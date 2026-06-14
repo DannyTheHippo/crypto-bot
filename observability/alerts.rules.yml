@@ -1,0 +1,77 @@
+# Prometheus alerting rules (Phase 10). Every rule below references a metric the app ACTUALLY emits
+# (/metrics via @willsoto/nestjs-prometheus): event_loop_delay_p99_seconds, event_loop_utilization,
+# mode_info{requested,effective}, boot_info{boot_id}, kill_switch_state{state} (MetricsService, 5s),
+# and reconciliation_mismatch_total (ReconciliationService). All rules are ACTIVE — none stubbed.
+# Trading gauges (equity_usdt, day_pnl_usdt, drawdown_ratio, realized_pnl_usdt, position_*, fills_total,
+# orders_total{outcome}, orders_rejected_total{code}) are also emitted and surfaced on the Grafana
+# dashboards; add threshold alerts here (e.g. daily-loss / drawdown approaching limits) as desired.
+groups:
+  - name: crypto-bot-health
+    rules:
+      - alert: TargetDown
+        expr: up{job="crypto-bot"} == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "crypto-bot /metrics target is down"
+          runbook: "docs/runbook.md#halt-response"
+
+      - alert: EventLoopBudgetBreach
+        # §8 event-loop budget: p99 loop delay over 50ms sustained means the single-threaded hot
+        # path (strategy → risk → execution) is being starved — order latency and the OMS query
+        # loops degrade. Budget is conservative for a trading loop.
+        expr: event_loop_delay_p99_seconds > 0.05
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: "Event-loop p99 delay over the 50ms budget ({{ $value }}s)"
+          runbook: "docs/runbook.md"
+
+      - alert: EventLoopUtilizationHigh
+        expr: event_loop_utilization > 0.9
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Event-loop utilization sustained above 90% ({{ $value }})"
+
+  - name: crypto-bot-mode
+    rules:
+      # Paper-honesty visibility: surfaces whenever the process is resolving to a non-paper effective
+      # mode. Not an error (live is legitimate when armed) — an info-level notice so operators always
+      # know the live wall state. Pages should come from the kill-switch alerts (below) once emitted.
+      - alert: EffectiveModeLive
+        expr: mode_info{effective="live"} == 1
+        for: 0m
+        labels: { severity: info }
+        annotations:
+          summary: "Effective trading mode is LIVE (boot_id label on boot_info)"
+          runbook: "docs/runbook.md#re-arm-live-arming-interlock-10b--out-of-session"
+
+  - name: crypto-bot-safety
+    rules:
+      # kill_switch_state is emitted by MetricsService (sampled every 5s; only the active state = 1).
+      - alert: KillSwitchEngaged
+        expr: kill_switch_state{state!="RUNNING"} == 1
+        for: 0m
+        labels: { severity: critical }
+        annotations:
+          summary: "Kill switch is engaged (not RUNNING) — trading halted"
+          runbook: "docs/runbook.md#halt-response"
+
+      - alert: HaltedDegraded
+        expr: kill_switch_state{state="HALTED_DEGRADED"} == 1
+        for: 0m
+        labels: { severity: critical }
+        annotations:
+          summary: "Kill switch HALTED_DEGRADED — cancels unconfirmed, venue orders may be live"
+          runbook: "docs/runbook.md#halt-response"
+
+      # reconciliation_mismatch_total is emitted by ReconciliationService (incremented per pass by the
+      # mismatch count). A mismatch HALTs and never auto-flattens (§6.4) — investigate immediately.
+      - alert: ReconciliationMismatch
+        expr: increase(reconciliation_mismatch_total[5m]) > 0
+        for: 0m
+        labels: { severity: critical }
+        annotations:
+          summary: "Reconciliation detected a venue/local mismatch — halted, never auto-flattened"
+          runbook: "docs/runbook.md#reconciliation-mismatch-64"

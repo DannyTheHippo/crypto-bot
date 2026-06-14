@@ -1,0 +1,42 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+
+env:
+  NODE_ENV: test
+  CI: 'true'
+
+jobs:
+  testnet:
+    runs-on: ubuntu-latest
+    env:
+      BINANCE_TESTNET_API_KEY: ${{ secrets.BINANCE_TESTNET_API_KEY }}
+      BINANCE_TESTNET_API_SECRET: ${{ secrets.BINANCE_TESTNET_API_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Test testnet
+        if: ${{ env.BINANCE_TESTNET_API_KEY != '' }}
+        run: pnpm test:testnet
+
+  mutation-testing:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Mutation testing placeholder (Phase 4+)
+        run: echo "Mutation testing arrives in Phase 4"

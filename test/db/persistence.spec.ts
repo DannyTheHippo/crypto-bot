@@ -1,0 +1,619 @@
+/**
+ * DB integration suite — requires a live PostgreSQL 16 at DATABASE_URL.
+ * Skips entirely without it so `pnpm test:db` without DATABASE_URL exits 0.
+ *
+ * WARNING: this suite DROPS SCHEMA public CASCADE before running migrations.
+ * It must only run against a disposable test database.
+ *
+ * Safety guard (M7): the suite is skipped unless EITHER:
+ *   - DB_SUITE_ALLOW_RESET=1 is set, OR
+ *   - the database name in DATABASE_URL ends with `_test`
+ *
+ * Run unsandboxed:
+ *   DB_SUITE_ALLOW_RESET=1 DATABASE_URL=postgres://cryptobot:cryptobot@127.0.0.1:5432/cryptobot_test pnpm test:db
+ */
+
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { Pool } from 'pg';
+import { drizzle } from 'drizzle-orm/node-postgres';
+import { migrate } from 'drizzle-orm/node-postgres/migrator';
+import * as path from 'path';
+import * as schema from '../../src/modules/persistence/schema';
+import {
+  computeAuditHash,
+  AUDIT_INITIAL_PREV_HASH,
+} from '../../src/modules/persistence/journal-hash';
+import { JournalRepository } from '../../src/modules/persistence/repositories/journal.repository';
+import { OutboxRepository } from '../../src/modules/persistence/repositories/outbox.repository';
+import { FillRepository } from '../../src/modules/persistence/repositories/fill.repository';
+import { DrizzleExecutionStore } from '../../src/modules/persistence/repositories/drizzle-execution-store';
+import { RiskDecisionRepository } from '../../src/modules/persistence/repositories/risk-decision.repository';
+import { SignalRepository } from '../../src/modules/persistence/repositories/signal.repository';
+import Decimal from 'decimal.js';
+import { price, qty } from '../../src/domain/types/money';
+import { venueId, symbolId, clientOrderId, strategyId, epochMs } from '../../src/domain/types/ids';
+import type { FillRecord } from '../../src/domain/types/exec-report';
+import type { Position } from '../../src/domain/types/portfolio';
+
+const DB_URL = process.env['DATABASE_URL'];
+
+function dbNameEndsWithTest(url: string): boolean {
+  try {
+    return new URL(url).pathname.replace(/^\//, '').endsWith('_test');
+  } catch {
+    return false;
+  }
+}
+
+const resetAllowed =
+  process.env['DB_SUITE_ALLOW_RESET'] === '1' || (!!DB_URL && dbNameEndsWithTest(DB_URL));
+
+const SKIP = !DB_URL || !resetAllowed;
+
+// pg returns NUMERIC(38,18) padded to 18 decimal places.
+function pad18(s: string): string {
+  const dot = s.indexOf('.');
+  if (dot === -1) return s + '.' + '0'.repeat(18);
+  const frac = s.slice(dot + 1);
+  return frac.length >= 18 ? s.slice(0, dot + 19) : s + '0'.repeat(18 - frac.length);
+}
+
+const MIGRATIONS_FOLDER = path.resolve(__dirname, '../../drizzle');
+
+describe.skipIf(SKIP)('DB integration — persistence layer', () => {
+  let pool: Pool;
+  let db: ReturnType<typeof drizzle<typeof schema>>;
+
+  beforeAll(async () => {
+    pool = new Pool({ connectionString: DB_URL! });
+
+    // The generated DDL schema-qualifies references (public.*), so the migrations
+    // must run verbatim against public. The target DB is dedicated to this suite:
+    // reset public + drizzle bookkeeping so every run applies migrations from scratch.
+    await pool.query(`DROP SCHEMA IF EXISTS public CASCADE`);
+    await pool.query(`CREATE SCHEMA public`);
+    await pool.query(`DROP SCHEMA IF EXISTS drizzle CASCADE`);
+
+    db = drizzle(pool, { schema });
+
+    await migrate(db, { migrationsFolder: MIGRATIONS_FOLDER });
+  }, 30_000);
+
+  afterAll(async () => {
+    await pool.end();
+  }, 10_000);
+
+  // Seed a minimal order_intents parent row so a subsequent orders insert satisfies the
+  // orders.intent_id → order_intents FK (the write-ahead path always persists the intent first).
+  async function seedIntent(intentId: string, clientOrderId: string, mode: string, runId: string, bootId: string): Promise<void> {
+    await pool.query(
+      `INSERT INTO public.order_intents
+        (intent_id, client_order_id, strategy_id, venue, symbol, side, type, qty, time_in_force, reduce_only,
+         ref_price, ref_seq, created_at, expires_at, source_dedupe_key, source_event_time, source_based_on_seq,
+         source_strength, mode, run_id, boot_id)
+       VALUES ($1,$2,'s','binance','BTC/USDT','BUY','LIMIT','1.000000000000000000','GTC',false,
+         '50000.000000000000000000',0,0,9999999,$3,0,0,'0.5',$4,$5,$6)`,
+      [intentId, clientOrderId, `dk-${intentId}`, mode, runId, bootId],
+    );
+  }
+
+  // ── (a) Migrations apply ──────────────────────────────────────────────────
+  it('(a) all expected tables exist after migration', async () => {
+    const result = await pool.query<{ tablename: string }>(
+      `SELECT tablename FROM pg_tables WHERE schemaname = $1 ORDER BY tablename`,
+      ['public'],
+    );
+    const tables = result.rows.map((r) => r.tablename);
+    const expected = [
+      'audit_log',
+      'balances',
+      'config_snapshots',
+      'equity_curve',
+      'exec_outbox',
+      'fee_ledger',
+      'fills',
+      'mode_transitions',
+      'order_events',
+      'order_intents',
+      'orders',
+      'outbox_consumer_acks',
+      'positions',
+      'reconciliations',
+      'risk_decisions',
+      'signals',
+    ];
+    for (const t of expected) {
+      expect(tables, `table ${t} missing`).toContain(t);
+    }
+  });
+
+  // ── (a2) information_schema shape assertions ──────────────────────────────
+  it('(a2) audit_log.payload column type is text (not jsonb)', async () => {
+    const result = await pool.query<{ data_type: string }>(
+      `SELECT data_type
+       FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = 'audit_log' AND column_name = 'payload'`,
+    );
+    expect(result.rows[0]?.data_type).toBe('text');
+  });
+
+  it('(a2) positions primary key has mode as first column and 4 total columns', async () => {
+    const result = await pool.query<{ column_name: string; ordinal_position: number }>(
+      `SELECT kcu.column_name, kcu.ordinal_position
+       FROM information_schema.table_constraints tc
+       JOIN information_schema.key_column_usage kcu
+         ON tc.constraint_name = kcu.constraint_name
+        AND tc.table_schema = kcu.table_schema
+       WHERE tc.table_schema = 'public'
+         AND tc.table_name = 'positions'
+         AND tc.constraint_type = 'PRIMARY KEY'
+       ORDER BY kcu.ordinal_position`,
+    );
+    const cols = result.rows.map((r) => r.column_name);
+    expect(cols[0], 'mode must be first PK column').toBe('mode');
+    expect(cols).toContain('strategy_id');
+    expect(cols).toContain('venue');
+    expect(cols).toContain('symbol');
+    expect(cols.length).toBe(4);
+  });
+
+  it('(a2) order_events.id is primary key with GENERATED ALWAYS AS IDENTITY', async () => {
+    const pkResult = await pool.query<{ column_name: string }>(
+      `SELECT kcu.column_name
+       FROM information_schema.table_constraints tc
+       JOIN information_schema.key_column_usage kcu
+         ON tc.constraint_name = kcu.constraint_name
+        AND tc.table_schema = kcu.table_schema
+       WHERE tc.table_schema = 'public'
+         AND tc.table_name = 'order_events'
+         AND tc.constraint_type = 'PRIMARY KEY'`,
+    );
+    expect(pkResult.rows.map((r) => r.column_name)).toContain('id');
+
+    const identResult = await pool.query<{ is_identity: string; identity_generation: string }>(
+      `SELECT is_identity, identity_generation
+       FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = 'order_events' AND column_name = 'id'`,
+    );
+    expect(identResult.rows[0]?.is_identity).toBe('YES');
+    expect(identResult.rows[0]?.identity_generation).toBe('ALWAYS');
+  });
+
+  it('(a2) order_events has UNIQUE index on (order_id, dedupe_key)', async () => {
+    const result = await pool.query<{ indexname: string; indexdef: string }>(
+      `SELECT indexname, indexdef FROM pg_indexes
+       WHERE schemaname = 'public' AND tablename = 'order_events'
+         AND indexname = 'order_events_order_dedupe_uidx'`,
+    );
+    expect(result.rows.length).toBe(1);
+    expect(result.rows[0]!.indexdef).toMatch(/UNIQUE/i);
+  });
+
+  // ── (b) Exact-decimal round-trip ─────────────────────────────────────────
+  it('(b) NUMERIC(38,18) round-trip: adversarial values preserve exact strings', async () => {
+    const cases: Array<{ input: string; expected: string }> = [
+      { input: '0.000000000000000001', expected: pad18('0.000000000000000001') },
+      {
+        input: '99999999999999999999.999999999999999999',
+        expected: '99999999999999999999.999999999999999999',
+      },
+      { input: '0.1', expected: pad18('0.1') },
+      { input: '123.456', expected: pad18('123.456') },
+    ];
+
+    for (const { input, expected } of cases) {
+      await pool.query(
+        `INSERT INTO public.balances
+           (venue, asset, free, locked, mode, run_id, boot_id)
+         VALUES ('test', $1, $2, '0.000000000000000000', 'paper', 'run1', 'boot1')`,
+        [input, input],
+      );
+      const row = await pool.query<{ free: string; locked: string }>(
+        `SELECT free, locked FROM public.balances WHERE venue='test' AND asset=$1 LIMIT 1`,
+        [input],
+      );
+      expect(row.rows[0]!.free, `free for input ${input}`).toBe(expected);
+      expect(typeof row.rows[0]!.free).toBe('string');
+    }
+  });
+
+  // ── (c) Audit immutability ────────────────────────────────────────────────
+  it('(c) UPDATE on audit_log raises exception', async () => {
+    await pool.query(
+      `INSERT INTO public.audit_log (actor, category, payload, prev_hash, hash)
+       VALUES ('test', 'test', '{}', $1, $2)`,
+      ['0'.repeat(64), computeAuditHash({}, AUDIT_INITIAL_PREV_HASH)],
+    );
+    await expect(
+      pool.query(`UPDATE public.audit_log SET actor='hacker' WHERE actor='test'`),
+    ).rejects.toThrow(/append-only|prohibited/i);
+  });
+
+  it('(c) DELETE on audit_log raises exception', async () => {
+    await expect(pool.query(`DELETE FROM public.audit_log WHERE actor='test'`)).rejects.toThrow(
+      /append-only|prohibited/i,
+    );
+  });
+
+  it('(c) TRUNCATE on audit_log raises exception', async () => {
+    await expect(pool.query(`TRUNCATE public.audit_log`)).rejects.toThrow(
+      /append-only|prohibited/i,
+    );
+  });
+
+  it('(c) UPDATE on order_events raises exception', async () => {
+    // Insert prerequisite: order_intent + order first (FK chain).
+    await pool.query(
+      `INSERT INTO public.order_intents
+         (intent_id, client_order_id, strategy_id, venue, symbol, side, type,
+          qty, time_in_force, reduce_only, ref_price, ref_seq,
+          created_at, expires_at, source_dedupe_key, source_event_time,
+          source_based_on_seq, source_strength, mode, run_id, boot_id)
+       VALUES ('intent-oe-1','cbpdeadbeef00000000000000000000001','s1','binance','BTC/USDT',
+               'BUY','LIMIT','1.000000000000000000','GTC',false,
+               '50000.000000000000000000',0,0,9999999999,'dk1',0,0,'0.5','paper','r1','b1')
+       ON CONFLICT DO NOTHING`,
+    );
+    await pool.query(
+      `INSERT INTO public.orders
+         (intent_id, client_order_id, strategy_id, venue, symbol, side, type,
+          qty, time_in_force, state, cum_qty, mode, run_id, boot_id)
+       VALUES ('intent-oe-1','cbpdeadbeef00000000000000000000001','s1','binance','BTC/USDT',
+               'BUY','LIMIT','1.000000000000000000','GTC','NEW',
+               '0.000000000000000000','paper','r1','b1')
+       ON CONFLICT DO NOTHING`,
+    );
+    await pool.query(
+      `INSERT INTO public.order_events
+         (order_id, dedupe_key, event_type, payload, seq, mode, run_id, boot_id)
+       VALUES ('intent-oe-1','dk-immutable','SUBMITTED','{}',1,'paper','r1','b1')`,
+    );
+    await expect(
+      pool.query(
+        `UPDATE public.order_events SET event_type='TAMPERED' WHERE dedupe_key='dk-immutable'`,
+      ),
+    ).rejects.toThrow(/append-only|prohibited/i);
+  });
+
+  it('(c) DELETE on order_events raises exception', async () => {
+    await expect(
+      pool.query(`DELETE FROM public.order_events WHERE dedupe_key='dk-immutable'`),
+    ).rejects.toThrow(/append-only|prohibited/i);
+  });
+
+  it('(c) TRUNCATE on order_events raises exception', async () => {
+    await expect(pool.query(`TRUNCATE public.order_events`)).rejects.toThrow(
+      /append-only|prohibited/i,
+    );
+  });
+
+  // ── (d) Hash chain — via real JournalRepository ───────────────────────────
+  it('(d) hash chain: JournalRepository.append stores entries with correct chained hashes', async () => {
+    const journal = new JournalRepository(db);
+    const entries = [
+      { actor: 'system', category: 'boot', payload: { event: 'start', n: 1 } },
+      { actor: 'system', category: 'mode', payload: { event: 'paper', n: 2 } },
+      { actor: 'operator', category: 'arm', payload: { event: 'arm_request', n: 3 } },
+    ];
+
+    const seqs: number[] = [];
+    for (const e of entries) {
+      const seq = await journal.append(e);
+      seqs.push(seq);
+    }
+    expect(seqs.length).toBe(3);
+    expect(seqs[1]!).toBeGreaterThan(seqs[0]!);
+    expect(seqs[2]!).toBeGreaterThan(seqs[1]!);
+
+    // Fetch back and re-derive chain to confirm stored hashes are consistent.
+    // The payload column stores canonical sorted-key JSON text; we parse it to
+    // recompute the hash rather than relying on the original in-memory object.
+    const result = await pool.query<{
+      seq: number;
+      prev_hash: string;
+      hash: string;
+      payload: string;
+    }>(
+      `SELECT seq, prev_hash, hash, payload FROM public.audit_log
+       WHERE seq >= $1 ORDER BY seq`,
+      [seqs[0]],
+    );
+    const rows = result.rows;
+    expect(rows.length).toBe(3);
+
+    let rePrev = rows[0]!.prev_hash;
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i]!;
+      const storedPayload = JSON.parse(row.payload) as unknown;
+      const reHash = computeAuditHash(storedPayload, rePrev);
+      expect(row.hash, `hash mismatch at entry ${i}`).toBe(reHash);
+      expect(row.prev_hash, `prev_hash mismatch at entry ${i}`).toBe(rePrev);
+      rePrev = reHash;
+    }
+  });
+
+  it('(d) hash chain breaks if payload is tampered (computed, not stored)', () => {
+    const p1 = { event: 'boot' };
+    const p2 = { event: 'trade' };
+    const h1 = computeAuditHash(p1, AUDIT_INITIAL_PREV_HASH);
+    const h2 = computeAuditHash(p2, h1);
+
+    const tamperedH1 = computeAuditHash({ event: 'TAMPERED' }, AUDIT_INITIAL_PREV_HASH);
+    const brokenH2 = computeAuditHash(p2, tamperedH1);
+    expect(brokenH2).not.toBe(h2);
+  });
+
+  // ── (e) Outbox semantics — via real OutboxRepository ─────────────────────
+  it('(e) outbox: append 3 reports via OutboxRepository, consume returns them in cursor order', async () => {
+    const outbox = new OutboxRepository(db);
+    const reports = [
+      {
+        reportId: 'rep-1',
+        payload: { kind: 'ACK', n: 1 },
+        mode: 'paper' as const,
+        runId: 'run-ob',
+        bootId: 'boot-ob',
+      },
+      {
+        reportId: 'rep-2',
+        payload: { kind: 'FILL', n: 2 },
+        mode: 'paper' as const,
+        runId: 'run-ob',
+        bootId: 'boot-ob',
+      },
+      {
+        reportId: 'rep-3',
+        payload: { kind: 'CANCEL_ACK', n: 3 },
+        mode: 'paper' as const,
+        runId: 'run-ob',
+        bootId: 'boot-ob',
+      },
+    ];
+    const cursors: number[] = [];
+    for (const r of reports) {
+      const cursor = await outbox.append(r);
+      cursors.push(cursor);
+    }
+    expect(cursors.length).toBe(3);
+    expect(cursors[1]!).toBeGreaterThan(cursors[0]!);
+    expect(cursors[2]!).toBeGreaterThan(cursors[1]!);
+
+    const rows = await outbox.consume('consumer-repo-test', 0);
+    const ours = rows.filter((r) => reports.some((p) => p.reportId === r.reportId));
+    expect(ours.length).toBe(3);
+    expect(ours[0]!.reportId).toBe('rep-1');
+    expect(ours[1]!.reportId).toBe('rep-2');
+    expect(ours[2]!.reportId).toBe('rep-3');
+  });
+
+  it('(e) outbox: ack via OutboxRepository.ack; re-consume returns only rows above ack cursor', async () => {
+    const outbox = new OutboxRepository(db);
+
+    const ackResult = await pool.query<{ cursor: number }>(
+      `SELECT cursor FROM public.exec_outbox WHERE report_id = 'rep-2'`,
+    );
+    const ackCursor = ackResult.rows[0]!.cursor;
+
+    await outbox.ack('consumer-repo-ack', ackCursor);
+
+    const remaining = await outbox.consume('consumer-repo-ack', 0);
+    const ours = remaining.filter((r) => ['rep-1', 'rep-2', 'rep-3'].includes(r.reportId));
+    expect(ours.every((r) => r.cursor > ackCursor)).toBe(true);
+  });
+
+  it('(e) outbox: duplicate reportId via OutboxRepository.append returns same cursor (idempotent)', async () => {
+    const outbox = new OutboxRepository(db);
+    const report = {
+      reportId: 'rep-dedup-repo',
+      payload: { kind: 'ACK' },
+      mode: 'paper' as const,
+      runId: 'run-ob',
+      bootId: 'boot-ob',
+    };
+    const cursor1 = await outbox.append(report);
+    const cursor2 = await outbox.append(report);
+    expect(cursor1).toBe(cursor2);
+  });
+
+  // ── (f) Fill dedupe — via real FillRepository ─────────────────────────────
+  it('(f) fill dedupe: same (venue,symbol,venue_trade_id) via FillRepository.insertIdempotent → one row', async () => {
+    const fillRepo = new FillRepository(db);
+    const fill = {
+      venue: 'binance',
+      symbol: 'BTC/USDT',
+      venueTradeId: 'trade-repo-001',
+      clientOrderId: 'cbpdeadbeef00000000000000000000001',
+      price: '50000.000000000000000000',
+      qty: '0.001000000000000000',
+      feeResolved: false,
+      liquidity: 'taker' as const,
+      venueTimestamp: 1700000000000,
+      source: 'ws' as const,
+      mode: 'paper' as const,
+      runId: 'r1',
+      bootId: 'b1',
+    };
+
+    const r1 = await fillRepo.insertIdempotent(fill);
+    expect(r1.inserted).toBe(true);
+
+    const r2 = await fillRepo.insertIdempotent(fill);
+    expect(r2.inserted).toBe(false);
+
+    const fetched = await fillRepo.fetchByTradeId('binance', 'BTC/USDT', 'trade-repo-001');
+    expect(fetched).not.toBeNull();
+    expect(fetched!.venueTradeId).toBe('trade-repo-001');
+  });
+
+  // ── (f2) DrizzleExecutionStore.saveFill — Decimal dedupe, no false conflict ──
+  it('(f2) saveFill re-ingesting an identical fill returns {inserted:false, conflict:false}', async () => {
+    // Regression: pg renders NUMERIC(38,18) padded ('100.500000000000000000'); a STRING compare
+    // against fill.price.toFixed() ('100.5') would false-positive a FILL_PAYLOAD_CONFLICT and HALT
+    // the bot on every benign duplicate fill. saveFill must compare by exact Decimal value.
+    const store = new DrizzleExecutionStore(db, { mode: 'paper', runId: 'r1', bootId: 'b1' });
+    const fill: FillRecord = {
+      venue: venueId('binance'),
+      symbol: symbolId('BTC/USDT'),
+      venueTradeId: 'dup-decimal-1',
+      clientOrderId: clientOrderId('cbpdeadbeef00000000000000000000099'),
+      price: price('100.5'),
+      qty: qty('0.001'),
+      fee: null,
+      liquidity: 'taker',
+      venueTimestamp: epochMs(1_700_000_000_000),
+      source: 'paper',
+    };
+    const first = await store.saveFill(fill, '');
+    expect(first.inserted).toBe(true);
+    const second = await store.saveFill(fill, '');
+    expect(second.inserted).toBe(false);
+    expect(second.conflict).toBe(false);
+  });
+
+  // ── (h) DB-backed recovery surface (savePortfolioSample / loadRecoverySnapshot / loadOpenOrders) ──
+  // Each test uses a distinct `mode` so the mode-keyed (current-state) positions/orders tables
+  // do not couple tests. Money is asserted by EXACT padded string (pg renders NUMERIC(38,18)).
+  it('(h) savePortfolioSample + loadRecoverySnapshot round-trips equity and positions exactly', async () => {
+    const store = new DrizzleExecutionStore(db, { mode: 'testnet', runId: 'run-rec', bootId: 'boot-rec' });
+    const pos: Position = {
+      strategyId: strategyId('s-rec'),
+      venue: venueId('binance'),
+      symbol: symbolId('BTC/USDT'),
+      signedQty: new Decimal('1.5'),
+      avgEntry: price('20000'),
+      realizedPnl: new Decimal('12.25'),
+    };
+    await store.savePortfolioSample(
+      { ts: epochMs(1_700_000_100_000), equity: '49850.5', cash: '19850.5', unrealized: '0', peak: '50000', sessionDateUtc: '2026-06-14' },
+      [pos],
+    );
+
+    const snap = await store.loadRecoverySnapshot('testnet');
+    expect(snap.latest).not.toBeNull();
+    expect(snap.latest!.cash).toBe(pad18('19850.5'));
+    expect(snap.latest!.equity).toBe(pad18('49850.5'));
+    expect(snap.latest!.peak).toBe(pad18('50000'));
+    // sodEquity = first sample of the latest row's session date = this sample.
+    expect(snap.sodEquity).toBe(pad18('49850.5'));
+    expect(snap.positions).toHaveLength(1);
+    expect(snap.positions[0]!.signedQty.toFixed()).toBe('1.5');
+    expect(snap.positions[0]!.avgEntry.toFixed()).toBe('20000');
+    expect(snap.positions[0]!.realizedPnl.toFixed()).toBe('12.25');
+
+    // Full restore invariant: restored equity must equal cash + Σ(signedQty × avgEntry-as-mark) exactly.
+    const recomputed = new Decimal(snap.latest!.cash).plus(
+      snap.positions.reduce((acc, p) => acc.plus(p.signedQty.mul(p.avgEntry)), new Decimal(0)),
+    );
+    // cash 19850.5 + 1.5×20000 = 49850.5
+    expect(recomputed.toFixed()).toBe('49850.5');
+  });
+
+  it('(h) savePortfolioSample with an empty position set clears the persisted positions (flat)', async () => {
+    const store = new DrizzleExecutionStore(db, { mode: 'live', runId: 'run-flat', bootId: 'boot-flat' });
+    await store.savePortfolioSample(
+      { ts: epochMs(1_700_000_200_000), equity: '100', cash: '100', unrealized: '0', peak: '100', sessionDateUtc: '2026-06-15' },
+      [{ strategyId: strategyId('s-flat'), venue: venueId('binance'), symbol: symbolId('ETH/USDT'), signedQty: new Decimal('2'), avgEntry: price('3000'), realizedPnl: new Decimal('0') }],
+    );
+    // A later flat sample must DELETE the prior position row (replaceAll = DELETE-by-mode + insert []).
+    await store.savePortfolioSample(
+      { ts: epochMs(1_700_000_300_000), equity: '100', cash: '100', unrealized: '0', peak: '100', sessionDateUtc: '2026-06-15' },
+      [],
+    );
+    const snap = await store.loadRecoverySnapshot('live');
+    expect(snap.positions).toHaveLength(0);
+    expect(snap.latest!.cash).toBe(pad18('100'));
+  });
+
+  it('(h) loadOpenOrders returns only non-terminal orders for the mode', async () => {
+    const store = new DrizzleExecutionStore(db, { mode: 'live', runId: 'run-oo', bootId: 'boot-oo' });
+    // orders.intent_id has a (legitimate) FK to order_intents (write-ahead: saveIntent precedes
+    // saveNewOrder), so seed the parent intents first.
+    await seedIntent('oo-open-1', 'cbp-oo-open-000000000000000000001', 'live', 'run-oo', 'boot-oo');
+    await seedIntent('oo-term-1', 'cbp-oo-term-000000000000000000001', 'live', 'run-oo', 'boot-oo');
+    const ins = `INSERT INTO public.orders
+      (intent_id, client_order_id, strategy_id, venue, symbol, side, type, qty, time_in_force, state, cum_qty, terminal_at, mode, run_id, boot_id)
+      VALUES `;
+    // open (terminal_at NULL) + terminal (terminal_at set) under mode 'live'
+    await pool.query(ins + `('oo-open-1','cbp-oo-open-000000000000000000001','s','binance','BTC/USDT','BUY','LIMIT','1.000000000000000000','GTC','ACKED','0.000000000000000000',NULL,'live','run-oo','boot-oo')`);
+    await pool.query(ins + `('oo-term-1','cbp-oo-term-000000000000000000001','s','binance','BTC/USDT','BUY','LIMIT','1.000000000000000000','GTC','FILLED','1.000000000000000000',1700000000000,'live','run-oo','boot-oo')`);
+
+    const open = await store.loadOpenOrders('live');
+    expect(open).toHaveLength(1);
+    expect(open[0]!.clientOrderId).toBe('cbp-oo-open-000000000000000000001');
+    expect(open[0]!.state).toBe('ACKED');
+  });
+
+  it('(h) loadOpenOrders fails fast on an unrecognized persisted state (I7 — never trusted)', async () => {
+    const store = new DrizzleExecutionStore(db, { mode: 'paper', runId: 'run-bad', bootId: 'boot-bad' });
+    await seedIntent('oo-bad-1', 'cbp-oo-bad-0000000000000000000001', 'paper', 'run-bad', 'boot-bad');
+    const ins = `INSERT INTO public.orders
+      (intent_id, client_order_id, strategy_id, venue, symbol, side, type, qty, time_in_force, state, cum_qty, terminal_at, mode, run_id, boot_id)
+      VALUES ('oo-bad-1','cbp-oo-bad-0000000000000000000001','s','binance','BTC/USDT','BUY','LIMIT','1.000000000000000000','GTC','BOGUS_STATE','0.000000000000000000',NULL,'paper','run-bad','boot-bad')`;
+    await pool.query(ins);
+    await expect(store.loadOpenOrders('paper')).rejects.toThrow(/unrecognized persisted order state/i);
+  });
+
+  // ── (i) Decision-trail persistence (§8): risk_decisions + signals rows land ──
+  it('(i) risk_decisions row round-trips with exact reasons and mode scoping', async () => {
+    const repo = new RiskDecisionRepository(db);
+    await repo.insert({
+      intentId: 'dt-intent-1', verdict: 'REJECTED', reasons: ['DAILY_LOSS', 'MAX_DRAWDOWN'],
+      limitsVersion: '', snapshotSeq: 42n, inputsHash: '', mode: 'testnet', runId: 'run-dt', bootId: 'boot-dt',
+    });
+    const { rows } = await pool.query<{ intent_id: string; verdict: string; reasons: string[]; mode: string }>(
+      `SELECT intent_id, verdict, reasons, mode FROM public.risk_decisions WHERE intent_id = 'dt-intent-1'`,
+    );
+    expect(rows[0]?.verdict).toBe('REJECTED');
+    expect(rows[0]?.reasons).toEqual(['DAILY_LOSS', 'MAX_DRAWDOWN']);
+    expect(rows[0]?.mode).toBe('testnet');
+  });
+
+  it('(i) signals row round-trips with exact money strings and outcome', async () => {
+    const repo = new SignalRepository(db);
+    await repo.insert({
+      signalId: 'dt-sig-1', strategyId: 's', venue: 'binance', symbol: 'BTC/USDT', kind: 'ENTER_LONG',
+      strength: '0.5', refPrice: '50000.25', basedOnSeq: 7n, eventTime: 1_700_000_000_000, ttlMs: 10_000,
+      dedupeKey: 'dk-dt-1', reason: 'ema-cross', outcome: 'APPROVED', intentId: 'dt-intent-2',
+      mode: 'paper', runId: 'run-dt', bootId: 'boot-dt',
+    });
+    const { rows } = await pool.query<{ ref_price: string; outcome: string; intent_id: string }>(
+      `SELECT ref_price, outcome, intent_id FROM public.signals WHERE signal_id = 'dt-sig-1'`,
+    );
+    expect(rows[0]?.ref_price).toBe(pad18('50000.25'));
+    expect(rows[0]?.outcome).toBe('APPROVED');
+    expect(rows[0]?.intent_id).toBe('dt-intent-2');
+  });
+
+  // ── (g) Constraint smoke tests ────────────────────────────────────────────
+  it('(g) duplicate client_order_id on order_intents is rejected', async () => {
+    const row = `INSERT INTO public.order_intents
+      (intent_id, client_order_id, strategy_id, venue, symbol, side, type,
+       qty, time_in_force, reduce_only, ref_price, ref_seq,
+       created_at, expires_at, source_dedupe_key, source_event_time,
+       source_based_on_seq, source_strength, mode, run_id, boot_id)
+     VALUES`;
+    await pool.query(
+      row +
+        ` ('intent-dup-1','cbp-dup-test-00000000000000000001','s1','binance','BTC/USDT',
+          'BUY','LIMIT','1.000000000000000000','GTC',false,
+          '50000.000000000000000000',0,0,9999999,'dk-d1',0,0,'0.5','paper','r1','b1')`,
+    );
+    await expect(
+      pool.query(
+        row +
+          ` ('intent-dup-2','cbp-dup-test-00000000000000000001','s2','binance','BTC/USDT',
+            'BUY','LIMIT','1.000000000000000000','GTC',false,
+            '50000.000000000000000000',0,0,9999999,'dk-d2',0,0,'0.5','paper','r1','b1')`,
+      ),
+    ).rejects.toThrow(/unique|duplicate/i);
+  });
+
+  it('(g) duplicate (order_id, dedupe_key) on order_events is rejected', async () => {
+    // Reuse intent-oe-1 + its order row created in test (c).
+    const insert = `INSERT INTO public.order_events
+      (order_id, dedupe_key, event_type, payload, seq, mode, run_id, boot_id)
+      VALUES ('intent-oe-1','dk-smoke','SUBMITTED','{}',2,'paper','r1','b1')`;
+    await pool.query(insert);
+    await expect(pool.query(insert)).rejects.toThrow(/unique|duplicate/i);
+  });
+});

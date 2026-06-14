@@ -1,0 +1,13 @@
+global:
+  scrape_interval: 15s
+
+rule_files:
+  - alerts.rules.yml
+
+scrape_configs:
+  - job_name: crypto-bot
+    static_configs:
+      - targets:
+          - app:3000
+          # - host.docker.internal:3000  # use when running the app on the host instead of in compose
+    metrics_path: /metrics

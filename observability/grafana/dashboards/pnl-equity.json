@@ -1,0 +1,82 @@
+{
+  "uid": "crypto-bot-pnl",
+  "title": "crypto-bot — PnL & Equity",
+  "tags": ["crypto-bot"],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "refresh": "10s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": { "list": [] },
+  "annotations": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Equity & peak (USDT)",
+      "description": "Account equity = cash + Σ position×mark (unrealized is embedded here). Peak is the persisted high-water mark.",
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 8 } } },
+      "targets": [
+        { "expr": "equity_usdt", "refId": "A", "legendFormat": "equity" },
+        { "expr": "peak_equity_usdt", "refId": "B", "legendFormat": "peak" }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Day PnL (USDT)",
+      "description": "equity − start-of-day-UTC equity.",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 0 }] },
+          "color": { "mode": "thresholds" }
+        }
+      },
+      "targets": [{ "expr": "day_pnl_usdt", "refId": "A" }]
+    },
+    {
+      "id": 3,
+      "type": "gauge",
+      "title": "Drawdown (peak→trough)",
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 0.1 }, { "color": "red", "value": 0.2 }] }
+        }
+      },
+      "targets": [{ "expr": "drawdown_ratio", "refId": "A" }]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Free cash (USDT)",
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 4 },
+      "targets": [{ "expr": "cash_usdt", "refId": "A" }]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Realized PnL by strategy/symbol (USDT)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 9 },
+      "targets": [{ "expr": "realized_pnl_usdt", "refId": "A", "legendFormat": "{{ strategy }} {{ symbol }}" }]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Position quantity (signed)",
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 9 },
+      "targets": [{ "expr": "position_qty", "refId": "A", "legendFormat": "{{ symbol }}" }]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Position notional (USDT)",
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 9 },
+      "targets": [{ "expr": "position_notional_usdt", "refId": "A", "legendFormat": "{{ symbol }}" }]
+    }
+  ]
+}

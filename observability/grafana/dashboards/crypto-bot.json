@@ -1,0 +1,108 @@
+{
+  "uid": "crypto-bot-overview",
+  "title": "crypto-bot — overview",
+  "tags": ["crypto-bot"],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "refresh": "10s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": { "list": [] },
+  "annotations": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Scrape up",
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "mappings": [{ "type": "value", "options": { "0": { "text": "DOWN" }, "1": { "text": "UP" } } }], "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }, "color": { "mode": "thresholds" } } },
+      "targets": [{ "expr": "up{job=\"crypto-bot\"}", "refId": "A" }]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Effective mode",
+      "description": "Which mode the four-gate wall resolved to. paper unless all gates pass.",
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
+      "targets": [{ "expr": "mode_info", "refId": "A", "legendFormat": "{{ effective }}" }]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Kill switch",
+      "description": "The currently-active kill-switch state (RUNNING is healthy).",
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0 },
+      "targets": [{ "expr": "kill_switch_state == 1", "refId": "A", "legendFormat": "{{ state }}" }]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Equity (USDT)",
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 0 },
+      "targets": [{ "expr": "equity_usdt", "refId": "A" }]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Day PnL (USDT)",
+      "description": "equity − start-of-day-UTC equity (survives restarts via DB-backed recovery).",
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 0 },
+      "fieldConfig": { "defaults": { "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 0 }] }, "color": { "mode": "thresholds" } } },
+      "targets": [{ "expr": "day_pnl_usdt", "refId": "A" }]
+    },
+    {
+      "id": 6,
+      "type": "gauge",
+      "title": "Drawdown",
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 0.1 }, { "color": "red", "value": 0.2 }] } } },
+      "targets": [{ "expr": "drawdown_ratio", "refId": "A" }]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Equity & peak (USDT)",
+      "description": "Account equity = cash + Σ position×mark. Peak is the persisted high-water mark; both continue across restarts (DB recovery).",
+      "gridPos": { "h": 8, "w": 16, "x": 0, "y": 4 },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 8 } } },
+      "targets": [
+        { "expr": "equity_usdt", "refId": "A", "legendFormat": "equity" },
+        { "expr": "peak_equity_usdt", "refId": "B", "legendFormat": "peak" }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Open orders & in-flight intents",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 4 },
+      "targets": [
+        { "expr": "open_orders", "refId": "A", "legendFormat": "open orders" },
+        { "expr": "in_flight_intents", "refId": "B", "legendFormat": "in-flight" }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "stat",
+      "title": "Reconcile: since last clean pass (s)",
+      "description": "time() − reconciliation_last_success_timestamp_seconds. Grows unbounded if the reconciler stalls or keeps HALTing — itself a fault signal (§8).",
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 12 },
+      "fieldConfig": { "defaults": { "unit": "s", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 120 }, { "color": "red", "value": 300 }] }, "color": { "mode": "thresholds" } } },
+      "targets": [{ "expr": "time() - reconciliation_last_success_timestamp_seconds", "refId": "A" }]
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Event-loop p99 delay (s) — 50ms budget",
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 12 },
+      "fieldConfig": { "defaults": { "unit": "s", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 0.05 }] } } },
+      "targets": [{ "expr": "event_loop_delay_p99_seconds", "refId": "A", "legendFormat": "p99 delay" }]
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Event-loop utilization",
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 12 },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 } },
+      "targets": [{ "expr": "event_loop_utilization", "refId": "A", "legendFormat": "utilization" }]
+    }
+  ]
+}

@@ -1,0 +1,73 @@
+import { Module } from '@nestjs/common';
+import { TerminusModule } from '@nestjs/terminus';
+import { PrometheusModule } from '@willsoto/nestjs-prometheus';
+import { LoggerModule } from 'nestjs-pino';
+import { ConfigService } from '@nestjs/config';
+import { HealthController } from './health.controller';
+import { EventLoopHealthIndicator } from './event-loop-health.indicator';
+import {
+  MetricsService,
+  EVENT_LOOP_DELAY_GAUGE,
+  EVENT_LOOP_UTILIZATION_GAUGE,
+  MODE_INFO_GAUGE,
+  BOOT_INFO_GAUGE,
+  KILL_SWITCH_STATE_GAUGE,
+  EQUITY_GAUGE,
+  CASH_GAUGE,
+  PEAK_EQUITY_GAUGE,
+  DAY_PNL_GAUGE,
+  DRAWDOWN_GAUGE,
+  REALIZED_PNL_GAUGE,
+  POSITION_QTY_GAUGE,
+  POSITION_NOTIONAL_GAUGE,
+  OPEN_ORDERS_GAUGE,
+  IN_FLIGHT_GAUGE,
+} from './metrics.service';
+import { buildPinoHttpOptions } from './logger.config';
+import type { AppConfig } from '../../ports/app-config';
+
+@Module({
+  imports: [
+    LoggerModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (configService: ConfigService<AppConfig, true>) => {
+        const mode = configService.get('mode', { infer: true });
+        const app = configService.get('app', { infer: true });
+        const obs = configService.get('observability', { infer: true });
+        return buildPinoHttpOptions({
+          level: obs.logLevel,
+          bootId: app.bootId,
+          mode: mode.configMode,
+        });
+      },
+    }),
+    TerminusModule,
+    PrometheusModule.register({
+      defaultMetrics: {
+        enabled: true,
+      },
+    }),
+  ],
+  controllers: [HealthController],
+  providers: [
+    EventLoopHealthIndicator,
+    MetricsService,
+    EVENT_LOOP_DELAY_GAUGE,
+    EVENT_LOOP_UTILIZATION_GAUGE,
+    MODE_INFO_GAUGE,
+    BOOT_INFO_GAUGE,
+    KILL_SWITCH_STATE_GAUGE,
+    EQUITY_GAUGE,
+    CASH_GAUGE,
+    PEAK_EQUITY_GAUGE,
+    DAY_PNL_GAUGE,
+    DRAWDOWN_GAUGE,
+    REALIZED_PNL_GAUGE,
+    POSITION_QTY_GAUGE,
+    POSITION_NOTIONAL_GAUGE,
+    OPEN_ORDERS_GAUGE,
+    IN_FLIGHT_GAUGE,
+  ],
+  exports: [EventLoopHealthIndicator, MetricsService],
+})
+export class ObservabilityModule {}

@@ -1,0 +1,99 @@
+{
+  "uid": "crypto-bot-risk",
+  "title": "crypto-bot — Risk & safety",
+  "tags": ["crypto-bot"],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "refresh": "10s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": { "list": [] },
+  "annotations": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "type": "state-timeline",
+      "title": "Kill-switch state",
+      "description": "Only the active state carries 1 (RUNNING is healthy; anything else is a halt).",
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "custom": { "fillOpacity": 80 }, "min": 0, "max": 1 } },
+      "targets": [{ "expr": "kill_switch_state == 1", "refId": "A", "legendFormat": "{{ state }}" }]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Effective mode",
+      "description": "paper unless all four live gates pass.",
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 0 },
+      "targets": [{ "expr": "mode_info", "refId": "A", "legendFormat": "{{ effective }}" }]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Reconciliation mismatches (total)",
+      "description": "Any non-zero value pages (design §8). Reconciliation HALTs, never auto-flattens.",
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] },
+          "color": { "mode": "thresholds" }
+        }
+      },
+      "targets": [{ "expr": "reconciliation_mismatch_total", "refId": "A" }]
+    },
+    {
+      "id": 4,
+      "type": "gauge",
+      "title": "Drawdown vs 20% limit",
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 6 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 0.1 }, { "color": "red", "value": 0.2 }] }
+        }
+      },
+      "targets": [{ "expr": "drawdown_ratio", "refId": "A" }]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Day PnL (USDT) — watch against the daily-loss limit",
+      "gridPos": { "h": 7, "w": 16, "x": 8, "y": 6 },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 0 }] },
+          "custom": { "drawStyle": "line", "fillOpacity": 8, "thresholdsStyle": { "mode": "line" } }
+        }
+      },
+      "targets": [{ "expr": "day_pnl_usdt", "refId": "A", "legendFormat": "day PnL" }]
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Since last clean reconcile (s)",
+      "description": "time() − reconciliation_last_success_timestamp_seconds. A growing value means the reconciler is stalled or repeatedly HALTing — investigate before trusting local state (§8).",
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 13 },
+      "fieldConfig": { "defaults": { "unit": "s", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 120 }, { "color": "red", "value": 300 }] }, "color": { "mode": "thresholds" } } },
+      "targets": [{ "expr": "time() - reconciliation_last_success_timestamp_seconds", "refId": "A" }]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Reconciliation passes by result (15m rate)",
+      "description": "reconciliation_runs_total{result=clean|mismatch|halt}. Demo runs the open-orders + holdings axes against the dedicated account; a halt result HALTs (never auto-flattens).",
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 13 },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "bars", "stacking": { "mode": "normal" } } } },
+      "targets": [{ "expr": "sum by (result) (rate(reconciliation_runs_total[15m]))", "refId": "A", "legendFormat": "{{ result }}" }]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Risk vetoes by code (15m rate)",
+      "description": "risk_rejections_total — the risk stage of the §8 rejection taxonomy (sizing/band/notional/exposure/kill-switch vetoes).",
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 13 },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "bars", "stacking": { "mode": "normal" } } } },
+      "targets": [{ "expr": "sum by (code) (rate(risk_rejections_total[15m]))", "refId": "A", "legendFormat": "{{ code }}" }]
+    }
+  ]
+}

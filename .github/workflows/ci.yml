@@ -1,0 +1,81 @@
+# IMPORTANT: This workflow must NEVER receive live credentials.
+# The config schema additionally strips live credential fields under CI
+# (NODE_ENV=test or CI=true forces configMode=paper and deletes BINANCE_LIVE_API_KEY,
+# BINANCE_LIVE_API_SECRET, ARMING_SECRET, LIVE_BASE_URL_OVERRIDE from the validated env).
+
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+env:
+  NODE_ENV: test
+  CI: "true"
+  TRADING_MODE: paper
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: cryptobot
+          POSTGRES_PASSWORD: cryptobot
+          POSTGRES_DB: cryptobot
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Schema/migration consistency check
+        run: pnpm exec drizzle-kit check
+
+      - name: Build
+        run: pnpm build
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Type check
+        run: pnpm typecheck
+
+      - name: Format check
+        run: pnpm format:check
+
+      - name: Test (unit + livegate)
+        run: pnpm test
+
+      - name: Test paper (passWithNoTests)
+        run: pnpm test:paper
+
+      - name: Coverage gate
+        run: pnpm test:cov
+
+      - name: DB integration tests
+        env:
+          DATABASE_URL: postgres://cryptobot:cryptobot@127.0.0.1:5432/cryptobot
+          DB_SUITE_ALLOW_RESET: "1"
+        run: pnpm test:db

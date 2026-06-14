@@ -1,0 +1,15 @@
+{
+  "packageManager": "pnpm",
+  "runner": "vitest",
+  "formatter": "prettier",
+  "linter": "eslint",
+  "typeChecker": "tsc",
+  "scripts": {
+    "build": "pnpm build",
+    "lint": "pnpm lint",
+    "typecheck": "pnpm typecheck",
+    "format": "pnpm format:check",
+    "test": "pnpm test",
+    "coverage": "pnpm test:cov"
+  }
+}

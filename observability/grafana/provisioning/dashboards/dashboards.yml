@@ -1,0 +1,11 @@
+# Grafana dashboard provisioning (Phase 10): loads the checked-in dashboard JSON from disk.
+apiVersion: 1
+providers:
+  - name: crypto-bot
+    orgId: 1
+    folder: crypto-bot
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /etc/grafana/dashboards

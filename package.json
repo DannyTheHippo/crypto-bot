@@ -1,0 +1,72 @@
+{
+  "name": "crypto-bot",
+  "version": "0.0.1",
+  "private": true,
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.32.1",
+  "scripts": {
+    "build": "nest build",
+    "start": "node dist/main.js",
+    "start:dev": "nest start --watch",
+    "migrate": "drizzle-kit migrate",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit -p tsconfig.eslint.json",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run test/unit test/livegate",
+    "test:livegate": "vitest run test/livegate",
+    "test:paper": "vitest run --passWithNoTests test/paper",
+    "test:cov": "vitest run --coverage test/unit test/livegate",
+    "test:db": "vitest run --passWithNoTests test/db",
+    "test:testnet": "vitest run --passWithNoTests test/testnet"
+  },
+  "dependencies": {
+    "@nestjs/common": "^11.1.26",
+    "@nestjs/config": "^4.0.4",
+    "@nestjs/core": "^11.1.26",
+    "@nestjs/platform-express": "^11.1.26",
+    "@nestjs/schedule": "^6.1.3",
+    "@nestjs/terminus": "^11.1.1",
+    "@willsoto/nestjs-prometheus": "^6.1.0",
+    "ccxt": "4.5.58",
+    "decimal.js": "^10.6.0",
+    "drizzle-orm": "0.45.2",
+    "nestjs-pino": "^4.6.1",
+    "pg": "8.21.0",
+    "pino": "^9.7.0",
+    "pino-http": "^10.4.0",
+    "prom-client": "^15.1.3",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "^11.0.7",
+    "@nestjs/schematics": "^11.0.5",
+    "@nestjs/testing": "^11.1.26",
+    "@swc/core": "^1.11.29",
+    "@types/node": "^24.13.2",
+    "@types/pg": "^8.20.0",
+    "@types/superagent": "^8.1.10",
+    "@types/supertest": "^6.0.3",
+    "@vitest/coverage-v8": "^4.1.8",
+    "drizzle-kit": "0.31.10",
+    "eslint": "^9.28.0",
+    "eslint-plugin-boundaries": "^6.0.2",
+    "fast-check": "^4.8.0",
+    "prettier": "^3.5.3",
+    "supertest": "^7.1.0",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.33.1",
+    "unplugin-swc": "^1.5.2",
+    "vitest": "^4.1.8"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@swc/core",
+      "esbuild"
+    ]
+  }
+}

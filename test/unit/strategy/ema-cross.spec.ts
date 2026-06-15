@@ -34,10 +34,31 @@ function candle(seq: number, close: string, t: number): CandleEvent {
 }
 
 // Flat, then a sharp rise (golden cross), then a sharp fall (death cross).
-const CLOSES = ['100', '100', '100', '100', '100', '110', '125', '140', '160', '150', '130', '110', '90', '70'];
+const CLOSES = [
+  '100',
+  '100',
+  '100',
+  '100',
+  '100',
+  '110',
+  '125',
+  '140',
+  '160',
+  '150',
+  '130',
+  '110',
+  '90',
+  '70',
+];
 
 function run(): { signals: Signal[]; closeAt: Map<number, string> } {
-  const strat = new EmaCrossStrategy(strategyId('ema1'), { fast: 3, slow: 5, symbol: S, venue: V, ttlMs: 30_000 });
+  const strat = new EmaCrossStrategy(strategyId('ema1'), {
+    fast: 3,
+    slow: 5,
+    symbol: S,
+    venue: V,
+    ttlMs: 30_000,
+  });
   const signals: Signal[] = [];
   const closeAt = new Map<number, string>();
   CLOSES.forEach((c, i) => {
@@ -76,7 +97,13 @@ describe('EmaCrossStrategy golden behaviour', () => {
   });
 
   it('emits nothing before a full slow-period window exists', () => {
-    const strat = new EmaCrossStrategy(strategyId('ema2'), { fast: 3, slow: 5, symbol: S, venue: V, ttlMs: 1000 });
+    const strat = new EmaCrossStrategy(strategyId('ema2'), {
+      fast: 3,
+      slow: 5,
+      symbol: S,
+      venue: V,
+      ttlMs: 1000,
+    });
     // Fewer than `slow` closed candles → no signal possible.
     const out = [
       ...strat.onCandle(candle(0, '100', 1000), view),
@@ -87,14 +114,32 @@ describe('EmaCrossStrategy golden behaviour', () => {
   });
 
   it('non-candle handlers are inert and onInit/onStop are no-ops (candle-driven v1)', () => {
-    const strat = new EmaCrossStrategy(strategyId('ema4'), { fast: 3, slow: 5, symbol: S, venue: V, ttlMs: 1000 });
+    const strat = new EmaCrossStrategy(strategyId('ema4'), {
+      fast: 3,
+      slow: 5,
+      symbol: S,
+      venue: V,
+      ttlMs: 1000,
+    });
     strat.onInit({ params: {}, warmupCandles: new Map(), symbolConstraints: new Map() });
     const c = candle(0, '100', 1000);
-    const ticker = { ...c, kind: 'TICKER' as const, bid: price('99'), ask: price('101'), last: price('100') };
+    const ticker = {
+      ...c,
+      kind: 'TICKER' as const,
+      bid: price('99'),
+      ask: price('101'),
+      last: price('100'),
+    };
     const book = { ...c, kind: 'ORDER_BOOK_SNAPSHOT' as const, bids: [], asks: [] };
     const exec = {
-      reportId: 'r', clientOrderId: 'cbp0000000000000007000800000000000000' as never,
-      venue: V, symbol: S, eventTime: epochMs(1), ingestTime: epochMs(1), kind: 'ACK' as const, venueOrderId: 'v',
+      reportId: 'r',
+      clientOrderId: 'cbp0000000000000007000800000000000000' as never,
+      venue: V,
+      symbol: S,
+      eventTime: epochMs(1),
+      ingestTime: epochMs(1),
+      kind: 'ACK' as const,
+      venueOrderId: 'v',
     };
     expect(strat.onTick(ticker as never, view)).toEqual([]);
     expect(strat.onOrderBook(book as never, view)).toEqual([]);
@@ -103,7 +148,13 @@ describe('EmaCrossStrategy golden behaviour', () => {
   });
 
   it('ignores non-closed candles and other symbols', () => {
-    const strat = new EmaCrossStrategy(strategyId('ema3'), { fast: 3, slow: 5, symbol: S, venue: V, ttlMs: 1000 });
+    const strat = new EmaCrossStrategy(strategyId('ema3'), {
+      fast: 3,
+      slow: 5,
+      symbol: S,
+      venue: V,
+      ttlMs: 1000,
+    });
     const open = { ...candle(0, '100', 1000), closed: false };
     const other = { ...candle(1, '100', 1001), symbol: symbolId('ETH/USDT') };
     expect(strat.onCandle(open, view)).toEqual([]);

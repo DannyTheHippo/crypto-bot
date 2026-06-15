@@ -20,6 +20,7 @@ CLEAN=$(mktemp -d) && cd "$CLEAN" \
   && TRADING_MODE=paper "$PROJ/node_modules/.bin/vitest" run --root "$PROJ" --config "$PROJ/vitest.config.ts" test/unit test/livegate \
   && TRADING_MODE=paper "$PROJ/node_modules/.bin/vitest" run --passWithNoTests --root "$PROJ" --config "$PROJ/vitest.config.ts" test/paper
 ```
+
 All must be green. `format:check` is pre-existing repo-wide red (hand-style debt) — out of scope; format only touched files.
 Run all docker/test commands sandbox-disabled (the bash sandbox spuriously fails tsc/redirects and blocks the docker socket).
 
@@ -28,15 +29,17 @@ Run all docker/test commands sandbox-disabled (the bash sandbox spuriously fails
 1. Money is never a float: decimal.js + branded types, exact-string tests (no `toBeCloseTo`), no parseFloat/Number on money paths.
 2. Strategy → Risk → Execution → Adapter. Never bypass Risk, never widen Execution's RiskApprovedIntent signature, never disable boundaries zones.
 3. Paper is default; live is gated. Never weaken the four live gates or the NODE_ENV=test override.
-4. `src/domain` stays pure (no @nestjs/*, ccxt, Date.now, process.env).
+4. `src/domain` stays pure (no @nestjs/\*, ccxt, Date.now, process.env).
 5. OMS: never blind-resubmit; persist intent before network; unknown >60s ⇒ kill switch.
 6. `audit_log`/`order_events` append-only — never UPDATE/DELETE/relax triggers. Reconciliation mismatch HALTs.
 7. No secrets in code/logs/fixtures.
+
 - **Never weaken a guard or overfit to manufacture P&L.** If a change can't go gate-green, revert it and report honestly.
 
 ## Improvement backlog (analyze, then pick ONE per run)
 
 > **2026-06-15 nightly update** — authoritative backlog now lives in `nightly-2026-06-15.md` §9. Headlines:
+>
 > - **TOP (new, safety/operational):** periodic 30 s venue-truth reconciliation silently not completing on testnet
 >   (`reconTs=0`, `reconciliation_runs_total` empty) — a swallowed `fetchOpenOrders`/`fetchBalance` throw
 >   (`app.module.ts:646-647,663`). Pre-existing (not introduced by the research pass). Fix + regression test + alert.
@@ -64,7 +67,7 @@ equity 4421.54 (peak 5500), fills(db) 18, open_orders 0, in_flight 0, PRECISION_
 
 **Analysis (pre-reset, boot cba63e28):** equity 4421.54 (start 5000, peak 5500), DB fills 18, open_orders/in_flight 0, PRECISION_OVERFLOW 0 (tonight's avgEntry fix holding). risk_decisions: 5/5 APPROVED; signals: 5 (3 golden / 2 death EMA cross), all approved — NO SIZING_REJECTED persisted (the plan's 10× was a pre-redeploy log artifact). The 5000→4421 drop is **stall-induced accounting drift** (buys deducted cash; the offsetting sells' fills never ingested during the poison-message stall), not realized loss (realized_pnl ≈ −0.136) — and it is wiped by the reset.
 
-**Change applied:** `src/domain/paper/fill.ts` — wrapped the simulated-fee `base×feeBps÷10000` in `roundToMoneyPrecision` (+ regression test in `test/unit/paper/fill.spec.ts`). Same PRECISION_OVERFLOW class as tonight's avgEntry fix (a >18-dp fee threw at the `feeAmount` mint for high-precision inputs). **Honest scope:** this is the paper-fill path — testnet ingests venue-provided fees, so it is *testnet-invisible this window*; it's a correctness/stability hardening (prevents a latent crash class), NOT a P&L driver.
+**Change applied:** `src/domain/paper/fill.ts` — wrapped the simulated-fee `base×feeBps÷10000` in `roundToMoneyPrecision` (+ regression test in `test/unit/paper/fill.spec.ts`). Same PRECISION_OVERFLOW class as tonight's avgEntry fix (a >18-dp fee threw at the `feeAmount` mint for high-precision inputs). **Honest scope:** this is the paper-fill path — testnet ingests venue-provided fees, so it is _testnet-invisible this window_; it's a correctness/stability hardening (prevents a latent crash class), NOT a P&L driver.
 
 **Why not a P&L-positive testnet change:** the strategy (ema-cross) is fixed; raising `BASE_NOTIONAL` only scales risk (not edge); a sizing/exit change can't beat the venue minNotional; poller-`since` carries fill-dropping regression risk too high for an unattended loop. No safe, gate-green, edge-improving testnet change was available — consistent with the confirmed "aspirational, report honestly" directive.
 

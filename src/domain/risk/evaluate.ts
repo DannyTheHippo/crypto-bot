@@ -54,8 +54,18 @@ export type HaltRequest = 'DAILY_LOSS' | 'MAX_DRAWDOWN' | 'ORDER_RATE_RUNAWAY';
 
 export type RiskEvaluation =
   | { readonly verdict: 'APPROVED'; readonly intent: OrderIntent }
-  | { readonly verdict: 'RESIZED'; readonly intent: OrderIntent; readonly originalQty: Qty; readonly reasons: readonly RiskReason[] }
-  | { readonly verdict: 'REJECTED'; readonly intent: OrderIntent; readonly reasons: readonly RiskReason[]; readonly halt?: HaltRequest };
+  | {
+      readonly verdict: 'RESIZED';
+      readonly intent: OrderIntent;
+      readonly originalQty: Qty;
+      readonly reasons: readonly RiskReason[];
+    }
+  | {
+      readonly verdict: 'REJECTED';
+      readonly intent: OrderIntent;
+      readonly reasons: readonly RiskReason[];
+      readonly halt?: HaltRequest;
+    };
 
 export function positionKey(strategyId: StrategyId, venue: VenueId, symbol: SymbolId): string {
   return `${strategyId}:${venue}:${symbol}`;
@@ -71,7 +81,8 @@ function signedQty(side: OrderIntent['side'], q: Decimal): Decimal {
 }
 
 export function evaluate(input: RiskEvalInput): RiskEvaluation {
-  const { intent, isFlatten, snapshot, killState, effectiveMode, mark, filters, rate, wouldCross } = input;
+  const { intent, isFlatten, snapshot, killState, effectiveMode, mark, filters, rate, wouldCross } =
+    input;
   const reduceOnly = intent.reduceOnly;
   const flattenClamp = isFlatten && reduceOnly; // FLATTEN gets clamps where strategy intents hard-reject
 
@@ -88,7 +99,8 @@ export function evaluate(input: RiskEvalInput): RiskEvaluation {
   if (limits === null) return reject(intent, 'LIMITS_INCOMPLETE');
 
   // P1 — market-data staleness; flatten carve-out may use last-trade with band ×2
-  const fresh = mark !== undefined && mark.ageMs <= limits.staleMaxAgeMs && mark.feedHealth === 'LIVE';
+  const fresh =
+    mark !== undefined && mark.ageMs <= limits.staleMaxAgeMs && mark.feedHealth === 'LIVE';
   let refMid: Decimal;
   let bandMultiplier = 1;
   if (fresh) {
@@ -110,7 +122,10 @@ export function evaluate(input: RiskEvalInput): RiskEvaluation {
   if (bandDeviation.gt(maxBand)) {
     if (flattenClamp) {
       // clamp to the band edge on the order's side (marketable-limit at the edge)
-      const edge = intent.side === 'BUY' ? refMid.mul(maxBand.add(1)) : refMid.mul(new Decimal(1).sub(maxBand));
+      const edge =
+        intent.side === 'BUY'
+          ? refMid.mul(maxBand.add(1))
+          : refMid.mul(new Decimal(1).sub(maxBand));
       workingPrice = edge;
       reasons.push('PRICE_BAND');
     } else {
@@ -136,18 +151,29 @@ export function evaluate(input: RiskEvalInput): RiskEvaluation {
 
   // R1 — order rate (SOFT: reject this perishable intent; runaway escalates to kill switch)
   if (!rate.allowed) {
-    return { verdict: 'REJECTED', intent, reasons: ['RATE_LIMIT'], halt: rate.runaway ? 'ORDER_RATE_RUNAWAY' : undefined };
+    return {
+      verdict: 'REJECTED',
+      intent,
+      reasons: ['RATE_LIMIT'],
+      halt: rate.runaway ? 'ORDER_RATE_RUNAWAY' : undefined,
+    };
   }
 
   // X1 — crossing a sibling strategy's resting order
   if (wouldCross) return reject(intent, 'CROSSING_INTENT');
 
   // Position / exposure context
-  const pos: Position | undefined = snapshot.positions.get(positionKey(intent.strategyId, intent.venue, intent.symbol));
+  const pos: Position | undefined = snapshot.positions.get(
+    positionKey(intent.strategyId, intent.venue, intent.symbol),
+  );
   const posQty = pos ? pos.signedQty : new Decimal(0);
   let inflightSigned = new Decimal(0);
   for (const f of snapshot.inFlightIntents) {
-    if (f.strategyId === intent.strategyId && f.venue === intent.venue && f.symbol === intent.symbol) {
+    if (
+      f.strategyId === intent.strategyId &&
+      f.venue === intent.venue &&
+      f.symbol === intent.symbol
+    ) {
       inflightSigned = inflightSigned.add(signedQty(f.side, f.qty));
     }
   }
@@ -196,7 +222,8 @@ export function evaluate(input: RiskEvalInput): RiskEvaluation {
 
   // F2 — reduce-only semantics (sign opposes position; qty ≤ |position|; no flips)
   if (reduceOnly) {
-    const reduces = (posQty.gt(0) && intent.side === 'SELL') || (posQty.lt(0) && intent.side === 'BUY');
+    const reduces =
+      (posQty.gt(0) && intent.side === 'SELL') || (posQty.lt(0) && intent.side === 'BUY');
     if (!reduces) return reject(intent, 'REDUCE_ONLY_VIOLATION');
     const maxReduce = posQty.abs();
     if (workingQty.gt(maxReduce)) {
@@ -208,8 +235,13 @@ export function evaluate(input: RiskEvalInput): RiskEvaluation {
   // F1 — post-clamp exchange-filter validation (a clamp below minimums REJECTS, never doom-submits)
   const steppedQty = roundToStep(makeQty(workingQty), filters.stepSize, 'down');
   if (steppedQty.lt(new Decimal(filters.minQty))) return reject(intent, 'BELOW_EXCHANGE_MIN');
-  const tickedPrice = roundToTick(makePrice(workingPrice), filters.tickSize, intent.side === 'BUY' ? 'down' : 'up');
-  if (steppedQty.mul(tickedPrice).lt(new Decimal(filters.minNotional))) return reject(intent, 'BELOW_EXCHANGE_MIN');
+  const tickedPrice = roundToTick(
+    makePrice(workingPrice),
+    filters.tickSize,
+    intent.side === 'BUY' ? 'down' : 'up',
+  );
+  if (steppedQty.mul(tickedPrice).lt(new Decimal(filters.minNotional)))
+    return reject(intent, 'BELOW_EXCHANGE_MIN');
 
   // Build the final (possibly resized) intent.
   const finalIntent: OrderIntent = { ...intent, qty: steppedQty, limitPrice: tickedPrice };

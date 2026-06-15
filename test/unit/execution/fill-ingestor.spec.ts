@@ -18,10 +18,23 @@ function build(
 ) {
   const store = new InMemoryExecutionStore();
   const orders = new OrderBookService();
-  const portfolio = new PortfolioStateService({ quoteAsset: 'USDT', startingCash: '100000' }, new FeeLedgerService());
+  const portfolio = new PortfolioStateService(
+    { quoteAsset: 'USDT', startingCash: '100000' },
+    new FeeLedgerService(),
+  );
   const sampler = new EquitySamplerService(portfolio, fixedFeed('100'), fixedClock(), store);
   const { ks, engages } = killSwitchStub();
-  const ingestor = new FillIngestorService(store, ks, orders, portfolio, sampler, fillsCounter, filledQtyCounter, fullyFilledCounter, slippageDecision);
+  const ingestor = new FillIngestorService(
+    store,
+    ks,
+    orders,
+    portfolio,
+    sampler,
+    fillsCounter,
+    filledQtyCounter,
+    fullyFilledCounter,
+    slippageDecision,
+  );
   return { store, orders, portfolio, ingestor, engages };
 }
 
@@ -32,7 +45,13 @@ function seed(ctx: ReturnType<typeof build>, intent = makeIntent()) {
   ctx.orders.apply(coid, { type: 'SUBMIT_SENT' });
   const acked = ctx.orders.apply(coid, { type: 'ACK', venueOrderId: 'v1' });
   ctx.portfolio.addInFlight(intent);
-  ctx.portfolio.openOrder(intent.strategyId, { clientOrderId: coid, symbol: SYM, side: 'BUY', qty: intent.qty, limitPrice: price('100') });
+  ctx.portfolio.openOrder(intent.strategyId, {
+    clientOrderId: coid,
+    symbol: SYM,
+    side: 'BUY',
+    qty: intent.qty,
+    limitPrice: price('100'),
+  });
   return { coid, intent, acked };
 }
 
@@ -40,7 +59,11 @@ describe('FillIngestorService', () => {
   it('applies a fill: dedupes, folds, updates the position, samples equity', async () => {
     const ctx = build();
     const { coid, acked } = seed(ctx, makeIntent({ qty: qty('2') }));
-    const r = await ctx.ingestor.ingest(acked, makeFill({ clientOrderId: coid, qty: qty('1'), venueTradeId: 'td1' }), 'rep1');
+    const r = await ctx.ingestor.ingest(
+      acked,
+      makeFill({ clientOrderId: coid, qty: qty('1'), venueTradeId: 'td1' }),
+      'rep1',
+    );
 
     expect(r.applied).toBe(true);
     expect(r.record.state).toBe('PARTIALLY_FILLED');
@@ -53,8 +76,16 @@ describe('FillIngestorService', () => {
   it('is idempotent on (venue, symbol, venueTradeId): a duplicate applies nothing', async () => {
     const ctx = build();
     const { coid, acked } = seed(ctx, makeIntent({ qty: qty('2') }));
-    const first = await ctx.ingestor.ingest(acked, makeFill({ clientOrderId: coid, venueTradeId: 'same' }), 'rep1');
-    const dup = await ctx.ingestor.ingest(first.record, makeFill({ clientOrderId: coid, venueTradeId: 'same' }), 'rep2');
+    const first = await ctx.ingestor.ingest(
+      acked,
+      makeFill({ clientOrderId: coid, venueTradeId: 'same' }),
+      'rep1',
+    );
+    const dup = await ctx.ingestor.ingest(
+      first.record,
+      makeFill({ clientOrderId: coid, venueTradeId: 'same' }),
+      'rep2',
+    );
 
     expect(dup.applied).toBe(false);
     expect(dup.record).toBe(first.record); // unchanged
@@ -65,7 +96,11 @@ describe('FillIngestorService', () => {
   it('retires the order from in-flight + open orders on a terminal (full) fill', async () => {
     const ctx = build();
     const { coid, acked } = seed(ctx); // qty 1
-    const r = await ctx.ingestor.ingest(acked, makeFill({ clientOrderId: coid, qty: qty('1'), venueTradeId: 'full' }), 'rep1');
+    const r = await ctx.ingestor.ingest(
+      acked,
+      makeFill({ clientOrderId: coid, qty: qty('1'), venueTradeId: 'full' }),
+      'rep1',
+    );
 
     expect(r.record.state).toBe('FILLED');
     expect(ctx.portfolio.snapshot().inFlightIntents).toHaveLength(0);
@@ -75,9 +110,17 @@ describe('FillIngestorService', () => {
   it('engages the kill switch on a same-tradeId, different-payload conflict (§6.6 I3)', async () => {
     const ctx = build();
     const { coid, acked } = seed(ctx, makeIntent({ qty: qty('2') }));
-    const first = await ctx.ingestor.ingest(acked, makeFill({ clientOrderId: coid, venueTradeId: 'dupe', qty: qty('1') }), 'rep1');
+    const first = await ctx.ingestor.ingest(
+      acked,
+      makeFill({ clientOrderId: coid, venueTradeId: 'dupe', qty: qty('1') }),
+      'rep1',
+    );
     // Same tradeId re-arrives with a different qty — corruption, not a benign duplicate.
-    const conflicting = await ctx.ingestor.ingest(first.record, makeFill({ clientOrderId: coid, venueTradeId: 'dupe', qty: qty('2') }), 'rep2');
+    const conflicting = await ctx.ingestor.ingest(
+      first.record,
+      makeFill({ clientOrderId: coid, venueTradeId: 'dupe', qty: qty('2') }),
+      'rep2',
+    );
 
     expect(conflicting.applied).toBe(false);
     expect(ctx.engages).toEqual([{ reason: 'FILL_PAYLOAD_CONFLICT', flatten: false }]);
@@ -92,7 +135,11 @@ describe('FillIngestorService', () => {
     ctx.orders.create(initialOrder(coid, intent.qty, '0.001'));
     ctx.orders.apply(coid, { type: 'SUBMIT_SENT' });
     const acked = ctx.orders.apply(coid, { type: 'ACK', venueOrderId: 'v1' }); // never added to in-flight
-    const r = await ctx.ingestor.ingest(acked, makeFill({ clientOrderId: coid, venueTradeId: 'x' }), 'rep1');
+    const r = await ctx.ingestor.ingest(
+      acked,
+      makeFill({ clientOrderId: coid, venueTradeId: 'x' }),
+      'rep1',
+    );
 
     expect(r.applied).toBe(true);
     expect(r.record.state).toBe('FILLED');
@@ -118,9 +165,18 @@ describe('FillIngestorService', () => {
     const ctx = build(undefined, filledQty, fullyFilled, slippage);
     const { coid, acked } = seed(ctx); // qty 1, BUY, refPrice 100, LIMIT/GTC
     // BUY fill at 101 → adverse +100 bps; full fill → FILLED.
-    await ctx.ingestor.ingest(acked, makeFill({ clientOrderId: coid, qty: qty('1'), price: price('101'), venueTradeId: 'fr1' }), 'rep1');
-    expect((filledQty.inc as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual([{ type: 'LIMIT', tif: 'GTC' }, 1]);
-    expect((fullyFilled.inc as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual([{ type: 'LIMIT', tif: 'GTC' }]);
+    await ctx.ingestor.ingest(
+      acked,
+      makeFill({ clientOrderId: coid, qty: qty('1'), price: price('101'), venueTradeId: 'fr1' }),
+      'rep1',
+    );
+    expect((filledQty.inc as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual([
+      { type: 'LIMIT', tif: 'GTC' },
+      1,
+    ]);
+    expect((fullyFilled.inc as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual([
+      { type: 'LIMIT', tif: 'GTC' },
+    ]);
     const obs = (slippage.observe as ReturnType<typeof vi.fn>).mock.calls[0]!;
     expect(obs[0]).toEqual({ venue: 'binance', symbol: 'BTC/USDT', side: 'BUY', type: 'LIMIT' });
     expect(obs[1]).toBe(100); // (101-100)/100*1e4*(+1)
@@ -131,7 +187,11 @@ describe('FillIngestorService', () => {
     const ctx = build(undefined, undefined, undefined, slippage);
     const { coid, acked } = seed(ctx, makeIntent({ side: 'SELL' })); // refPrice 100, SELL
     // SELL fill at 99 → sold below reference → adverse +100 bps (sign = -1).
-    await ctx.ingestor.ingest(acked, makeFill({ clientOrderId: coid, qty: qty('1'), price: price('99'), venueTradeId: 's1' }), 'rep1');
+    await ctx.ingestor.ingest(
+      acked,
+      makeFill({ clientOrderId: coid, qty: qty('1'), price: price('99'), venueTradeId: 's1' }),
+      'rep1',
+    );
     const obs = (slippage.observe as ReturnType<typeof vi.fn>).mock.calls[0]!;
     expect(obs[0]).toMatchObject({ side: 'SELL' });
     expect(obs[1]).toBe(100);

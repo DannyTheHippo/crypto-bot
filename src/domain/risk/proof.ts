@@ -29,7 +29,11 @@ export interface MintOptions {
   readonly snapshotSeq: bigint;
 }
 
-export function mintApproval(intent: OrderIntent, key: Buffer | string, opts: MintOptions): RiskApprovedIntent {
+export function mintApproval(
+  intent: OrderIntent,
+  key: Buffer | string,
+  opts: MintOptions,
+): RiskApprovedIntent {
   const hash = intentHash(intent);
   const proof: ApprovalProof = {
     intentHash: hash,

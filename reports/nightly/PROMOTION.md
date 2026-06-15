@@ -23,11 +23,12 @@ The repo has drifted from the documented `paper`-integration model and this is t
 - **Decision needed:** because the human is already merging nightly work directly into `main`, the `paper → main`
   promotion gate is effectively being bypassed upstream. Either (a) keep committing to `main` directly and treat `paper`
   as a throwaway integration mirror, or (b) resume the documented flow (work lands on `paper`, human promotes `paper →
-  main`). The automation will follow whichever, but it will never push or touch `main` regardless.
+main`). The automation will follow whichever, but it will never push or touch `main` regardless.
 
 ## Accumulated diff since the last live state (`main` @ `8231bcc`)
 
 `paper` @ `7691586` adds, relative to `main`:
+
 - `test/backtest/harness.ts` — generalized to drive any `Strategy` via a factory (was EMA-hardcoded).
 - `test/backtest/mean-reversion.strategy.ts`, `test/backtest/mean-reversion.study.spec.ts` — new mean-reversion
   hypothesis + OOS study.

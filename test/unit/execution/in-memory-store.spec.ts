@@ -9,13 +9,28 @@ import { price, qty } from '../../../src/domain/types/money';
 import type { Position } from '../../../src/domain/types/portfolio';
 
 const proof: ApprovalProof = {
-  intentHash: 'h', hmac: 'm', nonce: 'n', approvedAtMs: epochMs(1), ttlMs: 2000, limitsVersion: 'v1', snapshotSeq: 1n,
+  intentHash: 'h',
+  hmac: 'm',
+  nonce: 'n',
+  approvedAtMs: epochMs(1),
+  ttlMs: 2000,
+  limitsVersion: 'v1',
+  snapshotSeq: 1n,
 };
 
-const SAMPLE = { ts: epochMs(1), equity: '100', cash: '100', unrealized: '0', peak: '100', sessionDateUtc: '2023-11-14' };
+const SAMPLE = {
+  ts: epochMs(1),
+  equity: '100',
+  cash: '100',
+  unrealized: '0',
+  peak: '100',
+  sessionDateUtc: '2023-11-14',
+};
 
 const POS: Position = {
-  strategyId: SID, venue: V, symbol: SYM,
+  strategyId: SID,
+  venue: V,
+  symbol: SYM,
   signedQty: new Decimal('1'),
   avgEntry: price('100'),
   realizedPnl: new Decimal('0'),
@@ -39,22 +54,32 @@ describe('InMemoryExecutionStore', () => {
     await store.saveNewOrder(rec, intent);
 
     const first = await store.appendOrderEvent({
-      clientOrderId: intent.clientOrderId, dedupeKey: 'submit', event: { type: 'SUBMIT_SENT' },
-      derivedState: 'SUBMITTING', cumQty: '0',
+      clientOrderId: intent.clientOrderId,
+      dedupeKey: 'submit',
+      event: { type: 'SUBMIT_SENT' },
+      derivedState: 'SUBMITTING',
+      cumQty: '0',
     });
     expect(first).toEqual({ applied: true });
 
     const acked = await store.appendOrderEvent({
-      clientOrderId: intent.clientOrderId, dedupeKey: 'ack', event: { type: 'ACK', venueOrderId: 'v9' },
-      derivedState: 'ACKED', cumQty: '0', venueOrderId: 'v9',
+      clientOrderId: intent.clientOrderId,
+      dedupeKey: 'ack',
+      event: { type: 'ACK', venueOrderId: 'v9' },
+      derivedState: 'ACKED',
+      cumQty: '0',
+      venueOrderId: 'v9',
     });
     expect(acked).toEqual({ applied: true });
     expect(store.stateOf(intent.clientOrderId)).toBe('ACKED');
     expect(store.orders.get(intent.clientOrderId)?.venueOrderId).toBe('v9');
 
     const dup = await store.appendOrderEvent({
-      clientOrderId: intent.clientOrderId, dedupeKey: 'ack', event: { type: 'ACK', venueOrderId: 'v9' },
-      derivedState: 'RECONCILE_REQUIRED', cumQty: '0',
+      clientOrderId: intent.clientOrderId,
+      dedupeKey: 'ack',
+      event: { type: 'ACK', venueOrderId: 'v9' },
+      derivedState: 'RECONCILE_REQUIRED',
+      cumQty: '0',
     });
     expect(dup).toEqual({ applied: false });
     expect(store.stateOf(intent.clientOrderId)).toBe('ACKED'); // unchanged by the dropped duplicate
@@ -104,7 +129,13 @@ describe('InMemoryExecutionStore', () => {
 
   it('saveReconciliation accumulates rows', async () => {
     const store = new InMemoryExecutionStore();
-    await store.saveReconciliation({ ts: epochMs(1), venue: 'binance', mismatches: 0, halted: false, detail: 'clean' });
+    await store.saveReconciliation({
+      ts: epochMs(1),
+      venue: 'binance',
+      mismatches: 0,
+      halted: false,
+      detail: 'clean',
+    });
     expect(store.reconciliations).toHaveLength(1);
   });
 });

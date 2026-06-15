@@ -1,7 +1,12 @@
 import Decimal from 'decimal.js';
 import { price, qty, feeAmount } from '../../../src/domain/types/money';
 import {
-  intentId, encodeClientOrderId, strategyId, venueId, symbolId, epochMs,
+  intentId,
+  encodeClientOrderId,
+  strategyId,
+  venueId,
+  symbolId,
+  epochMs,
 } from '../../../src/domain/types/ids';
 import type { OrderIntent } from '../../../src/domain/types/order-intent';
 import type { FillRecord } from '../../../src/domain/types/exec-report';
@@ -25,9 +30,20 @@ export function makeIntent(over: Partial<OrderIntent> = {}): OrderIntent {
   return {
     intentId: id,
     clientOrderId: over.clientOrderId ?? encodeClientOrderId(id, 'paper'),
-    strategyId: SID, venue: V, symbol: SYM, side: 'BUY', type: 'LIMIT',
-    qty: qty('1'), limitPrice: price('100'), timeInForce: 'GTC', reduceOnly: false,
-    mode: 'paper', refPrice: price('100'), refSeq: 9n, createdAt: epochMs(0), expiresAt: epochMs(T + 10_000),
+    strategyId: SID,
+    venue: V,
+    symbol: SYM,
+    side: 'BUY',
+    type: 'LIMIT',
+    qty: qty('1'),
+    limitPrice: price('100'),
+    timeInForce: 'GTC',
+    reduceOnly: false,
+    mode: 'paper',
+    refPrice: price('100'),
+    refSeq: 9n,
+    createdAt: epochMs(0),
+    expiresAt: epochMs(T + 10_000),
     source: { dedupeKey: 'k', eventTime: epochMs(0), basedOnSeq: 9n, strength: 1 },
     ...over,
   };
@@ -35,8 +51,15 @@ export function makeIntent(over: Partial<OrderIntent> = {}): OrderIntent {
 
 export function makeFill(over: Partial<FillRecord> = {}): FillRecord {
   return {
-    venue: V, symbol: SYM, venueTradeId: 't1', clientOrderId: encodeClientOrderId(IID, 'paper'),
-    price: price('100'), qty: qty('1'), fee: null, liquidity: 'taker', venueTimestamp: epochMs(T),
+    venue: V,
+    symbol: SYM,
+    venueTradeId: 't1',
+    clientOrderId: encodeClientOrderId(IID, 'paper'),
+    price: price('100'),
+    qty: qty('1'),
+    fee: null,
+    liquidity: 'taker',
+    venueTimestamp: epochMs(T),
     source: 'paper',
     ...over,
   };
@@ -58,11 +81,16 @@ export function fixedFeed(mid = '100', refPresent = true): FeedHealthPort {
 export const D = (s: string) => new Decimal(s);
 
 // Recording kill-switch stub: stays RUNNING (so callers keep evaluating) and captures engagements.
-export function killSwitchStub(): { ks: KillSwitchPort; engages: Array<{ reason: string; flatten: boolean }> } {
+export function killSwitchStub(): {
+  ks: KillSwitchPort;
+  engages: Array<{ reason: string; flatten: boolean }>;
+} {
   const engages: Array<{ reason: string; flatten: boolean }> = [];
   const ks: KillSwitchPort = {
     state: (): KillSwitchState => 'RUNNING',
-    engage: (reason, flatten) => { engages.push({ reason, flatten }); },
+    engage: (reason, flatten) => {
+      engages.push({ reason, flatten });
+    },
     confirmCancels: () => undefined,
     cancelTimeout: () => undefined,
     allFlat: () => undefined,

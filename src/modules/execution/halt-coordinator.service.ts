@@ -3,12 +3,20 @@ import Decimal from 'decimal.js';
 import { CLOCK, type ClockPort } from '../../ports/clock';
 import { FEED_HEALTH, type FeedHealthPort } from '../../ports/market-data';
 import {
-  KILL_SWITCH, RISK_ENGINE, POSITION_SIZER,
-  type KillSwitchPort, type RiskEnginePort, type PositionSizerPort,
+  KILL_SWITCH,
+  RISK_ENGINE,
+  POSITION_SIZER,
+  type KillSwitchPort,
+  type RiskEnginePort,
+  type PositionSizerPort,
 } from '../../ports/risk';
 import {
-  EXECUTION_GATE, PORTFOLIO_VIEW, EXEC_FILTERS,
-  type ExecutionGatePort, type PortfolioViewPort, type ExecFilters,
+  EXECUTION_GATE,
+  PORTFOLIO_VIEW,
+  EXEC_FILTERS,
+  type ExecutionGatePort,
+  type PortfolioViewPort,
+  type ExecFilters,
 } from '../../ports/execution';
 import { price, type Price } from '../../domain/types/money';
 import type { Signal } from '../../domain/types/signal';
@@ -92,7 +100,10 @@ export class HaltCoordinatorService {
     let allFlat = true;
     for (const pos of snap.positions.values()) {
       if (this.isDust(pos)) continue; // already flat by qty for ALL_FLAT purposes
-      if (busy.has(pos.symbol)) { allFlat = false; continue; } // STACKING GUARD: a slice is working this symbol
+      if (busy.has(pos.symbol)) {
+        allFlat = false;
+        continue;
+      } // STACKING GUARD: a slice is working this symbol
       const outcome = await this.fireFlatten(pos, now, snap.snapshotSeq);
       if (outcome !== 'UNFLATTENABLE') allFlat = false; // FIRED/DEFER ⇒ live qty still to clear
     }
@@ -115,10 +126,18 @@ export class HaltCoordinatorService {
 
   private flattenSignal(pos: Position, mark: Price, now: EpochMs, seq: bigint): Signal {
     return {
-      strategyId: pos.strategyId, venue: pos.venue, symbol: pos.symbol, kind: 'FLATTEN', strength: 1,
+      strategyId: pos.strategyId,
+      venue: pos.venue,
+      symbol: pos.symbol,
+      kind: 'FLATTEN',
+      strength: 1,
       limitPriceHint: price(mark.mul(MARKETABLE_FACTOR)), // clamped to the band edge by evaluate
-      refPrice: mark, basedOnSeq: seq, eventTime: now, ttlMs: FLATTEN_TTL_MS,
-      dedupeKey: `flatten:${pos.symbol}:${now}`, reason: 'KILL_SWITCH_FLATTEN',
+      refPrice: mark,
+      basedOnSeq: seq,
+      eventTime: now,
+      ttlMs: FLATTEN_TTL_MS,
+      dedupeKey: `flatten:${pos.symbol}:${now}`,
+      reason: 'KILL_SWITCH_FLATTEN',
     };
   }
 

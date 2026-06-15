@@ -8,15 +8,22 @@ import type { OrderState, OrderEvent } from './reducer';
 // reuses the normal reducer events so recovery flows through the same audited transitions.
 export function recoveryEventFor(state: OrderState): OrderEvent | undefined {
   switch (state) {
-    case 'SUBMITTING': return { type: 'SUBMIT_AMBIGUOUS' };
-    case 'CANCEL_PENDING': return { type: 'CANCEL_REJECT_UNKNOWN' };
-    default: return undefined;
+    case 'SUBMITTING':
+      return { type: 'SUBMIT_AMBIGUOUS' };
+    case 'CANCEL_PENDING':
+      return { type: 'CANCEL_REJECT_UNKNOWN' };
+    default:
+      return undefined;
   }
 }
 
 // Live arming is refused while any order is unresolved (§6.1): a *_UNKNOWN or a frozen
 // RECONCILE_REQUIRED means the state of real money is in doubt.
-const UNRESOLVED: ReadonlySet<OrderState> = new Set(['SUBMIT_UNKNOWN', 'CANCEL_UNKNOWN', 'RECONCILE_REQUIRED']);
+const UNRESOLVED: ReadonlySet<OrderState> = new Set([
+  'SUBMIT_UNKNOWN',
+  'CANCEL_UNKNOWN',
+  'RECONCILE_REQUIRED',
+]);
 
 export function isUnresolved(state: OrderState): boolean {
   return UNRESOLVED.has(state);

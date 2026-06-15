@@ -1,6 +1,12 @@
 import { Injectable } from '@nestjs/common';
 import type {
-  ExchangePort, VenueCapabilities, PlaceOrderRequest, ExchangeAck, ExchangeOrderState, VenueFill, CredentialCheck,
+  ExchangePort,
+  VenueCapabilities,
+  PlaceOrderRequest,
+  ExchangeAck,
+  ExchangeOrderState,
+  VenueFill,
+  CredentialCheck,
 } from '../../ports/exchange';
 import { LIVE_ADAPTER_CAP } from '../../ports/mode-control';
 import type { VenueId, SymbolId, ClientOrderId, EpochMs } from '../../domain/types/ids';

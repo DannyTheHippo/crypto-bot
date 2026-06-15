@@ -1,4 +1,11 @@
-import { Inject, Logger, Module, OnApplicationShutdown, OnModuleInit, Provider } from '@nestjs/common';
+import {
+  Inject,
+  Logger,
+  Module,
+  OnApplicationShutdown,
+  OnModuleInit,
+  Provider,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as path from 'node:path';
 import { Pool } from 'pg';
@@ -101,7 +108,11 @@ const dbHealthProvider: Provider = {
 const MIGRATIONS_FOLDER = path.resolve(__dirname, '../../../drizzle');
 
 function isTestEnv(): boolean {
-  return process.env['NODE_ENV'] === 'test' || process.env['NODE_ENV'] === 'ci' || Boolean(process.env['CI']);
+  return (
+    process.env['NODE_ENV'] === 'test' ||
+    process.env['NODE_ENV'] === 'ci' ||
+    Boolean(process.env['CI'])
+  );
 }
 
 @Module({

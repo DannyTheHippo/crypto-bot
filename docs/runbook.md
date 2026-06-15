@@ -26,6 +26,7 @@ anomalies, rate runaway, ModeControl downgrades (8h arm-TTL expiry, key-probe fa
   mode preconditions re-evaluated. Live arming state is **not** restored — re-arm is required.
 
 ### Halt response
+
 1. Identify the engage reason from the structured log / `killswitch.engaged` metric + audit trail.
 2. If `HALTED_DEGRADED`: assume orders may be live at the venue. Do NOT resume. Drive reconciliation
    (§Reconciliation mismatch) until the venue/local order sets agree, then manually cancel any
@@ -100,7 +101,7 @@ Paper-honesty check: confirm `mode.boot_resolution` audit shows `effective: pape
 At the `ExchangePort` abstraction Binance spot supports a caller-supplied client order id,
 `fetchOrder` lookup by that id, a user-data stream, and a testnet/sandbox. The venue-specific
 details — the client-order-id field name (`newClientOrderId`), rate-limit shapes, exact
-`apiRestrictions` payload — are unified by ccxt *below* the port, which is why a single
+`apiRestrictions` payload — are unified by ccxt _below_ the port, which is why a single
 `CcxtExchangeAdapter` serves the venue (selected by config:
 `VENUES=[{"id":"binance","environment":"testnet"}]`). Confirm the `apiRestrictions` response
 shape and any symbol-filter quirks at the out-of-session RUN.

@@ -5,7 +5,9 @@ import type { VenueConfig, VenueEnvironment } from '../../../src/ports/app-confi
 
 describe('resolveVenueUrls generic fallback (unknown venue)', () => {
   it('uses api.public / ws.spot and leaves wsApi empty', () => {
-    const fake = { urls: { api: { public: 'https://api.kraken.test', ws: { spot: 'wss://ws.kraken.test' } } } };
+    const fake = {
+      urls: { api: { public: 'https://api.kraken.test', ws: { spot: 'wss://ws.kraken.test' } } },
+    };
     const u = resolveVenueUrls(fake, 'kraken');
     expect(u.restSpot).toBe('https://api.kraken.test');
     expect(u.wsSpot).toBe('wss://ws.kraken.test');
@@ -13,7 +15,9 @@ describe('resolveVenueUrls generic fallback (unknown venue)', () => {
   });
 
   it('falls back to api.rest / ws.public when primary keys are absent', () => {
-    const fake = { urls: { api: { rest: 'https://rest.x.test', ws: { public: 'wss://pub.x.test' } } } };
+    const fake = {
+      urls: { api: { rest: 'https://rest.x.test', ws: { public: 'wss://pub.x.test' } } },
+    };
     const u = resolveVenueUrls(fake, 'somevenue');
     expect(u.restSpot).toBe('https://rest.x.test');
     expect(u.wsSpot).toBe('wss://pub.x.test');
@@ -33,7 +37,10 @@ describe('resolveVenueUrls generic fallback (unknown venue)', () => {
 function urls(id: string, environment: VenueEnvironment) {
   const cfg: VenueConfig = { id, environment };
   const ex = buildCcxtExchange(cfg);
-  return resolveVenueUrls(ex as unknown as { urls: { api?: Record<string, unknown> }; hostname?: string }, id);
+  return resolveVenueUrls(
+    ex as unknown as { urls: { api?: Record<string, unknown> }; hostname?: string },
+    id,
+  );
 }
 
 describe('Binance sandbox/demo/live URL resolution (ccxt 4.5.58)', () => {

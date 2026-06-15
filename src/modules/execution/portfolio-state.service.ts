@@ -7,9 +7,19 @@ import { FLAT, type PositionState } from '../../domain/oms/position';
 import { applyFillToPortfolio } from '../../domain/oms/portfolio-fill';
 import type { OrderIntent } from '../../domain/types/order-intent';
 import type { FillRecord } from '../../domain/types/exec-report';
-import type { Position, PortfolioSnapshot, StrategyPortfolioView, OpenOrderSummary, AssetBalance } from '../../domain/types/portfolio';
+import type {
+  Position,
+  PortfolioSnapshot,
+  StrategyPortfolioView,
+  OpenOrderSummary,
+  AssetBalance,
+} from '../../domain/types/portfolio';
 import type { StrategyId, ClientOrderId } from '../../domain/types/ids';
-import { PORTFOLIO_CONFIG, type PortfolioConfig, type PortfolioViewPort } from '../../ports/execution';
+import {
+  PORTFOLIO_CONFIG,
+  type PortfolioConfig,
+  type PortfolioViewPort,
+} from '../../ports/execution';
 import { FeeLedgerService } from './fee-ledger.service';
 
 interface OpenOrderRec {

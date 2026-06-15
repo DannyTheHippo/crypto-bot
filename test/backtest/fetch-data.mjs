@@ -55,7 +55,9 @@ async function fetchInterval(tf) {
     }
     const lastTs = batch[batch.length - 1][0];
     since = lastTs + step;
-    process.stdout.write(`\r${tf}: ${bars.length} bars (last ${new Date(lastTs).toISOString()})   `);
+    process.stdout.write(
+      `\r${tf}: ${bars.length} bars (last ${new Date(lastTs).toISOString()})   `,
+    );
     if (added === 0 || lastTs >= now - step) break;
   }
   bars.sort((a, b) => a[0] - b[0]);

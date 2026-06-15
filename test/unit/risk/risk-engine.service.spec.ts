@@ -14,7 +14,14 @@ import type { PortfolioSnapshot, Position } from '../../../src/domain/types/port
 import type { PartialRiskLimits } from '../../../src/domain/risk/limits';
 import type { RiskDecision } from '../../../src/domain/types/risk-decision';
 import { price, qty } from '../../../src/domain/types/money';
-import { intentId, encodeClientOrderId, strategyId, venueId, symbolId, epochMs } from '../../../src/domain/types/ids';
+import {
+  intentId,
+  encodeClientOrderId,
+  strategyId,
+  venueId,
+  symbolId,
+  epochMs,
+} from '../../../src/domain/types/ids';
 import { verifyApproval } from '../../../src/domain/risk/proof';
 
 const T = 1700000000000;
@@ -23,16 +30,33 @@ const V = venueId('binance');
 const SYM = symbolId('BTC/USDT');
 const SID = strategyId('s');
 const IID = intentId('0190abcd-1234-7abc-89ab-0123456789ab');
-const FILTERS: SymbolFilters = { tickSize: '0.01', stepSize: '0.001', minQty: '0.001', minNotional: '5' };
+const FILTERS: SymbolFilters = {
+  tickSize: '0.01',
+  stepSize: '0.001',
+  minQty: '0.001',
+  minNotional: '5',
+};
 const LIMITS: PartialRiskLimits = {
-  maxBandBps: 100, maxOrderNotional: '1000000', maxDriftBps: 100, maxPositionPerSymbol: '1000',
-  maxGrossExposure: '1000000', maxNetExposure: '1000000', maxDailyLoss: '5000', maxDrawdownPct: '0.5', staleMaxAgeMs: 5000,
+  maxBandBps: 100,
+  maxOrderNotional: '1000000',
+  maxDriftBps: 100,
+  maxPositionPerSymbol: '1000',
+  maxGrossExposure: '1000000',
+  maxNetExposure: '1000000',
+  maxDailyLoss: '5000',
+  maxDrawdownPct: '0.5',
+  staleMaxAgeMs: 5000,
 };
 
 function deps(over: Partial<RiskEngineDeps> = {}): RiskEngineDeps {
   return {
-    key: Buffer.alloc(32, 1), limits: LIMITS, limitsVersion: 'v1', mode: 'paper',
-    filters: new Map([[String(SYM), FILTERS]]), randomBytes: (n) => new Uint8Array(n).fill(3), ...over,
+    key: Buffer.alloc(32, 1),
+    limits: LIMITS,
+    limitsVersion: 'v1',
+    mode: 'paper',
+    filters: new Map([[String(SYM), FILTERS]]),
+    randomBytes: (n) => new Uint8Array(n).fill(3),
+    ...over,
   };
 }
 
@@ -46,26 +70,65 @@ function feed(refPresent = true): FeedHealthPort {
 
 function intent(o: Partial<OrderIntent> = {}): OrderIntent {
   return {
-    intentId: IID, clientOrderId: encodeClientOrderId(IID, 'paper'), strategyId: SID, venue: V, symbol: SYM,
-    side: 'BUY', type: 'LIMIT', qty: qty('1'), limitPrice: price('100'), timeInForce: 'GTC', reduceOnly: false,
-    mode: 'paper', refPrice: price('100'), refSeq: 9n, createdAt: epochMs(0), expiresAt: epochMs(T + 10_000),
-    source: { dedupeKey: 'k', eventTime: epochMs(0), basedOnSeq: 9n, strength: 1 }, ...o,
+    intentId: IID,
+    clientOrderId: encodeClientOrderId(IID, 'paper'),
+    strategyId: SID,
+    venue: V,
+    symbol: SYM,
+    side: 'BUY',
+    type: 'LIMIT',
+    qty: qty('1'),
+    limitPrice: price('100'),
+    timeInForce: 'GTC',
+    reduceOnly: false,
+    mode: 'paper',
+    refPrice: price('100'),
+    refSeq: 9n,
+    createdAt: epochMs(0),
+    expiresAt: epochMs(T + 10_000),
+    source: { dedupeKey: 'k', eventTime: epochMs(0), basedOnSeq: 9n, strength: 1 },
+    ...o,
   };
 }
 
 function snapshot(o: Partial<PortfolioSnapshot> = {}): PortfolioSnapshot {
   return {
-    positions: new Map<string, Position>(), balances: new Map(), openOrders: [], inFlightIntents: [],
-    equity: new Decimal(10_000), peakEquity: new Decimal(10_000), sodEquityUtc: new Decimal(10_000),
-    reconcileStatus: 'CLEAN', snapshotSeq: 1n, ...o,
+    positions: new Map<string, Position>(),
+    balances: new Map(),
+    openOrders: [],
+    inFlightIntents: [],
+    equity: new Decimal(10_000),
+    peakEquity: new Decimal(10_000),
+    sodEquityUtc: new Decimal(10_000),
+    reconcileStatus: 'CLEAN',
+    snapshotSeq: 1n,
+    ...o,
   };
 }
 
-function makeEngine(over: { deps?: Partial<RiskEngineDeps>; refPresent?: boolean; riskRejects?: Counter<string> } = {}) {
-  const journal: RiskJournalPort & { records: RiskDecision[] } = { records: [], record(d) { this.records.push(d); } };
+function makeEngine(
+  over: {
+    deps?: Partial<RiskEngineDeps>;
+    refPresent?: boolean;
+    riskRejects?: Counter<string>;
+  } = {},
+) {
+  const journal: RiskJournalPort & { records: RiskDecision[] } = {
+    records: [],
+    record(d) {
+      this.records.push(d);
+    },
+  };
   const kill = new KillSwitchService();
   const engine = new RiskEngineService(
-    clock, deps(over.deps), feed(over.refPresent ?? true), kill, new RateBucketsService(clock), new CrossingRegistryService(), journal, over.riskRejects,
+    clock,
+    deps(over.deps),
+    feed(over.refPresent ?? true),
+    kill,
+    new RateBucketsService(clock),
+    new CrossingRegistryService(),
+    journal,
+    over.riskRejects,
   );
   return { engine, journal, kill };
 }
@@ -75,7 +138,17 @@ describe('RiskEngineService', () => {
     const { engine, journal } = makeEngine();
     // A held position exercises the pre-trade exposure aggregation loop.
     const positions = new Map<string, Position>([
-      [`${SID}:${V}:${SYM}`, { strategyId: SID, venue: V, symbol: SYM, signedQty: new Decimal('2'), avgEntry: price('100'), realizedPnl: new Decimal(0) }],
+      [
+        `${SID}:${V}:${SYM}`,
+        {
+          strategyId: SID,
+          venue: V,
+          symbol: SYM,
+          signedQty: new Decimal('2'),
+          avgEntry: price('100'),
+          realizedPnl: new Decimal(0),
+        },
+      ],
     ]);
     const d = engine.evaluate(intent({ reduceOnly: false }), snapshot({ positions }));
     expect(d.verdict).toBe('APPROVED');
@@ -98,12 +171,17 @@ describe('RiskEngineService', () => {
     const { engine } = makeEngine({ refPresent: false, riskRejects: counter });
     const d = engine.evaluate(intent(), snapshot());
     expect(d.verdict).toBe('REJECTED');
-    expect((counter.inc as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual([{ code: 'STALE_DATA' }]);
+    expect((counter.inc as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual([
+      { code: 'STALE_DATA' },
+    ]);
   });
 
   it('engages the kill switch on a daily-loss halt', () => {
     const { engine, kill } = makeEngine();
-    const d = engine.evaluate(intent(), snapshot({ equity: new Decimal(5_000), sodEquityUtc: new Decimal(10_000) }));
+    const d = engine.evaluate(
+      intent(),
+      snapshot({ equity: new Decimal(5_000), sodEquityUtc: new Decimal(10_000) }),
+    );
     expect(d).toMatchObject({ verdict: 'REJECTED', reasons: ['DAILY_LOSS'] });
     expect(kill.state()).toBe('HALTING');
   });
@@ -112,7 +190,11 @@ describe('RiskEngineService', () => {
     const { engine, kill } = makeEngine();
     const d = engine.evaluate(
       intent(),
-      snapshot({ equity: new Decimal(4_000), peakEquity: new Decimal(10_000), sodEquityUtc: new Decimal(4_000) }),
+      snapshot({
+        equity: new Decimal(4_000),
+        peakEquity: new Decimal(10_000),
+        sodEquityUtc: new Decimal(4_000),
+      }),
     );
     expect(d).toMatchObject({ verdict: 'REJECTED', reasons: ['MAX_DRAWDOWN'] });
     expect(kill.state()).toBe('HALTING'); // flatten-requested branch
@@ -152,9 +234,20 @@ describe('RiskEngineService', () => {
   // The flatten path is the kill switch's only way out: it MUST clear evaluate end-to-end while
   // FLATTENING and mint a proof the execution gate then verifies. If any gate silently vetoed a
   // flatten, the bot would deadlock halted-but-unable-to-flatten — this is that guard.
-  const longPos = () => new Map<string, Position>([
-    [`${SID}:${V}:${SYM}`, { strategyId: SID, venue: V, symbol: SYM, signedQty: new Decimal('2'), avgEntry: price('100'), realizedPnl: new Decimal(0) }],
-  ]);
+  const longPos = () =>
+    new Map<string, Position>([
+      [
+        `${SID}:${V}:${SYM}`,
+        {
+          strategyId: SID,
+          venue: V,
+          symbol: SYM,
+          signedQty: new Decimal('2'),
+          avgEntry: price('100'),
+          realizedPnl: new Decimal(0),
+        },
+      ],
+    ]);
 
   it('evaluateFlatten APPROVES a reduce-only flatten during FLATTENING and mints a verifiable proof', () => {
     const { engine, kill } = makeEngine();
@@ -162,7 +255,10 @@ describe('RiskEngineService', () => {
     kill.confirmCancels(); // HALTING → FLATTENING (flatten requested)
     expect(kill.state()).toBe('FLATTENING');
 
-    const d = engine.evaluateFlatten(intent({ reduceOnly: true, side: 'SELL', qty: qty('2') }), snapshot({ positions: longPos() }));
+    const d = engine.evaluateFlatten(
+      intent({ reduceOnly: true, side: 'SELL', qty: qty('2') }),
+      snapshot({ positions: longPos() }),
+    );
     expect(['APPROVED', 'RESIZED']).toContain(d.verdict);
     if (d.verdict === 'APPROVED' || d.verdict === 'RESIZED') {
       // The gate would verify exactly this proof before placing the order.
@@ -178,7 +274,10 @@ describe('RiskEngineService', () => {
     // Now flatten: a separate reserved bucket, so R1 still passes even though the normal one is dry.
     kill.engage('drawdown', true);
     kill.confirmCancels();
-    const d = engine.evaluateFlatten(intent({ reduceOnly: true, side: 'SELL', qty: qty('2') }), snapshot({ positions: longPos() }));
+    const d = engine.evaluateFlatten(
+      intent({ reduceOnly: true, side: 'SELL', qty: qty('2') }),
+      snapshot({ positions: longPos() }),
+    );
     expect(['APPROVED', 'RESIZED']).toContain(d.verdict);
   });
 
@@ -186,7 +285,10 @@ describe('RiskEngineService', () => {
     const { engine, kill } = makeEngine();
     kill.engage('drawdown', true);
     kill.confirmCancels(); // FLATTENING
-    const d = engine.evaluateFlatten(intent({ reduceOnly: false }), snapshot({ positions: longPos() }));
+    const d = engine.evaluateFlatten(
+      intent({ reduceOnly: false }),
+      snapshot({ positions: longPos() }),
+    );
     expect(d).toMatchObject({ verdict: 'REJECTED', reasons: ['KILL_SWITCH'] });
   });
 });

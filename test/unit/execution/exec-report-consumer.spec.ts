@@ -12,7 +12,13 @@ import { makeIntent, fixedClock, fixedFeed, killSwitchStub, V, SYM, T } from './
 import { price, qty } from '../../../src/domain/types/money';
 import { epochMs, type ClientOrderId } from '../../../src/domain/types/ids';
 import type { ExecRunContext } from '../../../src/ports/execution';
-import type { FillReport, AckReport, CancelAckReport, ExpireReport, RejectReport } from '../../../src/domain/types/exec-report';
+import type {
+  FillReport,
+  AckReport,
+  CancelAckReport,
+  ExpireReport,
+  RejectReport,
+} from '../../../src/domain/types/exec-report';
 
 const CTX: ExecRunContext = { mode: 'paper', runId: 'run', bootId: 'boot' };
 
@@ -20,7 +26,10 @@ function build(ctx: ExecRunContext = CTX) {
   const outbox = new InMemoryExecOutbox();
   const store = new InMemoryExecutionStore();
   const orders = new OrderBookService();
-  const portfolio = new PortfolioStateService({ quoteAsset: 'USDT', startingCash: '100000' }, new FeeLedgerService());
+  const portfolio = new PortfolioStateService(
+    { quoteAsset: 'USDT', startingCash: '100000' },
+    new FeeLedgerService(),
+  );
   const sampler = new EquitySamplerService(portfolio, fixedFeed('100'), fixedClock(), store);
   const ingestor = new FillIngestorService(store, killSwitchStub().ks, orders, portfolio, sampler);
   const consumer = new ExecReportConsumerService(outbox, store, ctx, orders, portfolio, ingestor);
@@ -28,19 +37,53 @@ function build(ctx: ExecRunContext = CTX) {
 }
 
 const base = (coid: ClientOrderId) => ({
-  clientOrderId: coid, venue: V, symbol: SYM, eventTime: epochMs(T), ingestTime: epochMs(T),
+  clientOrderId: coid,
+  venue: V,
+  symbol: SYM,
+  eventTime: epochMs(T),
+  ingestTime: epochMs(T),
 });
 
-function fill(coid: ClientOrderId, reportId: string, q: string, tradeId = 'td-' + reportId): FillReport {
+function fill(
+  coid: ClientOrderId,
+  reportId: string,
+  q: string,
+  tradeId = 'td-' + reportId,
+): FillReport {
   return {
-    kind: 'FILL', reportId, ...base(coid), venueTradeId: tradeId,
-    price: price('100'), qty: qty(q), fee: null, liquidity: 'taker', venueTimestamp: epochMs(T),
+    kind: 'FILL',
+    reportId,
+    ...base(coid),
+    venueTradeId: tradeId,
+    price: price('100'),
+    qty: qty(q),
+    fee: null,
+    liquidity: 'taker',
+    venueTimestamp: epochMs(T),
   };
 }
-const ack = (coid: ClientOrderId, reportId: string): AckReport => ({ kind: 'ACK', reportId, ...base(coid), venueOrderId: 'v1' });
-const cancelAck = (coid: ClientOrderId, reportId: string): CancelAckReport => ({ kind: 'CANCEL_ACK', reportId, ...base(coid) });
-const expire = (coid: ClientOrderId, reportId: string): ExpireReport => ({ kind: 'EXPIRE', reportId, ...base(coid) });
-const reject = (coid: ClientOrderId, reportId: string): RejectReport => ({ kind: 'REJECT', reportId, ...base(coid), reason: 'x' });
+const ack = (coid: ClientOrderId, reportId: string): AckReport => ({
+  kind: 'ACK',
+  reportId,
+  ...base(coid),
+  venueOrderId: 'v1',
+});
+const cancelAck = (coid: ClientOrderId, reportId: string): CancelAckReport => ({
+  kind: 'CANCEL_ACK',
+  reportId,
+  ...base(coid),
+});
+const expire = (coid: ClientOrderId, reportId: string): ExpireReport => ({
+  kind: 'EXPIRE',
+  reportId,
+  ...base(coid),
+});
+const reject = (coid: ClientOrderId, reportId: string): RejectReport => ({
+  kind: 'REJECT',
+  reportId,
+  ...base(coid),
+  reason: 'x',
+});
 
 // Seed an order already ACKED + open + in-flight, as it would be after gate.submit.
 function seedAcked(ctx: ReturnType<typeof build>, intent = makeIntent()) {
@@ -49,7 +92,13 @@ function seedAcked(ctx: ReturnType<typeof build>, intent = makeIntent()) {
   ctx.orders.apply(coid, { type: 'SUBMIT_SENT' });
   ctx.orders.apply(coid, { type: 'ACK', venueOrderId: 'v1' });
   ctx.portfolio.addInFlight(intent);
-  ctx.portfolio.openOrder(intent.strategyId, { clientOrderId: coid, symbol: SYM, side: 'BUY', qty: intent.qty, limitPrice: price('100') });
+  ctx.portfolio.openOrder(intent.strategyId, {
+    clientOrderId: coid,
+    symbol: SYM,
+    side: 'BUY',
+    qty: intent.qty,
+    limitPrice: price('100'),
+  });
   return { coid, intent };
 }
 
@@ -77,7 +126,10 @@ describe('ExecReportConsumerService', () => {
     await ctx.outbox.append({ reportId: 'f1', report: fill(coid, 'f1', '1', 'same-trade') });
     await ctx.consumer.pump();
     // A reconnect re-sends the same trade under a new reportId.
-    await ctx.outbox.append({ reportId: 'f1-redelivered', report: fill(coid, 'f1-redelivered', '1', 'same-trade') });
+    await ctx.outbox.append({
+      reportId: 'f1-redelivered',
+      report: fill(coid, 'f1-redelivered', '1', 'same-trade'),
+    });
     await ctx.consumer.pump();
     expect(ctx.store.fills.size).toBe(1);
     expect(ctx.portfolio.cashBalance().toFixed()).toBe('99900'); // only one fill applied
@@ -144,7 +196,13 @@ describe('ExecReportConsumerService', () => {
     const { coid } = seedAcked(ctx);
     ctx.orders.apply(coid, { type: 'CANCEL_REQUESTED' }); // CANCEL_PENDING
     // Pre-journal the cancel event under the report's id (as if a prior life applied it).
-    await ctx.store.appendOrderEvent({ clientOrderId: coid, dedupeKey: 'c9', event: { type: 'CANCEL_ACK' }, derivedState: 'CANCELED', cumQty: '0' });
+    await ctx.store.appendOrderEvent({
+      clientOrderId: coid,
+      dedupeKey: 'c9',
+      event: { type: 'CANCEL_ACK' },
+      derivedState: 'CANCELED',
+      cumQty: '0',
+    });
     await ctx.outbox.append({ reportId: 'c9', report: cancelAck(coid, 'c9') });
     await ctx.consumer.pump();
     expect(ctx.orders.get(coid)?.state).toBe('CANCEL_PENDING'); // fold skipped — journal said duplicate

@@ -1,12 +1,24 @@
 import { describe, it, expect } from 'vitest';
 import { InMemoryExecOutbox } from '../../../src/modules/execution/in-memory-outbox';
 import type { ExecReport } from '../../../src/domain/types/exec-report';
-import { encodeClientOrderId, intentId, venueId, symbolId, epochMs } from '../../../src/domain/types/ids';
+import {
+  encodeClientOrderId,
+  intentId,
+  venueId,
+  symbolId,
+  epochMs,
+} from '../../../src/domain/types/ids';
 
 const coid = encodeClientOrderId(intentId('0190abcd-1234-7abc-89ab-0123456789ab'), 'paper');
 const report = (id: string): ExecReport => ({
-  kind: 'ACK', reportId: id, clientOrderId: coid, venue: venueId('binance'), symbol: symbolId('BTC/USDT'),
-  eventTime: epochMs(1), ingestTime: epochMs(1), venueOrderId: 'v1',
+  kind: 'ACK',
+  reportId: id,
+  clientOrderId: coid,
+  venue: venueId('binance'),
+  symbol: symbolId('BTC/USDT'),
+  eventTime: epochMs(1),
+  ingestTime: epochMs(1),
+  venueOrderId: 'v1',
 });
 
 describe('InMemoryExecOutbox', () => {

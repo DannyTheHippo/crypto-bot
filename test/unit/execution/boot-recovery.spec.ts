@@ -16,7 +16,10 @@ import { SID, V, SYM } from './helpers';
 type RecoverySnap = Awaited<ReturnType<ExecutionStorePort['loadRecoverySnapshot']>>;
 
 function makePortfolio(): PortfolioStateService {
-  return new PortfolioStateService({ quoteAsset: 'USDT', startingCash: '100000' }, new FeeLedgerService());
+  return new PortfolioStateService(
+    { quoteAsset: 'USDT', startingCash: '100000' },
+    new FeeLedgerService(),
+  );
 }
 
 // store fake: BootRecoveryService only calls loadRecoverySnapshot + loadOpenOrders.
@@ -28,7 +31,12 @@ function fakeStore(snap: RecoverySnap, open: OrderRecord[]): ExecutionStorePort 
 }
 
 function crashRecoveryStub(calls: { n: number }): CrashRecoveryService {
-  return { recoverOnBoot: () => { calls.n += 1; return Promise.resolve([]); } } as unknown as CrashRecoveryService;
+  return {
+    recoverOnBoot: () => {
+      calls.n += 1;
+      return Promise.resolve([]);
+    },
+  } as unknown as CrashRecoveryService;
 }
 
 const SAMPLE: EquitySample = {

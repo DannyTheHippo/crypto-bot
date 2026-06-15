@@ -7,7 +7,10 @@ import { makeIntent, makeFill, fixedClock, fixedFeed } from './helpers';
 import { price, qty } from '../../../src/domain/types/money';
 
 function make(feedMid = '110', refPresent = true) {
-  const ps = new PortfolioStateService({ quoteAsset: 'USDT', startingCash: '100000' }, new FeeLedgerService());
+  const ps = new PortfolioStateService(
+    { quoteAsset: 'USDT', startingCash: '100000' },
+    new FeeLedgerService(),
+  );
   const store = new InMemoryExecutionStore();
   const sampler = new EquitySamplerService(ps, fixedFeed(feedMid, refPresent), fixedClock(), store);
   return { ps, store, sampler };

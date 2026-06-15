@@ -5,7 +5,10 @@ import type { ApprovalProof } from '../../domain/types/risk-decision';
 import type { FillRecord } from '../../domain/types/exec-report';
 import type { Position } from '../../domain/types/portfolio';
 import type {
-  ExecutionStorePort, PersistedOrderEvent, EquitySample, ReconciliationRow,
+  ExecutionStorePort,
+  PersistedOrderEvent,
+  EquitySample,
+  ReconciliationRow,
 } from '../../ports/execution';
 import type { OrderRecord, OrderState } from '../../domain/oms/reducer';
 
@@ -38,7 +41,11 @@ export class InMemoryExecutionStore implements ExecutionStorePort {
   }
 
   saveNewOrder(record: OrderRecord, intent: OrderIntent): Promise<void> {
-    this.orders.set(record.clientOrderId, { state: record.state, cumQty: record.cumQty.toFixed(), intentId: intent.intentId });
+    this.orders.set(record.clientOrderId, {
+      state: record.state,
+      cumQty: record.cumQty.toFixed(),
+      intentId: intent.intentId,
+    });
     return Promise.resolve();
   }
 
@@ -80,7 +87,11 @@ export class InMemoryExecutionStore implements ExecutionStorePort {
     return Promise.resolve();
   }
 
-  loadRecoverySnapshot(): Promise<{ latest: EquitySample | null; sodEquity: string | null; positions: Position[] }> {
+  loadRecoverySnapshot(): Promise<{
+    latest: EquitySample | null;
+    sodEquity: string | null;
+    positions: Position[];
+  }> {
     return Promise.resolve({
       latest: this.lastSample,
       sodEquity: null,

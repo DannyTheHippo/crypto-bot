@@ -3,8 +3,11 @@ import Decimal from 'decimal.js';
 import { CLOCK, type ClockPort } from '../../ports/clock';
 import { FEED_HEALTH, type FeedHealthPort } from '../../ports/market-data';
 import {
-  EXECUTION_STORE, EQUITY_OBSERVER,
-  type ExecutionStorePort, type EquitySample, type EquityObserver,
+  EXECUTION_STORE,
+  EQUITY_OBSERVER,
+  type ExecutionStorePort,
+  type EquitySample,
+  type EquityObserver,
 } from '../../ports/execution';
 import { PortfolioStateService } from './portfolio-state.service';
 

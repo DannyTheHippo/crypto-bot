@@ -6,7 +6,9 @@ import { intentId } from '../../../src/domain/types/ids';
 import { makeIntent } from './helpers';
 
 const coid = makeIntent().clientOrderId;
-const other = makeIntent({ intentId: intentId('0190abcd-1234-7abc-89ab-0123456789ff') }).clientOrderId;
+const other = makeIntent({
+  intentId: intentId('0190abcd-1234-7abc-89ab-0123456789ff'),
+}).clientOrderId;
 
 describe('OrderBookService', () => {
   it('creates, reads, and folds events through the reducer', () => {

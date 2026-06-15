@@ -2,15 +2,34 @@ import { Injectable, Inject } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { CLOCK, type ClockPort } from '../../ports/clock';
 import {
-  MODE_AUDIT, KEY_PROBE, MODE_CONTROL_CONFIG, ARM_PRECONDITIONS,
+  MODE_AUDIT,
+  KEY_PROBE,
+  MODE_CONTROL_CONFIG,
+  ARM_PRECONDITIONS,
   ModeViolationError,
-  type ModeControlPort, type ModeControlConfig, type ArmPreconditionsPort,
-  type ArmRequest, type ArmResult, type ArmFailureReason,
-  type ModeAuditPort, type KeyProbeResult, type KeyProbePort,
+  type ModeControlPort,
+  type ModeControlConfig,
+  type ArmPreconditionsPort,
+  type ArmRequest,
+  type ArmResult,
+  type ArmFailureReason,
+  type ModeAuditPort,
+  type KeyProbeResult,
+  type KeyProbePort,
 } from '../../ports/mode-control';
 import { KILL_SWITCH, type KillSwitchPort } from '../../ports/risk';
-import { INITIAL_ARMING, reduceArming, type ArmingState, type ArmFailure, type ArmingDeps } from '../../domain/mode/arming';
-import { resolveMode, type ModeResolutionVector, type ModeResolution } from '../../domain/mode/resolution';
+import {
+  INITIAL_ARMING,
+  reduceArming,
+  type ArmingState,
+  type ArmFailure,
+  type ArmingDeps,
+} from '../../domain/mode/arming';
+import {
+  resolveMode,
+  type ModeResolutionVector,
+  type ModeResolution,
+} from '../../domain/mode/resolution';
 import type { TradingMode } from '../../domain/types/mode';
 import { verifyArmingHmac } from './hmac';
 
@@ -47,7 +66,11 @@ export class ModeControlService implements ModeControlPort {
 
   // Lazily enforces TTL on every public method call — no cron dependency.
   private tick(): void {
-    const result = reduceArming(this.arming, { type: 'TICK', nowMs: this.clock.now() }, this.armingDeps);
+    const result = reduceArming(
+      this.arming,
+      { type: 'TICK', nowMs: this.clock.now() },
+      this.armingDeps,
+    );
     this.arming = result.state;
     if (result.effect === 'KILL_SWITCH_ENGAGE') {
       this.killSwitch.engage('ARMED_TTL_EXPIRED', false);
@@ -129,7 +152,11 @@ export class ModeControlService implements ModeControlPort {
   // execution gate's responsibility in P8d — this method guards the static config authority.
   assertCanTrade(intentMode: TradingMode, intentId?: string): void {
     if (intentMode === 'live' && this.cfg.requested !== 'live') {
-      this.audit.record({ type: 'live_order_refused', intentId: intentId ?? '-', code: 'NOT_LIVE_AUTHORITY' });
+      this.audit.record({
+        type: 'live_order_refused',
+        intentId: intentId ?? '-',
+        code: 'NOT_LIVE_AUTHORITY',
+      });
       throw new ModeViolationError('NOT_LIVE_AUTHORITY', 'Live orders require live boot authority');
     }
   }

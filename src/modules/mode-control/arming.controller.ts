@@ -14,7 +14,12 @@ export class ArmingController {
 
   @Post('arm/confirm')
   confirm(@Body() b: { challengeId: string; hmacHex: string; bootId: string }) {
-    return this.service.armLive({ step: 'CONFIRM', challengeId: b.challengeId, hmacHex: b.hmacHex, bootId: b.bootId });
+    return this.service.armLive({
+      step: 'CONFIRM',
+      challengeId: b.challengeId,
+      hmacHex: b.hmacHex,
+      bootId: b.bootId,
+    });
   }
 
   @Post('disarm')

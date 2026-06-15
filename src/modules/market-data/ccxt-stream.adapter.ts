@@ -1,5 +1,12 @@
 import { Injectable, Inject } from '@nestjs/common';
-import { pro as ccxtPro, Exchange, type Ticker, type Trade, type OHLCV, type OrderBook } from 'ccxt';
+import {
+  pro as ccxtPro,
+  Exchange,
+  type Ticker,
+  type Trade,
+  type OHLCV,
+  type OrderBook,
+} from 'ccxt';
 import type { ExchangeStreamPort, RawVenueEvent, RawUserEvent } from '../../ports/exchange-stream';
 import type { SubscriptionSpec } from '../../ports/market-data';
 import type { VenueId, SymbolId } from '../../domain/types/ids';
@@ -39,13 +46,19 @@ export class RealWatchSource implements WatchSource {
     return (exchange as unknown as { watchTicker(s: string): Promise<Ticker> }).watchTicker(symbol);
   }
   async watchTrades(exchange: Exchange, symbol: string): Promise<Trade[]> {
-    return (exchange as unknown as { watchTrades(s: string): Promise<Trade[]> }).watchTrades(symbol);
+    return (exchange as unknown as { watchTrades(s: string): Promise<Trade[]> }).watchTrades(
+      symbol,
+    );
   }
   async watchOHLCV(exchange: Exchange, symbol: string, timeframe: string): Promise<OHLCV[]> {
-    return (exchange as unknown as { watchOHLCV(s: string, tf: string): Promise<OHLCV[]> }).watchOHLCV(symbol, timeframe);
+    return (
+      exchange as unknown as { watchOHLCV(s: string, tf: string): Promise<OHLCV[]> }
+    ).watchOHLCV(symbol, timeframe);
   }
   async watchOrderBook(exchange: Exchange, symbol: string): Promise<OrderBook> {
-    return (exchange as unknown as { watchOrderBook(s: string): Promise<OrderBook> }).watchOrderBook(symbol);
+    return (
+      exchange as unknown as { watchOrderBook(s: string): Promise<OrderBook> }
+    ).watchOrderBook(symbol);
   }
 }
 
@@ -315,7 +328,12 @@ export class CcxtExchangeStreamAdapter implements ExchangeStreamPort {
       this.stateTracker.setHealth(this.venueId, symbol, channel, 'GAP');
       return;
     }
-    this.stateTracker.setHealth(this.venueId, symbol, channel, isTransient(err) ? 'DEGRADED' : 'GAP');
+    this.stateTracker.setHealth(
+      this.venueId,
+      symbol,
+      channel,
+      isTransient(err) ? 'DEGRADED' : 'GAP',
+    );
     await this.backoff();
   }
 

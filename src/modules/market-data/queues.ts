@@ -1,4 +1,9 @@
-import type { TickerEvent, OrderBookSnapshotEvent, TradeEvent, CandleEvent } from '../../domain/types/market-events';
+import type {
+  TickerEvent,
+  OrderBookSnapshotEvent,
+  TradeEvent,
+  CandleEvent,
+} from '../../domain/types/market-events';
 
 // ── Ticker conflation cell ───────────────────────────────────────────────────
 // Latest-wins; conflatedCount tracks how many events were merged since last read.
@@ -60,7 +65,7 @@ const TRADE_RING_CAPACITY = 1024;
 
 export interface TradeRing {
   readonly buf: (TradeEvent | undefined)[];
-  head: number;   // index of oldest item
+  head: number; // index of oldest item
   count: number;
   dropped: boolean;
 }
@@ -145,7 +150,10 @@ export function candleQueuePush(queue: CandleQueue, event: CandleEvent): void {
   queue.count++;
 }
 
-export function candleQueueDrain(queue: CandleQueue): { events: CandleEvent[]; gapDetected: boolean } {
+export function candleQueueDrain(queue: CandleQueue): {
+  events: CandleEvent[];
+  gapDetected: boolean;
+} {
   const gapDetected = queue.closedCandleLost;
   queue.closedCandleLost = false;
 

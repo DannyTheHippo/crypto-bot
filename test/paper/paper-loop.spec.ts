@@ -16,7 +16,10 @@ import type { ModeControlPort } from '../../src/ports/mode-control';
 import { SignalSinkService } from '../../src/modules/execution/signal-sink.service';
 import { InMemoryExecOutbox } from '../../src/modules/execution/in-memory-outbox';
 import { InMemoryExecutionStore } from '../../src/modules/execution/in-memory-store';
-import { PaperExchangeAdapter, type PaperConfig } from '../../src/modules/exchange-adapter/paper-exchange.adapter';
+import {
+  PaperExchangeAdapter,
+  type PaperConfig,
+} from '../../src/modules/exchange-adapter/paper-exchange.adapter';
 import { KillSwitchService } from '../../src/modules/risk/kill-switch.service';
 import { RateBucketsService } from '../../src/modules/risk/rate-buckets.service';
 import { CrossingRegistryService } from '../../src/modules/risk/crossing-registry.service';
@@ -37,25 +40,43 @@ const SID = strategyId('s1');
 const VEN = venueId('binance');
 const SYM = symbolId('BTC/USDT');
 const KEY = Buffer.alloc(32, 7);
-const FILTERS = new Map<string, SymbolFilters>([[String(SYM), { tickSize: '0.01', stepSize: '0.001', minQty: '0.001', minNotional: '5' }]]);
+const FILTERS = new Map<string, SymbolFilters>([
+  [String(SYM), { tickSize: '0.01', stepSize: '0.001', minQty: '0.001', minNotional: '5' }],
+]);
 const LIMITS: PartialRiskLimits = {
-  maxBandBps: 100, maxOrderNotional: '1000000', maxDriftBps: 100, maxPositionPerSymbol: '1000',
-  maxGrossExposure: '1000000', maxNetExposure: '1000000', maxDailyLoss: '5000', maxDrawdownPct: '0.5', staleMaxAgeMs: 5000,
+  maxBandBps: 100,
+  maxOrderNotional: '1000000',
+  maxDriftBps: 100,
+  maxPositionPerSymbol: '1000',
+  maxGrossExposure: '1000000',
+  maxNetExposure: '1000000',
+  maxDailyLoss: '5000',
+  maxDrawdownPct: '0.5',
+  staleMaxAgeMs: 5000,
 };
 const CTX: ExecRunContext = { mode: 'paper', runId: 'run', bootId: 'boot' };
 const lvl = (p: string, q: string): OrderLevel => ({ price: price(p), qty: qty(q) });
 
 function feed(mid = '100'): FeedHealthPort {
-  return { getRefPrice: () => ({ mid: price(mid), at: epochMs(T) }), health: () => 'LIVE', fetchCandles: () => Promise.resolve([]) };
+  return {
+    getRefPrice: () => ({ mid: price(mid), at: epochMs(T) }),
+    health: () => 'LIVE',
+    fetchCandles: () => Promise.resolve([]),
+  };
 }
 
-function buildLoop(opts: { reorder?: boolean; balances?: Record<string, string>; byteSeed?: number } = {}) {
+function buildLoop(
+  opts: { reorder?: boolean; balances?: Record<string, string>; byteSeed?: number } = {},
+) {
   const clock = { now: () => epochMs(T) };
   // Deterministic byte source so intent ids / nonces are reproducible across runs.
   let s = (opts.byteSeed ?? 1) >>> 0;
   const randomBytes = (n: number) => {
     const a = new Uint8Array(n);
-    for (let i = 0; i < n; i++) { s = (Math.imul(s, 1103515245) + 12345) >>> 0; a[i] = s & 0xff; }
+    for (let i = 0; i < n; i++) {
+      s = (Math.imul(s, 1103515245) + 12345) >>> 0;
+      a[i] = s & 0xff;
+    }
     return a;
   };
   const fees = new FeeLedgerService();
@@ -65,34 +86,77 @@ function buildLoop(opts: { reorder?: boolean; balances?: Record<string, string>;
   const orders = new OrderBookService();
   const nonces = new NonceLedgerService();
   const sampler = new EquitySamplerService(portfolio, feed(), clock, store);
-  const ingestor = new FillIngestorService(store, new KillSwitchService(), orders, portfolio, sampler);
+  const ingestor = new FillIngestorService(
+    store,
+    new KillSwitchService(),
+    orders,
+    portfolio,
+    sampler,
+  );
   const consumer = new ExecReportConsumerService(outbox, store, CTX, orders, portfolio, ingestor);
   const notify = () => consumer.pump().then(() => undefined);
   const paperCfg: PaperConfig = {
-    seed: 42, takerBuffer: '0.05', fees: { makerBps: '1', takerBps: '10', feeCurrency: 'quote' },
-    latency: { submitMs: [0, 0], eventMs: [0, 0] }, insufficientDepthPolicy: 'partial_then_reject_rest',
-    reorderDelivery: opts.reorder, startingBalances: opts.balances ?? { USDT: '100000' },
+    seed: 42,
+    takerBuffer: '0.05',
+    fees: { makerBps: '1', takerBps: '10', feeCurrency: 'quote' },
+    latency: { submitMs: [0, 0], eventMs: [0, 0] },
+    insufficientDepthPolicy: 'partial_then_reject_rest',
+    reorderDelivery: opts.reorder,
+    startingBalances: opts.balances ?? { USDT: '100000' },
   };
   const adapter = new PaperExchangeAdapter(clock, outbox, notify, paperCfg, VEN);
-  const sizer = new PositionSizerService(clock, { baseNotional: '1000', mode: 'paper', filters: FILTERS, randomBytes });
+  const sizer = new PositionSizerService(clock, {
+    baseNotional: '1000',
+    mode: 'paper',
+    filters: FILTERS,
+    randomBytes,
+  });
   const engine = new RiskEngineService(
-    clock, { key: KEY, limits: LIMITS, limitsVersion: 'v1', mode: 'paper', filters: FILTERS, randomBytes },
-    feed(), new KillSwitchService(), new RateBucketsService(clock), new CrossingRegistryService(), { record: () => undefined },
+    clock,
+    { key: KEY, limits: LIMITS, limitsVersion: 'v1', mode: 'paper', filters: FILTERS, randomBytes },
+    feed(),
+    new KillSwitchService(),
+    new RateBucketsService(clock),
+    new CrossingRegistryService(),
+    { record: () => undefined },
   );
   const gateway = new SignalGatewayService(clock, new KillSwitchService(), sizer, engine);
   const modeControl: ModeControlPort = {
     resolveMode: () => ({ effective: 'paper', requested: 'paper', downgrades: [] }),
-    armLive: () => ({ ok: true }), disarm: () => undefined, assertCanTrade: () => undefined,
+    armLive: () => ({ ok: true }),
+    disarm: () => undefined,
+    assertCanTrade: () => undefined,
   };
-  const gate = new ExecutionGateService(clock, KEY, CTX, FILTERS, store, adapter, modeControl, nonces, orders, portfolio);
+  const gate = new ExecutionGateService(
+    clock,
+    KEY,
+    CTX,
+    FILTERS,
+    store,
+    adapter,
+    modeControl,
+    nonces,
+    orders,
+    portfolio,
+  );
   const sink = new SignalSinkService(gateway, portfolio, gate);
   return { adapter, gate, sink, consumer, orders, portfolio, store, outbox };
 }
 
 function enterLong(over: Partial<Signal> = {}): Signal {
   return {
-    strategyId: SID, venue: VEN, symbol: SYM, kind: 'ENTER_LONG', strength: 1, refPrice: price('100'),
-    basedOnSeq: 1n, eventTime: epochMs(T), ttlMs: 10_000, dedupeKey: 'sig-1', reason: 'test', ...over,
+    strategyId: SID,
+    venue: VEN,
+    symbol: SYM,
+    kind: 'ENTER_LONG',
+    strength: 1,
+    refPrice: price('100'),
+    basedOnSeq: 1n,
+    eventTime: epochMs(T),
+    ttlMs: 10_000,
+    dedupeKey: 'sig-1',
+    reason: 'test',
+    ...over,
   };
 }
 
@@ -127,14 +191,32 @@ describe('paper loop (end-to-end, deterministic)', () => {
   it('soak: sustained enter/exit cycles preserve money exactness, finite non-negative equity, and legal order states', async () => {
     const loop = buildLoop();
     const KNOWN_STATES = new Set([
-      'NEW', 'SUBMITTING', 'SUBMIT_UNKNOWN', 'ACKED', 'PARTIALLY_FILLED', 'FILLED',
-      'CANCEL_PENDING', 'CANCEL_UNKNOWN', 'CANCELED', 'REJECTED', 'EXPIRED', 'RECONCILE_REQUIRED',
+      'NEW',
+      'SUBMITTING',
+      'SUBMIT_UNKNOWN',
+      'ACKED',
+      'PARTIALLY_FILLED',
+      'FILLED',
+      'CANCEL_PENDING',
+      'CANCEL_UNKNOWN',
+      'CANCELED',
+      'REJECTED',
+      'EXPIRED',
+      'RECONCILE_REQUIRED',
     ]);
     for (let i = 0; i < 40; i++) {
       const p = 100 + (i % 7); // 100..106
       loop.adapter.ingestBook(SYM, [lvl(String(p - 1), '50')], [lvl(String(p), '50')]);
       const kind = i % 2 === 0 ? 'ENTER_LONG' : 'EXIT_LONG';
-      await loop.sink.recordSignal(enterLong({ kind, refPrice: price(String(p)), basedOnSeq: BigInt(i + 1), eventTime: epochMs(T + i), dedupeKey: `soak-${i}` }));
+      await loop.sink.recordSignal(
+        enterLong({
+          kind,
+          refPrice: price(String(p)),
+          basedOnSeq: BigInt(i + 1),
+          eventTime: epochMs(T + i),
+          dedupeKey: `soak-${i}`,
+        }),
+      );
     }
 
     const snap = loop.portfolio.snapshot();

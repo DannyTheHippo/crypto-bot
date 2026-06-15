@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import Decimal from 'decimal.js';
-import { classifyVenueOpenOrder, balanceWithinEpsilon, driftStrictlyGrowing } from '../../../src/domain/oms/reconcile';
+import {
+  classifyVenueOpenOrder,
+  balanceWithinEpsilon,
+  driftStrictlyGrowing,
+} from '../../../src/domain/oms/reconcile';
 import { encodeClientOrderId, intentId } from '../../../src/domain/types/ids';
 
 const OUR_COID = encodeClientOrderId(intentId('0190abcd-1234-7abc-89ab-0123456789ab'), 'paper');

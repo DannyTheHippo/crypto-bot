@@ -26,8 +26,11 @@ export class CrashRecoveryService {
       if (event === undefined) continue;
       const next = reduce(rec, event);
       const { applied } = await this.store.appendOrderEvent({
-        clientOrderId: rec.clientOrderId, dedupeKey: `recover:${event.type}`, event,
-        derivedState: next.state, cumQty: next.cumQty.toFixed(),
+        clientOrderId: rec.clientOrderId,
+        dedupeKey: `recover:${event.type}`,
+        event,
+        derivedState: next.state,
+        cumQty: next.cumQty.toFixed(),
       });
       if (!applied) continue;
       this.orders.commit(next);

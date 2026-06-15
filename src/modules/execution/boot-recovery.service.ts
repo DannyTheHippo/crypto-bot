@@ -52,6 +52,8 @@ export class BootRecoveryService {
     const open = await this.store.loadOpenOrders(mode);
     for (const order of open) this.orderBook.create(order);
     const degraded = await this.crashRecovery.recoverOnBoot();
-    this.log.log(`boot recovery: ${open.length} open order(s) seeded, ${degraded.length} degraded to *_UNKNOWN`);
+    this.log.log(
+      `boot recovery: ${open.length} open order(s) seeded, ${degraded.length} degraded to *_UNKNOWN`,
+    );
   }
 }

@@ -22,9 +22,15 @@ export type PartialRiskLimits = {
 
 // G2: every limit present, and every numeric/decimal strictly positive.
 // Returns the complete config (narrowed) or null when incomplete.
-export function validateLimits(limits: PartialRiskLimits | null | undefined): RiskLimitsConfig | null {
+export function validateLimits(
+  limits: PartialRiskLimits | null | undefined,
+): RiskLimitsConfig | null {
   if (!limits) return null;
-  const numericFields: ReadonlyArray<keyof RiskLimitsConfig> = ['maxBandBps', 'maxDriftBps', 'staleMaxAgeMs'];
+  const numericFields: ReadonlyArray<keyof RiskLimitsConfig> = [
+    'maxBandBps',
+    'maxDriftBps',
+    'staleMaxAgeMs',
+  ];
   const decimalFields: ReadonlyArray<keyof RiskLimitsConfig> = [
     'maxOrderNotional',
     'maxPositionPerSymbol',

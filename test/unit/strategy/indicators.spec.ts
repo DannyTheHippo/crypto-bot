@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { smaFromNumbers, emaFromNumbers, emaFromPrices } from '../../../src/domain/strategy/indicators';
+import {
+  smaFromNumbers,
+  emaFromNumbers,
+  emaFromPrices,
+} from '../../../src/domain/strategy/indicators';
 import { price } from '../../../src/domain/types/money';
 
 describe('smaFromNumbers', () => {

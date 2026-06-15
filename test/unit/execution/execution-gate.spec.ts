@@ -8,7 +8,12 @@ import { PortfolioStateService } from '../../../src/modules/execution/portfolio-
 import { FeeLedgerService } from '../../../src/modules/execution/fee-ledger.service';
 import { InMemoryExecutionStore } from '../../../src/modules/execution/in-memory-store';
 import { mintApproval } from '../../../src/domain/risk/proof';
-import { AdapterError, type ExchangePort, type ExchangeAck, type PlaceOrderRequest } from '../../../src/ports/exchange';
+import {
+  AdapterError,
+  type ExchangePort,
+  type ExchangeAck,
+  type PlaceOrderRequest,
+} from '../../../src/ports/exchange';
 import { ModeViolationError, type ModeControlPort } from '../../../src/ports/mode-control';
 import type { ExecRunContext, ExecFilters } from '../../../src/ports/execution';
 import type { SymbolFilters } from '../../../src/domain/risk/evaluate';
@@ -27,25 +32,48 @@ const flush = () => new Promise((r) => setImmediate(r));
 
 function approve(over = {}, key: Buffer = KEY, approvedAtMs = T): RiskApprovedIntent {
   return mintApproval(makeIntent(over), key, {
-    nonce: 'nonce-' + JSON.stringify(over), approvedAtMs: epochMs(approvedAtMs), limitsVersion: 'v1', snapshotSeq: 1n,
+    nonce: 'nonce-' + JSON.stringify(over),
+    approvedAtMs: epochMs(approvedAtMs),
+    limitsVersion: 'v1',
+    snapshotSeq: 1n,
   });
 }
 
 function fakeExchange(place: (req: PlaceOrderRequest) => Promise<ExchangeAck>): {
-  port: ExchangePort; placeCalls: PlaceOrderRequest[]; cancelCalls: [ClientOrderId, string][];
+  port: ExchangePort;
+  placeCalls: PlaceOrderRequest[];
+  cancelCalls: [ClientOrderId, string][];
 } {
   const placeCalls: PlaceOrderRequest[] = [];
   const cancelCalls: [ClientOrderId, string][] = [];
   const port: ExchangePort = {
     venue: venueId('binance'),
-    capabilities: { clientOrderId: true, fetchOrderByClientId: true, wsUserStream: true, stp: false, sandbox: true },
-    placeOrder: (req) => { placeCalls.push(req); return place(req); },
-    cancelOrder: (coid, sym) => { cancelCalls.push([coid, String(sym)]); return Promise.resolve({ clientOrderId: coid, venueOrderId: 'v1' }); },
+    capabilities: {
+      clientOrderId: true,
+      fetchOrderByClientId: true,
+      wsUserStream: true,
+      stp: false,
+      sandbox: true,
+    },
+    placeOrder: (req) => {
+      placeCalls.push(req);
+      return place(req);
+    },
+    cancelOrder: (coid, sym) => {
+      cancelCalls.push([coid, String(sym)]);
+      return Promise.resolve({ clientOrderId: coid, venueOrderId: 'v1' });
+    },
     fetchOrder: () => Promise.reject(new Error('unused')),
     fetchOpenOrders: () => Promise.resolve([]),
     fetchBalances: () => Promise.resolve(new Map()),
     fetchMyTrades: () => Promise.resolve([]),
-    validateCredentials: () => Promise.resolve({ valid: true, canTrade: true, withdrawalsEnabled: false, keyFingerprint: 'fp' }),
+    validateCredentials: () =>
+      Promise.resolve({
+        valid: true,
+        canTrade: true,
+        withdrawalsEnabled: false,
+        keyFingerprint: 'fp',
+      }),
   };
   return { port, placeCalls, cancelCalls };
 }
@@ -56,7 +84,9 @@ function fakeModeControl(over: Partial<ModeControlPort> = {}): ModeControlPort {
     resolveMode: () => ({ effective: 'paper', requested: 'paper', downgrades: [] }),
     armLive: () => ({ ok: true }),
     disarm: () => undefined,
-    assertCanTrade: (m) => { if (m === 'live') throw new ModeViolationError('NOT_LIVE_AUTHORITY', 'live not authorised'); },
+    assertCanTrade: (m) => {
+      if (m === 'live') throw new ModeViolationError('NOT_LIVE_AUTHORITY', 'live not authorised');
+    },
     ...over,
   };
 }
@@ -74,12 +104,34 @@ function build(
   const store = new InMemoryExecutionStore();
   const nonces = new NonceLedgerService();
   const orders = new OrderBookService();
-  const portfolio = new PortfolioStateService({ quoteAsset: 'USDT', startingCash: '100000' }, new FeeLedgerService());
-  const gate = new ExecutionGateService(fixedClock(clockT), KEY, CTX, FILTERS, store, exchange, modeControl, nonces, orders, portfolio, ordersCounter, ordersRejectedCounter, submittedCounter, submittedQtyCounter, submitLatency);
+  const portfolio = new PortfolioStateService(
+    { quoteAsset: 'USDT', startingCash: '100000' },
+    new FeeLedgerService(),
+  );
+  const gate = new ExecutionGateService(
+    fixedClock(clockT),
+    KEY,
+    CTX,
+    FILTERS,
+    store,
+    exchange,
+    modeControl,
+    nonces,
+    orders,
+    portfolio,
+    ordersCounter,
+    ordersRejectedCounter,
+    submittedCounter,
+    submittedQtyCounter,
+    submitLatency,
+  );
   return { gate, store, nonces, orders, portfolio };
 }
 
-const ackOf = (req: PlaceOrderRequest): ExchangeAck => ({ clientOrderId: req.clientOrderId, venueOrderId: 'v-' + req.clientOrderId });
+const ackOf = (req: PlaceOrderRequest): ExchangeAck => ({
+  clientOrderId: req.clientOrderId,
+  venueOrderId: 'v-' + req.clientOrderId,
+});
 
 describe('ExecutionGateService.submit', () => {
   it('happy path: write-ahead NEW→SUBMITTING, places, folds ACK, journals each step', async () => {
@@ -97,7 +149,9 @@ describe('ExecutionGateService.submit', () => {
 
   it('persists SUBMITTING BEFORE placeOrder resolves (write-ahead invariant)', async () => {
     let resolvePlace!: (a: ExchangeAck) => void;
-    const pending = new Promise<ExchangeAck>((r) => { resolvePlace = r; });
+    const pending = new Promise<ExchangeAck>((r) => {
+      resolvePlace = r;
+    });
     const { port } = fakeExchange(() => pending);
     const { gate, store } = build(port);
     const approved = approve();
@@ -128,7 +182,10 @@ describe('ExecutionGateService.submit', () => {
     const { port, placeCalls } = fakeExchange((req) => Promise.resolve(ackOf(req)));
     const { gate } = build(port);
     const approved = approve();
-    const tampered = { ...approved, intent: { ...approved.intent, refSeq: 999n } } as RiskApprovedIntent;
+    const tampered = {
+      ...approved,
+      intent: { ...approved.intent, refSeq: 999n },
+    } as RiskApprovedIntent;
     const res = await gate.submit(tampered);
     expect(res).toMatchObject({ outcome: 'REJECTED', reason: 'BAD_HASH' });
     expect(placeCalls).toHaveLength(0);
@@ -146,17 +203,25 @@ describe('ExecutionGateService.submit', () => {
   });
 
   it('rejects to terminal on a TERMINAL_REJECT adapter error and clears in-flight', async () => {
-    const { port } = fakeExchange(() => Promise.reject(new AdapterError('TERMINAL_REJECT', 'INSUFFICIENT_FUNDS', 'no funds')));
+    const { port } = fakeExchange(() =>
+      Promise.reject(new AdapterError('TERMINAL_REJECT', 'INSUFFICIENT_FUNDS', 'no funds')),
+    );
     const { gate, orders, portfolio } = build(port);
     const approved = approve();
     const res = await gate.submit(approved);
-    expect(res).toMatchObject({ outcome: 'REJECTED', state: 'REJECTED', reason: 'INSUFFICIENT_FUNDS' });
+    expect(res).toMatchObject({
+      outcome: 'REJECTED',
+      state: 'REJECTED',
+      reason: 'INSUFFICIENT_FUNDS',
+    });
     expect(orders.get(approved.intent.clientOrderId)?.state).toBe('REJECTED');
     expect(portfolio.snapshot().inFlightIntents).toHaveLength(0);
   });
 
   it('routes an ambiguous adapter error to SUBMIT_UNKNOWN (exposure reserved)', async () => {
-    const { port } = fakeExchange(() => Promise.reject(new AdapterError('OUTCOME_AMBIGUOUS', 'TIMEOUT', 'maybe sent')));
+    const { port } = fakeExchange(() =>
+      Promise.reject(new AdapterError('OUTCOME_AMBIGUOUS', 'TIMEOUT', 'maybe sent')),
+    );
     const { gate, portfolio } = build(port);
     const res = await gate.submit(approve());
     expect(res).toMatchObject({ outcome: 'UNKNOWN', state: 'SUBMIT_UNKNOWN', reason: 'TIMEOUT' });
@@ -166,7 +231,11 @@ describe('ExecutionGateService.submit', () => {
   it('treats an unmapped (non-AdapterError) throw as ambiguous, never terminal', async () => {
     const { port } = fakeExchange(() => Promise.reject(new Error('socket hangup')));
     const { gate } = build(port);
-    expect(await gate.submit(approve())).toMatchObject({ outcome: 'UNKNOWN', state: 'SUBMIT_UNKNOWN', reason: 'UNKNOWN' });
+    expect(await gate.submit(approve())).toMatchObject({
+      outcome: 'UNKNOWN',
+      state: 'SUBMIT_UNKNOWN',
+      reason: 'UNKNOWN',
+    });
   });
 
   it('skips the ACK fold when a fill implicitly acked the order during placeOrder', async () => {
@@ -249,8 +318,12 @@ describe('ExecutionGateService.submit', () => {
     // A bad-key approval is rejected before any persistence or network call (oms stage).
     const res = await gate.submit(approve({}, Buffer.alloc(32, 9)));
     expect(res.outcome).toBe('REJECTED');
-    expect((ordersCounter.inc as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual([{ outcome: 'REJECTED' }]);
-    expect((ordersRejectedCounter.inc as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual([{ stage: 'oms', code: res.reason }]);
+    expect((ordersCounter.inc as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual([
+      { outcome: 'REJECTED' },
+    ]);
+    expect((ordersRejectedCounter.inc as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual([
+      { stage: 'oms', code: res.reason },
+    ]);
   });
 
   it('records fill-rate (submitted) + submit latency on a SUBMITTED outcome', async () => {
@@ -258,11 +331,25 @@ describe('ExecutionGateService.submit', () => {
     const submittedQty = { inc: vi.fn() } as unknown as Counter<string>;
     const latency = { observe: vi.fn() } as unknown as Histogram<string>;
     const { port } = fakeExchange((req) => Promise.resolve(ackOf(req)));
-    const { gate } = build(port, T, fakeModeControl(), undefined, undefined, submitted, submittedQty, latency);
+    const { gate } = build(
+      port,
+      T,
+      fakeModeControl(),
+      undefined,
+      undefined,
+      submitted,
+      submittedQty,
+      latency,
+    );
     const res = await gate.submit(approve({})); // LIMIT/GTC, qty 1, venue binance
     expect(res.outcome).toBe('SUBMITTED');
-    expect((submitted.inc as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual([{ type: 'LIMIT', tif: 'GTC' }]);
-    expect((submittedQty.inc as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual([{ type: 'LIMIT', tif: 'GTC' }, 1]);
+    expect((submitted.inc as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual([
+      { type: 'LIMIT', tif: 'GTC' },
+    ]);
+    expect((submittedQty.inc as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual([
+      { type: 'LIMIT', tif: 'GTC' },
+      1,
+    ]);
     const obs = (latency.observe as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(obs![0]).toEqual({ venue: 'binance', type: 'LIMIT' });
     expect(typeof obs![1]).toBe('number');
@@ -348,7 +435,9 @@ describe('ExecutionGateService cancel / drain / flatten', () => {
 
   it('SUBMITTING + cancel sets cancelWanted (deferred), no venue cancel yet', async () => {
     let resolvePlace!: (a: ExchangeAck) => void;
-    const pending = new Promise<ExchangeAck>((r) => { resolvePlace = r; });
+    const pending = new Promise<ExchangeAck>((r) => {
+      resolvePlace = r;
+    });
     const { port, cancelCalls } = fakeExchange(() => pending);
     const { gate, orders } = build(port);
     const approved = approve();

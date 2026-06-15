@@ -28,7 +28,10 @@ export interface PortfolioFillResult {
   readonly feeLedger: { readonly asset: string; readonly amount: Decimal } | null; // third-asset only
 }
 
-export function applyFillToPortfolio(pos: PositionState, input: FillMoneyInput): PortfolioFillResult {
+export function applyFillToPortfolio(
+  pos: PositionState,
+  input: FillMoneyInput,
+): PortfolioFillResult {
   const { side, fillQty, fillPrice, fee, baseAsset, quoteAsset } = input;
   const notional = fillPrice.mul(fillQty);
 

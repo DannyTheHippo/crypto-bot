@@ -90,7 +90,7 @@ chosen while untried, plausible edge hypotheses remain in the backlog.
 - The model is a HYBRID: a commit/tag scaffold (paper/nightly branches, paper-YYYY-MM-DD tags,
   state.json last_good) records WHAT was promoted; the working tree is WHAT builds. There is
   exactly one remote (origin) and it holds ONLY main — the integration branches (paper,
-  nightly/*) and all tags are intentionally LOCAL and never pushed; promotion is local-file-driven
+  nightly/\*) and all tags are intentionally LOCAL and never pushed; promotion is local-file-driven
   via PROMOTION.md, not push-driven.
 
 ## SCHEDULING NOTE (read once)
@@ -296,7 +296,7 @@ F. VALIDATE, MERGE, DEPLOY, VERIFY:
    deployed == tagged), rebuilding the app container and PRESERVING all data volumes:
    `docker compose build app && docker compose up -d app`. The Dockerfile builds from `COPY . .` +
    `pnpm build`, so the on-disk working tree is the build source (filtered by .dockerignore: dist,
-   node_modules, .git, .env, test are excluded). Migrations auto-run on boot
+   node*modules, .git, .env, test are excluded). Migrations auto-run on boot
    (`PersistenceModule.onModuleInit`) and are idempotent (drizzle skips already-applied
    migrations), so a fresh DB self-initializes and the existing-DB rebuild touches no data. On the
    next boot `BootRecoveryService.recoverOnBoot` RESTORES the portfolio snapshot (cash, equity,
@@ -315,11 +315,11 @@ F. VALIDATE, MERGE, DEPLOY, VERIFY:
    `crypto-bot_postgres_data` named volume (the positions/orders `BootRecoveryService` reads and the
    evidence step A evaluates), the `crypto-bot_grafana_data` named volume (Grafana state), AND the
    anonymous volume Prometheus uses for its TSDB (the `prom/prometheus` image declares
-   `VOLUME /prometheus` and compose maps no named volume there). The `crypto-bot_` prefix is
-   Compose-v2-specific (`docker compose`); legacy v1 stripped the hyphen to `cryptobot_`. After the
-   app rebuild, confirm the postgres volume and its row counts survived. (A human-directed
-   clean-slate reset is the only exception — it is not routine nightly operation. The `down -v` used
-   in this session's `/loop` benchmark runs was that deliberate exception, NOT the nightly path.)
+   `VOLUME /prometheus` and compose maps no named volume there). The `crypto-bot*` prefix is
+Compose-v2-specific (`docker compose`); legacy v1 stripped the hyphen to `cryptobot\_`. After the
+app rebuild, confirm the postgres volume and its row counts survived. (A human-directed
+clean-slate reset is the only exception — it is not routine nightly operation. The `down -v`used
+in this session's`/loop` benchmark runs was that deliberate exception, NOT the nightly path.)
 4. POST-DEPLOY HEALTH VERIFICATION (soak ~15-30 min): process stays up, testnet connectivity
    established, market data flowing, one round-trip paper order placed, acknowledged, and
    reconciled, no error-rate spike vs baseline. Show evidence.

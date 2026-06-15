@@ -5,16 +5,25 @@ import Decimal from 'decimal.js';
 import { CLOCK, type ClockPort } from '../../ports/clock';
 import { KILL_SWITCH, type KillSwitchPort } from '../../ports/risk';
 import {
-  EXCHANGE_PORT, type ExchangePort, type ExchangeOrderState, type VenueFill,
+  EXCHANGE_PORT,
+  type ExchangePort,
+  type ExchangeOrderState,
+  type VenueFill,
 } from '../../ports/exchange';
 import {
-  EXECUTION_STORE, RECON_CONFIG,
-  type ExecutionStorePort, type ReconConfig,
+  EXECUTION_STORE,
+  RECON_CONFIG,
+  type ExecutionStorePort,
+  type ReconConfig,
 } from '../../ports/execution';
 import { reduce, type OrderEvent } from '../../domain/oms/reducer';
 import { isOurClientOrderId } from '../../domain/types/ids';
 import { price, qty, feeAmount } from '../../domain/types/money';
-import { classifyVenueOpenOrder, balanceWithinEpsilon, driftStrictlyGrowing } from '../../domain/oms/reconcile';
+import {
+  classifyVenueOpenOrder,
+  balanceWithinEpsilon,
+  driftStrictlyGrowing,
+} from '../../domain/oms/reconcile';
 import type { ClientOrderId, SymbolId, EpochMs } from '../../domain/types/ids';
 import type { FillRecord } from '../../domain/types/exec-report';
 import { OrderBookService } from './order-book.service';
@@ -68,9 +77,15 @@ export class ReconciliationService {
     private readonly orders: OrderBookService,
     private readonly portfolio: PortfolioStateService,
     private readonly ingestor: FillIngestorService,
-    @Optional() @InjectMetric('reconciliation_mismatch_total') private readonly mismatchCounter?: Counter<string>,
-    @Optional() @InjectMetric('reconciliation_runs_total') private readonly runsCounter?: Counter<string>,
-    @Optional() @InjectMetric('reconciliation_last_success_timestamp_seconds') private readonly lastSuccessGauge?: Gauge<string>,
+    @Optional()
+    @InjectMetric('reconciliation_mismatch_total')
+    private readonly mismatchCounter?: Counter<string>,
+    @Optional()
+    @InjectMetric('reconciliation_runs_total')
+    private readonly runsCounter?: Counter<string>,
+    @Optional()
+    @InjectMetric('reconciliation_last_success_timestamp_seconds')
+    private readonly lastSuccessGauge?: Gauge<string>,
   ) {}
 
   async reconcile(): Promise<{ mismatches: number; halted: boolean }> {
@@ -84,8 +99,11 @@ export class ReconciliationService {
     if (halted) this.killSwitch.engage(`RECONCILE_MISMATCH:${acc.halts.join(',')}`, false); // never auto-flatten
 
     await this.store.saveReconciliation({
-      ts: this.clock.now(), venue: this.exchange.venue,
-      mismatches: acc.mismatches, halted, detail: acc.halts.join(',') || 'clean',
+      ts: this.clock.now(),
+      venue: this.exchange.venue,
+      mismatches: acc.mismatches,
+      halted,
+      detail: acc.halts.join(',') || 'clean',
     });
     this.mismatchCounter?.inc(acc.mismatches); // 0 on a clean pass; the alert fires on an increase
     const result = halted ? 'halt' : acc.mismatches > 0 ? 'mismatch' : 'clean';
@@ -118,7 +136,11 @@ export class ReconciliationService {
     }
   }
 
-  private async adoptTerminal(coid: ClientOrderId, symbol: SymbolId, acc: PassAccumulator): Promise<void> {
+  private async adoptTerminal(
+    coid: ClientOrderId,
+    symbol: SymbolId,
+    acc: PassAccumulator,
+  ): Promise<void> {
     let venue: ExchangeOrderState;
     try {
       venue = await this.exchange.fetchOrder(coid, symbol);
@@ -141,9 +163,12 @@ export class ReconciliationService {
   // reducer would reject the illegal fold anyway). 'open'/'closed' are likewise non-adopt here.
   private terminalEventFor(status: ExchangeOrderState['status']): OrderEvent | undefined {
     switch (status) {
-      case 'canceled': return { type: 'VENUE_CANCELED' };
-      case 'expired': return { type: 'VENUE_EXPIRED' };
-      default: return undefined;
+      case 'canceled':
+        return { type: 'VENUE_CANCELED' };
+      case 'expired':
+        return { type: 'VENUE_EXPIRED' };
+      default:
+        return undefined;
     }
   }
 
@@ -162,7 +187,8 @@ export class ReconciliationService {
       }
       for (const t of trades) {
         await this.reconcileTrade(t, acc);
-        if (t.venueTimestamp > (this.checkpoints.get(key) ?? 0)) this.checkpoints.set(key, t.venueTimestamp);
+        if (t.venueTimestamp > (this.checkpoints.get(key) ?? 0))
+          this.checkpoints.set(key, t.venueTimestamp);
       }
     }
   }
@@ -175,7 +201,11 @@ export class ReconciliationService {
       acc.halts.push('FILL_FOR_UNKNOWN_ORDER'); // our prefix, no local order ⇒ corruption (§6.4)
       return;
     }
-    const { applied } = await this.ingestor.ingest(rec, this.toFillRecord(t), `reconcile:${t.venueTradeId}`);
+    const { applied } = await this.ingestor.ingest(
+      rec,
+      this.toFillRecord(t),
+      `reconcile:${t.venueTradeId}`,
+    );
     if (applied) acc.mismatches += 1; // a fill we had missed via the stream — backfilled + WARN
   }
 
@@ -223,8 +253,11 @@ export class ReconciliationService {
     // fold is only reached for a local open order, which is always present in the book.
     const next = reduce(this.orders.get(coid)!, event);
     const { applied } = await this.store.appendOrderEvent({
-      clientOrderId: coid, dedupeKey: `reconcile:${event.type}`, event,
-      derivedState: next.state, cumQty: next.cumQty.toFixed(),
+      clientOrderId: coid,
+      dedupeKey: `reconcile:${event.type}`,
+      event,
+      derivedState: next.state,
+      cumQty: next.cumQty.toFixed(),
     });
     if (!applied) return;
     this.orders.commit(next);
@@ -234,10 +267,16 @@ export class ReconciliationService {
 
   private toFillRecord(t: VenueFill): FillRecord {
     return {
-      venue: t.venue, symbol: t.symbol, venueTradeId: t.venueTradeId, clientOrderId: t.clientOrderId,
-      price: price(t.price), qty: qty(t.qty),
+      venue: t.venue,
+      symbol: t.symbol,
+      venueTradeId: t.venueTradeId,
+      clientOrderId: t.clientOrderId,
+      price: price(t.price),
+      qty: qty(t.qty),
       fee: t.fee ? { ccy: t.fee.ccy, amount: feeAmount(t.fee.amount) } : null,
-      liquidity: t.liquidity, venueTimestamp: t.venueTimestamp, source: 'rest_reconcile',
+      liquidity: t.liquidity,
+      venueTimestamp: t.venueTimestamp,
+      source: 'rest_reconcile',
     };
   }
 }

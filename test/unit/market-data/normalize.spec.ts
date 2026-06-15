@@ -12,7 +12,12 @@ import type {
 const V = venueId('binance');
 const ingest = epochMs(2000);
 
-function raw(type: RawVenueEvent['type'], symbol: string, body: unknown, ts?: number): RawVenueEvent {
+function raw(
+  type: RawVenueEvent['type'],
+  symbol: string,
+  body: unknown,
+  ts?: number,
+): RawVenueEvent {
   return {
     type,
     venue: V,
@@ -25,7 +30,12 @@ function raw(type: RawVenueEvent['type'], symbol: string, body: unknown, ts?: nu
 describe('normalize ticker', () => {
   it('parses string numerics to exact Decimals and uses exchange eventTime', () => {
     const ev = normalizeRawEvent(
-      raw('ticker', 'NORM-TICK', { timestamp: 1234, bid: '100.5', ask: '100.60', last: '100.55' }, 1234),
+      raw(
+        'ticker',
+        'NORM-TICK',
+        { timestamp: 1234, bid: '100.5', ask: '100.60', last: '100.55' },
+        1234,
+      ),
       ingest,
     ) as TickerEvent;
     expect(ev.kind).toBe('TICKER');
@@ -46,8 +56,14 @@ describe('normalize ticker', () => {
   });
 
   it('assigns a strictly increasing seq per (venue, symbol, channel)', () => {
-    const a = normalizeRawEvent(raw('ticker', 'NORM-SEQ', { bid: '1', ask: '2', last: '1.5', timestamp: 1 }, 1), ingest);
-    const b = normalizeRawEvent(raw('ticker', 'NORM-SEQ', { bid: '1', ask: '2', last: '1.5', timestamp: 2 }, 2), ingest);
+    const a = normalizeRawEvent(
+      raw('ticker', 'NORM-SEQ', { bid: '1', ask: '2', last: '1.5', timestamp: 1 }, 1),
+      ingest,
+    );
+    const b = normalizeRawEvent(
+      raw('ticker', 'NORM-SEQ', { bid: '1', ask: '2', last: '1.5', timestamp: 2 }, 2),
+      ingest,
+    );
     expect(b.seq).toBe(a.seq + 1n);
   });
 });
@@ -55,7 +71,12 @@ describe('normalize ticker', () => {
 describe('normalize ticker fallbacks', () => {
   it('falls back to bestBid/bestAsk/close when bid/ask/last are absent', () => {
     const ev = normalizeRawEvent(
-      raw('ticker', 'NORM-TICK-FB', { timestamp: 9, bestBid: '10', bestAsk: '11', close: '10.5' }, 9),
+      raw(
+        'ticker',
+        'NORM-TICK-FB',
+        { timestamp: 9, bestBid: '10', bestAsk: '11', close: '10.5' },
+        9,
+      ),
       ingest,
     ) as TickerEvent;
     expect(ev.bid.toFixed()).toBe('10');
@@ -67,7 +88,12 @@ describe('normalize ticker fallbacks', () => {
 describe('normalize trade', () => {
   it('maps side, exact qty/price and tradeId', () => {
     const ev = normalizeRawEvent(
-      raw('trade', 'NORM-TRADE', { timestamp: 10, price: '100', amount: '2.5', side: 'buy', id: 't1' }, 10),
+      raw(
+        'trade',
+        'NORM-TRADE',
+        { timestamp: 10, price: '100', amount: '2.5', side: 'buy', id: 't1' },
+        10,
+      ),
       ingest,
     ) as TradeEvent;
     expect(ev.kind).toBe('TRADE');
@@ -79,7 +105,12 @@ describe('normalize trade', () => {
 
   it('infers BUY from takerSide and qty from size when fields differ', () => {
     const ev = normalizeRawEvent(
-      raw('trade', 'NORM-TRADE-TS', { timestamp: 11, price: '100', size: '3', takerSide: 'buy', tradeId: 'tt' }, 11),
+      raw(
+        'trade',
+        'NORM-TRADE-TS',
+        { timestamp: 11, price: '100', size: '3', takerSide: 'buy', tradeId: 'tt' },
+        11,
+      ),
       ingest,
     ) as TradeEvent;
     expect(ev.side).toBe('BUY');
@@ -89,7 +120,12 @@ describe('normalize trade', () => {
 
   it('defaults to SELL when side is neither buy nor takerSide buy', () => {
     const ev = normalizeRawEvent(
-      raw('trade', 'NORM-TRADE-SELL', { timestamp: 12, price: '100', amount: '1', side: 'sell', id: 's' }, 12),
+      raw(
+        'trade',
+        'NORM-TRADE-SELL',
+        { timestamp: 12, price: '100', amount: '1', side: 'sell', id: 's' },
+        12,
+      ),
       ingest,
     ) as TradeEvent;
     expect(ev.side).toBe('SELL');
@@ -117,15 +153,20 @@ describe('normalize candle (OHLCV array)', () => {
 describe('normalize candle (parsed object form)', () => {
   it('parses an object-shaped candle with openTime/closed', () => {
     const ev = normalizeRawEvent(
-      raw('candle', 'NORM-CANDLE-OBJ', {
-        openTime: 300000,
-        open: '50',
-        high: '55',
-        low: '49',
-        close: '52.5',
-        volume: '7',
-        closed: false,
-      }, 300000),
+      raw(
+        'candle',
+        'NORM-CANDLE-OBJ',
+        {
+          openTime: 300000,
+          open: '50',
+          high: '55',
+          low: '49',
+          close: '52.5',
+          volume: '7',
+          closed: false,
+        },
+        300000,
+      ),
       ingest,
       '5m',
     ) as CandleEvent;
@@ -141,11 +182,16 @@ describe('normalize candle (parsed object form)', () => {
 describe('normalize order book', () => {
   it('prefers the exact .info string over the float cache value', () => {
     const ev = normalizeRawEvent(
-      raw('book', 'NORM-BOOK1', {
-        timestamp: 5,
-        bids: [[100.5, 2, { price: '100.50000000', size: '2.00000000' }]],
-        asks: [[100.6, 3, { price: '100.60000000', size: '3.00000000' }]],
-      }, 5),
+      raw(
+        'book',
+        'NORM-BOOK1',
+        {
+          timestamp: 5,
+          bids: [[100.5, 2, { price: '100.50000000', size: '2.00000000' }]],
+          asks: [[100.6, 3, { price: '100.60000000', size: '3.00000000' }]],
+        },
+        5,
+      ),
       ingest,
     ) as OrderBookSnapshotEvent;
     expect(ev.bids[0]?.price.toFixed()).toBe('100.5');
@@ -165,11 +211,16 @@ describe('normalize order book', () => {
 
   it('skips a malformed level but keeps the valid side (book is reference-grade)', () => {
     const ev = normalizeRawEvent(
-      raw('book', 'NORM-BOOK3', {
-        timestamp: 7,
-        bids: [['not-a-number', '1'], 'garbage'], // first throws in Decimal, second is not an array
-        asks: [['100', '2']],
-      }, 7),
+      raw(
+        'book',
+        'NORM-BOOK3',
+        {
+          timestamp: 7,
+          bids: [['not-a-number', '1'], 'garbage'], // first throws in Decimal, second is not an array
+          asks: [['100', '2']],
+        },
+        7,
+      ),
       ingest,
     ) as OrderBookSnapshotEvent;
     expect(ev.bids).toHaveLength(0); // both bid entries dropped, never throws

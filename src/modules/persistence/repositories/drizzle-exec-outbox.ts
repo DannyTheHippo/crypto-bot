@@ -1,5 +1,10 @@
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import type { ExecOutboxPort, OutboxAppend, OutboxEntry, ExecRunContext } from '../../../ports/execution';
+import type {
+  ExecOutboxPort,
+  OutboxAppend,
+  OutboxEntry,
+  ExecRunContext,
+} from '../../../ports/execution';
 import type * as schema from '../schema';
 import { OutboxRepository } from './outbox.repository';
 

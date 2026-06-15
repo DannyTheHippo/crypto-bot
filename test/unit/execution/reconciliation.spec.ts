@@ -15,7 +15,12 @@ import { encodeClientOrderId, intentId, epochMs } from '../../../src/domain/type
 import { price } from '../../../src/domain/types/money';
 import { makeIntent, makeFill, fixedFeed, killSwitchStub, SYM, V, T } from './helpers';
 
-const CFG: ReconConfig = { epsAbs: '0.00000001', epsRel: '0.0001', overlapMs: 300_000, driftPasses: 3 };
+const CFG: ReconConfig = {
+  epsAbs: '0.00000001',
+  epsRel: '0.0001',
+  overlapMs: 300_000,
+  driftPasses: 3,
+};
 const OTHER_COID = encodeClientOrderId(intentId('0190ffff-1234-7abc-89ab-0123456789ab'), 'paper');
 
 interface ExchangeScript {
@@ -37,53 +42,128 @@ function build(
   const clock = { now: () => epochMs(nowMs) };
   const store = new InMemoryExecutionStore();
   const orders = new OrderBookService();
-  const portfolio = new PortfolioStateService({ quoteAsset: 'USDT', startingCash: '100000' }, new FeeLedgerService());
+  const portfolio = new PortfolioStateService(
+    { quoteAsset: 'USDT', startingCash: '100000' },
+    new FeeLedgerService(),
+  );
   const sampler = new EquitySamplerService(portfolio, fixedFeed('100'), clock, store);
   const { ks, engages } = killSwitchStub();
   const ingestor = new FillIngestorService(store, ks, orders, portfolio, sampler);
 
   const exchange: ExchangePort = {
     venue: V,
-    capabilities: { clientOrderId: true, fetchOrderByClientId: true, wsUserStream: true, stp: false, sandbox: true },
+    capabilities: {
+      clientOrderId: true,
+      fetchOrderByClientId: true,
+      wsUserStream: true,
+      stp: false,
+      sandbox: true,
+    },
     placeOrder: () => Promise.reject(new Error('unused')),
     cancelOrder: () => Promise.reject(new Error('unused')),
-    fetchOrder: () => Promise.resolve((script.fetchOrder ?? (() => { throw new Error('no fetchOrder'); }))()),
+    fetchOrder: () =>
+      Promise.resolve(
+        (
+          script.fetchOrder ??
+          (() => {
+            throw new Error('no fetchOrder');
+          })
+        )(),
+      ),
     fetchOpenOrders: () => Promise.resolve(script.openOrders ?? []),
-    fetchBalances: () => (script.balancesThrow
-      ? Promise.reject(new Error('balances down'))
-      : Promise.resolve(script.balances ? script.balances() : new Map([['USDT', { free: '100000', locked: '0' }]]))),
-    fetchMyTrades: () => (script.tradesThrow ? Promise.reject(new Error('trades down')) : Promise.resolve(script.trades ?? [])),
+    fetchBalances: () =>
+      script.balancesThrow
+        ? Promise.reject(new Error('balances down'))
+        : Promise.resolve(
+            script.balances
+              ? script.balances()
+              : new Map([['USDT', { free: '100000', locked: '0' }]]),
+          ),
+    fetchMyTrades: () =>
+      script.tradesThrow
+        ? Promise.reject(new Error('trades down'))
+        : Promise.resolve(script.trades ?? []),
     validateCredentials: () => Promise.reject(new Error('unused')),
   };
 
-  const recon = new ReconciliationService(clock, exchange, store, ks, CFG, orders, portfolio, ingestor, mismatchCounter, runsCounter, lastSuccessGauge);
-  return { store, orders, portfolio, recon, engages, setNow: (t: number) => { nowMs = t; } };
+  const recon = new ReconciliationService(
+    clock,
+    exchange,
+    store,
+    ks,
+    CFG,
+    orders,
+    portfolio,
+    ingestor,
+    mismatchCounter,
+    runsCounter,
+    lastSuccessGauge,
+  );
+  return {
+    store,
+    orders,
+    portfolio,
+    recon,
+    engages,
+    setNow: (t: number) => {
+      nowMs = t;
+    },
+  };
 }
 
 type Ctx = ReturnType<typeof build>;
 
-function seedOpenOrder(ctx: Ctx, coid = makeIntent().clientOrderId, over: Partial<ReturnType<typeof makeIntent>> = {}) {
+function seedOpenOrder(
+  ctx: Ctx,
+  coid = makeIntent().clientOrderId,
+  over: Partial<ReturnType<typeof makeIntent>> = {},
+) {
   const intent = makeIntent({ clientOrderId: coid, ...over });
   ctx.orders.create(initialOrder(coid, intent.qty, '0.001'));
   ctx.orders.apply(coid, { type: 'SUBMIT_SENT' });
   ctx.orders.apply(coid, { type: 'ACK', venueOrderId: 'v1' });
   ctx.portfolio.addInFlight(intent);
-  ctx.portfolio.openOrder(intent.strategyId, { clientOrderId: coid, symbol: SYM, side: 'BUY', qty: intent.qty, limitPrice: price('100') });
+  ctx.portfolio.openOrder(intent.strategyId, {
+    clientOrderId: coid,
+    symbol: SYM,
+    side: 'BUY',
+    qty: intent.qty,
+    limitPrice: price('100'),
+  });
   return coid;
 }
 
-const venueOrder = (coid: string, status: ExchangeOrderState['status']): ExchangeOrderState =>
-  ({ clientOrderId: coid as ExchangeOrderState['clientOrderId'], venueOrderId: 'v1', symbol: SYM, status, cumQty: '0', qty: '1' });
+const venueOrder = (coid: string, status: ExchangeOrderState['status']): ExchangeOrderState => ({
+  clientOrderId: coid as ExchangeOrderState['clientOrderId'],
+  venueOrderId: 'v1',
+  symbol: SYM,
+  status,
+  cumQty: '0',
+  qty: '1',
+});
 
 const trade = (coid: string, tradeId: string): VenueFill => ({
-  venue: V, symbol: SYM, venueTradeId: tradeId, clientOrderId: coid as VenueFill['clientOrderId'],
-  price: '100', qty: '1', fee: null, liquidity: 'taker', venueTimestamp: epochMs(T),
+  venue: V,
+  symbol: SYM,
+  venueTradeId: tradeId,
+  clientOrderId: coid as VenueFill['clientOrderId'],
+  price: '100',
+  qty: '1',
+  fee: null,
+  liquidity: 'taker',
+  venueTimestamp: epochMs(T),
 });
 
 describe('ReconciliationService (§6.4)', () => {
-  it('sweeps a held position\'s symbol and stays clean when the venue ledger agrees', async () => {
+  it("sweeps a held position's symbol and stays clean when the venue ledger agrees", async () => {
     const intent = makeIntent(); // BUY 1 BTC @ 100
-    const ctx = build({ balances: () => new Map([['USDT', { free: '99900', locked: '0' }], ['BTC', { free: '1', locked: '0' }]]) });
+    const ctx = build({
+      balances: () =>
+        new Map([
+          ['USDT', { free: '99900', locked: '0' }],
+          ['BTC', { free: '1', locked: '0' }],
+        ]),
+    });
     ctx.portfolio.applyFill(intent, makeFill({ qty: intent.qty, price: intent.refPrice })); // creates the position
     const r = await ctx.recon.reconcile();
     expect(r).toEqual({ mismatches: 0, halted: false }); // position symbol swept, balances agree
@@ -112,13 +192,23 @@ describe('ReconciliationService (§6.4)', () => {
 
     // mismatch pass (foreign open order) → result 'mismatch', no new gauge set
     const setCountAfterClean = setCalls.length;
-    const mismatch = build({ openOrders: [venueOrder('someoneElseOrder', 'open')] }, undefined, runs, lastSuccess);
+    const mismatch = build(
+      { openOrders: [venueOrder('someoneElseOrder', 'open')] },
+      undefined,
+      runs,
+      lastSuccess,
+    );
     await mismatch.recon.reconcile();
     expect(incCalls.at(-1)).toEqual([{ result: 'mismatch' }]);
     expect(setCalls.length).toBe(setCountAfterClean); // gauge unchanged on a non-clean pass
 
     // halt pass (our-prefix unknown open) → result 'halt'
-    const halt = build({ openOrders: [venueOrder(OTHER_COID, 'open')] }, undefined, runs, lastSuccess);
+    const halt = build(
+      { openOrders: [venueOrder(OTHER_COID, 'open')] },
+      undefined,
+      runs,
+      lastSuccess,
+    );
     await halt.recon.reconcile();
     expect(incCalls.at(-1)).toEqual([{ result: 'halt' }]);
   });
@@ -150,17 +240,26 @@ describe('ReconciliationService (§6.4)', () => {
   it.each<[ExchangeOrderState['status'], string]>([
     ['canceled', 'CANCELED'],
     ['expired', 'EXPIRED'],
-  ])('a local open order absent from the venue adopts the venue terminal truth (%s)', async (status, expected) => {
-    const ctx = build({ openOrders: [], fetchOrder: () => venueOrder(makeIntent().clientOrderId, status) });
-    const coid = seedOpenOrder(ctx);
-    const r = await ctx.recon.reconcile();
-    expect(ctx.orders.get(coid)?.state).toBe(expected);
-    expect(r.mismatches).toBeGreaterThan(0);
-    expect(r.halted).toBe(false);
-  });
+  ])(
+    'a local open order absent from the venue adopts the venue terminal truth (%s)',
+    async (status, expected) => {
+      const ctx = build({
+        openOrders: [],
+        fetchOrder: () => venueOrder(makeIntent().clientOrderId, status),
+      });
+      const coid = seedOpenOrder(ctx);
+      const r = await ctx.recon.reconcile();
+      expect(ctx.orders.get(coid)?.state).toBe(expected);
+      expect(r.mismatches).toBeGreaterThan(0);
+      expect(r.halted).toBe(false);
+    },
+  );
 
   it('a venue "rejected" for an order we already acked is a WARN inconsistency, not an illegal adopt', async () => {
-    const ctx = build({ openOrders: [], fetchOrder: () => venueOrder(makeIntent().clientOrderId, 'rejected') });
+    const ctx = build({
+      openOrders: [],
+      fetchOrder: () => venueOrder(makeIntent().clientOrderId, 'rejected'),
+    });
     const coid = seedOpenOrder(ctx);
     const r = await ctx.recon.reconcile();
     expect(ctx.orders.get(coid)?.state).toBe('ACKED'); // unchanged — never folded illegally
@@ -170,7 +269,10 @@ describe('ReconciliationService (§6.4)', () => {
 
   it('backfills a missed fill for a known order via the FillIngestor (WARN)', async () => {
     const coid = makeIntent().clientOrderId;
-    const ctx = build({ openOrders: [venueOrder(coid, 'open')], trades: [trade(coid, 'missed-1')] });
+    const ctx = build({
+      openOrders: [venueOrder(coid, 'open')],
+      trades: [trade(coid, 'missed-1')],
+    });
     seedOpenOrder(ctx, coid);
     const r = await ctx.recon.reconcile();
     expect(ctx.store.fills.size).toBe(1); // the missed fill was ingested
@@ -180,7 +282,10 @@ describe('ReconciliationService (§6.4)', () => {
   it('a trade for an our-prefix order unknown locally HALTs', async () => {
     // Seed a known order on SYM so SYM is swept; the orphan trade is a DIFFERENT our-prefix id.
     const known = makeIntent().clientOrderId;
-    const ctx = build({ openOrders: [venueOrder(known, 'open')], trades: [trade(OTHER_COID, 'orphan-1')] });
+    const ctx = build({
+      openOrders: [venueOrder(known, 'open')],
+      trades: [trade(OTHER_COID, 'orphan-1')],
+    });
     seedOpenOrder(ctx, known);
     const r = await ctx.recon.reconcile();
     expect(r.halted).toBe(true);
@@ -201,7 +306,12 @@ describe('ReconciliationService (§6.4)', () => {
       balances: () => {
         n += 1;
         // 0.001, 0.002, 0.003 below the local 100000 — each within ε (tol 10) but strictly growing.
-        return new Map([['USDT', { free: new Decimal(100000).add(new Decimal(0.001).mul(n)).toFixed(), locked: '0' }]]);
+        return new Map([
+          [
+            'USDT',
+            { free: new Decimal(100000).add(new Decimal(0.001).mul(n)).toFixed(), locked: '0' },
+          ],
+        ]);
       },
     });
     expect((await ctx.recon.reconcile()).halted).toBe(false); // pass 1
@@ -223,7 +333,12 @@ describe('ReconciliationService (§6.4)', () => {
 
   it('an order we cannot query while believed open is a WARN mismatch', async () => {
     const coid = makeIntent().clientOrderId;
-    const ctx = build({ openOrders: [], fetchOrder: () => { throw new Error('fetchOrder down'); } });
+    const ctx = build({
+      openOrders: [],
+      fetchOrder: () => {
+        throw new Error('fetchOrder down');
+      },
+    });
     seedOpenOrder(ctx, coid);
     const r = await ctx.recon.reconcile();
     expect(r.mismatches).toBeGreaterThan(0);
@@ -252,7 +367,18 @@ describe('ReconciliationService (§6.4)', () => {
     seedOpenOrder(ctx, coid);
     // The fill is already in the store with the SAME payload — reconcile must not double-count it.
     await ctx.store.saveFill(
-      { venue: V, symbol: SYM, venueTradeId: 'known-1', clientOrderId: coid, price: price('100'), qty: makeIntent().qty, fee: null, liquidity: 'taker', venueTimestamp: epochMs(T), source: 'ws' },
+      {
+        venue: V,
+        symbol: SYM,
+        venueTradeId: 'known-1',
+        clientOrderId: coid,
+        price: price('100'),
+        qty: makeIntent().qty,
+        fee: null,
+        liquidity: 'taker',
+        venueTimestamp: epochMs(T),
+        source: 'ws',
+      },
       'i1',
     );
     const r = await ctx.recon.reconcile();
@@ -266,7 +392,18 @@ describe('ReconciliationService (§6.4)', () => {
     seedOpenOrder(ctx, coid); // stays ACKED + open (KNOWN); SYM is swept both passes
     // Pre-store the fill so each sweep dedupes it (no balance change), isolating the checkpoint path.
     await ctx.store.saveFill(
-      { venue: V, symbol: SYM, venueTradeId: 'cp-1', clientOrderId: coid, price: price('100'), qty: makeIntent().qty, fee: null, liquidity: 'taker', venueTimestamp: epochMs(T), source: 'ws' },
+      {
+        venue: V,
+        symbol: SYM,
+        venueTradeId: 'cp-1',
+        clientOrderId: coid,
+        price: price('100'),
+        qty: makeIntent().qty,
+        fee: null,
+        liquidity: 'taker',
+        venueTimestamp: epochMs(T),
+        source: 'ws',
+      },
       'i1',
     );
     const first = await ctx.recon.reconcile(); // sets checkpoint = T (the trade's venueTimestamp)
@@ -282,8 +419,11 @@ describe('ReconciliationService (§6.4)', () => {
     seedOpenOrder(ctx, coid);
     // A prior life journaled the cancel adopt under the reconcile dedupe key.
     await ctx.store.appendOrderEvent({
-      clientOrderId: coid, dedupeKey: 'reconcile:VENUE_CANCELED', event: { type: 'VENUE_CANCELED' },
-      derivedState: 'CANCELED', cumQty: '0',
+      clientOrderId: coid,
+      dedupeKey: 'reconcile:VENUE_CANCELED',
+      event: { type: 'VENUE_CANCELED' },
+      derivedState: 'CANCELED',
+      cumQty: '0',
     });
     await ctx.recon.reconcile();
     expect(ctx.orders.get(coid)?.state).toBe('ACKED'); // fold skipped — journal said duplicate

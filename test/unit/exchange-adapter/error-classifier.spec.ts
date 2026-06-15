@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import * as ccxt from 'ccxt';
-import { classifyCcxtError, toAdapterError } from '../../../src/modules/exchange-adapter/error-classifier';
+import {
+  classifyCcxtError,
+  toAdapterError,
+} from '../../../src/modules/exchange-adapter/error-classifier';
 import { AdapterError, type AdapterErrorClass } from '../../../src/ports/exchange';
 
 // §6.3 classifier is snapshot-tested against the PINNED ccxt error hierarchy (4.5.58). ccxt has
@@ -42,7 +45,13 @@ describe('ccxt error hierarchy snapshot (4.5.58)', () => {
     DDoSProtection: ['NetworkError', 'OperationFailed', 'BaseError', 'Error'],
     RateLimitExceeded: ['NetworkError', 'OperationFailed', 'BaseError', 'Error'],
     ExchangeNotAvailable: ['NetworkError', 'OperationFailed', 'BaseError', 'Error'],
-    OnMaintenance: ['ExchangeNotAvailable', 'NetworkError', 'OperationFailed', 'BaseError', 'Error'],
+    OnMaintenance: [
+      'ExchangeNotAvailable',
+      'NetworkError',
+      'OperationFailed',
+      'BaseError',
+      'Error',
+    ],
     InvalidNonce: ['NetworkError', 'OperationFailed', 'BaseError', 'Error'],
     RequestTimeout: ['NetworkError', 'OperationFailed', 'BaseError', 'Error'],
     BadResponse: ['OperationFailed', 'BaseError', 'Error'],
@@ -107,11 +116,17 @@ describe('classifyCcxtError', () => {
   });
 
   it('defaults a non-ccxt Error to OUTCOME_AMBIGUOUS with its own constructor name', () => {
-    expect(classifyCcxtError(new TypeError('nope'))).toEqual({ errorClass: 'OUTCOME_AMBIGUOUS', code: 'TypeError' });
+    expect(classifyCcxtError(new TypeError('nope'))).toEqual({
+      errorClass: 'OUTCOME_AMBIGUOUS',
+      code: 'TypeError',
+    });
   });
 
   it('defaults a thrown non-Error value to OUTCOME_AMBIGUOUS/UNKNOWN', () => {
-    expect(classifyCcxtError('plain string')).toEqual({ errorClass: 'OUTCOME_AMBIGUOUS', code: 'UNKNOWN' });
+    expect(classifyCcxtError('plain string')).toEqual({
+      errorClass: 'OUTCOME_AMBIGUOUS',
+      code: 'UNKNOWN',
+    });
   });
 });
 

@@ -10,7 +10,18 @@ describe('recoveryEventFor (§6.1 crash recovery, I1)', () => {
     expect(recoveryEventFor('CANCEL_PENDING')).toEqual({ type: 'CANCEL_REJECT_UNKNOWN' });
   });
   it('leaves durable states untouched (no degrade to an optimistic state)', () => {
-    for (const s of ['NEW', 'ACKED', 'PARTIALLY_FILLED', 'FILLED', 'CANCELED', 'REJECTED', 'EXPIRED', 'SUBMIT_UNKNOWN', 'CANCEL_UNKNOWN', 'RECONCILE_REQUIRED'] as OrderState[]) {
+    for (const s of [
+      'NEW',
+      'ACKED',
+      'PARTIALLY_FILLED',
+      'FILLED',
+      'CANCELED',
+      'REJECTED',
+      'EXPIRED',
+      'SUBMIT_UNKNOWN',
+      'CANCEL_UNKNOWN',
+      'RECONCILE_REQUIRED',
+    ] as OrderState[]) {
       expect(recoveryEventFor(s)).toBeUndefined();
     }
   });
@@ -23,7 +34,17 @@ describe('isUnresolved (live-arming gate)', () => {
     expect(isUnresolved('RECONCILE_REQUIRED')).toBe(true);
   });
   it('is false for normal lifecycle + terminal states', () => {
-    for (const s of ['NEW', 'SUBMITTING', 'ACKED', 'PARTIALLY_FILLED', 'CANCEL_PENDING', 'FILLED', 'CANCELED', 'REJECTED', 'EXPIRED'] as OrderState[]) {
+    for (const s of [
+      'NEW',
+      'SUBMITTING',
+      'ACKED',
+      'PARTIALLY_FILLED',
+      'CANCEL_PENDING',
+      'FILLED',
+      'CANCELED',
+      'REJECTED',
+      'EXPIRED',
+    ] as OrderState[]) {
       expect(isUnresolved(s)).toBe(false);
     }
   });

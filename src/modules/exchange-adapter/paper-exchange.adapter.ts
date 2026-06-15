@@ -2,17 +2,38 @@ import { Inject, Injectable } from '@nestjs/common';
 import Decimal from 'decimal.js';
 import { CLOCK, type ClockPort } from '../../ports/clock';
 import {
-  AdapterError, type ExchangePort, type VenueCapabilities, type PlaceOrderRequest,
-  type ExchangeAck, type ExchangeOrderState, type VenueFill, type CredentialCheck,
+  AdapterError,
+  type ExchangePort,
+  type VenueCapabilities,
+  type PlaceOrderRequest,
+  type ExchangeAck,
+  type ExchangeOrderState,
+  type VenueFill,
+  type CredentialCheck,
 } from '../../ports/exchange';
 import {
-  EXEC_OUTBOX, EXEC_REPORT_NOTIFY, type ExecOutboxPort, type ExecReportNotify,
+  EXEC_OUTBOX,
+  EXEC_REPORT_NOTIFY,
+  type ExecOutboxPort,
+  type ExecReportNotify,
 } from '../../ports/execution';
-import { bookWalk, tradeThroughFill, type SimFill, type FeeCcy, type InsufficientDepthPolicy } from '../../domain/paper/fill';
+import {
+  bookWalk,
+  tradeThroughFill,
+  type SimFill,
+  type FeeCcy,
+  type InsufficientDepthPolicy,
+} from '../../domain/paper/fill';
 import { mulberry32 } from '../../domain/strategy/prng';
 import { splitSymbol } from '../../domain/types/symbol';
 import { price, qty } from '../../domain/types/money';
-import { epochMs, type ClientOrderId, type SymbolId, type VenueId, type EpochMs } from '../../domain/types/ids';
+import {
+  epochMs,
+  type ClientOrderId,
+  type SymbolId,
+  type VenueId,
+  type EpochMs,
+} from '../../domain/types/ids';
 import type { OrderLevel } from '../../domain/types/market-events';
 import type { ExecReport, FillReport } from '../../domain/types/exec-report';
 
@@ -24,20 +45,37 @@ export const PAPER_CONFIG = Symbol('PAPER_CONFIG');
 export interface PaperConfig {
   readonly seed: number;
   readonly takerBuffer: string; // extra quote fraction locked on buys to cover walk slippage
-  readonly fees: { readonly makerBps: string; readonly takerBps: string; readonly feeCurrency: FeeCcy };
+  readonly fees: {
+    readonly makerBps: string;
+    readonly takerBps: string;
+    readonly feeCurrency: FeeCcy;
+  };
   readonly latency: { readonly submitMs: [number, number]; readonly eventMs: [number, number] };
   readonly insufficientDepthPolicy: InsufficientDepthPolicy;
   readonly reorderDelivery?: boolean;
   readonly startingBalances: Readonly<Record<string, string>>;
 }
 
-interface Balance { free: Decimal; locked: Decimal }
-interface Resting {
-  readonly clientOrderId: ClientOrderId; readonly venueOrderId: string; readonly symbol: SymbolId;
-  readonly side: 'BUY' | 'SELL'; readonly limitPrice: Decimal; remaining: Decimal;
-  readonly lockAsset: string; lockRemaining: Decimal;
+interface Balance {
+  free: Decimal;
+  locked: Decimal;
 }
-interface OrderSnap { venueOrderId: string; status: ExchangeOrderState['status']; cumQty: Decimal; qty: Decimal }
+interface Resting {
+  readonly clientOrderId: ClientOrderId;
+  readonly venueOrderId: string;
+  readonly symbol: SymbolId;
+  readonly side: 'BUY' | 'SELL';
+  readonly limitPrice: Decimal;
+  remaining: Decimal;
+  readonly lockAsset: string;
+  lockRemaining: Decimal;
+}
+interface OrderSnap {
+  venueOrderId: string;
+  status: ExchangeOrderState['status'];
+  cumQty: Decimal;
+  qty: Decimal;
+}
 
 // PaperExchangeAdapter (§6.5): same ExchangePort as a venue, ccxt-shaped AdapterError rejects,
 // fills delivered through the same EXEC_OUTBOX — the OMS cannot tell it apart. Determinism:
@@ -47,12 +85,19 @@ interface OrderSnap { venueOrderId: string; status: ExchangeOrderState['status']
 export class PaperExchangeAdapter implements ExchangePort {
   readonly venue: VenueId;
   readonly capabilities: VenueCapabilities = {
-    clientOrderId: true, fetchOrderByClientId: true, wsUserStream: true, stp: false, sandbox: true,
+    clientOrderId: true,
+    fetchOrderByClientId: true,
+    wsUserStream: true,
+    stp: false,
+    sandbox: true,
   };
 
   private readonly balances = new Map<string, Balance>();
   private readonly resting = new Map<string, Resting>();
-  private readonly books = new Map<string, { bids: readonly OrderLevel[]; asks: readonly OrderLevel[] }>();
+  private readonly books = new Map<
+    string,
+    { bids: readonly OrderLevel[]; asks: readonly OrderLevel[] }
+  >();
   private readonly snaps = new Map<string, OrderSnap>();
   private readonly trades: VenueFill[] = [];
   private readonly rng: () => number;
@@ -87,8 +132,12 @@ export class PaperExchangeAdapter implements ExchangePort {
     for (const order of [...this.resting.values()]) {
       if (order.symbol !== symbol) continue;
       const sim = tradeThroughFill(
-        order.side, price(order.limitPrice), order.remaining,
-        { price: price(print.price), qty: qty(print.qty) }, this.makerBps, this.cfg.fees.feeCurrency,
+        order.side,
+        price(order.limitPrice),
+        order.remaining,
+        { price: price(print.price), qty: qty(print.qty) },
+        this.makerBps,
+        this.cfg.fees.feeCurrency,
       );
       if (sim) await this.fill(order, sim);
     }
@@ -103,21 +152,38 @@ export class PaperExchangeAdapter implements ExchangePort {
     const { lockAsset, lockAmount } = this.computeLock(req, base, quote);
     const bal = this.bal(lockAsset);
     if (bal.free.lt(lockAmount)) {
-      throw new AdapterError('TERMINAL_REJECT', 'INSUFFICIENT_FUNDS', `paper: insufficient ${lockAsset}`);
+      throw new AdapterError(
+        'TERMINAL_REJECT',
+        'INSUFFICIENT_FUNDS',
+        `paper: insufficient ${lockAsset}`,
+      );
     }
     bal.free = bal.free.sub(lockAmount);
     bal.locked = bal.locked.add(lockAmount);
-    this.snaps.set(req.clientOrderId, { venueOrderId, status: 'open', cumQty: new Decimal(0), qty: orderQty });
+    this.snaps.set(req.clientOrderId, {
+      venueOrderId,
+      status: 'open',
+      cumQty: new Decimal(0),
+      qty: orderQty,
+    });
 
     const order: Resting = {
-      clientOrderId: req.clientOrderId, venueOrderId, symbol: req.symbol, side: req.side,
+      clientOrderId: req.clientOrderId,
+      venueOrderId,
+      symbol: req.symbol,
+      side: req.side,
       limitPrice: req.limitPrice !== undefined ? new Decimal(req.limitPrice) : new Decimal(0),
-      remaining: orderQty, lockAsset, lockRemaining: lockAmount,
+      remaining: orderQty,
+      lockAsset,
+      lockRemaining: lockAmount,
     };
 
     if (req.type === 'MARKET') {
       await this.fillMarket(order, undefined);
-    } else if (req.limitPrice !== undefined && this.isMarketable(req.side, req.symbol, new Decimal(req.limitPrice))) {
+    } else if (
+      req.limitPrice !== undefined &&
+      this.isMarketable(req.side, req.symbol, new Decimal(req.limitPrice))
+    ) {
       await this.fillMarket(order, new Decimal(req.limitPrice)); // marketable-on-arrival: cross capped at limit
       if (order.remaining.gt(0)) this.resting.set(req.clientOrderId, order); // remainder rests
     } else {
@@ -130,24 +196,38 @@ export class PaperExchangeAdapter implements ExchangePort {
     const order = this.resting.get(clientOrderId);
     const snap = this.snaps.get(clientOrderId);
     if (order === undefined || snap === undefined) {
-      throw new AdapterError('TERMINAL_REJECT', 'ORDER_NOT_FOUND', `paper: ${clientOrderId} not open`);
+      throw new AdapterError(
+        'TERMINAL_REJECT',
+        'ORDER_NOT_FOUND',
+        `paper: ${clientOrderId} not open`,
+      );
     }
     this.release(order);
     this.resting.delete(clientOrderId);
     this.snaps.set(clientOrderId, { ...snap, status: 'canceled' });
     await this.emit({
-      kind: 'CANCEL_ACK', reportId: `paper-rpt-${this.next()}`, clientOrderId, venue: this.venue,
-      symbol: order.symbol, eventTime: this.eventTime(), ingestTime: this.clock.now(),
+      kind: 'CANCEL_ACK',
+      reportId: `paper-rpt-${this.next()}`,
+      clientOrderId,
+      venue: this.venue,
+      symbol: order.symbol,
+      eventTime: this.eventTime(),
+      ingestTime: this.clock.now(),
     });
     return { clientOrderId, venueOrderId: order.venueOrderId };
   }
 
   fetchOrder(clientOrderId: ClientOrderId, symbol: SymbolId): Promise<ExchangeOrderState> {
     const snap = this.snaps.get(clientOrderId);
-    if (snap === undefined) return Promise.reject(new AdapterError('TERMINAL_REJECT', 'ORDER_NOT_FOUND', 'paper'));
+    if (snap === undefined)
+      return Promise.reject(new AdapterError('TERMINAL_REJECT', 'ORDER_NOT_FOUND', 'paper'));
     return Promise.resolve({
-      clientOrderId, venueOrderId: snap.venueOrderId, symbol, status: snap.status,
-      cumQty: snap.cumQty.toFixed(), qty: snap.qty.toFixed(),
+      clientOrderId,
+      venueOrderId: snap.venueOrderId,
+      symbol,
+      status: snap.status,
+      cumQty: snap.cumQty.toFixed(),
+      qty: snap.qty.toFixed(),
     });
   }
 
@@ -156,23 +236,38 @@ export class PaperExchangeAdapter implements ExchangePort {
       .filter((o) => symbol === undefined || o.symbol === symbol)
       .map((o): ExchangeOrderState => {
         const snap = this.snaps.get(o.clientOrderId)!;
-        return { clientOrderId: o.clientOrderId, venueOrderId: o.venueOrderId, symbol: o.symbol, status: 'open', cumQty: snap.cumQty.toFixed(), qty: snap.qty.toFixed() };
+        return {
+          clientOrderId: o.clientOrderId,
+          venueOrderId: o.venueOrderId,
+          symbol: o.symbol,
+          status: 'open',
+          cumQty: snap.cumQty.toFixed(),
+          qty: snap.qty.toFixed(),
+        };
       });
     return Promise.resolve(open);
   }
 
   fetchBalances(): Promise<ReadonlyMap<string, { free: string; locked: string }>> {
     const out = new Map<string, { free: string; locked: string }>();
-    for (const [asset, b] of this.balances) out.set(asset, { free: b.free.toFixed(), locked: b.locked.toFixed() });
+    for (const [asset, b] of this.balances)
+      out.set(asset, { free: b.free.toFixed(), locked: b.locked.toFixed() });
     return Promise.resolve(out);
   }
 
   fetchMyTrades(symbol: SymbolId, since: EpochMs): Promise<readonly VenueFill[]> {
-    return Promise.resolve(this.trades.filter((t) => t.symbol === symbol && t.venueTimestamp >= since));
+    return Promise.resolve(
+      this.trades.filter((t) => t.symbol === symbol && t.venueTimestamp >= since),
+    );
   }
 
   validateCredentials(): Promise<CredentialCheck> {
-    return Promise.resolve({ valid: true, canTrade: true, withdrawalsEnabled: false, keyFingerprint: 'paper' });
+    return Promise.resolve({
+      valid: true,
+      canTrade: true,
+      withdrawalsEnabled: false,
+      keyFingerprint: 'paper',
+    });
   }
 
   // ── Fill mechanics ──────────────────────────────────────────────────────────────────────
@@ -184,9 +279,17 @@ export class PaperExchangeAdapter implements ExchangePort {
     }
     let levels = order.side === 'BUY' ? book.asks : book.bids;
     if (limitCap !== undefined) {
-      levels = levels.filter((l) => (order.side === 'BUY' ? l.price.lte(limitCap) : l.price.gte(limitCap)));
+      levels = levels.filter((l) =>
+        order.side === 'BUY' ? l.price.lte(limitCap) : l.price.gte(limitCap),
+      );
     }
-    const sims = bookWalk(order.remaining, levels, this.takerBps, this.cfg.fees.feeCurrency, this.cfg.insufficientDepthPolicy);
+    const sims = bookWalk(
+      order.remaining,
+      levels,
+      this.takerBps,
+      this.cfg.fees.feeCurrency,
+      this.cfg.insufficientDepthPolicy,
+    );
     for (const sim of sims) await this.fill(order, sim);
   }
 
@@ -205,9 +308,15 @@ export class PaperExchangeAdapter implements ExchangePort {
     const venueTradeId = `paper-trade-${this.next()}`;
     const venueTimestamp = this.eventTime();
     this.trades.push({
-      venue: this.venue, symbol: order.symbol, venueTradeId, clientOrderId: order.clientOrderId,
-      price: sim.price.toFixed(), qty: sim.qty.toFixed(), fee: { ccy: feeAsset, amount: sim.fee.amount.toFixed() },
-      liquidity: sim.liquidity, venueTimestamp,
+      venue: this.venue,
+      symbol: order.symbol,
+      venueTradeId,
+      clientOrderId: order.clientOrderId,
+      price: sim.price.toFixed(),
+      qty: sim.qty.toFixed(),
+      fee: { ccy: feeAsset, amount: sim.fee.amount.toFixed() },
+      liquidity: sim.liquidity,
+      venueTimestamp,
     });
 
     if (filled) {
@@ -216,10 +325,19 @@ export class PaperExchangeAdapter implements ExchangePort {
     }
 
     const report: FillReport = {
-      kind: 'FILL', reportId: `paper-rpt-${this.next()}`, clientOrderId: order.clientOrderId, venue: this.venue,
-      symbol: order.symbol, eventTime: this.eventTime(), ingestTime: this.clock.now(),
-      venueTradeId, price: sim.price, qty: sim.qty, fee: { ccy: feeAsset, amount: sim.fee.amount },
-      liquidity: sim.liquidity, venueTimestamp,
+      kind: 'FILL',
+      reportId: `paper-rpt-${this.next()}`,
+      clientOrderId: order.clientOrderId,
+      venue: this.venue,
+      symbol: order.symbol,
+      eventTime: this.eventTime(),
+      ingestTime: this.clock.now(),
+      venueTradeId,
+      price: sim.price,
+      qty: sim.qty,
+      fee: { ccy: feeAsset, amount: sim.fee.amount },
+      liquidity: sim.liquidity,
+      venueTimestamp,
     };
     await this.emit(report);
   }
@@ -257,9 +375,14 @@ export class PaperExchangeAdapter implements ExchangePort {
     order.lockRemaining = new Decimal(0);
   }
 
-  private computeLock(req: PlaceOrderRequest, base: string, quote: string): { lockAsset: string; lockAmount: Decimal } {
+  private computeLock(
+    req: PlaceOrderRequest,
+    base: string,
+    quote: string,
+  ): { lockAsset: string; lockAmount: Decimal } {
     if (req.side === 'SELL') return { lockAsset: base, lockAmount: new Decimal(req.qty) };
-    const ref = req.limitPrice !== undefined ? new Decimal(req.limitPrice) : this.bestAsk(req.symbol);
+    const ref =
+      req.limitPrice !== undefined ? new Decimal(req.limitPrice) : this.bestAsk(req.symbol);
     const amount = ref.mul(req.qty).mul(this.takerBuffer.add(1));
     return { lockAsset: quote, lockAmount: amount };
   }
@@ -267,7 +390,11 @@ export class PaperExchangeAdapter implements ExchangePort {
   private bestAsk(symbol: SymbolId): Decimal {
     const book = this.books.get(symbol);
     if (book === undefined || book.asks.length === 0) {
-      throw new AdapterError('TERMINAL_REJECT', 'NO_BOOK', `paper: no book to price market ${symbol}`);
+      throw new AdapterError(
+        'TERMINAL_REJECT',
+        'NO_BOOK',
+        `paper: no book to price market ${symbol}`,
+      );
     }
     return book.asks[0]!.price;
   }

@@ -7,7 +7,13 @@ import type { Strategy, MarketView } from '../../../src/domain/strategy/strategy
 import type { MarketEvent, CandleEvent } from '../../../src/domain/types/market-events';
 import type { Signal } from '../../../src/domain/types/signal';
 import type { SubscriptionSpec } from '../../../src/domain/types/subscription';
-import { strategyId, venueId, symbolId, epochMs, type StrategyId } from '../../../src/domain/types/ids';
+import {
+  strategyId,
+  venueId,
+  symbolId,
+  epochMs,
+  type StrategyId,
+} from '../../../src/domain/types/ids';
 import { price, qty } from '../../../src/domain/types/money';
 
 const V = venueId('binance');
@@ -15,40 +21,80 @@ const S = symbolId('BTC/USDT');
 
 function candle(seq: number, t: number): CandleEvent {
   return {
-    kind: 'CANDLE', venue: V, symbol: S, channel: 'candle:1h', seq: BigInt(seq),
-    eventTime: epochMs(t), ingestTime: epochMs(t + 1), interval: '1h',
-    openTime: epochMs(t), closeTime: epochMs(t + 1), open: price('100'), high: price('100'),
-    low: price('100'), close: price('100'), volume: qty('1'), closed: true,
+    kind: 'CANDLE',
+    venue: V,
+    symbol: S,
+    channel: 'candle:1h',
+    seq: BigInt(seq),
+    eventTime: epochMs(t),
+    ingestTime: epochMs(t + 1),
+    interval: '1h',
+    openTime: epochMs(t),
+    closeTime: epochMs(t + 1),
+    open: price('100'),
+    high: price('100'),
+    low: price('100'),
+    close: price('100'),
+    volume: qty('1'),
+    closed: true,
   };
 }
 
 function ticker(seq: number, t: number): MarketEvent {
   return {
-    kind: 'TICKER', venue: V, symbol: S, channel: 'ticker', seq: BigInt(seq),
-    eventTime: epochMs(t), ingestTime: epochMs(t + 1), bid: price('99'), ask: price('101'), last: price('100'),
+    kind: 'TICKER',
+    venue: V,
+    symbol: S,
+    channel: 'ticker',
+    seq: BigInt(seq),
+    eventTime: epochMs(t),
+    ingestTime: epochMs(t + 1),
+    bid: price('99'),
+    ask: price('101'),
+    last: price('100'),
   };
 }
 
 function book(seq: number, t: number): MarketEvent {
   return {
-    kind: 'ORDER_BOOK_SNAPSHOT', venue: V, symbol: S, channel: 'book', seq: BigInt(seq),
-    eventTime: epochMs(t), ingestTime: epochMs(t + 1),
-    bids: [{ price: price('99'), qty: qty('1') }], asks: [{ price: price('101'), qty: qty('1') }],
+    kind: 'ORDER_BOOK_SNAPSHOT',
+    venue: V,
+    symbol: S,
+    channel: 'book',
+    seq: BigInt(seq),
+    eventTime: epochMs(t),
+    ingestTime: epochMs(t + 1),
+    bids: [{ price: price('99'), qty: qty('1') }],
+    asks: [{ price: price('101'), qty: qty('1') }],
   };
 }
 
 function execReport(t: number) {
   return {
-    reportId: `r${t}`, clientOrderId: 'cbp0000000000000007000800000000000000' as never,
-    venue: V, symbol: S, eventTime: epochMs(t), ingestTime: epochMs(t), kind: 'ACK' as const, venueOrderId: 'v',
+    reportId: `r${t}`,
+    clientOrderId: 'cbp0000000000000007000800000000000000' as never,
+    venue: V,
+    symbol: S,
+    eventTime: epochMs(t),
+    ingestTime: epochMs(t),
+    kind: 'ACK' as const,
+    venueOrderId: 'v',
   };
 }
 
 function sig(kind: Signal['kind'], t: number): Signal {
   return {
-    strategyId: strategyId('fake'), venue: V, symbol: S, kind, strength: 1,
-    refPrice: price('100'), basedOnSeq: 1n, eventTime: epochMs(t), ttlMs: 1000,
-    dedupeKey: `fake:${kind}:${t}`, reason: 'test',
+    strategyId: strategyId('fake'),
+    venue: V,
+    symbol: S,
+    kind,
+    strength: 1,
+    refPrice: price('100'),
+    basedOnSeq: 1n,
+    eventTime: epochMs(t),
+    ttlMs: 1000,
+    dedupeKey: `fake:${kind}:${t}`,
+    reason: 'test',
   };
 }
 
@@ -66,7 +112,9 @@ class FakeStrategy implements Strategy {
   bookEmit: Signal[] = [];
   execEmit: Signal[] = [];
   lastViewEventTime = 0;
-  constructor(id: StrategyId) { this.id = id; }
+  constructor(id: StrategyId) {
+    this.id = id;
+  }
   onInit(): void {}
   onCandle(_e: CandleEvent, v: MarketView): Signal[] {
     // Exercise the host-assembled MarketView so its accessors are covered.
@@ -79,9 +127,15 @@ class FakeStrategy implements Strategy {
     void v.portfolio;
     return this.emit;
   }
-  onTick(): Signal[] { return this.tickEmit; }
-  onOrderBook(): Signal[] { return this.bookEmit; }
-  onExecReport(): Signal[] { return this.execEmit; }
+  onTick(): Signal[] {
+    return this.tickEmit;
+  }
+  onOrderBook(): Signal[] {
+    return this.bookEmit;
+  }
+  onExecReport(): Signal[] {
+    return this.execEmit;
+  }
   onStop(): void {}
 }
 
@@ -94,7 +148,8 @@ function pushStream() {
     [Symbol.asyncIterator]: () => ({
       next: (): Promise<IteratorResult<MarketEvent>> => {
         if (queue.length) return Promise.resolve({ value: queue.shift()!, done: false });
-        if (closed) return Promise.resolve({ value: undefined as unknown as MarketEvent, done: true });
+        if (closed)
+          return Promise.resolve({ value: undefined as unknown as MarketEvent, done: true });
         return new Promise((r) => (resolve = r));
       },
     }),
@@ -102,11 +157,19 @@ function pushStream() {
   return {
     iterable,
     push(v: MarketEvent) {
-      if (resolve) { const r = resolve; resolve = null; r({ value: v, done: false }); } else queue.push(v);
+      if (resolve) {
+        const r = resolve;
+        resolve = null;
+        r({ value: v, done: false });
+      } else queue.push(v);
     },
     close() {
       closed = true;
-      if (resolve) { const r = resolve; resolve = null; r({ value: undefined, done: true }); }
+      if (resolve) {
+        const r = resolve;
+        resolve = null;
+        r({ value: undefined, done: true });
+      }
     },
   };
 }
@@ -133,7 +196,13 @@ function makeHost(opts: {
   registry.register('fake', () => opts.strategy);
   registry.enable(id, 'fake', {});
   const marketStream: MarketStreamPort = { subscribe: () => opts.stream };
-  const host = new StrategyHost(marketStream, feedHealth(opts.warmup), opts.sink, registry, opts.hrtimeFn);
+  const host = new StrategyHost(
+    marketStream,
+    feedHealth(opts.warmup),
+    opts.sink,
+    registry,
+    opts.hrtimeFn,
+  );
   return { host, registry, id };
 }
 
@@ -144,7 +213,12 @@ describe('StrategyHost', () => {
     const strat = new FakeStrategy(strategyId('w'));
     strat.emit = [sig('ENTER_LONG', 1)]; // would emit on every warmup candle
     const stream = pushStream();
-    const { host, registry, id } = makeHost({ strategy: strat, stream: stream.iterable, sink, warmup: [candle(0, 0), candle(1, 1)] });
+    const { host, registry, id } = makeHost({
+      strategy: strat,
+      stream: stream.iterable,
+      sink,
+      warmup: [candle(0, 0), candle(1, 1)],
+    });
 
     await host.start(); // warmup replays 2 candles — discarded
     stream.close();
@@ -189,7 +263,12 @@ describe('StrategyHost', () => {
       tog = !tog;
       return tog ? 0n : 60_000_000n;
     };
-    const { host, registry, id } = makeHost({ strategy: strat, stream: stream.iterable, sink, hrtimeFn });
+    const { host, registry, id } = makeHost({
+      strategy: strat,
+      stream: stream.iterable,
+      sink,
+      hrtimeFn,
+    });
 
     await host.start();
     for (let i = 0; i < 3; i++) {
@@ -244,8 +323,17 @@ describe('StrategyHost', () => {
     await tick();
     // A TRADE event is accepted by the host but not dispatched to strategies in v1.
     stream.push({
-      kind: 'TRADE', venue: V, symbol: S, channel: 'trade', seq: 4n,
-      eventTime: epochMs(4), ingestTime: epochMs(5), price: price('100'), qty: qty('1'), side: 'BUY', tradeId: 't',
+      kind: 'TRADE',
+      venue: V,
+      symbol: S,
+      channel: 'trade',
+      seq: 4n,
+      eventTime: epochMs(4),
+      ingestTime: epochMs(5),
+      price: price('100'),
+      qty: qty('1'),
+      side: 'BUY',
+      tradeId: 't',
     });
     await tick();
     host.enqueueExecReport(id, execReport(3)); // queued; drained on the next stream event
@@ -266,7 +354,10 @@ describe('StrategyHost', () => {
     const { host } = makeHost({ strategy: strat, stream: stream.iterable, sink });
     await host.start(); // populates the per-strategy runtime; the empty stream parks consumeEvents
 
-    const internals = host as unknown as { routeEvent(e: MarketEvent): void; drainMailboxes(): void };
+    const internals = host as unknown as {
+      routeEvent(e: MarketEvent): void;
+      drainMailboxes(): void;
+    };
     internals.routeEvent(ticker(1, 1));
     internals.routeEvent(ticker(2, 2)); // same symbol → conflates onto the queued ticker
     internals.routeEvent(book(3, 3));

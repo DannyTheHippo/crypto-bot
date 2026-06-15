@@ -6,7 +6,12 @@ import type { OrderIntent } from '../../../src/domain/types/order-intent';
 import type { PortfolioSnapshot, Position } from '../../../src/domain/types/portfolio';
 import { price, qty } from '../../../src/domain/types/money';
 import {
-  intentId, encodeClientOrderId, strategyId, venueId, symbolId, epochMs,
+  intentId,
+  encodeClientOrderId,
+  strategyId,
+  venueId,
+  symbolId,
+  epochMs,
 } from '../../../src/domain/types/ids';
 
 const SID = strategyId('s1');
@@ -30,9 +35,20 @@ function makeIntent(o: Partial<OrderIntent> = {}): OrderIntent {
   return {
     intentId: IID,
     clientOrderId: encodeClientOrderId(IID, 'paper'),
-    strategyId: SID, venue: V, symbol: SYM, side: 'BUY', type: 'LIMIT',
-    qty: qty('1'), limitPrice: price('100'), timeInForce: 'GTC', reduceOnly: false,
-    mode: 'paper', refPrice: price('100'), refSeq: 1n, createdAt: epochMs(0), expiresAt: epochMs(10_000),
+    strategyId: SID,
+    venue: V,
+    symbol: SYM,
+    side: 'BUY',
+    type: 'LIMIT',
+    qty: qty('1'),
+    limitPrice: price('100'),
+    timeInForce: 'GTC',
+    reduceOnly: false,
+    mode: 'paper',
+    refPrice: price('100'),
+    refSeq: 1n,
+    createdAt: epochMs(0),
+    expiresAt: epochMs(10_000),
     source: { dedupeKey: 'k', eventTime: epochMs(0), basedOnSeq: 1n, strength: 1 },
     ...o,
   };
@@ -76,7 +92,17 @@ function makeInput(o: Partial<RiskEvalInput> = {}): RiskEvalInput {
 
 function pos(signed: string): Map<string, Position> {
   return new Map([
-    [`${SID}:${V}:${SYM}`, { strategyId: SID, venue: V, symbol: SYM, signedQty: new Decimal(signed), avgEntry: price('100'), realizedPnl: new Decimal(0) }],
+    [
+      `${SID}:${V}:${SYM}`,
+      {
+        strategyId: SID,
+        venue: V,
+        symbol: SYM,
+        signedQty: new Decimal(signed),
+        avgEntry: price('100'),
+        realizedPnl: new Decimal(0),
+      },
+    ],
   ]);
 }
 
@@ -92,11 +118,14 @@ describe('RiskEngine.evaluate — §5 decision table', () => {
     expect(r).toMatchObject({ verdict: 'REJECTED', reasons: ['KILL_SWITCH'] });
   });
   it('G0: FLATTENING permits a reduce-only flatten (carve-out)', () => {
-    const r = evaluate(makeInput({
-      killState: 'FLATTENING', isFlatten: true,
-      intent: makeIntent({ side: 'SELL', reduceOnly: true }),
-      snapshot: snapshot({ positions: pos('5') }),
-    }));
+    const r = evaluate(
+      makeInput({
+        killState: 'FLATTENING',
+        isFlatten: true,
+        intent: makeIntent({ side: 'SELL', reduceOnly: true }),
+        snapshot: snapshot({ positions: pos('5') }),
+      }),
+    );
     expect(r.verdict).not.toBe('REJECTED');
   });
   it('G0: FLATTENING still rejects a non-flatten intent', () => {
@@ -121,18 +150,24 @@ describe('RiskEngine.evaluate — §5 decision table', () => {
     expect(evaluate(makeInput({ mark: undefined }))).toMatchObject({ reasons: ['STALE_DATA'] });
   });
   it('P1: rejects on stale age', () => {
-    expect(evaluate(makeInput({ mark: { ...MARK, ageMs: 6000 } }))).toMatchObject({ reasons: ['STALE_DATA'] });
+    expect(evaluate(makeInput({ mark: { ...MARK, ageMs: 6000 } }))).toMatchObject({
+      reasons: ['STALE_DATA'],
+    });
   });
   it('P1: rejects on non-LIVE feed', () => {
-    expect(evaluate(makeInput({ mark: { ...MARK, feedHealth: 'DEGRADED' } }))).toMatchObject({ reasons: ['STALE_DATA'] });
+    expect(evaluate(makeInput({ mark: { ...MARK, feedHealth: 'DEGRADED' } }))).toMatchObject({
+      reasons: ['STALE_DATA'],
+    });
   });
   it('P1: flatten carve-out uses last-trade on stale data with band ×2', () => {
-    const r = evaluate(makeInput({
-      isFlatten: true,
-      intent: makeIntent({ side: 'SELL', reduceOnly: true, limitPrice: price('100') }),
-      snapshot: snapshot({ positions: pos('5') }),
-      mark: { mid: price('100'), ageMs: 9999, feedHealth: 'GAP', lastTrade: price('100') },
-    }));
+    const r = evaluate(
+      makeInput({
+        isFlatten: true,
+        intent: makeIntent({ side: 'SELL', reduceOnly: true, limitPrice: price('100') }),
+        snapshot: snapshot({ positions: pos('5') }),
+        mark: { mid: price('100'), ageMs: 9999, feedHealth: 'GAP', lastTrade: price('100') },
+      }),
+    );
     expect(r.verdict).not.toBe('REJECTED');
   });
 
@@ -146,11 +181,13 @@ describe('RiskEngine.evaluate — §5 decision table', () => {
     expect(r.verdict).toBe('APPROVED');
   });
   it('P2: flatten CLAMPS price to the band edge (SELL → lower edge)', () => {
-    const r = evaluate(makeInput({
-      isFlatten: true,
-      intent: makeIntent({ side: 'SELL', reduceOnly: true, limitPrice: price('50') }),
-      snapshot: snapshot({ positions: pos('5') }),
-    }));
+    const r = evaluate(
+      makeInput({
+        isFlatten: true,
+        intent: makeIntent({ side: 'SELL', reduceOnly: true, limitPrice: price('50') }),
+        snapshot: snapshot({ positions: pos('5') }),
+      }),
+    );
     expect(r.verdict).toBe('RESIZED');
     if (r.verdict === 'RESIZED') {
       expect(r.reasons).toContain('PRICE_BAND');
@@ -160,16 +197,25 @@ describe('RiskEngine.evaluate — §5 decision table', () => {
 
   // P3 fat-finger
   it('P3: HARD rejects an over-notional strategy order', () => {
-    const r = evaluate(makeInput({ intent: makeIntent({ qty: qty('20000'), limitPrice: price('100') }) }));
+    const r = evaluate(
+      makeInput({ intent: makeIntent({ qty: qty('20000'), limitPrice: price('100') }) }),
+    );
     expect(r).toMatchObject({ verdict: 'REJECTED', reasons: ['FAT_FINGER'] });
   });
   it('P3: flatten CLAMPS qty to the notional cap', () => {
-    const r = evaluate(makeInput({
-      isFlatten: true,
-      intent: makeIntent({ side: 'SELL', reduceOnly: true, qty: qty('20000'), limitPrice: price('100') }),
-      snapshot: snapshot({ positions: pos('20000') }),
-      limits: { ...FULL_LIMITS, maxOrderNotional: '1000', maxPositionPerSymbol: '99999' },
-    }));
+    const r = evaluate(
+      makeInput({
+        isFlatten: true,
+        intent: makeIntent({
+          side: 'SELL',
+          reduceOnly: true,
+          qty: qty('20000'),
+          limitPrice: price('100'),
+        }),
+        snapshot: snapshot({ positions: pos('20000') }),
+        limits: { ...FULL_LIMITS, maxOrderNotional: '1000', maxPositionPerSymbol: '99999' },
+      }),
+    );
     expect(r.verdict).toBe('RESIZED');
     if (r.verdict === 'RESIZED') expect(r.reasons).toContain('FAT_FINGER');
   });
@@ -179,7 +225,9 @@ describe('RiskEngine.evaluate — §5 decision table', () => {
     expect(evaluate(makeInput({ now: epochMs(20_000) }))).toMatchObject({ reasons: ['EXPIRED'] });
   });
   it('P4: rejects on reference drift', () => {
-    const r = evaluate(makeInput({ intent: makeIntent({ refPrice: price('110'), limitPrice: price('100') }) }));
+    const r = evaluate(
+      makeInput({ intent: makeIntent({ refPrice: price('110'), limitPrice: price('100') }) }),
+    );
     expect(r).toMatchObject({ verdict: 'REJECTED', reasons: ['REF_DRIFT'] });
   });
 
@@ -191,21 +239,29 @@ describe('RiskEngine.evaluate — §5 decision table', () => {
   });
   it('R1: rate runaway escalates to a kill-switch halt', () => {
     const r = evaluate(makeInput({ rate: { allowed: false, runaway: true } }));
-    expect(r).toMatchObject({ verdict: 'REJECTED', reasons: ['RATE_LIMIT'], halt: 'ORDER_RATE_RUNAWAY' });
+    expect(r).toMatchObject({
+      verdict: 'REJECTED',
+      reasons: ['RATE_LIMIT'],
+      halt: 'ORDER_RATE_RUNAWAY',
+    });
   });
 
   // X1 crossing
   it('X1: rejects a crossing intent', () => {
-    expect(evaluate(makeInput({ wouldCross: true }))).toMatchObject({ reasons: ['CROSSING_INTENT'] });
+    expect(evaluate(makeInput({ wouldCross: true }))).toMatchObject({
+      reasons: ['CROSSING_INTENT'],
+    });
   });
 
   // E1 position limit
   it('E1: CLAMPS to position headroom', () => {
-    const r = evaluate(makeInput({
-      intent: makeIntent({ qty: qty('600') }),
-      snapshot: snapshot({ positions: pos('600') }),
-      limits: { ...FULL_LIMITS, maxPositionPerSymbol: '1000' },
-    }));
+    const r = evaluate(
+      makeInput({
+        intent: makeIntent({ qty: qty('600') }),
+        snapshot: snapshot({ positions: pos('600') }),
+        limits: { ...FULL_LIMITS, maxPositionPerSymbol: '1000' },
+      }),
+    );
     expect(r.verdict).toBe('RESIZED');
     if (r.verdict === 'RESIZED') {
       expect(r.reasons).toContain('POSITION_LIMIT');
@@ -213,82 +269,143 @@ describe('RiskEngine.evaluate — §5 decision table', () => {
     }
   });
   it('E1: rejects when there is no position headroom at all', () => {
-    const r = evaluate(makeInput({
-      intent: makeIntent({ qty: qty('1') }),
-      snapshot: snapshot({ positions: pos('1000') }),
-      limits: { ...FULL_LIMITS, maxPositionPerSymbol: '1000' },
-    }));
+    const r = evaluate(
+      makeInput({
+        intent: makeIntent({ qty: qty('1') }),
+        snapshot: snapshot({ positions: pos('1000') }),
+        limits: { ...FULL_LIMITS, maxPositionPerSymbol: '1000' },
+      }),
+    );
     expect(r).toMatchObject({ verdict: 'REJECTED', reasons: ['POSITION_LIMIT'] });
   });
   it('E1: counts same-direction in-flight intents toward the limit', () => {
-    const r = evaluate(makeInput({
-      intent: makeIntent({ qty: qty('400') }),
-      snapshot: snapshot({ inFlightIntents: [makeIntent({ qty: qty('800'), side: 'BUY' })], positions: pos('0') }),
-      limits: { ...FULL_LIMITS, maxPositionPerSymbol: '1000' },
-    }));
+    const r = evaluate(
+      makeInput({
+        intent: makeIntent({ qty: qty('400') }),
+        snapshot: snapshot({
+          inFlightIntents: [makeIntent({ qty: qty('800'), side: 'BUY' })],
+          positions: pos('0'),
+        }),
+        limits: { ...FULL_LIMITS, maxPositionPerSymbol: '1000' },
+      }),
+    );
     expect(r.verdict).toBe('RESIZED'); // 800 in-flight + clamp to 200 headroom
     if (r.verdict === 'RESIZED') expect(r.intent.qty.toFixed()).toBe('200');
   });
 
   // E2/E3 exposure
   it('E2/E3: CLAMPS to gross exposure headroom', () => {
-    const r = evaluate(makeInput({
-      intent: makeIntent({ qty: qty('100'), limitPrice: price('100') }), // wants 10000 notional
-      currentGross: new Decimal(995_000), currentNet: new Decimal(995_000),
-      limits: { ...FULL_LIMITS, maxGrossExposure: '1000000', maxNetExposure: '1000000' },
-    }));
+    const r = evaluate(
+      makeInput({
+        intent: makeIntent({ qty: qty('100'), limitPrice: price('100') }), // wants 10000 notional
+        currentGross: new Decimal(995_000),
+        currentNet: new Decimal(995_000),
+        limits: { ...FULL_LIMITS, maxGrossExposure: '1000000', maxNetExposure: '1000000' },
+      }),
+    );
     expect(r.verdict).toBe('RESIZED');
     if (r.verdict === 'RESIZED') expect(r.reasons).toContain('EXPOSURE_LIMIT'); // headroom 5000 / 100 = 50 qty
   });
   it('E2/E3: net headroom can be the binding constraint', () => {
-    const r = evaluate(makeInput({
-      intent: makeIntent({ qty: qty('100'), limitPrice: price('100') }),
-      currentGross: new Decimal(0), currentNet: new Decimal(999_000),
-      limits: { ...FULL_LIMITS, maxGrossExposure: '1000000', maxNetExposure: '1000000' },
-    }));
+    const r = evaluate(
+      makeInput({
+        intent: makeIntent({ qty: qty('100'), limitPrice: price('100') }),
+        currentGross: new Decimal(0),
+        currentNet: new Decimal(999_000),
+        limits: { ...FULL_LIMITS, maxGrossExposure: '1000000', maxNetExposure: '1000000' },
+      }),
+    );
     expect(r.verdict).toBe('RESIZED'); // net headroom 1000 < order 10000
   });
   it('E2/E3: rejects when there is no exposure headroom', () => {
-    const r = evaluate(makeInput({
-      currentGross: new Decimal(1_000_000), currentNet: new Decimal(1_000_000),
-    }));
+    const r = evaluate(
+      makeInput({
+        currentGross: new Decimal(1_000_000),
+        currentNet: new Decimal(1_000_000),
+      }),
+    );
     expect(r).toMatchObject({ verdict: 'REJECTED', reasons: ['EXPOSURE_LIMIT'] });
   });
 
   // C1 daily loss
   it('C1: rejects + halts at the daily-loss boundary (equality trips)', () => {
-    const r = evaluate(makeInput({ snapshot: snapshot({ equity: new Decimal(5_000), sodEquityUtc: new Decimal(10_000) }) }));
+    const r = evaluate(
+      makeInput({
+        snapshot: snapshot({ equity: new Decimal(5_000), sodEquityUtc: new Decimal(10_000) }),
+      }),
+    );
     expect(r).toMatchObject({ verdict: 'REJECTED', reasons: ['DAILY_LOSS'], halt: 'DAILY_LOSS' });
   });
   it('C1: reduce-only passes the daily-loss gate', () => {
-    const r = evaluate(makeInput({
-      intent: makeIntent({ side: 'SELL', reduceOnly: true }),
-      snapshot: snapshot({ equity: new Decimal(5_000), sodEquityUtc: new Decimal(10_000), positions: pos('5') }),
-    }));
+    const r = evaluate(
+      makeInput({
+        intent: makeIntent({ side: 'SELL', reduceOnly: true }),
+        snapshot: snapshot({
+          equity: new Decimal(5_000),
+          sodEquityUtc: new Decimal(10_000),
+          positions: pos('5'),
+        }),
+      }),
+    );
     expect(r.verdict).not.toBe('REJECTED');
   });
 
   // C2 drawdown
   it('C2: rejects + halts at the drawdown boundary', () => {
-    const r = evaluate(makeInput({ snapshot: snapshot({ equity: new Decimal(5_000), peakEquity: new Decimal(10_000), sodEquityUtc: new Decimal(5_000) }) }));
-    expect(r).toMatchObject({ verdict: 'REJECTED', reasons: ['MAX_DRAWDOWN'], halt: 'MAX_DRAWDOWN' });
+    const r = evaluate(
+      makeInput({
+        snapshot: snapshot({
+          equity: new Decimal(5_000),
+          peakEquity: new Decimal(10_000),
+          sodEquityUtc: new Decimal(5_000),
+        }),
+      }),
+    );
+    expect(r).toMatchObject({
+      verdict: 'REJECTED',
+      reasons: ['MAX_DRAWDOWN'],
+      halt: 'MAX_DRAWDOWN',
+    });
   });
   it('C2: a zero peak equity skips the drawdown gate', () => {
-    const r = evaluate(makeInput({ snapshot: snapshot({ peakEquity: new Decimal(0), equity: new Decimal(0), sodEquityUtc: new Decimal(0) }) }));
+    const r = evaluate(
+      makeInput({
+        snapshot: snapshot({
+          peakEquity: new Decimal(0),
+          equity: new Decimal(0),
+          sodEquityUtc: new Decimal(0),
+        }),
+      }),
+    );
     expect(r.verdict).toBe('APPROVED');
   });
 
   // F2 reduce-only semantics
   it('F2: reduce-only with the wrong side is a violation', () => {
-    const r = evaluate(makeInput({ intent: makeIntent({ side: 'BUY', reduceOnly: true }), snapshot: snapshot({ positions: pos('5') }) }));
+    const r = evaluate(
+      makeInput({
+        intent: makeIntent({ side: 'BUY', reduceOnly: true }),
+        snapshot: snapshot({ positions: pos('5') }),
+      }),
+    );
     expect(r).toMatchObject({ verdict: 'REJECTED', reasons: ['REDUCE_ONLY_VIOLATION'] });
   });
   it('F2: reduce-only on a short position permits a BUY', () => {
-    const r = evaluate(makeInput({ intent: makeIntent({ side: 'BUY', reduceOnly: true, qty: qty('3') }), snapshot: snapshot({ positions: pos('-5') }) }));
+    const r = evaluate(
+      makeInput({
+        intent: makeIntent({ side: 'BUY', reduceOnly: true, qty: qty('3') }),
+        snapshot: snapshot({ positions: pos('-5') }),
+      }),
+    );
     expect(r.verdict).not.toBe('REJECTED');
   });
   it('F2: reduce-only qty exceeding the position is clamped down', () => {
-    const r = evaluate(makeInput({ intent: makeIntent({ side: 'SELL', reduceOnly: true, qty: qty('10') }), snapshot: snapshot({ positions: pos('4') }) }));
+    const r = evaluate(
+      makeInput({
+        intent: makeIntent({ side: 'SELL', reduceOnly: true, qty: qty('10') }),
+        snapshot: snapshot({ positions: pos('4') }),
+      }),
+    );
     expect(r.verdict).toBe('RESIZED');
     if (r.verdict === 'RESIZED') {
       expect(r.reasons).toContain('REDUCE_ONLY_VIOLATION');
@@ -297,31 +414,42 @@ describe('RiskEngine.evaluate — §5 decision table', () => {
   });
 
   it('MARKET order with no limit price uses the mark as the working price', () => {
-    const r = evaluate(makeInput({ intent: makeIntent({ type: 'MARKET', limitPrice: undefined, qty: qty('1') }) }));
+    const r = evaluate(
+      makeInput({ intent: makeIntent({ type: 'MARKET', limitPrice: undefined, qty: qty('1') }) }),
+    );
     expect(r.verdict).toBe('APPROVED');
   });
 
   it('nets opposing same-symbol in-flight intents and ignores non-matching ones', () => {
-    const r = evaluate(makeInput({
-      intent: makeIntent({ side: 'BUY', qty: qty('400') }),
-      snapshot: snapshot({
-        positions: pos('0'),
-        inFlightIntents: [
-          makeIntent({ side: 'SELL', qty: qty('200') }), // matching → reduces committed exposure
-          makeIntent({ side: 'BUY', qty: qty('900'), symbol: symbolId('ETH/USDT') }), // other symbol → ignored
-        ],
+    const r = evaluate(
+      makeInput({
+        intent: makeIntent({ side: 'BUY', qty: qty('400') }),
+        snapshot: snapshot({
+          positions: pos('0'),
+          inFlightIntents: [
+            makeIntent({ side: 'SELL', qty: qty('200') }), // matching → reduces committed exposure
+            makeIntent({ side: 'BUY', qty: qty('900'), symbol: symbolId('ETH/USDT') }), // other symbol → ignored
+          ],
+        }),
+        limits: { ...FULL_LIMITS, maxPositionPerSymbol: '1000' },
       }),
-      limits: { ...FULL_LIMITS, maxPositionPerSymbol: '1000' },
-    }));
+    );
     expect(r.verdict).toBe('APPROVED'); // base −200 + 400 = 200 ≤ 1000
   });
 
   it('P2: flatten CLAMPS a BUY to the upper band edge (reduce-only on a short)', () => {
-    const r = evaluate(makeInput({
-      isFlatten: true,
-      intent: makeIntent({ side: 'BUY', reduceOnly: true, qty: qty('3'), limitPrice: price('500') }),
-      snapshot: snapshot({ positions: pos('-5') }),
-    }));
+    const r = evaluate(
+      makeInput({
+        isFlatten: true,
+        intent: makeIntent({
+          side: 'BUY',
+          reduceOnly: true,
+          qty: qty('3'),
+          limitPrice: price('500'),
+        }),
+        snapshot: snapshot({ positions: pos('-5') }),
+      }),
+    );
     expect(r.verdict).toBe('RESIZED');
     if (r.verdict === 'RESIZED') {
       expect(r.reasons).toContain('PRICE_BAND');
@@ -331,26 +459,37 @@ describe('RiskEngine.evaluate — §5 decision table', () => {
 
   // F1 exchange filters
   it('F1: rejects when the clamped qty falls below the exchange minimum', () => {
-    const r = evaluate(makeInput({
-      intent: makeIntent({ qty: qty('1000') }),
-      snapshot: snapshot({ positions: pos('999.9995') }),
-      limits: { ...FULL_LIMITS, maxPositionPerSymbol: '1000' },
-      filters: { tickSize: '0.01', stepSize: '0.001', minQty: '0.01', minNotional: '5' },
-    }));
+    const r = evaluate(
+      makeInput({
+        intent: makeIntent({ qty: qty('1000') }),
+        snapshot: snapshot({ positions: pos('999.9995') }),
+        limits: { ...FULL_LIMITS, maxPositionPerSymbol: '1000' },
+        filters: { tickSize: '0.01', stepSize: '0.001', minQty: '0.01', minNotional: '5' },
+      }),
+    );
     expect(r).toMatchObject({ verdict: 'REJECTED', reasons: ['BELOW_EXCHANGE_MIN'] });
   });
   it('F1: rejects when notional is below the exchange minimum', () => {
-    const r = evaluate(makeInput({
-      intent: makeIntent({ qty: qty('0.01'), limitPrice: price('100') }),
-      filters: { tickSize: '0.01', stepSize: '0.001', minQty: '0.001', minNotional: '5' },
-    }));
+    const r = evaluate(
+      makeInput({
+        intent: makeIntent({ qty: qty('0.01'), limitPrice: price('100') }),
+        filters: { tickSize: '0.01', stepSize: '0.001', minQty: '0.001', minNotional: '5' },
+      }),
+    );
     expect(r).toMatchObject({ verdict: 'REJECTED', reasons: ['BELOW_EXCHANGE_MIN'] });
   });
   it('F1: SELL price rounds UP to the tick; APPROVED reduce-only exit', () => {
-    const r = evaluate(makeInput({
-      intent: makeIntent({ side: 'SELL', reduceOnly: true, qty: qty('5'), limitPrice: price('99.999') }),
-      snapshot: snapshot({ positions: pos('5') }),
-    }));
+    const r = evaluate(
+      makeInput({
+        intent: makeIntent({
+          side: 'SELL',
+          reduceOnly: true,
+          qty: qty('5'),
+          limitPrice: price('99.999'),
+        }),
+        snapshot: snapshot({ positions: pos('5') }),
+      }),
+    );
     // 99.999 rounds up to 100.00 on a 0.01 tick; reduce-only qty == position ⇒ APPROVED.
     expect(r.verdict).toBe('APPROVED');
     if (r.verdict === 'APPROVED') expect(r.intent.limitPrice!.toFixed()).toBe('100');

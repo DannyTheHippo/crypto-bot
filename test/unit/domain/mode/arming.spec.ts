@@ -35,14 +35,22 @@ const armed: ArmingState = {
 
 describe('reduceArming — REQUEST', () => {
   it('from DISARMED → CHALLENGE_ISSUED with correct TTL', () => {
-    const r = reduceArming(INITIAL_ARMING, { type: 'REQUEST', challengeId, bootId, nowMs: T0 }, deps);
+    const r = reduceArming(
+      INITIAL_ARMING,
+      { type: 'REQUEST', challengeId, bootId, nowMs: T0 },
+      deps,
+    );
     expect(r.effect).toBe('NONE');
     expect(r.failure).toBeUndefined();
     expect(r.state).toEqual(challenged);
   });
 
   it('from CHALLENGE_ISSUED → replaces challenge (fresh mint allowed)', () => {
-    const r = reduceArming(challenged, { type: 'REQUEST', challengeId: 'chal-2', bootId: 'boot-2', nowMs: T0 }, deps);
+    const r = reduceArming(
+      challenged,
+      { type: 'REQUEST', challengeId: 'chal-2', bootId: 'boot-2', nowMs: T0 },
+      deps,
+    );
     expect(r.state).toEqual({
       kind: 'CHALLENGE_ISSUED',
       challengeId: 'chal-2',
@@ -54,7 +62,11 @@ describe('reduceArming — REQUEST', () => {
   });
 
   it('from ARMED → keeps existing armed session (safe: no silent drop)', () => {
-    const r = reduceArming(armed, { type: 'REQUEST', challengeId: 'chal-new', bootId, nowMs: T0 }, deps);
+    const r = reduceArming(
+      armed,
+      { type: 'REQUEST', challengeId: 'chal-new', bootId, nowMs: T0 },
+      deps,
+    );
     expect(r.state).toBe(armed);
     expect(r.effect).toBe('NONE');
     expect(r.failure).toBeUndefined();
@@ -63,7 +75,11 @@ describe('reduceArming — REQUEST', () => {
 
 describe('reduceArming — CONFIRM', () => {
   it('DISARMED → NO_CHALLENGE failure, stays DISARMED', () => {
-    const r = reduceArming(INITIAL_ARMING, { type: 'CONFIRM', hmacHex: 'good', bootId, nowMs: T0 }, deps);
+    const r = reduceArming(
+      INITIAL_ARMING,
+      { type: 'CONFIRM', hmacHex: 'good', bootId, nowMs: T0 },
+      deps,
+    );
     expect(r.failure).toBe('NO_CHALLENGE');
     expect(r.state.kind).toBe('DISARMED');
     expect(r.effect).toBe('NONE');
@@ -78,7 +94,11 @@ describe('reduceArming — CONFIRM', () => {
 
   it('CHALLENGE_ISSUED, TTL expired (nowMs > expiresAtMs) → TTL_EXPIRED, resets to DISARMED', () => {
     const nowExpired = epochMs(T0 + CHALLENGE_TTL_MS + 1);
-    const r = reduceArming(challenged, { type: 'CONFIRM', hmacHex: 'good', bootId, nowMs: nowExpired }, deps);
+    const r = reduceArming(
+      challenged,
+      { type: 'CONFIRM', hmacHex: 'good', bootId, nowMs: nowExpired },
+      deps,
+    );
     expect(r.failure).toBe('TTL_EXPIRED');
     expect(r.state.kind).toBe('DISARMED');
     expect(r.effect).toBe('NONE');
@@ -86,27 +106,43 @@ describe('reduceArming — CONFIRM', () => {
 
   it('TTL boundary: nowMs === expiresAtMs is NOT expired', () => {
     const atBoundary = epochMs(T0 + CHALLENGE_TTL_MS);
-    const r = reduceArming(challenged, { type: 'CONFIRM', hmacHex: 'good', bootId, nowMs: atBoundary }, deps);
+    const r = reduceArming(
+      challenged,
+      { type: 'CONFIRM', hmacHex: 'good', bootId, nowMs: atBoundary },
+      deps,
+    );
     expect(r.failure).toBeUndefined();
     expect(r.state.kind).toBe('ARMED');
   });
 
   it('wrong bootId → BOOTID_MISMATCH, stays CHALLENGE_ISSUED', () => {
-    const r = reduceArming(challenged, { type: 'CONFIRM', hmacHex: 'good', bootId: 'other-boot', nowMs: T0 }, deps);
+    const r = reduceArming(
+      challenged,
+      { type: 'CONFIRM', hmacHex: 'good', bootId: 'other-boot', nowMs: T0 },
+      deps,
+    );
     expect(r.failure).toBe('BOOTID_MISMATCH');
     expect(r.state).toBe(challenged);
     expect(r.effect).toBe('NONE');
   });
 
   it('bad hmac → HMAC_MISMATCH, stays CHALLENGE_ISSUED', () => {
-    const r = reduceArming(challenged, { type: 'CONFIRM', hmacHex: 'bad', bootId, nowMs: T0 }, deps);
+    const r = reduceArming(
+      challenged,
+      { type: 'CONFIRM', hmacHex: 'bad', bootId, nowMs: T0 },
+      deps,
+    );
     expect(r.failure).toBe('HMAC_MISMATCH');
     expect(r.state).toBe(challenged);
     expect(r.effect).toBe('NONE');
   });
 
   it('valid CONFIRM → ARMED with correct 8h TTL', () => {
-    const r = reduceArming(challenged, { type: 'CONFIRM', hmacHex: 'good', bootId, nowMs: T0 }, deps);
+    const r = reduceArming(
+      challenged,
+      { type: 'CONFIRM', hmacHex: 'good', bootId, nowMs: T0 },
+      deps,
+    );
     expect(r.failure).toBeUndefined();
     expect(r.state).toEqual({
       kind: 'ARMED',
@@ -171,7 +207,13 @@ describe('reduceArming — DISARM', () => {
   });
 
   it('all DisarmTrigger values are handled', () => {
-    const triggers = ['MANUAL', 'KILL_SWITCH', 'KEY_PROBE_FAILURE', 'RECONCILE_MISMATCH', 'TTL'] as const;
+    const triggers = [
+      'MANUAL',
+      'KILL_SWITCH',
+      'KEY_PROBE_FAILURE',
+      'RECONCILE_MISMATCH',
+      'TTL',
+    ] as const;
     for (const trigger of triggers) {
       const r = reduceArming(armed, { type: 'DISARM', trigger }, deps);
       expect(r.state.kind).toBe('DISARMED');

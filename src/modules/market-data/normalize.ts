@@ -44,7 +44,9 @@ function numOrUndef(v: unknown): number | undefined {
 
 function eventTimeOf(ts: unknown, ingestTime: EpochMs): { eventTime: EpochMs; synthetic: boolean } {
   const t = numOrUndef(ts);
-  return t === undefined ? { eventTime: ingestTime, synthetic: true } : { eventTime: epochMs(t), synthetic: false };
+  return t === undefined
+    ? { eventTime: ingestTime, synthetic: true }
+    : { eventTime: epochMs(t), synthetic: false };
 }
 
 /**
@@ -132,7 +134,11 @@ const INTERVAL_MS: Record<CandleInterval, number> = {
   '1d': 86_400_000,
 };
 
-function normalizeCandle(raw: RawVenueEvent, ingestTime: EpochMs, interval: CandleInterval): CandleEvent {
+function normalizeCandle(
+  raw: RawVenueEvent,
+  ingestTime: EpochMs,
+  interval: CandleInterval,
+): CandleEvent {
   const channel = `candle:${interval}`;
 
   // ccxt OHLCV array: [timestamp, open, high, low, close, volume, (closed?)].

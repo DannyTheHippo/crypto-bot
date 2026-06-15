@@ -18,7 +18,12 @@ export class CrossingRegistryService {
     this.orders.delete(id);
   }
 
-  wouldCross(strategyId: StrategyId, symbol: SymbolId, side: 'BUY' | 'SELL', limitPrice: Price | undefined): boolean {
+  wouldCross(
+    strategyId: StrategyId,
+    symbol: SymbolId,
+    side: 'BUY' | 'SELL',
+    limitPrice: Price | undefined,
+  ): boolean {
     const probe: CrossingProbe = { strategyId, symbol, side, limitPrice };
     return wouldCross(probe, Array.from(this.orders.values()));
   }

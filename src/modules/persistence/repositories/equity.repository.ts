@@ -44,11 +44,19 @@ export class EquityRepository {
     return rows[0] ?? null;
   }
 
-  async findSessionStartByMode(mode: TradingMode, sessionDateUtc: string): Promise<EquityRow | null> {
+  async findSessionStartByMode(
+    mode: TradingMode,
+    sessionDateUtc: string,
+  ): Promise<EquityRow | null> {
     const rows = await requireDb(this.db)
       .select()
       .from(schema.equityCurve)
-      .where(and(eq(schema.equityCurve.mode, mode), eq(schema.equityCurve.sessionDateUtc, sessionDateUtc)))
+      .where(
+        and(
+          eq(schema.equityCurve.mode, mode),
+          eq(schema.equityCurve.sessionDateUtc, sessionDateUtc),
+        ),
+      )
       .orderBy(asc(schema.equityCurve.ts), asc(schema.equityCurve.id))
       .limit(1);
     return rows[0] ?? null;

@@ -85,7 +85,13 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
 
   // Seed a minimal order_intents parent row so a subsequent orders insert satisfies the
   // orders.intent_id → order_intents FK (the write-ahead path always persists the intent first).
-  async function seedIntent(intentId: string, clientOrderId: string, mode: string, runId: string, bootId: string): Promise<void> {
+  async function seedIntent(
+    intentId: string,
+    clientOrderId: string,
+    mode: string,
+    runId: string,
+    bootId: string,
+  ): Promise<void> {
     await pool.query(
       `INSERT INTO public.order_intents
         (intent_id, client_order_id, strategy_id, venue, symbol, side, type, qty, time_in_force, reduce_only,
@@ -474,7 +480,11 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
   // Each test uses a distinct `mode` so the mode-keyed (current-state) positions/orders tables
   // do not couple tests. Money is asserted by EXACT padded string (pg renders NUMERIC(38,18)).
   it('(h) savePortfolioSample + loadRecoverySnapshot round-trips equity and positions exactly', async () => {
-    const store = new DrizzleExecutionStore(db, { mode: 'testnet', runId: 'run-rec', bootId: 'boot-rec' });
+    const store = new DrizzleExecutionStore(db, {
+      mode: 'testnet',
+      runId: 'run-rec',
+      bootId: 'boot-rec',
+    });
     const pos: Position = {
       strategyId: strategyId('s-rec'),
       venue: venueId('binance'),
@@ -484,7 +494,14 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
       realizedPnl: new Decimal('12.25'),
     };
     await store.savePortfolioSample(
-      { ts: epochMs(1_700_000_100_000), equity: '49850.5', cash: '19850.5', unrealized: '0', peak: '50000', sessionDateUtc: '2026-06-14' },
+      {
+        ts: epochMs(1_700_000_100_000),
+        equity: '49850.5',
+        cash: '19850.5',
+        unrealized: '0',
+        peak: '50000',
+        sessionDateUtc: '2026-06-14',
+      },
       [pos],
     );
 
@@ -509,14 +526,41 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
   });
 
   it('(h) savePortfolioSample with an empty position set clears the persisted positions (flat)', async () => {
-    const store = new DrizzleExecutionStore(db, { mode: 'live', runId: 'run-flat', bootId: 'boot-flat' });
+    const store = new DrizzleExecutionStore(db, {
+      mode: 'live',
+      runId: 'run-flat',
+      bootId: 'boot-flat',
+    });
     await store.savePortfolioSample(
-      { ts: epochMs(1_700_000_200_000), equity: '100', cash: '100', unrealized: '0', peak: '100', sessionDateUtc: '2026-06-15' },
-      [{ strategyId: strategyId('s-flat'), venue: venueId('binance'), symbol: symbolId('ETH/USDT'), signedQty: new Decimal('2'), avgEntry: price('3000'), realizedPnl: new Decimal('0') }],
+      {
+        ts: epochMs(1_700_000_200_000),
+        equity: '100',
+        cash: '100',
+        unrealized: '0',
+        peak: '100',
+        sessionDateUtc: '2026-06-15',
+      },
+      [
+        {
+          strategyId: strategyId('s-flat'),
+          venue: venueId('binance'),
+          symbol: symbolId('ETH/USDT'),
+          signedQty: new Decimal('2'),
+          avgEntry: price('3000'),
+          realizedPnl: new Decimal('0'),
+        },
+      ],
     );
     // A later flat sample must DELETE the prior position row (replaceAll = DELETE-by-mode + insert []).
     await store.savePortfolioSample(
-      { ts: epochMs(1_700_000_300_000), equity: '100', cash: '100', unrealized: '0', peak: '100', sessionDateUtc: '2026-06-15' },
+      {
+        ts: epochMs(1_700_000_300_000),
+        equity: '100',
+        cash: '100',
+        unrealized: '0',
+        peak: '100',
+        sessionDateUtc: '2026-06-15',
+      },
       [],
     );
     const snap = await store.loadRecoverySnapshot('live');
@@ -525,7 +569,11 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
   });
 
   it('(h) loadOpenOrders returns only non-terminal orders for the mode', async () => {
-    const store = new DrizzleExecutionStore(db, { mode: 'live', runId: 'run-oo', bootId: 'boot-oo' });
+    const store = new DrizzleExecutionStore(db, {
+      mode: 'live',
+      runId: 'run-oo',
+      bootId: 'boot-oo',
+    });
     // orders.intent_id has a (legitimate) FK to order_intents (write-ahead: saveIntent precedes
     // saveNewOrder), so seed the parent intents first.
     await seedIntent('oo-open-1', 'cbp-oo-open-000000000000000000001', 'live', 'run-oo', 'boot-oo');
@@ -534,8 +582,14 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
       (intent_id, client_order_id, strategy_id, venue, symbol, side, type, qty, time_in_force, state, cum_qty, terminal_at, mode, run_id, boot_id)
       VALUES `;
     // open (terminal_at NULL) + terminal (terminal_at set) under mode 'live'
-    await pool.query(ins + `('oo-open-1','cbp-oo-open-000000000000000000001','s','binance','BTC/USDT','BUY','LIMIT','1.000000000000000000','GTC','ACKED','0.000000000000000000',NULL,'live','run-oo','boot-oo')`);
-    await pool.query(ins + `('oo-term-1','cbp-oo-term-000000000000000000001','s','binance','BTC/USDT','BUY','LIMIT','1.000000000000000000','GTC','FILLED','1.000000000000000000',1700000000000,'live','run-oo','boot-oo')`);
+    await pool.query(
+      ins +
+        `('oo-open-1','cbp-oo-open-000000000000000000001','s','binance','BTC/USDT','BUY','LIMIT','1.000000000000000000','GTC','ACKED','0.000000000000000000',NULL,'live','run-oo','boot-oo')`,
+    );
+    await pool.query(
+      ins +
+        `('oo-term-1','cbp-oo-term-000000000000000000001','s','binance','BTC/USDT','BUY','LIMIT','1.000000000000000000','GTC','FILLED','1.000000000000000000',1700000000000,'live','run-oo','boot-oo')`,
+    );
 
     const open = await store.loadOpenOrders('live');
     expect(open).toHaveLength(1);
@@ -544,23 +598,47 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
   });
 
   it('(h) loadOpenOrders fails fast on an unrecognized persisted state (I7 — never trusted)', async () => {
-    const store = new DrizzleExecutionStore(db, { mode: 'paper', runId: 'run-bad', bootId: 'boot-bad' });
-    await seedIntent('oo-bad-1', 'cbp-oo-bad-0000000000000000000001', 'paper', 'run-bad', 'boot-bad');
+    const store = new DrizzleExecutionStore(db, {
+      mode: 'paper',
+      runId: 'run-bad',
+      bootId: 'boot-bad',
+    });
+    await seedIntent(
+      'oo-bad-1',
+      'cbp-oo-bad-0000000000000000000001',
+      'paper',
+      'run-bad',
+      'boot-bad',
+    );
     const ins = `INSERT INTO public.orders
       (intent_id, client_order_id, strategy_id, venue, symbol, side, type, qty, time_in_force, state, cum_qty, terminal_at, mode, run_id, boot_id)
       VALUES ('oo-bad-1','cbp-oo-bad-0000000000000000000001','s','binance','BTC/USDT','BUY','LIMIT','1.000000000000000000','GTC','BOGUS_STATE','0.000000000000000000',NULL,'paper','run-bad','boot-bad')`;
     await pool.query(ins);
-    await expect(store.loadOpenOrders('paper')).rejects.toThrow(/unrecognized persisted order state/i);
+    await expect(store.loadOpenOrders('paper')).rejects.toThrow(
+      /unrecognized persisted order state/i,
+    );
   });
 
   // ── (i) Decision-trail persistence (§8): risk_decisions + signals rows land ──
   it('(i) risk_decisions row round-trips with exact reasons and mode scoping', async () => {
     const repo = new RiskDecisionRepository(db);
     await repo.insert({
-      intentId: 'dt-intent-1', verdict: 'REJECTED', reasons: ['DAILY_LOSS', 'MAX_DRAWDOWN'],
-      limitsVersion: '', snapshotSeq: 42n, inputsHash: '', mode: 'testnet', runId: 'run-dt', bootId: 'boot-dt',
+      intentId: 'dt-intent-1',
+      verdict: 'REJECTED',
+      reasons: ['DAILY_LOSS', 'MAX_DRAWDOWN'],
+      limitsVersion: '',
+      snapshotSeq: 42n,
+      inputsHash: '',
+      mode: 'testnet',
+      runId: 'run-dt',
+      bootId: 'boot-dt',
     });
-    const { rows } = await pool.query<{ intent_id: string; verdict: string; reasons: string[]; mode: string }>(
+    const { rows } = await pool.query<{
+      intent_id: string;
+      verdict: string;
+      reasons: string[];
+      mode: string;
+    }>(
       `SELECT intent_id, verdict, reasons, mode FROM public.risk_decisions WHERE intent_id = 'dt-intent-1'`,
     );
     expect(rows[0]?.verdict).toBe('REJECTED');
@@ -571,10 +649,23 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
   it('(i) signals row round-trips with exact money strings and outcome', async () => {
     const repo = new SignalRepository(db);
     await repo.insert({
-      signalId: 'dt-sig-1', strategyId: 's', venue: 'binance', symbol: 'BTC/USDT', kind: 'ENTER_LONG',
-      strength: '0.5', refPrice: '50000.25', basedOnSeq: 7n, eventTime: 1_700_000_000_000, ttlMs: 10_000,
-      dedupeKey: 'dk-dt-1', reason: 'ema-cross', outcome: 'APPROVED', intentId: 'dt-intent-2',
-      mode: 'paper', runId: 'run-dt', bootId: 'boot-dt',
+      signalId: 'dt-sig-1',
+      strategyId: 's',
+      venue: 'binance',
+      symbol: 'BTC/USDT',
+      kind: 'ENTER_LONG',
+      strength: '0.5',
+      refPrice: '50000.25',
+      basedOnSeq: 7n,
+      eventTime: 1_700_000_000_000,
+      ttlMs: 10_000,
+      dedupeKey: 'dk-dt-1',
+      reason: 'ema-cross',
+      outcome: 'APPROVED',
+      intentId: 'dt-intent-2',
+      mode: 'paper',
+      runId: 'run-dt',
+      bootId: 'boot-dt',
     });
     const { rows } = await pool.query<{ ref_price: string; outcome: string; intent_id: string }>(
       `SELECT ref_price, outcome, intent_id FROM public.signals WHERE signal_id = 'dt-sig-1'`,

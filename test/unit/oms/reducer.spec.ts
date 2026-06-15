@@ -1,15 +1,30 @@
 import { describe, it, expect } from 'vitest';
 import Decimal from 'decimal.js';
 import {
-  reduce, initialOrder, TransitionError, isOrderState, ORDER_STATES,
-  type OrderRecord, type OrderState, type OrderEvent,
+  reduce,
+  initialOrder,
+  TransitionError,
+  isOrderState,
+  ORDER_STATES,
+  type OrderRecord,
+  type OrderState,
+  type OrderEvent,
 } from '../../../src/domain/oms/reducer';
 import { clientOrderId } from '../../../src/domain/types/ids';
 
 const COID = clientOrderId('cbp0190abcd123407abc89ab0123456789ab');
 
 function rec(state: OrderState, over: Partial<OrderRecord> = {}): OrderRecord {
-  return { clientOrderId: COID, state, qty: new Decimal('10'), cumQty: new Decimal(0), stepSize: '0.001', attempt: 0, cancelWanted: false, ...over };
+  return {
+    clientOrderId: COID,
+    state,
+    qty: new Decimal('10'),
+    cumQty: new Decimal(0),
+    stepSize: '0.001',
+    attempt: 0,
+    cancelWanted: false,
+    ...over,
+  };
 }
 const fill = (cum: string): OrderEvent => ({ type: 'FILL', cumQty: new Decimal(cum) });
 
@@ -50,7 +65,9 @@ describe('OMS reducer (§6.1)', () => {
     });
     it('SUBMIT_FAILED_NOT_SENT → NEW (attempt++), and → REJECTED past 3', () => {
       expect(reduce(rec('SUBMITTING'), { type: 'SUBMIT_FAILED_NOT_SENT' }).state).toBe('NEW');
-      expect(reduce(rec('SUBMITTING', { attempt: 3 }), { type: 'SUBMIT_FAILED_NOT_SENT' }).state).toBe('REJECTED');
+      expect(
+        reduce(rec('SUBMITTING', { attempt: 3 }), { type: 'SUBMIT_FAILED_NOT_SENT' }).state,
+      ).toBe('REJECTED');
     });
     it('SUBMIT_AMBIGUOUS → SUBMIT_UNKNOWN', () => {
       expect(reduce(rec('SUBMITTING'), { type: 'SUBMIT_AMBIGUOUS' }).state).toBe('SUBMIT_UNKNOWN');
@@ -90,7 +107,9 @@ describe('OMS reducer (§6.1)', () => {
       // The resolver, not the reducer, owns the TTL check: the reducer must keep these two
       // events distinct so a lapsed intent is never resubmitted on its deterministic id.
       expect(reduce(rec('SUBMIT_UNKNOWN'), { type: 'QUERY_NOT_FOUND' }).state).toBe('NEW');
-      expect(reduce(rec('SUBMIT_UNKNOWN'), { type: 'QUERY_NOT_FOUND_EXPIRED' }).state).toBe('CANCELED');
+      expect(reduce(rec('SUBMIT_UNKNOWN'), { type: 'QUERY_NOT_FOUND_EXPIRED' }).state).toBe(
+        'CANCELED',
+      );
     });
     it('illegal event throws', () => {
       expect(() => reduce(rec('SUBMIT_UNKNOWN'), { type: 'CANCEL_ACK' })).toThrow(TransitionError);
@@ -100,7 +119,9 @@ describe('OMS reducer (§6.1)', () => {
   describe('ACKED / PARTIALLY_FILLED', () => {
     for (const s of ['ACKED', 'PARTIALLY_FILLED'] as const) {
       it(`${s}: fill, stale-fill drop, cancel-requested, venue terminal, illegal`, () => {
-        expect(reduce(rec(s, { cumQty: new Decimal('1') }), fill('5')).state).toBe('PARTIALLY_FILLED');
+        expect(reduce(rec(s, { cumQty: new Decimal('1') }), fill('5')).state).toBe(
+          'PARTIALLY_FILLED',
+        );
         expect(reduce(rec(s, { cumQty: new Decimal('5') }), fill('3')).cumQty.toFixed()).toBe('5'); // stale ≤ current dropped
         expect(reduce(rec(s), fill('10')).state).toBe('FILLED');
         expect(reduce(rec(s), { type: 'CANCEL_REQUESTED' }).state).toBe('CANCEL_PENDING');
@@ -120,10 +141,14 @@ describe('OMS reducer (§6.1)', () => {
       expect(reduce(rec('CANCEL_PENDING'), fill('10')).state).toBe('FILLED');
     });
     it('ambiguous cancel reject → CANCEL_UNKNOWN', () => {
-      expect(reduce(rec('CANCEL_PENDING'), { type: 'CANCEL_REJECT_UNKNOWN' }).state).toBe('CANCEL_UNKNOWN');
+      expect(reduce(rec('CANCEL_PENDING'), { type: 'CANCEL_REJECT_UNKNOWN' }).state).toBe(
+        'CANCEL_UNKNOWN',
+      );
     });
     it('illegal event throws', () => {
-      expect(() => reduce(rec('CANCEL_PENDING'), { type: 'ACK', venueOrderId: 'v' })).toThrow(TransitionError);
+      expect(() => reduce(rec('CANCEL_PENDING'), { type: 'ACK', venueOrderId: 'v' })).toThrow(
+        TransitionError,
+      );
     });
   });
 
@@ -132,8 +157,12 @@ describe('OMS reducer (§6.1)', () => {
       expect(reduce(rec('CANCEL_UNKNOWN'), fill('4')).state).toBe('CANCEL_UNKNOWN');
       expect(reduce(rec('CANCEL_UNKNOWN'), fill('10')).state).toBe('FILLED');
       expect(reduce(rec('CANCEL_UNKNOWN'), { type: 'CANCEL_ACK' }).state).toBe('CANCELED');
-      expect(reduce(rec('CANCEL_UNKNOWN'), { type: 'QUERY_NOT_FOUND' }).state).toBe('RECONCILE_REQUIRED');
-      expect(reduce(rec('CANCEL_UNKNOWN'), { type: 'QUERY_INCONCLUSIVE' }).state).toBe('RECONCILE_REQUIRED');
+      expect(reduce(rec('CANCEL_UNKNOWN'), { type: 'QUERY_NOT_FOUND' }).state).toBe(
+        'RECONCILE_REQUIRED',
+      );
+      expect(reduce(rec('CANCEL_UNKNOWN'), { type: 'QUERY_INCONCLUSIVE' }).state).toBe(
+        'RECONCILE_REQUIRED',
+      );
       expect(() => reduce(rec('CANCEL_UNKNOWN'), { type: 'SUBMIT_SENT' })).toThrow(TransitionError);
     });
   });
@@ -141,7 +170,9 @@ describe('OMS reducer (§6.1)', () => {
   describe('RECONCILE_REQUIRED', () => {
     it('still ingests fills, freezes everything else', () => {
       expect(reduce(rec('RECONCILE_REQUIRED'), fill('2')).cumQty.toFixed()).toBe('2');
-      expect(() => reduce(rec('RECONCILE_REQUIRED'), { type: 'ACK', venueOrderId: 'v' })).toThrow(TransitionError);
+      expect(() => reduce(rec('RECONCILE_REQUIRED'), { type: 'ACK', venueOrderId: 'v' })).toThrow(
+        TransitionError,
+      );
     });
   });
 

@@ -1,4 +1,9 @@
-import type { MarketEvent, CandleEvent, CandleInterval, ChannelHealth } from '../domain/types/market-events';
+import type {
+  MarketEvent,
+  CandleEvent,
+  CandleInterval,
+  ChannelHealth,
+} from '../domain/types/market-events';
 import type { Price } from '../domain/types/money';
 import type { VenueId, SymbolId, EpochMs } from '../domain/types/ids';
 import type { SubscriptionSpec } from '../domain/types/subscription';

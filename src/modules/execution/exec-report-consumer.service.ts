@@ -1,9 +1,19 @@
 import { Inject, Injectable } from '@nestjs/common';
 import {
-  EXEC_OUTBOX, EXECUTION_STORE, EXEC_RUN_CONTEXT,
-  type ExecOutboxPort, type ExecutionStorePort, type ExecRunContext, type OutboxEntry,
+  EXEC_OUTBOX,
+  EXECUTION_STORE,
+  EXEC_RUN_CONTEXT,
+  type ExecOutboxPort,
+  type ExecutionStorePort,
+  type ExecRunContext,
+  type OutboxEntry,
 } from '../../ports/execution';
-import { reduce, type OrderRecord, type OrderEvent, type OrderState } from '../../domain/oms/reducer';
+import {
+  reduce,
+  type OrderRecord,
+  type OrderEvent,
+  type OrderState,
+} from '../../domain/oms/reducer';
 import type { ClientOrderId } from '../../domain/types/ids';
 import type { FillReport, FillRecord } from '../../domain/types/exec-report';
 import { OrderBookService } from './order-book.service';
@@ -65,7 +75,10 @@ export class ExecReportConsumerService {
         return;
       case 'ACK':
         if (rec.state === 'SUBMITTING' || rec.state === 'SUBMIT_UNKNOWN') {
-          await this.foldEvent(coid, rec, report.reportId, { type: 'ACK', venueOrderId: report.venueOrderId });
+          await this.foldEvent(coid, rec, report.reportId, {
+            type: 'ACK',
+            venueOrderId: report.venueOrderId,
+          });
         } else {
           this.orders.setVenueOrderId(coid, report.venueOrderId); // redundant ack — metadata only
         }
@@ -75,19 +88,35 @@ export class ExecReportConsumerService {
 
   private async applyFill(rec: OrderRecord, report: FillReport): Promise<void> {
     const fill: FillRecord = {
-      venue: report.venue, symbol: report.symbol, venueTradeId: report.venueTradeId, clientOrderId: report.clientOrderId,
-      price: report.price, qty: report.qty, fee: report.fee, liquidity: report.liquidity,
-      venueTimestamp: report.venueTimestamp, source: this.ctx.mode === 'paper' ? 'paper' : 'ws',
+      venue: report.venue,
+      symbol: report.symbol,
+      venueTradeId: report.venueTradeId,
+      clientOrderId: report.clientOrderId,
+      price: report.price,
+      qty: report.qty,
+      fee: report.fee,
+      liquidity: report.liquidity,
+      venueTimestamp: report.venueTimestamp,
+      source: this.ctx.mode === 'paper' ? 'paper' : 'ws',
     };
     // §6.6 fill idempotency + position/equity effects are owned by the shared FillIngestor; the
     // stream reportId keys the journal fold so a redelivered report is a no-op.
     await this.ingestor.ingest(rec, fill, report.reportId);
   }
 
-  private async foldEvent(coid: ClientOrderId, rec: OrderRecord, dedupeKey: string, event: OrderEvent): Promise<void> {
+  private async foldEvent(
+    coid: ClientOrderId,
+    rec: OrderRecord,
+    dedupeKey: string,
+    event: OrderEvent,
+  ): Promise<void> {
     const next = reduce(rec, event);
     const { applied } = await this.store.appendOrderEvent({
-      clientOrderId: coid, dedupeKey, event, derivedState: next.state, cumQty: next.cumQty.toFixed(),
+      clientOrderId: coid,
+      dedupeKey,
+      event,
+      derivedState: next.state,
+      cumQty: next.cumQty.toFixed(),
     });
     if (!applied) return; // redelivered report — journal already has it, do not re-fold
     this.orders.commit(next);

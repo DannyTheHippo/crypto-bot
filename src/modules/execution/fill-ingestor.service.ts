@@ -1,5 +1,9 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
-import { InjectMetric, makeCounterProvider, makeHistogramProvider } from '@willsoto/nestjs-prometheus';
+import {
+  InjectMetric,
+  makeCounterProvider,
+  makeHistogramProvider,
+} from '@willsoto/nestjs-prometheus';
 import { Counter, Histogram } from 'prom-client';
 import { EXECUTION_STORE, type ExecutionStorePort } from '../../ports/execution';
 import { KILL_SWITCH, type KillSwitchPort } from '../../ports/risk';
@@ -65,14 +69,23 @@ export class FillIngestorService {
     private readonly portfolio: PortfolioStateService,
     private readonly sampler: EquitySamplerService,
     @Optional() @InjectMetric('fills_total') private readonly fillsCounter?: Counter<string>,
-    @Optional() @InjectMetric('orders_filled_qty_total') private readonly filledQtyCounter?: Counter<string>,
-    @Optional() @InjectMetric('orders_fully_filled_total') private readonly fullyFilledCounter?: Counter<string>,
-    @Optional() @InjectMetric('order_slippage_decision_bps') private readonly slippageDecision?: Histogram<string>,
+    @Optional()
+    @InjectMetric('orders_filled_qty_total')
+    private readonly filledQtyCounter?: Counter<string>,
+    @Optional()
+    @InjectMetric('orders_fully_filled_total')
+    private readonly fullyFilledCounter?: Counter<string>,
+    @Optional()
+    @InjectMetric('order_slippage_decision_bps')
+    private readonly slippageDecision?: Histogram<string>,
   ) {}
 
   async ingest(rec: OrderRecord, fill: FillRecord, dedupeKey: string): Promise<IngestResult> {
     const coid = fill.clientOrderId;
-    const { inserted, conflict } = await this.store.saveFill(fill, decodeClientOrderId(coid).intentId);
+    const { inserted, conflict } = await this.store.saveFill(
+      fill,
+      decodeClientOrderId(coid).intentId,
+    );
     // §6.6 I3 — a tradeId we already hold with a different payload is corruption; halt, never apply.
     if (conflict) {
       this.killSwitch.engage('FILL_PAYLOAD_CONFLICT', false);
@@ -84,8 +97,11 @@ export class FillIngestorService {
     const newCum = rec.cumQty.add(fill.qty); // cumulative; the dedupe above guarantees no double-count
     const next = reduce(rec, { type: 'FILL', cumQty: newCum });
     await this.store.appendOrderEvent({
-      clientOrderId: coid, dedupeKey, event: { type: 'FILL', cumQty: newCum },
-      derivedState: next.state, cumQty: next.cumQty.toFixed(),
+      clientOrderId: coid,
+      dedupeKey,
+      event: { type: 'FILL', cumQty: newCum },
+      derivedState: next.state,
+      cumQty: next.cumQty.toFixed(),
     });
     this.orders.commit(next);
 
@@ -94,9 +110,15 @@ export class FillIngestorService {
       this.portfolio.applyFill(intent, fill);
       // §8 fill-rate numerator + decision slippage. The .toNumber() calls are the sanctioned
       // export boundary; bps is signed so positive = adverse for both sides.
-      this.filledQtyCounter?.inc({ type: intent.type, tif: intent.timeInForce }, fill.qty.toNumber());
+      this.filledQtyCounter?.inc(
+        { type: intent.type, tif: intent.timeInForce },
+        fill.qty.toNumber(),
+      );
       const sign = intent.side === 'BUY' ? 1 : -1;
-      const slipBps = fill.price.sub(intent.refPrice).div(intent.refPrice).mul(10000 * sign);
+      const slipBps = fill.price
+        .sub(intent.refPrice)
+        .div(intent.refPrice)
+        .mul(10000 * sign);
       this.slippageDecision?.observe(
         { venue: intent.venue, symbol: intent.symbol, side: intent.side, type: intent.type },
         slipBps.toNumber(),

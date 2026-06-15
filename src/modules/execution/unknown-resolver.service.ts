@@ -3,12 +3,20 @@ import Decimal from 'decimal.js';
 import { CLOCK, type ClockPort } from '../../ports/clock';
 import { KILL_SWITCH, type KillSwitchPort } from '../../ports/risk';
 import {
-  EXCHANGE_PORT, AdapterError, type ExchangePort, type ExchangeOrderState, type VenueFill,
+  EXCHANGE_PORT,
+  AdapterError,
+  type ExchangePort,
+  type ExchangeOrderState,
+  type VenueFill,
 } from '../../ports/exchange';
 import { EXECUTION_STORE, type ExecutionStorePort } from '../../ports/execution';
 import { reduce, type OrderEvent, type OrderState } from '../../domain/oms/reducer';
 import { mulberry32 } from '../../domain/strategy/prng';
-import { queryBackoffMs, MAX_QUERY_ATTEMPTS, UNKNOWN_KILL_AFTER_MS } from '../../domain/oms/query-backoff';
+import {
+  queryBackoffMs,
+  MAX_QUERY_ATTEMPTS,
+  UNKNOWN_KILL_AFTER_MS,
+} from '../../domain/oms/query-backoff';
 import { price, qty, feeAmount } from '../../domain/types/money';
 import type { ClientOrderId, SymbolId, EpochMs } from '../../domain/types/ids';
 import type { FillRecord } from '../../domain/types/exec-report';
@@ -94,10 +102,14 @@ export class UnknownResolverService {
         const intent = this.portfolio.inFlightIntent(rec.clientOrderId);
         if (intent === undefined) continue; // exposure is reserved via the intent; without it we cannot poll
         this.pending.set(rec.clientOrderId, {
-          coid: rec.clientOrderId, symbol: intent.symbol,
+          coid: rec.clientOrderId,
+          symbol: intent.symbol,
           kind: rec.state === 'SUBMIT_UNKNOWN' ? 'submit' : 'cancel',
-          attempts: 0, nextDueAt: now + this.backoff(1), firstUnknownAt: now,
-          cancelReissues: 0, escalated: false,
+          attempts: 0,
+          nextDueAt: now + this.backoff(1),
+          firstUnknownAt: now,
+          cancelReissues: 0,
+          escalated: false,
         });
       } else if (!isUnknown && tracked) {
         this.pending.delete(rec.clientOrderId);
@@ -145,7 +157,11 @@ export class UnknownResolverService {
         }
         return;
       case 'canceled':
-        await this.fold(p, 'query-canceled', p.kind === 'cancel' ? { type: 'CANCEL_ACK' } : { type: 'VENUE_CANCELED' });
+        await this.fold(
+          p,
+          'query-canceled',
+          p.kind === 'cancel' ? { type: 'CANCEL_ACK' } : { type: 'VENUE_CANCELED' },
+        );
         this.pending.delete(p.coid);
         return;
       case 'closed':
@@ -200,8 +216,9 @@ export class UnknownResolverService {
     // events distinct precisely so a lapsed intent is never resubmitted on its deterministic id.
     const intent = this.portfolio.inFlightIntent(p.coid);
     const expired = intent === undefined || this.clock.now() > intent.expiresAt;
-    await this.fold(p, expired ? 'query-not-found-expired' : 'query-not-found',
-      { type: expired ? 'QUERY_NOT_FOUND_EXPIRED' : 'QUERY_NOT_FOUND' });
+    await this.fold(p, expired ? 'query-not-found-expired' : 'query-not-found', {
+      type: expired ? 'QUERY_NOT_FOUND_EXPIRED' : 'QUERY_NOT_FOUND',
+    });
     this.pending.delete(p.coid); // NEW is resubmit-eligible; resubmit orchestration is a follow-up
   }
 
@@ -244,8 +261,12 @@ export class UnknownResolverService {
   private async fold(p: Pending, dedupeKey: string, event: OrderEvent): Promise<void> {
     const next = reduce(this.orders.get(p.coid)!, event);
     const { applied } = await this.store.appendOrderEvent({
-      clientOrderId: p.coid, dedupeKey, event,
-      derivedState: next.state, cumQty: next.cumQty.toFixed(), venueOrderId: next.venueOrderId,
+      clientOrderId: p.coid,
+      dedupeKey,
+      event,
+      derivedState: next.state,
+      cumQty: next.cumQty.toFixed(),
+      venueOrderId: next.venueOrderId,
     });
     if (!applied) return;
     this.orders.commit(next);
@@ -276,10 +297,16 @@ export class UnknownResolverService {
 
   private toFillRecord(t: VenueFill): FillRecord {
     return {
-      venue: t.venue, symbol: t.symbol, venueTradeId: t.venueTradeId, clientOrderId: t.clientOrderId,
-      price: price(t.price), qty: qty(t.qty),
+      venue: t.venue,
+      symbol: t.symbol,
+      venueTradeId: t.venueTradeId,
+      clientOrderId: t.clientOrderId,
+      price: price(t.price),
+      qty: qty(t.qty),
       fee: t.fee ? { ccy: t.fee.ccy, amount: feeAmount(t.fee.amount) } : null,
-      liquidity: t.liquidity, venueTimestamp: t.venueTimestamp, source: 'rest_reconcile',
+      liquidity: t.liquidity,
+      venueTimestamp: t.venueTimestamp,
+      source: 'rest_reconcile',
     };
   }
 

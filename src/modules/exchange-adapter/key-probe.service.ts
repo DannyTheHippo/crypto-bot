@@ -31,15 +31,36 @@ export class KeyProbeService implements KeyProbePort {
       const spotEnabled = r['enableSpotAndMarginTrading'] === true;
       const marginOrFutures = r['enableMargin'] === true || r['enableFutures'] === true;
       const keysValid = !withdrawalsEnabled && spotEnabled && !marginOrFutures;
-      return { keysValid, withdrawalsEnabled, spotEnabled, marginOrFutures, keyFingerprint: this.cfg.keyFingerprint, urlCrossCheckOk: true };
+      return {
+        keysValid,
+        withdrawalsEnabled,
+        spotEnabled,
+        marginOrFutures,
+        keyFingerprint: this.cfg.keyFingerprint,
+        urlCrossCheckOk: true,
+      };
     } catch {
       // Spot Testnet exposes no sapi (NotSupported); a network/permission error lands here too.
       if (this.cfg.requireRestrictions) {
         // Live: cannot confirm withdrawals are disabled ⇒ refuse (fail closed).
-        return { keysValid: false, withdrawalsEnabled: true, spotEnabled: false, marginOrFutures: false, keyFingerprint: this.cfg.keyFingerprint, urlCrossCheckOk: true };
+        return {
+          keysValid: false,
+          withdrawalsEnabled: true,
+          spotEnabled: false,
+          marginOrFutures: false,
+          keyFingerprint: this.cfg.keyFingerprint,
+          urlCrossCheckOk: true,
+        };
       }
       // Testnet: degrade to canTrade — the env/url gate carries the wall here, no real funds at risk.
-      return { keysValid: true, withdrawalsEnabled: false, spotEnabled: true, marginOrFutures: false, keyFingerprint: this.cfg.keyFingerprint, urlCrossCheckOk: true };
+      return {
+        keysValid: true,
+        withdrawalsEnabled: false,
+        spotEnabled: true,
+        marginOrFutures: false,
+        keyFingerprint: this.cfg.keyFingerprint,
+        urlCrossCheckOk: true,
+      };
     }
   }
 }

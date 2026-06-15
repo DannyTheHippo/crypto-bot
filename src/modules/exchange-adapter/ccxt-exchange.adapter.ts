@@ -8,7 +8,14 @@ import {
   type VenueFill,
   type CredentialCheck,
 } from '../../ports/exchange';
-import { clientOrderId, symbolId, type ClientOrderId, type SymbolId, type VenueId, type EpochMs } from '../../domain/types/ids';
+import {
+  clientOrderId,
+  symbolId,
+  type ClientOrderId,
+  type SymbolId,
+  type VenueId,
+  type EpochMs,
+} from '../../domain/types/ids';
 import { toAdapterError } from './error-classifier';
 import { CCXT_ORDER_CLIENT, type CcxtOrderClient } from './ccxt-order-client';
 import { normalizeOrderState, normalizeTrade, normalizeBalances } from './ccxt-normalize';
@@ -93,7 +100,7 @@ export class CcxtExchangeAdapter implements ExchangePort {
       const orders = await this.client.fetchOpenOrders(symbol);
       return orders.map((o) => {
         // Each open-order row carries its own symbol; ExchangeOrderState.symbol is required.
-        const orderSymbol = o.symbol !== undefined ? symbolId(o.symbol) : (symbol ?? symbolId(''));
+        const orderSymbol = o.symbol !== undefined ? symbolId(o.symbol) : symbol ?? symbolId('');
         const coid = clientOrderId(o.clientOrderId ?? '');
         return normalizeOrderState(o, coid, orderSymbol);
       });
@@ -122,6 +129,11 @@ export class CcxtExchangeAdapter implements ExchangePort {
 
   // Phase-7 increment-2 wires the real apiRestrictions probe.
   validateCredentials(): Promise<CredentialCheck> {
-    return Promise.resolve({ valid: true, canTrade: true, withdrawalsEnabled: false, keyFingerprint: 'ccxt' });
+    return Promise.resolve({
+      valid: true,
+      canTrade: true,
+      withdrawalsEnabled: false,
+      keyFingerprint: 'ccxt',
+    });
   }
 }

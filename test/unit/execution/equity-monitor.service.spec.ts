@@ -10,22 +10,41 @@ import { epochMs } from '../../../src/domain/types/ids';
 const LIMITS: EquityLimits = { maxDailyLoss: '5000', maxDrawdownPct: '0.2' };
 
 function build(startState: KillSwitchState = 'RUNNING') {
-  const portfolio = new PortfolioStateService({ quoteAsset: 'USDT', startingCash: '100000' }, new FeeLedgerService());
+  const portfolio = new PortfolioStateService(
+    { quoteAsset: 'USDT', startingCash: '100000' },
+    new FeeLedgerService(),
+  );
   let state: KillSwitchState = startState;
   const engages: Array<{ reason: string; flatten: boolean }> = [];
   const killSwitch: KillSwitchPort = {
     state: () => state,
-    engage: (reason, flatten) => { engages.push({ reason, flatten }); state = 'HALTING'; },
+    engage: (reason, flatten) => {
+      engages.push({ reason, flatten });
+      state = 'HALTING';
+    },
     confirmCancels: () => undefined,
     cancelTimeout: () => undefined,
     allFlat: () => undefined,
   };
   const monitor = new EquityMonitorService(portfolio, killSwitch, LIMITS);
-  return { portfolio, monitor, engages, setState: (s: KillSwitchState) => { state = s; } };
+  return {
+    portfolio,
+    monitor,
+    engages,
+    setState: (s: KillSwitchState) => {
+      state = s;
+    },
+  };
 }
 
 const sample = (equity: string, over: Partial<EquitySample> = {}): EquitySample => ({
-  ts: epochMs(1_700_000_000_000), equity, cash: equity, unrealized: '0', peak: '100000', sessionDateUtc: '2026-06-13', ...over,
+  ts: epochMs(1_700_000_000_000),
+  equity,
+  cash: equity,
+  unrealized: '0',
+  peak: '100000',
+  sessionDateUtc: '2026-06-13',
+  ...over,
 });
 
 describe('EquityMonitorService (§5 post-trade monitors)', () => {

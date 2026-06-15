@@ -17,7 +17,12 @@
 // Math.random / process / network. If this hypothesis were ever to clear the step-D validation
 // standard, this class moves verbatim to src/domain/strategy/; nothing here is reimplemented
 // accounting (PnL settles through the real applyFillToPosition via the harness).
-import type { CandleEvent, TickerEvent, OrderBookSnapshotEvent, CandleInterval } from '../../src/domain/types/market-events';
+import type {
+  CandleEvent,
+  TickerEvent,
+  OrderBookSnapshotEvent,
+  CandleInterval,
+} from '../../src/domain/types/market-events';
 import type { ExecReport } from '../../src/domain/types/exec-report';
 import type { Signal } from '../../src/domain/types/signal';
 import type { StrategyId, VenueId, SymbolId } from '../../src/domain/types/ids';

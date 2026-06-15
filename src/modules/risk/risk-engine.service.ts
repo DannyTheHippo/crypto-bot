@@ -5,7 +5,11 @@ import Decimal from 'decimal.js';
 import { CLOCK, type ClockPort } from '../../ports/clock';
 import { FEED_HEALTH, type FeedHealthPort } from '../../ports/market-data';
 import {
-  RISK_ENGINE_DEPS, RISK_JOURNAL, type RiskEnginePort, type RiskEngineDeps, type RiskJournalPort,
+  RISK_ENGINE_DEPS,
+  RISK_JOURNAL,
+  type RiskEnginePort,
+  type RiskEngineDeps,
+  type RiskJournalPort,
 } from '../../ports/risk';
 import { evaluate, type MarkInfo, type RiskEvalInput } from '../../domain/risk/evaluate';
 import { mintApproval } from '../../domain/risk/proof';
@@ -37,7 +41,9 @@ export class RiskEngineService implements RiskEnginePort {
     private readonly rates: RateBucketsService,
     private readonly crossing: CrossingRegistryService,
     @Inject(RISK_JOURNAL) private readonly journal: RiskJournalPort,
-    @Optional() @InjectMetric('risk_rejections_total') private readonly riskRejects?: Counter<string>,
+    @Optional()
+    @InjectMetric('risk_rejections_total')
+    private readonly riskRejects?: Counter<string>,
   ) {}
 
   // Journal every decision and, for a veto, count it by reason code for the §8 rejection taxonomy.
@@ -71,7 +77,11 @@ export class RiskEngineService implements RiskEnginePort {
     // risk a NaN-rounded quantity (the sizer also guards this upstream).
     const filters = this.deps.filters.get(intent.symbol);
     if (!filters) {
-      const decision: RiskDecision = { verdict: 'REJECTED', intent, reasons: ['LIMITS_INCOMPLETE'] };
+      const decision: RiskDecision = {
+        verdict: 'REJECTED',
+        intent,
+        reasons: ['LIMITS_INCOMPLETE'],
+      };
       this.record(decision);
       return decision;
     }
@@ -80,7 +90,9 @@ export class RiskEngineService implements RiskEnginePort {
     const ref = this.feed.getRefPrice(intent.symbol);
     const mark: MarkInfo | undefined = ref
       ? {
-          mid: ref.mid, ageMs: now - ref.at, feedHealth: this.feed.health(intent.venue, intent.symbol, 'book'),
+          mid: ref.mid,
+          ageMs: now - ref.at,
+          feedHealth: this.feed.health(intent.venue, intent.symbol, 'book'),
           lastTrade: ref.mid, // flatten's stale carve-out (P1) falls back to last trade with band ×2
         }
       : undefined;
@@ -108,7 +120,12 @@ export class RiskEngineService implements RiskEnginePort {
       mark,
       filters,
       rate,
-      wouldCross: this.crossing.wouldCross(intent.strategyId, intent.symbol, intent.side, intent.limitPrice),
+      wouldCross: this.crossing.wouldCross(
+        intent.strategyId,
+        intent.symbol,
+        intent.side,
+        intent.limitPrice,
+      ),
       currentGross: gross,
       currentNet: net,
       now,
@@ -120,10 +137,7 @@ export class RiskEngineService implements RiskEnginePort {
     return decision;
   }
 
-  private finalize(
-    result: ReturnType<typeof evaluate>,
-    now: EpochMs,
-  ): RiskDecision {
+  private finalize(result: ReturnType<typeof evaluate>, now: EpochMs): RiskDecision {
     if (result.verdict === 'REJECTED') {
       if (result.halt) this.killSwitch.engage(result.halt, result.halt === 'MAX_DRAWDOWN');
       return { verdict: 'REJECTED', intent: result.intent, reasons: result.reasons };

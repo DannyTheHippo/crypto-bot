@@ -1,6 +1,12 @@
 import { Injectable, Inject } from '@nestjs/common';
 import type { StrategyId, EpochMs } from '../../domain/types/ids';
-import type { CandleEvent, TickerEvent, OrderBookSnapshotEvent, ChannelHealth, CandleInterval } from '../../domain/types/market-events';
+import type {
+  CandleEvent,
+  TickerEvent,
+  OrderBookSnapshotEvent,
+  ChannelHealth,
+  CandleInterval,
+} from '../../domain/types/market-events';
 import type { MarketEvent } from '../../domain/types/market-events';
 import type { ExecReport } from '../../domain/types/exec-report';
 import type { Signal } from '../../domain/types/signal';
@@ -145,9 +151,7 @@ export class StrategyHost implements StrategyHostPort {
     for (const symbol of spec.symbols) {
       let candles: CandleEvent[] = [];
       try {
-        candles = [
-          ...(await this.feedHealth.fetchCandles(spec.venue, symbol, interval, bars)),
-        ];
+        candles = [...(await this.feedHealth.fetchCandles(spec.venue, symbol, interval, bars))];
       } catch {
         // Warmup backfill failure is non-fatal: strategy proceeds with empty history.
       }
@@ -205,9 +209,7 @@ export class StrategyHost implements StrategyHostPort {
           break;
         case 'ORDER_BOOK_SNAPSHOT':
           const bookIdx = runtime.mailbox.findLastIndex(
-            (m) =>
-              m.kind === 'book' &&
-              (m.event as OrderBookSnapshotEvent).symbol === event.symbol,
+            (m) => m.kind === 'book' && (m.event as OrderBookSnapshotEvent).symbol === event.symbol,
           );
           if (bookIdx >= 0) {
             runtime.mailbox.splice(bookIdx, 1);

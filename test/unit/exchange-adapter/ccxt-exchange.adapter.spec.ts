@@ -3,7 +3,12 @@ import { InsufficientFunds, OrderNotFound } from 'ccxt';
 import { CcxtExchangeAdapter } from '../../../src/modules/exchange-adapter/ccxt-exchange.adapter';
 import { AdapterError } from '../../../src/ports/exchange';
 import { clientOrderId, venueId, symbolId, epochMs } from '../../../src/domain/types/ids';
-import type { CcxtOrderClient, CcxtOrder, CcxtTrade, CcxtBalances } from '../../../src/modules/exchange-adapter/ccxt-order-client';
+import type {
+  CcxtOrderClient,
+  CcxtOrder,
+  CcxtTrade,
+  CcxtBalances,
+} from '../../../src/modules/exchange-adapter/ccxt-order-client';
 import type { PlaceOrderRequest } from '../../../src/ports/exchange';
 
 const SYM = symbolId('BTC/USDT');
@@ -87,14 +92,8 @@ describe('CcxtExchangeAdapter.placeOrder', () => {
 
     await adapter.placeOrder({ ...baseReq, type: 'MARKET', limitPrice: undefined });
 
-    const [, type, , , , params] = (client.createOrder as ReturnType<typeof vi.fn>).mock.calls[0] as [
-      string,
-      string,
-      string,
-      string,
-      string | undefined,
-      Record<string, unknown>,
-    ];
+    const [, type, , , , params] = (client.createOrder as ReturnType<typeof vi.fn>).mock
+      .calls[0] as [string, string, string, string, string | undefined, Record<string, unknown>];
     expect(type).toBe('market');
     expect(params['timeInForce']).toBeUndefined();
   });
@@ -105,14 +104,8 @@ describe('CcxtExchangeAdapter.placeOrder', () => {
 
     await adapter.placeOrder({ ...baseReq, type: 'LIMIT_MAKER' });
 
-    const [, type, , , , params] = (client.createOrder as ReturnType<typeof vi.fn>).mock.calls[0] as [
-      string,
-      string,
-      string,
-      string,
-      string | undefined,
-      Record<string, unknown>,
-    ];
+    const [, type, , , , params] = (client.createOrder as ReturnType<typeof vi.fn>).mock
+      .calls[0] as [string, string, string, string, string | undefined, Record<string, unknown>];
     expect(type).toBe('limit');
     expect(params['postOnly']).toBe(true);
   });
@@ -166,7 +159,11 @@ describe('CcxtExchangeAdapter.cancelOrder', () => {
 
     const ack = await adapter.cancelOrder(COID, SYM);
 
-    expect((client.cancelOrder as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual([undefined, SYM, { clientOrderId: COID }]);
+    expect((client.cancelOrder as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual([
+      undefined,
+      SYM,
+      { clientOrderId: COID },
+    ]);
     expect(ack.clientOrderId).toBe(COID);
     expect(ack.venueOrderId).toBe('12345');
   });
@@ -193,7 +190,11 @@ describe('CcxtExchangeAdapter.fetchOrder', () => {
 
     const state = await adapter.fetchOrder(COID, SYM);
 
-    expect((client.fetchOrder as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual([undefined, SYM, { clientOrderId: COID }]);
+    expect((client.fetchOrder as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual([
+      undefined,
+      SYM,
+      { clientOrderId: COID },
+    ]);
     expect(state.clientOrderId).toBe(COID);
     expect(state.venueOrderId).toBe('12345');
     expect(state.status).toBe('open');
@@ -222,9 +223,9 @@ describe('CcxtExchangeAdapter.fetchOpenOrders', () => {
 
   it('maps open orders to ExchangeOrderState', async () => {
     const client = fakeClient({
-      fetchOpenOrders: vi.fn().mockResolvedValue([
-        { ...baseOrder, status: 'open', symbol: 'BTC/USDT' },
-      ]),
+      fetchOpenOrders: vi
+        .fn()
+        .mockResolvedValue([{ ...baseOrder, status: 'open', symbol: 'BTC/USDT' }]),
     });
     const adapter = makeCcxtAdapter(client);
 
@@ -237,9 +238,9 @@ describe('CcxtExchangeAdapter.fetchOpenOrders', () => {
 
   it('uses order.symbol when symbol param is undefined', async () => {
     const client = fakeClient({
-      fetchOpenOrders: vi.fn().mockResolvedValue([
-        { ...baseOrder, status: 'open', symbol: 'ETH/USDT' },
-      ]),
+      fetchOpenOrders: vi
+        .fn()
+        .mockResolvedValue([{ ...baseOrder, status: 'open', symbol: 'ETH/USDT' }]),
     });
     const adapter = makeCcxtAdapter(client);
 
@@ -269,7 +270,12 @@ describe('CcxtExchangeAdapter.fetchMyTrades', () => {
 
     const fills = await adapter.fetchMyTrades(SYM, since);
 
-    expect((client.fetchMyTrades as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual([SYM, since, undefined, {}]);
+    expect((client.fetchMyTrades as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual([
+      SYM,
+      since,
+      undefined,
+      {},
+    ]);
     expect(fills).toHaveLength(1);
     expect(fills[0]!.price).toBe('50000.00'); // exact string, never toBeCloseTo
     expect(fills[0]!.qty).toBe('0.1');

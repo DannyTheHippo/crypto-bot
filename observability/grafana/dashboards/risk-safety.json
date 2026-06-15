@@ -34,7 +34,13 @@
       "gridPos": { "h": 6, "w": 6, "x": 18, "y": 0 },
       "fieldConfig": {
         "defaults": {
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          },
           "color": { "mode": "thresholds" }
         }
       },
@@ -50,7 +56,14 @@
           "unit": "percentunit",
           "min": 0,
           "max": 1,
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 0.1 }, { "color": "red", "value": 0.2 }] }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 0.1 },
+              { "color": "red", "value": 0.2 }
+            ]
+          }
         }
       },
       "targets": [{ "expr": "drawdown_ratio", "refId": "A" }]
@@ -62,7 +75,13 @@
       "gridPos": { "h": 7, "w": 16, "x": 8, "y": 6 },
       "fieldConfig": {
         "defaults": {
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 0 }] },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 0 }
+            ]
+          },
           "custom": { "drawStyle": "line", "fillOpacity": 8, "thresholdsStyle": { "mode": "line" } }
         }
       },
@@ -74,8 +93,23 @@
       "title": "Since last clean reconcile (s)",
       "description": "time() − reconciliation_last_success_timestamp_seconds. A growing value means the reconciler is stalled or repeatedly HALTing — investigate before trusting local state (§8).",
       "gridPos": { "h": 6, "w": 8, "x": 0, "y": 13 },
-      "fieldConfig": { "defaults": { "unit": "s", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 120 }, { "color": "red", "value": 300 }] }, "color": { "mode": "thresholds" } } },
-      "targets": [{ "expr": "time() - reconciliation_last_success_timestamp_seconds", "refId": "A" }]
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 120 },
+              { "color": "red", "value": 300 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        }
+      },
+      "targets": [
+        { "expr": "time() - reconciliation_last_success_timestamp_seconds", "refId": "A" }
+      ]
     },
     {
       "id": 7,
@@ -83,8 +117,16 @@
       "title": "Reconciliation passes by result (15m rate)",
       "description": "reconciliation_runs_total{result=clean|mismatch|halt}. Demo runs the open-orders + holdings axes against the dedicated account; a halt result HALTs (never auto-flattens).",
       "gridPos": { "h": 6, "w": 8, "x": 8, "y": 13 },
-      "fieldConfig": { "defaults": { "custom": { "drawStyle": "bars", "stacking": { "mode": "normal" } } } },
-      "targets": [{ "expr": "sum by (result) (rate(reconciliation_runs_total[15m]))", "refId": "A", "legendFormat": "{{ result }}" }]
+      "fieldConfig": {
+        "defaults": { "custom": { "drawStyle": "bars", "stacking": { "mode": "normal" } } }
+      },
+      "targets": [
+        {
+          "expr": "sum by (result) (rate(reconciliation_runs_total[15m]))",
+          "refId": "A",
+          "legendFormat": "{{ result }}"
+        }
+      ]
     },
     {
       "id": 8,
@@ -92,8 +134,16 @@
       "title": "Risk vetoes by code (15m rate)",
       "description": "risk_rejections_total — the risk stage of the §8 rejection taxonomy (sizing/band/notional/exposure/kill-switch vetoes).",
       "gridPos": { "h": 6, "w": 8, "x": 16, "y": 13 },
-      "fieldConfig": { "defaults": { "custom": { "drawStyle": "bars", "stacking": { "mode": "normal" } } } },
-      "targets": [{ "expr": "sum by (code) (rate(risk_rejections_total[15m]))", "refId": "A", "legendFormat": "{{ code }}" }]
+      "fieldConfig": {
+        "defaults": { "custom": { "drawStyle": "bars", "stacking": { "mode": "normal" } } }
+      },
+      "targets": [
+        {
+          "expr": "sum by (code) (rate(risk_rejections_total[15m]))",
+          "refId": "A",
+          "legendFormat": "{{ code }}"
+        }
+      ]
     }
   ]
 }

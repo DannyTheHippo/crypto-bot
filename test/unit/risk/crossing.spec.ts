@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { wouldCross, type RestingOrder, type CrossingProbe } from '../../../src/domain/risk/crossing';
+import {
+  wouldCross,
+  type RestingOrder,
+  type CrossingProbe,
+} from '../../../src/domain/risk/crossing';
 import { price } from '../../../src/domain/types/money';
 import { strategyId, symbolId } from '../../../src/domain/types/ids';
 
@@ -12,7 +16,12 @@ function rest(side: 'BUY' | 'SELL', p: string, strat = B, symbol = SYM): Resting
   return { strategyId: strat, symbol, side, price: price(p) };
 }
 function probe(side: 'BUY' | 'SELL', limit: string | undefined, strat = A): CrossingProbe {
-  return { strategyId: strat, symbol: SYM, side, limitPrice: limit === undefined ? undefined : price(limit) };
+  return {
+    strategyId: strat,
+    symbol: SYM,
+    side,
+    limitPrice: limit === undefined ? undefined : price(limit),
+  };
 }
 
 describe('wouldCross (§5 X1)', () => {

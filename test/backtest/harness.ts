@@ -49,17 +49,33 @@ export function prepare(bars: readonly Bar[], interval: CandleInterval): Prepare
     opens.push(open);
     closes.push(close);
     events.push({
-      kind: 'CANDLE', venue: BT_VENUE, symbol: BT_SYMBOL, channel: `candles:${interval}`, seq: BigInt(i + 1),
-      eventTime: epochMs(b[0]), ingestTime: epochMs(b[0]), interval,
-      openTime: epochMs(b[0]), closeTime: epochMs(b[0] + 1),
-      open: price(open), high: px8(b[2]), low: px8(b[3]), close: price(close), volume: DUMMY_VOL, closed: true,
+      kind: 'CANDLE',
+      venue: BT_VENUE,
+      symbol: BT_SYMBOL,
+      channel: `candles:${interval}`,
+      seq: BigInt(i + 1),
+      eventTime: epochMs(b[0]),
+      ingestTime: epochMs(b[0]),
+      interval,
+      openTime: epochMs(b[0]),
+      closeTime: epochMs(b[0] + 1),
+      open: price(open),
+      high: px8(b[2]),
+      low: px8(b[3]),
+      close: price(close),
+      volume: DUMMY_VOL,
+      closed: true,
     });
   }
   return { events, opens, closes };
 }
 
 export function slice(p: Prepared, from: number, to: number): Prepared {
-  return { events: p.events.slice(from, to), opens: p.opens.slice(from, to), closes: p.closes.slice(from, to) };
+  return {
+    events: p.events.slice(from, to),
+    opens: p.opens.slice(from, to),
+    closes: p.closes.slice(from, to),
+  };
 }
 
 export interface BtOpts {
@@ -86,7 +102,11 @@ export interface BtResult {
 // Drives `makeStrategy()` over `prep`. The factory builds a FRESH strategy per call (no state leak
 // across IS/OOS splits or grid points). The harness owns lifecycle (onInit), fills, fees, sizing,
 // and PnL — exactly as for the EMA study, so the only variable across studies is the strategy.
-export function runBacktest(prep: Prepared, makeStrategy: () => Strategy, opts: BtOpts = {}): BtResult {
+export function runBacktest(
+  prep: Prepared,
+  makeStrategy: () => Strategy,
+  opts: BtOpts = {},
+): BtResult {
   const { events, opens, closes } = prep;
   const startingCash = opts.startingCash ?? 5000;
   const baseNotional = new Decimal(opts.baseNotional ?? 1000);
@@ -139,10 +159,15 @@ export function runBacktest(prep: Prepared, makeStrategy: () => Strategy, opts: 
   const pnl = pos.realizedPnl.add(pos.signedQty.mul(lastClose.sub(pos.avgEntry)));
   const buyHold = closes.length > 1 ? lastClose.div(closes[0]).sub(1).mul(100).toNumber() : 0;
   return {
-    bars: events.length, trades: roundTrips, fills,
-    pnl: pnl.toNumber(), returnPct: pnl.div(startingCash).mul(100).toNumber(),
+    bars: events.length,
+    trades: roundTrips,
+    fills,
+    pnl: pnl.toNumber(),
+    returnPct: pnl.div(startingCash).mul(100).toNumber(),
     winRate: roundTrips > 0 ? wins / roundTrips : 0,
-    feesPaid: feesPaid.toNumber(), maxDrawdownPct: maxDd * 100,
-    finalEquity: startingCash + pnl.toNumber(), buyHoldPct: buyHold,
+    feesPaid: feesPaid.toNumber(),
+    maxDrawdownPct: maxDd * 100,
+    finalEquity: startingCash + pnl.toNumber(),
+    buyHoldPct: buyHold,
   };
 }

@@ -93,7 +93,12 @@ describe('resolveMode — live requested (2⁴ gate combinations)', () => {
   });
 
   it('envFlagLive+keysValid+limitsComplete false → paper with three reasons', () => {
-    const r = resolveMode({ ...allLive, envFlagLive: false, keysValid: false, limitsComplete: false });
+    const r = resolveMode({
+      ...allLive,
+      envFlagLive: false,
+      keysValid: false,
+      limitsComplete: false,
+    });
     expect(r.effective).toBe('paper');
     expect(r.downgrades).toEqual(['ENV_FLAG', 'KEYS_INVALID', 'LIMITS_INCOMPLETE']);
   });
@@ -105,7 +110,13 @@ describe('resolveMode — live requested (2⁴ gate combinations)', () => {
   });
 
   it('all gates false → paper with all four downgrade reasons', () => {
-    const r = resolveMode({ ...allLive, envFlagLive: false, armed: false, keysValid: false, limitsComplete: false });
+    const r = resolveMode({
+      ...allLive,
+      envFlagLive: false,
+      armed: false,
+      keysValid: false,
+      limitsComplete: false,
+    });
     expect(r.effective).toBe('paper');
     expect(r.downgrades).toEqual(['ENV_FLAG', 'NOT_ARMED', 'KEYS_INVALID', 'LIMITS_INCOMPLETE']);
   });

@@ -7,13 +7,13 @@ name: CI
 
 on:
   push:
-    branches: ["**"]
+    branches: ['**']
   pull_request:
-    branches: ["**"]
+    branches: ['**']
 
 env:
   NODE_ENV: test
-  CI: "true"
+  CI: 'true'
   TRADING_MODE: paper
 
 jobs:
@@ -44,7 +44,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "24"
+          node-version: '24'
           cache: pnpm
 
       - name: Install dependencies
@@ -77,5 +77,5 @@ jobs:
       - name: DB integration tests
         env:
           DATABASE_URL: postgres://cryptobot:cryptobot@127.0.0.1:5432/cryptobot
-          DB_SUITE_ALLOW_RESET: "1"
+          DB_SUITE_ALLOW_RESET: '1'
         run: pnpm test:db

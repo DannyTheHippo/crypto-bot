@@ -3,9 +3,15 @@ import { ConfigService } from '@nestjs/config';
 import { CLOCK, SystemClock } from '../../ports/clock';
 import type { AppConfig } from '../../ports/app-config';
 import {
-  MODE_CONTROL, MODE_AUDIT, ARM_PRECONDITIONS, MODE_CONTROL_CONFIG, LIMITS_COMPLETE,
+  MODE_CONTROL,
+  MODE_AUDIT,
+  ARM_PRECONDITIONS,
+  MODE_CONTROL_CONFIG,
+  LIMITS_COMPLETE,
   MODE_AUDIT_OVERRIDE,
-  type ModeAuditPort, type ArmPreconditionsPort, type ModeControlConfig,
+  type ModeAuditPort,
+  type ArmPreconditionsPort,
+  type ModeControlConfig,
 } from '../../ports/mode-control';
 import { ModeControlService } from './mode-control.service';
 import { ArmingController } from './arming.controller';
@@ -26,7 +32,10 @@ const defaultPreconditions: ArmPreconditionsPort = { check: () => ({ ok: true })
 // stays true here (full wiring to the risk-limits validation is a follow-up).
 const configProvider: Provider = {
   provide: MODE_CONTROL_CONFIG,
-  useFactory: (config: ConfigService<AppConfig, true>, limitsComplete: boolean): ModeControlConfig => ({
+  useFactory: (
+    config: ConfigService<AppConfig, true>,
+    limitsComplete: boolean,
+  ): ModeControlConfig => ({
     requested: config.get('mode', { infer: true }).configMode,
     bootId: config.get('app', { infer: true }).bootId,
     armingSecret: config.get('armingSecret', { infer: true }),

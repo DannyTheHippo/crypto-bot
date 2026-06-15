@@ -149,7 +149,9 @@ export interface ExecutionStorePort {
   // §6.4 — one durable row per reconciliation pass (mismatch count > 0 pages).
   saveReconciliation(row: ReconciliationRow): Promise<void>;
   // Recovery reads: load last equity sample + start-of-day equity + current positions.
-  loadRecoverySnapshot(mode: TradingMode): Promise<{ latest: EquitySample | null; sodEquity: string | null; positions: Position[] }>;
+  loadRecoverySnapshot(
+    mode: TradingMode,
+  ): Promise<{ latest: EquitySample | null; sodEquity: string | null; positions: Position[] }>;
   // Recovery read: load orders with no terminal_at (open/in-flight states).
   loadOpenOrders(mode: TradingMode): Promise<OrderRecord[]>;
 }

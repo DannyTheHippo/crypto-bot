@@ -14,7 +14,13 @@ import { buildCcxtExchange } from '../../src/modules/market-data/ccxt-stream.ada
 import { RealCcxtOrderClient } from '../../src/modules/exchange-adapter/ccxt-order-client';
 import { CcxtExchangeAdapter } from '../../src/modules/exchange-adapter/ccxt-exchange.adapter';
 import { AdapterError } from '../../src/ports/exchange';
-import { intentId, encodeClientOrderId, venueId, symbolId, epochMs } from '../../src/domain/types/ids';
+import {
+  intentId,
+  encodeClientOrderId,
+  venueId,
+  symbolId,
+  epochMs,
+} from '../../src/domain/types/ids';
 import { uuidv7 } from '../../src/modules/risk/uuidv7';
 import { randomBytes } from 'node:crypto';
 
@@ -24,11 +30,15 @@ import { randomBytes } from 'node:crypto';
 // pair set ⇒ the whole suite skips, so `pnpm test:testnet` stays all-skipped (green) in CI and runs
 // against the configured sandbox only at the out-of-session RUN.
 const DEMO = Boolean(process.env['BINANCE_DEMO_API_KEY'] && process.env['BINANCE_DEMO_API_SECRET']);
-const TESTNET = Boolean(process.env['BINANCE_TESTNET_API_KEY'] && process.env['BINANCE_TESTNET_API_SECRET']);
+const TESTNET = Boolean(
+  process.env['BINANCE_TESTNET_API_KEY'] && process.env['BINANCE_TESTNET_API_SECRET'],
+);
 const HAS_CREDS = DEMO || TESTNET;
 const ENVIRONMENT: 'demo' | 'testnet' = DEMO ? 'demo' : 'testnet';
-const API_KEY = (DEMO ? process.env['BINANCE_DEMO_API_KEY'] : process.env['BINANCE_TESTNET_API_KEY']) ?? '';
-const API_SECRET = (DEMO ? process.env['BINANCE_DEMO_API_SECRET'] : process.env['BINANCE_TESTNET_API_SECRET']) ?? '';
+const API_KEY =
+  (DEMO ? process.env['BINANCE_DEMO_API_KEY'] : process.env['BINANCE_TESTNET_API_KEY']) ?? '';
+const API_SECRET =
+  (DEMO ? process.env['BINANCE_DEMO_API_SECRET'] : process.env['BINANCE_TESTNET_API_SECRET']) ?? '';
 const SYM = symbolId('BTC/USDT');
 const VEN = venueId('binance');
 
@@ -42,71 +52,89 @@ function adapter(): CcxtExchangeAdapter {
   return new CcxtExchangeAdapter(new RealCcxtOrderClient(buildExchange()), VEN, true);
 }
 // clientOrderId carries the sandbox mode char 't' in both flavors — these are sandbox orders, not live.
-const coid = () => encodeClientOrderId(intentId(uuidv7(epochMs(Date.now()), randomBytes(10))), 'testnet');
+const coid = () =>
+  encodeClientOrderId(intentId(uuidv7(epochMs(Date.now()), randomBytes(10))), 'testnet');
 
-describe.skipIf(!HAS_CREDS)(`Binance ${DEMO ? 'Demo Trading' : 'Spot Testnet'} order lifecycle`, () => {
-  it('1. validateCredentials succeeds with withdrawals disabled', async () => {
-    const cc = await adapter().validateCredentials();
-    expect(cc.valid).toBe(true);
-    expect(cc.withdrawalsEnabled).toBe(false); // §10c — withdrawals MUST be disabled
-  });
-
-  it('2. fetchBalances returns exact-string asset balances', async () => {
-    const balances = await adapter().fetchBalances();
-    expect(balances.size).toBeGreaterThan(0);
-    for (const [, b] of balances) {
-      expect(typeof b.free).toBe('string');
-      expect(typeof b.locked).toBe('string');
-    }
-  });
-
-  it('3. place a far-from-market passive limit, fetchOrder by clientOrderId, then cancel', async () => {
-    // Share one exchange handle: the live price (for a filter-valid bid) and the adapter under
-    // test read the same testnet market. A bid 30% below the live price rests without filling
-    // yet stays inside Binance's PERCENT_PRICE_BY_SIDE band (bidMultiplierDown ~0.2 for BTC/USDT)
-    // — a hardcoded $1000 bid on a ~$100k asset trips that filter (the adapter correctly surfaces
-    // it as a TERMINAL_REJECT AdapterError; the order simply never rests).
-    const exchange = buildExchange();
-    const a = new CcxtExchangeAdapter(new RealCcxtOrderClient(exchange), VEN, true);
-    const id = coid();
-
-    const ticker = await exchange.fetchTicker('BTC/USDT');
-    const ref = new Decimal(String(ticker.last ?? ticker.bid ?? ticker.close));
-    const limitPrice = ref.times('0.7').toFixed(2); // tick-aligned (BTC/USDT tickSize 0.01)
-
-    const ack = await a.placeOrder({
-      clientOrderId: id, symbol: SYM, side: 'BUY', type: 'LIMIT',
-      qty: '0.001', limitPrice, timeInForce: 'GTC', reduceOnly: false,
+describe.skipIf(!HAS_CREDS)(
+  `Binance ${DEMO ? 'Demo Trading' : 'Spot Testnet'} order lifecycle`,
+  () => {
+    it('1. validateCredentials succeeds with withdrawals disabled', async () => {
+      const cc = await adapter().validateCredentials();
+      expect(cc.valid).toBe(true);
+      expect(cc.withdrawalsEnabled).toBe(false); // §10c — withdrawals MUST be disabled
     });
-    expect(ack.clientOrderId).toBe(id);
-    expect(ack.venueOrderId).toBeTruthy();
 
-    const state = await a.fetchOrder(id, SYM); // §6.2 lookup by clientOrderId
-    expect(state.status).toBe('open');
-    expect(state.clientOrderId).toBe(id);
+    it('2. fetchBalances returns exact-string asset balances', async () => {
+      const balances = await adapter().fetchBalances();
+      expect(balances.size).toBeGreaterThan(0);
+      for (const [, b] of balances) {
+        expect(typeof b.free).toBe('string');
+        expect(typeof b.locked).toBe('string');
+      }
+    });
 
-    const cancel = await a.cancelOrder(id, SYM);
-    expect(cancel.clientOrderId).toBe(id);
-  }, 20_000);
+    it('3. place a far-from-market passive limit, fetchOrder by clientOrderId, then cancel', async () => {
+      // Share one exchange handle: the live price (for a filter-valid bid) and the adapter under
+      // test read the same testnet market. A bid 30% below the live price rests without filling
+      // yet stays inside Binance's PERCENT_PRICE_BY_SIDE band (bidMultiplierDown ~0.2 for BTC/USDT)
+      // — a hardcoded $1000 bid on a ~$100k asset trips that filter (the adapter correctly surfaces
+      // it as a TERMINAL_REJECT AdapterError; the order simply never rests).
+      const exchange = buildExchange();
+      const a = new CcxtExchangeAdapter(new RealCcxtOrderClient(exchange), VEN, true);
+      const id = coid();
 
-  it('4. fetchOrder for an unknown clientOrderId raises an OUTCOME_AMBIGUOUS/TERMINAL AdapterError (never raw ccxt)', async () => {
-    await expect(adapter().fetchOrder(coid(), SYM)).rejects.toBeInstanceOf(AdapterError);
-  });
+      const ticker = await exchange.fetchTicker('BTC/USDT');
+      const ref = new Decimal(String(ticker.last ?? ticker.bid ?? ticker.close));
+      const limitPrice = ref.times('0.7').toFixed(2); // tick-aligned (BTC/USDT tickSize 0.01)
 
-  it('5. an insufficient-balance order is refused as a TERMINAL_REJECT AdapterError', async () => {
-    const a = adapter();
-    await expect(a.placeOrder({
-      clientOrderId: coid(), symbol: SYM, side: 'BUY', type: 'LIMIT',
-      qty: '1000000', limitPrice: '1000000', timeInForce: 'GTC', reduceOnly: false,
-    })).rejects.toMatchObject({ errorClass: 'TERMINAL_REJECT' });
-  });
+      const ack = await a.placeOrder({
+        clientOrderId: id,
+        symbol: SYM,
+        side: 'BUY',
+        type: 'LIMIT',
+        qty: '0.001',
+        limitPrice,
+        timeInForce: 'GTC',
+        reduceOnly: false,
+      });
+      expect(ack.clientOrderId).toBe(id);
+      expect(ack.venueOrderId).toBeTruthy();
 
-  it('6. fetchMyTrades returns exact-string fills with venue tradeIds', async () => {
-    const fills = await adapter().fetchMyTrades(SYM, epochMs(Date.now() - 86_400_000));
-    for (const f of fills) {
-      expect(typeof f.price).toBe('string');
-      expect(f.venueTradeId).toBeTruthy();
-      expect(f.venue).toBe(VEN);
-    }
-  });
-});
+      const state = await a.fetchOrder(id, SYM); // §6.2 lookup by clientOrderId
+      expect(state.status).toBe('open');
+      expect(state.clientOrderId).toBe(id);
+
+      const cancel = await a.cancelOrder(id, SYM);
+      expect(cancel.clientOrderId).toBe(id);
+    }, 20_000);
+
+    it('4. fetchOrder for an unknown clientOrderId raises an OUTCOME_AMBIGUOUS/TERMINAL AdapterError (never raw ccxt)', async () => {
+      await expect(adapter().fetchOrder(coid(), SYM)).rejects.toBeInstanceOf(AdapterError);
+    });
+
+    it('5. an insufficient-balance order is refused as a TERMINAL_REJECT AdapterError', async () => {
+      const a = adapter();
+      await expect(
+        a.placeOrder({
+          clientOrderId: coid(),
+          symbol: SYM,
+          side: 'BUY',
+          type: 'LIMIT',
+          qty: '1000000',
+          limitPrice: '1000000',
+          timeInForce: 'GTC',
+          reduceOnly: false,
+        }),
+      ).rejects.toMatchObject({ errorClass: 'TERMINAL_REJECT' });
+    });
+
+    it('6. fetchMyTrades returns exact-string fills with venue tradeIds', async () => {
+      const fills = await adapter().fetchMyTrades(SYM, epochMs(Date.now() - 86_400_000));
+      for (const f of fills) {
+        expect(typeof f.price).toBe('string');
+        expect(f.venueTradeId).toBeTruthy();
+        expect(f.venue).toBe(VEN);
+      }
+    });
+  },
+);

@@ -15,8 +15,16 @@
       "title": "Order outcomes (per s, 5m rate)",
       "description": "Every ExecutionGate.submit() result by outcome (SUBMITTED / REJECTED / UNKNOWN).",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
-      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "stacking": { "mode": "normal" } } } },
-      "targets": [{ "expr": "sum by (outcome) (rate(orders_total[5m]))", "refId": "A", "legendFormat": "{{ outcome }}" }]
+      "fieldConfig": {
+        "defaults": { "custom": { "drawStyle": "line", "stacking": { "mode": "normal" } } }
+      },
+      "targets": [
+        {
+          "expr": "sum by (outcome) (rate(orders_total[5m]))",
+          "refId": "A",
+          "legendFormat": "{{ outcome }}"
+        }
+      ]
     },
     {
       "id": 2,
@@ -24,10 +32,20 @@
       "title": "Rejection taxonomy (per s, 5m rate)",
       "description": "Full §8 taxonomy: orders_rejected_total by stage (oms = our pre-network gate, exchange = venue) plus risk_rejections_total (risk-engine vetoes; sibling metric because eslint-boundaries forbids modules/risk importing the gate's counter).",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
-      "fieldConfig": { "defaults": { "custom": { "drawStyle": "bars", "stacking": { "mode": "normal" } } } },
+      "fieldConfig": {
+        "defaults": { "custom": { "drawStyle": "bars", "stacking": { "mode": "normal" } } }
+      },
       "targets": [
-        { "expr": "sum by (stage, code) (rate(orders_rejected_total[5m]))", "refId": "A", "legendFormat": "{{ stage }}:{{ code }}" },
-        { "expr": "sum by (code) (rate(risk_rejections_total[5m]))", "refId": "B", "legendFormat": "risk:{{ code }}" }
+        {
+          "expr": "sum by (stage, code) (rate(orders_rejected_total[5m]))",
+          "refId": "A",
+          "legendFormat": "{{ stage }}:{{ code }}"
+        },
+        {
+          "expr": "sum by (code) (rate(risk_rejections_total[5m]))",
+          "refId": "B",
+          "legendFormat": "risk:{{ code }}"
+        }
       ]
     },
     {
@@ -53,9 +71,21 @@
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
       "fieldConfig": { "defaults": { "unit": "s" } },
       "targets": [
-        { "expr": "histogram_quantile(0.5, sum by (le, type) (rate(order_submit_latency_seconds_bucket[5m])))", "refId": "A", "legendFormat": "p50 {{ type }}" },
-        { "expr": "histogram_quantile(0.95, sum by (le, type) (rate(order_submit_latency_seconds_bucket[5m])))", "refId": "B", "legendFormat": "p95 {{ type }}" },
-        { "expr": "histogram_quantile(0.99, sum by (le, type) (rate(order_submit_latency_seconds_bucket[5m])))", "refId": "C", "legendFormat": "p99 {{ type }}" }
+        {
+          "expr": "histogram_quantile(0.5, sum by (le, type) (rate(order_submit_latency_seconds_bucket[5m])))",
+          "refId": "A",
+          "legendFormat": "p50 {{ type }}"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, type) (rate(order_submit_latency_seconds_bucket[5m])))",
+          "refId": "B",
+          "legendFormat": "p95 {{ type }}"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, type) (rate(order_submit_latency_seconds_bucket[5m])))",
+          "refId": "C",
+          "legendFormat": "p99 {{ type }}"
+        }
       ]
     },
     {
@@ -66,8 +96,16 @@
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
       "fieldConfig": { "defaults": { "unit": "none" } },
       "targets": [
-        { "expr": "histogram_quantile(0.5, sum by (le, symbol) (rate(order_slippage_decision_bps_bucket[5m])))", "refId": "A", "legendFormat": "p50 {{ symbol }}" },
-        { "expr": "histogram_quantile(0.9, sum by (le, symbol) (rate(order_slippage_decision_bps_bucket[5m])))", "refId": "B", "legendFormat": "p90 {{ symbol }}" }
+        {
+          "expr": "histogram_quantile(0.5, sum by (le, symbol) (rate(order_slippage_decision_bps_bucket[5m])))",
+          "refId": "A",
+          "legendFormat": "p50 {{ symbol }}"
+        },
+        {
+          "expr": "histogram_quantile(0.9, sum by (le, symbol) (rate(order_slippage_decision_bps_bucket[5m])))",
+          "refId": "B",
+          "legendFormat": "p90 {{ symbol }}"
+        }
       ]
     },
     {
@@ -78,7 +116,10 @@
       "gridPos": { "h": 8, "w": 6, "x": 12, "y": 16 },
       "fieldConfig": { "defaults": { "unit": "percentunit" } },
       "targets": [
-        { "expr": "sum(rate(orders_fully_filled_total[5m])) / clamp_min(sum(rate(orders_submitted_total[5m])), 0.0001)", "refId": "A" }
+        {
+          "expr": "sum(rate(orders_fully_filled_total[5m])) / clamp_min(sum(rate(orders_submitted_total[5m])), 0.0001)",
+          "refId": "A"
+        }
       ]
     },
     {
@@ -98,7 +139,11 @@
       "gridPos": { "h": 7, "w": 24, "x": 0, "y": 24 },
       "targets": [
         { "expr": "rate(fills_total[5m])", "refId": "A", "legendFormat": "fills/s" },
-        { "expr": "sum(rate(orders_submitted_total[5m]))", "refId": "B", "legendFormat": "submitted/s" }
+        {
+          "expr": "sum(rate(orders_submitted_total[5m]))",
+          "refId": "B",
+          "legendFormat": "submitted/s"
+        }
       ]
     }
   ]

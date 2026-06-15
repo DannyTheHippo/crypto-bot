@@ -7,7 +7,11 @@ import type { MarketStreamPort, SubscriptionSpec } from '../../ports/market-data
 // Populated by the teeing stream on every ticker/book so the RiskEngine's mark is fresh — the
 // RiskEngine rejects STALE_DATA without it. FeedHealthService implements this.
 export interface RefPriceSink {
-  updateRefPrice(symbol: SymbolId, mid: import('../../domain/types/money').Price, at: EpochMs): void;
+  updateRefPrice(
+    symbol: SymbolId,
+    mid: import('../../domain/types/money').Price,
+    at: EpochMs,
+  ): void;
 }
 
 // Paper-only fill simulation feed. In demo/live the venue fills orders, so this is absent and the
@@ -59,7 +63,8 @@ export class TeeingMarketStream implements MarketStreamPort {
       case 'ORDER_BOOK_SNAPSHOT': {
         const bestBid = ev.bids[0]?.price;
         const bestAsk = ev.asks[0]?.price;
-        if (bestBid !== undefined && bestAsk !== undefined) this.setRef(ev.symbol, bestBid, bestAsk, ev.eventTime);
+        if (bestBid !== undefined && bestAsk !== undefined)
+          this.setRef(ev.symbol, bestBid, bestAsk, ev.eventTime);
         this.paperFeed?.ingestBook(ev.symbol, ev.bids, ev.asks);
         break;
       }

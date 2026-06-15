@@ -1,15 +1,29 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
-import { InjectMetric, makeCounterProvider, makeHistogramProvider } from '@willsoto/nestjs-prometheus';
+import {
+  InjectMetric,
+  makeCounterProvider,
+  makeHistogramProvider,
+} from '@willsoto/nestjs-prometheus';
 import { Counter, Histogram } from 'prom-client';
 import { CLOCK, type ClockPort } from '../../ports/clock';
 import { RISK_SIGNING_KEY } from '../../ports/risk';
 import { MODE_CONTROL, type ModeControlPort } from '../../ports/mode-control';
 import {
-  EXCHANGE_PORT, AdapterError, type ExchangePort, type ExchangeAck, type PlaceOrderRequest,
+  EXCHANGE_PORT,
+  AdapterError,
+  type ExchangePort,
+  type ExchangeAck,
+  type PlaceOrderRequest,
 } from '../../ports/exchange';
 import {
-  EXECUTION_STORE, EXEC_RUN_CONTEXT, EXEC_FILTERS,
-  type ExecutionGatePort, type ExecutionStorePort, type SubmitAck, type ExecRunContext, type ExecFilters,
+  EXECUTION_STORE,
+  EXEC_RUN_CONTEXT,
+  EXEC_FILTERS,
+  type ExecutionGatePort,
+  type ExecutionStorePort,
+  type SubmitAck,
+  type ExecRunContext,
+  type ExecFilters,
 } from '../../ports/execution';
 import { verifyApproval } from '../../domain/risk/proof';
 import { initialOrder, type OrderEvent, type OrderState } from '../../domain/oms/reducer';
@@ -63,7 +77,12 @@ export const ORDER_SUBMIT_LATENCY = makeHistogramProvider({
 });
 
 const DEFAULT_STEP = '0.00000001';
-const TERMINAL_ORDER_STATES: ReadonlySet<OrderState> = new Set(['FILLED', 'CANCELED', 'REJECTED', 'EXPIRED']);
+const TERMINAL_ORDER_STATES: ReadonlySet<OrderState> = new Set([
+  'FILLED',
+  'CANCELED',
+  'REJECTED',
+  'EXPIRED',
+]);
 
 // EXECUTION_GATE (§2.4): the sole entry from Risk to a venue. A failed proof refuses before
 // any persistence or network call (the order-authorization chokepoint). The write-ahead
@@ -84,10 +103,18 @@ export class ExecutionGateService implements ExecutionGatePort {
     private readonly orders: OrderBookService,
     private readonly portfolio: PortfolioStateService,
     @Optional() @InjectMetric('orders_total') private readonly ordersCounter?: Counter<string>,
-    @Optional() @InjectMetric('orders_rejected_total') private readonly ordersRejectedCounter?: Counter<string>,
-    @Optional() @InjectMetric('orders_submitted_total') private readonly submittedCounter?: Counter<string>,
-    @Optional() @InjectMetric('orders_submitted_qty_total') private readonly submittedQtyCounter?: Counter<string>,
-    @Optional() @InjectMetric('order_submit_latency_seconds') private readonly submitLatency?: Histogram<string>,
+    @Optional()
+    @InjectMetric('orders_rejected_total')
+    private readonly ordersRejectedCounter?: Counter<string>,
+    @Optional()
+    @InjectMetric('orders_submitted_total')
+    private readonly submittedCounter?: Counter<string>,
+    @Optional()
+    @InjectMetric('orders_submitted_qty_total')
+    private readonly submittedQtyCounter?: Counter<string>,
+    @Optional()
+    @InjectMetric('order_submit_latency_seconds')
+    private readonly submitLatency?: Histogram<string>,
   ) {}
 
   async submit(approved: RiskApprovedIntent): Promise<SubmitAck> {
@@ -105,7 +132,12 @@ export class ExecutionGateService implements ExecutionGatePort {
 
   // Centralizes orders_rejected_total emission so the rejection stage (oms vs exchange) is recorded
   // at the site that knows it, rather than re-derived from the reason string in submit().
-  private reject(coid: ClientOrderId, code: string, stage: 'oms' | 'exchange', state?: OrderState): SubmitAck {
+  private reject(
+    coid: ClientOrderId,
+    code: string,
+    stage: 'oms' | 'exchange',
+    state?: OrderState,
+  ): SubmitAck {
     this.ordersRejectedCounter?.inc({ stage, code });
     return state !== undefined
       ? { clientOrderId: coid, outcome: 'REJECTED', state, reason: code }
@@ -148,8 +180,11 @@ export class ExecutionGateService implements ExecutionGatePort {
 
     const submitting = this.orders.apply(coid, { type: 'SUBMIT_SENT' });
     await this.store.appendOrderEvent({
-      clientOrderId: coid, dedupeKey: 'submit', event: { type: 'SUBMIT_SENT' },
-      derivedState: submitting.state, cumQty: submitting.cumQty.toFixed(),
+      clientOrderId: coid,
+      dedupeKey: 'submit',
+      event: { type: 'SUBMIT_SENT' },
+      derivedState: submitting.state,
+      cumQty: submitting.cumQty.toFixed(),
     });
 
     let ack: ExchangeAck;
@@ -166,8 +201,12 @@ export class ExecutionGateService implements ExecutionGatePort {
     if (current.state === 'SUBMITTING') {
       const acked = this.orders.apply(coid, { type: 'ACK', venueOrderId: ack.venueOrderId });
       await this.store.appendOrderEvent({
-        clientOrderId: coid, dedupeKey: 'ack', event: { type: 'ACK', venueOrderId: ack.venueOrderId },
-        derivedState: acked.state, cumQty: acked.cumQty.toFixed(), venueOrderId: ack.venueOrderId,
+        clientOrderId: coid,
+        dedupeKey: 'ack',
+        event: { type: 'ACK', venueOrderId: ack.venueOrderId },
+        derivedState: acked.state,
+        cumQty: acked.cumQty.toFixed(),
+        venueOrderId: ack.venueOrderId,
       });
     } else {
       this.orders.setVenueOrderId(coid, ack.venueOrderId);
@@ -181,7 +220,12 @@ export class ExecutionGateService implements ExecutionGatePort {
     if (!TERMINAL_ORDER_STATES.has(finalState)) {
       this.portfolio.openOrder(intent.strategyId, this.toOpenSummary(intent));
     }
-    return { clientOrderId: coid, outcome: 'SUBMITTED', state: finalState, venueOrderId: ack.venueOrderId };
+    return {
+      clientOrderId: coid,
+      outcome: 'SUBMITTED',
+      state: finalState,
+      venueOrderId: ack.venueOrderId,
+    };
   }
 
   async cancel(clientOrderId: ClientOrderId, reason: string): Promise<void> {
@@ -190,7 +234,14 @@ export class ExecutionGateService implements ExecutionGatePort {
 
     if (rec.state === 'NEW') {
       const canceled = this.orders.apply(clientOrderId, { type: 'CANCEL_REQUESTED' }); // local-only
-      await this.persistEvent(clientOrderId, 'cancel-local', { type: 'CANCEL_REQUESTED' }, canceled.state, canceled.cumQty.toFixed(), reason);
+      await this.persistEvent(
+        clientOrderId,
+        'cancel-local',
+        { type: 'CANCEL_REQUESTED' },
+        canceled.state,
+        canceled.cumQty.toFixed(),
+        reason,
+      );
       this.portfolio.clearInFlight(clientOrderId);
       this.portfolio.closeOrder(clientOrderId);
       return;
@@ -198,7 +249,14 @@ export class ExecutionGateService implements ExecutionGatePort {
 
     if (rec.state === 'ACKED' || rec.state === 'PARTIALLY_FILLED' || rec.state === 'SUBMITTING') {
       const next = this.orders.apply(clientOrderId, { type: 'CANCEL_REQUESTED' }); // CANCEL_PENDING or cancelWanted
-      await this.persistEvent(clientOrderId, 'cancel-req', { type: 'CANCEL_REQUESTED' }, next.state, next.cumQty.toFixed(), reason);
+      await this.persistEvent(
+        clientOrderId,
+        'cancel-req',
+        { type: 'CANCEL_REQUESTED' },
+        next.state,
+        next.cumQty.toFixed(),
+        reason,
+      );
       const intent = this.portfolio.inFlightIntent(clientOrderId);
       if (next.state === 'CANCEL_PENDING' && intent !== undefined) {
         try {
@@ -230,22 +288,45 @@ export class ExecutionGateService implements ExecutionGatePort {
     const code = err instanceof AdapterError ? err.code : 'UNKNOWN';
     if (cls === 'TERMINAL_REJECT') {
       const rejected = this.orders.apply(coid, { type: 'REJECT' });
-      await this.persistEvent(coid, 'reject', { type: 'REJECT' }, rejected.state, rejected.cumQty.toFixed());
+      await this.persistEvent(
+        coid,
+        'reject',
+        { type: 'REJECT' },
+        rejected.state,
+        rejected.cumQty.toFixed(),
+      );
       this.portfolio.clearInFlight(coid);
       return this.reject(coid, code, 'exchange', rejected.state);
     }
     // Everything else is ambiguous: the order may have landed. SUBMIT_UNKNOWN starts a query
     // loop (Phase 6); worst-case exposure stays reserved (in-flight intent retained).
     const unknown = this.orders.apply(coid, { type: 'SUBMIT_AMBIGUOUS' });
-    await this.persistEvent(coid, 'submit-ambiguous', { type: 'SUBMIT_AMBIGUOUS' }, unknown.state, unknown.cumQty.toFixed());
+    await this.persistEvent(
+      coid,
+      'submit-ambiguous',
+      { type: 'SUBMIT_AMBIGUOUS' },
+      unknown.state,
+      unknown.cumQty.toFixed(),
+    );
     return { clientOrderId: coid, outcome: 'UNKNOWN', state: unknown.state, reason: code };
   }
 
   private async persistEvent(
-    clientOrderId: ClientOrderId, dedupeKey: string,
-    event: OrderEvent, derivedState: OrderState, cumQty: string, reason?: string,
+    clientOrderId: ClientOrderId,
+    dedupeKey: string,
+    event: OrderEvent,
+    derivedState: OrderState,
+    cumQty: string,
+    reason?: string,
   ): Promise<void> {
-    await this.store.appendOrderEvent({ clientOrderId, dedupeKey, event, derivedState, cumQty, reason });
+    await this.store.appendOrderEvent({
+      clientOrderId,
+      dedupeKey,
+      event,
+      derivedState,
+      cumQty,
+      reason,
+    });
   }
 
   private stepSize(symbol: OrderIntent['symbol']): string {
@@ -254,16 +335,24 @@ export class ExecutionGateService implements ExecutionGatePort {
 
   private toPlaceRequest(intent: OrderIntent): PlaceOrderRequest {
     return {
-      clientOrderId: intent.clientOrderId, symbol: intent.symbol, side: intent.side, type: intent.type,
-      qty: intent.qty.toFixed(), limitPrice: intent.limitPrice?.toFixed(),
-      timeInForce: intent.timeInForce, reduceOnly: intent.reduceOnly,
+      clientOrderId: intent.clientOrderId,
+      symbol: intent.symbol,
+      side: intent.side,
+      type: intent.type,
+      qty: intent.qty.toFixed(),
+      limitPrice: intent.limitPrice?.toFixed(),
+      timeInForce: intent.timeInForce,
+      reduceOnly: intent.reduceOnly,
     };
   }
 
   private toOpenSummary(intent: OrderIntent): OpenOrderSummary {
     return {
-      clientOrderId: intent.clientOrderId, symbol: intent.symbol, side: intent.side,
-      qty: intent.qty, limitPrice: intent.limitPrice,
+      clientOrderId: intent.clientOrderId,
+      symbol: intent.symbol,
+      side: intent.side,
+      qty: intent.qty,
+      limitPrice: intent.limitPrice,
     };
   }
 }

@@ -101,7 +101,11 @@ export class RealCcxtOrderClient implements CcxtOrderClient {
   ): Promise<CcxtOrder> {
     return (
       this.exchange as unknown as {
-        cancelOrder(id: string | undefined, symbol: string, params: Record<string, unknown>): Promise<CcxtOrder>;
+        cancelOrder(
+          id: string | undefined,
+          symbol: string,
+          params: Record<string, unknown>,
+        ): Promise<CcxtOrder>;
       }
     ).cancelOrder(id, symbol, params);
   }
@@ -113,7 +117,11 @@ export class RealCcxtOrderClient implements CcxtOrderClient {
   ): Promise<CcxtOrder> {
     return (
       this.exchange as unknown as {
-        fetchOrder(id: string | undefined, symbol: string, params: Record<string, unknown>): Promise<CcxtOrder>;
+        fetchOrder(
+          id: string | undefined,
+          symbol: string,
+          params: Record<string, unknown>,
+        ): Promise<CcxtOrder>;
       }
     ).fetchOrder(id, symbol, params);
   }

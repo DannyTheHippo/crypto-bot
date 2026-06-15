@@ -5,11 +5,22 @@ import { epochMs, type EpochMs } from '../types/ids';
 export const CHALLENGE_TTL_MS = 60_000;
 export const ARMED_SESSION_TTL_MS = 28_800_000;
 
-export type DisarmTrigger = 'MANUAL' | 'KILL_SWITCH' | 'KEY_PROBE_FAILURE' | 'RECONCILE_MISMATCH' | 'TTL';
+export type DisarmTrigger =
+  | 'MANUAL'
+  | 'KILL_SWITCH'
+  | 'KEY_PROBE_FAILURE'
+  | 'RECONCILE_MISMATCH'
+  | 'TTL';
 
 export type ArmingState =
   | { kind: 'DISARMED' }
-  | { kind: 'CHALLENGE_ISSUED'; challengeId: string; bootId: string; issuedAtMs: EpochMs; expiresAtMs: EpochMs }
+  | {
+      kind: 'CHALLENGE_ISSUED';
+      challengeId: string;
+      bootId: string;
+      issuedAtMs: EpochMs;
+      expiresAtMs: EpochMs;
+    }
   | { kind: 'ARMED'; armedAtMs: EpochMs; expiresAtMs: EpochMs };
 
 export type ArmingEvent =
@@ -23,10 +34,20 @@ export type ArmingEffect = 'NONE' | 'KILL_SWITCH_ENGAGE';
 export interface ArmingDeps {
   readonly armingSecret: string;
   // Constant-time comparison injected so the domain never imports node:crypto.
-  readonly verifyHmac: (challengeId: string, bootId: string, secret: string, candidateHex: string) => boolean;
+  readonly verifyHmac: (
+    challengeId: string,
+    bootId: string,
+    secret: string,
+    candidateHex: string,
+  ) => boolean;
 }
 
-export type ArmFailure = 'TTL_EXPIRED' | 'REPLAY' | 'HMAC_MISMATCH' | 'BOOTID_MISMATCH' | 'NO_CHALLENGE';
+export type ArmFailure =
+  | 'TTL_EXPIRED'
+  | 'REPLAY'
+  | 'HMAC_MISMATCH'
+  | 'BOOTID_MISMATCH'
+  | 'NO_CHALLENGE';
 
 export interface ArmingResult {
   readonly state: ArmingState;

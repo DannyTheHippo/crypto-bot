@@ -9,6 +9,8 @@ import type { ExchangePort } from '../../../src/ports/exchange';
 describe('LiveExchangeAdapter', () => {
   it('throws on construction under NODE_ENV=test (CI-cannot-reach-live backstop)', () => {
     // The NODE_ENV guard fires before the inner adapter is touched, so a stub inner is fine here.
-    expect(() => new LiveExchangeAdapter(Symbol('cap'), {} as unknown as ExchangePort)).toThrow(/never be constructed/);
+    expect(() => new LiveExchangeAdapter(Symbol('cap'), {} as unknown as ExchangePort)).toThrow(
+      /never be constructed/,
+    );
   });
 });

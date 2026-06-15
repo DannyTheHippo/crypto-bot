@@ -78,8 +78,20 @@ export class TransitionError extends Error {
 
 const MAX_SUBMIT_ATTEMPTS = 3;
 
-export function initialOrder(clientOrderId: ClientOrderId, qty: Decimal, stepSize: string): OrderRecord {
-  return { clientOrderId, state: 'NEW', qty, cumQty: new Decimal(0), stepSize, attempt: 0, cancelWanted: false };
+export function initialOrder(
+  clientOrderId: ClientOrderId,
+  qty: Decimal,
+  stepSize: string,
+): OrderRecord {
+  return {
+    clientOrderId,
+    state: 'NEW',
+    qty,
+    cumQty: new Decimal(0),
+    stepSize,
+    attempt: 0,
+    cancelWanted: false,
+  };
 }
 
 // Apply a venue CUMULATIVE fill quantity. Returns the new cumQty + whether the order is

@@ -8,7 +8,12 @@ const D = (s: string) => new Decimal(s);
 describe('applyFillToPortfolio (§6.6 fee regimes)', () => {
   it('BUY with no fee spends quote and opens the position at the fill', () => {
     const r = applyFillToPortfolio(FLAT, {
-      side: 'BUY', fillQty: D('2'), fillPrice: D('100'), fee: null, baseAsset: 'BTC', quoteAsset: 'USDT',
+      side: 'BUY',
+      fillQty: D('2'),
+      fillPrice: D('100'),
+      fee: null,
+      baseAsset: 'BTC',
+      quoteAsset: 'USDT',
     });
     expect(r.cashDelta.toFixed()).toBe('-200');
     expect(r.position.signedQty.toFixed()).toBe('2');
@@ -18,11 +23,20 @@ describe('applyFillToPortfolio (§6.6 fee regimes)', () => {
 
   it('quote fee is charged to both quote cash and realized PnL (one cost, two ledgers)', () => {
     const long = applyFillToPortfolio(FLAT, {
-      side: 'BUY', fillQty: D('2'), fillPrice: D('100'), fee: null, baseAsset: 'BTC', quoteAsset: 'USDT',
+      side: 'BUY',
+      fillQty: D('2'),
+      fillPrice: D('100'),
+      fee: null,
+      baseAsset: 'BTC',
+      quoteAsset: 'USDT',
     }).position;
     const r = applyFillToPortfolio(long, {
-      side: 'SELL', fillQty: D('2'), fillPrice: D('110'), fee: { ccy: 'USDT', amount: D('0.22') },
-      baseAsset: 'BTC', quoteAsset: 'USDT',
+      side: 'SELL',
+      fillQty: D('2'),
+      fillPrice: D('110'),
+      fee: { ccy: 'USDT', amount: D('0.22') },
+      baseAsset: 'BTC',
+      quoteAsset: 'USDT',
     });
     expect(r.cashDelta.toFixed()).toBe('219.78'); // +220 proceeds − 0.22 fee
     expect(r.position.signedQty.toFixed()).toBe('0'); // closed
@@ -32,8 +46,12 @@ describe('applyFillToPortfolio (§6.6 fee regimes)', () => {
 
   it('base fee shaves retained base (net), keeps cost basis gross, no fee ledger', () => {
     const r = applyFillToPortfolio(FLAT, {
-      side: 'BUY', fillQty: D('2'), fillPrice: D('100'), fee: { ccy: 'BTC', amount: D('0.002') },
-      baseAsset: 'BTC', quoteAsset: 'USDT',
+      side: 'BUY',
+      fillQty: D('2'),
+      fillPrice: D('100'),
+      fee: { ccy: 'BTC', amount: D('0.002') },
+      baseAsset: 'BTC',
+      quoteAsset: 'USDT',
     });
     expect(r.cashDelta.toFixed()).toBe('-200'); // gross quote spent; fee taken in base
     expect(r.position.signedQty.toFixed()).toBe('1.998'); // 2 − 0.002 net base retained
@@ -43,8 +61,12 @@ describe('applyFillToPortfolio (§6.6 fee regimes)', () => {
 
   it('third-asset fee is recorded in the ledger and never touches position or cash', () => {
     const r = applyFillToPortfolio(FLAT, {
-      side: 'BUY', fillQty: D('2'), fillPrice: D('100'), fee: { ccy: 'BNB', amount: D('0.5') },
-      baseAsset: 'BTC', quoteAsset: 'USDT',
+      side: 'BUY',
+      fillQty: D('2'),
+      fillPrice: D('100'),
+      fee: { ccy: 'BNB', amount: D('0.5') },
+      baseAsset: 'BTC',
+      quoteAsset: 'USDT',
     });
     expect(r.cashDelta.toFixed()).toBe('-200');
     expect(r.position.signedQty.toFixed()).toBe('2');

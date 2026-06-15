@@ -15,23 +15,59 @@ import { price, qty } from '../../../src/domain/types/money';
 import { epochMs, symbolId } from '../../../src/domain/types/ids';
 import { makeIntent, makeFill, SYM, T } from './helpers';
 
-const FILTERS: ExecFilters = new Map<string, SymbolFilters>([[String(SYM), { tickSize: '0.01', stepSize: '0.001', minQty: '0.001', minNotional: '5' }]]);
+const FILTERS: ExecFilters = new Map<string, SymbolFilters>([
+  [String(SYM), { tickSize: '0.01', stepSize: '0.001', minQty: '0.001', minNotional: '5' }],
+]);
 
 function build(opts: { mark?: string | null } = {}) {
   let nowMs = T;
   const clock = { now: () => epochMs(nowMs) };
-  const setNow = (t: number) => { nowMs = t; };
+  const setNow = (t: number) => {
+    nowMs = t;
+  };
   const killSwitch = new KillSwitchService();
-  const portfolio = new PortfolioStateService({ quoteAsset: 'USDT', startingCash: '100000' }, new FeeLedgerService());
+  const portfolio = new PortfolioStateService(
+    { quoteAsset: 'USDT', startingCash: '100000' },
+    new FeeLedgerService(),
+  );
 
   const feed: FeedHealthPort = {
-    getRefPrice: () => (opts.mark === null ? undefined : { mid: price(opts.mark ?? '100'), at: epochMs(T) }),
-    health: () => 'LIVE', fetchCandles: () => Promise.resolve([]),
+    getRefPrice: () =>
+      opts.mark === null ? undefined : { mid: price(opts.mark ?? '100'), at: epochMs(T) },
+    health: () => 'LIVE',
+    fetchCandles: () => Promise.resolve([]),
   };
-  const sizer = new PositionSizerService(clock, { baseNotional: '1000', mode: 'paper', filters: FILTERS, randomBytes: (n) => new Uint8Array(n).fill(3) });
+  const sizer = new PositionSizerService(clock, {
+    baseNotional: '1000',
+    mode: 'paper',
+    filters: FILTERS,
+    randomBytes: (n) => new Uint8Array(n).fill(3),
+  });
   const engine = new RiskEngineService(
-    clock, { key: Buffer.alloc(32, 1), limits: { maxBandBps: 100, maxOrderNotional: '1000000', maxDriftBps: 100, maxPositionPerSymbol: '1000', maxGrossExposure: '1000000', maxNetExposure: '1000000', maxDailyLoss: '5000', maxDrawdownPct: '0.9', staleMaxAgeMs: 5000 }, limitsVersion: 'v1', mode: 'paper', filters: FILTERS, randomBytes: (n) => new Uint8Array(n).fill(3) },
-    feed, killSwitch, new RateBucketsService(clock), new CrossingRegistryService(), { record: () => undefined },
+    clock,
+    {
+      key: Buffer.alloc(32, 1),
+      limits: {
+        maxBandBps: 100,
+        maxOrderNotional: '1000000',
+        maxDriftBps: 100,
+        maxPositionPerSymbol: '1000',
+        maxGrossExposure: '1000000',
+        maxNetExposure: '1000000',
+        maxDailyLoss: '5000',
+        maxDrawdownPct: '0.9',
+        staleMaxAgeMs: 5000,
+      },
+      limitsVersion: 'v1',
+      mode: 'paper',
+      filters: FILTERS,
+      randomBytes: (n) => new Uint8Array(n).fill(3),
+    },
+    feed,
+    killSwitch,
+    new RateBucketsService(clock),
+    new CrossingRegistryService(),
+    { record: () => undefined },
   );
 
   const submits: RiskApprovedIntent[] = [];
@@ -42,15 +78,36 @@ function build(opts: { mark?: string | null } = {}) {
     submit: (a) => {
       submits.push(a);
       portfolio.addInFlight(a.intent);
-      portfolio.openOrder(a.intent.strategyId, { clientOrderId: a.intent.clientOrderId, symbol: a.intent.symbol, side: a.intent.side, qty: a.intent.qty, limitPrice: a.intent.limitPrice });
-      return Promise.resolve({ clientOrderId: a.intent.clientOrderId, outcome: 'SUBMITTED' } as SubmitAck);
+      portfolio.openOrder(a.intent.strategyId, {
+        clientOrderId: a.intent.clientOrderId,
+        symbol: a.intent.symbol,
+        side: a.intent.side,
+        qty: a.intent.qty,
+        limitPrice: a.intent.limitPrice,
+      });
+      return Promise.resolve({
+        clientOrderId: a.intent.clientOrderId,
+        outcome: 'SUBMITTED',
+      } as SubmitAck);
     },
     cancel: () => Promise.resolve(),
     cancelAllFor: () => Promise.resolve(),
-    flattenAll: (reason) => { flattenAllReasons.push(reason); return Promise.resolve(); },
+    flattenAll: (reason) => {
+      flattenAllReasons.push(reason);
+      return Promise.resolve();
+    },
   };
 
-  const coord = new HaltCoordinatorService(clock, killSwitch, gate, portfolio, engine, sizer, feed, FILTERS);
+  const coord = new HaltCoordinatorService(
+    clock,
+    killSwitch,
+    gate,
+    portfolio,
+    engine,
+    sizer,
+    feed,
+    FILTERS,
+  );
   return { clock, setNow, killSwitch, portfolio, coord, submits, flattenAllReasons };
 }
 
@@ -107,7 +164,12 @@ describe('HaltCoordinatorService — HALTING', () => {
   it('does not re-issue cancel-all across ticks while open orders persist', async () => {
     const ctx = build();
     ctx.killSwitch.engage('anomaly', false);
-    ctx.portfolio.openOrder(makeIntent().strategyId, { clientOrderId: makeIntent().clientOrderId, symbol: SYM, side: 'BUY', qty: qty('1') });
+    ctx.portfolio.openOrder(makeIntent().strategyId, {
+      clientOrderId: makeIntent().clientOrderId,
+      symbol: SYM,
+      side: 'BUY',
+      qty: qty('1'),
+    });
     await ctx.coord.tick(epochMs(T));
     await ctx.coord.tick(epochMs(T + 1000));
     expect(ctx.flattenAllReasons).toHaveLength(1); // issued once
@@ -117,7 +179,12 @@ describe('HaltCoordinatorService — HALTING', () => {
   it('escalates to HALTED_DEGRADED when cancels are unconfirmed past 10s', async () => {
     const ctx = build();
     ctx.killSwitch.engage('anomaly', false);
-    ctx.portfolio.openOrder(makeIntent().strategyId, { clientOrderId: makeIntent().clientOrderId, symbol: SYM, side: 'BUY', qty: qty('1') });
+    ctx.portfolio.openOrder(makeIntent().strategyId, {
+      clientOrderId: makeIntent().clientOrderId,
+      symbol: SYM,
+      side: 'BUY',
+      qty: qty('1'),
+    });
     await ctx.coord.tick(epochMs(T)); // haltingSince = T
     await ctx.coord.tick(epochMs(T + 10_000)); // 10s elapsed, still open
     expect(ctx.killSwitch.state()).toBe('HALTED_DEGRADED');
@@ -148,7 +215,12 @@ describe('HaltCoordinatorService — FLATTENING', () => {
   it('skips a position whose symbol already has an open order (busy)', async () => {
     const ctx = build();
     seedPosition(ctx, '2');
-    ctx.portfolio.openOrder(makeIntent().strategyId, { clientOrderId: makeIntent().clientOrderId, symbol: SYM, side: 'SELL', qty: qty('1') });
+    ctx.portfolio.openOrder(makeIntent().strategyId, {
+      clientOrderId: makeIntent().clientOrderId,
+      symbol: SYM,
+      side: 'SELL',
+      qty: qty('1'),
+    });
     toFlattening(ctx);
     await ctx.coord.tick(epochMs(T));
     expect(ctx.submits).toHaveLength(0); // guard: symbol busy
@@ -212,7 +284,12 @@ describe('HaltCoordinatorService — FLATTENING', () => {
     const ctx = build();
     ctx.killSwitch.engage('drawdown', true); // HALTING (flatten requested)
     const openCoid = makeIntent().clientOrderId;
-    ctx.portfolio.openOrder(makeIntent().strategyId, { clientOrderId: openCoid, symbol: SYM, side: 'BUY', qty: qty('2') });
+    ctx.portfolio.openOrder(makeIntent().strategyId, {
+      clientOrderId: openCoid,
+      symbol: SYM,
+      side: 'BUY',
+      qty: qty('2'),
+    });
     await ctx.coord.tick(epochMs(T)); // cancel-all issued; still open ⇒ stays HALTING
 
     // A fill lands during HALTING: position opens, the order closes (cancel race — fills win).

@@ -4,10 +4,12 @@
 **No git commits.** Changes (if any) accumulate in the `paper` working tree atop tonight's avgEntry fix + the prior loop's 4 improvements.
 
 ## Window
+
 - **Start:** 2026-06-14T22:57Z, boot `49c355d4`, **equity = 5000.00** (clean reset). Target at +6h: **equity ≥ 5050** (+1%).
 - **End / measure:** ~2026-06-15T04:57Z (run 2 fires via one-shot cron at 06:56 local).
 
 ## Run 2 (+6h) — EXACT procedure for the fired agent
+
 1. **MEASURE FIRST — do NOT reset before measuring.** Scrape /metrics + query Postgres for current equity, realized_pnl, fills, signals, open/in-flight, PRECISION_OVERFLOW, errors. Compute **window P&L = (equity − 5000)/5000**. Report honestly whether ≥ +1% (this is the deliverable — driven by the strategy/market over 6h, not by forcing).
 2. Analyze the 6h of trading (fill rate, signal→fill conversion, any errors/rejections).
 3. THEN, optionally, apply ONE safe gate-green improvement if the 6h data reveals a genuine one (see backlog below + guardrails). +1% is NOT a gate; never weaken a guard or overfit.
@@ -15,9 +17,11 @@
 5. Record below + PushNotification the honest window P&L outcome.
 
 ## Run 1 — 2026-06-14T22:57Z (now)
+
 **Action: window start + clean reset; NO code change applied (honest — none was warranted).**
 
 Ran an exhaustive 13-agent audit workflow (7 subsystem lenses → 6 unique candidates → adversarial verification of each). **All 6 were refuted (recommended=false):**
+
 - **Marketable LIMIT pricing** (strategy) — RISKY: live mid is unavailable to the candles-only strategy (inert/no-op), and the real fix wires live data into signal prices, breaking the **byte-identical replay-determinism invariant**.
 - **TTL reaper for stale GTC resting orders** — RISKY: real bug (expired resting orders are never cancelled), but the P&L sign is an **unverified directional bet** (cancelling forgoes mean-reversion fills too) + a new periodic driver in a 100%-coverage glob.
 - **E2/E3 exposure-clamp PRECISION_OVERFLOW** (`src/domain/risk/evaluate.ts:209`) — NO_REAL_VALUE: a genuine latent bug (same class as tonight's avgEntry fix — `makeQty()` wraps a non-terminating `headroom.div(price)` before `roundToStep`, throwing uncaught), safe + gate-green to fix, **but unreachable** under the shipped enter-when-flat strategy (gross exposure never approaches the 1 M cap) → zero P&L impact. **Deferred (verified safe; revisit only if the strategy pyramids or the exposure cap tightens).**

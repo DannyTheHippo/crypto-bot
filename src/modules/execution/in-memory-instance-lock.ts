@@ -12,7 +12,9 @@ export class InMemoryInstanceLock implements InstanceLockPort {
   acquire(venue: string, keyFingerprint: string): Promise<void> {
     const key = `${venue}|${keyFingerprint}`;
     if (this.held !== undefined) {
-      return Promise.reject(new Error(`instance lock already held for ${this.held} (cannot also take ${key})`));
+      return Promise.reject(
+        new Error(`instance lock already held for ${this.held} (cannot also take ${key})`),
+      );
     }
     this.held = key;
     return Promise.resolve();

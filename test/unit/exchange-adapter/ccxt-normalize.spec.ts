@@ -1,7 +1,15 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeOrderState, normalizeTrade, normalizeBalances } from '../../../src/modules/exchange-adapter/ccxt-normalize';
+import {
+  normalizeOrderState,
+  normalizeTrade,
+  normalizeBalances,
+} from '../../../src/modules/exchange-adapter/ccxt-normalize';
 import { clientOrderId, venueId, symbolId, epochMs } from '../../../src/domain/types/ids';
-import type { CcxtOrder, CcxtTrade, CcxtBalances } from '../../../src/modules/exchange-adapter/ccxt-order-client';
+import type {
+  CcxtOrder,
+  CcxtTrade,
+  CcxtBalances,
+} from '../../../src/modules/exchange-adapter/ccxt-order-client';
 
 const SYM = symbolId('BTC/USDT');
 const VEN = venueId('binance');
@@ -40,13 +48,15 @@ describe('normalizeOrderState', () => {
   });
 
   it('throws on unknown status', () => {
-    expect(() => normalizeOrderState({ ...baseOrder, status: 'pending' }, COID, SYM))
-      .toThrow('unknown ccxt order status "pending"');
+    expect(() => normalizeOrderState({ ...baseOrder, status: 'pending' }, COID, SYM)).toThrow(
+      'unknown ccxt order status "pending"',
+    );
   });
 
   it('throws on undefined status', () => {
-    expect(() => normalizeOrderState({ ...baseOrder, status: undefined }, COID, SYM))
-      .toThrow('unknown ccxt order status "undefined"');
+    expect(() => normalizeOrderState({ ...baseOrder, status: undefined }, COID, SYM)).toThrow(
+      'unknown ccxt order status "undefined"',
+    );
   });
 
   it('stringifies numeric id', () => {
@@ -129,13 +139,15 @@ describe('normalizeTrade', () => {
   });
 
   it('throws when timestamp is undefined', () => {
-    expect(() => normalizeTrade({ ...baseTrade, timestamp: undefined }, VEN, SYM))
-      .toThrow('missing a valid integer timestamp');
+    expect(() => normalizeTrade({ ...baseTrade, timestamp: undefined }, VEN, SYM)).toThrow(
+      'missing a valid integer timestamp',
+    );
   });
 
   it('throws when timestamp is a float', () => {
-    expect(() => normalizeTrade({ ...baseTrade, timestamp: 1.5 }, VEN, SYM))
-      .toThrow('missing a valid integer timestamp');
+    expect(() => normalizeTrade({ ...baseTrade, timestamp: 1.5 }, VEN, SYM)).toThrow(
+      'missing a valid integer timestamp',
+    );
   });
 
   it('stringifies numeric trade id', () => {

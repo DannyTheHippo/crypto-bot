@@ -13,13 +13,21 @@ import { isOurClientOrderId } from '../types/ids';
 //   KNOWN         — our prefix, present locally: expected.
 export type VenueOpenVerdict = 'FOREIGN' | 'UNKNOWN_OURS' | 'KNOWN';
 
-export function classifyVenueOpenOrder(venueClientOrderId: string, knownLocally: boolean): VenueOpenVerdict {
+export function classifyVenueOpenOrder(
+  venueClientOrderId: string,
+  knownLocally: boolean,
+): VenueOpenVerdict {
   if (!isOurClientOrderId(venueClientOrderId)) return 'FOREIGN';
   return knownLocally ? 'KNOWN' : 'UNKNOWN_OURS';
 }
 
 // Balance drift within ε = max(εabs_dust, εrel·|venue|) is recorded, NOT adopted (§6.4).
-export function balanceWithinEpsilon(local: Decimal, venue: Decimal, epsAbs: string, epsRel: string): boolean {
+export function balanceWithinEpsilon(
+  local: Decimal,
+  venue: Decimal,
+  epsAbs: string,
+  epsRel: string,
+): boolean {
   const tolerance = Decimal.max(new Decimal(epsAbs), venue.abs().mul(new Decimal(epsRel)));
   return venue.sub(local).abs().lte(tolerance);
 }

@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { queryBackoffMs, QUERY_BACKOFF_MS, MAX_QUERY_ATTEMPTS, UNKNOWN_KILL_AFTER_MS } from '../../../src/domain/oms/query-backoff';
+import {
+  queryBackoffMs,
+  QUERY_BACKOFF_MS,
+  MAX_QUERY_ATTEMPTS,
+  UNKNOWN_KILL_AFTER_MS,
+} from '../../../src/domain/oms/query-backoff';
 
 describe('queryBackoffMs (§6.3 query loop)', () => {
   it('exposes the documented schedule and constants', () => {

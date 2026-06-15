@@ -1,4 +1,9 @@
-import type { CandleEvent, TickerEvent, OrderBookSnapshotEvent, CandleInterval } from '../types/market-events';
+import type {
+  CandleEvent,
+  TickerEvent,
+  OrderBookSnapshotEvent,
+  CandleInterval,
+} from '../types/market-events';
 import type { ExecReport } from '../types/exec-report';
 import type { Signal } from '../types/signal';
 import type { StrategyId, VenueId, SymbolId } from '../types/ids';

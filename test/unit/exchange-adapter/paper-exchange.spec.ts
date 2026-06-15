@@ -1,9 +1,19 @@
 import { describe, it, expect } from 'vitest';
 import Decimal from 'decimal.js';
-import { PaperExchangeAdapter, type PaperConfig } from '../../../src/modules/exchange-adapter/paper-exchange.adapter';
+import {
+  PaperExchangeAdapter,
+  type PaperConfig,
+} from '../../../src/modules/exchange-adapter/paper-exchange.adapter';
 import { InMemoryExecOutbox } from '../../../src/modules/execution/in-memory-outbox';
 import { price, qty } from '../../../src/domain/types/money';
-import { venueId, symbolId, epochMs, encodeClientOrderId, intentId, type ClientOrderId } from '../../../src/domain/types/ids';
+import {
+  venueId,
+  symbolId,
+  epochMs,
+  encodeClientOrderId,
+  intentId,
+  type ClientOrderId,
+} from '../../../src/domain/types/ids';
 import type { ClockPort } from '../../../src/ports/clock';
 import type { OrderLevel } from '../../../src/domain/types/market-events';
 import type { ExecReport, FillReport } from '../../../src/domain/types/exec-report';
@@ -18,7 +28,8 @@ const bids = [lvl('99', '2'), lvl('98', '3')];
 
 function cfg(over: Partial<PaperConfig> = {}): PaperConfig {
   return {
-    seed: 42, takerBuffer: '0.05',
+    seed: 42,
+    takerBuffer: '0.05',
     fees: { makerBps: '1', takerBps: '10', feeCurrency: 'quote' },
     latency: { submitMs: [0, 0], eventMs: [0, 5] },
     insufficientDepthPolicy: 'partial_then_reject_rest',
@@ -42,8 +53,14 @@ function coid(): ClientOrderId {
 
 function req(over: Partial<PlaceOrderRequest>): PlaceOrderRequest {
   return {
-    clientOrderId: coid(), symbol: SYM, side: 'BUY', type: 'MARKET', qty: '1',
-    timeInForce: 'GTC', reduceOnly: false, ...over,
+    clientOrderId: coid(),
+    symbol: SYM,
+    side: 'BUY',
+    type: 'MARKET',
+    qty: '1',
+    timeInForce: 'GTC',
+    reduceOnly: false,
+    ...over,
   };
 }
 
@@ -71,8 +88,13 @@ describe('PaperExchangeAdapter', () => {
   it('throws a ccxt-shaped TERMINAL_REJECT on insufficient funds', async () => {
     const { adapter } = make({ startingBalances: { USDT: '50', BTC: '0' } });
     adapter.ingestBook(SYM, bids, asks);
-    await expect(adapter.placeOrder(req({ type: 'MARKET', side: 'BUY', qty: '1' })))
-      .rejects.toMatchObject({ name: 'AdapterError', errorClass: 'TERMINAL_REJECT', code: 'INSUFFICIENT_FUNDS' });
+    await expect(
+      adapter.placeOrder(req({ type: 'MARKET', side: 'BUY', qty: '1' })),
+    ).rejects.toMatchObject({
+      name: 'AdapterError',
+      errorClass: 'TERMINAL_REJECT',
+      code: 'INSUFFICIENT_FUNDS',
+    });
   });
 
   it('rests a non-marketable limit and fills it on trade-through', async () => {
@@ -101,7 +123,16 @@ describe('PaperExchangeAdapter', () => {
     const { adapter, outbox } = make();
     adapter.ingestBook(SYM, bids, asks);
     const c = coid();
-    await adapter.placeOrder({ clientOrderId: c, symbol: SYM, side: 'BUY', type: 'LIMIT', qty: '1', limitPrice: '99', timeInForce: 'GTC', reduceOnly: false });
+    await adapter.placeOrder({
+      clientOrderId: c,
+      symbol: SYM,
+      side: 'BUY',
+      type: 'LIMIT',
+      qty: '1',
+      limitPrice: '99',
+      timeInForce: 'GTC',
+      reduceOnly: false,
+    });
     expect((await adapter.fetchBalances()).get('USDT')?.locked).not.toBe('0'); // locked while resting
     await adapter.cancelOrder(c);
     expect((await reports(outbox)).some((r) => r.kind === 'CANCEL_ACK')).toBe(true);
@@ -125,20 +156,28 @@ describe('PaperExchangeAdapter', () => {
       await adapter.placeOrder(req({ type: 'MARKET', side: 'BUY', qty: '2' }));
       return (await reports(outbox)).map((r) => JSON.stringify(r));
     };
-    coidSeq = 0; const a = await run();
-    coidSeq = 0; const b = await run();
+    coidSeq = 0;
+    const a = await run();
+    coidSeq = 0;
+    const b = await run();
     expect(a).toEqual(b);
   });
 
   it('auto-delivers via notify in normal mode but defers in reorderDelivery mode', async () => {
     let normal = 0;
-    const a = make({}, () => { normal += 1; return Promise.resolve(); });
+    const a = make({}, () => {
+      normal += 1;
+      return Promise.resolve();
+    });
     a.adapter.ingestBook(SYM, bids, asks);
     await a.adapter.placeOrder(req({ type: 'MARKET', side: 'BUY', qty: '1' }));
     expect(normal).toBeGreaterThanOrEqual(1); // fill auto-delivered to the OMS
 
     let reorder = 0;
-    const r = make({ reorderDelivery: true }, () => { reorder += 1; return Promise.resolve(); });
+    const r = make({ reorderDelivery: true }, () => {
+      reorder += 1;
+      return Promise.resolve();
+    });
     r.adapter.ingestBook(SYM, bids, asks);
     await r.adapter.placeOrder(req({ type: 'MARKET', side: 'BUY', qty: '1' }));
     expect(reorder).toBe(0); // delivery deferred to manual control (reorder rows)
@@ -148,7 +187,15 @@ describe('PaperExchangeAdapter', () => {
     const { adapter } = make();
     adapter.ingestBook(SYM, bids, asks);
     const c = coid();
-    await adapter.placeOrder({ clientOrderId: c, symbol: SYM, side: 'BUY', type: 'MARKET', qty: '1', timeInForce: 'GTC', reduceOnly: false });
+    await adapter.placeOrder({
+      clientOrderId: c,
+      symbol: SYM,
+      side: 'BUY',
+      type: 'MARKET',
+      qty: '1',
+      timeInForce: 'GTC',
+      reduceOnly: false,
+    });
     expect((await adapter.fetchOrder(c, SYM)).status).toBe('closed');
     expect(await adapter.fetchMyTrades(SYM, epochMs(0))).toHaveLength(1);
     expect((await adapter.validateCredentials()).withdrawalsEnabled).toBe(false);

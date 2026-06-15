@@ -11,10 +11,7 @@ interface RegistryEntry {
 
 @Injectable()
 export class StrategyRegistry implements StrategyRegistryPort {
-  private readonly factories = new Map<
-    string,
-    (id: StrategyId, params: unknown) => Strategy
-  >();
+  private readonly factories = new Map<string, (id: StrategyId, params: unknown) => Strategy>();
   private readonly entries = new Map<StrategyId, RegistryEntry>();
 
   register(type: string, factory: (id: StrategyId, params: unknown) => Strategy): void {

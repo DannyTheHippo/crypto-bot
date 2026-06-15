@@ -25,7 +25,11 @@ function tracker() {
   return { st, setHealth, recordEvent, checkStaleness };
 }
 
-function adapterWith(ws: WatchSource, st: ChannelStateTracker, caps: Record<string, boolean> = FULL_CAPS) {
+function adapterWith(
+  ws: WatchSource,
+  st: ChannelStateTracker,
+  caps: Record<string, boolean> = FULL_CAPS,
+) {
   const exchange = { id: 'binance', has: caps } as never;
   return new CcxtExchangeStreamAdapter(clock, ws, exchange, V, st);
 }
@@ -72,7 +76,9 @@ describe('RealWatchSource delegates to the ccxt exchange', () => {
 
 describe('buildCcxtExchange', () => {
   it('throws for an unknown venue id', () => {
-    expect(() => buildCcxtExchange({ id: 'definitelynotavenue', environment: 'live' })).toThrow(/no exchange named/);
+    expect(() => buildCcxtExchange({ id: 'definitelynotavenue', environment: 'live' })).toThrow(
+      /no exchange named/,
+    );
   });
 
   it('constructs a live binance client (string numerics)', () => {
@@ -81,7 +87,11 @@ describe('buildCcxtExchange', () => {
   });
 
   it('accepts a baseUrlOverride without throwing', () => {
-    const ex = buildCcxtExchange({ id: 'binance', environment: 'live', baseUrlOverride: 'https://example.test/api' });
+    const ex = buildCcxtExchange({
+      id: 'binance',
+      environment: 'live',
+      baseUrlOverride: 'https://example.test/api',
+    });
     expect(ex.id).toBe('binance');
   });
 });
@@ -91,7 +101,9 @@ describe('supervised channel loops deliver normalized raw events', () => {
     vi.useFakeTimers();
     const { st, recordEvent } = tracker();
     const ws = onceThenPark('watchTicker', { timestamp: 1, bid: '1', ask: '2', last: '1.5' });
-    const it = adapterWith(ws, st).marketRaw({ venue: V, symbols: [S], channels: { ticker: true } })[Symbol.asyncIterator]();
+    const it = adapterWith(ws, st)
+      .marketRaw({ venue: V, symbols: [S], channels: { ticker: true } })
+      [Symbol.asyncIterator]();
     const first = await it.next();
     if (first.done) throw new Error('no event');
     expect(first.value.type).toBe('ticker');
@@ -102,8 +114,12 @@ describe('supervised channel loops deliver normalized raw events', () => {
   it('trades loop (one raw event per trade in the batch)', async () => {
     vi.useFakeTimers();
     const { st } = tracker();
-    const ws = onceThenPark('watchTrades', [{ timestamp: 1, price: '100', amount: '1', side: 'buy', id: 'a' }]);
-    const it = adapterWith(ws, st).marketRaw({ venue: V, symbols: [S], channels: { trades: true } })[Symbol.asyncIterator]();
+    const ws = onceThenPark('watchTrades', [
+      { timestamp: 1, price: '100', amount: '1', side: 'buy', id: 'a' },
+    ]);
+    const it = adapterWith(ws, st)
+      .marketRaw({ venue: V, symbols: [S], channels: { trades: true } })
+      [Symbol.asyncIterator]();
     const first = await it.next();
     if (first.done) throw new Error('no event');
     expect(first.value.type).toBe('trade');
@@ -114,7 +130,9 @@ describe('supervised channel loops deliver normalized raw events', () => {
     vi.useFakeTimers();
     const { st } = tracker();
     const ws = onceThenPark('watchOHLCV', [[60000, '100', '110', '90', '105', '10', true]]);
-    const it = adapterWith(ws, st).marketRaw({ venue: V, symbols: [S], channels: { candles: ['1m'] } })[Symbol.asyncIterator]();
+    const it = adapterWith(ws, st)
+      .marketRaw({ venue: V, symbols: [S], channels: { candles: ['1m'] } })
+      [Symbol.asyncIterator]();
     const first = await it.next();
     if (first.done) throw new Error('no event');
     expect(first.value.type).toBe('candle');
@@ -129,14 +147,19 @@ describe('supervised channel loops deliver normalized raw events', () => {
       watchTrades: () => {
         n++;
         if (n === 1) return Promise.reject(new Error('unmapped failure')); // not transient, not checksum
-        if (n === 2) return Promise.resolve([{ timestamp: 2, price: '1', amount: '1', side: 'buy', id: 'a' }] as never);
+        if (n === 2)
+          return Promise.resolve([
+            { timestamp: 2, price: '1', amount: '1', side: 'buy', id: 'a' },
+          ] as never);
         return new Promise<never>(() => {});
       },
       watchTicker: () => Promise.reject(new Error('unused')),
       watchOHLCV: () => Promise.reject(new Error('unused')),
       watchOrderBook: () => Promise.reject(new Error('unused')),
     };
-    const it = adapterWith(ws, st).marketRaw({ venue: V, symbols: [S], channels: { trades: true } })[Symbol.asyncIterator]();
+    const it = adapterWith(ws, st)
+      .marketRaw({ venue: V, symbols: [S], channels: { trades: true } })
+      [Symbol.asyncIterator]();
     const pending = it.next();
     await vi.advanceTimersByTimeAsync(1100);
     const first = await pending;
@@ -160,7 +183,9 @@ describe('supervised channel loops deliver normalized raw events', () => {
       watchOrderBook: () => Promise.reject(new Error('unused')),
     };
     holder.adapter = adapterWith(ws, st);
-    const it = holder.adapter.marketRaw({ venue: V, symbols: [S], channels: { ticker: true } })[Symbol.asyncIterator]();
+    const it = holder.adapter
+      .marketRaw({ venue: V, symbols: [S], channels: { ticker: true } })
+      [Symbol.asyncIterator]();
     const r = await it.next();
     expect(r.done).toBe(true); // loop broke, stream finished — no DEGRADED/GAP retry churn
   });
@@ -173,14 +198,17 @@ describe('supervised channel loops deliver normalized raw events', () => {
       watchTicker: () => {
         n++;
         if (n === 1) return Promise.reject(new NetworkError('socket hiccup'));
-        if (n === 2) return Promise.resolve({ timestamp: 2, bid: '1', ask: '2', last: '1.5' } as never);
+        if (n === 2)
+          return Promise.resolve({ timestamp: 2, bid: '1', ask: '2', last: '1.5' } as never);
         return new Promise<never>(() => {});
       },
       watchTrades: () => Promise.reject(new Error('unused')),
       watchOHLCV: () => Promise.reject(new Error('unused')),
       watchOrderBook: () => Promise.reject(new Error('unused')),
     };
-    const it = adapterWith(ws, st).marketRaw({ venue: V, symbols: [S], channels: { ticker: true } })[Symbol.asyncIterator]();
+    const it = adapterWith(ws, st)
+      .marketRaw({ venue: V, symbols: [S], channels: { ticker: true } })
+      [Symbol.asyncIterator]();
     const pending = it.next();
     await vi.advanceTimersByTimeAsync(1100); // let the 1s backoff fire and the loop resume
     const first = await pending;
@@ -201,9 +229,9 @@ describe('capability fail-fast', () => {
   for (const [method, channels] of cases) {
     it(`refuses to start when ${method} is unavailable`, () => {
       const adapter = adapterWith({} as WatchSource, tracker(), {}); // no capabilities
-      expect(() => adapter.marketRaw({ venue: V, symbols: [S], channels })[Symbol.asyncIterator]()).toThrow(
-        new RegExp(method),
-      );
+      expect(() =>
+        adapter.marketRaw({ venue: V, symbols: [S], channels })[Symbol.asyncIterator](),
+      ).toThrow(new RegExp(method));
     });
   }
 });

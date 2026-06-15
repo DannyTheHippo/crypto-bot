@@ -5,7 +5,11 @@ import request from 'supertest';
 import { AppModule } from '../../../src/app.module';
 import { EXECUTION_GATE, PORTFOLIO_VIEW, INSTANCE_LOCK } from '../../../src/ports/execution';
 import { KILL_SWITCH } from '../../../src/ports/risk';
-import { MODE_CONTROL, ModeViolationError, type ModeControlPort } from '../../../src/ports/mode-control';
+import {
+  MODE_CONTROL,
+  ModeViolationError,
+  type ModeControlPort,
+} from '../../../src/ports/mode-control';
 import { EXCHANGE_PORT } from '../../../src/ports/exchange';
 import { PaperExchangeAdapter } from '../../../src/modules/exchange-adapter/paper-exchange.adapter';
 import { LiveExchangeAdapter } from '../../../src/modules/exchange-adapter/live-exchange.adapter';
@@ -64,7 +68,9 @@ describe('AppModule composition', () => {
 
       const ready = await request(server).get('/health/ready');
       expect(ready.status).toBe(200);
-      const readyInfo = (ready.body as { info: { config: { effectiveMode: string }; database: { detail: string } } }).info;
+      const readyInfo = (
+        ready.body as { info: { config: { effectiveMode: string }; database: { detail: string } } }
+      ).info;
       expect(readyInfo.config.effectiveMode).toBe('paper');
       expect(readyInfo.database.detail).toBe('not_configured'); // DB-less paper boots ready
 

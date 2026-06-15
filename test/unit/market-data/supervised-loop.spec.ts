@@ -31,11 +31,17 @@ describe('CcxtExchangeStreamAdapter supervised book loop', () => {
     let calls = 0;
     const watchSource: WatchSource = {
       // eslint-disable-next-line @typescript-eslint/require-await
-      watchTicker: async () => { throw new Error('unused'); },
+      watchTicker: async () => {
+        throw new Error('unused');
+      },
       // eslint-disable-next-line @typescript-eslint/require-await
-      watchTrades: async () => { throw new Error('unused'); },
+      watchTrades: async () => {
+        throw new Error('unused');
+      },
       // eslint-disable-next-line @typescript-eslint/require-await
-      watchOHLCV: async () => { throw new Error('unused'); },
+      watchOHLCV: async () => {
+        throw new Error('unused');
+      },
       watchOrderBook: async () => {
         calls++;
         if (calls === 1) throw new ChecksumError('orderbook checksum mismatch');

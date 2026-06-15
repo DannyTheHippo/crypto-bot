@@ -33,7 +33,10 @@ describe('CrashRecoveryService (§6.1)', () => {
     expect(ctx.orders.get(submitting)?.state).toBe('SUBMIT_UNKNOWN');
     expect(ctx.orders.get(coidB)?.state).toBe('CANCEL_UNKNOWN');
     expect(degraded).toHaveLength(2);
-    expect(ctx.store.events.map((e) => e.derivedState).sort()).toEqual(['CANCEL_UNKNOWN', 'SUBMIT_UNKNOWN']);
+    expect(ctx.store.events.map((e) => e.derivedState).sort()).toEqual([
+      'CANCEL_UNKNOWN',
+      'SUBMIT_UNKNOWN',
+    ]);
   });
 
   it('leaves a terminal/acked order untouched and reports no degrade', async () => {
@@ -53,8 +56,11 @@ describe('CrashRecoveryService (§6.1)', () => {
     ctx.orders.create(initialOrder(coid, makeIntent().qty, '0.001'));
     ctx.orders.apply(coid, { type: 'SUBMIT_SENT' }); // SUBMITTING
     await ctx.store.appendOrderEvent({
-      clientOrderId: coid, dedupeKey: 'recover:SUBMIT_AMBIGUOUS', event: { type: 'SUBMIT_AMBIGUOUS' },
-      derivedState: 'SUBMIT_UNKNOWN', cumQty: '0',
+      clientOrderId: coid,
+      dedupeKey: 'recover:SUBMIT_AMBIGUOUS',
+      event: { type: 'SUBMIT_AMBIGUOUS' },
+      derivedState: 'SUBMIT_UNKNOWN',
+      cumQty: '0',
     });
     const degraded = await ctx.recovery.recoverOnBoot();
     expect(degraded).toHaveLength(0); // journal already had it — commit skipped

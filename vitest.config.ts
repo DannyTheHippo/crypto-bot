@@ -22,10 +22,20 @@ export default defineConfig({
         // Execution is the order-authorization chokepoint (verify-reject matrix + write-ahead
         // ordering). The PaperExchangeAdapter (sim) stays at the global threshold — the
         // deterministic paper suite drives it hard.
-        'src/modules/execution/**/*.ts': { lines: 100, branches: 100, functions: 100, statements: 100 },
+        'src/modules/execution/**/*.ts': {
+          lines: 100,
+          branches: 100,
+          functions: 100,
+          statements: 100,
+        },
         // ModeControl is the live-arming interlock. *.module.ts is excluded by the global
         // exclude pattern above, so only the service, controller, and hmac helper are gated.
-        'src/modules/mode-control/**/*.ts': { lines: 100, branches: 100, functions: 100, statements: 100 },
+        'src/modules/mode-control/**/*.ts': {
+          lines: 100,
+          branches: 100,
+          functions: 100,
+          statements: 100,
+        },
       },
       exclude: [
         'src/main.ts',

@@ -12,15 +12,44 @@ const view = {} as MarketView;
 
 function candle(seq: number, close: string, t: number): CandleEvent {
   return {
-    kind: 'CANDLE', venue: V, symbol: S, channel: 'candle:1h', seq: BigInt(seq),
-    eventTime: epochMs(t), ingestTime: epochMs(t + 1), interval: '1h',
-    openTime: epochMs(t), closeTime: epochMs(t + 3_600_000 - 1),
-    open: price(close), high: price(close), low: price(close), close: price(close),
-    volume: qty('1'), closed: true,
+    kind: 'CANDLE',
+    venue: V,
+    symbol: S,
+    channel: 'candle:1h',
+    seq: BigInt(seq),
+    eventTime: epochMs(t),
+    ingestTime: epochMs(t + 1),
+    interval: '1h',
+    openTime: epochMs(t),
+    closeTime: epochMs(t + 3_600_000 - 1),
+    open: price(close),
+    high: price(close),
+    low: price(close),
+    close: price(close),
+    volume: qty('1'),
+    closed: true,
   };
 }
 
-const CLOSES = ['100', '100', '100', '100', '100', '110', '125', '140', '160', '150', '130', '110', '90', '70', '90', '120', '160'];
+const CLOSES = [
+  '100',
+  '100',
+  '100',
+  '100',
+  '100',
+  '110',
+  '125',
+  '140',
+  '160',
+  '150',
+  '130',
+  '110',
+  '90',
+  '70',
+  '90',
+  '120',
+  '160',
+];
 
 // Serialize a Signal to a plain, comparable shape (Decimals → exact strings, bigint → string).
 function serialize(s: Signal) {
@@ -38,7 +67,13 @@ function serialize(s: Signal) {
 }
 
 function runOnce(): ReturnType<typeof serialize>[] {
-  const strat = new EmaCrossStrategy(strategyId('ema1'), { fast: 3, slow: 5, symbol: S, venue: V, ttlMs: 30_000 });
+  const strat = new EmaCrossStrategy(strategyId('ema1'), {
+    fast: 3,
+    slow: 5,
+    symbol: S,
+    venue: V,
+    ttlMs: 30_000,
+  });
   const out: ReturnType<typeof serialize>[] = [];
   CLOSES.forEach((c, i) => {
     for (const sig of strat.onCandle(candle(i, c, 1000 + i), view)) out.push(serialize(sig));

@@ -14,8 +14,18 @@ import type { TradingMode } from '../../domain/types/mode';
 // root binds it globally; RiskEngine/SignalGateway resolve it by class from that single instance.
 import { FEED_HEALTH, REAL_FEED_HEALTH, type FeedHealthPort } from '../../ports/market-data';
 import {
-  RISK_SIGNING_KEY, RISK_ENGINE_DEPS, SIZER_DEPS, RISK_JOURNAL, RISK_JOURNAL_OVERRIDE, RISK_ENGINE,
-  POSITION_SIZER, SIGNAL_GATEWAY, RISK_LIMITS, type RiskEngineDeps, type SizerDeps, type RiskJournalPort,
+  RISK_SIGNING_KEY,
+  RISK_ENGINE_DEPS,
+  SIZER_DEPS,
+  RISK_JOURNAL,
+  RISK_JOURNAL_OVERRIDE,
+  RISK_ENGINE,
+  POSITION_SIZER,
+  SIGNAL_GATEWAY,
+  RISK_LIMITS,
+  type RiskEngineDeps,
+  type SizerDeps,
+  type RiskJournalPort,
 } from '../../ports/risk';
 import type { PartialRiskLimits } from '../../domain/risk/limits';
 import type { SymbolFilters } from '../../domain/risk/evaluate';
@@ -36,8 +46,15 @@ const DEFAULT_FILTERS = new Map<string, SymbolFilters>([
   ['ETH/USDT', { tickSize: '0.01', stepSize: '0.0001', minQty: '0.0001', minNotional: '5' }],
 ]);
 const DEFAULT_LIMITS: PartialRiskLimits = {
-  maxBandBps: 100, maxOrderNotional: '100000', maxDriftBps: 100, maxPositionPerSymbol: '1000',
-  maxGrossExposure: '1000000', maxNetExposure: '1000000', maxDailyLoss: '5000', maxDrawdownPct: '0.2', staleMaxAgeMs: 5000,
+  maxBandBps: 100,
+  maxOrderNotional: '100000',
+  maxDriftBps: 100,
+  maxPositionPerSymbol: '1000',
+  maxGrossExposure: '1000000',
+  maxNetExposure: '1000000',
+  maxDailyLoss: '5000',
+  maxDrawdownPct: '0.2',
+  staleMaxAgeMs: 5000,
 };
 const noopFeedHealth: FeedHealthPort = {
   health: () => 'GAP',
@@ -83,14 +100,22 @@ const CONFIG_OPTIONAL = { token: ConfigService, optional: true } as const;
     {
       provide: SIZER_DEPS,
       useFactory: (config?: ConfigService<AppConfig, true>): SizerDeps => ({
-        baseNotional: baseNotionalFor(config), mode: configMode(config), filters: DEFAULT_FILTERS, randomBytes,
+        baseNotional: baseNotionalFor(config),
+        mode: configMode(config),
+        filters: DEFAULT_FILTERS,
+        randomBytes,
       }),
       inject: [CONFIG_OPTIONAL],
     },
     {
       provide: RISK_ENGINE_DEPS,
       useFactory: (key: Buffer, config?: ConfigService<AppConfig, true>): RiskEngineDeps => ({
-        key, limits: DEFAULT_LIMITS, limitsVersion: 'v1', mode: configMode(config), filters: DEFAULT_FILTERS, randomBytes,
+        key,
+        limits: DEFAULT_LIMITS,
+        limitsVersion: 'v1',
+        mode: configMode(config),
+        filters: DEFAULT_FILTERS,
+        randomBytes,
       }),
       inject: [RISK_SIGNING_KEY, CONFIG_OPTIONAL],
     },

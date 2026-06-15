@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { register } from 'prom-client';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { AppModule } from '../../../src/app.module';
 import { EventLoopHealthIndicator } from '../../../src/modules/observability/event-loop-health.indicator';
 import { MetricsService } from '../../../src/modules/observability/metrics.service';

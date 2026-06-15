@@ -2,7 +2,13 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import Decimal from 'decimal.js';
 import { price } from '../../../domain/types/money';
 import type { TradingMode } from '../../../domain/types/mode';
-import type { StrategyId, VenueId, SymbolId, ClientOrderId, EpochMs } from '../../../domain/types/ids';
+import type {
+  StrategyId,
+  VenueId,
+  SymbolId,
+  ClientOrderId,
+  EpochMs,
+} from '../../../domain/types/ids';
 import type { Position } from '../../../domain/types/portfolio';
 import type { OrderIntent } from '../../../domain/types/order-intent';
 import type { ApprovalProof } from '../../../domain/types/risk-decision';
@@ -147,7 +153,10 @@ export class DrizzleExecutionStore implements ExecutionStorePort {
     return { applied: true };
   }
 
-  async saveFill(fill: FillRecord, intentId: string): Promise<{ inserted: boolean; conflict: boolean }> {
+  async saveFill(
+    fill: FillRecord,
+    intentId: string,
+  ): Promise<{ inserted: boolean; conflict: boolean }> {
     const existing = await this.fills.fetchByTradeId(fill.venue, fill.symbol, fill.venueTradeId);
     if (existing !== null) {
       // Same tradeId, different price/qty is corruption (§6.6 I3). Compare by EXACT DECIMAL value,
@@ -224,7 +233,9 @@ export class DrizzleExecutionStore implements ExecutionStorePort {
     });
   }
 
-  async loadRecoverySnapshot(mode: TradingMode): Promise<{ latest: EquitySample | null; sodEquity: string | null; positions: Position[] }> {
+  async loadRecoverySnapshot(
+    mode: TradingMode,
+  ): Promise<{ latest: EquitySample | null; sodEquity: string | null; positions: Position[] }> {
     const latestRow = await this.equity.findLatestByMode(mode);
     if (latestRow === null) {
       return { latest: null, sodEquity: null, positions: [] };

@@ -9,8 +9,13 @@ function fakeService() {
   const disarms: string[] = [];
   const svc: ModeControlPort = {
     resolveMode: () => ({ effective: 'paper', requested: 'paper', downgrades: [] }),
-    armLive: (req) => { calls.push(req); return req.step === 'REQUEST' ? { ok: true, challengeId: 'c1' } : { ok: true }; },
-    disarm: (t) => { disarms.push(t); },
+    armLive: (req) => {
+      calls.push(req);
+      return req.step === 'REQUEST' ? { ok: true, challengeId: 'c1' } : { ok: true };
+    },
+    disarm: (t) => {
+      disarms.push(t);
+    },
     assertCanTrade: () => undefined,
   };
   return { svc, calls, disarms };
@@ -26,8 +31,14 @@ describe('ArmingController', () => {
 
   it('POST arm/confirm → armLive CONFIRM with challengeId/hmac/bootId', () => {
     const { svc, calls } = fakeService();
-    const res = new ArmingController(svc).confirm({ challengeId: 'c1', hmacHex: 'ab', bootId: 'boot-1' });
-    expect(calls).toEqual([{ step: 'CONFIRM', challengeId: 'c1', hmacHex: 'ab', bootId: 'boot-1' }]);
+    const res = new ArmingController(svc).confirm({
+      challengeId: 'c1',
+      hmacHex: 'ab',
+      bootId: 'boot-1',
+    });
+    expect(calls).toEqual([
+      { step: 'CONFIRM', challengeId: 'c1', hmacHex: 'ab', bootId: 'boot-1' },
+    ]);
     expect(res).toEqual({ ok: true });
   });
 

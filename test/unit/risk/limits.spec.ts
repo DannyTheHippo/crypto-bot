@@ -2,8 +2,15 @@ import { describe, it, expect } from 'vitest';
 import { validateLimits, type PartialRiskLimits } from '../../../src/domain/risk/limits';
 
 const VALID: PartialRiskLimits = {
-  maxBandBps: 100, maxOrderNotional: '1000000', maxDriftBps: 100, maxPositionPerSymbol: '1000',
-  maxGrossExposure: '1000000', maxNetExposure: '1000000', maxDailyLoss: '5000', maxDrawdownPct: '0.5', staleMaxAgeMs: 5000,
+  maxBandBps: 100,
+  maxOrderNotional: '1000000',
+  maxDriftBps: 100,
+  maxPositionPerSymbol: '1000',
+  maxGrossExposure: '1000000',
+  maxNetExposure: '1000000',
+  maxDailyLoss: '5000',
+  maxDrawdownPct: '0.5',
+  staleMaxAgeMs: 5000,
 };
 
 describe('validateLimits (§5 G2)', () => {

@@ -43,16 +43,49 @@ export const KILL_SWITCH_STATE_GAUGE = makeGaugeProvider({
 // truth is Decimal in Postgres; these gauges are display-grade float exports (design §8: "Prometheus
 // floats are display-grade exports"). Labeled gauges are reset each tick so a closed position's
 // series does not linger. Unrealized PnL is embedded in equity (cash + Σ position×mark).
-export const EQUITY_GAUGE = makeGaugeProvider({ name: 'equity_usdt', help: 'Account equity (cash + Σ position×mark), USDT' });
-export const CASH_GAUGE = makeGaugeProvider({ name: 'cash_usdt', help: 'Free quote (USDT) balance' });
-export const PEAK_EQUITY_GAUGE = makeGaugeProvider({ name: 'peak_equity_usdt', help: 'Peak equity high-water mark, USDT' });
-export const DAY_PNL_GAUGE = makeGaugeProvider({ name: 'day_pnl_usdt', help: 'Equity − start-of-day-UTC equity, USDT' });
-export const DRAWDOWN_GAUGE = makeGaugeProvider({ name: 'drawdown_ratio', help: '(peak − equity) / peak, 0..1' });
-export const REALIZED_PNL_GAUGE = makeGaugeProvider({ name: 'realized_pnl_usdt', help: 'Realized PnL per strategy/symbol, USDT', labelNames: ['strategy', 'symbol'] });
-export const POSITION_QTY_GAUGE = makeGaugeProvider({ name: 'position_qty', help: 'Signed position quantity per strategy/symbol', labelNames: ['strategy', 'symbol'] });
-export const POSITION_NOTIONAL_GAUGE = makeGaugeProvider({ name: 'position_notional_usdt', help: 'abs(position) × avgEntry per strategy/symbol, USDT', labelNames: ['strategy', 'symbol'] });
-export const OPEN_ORDERS_GAUGE = makeGaugeProvider({ name: 'open_orders', help: 'Open (resting) order count' });
-export const IN_FLIGHT_GAUGE = makeGaugeProvider({ name: 'in_flight_intents', help: 'In-flight (reserved) intent count' });
+export const EQUITY_GAUGE = makeGaugeProvider({
+  name: 'equity_usdt',
+  help: 'Account equity (cash + Σ position×mark), USDT',
+});
+export const CASH_GAUGE = makeGaugeProvider({
+  name: 'cash_usdt',
+  help: 'Free quote (USDT) balance',
+});
+export const PEAK_EQUITY_GAUGE = makeGaugeProvider({
+  name: 'peak_equity_usdt',
+  help: 'Peak equity high-water mark, USDT',
+});
+export const DAY_PNL_GAUGE = makeGaugeProvider({
+  name: 'day_pnl_usdt',
+  help: 'Equity − start-of-day-UTC equity, USDT',
+});
+export const DRAWDOWN_GAUGE = makeGaugeProvider({
+  name: 'drawdown_ratio',
+  help: '(peak − equity) / peak, 0..1',
+});
+export const REALIZED_PNL_GAUGE = makeGaugeProvider({
+  name: 'realized_pnl_usdt',
+  help: 'Realized PnL per strategy/symbol, USDT',
+  labelNames: ['strategy', 'symbol'],
+});
+export const POSITION_QTY_GAUGE = makeGaugeProvider({
+  name: 'position_qty',
+  help: 'Signed position quantity per strategy/symbol',
+  labelNames: ['strategy', 'symbol'],
+});
+export const POSITION_NOTIONAL_GAUGE = makeGaugeProvider({
+  name: 'position_notional_usdt',
+  help: 'abs(position) × avgEntry per strategy/symbol, USDT',
+  labelNames: ['strategy', 'symbol'],
+});
+export const OPEN_ORDERS_GAUGE = makeGaugeProvider({
+  name: 'open_orders',
+  help: 'Open (resting) order count',
+});
+export const IN_FLIGHT_GAUGE = makeGaugeProvider({
+  name: 'in_flight_intents',
+  help: 'In-flight (reserved) intent count',
+});
 
 @Injectable()
 export class MetricsService implements OnModuleInit, OnModuleDestroy {
@@ -121,7 +154,9 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
         this.peakEquityGauge.set(snap.peakEquity.toNumber());
         this.dayPnlGauge.set(snap.equity.minus(snap.sodEquityUtc).toNumber());
         this.drawdownGauge.set(
-          snap.peakEquity.gt(0) ? snap.peakEquity.minus(snap.equity).div(snap.peakEquity).toNumber() : 0,
+          snap.peakEquity.gt(0)
+            ? snap.peakEquity.minus(snap.equity).div(snap.peakEquity).toNumber()
+            : 0,
         );
         this.openOrdersGauge.set(snap.openOrders.length);
         this.inFlightGauge.set(snap.inFlightIntents.length);
@@ -133,7 +168,9 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
           const labels = { strategy: pos.strategyId, symbol: pos.symbol };
           this.realizedPnlGauge.labels(labels).set(pos.realizedPnl.toNumber());
           this.positionQtyGauge.labels(labels).set(pos.signedQty.toNumber());
-          this.positionNotionalGauge.labels(labels).set(pos.signedQty.abs().mul(pos.avgEntry).toNumber());
+          this.positionNotionalGauge
+            .labels(labels)
+            .set(pos.signedQty.abs().mul(pos.avgEntry).toNumber());
         }
       }
     }, 5000);

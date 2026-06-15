@@ -4,7 +4,12 @@ import { computeArmingHmac } from '../../../src/modules/mode-control/hmac';
 import { KillSwitchService } from '../../../src/modules/risk/kill-switch.service';
 import { ARMED_SESSION_TTL_MS, CHALLENGE_TTL_MS } from '../../../src/domain/mode/arming';
 import { ModeViolationError } from '../../../src/ports/mode-control';
-import type { ModeControlConfig, ModeAuditEvent, KeyProbeResult, ArmPreconditionResult } from '../../../src/ports/mode-control';
+import type {
+  ModeControlConfig,
+  ModeAuditEvent,
+  KeyProbeResult,
+  ArmPreconditionResult,
+} from '../../../src/ports/mode-control';
 import { epochMs } from '../../../src/domain/types/ids';
 
 const T = 1_700_000_000_000;
@@ -12,33 +17,58 @@ const SECRET = 'arming-secret';
 const BOOT = 'boot-1';
 
 const validProbe: KeyProbeResult = {
-  keysValid: true, withdrawalsEnabled: false, spotEnabled: true, marginOrFutures: false,
-  keyFingerprint: 'fp', urlCrossCheckOk: true,
+  keysValid: true,
+  withdrawalsEnabled: false,
+  spotEnabled: true,
+  marginOrFutures: false,
+  keyFingerprint: 'fp',
+  urlCrossCheckOk: true,
 };
 const invalidProbe: KeyProbeResult = {
-  keysValid: false, withdrawalsEnabled: true, spotEnabled: false, marginOrFutures: false,
-  keyFingerprint: 'none', urlCrossCheckOk: false,
+  keysValid: false,
+  withdrawalsEnabled: true,
+  spotEnabled: false,
+  marginOrFutures: false,
+  keyFingerprint: 'none',
+  urlCrossCheckOk: false,
 };
 
 function build(over: Partial<ModeControlConfig> = {}) {
   let t = T;
   const clock = { now: () => epochMs(t) };
   const events: ModeAuditEvent[] = [];
-  const audit = { record: (e: ModeAuditEvent) => { events.push(e); } };
+  const audit = {
+    record: (e: ModeAuditEvent) => {
+      events.push(e);
+    },
+  };
   let probe: KeyProbeResult = invalidProbe;
   const keyProbe = { probe: () => Promise.resolve(probe) };
   const killSwitch = new KillSwitchService(); // real instance: starts RUNNING
   let precond: ArmPreconditionResult = { ok: true };
   const preconditions = { check: () => precond };
   const cfg: ModeControlConfig = {
-    requested: 'paper', bootId: BOOT, armingSecret: SECRET, limitsComplete: true, ...over,
+    requested: 'paper',
+    bootId: BOOT,
+    armingSecret: SECRET,
+    limitsComplete: true,
+    ...over,
   };
   const svc = new ModeControlService(clock, keyProbe, killSwitch, audit, preconditions, cfg);
   return {
-    svc, events, killSwitch, cfg,
-    setNow: (n: number) => { t = n; },
-    setProbe: (p: KeyProbeResult) => { probe = p; },
-    setPrecond: (p: ArmPreconditionResult) => { precond = p; },
+    svc,
+    events,
+    killSwitch,
+    cfg,
+    setNow: (n: number) => {
+      t = n;
+    },
+    setProbe: (p: KeyProbeResult) => {
+      probe = p;
+    },
+    setPrecond: (p: ArmPreconditionResult) => {
+      precond = p;
+    },
   };
 }
 
@@ -47,7 +77,12 @@ function arm(ctx: ReturnType<typeof build>): void {
   const req = ctx.svc.armLive({ step: 'REQUEST', bootId: BOOT });
   if (!req.ok || req.challengeId === undefined) throw new Error('request failed');
   const hmacHex = computeArmingHmac(req.challengeId, BOOT, SECRET);
-  const res = ctx.svc.armLive({ step: 'CONFIRM', challengeId: req.challengeId, hmacHex, bootId: BOOT });
+  const res = ctx.svc.armLive({
+    step: 'CONFIRM',
+    challengeId: req.challengeId,
+    hmacHex,
+    bootId: BOOT,
+  });
   if (!res.ok) throw new Error('confirm failed: ' + res.reason);
 }
 
@@ -107,7 +142,12 @@ describe('ModeControlService', () => {
   it('CONFIRM fails HMAC_MISMATCH on a bad proof', () => {
     const ctx = build({ requested: 'live' });
     ctx.svc.armLive({ step: 'REQUEST', bootId: BOOT });
-    const res = ctx.svc.armLive({ step: 'CONFIRM', challengeId: 'x', hmacHex: 'deadbeef', bootId: BOOT });
+    const res = ctx.svc.armLive({
+      step: 'CONFIRM',
+      challengeId: 'x',
+      hmacHex: 'deadbeef',
+      bootId: BOOT,
+    });
     expect(res).toEqual({ ok: false, reason: 'HMAC_MISMATCH' });
     expect(ctx.svc.resolveMode().effective).toBe('paper'); // not armed
   });
@@ -117,7 +157,12 @@ describe('ModeControlService', () => {
     const req = ctx.svc.armLive({ step: 'REQUEST', bootId: BOOT });
     const hmacHex = computeArmingHmac((req as { challengeId: string }).challengeId, BOOT, SECRET);
     ctx.setNow(T + CHALLENGE_TTL_MS + 1);
-    const res = ctx.svc.armLive({ step: 'CONFIRM', challengeId: (req as { challengeId: string }).challengeId, hmacHex, bootId: BOOT });
+    const res = ctx.svc.armLive({
+      step: 'CONFIRM',
+      challengeId: (req as { challengeId: string }).challengeId,
+      hmacHex,
+      bootId: BOOT,
+    });
     expect(res).toEqual({ ok: false, reason: 'TTL_EXPIRED' });
   });
 
@@ -131,8 +176,17 @@ describe('ModeControlService', () => {
   it('CONFIRM maps BOOTID_MISMATCH onto HMAC_MISMATCH (no oracle on which half failed)', () => {
     const ctx = build({ requested: 'live' });
     const req = ctx.svc.armLive({ step: 'REQUEST', bootId: BOOT });
-    const hmacHex = computeArmingHmac((req as { challengeId: string }).challengeId, 'other-boot', SECRET);
-    const res = ctx.svc.armLive({ step: 'CONFIRM', challengeId: (req as { challengeId: string }).challengeId, hmacHex, bootId: 'other-boot' });
+    const hmacHex = computeArmingHmac(
+      (req as { challengeId: string }).challengeId,
+      'other-boot',
+      SECRET,
+    );
+    const res = ctx.svc.armLive({
+      step: 'CONFIRM',
+      challengeId: (req as { challengeId: string }).challengeId,
+      hmacHex,
+      bootId: 'other-boot',
+    });
     expect(res).toEqual({ ok: false, reason: 'HMAC_MISMATCH' });
   });
 
@@ -161,7 +215,10 @@ describe('ModeControlService', () => {
   it('assertCanTrade throws + audits when a live intent hits a paper-authority boot', () => {
     const ctx = build({ requested: 'paper' });
     expect(() => ctx.svc.assertCanTrade('live')).toThrow(ModeViolationError);
-    expect(ctx.events.at(-1)).toMatchObject({ type: 'live_order_refused', code: 'NOT_LIVE_AUTHORITY' });
+    expect(ctx.events.at(-1)).toMatchObject({
+      type: 'live_order_refused',
+      code: 'NOT_LIVE_AUTHORITY',
+    });
   });
 
   it('assertCanTrade allows a live intent under live authority and any paper intent', () => {
@@ -176,13 +233,22 @@ describe('ModeControlService', () => {
     ctx.setProbe(validProbe);
     await ctx.svc.refreshKeyProbe();
     const ev = ctx.events.at(-1);
-    expect(ev).toEqual({ type: 'key_check', withdrawalsEnabled: false, spotEnabled: true, marginOrFutures: false, urlCrossCheckOk: true });
+    expect(ev).toEqual({
+      type: 'key_check',
+      withdrawalsEnabled: false,
+      spotEnabled: true,
+      marginOrFutures: false,
+      urlCrossCheckOk: true,
+    });
   });
 
   // §10c / auditor S5: ModeControl recomputes keysValid from the restriction snapshot and does NOT
   // trust the probe's own verdict. Each restriction failure independently blocks live.
   it.each([
-    ['probe LIES keysValid:true while withdrawals are enabled', { ...validProbe, keysValid: true, withdrawalsEnabled: true }],
+    [
+      'probe LIES keysValid:true while withdrawals are enabled',
+      { ...validProbe, keysValid: true, withdrawalsEnabled: true },
+    ],
     ['spot trading disabled', { ...validProbe, spotEnabled: false }],
     ['margin/futures enabled', { ...validProbe, marginOrFutures: true }],
     ['venue URL cross-check fails', { ...validProbe, urlCrossCheckOk: false }],

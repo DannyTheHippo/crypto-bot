@@ -1,4 +1,11 @@
-import { clientOrderId, epochMs, type ClientOrderId, type EpochMs, type SymbolId, type VenueId } from '../../domain/types/ids';
+import {
+  clientOrderId,
+  epochMs,
+  type ClientOrderId,
+  type EpochMs,
+  type SymbolId,
+  type VenueId,
+} from '../../domain/types/ids';
 import type { ExchangeOrderState, VenueFill } from '../../ports/exchange';
 import type { CcxtBalances, CcxtOrder, CcxtTrade } from './ccxt-order-client';
 
@@ -15,7 +22,11 @@ function toStr(v: string | number | undefined, fallback = ''): string {
 // ── Order state normalization ─────────────────────────────────────────────────
 
 const VALID_STATUSES = new Set<ExchangeOrderState['status']>([
-  'open', 'closed', 'canceled', 'rejected', 'expired',
+  'open',
+  'closed',
+  'canceled',
+  'rejected',
+  'expired',
 ]);
 
 export function normalizeOrderState(
@@ -47,26 +58,27 @@ export function normalizeTrade(
   fallbackCoid?: ClientOrderId,
 ): VenueFill {
   // Fills are audit-grade; a missing timestamp is a data integrity problem, not a soft default.
-  if (t.timestamp === undefined || !Number.isFinite(t.timestamp) || !Number.isInteger(t.timestamp)) {
-    throw new Error(`normalizeTrade: trade is missing a valid integer timestamp (got ${t.timestamp})`);
+  if (
+    t.timestamp === undefined ||
+    !Number.isFinite(t.timestamp) ||
+    !Number.isInteger(t.timestamp)
+  ) {
+    throw new Error(
+      `normalizeTrade: trade is missing a valid integer timestamp (got ${t.timestamp})`,
+    );
   }
   const venueTimestamp: EpochMs = epochMs(t.timestamp);
 
   // t.order carries the venue's own order id but VenueFill requires the client order id.
   // The caller passes fallbackCoid (the coid we queried with) when t.order is absent.
   const coid: ClientOrderId =
-    t.order !== undefined
-      ? clientOrderId(t.order)
-      : (fallbackCoid ?? clientOrderId(''));
+    t.order !== undefined ? clientOrderId(t.order) : fallbackCoid ?? clientOrderId('');
 
   // takerOrMaker can be absent; default to 'taker' as the conservative assumption for fees.
-  const liquidity: 'maker' | 'taker' =
-    t.takerOrMaker === 'maker' ? 'maker' : 'taker';
+  const liquidity: 'maker' | 'taker' = t.takerOrMaker === 'maker' ? 'maker' : 'taker';
 
   const fee: VenueFill['fee'] =
-    t.fee != null
-      ? { ccy: t.fee.currency ?? '', amount: toStr(t.fee.cost, '0') }
-      : null;
+    t.fee != null ? { ccy: t.fee.currency ?? '', amount: toStr(t.fee.cost, '0') } : null;
 
   return {
     venue,
@@ -86,9 +98,7 @@ export function normalizeTrade(
 // ccxt top-level keys that are not asset entries.
 const CCXT_BALANCE_META_KEYS = new Set(['info', 'free', 'used', 'total', 'timestamp', 'datetime']);
 
-export function normalizeBalances(
-  b: CcxtBalances,
-): Map<string, { free: string; locked: string }> {
+export function normalizeBalances(b: CcxtBalances): Map<string, { free: string; locked: string }> {
   const out = new Map<string, { free: string; locked: string }>();
   for (const [asset, value] of Object.entries(b)) {
     if (CCXT_BALANCE_META_KEYS.has(asset)) continue;

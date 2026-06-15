@@ -63,9 +63,16 @@ describe('Signal — type shape', () => {
     expect(sig.strength).toBe(0.8);
   });
 
-  it('Signal.kind covers all four values', () => {
-    const kinds: Signal['kind'][] = ['ENTER_LONG', 'EXIT_LONG', 'FLATTEN', 'CANCEL_OPEN'];
-    expect(kinds.length).toBe(4);
+  it('Signal.kind covers all six values (incl. short open/cover)', () => {
+    const kinds: Signal['kind'][] = [
+      'ENTER_LONG',
+      'EXIT_LONG',
+      'ENTER_SHORT',
+      'EXIT_SHORT',
+      'FLATTEN',
+      'CANCEL_OPEN',
+    ];
+    expect(kinds.length).toBe(6);
   });
 });
 

@@ -28,8 +28,14 @@ const CPU_HARD_NS = 50_000_000n;
 // Consecutive hard-breach count before auto-DRAINING.
 const MAX_CONSECUTIVE_HARD = 3;
 
-// Risk-reducing signal kinds: allowed while DRAINING.
-const RISK_REDUCING = new Set<Signal['kind']>(['EXIT_LONG', 'FLATTEN', 'CANCEL_OPEN']);
+// Risk-reducing signal kinds: allowed while DRAINING. EXIT_SHORT (covering a short) reduces risk like
+// EXIT_LONG; ENTER_SHORT (opening a short) ADDS risk and is intentionally excluded.
+const RISK_REDUCING = new Set<Signal['kind']>([
+  'EXIT_LONG',
+  'EXIT_SHORT',
+  'FLATTEN',
+  'CANCEL_OPEN',
+]);
 
 // A mailbox item with a priority weight.
 // Priority order (high→low): execReports(3) > closedCandles(2) > trades(1) > book/ticker(0)

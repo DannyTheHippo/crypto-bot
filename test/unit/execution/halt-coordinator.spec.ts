@@ -8,6 +8,7 @@ import { CrossingRegistryService } from '../../../src/modules/risk/crossing-regi
 import { PositionSizerService } from '../../../src/modules/risk/position-sizer.service';
 import { RiskEngineService } from '../../../src/modules/risk/risk-engine.service';
 import type { ExecutionGatePort, ExecFilters, SubmitAck } from '../../../src/ports/execution';
+import type { RiskEnginePort } from '../../../src/ports/risk';
 import type { RiskApprovedIntent } from '../../../src/domain/types/risk-decision';
 import type { SymbolFilters } from '../../../src/domain/risk/evaluate';
 import type { FeedHealthPort } from '../../../src/ports/market-data';
@@ -19,7 +20,7 @@ const FILTERS: ExecFilters = new Map<string, SymbolFilters>([
   [String(SYM), { tickSize: '0.01', stepSize: '0.001', minQty: '0.001', minNotional: '5' }],
 ]);
 
-function build(opts: { mark?: string | null } = {}) {
+function build(opts: { mark?: string | null; engine?: RiskEnginePort } = {}) {
   let nowMs = T;
   const clock = { now: () => epochMs(nowMs) };
   const setNow = (t: number) => {
@@ -103,7 +104,7 @@ function build(opts: { mark?: string | null } = {}) {
     killSwitch,
     gate,
     portfolio,
-    engine,
+    opts.engine ?? engine,
     sizer,
     feed,
     FILTERS,
@@ -119,8 +120,8 @@ function seedPosition(ctx: Ctx, q: string) {
   ctx.portfolio.applyFill(intent, makeFill({ qty: qty(q), price: price('100') }));
 }
 
-// A short position (v1 is long-only, so this is an off-nominal state the flatten path must not
-// loop on): the SELL-only flatten sizer can't reduce it, so risk rejects and it is residual dust.
+// A short position. v1 strategies are long-only, but the sizer + flatten path now orient by position
+// sign, so the coordinator covers a short with a reduce-only BUY (it no longer abandons it as residue).
 function seedShort(ctx: Ctx, q: string) {
   const intent = makeIntent({ qty: qty(q), side: 'SELL' });
   ctx.portfolio.applyFill(intent, makeFill({ qty: qty(q), price: price('100') }));
@@ -251,13 +252,37 @@ describe('HaltCoordinatorService — FLATTENING', () => {
     expect(ctx.killSwitch.state()).toBe('HALTED'); // converges — never loops on the residue
   });
 
-  it('treats a risk-rejected slice (a short the long-only sizer cannot reduce) as residue → ALL_FLAT', async () => {
-    const ctx = build();
-    seedShort(ctx, '2'); // SELL-only flatten can't reduce a short ⇒ evaluateFlatten REJECTS
+  it('treats a flatten the RISK ENGINE rejects as unflattenable residue → converges to HALTED', async () => {
+    // fireFlatten contract (service line 124): a slice the sizer CAN size but the risk engine then
+    // REJECTS (e.g. rate-limit, crossing a sibling's resting order, ref-drift) is unflattenable residue
+    // — it counts toward ALL_FLAT so FLATTENING converges instead of looping forever. Post-Phase-3 the
+    // sizer covers shorts, so the former trigger (an un-coverable short → REDUCE_ONLY_VIOLATION) is gone;
+    // the engine's own reject rules live in evaluate.spec.ts, so here we inject a rejecting engine to
+    // assert the COORDINATOR's response to any rejection.
+    const rejectingEngine: RiskEnginePort = {
+      evaluate: (intent) => ({ verdict: 'REJECTED', intent, reasons: ['RATE_LIMIT'] }),
+      evaluateFlatten: (intent) => ({ verdict: 'REJECTED', intent, reasons: ['RATE_LIMIT'] }),
+    };
+    const ctx = build({ engine: rejectingEngine });
+    seedPosition(ctx, '2'); // a real long the sizer sizes fine ⇒ we reach the engine, which rejects
     toFlattening(ctx);
     await ctx.coord.tick(epochMs(T));
-    expect(ctx.submits).toHaveLength(0);
-    expect(ctx.killSwitch.state()).toBe('HALTED');
+    expect(ctx.submits).toHaveLength(0); // engine rejected the sized slice ⇒ nothing submitted
+    expect(ctx.killSwitch.state()).toBe('HALTED'); // UNFLATTENABLE ⇒ ALL_FLAT ⇒ converges (no loop)
+  });
+
+  it('covers a short during FLATTENING: sizer now sizes a reduce-only BUY → FIRED, awaits fill', async () => {
+    // Phase 3 short support: FLATTEN is oriented by position sign, so a short sizes a reduce-only BUY
+    // (cover), which evaluateFlatten clamps to the marketable band edge. The coordinator now actively
+    // covers the short instead of abandoning it as unflattenable residue (the old long-only behavior).
+    const ctx = build();
+    seedShort(ctx, '2'); // short 2 BTC
+    toFlattening(ctx);
+    await ctx.coord.tick(epochMs(T));
+    expect(ctx.submits).toHaveLength(1);
+    expect(ctx.submits[0]!.intent.reduceOnly).toBe(true);
+    expect(ctx.submits[0]!.intent.side).toBe('BUY'); // cover
+    expect(ctx.killSwitch.state()).toBe('FLATTENING'); // cover in flight, not yet flat
   });
 
   it('a position on a symbol with no configured filter is residue (no minQty, sizer cannot size it)', async () => {

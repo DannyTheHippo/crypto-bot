@@ -17,6 +17,7 @@ import { applyFillToPosition, FLAT, type PositionState } from '../../src/domain/
 import type { CandleEvent, CandleInterval } from '../../src/domain/types/market-events';
 import { venueId, symbolId, epochMs } from '../../src/domain/types/ids';
 import type { MarketView, Strategy } from '../../src/domain/strategy/strategy';
+import { runMakerBacktest, type FillModelKind, type MakerParams } from './fill-models';
 
 setupDecimal(); // production Decimal config (precision 40, ROUND_HALF_EVEN)
 
@@ -85,6 +86,14 @@ export interface BtOpts {
   readonly stepSize?: string;
   readonly minQty?: string;
   readonly minNotional?: string;
+  // When true, populate the optional per-trade / per-bar series on BtResult. Off by default so the
+  // 200+-trial grids don't pay the array-growth memory cost; the validation study turns it on for
+  // the per-trade Sharpe / deflated-Sharpe machinery and walk-forward needs the equity curve.
+  readonly recordSeries?: boolean;
+  // Fill model. Undefined / 'TAKER_NEXT_OPEN' = the verbatim next-bar-open taker path below
+  // (byte-identical regression). 'MAKER_RESTING' delegates to runMakerBacktest (requires `maker`).
+  readonly fillModel?: FillModelKind;
+  readonly maker?: MakerParams;
 }
 export interface BtResult {
   readonly bars: number;
@@ -97,6 +106,11 @@ export interface BtResult {
   readonly maxDrawdownPct: number;
   readonly finalEquity: number;
   readonly buyHoldPct: number; // close[last]/close[0] - 1, for regime context
+  // Optional series — present only when opts.recordSeries is set. All additive: existing specs and
+  // grid sweeps that don't ask for them compile and run unchanged.
+  readonly tradePnls?: readonly number[]; // per round-trip net PnL (USDT, both legs' fees included)
+  readonly tradeReturns?: readonly number[]; // per round-trip return = net PnL / entry gross notional
+  readonly equityCurve?: readonly number[]; // equity (startingCash + realized + unrealized) at each bar close
 }
 
 // Drives `makeStrategy()` over `prep`. The factory builds a FRESH strategy per call (no state leak
@@ -107,6 +121,13 @@ export function runBacktest(
   makeStrategy: () => Strategy,
   opts: BtOpts = {},
 ): BtResult {
+  // Maker path delegates to the resting-limit model; the taker path below is left untouched so it
+  // reproduces the EMA/mean-rev studies byte-for-byte.
+  if (opts.fillModel === 'MAKER_RESTING') {
+    if (!opts.maker) throw new Error('MAKER_RESTING requires opts.maker');
+    return runMakerBacktest(prep, makeStrategy, { ...opts, maker: opts.maker });
+  }
+
   const { events, opens, closes } = prep;
   const startingCash = opts.startingCash ?? 5000;
   const baseNotional = new Decimal(opts.baseNotional ?? 1000);
@@ -114,6 +135,8 @@ export function runBacktest(
   const stepSize = opts.stepSize ?? '0.00001';
   const minQty = new Decimal(opts.minQty ?? '0.00001');
   const minNotional = new Decimal(opts.minNotional ?? '5');
+
+  const recordSeries = opts.recordSeries ?? false;
 
   const strat = makeStrategy();
   strat.onInit({ params: {}, warmupCandles: new Map(), symbolConstraints: new Map() });
@@ -126,14 +149,44 @@ export function runBacktest(
   let fills = 0;
   let peak = startingCash;
   let maxDd = 0;
+  // Per-trade / per-bar series (only materialized when recordSeries). entryNotional is the gross
+  // quote committed on the opening leg — the denominator for that round-trip's fractional return.
+  const tradePnls: number[] = [];
+  const tradeReturns: number[] = [];
+  const equityCurve: number[] = [];
+  let entryNotional = new Decimal(0);
 
   for (let i = 0; i < events.length; i++) {
     const signals = strat.onCandle(events[i], STUB_VIEW);
     for (const s of signals) {
       const fillPrice = opens[i + 1]; // next-bar open; undefined at the last bar => no fill (no lookahead, no boundary cross)
       if (fillPrice === undefined) continue;
-      const side: 'BUY' | 'SELL' = s.kind === 'ENTER_LONG' ? 'BUY' : 'SELL';
-      const rawQty = side === 'BUY' ? baseNotional.div(fillPrice) : pos.signedQty.abs();
+      // Four directional kinds (shorts enabled for research). open = a new position leg sized at
+      // baseNotional; close = reduce the attributed position. For long-only strategies this is
+      // byte-identical to the prior `ENTER_LONG?BUY:SELL` proxy (ENTER_LONG=BUY/open, EXIT_LONG=SELL/close).
+      let side: 'BUY' | 'SELL';
+      let isOpen: boolean;
+      switch (s.kind) {
+        case 'ENTER_LONG':
+          side = 'BUY';
+          isOpen = true;
+          break;
+        case 'EXIT_LONG':
+          side = 'SELL';
+          isOpen = false;
+          break;
+        case 'ENTER_SHORT':
+          side = 'SELL';
+          isOpen = true;
+          break;
+        case 'EXIT_SHORT':
+          side = 'BUY';
+          isOpen = false;
+          break;
+        default:
+          continue; // FLATTEN / CANCEL_OPEN are not emitted by backtest strategies
+      }
+      const rawQty = isOpen ? baseNotional.div(fillPrice) : pos.signedQty.abs();
       const q = roundToStep(rawQty, stepSize, 'down');
       if (q.lte(0)) continue; // exit with no position (NO_POSITION) or rounds to zero
       if (q.lt(minQty) || q.mul(fillPrice).lt(minNotional)) continue; // sizer BELOW_MINIMUM
@@ -141,11 +194,17 @@ export function runBacktest(
       feesPaid = feesPaid.add(feeQuote);
       pos = applyFillToPosition(pos, side, q, fillPrice, feeQuote);
       fills++;
-      if (side === 'SELL') {
+      if (isOpen) {
+        entryNotional = fillPrice.mul(q); // gross quote committed on the opening leg
+      } else {
         const delta = pos.realizedPnl.sub(prevRealized); // this round-trip's net PnL (both legs' fees included)
         roundTrips++;
         if (delta.gt(0)) wins++;
         prevRealized = pos.realizedPnl;
+        if (recordSeries) {
+          tradePnls.push(delta.toNumber());
+          tradeReturns.push(entryNotional.gt(0) ? delta.div(entryNotional).toNumber() : 0);
+        }
       }
     }
     const unreal = pos.signedQty.mul(closes[i].sub(pos.avgEntry));
@@ -153,6 +212,7 @@ export function runBacktest(
     if (equity > peak) peak = equity;
     const dd = (peak - equity) / peak;
     if (dd > maxDd) maxDd = dd;
+    if (recordSeries) equityCurve.push(equity);
   }
 
   const lastClose = closes[closes.length - 1];
@@ -169,5 +229,6 @@ export function runBacktest(
     maxDrawdownPct: maxDd * 100,
     finalEquity: startingCash + pnl.toNumber(),
     buyHoldPct: buyHold,
+    ...(recordSeries ? { tradePnls, tradeReturns, equityCurve } : {}),
   };
 }

@@ -130,4 +130,88 @@ describe('PositionSizerService', () => {
     );
     expect(r).toEqual({ ok: false, reason: 'BELOW_MINIMUM' });
   });
+
+  // ── Short support (Phase 3): all six kinds map to the correct side + reduceOnly ──
+  function shortPosition(): Map<string, Position> {
+    return new Map<string, Position>([
+      [
+        `${SID}:${V}:${SYM}`,
+        {
+          strategyId: SID,
+          venue: V,
+          symbol: SYM,
+          signedQty: new Decimal('-4'), // net short 4
+          avgEntry: price('100'),
+          realizedPnl: new Decimal(0),
+        },
+      ],
+    ]);
+  }
+
+  it('sizes an ENTER_SHORT as a non-reduce sell from base notional × conviction', () => {
+    const r = new PositionSizerService(clock, deps()).size(
+      signal({ kind: 'ENTER_SHORT' }),
+      snapshot(),
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.intent.side).toBe('SELL');
+      expect(r.intent.reduceOnly).toBe(false);
+      expect(r.intent.qty.toFixed()).toBe('10'); // 1000 × 1 / 100, like an entry
+    }
+  });
+
+  it('sizes an EXIT_SHORT as a reduce-only buy covering the attributed short', () => {
+    const r = new PositionSizerService(clock, deps()).size(
+      signal({ kind: 'EXIT_SHORT' }),
+      snapshot(shortPosition()),
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.intent.side).toBe('BUY'); // cover
+      expect(r.intent.reduceOnly).toBe(true);
+      expect(r.intent.qty.toFixed()).toBe('4'); // |signedQty|
+    }
+  });
+
+  it('orients FLATTEN opposite the position sign: SELL a long, BUY a short', () => {
+    const long = new Map<string, Position>([
+      [
+        `${SID}:${V}:${SYM}`,
+        {
+          strategyId: SID,
+          venue: V,
+          symbol: SYM,
+          signedQty: new Decimal('3'),
+          avgEntry: price('100'),
+          realizedPnl: new Decimal(0),
+        },
+      ],
+    ]);
+    const flatLong = new PositionSizerService(clock, deps()).size(
+      signal({ kind: 'FLATTEN' }),
+      snapshot(long),
+    );
+    expect(flatLong.ok).toBe(true);
+    if (flatLong.ok) expect(flatLong.intent.side).toBe('SELL');
+
+    const flatShort = new PositionSizerService(clock, deps()).size(
+      signal({ kind: 'FLATTEN' }),
+      snapshot(shortPosition()),
+    );
+    expect(flatShort.ok).toBe(true);
+    if (flatShort.ok) {
+      expect(flatShort.intent.side).toBe('BUY');
+      expect(flatShort.intent.reduceOnly).toBe(true);
+      expect(flatShort.intent.qty.toFixed()).toBe('4');
+    }
+  });
+
+  it('rejects CANCEL_OPEN as NO_POSITION — not an order-producing signal', () => {
+    const r = new PositionSizerService(clock, deps()).size(
+      signal({ kind: 'CANCEL_OPEN' }),
+      snapshot(shortPosition()), // even while holding, CANCEL_OPEN places no order
+    );
+    expect(r).toEqual({ ok: false, reason: 'NO_POSITION' });
+  });
 });

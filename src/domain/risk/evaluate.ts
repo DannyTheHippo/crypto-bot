@@ -194,7 +194,12 @@ export function evaluate(input: RiskEvalInput): RiskEvaluation {
   // E2 / E3 — gross & net exposure (reduce-only strictly decreases ⇒ always passes)
   if (!reduceOnly) {
     const grossHeadroom = new Decimal(limits.maxGrossExposure).sub(input.currentGross);
-    const netHeadroom = new Decimal(limits.maxNetExposure).sub(input.currentNet);
+    // Net exposure is bounded by |net| ≤ maxNet in BOTH directions. A BUY grows net up and consumes
+    // maxNet − currentNet; a SELL (short open) grows net DOWN and consumes maxNet − (−currentNet) =
+    // maxNet + currentNet. The old direction-blind subtraction let a net-SHORT book breach −maxNet
+    // (netHeadroom inflated by |currentNet|). Byte-identical for BUY (the only prior non-reduce side).
+    const signedNet = intent.side === 'BUY' ? input.currentNet : input.currentNet.neg();
+    const netHeadroom = new Decimal(limits.maxNetExposure).sub(signedNet);
     const headroom = Decimal.min(grossHeadroom, netHeadroom); // tighter of the two binds
     const orderNotional = workingQty.mul(workingPrice);
     if (orderNotional.gt(headroom)) {

@@ -68,6 +68,10 @@ import {
 import { DemoFillPollerService } from './modules/execution/demo-fill-poller.service';
 import { ModeControlService } from './modules/mode-control/mode-control.service';
 import { EmaCrossStrategy, type EmaCrossParams } from './domain/strategy/ema-cross.strategy';
+import {
+  DonchianBreakoutStrategy,
+  type DonchianBreakoutParams,
+} from './domain/strategy/donchian-breakout.strategy';
 import type { CandleInterval } from './domain/types/market-events';
 import Decimal from 'decimal.js';
 import type { VenueConfig, VenueEnvironment } from './ports/app-config';
@@ -307,8 +311,10 @@ const INVALID_KEY_PROBE: KeyProbePort = {
         // Live keys from AppConfig (stripped under test/ci); sandbox keys + environment (testnet|demo)
         // from SANDBOX_ENV via resolveSandbox — keeping demo/testnet keys non-interchangeable.
         const sandbox = resolveSandbox(config);
-        const apiKey = isLive ? config.get('liveApiKey', { infer: true }) ?? '' : sandbox.apiKey;
-        const secret = isLive ? config.get('liveApiSecret', { infer: true }) ?? '' : sandbox.secret;
+        const apiKey = isLive ? (config.get('liveApiKey', { infer: true }) ?? '') : sandbox.apiKey;
+        const secret = isLive
+          ? (config.get('liveApiSecret', { infer: true }) ?? '')
+          : sandbox.secret;
         const client = buildOrderClient(
           primaryVenue(config),
           isLive ? 'live' : sandbox.environment,
@@ -694,11 +700,31 @@ export class AppModule implements OnApplicationBootstrap, OnModuleDestroy {
       `effective mode=${resolved.effective} (requested=${resolved.requested}) downgrades=[${resolved.downgrades.join(',')}]`,
     );
 
+    // Strategy selection. ACTIVE_STRATEGY picks which registered strategy the host runs; it DEFAULTS to
+    // the validated 'ema-cross'. 'donchian-breakout' is a promoted Phase-1 experiment that did NOT clear
+    // the step-D validation gate (reports/nightly/long-battery-study.md) — selecting it runs an
+    // UNVALIDATED EXPERIMENT on the demo/testnet bot only. The live gate (PROMOTION.md) is unaffected:
+    // ModeControl + the four live gates still bind, and no unvalidated strategy can reach live.
+    const active = process.env['ACTIVE_STRATEGY'] ?? 'ema-cross';
     this.registry.register('ema-cross', (id, p) => new EmaCrossStrategy(id, p as EmaCrossParams));
-    this.registry.enable(strategyId('ema-1'), 'ema-cross', params);
-    this.log.log(
-      `strategy ema-cross: ${params.symbol} ${params.interval} fast=${params.fast} slow=${params.slow} baseNotional=${process.env['BASE_NOTIONAL'] ?? '1000'}`,
+    this.registry.register(
+      'donchian-breakout',
+      (id, p) => new DonchianBreakoutStrategy(id, p as DonchianBreakoutParams),
     );
+    if (active === 'donchian-breakout') {
+      const dp = this.donchianParams();
+      this.registry.enable(strategyId('donchian-1'), 'donchian-breakout', dp);
+      this.log.warn(
+        `ACTIVE_STRATEGY=donchian-breakout — UNVALIDATED EXPERIMENT (failed step-D, underperformed ema-cross ` +
+          `in backtest; never promote to live). ${dp.symbol} ${dp.interval} entry=${dp.entryLookback} ` +
+          `exit=${dp.exitLookback} baseNotional=${process.env['BASE_NOTIONAL'] ?? '1000'}`,
+      );
+    } else {
+      this.registry.enable(strategyId('ema-1'), 'ema-cross', params);
+      this.log.log(
+        `strategy ema-cross (validated default): ${params.symbol} ${params.interval} fast=${params.fast} slow=${params.slow} baseNotional=${process.env['BASE_NOTIONAL'] ?? '1000'}`,
+      );
+    }
 
     await this.host.start();
     this.log.log('strategy host started — consuming market data');
@@ -756,6 +782,20 @@ export class AppModule implements OnApplicationBootstrap, OnModuleDestroy {
       venue: venueId(venue),
       fast: intEnv('EMA_FAST', '9'),
       slow: intEnv('EMA_SLOW', '21'),
+      ttlMs: intEnv('SIGNAL_TTL_MS', '120000'),
+      interval: (process.env['STRATEGY_INTERVAL'] ?? '1m') as CandleInterval,
+    };
+  }
+
+  private donchianParams(): DonchianBreakoutParams {
+    const venue = this.config.get('venues', { infer: true })[0]?.id ?? 'binance';
+    const intEnv = (name: string, def: string): number =>
+      new Decimal(process.env[name] ?? def).toNumber();
+    return {
+      symbol: symbolId(process.env['TRADING_SYMBOL'] ?? 'BTC/USDT'),
+      venue: venueId(venue),
+      entryLookback: intEnv('DONCHIAN_ENTRY', '20'),
+      exitLookback: intEnv('DONCHIAN_EXIT', '10'),
       ttlMs: intEnv('SIGNAL_TTL_MS', '120000'),
       interval: (process.env['STRATEGY_INTERVAL'] ?? '1m') as CandleInterval,
     };

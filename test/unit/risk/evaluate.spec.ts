@@ -327,6 +327,75 @@ describe('RiskEngine.evaluate — §5 decision table', () => {
     expect(r).toMatchObject({ verdict: 'REJECTED', reasons: ['EXPOSURE_LIMIT'] });
   });
 
+  // E3 directional net headroom (Phase 3 short fix). A net-SHORT book (currentNet < 0) must not let a
+  // further SELL (short open) blow past −maxNet. gross headroom is left full to isolate the net branch.
+  it('E3: a short SELL is REJECTED at the negative net-exposure cap', () => {
+    const r = evaluate(
+      makeInput({
+        intent: makeIntent({ side: 'SELL', reduceOnly: false, qty: qty('10') }), // short open
+        currentGross: new Decimal(0),
+        currentNet: new Decimal(-1_000_000), // already at −maxNet
+        limits: { ...FULL_LIMITS, maxGrossExposure: '1000000', maxNetExposure: '1000000' },
+      }),
+    );
+    // Old direction-blind code computed netHeadroom = maxNet − currentNet = 2,000,000 ⇒ APPROVED (bug).
+    // Directional: maxNet − (−currentNet) = 0 ⇒ no room ⇒ REJECT.
+    expect(r).toMatchObject({ verdict: 'REJECTED', reasons: ['EXPOSURE_LIMIT'] });
+  });
+  it('E3: a short SELL is CLAMPED to the remaining negative net headroom', () => {
+    const r = evaluate(
+      makeInput({
+        intent: makeIntent({
+          side: 'SELL',
+          reduceOnly: false,
+          qty: qty('100'),
+          limitPrice: price('100'),
+        }),
+        currentGross: new Decimal(0),
+        currentNet: new Decimal(-999_000), // 1000 of net-short headroom left
+        limits: { ...FULL_LIMITS, maxGrossExposure: '1000000', maxNetExposure: '1000000' },
+      }),
+    );
+    expect(r.verdict).toBe('RESIZED'); // 10000 order > 1000 headroom ⇒ clamp to 10 qty
+    if (r.verdict === 'RESIZED') expect(r.reasons).toContain('EXPOSURE_LIMIT');
+  });
+  it('E3: a BUY on a net-long book is byte-identical (maxNet − currentNet)', () => {
+    const r = evaluate(
+      makeInput({
+        intent: makeIntent({
+          side: 'BUY',
+          reduceOnly: false,
+          qty: qty('100'),
+          limitPrice: price('100'),
+        }),
+        currentGross: new Decimal(0),
+        currentNet: new Decimal(999_000), // long book: 1000 headroom up
+        limits: { ...FULL_LIMITS, maxGrossExposure: '1000000', maxNetExposure: '1000000' },
+      }),
+    );
+    expect(r.verdict).toBe('RESIZED'); // unchanged long behavior
+  });
+
+  // E1 per-symbol cap is direction-agnostic (uses |postPosition|): a short open is clamped too.
+  it('E1: a short SELL beyond the per-symbol cap is clamped', () => {
+    const r = evaluate(
+      makeInput({
+        intent: makeIntent({
+          side: 'SELL',
+          reduceOnly: false,
+          qty: qty('1500'),
+          limitPrice: price('100'),
+        }),
+        limits: { ...FULL_LIMITS, maxPositionPerSymbol: '1000' },
+      }),
+    );
+    expect(r.verdict).toBe('RESIZED');
+    if (r.verdict === 'RESIZED') {
+      expect(r.reasons).toContain('POSITION_LIMIT');
+      expect(r.intent.qty.toFixed()).toBe('1000'); // clamped to the cap
+    }
+  });
+
   // C1 daily loss
   it('C1: rejects + halts at the daily-loss boundary (equality trips)', () => {
     const r = evaluate(

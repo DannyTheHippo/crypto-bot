@@ -5,7 +5,13 @@ export interface Signal {
   readonly strategyId: StrategyId;
   readonly venue: VenueId;
   readonly symbol: SymbolId;
-  readonly kind: 'ENTER_LONG' | 'EXIT_LONG' | 'FLATTEN' | 'CANCEL_OPEN';
+  readonly kind:
+    | 'ENTER_LONG'
+    | 'EXIT_LONG'
+    | 'ENTER_SHORT'
+    | 'EXIT_SHORT'
+    | 'FLATTEN'
+    | 'CANCEL_OPEN';
   readonly strength: number;
   readonly limitPriceHint?: Price;
   readonly refPrice: Price;

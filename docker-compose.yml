@@ -15,6 +15,18 @@ services:
       # Bind all interfaces so Prometheus (and the published host port) can reach /metrics + /health.
       # main.ts defaults to 127.0.0.1 for host runs; the container network is the isolation boundary.
       HOST: 0.0.0.0
+      # ── Phase-4 best-of-breed experiment (testnet/demo ONLY) ──────────────────
+      # Runs the promoted Donchian breakout — an UNVALIDATED EXPERIMENT that did NOT clear the step-D
+      # validation gate (reports/nightly/long-battery-study.md) and underperformed the EMA-cross
+      # incumbent in backtest. Deployed deliberately as a labeled experiment on the demo bot. To
+      # restore the validated default, remove these four lines (ACTIVE_STRATEGY unset ⇒ ema-cross).
+      # The live gate is unaffected — ModeControl + the four live gates still bind; never reaches live.
+      # Params/interval pinned to the grid's least-bad Donchian (55/20 @ 1h, SR -0.045 / -3.02%) so the
+      # running config matches the characterized best-of-breed — NOT the 20/10@1m code default (SR -0.78).
+      ACTIVE_STRATEGY: donchian-breakout
+      STRATEGY_INTERVAL: '1h'
+      DONCHIAN_ENTRY: '55'
+      DONCHIAN_EXIT: '20'
     depends_on:
       postgres:
         condition: service_healthy

@@ -294,15 +294,21 @@ describe('StrategyHost', () => {
     strat.emit = [sig('ENTER_LONG', 1)]; // risk-INCREASING → filtered out
     stream.push(candle(0, 1));
     await tick();
-    strat.emit = [sig('EXIT_LONG', 2)]; // risk-reducing → allowed
+    strat.emit = [sig('ENTER_SHORT', 2)]; // risk-INCREASING (opens a short) → filtered out
     stream.push(candle(1, 2));
+    await tick();
+    strat.emit = [sig('EXIT_LONG', 3)]; // risk-reducing → allowed
+    stream.push(candle(2, 3));
+    await tick();
+    strat.emit = [sig('EXIT_SHORT', 4)]; // risk-reducing (covers a short) → allowed
+    stream.push(candle(3, 4));
     await tick();
     stream.close();
 
     const got: Signal[] = [];
     for await (const s of host.signals()) got.push(s);
-    expect(got.map((s) => s.kind)).toEqual(['EXIT_LONG']);
-    expect(recorded.map((s) => s.kind)).toEqual(['EXIT_LONG']);
+    expect(got.map((s) => s.kind)).toEqual(['EXIT_LONG', 'EXIT_SHORT']);
+    expect(recorded.map((s) => s.kind)).toEqual(['EXIT_LONG', 'EXIT_SHORT']);
   });
 
   it('routes ticker, book, and exec-report events to their handlers', async () => {

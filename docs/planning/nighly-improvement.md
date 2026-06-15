@@ -301,21 +301,21 @@ F. VALIDATE, MERGE, DEPLOY, VERIFY:
    migrations), so a fresh DB self-initializes and the existing-DB rebuild touches no data. On the
    next boot `BootRecoveryService.recoverOnBoot` RESTORES the portfolio snapshot (cash, equity,
    peak, start-of-day anchor, open positions) from Postgres, RE-SEEDS the OrderBook with persisted
-   non-terminal orders, and degrades every in-flight order to `*_UNKNOWN`; the periodic
+   non-terminal orders, and degrades every in-flight order to `*\_UNKNOWN`; the periodic
    reconciliation pass then establishes venue truth and HALTs on a material mismatch (never
    auto-flattens) — this IS the "reconcile on restart, never orphan" requirement, met without any
-   manual flatten. Caveat: `up -d app` honors app's `depends_on`, so it starts stopped
+   manual flatten. Caveat: `up -d app`honors app's`depends_on`, so it starts stopped
    postgres/prometheus and recreates them if their config changed; the "only app" outcome holds in
    the steady-state loop where deps are already running. For a hard guarantee that nothing but app
-   is touched use `docker compose up -d --no-deps app` (but NOT on a cold start where deps are not
-   yet up). No service declares a `restart:` policy, so recovery happens on the next operator-driven
-   `up`, not via automatic crash restart.
+   is touched use `docker compose up -d --no-deps app`(but NOT on a cold start where deps are not
+   yet up). No service declares a`restart:`policy, so recovery happens on the next operator-driven
+  `up`, not via automatic crash restart.
    **FOOTGUN — NEVER in the nightly loop:** do NOT run `docker compose down -v`, and do NOT recreate
-   the `postgres` / `prometheus` / `grafana` containers. `down -v` wipes THREE data stores: the
-   `crypto-bot_postgres_data` named volume (the positions/orders `BootRecoveryService` reads and the
-   evidence step A evaluates), the `crypto-bot_grafana_data` named volume (Grafana state), AND the
-   anonymous volume Prometheus uses for its TSDB (the `prom/prometheus` image declares
-   `VOLUME /prometheus` and compose maps no named volume there). The `crypto-bot*` prefix is
+   the `postgres`/`prometheus`/`grafana`containers.`down -v`wipes THREE data stores: the
+  `crypto-bot_postgres_data`named volume (the positions/orders`BootRecoveryService`reads and the
+   evidence step A evaluates), the`crypto-bot_grafana_data`named volume (Grafana state), AND the
+   anonymous volume Prometheus uses for its TSDB (the`prom/prometheus`image declares
+  `VOLUME /prometheus`and compose maps no named volume there). The`crypto-bot\*` prefix is
 Compose-v2-specific (`docker compose`); legacy v1 stripped the hyphen to `cryptobot\_`. After the
 app rebuild, confirm the postgres volume and its row counts survived. (A human-directed
 clean-slate reset is the only exception — it is not routine nightly operation. The `down -v`used

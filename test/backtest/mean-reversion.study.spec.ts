@@ -56,9 +56,7 @@ interface Row {
   oos: BtResult;
 }
 
-function studyInterval(
-  interval: CandleInterval,
-): {
+function studyInterval(interval: CandleInterval): {
   rows: Row[];
   isBH: number;
   oosBH: number;

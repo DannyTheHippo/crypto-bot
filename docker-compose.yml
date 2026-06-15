@@ -5,13 +5,13 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - '3000:3000'
+      - '3100:3100'
     env_file:
       - .env
     environment:
       DATABASE_URL: postgres://cryptobot:cryptobot@postgres:5432/cryptobot
       NODE_ENV: production
-      PORT: '3000'
+      PORT: '3100'
       # Bind all interfaces so Prometheus (and the published host port) can reach /metrics + /health.
       # main.ts defaults to 127.0.0.1 for host runs; the container network is the isolation boundary.
       HOST: 0.0.0.0
@@ -27,7 +27,7 @@ services:
         - -e
         - |
           const http = require('http');
-          const req = http.get('http://localhost:3000/health/live', (res) => {
+          const req = http.get('http://localhost:3100/health/live', (res) => {
             process.exit(res.statusCode === 200 ? 0 : 1);
           });
           req.on('error', () => process.exit(1));
@@ -65,8 +65,9 @@ services:
   grafana:
     image: grafana/grafana:12.0.1
     ports:
-      - '3001:3000'
+      - '3101:3101'
     environment:
+      GF_SERVER_HTTP_PORT: '3101'
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-grafana}
       GF_AUTH_ANONYMOUS_ENABLED: 'false'
     volumes:

@@ -56,10 +56,10 @@ pnpm build
 pnpm start
 ```
 
-The server starts on `http://localhost:3000` (configurable via `PORT`). Confirm it is healthy:
+The server starts on `http://localhost:3100` (configurable via `PORT`). Confirm it is healthy:
 
 ```bash
-curl http://localhost:3000/health/ready
+curl http://localhost:3100/health/ready
 ```
 
 To force paper mode regardless of `.env` contents:
@@ -82,8 +82,8 @@ With no credentials in the environment, the app resolves to paper mode automatic
 
 | Service    | URL                   | Default credentials                          |
 | ---------- | --------------------- | -------------------------------------------- |
-| App        | http://localhost:3000 | —                                            |
-| Grafana    | http://localhost:3001 | admin / admin (or `$GRAFANA_ADMIN_PASSWORD`) |
+| App        | http://localhost:3100 | —                                            |
+| Grafana    | http://localhost:3101 | admin / admin (or `$GRAFANA_ADMIN_PASSWORD`) |
 | Prometheus | http://localhost:9090 | —                                            |
 
 Grafana dashboards and Prometheus scrape config are provisioned automatically from `observability/`.
@@ -142,7 +142,7 @@ Key environment variables (full list with comments in `.env.example`):
 | `STARTING_CASH`                       | In-memory quote balance the bot tracks (set near the account's USDT balance)   | `5000`                    |
 | `DATABASE_URL`                        | Postgres connection string — optional; paper/demo run fine without it          | _(unset)_                 |
 | `GRAFANA_ADMIN_PASSWORD`              | Grafana admin password (docker-compose)                                        | `grafana`                 |
-| `PORT`                                | HTTP server port                                                               | `3000`                    |
+| `PORT`                                | HTTP server port                                                               | `3100`                    |
 | `LOG_LEVEL`                           | `fatal` \| `error` \| `warn` \| `info` \| `debug` \| `trace`                   | `debug`                   |
 
 ---
@@ -173,7 +173,7 @@ The app exposes:
 - `GET /health/live` — liveness probe
 - `GET /health/ready` — readiness probe (reports DB and market-data status)
 
-In a docker-compose stack, Grafana at `http://localhost:3001` comes up with dashboards pre-provisioned
+In a docker-compose stack, Grafana at `http://localhost:3101` comes up with dashboards pre-provisioned
 from `observability/grafana/provisioning/`. Prometheus scrapes the app on the configured interval.
 
 `bootId` and `run_id` are threaded through every metric label and structured log line to correlate

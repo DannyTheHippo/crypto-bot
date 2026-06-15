@@ -23,12 +23,12 @@ COPY --from=builder /app/package.json ./package.json
 
 USER node
 
-EXPOSE 3000
+EXPOSE 3100
 
 HEALTHCHECK --interval=10s --timeout=5s --retries=5 --start-period=30s \
   CMD node -e "\
     const http = require('http'); \
-    const req = http.get('http://localhost:3000/health/live', (res) => { \
+    const req = http.get('http://localhost:3100/health/live', (res) => { \
       process.exit(res.statusCode === 200 ? 0 : 1); \
     }); \
     req.on('error', () => process.exit(1)); \

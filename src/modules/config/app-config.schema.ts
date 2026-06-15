@@ -91,7 +91,7 @@ function parseVenues(env: Record<string, string | undefined>): readonly VenueCon
 }
 
 const envSchema = z.object({
-  PORT: z.coerce.number().int().min(1).max(65535).default(3000),
+  PORT: z.coerce.number().int().min(1).max(65535).default(3100),
   LOG_LEVEL: z.enum(PINO_LEVELS).default('info'),
   TRADING_MODE: z.string().optional(),
   NODE_ENV: z.string().optional(),

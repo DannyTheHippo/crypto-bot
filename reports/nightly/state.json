@@ -10,7 +10,7 @@
     "deployed_at": "2026-06-15T10:39:14Z",
     "mode": "testnet",
     "health_verdict": "HEALTHY",
-    "method": "cold start (no prior containers/volumes — prior /loop down -v wiped them): docker compose build app && docker compose up -d app; deps came up via depends_on; fresh crypto-bot_postgres_data created; migrations auto-applied. Host port remapped 3000->3100 for this deploy (unrelated ICPC backend held :3000); tracked docker-compose.yml restored to 3000:3000, running container on 3100."
+    "method": "cold start (no prior containers/volumes — prior /loop down -v wiped them): docker compose build app && docker compose up -d app; deps came up via depends_on; fresh crypto-bot_postgres_data created; migrations auto-applied. App on canonical port 3100 (Grafana 3101); 31xx block avoids local :3000 conflict with unrelated ICPC backend."
   },
   "verification": {
     "regression_test": "N/A — research-only night (zero src/ change). Faithfulness proof = the generalized harness reproduces backtest-study.md BYTE-IDENTICALLY (empty git diff). Mean-reversion verdict adversarially audited (5 lenses, 0 critical findings).",

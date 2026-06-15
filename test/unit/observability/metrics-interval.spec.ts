@@ -12,7 +12,7 @@ describe('EventLoopHealthIndicator.getMonitor() and MetricsService interval', ()
 
   beforeAll(async () => {
     process.env['NODE_ENV'] = 'test';
-    process.env['PORT'] = '3000';
+    process.env['PORT'] = '3100';
     register.clear();
 
     vi.useFakeTimers();

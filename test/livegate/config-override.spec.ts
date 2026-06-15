@@ -12,7 +12,7 @@ import { validate } from '../../src/modules/config/app-config.schema';
 
 const LIVE_ENV_BASE = {
   TRADING_MODE: 'live',
-  PORT: '3000',
+  PORT: '3100',
   BINANCE_LIVE_API_KEY: 'test-key-should-be-stripped',
   BINANCE_LIVE_API_SECRET: 'test-secret-should-be-stripped',
   ARMING_SECRET: 'test-arming-should-be-stripped',
@@ -132,7 +132,7 @@ describe('Config real-wiring: skipProcessEnv + validate() strips live secrets fr
   it('ConfigService.get returns undefined for BINANCE_LIVE_API_KEY and process.env is cleared when NODE_ENV=test', async () => {
     // Set env BEFORE dynamic import so forRoot/validate() sees it
     process.env['NODE_ENV'] = 'test';
-    process.env['PORT'] = '3000';
+    process.env['PORT'] = '3100';
     process.env['TRADING_MODE'] = 'live';
     process.env['BINANCE_LIVE_API_KEY'] = 'wiring-test-secret';
     process.env['BINANCE_LIVE_API_SECRET'] = 'wiring-test-secret2';

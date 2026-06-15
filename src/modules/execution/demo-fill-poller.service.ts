@@ -49,27 +49,46 @@ export class DemoFillPollerService {
 
     let ingested = 0;
     let skippedUnknown = 0;
+    // Advance the sweep watermark to the newest trade seen this poll, so the next fetchMyTrades only
+    // pulls trades at/after it instead of re-pulling every post-boot trade each cycle (unbounded work
+    // growth). Non-skipping: fetchMyTrades(since) returns ALL trades with ts ≥ since, so every trade
+    // ≤ maxTs was already in this fetch; the boundary trade re-fetches inclusively and the ingestor
+    // dedupes it on venueTradeId. Includes skipped (foreign/pre-boot) trades — all have ts ≤ now,
+    // while our not-yet-placed fills carry future ts, so the watermark can never outrun an own fill.
+    let maxTs = this.since;
     for (const symbol of symbols) {
       const fills = await this.exchange.fetchMyTrades(symbol, this.since);
       for (const f of fills) {
+        if (f.venueTimestamp > maxTs) maxTs = f.venueTimestamp;
         const rec = byVenueId.get(f.clientOrderId); // f.clientOrderId holds the venue order id (ccxt trade.order)
         if (rec === undefined) {
           skippedUnknown += 1; // a fill with no matching local order (foreign or pre-boot) — never halt here
           continue;
         }
-        const { applied } = await this.ingestor.ingest(rec, this.toFillRecord(f, rec.clientOrderId), `poll:${f.venueTradeId}`);
+        const { applied } = await this.ingestor.ingest(
+          rec,
+          this.toFillRecord(f, rec.clientOrderId),
+          `poll:${f.venueTradeId}`,
+        );
         if (applied) ingested += 1;
       }
     }
+    this.since = maxTs;
     return { ingested, skippedUnknown };
   }
 
   private toFillRecord(f: VenueFill, coid: ClientOrderId): FillRecord {
     return {
-      venue: f.venue, symbol: f.symbol, venueTradeId: f.venueTradeId, clientOrderId: coid,
-      price: price(f.price), qty: qty(f.qty),
+      venue: f.venue,
+      symbol: f.symbol,
+      venueTradeId: f.venueTradeId,
+      clientOrderId: coid,
+      price: price(f.price),
+      qty: qty(f.qty),
       fee: f.fee ? { ccy: f.fee.ccy, amount: feeAmount(f.fee.amount) } : null,
-      liquidity: f.liquidity, venueTimestamp: f.venueTimestamp, source: 'rest_reconcile',
+      liquidity: f.liquidity,
+      venueTimestamp: f.venueTimestamp,
+      source: 'rest_reconcile',
     };
   }
 }

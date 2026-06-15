@@ -157,6 +157,17 @@ export function roundToStep(q: Decimal, step: string, direction: 'down' | 'up'):
   return rounded as Qty;
 }
 
+// Conform a derived Decimal to the money type's fractional-precision ceiling (18 dp). Internal
+// cost-basis averages (the weighted-average position entry) divide quote by base and are inherently
+// between venue ticks, so the quotient is often non-terminating under the global precision-40
+// config — too many decimal places to mint as a Price. Rounding HALF_EVEN (the configured default,
+// unbiased for an average) to the 18-dp maximum makes the value mintable; the sub-1e-18 residual is
+// below any venue tick — economically zero. Use only for internal averages, never venue-facing
+// sizes (those round directionally to a tick/step via roundToTick/roundToStep).
+export function roundToMoneyPrecision(d: Decimal): Decimal {
+  return d.toDecimalPlaces(MAX_DECIMAL_PLACES, Decimal.ROUND_HALF_EVEN);
+}
+
 // ── Indicator escape hatch ───────────────────────────────────────────────────
 
 export function toIndicatorNumber(v: Price | Qty | Notional | FeeAmount): number {

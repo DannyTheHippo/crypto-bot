@@ -55,7 +55,10 @@ export interface KillSwitchPort {
 // it below the exchange minimum (never a dust order).
 export type SizingResult =
   | { readonly ok: true; readonly intent: OrderIntent }
-  | { readonly ok: false; readonly reason: 'BELOW_MINIMUM' | 'NO_REF_PRICE' };
+  // NO_POSITION: an exit signal with no attributed position to reduce (a benign strategy no-op).
+  // BELOW_MINIMUM: a genuinely sized order under the venue minQty/minNotional (the dust case).
+  // Kept distinct so trade-activity analysis isn't misled by conflating the two.
+  | { readonly ok: false; readonly reason: 'BELOW_MINIMUM' | 'NO_REF_PRICE' | 'NO_POSITION' };
 
 export interface PositionSizerPort {
   size(signal: Signal, snapshot: PortfolioSnapshot): SizingResult;
@@ -79,8 +82,14 @@ export interface RiskJournalPort {
 // SignalGateway outcome (§2.3 front door). DECIDED carries the RiskEngine verdict; the two
 // REJECTED shapes are fast-fails before sizing/evaluation.
 export type GatewayOutcome =
-  | { readonly status: 'GATEWAY_REJECTED'; readonly reason: 'KILL_SWITCH' | 'EXPIRED' | 'DUPLICATE' }
-  | { readonly status: 'SIZING_REJECTED'; readonly reason: 'BELOW_MINIMUM' | 'NO_REF_PRICE' }
+  | {
+      readonly status: 'GATEWAY_REJECTED';
+      readonly reason: 'KILL_SWITCH' | 'EXPIRED' | 'DUPLICATE';
+    }
+  | {
+      readonly status: 'SIZING_REJECTED';
+      readonly reason: 'BELOW_MINIMUM' | 'NO_REF_PRICE' | 'NO_POSITION';
+    }
   | { readonly status: 'DECIDED'; readonly decision: RiskDecision };
 
 // The fast-fail front door to Risk (kill/TTL/dedupe → sizer → engine). Exposed as a port so

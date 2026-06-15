@@ -1,7 +1,12 @@
 import { Injectable, Inject } from '@nestjs/common';
 import Decimal from 'decimal.js';
 import { CLOCK, type ClockPort } from '../../ports/clock';
-import { SIZER_DEPS, type PositionSizerPort, type SizingResult, type SizerDeps } from '../../ports/risk';
+import {
+  SIZER_DEPS,
+  type PositionSizerPort,
+  type SizingResult,
+  type SizerDeps,
+} from '../../ports/risk';
 import { positionKey } from '../../domain/risk/evaluate';
 import type { Signal } from '../../domain/types/signal';
 import type { OrderIntent } from '../../domain/types/order-intent';
@@ -26,22 +31,33 @@ export class PositionSizerService implements PositionSizerPort {
 
     // Limit price: hint or decision-time reference, rounded directionally to the tick.
     const refPrice = signal.refPrice;
-    const limitPrice = roundToTick(signal.limitPriceHint ?? refPrice, filters.tickSize, side === 'BUY' ? 'down' : 'up');
+    const limitPrice = roundToTick(
+      signal.limitPriceHint ?? refPrice,
+      filters.tickSize,
+      side === 'BUY' ? 'down' : 'up',
+    );
 
     // Sizing: exits reduce the attributed position; entries scale base notional by conviction.
     let rawQty: Decimal;
     if (isExit) {
-      const pos = snapshot.positions.get(positionKey(signal.strategyId, signal.venue, signal.symbol));
+      const pos = snapshot.positions.get(
+        positionKey(signal.strategyId, signal.venue, signal.symbol),
+      );
       rawQty = pos ? pos.signedQty.abs() : new Decimal(0);
     } else {
       rawQty = new Decimal(this.deps.baseNotional).mul(signal.strength).div(limitPrice);
     }
-    if (rawQty.lte(0)) return { ok: false, reason: 'BELOW_MINIMUM' };
+    // An exit with nothing attributed to reduce is a strategy no-op, not a dust order — report it
+    // distinctly so trade analysis can separate "flat, nothing to exit" from a genuine sub-min size.
+    if (rawQty.lte(0)) return { ok: false, reason: 'NO_POSITION' };
 
     // Round the raw (possibly high-precision, e.g. baseNotional/price) quantity to the step FIRST;
     // wrapping it in qty() before rounding would throw on the 18-place precision limit.
     const steppedQty: Qty = roundToStep(rawQty, filters.stepSize, 'down');
-    if (steppedQty.lt(new Decimal(filters.minQty)) || steppedQty.mul(limitPrice).lt(new Decimal(filters.minNotional))) {
+    if (
+      steppedQty.lt(new Decimal(filters.minQty)) ||
+      steppedQty.mul(limitPrice).lt(new Decimal(filters.minNotional))
+    ) {
       return { ok: false, reason: 'BELOW_MINIMUM' };
     }
 

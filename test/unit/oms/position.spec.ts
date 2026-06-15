@@ -1,10 +1,18 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import Decimal from 'decimal.js';
 import { applyFillToPosition, FLAT, type PositionState } from '../../../src/domain/oms/position';
+import { setupDecimal } from '../../../src/domain/types/money';
+
+// avgEntry is rounded to the money type's 18-dp ceiling, which depends on the production Decimal
+// config (precision 40); main.ts calls setupDecimal() at bootstrap. Existing cases here are
+// precision-insensitive (exact integer/short-decimal averages).
+beforeAll(() => setupDecimal());
 
 const D = (s: string) => new Decimal(s);
-const buy = (pos: PositionState, q: string, p: string, fee = '0') => applyFillToPosition(pos, 'BUY', D(q), D(p), D(fee));
-const sell = (pos: PositionState, q: string, p: string, fee = '0') => applyFillToPosition(pos, 'SELL', D(q), D(p), D(fee));
+const buy = (pos: PositionState, q: string, p: string, fee = '0') =>
+  applyFillToPosition(pos, 'BUY', D(q), D(p), D(fee));
+const sell = (pos: PositionState, q: string, p: string, fee = '0') =>
+  applyFillToPosition(pos, 'SELL', D(q), D(p), D(fee));
 
 describe('applyFillToPosition (average-cost, §6.6)', () => {
   it('opens a long from flat at the fill price', () => {
@@ -59,5 +67,14 @@ describe('applyFillToPosition (average-cost, §6.6)', () => {
   it('subtracts fees from realized PnL', () => {
     const r = sell(buy(FLAT, '2', '100', '0.5'), '2', '110', '0.5');
     expect(r.realizedPnl.toFixed()).toBe('19'); // 20 − 0.5 − 0.5
+  });
+
+  it('rounds a non-terminating weighted-average entry to ≤18 dp (money-precision conformance)', () => {
+    // Real live testnet BTC/USDT fills (#1 + #14): open 0.00156 @ 63965.66, add 0.00046 @ 64113.19.
+    // The quotient is non-terminating (35 dp under precision 40); it is rounded HALF_EVEN to 18 dp.
+    const r = buy(buy(FLAT, '0.00156', '63965.66'), '0.00046', '64113.19');
+    expect(r.signedQty.toFixed()).toBe('0.00202');
+    expect(r.avgEntry.toFixed()).toBe('63999.255940594059405941'); // exact (CLAUDE.md #1)
+    expect((r.avgEntry.toFixed().split('.')[1] ?? '').length).toBeLessThanOrEqual(18);
   });
 });

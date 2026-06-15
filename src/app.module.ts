@@ -1,4 +1,11 @@
-import { Global, Module, Inject, Logger, type OnApplicationBootstrap, type OnModuleDestroy } from '@nestjs/common';
+import {
+  Global,
+  Module,
+  Inject,
+  Logger,
+  type OnApplicationBootstrap,
+  type OnModuleDestroy,
+} from '@nestjs/common';
 import { randomBytes, createHash } from 'node:crypto';
 import type { Exchange } from 'ccxt';
 import { AppConfigModule } from './modules/config/config.module';
@@ -19,27 +26,45 @@ import { DB_HEALTH } from './ports/db-health';
 import { RiskModule } from './modules/risk/risk.module';
 import { KillSwitchService } from './modules/risk/kill-switch.service';
 import { ExecutionModule } from './modules/execution/execution.module';
-import { SignalSinkService } from './modules/execution/signal-sink.service';
+import {
+  SignalSinkService,
+  SIGNAL_REJECTIONS_COUNTER,
+} from './modules/execution/signal-sink.service';
 import { HaltCoordinatorService } from './modules/execution/halt-coordinator.service';
 import { UnknownResolverService } from './modules/execution/unknown-resolver.service';
 import { ReconciliationService } from './modules/execution/reconciliation.service';
 import { EquitySamplerService } from './modules/execution/equity-sampler.service';
 import { PortfolioStateService } from './modules/execution/portfolio-state.service';
 import { BootRecoveryService } from './modules/execution/boot-recovery.service';
-import { PaperExchangeAdapter, PAPER_CONFIG, type PaperConfig } from './modules/exchange-adapter/paper-exchange.adapter';
+import {
+  PaperExchangeAdapter,
+  PAPER_CONFIG,
+  type PaperConfig,
+} from './modules/exchange-adapter/paper-exchange.adapter';
 import { LiveExchangeAdapter } from './modules/exchange-adapter/live-exchange.adapter';
 import { CcxtExchangeAdapter } from './modules/exchange-adapter/ccxt-exchange.adapter';
 import { RealCcxtOrderClient } from './modules/exchange-adapter/ccxt-order-client';
 import { KeyProbeService } from './modules/exchange-adapter/key-probe.service';
 import {
-  buildCcxtExchange, CcxtExchangeStreamAdapter, RealWatchSource, WATCH_SOURCE,
-  type ChannelStateTracker, type WatchSource,
+  buildCcxtExchange,
+  CcxtExchangeStreamAdapter,
+  RealWatchSource,
+  WATCH_SOURCE,
+  type ChannelStateTracker,
+  type WatchSource,
 } from './modules/market-data/ccxt-stream.adapter';
-import { FeedHealthServiceWithBackfill, type OhlcvSource } from './modules/market-data/feed-health.service';
+import {
+  FeedHealthServiceWithBackfill,
+  type OhlcvSource,
+} from './modules/market-data/feed-health.service';
 import { MarketDataService } from './modules/market-data/market-data.service';
 import { StrategyRegistry } from './modules/strategy/strategy-registry';
 import { StrategyHost } from './modules/strategy/strategy-host';
-import { TeeingMarketStream, type RefPriceSink, type PaperFeedSink } from './modules/trading/teeing-market-stream';
+import {
+  TeeingMarketStream,
+  type RefPriceSink,
+  type PaperFeedSink,
+} from './modules/trading/teeing-market-stream';
 import { DemoFillPollerService } from './modules/execution/demo-fill-poller.service';
 import { ModeControlService } from './modules/mode-control/mode-control.service';
 import { EmaCrossStrategy, type EmaCrossParams } from './domain/strategy/ema-cross.strategy';
@@ -47,24 +72,61 @@ import type { CandleInterval } from './domain/types/market-events';
 import Decimal from 'decimal.js';
 import type { VenueConfig, VenueEnvironment } from './ports/app-config';
 import { ModeControlModule } from './modules/mode-control/mode-control.module';
-import { LIVE_ADAPTER_CAP, LIMITS_COMPLETE, KEY_PROBE, MODE_AUDIT_OVERRIDE, type KeyProbePort, type ModeAuditPort } from './ports/mode-control';
+import {
+  LIVE_ADAPTER_CAP,
+  LIMITS_COMPLETE,
+  KEY_PROBE,
+  MODE_AUDIT_OVERRIDE,
+  type KeyProbePort,
+  type ModeAuditPort,
+} from './ports/mode-control';
 import { ConfigService } from '@nestjs/config';
 import type { AppConfig } from './ports/app-config';
 import { CLOCK, SystemClock, type ClockPort } from './ports/clock';
-import { RISK_SIGNING_KEY, KILL_SWITCH, RISK_LIMITS, RISK_JOURNAL_OVERRIDE, type RiskJournalPort } from './ports/risk';
+import {
+  RISK_SIGNING_KEY,
+  KILL_SWITCH,
+  RISK_LIMITS,
+  RISK_JOURNAL_OVERRIDE,
+  type RiskJournalPort,
+} from './ports/risk';
 import { validateLimits, type PartialRiskLimits } from './domain/risk/limits';
 import { EXCHANGE_PORT, type ExchangePort } from './ports/exchange';
 import {
-  EXEC_OUTBOX, EXEC_REPORT_NOTIFY, PORTFOLIO_VIEW,
-  EXEC_OUTBOX_OVERRIDE, EXECUTION_STORE_OVERRIDE, INSTANCE_LOCK_OVERRIDE,
-  type ExecOutboxPort, type ExecReportNotify, type PortfolioViewPort,
-  type ExecutionStorePort, type InstanceLockPort, type ExecRunContext,
+  EXEC_OUTBOX,
+  EXEC_REPORT_NOTIFY,
+  PORTFOLIO_VIEW,
+  EXEC_OUTBOX_OVERRIDE,
+  EXECUTION_STORE_OVERRIDE,
+  INSTANCE_LOCK_OVERRIDE,
+  type ExecOutboxPort,
+  type ExecReportNotify,
+  type PortfolioViewPort,
+  type ExecutionStorePort,
+  type InstanceLockPort,
+  type ExecRunContext,
 } from './ports/execution';
-import { MARKET_STREAM, FEED_HEALTH, REAL_FEED_HEALTH, type FeedHealthPort, type MarketStreamPort } from './ports/market-data';
-import { EXCHANGE_STREAM, type ExchangeStreamPort, type RawVenueEvent, type RawUserEvent } from './ports/exchange-stream';
 import {
-  STRATEGY_HOST, STRATEGY_REGISTRY, SIGNAL_SINK, SIGNAL_JOURNAL,
-  type StrategyHostPort, type StrategyRegistryPort, type SignalJournalPort,
+  MARKET_STREAM,
+  FEED_HEALTH,
+  REAL_FEED_HEALTH,
+  type FeedHealthPort,
+  type MarketStreamPort,
+} from './ports/market-data';
+import {
+  EXCHANGE_STREAM,
+  type ExchangeStreamPort,
+  type RawVenueEvent,
+  type RawUserEvent,
+} from './ports/exchange-stream';
+import {
+  STRATEGY_HOST,
+  STRATEGY_REGISTRY,
+  SIGNAL_SINK,
+  SIGNAL_JOURNAL,
+  type StrategyHostPort,
+  type StrategyRegistryPort,
+  type SignalJournalPort,
 } from './ports/strategy';
 import { venueId, symbolId, strategyId, type SymbolId } from './domain/types/ids';
 
@@ -109,14 +171,22 @@ function dbRunContext(config: ConfigService<AppConfig, true>): ExecRunContext {
   providers: [
     {
       provide: EXEC_OUTBOX_OVERRIDE,
-      useFactory: (db: NodePgDatabase<typeof schema> | null, config: ConfigService<AppConfig, true>): ExecOutboxPort | undefined =>
+      useFactory: (
+        db: NodePgDatabase<typeof schema> | null,
+        config: ConfigService<AppConfig, true>,
+      ): ExecOutboxPort | undefined =>
         isTestEnv() || db === null ? undefined : new DrizzleExecOutbox(db, dbRunContext(config)),
       inject: [DRIZZLE_DB, ConfigService],
     },
     {
       provide: EXECUTION_STORE_OVERRIDE,
-      useFactory: (db: NodePgDatabase<typeof schema> | null, config: ConfigService<AppConfig, true>): ExecutionStorePort | undefined =>
-        isTestEnv() || db === null ? undefined : new DrizzleExecutionStore(db, dbRunContext(config)),
+      useFactory: (
+        db: NodePgDatabase<typeof schema> | null,
+        config: ConfigService<AppConfig, true>,
+      ): ExecutionStorePort | undefined =>
+        isTestEnv() || db === null
+          ? undefined
+          : new DrizzleExecutionStore(db, dbRunContext(config)),
       inject: [DRIZZLE_DB, ConfigService],
     },
     {
@@ -127,27 +197,47 @@ function dbRunContext(config: ConfigService<AppConfig, true>): ExecRunContext {
     },
     {
       provide: MODE_AUDIT_OVERRIDE,
-      useFactory: (db: NodePgDatabase<typeof schema> | null, config: ConfigService<AppConfig, true>): ModeAuditPort | undefined =>
-        isTestEnv() || db === null ? undefined : new DrizzleModeAudit(db, config.get('app', { infer: true }).bootId),
+      useFactory: (
+        db: NodePgDatabase<typeof schema> | null,
+        config: ConfigService<AppConfig, true>,
+      ): ModeAuditPort | undefined =>
+        isTestEnv() || db === null
+          ? undefined
+          : new DrizzleModeAudit(db, config.get('app', { infer: true }).bootId),
       inject: [DRIZZLE_DB, ConfigService],
     },
     {
       // DB-backed RISK_JOURNAL: persists every risk verdict to risk_decisions for offline analysis.
       provide: RISK_JOURNAL_OVERRIDE,
-      useFactory: (db: NodePgDatabase<typeof schema> | null, config: ConfigService<AppConfig, true>): RiskJournalPort | undefined =>
-        isTestEnv() || db === null ? undefined : new RiskDecisionJournalAdapter(db, dbRunContext(config)),
+      useFactory: (
+        db: NodePgDatabase<typeof schema> | null,
+        config: ConfigService<AppConfig, true>,
+      ): RiskJournalPort | undefined =>
+        isTestEnv() || db === null
+          ? undefined
+          : new RiskDecisionJournalAdapter(db, dbRunContext(config)),
       inject: [DRIZZLE_DB, ConfigService],
     },
     {
       // DB-backed SIGNAL_JOURNAL: persists every routed signal + its outcome to the signals table.
       // SignalSink injects this @Optional, so undefined (paper/no-DB/test) simply skips journaling.
       provide: SIGNAL_JOURNAL,
-      useFactory: (db: NodePgDatabase<typeof schema> | null, config: ConfigService<AppConfig, true>): SignalJournalPort | undefined =>
+      useFactory: (
+        db: NodePgDatabase<typeof schema> | null,
+        config: ConfigService<AppConfig, true>,
+      ): SignalJournalPort | undefined =>
         isTestEnv() || db === null ? undefined : new SignalJournalAdapter(db, dbRunContext(config)),
       inject: [DRIZZLE_DB, ConfigService],
     },
   ],
-  exports: [EXEC_OUTBOX_OVERRIDE, EXECUTION_STORE_OVERRIDE, INSTANCE_LOCK_OVERRIDE, MODE_AUDIT_OVERRIDE, RISK_JOURNAL_OVERRIDE, SIGNAL_JOURNAL],
+  exports: [
+    EXEC_OUTBOX_OVERRIDE,
+    EXECUTION_STORE_OVERRIDE,
+    INSTANCE_LOCK_OVERRIDE,
+    MODE_AUDIT_OVERRIDE,
+    RISK_JOURNAL_OVERRIDE,
+    SIGNAL_JOURNAL,
+  ],
 })
 class DrizzlePersistenceGlobalModule {}
 
@@ -195,7 +285,15 @@ class LimitsCompleteModule {}
 // true for live (an unprobeable restriction set ⇒ refuse). Under test/ci configMode is forced paper,
 // so no real client/probe is constructed in CI. keyFingerprint is a hex digest — never the raw key.
 const INVALID_KEY_PROBE: KeyProbePort = {
-  probe: () => Promise.resolve({ keysValid: false, withdrawalsEnabled: true, spotEnabled: false, marginOrFutures: false, keyFingerprint: 'none', urlCrossCheckOk: false }),
+  probe: () =>
+    Promise.resolve({
+      keysValid: false,
+      withdrawalsEnabled: true,
+      spotEnabled: false,
+      marginOrFutures: false,
+      keyFingerprint: 'none',
+      urlCrossCheckOk: false,
+    }),
 };
 @Global()
 @Module({
@@ -210,8 +308,15 @@ const INVALID_KEY_PROBE: KeyProbePort = {
         // from SANDBOX_ENV via resolveSandbox — keeping demo/testnet keys non-interchangeable.
         const sandbox = resolveSandbox(config);
         const apiKey = isLive ? (config.get('liveApiKey', { infer: true }) ?? '') : sandbox.apiKey;
-        const secret = isLive ? (config.get('liveApiSecret', { infer: true }) ?? '') : sandbox.secret;
-        const client = buildOrderClient(primaryVenue(config), isLive ? 'live' : sandbox.environment, apiKey, secret);
+        const secret = isLive
+          ? (config.get('liveApiSecret', { infer: true }) ?? '')
+          : sandbox.secret;
+        const client = buildOrderClient(
+          primaryVenue(config),
+          isLive ? 'live' : sandbox.environment,
+          apiKey,
+          secret,
+        );
         const keyFingerprint = createHash('sha256').update(apiKey).digest('hex').slice(0, 16);
         return new KeyProbeService(client, { keyFingerprint, requireRestrictions: isLive });
       },
@@ -226,7 +331,8 @@ class KeyProbeModule {}
 // PaperExchangeAdapter fed by ExecutionModule's outbox/notify; non-paper modes swap in the
 // CcxtExchangeAdapter here (Phase 7). Global so ExecutionModule's gate resolves EXCHANGE_PORT.
 const DEFAULT_PAPER_CONFIG: PaperConfig = {
-  seed: 1, takerBuffer: '0.05',
+  seed: 1,
+  takerBuffer: '0.05',
   fees: { makerBps: '1', takerBps: '10', feeCurrency: 'quote' },
   latency: { submitMs: [0, 0], eventMs: [0, 0] },
   insufficientDepthPolicy: 'partial_then_reject_rest',
@@ -236,7 +342,12 @@ const DEFAULT_PAPER_CONFIG: PaperConfig = {
 // Build a credentialed ccxt order client for a real venue (testnet/live). Reached only on a non-paper
 // boot — under test/ci configMode is forced paper, so this never runs in CI (no network, no keys).
 // The real order path is verified at the out-of-session testnet RUN; here it is typecheck-verified.
-function buildOrderClient(venue: string, environment: VenueEnvironment, apiKey: string, secret: string): RealCcxtOrderClient {
+function buildOrderClient(
+  venue: string,
+  environment: VenueEnvironment,
+  apiKey: string,
+  secret: string,
+): RealCcxtOrderClient {
   const venueConfig: VenueConfig = { id: venue, environment };
   const exchange = buildCcxtExchange(venueConfig);
   exchange.apiKey = apiKey;
@@ -255,11 +366,23 @@ function primaryVenue(config: ConfigService<AppConfig, true>): string {
 // pre-live dress rehearsal) or 'testnet' (setSandboxMode; the purpose-built integration sandbox).
 // Keys come straight from process.env (BINANCE_DEMO_*/BINANCE_TESTNET_*), never AppConfig, so they
 // are never hashed or logged. Reached only on a non-paper boot — under test/ci configMode is paper.
-function resolveSandbox(config: ConfigService<AppConfig, true>): { environment: VenueEnvironment; apiKey: string; secret: string } {
+function resolveSandbox(config: ConfigService<AppConfig, true>): {
+  environment: VenueEnvironment;
+  apiKey: string;
+  secret: string;
+} {
   if (config.get('mode', { infer: true }).sandboxEnv === 'demo') {
-    return { environment: 'demo', apiKey: process.env['BINANCE_DEMO_API_KEY'] ?? '', secret: process.env['BINANCE_DEMO_API_SECRET'] ?? '' };
+    return {
+      environment: 'demo',
+      apiKey: process.env['BINANCE_DEMO_API_KEY'] ?? '',
+      secret: process.env['BINANCE_DEMO_API_SECRET'] ?? '',
+    };
   }
-  return { environment: 'testnet', apiKey: process.env['BINANCE_TESTNET_API_KEY'] ?? '', secret: process.env['BINANCE_TESTNET_API_SECRET'] ?? '' };
+  return {
+    environment: 'testnet',
+    apiKey: process.env['BINANCE_TESTNET_API_KEY'] ?? '',
+    secret: process.env['BINANCE_TESTNET_API_SECRET'] ?? '',
+  };
 }
 @Global()
 @Module({
@@ -274,7 +397,10 @@ function resolveSandbox(config: ConfigService<AppConfig, true>): { environment: 
       // its constructor also throws unconditionally under test/ci as a second backstop.
       provide: EXCHANGE_PORT,
       useFactory: (
-        clock: ClockPort, outbox: ExecOutboxPort, notify: ExecReportNotify, cfg: PaperConfig,
+        clock: ClockPort,
+        outbox: ExecOutboxPort,
+        notify: ExecReportNotify,
+        cfg: PaperConfig,
         config: ConfigService<AppConfig, true>,
       ): ExchangePort => {
         const mode = config.get('mode', { infer: true }).configMode;
@@ -282,15 +408,28 @@ function resolveSandbox(config: ConfigService<AppConfig, true>): { environment: 
         if (mode === 'live') {
           // Live: real ccxt client behind the capability-token-guarded wrapper. liveApiKey/Secret are
           // present on AppConfig only outside test/ci (the schema strips them otherwise).
-          const client = buildOrderClient(venue, 'live', config.get('liveApiKey', { infer: true }) ?? '', config.get('liveApiSecret', { infer: true }) ?? '');
-          return new LiveExchangeAdapter(LIVE_ADAPTER_CAP, new CcxtExchangeAdapter(client, venueId(venue), false));
+          const client = buildOrderClient(
+            venue,
+            'live',
+            config.get('liveApiKey', { infer: true }) ?? '',
+            config.get('liveApiSecret', { infer: true }) ?? '',
+          );
+          return new LiveExchangeAdapter(
+            LIVE_ADAPTER_CAP,
+            new CcxtExchangeAdapter(client, venueId(venue), false),
+          );
         }
         if (mode === 'testnet') {
           // Sandbox: no capability token, no wrapper — a sandbox is not live. SANDBOX_ENV picks the
           // flavor (testnet via setSandboxMode, or demo via enableDemoTrading) and its own keys
           // (BINANCE_TESTNET_*/BINANCE_DEMO_*, separate from live keys; never reached under test/ci).
           const sandbox = resolveSandbox(config);
-          const client = buildOrderClient(venue, sandbox.environment, sandbox.apiKey, sandbox.secret);
+          const client = buildOrderClient(
+            venue,
+            sandbox.environment,
+            sandbox.apiKey,
+            sandbox.secret,
+          );
           return new CcxtExchangeAdapter(client, venueId(venue), true);
         }
         return new PaperExchangeAdapter(clock, outbox, notify, cfg, venueId(venue));
@@ -312,17 +451,27 @@ class PaperExchangeModule {}
 // that consumes this is itself test-gated.
 const NOOP_STREAM: ExchangeStreamPort = {
   marketRaw: (): AsyncIterable<RawVenueEvent> => ({
-    [Symbol.asyncIterator]: () => ({ next: () => Promise.resolve({ value: undefined as never, done: true }) }),
+    [Symbol.asyncIterator]: () => ({
+      next: () => Promise.resolve({ value: undefined as never, done: true }),
+    }),
   }),
   userEvents: (): AsyncIterable<RawUserEvent> => ({
-    [Symbol.asyncIterator]: () => ({ next: () => Promise.resolve({ value: undefined as never, done: true }) }),
+    [Symbol.asyncIterator]: () => ({
+      next: () => Promise.resolve({ value: undefined as never, done: true }),
+    }),
   }),
 };
 const NOOP_FEED_HEALTH: FeedHealthPort = {
-  health: () => 'GAP', getRefPrice: () => undefined, fetchCandles: () => Promise.resolve([]),
+  health: () => 'GAP',
+  getRefPrice: () => undefined,
+  fetchCandles: () => Promise.resolve([]),
 };
 function isTestEnv(): boolean {
-  return process.env['NODE_ENV'] === 'test' || process.env['NODE_ENV'] === 'ci' || Boolean(process.env['CI']);
+  return (
+    process.env['NODE_ENV'] === 'test' ||
+    process.env['NODE_ENV'] === 'ci' ||
+    Boolean(process.env['CI'])
+  );
 }
 function feedVenueConfig(config: ConfigService<AppConfig, true>): VenueConfig {
   const id = config.get('venues', { infer: true })[0]?.id ?? 'binance';
@@ -348,33 +497,59 @@ const MD_EXCHANGE = Symbol('MD_EXCHANGE');
     },
     {
       provide: REAL_FEED_HEALTH,
-      useFactory: (clock: ClockPort, config: ConfigService<AppConfig, true>, exchange?: Exchange): FeedHealthPort =>
+      useFactory: (
+        clock: ClockPort,
+        config: ConfigService<AppConfig, true>,
+        exchange?: Exchange,
+      ): FeedHealthPort =>
         exchange
-          ? new FeedHealthServiceWithBackfill(clock, NOOP_STREAM, exchange satisfies OhlcvSource, feedVenueConfig(config))
+          ? new FeedHealthServiceWithBackfill(
+              clock,
+              NOOP_STREAM,
+              exchange satisfies OhlcvSource,
+              feedVenueConfig(config),
+            )
           : NOOP_FEED_HEALTH,
       inject: [CLOCK, ConfigService, MD_EXCHANGE],
     },
     {
       provide: EXCHANGE_STREAM,
       useFactory: (
-        clock: ClockPort, watchSource: WatchSource, feedHealth: FeedHealthPort,
-        config: ConfigService<AppConfig, true>, exchange?: Exchange,
+        clock: ClockPort,
+        watchSource: WatchSource,
+        feedHealth: FeedHealthPort,
+        config: ConfigService<AppConfig, true>,
+        exchange?: Exchange,
       ): ExchangeStreamPort =>
         exchange
-          ? new CcxtExchangeStreamAdapter(clock, watchSource, exchange, venueId(feedVenueConfig(config).id), feedHealth as unknown as ChannelStateTracker)
+          ? new CcxtExchangeStreamAdapter(
+              clock,
+              watchSource,
+              exchange,
+              venueId(feedVenueConfig(config).id),
+              feedHealth as unknown as ChannelStateTracker,
+            )
           : NOOP_STREAM,
       inject: [CLOCK, WATCH_SOURCE, REAL_FEED_HEALTH, ConfigService, MD_EXCHANGE],
     },
     {
       provide: MARKET_STREAM,
       useFactory: (
-        exchangeStream: ExchangeStreamPort, clock: ClockPort, feedHealth: FeedHealthPort, exchangePort: ExchangePort,
+        exchangeStream: ExchangeStreamPort,
+        clock: ClockPort,
+        feedHealth: FeedHealthPort,
+        exchangePort: ExchangePort,
       ): MarketStreamPort => {
         const inner = new MarketDataService(exchangeStream, clock);
         // Paper sim needs book/trade ingestion to fill; the live/demo venue fills its own orders, so
         // paperFeed is present only when EXCHANGE_PORT is the PaperExchangeAdapter (structural check).
         const paperFeed = hasIngest(exchangePort) ? exchangePort : undefined;
-        return new TeeingMarketStream(inner, feedHealth as unknown as RefPriceSink, { ticker: true, book: true, trades: true }, paperFeed);
+        return new TeeingMarketStream(
+          inner,
+          feedHealth as unknown as RefPriceSink,
+          { ticker: true, book: true, trades: true },
+          paperFeed,
+        );
       },
       inject: [EXCHANGE_STREAM, CLOCK, REAL_FEED_HEALTH, EXCHANGE_PORT],
     },
@@ -389,8 +564,20 @@ class MarketFeedModule {}
 // (final integration, runtime — FEED_HEALTH is the no-op default until then).
 @Module({
   imports: [
-    AppConfigModule, DbHealthBridgeModule, DrizzlePersistenceGlobalModule, PortfolioViewBridgeModule, ObservabilityModule,
-    SigningKeyModule, KillSwitchModule, LimitsCompleteModule, KeyProbeModule, ModeControlModule, RiskModule, ExecutionModule, PaperExchangeModule, MarketFeedModule,
+    AppConfigModule,
+    DbHealthBridgeModule,
+    DrizzlePersistenceGlobalModule,
+    PortfolioViewBridgeModule,
+    ObservabilityModule,
+    SigningKeyModule,
+    KillSwitchModule,
+    LimitsCompleteModule,
+    KeyProbeModule,
+    ModeControlModule,
+    RiskModule,
+    ExecutionModule,
+    PaperExchangeModule,
+    MarketFeedModule,
   ],
   // SignalSinkService and HaltCoordinatorService live at the composition root because they bridge
   // Risk and Execution: each injects ports RiskModule exports (SIGNAL_GATEWAY / RISK_ENGINE +
@@ -400,14 +587,20 @@ class MarketFeedModule {}
   // TradingRuntimeService fires the whole loop at boot (non-test). A factory builds the host so its
   // optional hrtimeFn ctor param is not a DI dependency.
   providers: [
-    SignalSinkService, HaltCoordinatorService,
+    SignalSinkService,
+    SIGNAL_REJECTIONS_COUNTER,
+    HaltCoordinatorService,
     StrategyRegistry,
     { provide: STRATEGY_REGISTRY, useExisting: StrategyRegistry },
     { provide: SIGNAL_SINK, useExisting: SignalSinkService },
     {
       provide: STRATEGY_HOST,
-      useFactory: (ms: MarketStreamPort, fh: FeedHealthPort, sink: SignalSinkService, reg: StrategyRegistry) =>
-        new StrategyHost(ms, fh, sink, reg),
+      useFactory: (
+        ms: MarketStreamPort,
+        fh: FeedHealthPort,
+        sink: SignalSinkService,
+        reg: StrategyRegistry,
+      ) => new StrategyHost(ms, fh, sink, reg),
       inject: [MARKET_STREAM, FEED_HEALTH, SIGNAL_SINK, StrategyRegistry],
     },
   ],
@@ -453,7 +646,9 @@ export class AppModule implements OnApplicationBootstrap, OnModuleDestroy {
         void Promise.resolve(this.coordinator.tick(now)).catch(() => undefined);
         void Promise.resolve(this.resolver.tick(now)).catch(() => undefined);
       }, 1_000),
-      setInterval(() => { void Promise.resolve(this.sampler.sample()).catch(() => undefined); }, 5_000),
+      setInterval(() => {
+        void Promise.resolve(this.sampler.sample()).catch(() => undefined);
+      }, 5_000),
     );
     // Reconciliation compares the in-memory portfolio against the venue. In paper the in-memory
     // PaperExchangeAdapter IS the venue, so they match exactly. The demo/testnet account is DEDICATED
@@ -464,7 +659,9 @@ export class AppModule implements OnApplicationBootstrap, OnModuleDestroy {
     // inert on Binance (clientOrderId-less myTrades). Reconciliation logic itself is untouched.
     if (mode === 'paper' || mode === 'testnet') {
       this.driverTimers.push(
-        setInterval(() => { void Promise.resolve(this.reconciliation.reconcile()).catch(() => undefined); }, 30_000),
+        setInterval(() => {
+          void Promise.resolve(this.reconciliation.reconcile()).catch(() => undefined);
+        }, 30_000),
       );
     }
     void this.startTrading(mode);
@@ -488,23 +685,39 @@ export class AppModule implements OnApplicationBootstrap, OnModuleDestroy {
 
     if (mode !== 'paper') {
       await this.refreshKeyProbe();
-      this.driverTimers.push(setInterval(() => { void this.refreshKeyProbe(); }, 60_000));
+      this.driverTimers.push(
+        setInterval(() => {
+          void this.refreshKeyProbe();
+        }, 60_000),
+      );
     }
     const resolved = this.modeControl.resolveMode();
-    this.log.log(`effective mode=${resolved.effective} (requested=${resolved.requested}) downgrades=[${resolved.downgrades.join(',')}]`);
+    this.log.log(
+      `effective mode=${resolved.effective} (requested=${resolved.requested}) downgrades=[${resolved.downgrades.join(',')}]`,
+    );
 
     this.registry.register('ema-cross', (id, p) => new EmaCrossStrategy(id, p as EmaCrossParams));
     this.registry.enable(strategyId('ema-1'), 'ema-cross', params);
-    this.log.log(`strategy ema-cross: ${params.symbol} ${params.interval} fast=${params.fast} slow=${params.slow} baseNotional=${process.env['BASE_NOTIONAL'] ?? '1000'}`);
+    this.log.log(
+      `strategy ema-cross: ${params.symbol} ${params.interval} fast=${params.fast} slow=${params.slow} baseNotional=${process.env['BASE_NOTIONAL'] ?? '1000'}`,
+    );
 
     await this.host.start();
     this.log.log('strategy host started — consuming market data');
 
     if (mode !== 'paper') {
       this.fillPoller.init();
-      this.driverTimers.push(setInterval(() => { void this.runFillPoll(); }, 10_000));
+      this.driverTimers.push(
+        setInterval(() => {
+          void this.runFillPoll();
+        }, 10_000),
+      );
     }
-    this.driverTimers.push(setInterval(() => { this.logPortfolio(); }, 15_000));
+    this.driverTimers.push(
+      setInterval(() => {
+        this.logPortfolio();
+      }, 15_000),
+    );
   }
 
   private async refreshKeyProbe(): Promise<void> {
@@ -518,7 +731,8 @@ export class AppModule implements OnApplicationBootstrap, OnModuleDestroy {
   private async runFillPoll(): Promise<void> {
     try {
       const { ingested, skippedUnknown } = await this.fillPoller.poll(this.tradingSymbols);
-      if (ingested > 0 || skippedUnknown > 0) this.log.log(`fill poll: ingested=${ingested} skippedUnknown=${skippedUnknown}`);
+      if (ingested > 0 || skippedUnknown > 0)
+        this.log.log(`fill poll: ingested=${ingested} skippedUnknown=${skippedUnknown}`);
     } catch (err) {
       this.log.warn(`fill poll failed: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -526,16 +740,19 @@ export class AppModule implements OnApplicationBootstrap, OnModuleDestroy {
 
   private logPortfolio(): void {
     const snap = this.portfolio.snapshot();
-    const positions = [...snap.positions.values()].map((p) => `${p.symbol}:${p.signedQty.toFixed()}@${p.avgEntry.toFixed()}`);
+    const positions = [...snap.positions.values()].map(
+      (p) => `${p.symbol}:${p.signedQty.toFixed()}@${p.avgEntry.toFixed()}`,
+    );
     this.log.log(
       `portfolio: equity=${snap.equity.toFixed()} cash=${snap.balances.get('USDT')?.free.toFixed() ?? '?'} ` +
-      `positions=[${positions.join(',')}] openOrders=${snap.openOrders.length} inFlight=${snap.inFlightIntents.length}`,
+        `positions=[${positions.join(',')}] openOrders=${snap.openOrders.length} inFlight=${snap.inFlightIntents.length}`,
     );
   }
 
   private strategyParams(): EmaCrossParams {
     const venue = this.config.get('venues', { infer: true })[0]?.id ?? 'binance';
-    const intEnv = (name: string, def: string): number => new Decimal(process.env[name] ?? def).toNumber();
+    const intEnv = (name: string, def: string): number =>
+      new Decimal(process.env[name] ?? def).toNumber();
     return {
       symbol: symbolId(process.env['TRADING_SYMBOL'] ?? 'BTC/USDT'),
       venue: venueId(venue),

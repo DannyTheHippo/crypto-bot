@@ -1,11 +1,17 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import Decimal from 'decimal.js';
 import { PortfolioStateService } from '../../../src/modules/execution/portfolio-state.service';
 import { FeeLedgerService } from '../../../src/modules/execution/fee-ledger.service';
 import { positionKey } from '../../../src/domain/risk/evaluate';
 import { makeIntent, makeFill, SID, V, SYM } from './helpers';
-import { price, qty, feeAmount } from '../../../src/domain/types/money';
+import { price, qty, feeAmount, setupDecimal } from '../../../src/domain/types/money';
 import { strategyId } from '../../../src/domain/types/ids';
+
+// Production runs under the global Decimal config (precision 40, ROUND_HALF_EVEN); main.ts calls
+// setupDecimal() at bootstrap. The PRECISION_OVERFLOW regression below only reproduces under that
+// config (default precision 20 truncates the quotient before it can overflow), so the whole spec
+// runs under it. Every other assertion here is precision-insensitive (exact integer/short-decimal).
+beforeAll(() => setupDecimal());
 
 function make() {
   const fees = new FeeLedgerService();
@@ -71,29 +77,60 @@ describe('PortfolioStateService', () => {
   it('removes the position when a fill closes it to flat; cash reflects the round trip', () => {
     const { ps } = make();
     ps.applyFill(makeIntent({ side: 'BUY' }), makeFill({ qty: qty('1'), price: price('100') }));
-    ps.applyFill(makeIntent({ side: 'SELL' }), makeFill({ venueTradeId: 't2', qty: qty('1'), price: price('110') }));
+    ps.applyFill(
+      makeIntent({ side: 'SELL' }),
+      makeFill({ venueTradeId: 't2', qty: qty('1'), price: price('110') }),
+    );
     expect(ps.snapshot().positions.size).toBe(0);
     expect(ps.cashBalance().toFixed()).toBe('100010'); // -100 + 110
   });
 
   it('routes a third-asset fee to the fee ledger', () => {
     const { ps, fees } = make();
-    ps.applyFill(makeIntent({ side: 'BUY' }), makeFill({ qty: qty('1'), price: price('100'), fee: { ccy: 'BNB', amount: feeAmount('0.5') } }));
+    ps.applyFill(
+      makeIntent({ side: 'BUY' }),
+      makeFill({
+        qty: qty('1'),
+        price: price('100'),
+        fee: { ccy: 'BNB', amount: feeAmount('0.5') },
+      }),
+    );
     expect(fees.total('BNB').toFixed()).toBe('0.5');
   });
 
   it('shaves retained base on a base-currency fee', () => {
     const { ps } = make();
-    ps.applyFill(makeIntent({ side: 'BUY' }), makeFill({ qty: qty('2'), price: price('100'), fee: { ccy: 'BTC', amount: feeAmount('0.002') } }));
-    expect(ps.snapshot().positions.get(positionKey(SID, V, SYM))?.signedQty.toFixed()).toBe('1.998');
+    ps.applyFill(
+      makeIntent({ side: 'BUY' }),
+      makeFill({
+        qty: qty('2'),
+        price: price('100'),
+        fee: { ccy: 'BTC', amount: feeAmount('0.002') },
+      }),
+    );
+    expect(
+      ps
+        .snapshot()
+        .positions.get(positionKey(SID, V, SYM))
+        ?.signedQty.toFixed(),
+    ).toBe('1.998');
   });
 
   it('forStrategy returns only that strategy’s positions and open orders', () => {
     const { ps } = make();
     const sid2 = strategyId('s2');
     ps.applyFill(makeIntent({ side: 'BUY' }), makeFill({ qty: qty('1'), price: price('100') }));
-    ps.applyFill(makeIntent({ side: 'BUY', strategyId: sid2 }), makeFill({ venueTradeId: 't9', qty: qty('1'), price: price('100') }));
-    ps.openOrder(SID, { clientOrderId: makeIntent().clientOrderId, symbol: SYM, side: 'BUY', qty: qty('1'), limitPrice: price('100') });
+    ps.applyFill(
+      makeIntent({ side: 'BUY', strategyId: sid2 }),
+      makeFill({ venueTradeId: 't9', qty: qty('1'), price: price('100') }),
+    );
+    ps.openOrder(SID, {
+      clientOrderId: makeIntent().clientOrderId,
+      symbol: SYM,
+      side: 'BUY',
+      qty: qty('1'),
+      limitPrice: price('100'),
+    });
     const view = ps.forStrategy(SID);
     expect(view.positions.size).toBe(1);
     expect(view.positions.get(positionKey(SID, V, SYM))).toBeDefined();
@@ -113,7 +150,13 @@ describe('PortfolioStateService', () => {
     const { ps } = make();
     const intent = makeIntent();
     ps.addInFlight(intent);
-    ps.openOrder(SID, { clientOrderId: intent.clientOrderId, symbol: SYM, side: 'BUY', qty: qty('1'), limitPrice: price('100') });
+    ps.openOrder(SID, {
+      clientOrderId: intent.clientOrderId,
+      symbol: SYM,
+      side: 'BUY',
+      qty: qty('1'),
+      limitPrice: price('100'),
+    });
     let s = ps.snapshot();
     expect(s.inFlightIntents).toHaveLength(1);
     expect(s.openOrders).toHaveLength(1);
@@ -122,5 +165,58 @@ describe('PortfolioStateService', () => {
     s = ps.snapshot();
     expect(s.inFlightIntents).toHaveLength(0);
     expect(s.openOrders).toHaveLength(0);
+  });
+
+  // Regression for the live testnet/demo fill-poller stall: an add-to-position fill whose
+  // average-cost entry is non-terminating. avgEntry is minted as a Price at applyFill (the
+  // portfolio-state mint), so a >18-dp quotient threw MoneyError[PRECISION_OVERFLOW] and aborted
+  // fill ingestion. Numbers are real BTC/USDT fills from the live DB (fills #1 + #14): open
+  // 0.00156 @ 63965.66, then add 0.00046 @ 64113.19. The pure applyFillToPosition test alone is
+  // insufficient — the production throw is the Price mint, which only the full applyFill exercises.
+  it('rounds a non-terminating weighted-average entry to ≤18 dp on an add-to-position fill (no PRECISION_OVERFLOW)', () => {
+    const { ps } = make();
+    ps.applyFill(
+      makeIntent({ side: 'BUY' }),
+      makeFill({ venueTradeId: 't1', qty: qty('0.00156'), price: price('63965.66') }),
+    );
+    ps.applyFill(
+      makeIntent({ side: 'BUY' }),
+      makeFill({ venueTradeId: 't14', qty: qty('0.00046'), price: price('64113.19') }),
+    );
+    const p = ps.snapshot().positions.get(positionKey(SID, V, SYM));
+    expect(p?.signedQty.toFixed()).toBe('0.00202');
+    // (0.00156×63965.66 + 0.00046×64113.19) / 0.00202 = 63999.25594059405940594…, rounded
+    // HALF_EVEN to the money type's 18-dp maximum — exact string, never toBeCloseTo (CLAUDE.md #1).
+    expect(p?.avgEntry.toFixed()).toBe('63999.255940594059405941');
+    expect((p?.avgEntry.toFixed().split('.')[1] ?? '').length).toBeLessThanOrEqual(18);
+  });
+
+  // The fix newly unblocks the reduce path: before it, the add above threw and ingestion stalled,
+  // so a subsequent reducing fill was unreachable. realizedPnl = (fillPrice − avgEntry)×closeQty is
+  // a product of ≤18-dp values, so it can legitimately exceed 18 dp — but it is NEVER minted through
+  // a money constructor (held raw on PositionState, persisted via toFixed() into NUMERIC(38,18)
+  // which Postgres rounds, exported to metrics via toNumber()). So the reduce must NOT throw, and
+  // realizedPnl stays an exact raw Decimal. avgEntry is unchanged on a partial reduce.
+  it('reduces after the rounded-entry add without overflow; realizedPnl stays raw (>18 dp, unminted)', () => {
+    const { ps } = make();
+    ps.applyFill(
+      makeIntent({ side: 'BUY' }),
+      makeFill({ venueTradeId: 't1', qty: qty('0.00156'), price: price('63965.66') }),
+    );
+    ps.applyFill(
+      makeIntent({ side: 'BUY' }),
+      makeFill({ venueTradeId: 't14', qty: qty('0.00046'), price: price('64113.19') }),
+    );
+    expect(() =>
+      ps.applyFill(
+        makeIntent({ side: 'SELL' }),
+        makeFill({ venueTradeId: 't-sell', qty: qty('0.001'), price: price('64200') }),
+      ),
+    ).not.toThrow();
+    const p = ps.snapshot().positions.get(positionKey(SID, V, SYM));
+    expect(p?.signedQty.toFixed()).toBe('0.00102');
+    expect(p?.avgEntry.toFixed()).toBe('63999.255940594059405941'); // unchanged on partial reduce
+    // (64200 − 63999.255940594059405941) × 0.001 = 0.200744059405940594059 — 21 dp, exact, raw.
+    expect(p?.realizedPnl.toFixed()).toBe('0.200744059405940594059');
   });
 });

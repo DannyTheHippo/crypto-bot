@@ -13,6 +13,9 @@ export default tseslint.config(
       'docs/**',
       'drizzle/**',
       'drizzle.config.ts',
+      // Research/analysis tooling (EMA-cross backtest); validated by its own sanity test +
+      // adversarial review, intentionally outside the production typecheck/lint gate.
+      'test/backtest/**',
     ],
   },
   ...tseslint.configs.recommendedTypeChecked,

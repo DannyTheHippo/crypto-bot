@@ -1,5 +1,13 @@
 import Decimal from 'decimal.js';
-import { price as makePrice, qty as makeQty, feeAmount, type Price, type Qty, type FeeAmount } from '../types/money';
+import {
+  price as makePrice,
+  qty as makeQty,
+  feeAmount,
+  roundToMoneyPrecision,
+  type Price,
+  type Qty,
+  type FeeAmount,
+} from '../types/money';
 import type { OrderLevel } from '../types/market-events';
 
 // Pure paper-fill model (§6.5). Deterministic over its inputs; latency/PRNG live in the
@@ -15,14 +23,21 @@ export interface SimFill {
 }
 
 function makeFill(
-  p: Decimal, q: Decimal, feeBps: Decimal, feeCcy: FeeCcy, liquidity: 'maker' | 'taker',
+  p: Decimal,
+  q: Decimal,
+  feeBps: Decimal,
+  feeCcy: FeeCcy,
+  liquidity: 'maker' | 'taker',
 ): SimFill {
   // base-currency fee bills the filled quantity; quote bills the notional.
   const base = feeCcy === 'base' ? q : p.mul(q);
+  // base×feeBps÷10000 can exceed the money type's 18-dp ceiling for high-precision inputs (same
+  // unrounded-quotient class as the avgEntry overflow); round to 18 dp so feeAmount can mint it.
+  const feeRaw = roundToMoneyPrecision(base.mul(feeBps).div(10_000));
   return {
     price: makePrice(p),
     qty: makeQty(q),
-    fee: { ccy: feeCcy, amount: feeAmount(base.mul(feeBps).div(10_000)) },
+    fee: { ccy: feeCcy, amount: feeAmount(feeRaw) },
     liquidity,
   };
 }

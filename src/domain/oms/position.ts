@@ -1,4 +1,5 @@
 import Decimal from 'decimal.js';
+import { roundToMoneyPrecision } from '../types/money';
 
 // Pure average-cost position accounting (§6.6, §8 Realized PnL). Increasing fills move
 // the weighted-average entry; reducing fills realize PnL and leave avgEntry unchanged; a
@@ -10,7 +11,11 @@ export interface PositionState {
   readonly realizedPnl: Decimal;
 }
 
-export const FLAT: PositionState = { signedQty: new Decimal(0), avgEntry: new Decimal(0), realizedPnl: new Decimal(0) };
+export const FLAT: PositionState = {
+  signedQty: new Decimal(0),
+  avgEntry: new Decimal(0),
+  realizedPnl: new Decimal(0),
+};
 
 export function applyFillToPosition(
   pos: PositionState,
@@ -28,7 +33,11 @@ export function applyFillToPosition(
 
   if (increasing) {
     const absOld = oldQty.abs();
-    const avgEntry = absOld.mul(pos.avgEntry).add(fillQty.mul(fillPrice)).div(absOld.add(fillQty));
+    // The quotient is non-terminating for most real fills; round to the money type's 18-dp ceiling
+    // so it can be minted as a Price downstream (the cost-basis average is between ticks anyway).
+    const avgEntry = roundToMoneyPrecision(
+      absOld.mul(pos.avgEntry).add(fillQty.mul(fillPrice)).div(absOld.add(fillQty)),
+    );
     return { signedQty: newQty, avgEntry, realizedPnl: realized };
   }
 

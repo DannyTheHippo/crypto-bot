@@ -9,6 +9,7 @@ import {
   moneyToString,
   roundToTick,
   roundToStep,
+  roundToMoneyPrecision,
   toIndicatorNumber,
   MoneyError,
 } from '../../../src/domain/types/money';
@@ -393,6 +394,29 @@ describe('roundToStep()', () => {
     const q = qty('2.50');
     const result = roundToStep(q, '0.01', 'up');
     expect(moneyToString(result)).toBe('2.5');
+  });
+});
+
+describe('roundToMoneyPrecision()', () => {
+  it('rounds a >18 dp value to exactly 18 dp so it can be minted as money', () => {
+    // A real non-terminating weighted-average entry (live testnet BTC fills): 35 dp under the
+    // precision-40 config — too many to mint as a Price until conformed to the 18-dp ceiling.
+    const raw = new Decimal('63999.25594059405940594059405940594059406');
+    expect(roundToMoneyPrecision(raw).toFixed()).toBe('63999.255940594059405941');
+  });
+
+  it('is a no-op for a value already within 18 dp', () => {
+    expect(roundToMoneyPrecision(new Decimal('100.5')).toFixed()).toBe('100.5');
+  });
+
+  it('applies banker (HALF_EVEN) rounding at the 18th place — even stays', () => {
+    expect(roundToMoneyPrecision(new Decimal('1.0000000000000000005')).toFixed()).toBe('1');
+  });
+
+  it('applies banker (HALF_EVEN) rounding at the 18th place — odd rounds to even', () => {
+    expect(roundToMoneyPrecision(new Decimal('1.0000000000000000015')).toFixed()).toBe(
+      '1.000000000000000002',
+    );
   });
 });
 

@@ -1,64 +1,84 @@
 # Promotion artifact — `paper` → `main`
 
-> **Description only.** The remote is off-limits and `main` is the protected baseline branch.
-> This is **never pushed and never merged** by the automation. A human reads it and promotes manually.
+> **Description only.** The remote is off-limits. This artifact is read by a human who decides any
+> live promotion manually. The automation never pushes and never promotes to live.
 
-## Status: NOTHING TO PROMOTE TONIGHT (research-only night; production behavior unchanged)
+## Status: `paper` → `main` MERGE of the edge-search program (`paper` @ `eaf5668`)
 
-Tonight's pass (`2026-06-15`, tag `paper-2026-06-15`, `paper` @ `7691586`) shipped **research tooling only** — ZERO
-`src/` changes. The deployed bot runs the **same** EMA-cross strategy as before. There is no production behavior change
-to promote to live.
+This merge is **NOT research-only** — unlike prior nightly passes, it ships `src/` and config changes plus a
+deployed **UNVALIDATED experimental strategy** on the demo/testnet bot. It is promoted to `main` deliberately as
+a labeled experiment. **Live promotion is still NOT recommended** (see below): no validated edge exists, and the
+active demo strategy is explicitly unvalidated.
 
-## ⚠️ Branch-model divergence — needs a human decision (cannot be auto-resolved)
+## What this merge contains (`main` @ `8231bcc` → `paper` @ `eaf5668`, 5 commits)
 
-The repo has drifted from the documented `paper`-integration model and this is the most important item for the human:
+Research/ops commits (prior passes, folded in):
 
-- **`main` (`8231bcc`, = `origin/main`) is now the SUPERSET.** Commit `409340c` consolidated onto `main` all 5 prior
-  nightly fixes (avgEntry overflow, fill-fee rounding, poller watermark, NO_POSITION reason, signals_rejected_total) +
-  the backtest harness + research artifacts. The user has been committing directly to `main` and pushing to `origin`.
-- **`paper` was STALE** (only the avgEntry fix; missing the harness + the other 4 fixes). Guardrail 3 forbids the
-  automation from touching `main`, so tonight's work was branched off `main` (read-only on main; the superset is the
-  correct base) and the LOCAL `paper` branch was advanced to `7691586` (= `main` + tonight's research). `paper` and the
-  `paper-YYYY-MM-DD` tags remain local and unpushed by design.
-- **Decision needed:** because the human is already merging nightly work directly into `main`, the `paper → main`
-  promotion gate is effectively being bypassed upstream. Either (a) keep committing to `main` directly and treat `paper`
-  as a throwaway integration mirror, or (b) resume the documented flow (work lands on `paper`, human promotes `paper →
-main`). The automation will follow whichever, but it will never push or touch `main` regardless.
+- `7691586` — backtest harness generalized to any `Strategy`; mean-reversion hypothesis closed (research only).
+- `c284fcf` — nightly evidence records. `abf978c` — server port 3000 → 3100. `374c71c` — prettier format.
 
-## Accumulated diff since the last live state (`main` @ `8231bcc`)
+Edge-search program commit (`eaf5668`) — the substantive change:
 
-`paper` @ `7691586` adds, relative to `main`:
-
-- `test/backtest/harness.ts` — generalized to drive any `Strategy` via a factory (was EMA-hardcoded).
-- `test/backtest/mean-reversion.strategy.ts`, `test/backtest/mean-reversion.study.spec.ts` — new mean-reversion
-  hypothesis + OOS study.
-- `test/backtest/study.spec.ts` — EMA study refactored to the factory (reproduces `backtest-study.md` byte-identically).
-- `reports/nightly/meanrev-study.md`, `reports/nightly/nightly-2026-06-15.md` — research report + audit trail.
-- removed `test/backtest/feecheck.tmp.spec.ts` (scratch).
-
-**All in `test/backtest/` (off the production typecheck/lint gate) + `reports/`. No `src/`, no config, no migration, no
-dependency change.** The Docker image (built from `src/` only; `test/` is `.dockerignore`d) is functionally identical to
-the last-good image.
+- **Validation tooling** (`test/backtest/`, off the production gate): step-D harness — deflated Sharpe, t-stat,
+  MinBTL, walk-forward, purged CV (Bailey & López de Prado). `stats.ts`, `walk-forward.ts`, `cv.ts`, indicators,
+  trial registry, study specs.
+- **Production short plumbing** (`src/`): `signal.ts` `ENTER_SHORT`/`EXIT_SHORT` kinds; exhaustive sizer
+  `orderForKind`; **directional E3 net-exposure headroom** in `evaluate.ts` (risk-**tightening**: a net-short book
+  can no longer breach −maxNet; byte-identical for BUY/long); `strategy-host.ts` `EXIT_SHORT` in the risk-reducing
+  set; halt-coordinator covers a short during FLATTENING. `OrderIntent.side` stays `BUY|SELL` — **no Execution /
+  RiskApprovedIntent / HMAC signature widening.**
+- **Promoted experiment** (`src/domain/strategy/donchian-breakout.strategy.ts`): pure, replay-deterministic
+  Donchian breakout, wired behind a new **`ACTIVE_STRATEGY`** env switch in `app.module.ts` (**default
+  `ema-cross`**, the validated baseline).
+- **Demo deploy config** (`docker-compose.yml`): `ACTIVE_STRATEGY=donchian-breakout`, `STRATEGY_INTERVAL=1h`,
+  `DONCHIAN_ENTRY=55`, `DONCHIAN_EXIT=20` — the characterized best-of-breed `55/20 @ 1h` (backtest SR −0.045).
+  `.env.example` documents all env vars (incl. `HOST`, `ACTIVE_STRATEGY`, `DONCHIAN_*`) with `ema-cross` default.
 
 ## Current validated-edge status
 
-**No validated edge exists.** EMA-cross was proven edgeless (160-config OOS study). Tonight closed the plain
-short-horizon z-score mean-reversion hypothesis (0/48 positive-both OOS; 6/48 at zero fees → the strategy, not costs).
-The bot trades EMA-cross 3/5 on 1m as a break-even-minus-fees baseline. Promotion to live is **NOT recommended on PnL
-grounds** — there is no statistically validated profitable edge to promote. The reusable asset built tonight (a
-strategy-agnostic backtest harness) is what advances the search.
+**No validated edge exists — confirmed across every form tested.** EMA-cross (160-config), z-score mean-reversion
+(48-config), the pre-registered long battery (Donchian/dual-momentum/vol-regime/ADX-regime, 64 trials), maker /
+market-making, and the short battery (52 trials) **all FAIL** the step-D gate (cumulative N=324; 0/64 long
+profitable at VIP0 fees, 13/64 only at zero fees → the strategies, not costs). The demo bot runs the
+**UNVALIDATED** Donchian breakout `55/20 @ 1h` as a **labeled experiment, demo/testnet only**. Live promotion is
+**NOT recommended**: no statistically validated profitable edge to promote, and the active strategy is unvalidated.
 
-## Evidence / risk notes
+## Guardrails / live-gate integrity (adversarially audited before this merge)
 
-- Gate green on `7691586`: build + lint + typecheck + 844 unit/livegate + 9 paper (clean `.env`-free cwd,
-  `TRADING_MODE=paper`). Cold-start redeploy HEALTHY (see `nightly-2026-06-15.md` §7–8 and the ledger row).
-- Guardrails intact: no `src/` change, no risk-limit/gate weakening, no append-only-trigger change, no secrets. The
-  paper/live gate and risk limits are untouched.
-- **Consecutive HEALTHY nightly deploys: 2** (`paper-2026-06-14`, `paper-2026-06-15`). Tonight: cold-start redeploy,
-  7-sample ~18 min soak PASS — up, `RestartCount=0`, `/health/ready` 200, live round-trip filled/retired clean, 0 errors,
-  `reconciliation_mismatch=0`.
-- **Open safety finding (pre-existing, do NOT promote to live until addressed):** the periodic 30 s venue-truth
-  reconciliation pass is silently not completing on testnet (`reconTs=0`, `reconciliation_runs_total` empty) — a swallowed
-  `fetchOpenOrders`/`fetchBalance` throw. Present in `paper-2026-06-14` too. Order-level fill reconciliation works and no
-  drift/HALT occurred, but the venue-drift safety sweep is not actively confirming truth. This is the top backlog item;
-  a live promotion should wait until it is fixed and verified.
+A 6-dimension pre-merge audit of the full `main..eaf5668` diff confirmed the live-safety boundary is intact:
+
+- **The four live gates are UNTOUCHED at code level** — env-flag/mode resolution (`resolution.ts` unchanged;
+  invalid/missing `TRADING_MODE` ⇒ paper; `NODE_ENV=test/ci` forces paper), the bootId-bound HMAC arming interlock,
+  the validated-keys/withdrawals-disabled probe, and the complete-risk-limits check are all byte-equivalent
+  (changes around them are prettier reflow). `ACTIVE_STRATEGY` only selects which strategy the registry enables —
+  strictly **downstream** of mode resolution; it cannot bypass the gates. A donchian signal in live would still
+  require full live authority + a `RiskApprovedIntent`.
+- **`src/domain` purity + strategy boundaries intact**; **money paths stay `decimal.js`/branded** (no float leak);
+  **`audit_log`/`order_events` append-only triggers untouched**; reconciliation still HALTs without auto-flatten;
+  **no secrets, no absolute paths, no leftover artifacts.**
+- The directional E3 change is **strictly risk-tightening** (and value-identical for the long path).
+- The Docker image **DOES change** this time (`src/` changed); it is **NOT** functionally identical to the
+  last-good image — it carries the short plumbing and the Donchian strategy. The deployed config runs the
+  unvalidated experiment on the demo venue, which is paper-safe by construction (no `TRADING_MODE`/`VENUES`/live
+  creds in compose ⇒ degrades to paper).
+
+## Open / deferred items (do NOT promote to live until addressed)
+
+- **No validated edge** — the blocking reason against any live promotion.
+- **Latent (non-deployed) short-cover bug:** the halt-coordinator's FLATTEN marketable-price hint is hardcoded
+  below mark (correct for a SELL/long-flatten, but a BUY/short-cover rests rather than crossing except via the
+  PRICE_BAND clamp). **Unreachable in the deployed config** — no strategy emits `ENTER_SHORT` and the spot venue
+  is long/flat by construction — but must be fixed (derive hint direction from side) before any short-emitting
+  strategy or a margin/futures venue is enabled. Shorts are research-only / live execution DEFERRED.
+- **Pre-existing reconciler finding:** the periodic 30 s venue-truth reconciliation pass is silently not
+  completing on the demo account (`reconTs=0`, `reconciliation_runs_total` empty). Order-level fill reconciliation
+  works and no drift/HALT occurred, but the venue-drift safety sweep is not actively confirming truth. Top backlog
+  item; a live promotion must wait until it is fixed and verified.
+
+## Evidence
+
+- Gate on `eaf5668`: build + lint + typecheck + format:check + `test:cov` 860 (all 100% coverage globs hold:
+  risk/oms/mode/execution/mode-control) + `test:paper` 9 + backtest 37 — green from a clean `.env`-free cwd.
+- Demo soak: the promoted Donchian ran a full autonomous round-trip on the 1m deploy (`ENTER_LONG` BUY 0.0015 @
+  66648.43 → `EXIT_LONG` SELL 0.00149 @ 66717.98, realized_pnl +0.0042 net — one trade, not the edge), then was
+  redeployed at the corrected `55/20 @ 1h`; `/health/ready` 200, killSwitch RUNNING, zero error/warn.

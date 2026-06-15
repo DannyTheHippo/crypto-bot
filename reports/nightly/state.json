@@ -6,7 +6,7 @@
   "validated_default_strategy": "ema-cross",
   "deploy": {
     "tag": "edge-search-2026-06-15",
-    "fix_commit": "uncommitted (branch paper working tree)",
+    "fix_commit": "eaf5668 (edge-search program, committed on paper) + a PROMOTION.md/state correction follow-up; merged paper→main",
     "image_sha256": "85d5695414ab",
     "boot_id": "71d3c433-855b-48e9-af6d-3ac257b9f3bb",
     "deployed_at": "2026-06-15T15:32:34Z",

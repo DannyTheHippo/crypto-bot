@@ -2,8 +2,16 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { prepare, slice, runBacktest, type Bar, type BtResult } from './harness';
+import { prepare, slice, runBacktest, BT_VENUE, BT_SYMBOL, type Bar, type BtResult } from './harness';
 import type { CandleInterval } from '../../src/domain/types/market-events';
+import { EmaCrossStrategy } from '../../src/domain/strategy/ema-cross.strategy';
+import { strategyId } from '../../src/domain/types/ids';
+import type { Strategy } from '../../src/domain/strategy/strategy';
+
+// EMA strategy factory — fresh instance per backtest (the harness owns onInit). Built against the
+// harness venue/symbol so the strategy's symbol filter (strategy:65) matches the minted candles.
+const makeEma = (fast: number, slow: number, interval: CandleInterval): (() => Strategy) =>
+  () => new EmaCrossStrategy(strategyId('bt'), { fast, slow, symbol: BT_SYMBOL, venue: BT_VENUE, ttlMs: 30_000, interval });
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DATA = join(HERE, 'data');
@@ -32,15 +40,15 @@ function studyInterval(interval: CandleInterval): { rows: Row[]; isBH: number; o
   const oosP = slice(prep, splitAt, bars.length);
   const rows: Row[] = COMBOS.map((c) => ({
     fast: c.fast, slow: c.slow,
-    is: runBacktest(isP, { ...c, interval }, { feeBps: FEE_BPS }),
-    oos: runBacktest(oosP, { ...c, interval }, { feeBps: FEE_BPS }),
+    is: runBacktest(isP, makeEma(c.fast, c.slow, interval), { feeBps: FEE_BPS }),
+    oos: runBacktest(oosP, makeEma(c.fast, c.slow, interval), { feeBps: FEE_BPS }),
   }));
   // Decisive robustness check (per the methodology audit): re-run the grid at ZERO fees. If no combo
   // is positive in BOTH IS and OOS even with no transaction cost, the no-edge verdict cannot be a
   // fee/cost artifact — it is the strategy itself.
   const posBoth0 = COMBOS.filter((c) =>
-    runBacktest(isP, { ...c, interval }, { feeBps: 0 }).returnPct > 0 &&
-    runBacktest(oosP, { ...c, interval }, { feeBps: 0 }).returnPct > 0,
+    runBacktest(isP, makeEma(c.fast, c.slow, interval), { feeBps: 0 }).returnPct > 0 &&
+    runBacktest(oosP, makeEma(c.fast, c.slow, interval), { feeBps: 0 }).returnPct > 0,
   ).length;
   return {
     rows,
@@ -66,8 +74,8 @@ describe('EMA-cross backtest — sanity', () => {
     for (let i = 0; i < 60; i++) push(100 + i * (150 / 59)); // 100 -> 250 (golden cross -> buy)
     for (let i = 0; i < 60; i++) push(250 - i * (150 / 59)); // 250 -> 100 (death cross -> sell)
     const prep = prepare(bars, '1m');
-    const free = runBacktest(prep, { fast: 5, slow: 21, interval: '1m' }, { feeBps: 0 });
-    const fee = runBacktest(prep, { fast: 5, slow: 21, interval: '1m' }, { feeBps: 50 });
+    const free = runBacktest(prep, makeEma(5, 21, '1m'), { feeBps: 0 });
+    const fee = runBacktest(prep, makeEma(5, 21, '1m'), { feeBps: 50 });
     expect(free.fills).toBeGreaterThanOrEqual(2); // at least one full round-trip (buy + sell)
     expect(free.trades).toBeGreaterThanOrEqual(1);
     expect(free.pnl).toBeGreaterThan(0); // bought in the rise, sold in the fall => profit at zero fee

@@ -36,6 +36,17 @@ Run all docker/test commands sandbox-disabled (the bash sandbox spuriously fails
 
 ## Improvement backlog (analyze, then pick ONE per run)
 
+> **2026-06-15 nightly update** — authoritative backlog now lives in `nightly-2026-06-15.md` §9. Headlines:
+> - **TOP (new, safety/operational):** periodic 30 s venue-truth reconciliation silently not completing on testnet
+>   (`reconTs=0`, `reconciliation_runs_total` empty) — a swallowed `fetchOpenOrders`/`fetchBalance` throw
+>   (`app.module.ts:646-647,663`). Pre-existing (not introduced by the research pass). Fix + regression test + alert.
+> - **EMA-cross** edge: CLOSED (160-config study). **Plain z-score mean-reversion** edge: CLOSED tonight (0/48 OOS;
+>   6/48 at zero fees). Both via the now-generalized harness (drives any `Strategy` via a factory).
+> - Next edge candidates (each needs its own disciplined OOS study, no re-tuning closed forms): maker-rebate /
+>   marketable-LIMIT capture (needs a resting-limit/queue fill model in the harness); regime-conditioned reversion;
+>   cross-asset/pairs (needs multi-asset harness support).
+> - Still-latent non-PnL (verified safe): E2/E3 `evaluate.ts:209` overflow (unreachable); paper `makerBps` 1→10 typo.
+
 - **[LEAD] `SIZING_REJECTED:BELOW_MINIMUM` (10×+ in logs)** — orders rejected below venue `minNotional`, so the bot places almost nothing → ~zero P&L upside. Investigate `BASE_NOTIONAL` / position-sizer config vs Binance testnet `minNotional` (~$5–10 for BTC/USDT). Raising configured order notional (or honoring venue minNotional in sizing) would unblock trading. Correctness/throughput win, directly enables P&L. **A bot that can't place orders has zero P&L.**
 - `DemoFillPollerService.since` never advances (re-fetches all post-boot trades; inefficient; also the poison-message recovery gap).
 - `src/domain/paper/fill.ts:25` fee `base.mul(feeBps).div(10_000)` — same un-rounded class as tonight's avgEntry fix (latent; paper path).

@@ -1,20 +1,20 @@
 {
-  "last_good": "paper-2026-06-14",
-  "updated_at": "2026-06-14T17:14:01Z",
+  "last_good": "paper-2026-06-15",
+  "updated_at": "2026-06-15T11:00:00Z",
   "deploy": {
-    "tag": "paper-2026-06-14",
-    "paper_merge_commit": "95a6af0",
-    "fix_commit": "34bf2b1",
-    "image_sha256": "bd7f0096e2cc",
-    "boot_id": "cba63e28-d4e4-4e78-b8a5-5d5a6e19998b",
-    "deployed_at": "2026-06-14T16:58:59Z",
+    "tag": "paper-2026-06-15",
+    "paper_merge_commit": "7691586",
+    "fix_commit": "7691586",
+    "image_sha256": "d34cb4dc4ee7",
+    "boot_id": "63b9474a-8504-4691-9086-425dfaaf1239",
+    "deployed_at": "2026-06-15T10:39:14Z",
     "mode": "testnet",
     "health_verdict": "HEALTHY",
-    "method": "docker compose build app && docker compose up -d app (app-only; postgres/prometheus/grafana untouched)"
+    "method": "cold start (no prior containers/volumes — prior /loop down -v wiped them): docker compose build app && docker compose up -d app; deps came up via depends_on; fresh crypto-bot_postgres_data created; migrations auto-applied. Host port remapped 3000->3100 for this deploy (unrelated ICPC backend held :3000); tracked docker-compose.yml restored to 3000:3000, running container on 3100."
   },
   "verification": {
-    "regression_test": "PASS — RED (MoneyError[PRECISION_OVERFLOW], 35 dp) -> GREEN (avgEntry rounded to 18 dp, exact string)",
-    "gate": "build+lint+typecheck+test(838)+test:paper(9)+test:livegate+test:cov all green",
-    "soak": "PASS — 6 samples over ~13 min: healthy, RestartCount=0, /health/ready 200 (testnet+RUNNING+db up), open_orders=0, in_flight_intents=0, precision_overflow=0 throughout; live add-to-position fill ingested clean (avgEntry rounded to 18 dp, minted without overflow)"
+    "regression_test": "N/A — research-only night (zero src/ change). Faithfulness proof = the generalized harness reproduces backtest-study.md BYTE-IDENTICALLY (empty git diff). Mean-reversion verdict adversarially audited (5 lenses, 0 critical findings).",
+    "gate": "build+lint+typecheck+test(844 unit/livegate)+test:paper(9) all green on 7691586 (clean .env-free cwd, TRADING_MODE=paper). test:cov not required — no coverage-gated src/ zone touched (changes confined to off-gate test/backtest/).",
+    "soak": "PASS (HEALTHY) — 7 samples over ~18 min: running, RestartCount=0, /health/ready 200 (testnet+RUNNING+db up) throughout; full round-trip completed (BUY+SELL), then a fresh BUY — 3 fills BUY->SELL->BUY; END STATE holding ~$100 long (0.00151545 BTC @ 65937.52, cash 4899.84, no resting orders — open/in-flight 0/0), which is normal continued trading; PRECISION_OVERFLOW 0, 0 error/warn logs. CAVEAT: periodic venue-truth reconciler did not record a clean pass (reconTs=0, runs counter empty; reconciliation_mismatch=0 is vacuous — counter never reached) — PRE-EXISTING (same code as paper-2026-06-14), silently-swallowed venue call; logged as top backlog follow-up, not a regression or HALT."
   }
 }

@@ -29,6 +29,9 @@ import { FillRepository } from '../../src/modules/persistence/repositories/fill.
 import { DrizzleExecutionStore } from '../../src/modules/persistence/repositories/drizzle-execution-store';
 import { RiskDecisionRepository } from '../../src/modules/persistence/repositories/risk-decision.repository';
 import { SignalRepository } from '../../src/modules/persistence/repositories/signal.repository';
+import { AgentDecisionRepository } from '../../src/modules/persistence/repositories/agent-decision.repository';
+import { AgentDecisionJournalAdapter } from '../../src/modules/persistence/repositories/agent-decision-journal.adapter';
+import { PlaybookStoreAdapter } from '../../src/modules/persistence/repositories/playbook-store.adapter';
 import Decimal from 'decimal.js';
 import { price, qty } from '../../src/domain/types/money';
 import { venueId, symbolId, clientOrderId, strategyId, epochMs } from '../../src/domain/types/ids';
@@ -111,6 +114,8 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
     );
     const tables = result.rows.map((r) => r.tablename);
     const expected = [
+      'agent_decisions',
+      'agent_playbook_versions',
       'audit_log',
       'balances',
       'config_snapshots',
@@ -706,5 +711,129 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
       VALUES ('intent-oe-1','dk-smoke','SUBMITTED','{}',2,'paper','r1','b1')`;
     await pool.query(insert);
     await expect(pool.query(insert)).rejects.toThrow(/unique|duplicate/i);
+  });
+
+  // ── (j) Agentic persistence — decision journal + playbook store ──────────
+  // NOTE: these run in THIS file (not a separate test/db/*.spec.ts) deliberately — Vitest's
+  // fileParallelism defaults to true, and a second file with its own DROP SCHEMA CASCADE +
+  // migrate() in beforeAll would race this suite's identical reset. Reusing the already-migrated
+  // `db`/`pool` here avoids that hazard entirely.
+  it('(j) agent_decisions round-trips exact decimal strings; AgentDecisionJournalAdapter.recent() maps branded types oldest→newest', async () => {
+    const repo = new AgentDecisionRepository(db);
+    const base = {
+      strategyId: 'agentic-dt-1',
+      symbol: 'BTC/USDT',
+      venue: 'binance',
+      triggerKind: 'candle' as const,
+      basedOnSeq: 42n,
+      model: 'claude-opus-4-8',
+      action: 'long' as const,
+      confidence: 0.82,
+      rationale: 'trend + momentum confluence',
+      refPrice: '50000.123456789012345678',
+      close: '50000.123456789012345678',
+      inputTokens: 512,
+      outputTokens: 64,
+      latencyMs: 850,
+      playbookVersion: 1,
+    };
+    await repo.insert({ ...base, eventTime: 1_700_000_500_000, promptHash: 'hash-dt-1' });
+    await repo.insert({ ...base, eventTime: 1_700_000_600_000, promptHash: 'hash-dt-2' });
+    // Two rows sharing the same eventTime: the desc(id) tiebreak (id is the insertion-ordered PK)
+    // must resolve them in insertion order, matching InMemoryAgentDecisionJournal's plain
+    // append-order — not whatever order Postgres happens to return same-eventTime rows in.
+    await repo.insert({ ...base, eventTime: 1_700_000_700_000, promptHash: 'hash-dt-3a' });
+    await repo.insert({ ...base, eventTime: 1_700_000_700_000, promptHash: 'hash-dt-3b' });
+
+    const adapter = new AgentDecisionJournalAdapter(db);
+    const rows = await adapter.recent(500);
+    const ours = rows.filter((r) => r.promptHash === 'hash-dt-1' || r.promptHash === 'hash-dt-2');
+    expect(ours).toHaveLength(2);
+    // oldest→newest
+    expect(ours[0]!.promptHash).toBe('hash-dt-1');
+    expect(ours[1]!.promptHash).toBe('hash-dt-2');
+    expect(ours[0]!.refPrice).toBe(pad18('50000.123456789012345678'));
+    expect(ours[0]!.strategyId).toBe('agentic-dt-1');
+    expect(typeof ours[0]!.id).toBe('string');
+
+    const tied = rows.filter((r) => r.promptHash === 'hash-dt-3a' || r.promptHash === 'hash-dt-3b');
+    expect(tied.map((r) => r.promptHash)).toEqual(['hash-dt-3a', 'hash-dt-3b']);
+  });
+
+  it('(j) playbook store: current() lazily seeds the row on first call when absent', async () => {
+    const seed = { version: 1001, content: 'seed-1001' };
+    const store = new PlaybookStoreAdapter(db, seed);
+    await expect(store.current()).resolves.toEqual({ ...seed, source: 'seed' });
+
+    // A second adapter instance against the same seed version resolves the persisted row
+    // rather than re-attempting (and racing) the insert.
+    const store2 = new PlaybookStoreAdapter(db, seed);
+    await expect(store2.current()).resolves.toEqual({ ...seed, source: 'seed' });
+  });
+
+  it('(j) playbook store: append() assigns monotonically increasing versions', async () => {
+    const seed = { version: 2001, content: 'seed-2001' };
+    const store = new PlaybookStoreAdapter(db, seed);
+    await store.current(); // materializes the seed row first
+    const a = await store.append('draft a', 'reflection', seed.version);
+    const b = await store.append('draft b', 'reflection', seed.version);
+    expect(b.version).toBe(a.version + 1);
+  });
+
+  it('(j) playbook store: promotion activates its parentVersion target, pin overrides it, and the partial unique index allows only one promotion per UTC day', async () => {
+    const seed = { version: 3001, content: 'seed-3001' };
+    const seedStore = new PlaybookStoreAdapter(db, seed);
+    await seedStore.current(); // materializes the seed row
+    const draft = await seedStore.append('reflection draft 3001', 'reflection', seed.version);
+    await seedStore.append('promotion note', 'promotion', draft.version);
+
+    // Promotion resolution: a FRESH adapter instance (boot-resolution is per-instance) activates
+    // the promoted draft's content, not the promotion row's own content.
+    const freshStore = new PlaybookStoreAdapter(db, seed);
+    await expect(freshStore.current()).resolves.toEqual({
+      version: draft.version,
+      content: 'reflection draft 3001',
+      source: 'promotion',
+    });
+
+    // Pin overrides promotion resolution when the pinned row exists.
+    const pinnedStore = new PlaybookStoreAdapter(db, seed, seed.version);
+    await expect(pinnedStore.current()).resolves.toEqual({ ...seed, source: 'pin' });
+
+    // A second promotion the same UTC day is rejected by the partial unique index.
+    await expect(seedStore.append('second promotion', 'promotion', seed.version)).rejects.toThrow(
+      /unique|duplicate/i,
+    );
+  });
+
+  it('(j) playbook store: a promotion dated the next UTC day is allowed even though a same-day second promotion is blocked', async () => {
+    const seed = { version: 4001, content: 'seed-4001' };
+    const store = new PlaybookStoreAdapter(db, seed);
+    await store.current(); // materializes the seed row
+
+    // The promotion-per-UTC-day partial unique index is table-wide, not scoped per seed/version
+    // (see agent_playbook_versions_promotion_per_day_uidx in trading.schema.ts), and the preceding
+    // test in this file already committed a same-day promotion row. Clear it so this test's own
+    // day-1 insert below starts from zero same-day promotion rows (source='promotion' is an
+    // insert-only-by-convention row, not append-only-hardened like audit_log/order_events, so a
+    // test-scoped DELETE here is legal).
+    await pool.query(`DELETE FROM public.agent_playbook_versions WHERE source = 'promotion'`);
+
+    const day1 = await store.append('promotion note day 1', 'promotion', seed.version);
+
+    // Same UTC day: rejected (already covered generally above; re-asserted here for locality
+    // against this test's own seed range).
+    await expect(store.append('promotion note day 1b', 'promotion', seed.version)).rejects.toThrow(
+      /unique|duplicate/i,
+    );
+
+    // append() always stamps created_at via now(); simulating "the next day" requires an explicit
+    // created_at, so this row is inserted directly rather than through the store.
+    const result = await pool.query(
+      `INSERT INTO public.agent_playbook_versions (version, content, source, parent_version, created_at)
+       VALUES ($1, $2, 'promotion', $3, now() + interval '1 day')`,
+      [day1.version + 1, 'promotion note day 2', seed.version],
+    );
+    expect(result.rowCount).toBe(1);
   });
 });

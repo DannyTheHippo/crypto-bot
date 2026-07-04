@@ -5,6 +5,7 @@ import {
   Logger,
   type OnApplicationBootstrap,
   type OnModuleDestroy,
+  type OnModuleInit,
 } from '@nestjs/common';
 import { randomBytes, createHash } from 'node:crypto';
 import type { Exchange } from 'ccxt';
@@ -67,13 +68,52 @@ import {
 } from './modules/trading/teeing-market-stream';
 import { DemoFillPollerService } from './modules/execution/demo-fill-poller.service';
 import { ModeControlService } from './modules/mode-control/mode-control.service';
-import { EmaCrossStrategy, type EmaCrossParams } from './domain/strategy/ema-cross.strategy';
 import {
-  DonchianBreakoutStrategy,
-  type DonchianBreakoutParams,
-} from './domain/strategy/donchian-breakout.strategy';
+  AgenticStrategyModule,
+  AGENT_LLM_BUDGET,
+  PLAYBOOK_PROVIDER_OVERRIDE,
+  AGENT_TRADING_PROFILE_OVERRIDE,
+  REFLECTION_SERVICE,
+  REFLECTION_METRICS_RECORDER_OVERRIDE,
+  SEED_PLAYBOOK,
+} from './modules/agentic-strategy/agentic-strategy.module';
+import type { DailyLlmBudget } from './modules/agentic-strategy/agent-budget';
+import { ReflectionService } from './modules/agentic-strategy/reflection.service';
+import {
+  AgenticStrategy,
+  type AgenticStrategyParams,
+  type AgenticStrategyDeps,
+} from './modules/agentic-strategy/agentic.strategy';
+import { assertAgenticLaneNotLive } from './modules/agentic-strategy/agentic-live-interlock';
+import { validatePlaybook } from './modules/agentic-strategy/playbook-validator';
+import {
+  AGENT_CLIENT,
+  AGENT_DECISION_JOURNAL,
+  PLAYBOOK_PROVIDER,
+  AgentProposeError,
+  type AgentClientPort,
+  type AgentDecisionInput,
+  type AgentDecisionJournalPort,
+  type AgentProposal,
+  type AgentTradingProfile,
+  type PlaybookProvider,
+  type SymbolConstraints,
+} from './ports/agentic-strategy';
+import {
+  AgentMetricsRecorder,
+  type AgentDecideOutcome,
+} from './modules/observability/agent-metrics-recorder.service';
+import { AgentDecisionJournalAdapter } from './modules/persistence/repositories/agent-decision-journal.adapter';
+import { InMemoryAgentDecisionJournal } from './modules/persistence/repositories/in-memory-agent-decision-journal';
+import {
+  PlaybookStoreAdapter,
+  type PlaybookVersionEntry,
+} from './modules/persistence/repositories/playbook-store.adapter';
+import { InMemoryPlaybookStore } from './modules/persistence/repositories/in-memory-playbook-store';
+import { price, qty } from './domain/types/money';
+import type { SymbolFilters } from './domain/risk/evaluate';
+import { DEFAULT_FILTERS } from './domain/risk/default-filters';
 import type { CandleInterval } from './domain/types/market-events';
-import Decimal from 'decimal.js';
 import type { VenueConfig, VenueEnvironment } from './ports/app-config';
 import { ModeControlModule } from './modules/mode-control/mode-control.module';
 import {
@@ -93,6 +133,7 @@ import {
   RISK_LIMITS,
   RISK_JOURNAL_OVERRIDE,
   type RiskJournalPort,
+  type KillSwitchPort,
 } from './ports/risk';
 import { validateLimits, type PartialRiskLimits } from './domain/risk/limits';
 import { EXCHANGE_PORT, type ExchangePort } from './ports/exchange';
@@ -155,6 +196,20 @@ class DbHealthBridgeModule {}
   exports: [PORTFOLIO_VIEW],
 })
 class PortfolioViewBridgeModule {}
+
+// Lifts STRATEGY_REGISTRY into the global DI scope so ObservabilityModule's MetricsService (per-strategy
+// strategy_lifecycle sampling) and HealthController (ready() strategies detail) resolve it via
+// @Optional() @Inject(STRATEGY_REGISTRY) without an observability→app-root import (the boundary wall
+// runs the other way — modules must not import the composition root). Unlike DbHealthBridgeModule/
+// PortfolioViewBridgeModule, StrategyRegistry has no owning sub-module to re-export from: it is the
+// composition root's own service, so this bridge provides (not just re-exports) it — AppModule imports
+// this module instead of declaring StrategyRegistry as a local provider, keeping exactly one instance.
+@Global()
+@Module({
+  providers: [StrategyRegistry, { provide: STRATEGY_REGISTRY, useExisting: StrategyRegistry }],
+  exports: [StrategyRegistry, STRATEGY_REGISTRY],
+})
+class StrategyRegistryBridgeModule {}
 
 // §7: persistence runtime overrides. When DATABASE_URL is configured AND not under test/ci, the
 // execution/mode-control ports are backed by the Drizzle repositories — durable order/fill journal,
@@ -337,7 +392,7 @@ class KeyProbeModule {}
 const DEFAULT_PAPER_CONFIG: PaperConfig = {
   seed: 1,
   takerBuffer: '0.05',
-  fees: { makerBps: '1', takerBps: '10', feeCurrency: 'quote' },
+  fees: { makerBps: '10', takerBps: '10', feeCurrency: 'quote' },
   latency: { submitMs: [0, 0], eventMs: [0, 0] },
   insufficientDepthPolicy: 'partial_then_reject_rest',
   startingBalances: { USDT: '100000' },
@@ -563,6 +618,215 @@ const MD_EXCHANGE = Symbol('MD_EXCHANGE');
 })
 class MarketFeedModule {}
 
+// Composition-root shape for the write side of the playbook store (append/listVersions) — neither
+// PlaybookStoreAdapter nor InMemoryPlaybookStore share a formal port for it yet (reflection/promotion,
+// G4a/G4b, will need one); both classes already satisfy this shape structurally, so this is just the
+// type PLAYBOOK_PROVIDER_OVERRIDE's binding below is typed against, without a premature port addition
+// to ports/agentic-strategy.ts.
+interface PlaybookStorePort extends PlaybookProvider {
+  append(
+    content: string,
+    source: 'reflection' | 'promotion',
+    parentVersion: number,
+  ): Promise<{ version: number }>;
+  listVersions(limit: number): Promise<readonly PlaybookVersionEntry[]>;
+}
+
+// Composition-root tripwire wrapping the resolved playbook store's READ side only: the playbook is
+// untrusted, previously-model-authored content (see playbook-validator.ts's header comment).
+// AnthropicAgentClient re-validates on every call regardless (defense in depth); this wrapper
+// additionally surfaces a rejection to Prometheus (recordValidatorRejection) and guarantees the LLM
+// always receives SOME playbook (SEED_PLAYBOOK) rather than the client's own tripwire, which silently
+// composes no playbook at all. append/listVersions pass through unvalidated — validation only gates
+// what reaches the LLM prompt, never the store's write side (reflection/promotion write raw content).
+class ValidatingPlaybookProvider implements PlaybookStorePort {
+  constructor(
+    private readonly inner: PlaybookStorePort,
+    private readonly recorder: AgentMetricsRecorder,
+  ) {}
+
+  async current(): Promise<{
+    version: number;
+    content: string;
+    source?: 'pin' | 'promotion' | 'seed';
+  }> {
+    const stored = await this.inner.current();
+    const validation = validatePlaybook(stored.content);
+    if (!validation.ok) {
+      this.recorder.recordValidatorRejection(validation.bannedTokenHit ?? false);
+      return { ...SEED_PLAYBOOK, source: 'seed' };
+    }
+    return stored;
+  }
+
+  append(
+    content: string,
+    source: 'reflection' | 'promotion',
+    parentVersion: number,
+  ): Promise<{ version: number }> {
+    return this.inner.append(content, source, parentVersion);
+  }
+
+  listVersions(limit: number): Promise<readonly PlaybookVersionEntry[]> {
+    return this.inner.listVersions(limit);
+  }
+}
+
+// SymbolFilters (venue rounding rules Risk/Execution enforce, see domain/risk/default-filters.ts) →
+// SymbolConstraints (the agentic port's own name for the identical shape — ports/agentic-strategy.ts).
+function symbolConstraintsFor(symbol: string): SymbolConstraints | undefined {
+  const filters: SymbolFilters | undefined = DEFAULT_FILTERS.get(symbol);
+  if (!filters) return undefined;
+  return {
+    tickSize: price(filters.tickSize),
+    lotStep: qty(filters.stepSize),
+    minNotional: price(filters.minNotional),
+  };
+}
+
+// The agentic lane's own commercial profile (folded into its system prompt — see
+// AnthropicAgentClientConfig.profile), built from the SAME sources Risk/paper fees use rather than a
+// second, independently-tunable copy: maxOrderNotional is read live off RISK_LIMITS (RiskModule's
+// DEFAULT_LIMITS, exported for exactly this single-source-of-truth read — see LimitsCompleteModule
+// above); baseNotional mirrors risk.module.ts's (unexported) baseNotionalFor — same BASE_NOTIONAL env
+// var, same '1000' default; maker/takerBps mirror DEFAULT_PAPER_CONFIG.fees below (§1.5) — the actual
+// fee schedule the paper adapter charges, not the retired pure-lane prompt's hardcoded ~20bps taker
+// guess (no such shared constant exists elsewhere in the codebase).
+function agentTradingProfileFor(symbol: string, limits: PartialRiskLimits): AgentTradingProfile {
+  return {
+    makerBps: DEFAULT_PAPER_CONFIG.fees.makerBps,
+    takerBps: DEFAULT_PAPER_CONFIG.fees.takerBps,
+    baseNotional: process.env['BASE_NOTIONAL'] ?? '1000',
+    maxOrderNotional: limits.maxOrderNotional ?? '100000',
+    constraints: symbolConstraintsFor(symbol) ?? {
+      tickSize: price('0.01'),
+      lotStep: qty('0.0001'),
+      minNotional: price('10'),
+    },
+  };
+}
+
+// Composition-root decorator recording agentic-lane decide() telemetry (G3b's AgentMetricsRecorder)
+// around whichever AgentClientPort AgenticStrategyModule resolved (stub / budgeted-Anthropic) — kept
+// OUTSIDE that module so it can depend on ObservabilityModule (the boundary wall runs the other way).
+// Wrapped in AppModule's constructor body rather than re-provided under the AGENT_CLIENT token: Nest
+// has no way to inject "the imported AGENT_CLIENT specifically" from a scope that ALSO re-provides
+// that exact token locally (the local provider would shadow — and thus self-reference — the import
+// it's trying to wrap), so this wraps at the point of consumption instead of via a second DI binding.
+class MetricsWrappingAgentClient implements AgentClientPort {
+  constructor(
+    private readonly inner: AgentClientPort,
+    private readonly recorder: AgentMetricsRecorder,
+    private readonly budget: DailyLlmBudget,
+  ) {}
+
+  async propose(input: AgentDecisionInput): Promise<AgentProposal> {
+    const started = Date.now();
+    try {
+      const proposal = await this.inner.propose(input);
+      this.recorder.observeDecideLatency((Date.now() - started) / 1000);
+      if (proposal.usage) {
+        this.recorder.recordTokens(proposal.usage.inputTokens, proposal.usage.outputTokens);
+      }
+      this.recorder.recordDecide(this.outcomeForProposal(proposal));
+      return proposal;
+    } catch (err) {
+      this.recorder.observeDecideLatency((Date.now() - started) / 1000);
+      this.recorder.recordDecide(this.outcomeForError(err));
+      throw err;
+    }
+  }
+
+  // AgentProposeError carries only RETRYABLE|FATAL (ports/agentic-strategy.ts) — no distinct TIMEOUT
+  // kind, and string-matching the message to detect an aborted call would violate the very reason
+  // AgentProposeError exists (branch on kind, never on message text). 'timeout' is therefore never
+  // emitted here; a timed-out call surfaces as error_retryable like any other transient failure.
+  private outcomeForError(err: unknown): AgentDecideOutcome {
+    if (err instanceof AgentProposeError) {
+      return err.kind === 'FATAL' ? 'error_fatal' : 'error_retryable';
+    }
+    return 'error_retryable';
+  }
+
+  // A proposal with no client-supplied decision and no signals is either a genuine soft no-op (stub
+  // client, malformed response, refusal — see anthropic-agent-client.ts) or the budget gate's inert
+  // `{ signals: [] }` short-circuit (agent-budget.ts) — the two are indistinguishable from the
+  // proposal shape alone, so the budget snapshot (read AFTER propose() resolves, reflecting whether
+  // THIS call's reservation attempt was the one that failed) breaks the tie.
+  private outcomeForProposal(proposal: AgentProposal): AgentDecideOutcome {
+    if (!proposal.decision) {
+      let exhausted = false;
+      try {
+        exhausted = this.budget.snapshot().exhausted;
+      } catch {
+        /* metrics must never throw into a trading path */
+      }
+      return proposal.signals.length === 0 && exhausted ? 'budget_blocked' : 'hold';
+    }
+    return proposal.decision.action === 'hold' ? 'hold' : 'proposed';
+  }
+}
+
+// §7 (agentic lane), same test/ci-forces-in-memory backstop as DrizzlePersistenceGlobalModule above,
+// scoped to the agentic decision journal + playbook store + trading profile rather than
+// execution/mode-control — kept as its own bridge (not folded into DrizzlePersistenceGlobalModule)
+// because these bindings also need ObservabilityModule (AgentMetricsRecorder, for the playbook
+// validator tripwire) and RiskModule (RISK_LIMITS, for the trading profile), dependencies the
+// execution/mode-control overrides don't share. RiskModule is already imported by AppModule's own
+// imports below; Nest resolves a statically-imported module class once and shares the instance across
+// every importer (same precedent as LimitsCompleteModule's own `imports: [RiskModule]` above).
+@Global()
+@Module({
+  imports: [PersistenceModule, ObservabilityModule, RiskModule],
+  providers: [
+    {
+      provide: AGENT_DECISION_JOURNAL,
+      useFactory: (db: NodePgDatabase<typeof schema> | null): AgentDecisionJournalPort =>
+        isTestEnv() || db === null
+          ? new InMemoryAgentDecisionJournal()
+          : new AgentDecisionJournalAdapter(db),
+      inject: [DRIZZLE_DB],
+    },
+    {
+      // Bound under its own token (not directly to PLAYBOOK_PROVIDER, which AgenticStrategyModule owns)
+      // so the write side (append/listVersions) stays reachable for reflection/promotion (G4a/G4b)
+      // alongside the validated read side AgenticStrategyModule's PLAYBOOK_PROVIDER factory consumes
+      // via PLAYBOOK_PROVIDER_OVERRIDE (see that token's own comment).
+      provide: PLAYBOOK_PROVIDER_OVERRIDE,
+      useFactory: (
+        db: NodePgDatabase<typeof schema> | null,
+        config: ConfigService<AppConfig, true>,
+        recorder: AgentMetricsRecorder,
+      ): PlaybookStorePort => {
+        const pin = config.get('agentic', { infer: true }).playbookPin;
+        const store =
+          isTestEnv() || db === null
+            ? new InMemoryPlaybookStore(SEED_PLAYBOOK, pin)
+            : new PlaybookStoreAdapter(db, SEED_PLAYBOOK, pin);
+        return new ValidatingPlaybookProvider(store, recorder);
+      },
+      inject: [DRIZZLE_DB, ConfigService, AgentMetricsRecorder],
+    },
+    {
+      provide: AGENT_TRADING_PROFILE_OVERRIDE,
+      useFactory: (limits: PartialRiskLimits): AgentTradingProfile =>
+        agentTradingProfileFor(process.env['TRADING_SYMBOL'] ?? 'BTC/USDT', limits),
+      inject: [RISK_LIMITS],
+    },
+    // G4a: lets ReflectionService (modules/agentic-strategy, which cannot import modules/observability
+    // — the boundary wall) record validator-rejection tripwires through its own LOCAL structural type
+    // rather than the concrete class. Same useExisting pattern the DB_HEALTH/PORTFOLIO_VIEW bridges use.
+    { provide: REFLECTION_METRICS_RECORDER_OVERRIDE, useExisting: AgentMetricsRecorder },
+  ],
+  exports: [
+    AGENT_DECISION_JOURNAL,
+    PLAYBOOK_PROVIDER_OVERRIDE,
+    AGENT_TRADING_PROFILE_OVERRIDE,
+    REFLECTION_METRICS_RECORDER_OVERRIDE,
+  ],
+})
+class AgenticCompositionBridgeModule {}
+
 // Trading composition (Strategy→Risk→Execution→Paper). SignalSinkService bridges the gateway to
 // the execution gate; the StrategyHost is pointed at it when MarketData drives the host live
 // (final integration, runtime — FEED_HEALTH is the no-op default until then).
@@ -572,6 +836,8 @@ class MarketFeedModule {}
     DbHealthBridgeModule,
     DrizzlePersistenceGlobalModule,
     PortfolioViewBridgeModule,
+    StrategyRegistryBridgeModule,
+    AgenticCompositionBridgeModule,
     ObservabilityModule,
     SigningKeyModule,
     KillSwitchModule,
@@ -582,6 +848,7 @@ class MarketFeedModule {}
     ExecutionModule,
     PaperExchangeModule,
     MarketFeedModule,
+    AgenticStrategyModule,
   ],
   // SignalSinkService and HaltCoordinatorService live at the composition root because they bridge
   // Risk and Execution: each injects ports RiskModule exports (SIGNAL_GATEWAY / RISK_ENGINE +
@@ -589,13 +856,12 @@ class MarketFeedModule {}
   // is composed here too: it binds SIGNAL_SINK to the real SignalSinkService (StrategyModule's no-op is
   // for isolation) and consumes the teeing MARKET_STREAM + shared FEED_HEALTH from MarketFeedModule.
   // TradingRuntimeService fires the whole loop at boot (non-test). A factory builds the host so its
-  // optional hrtimeFn ctor param is not a DI dependency.
+  // optional hrtimeFn ctor param is not a DI dependency. StrategyRegistry itself now lives in
+  // StrategyRegistryBridgeModule (global, see its own comment) rather than as a local provider here.
   providers: [
     SignalSinkService,
     SIGNAL_REJECTIONS_COUNTER,
     HaltCoordinatorService,
-    StrategyRegistry,
-    { provide: STRATEGY_REGISTRY, useExisting: StrategyRegistry },
     { provide: SIGNAL_SINK, useExisting: SignalSinkService },
     {
       provide: STRATEGY_HOST,
@@ -604,15 +870,45 @@ class MarketFeedModule {}
         fh: FeedHealthPort,
         sink: SignalSinkService,
         reg: StrategyRegistry,
-      ) => new StrategyHost(ms, fh, sink, reg),
-      inject: [MARKET_STREAM, FEED_HEALTH, SIGNAL_SINK, StrategyRegistry],
+        pv: PortfolioViewPort,
+        config: ConfigService<AppConfig, true>,
+        killSwitch: KillSwitchPort,
+      ) => {
+        const agentic = config.get('agentic', { infer: true });
+        return new StrategyHost(ms, fh, sink, reg, {
+          agentTimeoutMs: agentic.timeoutMs + 2_000, // backstop: client aborts first
+          minDecisionIntervalMs: agentic.minDecisionIntervalMs,
+          portfolioFor: (id) => pv.forStrategy(id),
+          tradingHalted: () => killSwitch.state() !== 'RUNNING',
+          constraintsFor: symbolConstraintsFor,
+          drainCooldownBaseMs: agentic.drainCooldownBaseMs,
+          drainCooldownMaxMs: agentic.drainCooldownMaxMs,
+          maxEntriesPerDay: agentic.maxEntriesPerDay,
+        });
+      },
+      inject: [
+        MARKET_STREAM,
+        FEED_HEALTH,
+        SIGNAL_SINK,
+        StrategyRegistry,
+        PORTFOLIO_VIEW,
+        ConfigService,
+        KILL_SWITCH,
+      ],
     },
   ],
 })
-export class AppModule implements OnApplicationBootstrap, OnModuleDestroy {
+export class AppModule implements OnModuleInit, OnApplicationBootstrap, OnModuleDestroy {
   private readonly log = new Logger('TradingRuntime');
   private readonly driverTimers: ReturnType<typeof setInterval>[] = [];
   private tradingSymbols: SymbolId[] = [];
+  // Wraps the raw AGENT_CLIENT with G3b metrics telemetry — see MetricsWrappingAgentClient's own
+  // comment for why this happens here rather than via a second DI binding under the same token.
+  private readonly agentClient: AgentClientPort;
+  // The raw (unwrapped) client's own class name, kept for the startup log line below — the wrapper's
+  // own constructor.name would otherwise mask which concrete client (stub/budgeted-Anthropic) got
+  // selected.
+  private readonly agentClientKind: string;
 
   constructor(
     @Inject(CLOCK) private readonly clock: ClockPort,
@@ -627,7 +923,39 @@ export class AppModule implements OnApplicationBootstrap, OnModuleDestroy {
     private readonly modeControl: ModeControlService,
     private readonly fillPoller: DemoFillPollerService,
     private readonly bootRecovery: BootRecoveryService,
-  ) {}
+    @Inject(AGENT_CLIENT) rawAgentClient: AgentClientPort,
+    private readonly agentMetrics: AgentMetricsRecorder,
+    @Inject(AGENT_LLM_BUDGET) agentBudget: DailyLlmBudget,
+    @Inject(AGENT_DECISION_JOURNAL) private readonly agentJournal: AgentDecisionJournalPort,
+    @Inject(PLAYBOOK_PROVIDER) private readonly playbookProvider: PlaybookProvider,
+    @Inject(REFLECTION_SERVICE) private readonly reflectionService: ReflectionService,
+  ) {
+    this.agentClient = new MetricsWrappingAgentClient(
+      rawAgentClient,
+      this.agentMetrics,
+      agentBudget,
+    );
+    this.agentClientKind = rawAgentClient.constructor.name;
+  }
+
+  // Resolves the active playbook version once at boot and surfaces it to Prometheus
+  // (agentic_playbook_info) and the boot log (§G4b activation journaling — which of pin/promotion/
+  // seed won) — independent of onApplicationBootstrap's test/ci skip below: this is boot-time
+  // observability trivia, not a periodic trading driver, so it runs unconditionally (the in-memory
+  // store resolves synchronously; the DB-backed store is never reached under test/ci —
+  // AgenticCompositionBridgeModule's own isTestEnv() gate). A resolution failure is logged, never
+  // thrown — it must not block boot.
+  async onModuleInit(): Promise<void> {
+    try {
+      const { version, source } = await this.playbookProvider.current();
+      this.agentMetrics.setPlaybookInfo(version);
+      this.log.log(`active playbook resolved: version=${version} source=${source ?? 'unknown'}`);
+    } catch (err) {
+      this.log.warn(
+        `playbook resolution failed at boot: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
 
   // §6/§8 periodic drivers — the runtime FIRING of logic unit-tested in isolation: the halt
   // coordinator and unknown-order resolver tick each second, equity samples every 5s, reconciliation
@@ -684,7 +1012,7 @@ export class AppModule implements OnApplicationBootstrap, OnModuleDestroy {
   // own orders with no WS user stream yet — the fill poller sweeps fetchMyTrades. Portfolio is logged
   // on a cadence so a run is observable. The only hard human gate stays paper→live.
   private async startTrading(mode: 'paper' | 'testnet' | 'live'): Promise<void> {
-    const params = this.strategyParams();
+    const params = this.agenticParams();
     this.tradingSymbols = [params.symbol];
 
     if (mode !== 'paper') {
@@ -701,30 +1029,35 @@ export class AppModule implements OnApplicationBootstrap, OnModuleDestroy {
     );
 
     // Strategy selection. ACTIVE_STRATEGY picks which registered strategy the host runs; it DEFAULTS to
-    // the validated 'ema-cross'. 'donchian-breakout' is a promoted Phase-1 experiment that did NOT clear
-    // the step-D validation gate (reports/nightly/long-battery-study.md) — selecting it runs an
-    // UNVALIDATED EXPERIMENT on the demo/testnet bot only. The live gate (PROMOTION.md) is unaffected:
-    // ModeControl + the four live gates still bind, and no unvalidated strategy can reach live.
-    const active = process.env['ACTIVE_STRATEGY'] ?? 'ema-cross';
-    this.registry.register('ema-cross', (id, p) => new EmaCrossStrategy(id, p as EmaCrossParams));
-    this.registry.register(
-      'donchian-breakout',
-      (id, p) => new DonchianBreakoutStrategy(id, p as DonchianBreakoutParams),
+    // 'agentic', the only registered lane. An unrecognized value fails loud at registry.enable
+    // (unknown strategy type) rather than silently falling back.
+    const active = process.env['ACTIVE_STRATEGY'] ?? 'agentic';
+    // onClosedTrade is built per-registered-instance (using the factory's own `id`, not a fixed
+    // literal) so a future second agentic registration would each wire the reflection loop's
+    // lifecycle check against ITS OWN strategy id (see ReflectionService.runReflection).
+    this.registry.register('agentic', (id, p) => {
+      const deps: AgenticStrategyDeps = {
+        journal: this.agentJournal,
+        onClosedTrade: (count) => this.reflectionService.onClosedTrade(id, count),
+      };
+      return new AgenticStrategy(id, p as AgenticStrategyParams, this.agentClient, deps);
+    });
+    // SAFETY INTERLOCK (hard, fail-loud at boot). The agentic lane is permanently EXPERIMENT-ONLY and
+    // must NEVER run in a live-configured process. Gate on the LITERAL enabled below ('agentic'), NOT
+    // on `active` — ACTIVE_STRATEGY only selects among registered types (an unrecognized value fails
+    // loud at registry.enable's "unknown strategy type" throw just below); it must never be able to
+    // pick its way around this interlock while the enable call still composes the agentic lane. Gate
+    // on the STATIC `mode` (= configMode, the boundary that binds the live adapter), NOT
+    // resolveMode().effective — which is always 'paper' here pre-arming and so would never fire. See
+    // assertAgenticLaneNotLive for the full rationale.
+    assertAgenticLaneNotLive('agentic', mode);
+
+    this.registry.enable(strategyId('agentic-1'), active, params);
+    this.log.warn(
+      `ACTIVE_STRATEGY=agentic — UNVALIDATED, NON-DETERMINISTIC EXPERIMENT (live in-process agent; ` +
+        `step-D-uncertifiable, never promote to live). ${params.symbol} ${params.interval} ` +
+        `warmupBars=${params.warmupBars} agentClient=${this.agentClientKind}`,
     );
-    if (active === 'donchian-breakout') {
-      const dp = this.donchianParams();
-      this.registry.enable(strategyId('donchian-1'), 'donchian-breakout', dp);
-      this.log.warn(
-        `ACTIVE_STRATEGY=donchian-breakout — UNVALIDATED EXPERIMENT (failed step-D, underperformed ema-cross ` +
-          `in backtest; never promote to live). ${dp.symbol} ${dp.interval} entry=${dp.entryLookback} ` +
-          `exit=${dp.exitLookback} baseNotional=${process.env['BASE_NOTIONAL'] ?? '1000'}`,
-      );
-    } else {
-      this.registry.enable(strategyId('ema-1'), 'ema-cross', params);
-      this.log.log(
-        `strategy ema-cross (validated default): ${params.symbol} ${params.interval} fast=${params.fast} slow=${params.slow} baseNotional=${process.env['BASE_NOTIONAL'] ?? '1000'}`,
-      );
-    }
 
     await this.host.start();
     this.log.log('strategy host started — consuming market data');
@@ -773,31 +1106,15 @@ export class AppModule implements OnApplicationBootstrap, OnModuleDestroy {
     );
   }
 
-  private strategyParams(): EmaCrossParams {
+  private agenticParams(): AgenticStrategyParams {
     const venue = this.config.get('venues', { infer: true })[0]?.id ?? 'binance';
-    const intEnv = (name: string, def: string): number =>
-      new Decimal(process.env[name] ?? def).toNumber();
+    const agentic = this.config.get('agentic', { infer: true });
     return {
       symbol: symbolId(process.env['TRADING_SYMBOL'] ?? 'BTC/USDT'),
       venue: venueId(venue),
-      fast: intEnv('EMA_FAST', '9'),
-      slow: intEnv('EMA_SLOW', '21'),
-      ttlMs: intEnv('SIGNAL_TTL_MS', '120000'),
       interval: (process.env['STRATEGY_INTERVAL'] ?? '1m') as CandleInterval,
-    };
-  }
-
-  private donchianParams(): DonchianBreakoutParams {
-    const venue = this.config.get('venues', { infer: true })[0]?.id ?? 'binance';
-    const intEnv = (name: string, def: string): number =>
-      new Decimal(process.env[name] ?? def).toNumber();
-    return {
-      symbol: symbolId(process.env['TRADING_SYMBOL'] ?? 'BTC/USDT'),
-      venue: venueId(venue),
-      entryLookback: intEnv('DONCHIAN_ENTRY', '20'),
-      exitLookback: intEnv('DONCHIAN_EXIT', '10'),
-      ttlMs: intEnv('SIGNAL_TTL_MS', '120000'),
-      interval: (process.env['STRATEGY_INTERVAL'] ?? '1m') as CandleInterval,
+      warmupBars: agentic.warmupBars,
+      model: agentic.model,
     };
   }
 }

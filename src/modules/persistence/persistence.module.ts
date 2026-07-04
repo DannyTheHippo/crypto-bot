@@ -23,6 +23,8 @@ import {
   FILL_REPO,
   SIGNAL_REPO,
   RISK_DECISION_REPO,
+  AGENT_DECISION_REPO,
+  PLAYBOOK_VERSION_REPO,
   OUTBOX,
   JOURNAL,
   CONFIG_SNAPSHOT_REPO,
@@ -38,6 +40,8 @@ import { OrderRepository } from './repositories/order.repository';
 import { FillRepository } from './repositories/fill.repository';
 import { SignalRepository } from './repositories/signal.repository';
 import { RiskDecisionRepository } from './repositories/risk-decision.repository';
+import { AgentDecisionRepository } from './repositories/agent-decision.repository';
+import { PlaybookVersionRepository } from './repositories/playbook-version.repository';
 import { OutboxRepository } from './repositories/outbox.repository';
 import { JournalRepository } from './repositories/journal.repository';
 import { ConfigSnapshotRepository } from './repositories/config-snapshot.repository';
@@ -90,6 +94,8 @@ const repoProviders: Provider[] = [
   { provide: FILL_REPO, useClass: FillRepository },
   { provide: SIGNAL_REPO, useClass: SignalRepository },
   { provide: RISK_DECISION_REPO, useClass: RiskDecisionRepository },
+  { provide: AGENT_DECISION_REPO, useClass: AgentDecisionRepository },
+  { provide: PLAYBOOK_VERSION_REPO, useClass: PlaybookVersionRepository },
   { provide: OUTBOX, useClass: OutboxRepository },
   { provide: JOURNAL, useClass: JournalRepository },
   { provide: CONFIG_SNAPSHOT_REPO, useClass: ConfigSnapshotRepository },
@@ -133,6 +139,8 @@ function isTestEnv(): boolean {
     FILL_REPO,
     SIGNAL_REPO,
     RISK_DECISION_REPO,
+    AGENT_DECISION_REPO,
+    PLAYBOOK_VERSION_REPO,
     OUTBOX,
     JOURNAL,
     CONFIG_SNAPSHOT_REPO,

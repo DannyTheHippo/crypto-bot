@@ -29,6 +29,23 @@ export interface AppConfig {
     url: string | undefined;
   };
   venues: readonly VenueConfig[];
+  // Agentic lane knobs, validated but not yet the read path (composition still reads process.env
+  // directly; a later pass switches it to ConfigService against these exact fields).
+  agentic: {
+    model: string;
+    timeoutMs: number;
+    maxTokens: number;
+    minDecisionIntervalMs: number;
+    warmupBars: number;
+    maxCallsPerDay: number;
+    maxTokensPerDay: number;
+    maxEntriesPerDay: number;
+    drainCooldownBaseMs: number;
+    drainCooldownMaxMs: number;
+    reflectionEveryNTrades: number;
+    // Absent means unpinned.
+    playbookPin?: number;
+  };
   // §10 live-mode secrets — present ONLY when the process did not boot under NODE_ENV=test/ci
   // (the schema strips them otherwise; CI has no in-code path that reaches a live credential).
   // Excluded from configHash by canonicalJsonWithoutSecrets. Read solely inside the live-adapter

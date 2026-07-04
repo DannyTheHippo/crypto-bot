@@ -5,6 +5,7 @@ import request from 'supertest';
 import { AppModule } from '../../../src/app.module';
 import { EXECUTION_GATE, PORTFOLIO_VIEW, INSTANCE_LOCK } from '../../../src/ports/execution';
 import { KILL_SWITCH } from '../../../src/ports/risk';
+import { REFLECTION_SERVICE } from '../../../src/modules/agentic-strategy/agentic-strategy.module';
 import {
   MODE_CONTROL,
   ModeViolationError,
@@ -41,6 +42,10 @@ describe('AppModule composition', () => {
       expect(app.get(EXCHANGE_PORT, { strict: false })).toBeDefined();
       expect(app.get(KILL_SWITCH, { strict: false })).toBeDefined(); // single global kill switch
       expect(app.get(INSTANCE_LOCK, { strict: false })).toBeDefined();
+      // G4a: REFLECTION_SERVICE resolves through the full DI graph (AGENT_LLM_BUDGET plus every
+      // @Global-bound optional token it depends on) even though startTrading() — which would wire
+      // AgenticStrategyDeps.onClosedTrade to it — never fires under test/ci.
+      expect(app.get(REFLECTION_SERVICE, { strict: false })).toBeDefined();
       // The Phase-6 OMS-hardening graph resolves: resolver/reconciliation/crash-recovery in
       // ExecutionModule, and the cross-module HaltCoordinator (RISK_ENGINE + POSITION_SIZER) at root.
       expect(app.get(UnknownResolverService, { strict: false })).toBeDefined();
@@ -69,14 +74,31 @@ describe('AppModule composition', () => {
       const ready = await request(server).get('/health/ready');
       expect(ready.status).toBe(200);
       const readyInfo = (
-        ready.body as { info: { config: { effectiveMode: string }; database: { detail: string } } }
+        ready.body as {
+          info: {
+            config: { effectiveMode: string; strategies?: Record<string, unknown> };
+            database: { detail: string };
+          };
+        }
       ).info;
       expect(readyInfo.config.effectiveMode).toBe('paper');
       expect(readyInfo.database.detail).toBe('not_configured'); // DB-less paper boots ready
+      // G3c: STRATEGY_REGISTRY is bridged into global scope, so the detail key is present (empty under
+      // test/ci — onApplicationBootstrap's startTrading(), which registers the agentic strategy, never
+      // fires there).
+      expect(readyInfo.config.strategies).toEqual({});
 
       const metrics = await request(server).get('/metrics');
       expect(metrics.status).toBe(200);
       expect(metrics.text).toContain('mode_info{requested="paper",effective="paper"}');
+      // G3c: the strategy_lifecycle gauge is registered (STRATEGY_REGISTRY bridge active) even though
+      // no labeled series exists yet under test/ci (the 5s sample loop hasn't ticked, and the registry
+      // is empty regardless).
+      expect(metrics.text).toContain('# TYPE strategy_lifecycle gauge');
+      // G3c: AppModule.onModuleInit resolves the playbook and records it at boot, unconditionally
+      // (not gated behind the test/ci skip that guards the periodic trading drivers) — SEED_PLAYBOOK
+      // is version 1.
+      expect(metrics.text).toContain('agentic_playbook_info{version="1"} 1');
     } finally {
       await app.close();
     }

@@ -1,0 +1,134 @@
+import { describe, it, expect } from 'vitest';
+import type { ConfigService } from '@nestjs/config';
+import {
+  selectAgentClient,
+  createAgentLlmBudget,
+  agenticEnv,
+  SEED_PLAYBOOK,
+} from '../../../src/modules/agentic-strategy/agentic-strategy.module';
+import { StubAgentClient } from '../../../src/modules/agentic-strategy/agent-client.adapter';
+import { AnthropicAgentClient } from '../../../src/modules/agentic-strategy/anthropic-agent-client';
+import { BudgetedAgentClient } from '../../../src/modules/agentic-strategy/agent-budget';
+import { validatePlaybook } from '../../../src/modules/agentic-strategy/playbook-validator';
+import type { AppConfig } from '../../../src/ports/app-config';
+
+describe('selectAgentClient', () => {
+  it('returns the inert StubAgentClient when no ANTHROPIC_API_KEY is configured', () => {
+    expect(selectAgentClient({})).toBeInstanceOf(StubAgentClient);
+  });
+
+  it('returns the StubAgentClient under NODE_ENV=test even with an API key present', () => {
+    const client = selectAgentClient({ ANTHROPIC_API_KEY: 'k', NODE_ENV: 'test' });
+
+    expect(client).toBeInstanceOf(StubAgentClient);
+  });
+
+  it('returns the StubAgentClient under CI even with an API key present', () => {
+    const client = selectAgentClient({ ANTHROPIC_API_KEY: 'k', CI: 'true' });
+
+    expect(client).toBeInstanceOf(StubAgentClient);
+  });
+
+  it('wires the concrete AnthropicAgentClient, budget-wrapped, when an API key is present outside test/CI', () => {
+    const client = selectAgentClient({ ANTHROPIC_API_KEY: 'k' });
+
+    expect(client).toBeInstanceOf(BudgetedAgentClient);
+    expect((client as BudgetedAgentClient).inner).toBeInstanceOf(AnthropicAgentClient);
+  });
+
+  it('the stub path stays unwrapped (unbudgeted, playbook-free)', () => {
+    const client = selectAgentClient({});
+
+    expect(client).not.toBeInstanceOf(BudgetedAgentClient);
+  });
+
+  it('shares the caller-supplied budget instance rather than constructing its own', () => {
+    const budget = createAgentLlmBudget({ AGENTIC_MAX_CALLS_PER_DAY: '3' });
+    const client = selectAgentClient({ ANTHROPIC_API_KEY: 'k' }, budget) as BudgetedAgentClient;
+
+    expect(client.budget).toBe(budget);
+  });
+
+  it('constructs without throwing when a custom playbookProvider is supplied (real wiring seam)', () => {
+    const playbookProvider = { current: () => Promise.resolve({ version: 9, content: 'x' }) };
+
+    expect(() =>
+      selectAgentClient({ ANTHROPIC_API_KEY: 'k' }, undefined, playbookProvider),
+    ).not.toThrow();
+  });
+
+  it('constructs without throwing when env overrides for model/timeout/tokens/ttl are supplied', () => {
+    // AnthropicAgentClientConfig is stored on a private field with no accessor, so this asserts the
+    // observable contract (construction succeeds, concrete adapter wired) rather than reaching into it.
+    expect(() =>
+      selectAgentClient({
+        ANTHROPIC_API_KEY: 'k',
+        AGENTIC_MODEL: 'claude-custom',
+        AGENTIC_TIMEOUT_MS: '9000',
+        AGENTIC_MAX_TOKENS: '2048',
+        SIGNAL_TTL_MS: '60000',
+      }),
+    ).not.toThrow();
+    const client = selectAgentClient({
+      ANTHROPIC_API_KEY: 'k',
+      AGENTIC_MODEL: 'claude-custom',
+      AGENTIC_TIMEOUT_MS: '9000',
+      AGENTIC_MAX_TOKENS: '2048',
+      SIGNAL_TTL_MS: '60000',
+    }) as BudgetedAgentClient;
+    expect(client).toBeInstanceOf(BudgetedAgentClient);
+    expect(client.inner).toBeInstanceOf(AnthropicAgentClient);
+  });
+});
+
+describe('createAgentLlmBudget', () => {
+  it('reads caps from AGENTIC_MAX_CALLS_PER_DAY / AGENTIC_MAX_TOKENS_PER_DAY, defaulting when absent', () => {
+    const defaulted = createAgentLlmBudget({});
+    expect(defaulted.snapshot()).toMatchObject({ maxCallsPerDay: 500, maxTokensPerDay: 2_000_000 });
+
+    const overridden = createAgentLlmBudget({
+      AGENTIC_MAX_CALLS_PER_DAY: '10',
+      AGENTIC_MAX_TOKENS_PER_DAY: '1000',
+    });
+    expect(overridden.snapshot()).toMatchObject({ maxCallsPerDay: 10, maxTokensPerDay: 1000 });
+  });
+});
+
+describe('SEED_PLAYBOOK', () => {
+  it('passes validatePlaybook (version 1)', () => {
+    expect(SEED_PLAYBOOK.version).toBe(1);
+    expect(validatePlaybook(SEED_PLAYBOOK.content)).toEqual({ ok: true });
+  });
+});
+
+describe('agenticEnv', () => {
+  it('falls back to plain process.env when no ConfigService is supplied (module-isolation contexts)', () => {
+    expect(agenticEnv(undefined)).toBe(process.env);
+  });
+
+  it('maps every AGENTIC_* field off the validated AppConfig.agentic config, so the real wiring path can never drift from it', () => {
+    const agentic: AppConfig['agentic'] = {
+      model: 'claude-config-model',
+      timeoutMs: 12345,
+      maxTokens: 777,
+      minDecisionIntervalMs: 1000,
+      warmupBars: 50,
+      maxCallsPerDay: 42,
+      maxTokensPerDay: 999999,
+      maxEntriesPerDay: 3,
+      drainCooldownBaseMs: 1000,
+      drainCooldownMaxMs: 2000,
+      reflectionEveryNTrades: 7,
+    };
+    const config = { get: () => agentic } as unknown as ConfigService<AppConfig, true>;
+
+    expect(agenticEnv(config)).toMatchObject({
+      AGENTIC_MODEL: 'claude-config-model',
+      AGENTIC_TIMEOUT_MS: '12345',
+      AGENTIC_MAX_TOKENS: '777',
+      AGENTIC_MAX_CALLS_PER_DAY: '42',
+      AGENTIC_MAX_TOKENS_PER_DAY: '999999',
+      AGENTIC_REFLECTION_EVERY_N_TRADES: '7',
+    });
+  });
+});

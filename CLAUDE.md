@@ -26,8 +26,15 @@ build+lint+typecheck+test MUST be green before any completion claim.
    with withdrawals-disabled + complete risk limits), the NODE_ENV=test/ci override,
    or the config stripping of live secrets. test:livegate is sacred — never skip or
    delete it to make a suite pass.
-4. src/domain imports nothing impure (no @nestjs/\*, ccxt, Date.now, process.env).
-   Strategies: sync handlers, eventTime only, seeded RNG only.
+4. src/domain imports nothing impure (no @nestjs/\*, ccxt, Date.now, process.env). The strategy
+   lane is SOLELY the agentic / LLM-driven lane in src/modules/agentic-strategy/ (NOT src/domain):
+   async, non-deterministic (calls an out-of-process LLM at runtime), and permanently
+   EXPERIMENT-ONLY — paper/testnet only, step-D-uncertifiable, never promoted to live;
+   assertAgenticLaneNotLive refuses any live boot. Rules 1, 2, 3, 5, 6 bind on it exactly as
+   elsewhere — it only proposes a Signal, Risk still sizes/vetoes it, and the four live gates
+   still bind. The deterministic pure lane (ema-cross/donchian), its replay-determinism gate, and
+   the test/backtest research harness were RETIRED by owner decision 2026-07-03
+   (docs/planning/nighly-improvement.md records the historical program).
 5. OMS: never blind-resubmit — unknown outcome ⇒ query by clientOrderId first
    (same-id dedupe is NOT a safety net on Binance: open-orders-only). Persist intent
    before any network call. Unknown >60s ⇒ kill switch. Unmapped errors are

@@ -28,23 +28,13 @@ import {
   type RiskJournalPort,
 } from '../../ports/risk';
 import type { PartialRiskLimits } from '../../domain/risk/limits';
-import type { SymbolFilters } from '../../domain/risk/evaluate';
+import { DEFAULT_FILTERS } from '../../domain/risk/default-filters';
 import { RateBucketsService } from './rate-buckets.service';
 import { CrossingRegistryService } from './crossing-registry.service';
 import { PositionSizerService } from './position-sizer.service';
 import { RiskEngineService, RISK_REJECTIONS_COUNTER } from './risk-engine.service';
 import { SignalGatewayService } from './signal-gateway.service';
 
-// Per-symbol exchange constraints for the paper/demo trading universe (Binance spot filters,
-// ccxt 4.5.58). Without a non-empty entry the sizer fast-fails NO_REF_PRICE and the engine rejects
-// LIMITS_INCOMPLETE, so every order dies — this map is the venue-capability wiring the composition
-// root would otherwise inject. Values are the live Binance PRICE_FILTER/LOT_SIZE/NOTIONAL filters;
-// the demo environment mirrors them. Both SIZER_DEPS and RISK_ENGINE_DEPS read this ONE constant so
-// the sizer's stepping and the engine's F1 re-validation can never disagree.
-const DEFAULT_FILTERS = new Map<string, SymbolFilters>([
-  ['BTC/USDT', { tickSize: '0.01', stepSize: '0.00001', minQty: '0.00001', minNotional: '5' }],
-  ['ETH/USDT', { tickSize: '0.01', stepSize: '0.0001', minQty: '0.0001', minNotional: '5' }],
-]);
 const DEFAULT_LIMITS: PartialRiskLimits = {
   maxBandBps: 100,
   maxOrderNotional: '100000',

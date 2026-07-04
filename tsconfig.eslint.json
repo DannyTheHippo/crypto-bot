@@ -5,6 +5,5 @@
     "rootDir": "."
   },
   "include": ["src/**/*", "test/**/*", "vitest.config.ts", "eslint.config.mjs"],
-  "// test/backtest": "Research/analysis tooling (out-of-process EMA-cross backtest); validated by its own sanity test + adversarial review, intentionally outside the production typecheck/lint gate.",
-  "exclude": ["node_modules", "dist", "test/backtest/**/*"]
+  "exclude": ["node_modules", "dist"]
 }

@@ -547,6 +547,71 @@ describe('RiskEngine.evaluate — §5 decision table', () => {
     );
     expect(r).toMatchObject({ verdict: 'REJECTED', reasons: ['BELOW_EXCHANGE_MIN'] });
   });
+  // Non-terminating clamp quotients (>18 dp) must resize, never throw PRECISION_OVERFLOW.
+  it('P3: flatten CLAMPS to a non-terminating notional quotient without throwing', () => {
+    const r = evaluate(
+      makeInput({
+        isFlatten: true,
+        intent: makeIntent({
+          side: 'SELL',
+          reduceOnly: true,
+          qty: qty('100'),
+          limitPrice: price('3'),
+          refPrice: price('3'),
+        }),
+        snapshot: snapshot({ positions: pos('100') }),
+        mark: { mid: price('3'), ageMs: 0, feedHealth: 'LIVE' },
+        limits: { ...FULL_LIMITS, maxOrderNotional: '100', maxPositionPerSymbol: '99999' },
+        filters: { tickSize: '0.01', stepSize: '0.001', minQty: '0.001', minNotional: '5' },
+      }),
+    );
+    expect(r.verdict).toBe('RESIZED'); // 100/3 = 33.333… (>18 dp) clamped then stepped
+    if (r.verdict === 'RESIZED') {
+      expect(r.reasons).toContain('FAT_FINGER');
+      expect(r.intent.qty.toFixed()).toBe('33.333'); // stepped down to the 0.001 step
+    }
+  });
+  it('E2/E3: CLAMPS to a non-terminating exposure quotient without throwing', () => {
+    const r = evaluate(
+      makeInput({
+        intent: makeIntent({ qty: qty('100'), limitPrice: price('3'), refPrice: price('3') }),
+        mark: { mid: price('3'), ageMs: 0, feedHealth: 'LIVE' },
+        currentGross: new Decimal(999_900),
+        currentNet: new Decimal(999_900),
+        limits: { ...FULL_LIMITS, maxGrossExposure: '1000000', maxNetExposure: '1000000' },
+        filters: { tickSize: '0.01', stepSize: '0.001', minQty: '0.001', minNotional: '5' },
+      }),
+    );
+    expect(r.verdict).toBe('RESIZED'); // headroom 100 / price 3 = 33.333… (>18 dp)
+    if (r.verdict === 'RESIZED') {
+      expect(r.reasons).toContain('EXPOSURE_LIMIT');
+      expect(r.intent.qty.toFixed()).toBe('33.333');
+    }
+  });
+  it('P2: flatten CLAMPS a band edge with an 18-dp mid without throwing', () => {
+    const mid = price('0.123456789012345678'); // already at the 18-dp ceiling
+    const r = evaluate(
+      makeInput({
+        isFlatten: true,
+        intent: makeIntent({
+          side: 'SELL',
+          reduceOnly: true,
+          qty: qty('1'),
+          limitPrice: price('0.05'),
+          refPrice: mid,
+        }),
+        snapshot: snapshot({ positions: pos('5') }),
+        mark: { mid, ageMs: 0, feedHealth: 'LIVE' },
+        filters: { tickSize: '0.000001', stepSize: '0.001', minQty: '0.001', minNotional: '0' },
+      }),
+    );
+    expect(r.verdict).toBe('RESIZED'); // mid × (1 − band) exceeds 18 dp; must round to tick first
+    if (r.verdict === 'RESIZED') {
+      expect(r.reasons).toContain('PRICE_BAND');
+      expect(r.intent.limitPrice!.toFixed()).toBe('0.122223');
+    }
+  });
+
   it('F1: SELL price rounds UP to the tick; APPROVED reduce-only exit', () => {
     const r = evaluate(
       makeInput({

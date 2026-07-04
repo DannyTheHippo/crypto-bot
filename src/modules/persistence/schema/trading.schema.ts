@@ -6,9 +6,12 @@ import {
   timestamp,
   jsonb,
   integer,
+  doublePrecision,
   uniqueIndex,
+  index,
   primaryKey,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { numericMoney } from './custom-types';
 
 // ── Shared stamp columns ─────────────────────────────────────────────────────
@@ -307,3 +310,60 @@ export const auditLog = pgTable('audit_log', {
   prevHash: text('prev_hash').notNull(),
   hash: text('hash').notNull(),
 });
+
+// ── agent_decisions ───────────────────────────────────────────────────────────
+// Journals every agentic-lane decision (mapped to a Signal or not) for offline analysis — mirrors
+// signals'/risk_decisions' shape. PLAIN insert-only table: the append-only REVOKE/trigger hardening
+// in 0001_append_only_hardening.sql is scoped to audit_log/order_events only (CLAUDE.md rule 6).
+// action is TS-level only ($type<>()), no DB CHECK — matches signals.kind / risk_decisions.verdict.
+
+export const agentDecisions = pgTable(
+  'agent_decisions',
+  {
+    id: bigint('id', { mode: 'number' }).generatedAlwaysAsIdentity().primaryKey(),
+    strategyId: text('strategy_id').notNull(),
+    symbol: text('symbol').notNull(),
+    venue: text('venue').notNull(),
+    triggerKind: text('trigger_kind').notNull().$type<'candle' | 'ticker' | 'book' | 'exec'>(),
+    basedOnSeq: bigint('based_on_seq', { mode: 'bigint' }).notNull(),
+    eventTime: bigint('event_time', { mode: 'number' }).notNull(),
+    model: text('model').notNull(),
+    action: text('action').notNull().$type<'long' | 'flat' | 'hold' | 'error'>(),
+    confidence: doublePrecision('confidence'),
+    rationale: text('rationale').notNull(),
+    refPrice: numericMoney('ref_price'),
+    close: numericMoney('close'),
+    inputTokens: integer('input_tokens'),
+    outputTokens: integer('output_tokens'),
+    latencyMs: integer('latency_ms'),
+    playbookVersion: integer('playbook_version'),
+    promptHash: text('prompt_hash').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [index('agent_decisions_strategy_event_idx').on(t.strategyId, t.eventTime)],
+);
+
+// ── agent_playbook_versions ────────────────────────────────────────────────────
+// Versioned agent system-prompt playbook content. version is monotonic (UNIQUE); source
+// distinguishes the initial seed from later reflection drafts and promoted (activated) rows — a
+// 'promotion' row POINTS AT the version it promotes via parentVersion rather than duplicating its
+// content. At most one 'promotion' row may land per UTC calendar day (one promotion/day cadence),
+// enforced by a partial unique index on created_at's UTC date, scoped to source = 'promotion'.
+
+export const agentPlaybookVersions = pgTable(
+  'agent_playbook_versions',
+  {
+    id: bigint('id', { mode: 'number' }).generatedAlwaysAsIdentity().primaryKey(),
+    version: integer('version').notNull(),
+    content: text('content').notNull(),
+    source: text('source').notNull().$type<'seed' | 'reflection' | 'promotion'>(),
+    parentVersion: integer('parent_version'),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    uniqueIndex('agent_playbook_versions_version_uidx').on(t.version),
+    uniqueIndex('agent_playbook_versions_promotion_per_day_uidx')
+      .on(sql`(${t.createdAt} at time zone 'utc')::date`)
+      .where(sql`${t.source} = 'promotion'`),
+  ],
+);

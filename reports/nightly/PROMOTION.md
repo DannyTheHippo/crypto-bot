@@ -82,3 +82,14 @@ A 6-dimension pre-merge audit of the full `main..eaf5668` diff confirmed the liv
 - Demo soak: the promoted Donchian ran a full autonomous round-trip on the 1m deploy (`ENTER_LONG` BUY 0.0015 @
   66648.43 → `EXIT_LONG` SELL 0.00149 @ 66717.98, realized_pnl +0.0042 net — one trade, not the edge), then was
   redeployed at the corrected `55/20 @ 1h`; `/health/ready` 200, killSwitch RUNNING, zero error/warn.
+
+## 2026-07-03 — Agentic-only refactor (repo state; NOT yet deployed)
+
+Owner-directed refactor: the deterministic strategy lane (ema-cross, donchian-breakout), its
+tests (incl. replay-determinism), and the test/backtest research harness were removed; the
+agentic LLM lane is now the only strategy lane and the repo default (ACTIVE_STRATEGY=agentic).
+The lane remains permanently EXPERIMENT-ONLY: non-deterministic, step-D-uncertifiable, and the
+boot interlock refuses live. Consequence for promotion: there is currently NO step-D-validated
+strategy in the tree, so nothing is promotable to live until a future validated lane exists.
+The deployed testnet container still runs donchian-breakout from its last build; the next
+rebuild picks up the agentic default (inert stub unless ANTHROPIC_API_KEY is provided).

@@ -144,4 +144,105 @@ describe('validate()', () => {
     expect(cfg.mode.configMode).toBe('paper');
     expect(cfg.mode.downgrades.length).toBeGreaterThan(0);
   });
+
+  describe('agentic config', () => {
+    it('applies defaults when all AGENTIC_* vars are unset', () => {
+      const cfg = validate({ PORT: '3100' });
+      expect(cfg.agentic).toEqual({
+        model: 'claude-opus-4-8',
+        timeoutMs: 30000,
+        maxTokens: 1024,
+        minDecisionIntervalMs: 0,
+        warmupBars: 50,
+        maxCallsPerDay: 500,
+        maxTokensPerDay: 2_000_000,
+        maxEntriesPerDay: 12,
+        drainCooldownBaseMs: 30_000,
+        drainCooldownMaxMs: 900_000,
+        reflectionEveryNTrades: 10,
+        playbookPin: undefined,
+      });
+    });
+
+    it('reads AGENTIC_* overrides into cfg.agentic', () => {
+      const cfg = validate({
+        PORT: '3100',
+        AGENTIC_MODEL: 'claude-haiku-4-5',
+        AGENTIC_TIMEOUT_MS: '5000',
+        AGENTIC_MAX_TOKENS: '2048',
+        AGENTIC_MIN_DECISION_INTERVAL_MS: '1000',
+        AGENTIC_WARMUP_BARS: '80',
+        AGENTIC_MAX_CALLS_PER_DAY: '1000',
+        AGENTIC_MAX_TOKENS_PER_DAY: '5000000',
+        AGENTIC_MAX_ENTRIES_PER_DAY: '20',
+        AGENTIC_DRAIN_COOLDOWN_BASE_MS: '15000',
+        AGENTIC_DRAIN_COOLDOWN_MAX_MS: '600000',
+        AGENTIC_REFLECTION_EVERY_N_TRADES: '5',
+      });
+      expect(cfg.agentic.model).toBe('claude-haiku-4-5');
+      expect(cfg.agentic.timeoutMs).toBe(5000);
+      expect(cfg.agentic.maxTokens).toBe(2048);
+      expect(cfg.agentic.minDecisionIntervalMs).toBe(1000);
+      expect(cfg.agentic.warmupBars).toBe(80);
+      expect(cfg.agentic.maxCallsPerDay).toBe(1000);
+      expect(cfg.agentic.maxTokensPerDay).toBe(5000000);
+      expect(cfg.agentic.maxEntriesPerDay).toBe(20);
+      expect(cfg.agentic.drainCooldownBaseMs).toBe(15000);
+      expect(cfg.agentic.drainCooldownMaxMs).toBe(600000);
+      expect(cfg.agentic.reflectionEveryNTrades).toBe(5);
+    });
+
+    it('AGENTIC_REFLECTION_EVERY_N_TRADES=0 is valid (means off)', () => {
+      const cfg = validate({ PORT: '3100', AGENTIC_REFLECTION_EVERY_N_TRADES: '0' });
+      expect(cfg.agentic.reflectionEveryNTrades).toBe(0);
+    });
+
+    it('AGENTIC_PLAYBOOK_PIN absent → undefined (unpinned)', () => {
+      const cfg = validate({ PORT: '3100' });
+      expect(cfg.agentic.playbookPin).toBeUndefined();
+    });
+
+    it('AGENTIC_PLAYBOOK_PIN present → parsed as a positive int', () => {
+      const cfg = validate({ PORT: '3100', AGENTIC_PLAYBOOK_PIN: '7' });
+      expect(cfg.agentic.playbookPin).toBe(7);
+    });
+
+    it('throws on non-numeric AGENTIC_TIMEOUT_MS', () => {
+      expect(() => validate({ PORT: '3100', AGENTIC_TIMEOUT_MS: 'notanumber' })).toThrow(
+        /AGENTIC_TIMEOUT_MS/,
+      );
+    });
+
+    it('throws on negative AGENTIC_MAX_CALLS_PER_DAY', () => {
+      expect(() => validate({ PORT: '3100', AGENTIC_MAX_CALLS_PER_DAY: '-1' })).toThrow(
+        /AGENTIC_MAX_CALLS_PER_DAY/,
+      );
+    });
+
+    it('throws on negative AGENTIC_PLAYBOOK_PIN', () => {
+      expect(() => validate({ PORT: '3100', AGENTIC_PLAYBOOK_PIN: '-3' })).toThrow(
+        /AGENTIC_PLAYBOOK_PIN/,
+      );
+    });
+
+    it('throws on negative AGENTIC_REFLECTION_EVERY_N_TRADES', () => {
+      expect(() => validate({ PORT: '3100', AGENTIC_REFLECTION_EVERY_N_TRADES: '-1' })).toThrow(
+        /AGENTIC_REFLECTION_EVERY_N_TRADES/,
+      );
+    });
+
+    it('ANTHROPIC_API_KEY never enters AppConfig (secret stays out of the validated schema)', () => {
+      const cfg = validate({ PORT: '3100', ANTHROPIC_API_KEY: 'sk-secret' });
+      expect(cfg as unknown as Record<string, unknown>).not.toHaveProperty('ANTHROPIC_API_KEY');
+      expect(cfg.agentic as unknown as Record<string, unknown>).not.toHaveProperty(
+        'ANTHROPIC_API_KEY',
+      );
+    });
+
+    it('configHash is identical whether or not ANTHROPIC_API_KEY is present', () => {
+      const withKey = validate({ PORT: '3100', ANTHROPIC_API_KEY: 'sk-secret' });
+      const withoutKey = validate({ PORT: '3100' });
+      expect(withKey.configHash).toBe(withoutKey.configHash);
+    });
+  });
 });

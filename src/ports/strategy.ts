@@ -1,6 +1,6 @@
 import type { Signal } from '../domain/types/signal';
 import type { StrategyId } from '../domain/types/ids';
-import type { Strategy } from '../domain/strategy/strategy';
+import type { AsyncStrategy } from './agentic-strategy';
 
 // Signal journaling sink (§8 decision trail). The SignalSink records every signal it routes, tagged
 // with the gateway outcome and resulting intentId (if any). The composition root provides a DB-backed
@@ -32,11 +32,19 @@ export type StrategyLifecycle =
   | 'HALTED'
   | 'UNLOADED';
 
+// Structurally identical to strategy-registry.ts's own (module-local) DrainReason — a plain string
+// union, so StrategyRegistry already satisfies getDrainReason below without any change to that file
+// (ports may not import from modules — boundaries/dependencies — so the type is declared here too).
+export type DrainReason = 'AUTO' | 'OPERATOR';
+
 export interface StrategyRegistryPort {
-  register(type: string, factory: (id: StrategyId, params: unknown) => Strategy): void;
+  register(type: string, factory: (id: StrategyId, params: unknown) => AsyncStrategy): void;
   enable(id: StrategyId, type: string, params: unknown): void;
   disable(id: StrategyId, drain?: DrainPolicy): void;
   states(): readonly StrategyState[];
+  // Optional: only health/observability consumers need drainReason provenance; StrategyRegistry
+  // already implements this method.
+  getDrainReason?(id: StrategyId): DrainReason | undefined;
 }
 
 // ── Host port ─────────────────────────────────────────────────────────────────
@@ -50,8 +58,8 @@ export interface StrategyHostPort {
 // ── Signal sink port ──────────────────────────────────────────────────────────
 //
 // Written by the host for every signal that is NOT discarded during WARMUP.
-// The no-op default is provided by StrategyModule; app-level wiring replaces it
-// with the real persistence implementation in a later phase.
+// The composition root binds this to the real persistence implementation
+// (SignalSinkService).
 
 export interface SignalSinkPort {
   recordSignal(s: Signal): void | Promise<void>;

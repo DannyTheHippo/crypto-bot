@@ -368,6 +368,12 @@ describe('roundToTick()', () => {
     const result = roundToTick(p, '0.005', 'up');
     expect(moneyToString(result)).toBe('1.01');
   });
+
+  it('accepts a raw >18dp Decimal (not yet a valid Price) and rounds to a clean tick multiple', () => {
+    const raw = new Decimal('100').div(3); // 33.333… — non-terminating, would throw as a Price
+    const result = roundToTick(raw, '0.01', 'down');
+    expect(moneyToString(result)).toBe('33.33');
+  });
 });
 
 describe('roundToStep()', () => {

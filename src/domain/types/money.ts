@@ -137,7 +137,11 @@ export function moneyToString(v: Price | Qty | Notional | FeeAmount): string {
 // Exact-mod rounding: avoids implicit precision-bound rounding from div/mul.
 // down = v - (v mod t);  up = isZero(v mod t) ? v : down + t.
 
-export function roundToTick(p: Price, tick: string, direction: 'down' | 'up'): Price {
+// Accepts a raw Decimal (not only a Price): a band-clamped edge price derived by multiplication
+// (refMid × (1 ± band)) can exceed the 18-place precision limit, so it must be rounded to the tick
+// BEFORE it can be a valid Price — validating first would throw. The rounded result is a clean
+// multiple of the tick, hence precision-valid by construction; the brand cast is sound.
+export function roundToTick(p: Decimal, tick: string, direction: 'down' | 'up'): Price {
   const t = new Decimal(tick);
   const mod = p.mod(t);
   const down = p.sub(mod);

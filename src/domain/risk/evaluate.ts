@@ -2,7 +2,7 @@ import Decimal from 'decimal.js';
 import type { OrderIntent } from '../types/order-intent';
 import type { PortfolioSnapshot, Position } from '../types/portfolio';
 import type { Price, Qty } from '../types/money';
-import { qty as makeQty, price as makePrice, roundToStep, roundToTick } from '../types/money';
+import { roundToStep, roundToTick } from '../types/money';
 import type { RiskReason } from '../types/risk-decision';
 import type { ChannelHealth } from '../types/market-events';
 import type { TradingMode } from '../types/mode';
@@ -238,10 +238,10 @@ export function evaluate(input: RiskEvalInput): RiskEvaluation {
   }
 
   // F1 — post-clamp exchange-filter validation (a clamp below minimums REJECTS, never doom-submits)
-  const steppedQty = roundToStep(makeQty(workingQty), filters.stepSize, 'down');
+  const steppedQty = roundToStep(workingQty, filters.stepSize, 'down');
   if (steppedQty.lt(new Decimal(filters.minQty))) return reject(intent, 'BELOW_EXCHANGE_MIN');
   const tickedPrice = roundToTick(
-    makePrice(workingPrice),
+    workingPrice,
     filters.tickSize,
     intent.side === 'BUY' ? 'down' : 'up',
   );

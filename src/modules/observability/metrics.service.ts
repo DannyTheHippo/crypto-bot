@@ -1,11 +1,21 @@
 import { Injectable, OnModuleInit, OnModuleDestroy, Optional, Inject } from '@nestjs/common';
-import { InjectMetric, makeGaugeProvider } from '@willsoto/nestjs-prometheus';
+import {
+  InjectMetric,
+  makeGaugeProvider,
+  makeCounterProvider,
+  makeHistogramProvider,
+} from '@willsoto/nestjs-prometheus';
 import { Gauge } from 'prom-client';
 import { performance } from 'perf_hooks';
 import { ConfigService } from '@nestjs/config';
 import type { AppConfig } from '../../ports/app-config';
 import { KILL_SWITCH, type KillSwitchPort } from '../../ports/risk';
 import { PORTFOLIO_VIEW, type PortfolioViewPort } from '../../ports/execution';
+import {
+  STRATEGY_REGISTRY,
+  type StrategyRegistryPort,
+  type StrategyLifecycle,
+} from '../../ports/strategy';
 import { EventLoopHealthIndicator } from './event-loop-health.indicator';
 
 export const EVENT_LOOP_DELAY_GAUGE = makeGaugeProvider({
@@ -87,6 +97,51 @@ export const IN_FLIGHT_GAUGE = makeGaugeProvider({
   help: 'In-flight (reserved) intent count',
 });
 
+// Agentic-lane metrics (G3b). Recorded via AgentMetricsRecorder, NOT sampled by this service's loop —
+// the agentic lane calls the recorder's methods directly as decisions/tokens/rejections occur.
+export const AGENT_DECIDE_COUNTER = makeCounterProvider({
+  name: 'agent_decide_total',
+  help: 'Agentic lane decide() outcomes',
+  labelNames: ['outcome'] as const,
+});
+export const AGENT_TOKENS_COUNTER = makeCounterProvider({
+  name: 'agent_tokens_total',
+  help: 'Agentic lane LLM token usage, by kind',
+  labelNames: ['kind'] as const,
+});
+export const AGENT_DECIDE_LATENCY_HISTOGRAM = makeHistogramProvider({
+  name: 'agent_decide_latency_seconds',
+  help: 'Agentic lane decide() latency in seconds',
+  buckets: [0.5, 1, 2, 5, 10, 15, 20, 30],
+});
+export const AGENTIC_PLAYBOOK_INFO_GAUGE = makeGaugeProvider({
+  name: 'agentic_playbook_info',
+  help: 'Active agentic playbook version info (1 on the active version)',
+  labelNames: ['version'] as const,
+});
+export const PLAYBOOK_VALIDATOR_REJECTIONS_COUNTER = makeCounterProvider({
+  name: 'playbook_validator_rejections_total',
+  help: 'Playbook validator rejections, tagged by whether the denylist tripwire fired',
+  labelNames: ['banned_token'] as const,
+});
+
+// §strategy lifecycle — sampled in the 5s loop below (same pull pattern as kill_switch_state):
+// each strategy carries exactly one state at 1, all others in the union explicit 0 (not just absent),
+// so a terminal DRAINING/HALTED strategy is directly alertable rather than a "no data" gap.
+export const STRATEGY_LIFECYCLE_GAUGE = makeGaugeProvider({
+  name: 'strategy_lifecycle',
+  help: 'Per-strategy lifecycle state (1 for current state, 0 for others)',
+  labelNames: ['strategy', 'state'] as const,
+});
+const ALL_LIFECYCLE_STATES: readonly StrategyLifecycle[] = [
+  'LOADING',
+  'WARMUP',
+  'ACTIVE',
+  'DRAINING',
+  'HALTED',
+  'UNLOADED',
+];
+
 @Injectable()
 export class MetricsService implements OnModuleInit, OnModuleDestroy {
   private sampleInterval: ReturnType<typeof setInterval> | null = null;
@@ -112,6 +167,7 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
     @InjectMetric('position_notional_usdt') private readonly positionNotionalGauge: Gauge<string>,
     @InjectMetric('open_orders') private readonly openOrdersGauge: Gauge<string>,
     @InjectMetric('in_flight_intents') private readonly inFlightGauge: Gauge<string>,
+    @InjectMetric('strategy_lifecycle') private readonly strategyLifecycleGauge: Gauge<string>,
     private readonly configService: ConfigService<AppConfig, true>,
     private readonly eventLoopIndicator: EventLoopHealthIndicator,
     // @Optional so observability can boot standalone (no kill switch) — the gauge is simply not set.
@@ -119,6 +175,9 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
     // @Optional so observability boots standalone; in the running app the composition root bridges
     // PORTFOLIO_VIEW into global scope so the trading gauges are populated from the canonical snapshot.
     @Optional() @Inject(PORTFOLIO_VIEW) private readonly portfolio?: PortfolioViewPort,
+    // @Optional: STRATEGY_REGISTRY is not yet bridged into global scope (pending G3c) and is absent in
+    // every unit test — sampling below silently skips when it is undefined.
+    @Optional() @Inject(STRATEGY_REGISTRY) private readonly registry?: StrategyRegistryPort,
   ) {}
 
   onModuleInit() {
@@ -171,6 +230,17 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
           this.positionNotionalGauge
             .labels(labels)
             .set(pos.signedQty.abs().mul(pos.avgEntry).toNumber());
+        }
+      }
+
+      if (this.registry) {
+        this.strategyLifecycleGauge.reset(); // drop any strategy no longer in the registry
+        for (const { id, lifecycle } of this.registry.states()) {
+          for (const state of ALL_LIFECYCLE_STATES) {
+            this.strategyLifecycleGauge
+              .labels({ strategy: id, state })
+              .set(state === lifecycle ? 1 : 0);
+          }
         }
       }
     }, 5000);

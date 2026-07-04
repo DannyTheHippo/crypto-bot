@@ -11,7 +11,7 @@ import {
 } from '../../ports/exchange';
 import { EXECUTION_STORE, type ExecutionStorePort } from '../../ports/execution';
 import { reduce, type OrderEvent, type OrderState } from '../../domain/oms/reducer';
-import { mulberry32 } from '../../domain/strategy/prng';
+import { mulberry32 } from '../../domain/rng/prng';
 import {
   queryBackoffMs,
   MAX_QUERY_ATTEMPTS,

@@ -1,34 +1,47 @@
-import { describe, it, expect } from 'vitest';
-import { StrategyHost } from '../../../src/modules/strategy/strategy-host';
+import { describe, it, expect, vi } from 'vitest';
+import Decimal from 'decimal.js';
+import { StrategyHost, type AgenticHostOptions } from '../../../src/modules/strategy/strategy-host';
 import { StrategyRegistry } from '../../../src/modules/strategy/strategy-registry';
 import type { MarketStreamPort, FeedHealthPort } from '../../../src/ports/market-data';
 import type { SignalSinkPort } from '../../../src/ports/strategy';
-import type { Strategy, MarketView } from '../../../src/domain/strategy/strategy';
-import type { MarketEvent, CandleEvent } from '../../../src/domain/types/market-events';
+import type {
+  AsyncStrategy,
+  AgentDecisionInput,
+  StrategyInitContext,
+  SymbolConstraints,
+} from '../../../src/ports/agentic-strategy';
+import type {
+  MarketEvent,
+  CandleEvent,
+  CandleInterval,
+} from '../../../src/domain/types/market-events';
+import type { ExecReport } from '../../../src/domain/types/exec-report';
 import type { Signal } from '../../../src/domain/types/signal';
 import type { SubscriptionSpec } from '../../../src/domain/types/subscription';
+import type { Position, StrategyPortfolioView } from '../../../src/domain/types/portfolio';
+import { price, qty } from '../../../src/domain/types/money';
 import {
   strategyId,
   venueId,
   symbolId,
   epochMs,
+  clientOrderId,
   type StrategyId,
 } from '../../../src/domain/types/ids';
-import { price, qty } from '../../../src/domain/types/money';
 
 const V = venueId('binance');
 const S = symbolId('BTC/USDT');
 
-function candle(seq: number, t: number): CandleEvent {
+function candle(t: number, closed = true): CandleEvent {
   return {
     kind: 'CANDLE',
     venue: V,
     symbol: S,
-    channel: 'candle:1h',
-    seq: BigInt(seq),
+    channel: 'candle:1m',
+    seq: BigInt(t),
     eventTime: epochMs(t),
     ingestTime: epochMs(t + 1),
-    interval: '1h',
+    interval: '1m',
     openTime: epochMs(t),
     closeTime: epochMs(t + 1),
     open: price('100'),
@@ -36,17 +49,17 @@ function candle(seq: number, t: number): CandleEvent {
     low: price('100'),
     close: price('100'),
     volume: qty('1'),
-    closed: true,
+    closed,
   };
 }
 
-function ticker(seq: number, t: number): MarketEvent {
+function ticker(t: number): MarketEvent {
   return {
     kind: 'TICKER',
     venue: V,
     symbol: S,
     channel: 'ticker',
-    seq: BigInt(seq),
+    seq: BigInt(t),
     eventTime: epochMs(t),
     ingestTime: epochMs(t + 1),
     bid: price('99'),
@@ -55,13 +68,13 @@ function ticker(seq: number, t: number): MarketEvent {
   };
 }
 
-function book(seq: number, t: number): MarketEvent {
+function book(t: number): MarketEvent {
   return {
     kind: 'ORDER_BOOK_SNAPSHOT',
     venue: V,
     symbol: S,
     channel: 'book',
-    seq: BigInt(seq),
+    seq: BigInt(t),
     eventTime: epochMs(t),
     ingestTime: epochMs(t + 1),
     bids: [{ price: price('99'), qty: qty('1') }],
@@ -69,22 +82,22 @@ function book(seq: number, t: number): MarketEvent {
   };
 }
 
-function execReport(t: number) {
+function execReport(t: number): ExecReport {
   return {
     reportId: `r${t}`,
-    clientOrderId: 'cbp0000000000000007000800000000000000' as never,
+    clientOrderId: clientOrderId('cbp0000000000000007000800000000000000'),
     venue: V,
     symbol: S,
     eventTime: epochMs(t),
     ingestTime: epochMs(t),
-    kind: 'ACK' as const,
+    kind: 'ACK',
     venueOrderId: 'v',
   };
 }
 
-function sig(kind: Signal['kind'], t: number): Signal {
+function sig(id: StrategyId, kind: Signal['kind'], t: number): Signal {
   return {
-    strategyId: strategyId('fake'),
+    strategyId: id,
     venue: V,
     symbol: S,
     kind,
@@ -93,53 +106,47 @@ function sig(kind: Signal['kind'], t: number): Signal {
     basedOnSeq: 1n,
     eventTime: epochMs(t),
     ttlMs: 1000,
-    dedupeKey: `fake:${kind}:${t}`,
+    dedupeKey: `${id}:${kind}:${t}`,
     reason: 'test',
   };
 }
 
-// Fake strategy with a mutable emission so host behaviour is fully controllable.
-class FakeStrategy implements Strategy {
-  readonly id: StrategyId;
+// Minimal fake AsyncStrategy: `decide` is fully caller-controlled (resolve/reject/never-resolve),
+// so every host branch (conflate, timeout, drain) is reproducible without depending on the
+// concrete AgenticStrategy/agent-client wiring (owned by a concurrent change elsewhere).
+class ProgrammableStrategy implements AsyncStrategy {
+  readonly kind = 'agentic' as const;
   readonly subscriptions: SubscriptionSpec = {
     venue: V,
     symbols: [S],
-    channels: { candles: ['1h'], ticker: true, book: true },
+    channels: { candles: ['1m'] },
   };
-  readonly warmup = { interval: '1h' as const, bars: 2 };
-  emit: Signal[] = [];
-  tickEmit: Signal[] = [];
-  bookEmit: Signal[] = [];
-  execEmit: Signal[] = [];
-  lastViewEventTime = 0;
-  constructor(id: StrategyId) {
-    this.id = id;
+  calls = 0;
+  readonly inputs: AgentDecisionInput[] = [];
+  stopped = false;
+  initCtx?: StrategyInitContext;
+
+  constructor(
+    readonly id: StrategyId,
+    readonly warmup: { readonly interval: CandleInterval; readonly bars: number },
+    private readonly impl: (input: AgentDecisionInput) => Promise<Signal[]>,
+  ) {}
+
+  onInit(ctx: StrategyInitContext): void {
+    this.initCtx = ctx;
   }
-  onInit(): void {}
-  onCandle(_e: CandleEvent, v: MarketView): Signal[] {
-    // Exercise the host-assembled MarketView so its accessors are covered.
-    this.lastViewEventTime = v.eventTime;
-    v.candles(S, '1h', 3);
-    v.lastTicker(S);
-    v.book(S);
-    v.feed(S, 'candle:1h');
-    v.random();
-    void v.portfolio;
-    return this.emit;
+
+  decide(input: AgentDecisionInput): Promise<Signal[]> {
+    this.calls += 1;
+    this.inputs.push(input);
+    return this.impl(input);
   }
-  onTick(): Signal[] {
-    return this.tickEmit;
+
+  onStop(): void {
+    this.stopped = true;
   }
-  onOrderBook(): Signal[] {
-    return this.bookEmit;
-  }
-  onExecReport(): Signal[] {
-    return this.execEmit;
-  }
-  onStop(): void {}
 }
 
-// Push-based market stream the test drives event-by-event.
 function pushStream() {
   const queue: MarketEvent[] = [];
   let resolve: ((r: IteratorResult<MarketEvent>) => void) | null = null;
@@ -176,7 +183,7 @@ function pushStream() {
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
-function feedHealth(warmup: CandleEvent[] = []): FeedHealthPort {
+function defaultFeedHealth(warmup: readonly CandleEvent[] = []): FeedHealthPort {
   return {
     health: () => 'LIVE',
     getRefPrice: () => undefined,
@@ -185,65 +192,103 @@ function feedHealth(warmup: CandleEvent[] = []): FeedHealthPort {
 }
 
 function makeHost(opts: {
-  strategy: FakeStrategy;
-  stream: AsyncIterable<MarketEvent>;
+  strategy: AsyncStrategy;
   sink: SignalSinkPort;
-  warmup?: CandleEvent[];
-  hrtimeFn?: () => bigint;
-}): { host: StrategyHost; registry: StrategyRegistry; id: StrategyId } {
+  feedHealth?: FeedHealthPort;
+  hostOpts?: AgenticHostOptions;
+}): {
+  host: StrategyHost;
+  registry: StrategyRegistry;
+  stream: ReturnType<typeof pushStream>;
+  id: StrategyId;
+} {
   const registry = new StrategyRegistry();
   const id = opts.strategy.id;
   registry.register('fake', () => opts.strategy);
   registry.enable(id, 'fake', {});
-  const marketStream: MarketStreamPort = { subscribe: () => opts.stream };
+  const stream = pushStream();
+  const marketStream: MarketStreamPort = { subscribe: () => stream.iterable };
   const host = new StrategyHost(
     marketStream,
-    feedHealth(opts.warmup),
+    opts.feedHealth ?? defaultFeedHealth(),
     opts.sink,
     registry,
-    opts.hrtimeFn,
+    opts.hostOpts,
   );
-  return { host, registry, id };
+  return { host, registry, stream, id };
 }
 
-describe('StrategyHost', () => {
-  it('discards signals emitted during WARMUP replay and reaches ACTIVE', async () => {
-    const recorded: Signal[] = [];
-    const sink: SignalSinkPort = { recordSignal: (s) => void recorded.push(s) };
-    const strat = new FakeStrategy(strategyId('w'));
-    strat.emit = [sig('ENTER_LONG', 1)]; // would emit on every warmup candle
-    const stream = pushStream();
-    const { host, registry, id } = makeHost({
+describe('StrategyHost (agentic-only)', () => {
+  it('warmup populates candle history via feedHealth.fetchCandles without calling the client, then reaches ACTIVE', async () => {
+    const id = strategyId('warm');
+    const w1 = candle(0);
+    const w2 = candle(1);
+    const strat = new ProgrammableStrategy(id, { interval: '1m', bars: 2 }, () =>
+      Promise.resolve([]),
+    );
+    const fetchCandlesCalls: unknown[] = [];
+    const fh: FeedHealthPort = {
+      health: () => 'LIVE',
+      getRefPrice: () => undefined,
+      fetchCandles: (venue, symbol, interval, n) => {
+        fetchCandlesCalls.push([venue, symbol, interval, n]);
+        return Promise.resolve([w1, w2]);
+      },
+    };
+    const { host, registry, stream } = makeHost({
       strategy: strat,
-      stream: stream.iterable,
-      sink,
-      warmup: [candle(0, 0), candle(1, 1)],
+      sink: { recordSignal: () => undefined },
+      feedHealth: fh,
     });
 
-    await host.start(); // warmup replays 2 candles — discarded
-    stream.close();
-    const got: Signal[] = [];
-    for await (const s of host.signals()) got.push(s);
+    await host.start();
 
-    expect(recorded).toEqual([]); // nothing persisted during warmup
-    expect(got).toEqual([]);
+    expect(strat.calls).toBe(0); // warmup never calls the client
     expect(registry.getLifecycle(id)).toBe('ACTIVE');
+    expect(fetchCandlesCalls).toEqual([[V, S, '1m', 2]]);
+
+    stream.push(candle(2)); // candle-triggered decide sees the warmed-up history
+    await tick();
+    stream.close();
+
+    expect(strat.calls).toBe(1);
+    const hist = strat.inputs[0]?.snapshot.candles.get(S);
+    expect(hist?.map((c) => c.eventTime)).toEqual([epochMs(0), epochMs(1), epochMs(2)]);
   });
 
-  it('emits and persists signals once ACTIVE', async () => {
+  it('delivers a decided signal via the buffered path (consumer arrives after emission)', async () => {
+    const id = strategyId('buf');
     const recorded: Signal[] = [];
     const sink: SignalSinkPort = { recordSignal: (s) => void recorded.push(s) };
-    const strat = new FakeStrategy(strategyId('a'));
-    strat.emit = [sig('ENTER_LONG', 5)];
-    const stream = pushStream();
-    const { host } = makeHost({ strategy: strat, stream: stream.iterable, sink });
+    const strat = new ProgrammableStrategy(id, { interval: '1m', bars: 2 }, () =>
+      Promise.resolve([sig(id, 'ENTER_LONG', 5)]),
+    );
+    const { host, stream } = makeHost({ strategy: strat, sink });
 
     await host.start();
-    // Park a consumer first so the emitted signal is handed straight to the waiting
-    // resolver (covers the immediate-handoff path, not just the buffer path).
+    stream.push(candle(5));
+    await tick(); // decide resolves and the signal lands in the buffered queue (no consumer parked yet)
+    stream.close();
+
+    const got: Signal[] = [];
+    for await (const s of host.signals()) got.push(s);
+    expect(got.map((s) => s.kind)).toEqual(['ENTER_LONG']);
+    expect(recorded.map((s) => s.kind)).toEqual(['ENTER_LONG']);
+  });
+
+  it('delivers a decided signal via the awaiting-resolver path (consumer parked first)', async () => {
+    const id = strategyId('await');
+    const recorded: Signal[] = [];
+    const sink: SignalSinkPort = { recordSignal: (s) => void recorded.push(s) };
+    const strat = new ProgrammableStrategy(id, { interval: '1m', bars: 2 }, () =>
+      Promise.resolve([sig(id, 'ENTER_LONG', 5)]),
+    );
+    const { host, stream } = makeHost({ strategy: strat, sink });
+
+    await host.start();
     const iterator = host.signals()[Symbol.asyncIterator]();
-    const pending = iterator.next();
-    stream.push(candle(0, 5));
+    const pending = iterator.next(); // parked BEFORE the trigger
+    stream.push(candle(5));
     const first = await pending;
 
     if (first.done) throw new Error('expected a signal');
@@ -252,143 +297,669 @@ describe('StrategyHost', () => {
     stream.close();
   });
 
-  it('auto-transitions to DRAINING after 3 consecutive hard CPU breaches', async () => {
-    const sink: SignalSinkPort = { recordSignal: () => {} };
-    const strat = new FakeStrategy(strategyId('cpu'));
-    strat.emit = [];
-    const stream = pushStream();
-    // hrtime alternates 0 → 60ms per processItem call pair ⇒ every handler "takes" 60ms (> 50ms hard).
-    let tog = false;
-    const hrtimeFn = () => {
-      tog = !tog;
-      return tog ? 0n : 60_000_000n;
-    };
-    const { host, registry, id } = makeHost({
+  it('drops an unclosed candle entirely: no decide, and it never enters history', async () => {
+    const id = strategyId('unclosed');
+    const strat = new ProgrammableStrategy(id, { interval: '1m', bars: 2 }, () =>
+      Promise.resolve([]),
+    );
+    const { host, stream } = makeHost({ strategy: strat, sink: { recordSignal: () => undefined } });
+
+    await host.start();
+    stream.push(candle(1, false)); // unclosed
+    await tick();
+    expect(strat.calls).toBe(0);
+
+    stream.push(candle(2)); // closed → triggers; history must contain ONLY this one
+    await tick();
+    stream.close();
+
+    expect(strat.calls).toBe(1);
+    const hist = strat.inputs[0]?.snapshot.candles.get(S);
+    expect(hist?.map((c) => c.eventTime)).toEqual([epochMs(2)]);
+  });
+
+  it('folds ticker/book state without triggering, then surfaces it on the next candle-triggered snapshot', async () => {
+    const id = strategyId('tickbook');
+    const strat = new ProgrammableStrategy(id, { interval: '1m', bars: 2 }, () =>
+      Promise.resolve([]),
+    );
+    const { host, stream } = makeHost({ strategy: strat, sink: { recordSignal: () => undefined } });
+
+    await host.start();
+    stream.push(ticker(1));
+    await tick();
+    expect(strat.calls).toBe(0);
+    stream.push(book(2));
+    await tick();
+    expect(strat.calls).toBe(0);
+
+    stream.push(candle(3));
+    await tick();
+    stream.close();
+
+    expect(strat.calls).toBe(1);
+    const snap = strat.inputs[0]!.snapshot;
+    expect(snap.tickers.get(S)?.eventTime).toBe(epochMs(1));
+    expect(snap.books.get(S)?.eventTime).toBe(epochMs(2));
+  });
+
+  it('suppresses a second candle-triggered decide within minDecisionIntervalMs, then resumes past the window', async () => {
+    const id = strategyId('cadence');
+    const strat = new ProgrammableStrategy(id, { interval: '1m', bars: 2 }, () =>
+      Promise.resolve([]),
+    );
+    const { host, stream } = makeHost({
       strategy: strat,
-      stream: stream.iterable,
-      sink,
-      hrtimeFn,
+      sink: { recordSignal: () => undefined },
+      hostOpts: { minDecisionIntervalMs: 1000 },
+    });
+
+    // Base timestamps offset well clear of 0: the host's cadence clock initializes to epochMs(0),
+    // so a first candle AT eventTime 0 would itself be gated against that sentinel.
+    await host.start();
+    stream.push(candle(10_000));
+    await tick();
+    expect(strat.calls).toBe(1);
+
+    stream.push(candle(10_400)); // within the 1000ms window → suppressed
+    await tick();
+    expect(strat.calls).toBe(1);
+
+    stream.push(candle(11_000)); // gate is strict-less-than: exactly at the boundary → fires
+    await tick();
+    stream.close();
+
+    expect(strat.calls).toBe(2);
+  });
+
+  it('does not advance the cadence clock on a busy-conflated candle', async () => {
+    const id = strategyId('cadence-busy');
+    const resolvers: Array<(s: Signal[]) => void> = [];
+    const strat = new ProgrammableStrategy(
+      id,
+      { interval: '1m', bars: 2 },
+      () => new Promise<Signal[]>((r) => resolvers.push(r)),
+    );
+    const { host, stream } = makeHost({
+      strategy: strat,
+      sink: { recordSignal: () => undefined },
+      hostOpts: { minDecisionIntervalMs: 1000 },
+    });
+
+    // Base timestamps offset well clear of 0: the host's cadence clock initializes to epochMs(0),
+    // so a first candle AT eventTime 0 would itself be gated against that sentinel.
+    await host.start();
+    stream.push(candle(10_000)); // decide 1 starts; busy=true; cadence clock=10_000
+    await tick();
+    expect(strat.calls).toBe(1);
+
+    stream.push(candle(10_800)); // busy-conflated: folds history only, must NOT move the cadence clock
+    await tick();
+    expect(strat.calls).toBe(1);
+
+    resolvers[0]?.([]); // free the lane
+    await tick();
+
+    // 11_050 - 10_000 = 1050 ≥ 1000 → fires. If the conflated candle had wrongly moved the clock to
+    // 10_800, 11_050 - 10_800 = 250 < 1000 would have suppressed it instead.
+    stream.push(candle(11_050));
+    await tick();
+    stream.close();
+
+    expect(strat.calls).toBe(2);
+  });
+
+  it('folds an exec report forward, delivers it once to the triggering decide, and never re-delivers it', async () => {
+    const id = strategyId('exec');
+    const strat = new ProgrammableStrategy(id, { interval: '1m', bars: 2 }, () =>
+      Promise.resolve([]),
+    );
+    const { host, stream } = makeHost({ strategy: strat, sink: { recordSignal: () => undefined } });
+
+    await host.start();
+    host.enqueueExecReport(id, execReport(5)); // queued; drained on the next stream event
+    stream.push(candle(6)); // exec (priority 3) drains ahead of the candle (priority 2) in the same pass
+    await tick();
+
+    expect(strat.calls).toBe(1);
+    expect(strat.inputs[0]?.trigger.kind).toBe('exec');
+    expect(strat.inputs[0]?.snapshot.execReports).toHaveLength(1);
+    expect(strat.inputs[0]?.snapshot.execReports[0]?.reportId).toBe('r5');
+
+    stream.push(candle(7)); // a fresh decide — the exec report is not re-folded
+    await tick();
+    stream.close();
+
+    expect(strat.calls).toBe(2);
+    expect(strat.inputs[1]?.snapshot.execReports).toEqual([]);
+  });
+
+  it('AUTO-drains after 3 consecutive decide() timeouts, filters to risk-reducing signals while DRAINING, and a successful recovery probe restores ACTIVE', async () => {
+    vi.useFakeTimers();
+    try {
+      const id = strategyId('drain-timeout');
+      let calls = 0;
+      const strat = new ProgrammableStrategy(id, { interval: '1m', bars: 2 }, () => {
+        calls += 1;
+        if (calls <= 3) return new Promise<Signal[]>(() => undefined); // never resolves
+        return Promise.resolve([sig(id, 'ENTER_LONG', 100), sig(id, 'FLATTEN', 100)]);
+      });
+      const recorded: Signal[] = [];
+      const sink: SignalSinkPort = { recordSignal: (s) => void recorded.push(s) };
+      const { host, registry, stream } = makeHost({
+        strategy: strat,
+        sink,
+        // drainCooldownBaseMs: 0 isolates this test to the DRAINING signal filter + recovery, without
+        // also asserting cooldown timing (covered by the dedicated AUTO-recovery tests below).
+        hostOpts: { agentTimeoutMs: 50, drainCooldownBaseMs: 0 },
+      });
+
+      await host.start();
+      for (let i = 0; i < 3; i++) {
+        stream.push(candle(i));
+        await vi.advanceTimersByTimeAsync(50); // each timeout frees the lane for the next trigger
+      }
+      expect(registry.getLifecycle(id)).toBe('DRAINING');
+      expect(registry.getDrainReason(id)).toBe('AUTO');
+      expect(strat.calls).toBe(3);
+
+      stream.push(candle(100)); // the recovery probe fires (cooldown is 0) and resolves successfully
+      await vi.advanceTimersByTimeAsync(0);
+      stream.close();
+
+      expect(recorded.map((s) => s.kind)).toEqual(['FLATTEN']); // ENTER_LONG filtered, FLATTEN kept
+      expect(registry.getLifecycle(id)).toBe('ACTIVE'); // the successful probe restores ACTIVE
+      expect(registry.getDrainReason(id)).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('DRAINs after 3 consecutive decide() rejections, stamping drainReason AUTO', async () => {
+    const id = strategyId('drain-reject');
+    const strat = new ProgrammableStrategy(id, { interval: '1m', bars: 2 }, () =>
+      Promise.reject(new Error('agent down')),
+    );
+    const { host, registry, stream } = makeHost({
+      strategy: strat,
+      sink: { recordSignal: () => undefined },
     });
 
     await host.start();
     for (let i = 0; i < 3; i++) {
-      stream.push(candle(i, i));
+      stream.push(candle(i));
       await tick();
     }
     stream.close();
-    for await (const _ of host.signals()) void _;
 
+    expect(strat.calls).toBe(3);
     expect(registry.getLifecycle(id)).toBe('DRAINING');
+    expect(registry.getDrainReason(id)).toBe('AUTO');
   });
 
-  it('while DRAINING, filters emissions to risk-reducing kinds only', async () => {
-    const recorded: Signal[] = [];
-    const sink: SignalSinkPort = { recordSignal: (s) => void recorded.push(s) };
-    const strat = new FakeStrategy(strategyId('drain'));
-    const stream = pushStream();
-    const { host, registry, id } = makeHost({ strategy: strat, stream: stream.iterable, sink });
+  it('an AUTO drain skips decides during the cooldown (state still folds), then the post-cooldown probe fires exactly once', async () => {
+    const id = strategyId('auto-recover');
+    let clock = 0;
+    const nowFn = () => clock;
+    let shouldFail = true;
+    const strat = new ProgrammableStrategy(id, { interval: '1m', bars: 2 }, () =>
+      shouldFail ? Promise.reject(new Error('agent down')) : Promise.resolve([]),
+    );
+    const { host, registry, stream } = makeHost({
+      strategy: strat,
+      sink: { recordSignal: () => undefined },
+      hostOpts: { nowFn, drainCooldownBaseMs: 1000 },
+    });
 
     await host.start();
-    registry.setLifecycle(id, 'DRAINING');
+    for (let i = 0; i < 3; i++) {
+      stream.push(candle(i));
+      await tick();
+    }
+    expect(registry.getLifecycle(id)).toBe('DRAINING');
+    expect(registry.getDrainReason(id)).toBe('AUTO');
+    expect(strat.calls).toBe(3);
 
-    strat.emit = [sig('ENTER_LONG', 1)]; // risk-INCREASING → filtered out
-    stream.push(candle(0, 1));
+    // Still within the cooldown: the decide/client is never invoked, but the candle still folds.
+    stream.push(candle(10));
     await tick();
-    strat.emit = [sig('ENTER_SHORT', 2)]; // risk-INCREASING (opens a short) → filtered out
-    stream.push(candle(1, 2));
-    await tick();
-    strat.emit = [sig('EXIT_LONG', 3)]; // risk-reducing → allowed
-    stream.push(candle(2, 3));
-    await tick();
-    strat.emit = [sig('EXIT_SHORT', 4)]; // risk-reducing (covers a short) → allowed
-    stream.push(candle(3, 4));
+    expect(strat.calls).toBe(3);
+
+    // Cooldown elapsed: exactly one probe decide fires, and it succeeds → restores ACTIVE.
+    clock = 1000;
+    shouldFail = false;
+    stream.push(candle(20));
     await tick();
     stream.close();
 
-    const got: Signal[] = [];
-    for await (const s of host.signals()) got.push(s);
-    expect(got.map((s) => s.kind)).toEqual(['EXIT_LONG', 'EXIT_SHORT']);
-    expect(recorded.map((s) => s.kind)).toEqual(['EXIT_LONG', 'EXIT_SHORT']);
+    expect(strat.calls).toBe(4);
+    expect(registry.getLifecycle(id)).toBe('ACTIVE');
+    expect(registry.getDrainReason(id)).toBeUndefined();
+    // The candle folded during the cooldown (never decided) is still present in the probe's history
+    // (bars=2 bounds history at 3; the two oldest closed candles have rolled off by now).
+    const hist = strat.inputs[3]?.snapshot.candles.get(S);
+    expect(hist?.map((c) => c.eventTime)).toEqual([epochMs(2), epochMs(10), epochMs(20)]);
   });
 
-  it('routes ticker, book, and exec-report events to their handlers', async () => {
-    const recorded: Signal[] = [];
-    const sink: SignalSinkPort = { recordSignal: (s) => void recorded.push(s) };
-    const strat = new FakeStrategy(strategyId('multi'));
-    strat.emit = [];
-    strat.tickEmit = [sig('CANCEL_OPEN', 1)];
-    strat.bookEmit = [];
-    strat.execEmit = [sig('FLATTEN', 3)];
-    const stream = pushStream();
-    const { host, id } = makeHost({ strategy: strat, stream: stream.iterable, sink });
+  it('a failed AUTO-drain recovery probe doubles the cooldown, capped at drainCooldownMaxMs', async () => {
+    const id = strategyId('auto-backoff');
+    let clock = 0;
+    const nowFn = () => clock;
+    const strat = new ProgrammableStrategy(id, { interval: '1m', bars: 2 }, () =>
+      Promise.reject(new Error('agent down')),
+    );
+    const { host, registry, stream } = makeHost({
+      strategy: strat,
+      sink: { recordSignal: () => undefined },
+      hostOpts: { nowFn, drainCooldownBaseMs: 1000, drainCooldownMaxMs: 3000 },
+    });
 
     await host.start();
-    stream.push(ticker(1, 1));
+    for (let i = 0; i < 3; i++) {
+      stream.push(candle(i));
+      await tick();
+    }
+    expect(registry.getLifecycle(id)).toBe('DRAINING'); // cooldownUntilMs = 0 + 1000 = 1000
+
+    clock = 1000; // cooldown elapsed: probe #1 fires and fails
+    stream.push(candle(10));
     await tick();
-    stream.push(book(2, 2));
+    expect(strat.calls).toBe(4);
+    expect(registry.getLifecycle(id)).toBe('DRAINING'); // stays draining
+
+    // Probe #1 failure doubles: cooldownUntilMs = 1000 + min(1000·2¹, 3000) = 3000
+    clock = 2999;
+    stream.push(candle(11));
     await tick();
-    // A TRADE event is accepted by the host but not dispatched to strategies in v1.
+    expect(strat.calls).toBe(4); // still inside cooldown, no probe
+
+    clock = 3000;
+    stream.push(candle(12));
+    await tick();
+    expect(strat.calls).toBe(5); // probe #2 fires and fails too
+
+    // Probe #2 failure: cooldownUntilMs = 3000 + min(1000·2², 3000) = 6000 (would be 4000 uncapped)
+    clock = 5999;
+    stream.push(candle(13));
+    await tick();
+    expect(strat.calls).toBe(5);
+
+    clock = 6000;
+    stream.push(candle(14));
+    await tick();
+    stream.close();
+    expect(strat.calls).toBe(6); // probe #3 fires — the cap held rather than growing unbounded
+  });
+
+  it('an OPERATOR drain keeps deciding at cadence and filters to risk-reducing signals, but never auto-recovers even after a successful decide or an elapsed AUTO-style cooldown window', async () => {
+    const id = strategyId('operator-drain');
+    let clock = 0;
+    const nowFn = () => clock;
+    const recorded: Signal[] = [];
+    const sink: SignalSinkPort = { recordSignal: (s) => void recorded.push(s) };
+    const strat = new ProgrammableStrategy(id, { interval: '1m', bars: 2 }, () =>
+      Promise.resolve([sig(id, 'ENTER_LONG', 100), sig(id, 'FLATTEN', 100)]),
+    );
+    const { host, registry, stream } = makeHost({
+      strategy: strat,
+      sink,
+      hostOpts: { nowFn, drainCooldownBaseMs: 1000 },
+    });
+
+    await host.start();
+    registry.disable(id); // operator-initiated drain
+    expect(registry.getLifecycle(id)).toBe('DRAINING');
+    expect(registry.getDrainReason(id)).toBe('OPERATOR');
+
+    clock = 10_000; // far past any AUTO cooldown window — irrelevant to an OPERATOR drain
+    stream.push(candle(1));
+    await tick();
+    stream.close();
+
+    expect(strat.calls).toBe(1); // decided immediately at cadence — no cooldown gate applies
+    expect(registry.getLifecycle(id)).toBe('DRAINING'); // a successful decide must NOT restore ACTIVE
+    expect(registry.getDrainReason(id)).toBe('OPERATOR'); // reason untouched
+    expect(recorded.map((s) => s.kind)).toEqual(['FLATTEN']); // risk-reducing filter still applies
+  });
+
+  it('tradingHalted() suppresses ALL decides regardless of lifecycle, while state still folds', async () => {
+    const id = strategyId('halted');
+    const strat = new ProgrammableStrategy(id, { interval: '1m', bars: 2 }, () =>
+      Promise.resolve([]),
+    );
+    let halted = true;
+    const { host, stream } = makeHost({
+      strategy: strat,
+      sink: { recordSignal: () => undefined },
+      hostOpts: { tradingHalted: () => halted },
+    });
+
+    await host.start();
+    stream.push(candle(1));
+    await tick();
+    expect(strat.calls).toBe(0); // decide suppressed by the kill-switch
+
+    halted = false; // kill-switch lifted
+    stream.push(candle(2));
+    await tick();
+    stream.close();
+
+    expect(strat.calls).toBe(1);
+    // The halted candle still folded into history even though it never triggered a decide.
+    const hist = strat.inputs[0]?.snapshot.candles.get(S);
+    expect(hist?.map((c) => c.eventTime)).toEqual([epochMs(1), epochMs(2)]);
+  });
+
+  it('constraintsFor populates onInit ctx.symbolConstraints for each resolved subscribed symbol', async () => {
+    const id = strategyId('constraints');
+    const strat = new ProgrammableStrategy(id, { interval: '1m', bars: 2 }, () =>
+      Promise.resolve([]),
+    );
+    const constraints: SymbolConstraints = {
+      tickSize: price('0.01'),
+      lotStep: qty('0.001'),
+      minNotional: price('10'),
+    };
+    const { host } = makeHost({
+      strategy: strat,
+      sink: { recordSignal: () => undefined },
+      hostOpts: { constraintsFor: (symbol) => (symbol === S ? constraints : undefined) },
+    });
+
+    await host.start();
+
+    expect(strat.initCtx?.symbolConstraints.get(S)).toEqual(constraints);
+  });
+
+  it('constraintsFor returning undefined for a symbol leaves it out of onInit ctx.symbolConstraints', async () => {
+    const id = strategyId('constraints-none');
+    const strat = new ProgrammableStrategy(id, { interval: '1m', bars: 2 }, () =>
+      Promise.resolve([]),
+    );
+    const { host } = makeHost({ strategy: strat, sink: { recordSignal: () => undefined } });
+
+    await host.start();
+
+    expect(strat.initCtx?.symbolConstraints.size).toBe(0);
+  });
+
+  it('ignores TRADE events entirely (no decide)', async () => {
+    const id = strategyId('trade');
+    const strat = new ProgrammableStrategy(id, { interval: '1m', bars: 2 }, () =>
+      Promise.resolve([]),
+    );
+    const { host, stream } = makeHost({ strategy: strat, sink: { recordSignal: () => undefined } });
+
+    await host.start();
     stream.push({
       kind: 'TRADE',
       venue: V,
       symbol: S,
       channel: 'trade',
-      seq: 4n,
-      eventTime: epochMs(4),
-      ingestTime: epochMs(5),
+      seq: 1n,
+      eventTime: epochMs(1),
+      ingestTime: epochMs(2),
       price: price('100'),
       qty: qty('1'),
       side: 'BUY',
-      tradeId: 't',
+      tradeId: 't1',
     });
-    await tick();
-    host.enqueueExecReport(id, execReport(3)); // queued; drained on the next stream event
-    stream.push(candle(3, 3));
     await tick();
     stream.close();
 
-    const got: Signal[] = [];
-    for await (const s of host.signals()) got.push(s);
-    expect(got.map((s) => s.kind).sort()).toEqual(['CANCEL_OPEN', 'FLATTEN']);
+    expect(strat.calls).toBe(0);
   });
 
-  it('conflates same-symbol ticker and book updates queued before a drain', async () => {
-    const sink: SignalSinkPort = { recordSignal: () => {} };
-    const strat = new FakeStrategy(strategyId('conf'));
-    strat.tickEmit = [sig('CANCEL_OPEN', 9)];
-    const stream = pushStream();
-    const { host } = makeHost({ strategy: strat, stream: stream.iterable, sink });
-    await host.start(); // populates the per-strategy runtime; the empty stream parks consumeEvents
+  it('conflates multiple ticker updates for the same symbol before a single drain', async () => {
+    const id = strategyId('conflate');
+    const strat = new ProgrammableStrategy(id, { interval: '1m', bars: 2 }, () =>
+      Promise.resolve([]),
+    );
+    const { host, stream } = makeHost({ strategy: strat, sink: { recordSignal: () => undefined } });
+    await host.start(); // parks consumeEvents on the empty stream
 
     const internals = host as unknown as {
       routeEvent(e: MarketEvent): void;
       drainMailboxes(): void;
     };
-    internals.routeEvent(ticker(1, 1));
-    internals.routeEvent(ticker(2, 2)); // same symbol → conflates onto the queued ticker
-    internals.routeEvent(book(3, 3));
-    internals.routeEvent(book(4, 4)); // same symbol → conflates onto the queued book
+    internals.routeEvent(ticker(1));
+    internals.routeEvent(ticker(2)); // same symbol → conflates onto the queued ticker
+    internals.drainMailboxes(); // folds the (conflated) ticker; never a trigger, so no decide yet
+    expect(strat.calls).toBe(0);
+
+    // A candle in the SAME drain as the tickers would be processed first (mailbox is priority-sorted,
+    // candle > ticker), snapshotting before the ticker folds in — so it is driven in its own drain.
+    internals.routeEvent(candle(3));
     internals.drainMailboxes();
     stream.close();
 
-    const got: Signal[] = [];
-    for await (const s of host.signals()) got.push(s);
-    // Only one conflated ticker was processed → exactly one CANCEL_OPEN.
-    expect(got.filter((s) => s.kind === 'CANCEL_OPEN')).toHaveLength(1);
+    expect(strat.calls).toBe(1);
+    expect(strat.inputs[0]?.snapshot.tickers.size).toBe(1);
+    expect(strat.inputs[0]?.snapshot.tickers.get(S)?.eventTime).toBe(epochMs(2));
   });
 
-  it('stop() halts ACTIVE strategies and ends the signal stream', async () => {
-    const sink: SignalSinkPort = { recordSignal: () => {} };
-    const strat = new FakeStrategy(strategyId('stop'));
-    const stream = pushStream();
-    const { host, registry, id } = makeHost({ strategy: strat, stream: stream.iterable, sink });
+  it('uses portfolioFor to populate snapshot.portfolio, keyed by the real strategy id', async () => {
+    const id = strategyId('pf');
+    const strat = new ProgrammableStrategy(id, { interval: '1m', bars: 2 }, () =>
+      Promise.resolve([]),
+    );
+    const position: Position = {
+      strategyId: id,
+      venue: V,
+      symbol: S,
+      signedQty: new Decimal(1),
+      avgEntry: price('100'),
+      realizedPnl: new Decimal(0),
+    };
+    const view: StrategyPortfolioView = {
+      strategyId: id,
+      positions: new Map([[String(S), position]]),
+      openOrders: [],
+    };
+    const { host, stream } = makeHost({
+      strategy: strat,
+      sink: { recordSignal: () => undefined },
+      hostOpts: { portfolioFor: () => view },
+    });
+
     await host.start();
-    // Park a consumer on signals() BEFORE stop() so stop() wakes the waiting resolver.
+    stream.push(candle(1));
+    await tick();
+    stream.close();
+
+    expect(strat.inputs[0]?.snapshot.portfolio.strategyId).toBe(id);
+    expect(strat.inputs[0]?.snapshot.portfolio.positions.get(String(S))).toEqual(position);
+  });
+
+  it('stop() calls onStop, halts lifecycle, and completes the signals() iterator', async () => {
+    const id = strategyId('stop');
+    const strat = new ProgrammableStrategy(id, { interval: '1m', bars: 2 }, () =>
+      Promise.resolve([]),
+    );
+    const { host, registry, stream } = makeHost({
+      strategy: strat,
+      sink: { recordSignal: () => undefined },
+    });
+
+    await host.start();
     const iterator = host.signals()[Symbol.asyncIterator]();
-    const pending = iterator.next();
+    const pending = iterator.next(); // parked BEFORE stop() so stop() wakes the waiting resolver
     await host.stop();
+
+    expect(strat.stopped).toBe(true);
     expect(registry.getLifecycle(id)).toBe('HALTED');
     const r = await pending;
     expect(r.done).toBe(true);
+    stream.close();
+  });
+
+  it('works with the opts argument omitted (constructor defaults apply)', async () => {
+    const id = strategyId('defaults');
+    const strat = new ProgrammableStrategy(id, { interval: '1m', bars: 2 }, () =>
+      Promise.resolve([]),
+    );
+    const registry = new StrategyRegistry();
+    registry.register('fake', () => strat);
+    registry.enable(id, 'fake', {});
+    const stream = pushStream();
+    const marketStream: MarketStreamPort = { subscribe: () => stream.iterable };
+    const host = new StrategyHost(
+      marketStream,
+      defaultFeedHealth(),
+      { recordSignal: () => undefined },
+      registry,
+    );
+
+    await host.start();
+    stream.push(candle(1));
+    await tick();
+    stream.close();
+
+    expect(strat.calls).toBe(1);
+  });
+});
+
+describe('StrategyHost B5 entry cap (agentic)', () => {
+  it('drops the 13th ENTER_LONG of the UTC day under the default cap, admitting the first 12', async () => {
+    const id = strategyId('entry-cap-default');
+    const recorded: Signal[] = [];
+    const sink: SignalSinkPort = { recordSignal: (s) => void recorded.push(s) };
+    const strat = new ProgrammableStrategy(id, { interval: '1m', bars: 2 }, (input) =>
+      Promise.resolve([sig(id, 'ENTER_LONG', input.snapshot.eventTime)]),
+    );
+    const { host, stream } = makeHost({ strategy: strat, sink });
+
+    await host.start();
+    for (let i = 0; i < 13; i++) {
+      stream.push(candle(1000 + i));
+      await tick();
+    }
+    stream.close();
+
+    expect(strat.calls).toBe(13); // the strategy itself is never gated — only emission is
+    expect(recorded).toHaveLength(12); // the 13th ENTER_LONG dropped
+  });
+
+  it('exit/flatten signals always pass, even once the entry cap is exhausted', async () => {
+    const id = strategyId('entry-cap-exit');
+    const recorded: Signal[] = [];
+    const sink: SignalSinkPort = { recordSignal: (s) => void recorded.push(s) };
+    let call = 0;
+    const strat = new ProgrammableStrategy(id, { interval: '1m', bars: 2 }, () => {
+      call += 1;
+      // First 12 saturate the default cap; calls 13+ are FLATTEN, which must never be capped.
+      return Promise.resolve([sig(id, call <= 12 ? 'ENTER_LONG' : 'FLATTEN', call)]);
+    });
+    const { host, stream } = makeHost({ strategy: strat, sink });
+
+    await host.start();
+    for (let i = 0; i < 15; i++) {
+      stream.push(candle(1000 + i));
+      await tick();
+    }
+    stream.close();
+
+    expect(recorded.filter((s) => s.kind === 'ENTER_LONG')).toHaveLength(12);
+    expect(recorded.filter((s) => s.kind === 'FLATTEN')).toHaveLength(3);
+  });
+
+  it('resets the entry counter on a UTC-day rollover (nowFn seam)', async () => {
+    const id = strategyId('entry-cap-rollover');
+    const recorded: Signal[] = [];
+    const sink: SignalSinkPort = { recordSignal: (s) => void recorded.push(s) };
+    const strat = new ProgrammableStrategy(id, { interval: '1m', bars: 2 }, (input) =>
+      Promise.resolve([sig(id, 'ENTER_LONG', input.snapshot.eventTime)]),
+    );
+    let clock = 0;
+    const nowFn = () => clock;
+    const { host, stream } = makeHost({
+      strategy: strat,
+      sink,
+      hostOpts: { nowFn, maxEntriesPerDay: 2 },
+    });
+
+    await host.start();
+    stream.push(candle(1));
+    await tick();
+    stream.push(candle(2));
+    await tick();
+    stream.push(candle(3)); // 3rd same-day entry: capped
+    await tick();
+    expect(recorded).toHaveLength(2);
+
+    clock = 24 * 60 * 60 * 1000; // next UTC day
+    stream.push(candle(4));
+    await tick();
+    stream.close();
+
+    expect(recorded).toHaveLength(3); // fresh day, fresh cap
+  });
+
+  it('the entry counter persists across a tradingHalted toggle (cap independent of the kill-switch)', async () => {
+    const id = strategyId('entry-cap-halt');
+    const recorded: Signal[] = [];
+    const sink: SignalSinkPort = { recordSignal: (s) => void recorded.push(s) };
+    const strat = new ProgrammableStrategy(id, { interval: '1m', bars: 2 }, (input) =>
+      Promise.resolve([sig(id, 'ENTER_LONG', input.snapshot.eventTime)]),
+    );
+    let halted = false;
+    const { host, stream } = makeHost({
+      strategy: strat,
+      sink,
+      hostOpts: { maxEntriesPerDay: 2, tradingHalted: () => halted },
+    });
+
+    await host.start();
+    stream.push(candle(1));
+    await tick();
+    expect(recorded).toHaveLength(1); // 1/2 used
+
+    halted = true;
+    stream.push(candle(2)); // suppressed entirely by the kill-switch — no decide, no count change
+    await tick();
+    expect(strat.calls).toBe(1);
+    expect(recorded).toHaveLength(1);
+
+    halted = false;
+    stream.push(candle(3)); // 1 slot still remaining from before the halt
+    await tick();
+    expect(recorded).toHaveLength(2);
+
+    stream.push(candle(4)); // now exhausted — the halt window never reset or bypassed the cap
+    await tick();
+    stream.close();
+
+    expect(recorded).toHaveLength(2);
+  });
+
+  it('the entry counter persists across a DRAINING excursion (cap independent of lifecycle transitions)', async () => {
+    const id = strategyId('entry-cap-drain');
+    const recorded: Signal[] = [];
+    const sink: SignalSinkPort = { recordSignal: (s) => void recorded.push(s) };
+    const strat = new ProgrammableStrategy(id, { interval: '1m', bars: 2 }, (input) =>
+      Promise.resolve([sig(id, 'ENTER_LONG', input.snapshot.eventTime)]),
+    );
+    const { host, registry, stream } = makeHost({
+      strategy: strat,
+      sink,
+      hostOpts: { maxEntriesPerDay: 2 },
+    });
+
+    await host.start();
+    stream.push(candle(1));
+    await tick();
+    expect(recorded).toHaveLength(1); // 1/2 used
+
+    registry.disable(id); // OPERATOR drain — ENTER_LONG filtered by RISK_REDUCING before the cap check
+    stream.push(candle(2));
+    await tick();
+    expect(recorded).toHaveLength(1); // still 1/2 — the drained decide never reached admitEntry
+
+    registry.setLifecycle(id, 'ACTIVE'); // recovered
+    stream.push(candle(3));
+    await tick();
+    stream.close();
+
+    expect(recorded).toHaveLength(2); // consumes the last remaining slot — cap state carried through
   });
 });

@@ -13,9 +13,9 @@ export default tseslint.config(
       'docs/**',
       'drizzle/**',
       'drizzle.config.ts',
-      // Research/analysis tooling (EMA-cross backtest); validated by its own sanity test +
-      // adversarial review, intentionally outside the production typecheck/lint gate.
-      'test/backtest/**',
+      // Operator CLI scripts, run directly via `node` — not part of any tsconfig project (see
+      // tsconfig.eslint.json's include list), so typed linting has no project context for them.
+      'scripts/**',
     ],
   },
   ...tseslint.configs.recommendedTypeChecked,

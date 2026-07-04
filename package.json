@@ -11,6 +11,7 @@
     "start": "node dist/main.js",
     "start:dev": "nest start --watch",
     "migrate": "drizzle-kit migrate",
+    "playbook:promote": "node scripts/playbook-promote.mjs",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit -p tsconfig.eslint.json",
     "format": "prettier --write .",
@@ -20,7 +21,8 @@
     "test:paper": "vitest run --passWithNoTests test/paper",
     "test:cov": "vitest run --coverage test/unit test/livegate",
     "test:db": "vitest run --passWithNoTests test/db",
-    "test:testnet": "vitest run --passWithNoTests test/testnet"
+    "test:testnet": "vitest run --passWithNoTests test/testnet",
+    "eval:agentic": "vitest run test/eval"
   },
   "dependencies": {
     "@nestjs/common": "^11.1.26",

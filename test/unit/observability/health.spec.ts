@@ -1,3 +1,4 @@
+import { Global, Module } from '@nestjs/common';
 import { HealthCheckService } from '@nestjs/terminus';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { register } from 'prom-client';
@@ -7,6 +8,8 @@ import { AppConfigModule } from '../../../src/modules/config/config.module';
 import { HealthController } from '../../../src/modules/observability/health.controller';
 import { MetricsService } from '../../../src/modules/observability/metrics.service';
 import { ObservabilityModule } from '../../../src/modules/observability/observability.module';
+import { STRATEGY_REGISTRY, type StrategyRegistryPort } from '../../../src/ports/strategy';
+import { strategyId } from '../../../src/domain/types/ids';
 
 describe('Health endpoints (unit — no HTTP)', () => {
   let moduleRef: TestingModule;
@@ -47,6 +50,15 @@ describe('Health endpoints (unit — no HTTP)', () => {
     const configDetail = details?.['config'] as Record<string, unknown> | undefined;
     expect(configDetail?.['effectiveMode']).toBe('paper');
     expect(configDetail?.['killSwitchState']).toBe('RUNNING');
+  });
+
+  it('ready() config detail includes "strategies" — STRATEGY_REGISTRY is bridged into global scope (G3c)', async () => {
+    const result = await healthController.ready();
+    const details = result.info as Record<string, unknown> | undefined;
+    const configDetail = details?.['config'] as Record<string, unknown> | undefined;
+    // Under test/ci, AppModule's onApplicationBootstrap (which registers the agentic strategy) never
+    // fires — so the bridged registry is present but empty, not absent.
+    expect(configDetail?.['strategies']).toEqual({});
   });
 
   it('ready() result.info contains a "database" key when DbHealthBridgeModule is active', async () => {
@@ -105,5 +117,64 @@ describe('Health endpoints — without DbHealthBridgeModule (DB_HEALTH absent)',
     expect(result.status).toBe('ok');
     const info = result.info as Record<string, unknown> | undefined;
     expect(info?.['database']).toBeUndefined();
+  });
+});
+
+// Simulates the real G3c StrategyRegistryBridgeModule (app.module.ts) with a fake registry carrying
+// non-trivial state (multiple strategies, a drain reason) — exercising the per-strategy health detail
+// in isolation from AppModule's own (empty-under-test) registry. Same bridge-module pattern AppModule
+// uses for DB_HEALTH/PORTFOLIO_VIEW.
+const FAKE_REGISTRY: StrategyRegistryPort = {
+  register: () => undefined,
+  enable: () => undefined,
+  disable: () => undefined,
+  states: () => [
+    { id: strategyId('agentic-1'), lifecycle: 'ACTIVE' },
+    { id: strategyId('agentic-2'), lifecycle: 'DRAINING' },
+  ],
+  getDrainReason: (id) => (id === strategyId('agentic-2') ? 'AUTO' : undefined),
+};
+@Global()
+@Module({
+  providers: [{ provide: STRATEGY_REGISTRY, useValue: FAKE_REGISTRY }],
+  exports: [STRATEGY_REGISTRY],
+})
+class FakeStrategyRegistryBridgeModule {}
+
+describe('Health endpoints — with STRATEGY_REGISTRY bridged (fake)', () => {
+  let moduleRef: TestingModule;
+  let healthController: HealthController;
+
+  beforeAll(async () => {
+    process.env['NODE_ENV'] = 'test';
+    process.env['PORT'] = '3100';
+
+    register.clear();
+
+    moduleRef = await Test.createTestingModule({
+      imports: [AppConfigModule, FakeStrategyRegistryBridgeModule, ObservabilityModule],
+    }).compile();
+
+    await moduleRef.init();
+
+    healthController = moduleRef.get(HealthController);
+  });
+
+  afterAll(async () => {
+    await moduleRef.close();
+    register.clear();
+  });
+
+  it('ready() config detail includes per-strategy lifecycle, with drainReason only where set', async () => {
+    const result = await healthController.ready();
+    expect(result.status).toBe('ok');
+    const configDetail = (result.info as Record<string, unknown> | undefined)?.['config'] as
+      | Record<string, unknown>
+      | undefined;
+    expect(configDetail?.['killSwitchState']).toBe('RUNNING'); // unrelated detail stays present
+    expect(configDetail?.['strategies']).toEqual({
+      'agentic-1': { lifecycle: 'ACTIVE' },
+      'agentic-2': { lifecycle: 'DRAINING', drainReason: 'AUTO' },
+    });
   });
 });

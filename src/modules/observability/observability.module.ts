@@ -22,7 +22,14 @@ import {
   POSITION_NOTIONAL_GAUGE,
   OPEN_ORDERS_GAUGE,
   IN_FLIGHT_GAUGE,
+  STRATEGY_LIFECYCLE_GAUGE,
+  AGENT_DECIDE_COUNTER,
+  AGENT_TOKENS_COUNTER,
+  AGENT_DECIDE_LATENCY_HISTOGRAM,
+  AGENTIC_PLAYBOOK_INFO_GAUGE,
+  PLAYBOOK_VALIDATOR_REJECTIONS_COUNTER,
 } from './metrics.service';
+import { AgentMetricsRecorder } from './agent-metrics-recorder.service';
 import { buildPinoHttpOptions } from './logger.config';
 import type { AppConfig } from '../../ports/app-config';
 
@@ -67,7 +74,14 @@ import type { AppConfig } from '../../ports/app-config';
     POSITION_NOTIONAL_GAUGE,
     OPEN_ORDERS_GAUGE,
     IN_FLIGHT_GAUGE,
+    STRATEGY_LIFECYCLE_GAUGE,
+    AGENT_DECIDE_COUNTER,
+    AGENT_TOKENS_COUNTER,
+    AGENT_DECIDE_LATENCY_HISTOGRAM,
+    AGENTIC_PLAYBOOK_INFO_GAUGE,
+    PLAYBOOK_VALIDATOR_REJECTIONS_COUNTER,
+    AgentMetricsRecorder,
   ],
-  exports: [EventLoopHealthIndicator, MetricsService],
+  exports: [EventLoopHealthIndicator, MetricsService, AgentMetricsRecorder],
 })
 export class ObservabilityModule {}

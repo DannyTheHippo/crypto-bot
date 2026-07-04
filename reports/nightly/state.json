@@ -1,4 +1,5 @@
 {
+  "config_note_2026-07-03": "Repo config now selects ACTIVE_STRATEGY=agentic (deterministic lane removed). The deployed container still runs donchian-breakout from the last build until the next rebuild/deploy. Live gate and risk limits unchanged.",
   "last_good": "paper-2026-06-15",
   "updated_at": "2026-06-15T16:28:00Z",
   "active_strategy": "donchian-breakout",

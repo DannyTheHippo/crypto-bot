@@ -102,6 +102,23 @@ const envSchema = z.object({
   // Inert unless TRADING_MODE=testnet. Default 'demo' (live-mirroring dress rehearsal; the keys this
   // deployment ships are BINANCE_DEMO_*). Set SANDBOX_ENV=testnet for the testnet.binance.vision sandbox.
   SANDBOX_ENV: z.enum(['testnet', 'demo']).default('demo'),
+  // Agentic lane knobs — validated here so a later composition pass can read them off ConfigService
+  // instead of process.env, without renaming. ANTHROPIC_API_KEY deliberately excluded (secret; stays
+  // out of AppConfig per the live-secret-stripping precedent above).
+  AGENTIC_MODEL: z.string().min(1).default('claude-opus-4-8'),
+  AGENTIC_TIMEOUT_MS: z.coerce.number().int().positive().default(30000),
+  AGENTIC_MAX_TOKENS: z.coerce.number().int().positive().default(1024),
+  AGENTIC_MIN_DECISION_INTERVAL_MS: z.coerce.number().int().min(0).default(0),
+  AGENTIC_WARMUP_BARS: z.coerce.number().int().positive().default(50),
+  AGENTIC_MAX_CALLS_PER_DAY: z.coerce.number().int().positive().default(500),
+  AGENTIC_MAX_TOKENS_PER_DAY: z.coerce.number().int().positive().default(2_000_000),
+  AGENTIC_MAX_ENTRIES_PER_DAY: z.coerce.number().int().positive().default(12),
+  AGENTIC_DRAIN_COOLDOWN_BASE_MS: z.coerce.number().int().positive().default(30_000),
+  AGENTIC_DRAIN_COOLDOWN_MAX_MS: z.coerce.number().int().positive().default(900_000),
+  // 0 disables periodic reflection.
+  AGENTIC_REFLECTION_EVERY_N_TRADES: z.coerce.number().int().min(0).default(10),
+  // Absent means unpinned — no default (an explicit default would look like a pin).
+  AGENTIC_PLAYBOOK_PIN: z.coerce.number().int().positive().optional(),
 });
 
 export function validate(env: Record<string, string | undefined>): AppConfig {
@@ -136,6 +153,18 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     LOG_LEVEL: logLevel,
     DATABASE_URL: dbUrl,
     SANDBOX_ENV: sandboxEnv,
+    AGENTIC_MODEL: agenticModel,
+    AGENTIC_TIMEOUT_MS: agenticTimeoutMs,
+    AGENTIC_MAX_TOKENS: agenticMaxTokens,
+    AGENTIC_MIN_DECISION_INTERVAL_MS: agenticMinDecisionIntervalMs,
+    AGENTIC_WARMUP_BARS: agenticWarmupBars,
+    AGENTIC_MAX_CALLS_PER_DAY: agenticMaxCallsPerDay,
+    AGENTIC_MAX_TOKENS_PER_DAY: agenticMaxTokensPerDay,
+    AGENTIC_MAX_ENTRIES_PER_DAY: agenticMaxEntriesPerDay,
+    AGENTIC_DRAIN_COOLDOWN_BASE_MS: agenticDrainCooldownBaseMs,
+    AGENTIC_DRAIN_COOLDOWN_MAX_MS: agenticDrainCooldownMaxMs,
+    AGENTIC_REFLECTION_EVERY_N_TRADES: agenticReflectionEveryNTrades,
+    AGENTIC_PLAYBOOK_PIN: agenticPlaybookPin,
   } = parsed.data;
   const bootId = crypto.randomUUID();
   const venues = parseVenues(env);
@@ -158,6 +187,20 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     observability: { logLevel },
     db: { url: dbUrl },
     venues,
+    agentic: {
+      model: agenticModel,
+      timeoutMs: agenticTimeoutMs,
+      maxTokens: agenticMaxTokens,
+      minDecisionIntervalMs: agenticMinDecisionIntervalMs,
+      warmupBars: agenticWarmupBars,
+      maxCallsPerDay: agenticMaxCallsPerDay,
+      maxTokensPerDay: agenticMaxTokensPerDay,
+      maxEntriesPerDay: agenticMaxEntriesPerDay,
+      drainCooldownBaseMs: agenticDrainCooldownBaseMs,
+      drainCooldownMaxMs: agenticDrainCooldownMaxMs,
+      reflectionEveryNTrades: agenticReflectionEveryNTrades,
+      playbookPin: agenticPlaybookPin,
+    },
     ...liveFields,
   };
 

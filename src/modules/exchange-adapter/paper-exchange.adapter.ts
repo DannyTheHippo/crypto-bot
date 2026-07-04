@@ -24,7 +24,7 @@ import {
   type FeeCcy,
   type InsufficientDepthPolicy,
 } from '../../domain/paper/fill';
-import { mulberry32 } from '../../domain/strategy/prng';
+import { mulberry32 } from '../../domain/rng/prng';
 import { splitSymbol } from '../../domain/types/symbol';
 import { price, qty } from '../../domain/types/money';
 import {

@@ -1,0 +1,72 @@
+import { describe, it, expect } from 'vitest';
+import { InMemoryAgentDecisionJournal } from '../../../src/modules/persistence/repositories/in-memory-agent-decision-journal';
+import type { AgentDecisionEntry } from '../../../src/ports/agentic-strategy';
+import { strategyId, symbolId, venueId, epochMs } from '../../../src/domain/types/ids';
+
+function entry(eventTime: number, overrides: Partial<AgentDecisionEntry> = {}): AgentDecisionEntry {
+  return {
+    strategyId: strategyId('s1'),
+    symbol: symbolId('BTC/USDT'),
+    venue: venueId('binance'),
+    triggerKind: 'candle',
+    basedOnSeq: 1n,
+    eventTime: epochMs(eventTime),
+    model: 'claude-opus-4-8',
+    action: 'hold',
+    confidence: 0.5,
+    rationale: 'no edge',
+    refPrice: '50000.5',
+    close: '50000.5',
+    inputTokens: 100,
+    outputTokens: 20,
+    latencyMs: 500,
+    playbookVersion: 1,
+    promptHash: 'hash-1',
+    ...overrides,
+  };
+}
+
+describe('InMemoryAgentDecisionJournal', () => {
+  it('recent() returns rows oldest→newest, matching AgentContext.recentDecisions convention', async () => {
+    const journal = new InMemoryAgentDecisionJournal();
+    journal.record(entry(1));
+    journal.record(entry(2));
+    journal.record(entry(3));
+
+    const rows = await journal.recent(10);
+    expect(rows.map((r) => r.eventTime)).toEqual([1, 2, 3]);
+    expect(rows.map((r) => r.id)).toEqual(['1', '2', '3']);
+  });
+
+  it('recent(limit) returns only the most recent `limit` rows, still oldest→newest', async () => {
+    const journal = new InMemoryAgentDecisionJournal();
+    for (let i = 1; i <= 5; i++) journal.record(entry(i));
+
+    const rows = await journal.recent(2);
+    expect(rows.map((r) => r.eventTime)).toEqual([4, 5]);
+  });
+
+  it('ring buffer evicts the oldest row once MAX_ROWS (500) is exceeded', async () => {
+    const journal = new InMemoryAgentDecisionJournal();
+    for (let i = 1; i <= 501; i++) journal.record(entry(i));
+
+    const rows = await journal.recent(501);
+    expect(rows).toHaveLength(500);
+    // eventTime=1 (the oldest) was evicted; the tail is 2..501.
+    expect(rows[0]!.eventTime).toBe(2);
+    expect(rows[rows.length - 1]!.eventTime).toBe(501);
+  });
+
+  it('preserves every field on the entry, mapping id/createdAt in addition', async () => {
+    const journal = new InMemoryAgentDecisionJournal();
+    journal.record(entry(1, { action: 'long', confidence: 0.9, rationale: 'trend confirmed' }));
+
+    const [row] = await journal.recent(1);
+    expect(row!.action).toBe('long');
+    expect(row!.confidence).toBe(0.9);
+    expect(row!.rationale).toBe('trend confirmed');
+    expect(row!.strategyId).toBe('s1');
+    expect(typeof row!.id).toBe('string');
+    expect(typeof row!.createdAt).toBe('number');
+  });
+});

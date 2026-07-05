@@ -36,7 +36,7 @@ export class EquitySamplerService {
       equity = equity.add(p.signedQty.mul(mark));
       unrealized = unrealized.add(p.signedQty.mul(mark.sub(p.avgEntry)));
     }
-    this.portfolio.recordEquity(equity);
+    this.portfolio.recordEquity(equity, unrealized);
 
     const sample: EquitySample = {
       ts: now,

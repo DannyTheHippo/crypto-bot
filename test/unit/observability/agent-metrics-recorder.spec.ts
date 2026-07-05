@@ -8,6 +8,7 @@ import {
   AGENT_DECIDE_LATENCY_HISTOGRAM,
   AGENTIC_PLAYBOOK_INFO_GAUGE,
   PLAYBOOK_VALIDATOR_REJECTIONS_COUNTER,
+  AGENT_CLIENT_INFO_GAUGE,
 } from '../../../src/modules/observability/metrics.service';
 import { AgentMetricsRecorder } from '../../../src/modules/observability/agent-metrics-recorder.service';
 
@@ -24,6 +25,7 @@ describe('AgentMetricsRecorder', () => {
         AGENT_DECIDE_LATENCY_HISTOGRAM,
         AGENTIC_PLAYBOOK_INFO_GAUGE,
         PLAYBOOK_VALIDATOR_REJECTIONS_COUNTER,
+        AGENT_CLIENT_INFO_GAUGE,
         AgentMetricsRecorder,
       ],
     }).compile();
@@ -35,7 +37,7 @@ describe('AgentMetricsRecorder', () => {
     register.clear();
   });
 
-  it('registers all five agentic-lane metrics', async () => {
+  it('registers all six agentic-lane metrics', async () => {
     const names = (await register.getMetricsAsJSON()).map((m) => m.name);
     for (const name of [
       'agent_decide_total',
@@ -43,6 +45,7 @@ describe('AgentMetricsRecorder', () => {
       'agent_decide_latency_seconds',
       'agentic_playbook_info',
       'playbook_validator_rejections_total',
+      'agent_client_info',
     ]) {
       expect(names, name).toContain(name);
     }
@@ -88,6 +91,12 @@ describe('AgentMetricsRecorder', () => {
     expect(metric).toContain('banned_token="true"} 1');
     expect(metric).toContain('banned_token="false"} 1');
   });
+
+  it('setClientInfo sets agent_client_info{kind} to 1', async () => {
+    recorder.setClientInfo('stub');
+    const metric = await register.getSingleMetricAsString('agent_client_info');
+    expect(metric).toContain('kind="stub"} 1');
+  });
 });
 
 describe('AgentMetricsRecorder — never throws into a trading path', () => {
@@ -112,11 +121,13 @@ describe('AgentMetricsRecorder — never throws into a trading path', () => {
       throwing as unknown as Histogram<string>,
       throwing as unknown as Gauge<string>,
       throwing as unknown as Counter<string>,
+      throwing as unknown as Gauge<string>,
     );
     expect(() => recorder.recordDecide('proposed')).not.toThrow();
     expect(() => recorder.recordTokens(1, 1)).not.toThrow();
     expect(() => recorder.observeDecideLatency(1)).not.toThrow();
     expect(() => recorder.setPlaybookInfo(1)).not.toThrow();
     expect(() => recorder.recordValidatorRejection(true)).not.toThrow();
+    expect(() => recorder.setClientInfo('stub')).not.toThrow();
   });
 });

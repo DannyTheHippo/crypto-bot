@@ -73,6 +73,14 @@ export const DRAWDOWN_GAUGE = makeGaugeProvider({
   name: 'drawdown_ratio',
   help: '(peak − equity) / peak, 0..1',
 });
+export const UNREALIZED_PNL_GAUGE = makeGaugeProvider({
+  name: 'unrealized_pnl_usdt',
+  help: 'Unrealized PnL on open positions, Σ signedQty×(mark − avgEntry), USDT',
+});
+export const STARTING_CASH_GAUGE = makeGaugeProvider({
+  name: 'starting_cash_usdt',
+  help: 'Seed baseline (PortfolioConfig.startingCash) — return-since-inception denominator, USDT',
+});
 export const REALIZED_PNL_GAUGE = makeGaugeProvider({
   name: 'realized_pnl_usdt',
   help: 'Realized PnL per strategy/symbol, USDT',
@@ -124,6 +132,13 @@ export const PLAYBOOK_VALIDATOR_REJECTIONS_COUNTER = makeCounterProvider({
   help: 'Playbook validator rejections, tagged by whether the denylist tripwire fired',
   labelNames: ['banned_token'] as const,
 });
+// (E) Which agent client the lane bound at boot: 'stub' = inert (no ANTHROPIC_API_KEY, or test/ci) so
+// the demo proposes nothing; 'anthropic' = a live client that actually decides. One series carries 1.
+export const AGENT_CLIENT_INFO_GAUGE = makeGaugeProvider({
+  name: 'agent_client_info',
+  help: 'Bound agentic client kind (1 on the active kind; stub = INERT, anthropic = LIVE)',
+  labelNames: ['kind'] as const,
+});
 
 // §strategy lifecycle — sampled in the 5s loop below (same pull pattern as kill_switch_state):
 // each strategy carries exactly one state at 1, all others in the union explicit 0 (not just absent),
@@ -162,6 +177,8 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
     @InjectMetric('peak_equity_usdt') private readonly peakEquityGauge: Gauge<string>,
     @InjectMetric('day_pnl_usdt') private readonly dayPnlGauge: Gauge<string>,
     @InjectMetric('drawdown_ratio') private readonly drawdownGauge: Gauge<string>,
+    @InjectMetric('unrealized_pnl_usdt') private readonly unrealizedPnlGauge: Gauge<string>,
+    @InjectMetric('starting_cash_usdt') private readonly startingCashGauge: Gauge<string>,
     @InjectMetric('realized_pnl_usdt') private readonly realizedPnlGauge: Gauge<string>,
     @InjectMetric('position_qty') private readonly positionQtyGauge: Gauge<string>,
     @InjectMetric('position_notional_usdt') private readonly positionNotionalGauge: Gauge<string>,
@@ -211,6 +228,8 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
         this.equityGauge.set(snap.equity.toNumber());
         this.cashGauge.set(snap.balances.get('USDT')?.free.toNumber() ?? 0);
         this.peakEquityGauge.set(snap.peakEquity.toNumber());
+        this.unrealizedPnlGauge.set(snap.unrealized.toNumber());
+        this.startingCashGauge.set(snap.startingCash.toNumber());
         this.dayPnlGauge.set(snap.equity.minus(snap.sodEquityUtc).toNumber());
         this.drawdownGauge.set(
           snap.peakEquity.gt(0)

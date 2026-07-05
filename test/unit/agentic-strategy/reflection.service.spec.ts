@@ -117,9 +117,21 @@ function fakePlaybookStore(
   return { store, appended };
 }
 
-function fakeRecorder(): { recorder: ReflectionMetricsRecorder; rejections: boolean[] } {
+function fakeRecorder(): {
+  recorder: ReflectionMetricsRecorder;
+  rejections: boolean[];
+  tokens: Array<[number, number]>;
+} {
   const rejections: boolean[] = [];
-  return { recorder: { recordValidatorRejection: (b) => void rejections.push(b) }, rejections };
+  const tokens: Array<[number, number]> = [];
+  return {
+    recorder: {
+      recordValidatorRejection: (b) => void rejections.push(b),
+      recordTokens: (i, o) => void tokens.push([i, o]),
+    },
+    rejections,
+    tokens,
+  };
 }
 
 function warnLogger(): { warn: (msg: string) => void; messages: string[] } {
@@ -344,6 +356,91 @@ describe('ReflectionService', () => {
     });
   });
 
+  describe('auto-promotion (G4b)', () => {
+    const revision = (): Response =>
+      apiResponse(
+        revisionToolBody({ playbook: validPlaybookContent('revised'), changelog: 'tweak' }),
+      );
+
+    it('auto-promotes the minted candidate once closedTradeCount reaches autoPromoteMinTrades', async () => {
+      const h = buildHarness();
+      h.fetchFn.mockResolvedValue(revision());
+      const service = new ReflectionService(
+        baseCfg({ everyNTrades: 1, autoPromoteMinTrades: 30 }),
+        h.deps,
+      );
+
+      // The 2nd onClosedTrade arg is the strategy's cumulative closed-trade count (the promotion gate).
+      service.onClosedTrade(SID, 30);
+      await flush();
+
+      // A 'reflection' candidate is minted, then a 'promotion' row targeting it is appended.
+      expect(h.storeApi.appended.map((a) => a.source)).toEqual(['reflection', 'promotion']);
+      const mintedVersion = 2; // fakePlaybookStore: current version 1, first append → 2
+      const promotion = h.storeApi.appended[1]!;
+      expect(promotion.parentVersion).toBe(mintedVersion);
+      expect(promotion.content).toContain(`auto-promoted version ${mintedVersion}`);
+      expect(h.logger.messages.some((m) => m.includes('auto-promoted playbook version'))).toBe(
+        true,
+      );
+    });
+
+    it('does NOT auto-promote below the trade floor — the candidate stays INACTIVE', async () => {
+      const h = buildHarness();
+      h.fetchFn.mockResolvedValue(revision());
+      const service = new ReflectionService(
+        baseCfg({ everyNTrades: 1, autoPromoteMinTrades: 30 }),
+        h.deps,
+      );
+
+      service.onClosedTrade(SID, 29); // one short of the floor
+      await flush();
+
+      expect(h.storeApi.appended.map((a) => a.source)).toEqual(['reflection']);
+    });
+
+    it('does NOT auto-promote when disabled (autoPromoteMinTrades defaults to 0)', async () => {
+      const h = buildHarness();
+      h.fetchFn.mockResolvedValue(revision());
+      const service = new ReflectionService(baseCfg({ everyNTrades: 1 }), h.deps);
+
+      service.onClosedTrade(SID, 1000);
+      await flush();
+
+      expect(h.storeApi.appended.map((a) => a.source)).toEqual(['reflection']);
+    });
+
+    it('leaves the candidate INACTIVE (never throws) when the promotion append fails (once-per-day cap)', async () => {
+      const h = buildHarness();
+      h.fetchFn.mockResolvedValue(revision());
+      const appended: Array<{ source: string }> = [];
+      const failingStore: ReflectionPlaybookStore = {
+        current: () => Promise.resolve({ version: 1, content: validPlaybookContent('seed') }),
+        append: (_c, source) => {
+          appended.push({ source });
+          return source === 'promotion'
+            ? Promise.reject(new Error('promotion already landed today'))
+            : Promise.resolve({ version: 2 });
+        },
+      };
+      const service = new ReflectionService(
+        baseCfg({ everyNTrades: 1, autoPromoteMinTrades: 30 }),
+        {
+          ...h.deps,
+          playbookStore: failingStore,
+        },
+      );
+
+      service.onClosedTrade(SID, 30);
+      await flush();
+
+      expect(appended.map((a) => a.source)).toEqual(['reflection', 'promotion']); // both attempted
+      expect(
+        h.logger.messages.some((m) => m.includes('auto-promotion') && m.includes('did not land')),
+      ).toBe(true);
+    });
+  });
+
   describe('trigger + in-flight guard', () => {
     it('fires once tradesSinceLastAttempt reaches N (the 7-day floor is trivially satisfied at boot), then holds off until the floor elapses', async () => {
       const h = buildHarness();
@@ -371,6 +468,31 @@ describe('ReflectionService', () => {
       service.onClosedTrade(SID, 7);
       await flush();
       expect(h.fetchFn).toHaveBeenCalledTimes(2); // floor elapsed — fires again
+    });
+
+    it('re-fires after a tuned cooldownMs shorter than the 7-day default (F7)', async () => {
+      const h = buildHarness();
+      h.fetchFn.mockResolvedValue(
+        apiResponse(revisionToolBody({ playbook: validPlaybookContent('v2'), changelog: 'tweak' })),
+      );
+      const service = new ReflectionService(
+        baseCfg({ everyNTrades: 1, cooldownMs: 60_000 }),
+        h.deps,
+      );
+
+      service.onClosedTrade(SID, 1);
+      await flush();
+      expect(h.fetchFn).toHaveBeenCalledTimes(1); // first attempt (cooldown trivially satisfied at boot)
+
+      h.clock.now += 30_000; // below the 60s cooldown
+      service.onClosedTrade(SID, 2);
+      await flush();
+      expect(h.fetchFn).toHaveBeenCalledTimes(1); // cooldown not yet elapsed
+
+      h.clock.now += 30_001; // total 60_001ms — past the tuned cooldown, far below 7 days
+      service.onClosedTrade(SID, 3);
+      await flush();
+      expect(h.fetchFn).toHaveBeenCalledTimes(2); // tuned cooldown elapsed — fires again
     });
 
     it('does not reset the counter on a blocked (precondition-failed) attempt — the very next closed trade retries', async () => {
@@ -505,6 +627,44 @@ describe('ReflectionService', () => {
       ]);
     });
 
+    it('includes a decisionOutcomes forward-outcome digest in the reflection request body (F1)', async () => {
+      const rows: AgentDecisionRow[] = [
+        row({ action: 'long', close: '100', eventTime: epochMs(T) }), // FLAT→LONG entry
+        row({ action: 'flat', close: '110', eventTime: epochMs(T + 1000) }), // closes; no t+1 fwd
+      ];
+      const h = buildHarness({ rows });
+      h.fetchFn.mockResolvedValue(
+        apiResponse(revisionToolBody({ playbook: validPlaybookContent('v2'), changelog: 'tweak' })),
+      );
+      const service = new ReflectionService(baseCfg({ everyNTrades: 1 }), h.deps);
+
+      service.onClosedTrade(SID, 1);
+      await flush();
+
+      expect(h.fetchFn).toHaveBeenCalledTimes(1);
+      const init = h.fetchFn.mock.calls[0]![1] as RequestInit;
+      const requestBody = JSON.parse(init.body as string) as {
+        messages: { content: string }[];
+      };
+      const userContent = requestBody.messages[0]!.content;
+      // The user message is the playbook block, then "\n\n", then JSON.stringify(payload); the
+      // payload is the only place carrying the "closedTrades" key, so slice from there to the end.
+      const payload = JSON.parse(userContent.slice(userContent.indexOf('{"closedTrades"'))) as {
+        decisionOutcomes?: {
+          entries: { count: number; meanForwardReturnPct: number | null };
+          confidence: { highLong: { count: number } };
+        };
+      };
+      expect(payload.decisionOutcomes).toBeDefined();
+      // Only the entry has a t+1 forward return ((110-100)/100 = +10%); the exit is the last row.
+      expect(payload.decisionOutcomes!.entries).toEqual({
+        count: 1,
+        meanForwardReturnPct: ((110 - 100) / 100) * 100,
+      });
+      // The entry's default confidence 0.5 lands in the high-confidence long bucket.
+      expect(payload.decisionOutcomes!.confidence.highLong.count).toBe(1);
+    });
+
     it('records token usage on the budget when the API call succeeds', async () => {
       const h = buildHarness();
       h.fetchFn.mockResolvedValue(
@@ -517,6 +677,8 @@ describe('ReflectionService', () => {
 
       expect(h.budget.snapshot().inputTokens).toBe(10);
       expect(h.budget.snapshot().outputTokens).toBe(20);
+      // D: reflection-path tokens also feed the metrics recorder (agent_tokens_total) for the cost view.
+      expect(h.recorderApi.tokens).toEqual([[10, 20]]);
     });
 
     it('logs an API error, mints nothing, never throws to the caller, and releases the in-flight guard', async () => {
@@ -570,5 +732,29 @@ describe('createReflectionService', () => {
   it('constructs without throwing when env knobs are absent, defaulting everyNTrades/timeoutMs/model', () => {
     const h = buildHarness();
     expect(() => createReflectionService({}, h.deps)).not.toThrow();
+  });
+
+  it('threads AGENTIC_REFLECTION_COOLDOWN_MS through to the cooldown gate (F7)', async () => {
+    const h = buildHarness();
+    h.fetchFn.mockResolvedValue(
+      apiResponse(revisionToolBody({ playbook: validPlaybookContent('v2'), changelog: 'tweak' })),
+    );
+    const service = createReflectionService(
+      {
+        ANTHROPIC_API_KEY: 'k',
+        AGENTIC_REFLECTION_EVERY_N_TRADES: '1',
+        AGENTIC_REFLECTION_COOLDOWN_MS: '1000',
+      },
+      h.deps,
+    );
+
+    service.onClosedTrade(SID, 1);
+    await flush();
+    expect(h.fetchFn).toHaveBeenCalledTimes(1);
+
+    h.clock.now += 1001; // past the 1s tuned cooldown, far below the 7-day default
+    service.onClosedTrade(SID, 2);
+    await flush();
+    expect(h.fetchFn).toHaveBeenCalledTimes(2);
   });
 });

@@ -20,9 +20,12 @@ journal → reflection (hypothesis generation) → human review (eval scorecards
    (`agent-decision-journal.adapter.ts` / in-memory fallback).
 2. **Reflection** (`reflection.service.ts`, trade-triggered, detached from the decide path). After
    every `everyNTrades` closed trades (default 10, config `AGENTIC_REFLECTION_EVERY_N_TRADES`), and
-   never more than once per 7-day cooldown floor, it reviews recent journal rows and drafts a
-   candidate playbook revision. `append(content, 'reflection', parentVersion)` mints an **INACTIVE**
-   candidate row — reflection never activates anything itself.
+   never more than once per cooldown (default 7 days, tunable via `AGENTIC_REFLECTION_COOLDOWN_MS`,
+   floored at 0), it reviews recent journal rows — closed round-trips, a hold summary, and a
+   **forward-outcome digest** (per-decision t+1 outcomes bucketed by entry/exit/held-long/stayed-flat
+   and by confidence, from `counterfactual-scoring.ts`) — and drafts a candidate playbook revision.
+   `append(content, 'reflection', parentVersion)` mints an **INACTIVE** candidate row — reflection
+   never activates anything itself.
 3. **Human review.** Candidates are scored against eval scorecards (a separate task/harness) before
    anyone decides whether to promote one.
 4. **Promotion** (`scripts/playbook-promote.mjs`, this task — §G4b). A human runs

@@ -119,6 +119,7 @@ describe('agenticEnv', () => {
       drainCooldownBaseMs: 1000,
       drainCooldownMaxMs: 2000,
       reflectionEveryNTrades: 7,
+      reflectionCooldownMs: 86400000,
     };
     const config = { get: () => agentic } as unknown as ConfigService<AppConfig, true>;
 
@@ -129,6 +130,7 @@ describe('agenticEnv', () => {
       AGENTIC_MAX_CALLS_PER_DAY: '42',
       AGENTIC_MAX_TOKENS_PER_DAY: '999999',
       AGENTIC_REFLECTION_EVERY_N_TRADES: '7',
+      AGENTIC_REFLECTION_COOLDOWN_MS: '86400000',
     });
   });
 });

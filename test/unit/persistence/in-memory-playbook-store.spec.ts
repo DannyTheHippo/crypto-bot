@@ -39,6 +39,24 @@ describe('InMemoryPlaybookStore', () => {
     });
   });
 
+  it('re-resolves live after an in-process promotion append — current() is not frozen at its first call (G4b auto-promotion)', async () => {
+    const store = new InMemoryPlaybookStore(SEED);
+    // First read caches the seed resolution.
+    await expect(store.current()).resolves.toMatchObject({ version: 1, source: 'seed' });
+
+    // A reflection append is INACTIVE — it must NOT disturb the cached resolution.
+    const { version: draftVersion } = await store.append('reflection draft', 'reflection', 1);
+    await expect(store.current()).resolves.toMatchObject({ version: 1, source: 'seed' });
+
+    // A promotion append drops the cache, so the NEXT current() re-resolves live — no restart needed.
+    await store.append('promotion note', 'promotion', draftVersion);
+    await expect(store.current()).resolves.toEqual({
+      version: 2,
+      content: 'reflection draft',
+      source: 'promotion',
+    });
+  });
+
   it('pinVersion overrides promotion resolution when its row exists', async () => {
     const store = new InMemoryPlaybookStore(SEED, 1);
     const { version: draftVersion } = await store.append('reflection draft', 'reflection', 1);

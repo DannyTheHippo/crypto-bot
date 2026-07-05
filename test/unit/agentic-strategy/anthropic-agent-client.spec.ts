@@ -173,8 +173,14 @@ describe('AnthropicAgentClient', () => {
       expect(s.venue).toBe(V);
       expect(s.symbol).toBe(SYM);
       expect(s.ttlMs).toBe(cfg.signalTtlMs);
-      expect(s.eventTime).toBe(input.snapshot.eventTime);
-      expect(s.dedupeKey).toBe(`${SID}:${SYM}:agentic:long:${input.snapshot.eventTime}`);
+      // TTL is anchored to the triggering bar's CLOSE (not the snapshot/open time) so a signal from a
+      // just-closed candle isn't born past the gateway's expiry window — see the client's eventTime
+      // comment and the dedicated expiry-anchor test below.
+      const anchorClose =
+        input.trigger.kind === 'candle' ? input.trigger.event.closeTime : input.snapshot.eventTime;
+      expect(s.eventTime).toBe(anchorClose);
+      expect(s.eventTime).not.toBe(input.snapshot.eventTime);
+      expect(s.dedupeKey).toBe(`${SID}:${SYM}:agentic:long:${anchorClose}`);
       expect(s.reason).toBe('x');
     });
 
@@ -192,6 +198,50 @@ describe('AnthropicAgentClient', () => {
       expect(signals).toHaveLength(1);
       expect(moneyToString(signals[0]!.refPrice)).toBe('51000.25');
       expect(signals[0]!.basedOnSeq).toBe(7n);
+    });
+
+    it('anchors a candle-triggered signal to the bar closeTime, not its openTime (expiry-gate regression)', async () => {
+      // Regression for the "every candle-triggered signal is born EXPIRED" bug: normalized candles
+      // stamp eventTime = openTime, and the gateway rejects when wall-clock now > eventTime + ttlMs.
+      // With STRATEGY_INTERVAL > SIGNAL_TTL_MS the open-time anchor guarantees expiry before Risk.
+      // The fix anchors the signal's eventTime to the bar's CLOSE, so the TTL window starts at close.
+      const fetchFn = vi.fn();
+      const client = new AnthropicAgentClient(buildCfg({ signalTtlMs: 120_000 }), fetchFn);
+      fetchFn.mockResolvedValue(
+        apiResponse(toolUseBody({ action: 'long', confidence: 0.6, rationale: 'r' })),
+      );
+      // A 5m bar (interval 300_000ms) that just closed; snapshot.eventTime is the bar OPEN time.
+      const barOpen = T;
+      const bar: CandleEvent = {
+        ...candle('50000', 9n, barOpen),
+        interval: '5m',
+        openTime: epochMs(barOpen),
+        closeTime: epochMs(barOpen + 300_000),
+      };
+      const input: AgentDecisionInput = {
+        strategyId: SID,
+        trigger: { kind: 'candle', event: bar },
+        snapshot: {
+          eventTime: epochMs(barOpen),
+          candles: new Map([[SYM, [bar]]]),
+          tickers: new Map(),
+          books: new Map(),
+          execReports: [],
+          portfolio: { strategyId: SID, positions: new Map(), openOrders: [] },
+        },
+        context: FLAT_CONTEXT,
+      };
+
+      const { signals } = await client.propose(input);
+
+      expect(signals).toHaveLength(1);
+      const s = signals[0]!;
+      // eventTime is the bar CLOSE, one interval after the open-time snapshot stamp.
+      expect(s.eventTime).toBe(barOpen + 300_000);
+      expect(s.eventTime).toBeGreaterThan(input.snapshot.eventTime);
+      // The signal is actionable for its full TTL past the bar close — a decide arriving even 60s
+      // after close (well beyond the observed p95 latency) is still inside eventTime + ttlMs.
+      expect(s.eventTime + s.ttlMs).toBeGreaterThan(barOpen + 300_000 + 60_000);
     });
 
     it('maps a flat decision from a LONG context into a single EXIT_LONG signal at full strength', async () => {

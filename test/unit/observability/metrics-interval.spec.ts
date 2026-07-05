@@ -57,9 +57,19 @@ describe('EventLoopHealthIndicator.getMonitor() and MetricsService interval', ()
       'peak_equity_usdt',
       'day_pnl_usdt',
       'drawdown_ratio',
+      'unrealized_pnl_usdt',
+      'starting_cash_usdt',
       'open_orders',
       'in_flight_intents',
     ]) {
+      expect(register.getSingleMetric(name), `${name} registered`).toBeDefined();
+      expect(exposition, `${name} present in /metrics exposition`).toContain(name);
+    }
+  });
+
+  it('exposes the §8 fill-fold profitability metrics registered by ExecutionModule', async () => {
+    const exposition = await register.metrics();
+    for (const name of ['fees_paid_total', 'round_trips_total', 'trade_pnl_usdt']) {
       expect(register.getSingleMetric(name), `${name} registered`).toBeDefined();
       expect(exposition, `${name} present in /metrics exposition`).toContain(name);
     }

@@ -160,6 +160,7 @@ describe('validate()', () => {
         drainCooldownBaseMs: 30_000,
         drainCooldownMaxMs: 900_000,
         reflectionEveryNTrades: 10,
+        reflectionCooldownMs: 604_800_000,
         playbookPin: undefined,
       });
     });
@@ -178,6 +179,7 @@ describe('validate()', () => {
         AGENTIC_DRAIN_COOLDOWN_BASE_MS: '15000',
         AGENTIC_DRAIN_COOLDOWN_MAX_MS: '600000',
         AGENTIC_REFLECTION_EVERY_N_TRADES: '5',
+        AGENTIC_REFLECTION_COOLDOWN_MS: '3600000',
       });
       expect(cfg.agentic.model).toBe('claude-haiku-4-5');
       expect(cfg.agentic.timeoutMs).toBe(5000);
@@ -190,6 +192,7 @@ describe('validate()', () => {
       expect(cfg.agentic.drainCooldownBaseMs).toBe(15000);
       expect(cfg.agentic.drainCooldownMaxMs).toBe(600000);
       expect(cfg.agentic.reflectionEveryNTrades).toBe(5);
+      expect(cfg.agentic.reflectionCooldownMs).toBe(3600000);
     });
 
     it('AGENTIC_REFLECTION_EVERY_N_TRADES=0 is valid (means off)', () => {

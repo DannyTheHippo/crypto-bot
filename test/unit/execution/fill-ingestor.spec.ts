@@ -7,14 +7,29 @@ import { FeeLedgerService } from '../../../src/modules/execution/fee-ledger.serv
 import { EquitySamplerService } from '../../../src/modules/execution/equity-sampler.service';
 import { InMemoryExecutionStore } from '../../../src/modules/execution/in-memory-store';
 import { initialOrder } from '../../../src/domain/oms/reducer';
-import { makeIntent, makeFill, fixedFeed, fixedClock, killSwitchStub, SYM } from './helpers';
+import {
+  makeIntent,
+  makeFill,
+  feeQuote,
+  fixedFeed,
+  fixedClock,
+  killSwitchStub,
+  SYM,
+} from './helpers';
 import { price, qty } from '../../../src/domain/types/money';
+import { intentId } from '../../../src/domain/types/ids';
+
+// A second intentId so the closing SELL leg of a round trip gets its own clientOrderId/order.
+const SELL_IID = intentId('0190abcd-1234-7abc-89ab-0123456789ac');
 
 function build(
   fillsCounter?: Counter<string>,
   filledQtyCounter?: Counter<string>,
   fullyFilledCounter?: Counter<string>,
   slippageDecision?: Histogram<string>,
+  feesPaidCounter?: Counter<string>,
+  roundTripsCounter?: Counter<string>,
+  tradePnl?: Histogram<string>,
 ) {
   const store = new InMemoryExecutionStore();
   const orders = new OrderBookService();
@@ -34,6 +49,9 @@ function build(
     filledQtyCounter,
     fullyFilledCounter,
     slippageDecision,
+    feesPaidCounter,
+    roundTripsCounter,
+    tradePnl,
   );
   return { store, orders, portfolio, ingestor, engages };
 }
@@ -195,5 +213,115 @@ describe('FillIngestorService', () => {
     const obs = (slippage.observe as ReturnType<typeof vi.fn>).mock.calls[0]!;
     expect(obs[0]).toMatchObject({ side: 'SELL' });
     expect(obs[1]).toBe(100);
+  });
+
+  it('records fees_paid_total{ccy} when a fill carries a fee', async () => {
+    const feesPaid = { inc: vi.fn() } as unknown as Counter<string>;
+    const ctx = build(undefined, undefined, undefined, undefined, feesPaid);
+    const { coid, acked } = seed(ctx); // qty 1, BUY — opening fill, not a round trip
+    await ctx.ingestor.ingest(
+      acked,
+      makeFill({ clientOrderId: coid, qty: qty('1'), venueTradeId: 'wf1', fee: feeQuote('0.1') }),
+      'rep1',
+    );
+    expect((feesPaid.inc as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual([
+      { ccy: 'USDT' },
+      0.1,
+    ]);
+  });
+
+  it('does not touch fees_paid_total when the fill has no fee', async () => {
+    const feesPaid = { inc: vi.fn() } as unknown as Counter<string>;
+    const ctx = build(undefined, undefined, undefined, undefined, feesPaid);
+    const { coid, acked } = seed(ctx);
+    await ctx.ingestor.ingest(
+      acked,
+      makeFill({ clientOrderId: coid, venueTradeId: 'nf1' }),
+      'rep1',
+    );
+    expect((feesPaid.inc as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
+  });
+
+  it('records a winning round trip (round_trips_total{win} + trade_pnl_usdt) when a fill closes to flat', async () => {
+    const roundTrips = { inc: vi.fn() } as unknown as Counter<string>;
+    const tradePnl = { observe: vi.fn() } as unknown as Histogram<string>;
+    const ctx = build(undefined, undefined, undefined, undefined, undefined, roundTrips, tradePnl);
+    // Open long: BUY 1 @ 100.
+    const buy = seed(ctx, makeIntent({ side: 'BUY' }));
+    await ctx.ingestor.ingest(
+      buy.acked,
+      makeFill({ clientOrderId: buy.coid, qty: qty('1'), price: price('100'), venueTradeId: 'b1' }),
+      'rep-b',
+    );
+    // The opening fill is not a round trip — no metric yet.
+    expect((roundTrips.inc as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
+    expect((tradePnl.observe as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
+    // Close: SELL 1 @ 110 → +10 realized → win.
+    const sell = seed(ctx, makeIntent({ side: 'SELL', intentId: SELL_IID }));
+    await ctx.ingestor.ingest(
+      sell.acked,
+      makeFill({
+        clientOrderId: sell.coid,
+        qty: qty('1'),
+        price: price('110'),
+        venueTradeId: 's1',
+      }),
+      'rep-s',
+    );
+    expect((roundTrips.inc as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual([{ result: 'win' }]);
+    expect((tradePnl.observe as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual([10]);
+  });
+
+  it('records a losing round trip (round_trips_total{loss}) when the close nets ≤ 0', async () => {
+    const roundTrips = { inc: vi.fn() } as unknown as Counter<string>;
+    const tradePnl = { observe: vi.fn() } as unknown as Histogram<string>;
+    const ctx = build(undefined, undefined, undefined, undefined, undefined, roundTrips, tradePnl);
+    const buy = seed(ctx, makeIntent({ side: 'BUY' }));
+    await ctx.ingestor.ingest(
+      buy.acked,
+      makeFill({ clientOrderId: buy.coid, qty: qty('1'), price: price('100'), venueTradeId: 'b2' }),
+      'rep-b',
+    );
+    // Close below entry: SELL 1 @ 95 → −5 realized → loss.
+    const sell = seed(ctx, makeIntent({ side: 'SELL', intentId: SELL_IID }));
+    await ctx.ingestor.ingest(
+      sell.acked,
+      makeFill({ clientOrderId: sell.coid, qty: qty('1'), price: price('95'), venueTradeId: 's2' }),
+      'rep-s',
+    );
+    expect((roundTrips.inc as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual([
+      { result: 'loss' },
+    ]);
+    expect((tradePnl.observe as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual([-5]);
+  });
+
+  it('tolerates absent profitability metrics on a fee-bearing round trip (no throw)', async () => {
+    const ctx = build(); // no metrics wired — every @Optional counter/histogram is undefined
+    const buy = seed(ctx, makeIntent({ side: 'BUY' }));
+    await ctx.ingestor.ingest(
+      buy.acked,
+      makeFill({
+        clientOrderId: buy.coid,
+        qty: qty('1'),
+        price: price('100'),
+        venueTradeId: 'b3',
+        fee: feeQuote('0.1'),
+      }),
+      'rep-b',
+    );
+    const sell = seed(ctx, makeIntent({ side: 'SELL', intentId: SELL_IID }));
+    const r = await ctx.ingestor.ingest(
+      sell.acked,
+      makeFill({
+        clientOrderId: sell.coid,
+        qty: qty('1'),
+        price: price('110'),
+        venueTradeId: 's3',
+        fee: feeQuote('0.1'),
+      }),
+      'rep-s',
+    );
+    expect(r.applied).toBe(true);
+    expect(ctx.portfolio.snapshot().positions.size).toBe(0); // round trip closed to flat
   });
 });

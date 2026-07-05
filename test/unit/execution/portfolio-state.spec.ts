@@ -26,6 +26,8 @@ describe('PortfolioStateService', () => {
     expect(s.equity.toFixed()).toBe('100000');
     expect(s.peakEquity.toFixed()).toBe('100000');
     expect(s.sodEquityUtc.toFixed()).toBe('100000');
+    expect(s.unrealized.toFixed()).toBe('0'); // no marks recorded yet
+    expect(s.startingCash.toFixed()).toBe('100000'); // seed baseline
     expect(s.positions.size).toBe(0);
     expect(s.balances.get('USDT')?.free.toFixed()).toBe('100000');
     expect(s.snapshotSeq).toBe(1n);
@@ -66,7 +68,13 @@ describe('PortfolioStateService', () => {
 
   it('opens a position and debits quote cash on a BUY fill', () => {
     const { ps } = make();
-    ps.applyFill(makeIntent({ side: 'BUY' }), makeFill({ qty: qty('1'), price: price('100') }));
+    const app = ps.applyFill(
+      makeIntent({ side: 'BUY' }),
+      makeFill({ qty: qty('1'), price: price('100') }),
+    );
+    // An opening fill is not a round trip: no closed-to-flat, no realized PnL.
+    expect(app.closedToFlat).toBe(false);
+    expect(app.roundTripRealizedPnl).toBeNull();
     const s = ps.snapshot();
     expect(ps.cashBalance().toFixed()).toBe('99900');
     expect(s.positions.get(positionKey(SID, V, SYM))?.signedQty.toFixed()).toBe('1');
@@ -74,15 +82,21 @@ describe('PortfolioStateService', () => {
     expect(s.snapshotSeq).toBe(2n);
   });
 
-  it('removes the position when a fill closes it to flat; cash reflects the round trip', () => {
+  it('removes the position when a fill closes it to flat; returns the round-trip realized PnL', () => {
     const { ps } = make();
-    ps.applyFill(makeIntent({ side: 'BUY' }), makeFill({ qty: qty('1'), price: price('100') }));
-    ps.applyFill(
+    const open = ps.applyFill(
+      makeIntent({ side: 'BUY' }),
+      makeFill({ qty: qty('1'), price: price('100') }),
+    );
+    expect(open.closedToFlat).toBe(false);
+    const close = ps.applyFill(
       makeIntent({ side: 'SELL' }),
       makeFill({ venueTradeId: 't2', qty: qty('1'), price: price('110') }),
     );
     expect(ps.snapshot().positions.size).toBe(0);
     expect(ps.cashBalance().toFixed()).toBe('100010'); // -100 + 110
+    expect(close.closedToFlat).toBe(true);
+    expect(close.roundTripRealizedPnl?.toFixed()).toBe('10'); // (110 − 100) × 1, net of (no) fees
   });
 
   it('routes a third-asset fee to the fee ledger', () => {
@@ -137,13 +151,15 @@ describe('PortfolioStateService', () => {
     expect(view.openOrders).toHaveLength(1);
   });
 
-  it('ratchets peak equity and never lowers it', () => {
+  it('ratchets peak equity and never lowers it; surfaces the last-recorded unrealized PnL', () => {
     const { ps } = make();
-    ps.recordEquity(new Decimal('120000'));
-    ps.recordEquity(new Decimal('110000'));
+    ps.recordEquity(new Decimal('120000'), new Decimal('500'));
+    ps.recordEquity(new Decimal('110000'), new Decimal('-300'));
     const s = ps.snapshot();
     expect(s.equity.toFixed()).toBe('110000');
     expect(s.peakEquity.toFixed()).toBe('120000');
+    expect(s.unrealized.toFixed()).toBe('-300'); // tracks the latest sample, not the peak
+    expect(s.startingCash.toFixed()).toBe('100000'); // unchanged by equity recording
   });
 
   it('tracks in-flight intents and open orders in the snapshot, and clears them', () => {

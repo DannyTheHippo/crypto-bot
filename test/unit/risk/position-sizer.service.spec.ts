@@ -54,6 +54,8 @@ function snapshot(positions = new Map<string, Position>()): PortfolioSnapshot {
     openOrders: [],
     inFlightIntents: [],
     equity: new Decimal(0),
+    unrealized: new Decimal(0),
+    startingCash: new Decimal(0),
     peakEquity: new Decimal(0),
     sodEquityUtc: new Decimal(0),
     reconcileStatus: 'CLEAN',

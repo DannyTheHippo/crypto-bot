@@ -258,6 +258,58 @@ describe('AgenticStrategy context building', () => {
     });
   });
 
+  it('reclassifies a sub-minNotional dust LONG as FLAT once onInit has provided the venue minimum', async () => {
+    const client = new CapturingAgentClient();
+    const strategy = makeStrategy(client);
+    strategy.onInit({
+      params: {},
+      warmupCandles: new Map(),
+      symbolConstraints: new Map([
+        [SYM, { tickSize: price('0.01'), lotStep: qty('0.0001'), minNotional: price('5') }],
+      ]),
+    });
+
+    // qty 0.01 @ avgEntry 100 = $1 notional, below the $5 minimum → un-exitable dust → shown FLAT so
+    // the agent stops proposing exits that the sizer rejects BELOW_MINIMUM.
+    await strategy.decide(
+      buildInput({ portfolio: longPortfolio({ qty: '0.01', avgEntry: '100' }) }),
+    );
+
+    expect(client.inputs[0]!.context!.position.side).toBe('FLAT');
+    expect(client.inputs[0]!.context!.position.qty).toBe('0');
+  });
+
+  it('still reports a LONG when the held notional is at or above the venue minimum', async () => {
+    const client = new CapturingAgentClient();
+    const strategy = makeStrategy(client);
+    strategy.onInit({
+      params: {},
+      warmupCandles: new Map(),
+      symbolConstraints: new Map([
+        [SYM, { tickSize: price('0.01'), lotStep: qty('0.0001'), minNotional: price('5') }],
+      ]),
+    });
+
+    // qty 0.1 @ avgEntry 100 = $10 notional, above the $5 minimum → a real, exitable LONG.
+    await strategy.decide(
+      buildInput({ portfolio: longPortfolio({ qty: '0.1', avgEntry: '100' }) }),
+    );
+
+    expect(client.inputs[0]!.context!.position.side).toBe('LONG');
+    expect(client.inputs[0]!.context!.position.qty).toBe('0.1');
+  });
+
+  it('does not reclassify dust when onInit never supplied a minimum (fail-safe to the prior LONG behavior)', async () => {
+    const client = new CapturingAgentClient();
+    const strategy = makeStrategy(client); // onInit not called → minNotional stays null
+
+    await strategy.decide(
+      buildInput({ portfolio: longPortfolio({ qty: '0.01', avgEntry: '100' }) }),
+    );
+
+    expect(client.inputs[0]!.context!.position.side).toBe('LONG');
+  });
+
   it('keeps a newest-last ring of at most 10 past decisions, dropping the oldest once it overflows', async () => {
     // 11 scripted decisions (calls 0..10) feed the ring the 12th decide's context is captured from.
     const actionsForCalls = [

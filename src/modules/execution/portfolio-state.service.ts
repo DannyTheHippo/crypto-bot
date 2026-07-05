@@ -27,6 +27,14 @@ interface OpenOrderRec {
   readonly strategyId: StrategyId;
 }
 
+// Summary of one applyFill fold, consumed by the fill ingestor to emit round-trip profitability
+// metrics. closedToFlat mirrors the position-delete check; roundTripRealizedPnl is the realized PnL
+// of the just-closed round trip (net of quote fees), or null when the fill did not close to flat.
+export interface FillApplication {
+  readonly closedToFlat: boolean;
+  readonly roundTripRealizedPnl: Decimal | null;
+}
+
 // Canonical in-memory portfolio (§2.4): per-strategy virtual sub-account positions, a single
 // quote-cash balance (v1 single-quote), and the equity/peak/sod that Risk's C1/C2 read. Fills
 // fold through the pure applyFillToPortfolio; third-asset fees are routed to the fee ledger.
@@ -37,8 +45,12 @@ export class PortfolioStateService implements PortfolioViewPort {
   private readonly inFlight = new Map<string, OrderIntent>();
   private readonly openOrders = new Map<string, OpenOrderRec>();
   private readonly quoteAsset: string;
+  private readonly startingCash: Decimal;
   private cash: Decimal;
   private equityValue: Decimal;
+  // Unrealized PnL of the current book, refreshed by recordEquity (the sampler owns the marks). Held
+  // separately from equity so the snapshot can surface it directly without re-deriving from marks.
+  private unrealizedValue: Decimal;
   private peak: Decimal;
   private sodUtc: Decimal;
   private seq = 1n;
@@ -48,14 +60,17 @@ export class PortfolioStateService implements PortfolioViewPort {
     private readonly fees: FeeLedgerService,
   ) {
     this.quoteAsset = cfg.quoteAsset;
-    this.cash = new Decimal(cfg.startingCash);
+    this.startingCash = new Decimal(cfg.startingCash);
+    this.cash = this.startingCash;
     this.equityValue = this.cash;
+    this.unrealizedValue = new Decimal(0);
     this.peak = this.cash;
     this.sodUtc = this.cash;
   }
 
-  // Fold one realized fill into positions + quote cash + fee ledger (§6.6).
-  applyFill(intent: OrderIntent, fill: FillRecord): void {
+  // Fold one realized fill into positions + quote cash + fee ledger (§6.6). Returns a summary the
+  // fill ingestor turns into round-trip profitability metrics.
+  applyFill(intent: OrderIntent, fill: FillRecord): FillApplication {
     const key = positionKey(intent.strategyId, intent.venue, intent.symbol);
     const prior: PositionState = this.positions.get(key) ?? FLAT;
     const { base, quote } = splitSymbol(intent.symbol);
@@ -68,7 +83,10 @@ export class PortfolioStateService implements PortfolioViewPort {
       quoteAsset: quote,
     });
 
-    if (result.position.signedQty.isZero()) {
+    // Same check as the delete below: whatever the fold considers flat is a completed round trip.
+    // Spot long/flat never flips, so "round trip" == the position reaching flat (CLAUDE.md §4).
+    const closedToFlat = result.position.signedQty.isZero();
+    if (closedToFlat) {
       this.positions.delete(key);
     } else {
       this.positions.set(key, {
@@ -83,6 +101,13 @@ export class PortfolioStateService implements PortfolioViewPort {
     this.cash = this.cash.add(result.cashDelta);
     if (result.feeLedger) this.fees.add(result.feeLedger.asset, result.feeLedger.amount);
     this.seq += 1n;
+
+    // At the flat transition realizedPnl carries the full round-trip PnL (net of quote fees); the
+    // position is deleted above, so the next open starts fresh from FLAT with realizedPnl = 0.
+    return {
+      closedToFlat,
+      roundTripRealizedPnl: closedToFlat ? result.position.realizedPnl : null,
+    };
   }
 
   addInFlight(intent: OrderIntent): void {
@@ -105,10 +130,11 @@ export class PortfolioStateService implements PortfolioViewPort {
     this.openOrders.delete(clientOrderId);
   }
 
-  // Equity is computed by the EquitySampler (it owns marks); this records the result and
-  // ratchets the peak.
-  recordEquity(equity: Decimal): void {
+  // Equity and unrealized PnL are computed by the EquitySampler (it owns marks); this records the
+  // result and ratchets the peak.
+  recordEquity(equity: Decimal, unrealized: Decimal): void {
     this.equityValue = equity;
+    this.unrealizedValue = unrealized;
     if (equity.gt(this.peak)) this.peak = equity;
   }
 
@@ -160,6 +186,8 @@ export class PortfolioStateService implements PortfolioViewPort {
       openOrders: [...this.openOrders.values()].map((o) => o.summary),
       inFlightIntents: [...this.inFlight.values()],
       equity: this.equityValue,
+      unrealized: this.unrealizedValue,
+      startingCash: this.startingCash,
       peakEquity: this.peak,
       sodEquityUtc: this.sodUtc,
       reconcileStatus: 'CLEAN',

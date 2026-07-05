@@ -268,6 +268,8 @@ describe('PortfolioSnapshot — type shape', () => {
       openOrders: [],
       inFlightIntents: [],
       equity: new Decimal('10500'),
+      unrealized: new Decimal('250'),
+      startingCash: new Decimal('10000'),
       peakEquity: new Decimal('11000'),
       sodEquityUtc: new Decimal('10000'),
       reconcileStatus: 'CLEAN' as const,

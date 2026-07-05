@@ -46,6 +46,29 @@ export const SLIPPAGE_DECISION_HISTOGRAM = makeHistogramProvider({
   buckets: [-50, -20, -10, -5, -2, -1, 0, 1, 2, 5, 10, 20, 50],
 });
 
+// §8 profitability — captured at the fill fold (the round-trip realized PnL is already returned by the
+// pure fold; no money-path domain change). fees_paid_total sums fees across currencies; round_trips_total
+// counts completed round trips by result; trade_pnl_usdt distributes per-round-trip realized PnL (buckets
+// tuned to BASE_NOTIONAL≈100, so _sum/_count give cumulative realized-from-round-trips and avg trade PnL).
+// @Optional throughout so the direct-construction unit tests cover the metric-absent branch.
+export const FEES_PAID_COUNTER = makeCounterProvider({
+  name: 'fees_paid_total',
+  help: 'Fees paid across all fills, by fee currency (§8)',
+  labelNames: ['ccy'] as const,
+});
+
+export const ROUND_TRIPS_COUNTER = makeCounterProvider({
+  name: 'round_trips_total',
+  help: 'Completed round trips by result (win = round-trip PnL > 0, else loss)',
+  labelNames: ['result'] as const,
+});
+
+export const TRADE_PNL_HISTOGRAM = makeHistogramProvider({
+  name: 'trade_pnl_usdt',
+  help: 'Realized PnL per completed round trip, USDT (net of quote fees); _sum/_count give cumulative + avg',
+  buckets: [-10, -5, -2, -1, -0.5, -0.2, 0, 0.2, 0.5, 1, 2, 5, 10],
+});
+
 const TERMINAL: ReadonlySet<OrderState> = new Set(['FILLED', 'CANCELED', 'REJECTED', 'EXPIRED']);
 
 export interface IngestResult {
@@ -78,6 +101,15 @@ export class FillIngestorService {
     @Optional()
     @InjectMetric('order_slippage_decision_bps')
     private readonly slippageDecision?: Histogram<string>,
+    @Optional()
+    @InjectMetric('fees_paid_total')
+    private readonly feesPaidCounter?: Counter<string>,
+    @Optional()
+    @InjectMetric('round_trips_total')
+    private readonly roundTripsCounter?: Counter<string>,
+    @Optional()
+    @InjectMetric('trade_pnl_usdt')
+    private readonly tradePnl?: Histogram<string>,
   ) {}
 
   async ingest(rec: OrderRecord, fill: FillRecord, dedupeKey: string): Promise<IngestResult> {
@@ -107,7 +139,7 @@ export class FillIngestorService {
 
     const intent = this.portfolio.inFlightIntent(coid);
     if (intent !== undefined) {
-      this.portfolio.applyFill(intent, fill);
+      const application = this.portfolio.applyFill(intent, fill);
       // §8 fill-rate numerator + decision slippage. The .toNumber() calls are the sanctioned
       // export boundary; bps is signed so positive = adverse for both sides.
       this.filledQtyCounter?.inc(
@@ -125,6 +157,19 @@ export class FillIngestorService {
       );
       if (next.state === 'FILLED') {
         this.fullyFilledCounter?.inc({ type: intent.type, tif: intent.timeInForce });
+      }
+      // §8 profitability. Fees are counted per fill; round-trip metrics fire only when the fill
+      // closed the position to flat. .toNumber() is the sanctioned display export boundary.
+      if (fill.fee) {
+        this.feesPaidCounter?.inc({ ccy: fill.fee.ccy }, fill.fee.amount.toNumber());
+      }
+      // roundTripRealizedPnl is non-null exactly when the fill closed the position to flat
+      // (== application.closedToFlat); the null-check both signals the round trip and narrows the
+      // type. Net of quote fees, so >0 = win and ≤0 = loss (a fee-only wash nets a loss).
+      if (application.roundTripRealizedPnl !== null) {
+        const pnl = application.roundTripRealizedPnl;
+        this.roundTripsCounter?.inc({ result: pnl.gt(0) ? 'win' : 'loss' });
+        this.tradePnl?.observe(pnl.toNumber());
       }
     }
     if (TERMINAL.has(next.state)) {

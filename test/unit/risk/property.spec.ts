@@ -75,6 +75,8 @@ function input(
       openOrders: [],
       inFlightIntents: [],
       equity: new Decimal(10_000),
+      unrealized: new Decimal(0),
+      startingCash: new Decimal(10_000),
       peakEquity: new Decimal(10_000),
       sodEquityUtc: new Decimal(10_000),
       reconcileStatus: 'CLEAN',

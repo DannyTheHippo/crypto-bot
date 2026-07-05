@@ -946,6 +946,19 @@ export class AppModule implements OnModuleInit, OnApplicationBootstrap, OnModule
   // AgenticCompositionBridgeModule's own isTestEnv() gate). A resolution failure is logged, never
   // thrown — it must not block boot.
   async onModuleInit(): Promise<void> {
+    // (E) Surface which agent client bound at boot so live-vs-inert is unambiguous in Grafana and the
+    // log, not buried in one startup line. StubAgentClient (no ANTHROPIC_API_KEY, or test/ci) is inert
+    // — it proposes nothing, so the demo will never trade until a key is set; anything else is a live
+    // deciding client. constructor.name is the only distinguisher (the Anthropic path is wrapped in
+    // BudgetedAgentClient, so it is never literally 'AnthropicAgentClient').
+    const clientKind = this.agentClientKind === 'StubAgentClient' ? 'stub' : 'anthropic';
+    this.agentMetrics.setClientInfo(clientKind);
+    if (clientKind === 'stub') {
+      this.log.warn(
+        'agentic lane INERT: no ANTHROPIC_API_KEY — proposing nothing; demo will not trade until a key is set',
+      );
+    }
+
     try {
       const { version, source } = await this.playbookProvider.current();
       this.agentMetrics.setPlaybookInfo(version);

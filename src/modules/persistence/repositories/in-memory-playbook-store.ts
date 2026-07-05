@@ -102,6 +102,9 @@ export class InMemoryPlaybookStore implements PlaybookProvider {
     const version = this.nextVersion;
     this.nextVersion += 1;
     this.rows.push({ version, content, source, parentVersion, createdAt: Date.now() });
+    // Mirror PlaybookStoreAdapter: a 'promotion' append re-points resolution, so drop the cache to
+    // re-resolve live on the next current(); a 'reflection' candidate is INACTIVE and leaves it.
+    if (source === 'promotion') this.resolvedPromise = null;
     if (this.rows.length > InMemoryPlaybookStore.MAX_VERSIONS) {
       // Evict the oldest NON-seed row. The seed row (always index 0 — never pushed again after the
       // constructor) is resolve()'s last-resort fallback; evicting it would leave current()

@@ -39,6 +39,10 @@ export interface PortfolioSnapshot {
   readonly openOrders: readonly OpenOrderSummary[];
   readonly inFlightIntents: readonly OrderIntent[];
   readonly equity: Decimal;
+  // Unrealized PnL embedded in equity: Σ signedQty×(mark − avgEntry). Broken out for display.
+  readonly unrealized: Decimal;
+  // The seed baseline (PortfolioConfig.startingCash) — the denominator for return-since-inception.
+  readonly startingCash: Decimal;
   readonly peakEquity: Decimal;
   readonly sodEquityUtc: Decimal;
   readonly reconcileStatus: 'CLEAN' | 'PENDING' | 'MISMATCH';

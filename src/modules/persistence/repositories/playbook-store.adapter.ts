@@ -50,7 +50,9 @@ function toEntry(row: PlaybookVersionDbRow): PlaybookVersionEntry {
 //   3. the seed row (`seed.version`), lazily inserted on first call if absent.
 // Resolution runs ONCE per process and is cached — "Active version resolution at boot" (design
 // plan): a promotion written by a separate `playbook:promote` run only takes effect for THIS
-// process on its next restart, never live-swapped mid-run.
+// process on its next restart. The one exception is an IN-PROCESS promotion append (auto-promotion,
+// G4b): append() drops the cache when it writes a 'promotion' row, so the next current() re-resolves
+// live — this same adapter instance backs both the decide reads and the reflection writes.
 export class PlaybookStoreAdapter implements PlaybookProvider {
   private readonly repo: PlaybookVersionRepository;
   private readonly log = new Logger('PlaybookStore');
@@ -133,6 +135,10 @@ export class PlaybookStoreAdapter implements PlaybookProvider {
   ): Promise<{ version: number }> {
     const next = (await this.repo.maxVersion()) + 1;
     await this.repo.insert({ version: next, content, source, parentVersion });
+    // A 'promotion' row changes which version resolve() would pick; drop the cached resolution so the
+    // next current() re-resolves and the promotion takes effect live (auto-promotion, G4b). A
+    // 'reflection' append mints an INACTIVE candidate that never alters resolution — leave the cache.
+    if (source === 'promotion') this.resolvedPromise = null;
     return { version: next };
   }
 

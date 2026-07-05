@@ -76,14 +76,16 @@ describe('forward returns / hit rate', () => {
     ];
     const [scorecard] = scoreRows(rows);
 
-    // horizon 1: i0 (110-100)/100=+0.1 long hit; i1 (105-110)/110=-0.045 hold hit (<=0);
-    // i2 (120-105)/105=+0.143 flat miss (>0); i3 (90-120)/120=-0.25 hold hit; i4 has no i+1.
+    // Resulting exposure: i0 long→LONG, i1 hold→LONG (maintains the position), i2 flat→FLAT,
+    // i3 hold→FLAT (maintains flat).
+    // horizon 1: i0 LONG (110-100)/100=+0.1 hit; i1 LONG (105-110)/110=-0.045 miss (not >0);
+    // i2 FLAT (120-105)/105=+0.143 miss (>0); i3 FLAT (90-120)/120=-0.25 hit (<=0); i4 has no i+1.
     const h1 = horizonStats(scorecard!, 1);
     expect(h1.sampleCount).toBe(4);
-    expect(h1.hitCount).toBe(3);
-    expect(h1.hitRate).toBe(0.75);
+    expect(h1.hitCount).toBe(2);
+    expect(h1.hitRate).toBe(0.5);
 
-    // horizon 4: only i0 has an i+4 (index 4); (90-100)/100=-0.1, long, not a hit.
+    // horizon 4: only i0 has an i+4 (index 4); (90-100)/100=-0.1, LONG exposure, not a hit.
     const h4 = horizonStats(scorecard!, 4);
     expect(h4.sampleCount).toBe(1);
     expect(h4.hitCount).toBe(0);
@@ -123,6 +125,33 @@ describe('forward returns / hit rate', () => {
     ];
     const [holdScorecard] = scoreRows(holdRows);
     expect(horizonStats(holdScorecard!, 1).hitRate).toBe(1);
+  });
+
+  it('scores a hold that MAINTAINS a long as LONG exposure — a hold riding a rise is a hit (F2)', () => {
+    // Under the retired action-based convention i1 (a hold) was scored as flat and this rise made
+    // it a MISS; exposure-based scoring correctly credits the LONG position the hold maintained.
+    const rows: ScoringRow[] = [
+      row(0, { action: 'long', close: '100' }), // FLAT→LONG
+      row(1, { action: 'hold', close: '110' }), // maintains LONG; (120-110)/110>0 → hit
+      row(2, { action: 'hold', close: '120' }), // maintains LONG; no i+1 in a 3-row group
+    ];
+    const [scorecard] = scoreRows(rows);
+    const h1 = horizonStats(scorecard!, 1);
+    expect(h1.sampleCount).toBe(2);
+    expect(h1.hitCount).toBe(2);
+    expect(h1.hitRate).toBe(1);
+  });
+
+  it('scores a hold that MAINTAINS flat as FLAT exposure — a hold that missed a rise is a miss', () => {
+    const rows: ScoringRow[] = [
+      row(0, { action: 'hold', close: '100' }), // maintains FLAT; (110-100)/100>0 → miss
+      row(1, { action: 'hold', close: '110' }), // maintains FLAT; no i+1
+    ];
+    const [scorecard] = scoreRows(rows);
+    const h1 = horizonStats(scorecard!, 1);
+    expect(h1.sampleCount).toBe(1);
+    expect(h1.hitCount).toBe(0);
+    expect(h1.hitRate).toBe(0);
   });
 
   it('excludes "error" rows as decisions but still uses their close as a forward-return target', () => {
@@ -179,6 +208,20 @@ describe('confidence calibration', () => {
     const bucket = scorecard!.calibration.find((b) => b.bucketIndex === 2)!;
     expect(bucket.sampleCount).toBe(1);
     expect(bucket.meanForwardReturn).toBe(0.1);
+  });
+
+  it('uses the LONG directional edge (+fwd) for a hold that maintains a long position', () => {
+    const rows: ScoringRow[] = [
+      row(0, { action: 'long', confidence: 0.9, close: '100' }), // FLAT→LONG
+      row(1, { action: 'hold', confidence: 0.7, close: '110' }), // maintains LONG; bucket 7
+      row(2, { action: 'hold', close: '105' }),
+    ];
+    const [scorecard] = scoreRows(rows);
+    // i1 resulting LONG, conf 0.7 → bucket 7, fwd (105-110)/110; LONG edge is +fwd (unlike a
+    // resulting-flat row, which would negate it).
+    const bucket7 = scorecard!.calibration.find((b) => b.bucketIndex === 7)!;
+    expect(bucket7.sampleCount).toBe(1);
+    expect(bucket7.meanForwardReturn).toBe((105 - 110) / 110);
   });
 
   it('excludes a calibration-eligible row from every bucket when it has no forward return at t+1', () => {

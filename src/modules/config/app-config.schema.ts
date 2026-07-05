@@ -117,6 +117,13 @@ const envSchema = z.object({
   AGENTIC_DRAIN_COOLDOWN_MAX_MS: z.coerce.number().int().positive().default(900_000),
   // 0 disables periodic reflection.
   AGENTIC_REFLECTION_EVERY_N_TRADES: z.coerce.number().int().min(0).default(10),
+  // Minimum wall-clock between reflection attempts (F7 tunable). Default 7 days; floored at 0. A
+  // cost/noise throttle, never a safety gate — see reflection.service.ts's SEVEN_DAYS_MS comment.
+  AGENTIC_REFLECTION_COOLDOWN_MS: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .default(7 * 24 * 60 * 60 * 1000),
   // Absent means unpinned — no default (an explicit default would look like a pin).
   AGENTIC_PLAYBOOK_PIN: z.coerce.number().int().positive().optional(),
 });
@@ -164,6 +171,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     AGENTIC_DRAIN_COOLDOWN_BASE_MS: agenticDrainCooldownBaseMs,
     AGENTIC_DRAIN_COOLDOWN_MAX_MS: agenticDrainCooldownMaxMs,
     AGENTIC_REFLECTION_EVERY_N_TRADES: agenticReflectionEveryNTrades,
+    AGENTIC_REFLECTION_COOLDOWN_MS: agenticReflectionCooldownMs,
     AGENTIC_PLAYBOOK_PIN: agenticPlaybookPin,
   } = parsed.data;
   const bootId = crypto.randomUUID();
@@ -199,6 +207,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       drainCooldownBaseMs: agenticDrainCooldownBaseMs,
       drainCooldownMaxMs: agenticDrainCooldownMaxMs,
       reflectionEveryNTrades: agenticReflectionEveryNTrades,
+      reflectionCooldownMs: agenticReflectionCooldownMs,
       playbookPin: agenticPlaybookPin,
     },
     ...liveFields,

@@ -17,6 +17,8 @@ import {
   PEAK_EQUITY_GAUGE,
   DAY_PNL_GAUGE,
   DRAWDOWN_GAUGE,
+  UNREALIZED_PNL_GAUGE,
+  STARTING_CASH_GAUGE,
   REALIZED_PNL_GAUGE,
   POSITION_QTY_GAUGE,
   POSITION_NOTIONAL_GAUGE,
@@ -28,6 +30,7 @@ import {
   AGENT_DECIDE_LATENCY_HISTOGRAM,
   AGENTIC_PLAYBOOK_INFO_GAUGE,
   PLAYBOOK_VALIDATOR_REJECTIONS_COUNTER,
+  AGENT_CLIENT_INFO_GAUGE,
 } from './metrics.service';
 import { AgentMetricsRecorder } from './agent-metrics-recorder.service';
 import { buildPinoHttpOptions } from './logger.config';
@@ -69,6 +72,8 @@ import type { AppConfig } from '../../ports/app-config';
     PEAK_EQUITY_GAUGE,
     DAY_PNL_GAUGE,
     DRAWDOWN_GAUGE,
+    UNREALIZED_PNL_GAUGE,
+    STARTING_CASH_GAUGE,
     REALIZED_PNL_GAUGE,
     POSITION_QTY_GAUGE,
     POSITION_NOTIONAL_GAUGE,
@@ -80,6 +85,7 @@ import type { AppConfig } from '../../ports/app-config';
     AGENT_DECIDE_LATENCY_HISTOGRAM,
     AGENTIC_PLAYBOOK_INFO_GAUGE,
     PLAYBOOK_VALIDATOR_REJECTIONS_COUNTER,
+    AGENT_CLIENT_INFO_GAUGE,
     AgentMetricsRecorder,
   ],
   exports: [EventLoopHealthIndicator, MetricsService, AgentMetricsRecorder],

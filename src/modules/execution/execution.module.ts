@@ -44,6 +44,9 @@ import {
   ORDERS_FILLED_QTY_COUNTER,
   ORDERS_FULLY_FILLED_COUNTER,
   SLIPPAGE_DECISION_HISTOGRAM,
+  FEES_PAID_COUNTER,
+  ROUND_TRIPS_COUNTER,
+  TRADE_PNL_HISTOGRAM,
 } from './fill-ingestor.service';
 import {
   ExecutionGateService,
@@ -163,6 +166,9 @@ const providers: Provider[] = [
   ORDERS_FILLED_QTY_COUNTER,
   ORDERS_FULLY_FILLED_COUNTER,
   SLIPPAGE_DECISION_HISTOGRAM,
+  FEES_PAID_COUNTER,
+  ROUND_TRIPS_COUNTER,
+  TRADE_PNL_HISTOGRAM,
   CrashRecoveryService,
   BootRecoveryService,
   DemoFillPollerService,

@@ -83,6 +83,7 @@ export function agenticEnv(
     AGENTIC_MAX_CALLS_PER_DAY: String(agentic.maxCallsPerDay),
     AGENTIC_MAX_TOKENS_PER_DAY: String(agentic.maxTokensPerDay),
     AGENTIC_REFLECTION_EVERY_N_TRADES: String(agentic.reflectionEveryNTrades),
+    AGENTIC_REFLECTION_COOLDOWN_MS: String(agentic.reflectionCooldownMs),
   };
 }
 

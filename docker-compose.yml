@@ -20,9 +20,21 @@ services:
       # boot interlock refuses TRADING_MODE=live. ANTHROPIC_API_KEY comes from .env (env_file);
       # without it the lane binds the inert stub and proposes nothing.
       ACTIVE_STRATEGY: agentic
-      STRATEGY_INTERVAL: '15m'
-      AGENTIC_MODEL: claude-opus-4-8
+      # Demo cadence: 5m candles → first decision ≤5 min after boot, and 288 decisions/day stays
+      # under AGENTIC_MAX_CALLS_PER_DAY (500) so the lane runs sustainably all day. Warmup is a fast
+      # historical fetch (seconds), so this only paces LIVE decisions, not startup. Drop to 1m for a
+      # faster first trade (1440/day still under the cap); raise it to spend fewer LLM calls.
+      STRATEGY_INTERVAL: '5m'
+      # Sonnet-5, not Opus: the lane is permanently EXPERIMENT-ONLY, and at ~288 decides/day the
+      # cheaper model is the cost-aware default. This block overrides env_file, so it must match the
+      # intended model in .env or it silently forces a pricier model on the running demo.
+      AGENTIC_MODEL: claude-sonnet-5
       AGENTIC_WARMUP_BARS: '50'
+      # Auto-promote a reflection-minted playbook to ACTIVE once ≥30 closed trades have accrued
+      # (validated read-side; takes effect live, no restart). Gated at 30 because the toy scorecards
+      # are noise below that; 0 disables (manual `pnpm playbook:promote` only). Dormant until real
+      # trades exist, so it is inert on a fresh boot.
+      AGENTIC_AUTO_PROMOTE_MIN_TRADES: '30'
     depends_on:
       postgres:
         condition: service_healthy
@@ -77,7 +89,12 @@ services:
     environment:
       GF_SERVER_HTTP_PORT: '3101'
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-grafana}
-      GF_AUTH_ANONYMOUS_ENABLED: 'false'
+      # Anonymous read-only viewing so the provisioned dashboard loads without a login session
+      # (fixes panel /api/ds/query returning 401 "user token not found" → "no data"). The admin
+      # password above still gates editing/saving at /login.
+      GF_AUTH_ANONYMOUS_ENABLED: 'true'
+      GF_AUTH_ANONYMOUS_ORG_ROLE: 'Viewer'
+      GF_AUTH_ANONYMOUS_ORG_NAME: 'Main Org.'
     volumes:
       - grafana_data:/var/lib/grafana
       - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro

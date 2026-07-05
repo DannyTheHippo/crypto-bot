@@ -154,7 +154,16 @@ export class AnthropicAgentClient implements AgentClientPort {
       return { signals: [] };
     }
 
-    const eventTime = input.snapshot.eventTime;
+    // TTL anchor: a signal is actionable from the moment its basis bar CLOSED, not from the bar's
+    // open. Normalized candles stamp eventTime = openTime (market-data/normalize.ts), while the signal
+    // gateway rejects when wall-clock now > signal.eventTime + signalTtlMs (signal-gateway.service.ts).
+    // With STRATEGY_INTERVAL > SIGNAL_TTL_MS (e.g. a 5m bar, 2m TTL) an open-time anchor makes every
+    // candle-triggered signal born ~(interval − decide latency) past expiry, so it is rejected as
+    // EXPIRED before it can reach Risk. Anchor to the triggering bar's closeTime (a deterministic
+    // openTime + interval − 1) so the window starts at close; the intent's own expiresAt is already
+    // wall-clock-based (position-sizer.service.ts), so both expiry checks then agree.
+    const eventTime =
+      input.trigger.kind === 'candle' ? input.trigger.event.closeTime : input.snapshot.eventTime;
 
     const { content: playbookContent, version: playbookVersion } = await this.resolvePlaybook();
     const systemPrompt = buildSystemPrompt(this.cfg.profile ?? DEFAULT_TRADING_PROFILE);

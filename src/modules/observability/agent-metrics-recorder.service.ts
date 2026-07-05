@@ -28,6 +28,7 @@ export class AgentMetricsRecorder {
     @InjectMetric('agentic_playbook_info') private readonly playbookInfoGauge: Gauge<string>,
     @InjectMetric('playbook_validator_rejections_total')
     private readonly validatorRejectionsCounter: Counter<string>,
+    @InjectMetric('agent_client_info') private readonly clientInfoGauge: Gauge<string>,
   ) {}
 
   recordDecide(outcome: AgentDecideOutcome): void {
@@ -72,6 +73,18 @@ export class AgentMetricsRecorder {
   recordValidatorRejection(bannedToken: boolean): void {
     try {
       this.validatorRejectionsCounter.inc({ banned_token: String(bannedToken) });
+    } catch {
+      /* metrics must never throw into a trading path */
+    }
+  }
+
+  // (E) Set once at boot to the bound client kind ('stub' | 'anthropic'). The kind is fixed for the
+  // process lifetime, so a single series is set and never cleared (unlike setPlaybookInfo, which
+  // rotates on promotion). Surfaced as the dashboard "client status" panel — the loud, always-on
+  // signal for whether the demo is actually deciding vs inertly holding.
+  setClientInfo(kind: string): void {
+    try {
+      this.clientInfoGauge.labels({ kind }).set(1);
     } catch {
       /* metrics must never throw into a trading path */
     }

@@ -42,7 +42,7 @@ export interface CalibrationBucket {
   readonly upperBound: number; // exclusive, except bucket 9 (inclusive of confidence === 1)
   readonly sampleCount: number;
   // Mean "directional edge" at the t+1 horizon over rows in this bucket — see directionalEdge()
-  // below for the flat/hold sign convention. null when sampleCount === 0.
+  // below for the resulting-exposure sign convention. null when sampleCount === 0.
   readonly meanForwardReturn: number | null;
 }
 
@@ -82,34 +82,51 @@ function forwardReturn(rows: readonly ScoringRow[], i: number, horizon: number):
   return (to - from) / from;
 }
 
-// Both isHit and directionalEdge below are only ever called on a row already known not to be
-// 'error' (both call sites `continue` past 'error' rows first, which narrows row.action for the
-// rest of that loop body) — the parameter type says so, rather than carrying an unreachable
-// 'error' branch/null-return neither function's call site can actually trigger.
-type Decision = Exclude<ScoringRow['action'], 'error'>;
+// The position a decision RESULTS IN — the exposure actually carried into the forward window, which
+// is what a forward return measures against. Scoring keys off this, not the raw action (F2): a
+// 'hold' while already LONG is judged as the LONG exposure it maintains, not as flat.
+type Exposure = 'LONG' | 'FLAT';
 
-// Hit convention (documented, not the only defensible choice — see task brief):
-//   - 'long' is a hit iff the forward return is STRICTLY positive: the decision to hold a long
-//     paid off. A flat forward return (fwd === 0) is scored as a miss (no edge captured).
-//   - 'flat'/'hold' is a hit iff the forward return is non-positive (fwd <= 0): staying out of a
-//     market that fell — or went nowhere — "avoided a negative return". A strictly positive
-//     forward return means the flat/hold call missed a gain, scored as a miss.
-// The two branches are an exact complement split at zero (no overlap, no gap).
-function isHit(action: Decision, fwd: number): boolean {
-  if (action === 'long') return fwd > 0;
-  return fwd <= 0; // 'flat' | 'hold'
+// Walks the same long/flat state machine as computeToyEquity below and tags each row with the
+// exposure held AFTER its action is applied, returned parallel to the input (same length, same
+// order). A 'long' while FLAT opens (→LONG); a 'flat' while LONG closes (→FLAT); 'hold'/'error' and
+// no-op repeats ('long' while already LONG, 'flat' while already FLAT) leave the position unchanged.
+// Runs within a single group's own chronological subsequence, exactly as its callers do.
+function annotateResultingExposure(rows: readonly ScoringRow[]): readonly Exposure[] {
+  const exposures: Exposure[] = [];
+  let position: Exposure = 'FLAT';
+  for (const row of rows) {
+    if (row.action === 'long' && position === 'FLAT') position = 'LONG';
+    else if (row.action === 'flat' && position === 'LONG') position = 'FLAT';
+    exposures.push(position);
+  }
+  return exposures;
 }
 
-// Directional edge for calibration: the same "did this decision pay off" intuition as isHit above,
-// expressed as a continuous signed quantity instead of a boolean — for 'long' rows this is the raw
-// forward return (positive = paid off); for 'flat'/'hold' rows it is the NEGATED forward return (a
-// decline avoided also reads positive here). Used only for calibration's continuous mean, never for
-// a hit/miss threshold, so the zero-boundary asymmetry in isHit above does not apply here.
-function directionalEdge(action: Decision, fwd: number): number {
-  return action === 'long' ? fwd : -fwd;
+// Hit convention (exposure-based; an APPROVED change from the earlier action-based convention — see
+// the F2 finding in the improvement report). Scored against the resulting exposure so a hold that
+// maintains a position is judged on the exposure it carries, not miscounted as flat:
+//   - resulting LONG is a hit iff the forward return is STRICTLY positive (fwd > 0): being long
+//     paid off. A flat forward return (fwd === 0) is a miss (no edge captured).
+//   - resulting FLAT is a hit iff the forward return is non-positive (fwd <= 0): staying out of a
+//     market that fell — or went nowhere — avoided a loss. A strictly positive forward return means
+//     flat missed a gain, scored as a miss.
+// The two branches are an exact complement split at zero (no overlap, no gap).
+function isHit(exposure: Exposure, fwd: number): boolean {
+  return exposure === 'LONG' ? fwd > 0 : fwd <= 0;
+}
+
+// Directional edge for calibration: the same "did this exposure pay off" intuition as isHit above,
+// expressed as a continuous signed quantity instead of a boolean — resulting LONG uses the raw
+// forward return (positive = paid off); resulting FLAT uses the NEGATED forward return (a decline
+// avoided also reads positive here). Used only for calibration's continuous mean, never for a
+// hit/miss threshold, so the zero-boundary asymmetry in isHit above does not apply here.
+function directionalEdge(exposure: Exposure, fwd: number): number {
+  return exposure === 'LONG' ? fwd : -fwd;
 }
 
 function computeHorizonStats(rows: readonly ScoringRow[]): readonly HorizonStats[] {
+  const exposures = annotateResultingExposure(rows);
   return FORWARD_RETURN_HORIZONS.map((horizon) => {
     let sampleCount = 0;
     let hitCount = 0;
@@ -119,7 +136,7 @@ function computeHorizonStats(rows: readonly ScoringRow[]): readonly HorizonStats
       const fwd = forwardReturn(rows, i, horizon);
       if (fwd === null) continue;
       sampleCount++;
-      if (isHit(row.action, fwd)) hitCount++;
+      if (isHit(exposures[i]!, fwd)) hitCount++;
     }
     return {
       horizon,
@@ -143,13 +160,14 @@ function bucketIndexFor(confidence: number): number {
 }
 
 function computeCalibration(rows: readonly ScoringRow[]): readonly CalibrationBucket[] {
+  const exposures = annotateResultingExposure(rows);
   const sums = Array.from({ length: CALIBRATION_BUCKET_COUNT }, () => ({ sum: 0, count: 0 }));
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i]!;
     if (row.action === 'error' || row.confidence === null) continue;
     const fwd = forwardReturn(rows, i, CALIBRATION_HORIZON);
     if (fwd === null) continue;
-    const edge = directionalEdge(row.action, fwd);
+    const edge = directionalEdge(exposures[i]!, fwd);
     const bucket = sums[bucketIndexFor(row.confidence)]!;
     bucket.sum += edge;
     bucket.count += 1;
@@ -249,6 +267,98 @@ export function scoreRows(rows: readonly ScoringRow[]): readonly Scorecard[] {
     calibration: computeCalibration(groupRows),
     toyEquity: computeToyEquity(groupRows),
   }));
+}
+
+// ── Forward-outcome digest for the reflection loop (F1) ──────────────────────
+//
+// A compact summary of how RECENT decisions turned out one bar later, so the reflection prompt can
+// see post-decision price outcomes (previously it saw only closed round-trips + a hold count, never
+// whether individual decisions were followed by favorable moves). TOY RESEARCH METRIC — same caveats
+// as this module's header: thin, noisy, never a promotion input; it exists to help a model spot
+// SYSTEMATIC error (e.g. entries that on average lose money at t+1), not to prove anything.
+
+export interface DecisionOutcomeBucket {
+  // Decisions in this bucket that HAVE a defined t+1 forward return (rows at the very end of the
+  // window, with no next close to measure against, are excluded — so mean is always over `count`).
+  readonly count: number;
+  // Mean t+1 forward return over the bucket, as a PERCENT (0.1 → 10). null when count === 0.
+  readonly meanForwardReturnPct: number | null;
+}
+
+export interface DecisionOutcomeDigest {
+  readonly entries: DecisionOutcomeBucket; // opened a long (FLAT→LONG)
+  readonly exits: DecisionOutcomeBucket; // closed a long (LONG→FLAT)
+  readonly heldLong: DecisionOutcomeBucket; // maintained a long (hold, or long while already LONG)
+  readonly stayedFlat: DecisionOutcomeBucket; // maintained flat (hold, or flat while already FLAT)
+  readonly confidence: {
+    readonly lowLong: DecisionOutcomeBucket; // 'long' decisions with confidence < 0.5
+    readonly highLong: DecisionOutcomeBucket; // 'long' decisions with confidence >= 0.5
+  };
+}
+
+interface MutableBucket {
+  count: number;
+  sum: number;
+}
+
+function addToBucket(bucket: MutableBucket, fwd: number): void {
+  bucket.count += 1;
+  bucket.sum += fwd;
+}
+
+function finalizeBucket(bucket: MutableBucket): DecisionOutcomeBucket {
+  return {
+    count: bucket.count,
+    meanForwardReturnPct: bucket.count === 0 ? null : (bucket.sum / bucket.count) * 100,
+  };
+}
+
+/**
+ * Summarizes a recent oldest→newest decision window (the reflection lookback) into a DecisionOutcomeDigest,
+ * reusing the same resulting-exposure state walk as the scorecards. Each non-'error' decision with a
+ * defined t+1 forward return is bucketed by what it DID (entry / exit / held-long / stayed-flat) and,
+ * for 'long' decisions, by confidence split at 0.5 — each bucket reporting its count and mean t+1
+ * forward return. Unlike scoreRows, the whole window is treated as one continuous position sequence
+ * (it is the actual decision journal in order), not grouped per playbook/prompt.
+ *
+ * TOY RESEARCH METRIC — see this module's header comment and the F1 digest header above.
+ */
+export function summarizeRecentDecisionOutcomes(
+  rows: readonly ScoringRow[],
+): DecisionOutcomeDigest {
+  const exposures = annotateResultingExposure(rows);
+  const entries: MutableBucket = { count: 0, sum: 0 };
+  const exits: MutableBucket = { count: 0, sum: 0 };
+  const heldLong: MutableBucket = { count: 0, sum: 0 };
+  const stayedFlat: MutableBucket = { count: 0, sum: 0 };
+  const lowLong: MutableBucket = { count: 0, sum: 0 };
+  const highLong: MutableBucket = { count: 0, sum: 0 };
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i]!;
+    if (row.action === 'error') continue;
+    const fwd = forwardReturn(rows, i, 1); // t+1: the most immediate, least confounded outcome
+    if (fwd === null) continue;
+    const resulting = exposures[i]!;
+    const prev: Exposure = i === 0 ? 'FLAT' : exposures[i - 1]!;
+
+    if (row.action === 'long' && prev === 'FLAT') addToBucket(entries, fwd);
+    else if (row.action === 'flat' && prev === 'LONG') addToBucket(exits, fwd);
+    else if (resulting === 'LONG') addToBucket(heldLong, fwd);
+    else addToBucket(stayedFlat, fwd);
+
+    if (row.action === 'long' && row.confidence !== null) {
+      addToBucket(row.confidence < 0.5 ? lowLong : highLong, fwd);
+    }
+  }
+
+  return {
+    entries: finalizeBucket(entries),
+    exits: finalizeBucket(exits),
+    heldLong: finalizeBucket(heldLong),
+    stayedFlat: finalizeBucket(stayedFlat),
+    confidence: { lowLong: finalizeBucket(lowLong), highLong: finalizeBucket(highLong) },
+  };
 }
 
 export interface CompareOptions {

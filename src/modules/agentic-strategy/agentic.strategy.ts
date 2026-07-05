@@ -86,6 +86,10 @@ export class AgenticStrategy implements AsyncStrategy {
   private readonly baseIntervalMs: number;
   private readonly journal?: AgentDecisionJournalPort;
   private readonly onClosedTrade?: (count: number) => void;
+  // Venue minimum-notional for this symbol, captured in onInit. Used only to reclassify a sub-minimum
+  // "dust" position as flat in the agent's view (see buildContext). null ⇒ unavailable ⇒ no
+  // reclassification (fail safe to the prior LONG-when-any-qty behavior).
+  private minNotional: Price | null = null;
 
   // Ring buffer of past decisions, newest-last, capped — self-consistency context handed to the
   // agent each call. The client itself stays stateless; this trail lives host-side in the strategy.
@@ -120,7 +124,9 @@ export class AgenticStrategy implements AsyncStrategy {
   }
 
   onInit(ctx: StrategyInitContext): void {
-    void ctx;
+    // Capture the venue minimum-notional for this symbol so buildContext can treat a sub-minimum
+    // "dust" position as flat (see its own comment). Absent ⇒ null ⇒ no dust reclassification.
+    this.minNotional = ctx.symbolConstraints.get(this.symbol)?.minNotional ?? null;
   }
 
   async decide(input: AgentDecisionInput): Promise<Signal[]> {
@@ -204,24 +210,36 @@ export class AgenticStrategy implements AsyncStrategy {
       }
     }
 
-    const position: AgentPositionSummary = held
-      ? {
-          side: 'LONG',
-          qty: held.signedQty.toFixed(),
-          avgEntry: held.avgEntry.toFixed(),
-          realizedPnl: held.realizedPnl.toFixed(),
-          unrealizedPnlPct:
-            lastClose !== null ? (lastClose / toIndicatorNumber(held.avgEntry) - 1) * 100 : null,
-          openOrders,
-        }
-      : {
-          side: 'FLAT',
-          qty: '0',
-          avgEntry: null,
-          realizedPnl: '0',
-          unrealizedPnlPct: null,
-          openOrders,
-        };
+    // A held position whose notional is below the venue minimum is DUST: a reduce-only exit sized to
+    // that sub-minNotional qty is rejected BELOW_MINIMUM by the sizer, so it can never be closed.
+    // Surfacing it as LONG only makes the agent spam un-executable exits (and never reach flat, which
+    // also starves round-trip accounting). Treat it as FLAT so the agent holds or re-enters — a fresh
+    // entry absorbs the dust into a tradable position. minNotional comes from onInit; null ⇒ skip the
+    // reclassification. Decimal comparison only — no float on the money path.
+    const heldIsDust =
+      held !== undefined &&
+      this.minNotional !== null &&
+      held.signedQty.mul(held.avgEntry).lt(this.minNotional);
+
+    const position: AgentPositionSummary =
+      held !== undefined && !heldIsDust
+        ? {
+            side: 'LONG',
+            qty: held.signedQty.toFixed(),
+            avgEntry: held.avgEntry.toFixed(),
+            realizedPnl: held.realizedPnl.toFixed(),
+            unrealizedPnlPct:
+              lastClose !== null ? (lastClose / toIndicatorNumber(held.avgEntry) - 1) * 100 : null,
+            openOrders,
+          }
+        : {
+            side: 'FLAT',
+            qty: '0',
+            avgEntry: null,
+            realizedPnl: '0',
+            unrealizedPnlPct: null,
+            openOrders,
+          };
 
     return {
       indicators,

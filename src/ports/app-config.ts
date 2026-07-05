@@ -43,6 +43,7 @@ export interface AppConfig {
     drainCooldownBaseMs: number;
     drainCooldownMaxMs: number;
     reflectionEveryNTrades: number;
+    reflectionCooldownMs: number;
     // Absent means unpinned.
     playbookPin?: number;
   };

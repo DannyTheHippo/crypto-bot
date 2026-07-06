@@ -74,3 +74,28 @@ IDE auto-commit. Content is the validated work; message misdescribes it. Owner m
 
 **Next candidates:** the key fix (owner) unblocks everything; then #10 skip-rate tuning on first
 real-decide days; #5-7 (Stage 2) after the Stage-1 exit criterion holds.
+
+## 2026-07-06 — Pass 2 (owner-triggered)
+
+**Window:** ~15 min since Pass 1 deploy. **Evidence:** healthy, kill switch RUNNING, 0 errors;
+prescreen `called=2` post-redeploy (position_open), 2 stub holds, 0 rejections; readiness 26 RTs /
+net −$15.97 unchanged. **Lane still INERT** — ANTHROPIC_API_KEY blocker stands (owner action).
+
+**Shipped: no code — deliberately.** Both ranked candidates proved STALE on code re-verification:
+
+- Backlog #5 (scoring biases): already fixed since the 07-04 analysis — `isHit` is the approved
+  exposure-based F2 convention (exact complement split at zero; flat-in-a-falling-market is
+  honestly good for a long/flat lane), and the open-at-end toy-equity exclusion is deliberate,
+  documented, surfaced via `openAtEnd`, with reflection fed by realized venue round trips.
+- Backlog #6 (order-book depth): prompt v3 (d41b35f) already renders top-of-book levels, spread
+  bps, and imbalance via `buildOrderBookBlock` (agent-prompt.ts:154+).
+
+Pruned both with evidence; annotated #7 with the viable implementation shape (app-side
+`agentic_version_net_pnl_usd{version}` gauges — Grafana has no postgres datasource for a DB-join
+panel). Playbook §3 hardened: re-verify backlog items against current code before implementing.
+
+**Meta:** this is empty-pass 1 of 2 before the playbook's cadence/scope-change rule triggers —
+expected while the lane is INERT; the key fix resets the situation entirely.
+
+**Next candidates:** key fix (owner) → #10 skip-rate tuning on the first real-decide days → #7
+via the gauge-sampler shape → dust-threshold accounting stays flagged for owner.

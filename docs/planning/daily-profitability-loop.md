@@ -73,9 +73,12 @@ agentic-lane-only. Candidate sources, in priority order:
 3. The rolling backlog in `reports/loop/state.md`.
 4. New ideas from today's evidence (add to the backlog even when not chosen).
 
-Implement **one** improvement per pass (two only if both are S-effort). If nothing clears the bar,
-ship nothing — record why, and after **two consecutive** empty passes recommend a cadence or scope
-change in the report instead of forcing a change.
+Implement **one** improvement per pass (two only if both are S-effort). **Before implementing,
+re-verify the item is still real against current code** — backlog items inherited from dated
+analyses go stale (2026-07-06 Pass 2 precedent: two Stage-2 seeds from the 07-04 analysis were
+already fixed in the codebase; the pass's value was pruning them with evidence, not shipping). If
+nothing clears the bar, ship nothing — record why, and after **two consecutive** empty passes
+recommend a cadence or scope change in the report instead of forcing a change.
 
 ## 4. Autonomy boundaries (task-spec authorization for these runs)
 

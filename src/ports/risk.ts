@@ -27,6 +27,11 @@ export interface SizerDeps {
   readonly mode: TradingMode;
   readonly filters: ReadonlyMap<string, SymbolFilters>;
   readonly randomBytes: (n: number) => Uint8Array;
+  // Marketable-exit crossing buffer (bps) for reduce-only intents — how far the IOC limit crosses
+  // the spread so a partial fill doesn't leave sub-minNotional dust resting away from market.
+  // Optional so existing test fixtures that omit it keep booting; PositionSizerService falls back
+  // to 25 (mirrors risk.module's SIZER_DEPS factory default).
+  readonly exitCrossBufferBps?: number;
 }
 
 // Injected RiskEngine dependencies. The signing key is process-lifetime random

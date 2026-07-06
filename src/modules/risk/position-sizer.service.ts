@@ -65,13 +65,26 @@ export class PositionSizerService implements PositionSizerPort {
     if (order === null) return { ok: false, reason: 'NO_POSITION' };
     const { side, reduceOnly } = order;
 
-    // Limit price: hint or decision-time reference, rounded directionally to the tick.
+    // Limit price: hint or decision-time reference, rounded directionally to the tick. A hint or an
+    // entry price rounds conservatively (BUY down, SELL up — never pay/receive worse than intended).
+    // Reduce-only intents with no caller-supplied hint are instead made marketable (crossed past the
+    // spread by EXIT_CROSS_BUFFER_BPS): the tick-rounding direction FLIPS to stay crossed rather than
+    // retreat toward passive — SELL rounds down (still below the bid), BUY-cover rounds up (still
+    // above the ask) — so a partial IOC fill never leaves sub-minNotional dust resting away from
+    // market. A caller-supplied hint (e.g. the kill-switch flatten path's own band-edge pricing)
+    // always wins, unchanged, using the conservative direction.
     const refPrice = signal.refPrice;
-    const limitPrice = roundToTick(
-      signal.limitPriceHint ?? refPrice,
-      filters.tickSize,
-      side === 'BUY' ? 'down' : 'up',
-    );
+    const isCrossedExit = reduceOnly && signal.limitPriceHint === undefined;
+    const basePrice =
+      signal.limitPriceHint ?? (isCrossedExit ? this.crossedExitPrice(side, refPrice) : refPrice);
+    const tickDirection = isCrossedExit
+      ? side === 'BUY'
+        ? 'up'
+        : 'down'
+      : side === 'BUY'
+        ? 'down'
+        : 'up';
+    const limitPrice = roundToTick(basePrice, filters.tickSize, tickDirection);
 
     // Sizing: reduce-only legs (exit-long, cover-short, flatten) reduce the attributed position;
     // entries (long or short) scale base notional by conviction.
@@ -104,7 +117,7 @@ export class PositionSizerService implements PositionSizerPort {
       type: 'LIMIT',
       qty: steppedQty,
       limitPrice,
-      timeInForce: 'GTC',
+      timeInForce: reduceOnly ? 'IOC' : 'GTC',
       reduceOnly,
       mode: this.deps.mode,
       refPrice,
@@ -119,5 +132,15 @@ export class PositionSizerService implements PositionSizerPort {
       },
     };
     return { ok: true, intent };
+  }
+
+  // Crosses refPrice past the spread by EXIT_CROSS_BUFFER_BPS: SELL prices down (marketable against
+  // bids), BUY prices up (marketable against asks). Capped at 99bps in the config schema so the
+  // crossed price never trips domain/risk/evaluate.ts's price-band veto (maxBandBps=100). Falls back
+  // to 25 when deps omit the knob (module-isolation unit fixtures).
+  private crossedExitPrice(side: 'BUY' | 'SELL', refPrice: Decimal): Decimal {
+    const bufferBps = this.deps.exitCrossBufferBps ?? 25;
+    const buffer = new Decimal(bufferBps).div(10_000);
+    return side === 'SELL' ? refPrice.mul(new Decimal(1).sub(buffer)) : refPrice.mul(buffer.add(1));
   }
 }

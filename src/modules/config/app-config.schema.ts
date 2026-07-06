@@ -126,6 +126,11 @@ const envSchema = z.object({
     .default(7 * 24 * 60 * 60 * 1000),
   // Absent means unpinned — no default (an explicit default would look like a pin).
   AGENTIC_PLAYBOOK_PIN: z.coerce.number().int().positive().optional(),
+  // Marketable-exit crossing buffer (bps) for reduce-only intents (PositionSizerService): how far
+  // the IOC limit crosses the spread so a partial fill doesn't leave sub-minNotional dust resting
+  // away from market. Capped at 99 (< DEFAULT_LIMITS.maxBandBps=100 in risk.module) so a crossed
+  // exit price never trips domain/risk/evaluate.ts's price-band veto.
+  EXIT_CROSS_BUFFER_BPS: z.coerce.number().int().min(0).max(99).default(25),
 });
 
 export function validate(env: Record<string, string | undefined>): AppConfig {
@@ -173,6 +178,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     AGENTIC_REFLECTION_EVERY_N_TRADES: agenticReflectionEveryNTrades,
     AGENTIC_REFLECTION_COOLDOWN_MS: agenticReflectionCooldownMs,
     AGENTIC_PLAYBOOK_PIN: agenticPlaybookPin,
+    EXIT_CROSS_BUFFER_BPS: exitCrossBufferBps,
   } = parsed.data;
   const bootId = crypto.randomUUID();
   const venues = parseVenues(env);
@@ -209,6 +215,9 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       reflectionEveryNTrades: agenticReflectionEveryNTrades,
       reflectionCooldownMs: agenticReflectionCooldownMs,
       playbookPin: agenticPlaybookPin,
+    },
+    risk: {
+      exitCrossBufferBps,
     },
     ...liveFields,
   };

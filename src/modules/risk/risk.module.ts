@@ -66,6 +66,11 @@ function baseNotionalFor(config: ConfigService<AppConfig, true> | undefined): st
   void config;
   return process.env['BASE_NOTIONAL'] ?? '1000';
 }
+// §exit-liquidity: falls back to the schema's own default (25) so module-isolation unit boots
+// (RiskModule imported without AppConfigModule) still size a marketable exit correctly.
+function exitCrossBufferBpsFor(config: ConfigService<AppConfig, true> | undefined): number {
+  return config?.get('risk', { infer: true }).exitCrossBufferBps ?? 25;
+}
 const REAL_FEED_HEALTH_OPTIONAL = { token: REAL_FEED_HEALTH, optional: true } as const;
 const CONFIG_OPTIONAL = { token: ConfigService, optional: true } as const;
 
@@ -94,6 +99,7 @@ const CONFIG_OPTIONAL = { token: ConfigService, optional: true } as const;
         mode: configMode(config),
         filters: DEFAULT_FILTERS,
         randomBytes,
+        exitCrossBufferBps: exitCrossBufferBpsFor(config),
       }),
       inject: [CONFIG_OPTIONAL],
     },

@@ -216,4 +216,129 @@ describe('PositionSizerService', () => {
     );
     expect(r).toEqual({ ok: false, reason: 'NO_POSITION' });
   });
+
+  // ── Marketable exits: reduce-only intents cross the spread and go IOC ──
+  function longPosition(): Map<string, Position> {
+    return new Map<string, Position>([
+      [
+        `${SID}:${V}:${SYM}`,
+        {
+          strategyId: SID,
+          venue: V,
+          symbol: SYM,
+          signedQty: new Decimal('5'),
+          avgEntry: price('100'),
+          realizedPnl: new Decimal(0),
+        },
+      ],
+    ]);
+  }
+
+  it('sizes a reduce-only SELL (EXIT_LONG) as marketable IOC, crossed down and tick-rounded', () => {
+    const r = new PositionSizerService(clock, deps({ exitCrossBufferBps: 25 })).size(
+      signal({ kind: 'EXIT_LONG', refPrice: price('100') }),
+      snapshot(longPosition()),
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.intent.timeInForce).toBe('IOC');
+      expect(r.intent.type).toBe('LIMIT');
+      // 100 × (1 − 25/10000) = 99.75, already a multiple of tick 0.01 ⇒ rounds down to itself.
+      expect(r.intent.limitPrice?.toFixed()).toBe('99.75');
+    }
+  });
+
+  it('sizes a reduce-only BUY (EXIT_SHORT cover) as marketable IOC, crossed up and tick-rounded', () => {
+    const r = new PositionSizerService(clock, deps({ exitCrossBufferBps: 25 })).size(
+      signal({ kind: 'EXIT_SHORT', refPrice: price('100') }),
+      snapshot(shortPosition()),
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.intent.timeInForce).toBe('IOC');
+      // 100 × (1 + 25/10000) = 100.25, already a multiple of tick 0.01 ⇒ rounds up to itself.
+      expect(r.intent.limitPrice?.toFixed()).toBe('100.25');
+    }
+  });
+
+  it('leaves entries (ENTER_LONG/ENTER_SHORT) at LIMIT/GTC, unaffected by the exit buffer', () => {
+    const enterLong = new PositionSizerService(clock, deps({ exitCrossBufferBps: 25 })).size(
+      signal({ kind: 'ENTER_LONG', refPrice: price('100') }),
+      snapshot(),
+    );
+    expect(enterLong.ok).toBe(true);
+    if (enterLong.ok) {
+      expect(enterLong.intent.timeInForce).toBe('GTC');
+      expect(enterLong.intent.limitPrice?.toFixed()).toBe('100');
+    }
+
+    const enterShort = new PositionSizerService(clock, deps({ exitCrossBufferBps: 25 })).size(
+      signal({ kind: 'ENTER_SHORT', refPrice: price('100') }),
+      snapshot(),
+    );
+    expect(enterShort.ok).toBe(true);
+    if (enterShort.ok) {
+      expect(enterShort.intent.timeInForce).toBe('GTC');
+      expect(enterShort.intent.limitPrice?.toFixed()).toBe('100');
+    }
+  });
+
+  it('buffer 0 still emits IOC, priced at the tick-rounded refPrice with no crossing', () => {
+    const r = new PositionSizerService(clock, deps({ exitCrossBufferBps: 0 })).size(
+      signal({ kind: 'EXIT_LONG', refPrice: price('100') }),
+      snapshot(longPosition()),
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.intent.timeInForce).toBe('IOC');
+      expect(r.intent.limitPrice?.toFixed()).toBe('100');
+    }
+  });
+
+  it('falls back to a 25bps buffer when deps omit exitCrossBufferBps', () => {
+    const depsWithoutBuffer = deps();
+    expect(depsWithoutBuffer.exitCrossBufferBps).toBeUndefined();
+    const r = new PositionSizerService(clock, depsWithoutBuffer).size(
+      signal({ kind: 'EXIT_LONG', refPrice: price('100') }),
+      snapshot(longPosition()),
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.intent.timeInForce).toBe('IOC');
+      expect(r.intent.limitPrice?.toFixed()).toBe('99.75'); // default 25bps, same as the explicit case
+    }
+  });
+
+  it('a caller-supplied limitPriceHint on a reduce-only signal wins over the crossed-exit computation', () => {
+    // Mirrors halt-coordinator's kill-switch FLATTEN path, which prices its own band-edge hint.
+    const r = new PositionSizerService(clock, deps({ exitCrossBufferBps: 25 })).size(
+      signal({ kind: 'EXIT_LONG', refPrice: price('100'), limitPriceHint: price('97') }),
+      snapshot(longPosition()),
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.intent.timeInForce).toBe('IOC'); // still IOC — reduceOnly drives TIF, not the hint
+      expect(r.intent.limitPrice?.toFixed()).toBe('97');
+    }
+  });
+
+  it('crosses a non-tick-aligned exit price down (SELL) to the nearest tick below', () => {
+    // refPrice 101, buffer 25bps ⇒ 101 × 0.9975 = 100.7475, floored to the 0.01 tick ⇒ 100.74.
+    const r = new PositionSizerService(clock, deps({ exitCrossBufferBps: 25 })).size(
+      signal({ kind: 'EXIT_LONG', refPrice: price('101') }),
+      snapshot(longPosition()),
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.intent.limitPrice?.toFixed()).toBe('100.74');
+  });
+
+  it('crosses a non-tick-aligned cover price up (BUY) to the nearest tick above', () => {
+    // refPrice 101, buffer 25bps ⇒ 101 × 1.0025 = 101.2525, ceiled to the 0.01 tick ⇒ 101.26.
+    const r = new PositionSizerService(clock, deps({ exitCrossBufferBps: 25 })).size(
+      signal({ kind: 'EXIT_SHORT', refPrice: price('101') }),
+      snapshot(shortPosition()),
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.intent.limitPrice?.toFixed()).toBe('101.26');
+  });
 });

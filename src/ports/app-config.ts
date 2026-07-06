@@ -47,6 +47,11 @@ export interface AppConfig {
     // Absent means unpinned.
     playbookPin?: number;
   };
+  // Risk-lane knobs read via ConfigService (mirrors the agentic block above).
+  risk: {
+    // Marketable-exit crossing buffer (bps) for reduce-only intents — see the schema comment.
+    exitCrossBufferBps: number;
+  };
   // §10 live-mode secrets — present ONLY when the process did not boot under NODE_ENV=test/ci
   // (the schema strips them otherwise; CI has no in-code path that reaches a live credential).
   // Excluded from configHash by canonicalJsonWithoutSecrets. Read solely inside the live-adapter

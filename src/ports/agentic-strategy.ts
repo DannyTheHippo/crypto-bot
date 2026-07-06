@@ -213,6 +213,10 @@ export interface AgentTradingProfile {
   readonly baseNotional: string;
   readonly maxOrderNotional: string;
   readonly constraints: SymbolConstraints;
+  // P5 compounding sizing: present only when SIZER_EQUITY_FRACTION > 0 — PositionSizerService then
+  // sizes entries off equity × fraction × confidence instead of baseNotional × confidence. Absent
+  // keeps the prompt's legacy baseNotional sizing sentence byte-identical to pre-P5.
+  readonly equityFraction?: string;
 }
 
 // ── Agent decision journal ────────────────────────────────────────────────────

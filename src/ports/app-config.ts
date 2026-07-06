@@ -60,6 +60,9 @@ export interface AppConfig {
     exitCrossBufferBps: number;
     // Quote-currency (USDT) notional per order, sized below the account balance / above minNotional.
     baseNotional: string;
+    // Compounding position sizing (P5): fraction of equity sized per entry (0..1). '0' disables —
+    // PositionSizerService falls back to the legacy baseNotional × strength path.
+    equityFraction: string;
     // RiskLimitsConfig overlay knobs (domain/risk/limits.ts) — RiskModule merges these onto its
     // DEFAULT_LIMITS hardcoded fallback. maxDriftBps has no env knob (not part of this pass); it
     // stays hardcoded in DEFAULT_LIMITS.

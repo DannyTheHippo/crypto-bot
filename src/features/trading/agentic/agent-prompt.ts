@@ -83,7 +83,9 @@ export function buildSystemPrompt(profile: AgentTradingProfile): string {
     'You may only go LONG or stay FLAT — never short, never use leverage or margin.',
     'You decide only on CLOSED candles; never react to the still-forming current candle.',
     `Round-trip trading cost is approximately ${roundTripBps} basis points (${profile.makerBps} maker + ${profile.takerBps} taker) — only act when the expected edge clears fees.`,
-    `Your confidence scales the order: target notional ≈ baseNotional (${profile.baseNotional}) × confidence, capped at maxOrderNotional (${profile.maxOrderNotional}). An independent Risk engine has final authority and may veto, shrink, or resize every proposal you make; it, not you, controls final position size.`,
+    profile.equityFraction !== undefined
+      ? `Your confidence scales the order: target notional ≈ equity × ${profile.equityFraction} × confidence, capped at maxOrderNotional (${profile.maxOrderNotional}). An independent Risk engine has final authority and may veto, shrink, or resize every proposal you make; it, not you, controls final position size.`
+      : `Your confidence scales the order: target notional ≈ baseNotional (${profile.baseNotional}) × confidence, capped at maxOrderNotional (${profile.maxOrderNotional}). An independent Risk engine has final authority and may veto, shrink, or resize every proposal you make; it, not you, controls final position size.`,
     `Venue minimums for this symbol: tick size ${profile.constraints.tickSize.toFixed()}, lot step ${profile.constraints.lotStep.toFixed()}, minimum notional ${profile.constraints.minNotional.toFixed()}.`,
     'When uncertain, choose "hold".',
     `The candles array holds up to ${MAX_CANDLES} closed bars, oldest first. The newest ${MAX_CANDLES_FULL_PRECISION} keep full price/volume precision; any older bars in the window are reduced to ${REDUCED_SIGNIFICANT_DIGITS} significant digits — treat the older bars as coarse trend/regime context, not exact levels.`,

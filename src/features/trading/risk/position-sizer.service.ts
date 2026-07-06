@@ -11,6 +11,7 @@ import { positionKey } from '../../../domain/risk/evaluate';
 import type { Signal } from '../../../domain/types/signal';
 import type { OrderIntent } from '../../../domain/types/order-intent';
 import type { PortfolioSnapshot } from '../../../domain/types/portfolio';
+import { splitSymbol } from '../../../domain/types/symbol';
 import { roundToStep, roundToTick, type Qty } from '../../../domain/types/money';
 import { intentId, encodeClientOrderId, epochMs } from '../../../domain/types/ids';
 import { uuidv7 } from './uuidv7';
@@ -87,10 +88,11 @@ export class PositionSizerService implements PositionSizerPort {
     const limitPrice = roundToTick(basePrice, filters.tickSize, tickDirection);
 
     // Sizing: reduce-only legs (exit-long, cover-short, flatten) reduce the attributed position;
-    // entries (long or short) scale base notional by conviction.
+    // entries (long or short) scale by conviction — compounding equity-fraction sizing when enabled,
+    // else the legacy fixed baseNotional.
     const rawQty: Decimal = reduceOnly
       ? posQty.abs()
-      : new Decimal(this.deps.baseNotional).mul(signal.strength).div(limitPrice);
+      : this.entryNotional(signal, snapshot, side).div(limitPrice);
     // A reduce-only with nothing attributed is a strategy no-op, not a dust order — report it
     // distinctly so trade analysis can separate "flat, nothing to exit" from a genuine sub-min size.
     if (rawQty.lte(0)) return { ok: false, reason: 'NO_POSITION' };
@@ -142,5 +144,36 @@ export class PositionSizerService implements PositionSizerPort {
     const bufferBps = this.deps.exitCrossBufferBps ?? 25;
     const buffer = new Decimal(bufferBps).div(10_000);
     return side === 'SELL' ? refPrice.mul(new Decimal(1).sub(buffer)) : refPrice.mul(buffer.add(1));
+  }
+
+  // Entry (non-reduce-only) notional, quote-denominated. P5 compounding path: equity × fraction ×
+  // strength, when a positive fraction is configured AND equity is finite-positive (an unfunded or
+  // corrupt equity read falls back to the legacy path rather than sizing off a nonsensical base).
+  // Falls back to the legacy fixed baseNotional × strength otherwise — byte-identical to the
+  // pre-P5 behavior for every deployment that leaves SIZER_EQUITY_FRACTION at its disabled default.
+  //
+  // A single extra clamp applies to BUY entries only: capped at 95% of the symbol's free quote
+  // balance, so a compounding size can never request more quote cash than is actually free (the
+  // RiskEngine's maxOrderNotional/exposure limits are a separate, independent ceiling — this clamp
+  // is the sizer's own affordability check). SELL entries (opening a short) spend no quote cash up
+  // front, so the clamp does not apply. Absent balance data ⇒ no cap here — the engine/venue still
+  // vetoes an unaffordable order downstream.
+  private entryNotional(
+    signal: Signal,
+    snapshot: PortfolioSnapshot,
+    side: 'BUY' | 'SELL',
+  ): Decimal {
+    const fraction = new Decimal(this.deps.equityFraction ?? '0');
+    const legacyNotional = new Decimal(this.deps.baseNotional).mul(signal.strength);
+    if (fraction.lte(0) || !snapshot.equity.isFinite() || snapshot.equity.lte(0)) {
+      return legacyNotional;
+    }
+    const target = snapshot.equity.mul(fraction).mul(signal.strength);
+    if (side !== 'BUY') return target;
+
+    const quoteAsset = splitSymbol(signal.symbol).quote;
+    const freeQuote = snapshot.balances.get(quoteAsset)?.free;
+    if (freeQuote === undefined) return target;
+    return Decimal.min(target, freeQuote.mul('0.95'));
   }
 }

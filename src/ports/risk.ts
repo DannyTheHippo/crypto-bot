@@ -32,6 +32,10 @@ export interface SizerDeps {
   // Optional so existing test fixtures that omit it keep booting; PositionSizerService falls back
   // to 25 (mirrors risk.module's SIZER_DEPS factory default).
   readonly exitCrossBufferBps?: number;
+  // Compounding position sizing (P5): fraction of equity sized per entry (0..1). Optional so
+  // existing test fixtures that omit it keep booting; PositionSizerService falls back to '0'
+  // (disabled — legacy baseNotional × strength path), mirroring risk.module's SIZER_DEPS factory.
+  readonly equityFraction?: string;
 }
 
 // Injected RiskEngine dependencies. The signing key is process-lifetime random

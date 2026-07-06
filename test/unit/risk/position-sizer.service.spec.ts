@@ -47,13 +47,16 @@ function signal(o: Partial<Signal> = {}): Signal {
   };
 }
 
-function snapshot(positions = new Map<string, Position>()): PortfolioSnapshot {
+function snapshot(
+  positions = new Map<string, Position>(),
+  over: { equity?: Decimal; balances?: Map<string, { free: Decimal; locked: Decimal }> } = {},
+): PortfolioSnapshot {
   return {
     positions,
-    balances: new Map(),
+    balances: over.balances ?? new Map(),
     openOrders: [],
     inFlightIntents: [],
-    equity: new Decimal(0),
+    equity: over.equity ?? new Decimal(0),
     unrealized: new Decimal(0),
     startingCash: new Decimal(0),
     peakEquity: new Decimal(0),
@@ -340,5 +343,113 @@ describe('PositionSizerService', () => {
     );
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.intent.limitPrice?.toFixed()).toBe('101.26');
+  });
+
+  // ── P5 compounding position sizing: equity × fraction × strength on entries ──
+  describe('equity-fraction (compounding) entry sizing', () => {
+    it('sizes an ENTER_LONG from equity × fraction × strength when the fraction is configured', () => {
+      const r = new PositionSizerService(clock, deps({ equityFraction: '0.02' })).size(
+        signal({ strength: 1 }),
+        snapshot(new Map(), { equity: new Decimal('10000') }),
+      );
+      expect(r.ok).toBe(true);
+      // notional = 10000 × 0.02 × 1 = 200; qty = 200 / 100 (refPrice) = 2
+      if (r.ok) expect(r.intent.qty.toFixed()).toBe('2');
+    });
+
+    it('scales the fractional notional by signal strength', () => {
+      const r = new PositionSizerService(clock, deps({ equityFraction: '0.02' })).size(
+        signal({ strength: 0.5 }),
+        snapshot(new Map(), { equity: new Decimal('10000') }),
+      );
+      expect(r.ok).toBe(true);
+      // notional = 10000 × 0.02 × 0.5 = 100; qty = 100 / 100 = 1
+      if (r.ok) expect(r.intent.qty.toFixed()).toBe('1');
+    });
+
+    it('applies the fractional path to ENTER_SHORT too, with no free-quote clamp on the SELL side', () => {
+      const r = new PositionSizerService(clock, deps({ equityFraction: '0.02' })).size(
+        signal({ kind: 'ENTER_SHORT', strength: 1 }),
+        // No USDT balance at all — the free-quote clamp only ever applies to BUY entries, so a
+        // SELL (short open) is unaffected by its absence.
+        snapshot(new Map(), { equity: new Decimal('10000') }),
+      );
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(r.intent.side).toBe('SELL');
+        expect(r.intent.qty.toFixed()).toBe('2'); // same 200 notional / 100 price
+      }
+    });
+
+    it('clamps a BUY entry at 95% of free quote balance when the target notional exceeds it', () => {
+      const r = new PositionSizerService(clock, deps({ equityFraction: '0.5' })).size(
+        signal({ strength: 1 }),
+        snapshot(new Map(), {
+          equity: new Decimal('10000'),
+          balances: new Map([['USDT', { free: new Decimal('100'), locked: new Decimal(0) }]]),
+        }),
+      );
+      expect(r.ok).toBe(true);
+      // Uncapped target = 10000 × 0.5 × 1 = 5000, but free-quote clamp caps at 100 × 0.95 = 95;
+      // qty = 95 / 100 (refPrice) = 0.95.
+      if (r.ok) expect(r.intent.qty.toFixed()).toBe('0.95');
+    });
+
+    it('applies no free-quote cap on a BUY entry when the balance map has no entry for the quote asset', () => {
+      const r = new PositionSizerService(clock, deps({ equityFraction: '0.02' })).size(
+        signal({ strength: 1 }),
+        snapshot(new Map(), { equity: new Decimal('10000') }), // balances map is empty
+      );
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.intent.qty.toFixed()).toBe('2'); // uncapped: 200 / 100
+    });
+
+    it('falls back to the legacy baseNotional × strength path when equityFraction is "0"', () => {
+      const r = new PositionSizerService(clock, deps({ equityFraction: '0' })).size(
+        signal({ strength: 1 }),
+        snapshot(new Map(), { equity: new Decimal('10000') }),
+      );
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.intent.qty.toFixed()).toBe('10'); // 1000 (baseNotional) × 1 / 100
+    });
+
+    it('falls back to the legacy path when equityFraction is configured but equity is zero', () => {
+      const r = new PositionSizerService(clock, deps({ equityFraction: '0.02' })).size(
+        signal({ strength: 1 }),
+        snapshot(), // default equity: 0
+      );
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.intent.qty.toFixed()).toBe('10'); // legacy baseNotional path
+    });
+
+    it('falls back to the legacy path when equityFraction is configured but equity is negative', () => {
+      const r = new PositionSizerService(clock, deps({ equityFraction: '0.02' })).size(
+        signal({ strength: 1 }),
+        snapshot(new Map(), { equity: new Decimal('-500') }),
+      );
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.intent.qty.toFixed()).toBe('10'); // legacy baseNotional path
+    });
+
+    it('falls back to the legacy path when equity is non-finite (e.g. Infinity)', () => {
+      const r = new PositionSizerService(clock, deps({ equityFraction: '0.02' })).size(
+        signal({ strength: 1 }),
+        snapshot(new Map(), { equity: new Decimal(Infinity) }),
+      );
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.intent.qty.toFixed()).toBe('10'); // legacy baseNotional path
+    });
+
+    it('leaves reduce-only exits unaffected by the equity-fraction clamp (sizes off the attributed position)', () => {
+      const r = new PositionSizerService(clock, deps({ equityFraction: '0.02' })).size(
+        signal({ kind: 'EXIT_LONG' }),
+        snapshot(longPosition(), {
+          equity: new Decimal('10000'),
+          balances: new Map([['USDT', { free: new Decimal('1'), locked: new Decimal(0) }]]),
+        }),
+      );
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.intent.qty.toFixed()).toBe('5'); // |signedQty|, not equity-fraction-derived
+    });
   });
 });

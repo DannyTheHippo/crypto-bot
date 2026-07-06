@@ -21,6 +21,11 @@ const CANDLE_INTERVALS = ['1m', '5m', '15m', '1h', '4h', '1d'] as const;
 // strings, validated here and converted to Decimal only where the consuming module already does so
 // (domain/risk/limits.ts) — never a native float on a money path.
 const decimalString = z.string().regex(/^\d+(\.\d+)?$/, 'must be a non-negative decimal string');
+// Fraction knob (SIZER_EQUITY_FRACTION): a plain decimalString would accept '2' (200% of equity per
+// entry) — the bounded regex rejects anything above 1 at parse time, never via a float compare.
+const fractionString = z
+  .string()
+  .regex(/^(0(\.\d+)?|1(\.0+)?)$/, 'must be a decimal string between 0 and 1 inclusive');
 
 function isTestOrCiEnv(env: Record<string, string | undefined>): boolean {
   const nodeEnv = env['NODE_ENV'] ?? '';
@@ -152,6 +157,11 @@ const envSchema = z.object({
   // Quote-currency (USDT) notional per order. Default 100 matches the deployed .env — the prior
   // in-code fallback of '1000' (risk.module.ts/app.module.ts) was drift, never an intended default.
   BASE_NOTIONAL: decimalString.default('100'),
+  // Compounding position sizing (P5): fraction of current equity sized per entry, scaled further by
+  // signal strength. '0' (default) disables the fractional path — PositionSizerService falls back to
+  // the legacy baseNotional × strength sizing unchanged, so an unconfigured deployment sees zero
+  // behavior change.
+  SIZER_EQUITY_FRACTION: fractionString.default('0'),
   // RiskLimitsConfig overlay knobs (domain/risk/limits.ts) — RiskModule merges these onto
   // DEFAULT_LIMITS. Defaults equal the CURRENT hardcoded values, so an unconfigured deployment sees
   // zero behavior change. maxDriftBps has no knob in this pass; it stays hardcoded in DEFAULT_LIMITS.
@@ -242,6 +252,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     PROMOTION_DUST_NOTIONAL: promotionDustNotional,
     EXIT_CROSS_BUFFER_BPS: exitCrossBufferBps,
     BASE_NOTIONAL: baseNotional,
+    SIZER_EQUITY_FRACTION: sizerEquityFraction,
     RISK_MAX_ORDER_NOTIONAL: riskMaxOrderNotional,
     RISK_MAX_POSITION_PER_SYMBOL: riskMaxPositionPerSymbol,
     RISK_MAX_GROSS_EXPOSURE: riskMaxGrossExposure,
@@ -297,6 +308,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     risk: {
       exitCrossBufferBps,
       baseNotional,
+      equityFraction: sizerEquityFraction,
       maxOrderNotional: riskMaxOrderNotional,
       maxPositionPerSymbol: riskMaxPositionPerSymbol,
       maxGrossExposure: riskMaxGrossExposure,

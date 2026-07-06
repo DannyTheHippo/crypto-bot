@@ -10,6 +10,7 @@ import {
 import { randomBytes, createHash } from 'node:crypto';
 import { APP_FILTER } from '@nestjs/core';
 import type { Exchange } from 'ccxt';
+import Decimal from 'decimal.js';
 import { AppConfigModule } from './config/config.module';
 import { TypedConfigService } from './config/environment/typed-config.service';
 import { ObservabilityModule } from './features/common/observability/observability.module';
@@ -701,11 +702,14 @@ function symbolConstraintsFor(symbol: string): SymbolConstraints | undefined {
 // risk.module.ts's sizer reads (passed in by the factory below, so prompt and sizer can never
 // drift); maker/takerBps mirror DEFAULT_PAPER_CONFIG.fees below (§1.5) — the actual fee schedule
 // the paper adapter charges, not the retired pure-lane prompt's hardcoded ~20bps taker guess (no
-// such shared constant exists elsewhere in the codebase).
+// such shared constant exists elsewhere in the codebase). equityFraction is the SAME validated
+// AppConfig.risk.equityFraction risk.module.ts's sizer reads (P5 compounding sizing) — set on the
+// profile only when > 0 so the prompt sentence and the sizer's active path can never disagree.
 function agentTradingProfileFor(
   symbol: string,
   limits: PartialRiskLimits,
   baseNotional: string,
+  equityFraction: string,
 ): AgentTradingProfile {
   return {
     makerBps: DEFAULT_PAPER_CONFIG.fees.makerBps,
@@ -717,6 +721,10 @@ function agentTradingProfileFor(
       lotStep: qty('0.0001'),
       minNotional: price('10'),
     },
+    // Only set when compounding sizing is actually active — an always-present '0' would flip the
+    // prompt's sizing sentence for every unconfigured deployment (the disabled-path prompt must stay
+    // byte-identical to pre-P5).
+    ...(new Decimal(equityFraction).gt(0) ? { equityFraction } : {}),
   };
 }
 
@@ -839,7 +847,12 @@ class MetricsWrappingAgentClient implements AgentClientPort {
     {
       provide: AGENT_TRADING_PROFILE_OVERRIDE,
       useFactory: (limits: PartialRiskLimits, config: TypedConfigService): AgentTradingProfile =>
-        agentTradingProfileFor(config.strategy.symbol, limits, config.risk.baseNotional),
+        agentTradingProfileFor(
+          config.strategy.symbol,
+          limits,
+          config.risk.baseNotional,
+          config.risk.equityFraction,
+        ),
       inject: [RISK_LIMITS, TypedConfigService],
     },
     // G4a: lets ReflectionService (features/trading/agentic, which cannot import

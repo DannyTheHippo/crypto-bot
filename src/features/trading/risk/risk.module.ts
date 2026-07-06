@@ -71,6 +71,12 @@ function baseNotionalFor(config: TypedConfigService | undefined): string {
 function exitCrossBufferBpsFor(config: TypedConfigService | undefined): number {
   return config?.risk.exitCrossBufferBps ?? 25;
 }
+// P5 compounding sizing: falls back to the schema's own default ('0', disabled) so module-isolation
+// unit boots (RiskModule imported without AppConfigModule) still size orders the same as a real,
+// unconfigured deployment (legacy baseNotional × strength path).
+function equityFractionFor(config: TypedConfigService | undefined): string {
+  return config?.risk.equityFraction ?? '0';
+}
 // Overlays the RISK_* env knobs onto DEFAULT_LIMITS (single source of truth for both RISK_LIMITS —
 // consumed by RiskEngineService/ModeControl's LIMITS_COMPLETE gate — and RISK_ENGINE_DEPS). Absent
 // TypedConfigService (module-isolation boots) falls straight through to DEFAULT_LIMITS, unchanged
@@ -123,6 +129,7 @@ const CONFIG_OPTIONAL = { token: TypedConfigService, optional: true } as const;
         filters: DEFAULT_FILTERS,
         randomBytes,
         exitCrossBufferBps: exitCrossBufferBpsFor(config),
+        equityFraction: equityFractionFor(config),
       }),
       inject: [CONFIG_OPTIONAL],
     },

@@ -153,6 +153,16 @@ describe('validate()', () => {
     it('DATABASE_URL="" means no database (min(1) never sees it)', () => {
       expect(validate({ PORT: '3100', DATABASE_URL: '' }).db.url).toBeUndefined();
     });
+
+    it('a leaked inline comment ("VAR= # note" → value "# note") is treated as unset', () => {
+      // docker compose env_file quirk verified 2026-07-06: an empty assignment with a trailing
+      // comment delivers the comment text itself as the value.
+      const cfg = validate({
+        PORT: '3100',
+        AGENTIC_PLAYBOOK_PIN: '# optional playbook_version id to pin; unset = latest ACTIVE',
+      });
+      expect(cfg.agentic.playbookPin).toBeUndefined();
+    });
   });
 
   it('N3 — CI="false" (string) forces paper because Boolean("false") is truthy', () => {

@@ -173,11 +173,20 @@ const envSchema = z.object({
 // dotenv/compose convention: `VAR=` (empty assignment) means UNSET, not "the empty string". Without
 // this strip an emptied optional knob crashes the boot — zod v4 coerces '' to NaN (AGENTIC_PLAYBOOK_PIN=
 // took the deployed bot down on 2026-07-06) and the decimal-string knobs would fail their regex the
-// same way. Stripping before parse makes '' fall through to each field's default/optional handling.
+// same way. ALSO unset: values that are nothing but a leaked inline comment — docker compose's
+// env_file parser strips `value # comment` correctly but turns `VAR= # comment` into the literal
+// string '# comment' (verified via `docker compose config` on the same outage). A '#'-leading value
+// can never be a legitimate knob here (no secret or symbol starts with '#'), so it is treated as
+// the empty assignment it was meant to be. Stripping before parse makes both shapes fall through to
+// each field's default/optional handling.
 function withoutEmptyValues(
   env: Record<string, string | undefined>,
 ): Record<string, string | undefined> {
-  return Object.fromEntries(Object.entries(env).filter(([, v]) => v !== ''));
+  return Object.fromEntries(
+    Object.entries(env).filter(
+      ([, v]) => v !== '' && !(v !== undefined && v.trimStart().startsWith('#')),
+    ),
+  );
 }
 
 export function validate(rawEnv: Record<string, string | undefined>): AppConfig {

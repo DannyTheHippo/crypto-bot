@@ -41,3 +41,36 @@ round trips, net −$14.52→−$14.72, LLM $11.53, window 1.83d, ready=0; equit
 
 **Next candidates:** backlog #2 (Grafana render check), #10 (skip-rate tuning once real decides
 flow), #5-7 (Stage 2) blocked on Stage-1 exit criterion which is blocked on the key fix.
+
+## 2026-07-06 — Pass 1 (owner-triggered "run the first loop now")
+
+**Window:** ~1h since Pass 0 deploy. **Evidence:** app healthy, kill switch RUNNING, 0 errors;
+prescreen `called=6` (all position_open — correct while both symbols hold positions), 6 stub
+holds, 0 rejected signals; readiness 26 round trips (23→26 via DB-cumulative fills walk —
+protective-exit closures), net −$15.97, ready=0. **Lane still INERT** (stub) — the
+ANTHROPIC_API_KEY blocker stands: the slimmed `.env` (19 lines, credentials-only) has NO
+ANTHROPIC line; owner must add `ANTHROPIC_API_KEY=<key>` (no quotes/comment) + `docker compose
+up -d app`. Root-caused this pass: not an override — env_file delivers the Binance keys fine.
+
+**Shipped (backlog #8 + #9, both S; gates green — 1324 unit incl. 6 new, typecheck/build/lint;
+deployed, boot verified clean):**
+
+- #8: zod `superRefine` — boot fails LOUD when `AGENTIC_WARMUP_BARS` < prescreen
+  vol-long/breakout lookbacks (enforced only when prescreen enabled). Undersized warmup would
+  otherwise permanently fail-open and silently no-op the cost floor.
+- #9: `prescreen.ts` non-positive candle values now route to `insufficient_data` (consult) —
+  fail-open is total; previously NaN ratio math fell through to quiet=SKIP (fail-closed).
+
+**Verified read-only:** backlog #2 CLOSED — Grafana dashboard renders via API (55 panels;
+Agentic-lane row 80, net-of-cost 89/130, readiness 90, prescreen 142). Marketable-exits flag
+(2026-07-05) CLOSED — `position-sizer.service.ts:72,139` confirms reduce-only exits cross the
+spread by `EXIT_CROSS_BUFFER_BPS` (P1 f9ba515 superseded it).
+
+**Anomaly (surfaced, not acted on):** commit `76aceee` appeared on main containing exactly this
+pass's four code files with an unrelated auto-generated-style message ("chore(env): update
+configuration for multi-symbol trading…") and no agent trailer — most plausibly an owner-side
+IDE auto-commit. Content is the validated work; message misdescribes it. Owner may
+`git commit --amend` (nothing pushes) or leave it.
+
+**Next candidates:** the key fix (owner) unblocks everything; then #10 skip-rate tuning on first
+real-decide days; #5-7 (Stage 2) after the Stage-1 exit criterion holds.

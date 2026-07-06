@@ -80,6 +80,26 @@ describe('evaluatePrescreen — insufficient_data fail-open', () => {
     const result = evaluatePrescreen(baseArgs({ closes, highs: closes, lows }));
     expect(result).toEqual({ consult: true, reason: 'insufficient_data' });
   });
+
+  it('fails open (not fail-closed to quiet) when a close in the used window is zero', () => {
+    // A zero close feeds NaN into stdevOfReturns' ratio math; the NaN comparisons in
+    // isVolExpansion/breakout proximity fall through to false, which would otherwise land on
+    // quiet (consult: false) — the opposite of this module's fail-open stance.
+    const closes = [...flatCloses(19), 0];
+    const result = evaluatePrescreen(
+      baseArgs({ closes, highs: flatCloses(20), lows: flatCloses(20) }),
+    );
+    expect(result).toEqual({ consult: true, reason: 'insufficient_data' });
+  });
+
+  it('fails open (not fail-closed to quiet) when a low in the used window is negative', () => {
+    // A non-positive low makes distToLow's denominator non-positive, producing a distance that
+    // never legitimately compares <= breakoutPct — same fail-closed risk as the zero-close case.
+    const closes = flatCloses(20);
+    const lows = [...flatCloses(19), -5];
+    const result = evaluatePrescreen(baseArgs({ closes, highs: closes, lows }));
+    expect(result).toEqual({ consult: true, reason: 'insufficient_data' });
+  });
 });
 
 describe('evaluatePrescreen — vol_expansion', () => {

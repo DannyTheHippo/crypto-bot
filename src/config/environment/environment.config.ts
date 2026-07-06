@@ -102,126 +102,151 @@ function parseVenues(env: Record<string, string | undefined>): readonly VenueCon
   }
 }
 
-const envSchema = z.object({
-  PORT: z.coerce.number().int().min(1).max(65535).default(3100),
-  LOG_LEVEL: z.enum(PINO_LEVELS).default('info'),
-  TRADING_MODE: z.string().optional(),
-  NODE_ENV: z.string().optional(),
-  CI: z.string().optional(),
-  DATABASE_URL: z.string().min(1).optional(),
-  VENUES: z.string().optional(),
-  // §3.5 sandbox flavor for testnet mode: 'testnet' (setSandboxMode) or 'demo' (enableDemoTrading).
-  // Inert unless TRADING_MODE=testnet. Default 'demo' (live-mirroring dress rehearsal; the keys this
-  // deployment ships are BINANCE_DEMO_*). Set SANDBOX_ENV=testnet for the testnet.binance.vision sandbox.
-  SANDBOX_ENV: z.enum(['testnet', 'demo']).default('demo'),
-  // Agentic lane knobs — validated here so a later composition pass can read them off ConfigService
-  // instead of process.env, without renaming. ANTHROPIC_API_KEY deliberately excluded (secret; stays
-  // out of AppConfig per the live-secret-stripping precedent above).
-  // Default matches the AGENTIC_TOKEN_PRICE_* defaults below (Sonnet-5 at 3/15): an unconfigured
-  // deployment previously defaulted to Opus while the earned-live verdict priced its tokens at
-  // Sonnet rates — understating LLM cost inside a promotion gate (fail-OPEN direction).
-  AGENTIC_MODEL: z.string().min(1).default('claude-sonnet-5'),
-  // Reflection-path model override. Absent ⇒ reflection uses AGENTIC_MODEL (one model, one price).
-  // If you pin a PRICIER model here, set both AGENTIC_TOKEN_PRICE_* knobs to that model's rates —
-  // the flat pricing then OVER-counts decide-path cost, which is the fail-closed direction.
-  AGENTIC_REFLECTION_MODEL: z.string().min(1).optional(),
-  AGENTIC_TIMEOUT_MS: z.coerce.number().int().positive().default(30000),
-  AGENTIC_MAX_TOKENS: z.coerce.number().int().positive().default(1024),
-  AGENTIC_MIN_DECISION_INTERVAL_MS: z.coerce.number().int().min(0).default(0),
-  AGENTIC_WARMUP_BARS: z.coerce.number().int().positive().default(50),
-  AGENTIC_MAX_CALLS_PER_DAY: z.coerce.number().int().positive().default(500),
-  AGENTIC_MAX_TOKENS_PER_DAY: z.coerce.number().int().positive().default(2_000_000),
-  AGENTIC_MAX_ENTRIES_PER_DAY: z.coerce.number().int().positive().default(12),
-  AGENTIC_DRAIN_COOLDOWN_BASE_MS: z.coerce.number().int().positive().default(30_000),
-  AGENTIC_DRAIN_COOLDOWN_MAX_MS: z.coerce.number().int().positive().default(900_000),
-  // 0 disables periodic reflection.
-  AGENTIC_REFLECTION_EVERY_N_TRADES: z.coerce.number().int().min(0).default(10),
-  // Minimum wall-clock between reflection attempts (F7 tunable). Default 7 days; floored at 0. A
-  // cost/noise throttle, never a safety gate — see reflection.service.ts's SEVEN_DAYS_MS comment.
-  AGENTIC_REFLECTION_COOLDOWN_MS: z.coerce
-    .number()
-    .int()
-    .min(0)
-    .default(7 * 24 * 60 * 60 * 1000),
-  // Absent means unpinned — no default (an explicit default would look like a pin).
-  AGENTIC_PLAYBOOK_PIN: z.coerce.number().int().positive().optional(),
-  // Cumulative closed-trade floor before a reflection candidate auto-promotes to ACTIVE (G4b); 0
-  // (default) disables auto-promotion — see reflection.service.ts's autoPromoteMinTrades comment.
-  AGENTIC_AUTO_PROMOTE_MIN_TRADES: z.coerce.number().int().min(0).default(0),
-  // PromotionReadinessService LLM-cost math: USD per 1M tokens, operator-adjustable (claude-sonnet-5
-  // list prices as of this writing) — same stance as the Grafana cost-panel variables.
-  AGENTIC_TOKEN_PRICE_INPUT_PER_MTOK: decimalString.default('3'),
-  AGENTIC_TOKEN_PRICE_OUTPUT_PER_MTOK: decimalString.default('15'),
-  // Residual-position notional (quote ccy) below which PromotionReadinessService's round-trip walk
-  // considers a cycle CLOSED — historical pre-IOC cycles carry dust remainders that would otherwise
-  // never close. Default '5' mirrors BTC/USDT's exchange minNotional.
-  PROMOTION_DUST_NOTIONAL: decimalString.default('5'),
-  // Cost-floor pre-screen gate: a cheap indicator check consulted before each LLM call so a quiet
-  // market never burns a token spend on a call the agent was always going to pass on. 'true'/'false'
-  // (not z.coerce.boolean(): Boolean('false') === true would invert an explicit disable).
-  AGENTIC_PRESCREEN_ENABLED: z
-    .enum(['true', 'false'])
-    .default('true')
-    .transform((v) => v === 'true'),
-  AGENTIC_PRESCREEN_VOL_SHORT_BARS: z.coerce.number().int().positive().default(10),
-  AGENTIC_PRESCREEN_VOL_LONG_BARS: z.coerce.number().int().positive().default(50),
-  AGENTIC_PRESCREEN_VOL_RATIO: z.coerce.number().positive().default(1.3),
-  AGENTIC_PRESCREEN_BREAKOUT_LOOKBACK_BARS: z.coerce.number().int().positive().default(20),
-  AGENTIC_PRESCREEN_BREAKOUT_PCT: z.coerce.number().positive().default(0.005),
-  // Marketable-exit crossing buffer (bps) for reduce-only intents (PositionSizerService): how far
-  // the IOC limit crosses the spread so a partial fill doesn't leave sub-minNotional dust resting
-  // away from market. Capped at 99 (< DEFAULT_LIMITS.maxBandBps=100 in risk.module) so a crossed
-  // exit price never trips domain/risk/evaluate.ts's price-band veto.
-  EXIT_CROSS_BUFFER_BPS: z.coerce.number().int().min(0).max(99).default(25),
-  // Quote-currency (USDT) notional per order. Default 100 matches the deployed .env — the prior
-  // in-code fallback of '1000' (risk.module.ts/app.module.ts) was drift, never an intended default.
-  BASE_NOTIONAL: decimalString.default('100'),
-  // Compounding position sizing (P5): fraction of current equity sized per entry, scaled further by
-  // signal strength. '0' (default) disables the fractional path — PositionSizerService falls back to
-  // the legacy baseNotional × strength sizing unchanged, so an unconfigured deployment sees zero
-  // behavior change.
-  SIZER_EQUITY_FRACTION: fractionString.default('0'),
-  // ProtectiveExitService (bot-side stop-loss/trailing-stop backstop): fraction below avgEntry
-  // (stop) or below the ratcheted high-water mark (trailing) that force-exits a long via the normal
-  // Strategy→Risk→Execution path (an EXIT_LONG Signal, never a direct execution call). '0' (default)
-  // disables each independently — an unconfigured deployment sees zero behavior change.
-  PROTECT_STOP_LOSS_PCT: fractionString.default('0'),
-  PROTECT_TRAILING_PCT: fractionString.default('0'),
-  // RiskLimitsConfig overlay knobs (domain/risk/limits.ts) — RiskModule merges these onto
-  // DEFAULT_LIMITS. Defaults equal the CURRENT hardcoded values, so an unconfigured deployment sees
-  // zero behavior change. maxDriftBps has no knob in this pass; it stays hardcoded in DEFAULT_LIMITS.
-  RISK_MAX_ORDER_NOTIONAL: decimalString.default('100000'),
-  RISK_MAX_POSITION_PER_SYMBOL: decimalString.default('1000'),
-  RISK_MAX_GROSS_EXPOSURE: decimalString.default('1000000'),
-  RISK_MAX_NET_EXPOSURE: decimalString.default('1000000'),
-  RISK_MAX_DAILY_LOSS: decimalString.default('5000'),
-  RISK_MAX_DRAWDOWN_PCT: decimalString.default('0.2'),
-  RISK_MAX_BAND_BPS: z.coerce.number().int().positive().default(100),
-  RISK_STALE_MAX_AGE_MS: z.coerce.number().int().positive().default(5000),
-  // Strategy-lane knobs. ACTIVE_STRATEGY is a closed enum: 'agentic' is the only registered lane
-  // (the deterministic pure lane was retired 2026-07-03).
-  TRADING_SYMBOL: z.string().min(1).default('BTC/USDT'),
-  // Multi-symbol (P7): CSV of symbols, one agentic strategy instance per entry. Absent ⇒ falls
-  // back to [TRADING_SYMBOL] (which is thereby deprecated but still honored). Every entry must
-  // have a DEFAULT_FILTERS row — asserted loud at startTrading before any enable.
-  TRADING_SYMBOLS: z
-    .string()
-    .min(1)
-    .transform((raw) =>
-      raw
-        .split(',')
-        .map((s) => s.trim())
-        .filter((s) => s.length > 0),
-    )
-    .refine((symbols) => symbols.length > 0, 'TRADING_SYMBOLS must name at least one symbol')
-    .refine(
-      (symbols) => new Set(symbols).size === symbols.length,
-      'TRADING_SYMBOLS entries must be unique',
-    )
-    .optional(),
-  STRATEGY_INTERVAL: z.enum(CANDLE_INTERVALS).default('5m'),
-  ACTIVE_STRATEGY: z.enum(['agentic']).default('agentic'),
-});
+const envSchema = z
+  .object({
+    PORT: z.coerce.number().int().min(1).max(65535).default(3100),
+    LOG_LEVEL: z.enum(PINO_LEVELS).default('info'),
+    TRADING_MODE: z.string().optional(),
+    NODE_ENV: z.string().optional(),
+    CI: z.string().optional(),
+    DATABASE_URL: z.string().min(1).optional(),
+    VENUES: z.string().optional(),
+    // §3.5 sandbox flavor for testnet mode: 'testnet' (setSandboxMode) or 'demo' (enableDemoTrading).
+    // Inert unless TRADING_MODE=testnet. Default 'demo' (live-mirroring dress rehearsal; the keys this
+    // deployment ships are BINANCE_DEMO_*). Set SANDBOX_ENV=testnet for the testnet.binance.vision sandbox.
+    SANDBOX_ENV: z.enum(['testnet', 'demo']).default('demo'),
+    // Agentic lane knobs — validated here so a later composition pass can read them off ConfigService
+    // instead of process.env, without renaming. ANTHROPIC_API_KEY deliberately excluded (secret; stays
+    // out of AppConfig per the live-secret-stripping precedent above).
+    // Default matches the AGENTIC_TOKEN_PRICE_* defaults below (Sonnet-5 at 3/15): an unconfigured
+    // deployment previously defaulted to Opus while the earned-live verdict priced its tokens at
+    // Sonnet rates — understating LLM cost inside a promotion gate (fail-OPEN direction).
+    AGENTIC_MODEL: z.string().min(1).default('claude-sonnet-5'),
+    // Reflection-path model override. Absent ⇒ reflection uses AGENTIC_MODEL (one model, one price).
+    // If you pin a PRICIER model here, set both AGENTIC_TOKEN_PRICE_* knobs to that model's rates —
+    // the flat pricing then OVER-counts decide-path cost, which is the fail-closed direction.
+    AGENTIC_REFLECTION_MODEL: z.string().min(1).optional(),
+    AGENTIC_TIMEOUT_MS: z.coerce.number().int().positive().default(30000),
+    AGENTIC_MAX_TOKENS: z.coerce.number().int().positive().default(1024),
+    AGENTIC_MIN_DECISION_INTERVAL_MS: z.coerce.number().int().min(0).default(0),
+    AGENTIC_WARMUP_BARS: z.coerce.number().int().positive().default(50),
+    AGENTIC_MAX_CALLS_PER_DAY: z.coerce.number().int().positive().default(500),
+    AGENTIC_MAX_TOKENS_PER_DAY: z.coerce.number().int().positive().default(2_000_000),
+    AGENTIC_MAX_ENTRIES_PER_DAY: z.coerce.number().int().positive().default(12),
+    AGENTIC_DRAIN_COOLDOWN_BASE_MS: z.coerce.number().int().positive().default(30_000),
+    AGENTIC_DRAIN_COOLDOWN_MAX_MS: z.coerce.number().int().positive().default(900_000),
+    // 0 disables periodic reflection.
+    AGENTIC_REFLECTION_EVERY_N_TRADES: z.coerce.number().int().min(0).default(10),
+    // Minimum wall-clock between reflection attempts (F7 tunable). Default 7 days; floored at 0. A
+    // cost/noise throttle, never a safety gate — see reflection.service.ts's SEVEN_DAYS_MS comment.
+    AGENTIC_REFLECTION_COOLDOWN_MS: z.coerce
+      .number()
+      .int()
+      .min(0)
+      .default(7 * 24 * 60 * 60 * 1000),
+    // Absent means unpinned — no default (an explicit default would look like a pin).
+    AGENTIC_PLAYBOOK_PIN: z.coerce.number().int().positive().optional(),
+    // Cumulative closed-trade floor before a reflection candidate auto-promotes to ACTIVE (G4b); 0
+    // (default) disables auto-promotion — see reflection.service.ts's autoPromoteMinTrades comment.
+    AGENTIC_AUTO_PROMOTE_MIN_TRADES: z.coerce.number().int().min(0).default(0),
+    // PromotionReadinessService LLM-cost math: USD per 1M tokens, operator-adjustable (claude-sonnet-5
+    // list prices as of this writing) — same stance as the Grafana cost-panel variables.
+    AGENTIC_TOKEN_PRICE_INPUT_PER_MTOK: decimalString.default('3'),
+    AGENTIC_TOKEN_PRICE_OUTPUT_PER_MTOK: decimalString.default('15'),
+    // Residual-position notional (quote ccy) below which PromotionReadinessService's round-trip walk
+    // considers a cycle CLOSED — historical pre-IOC cycles carry dust remainders that would otherwise
+    // never close. Default '5' mirrors BTC/USDT's exchange minNotional.
+    PROMOTION_DUST_NOTIONAL: decimalString.default('5'),
+    // Cost-floor pre-screen gate: a cheap indicator check consulted before each LLM call so a quiet
+    // market never burns a token spend on a call the agent was always going to pass on. 'true'/'false'
+    // (not z.coerce.boolean(): Boolean('false') === true would invert an explicit disable).
+    AGENTIC_PRESCREEN_ENABLED: z
+      .enum(['true', 'false'])
+      .default('true')
+      .transform((v) => v === 'true'),
+    AGENTIC_PRESCREEN_VOL_SHORT_BARS: z.coerce.number().int().positive().default(10),
+    AGENTIC_PRESCREEN_VOL_LONG_BARS: z.coerce.number().int().positive().default(50),
+    AGENTIC_PRESCREEN_VOL_RATIO: z.coerce.number().positive().default(1.3),
+    AGENTIC_PRESCREEN_BREAKOUT_LOOKBACK_BARS: z.coerce.number().int().positive().default(20),
+    AGENTIC_PRESCREEN_BREAKOUT_PCT: z.coerce.number().positive().default(0.005),
+    // Marketable-exit crossing buffer (bps) for reduce-only intents (PositionSizerService): how far
+    // the IOC limit crosses the spread so a partial fill doesn't leave sub-minNotional dust resting
+    // away from market. Capped at 99 (< DEFAULT_LIMITS.maxBandBps=100 in risk.module) so a crossed
+    // exit price never trips domain/risk/evaluate.ts's price-band veto.
+    EXIT_CROSS_BUFFER_BPS: z.coerce.number().int().min(0).max(99).default(25),
+    // Quote-currency (USDT) notional per order. Default 100 matches the deployed .env — the prior
+    // in-code fallback of '1000' (risk.module.ts/app.module.ts) was drift, never an intended default.
+    BASE_NOTIONAL: decimalString.default('100'),
+    // Compounding position sizing (P5): fraction of current equity sized per entry, scaled further by
+    // signal strength. '0' (default) disables the fractional path — PositionSizerService falls back to
+    // the legacy baseNotional × strength sizing unchanged, so an unconfigured deployment sees zero
+    // behavior change.
+    SIZER_EQUITY_FRACTION: fractionString.default('0'),
+    // ProtectiveExitService (bot-side stop-loss/trailing-stop backstop): fraction below avgEntry
+    // (stop) or below the ratcheted high-water mark (trailing) that force-exits a long via the normal
+    // Strategy→Risk→Execution path (an EXIT_LONG Signal, never a direct execution call). '0' (default)
+    // disables each independently — an unconfigured deployment sees zero behavior change.
+    PROTECT_STOP_LOSS_PCT: fractionString.default('0'),
+    PROTECT_TRAILING_PCT: fractionString.default('0'),
+    // RiskLimitsConfig overlay knobs (domain/risk/limits.ts) — RiskModule merges these onto
+    // DEFAULT_LIMITS. Defaults equal the CURRENT hardcoded values, so an unconfigured deployment sees
+    // zero behavior change. maxDriftBps has no knob in this pass; it stays hardcoded in DEFAULT_LIMITS.
+    RISK_MAX_ORDER_NOTIONAL: decimalString.default('100000'),
+    RISK_MAX_POSITION_PER_SYMBOL: decimalString.default('1000'),
+    RISK_MAX_GROSS_EXPOSURE: decimalString.default('1000000'),
+    RISK_MAX_NET_EXPOSURE: decimalString.default('1000000'),
+    RISK_MAX_DAILY_LOSS: decimalString.default('5000'),
+    RISK_MAX_DRAWDOWN_PCT: decimalString.default('0.2'),
+    RISK_MAX_BAND_BPS: z.coerce.number().int().positive().default(100),
+    RISK_STALE_MAX_AGE_MS: z.coerce.number().int().positive().default(5000),
+    // Strategy-lane knobs. ACTIVE_STRATEGY is a closed enum: 'agentic' is the only registered lane
+    // (the deterministic pure lane was retired 2026-07-03).
+    TRADING_SYMBOL: z.string().min(1).default('BTC/USDT'),
+    // Multi-symbol (P7): CSV of symbols, one agentic strategy instance per entry. Absent ⇒ falls
+    // back to [TRADING_SYMBOL] (which is thereby deprecated but still honored). Every entry must
+    // have a DEFAULT_FILTERS row — asserted loud at startTrading before any enable.
+    TRADING_SYMBOLS: z
+      .string()
+      .min(1)
+      .transform((raw) =>
+        raw
+          .split(',')
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0),
+      )
+      .refine((symbols) => symbols.length > 0, 'TRADING_SYMBOLS must name at least one symbol')
+      .refine(
+        (symbols) => new Set(symbols).size === symbols.length,
+        'TRADING_SYMBOLS entries must be unique',
+      )
+      .optional(),
+    STRATEGY_INTERVAL: z.enum(CANDLE_INTERVALS).default('5m'),
+    ACTIVE_STRATEGY: z.enum(['agentic']).default('agentic'),
+  })
+  .superRefine((data, ctx) => {
+    // The prescreen gate (prescreen.ts) needs AGENTIC_WARMUP_BARS bars of history before its
+    // vol/breakout windows are full — if warmup is shorter than either window, hasEnoughData is
+    // false on every single bar post-warmup too, so evaluatePrescreen permanently returns
+    // insufficient_data (fail-open: every bar consults the LLM) and the cost-floor gate silently
+    // no-ops while AGENTIC_PRESCREEN_ENABLED still reads true. Only checked when the gate is
+    // actually enabled — a disabled gate never reads these windows.
+    if (!data.AGENTIC_PRESCREEN_ENABLED) return;
+    if (
+      data.AGENTIC_WARMUP_BARS < data.AGENTIC_PRESCREEN_VOL_LONG_BARS ||
+      data.AGENTIC_WARMUP_BARS < data.AGENTIC_PRESCREEN_BREAKOUT_LOOKBACK_BARS
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['AGENTIC_WARMUP_BARS'],
+        message:
+          `AGENTIC_WARMUP_BARS (${data.AGENTIC_WARMUP_BARS}) must be >= ` +
+          `AGENTIC_PRESCREEN_VOL_LONG_BARS (${data.AGENTIC_PRESCREEN_VOL_LONG_BARS}) and >= ` +
+          `AGENTIC_PRESCREEN_BREAKOUT_LOOKBACK_BARS (${data.AGENTIC_PRESCREEN_BREAKOUT_LOOKBACK_BARS}) ` +
+          `— otherwise the prescreen gate never sees enough history and permanently fail-opens ` +
+          `(insufficient_data every bar), silently no-opping the cost floor.`,
+      });
+    }
+  });
 
 // dotenv/compose convention: `VAR=` (empty assignment) means UNSET, not "the empty string". Without
 // this strip an emptied optional knob crashes the boot — zod v4 coerces '' to NaN (AGENTIC_PLAYBOOK_PIN=

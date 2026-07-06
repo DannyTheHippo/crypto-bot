@@ -352,6 +352,58 @@ describe('validate()', () => {
         /AGENTIC_AUTO_PROMOTE_MIN_TRADES/,
       );
     });
+
+    describe('prescreen warmup cross-field validation', () => {
+      // Regression: AGENTIC_WARMUP_BARS shorter than either prescreen window means
+      // evaluatePrescreen's hasEnoughData is false on every bar post-warmup too — the gate
+      // permanently fails open (insufficient_data every bar) and the cost floor silently no-ops.
+      it('throws naming all three knobs when warmup is below volLongBars', () => {
+        expect(() =>
+          validate({
+            PORT: '3100',
+            AGENTIC_WARMUP_BARS: '40',
+            AGENTIC_PRESCREEN_VOL_LONG_BARS: '50',
+            AGENTIC_PRESCREEN_BREAKOUT_LOOKBACK_BARS: '20',
+          }),
+        ).toThrow(
+          /AGENTIC_WARMUP_BARS \(40\).*AGENTIC_PRESCREEN_VOL_LONG_BARS \(50\).*AGENTIC_PRESCREEN_BREAKOUT_LOOKBACK_BARS \(20\)/s,
+        );
+      });
+
+      it('throws naming all three knobs when warmup is below breakoutLookbackBars', () => {
+        expect(() =>
+          validate({
+            PORT: '3100',
+            AGENTIC_WARMUP_BARS: '15',
+            AGENTIC_PRESCREEN_VOL_LONG_BARS: '10',
+            AGENTIC_PRESCREEN_BREAKOUT_LOOKBACK_BARS: '20',
+          }),
+        ).toThrow(
+          /AGENTIC_WARMUP_BARS \(15\).*AGENTIC_PRESCREEN_VOL_LONG_BARS \(10\).*AGENTIC_PRESCREEN_BREAKOUT_LOOKBACK_BARS \(20\)/s,
+        );
+      });
+
+      it('passes at the boundary — warmup exactly equal to volLongBars and breakoutLookbackBars', () => {
+        const cfg = validate({
+          PORT: '3100',
+          AGENTIC_WARMUP_BARS: '50',
+          AGENTIC_PRESCREEN_VOL_LONG_BARS: '50',
+          AGENTIC_PRESCREEN_BREAKOUT_LOOKBACK_BARS: '50',
+        });
+        expect(cfg.agentic.warmupBars).toBe(50);
+      });
+
+      it('skips the check entirely when the prescreen gate is disabled', () => {
+        const cfg = validate({
+          PORT: '3100',
+          AGENTIC_PRESCREEN_ENABLED: 'false',
+          AGENTIC_WARMUP_BARS: '5',
+          AGENTIC_PRESCREEN_VOL_LONG_BARS: '50',
+          AGENTIC_PRESCREEN_BREAKOUT_LOOKBACK_BARS: '20',
+        });
+        expect(cfg.agentic.warmupBars).toBe(5);
+      });
+    });
   });
 
   describe('risk config', () => {

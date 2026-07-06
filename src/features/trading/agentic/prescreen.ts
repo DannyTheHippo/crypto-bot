@@ -70,6 +70,16 @@ function allFinite(values: readonly number[]): boolean {
   return values.every((v) => Number.isFinite(v));
 }
 
+// A zero/negative candle value never crashes here (NaN/Infinity comparisons just fall through to
+// `false`, routing to the quiet/no-consult path below) — but that is fail-CLOSED, the opposite of
+// this module's stated fail-open stance: a zero `hh` turns distToHigh into an unconditional
+// Infinity (never <= breakoutPct), and a non-positive close feeding stdevOfReturns can produce NaN
+// ratios that likewise never compare true. Folding this into the data-quality gate alongside
+// allFinite ensures any non-positive value routes to insufficient_data (consult) instead.
+function allPositive(values: readonly number[]): boolean {
+  return values.every((v) => v > 0);
+}
+
 export function evaluatePrescreen(args: PrescreenArgs): PrescreenResult {
   const { closes, highs, lows, positionOpen, thresholds } = args;
   const { volShortBars, volLongBars, volRatio, breakoutLookbackBars, breakoutPct } = thresholds;
@@ -91,7 +101,10 @@ export function evaluatePrescreen(args: PrescreenArgs): PrescreenResult {
     !hasEnoughData ||
     !allFinite(longCloseWindow) ||
     !allFinite(breakoutHighWindow) ||
-    !allFinite(breakoutLowWindow)
+    !allFinite(breakoutLowWindow) ||
+    !allPositive(longCloseWindow) ||
+    !allPositive(breakoutHighWindow) ||
+    !allPositive(breakoutLowWindow)
   ) {
     return { consult: true, reason: 'insufficient_data' };
   }

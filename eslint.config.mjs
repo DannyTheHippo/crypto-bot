@@ -58,6 +58,11 @@ export default tseslint.config(
           mode: 'folder',
         },
         {
+          type: 'shared',
+          pattern: 'src/shared',
+          mode: 'folder',
+        },
+        {
           type: 'database',
           pattern: 'src/database',
           mode: 'folder',
@@ -86,16 +91,22 @@ export default tseslint.config(
               allow: ['domain', 'ports'],
             },
             {
+              // Cross-cutting zone (template mirror): base exception, global filter. Pure of
+              // feature knowledge — reaches only downward.
+              from: ['shared'],
+              allow: ['shared', 'domain', 'ports'],
+            },
+            {
               // Bootstrap/config zone (template mirror): env schema + typed facade. May not reach
               // into modules — it is upstream of every feature.
               from: ['config'],
-              allow: ['domain', 'ports', 'config'],
+              allow: ['domain', 'ports', 'config', 'shared'],
             },
             {
               // Composition-root-only zone: repositories/schema behind the DI tokens in ports/.
               // Modules never import it directly (they never had cross-module persistence imports).
               from: ['database'],
-              allow: ['database', 'domain', 'ports', 'config'],
+              allow: ['database', 'domain', 'ports', 'config', 'shared'],
             },
             {
               // Features (template mirror): may inject the TypedConfigService facade (the
@@ -106,12 +117,13 @@ export default tseslint.config(
                 'domain',
                 'ports',
                 'config',
+                'shared',
                 ['features', { featureName: '${from.featureName}' }],
               ],
             },
             {
               from: ['app'],
-              allow: ['domain', 'ports', 'config', 'database', 'features', 'app'],
+              allow: ['domain', 'ports', 'config', 'shared', 'database', 'features', 'app'],
             },
           ],
         },
@@ -269,6 +281,26 @@ export default tseslint.config(
             },
           ],
         },
+      ],
+    },
+  },
+  // Template DTO naming (mirrors template-mern): the file suffix and the exported class suffix
+  // agree, and the nest-cli swagger plugin keys off the same dtoFileNameSuffix list.
+  {
+    files: ['src/**/*.request.dto.ts'],
+    rules: {
+      '@typescript-eslint/naming-convention': [
+        'error',
+        { selector: 'class', format: ['PascalCase'], suffix: ['RequestDto'] },
+      ],
+    },
+  },
+  {
+    files: ['src/**/*.response.dto.ts'],
+    rules: {
+      '@typescript-eslint/naming-convention': [
+        'error',
+        { selector: 'class', format: ['PascalCase'], suffix: ['ResponseDto'] },
       ],
     },
   },

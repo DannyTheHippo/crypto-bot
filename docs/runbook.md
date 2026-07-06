@@ -61,8 +61,8 @@ the documented recovery path, then RESUME.
 
 Live trading requires arming AFTER boot (you arm last). Two-step, bootId-bound, in-memory only:
 
-1. `POST /mode/arm/request` → a crypto-random challenge bound to the current `bootId`, TTL 60s, single-use.
-2. `POST /mode/arm/confirm` with `HMAC-SHA256(challengeId + ':' + bootId, ARMING_SECRET)` (constant-time).
+1. `POST /api/v1/mode/arm/request` → a crypto-random challenge bound to the current `bootId`, TTL 60s, single-use.
+2. `POST /api/v1/mode/arm/confirm` with `HMAC-SHA256(challengeId + ':' + bootId, ARMING_SECRET)` (constant-time).
 
 Preconditions (all must hold; arm last): kill switch RUNNING, reconciliation clean, **no
 `*_UNKNOWN` / `RECONCILE_REQUIRED` orders**, and the other three gates already true (env flag requesting

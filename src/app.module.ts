@@ -8,11 +8,13 @@ import {
   type OnModuleInit,
 } from '@nestjs/common';
 import { randomBytes, createHash } from 'node:crypto';
+import { APP_FILTER } from '@nestjs/core';
 import type { Exchange } from 'ccxt';
 import { AppConfigModule } from './config/config.module';
 import { TypedConfigService } from './config/environment/typed-config.service';
 import { ObservabilityModule } from './features/common/observability/observability.module';
 import { PersistenceModule } from './database/database.module';
+import { GlobalExceptionFilter } from './shared/filters/global-exception.filter';
 import { DbHealthIndicator } from './database/db-health.indicator';
 import { DrizzleExecutionStore } from './database/repositories/drizzle-execution-store';
 import { DrizzleExecOutbox } from './database/repositories/drizzle-exec-outbox';
@@ -899,6 +901,7 @@ class AgenticCompositionBridgeModule {}
   // optional hrtimeFn ctor param is not a DI dependency. StrategyRegistry itself now lives in
   // StrategyRegistryBridgeModule (global, see its own comment) rather than as a local provider here.
   providers: [
+    { provide: APP_FILTER, useClass: GlobalExceptionFilter },
     SignalSinkService,
     SIGNAL_REJECTIONS_COUNTER,
     HaltCoordinatorService,

@@ -1,6 +1,27 @@
 # Daily profitability loop — state
 
-Playbook: `docs/planning/daily-profitability-loop.md` · Spec: `docs/specs/2026-07-06-profitability-design.md`
+Playbook (durable procedure): `docs/planning/daily-profitability-loop.md`
+
+## Strategic frame
+
+The mutable strategy the playbook deliberately does not embed. Passes update stage status here;
+when the owner approves a new spec, replace the pointer (and archive the old spec) — the playbook
+never changes for strategy evolution.
+
+- **Active spec:** `docs/specs/2026-07-06-profitability-design.md` (owner-approved 2026-07-06).
+- **Goal:** real live profitability at **$1k–$5k capital** (owner, 2026-07-06). Objective
+  function: net-of-cost PnL = `realizedPnl − fees − llmCostUsd`.
+- **Stage ladder + exit criteria (condensed from the active spec):**
+  1. **Cost floor** — LLM spend ≤$1/day for ≥3 consecutive days AND round trips ≥2/day AND no
+     `EXPIRED`/starved-exit regressions.
+  2. **Learning-loop edge** — ≥2 playbook promotions with version-attributed PnL AND rolling-7d
+     net-of-cost PnL ≥0.
+  3. **Earned-live** — pass the coded promotion gate (`PromotionReadinessService`: ≥30 closed demo
+     round trips, net-of-cost > 0, ≥14d window), then the unchanged human four-gate arming
+     ceremony. Nothing automates live.
+- **Settled owner decisions (not re-openable by a pass; argue in "Flagged for human review"
+  instead):** no shorts/futures/margin; no prompt caching; no third symbol; no model below
+  Sonnet-5; no return to 1m/5m cadence.
 
 ## Current stage
 

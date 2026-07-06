@@ -7,27 +7,29 @@ It is an operational playbook, not application code.
 
 ## 0. Mission and objective function
 
-Maximize **net-of-cost PnL** — `realizedPnl − fees − llmCostUsd` — toward the earned-live gate
-(≥30 closed demo round trips AND net-of-cost PnL > 0 AND ≥14-day window), at $1k–$5k target live
-capital. The strategic frame is `docs/specs/2026-07-06-profitability-design.md`: each pass checks
-the **current stage's exit criterion** and advances the stage when met (record the advance in the
-report). Every improvement is judged by its expected effect on net-of-cost PnL or on the
-trustworthiness of its measurement — nothing else counts as "high-value".
+Maximize **net-of-cost PnL** — `realizedPnl − fees − llmCostUsd` — toward the earned-live
+promotion gate (`PromotionReadinessService`; criteria encoded in code and
+`reports/nightly/PROMOTION.md`). Every improvement is judged by its expected effect on
+net-of-cost PnL or on the trustworthiness of its measurement — nothing else counts as
+"high-value". The **current strategic frame** (active spec, stage, exit criteria, target capital)
+is NOT written here — it lives in `reports/loop/state.md` § Strategic frame, so this playbook
+stays a timeless procedure while strategy evolves. Each pass checks the current stage's exit
+criterion there and advances the stage when met (record the advance in the report).
 
 ## 1. Rehydrate (read, never re-derive)
 
 Read in this order:
 
 1. This playbook.
-2. `docs/specs/2026-07-06-profitability-design.md` — stages, exit criteria, out-of-scope list.
-3. `reports/loop/state.md` — current stage, rolling backlog, last-pass pointer, open flagged items.
-4. `git log --oneline -20` — what shipped since the last pass (passes commit to `main`).
-5. Project memory index (auto-loaded) — env quirks, validation recipes.
+2. `reports/loop/state.md` — the loop's ONLY mutable memory: § Strategic frame (active spec
+   pointer, stage + exit criteria, settled owner decisions), current backlog, last-pass pointer,
+   open flagged items. Follow its spec pointer only when stage-level detail is needed.
+3. `git log --oneline -20` — what shipped since the last pass (passes commit to `main`).
+4. Project memory index (auto-loaded) — env quirks, validation recipes.
 
-Settled owner decisions are **not** re-openable by a pass: no shorts/futures/margin, no prompt
-caching, no third symbol, no model below Sonnet-5, no 1m/5m cadence return, goal = live
-profitability at $1k–$5k. A pass that believes one of these should change writes the argument into
-the report's "Flagged for human review" section instead of acting.
+Settled owner decisions (the list lives in state.md § Strategic frame) are **not** re-openable by
+a pass. A pass that believes one should change writes the argument into the report's "Flagged for
+human review" section instead of acting.
 
 ## 2. Evidence sweep (read-only)
 
@@ -69,7 +71,7 @@ agentic-lane-only. Candidate sources, in priority order:
 
 1. **Correctness bugs on the trading path surfaced by today's evidence** — these outrank
    everything (precedents: the 2026-07-04 signal-TTL bug, the 2026-07-05 dust trap).
-2. The spec's **current-stage items** not yet done.
+2. The **current stage's items** not yet done (per state.md § Strategic frame).
 3. The rolling backlog in `reports/loop/state.md`.
 4. New ideas from today's evidence (add to the backlog even when not chosen).
 

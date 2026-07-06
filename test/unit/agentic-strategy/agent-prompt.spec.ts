@@ -498,10 +498,12 @@ describe('buildUserMessage', () => {
         ['100.5', '1'],
         ['101', '1'],
       ]);
+      // Reference-grade floats (not money): asserted with exact equality against the SAME float
+      // expression the builder evaluates — 0.5, 100.25, and 1.5 are all binary-exact doubles.
       // mid = 100.25, spread = 0.5 -> bps = 0.5/100.25*10000 ≈ 49.875
-      expect(ob.spreadBps).toBeCloseTo(49.875, 2);
+      expect(ob.spreadBps).toBe((0.5 / 100.25) * 10_000);
       // bid qty 1+2=3, ask qty 1+1=2 -> imbalance 1.5
-      expect(ob.imbalance).toBeCloseTo(1.5, 6);
+      expect(ob.imbalance).toBe(1.5);
       for (const [price_, qty_] of [...ob.bids, ...ob.asks]) {
         expect(typeof price_).toBe('string');
         expect(typeof qty_).toBe('string');

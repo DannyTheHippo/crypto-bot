@@ -15,6 +15,13 @@ const PINO_LEVELS = ['fatal', 'error', 'warn', 'info', 'debug', 'trace'] as cons
 
 const VENUE_ENVIRONMENTS = ['paper', 'testnet', 'demo', 'live'] as const;
 
+const CANDLE_INTERVALS = ['1m', '5m', '15m', '1h', '4h', '1d'] as const;
+
+// Money/decimal-string knobs (RiskLimitsConfig fields + BASE_NOTIONAL): plain non-negative decimal
+// strings, validated here and converted to Decimal only where the consuming module already does so
+// (domain/risk/limits.ts) — never a native float on a money path.
+const decimalString = z.string().regex(/^\d+(\.\d+)?$/, 'must be a non-negative decimal string');
+
 function isTestOrCiEnv(env: Record<string, string | undefined>): boolean {
   const nodeEnv = env['NODE_ENV'] ?? '';
   return nodeEnv === 'test' || nodeEnv === 'ci' || Boolean(env['CI']);
@@ -126,11 +133,33 @@ const envSchema = z.object({
     .default(7 * 24 * 60 * 60 * 1000),
   // Absent means unpinned — no default (an explicit default would look like a pin).
   AGENTIC_PLAYBOOK_PIN: z.coerce.number().int().positive().optional(),
+  // Cumulative closed-trade floor before a reflection candidate auto-promotes to ACTIVE (G4b); 0
+  // (default) disables auto-promotion — see reflection.service.ts's autoPromoteMinTrades comment.
+  AGENTIC_AUTO_PROMOTE_MIN_TRADES: z.coerce.number().int().min(0).default(0),
   // Marketable-exit crossing buffer (bps) for reduce-only intents (PositionSizerService): how far
   // the IOC limit crosses the spread so a partial fill doesn't leave sub-minNotional dust resting
   // away from market. Capped at 99 (< DEFAULT_LIMITS.maxBandBps=100 in risk.module) so a crossed
   // exit price never trips domain/risk/evaluate.ts's price-band veto.
   EXIT_CROSS_BUFFER_BPS: z.coerce.number().int().min(0).max(99).default(25),
+  // Quote-currency (USDT) notional per order. Default 100 matches the deployed .env — the prior
+  // in-code fallback of '1000' (risk.module.ts/app.module.ts) was drift, never an intended default.
+  BASE_NOTIONAL: decimalString.default('100'),
+  // RiskLimitsConfig overlay knobs (domain/risk/limits.ts) — RiskModule merges these onto
+  // DEFAULT_LIMITS. Defaults equal the CURRENT hardcoded values, so an unconfigured deployment sees
+  // zero behavior change. maxDriftBps has no knob in this pass; it stays hardcoded in DEFAULT_LIMITS.
+  RISK_MAX_ORDER_NOTIONAL: decimalString.default('100000'),
+  RISK_MAX_POSITION_PER_SYMBOL: decimalString.default('1000'),
+  RISK_MAX_GROSS_EXPOSURE: decimalString.default('1000000'),
+  RISK_MAX_NET_EXPOSURE: decimalString.default('1000000'),
+  RISK_MAX_DAILY_LOSS: decimalString.default('5000'),
+  RISK_MAX_DRAWDOWN_PCT: decimalString.default('0.2'),
+  RISK_MAX_BAND_BPS: z.coerce.number().int().positive().default(100),
+  RISK_STALE_MAX_AGE_MS: z.coerce.number().int().positive().default(5000),
+  // Strategy-lane knobs. ACTIVE_STRATEGY is a closed enum: 'agentic' is the only registered lane
+  // (the deterministic pure lane was retired 2026-07-03).
+  TRADING_SYMBOL: z.string().min(1).default('BTC/USDT'),
+  STRATEGY_INTERVAL: z.enum(CANDLE_INTERVALS).default('5m'),
+  ACTIVE_STRATEGY: z.enum(['agentic']).default('agentic'),
 });
 
 export function validate(env: Record<string, string | undefined>): AppConfig {
@@ -178,7 +207,20 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     AGENTIC_REFLECTION_EVERY_N_TRADES: agenticReflectionEveryNTrades,
     AGENTIC_REFLECTION_COOLDOWN_MS: agenticReflectionCooldownMs,
     AGENTIC_PLAYBOOK_PIN: agenticPlaybookPin,
+    AGENTIC_AUTO_PROMOTE_MIN_TRADES: agenticAutoPromoteMinTrades,
     EXIT_CROSS_BUFFER_BPS: exitCrossBufferBps,
+    BASE_NOTIONAL: baseNotional,
+    RISK_MAX_ORDER_NOTIONAL: riskMaxOrderNotional,
+    RISK_MAX_POSITION_PER_SYMBOL: riskMaxPositionPerSymbol,
+    RISK_MAX_GROSS_EXPOSURE: riskMaxGrossExposure,
+    RISK_MAX_NET_EXPOSURE: riskMaxNetExposure,
+    RISK_MAX_DAILY_LOSS: riskMaxDailyLoss,
+    RISK_MAX_DRAWDOWN_PCT: riskMaxDrawdownPct,
+    RISK_MAX_BAND_BPS: riskMaxBandBps,
+    RISK_STALE_MAX_AGE_MS: riskStaleMaxAgeMs,
+    TRADING_SYMBOL: tradingSymbol,
+    STRATEGY_INTERVAL: strategyInterval,
+    ACTIVE_STRATEGY: activeStrategy,
   } = parsed.data;
   const bootId = crypto.randomUUID();
   const venues = parseVenues(env);
@@ -214,10 +256,25 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       drainCooldownMaxMs: agenticDrainCooldownMaxMs,
       reflectionEveryNTrades: agenticReflectionEveryNTrades,
       reflectionCooldownMs: agenticReflectionCooldownMs,
+      autoPromoteMinTrades: agenticAutoPromoteMinTrades,
       playbookPin: agenticPlaybookPin,
     },
     risk: {
       exitCrossBufferBps,
+      baseNotional,
+      maxOrderNotional: riskMaxOrderNotional,
+      maxPositionPerSymbol: riskMaxPositionPerSymbol,
+      maxGrossExposure: riskMaxGrossExposure,
+      maxNetExposure: riskMaxNetExposure,
+      maxDailyLoss: riskMaxDailyLoss,
+      maxDrawdownPct: riskMaxDrawdownPct,
+      maxBandBps: riskMaxBandBps,
+      staleMaxAgeMs: riskStaleMaxAgeMs,
+    },
+    strategy: {
+      symbol: tradingSymbol,
+      interval: strategyInterval,
+      active: activeStrategy,
     },
     ...liveFields,
   };

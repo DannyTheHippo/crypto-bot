@@ -687,16 +687,21 @@ function symbolConstraintsFor(symbol: string): SymbolConstraints | undefined {
 // The agentic lane's own commercial profile (folded into its system prompt — see
 // AnthropicAgentClientConfig.profile), built from the SAME sources Risk/paper fees use rather than a
 // second, independently-tunable copy: maxOrderNotional is read live off RISK_LIMITS (RiskModule's
-// DEFAULT_LIMITS, exported for exactly this single-source-of-truth read — see LimitsCompleteModule
-// above); baseNotional mirrors risk.module.ts's (unexported) baseNotionalFor — same BASE_NOTIONAL env
-// var, same '1000' default; maker/takerBps mirror DEFAULT_PAPER_CONFIG.fees below (§1.5) — the actual
-// fee schedule the paper adapter charges, not the retired pure-lane prompt's hardcoded ~20bps taker
-// guess (no such shared constant exists elsewhere in the codebase).
-function agentTradingProfileFor(symbol: string, limits: PartialRiskLimits): AgentTradingProfile {
+// config-overlaid DEFAULT_LIMITS, exported for exactly this single-source-of-truth read — see
+// LimitsCompleteModule above); baseNotional is the SAME validated AppConfig.risk.baseNotional
+// risk.module.ts's sizer reads (passed in by the factory below, so prompt and sizer can never
+// drift); maker/takerBps mirror DEFAULT_PAPER_CONFIG.fees below (§1.5) — the actual fee schedule
+// the paper adapter charges, not the retired pure-lane prompt's hardcoded ~20bps taker guess (no
+// such shared constant exists elsewhere in the codebase).
+function agentTradingProfileFor(
+  symbol: string,
+  limits: PartialRiskLimits,
+  baseNotional: string,
+): AgentTradingProfile {
   return {
     makerBps: DEFAULT_PAPER_CONFIG.fees.makerBps,
     takerBps: DEFAULT_PAPER_CONFIG.fees.takerBps,
-    baseNotional: process.env['BASE_NOTIONAL'] ?? '1000',
+    baseNotional,
     maxOrderNotional: limits.maxOrderNotional ?? '100000',
     constraints: symbolConstraintsFor(symbol) ?? {
       tickSize: price('0.01'),
@@ -809,9 +814,16 @@ class MetricsWrappingAgentClient implements AgentClientPort {
     },
     {
       provide: AGENT_TRADING_PROFILE_OVERRIDE,
-      useFactory: (limits: PartialRiskLimits): AgentTradingProfile =>
-        agentTradingProfileFor(process.env['TRADING_SYMBOL'] ?? 'BTC/USDT', limits),
-      inject: [RISK_LIMITS],
+      useFactory: (
+        limits: PartialRiskLimits,
+        config: ConfigService<AppConfig, true>,
+      ): AgentTradingProfile =>
+        agentTradingProfileFor(
+          config.get('strategy', { infer: true }).symbol,
+          limits,
+          config.get('risk', { infer: true }).baseNotional,
+        ),
+      inject: [RISK_LIMITS, ConfigService],
     },
     // G4a: lets ReflectionService (modules/agentic-strategy, which cannot import modules/observability
     // — the boundary wall) record validator-rejection tripwires through its own LOCAL structural type
@@ -1041,10 +1053,10 @@ export class AppModule implements OnModuleInit, OnApplicationBootstrap, OnModule
       `effective mode=${resolved.effective} (requested=${resolved.requested}) downgrades=[${resolved.downgrades.join(',')}]`,
     );
 
-    // Strategy selection. ACTIVE_STRATEGY picks which registered strategy the host runs; it DEFAULTS to
-    // 'agentic', the only registered lane. An unrecognized value fails loud at registry.enable
-    // (unknown strategy type) rather than silently falling back.
-    const active = process.env['ACTIVE_STRATEGY'] ?? 'agentic';
+    // Strategy selection. ACTIVE_STRATEGY picks which registered strategy the host runs; the schema
+    // constrains it to 'agentic', the only registered lane — an invalid value fails loud at config
+    // validation (boot) rather than at registry.enable.
+    const active = this.config.get('strategy', { infer: true }).active;
     // onClosedTrade is built per-registered-instance (using the factory's own `id`, not a fixed
     // literal) so a future second agentic registration would each wire the reflection loop's
     // lifecycle check against ITS OWN strategy id (see ReflectionService.runReflection).
@@ -1122,10 +1134,13 @@ export class AppModule implements OnModuleInit, OnApplicationBootstrap, OnModule
   private agenticParams(): AgenticStrategyParams {
     const venue = this.config.get('venues', { infer: true })[0]?.id ?? 'binance';
     const agentic = this.config.get('agentic', { infer: true });
+    const strategy = this.config.get('strategy', { infer: true });
     return {
-      symbol: symbolId(process.env['TRADING_SYMBOL'] ?? 'BTC/USDT'),
+      symbol: symbolId(strategy.symbol),
       venue: venueId(venue),
-      interval: (process.env['STRATEGY_INTERVAL'] ?? '1m') as CandleInterval,
+      // The schema constrains STRATEGY_INTERVAL to the CandleInterval values; the cast narrows the
+      // AppConfig string field back to the domain union.
+      interval: strategy.interval as CandleInterval,
       warmupBars: agentic.warmupBars,
       model: agentic.model,
     };

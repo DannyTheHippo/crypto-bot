@@ -29,8 +29,8 @@ export interface AppConfig {
     url: string | undefined;
   };
   venues: readonly VenueConfig[];
-  // Agentic lane knobs, validated but not yet the read path (composition still reads process.env
-  // directly; a later pass switches it to ConfigService against these exact fields).
+  // Agentic lane knobs, read off ConfigService at the composition root (agenticEnv overlay in
+  // agentic-strategy.module.ts).
   agentic: {
     model: string;
     timeoutMs: number;
@@ -44,6 +44,8 @@ export interface AppConfig {
     drainCooldownMaxMs: number;
     reflectionEveryNTrades: number;
     reflectionCooldownMs: number;
+    // Cumulative closed-trade floor before a reflection candidate auto-promotes (G4b); 0 disables.
+    autoPromoteMinTrades: number;
     // Absent means unpinned.
     playbookPin?: number;
   };
@@ -51,6 +53,25 @@ export interface AppConfig {
   risk: {
     // Marketable-exit crossing buffer (bps) for reduce-only intents — see the schema comment.
     exitCrossBufferBps: number;
+    // Quote-currency (USDT) notional per order, sized below the account balance / above minNotional.
+    baseNotional: string;
+    // RiskLimitsConfig overlay knobs (domain/risk/limits.ts) — RiskModule merges these onto its
+    // DEFAULT_LIMITS hardcoded fallback. maxDriftBps has no env knob (not part of this pass); it
+    // stays hardcoded in DEFAULT_LIMITS.
+    maxOrderNotional: string;
+    maxPositionPerSymbol: string;
+    maxGrossExposure: string;
+    maxNetExposure: string;
+    maxDailyLoss: string;
+    maxDrawdownPct: string;
+    maxBandBps: number;
+    staleMaxAgeMs: number;
+  };
+  // Strategy-lane knobs (symbol/interval/active lane selection) read via ConfigService.
+  strategy: {
+    symbol: string;
+    interval: string;
+    active: 'agentic';
   };
   // §10 live-mode secrets — present ONLY when the process did not boot under NODE_ENV=test/ci
   // (the schema strips them otherwise; CI has no in-code path that reaches a live credential).

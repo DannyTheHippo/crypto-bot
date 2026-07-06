@@ -525,8 +525,9 @@ export function createReflectionService(
       timeoutMs: intEnv(env['AGENTIC_TIMEOUT_MS'], DEFAULT_TIMEOUT_MS),
       model: env['AGENTIC_MODEL'] ?? DEFAULT_MODEL,
       cooldownMs: intEnv(env['AGENTIC_REFLECTION_COOLDOWN_MS'], SEVEN_DAYS_MS),
-      // Read straight off the env record (not AppConfig) — same secret/not-yet-validated precedent as
-      // SIGNAL_TTL_MS/ANTHROPIC_API_KEY (see agenticEnv's comment). 0 (default) disables auto-promotion.
+      // Validated in app-config.schema.ts; agenticEnv (agentic-strategy.module.ts) overlays the
+      // ConfigService value onto this env record before it reaches createReflectionService. 0
+      // (default) disables auto-promotion.
       autoPromoteMinTrades: intEnv(env['AGENTIC_AUTO_PROMOTE_MIN_TRADES'], 0),
       apiKey,
     },

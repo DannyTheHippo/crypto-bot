@@ -36,7 +36,7 @@ journal → reflection (hypothesis generation) → human review (eval scorecards
    script exits 1 if a second one is attempted the same day.
 5. **Activation.** `PlaybookStoreAdapter.resolve()` picks the active version in this order: an
    operator pin (`AGENTIC_PLAYBOOK_PIN`) → else the newest promotion row's `parentVersion` target →
-   else the seed. Resolution is cached after the first call. A promotion row written by a *separate*
+   else the seed. Resolution is cached after the first call. A promotion row written by a _separate_
    process (`pnpm playbook:promote`, or a pin change) takes effect for this process only on its
    **next restart**, never live-swapped mid-run. The one exception is an **in-process** promotion
    append (auto-promotion, below): `append()` drops the cache when it writes the `'promotion'` row,

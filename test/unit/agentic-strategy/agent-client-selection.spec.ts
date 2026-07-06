@@ -120,6 +120,7 @@ describe('agenticEnv', () => {
       drainCooldownMaxMs: 2000,
       reflectionEveryNTrades: 7,
       reflectionCooldownMs: 86400000,
+      autoPromoteMinTrades: 9,
     };
     const config = { get: () => agentic } as unknown as ConfigService<AppConfig, true>;
 
@@ -131,6 +132,7 @@ describe('agenticEnv', () => {
       AGENTIC_MAX_TOKENS_PER_DAY: '999999',
       AGENTIC_REFLECTION_EVERY_N_TRADES: '7',
       AGENTIC_REFLECTION_COOLDOWN_MS: '86400000',
+      AGENTIC_AUTO_PROMOTE_MIN_TRADES: '9',
     });
   });
 });

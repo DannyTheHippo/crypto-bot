@@ -57,19 +57,39 @@ const noopJournal: RiskJournalPort = { record: () => undefined };
 // config authority so the ExecutionGate's per-submission `intent.mode === resolveMode().effective`
 // check passes (testnet config + 'paper'-stamped intents = MODE_MISMATCH on every order). ConfigService
 // is @Optional: the module-isolation boot specs import RiskModule without AppConfigModule, so they
-// fall back to 'paper' (their stub ModeControl also resolves paper). baseNotional is env-tunable so a
-// demo run can size below the demo account's quote balance.
+// fall back to 'paper' (their stub ModeControl also resolves paper). baseNotional is config-tunable so
+// a demo run can size below the demo account's quote balance.
 function configMode(config: ConfigService<AppConfig, true> | undefined): TradingMode {
   return config?.get('mode', { infer: true }).configMode ?? 'paper';
 }
+// Falls back to the schema's own default ('100') so module-isolation unit boots (RiskModule imported
+// without AppConfigModule) still size orders the same as a real, unconfigured deployment.
 function baseNotionalFor(config: ConfigService<AppConfig, true> | undefined): string {
-  void config;
-  return process.env['BASE_NOTIONAL'] ?? '1000';
+  return config?.get('risk', { infer: true }).baseNotional ?? '100';
 }
 // §exit-liquidity: falls back to the schema's own default (25) so module-isolation unit boots
 // (RiskModule imported without AppConfigModule) still size a marketable exit correctly.
 function exitCrossBufferBpsFor(config: ConfigService<AppConfig, true> | undefined): number {
   return config?.get('risk', { infer: true }).exitCrossBufferBps ?? 25;
+}
+// Overlays the RISK_* env knobs onto DEFAULT_LIMITS (single source of truth for both RISK_LIMITS —
+// consumed by RiskEngineService/ModeControl's LIMITS_COMPLETE gate — and RISK_ENGINE_DEPS). Absent
+// ConfigService (module-isolation boots) falls straight through to DEFAULT_LIMITS, unchanged from
+// before this knob existed. maxDriftBps has no env knob in this pass — always DEFAULT_LIMITS'.
+function limitsFor(config: ConfigService<AppConfig, true> | undefined): PartialRiskLimits {
+  if (!config) return DEFAULT_LIMITS;
+  const risk = config.get('risk', { infer: true });
+  return {
+    ...DEFAULT_LIMITS,
+    maxOrderNotional: risk.maxOrderNotional,
+    maxPositionPerSymbol: risk.maxPositionPerSymbol,
+    maxGrossExposure: risk.maxGrossExposure,
+    maxNetExposure: risk.maxNetExposure,
+    maxDailyLoss: risk.maxDailyLoss,
+    maxDrawdownPct: risk.maxDrawdownPct,
+    maxBandBps: risk.maxBandBps,
+    staleMaxAgeMs: risk.staleMaxAgeMs,
+  };
 }
 const REAL_FEED_HEALTH_OPTIONAL = { token: REAL_FEED_HEALTH, optional: true } as const;
 const CONFIG_OPTIONAL = { token: ConfigService, optional: true } as const;
@@ -84,7 +104,11 @@ const CONFIG_OPTIONAL = { token: ConfigService, optional: true } as const;
       useFactory: (real?: FeedHealthPort): FeedHealthPort => real ?? noopFeedHealth,
       inject: [REAL_FEED_HEALTH_OPTIONAL],
     },
-    { provide: RISK_LIMITS, useValue: DEFAULT_LIMITS },
+    {
+      provide: RISK_LIMITS,
+      useFactory: (config?: ConfigService<AppConfig, true>): PartialRiskLimits => limitsFor(config),
+      inject: [CONFIG_OPTIONAL],
+    },
     {
       // No-op by default; the composition root binds a DB-backed RiskDecisionJournalAdapter via
       // RISK_JOURNAL_OVERRIDE when the persistence path is active (mirrors EXECUTION_STORE_OVERRIDE).
@@ -104,10 +128,12 @@ const CONFIG_OPTIONAL = { token: ConfigService, optional: true } as const;
       inject: [CONFIG_OPTIONAL],
     },
     {
+      // limits mirrors the RISK_LIMITS provider above (same limitsFor(config) overlay) — the engine
+      // must enforce the SAME limits ModeControl's LIMITS_COMPLETE gate reads off RISK_LIMITS.
       provide: RISK_ENGINE_DEPS,
       useFactory: (key: Buffer, config?: ConfigService<AppConfig, true>): RiskEngineDeps => ({
         key,
-        limits: DEFAULT_LIMITS,
+        limits: limitsFor(config),
         limitsVersion: 'v1',
         mode: configMode(config),
         filters: DEFAULT_FILTERS,

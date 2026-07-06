@@ -161,6 +161,7 @@ describe('validate()', () => {
         drainCooldownMaxMs: 900_000,
         reflectionEveryNTrades: 10,
         reflectionCooldownMs: 604_800_000,
+        autoPromoteMinTrades: 0,
         playbookPin: undefined,
       });
     });
@@ -246,6 +247,93 @@ describe('validate()', () => {
       const withKey = validate({ PORT: '3100', ANTHROPIC_API_KEY: 'sk-secret' });
       const withoutKey = validate({ PORT: '3100' });
       expect(withKey.configHash).toBe(withoutKey.configHash);
+    });
+
+    it('AGENTIC_AUTO_PROMOTE_MIN_TRADES defaults to 0 (auto-promotion disabled) and coerces', () => {
+      expect(validate({ PORT: '3100' }).agentic.autoPromoteMinTrades).toBe(0);
+      expect(
+        validate({ PORT: '3100', AGENTIC_AUTO_PROMOTE_MIN_TRADES: '30' }).agentic
+          .autoPromoteMinTrades,
+      ).toBe(30);
+    });
+
+    it('throws on negative AGENTIC_AUTO_PROMOTE_MIN_TRADES', () => {
+      expect(() => validate({ PORT: '3100', AGENTIC_AUTO_PROMOTE_MIN_TRADES: '-1' })).toThrow(
+        /AGENTIC_AUTO_PROMOTE_MIN_TRADES/,
+      );
+    });
+  });
+
+  describe('risk config', () => {
+    it('BASE_NOTIONAL defaults to the documented 100 (exact string, not the retired 1000)', () => {
+      expect(validate({ PORT: '3100' }).risk.baseNotional).toBe('100');
+      expect(validate({ PORT: '3100', BASE_NOTIONAL: '250.5' }).risk.baseNotional).toBe('250.5');
+    });
+
+    it('throws on a non-decimal BASE_NOTIONAL', () => {
+      expect(() => validate({ PORT: '3100', BASE_NOTIONAL: '1e3' })).toThrow(/BASE_NOTIONAL/);
+      expect(() => validate({ PORT: '3100', BASE_NOTIONAL: '-5' })).toThrow(/BASE_NOTIONAL/);
+    });
+
+    it('RISK_* limit knobs default to the shipped DEFAULT_LIMITS values (exact strings)', () => {
+      const risk = validate({ PORT: '3100' }).risk;
+      expect(risk.maxOrderNotional).toBe('100000');
+      expect(risk.maxPositionPerSymbol).toBe('1000');
+      expect(risk.maxGrossExposure).toBe('1000000');
+      expect(risk.maxNetExposure).toBe('1000000');
+      expect(risk.maxDailyLoss).toBe('5000');
+      expect(risk.maxDrawdownPct).toBe('0.2');
+      expect(risk.maxBandBps).toBe(100);
+      expect(risk.staleMaxAgeMs).toBe(5000);
+    });
+
+    it('RISK_* overrides land as given (money knobs stay exact strings)', () => {
+      const risk = validate({
+        PORT: '3100',
+        RISK_MAX_ORDER_NOTIONAL: '500',
+        RISK_MAX_DAILY_LOSS: '100.25',
+        RISK_MAX_BAND_BPS: '50',
+      }).risk;
+      expect(risk.maxOrderNotional).toBe('500');
+      expect(risk.maxDailyLoss).toBe('100.25');
+      expect(risk.maxBandBps).toBe(50);
+    });
+
+    it('throws on a non-decimal RISK_MAX_ORDER_NOTIONAL', () => {
+      expect(() => validate({ PORT: '3100', RISK_MAX_ORDER_NOTIONAL: 'lots' })).toThrow(
+        /RISK_MAX_ORDER_NOTIONAL/,
+      );
+    });
+  });
+
+  describe('strategy config', () => {
+    it('defaults: BTC/USDT on 5m, agentic lane', () => {
+      const strategy = validate({ PORT: '3100' }).strategy;
+      expect(strategy.symbol).toBe('BTC/USDT');
+      expect(strategy.interval).toBe('5m');
+      expect(strategy.active).toBe('agentic');
+    });
+
+    it('reads TRADING_SYMBOL and STRATEGY_INTERVAL overrides', () => {
+      const strategy = validate({
+        PORT: '3100',
+        TRADING_SYMBOL: 'ETH/USDT',
+        STRATEGY_INTERVAL: '1m',
+      }).strategy;
+      expect(strategy.symbol).toBe('ETH/USDT');
+      expect(strategy.interval).toBe('1m');
+    });
+
+    it('throws on an unknown STRATEGY_INTERVAL', () => {
+      expect(() => validate({ PORT: '3100', STRATEGY_INTERVAL: '7m' })).toThrow(
+        /STRATEGY_INTERVAL/,
+      );
+    });
+
+    it('throws on a non-agentic ACTIVE_STRATEGY (the only registered lane)', () => {
+      expect(() => validate({ PORT: '3100', ACTIVE_STRATEGY: 'ema-cross' })).toThrow(
+        /ACTIVE_STRATEGY/,
+      );
     });
   });
 });

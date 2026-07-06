@@ -131,6 +131,12 @@ export class AgenticStrategy implements AsyncStrategy {
 
   async decide(input: AgentDecisionInput): Promise<Signal[]> {
     const context = this.buildContext(input);
+    // Captured before trackClosedTrade advances lastPositionSide to THIS call's side — this is the
+    // side the strategy was actually carrying while the PREVIOUS (still-unannotated) decision's
+    // outcome accrued, which is what annotatePreviousOutcome needs to render "(held long)"/"(flat)"
+    // against the right decision. null (never annotated before) is treated as FLAT — the strategy
+    // starts flat.
+    const heldDuringPrev = this.lastPositionSide ?? 'FLAT';
     this.trackClosedTrade(context.position.side);
 
     let proposal: AgentProposal;
@@ -150,7 +156,7 @@ export class AgenticStrategy implements AsyncStrategy {
     // omits it) leaves this to a signal-inferred fallback so the decision trail stays populated.
     const decision = proposal.decision ?? this.inferStubDecision(signals);
 
-    this.annotatePreviousOutcome(lastClose, context.position, lastCandle);
+    this.annotatePreviousOutcome(lastClose, context.position, lastCandle, heldDuringPrev);
 
     this.history.push({
       eventTime: input.snapshot.eventTime,
@@ -290,20 +296,30 @@ export class AgenticStrategy implements AsyncStrategy {
 
   // Fills in the outcome of the PREVIOUS (still-unannotated) history record before this call's
   // decision supersedes it as the ring's tail — priceMovePct off the two decisions' close prices,
-  // positionPnlDelta off the exact combined-PnL delta since that decision was made.
+  // positionPnlDelta off the exact combined-PnL delta since that decision was made, heldDuring off
+  // the position side that was current as of THAT prior decision (lastPositionSide has already been
+  // advanced to the CURRENT call's side by trackClosedTrade before decide() reaches here, so it is
+  // captured up front, ahead of that advance, by the caller).
   private annotatePreviousOutcome(
     currentClose: number,
     position: AgentPositionSummary,
     lastCandle: CandleEvent | undefined,
+    heldDuring: 'LONG' | 'FLAT',
   ): void {
     const currentCombinedPnl = this.computeCombinedPnl(position, lastCandle?.close);
     if (this.lastCombinedPnl !== null && this.history.length > 0) {
       const prev = this.history[this.history.length - 1]!;
-      const priceMovePct = ((currentClose - prev.close) / prev.close) * 100;
+      // NaN/non-finite guard: an undercandled call seeds close as NaN (see decide()), and prev.close
+      // <= 0 makes the percentage move meaningless — either poisons the prompt as a literal "NaN%".
+      // Left null (not omitted) so the outcome is still recorded for positionPnlDelta/heldDuring.
+      const priceMovePct =
+        Number.isFinite(currentClose) && Number.isFinite(prev.close) && prev.close > 0
+          ? ((currentClose - prev.close) / prev.close) * 100
+          : null;
       const positionPnlDelta = currentCombinedPnl.minus(this.lastCombinedPnl).toFixed();
       this.history[this.history.length - 1] = {
         ...prev,
-        outcome: { priceMovePct, positionPnlDelta },
+        outcome: { priceMovePct, positionPnlDelta, heldDuring },
       };
     }
     this.lastCombinedPnl = currentCombinedPnl;

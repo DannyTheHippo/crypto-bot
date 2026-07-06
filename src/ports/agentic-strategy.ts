@@ -87,9 +87,17 @@ export interface AgentDecisionRecord {
   readonly close: number;
   readonly reason: string;
   // Forward-looking outcome of THIS decision, filled in later (once price has moved / the position
-  // has been marked) — never on the row itself at write time. priceMovePct is indicator-grade float;
-  // positionPnlDelta is an exact decimal string (money path).
-  readonly outcome?: { readonly priceMovePct: number; readonly positionPnlDelta: string };
+  // has been marked) — never on the row itself at write time. priceMovePct is indicator-grade float,
+  // null when the close backing the move was non-finite or the prior close was non-finite/<= 0 (kept
+  // null rather than NaN so it round-trips through JSON honestly and renders "n/a" instead of "NaN%").
+  // positionPnlDelta is an exact decimal string (money path). heldDuring records the position side
+  // the strategy was actually carrying while this decision's outcome accrued, so "+2%" can be told
+  // apart from "+2% while flat" — otherwise inaction and a held win read identically to the model.
+  readonly outcome?: {
+    readonly priceMovePct: number | null;
+    readonly positionPnlDelta: string;
+    readonly heldDuring: 'LONG' | 'FLAT';
+  };
 }
 
 // Higher-timeframe indicator snapshot the host derives by aggregating the base-interval candle

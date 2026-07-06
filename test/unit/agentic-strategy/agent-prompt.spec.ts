@@ -14,7 +14,11 @@ import type {
   AgentMarketSnapshot,
   AgentTradingProfile,
 } from '../../../src/ports/agentic-strategy';
-import type { CandleEvent, TickerEvent } from '../../../src/domain/types/market-events';
+import type {
+  CandleEvent,
+  TickerEvent,
+  OrderBookSnapshotEvent,
+} from '../../../src/domain/types/market-events';
 import type { ExecReport } from '../../../src/domain/types/exec-report';
 import { price, qty } from '../../../src/domain/types/money';
 import {
@@ -67,6 +71,30 @@ function ticker(): TickerEvent {
   };
 }
 
+function book(
+  over: { bids?: [string, string][]; asks?: [string, string][] } = {},
+): OrderBookSnapshotEvent {
+  const bids = over.bids ?? [
+    ['100', '1'],
+    ['99.5', '2'],
+  ];
+  const asks = over.asks ?? [
+    ['100.5', '1'],
+    ['101', '2'],
+  ];
+  return {
+    kind: 'ORDER_BOOK_SNAPSHOT',
+    venue: V,
+    symbol: SYM,
+    channel: 'book',
+    seq: 1n,
+    eventTime: epochMs(T),
+    ingestTime: epochMs(T + 1),
+    bids: bids.map(([p, q]) => ({ price: price(p), qty: qty(q) })),
+    asks: asks.map(([p, q]) => ({ price: price(p), qty: qty(q) })),
+  };
+}
+
 function execReport(): ExecReport {
   return {
     reportId: 'r1',
@@ -99,6 +127,7 @@ function buildInput(
   opts: {
     candles?: CandleEvent[];
     ticker?: TickerEvent;
+    book?: OrderBookSnapshotEvent;
     context?: AgentContext;
     execReports?: ExecReport[];
   } = {},
@@ -107,7 +136,7 @@ function buildInput(
     eventTime: epochMs(T),
     candles: opts.candles ? new Map([[SYM, opts.candles]]) : new Map(),
     tickers: opts.ticker ? new Map([[SYM, opts.ticker]]) : new Map(),
-    books: new Map(),
+    books: opts.book ? new Map([[SYM, opts.book]]) : new Map(),
     execReports: opts.execReports ?? [],
     portfolio: { strategyId: SID, positions: new Map(), openOrders: [] },
   };
@@ -167,6 +196,21 @@ describe('buildSystemPrompt', () => {
     expect(prompt).toContain('recentDecisions');
     expect(prompt.toLowerCase()).toContain('historical data');
   });
+
+  it('documents the candle precision scheme (full precision for recent bars, reduced for older ones)', () => {
+    const prompt = buildSystemPrompt(fixtureProfile());
+
+    expect(prompt.toLowerCase()).toContain('precision');
+    expect(prompt).toContain('10');
+  });
+
+  it('documents the orderBook block (levels, spread, imbalance) and its conditional presence', () => {
+    const prompt = buildSystemPrompt(fixtureProfile());
+
+    expect(prompt).toContain('orderBook');
+    expect(prompt.toLowerCase()).toContain('spread');
+    expect(prompt.toLowerCase()).toContain('imbalance');
+  });
 });
 
 describe('buildUserMessage', () => {
@@ -188,22 +232,36 @@ describe('buildUserMessage', () => {
     const first = payload.candles[0]!;
     const expectedFirst = candles[10]!; // 60 - 50 = 10: the 11th candle is the oldest kept
     expect(first[0]).toBe(expectedFirst.openTime);
-    expect(first[4]).toBe(expectedFirst.close.toFixed());
   });
 
-  it('encodes candle money fields as exact decimal strings, never floats', () => {
-    const c = candle(0); // open 1000, high 1001, low 999, close 1000.5, volume 1
-    const payload = JSON.parse(buildUserMessage(buildInput({ candles: [c] }))) as {
+  it('encodes the newest 10 candles in the window at full decimal precision, never floats', () => {
+    // Index 59 is the newest of 60 — within the last-10-full-precision slice of the 50-wide window.
+    const closeStr = '1000.123456789';
+    const c: CandleEvent = { ...candle(59), close: price(closeStr) };
+    const candles = [...Array.from({ length: 59 }, (_, i) => candle(i)), c];
+    const payload = JSON.parse(buildUserMessage(buildInput({ candles }))) as {
       candles: [number, string, string, string, string, string][];
     };
-    const [, open, high, low, close, volume] = payload.candles[0]!;
+    const [, , , , close] = payload.candles[payload.candles.length - 1]!;
 
-    expect(open).toBe('1000');
-    expect(high).toBe('1001');
-    expect(low).toBe('999');
-    expect(close).toBe('1000.5');
-    expect(volume).toBe('1');
-    for (const field of [open, high, low, close, volume]) expect(typeof field).toBe('string');
+    expect(close).toBe(closeStr);
+    expect(typeof close).toBe('string');
+  });
+
+  it('reduces candles older than the newest 10 (within the 50-wide window) to 6 significant digits', () => {
+    // Index 0 lands at the oldest-kept position (60 - 50 = 10 dropped, so index 10 is the oldest of
+    // the 50-wide window) and is well outside the last-10-full-precision slice.
+    const closeStr = '1000.123456789';
+    const candles = Array.from({ length: 60 }, (_, i) =>
+      i === 10 ? { ...candle(i), close: price(closeStr) } : candle(i),
+    );
+    const payload = JSON.parse(buildUserMessage(buildInput({ candles }))) as {
+      candles: [number, string, string, string, string, string][];
+    };
+    const [, , , , close] = payload.candles[0]!; // the oldest kept candle, index 10 pre-slice
+
+    expect(close).toBe('1000.12'); // 6 significant digits, exact Decimal rounding — not the full string
+    expect(close).not.toBe(closeStr);
   });
 
   it('serializes the ticker as exact decimal strings when present, or null when absent', () => {
@@ -216,7 +274,7 @@ describe('buildUserMessage', () => {
     expect(withoutTicker.ticker).toBeNull();
   });
 
-  it('passes indicators, htf, position, and recentDecisions straight through from context', () => {
+  it('passes indicators, htf, and position straight through from context', () => {
     const context: AgentContext = {
       indicators: {
         lastClose: 100,
@@ -246,13 +304,11 @@ describe('buildUserMessage', () => {
       indicators: unknown;
       htf: unknown;
       position: unknown;
-      recentDecisions: unknown;
     };
 
     expect(payload.indicators).toEqual(context.indicators);
     expect(payload.htf).toEqual(context.htf);
     expect(payload.position).toEqual(context.position);
-    expect(payload.recentDecisions).toEqual(context.recentDecisions);
   });
 
   it('defaults indicators/htf/position to null and recentDecisions to [] with no context', () => {
@@ -280,8 +336,8 @@ describe('buildUserMessage', () => {
     expect(payload.execReportsSinceLastDecide[0]).not.toHaveProperty('clientOrderId');
   });
 
-  describe('outcome rendering', () => {
-    it('renders a human-readable "N decisions ago" line only for decisions with a known outcome', () => {
+  describe('recentDecisions rendering (merged decision + outcome, one block)', () => {
+    it('renders each decision as a single human-readable line, with outcome appended once known', () => {
       const context: AgentContext = {
         indicators: null,
         position: {
@@ -298,23 +354,58 @@ describe('buildUserMessage', () => {
             action: 'long',
             close: 43125.1,
             reason: 'r1',
-            outcome: { priceMovePct: 0.42, positionPnlDelta: '3.10' },
+            outcome: { priceMovePct: 0.42, positionPnlDelta: '3.10', heldDuring: 'LONG' },
           },
           { eventTime: epochMs(T - 60_000), action: 'hold', close: 43200, reason: 'r2' }, // no outcome yet
         ],
       };
       const payload = JSON.parse(buildUserMessage(buildInput({ context }))) as {
-        recentDecisionOutcomes: string[];
+        recentDecisions: string[];
       };
 
-      expect(payload.recentDecisionOutcomes).toHaveLength(1);
-      const line = payload.recentDecisionOutcomes[0]!;
-      expect(line).toContain('2 decisions ago');
-      expect(line).toContain('long');
-      expect(line).toContain('43125.1');
-      expect(line).toContain('+0.42%');
-      expect(line).toContain('+3.10');
-      expect(line).toContain('USDT');
+      expect(payload.recentDecisions).toHaveLength(2);
+      const [annotated, unannotated] = payload.recentDecisions;
+
+      expect(annotated).toContain('2 decisions ago');
+      expect(annotated).toContain('long');
+      expect(annotated).toContain('43125.1');
+      expect(annotated).toContain('+0.42%');
+      expect(annotated).toContain('+3.10');
+      expect(annotated).toContain('USDT');
+      expect(annotated).toContain('held long');
+
+      expect(unannotated).toContain('1 decision ago');
+      expect(unannotated).toContain('hold');
+      expect(unannotated).not.toContain('→'); // no outcome arrow yet
+    });
+
+    it('renders "flat" for a decision annotated while the strategy held no position', () => {
+      const context: AgentContext = {
+        indicators: null,
+        position: {
+          side: 'FLAT',
+          qty: '0',
+          avgEntry: null,
+          realizedPnl: '0',
+          unrealizedPnlPct: null,
+          openOrders: 0,
+        },
+        recentDecisions: [
+          {
+            eventTime: epochMs(T - 60_000),
+            action: 'hold',
+            close: 100,
+            reason: 'r',
+            outcome: { priceMovePct: 2, positionPnlDelta: '0', heldDuring: 'FLAT' },
+          },
+        ],
+      };
+      const payload = JSON.parse(buildUserMessage(buildInput({ context }))) as {
+        recentDecisions: string[];
+      };
+
+      expect(payload.recentDecisions[0]).toContain('(flat)');
+      expect(payload.recentDecisions[0]).not.toContain('held long');
     });
 
     it('signs a negative price move and PnL delta without a double sign', () => {
@@ -334,20 +425,20 @@ describe('buildUserMessage', () => {
             action: 'long',
             close: 100,
             reason: 'r',
-            outcome: { priceMovePct: -1.5, positionPnlDelta: '-2.5' },
+            outcome: { priceMovePct: -1.5, positionPnlDelta: '-2.5', heldDuring: 'FLAT' },
           },
         ],
       };
       const payload = JSON.parse(buildUserMessage(buildInput({ context }))) as {
-        recentDecisionOutcomes: string[];
+        recentDecisions: string[];
       };
 
-      expect(payload.recentDecisionOutcomes[0]).toContain('-1.50%');
-      expect(payload.recentDecisionOutcomes[0]).toContain('-2.5');
-      expect(payload.recentDecisionOutcomes[0]).not.toContain('+-');
+      expect(payload.recentDecisions[0]).toContain('-1.50%');
+      expect(payload.recentDecisions[0]).toContain('-2.5');
+      expect(payload.recentDecisions[0]).not.toContain('+-');
     });
 
-    it('renders no outcome lines when no recent decision has an outcome yet', () => {
+    it('renders "n/a" (never the literal NaN) when priceMovePct is null', () => {
       const context: AgentContext = {
         indicators: null,
         position: {
@@ -358,13 +449,85 @@ describe('buildUserMessage', () => {
           unrealizedPnlPct: null,
           openOrders: 0,
         },
-        recentDecisions: [{ eventTime: epochMs(T), action: 'hold', close: 100, reason: '' }],
+        recentDecisions: [
+          {
+            eventTime: epochMs(T - 60_000),
+            action: 'hold',
+            close: NaN,
+            reason: 'no candle yet',
+            outcome: { priceMovePct: null, positionPnlDelta: '0', heldDuring: 'FLAT' },
+          },
+        ],
       };
-      const payload = JSON.parse(buildUserMessage(buildInput({ context }))) as {
-        recentDecisionOutcomes: string[];
+      const raw = buildUserMessage(buildInput({ context }));
+      const payload = JSON.parse(raw) as { recentDecisions: string[] };
+
+      expect(payload.recentDecisions[0]).toContain('n/a');
+      expect(raw).not.toContain('NaN');
+    });
+  });
+
+  describe('order book rendering', () => {
+    it('renders top-5 bid/ask levels as exact strings, spread in bps, and a bid/ask imbalance ratio', () => {
+      const b = book({
+        bids: [
+          ['100', '1'],
+          ['99.5', '2'],
+        ],
+        asks: [
+          ['100.5', '1'],
+          ['101', '1'],
+        ],
+      });
+      const payload = JSON.parse(buildUserMessage(buildInput({ book: b }))) as {
+        orderBook: {
+          bids: [string, string][];
+          asks: [string, string][];
+          spreadBps: number;
+          imbalance: number;
+        } | null;
       };
 
-      expect(payload.recentDecisionOutcomes).toEqual([]);
+      expect(payload.orderBook).not.toBeNull();
+      const ob = payload.orderBook!;
+      expect(ob.bids).toEqual([
+        ['100', '1'],
+        ['99.5', '2'],
+      ]);
+      expect(ob.asks).toEqual([
+        ['100.5', '1'],
+        ['101', '1'],
+      ]);
+      // mid = 100.25, spread = 0.5 -> bps = 0.5/100.25*10000 ≈ 49.875
+      expect(ob.spreadBps).toBeCloseTo(49.875, 2);
+      // bid qty 1+2=3, ask qty 1+1=2 -> imbalance 1.5
+      expect(ob.imbalance).toBeCloseTo(1.5, 6);
+      for (const [price_, qty_] of [...ob.bids, ...ob.asks]) {
+        expect(typeof price_).toBe('string');
+        expect(typeof qty_).toBe('string');
+      }
+    });
+
+    it('caps rendered levels at 5 per side even when the book is deeper', () => {
+      const deepLevels: [string, string][] = Array.from({ length: 8 }, (_, i) => [
+        String(100 - i),
+        '1',
+      ]);
+      const b = book({ bids: deepLevels, asks: deepLevels });
+      const payload = JSON.parse(buildUserMessage(buildInput({ book: b }))) as {
+        orderBook: { bids: unknown[]; asks: unknown[] } | null;
+      };
+
+      expect(payload.orderBook!.bids).toHaveLength(5);
+      expect(payload.orderBook!.asks).toHaveLength(5);
+    });
+
+    it('omits the orderBook key entirely (no empty scaffolding) when no book snapshot is available', () => {
+      const raw = buildUserMessage(buildInput());
+      const payload = JSON.parse(raw) as Record<string, unknown>;
+
+      expect(payload).not.toHaveProperty('orderBook');
+      expect(raw).not.toContain('spreadBps');
     });
   });
 
@@ -430,7 +593,7 @@ describe('computePromptHash', () => {
   });
 
   it.each([
-    ['templateVersion', { templateVersion: 'v3' }],
+    ['templateVersion', { templateVersion: 'v4' }],
     ['playbookContent', { playbookContent: 'a different playbook' }],
     ['toolSchemaJson', { toolSchemaJson: '{"different":true}' }],
     ['modelId', { modelId: 'claude-other-model' }],

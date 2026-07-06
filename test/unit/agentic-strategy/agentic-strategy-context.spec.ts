@@ -392,7 +392,7 @@ describe('AgenticStrategy context building', () => {
 });
 
 describe('AgenticStrategy retro outcome annotation', () => {
-  it('fills the previous decision outcome (priceMovePct + exact positionPnlDelta) once it becomes visible on the call after next', async () => {
+  it('fills the previous decision outcome (priceMovePct + exact positionPnlDelta + heldDuring) once it becomes visible on the call after next', async () => {
     const client = new CapturingAgentClient();
     const strategy = makeStrategy(client);
 
@@ -400,6 +400,7 @@ describe('AgenticStrategy retro outcome annotation', () => {
     await strategy.decide(buildInput({ candles: [candle('100', 0)], portfolio: emptyPortfolio() }));
     // Call 2: LONG qty=1 avgEntry=100 realizedPnl=0, close 110 — combinedPnl = 0 + (110-100)*1 = 10.
     // This annotates call 1's record with priceMovePct=(110-100)/100*100=10, positionPnlDelta='10'.
+    // heldDuring reflects the side as of call 1 (FLAT), not call 2 (LONG).
     await strategy.decide(
       buildInput({
         candles: [candle('110', 1)],
@@ -410,7 +411,41 @@ describe('AgenticStrategy retro outcome annotation', () => {
     await strategy.decide(buildInput({ candles: [candle('110', 2)], portfolio: emptyPortfolio() }));
 
     const recentDecisions = client.inputs[2]!.context!.recentDecisions;
-    expect(recentDecisions[0]!.outcome).toEqual({ priceMovePct: 10, positionPnlDelta: '10' });
+    expect(recentDecisions[0]!.outcome).toEqual({
+      priceMovePct: 10,
+      positionPnlDelta: '10',
+      heldDuring: 'FLAT',
+    });
+  });
+
+  it('records heldDuring LONG when the prior decision was made while a position was held', async () => {
+    const client = new CapturingAgentClient();
+    const strategy = makeStrategy(client);
+
+    // Call 1: LONG — the decision being annotated later was made while held.
+    await strategy.decide(
+      buildInput({
+        candles: [candle('100', 0)],
+        portfolio: longPortfolio({ avgEntry: '100', realizedPnl: '0', qty: '1' }),
+      }),
+    );
+    // Call 2: still LONG, close moves to 110.
+    await strategy.decide(
+      buildInput({
+        candles: [candle('110', 1)],
+        portfolio: longPortfolio({ avgEntry: '100', realizedPnl: '0', qty: '1' }),
+      }),
+    );
+    // Call 3: surfaces call 1's annotated outcome.
+    await strategy.decide(
+      buildInput({
+        candles: [candle('110', 2)],
+        portfolio: longPortfolio({ avgEntry: '100', realizedPnl: '0', qty: '1' }),
+      }),
+    );
+
+    const recentDecisions = client.inputs[2]!.context!.recentDecisions;
+    expect(recentDecisions[0]!.outcome!.heldDuring).toBe('LONG');
   });
 
   it('never populates outcome on the most recently pushed decision (it is annotated on the call after next)', async () => {
@@ -423,6 +458,28 @@ describe('AgenticStrategy retro outcome annotation', () => {
     const recentDecisions = client.inputs[1]!.context!.recentDecisions;
     expect(recentDecisions[0]!.outcome).toBeUndefined();
   });
+
+  it('leaves priceMovePct null (never NaN) when the annotated call had no candle to derive a close from', async () => {
+    const client = new CapturingAgentClient();
+    const strategy = makeStrategy(client);
+
+    // Call 1: no candles at all — close seeds as NaN.
+    await strategy.decide(buildInput({ candles: [], portfolio: emptyPortfolio() }));
+    // Call 2: a real candle arrives; annotates call 1's now-poisoned close.
+    await strategy.decide(buildInput({ candles: [candle('110', 1)], portfolio: emptyPortfolio() }));
+    // Call 3: surfaces call 1's annotated outcome.
+    await strategy.decide(buildInput({ candles: [candle('110', 2)], portfolio: emptyPortfolio() }));
+
+    const recentDecisions = client.inputs[2]!.context!.recentDecisions;
+    expect(recentDecisions[0]!.outcome!.priceMovePct).toBeNull();
+    expect(recentDecisions[0]!.outcome!.positionPnlDelta).toBe('0');
+  });
+
+  // A prev.close <= 0 is unreachable through the public API here — Price (money.ts price()) throws
+  // NON_POSITIVE for any value <= 0, and AgentDecisionRecord.close is always either a Price-derived
+  // toIndicatorNumber() (> 0) or NaN (the no-candle seed, covered above). The prev.close > 0 branch
+  // of the guard is defensive-only against that invariant; see agent-prompt.spec.ts for the
+  // rendering-level null→"n/a" coverage that IS reachable with a plain-literal AgentDecisionRecord.
 });
 
 describe('AgenticStrategy HTF context', () => {

@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { StrategyRegistry } from '../../../src/modules/strategy/strategy-registry';
-import { AgenticStrategy } from '../../../src/modules/agentic-strategy/agentic.strategy';
-import { StubAgentClient } from '../../../src/modules/agentic-strategy/agent-client.adapter';
-import type { AgenticStrategyParams } from '../../../src/modules/agentic-strategy/agentic.strategy';
+import { StrategyRegistry } from '../../../src/features/trading/agentic/strategy-registry';
+import { AgenticStrategy } from '../../../src/features/trading/agentic/agentic.strategy';
+import { StubAgentClient } from '../../../src/features/trading/agentic/agent-client.adapter';
+import type { AgenticStrategyParams } from '../../../src/features/trading/agentic/agentic.strategy';
 import { strategyId, venueId, symbolId } from '../../../src/domain/types/ids';
 
 const V = venueId('binance');

@@ -8,11 +8,11 @@ import {
   type ReflectionServiceDeps,
   type ReflectionPlaybookStore,
   type ReflectionMetricsRecorder,
-} from '../../../src/modules/agentic-strategy/reflection.service';
+} from '../../../src/features/trading/agentic/reflection.service';
 import {
   DailyLlmBudget,
   type DailyLlmBudgetCaps,
-} from '../../../src/modules/agentic-strategy/agent-budget';
+} from '../../../src/features/trading/agentic/agent-budget';
 import type {
   AgentDecisionJournalPort,
   AgentDecisionRow,

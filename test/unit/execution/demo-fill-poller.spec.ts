@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { DemoFillPollerService } from '../../../src/modules/execution/demo-fill-poller.service';
-import type { OrderBookService } from '../../../src/modules/execution/order-book.service';
+import { DemoFillPollerService } from '../../../src/features/trading/execution/demo-fill-poller.service';
+import type { OrderBookService } from '../../../src/features/trading/execution/order-book.service';
 import type {
   FillIngestorService,
   IngestResult,
-} from '../../../src/modules/execution/fill-ingestor.service';
+} from '../../../src/features/trading/execution/fill-ingestor.service';
 import type { ExchangePort, VenueFill } from '../../../src/ports/exchange';
 import type { OrderRecord } from '../../../src/domain/oms/reducer';
 import type { FillRecord } from '../../../src/domain/types/exec-report';

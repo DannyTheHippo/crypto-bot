@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { NonceLedgerService } from '../../../src/modules/execution/nonce-ledger.service';
+import { NonceLedgerService } from '../../../src/features/trading/execution/nonce-ledger.service';
 import { epochMs } from '../../../src/domain/types/ids';
 
 const ms = (n: number) => epochMs(n);

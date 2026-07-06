@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { CrashRecoveryService } from '../../../src/modules/execution/crash-recovery.service';
-import { InMemoryInstanceLock } from '../../../src/modules/execution/in-memory-instance-lock';
-import { OrderBookService } from '../../../src/modules/execution/order-book.service';
-import { InMemoryExecutionStore } from '../../../src/modules/execution/in-memory-store';
+import { CrashRecoveryService } from '../../../src/features/trading/execution/crash-recovery.service';
+import { InMemoryInstanceLock } from '../../../src/features/trading/execution/in-memory-instance-lock';
+import { OrderBookService } from '../../../src/features/trading/execution/order-book.service';
+import { InMemoryExecutionStore } from '../../../src/features/trading/execution/in-memory-store';
 import { initialOrder } from '../../../src/domain/oms/reducer';
 import { makeIntent } from './helpers';
 import { encodeClientOrderId, intentId } from '../../../src/domain/types/ids';

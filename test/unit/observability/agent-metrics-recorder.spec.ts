@@ -9,8 +9,8 @@ import {
   AGENTIC_PLAYBOOK_INFO_GAUGE,
   PLAYBOOK_VALIDATOR_REJECTIONS_COUNTER,
   AGENT_CLIENT_INFO_GAUGE,
-} from '../../../src/modules/observability/metrics.service';
-import { AgentMetricsRecorder } from '../../../src/modules/observability/agent-metrics-recorder.service';
+} from '../../../src/features/common/observability/metrics.service';
+import { AgentMetricsRecorder } from '../../../src/features/common/observability/agent-metrics-recorder.service';
 
 describe('AgentMetricsRecorder', () => {
   let moduleRef: TestingModule;

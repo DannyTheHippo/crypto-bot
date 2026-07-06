@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import Decimal from 'decimal.js';
-import { BootRecoveryService } from '../../../src/modules/execution/boot-recovery.service';
-import { PortfolioStateService } from '../../../src/modules/execution/portfolio-state.service';
-import { OrderBookService } from '../../../src/modules/execution/order-book.service';
-import type { CrashRecoveryService } from '../../../src/modules/execution/crash-recovery.service';
-import { FeeLedgerService } from '../../../src/modules/execution/fee-ledger.service';
+import { BootRecoveryService } from '../../../src/features/trading/execution/boot-recovery.service';
+import { PortfolioStateService } from '../../../src/features/trading/execution/portfolio-state.service';
+import { OrderBookService } from '../../../src/features/trading/execution/order-book.service';
+import type { CrashRecoveryService } from '../../../src/features/trading/execution/crash-recovery.service';
+import { FeeLedgerService } from '../../../src/features/trading/execution/fee-ledger.service';
 import { positionKey } from '../../../src/domain/risk/evaluate';
 import type { ExecutionStorePort, EquitySample } from '../../../src/ports/execution';
 import type { Position } from '../../../src/domain/types/portfolio';

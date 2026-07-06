@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { computeArmingHmac, verifyArmingHmac } from '../../../src/modules/mode-control/hmac';
+import {
+  computeArmingHmac,
+  verifyArmingHmac,
+} from '../../../src/features/trading/mode-control/hmac';
 
 // The constant-time HMAC compare is the arming security boundary (§10b). A length-guard precedes
 // timingSafeEqual (which throws on unequal-length buffers — itself a length side-channel).

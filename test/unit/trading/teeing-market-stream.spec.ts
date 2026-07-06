@@ -4,7 +4,7 @@ import {
   TeeingMarketStream,
   type RefPriceSink,
   type PaperFeedSink,
-} from '../../../src/modules/trading/teeing-market-stream';
+} from '../../../src/features/trading/market-data/teeing-market-stream';
 import type { MarketStreamPort, SubscriptionSpec } from '../../../src/ports/market-data';
 import type { MarketEvent, OrderLevel } from '../../../src/domain/types/market-events';
 import { price, qty, type Price } from '../../../src/domain/types/money';

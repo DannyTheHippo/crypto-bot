@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { EquitySamplerService } from '../../../src/modules/execution/equity-sampler.service';
-import { PortfolioStateService } from '../../../src/modules/execution/portfolio-state.service';
-import { FeeLedgerService } from '../../../src/modules/execution/fee-ledger.service';
-import { InMemoryExecutionStore } from '../../../src/modules/execution/in-memory-store';
+import { EquitySamplerService } from '../../../src/features/trading/execution/equity-sampler.service';
+import { PortfolioStateService } from '../../../src/features/trading/execution/portfolio-state.service';
+import { FeeLedgerService } from '../../../src/features/trading/execution/fee-ledger.service';
+import { InMemoryExecutionStore } from '../../../src/features/trading/execution/in-memory-store';
 import { makeIntent, makeFill, fixedClock, fixedFeed } from './helpers';
 import { price, qty } from '../../../src/domain/types/money';
 

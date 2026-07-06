@@ -11,7 +11,7 @@ import { randomBytes, createHash } from 'node:crypto';
 import type { Exchange } from 'ccxt';
 import { AppConfigModule } from './config/config.module';
 import { TypedConfigService } from './config/environment/typed-config.service';
-import { ObservabilityModule } from './modules/observability/observability.module';
+import { ObservabilityModule } from './features/common/observability/observability.module';
 import { PersistenceModule } from './database/database.module';
 import { DbHealthIndicator } from './database/db-health.indicator';
 import { DrizzleExecutionStore } from './database/repositories/drizzle-execution-store';
@@ -25,28 +25,28 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import type { Pool } from 'pg';
 import type * as schema from './database/schemas/trading';
 import { DB_HEALTH } from './ports/db-health';
-import { RiskModule } from './modules/risk/risk.module';
-import { KillSwitchService } from './modules/risk/kill-switch.service';
-import { ExecutionModule } from './modules/execution/execution.module';
+import { RiskModule } from './features/trading/risk/risk.module';
+import { KillSwitchService } from './features/trading/risk/kill-switch.service';
+import { ExecutionModule } from './features/trading/execution/execution.module';
 import {
   SignalSinkService,
   SIGNAL_REJECTIONS_COUNTER,
-} from './modules/execution/signal-sink.service';
-import { HaltCoordinatorService } from './modules/execution/halt-coordinator.service';
-import { UnknownResolverService } from './modules/execution/unknown-resolver.service';
-import { ReconciliationService } from './modules/execution/reconciliation.service';
-import { EquitySamplerService } from './modules/execution/equity-sampler.service';
-import { PortfolioStateService } from './modules/execution/portfolio-state.service';
-import { BootRecoveryService } from './modules/execution/boot-recovery.service';
+} from './features/trading/execution/signal-sink.service';
+import { HaltCoordinatorService } from './features/trading/execution/halt-coordinator.service';
+import { UnknownResolverService } from './features/trading/execution/unknown-resolver.service';
+import { ReconciliationService } from './features/trading/execution/reconciliation.service';
+import { EquitySamplerService } from './features/trading/execution/equity-sampler.service';
+import { PortfolioStateService } from './features/trading/execution/portfolio-state.service';
+import { BootRecoveryService } from './features/trading/execution/boot-recovery.service';
 import {
   PaperExchangeAdapter,
   PAPER_CONFIG,
   type PaperConfig,
-} from './modules/exchange-adapter/paper-exchange.adapter';
-import { LiveExchangeAdapter } from './modules/exchange-adapter/live-exchange.adapter';
-import { CcxtExchangeAdapter } from './modules/exchange-adapter/ccxt-exchange.adapter';
-import { RealCcxtOrderClient } from './modules/exchange-adapter/ccxt-order-client';
-import { KeyProbeService } from './modules/exchange-adapter/key-probe.service';
+} from './features/trading/exchange/paper-exchange.adapter';
+import { LiveExchangeAdapter } from './features/trading/exchange/live-exchange.adapter';
+import { CcxtExchangeAdapter } from './features/trading/exchange/ccxt-exchange.adapter';
+import { RealCcxtOrderClient } from './features/trading/exchange/ccxt-order-client';
+import { KeyProbeService } from './features/trading/exchange/key-probe.service';
 import {
   buildCcxtExchange,
   CcxtExchangeStreamAdapter,
@@ -54,21 +54,21 @@ import {
   WATCH_SOURCE,
   type ChannelStateTracker,
   type WatchSource,
-} from './modules/market-data/ccxt-stream.adapter';
+} from './features/trading/market-data/ccxt-stream.adapter';
 import {
   FeedHealthServiceWithBackfill,
   type OhlcvSource,
-} from './modules/market-data/feed-health.service';
-import { MarketDataService } from './modules/market-data/market-data.service';
-import { StrategyRegistry } from './modules/strategy/strategy-registry';
-import { StrategyHost } from './modules/strategy/strategy-host';
+} from './features/trading/market-data/feed-health.service';
+import { MarketDataService } from './features/trading/market-data/market-data.service';
+import { StrategyRegistry } from './features/trading/agentic/strategy-registry';
+import { StrategyHost } from './features/trading/agentic/strategy-host';
 import {
   TeeingMarketStream,
   type RefPriceSink,
   type PaperFeedSink,
-} from './modules/trading/teeing-market-stream';
-import { DemoFillPollerService } from './modules/execution/demo-fill-poller.service';
-import { ModeControlService } from './modules/mode-control/mode-control.service';
+} from './features/trading/market-data/teeing-market-stream';
+import { DemoFillPollerService } from './features/trading/execution/demo-fill-poller.service';
+import { ModeControlService } from './features/trading/mode-control/mode-control.service';
 import {
   AgenticStrategyModule,
   AGENT_LLM_BUDGET,
@@ -77,16 +77,16 @@ import {
   REFLECTION_SERVICE,
   REFLECTION_METRICS_RECORDER_OVERRIDE,
   SEED_PLAYBOOK,
-} from './modules/agentic-strategy/agentic-strategy.module';
-import type { DailyLlmBudget } from './modules/agentic-strategy/agent-budget';
-import { ReflectionService } from './modules/agentic-strategy/reflection.service';
+} from './features/trading/agentic/agentic-strategy.module';
+import type { DailyLlmBudget } from './features/trading/agentic/agent-budget';
+import { ReflectionService } from './features/trading/agentic/reflection.service';
 import {
   AgenticStrategy,
   type AgenticStrategyParams,
   type AgenticStrategyDeps,
-} from './modules/agentic-strategy/agentic.strategy';
-import { assertAgenticLaneNotLive } from './modules/agentic-strategy/agentic-live-interlock';
-import { validatePlaybook } from './modules/agentic-strategy/playbook-validator';
+} from './features/trading/agentic/agentic.strategy';
+import { assertAgenticLaneNotLive } from './features/trading/agentic/agentic-live-interlock';
+import { validatePlaybook } from './features/trading/agentic/playbook-validator';
 import {
   AGENT_CLIENT,
   AGENT_DECISION_JOURNAL,
@@ -105,7 +105,7 @@ import {
 import {
   AgentMetricsRecorder,
   type AgentDecideOutcome,
-} from './modules/observability/agent-metrics-recorder.service';
+} from './features/common/observability/agent-metrics-recorder.service';
 import { AgentDecisionJournalAdapter } from './database/repositories/agent-decision-journal.adapter';
 import { InMemoryAgentDecisionJournal } from './database/repositories/in-memory-agent-decision-journal';
 import { LlmUsageSinkAdapter } from './database/repositories/llm-usage-sink.adapter';
@@ -128,7 +128,7 @@ import type { SymbolFilters } from './domain/risk/evaluate';
 import { DEFAULT_FILTERS } from './domain/risk/default-filters';
 import type { CandleInterval } from './domain/types/market-events';
 import type { VenueConfig, VenueEnvironment } from './ports/app-config';
-import { ModeControlModule } from './modules/mode-control/mode-control.module';
+import { ModeControlModule } from './features/trading/mode-control/mode-control.module';
 import {
   LIVE_ADAPTER_CAP,
   LIMITS_COMPLETE,
@@ -840,8 +840,9 @@ class MetricsWrappingAgentClient implements AgentClientPort {
         agentTradingProfileFor(config.strategy.symbol, limits, config.risk.baseNotional),
       inject: [RISK_LIMITS, TypedConfigService],
     },
-    // G4a: lets ReflectionService (modules/agentic-strategy, which cannot import modules/observability
-    // — the boundary wall) record validator-rejection tripwires through its own LOCAL structural type
+    // G4a: lets ReflectionService (features/trading/agentic, which cannot import
+    // features/common/observability — the boundary wall) record validator-rejection tripwires
+    // through its own LOCAL structural type
     // rather than the concrete class. Same useExisting pattern the DB_HEALTH/PORTFOLIO_VIEW bridges use.
     { provide: REFLECTION_METRICS_RECORDER_OVERRIDE, useExisting: AgentMetricsRecorder },
     {

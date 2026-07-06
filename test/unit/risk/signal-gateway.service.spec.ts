@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import Decimal from 'decimal.js';
-import { SignalGatewayService } from '../../../src/modules/risk/signal-gateway.service';
-import { KillSwitchService } from '../../../src/modules/risk/kill-switch.service';
-import { PositionSizerService } from '../../../src/modules/risk/position-sizer.service';
-import { RiskEngineService } from '../../../src/modules/risk/risk-engine.service';
-import { RateBucketsService } from '../../../src/modules/risk/rate-buckets.service';
-import { CrossingRegistryService } from '../../../src/modules/risk/crossing-registry.service';
+import { SignalGatewayService } from '../../../src/features/trading/risk/signal-gateway.service';
+import { KillSwitchService } from '../../../src/features/trading/risk/kill-switch.service';
+import { PositionSizerService } from '../../../src/features/trading/risk/position-sizer.service';
+import { RiskEngineService } from '../../../src/features/trading/risk/risk-engine.service';
+import { RateBucketsService } from '../../../src/features/trading/risk/rate-buckets.service';
+import { CrossingRegistryService } from '../../../src/features/trading/risk/crossing-registry.service';
 import type { SizerDeps, RiskEngineDeps, RiskJournalPort } from '../../../src/ports/risk';
 import type { FeedHealthPort } from '../../../src/ports/market-data';
 import type { SymbolFilters } from '../../../src/domain/risk/evaluate';

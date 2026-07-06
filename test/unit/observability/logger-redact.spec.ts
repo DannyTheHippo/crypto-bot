@@ -4,7 +4,7 @@ import pino from 'pino';
 import {
   REDACT_PATHS,
   buildPinoHttpOptions,
-} from '../../../src/modules/observability/logger.config';
+} from '../../../src/features/common/observability/logger.config';
 
 describe('Logger pino config redact paths', () => {
   it('includes all required redact paths', () => {

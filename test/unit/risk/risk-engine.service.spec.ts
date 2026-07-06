@@ -1,10 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { Counter } from 'prom-client';
 import Decimal from 'decimal.js';
-import { RiskEngineService } from '../../../src/modules/risk/risk-engine.service';
-import { KillSwitchService } from '../../../src/modules/risk/kill-switch.service';
-import { RateBucketsService } from '../../../src/modules/risk/rate-buckets.service';
-import { CrossingRegistryService } from '../../../src/modules/risk/crossing-registry.service';
+import { RiskEngineService } from '../../../src/features/trading/risk/risk-engine.service';
+import { KillSwitchService } from '../../../src/features/trading/risk/kill-switch.service';
+import { RateBucketsService } from '../../../src/features/trading/risk/rate-buckets.service';
+import { CrossingRegistryService } from '../../../src/features/trading/risk/crossing-registry.service';
 import type { RiskEngineDeps, RiskJournalPort } from '../../../src/ports/risk';
 import type { FeedHealthPort } from '../../../src/ports/market-data';
 import type { SymbolFilters } from '../../../src/domain/risk/evaluate';

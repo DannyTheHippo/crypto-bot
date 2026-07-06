@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeRawEvent } from '../../../src/modules/market-data/normalize';
+import { normalizeRawEvent } from '../../../src/features/trading/market-data/normalize';
 import { venueId, symbolId, epochMs } from '../../../src/domain/types/ids';
 import type { RawVenueEvent } from '../../../src/ports/exchange-stream';
 import type {

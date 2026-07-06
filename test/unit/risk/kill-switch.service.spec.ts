@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { KillSwitchService } from '../../../src/modules/risk/kill-switch.service';
+import { KillSwitchService } from '../../../src/features/trading/risk/kill-switch.service';
 
 describe('KillSwitchService', () => {
   it('starts RUNNING and engages to HALTING carrying reason + flatten flag', () => {

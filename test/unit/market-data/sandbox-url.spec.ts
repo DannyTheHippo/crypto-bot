@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { buildCcxtExchange } from '../../../src/modules/market-data/ccxt-stream.adapter';
-import { resolveVenueUrls } from '../../../src/modules/market-data/venue-urls';
+import { buildCcxtExchange } from '../../../src/features/trading/market-data/ccxt-stream.adapter';
+import { resolveVenueUrls } from '../../../src/features/trading/market-data/venue-urls';
 import type { VenueConfig, VenueEnvironment } from '../../../src/ports/app-config';
 
 describe('resolveVenueUrls generic fallback (unknown venue)', () => {

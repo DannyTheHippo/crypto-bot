@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import Decimal from 'decimal.js';
-import { PositionSizerService } from '../../../src/modules/risk/position-sizer.service';
+import { PositionSizerService } from '../../../src/features/trading/risk/position-sizer.service';
 import type { SizerDeps } from '../../../src/ports/risk';
 import type { SymbolFilters } from '../../../src/domain/risk/evaluate';
 import type { ClockPort } from '../../../src/ports/clock';

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { CrossingRegistryService } from '../../../src/modules/risk/crossing-registry.service';
+import { CrossingRegistryService } from '../../../src/features/trading/risk/crossing-registry.service';
 import { price } from '../../../src/domain/types/money';
 import { clientOrderId, strategyId, symbolId } from '../../../src/domain/types/ids';
 

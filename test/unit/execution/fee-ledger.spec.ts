@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import Decimal from 'decimal.js';
-import { FeeLedgerService } from '../../../src/modules/execution/fee-ledger.service';
+import { FeeLedgerService } from '../../../src/features/trading/execution/fee-ledger.service';
 
 describe('FeeLedgerService', () => {
   it('accumulates per asset and totals; unknown asset is zero', () => {

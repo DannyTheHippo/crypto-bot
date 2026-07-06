@@ -1,7 +1,7 @@
 // Shared support code for the agentic eval harness (test/eval/agentic/*.spec.ts). Not itself a
 // test file — Vitest's default include glob only picks up *.spec.ts/*.test.ts, so this module is
 // only ever reached via import.
-import { AnthropicAgentClient } from '../../../src/modules/agentic-strategy/anthropic-agent-client';
+import { AnthropicAgentClient } from '../../../src/features/trading/agentic/anthropic-agent-client';
 import { price, qty } from '../../../src/domain/types/money';
 import { strategyId, venueId, symbolId, epochMs } from '../../../src/domain/types/ids';
 import type { CandleEvent } from '../../../src/domain/types/market-events';
@@ -10,7 +10,7 @@ import type {
   AgentMarketSnapshot,
   AgentTradingProfile,
 } from '../../../src/ports/agentic-strategy';
-import type { ScoringRow } from '../../../src/modules/agentic-strategy/counterfactual-scoring';
+import type { ScoringRow } from '../../../src/features/trading/agentic/counterfactual-scoring';
 
 export const T = 1_700_000_000_000;
 export const SID = strategyId('agentic-eval');

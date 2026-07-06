@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   DailyLlmBudget,
   BudgetedAgentClient,
-} from '../../../src/modules/agentic-strategy/agent-budget';
+} from '../../../src/features/trading/agentic/agent-budget';
 import type {
   AgentClientPort,
   AgentDecisionInput,

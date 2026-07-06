@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
-import { KeyProbeService } from '../../../src/modules/exchange-adapter/key-probe.service';
-import type { CcxtOrderClient } from '../../../src/modules/exchange-adapter/ccxt-order-client';
+import { KeyProbeService } from '../../../src/features/trading/exchange/key-probe.service';
+import type { CcxtOrderClient } from '../../../src/features/trading/exchange/ccxt-order-client';
 
 // A client whose only relevant method is the apiRestrictions probe; other methods are unused here.
 function clientReturning(restrictions: Record<string, unknown>): CcxtOrderClient {

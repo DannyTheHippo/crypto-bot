@@ -1,18 +1,21 @@
 import { describe, it, expect, vi } from 'vitest';
 import Decimal from 'decimal.js';
-import { StrategyHost, type AgenticHostOptions } from '../../../src/modules/strategy/strategy-host';
-import { StrategyRegistry } from '../../../src/modules/strategy/strategy-registry';
-import { AgenticStrategy } from '../../../src/modules/agentic-strategy/agentic.strategy';
-import { StubAgentClient } from '../../../src/modules/agentic-strategy/agent-client.adapter';
-import { assertAgenticLaneNotLive } from '../../../src/modules/agentic-strategy/agentic-live-interlock';
+import {
+  StrategyHost,
+  type AgenticHostOptions,
+} from '../../../src/features/trading/agentic/strategy-host';
+import { StrategyRegistry } from '../../../src/features/trading/agentic/strategy-registry';
+import { AgenticStrategy } from '../../../src/features/trading/agentic/agentic.strategy';
+import { StubAgentClient } from '../../../src/features/trading/agentic/agent-client.adapter';
+import { assertAgenticLaneNotLive } from '../../../src/features/trading/agentic/agentic-live-interlock';
 import type { PromotionReadiness } from '../../../src/ports/promotion';
-import { SignalSinkService } from '../../../src/modules/execution/signal-sink.service';
-import { SignalGatewayService } from '../../../src/modules/risk/signal-gateway.service';
-import { KillSwitchService } from '../../../src/modules/risk/kill-switch.service';
-import { PositionSizerService } from '../../../src/modules/risk/position-sizer.service';
-import { RiskEngineService } from '../../../src/modules/risk/risk-engine.service';
-import { RateBucketsService } from '../../../src/modules/risk/rate-buckets.service';
-import { CrossingRegistryService } from '../../../src/modules/risk/crossing-registry.service';
+import { SignalSinkService } from '../../../src/features/trading/execution/signal-sink.service';
+import { SignalGatewayService } from '../../../src/features/trading/risk/signal-gateway.service';
+import { KillSwitchService } from '../../../src/features/trading/risk/kill-switch.service';
+import { PositionSizerService } from '../../../src/features/trading/risk/position-sizer.service';
+import { RiskEngineService } from '../../../src/features/trading/risk/risk-engine.service';
+import { RateBucketsService } from '../../../src/features/trading/risk/rate-buckets.service';
+import { CrossingRegistryService } from '../../../src/features/trading/risk/crossing-registry.service';
 import { verifyApproval } from '../../../src/domain/risk/proof';
 import type {
   AgentClientPort,

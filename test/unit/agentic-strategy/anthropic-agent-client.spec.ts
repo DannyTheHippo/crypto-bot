@@ -3,8 +3,8 @@ import {
   AnthropicAgentClient,
   type AnthropicAgentClientConfig,
   type LoggerLike,
-} from '../../../src/modules/agentic-strategy/anthropic-agent-client';
-import { DECISION_TOOL } from '../../../src/modules/agentic-strategy/agent-prompt';
+} from '../../../src/features/trading/agentic/anthropic-agent-client';
+import { DECISION_TOOL } from '../../../src/features/trading/agentic/agent-prompt';
 import {
   AgentProposeError,
   type AgentDecisionInput,

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { RateBucketsService } from '../../../src/modules/risk/rate-buckets.service';
+import { RateBucketsService } from '../../../src/features/trading/risk/rate-buckets.service';
 import type { ClockPort } from '../../../src/ports/clock';
 import { epochMs } from '../../../src/domain/types/ids';
 

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { EquityMonitorService } from '../../../src/modules/execution/equity-monitor.service';
-import { PortfolioStateService } from '../../../src/modules/execution/portfolio-state.service';
-import { FeeLedgerService } from '../../../src/modules/execution/fee-ledger.service';
+import { EquityMonitorService } from '../../../src/features/trading/execution/equity-monitor.service';
+import { PortfolioStateService } from '../../../src/features/trading/execution/portfolio-state.service';
+import { FeeLedgerService } from '../../../src/features/trading/execution/fee-ledger.service';
 import type { KillSwitchPort } from '../../../src/ports/risk';
 import type { KillSwitchState } from '../../../src/domain/risk/kill-switch';
 import type { EquitySample, EquityLimits } from '../../../src/ports/execution';

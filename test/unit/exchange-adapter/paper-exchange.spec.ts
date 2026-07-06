@@ -3,8 +3,8 @@ import Decimal from 'decimal.js';
 import {
   PaperExchangeAdapter,
   type PaperConfig,
-} from '../../../src/modules/exchange-adapter/paper-exchange.adapter';
-import { InMemoryExecOutbox } from '../../../src/modules/execution/in-memory-outbox';
+} from '../../../src/features/trading/exchange/paper-exchange.adapter';
+import { InMemoryExecOutbox } from '../../../src/features/trading/execution/in-memory-outbox';
 import { price, qty } from '../../../src/domain/types/money';
 import {
   venueId,

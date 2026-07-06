@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { SignalSinkService } from '../../../src/modules/execution/signal-sink.service';
+import { SignalSinkService } from '../../../src/features/trading/execution/signal-sink.service';
 import { mintApproval } from '../../../src/domain/risk/proof';
 import type { GatewayOutcome, SignalGatewayPort } from '../../../src/ports/risk';
 import type { SignalJournalPort } from '../../../src/ports/strategy';

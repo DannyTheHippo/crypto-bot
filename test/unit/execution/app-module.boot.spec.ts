@@ -5,19 +5,19 @@ import request from 'supertest';
 import { AppModule } from '../../../src/app.module';
 import { EXECUTION_GATE, PORTFOLIO_VIEW, INSTANCE_LOCK } from '../../../src/ports/execution';
 import { KILL_SWITCH } from '../../../src/ports/risk';
-import { REFLECTION_SERVICE } from '../../../src/modules/agentic-strategy/agentic-strategy.module';
+import { REFLECTION_SERVICE } from '../../../src/features/trading/agentic/agentic-strategy.module';
 import {
   MODE_CONTROL,
   ModeViolationError,
   type ModeControlPort,
 } from '../../../src/ports/mode-control';
 import { EXCHANGE_PORT } from '../../../src/ports/exchange';
-import { PaperExchangeAdapter } from '../../../src/modules/exchange-adapter/paper-exchange.adapter';
-import { LiveExchangeAdapter } from '../../../src/modules/exchange-adapter/live-exchange.adapter';
-import { HaltCoordinatorService } from '../../../src/modules/execution/halt-coordinator.service';
-import { ReconciliationService } from '../../../src/modules/execution/reconciliation.service';
-import { UnknownResolverService } from '../../../src/modules/execution/unknown-resolver.service';
-import { CrashRecoveryService } from '../../../src/modules/execution/crash-recovery.service';
+import { PaperExchangeAdapter } from '../../../src/features/trading/exchange/paper-exchange.adapter';
+import { LiveExchangeAdapter } from '../../../src/features/trading/exchange/live-exchange.adapter';
+import { HaltCoordinatorService } from '../../../src/features/trading/execution/halt-coordinator.service';
+import { ReconciliationService } from '../../../src/features/trading/execution/reconciliation.service';
+import { UnknownResolverService } from '../../../src/features/trading/execution/unknown-resolver.service';
+import { CrashRecoveryService } from '../../../src/features/trading/execution/crash-recovery.service';
 
 // Boots the REAL AppModule (not a mirror) as a full HTTP application: nest build only typechecks —
 // DI resolution errors (token collisions, unresolvable providers, the SigningKeyModule/

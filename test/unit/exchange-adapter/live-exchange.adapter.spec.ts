@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { LiveExchangeAdapter } from '../../../src/modules/exchange-adapter/live-exchange.adapter';
+import { LiveExchangeAdapter } from '../../../src/features/trading/exchange/live-exchange.adapter';
 import type { ExchangePort } from '../../../src/ports/exchange';
 
 // The live adapter is a Phase-7 placeholder; its ONE asserted Phase-8 behaviour is the constructor

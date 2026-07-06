@@ -4,7 +4,7 @@ import {
   compare,
   type ScoringRow,
   type Scorecard,
-} from '../../../src/modules/agentic-strategy/counterfactual-scoring';
+} from '../../../src/features/trading/agentic/counterfactual-scoring';
 import { epochMs } from '../../../src/domain/types/ids';
 
 const T = 1_700_000_000_000;

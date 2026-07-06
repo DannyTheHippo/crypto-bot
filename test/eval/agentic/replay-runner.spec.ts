@@ -9,9 +9,9 @@ import {
   PROMPT_TEMPLATE_VERSION,
   buildSystemPrompt,
   computePromptHash,
-} from '../../../src/modules/agentic-strategy/agent-prompt';
-import { SEED_PLAYBOOK } from '../../../src/modules/agentic-strategy/agentic-strategy.module';
-import { scoreRows } from '../../../src/modules/agentic-strategy/counterfactual-scoring';
+} from '../../../src/features/trading/agentic/agent-prompt';
+import { SEED_PLAYBOOK } from '../../../src/features/trading/agentic/agentic-strategy.module';
+import { scoreRows } from '../../../src/features/trading/agentic/counterfactual-scoring';
 import { EVAL_PROFILE, replay, type ScriptedDecision } from './fixtures';
 
 const MODEL = 'claude-eval-fixture-model';

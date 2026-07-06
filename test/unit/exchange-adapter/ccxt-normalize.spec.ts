@@ -3,13 +3,13 @@ import {
   normalizeOrderState,
   normalizeTrade,
   normalizeBalances,
-} from '../../../src/modules/exchange-adapter/ccxt-normalize';
+} from '../../../src/features/trading/exchange/ccxt-normalize';
 import { clientOrderId, venueId, symbolId, epochMs } from '../../../src/domain/types/ids';
 import type {
   CcxtOrder,
   CcxtTrade,
   CcxtBalances,
-} from '../../../src/modules/exchange-adapter/ccxt-order-client';
+} from '../../../src/features/trading/exchange/ccxt-order-client';
 
 const SYM = symbolId('BTC/USDT');
 const VEN = venueId('binance');

@@ -9,9 +9,9 @@ import {
 
 // The seed shape is injected by the composition root (SEED_PLAYBOOK, exported from
 // agentic-strategy.module.ts) rather than imported directly: persistence and agentic-strategy are
-// sibling `modules/*` zones under eslint-plugin-boundaries (a module may only import its own
-// moduleName — see eslint.config.mjs § boundaries/dependencies), so the value crosses the wall via
-// constructor injection, not a cross-module import.
+// sibling `features/*/*` zones under eslint-plugin-boundaries (a feature may only import its own
+// featureName — see eslint.config.mjs § boundaries/dependencies), so the value crosses the wall via
+// constructor injection, not a cross-feature import.
 export interface PlaybookSeed {
   readonly version: number;
   readonly content: string;

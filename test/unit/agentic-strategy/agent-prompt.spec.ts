@@ -7,7 +7,7 @@ import {
   buildSystemPrompt,
   buildUserMessage,
   computePromptHash,
-} from '../../../src/modules/agentic-strategy/agent-prompt';
+} from '../../../src/features/trading/agentic/agent-prompt';
 import type {
   AgentDecisionInput,
   AgentContext,

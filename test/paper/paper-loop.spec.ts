@@ -4,28 +4,28 @@ import Decimal from 'decimal.js';
 // → Risk → Execution gate → PaperExchangeAdapter → outbox → consumer → portfolio. Exercises
 // book-walk fills, partials, insufficient funds, byte-identical determinism, and both delivery
 // orderings (implicit-ack vs ACK-then-fill).
-import { PortfolioStateService } from '../../src/modules/execution/portfolio-state.service';
-import { FeeLedgerService } from '../../src/modules/execution/fee-ledger.service';
-import { NonceLedgerService } from '../../src/modules/execution/nonce-ledger.service';
-import { OrderBookService } from '../../src/modules/execution/order-book.service';
-import { EquitySamplerService } from '../../src/modules/execution/equity-sampler.service';
-import { FillIngestorService } from '../../src/modules/execution/fill-ingestor.service';
-import { ExecReportConsumerService } from '../../src/modules/execution/exec-report-consumer.service';
-import { ExecutionGateService } from '../../src/modules/execution/execution-gate.service';
+import { PortfolioStateService } from '../../src/features/trading/execution/portfolio-state.service';
+import { FeeLedgerService } from '../../src/features/trading/execution/fee-ledger.service';
+import { NonceLedgerService } from '../../src/features/trading/execution/nonce-ledger.service';
+import { OrderBookService } from '../../src/features/trading/execution/order-book.service';
+import { EquitySamplerService } from '../../src/features/trading/execution/equity-sampler.service';
+import { FillIngestorService } from '../../src/features/trading/execution/fill-ingestor.service';
+import { ExecReportConsumerService } from '../../src/features/trading/execution/exec-report-consumer.service';
+import { ExecutionGateService } from '../../src/features/trading/execution/execution-gate.service';
 import type { ModeControlPort } from '../../src/ports/mode-control';
-import { SignalSinkService } from '../../src/modules/execution/signal-sink.service';
-import { InMemoryExecOutbox } from '../../src/modules/execution/in-memory-outbox';
-import { InMemoryExecutionStore } from '../../src/modules/execution/in-memory-store';
+import { SignalSinkService } from '../../src/features/trading/execution/signal-sink.service';
+import { InMemoryExecOutbox } from '../../src/features/trading/execution/in-memory-outbox';
+import { InMemoryExecutionStore } from '../../src/features/trading/execution/in-memory-store';
 import {
   PaperExchangeAdapter,
   type PaperConfig,
-} from '../../src/modules/exchange-adapter/paper-exchange.adapter';
-import { KillSwitchService } from '../../src/modules/risk/kill-switch.service';
-import { RateBucketsService } from '../../src/modules/risk/rate-buckets.service';
-import { CrossingRegistryService } from '../../src/modules/risk/crossing-registry.service';
-import { PositionSizerService } from '../../src/modules/risk/position-sizer.service';
-import { RiskEngineService } from '../../src/modules/risk/risk-engine.service';
-import { SignalGatewayService } from '../../src/modules/risk/signal-gateway.service';
+} from '../../src/features/trading/exchange/paper-exchange.adapter';
+import { KillSwitchService } from '../../src/features/trading/risk/kill-switch.service';
+import { RateBucketsService } from '../../src/features/trading/risk/rate-buckets.service';
+import { CrossingRegistryService } from '../../src/features/trading/risk/crossing-registry.service';
+import { PositionSizerService } from '../../src/features/trading/risk/position-sizer.service';
+import { RiskEngineService } from '../../src/features/trading/risk/risk-engine.service';
+import { SignalGatewayService } from '../../src/features/trading/risk/signal-gateway.service';
 import type { ExecRunContext } from '../../src/ports/execution';
 import type { SymbolFilters } from '../../src/domain/risk/evaluate';
 import type { PartialRiskLimits } from '../../src/domain/risk/limits';

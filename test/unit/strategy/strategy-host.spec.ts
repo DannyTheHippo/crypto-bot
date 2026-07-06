@@ -1,7 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
 import Decimal from 'decimal.js';
-import { StrategyHost, type AgenticHostOptions } from '../../../src/modules/strategy/strategy-host';
-import { StrategyRegistry } from '../../../src/modules/strategy/strategy-registry';
+import {
+  StrategyHost,
+  type AgenticHostOptions,
+} from '../../../src/features/trading/agentic/strategy-host';
+import { StrategyRegistry } from '../../../src/features/trading/agentic/strategy-registry';
 import type { MarketStreamPort, FeedHealthPort } from '../../../src/ports/market-data';
 import type { SignalSinkPort } from '../../../src/ports/strategy';
 import type {

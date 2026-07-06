@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { InMemoryExecOutbox } from '../../../src/modules/execution/in-memory-outbox';
+import { InMemoryExecOutbox } from '../../../src/features/trading/execution/in-memory-outbox';
 import type { ExecReport } from '../../../src/domain/types/exec-report';
 import {
   encodeClientOrderId,

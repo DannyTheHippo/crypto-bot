@@ -9,7 +9,7 @@ import {
   PROMOTION_LLM_COST_GAUGE,
   PROMOTION_WINDOW_DAYS_GAUGE,
   PROMOTION_READY_GAUGE,
-} from '../../../src/modules/observability/promotion-metrics.service';
+} from '../../../src/features/common/observability/promotion-metrics.service';
 import { PROMOTION_READINESS, type PromotionReadinessPort } from '../../../src/ports/promotion';
 
 const FAKE_EVIDENCE = {

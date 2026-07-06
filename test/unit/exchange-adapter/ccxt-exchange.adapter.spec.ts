@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { InsufficientFunds, OrderNotFound } from 'ccxt';
-import { CcxtExchangeAdapter } from '../../../src/modules/exchange-adapter/ccxt-exchange.adapter';
+import { CcxtExchangeAdapter } from '../../../src/features/trading/exchange/ccxt-exchange.adapter';
 import { AdapterError } from '../../../src/ports/exchange';
 import { clientOrderId, venueId, symbolId, epochMs } from '../../../src/domain/types/ids';
 import type {
@@ -8,7 +8,7 @@ import type {
   CcxtOrder,
   CcxtTrade,
   CcxtBalances,
-} from '../../../src/modules/exchange-adapter/ccxt-order-client';
+} from '../../../src/features/trading/exchange/ccxt-order-client';
 import type { PlaceOrderRequest } from '../../../src/ports/exchange';
 
 const SYM = symbolId('BTC/USDT');

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ArmingController } from '../../../src/modules/mode-control/arming.controller';
+import { ArmingController } from '../../../src/features/trading/mode-control/arming.controller';
 import type { ModeControlPort, ArmRequest } from '../../../src/ports/mode-control';
 
 // The controller is pure delegation (transport binding + auth are deferred runtime glue). These

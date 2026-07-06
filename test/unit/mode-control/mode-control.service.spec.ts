@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { ModeControlService } from '../../../src/modules/mode-control/mode-control.service';
-import { computeArmingHmac } from '../../../src/modules/mode-control/hmac';
-import { KillSwitchService } from '../../../src/modules/risk/kill-switch.service';
+import { ModeControlService } from '../../../src/features/trading/mode-control/mode-control.service';
+import { computeArmingHmac } from '../../../src/features/trading/mode-control/hmac';
+import { KillSwitchService } from '../../../src/features/trading/risk/kill-switch.service';
 import { ARMED_SESSION_TTL_MS, CHALLENGE_TTL_MS } from '../../../src/domain/mode/arming';
 import { ModeViolationError } from '../../../src/ports/mode-control';
 import type {

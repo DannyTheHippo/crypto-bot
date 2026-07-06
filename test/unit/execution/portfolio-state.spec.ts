@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import Decimal from 'decimal.js';
-import { PortfolioStateService } from '../../../src/modules/execution/portfolio-state.service';
-import { FeeLedgerService } from '../../../src/modules/execution/fee-ledger.service';
+import { PortfolioStateService } from '../../../src/features/trading/execution/portfolio-state.service';
+import { FeeLedgerService } from '../../../src/features/trading/execution/fee-ledger.service';
 import { positionKey } from '../../../src/domain/risk/evaluate';
 import { makeIntent, makeFill, SID, V, SYM } from './helpers';
 import { price, qty, feeAmount, setupDecimal } from '../../../src/domain/types/money';

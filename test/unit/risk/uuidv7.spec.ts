@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { uuidv7 } from '../../../src/modules/risk/uuidv7';
+import { uuidv7 } from '../../../src/features/trading/risk/uuidv7';
 import { intentId } from '../../../src/domain/types/ids';
 
 const UUIDV7_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;

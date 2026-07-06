@@ -1,12 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
 import Decimal from 'decimal.js';
 import type { Counter, Histogram } from 'prom-client';
-import { ExecutionGateService } from '../../../src/modules/execution/execution-gate.service';
-import { NonceLedgerService } from '../../../src/modules/execution/nonce-ledger.service';
-import { OrderBookService } from '../../../src/modules/execution/order-book.service';
-import { PortfolioStateService } from '../../../src/modules/execution/portfolio-state.service';
-import { FeeLedgerService } from '../../../src/modules/execution/fee-ledger.service';
-import { InMemoryExecutionStore } from '../../../src/modules/execution/in-memory-store';
+import { ExecutionGateService } from '../../../src/features/trading/execution/execution-gate.service';
+import { NonceLedgerService } from '../../../src/features/trading/execution/nonce-ledger.service';
+import { OrderBookService } from '../../../src/features/trading/execution/order-book.service';
+import { PortfolioStateService } from '../../../src/features/trading/execution/portfolio-state.service';
+import { FeeLedgerService } from '../../../src/features/trading/execution/fee-ledger.service';
+import { InMemoryExecutionStore } from '../../../src/features/trading/execution/in-memory-store';
 import { mintApproval } from '../../../src/domain/risk/proof';
 import {
   AdapterError,

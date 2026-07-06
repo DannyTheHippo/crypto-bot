@@ -3,7 +3,7 @@ import {
   FeedHealthService,
   FeedHealthServiceWithBackfill,
   type OhlcvSource,
-} from '../../../src/modules/market-data/feed-health.service';
+} from '../../../src/features/trading/market-data/feed-health.service';
 import type { ExchangeStreamPort } from '../../../src/ports/exchange-stream';
 import type { ClockPort } from '../../../src/ports/clock';
 import type { VenueConfig } from '../../../src/ports/app-config';

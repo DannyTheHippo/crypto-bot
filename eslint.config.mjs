@@ -63,10 +63,10 @@ export default tseslint.config(
           mode: 'folder',
         },
         {
-          type: 'modules',
-          pattern: 'src/modules/*',
+          type: 'features',
+          pattern: 'src/features/*/*',
           mode: 'folder',
-          capture: ['moduleName'],
+          capture: ['groupName', 'featureName'],
         },
       ],
       'boundaries/ignore': ['**/*.spec.ts', '**/*.test.ts'],
@@ -98,19 +98,20 @@ export default tseslint.config(
               allow: ['database', 'domain', 'ports', 'config'],
             },
             {
-              // 'config' addition: modules inject the TypedConfigService facade (the sanctioned
-              // config read path) — never each other.
-              from: [['modules', { moduleName: '*' }]],
+              // Features (template mirror): may inject the TypedConfigService facade (the
+              // sanctioned config read path) and their OWN feature only — never each other, never
+              // database (the composition-root bridge pattern carries tokens across).
+              from: [['features', { featureName: '*' }]],
               allow: [
                 'domain',
                 'ports',
                 'config',
-                ['modules', { moduleName: '${from.moduleName}' }],
+                ['features', { featureName: '${from.featureName}' }],
               ],
             },
             {
               from: ['app'],
-              allow: ['domain', 'ports', 'config', 'database', 'modules', 'app'],
+              allow: ['domain', 'ports', 'config', 'database', 'features', 'app'],
             },
           ],
         },
@@ -251,11 +252,11 @@ export default tseslint.config(
       ],
     },
   },
-  // Minting boundary: only src/domain/risk/ and src/modules/risk/ may import from
+  // Minting boundary: only src/domain/risk/ and src/features/trading/risk/ may import from
   // domain/risk/minting. All other files must go through the public port.
   {
     files: ['src/**/*', 'test/**/*'],
-    ignores: ['src/domain/risk/**', 'src/modules/risk/**'],
+    ignores: ['src/domain/risk/**', 'src/features/trading/risk/**'],
     rules: {
       'no-restricted-imports': [
         'error',
@@ -264,7 +265,7 @@ export default tseslint.config(
             {
               group: ['**/domain/risk/minting', '**/domain/risk/minting/**'],
               message:
-                'Import domain/risk/minting only from src/domain/risk/ or src/modules/risk/.',
+                'Import domain/risk/minting only from src/domain/risk/ or src/features/trading/risk/.',
             },
           ],
         },

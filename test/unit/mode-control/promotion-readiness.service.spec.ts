@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { PromotionReadinessService } from '../../../src/modules/mode-control/promotion-readiness.service';
+import { PromotionReadinessService } from '../../../src/features/trading/mode-control/promotion-readiness.service';
 import type {
   PromotionFillRow,
   PromotionReadinessConfig,

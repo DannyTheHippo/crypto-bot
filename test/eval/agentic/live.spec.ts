@@ -3,12 +3,12 @@
 // spends a real token by default. This is the only file in test/eval/agentic that can touch the
 // network; every other suite here is offline (scripted fetchFn or DB-only).
 import { describe, it, expect } from 'vitest';
-import { AnthropicAgentClient } from '../../../src/modules/agentic-strategy/anthropic-agent-client';
-import { SEED_PLAYBOOK } from '../../../src/modules/agentic-strategy/agentic-strategy.module';
+import { AnthropicAgentClient } from '../../../src/features/trading/agentic/anthropic-agent-client';
+import { SEED_PLAYBOOK } from '../../../src/features/trading/agentic/agentic-strategy.module';
 import {
   scoreRows,
   type ScoringRow,
-} from '../../../src/modules/agentic-strategy/counterfactual-scoring';
+} from '../../../src/features/trading/agentic/counterfactual-scoring';
 import { evalCandle, evalInput, EVAL_PROFILE } from './fixtures';
 
 const API_KEY = process.env['ANTHROPIC_API_KEY'];

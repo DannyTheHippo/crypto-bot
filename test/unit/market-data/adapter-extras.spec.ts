@@ -6,7 +6,7 @@ import {
   buildCcxtExchange,
   type WatchSource,
   type ChannelStateTracker,
-} from '../../../src/modules/market-data/ccxt-stream.adapter';
+} from '../../../src/features/trading/market-data/ccxt-stream.adapter';
 import type { ClockPort } from '../../../src/ports/clock';
 import type { SubscriptionSpec } from '../../../src/ports/market-data';
 import { venueId, symbolId, epochMs } from '../../../src/domain/types/ids';

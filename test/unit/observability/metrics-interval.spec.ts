@@ -4,9 +4,9 @@ import { register } from 'prom-client';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { AppModule } from '../../../src/app.module';
 import { AppConfigModule } from '../../../src/config/config.module';
-import { EventLoopHealthIndicator } from '../../../src/modules/observability/event-loop-health.indicator';
-import { MetricsService } from '../../../src/modules/observability/metrics.service';
-import { ObservabilityModule } from '../../../src/modules/observability/observability.module';
+import { EventLoopHealthIndicator } from '../../../src/features/common/observability/event-loop-health.indicator';
+import { MetricsService } from '../../../src/features/common/observability/metrics.service';
+import { ObservabilityModule } from '../../../src/features/common/observability/observability.module';
 import { STRATEGY_REGISTRY, type StrategyRegistryPort } from '../../../src/ports/strategy';
 import { strategyId } from '../../../src/domain/types/ids';
 

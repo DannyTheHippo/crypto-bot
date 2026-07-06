@@ -78,7 +78,7 @@ export interface RiskEnginePort {
   evaluateFlatten(intent: OrderIntent, snapshot: PortfolioSnapshot): RiskDecision;
 }
 
-// Journaling sink so modules/risk never imports database (boundary wall).
+// Journaling sink so features/trading/risk never imports database (boundary wall).
 // No-op default in RiskModule; app-level wiring records to the risk_decisions repo.
 export interface RiskJournalPort {
   record(decision: RiskDecision): void;
@@ -98,7 +98,7 @@ export type GatewayOutcome =
   | { readonly status: 'DECIDED'; readonly decision: RiskDecision };
 
 // The fast-fail front door to Risk (kill/TTL/dedupe → sizer → engine). Exposed as a port so
-// the Strategy→Risk→Execution orchestrator can route signals without importing modules/risk.
+// the Strategy→Risk→Execution orchestrator can route signals without importing features/trading/risk.
 export interface SignalGatewayPort {
   accept(signal: Signal, snapshot: PortfolioSnapshot): GatewayOutcome;
 }

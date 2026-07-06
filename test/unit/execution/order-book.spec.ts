@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import Decimal from 'decimal.js';
-import { OrderBookService } from '../../../src/modules/execution/order-book.service';
+import { OrderBookService } from '../../../src/features/trading/execution/order-book.service';
 import { initialOrder } from '../../../src/domain/oms/reducer';
 import { intentId } from '../../../src/domain/types/ids';
 import { makeIntent } from './helpers';

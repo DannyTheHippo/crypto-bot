@@ -8,31 +8,31 @@ import { describe, it, expect } from 'vitest';
 // ever reaches the venue; here intent.mode='testnet' matches the gate's effective mode, so the order
 // is placed; (2) fill matching — ccxt puts the VENUE order id in trade.order, so fills are matched by
 // venueOrderId, not the cb-prefixed clientOrderId.
-import { PortfolioStateService } from '../../src/modules/execution/portfolio-state.service';
-import { FeeLedgerService } from '../../src/modules/execution/fee-ledger.service';
-import { EquitySamplerService } from '../../src/modules/execution/equity-sampler.service';
-import { EquityMonitorService } from '../../src/modules/execution/equity-monitor.service';
-import { InMemoryExecutionStore } from '../../src/modules/execution/in-memory-store';
-import { InMemoryExecOutbox } from '../../src/modules/execution/in-memory-outbox';
-import { OrderBookService } from '../../src/modules/execution/order-book.service';
-import { NonceLedgerService } from '../../src/modules/execution/nonce-ledger.service';
-import { FillIngestorService } from '../../src/modules/execution/fill-ingestor.service';
-import { ExecutionGateService } from '../../src/modules/execution/execution-gate.service';
-import { DemoFillPollerService } from '../../src/modules/execution/demo-fill-poller.service';
-import { SignalSinkService } from '../../src/modules/execution/signal-sink.service';
-import { CcxtExchangeAdapter } from '../../src/modules/exchange-adapter/ccxt-exchange.adapter';
+import { PortfolioStateService } from '../../src/features/trading/execution/portfolio-state.service';
+import { FeeLedgerService } from '../../src/features/trading/execution/fee-ledger.service';
+import { EquitySamplerService } from '../../src/features/trading/execution/equity-sampler.service';
+import { EquityMonitorService } from '../../src/features/trading/execution/equity-monitor.service';
+import { InMemoryExecutionStore } from '../../src/features/trading/execution/in-memory-store';
+import { InMemoryExecOutbox } from '../../src/features/trading/execution/in-memory-outbox';
+import { OrderBookService } from '../../src/features/trading/execution/order-book.service';
+import { NonceLedgerService } from '../../src/features/trading/execution/nonce-ledger.service';
+import { FillIngestorService } from '../../src/features/trading/execution/fill-ingestor.service';
+import { ExecutionGateService } from '../../src/features/trading/execution/execution-gate.service';
+import { DemoFillPollerService } from '../../src/features/trading/execution/demo-fill-poller.service';
+import { SignalSinkService } from '../../src/features/trading/execution/signal-sink.service';
+import { CcxtExchangeAdapter } from '../../src/features/trading/exchange/ccxt-exchange.adapter';
 import type {
   CcxtOrderClient,
   CcxtOrder,
   CcxtTrade,
   CcxtBalances,
-} from '../../src/modules/exchange-adapter/ccxt-order-client';
-import { KillSwitchService } from '../../src/modules/risk/kill-switch.service';
-import { RateBucketsService } from '../../src/modules/risk/rate-buckets.service';
-import { CrossingRegistryService } from '../../src/modules/risk/crossing-registry.service';
-import { PositionSizerService } from '../../src/modules/risk/position-sizer.service';
-import { RiskEngineService } from '../../src/modules/risk/risk-engine.service';
-import { SignalGatewayService } from '../../src/modules/risk/signal-gateway.service';
+} from '../../src/features/trading/exchange/ccxt-order-client';
+import { KillSwitchService } from '../../src/features/trading/risk/kill-switch.service';
+import { RateBucketsService } from '../../src/features/trading/risk/rate-buckets.service';
+import { CrossingRegistryService } from '../../src/features/trading/risk/crossing-registry.service';
+import { PositionSizerService } from '../../src/features/trading/risk/position-sizer.service';
+import { RiskEngineService } from '../../src/features/trading/risk/risk-engine.service';
+import { SignalGatewayService } from '../../src/features/trading/risk/signal-gateway.service';
 import type { ModeControlPort } from '../../src/ports/mode-control';
 import type { ExecRunContext } from '../../src/ports/execution';
 import type { SymbolFilters } from '../../src/domain/risk/evaluate';

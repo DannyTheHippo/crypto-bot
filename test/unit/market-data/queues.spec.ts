@@ -12,7 +12,7 @@ import {
   makeCandleQueue,
   candleQueuePush,
   candleQueueDrain,
-} from '../../../src/modules/market-data/queues';
+} from '../../../src/features/trading/market-data/queues';
 import { price, qty } from '../../../src/domain/types/money';
 import { venueId, symbolId, epochMs } from '../../../src/domain/types/ids';
 import type {

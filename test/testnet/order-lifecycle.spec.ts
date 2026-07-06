@@ -10,9 +10,9 @@
  */
 import { describe, it, expect } from 'vitest';
 import Decimal from 'decimal.js';
-import { buildCcxtExchange } from '../../src/modules/market-data/ccxt-stream.adapter';
-import { RealCcxtOrderClient } from '../../src/modules/exchange-adapter/ccxt-order-client';
-import { CcxtExchangeAdapter } from '../../src/modules/exchange-adapter/ccxt-exchange.adapter';
+import { buildCcxtExchange } from '../../src/features/trading/market-data/ccxt-stream.adapter';
+import { RealCcxtOrderClient } from '../../src/features/trading/exchange/ccxt-order-client';
+import { CcxtExchangeAdapter } from '../../src/features/trading/exchange/ccxt-exchange.adapter';
 import { AdapterError } from '../../src/ports/exchange';
 import {
   intentId,
@@ -21,7 +21,7 @@ import {
   symbolId,
   epochMs,
 } from '../../src/domain/types/ids';
-import { uuidv7 } from '../../src/modules/risk/uuidv7';
+import { uuidv7 } from '../../src/features/trading/risk/uuidv7';
 import { randomBytes } from 'node:crypto';
 
 // Sandbox flavor (design §3.5 / SANDBOX_ENV): prefer Binance Demo Trading (enableDemoTrading —

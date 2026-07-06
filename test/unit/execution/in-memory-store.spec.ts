@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import Decimal from 'decimal.js';
-import { InMemoryExecutionStore } from '../../../src/modules/execution/in-memory-store';
+import { InMemoryExecutionStore } from '../../../src/features/trading/execution/in-memory-store';
 import { initialOrder } from '../../../src/domain/oms/reducer';
 import { makeIntent, makeFill, SID, V, SYM } from './helpers';
 import type { ApprovalProof } from '../../../src/domain/types/risk-decision';

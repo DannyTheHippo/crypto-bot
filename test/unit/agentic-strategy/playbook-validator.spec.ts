@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { validatePlaybook } from '../../../src/modules/agentic-strategy/playbook-validator';
+import { validatePlaybook } from '../../../src/features/trading/agentic/playbook-validator';
 import {
   PLAYBOOK_BLOCK_START,
   PLAYBOOK_BLOCK_END,
-} from '../../../src/modules/agentic-strategy/agent-prompt';
+} from '../../../src/features/trading/agentic/agent-prompt';
 
 function validPlaybook(): string {
   return [

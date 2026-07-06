@@ -5,9 +5,9 @@ import { register } from 'prom-client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { AppModule } from '../../../src/app.module';
 import { AppConfigModule } from '../../../src/config/config.module';
-import { HealthController } from '../../../src/modules/observability/health.controller';
-import { MetricsService } from '../../../src/modules/observability/metrics.service';
-import { ObservabilityModule } from '../../../src/modules/observability/observability.module';
+import { HealthController } from '../../../src/features/common/observability/health.controller';
+import { MetricsService } from '../../../src/features/common/observability/metrics.service';
+import { ObservabilityModule } from '../../../src/features/common/observability/observability.module';
 import { STRATEGY_REGISTRY, type StrategyRegistryPort } from '../../../src/ports/strategy';
 import { strategyId } from '../../../src/domain/types/ids';
 

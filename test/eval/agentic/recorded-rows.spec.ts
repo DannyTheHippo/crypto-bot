@@ -12,7 +12,7 @@ import { AgentDecisionJournalAdapter } from '../../../src/database/repositories/
 import {
   scoreRows,
   type ScoringRow,
-} from '../../../src/modules/agentic-strategy/counterfactual-scoring';
+} from '../../../src/features/trading/agentic/counterfactual-scoring';
 
 const DB_URL = process.env['DATABASE_URL'];
 

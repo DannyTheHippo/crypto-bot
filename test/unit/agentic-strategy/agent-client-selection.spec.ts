@@ -5,11 +5,11 @@ import {
   createAgentLlmBudget,
   agenticEnv,
   SEED_PLAYBOOK,
-} from '../../../src/modules/agentic-strategy/agentic-strategy.module';
-import { StubAgentClient } from '../../../src/modules/agentic-strategy/agent-client.adapter';
-import { AnthropicAgentClient } from '../../../src/modules/agentic-strategy/anthropic-agent-client';
-import { BudgetedAgentClient } from '../../../src/modules/agentic-strategy/agent-budget';
-import { validatePlaybook } from '../../../src/modules/agentic-strategy/playbook-validator';
+} from '../../../src/features/trading/agentic/agentic-strategy.module';
+import { StubAgentClient } from '../../../src/features/trading/agentic/agent-client.adapter';
+import { AnthropicAgentClient } from '../../../src/features/trading/agentic/anthropic-agent-client';
+import { BudgetedAgentClient } from '../../../src/features/trading/agentic/agent-budget';
+import { validatePlaybook } from '../../../src/features/trading/agentic/playbook-validator';
 import type { AppConfig } from '../../../src/ports/app-config';
 
 describe('selectAgentClient', () => {

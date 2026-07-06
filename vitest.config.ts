@@ -16,13 +16,18 @@ export default defineConfig({
         // build below threshold — Risk/OMS-reducer/ModeControl correctness is asserted,
         // not sampled. Per-glob thresholds apply to matched files; global covers the rest.
         'src/domain/risk/**/*.ts': { lines: 100, branches: 100, functions: 100, statements: 100 },
-        'src/modules/risk/**/*.ts': { lines: 100, branches: 100, functions: 100, statements: 100 },
+        'src/features/trading/risk/**/*.ts': {
+          lines: 100,
+          branches: 100,
+          functions: 100,
+          statements: 100,
+        },
         'src/domain/oms/**/*.ts': { lines: 100, branches: 100, functions: 100, statements: 100 },
         'src/domain/mode/**/*.ts': { lines: 100, branches: 100, functions: 100, statements: 100 },
         // Execution is the order-authorization chokepoint (verify-reject matrix + write-ahead
         // ordering). The PaperExchangeAdapter (sim) stays at the global threshold — the
         // deterministic paper suite drives it hard.
-        'src/modules/execution/**/*.ts': {
+        'src/features/trading/execution/**/*.ts': {
           lines: 100,
           branches: 100,
           functions: 100,
@@ -30,7 +35,7 @@ export default defineConfig({
         },
         // ModeControl is the live-arming interlock. *.module.ts is excluded by the global
         // exclude pattern above, so only the service, controller, and hmac helper are gated.
-        'src/modules/mode-control/**/*.ts': {
+        'src/features/trading/mode-control/**/*.ts': {
           lines: 100,
           branches: 100,
           functions: 100,

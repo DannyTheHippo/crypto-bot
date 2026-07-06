@@ -4,7 +4,7 @@ import {
   AgenticStrategy,
   type AgenticStrategyParams,
   type AgenticStrategyDeps,
-} from '../../../src/modules/agentic-strategy/agentic.strategy';
+} from '../../../src/features/trading/agentic/agentic.strategy';
 import {
   AgentProposeError,
   type AgentClientPort,

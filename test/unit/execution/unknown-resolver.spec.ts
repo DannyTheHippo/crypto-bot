@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { UnknownResolverService } from '../../../src/modules/execution/unknown-resolver.service';
-import { OrderBookService } from '../../../src/modules/execution/order-book.service';
-import { PortfolioStateService } from '../../../src/modules/execution/portfolio-state.service';
-import { FeeLedgerService } from '../../../src/modules/execution/fee-ledger.service';
-import { EquitySamplerService } from '../../../src/modules/execution/equity-sampler.service';
-import { FillIngestorService } from '../../../src/modules/execution/fill-ingestor.service';
-import { InMemoryExecutionStore } from '../../../src/modules/execution/in-memory-store';
+import { UnknownResolverService } from '../../../src/features/trading/execution/unknown-resolver.service';
+import { OrderBookService } from '../../../src/features/trading/execution/order-book.service';
+import { PortfolioStateService } from '../../../src/features/trading/execution/portfolio-state.service';
+import { FeeLedgerService } from '../../../src/features/trading/execution/fee-ledger.service';
+import { EquitySamplerService } from '../../../src/features/trading/execution/equity-sampler.service';
+import { FillIngestorService } from '../../../src/features/trading/execution/fill-ingestor.service';
+import { InMemoryExecutionStore } from '../../../src/features/trading/execution/in-memory-store';
 import { initialOrder } from '../../../src/domain/oms/reducer';
 import {
   AdapterError,

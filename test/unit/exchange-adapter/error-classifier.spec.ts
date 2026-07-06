@@ -3,7 +3,7 @@ import * as ccxt from 'ccxt';
 import {
   classifyCcxtError,
   toAdapterError,
-} from '../../../src/modules/exchange-adapter/error-classifier';
+} from '../../../src/features/trading/exchange/error-classifier';
 import { AdapterError, type AdapterErrorClass } from '../../../src/ports/exchange';
 
 // §6.3 classifier is snapshot-tested against the PINNED ccxt error hierarchy (4.5.58). ccxt has

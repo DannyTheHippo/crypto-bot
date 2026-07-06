@@ -44,7 +44,7 @@ export interface LlmTokenTotals {
 }
 
 // What PromotionReadinessService's round-trip walk + LLM-cost math need from the DB — nothing more.
-// Crosses the modules/mode-control ↔ database boundary; the composition root is the only
+// Crosses the features/trading/mode-control ↔ database boundary; the composition root is the only
 // place allowed to bind a concrete (Drizzle-backed) implementation to this port (rule 2's boundary
 // wall — mode-control may not import database directly).
 export interface PromotionStatsPort {

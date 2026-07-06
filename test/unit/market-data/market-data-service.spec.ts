@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { MarketDataService } from '../../../src/modules/market-data/market-data.service';
+import { MarketDataService } from '../../../src/features/trading/market-data/market-data.service';
 import type {
   ExchangeStreamPort,
   RawVenueEvent,

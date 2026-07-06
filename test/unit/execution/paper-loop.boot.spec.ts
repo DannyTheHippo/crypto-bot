@@ -1,15 +1,15 @@
 import { describe, it, expect } from 'vitest';
 import { Global, Module } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
-import { RiskModule } from '../../../src/modules/risk/risk.module';
-import { KillSwitchService } from '../../../src/modules/risk/kill-switch.service';
-import { ExecutionModule } from '../../../src/modules/execution/execution.module';
-import { SignalSinkService } from '../../../src/modules/execution/signal-sink.service';
+import { RiskModule } from '../../../src/features/trading/risk/risk.module';
+import { KillSwitchService } from '../../../src/features/trading/risk/kill-switch.service';
+import { ExecutionModule } from '../../../src/features/trading/execution/execution.module';
+import { SignalSinkService } from '../../../src/features/trading/execution/signal-sink.service';
 import {
   PaperExchangeAdapter,
   PAPER_CONFIG,
   type PaperConfig,
-} from '../../../src/modules/exchange-adapter/paper-exchange.adapter';
+} from '../../../src/features/trading/exchange/paper-exchange.adapter';
 import { CLOCK, type ClockPort } from '../../../src/ports/clock';
 import { FEED_HEALTH, type FeedHealthPort } from '../../../src/ports/market-data';
 import { RISK_SIGNING_KEY, KILL_SWITCH } from '../../../src/ports/risk';

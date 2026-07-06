@@ -138,6 +138,23 @@ describe('validate()', () => {
     expect(withDb.configHash).toBe(withoutDb.configHash);
   });
 
+  describe('empty-string env values mean UNSET (dotenv/compose convention)', () => {
+    // Regression: AGENTIC_PLAYBOOK_PIN='' crashed the deployed boot on 2026-07-06 — zod v4 coerces
+    // '' to NaN, and the decimal-string knobs would fail their regex the same way.
+    it('AGENTIC_PLAYBOOK_PIN="" resolves to unpinned, not a NaN crash', () => {
+      const cfg = validate({ PORT: '3100', AGENTIC_PLAYBOOK_PIN: '' });
+      expect(cfg.agentic.playbookPin).toBeUndefined();
+    });
+
+    it('BASE_NOTIONAL="" falls back to the default instead of failing the decimal regex', () => {
+      expect(validate({ PORT: '3100', BASE_NOTIONAL: '' }).risk.baseNotional).toBe('100');
+    });
+
+    it('DATABASE_URL="" means no database (min(1) never sees it)', () => {
+      expect(validate({ PORT: '3100', DATABASE_URL: '' }).db.url).toBeUndefined();
+    });
+  });
+
   it('N3 — CI="false" (string) forces paper because Boolean("false") is truthy', () => {
     // Boolean(env['CI']) where env['CI'] === 'false' → Boolean('false') === true → test-env override
     const cfg = validate({ PORT: '3100', CI: 'false', TRADING_MODE: 'live' });

@@ -170,7 +170,18 @@ const envSchema = z.object({
   ACTIVE_STRATEGY: z.enum(['agentic']).default('agentic'),
 });
 
-export function validate(env: Record<string, string | undefined>): AppConfig {
+// dotenv/compose convention: `VAR=` (empty assignment) means UNSET, not "the empty string". Without
+// this strip an emptied optional knob crashes the boot — zod v4 coerces '' to NaN (AGENTIC_PLAYBOOK_PIN=
+// took the deployed bot down on 2026-07-06) and the decimal-string knobs would fail their regex the
+// same way. Stripping before parse makes '' fall through to each field's default/optional handling.
+function withoutEmptyValues(
+  env: Record<string, string | undefined>,
+): Record<string, string | undefined> {
+  return Object.fromEntries(Object.entries(env).filter(([, v]) => v !== ''));
+}
+
+export function validate(rawEnv: Record<string, string | undefined>): AppConfig {
+  const env = withoutEmptyValues(rawEnv);
   const isTestOrCi = isTestOrCiEnv(env);
   const rawMode = env['TRADING_MODE'] ?? '';
 

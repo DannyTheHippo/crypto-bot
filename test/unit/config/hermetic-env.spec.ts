@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Test } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import * as fs from 'fs';
-import { AppConfigModule } from '../../../src/modules/config/config.module';
+import { AppConfigModule } from '../../../src/config/config.module';
 import type { AppConfig } from '../../../src/ports/app-config';
 
 // Regression guard for the P0-baseline leak: a developer's local ./.env carries deployed-stack

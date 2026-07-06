@@ -1,5 +1,4 @@
 import { Logger, Module } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import Decimal from 'decimal.js';
 import {
   AGENT_CLIENT,
@@ -12,7 +11,7 @@ import {
   type LlmUsageSink,
   type PlaybookProvider,
 } from '../../ports/agentic-strategy';
-import type { AppConfig } from '../../ports/app-config';
+import { TypedConfigService } from '../../config/environment/typed-config.service';
 import { KILL_SWITCH, type KillSwitchPort } from '../../ports/risk';
 import { STRATEGY_REGISTRY, type StrategyRegistryPort } from '../../ports/strategy';
 import { StubAgentClient } from './agent-client.adapter';
@@ -67,16 +66,14 @@ export const REFLECTION_SERVICE = Symbol('REFLECTION_SERVICE');
 export const REFLECTION_METRICS_RECORDER_OVERRIDE = Symbol('REFLECTION_METRICS_RECORDER_OVERRIDE');
 
 // Builds the env-shaped record selectAgentClient/createAgentLlmBudget read. Sources the validated
-// AGENTIC_* fields (G1c) off ConfigService rather than raw process.env when available, so the real
-// wiring path and app-config.schema.ts can never drift; ANTHROPIC_API_KEY/SIGNAL_TTL_MS/NODE_ENV/CI
-// stay off AppConfig (secret / not-yet-validated / test-seam) and are read straight off process.env
-// either way. Falls back to plain process.env when ConfigService is absent (module-isolation tests),
-// keeping selectAgentClient's own DEFAULT_* constants as the backstop.
-export function agenticEnv(
-  config?: ConfigService<AppConfig, true>,
-): Record<string, string | undefined> {
+// AGENTIC_* fields (G1c) off TypedConfigService rather than raw process.env when available, so the
+// real wiring path and environment.config.ts can never drift; ANTHROPIC_API_KEY/SIGNAL_TTL_MS/
+// NODE_ENV/CI stay off AppConfig (secret / not-yet-validated / test-seam) and are read straight off
+// process.env either way. Falls back to plain process.env when TypedConfigService is absent
+// (module-isolation tests), keeping selectAgentClient's own DEFAULT_* constants as the backstop.
+export function agenticEnv(config?: TypedConfigService): Record<string, string | undefined> {
   if (!config) return process.env;
-  const agentic = config.get('agentic', { infer: true });
+  const agentic = config.agentic;
   return {
     ...process.env,
     AGENTIC_MODEL: agentic.model,
@@ -178,9 +175,8 @@ export function selectAgentClient(
   providers: [
     {
       provide: AGENT_LLM_BUDGET,
-      useFactory: (config?: ConfigService<AppConfig, true>) =>
-        createAgentLlmBudget(agenticEnv(config)),
-      inject: [{ token: ConfigService, optional: true }],
+      useFactory: (config?: TypedConfigService) => createAgentLlmBudget(agenticEnv(config)),
+      inject: [{ token: TypedConfigService, optional: true }],
     },
     {
       provide: PLAYBOOK_PROVIDER,
@@ -193,13 +189,13 @@ export function selectAgentClient(
       useFactory: (
         budget: DailyLlmBudget,
         playbookProvider: PlaybookProvider,
-        config: ConfigService<AppConfig, true> | undefined,
+        config: TypedConfigService | undefined,
         profile: AgentTradingProfile | undefined,
       ) => selectAgentClient(agenticEnv(config), budget, playbookProvider, profile),
       inject: [
         AGENT_LLM_BUDGET,
         PLAYBOOK_PROVIDER,
-        { token: ConfigService, optional: true },
+        { token: TypedConfigService, optional: true },
         { token: AGENT_TRADING_PROFILE_OVERRIDE, optional: true },
       ],
     },
@@ -214,7 +210,7 @@ export function selectAgentClient(
       provide: REFLECTION_SERVICE,
       useFactory: (
         budget: DailyLlmBudget,
-        config: ConfigService<AppConfig, true> | undefined,
+        config: TypedConfigService | undefined,
         playbookStore: ReflectionPlaybookStore | undefined,
         journal: AgentDecisionJournalPort | undefined,
         recorder: ReflectionMetricsRecorder | undefined,
@@ -234,7 +230,7 @@ export function selectAgentClient(
         }),
       inject: [
         AGENT_LLM_BUDGET,
-        { token: ConfigService, optional: true },
+        { token: TypedConfigService, optional: true },
         { token: PLAYBOOK_PROVIDER_OVERRIDE, optional: true },
         { token: AGENT_DECISION_JOURNAL, optional: true },
         { token: REFLECTION_METRICS_RECORDER_OVERRIDE, optional: true },

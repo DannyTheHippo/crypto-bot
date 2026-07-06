@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { validate } from '../../../src/modules/config/app-config.schema';
+import { validate } from '../../../src/config/environment/environment.config';
 
 describe('validate()', () => {
   it('defaults to paper when TRADING_MODE is absent', () => {

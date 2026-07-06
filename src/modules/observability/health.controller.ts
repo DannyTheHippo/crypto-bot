@@ -1,8 +1,7 @@
 import { Controller, Get, Inject, Optional } from '@nestjs/common';
 import { HealthCheck, HealthCheckService, HealthIndicatorResult } from '@nestjs/terminus';
-import { ConfigService } from '@nestjs/config';
+import { TypedConfigService } from '../../config/environment/typed-config.service';
 import { EventLoopHealthIndicator } from './event-loop-health.indicator';
-import type { AppConfig } from '../../ports/app-config';
 import { DB_HEALTH, type DbHealthPort } from '../../ports/db-health';
 import {
   STRATEGY_REGISTRY,
@@ -20,7 +19,7 @@ interface StrategyDetail {
 export class HealthController {
   constructor(
     private readonly health: HealthCheckService,
-    private readonly configService: ConfigService<AppConfig, true>,
+    private readonly configService: TypedConfigService,
     private readonly eventLoopIndicator: EventLoopHealthIndicator,
     @Optional()
     @Inject(DB_HEALTH)
@@ -41,7 +40,7 @@ export class HealthController {
   @Get('ready')
   @HealthCheck()
   ready() {
-    const mode = this.configService.get('mode', { infer: true });
+    const mode = this.configService.mode;
     const configDetail: {
       status: 'up';
       effectiveMode: string;

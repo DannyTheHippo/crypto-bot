@@ -7,8 +7,7 @@ import {
 } from '@willsoto/nestjs-prometheus';
 import { Gauge } from 'prom-client';
 import { performance } from 'perf_hooks';
-import { ConfigService } from '@nestjs/config';
-import type { AppConfig } from '../../ports/app-config';
+import { TypedConfigService } from '../../config/environment/typed-config.service';
 import { KILL_SWITCH, type KillSwitchPort } from '../../ports/risk';
 import { PORTFOLIO_VIEW, type PortfolioViewPort } from '../../ports/execution';
 import {
@@ -185,7 +184,7 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
     @InjectMetric('open_orders') private readonly openOrdersGauge: Gauge<string>,
     @InjectMetric('in_flight_intents') private readonly inFlightGauge: Gauge<string>,
     @InjectMetric('strategy_lifecycle') private readonly strategyLifecycleGauge: Gauge<string>,
-    private readonly configService: ConfigService<AppConfig, true>,
+    private readonly configService: TypedConfigService,
     private readonly eventLoopIndicator: EventLoopHealthIndicator,
     // @Optional so observability can boot standalone (no kill switch) — the gauge is simply not set.
     @Optional() @Inject(KILL_SWITCH) private readonly killSwitch?: KillSwitchPort,
@@ -198,8 +197,8 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   onModuleInit() {
-    const mode = this.configService.get('mode', { infer: true });
-    const app = this.configService.get('app', { infer: true });
+    const mode = this.configService.mode;
+    const app = this.configService.app;
 
     this.modeInfoGauge
       .labels({ requested: mode.requestedMode || 'paper', effective: mode.configMode })

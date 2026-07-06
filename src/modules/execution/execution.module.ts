@@ -1,8 +1,7 @@
 import { Module, type Provider } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { CLOCK, SystemClock } from '../../ports/clock';
 import { FEED_HEALTH, REAL_FEED_HEALTH, type FeedHealthPort } from '../../ports/market-data';
-import type { AppConfig } from '../../ports/app-config';
+import { TypedConfigService } from '../../config/environment/typed-config.service';
 import {
   EXECUTION_GATE,
   PORTFOLIO_VIEW,
@@ -78,19 +77,19 @@ const noopFeedHealth: FeedHealthPort = {
   fetchCandles: () => Promise.resolve([]),
 };
 const REAL_FEED_HEALTH_OPTIONAL = { token: REAL_FEED_HEALTH, optional: true } as const;
-const CONFIG_OPTIONAL = { token: ConfigService, optional: true } as const;
+const CONFIG_OPTIONAL = { token: TypedConfigService, optional: true } as const;
 
 // EXEC_RUN_CONTEXT.mode must track the boot config authority (paper/testnet/live) — it stamps the
-// run and must agree with the mode the sizer brands intents with. ConfigService is @Optional so the
-// module-isolation boot specs (no AppConfigModule) keep the paper defaults.
-function runContextFrom(config: ConfigService<AppConfig, true> | undefined): ExecRunContext {
+// run and must agree with the mode the sizer brands intents with. TypedConfigService is @Optional so
+// the module-isolation boot specs (no AppConfigModule) keep the paper defaults.
+function runContextFrom(config: TypedConfigService | undefined): ExecRunContext {
   if (config === undefined) return { mode: 'paper', runId: 'paper-local', bootId: 'boot-local' };
-  const bootId = config.get('app', { infer: true }).bootId;
-  return { mode: config.get('mode', { infer: true }).configMode, runId: `run-${bootId}`, bootId };
+  const bootId = config.app.bootId;
+  return { mode: config.mode.configMode, runId: `run-${bootId}`, bootId };
 }
 // startingCash is env-tunable (STARTING_CASH) so a demo run can seed the in-memory quote balance to
 // the demo account's actual USDT — keeping the local model close to venue truth.
-function portfolioConfigFrom(config: ConfigService<AppConfig, true> | undefined): PortfolioConfig {
+function portfolioConfigFrom(config: TypedConfigService | undefined): PortfolioConfig {
   void config;
   return { quoteAsset: 'USDT', startingCash: process.env['STARTING_CASH'] ?? '100000' };
 }
@@ -114,13 +113,12 @@ const providers: Provider[] = [
   },
   {
     provide: EXEC_RUN_CONTEXT,
-    useFactory: (config?: ConfigService<AppConfig, true>): ExecRunContext => runContextFrom(config),
+    useFactory: (config?: TypedConfigService): ExecRunContext => runContextFrom(config),
     inject: [CONFIG_OPTIONAL],
   },
   {
     provide: PORTFOLIO_CONFIG,
-    useFactory: (config?: ConfigService<AppConfig, true>): PortfolioConfig =>
-      portfolioConfigFrom(config),
+    useFactory: (config?: TypedConfigService): PortfolioConfig => portfolioConfigFrom(config),
     inject: [CONFIG_OPTIONAL],
   },
   { provide: EXEC_FILTERS, useValue: DEFAULT_FILTERS },

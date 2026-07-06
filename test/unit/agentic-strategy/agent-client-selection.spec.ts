@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { ConfigService } from '@nestjs/config';
+import type { TypedConfigService } from '../../../src/config/environment/typed-config.service';
 import {
   selectAgentClient,
   createAgentLlmBudget,
@@ -102,7 +102,7 @@ describe('SEED_PLAYBOOK', () => {
 });
 
 describe('agenticEnv', () => {
-  it('falls back to plain process.env when no ConfigService is supplied (module-isolation contexts)', () => {
+  it('falls back to plain process.env when no TypedConfigService is supplied (module-isolation contexts)', () => {
     expect(agenticEnv(undefined)).toBe(process.env);
   });
 
@@ -125,7 +125,7 @@ describe('agenticEnv', () => {
       tokenPriceOutputPerMtok: '15',
       promotionDustNotional: '5',
     };
-    const config = { get: () => agentic } as unknown as ConfigService<AppConfig, true>;
+    const config = { agentic } as unknown as TypedConfigService;
 
     expect(agenticEnv(config)).toMatchObject({
       AGENTIC_MODEL: 'claude-config-model',

@@ -3,7 +3,7 @@ import { Test, type TestingModule } from '@nestjs/testing';
 import { register } from 'prom-client';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { AppModule } from '../../../src/app.module';
-import { AppConfigModule } from '../../../src/modules/config/config.module';
+import { AppConfigModule } from '../../../src/config/config.module';
 import { EventLoopHealthIndicator } from '../../../src/modules/observability/event-loop-health.indicator';
 import { MetricsService } from '../../../src/modules/observability/metrics.service';
 import { ObservabilityModule } from '../../../src/modules/observability/observability.module';

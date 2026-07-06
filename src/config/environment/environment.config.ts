@@ -179,18 +179,19 @@ const envSchema = z.object({
 // can never be a legitimate knob here (no secret or symbol starts with '#'), so it is treated as
 // the empty assignment it was meant to be. Stripping before parse makes both shapes fall through to
 // each field's default/optional handling.
-function withoutEmptyValues(
-  env: Record<string, string | undefined>,
-): Record<string, string | undefined> {
-  return Object.fromEntries(
-    Object.entries(env).filter(
-      ([, v]) => v !== '' && !(v !== undefined && v.trimStart().startsWith('#')),
-    ),
-  );
+//
+// Mutates IN PLACE, deliberately: validate() has a load-bearing mutate-the-caller contract — the
+// test/ci live-credential strip below deletes secret keys from the SAME record the caller handed in
+// (config-override.spec.ts asserts this). A copy here would silently break that strip: the secrets
+// would be deleted from the copy while surviving in the caller's env.
+function stripEmptyValues(env: Record<string, string | undefined>): void {
+  for (const [k, v] of Object.entries(env)) {
+    if (v === '' || (v !== undefined && v.trimStart().startsWith('#'))) delete env[k];
+  }
 }
 
-export function validate(rawEnv: Record<string, string | undefined>): AppConfig {
-  const env = withoutEmptyValues(rawEnv);
+export function validate(env: Record<string, string | undefined>): AppConfig {
+  stripEmptyValues(env);
   const isTestOrCi = isTestOrCiEnv(env);
   const rawMode = env['TRADING_MODE'] ?? '';
 

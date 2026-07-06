@@ -8,7 +8,7 @@
  * Never skip or delete these tests to make a suite pass.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { validate } from '../../src/modules/config/app-config.schema';
+import { validate } from '../../src/config/environment/environment.config';
 
 const LIVE_ENV_BASE = {
   TRADING_MODE: 'live',
@@ -143,7 +143,7 @@ describe('Config real-wiring: skipProcessEnv + validate() strips live secrets fr
     register.clear();
 
     // Dynamic import ensures NestConfigModule.forRoot() evaluates after env is set
-    const { AppConfigModule } = await import('../../src/modules/config/config.module');
+    const { AppConfigModule } = await import('../../src/config/config.module');
     const { Test } = await import('@nestjs/testing');
     const { ConfigService } = await import('@nestjs/config');
 

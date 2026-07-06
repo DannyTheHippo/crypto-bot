@@ -1,8 +1,7 @@
 import { Module } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { randomBytes } from 'node:crypto';
 import { CLOCK, SystemClock } from '../../ports/clock';
-import type { AppConfig } from '../../ports/app-config';
+import { TypedConfigService } from '../../config/environment/typed-config.service';
 import type { TradingMode } from '../../domain/types/mode';
 // RISK_SIGNING_KEY is NOT self-provided here: §4.2 requires a single process-lifetime key
 // shared by exactly two consumers (this RiskEngine + Execution's verify). The composition root
@@ -55,30 +54,30 @@ const noopJournal: RiskJournalPort = { record: () => undefined };
 
 // §3 mode threading: intent.mode (sizer) and the engine's effectiveMode (G1) must equal the boot
 // config authority so the ExecutionGate's per-submission `intent.mode === resolveMode().effective`
-// check passes (testnet config + 'paper'-stamped intents = MODE_MISMATCH on every order). ConfigService
-// is @Optional: the module-isolation boot specs import RiskModule without AppConfigModule, so they
-// fall back to 'paper' (their stub ModeControl also resolves paper). baseNotional is config-tunable so
-// a demo run can size below the demo account's quote balance.
-function configMode(config: ConfigService<AppConfig, true> | undefined): TradingMode {
-  return config?.get('mode', { infer: true }).configMode ?? 'paper';
+// check passes (testnet config + 'paper'-stamped intents = MODE_MISMATCH on every order).
+// TypedConfigService is @Optional: the module-isolation boot specs import RiskModule without
+// AppConfigModule, so they fall back to 'paper' (their stub ModeControl also resolves paper).
+// baseNotional is config-tunable so a demo run can size below the demo account's quote balance.
+function configMode(config: TypedConfigService | undefined): TradingMode {
+  return config?.mode.configMode ?? 'paper';
 }
 // Falls back to the schema's own default ('100') so module-isolation unit boots (RiskModule imported
 // without AppConfigModule) still size orders the same as a real, unconfigured deployment.
-function baseNotionalFor(config: ConfigService<AppConfig, true> | undefined): string {
-  return config?.get('risk', { infer: true }).baseNotional ?? '100';
+function baseNotionalFor(config: TypedConfigService | undefined): string {
+  return config?.risk.baseNotional ?? '100';
 }
 // §exit-liquidity: falls back to the schema's own default (25) so module-isolation unit boots
 // (RiskModule imported without AppConfigModule) still size a marketable exit correctly.
-function exitCrossBufferBpsFor(config: ConfigService<AppConfig, true> | undefined): number {
-  return config?.get('risk', { infer: true }).exitCrossBufferBps ?? 25;
+function exitCrossBufferBpsFor(config: TypedConfigService | undefined): number {
+  return config?.risk.exitCrossBufferBps ?? 25;
 }
 // Overlays the RISK_* env knobs onto DEFAULT_LIMITS (single source of truth for both RISK_LIMITS —
 // consumed by RiskEngineService/ModeControl's LIMITS_COMPLETE gate — and RISK_ENGINE_DEPS). Absent
-// ConfigService (module-isolation boots) falls straight through to DEFAULT_LIMITS, unchanged from
-// before this knob existed. maxDriftBps has no env knob in this pass — always DEFAULT_LIMITS'.
-function limitsFor(config: ConfigService<AppConfig, true> | undefined): PartialRiskLimits {
+// TypedConfigService (module-isolation boots) falls straight through to DEFAULT_LIMITS, unchanged
+// from before this knob existed. maxDriftBps has no env knob in this pass — always DEFAULT_LIMITS'.
+function limitsFor(config: TypedConfigService | undefined): PartialRiskLimits {
   if (!config) return DEFAULT_LIMITS;
-  const risk = config.get('risk', { infer: true });
+  const risk = config.risk;
   return {
     ...DEFAULT_LIMITS,
     maxOrderNotional: risk.maxOrderNotional,
@@ -92,7 +91,7 @@ function limitsFor(config: ConfigService<AppConfig, true> | undefined): PartialR
   };
 }
 const REAL_FEED_HEALTH_OPTIONAL = { token: REAL_FEED_HEALTH, optional: true } as const;
-const CONFIG_OPTIONAL = { token: ConfigService, optional: true } as const;
+const CONFIG_OPTIONAL = { token: TypedConfigService, optional: true } as const;
 
 @Module({
   providers: [
@@ -106,7 +105,7 @@ const CONFIG_OPTIONAL = { token: ConfigService, optional: true } as const;
     },
     {
       provide: RISK_LIMITS,
-      useFactory: (config?: ConfigService<AppConfig, true>): PartialRiskLimits => limitsFor(config),
+      useFactory: (config?: TypedConfigService): PartialRiskLimits => limitsFor(config),
       inject: [CONFIG_OPTIONAL],
     },
     {
@@ -118,7 +117,7 @@ const CONFIG_OPTIONAL = { token: ConfigService, optional: true } as const;
     },
     {
       provide: SIZER_DEPS,
-      useFactory: (config?: ConfigService<AppConfig, true>): SizerDeps => ({
+      useFactory: (config?: TypedConfigService): SizerDeps => ({
         baseNotional: baseNotionalFor(config),
         mode: configMode(config),
         filters: DEFAULT_FILTERS,
@@ -131,7 +130,7 @@ const CONFIG_OPTIONAL = { token: ConfigService, optional: true } as const;
       // limits mirrors the RISK_LIMITS provider above (same limitsFor(config) overlay) — the engine
       // must enforce the SAME limits ModeControl's LIMITS_COMPLETE gate reads off RISK_LIMITS.
       provide: RISK_ENGINE_DEPS,
-      useFactory: (key: Buffer, config?: ConfigService<AppConfig, true>): RiskEngineDeps => ({
+      useFactory: (key: Buffer, config?: TypedConfigService): RiskEngineDeps => ({
         key,
         limits: limitsFor(config),
         limitsVersion: 'v1',

@@ -1,7 +1,6 @@
 import { Global, Module, type Provider } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { CLOCK, SystemClock } from '../../ports/clock';
-import type { AppConfig } from '../../ports/app-config';
+import { TypedConfigService } from '../../config/environment/typed-config.service';
 import {
   MODE_CONTROL,
   MODE_AUDIT,
@@ -38,16 +37,13 @@ const defaultPreconditions: ArmPreconditionsPort = { check: () => ({ ok: true })
 // stays true here (full wiring to the risk-limits validation is a follow-up).
 const configProvider: Provider = {
   provide: MODE_CONTROL_CONFIG,
-  useFactory: (
-    config: ConfigService<AppConfig, true>,
-    limitsComplete: boolean,
-  ): ModeControlConfig => ({
-    requested: config.get('mode', { infer: true }).configMode,
-    bootId: config.get('app', { infer: true }).bootId,
-    armingSecret: config.get('armingSecret', { infer: true }),
+  useFactory: (config: TypedConfigService, limitsComplete: boolean): ModeControlConfig => ({
+    requested: config.mode.configMode,
+    bootId: config.app.bootId,
+    armingSecret: config.liveSecrets.armingSecret,
     limitsComplete,
   }),
-  inject: [ConfigService, LIMITS_COMPLETE],
+  inject: [TypedConfigService, LIMITS_COMPLETE],
 };
 
 // Same derived-value-object pattern as MODE_CONTROL_CONFIG above: PromotionReadinessService takes a
@@ -55,15 +51,15 @@ const configProvider: Provider = {
 // strings from the agentic schema block.
 const readinessConfigProvider: Provider = {
   provide: PROMOTION_READINESS_CONFIG,
-  useFactory: (config: ConfigService<AppConfig, true>): PromotionReadinessConfig => {
-    const agentic = config.get('agentic', { infer: true });
+  useFactory: (config: TypedConfigService): PromotionReadinessConfig => {
+    const agentic = config.agentic;
     return {
       tokenPriceInputPerMtok: agentic.tokenPriceInputPerMtok,
       tokenPriceOutputPerMtok: agentic.tokenPriceOutputPerMtok,
       dustNotional: agentic.promotionDustNotional,
     };
   },
-  inject: [ConfigService],
+  inject: [TypedConfigService],
 };
 
 const providers: Provider[] = [

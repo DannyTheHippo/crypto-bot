@@ -9,7 +9,8 @@ import {
 } from '@nestjs/common';
 import { randomBytes, createHash } from 'node:crypto';
 import type { Exchange } from 'ccxt';
-import { AppConfigModule } from './modules/config/config.module';
+import { AppConfigModule } from './config/config.module';
+import { TypedConfigService } from './config/environment/typed-config.service';
 import { ObservabilityModule } from './modules/observability/observability.module';
 import { PersistenceModule } from './modules/persistence/persistence.module';
 import { DbHealthIndicator } from './modules/persistence/db-health.indicator';
@@ -136,8 +137,6 @@ import {
   type KeyProbePort,
   type ModeAuditPort,
 } from './ports/mode-control';
-import { ConfigService } from '@nestjs/config';
-import type { AppConfig } from './ports/app-config';
 import { CLOCK, SystemClock, type ClockPort } from './ports/clock';
 import {
   RISK_SIGNING_KEY,
@@ -232,9 +231,9 @@ class StrategyRegistryBridgeModule {}
 // regardless of DATABASE_URL). The composition root is the only place allowed to wire these
 // concretions to the execution/mode-control ports. The run context stamped on persisted rows matches
 // ExecutionModule's EXEC_RUN_CONTEXT (same bootId/runId/mode derivation).
-function dbRunContext(config: ConfigService<AppConfig, true>): ExecRunContext {
-  const bootId = config.get('app', { infer: true }).bootId;
-  return { mode: config.get('mode', { infer: true }).configMode, runId: `run-${bootId}`, bootId };
+function dbRunContext(config: TypedConfigService): ExecRunContext {
+  const bootId = config.app.bootId;
+  return { mode: config.mode.configMode, runId: `run-${bootId}`, bootId };
 }
 @Global()
 @Module({
@@ -244,21 +243,21 @@ function dbRunContext(config: ConfigService<AppConfig, true>): ExecRunContext {
       provide: EXEC_OUTBOX_OVERRIDE,
       useFactory: (
         db: NodePgDatabase<typeof schema> | null,
-        config: ConfigService<AppConfig, true>,
+        config: TypedConfigService,
       ): ExecOutboxPort | undefined =>
         isTestEnv() || db === null ? undefined : new DrizzleExecOutbox(db, dbRunContext(config)),
-      inject: [DRIZZLE_DB, ConfigService],
+      inject: [DRIZZLE_DB, TypedConfigService],
     },
     {
       provide: EXECUTION_STORE_OVERRIDE,
       useFactory: (
         db: NodePgDatabase<typeof schema> | null,
-        config: ConfigService<AppConfig, true>,
+        config: TypedConfigService,
       ): ExecutionStorePort | undefined =>
         isTestEnv() || db === null
           ? undefined
           : new DrizzleExecutionStore(db, dbRunContext(config)),
-      inject: [DRIZZLE_DB, ConfigService],
+      inject: [DRIZZLE_DB, TypedConfigService],
     },
     {
       provide: INSTANCE_LOCK_OVERRIDE,
@@ -270,24 +269,22 @@ function dbRunContext(config: ConfigService<AppConfig, true>): ExecRunContext {
       provide: MODE_AUDIT_OVERRIDE,
       useFactory: (
         db: NodePgDatabase<typeof schema> | null,
-        config: ConfigService<AppConfig, true>,
+        config: TypedConfigService,
       ): ModeAuditPort | undefined =>
-        isTestEnv() || db === null
-          ? undefined
-          : new DrizzleModeAudit(db, config.get('app', { infer: true }).bootId),
-      inject: [DRIZZLE_DB, ConfigService],
+        isTestEnv() || db === null ? undefined : new DrizzleModeAudit(db, config.app.bootId),
+      inject: [DRIZZLE_DB, TypedConfigService],
     },
     {
       // DB-backed RISK_JOURNAL: persists every risk verdict to risk_decisions for offline analysis.
       provide: RISK_JOURNAL_OVERRIDE,
       useFactory: (
         db: NodePgDatabase<typeof schema> | null,
-        config: ConfigService<AppConfig, true>,
+        config: TypedConfigService,
       ): RiskJournalPort | undefined =>
         isTestEnv() || db === null
           ? undefined
           : new RiskDecisionJournalAdapter(db, dbRunContext(config)),
-      inject: [DRIZZLE_DB, ConfigService],
+      inject: [DRIZZLE_DB, TypedConfigService],
     },
     {
       // DB-backed SIGNAL_JOURNAL: persists every routed signal + its outcome to the signals table.
@@ -295,10 +292,10 @@ function dbRunContext(config: ConfigService<AppConfig, true>): ExecRunContext {
       provide: SIGNAL_JOURNAL,
       useFactory: (
         db: NodePgDatabase<typeof schema> | null,
-        config: ConfigService<AppConfig, true>,
+        config: TypedConfigService,
       ): SignalJournalPort | undefined =>
         isTestEnv() || db === null ? undefined : new SignalJournalAdapter(db, dbRunContext(config)),
-      inject: [DRIZZLE_DB, ConfigService],
+      inject: [DRIZZLE_DB, TypedConfigService],
     },
   ],
   exports: [
@@ -371,17 +368,15 @@ const INVALID_KEY_PROBE: KeyProbePort = {
   providers: [
     {
       provide: KEY_PROBE,
-      useFactory: (config: ConfigService<AppConfig, true>): KeyProbePort => {
-        const mode = config.get('mode', { infer: true }).configMode;
+      useFactory: (config: TypedConfigService): KeyProbePort => {
+        const mode = config.mode.configMode;
         if (mode === 'paper') return INVALID_KEY_PROBE;
         const isLive = mode === 'live';
         // Live keys from AppConfig (stripped under test/ci); sandbox keys + environment (testnet|demo)
         // from SANDBOX_ENV via resolveSandbox — keeping demo/testnet keys non-interchangeable.
         const sandbox = resolveSandbox(config);
-        const apiKey = isLive ? (config.get('liveApiKey', { infer: true }) ?? '') : sandbox.apiKey;
-        const secret = isLive
-          ? (config.get('liveApiSecret', { infer: true }) ?? '')
-          : sandbox.secret;
+        const apiKey = isLive ? (config.liveSecrets.liveApiKey ?? '') : sandbox.apiKey;
+        const secret = isLive ? (config.liveSecrets.liveApiSecret ?? '') : sandbox.secret;
         const client = buildOrderClient(
           primaryVenue(config),
           isLive ? 'live' : sandbox.environment,
@@ -391,7 +386,7 @@ const INVALID_KEY_PROBE: KeyProbePort = {
         const keyFingerprint = createHash('sha256').update(apiKey).digest('hex').slice(0, 16);
         return new KeyProbeService(client, { keyFingerprint, requireRestrictions: isLive });
       },
-      inject: [ConfigService],
+      inject: [TypedConfigService],
     },
   ],
   exports: [KEY_PROBE],
@@ -428,8 +423,8 @@ function buildOrderClient(
 
 // The non-paper venue is configurable (VENUES env): the CcxtExchangeAdapter is venue-agnostic, so
 // the venue is selected purely by config — first configured venue, default binance.
-function primaryVenue(config: ConfigService<AppConfig, true>): string {
-  return config.get('venues', { infer: true })[0]?.id ?? 'binance';
+function primaryVenue(config: TypedConfigService): string {
+  return config.venues[0]?.id ?? 'binance';
 }
 
 // §3.5: in testnet mode the sandbox FLAVOR (SANDBOX_ENV) picks the environment and its own
@@ -437,12 +432,12 @@ function primaryVenue(config: ConfigService<AppConfig, true>): string {
 // pre-live dress rehearsal) or 'testnet' (setSandboxMode; the purpose-built integration sandbox).
 // Keys come straight from process.env (BINANCE_DEMO_*/BINANCE_TESTNET_*), never AppConfig, so they
 // are never hashed or logged. Reached only on a non-paper boot — under test/ci configMode is paper.
-function resolveSandbox(config: ConfigService<AppConfig, true>): {
+function resolveSandbox(config: TypedConfigService): {
   environment: VenueEnvironment;
   apiKey: string;
   secret: string;
 } {
-  if (config.get('mode', { infer: true }).sandboxEnv === 'demo') {
+  if (config.mode.sandboxEnv === 'demo') {
     return {
       environment: 'demo',
       apiKey: process.env['BINANCE_DEMO_API_KEY'] ?? '',
@@ -472,9 +467,9 @@ function resolveSandbox(config: ConfigService<AppConfig, true>): {
         outbox: ExecOutboxPort,
         notify: ExecReportNotify,
         cfg: PaperConfig,
-        config: ConfigService<AppConfig, true>,
+        config: TypedConfigService,
       ): ExchangePort => {
-        const mode = config.get('mode', { infer: true }).configMode;
+        const mode = config.mode.configMode;
         const venue = primaryVenue(config); // binance, configured via VENUES
         if (mode === 'live') {
           // Live: real ccxt client behind the capability-token-guarded wrapper. liveApiKey/Secret are
@@ -482,8 +477,8 @@ function resolveSandbox(config: ConfigService<AppConfig, true>): {
           const client = buildOrderClient(
             venue,
             'live',
-            config.get('liveApiKey', { infer: true }) ?? '',
-            config.get('liveApiSecret', { infer: true }) ?? '',
+            config.liveSecrets.liveApiKey ?? '',
+            config.liveSecrets.liveApiSecret ?? '',
           );
           return new LiveExchangeAdapter(
             LIVE_ADAPTER_CAP,
@@ -505,7 +500,7 @@ function resolveSandbox(config: ConfigService<AppConfig, true>): {
         }
         return new PaperExchangeAdapter(clock, outbox, notify, cfg, venueId(venue));
       },
-      inject: [CLOCK, EXEC_OUTBOX, EXEC_REPORT_NOTIFY, PAPER_CONFIG, ConfigService],
+      inject: [CLOCK, EXEC_OUTBOX, EXEC_REPORT_NOTIFY, PAPER_CONFIG, TypedConfigService],
     },
   ],
   exports: [EXCHANGE_PORT],
@@ -544,8 +539,8 @@ function isTestEnv(): boolean {
     Boolean(process.env['CI'])
   );
 }
-function feedVenueConfig(config: ConfigService<AppConfig, true>): VenueConfig {
-  const id = config.get('venues', { infer: true })[0]?.id ?? 'binance';
+function feedVenueConfig(config: TypedConfigService): VenueConfig {
+  const id = config.venues[0]?.id ?? 'binance';
   // Market data is public; default to live streams (realistic depth) regardless of trading mode.
   const environment = (process.env['FEED_ENV'] as VenueEnvironment | undefined) ?? 'live';
   return { id, environment };
@@ -562,15 +557,15 @@ const MD_EXCHANGE = Symbol('MD_EXCHANGE');
     { provide: WATCH_SOURCE, useClass: RealWatchSource },
     {
       provide: MD_EXCHANGE,
-      useFactory: (config: ConfigService<AppConfig, true>): Exchange | undefined =>
+      useFactory: (config: TypedConfigService): Exchange | undefined =>
         isTestEnv() ? undefined : buildCcxtExchange(feedVenueConfig(config)), // public — no apiKey/secret
-      inject: [ConfigService],
+      inject: [TypedConfigService],
     },
     {
       provide: REAL_FEED_HEALTH,
       useFactory: (
         clock: ClockPort,
-        config: ConfigService<AppConfig, true>,
+        config: TypedConfigService,
         exchange?: Exchange,
       ): FeedHealthPort =>
         exchange
@@ -581,7 +576,7 @@ const MD_EXCHANGE = Symbol('MD_EXCHANGE');
               feedVenueConfig(config),
             )
           : NOOP_FEED_HEALTH,
-      inject: [CLOCK, ConfigService, MD_EXCHANGE],
+      inject: [CLOCK, TypedConfigService, MD_EXCHANGE],
     },
     {
       provide: EXCHANGE_STREAM,
@@ -589,7 +584,7 @@ const MD_EXCHANGE = Symbol('MD_EXCHANGE');
         clock: ClockPort,
         watchSource: WatchSource,
         feedHealth: FeedHealthPort,
-        config: ConfigService<AppConfig, true>,
+        config: TypedConfigService,
         exchange?: Exchange,
       ): ExchangeStreamPort =>
         exchange
@@ -601,7 +596,7 @@ const MD_EXCHANGE = Symbol('MD_EXCHANGE');
               feedHealth as unknown as ChannelStateTracker,
             )
           : NOOP_STREAM,
-      inject: [CLOCK, WATCH_SOURCE, REAL_FEED_HEALTH, ConfigService, MD_EXCHANGE],
+      inject: [CLOCK, WATCH_SOURCE, REAL_FEED_HEALTH, TypedConfigService, MD_EXCHANGE],
     },
     {
       provide: MARKET_STREAM,
@@ -812,12 +807,12 @@ class MetricsWrappingAgentClient implements AgentClientPort {
       provide: LLM_USAGE_SINK,
       useFactory: (
         db: NodePgDatabase<typeof schema> | null,
-        config: ConfigService<AppConfig, true>,
+        config: TypedConfigService,
       ): LlmUsageSink =>
         isTestEnv() || db === null
           ? new InMemoryLlmUsageSink()
-          : new LlmUsageSinkAdapter(db, config.get('mode', { infer: true }).configMode),
-      inject: [DRIZZLE_DB, ConfigService],
+          : new LlmUsageSinkAdapter(db, config.mode.configMode),
+      inject: [DRIZZLE_DB, TypedConfigService],
     },
     {
       // Bound under its own token (not directly to PLAYBOOK_PROVIDER, which AgenticStrategyModule owns)
@@ -827,30 +822,23 @@ class MetricsWrappingAgentClient implements AgentClientPort {
       provide: PLAYBOOK_PROVIDER_OVERRIDE,
       useFactory: (
         db: NodePgDatabase<typeof schema> | null,
-        config: ConfigService<AppConfig, true>,
+        config: TypedConfigService,
         recorder: AgentMetricsRecorder,
       ): PlaybookStorePort => {
-        const pin = config.get('agentic', { infer: true }).playbookPin;
+        const pin = config.agentic.playbookPin;
         const store =
           isTestEnv() || db === null
             ? new InMemoryPlaybookStore(SEED_PLAYBOOK, pin)
             : new PlaybookStoreAdapter(db, SEED_PLAYBOOK, pin);
         return new ValidatingPlaybookProvider(store, recorder);
       },
-      inject: [DRIZZLE_DB, ConfigService, AgentMetricsRecorder],
+      inject: [DRIZZLE_DB, TypedConfigService, AgentMetricsRecorder],
     },
     {
       provide: AGENT_TRADING_PROFILE_OVERRIDE,
-      useFactory: (
-        limits: PartialRiskLimits,
-        config: ConfigService<AppConfig, true>,
-      ): AgentTradingProfile =>
-        agentTradingProfileFor(
-          config.get('strategy', { infer: true }).symbol,
-          limits,
-          config.get('risk', { infer: true }).baseNotional,
-        ),
-      inject: [RISK_LIMITS, ConfigService],
+      useFactory: (limits: PartialRiskLimits, config: TypedConfigService): AgentTradingProfile =>
+        agentTradingProfileFor(config.strategy.symbol, limits, config.risk.baseNotional),
+      inject: [RISK_LIMITS, TypedConfigService],
     },
     // G4a: lets ReflectionService (modules/agentic-strategy, which cannot import modules/observability
     // — the boundary wall) record validator-rejection tripwires through its own LOCAL structural type
@@ -922,10 +910,10 @@ class AgenticCompositionBridgeModule {}
         sink: SignalSinkService,
         reg: StrategyRegistry,
         pv: PortfolioViewPort,
-        config: ConfigService<AppConfig, true>,
+        config: TypedConfigService,
         killSwitch: KillSwitchPort,
       ) => {
-        const agentic = config.get('agentic', { infer: true });
+        const agentic = config.agentic;
         return new StrategyHost(ms, fh, sink, reg, {
           agentTimeoutMs: agentic.timeoutMs + 2_000, // backstop: client aborts first
           minDecisionIntervalMs: agentic.minDecisionIntervalMs,
@@ -943,7 +931,7 @@ class AgenticCompositionBridgeModule {}
         SIGNAL_SINK,
         StrategyRegistry,
         PORTFOLIO_VIEW,
-        ConfigService,
+        TypedConfigService,
         KILL_SWITCH,
       ],
     },
@@ -967,7 +955,7 @@ export class AppModule implements OnModuleInit, OnApplicationBootstrap, OnModule
     private readonly resolver: UnknownResolverService,
     private readonly reconciliation: ReconciliationService,
     private readonly sampler: EquitySamplerService,
-    private readonly config: ConfigService<AppConfig, true>,
+    private readonly config: TypedConfigService,
     @Inject(STRATEGY_HOST) private readonly host: StrategyHostPort,
     @Inject(STRATEGY_REGISTRY) private readonly registry: StrategyRegistryPort,
     @Inject(PORTFOLIO_VIEW) private readonly portfolio: PortfolioViewPort,
@@ -1031,7 +1019,7 @@ export class AppModule implements OnModuleInit, OnApplicationBootstrap, OnModule
   async onApplicationBootstrap(): Promise<void> {
     const env = process.env['NODE_ENV'];
     if (env === 'test' || env === 'ci' || process.env['CI']) return;
-    const mode = this.config.get('mode', { infer: true }).configMode;
+    const mode = this.config.mode.configMode;
     // Restore P/L state (cash/equity/peak/sod + open positions) and seed+degrade open orders from
     // Postgres BEFORE any trading or sampling, so equity/drawdown continue across restarts and the
     // first reconcile sees recovered truth. No-op in paper/no-DB (in-memory store returns empty). A
@@ -1096,7 +1084,7 @@ export class AppModule implements OnModuleInit, OnApplicationBootstrap, OnModule
     // Strategy selection. ACTIVE_STRATEGY picks which registered strategy the host runs; the schema
     // constrains it to 'agentic', the only registered lane — an invalid value fails loud at config
     // validation (boot) rather than at registry.enable.
-    const active = this.config.get('strategy', { infer: true }).active;
+    const active = this.config.strategy.active;
     // onClosedTrade is built per-registered-instance (using the factory's own `id`, not a fixed
     // literal) so a future second agentic registration would each wire the reflection loop's
     // lifecycle check against ITS OWN strategy id (see ReflectionService.runReflection).
@@ -1186,9 +1174,9 @@ export class AppModule implements OnModuleInit, OnApplicationBootstrap, OnModule
   }
 
   private agenticParams(): AgenticStrategyParams {
-    const venue = this.config.get('venues', { infer: true })[0]?.id ?? 'binance';
-    const agentic = this.config.get('agentic', { infer: true });
-    const strategy = this.config.get('strategy', { infer: true });
+    const venue = this.config.venues[0]?.id ?? 'binance';
+    const agentic = this.config.agentic;
+    const strategy = this.config.strategy;
     return {
       symbol: symbolId(strategy.symbol),
       venue: venueId(venue),

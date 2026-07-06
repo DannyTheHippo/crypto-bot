@@ -2,7 +2,7 @@ import { Module } from '@nestjs/common';
 import { TerminusModule } from '@nestjs/terminus';
 import { PrometheusModule } from '@willsoto/nestjs-prometheus';
 import { LoggerModule } from 'nestjs-pino';
-import { ConfigService } from '@nestjs/config';
+import { TypedConfigService } from '../../config/environment/typed-config.service';
 import { HealthController } from './health.controller';
 import { EventLoopHealthIndicator } from './event-loop-health.indicator';
 import {
@@ -42,16 +42,15 @@ import {
   PROMOTION_READY_GAUGE,
 } from './promotion-metrics.service';
 import { buildPinoHttpOptions } from './logger.config';
-import type { AppConfig } from '../../ports/app-config';
 
 @Module({
   imports: [
     LoggerModule.forRootAsync({
-      inject: [ConfigService],
-      useFactory: (configService: ConfigService<AppConfig, true>) => {
-        const mode = configService.get('mode', { infer: true });
-        const app = configService.get('app', { infer: true });
-        const obs = configService.get('observability', { infer: true });
+      inject: [TypedConfigService],
+      useFactory: (configService: TypedConfigService) => {
+        const mode = configService.mode;
+        const app = configService.app;
+        const obs = configService.observability;
         return buildPinoHttpOptions({
           level: obs.logLevel,
           bootId: app.bootId,

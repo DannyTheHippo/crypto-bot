@@ -53,6 +53,11 @@ export default tseslint.config(
           mode: 'folder',
         },
         {
+          type: 'config',
+          pattern: 'src/config',
+          mode: 'folder',
+        },
+        {
           type: 'modules',
           pattern: 'src/modules/*',
           mode: 'folder',
@@ -76,12 +81,25 @@ export default tseslint.config(
               allow: ['domain', 'ports'],
             },
             {
+              // Bootstrap/config zone (template mirror): env schema + typed facade. May not reach
+              // into modules — it is upstream of every feature.
+              from: ['config'],
+              allow: ['domain', 'ports', 'config'],
+            },
+            {
+              // 'config' addition: modules inject the TypedConfigService facade (the sanctioned
+              // config read path) — never each other.
               from: [['modules', { moduleName: '*' }]],
-              allow: ['domain', 'ports', ['modules', { moduleName: '${from.moduleName}' }]],
+              allow: [
+                'domain',
+                'ports',
+                'config',
+                ['modules', { moduleName: '${from.moduleName}' }],
+              ],
             },
             {
               from: ['app'],
-              allow: ['domain', 'ports', 'modules', 'app'],
+              allow: ['domain', 'ports', 'config', 'modules', 'app'],
             },
           ],
         },

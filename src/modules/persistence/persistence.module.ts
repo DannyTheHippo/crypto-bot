@@ -6,13 +6,12 @@ import {
   OnModuleInit,
   Provider,
 } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+import { TypedConfigService } from '../../config/environment/typed-config.service';
 import * as path from 'node:path';
 import { Pool } from 'pg';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import type { AppConfig } from '../../ports/app-config';
 import * as schema from './schema';
 
 import {
@@ -52,8 +51,8 @@ import { DbHealthIndicator } from './db-health.indicator';
 
 const poolProvider: Provider = {
   provide: DATABASE_POOL,
-  useFactory: (config: ConfigService<AppConfig, true>) => {
-    const dbUrl = config.get('db', { infer: true }).url;
+  useFactory: (config: TypedConfigService) => {
+    const dbUrl = config.db.url;
     if (!dbUrl) {
       // When DATABASE_URL is absent the module registers but the pool is null.
       // DbHealthIndicator reports 'not_configured'; the app boots in paper mode without DB.
@@ -66,7 +65,7 @@ const poolProvider: Provider = {
     });
     return pool;
   },
-  inject: [ConfigService],
+  inject: [TypedConfigService],
 };
 
 const drizzleProvider: Provider = {

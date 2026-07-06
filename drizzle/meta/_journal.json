@@ -29,6 +29,13 @@
       "when": 1781282295780,
       "tag": "0003_agentic_journal",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1781282295781,
+      "tag": "0004_llm_usage",
+      "breakpoints": true
     }
   ]
 }

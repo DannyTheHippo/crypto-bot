@@ -260,6 +260,31 @@ export interface AgentDecisionJournalPort {
   recent(limit: number): Promise<readonly AgentDecisionRow[]>;
 }
 
+// ── LLM usage sink ────────────────────────────────────────────────────────────
+//
+// Persists reflection-path LLM token usage (llm_usage table) for offline cost analysis — decide-path
+// usage is ALREADY captured per call on agent_decisions.input_tokens/output_tokens, so this sink's
+// CURRENT writers are the reflection loop only; recording decide-path usage here too would double
+// count against agent_decisions when a later PnL computation UNIONs the two sources. Same convention
+// as AGENT_DECISION_JOURNAL: record is sync fire-and-forget, an analysis artifact rather than a safety
+// interlock — the composition root binds a DB-backed adapter when the persistence path is active, else
+// the token resolves to undefined and the @Optional consumer simply skips recording. mode is stamped
+// by the adapter at construction (mirrors SignalJournalAdapter's ExecRunContext), not carried on the
+// entry — a caller like ReflectionService has no natural access to the run's trading mode.
+export const LLM_USAGE_SINK = Symbol('LLM_USAGE_SINK');
+
+export interface LlmUsageEntry {
+  readonly kind: 'decide' | 'reflection';
+  readonly model: string;
+  readonly strategyId?: StrategyId;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+}
+
+export interface LlmUsageSink {
+  record(entry: LlmUsageEntry): void;
+}
+
 // ── Playbook provider ─────────────────────────────────────────────────────────
 //
 // Seam for the agent's versioned strategy playbook (system-prompt content beyond the fixed rules in

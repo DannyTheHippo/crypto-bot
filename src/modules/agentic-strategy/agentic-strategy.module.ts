@@ -4,10 +4,12 @@ import Decimal from 'decimal.js';
 import {
   AGENT_CLIENT,
   AGENT_DECISION_JOURNAL,
+  LLM_USAGE_SINK,
   PLAYBOOK_PROVIDER,
   type AgentClientPort,
   type AgentDecisionJournalPort,
   type AgentTradingProfile,
+  type LlmUsageSink,
   type PlaybookProvider,
 } from '../../ports/agentic-strategy';
 import type { AppConfig } from '../../ports/app-config';
@@ -203,11 +205,12 @@ export function selectAgentClient(
     },
     {
       // G4a wiring. Every injected token besides AGENT_LLM_BUDGET is optional: PLAYBOOK_PROVIDER_OVERRIDE/
-      // AGENT_DECISION_JOURNAL/REFLECTION_METRICS_RECORDER_OVERRIDE are bound by AgenticCompositionBridgeModule
-      // (app.module.ts), KILL_SWITCH by KillSwitchModule, STRATEGY_REGISTRY by StrategyRegistryBridgeModule —
-      // all @Global, so they resolve here without this module importing any of them, but resolve to
-      // undefined in an isolated AgenticStrategyModule-only test context (ReflectionService then fails
-      // every precondition closed rather than guessing — see its own deps comment).
+      // AGENT_DECISION_JOURNAL/REFLECTION_METRICS_RECORDER_OVERRIDE/LLM_USAGE_SINK are bound by
+      // AgenticCompositionBridgeModule (app.module.ts), KILL_SWITCH by KillSwitchModule, STRATEGY_REGISTRY
+      // by StrategyRegistryBridgeModule — all @Global, so they resolve here without this module importing
+      // any of them, but resolve to undefined in an isolated AgenticStrategyModule-only test context
+      // (ReflectionService then fails every precondition closed rather than guessing — see its own deps
+      // comment; LLM_USAGE_SINK absent simply means reflection-path usage goes unpersisted).
       provide: REFLECTION_SERVICE,
       useFactory: (
         budget: DailyLlmBudget,
@@ -217,6 +220,7 @@ export function selectAgentClient(
         recorder: ReflectionMetricsRecorder | undefined,
         killSwitch: KillSwitchPort | undefined,
         registry: StrategyRegistryPort | undefined,
+        usageSink: LlmUsageSink | undefined,
       ) =>
         createReflectionService(agenticEnv(config), {
           budget,
@@ -225,6 +229,7 @@ export function selectAgentClient(
           recorder,
           killSwitch,
           registry,
+          usageSink,
           logger: new Logger('ReflectionService'),
         }),
       inject: [
@@ -235,6 +240,7 @@ export function selectAgentClient(
         { token: REFLECTION_METRICS_RECORDER_OVERRIDE, optional: true },
         { token: KILL_SWITCH, optional: true },
         { token: STRATEGY_REGISTRY, optional: true },
+        { token: LLM_USAGE_SINK, optional: true },
       ],
     },
   ],

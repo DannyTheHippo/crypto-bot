@@ -6,6 +6,7 @@ import type {
   AgentDecisionJournalPort,
   AgentDecisionRow,
   AgentUsage,
+  LlmUsageSink,
 } from '../../ports/agentic-strategy';
 import type { KillSwitchPort } from '../../ports/risk';
 import type { StrategyRegistryPort } from '../../ports/strategy';
@@ -96,6 +97,11 @@ export interface ReflectionServiceDeps {
   readonly playbookStore?: ReflectionPlaybookStore;
   readonly journal?: AgentDecisionJournalPort;
   readonly recorder?: ReflectionMetricsRecorder;
+  // Absent ⇒ reflection-path token usage simply isn't persisted (fire-and-forget analysis artifact,
+  // never a safety interlock — mirrors journal/recorder's own optionality). Decide-path usage is
+  // already captured on agent_decisions; this sink is the reflection loop's own record so a later
+  // cost computation can UNION the two without double counting (see LlmUsageSink's own comment).
+  readonly usageSink?: LlmUsageSink;
   // Absent ⇒ the corresponding safety precondition can't be confirmed, so runReflection fails
   // CLOSED (aborts) rather than assuming a missing dependency would have said yes.
   readonly killSwitch?: KillSwitchPort;
@@ -433,6 +439,13 @@ export class ReflectionService {
       };
       this.deps.budget.recordUsage(usage);
       this.deps.recorder?.recordTokens?.(usage.inputTokens, usage.outputTokens);
+      this.deps.usageSink?.record({
+        kind: 'reflection',
+        model: this.cfg.model,
+        strategyId,
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+      });
     }
     if (envelope.data.stop_reason === 'refusal') {
       this.warn('reflection: model refused to submit a revision');

@@ -367,3 +367,23 @@ export const agentPlaybookVersions = pgTable(
       .where(sql`${t.source} = 'promotion'`),
   ],
 );
+
+// ── llm_usage ─────────────────────────────────────────────────────────────────
+// Reflection-path LLM token usage, kept separate from agent_decisions.input_tokens/output_tokens
+// (the decide-path's own per-call columns) so cost analysis can UNION the two without double
+// counting: decide-path tokens live on agent_decisions; this table's CURRENT writers are the
+// reflection loop only (ReflectionService, via LlmUsageSink — ports/agentic-strategy.ts). kind stays
+// a 2-value union ('decide' | 'reflection') for future use rather than a fixed literal, matching the
+// repo's TS-level-only enum convention (agent_decisions.action, agent_playbook_versions.source) —
+// no DB CHECK constraint. strategy_id is nullable: reflection runs are per-strategy, but a future
+// 'decide' writer might not always resolve one at call time.
+export const llmUsage = pgTable('llm_usage', {
+  id: bigint('id', { mode: 'number' }).generatedAlwaysAsIdentity().primaryKey(),
+  kind: text('kind').notNull().$type<'decide' | 'reflection'>(),
+  model: text('model').notNull(),
+  mode: text('mode').notNull().$type<'paper' | 'testnet' | 'live'>(),
+  strategyId: text('strategy_id'),
+  inputTokens: integer('input_tokens').notNull(),
+  outputTokens: integer('output_tokens').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+});

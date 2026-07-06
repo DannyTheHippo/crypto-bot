@@ -16,6 +16,8 @@ import {
 import type {
   AgentDecisionJournalPort,
   AgentDecisionRow,
+  LlmUsageEntry,
+  LlmUsageSink,
 } from '../../../src/ports/agentic-strategy';
 import type { KillSwitchPort } from '../../../src/ports/risk';
 import type { KillSwitchState } from '../../../src/domain/risk/kill-switch';
@@ -134,6 +136,11 @@ function fakeRecorder(): {
   };
 }
 
+function fakeUsageSink(): { sink: LlmUsageSink; recorded: LlmUsageEntry[] } {
+  const recorded: LlmUsageEntry[] = [];
+  return { sink: { record: (entry) => void recorded.push(entry) }, recorded };
+}
+
 function warnLogger(): { warn: (msg: string) => void; messages: string[] } {
   const messages: string[] = [];
   return { warn: (msg: string) => void messages.push(msg), messages };
@@ -171,6 +178,7 @@ interface Harness {
   logger: ReturnType<typeof warnLogger>;
   storeApi: ReturnType<typeof fakePlaybookStore>;
   recorderApi: ReturnType<typeof fakeRecorder>;
+  usageSinkApi: ReturnType<typeof fakeUsageSink>;
   budget: DailyLlmBudget;
   clock: { now: number };
 }
@@ -182,6 +190,7 @@ function buildHarness(
     budgetCaps?: DailyLlmBudgetCaps;
     rows?: readonly AgentDecisionRow[];
     seedContent?: string;
+    withUsageSink?: boolean;
   } = {},
 ): Harness {
   const clock = { now: T };
@@ -190,6 +199,7 @@ function buildHarness(
   const logger = warnLogger();
   const storeApi = fakePlaybookStore(opts.seedContent ?? validPlaybookContent('seed'));
   const recorderApi = fakeRecorder();
+  const usageSinkApi = fakeUsageSink();
   const budget = new DailyLlmBudget(
     opts.budgetCaps ?? { maxCallsPerDay: 10, maxTokensPerDay: 1_000_000 },
     nowFn,
@@ -199,13 +209,14 @@ function buildHarness(
     playbookStore: storeApi.store,
     journal: fakeJournal(opts.rows ?? []),
     recorder: recorderApi.recorder,
+    usageSink: (opts.withUsageSink ?? true) ? usageSinkApi.sink : undefined,
     killSwitch: killSwitchWithState(opts.killSwitchState ?? 'RUNNING'),
     registry: registryWithLifecycle(opts.lifecycle ?? 'ACTIVE'),
     fetchFn,
     nowFn,
     logger,
   };
-  return { deps, fetchFn, logger, storeApi, recorderApi, budget, clock };
+  return { deps, fetchFn, logger, storeApi, recorderApi, usageSinkApi, budget, clock };
 }
 
 describe('reconstructClosedTrades', () => {
@@ -679,6 +690,45 @@ describe('ReflectionService', () => {
       expect(h.budget.snapshot().outputTokens).toBe(20);
       // D: reflection-path tokens also feed the metrics recorder (agent_tokens_total) for the cost view.
       expect(h.recorderApi.tokens).toEqual([[10, 20]]);
+    });
+
+    it('records reflection-path usage into the optional LLM usage sink when present', async () => {
+      const h = buildHarness();
+      h.fetchFn.mockResolvedValue(
+        apiResponse(revisionToolBody({ playbook: validPlaybookContent('v2'), changelog: 'tweak' })),
+      );
+      const service = new ReflectionService(
+        baseCfg({ everyNTrades: 1, model: 'claude-test-model' }),
+        h.deps,
+      );
+
+      service.onClosedTrade(SID, 1);
+      await flush();
+
+      expect(h.usageSinkApi.recorded).toEqual([
+        {
+          kind: 'reflection',
+          model: 'claude-test-model',
+          strategyId: SID,
+          inputTokens: 10,
+          outputTokens: 20,
+        },
+      ]);
+    });
+
+    it('is a no-op when no LLM usage sink is wired (absent ⇒ usage simply goes unpersisted)', async () => {
+      const h = buildHarness({ withUsageSink: false });
+      h.fetchFn.mockResolvedValue(
+        apiResponse(revisionToolBody({ playbook: validPlaybookContent('v2'), changelog: 'tweak' })),
+      );
+      const service = new ReflectionService(baseCfg({ everyNTrades: 1 }), h.deps);
+
+      expect(() => service.onClosedTrade(SID, 1)).not.toThrow();
+      await flush();
+
+      // The budget/recorder still see usage — only the sink is absent.
+      expect(h.budget.snapshot().inputTokens).toBe(10);
+      expect(h.usageSinkApi.recorded).toEqual([]);
     });
 
     it('logs an API error, mints nothing, never throws to the caller, and releases the in-flight guard', async () => {

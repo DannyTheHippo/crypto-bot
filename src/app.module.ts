@@ -89,6 +89,7 @@ import { validatePlaybook } from './modules/agentic-strategy/playbook-validator'
 import {
   AGENT_CLIENT,
   AGENT_DECISION_JOURNAL,
+  LLM_USAGE_SINK,
   PLAYBOOK_PROVIDER,
   AgentProposeError,
   type AgentClientPort,
@@ -96,6 +97,7 @@ import {
   type AgentDecisionJournalPort,
   type AgentProposal,
   type AgentTradingProfile,
+  type LlmUsageSink,
   type PlaybookProvider,
   type SymbolConstraints,
 } from './ports/agentic-strategy';
@@ -105,6 +107,8 @@ import {
 } from './modules/observability/agent-metrics-recorder.service';
 import { AgentDecisionJournalAdapter } from './modules/persistence/repositories/agent-decision-journal.adapter';
 import { InMemoryAgentDecisionJournal } from './modules/persistence/repositories/in-memory-agent-decision-journal';
+import { LlmUsageSinkAdapter } from './modules/persistence/repositories/llm-usage-sink.adapter';
+import { InMemoryLlmUsageSink } from './modules/persistence/repositories/in-memory-llm-usage-sink';
 import {
   PlaybookStoreAdapter,
   type PlaybookVersionEntry,
@@ -773,8 +777,8 @@ class MetricsWrappingAgentClient implements AgentClientPort {
 }
 
 // §7 (agentic lane), same test/ci-forces-in-memory backstop as DrizzlePersistenceGlobalModule above,
-// scoped to the agentic decision journal + playbook store + trading profile rather than
-// execution/mode-control — kept as its own bridge (not folded into DrizzlePersistenceGlobalModule)
+// scoped to the agentic decision journal + playbook store + trading profile + LLM usage sink rather
+// than execution/mode-control — kept as its own bridge (not folded into DrizzlePersistenceGlobalModule)
 // because these bindings also need ObservabilityModule (AgentMetricsRecorder, for the playbook
 // validator tripwire) and RiskModule (RISK_LIMITS, for the trading profile), dependencies the
 // execution/mode-control overrides don't share. RiskModule is already imported by AppModule's own
@@ -791,6 +795,21 @@ class MetricsWrappingAgentClient implements AgentClientPort {
           ? new InMemoryAgentDecisionJournal()
           : new AgentDecisionJournalAdapter(db),
       inject: [DRIZZLE_DB],
+    },
+    {
+      // DB-backed LLM_USAGE_SINK: persists reflection-path token usage to llm_usage for offline cost
+      // analysis (P2a) — ReflectionService injects this @Optional, so undefined (paper/no-DB/test)
+      // simply skips recording. In-memory (array-backed, not a bare no-op — see its own comment)
+      // under test/ci or no-DB, mirroring AGENT_DECISION_JOURNAL's own fallback convention above.
+      provide: LLM_USAGE_SINK,
+      useFactory: (
+        db: NodePgDatabase<typeof schema> | null,
+        config: ConfigService<AppConfig, true>,
+      ): LlmUsageSink =>
+        isTestEnv() || db === null
+          ? new InMemoryLlmUsageSink()
+          : new LlmUsageSinkAdapter(db, config.get('mode', { infer: true }).configMode),
+      inject: [DRIZZLE_DB, ConfigService],
     },
     {
       // Bound under its own token (not directly to PLAYBOOK_PROVIDER, which AgenticStrategyModule owns)
@@ -835,6 +854,7 @@ class MetricsWrappingAgentClient implements AgentClientPort {
     PLAYBOOK_PROVIDER_OVERRIDE,
     AGENT_TRADING_PROFILE_OVERRIDE,
     REFLECTION_METRICS_RECORDER_OVERRIDE,
+    LLM_USAGE_SINK,
   ],
 })
 class AgenticCompositionBridgeModule {}

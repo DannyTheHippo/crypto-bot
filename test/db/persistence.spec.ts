@@ -32,6 +32,8 @@ import { SignalRepository } from '../../src/modules/persistence/repositories/sig
 import { AgentDecisionRepository } from '../../src/modules/persistence/repositories/agent-decision.repository';
 import { AgentDecisionJournalAdapter } from '../../src/modules/persistence/repositories/agent-decision-journal.adapter';
 import { PlaybookStoreAdapter } from '../../src/modules/persistence/repositories/playbook-store.adapter';
+import { LlmUsageRepository } from '../../src/modules/persistence/repositories/llm-usage.repository';
+import { LlmUsageSinkAdapter } from '../../src/modules/persistence/repositories/llm-usage-sink.adapter';
 import Decimal from 'decimal.js';
 import { price, qty } from '../../src/domain/types/money';
 import { venueId, symbolId, clientOrderId, strategyId, epochMs } from '../../src/domain/types/ids';
@@ -135,6 +137,7 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
       'exec_outbox',
       'fee_ledger',
       'fills',
+      'llm_usage',
       'mode_transitions',
       'order_events',
       'order_intents',
@@ -847,5 +850,79 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
       [day1.version + 1, 'promotion note day 2', seed.version],
     );
     expect(result.rowCount).toBe(1);
+  });
+
+  it('(j) llm_usage row insert round-trips exact ints, kind/mode/strategy_id, and created_at is populated', async () => {
+    const repo = new LlmUsageRepository(db);
+    await repo.insert({
+      kind: 'reflection',
+      model: 'claude-opus-4-8',
+      mode: 'paper',
+      strategyId: 'agentic-dt-1',
+      inputTokens: 512,
+      outputTokens: 64,
+    });
+
+    const rows = await pool.query<{
+      kind: string;
+      model: string;
+      mode: string;
+      strategy_id: string | null;
+      input_tokens: number;
+      output_tokens: number;
+      created_at: Date;
+    }>(
+      `SELECT kind, model, mode, strategy_id, input_tokens, output_tokens, created_at
+       FROM public.llm_usage WHERE model = $1`,
+      ['claude-opus-4-8'],
+    );
+    expect(rows.rows).toHaveLength(1);
+    const row = rows.rows[0]!;
+    expect(row.kind).toBe('reflection');
+    expect(row.mode).toBe('paper');
+    expect(row.strategy_id).toBe('agentic-dt-1');
+    expect(row.input_tokens).toBe(512);
+    expect(row.output_tokens).toBe(64);
+    expect(row.created_at).toBeInstanceOf(Date);
+  });
+
+  it('(j) llm_usage: strategy_id is nullable', async () => {
+    const repo = new LlmUsageRepository(db);
+    await repo.insert({
+      kind: 'reflection',
+      model: 'claude-opus-4-8-nullable-sid',
+      mode: 'testnet',
+      strategyId: null,
+      inputTokens: 1,
+      outputTokens: 2,
+    });
+
+    const rows = await pool.query<{ strategy_id: string | null }>(
+      `SELECT strategy_id FROM public.llm_usage WHERE model = $1`,
+      ['claude-opus-4-8-nullable-sid'],
+    );
+    expect(rows.rows).toHaveLength(1);
+    expect(rows.rows[0]!.strategy_id).toBeNull();
+  });
+
+  it('(j) LlmUsageSinkAdapter.record() stamps the constructor-bound mode and swallows insert errors (fire-and-forget)', async () => {
+    const adapter = new LlmUsageSinkAdapter(db, 'live');
+    adapter.record({
+      kind: 'reflection',
+      model: 'claude-opus-4-8-adapter',
+      strategyId: strategyId('agentic-dt-2'),
+      inputTokens: 7,
+      outputTokens: 3,
+    });
+    // record() is sync fire-and-forget; give the detached insert a tick to land.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const rows = await pool.query<{ mode: string; strategy_id: string | null }>(
+      `SELECT mode, strategy_id FROM public.llm_usage WHERE model = $1`,
+      ['claude-opus-4-8-adapter'],
+    );
+    expect(rows.rows).toHaveLength(1);
+    expect(rows.rows[0]!.mode).toBe('live');
+    expect(rows.rows[0]!.strategy_id).toBe('agentic-dt-2');
   });
 });

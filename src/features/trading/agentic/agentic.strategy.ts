@@ -29,7 +29,12 @@ import {
   type StrategyInitContext,
 } from '../../../ports/agentic-strategy';
 import { MAX_REASON_LEN, type LoggerLike } from './anthropic-agent-client';
-import { evaluatePrescreen, type PrescreenOutcome, type PrescreenThresholds } from './prescreen';
+import {
+  evaluatePrescreen,
+  type PrescreenOutcome,
+  type PrescreenReason,
+  type PrescreenThresholds,
+} from './prescreen';
 
 export interface AgenticStrategyParams {
   readonly symbol: SymbolId;
@@ -52,8 +57,10 @@ export interface AgenticStrategyDeps {
   // reflection task subscribes; the strategy itself takes no action beyond counting and calling it.
   readonly onClosedTrade?: (count: number) => void;
   // Fires once per decide() call when the prescreen gate is enabled, with its outcome — mirrors the
-  // onClosedTrade seam. Optional/no-op-defaulted so existing tests/callers stay valid.
-  readonly onPrescreen?: (outcome: PrescreenOutcome) => void;
+  // onClosedTrade seam. Optional/no-op-defaulted so existing tests/callers stay valid. `reason` is
+  // the finer PrescreenReason behind the outcome (absent for 'failopen_error': evaluatePrescreen
+  // itself threw, so no reason was ever computed).
+  readonly onPrescreen?: (outcome: PrescreenOutcome, reason?: PrescreenReason) => void;
   readonly logger?: LoggerLike;
 }
 
@@ -96,7 +103,7 @@ export class AgenticStrategy implements AsyncStrategy {
   private readonly baseIntervalMs: number;
   private readonly journal?: AgentDecisionJournalPort;
   private readonly onClosedTrade?: (count: number) => void;
-  private readonly onPrescreen?: (outcome: PrescreenOutcome) => void;
+  private readonly onPrescreen?: (outcome: PrescreenOutcome, reason?: PrescreenReason) => void;
   private readonly logger: LoggerLike;
   private readonly prescreenEnabled: boolean;
   private readonly prescreenThresholds?: PrescreenThresholds;
@@ -216,10 +223,10 @@ export class AgenticStrategy implements AsyncStrategy {
         thresholds: this.prescreenThresholds,
       });
       if (result.consult) {
-        this.onPrescreen?.('called');
+        this.onPrescreen?.('called', result.reason);
         return null;
       }
-      this.onPrescreen?.('skipped_quiet');
+      this.onPrescreen?.('skipped_quiet', result.reason);
       return result.reason;
     } catch (err) {
       this.logger.warn(

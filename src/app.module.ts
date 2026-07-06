@@ -1200,7 +1200,7 @@ export class AppModule
       const deps: AgenticStrategyDeps = {
         journal: this.agentJournal,
         onClosedTrade: (count) => this.reflectionService.onClosedTrade(id, count),
-        onPrescreen: (outcome) => this.agentMetrics.recordPrescreen(outcome),
+        onPrescreen: (outcome, reason) => this.agentMetrics.recordPrescreen(outcome, reason),
       };
       return new AgenticStrategy(id, p as AgenticStrategyParams, this.agentClient, deps);
     });

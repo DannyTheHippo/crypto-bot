@@ -140,8 +140,11 @@ export const AGENT_CLIENT_INFO_GAUGE = makeGaugeProvider({
 });
 export const AGENTIC_PRESCREEN_COUNTER = makeCounterProvider({
   name: 'agentic_prescreen_total',
-  help: 'Prescreen gate outcomes ahead of agentic LLM calls (called / skipped_quiet / failopen_error)',
-  labelNames: ['outcome'] as const,
+  help:
+    'Prescreen gate outcomes ahead of agentic LLM calls (called / skipped_quiet / failopen_error), ' +
+    'labeled by the PrescreenReason that drove it (position_open / vol_expansion / ' +
+    'breakout_proximity / insufficient_data / quiet / n/a for failopen_error)',
+  labelNames: ['outcome', 'reason'] as const,
 });
 
 // §strategy lifecycle — sampled in the 5s loop below (same pull pattern as kill_switch_state):

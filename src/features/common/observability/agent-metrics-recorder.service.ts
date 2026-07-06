@@ -14,6 +14,18 @@ export type AgentTokenKind = 'input' | 'output';
 
 export type AgentPrescreenOutcome = 'called' | 'skipped_quiet' | 'failopen_error';
 
+// Mirrors prescreen.ts's PrescreenReason — duplicated rather than imported because the
+// eslint-plugin-boundaries wall forbids this feature (common/observability) importing from
+// trading/agentic; same convention as AgentPrescreenOutcome above. 'n/a' is this module's own
+// sentinel for the failopen_error path, where evaluatePrescreen threw before computing any reason.
+export type AgentPrescreenReason =
+  | 'position_open'
+  | 'vol_expansion'
+  | 'breakout_proximity'
+  | 'insufficient_data'
+  | 'quiet'
+  | 'n/a';
+
 // Typed recorder over the agentic-lane providers registered in metrics.service.ts. Exported from
 // ObservabilityModule so the composition root can hand it (or closures over it) to the agentic lane —
 // this module never imports features/trading/agentic itself (the boundaries wall runs the other way).
@@ -94,9 +106,9 @@ export class AgentMetricsRecorder {
     }
   }
 
-  recordPrescreen(outcome: AgentPrescreenOutcome): void {
+  recordPrescreen(outcome: AgentPrescreenOutcome, reason?: AgentPrescreenReason): void {
     try {
-      this.prescreenCounter.inc({ outcome });
+      this.prescreenCounter.inc({ outcome, reason: reason ?? 'n/a' });
     } catch {
       /* metrics must never throw into a trading path */
     }

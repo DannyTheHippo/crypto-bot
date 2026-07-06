@@ -178,7 +178,7 @@ describe('AgenticStrategy prescreen gate', () => {
 
     expect(client.inputs).toHaveLength(0);
     expect(signals).toEqual([]);
-    expect(onPrescreen).toHaveBeenCalledExactlyOnceWith('skipped_quiet');
+    expect(onPrescreen).toHaveBeenCalledExactlyOnceWith('skipped_quiet', 'quiet');
     expect(journal.entries).toHaveLength(1);
     expect(journal.entries[0]!.action).toBe('hold');
     expect(journal.entries[0]!.model).toBe('prescreen');
@@ -199,7 +199,7 @@ describe('AgenticStrategy prescreen gate', () => {
 
     expect(client.inputs).toHaveLength(1);
     expect(signals).toEqual([]);
-    expect(onPrescreen).toHaveBeenCalledExactlyOnceWith('called');
+    expect(onPrescreen).toHaveBeenCalledExactlyOnceWith('called', 'vol_expansion');
   });
 
   it('always consults the LLM when a position is open, regardless of how quiet the market is', async () => {
@@ -213,7 +213,7 @@ describe('AgenticStrategy prescreen gate', () => {
     await strategy.decide(buildInput({ candles: quietCandles(), portfolio: longPortfolio() }));
 
     expect(client.inputs).toHaveLength(1);
-    expect(onPrescreen).toHaveBeenCalledExactlyOnceWith('called');
+    expect(onPrescreen).toHaveBeenCalledExactlyOnceWith('called', 'position_open');
   });
 
   it('still fires onClosedTrade for a round trip that closes on a quiet candle, even though the gate then skips the LLM (trackClosedTrade runs before evaluatePrescreenGate)', async () => {
@@ -241,7 +241,7 @@ describe('AgenticStrategy prescreen gate', () => {
     expect(onClosedTrade).toHaveBeenCalledExactlyOnceWith(1);
     expect(client.inputs).toHaveLength(1); // unchanged: the second call never reached the LLM
     expect(signals).toEqual([]);
-    expect(onPrescreen).toHaveBeenNthCalledWith(2, 'skipped_quiet');
+    expect(onPrescreen).toHaveBeenNthCalledWith(2, 'skipped_quiet', 'quiet');
     expect(journal.entries).toHaveLength(2);
     expect(journal.entries[1]!.model).toBe('prescreen');
   });

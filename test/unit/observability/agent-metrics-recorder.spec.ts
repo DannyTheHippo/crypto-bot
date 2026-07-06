@@ -101,14 +101,16 @@ describe('AgentMetricsRecorder', () => {
     expect(metric).toContain('kind="stub"} 1');
   });
 
-  it('recordPrescreen increments agentic_prescreen_total{outcome}', async () => {
-    recorder.recordPrescreen('called');
-    recorder.recordPrescreen('skipped_quiet');
+  it('recordPrescreen increments agentic_prescreen_total{outcome,reason}', async () => {
+    recorder.recordPrescreen('called', 'vol_expansion');
+    recorder.recordPrescreen('called', 'position_open');
+    recorder.recordPrescreen('skipped_quiet', 'quiet');
     recorder.recordPrescreen('failopen_error');
     const metric = await register.getSingleMetricAsString('agentic_prescreen_total');
-    expect(metric).toContain('outcome="called"} 1');
-    expect(metric).toContain('outcome="skipped_quiet"} 1');
-    expect(metric).toContain('outcome="failopen_error"} 1');
+    expect(metric).toContain('outcome="called",reason="vol_expansion"} 1');
+    expect(metric).toContain('outcome="called",reason="position_open"} 1');
+    expect(metric).toContain('outcome="skipped_quiet",reason="quiet"} 1');
+    expect(metric).toContain('outcome="failopen_error",reason="n/a"} 1');
   });
 });
 

@@ -121,6 +121,9 @@ describe('agenticEnv', () => {
       reflectionEveryNTrades: 7,
       reflectionCooldownMs: 86400000,
       autoPromoteMinTrades: 9,
+      tokenPriceInputPerMtok: '3',
+      tokenPriceOutputPerMtok: '15',
+      promotionDustNotional: '5',
     };
     const config = { get: () => agentic } as unknown as ConfigService<AppConfig, true>;
 

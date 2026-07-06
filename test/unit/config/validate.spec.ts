@@ -163,6 +163,9 @@ describe('validate()', () => {
         reflectionCooldownMs: 604_800_000,
         autoPromoteMinTrades: 0,
         playbookPin: undefined,
+        tokenPriceInputPerMtok: '3',
+        tokenPriceOutputPerMtok: '15',
+        promotionDustNotional: '5',
       });
     });
 
@@ -255,6 +258,35 @@ describe('validate()', () => {
         validate({ PORT: '3100', AGENTIC_AUTO_PROMOTE_MIN_TRADES: '30' }).agentic
           .autoPromoteMinTrades,
       ).toBe(30);
+    });
+
+    it('AGENTIC_TOKEN_PRICE_*_PER_MTOK and PROMOTION_DUST_NOTIONAL default and override as decimal strings', () => {
+      const defaults = validate({ PORT: '3100' }).agentic;
+      expect(defaults.tokenPriceInputPerMtok).toBe('3');
+      expect(defaults.tokenPriceOutputPerMtok).toBe('15');
+      expect(defaults.promotionDustNotional).toBe('5');
+
+      const overridden = validate({
+        PORT: '3100',
+        AGENTIC_TOKEN_PRICE_INPUT_PER_MTOK: '2.5',
+        AGENTIC_TOKEN_PRICE_OUTPUT_PER_MTOK: '12.75',
+        PROMOTION_DUST_NOTIONAL: '10',
+      }).agentic;
+      expect(overridden.tokenPriceInputPerMtok).toBe('2.5');
+      expect(overridden.tokenPriceOutputPerMtok).toBe('12.75');
+      expect(overridden.promotionDustNotional).toBe('10');
+    });
+
+    it('throws on a non-decimal AGENTIC_TOKEN_PRICE_INPUT_PER_MTOK', () => {
+      expect(() => validate({ PORT: '3100', AGENTIC_TOKEN_PRICE_INPUT_PER_MTOK: 'free' })).toThrow(
+        /AGENTIC_TOKEN_PRICE_INPUT_PER_MTOK/,
+      );
+    });
+
+    it('throws on a non-decimal PROMOTION_DUST_NOTIONAL', () => {
+      expect(() => validate({ PORT: '3100', PROMOTION_DUST_NOTIONAL: '-5' })).toThrow(
+        /PROMOTION_DUST_NOTIONAL/,
+      );
     });
 
     it('throws on negative AGENTIC_AUTO_PROMOTE_MIN_TRADES', () => {

@@ -34,6 +34,7 @@ import { AgentDecisionJournalAdapter } from '../../src/modules/persistence/repos
 import { PlaybookStoreAdapter } from '../../src/modules/persistence/repositories/playbook-store.adapter';
 import { LlmUsageRepository } from '../../src/modules/persistence/repositories/llm-usage.repository';
 import { LlmUsageSinkAdapter } from '../../src/modules/persistence/repositories/llm-usage-sink.adapter';
+import { PromotionStatsRepository } from '../../src/modules/persistence/repositories/promotion-stats.repository';
 import Decimal from 'decimal.js';
 import { price, qty } from '../../src/domain/types/money';
 import { venueId, symbolId, clientOrderId, strategyId, epochMs } from '../../src/domain/types/ids';
@@ -924,5 +925,101 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
     expect(rows.rows).toHaveLength(1);
     expect(rows.rows[0]!.mode).toBe('live');
     expect(rows.rows[0]!.strategy_id).toBe('agentic-dt-2');
+  });
+
+  // ── (k) PromotionStatsRepository — earned-live evidence queries ───────────
+  // Side/strategy live on order_intents, not fills — the section's own intent seeder takes a side
+  // (the shared seedIntent above hardcodes BUY).
+  async function seedIntentWithSide(
+    intentId: string,
+    clientOrderId: string,
+    side: 'BUY' | 'SELL',
+    mode: string,
+  ): Promise<void> {
+    await pool.query(
+      `INSERT INTO public.order_intents
+        (intent_id, client_order_id, strategy_id, venue, symbol, side, type, qty, time_in_force, reduce_only,
+         ref_price, ref_seq, created_at, expires_at, source_dedupe_key, source_event_time, source_based_on_seq,
+         source_strength, mode, run_id, boot_id)
+       VALUES ($1,$2,'agentic-k','binance','BTC/USDT',$3,'LIMIT','1.000000000000000000','GTC',false,
+         '50000.000000000000000000',0,0,9999999,$4,0,0,'0.5',$5,'run-k','boot-k')`,
+      [intentId, clientOrderId, side, `dk-${intentId}`, mode],
+    );
+  }
+
+  async function seedFill(
+    venueTradeId: string,
+    intentId: string | null,
+    ts: number,
+    mode: string,
+    fee: { amount: string; ccy: string } | null,
+  ): Promise<void> {
+    await pool.query(
+      `INSERT INTO public.fills
+        (venue, symbol, venue_trade_id, intent_id, client_order_id, price, qty, fee_ccy, fee_amount,
+         liquidity, venue_timestamp, source, mode, run_id, boot_id)
+       VALUES ('binance','BTC/USDT',$1,$2,'cb-k','50000.000000000000000000','0.001000000000000000',
+         $3,$4,'taker',$5,'rest_reconcile',$6,'run-k','boot-k')`,
+      [venueTradeId, intentId, fee?.ccy ?? null, fee?.amount ?? null, ts, mode],
+    );
+  }
+
+  it('(k) fillsForMode: mode filter, executedAt→fillId ordering, LEFT-JOIN nulls for unresolved intents', async () => {
+    const repo = new PromotionStatsRepository(db);
+    await seedIntentWithSide('int-k-buy', 'cb-k-buy', 'BUY', 'testnet');
+    await seedIntentWithSide('int-k-sell', 'cb-k-sell', 'SELL', 'testnet');
+    await seedIntentWithSide('int-k-paper', 'cb-k-paper', 'BUY', 'paper');
+    await seedFill('vt-k-2', 'int-k-buy', 2_000, 'testnet', {
+      amount: '0.010000000000000000',
+      ccy: 'USDT',
+    });
+    await seedFill('vt-k-1', 'int-k-sell', 1_000, 'testnet', null);
+    await seedFill('vt-k-3', null, 3_000, 'testnet', null);
+    await seedFill('vt-k-0', 'int-k-paper', 500, 'paper', null);
+
+    const rows = await repo.fillsForMode('testnet');
+    const ours = rows.filter(
+      (r) => r.symbol === 'BTC/USDT' && [1_000, 2_000, 3_000].includes(r.executedAt),
+    );
+    expect(ours.map((r) => r.executedAt)).toEqual([1_000, 2_000, 3_000]);
+    expect(ours[0]!.side).toBe('SELL');
+    expect(ours[0]!.strategyId).toBe('agentic-k');
+    expect(ours[1]!.side).toBe('BUY');
+    expect(ours[1]!.fee).toBe(pad18('0.01'));
+    expect(ours[1]!.feeAsset).toBe('USDT');
+    expect(ours[1]!.qty).toBe(pad18('0.001'));
+    expect(ours[2]!.strategyId).toBeNull();
+    expect(ours[2]!.side).toBeNull();
+    // paper-mode fill excluded by the WHERE mode filter
+    expect(rows.some((r) => r.executedAt === 500)).toBe(false);
+  });
+
+  it('(k) llmTokenTotals: decide from agent_decisions (nulls as 0), reflection-only rows from llm_usage', async () => {
+    const repo = new PromotionStatsRepository(db);
+    // Earlier (j) sections already landed agent_decisions/llm_usage rows in this suite run, so the
+    // assertions are DELTAS around this test's own inserts, not absolute totals.
+    const before = await repo.llmTokenTotals();
+    await pool.query(
+      `INSERT INTO public.agent_decisions
+        (strategy_id, symbol, venue, trigger_kind, based_on_seq, event_time, model, action, rationale,
+         input_tokens, output_tokens, prompt_hash)
+       VALUES
+        ('agentic-k','BTC/USDT','binance','candle',0,1,'m','hold','r',100,10,'hash-k-1'),
+        ('agentic-k','BTC/USDT','binance','candle',0,2,'m','hold','r',200,20,'hash-k-2'),
+        ('agentic-k','BTC/USDT','binance','candle',0,3,'m','error','r',NULL,NULL,'hash-k-3')`,
+    );
+    await pool.query(
+      `INSERT INTO public.llm_usage (kind, model, mode, strategy_id, input_tokens, output_tokens)
+       VALUES ('reflection','m','testnet','agentic-k',50,5),
+              ('decide','m','testnet','agentic-k',999,999)`,
+    );
+
+    const totals = await repo.llmTokenTotals();
+    // decide side ignores the llm_usage 'decide' row (would double-count agent_decisions) and
+    // treats NULL token columns as 0.
+    expect(totals.decideInputTokens - before.decideInputTokens).toBe(300);
+    expect(totals.decideOutputTokens - before.decideOutputTokens).toBe(30);
+    expect(totals.reflectionInputTokens - before.reflectionInputTokens).toBe(50);
+    expect(totals.reflectionOutputTokens - before.reflectionOutputTokens).toBe(5);
   });
 });

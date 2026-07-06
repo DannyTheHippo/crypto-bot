@@ -13,7 +13,13 @@ import {
   type ArmPreconditionsPort,
   type ModeControlConfig,
 } from '../../ports/mode-control';
+import {
+  PROMOTION_READINESS,
+  PROMOTION_READINESS_CONFIG,
+  type PromotionReadinessConfig,
+} from '../../ports/promotion';
 import { ModeControlService } from './mode-control.service';
+import { PromotionReadinessService } from './promotion-readiness.service';
 import { ArmingController } from './arming.controller';
 
 const noopAudit: ModeAuditPort = { record: () => undefined };
@@ -44,6 +50,22 @@ const configProvider: Provider = {
   inject: [ConfigService, LIMITS_COMPLETE],
 };
 
+// Same derived-value-object pattern as MODE_CONTROL_CONFIG above: PromotionReadinessService takes a
+// plain config object (unit tests stay ConfigService-free); prices/dust are validated decimal
+// strings from the agentic schema block.
+const readinessConfigProvider: Provider = {
+  provide: PROMOTION_READINESS_CONFIG,
+  useFactory: (config: ConfigService<AppConfig, true>): PromotionReadinessConfig => {
+    const agentic = config.get('agentic', { infer: true });
+    return {
+      tokenPriceInputPerMtok: agentic.tokenPriceInputPerMtok,
+      tokenPriceOutputPerMtok: agentic.tokenPriceOutputPerMtok,
+      dustNotional: agentic.promotionDustNotional,
+    };
+  },
+  inject: [ConfigService],
+};
+
 const providers: Provider[] = [
   { provide: CLOCK, useClass: SystemClock },
   {
@@ -53,8 +75,11 @@ const providers: Provider[] = [
   },
   { provide: ARM_PRECONDITIONS, useValue: defaultPreconditions },
   configProvider,
+  readinessConfigProvider,
   ModeControlService,
   { provide: MODE_CONTROL, useExisting: ModeControlService },
+  PromotionReadinessService,
+  { provide: PROMOTION_READINESS, useExisting: PromotionReadinessService },
 ];
 
 // @Global so the ExecutionGate (in ExecutionModule) resolves the SINGLE MODE_CONTROL instance — the
@@ -65,6 +90,7 @@ const providers: Provider[] = [
   providers,
   // ModeControlService (concrete) is exported alongside the port so the composition-root trading
   // runtime can call refreshKeyProbe() at boot — not on ModeControlPort (a runtime-glue concern).
-  exports: [MODE_CONTROL, ModeControlService],
+  // PROMOTION_READINESS is the earned-live evidence verdict (P2b) the boot interlock consumes (P2c).
+  exports: [MODE_CONTROL, ModeControlService, PROMOTION_READINESS],
 })
 export class ModeControlModule {}

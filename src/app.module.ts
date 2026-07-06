@@ -109,6 +109,8 @@ import { AgentDecisionJournalAdapter } from './modules/persistence/repositories/
 import { InMemoryAgentDecisionJournal } from './modules/persistence/repositories/in-memory-agent-decision-journal';
 import { LlmUsageSinkAdapter } from './modules/persistence/repositories/llm-usage-sink.adapter';
 import { InMemoryLlmUsageSink } from './modules/persistence/repositories/in-memory-llm-usage-sink';
+import { PromotionStatsRepository } from './modules/persistence/repositories/promotion-stats.repository';
+import { PROMOTION_STATS, type PromotionStatsPort } from './ports/promotion';
 import {
   PlaybookStoreAdapter,
   type PlaybookVersionEntry,
@@ -848,6 +850,16 @@ class MetricsWrappingAgentClient implements AgentClientPort {
     // — the boundary wall) record validator-rejection tripwires through its own LOCAL structural type
     // rather than the concrete class. Same useExisting pattern the DB_HEALTH/PORTFOLIO_VIEW bridges use.
     { provide: REFLECTION_METRICS_RECORDER_OVERRIDE, useExisting: AgentMetricsRecorder },
+    {
+      // PROMOTION_STATS (earned-live evidence source): DB-backed only — there is deliberately NO
+      // in-memory fallback, because PromotionReadinessService treats an absent stats source as the
+      // fail-closed NO_STATS_SOURCE verdict (a bot without durable fills has no promotion evidence
+      // by definition). undefined under test/ci/no-DB, mirroring the *_OVERRIDE convention.
+      provide: PROMOTION_STATS,
+      useFactory: (db: NodePgDatabase<typeof schema> | null): PromotionStatsPort | undefined =>
+        isTestEnv() || db === null ? undefined : new PromotionStatsRepository(db),
+      inject: [DRIZZLE_DB],
+    },
   ],
   exports: [
     AGENT_DECISION_JOURNAL,
@@ -855,6 +867,7 @@ class MetricsWrappingAgentClient implements AgentClientPort {
     AGENT_TRADING_PROFILE_OVERRIDE,
     REFLECTION_METRICS_RECORDER_OVERRIDE,
     LLM_USAGE_SINK,
+    PROMOTION_STATS,
   ],
 })
 class AgenticCompositionBridgeModule {}

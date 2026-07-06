@@ -48,6 +48,11 @@ export interface AppConfig {
     autoPromoteMinTrades: number;
     // Absent means unpinned.
     playbookPin?: number;
+    // PromotionReadinessService LLM-cost math: USD per 1M tokens, operator-adjustable.
+    tokenPriceInputPerMtok: string;
+    tokenPriceOutputPerMtok: string;
+    // Residual-position notional (quote ccy) below which a round-trip cycle counts as CLOSED.
+    promotionDustNotional: string;
   };
   // Risk-lane knobs read via ConfigService (mirrors the agentic block above).
   risk: {

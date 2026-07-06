@@ -136,6 +136,14 @@ const envSchema = z.object({
   // Cumulative closed-trade floor before a reflection candidate auto-promotes to ACTIVE (G4b); 0
   // (default) disables auto-promotion — see reflection.service.ts's autoPromoteMinTrades comment.
   AGENTIC_AUTO_PROMOTE_MIN_TRADES: z.coerce.number().int().min(0).default(0),
+  // PromotionReadinessService LLM-cost math: USD per 1M tokens, operator-adjustable (claude-sonnet-5
+  // list prices as of this writing) — same stance as the Grafana cost-panel variables.
+  AGENTIC_TOKEN_PRICE_INPUT_PER_MTOK: decimalString.default('3'),
+  AGENTIC_TOKEN_PRICE_OUTPUT_PER_MTOK: decimalString.default('15'),
+  // Residual-position notional (quote ccy) below which PromotionReadinessService's round-trip walk
+  // considers a cycle CLOSED — historical pre-IOC cycles carry dust remainders that would otherwise
+  // never close. Default '5' mirrors BTC/USDT's exchange minNotional.
+  PROMOTION_DUST_NOTIONAL: decimalString.default('5'),
   // Marketable-exit crossing buffer (bps) for reduce-only intents (PositionSizerService): how far
   // the IOC limit crosses the spread so a partial fill doesn't leave sub-minNotional dust resting
   // away from market. Capped at 99 (< DEFAULT_LIMITS.maxBandBps=100 in risk.module) so a crossed
@@ -208,6 +216,9 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     AGENTIC_REFLECTION_COOLDOWN_MS: agenticReflectionCooldownMs,
     AGENTIC_PLAYBOOK_PIN: agenticPlaybookPin,
     AGENTIC_AUTO_PROMOTE_MIN_TRADES: agenticAutoPromoteMinTrades,
+    AGENTIC_TOKEN_PRICE_INPUT_PER_MTOK: agenticTokenPriceInputPerMtok,
+    AGENTIC_TOKEN_PRICE_OUTPUT_PER_MTOK: agenticTokenPriceOutputPerMtok,
+    PROMOTION_DUST_NOTIONAL: promotionDustNotional,
     EXIT_CROSS_BUFFER_BPS: exitCrossBufferBps,
     BASE_NOTIONAL: baseNotional,
     RISK_MAX_ORDER_NOTIONAL: riskMaxOrderNotional,
@@ -258,6 +269,9 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       reflectionCooldownMs: agenticReflectionCooldownMs,
       autoPromoteMinTrades: agenticAutoPromoteMinTrades,
       playbookPin: agenticPlaybookPin,
+      tokenPriceInputPerMtok: agenticTokenPriceInputPerMtok,
+      tokenPriceOutputPerMtok: agenticTokenPriceOutputPerMtok,
+      promotionDustNotional,
     },
     risk: {
       exitCrossBufferBps,

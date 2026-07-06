@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, type Mock } from 'vitest';
-import { DbHealthIndicator } from '../../../src/modules/persistence/db-health.indicator';
+import { DbHealthIndicator } from '../../../src/database/db-health.indicator';
 import type { Pool, PoolClient } from 'pg';
 
 function makeMockPool(queryBehavior: 'ok' | 'throw'): { pool: Pool; release: Mock } {

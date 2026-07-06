@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { numericMoney } from '../../../src/modules/persistence/schema/custom-types';
+import { numericMoney } from '../../../src/database/schemas/trading/custom-types';
 
 /**
  * numericMoney is a drizzle customType builder.  Calling it with a column name returns

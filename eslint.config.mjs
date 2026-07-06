@@ -58,6 +58,11 @@ export default tseslint.config(
           mode: 'folder',
         },
         {
+          type: 'database',
+          pattern: 'src/database',
+          mode: 'folder',
+        },
+        {
           type: 'modules',
           pattern: 'src/modules/*',
           mode: 'folder',
@@ -87,6 +92,12 @@ export default tseslint.config(
               allow: ['domain', 'ports', 'config'],
             },
             {
+              // Composition-root-only zone: repositories/schema behind the DI tokens in ports/.
+              // Modules never import it directly (they never had cross-module persistence imports).
+              from: ['database'],
+              allow: ['database', 'domain', 'ports', 'config'],
+            },
+            {
               // 'config' addition: modules inject the TypedConfigService facade (the sanctioned
               // config read path) — never each other.
               from: [['modules', { moduleName: '*' }]],
@@ -99,7 +110,7 @@ export default tseslint.config(
             },
             {
               from: ['app'],
-              allow: ['domain', 'ports', 'config', 'modules', 'app'],
+              allow: ['domain', 'ports', 'config', 'database', 'modules', 'app'],
             },
           ],
         },

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { InMemoryAgentDecisionJournal } from '../../../src/modules/persistence/repositories/in-memory-agent-decision-journal';
+import { InMemoryAgentDecisionJournal } from '../../../src/database/repositories/in-memory-agent-decision-journal';
 import type { AgentDecisionEntry } from '../../../src/ports/agentic-strategy';
 import { strategyId, symbolId, venueId, epochMs } from '../../../src/domain/types/ids';
 

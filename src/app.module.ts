@@ -12,18 +12,18 @@ import type { Exchange } from 'ccxt';
 import { AppConfigModule } from './config/config.module';
 import { TypedConfigService } from './config/environment/typed-config.service';
 import { ObservabilityModule } from './modules/observability/observability.module';
-import { PersistenceModule } from './modules/persistence/persistence.module';
-import { DbHealthIndicator } from './modules/persistence/db-health.indicator';
-import { DrizzleExecutionStore } from './modules/persistence/repositories/drizzle-execution-store';
-import { DrizzleExecOutbox } from './modules/persistence/repositories/drizzle-exec-outbox';
-import { PgAdvisoryInstanceLock } from './modules/persistence/repositories/pg-advisory-instance-lock';
-import { DrizzleModeAudit } from './modules/persistence/repositories/drizzle-mode-audit';
-import { RiskDecisionJournalAdapter } from './modules/persistence/repositories/risk-decision-journal.adapter';
-import { SignalJournalAdapter } from './modules/persistence/repositories/signal-journal.adapter';
-import { DATABASE_POOL, DRIZZLE_DB } from './modules/persistence/persistence.tokens';
+import { PersistenceModule } from './database/database.module';
+import { DbHealthIndicator } from './database/db-health.indicator';
+import { DrizzleExecutionStore } from './database/repositories/drizzle-execution-store';
+import { DrizzleExecOutbox } from './database/repositories/drizzle-exec-outbox';
+import { PgAdvisoryInstanceLock } from './database/repositories/pg-advisory-instance-lock';
+import { DrizzleModeAudit } from './database/repositories/drizzle-mode-audit';
+import { RiskDecisionJournalAdapter } from './database/repositories/risk-decision-journal.adapter';
+import { SignalJournalAdapter } from './database/repositories/signal-journal.adapter';
+import { DATABASE_POOL, DRIZZLE_DB } from './database/database.tokens';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import type { Pool } from 'pg';
-import type * as schema from './modules/persistence/schema';
+import type * as schema from './database/schemas/trading';
 import { DB_HEALTH } from './ports/db-health';
 import { RiskModule } from './modules/risk/risk.module';
 import { KillSwitchService } from './modules/risk/kill-switch.service';
@@ -106,11 +106,11 @@ import {
   AgentMetricsRecorder,
   type AgentDecideOutcome,
 } from './modules/observability/agent-metrics-recorder.service';
-import { AgentDecisionJournalAdapter } from './modules/persistence/repositories/agent-decision-journal.adapter';
-import { InMemoryAgentDecisionJournal } from './modules/persistence/repositories/in-memory-agent-decision-journal';
-import { LlmUsageSinkAdapter } from './modules/persistence/repositories/llm-usage-sink.adapter';
-import { InMemoryLlmUsageSink } from './modules/persistence/repositories/in-memory-llm-usage-sink';
-import { PromotionStatsRepository } from './modules/persistence/repositories/promotion-stats.repository';
+import { AgentDecisionJournalAdapter } from './database/repositories/agent-decision-journal.adapter';
+import { InMemoryAgentDecisionJournal } from './database/repositories/in-memory-agent-decision-journal';
+import { LlmUsageSinkAdapter } from './database/repositories/llm-usage-sink.adapter';
+import { InMemoryLlmUsageSink } from './database/repositories/in-memory-llm-usage-sink';
+import { PromotionStatsRepository } from './database/repositories/promotion-stats.repository';
 import {
   PROMOTION_STATS,
   PROMOTION_READINESS,
@@ -121,8 +121,8 @@ import {
 import {
   PlaybookStoreAdapter,
   type PlaybookVersionEntry,
-} from './modules/persistence/repositories/playbook-store.adapter';
-import { InMemoryPlaybookStore } from './modules/persistence/repositories/in-memory-playbook-store';
+} from './database/repositories/playbook-store.adapter';
+import { InMemoryPlaybookStore } from './database/repositories/in-memory-playbook-store';
 import { price, qty } from './domain/types/money';
 import type { SymbolFilters } from './domain/risk/evaluate';
 import { DEFAULT_FILTERS } from './domain/risk/default-filters';

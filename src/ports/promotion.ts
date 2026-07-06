@@ -44,9 +44,9 @@ export interface LlmTokenTotals {
 }
 
 // What PromotionReadinessService's round-trip walk + LLM-cost math need from the DB — nothing more.
-// Crosses the modules/mode-control ↔ modules/persistence boundary; the composition root is the only
+// Crosses the modules/mode-control ↔ database boundary; the composition root is the only
 // place allowed to bind a concrete (Drizzle-backed) implementation to this port (rule 2's boundary
-// wall — mode-control may not import persistence directly).
+// wall — mode-control may not import database directly).
 export interface PromotionStatsPort {
   // Ordered oldest→newest (executedAt, then insertion order for ties) fills for the given mode —
   // the round-trip walk depends on this ordering to track signed position correctly.

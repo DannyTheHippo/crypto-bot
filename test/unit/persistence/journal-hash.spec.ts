@@ -4,7 +4,7 @@ import {
   computeAuditHash,
   canonicalPayload,
   AUDIT_INITIAL_PREV_HASH,
-} from '../../../src/modules/persistence/journal-hash';
+} from '../../../src/database/journal-hash';
 
 describe('computeAuditHash', () => {
   it('returns a 64-char hex string', () => {

@@ -78,7 +78,7 @@ export interface RiskEnginePort {
   evaluateFlatten(intent: OrderIntent, snapshot: PortfolioSnapshot): RiskDecision;
 }
 
-// Journaling sink so modules/risk never imports modules/persistence (boundary wall).
+// Journaling sink so modules/risk never imports database (boundary wall).
 // No-op default in RiskModule; app-level wiring records to the risk_decisions repo.
 export interface RiskJournalPort {
   record(decision: RiskDecision): void;

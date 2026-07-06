@@ -13,7 +13,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { Pool } from 'pg';
-import { PgAdvisoryInstanceLock } from '../../src/modules/persistence/repositories/pg-advisory-instance-lock';
+import { PgAdvisoryInstanceLock } from '../../src/database/repositories/pg-advisory-instance-lock';
 
 const DB_URL = process.env['DATABASE_URL'];
 

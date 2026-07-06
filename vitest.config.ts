@@ -45,8 +45,8 @@ export default defineConfig({
         'dist/**',
         // DB-bound repository wrappers and schema definitions are thin SQL/DDL
         // with no branchable logic; they are covered by test:db (integration, unsandboxed).
-        'src/modules/persistence/schema/**',
-        'src/modules/persistence/repositories/**',
+        'src/database/schemas/**',
+        'src/database/repositories/**',
       ],
     },
   },

@@ -31,8 +31,11 @@ export class InMemoryAgentDecisionJournal implements AgentDecisionJournalPort {
     }
   }
 
-  recent(limit: number): Promise<readonly AgentDecisionRow[]> {
-    // rows are stored oldest→newest already (append-only push); take the tail `limit` entries.
-    return Promise.resolve(this.rows.slice(Math.max(0, this.rows.length - limit)));
+  recent(limit: number, strategyId?: string): Promise<readonly AgentDecisionRow[]> {
+    // rows are stored oldest→newest already (append-only push); apply the optional per-strategy
+    // scope (P7 — see the port's own comment), then take the tail `limit` entries.
+    const scoped =
+      strategyId === undefined ? this.rows : this.rows.filter((r) => r.strategyId === strategyId);
+    return Promise.resolve(scoped.slice(Math.max(0, scoped.length - limit)));
   }
 }

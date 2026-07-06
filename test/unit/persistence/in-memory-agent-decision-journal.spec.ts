@@ -57,6 +57,22 @@ describe('InMemoryAgentDecisionJournal', () => {
     expect(rows[rows.length - 1]!.eventTime).toBe(501);
   });
 
+  it('recent(limit, strategyId) scopes to one strategy before applying the limit (P7)', async () => {
+    const journal = new InMemoryAgentDecisionJournal();
+    journal.record(entry(1, { strategyId: strategyId('agentic-1') }));
+    journal.record(entry(2, { strategyId: strategyId('agentic-2') }));
+    journal.record(entry(3, { strategyId: strategyId('agentic-1') }));
+    journal.record(entry(4, { strategyId: strategyId('agentic-2') }));
+
+    const scoped = await journal.recent(10, 'agentic-2');
+    expect(scoped.map((r) => r.eventTime)).toEqual([2, 4]);
+    // The limit applies AFTER the scope — the tail of the scoped rows, not of the raw ring.
+    const limited = await journal.recent(1, 'agentic-1');
+    expect(limited.map((r) => r.eventTime)).toEqual([3]);
+    // Unscoped read stays the historical behavior.
+    expect((await journal.recent(10)).map((r) => r.eventTime)).toEqual([1, 2, 3, 4]);
+  });
+
   it('preserves every field on the entry, mapping id/createdAt in addition', async () => {
     const journal = new InMemoryAgentDecisionJournal();
     journal.record(entry(1, { action: 'long', confidence: 0.9, rationale: 'trend confirmed' }));

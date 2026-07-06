@@ -12,6 +12,8 @@ export type AgentDecideOutcome =
 
 export type AgentTokenKind = 'input' | 'output';
 
+export type AgentPrescreenOutcome = 'called' | 'skipped_quiet' | 'failopen_error';
+
 // Typed recorder over the agentic-lane providers registered in metrics.service.ts. Exported from
 // ObservabilityModule so the composition root can hand it (or closures over it) to the agentic lane —
 // this module never imports features/trading/agentic itself (the boundaries wall runs the other way).
@@ -29,6 +31,8 @@ export class AgentMetricsRecorder {
     @InjectMetric('playbook_validator_rejections_total')
     private readonly validatorRejectionsCounter: Counter<string>,
     @InjectMetric('agent_client_info') private readonly clientInfoGauge: Gauge<string>,
+    @InjectMetric('agentic_prescreen_total')
+    private readonly prescreenCounter: Counter<string>,
   ) {}
 
   recordDecide(outcome: AgentDecideOutcome): void {
@@ -85,6 +89,14 @@ export class AgentMetricsRecorder {
   setClientInfo(kind: string): void {
     try {
       this.clientInfoGauge.labels({ kind }).set(1);
+    } catch {
+      /* metrics must never throw into a trading path */
+    }
+  }
+
+  recordPrescreen(outcome: AgentPrescreenOutcome): void {
+    try {
+      this.prescreenCounter.inc({ outcome });
     } catch {
       /* metrics must never throw into a trading path */
     }

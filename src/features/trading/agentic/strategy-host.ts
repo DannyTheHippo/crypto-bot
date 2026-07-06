@@ -7,6 +7,7 @@ import type {
   OrderBookSnapshotEvent,
 } from '../../../domain/types/market-events';
 import type { MarketEvent } from '../../../domain/types/market-events';
+import type { SubscriptionSpec } from '../../../domain/types/subscription';
 import type { ExecReport } from '../../../domain/types/exec-report';
 import type { Signal } from '../../../domain/types/signal';
 import type { StrategyPortfolioView } from '../../../domain/types/portfolio';
@@ -248,12 +249,20 @@ export class StrategyHost implements StrategyHostPort {
   }
 
   private async consumeEvents(): Promise<void> {
-    const sub = this.registry.states()[0];
-    if (!sub) return;
-    const strategy = this.registry.getStrategy(sub.id);
-    if (!strategy) return;
+    // Multi-symbol (P7): ONE stream subscription covering the UNION of every registered instance's
+    // spec — subscribing off states()[0] alone starved every other instance's symbol of data. All
+    // instances share a venue and channel shape (one lane, per-symbol instances), so venue/channels
+    // come from the first spec and only the symbol set is merged; routeEvent below then scopes each
+    // event back down to the runtimes that declared its symbol.
+    const specs = this.registry
+      .states()
+      .map(({ id }) => this.registry.getStrategy(id)?.subscriptions)
+      .filter((s): s is SubscriptionSpec => s !== undefined);
+    const first = specs[0];
+    if (!first) return;
+    const symbols = [...new Set(specs.flatMap((s) => s.symbols))];
 
-    const stream = this.marketStream.subscribe(strategy.subscriptions);
+    const stream = this.marketStream.subscribe({ ...first, symbols });
     for await (const event of stream) {
       this.routeEvent(event);
       this.drainMailboxes();
@@ -270,6 +279,11 @@ export class StrategyHost implements StrategyHostPort {
     for (const [id, runtime] of this.runtimes) {
       const lifecycle = this.registry.getLifecycle(id);
       if (!lifecycle || lifecycle === 'HALTED' || lifecycle === 'UNLOADED') continue;
+      // Multi-symbol (P7): only the runtimes that DECLARED this event's symbol see it — the merged
+      // stream above carries every instance's symbols, and an undeclared symbol reaching a
+      // single-symbol instance would make it decide on an instrument it does not trade.
+      const spec = this.registry.getStrategy(id)?.subscriptions;
+      if (spec !== undefined && !spec.symbols.includes(event.symbol)) continue;
 
       switch (event.kind) {
         case 'CANDLE':

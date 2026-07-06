@@ -20,11 +20,14 @@ const CFG: ReconConfig = {
   epsRel: '0.0001',
   overlapMs: 300_000,
   driftPasses: 3,
+  balanceAxis: true,
+  sweepSymbols: [],
 };
 const OTHER_COID = encodeClientOrderId(intentId('0190ffff-1234-7abc-89ab-0123456789ab'), 'paper');
 
 interface ExchangeScript {
   openOrders?: ExchangeOrderState[];
+  openOrdersThrow?: boolean;
   fetchOrder?: () => ExchangeOrderState;
   trades?: VenueFill[];
   tradesThrow?: boolean;
@@ -37,6 +40,7 @@ function build(
   mismatchCounter?: Counter<string>,
   runsCounter?: Counter<string>,
   lastSuccessGauge?: Gauge<string>,
+  cfgOver: Partial<ReconConfig> = {},
 ) {
   let nowMs = T;
   const clock = { now: () => epochMs(nowMs) };
@@ -70,7 +74,10 @@ function build(
           })
         )(),
       ),
-    fetchOpenOrders: () => Promise.resolve(script.openOrders ?? []),
+    fetchOpenOrders: () =>
+      script.openOrdersThrow
+        ? Promise.reject(new Error('open orders down'))
+        : Promise.resolve(script.openOrders ?? []),
     fetchBalances: () =>
       script.balancesThrow
         ? Promise.reject(new Error('balances down'))
@@ -91,7 +98,7 @@ function build(
     exchange,
     store,
     ks,
-    CFG,
+    { ...CFG, ...cfgOver },
     orders,
     portfolio,
     ingestor,
@@ -172,7 +179,16 @@ describe('ReconciliationService (§6.4)', () => {
   it('increments the reconciliation_mismatch_total metric by the pass mismatch count', async () => {
     const counter = { inc: vi.fn() } as unknown as Counter<string>;
     // A foreign venue open order is a WARN mismatch (count 1) — a deterministic non-zero pass.
-    const ctx = build({ openOrders: [venueOrder('someoneElseOrder', 'open')] }, counter);
+    // SYM is in the configured sweep set (no local state yet — the per-symbol sweep must still run).
+    const ctx = build(
+      { openOrders: [venueOrder('someoneElseOrder', 'open')] },
+      counter,
+      undefined,
+      undefined,
+      {
+        sweepSymbols: [SYM],
+      },
+    );
     const r = await ctx.recon.reconcile();
     expect(r.mismatches).toBeGreaterThan(0);
     expect((counter.inc as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual([r.mismatches]);
@@ -197,6 +213,7 @@ describe('ReconciliationService (§6.4)', () => {
       undefined,
       runs,
       lastSuccess,
+      { sweepSymbols: [SYM] },
     );
     await mismatch.recon.reconcile();
     expect(incCalls.at(-1)).toEqual([{ result: 'mismatch' }]);
@@ -208,6 +225,7 @@ describe('ReconciliationService (§6.4)', () => {
       undefined,
       runs,
       lastSuccess,
+      { sweepSymbols: [SYM] },
     );
     await halt.recon.reconcile();
     expect(incCalls.at(-1)).toEqual([{ result: 'halt' }]);
@@ -223,18 +241,101 @@ describe('ReconciliationService (§6.4)', () => {
   });
 
   it('a foreign venue open order is a WARN mismatch, not a halt', async () => {
-    const ctx = build({ openOrders: [venueOrder('someoneElseOrder', 'open')] });
+    const ctx = build(
+      { openOrders: [venueOrder('someoneElseOrder', 'open')] },
+      undefined,
+      undefined,
+      undefined,
+      {
+        sweepSymbols: [SYM],
+      },
+    );
     const r = await ctx.recon.reconcile();
     expect(r.mismatches).toBe(1);
     expect(r.halted).toBe(false);
   });
 
   it('our-prefix venue open order unknown locally HALTs (no auto-cancel)', async () => {
-    const ctx = build({ openOrders: [venueOrder(OTHER_COID, 'open')] });
+    const ctx = build(
+      { openOrders: [venueOrder(OTHER_COID, 'open')] },
+      undefined,
+      undefined,
+      undefined,
+      {
+        sweepSymbols: [SYM],
+      },
+    );
     const r = await ctx.recon.reconcile();
     expect(r.halted).toBe(true);
     expect(ctx.engages[0]!.flatten).toBe(false); // HALT, never auto-flatten
     expect(ctx.engages[0]!.reason).toContain('UNKNOWN_OURS_OPEN');
+  });
+
+  it('a failed per-symbol open-order sweep is a WARN mismatch and skips terminal adoption', async () => {
+    const ctx = build({ openOrdersThrow: true });
+    const coid = seedOpenOrder(ctx); // SYM has local state → swept → the sweep fails
+    const r = await ctx.recon.reconcile();
+    // Exactly the sweep-failure mismatch: adoptTerminal must NOT run (its fetchOrder stub would
+    // throw and add a second mismatch if it did).
+    expect(r.mismatches).toBe(1);
+    expect(r.halted).toBe(false);
+    expect(ctx.orders.get(coid)?.state).toBe('ACKED'); // absence ≠ venue truth when the fetch failed
+  });
+
+  it('balanceAxis=false skips the balances axis entirely (shared demo account)', async () => {
+    const ctx = build(
+      { balances: () => new Map([['USDT', { free: '90000', locked: '0' }]]) }, // would be BALANCE_DRIFT
+      undefined,
+      undefined,
+      undefined,
+      { balanceAxis: false },
+    );
+    const r = await ctx.recon.reconcile();
+    expect(r).toEqual({ mismatches: 0, halted: false });
+    expect(ctx.engages).toHaveLength(0);
+  });
+
+  it('configured sweepSymbols are swept even with zero local state', async () => {
+    // No orders, no positions — only the config names SYM; the failing trade sweep proves it ran.
+    const ctx = build({ tradesThrow: true }, undefined, undefined, undefined, {
+      sweepSymbols: [SYM],
+    });
+    const r = await ctx.recon.reconcile();
+    expect(r.mismatches).toBe(1);
+    expect(r.halted).toBe(false);
+  });
+
+  it('an axis throw past the per-item guards records result=error + PASS_ERROR row, then rethrows', async () => {
+    const runs = { inc: vi.fn() } as unknown as Counter<string>;
+    const coid = makeIntent().clientOrderId;
+    const ctx = build(
+      { openOrders: [venueOrder(coid, 'open')], trades: [trade(coid, 'boom-1')] },
+      undefined,
+      runs,
+    );
+    seedOpenOrder(ctx, coid);
+    // The ingest path's store write throwing is exactly the kind of escape the pass accounting must
+    // survive: the row and the runs counter still land, and the driver sees the rethrow.
+    ctx.store.saveFill = () => {
+      throw new Error('db down');
+    };
+    await expect(ctx.recon.reconcile()).rejects.toThrow('db down');
+    expect((runs.inc as ReturnType<typeof vi.fn>).mock.calls.at(-1)).toEqual([{ result: 'error' }]);
+    expect(ctx.store.reconciliations).toHaveLength(1);
+    expect(ctx.store.reconciliations[0]!.detail).toBe('PASS_ERROR:Error:db down');
+    expect(ctx.store.reconciliations[0]!.halted).toBe(false);
+  });
+
+  it('a non-Error axis throw is described by type in the PASS_ERROR detail', async () => {
+    const coid = makeIntent().clientOrderId;
+    const ctx = build({ openOrders: [venueOrder(coid, 'open')], trades: [trade(coid, 'boom-2')] });
+    seedOpenOrder(ctx, coid);
+    ctx.store.saveFill = () => {
+      // eslint-disable-next-line @typescript-eslint/only-throw-error -- exercising the non-Error branch
+      throw 'string failure';
+    };
+    await expect(ctx.recon.reconcile()).rejects.toBe('string failure');
+    expect(ctx.store.reconciliations[0]!.detail).toBe('PASS_ERROR:string:string failure');
   });
 
   it.each<[ExchangeOrderState['status'], string]>([

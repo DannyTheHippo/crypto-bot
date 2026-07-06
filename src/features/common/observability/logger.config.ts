@@ -1,3 +1,5 @@
+import { currentCorrelationId } from '../../../shared/correlation/correlation';
+
 export const REDACT_PATHS = [
   'req.headers.authorization',
   'req.headers["x-mbx-apikey"]',
@@ -27,6 +29,10 @@ export function buildPinoHttpOptions(opts: PinoLoggerOptions) {
         bootId: opts.bootId,
         mode: opts.mode,
       },
+      // Correlation-ALS (P4): stamps the request-scoped correlation id (CorrelationMiddleware,
+      // src/shared/correlation/) onto every line logged inside a request. Off-request lines (boot,
+      // timers) return undefined, which pino's serializer simply omits.
+      mixin: () => ({ correlationId: currentCorrelationId() }),
     },
   };
 }

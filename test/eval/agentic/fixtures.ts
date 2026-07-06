@@ -162,6 +162,7 @@ export async function replay(
       close: candle.close.toFixed(),
       playbookVersion: proposal.playbookVersion ?? null,
       promptHash: proposal.promptHash ?? 'unknown',
+      model,
     });
   }
   return { rows, requestLog };

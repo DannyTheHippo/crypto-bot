@@ -168,12 +168,19 @@ export interface ReconciliationRow {
 // §6.4 reconciliation tunables. epsAbs/epsRel form the per-asset balance tolerance band; overlapMs
 // is the fetchMyTrades look-back beyond the checkpoint (free under I3 dedupe, absorbs clock skew);
 // driftPasses is how many consecutive strictly-growing within-ε drifts escalate to a HALT.
+// balanceAxis disables the per-asset balance comparison where local balances cannot mirror venue
+// truth (a shared multi-asset demo account vs the synthetic STARTING_CASH seed) — a false
+// BALANCE_DRIFT there would HALT on holdings the bot never touched. Order/trade axes always run.
+// sweepSymbols is the configured trading universe, unioned with symbols that have live local state,
+// so the open-order/trade sweeps see venue truth even before the bot holds anything.
 export const RECON_CONFIG = Symbol('RECON_CONFIG');
 export interface ReconConfig {
   readonly epsAbs: string;
   readonly epsRel: string;
   readonly overlapMs: number;
   readonly driftPasses: number;
+  readonly balanceAxis: boolean;
+  readonly sweepSymbols: readonly string[];
 }
 
 // §1/§6 single-writer interlock: a per-(venue, apiKey) lock acquired at startup so a second bot

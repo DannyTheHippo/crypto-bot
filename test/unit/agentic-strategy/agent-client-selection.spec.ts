@@ -124,6 +124,12 @@ describe('agenticEnv', () => {
       tokenPriceInputPerMtok: '3',
       tokenPriceOutputPerMtok: '15',
       promotionDustNotional: '5',
+      prescreenEnabled: true,
+      prescreenVolShortBars: 10,
+      prescreenVolLongBars: 50,
+      prescreenVolRatio: 1.3,
+      prescreenBreakoutLookbackBars: 20,
+      prescreenBreakoutPct: 0.005,
     };
     const config = { agentic } as unknown as TypedConfigService;
 

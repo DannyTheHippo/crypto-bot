@@ -52,6 +52,11 @@ export interface AnthropicAgentClientConfig {
   // Optional so existing wiring that hasn't supplied one yet still compiles; falls back to
   // DEFAULT_TRADING_PROFILE below until the module-wiring task threads the strategy's real profile.
   readonly profile?: AgentTradingProfile;
+  // Multi-symbol (P7): the venue constraints are the ONLY per-symbol profile field, so ONE shared
+  // client resolves them per decide from the input's symbol; everything else on `profile`
+  // (fees, sizing, backstop) is symbol-independent. Absent (or returning undefined for a symbol)
+  // ⇒ the static profile's constraints — the exact pre-P7 behavior.
+  readonly constraintsFor?: (symbol: string) => AgentTradingProfile['constraints'] | undefined;
 }
 
 // Placeholder profile used only when no real AgentTradingProfile has been wired yet — keeps the
@@ -166,7 +171,9 @@ export class AnthropicAgentClient implements AgentClientPort {
       input.trigger.kind === 'candle' ? input.trigger.event.closeTime : input.snapshot.eventTime;
 
     const { content: playbookContent, version: playbookVersion } = await this.resolvePlaybook();
-    const systemPrompt = buildSystemPrompt(this.cfg.profile ?? DEFAULT_TRADING_PROFILE);
+    const baseProfile = this.cfg.profile ?? DEFAULT_TRADING_PROFILE;
+    const constraints = this.cfg.constraintsFor?.(String(symbol)) ?? baseProfile.constraints;
+    const systemPrompt = buildSystemPrompt({ ...baseProfile, constraints });
     const userMessage = buildUserMessage(input, playbookContent ? { playbookContent } : {});
     const promptHash = computePromptHash({
       templateVersion: PROMPT_TEMPLATE_VERSION,

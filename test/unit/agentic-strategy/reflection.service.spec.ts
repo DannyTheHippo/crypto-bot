@@ -807,4 +807,254 @@ describe('createReflectionService', () => {
     await flush();
     expect(h.fetchFn).toHaveBeenCalledTimes(2);
   });
+
+  // Model precedence: AGENTIC_REFLECTION_MODEL > AGENTIC_MODEL > the shared Sonnet-5 default.
+  // Asserted off the actual request body — the only place the choice becomes observable.
+  it.each([
+    [
+      { AGENTIC_REFLECTION_MODEL: 'claude-opus-4-8', AGENTIC_MODEL: 'claude-sonnet-5' },
+      'claude-opus-4-8',
+    ],
+    [{ AGENTIC_MODEL: 'claude-haiku-4-5' }, 'claude-haiku-4-5'],
+    [{}, 'claude-sonnet-5'],
+  ] as const)('reflection model precedence: %o → %s', async (envOver, expected) => {
+    const h = buildHarness();
+    h.fetchFn.mockResolvedValue(
+      apiResponse(revisionToolBody({ playbook: validPlaybookContent('v2'), changelog: 'c' })),
+    );
+    const service = createReflectionService(
+      { ANTHROPIC_API_KEY: 'k', AGENTIC_REFLECTION_EVERY_N_TRADES: '1', ...envOver },
+      h.deps,
+    );
+    service.onClosedTrade(SID, 1);
+    await flush();
+    const body = JSON.parse((h.fetchFn.mock.calls[0]![1] as { body: string }).body) as {
+      model: string;
+    };
+    expect(body.model).toBe(expected);
+  });
+});
+
+// ── Realized round-trip evidence + durable trigger seed ─────────────────────
+
+import type {
+  ReflectionTriggerSeed,
+  RoundTripEvidence,
+  RoundTripEvidencePort,
+} from '../../../src/ports/promotion';
+
+function evidenceRow(over: Partial<RoundTripEvidence> = {}): RoundTripEvidence {
+  return {
+    strategyId: 'agentic-1',
+    symbol: 'BTC/USDT',
+    openedAt: T - 60_000,
+    closedAt: T,
+    holdingMs: 60_000,
+    entryVwap: '100',
+    exitVwap: '101',
+    boughtQty: '1',
+    realizedPnl: '1',
+    feesQuote: '0.2',
+    netPnl: '0.8',
+    meanSlippageBps: '12.50',
+    ...over,
+  };
+}
+
+function fakeEvidence(
+  over: Partial<{
+    trips: readonly RoundTripEvidence[];
+    seed: ReflectionTriggerSeed;
+    tripsError: Error;
+    seedError: Error;
+  }> = {},
+): { port: RoundTripEvidencePort; seedCalls: () => number } {
+  let seedCalls = 0;
+  const port: RoundTripEvidencePort = {
+    recentRoundTrips: () =>
+      over.tripsError ? Promise.reject(over.tripsError) : Promise.resolve(over.trips ?? []),
+    reflectionSeed: () => {
+      seedCalls += 1;
+      return over.seedError
+        ? Promise.reject(over.seedError)
+        : Promise.resolve(
+            over.seed ?? {
+              closedTradesTotal: 0,
+              closedSinceLastReflection: 0,
+              lastReflectionAt: null,
+            },
+          );
+    },
+  };
+  return { port, seedCalls: () => seedCalls };
+}
+
+function requestBodyOf(
+  fetchFn: ReturnType<typeof vi.fn>,
+  call = 0,
+): {
+  system: string;
+  messages: Array<{ content: string }>;
+} {
+  return JSON.parse((fetchFn.mock.calls[call]![1] as { body: string }).body) as {
+    system: string;
+    messages: Array<{ content: string }>;
+  };
+}
+
+describe('ReflectionService realized evidence + trigger seeding', () => {
+  it('the DB seed revives a redeploy-starved trigger (fires earlier than in-memory counting would)', async () => {
+    const h = buildHarness();
+    const ev = fakeEvidence({
+      seed: { closedTradesTotal: 20, closedSinceLastReflection: 2, lastReflectionAt: null },
+    });
+    h.fetchFn.mockResolvedValue(
+      apiResponse(revisionToolBody({ playbook: validPlaybookContent('v2'), changelog: 'c' })),
+    );
+    const service = new ReflectionService(baseCfg({ everyNTrades: 3 }), {
+      ...h.deps,
+      evidence: ev.port,
+    });
+    service.onClosedTrade(SID, 1); // in-memory 1 of 3; kicks the seed
+    await flush(); // seed lands: max(1, 2) = 2
+    expect(h.fetchFn).not.toHaveBeenCalled();
+    service.onClosedTrade(SID, 2); // 3 of 3 → fires
+    await flush();
+    expect(h.fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failed seed logs, falls back to in-memory counters, and retries on the next trade', async () => {
+    const h = buildHarness();
+    const ev = fakeEvidence({ seedError: new Error('db down') });
+    const service = new ReflectionService(baseCfg({ everyNTrades: 10 }), {
+      ...h.deps,
+      evidence: ev.port,
+    });
+    service.onClosedTrade(SID, 1);
+    await flush();
+    expect(h.logger.messages.some((m) => m.includes('trigger seed failed'))).toBe(true);
+    service.onClosedTrade(SID, 2);
+    await flush();
+    expect(ev.seedCalls()).toBe(2); // unseeded again after the failure → retried
+    expect(h.fetchFn).not.toHaveBeenCalled();
+  });
+
+  it('a seeded lastReflectionAt arms the cooldown across restarts', async () => {
+    const h = buildHarness();
+    const ev = fakeEvidence({
+      seed: { closedTradesTotal: 5, closedSinceLastReflection: 0, lastReflectionAt: T - 500 },
+    });
+    h.fetchFn.mockResolvedValue(
+      apiResponse(revisionToolBody({ playbook: validPlaybookContent('v2'), changelog: 'c' })),
+    );
+    const service = new ReflectionService(baseCfg({ everyNTrades: 2, cooldownMs: 1_000 }), {
+      ...h.deps,
+      evidence: ev.port,
+    });
+    service.onClosedTrade(SID, 1); // 1 of 2; kicks seed
+    await flush();
+    service.onClosedTrade(SID, 2); // 2 of 2, but T − (T−500) = 500 < 1000 → cooldown blocks
+    await flush();
+    expect(h.fetchFn).not.toHaveBeenCalled();
+    h.clock.now = T + 600; // now 1100 past the seeded attempt
+    service.onClosedTrade(SID, 3);
+    await flush();
+    expect(h.fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('folds realizedRoundTrips into the payload and teaches the model to prefer it over proxies', async () => {
+    const h = buildHarness();
+    const trip = evidenceRow();
+    const ev = fakeEvidence({ trips: [trip] });
+    h.fetchFn.mockResolvedValue(
+      apiResponse(revisionToolBody({ playbook: validPlaybookContent('v2'), changelog: 'c' })),
+    );
+    const service = new ReflectionService(baseCfg({ everyNTrades: 1 }), {
+      ...h.deps,
+      evidence: ev.port,
+    });
+    service.onClosedTrade(SID, 1);
+    await flush();
+    const body = requestBodyOf(h.fetchFn);
+    expect(body.system).toContain('realizedRoundTrips is DIFFERENT in kind');
+    const payload = JSON.parse(body.messages[0]!.content.split('\n\n').at(-1)!) as {
+      realizedRoundTrips: RoundTripEvidence[];
+    };
+    expect(payload.realizedRoundTrips).toEqual([trip]);
+  });
+
+  it('evidence failure mid-run degrades to proxies-only and still completes the attempt', async () => {
+    const h = buildHarness();
+    const ev = fakeEvidence({ tripsError: new Error('db gone'), seedError: new Error('db gone') });
+    h.fetchFn.mockResolvedValue(
+      apiResponse(revisionToolBody({ playbook: validPlaybookContent('v2'), changelog: 'c' })),
+    );
+    const service = new ReflectionService(baseCfg({ everyNTrades: 1 }), {
+      ...h.deps,
+      evidence: ev.port,
+    });
+    service.onClosedTrade(SID, 1);
+    await flush();
+    expect(h.fetchFn).toHaveBeenCalledTimes(1);
+    const payload = JSON.parse(
+      requestBodyOf(h.fetchFn).messages[0]!.content.split('\n\n').at(-1)!,
+    ) as { realizedRoundTrips: RoundTripEvidence[] };
+    expect(payload.realizedRoundTrips).toEqual([]);
+    expect(h.logger.messages.some((m) => m.includes('evidence unavailable'))).toBe(true);
+  });
+
+  it('trigger counters are per-strategy (P7): one instance triggering never drains another', async () => {
+    const h = buildHarness();
+    h.fetchFn.mockResolvedValue(
+      apiResponse(revisionToolBody({ playbook: validPlaybookContent('v2'), changelog: 'c' })),
+    );
+    const service = new ReflectionService(baseCfg({ everyNTrades: 2, cooldownMs: 0 }), h.deps);
+    const otherId = strategyId('agentic-2');
+    service.onClosedTrade(SID, 1); // agentic-1: 1 of 2
+    service.onClosedTrade(otherId, 1); // agentic-2: 1 of 2 — lane-wide that is 2, but per-strategy neither fires
+    await flush();
+    expect(h.fetchFn).not.toHaveBeenCalled();
+    service.onClosedTrade(SID, 2); // agentic-1 reaches 2 of 2 → fires for agentic-1 only
+    await flush();
+    expect(h.fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('scopes the journal read to the triggering strategy (P7)', async () => {
+    const h = buildHarness();
+    const recentCalls: Array<[number, string | undefined]> = [];
+    const journal: AgentDecisionJournalPort = {
+      record: () => undefined,
+      recent: (limit, sid) => {
+        recentCalls.push([limit, sid]);
+        return Promise.resolve([]);
+      },
+    };
+    h.fetchFn.mockResolvedValue(
+      apiResponse(revisionToolBody({ playbook: validPlaybookContent('v2'), changelog: 'c' })),
+    );
+    const service = new ReflectionService(baseCfg({ everyNTrades: 1 }), { ...h.deps, journal });
+    service.onClosedTrade(SID, 1);
+    await flush();
+    expect(recentCalls).toEqual([[200, String(SID)]]);
+  });
+
+  it('the DB closed-trip total floors the auto-promotion count across redeploys', async () => {
+    const h = buildHarness();
+    const ev = fakeEvidence({
+      seed: { closedTradesTotal: 35, closedSinceLastReflection: 1, lastReflectionAt: null },
+    });
+    h.fetchFn.mockResolvedValue(
+      apiResponse(revisionToolBody({ playbook: validPlaybookContent('v2'), changelog: 'c' })),
+    );
+    const service = new ReflectionService(baseCfg({ everyNTrades: 1, autoPromoteMinTrades: 30 }), {
+      ...h.deps,
+      evidence: ev.port,
+    });
+    // In-memory count is 1 (fresh boot) but the DB knows 35 closed trades → promotion proceeds.
+    service.onClosedTrade(SID, 1);
+    await flush();
+    const promotion = h.storeApi.appended.find((a) => a.source === 'promotion');
+    expect(promotion).toBeDefined();
+    expect(promotion!.content).toContain('after 35 closed trades');
+  });
 });

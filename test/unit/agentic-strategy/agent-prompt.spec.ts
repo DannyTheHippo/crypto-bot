@@ -197,6 +197,32 @@ describe('buildSystemPrompt', () => {
     expect(prompt.toLowerCase()).toContain('historical data');
   });
 
+  it('with no protective backstop configured the prompt is byte-identical (no backstop mention)', () => {
+    const prompt = buildSystemPrompt(fixtureProfile());
+    expect(prompt).not.toContain('protective backstop');
+    expect(prompt).not.toContain('  '); // no double space from a skipped sentence
+  });
+
+  it('describes a stop-only backstop', () => {
+    const prompt = buildSystemPrompt(fixtureProfile({ protectStopLossPct: '0.02' }));
+    expect(prompt).toContain(
+      'A bot-side protective backstop will force-exit any long via the normal risk path if price falls 0.02 below entry — do not rely on it as your exit plan; manage exits yourself.',
+    );
+  });
+
+  it('describes a trailing-only backstop', () => {
+    const prompt = buildSystemPrompt(fixtureProfile({ protectTrailingPct: '0.015' }));
+    expect(prompt).toContain('if price falls 0.015 below its peak — do not rely on it');
+    expect(prompt).not.toContain('below entry');
+  });
+
+  it('describes both backstops in one sentence when both are configured', () => {
+    const prompt = buildSystemPrompt(
+      fixtureProfile({ protectStopLossPct: '0.02', protectTrailingPct: '0.015' }),
+    );
+    expect(prompt).toContain('0.02 below entry or 0.015 below its peak');
+  });
+
   it('documents the candle precision scheme (full precision for recent bars, reduced for older ones)', () => {
     const prompt = buildSystemPrompt(fixtureProfile());
 

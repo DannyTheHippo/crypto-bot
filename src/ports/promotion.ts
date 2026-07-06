@@ -31,6 +31,10 @@ export interface PromotionFillRow {
   readonly fee: string | null;
   readonly feeAsset: string | null;
   readonly executedAt: number;
+  // The decide-time reference price the intent was sized against (order_intents.ref_price via the
+  // same LEFT JOIN — null when the intent is unresolved). Evidence-only: feeds the reflection
+  // lane's decide-vs-fill slippage digest; the promotion verdict ignores it.
+  readonly refPrice?: string | null;
 }
 
 // Sum of input/output tokens across BOTH LLM call sites: agent_decisions (decide path) and
@@ -55,6 +59,56 @@ export interface PromotionStatsPort {
   // mode column; see promotion-readiness.service.ts's own comment on why over-counting cost here is
   // the fail-closed direction).
   llmTokenTotals(): Promise<LlmTokenTotals>;
+  // Epoch ms of the newest llm_usage kind='reflection' row, null when reflection has never run.
+  // Optional so existing fakes/implementations remain valid; the reflection trigger seed treats an
+  // absent method the same as "never reflected".
+  latestReflectionAt?(): Promise<number | null>;
+}
+
+// ── Realized round-trip evidence (reflection lane) ──────────────────────────
+
+export const REFLECTION_EVIDENCE = Symbol('REFLECTION_EVIDENCE');
+
+// One CLOSED demo round trip, walked from venue fills with the same dust-closure rule the
+// promotion verdict uses (src/domain/risk/round-trips.ts) — realized venue truth, in contrast to
+// the journal-reconstructed t+1 close-price proxies reflection otherwise learns from. All money
+// fields are decimal strings; netPnl = realizedPnl (gross) − feesQuote (convertible fees only —
+// an unconvertible fee asset is the promotion verdict's concern, not this evidence feed's).
+export interface RoundTripEvidence {
+  readonly strategyId: string;
+  readonly symbol: string;
+  readonly openedAt: number;
+  readonly closedAt: number;
+  readonly holdingMs: number;
+  readonly entryVwap: string | null;
+  readonly exitVwap: string | null;
+  readonly boughtQty: string;
+  readonly realizedPnl: string;
+  readonly feesQuote: string;
+  readonly netPnl: string;
+  readonly meanSlippageBps: string | null;
+}
+
+// Durable trigger state for the reflection loop. The in-process trade counters reset on every
+// redeploy, which starved reflection to zero firings for days — this seed lets the service resume
+// its cadence from DB truth: how many demo round trips have closed in total, how many since the
+// last reflection attempt actually reached the API, and when that attempt was.
+export interface ReflectionTriggerSeed {
+  readonly closedTradesTotal: number;
+  readonly closedSinceLastReflection: number;
+  readonly lastReflectionAt: number | null;
+}
+
+// Optional composition-root bridge into the agentic lane (same boundary story as
+// PromotionStatsPort above): DB-backed when persistence is configured, absent under test/ci —
+// reflection treats the evidence as additive and proceeds without it.
+// Multi-symbol (P7): reflectionSeed(strategyId) scopes the trigger seed to one instance's closed
+// trips (per-strategy trigger counters); absent ⇒ lane-wide totals. recentRoundTrips stays
+// lane-wide — the playbook is lane-global, so reflection deliberately sees every symbol's realized
+// outcomes (rows carry strategyId/symbol for attribution).
+export interface RoundTripEvidencePort {
+  recentRoundTrips(limit: number): Promise<readonly RoundTripEvidence[]>;
+  reflectionSeed(strategyId?: string): Promise<ReflectionTriggerSeed>;
 }
 
 // ── PromotionReadiness verdict ───────────────────────────────────────────────

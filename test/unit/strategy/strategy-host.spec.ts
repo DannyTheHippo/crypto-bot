@@ -35,11 +35,11 @@ import {
 const V = venueId('binance');
 const S = symbolId('BTC/USDT');
 
-function candle(t: number, closed = true): CandleEvent {
+function candle(t: number, closed = true, symbol = S): CandleEvent {
   return {
     kind: 'CANDLE',
     venue: V,
-    symbol: S,
+    symbol,
     channel: 'candle:1m',
     seq: BigInt(t),
     eventTime: epochMs(t),
@@ -119,11 +119,7 @@ function sig(id: StrategyId, kind: Signal['kind'], t: number): Signal {
 // concrete AgenticStrategy/agent-client wiring (owned by a concurrent change elsewhere).
 class ProgrammableStrategy implements AsyncStrategy {
   readonly kind = 'agentic' as const;
-  readonly subscriptions: SubscriptionSpec = {
-    venue: V,
-    symbols: [S],
-    channels: { candles: ['1m'] },
-  };
+  readonly subscriptions: SubscriptionSpec;
   calls = 0;
   readonly inputs: AgentDecisionInput[] = [];
   stopped = false;
@@ -133,7 +129,10 @@ class ProgrammableStrategy implements AsyncStrategy {
     readonly id: StrategyId,
     readonly warmup: { readonly interval: CandleInterval; readonly bars: number },
     private readonly impl: (input: AgentDecisionInput) => Promise<Signal[]>,
-  ) {}
+    symbol = S,
+  ) {
+    this.subscriptions = { venue: V, symbols: [symbol], channels: { candles: ['1m'] } };
+  }
 
   onInit(ctx: StrategyInitContext): void {
     this.initCtx = ctx;
@@ -964,5 +963,49 @@ describe('StrategyHost B5 entry cap (agentic)', () => {
     stream.close();
 
     expect(recorded).toHaveLength(2); // consumes the last remaining slot — cap state carried through
+  });
+
+  it('multi-symbol (P7): subscribes the UNION of instance specs and routes each event only to its declaring instance', async () => {
+    const ETH = symbolId('ETH/USDT');
+    const idBtc = strategyId('agentic-1');
+    const idEth = strategyId('agentic-2');
+    const recorded: Signal[] = [];
+    const sink: SignalSinkPort = { recordSignal: (s) => void recorded.push(s) };
+    const btc = new ProgrammableStrategy(idBtc, { interval: '1m', bars: 0 }, () =>
+      Promise.resolve([]),
+    );
+    const eth = new ProgrammableStrategy(
+      idEth,
+      { interval: '1m', bars: 0 },
+      () => Promise.resolve([]),
+      ETH,
+    );
+    const registry = new StrategyRegistry();
+    registry.register('fake-btc', () => btc);
+    registry.register('fake-eth', () => eth);
+    registry.enable(idBtc, 'fake-btc', {});
+    registry.enable(idEth, 'fake-eth', {});
+    const stream = pushStream();
+    let subscribed: SubscriptionSpec | undefined;
+    const marketStream: MarketStreamPort = {
+      subscribe: (spec) => {
+        subscribed = spec;
+        return stream.iterable;
+      },
+    };
+    const host = new StrategyHost(marketStream, defaultFeedHealth(), sink, registry);
+
+    await host.start();
+    stream.push(candle(5)); // BTC bar
+    await tick();
+    stream.push(candle(6, true, ETH)); // ETH bar
+    await tick();
+    stream.close();
+
+    expect(subscribed?.symbols).toEqual([S, ETH]); // union, one stream
+    expect(btc.calls).toBe(1); // the ETH bar never reached the BTC instance
+    expect(btc.inputs[0]!.trigger.event.symbol).toBe(S);
+    expect(eth.calls).toBe(1);
+    expect(eth.inputs[0]!.trigger.event.symbol).toBe(ETH);
   });
 });

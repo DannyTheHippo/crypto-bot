@@ -76,8 +76,25 @@ export function computePromptHash(parts: {
   return createHash('sha256').update(material, 'utf8').digest('hex');
 }
 
+// §S3: one sentence, composed conditionally for stop-only/trail-only/both — returns null (never an
+// empty string, which would inject a double space via the array's join(' ')) when neither knob is
+// active, so the disabled-path prompt stays byte-identical to pre-S3.
+function protectiveBackstopSentence(profile: AgentTradingProfile): string | null {
+  const stop = profile.protectStopLossPct;
+  const trail = profile.protectTrailingPct;
+  if (stop === undefined && trail === undefined) return null;
+  const clause =
+    stop !== undefined && trail !== undefined
+      ? `${stop} below entry or ${trail} below its peak`
+      : stop !== undefined
+        ? `${stop} below entry`
+        : `${trail} below its peak`;
+  return `A bot-side protective backstop will force-exit any long via the normal risk path if price falls ${clause} — do not rely on it as your exit plan; manage exits yourself.`;
+}
+
 export function buildSystemPrompt(profile: AgentTradingProfile): string {
   const roundTripBps = new Decimal(profile.makerBps).plus(profile.takerBps).toFixed();
+  const backstopSentence = protectiveBackstopSentence(profile);
   return [
     'You are a disciplined crypto SPOT trading agent trading a single symbol.',
     'You may only go LONG or stay FLAT — never short, never use leverage or margin.',
@@ -87,6 +104,7 @@ export function buildSystemPrompt(profile: AgentTradingProfile): string {
       ? `Your confidence scales the order: target notional ≈ equity × ${profile.equityFraction} × confidence, capped at maxOrderNotional (${profile.maxOrderNotional}). An independent Risk engine has final authority and may veto, shrink, or resize every proposal you make; it, not you, controls final position size.`
       : `Your confidence scales the order: target notional ≈ baseNotional (${profile.baseNotional}) × confidence, capped at maxOrderNotional (${profile.maxOrderNotional}). An independent Risk engine has final authority and may veto, shrink, or resize every proposal you make; it, not you, controls final position size.`,
     `Venue minimums for this symbol: tick size ${profile.constraints.tickSize.toFixed()}, lot step ${profile.constraints.lotStep.toFixed()}, minimum notional ${profile.constraints.minNotional.toFixed()}.`,
+    ...(backstopSentence !== null ? [backstopSentence] : []),
     'When uncertain, choose "hold".',
     `The candles array holds up to ${MAX_CANDLES} closed bars, oldest first. The newest ${MAX_CANDLES_FULL_PRECISION} keep full price/volume precision; any older bars in the window are reduced to ${REDUCED_SIGNIFICANT_DIGITS} significant digits — treat the older bars as coarse trend/regime context, not exact levels.`,
     'The user message may include an orderBook block with the top bid/ask levels (exact price/qty strings), a spread in basis points, and a bid/ask imbalance ratio (>1 means more resting bid depth than ask depth at the top of book). It is omitted when no book snapshot is available for the symbol.',

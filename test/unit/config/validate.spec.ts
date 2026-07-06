@@ -176,7 +176,10 @@ describe('validate()', () => {
     it('applies defaults when all AGENTIC_* vars are unset', () => {
       const cfg = validate({ PORT: '3100' });
       expect(cfg.agentic).toEqual({
-        model: 'claude-opus-4-8',
+        // Default matches the token-price defaults (Sonnet-5 at 3/15) so an unconfigured
+        // deployment can never bill a pricier model at cheaper rates in the earned-live math.
+        model: 'claude-sonnet-5',
+        reflectionModel: undefined,
         timeoutMs: 30000,
         maxTokens: 1024,
         minDecisionIntervalMs: 0,
@@ -193,6 +196,12 @@ describe('validate()', () => {
         tokenPriceInputPerMtok: '3',
         tokenPriceOutputPerMtok: '15',
         promotionDustNotional: '5',
+        prescreenEnabled: true,
+        prescreenVolShortBars: 10,
+        prescreenVolLongBars: 50,
+        prescreenVolRatio: 1.3,
+        prescreenBreakoutLookbackBars: 20,
+        prescreenBreakoutPct: 0.005,
       });
     });
 
@@ -211,6 +220,12 @@ describe('validate()', () => {
         AGENTIC_DRAIN_COOLDOWN_MAX_MS: '600000',
         AGENTIC_REFLECTION_EVERY_N_TRADES: '5',
         AGENTIC_REFLECTION_COOLDOWN_MS: '3600000',
+        AGENTIC_PRESCREEN_ENABLED: 'false',
+        AGENTIC_PRESCREEN_VOL_SHORT_BARS: '15',
+        AGENTIC_PRESCREEN_VOL_LONG_BARS: '60',
+        AGENTIC_PRESCREEN_VOL_RATIO: '1.5',
+        AGENTIC_PRESCREEN_BREAKOUT_LOOKBACK_BARS: '30',
+        AGENTIC_PRESCREEN_BREAKOUT_PCT: '0.01',
       });
       expect(cfg.agentic.model).toBe('claude-haiku-4-5');
       expect(cfg.agentic.timeoutMs).toBe(5000);
@@ -224,11 +239,27 @@ describe('validate()', () => {
       expect(cfg.agentic.drainCooldownMaxMs).toBe(600000);
       expect(cfg.agentic.reflectionEveryNTrades).toBe(5);
       expect(cfg.agentic.reflectionCooldownMs).toBe(3600000);
+      expect(cfg.agentic.prescreenEnabled).toBe(false);
+      expect(cfg.agentic.prescreenVolShortBars).toBe(15);
+      expect(cfg.agentic.prescreenVolLongBars).toBe(60);
+      expect(cfg.agentic.prescreenVolRatio).toBe(1.5);
+      expect(cfg.agentic.prescreenBreakoutLookbackBars).toBe(30);
+      expect(cfg.agentic.prescreenBreakoutPct).toBe(0.01);
     });
 
     it('AGENTIC_REFLECTION_EVERY_N_TRADES=0 is valid (means off)', () => {
       const cfg = validate({ PORT: '3100', AGENTIC_REFLECTION_EVERY_N_TRADES: '0' });
       expect(cfg.agentic.reflectionEveryNTrades).toBe(0);
+    });
+
+    it('AGENTIC_REFLECTION_MODEL absent → undefined (reflection follows AGENTIC_MODEL)', () => {
+      const cfg = validate({ PORT: '3100' });
+      expect(cfg.agentic.reflectionModel).toBeUndefined();
+    });
+
+    it('AGENTIC_REFLECTION_MODEL present → carried into cfg.agentic', () => {
+      const cfg = validate({ PORT: '3100', AGENTIC_REFLECTION_MODEL: 'claude-opus-4-8' });
+      expect(cfg.agentic.reflectionModel).toBe('claude-opus-4-8');
     });
 
     it('AGENTIC_PLAYBOOK_PIN absent → undefined (unpinned)', () => {
@@ -363,9 +394,54 @@ describe('validate()', () => {
         /RISK_MAX_ORDER_NOTIONAL/,
       );
     });
+
+    it('PROTECT_* backstop knobs default to 0 (disabled) and land as exact fraction strings', () => {
+      const defaults = validate({ PORT: '3100' }).risk;
+      expect(defaults.protectStopLossPct).toBe('0');
+      expect(defaults.protectTrailingPct).toBe('0');
+      const set = validate({
+        PORT: '3100',
+        PROTECT_STOP_LOSS_PCT: '0.02',
+        PROTECT_TRAILING_PCT: '0.015',
+      }).risk;
+      expect(set.protectStopLossPct).toBe('0.02');
+      expect(set.protectTrailingPct).toBe('0.015');
+    });
+
+    it('throws on a PROTECT_* value outside the 0..1 fraction range', () => {
+      expect(() => validate({ PORT: '3100', PROTECT_STOP_LOSS_PCT: '2' })).toThrow(
+        /PROTECT_STOP_LOSS_PCT/,
+      );
+      expect(() => validate({ PORT: '3100', PROTECT_TRAILING_PCT: '-0.1' })).toThrow(
+        /PROTECT_TRAILING_PCT/,
+      );
+    });
   });
 
   describe('strategy config', () => {
+    it('TRADING_SYMBOLS absent → symbols falls back to [TRADING_SYMBOL]', () => {
+      expect(validate({ PORT: '3100' }).strategy.symbols).toEqual(['BTC/USDT']);
+      expect(validate({ PORT: '3100', TRADING_SYMBOL: 'ETH/USDT' }).strategy.symbols).toEqual([
+        'ETH/USDT',
+      ]);
+    });
+
+    it('TRADING_SYMBOLS CSV parses, trims, and wins over TRADING_SYMBOL', () => {
+      const strategy = validate({
+        PORT: '3100',
+        TRADING_SYMBOL: 'SOL/USDT',
+        TRADING_SYMBOLS: ' BTC/USDT , ETH/USDT ',
+      }).strategy;
+      expect(strategy.symbols).toEqual(['BTC/USDT', 'ETH/USDT']);
+    });
+
+    it('TRADING_SYMBOLS rejects duplicates and an all-commas value', () => {
+      expect(() => validate({ PORT: '3100', TRADING_SYMBOLS: 'BTC/USDT,BTC/USDT' })).toThrow(
+        /TRADING_SYMBOLS/,
+      );
+      expect(() => validate({ PORT: '3100', TRADING_SYMBOLS: ' , ' })).toThrow(/TRADING_SYMBOLS/);
+    });
+
     it('defaults: BTC/USDT on 5m, agentic lane', () => {
       const strategy = validate({ PORT: '3100' }).strategy;
       expect(strategy.symbol).toBe('BTC/USDT');

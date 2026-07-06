@@ -117,7 +117,14 @@ const envSchema = z.object({
   // Agentic lane knobs — validated here so a later composition pass can read them off ConfigService
   // instead of process.env, without renaming. ANTHROPIC_API_KEY deliberately excluded (secret; stays
   // out of AppConfig per the live-secret-stripping precedent above).
-  AGENTIC_MODEL: z.string().min(1).default('claude-opus-4-8'),
+  // Default matches the AGENTIC_TOKEN_PRICE_* defaults below (Sonnet-5 at 3/15): an unconfigured
+  // deployment previously defaulted to Opus while the earned-live verdict priced its tokens at
+  // Sonnet rates — understating LLM cost inside a promotion gate (fail-OPEN direction).
+  AGENTIC_MODEL: z.string().min(1).default('claude-sonnet-5'),
+  // Reflection-path model override. Absent ⇒ reflection uses AGENTIC_MODEL (one model, one price).
+  // If you pin a PRICIER model here, set both AGENTIC_TOKEN_PRICE_* knobs to that model's rates —
+  // the flat pricing then OVER-counts decide-path cost, which is the fail-closed direction.
+  AGENTIC_REFLECTION_MODEL: z.string().min(1).optional(),
   AGENTIC_TIMEOUT_MS: z.coerce.number().int().positive().default(30000),
   AGENTIC_MAX_TOKENS: z.coerce.number().int().positive().default(1024),
   AGENTIC_MIN_DECISION_INTERVAL_MS: z.coerce.number().int().min(0).default(0),
@@ -149,6 +156,18 @@ const envSchema = z.object({
   // considers a cycle CLOSED — historical pre-IOC cycles carry dust remainders that would otherwise
   // never close. Default '5' mirrors BTC/USDT's exchange minNotional.
   PROMOTION_DUST_NOTIONAL: decimalString.default('5'),
+  // Cost-floor pre-screen gate: a cheap indicator check consulted before each LLM call so a quiet
+  // market never burns a token spend on a call the agent was always going to pass on. 'true'/'false'
+  // (not z.coerce.boolean(): Boolean('false') === true would invert an explicit disable).
+  AGENTIC_PRESCREEN_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
+  AGENTIC_PRESCREEN_VOL_SHORT_BARS: z.coerce.number().int().positive().default(10),
+  AGENTIC_PRESCREEN_VOL_LONG_BARS: z.coerce.number().int().positive().default(50),
+  AGENTIC_PRESCREEN_VOL_RATIO: z.coerce.number().positive().default(1.3),
+  AGENTIC_PRESCREEN_BREAKOUT_LOOKBACK_BARS: z.coerce.number().int().positive().default(20),
+  AGENTIC_PRESCREEN_BREAKOUT_PCT: z.coerce.number().positive().default(0.005),
   // Marketable-exit crossing buffer (bps) for reduce-only intents (PositionSizerService): how far
   // the IOC limit crosses the spread so a partial fill doesn't leave sub-minNotional dust resting
   // away from market. Capped at 99 (< DEFAULT_LIMITS.maxBandBps=100 in risk.module) so a crossed
@@ -162,6 +181,12 @@ const envSchema = z.object({
   // the legacy baseNotional × strength sizing unchanged, so an unconfigured deployment sees zero
   // behavior change.
   SIZER_EQUITY_FRACTION: fractionString.default('0'),
+  // ProtectiveExitService (bot-side stop-loss/trailing-stop backstop): fraction below avgEntry
+  // (stop) or below the ratcheted high-water mark (trailing) that force-exits a long via the normal
+  // Strategy→Risk→Execution path (an EXIT_LONG Signal, never a direct execution call). '0' (default)
+  // disables each independently — an unconfigured deployment sees zero behavior change.
+  PROTECT_STOP_LOSS_PCT: fractionString.default('0'),
+  PROTECT_TRAILING_PCT: fractionString.default('0'),
   // RiskLimitsConfig overlay knobs (domain/risk/limits.ts) — RiskModule merges these onto
   // DEFAULT_LIMITS. Defaults equal the CURRENT hardcoded values, so an unconfigured deployment sees
   // zero behavior change. maxDriftBps has no knob in this pass; it stays hardcoded in DEFAULT_LIMITS.
@@ -176,6 +201,24 @@ const envSchema = z.object({
   // Strategy-lane knobs. ACTIVE_STRATEGY is a closed enum: 'agentic' is the only registered lane
   // (the deterministic pure lane was retired 2026-07-03).
   TRADING_SYMBOL: z.string().min(1).default('BTC/USDT'),
+  // Multi-symbol (P7): CSV of symbols, one agentic strategy instance per entry. Absent ⇒ falls
+  // back to [TRADING_SYMBOL] (which is thereby deprecated but still honored). Every entry must
+  // have a DEFAULT_FILTERS row — asserted loud at startTrading before any enable.
+  TRADING_SYMBOLS: z
+    .string()
+    .min(1)
+    .transform((raw) =>
+      raw
+        .split(',')
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0),
+    )
+    .refine((symbols) => symbols.length > 0, 'TRADING_SYMBOLS must name at least one symbol')
+    .refine(
+      (symbols) => new Set(symbols).size === symbols.length,
+      'TRADING_SYMBOLS entries must be unique',
+    )
+    .optional(),
   STRATEGY_INTERVAL: z.enum(CANDLE_INTERVALS).default('5m'),
   ACTIVE_STRATEGY: z.enum(['agentic']).default('agentic'),
 });
@@ -234,6 +277,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     DATABASE_URL: dbUrl,
     SANDBOX_ENV: sandboxEnv,
     AGENTIC_MODEL: agenticModel,
+    AGENTIC_REFLECTION_MODEL: agenticReflectionModel,
     AGENTIC_TIMEOUT_MS: agenticTimeoutMs,
     AGENTIC_MAX_TOKENS: agenticMaxTokens,
     AGENTIC_MIN_DECISION_INTERVAL_MS: agenticMinDecisionIntervalMs,
@@ -250,9 +294,17 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     AGENTIC_TOKEN_PRICE_INPUT_PER_MTOK: agenticTokenPriceInputPerMtok,
     AGENTIC_TOKEN_PRICE_OUTPUT_PER_MTOK: agenticTokenPriceOutputPerMtok,
     PROMOTION_DUST_NOTIONAL: promotionDustNotional,
+    AGENTIC_PRESCREEN_ENABLED: agenticPrescreenEnabled,
+    AGENTIC_PRESCREEN_VOL_SHORT_BARS: agenticPrescreenVolShortBars,
+    AGENTIC_PRESCREEN_VOL_LONG_BARS: agenticPrescreenVolLongBars,
+    AGENTIC_PRESCREEN_VOL_RATIO: agenticPrescreenVolRatio,
+    AGENTIC_PRESCREEN_BREAKOUT_LOOKBACK_BARS: agenticPrescreenBreakoutLookbackBars,
+    AGENTIC_PRESCREEN_BREAKOUT_PCT: agenticPrescreenBreakoutPct,
     EXIT_CROSS_BUFFER_BPS: exitCrossBufferBps,
     BASE_NOTIONAL: baseNotional,
     SIZER_EQUITY_FRACTION: sizerEquityFraction,
+    PROTECT_STOP_LOSS_PCT: protectStopLossPct,
+    PROTECT_TRAILING_PCT: protectTrailingPct,
     RISK_MAX_ORDER_NOTIONAL: riskMaxOrderNotional,
     RISK_MAX_POSITION_PER_SYMBOL: riskMaxPositionPerSymbol,
     RISK_MAX_GROSS_EXPOSURE: riskMaxGrossExposure,
@@ -262,6 +314,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     RISK_MAX_BAND_BPS: riskMaxBandBps,
     RISK_STALE_MAX_AGE_MS: riskStaleMaxAgeMs,
     TRADING_SYMBOL: tradingSymbol,
+    TRADING_SYMBOLS: tradingSymbols,
     STRATEGY_INTERVAL: strategyInterval,
     ACTIVE_STRATEGY: activeStrategy,
   } = parsed.data;
@@ -288,6 +341,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     venues,
     agentic: {
       model: agenticModel,
+      reflectionModel: agenticReflectionModel,
       timeoutMs: agenticTimeoutMs,
       maxTokens: agenticMaxTokens,
       minDecisionIntervalMs: agenticMinDecisionIntervalMs,
@@ -304,11 +358,19 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       tokenPriceInputPerMtok: agenticTokenPriceInputPerMtok,
       tokenPriceOutputPerMtok: agenticTokenPriceOutputPerMtok,
       promotionDustNotional,
+      prescreenEnabled: agenticPrescreenEnabled,
+      prescreenVolShortBars: agenticPrescreenVolShortBars,
+      prescreenVolLongBars: agenticPrescreenVolLongBars,
+      prescreenVolRatio: agenticPrescreenVolRatio,
+      prescreenBreakoutLookbackBars: agenticPrescreenBreakoutLookbackBars,
+      prescreenBreakoutPct: agenticPrescreenBreakoutPct,
     },
     risk: {
       exitCrossBufferBps,
       baseNotional,
       equityFraction: sizerEquityFraction,
+      protectStopLossPct,
+      protectTrailingPct,
       maxOrderNotional: riskMaxOrderNotional,
       maxPositionPerSymbol: riskMaxPositionPerSymbol,
       maxGrossExposure: riskMaxGrossExposure,
@@ -320,6 +382,8 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     },
     strategy: {
       symbol: tradingSymbol,
+      // TRADING_SYMBOLS wins; the legacy single TRADING_SYMBOL is the one-element fallback.
+      symbols: tradingSymbols ?? [tradingSymbol],
       interval: strategyInterval,
       active: activeStrategy,
     },

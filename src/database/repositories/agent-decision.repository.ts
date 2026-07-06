@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { desc } from 'drizzle-orm';
+import { desc, eq } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../database.tokens';
 import * as schema from '../schemas/trading';
 import { requireDb } from './persistence-guard';
@@ -43,12 +43,22 @@ export class AgentDecisionRepository {
   // desc(id) tiebreak matters when two rows share an eventTime: id is the insertion-ordered PK, so
   // ties resolve the same way InMemoryAgentDecisionJournal's plain append-order does, rather than
   // however Postgres happens to return same-eventTime rows.
-  async selectRecent(limit: number): Promise<AgentDecisionDbRow[]> {
-    const rows = await requireDb(this.db)
-      .select()
-      .from(schema.agentDecisions)
-      .orderBy(desc(schema.agentDecisions.eventTime), desc(schema.agentDecisions.id))
-      .limit(limit);
+  // strategyId (P7) scopes the window to one instance's rows — see the port's own comment.
+  async selectRecent(limit: number, strategyId?: string): Promise<AgentDecisionDbRow[]> {
+    const db = requireDb(this.db);
+    const rows =
+      strategyId === undefined
+        ? await db
+            .select()
+            .from(schema.agentDecisions)
+            .orderBy(desc(schema.agentDecisions.eventTime), desc(schema.agentDecisions.id))
+            .limit(limit)
+        : await db
+            .select()
+            .from(schema.agentDecisions)
+            .where(eq(schema.agentDecisions.strategyId, strategyId))
+            .orderBy(desc(schema.agentDecisions.eventTime), desc(schema.agentDecisions.id))
+            .limit(limit);
     return rows.reverse();
   }
 }

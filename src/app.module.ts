@@ -3,6 +3,8 @@ import {
   Module,
   Inject,
   Logger,
+  type MiddlewareConsumer,
+  type NestModule,
   type OnApplicationBootstrap,
   type OnModuleDestroy,
   type OnModuleInit,
@@ -16,6 +18,7 @@ import { TypedConfigService } from './config/environment/typed-config.service';
 import { ObservabilityModule } from './features/common/observability/observability.module';
 import { PersistenceModule } from './database/database.module';
 import { GlobalExceptionFilter } from './shared/filters/global-exception.filter';
+import { CorrelationMiddleware } from './shared/correlation/correlation.middleware';
 import { DbHealthIndicator } from './database/db-health.indicator';
 import { DrizzleExecutionStore } from './database/repositories/drizzle-execution-store';
 import { DrizzleExecOutbox } from './database/repositories/drizzle-exec-outbox';
@@ -36,6 +39,10 @@ import {
   SIGNAL_REJECTIONS_COUNTER,
 } from './features/trading/execution/signal-sink.service';
 import { HaltCoordinatorService } from './features/trading/execution/halt-coordinator.service';
+import {
+  ProtectiveExitService,
+  PROTECTIVE_EXITS_COUNTER,
+} from './features/trading/risk/protective-exit.service';
 import { UnknownResolverService } from './features/trading/execution/unknown-resolver.service';
 import { ReconciliationService } from './features/trading/execution/reconciliation.service';
 import { EquitySamplerService } from './features/trading/execution/equity-sampler.service';
@@ -117,10 +124,13 @@ import { PromotionStatsRepository } from './database/repositories/promotion-stat
 import {
   PROMOTION_STATS,
   PROMOTION_READINESS,
+  REFLECTION_EVIDENCE,
   type PromotionStatsPort,
   type PromotionReadinessPort,
   type PromotionReadiness,
+  type RoundTripEvidencePort,
 } from './ports/promotion';
+import { RoundTripEvidenceReader } from './features/trading/agentic/round-trip-evidence.reader';
 import {
   PlaybookStoreAdapter,
   type PlaybookVersionEntry,
@@ -146,8 +156,10 @@ import {
   KILL_SWITCH,
   RISK_LIMITS,
   RISK_JOURNAL_OVERRIDE,
+  PROTECTIVE_EXIT_CONFIG,
   type RiskJournalPort,
   type KillSwitchPort,
+  type ProtectiveExitConfig,
 } from './ports/risk';
 import { validateLimits, type PartialRiskLimits } from './domain/risk/limits';
 import { EXCHANGE_PORT, type ExchangePort } from './ports/exchange';
@@ -710,6 +722,8 @@ function agentTradingProfileFor(
   limits: PartialRiskLimits,
   baseNotional: string,
   equityFraction: string,
+  protectStopLossPct: string,
+  protectTrailingPct: string,
 ): AgentTradingProfile {
   return {
     makerBps: DEFAULT_PAPER_CONFIG.fees.makerBps,
@@ -725,6 +739,10 @@ function agentTradingProfileFor(
     // prompt's sizing sentence for every unconfigured deployment (the disabled-path prompt must stay
     // byte-identical to pre-P5).
     ...(new Decimal(equityFraction).gt(0) ? { equityFraction } : {}),
+    // §S3: same latitude as equityFraction above — only set when the corresponding knob is active, so
+    // the disabled-path prompt stays byte-identical to pre-S3.
+    ...(new Decimal(protectStopLossPct).gt(0) ? { protectStopLossPct } : {}),
+    ...(new Decimal(protectTrailingPct).gt(0) ? { protectTrailingPct } : {}),
   };
 }
 
@@ -845,13 +863,19 @@ class MetricsWrappingAgentClient implements AgentClientPort {
       inject: [DRIZZLE_DB, TypedConfigService, AgentMetricsRecorder],
     },
     {
+      // The shared client's STATIC profile: fees/sizing/backstop are symbol-independent; the
+      // constraints here are only the fallback — the client resolves per-symbol constraints per
+      // decide (constraintsFor, agentic-strategy.module.ts), so the first configured symbol is
+      // just the fallback anchor.
       provide: AGENT_TRADING_PROFILE_OVERRIDE,
       useFactory: (limits: PartialRiskLimits, config: TypedConfigService): AgentTradingProfile =>
         agentTradingProfileFor(
-          config.strategy.symbol,
+          config.strategy.symbols[0]!,
           limits,
           config.risk.baseNotional,
           config.risk.equityFraction,
+          config.risk.protectStopLossPct,
+          config.risk.protectTrailingPct,
         ),
       inject: [RISK_LIMITS, TypedConfigService],
     },
@@ -870,6 +894,21 @@ class MetricsWrappingAgentClient implements AgentClientPort {
         isTestEnv() || db === null ? undefined : new PromotionStatsRepository(db),
       inject: [DRIZZLE_DB],
     },
+    {
+      // Realized round-trip evidence + durable trigger seed for ReflectionService — a pure reader
+      // over the same PROMOTION_STATS binding (one fills-walk closure rule for the promotion
+      // verdict AND the learning loop). DB-only like PROMOTION_STATS itself: undefined under
+      // test/ci/no-DB, where reflection degrades to journal proxies and in-memory triggers.
+      provide: REFLECTION_EVIDENCE,
+      useFactory: (
+        stats: PromotionStatsPort | undefined,
+        config: TypedConfigService,
+      ): RoundTripEvidencePort | undefined =>
+        stats === undefined
+          ? undefined
+          : new RoundTripEvidenceReader(stats, config.agentic.promotionDustNotional),
+      inject: [PROMOTION_STATS, TypedConfigService],
+    },
   ],
   exports: [
     AGENT_DECISION_JOURNAL,
@@ -878,6 +917,7 @@ class MetricsWrappingAgentClient implements AgentClientPort {
     REFLECTION_METRICS_RECORDER_OVERRIDE,
     LLM_USAGE_SINK,
     PROMOTION_STATS,
+    REFLECTION_EVIDENCE,
   ],
 })
 class AgenticCompositionBridgeModule {}
@@ -918,6 +958,21 @@ class AgenticCompositionBridgeModule {}
     SignalSinkService,
     SIGNAL_REJECTIONS_COUNTER,
     HaltCoordinatorService,
+    {
+      // §S3: ProtectiveExitConfig rides the SAME validated config + DEFAULT_FILTERS the risk lane
+      // uses (never a second, independently-tunable copy). cooldownMs is a fixed constant (not yet
+      // config-tunable) — a per-symbol re-fire floor, not a safety gate.
+      provide: PROTECTIVE_EXIT_CONFIG,
+      useFactory: (config: TypedConfigService): ProtectiveExitConfig => ({
+        stopLossPct: config.risk.protectStopLossPct,
+        trailingPct: config.risk.protectTrailingPct,
+        cooldownMs: 30_000,
+        filters: DEFAULT_FILTERS,
+      }),
+      inject: [TypedConfigService],
+    },
+    ProtectiveExitService,
+    PROTECTIVE_EXITS_COUNTER,
     { provide: SIGNAL_SINK, useExisting: SignalSinkService },
     {
       provide: STRATEGY_HOST,
@@ -954,7 +1009,9 @@ class AgenticCompositionBridgeModule {}
     },
   ],
 })
-export class AppModule implements OnModuleInit, OnApplicationBootstrap, OnModuleDestroy {
+export class AppModule
+  implements NestModule, OnModuleInit, OnApplicationBootstrap, OnModuleDestroy
+{
   private readonly log = new Logger('TradingRuntime');
   private readonly driverTimers: ReturnType<typeof setInterval>[] = [];
   private tradingSymbols: SymbolId[] = [];
@@ -969,6 +1026,7 @@ export class AppModule implements OnModuleInit, OnApplicationBootstrap, OnModule
   constructor(
     @Inject(CLOCK) private readonly clock: ClockPort,
     private readonly coordinator: HaltCoordinatorService,
+    private readonly protectiveExit: ProtectiveExitService,
     private readonly resolver: UnknownResolverService,
     private readonly reconciliation: ReconciliationService,
     private readonly sampler: EquitySamplerService,
@@ -1002,6 +1060,12 @@ export class AppModule implements OnModuleInit, OnApplicationBootstrap, OnModule
   // store resolves synchronously; the DB-backed store is never reached under test/ci —
   // AgenticCompositionBridgeModule's own isTestEnv() gate). A resolution failure is logged, never
   // thrown — it must not block boot.
+  // Correlation-ALS (P4 residue): every HTTP request (health, metrics, arming) runs inside a
+  // correlation scope; the pino mixin (logger.config.ts) stamps the id on each line logged within.
+  configure(consumer: MiddlewareConsumer): void {
+    consumer.apply(CorrelationMiddleware).forRoutes('{*path}');
+  }
+
   async onModuleInit(): Promise<void> {
     // (E) Surface which agent client bound at boot so live-vs-inert is unambiguous in Grafana and the
     // log, not buried in one startup line. StubAgentClient (no ANTHROPIC_API_KEY, or test/ci) is inert
@@ -1052,17 +1116,34 @@ export class AppModule implements OnModuleInit, OnApplicationBootstrap, OnModule
         void Promise.resolve(this.sampler.sample()).catch(() => undefined);
       }, 5_000),
     );
+    // §S3 protective backstop: ticks alongside the halt coordinator/resolver, but its rejection is
+    // LOGGED (not silently swallowed) — a tick failure here means the bot-side stop-loss/trailing
+    // stop is not being enforced, which is worth a warn line even though the tick itself never engages
+    // the kill switch on its own faults.
+    this.driverTimers.push(
+      setInterval(() => {
+        void Promise.resolve(this.protectiveExit.tick(this.clock.now())).catch((err: unknown) => {
+          this.log.warn(
+            `protective-exit tick failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        });
+      }, 1_000),
+    );
     // Reconciliation compares the in-memory portfolio against the venue. In paper the in-memory
-    // PaperExchangeAdapter IS the venue, so they match exactly. The demo/testnet account is DEDICATED
-    // to the bot, so the holdings/balances axis is meaningful there too — run it and HALT on drift
-    // (never auto-flatten). Caveat: FeeLedgerService (third-asset fees, e.g. BNB) is not persisted and
-    // resets on restart, so the balances axis could HALT on BNB drift after a restart — pay demo fees
-    // in quote/base, or tolerate BNB; this does not affect quote-denominated P/L. The trades axis is
-    // inert on Binance (clientOrderId-less myTrades). Reconciliation logic itself is untouched.
+    // PaperExchangeAdapter IS the venue, so they match exactly. On the Binance Demo flavor the
+    // account is a SHARED multi-asset wallet (not dedicated to the bot), so ReconConfig disables the
+    // balances axis there (a BALANCE_DRIFT HALT on holdings the bot never touched would be wrong);
+    // order/trade axes run everywhere. A failed pass is logged AND lands in reconciliation_runs_total
+    // {result="error"} + the reconciliations row — a silent .catch here once hid a per-pass throw for
+    // weeks (reconTs=0, zero rows) while the safety sweep never actually confirmed venue truth.
     if (mode === 'paper' || mode === 'testnet') {
       this.driverTimers.push(
         setInterval(() => {
-          void Promise.resolve(this.reconciliation.reconcile()).catch(() => undefined);
+          void Promise.resolve(this.reconciliation.reconcile()).catch((err: unknown) => {
+            this.log.warn(
+              `reconcile pass failed: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          });
         }, 30_000),
       );
     }
@@ -1082,8 +1163,18 @@ export class AppModule implements OnModuleInit, OnApplicationBootstrap, OnModule
   // own orders with no WS user stream yet — the fill poller sweeps fetchMyTrades. Portfolio is logged
   // on a cadence so a run is observable. The only hard human gate stays paper→live.
   private async startTrading(mode: 'paper' | 'testnet' | 'live'): Promise<void> {
-    const params = this.agenticParams();
-    this.tradingSymbols = [params.symbol];
+    // Multi-symbol (P7): one agentic strategy instance per configured symbol. Every symbol MUST
+    // have a DEFAULT_FILTERS row — the sizer/risk/prompt all read it, and a missing entry would
+    // otherwise surface as a per-order NO_REF_PRICE/LIMITS_INCOMPLETE drizzle of rejections
+    // instead of one loud boot failure here.
+    const symbols = this.config.strategy.symbols;
+    const unfiltered = symbols.filter((s) => !DEFAULT_FILTERS.has(s));
+    if (unfiltered.length > 0) {
+      throw new Error(
+        `TRADING_SYMBOLS entries without a DEFAULT_FILTERS row: ${unfiltered.join(', ')} — add venue filters (domain/risk/default-filters.ts) before trading them`,
+      );
+    }
+    this.tradingSymbols = symbols.map((s) => symbolId(s));
 
     if (mode !== 'paper') {
       await this.refreshKeyProbe();
@@ -1109,6 +1200,7 @@ export class AppModule implements OnModuleInit, OnApplicationBootstrap, OnModule
       const deps: AgenticStrategyDeps = {
         journal: this.agentJournal,
         onClosedTrade: (count) => this.reflectionService.onClosedTrade(id, count),
+        onPrescreen: (outcome) => this.agentMetrics.recordPrescreen(outcome),
       };
       return new AgenticStrategy(id, p as AgenticStrategyParams, this.agentClient, deps);
     });
@@ -1136,11 +1228,19 @@ export class AppModule implements OnModuleInit, OnApplicationBootstrap, OnModule
     }
     assertAgenticLaneNotLive('agentic', mode, readiness);
 
-    this.registry.enable(strategyId('agentic-1'), active, params);
+    // One instance per symbol: agentic-1, agentic-2, … — ids stay stable for a given TRADING_SYMBOLS
+    // ordering (positions/journals key off the id, so reordering the CSV re-attributes state; the
+    // runbook documents append-only symbol management). Each instance gets its own params (symbol,
+    // entry caps run per-strategy in the host) while AGENT_LLM_BUDGET stays ONE shared lane-wide
+    // spend cap across all instances.
+    symbols.forEach((symbol, i) => {
+      this.registry.enable(strategyId(`agentic-${i + 1}`), active, this.agenticParams(symbol));
+    });
+    const first = this.agenticParams(symbols[0]!);
     this.log.warn(
       `ACTIVE_STRATEGY=agentic — UNVALIDATED, NON-DETERMINISTIC EXPERIMENT (live in-process agent; ` +
-        `step-D-uncertifiable, never promote to live). ${params.symbol} ${params.interval} ` +
-        `warmupBars=${params.warmupBars} agentClient=${this.agentClientKind}`,
+        `step-D-uncertifiable, live access is earned). symbols=[${symbols.join(', ')}] ${first.interval} ` +
+        `warmupBars=${first.warmupBars} agentClient=${this.agentClientKind}`,
     );
 
     await this.host.start();
@@ -1190,18 +1290,26 @@ export class AppModule implements OnModuleInit, OnApplicationBootstrap, OnModule
     );
   }
 
-  private agenticParams(): AgenticStrategyParams {
+  private agenticParams(symbol: string): AgenticStrategyParams {
     const venue = this.config.venues[0]?.id ?? 'binance';
     const agentic = this.config.agentic;
     const strategy = this.config.strategy;
     return {
-      symbol: symbolId(strategy.symbol),
+      symbol: symbolId(symbol),
       venue: venueId(venue),
       // The schema constrains STRATEGY_INTERVAL to the CandleInterval values; the cast narrows the
       // AppConfig string field back to the domain union.
       interval: strategy.interval as CandleInterval,
       warmupBars: agentic.warmupBars,
       model: agentic.model,
+      prescreenEnabled: agentic.prescreenEnabled,
+      prescreenThresholds: {
+        volShortBars: agentic.prescreenVolShortBars,
+        volLongBars: agentic.prescreenVolLongBars,
+        volRatio: agentic.prescreenVolRatio,
+        breakoutLookbackBars: agentic.prescreenBreakoutLookbackBars,
+        breakoutPct: agentic.prescreenBreakoutPct,
+      },
     };
   }
 }

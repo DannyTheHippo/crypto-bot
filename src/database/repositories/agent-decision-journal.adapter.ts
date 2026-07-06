@@ -51,8 +51,8 @@ export class AgentDecisionJournalAdapter implements AgentDecisionJournalPort {
     });
   }
 
-  async recent(limit: number): Promise<readonly AgentDecisionRow[]> {
-    const rows = await this.repo.selectRecent(limit);
+  async recent(limit: number, strategyId?: string): Promise<readonly AgentDecisionRow[]> {
+    const rows = await this.repo.selectRecent(limit, strategyId);
     return rows.map((r) => ({
       strategyId: r.strategyId as StrategyId,
       symbol: r.symbol as SymbolId,

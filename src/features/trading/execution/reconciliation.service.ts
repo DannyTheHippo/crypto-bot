@@ -35,6 +35,15 @@ interface PassAccumulator {
   readonly halts: string[];
 }
 
+// Compact, redaction-safe error description for the reconciliations row: class name + a truncated
+// message (ccxt errors can be verbose; secrets never appear in a class name, and the message cap
+// bounds what a venue error body can drag into the row).
+function describeError(err: unknown): string {
+  const name = err instanceof Error ? err.constructor.name : typeof err;
+  const message = err instanceof Error ? err.message : String(err);
+  return `${name}:${message}`.slice(0, 160);
+}
+
 // §8/§10 reconciliation_mismatch_total — incremented per pass by the pass's mismatch count (0 on a
 // clean pass). Registers to the default prom-client registry that /metrics scrapes; @Optional so
 // the directly-constructed unit tests need not supply it. Drives the ReconciliationMismatch alert.
@@ -91,9 +100,17 @@ export class ReconciliationService {
   async reconcile(): Promise<{ mismatches: number; halted: boolean }> {
     const acc: PassAccumulator = { mismatches: 0, halts: [] };
 
-    await this.reconcileOpenOrders(acc);
-    await this.reconcileTrades(acc);
-    await this.reconcileBalances(acc);
+    // An axis throw past its own per-item guards must still land in the reconciliations row and the
+    // runs counter — a pass that silently never completes is indistinguishable from a healthy idle
+    // reconciler (exactly the failure mode that hid the symbol-less fetchOpenOrders throw for weeks).
+    let passError: unknown;
+    try {
+      await this.reconcileOpenOrders(acc);
+      await this.reconcileTrades(acc);
+      if (this.cfg.balanceAxis) await this.reconcileBalances(acc);
+    } catch (err) {
+      passError = err;
+    }
 
     const halted = acc.halts.length > 0;
     if (halted) this.killSwitch.engage(`RECONCILE_MISMATCH:${acc.halts.join(',')}`, false); // never auto-flatten
@@ -103,18 +120,45 @@ export class ReconciliationService {
       venue: this.exchange.venue,
       mismatches: acc.mismatches,
       halted,
-      detail: acc.halts.join(',') || 'clean',
+      detail:
+        passError !== undefined
+          ? `PASS_ERROR:${describeError(passError)}`
+          : acc.halts.join(',') || 'clean',
     });
     this.mismatchCounter?.inc(acc.mismatches); // 0 on a clean pass; the alert fires on an increase
-    const result = halted ? 'halt' : acc.mismatches > 0 ? 'mismatch' : 'clean';
+    const result =
+      passError !== undefined
+        ? 'error'
+        : halted
+          ? 'halt'
+          : acc.mismatches > 0
+            ? 'mismatch'
+            : 'clean';
     this.runsCounter?.inc({ result });
     if (result === 'clean') this.lastSuccessGauge?.set(this.clock.now() / 1000);
+    // Rethrow the ORIGINAL axis throw unchanged (whatever its type) so the driver's logged catch
+    // surfaces the true cause.
+    // eslint-disable-next-line @typescript-eslint/only-throw-error -- original throw, type unknown
+    if (passError !== undefined) throw passError;
     return { mismatches: acc.mismatches, halted };
   }
 
-  // Axis 1 — open orders joined on clientOrderId.
+  // Axis 1 — open orders joined on clientOrderId. Swept PER SYMBOL: ccxt's binance throws on a
+  // symbol-less fetchOpenOrders() by default (the global endpoint is rate-limit-punished), which
+  // used to abort the whole pass before any row/counter was written. Cost of the per-symbol sweep:
+  // FOREIGN orders on symbols outside the sweep set are no longer observed — acceptable, they were
+  // WARN-only and the sweep set covers everything the bot trades or holds.
   private async reconcileOpenOrders(acc: PassAccumulator): Promise<void> {
-    const venueOpen = await this.exchange.fetchOpenOrders();
+    const venueOpen: ExchangeOrderState[] = [];
+    const failedSymbols = new Set<SymbolId>();
+    for (const symbol of this.sweepSymbols()) {
+      try {
+        venueOpen.push(...(await this.exchange.fetchOpenOrders(symbol)));
+      } catch {
+        acc.mismatches += 1; // could not sweep this symbol's open orders — surfaced, re-checked next pass
+        failedSymbols.add(symbol);
+      }
+    }
     const localOpen = this.portfolio.snapshot().openOrders;
     const localCoids = new Set<string>(localOpen.map((o) => o.clientOrderId));
     const venueCoids = new Set<string>(venueOpen.map((o) => o.clientOrderId));
@@ -130,8 +174,12 @@ export class ReconciliationService {
     }
 
     // Local order we believe open but the venue does not list: adopt the venue's terminal truth.
+    // Skipped for symbols whose sweep failed — absence there is fetch failure, not venue truth
+    // (adoptTerminal re-queries per order anyway, but there is no point burning calls on a venue
+    // that just refused the symbol).
     for (const lo of localOpen) {
       if (venueCoids.has(lo.clientOrderId)) continue;
+      if (failedSymbols.has(lo.symbol)) continue;
       await this.adoptTerminal(lo.clientOrderId, lo.symbol, acc);
     }
   }
@@ -174,7 +222,7 @@ export class ReconciliationService {
 
   // Axis 2 — trades since the per-(venue,symbol) checkpoint minus an overlap window.
   private async reconcileTrades(acc: PassAccumulator): Promise<void> {
-    for (const symbol of this.symbolsOfInterest()) {
+    for (const symbol of this.sweepSymbols()) {
       const key = `${this.exchange.venue}|${symbol}`;
       const checkpoint = this.checkpoints.get(key) ?? (0 as EpochMs);
       const since = Math.max(0, checkpoint - this.cfg.overlapMs) as EpochMs;
@@ -239,9 +287,12 @@ export class ReconciliationService {
     }
   }
 
-  private symbolsOfInterest(): SymbolId[] {
+  // The configured trading universe unioned with symbols carrying live local state — so the sweeps
+  // observe venue truth even before the bot holds anything, and keep observing residue after a
+  // config change drops a symbol.
+  private sweepSymbols(): SymbolId[] {
     const snap = this.portfolio.snapshot();
-    const set = new Set<SymbolId>();
+    const set = new Set<SymbolId>(this.cfg.sweepSymbols as SymbolId[]);
     for (const o of snap.openOrders) set.add(o.symbol);
     for (const p of snap.positions.values()) set.add(p.symbol);
     return [...set];

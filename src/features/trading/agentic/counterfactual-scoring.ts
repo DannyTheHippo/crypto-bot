@@ -21,7 +21,14 @@ import type { AgentDecisionRow } from '../../../ports/agentic-strategy';
 
 export type ScoringRow = Pick<
   AgentDecisionRow,
-  'eventTime' | 'action' | 'confidence' | 'refPrice' | 'close' | 'playbookVersion' | 'promptHash'
+  | 'eventTime'
+  | 'action'
+  | 'confidence'
+  | 'refPrice'
+  | 'close'
+  | 'playbookVersion'
+  | 'promptHash'
+  | 'model'
 >;
 
 export const FORWARD_RETURN_HORIZONS = [1, 4, 24] as const;
@@ -321,6 +328,12 @@ function finalizeBucket(bucket: MutableBucket): DecisionOutcomeBucket {
  * forward return. Unlike scoreRows, the whole window is treated as one continuous position sequence
  * (it is the actual decision journal in order), not grouped per playbook/prompt.
  *
+ * Prescreen quiet-HOLD rows (model === 'prescreen') stay in the sequence for the exposure walk and
+ * forward-return adjacency (they are real, chronologically ordered decisions), but are excluded from
+ * bucketing: they are FLAT-by-construction (the gate only skips when already flat — see
+ * evaluatePrescreenGate in agentic.strategy.ts), so counting them would flood stayedFlat with
+ * hand-picked quiet periods rather than genuine model HOLDs.
+ *
  * TOY RESEARCH METRIC — see this module's header comment and the F1 digest header above.
  */
 export function summarizeRecentDecisionOutcomes(
@@ -336,7 +349,7 @@ export function summarizeRecentDecisionOutcomes(
 
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i]!;
-    if (row.action === 'error') continue;
+    if (row.action === 'error' || row.model === 'prescreen') continue;
     const fwd = forwardReturn(rows, i, 1); // t+1: the most immediate, least confounded outcome
     if (fwd === null) continue;
     const resulting = exposures[i]!;

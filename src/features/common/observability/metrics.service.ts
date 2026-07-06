@@ -138,6 +138,11 @@ export const AGENT_CLIENT_INFO_GAUGE = makeGaugeProvider({
   help: 'Bound agentic client kind (1 on the active kind; stub = INERT, anthropic = LIVE)',
   labelNames: ['kind'] as const,
 });
+export const AGENTIC_PRESCREEN_COUNTER = makeCounterProvider({
+  name: 'agentic_prescreen_total',
+  help: 'Prescreen gate outcomes ahead of agentic LLM calls (called / skipped_quiet / failopen_error)',
+  labelNames: ['outcome'] as const,
+});
 
 // §strategy lifecycle — sampled in the 5s loop below (same pull pattern as kill_switch_state):
 // each strategy carries exactly one state at 1, all others in the union explicit 0 (not just absent),

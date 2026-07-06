@@ -57,6 +57,46 @@ Response: a reconciliation HALT is an incident. Reconcile the discrepancy manual
 the append-only `order_events` / `audit_log` / `reconciliations` rows), correct local state only via
 the documented recovery path, then RESUME.
 
+**Demo-flavor semantics (2026-07-06 fix).** The open-orders axis sweeps PER SYMBOL (the configured
+trading universe ∪ symbols with live local state) — the old symbol-less `fetchOpenOrders()` threw on
+ccxt's binance and the whole pass died silently for weeks (`reconciliation_runs_total` empty,
+`reconTs=0`). On `SANDBOX_ENV=demo` the **balances axis is disabled** (`ReconConfig.balanceAxis`):
+the demo account is a shared multi-asset wallet, so a BALANCE_DRIFT HALT there would fire on holdings
+the bot never touched; paper and the dedicated Spot Testnet keep it. A pass that still throws lands
+in `reconciliation_runs_total{result="error"}` + a `PASS_ERROR:` reconciliations row AND a
+`reconcile pass failed:` warn log — a reconciler that logs nothing and counts nothing is broken, not
+healthy. Watch `reconciliation_last_success_timestamp_seconds` age in Grafana.
+
+## Protective exits (bot-side stop-loss / trailing stop)
+
+`ProtectiveExitService` (features/trading/risk) ticks every 1s and force-exits a LONG through the
+FULL Strategy→Risk→Execution path (marketable IOC via the sizer — never a direct venue call) when
+price falls `PROTECT_STOP_LOSS_PCT` below entry or `PROTECT_TRAILING_PCT` below the post-entry
+high-water mark. Ops notes:
+
+- `0` disables each knob independently; both-zero = service inert (pre-S3 behavior, prompt unchanged).
+- The HWM is in-memory: after a restart trailing re-arms from `max(avgEntry, current)`, not the
+  pre-restart peak (documented boot amnesia).
+- Fires are visible as `protective_exits_total{reason="STOP_LOSS"|"TRAILING_STOP"}` (Grafana Risk &
+  safety row) and as `EXIT_LONG` signals with reason `STOP_LOSS`/`TRAILING_STOP` in the signals table.
+- Guards: kill-switch must be RUNNING (HaltCoordinator owns halted states), dust positions skipped,
+  never stacks on an open order/in-flight intent, 30s per-symbol re-fire cooldown.
+- The agent's system prompt discloses the backstop so it plans exits itself rather than leaning on it.
+
+## Multi-symbol operation (`TRADING_SYMBOLS`)
+
+One agentic instance per CSV entry (`agentic-1`, `agentic-2`, … in CSV order). Rules:
+
+- **APPEND new symbols, never reorder** — positions/journals key off the instance id; reordering
+  re-attributes state.
+- Every entry needs a `DEFAULT_FILTERS` row (domain/risk/default-filters.ts) — boot fails loud otherwise.
+- One shared lane-wide LLM budget (`AGENTIC_MAX_CALLS_PER_DAY` etc.); entry caps apply per instance.
+  Each 5m symbol ≈ 288 decides/day — budget accordingly.
+- Reflection triggers per instance (its own 10 closed trades) against its own journal window; the
+  playbook stays lane-global, and realized round-trip evidence spans all symbols.
+- The earned-live promotion verdict counts round trips across ALL instances (per (strategyId, symbol)
+  walk over demo fills).
+
 ## Re-arm (live arming interlock, §10b) — _(out-of-session)_
 
 Live trading requires arming AFTER boot (you arm last). Two-step, bootId-bound, in-memory only:

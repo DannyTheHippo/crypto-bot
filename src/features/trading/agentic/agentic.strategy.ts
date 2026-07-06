@@ -28,7 +28,8 @@ import {
   type AgentProposal,
   type StrategyInitContext,
 } from '../../../ports/agentic-strategy';
-import { MAX_REASON_LEN } from './anthropic-agent-client';
+import { MAX_REASON_LEN, type LoggerLike } from './anthropic-agent-client';
+import { evaluatePrescreen, type PrescreenOutcome, type PrescreenThresholds } from './prescreen';
 
 export interface AgenticStrategyParams {
   readonly symbol: SymbolId;
@@ -39,6 +40,10 @@ export interface AgenticStrategyParams {
   // actually calls; this is the strategy's account of it for the journal row. Optional (falls back
   // to DEFAULT_MODEL_ID) so existing callers that predate this field still compile.
   readonly model?: string;
+  // Cost-floor pre-screen gate (see prescreen.ts): consulted before every LLM call unless disabled.
+  // Optional/absent ⇒ disabled, so existing callers that predate this field stay byte-identical.
+  readonly prescreenEnabled?: boolean;
+  readonly prescreenThresholds?: PrescreenThresholds;
 }
 
 export interface AgenticStrategyDeps {
@@ -46,11 +51,16 @@ export interface AgenticStrategyDeps {
   // Fires once per detected LONG→FLAT round trip, with the running closed-trade count. A later
   // reflection task subscribes; the strategy itself takes no action beyond counting and calling it.
   readonly onClosedTrade?: (count: number) => void;
+  // Fires once per decide() call when the prescreen gate is enabled, with its outcome — mirrors the
+  // onClosedTrade seam. Optional/no-op-defaulted so existing tests/callers stay valid.
+  readonly onPrescreen?: (outcome: PrescreenOutcome) => void;
+  readonly logger?: LoggerLike;
 }
 
 const MAX_DECISION_HISTORY = 10;
 const INDICATOR_WARMUP_CLOSES = 21;
 const MAX_JOURNAL_RATIONALE_LEN = 2000;
+const NOOP_LOGGER: LoggerLike = { warn: () => undefined };
 
 const INTERVAL_MS: Record<CandleInterval, number> = {
   '1m': 60_000,
@@ -72,7 +82,7 @@ const DEFAULT_MODEL_ID = 'unknown';
 // decisions before handing off — it still owns NO trading logic itself (Risk still sizes/vetoes
 // every proposed signal). The agent's proposed signals flow through the Risk chokepoint (the host
 // calls recordSignal); the host imposes the wall-clock timeout, so decide just enriches and
-// delegates. Permanently EXPERIMENT-ONLY (see ports/agentic-strategy.ts).
+// delegates. Live access is EARNED via the promotion gate, never assumed (see ports/agentic-strategy.ts).
 export class AgenticStrategy implements AsyncStrategy {
   readonly kind = 'agentic' as const;
   readonly id: StrategyId;
@@ -86,6 +96,10 @@ export class AgenticStrategy implements AsyncStrategy {
   private readonly baseIntervalMs: number;
   private readonly journal?: AgentDecisionJournalPort;
   private readonly onClosedTrade?: (count: number) => void;
+  private readonly onPrescreen?: (outcome: PrescreenOutcome) => void;
+  private readonly logger: LoggerLike;
+  private readonly prescreenEnabled: boolean;
+  private readonly prescreenThresholds?: PrescreenThresholds;
   // Venue minimum-notional for this symbol, captured in onInit. Used only to reclassify a sub-minimum
   // "dust" position as flat in the agent's view (see buildContext). null ⇒ unavailable ⇒ no
   // reclassification (fail safe to the prior LONG-when-any-qty behavior).
@@ -115,6 +129,10 @@ export class AgenticStrategy implements AsyncStrategy {
     this.baseIntervalMs = INTERVAL_MS[params.interval];
     this.journal = deps.journal;
     this.onClosedTrade = deps.onClosedTrade;
+    this.onPrescreen = deps.onPrescreen;
+    this.logger = deps.logger ?? NOOP_LOGGER;
+    this.prescreenEnabled = params.prescreenEnabled ?? false;
+    this.prescreenThresholds = params.prescreenThresholds;
     this.subscriptions = {
       venue: params.venue,
       symbols: [params.symbol],
@@ -138,6 +156,11 @@ export class AgenticStrategy implements AsyncStrategy {
     // starts flat.
     const heldDuringPrev = this.lastPositionSide ?? 'FLAT';
     this.trackClosedTrade(context.position.side);
+
+    const prescreenReason = this.evaluatePrescreenGate(input, context);
+    if (prescreenReason !== null) {
+      return this.recordQuietHold(input, context, heldDuringPrev, prescreenReason);
+    }
 
     let proposal: AgentProposal;
     try {
@@ -173,6 +196,64 @@ export class AgenticStrategy implements AsyncStrategy {
     this.recordJournalEntry(input, decision, proposal);
 
     return signals;
+  }
+
+  // Cost-floor gate (see prescreen.ts). Disabled ⇒ null unconditionally: no counter, no evaluation,
+  // unchanged behavior. Enabled ⇒ evaluated over the same candle window buildContext already read for
+  // this call, reusing its dust-aware LONG/FLAT classification (context.position.side) rather than
+  // re-deriving position-open from the raw portfolio. Returns the quiet reason string when the LLM
+  // call should be skipped, else null (either "consult" or the gate itself failed open on an error).
+  private evaluatePrescreenGate(input: AgentDecisionInput, context: AgentContext): string | null {
+    if (!this.prescreenEnabled || !this.prescreenThresholds) return null;
+
+    const candles = input.snapshot.candles.get(this.symbol) ?? [];
+    try {
+      const result = evaluatePrescreen({
+        closes: candles.map((c) => toIndicatorNumber(c.close)),
+        highs: candles.map((c) => toIndicatorNumber(c.high)),
+        lows: candles.map((c) => toIndicatorNumber(c.low)),
+        positionOpen: context.position.side === 'LONG',
+        thresholds: this.prescreenThresholds,
+      });
+      if (result.consult) {
+        this.onPrescreen?.('called');
+        return null;
+      }
+      this.onPrescreen?.('skipped_quiet');
+      return result.reason;
+    } catch (err) {
+      this.logger.warn(
+        `prescreen evaluation failed, failing open to the LLM: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      this.onPrescreen?.('failopen_error');
+      return null;
+    }
+  }
+
+  // Deterministic HOLD path taken when the prescreen gate skips the LLM call entirely: no client
+  // call, no token/decide counters (MetricsWrappingAgentClient never runs), an honest journal row
+  // naming the prescreen reason under a distinct 'prescreen' model tag, and the same empty-signal
+  // result shape decide() returns for any other HOLD. Unlike a real decision, this skip is NOT pushed
+  // into the history ring: the ring is rendered to the LLM as its own prior decisions (agent-prompt.ts),
+  // and a prescreen skip was never seen or reasoned about by the model — presenting it as such would
+  // fabricate a decision the agent never made. annotatePreviousOutcome still runs unconditionally so
+  // the last REAL decision's outcome (price move, PnL delta) keeps accruing through the quiet period.
+  private recordQuietHold(
+    input: AgentDecisionInput,
+    context: AgentContext,
+    heldDuringPrev: 'LONG' | 'FLAT',
+    reason: string,
+  ): Signal[] {
+    const candles = input.snapshot.candles.get(this.symbol) ?? [];
+    const lastCandle = candles.length > 0 ? candles[candles.length - 1] : undefined;
+    const lastClose = lastCandle ? toIndicatorNumber(lastCandle.close) : NaN;
+    const rationale = `prescreen: ${reason} — LLM not consulted`;
+
+    this.annotatePreviousOutcome(lastClose, context.position, lastCandle, heldDuringPrev);
+
+    this.recordQuietJournalEntry(input, rationale);
+
+    return [];
   }
 
   onStop(): void {
@@ -359,10 +440,13 @@ export class AgenticStrategy implements AsyncStrategy {
     return { basedOnSeq: 0n, refPrice: null };
   }
 
+  // proposal is absent only for the prescreen quiet-HOLD path (recordQuietHold) — no client call was
+  // ever made, so there is no usage/latency/playbook telemetry to map through; those fields fall back
+  // to the same null/'' the client-omits-decision stub path already uses.
   private recordJournalEntry(
     input: AgentDecisionInput,
     decision: AgentDecisionMeta,
-    proposal: AgentProposal,
+    proposal?: AgentProposal,
   ): void {
     if (!this.journal) return;
     const { basedOnSeq, refPrice } = this.deriveMarketBasis(input);
@@ -382,11 +466,11 @@ export class AgenticStrategy implements AsyncStrategy {
         rationale: decision.rationale.slice(0, MAX_JOURNAL_RATIONALE_LEN),
         refPrice: refPrice ? refPrice.toFixed() : null,
         close: lastCandle ? lastCandle.close.toFixed() : null,
-        inputTokens: proposal.usage?.inputTokens ?? null,
-        outputTokens: proposal.usage?.outputTokens ?? null,
-        latencyMs: proposal.latencyMs ?? null,
-        playbookVersion: proposal.playbookVersion ?? null,
-        promptHash: proposal.promptHash ?? '',
+        inputTokens: proposal?.usage?.inputTokens ?? null,
+        outputTokens: proposal?.usage?.outputTokens ?? null,
+        latencyMs: proposal?.latencyMs ?? null,
+        playbookVersion: proposal?.playbookVersion ?? null,
+        promptHash: proposal?.promptHash ?? '',
       });
     } catch {
       // A journal failure must never affect trading — it's an analysis artifact, not a safety
@@ -415,6 +499,38 @@ export class AgenticStrategy implements AsyncStrategy {
         // Never the underlying message: it may echo transport detail beyond kind/status. Never the
         // key, never the response body.
         rationale: status !== undefined ? `${kind} (status ${status})` : kind,
+        refPrice: refPrice ? refPrice.toFixed() : null,
+        close: lastCandle ? lastCandle.close.toFixed() : null,
+        inputTokens: null,
+        outputTokens: null,
+        latencyMs: null,
+        playbookVersion: null,
+        promptHash: '',
+      });
+    } catch {
+      // See recordJournalEntry — a journal failure must never affect trading.
+    }
+  }
+
+  // model is 'prescreen' (not this.model) — an honest account that no LLM call was made for this
+  // row, distinguishable at a glance from every client-sourced decision on the same strategyId.
+  private recordQuietJournalEntry(input: AgentDecisionInput, rationale: string): void {
+    if (!this.journal) return;
+    const { basedOnSeq, refPrice } = this.deriveMarketBasis(input);
+    const candles = input.snapshot.candles.get(this.symbol) ?? [];
+    const lastCandle = candles.length > 0 ? candles[candles.length - 1] : undefined;
+    try {
+      this.journal.record({
+        strategyId: this.id,
+        symbol: this.symbol,
+        venue: this.venue,
+        triggerKind: input.trigger.kind,
+        basedOnSeq,
+        eventTime: input.snapshot.eventTime,
+        model: 'prescreen',
+        action: 'hold',
+        confidence: null,
+        rationale: rationale.slice(0, MAX_JOURNAL_RATIONALE_LEN),
         refPrice: refPrice ? refPrice.toFixed() : null,
         close: lastCandle ? lastCandle.close.toFixed() : null,
         inputTokens: null,

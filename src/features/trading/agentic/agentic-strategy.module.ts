@@ -13,6 +13,9 @@ import {
 } from '../../../ports/agentic-strategy';
 import { TypedConfigService } from '../../../config/environment/typed-config.service';
 import { KILL_SWITCH, type KillSwitchPort } from '../../../ports/risk';
+import { REFLECTION_EVIDENCE, type RoundTripEvidencePort } from '../../../ports/promotion';
+import { DEFAULT_FILTERS } from '../../../domain/risk/default-filters';
+import { price, qty } from '../../../domain/types/money';
 import { STRATEGY_REGISTRY, type StrategyRegistryPort } from '../../../ports/strategy';
 import { StubAgentClient } from './agent-client.adapter';
 import { AnthropicAgentClient } from './anthropic-agent-client';
@@ -23,7 +26,9 @@ import {
   type ReflectionPlaybookStore,
 } from './reflection.service';
 
-const DEFAULT_MODEL = 'claude-opus-4-8';
+// Matches AGENTIC_MODEL's schema default and the AGENTIC_TOKEN_PRICE_* defaults (Sonnet-5 at 3/15)
+// — see environment.config.ts's AGENTIC_MODEL comment for the cost-honesty rationale.
+const DEFAULT_MODEL = 'claude-sonnet-5';
 const DEFAULT_TIMEOUT_MS = 30000;
 const DEFAULT_MAX_TOKENS = 1024;
 const DEFAULT_SIGNAL_TTL_MS = 120000;
@@ -77,6 +82,7 @@ export function agenticEnv(config?: TypedConfigService): Record<string, string |
   return {
     ...process.env,
     AGENTIC_MODEL: agentic.model,
+    AGENTIC_REFLECTION_MODEL: agentic.reflectionModel,
     AGENTIC_TIMEOUT_MS: String(agentic.timeoutMs),
     AGENTIC_MAX_TOKENS: String(agentic.maxTokens),
     AGENTIC_MAX_CALLS_PER_DAY: String(agentic.maxCallsPerDay),
@@ -155,12 +161,29 @@ export function selectAgentClient(
       maxTokens: intEnv(env['AGENTIC_MAX_TOKENS'], DEFAULT_MAX_TOKENS),
       signalTtlMs: intEnv(env['SIGNAL_TTL_MS'], DEFAULT_SIGNAL_TTL_MS),
       profile,
+      constraintsFor: constraintsFromDefaultFilters,
     },
     fetch,
     new Logger('AnthropicAgentClient'),
     playbookProvider,
   );
   return new BudgetedAgentClient(client, budget, new Logger('AgentBudget'));
+}
+
+// Multi-symbol (P7): per-decide venue-constraint resolution for the shared client, sourced from the
+// SAME DEFAULT_FILTERS table Risk/Execution enforce (domain/risk/default-filters) — the prompt's
+// tick/lot/minNotional can never drift from what the sizer actually rounds to. Returns undefined
+// for an unfiltered symbol, which falls back to the static profile's constraints in the client.
+function constraintsFromDefaultFilters(
+  symbol: string,
+): AgentTradingProfile['constraints'] | undefined {
+  const filters = DEFAULT_FILTERS.get(symbol);
+  if (!filters) return undefined;
+  return {
+    tickSize: price(filters.tickSize),
+    lotStep: qty(filters.stepSize),
+    minNotional: price(filters.minNotional),
+  };
 }
 
 // Wires the out-of-process agent client. Binds AGENT_CLIENT to the concrete AnthropicAgentClient
@@ -217,6 +240,7 @@ export function selectAgentClient(
         killSwitch: KillSwitchPort | undefined,
         registry: StrategyRegistryPort | undefined,
         usageSink: LlmUsageSink | undefined,
+        evidence: RoundTripEvidencePort | undefined,
       ) =>
         createReflectionService(agenticEnv(config), {
           budget,
@@ -226,6 +250,7 @@ export function selectAgentClient(
           killSwitch,
           registry,
           usageSink,
+          evidence,
           logger: new Logger('ReflectionService'),
         }),
       inject: [
@@ -237,6 +262,7 @@ export function selectAgentClient(
         { token: KILL_SWITCH, optional: true },
         { token: STRATEGY_REGISTRY, optional: true },
         { token: LLM_USAGE_SINK, optional: true },
+        { token: REFLECTION_EVIDENCE, optional: true },
       ],
     },
   ],

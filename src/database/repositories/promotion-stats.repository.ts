@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { eq, asc } from 'drizzle-orm';
+import { eq, asc, desc } from 'drizzle-orm';
 import type { TradingMode } from '../../domain/types/mode';
 import type { PromotionStatsPort, PromotionFillRow, LlmTokenTotals } from '../../ports/promotion';
 import { DRIZZLE_DB } from '../database.tokens';
@@ -31,6 +31,7 @@ export class PromotionStatsRepository implements PromotionStatsPort {
         fee: schema.fills.feeAmount,
         feeAsset: schema.fills.feeCcy,
         executedAt: schema.fills.venueTimestamp,
+        refPrice: schema.orderIntents.refPrice,
         fillId: schema.fills.fillId,
       })
       .from(schema.fills)
@@ -49,6 +50,7 @@ export class PromotionStatsRepository implements PromotionStatsPort {
       fee: r.fee,
       feeAsset: r.feeAsset,
       executedAt: r.executedAt,
+      refPrice: r.refPrice,
     }));
   }
 
@@ -85,5 +87,19 @@ export class PromotionStatsRepository implements PromotionStatsPort {
     }
 
     return { decideInputTokens, decideOutputTokens, reflectionInputTokens, reflectionOutputTokens };
+  }
+
+  // Newest reflection-path usage row = the last reflection attempt that actually reached the API
+  // (usage is recorded only after a parsed response). Feeds the reflection trigger seed so a
+  // redeploy resumes the cadence instead of resetting it.
+  async latestReflectionAt(): Promise<number | null> {
+    const rows = await requireDb(this.db)
+      .select({ createdAt: schema.llmUsage.createdAt })
+      .from(schema.llmUsage)
+      .where(eq(schema.llmUsage.kind, 'reflection'))
+      .orderBy(desc(schema.llmUsage.createdAt), desc(schema.llmUsage.id))
+      .limit(1);
+    const first = rows[0];
+    return first === undefined ? null : first.createdAt.getTime();
   }
 }

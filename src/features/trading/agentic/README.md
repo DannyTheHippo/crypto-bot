@@ -1,11 +1,12 @@
 # agentic-strategy
 
 The agentic lane is an LLM-driven strategy: async, non-deterministic (it calls an out-of-process
-model at runtime), and permanently **EXPERIMENT-ONLY** — paper/testnet only, step-D-uncertifiable,
-never promoted to live. `assertAgenticLaneNotLive` (`agentic-live-interlock.ts`) refuses any live
-boot with `ACTIVE_STRATEGY=agentic`. It only proposes a `Signal`; Risk still sizes/vetoes every
-proposal, and the four live gates still bind — this lane does not bypass any of CLAUDE.md's hard
-rules.
+model at runtime), and step-D-uncertifiable — so **live access is EARNED, never assumed**.
+`assertAgenticLaneNotLive` (`agentic-live-interlock.ts`) refuses any live boot with
+`ACTIVE_STRATEGY=agentic` unless `PromotionReadinessService` returns a permitted verdict (>=30
+closed demo round trips AND positive net-of-cost PnL over >=14 days); a permitted verdict only
+allows ATTEMPTING the unchanged four-gate arming ceremony. It only proposes a `Signal`; Risk still
+sizes/vetoes every proposal — this lane does not bypass any of CLAUDE.md's hard rules.
 
 The deterministic pure lane (ema-cross/donchian) and its research harness were retired by owner
 decision 2026-07-03; this module is now the only strategy lane under active development.

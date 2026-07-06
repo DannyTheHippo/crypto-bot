@@ -194,7 +194,7 @@ Order path: **Strategy** emits Signals (conviction, no quantities) → **Risk** 
 **Execution** stamps a `RiskApprovedIntent` (brand + HMAC proof) → **ExchangeAdapter** places the
 order. Execution never widens its signature; strategies cannot import execution or adapter code.
 
-See [docs/design-plan.md](docs/design-plan.md) for the full architecture, module contracts, OMS
+See [docs/archive/design-plan.md](docs/archive/design-plan.md) for the full architecture, module contracts, OMS
 design, risk rules, persistence schema, and phased build order.
 
 ---
@@ -245,13 +245,13 @@ src/
   app.module.ts    composition root
 drizzle/           schema definitions and migrations
 observability/     Prometheus config, Grafana provisioning (dashboards + datasources)
-docs/              design-plan.md, runbook.md, demo-trading-run.md
+docs/             runbook.md, archive/design-plan.md, demo-trading-run.md
 ```
 
 ---
 
 ## Links
 
-- [Architecture & design](docs/design-plan.md)
+- [Architecture & design](docs/archive/design-plan.md)
 - [Operations runbook](docs/runbook.md)
 - [Demo trading run walkthrough](docs/demo-trading-run.md)

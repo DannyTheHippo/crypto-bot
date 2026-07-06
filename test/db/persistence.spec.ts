@@ -773,6 +773,37 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
     expect(tied.map((r) => r.promptHash)).toEqual(['hash-dt-3a', 'hash-dt-3b']);
   });
 
+  it('(j) recent(limit, strategyId) scopes the window to one instance (P7)', async () => {
+    const repo = new AgentDecisionRepository(db);
+    const base = {
+      symbol: 'BTC/USDT',
+      venue: 'binance',
+      triggerKind: 'candle' as const,
+      basedOnSeq: 1n,
+      model: 'm',
+      action: 'hold' as const,
+      confidence: 0.5,
+      rationale: 'r',
+      refPrice: null,
+      close: null,
+      inputTokens: null,
+      outputTokens: null,
+      latencyMs: null,
+      playbookVersion: null,
+    };
+    await repo.insert({ ...base, strategyId: 'agentic-p7-1', eventTime: 1, promptHash: 'p7-a' });
+    await repo.insert({ ...base, strategyId: 'agentic-p7-2', eventTime: 2, promptHash: 'p7-b' });
+    await repo.insert({ ...base, strategyId: 'agentic-p7-1', eventTime: 3, promptHash: 'p7-c' });
+
+    const adapter = new AgentDecisionJournalAdapter(db);
+    const scoped = await adapter.recent(500, 'agentic-p7-1');
+    expect(scoped.every((r) => r.strategyId === 'agentic-p7-1')).toBe(true);
+    expect(scoped.map((r) => r.promptHash)).toEqual(['p7-a', 'p7-c']);
+    // The limit applies within the scope — the other strategy's rows never consume it.
+    const limited = await adapter.recent(1, 'agentic-p7-1');
+    expect(limited.map((r) => r.promptHash)).toEqual(['p7-c']);
+  });
+
   it('(j) playbook store: current() lazily seeds the row on first call when absent', async () => {
     const seed = { version: 1001, content: 'seed-1001' };
     const store = new PlaybookStoreAdapter(db, seed);
@@ -1018,5 +1049,39 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
     expect(totals.decideOutputTokens - before.decideOutputTokens).toBe(30);
     expect(totals.reflectionInputTokens - before.reflectionInputTokens).toBe(50);
     expect(totals.reflectionOutputTokens - before.reflectionOutputTokens).toBe(5);
+  });
+
+  it('(k) fillsForMode carries the intent refPrice (null on an unresolved join) for slippage evidence', async () => {
+    const repo = new PromotionStatsRepository(db);
+    await seedIntentWithSide('int-k-ref', 'cb-k-ref', 'BUY', 'testnet');
+    await seedFill('vt-k-ref', 'int-k-ref', 4_000, 'testnet', null);
+    await seedFill('vt-k-noref', null, 5_000, 'testnet', null);
+
+    const rows = await repo.fillsForMode('testnet');
+    const joined = rows.find((r) => r.executedAt === 4_000);
+    const orphan = rows.find((r) => r.executedAt === 5_000);
+    expect(joined!.refPrice).toBe(pad18('50000')); // order_intents.ref_price via the LEFT JOIN
+    expect(orphan!.refPrice).toBeNull();
+  });
+
+  it('(k) latestReflectionAt: null before any reflection row, newest created_at after', async () => {
+    const repo = new PromotionStatsRepository(db);
+    // The (k) llmTokenTotals test above may already have inserted a reflection row in this suite
+    // run — take a before-reading and only assert monotonic movement plus the null→value contract
+    // against a fresh, strictly newer row.
+    const before = await repo.latestReflectionAt();
+    await pool.query(
+      `INSERT INTO public.llm_usage (kind, model, mode, strategy_id, input_tokens, output_tokens, created_at)
+       VALUES ('reflection','m','testnet','agentic-k',1,1, now() + interval '1 hour')`,
+    );
+    const after = await repo.latestReflectionAt();
+    expect(after).not.toBeNull();
+    if (before !== null) expect(after!).toBeGreaterThan(before);
+    // decide-kind rows never move the marker
+    await pool.query(
+      `INSERT INTO public.llm_usage (kind, model, mode, strategy_id, input_tokens, output_tokens, created_at)
+       VALUES ('decide','m','testnet','agentic-k',1,1, now() + interval '2 hour')`,
+    );
+    expect(await repo.latestReflectionAt()).toBe(after);
   });
 });

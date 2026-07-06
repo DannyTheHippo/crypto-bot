@@ -111,7 +111,11 @@ data-driven demo evidence that unlocks a live attempt.
 - Positive **net-of-cost PnL** over the evidence window: `realizedPnl − fees − llmCostUsd > 0`.
   `llmCostUsd` prices summed decide + reflection tokens (`agent_decisions` + `llm_usage`) at
   `AGENTIC_TOKEN_PRICE_INPUT_PER_MTOK=3` / `AGENTIC_TOKEN_PRICE_OUTPUT_PER_MTOK=15` USD per
-  million tokens.
+  million tokens. The pricing is flat across models, so the operator rule is: if
+  `AGENTIC_REFLECTION_MODEL` (or `AGENTIC_MODEL`) is pinned to a pricier model, raise BOTH
+  `AGENTIC_TOKEN_PRICE_*` knobs to the pricier model's rates — over-counting the cheaper path's
+  cost is the fail-closed direction; under-counting would flatter the gate. (Per-row `model`
+  columns exist on both tables, so exact per-model pricing is retrofittable at read time.)
 - Evidence window `>= 14` days, measured as the span between the first and last closed round trip.
 - Any unresolved fill (fills row with no attributable `order_intents` join) or an unconvertible
   fee asset forces `permitted=false` regardless of the numeric checks (fail-closed, not silently
@@ -169,3 +173,29 @@ agentic_promotion_ready         # 1 = permitted, 0 = not permitted
 Dashboard: the "Agentic lane (LLM)" row in `observability/grafana/dashboards/crypto-bot.json`
 carries panels for all five (net-of-cost PnL, readiness, round trips vs the 30 threshold,
 evidence window vs the 14-day threshold).
+
+## 2026-07-06b — Evidence-quality pass (reconciliation fixed; learning loop live; protective backstop)
+
+Same-day follow-up shipping the levers that make the earned-live evidence trustworthy and the
+learning loop real:
+
+- **Reconciliation now actually confirms venue truth.** The 30s sweep had silently thrown on EVERY
+  pass since the demo went up (symbol-less `fetchOpenOrders()` throw swallowed by the driver's empty
+  catch — `reconciliations` had ZERO rows ever). Fixed: per-symbol open-order sweep, a
+  `result="error"` accounting path (a failing pass can never be silent again), and the balances axis
+  disabled on the shared demo wallet only. First CLEAN rows verified live within minutes of deploy.
+  This closes the prior "top backlog item" blocking any live promotion (see the 2026-06-15 section).
+- **The reflection loop had NEVER fired** (llm_usage empty, playbook stuck at seed v1 after 21 round
+  trips): its trade counters reset on every redeploy. Now seeded from DB truth (closed trips since
+  the last reflection row), the cooldown runs 24h on the demo (compose), and reflection evidence
+  gains realized venue round trips (fills-walked, net-of-fee, with decide-vs-fill slippage) clearly
+  distinguished from the t+1 close-price proxies. The auto-promotion count is floored by the DB
+  total, so redeploys no longer starve the ≥30 gate either.
+- **Bot-side protective exits** (`PROTECT_STOP_LOSS_PCT`/`PROTECT_TRAILING_PCT`) backstop every long
+  through the full risk path even when the LLM is dark — improving the risk-adjusted quality of the
+  round trips the evidence window accrues.
+- **Multi-symbol** (`TRADING_SYMBOLS`, one instance per symbol) multiplies evidence accrual; the
+  readiness walk already counts per (strategyId, symbol) and needs no change.
+- Cost-honesty guard: `AGENTIC_MODEL`'s schema default now matches the 3/15 token-price defaults
+  (Sonnet-5), and the flat-pricing operator rule above governs any pricier
+  `AGENTIC_REFLECTION_MODEL` pin.

@@ -33,6 +33,9 @@ export interface AppConfig {
   // agentic-strategy.module.ts).
   agentic: {
     model: string;
+    // Reflection-path model override; absent ⇒ reflection uses `model` (one model, one price —
+    // pinning a pricier model requires raising AGENTIC_TOKEN_PRICE_* to its rates, fail-closed).
+    reflectionModel?: string;
     timeoutMs: number;
     maxTokens: number;
     minDecisionIntervalMs: number;
@@ -53,6 +56,14 @@ export interface AppConfig {
     tokenPriceOutputPerMtok: string;
     // Residual-position notional (quote ccy) below which a round-trip cycle counts as CLOSED.
     promotionDustNotional: string;
+    // Cost-floor pre-screen gate: consulted before each LLM call so a quiet market never burns a
+    // token spend on a call the agent was always going to pass on.
+    prescreenEnabled: boolean;
+    prescreenVolShortBars: number;
+    prescreenVolLongBars: number;
+    prescreenVolRatio: number;
+    prescreenBreakoutLookbackBars: number;
+    prescreenBreakoutPct: number;
   };
   // Risk-lane knobs read via ConfigService (mirrors the agentic block above).
   risk: {
@@ -63,6 +74,11 @@ export interface AppConfig {
     // Compounding position sizing (P5): fraction of equity sized per entry (0..1). '0' disables —
     // PositionSizerService falls back to the legacy baseNotional × strength path.
     equityFraction: string;
+    // ProtectiveExitService (bot-side stop-loss/trailing-stop backstop): fraction below avgEntry
+    // (stop) / the ratcheted high-water mark (trailing) that force-exits a long. '0' disables each
+    // independently.
+    protectStopLossPct: string;
+    protectTrailingPct: string;
     // RiskLimitsConfig overlay knobs (domain/risk/limits.ts) — RiskModule merges these onto its
     // DEFAULT_LIMITS hardcoded fallback. maxDriftBps has no env knob (not part of this pass); it
     // stays hardcoded in DEFAULT_LIMITS.
@@ -77,7 +93,10 @@ export interface AppConfig {
   };
   // Strategy-lane knobs (symbol/interval/active lane selection) read via ConfigService.
   strategy: {
+    // Deprecated single-symbol knob; still honored as the fallback when TRADING_SYMBOLS is unset.
     symbol: string;
+    // Multi-symbol (P7): one agentic strategy instance per entry; always non-empty.
+    symbols: string[];
     interval: string;
     active: 'agentic';
   };

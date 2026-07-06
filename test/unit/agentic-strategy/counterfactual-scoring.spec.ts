@@ -18,6 +18,7 @@ function row(index: number, over: Partial<ScoringRow> = {}): ScoringRow {
     close: null,
     playbookVersion: 1,
     promptHash: 'hash-a',
+    model: 'test-model',
     ...over,
   };
 }

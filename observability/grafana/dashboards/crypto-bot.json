@@ -5,7 +5,10 @@
   "timezone": "utc",
   "schemaVersion": 39,
   "refresh": "10s",
-  "time": { "from": "now-6h", "to": "now" },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
   "templating": {
     "list": [
       {
@@ -13,127 +16,289 @@
         "name": "price_in_per_mtok",
         "label": "Input $ / 1M tokens",
         "description": "set to your model's pricing (USD per 1M input tokens)",
-        "query": "15",
-        "current": { "text": "15", "value": "15" }
+        "query": "3",
+        "current": {
+          "text": "3",
+          "value": "3"
+        }
       },
       {
         "type": "textbox",
         "name": "price_out_per_mtok",
         "label": "Output $ / 1M tokens",
         "description": "set to your model's pricing (USD per 1M output tokens)",
-        "query": "75",
-        "current": { "text": "75", "value": "75" }
+        "query": "15",
+        "current": {
+          "text": "15",
+          "value": "15"
+        }
       }
     ]
   },
-  "annotations": { "list": [] },
+  "annotations": {
+    "list": []
+  },
   "panels": [
     {
       "id": 1,
       "type": "row",
       "title": "Overview",
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "id": 142,
+      "type": "stat",
+      "title": "Total money (equity \u2212 fees \u2212 API cost, USD)",
+      "description": "All money right now: equity_usdt minus cumulative fees paid minus cumulative LLM spend. The single bottom-line USD figure.",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "equity_usdt - scalar(sum(fees_paid_total) or vector(0)) - scalar(sum(agent_tokens_total{kind=\"input\"}) or vector(0)) / 1e6 * ${price_in_per_mtok} - scalar(sum(agent_tokens_total{kind=\"output\"}) or vector(0)) / 1e6 * ${price_out_per_mtok}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 130,
+      "type": "stat",
+      "title": "Net-of-cost PnL (evidence, USD)",
+      "description": "agentic_promotion_net_pnl_usd \u2014 realized PnL minus fees minus LLM spend over the earned-live promotion evidence window (PromotionReadinessService; sampled every 5m). THE headline number: the bot is only profitable if this is positive.",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "agentic_promotion_net_pnl_usd",
+          "refId": "A"
+        }
+      ]
     },
     {
       "id": 100,
       "type": "stat",
       "title": "Return since inception (%)",
-      "description": "(equity − starting cash) / starting cash — total return since the account was seeded.",
-      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
+      "description": "(equity \u2212 starting cash) / starting cash \u2014 total return since the account was seeded.",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 1
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "percentunit",
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "red", "value": null },
-              { "color": "green", "value": 0 }
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0
+              }
             ]
           },
-          "color": { "mode": "thresholds" }
+          "color": {
+            "mode": "thresholds"
+          }
         }
       },
       "targets": [
-        { "expr": "(equity_usdt - starting_cash_usdt) / starting_cash_usdt", "refId": "A" }
+        {
+          "expr": "(equity_usdt - starting_cash_usdt) / starting_cash_usdt",
+          "refId": "A"
+        }
       ]
     },
     {
       "id": 101,
       "type": "stat",
       "title": "Day return (%)",
-      "description": "Day PnL as a % of start-of-day equity (equity − dayPnL).",
-      "gridPos": { "h": 4, "w": 3, "x": 4, "y": 1 },
+      "description": "Day PnL as a % of start-of-day equity (equity \u2212 dayPnL).",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
+        "y": 1
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "percentunit",
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "red", "value": null },
-              { "color": "green", "value": 0 }
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0
+              }
             ]
           },
-          "color": { "mode": "thresholds" }
+          "color": {
+            "mode": "thresholds"
+          }
         }
       },
-      "targets": [{ "expr": "day_pnl_usdt / (equity_usdt - day_pnl_usdt)", "refId": "A" }]
+      "targets": [
+        {
+          "expr": "day_pnl_usdt / (equity_usdt - day_pnl_usdt)",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 103,
+      "type": "stat",
+      "title": "Realized PnL \u2014 round trips (USDT)",
+      "description": "Cumulative realized PnL summed over completed round trips (trade_pnl_usdt histogram _sum, net of fees).",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(trade_pnl_usdt_sum)",
+          "refId": "A"
+        }
+      ]
     },
     {
       "id": 102,
       "type": "stat",
       "title": "Unrealized PnL (USDT)",
-      "description": "Mark-to-market PnL on open positions: Σ signedQty×(mark − avgEntry).",
-      "gridPos": { "h": 4, "w": 3, "x": 7, "y": 1 },
+      "description": "Mark-to-market PnL on open positions: \u03a3 signedQty\u00d7(mark \u2212 avgEntry).",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 1
+      },
       "fieldConfig": {
         "defaults": {
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "red", "value": null },
-              { "color": "green", "value": 0 }
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0
+              }
             ]
           },
-          "color": { "mode": "thresholds" }
+          "color": {
+            "mode": "thresholds"
+          }
         }
       },
-      "targets": [{ "expr": "unrealized_pnl_usdt", "refId": "A" }]
-    },
-    {
-      "id": 103,
-      "type": "stat",
-      "title": "Realized PnL — round trips (USDT)",
-      "description": "Cumulative realized PnL summed over completed round trips (trade_pnl_usdt histogram _sum, net of fees).",
-      "gridPos": { "h": 4, "w": 4, "x": 10, "y": 1 },
-      "fieldConfig": {
-        "defaults": {
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "red", "value": null },
-              { "color": "green", "value": 0 }
-            ]
-          },
-          "color": { "mode": "thresholds" }
+      "targets": [
+        {
+          "expr": "unrealized_pnl_usdt",
+          "refId": "A"
         }
-      },
-      "targets": [{ "expr": "sum(trade_pnl_usdt_sum)", "refId": "A" }]
-    },
-    {
-      "id": 104,
-      "type": "stat",
-      "title": "Fees paid (USDT)",
-      "description": "Cumulative fees paid across all fills and fee currencies.",
-      "gridPos": { "h": 4, "w": 3, "x": 14, "y": 1 },
-      "targets": [{ "expr": "sum(fees_paid_total)", "refId": "A" }]
+      ]
     },
     {
       "id": 105,
       "type": "stat",
       "title": "Win rate",
-      "description": "Winning round trips ÷ total round trips (round-trip PnL > 0 is a win).",
-      "gridPos": { "h": 4, "w": 3, "x": 17, "y": 1 },
-      "fieldConfig": { "defaults": { "unit": "percentunit" } },
+      "description": "Winning round trips \u00f7 total round trips (round-trip PnL > 0 is a win).",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 5
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        }
+      },
       "targets": [
         {
           "expr": "sum(round_trips_total{result=\"win\"}) / clamp_min(sum(round_trips_total), 1)",
@@ -142,59 +307,193 @@
       ]
     },
     {
-      "id": 106,
-      "type": "stat",
-      "title": "Exposure",
-      "description": "Gross position notional ÷ equity — how much of the book is deployed.",
-      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 1 },
-      "fieldConfig": { "defaults": { "unit": "percentunit" } },
-      "targets": [{ "expr": "sum(position_notional_usdt) / equity_usdt", "refId": "A" }]
-    },
-    {
-      "id": 107,
-      "type": "stat",
-      "title": "Scrape up",
-      "description": "Prometheus scrape health for the bot target (UP = metrics flowing).",
-      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 5 },
-      "fieldConfig": {
-        "defaults": {
-          "mappings": [
-            { "type": "value", "options": { "0": { "text": "DOWN" }, "1": { "text": "UP" } } }
-          ],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "red", "value": null },
-              { "color": "green", "value": 1 }
-            ]
-          },
-          "color": { "mode": "thresholds" }
-        }
-      },
-      "targets": [{ "expr": "up{job=\"crypto-bot\"}", "refId": "A" }]
-    },
-    {
       "id": 108,
       "type": "stat",
       "title": "Effective mode",
       "description": "Trading mode the four-gate wall resolved to. paper unless every live gate passes.",
-      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 5 },
-      "targets": [{ "expr": "mode_info", "refId": "A", "legendFormat": "{{ effective }}" }]
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 13
+      },
+      "targets": [
+        {
+          "expr": "mode_info",
+          "refId": "A",
+          "legendFormat": "{{ effective }}"
+        }
+      ]
     },
     {
       "id": 109,
       "type": "stat",
-      "title": "Kill switch",
+      "title": "Health (kill switch)",
       "description": "Currently-active kill-switch state (RUNNING is healthy; anything else is a halt).",
-      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 5 },
-      "targets": [{ "expr": "kill_switch_state == 1", "refId": "A", "legendFormat": "{{ state }}" }]
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 13
+      },
+      "targets": [
+        {
+          "expr": "kill_switch_state == 1",
+          "refId": "A",
+          "legendFormat": "{{ state }}"
+        }
+      ]
+    },
+    {
+      "id": 116,
+      "type": "stat",
+      "title": "Agent client",
+      "description": "Which agentic client bound at boot. stub = INERT (proposes nothing); anthropic = LIVE deciding client.",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 13
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "stub": {
+                  "text": "INERT (stub)",
+                  "color": "orange",
+                  "index": 0
+                },
+                "anthropic": {
+                  "text": "LIVE (anthropic)",
+                  "color": "green",
+                  "index": 1
+                }
+              }
+            }
+          ],
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "textMode": "name",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"]
+        }
+      },
+      "targets": [
+        {
+          "expr": "agent_client_info == 1",
+          "refId": "A",
+          "legendFormat": "{{ kind }}"
+        }
+      ]
+    },
+    {
+      "id": 90,
+      "type": "stat",
+      "title": "Promotion readiness",
+      "description": "agentic_promotion_ready \u2014 the earned-live verdict from PromotionReadinessService (>=30 closed demo round trips AND positive net-of-cost PnL over >=14 days).",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
+        "y": 13
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "NOT READY",
+                  "color": "red",
+                  "index": 0
+                },
+                "1": {
+                  "text": "READY",
+                  "color": "green",
+                  "index": 1
+                }
+              }
+            }
+          ],
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "textMode": "name",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"]
+        }
+      },
+      "targets": [
+        {
+          "expr": "agentic_promotion_ready",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 91,
+      "type": "stat",
+      "title": "Round trips (evidence)",
+      "description": "agentic_promotion_round_trips \u2014 closed demo round trips counted toward the >=30 promotion threshold.",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 13
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 30
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "agentic_promotion_round_trips",
+          "refId": "A"
+        }
+      ]
     },
     {
       "id": 110,
       "type": "gauge",
       "title": "Drawdown",
-      "description": "(peak − equity) / peak against the 20% limit.",
-      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 5 },
+      "description": "(peak \u2212 equity) / peak against the 20% limit.",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 13
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "percentunit",
@@ -203,123 +502,77 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "orange", "value": 0.1 },
-              { "color": "red", "value": 0.2 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.1
+              },
+              {
+                "color": "red",
+                "value": 0.2
+              }
             ]
           }
         }
       },
-      "targets": [{ "expr": "drawdown_ratio", "refId": "A" }]
-    },
-    {
-      "id": 111,
-      "type": "stat",
-      "title": "Reconciliation mismatches",
-      "description": "Total reconciliation mismatches. Any non-zero pages (§8); reconciliation HALTs, never auto-flattens.",
-      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 5 },
-      "fieldConfig": {
-        "defaults": {
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 1 }
-            ]
-          },
-          "color": { "mode": "thresholds" }
-        }
-      },
-      "targets": [{ "expr": "reconciliation_mismatch_total", "refId": "A" }]
-    },
-    {
-      "id": 112,
-      "type": "stat",
-      "title": "Reconcile age (s)",
-      "description": "Seconds since the last clean reconcile pass. Grows unbounded if the reconciler stalls or keeps HALTing (§8).",
-      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 5 },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "orange", "value": 120 },
-              { "color": "red", "value": 300 }
-            ]
-          },
-          "color": { "mode": "thresholds" }
-        }
-      },
-      "targets": [
-        { "expr": "time() - reconciliation_last_success_timestamp_seconds", "refId": "A" }
-      ]
-    },
-    {
-      "id": 113,
-      "type": "stat",
-      "title": "Order reject rate (/s)",
-      "description": "Order rejections per second (5m rate), all stages — quick health of the execution path.",
-      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 9 },
-      "targets": [{ "expr": "sum(rate(orders_rejected_total[5m]))", "refId": "A" }]
-    },
-    {
-      "id": 114,
-      "type": "stat",
-      "title": "Fill rate (5m)",
-      "description": "Share of submitted orders that reached FILLED over 5m.",
-      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 9 },
-      "fieldConfig": { "defaults": { "unit": "percentunit" } },
       "targets": [
         {
-          "expr": "sum(rate(orders_fully_filled_total[5m])) / clamp_min(sum(rate(orders_submitted_total[5m])), 0.0001)",
+          "expr": "drawdown_ratio",
           "refId": "A"
         }
       ]
     },
     {
-      "id": 115,
-      "type": "stat",
-      "title": "Risk vetoes (/s)",
-      "description": "Risk-engine vetoes per second (15m rate) — sizing/band/notional/exposure/kill-switch rejections.",
-      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 9 },
-      "targets": [{ "expr": "sum(rate(risk_rejections_total[15m]))", "refId": "A" }]
-    },
-    {
-      "id": 116,
-      "type": "stat",
-      "title": "Agent client",
-      "description": "Which agentic client bound at boot. stub = INERT (proposes nothing); anthropic = LIVE deciding client.",
-      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 9 },
+      "id": 119,
+      "type": "timeseries",
+      "title": "Equity & peak (USDT)",
+      "description": "Account equity = cash + \u03a3 position\u00d7mark, with the persisted peak high-water mark. Both survive restarts (DB recovery).",
+      "gridPos": {
+        "h": 8,
+        "w": 16,
+        "x": 0,
+        "y": 5
+      },
       "fieldConfig": {
         "defaults": {
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "stub": { "text": "INERT (stub)", "color": "orange", "index": 0 },
-                "anthropic": { "text": "LIVE (anthropic)", "color": "green", "index": 1 }
-              }
-            }
-          ],
-          "color": { "mode": "fixed", "fixedColor": "text" }
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 8
+          }
         }
       },
-      "options": {
-        "colorMode": "background",
-        "textMode": "name",
-        "reduceOptions": { "calcs": ["lastNotNull"] }
-      },
-      "targets": [{ "expr": "agent_client_info == 1", "refId": "A", "legendFormat": "{{ kind }}" }]
+      "targets": [
+        {
+          "expr": "equity_usdt",
+          "refId": "A",
+          "legendFormat": "equity"
+        },
+        {
+          "expr": "peak_equity_usdt",
+          "refId": "B",
+          "legendFormat": "peak"
+        }
+      ]
     },
     {
       "id": 117,
       "type": "stat",
       "title": "API cost (cumulative USD)",
-      "description": "Cumulative LLM spend since process start (token totals × the per-1M price template vars). Resets on restart.",
-      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 9 },
-      "fieldConfig": { "defaults": { "unit": "currencyUSD" } },
+      "description": "Cumulative LLM spend since process start (token totals \u00d7 the per-1M price template vars). Resets on restart.",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 5
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD"
+        }
+      },
       "targets": [
         {
           "expr": "sum(agent_tokens_total{kind=\"input\"}) / 1e6 * ${price_in_per_mtok} + sum(agent_tokens_total{kind=\"output\"}) / 1e6 * ${price_out_per_mtok}",
@@ -328,163 +581,175 @@
       ]
     },
     {
-      "id": 118,
-      "type": "stat",
-      "title": "Decide rate (/s)",
-      "description": "Agentic decide() calls per second (5m rate) — how busy the LLM lane is.",
-      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 9 },
-      "targets": [{ "expr": "sum(rate(agent_decide_total[5m]))", "refId": "A" }]
-    },
-    {
-      "id": 119,
+      "id": 141,
       "type": "timeseries",
-      "title": "Equity & peak (USDT)",
-      "description": "Account equity = cash + Σ position×mark, with the persisted peak high-water mark. Both survive restarts (DB recovery).",
-      "gridPos": { "h": 8, "w": 16, "x": 0, "y": 13 },
-      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 8 } } },
-      "targets": [
-        { "expr": "equity_usdt", "refId": "A", "legendFormat": "equity" },
-        { "expr": "peak_equity_usdt", "refId": "B", "legendFormat": "peak" }
-      ]
-    },
-    {
-      "id": 120,
-      "type": "timeseries",
-      "title": "Open orders & in-flight intents",
-      "description": "Resting (open) order count and reserved (in-flight) intent count.",
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 13 },
-      "targets": [
-        { "expr": "open_orders", "refId": "A", "legendFormat": "open orders" },
-        { "expr": "in_flight_intents", "refId": "B", "legendFormat": "in-flight" }
-      ]
-    },
-    {
-      "id": 121,
-      "type": "timeseries",
-      "title": "Event-loop p99 delay (s) — 50ms budget",
-      "description": "p99 event-loop delay. Sustained values over the 50ms budget mean the process is starving async work.",
-      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 21 },
+      "title": "Total money (equity \u2212 fees \u2212 API cost, USD)",
+      "description": "equity_usdt minus cumulative fees paid minus cumulative LLM spend \u2014 all money net of both cost sources, over time.",
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 16,
+        "y": 9
+      },
       "fieldConfig": {
         "defaults": {
-          "unit": "s",
+          "unit": "currencyUSD",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 8
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 0.05 }
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0
+              }
             ]
+          },
+          "color": {
+            "mode": "thresholds"
           }
         }
       },
       "targets": [
-        { "expr": "event_loop_delay_p99_seconds", "refId": "A", "legendFormat": "p99 delay" }
+        {
+          "expr": "equity_usdt - scalar(sum(fees_paid_total) or vector(0)) - scalar(sum(agent_tokens_total{kind=\"input\"}) or vector(0)) / 1e6 * ${price_in_per_mtok} - scalar(sum(agent_tokens_total{kind=\"output\"}) or vector(0)) / 1e6 * ${price_out_per_mtok}",
+          "refId": "A",
+          "legendFormat": "total money"
+        }
       ]
-    },
-    {
-      "id": 122,
-      "type": "timeseries",
-      "title": "Event-loop utilization",
-      "description": "Fraction of time the event loop was busy (1 = saturated).",
-      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 21 },
-      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 } },
-      "targets": [{ "expr": "event_loop_utilization", "refId": "A", "legendFormat": "utilization" }]
     },
     {
       "id": 20,
       "type": "row",
       "title": "PnL & equity",
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 27 }
-    },
-    {
-      "id": 21,
-      "type": "timeseries",
-      "title": "Equity & peak (USDT)",
-      "description": "Account equity = cash + Σ position×mark (unrealized is embedded here). Peak is the persisted high-water mark.",
-      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 28 },
-      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 8 } } },
-      "targets": [
-        { "expr": "equity_usdt", "refId": "A", "legendFormat": "equity" },
-        { "expr": "peak_equity_usdt", "refId": "B", "legendFormat": "peak" }
-      ]
-    },
-    {
-      "id": 22,
-      "type": "stat",
-      "title": "Day PnL (USDT)",
-      "description": "equity − start-of-day-UTC equity.",
-      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 28 },
-      "fieldConfig": {
-        "defaults": {
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "red", "value": null },
-              { "color": "green", "value": 0 }
-            ]
-          },
-          "color": { "mode": "thresholds" }
-        }
-      },
-      "targets": [{ "expr": "day_pnl_usdt", "refId": "A" }]
-    },
-    {
-      "id": 23,
-      "type": "gauge",
-      "title": "Drawdown (peak→trough)",
-      "description": "(peak − equity) / peak — the peak-to-trough drawdown ratio.",
-      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 28 },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percentunit",
-          "min": 0,
-          "max": 1,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "orange", "value": 0.1 },
-              { "color": "red", "value": 0.2 }
-            ]
-          }
-        }
-      },
-      "targets": [{ "expr": "drawdown_ratio", "refId": "A" }]
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 17
+      }
     },
     {
       "id": 24,
       "type": "stat",
       "title": "Free cash (USDT)",
       "description": "Uncommitted cash balance available for new positions (cash_usdt).",
-      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 32 },
-      "targets": [{ "expr": "cash_usdt", "refId": "A" }]
+      "gridPos": {
+        "h": 8,
+        "w": 4,
+        "x": 0,
+        "y": 18
+      },
+      "targets": [
+        {
+          "expr": "cash_usdt",
+          "refId": "A"
+        }
+      ]
     },
     {
       "id": 25,
       "type": "timeseries",
       "title": "Realized PnL by strategy/symbol (USDT)",
-      "description": "realized_pnl_usdt broken out by strategy and symbol — where PnL is actually coming from.",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 37 },
+      "description": "realized_pnl_usdt broken out by strategy and symbol \u2014 where PnL is actually coming from.",
+      "gridPos": {
+        "h": 8,
+        "w": 10,
+        "x": 4,
+        "y": 18
+      },
       "targets": [
-        { "expr": "realized_pnl_usdt", "refId": "A", "legendFormat": "{{ strategy }} {{ symbol }}" }
+        {
+          "expr": "realized_pnl_usdt",
+          "refId": "A",
+          "legendFormat": "{{ strategy }} {{ symbol }}"
+        }
       ]
     },
     {
       "id": 26,
       "type": "timeseries",
       "title": "Position quantity (signed)",
-      "description": "position_qty per symbol; sign indicates long (+) or short (−).",
-      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 37 },
-      "targets": [{ "expr": "position_qty", "refId": "A", "legendFormat": "{{ symbol }}" }]
+      "description": "position_qty per symbol; sign indicates long (+) or short (\u2212).",
+      "gridPos": {
+        "h": 8,
+        "w": 5,
+        "x": 14,
+        "y": 18
+      },
+      "targets": [
+        {
+          "expr": "position_qty",
+          "refId": "A",
+          "legendFormat": "{{ symbol }}"
+        }
+      ]
     },
     {
       "id": 27,
       "type": "timeseries",
       "title": "Position notional (USDT)",
-      "description": "position_notional_usdt per symbol — position size at current mark.",
-      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 37 },
+      "description": "position_notional_usdt per symbol \u2014 position size at current mark.",
+      "gridPos": {
+        "h": 8,
+        "w": 5,
+        "x": 19,
+        "y": 18
+      },
       "targets": [
-        { "expr": "position_notional_usdt", "refId": "A", "legendFormat": "{{ symbol }}" }
+        {
+          "expr": "position_notional_usdt",
+          "refId": "A",
+          "legendFormat": "{{ symbol }}"
+        }
+      ]
+    },
+    {
+      "id": 104,
+      "type": "stat",
+      "title": "Fees paid (USDT)",
+      "description": "Cumulative fees paid across all fills and fee currencies.",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 26
+      },
+      "targets": [
+        {
+          "expr": "sum(fees_paid_total)",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 106,
+      "type": "stat",
+      "title": "Exposure",
+      "description": "Gross position notional \u00f7 equity \u2014 how much of the book is deployed.",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 26
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(position_notional_usdt) / equity_usdt",
+          "refId": "A"
+        }
       ]
     },
     {
@@ -492,16 +757,33 @@
       "type": "row",
       "title": "Execution quality",
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 45 }
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 30
+      }
     },
     {
       "id": 41,
       "type": "timeseries",
       "title": "Order outcomes (per s, 5m rate)",
       "description": "Every ExecutionGate.submit() result by outcome (SUBMITTED / REJECTED / UNKNOWN).",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 46 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 31
+      },
       "fieldConfig": {
-        "defaults": { "custom": { "drawStyle": "line", "stacking": { "mode": "normal" } } }
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        }
       },
       "targets": [
         {
@@ -515,10 +797,22 @@
       "id": 42,
       "type": "timeseries",
       "title": "Rejection taxonomy (per s, 5m rate)",
-      "description": "Full §8 taxonomy: orders_rejected_total by stage (oms = our pre-network gate, exchange = venue) plus risk_rejections_total (risk-engine vetoes; sibling metric because eslint-boundaries forbids modules/risk importing the gate's counter).",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 46 },
+      "description": "Full \u00a78 taxonomy: orders_rejected_total by stage (oms = our pre-network gate, exchange = venue) plus risk_rejections_total (risk-engine vetoes; sibling metric because eslint-boundaries forbids modules/risk importing the gate's counter).",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 31
+      },
       "fieldConfig": {
-        "defaults": { "custom": { "drawStyle": "bars", "stacking": { "mode": "normal" } } }
+        "defaults": {
+          "custom": {
+            "drawStyle": "bars",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        }
       },
       "targets": [
         {
@@ -537,9 +831,20 @@
       "id": 43,
       "type": "timeseries",
       "title": "Fill rate by type/TIF (5m)",
-      "description": "Σ filled qty / Σ submitted qty over the window, per order type and time-in-force. Limit fill rate is strategy-meaningful; market should be ~1.",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 54 },
-      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 } },
+      "description": "\u03a3 filled qty / \u03a3 submitted qty over the window, per order type and time-in-force. Limit fill rate is strategy-meaningful; market should be ~1.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 39
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1
+        }
+      },
       "targets": [
         {
           "expr": "sum by (type, tif) (rate(orders_filled_qty_total[5m])) / clamp_min(sum by (type, tif) (rate(orders_submitted_qty_total[5m])), 0.0001)",
@@ -551,10 +856,19 @@
     {
       "id": 44,
       "type": "timeseries",
-      "title": "Submit→ack latency (s)",
+      "title": "Submit\u2192ack latency (s)",
       "description": "order_submit_latency_seconds quantiles by order type (intent submission to venue ack).",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 54 },
-      "fieldConfig": { "defaults": { "unit": "s" } },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 39
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      },
       "targets": [
         {
           "expr": "histogram_quantile(0.5, sum by (le, type) (rate(order_submit_latency_seconds_bucket[5m])))",
@@ -577,9 +891,18 @@
       "id": 45,
       "type": "timeseries",
       "title": "Decision slippage (bps, signed; + = adverse)",
-      "description": "order_slippage_decision_bps — execution price vs the signal's reference price. Positive = adverse for both sides. p50/p90 over 5m.",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 62 },
-      "fieldConfig": { "defaults": { "unit": "none" } },
+      "description": "order_slippage_decision_bps \u2014 execution price vs the signal's reference price. Positive = adverse for both sides. p50/p90 over 5m.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 47
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        }
+      },
       "targets": [
         {
           "expr": "histogram_quantile(0.5, sum by (le, symbol) (rate(order_slippage_decision_bps_bucket[5m])))",
@@ -597,9 +920,18 @@
       "id": 46,
       "type": "stat",
       "title": "Fully-filled order ratio (5m)",
-      "description": "orders_fully_filled_total / orders_submitted_total — share of submissions that reached FILLED.",
-      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 62 },
-      "fieldConfig": { "defaults": { "unit": "percentunit" } },
+      "description": "orders_fully_filled_total / orders_submitted_total \u2014 share of submissions that reached FILLED.",
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 47
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        }
+      },
       "targets": [
         {
           "expr": "sum(rate(orders_fully_filled_total[5m])) / clamp_min(sum(rate(orders_submitted_total[5m])), 0.0001)",
@@ -612,20 +944,42 @@
       "type": "timeseries",
       "title": "Open orders & in-flight intents",
       "description": "Resting (open) order count and reserved (in-flight) intent count.",
-      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 62 },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 47
+      },
       "targets": [
-        { "expr": "open_orders", "refId": "A", "legendFormat": "open orders" },
-        { "expr": "in_flight_intents", "refId": "B", "legendFormat": "in-flight" }
+        {
+          "expr": "open_orders",
+          "refId": "A",
+          "legendFormat": "open orders"
+        },
+        {
+          "expr": "in_flight_intents",
+          "refId": "B",
+          "legendFormat": "in-flight"
+        }
       ]
     },
     {
       "id": 48,
       "type": "timeseries",
       "title": "Fills & submissions (per s, 5m rate)",
-      "description": "fills_total and orders_submitted_total rates (5m) — fill throughput vs submission throughput.",
-      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 70 },
+      "description": "fills_total and orders_submitted_total rates (5m) \u2014 fill throughput vs submission throughput.",
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 55
+      },
       "targets": [
-        { "expr": "rate(fills_total[5m])", "refId": "A", "legendFormat": "fills/s" },
+        {
+          "expr": "rate(fills_total[5m])",
+          "refId": "A",
+          "legendFormat": "fills/s"
+        },
         {
           "expr": "sum(rate(orders_submitted_total[5m]))",
           "refId": "B",
@@ -638,110 +992,163 @@
       "type": "row",
       "title": "Risk & safety",
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 77 }
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 62
+      }
     },
     {
       "id": 61,
       "type": "state-timeline",
       "title": "Kill-switch state",
       "description": "Only the active state carries 1 (RUNNING is healthy; anything else is a halt).",
-      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 78 },
-      "fieldConfig": { "defaults": { "custom": { "fillOpacity": 80 }, "min": 0, "max": 1 } },
-      "targets": [{ "expr": "kill_switch_state == 1", "refId": "A", "legendFormat": "{{ state }}" }]
-    },
-    {
-      "id": 62,
-      "type": "stat",
-      "title": "Effective mode",
-      "description": "paper unless all four live gates pass.",
-      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 78 },
-      "targets": [{ "expr": "mode_info", "refId": "A", "legendFormat": "{{ effective }}" }]
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 0,
+        "y": 63
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 80
+          },
+          "min": 0,
+          "max": 1
+        }
+      },
+      "targets": [
+        {
+          "expr": "kill_switch_state == 1",
+          "refId": "A",
+          "legendFormat": "{{ state }}"
+        }
+      ]
     },
     {
       "id": 63,
       "type": "stat",
       "title": "Reconciliation mismatches (total)",
-      "description": "Any non-zero value pages (design §8). Reconciliation HALTs, never auto-flattens.",
-      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 78 },
+      "description": "Any non-zero value pages (design \u00a78). Reconciliation HALTs, never auto-flattens.",
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 12,
+        "y": 63
+      },
       "fieldConfig": {
         "defaults": {
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 1 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
             ]
           },
-          "color": { "mode": "thresholds" }
-        }
-      },
-      "targets": [{ "expr": "reconciliation_mismatch_total", "refId": "A" }]
-    },
-    {
-      "id": 64,
-      "type": "gauge",
-      "title": "Drawdown vs 20% limit",
-      "description": "(peak − equity) / peak against the 20% drawdown limit.",
-      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 84 },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percentunit",
-          "min": 0,
-          "max": 1,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "orange", "value": 0.1 },
-              { "color": "red", "value": 0.2 }
-            ]
+          "color": {
+            "mode": "thresholds"
           }
         }
       },
-      "targets": [{ "expr": "drawdown_ratio", "refId": "A" }]
-    },
-    {
-      "id": 65,
-      "type": "timeseries",
-      "title": "Day PnL (USDT) — watch against the daily-loss limit",
-      "description": "equity − start-of-day-UTC equity, plotted against the daily-loss limit threshold line.",
-      "gridPos": { "h": 7, "w": 16, "x": 8, "y": 84 },
-      "fieldConfig": {
-        "defaults": {
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 0 }
-            ]
-          },
-          "custom": { "drawStyle": "line", "fillOpacity": 8, "thresholdsStyle": { "mode": "line" } }
+      "targets": [
+        {
+          "expr": "reconciliation_mismatch_total",
+          "refId": "A"
         }
-      },
-      "targets": [{ "expr": "day_pnl_usdt", "refId": "A", "legendFormat": "day PnL" }]
+      ]
     },
     {
       "id": 66,
       "type": "stat",
       "title": "Since last clean reconcile (s)",
-      "description": "time() − reconciliation_last_success_timestamp_seconds. A growing value means the reconciler is stalled or repeatedly HALTing — investigate before trusting local state (§8).",
-      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 91 },
+      "description": "time() \u2212 reconciliation_last_success_timestamp_seconds. A growing value means the reconciler is stalled or repeatedly HALTing \u2014 investigate before trusting local state (\u00a78).",
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 18,
+        "y": 63
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "s",
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "orange", "value": 120 },
-              { "color": "red", "value": 300 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 120
+              },
+              {
+                "color": "red",
+                "value": 300
+              }
             ]
           },
-          "color": { "mode": "thresholds" }
+          "color": {
+            "mode": "thresholds"
+          }
         }
       },
       "targets": [
-        { "expr": "time() - reconciliation_last_success_timestamp_seconds", "refId": "A" }
+        {
+          "expr": "time() - reconciliation_last_success_timestamp_seconds",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 65,
+      "type": "timeseries",
+      "title": "Day PnL (USDT) \u2014 watch against the daily-loss limit",
+      "description": "equity \u2212 start-of-day-UTC equity, plotted against the daily-loss limit threshold line.",
+      "gridPos": {
+        "h": 7,
+        "w": 16,
+        "x": 0,
+        "y": 69
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0
+              }
+            ]
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "day_pnl_usdt",
+          "refId": "A",
+          "legendFormat": "day PnL"
+        }
       ]
     },
     {
@@ -749,9 +1156,21 @@
       "type": "timeseries",
       "title": "Reconciliation passes by result (15m rate)",
       "description": "reconciliation_runs_total{result=clean|mismatch|halt}. Demo runs the open-orders + holdings axes against the dedicated account; a halt result HALTs (never auto-flattens).",
-      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 91 },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 16,
+        "y": 69
+      },
       "fieldConfig": {
-        "defaults": { "custom": { "drawStyle": "bars", "stacking": { "mode": "normal" } } }
+        "defaults": {
+          "custom": {
+            "drawStyle": "bars",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        }
       },
       "targets": [
         {
@@ -765,10 +1184,22 @@
       "id": 68,
       "type": "timeseries",
       "title": "Risk vetoes by code (15m rate)",
-      "description": "risk_rejections_total — the risk stage of the §8 rejection taxonomy (sizing/band/notional/exposure/kill-switch vetoes).",
-      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 91 },
+      "description": "risk_rejections_total \u2014 the risk stage of the \u00a78 rejection taxonomy (sizing/band/notional/exposure/kill-switch vetoes).",
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 0,
+        "y": 76
+      },
       "fieldConfig": {
-        "defaults": { "custom": { "drawStyle": "bars", "stacking": { "mode": "normal" } } }
+        "defaults": {
+          "custom": {
+            "drawStyle": "bars",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        }
       },
       "targets": [
         {
@@ -779,72 +1210,78 @@
       ]
     },
     {
+      "id": 131,
+      "type": "stat",
+      "title": "Protective exits (by reason)",
+      "description": "protective_exits_total \u2014 bot-enforced stop-loss/trailing-stop exits fired through the normal risk path (ProtectiveExitService). Counter resets on restart.",
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 12,
+        "y": 76
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        }
+      },
+      "options": {
+        "textMode": "value_and_name",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"]
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(protective_exits_total) by (reason)",
+          "refId": "A",
+          "legendFormat": "{{reason}}"
+        }
+      ]
+    },
+    {
       "id": 80,
       "type": "row",
       "title": "Agentic lane (LLM)",
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 97 }
-    },
-    {
-      "id": 81,
-      "type": "stat",
-      "title": "Client status",
-      "description": "Which agent client bound at boot. stub = INERT (no ANTHROPIC_API_KEY, or test/ci) — proposes nothing, demo does not trade; anthropic = LIVE deciding client.",
-      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 98 },
-      "fieldConfig": {
-        "defaults": {
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "stub": { "text": "INERT (stub)", "color": "orange", "index": 0 },
-                "anthropic": { "text": "LIVE (anthropic)", "color": "green", "index": 1 }
-              }
-            }
-          ],
-          "color": { "mode": "fixed", "fixedColor": "text" }
-        }
-      },
-      "options": {
-        "colorMode": "background",
-        "textMode": "name",
-        "reduceOptions": { "calcs": ["lastNotNull"] }
-      },
-      "targets": [{ "expr": "agent_client_info == 1", "refId": "A", "legendFormat": "{{ kind }}" }]
-    },
-    {
-      "id": 82,
-      "type": "stat",
-      "title": "Active playbook",
-      "description": "agentic_playbook_info — the playbook version resolved active at boot / after promotion.",
-      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 98 },
-      "options": { "textMode": "name", "reduceOptions": { "calcs": ["lastNotNull"] } },
-      "targets": [
-        { "expr": "agentic_playbook_info == 1", "refId": "A", "legendFormat": "v{{ version }}" }
-      ]
-    },
-    {
-      "id": 83,
-      "type": "stat",
-      "title": "API token cost (cumulative, USD)",
-      "description": "Cumulative LLM spend since process start: agent_tokens_total{kind} ÷ 1M × the per-1M price template variables (edit them to match your model's pricing). Reset by a process restart (counters reset).",
-      "gridPos": { "h": 4, "w": 12, "x": 12, "y": 98 },
-      "fieldConfig": { "defaults": { "unit": "currencyUSD" } },
-      "targets": [
-        {
-          "expr": "sum(agent_tokens_total{kind=\"input\"}) / 1e6 * ${price_in_per_mtok} + sum(agent_tokens_total{kind=\"output\"}) / 1e6 * ${price_out_per_mtok}",
-          "refId": "A",
-          "legendFormat": "cost"
-        }
-      ]
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 82
+      }
     },
     {
       "id": 84,
       "type": "timeseries",
       "title": "API token cost rate ($/hr)",
-      "description": "5m token rate × the per-1M price template variables, projected to USD per hour. Tracks live LLM spend as the lane decides.",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 102 },
-      "fieldConfig": { "defaults": { "unit": "currencyUSD" } },
+      "description": "5m token rate \u00d7 the per-1M price template variables, projected to USD per hour. Tracks live LLM spend as the lane decides.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 83
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD"
+        }
+      },
       "targets": [
         {
           "expr": "(sum(rate(agent_tokens_total{kind=\"input\"}[5m])) * ${price_in_per_mtok} + sum(rate(agent_tokens_total{kind=\"output\"}[5m])) * ${price_out_per_mtok}) / 1e6 * 3600",
@@ -858,9 +1295,21 @@
       "type": "timeseries",
       "title": "Decide outcomes (per s, 5m rate)",
       "description": "agent_decide_total by outcome (proposed / hold / error_retryable / error_fatal / timeout / budget_blocked).",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 102 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 83
+      },
       "fieldConfig": {
-        "defaults": { "custom": { "drawStyle": "line", "stacking": { "mode": "normal" } } }
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        }
       },
       "targets": [
         {
@@ -874,9 +1323,18 @@
       "id": 86,
       "type": "timeseries",
       "title": "Decide latency (s)",
-      "description": "agent_decide_latency_seconds quantiles over 5m — how long each LLM decide() takes end to end.",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 110 },
-      "fieldConfig": { "defaults": { "unit": "s" } },
+      "description": "agent_decide_latency_seconds quantiles over 5m \u2014 how long each LLM decide() takes end to end.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 91
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      },
       "targets": [
         {
           "expr": "histogram_quantile(0.5, sum by (le) (rate(agent_decide_latency_seconds_bucket[5m])))",
@@ -899,8 +1357,13 @@
       "id": 87,
       "type": "timeseries",
       "title": "Token rate by kind (per s, 5m rate)",
-      "description": "agent_tokens_total by kind (input / output) — the raw throughput the cost panels above monetize.",
-      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 110 },
+      "description": "agent_tokens_total by kind (input / output) \u2014 the raw throughput the cost panels above monetize.",
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 91
+      },
       "targets": [
         {
           "expr": "sum by (kind) (rate(agent_tokens_total[5m]))",
@@ -913,10 +1376,22 @@
       "id": 88,
       "type": "timeseries",
       "title": "Playbook validator rejections (per s, 5m rate)",
-      "description": "playbook_validator_rejections_total by banned_token — a reflection candidate the validator refused (banned_token=true is the denylist tripwire).",
-      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 110 },
+      "description": "playbook_validator_rejections_total by banned_token \u2014 a reflection candidate the validator refused (banned_token=true is the denylist tripwire).",
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 91
+      },
       "fieldConfig": {
-        "defaults": { "custom": { "drawStyle": "bars", "stacking": { "mode": "normal" } } }
+        "defaults": {
+          "custom": {
+            "drawStyle": "bars",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        }
       },
       "targets": [
         {
@@ -930,80 +1405,245 @@
       "id": 89,
       "type": "timeseries",
       "title": "Net-of-cost PnL (promotion evidence)",
-      "description": "agentic_promotion_net_pnl_usd — realized PnL minus fees minus LLM spend over the earned-live promotion evidence window (PromotionReadinessService).",
-      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 118 },
-      "fieldConfig": { "defaults": { "unit": "currencyUSD" } },
+      "description": "agentic_promotion_net_pnl_usd \u2014 realized PnL minus fees minus LLM spend over the earned-live promotion evidence window (PromotionReadinessService).",
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 0,
+        "y": 99
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD"
+        }
+      },
       "targets": [
-        { "expr": "agentic_promotion_net_pnl_usd", "refId": "A", "legendFormat": "net PnL" }
+        {
+          "expr": "agentic_promotion_net_pnl_usd",
+          "refId": "A",
+          "legendFormat": "net PnL"
+        }
       ]
     },
     {
-      "id": 90,
+      "id": 82,
       "type": "stat",
-      "title": "Promotion readiness",
-      "description": "agentic_promotion_ready — the earned-live verdict from PromotionReadinessService (>=30 closed demo round trips AND positive net-of-cost PnL over >=14 days).",
-      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 118 },
-      "fieldConfig": {
-        "defaults": {
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "0": { "text": "NOT READY", "color": "red", "index": 0 },
-                "1": { "text": "READY", "color": "green", "index": 1 }
-              }
-            }
-          ],
-          "color": { "mode": "fixed", "fixedColor": "text" }
-        }
+      "title": "Active playbook",
+      "description": "agentic_playbook_info \u2014 the playbook version resolved active at boot / after promotion.",
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 12,
+        "y": 99
       },
       "options": {
-        "colorMode": "background",
         "textMode": "name",
-        "reduceOptions": { "calcs": ["lastNotNull"] }
-      },
-      "targets": [{ "expr": "agentic_promotion_ready", "refId": "A" }]
-    },
-    {
-      "id": 91,
-      "type": "stat",
-      "title": "Round trips (evidence)",
-      "description": "agentic_promotion_round_trips — closed demo round trips counted toward the >=30 promotion threshold.",
-      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 118 },
-      "fieldConfig": {
-        "defaults": {
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "red", "value": null },
-              { "color": "green", "value": 30 }
-            ]
-          },
-          "color": { "mode": "thresholds" }
+        "reduceOptions": {
+          "calcs": ["lastNotNull"]
         }
       },
-      "targets": [{ "expr": "agentic_promotion_round_trips", "refId": "A" }]
+      "targets": [
+        {
+          "expr": "agentic_playbook_info == 1",
+          "refId": "A",
+          "legendFormat": "v{{ version }}"
+        }
+      ]
     },
     {
       "id": 92,
       "type": "stat",
       "title": "Evidence window (days)",
-      "description": "agentic_promotion_window_days — span between the first and last closed demo round trip; must reach >=14 days.",
-      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 118 },
+      "description": "agentic_promotion_window_days \u2014 span between the first and last closed demo round trip; must reach >=14 days.",
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 18,
+        "y": 99
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "d",
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "red", "value": null },
-              { "color": "green", "value": 14 }
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 14
+              }
             ]
           },
-          "color": { "mode": "thresholds" }
+          "color": {
+            "mode": "thresholds"
+          }
         }
       },
-      "targets": [{ "expr": "agentic_promotion_window_days", "refId": "A" }]
+      "targets": [
+        {
+          "expr": "agentic_promotion_window_days",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 142,
+      "type": "timeseries",
+      "title": "Prescreen outcomes",
+      "description": "agentic_prescreen_total by outcome (called / skipped_quiet / failopen_error) — the Stage-1 cost-floor gate; skip rate = cost saved.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 105
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (outcome) (rate(agentic_prescreen_total[15m]))",
+          "refId": "A",
+          "legendFormat": "{{outcome}}"
+        }
+      ]
+    },
+    {
+      "id": 140,
+      "type": "row",
+      "title": "System",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 113
+      },
+      "panels": []
+    },
+    {
+      "id": 107,
+      "type": "stat",
+      "title": "Scrape up",
+      "description": "Prometheus scrape health for the bot target (UP = metrics flowing).",
+      "gridPos": {
+        "h": 6,
+        "w": 4,
+        "x": 0,
+        "y": 114
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "DOWN"
+                },
+                "1": {
+                  "text": "UP"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "up{job=\"crypto-bot\"}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 121,
+      "type": "timeseries",
+      "title": "Event-loop p99 delay (s) \u2014 50ms budget",
+      "description": "p99 event-loop delay. Sustained values over the 50ms budget mean the process is starving async work.",
+      "gridPos": {
+        "h": 6,
+        "w": 10,
+        "x": 4,
+        "y": 114
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.05
+              }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "event_loop_delay_p99_seconds",
+          "refId": "A",
+          "legendFormat": "p99 delay"
+        }
+      ]
+    },
+    {
+      "id": 122,
+      "type": "timeseries",
+      "title": "Event-loop utilization",
+      "description": "Fraction of time the event loop was busy (1 = saturated).",
+      "gridPos": {
+        "h": 6,
+        "w": 10,
+        "x": 14,
+        "y": 114
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1
+        }
+      },
+      "targets": [
+        {
+          "expr": "event_loop_utilization",
+          "refId": "A",
+          "legendFormat": "utilization"
+        }
+      ]
     }
   ]
 }

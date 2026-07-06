@@ -38,7 +38,7 @@ build+lint+typecheck+test MUST be green before any completion claim.
    proposes a Signal, Risk still sizes/vetoes it, and the four live gates still bind. The
    deterministic pure lane (ema-cross/donchian), its replay-determinism gate, and the
    test/backtest research harness were RETIRED by owner decision 2026-07-03
-   (docs/planning/nighly-improvement.md records the historical program).
+   (docs/archive/nighly-improvement.md records the historical program).
 5. OMS: never blind-resubmit — unknown outcome ⇒ query by clientOrderId first
    (same-id dedupe is NOT a safety net on Binance: open-orders-only). Persist intent
    before any network call. Unknown >60s ⇒ kill switch. Unmapped errors are

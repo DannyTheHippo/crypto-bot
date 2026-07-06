@@ -43,6 +43,7 @@ describe.skipIf(SKIP)('agentic eval — live (guarded, real Anthropic API call)'
       close: candle.close.toFixed(),
       playbookVersion: proposal.playbookVersion ?? null,
       promptHash: proposal.promptHash ?? 'unknown',
+      model: process.env['AGENTIC_MODEL'] ?? 'claude-opus-4-8',
     };
     expect(() => scoreRows([row])).not.toThrow();
   }, 30_000);

@@ -19,6 +19,18 @@ export const RISK_JOURNAL = Symbol('RISK_JOURNAL');
 export const RISK_JOURNAL_OVERRIDE = Symbol('RISK_JOURNAL_OVERRIDE');
 export const SIZER_DEPS = Symbol('SIZER_DEPS');
 export const RISK_ENGINE_DEPS = Symbol('RISK_ENGINE_DEPS');
+export const PROTECTIVE_EXIT_CONFIG = Symbol('PROTECTIVE_EXIT_CONFIG');
+
+// ProtectiveExitService tunables (bot-side stop-loss/trailing-stop backstop). stopLossPct/
+// trailingPct are decimal-string fractions ('0' disables each independently); cooldownMs floors how
+// often the service may re-fire a protective exit for the same symbol; filters mirrors SIZER_DEPS'
+// own per-symbol constraints (dust-skip check only — the sizer does its own, authoritative filtering).
+export interface ProtectiveExitConfig {
+  readonly stopLossPct: string;
+  readonly trailingPct: string;
+  readonly cooldownMs: number;
+  readonly filters: ReadonlyMap<string, SymbolFilters>;
+}
 
 // Injected sizing dependencies. baseNotional (quote) scales by signal strength;
 // filters carry per-symbol exchange constraints; randomBytes feeds the UUIDv7.

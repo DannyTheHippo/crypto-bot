@@ -36,9 +36,11 @@ export interface StrategyInitContext {
 // binds exactly as for the pure lane: it only PROPOSES `Signal`s — Risk still sizes/vetoes them, the
 // `eslint-plugin-boundaries` wall forbids it importing execution/adapter (Risk routing is the only
 // path), and the paper-default + four live gates are unchanged. Because its live decisions are not
-// historically reproducible it CANNOT be certified by the replay-based step-D gate: it is permanently
-// EXPERIMENT-ONLY (testnet/paper), never a "validated edge", never promoted to live. See
-// docs/planning/nighly-improvement.md → Determinism pre-flight carve-out and CLAUDE.md rule 4.
+// historically reproducible it CANNOT be certified by the replay-based step-D gate: live access is
+// EARNED, not assumed — assertAgenticLaneNotLive refuses a live boot unless the
+// PromotionReadinessService verdict passes (>=30 closed demo round trips AND positive net-of-cost
+// PnL over >=14 days), and the four-gate arming ceremony still binds on top. See
+// docs/archive/nighly-improvement.md (historical step-D program) and CLAUDE.md rule 4.
 
 // An immutable, point-in-time copy of market state handed to an agent at decide() time. Unlike the
 // live host `MarketView`, every container here is COPIED at call time (arrays/maps cloned; the
@@ -217,6 +219,11 @@ export interface AgentTradingProfile {
   // sizes entries off equity × fraction × confidence instead of baseNotional × confidence. Absent
   // keeps the prompt's legacy baseNotional sizing sentence byte-identical to pre-P5.
   readonly equityFraction?: string;
+  // §S3 bot-side protective backstop (ProtectiveExitService): present only when the corresponding
+  // PROTECT_*_PCT knob is > 0, so the prompt sentence and the service's active enforcement can never
+  // disagree. Absent keeps the prompt byte-identical to pre-S3.
+  readonly protectStopLossPct?: string;
+  readonly protectTrailingPct?: string;
 }
 
 // ── Agent decision journal ────────────────────────────────────────────────────
@@ -261,7 +268,10 @@ export interface AgentDecisionJournalPort {
   // — both DB (AgentDecisionJournalAdapter) and in-memory (InMemoryAgentDecisionJournal)
   // implementations return the same order, including the same tiebreak (insertion order) when two
   // rows share an eventTime.
-  recent(limit: number): Promise<readonly AgentDecisionRow[]>;
+  // Multi-symbol (P7): strategyId scopes the read to one instance's rows — a mixed-strategy window
+  // would corrupt the reflection loop's single-instrument position walks (each instance trades one
+  // symbol). Absent ⇒ the historical unscoped read.
+  recent(limit: number, strategyId?: string): Promise<readonly AgentDecisionRow[]>;
 }
 
 // ── LLM usage sink ────────────────────────────────────────────────────────────

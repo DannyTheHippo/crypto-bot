@@ -102,7 +102,24 @@ const DEFAULT_RECON_CONFIG: ReconConfig = {
   epsRel: '0.0001',
   overlapMs: 300_000,
   driftPasses: 3,
+  balanceAxis: true,
+  sweepSymbols: [],
 };
+// The balances axis compares local balances (seeded from the synthetic STARTING_CASH) against venue
+// truth per asset. On Binance Demo Trading the account is a shared multi-asset wallet the bot does
+// not own end-to-end, so BALANCE_DRIFT would HALT on holdings the bot never touched — the axis is
+// disabled for that flavor only. Paper (the adapter IS the venue) and the dedicated Spot Testnet
+// keep it. sweepSymbols carries the configured trading symbol so the order/trade sweeps observe the
+// venue even when no local state exists yet.
+function reconConfigFrom(config: TypedConfigService | undefined): ReconConfig {
+  if (config === undefined) return DEFAULT_RECON_CONFIG;
+  const demoAccount = config.mode.configMode === 'testnet' && config.mode.sandboxEnv === 'demo';
+  return {
+    ...DEFAULT_RECON_CONFIG,
+    balanceAxis: !demoAccount,
+    sweepSymbols: config.strategy.symbols,
+  };
+}
 
 const providers: Provider[] = [
   { provide: CLOCK, useClass: SystemClock },
@@ -123,7 +140,11 @@ const providers: Provider[] = [
   },
   { provide: EXEC_FILTERS, useValue: DEFAULT_FILTERS },
   { provide: EQUITY_LIMITS, useValue: DEFAULT_EQUITY_LIMITS },
-  { provide: RECON_CONFIG, useValue: DEFAULT_RECON_CONFIG },
+  {
+    provide: RECON_CONFIG,
+    useFactory: (config?: TypedConfigService): ReconConfig => reconConfigFrom(config),
+    inject: [CONFIG_OPTIONAL],
+  },
   {
     provide: EXEC_OUTBOX,
     useFactory: (override?: ExecOutboxPort): ExecOutboxPort => override ?? new InMemoryExecOutbox(),

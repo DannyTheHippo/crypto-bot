@@ -14,11 +14,11 @@ mode-only fill filter — pre-multi-symbol evidence counts.
 
 **Pass 2, 2026-07-06** (owner-triggered; LOG.md has Passes 0–2). Snapshot at Pass 2: readiness 26
 round trips, net −$15.97, ready=0; equity ~4997.7; 2 symbols (agentic-1 BTC/USDT, agentic-2
-ETH/USDT), playbook seed v1; prescreen live (`called`-only so far — positions open). **Lane INERT
-(stub): ANTHROPIC_API_KEY missing from `.env` — the #1 blocker; everything interesting resumes
-when the owner adds it.** Empty-pass counter: 1 of 2 (Pass 2 shipped no code — stale-backlog
-pruning only). Tree committed through `501208a`; a loop pass must never commit changes it didn't
-author.
+ETH/USDT), playbook seed v1. **Post-Pass-2 update (~22:15): key blocker RESOLVED — lane LIVE on
+Sonnet** (see resolved flag below; first window: 3 decides, 1 proposed, first `skipped_quiet`,
+~1.7¢/decide). Empty-pass counter: 1 of 2 (Pass 2 shipped no code — stale-backlog pruning only);
+counter resets naturally now that live data unblocks #10. Tree committed through `501208a`; a
+loop pass must never commit changes it didn't author.
 
 ## Backlog (ranked; re-rank each pass)
 
@@ -38,10 +38,13 @@ author.
 
 ## Flagged for human review (open)
 
-- **BLOCKER — ANTHROPIC_API_KEY not reaching the container (2026-07-06 redeploy):** lane INERT
-  (stub client, no trades, no evidence accrual). Owner: verify the key is set non-empty in `.env`
-  (empty `VAR=` or `VAR= # comment` counts as unset), then `docker compose up -d app`. Details in
-  LOG.md Pass 0.
+- ~~**BLOCKER — ANTHROPIC_API_KEY** (2026-07-06)~~ — RESOLVED 2026-07-06 ~22:15: owner re-added the
+  key to `.env` (the slimmed rewrite had dropped the line); container recreated,
+  `agent_client_info{kind="anthropic"}`, first live window confirmed — 3 Sonnet decides
+  (1 proposed, 0 rejections), 12.6k in/0.8k out tokens (~1.7¢/decide), and the FIRST production
+  `skipped_quiet` prescreen save. Projected ~$1.0–1.6/day at the 50–70% skip target → backlog #10
+  (threshold tuning) is now the live lever; Stage-1 exit-criterion measurement starts with the
+  next daily pass.
 
 - ~~**Marketable exits** (2026-07-05)~~ — CLOSED 2026-07-06 Pass 1: `position-sizer.service.ts:72,139`
   confirms reduce-only exits cross the spread by `EXIT_CROSS_BUFFER_BPS` (P1 f9ba515).

@@ -53,6 +53,18 @@ const resetAllowed =
 
 const SKIP = !DB_URL || !resetAllowed;
 
+// drizzle ≥0.44 wraps query failures in DrizzleQueryError with the pg error (code 23505,
+// "duplicate key value violates unique constraint") on the `cause` chain, so unique-violation
+// assertions must walk the chain rather than match the top-level message.
+function isUniqueViolation(err: unknown): boolean {
+  for (let e = err; e !== null && e !== undefined; e = (e as { cause?: unknown }).cause) {
+    const { code, message } = e as { code?: unknown; message?: unknown };
+    if (code === '23505') return true;
+    if (typeof message === 'string' && /unique|duplicate/i.test(message)) return true;
+  }
+  return false;
+}
+
 // pg returns NUMERIC(38,18) padded to 18 decimal places.
 function pad18(s: string): string {
   const dot = s.indexOf('.');
@@ -801,8 +813,8 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
     await expect(pinnedStore.current()).resolves.toEqual({ ...seed, source: 'pin' });
 
     // A second promotion the same UTC day is rejected by the partial unique index.
-    await expect(seedStore.append('second promotion', 'promotion', seed.version)).rejects.toThrow(
-      /unique|duplicate/i,
+    await expect(seedStore.append('second promotion', 'promotion', seed.version)).rejects.toSatisfy(
+      isUniqueViolation,
     );
   });
 
@@ -823,9 +835,9 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
 
     // Same UTC day: rejected (already covered generally above; re-asserted here for locality
     // against this test's own seed range).
-    await expect(store.append('promotion note day 1b', 'promotion', seed.version)).rejects.toThrow(
-      /unique|duplicate/i,
-    );
+    await expect(
+      store.append('promotion note day 1b', 'promotion', seed.version),
+    ).rejects.toSatisfy(isUniqueViolation);
 
     // append() always stamps created_at via now(); simulating "the next day" requires an explicit
     // created_at, so this row is inserted directly rather than through the store.

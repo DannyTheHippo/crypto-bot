@@ -13,7 +13,8 @@ decision 2026-07-03; this module is now the only strategy lane under active deve
 ## Self-improvement loop
 
 ```
-journal → reflection (hypothesis generation) → human review (eval scorecards) → promotion → active on next boot
+journal → reflection (hypothesis generation) → human review (eval scorecards) → promotion → active
+                                                                                  (or: reflection auto-promotes directly, below)
 ```
 
 1. **Journal.** Every decide-path call is recorded to `AGENT_DECISION_JOURNAL`
@@ -35,10 +36,13 @@ journal → reflection (hypothesis generation) → human review (eval scorecards
    script exits 1 if a second one is attempted the same day.
 5. **Activation.** `PlaybookStoreAdapter.resolve()` picks the active version in this order: an
    operator pin (`AGENTIC_PLAYBOOK_PIN`) → else the newest promotion row's `parentVersion` target →
-   else the seed. Resolution runs **once per process, at boot, and is cached** — a promotion (or a
-   pin change) written while a process is already running takes effect only on that process's
-   **next restart**, never live-swapped mid-run. Boot logs the resolved outcome (version + how it
-   was resolved: pin/promotion/seed) and records it to the `agentic_playbook_info` gauge.
+   else the seed. Resolution is cached after the first call. A promotion row written by a *separate*
+   process (`pnpm playbook:promote`, or a pin change) takes effect for this process only on its
+   **next restart**, never live-swapped mid-run. The one exception is an **in-process** promotion
+   append (auto-promotion, below): `append()` drops the cache when it writes the `'promotion'` row,
+   so the very next resolution in that same process picks it up immediately, no restart needed. Boot
+   logs the resolved outcome (version + how it was resolved: pin/promotion/seed) and records it to
+   the `agentic_playbook_info` gauge.
 
 **Rollback** is the same mechanism run backwards — there is no separate rollback code path:
 
@@ -51,14 +55,24 @@ journal → reflection (hypothesis generation) → human review (eval scorecards
 Both paths are exercised in `test/unit/persistence/in-memory-playbook-store.spec.ts` and
 `test/db/persistence.spec.ts`'s playbook-store cases.
 
-## Auto-promotion is deferred
+## Auto-promotion
 
-Promotion above is a deliberate, human-pinned action — there is no scheduled or automatic promotion
-path, by design. Auto-promotion is gated behind a documented evidence threshold that has not been
-reached: **≥30 matched closed trades per comparison window**. At this lane's current volume (0–3
-trades/day), a smaller sample is statistically indistinguishable from noise, so an automated
-promoter would be as likely to activate a regression as an improvement. Revisit only once the trade
-volume and a comparison methodology (paired trades, matched market regime) both support it.
+Alongside the manual path above, `reflection.service.ts` can also promote a candidate itself
+(`maybeAutoPromote`), gated behind `AGENTIC_AUTO_PROMOTE_MIN_TRADES` (default `0`, which disables
+it — candidates then stay INACTIVE for manual `playbook:promote`). The deployed demo bot
+(`docker-compose.yml`) sets it to `30`.
+
+Auto-promotion only runs as the tail end of a reflection attempt that actually mints a new
+candidate — it is not a standalone scheduler, so it inherits every precondition reflection already
+has (§ Self-improvement loop step 2: `everyNTrades` cadence, the cooldown, the kill switch, the
+strategy's `ACTIVE` lifecycle, and the LLM budget). When a reflection run mints a candidate, it is
+promoted immediately if the strategy's **cumulative** closed-trade count is `>=
+AGENTIC_AUTO_PROMOTE_MIN_TRADES` — this is a running total, not a per-window or matched-trade
+sample, so raising the threshold is the only lever against noisy early promotions. Promotion appends
+the same `source='promotion'` row the manual path writes, so it is still subject to the
+once-per-UTC-day partial unique index; if that write fails (e.g. a manual promotion already landed
+that day), auto-promotion is non-fatal — the candidate simply stays INACTIVE and remains promotable
+later, by either path.
 
 ## Safety bounds on every loop iteration
 

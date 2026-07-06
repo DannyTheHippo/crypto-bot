@@ -925,6 +925,85 @@
           "legendFormat": "banned_token={{ banned_token }}"
         }
       ]
+    },
+    {
+      "id": 89,
+      "type": "timeseries",
+      "title": "Net-of-cost PnL (promotion evidence)",
+      "description": "agentic_promotion_net_pnl_usd — realized PnL minus fees minus LLM spend over the earned-live promotion evidence window (PromotionReadinessService).",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 118 },
+      "fieldConfig": { "defaults": { "unit": "currencyUSD" } },
+      "targets": [
+        { "expr": "agentic_promotion_net_pnl_usd", "refId": "A", "legendFormat": "net PnL" }
+      ]
+    },
+    {
+      "id": 90,
+      "type": "stat",
+      "title": "Promotion readiness",
+      "description": "agentic_promotion_ready — the earned-live verdict from PromotionReadinessService (>=30 closed demo round trips AND positive net-of-cost PnL over >=14 days).",
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 118 },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": { "text": "NOT READY", "color": "red", "index": 0 },
+                "1": { "text": "READY", "color": "green", "index": 1 }
+              }
+            }
+          ],
+          "color": { "mode": "fixed", "fixedColor": "text" }
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "textMode": "name",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      },
+      "targets": [{ "expr": "agentic_promotion_ready", "refId": "A" }]
+    },
+    {
+      "id": 91,
+      "type": "stat",
+      "title": "Round trips (evidence)",
+      "description": "agentic_promotion_round_trips — closed demo round trips counted toward the >=30 promotion threshold.",
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 118 },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 30 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        }
+      },
+      "targets": [{ "expr": "agentic_promotion_round_trips", "refId": "A" }]
+    },
+    {
+      "id": 92,
+      "type": "stat",
+      "title": "Evidence window (days)",
+      "description": "agentic_promotion_window_days — span between the first and last closed demo round trip; must reach >=14 days.",
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 118 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "d",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 14 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        }
+      },
+      "targets": [{ "expr": "agentic_promotion_window_days", "refId": "A" }]
     }
   ]
 }

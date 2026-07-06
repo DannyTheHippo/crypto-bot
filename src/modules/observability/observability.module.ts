@@ -33,6 +33,14 @@ import {
   AGENT_CLIENT_INFO_GAUGE,
 } from './metrics.service';
 import { AgentMetricsRecorder } from './agent-metrics-recorder.service';
+import {
+  PromotionMetricsService,
+  PROMOTION_ROUND_TRIPS_GAUGE,
+  PROMOTION_NET_PNL_GAUGE,
+  PROMOTION_LLM_COST_GAUGE,
+  PROMOTION_WINDOW_DAYS_GAUGE,
+  PROMOTION_READY_GAUGE,
+} from './promotion-metrics.service';
 import { buildPinoHttpOptions } from './logger.config';
 import type { AppConfig } from '../../ports/app-config';
 
@@ -87,6 +95,12 @@ import type { AppConfig } from '../../ports/app-config';
     PLAYBOOK_VALIDATOR_REJECTIONS_COUNTER,
     AGENT_CLIENT_INFO_GAUGE,
     AgentMetricsRecorder,
+    PROMOTION_ROUND_TRIPS_GAUGE,
+    PROMOTION_NET_PNL_GAUGE,
+    PROMOTION_LLM_COST_GAUGE,
+    PROMOTION_WINDOW_DAYS_GAUGE,
+    PROMOTION_READY_GAUGE,
+    PromotionMetricsService,
   ],
   exports: [EventLoopHealthIndicator, MetricsService, AgentMetricsRecorder],
 })

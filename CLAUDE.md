@@ -28,12 +28,16 @@ build+lint+typecheck+test MUST be green before any completion claim.
    delete it to make a suite pass.
 4. src/domain imports nothing impure (no @nestjs/\*, ccxt, Date.now, process.env). The strategy
    lane is SOLELY the agentic / LLM-driven lane in src/modules/agentic-strategy/ (NOT src/domain):
-   async, non-deterministic (calls an out-of-process LLM at runtime), and permanently
-   EXPERIMENT-ONLY — paper/testnet only, step-D-uncertifiable, never promoted to live;
-   assertAgenticLaneNotLive refuses any live boot. Rules 1, 2, 3, 5, 6 bind on it exactly as
-   elsewhere — it only proposes a Signal, Risk still sizes/vetoes it, and the four live gates
-   still bind. The deterministic pure lane (ema-cross/donchian), its replay-determinism gate, and
-   the test/backtest research harness were RETIRED by owner decision 2026-07-03
+   async and non-deterministic (calls an out-of-process LLM at runtime), so it remains
+   step-D-uncertifiable — live access is EARNED, not assumed. assertAgenticLaneNotLive refuses
+   any live boot unless PromotionReadinessService (src/modules/mode-control/) returns a permitted
+   verdict: >=30 closed demo round trips AND positive net-of-cost PnL (realized − fees − LLM
+   spend) over >=14 days. A permitted boot still faces the unchanged four live gates and
+   bootId-bound arming ceremony on top — the promotion gate narrows who may attempt arming, it
+   does not replace it. Rules 1, 2, 3, 5, 6 bind on the lane exactly as elsewhere — it only
+   proposes a Signal, Risk still sizes/vetoes it, and the four live gates still bind. The
+   deterministic pure lane (ema-cross/donchian), its replay-determinism gate, and the
+   test/backtest research harness were RETIRED by owner decision 2026-07-03
    (docs/planning/nighly-improvement.md records the historical program).
 5. OMS: never blind-resubmit — unknown outcome ⇒ query by clientOrderId first
    (same-id dedupe is NOT a safety net on Binance: open-orders-only). Persist intent

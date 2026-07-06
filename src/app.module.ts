@@ -110,7 +110,13 @@ import { InMemoryAgentDecisionJournal } from './modules/persistence/repositories
 import { LlmUsageSinkAdapter } from './modules/persistence/repositories/llm-usage-sink.adapter';
 import { InMemoryLlmUsageSink } from './modules/persistence/repositories/in-memory-llm-usage-sink';
 import { PromotionStatsRepository } from './modules/persistence/repositories/promotion-stats.repository';
-import { PROMOTION_STATS, type PromotionStatsPort } from './ports/promotion';
+import {
+  PROMOTION_STATS,
+  PROMOTION_READINESS,
+  type PromotionStatsPort,
+  type PromotionReadinessPort,
+  type PromotionReadiness,
+} from './ports/promotion';
 import {
   PlaybookStoreAdapter,
   type PlaybookVersionEntry,
@@ -974,6 +980,7 @@ export class AppModule implements OnModuleInit, OnApplicationBootstrap, OnModule
     @Inject(AGENT_DECISION_JOURNAL) private readonly agentJournal: AgentDecisionJournalPort,
     @Inject(PLAYBOOK_PROVIDER) private readonly playbookProvider: PlaybookProvider,
     @Inject(REFLECTION_SERVICE) private readonly reflectionService: ReflectionService,
+    @Inject(PROMOTION_READINESS) private readonly promotionReadiness: PromotionReadinessPort,
   ) {
     this.agentClient = new MetricsWrappingAgentClient(
       rawAgentClient,
@@ -1100,15 +1107,29 @@ export class AppModule implements OnModuleInit, OnApplicationBootstrap, OnModule
       };
       return new AgenticStrategy(id, p as AgenticStrategyParams, this.agentClient, deps);
     });
-    // SAFETY INTERLOCK (hard, fail-loud at boot). The agentic lane is permanently EXPERIMENT-ONLY and
-    // must NEVER run in a live-configured process. Gate on the LITERAL enabled below ('agentic'), NOT
-    // on `active` — ACTIVE_STRATEGY only selects among registered types (an unrecognized value fails
-    // loud at registry.enable's "unknown strategy type" throw just below); it must never be able to
-    // pick its way around this interlock while the enable call still composes the agentic lane. Gate
-    // on the STATIC `mode` (= configMode, the boundary that binds the live adapter), NOT
+    // SAFETY INTERLOCK (hard, fail-loud at boot). A live-configured agentic boot is refused unless
+    // the earned-live promotion gate passes: an explicit permitted PromotionReadiness verdict
+    // computed fresh from durable demo evidence (>=30 round trips, positive net-of-cost PnL, >=14d
+    // — see PromotionReadinessService). The verdict is evaluated ONLY for a live boot (paper/testnet
+    // boots skip the DB query and stay byte-identical); any evaluation error collapses to undefined
+    // = fail-closed refusal. Gate on the LITERAL enabled below ('agentic'), NOT on `active` —
+    // ACTIVE_STRATEGY only selects among registered types (an unrecognized value fails loud at
+    // registry.enable's "unknown strategy type" throw just below); it must never be able to pick its
+    // way around this interlock while the enable call still composes the agentic lane. Gate on the
+    // STATIC `mode` (= configMode, the boundary that binds the live adapter), NOT
     // resolveMode().effective — which is always 'paper' here pre-arming and so would never fire. See
-    // assertAgenticLaneNotLive for the full rationale.
-    assertAgenticLaneNotLive('agentic', mode);
+    // assertAgenticLaneNotLive for the full rationale; a permitted verdict still leaves the four-gate
+    // arming ceremony fully in force.
+    let readiness: PromotionReadiness | undefined;
+    if (mode === 'live') {
+      try {
+        readiness = await this.promotionReadiness.evaluate();
+      } catch (err) {
+        this.log.error(`promotion-readiness evaluation failed (fail-closed): ${String(err)}`);
+        readiness = undefined;
+      }
+    }
+    assertAgenticLaneNotLive('agentic', mode, readiness);
 
     this.registry.enable(strategyId('agentic-1'), active, params);
     this.log.warn(

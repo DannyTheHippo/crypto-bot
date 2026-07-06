@@ -88,8 +88,84 @@ A 6-dimension pre-merge audit of the full `main..eaf5668` diff confirmed the liv
 Owner-directed refactor: the deterministic strategy lane (ema-cross, donchian-breakout), its
 tests (incl. replay-determinism), and the test/backtest research harness were removed; the
 agentic LLM lane is now the only strategy lane and the repo default (ACTIVE_STRATEGY=agentic).
-The lane remains permanently EXPERIMENT-ONLY: non-deterministic, step-D-uncertifiable, and the
-boot interlock refuses live. Consequence for promotion: there is currently NO step-D-validated
-strategy in the tree, so nothing is promotable to live until a future validated lane exists.
+The lane is non-deterministic and step-D-uncertifiable, and the boot interlock refuses live
+unless the earned-live promotion gate is met (see the 2026-07-06 section below — this
+superseded the original "permanently EXPERIMENT-ONLY" stance). Consequence for promotion:
+nothing is promotable until the earned-live criteria are met; criteria tracking is live.
 The deployed testnet container still runs donchian-breakout from its last build; the next
 rebuild picks up the agentic default (inert stub unless ANTHROPIC_API_KEY is provided).
+
+## 2026-07-06 — Earned-live promotion gate (supersedes "permanently EXPERIMENT-ONLY")
+
+The 2026-07-03 stance above — the agentic lane is permanently EXPERIMENT-ONLY, never promoted to
+live — is **superseded by owner decision**. Live access is now **earned**, not permanently barred:
+the lane still starts non-deterministic and step-D-uncertifiable (an LLM call is not
+replay-deterministic and cannot pass the retired step-D battery), but it can now accumulate
+data-driven demo evidence that unlocks a live attempt.
+
+**Exact criteria (computed by `PromotionReadinessService`, `src/modules/mode-control/`,
+`PromotionReadinessPort.evaluate()` behind the `PROMOTION_READINESS` token):**
+
+- `>= 30` closed demo (testnet) round trips, walked per `(strategyId, symbol)` from ordered fills
+  (a cycle closes when residual notional drops below the configured dust threshold).
+- Positive **net-of-cost PnL** over the evidence window: `realizedPnl − fees − llmCostUsd > 0`.
+  `llmCostUsd` prices summed decide + reflection tokens (`agent_decisions` + `llm_usage`) at
+  `AGENTIC_TOKEN_PRICE_INPUT_PER_MTOK=3` / `AGENTIC_TOKEN_PRICE_OUTPUT_PER_MTOK=15` USD per
+  million tokens.
+- Evidence window `>= 14` days, measured as the span between the first and last closed round trip.
+- Any unresolved fill (fills row with no attributable `order_intents` join) or an unconvertible
+  fee asset forces `permitted=false` regardless of the numeric checks (fail-closed, not silently
+  ignored).
+
+**Fail-closed semantics:** `assertAgenticLaneNotLive` calls `evaluate()` on every live boot
+attempt and refuses the boot unless `permitted=true`. Absence of the `PROMOTION_READINESS` port,
+a DB error, or any of the reasons above (`NO_STATS_SOURCE`, `UNRESOLVED_FILL`,
+`UNCONVERTIBLE_FEE_ASSET`, `INSUFFICIENT_ROUND_TRIPS`, `NON_POSITIVE_NET_PNL`,
+`INSUFFICIENT_WINDOW`) all resolve to **not permitted** — there is no default-open path.
+
+**Unchanged deployment ceremony on top:** a permitted verdict only means the lane is _eligible_ to
+attempt arming. The four live gates (env flag + bootId-bound interlock + validated keys with
+withdrawals disabled + complete risk limits), the `NODE_ENV=test/ci` override, and the human
+`paper` → `main` merge described earlier in this file are entirely unchanged. Nothing here
+automates a live promotion — a human still decides and arms manually.
+
+**Evidence an operator can run directly (read-only):**
+
+SQL over the same tables the port reads (adjust the demo-mode filter/window as needed):
+
+```sql
+-- Closed-cycle inputs: ordered fills for the testnet (demo) mode, joined to order_intents
+-- for strategyId/side, oldest→newest.
+SELECT f.executed_at, f.symbol, oi.strategy_id, oi.side, f.qty, f.price, f.fee, f.fee_asset
+FROM fills f
+LEFT JOIN order_intents oi ON oi.id = f.intent_id
+WHERE f.mode = 'testnet'
+ORDER BY f.executed_at ASC;
+
+-- LLM token totals across both call sites (decide + reflection).
+SELECT
+  SUM(input_tokens)  AS decide_input_tokens,
+  SUM(output_tokens) AS decide_output_tokens
+FROM agent_decisions;
+
+SELECT
+  SUM(input_tokens)  AS reflection_input_tokens,
+  SUM(output_tokens) AS reflection_output_tokens
+FROM llm_usage;
+```
+
+`promtool` queries against the new gauges (`src/modules/observability/promotion-metrics.service.ts`,
+sampled on its own 5-minute interval — `evaluate()` runs full-table scans, deliberately kept off
+the 5s sampling loop):
+
+```
+agentic_promotion_round_trips
+agentic_promotion_net_pnl_usd
+agentic_promotion_llm_cost_usd
+agentic_promotion_window_days
+agentic_promotion_ready         # 1 = permitted, 0 = not permitted
+```
+
+Dashboard: the "Agentic lane (LLM)" row in `observability/grafana/dashboards/crypto-bot.json`
+carries panels for all five (net-of-cost PnL, readiness, round trips vs the 30 threshold,
+evidence window vs the 14-day threshold).

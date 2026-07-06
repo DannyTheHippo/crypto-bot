@@ -14,6 +14,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { ModeControlService } from '../../src/modules/mode-control/mode-control.service';
+import { assertAgenticLaneNotLive } from '../../src/modules/agentic-strategy/agentic-live-interlock';
 import { computeArmingHmac } from '../../src/modules/mode-control/hmac';
 import { KillSwitchService } from '../../src/modules/risk/kill-switch.service';
 import { ARMED_SESSION_TTL_MS, CHALLENGE_TTL_MS } from '../../src/domain/mode/arming';
@@ -204,5 +205,58 @@ describe('LIVE-GATE MATRIX — arming interlock safety rows', () => {
     ctx.killSwitch.engage('reconcile mismatch', false);
     const res = ctx.svc.armLive({ step: 'CONFIRM', challengeId: 'x', hmacHex: 'ab', bootId: BOOT });
     expect(res).toEqual({ ok: false, reason: 'PRECONDITION' });
+  });
+});
+
+// Earned-live promotion gate (boot interlock, sits BEFORE the four-gate wall above): a
+// live-configured agentic boot composes only with an explicit permitted PromotionReadiness verdict.
+// EXTENDS the sacred matrix — the four-gate rows above are untouched and still bind after this
+// gate passes (a permitted verdict changes nothing about env-flag/arming/keys/limits resolution).
+describe('LIVE-GATE MATRIX — earned-live promotion gate (agentic boot interlock)', () => {
+  const evidence = {
+    roundTrips: 42,
+    realizedPnl: '120',
+    fees: '4',
+    llmCostUsd: '20',
+    netPnl: '96',
+    windowDays: 21,
+    firstClosedAt: 1,
+    lastClosedAt: 2,
+    reasons: [] as string[],
+  };
+
+  it('refuses a live agentic boot with no verdict at all (no DB / evaluation error → fail-closed)', () => {
+    expect(() => assertAgenticLaneNotLive('agentic', 'live')).toThrow(/no readiness verdict/);
+    expect(() => assertAgenticLaneNotLive('agentic', 'live', undefined)).toThrow(
+      /no readiness verdict/,
+    );
+  });
+
+  it.each([
+    ['INSUFFICIENT_ROUND_TRIPS'],
+    ['NON_POSITIVE_NET_PNL'],
+    ['INSUFFICIENT_WINDOW'],
+    ['UNCONVERTIBLE_FEE_ASSET'],
+    ['NO_STATS_SOURCE'],
+  ])('refuses a live agentic boot on an unmet-criteria verdict (%s)', (reason) => {
+    const refused = { permitted: false, evidence: { ...evidence, reasons: [reason] } };
+    expect(() => assertAgenticLaneNotLive('agentic', 'live', refused)).toThrow(
+      new RegExp(`unmet criteria: ${reason}`),
+    );
+  });
+
+  it('a permitted verdict lets the agentic boot compose — and does NOT touch the four-gate wall', () => {
+    expect(() =>
+      assertAgenticLaneNotLive('agentic', 'live', { permitted: true, evidence }),
+    ).not.toThrow();
+    // The wall is unchanged: a live-requested, UNARMED ModeControl still resolves paper exactly as
+    // the 2⁴ matrix rows above prove — the promotion gate adds a precondition, never a bypass.
+    const ctx = build({ requested: 'live' });
+    expect(ctx.svc.resolveMode().effective).toBe('paper');
+  });
+
+  it('paper/testnet agentic boots never consult the verdict (evidence accrues below live)', () => {
+    expect(() => assertAgenticLaneNotLive('agentic', 'paper')).not.toThrow();
+    expect(() => assertAgenticLaneNotLive('agentic', 'testnet')).not.toThrow();
   });
 });

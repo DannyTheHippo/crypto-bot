@@ -5,6 +5,7 @@ import { StrategyRegistry } from '../../../src/modules/strategy/strategy-registr
 import { AgenticStrategy } from '../../../src/modules/agentic-strategy/agentic.strategy';
 import { StubAgentClient } from '../../../src/modules/agentic-strategy/agent-client.adapter';
 import { assertAgenticLaneNotLive } from '../../../src/modules/agentic-strategy/agentic-live-interlock';
+import type { PromotionReadiness } from '../../../src/ports/promotion';
 import { SignalSinkService } from '../../../src/modules/execution/signal-sink.service';
 import { SignalGatewayService } from '../../../src/modules/risk/signal-gateway.service';
 import { KillSwitchService } from '../../../src/modules/risk/kill-switch.service';
@@ -471,16 +472,45 @@ describe('agentic host lifecycle (fire-and-forget, conflate, drain)', () => {
   });
 });
 
-describe('live interlock (agentic can never run in a live-configured process)', () => {
-  it('throws when ACTIVE_STRATEGY=agentic and configMode=live (the static live authority)', () => {
+describe('live interlock (earned-live gate: a live-configured agentic boot needs a permitted verdict)', () => {
+  const permittedVerdict: PromotionReadiness = {
+    permitted: true,
+    evidence: {
+      roundTrips: 42,
+      realizedPnl: '120',
+      fees: '4',
+      llmCostUsd: '20',
+      netPnl: '96',
+      windowDays: 21,
+      firstClosedAt: 1,
+      lastClosedAt: 2,
+      reasons: [],
+    },
+  };
+
+  it('throws when ACTIVE_STRATEGY=agentic and configMode=live with NO verdict (fail-closed default)', () => {
     // Gates on configMode, NOT resolveMode().effective: at boot the bot is unarmed, so effective is
     // always 'paper' there — a later runtime arm would otherwise let agentic intents reach the live venue.
     expect(() => assertAgenticLaneNotLive('agentic', 'live')).toThrow(
-      /forbidden when configMode=live/,
+      /refused at configMode=live.*no readiness verdict/,
     );
   });
 
-  it('allows the agentic lane on paper and testnet (its experiment-only home)', () => {
+  it('throws on a not-permitted verdict, surfacing the unmet criteria', () => {
+    const refused = {
+      permitted: false,
+      evidence: { ...permittedVerdict.evidence, reasons: ['INSUFFICIENT_ROUND_TRIPS'] },
+    };
+    expect(() => assertAgenticLaneNotLive('agentic', 'live', refused)).toThrow(
+      /unmet criteria: INSUFFICIENT_ROUND_TRIPS/,
+    );
+  });
+
+  it('passes on an explicitly permitted verdict — and ONLY then (arming still gates orders downstream)', () => {
+    expect(() => assertAgenticLaneNotLive('agentic', 'live', permittedVerdict)).not.toThrow();
+  });
+
+  it('allows the agentic lane on paper and testnet without any verdict (its evidence-accruing home)', () => {
     expect(() => assertAgenticLaneNotLive('agentic', 'paper')).not.toThrow();
     expect(() => assertAgenticLaneNotLive('agentic', 'testnet')).not.toThrow();
   });

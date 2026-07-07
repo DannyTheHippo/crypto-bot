@@ -433,7 +433,7 @@
       },
       "options": {
         "colorMode": "background",
-        "textMode": "name",
+        "textMode": "value",
         "reduceOptions": {
           "calcs": ["lastNotNull"]
         }
@@ -1294,7 +1294,7 @@
       "id": 85,
       "type": "timeseries",
       "title": "Decide outcomes (per s, 5m rate)",
-      "description": "agent_decide_total by outcome (proposed / hold / error_retryable / error_fatal / timeout / budget_blocked).",
+      "description": "agent_decide_total by outcome (proposed / noop / hold / error_retryable / error_fatal / timeout / budget_blocked). noop = a non-hold decision that mapped to zero signals (e.g. flat-while-FLAT) \u2014 nothing reached Risk.",
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -1493,7 +1493,7 @@
       "id": 142,
       "type": "timeseries",
       "title": "Prescreen outcomes",
-      "description": "agentic_prescreen_total by outcome (called / skipped_quiet / failopen_error) — the Stage-1 cost-floor gate; skip rate = cost saved.",
+      "description": "agentic_prescreen_total by outcome (called / skipped_quiet / failopen_error) \u2014 the Stage-1 cost-floor gate; skip rate = cost saved.",
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -1642,6 +1642,101 @@
           "expr": "event_loop_utilization",
           "refId": "A",
           "legendFormat": "utilization"
+        }
+      ]
+    },
+    {
+      "id": 150,
+      "type": "row",
+      "title": "Agentic learning (per-version attribution)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 121
+      },
+      "panels": []
+    },
+    {
+      "id": 151,
+      "type": "timeseries",
+      "title": "Net PnL by playbook version (USD)",
+      "description": "agentic_version_net_pnl_usd: realized \u2212 per-cycle fees per closed round trip, attributed to the playbook version active at the trip's ENTRY decision (5-min DB-backed sampler). The Stage-2 promotion signal: a candidate version must beat the champion here, not on vibes. LLM spend is NOT subtracted in this series \u2014 see the promotion net-of-cost stat.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 122
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "unit": "currencyUSD"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": ["lastNotNull"]
+        }
+      },
+      "targets": [
+        {
+          "expr": "agentic_version_net_pnl_usd",
+          "legendFormat": "v{{version}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 152,
+      "type": "timeseries",
+      "title": "Round trips by playbook version",
+      "description": "agentic_version_round_trips: closed demo round trips attributed to each playbook version (entry-time attribution, same sampler). version=\"unknown\" = trips older than the journal lookback window.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 122
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": ["lastNotNull"]
+        }
+      },
+      "targets": [
+        {
+          "expr": "agentic_version_round_trips",
+          "legendFormat": "v{{version}}",
+          "refId": "A"
         }
       ]
     }

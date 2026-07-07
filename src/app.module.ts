@@ -854,7 +854,12 @@ export class MetricsWrappingAgentClient implements AgentClientPort {
       const proposal = await this.inner.propose(input);
       this.recorder.observeDecideLatency((Date.now() - started) / 1000);
       if (proposal.usage) {
-        this.recorder.recordTokens(proposal.usage.inputTokens, proposal.usage.outputTokens);
+        this.recorder.recordTokens(
+          proposal.usage.inputTokens,
+          proposal.usage.outputTokens,
+          proposal.usage.cacheReadInputTokens,
+          proposal.usage.cacheCreationInputTokens,
+        );
       }
       this.recorder.recordDecide(this.outcomeForProposal(proposal));
       return proposal;

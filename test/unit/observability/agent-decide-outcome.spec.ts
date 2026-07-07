@@ -88,3 +88,42 @@ describe('MetricsWrappingAgentClient outcome classification (agent_decide_total{
     expect(outcome).toBe('proposed');
   });
 });
+
+describe('MetricsWrappingAgentClient token forwarding (agent_tokens_total)', () => {
+  function tokensFor(usage: AgentProposal['usage']): Promise<unknown[]> {
+    const inner: AgentClientPort = {
+      propose: () =>
+        Promise.resolve({
+          signals: [],
+          decision: { action: 'hold', confidence: 0.5, rationale: 'no edge' },
+          usage,
+        } satisfies AgentProposal),
+    };
+    const captured: unknown[][] = [];
+    const recorder = {
+      observeDecideLatency: () => undefined,
+      recordTokens: (...args: unknown[]) => {
+        captured.push(args);
+      },
+      recordDecide: () => undefined,
+    } as unknown as AgentMetricsRecorder;
+    const budget = new DailyLlmBudget({ maxCallsPerDay: 1, maxTokensPerDay: 1 });
+    const client = new MetricsWrappingAgentClient(inner, recorder, budget);
+    return client.propose(minimalInput()).then(() => captured[0]!);
+  }
+
+  it('forwards cache usage fields when the response carried them (W2.4 verification path)', async () => {
+    const args = await tokensFor({
+      inputTokens: 100,
+      outputTokens: 20,
+      cacheReadInputTokens: 1500,
+      cacheCreationInputTokens: 30,
+    });
+    expect(args).toEqual([100, 20, 1500, 30]);
+  });
+
+  it('forwards undefined (not 0) when cache fields are absent — absent must stay distinguishable', async () => {
+    const args = await tokensFor({ inputTokens: 100, outputTokens: 20 });
+    expect(args).toEqual([100, 20, undefined, undefined]);
+  });
+});

@@ -11,7 +11,7 @@ export type AgentDecideOutcome =
   | 'timeout'
   | 'budget_blocked';
 
-export type AgentTokenKind = 'input' | 'output';
+export type AgentTokenKind = 'input' | 'output' | 'cache_read' | 'cache_creation';
 
 export type AgentPrescreenOutcome = 'called' | 'skipped_quiet' | 'failopen_error';
 
@@ -56,10 +56,19 @@ export class AgentMetricsRecorder {
     }
   }
 
-  recordTokens(input: number, output: number): void {
+  // Cache kinds are inc'd only when the response actually carried the field: an absent series
+  // (envelope never reported cache usage) and a zero series (confirmed zero cache reads) answer
+  // the W2.4 falsifiability check differently (see AgentUsage in ports/agentic-strategy.ts).
+  // These series also expose the cache-write premium the flat 3/15 accounting can't see —
+  // cache_creation tokens bill above base input rate and appear in NEITHER input nor output.
+  recordTokens(input: number, output: number, cacheRead?: number, cacheCreation?: number): void {
     try {
       this.tokensCounter.inc({ kind: 'input' }, input);
       this.tokensCounter.inc({ kind: 'output' }, output);
+      if (cacheRead !== undefined) this.tokensCounter.inc({ kind: 'cache_read' }, cacheRead);
+      if (cacheCreation !== undefined) {
+        this.tokensCounter.inc({ kind: 'cache_creation' }, cacheCreation);
+      }
     } catch {
       /* metrics must never throw into a trading path */
     }

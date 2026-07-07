@@ -69,6 +69,28 @@ describe('AgentMetricsRecorder', () => {
     expect(metric).toContain('kind="output"} 45');
   });
 
+  it('recordTokens leaves the cache series absent when the response carried no cache fields', async () => {
+    recorder.recordTokens(120, 45);
+    const metric = await register.getSingleMetricAsString('agent_tokens_total');
+    expect(metric).not.toContain('kind="cache_read"');
+    expect(metric).not.toContain('kind="cache_creation"');
+  });
+
+  it('recordTokens materializes cache series at explicit zero (W2.4: absent ≠ confirmed-zero)', async () => {
+    recorder.recordTokens(120, 45, 0, 0);
+    const metric = await register.getSingleMetricAsString('agent_tokens_total');
+    expect(metric).toContain('kind="cache_read"} 0');
+    expect(metric).toContain('kind="cache_creation"} 0');
+  });
+
+  it('recordTokens accumulates cache_read and cache_creation counts', async () => {
+    recorder.recordTokens(120, 45, 1500, 0);
+    recorder.recordTokens(80, 30, 0, 2000);
+    const metric = await register.getSingleMetricAsString('agent_tokens_total');
+    expect(metric).toContain('kind="cache_read"} 1500');
+    expect(metric).toContain('kind="cache_creation"} 2000');
+  });
+
   it('observeDecideLatency records into the latency histogram', async () => {
     recorder.observeDecideLatency(3);
     const metric = await register.getSingleMetricAsString('agent_decide_latency_seconds');

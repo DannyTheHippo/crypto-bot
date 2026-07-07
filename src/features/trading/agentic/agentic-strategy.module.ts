@@ -97,6 +97,8 @@ export function agenticEnv(config?: TypedConfigService): Record<string, string |
     AGENTIC_REFLECTION_EVERY_N_TRADES: String(agentic.reflectionEveryNTrades),
     AGENTIC_REFLECTION_COOLDOWN_MS: String(agentic.reflectionCooldownMs),
     AGENTIC_AUTO_PROMOTE_MIN_TRADES: String(agentic.autoPromoteMinTrades),
+    AGENTIC_PLAN_MODE: String(agentic.planMode),
+    AGENTIC_MIN_EDGE_MULTIPLE: agentic.minEdgeMultiple,
   };
 }
 
@@ -178,6 +180,10 @@ export function selectAgentClient(
       signalTtlMs: intEnv(env['SIGNAL_TTL_MS'], DEFAULT_SIGNAL_TTL_MS),
       profile,
       constraintsFor: constraintsFromDefaultFilters,
+      // W3.1 plan mode: submit_plan tool + deterministic plan executor (strategy side). Flag off ⇒
+      // byte-identical legacy submit_decision behavior.
+      planMode: env['AGENTIC_PLAN_MODE'] === 'true',
+      minEdgeMultiple: env['AGENTIC_MIN_EDGE_MULTIPLE'],
     },
     fetch,
     new Logger('AnthropicAgentClient'),

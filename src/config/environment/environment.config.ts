@@ -139,6 +139,18 @@ const envSchema = z
     // W2.1 stale-entry sweep: a resting entry older than this many observed decide cycles gets a
     // CANCEL_OPEN (risk-reducing; SignalSink routes it to an order-cancel). 0 disables.
     AGENTIC_ENTRY_TTL_BARS: z.coerce.number().int().min(0).default(2),
+    // W3.1 plan-based trading: the LLM emits a full trade plan (entry offset, stop, take-profit,
+    // validity) via submit_plan and plan-executor.ts manages it deterministically between consults.
+    // Off by default — enabling is gated on offline A/B evidence + owner approval (approved plan).
+    AGENTIC_PLAN_MODE: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
+    // Fee-aware plan viability floor: a plan is rejected when takeProfitPct < multiple × the
+    // round-trip fee fraction (maker+taker bps / 10000). Decimal string — money-adjacent math.
+    AGENTIC_MIN_EDGE_MULTIPLE: decimalString.default('1.5'),
+    // Safety re-consult cadence while a plan is active without executor action.
+    AGENTIC_PLAN_MAX_QUIET_BARS: z.coerce.number().int().min(1).default(16),
     AGENTIC_MAX_ENTRIES_PER_DAY: z.coerce.number().int().positive().default(12),
     AGENTIC_DRAIN_COOLDOWN_BASE_MS: z.coerce.number().int().positive().default(30_000),
     AGENTIC_DRAIN_COOLDOWN_MAX_MS: z.coerce.number().int().positive().default(900_000),
@@ -351,6 +363,9 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     AGENTIC_PRESCREEN_BREAKOUT_LOOKBACK_BARS: agenticPrescreenBreakoutLookbackBars,
     AGENTIC_PRESCREEN_BREAKOUT_PCT: agenticPrescreenBreakoutPct,
     AGENTIC_EXPECTANCY_LADDER: agenticExpectancyLadder,
+    AGENTIC_PLAN_MODE: agenticPlanMode,
+    AGENTIC_MIN_EDGE_MULTIPLE: agenticMinEdgeMultiple,
+    AGENTIC_PLAN_MAX_QUIET_BARS: agenticPlanMaxQuietBars,
     EXIT_CROSS_BUFFER_BPS: exitCrossBufferBps,
     BASE_NOTIONAL: baseNotional,
     SIZER_EQUITY_FRACTION: sizerEquityFraction,
@@ -419,6 +434,9 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       prescreenBreakoutLookbackBars: agenticPrescreenBreakoutLookbackBars,
       prescreenBreakoutPct: agenticPrescreenBreakoutPct,
       expectancyLadderEnabled: agenticExpectancyLadder,
+      planMode: agenticPlanMode,
+      minEdgeMultiple: agenticMinEdgeMultiple,
+      planMaxQuietBars: agenticPlanMaxQuietBars,
     },
     risk: {
       exitCrossBufferBps,

@@ -180,9 +180,26 @@ export interface AgentUsage {
   readonly cacheReadInputTokens?: number;
 }
 
+// W3.1 plan-based trading: the executor-managed trade plan a 'long' decision carried, parsed off
+// submit_plan's tool-use payload. Pct fields are STRINGS (not the raw schema numbers) so every
+// downstream consumer — plan-executor.ts's Decimal compares, the strategy's in-memory plan state —
+// stays on the money-safe Decimal→string path; only entryOffsetBps/entryValidityBars/maxHoldBars
+// stay plain numbers (bar counts / bps offsets, never a money value themselves).
+export interface AgentPlan {
+  readonly entryOffsetBps: number;
+  readonly stopLossPct: string;
+  readonly takeProfitPct: string;
+  readonly entryValidityBars: number;
+  readonly maxHoldBars: number;
+}
+
 export interface AgentProposal {
   readonly signals: Signal[];
   readonly decision?: AgentDecisionMeta;
+  // Present only when planMode is on AND the decision was a viable 'long' plan (absent on 'flat'/
+  // 'hold', and absent when the plan was rejected by the fee-aware edge floor — see
+  // anthropic-agent-client.ts's plan-rejection path, which returns signals: [] with no plan).
+  readonly plan?: AgentPlan;
   readonly usage?: AgentUsage;
   // Wall-clock duration of the HTTP call, client-measured; absent when no call was made.
   readonly latencyMs?: number;

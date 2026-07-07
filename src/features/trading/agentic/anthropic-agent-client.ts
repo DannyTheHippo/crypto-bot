@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import Decimal from 'decimal.js';
 import { price, qty, type Price } from '../../../domain/types/money';
 import type { OrderBookSnapshotEvent } from '../../../domain/types/market-events';
 import type { Signal } from '../../../domain/types/signal';
@@ -6,12 +7,15 @@ import {
   AgentProposeError,
   type AgentClientPort,
   type AgentDecisionInput,
+  type AgentPlan,
   type AgentProposal,
   type AgentTradingProfile,
   type PlaybookProvider,
 } from '../../../ports/agentic-strategy';
 import {
   DECISION_TOOL,
+  PLAN_TOOL,
+  PLAN_TEMPLATE_VERSION,
   PROMPT_TEMPLATE_VERSION,
   buildMarketPayload,
   buildPlaybookBlock,
@@ -25,6 +29,31 @@ const decisionSchema = z.object({
   confidence: z.number().min(0).max(1),
   rationale: z.string().min(1).max(2000),
 });
+
+// W3.1 submit_plan payload: the decision fields plus a managed trade plan, REQUIRED when opening a
+// long (schema-enforced — a plan-less 'long' is malformed, not a bare entry). Pct fields arrive as
+// JSON numbers (fractions, bounded well inside double precision) and are converted to strings at
+// the mapping boundary so all downstream math stays Decimal-on-strings.
+const planSchema = decisionSchema
+  .extend({
+    plan: z
+      .object({
+        entryOffsetBps: z.number().int().min(-50).max(50),
+        stopLossPct: z.number().min(0.001).max(0.05),
+        takeProfitPct: z.number().min(0.001).max(0.1),
+        entryValidityBars: z.number().int().min(1).max(8),
+        maxHoldBars: z.number().int().min(4).max(96),
+      })
+      .optional(),
+  })
+  .superRefine((v, ctx) => {
+    if (v.action === 'long' && v.plan === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "plan is required when action is 'long'",
+      });
+    }
+  });
 
 // Only the envelope fields this client reads — not a full Messages-API response model.
 const anthropicResponseSchema = z.object({
@@ -67,6 +96,11 @@ export interface AnthropicAgentClientConfig {
   // (fees, sizing, backstop) is symbol-independent. Absent (or returning undefined for a symbol)
   // ⇒ the static profile's constraints — the exact pre-P7 behavior.
   readonly constraintsFor?: (symbol: string) => AgentTradingProfile['constraints'] | undefined;
+  // W3.1 plan mode: send submit_plan (managed trade plans) instead of submit_decision. Absent/false
+  // ⇒ byte-identical legacy behavior.
+  readonly planMode?: boolean;
+  // Fee-aware plan viability floor (decimal string; default '1.5') — see the mapping's edge check.
+  readonly minEdgeMultiple?: string;
 }
 
 // Placeholder profile used only when no real AgentTradingProfile has been wired yet — keeps the
@@ -193,7 +227,12 @@ export class AnthropicAgentClient implements AgentClientPort {
     const { content: playbookContent, version: playbookVersion } = await this.resolvePlaybook();
     const baseProfile = this.cfg.profile ?? DEFAULT_TRADING_PROFILE;
     const constraints = this.cfg.constraintsFor?.(String(symbol)) ?? baseProfile.constraints;
-    const systemPrompt = buildSystemPrompt({ ...baseProfile, constraints });
+    const systemPrompt = buildSystemPrompt(
+      { ...baseProfile, constraints },
+      this.cfg.planMode
+        ? { planMode: true, minEdgeMultiple: this.cfg.minEdgeMultiple ?? '1.5' }
+        : {},
+    );
     // inputPayload is the market JSON ALONE — buildMarketPayload's signature carries no
     // playbookContent parameter, so it structurally cannot echo playbook text (see its own comment).
     // W2.4 cache experiment: the playbook block (the only sizeable stable prefix) rides in its own
@@ -213,10 +252,11 @@ export class AnthropicAgentClient implements AgentClientPort {
           { type: 'text', text: `\n\n${inputPayload}` },
         ]
       : inputPayload;
+    const activeTool = this.cfg.planMode ? PLAN_TOOL : DECISION_TOOL;
     const promptHash = computePromptHash({
-      templateVersion: PROMPT_TEMPLATE_VERSION,
+      templateVersion: this.cfg.planMode ? PLAN_TEMPLATE_VERSION : PROMPT_TEMPLATE_VERSION,
       playbookContent: playbookContent ?? '',
-      toolSchemaJson: JSON.stringify(DECISION_TOOL),
+      toolSchemaJson: JSON.stringify(activeTool),
       modelId: this.cfg.model,
     });
 
@@ -272,21 +312,28 @@ export class AnthropicAgentClient implements AgentClientPort {
       this.logger.warn('anthropic api: model refused to decide');
       return { signals: [], usage, latencyMs, playbookVersion, promptHash, inputPayload };
     }
+    const toolName = this.cfg.planMode ? PLAN_TOOL.name : DECISION_TOOL.name;
     const toolBlock = envelope.data.content?.find(
-      (b) => b.type === 'tool_use' && b.name === 'submit_decision',
+      (b) => b.type === 'tool_use' && b.name === toolName,
     );
     if (!toolBlock) {
-      this.logger.warn('anthropic api: no submit_decision tool_use block in response');
+      this.logger.warn(`anthropic api: no ${toolName} tool_use block in response`);
       return { signals: [], usage, latencyMs, playbookVersion, promptHash, inputPayload };
     }
-    const parsedDecision = decisionSchema.safeParse(toolBlock.input);
+    const parsedDecision = this.cfg.planMode
+      ? planSchema.safeParse(toolBlock.input)
+      : decisionSchema.safeParse(toolBlock.input);
     if (!parsedDecision.success) {
-      this.logger.warn('anthropic api: submit_decision payload failed schema validation');
+      this.logger.warn(`anthropic api: ${toolName} payload failed schema validation`);
       return { signals: [], usage, latencyMs, playbookVersion, promptHash, inputPayload };
     }
 
     const side = input.context?.position.side ?? 'FLAT';
     const { action, confidence, rationale } = parsedDecision.data;
+    // Explicitly re-typed: the decision/plan schema union erases `plan` under `in`-narrowing.
+    const rawPlan: z.infer<typeof planSchema>['plan'] = this.cfg.planMode
+      ? (parsedDecision.data as z.infer<typeof planSchema>).plan
+      : undefined;
     const common = {
       strategyId: input.strategyId,
       venue,
@@ -299,9 +346,53 @@ export class AnthropicAgentClient implements AgentClientPort {
       reason: rationale.slice(0, MAX_REASON_LEN),
     };
 
+    // W3.1 fee-aware plan viability floor: a plan whose take-profit cannot clear
+    // minEdgeMultiple × the round-trip fee fraction is rejected outright — journal-visible via the
+    // prefixed rationale, no signals, no plan (the strategy treats it as a hold).
+    if (this.cfg.planMode && action === 'long' && side === 'FLAT' && rawPlan) {
+      const feeFraction = new Decimal(baseProfile.makerBps).plus(baseProfile.takerBps).div(10_000);
+      const edgeFloor = new Decimal(this.cfg.minEdgeMultiple ?? '1.5').mul(feeFraction);
+      if (new Decimal(String(rawPlan.takeProfitPct)).lt(edgeFloor)) {
+        this.logger.warn(
+          `plan rejected: takeProfitPct ${rawPlan.takeProfitPct} below edge floor ${edgeFloor.toFixed()}`,
+        );
+        return {
+          signals: [],
+          decision: {
+            action,
+            confidence,
+            rationale: `[plan rejected: edge below floor] ${rationale}`,
+          },
+          usage,
+          latencyMs,
+          playbookVersion,
+          promptHash,
+          inputPayload,
+        };
+      }
+    }
+
     let signals: Signal[];
+    let acceptedPlan: AgentPlan | undefined;
     if (action === 'long' && side === 'FLAT') {
-      const limitPriceHint = this.bookEntryHint(input.snapshot.books.get(symbol), refPrice);
+      // Plan mode: the plan's own entry offset prices the resting entry (positive bps = below the
+      // last close) and supersedes the book-touch hint; legacy mode keeps the bestBid hint.
+      let limitPriceHint: Price | undefined;
+      if (this.cfg.planMode && rawPlan && lastCandle) {
+        const offsetHint = new Decimal(lastCandle.close.toFixed())
+          .mul(new Decimal(1).minus(new Decimal(rawPlan.entryOffsetBps).div(10_000)))
+          .toDecimalPlaces(8);
+        limitPriceHint = price(offsetHint.toFixed());
+        acceptedPlan = {
+          entryOffsetBps: rawPlan.entryOffsetBps,
+          stopLossPct: String(rawPlan.stopLossPct),
+          takeProfitPct: String(rawPlan.takeProfitPct),
+          entryValidityBars: rawPlan.entryValidityBars,
+          maxHoldBars: rawPlan.maxHoldBars,
+        };
+      } else {
+        limitPriceHint = this.bookEntryHint(input.snapshot.books.get(symbol), refPrice);
+      }
       signals = [
         {
           ...common,
@@ -323,6 +414,7 @@ export class AnthropicAgentClient implements AgentClientPort {
     return {
       signals,
       decision: { action, confidence, rationale },
+      ...(acceptedPlan ? { plan: acceptedPlan } : {}),
       usage,
       latencyMs,
       playbookVersion,
@@ -406,8 +498,11 @@ export class AnthropicAgentClient implements AgentClientPort {
           // cache_control block. Cache reads are observed via usage.cache_read_input_tokens.
           system: [{ type: 'text', text: systemPrompt, cache_control: EPHEMERAL_1H }],
           messages: [{ role: 'user', content: userContent }],
-          tools: [DECISION_TOOL],
-          tool_choice: { type: 'tool', name: 'submit_decision' },
+          tools: [this.cfg.planMode ? PLAN_TOOL : DECISION_TOOL],
+          tool_choice: {
+            type: 'tool',
+            name: this.cfg.planMode ? PLAN_TOOL.name : DECISION_TOOL.name,
+          },
           // Omitting `thinking` on claude-sonnet-5 silently runs (billed) adaptive thinking; the
           // decide call has no use for it (structured tool-use, not open-ended reasoning), so it's
           // explicitly disabled here. Reflection has its own separate request builder (see

@@ -76,6 +76,14 @@ export interface AppConfig {
     // to this strategy's rolling realized net expectancy. Default false — inert regardless of the
     // knob unless AgenticStrategyDeps also carries a RoundTripEvidencePort (see agentic.strategy.ts).
     expectancyLadderEnabled: boolean;
+    // W3.1 plan-based trading: LLM emits a full trade plan; plan-executor.ts manages it
+    // deterministically between consults. Off by default; enabling gated on offline A/B + owner.
+    planMode: boolean;
+    // Fee-aware plan viability floor (decimal string): reject plans whose takeProfitPct is below
+    // multiple × round-trip fee fraction.
+    minEdgeMultiple: string;
+    // Safety re-consult cadence (bars) while a plan is active without executor action.
+    planMaxQuietBars: number;
   };
   // Risk-lane knobs read via ConfigService (mirrors the agentic block above).
   risk: {

@@ -36,6 +36,7 @@ import {
   type PrescreenThresholds,
 } from './prescreen';
 import type { RoundTripEvidencePort } from '../../../ports/promotion';
+import { evaluatePlan, type PlanExecutorState } from './plan-executor';
 
 export interface AgenticStrategyParams {
   readonly symbol: SymbolId;
@@ -54,6 +55,11 @@ export interface AgenticStrategyParams {
   // cycles gets a CANCEL_OPEN (risk-reducing; routed by SignalSink to an order-cancel, never to the
   // gateway). Optional/absent/0 ⇒ disabled, so existing callers stay byte-identical.
   readonly entryTtlBars?: number;
+  // W3.1 plan-based trading: the client returns managed trade plans (AgentProposal.plan) and this
+  // strategy runs plan-executor.ts between LLM consults. Absent/false ⇒ legacy bar-by-bar behavior.
+  readonly planMode?: boolean;
+  // Safety re-consult cadence (bars) while a plan is active without executor action. Default 16.
+  readonly planMaxQuietBars?: number;
   // W4.2 expectancy-laddered strength modulation: scales ENTER_LONG strength by this strategy's
   // rolling realized net expectancy — reduction-only (see the class-level EXPECTANCY_LADDER_* consts
   // for the ladder). Optional/absent ⇒ disabled, so existing callers stay byte-identical. Also inert
@@ -144,6 +150,15 @@ export class AgenticStrategy implements AsyncStrategy {
   private readonly prescreenEnabled: boolean;
   private readonly prescreenThresholds?: PrescreenThresholds;
   private readonly entryTtlBars: number;
+  private readonly planMode: boolean;
+  private readonly planMaxQuietBars: number;
+  // W3.1 active managed plan — in-memory by design: a restart loses it, the position_open prescreen
+  // then forces a consult and the model issues a fresh plan (documented self-heal path).
+  private activePlan: {
+    plan: NonNullable<AgentProposal['plan']>;
+    entryPrice: string | null;
+    barsElapsed: number;
+  } | null = null;
   private readonly expectancyLadderEnabled: boolean;
   private readonly evidence?: RoundTripEvidencePort;
   // W2.1 stale-entry sweep state. OpenOrderSummary carries no timestamps, so age is measured in
@@ -189,6 +204,8 @@ export class AgenticStrategy implements AsyncStrategy {
     this.prescreenEnabled = params.prescreenEnabled ?? false;
     this.prescreenThresholds = params.prescreenThresholds;
     this.entryTtlBars = params.entryTtlBars ?? 0;
+    this.planMode = params.planMode ?? false;
+    this.planMaxQuietBars = params.planMaxQuietBars ?? 16;
     this.expectancyLadderEnabled = params.expectancyLadderEnabled ?? false;
     this.evidence = deps.evidence;
     this.subscriptions = {
@@ -218,6 +235,13 @@ export class AgenticStrategy implements AsyncStrategy {
     // starts flat.
     const heldDuringPrev = this.lastPositionSide ?? 'FLAT';
     this.trackClosedTrade(context.position.side);
+
+    // W3.1: an active plan is managed deterministically — the LLM is consulted only on the safety
+    // cadence (planMaxQuietBars) or once the plan clears. Returns null to fall through to a consult.
+    if (this.planMode && this.activePlan) {
+      const planSignals = this.runActivePlan(input, context, heldDuringPrev);
+      if (planSignals !== null) return [...staleCancels, ...planSignals];
+    }
 
     const prescreenReason = this.evaluatePrescreenGate(input, context);
     if (prescreenReason !== null) {
@@ -260,7 +284,105 @@ export class AgenticStrategy implements AsyncStrategy {
 
     this.recordJournalEntry(input, decision, proposal);
 
+    // W3.1 plan bookkeeping: a returned plan REPLACES any active one (fresh clock); an explicit
+    // 'flat' clears it (the exit signal above closes the position the plan was managing).
+    if (this.planMode) {
+      if (proposal.plan) {
+        this.activePlan = { plan: proposal.plan, entryPrice: null, barsElapsed: 0 };
+      } else if (decision.action === 'flat') {
+        this.activePlan = null;
+      }
+    }
+
     return [...staleCancels, ...signals];
+  }
+
+  // W3.1 per-bar management of the active plan. Non-null return = this bar is fully handled without
+  // an LLM call; null = fall through to the normal consult path (safety re-consult cadence).
+  private runActivePlan(
+    input: AgentDecisionInput,
+    context: AgentContext,
+    heldDuringPrev: 'LONG' | 'FLAT',
+  ): Signal[] | null {
+    const active = this.activePlan!;
+    active.barsElapsed += 1;
+
+    // Capture the realized entry price on the first bar the position shows LONG — the executor's
+    // stop/TP levels anchor to the actual average fill, not the plan's intended offset price.
+    if (context.position.side === 'LONG' && active.entryPrice === null) {
+      active.entryPrice = context.position.avgEntry;
+    }
+
+    const candles = input.snapshot.candles.get(this.symbol) ?? [];
+    const lastCandle = candles.length > 0 ? candles[candles.length - 1] : undefined;
+    if (!lastCandle) return null; // no basis bar — let the normal path decide
+
+    const hasRestingEntry = input.snapshot.portfolio.openOrders.some(
+      (o) => o.symbol === this.symbol && o.side === 'BUY',
+    );
+    const state: PlanExecutorState = {
+      plan: active.plan,
+      entryPrice: active.entryPrice,
+      planStartedBar: 0,
+      barsElapsed: active.barsElapsed,
+    };
+    const verdict = evaluatePlan({
+      state,
+      closePrice: lastCandle.close.toFixed(),
+      positionSide: context.position.side,
+      hasRestingEntry,
+    });
+
+    const lastClose = toIndicatorNumber(lastCandle.close);
+    if (verdict.type === 'exit') {
+      this.activePlan = null;
+      this.annotatePreviousOutcome(lastClose, context.position, lastCandle, heldDuringPrev);
+      this.recordQuietJournalEntry(input, `plan exit: ${verdict.reason}`, 'plan-executor');
+      return [
+        {
+          strategyId: this.id,
+          venue: this.venue,
+          symbol: this.symbol,
+          kind: 'EXIT_LONG',
+          strength: 1,
+          refPrice: lastCandle.close,
+          basedOnSeq: lastCandle.seq,
+          eventTime: input.snapshot.eventTime,
+          ttlMs: this.baseIntervalMs,
+          dedupeKey: `${this.id}:${this.symbol}:agentic:plan_exit:${input.snapshot.eventTime}`,
+          reason: `plan exit: ${verdict.reason}`,
+        },
+      ];
+    }
+    if (verdict.type === 'cancel_entry' || verdict.type === 'plan_expired') {
+      this.activePlan = null;
+      this.annotatePreviousOutcome(lastClose, context.position, lastCandle, heldDuringPrev);
+      this.recordQuietJournalEntry(input, `plan cleared: ${verdict.type}`, 'plan-executor');
+      if (verdict.type === 'cancel_entry') {
+        return [
+          {
+            strategyId: this.id,
+            venue: this.venue,
+            symbol: this.symbol,
+            kind: 'CANCEL_OPEN',
+            strength: 1,
+            refPrice: lastCandle.close,
+            basedOnSeq: lastCandle.seq,
+            eventTime: input.snapshot.eventTime,
+            ttlMs: this.baseIntervalMs,
+            dedupeKey: `${this.id}:${this.symbol}:agentic:plan_cancel:${input.snapshot.eventTime}`,
+            reason: 'plan cleared: entry validity lapsed — cancel-open sweep',
+          },
+        ];
+      }
+      return [];
+    }
+
+    // hold: consult only on the safety cadence, else this bar is a deterministic no-call hold.
+    if (active.barsElapsed % this.planMaxQuietBars === 0) return null;
+    this.annotatePreviousOutcome(lastClose, context.position, lastCandle, heldDuringPrev);
+    this.recordQuietJournalEntry(input, 'plan active — deterministic hold', 'plan-executor');
+    return [];
   }
 
   // W2.1 stale-entry sweep — runs every decide cycle, prescreen-skipped ones included. Emits
@@ -692,7 +814,11 @@ export class AgenticStrategy implements AsyncStrategy {
 
   // model is 'prescreen' (not this.model) — an honest account that no LLM call was made for this
   // row, distinguishable at a glance from every client-sourced decision on the same strategyId.
-  private recordQuietJournalEntry(input: AgentDecisionInput, rationale: string): void {
+  private recordQuietJournalEntry(
+    input: AgentDecisionInput,
+    rationale: string,
+    model: 'prescreen' | 'plan-executor' = 'prescreen',
+  ): void {
     if (!this.journal) return;
     const { basedOnSeq, refPrice } = this.deriveMarketBasis(input);
     const candles = input.snapshot.candles.get(this.symbol) ?? [];
@@ -705,7 +831,7 @@ export class AgenticStrategy implements AsyncStrategy {
         triggerKind: input.trigger.kind,
         basedOnSeq,
         eventTime: input.snapshot.eventTime,
-        model: 'prescreen',
+        model,
         action: 'hold',
         confidence: null,
         rationale: rationale.slice(0, MAX_JOURNAL_RATIONALE_LEN),

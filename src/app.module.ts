@@ -1412,6 +1412,8 @@ export class AppModule
         breakoutPct: agentic.prescreenBreakoutPct,
       },
       expectancyLadderEnabled: agentic.expectancyLadderEnabled,
+      planMode: agentic.planMode,
+      planMaxQuietBars: agentic.planMaxQuietBars,
     };
   }
 }

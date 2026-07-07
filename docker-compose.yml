@@ -85,6 +85,9 @@ services:
       AGENTIC_REFLECTION_EVERY_N_TRADES: 10 # closed trades between reflection runs; 0 disables reflection
       AGENTIC_REFLECTION_COOLDOWN_MS: 43200000 # min wall-clock between reflection runs (schema default 7d; demo pins 12h so candidates iterate ~2×/day; floored at 0)
       AGENTIC_AUTO_PROMOTE_MIN_TRADES: 30 # ≥N closed trades auto-promotes a reflection candidate to ACTIVE (live, validated); 0 disables (manual promote only)
+      AGENTIC_PLAN_MODE: 'false' # W3.1 plan-based trading (submit_plan + deterministic executor); enable ONLY after offline A/B on recorded inputs + owner approval
+      AGENTIC_MIN_EDGE_MULTIPLE: '1.5' # plan viability floor: reject plans with takeProfitPct < multiple x round-trip fee fraction
+      AGENTIC_PLAN_MAX_QUIET_BARS: 16 # safety re-consult cadence while a plan is active without executor action
       AGENTIC_PLAYBOOK_AB_PCT: 0 # W4.1 champion/candidate A/B: % of decides routed to a newer INACTIVE reflection candidate (per-version attribution accrues pre-promotion); 0 disables — enable only after candidate quality is worth measuring
       AGENTIC_EXPECTANCY_LADDER: 'false' # W4.2 reduction-only ENTER_LONG strength ladder keyed to rolling realized expectancy; enable after attribution data accrues
       AGENTIC_PRESCREEN_ENABLED: 'true' # deterministic gate: LLM consulted only on open position / vol expansion / breakout proximity; fail-open

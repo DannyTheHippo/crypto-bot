@@ -227,3 +227,17 @@ new Decimal(config.risk.protectTrailingPct).gt(0)`, plumbed through a new
   approval (backlog #15).
 - **Next-pass candidates:** backlog #13 (cache falsifiability), #14 (skip-rate/$-day
   re-measure), #17 (W2.6 cross-symbol block), #15 (plan-mode offline A/B once rows accrue).
+
+### Pass 4 addendum — owner enabled plan mode + dashboard ownership (2026-07-07)
+
+Owner follow-up decisions, same day: (1) took ownership of the dirty
+`observability/grafana/dashboards/crypto-bot.json` — the pre-existing diff turned out to be a
+single stat-panel `textMode` tweak, kept and committed; added an "Agentic learning (per-version
+attribution)" row with net-PnL-by-version and round-trips-by-version panels, and added `noop` to
+the decide-outcome panel description. (2) **Enabled `AGENTIC_PLAN_MODE`** — the offline-A/B
+pre-check was waived by explicit owner decision; the recorded-input harness and executor parameter
+sweep remain the post-hoc validators (backlog #15). Container recreated; boot de36fa2d clean
+(zero level-50, portfolio + 57 open orders recovered, warmup 340). Live risk bound unchanged:
+demo lane only — the earned-live gate and four-gate arming ceremony still stand between any of
+this and real funds. Watch items: first `submit_plan` consult and stored plan; no-LLM bars while
+a plan is active (calls flat while long); plan-executor journal rows (`model='plan-executor'`).

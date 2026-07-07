@@ -388,3 +388,65 @@ CANCEL_PENDING`; `reconciliation_runs_total`: 174 clean then 105+ `error`; last 
   anomaly as unverified); #20 latch gauge (now higher value: alerts actually fire); Prometheus
   TSDB named volume (new — today's no-recreate constraint exists BECAUSE history is unprotected);
   #13 cache verification via DB SQL; #14 continues (first ≤$1/day + 50% skip reading today).
+
+## 2026-07-07 — Pass 7 (owner-triggered, same session as Pass 6: "whatever you left out claiming owner-territory should be fixed now")
+
+- **Authorization:** the owner lifted the must-not-touch boundary for exactly the Pass-6 flagged
+  OMS fix package. Money-path discipline applied in full: regression tests first-class, reviewer
+  dispatch before commit, full gates including livegate/paper/db, deploy + soak.
+- **Shipped `f5ce2c0` (12 files) — all four package items:**
+  1. `domain/oms/reducer.ts`: CANCEL_PENDING and CANCEL_UNKNOWN accept `VENUE_CANCELED`→CANCELED
+     and `VENUE_EXPIRED`→EXPIRED (reconcile-channel confirmation of a requested cancel; FILL arms
+     untouched — fills still win); `CANCEL_ACK`-on-CANCELED joins the duplicate-terminal no-ops.
+  2. `reconciliation.service.ts`: `adoptTerminal` isolates a `TransitionError` to that order —
+     mismatch counted, pass continues; any other throw still aborts loudly as before.
+  3. `execution-gate.service.ts` cancel(): REST `cancelOrder` success folds `CANCEL_ACK` inline
+     (the 200 IS the venue confirmation — no exec report exists outside paper); a throw degrades
+     to CANCEL_UNKNOWN for the resolver/reconcile to settle; symbol falls back to the open-order
+     summary for intent-less recovered orders; BOTH folds guarded by a state re-read so a racing
+     full fill wins.
+  4. `boot-recovery.service.ts` (+ `loadOpenOrders` → `RecoveredOpenOrder` plumbing through the
+     port and both stores): venue-confirmed states (ACKED/PARTIALLY_FILLED/CANCEL_PENDING/
+     CANCEL_UNKNOWN) now register in the portfolio open set at boot; never-confirmed states
+     (NEW/SUBMITTING/SUBMIT_UNKNOWN/RECONCILE_REQUIRED) deliberately stay order-book-only.
+- **Review:** reviewer agent, verdict APPROVE-WITH-MUST-FIX. Must-fix applied + regression test:
+  the cancel-throw path folded `CANCEL_REJECT_UNKNOWN` unguarded — a fill racing a REFUSED cancel
+  (live-WS "-2011 on a just-filled order" shape) would have frozen a FILLED order to
+  RECONCILE_REQUIRED in the append-only journal. Now guarded like the success path. Reviewer
+  affirmed money-safety of the inline ack (ccxt resolves cancelOrder only on genuine venue
+  cancel), idempotence of double cancels, and the boundaries walls. Reviewer nice-to-have
+  carried to backlog: recovered resting orders still don't count into Risk's E1 in-flight
+  exposure clamp (pre-existing; intents aren't persisted).
+- **Gates:** build/lint/typecheck green; **1411 unit** (11 new), 41 livegate, 11 paper, 43 db.
+- **Deploy + soak (boot 28dc56a2, 16:26→16:38+):** `compose build app && up -d app`. Boot:
+  "61 open order(s) seeded (4 registered open), 1 degraded" — the stranded order came back as a
+  portfolio-visible CANCEL_UNKNOWN and **the first reconcile pass adopted venue truth and retired
+  it (open_orders 4→3, `result="mismatch"`), exactly the designed self-heal**. Zero pass errors
+  since; every 30s pass completes (mismatch=18+ and counting — see residuals); zero level-50,
+  warns = boot boilerplate only; kill switch RUNNING; equity/position continuity clean
+  (positions=2 restored). Lane live: the 16:30 bar produced 1 proposed decide + 1 quiet skip,
+  1451 in / 332 out tokens (≈0.9¢). Prometheus rules now load from the compose mount
+  (recreate exercised it); **TSDB history SURVIVED both recreates** — the prom image's anonymous
+  volume at /prometheus is preserved by compose recreation, so Pass 6's no-recreate caution was
+  overly conservative (named volume still preferable; backlog #22 downgraded).
+- **Follow-up shipped `378f88b`:** live soak falsified my ReconcilerStalled expression — the
+  shared demo wallet carries ~4 foreign resting orders, so every healthy pass counts mismatches
+  and a "no clean pass in 10m" alert would fire forever. Re-keyed to completion:
+  `sum(increase(reconciliation_runs_total{result!="error"}[10m])) == 0` — still catches the
+  2026-07-07 throw-loop (completions were zero while errors grew), immune to the foreign-order
+  steady state. Verified: ReconcilerStalled **inactive** live while passes complete;
+  ReconcilePassErrors self-resolves once the dead app's samples age out of its 15m window.
+- **Residuals (new/updated flags + backlog):**
+  - **ReconciliationMismatch fires continuously** on the foreign-order steady state (~4/pass,
+    WARN-and-ignore class counted into the same counter as would-halt classes). Splitting the
+    counter by mismatch class (foreign / adopted / halt) is an S app-side change enabling a
+    quiet-by-default alert — new backlog #24.
+  - **The 57 zombies are `SUBMIT_UNKNOWN`, not ACKED** (boot data: 61 seeded, only 4
+    venue-confirmed). They never confirmed landing, so the fix deliberately does NOT register
+    them; they persist as journal residue and keep `hasUnresolvedOrders()` true, which will
+    refuse live arming someday. Venue-dead (no UNKNOWN_OURS halts in 174+ clean passes), so the
+    resolution is a journaled one-time sweep the owner authorizes — new backlog #25. Enumerate:
+    `SELECT state, count(*) FROM orders WHERE terminal_at IS NULL GROUP BY state;`
+- **Meta:** Pass 6+7 together consumed well past the session budget (RED at the reviewer
+  dispatch); per token-budget policy the reviewer's should-fix items were applied inline/carried
+  to backlog instead of a second review loop, and no further agents were dispatched.

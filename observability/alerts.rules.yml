@@ -1,7 +1,8 @@
 # Prometheus alerting rules (Phase 10). Every rule below references a metric the app ACTUALLY emits
 # (/metrics via @willsoto/nestjs-prometheus): event_loop_delay_p99_seconds, event_loop_utilization,
 # mode_info{requested,effective}, boot_info{boot_id}, kill_switch_state{state} (MetricsService, 5s),
-# and reconciliation_mismatch_total (ReconciliationService). All rules are ACTIVE — none stubbed.
+# reconciliation_mismatch_total + reconciliation_runs_total{result} (ReconciliationService), and
+# agent_decide_total{outcome} (AgentMetricsRecorder). All rules are ACTIVE — none stubbed.
 # Trading gauges (equity_usdt, day_pnl_usdt, drawdown_ratio, realized_pnl_usdt, position_*, fills_total,
 # orders_total{outcome}, orders_rejected_total{code}) are also emitted and surfaced on the Grafana
 # dashboards; add threshold alerts here (e.g. daily-loss / drawdown approaching limits) as desired.
@@ -66,14 +67,28 @@ groups:
           summary: 'Kill switch HALTED_DEGRADED — cancels unconfirmed, venue orders may be live'
           runbook: 'docs/runbook.md#halt-response'
 
-      # reconciliation_mismatch_total is emitted by ReconciliationService (incremented per pass by the
-      # mismatch count). A mismatch HALTs and never auto-flattens (§6.4) — investigate immediately.
-      - alert: ReconciliationMismatch
-        expr: increase(reconciliation_mismatch_total[5m]) > 0
+      # Halting mismatch classes (UNKNOWN_OURS_OPEN, FILL_FOR_UNKNOWN_ORDER, balance drift) engage
+      # the kill switch and label the pass result="halt" — this pages the reconciliation cause by
+      # name (KillSwitchEngaged fires alongside, but its state label doesn't say WHY).
+      - alert: ReconciliationHalt
+        expr: increase(reconciliation_runs_total{result="halt"}[5m]) > 0
         for: 0m
         labels: { severity: critical }
         annotations:
-          summary: 'Reconciliation detected a venue/local mismatch — halted, never auto-flattened'
+          summary: 'Reconciliation hit a halting mismatch class — kill switch engaged, never auto-flattened'
+          runbook: 'docs/runbook.md#reconciliation-mismatch-64'
+
+      # reconciliation_mismatch_total conflates halting classes with WARN-and-ignore classes
+      # (foreign orders / adopted terminals / backfilled fills). On the shared demo wallet the
+      # ~3-4 foreign resting orders are a permanent ~3-per-pass steady state, so this fires
+      # continuously by design — severity warning until the counter is split by mismatch class
+      # (loop backlog #24); halting classes page via ReconciliationHalt + KillSwitchEngaged above.
+      - alert: ReconciliationMismatch
+        expr: increase(reconciliation_mismatch_total[5m]) > 0
+        for: 0m
+        labels: { severity: warning }
+        annotations:
+          summary: 'Reconciliation mismatches in the last 5m (class-blind counter; foreign-order noise expected on the shared demo wallet)'
           runbook: 'docs/runbook.md#reconciliation-mismatch-64'
 
       # A stalled reconciler is itself a fault (§8): a pass that throws leaves venue truth
@@ -101,3 +116,19 @@ groups:
         annotations:
           summary: 'Reconciliation passes are erroring (result="error" in the last 15m)'
           runbook: 'docs/runbook.md#reconciliation-mismatch-64'
+
+  - name: crypto-bot-agentic
+    rules:
+      # The Anthropic client latches itself degraded on the first FATAL API error (bad key, rejected
+      # schema — anthropic-agent-client.ts): every later propose() short-circuits to an empty
+      # proposal, which the metrics wrapper records as 'hold', so the lane looks alive while making
+      # zero LLM calls (2026-07-07: a 400 on the first plan-mode decide cost ~1h of dead air with a
+      # single warn line). agent_decide_total resets on the container recreate that also clears the
+      # latch, so this fires for exactly the latch's lifetime.
+      - alert: AgentClientFatalLatch
+        expr: sum(agent_decide_total{outcome="error_fatal"}) > 0
+        for: 0m
+        labels: { severity: critical }
+        annotations:
+          summary: 'Agent client hit a FATAL API error — lane latched degraded (zero LLM calls) until the app container is recreated'
+          runbook: 'docs/runbook.md'

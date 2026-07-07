@@ -882,8 +882,101 @@ describe('AnthropicAgentClient', () => {
       expect(body['tools']).toEqual([DECISION_TOOL]);
       expect(body['tool_choice']).toEqual({ type: 'tool', name: 'submit_decision' });
       expect(body).not.toHaveProperty('temperature');
-      expect(body).not.toHaveProperty('thinking');
+      expect(body['thinking']).toEqual({ type: 'disabled' });
       expect(body).not.toHaveProperty('cache_control');
+    });
+
+    it('sends thinking:disabled alongside the forced tool_choice on every decide call', async () => {
+      const fetchFn = vi.fn();
+      const client = new AnthropicAgentClient(buildCfg(), fetchFn);
+      fetchFn.mockResolvedValue(
+        apiResponse(toolUseBody({ action: 'hold', confidence: 0.5, rationale: 'r' })),
+      );
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+      });
+
+      await client.propose(input);
+
+      const [, init] = fetchFn.mock.calls[0] as [string, RequestInit];
+      const body = JSON.parse(init.body as string) as Record<string, unknown>;
+      expect(body['thinking']).toEqual({ type: 'disabled' });
+      expect(body['tool_choice']).toEqual({ type: 'tool', name: 'submit_decision' });
+    });
+  });
+
+  describe('book-aware entry price hint', () => {
+    function book(bidPrice: string, bidQty = '1'): AgentMarketSnapshot['books'] {
+      return new Map([
+        [
+          SYM,
+          {
+            kind: 'ORDER_BOOK_SNAPSHOT' as const,
+            venue: V,
+            symbol: SYM,
+            channel: 'book',
+            seq: 1n,
+            eventTime: epochMs(T),
+            ingestTime: epochMs(T + 1),
+            bids: [{ price: price(bidPrice), qty: qty(bidQty) }],
+            asks: [{ price: price('50100'), qty: qty('1') }],
+          },
+        ],
+      ]);
+    }
+
+    function buildInputWithBook(books: AgentMarketSnapshot['books']): AgentDecisionInput {
+      const base = buildInput({
+        tickers: new Map([[SYM, ticker('50000', 1n)]]),
+        context: FLAT_CONTEXT,
+      });
+      return { ...base, snapshot: { ...base.snapshot, books } };
+    }
+
+    it('sets limitPriceHint to the best bid when within 25bps below refPrice', async () => {
+      const fetchFn = vi.fn();
+      const client = new AnthropicAgentClient(buildCfg(), fetchFn);
+      fetchFn.mockResolvedValue(
+        apiResponse(toolUseBody({ action: 'long', confidence: 0.8, rationale: 'r' })),
+      );
+      // refPrice 50000, 25bps = 125 — a bid at 49900 (100 below) is inside the band.
+      const input = buildInputWithBook(book('49900'));
+
+      const { signals } = await client.propose(input);
+
+      expect(signals).toHaveLength(1);
+      expect(moneyToString(signals[0]!.limitPriceHint!)).toBe('49900');
+    });
+
+    it('omits limitPriceHint when the best bid is more than 25bps below refPrice', async () => {
+      const fetchFn = vi.fn();
+      const client = new AnthropicAgentClient(buildCfg(), fetchFn);
+      fetchFn.mockResolvedValue(
+        apiResponse(toolUseBody({ action: 'long', confidence: 0.8, rationale: 'r' })),
+      );
+      // refPrice 50000, 25bps = 125 — a bid at 49800 (200 below) is outside the band.
+      const input = buildInputWithBook(book('49800'));
+
+      const { signals } = await client.propose(input);
+
+      expect(signals[0]!.limitPriceHint).toBeUndefined();
+    });
+
+    it('omits limitPriceHint when the context has no order book', async () => {
+      const fetchFn = vi.fn();
+      const client = new AnthropicAgentClient(buildCfg(), fetchFn);
+      fetchFn.mockResolvedValue(
+        apiResponse(toolUseBody({ action: 'long', confidence: 0.8, rationale: 'r' })),
+      );
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('50000', 1n)]]),
+        context: FLAT_CONTEXT,
+      });
+
+      const { signals } = await client.propose(input);
+
+      expect(signals[0]!.limitPriceHint).toBeUndefined();
     });
   });
 });

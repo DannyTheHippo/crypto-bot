@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { price, qty, type Price } from '../../../domain/types/money';
+import type { OrderBookSnapshotEvent } from '../../../domain/types/market-events';
 import type { Signal } from '../../../domain/types/signal';
 import {
   AgentProposeError,
@@ -261,11 +262,15 @@ export class AnthropicAgentClient implements AgentClientPort {
 
     let signals: Signal[];
     if (action === 'long' && side === 'FLAT') {
+      const limitPriceHint = this.bookEntryHint(input.snapshot.books.get(symbol), refPrice);
       signals = [
         {
           ...common,
           kind: 'ENTER_LONG',
           strength: Math.min(MAX_STRENGTH, Math.max(MIN_STRENGTH, confidence)),
+          // Omitted entirely (no key) rather than undefined when no book/no near-touch bid — see
+          // bookEntryHint's own comment.
+          ...(limitPriceHint ? { limitPriceHint } : {}),
         },
       ];
     } else if (action === 'flat' && side === 'LONG') {
@@ -284,6 +289,20 @@ export class AnthropicAgentClient implements AgentClientPort {
       playbookVersion,
       promptHash,
     };
+  }
+
+  // Best-bid entry hint: a resting bid within 25bps below refPrice is a cheaper (maker) entry than
+  // crossing at refPrice, close enough that waiting for it is unlikely to miss the move. A bid AT or
+  // ABOVE refPrice, one further than 25bps below it, or no book at all all resolve to undefined —
+  // Risk/PositionSizer then fall back to their existing refPrice-based behavior unchanged.
+  private bookEntryHint(
+    book: OrderBookSnapshotEvent | undefined,
+    refPrice: Price,
+  ): Price | undefined {
+    const bestBid = book?.bids[0]?.price;
+    if (!bestBid || bestBid.gt(refPrice)) return undefined;
+    const maxDiscount = refPrice.mul('0.0025');
+    return refPrice.sub(bestBid).lte(maxDiscount) ? bestBid : undefined;
   }
 
   // Fetches the current playbook (if a provider is wired) and structurally validates it — an
@@ -346,6 +365,11 @@ export class AnthropicAgentClient implements AgentClientPort {
           messages: [{ role: 'user', content: userMessage }],
           tools: [DECISION_TOOL],
           tool_choice: { type: 'tool', name: 'submit_decision' },
+          // Omitting `thinking` on claude-sonnet-5 silently runs (billed) adaptive thinking; the
+          // decide call has no use for it (structured tool-use, not open-ended reasoning), so it's
+          // explicitly disabled here. Reflection has its own separate request builder (see
+          // reflection.service.ts) and is unaffected by this.
+          thinking: { type: 'disabled' },
           // Deliberately no cache_control: below the ~4096-token cacheable minimum on opus this is a
           // silent no-op — revisit once the prompt (playbook + candle history) grows past it.
         }),

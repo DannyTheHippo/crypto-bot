@@ -8,6 +8,8 @@ import type { LoggerLike } from './anthropic-agent-client';
 
 const NOOP_LOGGER: LoggerLike = { warn: () => undefined };
 
+const MTOK = 1_000_000;
+
 function utcDayKey(nowMs: number): string {
   return new Date(nowMs).toISOString().slice(0, 10);
 }
@@ -15,6 +17,13 @@ function utcDayKey(nowMs: number): string {
 export interface DailyLlmBudgetCaps {
   readonly maxCallsPerDay: number;
   readonly maxTokensPerDay: number;
+  // Daily USD cost circuit breaker, priced off recordUsage's token counts (see priceInputPerMtok/
+  // priceOutputPerMtok below). Absent/0 (default) disables it — matches the maxCallsPerDay/
+  // maxTokensPerDay callers that predate this knob and never set it.
+  readonly maxCostUsdPerDay?: number;
+  // USD per 1M tokens; only meaningful when maxCostUsdPerDay > 0.
+  readonly priceInputPerMtok?: number;
+  readonly priceOutputPerMtok?: number;
 }
 
 export interface DailyLlmBudgetSnapshot {
@@ -22,8 +31,10 @@ export interface DailyLlmBudgetSnapshot {
   readonly calls: number;
   readonly inputTokens: number;
   readonly outputTokens: number;
+  readonly costUsd: number;
   readonly maxCallsPerDay: number;
   readonly maxTokensPerDay: number;
+  readonly maxCostUsdPerDay: number;
   readonly exhausted: boolean;
 }
 
@@ -36,6 +47,7 @@ export class DailyLlmBudget {
   private calls = 0;
   private inputTokens = 0;
   private outputTokens = 0;
+  private costUsd = 0;
 
   constructor(
     private readonly caps: DailyLlmBudgetCaps,
@@ -51,16 +63,20 @@ export class DailyLlmBudget {
     this.calls = 0;
     this.inputTokens = 0;
     this.outputTokens = 0;
+    this.costUsd = 0;
   }
 
   // The shared gate every caller (decide path, future reflection path) must pass BEFORE spending a
-  // call: false when the call cap is already reached, or the token cap was already crossed by prior
-  // usage. Reserves (increments calls) on success — the call is "paid for" regardless of what its
-  // caller does with it next (including a failed/rejected inner call).
+  // call: false when the call cap is already reached, the token cap was already crossed by prior
+  // usage, or (cap>0) the USD cost circuit breaker already tripped. Reserves (increments calls) on
+  // success — the call is "paid for" regardless of what its caller does with it next (including a
+  // failed/rejected inner call).
   tryReserveCall(): boolean {
     this.rollIfNeeded();
     if (this.calls >= this.caps.maxCallsPerDay) return false;
     if (this.inputTokens + this.outputTokens >= this.caps.maxTokensPerDay) return false;
+    const costCap = this.caps.maxCostUsdPerDay ?? 0;
+    if (costCap > 0 && this.costUsd >= costCap) return false;
     this.calls += 1;
     return true;
   }
@@ -70,20 +86,27 @@ export class DailyLlmBudget {
     if (!usage) return;
     this.inputTokens += usage.inputTokens;
     this.outputTokens += usage.outputTokens;
+    this.costUsd +=
+      (usage.inputTokens / MTOK) * (this.caps.priceInputPerMtok ?? 0) +
+      (usage.outputTokens / MTOK) * (this.caps.priceOutputPerMtok ?? 0);
   }
 
   snapshot(): DailyLlmBudgetSnapshot {
     this.rollIfNeeded();
+    const costCap = this.caps.maxCostUsdPerDay ?? 0;
     const exhausted =
       this.calls >= this.caps.maxCallsPerDay ||
-      this.inputTokens + this.outputTokens >= this.caps.maxTokensPerDay;
+      this.inputTokens + this.outputTokens >= this.caps.maxTokensPerDay ||
+      (costCap > 0 && this.costUsd >= costCap);
     return {
       dayKey: this.dayKey,
       calls: this.calls,
       inputTokens: this.inputTokens,
       outputTokens: this.outputTokens,
+      costUsd: this.costUsd,
       maxCallsPerDay: this.caps.maxCallsPerDay,
       maxTokensPerDay: this.caps.maxTokensPerDay,
+      maxCostUsdPerDay: costCap,
       exhausted,
     };
   }

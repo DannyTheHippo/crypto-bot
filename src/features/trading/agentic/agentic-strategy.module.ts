@@ -34,6 +34,10 @@ const DEFAULT_MAX_TOKENS = 1024;
 const DEFAULT_SIGNAL_TTL_MS = 120000;
 const DEFAULT_MAX_CALLS_PER_DAY = 500;
 const DEFAULT_MAX_TOKENS_PER_DAY = 2_000_000;
+// Matches environment.config.ts's AGENTIC_DAILY_COST_STOP_USD/AGENTIC_TOKEN_PRICE_*PER_MTOK defaults.
+const DEFAULT_DAILY_COST_STOP_USD = 3;
+const DEFAULT_TOKEN_PRICE_INPUT_PER_MTOK = 3;
+const DEFAULT_TOKEN_PRICE_OUTPUT_PER_MTOK = 15;
 
 function intEnv(raw: string | undefined, fallback: number): number {
   return new Decimal(raw ?? fallback).toNumber();
@@ -87,6 +91,9 @@ export function agenticEnv(config?: TypedConfigService): Record<string, string |
     AGENTIC_MAX_TOKENS: String(agentic.maxTokens),
     AGENTIC_MAX_CALLS_PER_DAY: String(agentic.maxCallsPerDay),
     AGENTIC_MAX_TOKENS_PER_DAY: String(agentic.maxTokensPerDay),
+    AGENTIC_DAILY_COST_STOP_USD: String(agentic.dailyCostStopUsd),
+    AGENTIC_TOKEN_PRICE_INPUT_PER_MTOK: agentic.tokenPriceInputPerMtok,
+    AGENTIC_TOKEN_PRICE_OUTPUT_PER_MTOK: agentic.tokenPriceOutputPerMtok,
     AGENTIC_REFLECTION_EVERY_N_TRADES: String(agentic.reflectionEveryNTrades),
     AGENTIC_REFLECTION_COOLDOWN_MS: String(agentic.reflectionCooldownMs),
     AGENTIC_AUTO_PROMOTE_MIN_TRADES: String(agentic.autoPromoteMinTrades),
@@ -97,6 +104,15 @@ export function createAgentLlmBudget(env: Record<string, string | undefined>): D
   return new DailyLlmBudget({
     maxCallsPerDay: intEnv(env['AGENTIC_MAX_CALLS_PER_DAY'], DEFAULT_MAX_CALLS_PER_DAY),
     maxTokensPerDay: intEnv(env['AGENTIC_MAX_TOKENS_PER_DAY'], DEFAULT_MAX_TOKENS_PER_DAY),
+    maxCostUsdPerDay: intEnv(env['AGENTIC_DAILY_COST_STOP_USD'], DEFAULT_DAILY_COST_STOP_USD),
+    priceInputPerMtok: intEnv(
+      env['AGENTIC_TOKEN_PRICE_INPUT_PER_MTOK'],
+      DEFAULT_TOKEN_PRICE_INPUT_PER_MTOK,
+    ),
+    priceOutputPerMtok: intEnv(
+      env['AGENTIC_TOKEN_PRICE_OUTPUT_PER_MTOK'],
+      DEFAULT_TOKEN_PRICE_OUTPUT_PER_MTOK,
+    ),
   });
 }
 

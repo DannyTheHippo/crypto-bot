@@ -42,6 +42,9 @@ export interface AppConfig {
     warmupBars: number;
     maxCallsPerDay: number;
     maxTokensPerDay: number;
+    // Daily USD cost circuit breaker (agent-budget.ts's DailyLlmBudget), priced off
+    // tokenPriceInputPerMtok/tokenPriceOutputPerMtok below. 0 disables it.
+    dailyCostStopUsd: number;
     maxEntriesPerDay: number;
     drainCooldownBaseMs: number;
     drainCooldownMaxMs: number;

@@ -186,6 +186,7 @@ describe('validate()', () => {
         warmupBars: 50,
         maxCallsPerDay: 500,
         maxTokensPerDay: 2_000_000,
+        dailyCostStopUsd: 3,
         maxEntriesPerDay: 12,
         drainCooldownBaseMs: 30_000,
         drainCooldownMaxMs: 900_000,
@@ -215,6 +216,7 @@ describe('validate()', () => {
         AGENTIC_WARMUP_BARS: '80',
         AGENTIC_MAX_CALLS_PER_DAY: '1000',
         AGENTIC_MAX_TOKENS_PER_DAY: '5000000',
+        AGENTIC_DAILY_COST_STOP_USD: '7.5',
         AGENTIC_MAX_ENTRIES_PER_DAY: '20',
         AGENTIC_DRAIN_COOLDOWN_BASE_MS: '15000',
         AGENTIC_DRAIN_COOLDOWN_MAX_MS: '600000',
@@ -234,6 +236,7 @@ describe('validate()', () => {
       expect(cfg.agentic.warmupBars).toBe(80);
       expect(cfg.agentic.maxCallsPerDay).toBe(1000);
       expect(cfg.agentic.maxTokensPerDay).toBe(5000000);
+      expect(cfg.agentic.dailyCostStopUsd).toBe(7.5);
       expect(cfg.agentic.maxEntriesPerDay).toBe(20);
       expect(cfg.agentic.drainCooldownBaseMs).toBe(15000);
       expect(cfg.agentic.drainCooldownMaxMs).toBe(600000);

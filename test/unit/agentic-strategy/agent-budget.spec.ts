@@ -112,10 +112,116 @@ describe('DailyLlmBudget', () => {
       calls: 1,
       inputTokens: 100,
       outputTokens: 50,
+      costUsd: 0,
       maxCallsPerDay: 5,
       maxTokensPerDay: 500,
+      maxCostUsdPerDay: 0,
       exhausted: false,
     });
+  });
+
+  it('0 maxCostUsdPerDay disables the cost circuit breaker entirely', () => {
+    const budget = new DailyLlmBudget(
+      {
+        maxCallsPerDay: 100,
+        maxTokensPerDay: 1_000_000_000,
+        maxCostUsdPerDay: 0,
+        priceInputPerMtok: 1_000,
+        priceOutputPerMtok: 1_000,
+      },
+      () => T,
+    );
+
+    // Cost accrues to ~$200k — would trip any cap > 0 — while staying under the token cap, so
+    // only the disabled breaker is exercised.
+    budget.recordUsage({ inputTokens: 100_000_000, outputTokens: 100_000_000 });
+    expect(budget.snapshot().costUsd).toBeGreaterThan(0);
+    expect(budget.snapshot().exhausted).toBe(false);
+    expect(budget.tryReserveCall()).toBe(true);
+  });
+
+  it('under the cost cap allows further calls', () => {
+    const budget = new DailyLlmBudget(
+      {
+        maxCallsPerDay: 100,
+        maxTokensPerDay: 1_000_000_000,
+        maxCostUsdPerDay: 10,
+        priceInputPerMtok: 3,
+        priceOutputPerMtok: 15,
+      },
+      () => T,
+    );
+
+    budget.recordUsage({ inputTokens: 1_000_000, outputTokens: 100_000 }); // 3 + 1.5 = 4.5 < 10
+    expect(budget.snapshot().costUsd).toBe(4.5);
+    expect(budget.snapshot().exhausted).toBe(false);
+    expect(budget.tryReserveCall()).toBe(true);
+  });
+
+  it('crossing the cost cap exhausts the budget', () => {
+    const budget = new DailyLlmBudget(
+      {
+        maxCallsPerDay: 100,
+        maxTokensPerDay: 1_000_000_000,
+        maxCostUsdPerDay: 10,
+        priceInputPerMtok: 3,
+        priceOutputPerMtok: 15,
+      },
+      () => T,
+    );
+
+    budget.recordUsage({ inputTokens: 3_000_000, outputTokens: 200_000 }); // 9 + 3 = 12 > 10
+    expect(budget.snapshot().exhausted).toBe(true);
+    expect(budget.tryReserveCall()).toBe(false);
+  });
+
+  it('exactly at the cost cap exhausts the budget', () => {
+    const budget = new DailyLlmBudget(
+      {
+        maxCallsPerDay: 100,
+        maxTokensPerDay: 1_000_000_000,
+        maxCostUsdPerDay: 10,
+        priceInputPerMtok: 5,
+        priceOutputPerMtok: 5,
+      },
+      () => T,
+    );
+
+    budget.recordUsage({ inputTokens: 1_000_000, outputTokens: 1_000_000 }); // 5 + 5 = 10 === 10
+    expect(budget.snapshot().costUsd).toBe(10);
+    expect(budget.snapshot().exhausted).toBe(true);
+    expect(budget.tryReserveCall()).toBe(false);
+  });
+
+  it('rolls the cost cap over on a UTC day change alongside calls/tokens', () => {
+    let clock = T;
+    const nowFn = () => clock;
+    const budget = new DailyLlmBudget(
+      {
+        maxCallsPerDay: 100,
+        maxTokensPerDay: 1_000_000_000,
+        maxCostUsdPerDay: 10,
+        priceInputPerMtok: 5,
+        priceOutputPerMtok: 5,
+      },
+      nowFn,
+    );
+
+    budget.recordUsage({ inputTokens: 1_000_000, outputTokens: 1_000_000 }); // exhausts (=10)
+    expect(budget.tryReserveCall()).toBe(false);
+
+    clock = T + 24 * 60 * 60 * 1000; // next UTC day
+    expect(budget.tryReserveCall()).toBe(true); // rolled over: fresh cost budget
+    expect(budget.snapshot().costUsd).toBe(0);
+  });
+
+  it('existing call/token cap behavior is unchanged when no cost cap is configured', () => {
+    const budget = new DailyLlmBudget({ maxCallsPerDay: 1, maxTokensPerDay: 1000 }, () => T);
+
+    expect(budget.tryReserveCall()).toBe(true);
+    budget.recordUsage({ inputTokens: 600, outputTokens: 500 }); // 1100 ≥ 1000 token cap
+    expect(budget.tryReserveCall()).toBe(false);
+    expect(budget.snapshot().maxCostUsdPerDay).toBe(0);
   });
 });
 

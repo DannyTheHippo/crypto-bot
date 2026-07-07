@@ -92,6 +92,19 @@ describe('createAgentLlmBudget', () => {
     });
     expect(overridden.snapshot()).toMatchObject({ maxCallsPerDay: 10, maxTokensPerDay: 1000 });
   });
+
+  it('reads the cost cap and prices from AGENTIC_DAILY_COST_STOP_USD / AGENTIC_TOKEN_PRICE_*_PER_MTOK, defaulting when absent', () => {
+    const defaulted = createAgentLlmBudget({});
+    expect(defaulted.snapshot()).toMatchObject({ maxCostUsdPerDay: 3 });
+
+    const overridden = createAgentLlmBudget({
+      AGENTIC_DAILY_COST_STOP_USD: '10',
+      AGENTIC_TOKEN_PRICE_INPUT_PER_MTOK: '2',
+      AGENTIC_TOKEN_PRICE_OUTPUT_PER_MTOK: '4',
+    });
+    overridden.recordUsage({ inputTokens: 1_000_000, outputTokens: 1_000_000 }); // 2 + 4 = 6
+    expect(overridden.snapshot()).toMatchObject({ maxCostUsdPerDay: 10, costUsd: 6 });
+  });
 });
 
 describe('SEED_PLAYBOOK', () => {
@@ -115,6 +128,7 @@ describe('agenticEnv', () => {
       warmupBars: 50,
       maxCallsPerDay: 42,
       maxTokensPerDay: 999999,
+      dailyCostStopUsd: 6,
       maxEntriesPerDay: 3,
       drainCooldownBaseMs: 1000,
       drainCooldownMaxMs: 2000,
@@ -139,6 +153,9 @@ describe('agenticEnv', () => {
       AGENTIC_MAX_TOKENS: '777',
       AGENTIC_MAX_CALLS_PER_DAY: '42',
       AGENTIC_MAX_TOKENS_PER_DAY: '999999',
+      AGENTIC_DAILY_COST_STOP_USD: '6',
+      AGENTIC_TOKEN_PRICE_INPUT_PER_MTOK: '3',
+      AGENTIC_TOKEN_PRICE_OUTPUT_PER_MTOK: '15',
       AGENTIC_REFLECTION_EVERY_N_TRADES: '7',
       AGENTIC_REFLECTION_COOLDOWN_MS: '86400000',
       AGENTIC_AUTO_PROMOTE_MIN_TRADES: '9',

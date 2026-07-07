@@ -241,3 +241,58 @@ sweep remain the post-hoc validators (backlog #15). Container recreated; boot de
 demo lane only — the earned-live gate and four-gate arming ceremony still stand between any of
 this and real funds. Watch items: first `submit_plan` consult and stored plan; no-LLM bars while
 a plan is active (calls flat while long); plan-executor journal rows (`model='plan-executor'`).
+
+## 2026-07-07 — Pass 5 (scheduled run, ~12:40–13:50)
+
+- **Data window read:** boot de36fa2d only (11:58–12:40 — the Pass-4-addendum container recreate
+  wiped older docker logs; Pass 4 swept the earlier window the same morning), promtool gauges, git
+  log since Pass 4 (3 owner commits: per-version panels + dashboard ownership `ba488ec`,
+  AGENTIC_PLAN_MODE enable `83e175c`, dashboard restructure `c7865df`). Working tree clean at pass
+  start — the long-standing unowned dashboard diff is resolved (owner committed it).
+- **Headline metrics (12:40):** readiness 28 RTs, net −$17.15, LLM $13.65, window 2.16d, ready=0;
+  equity ~4997.94, drawdown 0.04%. Boot de36fa2d decides: `hold=1`, **`error_fatal=1`**,
+  `agent_tokens_total` EMPTY; prescreen quiet=4 / breakout_proximity=2.
+- **Key finding (correctness bug on the trading path — outranked everything):** the FIRST decide
+  of the first plan-mode boot (12:15:02) got HTTP 400 from /v1/messages and
+  `AnthropicAgentClient` FATAL-latched to degraded — **the agentic lane was dead from 12:15 until
+  the 13:18 fix deploy** (the 12:30 call short-circuited on the latch; zero tokens spent). Root
+  cause: `PLAN_TOOL` is `strict: true` and carried `minimum`/`maximum` on the five plan fields;
+  Anthropic strict tool use rejects numeric bound keywords at request time ("For 'integer' type,
+  properties maximum, minimum are not supported"). The official SDKs strip these client-side; our
+  raw-fetch client sends them verbatim. `DECISION_TOOL` (strict, no bounds) was never affected —
+  which is why four days of legacy-path decides ran clean on the identical thinking/cache/
+  tool_choice config.
+- **Verification method (ground truth before any edit):** minimal repro requests sent from inside
+  the app container — shipped schema → 400 (message above); bounds stripped, strict kept → 200;
+  non-strict with bounds → 200; number-type bounds only → 400; final built dist schema verbatim → 200. (~5 out-of-band API calls, ≈$0.02, not routed through DailyLlmBudget — noted for cost
+  honesty.)
+- **Decision + diff (S effort, agentic-lane only):** commit `d54b3bf`, 3 files. New `PLAN_BOUNDS`
+  constant is the single source for the five ranges — rendered into the tool-schema field
+  descriptions (what the model reads) AND consumed by the zod `planSchema` (the enforcing gate), so
+  the copies cannot drift. Regression test walks every strict tool schema against an ALLOWLIST of
+  API-accepted keywords (any future rejected keyword fails in CI, not in production) and asserts
+  each `PLAN_BOUNDS` range appears in its description.
+- **Review:** reviewer agent dispatched pre-commit — APPROVE, no must-fix; its two should-fix
+  items (bound duplication across files; description test not tied to zod) were folded in via the
+  shared constant + allowlist before committing.
+- **Gates:** build/lint/typecheck green; 1400 unit (up from 1397).
+- **Soak (30 min, boot b61908ba, 13:18–13:48):** healthy, RestartCount 0, zero level-50, zero
+  unexpected warns. Prescreen flowing (3 quiet / 1 called). **First live `submit_plan` decide
+  succeeded at the 13:45 bar** — `proposed=1`, 1585 in / 170 out (≈0.7¢/decide), and the signal
+  passed Risk into Execution: `openOrders=1 inFlight=1` (a plan-priced resting entry). No
+  `error_fatal`, no latch, no EXPIRED, equity unmoved. Plan mode is now actually live — before
+  this fix it had never completed a single call.
+- **Flagged for human review:**
+  - **Latch observability gap:** a FATAL latch emits one warn line and the lane silently dies —
+    today that cost ~1h of dead air that only a log-reading pass could see. Proposal: an
+    `agent_client_degraded` gauge (or alert on `agent_decide_total{outcome="error_fatal"} > 0`)
+    plus a Grafana alert. Added to backlog (#20).
+  - **Recovered stale orders NOT yet swept:** boot b61908ba again seeded 57 open orders, and no
+    CANCEL_OPEN fired during the soak — the Pass-4 assumption that the entry-TTL sweep clears the
+    backlog organically is still unverified (the dead lane never processed bars, and recovered
+    orders may lack sweep-eligible tracking). Backlog #21: verify sweep coverage of
+    boot-recovered orders; a venue-side one-time cleanup may still be needed.
+- **Next-pass candidates:** #13 cache_read verification (note: no cache token series exists in
+  Prometheus — read the DB usage columns or add observability first), #14 skip-rate/$-day
+  re-measure with plan mode live, #21 sweep-coverage check, first plan lifecycle watch
+  (plan-executor bars, entry TTL, forced exits), #17 W2.6 cross-symbol block.

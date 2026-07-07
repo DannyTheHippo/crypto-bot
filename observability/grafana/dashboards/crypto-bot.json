@@ -49,7 +49,8 @@
         "w": 24,
         "x": 0,
         "y": 0
-      }
+      },
+      "panels": []
     },
     {
       "id": 142,
@@ -284,6 +285,61 @@
       ]
     },
     {
+      "id": 119,
+      "type": "timeseries",
+      "title": "Equity & peak (USDT)",
+      "description": "Account equity = cash + \u03a3 position\u00d7mark, with the persisted peak high-water mark. Both survive restarts (DB recovery).",
+      "gridPos": {
+        "h": 8,
+        "w": 16,
+        "x": 0,
+        "y": 5
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 8
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "equity_usdt",
+          "refId": "A",
+          "legendFormat": "equity"
+        },
+        {
+          "expr": "peak_equity_usdt",
+          "refId": "B",
+          "legendFormat": "peak"
+        }
+      ]
+    },
+    {
+      "id": 117,
+      "type": "stat",
+      "title": "API cost (cumulative USD)",
+      "description": "Cumulative LLM spend since process start (token totals \u00d7 the per-1M price template vars). Resets on restart.",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 5
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(agent_tokens_total{kind=\"input\"}) / 1e6 * ${price_in_per_mtok} + sum(agent_tokens_total{kind=\"output\"}) / 1e6 * ${price_out_per_mtok}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
       "id": 105,
       "type": "stat",
       "title": "Win rate",
@@ -291,7 +347,7 @@
       "gridPos": {
         "h": 4,
         "w": 4,
-        "x": 16,
+        "x": 20,
         "y": 5
       },
       "fieldConfig": {
@@ -302,6 +358,139 @@
       "targets": [
         {
           "expr": "sum(round_trips_total{result=\"win\"}) / clamp_min(sum(round_trips_total), 1)",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 91,
+      "type": "stat",
+      "title": "Round trips (evidence)",
+      "description": "agentic_promotion_round_trips \u2014 closed demo round trips counted toward the >=30 promotion threshold.",
+      "gridPos": {
+        "h": 4,
+        "w": 2,
+        "x": 16,
+        "y": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 30
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "agentic_promotion_round_trips",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 90,
+      "type": "stat",
+      "title": "Promotion readiness",
+      "description": "agentic_promotion_ready \u2014 the earned-live verdict from PromotionReadinessService (>=30 closed demo round trips AND positive net-of-cost PnL over >=14 days).",
+      "gridPos": {
+        "h": 4,
+        "w": 2,
+        "x": 18,
+        "y": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "NOT READY",
+                  "color": "red",
+                  "index": 0
+                },
+                "1": {
+                  "text": "READY",
+                  "color": "green",
+                  "index": 1
+                }
+              }
+            }
+          ],
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "textMode": "value",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"]
+        }
+      },
+      "targets": [
+        {
+          "expr": "agentic_promotion_ready",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 154,
+      "type": "stat",
+      "title": "Playbook net PnL by version (USD)",
+      "description": "agentic_version_net_pnl_usd \u2014 realized \u2212 fees per closed round trip, attributed to the playbook version active at entry. THE learning-loop scoreboard: a candidate version earns promotion by beating the champion here.",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "textMode": "value_and_name",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"]
+        }
+      },
+      "targets": [
+        {
+          "expr": "agentic_version_net_pnl_usd",
+          "legendFormat": "v{{version}}",
           "refId": "A"
         }
       ]
@@ -396,60 +585,35 @@
       ]
     },
     {
-      "id": 90,
+      "id": 82,
       "type": "stat",
-      "title": "Promotion readiness",
-      "description": "agentic_promotion_ready \u2014 the earned-live verdict from PromotionReadinessService (>=30 closed demo round trips AND positive net-of-cost PnL over >=14 days).",
+      "title": "Active playbook",
+      "description": "agentic_playbook_info \u2014 the playbook version resolved active at boot / after promotion.",
       "gridPos": {
         "h": 4,
         "w": 4,
         "x": 12,
         "y": 13
       },
-      "fieldConfig": {
-        "defaults": {
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "0": {
-                  "text": "NOT READY",
-                  "color": "red",
-                  "index": 0
-                },
-                "1": {
-                  "text": "READY",
-                  "color": "green",
-                  "index": 1
-                }
-              }
-            }
-          ],
-          "color": {
-            "mode": "fixed",
-            "fixedColor": "text"
-          }
-        }
-      },
       "options": {
-        "colorMode": "background",
-        "textMode": "value",
+        "textMode": "name",
         "reduceOptions": {
           "calcs": ["lastNotNull"]
         }
       },
       "targets": [
         {
-          "expr": "agentic_promotion_ready",
-          "refId": "A"
+          "expr": "agentic_playbook_info == 1",
+          "refId": "A",
+          "legendFormat": "v{{ version }}"
         }
       ]
     },
     {
-      "id": 91,
+      "id": 92,
       "type": "stat",
-      "title": "Round trips (evidence)",
-      "description": "agentic_promotion_round_trips \u2014 closed demo round trips counted toward the >=30 promotion threshold.",
+      "title": "Evidence window (days)",
+      "description": "agentic_promotion_window_days \u2014 span between the first and last closed demo round trip; must reach >=14 days.",
       "gridPos": {
         "h": 4,
         "w": 4,
@@ -458,6 +622,7 @@
       },
       "fieldConfig": {
         "defaults": {
+          "unit": "d",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -467,7 +632,7 @@
               },
               {
                 "color": "green",
-                "value": 30
+                "value": 14
               }
             ]
           },
@@ -478,16 +643,16 @@
       },
       "targets": [
         {
-          "expr": "agentic_promotion_round_trips",
+          "expr": "agentic_promotion_window_days",
           "refId": "A"
         }
       ]
     },
     {
-      "id": 110,
-      "type": "gauge",
-      "title": "Drawdown",
-      "description": "(peak \u2212 equity) / peak against the 20% limit.",
+      "id": 153,
+      "type": "stat",
+      "title": "Prescreen skip rate (24h)",
+      "description": "skipped_quiet / all prescreen evaluations over 24h \u2014 Stage-1 cost-floor target band is 50-70%.",
       "gridPos": {
         "h": 4,
         "w": 4,
@@ -497,130 +662,40 @@
       "fieldConfig": {
         "defaults": {
           "unit": "percentunit",
-          "min": 0,
-          "max": 1,
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "red",
                 "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.35
+              },
+              {
+                "color": "green",
+                "value": 0.5
               },
               {
                 "color": "orange",
-                "value": 0.1
-              },
-              {
-                "color": "red",
-                "value": 0.2
+                "value": 0.75
               }
             ]
           }
-        }
-      },
-      "targets": [
-        {
-          "expr": "drawdown_ratio",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 119,
-      "type": "timeseries",
-      "title": "Equity & peak (USDT)",
-      "description": "Account equity = cash + \u03a3 position\u00d7mark, with the persisted peak high-water mark. Both survive restarts (DB recovery).",
-      "gridPos": {
-        "h": 8,
-        "w": 16,
-        "x": 0,
-        "y": 5
-      },
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 8
-          }
-        }
-      },
-      "targets": [
-        {
-          "expr": "equity_usdt",
-          "refId": "A",
-          "legendFormat": "equity"
         },
-        {
-          "expr": "peak_equity_usdt",
-          "refId": "B",
-          "legendFormat": "peak"
-        }
-      ]
-    },
-    {
-      "id": 117,
-      "type": "stat",
-      "title": "API cost (cumulative USD)",
-      "description": "Cumulative LLM spend since process start (token totals \u00d7 the per-1M price template vars). Resets on restart.",
-      "gridPos": {
-        "h": 4,
-        "w": 4,
-        "x": 20,
-        "y": 5
+        "overrides": []
       },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "currencyUSD"
+      "options": {
+        "colorMode": "background",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"]
         }
       },
       "targets": [
         {
-          "expr": "sum(agent_tokens_total{kind=\"input\"}) / 1e6 * ${price_in_per_mtok} + sum(agent_tokens_total{kind=\"output\"}) / 1e6 * ${price_out_per_mtok}",
+          "expr": "sum(increase(agentic_prescreen_total{outcome=\"skipped_quiet\"}[24h])) / clamp_min(sum(increase(agentic_prescreen_total[24h])), 1)",
           "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 141,
-      "type": "timeseries",
-      "title": "Total money (equity \u2212 fees \u2212 API cost, USD)",
-      "description": "equity_usdt minus cumulative fees paid minus cumulative LLM spend \u2014 all money net of both cost sources, over time.",
-      "gridPos": {
-        "h": 4,
-        "w": 8,
-        "x": 16,
-        "y": 9
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "currencyUSD",
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 8
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "green",
-                "value": 0
-              }
-            ]
-          },
-          "color": {
-            "mode": "thresholds"
-          }
-        }
-      },
-      "targets": [
-        {
-          "expr": "equity_usdt - scalar(sum(fees_paid_total) or vector(0)) - scalar(sum(agent_tokens_total{kind=\"input\"}) or vector(0)) / 1e6 * ${price_in_per_mtok} - scalar(sum(agent_tokens_total{kind=\"output\"}) or vector(0)) / 1e6 * ${price_out_per_mtok}",
-          "refId": "A",
-          "legendFormat": "total money"
         }
       ]
     },
@@ -634,7 +709,8 @@
         "w": 24,
         "x": 0,
         "y": 17
-      }
+      },
+      "panels": []
     },
     {
       "id": 24,
@@ -718,7 +794,7 @@
       "description": "Cumulative fees paid across all fills and fee currencies.",
       "gridPos": {
         "h": 4,
-        "w": 6,
+        "w": 12,
         "x": 0,
         "y": 26
       },
@@ -736,8 +812,8 @@
       "description": "Gross position notional \u00f7 equity \u2014 how much of the book is deployed.",
       "gridPos": {
         "h": 4,
-        "w": 6,
-        "x": 6,
+        "w": 12,
+        "x": 12,
         "y": 26
       },
       "fieldConfig": {
@@ -762,7 +838,8 @@
         "w": 24,
         "x": 0,
         "y": 30
-      }
+      },
+      "panels": []
     },
     {
       "id": 41,
@@ -771,7 +848,7 @@
       "description": "Every ExecutionGate.submit() result by outcome (SUBMITTED / REJECTED / UNKNOWN).",
       "gridPos": {
         "h": 8,
-        "w": 12,
+        "w": 6,
         "x": 0,
         "y": 31
       },
@@ -800,8 +877,8 @@
       "description": "Full \u00a78 taxonomy: orders_rejected_total by stage (oms = our pre-network gate, exchange = venue) plus risk_rejections_total (risk-engine vetoes; sibling metric because eslint-boundaries forbids modules/risk importing the gate's counter).",
       "gridPos": {
         "h": 8,
-        "w": 12,
-        "x": 12,
+        "w": 6,
+        "x": 6,
         "y": 31
       },
       "fieldConfig": {
@@ -834,9 +911,9 @@
       "description": "\u03a3 filled qty / \u03a3 submitted qty over the window, per order type and time-in-force. Limit fill rate is strategy-meaningful; market should be ~1.",
       "gridPos": {
         "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 39
+        "w": 6,
+        "x": 12,
+        "y": 31
       },
       "fieldConfig": {
         "defaults": {
@@ -860,9 +937,9 @@
       "description": "order_submit_latency_seconds quantiles by order type (intent submission to venue ack).",
       "gridPos": {
         "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 39
+        "w": 6,
+        "x": 18,
+        "y": 31
       },
       "fieldConfig": {
         "defaults": {
@@ -894,9 +971,9 @@
       "description": "order_slippage_decision_bps \u2014 execution price vs the signal's reference price. Positive = adverse for both sides. p50/p90 over 5m.",
       "gridPos": {
         "h": 8,
-        "w": 12,
+        "w": 6,
         "x": 0,
-        "y": 47
+        "y": 39
       },
       "fieldConfig": {
         "defaults": {
@@ -924,8 +1001,8 @@
       "gridPos": {
         "h": 8,
         "w": 6,
-        "x": 12,
-        "y": 47
+        "x": 6,
+        "y": 39
       },
       "fieldConfig": {
         "defaults": {
@@ -947,8 +1024,8 @@
       "gridPos": {
         "h": 8,
         "w": 6,
-        "x": 18,
-        "y": 47
+        "x": 12,
+        "y": 39
       },
       "targets": [
         {
@@ -969,10 +1046,10 @@
       "title": "Fills & submissions (per s, 5m rate)",
       "description": "fills_total and orders_submitted_total rates (5m) \u2014 fill throughput vs submission throughput.",
       "gridPos": {
-        "h": 7,
-        "w": 24,
-        "x": 0,
-        "y": 55
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 39
       },
       "targets": [
         {
@@ -996,8 +1073,9 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 62
-      }
+        "y": 47
+      },
+      "panels": []
     },
     {
       "id": 61,
@@ -1005,10 +1083,10 @@
       "title": "Kill-switch state",
       "description": "Only the active state carries 1 (RUNNING is healthy; anything else is a halt).",
       "gridPos": {
-        "h": 6,
+        "h": 8,
         "w": 12,
         "x": 0,
-        "y": 63
+        "y": 48
       },
       "fieldConfig": {
         "defaults": {
@@ -1033,10 +1111,10 @@
       "title": "Reconciliation mismatches (total)",
       "description": "Any non-zero value pages (design \u00a78). Reconciliation HALTs, never auto-flattens.",
       "gridPos": {
-        "h": 6,
+        "h": 8,
         "w": 6,
         "x": 12,
-        "y": 63
+        "y": 48
       },
       "fieldConfig": {
         "defaults": {
@@ -1071,10 +1149,10 @@
       "title": "Since last clean reconcile (s)",
       "description": "time() \u2212 reconciliation_last_success_timestamp_seconds. A growing value means the reconciler is stalled or repeatedly HALTing \u2014 investigate before trusting local state (\u00a78).",
       "gridPos": {
-        "h": 6,
+        "h": 8,
         "w": 6,
         "x": 18,
-        "y": 63
+        "y": 48
       },
       "fieldConfig": {
         "defaults": {
@@ -1114,10 +1192,10 @@
       "title": "Day PnL (USDT) \u2014 watch against the daily-loss limit",
       "description": "equity \u2212 start-of-day-UTC equity, plotted against the daily-loss limit threshold line.",
       "gridPos": {
-        "h": 7,
-        "w": 16,
+        "h": 8,
+        "w": 8,
         "x": 0,
-        "y": 69
+        "y": 56
       },
       "fieldConfig": {
         "defaults": {
@@ -1157,10 +1235,10 @@
       "title": "Reconciliation passes by result (15m rate)",
       "description": "reconciliation_runs_total{result=clean|mismatch|halt}. Demo runs the open-orders + holdings axes against the dedicated account; a halt result HALTs (never auto-flattens).",
       "gridPos": {
-        "h": 7,
-        "w": 8,
-        "x": 16,
-        "y": 69
+        "h": 8,
+        "w": 4,
+        "x": 8,
+        "y": 56
       },
       "fieldConfig": {
         "defaults": {
@@ -1186,10 +1264,10 @@
       "title": "Risk vetoes by code (15m rate)",
       "description": "risk_rejections_total \u2014 the risk stage of the \u00a78 rejection taxonomy (sizing/band/notional/exposure/kill-switch vetoes).",
       "gridPos": {
-        "h": 6,
-        "w": 12,
-        "x": 0,
-        "y": 76
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 56
       },
       "fieldConfig": {
         "defaults": {
@@ -1215,10 +1293,10 @@
       "title": "Protective exits (by reason)",
       "description": "protective_exits_total \u2014 bot-enforced stop-loss/trailing-stop exits fired through the normal risk path (ProtectiveExitService). Counter resets on restart.",
       "gridPos": {
-        "h": 6,
-        "w": 12,
-        "x": 12,
-        "y": 76
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 56
       },
       "fieldConfig": {
         "defaults": {
@@ -1263,8 +1341,9 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 82
-      }
+        "y": 64
+      },
+      "panels": []
     },
     {
       "id": 84,
@@ -1273,9 +1352,9 @@
       "description": "5m token rate \u00d7 the per-1M price template variables, projected to USD per hour. Tracks live LLM spend as the lane decides.",
       "gridPos": {
         "h": 8,
-        "w": 12,
+        "w": 8,
         "x": 0,
-        "y": 83
+        "y": 65
       },
       "fieldConfig": {
         "defaults": {
@@ -1297,9 +1376,9 @@
       "description": "agent_decide_total by outcome (proposed / noop / hold / error_retryable / error_fatal / timeout / budget_blocked). noop = a non-hold decision that mapped to zero signals (e.g. flat-while-FLAT) \u2014 nothing reached Risk.",
       "gridPos": {
         "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 83
+        "w": 8,
+        "x": 8,
+        "y": 65
       },
       "fieldConfig": {
         "defaults": {
@@ -1320,15 +1399,44 @@
       ]
     },
     {
+      "id": 143,
+      "type": "timeseries",
+      "title": "Prescreen outcomes",
+      "description": "agentic_prescreen_total by outcome (called / skipped_quiet / failopen_error) \u2014 the Stage-1 cost-floor gate; skip rate = cost saved.",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 65
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (outcome) (rate(agentic_prescreen_total[15m]))",
+          "refId": "A",
+          "legendFormat": "{{outcome}}"
+        }
+      ]
+    },
+    {
       "id": 86,
       "type": "timeseries",
       "title": "Decide latency (s)",
       "description": "agent_decide_latency_seconds quantiles over 5m \u2014 how long each LLM decide() takes end to end.",
       "gridPos": {
         "h": 8,
-        "w": 12,
+        "w": 8,
         "x": 0,
-        "y": 91
+        "y": 73
       },
       "fieldConfig": {
         "defaults": {
@@ -1360,9 +1468,9 @@
       "description": "agent_tokens_total by kind (input / output) \u2014 the raw throughput the cost panels above monetize.",
       "gridPos": {
         "h": 8,
-        "w": 6,
-        "x": 12,
-        "y": 91
+        "w": 8,
+        "x": 8,
+        "y": 73
       },
       "targets": [
         {
@@ -1379,9 +1487,9 @@
       "description": "playbook_validator_rejections_total by banned_token \u2014 a reflection candidate the validator refused (banned_token=true is the denylist tripwire).",
       "gridPos": {
         "h": 8,
-        "w": 6,
-        "x": 18,
-        "y": 91
+        "w": 8,
+        "x": 16,
+        "y": 73
       },
       "fieldConfig": {
         "defaults": {
@@ -1402,119 +1510,97 @@
       ]
     },
     {
-      "id": 89,
-      "type": "timeseries",
-      "title": "Net-of-cost PnL (promotion evidence)",
-      "description": "agentic_promotion_net_pnl_usd \u2014 realized PnL minus fees minus LLM spend over the earned-live promotion evidence window (PromotionReadinessService).",
+      "id": 150,
+      "type": "row",
+      "title": "Agentic learning (per-version attribution)",
+      "collapsed": false,
       "gridPos": {
-        "h": 6,
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 81
+      },
+      "panels": []
+    },
+    {
+      "id": 151,
+      "type": "timeseries",
+      "title": "Net PnL by playbook version (USD)",
+      "description": "agentic_version_net_pnl_usd: realized \u2212 per-cycle fees per closed round trip, attributed to the playbook version active at the trip's ENTRY decision (5-min DB-backed sampler). The Stage-2 promotion signal: a candidate version must beat the champion here, not on vibes. LLM spend is NOT subtracted in this series \u2014 see the promotion net-of-cost stat.",
+      "gridPos": {
+        "h": 8,
         "w": 12,
         "x": 0,
-        "y": 99
+        "y": 82
       },
       "fieldConfig": {
         "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
           "unit": "currencyUSD"
-        }
-      },
-      "targets": [
-        {
-          "expr": "agentic_promotion_net_pnl_usd",
-          "refId": "A",
-          "legendFormat": "net PnL"
-        }
-      ]
-    },
-    {
-      "id": 82,
-      "type": "stat",
-      "title": "Active playbook",
-      "description": "agentic_playbook_info \u2014 the playbook version resolved active at boot / after promotion.",
-      "gridPos": {
-        "h": 6,
-        "w": 6,
-        "x": 12,
-        "y": 99
+        },
+        "overrides": []
       },
       "options": {
-        "textMode": "name",
-        "reduceOptions": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
           "calcs": ["lastNotNull"]
         }
       },
       "targets": [
         {
-          "expr": "agentic_playbook_info == 1",
-          "refId": "A",
-          "legendFormat": "v{{ version }}"
-        }
-      ]
-    },
-    {
-      "id": 92,
-      "type": "stat",
-      "title": "Evidence window (days)",
-      "description": "agentic_promotion_window_days \u2014 span between the first and last closed demo round trip; must reach >=14 days.",
-      "gridPos": {
-        "h": 6,
-        "w": 6,
-        "x": 18,
-        "y": 99
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "d",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "green",
-                "value": 14
-              }
-            ]
-          },
-          "color": {
-            "mode": "thresholds"
-          }
-        }
-      },
-      "targets": [
-        {
-          "expr": "agentic_promotion_window_days",
+          "expr": "agentic_version_net_pnl_usd",
+          "legendFormat": "v{{version}}",
           "refId": "A"
         }
       ]
     },
     {
-      "id": 142,
+      "id": 152,
       "type": "timeseries",
-      "title": "Prescreen outcomes",
-      "description": "agentic_prescreen_total by outcome (called / skipped_quiet / failopen_error) \u2014 the Stage-1 cost-floor gate; skip rate = cost saved.",
+      "title": "Round trips by playbook version",
+      "description": "agentic_version_round_trips: closed demo round trips attributed to each playbook version (entry-time attribution, same sampler). version=\"unknown\" = trips older than the journal lookback window.",
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 105
+        "y": 82
       },
       "fieldConfig": {
         "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
             "drawStyle": "line",
-            "stacking": {
-              "mode": "normal"
-            }
-          }
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": ["lastNotNull"]
         }
       },
       "targets": [
         {
-          "expr": "sum by (outcome) (rate(agentic_prescreen_total[15m]))",
-          "refId": "A",
-          "legendFormat": "{{outcome}}"
+          "expr": "agentic_version_round_trips",
+          "legendFormat": "v{{version}}",
+          "refId": "A"
         }
       ]
     },
@@ -1527,7 +1613,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 113
+        "y": 90
       },
       "panels": []
     },
@@ -1540,7 +1626,7 @@
         "h": 6,
         "w": 4,
         "x": 0,
-        "y": 114
+        "y": 91
       },
       "fieldConfig": {
         "defaults": {
@@ -1591,7 +1677,7 @@
         "h": 6,
         "w": 10,
         "x": 4,
-        "y": 114
+        "y": 91
       },
       "fieldConfig": {
         "defaults": {
@@ -1628,7 +1714,7 @@
         "h": 6,
         "w": 10,
         "x": 14,
-        "y": 114
+        "y": 91
       },
       "fieldConfig": {
         "defaults": {
@@ -1642,101 +1728,6 @@
           "expr": "event_loop_utilization",
           "refId": "A",
           "legendFormat": "utilization"
-        }
-      ]
-    },
-    {
-      "id": 150,
-      "type": "row",
-      "title": "Agentic learning (per-version attribution)",
-      "collapsed": false,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 121
-      },
-      "panels": []
-    },
-    {
-      "id": 151,
-      "type": "timeseries",
-      "title": "Net PnL by playbook version (USD)",
-      "description": "agentic_version_net_pnl_usd: realized \u2212 per-cycle fees per closed round trip, attributed to the playbook version active at the trip's ENTRY decision (5-min DB-backed sampler). The Stage-2 promotion signal: a candidate version must beat the champion here, not on vibes. LLM spend is NOT subtracted in this series \u2014 see the promotion net-of-cost stat.",
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 122
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "lineWidth": 2,
-            "showPoints": "never"
-          },
-          "unit": "currencyUSD"
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "right",
-          "calcs": ["lastNotNull"]
-        }
-      },
-      "targets": [
-        {
-          "expr": "agentic_version_net_pnl_usd",
-          "legendFormat": "v{{version}}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 152,
-      "type": "timeseries",
-      "title": "Round trips by playbook version",
-      "description": "agentic_version_round_trips: closed demo round trips attributed to each playbook version (entry-time attribution, same sampler). version=\"unknown\" = trips older than the journal lookback window.",
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 122
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "lineWidth": 2,
-            "showPoints": "never"
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "right",
-          "calcs": ["lastNotNull"]
-        }
-      },
-      "targets": [
-        {
-          "expr": "agentic_version_round_trips",
-          "legendFormat": "v{{version}}",
-          "refId": "A"
         }
       ]
     }

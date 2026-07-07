@@ -611,8 +611,15 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
 
     const open = await store.loadOpenOrders('live');
     expect(open).toHaveLength(1);
-    expect(open[0]!.clientOrderId).toBe('cbp-oo-open-000000000000000000001');
-    expect(open[0]!.state).toBe('ACKED');
+    expect(open[0]!.record.clientOrderId).toBe('cbp-oo-open-000000000000000000001');
+    expect(open[0]!.record.state).toBe('ACKED');
+    // The portfolio-seeding half (2026-07-07): strategy attribution + open-order summary come
+    // from the same row, exact strings preserved through the Qty/Price mints.
+    expect(open[0]!.strategyId).toBe('s');
+    expect(open[0]!.summary.symbol).toBe('BTC/USDT');
+    expect(open[0]!.summary.side).toBe('BUY');
+    expect(open[0]!.summary.qty.toFixed()).toBe('1');
+    expect(open[0]!.summary.limitPrice).toBeUndefined();
   });
 
   it('(h) loadOpenOrders fails fast on an unrecognized persisted state (I7 — never trusted)', async () => {

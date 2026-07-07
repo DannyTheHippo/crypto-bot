@@ -16,7 +16,7 @@ import {
   type ExecutionStorePort,
   type ReconConfig,
 } from '../../../ports/execution';
-import { reduce, type OrderEvent } from '../../../domain/oms/reducer';
+import { reduce, TransitionError, type OrderEvent } from '../../../domain/oms/reducer';
 import { isOurClientOrderId } from '../../../domain/types/ids';
 import { price, qty, feeAmount } from '../../../domain/types/money';
 import {
@@ -202,7 +202,15 @@ export class ReconciliationService {
       return;
     }
     acc.mismatches += 1; // adopting a terminal we missed via the stream
-    await this.fold(coid, event);
+    try {
+      await this.fold(coid, event);
+    } catch (err) {
+      // A fold the reducer refuses is that one order's problem, never the pass's: rethrowing here
+      // turned a single stranded CANCEL_PENDING order into 100% reconcile downtime on 2026-07-07
+      // (the trades/balances axes never ran). The mismatch above stands and the order is
+      // re-examined next pass; anything but a state-machine refusal still aborts as before.
+      if (!(err instanceof TransitionError)) throw err;
+    }
   }
 
   // Only the terminals an open (ACKED/PARTIALLY_FILLED) order may LEGALLY reach are adopted:

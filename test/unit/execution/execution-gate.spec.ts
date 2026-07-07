@@ -357,14 +357,65 @@ describe('ExecutionGateService.submit', () => {
 });
 
 describe('ExecutionGateService cancel / drain / flatten', () => {
-  it('cancels an ACKED order to CANCEL_PENDING and calls the venue', async () => {
+  it('cancels an ACKED order: venue call, then the REST success folds CANCEL_ACK → CANCELED', async () => {
     const { port, cancelCalls } = fakeExchange((req) => Promise.resolve(ackOf(req)));
-    const { gate, orders } = build(port);
+    const { gate, orders, store, portfolio } = build(port);
     const approved = approve();
+    const coid = approved.intent.clientOrderId;
     await gate.submit(approved);
-    await gate.cancel(approved.intent.clientOrderId, 'TTL');
-    expect(orders.get(approved.intent.clientOrderId)?.state).toBe('CANCEL_PENDING');
-    expect(cancelCalls).toEqual([[approved.intent.clientOrderId, String(SYM)]]);
+    await gate.cancel(coid, 'TTL');
+    expect(cancelCalls).toEqual([[coid, String(SYM)]]);
+    // No CANCEL_ACK exec report exists outside paper — the REST return is the confirmation
+    // (2026-07-07: waiting for the report stranded every demo-venue cancel in CANCEL_PENDING).
+    expect(orders.get(coid)?.state).toBe('CANCELED');
+    expect(store.events.map((e) => e.dedupeKey)).toContain('cancel-ack');
+    expect(portfolio.snapshot().openOrders).toHaveLength(0);
+    expect(portfolio.snapshot().inFlightIntents).toHaveLength(0);
+  });
+
+  it('a venue cancel throw degrades to CANCEL_UNKNOWN (query loop resolves), never assumes success', async () => {
+    const { port } = fakeExchange((req) => Promise.resolve(ackOf(req)));
+    port.cancelOrder = () => Promise.reject(new Error('venue down'));
+    const { gate, orders, store } = build(port);
+    const approved = approve();
+    const coid = approved.intent.clientOrderId;
+    await gate.submit(approved);
+    await gate.cancel(coid, 'TTL');
+    expect(orders.get(coid)?.state).toBe('CANCEL_UNKNOWN');
+    expect(store.events.map((e) => e.dedupeKey)).toContain('cancel-unknown');
+    expect(store.events.map((e) => e.dedupeKey)).not.toContain('cancel-ack');
+  });
+
+  it('skips the CANCEL_ACK fold when a full fill races the cancel (fills win)', async () => {
+    const { port } = fakeExchange((req) => Promise.resolve(ackOf(req)));
+    const { gate, orders, store } = build(port);
+    const approved = approve();
+    const coid = approved.intent.clientOrderId;
+    await gate.submit(approved);
+    port.cancelOrder = () => {
+      orders.apply(coid, { type: 'FILL', cumQty: approved.intent.qty }); // fills during the await
+      return Promise.resolve({ clientOrderId: coid, venueOrderId: 'v1' });
+    };
+    await gate.cancel(coid, 'TTL');
+    expect(orders.get(coid)?.state).toBe('FILLED');
+    expect(store.events.map((e) => e.dedupeKey)).not.toContain('cancel-ack');
+  });
+
+  it('skips the CANCEL_REJECT_UNKNOWN fold when a full fill races a REFUSED cancel (fills win)', async () => {
+    const { port } = fakeExchange((req) => Promise.resolve(ackOf(req)));
+    const { gate, orders, store } = build(port);
+    const approved = approve();
+    const coid = approved.intent.clientOrderId;
+    await gate.submit(approved);
+    port.cancelOrder = () => {
+      // The venue filled the order during the await and refuses the cancel (-2011 shape): the
+      // refusal is "too late", not an unknown — folding onto FILLED would freeze the journal.
+      orders.apply(coid, { type: 'FILL', cumQty: approved.intent.qty });
+      return Promise.reject(new Error('Unknown order sent'));
+    };
+    await gate.cancel(coid, 'TTL');
+    expect(orders.get(coid)?.state).toBe('FILLED');
+    expect(store.events.map((e) => e.dedupeKey)).not.toContain('cancel-unknown');
   });
 
   it('cancels a NEW (never-sent) order locally with no venue call', async () => {
@@ -414,16 +465,29 @@ describe('ExecutionGateService cancel / drain / flatten', () => {
     expect(cancelCalls).toHaveLength(0);
   });
 
-  it('cancels an ACKED order with no in-flight intent (CANCEL_PENDING, no venue call)', async () => {
+  it('cancels an intent-less order via the open-order summary symbol (boot-recovered path)', async () => {
     const { port, cancelCalls } = fakeExchange((req) => Promise.resolve(ackOf(req)));
     const { gate, orders, portfolio } = build(port);
     const approved = approve();
     const coid = approved.intent.clientOrderId;
     await gate.submit(approved);
-    portfolio.clearInFlight(coid); // intent gone (e.g. already retired)
+    portfolio.clearInFlight(coid); // recovered orders have no in-flight intent (in-memory only)
+    await gate.cancel(coid, 'TTL');
+    expect(cancelCalls).toEqual([[coid, String(SYM)]]); // symbol from the open-order summary
+    expect(orders.get(coid)?.state).toBe('CANCELED');
+  });
+
+  it('with neither intent nor summary there is no venue call — reconciliation adopts venue truth', async () => {
+    const { port, cancelCalls } = fakeExchange((req) => Promise.resolve(ackOf(req)));
+    const { gate, orders, portfolio } = build(port);
+    const approved = approve();
+    const coid = approved.intent.clientOrderId;
+    await gate.submit(approved);
+    portfolio.clearInFlight(coid);
+    portfolio.closeOrder(coid); // summary gone too — no symbol source remains
     await gate.cancel(coid, 'TTL');
     expect(orders.get(coid)?.state).toBe('CANCEL_PENDING');
-    expect(cancelCalls).toHaveLength(0); // no intent → no symbol → no venue cancel
+    expect(cancelCalls).toHaveLength(0);
   });
 
   it('falls back to the default step size when the symbol has no filter', async () => {

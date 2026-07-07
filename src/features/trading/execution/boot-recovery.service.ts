@@ -2,9 +2,23 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import Decimal from 'decimal.js';
 import { EXECUTION_STORE, type ExecutionStorePort } from '../../../ports/execution';
 import type { TradingMode } from '../../../domain/types/mode';
+import type { OrderState } from '../../../domain/oms/reducer';
 import { PortfolioStateService } from './portfolio-state.service';
 import { OrderBookService } from './order-book.service';
 import { CrashRecoveryService } from './crash-recovery.service';
+
+// States with a venue ack behind them: the order may genuinely rest venue-side, so it belongs in
+// the portfolio open set where reconciliation adopts venue truth for it and the stale-entry sweep
+// can see it (before 2026-07-07 recovered orders entered only the order book and were invisible
+// to both — a stranded CANCEL_PENDING and 57 unsweepable zombies). NEW/SUBMITTING/SUBMIT_UNKNOWN
+// rows never confirmed landing — registering them would turn every reconcile pass into
+// fetchOrder-not-found mismatch noise — and RECONCILE_REQUIRED is frozen, operator-owned.
+const VENUE_CONFIRMED_OPEN: ReadonlySet<OrderState> = new Set([
+  'ACKED',
+  'PARTIALLY_FILLED',
+  'CANCEL_PENDING',
+  'CANCEL_UNKNOWN',
+]);
 
 // Boot recovery (§4.2). On a real (DB-backed) boot this restores the reduced portfolio snapshot —
 // cash, equity, peak, start-of-day anchor and open positions — from Postgres so P/L spans restarts,
@@ -50,10 +64,17 @@ export class BootRecoveryService {
     }
 
     const open = await this.store.loadOpenOrders(mode);
-    for (const order of open) this.orderBook.create(order);
+    let registered = 0;
+    for (const o of open) {
+      this.orderBook.create(o.record);
+      if (VENUE_CONFIRMED_OPEN.has(o.record.state)) {
+        this.portfolio.openOrder(o.strategyId, o.summary);
+        registered += 1;
+      }
+    }
     const degraded = await this.crashRecovery.recoverOnBoot();
     this.log.log(
-      `boot recovery: ${open.length} open order(s) seeded, ${degraded.length} degraded to *_UNKNOWN`,
+      `boot recovery: ${open.length} open order(s) seeded (${registered} registered open), ${degraded.length} degraded to *_UNKNOWN`,
     );
   }
 }

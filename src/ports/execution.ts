@@ -2,7 +2,12 @@ import type { ClientOrderId, StrategyId, EpochMs } from '../domain/types/ids';
 import type { TradingMode } from '../domain/types/mode';
 import type { OrderIntent } from '../domain/types/order-intent';
 import type { ApprovalProof, RiskApprovedIntent } from '../domain/types/risk-decision';
-import type { PortfolioSnapshot, StrategyPortfolioView, Position } from '../domain/types/portfolio';
+import type {
+  PortfolioSnapshot,
+  StrategyPortfolioView,
+  Position,
+  OpenOrderSummary,
+} from '../domain/types/portfolio';
 import type { ExecReport, FillRecord } from '../domain/types/exec-report';
 import type { OrderRecord, OrderEvent, OrderState } from '../domain/oms/reducer';
 import type { SymbolFilters } from '../domain/risk/evaluate';
@@ -159,7 +164,17 @@ export interface ExecutionStorePort {
     mode: TradingMode,
   ): Promise<{ latest: EquitySample | null; sodEquity: string | null; positions: Position[] }>;
   // Recovery read: load orders with no terminal_at (open/in-flight states).
-  loadOpenOrders(mode: TradingMode): Promise<OrderRecord[]>;
+  loadOpenOrders(mode: TradingMode): Promise<RecoveredOpenOrder[]>;
+}
+
+// A non-terminal order restored at boot: the OMS record for the order-book projection plus the
+// strategy attribution + summary the portfolio open-order set needs. Without the summary half,
+// recovered orders were invisible to reconciliation's venue-truth adoption and the stale-entry
+// sweep (2026-07-07: a stranded cancel + 57 unsweepable zombies).
+export interface RecoveredOpenOrder {
+  readonly record: OrderRecord;
+  readonly strategyId: StrategyId;
+  readonly summary: OpenOrderSummary;
 }
 
 // §6.4 reconciliation audit row.

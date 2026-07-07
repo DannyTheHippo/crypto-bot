@@ -257,14 +257,53 @@ export class ExecutionGateService implements ExecutionGatePort {
         next.cumQty.toFixed(),
         reason,
       );
+      // Boot-recovered orders carry no in-flight intent (it is in-memory), so the symbol falls
+      // back to the recovered open-order summary. With neither there is no venue call and the
+      // order stays CANCEL_PENDING for reconciliation to adopt venue truth.
       const intent = this.portfolio.inFlightIntent(clientOrderId);
-      if (next.state === 'CANCEL_PENDING' && intent !== undefined) {
-        try {
-          await this.exchange.cancelOrder(clientOrderId, intent.symbol);
-        } catch {
-          // Cancel ambiguity (CANCEL_UNKNOWN) and its query loop are Phase 6; the CANCEL_ACK
-          // otherwise arrives through the outbox and the consumer folds it to CANCELED.
+      const symbol =
+        intent?.symbol ??
+        this.portfolio.snapshot().openOrders.find((o) => o.clientOrderId === clientOrderId)?.symbol;
+      if (next.state !== 'CANCEL_PENDING' || symbol === undefined) return;
+      try {
+        await this.exchange.cancelOrder(clientOrderId, symbol);
+      } catch {
+        // Refusal or unknown outcome: degrade to CANCEL_UNKNOWN so the resolver's query loop
+        // (same-boot orders) or reconciliation's venue-truth adoption (recovered orders) resolves
+        // it — never assume the cancel landed. Guarded like the success fold below: a fill racing
+        // the await may already have driven the order terminal and retired it (fills win) — a
+        // cancel the venue refused because the order just filled is "too late", not an unknown,
+        // and folding CANCEL_REJECT_UNKNOWN onto FILLED would freeze it to RECONCILE_REQUIRED in
+        // the append-only journal (reviewer must-fix, 2026-07-07).
+        if (this.orders.get(clientOrderId)!.state === 'CANCEL_PENDING') {
+          const unknown = this.orders.apply(clientOrderId, { type: 'CANCEL_REJECT_UNKNOWN' });
+          await this.persistEvent(
+            clientOrderId,
+            'cancel-unknown',
+            { type: 'CANCEL_REJECT_UNKNOWN' },
+            unknown.state,
+            unknown.cumQty.toFixed(),
+            reason,
+          );
         }
+        return;
+      }
+      // The REST success return IS the venue's cancel confirmation: outside paper no CANCEL_ACK
+      // exec report ever arrives (no user stream), which stranded every demo-venue cancel in
+      // CANCEL_PENDING until 2026-07-07. Re-read the state first — a fill may have raced during
+      // the await and fills win the cancel race (a full fill is already terminal FILLED).
+      if (this.orders.get(clientOrderId)!.state === 'CANCEL_PENDING') {
+        const acked = this.orders.apply(clientOrderId, { type: 'CANCEL_ACK' });
+        await this.persistEvent(
+          clientOrderId,
+          'cancel-ack',
+          { type: 'CANCEL_ACK' },
+          acked.state,
+          acked.cumQty.toFixed(),
+          reason,
+        );
+        this.portfolio.clearInFlight(clientOrderId);
+        this.portfolio.closeOrder(clientOrderId);
       }
     }
   }

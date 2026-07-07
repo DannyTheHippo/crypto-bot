@@ -1,6 +1,6 @@
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import Decimal from 'decimal.js';
-import { price } from '../../domain/types/money';
+import { price, qty } from '../../domain/types/money';
 import type { TradingMode } from '../../domain/types/mode';
 import type { StrategyId, VenueId, SymbolId, ClientOrderId, EpochMs } from '../../domain/types/ids';
 import type { Position } from '../../domain/types/portfolio';
@@ -14,6 +14,7 @@ import type {
   PersistedOrderEvent,
   EquitySample,
   ReconciliationRow,
+  RecoveredOpenOrder,
   ExecRunContext,
 } from '../../ports/execution';
 import * as schema from '../schemas/trading';
@@ -260,7 +261,7 @@ export class DrizzleExecutionStore implements ExecutionStorePort {
     return { latest, sodEquity, positions: domainPositions };
   }
 
-  async loadOpenOrders(mode: TradingMode): Promise<OrderRecord[]> {
+  async loadOpenOrders(mode: TradingMode): Promise<RecoveredOpenOrder[]> {
     const rows = await this.orders.findOpenByMode(mode);
     // orders table has no step_size / attempt / cancelWanted columns — these are runtime-only
     // fields for the OMS reducer. Recovery routes through reconciliation (§4.2), not reducer
@@ -274,7 +275,7 @@ export class DrizzleExecutionStore implements ExecutionStorePort {
           `recovery: unrecognized persisted order state '${r.state}' for clientOrderId ${r.clientOrderId}`,
         );
       }
-      return {
+      const record: OrderRecord = {
         clientOrderId: r.clientOrderId as ClientOrderId,
         state: r.state,
         qty: new Decimal(r.qty),
@@ -283,6 +284,17 @@ export class DrizzleExecutionStore implements ExecutionStorePort {
         venueOrderId: r.venueOrderId ?? undefined,
         attempt: 0,
         cancelWanted: false,
+      };
+      return {
+        record,
+        strategyId: r.strategyId as StrategyId,
+        summary: {
+          clientOrderId: r.clientOrderId as ClientOrderId,
+          symbol: r.symbol as SymbolId,
+          side: r.side,
+          qty: qty(r.qty),
+          limitPrice: r.limitPrice === null ? undefined : price(r.limitPrice),
+        },
       };
     });
   }

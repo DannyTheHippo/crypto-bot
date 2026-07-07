@@ -9,6 +9,7 @@ import type {
   PersistedOrderEvent,
   EquitySample,
   ReconciliationRow,
+  RecoveredOpenOrder,
 } from '../../../ports/execution';
 import type { OrderRecord, OrderState } from '../../../domain/oms/reducer';
 
@@ -99,7 +100,7 @@ export class InMemoryExecutionStore implements ExecutionStorePort {
     });
   }
 
-  loadOpenOrders(): Promise<OrderRecord[]> {
+  loadOpenOrders(): Promise<RecoveredOpenOrder[]> {
     return Promise.resolve([]);
   }
 

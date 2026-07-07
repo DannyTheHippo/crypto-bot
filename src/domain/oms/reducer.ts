@@ -194,6 +194,14 @@ export function reduce(rec: OrderRecord, event: OrderEvent): OrderRecord {
           return withFill(rec, event.cumQty, 'CANCEL_PENDING'); // fills win; keep waiting until terminal
         case 'CANCEL_REJECT_UNKNOWN':
           return { ...rec, state: 'CANCEL_UNKNOWN' };
+        // Venue truth adopted by reconciliation confirms the cancel we asked for — outside paper
+        // there is no user stream, so no CANCEL_ACK exec report ever arrives and the reconcile
+        // sweep is the channel that terminates a cancel-in-flight order (2026-07-07: this pair
+        // being illegal stranded one order and aborted every reconcile pass for an hour).
+        case 'VENUE_CANCELED':
+          return { ...rec, state: 'CANCELED' };
+        case 'VENUE_EXPIRED':
+          return { ...rec, state: 'EXPIRED' };
         default:
           throw new TransitionError(rec.state, event.type);
       }
@@ -204,6 +212,13 @@ export function reduce(rec: OrderRecord, event: OrderEvent): OrderRecord {
           return withFill(rec, event.cumQty, 'CANCEL_UNKNOWN');
         case 'CANCEL_ACK':
           return { ...rec, state: 'CANCELED' }; // query resolved: canceled
+        // Same reconcile-channel adoption as CANCEL_PENDING: crash recovery degrades a pending
+        // cancel to CANCEL_UNKNOWN, and a recovered order has no in-flight intent for the query
+        // loop — reconciliation's venue truth is the only resolver left.
+        case 'VENUE_CANCELED':
+          return { ...rec, state: 'CANCELED' };
+        case 'VENUE_EXPIRED':
+          return { ...rec, state: 'EXPIRED' };
         case 'QUERY_NOT_FOUND':
           return { ...rec, state: 'RECONCILE_REQUIRED' }; // an order we hold an ack for cannot vanish
         case 'QUERY_INCONCLUSIVE':
@@ -230,9 +245,12 @@ export function reduce(rec: OrderRecord, event: OrderEvent): OrderRecord {
 // → RECONCILE_REQUIRED. Stale duplicates are dropped. Anything else freezes for review.
 function reduceTerminal(rec: OrderRecord, event: OrderEvent): OrderRecord {
   if (event.type !== 'FILL') {
-    // A duplicate of the same terminal is a no-op; a contradicting terminal freezes.
+    // A duplicate of the same terminal is a no-op; a contradicting terminal freezes. CANCEL_ACK on
+    // CANCELED is the two-channel case: the gate folds the REST cancel success inline while the
+    // paper outbox also delivers a CANCEL_ACK report — a second confirmation of the same cancel.
     if (
       (event.type === 'VENUE_CANCELED' && rec.state === 'CANCELED') ||
+      (event.type === 'CANCEL_ACK' && rec.state === 'CANCELED') ||
       (event.type === 'VENUE_EXPIRED' && rec.state === 'EXPIRED') ||
       (event.type === 'REJECT' && rec.state === 'REJECTED')
     ) {

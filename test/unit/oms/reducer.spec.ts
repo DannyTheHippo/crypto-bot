@@ -145,6 +145,10 @@ describe('OMS reducer (§6.1)', () => {
         'CANCEL_UNKNOWN',
       );
     });
+    it('venue terminals adopted via reconciliation confirm the cancel (2026-07-07 strand)', () => {
+      expect(reduce(rec('CANCEL_PENDING'), { type: 'VENUE_CANCELED' }).state).toBe('CANCELED');
+      expect(reduce(rec('CANCEL_PENDING'), { type: 'VENUE_EXPIRED' }).state).toBe('EXPIRED');
+    });
     it('illegal event throws', () => {
       expect(() => reduce(rec('CANCEL_PENDING'), { type: 'ACK', venueOrderId: 'v' })).toThrow(
         TransitionError,
@@ -164,6 +168,10 @@ describe('OMS reducer (§6.1)', () => {
         'RECONCILE_REQUIRED',
       );
       expect(() => reduce(rec('CANCEL_UNKNOWN'), { type: 'SUBMIT_SENT' })).toThrow(TransitionError);
+    });
+    it('venue terminals adopted via reconciliation resolve a recovered pending cancel', () => {
+      expect(reduce(rec('CANCEL_UNKNOWN'), { type: 'VENUE_CANCELED' }).state).toBe('CANCELED');
+      expect(reduce(rec('CANCEL_UNKNOWN'), { type: 'VENUE_EXPIRED' }).state).toBe('EXPIRED');
     });
   });
 
@@ -188,6 +196,9 @@ describe('OMS reducer (§6.1)', () => {
       expect(reduce(rec('CANCELED'), { type: 'VENUE_CANCELED' }).state).toBe('CANCELED');
       expect(reduce(rec('EXPIRED'), { type: 'VENUE_EXPIRED' }).state).toBe('EXPIRED');
       expect(reduce(rec('REJECTED'), { type: 'REJECT' }).state).toBe('REJECTED');
+    });
+    it('a second cancel confirmation (gate REST fold + paper outbox report) is a no-op', () => {
+      expect(reduce(rec('CANCELED'), { type: 'CANCEL_ACK' }).state).toBe('CANCELED');
     });
     it('a contradicting terminal event freezes to RECONCILE_REQUIRED', () => {
       expect(reduce(rec('FILLED'), { type: 'REJECT' }).state).toBe('RECONCILE_REQUIRED');

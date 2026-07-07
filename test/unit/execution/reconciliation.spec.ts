@@ -368,6 +368,51 @@ describe('ReconciliationService (§6.4)', () => {
     expect(r.halted).toBe(false);
   });
 
+  it.each<['CANCEL_PENDING' | 'CANCEL_UNKNOWN']>([['CANCEL_PENDING'], ['CANCEL_UNKNOWN']])(
+    'adopts venue "canceled" for a %s order — the 2026-07-07 stranded-cancel regression',
+    async (state) => {
+      const runs = { inc: vi.fn() } as unknown as Counter<string>;
+      const ctx = build(
+        { openOrders: [], fetchOrder: () => venueOrder('any', 'canceled') },
+        undefined,
+        runs,
+      );
+      const coid = seedOpenOrder(ctx);
+      ctx.orders.apply(coid, { type: 'CANCEL_REQUESTED' }); // ACKED → CANCEL_PENDING
+      if (state === 'CANCEL_UNKNOWN') ctx.orders.apply(coid, { type: 'CANCEL_REJECT_UNKNOWN' });
+      const r = await ctx.recon.reconcile();
+      expect(ctx.orders.get(coid)?.state).toBe('CANCELED');
+      expect(ctx.portfolio.snapshot().openOrders).toHaveLength(0); // retired, not stuck
+      expect(r.halted).toBe(false);
+      expect((runs.inc as ReturnType<typeof vi.fn>).mock.calls.at(-1)).toEqual([
+        { result: 'mismatch' }, // an adopted terminal, never a PASS_ERROR abort
+      ]);
+    },
+  );
+
+  it('a fold the reducer refuses does not abort the pass — remaining orders still reconcile', async () => {
+    const runs = { inc: vi.fn() } as unknown as Counter<string>;
+    const ctx = build(
+      { openOrders: [], fetchOrder: () => venueOrder('any', 'canceled') },
+      undefined,
+      runs,
+    );
+    // First order frozen at RECONCILE_REQUIRED: VENUE_CANCELED is illegal there and the fold throws.
+    const frozen = seedOpenOrder(ctx);
+    ctx.orders.apply(frozen, { type: 'CANCEL_REQUESTED' });
+    ctx.orders.apply(frozen, { type: 'CANCEL_REJECT_UNKNOWN' });
+    ctx.orders.apply(frozen, { type: 'QUERY_INCONCLUSIVE' });
+    // Second order is a healthy ACKED adoption that must still run after the refused fold.
+    const adoptable = seedOpenOrder(ctx, OTHER_COID);
+    const r = await ctx.recon.reconcile();
+    expect(ctx.orders.get(frozen)?.state).toBe('RECONCILE_REQUIRED'); // untouched
+    expect(ctx.orders.get(adoptable)?.state).toBe('CANCELED'); // the pass kept going
+    expect((runs.inc as ReturnType<typeof vi.fn>).mock.calls.at(-1)).toEqual([
+      { result: 'mismatch' }, // 2026-07-07: this was result=error and 100% reconcile downtime
+    ]);
+    expect(r.halted).toBe(false);
+  });
+
   it('backfills a missed fill for a known order via the FillIngestor (WARN)', async () => {
     const coid = makeIntent().clientOrderId;
     const ctx = build({

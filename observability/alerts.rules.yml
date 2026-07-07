@@ -79,13 +79,17 @@ groups:
       # A stalled reconciler is itself a fault (§8): a pass that throws leaves venue truth
       # unconfirmed while trading continues — the 2026-07-07 CANCEL_PENDING/VENUE_CANCELED
       # TransitionError killed every pass for an hour with only warn lines to show for it.
-      # 10 minutes = 20 missed 30s passes, far beyond transient venue flake.
+      # "Stalled" = no pass COMPLETING, deliberately not "no clean pass": on the shared demo
+      # wallet, foreign resting orders make a small per-pass mismatch count the healthy steady
+      # state (WARN-and-ignore class), so a clean-pass age would fire forever on a working
+      # reconciler. Any result but error means venue truth was read end-to-end. 10 minutes =
+      # 20 missed 30s passes, far beyond transient venue flake.
       - alert: ReconcilerStalled
-        expr: time() - reconciliation_last_success_timestamp_seconds > 600
+        expr: sum(increase(reconciliation_runs_total{result!="error"}[10m])) == 0
         for: 0m
         labels: { severity: critical }
         annotations:
-          summary: 'No clean reconciliation pass for over 10 minutes — venue truth unconfirmed'
+          summary: 'No reconciliation pass has completed in over 10 minutes — venue truth unconfirmed'
           runbook: 'docs/runbook.md#reconciliation-mismatch-64'
 
       # Catches intermittent pass errors that never trip the 10-minute stall (some passes clean,

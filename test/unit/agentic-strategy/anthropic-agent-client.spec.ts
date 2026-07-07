@@ -396,8 +396,16 @@ describe('AnthropicAgentClient', () => {
 
       expect(proposal.playbookVersion).toBe(7);
       const [, init] = fetchFn.mock.calls[0] as [string, RequestInit];
-      const body = JSON.parse(init.body as string) as { messages: { content: string }[] };
-      expect(body.messages[0]!.content).toContain(playbookContent);
+      // W2.4: with a playbook present the user content is TWO blocks — [cache_control'd playbook
+      // block, volatile market JSON] — whose concatenated text carries the playbook content.
+      const body = JSON.parse(init.body as string) as {
+        messages: { content: { type: string; text: string; cache_control?: unknown }[] }[];
+      };
+      const blocks = body.messages[0]!.content;
+      expect(blocks).toHaveLength(2);
+      expect(blocks[0]!.text).toContain(playbookContent);
+      expect(blocks[0]!.cache_control).toEqual({ type: 'ephemeral', ttl: '1h' });
+      expect(blocks[1]!.cache_control).toBeUndefined();
     });
 
     it('treats an invalid stored playbook as absent, warning only once across repeated calls with the same content', async () => {
@@ -477,9 +485,9 @@ describe('AnthropicAgentClient', () => {
       await client.propose(input);
 
       const [, init] = fetchFn.mock.calls[0] as [string, RequestInit];
-      const body = JSON.parse(init.body as string) as { system: string };
-      expect(body.system).toContain('123');
-      expect(body.system).toContain('456');
+      const body = JSON.parse(init.body as string) as { system: { text: string }[] };
+      expect(body.system[0]!.text).toContain('123');
+      expect(body.system[0]!.text).toContain('456');
     });
   });
 
@@ -877,13 +885,19 @@ describe('AnthropicAgentClient', () => {
       const body = JSON.parse(init.body as string) as Record<string, unknown>;
       expect(body['model']).toBe(cfg.model);
       expect(body['max_tokens']).toBe(cfg.maxTokens);
-      expect(typeof body['system']).toBe('string');
+      // W2.4: system rides as a single cache_control'd text block (the stable request prefix).
+      expect(body['system']).toEqual([
+        {
+          type: 'text',
+          text: expect.stringContaining('LONG') as string,
+          cache_control: { type: 'ephemeral', ttl: '1h' },
+        },
+      ]);
       expect(Array.isArray(body['messages'])).toBe(true);
       expect(body['tools']).toEqual([DECISION_TOOL]);
       expect(body['tool_choice']).toEqual({ type: 'tool', name: 'submit_decision' });
       expect(body).not.toHaveProperty('temperature');
       expect(body['thinking']).toEqual({ type: 'disabled' });
-      expect(body).not.toHaveProperty('cache_control');
     });
 
     it('sends thinking:disabled alongside the forced tool_choice on every decide call', async () => {

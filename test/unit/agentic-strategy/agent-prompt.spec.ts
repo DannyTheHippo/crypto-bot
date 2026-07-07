@@ -249,20 +249,20 @@ describe('buildUserMessage', () => {
     }).not.toThrow();
   });
 
-  it('caps candles at the last 50 when more are supplied, keeping the newest window', () => {
+  it('caps candles at the last 30 when more are supplied, keeping the newest window', () => {
     const candles = Array.from({ length: 60 }, (_, i) => candle(i));
     const payload = JSON.parse(buildUserMessage(buildInput({ candles }))) as {
       candles: [number, string, string, string, string, string][];
     };
 
-    expect(payload.candles).toHaveLength(50);
+    expect(payload.candles).toHaveLength(30);
     const first = payload.candles[0]!;
-    const expectedFirst = candles[10]!; // 60 - 50 = 10: the 11th candle is the oldest kept
+    const expectedFirst = candles[30]!; // 60 - 30 = 30: the 31st candle is the oldest kept
     expect(first[0]).toBe(expectedFirst.openTime);
   });
 
   it('encodes the newest 10 candles in the window at full decimal precision, never floats', () => {
-    // Index 59 is the newest of 60 — within the last-10-full-precision slice of the 50-wide window.
+    // Index 59 is the newest of 60 — within the last-10-full-precision slice of the 30-wide window.
     const closeStr = '1000.123456789';
     const c: CandleEvent = { ...candle(59), close: price(closeStr) };
     const candles = [...Array.from({ length: 59 }, (_, i) => candle(i)), c];
@@ -275,17 +275,17 @@ describe('buildUserMessage', () => {
     expect(typeof close).toBe('string');
   });
 
-  it('reduces candles older than the newest 10 (within the 50-wide window) to 6 significant digits', () => {
-    // Index 0 lands at the oldest-kept position (60 - 50 = 10 dropped, so index 10 is the oldest of
-    // the 50-wide window) and is well outside the last-10-full-precision slice.
+  it('reduces candles older than the newest 10 (within the 30-wide window) to 6 significant digits', () => {
+    // Index 30 lands at the oldest-kept position (60 - 30 = 30 dropped, so index 30 is the oldest of
+    // the 30-wide window) and is well outside the last-10-full-precision slice.
     const closeStr = '1000.123456789';
     const candles = Array.from({ length: 60 }, (_, i) =>
-      i === 10 ? { ...candle(i), close: price(closeStr) } : candle(i),
+      i === 30 ? { ...candle(i), close: price(closeStr) } : candle(i),
     );
     const payload = JSON.parse(buildUserMessage(buildInput({ candles }))) as {
       candles: [number, string, string, string, string, string][];
     };
-    const [, , , , close] = payload.candles[0]!; // the oldest kept candle, index 10 pre-slice
+    const [, , , , close] = payload.candles[0]!; // the oldest kept candle, index 30 pre-slice
 
     expect(close).toBe('1000.12'); // 6 significant digits, exact Decimal rounding — not the full string
     expect(close).not.toBe(closeStr);
@@ -622,7 +622,7 @@ describe('computePromptHash', () => {
   });
 
   it.each([
-    ['templateVersion', { templateVersion: 'v4' }],
+    ['templateVersion', { templateVersion: 'v-other' }],
     ['playbookContent', { playbookContent: 'a different playbook' }],
     ['toolSchemaJson', { toolSchemaJson: '{"different":true}' }],
     ['modelId', { modelId: 'claude-other-model' }],

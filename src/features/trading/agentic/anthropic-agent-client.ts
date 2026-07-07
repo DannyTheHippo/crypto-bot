@@ -14,8 +14,8 @@ import {
   DECISION_TOOL,
   PROMPT_TEMPLATE_VERSION,
   buildMarketPayload,
+  buildPlaybookBlock,
   buildSystemPrompt,
-  buildUserMessage,
   computePromptHash,
 } from './agent-prompt';
 import { validatePlaybook } from './playbook-validator';
@@ -34,7 +34,15 @@ const anthropicResponseSchema = z.object({
       z.object({ type: z.string(), name: z.string().optional(), input: z.unknown().optional() }),
     )
     .optional(),
-  usage: z.object({ input_tokens: z.number(), output_tokens: z.number() }).optional(),
+  usage: z
+    .object({
+      input_tokens: z.number(),
+      output_tokens: z.number(),
+      // W2.4 cache experiment observability — absent on models/routes without caching.
+      cache_creation_input_tokens: z.number().optional(),
+      cache_read_input_tokens: z.number().optional(),
+    })
+    .optional(),
 });
 
 export interface LoggerLike {
@@ -80,6 +88,16 @@ const DEFAULT_TRADING_PROFILE: AgentTradingProfile = {
 // free-text rationale to the same bound before it re-enters a later prompt (see agent-prompt.ts's
 // data-framing of recentDecisions) — one literal, never a second copy that could drift from it.
 export const MAX_REASON_LEN = 200;
+
+// W2.4 prompt-cache experiment: 1h TTL keeps the prefix warm across the 15m decide cadence (a 5m
+// default TTL would expire between bars). Applied to the system prompt and the playbook block only
+// — never the volatile market JSON.
+const EPHEMERAL_1H = { type: 'ephemeral', ttl: '1h' } as const;
+interface AnthropicTextBlock {
+  readonly type: 'text';
+  readonly text: string;
+  readonly cache_control?: typeof EPHEMERAL_1H;
+}
 const MIN_STRENGTH = 0.1;
 const MAX_STRENGTH = 1;
 
@@ -178,10 +196,23 @@ export class AnthropicAgentClient implements AgentClientPort {
     const systemPrompt = buildSystemPrompt({ ...baseProfile, constraints });
     // inputPayload is the market JSON ALONE — buildMarketPayload's signature carries no
     // playbookContent parameter, so it structurally cannot echo playbook text (see its own comment).
-    // userMessage is the same JSON, optionally prefixed with the playbook block for the actual model
-    // call; the two are independently derived from `input`, never one sliced out of the other.
+    // W2.4 cache experiment: the playbook block (the only sizeable stable prefix) rides in its own
+    // cache_control content block while the volatile market JSON follows uncached; block 2 carries
+    // the '\n\n' separator, so the concatenated model-visible text stays byte-identical to
+    // buildUserMessage's single-string form (see buildPlaybookBlock's comment). Falsifiable:
+    // Sonnet-5's minimum cacheable prefix is unpublished — if usage.cache_read_input_tokens stays 0
+    // in production the blocks revert (config-free, cheap to remove).
     const inputPayload = buildMarketPayload(input);
-    const userMessage = buildUserMessage(input, playbookContent ? { playbookContent } : {});
+    const userContent: string | AnthropicTextBlock[] = playbookContent
+      ? [
+          {
+            type: 'text',
+            text: buildPlaybookBlock(playbookContent),
+            cache_control: EPHEMERAL_1H,
+          },
+          { type: 'text', text: `\n\n${inputPayload}` },
+        ]
+      : inputPayload;
     const promptHash = computePromptHash({
       templateVersion: PROMPT_TEMPLATE_VERSION,
       playbookContent: playbookContent ?? '',
@@ -196,7 +227,7 @@ export class AnthropicAgentClient implements AgentClientPort {
     let res: Response;
     try {
       try {
-        res = await this.attemptOnce(systemPrompt, userMessage, controller.signal);
+        res = await this.attemptOnce(systemPrompt, userContent, controller.signal);
       } catch (firstErr) {
         const classified = firstErr as AgentProposeError;
         const remainingMs = deadline - Date.now();
@@ -210,7 +241,7 @@ export class AnthropicAgentClient implements AgentClientPort {
         );
         await delay(backoffMs);
         try {
-          res = await this.attemptOnce(systemPrompt, userMessage, controller.signal);
+          res = await this.attemptOnce(systemPrompt, userContent, controller.signal);
         } catch (secondErr) {
           const secondClassified = secondErr as AgentProposeError;
           this.handleFailure(secondClassified);
@@ -232,6 +263,8 @@ export class AnthropicAgentClient implements AgentClientPort {
       ? {
           inputTokens: envelope.data.usage.input_tokens,
           outputTokens: envelope.data.usage.output_tokens,
+          cacheCreationInputTokens: envelope.data.usage.cache_creation_input_tokens,
+          cacheReadInputTokens: envelope.data.usage.cache_read_input_tokens,
         }
       : undefined;
 
@@ -353,7 +386,7 @@ export class AnthropicAgentClient implements AgentClientPort {
   // the identical prompt rather than silently re-deriving it.
   private async attemptOnce(
     systemPrompt: string,
-    userMessage: string,
+    userContent: string | AnthropicTextBlock[],
     signal: AbortSignal,
   ): Promise<Response> {
     let res: Response;
@@ -368,8 +401,11 @@ export class AnthropicAgentClient implements AgentClientPort {
         body: JSON.stringify({
           model: this.cfg.model,
           max_tokens: this.cfg.maxTokens,
-          system: systemPrompt,
-          messages: [{ role: 'user', content: userMessage }],
+          // W2.4: system as a cache_control block — with the tool schema it forms the stable
+          // request prefix; the playbook block (when present) extends it via userContent's own
+          // cache_control block. Cache reads are observed via usage.cache_read_input_tokens.
+          system: [{ type: 'text', text: systemPrompt, cache_control: EPHEMERAL_1H }],
+          messages: [{ role: 'user', content: userContent }],
           tools: [DECISION_TOOL],
           tool_choice: { type: 'tool', name: 'submit_decision' },
           // Omitting `thinking` on claude-sonnet-5 silently runs (billed) adaptive thinking; the
@@ -377,8 +413,6 @@ export class AnthropicAgentClient implements AgentClientPort {
           // explicitly disabled here. Reflection has its own separate request builder (see
           // reflection.service.ts) and is unaffected by this.
           thinking: { type: 'disabled' },
-          // Deliberately no cache_control: below the ~4096-token cacheable minimum on opus this is a
-          // silent no-op — revisit once the prompt (playbook + candle history) grows past it.
         }),
         signal,
       });

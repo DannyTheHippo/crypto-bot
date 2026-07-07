@@ -171,6 +171,13 @@ export interface AgentDecisionMeta {
 export interface AgentUsage {
   readonly inputTokens: number;
   readonly outputTokens: number;
+  // W2.4 prompt-cache experiment (falsifiability note lives on anthropic-agent-client.ts's request
+  // builder): tokens written to/read from the ephemeral cache on this call, per the Anthropic
+  // response envelope's usage object. Optional/absent whenever the response carries neither field
+  // (a non-Anthropic stub client, or an envelope that predates this field) — never defaulted to 0,
+  // so "absent" and "confirmed zero" stay distinguishable to a later cost/hit-rate analysis.
+  readonly cacheCreationInputTokens?: number;
+  readonly cacheReadInputTokens?: number;
 }
 
 export interface AgentProposal {

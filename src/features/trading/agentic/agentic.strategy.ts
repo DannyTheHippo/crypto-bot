@@ -478,6 +478,7 @@ export class AgenticStrategy implements AsyncStrategy {
         latencyMs: proposal?.latencyMs ?? null,
         playbookVersion: proposal?.playbookVersion ?? null,
         promptHash: proposal?.promptHash ?? '',
+        inputPayload: proposal?.inputPayload ?? null,
       });
     } catch {
       // A journal failure must never affect trading — it's an analysis artifact, not a safety
@@ -513,6 +514,7 @@ export class AgenticStrategy implements AsyncStrategy {
         latencyMs: null,
         playbookVersion: null,
         promptHash: '',
+        inputPayload: null,
       });
     } catch {
       // See recordJournalEntry — a journal failure must never affect trading.
@@ -545,6 +547,7 @@ export class AgenticStrategy implements AsyncStrategy {
         latencyMs: null,
         playbookVersion: null,
         promptHash: '',
+        inputPayload: null,
       });
     } catch {
       // See recordJournalEntry — a journal failure must never affect trading.

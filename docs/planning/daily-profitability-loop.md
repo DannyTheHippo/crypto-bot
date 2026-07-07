@@ -78,7 +78,10 @@ agentic-lane-only. Candidate sources, in priority order:
 3. The rolling backlog in `reports/loop/state.md`.
 4. New ideas from today's evidence (add to the backlog even when not chosen).
 
-Implement **one** improvement per pass (two only if both are S-effort). **Before implementing,
+Implement up to **one M-effort plus two S-effort** improvements per pass while the 2026-07-07
+approved-plan backlog exists (owner decision 2026-07-07) — deployed sequentially with individual
+soaks, and **never two money-path items in one pass**; when that backlog is exhausted, revert to
+one improvement per pass (two only if both are S-effort). **Before implementing,
 re-verify the item is still real against current code** — backlog items inherited from dated
 analyses go stale (2026-07-06 Pass 2 precedent: two Stage-2 seeds from the 07-04 analysis were
 already fixed in the codebase; the pass's value was pruning them with evidence, not shipping). If
@@ -94,14 +97,28 @@ recommend a cadence or scope change in the report instead of forcing a change.
   `src/config/environment/environment.config.ts` for agentic/observability settings.
 - Observability: `observability/` dashboards, metrics services, panels.
 - Docs and reports: `docs/`, `reports/loop/`.
+- **Scoped money-path exceptions (owner decision 2026-07-07), each ONLY with a mandatory
+  reviewer-agent dispatch before commit, full gates + `test:livegate` + `test:paper` green, and
+  risk-reducing/metrics-only semantics:**
+  - `src/features/trading/execution/signal-sink.service.ts` — CANCEL_OPEN routing only
+    (cancelling a strategy's own resting orders; never order placement).
+  - `src/features/trading/execution/portfolio-state.service.ts` — FillApplication metrics
+    emission only (e.g. dust-tolerant round-trip metrics); never position/cash mutation
+    semantics.
+  - `src/features/trading/risk/position-sizer.service.ts` — price-hint/TIF plumbing only; never
+    sizing or veto semantics.
+  - Drizzle migrations that ADD nullable analytics columns to non-money tables (e.g.
+    `agent_decisions`); never money tables, never append-only triggers.
 
 **MUST NOT touch** (report-only, with evidence + exact proposed diff in "Flagged for human
 review" — the 2026-07-05 marketable-exits flag is the template):
 
-- Risk sizing/veto (`src/features/trading/risk/`), Execution, OMS, exchange adapters.
+- Risk sizing/veto semantics (`src/features/trading/risk/` beyond the hint/TIF exception above),
+  Execution and OMS beyond the two scoped files above, exchange adapters.
 - The four live gates, mode resolution, arming interlock, `test:livegate` (sacred — never skip,
   weaken, or delete).
-- Append-only tables/triggers (`audit_log`, `order_events`), money-table schema, migrations.
+- Append-only tables/triggers (`audit_log`, `order_events`), money-table schema and their
+  migrations.
 - Secrets, `.env` (the example file is fine), pino redact lists.
 
 Hard rules 1–7 in the project `CLAUDE.md` bind in full. **Never push to any remote.** Commits to

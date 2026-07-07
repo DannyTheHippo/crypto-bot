@@ -338,6 +338,9 @@ export const agentDecisions = pgTable(
     latencyMs: integer('latency_ms'),
     playbookVersion: integer('playbook_version'),
     promptHash: text('prompt_hash').notNull(),
+    // Rendered market-context JSON the model saw (playbook/system excluded — see agent-prompt.ts's
+    // buildMarketPayload) for offline prompt-variant replay; null on error/quiet-hold rows.
+    inputPayload: text('input_payload'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => [index('agent_decisions_strategy_event_idx').on(t.strategyId, t.eventTime)],

@@ -4,6 +4,7 @@ import {
   PLAYBOOK_BLOCK_START,
   PLAYBOOK_BLOCK_END,
   PROMPT_TEMPLATE_VERSION,
+  buildMarketPayload,
   buildSystemPrompt,
   buildUserMessage,
   computePromptHash,
@@ -627,5 +628,28 @@ describe('computePromptHash', () => {
     ['modelId', { modelId: 'claude-other-model' }],
   ])('changes when %s changes', (_label, override) => {
     expect(computePromptHash({ ...base, ...override })).not.toBe(computePromptHash(base));
+  });
+});
+
+describe('buildMarketPayload (W1.3 input-snapshot persistence)', () => {
+  it('equals buildUserMessage when no playbook is supplied', () => {
+    const input = buildInput();
+    expect(buildMarketPayload(input)).toBe(buildUserMessage(input));
+  });
+
+  it('never contains playbook delimiters or content, even when the user message does', () => {
+    const input = buildInput();
+    const playbookContent = 'PLAYBOOK-SECRET-HEURISTIC never persist me';
+    const message = buildUserMessage(input, { playbookContent });
+    const payload = buildMarketPayload(input);
+
+    expect(message).toContain(PLAYBOOK_BLOCK_START);
+    expect(message).toContain(playbookContent);
+    expect(payload).not.toContain(PLAYBOOK_BLOCK_START);
+    expect(payload).not.toContain(PLAYBOOK_BLOCK_END);
+    expect(payload).not.toContain(playbookContent);
+    expect(() => {
+      JSON.parse(payload);
+    }).not.toThrow();
   });
 });

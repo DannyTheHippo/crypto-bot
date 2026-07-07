@@ -20,8 +20,14 @@ never changes for strategy evolution.
      round trips, net-of-cost > 0, ≥14d window), then the unchanged human four-gate arming
      ceremony. Nothing automates live.
 - **Settled owner decisions (not re-openable by a pass; argue in "Flagged for human review"
-  instead):** no shorts/futures/margin; no prompt caching; no third symbol; no model below
-  Sonnet-5; no return to 1m/5m cadence.
+  instead):** no shorts/futures/margin; no third symbol until the Stage-2 exit criterion holds;
+  no model below Sonnet-5; no return to 1m/5m cadence. _("No prompt caching" pruned 2026-07-07 by
+  owner decision — its factual grounds were stale; the falsifiable cache experiment (W2.4 of the
+  2026-07-07 approved plan) is authorized and reverts if `cache_read_input_tokens` stays 0.)_
+- **Pre-authorization (owner, 2026-07-07):** IF net-of-cost > 0 AND round trips ≥ 30 before the
+  14-day window fills, `MIN_WINDOW_DAYS` 14→10 (`promotion-readiness.service.ts:15`) may be
+  applied with the owner sign-off recorded in the pass report. The ≥30-trips and positive-net
+  thresholds are NOT relaxable.
 
 ## Current stage
 
@@ -84,7 +90,14 @@ counter resets naturally now that live data unblocks #10.
 - ~~**Marketable exits** (2026-07-05)~~ — CLOSED 2026-07-06 Pass 1: `position-sizer.service.ts:72,139`
   confirms reduce-only exits cross the spread by `EXIT_CROSS_BUFFER_BPS` (P1 f9ba515).
 - **Dust-threshold round-trip accounting** (2026-07-05): `portfolio-state.service.ts` records a
-  round trip only at exactly-zero signed qty; touches realized-PnL accounting — needs owner call.
+  round trip only at exactly-zero signed qty; touches realized-PnL accounting — RESOLVED
+  2026-07-07: owner approved a metrics-only fix (W2.2 of the approved plan) — round-trip metrics
+  emit at residual notional ≤ PROMOTION_DUST_NOTIONAL; position/cash semantics untouched.
+- **55 stale open orders on the demo venue** (2026-07-07): boot recovery seeded 55 open orders
+  (boot 10c8af0c) — rest-forever GTC entries accumulated across prior boots, locking demo quote
+  balance venue-side. W2.1 (entry TTL + CANCEL_OPEN) prevents new accumulation; the EXISTING 55
+  need a one-time cleanup (venue-side cancel sweep or demo account reset) — owner action or an
+  explicitly authorized pass.
 - **Uncommitted Grafana dashboard edit** (predates Pass 3, still open): working tree has had an
   uncommitted `observability/grafana/dashboards/crypto-bot.json` diff (reformatted JSON + a
   promotion-readiness panel description/mapping change) since before this pass started — not

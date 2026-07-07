@@ -45,6 +45,7 @@ export class AgentDecisionJournalAdapter implements AgentDecisionJournalPort {
       latencyMs: entry.latencyMs,
       playbookVersion: entry.playbookVersion,
       promptHash: entry.promptHash,
+      inputPayload: entry.inputPayload,
     };
     void this.repo.insert(row).catch((err: unknown) => {
       this.log.error(`agent_decisions insert failed: ${String(err)}`);
@@ -71,6 +72,7 @@ export class AgentDecisionJournalAdapter implements AgentDecisionJournalPort {
       latencyMs: r.latencyMs,
       playbookVersion: r.playbookVersion,
       promptHash: r.promptHash,
+      inputPayload: r.inputPayload,
       id: String(r.id),
       createdAt: r.createdAt.getTime() as EpochMs,
     }));

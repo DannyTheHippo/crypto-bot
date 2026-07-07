@@ -36,6 +36,13 @@
       "when": 1781282295781,
       "tag": "0004_llm_usage",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1781282295782,
+      "tag": "0005_agent_decision_input_payload",
+      "breakpoints": true
     }
   ]
 }

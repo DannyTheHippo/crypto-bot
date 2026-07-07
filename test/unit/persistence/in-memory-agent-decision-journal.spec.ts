@@ -22,6 +22,7 @@ function entry(eventTime: number, overrides: Partial<AgentDecisionEntry> = {}): 
     latencyMs: 500,
     playbookVersion: 1,
     promptHash: 'hash-1',
+    inputPayload: null,
     ...overrides,
   };
 }

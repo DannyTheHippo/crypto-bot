@@ -13,6 +13,7 @@ import {
 import {
   DECISION_TOOL,
   PROMPT_TEMPLATE_VERSION,
+  buildMarketPayload,
   buildSystemPrompt,
   buildUserMessage,
   computePromptHash,
@@ -175,6 +176,11 @@ export class AnthropicAgentClient implements AgentClientPort {
     const baseProfile = this.cfg.profile ?? DEFAULT_TRADING_PROFILE;
     const constraints = this.cfg.constraintsFor?.(String(symbol)) ?? baseProfile.constraints;
     const systemPrompt = buildSystemPrompt({ ...baseProfile, constraints });
+    // inputPayload is the market JSON ALONE — buildMarketPayload's signature carries no
+    // playbookContent parameter, so it structurally cannot echo playbook text (see its own comment).
+    // userMessage is the same JSON, optionally prefixed with the playbook block for the actual model
+    // call; the two are independently derived from `input`, never one sliced out of the other.
+    const inputPayload = buildMarketPayload(input);
     const userMessage = buildUserMessage(input, playbookContent ? { playbookContent } : {});
     const promptHash = computePromptHash({
       templateVersion: PROMPT_TEMPLATE_VERSION,
@@ -220,7 +226,7 @@ export class AnthropicAgentClient implements AgentClientPort {
     const envelope = anthropicResponseSchema.safeParse(body);
     if (!envelope.success) {
       this.logger.warn('anthropic api: malformed response envelope');
-      return { signals: [], latencyMs, playbookVersion, promptHash };
+      return { signals: [], latencyMs, playbookVersion, promptHash, inputPayload };
     }
     const usage = envelope.data.usage
       ? {
@@ -231,19 +237,19 @@ export class AnthropicAgentClient implements AgentClientPort {
 
     if (envelope.data.stop_reason === 'refusal') {
       this.logger.warn('anthropic api: model refused to decide');
-      return { signals: [], usage, latencyMs, playbookVersion, promptHash };
+      return { signals: [], usage, latencyMs, playbookVersion, promptHash, inputPayload };
     }
     const toolBlock = envelope.data.content?.find(
       (b) => b.type === 'tool_use' && b.name === 'submit_decision',
     );
     if (!toolBlock) {
       this.logger.warn('anthropic api: no submit_decision tool_use block in response');
-      return { signals: [], usage, latencyMs, playbookVersion, promptHash };
+      return { signals: [], usage, latencyMs, playbookVersion, promptHash, inputPayload };
     }
     const parsedDecision = decisionSchema.safeParse(toolBlock.input);
     if (!parsedDecision.success) {
       this.logger.warn('anthropic api: submit_decision payload failed schema validation');
-      return { signals: [], usage, latencyMs, playbookVersion, promptHash };
+      return { signals: [], usage, latencyMs, playbookVersion, promptHash, inputPayload };
     }
 
     const side = input.context?.position.side ?? 'FLAT';
@@ -288,6 +294,7 @@ export class AnthropicAgentClient implements AgentClientPort {
       latencyMs,
       playbookVersion,
       promptHash,
+      inputPayload,
     };
   }
 

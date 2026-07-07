@@ -749,6 +749,7 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
       outputTokens: 64,
       latencyMs: 850,
       playbookVersion: 1,
+      inputPayload: '{"candles":[]}',
     };
     await repo.insert({ ...base, eventTime: 1_700_000_500_000, promptHash: 'hash-dt-1' });
     await repo.insert({ ...base, eventTime: 1_700_000_600_000, promptHash: 'hash-dt-2' });
@@ -790,6 +791,7 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
       outputTokens: null,
       latencyMs: null,
       playbookVersion: null,
+      inputPayload: null,
     };
     await repo.insert({ ...base, strategyId: 'agentic-p7-1', eventTime: 1, promptHash: 'p7-a' });
     await repo.insert({ ...base, strategyId: 'agentic-p7-2', eventTime: 2, promptHash: 'p7-b' });

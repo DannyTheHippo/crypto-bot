@@ -23,6 +23,7 @@ export interface AgentDecisionInsert {
   latencyMs: number | null;
   playbookVersion: number | null;
   promptHash: string;
+  inputPayload: string | null;
 }
 
 export type AgentDecisionDbRow = typeof schema.agentDecisions.$inferSelect;

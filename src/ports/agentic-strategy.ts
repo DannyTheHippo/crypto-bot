@@ -184,6 +184,11 @@ export interface AgentProposal {
   // the decision journal, absent whenever no call was made (same convention as latencyMs).
   readonly playbookVersion?: number;
   readonly promptHash?: string;
+  // The rendered market-context JSON (candles/ticker/book/indicators/position/recentDecisions) the
+  // client sent — see agent-prompt.ts's buildMarketPayload — WITHOUT the playbook block or system
+  // prompt, so a stored row can never carry playbook content. Absent whenever no call was made (same
+  // convention as latencyMs/promptHash); persisted for offline prompt-variant replay (W1.3).
+  readonly inputPayload?: string;
 }
 
 export interface AgentClientPort {
@@ -255,6 +260,8 @@ export interface AgentDecisionEntry {
   readonly latencyMs: number | null;
   readonly playbookVersion: number | null;
   readonly promptHash: string;
+  // See AgentProposal.inputPayload — null when no call was made (e.g. the error/quiet-hold paths).
+  readonly inputPayload: string | null;
 }
 
 export interface AgentDecisionRow extends AgentDecisionEntry {

@@ -66,6 +66,7 @@ function row(overrides: Partial<AgentDecisionRow> = {}): AgentDecisionRow {
     latencyMs: null,
     playbookVersion: 1,
     promptHash: 'hash',
+    inputPayload: null,
     id: '1',
     createdAt: epochMs(T),
     ...overrides,

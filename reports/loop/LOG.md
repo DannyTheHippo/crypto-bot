@@ -189,3 +189,41 @@ new Decimal(config.risk.protectTrailingPct).gt(0)`, plumbed through a new
   wiring + rewriting the `position_open` assertions in `prescreen.spec.ts` and
   `agentic-strategy-prescreen.spec.ts` (the ones this pass left alone — see the "always consults...
   when a position is open" tests in both files) + updated `prescreen.ts` header comment.
+
+## 2026-07-07 — Pass 4 (owner-triggered "aggressive refactors + governance" session)
+
+- **Data window read:** pre-implementation sweep on boot 10c8af0c (~9h): 28 cumulative RTs, net
+  −$17.04 (LLM $13.54), skip rate 27% with `breakout_proximity` driving 37/51 calls, ~5.1k
+  in-tokens/decide, ~$2–2.6/day pace. Root-caused: 39 "proposed" decides → 2 orders because
+  non-hold zero-signal decisions were mislabeled `proposed`; boot recovery seeded 55 stale GTC
+  entries (rest-forever confirmed at scale); h1/h4 HTF indicators proven ALWAYS NULL in production
+  (history capped at warmup+1=51 < the 84/336 bars aggregation needs).
+- **Decision:** execute the owner-approved 2026-07-07 plan (full build: Waves 1–4 + governance).
+  Owner widened scope mid-session: hard gates/CLAUDE.md/repo rules changeable; all four governance
+  changes approved via interview.
+- **Shipped (15 commits, ca71b55..2241be8):** W1 config (warmup 340 → HTF revived +regression
+  test; breakout 0.0025; reflection 12h); thinking:{disabled} on decides + bestBid entry hints;
+  AGENTIC_DAILY_COST_STOP_USD circuit breaker; `noop` decide-outcome label; input_payload
+  persistence (migration 0005) + offline replay/A-B harness; CANCEL_OPEN routing +
+  AGENTIC_ENTRY_TTL_BARS stale-entry sweep and dust-tolerant round-trip metrics (reviewer pass:
+  one MUST-FIX — dust-close required an actual reduction — applied +regression test); candle trim
+  50→30 (template v4) + prompt-cache experiment (1h-TTL blocks, falsifiable); per-playbook-version
+  net-PnL gauges; AGENTIC_PLAN_MODE plan-based trading (flag OFF; submit_plan tool + pure
+  plan-executor + fee-aware edge floor + lifecycle wiring); AGENTIC_PLAYBOOK_AB_PCT +
+  AGENTIC_EXPECTANCY_LADDER (flags OFF); zero-LLM executor parameter sweep. Governance:
+  daily-loop MAY list widened (scoped money-path exceptions w/ mandatory review), 1M+2S per pass,
+  stale settled decision pruned, MIN_WINDOW_DAYS 14→10 pre-authorization recorded.
+- **Gates:** build/lint/typecheck green; 1397 unit + 43 db + 11 paper + 41 livegate (untouched).
+- **Soak (~45 min, boot 5148eac2):** healthy boot, warmupBars=340 live, ZERO level-50 errors, no
+  EXPIRED. Skip rate 4/6 ≈ **67%** (target 50–70% — breakout tighten landed). Tokens **~1,475
+  in/decide** (was ~5,100; candle trim + cache) ⇒ projected **≈$0.5/day**, under the Stage-1
+  ≤$1/day exit for the first time. `agentic_version_net_pnl_usd{version="1"} = −$3.50/28 RTs`
+  live — trading PnL now measurable separately from LLM spend. Boot recovery seeded 57 stale
+  orders; entry-TTL sweep live but not yet observed firing (needs 2 observed bars) — next-pass
+  watch item alongside cache_read verification (backlog #13/#14).
+- **Flagged for human review:** unowned dirty Grafana dashboard JSON still blocks new panels
+  (backlog #19); one-time cleanup of the 57 stale venue orders happens organically via the sweep —
+  verify next pass; AGENTIC_PLAN_MODE enable-gate needs ≥200 recorded input_payload rows + owner
+  approval (backlog #15).
+- **Next-pass candidates:** backlog #13 (cache falsifiability), #14 (skip-rate/$-day
+  re-measure), #17 (W2.6 cross-symbol block), #15 (plan-mode offline A/B once rows accrue).

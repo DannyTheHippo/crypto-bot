@@ -163,9 +163,10 @@ export class FillIngestorService {
       if (fill.fee) {
         this.feesPaidCounter?.inc({ ccy: fill.fee.ccy }, fill.fee.amount.toNumber());
       }
-      // roundTripRealizedPnl is non-null exactly when the fill closed the position to flat
-      // (== application.closedToFlat); the null-check both signals the round trip and narrows the
-      // type. Net of quote fees, so >0 = win and ≤0 = loss (a fee-only wash nets a loss).
+      // roundTripRealizedPnl is non-null exactly when application.roundTripClosed — an exact-zero
+      // fold OR a dust-close (W2.2: residual notional at/below PortfolioConfig.dustNotional, deduped
+      // per position epoch); the null-check both signals the round trip and narrows the type. Net of
+      // quote fees, so >0 = win and ≤0 = loss (a fee-only wash nets a loss).
       if (application.roundTripRealizedPnl !== null) {
         const pnl = application.roundTripRealizedPnl;
         this.roundTripsCounter?.inc({ result: pnl.gt(0) ? 'win' : 'loss' });

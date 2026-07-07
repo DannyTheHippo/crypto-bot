@@ -88,10 +88,16 @@ function runContextFrom(config: TypedConfigService | undefined): ExecRunContext 
   return { mode: config.mode.configMode, runId: `run-${bootId}`, bootId };
 }
 // startingCash is env-tunable (STARTING_CASH) so a demo run can seed the in-memory quote balance to
-// the demo account's actual USDT — keeping the local model close to venue truth.
+// the demo account's actual USDT — keeping the local model close to venue truth. dustNotional reuses
+// PROMOTION_DUST_NOTIONAL (the promotion verdict's own dust knob) so live round-trip metrics close
+// on the same residual-notional rule the earned-live gate already tolerates; @Optional config in
+// module-isolation tests leaves it undefined, which the service treats as disabled (0).
 function portfolioConfigFrom(config: TypedConfigService | undefined): PortfolioConfig {
-  void config;
-  return { quoteAsset: 'USDT', startingCash: process.env['STARTING_CASH'] ?? '100000' };
+  return {
+    quoteAsset: 'USDT',
+    startingCash: process.env['STARTING_CASH'] ?? '100000',
+    dustNotional: config?.agentic.promotionDustNotional,
+  };
 }
 const DEFAULT_FILTERS: ExecFilters = new Map();
 // Monitor limits + reconciliation tunables; the composition root overrides EQUITY_LIMITS from the

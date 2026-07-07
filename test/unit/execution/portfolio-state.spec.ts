@@ -13,9 +13,12 @@ import { strategyId } from '../../../src/domain/types/ids';
 // runs under it. Every other assertion here is precision-insensitive (exact integer/short-decimal).
 beforeAll(() => setupDecimal());
 
-function make() {
+function make(dustNotional?: string) {
   const fees = new FeeLedgerService();
-  const ps = new PortfolioStateService({ quoteAsset: 'USDT', startingCash: '100000' }, fees);
+  const ps = new PortfolioStateService(
+    { quoteAsset: 'USDT', startingCash: '100000', dustNotional },
+    fees,
+  );
   return { ps, fees };
 }
 
@@ -234,5 +237,110 @@ describe('PortfolioStateService', () => {
     expect(p?.avgEntry.toFixed()).toBe('63999.255940594059405941'); // unchanged on partial reduce
     // (64200 − 63999.255940594059405941) × 0.001 = 0.200744059405940594059 — 21 dp, exact, raw.
     expect(p?.realizedPnl.toFixed()).toBe('0.200744059405940594059');
+  });
+
+  // W2.2 — align live round-trip metrics with the promotion verdict's dust-tolerant walk
+  // (round-trips.ts): sub-stepSize residue below PROMOTION_DUST_NOTIONAL never reaches exact zero,
+  // so metrics must fire on the dust-close instead. Position accounting itself never changes.
+  describe('dust-close round-trip metrics (W2.2)', () => {
+    it('reports the round trip once when a reducing fill leaves residual notional at/below dustNotional; position retained', () => {
+      const { ps } = make('5'); // PROMOTION_DUST_NOTIONAL default
+      ps.applyFill(makeIntent({ side: 'BUY' }), makeFill({ qty: qty('1'), price: price('100') }));
+      // Reduce to 0.0004 @ 110 → residual notional 0.044 ≤ 5: dust-close, position retained nonzero.
+      const dustClose = ps.applyFill(
+        makeIntent({ side: 'SELL' }),
+        makeFill({ venueTradeId: 't2', qty: qty('0.9996'), price: price('110') }),
+      );
+      expect(dustClose.closedToFlat).toBe(false); // position accounting: never treated as flat
+      expect(dustClose.roundTripClosed).toBe(true); // metrics: dust-close counts as closed
+      // realizedPnl = (110 − 100) × 0.9996 = 9.996 — the existing fold's own number, no new math.
+      expect(dustClose.roundTripRealizedPnl?.toFixed()).toBe('9.996');
+      const p = ps.snapshot().positions.get(positionKey(SID, V, SYM));
+      expect(p?.signedQty.toFixed()).toBe('0.0004'); // RETAINED, never deleted while nonzero
+      expect(ps.cashBalance().toFixed()).toBe('100009.956'); // -100 + 0.9996×110 = +9.956, unchanged money math
+    });
+
+    it('does not double-count an eventual exact-zero on the same dust after it already reported', () => {
+      const { ps } = make('5');
+      ps.applyFill(makeIntent({ side: 'BUY' }), makeFill({ qty: qty('1'), price: price('100') }));
+      const dustClose = ps.applyFill(
+        makeIntent({ side: 'SELL' }),
+        makeFill({ venueTradeId: 't2', qty: qty('0.9996'), price: price('110') }),
+      );
+      expect(dustClose.roundTripClosed).toBe(true);
+      // The leftover 0.0004 later gets swept to exact zero — must NOT fire a second metric.
+      const exactClose = ps.applyFill(
+        makeIntent({ side: 'SELL' }),
+        makeFill({ venueTradeId: 't3', qty: qty('0.0004'), price: price('120') }),
+      );
+      expect(exactClose.closedToFlat).toBe(true);
+      expect(exactClose.roundTripClosed).toBe(false); // already reported this epoch — suppressed
+      expect(exactClose.roundTripRealizedPnl).toBeNull();
+      expect(ps.snapshot().positions.size).toBe(0); // position deletion on exact-zero is unaffected
+    });
+
+    it('re-arms the dust-report epoch once the position re-enters (grows back above dustNotional)', () => {
+      const { ps } = make('5');
+      ps.applyFill(makeIntent({ side: 'BUY' }), makeFill({ qty: qty('1'), price: price('100') }));
+      const firstDustClose = ps.applyFill(
+        makeIntent({ side: 'SELL' }),
+        makeFill({ venueTradeId: 't2', qty: qty('0.9996'), price: price('110') }),
+      );
+      expect(firstDustClose.roundTripClosed).toBe(true);
+      // Re-enter: BUY back above the dust threshold (notional 0.9996×100 ≈ 99.96 > 5).
+      const reenter = ps.applyFill(
+        makeIntent({ side: 'BUY' }),
+        makeFill({ venueTradeId: 't3', qty: qty('0.9996'), price: price('100') }),
+      );
+      expect(reenter.roundTripClosed).toBe(false); // opening fill, not a close
+      // Close again down to dust: a new epoch, so the metric fires again.
+      const secondDustClose = ps.applyFill(
+        makeIntent({ side: 'SELL' }),
+        makeFill({ venueTradeId: 't4', qty: qty('0.9996'), price: price('105') }),
+      );
+      expect(secondDustClose.roundTripClosed).toBe(true);
+      expect(secondDustClose.roundTripRealizedPnl?.toFixed()).toBe('4.998'); // (105−100)×0.9996
+    });
+
+    it('threshold absent/0 disables dust-close reporting: only an exact-zero fold counts', () => {
+      const { ps } = make(); // no dustNotional → defaults to '0'
+      ps.applyFill(makeIntent({ side: 'BUY' }), makeFill({ qty: qty('1'), price: price('100') }));
+      // Same reducing fill that dust-closes at threshold '5' above; with threshold 0 it must NOT
+      // report — the leftover dust position is retained, unreported, exactly as pre-W2.2.
+      const reduce = ps.applyFill(
+        makeIntent({ side: 'SELL' }),
+        makeFill({ venueTradeId: 't2', qty: qty('0.9996'), price: price('110') }),
+      );
+      expect(reduce.closedToFlat).toBe(false);
+      expect(reduce.roundTripClosed).toBe(false);
+      expect(reduce.roundTripRealizedPnl).toBeNull();
+      const p = ps.snapshot().positions.get(positionKey(SID, V, SYM));
+      expect(p?.signedQty.toFixed()).toBe('0.0004'); // money accounting unchanged either way
+    });
+
+    // Reviewer must-fix regression (2026-07-07): dust-close must key off an actual REDUCTION —
+    // an opening/adding fill whose resulting notional is still tiny (e.g. the first partial fill
+    // of a resting entry) is a position being built, never a round trip ending. Pre-fix this
+    // emitted a spurious loss round trip into the metrics on every small opening fill.
+    it('does not report a round trip on an opening or adding fill at/below dustNotional', () => {
+      const { ps } = make('5');
+      // Open from FLAT with notional 1.0 ≤ 5: no report.
+      const open = ps.applyFill(
+        makeIntent({ side: 'BUY' }),
+        makeFill({ qty: qty('0.01'), price: price('100') }),
+      );
+      expect(open.closedToFlat).toBe(false);
+      expect(open.roundTripClosed).toBe(false);
+      expect(open.roundTripRealizedPnl).toBeNull();
+      // Add another tiny partial fill (still ≤ 5 total): still building, still no report.
+      const add = ps.applyFill(
+        makeIntent({ side: 'BUY' }),
+        makeFill({ venueTradeId: 't2', qty: qty('0.01'), price: price('100') }),
+      );
+      expect(add.roundTripClosed).toBe(false);
+      expect(add.roundTripRealizedPnl).toBeNull();
+      const p = ps.snapshot().positions.get(positionKey(SID, V, SYM));
+      expect(p?.signedQty.toFixed()).toBe('0.02'); // position retained and growing
+    });
   });
 });

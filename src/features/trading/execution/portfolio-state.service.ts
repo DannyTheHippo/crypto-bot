@@ -28,10 +28,14 @@ interface OpenOrderRec {
 }
 
 // Summary of one applyFill fold, consumed by the fill ingestor to emit round-trip profitability
-// metrics. closedToFlat mirrors the position-delete check; roundTripRealizedPnl is the realized PnL
-// of the just-closed round trip (net of quote fees), or null when the fill did not close to flat.
+// metrics. closedToFlat mirrors the position-delete check (exact zero only — position accounting
+// semantics, unchanged by W2.2). roundTripClosed is the METRICS-ONLY superset: true on closedToFlat
+// OR on a dust-close (residual notional at/below PortfolioConfig.dustNotional), deduped per position
+// epoch so a later exact-zero on the same leftover dust never double-counts. roundTripRealizedPnl is
+// the fold's own realized PnL to that point (net of quote fees), non-null iff roundTripClosed.
 export interface FillApplication {
   readonly closedToFlat: boolean;
+  readonly roundTripClosed: boolean;
   readonly roundTripRealizedPnl: Decimal | null;
 }
 
@@ -46,6 +50,16 @@ export class PortfolioStateService implements PortfolioViewPort {
   private readonly openOrders = new Map<string, OpenOrderRec>();
   private readonly quoteAsset: string;
   private readonly startingCash: Decimal;
+  private readonly dustNotional: Decimal;
+  // Per (strategyId, venue, symbol) dust-close report state (W2.2, metrics only — see
+  // FillApplication). A dust-retained position row keeps accumulating realizedPnl across epochs, so
+  // each report must be the DELTA over what this row already reported (`baseline`), never the raw
+  // cumulative fold value — otherwise a re-entry's dust-close re-reports the prior epoch's PnL.
+  // `reported` suppresses a second fire on the same epoch's leftover dust (including an eventual
+  // exact-zero sweep); it re-arms when the position grows back above dustNotional while `baseline`
+  // persists for the row's lifetime. The whole record clears on exact-zero delete (the fold restarts
+  // realizedPnl at 0). In-memory only, matching the metrics' per-boot scope.
+  private readonly dustReport = new Map<string, { reported: boolean; baseline: Decimal }>();
   private cash: Decimal;
   private equityValue: Decimal;
   // Unrealized PnL of the current book, refreshed by recordEquity (the sampler owns the marks). Held
@@ -66,6 +80,7 @@ export class PortfolioStateService implements PortfolioViewPort {
     this.unrealizedValue = new Decimal(0);
     this.peak = this.cash;
     this.sodUtc = this.cash;
+    this.dustNotional = new Decimal(cfg.dustNotional ?? '0');
   }
 
   // Fold one realized fill into positions + quote cash + fee ledger (§6.6). Returns a summary the
@@ -102,11 +117,38 @@ export class PortfolioStateService implements PortfolioViewPort {
     if (result.feeLedger) this.fees.add(result.feeLedger.asset, result.feeLedger.amount);
     this.seq += 1n;
 
-    // At the flat transition realizedPnl carries the full round-trip PnL (net of quote fees); the
-    // position is deleted above, so the next open starts fresh from FLAT with realizedPnl = 0.
+    // W2.2 dust-close metrics rule (mirrors round-trips.ts's promotion walk): IOC exits are sized off
+    // the step-rounded position qty, so sub-stepSize residue routinely survives every exit and an
+    // exact-zero fold never fires. Below dustNotional the residual (|signedQty| × THIS fill's price —
+    // same convention as the promotion walk) counts as a closed round trip for METRICS ONLY; the
+    // position row above is already retained untouched.
+    const residualNotional = result.position.signedQty.abs().mul(fill.price);
+    // Only a fill that REDUCED the position can dust-close it — an opening/adding fill whose
+    // resulting notional is still tiny (e.g. the first partial fill of a resting entry) is a
+    // position being built, not a round trip ending (reviewer must-fix, 2026-07-07). Strict lt
+    // matches the promotion walk's comparator (round-trips.ts:173).
+    const reduced = result.position.signedQty.abs().lt(prior.signedQty.abs());
+    const isDustClose =
+      !closedToFlat && reduced && this.dustNotional.gt(0) && residualNotional.lt(this.dustNotional);
+    const report = this.dustReport.get(key) ?? { reported: false, baseline: new Decimal(0) };
+    const roundTripClosed = (closedToFlat || isDustClose) && !report.reported;
+    // Reported PnL is the fold's own number minus what this row already reported (see dustReport's
+    // doc comment) — no new PnL math, just epoch accounting over the retained row.
+    const reportedPnl = roundTripClosed ? result.position.realizedPnl.minus(report.baseline) : null;
+    if (closedToFlat) {
+      // Row deleted above; the next open starts fresh from FLAT with realizedPnl = 0.
+      this.dustReport.delete(key);
+    } else if (roundTripClosed) {
+      this.dustReport.set(key, { reported: true, baseline: result.position.realizedPnl });
+    } else if (residualNotional.gt(this.dustNotional)) {
+      // Re-entered above dust: re-arm the next epoch's report; the baseline persists.
+      this.dustReport.set(key, { reported: false, baseline: report.baseline });
+    }
+
     return {
       closedToFlat,
-      roundTripRealizedPnl: closedToFlat ? result.position.realizedPnl : null,
+      roundTripClosed,
+      roundTripRealizedPnl: reportedPnl,
     };
   }
 

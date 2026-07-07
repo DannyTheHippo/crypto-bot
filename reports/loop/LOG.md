@@ -450,3 +450,84 @@ CANCEL_PENDING`; `reconciliation_runs_total`: 174 clean then 105+ `error`; last 
 - **Meta:** Pass 6+7 together consumed well past the session budget (RED at the reviewer
   dispatch); per token-budget policy the reviewer's should-fix items were applied inline/carried
   to backlog instead of a second review loop, and no further agents were dispatched.
+
+## 2026-07-07 — Pass 8 (scheduled run, ~18:05–19:15)
+
+- **Data window read:** boots b61908ba tail + 28dc56a2 (16:26–18:26) via live promtool + TSDB
+  history queries (`--time`); 24h gauge deltas vs 2026-07-06 18:10.
+- **Headline metrics (sweep at 18:09):** promotion scoreboard 30 round trips / net **−$17.94** /
+  LLM $13.77 / window 2.75d / ready 0. **The ≥30-trips threshold is MET for the first time**
+  (23→30 since Pass 6's reading, ≈+7 in ~27h — the ≥2/day pace criterion is comfortably
+  exceeded); net is still negative, so the owner's pre-authorized `MIN_WINDOW_DAYS` 14→10
+  reduction does NOT trigger (it requires net > 0 AND ≥30 trips). 24h LLM spend by gauge delta:
+  **$2.56** — dominated by the overnight pre-Pass-4 config; the post-13:18 fixed boots run at
+  **≈$0.58/day counted** pro-rated (b61908ba $0.37/day over 3.0h, 28dc56a2 $0.95/day over 1.7h;
+  flat 3/15 on input/output only — see the cache finding below for why "counted" ≠ "true").
+  Skip rate post-fix 6/18 ≈ 33% (target 50–70%); reason mix shifted this boot cycle —
+  `vol_expansion` drove 6/7 calls on 28dc56a2 vs Pass 3's `breakout_proximity` 73% (small
+  samples; #10 keeps watching). Reconciler: 206 passes completed on 28dc56a2, zero errors, all
+  mismatch-class = the known foreign-order steady state. Zero level-50 in 24h of app logs; warns
+  are boot boilerplate only. Stage-1 note: 2026-07-07 cannot count toward the 3-day clock
+  (12:15–13:18 outage hole + three boots + config change mid-day); the clock can start 07-08.
+- **Evidence findings:**
+  1. **`ReconciliationMismatch` was firing 24/7 at severity=critical** on the foreign-order
+     steady state (~3/pass × every 30s) — a permanent critical page trains the operator to
+     ignore the one alert class that must never be ignored. The proper fix (class-split counter)
+     is owner territory (#24, OMS file); an observability-only interim exists because halting
+     classes independently engage the kill switch and label `result="halt"`.
+  2. **The W2.4 prompt-cache experiment was unverifiable**: `anthropic-agent-client.ts` parses
+     `cache_read_input_tokens`/`cache_creation_input_tokens` but the fields died in the
+     in-memory proposal — no DB column, no metric (Pass 5's "DB usage columns" assumption was
+     wrong). Worse, 1h-TTL cache WRITES bill at 2× base input and appear in neither
+     `input_tokens` nor `output_tokens`, so the flat 3/15 accounting was blind to real spend.
+- **Shipped (two S improvements, both observability, no money-path):**
+  - `a25389a` **alert hygiene** (closes #20, interim for #24): new `ReconciliationHalt` critical
+    on `reconciliation_runs_total{result="halt"}` (pages the kill-switch-engaging classes by
+    name); `ReconciliationMismatch` downgraded to warning with an honest annotation; new
+    `AgentClientFatalLatch` critical on `agent_decide_total{outcome="error_fatal"} > 0` — fires
+    for exactly the latch's lifetime since the counter resets on the recreate that clears it.
+  - `f5221b9` **cache-token series** (#13 metric): `agent_tokens_total` gains
+    `kind="cache_read"/"cache_creation"`, forwarded by `MetricsWrappingAgentClient` only when
+    the response carried the fields (absent ≠ confirmed-zero, per the AgentUsage contract).
+    5 new unit tests (recorder + forwarding).
+- **Gates:** build/lint/typecheck green, **1416 unit** (1411+5); pre-commit hook re-ran
+  format/lint/typecheck on both commits. (livegate/paper/db not required — no money-path files.)
+- **Deploys:** prometheus recreated to pick up the rules (11 rules loaded; **TSDB survived a
+  third recreate** — anonymous-volume behavior now thrice-verified); app rebuilt → boot
+  **dcf7e4c2** 18:26 (63 orders seeded, 3 registered open — matches pre-restart open_orders,
+  0 degraded, positions=2 restored, equity continuity clean).
+- **Soak (18:26→19:08, green):** healthy; 0 level-50; decides on both 15m bars (1 proposed,
+  3 hold); no EXPIRED; reconciler 84 passes, 0 errors; only the designed warning-severity
+  mismatch alert firing; `AgentClientFatalLatch`/`ReconciliationHalt` verified loaded and
+  correctly inactive.
+- **#13 VERDICT — same pass, POSITIVE: the cache WORKS.** First soak window:
+  `cache_creation` 2775, `cache_read` 8325 = one 2775-token prefix written once, read back on
+  each of the 3 subsequent calls. The experiment KEEPS (no revert). True per-call prompt is
+  ≈4,435 tokens, not the ≈1,660 that `input_tokens` shows — the cache has likely been working
+  since Pass 4 deployed it, invisibly. Window cost: true ≈$0.059 vs counted ≈$0.040 (~1.5×
+  undercount, creation-heavy first window; steady state is cheaper as writes amortize hourly).
+  Net effect of the cache is a SAVING (≈2,775 tokens/call at 0.3 instead of 3.0 $/MTok once
+  written), but the counted $/day understates true billing — Stage-1's ≤$1/day must eventually
+  be judged on true spend (see flagged item).
+- **Ops gotcha (recorded in project memory):** Edit-tool writes replace files by atomic rename,
+  and Docker Desktop's VirtioFS pins a single-file bind mount at the OLD byte length — the
+  container saw my new rules truncated (promtool validated the truncation happily: 8 rules).
+  Remedy: recreate the consuming container after editing any single-file mount.
+- **Flagged for human review:**
+  - **True-spend accounting**: the promotion gate's `llmCostUsd` (and every $/day read) prices
+    only `input/output` at flat 3/15; cache reads (0.3) and 1h-TTL writes (6.0) are now visible
+    in Prometheus but not in the gate. Folding them in makes the gate STRICTER (honest-cost
+    direction) but changes the promotion formula → owner sign-off requested. Proposed path =
+    backlog #27 (nullable analytics columns on `agent_decisions` via the scoped migration
+    exception + journal plumbing + promotion-stats read).
+  - FYI: `ReconciliationMismatch` now pages at warning, not critical (interim until #24's
+    class split; halting classes still page critical via `ReconciliationHalt` +
+    `KillSwitchEngaged`). Revert trivially if you want the noise back.
+- **Next-pass candidates:** #14 first countable Stage-1 day (07-08) with cache-corrected true
+  $/day; #27 cache-token persistence (needs the owner decision above for the gate formula, but
+  the columns+plumbing half is autonomous); #19 Grafana panels (cache series now plottable);
+  #10 threshold re-tune once the reason mix stabilizes; #24/#25 remain owner packages.
+- **Empty-pass counter:** 0 of 2 (shipped two improvements).
+- **Meta:** solo pass, no agent dispatches (both improvements observability-scoped, no
+  mandatory reviewer trigger); the soak Monitor ran sandboxed and was blind to docker — polled
+  manually after its timeout; future passes should soak via sandbox-disabled background Bash.

@@ -129,6 +129,8 @@ describe('agenticEnv', () => {
       maxCallsPerDay: 42,
       maxTokensPerDay: 999999,
       entryTtlBars: 2,
+      playbookAbPct: 0,
+      expectancyLadderEnabled: false,
       dailyCostStopUsd: 6,
       maxEntriesPerDay: 3,
       drainCooldownBaseMs: 1000,

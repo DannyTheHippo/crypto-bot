@@ -195,6 +195,8 @@ describe('validate()', () => {
         reflectionCooldownMs: 604_800_000,
         autoPromoteMinTrades: 0,
         playbookPin: undefined,
+        playbookAbPct: 0,
+        expectancyLadderEnabled: false,
         tokenPriceInputPerMtok: '3',
         tokenPriceOutputPerMtok: '15',
         promotionDustNotional: '5',
@@ -274,6 +276,22 @@ describe('validate()', () => {
     it('AGENTIC_PLAYBOOK_PIN present → parsed as a positive int', () => {
       const cfg = validate({ PORT: '3100', AGENTIC_PLAYBOOK_PIN: '7' });
       expect(cfg.agentic.playbookPin).toBe(7);
+    });
+
+    it('AGENTIC_PLAYBOOK_AB_PCT absent → 0 (routing disabled)', () => {
+      const cfg = validate({ PORT: '3100' });
+      expect(cfg.agentic.playbookAbPct).toBe(0);
+    });
+
+    it('AGENTIC_PLAYBOOK_AB_PCT present → parsed within 0-50', () => {
+      const cfg = validate({ PORT: '3100', AGENTIC_PLAYBOOK_AB_PCT: '25' });
+      expect(cfg.agentic.playbookAbPct).toBe(25);
+    });
+
+    it('throws on AGENTIC_PLAYBOOK_AB_PCT above 50', () => {
+      expect(() => validate({ PORT: '3100', AGENTIC_PLAYBOOK_AB_PCT: '51' })).toThrow(
+        /AGENTIC_PLAYBOOK_AB_PCT/,
+      );
     });
 
     it('throws on non-numeric AGENTIC_TIMEOUT_MS', () => {

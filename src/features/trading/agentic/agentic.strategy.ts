@@ -35,6 +35,7 @@ import {
   type PrescreenReason,
   type PrescreenThresholds,
 } from './prescreen';
+import type { RoundTripEvidencePort } from '../../../ports/promotion';
 
 export interface AgenticStrategyParams {
   readonly symbol: SymbolId;
@@ -53,6 +54,11 @@ export interface AgenticStrategyParams {
   // cycles gets a CANCEL_OPEN (risk-reducing; routed by SignalSink to an order-cancel, never to the
   // gateway). Optional/absent/0 ⇒ disabled, so existing callers stay byte-identical.
   readonly entryTtlBars?: number;
+  // W4.2 expectancy-laddered strength modulation: scales ENTER_LONG strength by this strategy's
+  // rolling realized net expectancy — reduction-only (see the class-level EXPECTANCY_LADDER_* consts
+  // for the ladder). Optional/absent ⇒ disabled, so existing callers stay byte-identical. Also inert
+  // without AgenticStrategyDeps.evidence — a true flag with no evidence port is a no-op, not an error.
+  readonly expectancyLadderEnabled?: boolean;
 }
 
 export interface AgenticStrategyDeps {
@@ -65,6 +71,12 @@ export interface AgenticStrategyDeps {
   // the finer PrescreenReason behind the outcome (absent for 'failopen_error': evaluatePrescreen
   // itself threw, so no reason was ever computed).
   readonly onPrescreen?: (outcome: PrescreenOutcome, reason?: PrescreenReason) => void;
+  // W4.2 expectancy-laddered strength modulation's data source: realized (venue-fill-derived) closed
+  // round trips, the same evidence feed the reflection lane reads (ports/promotion.ts). Optional —
+  // absent means the ladder is inert even when expectancyLadderEnabled is true (see that param's own
+  // comment); no in-strategy fallback is computed, since the strategy has no other access to
+  // realized fills.
+  readonly evidence?: RoundTripEvidencePort;
   readonly logger?: LoggerLike;
 }
 
@@ -86,6 +98,26 @@ const HTF_TARGET_MS: Record<'h1' | 'h4', number> = { h1: 3_600_000, h4: 14_400_0
 // Placeholder journal `model` value for callers that predate AgenticStrategyParams.model (e.g. the
 // composition root's construction, wired for real by a later module-wiring task).
 const DEFAULT_MODEL_ID = 'unknown';
+
+// W4.2 expectancy-laddered strength modulation. Mean netPnl (USD, Decimal-computed off the evidence
+// port's decimal strings) over the last EXPECTANCY_LADDER_WINDOW_TRIPS CLOSED round trips for THIS
+// strategyId; fewer than EXPECTANCY_LADDER_MIN_TRIPS ⇒ insufficient data ⇒ full strength.
+// RoundTripEvidencePort.recentRoundTrips is lane-wide, not strategyId-scoped (ports/promotion.ts) —
+// FETCH_LIMIT over-fetches so filtering down to this.id still has a chance of finding a full window
+// in a multi-symbol deployment; the extra rows are discarded below.
+const EXPECTANCY_LADDER_WINDOW_TRIPS = 15;
+const EXPECTANCY_LADDER_FETCH_LIMIT = 60;
+const EXPECTANCY_LADDER_MIN_TRIPS = 8;
+// Ladder: mean >= 0 (flat or profitable) -> full strength; mean >= this floor (losing, but only
+// slightly) -> 0.7x; else (clearly negative) -> 0.4x. Reduction-only by construction — no branch
+// ever exceeds 1.0, so this can only shrink downstream sized notional, never grow it.
+const EXPECTANCY_LADDER_SLIGHT_NEGATIVE_FLOOR_USD = '-0.10';
+const EXPECTANCY_LADDER_MULTIPLIER_FULL = 1;
+const EXPECTANCY_LADDER_MULTIPLIER_SLIGHT_NEGATIVE = 0.7;
+const EXPECTANCY_LADDER_MULTIPLIER_NEGATIVE = 0.4;
+// Mirrors AnthropicAgentClient's own MIN_STRENGTH floor (anthropic-agent-client.ts) — the ladder must
+// never scale a signal's strength below the floor the client itself already enforces on confidence.
+const MIN_SIGNAL_STRENGTH = 0.1;
 
 // Concrete agentic strategy: a thin in-process host-side shell that delegates each decision to the
 // out-of-process agent client. It enriches the host's snapshot with computed indicators (own
@@ -112,6 +144,8 @@ export class AgenticStrategy implements AsyncStrategy {
   private readonly prescreenEnabled: boolean;
   private readonly prescreenThresholds?: PrescreenThresholds;
   private readonly entryTtlBars: number;
+  private readonly expectancyLadderEnabled: boolean;
+  private readonly evidence?: RoundTripEvidencePort;
   // W2.1 stale-entry sweep state. OpenOrderSummary carries no timestamps, so age is measured in
   // observed decide cycles: clientOrderId → the snapshot eventTime this strategy FIRST saw the order
   // resting. cancelRequestedAt records when a CANCEL_OPEN was emitted for an id so it isn't re-spammed
@@ -155,6 +189,8 @@ export class AgenticStrategy implements AsyncStrategy {
     this.prescreenEnabled = params.prescreenEnabled ?? false;
     this.prescreenThresholds = params.prescreenThresholds;
     this.entryTtlBars = params.entryTtlBars ?? 0;
+    this.expectancyLadderEnabled = params.expectancyLadderEnabled ?? false;
+    this.evidence = deps.evidence;
     this.subscriptions = {
       venue: params.venue,
       symbols: [params.symbol],
@@ -199,7 +235,7 @@ export class AgenticStrategy implements AsyncStrategy {
       throw err;
     }
 
-    const signals = proposal.signals;
+    const signals = await this.applyExpectancyLadder(proposal.signals);
     const candles = input.snapshot.candles.get(this.symbol) ?? [];
     const lastCandle = candles.length > 0 ? candles[candles.length - 1] : undefined;
     const lastClose = lastCandle ? toIndicatorNumber(lastCandle.close) : NaN;
@@ -322,6 +358,51 @@ export class AgenticStrategy implements AsyncStrategy {
       );
       this.onPrescreen?.('failopen_error');
       return null;
+    }
+  }
+
+  // W4.2 expectancy-laddered strength modulation. Disabled, no evidence port wired, or no ENTER_LONG
+  // signal present ⇒ returns signals unchanged with no DB round trip. Other signal kinds (EXIT_LONG,
+  // CANCEL_OPEN, etc.) are never touched — only ENTER_LONG strength is reduction-scaled.
+  private async applyExpectancyLadder(signals: readonly Signal[]): Promise<Signal[]> {
+    if (!this.expectancyLadderEnabled || !this.evidence) return [...signals];
+    if (!signals.some((s) => s.kind === 'ENTER_LONG')) return [...signals];
+
+    const multiplier = await this.computeExpectancyMultiplier();
+    if (multiplier === EXPECTANCY_LADDER_MULTIPLIER_FULL) return [...signals];
+
+    return signals.map((s) =>
+      s.kind === 'ENTER_LONG'
+        ? { ...s, strength: Math.max(MIN_SIGNAL_STRENGTH, s.strength * multiplier) }
+        : s,
+    );
+  }
+
+  // Fetches the evidence port's lane-wide recent round trips, filters to this strategy's own closed
+  // trips, and maps the trailing window's mean net PnL onto the ladder. Any failure (including too
+  // little data) fails open to full strength — the ladder is risk-reducing, so its own errors must
+  // never risk-increase by mistake in the other direction.
+  private async computeExpectancyMultiplier(): Promise<number> {
+    if (!this.evidence) return EXPECTANCY_LADDER_MULTIPLIER_FULL;
+    try {
+      const trips = await this.evidence.recentRoundTrips(EXPECTANCY_LADDER_FETCH_LIMIT);
+      const mine = trips
+        .filter((t) => t.strategyId === this.id)
+        .slice(-EXPECTANCY_LADDER_WINDOW_TRIPS);
+      if (mine.length < EXPECTANCY_LADDER_MIN_TRIPS) return EXPECTANCY_LADDER_MULTIPLIER_FULL;
+
+      const sum = mine.reduce((acc, t) => acc.plus(t.netPnl), new Decimal(0));
+      const mean = sum.div(mine.length);
+      if (mean.gte(0)) return EXPECTANCY_LADDER_MULTIPLIER_FULL;
+      if (mean.gte(EXPECTANCY_LADDER_SLIGHT_NEGATIVE_FLOOR_USD)) {
+        return EXPECTANCY_LADDER_MULTIPLIER_SLIGHT_NEGATIVE;
+      }
+      return EXPECTANCY_LADDER_MULTIPLIER_NEGATIVE;
+    } catch (err) {
+      this.logger.warn(
+        `expectancy-ladder evaluation failed, defaulting to full strength: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return EXPECTANCY_LADDER_MULTIPLIER_FULL;
     }
   }
 

@@ -2,6 +2,7 @@ import {
   Global,
   Module,
   Inject,
+  Optional,
   Logger,
   type MiddlewareConsumer,
   type NestModule,
@@ -654,6 +655,93 @@ interface PlaybookStorePort extends PlaybookProvider {
   listVersions(limit: number): Promise<readonly PlaybookVersionEntry[]>;
 }
 
+// W4.1 live champion/candidate A/B: when a newer INACTIVE reflection-minted candidate exists, route a
+// deterministic percentage of current() calls to its content instead of the resolved ACTIVE version,
+// so per-version PnL attribution (agent_decisions.playbookVersion / agentic_version_net_pnl_usd{version})
+// accrues candidate evidence BEFORE promotion. Playbook content is inert advisory prose — no state
+// crosses versions — and whatever this returns still passes through ValidatingPlaybookProvider (the
+// outer wrap below) exactly as ACTIVE does, so routing is safe by construction.
+//
+// Determinism: PlaybookProvider.current() (ports/agentic-strategy.ts) takes no per-call argument — no
+// strategyId/basedOnSeq reaches this layer, and threading either through AGENT_CLIENT/agent-prompt just
+// to key routing would be new plumbing this task deliberately avoids. Routing is therefore keyed off
+// wall-clock: a UTC-minute bucket (`floor(Date.now() / 60_000) % 100`) compared against `pct`. Every
+// current() call within the same UTC minute makes the same routing decision (no flip-flopping between
+// two consecutive decides moments apart), while the bucket cycles through all 100 values over ~100
+// minutes, approximating the requested percentage over any window longer than that. Not cached across
+// calls (unlike PlaybookStoreAdapter/InMemoryPlaybookStore's own resolved-active cache) — each call
+// re-derives its bucket off the live clock and re-reads listVersions, so a freshly minted candidate or
+// a promotion is picked up on the very next call, never stale.
+//
+// Exported (unlike the sibling ValidatingPlaybookProvider) so its own unit spec can import and
+// exercise it directly against a fake PlaybookStorePort — same precedent as MetricsWrappingAgentClient
+// below, which agent-decide-outcome.spec.ts imports from this module the same way.
+export class PlaybookAbRoutingProvider implements PlaybookStorePort {
+  private static readonly BUCKET_MS = 60_000;
+
+  constructor(
+    private readonly inner: PlaybookStorePort,
+    private readonly pct: number,
+  ) {}
+
+  async current(): Promise<{
+    version: number;
+    content: string;
+    source?: 'pin' | 'promotion' | 'seed';
+  }> {
+    const active = await this.inner.current();
+    if (this.pct <= 0) return active; // default/disabled — skip the listVersions round trip entirely
+
+    const bucket = Math.floor(Date.now() / PlaybookAbRoutingProvider.BUCKET_MS) % 100;
+    if (bucket >= this.pct) return active;
+
+    const candidate = await this.latestCandidate(active.version);
+    if (!candidate) return active;
+
+    // Local structural gate: an invalid candidate falls back to ACTIVE rather than ever being
+    // surfaced (and journaled) as the served version — ValidatingPlaybookProvider still re-validates
+    // ACTIVE and candidate content identically regardless; this pre-check just keeps a rejected
+    // candidate from being the thing that lands in agent_decisions.playbook_version.
+    const validation = validatePlaybook(candidate.content);
+    if (!validation.ok) return active;
+
+    // `source` intentionally omitted (not undefined) — this resolution outcome is neither
+    // pin/promotion/seed; PlaybookProvider.current()'s own doc calls that "omitted by providers that
+    // don't track it".
+    return { version: candidate.version, content: candidate.content };
+  }
+
+  // Newest INACTIVE reflection-minted row with version > the resolved active version — mirrors
+  // PlaybookStoreAdapter.resolve()'s own "newest wins" convention for other sources. A cap of 50 rows
+  // matches InMemoryPlaybookStore.MAX_VERSIONS, so both backings are scanned in full.
+  private async latestCandidate(activeVersion: number): Promise<PlaybookVersionEntry | undefined> {
+    const versions = await this.inner.listVersions(50);
+    let latest: PlaybookVersionEntry | undefined;
+    for (const row of versions) {
+      if (
+        row.source === 'reflection' &&
+        row.version > activeVersion &&
+        (latest === undefined || row.version > latest.version)
+      ) {
+        latest = row;
+      }
+    }
+    return latest;
+  }
+
+  append(
+    content: string,
+    source: 'reflection' | 'promotion',
+    parentVersion: number,
+  ): Promise<{ version: number }> {
+    return this.inner.append(content, source, parentVersion);
+  }
+
+  listVersions(limit: number): Promise<readonly PlaybookVersionEntry[]> {
+    return this.inner.listVersions(limit);
+  }
+}
+
 // Composition-root tripwire wrapping the resolved playbook store's READ side only: the playbook is
 // untrusted, previously-model-authored content (see playbook-validator.ts's header comment).
 // AnthropicAgentClient re-validates on every call regardless (defense in depth); this wrapper
@@ -861,7 +949,10 @@ export class MetricsWrappingAgentClient implements AgentClientPort {
           isTestEnv() || db === null
             ? new InMemoryPlaybookStore(SEED_PLAYBOOK, pin)
             : new PlaybookStoreAdapter(db, SEED_PLAYBOOK, pin);
-        return new ValidatingPlaybookProvider(store, recorder);
+        // W4.1: A/B router sits INSIDE the validating wrap, so candidate content faces the exact
+        // same read-side validation as ACTIVE. pct=0 (default) short-circuits to the plain store.
+        const routed = new PlaybookAbRoutingProvider(store, config.agentic.playbookAbPct);
+        return new ValidatingPlaybookProvider(routed, recorder);
       },
       inject: [DRIZZLE_DB, TypedConfigService, AgentMetricsRecorder],
     },
@@ -1047,6 +1138,11 @@ export class AppModule
     @Inject(PLAYBOOK_PROVIDER) private readonly playbookProvider: PlaybookProvider,
     @Inject(REFLECTION_SERVICE) private readonly reflectionService: ReflectionService,
     @Inject(PROMOTION_READINESS) private readonly promotionReadiness: PromotionReadinessPort,
+    // W4.2 expectancy ladder's realized-evidence feed — @Optional like the token's other consumers:
+    // absent under test/ci/no-DB, which leaves the ladder inert regardless of its flag.
+    @Optional()
+    @Inject(REFLECTION_EVIDENCE)
+    private readonly roundTripEvidence?: RoundTripEvidencePort,
   ) {
     this.agentClient = new MetricsWrappingAgentClient(
       rawAgentClient,
@@ -1204,6 +1300,7 @@ export class AppModule
         journal: this.agentJournal,
         onClosedTrade: (count) => this.reflectionService.onClosedTrade(id, count),
         onPrescreen: (outcome, reason) => this.agentMetrics.recordPrescreen(outcome, reason),
+        evidence: this.roundTripEvidence,
       };
       return new AgenticStrategy(id, p as AgenticStrategyParams, this.agentClient, deps);
     });
@@ -1314,6 +1411,7 @@ export class AppModule
         breakoutLookbackBars: agentic.prescreenBreakoutLookbackBars,
         breakoutPct: agentic.prescreenBreakoutPct,
       },
+      expectancyLadderEnabled: agentic.expectancyLadderEnabled,
     };
   }
 }

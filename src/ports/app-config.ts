@@ -56,6 +56,9 @@ export interface AppConfig {
     autoPromoteMinTrades: number;
     // Absent means unpinned.
     playbookPin?: number;
+    // W4.1 champion/candidate A/B: percent (0-50) of decides deterministically routed to a newer
+    // INACTIVE reflection-minted candidate instead of ACTIVE. 0 disables (default).
+    playbookAbPct: number;
     // PromotionReadinessService LLM-cost math: USD per 1M tokens, operator-adjustable.
     tokenPriceInputPerMtok: string;
     tokenPriceOutputPerMtok: string;
@@ -69,6 +72,10 @@ export interface AppConfig {
     prescreenVolRatio: number;
     prescreenBreakoutLookbackBars: number;
     prescreenBreakoutPct: number;
+    // W4.2 expectancy-laddered strength modulation: reduction-only ENTER_LONG strength scaling keyed
+    // to this strategy's rolling realized net expectancy. Default false — inert regardless of the
+    // knob unless AgenticStrategyDeps also carries a RoundTripEvidencePort (see agentic.strategy.ts).
+    expectancyLadderEnabled: boolean;
   };
   // Risk-lane knobs read via ConfigService (mirrors the agentic block above).
   risk: {

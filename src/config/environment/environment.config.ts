@@ -153,6 +153,12 @@ const envSchema = z
       .default(7 * 24 * 60 * 60 * 1000),
     // Absent means unpinned — no default (an explicit default would look like a pin).
     AGENTIC_PLAYBOOK_PIN: z.coerce.number().int().positive().optional(),
+    // W4.1 champion/candidate A/B: percent (0-50) of decides deterministically routed to a newer
+    // INACTIVE reflection-minted candidate (see PlaybookAbRoutingProvider, app.module.ts) instead of
+    // the resolved ACTIVE version, so per-version PnL attribution accrues candidate evidence before
+    // promotion. 0 (default) disables routing — every decide sees ACTIVE, byte-identical to pre-W4.1.
+    // Capped at 50 so a candidate can never outweigh the active version's own evidence share.
+    AGENTIC_PLAYBOOK_AB_PCT: z.coerce.number().int().min(0).max(50).default(0),
     // Cumulative closed-trade floor before a reflection candidate auto-promotes to ACTIVE (G4b); 0
     // (default) disables auto-promotion — see reflection.service.ts's autoPromoteMinTrades comment.
     AGENTIC_AUTO_PROMOTE_MIN_TRADES: z.coerce.number().int().min(0).default(0),
@@ -176,6 +182,15 @@ const envSchema = z
     AGENTIC_PRESCREEN_VOL_RATIO: z.coerce.number().positive().default(1.3),
     AGENTIC_PRESCREEN_BREAKOUT_LOOKBACK_BARS: z.coerce.number().int().positive().default(20),
     AGENTIC_PRESCREEN_BREAKOUT_PCT: z.coerce.number().positive().default(0.005),
+    // W4.2 expectancy-laddered strength modulation: scales ENTER_LONG signal strength by this
+    // strategy's rolling realized net expectancy — reduction-only (never raises strength above what
+    // the LLM proposed). 'true'/'false' (not z.coerce.boolean(), same rationale as
+    // AGENTIC_PRESCREEN_ENABLED above). Default 'false': an unconfigured deployment sees zero
+    // behavior change.
+    AGENTIC_EXPECTANCY_LADDER: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
     // Marketable-exit crossing buffer (bps) for reduce-only intents (PositionSizerService): how far
     // the IOC limit crosses the spread so a partial fill doesn't leave sub-minNotional dust resting
     // away from market. Capped at 99 (< DEFAULT_LIMITS.maxBandBps=100 in risk.module) so a crossed
@@ -324,6 +339,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     AGENTIC_REFLECTION_EVERY_N_TRADES: agenticReflectionEveryNTrades,
     AGENTIC_REFLECTION_COOLDOWN_MS: agenticReflectionCooldownMs,
     AGENTIC_PLAYBOOK_PIN: agenticPlaybookPin,
+    AGENTIC_PLAYBOOK_AB_PCT: agenticPlaybookAbPct,
     AGENTIC_AUTO_PROMOTE_MIN_TRADES: agenticAutoPromoteMinTrades,
     AGENTIC_TOKEN_PRICE_INPUT_PER_MTOK: agenticTokenPriceInputPerMtok,
     AGENTIC_TOKEN_PRICE_OUTPUT_PER_MTOK: agenticTokenPriceOutputPerMtok,
@@ -334,6 +350,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     AGENTIC_PRESCREEN_VOL_RATIO: agenticPrescreenVolRatio,
     AGENTIC_PRESCREEN_BREAKOUT_LOOKBACK_BARS: agenticPrescreenBreakoutLookbackBars,
     AGENTIC_PRESCREEN_BREAKOUT_PCT: agenticPrescreenBreakoutPct,
+    AGENTIC_EXPECTANCY_LADDER: agenticExpectancyLadder,
     EXIT_CROSS_BUFFER_BPS: exitCrossBufferBps,
     BASE_NOTIONAL: baseNotional,
     SIZER_EQUITY_FRACTION: sizerEquityFraction,
@@ -391,6 +408,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       reflectionCooldownMs: agenticReflectionCooldownMs,
       autoPromoteMinTrades: agenticAutoPromoteMinTrades,
       playbookPin: agenticPlaybookPin,
+      playbookAbPct: agenticPlaybookAbPct,
       tokenPriceInputPerMtok: agenticTokenPriceInputPerMtok,
       tokenPriceOutputPerMtok: agenticTokenPriceOutputPerMtok,
       promotionDustNotional,
@@ -400,6 +418,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       prescreenVolRatio: agenticPrescreenVolRatio,
       prescreenBreakoutLookbackBars: agenticPrescreenBreakoutLookbackBars,
       prescreenBreakoutPct: agenticPrescreenBreakoutPct,
+      expectancyLadderEnabled: agenticExpectancyLadder,
     },
     risk: {
       exitCrossBufferBps,

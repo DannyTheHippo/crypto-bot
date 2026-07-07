@@ -171,6 +171,9 @@ services:
       - '9090:9090'
     volumes:
       - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # Without this mount the config's rule_files glob silently matches nothing and every alert
+      # is dead (discovered 2026-07-07: /api/v1/rules returned zero groups since first boot).
+      - ./observability/alerts.rules.yml:/etc/prometheus/alerts.rules.yml:ro
     command:
       - --config.file=/etc/prometheus/prometheus.yml
 

@@ -33,11 +33,35 @@ never changes for strategy evolution.
 
 **Stage 1 — cost floor, DEPLOYED 2026-07-06** (soak pending confirmation; Stage-1 exit criterion:
 ≥3 consecutive days ≤$1/day LLM spend, round trips ≥2/day, no EXPIRED/starved-exit regressions).
+First in-band reading 2026-07-07 Pass 6: ≈$0.33/day pro-rated and 50% prescreen skip on boot
+b61908ba (2.2h sample — too short to count toward the 3-day criterion; the consecutive-day clock
+can only start on a full clean day, and 07-07 carries the 12:15–13:18 outage hole plus the dead
+reconciler caveat).
 Stage 0 verified same day: promotion gauges recovered post-restart (23 RTs, net −$14.72, LLM
 $11.53, window 1.83d) and the readiness walk pools cycles across (strategyId, symbol) with a
 mode-only fill filter — pre-multi-symbol evidence counts.
 
 ## Last pass
+
+**Pass 6, 2026-07-07** (scheduled run, ~15:15–16:10). Two findings. (1) **Reconciliation is DEAD
+since 14:45:32** — the first live CANCEL_OPEN (entry-TTL sweep cancelling the 13:45 plan entry)
+stranded an order in CANCEL_PENDING because nothing acks cancels on the demo venue (only the
+paper adapter emits CANCEL_ACK), and every 30s reconcile pass since throws
+`VENUE_CANCELED in CANCEL_PENDING` and aborts whole — trades/balances axes included. Fix package
+(reducer arms + per-order guard + gate folds ack on REST success + boot-recovery portfolio
+seeding) is OWNER territory — exact diffs in LOG.md Pass 6. **RESTART HAZARD: recreating the app
+container before the fix lands makes the stuck order permanently unresolvable and poisons live
+arming via hasUnresolvedOrders()** — do not redeploy the app until the fix ships (deploying the
+fix itself is fine IF it includes reducer arms + portfolio seeding: the first reconcile pass then
+self-heals everything, 57 zombies included). (2) **All Prometheus alert rules were dead since
+first boot** (alerts.rules.yml never mounted; empty rule_files glob is not an error) — FIXED this
+pass (`239edf0`): mount added, ReconcilerStalled + ReconcilePassErrors rules added, hot-loaded via
+cp+SIGHUP (no recreate — no TSDB volume), all three reconciliation alerts verified firing against
+the live incident. Gates green (1400 unit). App container deliberately untouched. Stage-1 note:
+first sub-$1/day reading (≈$0.33/day pro-rated, 2.2h sample) and first in-band skip rate (3/6).
+Backlog #21 answered negatively: the sweep structurally cannot see boot-recovered orders (they
+never enter the portfolio open set); the 57 stale orders are venue-dead journal residue, not live
+balance locks (174 clean passes would have HALTed UNKNOWN_OURS otherwise).
 
 **Pass 5, 2026-07-07** (scheduled run, ~12:40–13:50). Found and fixed a trading-path correctness
 bug the same pass: the first AGENTIC_PLAN_MODE boot (de36fa2d) got HTTP 400 on its FIRST decide —
@@ -109,8 +133,10 @@ counter resets naturally now that live data unblocks #10.
 | 17  | W2.6 cross-symbol + self-track-record prompt block (≤300 tok, validated via the offline harness)                                                                                                                                                                                                 | 2     | S      | pending (deferred from Pass 4 — file-scope conflict with plan-mode work)                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | 18  | W4.4 seeds: per-hour/session expectancy gating; bounded knob-learning channel for reflection (needs validator design); fee-tier/BNB-discount paper modeling (live-prep); trade-flow snapshot widening                                                                                            | 2+    | M-L    | seeds (each needs data or design first)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | 19  | Grafana panels for the new series (cache tokens, `outcome="noop"` split — per-version panels shipped by owner in `ba488ec`)                                                                                                                                                                      | 1     | S      | UNBLOCKED 2026-07-07 Pass 5: owner took ownership of the dashboard (`ba488ec`, `c7865df`) — tree clean, remaining panels can ship in a normal pass                                                                                                                                                                                                                                                                                                                                                                                                 |
-| 20  | Degraded-latch observability: `agent_client_degraded` gauge (or alert on `agent_decide_total{outcome="error_fatal"} > 0`) + Grafana alert — a FATAL latch currently emits one warn line and the lane silently dies (cost ~1h dead air on 2026-07-07)                                             | 1     | S      | pending (seeded by Pass 5's incident)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| 21  | Verify the entry-TTL sweep actually covers boot-RECOVERED open orders: boot b61908ba re-seeded 57 stale orders and no CANCEL_OPEN fired during the Pass-5 soak — Pass 4's "sweep clears them organically" assumption is unverified; recovered orders may lack sweep-eligible tracking            | 1     | S      | pending (watch next pass; if not swept, propose venue-side one-time cleanup to owner)                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| 20  | Degraded-latch observability: `agent_client_degraded` gauge (or alert on `agent_decide_total{outcome="error_fatal"} > 0`) + Grafana alert — a FATAL latch currently emits one warn line and the lane silently dies (cost ~1h dead air on 2026-07-07)                                             | 1     | S      | pending (seeded by Pass 5's incident; value UP after Pass 6 — alert rules actually load/fire now, so a new rule on `error_fatal` is deliverable without app changes)                                                                                                                                                                                                                                                                                                                                                                               |
+| 21  | Verify the entry-TTL sweep actually covers boot-RECOVERED open orders: boot b61908ba re-seeded 57 stale orders and no CANCEL_OPEN fired during the Pass-5 soak — Pass 4's "sweep clears them organically" assumption is unverified; recovered orders may lack sweep-eligible tracking            | 1     | S      | ANSWERED-NEGATIVE 2026-07-07 Pass 6: structurally impossible — boot recovery seeds only the order book, recovered orders never enter the portfolio open set the sweep reads (`boot-recovery.service.ts:52-53`). Fix = portfolio seeding, item 4 of the Pass-6 flagged OMS package (owner). Also: the 57 are venue-dead journal residue, not live balance locks                                                                                                                                                                                     |
+| 22  | Prometheus TSDB named volume (`prometheus_data:/prometheus`) — today the TSDB lives in the container layer; any recreate wipes all metrics history (forced Pass 6 to hot-load rules via cp+SIGHUP instead of `up -d prometheus`). One-time history loss at migration; coordinate with owner      | 1     | S      | pending (new, seeded by Pass 6)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| 23  | OMS cancel-ack fix package (reducer VENUE_CANCELED/VENUE_EXPIRED arms in CANCEL_PENDING/CANCEL_UNKNOWN; reconcile per-order fold guard; gate folds CANCEL_ACK on REST success; boot-recovery portfolio seeding) — reconciliation is DEAD until this ships; every stale-entry cancel reproduces   | 1     | M      | OWNER-ONLY (must-not-touch files) — exact diffs in LOG.md Pass 6; passes watch and report only                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 
 ## Flagged for human review (open)
 
@@ -145,3 +171,26 @@ counter resets naturally now that live data unblocks #10.
   were sent from inside the app container to reproduce and verify the 400 fix — real spend on the
   lane's API key that bypasses DailyLlmBudget accounting. Deliberate, tiny, and logged here for
   cost honesty.
+
+- **RECONCILIATION DEAD + RESTART HAZARD** (2026-07-07 Pass 6 — read before ANY app
+  redeploy): every reconcile pass since 14:45:32 throws `Illegal OMS transition: VENUE_CANCELED
+in state CANCEL_PENDING` and aborts whole (order+trade+balance axes unverified while trading
+  continues). Root cause: nothing acks cancels on the demo venue (only the paper adapter emits
+  CANCEL_ACK; the gate discards the REST cancel success), so the entry-TTL sweep's first live
+  CANCEL_OPEN stranded its order in CANCEL_PENDING. Fix package = backlog #23, exact diffs in
+  LOG.md Pass 6 (owner-only files). **Do NOT recreate the app container before the fix ships**:
+  boot recovery would degrade the stuck order to a CANCEL_UNKNOWN that nothing can ever resolve
+  (no intent, not in the portfolio open set) and `hasUnresolvedOrders()` would refuse live arming
+  permanently. Deploying the fix itself is safe IF it includes the reducer arms + boot-recovery
+  portfolio seeding (first reconcile pass then self-heals the stuck order and the 57 zombies).
+  Verification SQL is in the LOG.md Pass 6 entry. ReconcilerStalled/ReconciliationMismatch/
+  ReconcilePassErrors alerts are now live and firing on this exact condition (Pass 6 fix
+  `239edf0`) — they clear when the fix lands, which doubles as the fix's soak signal.
+
+- **Alerting was dead since first boot** (2026-07-07 Pass 6, FIXED same pass): alerts.rules.yml
+  was never mounted into the prometheus container — `rule_files` glob matched nothing, zero rule
+  groups loaded, every Phase-10 alert inert since the stack was built. Fixed in `239edf0` (mount +
+  2 new reconciler rules), hot-loaded via cp+SIGHUP to preserve the un-volumed TSDB. Residue: the
+  running container's rules came via `cp` — they survive restart but not recreate; the compose
+  mount takes over on the next recreate. Listed for visibility until the mount has been exercised
+  by a real recreate (pair with backlog #22).

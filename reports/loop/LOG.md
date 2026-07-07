@@ -296,3 +296,95 @@ a plan is active (calls flat while long); plan-executor journal rows (`model='pl
   Prometheus — read the DB usage columns or add observability first), #14 skip-rate/$-day
   re-measure with plan mode live, #21 sweep-coverage check, first plan lifecycle watch
   (plan-executor bars, entry TTL, forced exits), #17 W2.6 cross-symbol block.
+
+## 2026-07-07 — Pass 6 (scheduled run, ~15:15–16:10)
+
+- **Data window read:** boot b61908ba logs (13:18→15:45, 2056 lines), promtool gauges, git log
+  since Pass 5 (one commit: the Pass-5 record `893d365`). Tree clean at pass start.
+- **Headline metrics (15:35):** readiness 28 RTs, net −$17.26, LLM $13.68, window 2.16d, ready=0;
+  equity 4997.28, drawdown 0.05%. This boot: 4434 in / 1092 out tokens ≈ $0.030 over ~2.2h →
+  **≈$0.33/day pro-rated — first reading under the Stage-1 ≤$1/day exit criterion** (small sample;
+  thinking-off + prescreen + 15m cadence doing their job). Prescreen 3 quiet / 3 called (50%
+  skip — inside the 50–70% target band for the first time). Decides: 3, all `proposed`, zero
+  rejections, zero EXPIRED. 4 fills, 1 round trip this boot.
+- **Key finding 1 (trading-path correctness bug — outranks everything; fix out of autonomy
+  bounds → flagged with proposed diffs):** **reconciliation has been dead since 14:45:32.**
+  100+ consecutive passes (30s cadence) throw `Illegal OMS transition: VENUE_CANCELED in state
+CANCEL_PENDING`; `reconciliation_runs_total`: 174 clean then 105+ `error`; last clean pass
+  14:45:02. Chain, each link verified in code: (1) only `PaperExchangeAdapter` ever emits a
+  `CANCEL_ACK` exec report (`paper-exchange.adapter.ts:209`) — the ccxt/demo adapter has no user
+  stream and synthesizes nothing; (2) `ExecutionGateService.cancel` journals `CANCEL_REQUESTED`
+  → CANCEL_PENDING, fires REST `cancelOrder`, and DISCARDS the success response, waiting for an
+  ack that never comes on testnet (`execution-gate.service.ts:250-268`); (3) the stranded order
+  stays in the portfolio open set, the next reconcile pass finds it gone venue-side and folds
+  `VENUE_CANCELED` — illegal in CANCEL_PENDING (`reducer.ts:189-198`) — and the throw aborts the
+  ENTIRE pass including the trades and balances axes (`reconciliation.service.ts:107-113`,
+  `adoptTerminal`'s fold has no per-order guard). Trigger: the first-ever CANCEL_OPEN on the demo
+  venue (entry-TTL sweep at the 14:45 bar cancelling the 13:45 plan-priced entry — W2.1's first
+  live firing; every future stale-entry cancel reproduces this). The demo fill poller still runs,
+  so fills ingest — but venue-truth confirmation is OFF while trading continues.
+- **Key finding 2 (in-scope, shipped this pass):** **every Prometheus alert rule was silently
+  dead since first boot.** `docker-compose.yml` mounted only `prometheus.yml`; `alerts.rules.yml`
+  was never mounted, and a `rule_files` glob matching nothing is not an error — `/api/v1/rules`
+  returned `{"groups":[]}`. TargetDown, KillSwitchEngaged, ReconciliationMismatch: none could
+  ever fire. Today's incident would have paged at 14:50 (`reconciliation_mismatch_total` was
+  incrementing every failing pass — the adopt is counted before the fold throws).
+- **Restart hazard (owner MUST read before touching the app container):** recovery degrades
+  CANCEL_PENDING → CANCEL_UNKNOWN at boot (`recovery.ts:13-14`), but boot recovery seeds only the
+  order book — recovered orders get no in-flight intent and never enter the portfolio open set
+  (`boot-recovery.service.ts:52-53`), so the resolver cannot poll them
+  (`unknown-resolver.service.ts:103`) and reconcile cannot see them. **Any app
+  recreate/redeploy before the OMS fix lands converts the stuck order into a PERMANENTLY
+  unresolvable CANCEL_UNKNOWN**, and `hasUnresolvedOrders()` then refuses live arming forever
+  (until manual DB surgery on an append-only journal — i.e., don't).
+- **Backlog #21 answered (negative, by construction):** the entry-TTL sweep reads
+  `portfolio.forStrategy().openOrders`; boot-recovered orders are never in that set, so the sweep
+  CANNOT cover them — Pass 4's "clears them organically" was structurally impossible. Silver
+  lining: 174 clean reconcile passes this boot mean the venue open list contained none of the 57
+  recovered zombies (our-prefix venue orders absent locally would have HALTed UNKNOWN_OURS) —
+  the stale orders are venue-dead journal residue, re-seeded into the order book every boot, not
+  live balance locks.
+- **Decision + diff:** the only in-scope, deploy-safe improvement was the alerting fix (S,
+  observability+compose): mount `alerts.rules.yml` into the prometheus service; add
+  `ReconcilerStalled` (no clean pass >10m, critical, on the existing last-success gauge) and
+  `ReconcilePassErrors` (any `result="error"` in 15m, warning). Commit `239edf0`, 2 files.
+- **Gates:** build/lint/typecheck green; 1400/1400 unit.
+- **Deploy + soak:** hot-loaded WITHOUT recreating the container (`docker compose cp` + SIGHUP —
+  Prometheus has NO data volume; a recreate would wipe 2 days of TSDB). `promtool check rules`:
+  9 rules OK; `/api/v1/rules` shows all 3 groups; **all three reconciliation alerts verified
+  FIRING against the live incident** (ReconciliationMismatch, ReconcilerStalled,
+  ReconcilePassErrors) — end-to-end validation no synthetic test could give. App container
+  untouched (uptime preserved deliberately — see restart hazard). Note: the running container's
+  rules arrived via `cp`, so they survive restart but not recreate; the compose mount takes over
+  on the next recreate.
+- **Flagged for human review — proposed OMS/execution fix package** (all files are
+  must-not-touch for a pass; sequencing matters, see restart hazard):
+  1. `domain/oms/reducer.ts` — CANCEL_PENDING: accept `VENUE_CANCELED`→CANCELED and
+     `VENUE_EXPIRED`→EXPIRED (venue confirming the cancel via the reconcile channel is the
+     EXPECTED demo-venue outcome, not a contradiction; fills still win — the FILL arm stays
+     first). Same two arms on CANCEL_UNKNOWN. Optionally add `CANCEL_ACK`-on-CANCELED to
+     `reduceTerminal`'s no-op list (needed if item 3 ships, harmless alone).
+  2. `reconciliation.service.ts` `adoptTerminal` — wrap the `fold` in try/catch counting a
+     mismatch on `TransitionError` instead of letting one bad order kill the whole pass (the
+     pass-abort blast radius is the real severity multiplier today).
+  3. `execution-gate.service.ts` `cancel` — fold `CANCEL_ACK` directly when the REST
+     `cancelOrder` returns success (on ccxt the 200 IS the ack); fold `CANCEL_REJECT_UNKNOWN` →
+     CANCEL_UNKNOWN when it throws, so the resolver's query loop takes over (intent exists for
+     same-boot orders). Closes the strand-window at the source.
+  4. `boot-recovery.service.ts` (+ `loadOpenOrders` plumbing for symbol/strategyId, which the
+     `orders` table already stores) — register recovered non-terminal orders into the portfolio
+     open set. One structural gap, three symptoms: reconcile can then adopt venue truth for
+     recovered orders, post-restart CANCEL_UNKNOWNs self-heal via item 1's arms, and the
+     entry-TTL sweep finally covers recovered orders (#21). With 1+4 deployed, the first
+     reconcile pass after the fix-deploy retires today's stuck order AND the 57 zombies
+     organically — no venue-side cleanup, no DB surgery.
+  - Verification SQL for the owner (per-row truth; run via `!psql`):
+    `SELECT client_order_id, symbol, strategy_id, state, cum_qty, updated_at FROM orders WHERE state NOT IN ('FILLED','CANCELED','REJECTED','EXPIRED') ORDER BY updated_at DESC;`
+    (expect 1 CANCEL_PENDING from ~14:45 + ~57 ACKED zombies + any live resting entry), and
+    `SELECT e.dedupe_key, e.event_type, e.ts FROM order_events e JOIN orders o ON o.intent_id = e.order_id WHERE o.state = 'CANCEL_PENDING' ORDER BY e.id;`
+    (expect `cancel-req`/CANCEL_REQUESTED as the last row — no ack ever journaled).
+- **Next-pass candidates:** watch reconcile after the owner ships the fix package (stop-condition
+  posture until then: reconciliation is not confirming venue truth — treat any equity/fill
+  anomaly as unverified); #20 latch gauge (now higher value: alerts actually fire); Prometheus
+  TSDB named volume (new — today's no-recreate constraint exists BECAUSE history is unprotected);
+  #13 cache verification via DB SQL; #14 continues (first ≤$1/day + 50% skip reading today).

@@ -42,6 +42,11 @@ import {
   PROMOTION_WINDOW_DAYS_GAUGE,
   PROMOTION_READY_GAUGE,
 } from './promotion-metrics.service';
+import {
+  VersionAttributionMetricsService,
+  VERSION_NET_PNL_GAUGE,
+  VERSION_ROUND_TRIPS_GAUGE,
+} from './version-attribution-metrics.service';
 import { buildPinoHttpOptions } from './logger.config';
 
 @Module({
@@ -102,6 +107,9 @@ import { buildPinoHttpOptions } from './logger.config';
     PROMOTION_WINDOW_DAYS_GAUGE,
     PROMOTION_READY_GAUGE,
     PromotionMetricsService,
+    VERSION_NET_PNL_GAUGE,
+    VERSION_ROUND_TRIPS_GAUGE,
+    VersionAttributionMetricsService,
   ],
   exports: [EventLoopHealthIndicator, MetricsService, AgentMetricsRecorder],
 })

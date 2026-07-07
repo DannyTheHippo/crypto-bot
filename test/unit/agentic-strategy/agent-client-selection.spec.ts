@@ -128,6 +128,7 @@ describe('agenticEnv', () => {
       warmupBars: 50,
       maxCallsPerDay: 42,
       maxTokensPerDay: 999999,
+      entryTtlBars: 2,
       dailyCostStopUsd: 6,
       maxEntriesPerDay: 3,
       drainCooldownBaseMs: 1000,

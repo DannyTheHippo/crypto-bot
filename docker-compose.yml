@@ -79,6 +79,7 @@ services:
       AGENTIC_MAX_TOKENS_PER_DAY: 2000000 # DailyLlmBudget cap on input+output tokens per UTC day
       AGENTIC_DAILY_COST_STOP_USD: 3 # USD cost circuit breaker per UTC day (tokens × AGENTIC_TOKEN_PRICE_*); trips the same exhausted/drain path as the call/token caps; 0 disables
       AGENTIC_MAX_ENTRIES_PER_DAY: 12 # cap on ENTER_LONG decisions per UTC day
+      AGENTIC_ENTRY_TTL_BARS: 2 # stale-entry sweep: resting entries older than N observed decide cycles get a CANCEL_OPEN (risk-reducing); 0 disables
       AGENTIC_DRAIN_COOLDOWN_BASE_MS: 30000 # first AUTO-drain cooldown backoff
       AGENTIC_DRAIN_COOLDOWN_MAX_MS: 900000 # ceiling on AUTO-drain cooldown backoff
       AGENTIC_REFLECTION_EVERY_N_TRADES: 10 # closed trades between reflection runs; 0 disables reflection

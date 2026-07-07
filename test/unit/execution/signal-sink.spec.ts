@@ -5,9 +5,9 @@ import type { GatewayOutcome, SignalGatewayPort } from '../../../src/ports/risk'
 import type { SignalJournalPort } from '../../../src/ports/strategy';
 import type { ExecutionGatePort, PortfolioViewPort, SubmitAck } from '../../../src/ports/execution';
 import type { RiskApprovedIntent } from '../../../src/domain/types/risk-decision';
-import type { PortfolioSnapshot, StrategyPortfolioView } from '../../../src/domain/types/portfolio';
+import type { PortfolioSnapshot, OpenOrderSummary } from '../../../src/domain/types/portfolio';
 import { makeIntent, SID } from './helpers';
-import { epochMs } from '../../../src/domain/types/ids';
+import { clientOrderId, epochMs, symbolId } from '../../../src/domain/types/ids';
 import { qty } from '../../../src/domain/types/money';
 
 const approved = (): RiskApprovedIntent =>
@@ -22,12 +22,22 @@ function makeSink(
   outcome: GatewayOutcome,
   journal?: SignalJournalPort,
   rejects?: { inc: (labels: Record<string, string>) => void },
+  openOrders?: readonly OpenOrderSummary[],
 ) {
   const submitted: RiskApprovedIntent[] = [];
+  const cancelled: Array<{ clientOrderId: string; reason: string }> = [];
+  const forStrategyCalls: string[] = [];
   const gateway: SignalGatewayPort = { accept: () => outcome };
   const portfolio: PortfolioViewPort = {
     snapshot: () => ({}) as PortfolioSnapshot,
-    forStrategy: () => ({}) as StrategyPortfolioView,
+    forStrategy: (id) => {
+      forStrategyCalls.push(id);
+      return {
+        strategyId: id,
+        positions: new Map(),
+        openOrders: openOrders ?? [],
+      };
+    },
   };
   const gate: ExecutionGatePort = {
     submit: (a) => {
@@ -37,13 +47,27 @@ function makeSink(
         outcome: 'SUBMITTED',
       } as SubmitAck);
     },
-    cancel: () => Promise.resolve(),
+    cancel: (coid, reason) => {
+      cancelled.push({ clientOrderId: coid, reason });
+      return Promise.resolve();
+    },
     cancelAllFor: () => Promise.resolve(),
     flattenAll: () => Promise.resolve(),
   };
   return {
     sink: new SignalSinkService(gateway, portfolio, gate, journal, rejects as never),
     submitted,
+    cancelled,
+    forStrategyCalls,
+  };
+}
+
+function openOrder(symbol = makeIntent().symbol, coidSeed = '0'): OpenOrderSummary {
+  return {
+    clientOrderId: clientOrderId('cbp' + coidSeed.repeat(32)),
+    symbol,
+    side: 'BUY',
+    qty: qty('1'),
   };
 }
 
@@ -60,6 +84,8 @@ const signal = () => ({
   dedupeKey: 'k',
   reason: 't',
 });
+
+const cancelSignal = () => ({ ...signal(), kind: 'CANCEL_OPEN' as const });
 
 describe('SignalSinkService', () => {
   it('submits an APPROVED decision to the execution gate', async () => {
@@ -153,5 +179,75 @@ describe('SignalSinkService', () => {
     );
     await rej.sink.recordSignal(signal());
     expect(record.mock.calls[0]).toEqual([expect.anything(), 'REJECTED']);
+  });
+
+  describe('CANCEL_OPEN', () => {
+    it('cancels every open order for the strategy+symbol without touching the gateway', async () => {
+      const { sink, submitted, cancelled, forStrategyCalls } = makeSink(
+        { status: 'GATEWAY_REJECTED', reason: 'DUPLICATE' }, // would fail if the sink ever reached the gateway
+        undefined,
+        undefined,
+        [openOrder(undefined, '0'), openOrder(undefined, '1')],
+      );
+      const sig = cancelSignal();
+      await sink.recordSignal(sig);
+      expect(forStrategyCalls).toEqual([sig.strategyId]); // scoped to the SIGNAL's own strategy
+      expect(cancelled).toEqual([
+        { clientOrderId: 'cbp' + '0'.repeat(32), reason: 'CANCEL_OPEN_SIGNAL' },
+        { clientOrderId: 'cbp' + '1'.repeat(32), reason: 'CANCEL_OPEN_SIGNAL' },
+      ]);
+      expect(submitted).toHaveLength(0); // never reaches the risk/execution submit path
+    });
+
+    it('ignores open orders on a different symbol', async () => {
+      const otherSymbol = symbolId('ETH/USDT');
+      const { sink, cancelled } = makeSink(
+        { status: 'GATEWAY_REJECTED', reason: 'DUPLICATE' },
+        undefined,
+        undefined,
+        [openOrder(otherSymbol, '0')],
+      );
+      await sink.recordSignal(cancelSignal());
+      expect(cancelled).toHaveLength(0);
+    });
+
+    it('is idempotent when there are no matching open orders (no-op)', async () => {
+      const { sink, cancelled } = makeSink(
+        { status: 'GATEWAY_REJECTED', reason: 'DUPLICATE' },
+        undefined,
+        undefined,
+        [],
+      );
+      await sink.recordSignal(cancelSignal());
+      expect(cancelled).toHaveLength(0);
+    });
+
+    it('journals the cancelled-order count as the outcome', async () => {
+      const record = vi.fn();
+      const journal: SignalJournalPort = { record };
+      const { sink } = makeSink(
+        { status: 'GATEWAY_REJECTED', reason: 'DUPLICATE' },
+        journal,
+        undefined,
+        [openOrder(undefined, '0')],
+      );
+      await sink.recordSignal(cancelSignal());
+      expect(record).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: 'CANCEL_OPEN' }),
+        'CANCEL_OPEN:1',
+      );
+    });
+
+    it('does not increment the front-door rejection counter for CANCEL_OPEN', async () => {
+      const inc = vi.fn();
+      const { sink } = makeSink(
+        { status: 'GATEWAY_REJECTED', reason: 'DUPLICATE' },
+        undefined,
+        { inc },
+        [openOrder(undefined, '0')],
+      );
+      await sink.recordSignal(cancelSignal());
+      expect(inc).not.toHaveBeenCalled();
+    });
   });
 });

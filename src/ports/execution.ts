@@ -32,10 +32,11 @@ export interface ExecRunContext {
 export interface PortfolioConfig {
   readonly quoteAsset: string;
   readonly startingCash: string;
-  // Same knob as the promotion verdict's PROMOTION_DUST_NOTIONAL: residual position notional
-  // (quote ccy) at or below which applyFill reports a round trip closed for METRICS purposes even
-  // though the position itself stays nonzero (never deleted while open — CLAUDE.md §6). Absent or
-  // '0' disables dust-close reporting: only an exact-zero fold counts (pre-W2.2 behavior).
+  // Same knob as the promotion verdict's PROMOTION_DUST_NOTIONAL: when a REDUCING fill leaves
+  // residual position notional (quote ccy) strictly below this, applyFill reports the round trip
+  // closed for METRICS purposes even though the position itself stays nonzero (never deleted while
+  // open — CLAUDE.md §6). Absent or '0' disables dust-close reporting: only an exact-zero fold
+  // counts (pre-W2.2 behavior).
   readonly dustNotional?: string;
 }
 

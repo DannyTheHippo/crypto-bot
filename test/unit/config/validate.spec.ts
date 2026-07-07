@@ -187,6 +187,7 @@ describe('validate()', () => {
         maxCallsPerDay: 500,
         maxTokensPerDay: 2_000_000,
         dailyCostStopUsd: 3,
+        entryTtlBars: 2,
         maxEntriesPerDay: 12,
         drainCooldownBaseMs: 30_000,
         drainCooldownMaxMs: 900_000,

@@ -41,6 +41,15 @@ export class SignalSinkService implements SignalSinkPort {
   ) {}
 
   async recordSignal(signal: Signal): Promise<void> {
+    // CANCEL_OPEN never reaches the gateway/sizer: position-sizer.service.ts maps it to null (no
+    // sizing to do), which the gateway would otherwise pass through only to have it land as a benign
+    // NO_POSITION reject — noise, not a decision. It is risk-reducing-only (cancel, never place), so
+    // it is handled here directly against the execution layer's existing per-order cancel path.
+    if (signal.kind === 'CANCEL_OPEN') {
+      await this.cancelOpenForSignal(signal);
+      return;
+    }
+
     const outcome = this.gateway.accept(signal, this.portfolio.snapshot());
     if (outcome.status !== 'DECIDED') {
       this.journal?.record(signal, `${outcome.status}:${outcome.reason}`);
@@ -54,5 +63,20 @@ export class SignalSinkService implements SignalSinkPort {
       return;
     }
     this.journal?.record(signal, decision.verdict); // REJECTED by risk
+  }
+
+  // Cancels only the signal's OWN strategy's open orders for the signal's OWN symbol, via
+  // ExecutionGatePort.cancel — the same per-order primitive flattenAll/cancelAllFor loop over, so no
+  // new venue call is introduced. cancelAllFor(strategyId) is not reused as-is: it is whole-strategy
+  // (all symbols), and CANCEL_OPEN is scoped to one symbol only — using it here would risk cancelling
+  // the strategy's resting orders on OTHER symbols. Idempotent: no matching open orders ⇒ no-op.
+  private async cancelOpenForSignal(signal: Signal): Promise<void> {
+    const toCancel = this.portfolio
+      .forStrategy(signal.strategyId)
+      .openOrders.filter((o) => o.symbol === signal.symbol);
+    for (const o of toCancel) {
+      await this.gate.cancel(o.clientOrderId, 'CANCEL_OPEN_SIGNAL');
+    }
+    this.journal?.record(signal, `CANCEL_OPEN:${toCancel.length}`);
   }
 }

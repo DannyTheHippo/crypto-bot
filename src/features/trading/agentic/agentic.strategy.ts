@@ -1,7 +1,7 @@
 import Decimal from 'decimal.js';
 import type { CandleEvent, CandleInterval } from '../../../domain/types/market-events';
 import type { Signal } from '../../../domain/types/signal';
-import type { StrategyId, VenueId, SymbolId } from '../../../domain/types/ids';
+import type { StrategyId, VenueId, SymbolId, EpochMs } from '../../../domain/types/ids';
 import type { SubscriptionSpec } from '../../../domain/types/subscription';
 import type { Position } from '../../../domain/types/portfolio';
 import type { Price } from '../../../domain/types/money';
@@ -49,6 +49,10 @@ export interface AgenticStrategyParams {
   // Optional/absent ⇒ disabled, so existing callers that predate this field stay byte-identical.
   readonly prescreenEnabled?: boolean;
   readonly prescreenThresholds?: PrescreenThresholds;
+  // W2.1 stale-entry sweep: a resting non-reduce-only order older than this many observed decide
+  // cycles gets a CANCEL_OPEN (risk-reducing; routed by SignalSink to an order-cancel, never to the
+  // gateway). Optional/absent/0 ⇒ disabled, so existing callers stay byte-identical.
+  readonly entryTtlBars?: number;
 }
 
 export interface AgenticStrategyDeps {
@@ -107,6 +111,16 @@ export class AgenticStrategy implements AsyncStrategy {
   private readonly logger: LoggerLike;
   private readonly prescreenEnabled: boolean;
   private readonly prescreenThresholds?: PrescreenThresholds;
+  private readonly entryTtlBars: number;
+  // W2.1 stale-entry sweep state. OpenOrderSummary carries no timestamps, so age is measured in
+  // observed decide cycles: clientOrderId → the snapshot eventTime this strategy FIRST saw the order
+  // resting. cancelRequestedAt records when a CANCEL_OPEN was emitted for an id so it isn't re-spammed
+  // every bar, but re-arms after another TTL window (covers a lost/failed cancel). Both prune to the
+  // currently-open set each cycle; in-memory by design — after a restart, ages restart at zero and a
+  // still-resting order is swept AGENTIC_ENTRY_TTL_BARS later (this is also the organic cleanup path
+  // for legacy resting orders recovered at boot).
+  private readonly entryFirstSeen = new Map<string, EpochMs>();
+  private readonly entryCancelRequestedAt = new Map<string, EpochMs>();
   // Venue minimum-notional for this symbol, captured in onInit. Used only to reclassify a sub-minimum
   // "dust" position as flat in the agent's view (see buildContext). null ⇒ unavailable ⇒ no
   // reclassification (fail safe to the prior LONG-when-any-qty behavior).
@@ -140,6 +154,7 @@ export class AgenticStrategy implements AsyncStrategy {
     this.logger = deps.logger ?? NOOP_LOGGER;
     this.prescreenEnabled = params.prescreenEnabled ?? false;
     this.prescreenThresholds = params.prescreenThresholds;
+    this.entryTtlBars = params.entryTtlBars ?? 0;
     this.subscriptions = {
       venue: params.venue,
       symbols: [params.symbol],
@@ -155,6 +170,10 @@ export class AgenticStrategy implements AsyncStrategy {
   }
 
   async decide(input: AgentDecisionInput): Promise<Signal[]> {
+    // Deterministic and prescreen-independent: resting GTC entries otherwise rest forever (nothing
+    // enforces expiresAt on ACKED orders — boot 10c8af0c recovered 55 of them). Computed first so
+    // both the quiet-hold path and the LLM path return it.
+    const staleCancels = this.staleEntryCancels(input);
     const context = this.buildContext(input);
     // Captured before trackClosedTrade advances lastPositionSide to THIS call's side — this is the
     // side the strategy was actually carrying while the PREVIOUS (still-unannotated) decision's
@@ -166,7 +185,10 @@ export class AgenticStrategy implements AsyncStrategy {
 
     const prescreenReason = this.evaluatePrescreenGate(input, context);
     if (prescreenReason !== null) {
-      return this.recordQuietHold(input, context, heldDuringPrev, prescreenReason);
+      return [
+        ...staleCancels,
+        ...this.recordQuietHold(input, context, heldDuringPrev, prescreenReason),
+      ];
     }
 
     let proposal: AgentProposal;
@@ -202,7 +224,73 @@ export class AgenticStrategy implements AsyncStrategy {
 
     this.recordJournalEntry(input, decision, proposal);
 
-    return signals;
+    return [...staleCancels, ...signals];
+  }
+
+  // W2.1 stale-entry sweep — runs every decide cycle, prescreen-skipped ones included. Emits
+  // CANCEL_OPEN for this strategy's own resting BUY orders whose observed resting age (event-time
+  // since first sighting) exceeds entryTtlBars × the base interval: risk-reducing by construction
+  // (never places orders), exempt from the entry cap and the DRAINING filter (strategy-host
+  // RISK_REDUCING), intercepted by SignalSink before the gateway. Reduce-only exits are IOC and
+  // never rest, so only BUY entries are swept.
+  private staleEntryCancels(input: AgentDecisionInput): Signal[] {
+    if (this.entryTtlBars <= 0) return [];
+    const open = input.snapshot.portfolio.openOrders.filter(
+      (o) => o.symbol === this.symbol && o.side === 'BUY',
+    );
+    const openIds = new Set<string>(open.map((o) => o.clientOrderId as string));
+    for (const id of [...this.entryFirstSeen.keys()]) {
+      if (!openIds.has(id)) this.entryFirstSeen.delete(id);
+    }
+    for (const id of [...this.entryCancelRequestedAt.keys()]) {
+      if (!openIds.has(id)) this.entryCancelRequestedAt.delete(id);
+    }
+
+    // Ref price resolved BEFORE any id is marked cancel-requested: a no-price bail must not burn
+    // the request slot and silently suppress the sweep for a TTL window (reviewer note).
+    const candles = input.snapshot.candles.get(this.symbol) ?? [];
+    const lastCandle = candles.length > 0 ? candles[candles.length - 1] : undefined;
+    const ticker = input.snapshot.tickers.get(this.symbol);
+    const refPrice = lastCandle?.close ?? ticker?.last;
+    if (refPrice === undefined) return [];
+
+    const now = input.snapshot.eventTime;
+    const ttlMs = this.entryTtlBars * this.baseIntervalMs;
+    let staleFound = false;
+    for (const o of open) {
+      const id = o.clientOrderId as string;
+      const firstSeen = this.entryFirstSeen.get(id);
+      if (firstSeen === undefined) {
+        this.entryFirstSeen.set(id, now);
+        continue;
+      }
+      if (now - firstSeen < ttlMs) continue;
+      // Already requested: re-arm only after another full TTL window (covers a lost/failed cancel
+      // without re-spamming every bar while the venue works the first one).
+      const requestedAt = this.entryCancelRequestedAt.get(id);
+      if (requestedAt !== undefined && now - requestedAt < ttlMs) continue;
+      this.entryCancelRequestedAt.set(id, now);
+      staleFound = true;
+    }
+    if (!staleFound) return [];
+
+    return [
+      {
+        strategyId: this.id,
+        venue: this.venue,
+        symbol: this.symbol,
+        kind: 'CANCEL_OPEN',
+        strength: 1,
+        refPrice,
+        // Never consumed by Risk (SignalSink intercepts CANCEL_OPEN before the gateway), so the
+        // seq only needs to be a plausible provenance marker.
+        basedOnSeq: lastCandle?.seq ?? ticker?.seq ?? 0n,
+        eventTime: now,
+        ttlMs: this.baseIntervalMs,
+        dedupeKey: `${this.id}:${this.symbol}:agentic:cancel_open:${now}`,
+        reason: `stale entry: resting > ${this.entryTtlBars} bars — cancel-open sweep`,
+      },
+    ];
   }
 
   // Cost-floor gate (see prescreen.ts). Disabled ⇒ null unconditionally: no counter, no evaluation,

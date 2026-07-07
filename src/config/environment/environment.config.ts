@@ -136,6 +136,9 @@ const envSchema = z
     // off AGENTIC_TOKEN_PRICE_*PER_MTOK below at the same rate the promotion-readiness cost math
     // uses. 0 disables it. Not .int(): a dollar cap is legitimately fractional.
     AGENTIC_DAILY_COST_STOP_USD: z.coerce.number().min(0).default(3),
+    // W2.1 stale-entry sweep: a resting entry older than this many observed decide cycles gets a
+    // CANCEL_OPEN (risk-reducing; SignalSink routes it to an order-cancel). 0 disables.
+    AGENTIC_ENTRY_TTL_BARS: z.coerce.number().int().min(0).default(2),
     AGENTIC_MAX_ENTRIES_PER_DAY: z.coerce.number().int().positive().default(12),
     AGENTIC_DRAIN_COOLDOWN_BASE_MS: z.coerce.number().int().positive().default(30_000),
     AGENTIC_DRAIN_COOLDOWN_MAX_MS: z.coerce.number().int().positive().default(900_000),
@@ -314,6 +317,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     AGENTIC_MAX_CALLS_PER_DAY: agenticMaxCallsPerDay,
     AGENTIC_MAX_TOKENS_PER_DAY: agenticMaxTokensPerDay,
     AGENTIC_DAILY_COST_STOP_USD: agenticDailyCostStopUsd,
+    AGENTIC_ENTRY_TTL_BARS: agenticEntryTtlBars,
     AGENTIC_MAX_ENTRIES_PER_DAY: agenticMaxEntriesPerDay,
     AGENTIC_DRAIN_COOLDOWN_BASE_MS: agenticDrainCooldownBaseMs,
     AGENTIC_DRAIN_COOLDOWN_MAX_MS: agenticDrainCooldownMaxMs,
@@ -379,6 +383,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       maxCallsPerDay: agenticMaxCallsPerDay,
       maxTokensPerDay: agenticMaxTokensPerDay,
       dailyCostStopUsd: agenticDailyCostStopUsd,
+      entryTtlBars: agenticEntryTtlBars,
       maxEntriesPerDay: agenticMaxEntriesPerDay,
       drainCooldownBaseMs: agenticDrainCooldownBaseMs,
       drainCooldownMaxMs: agenticDrainCooldownMaxMs,

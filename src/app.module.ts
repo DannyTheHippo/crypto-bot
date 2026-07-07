@@ -1305,6 +1305,7 @@ export class AppModule
       interval: strategy.interval as CandleInterval,
       warmupBars: agentic.warmupBars,
       model: agentic.model,
+      entryTtlBars: agentic.entryTtlBars,
       prescreenEnabled: agentic.prescreenEnabled,
       prescreenThresholds: {
         volShortBars: agentic.prescreenVolShortBars,

@@ -45,6 +45,8 @@ export interface AppConfig {
     // Daily USD cost circuit breaker (agent-budget.ts's DailyLlmBudget), priced off
     // tokenPriceInputPerMtok/tokenPriceOutputPerMtok below. 0 disables it.
     dailyCostStopUsd: number;
+    // W2.1 stale-entry sweep TTL in observed decide cycles; 0 disables.
+    entryTtlBars: number;
     maxEntriesPerDay: number;
     drainCooldownBaseMs: number;
     drainCooldownMaxMs: number;

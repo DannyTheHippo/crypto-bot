@@ -14,6 +14,7 @@ import {
 } from '../../../ports/agentic-strategy';
 import {
   DECISION_TOOL,
+  PLAN_BOUNDS,
   PLAN_TOOL,
   PLAN_TEMPLATE_VERSION,
   PROMPT_TEMPLATE_VERSION,
@@ -33,16 +34,33 @@ const decisionSchema = z.object({
 // W3.1 submit_plan payload: the decision fields plus a managed trade plan, REQUIRED when opening a
 // long (schema-enforced — a plan-less 'long' is malformed, not a bare entry). Pct fields arrive as
 // JSON numbers (fractions, bounded well inside double precision) and are converted to strings at
-// the mapping boundary so all downstream math stays Decimal-on-strings.
+// the mapping boundary so all downstream math stays Decimal-on-strings. This zod schema is the
+// REAL bounds gate: the wire tool schema cannot carry minimum/maximum (strict tool use 400s on
+// them), so PLAN_TOOL states the ranges in prose and both sides render from PLAN_BOUNDS.
 const planSchema = decisionSchema
   .extend({
     plan: z
       .object({
-        entryOffsetBps: z.number().int().min(-50).max(50),
-        stopLossPct: z.number().min(0.001).max(0.05),
-        takeProfitPct: z.number().min(0.001).max(0.1),
-        entryValidityBars: z.number().int().min(1).max(8),
-        maxHoldBars: z.number().int().min(4).max(96),
+        entryOffsetBps: z
+          .number()
+          .int()
+          .min(PLAN_BOUNDS.entryOffsetBps.min)
+          .max(PLAN_BOUNDS.entryOffsetBps.max),
+        stopLossPct: z.number().min(PLAN_BOUNDS.stopLossPct.min).max(PLAN_BOUNDS.stopLossPct.max),
+        takeProfitPct: z
+          .number()
+          .min(PLAN_BOUNDS.takeProfitPct.min)
+          .max(PLAN_BOUNDS.takeProfitPct.max),
+        entryValidityBars: z
+          .number()
+          .int()
+          .min(PLAN_BOUNDS.entryValidityBars.min)
+          .max(PLAN_BOUNDS.entryValidityBars.max),
+        maxHoldBars: z
+          .number()
+          .int()
+          .min(PLAN_BOUNDS.maxHoldBars.min)
+          .max(PLAN_BOUNDS.maxHoldBars.max),
       })
       .optional(),
   })

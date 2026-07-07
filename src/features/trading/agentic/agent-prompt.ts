@@ -65,6 +65,18 @@ export const DECISION_TOOL = {
   },
 } as const;
 
+// Single source for the plan-field numeric ranges. Consumed by BOTH the PLAN_TOOL descriptions
+// below (what the model reads) and the client's zod planSchema (what actually enforces) — one
+// constant, never two hand-maintained copies that could drift (same rule as MAX_REASON_LEN in
+// anthropic-agent-client.ts).
+export const PLAN_BOUNDS = {
+  entryOffsetBps: { min: -50, max: 50 },
+  stopLossPct: { min: 0.001, max: 0.05 },
+  takeProfitPct: { min: 0.001, max: 0.1 },
+  entryValidityBars: { min: 1, max: 8 },
+  maxHoldBars: { min: 4, max: 96 },
+} as const;
+
 // W3.1 plan-based trading (AGENTIC_PLAN_MODE): the model emits a full trade PLAN instead of a
 // bar-by-bar long/flat vote — plan-executor.ts then manages it deterministically between LLM
 // consults, so the agent is asked far less often once it holds a plan. `plan` is optional at the
@@ -96,37 +108,31 @@ export const PLAN_TOOL = {
       plan: {
         type: 'object',
         description: "The managed trade plan — REQUIRED when action is 'long'.",
+        // No JSON-schema minimum/maximum anywhere in here: strict tool use rejects numeric bounds
+        // with HTTP 400 ("For 'integer'/'number' type, properties maximum, minimum are not
+        // supported" — observed live 2026-07-07, the first plan-mode boot latched the client
+        // degraded on its first call). Bounds ride in the descriptions for the model and are
+        // enforced by the client's zod planSchema, which was always the actual gate.
         properties: {
           entryOffsetBps: {
             type: 'integer',
-            minimum: -50,
-            maximum: 50,
-            description:
-              'Basis points below (positive) or above (negative) the last closed candle close to rest the entry at',
+            description: `Basis points below (positive) or above (negative) the last closed candle close to rest the entry at; integer in [${PLAN_BOUNDS.entryOffsetBps.min}, ${PLAN_BOUNDS.entryOffsetBps.max}]`,
           },
           stopLossPct: {
             type: 'number',
-            minimum: 0.001,
-            maximum: 0.05,
-            description: 'Stop-loss as a fraction below entry price',
+            description: `Stop-loss as a fraction below entry price, in [${PLAN_BOUNDS.stopLossPct.min}, ${PLAN_BOUNDS.stopLossPct.max}]`,
           },
           takeProfitPct: {
             type: 'number',
-            minimum: 0.001,
-            maximum: 0.1,
-            description: 'Take-profit as a fraction above entry price',
+            description: `Take-profit as a fraction above entry price, in [${PLAN_BOUNDS.takeProfitPct.min}, ${PLAN_BOUNDS.takeProfitPct.max}]`,
           },
           entryValidityBars: {
             type: 'integer',
-            minimum: 1,
-            maximum: 8,
-            description: 'Bars the resting entry stays live before being cancelled if unfilled',
+            description: `Bars the resting entry stays live before being cancelled if unfilled; integer in [${PLAN_BOUNDS.entryValidityBars.min}, ${PLAN_BOUNDS.entryValidityBars.max}]`,
           },
           maxHoldBars: {
             type: 'integer',
-            minimum: 4,
-            maximum: 96,
-            description: 'Maximum bars to hold the filled position before a forced exit',
+            description: `Maximum bars to hold the filled position before a forced exit; integer in [${PLAN_BOUNDS.maxHoldBars.min}, ${PLAN_BOUNDS.maxHoldBars.max}]`,
           },
         },
         required: [

@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   DECISION_TOOL,
+  PLAN_BOUNDS,
+  PLAN_TOOL,
   PLAYBOOK_BLOCK_START,
   PLAYBOOK_BLOCK_END,
   PROMPT_TEMPLATE_VERSION,
@@ -602,6 +604,59 @@ describe('DECISION_TOOL', () => {
 
   it('constrains action to exactly long, flat, hold', () => {
     expect(DECISION_TOOL.input_schema.properties.action.enum).toEqual(['long', 'flat', 'hold']);
+  });
+});
+
+describe('strict tool schemas stay within the API-accepted JSON-schema subset', () => {
+  // Anthropic strict tool use rejects constraint keywords with HTTP 400 at request time ("For
+  // 'integer' type, properties maximum, minimum are not supported" — observed live 2026-07-07,
+  // when the first plan-mode boot latched the agent client to degraded on its first call). Bounds
+  // belong in field descriptions plus the client-side zod schema, never in the wire schema. An
+  // allowlist walk (not a denylist) so ANY keyword outside the known-accepted set fails here
+  // instead of 400ing in production.
+  const ALLOWED_SCHEMA_KEYWORDS = new Set([
+    'type',
+    'description',
+    'properties',
+    'required',
+    'additionalProperties',
+    'enum',
+    'items',
+  ]);
+
+  function assertSchemaNode(node: Record<string, unknown>, path: string): void {
+    for (const key of Object.keys(node)) {
+      expect(
+        ALLOWED_SCHEMA_KEYWORDS.has(key),
+        `schema keyword '${key}' at ${path} is outside the strict-API-accepted allowlist`,
+      ).toBe(true);
+    }
+    if (node.properties !== undefined) {
+      for (const [name, child] of Object.entries(node.properties as Record<string, unknown>)) {
+        assertSchemaNode(child as Record<string, unknown>, `${path}.properties.${name}`);
+      }
+    }
+    if (node.items !== undefined) {
+      assertSchemaNode(node.items as Record<string, unknown>, `${path}.items`);
+    }
+  }
+
+  it.each([
+    ['DECISION_TOOL', DECISION_TOOL],
+    ['PLAN_TOOL', PLAN_TOOL],
+  ])('%s uses only schema keywords the strict API accepts', (_label, tool) => {
+    expect(tool.strict).toBe(true);
+    assertSchemaNode(tool.input_schema, 'input_schema');
+  });
+
+  it('PLAN_TOOL states every PLAN_BOUNDS range in the matching field description', () => {
+    const planProps = PLAN_TOOL.input_schema.properties.plan.properties;
+    for (const [field, bounds] of Object.entries(PLAN_BOUNDS)) {
+      const description = planProps[field as keyof typeof planProps].description;
+      expect(description, `plan.${field} description must state its [min, max] range`).toContain(
+        `[${bounds.min}, ${bounds.max}]`,
+      );
+    }
   });
 });
 

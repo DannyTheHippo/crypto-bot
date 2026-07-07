@@ -753,7 +753,7 @@ function agentTradingProfileFor(
 // has no way to inject "the imported AGENT_CLIENT specifically" from a scope that ALSO re-provides
 // that exact token locally (the local provider would shadow — and thus self-reference — the import
 // it's trying to wrap), so this wraps at the point of consumption instead of via a second DI binding.
-class MetricsWrappingAgentClient implements AgentClientPort {
+export class MetricsWrappingAgentClient implements AgentClientPort {
   constructor(
     private readonly inner: AgentClientPort,
     private readonly recorder: AgentMetricsRecorder,
@@ -803,7 +803,10 @@ class MetricsWrappingAgentClient implements AgentClientPort {
       }
       return proposal.signals.length === 0 && exhausted ? 'budget_blocked' : 'hold';
     }
-    return proposal.decision.action === 'hold' ? 'hold' : 'proposed';
+    if (proposal.decision.action === 'hold') return 'hold';
+    // A non-hold action can still map to zero signals (e.g. 'flat' while already FLAT, 'long' while
+    // already LONG — see the mapping comment in anthropic-agent-client.ts) — nothing reached Risk.
+    return proposal.signals.length === 0 ? 'noop' : 'proposed';
   }
 }
 

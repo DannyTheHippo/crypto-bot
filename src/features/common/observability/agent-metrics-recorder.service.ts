@@ -5,6 +5,7 @@ import type { Counter, Gauge, Histogram } from 'prom-client';
 export type AgentDecideOutcome =
   | 'proposed'
   | 'hold'
+  | 'noop'
   | 'error_retryable'
   | 'error_fatal'
   | 'timeout'

@@ -52,13 +52,20 @@ blocks docker/promtool. Host `psql` and host `curl` are **auto-denied**; do not 
      `agentic_promotion_llm_cost_usd`, `agentic_promotion_window_days`, `agentic_promotion_ready`
      — the gate scoreboard (DB-backed, survives restarts; sampled every 5 min — a fresh boot reads
      0 until first sample).
-   - `sum by (kind) (agent_tokens_total)` → derive $/day at the configured
-     `AGENTIC_TOKEN_PRICE_*_PER_MTOK` rates (3 input / 15 output per Mtok). Counters reset per boot
-     — pro-rate by uptime.
+   - `sum by (kind) (agent_tokens_total)` → derive TRUE $/day. Since W4+W13 (2026-07-08) the gate
+     and the $/day breaker price per-model AND include cache tokens: cache reads at ~0.1× input,
+     1h-TTL writes at ~2× input. `kind` now splits input/output/`cache_read`/`cache_creation` — a
+     $/day read that ignores the cache kinds undercounts (~1.5× in creation-heavy windows). The DB
+     gauge `agentic_promotion_llm_cost_usd` is now the honest per-model+cache figure.
    - `sum by (outcome) (agent_decide_total)`, `signals_rejected_total` (any `EXPIRED` is a
      regression), `fills_total`, `round_trips_total`, `equity_usdt`, `drawdown_ratio`,
-     `realized_pnl_usdt`, `agentic_playbook_info`, and `agentic_prescreen_total` once the
-     pre-screen ships.
+     `realized_pnl_usdt`, `agentic_playbook_info`, and `agentic_prescreen_total`.
+   - **Learning-loop health (W2/W5/W14, 2026-07-08):** `sum by (outcome) (agentic_reflection_outcomes_total)`
+     — every reflection exit is labeled (`minted`/`validator_reject`/`no_change`/`auto_promoted`/…).
+     A sustained `validator_reject` means the loop can't iterate (the `AgenticReflectionRejects`
+     alert fires ≥2/6h); `minted` advancing then `agentic_playbook_info{version}` climbing past 1 is
+     the loop working. `agentic_version_net_pnl_usd{version}` / `agentic_version_round_trips{version}`
+     are the per-version A/B attribution the promotion evaluator promotes on.
 4. **DB per-row truth:** the promotion gauges are the DB-backed read. When a per-row query is
    essential to a decision (e.g. attributing PnL to a playbook version), write the exact SQL into
    the report for the owner to run via a `!` prompt (templates in `reports/nightly/PROMOTION.md`
@@ -94,9 +101,18 @@ recommend a cadence or scope change in the report instead of forcing a change.
 
 - Agentic-lane code: `src/features/trading/agentic/`.
 - Config: `docker-compose.yml`, `.env.example` (keep in sync — standing rule), zod schema knobs in
-  `src/config/environment/environment.config.ts` for agentic/observability settings.
+  `src/config/environment/environment.config.ts` for agentic/observability settings. This now
+  includes (owner decision 2026-07-08, learning-system mandate): the reflection model / cadence /
+  `AGENTIC_TOKEN_PRICES_JSON` per-model rate map (within the `AGENTIC_DAILY_COST_STOP_USD` breaker,
+  currently $5/day) and the `AGENTIC_AUTO_PROMOTE_MIN_ATTRIBUTED_TRADES` / `AGENTIC_PLAYBOOK_AB_PCT`
+  / `AGENTIC_EXPECTANCY_LADDER` learning knobs. `PROMOTION_EVIDENCE_EPOCH` is OWNER-declared — a
+  pass proposes a new epoch in the report, never sets it unilaterally.
 - Observability: `observability/` dashboards, metrics services, panels.
 - Docs and reports: `docs/`, `reports/loop/`.
+- **Offline eval harnesses** (`test/eval/agentic/`, `pnpm eval:*`): run them to validate a playbook
+  candidate or a prompt/executor change at $0 against recorded `input_payload` rows BEFORE any live
+  flip (this is the sanctioned place to evaluate a decide-model change or thinking-on-decides —
+  neither is a blind config flip).
 - **Scoped money-path exceptions (owner decision 2026-07-07), each ONLY with a mandatory
   reviewer-agent dispatch before commit, full gates + `test:livegate` + `test:paper` green, and
   risk-reducing/metrics-only semantics:**

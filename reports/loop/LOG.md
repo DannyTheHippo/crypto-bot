@@ -531,3 +531,71 @@ CANCEL_PENDING`; `reconciliation_runs_total`: 174 clean then 105+ `error`; last 
 - **Meta:** solo pass, no agent dispatches (both improvements observability-scoped, no
   mandatory reviewer trigger); the soak Monitor ran sandboxed and was blind to docker — polled
   manually after its timeout; future passes should soak via sandbox-disabled background Bash.
+
+---
+
+## 2026-07-08 — Aggressive-improvement session (owner-directed, not a scheduled loop pass)
+
+**Window:** end-to-end investigation (code + DB + 4-day Prometheus TSDB + boot logs) → approved
+plan → parallel implementation. Owner `/goal`: "improve aggressively — challenge/change ANYTHING
+(hard rules, app code, anything)." **Commit** `bac974c` (51 files, +2451/−162). **Deployed** boot
+47a66bba (`TRADING_MODE=testnet`, demo).
+
+**Forensics that reframed the program** (the cost floor was already met; edge was the problem):
+
+- Learning loop silently DEAD 4 days: the ONE reflection candidate ever minted tripped the
+  polarity-blind banned-word validator (`playbook_validator_rejections_total{banned_token="true"}=1`;
+  playbook stuck at v1 seed; `llm_usage` = 1 row). The reflection system prompt itself said "Never
+  introduce leverage, margin, shorting…" and the model's cautionary echo of those words self-rejected.
+- Entry decisions had NO measurable edge: `long` decides averaged ≈0 to −3bps next-bar forward return
+  at EVERY confidence bucket (calibration over 928 `agent_decisions`) vs a 20bps fee hurdle.
+- R:R inverted: avg win +$0.06 vs avg loss −$0.21 (payoff 0.29:1, breakeven win rate ~78%); the plan
+  gate floored take-profit (≥1.5× fee) but NOT stop-loss. A `max_hold` protective exit also EXPIRED
+  at the gateway (age 902.2s vs ttl 900s) — executor exits raced their own one-bar TTL.
+- ALL 66 `orders` rows had `terminal_at` NULL → 63 re-seeded "open" every boot.
+
+**Decision + rationale:** revive and strengthen the two-tier self-learning system rather than
+micro-optimize cost. Owner interview settled: attributed auto-promotion (not count-only); SL≥fee +
+TP/SL≥1.5 R:R floors; expectancy ladder ON now + sizing 0.02→0.05 pre-authorized on a measured
+trigger; true-cost gate + owner evidence epoch; reflection→Opus-4.8, breaker $3→$5, cadence 5-trades/6h.
+
+**Diff (W-items):** W1 config surface + compose flips; W2 reflection prompt reword + outcome
+telemetry + cache parsing; W3 R:R floors + flat/hold; W10 exit-TTL fix; W4/W13 true-spend per-model+
+cache pricing (migration 0006) + `PROMOTION_EVIDENCE_EPOCH`; W5 `promotion-evaluator.ts` + A/B live +
+ladder boot log; W6 inputPayload sampling; W7 terminal_at stamping + `TERMINAL_ORDER_STATES` (4 copies
+collapsed) + backfill (migration 0007); W14 calibration/regime reflection digests; W9 `AgenticReflectionRejects`
+alert.
+
+**Gate:** build ✓, lint ✓ (pre-existing boundaries warning only), typecheck ✓, 1463 unit+livegate ✓,
+11 paper ✓, 41 livegate ✓, 44 db ✓ (migrations 0006/0007 apply vs real Postgres). **Reviewer** (opus)
+on the OMS + gate-math + evaluator surface: APPROVE, no must-fix; 2 should-fix addressed (stale
+single-writer comment now documents the `version`-unique-index invariant that makes concurrent
+reflection+evaluator appends safe; epoch-straddle bound documented + epoch set at a flat-position
+instant).
+
+**Deploy proof (boot 47a66bba):** migrations applied; boot recovery seeded **3 orders (was 63)** —
+W7 backfill stamped 62 FILLED + 1 CANCELED, leaving only the 2 CANCEL_UNKNOWN + 1 PARTIALLY_FILLED
+that reconciliation owns; **expectancy ladder logged ACTIVE**; `agent_client_info{kind="anthropic"}`
+(live); kill switch RUNNING; **scoreboard reads 0 RT / $0 / 0d** from the new epoch (pre-epoch −$18.99
+preserved in Grafana, no longer gating); cache columns present on `agent_decisions`. Soak: decides
+fire on the 15m bar close; monitored for EXPIRED regressions / errors / first activity.
+
+**Flagged for human review:**
+
+- **W11 (sub-bar plan-stop enforcement) DEFERRED** — enforcing the plan's stop/take-profit inside the
+  1s `ProtectiveExitService` tick modifies a §S3 safety component, and the plan's own open-questions
+  flagged "bot-side take-profit leg" as an unresolved owner decision. Design ready: a `PLAN_EXIT_VIEW`
+  port populated by `AgenticStrategy.activePlan`, read in the protective tick as position-scoped
+  dynamic thresholds (tighter-of precedence with static `PROTECT_*`). Reviewer-mandatory when
+  authorized. It attacks the −$1..−$5 gap-through tail (plan stops today evaluate only at 15m closes).
+
+**Next-pass candidates:** run `eval:candidates` once `input_payload` rows clear ~200 (W6 now accrues
+them under plan mode); W12 operational event logging (15h of debug logs had ZERO lane-activity lines —
+signal-sink is a money-path scoped-exception file, needs reviewer); W9 Grafana panels for the
+reflection-outcomes + per-model-cost + A/B series; watch `agentic_reflection_outcomes_total` for the
+first post-fix `minted` and `agentic_playbook_info{version}` climbing past 1 (the loop finally
+iterating); tune `AGENTIC_MIN_RR` / prescreen thresholds against the new calibration digest.
+
+- **Meta:** ~10 parallel implementer dispatches; agents stalled mid-stream repeatedly (the known
+  pattern) — resumed ≤2× with narrow remainders, then orchestrator took over (W4 gate-math, W5
+  evaluator done inline). Every merge gated by the orchestrator's own sandbox-disabled test run.

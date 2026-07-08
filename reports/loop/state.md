@@ -21,31 +21,69 @@ never changes for strategy evolution.
      ceremony. Nothing automates live.
 - **Settled owner decisions (not re-openable by a pass; argue in "Flagged for human review"
   instead):** no shorts/futures/margin; no third symbol until the Stage-2 exit criterion holds;
-  no model below Sonnet-5; no return to 1m/5m cadence. _("No prompt caching" pruned 2026-07-07 by
-  owner decision — its factual grounds were stale; the falsifiable cache experiment (W2.4 of the
-  2026-07-07 approved plan) is authorized and reverts if `cache_read_input_tokens` stays 0.)_
-- **Pre-authorization (owner, 2026-07-07):** IF net-of-cost > 0 AND round trips ≥ 30 before the
-  14-day window fills, `MIN_WINDOW_DAYS` 14→10 (`promotion-readiness.service.ts:15`) may be
-  applied with the owner sign-off recorded in the pass report. The ≥30-trips and positive-net
-  thresholds are NOT relaxable.
+  no return to 1m/5m DECIDE cadence. _("No prompt caching" pruned 2026-07-07 — the cache is verified
+  working and now priced honestly, W4/W13.)_
+  - **UN-SETTLED 2026-07-08 (owner learning-system mandate, "improve aggressively" session):** the
+    "no model below/other-than Sonnet-5" and "≤$1/day" framings are lifted. Reflection now runs on
+    Opus-4.8 (1–4 calls/day); the decide model stays Sonnet-5 **until the offline replay harness can
+    measure a change at $0** (a daily-loop experiment, W15, not a blind flip); the cost ceiling is
+    now the `AGENTIC_DAILY_COST_STOP_USD=$5/day` breaker (expected true spend ~$1.5–2.5/day).
+- **Pre-authorizations (owner):**
+  - (2026-07-07) IF net-of-cost > 0 AND round trips ≥ 30 before the 14-day window fills,
+    `MIN_WINDOW_DAYS` 14→10 (`promotion-readiness.service.ts`) may be applied with owner sign-off in
+    the pass report. ≥30-trips and positive-net are NOT relaxable.
+  - (2026-07-08) **Sizing escalation:** `SIZER_EQUITY_FRACTION` 0.02→0.05 may be applied once the
+    trailing 15-trip mean net PnL/trip ≥ $0 on BOTH `agentic-1` and `agentic-2` (the exact metric
+    the expectancy ladder computes), with owner sign-off recorded. The reduction-only expectancy
+    ladder (now ON) auto-brakes if expectancy reverts. Sizing stays 0.02 until the trigger fires.
+  - (2026-07-08) **Evidence epoch SET:** `PROMOTION_EVIDENCE_EPOCH=2026-07-08T09:52:35Z` (a
+    flat-position instant). The gate now evaluates round trips / LLM cost / window from this instant
+    — the −$18.99 all-time experimentation hole is visible in Grafana but no longer gates promotion.
+    Moving the epoch again is an owner decision.
 
 ## Current stage
 
-**Stage 1 — cost floor, DEPLOYED 2026-07-06** (Stage-1 exit criterion: ≥3 consecutive days
-≤$1/day LLM spend, round trips ≥2/day, no EXPIRED/starved-exit regressions).
-Pass 8 (2026-07-07 evening) readings: post-13:18 boots ≈**$0.58/day counted** (flat 3/15 on
-input/output); skip rate 6/18 ≈ 33% (below 50–70% target); RT pace 23→30 in ~27h (≥2/day
-comfortably met); ≥30-trips promotion threshold hit for the first time (net still negative, so
-the pre-authorized window shortening does not trigger). CAVEAT: the cache is now measurable
-(Pass 8) and counted ≠ true spend — true adds cache reads at 0.3 and 1h-TTL writes at 6.0 $/MTok
-(~1.5× counted in the creation-heavy first window; less at steady state). 07-07 is NOT countable
-toward the 3-day clock (outage hole + three boots + mid-day config change); the clock can start
-2026-07-08, and should be judged on cache-corrected true $/day.
-Stage 0 verified 2026-07-06: promotion gauges recovered post-restart (23 RTs, net −$14.72, LLM
-$11.53, window 1.83d) and the readiness walk pools cycles across (strategyId, symbol) with a
-mode-only fill filter — pre-multi-symbol evidence counts.
+**Stage 2 — learning-loop edge, DEPLOYED 2026-07-08** (aggressive-improvement session; boot
+47a66bba). Stage 1 (cost floor) is CLOSED: true spend ~$0.77/day well under the $5 breaker, skip
+rate ~70–83%. The lane's problem was never cost — it was that the edge was absent and the
+edge-creating machinery was broken. The forensics that reframed the program:
+
+- **Learning loop was silently DEAD 4 days**: the ONE reflection candidate ever minted was killed
+  by the polarity-blind banned-word validator (`playbook_validator_rejections_total{banned_token=
+"true"}=1`; playbook stuck at v1 seed). `llm_usage` had 1 row.
+- **Entry decisions had NO measurable edge**: `long` decides averaged ≈0 to −3bps next-bar forward
+  return at EVERY confidence bucket vs a 20bps fee hurdle (calibration over 928 `agent_decisions`).
+- **R:R inverted**: avg win +$0.06 vs avg loss −$0.21 (payoff 0.29:1) — the plan gate floored only
+  the take-profit side, never the stop.
+
+**Stage-2 shape = a four-stage learning funnel** whose speed is no longer bounded by live trade
+throughput: reflection (Opus-4.8, rich calibration/attribution/regime diagnostics) → offline
+replay scoring at $0 (harness ready; needs ≥200 `input_payload` rows, now accruing via W6) →
+25% live A/B attribution → attributed auto-promotion (candidate's own net/trip must beat champion).
+Stage-2 exit criterion (unchanged): ≥2 playbook promotions with version-attributed PnL AND
+rolling-7d net-of-cost ≥0.
+
+Scoreboard at deploy (epoch just set → reads from 0): 0 RT, $0 net, window 0d, ready=0. The
+pre-epoch cumulative was 32 RT / net −$18.99 (of which LLM $14.11), preserved in Grafana history
+but no longer gating. Boot proof: expectancy ladder logged ACTIVE; boot recovery seeded 3 orders
+(was 63 — W7 terminal_at backfill stamped 62 FILLED and 1 CANCELED, leaving only the two
+CANCEL_UNKNOWN and one PARTIALLY_FILLED that reconciliation owns).
 
 ## Last pass
+
+**Aggressive-improvement session, 2026-07-08** (owner-directed, `/goal` "improve aggressively —
+challenge/change ANYTHING"; approved plan `investigate-this-repo-end-to-end-structured-reef.md`).
+Commit `bac974c` (51 files, +2451/−162). Deployed boot 47a66bba; reviewer (opus) APPROVED, no
+must-fix. Gate green: build/lint/typecheck, 1463 unit+livegate, 11 paper, 41 livegate, 44 db.
+Shipped 9 work-items (W1–W7, W10, W13, W14): reflection revival (banned-word prompt collision fixed,
+`agentic_reflection_outcomes_total` telemetry, cache parsing, Opus-4.8 tier); reflection evidence
+upgrade (calibration/regime digests); attributed auto-promotion evaluator with A/B live at 25% and
+expectancy ladder ON; plan-gate R:R floors, exit-TTL race fix, flat/hold disambiguation; true-spend
+accounting (per-model and cache pricing, migration 0006) with owner evidence epoch; terminal_at OMS
+stamping and backfill (migration 0007; boot reseed 63→3 verified live); inputPayload sampling.
+DEFERRED (owner-gated): W11 sub-bar plan-stop enforcement (modifies the §S3 ProtectiveExitService —
+an unresolved owner question, see Flagged). Follow-ups noted: W12 operational event logging, W15
+offline `eval:candidates` runner wiring, W9 Grafana panels for the new series. Full detail in LOG.md.
 
 **Pass 8, 2026-07-07** (scheduled run, ~18:05–19:15). Two S observability improvements, both
 verified live; no money-path files. (1) **Alert hygiene** `a25389a`: `ReconciliationHalt`
@@ -149,6 +187,16 @@ Sonnet** (see resolved flag below; first window: 3 decides, 1 proposed, first `s
 counter resets naturally now that live data unblocks #10.
 
 ## Backlog (ranked; re-rank each pass)
+
+**2026-07-08 session closed these:** #11 (reflection model) — Opus-4.8 with mandatory per-model
+pricing (W13); #16 (A/B enable + attributed auto-promote) — live at 25% + evaluator shipped (W5);
+#27 (true-spend accounting + cache columns + gate-formula fold) — DONE (W4/W13, owner-approved
+epoch). PARTIAL: #17 (cross-symbol/self-track-record) — the regime + own-track-record evidence now
+reaches REFLECTION (W14); the decide-prompt version waits on the offline harness. OPEN follow-ups
+(not this session): W12 operational event logging, W15 `eval:candidates` runner, W9 Grafana panels
+for the new series, #24 (foreign-order mismatch class split — still owner/OMS territory), #25 (the
+2 CANCEL_UNKNOWN zombies — now the ONLY unstamped-terminal residue after W7's backfill; reconciliation
+owns them).
 
 | #   | Item                                                                                                                                                                                                                                                                                                                                                                                                          | Stage | Effort | Status                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

@@ -34,10 +34,18 @@ describe('agentic eval — replay runner (offline, fixture fetchFn)', () => {
     expect(requestLog).toHaveLength(CLOSES.length);
 
     // Every request actually carried the real system prompt this profile/playbook composes —
-    // proof the fixture drove the REAL buildSystemPrompt, not a stubbed-out one.
+    // proof the fixture drove the REAL buildSystemPrompt, not a stubbed-out one. The client sends
+    // `system` as a single cache_control text block (W2.4 prompt caching, anthropic-agent-client.ts),
+    // so the assertion checks that envelope, not a bare string.
     const expectedSystemPrompt = buildSystemPrompt(EVAL_PROFILE);
     for (const req of requestLog) {
-      expect(req.system).toBe(expectedSystemPrompt);
+      expect(req.system).toEqual([
+        {
+          type: 'text',
+          text: expectedSystemPrompt,
+          cache_control: { type: 'ephemeral', ttl: '1h' },
+        },
+      ]);
     }
 
     // The promptHash the client returned must match an independent computePromptHash call over

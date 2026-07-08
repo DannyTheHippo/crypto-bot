@@ -11,6 +11,9 @@ export interface LlmUsageInsert {
   strategyId: string | null;
   inputTokens: number;
   outputTokens: number;
+  // Optional — nullable analytics columns; absent ⇒ NULL (see AgentDecisionInsert's own note).
+  cacheReadInputTokens?: number | null;
+  cacheCreationInputTokens?: number | null;
 }
 
 @Injectable()

@@ -7,7 +7,7 @@ import {
 import { Counter, Histogram } from 'prom-client';
 import { EXECUTION_STORE, type ExecutionStorePort } from '../../../ports/execution';
 import { KILL_SWITCH, type KillSwitchPort } from '../../../ports/risk';
-import { reduce, type OrderRecord, type OrderState } from '../../../domain/oms/reducer';
+import { reduce, TERMINAL_ORDER_STATES, type OrderRecord } from '../../../domain/oms/reducer';
 import { decodeClientOrderId } from '../../../domain/types/ids';
 import type { FillRecord } from '../../../domain/types/exec-report';
 import { OrderBookService } from './order-book.service';
@@ -69,7 +69,7 @@ export const TRADE_PNL_HISTOGRAM = makeHistogramProvider({
   buckets: [-10, -5, -2, -1, -0.5, -0.2, 0, 0.2, 0.5, 1, 2, 5, 10],
 });
 
-const TERMINAL: ReadonlySet<OrderState> = new Set(['FILLED', 'CANCELED', 'REJECTED', 'EXPIRED']);
+const TERMINAL = TERMINAL_ORDER_STATES;
 
 export interface IngestResult {
   readonly applied: boolean; // false when the fill was a duplicate (already in the fill table)

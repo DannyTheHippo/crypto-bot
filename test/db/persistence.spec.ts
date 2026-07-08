@@ -24,6 +24,7 @@ import { JournalRepository } from '../../src/database/repositories/journal.repos
 import { OutboxRepository } from '../../src/database/repositories/outbox.repository';
 import { FillRepository } from '../../src/database/repositories/fill.repository';
 import { DrizzleExecutionStore } from '../../src/database/repositories/drizzle-execution-store';
+import { OrderRepository } from '../../src/database/repositories/order.repository';
 import { RiskDecisionRepository } from '../../src/database/repositories/risk-decision.repository';
 import { SignalRepository } from '../../src/database/repositories/signal.repository';
 import { AgentDecisionRepository } from '../../src/database/repositories/agent-decision.repository';
@@ -644,6 +645,76 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
     );
   });
 
+  // ── (h2) W7: terminal_at is stamped at the appendOrderEvent chokepoint, and loadOpenOrders/
+  // findOpenByMode excludes the row once it is set ────────────────────────────────────────────
+  it('(h2) appendOrderEvent stamps terminal_at for a terminal derivedState and leaves it null for a non-terminal one', async () => {
+    const store = new DrizzleExecutionStore(db, {
+      mode: 'live',
+      runId: 'run-tat',
+      bootId: 'boot-tat',
+    });
+    const orderRepo = new OrderRepository(db);
+    await seedIntent(
+      'oo-tat-term',
+      'cbp-oo-tat-term0000000000000001',
+      'live',
+      'run-tat',
+      'boot-tat',
+    );
+    await seedIntent(
+      'oo-tat-open',
+      'cbp-oo-tat-open0000000000000001',
+      'live',
+      'run-tat',
+      'boot-tat',
+    );
+    const ins = `INSERT INTO public.orders
+      (intent_id, client_order_id, strategy_id, venue, symbol, side, type, qty, time_in_force, state, cum_qty, terminal_at, mode, run_id, boot_id)
+      VALUES `;
+    await pool.query(
+      ins +
+        `('oo-tat-term','cbp-oo-tat-term0000000000000001','s','binance','BTC/USDT','BUY','LIMIT','1.000000000000000000','GTC','ACKED','0.000000000000000000',NULL,'live','run-tat','boot-tat')`,
+    );
+    await pool.query(
+      ins +
+        `('oo-tat-open','cbp-oo-tat-open0000000000000001','s','binance','BTC/USDT','BUY','LIMIT','1.000000000000000000','GTC','ACKED','0.000000000000000000',NULL,'live','run-tat','boot-tat')`,
+    );
+
+    const before = Date.now();
+    const terminalApply = await store.appendOrderEvent({
+      clientOrderId: clientOrderId('cbp-oo-tat-term0000000000000001'),
+      dedupeKey: 'venue-canceled',
+      event: { type: 'VENUE_CANCELED' },
+      derivedState: 'CANCELED',
+      cumQty: '0',
+    });
+    const nonTerminalApply = await store.appendOrderEvent({
+      clientOrderId: clientOrderId('cbp-oo-tat-open0000000000000001'),
+      dedupeKey: 'ack',
+      event: { type: 'ACK', venueOrderId: 'v-tat' },
+      derivedState: 'ACKED',
+      cumQty: '0',
+      venueOrderId: 'v-tat',
+    });
+    const after = Date.now();
+    expect(terminalApply).toEqual({ applied: true });
+    expect(nonTerminalApply).toEqual({ applied: true });
+
+    const term = await orderRepo.findByClientOrderId('cbp-oo-tat-term0000000000000001');
+    const open = await orderRepo.findByClientOrderId('cbp-oo-tat-open0000000000000001');
+    expect(term!.terminalAt).not.toBeNull();
+    expect(term!.terminalAt as number).toBeGreaterThanOrEqual(before);
+    expect(term!.terminalAt as number).toBeLessThanOrEqual(after);
+    expect(open!.terminalAt).toBeNull();
+
+    // The chokepoint fix means findOpenByMode/loadOpenOrders now excludes the terminal row —
+    // this is the BootRecovery re-seed bug the backfill + stamping fix (W7) closes. `mode: 'live'`
+    // is shared with an earlier test's fixture rows, so assert membership rather than the full set.
+    const openCoids = (await store.loadOpenOrders('live')).map((o) => o.record.clientOrderId);
+    expect(openCoids).toContain('cbp-oo-tat-open0000000000000001');
+    expect(openCoids).not.toContain('cbp-oo-tat-term0000000000000001');
+  });
+
   // ── (i) Decision-trail persistence (§8): risk_decisions + signals rows land ──
   it('(i) risk_decisions row round-trips with exact reasons and mode scoping', async () => {
     const repo = new RiskDecisionRepository(db);
@@ -1052,12 +1123,14 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
     );
 
     const totals = await repo.llmTokenTotals();
+    // Per-model totals (W4+W13): both call sites here use model='m', so they merge into one entry.
     // decide side ignores the llm_usage 'decide' row (would double-count agent_decisions) and
-    // treats NULL token columns as 0.
-    expect(totals.decideInputTokens - before.decideInputTokens).toBe(300);
-    expect(totals.decideOutputTokens - before.decideOutputTokens).toBe(30);
-    expect(totals.reflectionInputTokens - before.reflectionInputTokens).toBe(50);
-    expect(totals.reflectionOutputTokens - before.reflectionOutputTokens).toBe(5);
+    // treats NULL token columns as 0. Deltas: input 300 (decide) + 50 (reflection) = 350;
+    // output 30 + 5 = 35.
+    const sumIn = (t: typeof totals) => t.perModel.reduce((s, m) => s + m.inputTokens, 0);
+    const sumOut = (t: typeof totals) => t.perModel.reduce((s, m) => s + m.outputTokens, 0);
+    expect(sumIn(totals) - sumIn(before)).toBe(350);
+    expect(sumOut(totals) - sumOut(before)).toBe(35);
   });
 
   it('(k) fillsForMode carries the intent refPrice (null on an unresolved join) for slippage evidence', async () => {

@@ -88,8 +88,14 @@ import {
   REFLECTION_SERVICE,
   REFLECTION_METRICS_RECORDER_OVERRIDE,
   SEED_PLAYBOOK,
+  agenticEnv,
 } from './features/trading/agentic/agentic-strategy.module';
 import type { DailyLlmBudget } from './features/trading/agentic/agent-budget';
+import {
+  createPromotionEvaluator,
+  PromotionEvaluator,
+  type EvaluatorPlaybookStore,
+} from './features/trading/agentic/promotion-evaluator';
 import { ReflectionService } from './features/trading/agentic/reflection.service';
 import {
   AgenticStrategy,
@@ -1121,6 +1127,7 @@ export class AppModule
   // own constructor.name would otherwise mask which concrete client (stub/budgeted-Anthropic) got
   // selected.
   private readonly agentClientKind: string;
+  private readonly promotionEvaluator: PromotionEvaluator;
 
   constructor(
     @Inject(CLOCK) private readonly clock: ClockPort,
@@ -1143,11 +1150,19 @@ export class AppModule
     @Inject(PLAYBOOK_PROVIDER) private readonly playbookProvider: PlaybookProvider,
     @Inject(REFLECTION_SERVICE) private readonly reflectionService: ReflectionService,
     @Inject(PROMOTION_READINESS) private readonly promotionReadiness: PromotionReadinessPort,
+    // W5 attributed auto-promotion: the evaluator promotes a reflection candidate to ACTIVE on its
+    // own A/B-attributed evidence beating the champion (see promotion-evaluator.ts). Built here from
+    // the same store the reflection loop writes and the DB-backed stats/journal, and wired as a
+    // second onClosedTrade observer alongside reflection below. All deps @Optional: absent under
+    // test/ci/no-DB leaves the evaluator inert (createPromotionEvaluator's own inert guard).
     // W4.2 expectancy ladder's realized-evidence feed — @Optional like the token's other consumers:
     // absent under test/ci/no-DB, which leaves the ladder inert regardless of its flag.
     @Optional()
     @Inject(REFLECTION_EVIDENCE)
     private readonly roundTripEvidence?: RoundTripEvidencePort,
+    @Optional() @Inject(PROMOTION_STATS) promotionStats?: PromotionStatsPort,
+    @Optional() @Inject(PLAYBOOK_PROVIDER_OVERRIDE) playbookStore?: EvaluatorPlaybookStore,
+    @Optional() @Inject(KILL_SWITCH) killSwitch?: KillSwitchPort,
   ) {
     this.agentClient = new MetricsWrappingAgentClient(
       rawAgentClient,
@@ -1155,6 +1170,15 @@ export class AppModule
       agentBudget,
     );
     this.agentClientKind = rawAgentClient.constructor.name;
+    this.promotionEvaluator = createPromotionEvaluator(agenticEnv(this.config), {
+      stats: promotionStats,
+      journal: this.agentJournal,
+      playbookStore,
+      recorder: this.agentMetrics,
+      killSwitch,
+      registry: this.registry,
+      logger: { warn: (m) => this.log.warn(m) },
+    });
   }
 
   // Resolves the active playbook version once at boot and surfaces it to Prometheus
@@ -1303,12 +1327,30 @@ export class AppModule
     this.registry.register('agentic', (id, p) => {
       const deps: AgenticStrategyDeps = {
         journal: this.agentJournal,
-        onClosedTrade: (count) => this.reflectionService.onClosedTrade(id, count),
+        onClosedTrade: (count) => {
+          this.reflectionService.onClosedTrade(id, count);
+          // W5: the attributed evaluator observes the same closed-trade seam; inert unless
+          // AGENTIC_AUTO_PROMOTE_MIN_ATTRIBUTED_TRADES > 0 and the DB-backed deps are bound.
+          this.promotionEvaluator.onClosedTrade(id, count);
+        },
         onPrescreen: (outcome, reason) => this.agentMetrics.recordPrescreen(outcome, reason),
         evidence: this.roundTripEvidence,
       };
       return new AgenticStrategy(id, p as AgenticStrategyParams, this.agentClient, deps);
     });
+    // W5: make an "enabled but silently no-op" expectancy ladder visible at boot. The ladder is
+    // reduction-only and inert unless BOTH the flag is on AND a realized-evidence port is wired
+    // (agentic.strategy.ts's applyExpectancyLadder no-ops without deps.evidence) — a config that
+    // flips the flag on a no-DB boot would otherwise look active while doing nothing.
+    if (this.config.agentic.expectancyLadderEnabled) {
+      if (this.roundTripEvidence !== undefined) {
+        this.log.log('expectancy ladder ACTIVE (flag on, realized-evidence port wired)');
+      } else {
+        this.log.warn(
+          'expectancy ladder flag is ON but no realized-evidence port is wired — ladder is INERT (no-DB/test boot)',
+        );
+      }
+    }
     // SAFETY INTERLOCK (hard, fail-loud at boot). A live-configured agentic boot is refused unless
     // the earned-live promotion gate passes: an explicit permitted PromotionReadiness verdict
     // computed fresh from durable demo evidence (>=30 round trips, positive net-of-cost PnL, >=14d
@@ -1419,6 +1461,8 @@ export class AppModule
       expectancyLadderEnabled: agentic.expectancyLadderEnabled,
       planMode: agentic.planMode,
       planMaxQuietBars: agentic.planMaxQuietBars,
+      planExitTtlBars: agentic.planExitTtlBars,
+      quietPayloadSampleBars: agentic.quietPayloadSampleBars,
     };
   }
 }

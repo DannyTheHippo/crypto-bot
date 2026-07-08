@@ -84,6 +84,46 @@ export interface AppConfig {
     minEdgeMultiple: string;
     // Safety re-consult cadence (bars) while a plan is active without executor action.
     planMaxQuietBars: number;
+    // R:R structure floor (decimal string): reject plans whose takeProfitPct/stopLossPct ratio is
+    // below this. Complements minEdgeMultiple, which floors only the win side — without a ratio
+    // bound a plan may carry a stop smaller than the round-trip fee itself.
+    minRr: string;
+    // TTL (in bars) for plan-executor-emitted exit signals. Executor exits carry eventTime = the
+    // evaluated bar's close, so a one-bar TTL races its own age by construction (observed live:
+    // a max_hold exit expired at age 902.2s vs ttl 900s). Two bars gives jitter headroom; Risk's
+    // own ref-price staleness veto is the freshness gate, this TTL is only replay protection.
+    planExitTtlBars: number;
+    // Attributed auto-promotion: candidate-attributed closed-trip floor before the promotion
+    // evaluator may promote a reflection candidate to ACTIVE on evidence (candidate mean net/trip
+    // beats champion). 0 disables the evaluator. Distinct from autoPromoteMinTrades, the legacy
+    // count-only path this replaces.
+    autoPromoteMinAttributedTrades: number;
+    // Sample the decide-time input payload every Nth plan-managed (quiet) bar so the offline
+    // replay harness accrues rows while plan mode manages positions. 0 disables sampling.
+    quietPayloadSampleBars: number;
+    // Cache-token pricing for the DEFAULT model (USD per 1M tokens, decimal strings): reads bill
+    // at ~0.1x input, 1h-TTL writes at ~2x input. Priced $0 before W4/W13 — an undercount of true
+    // spend inside a promotion gate (fail-open) — now first-class.
+    tokenPriceCacheReadPerMtok: string;
+    tokenPriceCacheWritePerMtok: string;
+    // Per-model price override map (parsed from AGENTIC_TOKEN_PRICES_JSON). Keys are model ids;
+    // absent models fall back to the flat tokenPrice* knobs above. Consumers pricing an UNKNOWN
+    // model (present in rows, absent here and ≠ the default model) must use the most expensive
+    // configured rates — the fail-closed direction.
+    tokenPrices?: Readonly<
+      Record<
+        string,
+        {
+          readonly inputPerMtok: string;
+          readonly outputPerMtok: string;
+          readonly cacheReadPerMtok: string;
+          readonly cacheWritePerMtok: string;
+        }
+      >
+    >;
+    // Owner-declared evidence epoch (ISO-8601): the promotion gate evaluates fills/tokens/window
+    // from this instant instead of all-time. Absent ⇒ all-time (byte-identical legacy behavior).
+    promotionEvidenceEpoch?: string;
   };
   // Risk-lane knobs read via ConfigService (mirrors the agentic block above).
   risk: {

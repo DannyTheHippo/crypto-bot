@@ -10,9 +10,32 @@ export const PROMOTION_READINESS_CONFIG = Symbol('PROMOTION_READINESS_CONFIG');
 // "derived from validated AppConfig at boot" pattern so the service takes a plain DI-injected
 // value object instead of ConfigService directly (keeps its unit tests config-free).
 export interface PromotionReadinessConfig {
+  // Default-model rates (decimal strings): used for the model === AGENTIC_MODEL rows, and as the
+  // fallback whenever tokenPrices is absent. Cache rates (W4+W13) were priced $0 before this.
   readonly tokenPriceInputPerMtok: string;
   readonly tokenPriceOutputPerMtok: string;
+  readonly tokenPriceCacheReadPerMtok?: string;
+  readonly tokenPriceCacheWritePerMtok?: string;
   readonly dustNotional: string;
+  // Per-model rate override map (mirrors AppConfig.agentic.tokenPrices — decimal strings). When set,
+  // a model present in cost rows but ABSENT here (and ≠ the default-model rate set) prices at the
+  // MOST EXPENSIVE configured rates per component — fail-closed, never silently under-pricing an
+  // unrecognized model inside a live-arming gate.
+  readonly tokenPrices?: Readonly<
+    Record<
+      string,
+      {
+        readonly inputPerMtok: string;
+        readonly outputPerMtok: string;
+        readonly cacheReadPerMtok: string;
+        readonly cacheWritePerMtok: string;
+      }
+    >
+  >;
+  // Owner-declared evidence epoch (ms). When set, the gate evaluates round trips + LLM cost + window
+  // only from this instant forward — so a post-fix configuration is judged on post-fix evidence, not
+  // the sunk experimentation hole. Absent ⇒ all-time (byte-identical legacy behavior).
+  readonly evidenceEpochMs?: number;
 }
 
 // ── PromotionStatsPort ───────────────────────────────────────────────────────
@@ -37,14 +60,21 @@ export interface PromotionFillRow {
   readonly refPrice?: string | null;
 }
 
-// Sum of input/output tokens across BOTH LLM call sites: agent_decisions (decide path) and
-// llm_usage (reflection path, added in commit 8b6842c). Kept as a single aggregate — see
-// llmTokenTotals' own doc comment for why a per-model breakdown isn't needed by the cost math.
+// Per-model token totals across BOTH LLM call sites: agent_decisions (decide path) and llm_usage
+// (reflection path). Grouped by model (W4+W13) so a lane running a cheap decide model + a pricier
+// reflection model is costed at each model's own rates — flat pricing under-counted the pricier
+// path. Cache tokens included (priced $0 before W4+W13). Rows with no tokens (e.g. prescreen HOLD
+// journal rows, model='prescreen') contribute zeros and are harmless.
+export interface PerModelTokenTotals {
+  readonly model: string;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cacheReadTokens: number;
+  readonly cacheCreationTokens: number;
+}
+
 export interface LlmTokenTotals {
-  readonly decideInputTokens: number;
-  readonly decideOutputTokens: number;
-  readonly reflectionInputTokens: number;
-  readonly reflectionOutputTokens: number;
+  readonly perModel: readonly PerModelTokenTotals[];
 }
 
 // What PromotionReadinessService's round-trip walk + LLM-cost math need from the DB — nothing more.
@@ -53,12 +83,14 @@ export interface LlmTokenTotals {
 // wall — mode-control may not import database directly).
 export interface PromotionStatsPort {
   // Ordered oldest→newest (executedAt, then insertion order for ties) fills for the given mode —
-  // the round-trip walk depends on this ordering to track signed position correctly.
-  fillsForMode(mode: TradingMode): Promise<readonly PromotionFillRow[]>;
-  // Aggregate token totals across the full history (not mode-scoped — agent_decisions carries no
+  // the round-trip walk depends on this ordering to track signed position correctly. sinceMs, when
+  // set, filters to fills executed at/after that instant (evidence-epoch gating); absent ⇒ all-time.
+  fillsForMode(mode: TradingMode, sinceMs?: number): Promise<readonly PromotionFillRow[]>;
+  // Per-model token totals across the full history (not mode-scoped — agent_decisions carries no
   // mode column; see promotion-readiness.service.ts's own comment on why over-counting cost here is
-  // the fail-closed direction).
-  llmTokenTotals(): Promise<LlmTokenTotals>;
+  // the fail-closed direction). sinceMs filters to rows created at/after that instant; absent ⇒
+  // all-time.
+  llmTokenTotals(sinceMs?: number): Promise<LlmTokenTotals>;
   // Epoch ms of the newest llm_usage kind='reflection' row, null when reflection has never run.
   // Optional so existing fakes/implementations remain valid; the reflection trigger seed treats an
   // absent method the same as "never reflected".

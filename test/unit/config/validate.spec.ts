@@ -194,14 +194,22 @@ describe('validate()', () => {
         reflectionEveryNTrades: 10,
         reflectionCooldownMs: 604_800_000,
         autoPromoteMinTrades: 0,
+        autoPromoteMinAttributedTrades: 0,
         playbookPin: undefined,
         playbookAbPct: 0,
         expectancyLadderEnabled: false,
         planMode: false,
         minEdgeMultiple: '1.5',
+        minRr: '1.5',
         planMaxQuietBars: 16,
+        planExitTtlBars: 2,
+        quietPayloadSampleBars: 0,
         tokenPriceInputPerMtok: '3',
         tokenPriceOutputPerMtok: '15',
+        tokenPriceCacheReadPerMtok: '0.3',
+        tokenPriceCacheWritePerMtok: '6',
+        tokenPrices: undefined,
+        promotionEvidenceEpoch: undefined,
         promotionDustNotional: '5',
         prescreenEnabled: true,
         prescreenVolShortBars: 10,
@@ -375,6 +383,93 @@ describe('validate()', () => {
     it('throws on negative AGENTIC_AUTO_PROMOTE_MIN_TRADES', () => {
       expect(() => validate({ PORT: '3100', AGENTIC_AUTO_PROMOTE_MIN_TRADES: '-1' })).toThrow(
         /AGENTIC_AUTO_PROMOTE_MIN_TRADES/,
+      );
+    });
+
+    it('AGENTIC_AUTO_PROMOTE_MIN_ATTRIBUTED_TRADES defaults to 0 (evaluator disabled) and coerces', () => {
+      expect(validate({ PORT: '3100' }).agentic.autoPromoteMinAttributedTrades).toBe(0);
+      expect(
+        validate({ PORT: '3100', AGENTIC_AUTO_PROMOTE_MIN_ATTRIBUTED_TRADES: '10' }).agentic
+          .autoPromoteMinAttributedTrades,
+      ).toBe(10);
+      expect(() =>
+        validate({ PORT: '3100', AGENTIC_AUTO_PROMOTE_MIN_ATTRIBUTED_TRADES: '-1' }),
+      ).toThrow(/AGENTIC_AUTO_PROMOTE_MIN_ATTRIBUTED_TRADES/);
+    });
+
+    it('AGENTIC_MIN_RR defaults to 1.5 and stays an exact decimal string', () => {
+      expect(validate({ PORT: '3100' }).agentic.minRr).toBe('1.5');
+      expect(validate({ PORT: '3100', AGENTIC_MIN_RR: '2' }).agentic.minRr).toBe('2');
+      expect(() => validate({ PORT: '3100', AGENTIC_MIN_RR: 'lots' })).toThrow(/AGENTIC_MIN_RR/);
+    });
+
+    it('AGENTIC_PLAN_EXIT_TTL_BARS defaults to 2 and rejects a 1-bar TTL (races its own age)', () => {
+      expect(validate({ PORT: '3100' }).agentic.planExitTtlBars).toBe(2);
+      expect(
+        validate({ PORT: '3100', AGENTIC_PLAN_EXIT_TTL_BARS: '3' }).agentic.planExitTtlBars,
+      ).toBe(3);
+      expect(() => validate({ PORT: '3100', AGENTIC_PLAN_EXIT_TTL_BARS: '1' })).toThrow(
+        /AGENTIC_PLAN_EXIT_TTL_BARS/,
+      );
+    });
+
+    it('AGENTIC_QUIET_PAYLOAD_SAMPLE_BARS defaults to 0 (disabled) and coerces', () => {
+      expect(validate({ PORT: '3100' }).agentic.quietPayloadSampleBars).toBe(0);
+      expect(
+        validate({ PORT: '3100', AGENTIC_QUIET_PAYLOAD_SAMPLE_BARS: '4' }).agentic
+          .quietPayloadSampleBars,
+      ).toBe(4);
+    });
+
+    it('cache price knobs default to sonnet-5 list rates as exact decimal strings', () => {
+      const defaults = validate({ PORT: '3100' }).agentic;
+      expect(defaults.tokenPriceCacheReadPerMtok).toBe('0.3');
+      expect(defaults.tokenPriceCacheWritePerMtok).toBe('6');
+      expect(() =>
+        validate({ PORT: '3100', AGENTIC_TOKEN_PRICE_CACHE_READ_PER_MTOK: 'cheap' }),
+      ).toThrow(/AGENTIC_TOKEN_PRICE_CACHE_READ_PER_MTOK/);
+    });
+
+    it('AGENTIC_TOKEN_PRICES_JSON parses a valid per-model map and is absent by default', () => {
+      expect(validate({ PORT: '3100' }).agentic.tokenPrices).toBeUndefined();
+      const cfg = validate({
+        PORT: '3100',
+        AGENTIC_TOKEN_PRICES_JSON:
+          '{"claude-opus-4-8":{"inputPerMtok":"5","outputPerMtok":"25","cacheReadPerMtok":"0.5","cacheWritePerMtok":"10"}}',
+      });
+      expect(cfg.agentic.tokenPrices?.['claude-opus-4-8']).toEqual({
+        inputPerMtok: '5',
+        outputPerMtok: '25',
+        cacheReadPerMtok: '0.5',
+        cacheWritePerMtok: '10',
+      });
+    });
+
+    it('AGENTIC_TOKEN_PRICES_JSON fails LOUD on malformed JSON and on a partial entry', () => {
+      expect(() => validate({ PORT: '3100', AGENTIC_TOKEN_PRICES_JSON: '{nope' })).toThrow(
+        /AGENTIC_TOKEN_PRICES_JSON is not valid JSON/,
+      );
+      // A partial entry would silently price the missing component at $0 — the exact fail-open
+      // hole the map exists to close.
+      expect(() =>
+        validate({
+          PORT: '3100',
+          AGENTIC_TOKEN_PRICES_JSON: '{"claude-opus-4-8":{"inputPerMtok":"5"}}',
+        }),
+      ).toThrow(/AGENTIC_TOKEN_PRICES_JSON failed validation/);
+    });
+
+    it('PROMOTION_EVIDENCE_EPOCH accepts ISO-8601, treats empty as unset, rejects garbage', () => {
+      expect(validate({ PORT: '3100' }).agentic.promotionEvidenceEpoch).toBeUndefined();
+      expect(
+        validate({ PORT: '3100', PROMOTION_EVIDENCE_EPOCH: '' }).agentic.promotionEvidenceEpoch,
+      ).toBeUndefined();
+      expect(
+        validate({ PORT: '3100', PROMOTION_EVIDENCE_EPOCH: '2026-07-08T12:00:00Z' }).agentic
+          .promotionEvidenceEpoch,
+      ).toBe('2026-07-08T12:00:00Z');
+      expect(() => validate({ PORT: '3100', PROMOTION_EVIDENCE_EPOCH: 'yesterday-ish' })).toThrow(
+        /PROMOTION_EVIDENCE_EPOCH/,
       );
     });
 

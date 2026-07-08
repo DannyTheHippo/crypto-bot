@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   scoreRows,
   compare,
+  summarizeCalibration,
+  summarizeRegimeSplit,
   type ScoringRow,
   type Scorecard,
 } from '../../../src/features/trading/agentic/counterfactual-scoring';
@@ -368,5 +370,88 @@ describe('compare()', () => {
 
     // Neither fixture closes a round trip (no 'flat' row) -> both stay at the initial equity of 1.
     expect(result.finalEquityDelta).toBe(0);
+  });
+});
+
+describe('summarizeCalibration (W14)', () => {
+  it('buckets rows by action x stated-confidence bucket and reports mean t+1 forward return in bps for buckets with n>=3', () => {
+    const rows: ScoringRow[] = [
+      row(0, { action: 'long', confidence: 0.65, close: '100' }),
+      row(1, { action: 'long', confidence: 0.65, close: '102' }),
+      row(2, { action: 'long', confidence: 0.65, close: '101' }),
+      row(3, { action: 'long', confidence: 0.65, close: '103' }), // last row: no t+1, not counted
+    ];
+    const digest = summarizeCalibration(rows);
+    // Same summation order as the source (i=0,1,2 in sequence) so the float division matches exactly.
+    const expectedMean =
+      (((102 - 100) / 100) * 10000 + ((101 - 102) / 102) * 10000 + ((103 - 101) / 101) * 10000) / 3;
+    expect(digest).toEqual([
+      {
+        action: 'long',
+        confidenceLowerBound: 3 * 0.2, // 0.6000000000000001 — same idx*width float as the source
+        confidenceUpperBound: 0.8,
+        count: 3,
+        meanForwardReturnBps: expectedMean,
+      },
+    ]);
+  });
+
+  it('omits buckets with fewer than 3 samples', () => {
+    // Only 2 rows have a defined t+1 forward return (row2 is last, no next close).
+    const rows: ScoringRow[] = [
+      row(0, { action: 'long', confidence: 0.5, close: '100' }),
+      row(1, { action: 'long', confidence: 0.5, close: '110' }),
+      row(2, { action: 'long', confidence: 0.5, close: '90' }),
+    ];
+    expect(summarizeCalibration(rows)).toEqual([]);
+  });
+
+  it('excludes "error" rows and null-confidence rows from bucketing', () => {
+    const rows: ScoringRow[] = [
+      row(0, { action: 'error', confidence: 0.5, close: '100' }),
+      row(1, { action: 'long', confidence: null, close: '110' }),
+      row(2, { action: 'hold', confidence: 0.5, close: '90' }),
+    ];
+    expect(summarizeCalibration(rows)).toEqual([]);
+  });
+});
+
+describe('summarizeRegimeSplit (W14)', () => {
+  it("splits per-action t+1 forward-return stats at the median trailing 10-close stdev into 'quiet' and 'active'", () => {
+    // Indices 0-49: constant close (100) -> every fully-inside trailing-10 window has stdev 0
+    // ("quiet"). Indices 50-79: alternates 100/300 by parity -> once the trailing window is fully
+    // inside this zone (i >= 59), every window holds exactly five 100s and five 300s (window width
+    // 10 matches the alternation's period 2), giving a constant nonzero stdev ("active"). Zero-stdev
+    // rows (i=9..50, 42 of them) outnumber the 28 nonzero ones (i=51..78) among the 70 defined
+    // stdevs, so the median is exactly 0 — any nonzero row is unambiguously above it.
+    const rows: ScoringRow[] = [];
+    for (let i = 0; i < 50; i++) {
+      rows.push(row(i, { action: i === 9 ? 'long' : 'error', close: '100' }));
+    }
+    for (let i = 50; i < 80; i++) {
+      const k = i - 50;
+      rows.push(
+        row(i, { action: i === 65 ? 'flat' : 'error', close: k % 2 === 0 ? '100' : '300' }),
+      );
+    }
+
+    const digest = summarizeRegimeSplit(rows);
+
+    // i=9: window [0..9] is all 100 -> stdev 0 -> quiet. fwd = (close10-close9)/close9 = 0.
+    expect(digest.quiet).toEqual([{ action: 'long', count: 1, meanForwardReturnBps: 0 }]);
+    // i=65 (k=15, odd -> 300; i=66, k=16, even -> 100): window [56..65] is fully inside the
+    // alternating zone -> stdev > 0 -> active. fwd = (100-300)/300.
+    expect(digest.active).toEqual([
+      { action: 'flat', count: 1, meanForwardReturnBps: ((100 - 300) / 300) * 10000 },
+    ]);
+  });
+
+  it('returns empty quiet/active arrays when no row has a full trailing-window stdev', () => {
+    // Fewer than 10 rows -> trailingStdev is null for every index.
+    const rows: ScoringRow[] = [
+      row(0, { action: 'long', close: '100' }),
+      row(1, { action: 'flat', close: '110' }),
+    ];
+    expect(summarizeRegimeSplit(rows)).toEqual({ quiet: [], active: [] });
   });
 });

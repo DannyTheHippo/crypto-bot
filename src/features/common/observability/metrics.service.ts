@@ -146,6 +146,14 @@ export const AGENTIC_PRESCREEN_COUNTER = makeCounterProvider({
     'breakout_proximity / insufficient_data / quiet / n/a for failopen_error)',
   labelNames: ['outcome', 'reason'] as const,
 });
+// W2: every silent exit in the reflection loop (onClosedTrade/runReflection/maybeAutoPromote) now
+// increments this with a closed-set outcome label — the loop's only prior mint was invisible from
+// outside a debugger (see reflection.service.ts's own header comment on the confirmed root cause).
+export const AGENTIC_REFLECTION_OUTCOMES_COUNTER = makeCounterProvider({
+  name: 'agentic_reflection_outcomes_total',
+  help: 'Reflection loop attempt outcomes, labeled by the exit reason (bound closed set)',
+  labelNames: ['outcome'] as const,
+});
 
 // §strategy lifecycle — sampled in the 5s loop below (same pull pattern as kill_switch_state):
 // each strategy carries exactly one state at 1, all others in the union explicit 0 (not just absent),

@@ -335,6 +335,11 @@ export const agentDecisions = pgTable(
     close: numericMoney('close'),
     inputTokens: integer('input_tokens'),
     outputTokens: integer('output_tokens'),
+    // Cache-token analytics (W4+W13 true-spend accounting) — mirrors AgentDecisionEntry's
+    // absent-vs-null-vs-confirmed-zero semantics (ports/agentic-strategy.ts); null on pre-W4 rows
+    // and on error/quiet-hold rows that never called the client.
+    cacheReadInputTokens: integer('cache_read_input_tokens'),
+    cacheCreationInputTokens: integer('cache_creation_input_tokens'),
     latencyMs: integer('latency_ms'),
     playbookVersion: integer('playbook_version'),
     promptHash: text('prompt_hash').notNull(),
@@ -388,5 +393,9 @@ export const llmUsage = pgTable('llm_usage', {
   strategyId: text('strategy_id'),
   inputTokens: integer('input_tokens').notNull(),
   outputTokens: integer('output_tokens').notNull(),
+  // Cache-token analytics (W4+W13 true-spend accounting) — same absent-vs-zero semantics as
+  // LlmUsageEntry's cache fields (ports/agentic-strategy.ts); null on pre-W4 rows.
+  cacheReadInputTokens: integer('cache_read_input_tokens'),
+  cacheCreationInputTokens: integer('cache_creation_input_tokens'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });

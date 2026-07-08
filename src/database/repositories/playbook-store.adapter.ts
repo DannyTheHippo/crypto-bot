@@ -122,12 +122,19 @@ export class PlaybookStoreAdapter implements PlaybookProvider {
     return { version: row.version, content: row.content, source: 'seed' };
   }
 
-  // Single-writer lane (only the reflection/promotion services call append; their own scheduling
-  // never overlaps two calls concurrently — see G4a/G4b), so a plain max+1 read-then-insert is
-  // sufficient; no transaction-level lock is taken. The new row is INACTIVE by definition — it
-  // only becomes the active version via a later 'promotion' row or an operator pin (see resolve()).
-  // For source='promotion', `content` is a promotion rationale/audit note, not the active
-  // content — resolve() reads `parentVersion`'s row for that.
+  // Concurrency (W5, 2026-07-08): append is no longer a strict single-writer lane — the reflection
+  // loop AND the attributed promotion evaluator both observe onClosedTrade (app.module.ts), each
+  // with only its OWN in-flight guard, so a closed trade landing mid-reflection can run the
+  // evaluator's fast DB-only evaluate concurrently, and two plain (maxVersion()+1) read-then-inserts
+  // can interleave. This stays correct WITHOUT a transaction lock because the ACTUAL invariant is
+  // enforced elsewhere: `agent_playbook_versions_version_uidx` (trading.schema.ts) is a UNIQUE index
+  // on `version`, so the losing race's insert fails atomically (no duplicate-version corruption of
+  // resolve()), and BOTH callers catch that failure (evaluator try/catch → promote_failed; reflection
+  // `void runReflection().catch`) and retry on the next trade. Do not drop the unique index or either
+  // catch site without replacing this with a transactional lock. The new row is INACTIVE by
+  // definition — it only becomes the active version via a later 'promotion' row or an operator pin
+  // (see resolve()). For source='promotion', `content` is a promotion rationale/audit note, not the
+  // active content — resolve() reads `parentVersion`'s row for that.
   async append(
     content: string,
     source: 'reflection' | 'promotion',

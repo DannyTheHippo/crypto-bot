@@ -119,6 +119,8 @@ export interface AnthropicAgentClientConfig {
   readonly planMode?: boolean;
   // Fee-aware plan viability floor (decimal string; default '1.5') — see the mapping's edge check.
   readonly minEdgeMultiple?: string;
+  // W3 payoff-floor multiple (decimal string; default '1.5') — see the mapping's stop-floor/RR check.
+  readonly minRr?: string;
 }
 
 // Placeholder profile used only when no real AgentTradingProfile has been wired yet — keeps the
@@ -248,7 +250,11 @@ export class AnthropicAgentClient implements AgentClientPort {
     const systemPrompt = buildSystemPrompt(
       { ...baseProfile, constraints },
       this.cfg.planMode
-        ? { planMode: true, minEdgeMultiple: this.cfg.minEdgeMultiple ?? '1.5' }
+        ? {
+            planMode: true,
+            minEdgeMultiple: this.cfg.minEdgeMultiple ?? '1.5',
+            minRr: this.cfg.minRr ?? '1.5',
+          }
         : {},
     );
     // inputPayload is the market JSON ALONE — buildMarketPayload's signature carries no
@@ -367,19 +373,36 @@ export class AnthropicAgentClient implements AgentClientPort {
     // W3.1 fee-aware plan viability floor: a plan whose take-profit cannot clear
     // minEdgeMultiple × the round-trip fee fraction is rejected outright — journal-visible via the
     // prefixed rationale, no signals, no plan (the strategy treats it as a hold).
+    // W3 payoff-floor gates (same rejection shape): a stop below the round-trip fee fraction
+    // guarantees a loss on the stop-out alone, and a takeProfitPct/stopLossPct ratio below
+    // AGENTIC_MIN_RR lets a plan lose money even at a winning-trade rate above 50% — both are
+    // rejected before the plan ever reaches the market.
     if (this.cfg.planMode && action === 'long' && side === 'FLAT' && rawPlan) {
       const feeFraction = new Decimal(baseProfile.makerBps).plus(baseProfile.takerBps).div(10_000);
       const edgeFloor = new Decimal(this.cfg.minEdgeMultiple ?? '1.5').mul(feeFraction);
-      if (new Decimal(String(rawPlan.takeProfitPct)).lt(edgeFloor)) {
-        this.logger.warn(
-          `plan rejected: takeProfitPct ${rawPlan.takeProfitPct} below edge floor ${edgeFloor.toFixed()}`,
-        );
+      const minRr = new Decimal(this.cfg.minRr ?? '1.5');
+      const stopLossPct = new Decimal(String(rawPlan.stopLossPct));
+      const takeProfitPct = new Decimal(String(rawPlan.takeProfitPct));
+      let rejectionWarn: string | undefined;
+      let rejectionTag: string | undefined;
+      if (takeProfitPct.lt(edgeFloor)) {
+        rejectionWarn = `plan rejected: takeProfitPct ${rawPlan.takeProfitPct} below edge floor ${edgeFloor.toFixed()}`;
+        rejectionTag = 'edge below floor';
+      } else if (stopLossPct.lt(feeFraction)) {
+        rejectionWarn = `plan rejected: stopLossPct ${rawPlan.stopLossPct} below round-trip fee ${feeFraction.toFixed()}`;
+        rejectionTag = 'stop below fee floor';
+      } else if (takeProfitPct.div(stopLossPct).lt(minRr)) {
+        rejectionWarn = `plan rejected: takeProfitPct/stopLossPct ${takeProfitPct.div(stopLossPct).toFixed()} below AGENTIC_MIN_RR ${minRr.toFixed()}`;
+        rejectionTag = 'RR below floor';
+      }
+      if (rejectionWarn && rejectionTag) {
+        this.logger.warn(rejectionWarn);
         return {
           signals: [],
           decision: {
             action,
             confidence,
-            rationale: `[plan rejected: edge below floor] ${rationale}`,
+            rationale: `[plan rejected: ${rejectionTag}] ${rationale}`,
           },
           usage,
           latencyMs,

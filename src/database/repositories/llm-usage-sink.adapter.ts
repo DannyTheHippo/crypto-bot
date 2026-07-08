@@ -29,6 +29,8 @@ export class LlmUsageSinkAdapter implements LlmUsageSink {
       strategyId: entry.strategyId ?? null,
       inputTokens: entry.inputTokens,
       outputTokens: entry.outputTokens,
+      cacheReadInputTokens: entry.cacheReadInputTokens ?? null,
+      cacheCreationInputTokens: entry.cacheCreationInputTokens ?? null,
     };
     void this.repo.insert(row).catch((err: unknown) => {
       this.log.error(`llm_usage insert failed: ${String(err)}`);

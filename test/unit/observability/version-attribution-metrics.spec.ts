@@ -67,13 +67,7 @@ function service(
   const trips = gaugeFake();
   const stats: PromotionStatsPort = {
     fillsForMode: () => Promise.resolve(fills),
-    llmTokenTotals: () =>
-      Promise.resolve({
-        decideInputTokens: 0,
-        decideOutputTokens: 0,
-        reflectionInputTokens: 0,
-        reflectionOutputTokens: 0,
-      }),
+    llmTokenTotals: () => Promise.resolve({ perModel: [] }),
   };
   const journal: AgentDecisionJournalPort = {
     record: () => undefined,

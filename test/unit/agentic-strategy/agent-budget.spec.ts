@@ -193,6 +193,83 @@ describe('DailyLlmBudget', () => {
     expect(budget.tryReserveCall()).toBe(false);
   });
 
+  it('prices cache tokens at the default cache rates (W4+W13)', () => {
+    const budget = new DailyLlmBudget(
+      {
+        maxCallsPerDay: 100,
+        maxTokensPerDay: 1_000_000_000,
+        maxCostUsdPerDay: 100,
+        priceInputPerMtok: 3,
+        priceOutputPerMtok: 15,
+        priceCacheReadPerMtok: 0.3,
+        priceCacheWritePerMtok: 6,
+      },
+      () => T,
+    );
+    // 1M in ×3 + 1M out ×15 + 1M cacheRead ×0.3 + 1M cacheWrite ×6 = 3 + 15 + 0.3 + 6 = 24.3
+    budget.recordUsage({
+      inputTokens: 1_000_000,
+      outputTokens: 1_000_000,
+      cacheReadInputTokens: 1_000_000,
+      cacheCreationInputTokens: 1_000_000,
+    });
+    expect(budget.snapshot().costUsd).toBe(24.3);
+  });
+
+  it('prices a mixed-model day at each model’s own rates', () => {
+    const budget = new DailyLlmBudget(
+      {
+        maxCallsPerDay: 100,
+        maxTokensPerDay: 1_000_000_000,
+        maxCostUsdPerDay: 100,
+        priceInputPerMtok: 3,
+        priceOutputPerMtok: 15,
+        pricesByModel: {
+          'claude-sonnet-5': {
+            inputPerMtok: 3,
+            outputPerMtok: 15,
+            cacheReadPerMtok: 0.3,
+            cacheWritePerMtok: 6,
+          },
+          'claude-opus-4-8': {
+            inputPerMtok: 5,
+            outputPerMtok: 25,
+            cacheReadPerMtok: 0.5,
+            cacheWritePerMtok: 10,
+          },
+        },
+      },
+      () => T,
+    );
+    budget.recordUsage({ inputTokens: 1_000_000, outputTokens: 0 }, 'claude-sonnet-5'); // 3
+    budget.recordUsage({ inputTokens: 1_000_000, outputTokens: 1_000_000 }, 'claude-opus-4-8'); // 5 + 25 = 30
+    expect(budget.snapshot().costUsd).toBe(33);
+  });
+
+  it('an unknown model prices at the most-expensive configured rates (fail-closed)', () => {
+    const budget = new DailyLlmBudget(
+      {
+        maxCallsPerDay: 100,
+        maxTokensPerDay: 1_000_000_000,
+        maxCostUsdPerDay: 100,
+        priceInputPerMtok: 3,
+        priceOutputPerMtok: 15,
+        pricesByModel: {
+          'claude-opus-4-8': {
+            inputPerMtok: 5,
+            outputPerMtok: 25,
+            cacheReadPerMtok: 0.5,
+            cacheWritePerMtok: 10,
+          },
+        },
+      },
+      () => T,
+    );
+    // Unknown model → max(default 3, opus 5) input = 5. 1M ×5 = 5.
+    budget.recordUsage({ inputTokens: 1_000_000, outputTokens: 0 }, 'some-unpriced-model');
+    expect(budget.snapshot().costUsd).toBe(5);
+  });
+
   it('rolls the cost cap over on a UTC day change alongside calls/tokens', () => {
     let clock = T;
     const nowFn = () => clock;

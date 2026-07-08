@@ -8,7 +8,7 @@ import type { OrderIntent } from '../../domain/types/order-intent';
 import type { ApprovalProof } from '../../domain/types/risk-decision';
 import type { FillRecord } from '../../domain/types/exec-report';
 import type { OrderRecord } from '../../domain/oms/reducer';
-import { isOrderState } from '../../domain/oms/reducer';
+import { isOrderState, TERMINAL_ORDER_STATES } from '../../domain/oms/reducer';
 import type {
   ExecutionStorePort,
   PersistedOrderEvent,
@@ -140,9 +140,12 @@ export class DrizzleExecutionStore implements ExecutionStorePort {
 
     if (!inserted) return { applied: false };
 
-    // Refresh the cached reducer state on the orders row.
+    // Refresh the cached reducer state on the orders row. Stamping terminal_at here is the
+    // single OMS persistence chokepoint for it (findOpenByMode/BootRecovery rely on it being
+    // non-null for every order that will never transition again).
     await this.orders.updateState(order.intentId, ev.derivedState, ev.cumQty, {
       venueOrderId: ev.venueOrderId,
+      ...(TERMINAL_ORDER_STATES.has(ev.derivedState) ? { terminalAt: Date.now() } : {}),
     });
 
     return { applied: true };

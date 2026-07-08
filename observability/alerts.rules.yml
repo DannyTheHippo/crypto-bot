@@ -132,3 +132,19 @@ groups:
         annotations:
           summary: 'Agent client hit a FATAL API error — lane latched degraded (zero LLM calls) until the app container is recreated'
           runbook: 'docs/runbook.md'
+
+      # W2 (2026-07-08): the reflection learning loop was silently dead for 4 days because every
+      # minted candidate tripped the polarity-blind banned-word validator (confirmed live:
+      # playbook_validator_rejections_total{banned_token="true"}=1, playbook stuck at the v1 seed).
+      # The reflection prompt was reworded to avoid the trigger words; this alert warns if a future
+      # model still emits a banned token so the loop can never iterate — instead of it dying
+      # invisibly again. Warning, not critical: one rejection is recoverable (the seed stays
+      # active); a sustained pattern is the real failure. Requires agentic_reflection_outcomes_total
+      # (added W2, AgentMetricsRecorder).
+      - alert: AgenticReflectionRejects
+        expr: sum(increase(agentic_reflection_outcomes_total{outcome="validator_reject"}[6h])) >= 2
+        for: 0m
+        labels: { severity: warning }
+        annotations:
+          summary: 'Reflection candidates are being rejected by the playbook validator (≥2 in 6h) — the learning loop cannot iterate'
+          runbook: 'docs/runbook.md'

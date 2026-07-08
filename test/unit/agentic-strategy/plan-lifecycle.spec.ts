@@ -117,8 +117,8 @@ class PlanningClient implements AgentClientPort {
   }
 }
 
-function makeStrategy(client: AgentClientPort, planMode = true): AgenticStrategy {
-  const params: AgenticStrategyParams = {
+function makeParams(planMode = true): AgenticStrategyParams {
+  return {
     symbol: SYM,
     venue: V,
     interval: '15m',
@@ -127,7 +127,10 @@ function makeStrategy(client: AgentClientPort, planMode = true): AgenticStrategy
     planMode,
     planMaxQuietBars: 4,
   };
-  return new AgenticStrategy(SID, params, client);
+}
+
+function makeStrategy(client: AgentClientPort, planMode = true): AgenticStrategy {
+  return new AgenticStrategy(SID, makeParams(planMode), client);
 }
 
 describe('AgenticStrategy plan lifecycle (W3.1)', () => {
@@ -176,6 +179,93 @@ describe('AgenticStrategy plan lifecycle (W3.1)', () => {
     );
     expect(out[0]!.kind).toBe('EXIT_LONG');
     expect(out[0]!.reason).toBe('plan exit: stop');
+  });
+
+  it('executor exit signals carry a multi-bar TTL, never one bar (gateway TTL race regression)', async () => {
+    // Live 2026-07-07: a max_hold plan exit was GATEWAY_REJECTED:EXPIRED at age 902.2s vs
+    // ttl 900s — executor signals anchor eventTime to the evaluated bar's close, so a one-bar
+    // TTL loses the race against its own age on any ≥2s jitter. Default planExitTtlBars = 2.
+    const client = new PlanningClient();
+    const strategy = makeStrategy(client);
+    await strategy.decide(buildInput(0));
+    const out = await strategy.decide(
+      buildInput(1, { close: '98', position: longPosition('100') }),
+    );
+    expect(out[0]!.kind).toBe('EXIT_LONG');
+    expect(out[0]!.ttlMs).toBe(2 * STEP_MS);
+  });
+
+  it('planExitTtlBars below the 2-bar floor is clamped up, never trusted', async () => {
+    const client = new PlanningClient();
+    const strategy = new AgenticStrategy(
+      SID,
+      {
+        symbol: SYM,
+        venue: V,
+        interval: '15m',
+        warmupBars: 5,
+        model: 'test-model',
+        planMode: true,
+        planMaxQuietBars: 4,
+        planExitTtlBars: 1,
+      },
+      client,
+    );
+    await strategy.decide(buildInput(0));
+    const out = await strategy.decide(
+      buildInput(1, { close: '98', position: longPosition('100') }),
+    );
+    expect(out[0]!.ttlMs).toBe(2 * STEP_MS);
+  });
+
+  it('samples the market payload every Nth managed bar (W6) — others stay null', async () => {
+    const client = new PlanningClient();
+    const entries: Array<{ has: boolean }> = [];
+    const strategy = new AgenticStrategy(
+      SID,
+      {
+        symbol: SYM,
+        venue: V,
+        interval: '15m',
+        warmupBars: 5,
+        model: 'test-model',
+        planMode: true,
+        planMaxQuietBars: 8, // > the bars we drive, so no consult interrupts the quiet holds
+        quietPayloadSampleBars: 2,
+      },
+      client,
+      {
+        journal: {
+          record: (e) => entries.push({ has: e.inputPayload !== null }),
+          recent: () => Promise.resolve([]),
+        },
+      },
+    );
+    await strategy.decide(buildInput(0)); // consult → plan stored (records a decide entry)
+    entries.length = 0; // ignore the initial consult journal; measure only managed quiet bars
+    // Bars 1..3 hold the position at entry (close 100 = avgEntry, no TP/SL) → managed quiet holds.
+    for (let i = 1; i <= 3; i++) {
+      await strategy.decide(buildInput(i, { close: '100', position: longPosition('100') }));
+    }
+    // barsElapsed 1,2,3 → sample on 2 only (barsElapsed % 2 === 0): [null, payload, null].
+    expect(entries.map((e) => e.has)).toEqual([false, true, false]);
+  });
+
+  it('never samples a managed-bar payload when quietPayloadSampleBars is 0 (default, byte-identical)', async () => {
+    const client = new PlanningClient();
+    const entries: Array<{ has: boolean }> = [];
+    const strategy = new AgenticStrategy(SID, makeParams(), client, {
+      journal: {
+        record: (e) => entries.push({ has: e.inputPayload !== null }),
+        recent: () => Promise.resolve([]),
+      },
+    });
+    await strategy.decide(buildInput(0));
+    entries.length = 0;
+    for (let i = 1; i <= 3; i++) {
+      await strategy.decide(buildInput(i, { close: '100', position: longPosition('100') }));
+    }
+    expect(entries.every((e) => !e.has)).toBe(true);
   });
 
   it('cancels an unfilled entry after entryValidityBars and clears the plan', async () => {

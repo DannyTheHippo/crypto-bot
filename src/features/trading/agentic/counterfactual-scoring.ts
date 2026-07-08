@@ -374,6 +374,160 @@ export function summarizeRecentDecisionOutcomes(
   };
 }
 
+// ── Calibration + regime digests for the reflection loop (W14) ──────────────
+//
+// The F1 digest above buckets recent decisions by WHAT they did; these two buckets by the model's
+// own STATED confidence and by realized-volatility regime, so a systematic miscalibration (e.g.
+// 'long' entries showing no positive edge at any confidence level) is visible to the reflection
+// model as a table, not something a human has to compute by hand from agent_decisions. Same t+1,
+// close-price-proxy, TOY RESEARCH METRIC caveats as this module's header comment.
+
+const CALIBRATION_MIN_SAMPLE = 3;
+const CONFIDENCE_BUCKET_WIDTH = 0.2;
+const CONFIDENCE_BUCKET_COUNT = 5; // 0.0-0.2, 0.2-0.4, 0.4-0.6, 0.6-0.8, 0.8-1.0
+const CALIBRATED_ACTIONS = ['long', 'flat', 'hold'] as const;
+type CalibratedAction = (typeof CALIBRATED_ACTIONS)[number];
+
+export interface CalibrationCell {
+  readonly action: CalibratedAction;
+  readonly confidenceLowerBound: number; // inclusive
+  readonly confidenceUpperBound: number; // exclusive, except the top bucket (inclusive of 1)
+  readonly count: number;
+  readonly meanForwardReturnBps: number;
+}
+
+// Compact — only buckets with count >= CALIBRATION_MIN_SAMPLE are present (empty/thin buckets are
+// omitted entirely rather than emitted as null noise; see this section's header comment).
+export type CalibrationDigest = readonly CalibrationCell[];
+
+function confidenceBucketIndex(confidence: number): number {
+  const clamped = Math.min(1, Math.max(0, confidence));
+  return Math.min(CONFIDENCE_BUCKET_COUNT - 1, Math.floor(clamped / CONFIDENCE_BUCKET_WIDTH));
+}
+
+/**
+ * Buckets rows by (action × stated-confidence bucket) and reports count + mean t+1 forward return
+ * in bps for every bucket that clears CALIBRATION_MIN_SAMPLE. Unlike computeCalibration's
+ * exposure-based "directional edge" above, this reports the RAW forward return per action — 'long'
+ * decisions that lose money read as a negative mean here regardless of confidence, which is exactly
+ * the systematic-miscalibration signal the reflection prompt needs to see.
+ *
+ * TOY RESEARCH METRIC — see this module's header comment.
+ */
+export function summarizeCalibration(rows: readonly ScoringRow[]): CalibrationDigest {
+  const sums = new Map<string, { sum: number; count: number }>();
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i]!;
+    if (row.action === 'error' || row.confidence === null) continue;
+    const fwd = forwardReturn(rows, i, CALIBRATION_HORIZON);
+    if (fwd === null) continue;
+    const key = `${row.action}:${confidenceBucketIndex(row.confidence)}`;
+    const bucket = sums.get(key) ?? { sum: 0, count: 0 };
+    bucket.sum += fwd * 10000;
+    bucket.count += 1;
+    sums.set(key, bucket);
+  }
+  const cells: CalibrationCell[] = [];
+  for (const action of CALIBRATED_ACTIONS) {
+    for (let idx = 0; idx < CONFIDENCE_BUCKET_COUNT; idx++) {
+      const bucket = sums.get(`${action}:${idx}`);
+      if (!bucket || bucket.count < CALIBRATION_MIN_SAMPLE) continue;
+      cells.push({
+        action,
+        confidenceLowerBound: idx * CONFIDENCE_BUCKET_WIDTH,
+        confidenceUpperBound: (idx + 1) * CONFIDENCE_BUCKET_WIDTH,
+        count: bucket.count,
+        meanForwardReturnBps: bucket.sum / bucket.count,
+      });
+    }
+  }
+  return cells;
+}
+
+// Trailing-window realized-volatility proxy — no candle table is available here (same constraint
+// forwardReturn's own comment notes), so a rolling stdev of the journal's own `close` field is the
+// only regime signal on hand. 10 closes is this module's first such window (no existing convention
+// to reuse).
+const VOLATILITY_WINDOW = 10;
+
+// stdev of the `window` closes ending at (and including) row i; null until `window` closes are
+// available (start of the group) or any close in the window is unrecorded.
+function trailingStdev(rows: readonly ScoringRow[], i: number, window: number): number | null {
+  const start = i - window + 1;
+  if (start < 0) return null;
+  const closes: number[] = [];
+  for (let k = start; k <= i; k++) {
+    const c = rows[k]!.close;
+    if (c === null) return null;
+    closes.push(toIndicatorFloat(c));
+  }
+  const mean = closes.reduce((sum, v) => sum + v, 0) / closes.length;
+  const variance = closes.reduce((sum, v) => sum + (v - mean) ** 2, 0) / closes.length;
+  return Math.sqrt(variance);
+}
+
+function median(values: readonly number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0 ? (sorted[mid - 1]! + sorted[mid]!) / 2 : sorted[mid]!;
+}
+
+export interface RegimeActionStats {
+  readonly action: CalibratedAction;
+  readonly count: number;
+  readonly meanForwardReturnBps: number;
+}
+
+export interface RegimeSplitDigest {
+  readonly quiet: readonly RegimeActionStats[]; // trailing stdev <= median
+  readonly active: readonly RegimeActionStats[]; // trailing stdev > median
+}
+
+/**
+ * Splits the SAME per-action t+1 forward-return stats as summarizeCalibration above by
+ * realized-volatility regime: each row's trailing VOLATILITY_WINDOW-close stdev is computed, the
+ * median across all rows with a defined stdev splits the window into 'quiet' (<= median) and
+ * 'active' (> median), and each half reports count + mean forward return in bps per action. Rows
+ * without VOLATILITY_WINDOW prior closes in their own group (or with an undefined t+1 forward
+ * return) are excluded from both halves — never silently placed in a default regime.
+ *
+ * TOY RESEARCH METRIC — see this module's header comment.
+ */
+export function summarizeRegimeSplit(rows: readonly ScoringRow[]): RegimeSplitDigest {
+  const stdevs = rows.map((_, i) => trailingStdev(rows, i, VOLATILITY_WINDOW));
+  const definedStdevs = stdevs.filter((s): s is number => s !== null);
+  if (definedStdevs.length === 0) return { quiet: [], active: [] };
+  const splitPoint = median(definedStdevs);
+
+  const quietSums = new Map<CalibratedAction, { sum: number; count: number }>();
+  const activeSums = new Map<CalibratedAction, { sum: number; count: number }>();
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i]!;
+    if (row.action === 'error') continue;
+    const stdev = stdevs[i];
+    if (stdev === null || stdev === undefined) continue;
+    const fwd = forwardReturn(rows, i, CALIBRATION_HORIZON);
+    if (fwd === null) continue;
+    const target = stdev <= splitPoint ? quietSums : activeSums;
+    const bucket = target.get(row.action) ?? { sum: 0, count: 0 };
+    bucket.sum += fwd * 10000;
+    bucket.count += 1;
+    target.set(row.action, bucket);
+  }
+
+  const finalize = (
+    sums: Map<CalibratedAction, { sum: number; count: number }>,
+  ): RegimeActionStats[] =>
+    CALIBRATED_ACTIONS.flatMap((action) => {
+      const bucket = sums.get(action);
+      return bucket
+        ? [{ action, count: bucket.count, meanForwardReturnBps: bucket.sum / bucket.count }]
+        : [];
+    });
+
+  return { quiet: finalize(quietSums), active: finalize(activeSums) };
+}
+
 export interface CompareOptions {
   // Required (and must be exactly `true`) to proceed — see compare()'s own comment for why.
   readonly assertSameTemplate?: boolean;

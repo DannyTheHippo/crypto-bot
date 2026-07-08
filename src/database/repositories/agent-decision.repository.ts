@@ -20,6 +20,10 @@ export interface AgentDecisionInsert {
   close: string | null;
   inputTokens: number | null;
   outputTokens: number | null;
+  // Optional so pre-#27 callers and test fixtures stay valid (nullable analytics columns; absent ⇒
+  // NULL, distinguishable from a confirmed zero — see AgentUsage's own absent-vs-zero convention).
+  cacheReadInputTokens?: number | null;
+  cacheCreationInputTokens?: number | null;
   latencyMs: number | null;
   playbookVersion: number | null;
   promptHash: string;

@@ -184,4 +184,27 @@ describe('validatePlaybook', () => {
       expect(result.bannedTokenHit).toBeUndefined();
     }
   });
+
+  // W2 confirmed root cause: the denylist is polarity-blind by design (this file's own header
+  // comment) — a CAUTIONARY echo of a banned word trips the same tripwire as an instruction to use
+  // it. Pinned so a future "fix" doesn't accidentally reintroduce polarity awareness here; the fix
+  // belongs in the prompt (reflection.service.ts), never in this validator.
+  it('rejects a cautionary sentence that merely mentions a banned word ("Do not use leverage or margin.") with bannedTokenHit:true', () => {
+    const content = [
+      '## regime notes',
+      'x',
+      '## entry rules',
+      'y',
+      '## exit rules',
+      'z',
+      '## mistakes to avoid',
+      'Do not use leverage or margin.',
+    ].join('\n');
+
+    const result = validatePlaybook(content);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.bannedTokenHit).toBe(true);
+    }
+  });
 });

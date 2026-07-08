@@ -281,6 +281,11 @@ export interface AgentDecisionEntry {
   readonly close: string | null;
   readonly inputTokens: number | null;
   readonly outputTokens: number | null;
+  // Cache-token analytics (#27 true-spend accounting), mirroring AgentUsage's field semantics:
+  // absent/null when the response carried neither field — never defaulted to 0, so "absent" and
+  // "confirmed zero" stay distinguishable to cost analysis. Optional so pre-#27 writers compile.
+  readonly cacheReadInputTokens?: number | null;
+  readonly cacheCreationInputTokens?: number | null;
   readonly latencyMs: number | null;
   readonly playbookVersion: number | null;
   readonly promptHash: string;
@@ -324,6 +329,9 @@ export interface LlmUsageEntry {
   readonly strategyId?: StrategyId;
   readonly inputTokens: number;
   readonly outputTokens: number;
+  // Cache-token analytics (#27) — same absent-vs-zero semantics as AgentUsage's cache fields.
+  readonly cacheReadInputTokens?: number;
+  readonly cacheCreationInputTokens?: number;
 }
 
 export interface LlmUsageSink {

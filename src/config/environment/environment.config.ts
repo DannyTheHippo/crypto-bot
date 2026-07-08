@@ -77,6 +77,38 @@ function canonicalJsonWithoutSecrets(config: AppConfig): string {
 
 const tradingModeValues = ['paper', 'testnet', 'live'] as const;
 
+// Per-model token-price entries (AGENTIC_TOKEN_PRICES_JSON). All four rates required per model —
+// a partial entry would silently price the missing component at $0, the exact fail-open hole the
+// map exists to close. Parsed fail-LOUD (throws into validate()'s error path), unlike parseVenues'
+// silent-drop: a malformed price map corrupts the promotion gate's cost math.
+const tokenPriceEntrySchema = z.object({
+  inputPerMtok: decimalString,
+  outputPerMtok: decimalString,
+  cacheReadPerMtok: decimalString,
+  cacheWritePerMtok: decimalString,
+});
+const tokenPricesSchema = z.record(z.string().min(1), tokenPriceEntrySchema);
+
+function parseTokenPrices(
+  raw: string | undefined,
+): Readonly<Record<string, z.infer<typeof tokenPriceEntrySchema>>> | undefined {
+  if (!raw) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(
+      `AGENTIC_TOKEN_PRICES_JSON is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  const result = tokenPricesSchema.safeParse(parsed);
+  if (!result.success) {
+    const issues = result.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ');
+    throw new Error(`AGENTIC_TOKEN_PRICES_JSON failed validation: ${issues}`);
+  }
+  return result.data;
+}
+
 const venueConfigSchema = z.object({
   id: z.string().min(1),
   environment: z.enum(VENUE_ENVIRONMENTS),
@@ -149,8 +181,20 @@ const envSchema = z
     // Fee-aware plan viability floor: a plan is rejected when takeProfitPct < multiple × the
     // round-trip fee fraction (maker+taker bps / 10000). Decimal string — money-adjacent math.
     AGENTIC_MIN_EDGE_MULTIPLE: decimalString.default('1.5'),
+    // R:R structure floor: a plan is rejected when takeProfitPct / stopLossPct < this ratio.
+    // minEdgeMultiple floors only the WIN side; without this, a stop may sit below the round-trip
+    // fee itself (measured live: avg win +$0.06 vs avg loss -$0.21 — payoff 0.29:1).
+    AGENTIC_MIN_RR: decimalString.default('1.5'),
     // Safety re-consult cadence while a plan is active without executor action.
     AGENTIC_PLAN_MAX_QUIET_BARS: z.coerce.number().int().min(1).default(16),
+    // TTL in bars for plan-executor-emitted EXIT signals. Executor exits carry eventTime = the
+    // evaluated bar's close, so ttl = one bar loses the race against its own age on any ≥2s jitter
+    // (observed live 2026-07-07: a max_hold exit EXPIRED at age 902.2s vs ttl 900s). Min 2.
+    AGENTIC_PLAN_EXIT_TTL_BARS: z.coerce.number().int().min(2).default(2),
+    // Sample the decide-time input payload every Nth plan-managed (quiet) bar so the offline
+    // replay harness accrues rows under plan mode (which otherwise journals inputPayload: null on
+    // every managed bar). 0 (default) disables — no journal-volume change unconfigured.
+    AGENTIC_QUIET_PAYLOAD_SAMPLE_BARS: z.coerce.number().int().min(0).default(0),
     AGENTIC_MAX_ENTRIES_PER_DAY: z.coerce.number().int().positive().default(12),
     AGENTIC_DRAIN_COOLDOWN_BASE_MS: z.coerce.number().int().positive().default(30_000),
     AGENTIC_DRAIN_COOLDOWN_MAX_MS: z.coerce.number().int().positive().default(900_000),
@@ -173,11 +217,36 @@ const envSchema = z
     AGENTIC_PLAYBOOK_AB_PCT: z.coerce.number().int().min(0).max(50).default(0),
     // Cumulative closed-trade floor before a reflection candidate auto-promotes to ACTIVE (G4b); 0
     // (default) disables auto-promotion — see reflection.service.ts's autoPromoteMinTrades comment.
+    // LEGACY count-only path: superseded by AGENTIC_AUTO_PROMOTE_MIN_ATTRIBUTED_TRADES below (the
+    // count-only gate promotes on LANE-WIDE trade count with zero candidate-attributed evidence).
     AGENTIC_AUTO_PROMOTE_MIN_TRADES: z.coerce.number().int().min(0).default(0),
+    // Attributed auto-promotion (owner decision 2026-07-08): the promotion evaluator promotes a
+    // reflection candidate only once the CANDIDATE's own attributed closed trips reach this floor
+    // AND its mean net/trip (realized − fees) beats the champion's over the same trailing window.
+    // 0 (default) disables the evaluator.
+    AGENTIC_AUTO_PROMOTE_MIN_ATTRIBUTED_TRADES: z.coerce.number().int().min(0).default(0),
     // PromotionReadinessService LLM-cost math: USD per 1M tokens, operator-adjustable (claude-sonnet-5
     // list prices as of this writing) — same stance as the Grafana cost-panel variables.
     AGENTIC_TOKEN_PRICE_INPUT_PER_MTOK: decimalString.default('3'),
     AGENTIC_TOKEN_PRICE_OUTPUT_PER_MTOK: decimalString.default('15'),
+    // Cache-token pricing for the default model: reads ~0.1x input, 1h-TTL writes ~2x input
+    // (claude-sonnet-5 list: 0.3 / 6). Priced $0 before W4/W13 — understated true spend inside a
+    // promotion gate (fail-open direction); now first-class in llmCostUsd + the daily breaker.
+    AGENTIC_TOKEN_PRICE_CACHE_READ_PER_MTOK: decimalString.default('0.3'),
+    AGENTIC_TOKEN_PRICE_CACHE_WRITE_PER_MTOK: decimalString.default('6'),
+    // Per-model price override map, JSON: {"<model-id>": {"inputPerMtok": "5", "outputPerMtok":
+    // "25", "cacheReadPerMtok": "0.5", "cacheWritePerMtok": "10"}, ...}. Mandatory for gate honesty
+    // the moment reflectionModel ≠ model — flat pricing under-counts a pricier reflection model.
+    // Absent models fall back to the flat knobs above; unknown models in cost rows price at the
+    // MOST EXPENSIVE configured rates (fail-closed). Validated below; a malformed value fails boot.
+    AGENTIC_TOKEN_PRICES_JSON: z.string().optional(),
+    // Owner-declared evidence epoch (ISO-8601 instant, e.g. 2026-07-08T12:00:00Z): the promotion
+    // gate evaluates fills/tokens/window from this instant instead of all-time, so post-fix
+    // evidence judges the post-fix configuration (owner decision 2026-07-08). Absent/'' ⇒ all-time.
+    PROMOTION_EVIDENCE_EPOCH: z
+      .string()
+      .refine((v) => !Number.isNaN(Date.parse(v)), 'must be an ISO-8601 timestamp')
+      .optional(),
     // Residual-position notional (quote ccy) below which PromotionReadinessService's round-trip walk
     // considers a cycle CLOSED — historical pre-IOC cycles carry dust remainders that would otherwise
     // never close. Default '5' mirrors BTC/USDT's exchange minNotional.
@@ -353,8 +422,13 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     AGENTIC_PLAYBOOK_PIN: agenticPlaybookPin,
     AGENTIC_PLAYBOOK_AB_PCT: agenticPlaybookAbPct,
     AGENTIC_AUTO_PROMOTE_MIN_TRADES: agenticAutoPromoteMinTrades,
+    AGENTIC_AUTO_PROMOTE_MIN_ATTRIBUTED_TRADES: agenticAutoPromoteMinAttributedTrades,
     AGENTIC_TOKEN_PRICE_INPUT_PER_MTOK: agenticTokenPriceInputPerMtok,
     AGENTIC_TOKEN_PRICE_OUTPUT_PER_MTOK: agenticTokenPriceOutputPerMtok,
+    AGENTIC_TOKEN_PRICE_CACHE_READ_PER_MTOK: agenticTokenPriceCacheReadPerMtok,
+    AGENTIC_TOKEN_PRICE_CACHE_WRITE_PER_MTOK: agenticTokenPriceCacheWritePerMtok,
+    AGENTIC_TOKEN_PRICES_JSON: agenticTokenPricesJson,
+    PROMOTION_EVIDENCE_EPOCH: promotionEvidenceEpoch,
     PROMOTION_DUST_NOTIONAL: promotionDustNotional,
     AGENTIC_PRESCREEN_ENABLED: agenticPrescreenEnabled,
     AGENTIC_PRESCREEN_VOL_SHORT_BARS: agenticPrescreenVolShortBars,
@@ -365,7 +439,10 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     AGENTIC_EXPECTANCY_LADDER: agenticExpectancyLadder,
     AGENTIC_PLAN_MODE: agenticPlanMode,
     AGENTIC_MIN_EDGE_MULTIPLE: agenticMinEdgeMultiple,
+    AGENTIC_MIN_RR: agenticMinRr,
     AGENTIC_PLAN_MAX_QUIET_BARS: agenticPlanMaxQuietBars,
+    AGENTIC_PLAN_EXIT_TTL_BARS: agenticPlanExitTtlBars,
+    AGENTIC_QUIET_PAYLOAD_SAMPLE_BARS: agenticQuietPayloadSampleBars,
     EXIT_CROSS_BUFFER_BPS: exitCrossBufferBps,
     BASE_NOTIONAL: baseNotional,
     SIZER_EQUITY_FRACTION: sizerEquityFraction,
@@ -422,10 +499,15 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       reflectionEveryNTrades: agenticReflectionEveryNTrades,
       reflectionCooldownMs: agenticReflectionCooldownMs,
       autoPromoteMinTrades: agenticAutoPromoteMinTrades,
+      autoPromoteMinAttributedTrades: agenticAutoPromoteMinAttributedTrades,
       playbookPin: agenticPlaybookPin,
       playbookAbPct: agenticPlaybookAbPct,
       tokenPriceInputPerMtok: agenticTokenPriceInputPerMtok,
       tokenPriceOutputPerMtok: agenticTokenPriceOutputPerMtok,
+      tokenPriceCacheReadPerMtok: agenticTokenPriceCacheReadPerMtok,
+      tokenPriceCacheWritePerMtok: agenticTokenPriceCacheWritePerMtok,
+      tokenPrices: parseTokenPrices(agenticTokenPricesJson),
+      promotionEvidenceEpoch,
       promotionDustNotional,
       prescreenEnabled: agenticPrescreenEnabled,
       prescreenVolShortBars: agenticPrescreenVolShortBars,
@@ -437,6 +519,9 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       planMode: agenticPlanMode,
       minEdgeMultiple: agenticMinEdgeMultiple,
       planMaxQuietBars: agenticPlanMaxQuietBars,
+      minRr: agenticMinRr,
+      planExitTtlBars: agenticPlanExitTtlBars,
+      quietPayloadSampleBars: agenticQuietPayloadSampleBars,
     },
     risk: {
       exitCrossBufferBps,

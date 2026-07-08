@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import Decimal from 'decimal.js';
 import {
   AnthropicAgentClient,
   type AnthropicAgentClientConfig,
@@ -991,6 +992,182 @@ describe('AnthropicAgentClient', () => {
       const { signals } = await client.propose(input);
 
       expect(signals[0]!.limitPriceHint).toBeUndefined();
+    });
+  });
+
+  describe('plan mode: payoff-floor gate (stopLossPct floor + TP/SL ratio floor)', () => {
+    // DEFAULT_TRADING_PROFILE (used when cfg.profile is absent) carries makerBps/takerBps '10' each,
+    // so feeFraction = (10+10)/10000 = 0.002 — the same value PLAN_BOUNDS.stopLossPct.min was raised
+    // to. A schema-valid (>= PLAN_BOUNDS.stopLossPct.min) stopLossPct can still land below the fee
+    // floor for a higher-fee profile, which is what the stop-floor test below exercises.
+    const HIGHER_FEE_PROFILE = {
+      makerBps: '20',
+      takerBps: '20', // feeFraction = 40/10000 = 0.004
+      baseNotional: '50',
+      maxOrderNotional: '200',
+      constraints: {
+        tickSize: price('0.01'),
+        lotStep: qty('0.0001'),
+        minNotional: price('10'),
+      },
+    };
+
+    function plan(over: Partial<Record<string, number>> = {}): Record<string, number> {
+      return {
+        entryOffsetBps: 0,
+        stopLossPct: 0.003,
+        takeProfitPct: 0.0045,
+        entryValidityBars: 4,
+        maxHoldBars: 8,
+        ...over,
+      };
+    }
+
+    it('rejects a plan whose stopLossPct is below the round-trip fee fraction, journal-visible rationale, no signals', async () => {
+      const fetchFn = vi.fn();
+      const warn = vi.fn();
+      const client = new AnthropicAgentClient(
+        buildCfg({ planMode: true, profile: HIGHER_FEE_PROFILE }),
+        fetchFn,
+        { warn },
+      );
+      fetchFn.mockResolvedValue(
+        apiResponse(
+          toolUseBody(
+            {
+              action: 'long',
+              confidence: 0.8,
+              rationale: 'r',
+              // stopLossPct 0.0025 clears PLAN_BOUNDS.stopLossPct.min (0.002) but sits below this
+              // profile's 0.004 fee fraction; takeProfitPct 0.01 clears the edge floor (1.5 × 0.004).
+              plan: plan({ stopLossPct: 0.0025, takeProfitPct: 0.01 }),
+            },
+            'tool_use',
+            'submit_plan',
+          ),
+        ),
+      );
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+      });
+
+      const proposal = await client.propose(input);
+
+      expect(proposal.signals).toEqual([]);
+      expect(proposal.plan).toBeUndefined();
+      expect(proposal.decision?.rationale).toBe('[plan rejected: stop below fee floor] r');
+      expect(warn).toHaveBeenCalledWith(
+        'plan rejected: stopLossPct 0.0025 below round-trip fee 0.004',
+      );
+    });
+
+    it('rejects a plan whose takeProfitPct/stopLossPct ratio is below AGENTIC_MIN_RR, journal-visible rationale, no signals', async () => {
+      const fetchFn = vi.fn();
+      const warn = vi.fn();
+      const client = new AnthropicAgentClient(buildCfg({ planMode: true, minRr: '1.5' }), fetchFn, {
+        warn,
+      });
+      fetchFn.mockResolvedValue(
+        apiResponse(
+          toolUseBody(
+            {
+              action: 'long',
+              confidence: 0.8,
+              rationale: 'r',
+              plan: plan({ stopLossPct: 0.003, takeProfitPct: 0.004 }),
+            },
+            'tool_use',
+            'submit_plan',
+          ),
+        ),
+      );
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+      });
+
+      const proposal = await client.propose(input);
+
+      expect(proposal.signals).toEqual([]);
+      expect(proposal.plan).toBeUndefined();
+      expect(proposal.decision?.rationale).toBe('[plan rejected: RR below floor] r');
+      const ratio = new Decimal('0.004').div('0.003').toFixed();
+      expect(warn).toHaveBeenCalledWith(
+        `plan rejected: takeProfitPct/stopLossPct ${ratio} below AGENTIC_MIN_RR 1.5`,
+      );
+    });
+
+    it('accepts a plan at the exact boundary (stopLossPct === feeFraction, takeProfitPct/stopLossPct === minRr)', async () => {
+      const fetchFn = vi.fn();
+      const client = new AnthropicAgentClient(buildCfg({ planMode: true, minRr: '1.5' }), fetchFn);
+      fetchFn.mockResolvedValue(
+        apiResponse(
+          toolUseBody(
+            {
+              action: 'long',
+              confidence: 0.8,
+              rationale: 'r',
+              plan: plan({ stopLossPct: 0.002, takeProfitPct: 0.003 }),
+            },
+            'tool_use',
+            'submit_plan',
+          ),
+        ),
+      );
+      // acceptedPlan is only populated when a lastCandle is available (its close prices the resting
+      // entry) — see the client's entry-offset mapping.
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        candles: new Map([[SYM, [candle('100', 1n)]]]),
+        context: FLAT_CONTEXT,
+      });
+
+      const proposal = await client.propose(input);
+
+      expect(proposal.signals).toHaveLength(1);
+      expect(proposal.signals[0]!.kind).toBe('ENTER_LONG');
+      expect(proposal.plan).toEqual({
+        entryOffsetBps: 0,
+        stopLossPct: '0.002',
+        takeProfitPct: '0.003',
+        entryValidityBars: 4,
+        maxHoldBars: 8,
+      });
+    });
+
+    it('applies the 1.5 default RR floor when cfg.minRr is omitted', async () => {
+      const fetchFn = vi.fn();
+      const warn = vi.fn();
+      // No minRr on cfg — same plan as the boundary-pass case above but with a ratio (1.4) just
+      // below the 1.5 default, so the default (not an unset/no-op floor) is what rejects it.
+      const client = new AnthropicAgentClient(buildCfg({ planMode: true }), fetchFn, { warn });
+      fetchFn.mockResolvedValue(
+        apiResponse(
+          toolUseBody(
+            {
+              action: 'long',
+              confidence: 0.8,
+              rationale: 'r',
+              plan: plan({ stopLossPct: 0.01, takeProfitPct: 0.014 }),
+            },
+            'tool_use',
+            'submit_plan',
+          ),
+        ),
+      );
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+      });
+
+      const proposal = await client.propose(input);
+
+      expect(proposal.signals).toEqual([]);
+      expect(proposal.decision?.rationale).toBe('[plan rejected: RR below floor] r');
+      expect(warn).toHaveBeenCalledWith(
+        'plan rejected: takeProfitPct/stopLossPct 1.4 below AGENTIC_MIN_RR 1.5',
+      );
     });
   });
 });

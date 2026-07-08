@@ -240,6 +240,35 @@ describe('buildSystemPrompt', () => {
     expect(prompt.toLowerCase()).toContain('spread');
     expect(prompt.toLowerCase()).toContain('imbalance');
   });
+
+  describe('plan mode (W3 payoff-floor sentence)', () => {
+    it('states the stop-floor/RR constraint up front, with the configured minRr, when planMode is on', () => {
+      const prompt = buildSystemPrompt(fixtureProfile(), {
+        planMode: true,
+        minEdgeMultiple: '1.5',
+        minRr: '2',
+      });
+
+      expect(prompt).toContain(
+        'Plans are auto-rejected unless stopLossPct is at least the round-trip fee fraction and takeProfitPct is at least AGENTIC_MIN_RR (2) times stopLossPct — propose plans with genuine asymmetry, not thin targets with loose stops.',
+      );
+    });
+
+    it('defaults minRr to 1.5 in the sentence when opts.minRr is omitted', () => {
+      const prompt = buildSystemPrompt(fixtureProfile(), {
+        planMode: true,
+        minEdgeMultiple: '1.5',
+      });
+
+      expect(prompt).toContain('AGENTIC_MIN_RR (1.5)');
+    });
+
+    it('omits the payoff-floor sentence entirely outside plan mode', () => {
+      const prompt = buildSystemPrompt(fixtureProfile());
+
+      expect(prompt).not.toContain('AGENTIC_MIN_RR');
+    });
+  });
 });
 
 describe('buildUserMessage', () => {
@@ -605,6 +634,12 @@ describe('DECISION_TOOL', () => {
   it('constrains action to exactly long, flat, hold', () => {
     expect(DECISION_TOOL.input_schema.properties.action.enum).toEqual(['long', 'flat', 'hold']);
   });
+
+  it("disambiguates 'flat' (close an open position) from the already-flat case (use 'hold')", () => {
+    expect(DECISION_TOOL.input_schema.properties.action.description).toContain(
+      "'flat' to close an open position (if already flat, use 'hold')",
+    );
+  });
 });
 
 describe('strict tool schemas stay within the API-accepted JSON-schema subset', () => {
@@ -657,6 +692,20 @@ describe('strict tool schemas stay within the API-accepted JSON-schema subset', 
         `[${bounds.min}, ${bounds.max}]`,
       );
     }
+  });
+});
+
+describe('PLAN_TOOL', () => {
+  it("disambiguates 'flat' (close an open position) from the already-flat case (use 'hold')", () => {
+    expect(PLAN_TOOL.input_schema.properties.action.description).toContain(
+      "'flat' to close an open position (if already flat, use 'hold')",
+    );
+  });
+});
+
+describe('PLAN_BOUNDS', () => {
+  it('raises the stopLossPct floor to 0.002 (the round-trip fee fraction), above the old 0.001 floor', () => {
+    expect(PLAN_BOUNDS.stopLossPct.min).toBe(0.002);
   });
 });
 

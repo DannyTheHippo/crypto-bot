@@ -123,17 +123,21 @@ function fakePlaybookStore(
 function fakeRecorder(): {
   recorder: ReflectionMetricsRecorder;
   rejections: boolean[];
-  tokens: Array<[number, number]>;
+  tokens: Array<[number, number, number | undefined, number | undefined]>;
+  outcomes: string[];
 } {
   const rejections: boolean[] = [];
-  const tokens: Array<[number, number]> = [];
+  const tokens: Array<[number, number, number | undefined, number | undefined]> = [];
+  const outcomes: string[] = [];
   return {
     recorder: {
       recordValidatorRejection: (b) => void rejections.push(b),
-      recordTokens: (i, o) => void tokens.push([i, o]),
+      recordTokens: (i, o, cr, cc) => void tokens.push([i, o, cr, cc]),
+      recordReflectionOutcome: (outcome) => void outcomes.push(outcome),
     },
     rejections,
     tokens,
+    outcomes,
   };
 }
 
@@ -608,6 +612,9 @@ describe('ReflectionService', () => {
 
       expect(h.storeApi.appended).toHaveLength(0);
       expect(h.recorderApi.rejections).toEqual([false]);
+      // The exit-point telemetry (W2): this is exactly the silent-discard path that killed the
+      // live loop — it must now be visible as a labeled outcome, not just a warn line.
+      expect(h.recorderApi.outcomes).toEqual(['attempt_started', 'validator_reject']);
     });
 
     it('mints nothing when the revised playbook hashes identical to the current one (NO_CHANGE)', async () => {
@@ -622,6 +629,7 @@ describe('ReflectionService', () => {
       await flush();
 
       expect(h.storeApi.appended).toHaveLength(0);
+      expect(h.recorderApi.outcomes).toEqual(['attempt_started', 'no_change']);
     });
 
     it('mints a new INACTIVE candidate when the revised playbook differs from the current one', async () => {
@@ -637,6 +645,24 @@ describe('ReflectionService', () => {
       expect(h.storeApi.appended).toEqual([
         { content: validPlaybookContent('v2'), source: 'reflection', parentVersion: 1 },
       ]);
+      expect(h.recorderApi.outcomes).toEqual(['attempt_started', 'minted']);
+    });
+
+    it('labels a refusal and a budget-exhausted attempt with their own outcomes', async () => {
+      const refused = buildHarness();
+      refused.fetchFn.mockResolvedValue(
+        apiResponse({ stop_reason: 'refusal', content: [], usage: undefined }),
+      );
+      const service = new ReflectionService(baseCfg({ everyNTrades: 1 }), refused.deps);
+      service.onClosedTrade(SID, 1);
+      await flush();
+      expect(refused.recorderApi.outcomes).toEqual(['attempt_started', 'refusal']);
+
+      const broke = buildHarness({ budgetCaps: { maxCallsPerDay: 0, maxTokensPerDay: 1_000_000 } });
+      const service2 = new ReflectionService(baseCfg({ everyNTrades: 1 }), broke.deps);
+      service2.onClosedTrade(SID, 1);
+      await flush();
+      expect(broke.recorderApi.outcomes).toEqual(['budget_exhausted']);
     });
 
     it('includes a decisionOutcomes forward-outcome digest in the reflection request body (F1)', async () => {
@@ -677,6 +703,40 @@ describe('ReflectionService', () => {
       expect(payload.decisionOutcomes!.confidence.highLong.count).toBe(1);
     });
 
+    it('folds calibration/regimeSplit/costContext into the payload and teaches the model to read calibration (W14)', async () => {
+      const rows: AgentDecisionRow[] = [
+        row({ action: 'long', close: '100', eventTime: epochMs(T) }),
+        row({ action: 'flat', close: '110', eventTime: epochMs(T + 1000) }),
+      ];
+      const h = buildHarness({ rows });
+      h.fetchFn.mockResolvedValue(
+        apiResponse(revisionToolBody({ playbook: validPlaybookContent('v2'), changelog: 'tweak' })),
+      );
+      const service = new ReflectionService(baseCfg({ everyNTrades: 1 }), h.deps);
+
+      service.onClosedTrade(SID, 1);
+      await flush();
+
+      const body = requestBodyOf(h.fetchFn);
+      expect(body.system).toContain(
+        'if long-entries show no positive edge at any confidence, the entry rules',
+      );
+      const userContent = body.messages[0]!.content;
+      const payload = JSON.parse(userContent.slice(userContent.indexOf('{"closedTrades"'))) as {
+        calibration?: unknown[];
+        regimeSplit?: { quiet: unknown[]; active: unknown[] };
+        costContext?: { roundTripFeeBps: number; note: string };
+      };
+      // Only 2 rows -> the single decision-point bucket has n=1, below CALIBRATION_MIN_SAMPLE (3),
+      // so calibration is present but empty; regimeSplit needs a 10-row trailing window, also empty.
+      expect(payload.calibration).toEqual([]);
+      expect(payload.regimeSplit).toEqual({ quiet: [], active: [] });
+      expect(payload.costContext).toEqual({
+        roundTripFeeBps: 20,
+        note: 'net-of-cost PnL = realized − fees − LLM cost; wins must clear ~20bps round-trip fees',
+      });
+    });
+
     it('records token usage on the budget when the API call succeeds', async () => {
       const h = buildHarness();
       h.fetchFn.mockResolvedValue(
@@ -689,8 +749,10 @@ describe('ReflectionService', () => {
 
       expect(h.budget.snapshot().inputTokens).toBe(10);
       expect(h.budget.snapshot().outputTokens).toBe(20);
-      // D: reflection-path tokens also feed the metrics recorder (agent_tokens_total) for the cost view.
-      expect(h.recorderApi.tokens).toEqual([[10, 20]]);
+      // D: reflection-path tokens also feed the metrics recorder (agent_tokens_total) for the cost
+      // view. Cache args are undefined (not 0) when the response carried neither field — the
+      // absent-vs-confirmed-zero distinction the cost analysis depends on.
+      expect(h.recorderApi.tokens).toEqual([[10, 20, undefined, undefined]]);
     });
 
     it('records reflection-path usage into the optional LLM usage sink when present', async () => {

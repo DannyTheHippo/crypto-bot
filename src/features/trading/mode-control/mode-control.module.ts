@@ -53,9 +53,19 @@ const readinessConfigProvider: Provider = {
   provide: PROMOTION_READINESS_CONFIG,
   useFactory: (config: TypedConfigService): PromotionReadinessConfig => {
     const agentic = config.agentic;
+    // Evidence epoch (W4+W13, owner 2026-07-08): parse the ISO string once here so the service takes
+    // a plain ms number. An unset (undefined) epoch stays undefined ⇒ all-time gate behavior.
+    const evidenceEpochMs =
+      agentic.promotionEvidenceEpoch === undefined
+        ? undefined
+        : Date.parse(agentic.promotionEvidenceEpoch);
     return {
       tokenPriceInputPerMtok: agentic.tokenPriceInputPerMtok,
       tokenPriceOutputPerMtok: agentic.tokenPriceOutputPerMtok,
+      tokenPriceCacheReadPerMtok: agentic.tokenPriceCacheReadPerMtok,
+      tokenPriceCacheWritePerMtok: agentic.tokenPriceCacheWritePerMtok,
+      tokenPrices: agentic.tokenPrices,
+      evidenceEpochMs,
       dustNotional: agentic.promotionDustNotional,
     };
   },

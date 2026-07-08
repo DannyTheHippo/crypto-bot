@@ -42,6 +42,15 @@ export function isOrderState(s: string): s is OrderState {
   return (ORDER_STATES as readonly string[]).includes(s);
 }
 
+// Single source of truth for "the order will never transition again" (was hand-synced across
+// execution-gate/fill-ingestor/unknown-resolver/exec-report-consumer — W7 collapsed the copies).
+export const TERMINAL_ORDER_STATES: ReadonlySet<OrderState> = new Set([
+  'FILLED',
+  'CANCELED',
+  'REJECTED',
+  'EXPIRED',
+]);
+
 export interface OrderRecord {
   readonly clientOrderId: ClientOrderId;
   readonly state: OrderState;

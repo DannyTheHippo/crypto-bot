@@ -19,7 +19,7 @@ import { price, qty } from '../../../domain/types/money';
 import { STRATEGY_REGISTRY, type StrategyRegistryPort } from '../../../ports/strategy';
 import { StubAgentClient } from './agent-client.adapter';
 import { AnthropicAgentClient } from './anthropic-agent-client';
-import { BudgetedAgentClient, DailyLlmBudget } from './agent-budget';
+import { BudgetedAgentClient, DailyLlmBudget, type ModelTokenRates } from './agent-budget';
 import {
   createReflectionService,
   type ReflectionMetricsRecorder,
@@ -38,9 +38,44 @@ const DEFAULT_MAX_TOKENS_PER_DAY = 2_000_000;
 const DEFAULT_DAILY_COST_STOP_USD = 3;
 const DEFAULT_TOKEN_PRICE_INPUT_PER_MTOK = 3;
 const DEFAULT_TOKEN_PRICE_OUTPUT_PER_MTOK = 15;
+// W4+W13: matches environment.config.ts's AGENTIC_TOKEN_PRICE_CACHE_*_PER_MTOK defaults.
+const DEFAULT_TOKEN_PRICE_CACHE_READ_PER_MTOK = 0.3;
+const DEFAULT_TOKEN_PRICE_CACHE_WRITE_PER_MTOK = 6;
 
 function intEnv(raw: string | undefined, fallback: number): number {
   return new Decimal(raw ?? fallback).toNumber();
+}
+
+// Converts AppConfig.agentic.tokenPrices' decimal-string per-model map into DailyLlmBudgetCaps'
+// number-rated ModelTokenRates map (same Decimal(...).toNumber() convention as intEnv above) — the
+// composition root's only reachable source for the map (see createAgentLlmBudget's own comment on
+// why it isn't re-parsed from AGENTIC_TOKEN_PRICES_JSON here).
+function toModelTokenRates(
+  tokenPrices:
+    | Readonly<
+        Record<
+          string,
+          {
+            readonly inputPerMtok: string;
+            readonly outputPerMtok: string;
+            readonly cacheReadPerMtok: string;
+            readonly cacheWritePerMtok: string;
+          }
+        >
+      >
+    | undefined,
+): Readonly<Record<string, ModelTokenRates>> | undefined {
+  if (!tokenPrices) return undefined;
+  const out: Record<string, ModelTokenRates> = {};
+  for (const [model, rates] of Object.entries(tokenPrices)) {
+    out[model] = {
+      inputPerMtok: new Decimal(rates.inputPerMtok).toNumber(),
+      outputPerMtok: new Decimal(rates.outputPerMtok).toNumber(),
+      cacheReadPerMtok: new Decimal(rates.cacheReadPerMtok).toNumber(),
+      cacheWritePerMtok: new Decimal(rates.cacheWritePerMtok).toNumber(),
+    };
+  }
+  return out;
 }
 
 // Local to this module (see G2b task brief) — health/metrics/reflection inject this token later to
@@ -97,12 +132,26 @@ export function agenticEnv(config?: TypedConfigService): Record<string, string |
     AGENTIC_REFLECTION_EVERY_N_TRADES: String(agentic.reflectionEveryNTrades),
     AGENTIC_REFLECTION_COOLDOWN_MS: String(agentic.reflectionCooldownMs),
     AGENTIC_AUTO_PROMOTE_MIN_TRADES: String(agentic.autoPromoteMinTrades),
+    AGENTIC_AUTO_PROMOTE_MIN_ATTRIBUTED_TRADES: String(agentic.autoPromoteMinAttributedTrades),
     AGENTIC_PLAN_MODE: String(agentic.planMode),
     AGENTIC_MIN_EDGE_MULTIPLE: agentic.minEdgeMultiple,
+    AGENTIC_MIN_RR: agentic.minRr,
+    AGENTIC_PLAN_EXIT_TTL_BARS: String(agentic.planExitTtlBars),
+    AGENTIC_QUIET_PAYLOAD_SAMPLE_BARS: String(agentic.quietPayloadSampleBars),
+    AGENTIC_TOKEN_PRICE_CACHE_READ_PER_MTOK: agentic.tokenPriceCacheReadPerMtok,
+    AGENTIC_TOKEN_PRICE_CACHE_WRITE_PER_MTOK: agentic.tokenPriceCacheWritePerMtok,
   };
 }
 
-export function createAgentLlmBudget(env: Record<string, string | undefined>): DailyLlmBudget {
+// pricesByModel: NOT sourced from env (AGENTIC_TOKEN_PRICES_JSON is parsed/validated once at boot
+// by environment.config.ts's parseTokenPrices — reparsing raw JSON here would duplicate that
+// fail-loud validation and could silently disagree with it). The composition root (app.module.ts)
+// threads AppConfig.agentic.tokenPrices straight through instead, converting each decimal-string
+// rate to a number via Decimal(...).toNumber() (same convention as intEnv above).
+export function createAgentLlmBudget(
+  env: Record<string, string | undefined>,
+  pricesByModel?: Readonly<Record<string, ModelTokenRates>>,
+): DailyLlmBudget {
   return new DailyLlmBudget({
     maxCallsPerDay: intEnv(env['AGENTIC_MAX_CALLS_PER_DAY'], DEFAULT_MAX_CALLS_PER_DAY),
     maxTokensPerDay: intEnv(env['AGENTIC_MAX_TOKENS_PER_DAY'], DEFAULT_MAX_TOKENS_PER_DAY),
@@ -115,6 +164,15 @@ export function createAgentLlmBudget(env: Record<string, string | undefined>): D
       env['AGENTIC_TOKEN_PRICE_OUTPUT_PER_MTOK'],
       DEFAULT_TOKEN_PRICE_OUTPUT_PER_MTOK,
     ),
+    priceCacheReadPerMtok: intEnv(
+      env['AGENTIC_TOKEN_PRICE_CACHE_READ_PER_MTOK'],
+      DEFAULT_TOKEN_PRICE_CACHE_READ_PER_MTOK,
+    ),
+    priceCacheWritePerMtok: intEnv(
+      env['AGENTIC_TOKEN_PRICE_CACHE_WRITE_PER_MTOK'],
+      DEFAULT_TOKEN_PRICE_CACHE_WRITE_PER_MTOK,
+    ),
+    pricesByModel,
   });
 }
 
@@ -184,12 +242,20 @@ export function selectAgentClient(
       // byte-identical legacy submit_decision behavior.
       planMode: env['AGENTIC_PLAN_MODE'] === 'true',
       minEdgeMultiple: env['AGENTIC_MIN_EDGE_MULTIPLE'],
+      minRr: env['AGENTIC_MIN_RR'],
     },
     fetch,
     new Logger('AnthropicAgentClient'),
     playbookProvider,
   );
-  return new BudgetedAgentClient(client, budget, new Logger('AgentBudget'));
+  // model threaded through so recordUsage (agent-budget.ts) can resolve per-model cache/token
+  // rates (W4+W13) — this client only ever calls the ONE model it was constructed with above.
+  return new BudgetedAgentClient(
+    client,
+    budget,
+    new Logger('AgentBudget'),
+    env['AGENTIC_MODEL'] ?? DEFAULT_MODEL,
+  );
 }
 
 // Multi-symbol (P7): per-decide venue-constraint resolution for the shared client, sourced from the
@@ -220,7 +286,8 @@ function constraintsFromDefaultFilters(
   providers: [
     {
       provide: AGENT_LLM_BUDGET,
-      useFactory: (config?: TypedConfigService) => createAgentLlmBudget(agenticEnv(config)),
+      useFactory: (config?: TypedConfigService) =>
+        createAgentLlmBudget(agenticEnv(config), toModelTokenRates(config?.agentic.tokenPrices)),
       inject: [{ token: TypedConfigService, optional: true }],
     },
     {

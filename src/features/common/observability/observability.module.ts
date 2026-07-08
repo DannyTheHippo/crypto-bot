@@ -32,6 +32,7 @@ import {
   PLAYBOOK_VALIDATOR_REJECTIONS_COUNTER,
   AGENT_CLIENT_INFO_GAUGE,
   AGENTIC_PRESCREEN_COUNTER,
+  AGENTIC_REFLECTION_OUTCOMES_COUNTER,
 } from './metrics.service';
 import { AgentMetricsRecorder } from './agent-metrics-recorder.service';
 import {
@@ -100,6 +101,7 @@ import { buildPinoHttpOptions } from './logger.config';
     PLAYBOOK_VALIDATOR_REJECTIONS_COUNTER,
     AGENT_CLIENT_INFO_GAUGE,
     AGENTIC_PRESCREEN_COUNTER,
+    AGENTIC_REFLECTION_OUTCOMES_COUNTER,
     AgentMetricsRecorder,
     PROMOTION_ROUND_TRIPS_GAUGE,
     PROMOTION_NET_PNL_GAUGE,

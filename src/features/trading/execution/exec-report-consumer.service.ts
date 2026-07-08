@@ -10,9 +10,9 @@ import {
 } from '../../../ports/execution';
 import {
   reduce,
+  TERMINAL_ORDER_STATES,
   type OrderRecord,
   type OrderEvent,
-  type OrderState,
 } from '../../../domain/oms/reducer';
 import type { ClientOrderId } from '../../../domain/types/ids';
 import type { FillReport, FillRecord } from '../../../domain/types/exec-report';
@@ -20,7 +20,7 @@ import { OrderBookService } from './order-book.service';
 import { PortfolioStateService } from './portfolio-state.service';
 import { FillIngestorService } from './fill-ingestor.service';
 
-const TERMINAL: ReadonlySet<OrderState> = new Set(['FILLED', 'CANCELED', 'REJECTED', 'EXPIRED']);
+const TERMINAL = TERMINAL_ORDER_STATES;
 
 // Consumes the never-drop EXEC_OUTBOX (§3.3/§6.6): read by cursor → apply → ack. A report is
 // already durable before its money effects, so the apply is idempotent on redelivery — the

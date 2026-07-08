@@ -13,12 +13,23 @@ const CFG: PromotionReadinessConfig = {
   dustNotional: '5',
 };
 
-const ZERO_TOKENS: LlmTokenTotals = {
-  decideInputTokens: 0,
-  decideOutputTokens: 0,
-  reflectionInputTokens: 0,
-  reflectionOutputTokens: 0,
-};
+const ZERO_TOKENS: LlmTokenTotals = { perModel: [] };
+
+// One default-model per-model row (the CFG above has no per-model map, so any model prices at the
+// flat 3/15 defaults with cache at 0 — preserving every legacy cost assertion below).
+function decideTokens(input: number, output: number): LlmTokenTotals {
+  return {
+    perModel: [
+      {
+        model: 'claude-sonnet-5',
+        inputTokens: input,
+        outputTokens: output,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+      },
+    ],
+  };
+}
 
 function fill(overrides: Partial<PromotionFillRow>): PromotionFillRow {
   return {
@@ -36,14 +47,22 @@ function fill(overrides: Partial<PromotionFillRow>): PromotionFillRow {
 
 function statsOf(fills: readonly PromotionFillRow[], tokens: LlmTokenTotals = ZERO_TOKENS) {
   const calls: string[] = [];
+  const sinceArgs: Array<number | undefined> = [];
   const port: PromotionStatsPort = {
-    fillsForMode: (mode) => {
+    fillsForMode: (mode, sinceMs) => {
       calls.push(mode);
-      return Promise.resolve(fills);
+      sinceArgs.push(sinceMs);
+      // Epoch filtering is the repository's job; the fake honors it so the service's window-anchor
+      // and cost-window branches are exercised end-to-end against a realistic filtered set.
+      const filtered = sinceMs === undefined ? fills : fills.filter((f) => f.executedAt >= sinceMs);
+      return Promise.resolve(filtered);
     },
-    llmTokenTotals: () => Promise.resolve(tokens),
+    llmTokenTotals: (sinceMs) => {
+      sinceArgs.push(sinceMs);
+      return Promise.resolve(tokens);
+    },
   };
-  return { port, calls };
+  return { port, calls, sinceArgs };
 }
 
 function service(fills: readonly PromotionFillRow[], tokens?: LlmTokenTotals) {
@@ -214,12 +233,7 @@ describe('PromotionReadinessService', () => {
       );
     }
     // realized = 30 × 1 = 30; llm cost = 1M/1M×3 + 100k/1M×15 = 3 + 1.5 = 4.5; net = 25.5 > 0.
-    const tokens: LlmTokenTotals = {
-      decideInputTokens: 500_000,
-      decideOutputTokens: 100_000,
-      reflectionInputTokens: 500_000,
-      reflectionOutputTokens: 0,
-    };
+    const tokens = decideTokens(1_000_000, 100_000);
     const v = await service(fills, tokens).evaluate();
     expect(v.evidence.roundTrips).toBe(30);
     expect(v.evidence.llmCostUsd).toBe('4.5');
@@ -268,11 +282,132 @@ describe('PromotionReadinessService', () => {
       );
     }
     // realized 30; cost = 10M/1M×3 = 30 → net exactly 0 → refused (lte).
-    const tokens: LlmTokenTotals = { ...ZERO_TOKENS, decideInputTokens: 10_000_000 };
+    const tokens = decideTokens(10_000_000, 0);
     const v = await service(fills, tokens).evaluate();
     expect(v.evidence.llmCostUsd).toBe('30');
     expect(v.evidence.netPnl).toBe('0');
     expect(v.evidence.reasons).toEqual(['NON_POSITIVE_NET_PNL']);
     expect(v.permitted).toBe(false);
+  });
+
+  describe('per-model cost (W4+W13)', () => {
+    const PRICED: PromotionReadinessConfig = {
+      tokenPriceInputPerMtok: '3',
+      tokenPriceOutputPerMtok: '15',
+      tokenPriceCacheReadPerMtok: '0.3',
+      tokenPriceCacheWritePerMtok: '6',
+      dustNotional: '5',
+      tokenPrices: {
+        'claude-sonnet-5': {
+          inputPerMtok: '3',
+          outputPerMtok: '15',
+          cacheReadPerMtok: '0.3',
+          cacheWritePerMtok: '6',
+        },
+        'claude-opus-4-8': {
+          inputPerMtok: '5',
+          outputPerMtok: '25',
+          cacheReadPerMtok: '0.5',
+          cacheWritePerMtok: '10',
+        },
+      },
+    };
+
+    it('sums each model at its own rates, cache tokens included', async () => {
+      // sonnet: 1M in ×3 + 0 out + 1M cacheRead ×0.3 + 1M cacheWrite ×6 = 3 + 0.3 + 6 = 9.3
+      // opus:   1M in ×5 + 1M out ×25 = 5 + 25 = 30 → total 39.3
+      const tokens: LlmTokenTotals = {
+        perModel: [
+          {
+            model: 'claude-sonnet-5',
+            inputTokens: 1_000_000,
+            outputTokens: 0,
+            cacheReadTokens: 1_000_000,
+            cacheCreationTokens: 1_000_000,
+          },
+          {
+            model: 'claude-opus-4-8',
+            inputTokens: 1_000_000,
+            outputTokens: 1_000_000,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
+          },
+        ],
+      };
+      const svc = new PromotionReadinessService(statsOf([], tokens).port, PRICED);
+      const v = await svc.evaluate();
+      expect(v.evidence.llmCostUsd).toBe('39.3');
+    });
+
+    it('an UNKNOWN model (map configured, model unlisted) prices at the most-expensive rates per component (fail-closed)', async () => {
+      // most-expensive across {defaults 3/15/0.3/6, sonnet 3/15/0.3/6, opus 5/25/0.5/10} =
+      // 5/25/0.5/10. 1M in ×5 = 5. → 5.
+      const tokens: LlmTokenTotals = {
+        perModel: [
+          {
+            model: 'some-unpriced-model',
+            inputTokens: 1_000_000,
+            outputTokens: 0,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
+          },
+        ],
+      };
+      const svc = new PromotionReadinessService(statsOf([], tokens).port, PRICED);
+      const v = await svc.evaluate();
+      expect(v.evidence.llmCostUsd).toBe('5');
+    });
+
+    it('with no tokenPrices map, cache rates fall back to the flat cache knobs (or 0 when absent)', async () => {
+      // CFG has no cache knobs → cache priced at 0; only input/output count.
+      const tokens: LlmTokenTotals = {
+        perModel: [
+          {
+            model: 'claude-sonnet-5',
+            inputTokens: 1_000_000,
+            outputTokens: 0,
+            cacheReadTokens: 5_000_000,
+            cacheCreationTokens: 5_000_000,
+          },
+        ],
+      };
+      const v = await service([], tokens).evaluate();
+      expect(v.evidence.llmCostUsd).toBe('3');
+    });
+  });
+
+  describe('evidence epoch (W4+W13)', () => {
+    it('threads evidenceEpochMs into BOTH stats reads', async () => {
+      const cfg: PromotionReadinessConfig = { ...CFG, evidenceEpochMs: 5_000 };
+      const { port, sinceArgs } = statsOf([]);
+      await new PromotionReadinessService(port, cfg).evaluate();
+      expect(sinceArgs).toEqual([5_000, 5_000]);
+    });
+
+    it('an unset epoch passes undefined to the stats reads (all-time)', async () => {
+      const { port, sinceArgs } = statsOf([]);
+      await new PromotionReadinessService(port, CFG).evaluate();
+      expect(sinceArgs).toEqual([undefined, undefined]);
+    });
+
+    it('anchors the window start at max(firstClosedAt, epoch): a pre-epoch trade cannot widen it', async () => {
+      // Two closed trips: one closes at t=1000 (pre-epoch), one at t=1000+15d. Epoch sits at the
+      // first close, so the fake filters the pre-epoch fills out AND the anchor clamps — window is
+      // measured from the epoch-forward trip only.
+      const closeA = 1_000;
+      const closeB = closeA + 15 * DAY;
+      const fills: PromotionFillRow[] = [
+        fill({ executedAt: closeA - 1, side: 'BUY', qty: '0.001', price: '50000' }),
+        fill({ executedAt: closeA, side: 'SELL', qty: '0.001', price: '51000' }),
+        fill({ executedAt: closeB - 1, side: 'BUY', qty: '0.001', price: '50000' }),
+        fill({ executedAt: closeB, side: 'SELL', qty: '0.001', price: '51000' }),
+      ];
+      const cfg: PromotionReadinessConfig = { ...CFG, evidenceEpochMs: closeB - 1 };
+      const svc = new PromotionReadinessService(statsOf(fills).port, cfg);
+      const v = await svc.evaluate();
+      // Only the epoch-forward trip survives the filter → 1 round trip, window 0 days.
+      expect(v.evidence.roundTrips).toBe(1);
+      expect(v.evidence.windowDays).toBe(0);
+    });
   });
 });

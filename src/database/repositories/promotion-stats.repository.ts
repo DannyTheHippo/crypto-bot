@@ -1,8 +1,13 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { eq, asc, desc } from 'drizzle-orm';
+import { eq, asc, desc, and, gte, type SQL } from 'drizzle-orm';
 import type { TradingMode } from '../../domain/types/mode';
-import type { PromotionStatsPort, PromotionFillRow, LlmTokenTotals } from '../../ports/promotion';
+import type {
+  PromotionStatsPort,
+  PromotionFillRow,
+  LlmTokenTotals,
+  PerModelTokenTotals,
+} from '../../ports/promotion';
 import { DRIZZLE_DB } from '../database.tokens';
 import * as schema from '../schemas/trading';
 import { requireDb } from './persistence-guard';
@@ -20,7 +25,14 @@ export class PromotionStatsRepository implements PromotionStatsPort {
     private readonly db: NodePgDatabase<typeof schema> | null,
   ) {}
 
-  async fillsForMode(mode: TradingMode): Promise<readonly PromotionFillRow[]> {
+  async fillsForMode(mode: TradingMode, sinceMs?: number): Promise<readonly PromotionFillRow[]> {
+    // venue_timestamp is a bigint (epoch ms) column — the epoch filter compares against the raw
+    // number, not a Date. Absent sinceMs ⇒ mode-only predicate (all-time).
+    const modePredicate = eq(schema.fills.mode, mode);
+    const where: SQL | undefined =
+      sinceMs === undefined
+        ? modePredicate
+        : and(modePredicate, gte(schema.fills.venueTimestamp, sinceMs));
     const rows = await requireDb(this.db)
       .select({
         strategyId: schema.orderIntents.strategyId,
@@ -36,7 +48,7 @@ export class PromotionStatsRepository implements PromotionStatsPort {
       })
       .from(schema.fills)
       .leftJoin(schema.orderIntents, eq(schema.fills.intentId, schema.orderIntents.intentId))
-      .where(eq(schema.fills.mode, mode))
+      .where(where)
       // executedAt (venue_timestamp) ordering, fillId (identity PK) as the same-millisecond
       // tiebreak — mirrors EquityRepository's own id-tiebreak convention.
       .orderBy(asc(schema.fills.venueTimestamp), asc(schema.fills.fillId));
@@ -54,39 +66,84 @@ export class PromotionStatsRepository implements PromotionStatsPort {
     }));
   }
 
-  async llmTokenTotals(): Promise<LlmTokenTotals> {
+  async llmTokenTotals(sinceMs?: number): Promise<LlmTokenTotals> {
     const db = requireDb(this.db);
+    const since = sinceMs === undefined ? undefined : new Date(sinceMs);
+    const decideWhere =
+      since === undefined ? undefined : gte(schema.agentDecisions.createdAt, since);
+    const reflectionWhere =
+      since === undefined
+        ? eq(schema.llmUsage.kind, 'reflection')
+        : and(eq(schema.llmUsage.kind, 'reflection'), gte(schema.llmUsage.createdAt, since));
+
     const [decideRows, reflectionRows] = await Promise.all([
       db
         .select({
+          model: schema.agentDecisions.model,
           inputTokens: schema.agentDecisions.inputTokens,
           outputTokens: schema.agentDecisions.outputTokens,
+          cacheReadInputTokens: schema.agentDecisions.cacheReadInputTokens,
+          cacheCreationInputTokens: schema.agentDecisions.cacheCreationInputTokens,
         })
-        .from(schema.agentDecisions),
+        .from(schema.agentDecisions)
+        .where(decideWhere),
       db
         .select({
+          model: schema.llmUsage.model,
           inputTokens: schema.llmUsage.inputTokens,
           outputTokens: schema.llmUsage.outputTokens,
+          cacheReadInputTokens: schema.llmUsage.cacheReadInputTokens,
+          cacheCreationInputTokens: schema.llmUsage.cacheCreationInputTokens,
         })
         .from(schema.llmUsage)
-        .where(eq(schema.llmUsage.kind, 'reflection')),
+        .where(reflectionWhere),
     ]);
 
-    let decideInputTokens = 0;
-    let decideOutputTokens = 0;
-    for (const row of decideRows) {
-      decideInputTokens += row.inputTokens ?? 0;
-      decideOutputTokens += row.outputTokens ?? 0;
+    // Accumulate BOTH call sites into one per-model map — a lane running a cheap decide model + a
+    // pricier reflection model must be costed at each model's own rates.
+    const byModel = new Map<string, PerModelTokenTotals>();
+    const fold = (
+      model: string,
+      input: number | null,
+      output: number | null,
+      cacheRead: number | null,
+      cacheCreation: number | null,
+    ): void => {
+      const prev = byModel.get(model) ?? {
+        model,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+      };
+      byModel.set(model, {
+        model,
+        inputTokens: prev.inputTokens + (input ?? 0),
+        outputTokens: prev.outputTokens + (output ?? 0),
+        cacheReadTokens: prev.cacheReadTokens + (cacheRead ?? 0),
+        cacheCreationTokens: prev.cacheCreationTokens + (cacheCreation ?? 0),
+      });
+    };
+    for (const r of decideRows) {
+      fold(
+        r.model,
+        r.inputTokens,
+        r.outputTokens,
+        r.cacheReadInputTokens,
+        r.cacheCreationInputTokens,
+      );
+    }
+    for (const r of reflectionRows) {
+      fold(
+        r.model,
+        r.inputTokens,
+        r.outputTokens,
+        r.cacheReadInputTokens,
+        r.cacheCreationInputTokens,
+      );
     }
 
-    let reflectionInputTokens = 0;
-    let reflectionOutputTokens = 0;
-    for (const row of reflectionRows) {
-      reflectionInputTokens += row.inputTokens;
-      reflectionOutputTokens += row.outputTokens;
-    }
-
-    return { decideInputTokens, decideOutputTokens, reflectionInputTokens, reflectionOutputTokens };
+    return { perModel: [...byModel.values()] };
   }
 
   // Newest reflection-path usage row = the last reflection attempt that actually reached the API

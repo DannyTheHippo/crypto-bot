@@ -26,7 +26,12 @@ import {
   type ExecFilters,
 } from '../../../ports/execution';
 import { verifyApproval } from '../../../domain/risk/proof';
-import { initialOrder, type OrderEvent, type OrderState } from '../../../domain/oms/reducer';
+import {
+  initialOrder,
+  TERMINAL_ORDER_STATES,
+  type OrderEvent,
+  type OrderState,
+} from '../../../domain/oms/reducer';
 import type { RiskApprovedIntent } from '../../../domain/types/risk-decision';
 import type { OrderIntent } from '../../../domain/types/order-intent';
 import type { OpenOrderSummary } from '../../../domain/types/portfolio';
@@ -77,12 +82,6 @@ export const ORDER_SUBMIT_LATENCY = makeHistogramProvider({
 });
 
 const DEFAULT_STEP = '0.00000001';
-const TERMINAL_ORDER_STATES: ReadonlySet<OrderState> = new Set([
-  'FILLED',
-  'CANCELED',
-  'REJECTED',
-  'EXPIRED',
-]);
 
 // EXECUTION_GATE (§2.4): the sole entry from Risk to a venue. A failed proof refuses before
 // any persistence or network call (the order-authorization chokepoint). The write-ahead

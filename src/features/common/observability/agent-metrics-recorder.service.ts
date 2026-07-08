@@ -46,6 +46,8 @@ export class AgentMetricsRecorder {
     @InjectMetric('agent_client_info') private readonly clientInfoGauge: Gauge<string>,
     @InjectMetric('agentic_prescreen_total')
     private readonly prescreenCounter: Counter<string>,
+    @InjectMetric('agentic_reflection_outcomes_total')
+    private readonly reflectionOutcomesCounter: Counter<string>,
   ) {}
 
   recordDecide(outcome: AgentDecideOutcome): void {
@@ -119,6 +121,17 @@ export class AgentMetricsRecorder {
   recordPrescreen(outcome: AgentPrescreenOutcome, reason?: AgentPrescreenReason): void {
     try {
       this.prescreenCounter.inc({ outcome, reason: reason ?? 'n/a' });
+    } catch {
+      /* metrics must never throw into a trading path */
+    }
+  }
+
+  // W2: bound closed set of outcome labels emitted by ReflectionService's own ReflectionMetricsRecorder
+  // interface — duplicated rather than imported (boundaries wall, same reasoning as
+  // AgentPrescreenReason above).
+  recordReflectionOutcome(outcome: string): void {
+    try {
+      this.reflectionOutcomesCounter.inc({ outcome });
     } catch {
       /* metrics must never throw into a trading path */
     }

@@ -10,7 +10,7 @@ import {
   type VenueFill,
 } from '../../../ports/exchange';
 import { EXECUTION_STORE, type ExecutionStorePort } from '../../../ports/execution';
-import { reduce, type OrderEvent, type OrderState } from '../../../domain/oms/reducer';
+import { reduce, TERMINAL_ORDER_STATES, type OrderEvent } from '../../../domain/oms/reducer';
 import { mulberry32 } from '../../../domain/rng/prng';
 import {
   queryBackoffMs,
@@ -24,7 +24,7 @@ import { OrderBookService } from './order-book.service';
 import { PortfolioStateService } from './portfolio-state.service';
 import { FillIngestorService } from './fill-ingestor.service';
 
-const TERMINAL: ReadonlySet<OrderState> = new Set(['FILLED', 'CANCELED', 'REJECTED', 'EXPIRED']);
+const TERMINAL = TERMINAL_ORDER_STATES;
 const NOT_FOUND_CODES: ReadonlySet<string> = new Set(['OrderNotFound', 'ORDER_NOT_FOUND']);
 const MAX_CANCEL_REISSUES = 3; // §6.1: >3 cancel reissues while still open ⇒ RECONCILE_REQUIRED
 const JITTER_SEED = 0x5165_5279; // fixed ⇒ the ±20% backoff jitter replays deterministically

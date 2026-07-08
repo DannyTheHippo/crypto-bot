@@ -29,6 +29,7 @@ import {
   type StrategyInitContext,
 } from '../../../ports/agentic-strategy';
 import { MAX_REASON_LEN, type LoggerLike } from './anthropic-agent-client';
+import { buildMarketPayload } from './agent-prompt';
 import {
   evaluatePrescreen,
   type PrescreenOutcome,
@@ -60,6 +61,17 @@ export interface AgenticStrategyParams {
   readonly planMode?: boolean;
   // Safety re-consult cadence (bars) while a plan is active without executor action. Default 16.
   readonly planMaxQuietBars?: number;
+  // TTL (bars) on executor-emitted signals (plan exits, plan cancels, stale-entry sweeps). A
+  // one-bar TTL races its own age — executor signals carry eventTime = the evaluated bar's close,
+  // so any ≥2s of processing jitter expires a protective exit at the gateway (observed live
+  // 2026-07-07: a max_hold exit died at age 902.2s vs ttl 900s). Default 2 bars.
+  readonly planExitTtlBars?: number;
+  // W6: sample the decide-time market payload every Nth plan-managed (quiet) bar (active.barsElapsed
+  // % N === 0) so the offline replay harness (test/eval/agentic/recorded-rows.spec.ts) accrues
+  // input_payload rows under plan mode, which otherwise journals inputPayload: null on every managed
+  // bar (see recordQuietJournalEntry). Prescreen-skip quiet holds are never sampled — only
+  // plan-managed bars. Default/0 ⇒ disabled, so existing callers stay byte-identical.
+  readonly quietPayloadSampleBars?: number;
   // W4.2 expectancy-laddered strength modulation: scales ENTER_LONG strength by this strategy's
   // rolling realized net expectancy — reduction-only (see the class-level EXPECTANCY_LADDER_* consts
   // for the ladder). Optional/absent ⇒ disabled, so existing callers stay byte-identical. Also inert
@@ -152,6 +164,8 @@ export class AgenticStrategy implements AsyncStrategy {
   private readonly entryTtlBars: number;
   private readonly planMode: boolean;
   private readonly planMaxQuietBars: number;
+  private readonly planExitTtlBars: number;
+  private readonly quietPayloadSampleBars: number;
   // W3.1 active managed plan — in-memory by design: a restart loses it, the position_open prescreen
   // then forces a consult and the model issues a fresh plan (documented self-heal path).
   private activePlan: {
@@ -206,6 +220,8 @@ export class AgenticStrategy implements AsyncStrategy {
     this.entryTtlBars = params.entryTtlBars ?? 0;
     this.planMode = params.planMode ?? false;
     this.planMaxQuietBars = params.planMaxQuietBars ?? 16;
+    this.planExitTtlBars = Math.max(2, params.planExitTtlBars ?? 2);
+    this.quietPayloadSampleBars = Math.max(0, params.quietPayloadSampleBars ?? 0);
     this.expectancyLadderEnabled = params.expectancyLadderEnabled ?? false;
     this.evidence = deps.evidence;
     this.subscriptions = {
@@ -348,7 +364,9 @@ export class AgenticStrategy implements AsyncStrategy {
           refPrice: lastCandle.close,
           basedOnSeq: lastCandle.seq,
           eventTime: input.snapshot.eventTime,
-          ttlMs: this.baseIntervalMs,
+          // planExitTtlBars × interval, never one bar: this EXIT faces the gateway TTL check and
+          // its age is already ≈ one bar at emission (eventTime anchors to the evaluated close).
+          ttlMs: this.planExitTtlBars * this.baseIntervalMs,
           dedupeKey: `${this.id}:${this.symbol}:agentic:plan_exit:${input.snapshot.eventTime}`,
           reason: `plan exit: ${verdict.reason}`,
         },
@@ -369,7 +387,7 @@ export class AgenticStrategy implements AsyncStrategy {
             refPrice: lastCandle.close,
             basedOnSeq: lastCandle.seq,
             eventTime: input.snapshot.eventTime,
-            ttlMs: this.baseIntervalMs,
+            ttlMs: this.planExitTtlBars * this.baseIntervalMs,
             dedupeKey: `${this.id}:${this.symbol}:agentic:plan_cancel:${input.snapshot.eventTime}`,
             reason: 'plan cleared: entry validity lapsed — cancel-open sweep',
           },
@@ -381,7 +399,20 @@ export class AgenticStrategy implements AsyncStrategy {
     // hold: consult only on the safety cadence, else this bar is a deterministic no-call hold.
     if (active.barsElapsed % this.planMaxQuietBars === 0) return null;
     this.annotatePreviousOutcome(lastClose, context.position, lastCandle, heldDuringPrev);
-    this.recordQuietJournalEntry(input, 'plan active — deterministic hold', 'plan-executor');
+    // W6: sample the SAME market payload a real consult would journal on every Nth managed bar, so
+    // the offline replay harness accrues rows while plan mode manages the position (which otherwise
+    // journals inputPayload: null on every managed bar). buildMarketPayload(input) is byte-identical
+    // to the client's own inputPayload (anthropic-agent-client.ts). 0 ⇒ never sample (unchanged).
+    const sampledPayload =
+      this.quietPayloadSampleBars > 0 && active.barsElapsed % this.quietPayloadSampleBars === 0
+        ? buildMarketPayload(input)
+        : null;
+    this.recordQuietJournalEntry(
+      input,
+      'plan active — deterministic hold',
+      'plan-executor',
+      sampledPayload,
+    );
     return [];
   }
 
@@ -444,7 +475,7 @@ export class AgenticStrategy implements AsyncStrategy {
         // seq only needs to be a plausible provenance marker.
         basedOnSeq: lastCandle?.seq ?? ticker?.seq ?? 0n,
         eventTime: now,
-        ttlMs: this.baseIntervalMs,
+        ttlMs: this.planExitTtlBars * this.baseIntervalMs,
         dedupeKey: `${this.id}:${this.symbol}:agentic:cancel_open:${now}`,
         reason: `stale entry: resting > ${this.entryTtlBars} bars — cancel-open sweep`,
       },
@@ -766,6 +797,8 @@ export class AgenticStrategy implements AsyncStrategy {
         close: lastCandle ? lastCandle.close.toFixed() : null,
         inputTokens: proposal?.usage?.inputTokens ?? null,
         outputTokens: proposal?.usage?.outputTokens ?? null,
+        cacheReadInputTokens: proposal?.usage?.cacheReadInputTokens ?? null,
+        cacheCreationInputTokens: proposal?.usage?.cacheCreationInputTokens ?? null,
         latencyMs: proposal?.latencyMs ?? null,
         playbookVersion: proposal?.playbookVersion ?? null,
         promptHash: proposal?.promptHash ?? '',
@@ -818,6 +851,9 @@ export class AgenticStrategy implements AsyncStrategy {
     input: AgentDecisionInput,
     rationale: string,
     model: 'prescreen' | 'plan-executor' = 'prescreen',
+    // W6: sampled market payload on a plan-managed quiet bar (see quietPayloadSampleBars) — absent
+    // callers (prescreen quiet holds, unsampled quiet bars) keep the pre-W6 null, byte-identical.
+    inputPayload: string | null = null,
   ): void {
     if (!this.journal) return;
     const { basedOnSeq, refPrice } = this.deriveMarketBasis(input);
@@ -842,7 +878,7 @@ export class AgenticStrategy implements AsyncStrategy {
         latencyMs: null,
         playbookVersion: null,
         promptHash: '',
-        inputPayload: null,
+        inputPayload,
       });
     } catch {
       // See recordJournalEntry — a journal failure must never affect trading.

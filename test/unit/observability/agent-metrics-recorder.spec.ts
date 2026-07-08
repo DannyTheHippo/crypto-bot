@@ -10,6 +10,7 @@ import {
   PLAYBOOK_VALIDATOR_REJECTIONS_COUNTER,
   AGENT_CLIENT_INFO_GAUGE,
   AGENTIC_PRESCREEN_COUNTER,
+  AGENTIC_REFLECTION_OUTCOMES_COUNTER,
 } from '../../../src/features/common/observability/metrics.service';
 import { AgentMetricsRecorder } from '../../../src/features/common/observability/agent-metrics-recorder.service';
 
@@ -28,6 +29,7 @@ describe('AgentMetricsRecorder', () => {
         PLAYBOOK_VALIDATOR_REJECTIONS_COUNTER,
         AGENT_CLIENT_INFO_GAUGE,
         AGENTIC_PRESCREEN_COUNTER,
+        AGENTIC_REFLECTION_OUTCOMES_COUNTER,
         AgentMetricsRecorder,
       ],
     }).compile();
@@ -39,7 +41,7 @@ describe('AgentMetricsRecorder', () => {
     register.clear();
   });
 
-  it('registers all seven agentic-lane metrics', async () => {
+  it('registers all eight agentic-lane metrics', async () => {
     const names = (await register.getMetricsAsJSON()).map((m) => m.name);
     for (const name of [
       'agent_decide_total',
@@ -49,6 +51,7 @@ describe('AgentMetricsRecorder', () => {
       'playbook_validator_rejections_total',
       'agent_client_info',
       'agentic_prescreen_total',
+      'agentic_reflection_outcomes_total',
     ]) {
       expect(names, name).toContain(name);
     }
@@ -134,6 +137,14 @@ describe('AgentMetricsRecorder', () => {
     expect(metric).toContain('outcome="skipped_quiet",reason="quiet"} 1');
     expect(metric).toContain('outcome="failopen_error",reason="n/a"} 1');
   });
+
+  it('recordReflectionOutcome increments agentic_reflection_outcomes_total{outcome}', async () => {
+    recorder.recordReflectionOutcome('minted');
+    recorder.recordReflectionOutcome('validator_reject');
+    const metric = await register.getSingleMetricAsString('agentic_reflection_outcomes_total');
+    expect(metric).toContain('outcome="minted"} 1');
+    expect(metric).toContain('outcome="validator_reject"} 1');
+  });
 });
 
 describe('AgentMetricsRecorder — never throws into a trading path', () => {
@@ -160,6 +171,7 @@ describe('AgentMetricsRecorder — never throws into a trading path', () => {
       throwing as unknown as Counter<string>,
       throwing as unknown as Gauge<string>,
       throwing as unknown as Counter<string>,
+      throwing as unknown as Counter<string>,
     );
     expect(() => recorder.recordDecide('proposed')).not.toThrow();
     expect(() => recorder.recordTokens(1, 1)).not.toThrow();
@@ -168,5 +180,6 @@ describe('AgentMetricsRecorder — never throws into a trading path', () => {
     expect(() => recorder.recordValidatorRejection(true)).not.toThrow();
     expect(() => recorder.setClientInfo('stub')).not.toThrow();
     expect(() => recorder.recordPrescreen('called')).not.toThrow();
+    expect(() => recorder.recordReflectionOutcome('minted')).not.toThrow();
   });
 });

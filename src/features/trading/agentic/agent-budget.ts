@@ -1,3 +1,4 @@
+import Decimal from 'decimal.js';
 import type {
   AgentClientPort,
   AgentDecisionInput,
@@ -14,6 +15,17 @@ function utcDayKey(nowMs: number): string {
   return new Date(nowMs).toISOString().slice(0, 10);
 }
 
+// Per-model USD/1M-token rates (W4+W13 true-spend accounting) — mirrors AppConfig.agentic.tokenPrices'
+// shape, but as parsed numbers (this class's whole cost surface predates decimal-string knobs and
+// every existing caller/spec asserts costUsd as a plain number; see recordUsage's own comment for why
+// the PER-CALL arithmetic still routes through Decimal).
+export interface ModelTokenRates {
+  readonly inputPerMtok: number;
+  readonly outputPerMtok: number;
+  readonly cacheReadPerMtok: number;
+  readonly cacheWritePerMtok: number;
+}
+
 export interface DailyLlmBudgetCaps {
   readonly maxCallsPerDay: number;
   readonly maxTokensPerDay: number;
@@ -21,9 +33,19 @@ export interface DailyLlmBudgetCaps {
   // priceOutputPerMtok below). Absent/0 (default) disables it — matches the maxCallsPerDay/
   // maxTokensPerDay callers that predate this knob and never set it.
   readonly maxCostUsdPerDay?: number;
-  // USD per 1M tokens; only meaningful when maxCostUsdPerDay > 0.
+  // USD per 1M tokens; only meaningful when maxCostUsdPerDay > 0. Also the DEFAULT-model rates used
+  // whenever pricesByModel is absent, or recordUsage's model is absent/unspecified.
   readonly priceInputPerMtok?: number;
   readonly priceOutputPerMtok?: number;
+  // W4+W13 cache-token rates (reads price cheap, 1h-TTL writes price dear) — priced $0 before this,
+  // undercounting true spend. Same default-rate semantics as priceInputPerMtok/priceOutputPerMtok.
+  readonly priceCacheReadPerMtok?: number;
+  readonly priceCacheWritePerMtok?: number;
+  // Optional per-model override map (e.g. sonnet decides + opus reflects at different rates). A
+  // model recordUsage is given that is ABSENT from this map (when the map itself IS configured)
+  // fails CLOSED to the most expensive rate configured anywhere (default rates + every mapped
+  // model, compared component-wise) rather than silently under-pricing an unrecognized model.
+  readonly pricesByModel?: Readonly<Record<string, ModelTokenRates>>;
 }
 
 export interface DailyLlmBudgetSnapshot {
@@ -81,14 +103,71 @@ export class DailyLlmBudget {
     return true;
   }
 
-  recordUsage(usage?: AgentUsage): void {
+  // model: the id the call was actually priced against (e.g. the decide model vs a pricier
+  // reflection model) — see resolveRates for the default/per-model/fail-closed resolution order.
+  // Cache tokens (W4+W13) are NOT folded into inputTokens/outputTokens: those two counters back
+  // maxTokensPerDay, which predates cache accounting and must keep counting the same tokens it
+  // always has — only costUsd (a separate cap) grows with cache-token spend.
+  recordUsage(usage?: AgentUsage, model?: string): void {
     this.rollIfNeeded();
     if (!usage) return;
     this.inputTokens += usage.inputTokens;
     this.outputTokens += usage.outputTokens;
-    this.costUsd +=
-      (usage.inputTokens / MTOK) * (this.caps.priceInputPerMtok ?? 0) +
-      (usage.outputTokens / MTOK) * (this.caps.priceOutputPerMtok ?? 0);
+    const rates = this.resolveRates(model);
+    // Per-call cost via Decimal (money math, never native-float accumulation) even though the
+    // rates/costUsd stay plain numbers at the class boundary — every existing caller/spec asserts
+    // costUsd with toBe() against plain numbers computed off round inputs, so the external type is
+    // preserved; only the arithmetic route changes.
+    const callCost = new Decimal(usage.inputTokens)
+      .div(MTOK)
+      .mul(rates.input)
+      .plus(new Decimal(usage.outputTokens).div(MTOK).mul(rates.output))
+      .plus(new Decimal(usage.cacheReadInputTokens ?? 0).div(MTOK).mul(rates.cacheRead))
+      .plus(new Decimal(usage.cacheCreationInputTokens ?? 0).div(MTOK).mul(rates.cacheWrite));
+    this.costUsd = new Decimal(this.costUsd).plus(callCost).toNumber();
+  }
+
+  private resolveRates(model: string | undefined): {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+  } {
+    const defaultRates = {
+      input: this.caps.priceInputPerMtok ?? 0,
+      output: this.caps.priceOutputPerMtok ?? 0,
+      cacheRead: this.caps.priceCacheReadPerMtok ?? 0,
+      cacheWrite: this.caps.priceCacheWritePerMtok ?? 0,
+    };
+    const byModel = this.caps.pricesByModel;
+    if (!byModel || model === undefined) return defaultRates;
+    const entry = byModel[model];
+    if (entry) {
+      return {
+        input: entry.inputPerMtok,
+        output: entry.outputPerMtok,
+        cacheRead: entry.cacheReadPerMtok,
+        cacheWrite: entry.cacheWritePerMtok,
+      };
+    }
+    // Unknown model with a map configured: fail-closed to the most expensive rate PER COMPONENT
+    // across every configured rate set (default + every mapped model) — never silently undercounts
+    // an unrecognized model's true spend.
+    const pools = [
+      defaultRates,
+      ...Object.values(byModel).map((e) => ({
+        input: e.inputPerMtok,
+        output: e.outputPerMtok,
+        cacheRead: e.cacheReadPerMtok,
+        cacheWrite: e.cacheWritePerMtok,
+      })),
+    ];
+    return {
+      input: Math.max(...pools.map((p) => p.input)),
+      output: Math.max(...pools.map((p) => p.output)),
+      cacheRead: Math.max(...pools.map((p) => p.cacheRead)),
+      cacheWrite: Math.max(...pools.map((p) => p.cacheWrite)),
+    };
   }
 
   snapshot(): DailyLlmBudgetSnapshot {
@@ -123,6 +202,10 @@ export class BudgetedAgentClient implements AgentClientPort {
     readonly inner: AgentClientPort,
     readonly budget: DailyLlmBudget,
     private readonly logger: LoggerLike = NOOP_LOGGER,
+    // The model this client's inner AgentClientPort actually calls (e.g. AGENTIC_MODEL) — threaded
+    // into recordUsage so per-model cache/token rates (W4+W13) price the decide path correctly.
+    // Absent (default) preserves pre-W4 behavior: recordUsage falls back to the flat default rates.
+    private readonly model?: string,
   ) {}
 
   async propose(input: AgentDecisionInput): Promise<AgentProposal> {
@@ -137,7 +220,7 @@ export class BudgetedAgentClient implements AgentClientPort {
       return { signals: [] };
     }
     const proposal = await this.inner.propose(input);
-    this.budget.recordUsage(proposal.usage);
+    this.budget.recordUsage(proposal.usage, this.model);
     return proposal;
   }
 }

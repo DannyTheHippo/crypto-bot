@@ -76,7 +76,37 @@ CANCEL_UNKNOWN and one PARTIALLY_FILLED that reconciliation owns).
 too early (reflection series not yet emitted, playbook v1). The Stage-2 exit evidence lands on the
 first pass with a full day of decides behind it.
 
+**Pass 10 (2026-07-08 ~11:31Z) — root-caused WHY the Stage-2 signal is absent, ship-nothing.** Same
+continuous boot 47a66bba (RestartCount=0), now ~1h37m in. Still 4 decides all `hold` (0 new LLM
+decides in 68 min — prescreen skip 71%, cost floor working), 0 fills, 0 proposes, 0 RT, portfolio
+static across 390 heartbeats. **DURABLE FINDING (record so no future pass re-derives it): the entire
+Stage-2 learning funnel is gated on closed round trips.** Reflection AND the attributed promotion
+evaluator fire SOLELY via `onClosedTrade` (`reflection.service.ts:370`; `app.module.ts:1330–1334`);
+there is **no wall-clock/cron trigger**. The DB seed (`seedTriggerState`) already primes
+`tradesSinceLastAttempt`≈32 with `lastAttemptAt=0`, so the loop would fire on the **next** closed
+trade regardless of `EVERY_N_TRADES=5` — meaning the ONLY thing gating all of Stage 2 is **zero new
+trades** (100% hold). This is correct-by-design (reflection consumes closed-trade evidence; nothing
+to chew without a trade), so continuing to soak yields no Stage-2 signal, though the soak keeps
+independent stability value. A wall-clock reflection trigger was evaluated and rejected on the merits
+(re-chews the same 32 trips → `NO_CHANGE` hash guard / hallucination; doesn't fix the no-trade
+blocker). Consequence for the exit criterion: at the current trade rate, ≥2 attributed promotions is
+unreachable in a reasonable window — see the §Flagged cost-floor-vs-throughput recommendation.
+
 ## Last pass
+
+**Pass 10, 2026-07-08** (scheduled run, ~11:31Z) — **SHIP NOTHING, learning loop throughput-starved.**
+Same continuous boot 47a66bba (RestartCount=0), ~1h37m in — no redeploy since Pass 9. Evidence clean:
+still 4 decides all `hold` (0 new in 68 min, prescreen skip 71% = cost floor working), 0 fills / 0
+proposes / 0 RT, portfolio static across 390 heartbeats, reconcile 201 mismatch / **0 halt / 0 error**,
+logs 0 error/warn/HALT/EXPIRED, cost $0.069 since epoch (DB gauge matches hand-priced tokens exactly),
+kill switch RUNNING. **Root-caused the missing Stage-2 signal:** the whole learning funnel (reflection
+plus the promotion evaluator) is trade-gated via `onClosedTrade` with no wall-clock path, and the DB
+seed already primes the trigger — so the sole blocker is **zero new closed trips**, not the threshold
+or a bug. No correctness bug; 100%-hold still n=4-unresolvable (0 proposes + 0 rejections ⇒ model-driven,
+R:R floors not implicated). Rejected a wall-clock reflection trigger on the merits (would churn
+`NO_CHANGE` over stale evidence). **Empty-pass counter 2 of 2** → carried the mandated §3 cadence/scope
+recommendation (cost-floor vs learning-throughput; see Flagged). Advisor consulted, corrected an
+over-rotation toward building the trigger. Full detail in LOG.md.
 
 **Pass 9, 2026-07-08** (scheduled run, ~10:23Z) — **SHIP NOTHING, soak-verification.** Fired ~30 min
 behind the owner session's `bac974c`/boot-47a66bba deploy (provenance settled: git commit times +
@@ -247,9 +277,26 @@ owns them).
 | 26  | Recovered resting orders don't count into Risk's E1 in-flight exposure clamp (intents aren't persisted, `evaluate.ts:171` iterates inFlightIntents only) — reviewer nice-to-have from the Pass-7 review; pre-existing, partially mitigated by the TTL sweep now seeing recovered orders                                                                                                                                                                                                                                                      | 2     | M      | pending (needs design: persist minimal intent columns or clamp on openOrders too)                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | 27  | True-spend cost accounting: persist cache_read/cache_creation tokens to `agent_decisions` (nullable analytics columns — scoped migration exception, mandatory reviewer) + journal plumbing, and fold cache economics (0.3 read / 6.0 1h-write $/MTok) into the $/day reads; changing the promotion gate's `llmCostUsd` formula is stricter-but-different ⇒ OWNER sign-off (flagged Pass 8)                                                                                                                                                   | 1     | M      | pending (new, seeded by Pass 8's cache verdict: flat 3/15 undercounted true spend ~1.5× in the first measured window; columns+plumbing autonomous, gate formula owner-gated)                                                                                                                                                                                                                                                                                                                                                                       |
 | 28  | `model` label on token/decide metrics: `agent_tokens_total` / `agent_decide_total` carry no `model` label, so once Opus reflection fires its tokens comingle with Sonnet decides in the `kind` buckets and Prometheus can't split per-model $/day. DB gauge `agentic_promotion_llm_cost_usd` is the intended per-model read (§2.3) ⇒ observability convenience gap, not a defect. Add a `model` label to the token/decide counters (observability, agentic-lane, autonomous)                                                                 | 1     | S      | pending (new, Pass 9 2026-07-08) — low priority until Opus reflection actually runs and its cost needs isolating from decide cost in Prometheus                                                                                                                                                                                                                                                                                                                                                                                                    |
-| 29  | **100%-hold watch** (Pass 9 saw 4/4 `hold`, n too small to conclude): re-check next pass with a full day of decides. Trigger (a) `agent_decide_total{outcome="hold"}` ~100% + `fills_total`=0 + 0 proposes after a day ⇒ model too passive (prompt/prescreen). Trigger (b) proposes appear but `signals_rejected_total` climbs with fills=0 ⇒ W3 plan-gate R:R floors (SL≥fee, TP/SL≥1.5) over-rejecting — a Stage-2-blocking regression as "quiet market". Now: 0 proposes+0 rejections ⇒ holds are model-driven, floors NOT yet implicated | 2     | S      | WATCH — re-verify Pass 10 against a full day of decide data; escalate to a correctness investigation only if a trigger fires                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| 29  | **100%-hold watch** (Pass 9 saw 4/4 `hold`, n too small to conclude): re-check next pass with a full day of decides. Trigger (a) `agent_decide_total{outcome="hold"}` ~100% + `fills_total`=0 + 0 proposes after a day ⇒ model too passive (prompt/prescreen). Trigger (b) proposes appear but `signals_rejected_total` climbs with fills=0 ⇒ W3 plan-gate R:R floors (SL≥fee, TP/SL≥1.5) over-rejecting — a Stage-2-blocking regression as "quiet market". Now: 0 proposes+0 rejections ⇒ holds are model-driven, floors NOT yet implicated | 2     | S      | WATCH (carried Pass 10→11) — Pass 10 STILL n=4 (0 new decides in 68 min; prescreen gated the bars), cannot conclude. Now the **single highest-value next-pass read** (§Flagged): it decides whether the no-trade state is quiet-market or genuine passivity, which gates the cost-floor-vs-throughput recommendation. Re-verify against a full day of decides; escalate only if trigger (a)/(b) fires                                                                                                                                              |
 
 ## Flagged for human review (open)
+
+- **RECOMMENDATION — cost-floor vs learning-throughput** (2026-07-08 Pass 10, playbook §3 mandate on
+  two consecutive empty passes): every Stage-2 stage (reflection → INACTIVE candidate → 25% A/B →
+  attributed auto-promotion) is downstream of closed round trips (all trade-gated via `onClosedTrade`,
+  no wall-clock path). At the current trade rate (Stage-1 cost floor skipping ~71%, 15m cadence, plus
+  quiet-market 100% holds), the exit criterion **≥2 attributed promotions + rolling-7d net ≥0 is
+  unreachable in a reasonable window.** Owner decision requested among: (a) **accept slow accrual**
+  (cheapest; Stage 2 may take weeks); (b) **raise trade opportunity within settled constraints** —
+  loosen prescreen sensitivity toward the low end of the skip band so more decides reach the model
+  and more trips close (NB no 3rd symbol / no 1m-5m are settled-off); (c) **first confirm 100%-hold is
+  passivity** via the #29 full-day check before touching anything. Pass read: do (c) next pass, then
+  (b) only if the full-day data shows genuine passivity rather than a genuinely quiet market.
+  - **Sub-option, FLAGGED NOT RECOMMENDED — wall-clock reflection trigger** (`AGENTIC_REFLECTION_MAX_IDLE_MS`):
+    lets reflection fire without new trades, BUT with no new closed trips it re-processes the same 32
+    historical trips → almost certainly hits the `NO_CHANGE` hash guard (`reflection.service.ts:638`)
+    or invents a revision off stale evidence. Does NOT unblock learning; only spends Opus. Only worth
+    it paired with a `closedSinceLastReflection == 0` skip gate. Owner call.
 
 - **True-spend cost accounting** (2026-07-07 Pass 8): the cache is verified working
   (`f5221b9` made it measurable; first window: 2775-token prefix, 3 reads) — a net SAVING vs an

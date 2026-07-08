@@ -671,3 +671,109 @@ boot, uninterrupted by this pass.
   100%-hold triggers; W12 agentic-lane decide/reflection event logging (no signal-sink); W9 Grafana
   panels once the reflection/A-B series carry data; `model` label on token metrics (#28); tune
   `AGENTIC_MIN_RR`/prescreen against the calibration digest once a day of decides accrues.
+
+## 2026-07-08 — Pass 10 (scheduled run, ~11:31Z) — SHIP NOTHING (learning loop throughput-starved)
+
+**Data window:** boot `47a66bba` only, 2026-07-08 09:54:54Z → 11:31Z (**~1h37m of runtime**).
+**Same continuous boot Pass 9 verified** — `docker inspect` → StartedAt 09:54:54Z, **RestartCount=0**,
+`bootId 47a66bba` unchanged; no redeploy, no owner recreate since Pass 9. This pass reads the same
+soak ~68 min deeper, not a new deploy.
+
+**Headline metrics (promtool + logs, boot 47a66bba):**
+
+- **Scoreboard** (epoch `2026-07-08T09:52:35Z`): 0 RT · net **−$0.069** (= −llmCost; realized/fees 0) ·
+  llmCost **$0.069** · window 0d · ready=0.
+- **Decides:** `agent_decide_total` = **4, all `hold`** — **unchanged from Pass 9's 4 at 10:23Z**, i.e.
+  **0 new LLM decides in ~68 min** (prescreen quiet-skipped every subsequent bar). This is EXPECTED
+  under the cost floor, **not** a liveness signal — see liveness note below. `fills_total`=0,
+  `round_trips_total`=0, `signals_rejected_total` **empty (no `EXPIRED`)**.
+- **Prescreen:** `called/vol_expansion`=4, `skipped_quiet/quiet`=10 → **14 evals, skip 71.4%**
+  (in/just over the 50–70% target). The 4 `vol_expansion` are the 4 decides; the 10 quiet are the LLM
+  saves.
+- **Tokens:** input 6163 · output 943 · **cache_read 5760 · cache_creation 5760**. Hand-priced
+  (Sonnet 3/15, cache-read 0.3, 1h-write 6.0 $/MTok) = **$0.069 — matches the DB gauge exactly**, so
+  the per-model+cache accounting (W4/W13) is honest. Note `cache_read == cache_creation`: with decides
+  now >1h apart (prescreen gaps), the 1h-TTL prefix expires between calls and is re-created rather than
+  read-amortized — a tiny ($0.035) inefficiency, logged not acted on (backlog candidate).
+- **Reconciliation:** 201 `result="mismatch"` runs, **0 halt / 0 error**; `reconciliation_mismatch_total`=603
+  (foreign-order WARN steady state, #24).
+- **Learning loop:** `agentic_reflection_outcomes_total` **series absent** · `playbook_validator_rejections_total`
+  empty · `agentic_playbook_info` **v1 seed** · version attribution v1 only (lifetime −$4.88 / 32 RT).
+- **Health:** `kill_switch_state{RUNNING}`=1 · equity 4996.73 · drawdown 0.065% · portfolio **static
+  across all 390 heartbeats** (2 dust positions BTC 1.06e-6 / ETH 9.96e-5, openOrders=3, inFlight=0 —
+  no fills, no new orders). Logs clean: 0 error / 0 warn / 0 HALT / 0 kill-switch / 0 EXPIRED; boot
+  recovery 3 orders / 0 degraded. **No stop condition.**
+
+**Liveness (advisor-flagged, to avoid misreporting):** `agent_decide_total` frozen at 4 is the
+prescreen doing its job, NOT the lane stalling. Liveness is proven by **prescreen 14** (keeping pace
+with ~13 expected bar-evals over 1h37m at 15m × 2 symbols), **heartbeat 390** (current to ~11:32Z),
+and **reconcile 201** (every ~30s, current) all advancing.
+
+**Root-cause finding — the Stage-2 learning loop is TRADE-THROUGHPUT-STARVED (not a bug):**
+Reflection **and** the attributed promotion evaluator fire SOLELY via `onClosedTrade`
+(`reflection.service.ts:370`, wired at `app.module.ts:1330–1334`). **There is no wall-clock / cron
+trigger** (verified: no `setInterval`/`@Cron`/scheduled path in the agentic module). Config:
+`AGENTIC_REFLECTION_EVERY_N_TRADES=5`, `COOLDOWN=6h`. Critically, the DB seed (`seedTriggerState`,
+`reflection.service.ts:423`) sets `tradesSinceLastAttempt = max(current, closedSinceLastReflection)`
+(~32, never reflected) with `lastAttemptAt=0` — **the loop is already primed and would fire on the
+very NEXT closed trade regardless of the =5 threshold.** So `everyNTrades` is NOT the blocker; the
+sole gate on all of Stage 2 is **zero new closed round trips** (100% hold, 0 fills, 0 proposes).
+The trade-gating is correct-by-design: reflection _consumes_ closed-trade evidence (reconstructed
+round trips, realized PnL, calibration), so it has nothing to chew on without a new trade.
+
+**Decision + rationale — SHIP NOTHING (report-only):**
+
+1. **No correctness bug on the trading path** (0 EXPIRED / 0 rejections / 0 errors / reconcile
+   0-halt-0-error) — nothing outranks the rest.
+2. **The 100%-hold is unresolvable at n=4** (backlog #29 mandates a full day of decides; 0 proposes +
+   0 rejections ⇒ holds are **model-driven**, W3 R:R floors **not** implicated). Shipping a fix for a
+   problem not yet confirmed = symptom-patching.
+3. **A wall-clock reflection trigger was considered and REJECTED on the merits** (not just scope):
+   firing reflection over a no-new-trade window re-chews the same 32 historical trips → the identical-hash
+   `NO_CHANGE` guard (`reflection.service.ts:638`) or a hallucinated revision off stale data; it burns
+   Opus calls to manufacture noise and does **not** address the real blocker (no new trades). Offered
+   below as a _flagged owner option with that caveat_ — not a recommendation.
+4. **The only autonomous code items (W12 logging, #28 `model` label, W9 panels) need a redeploy** that
+   resets the clean continuous soak, and none is urgent. The soak retains independent value
+   (slow-leak detection, the UTC-midnight cost-breaker reset, exercising the reflection path when a
+   trade does close) even though it produces no Stage-2 signal.
+
+Advisor consulted before deciding; concurred and corrected an initial over-rotation toward building
+the wall-clock trigger.
+
+**Empty-pass counter: 2 of 2** → per playbook §3 this pass carries the mandated cadence/scope-change
+recommendation (Flagged, below). Pass 9 was a schedule-collision empty; this one is a genuine
+"nothing clears the bar because the system is waiting on trades it isn't producing."
+
+**Gates:** N/A — no code change (loop-memory docs only). **Soak verdict:** clean at ~1h37m (healthy,
+prescreen/reconcile/heartbeat advancing, no EXPIRED/errors/HALT, cost well within the $5/day breaker);
+continues under the owner's boot, uninterrupted by this pass.
+
+**Flagged for human review / recommendation:**
+
+- **RECOMMENDATION (playbook §3, two consecutive empty passes) — cost-floor vs learning-throughput
+  tension.** Stage 1's cost floor (prescreen skipping ~71%, 15m cadence) plus quiet-market holds mean
+  the lane closes round trips rarely. But **every** Stage-2 stage (reflection → INACTIVE candidate →
+  25% A/B attribution → attributed auto-promotion) is downstream of closed trips, and the exit
+  criterion (≥2 promotions with version-attributed PnL AND rolling-7d net ≥0) is therefore
+  **unreachable in any reasonable window at the current trade rate.** Owner decision requested among:
+  (a) **accept slow accrual** and let the soak run — cheapest, but Stage 2 may take weeks;
+  (b) **raise trade opportunity** _within_ settled constraints (loosen prescreen sensitivity toward
+  the low end of the skip band; NB no 3rd symbol and no 1m/5m are settled-off) so more decides reach
+  the model and more trips close; (c) **first confirm whether 100%-hold is passivity** via the #29
+  full-day check next pass before touching anything. My read: do (c) next pass, then (b) if the
+  full-day data shows the model is genuinely too passive rather than the market genuinely quiet.
+- **Wall-clock reflection trigger — FLAGGED OPTION, NOT a recommendation.** A
+  `AGENTIC_REFLECTION_MAX_IDLE_MS`-style time trigger would let reflection fire without new trades,
+  but **caveat: with no new closed trips it re-processes the same 32 historical trips and almost
+  certainly hits the `NO_CHANGE` hash guard (or invents a revision off stale evidence)** — so it does
+  not actually unblock learning; it just spends Opus. Only worth it paired with a fresh-evidence
+  gate (skip if `closedSinceLastReflection == 0`). Owner call.
+- **100%-hold watch (#29) carried forward** unchanged — re-verify against a full day of decides next
+  pass; escalate to a correctness investigation only if trigger (a) or (b) fires. Current reading:
+  0 proposes + 0 rejections ⇒ model-driven holds, R:R floors not implicated.
+
+**Next-pass candidates:** (1) the **#29 full-day 100%-hold check** — the single highest-value read,
+determines whether (b) above is warranted; (2) first `minted` reflection / `version`>1 / RT accrual
+IF any trip closes; (3) W12 lane event logging, #28 `model` label, W9 panels — bundle into the next
+owner-authorized redeploy rather than forcing one.

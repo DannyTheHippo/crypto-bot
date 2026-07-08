@@ -777,3 +777,88 @@ continues under the owner's boot, uninterrupted by this pass.
 determines whether (b) above is warranted; (2) first `minted` reflection / `version`>1 / RT accrual
 IF any trip closes; (3) W12 lane event logging, #28 `model` label, W9 panels — bundle into the next
 owner-authorized redeploy rather than forcing one.
+
+### Pass 10 addendum — owner-directed follow-up (~14:00Z): 0-trade verified correct, eval harness un-bricked
+
+Owner (now present) directed: "fix the prettier mangling and any other issues you've found; only skip
+redeploy if the current 0-trade situation is correct." Both addressed; no redeploy (0-trade is
+correct, and the one code fix is test-only).
+
+**0-trade / 100%-hold VERDICT — CORRECT (not a defect):** four independent lines of evidence, so the
+report-only decision to leave the running app untouched is justified per the owner's condition:
+
+1. **Propose PATH is intact (plumbing, not model behavior).** The offline eval harness
+   (`pnpm eval:agentic`, $0, fixture fetchFn) drives a scripted `long`→`flat` window through the REAL
+   prompt-build + client-parse + executor pipeline and produces `scorecard.toyEquity.roundTrips === 1`.
+   This proves a propose _can_ flow through to an entry/exit/round-trip on the current tree — it does
+   NOT prove the live model proposes. Whether the model is too passive is Q2 (below), still open.
+   What it rules out is a structural bug that would make proposing impossible.
+2. **Holds are model-driven, not gate-suppressed.** 0 proposes AND 0 rejections
+   (`signals_rejected_total` empty) ⇒ the LLM chose `hold` at the decide step; no Risk/plan/expectancy
+   gate ever suppressed a would-be entry. The 4 holds are genuine (no `error` outcome).
+3. **The v1 seed playbook prescribes holding here.** Its regime notes say "Treat choppy, range-bound
+   conditions … as low-edge and prefer holding," and entry rules require "trend and momentum agree …
+   and the expected move clearly exceeds the stated round-trip trading cost." Holding through a
+   non-trending window is the playbook working as written (`agentic-strategy.module.ts:184`).
+4. **Holding is profit-maximizing given no edge.** The rebuild's own forensics put entry edge at ≈0
+   to −3bps next-bar vs a 20bps fee hurdle — trading into that loses to fees. A hold-biased lane is
+   correct micro-behavior.
+
+**Scope of the verdict — Q1 answered, Q2 still open.** "VERIFIED CORRECT" means **Q1: is 0-trade a
+defect on the trading path? → No.** It does NOT close **Q2: is the model too passive (a strategy /
+prompt weakness)?** — that remains n=4-unresolvable and is exactly backlog #29's job for the full-day
+window. The owner's redeploy condition keys on Q1 (no defect ⇒ no redeploy); Q2, even if it later
+resolves to "too passive," is offline-harness-validated prompt tuning plus owner sign-off on a future
+pass, never an emergency redeploy — and there is no fix to ship regardless (a rollback would
+reintroduce the R:R inversion the rebuild fixed). This correct-at-the-trade-level hold IS the
+throughput-starvation — correct micro, stalled macro. The stall is a strategy/regime question, not a
+bug.
+
+**Owner-confirmable evidence (SQL — psql host-denied, per playbook §2.4).** Points 3–4 above infer
+the regime was low-edge during the 4 decides; the direct proof is the model's own `rationale` +
+the indicator snapshot it saw (`input_payload`), which live in `agent_decisions`. Run via a `!`
+prompt to confirm the holds read as "no trend confluence / RSI mid-range / edge below fees":
+
+```sql
+SELECT to_timestamp(event_time/1000) AS at, strategy_id, symbol, action, confidence,
+       ref_price, playbook_version, rationale, input_payload
+FROM agent_decisions
+WHERE created_at >= '2026-07-08 09:52:00+00'
+ORDER BY event_time;
+```
+
+Expected: 4 rows, all `action='hold'`, rationale citing absent trend/momentum confluence; the
+`input_payload` EMA-fast/slow and RSI14 fields should show non-trending values consistent with the
+seed's "prefer holding" regime. If instead any rationale reads "wanted to enter but…", Q1 reopens.
+
+**Empty-pass counter RESET to 0.** The main Pass 10 entry recorded "empty 2/2 → cadence
+recommendation," but this addendum shipped `1f90ff6` — un-bricking the $0 replay harness the whole
+Stage-2 program depends on is a real improvement, so the empty streak is broken. The
+cost-floor-vs-throughput recommendation still stands, but **on its own merits** (the exit criterion
+is genuinely unreachable at the current trade rate), not as a two-empty-rule trigger.
+
+**New backlog item — gate `eval:agentic`.** The harness sat RED ~1 day purely because nothing runs
+it (`ci.yml` deliberately skips `test/eval`). Recommend adding the non-live specs (all but the two
+`EVAL_LIVE`-guarded files) to a gate or CI job so it cannot silently re-break. Owner's call on CI
+cost; added to state.md backlog.
+
+**Issue found and fixed — the offline replay harness was RED (`1f90ff6`, test-only):**
+`pnpm eval:agentic` failed at `replay-runner.spec.ts:40` — it asserted `req.system` equals the bare
+`buildSystemPrompt` string, but `AnthropicAgentClient` sends `system` as a single cache_control text
+block (`[{type:'text',text,cache_control:{type:'ephemeral',ttl:'1h'}}]`,
+`anthropic-agent-client.ts:540`) since the W2.4 prompt-cache work landed 2026-07-07. The test was
+never updated, so the harness state.md calls "ready" for Stage-2 $0 candidate scoring has been broken
+for ~1 day (it is NOT part of the gated `test` suite, so no gate caught it). Fixed the assertion to
+check the cache_control envelope; harness now **15 passed / 3 skipped** (the 3 are the API-guarded
+live specs). This is the same fix that produced the roundTrips proof in point 1 above.
+
+**Prettier "mangling" — fixed + prevented.** The mangled instance (a `+` at a manual line-start
+parsed by prettier as a list marker) was corrected in the Pass 10 doc commit `d6835e0`; a fresh scan
+finds no residual. Recurrence prevention is authoring discipline (keep `+`/`-`/`*` mid-line in report
+prose) — recorded in project memory `crypto-bot-env-quirks`. No prettier-config change is appropriate
+(a line-leading list marker is valid Markdown; the parser is behaving correctly).
+
+**Gates (this follow-up):** `build` ✓ · `typecheck` ✓ · `lint` ✓ (only pre-existing boundaries-legacy
+warnings) · `test` 1463 passed ✓ · `eval:agentic` 15 passed ✓. **No redeploy** — 0-trade is correct,
+and the eval fix touches only a test file (running app unaffected). Boot 47a66bba soak continues
+uninterrupted. Commits this follow-up: `1f90ff6` (eval fix), this doc addendum.

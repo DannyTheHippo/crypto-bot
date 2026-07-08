@@ -58,8 +58,11 @@ edge-creating machinery was broken. The forensics that reframed the program:
 
 **Stage-2 shape = a four-stage learning funnel** whose speed is no longer bounded by live trade
 throughput: reflection (Opus-4.8, rich calibration/attribution/regime diagnostics) → offline
-replay scoring at $0 (harness ready; needs ≥200 `input_payload` rows, now accruing via W6) →
-25% live A/B attribution → attributed auto-promotion (candidate's own net/trip must beat champion).
+replay scoring at $0 (harness `pnpm eval:agentic`; needs ≥200 `input_payload` rows, now accruing via
+W6 — NB the harness itself was RED from the 2026-07-07 W2.4 cache work until Pass 10 fixed a stale
+system-prompt assertion, `1f90ff6`; it is NOT in the gated `test` suite so no gate caught it — run
+`pnpm eval:agentic` when validating a candidate) → 25% live A/B attribution → attributed
+auto-promotion (candidate's own net/trip must beat champion).
 Stage-2 exit criterion (unchanged): ≥2 playbook promotions with version-attributed PnL AND
 rolling-7d net-of-cost ≥0.
 
@@ -91,6 +94,24 @@ independent stability value. A wall-clock reflection trigger was evaluated and r
 (re-chews the same 32 trips → `NO_CHANGE` hash guard / hallucination; doesn't fix the no-trade
 blocker). Consequence for the exit criterion: at the current trade rate, ≥2 attributed promotions is
 unreachable in a reasonable window — see the §Flagged cost-floor-vs-throughput recommendation.
+
+**Pass 10 addendum (owner-directed, ~14:00Z): 0-trade VERIFIED CORRECT.** Owner asked to skip
+redeploy only if the no-trade state is correct. It is, on four lines of evidence: (1) propose plumbing
+is functional — the offline eval (`pnpm eval:agentic`, once un-bricked, see below) drives a scripted
+`long`→`flat` round trip through the real prompt/client/executor pipeline (`roundTrips===1`); (2)
+holds are model-driven (0 proposes + 0 rejections, no gate suppression); (3) the v1 seed playbook
+explicitly prescribes holding in choppy/low-edge regimes and only entering when the move clears ~20bps
+fees; (4) documented edge ≈0 to −3bps vs the 20bps hurdle ⇒ holding is profit-maximizing. So the stall
+is a strategy/regime question, not a bug — no redeploy. **Also fixed a real issue found en route:**
+`pnpm eval:agentic` was RED since the 2026-07-07 cache work (stale system-prompt assertion; `1f90ff6`,
+test-only) — the $0 replay harness Stage-2 leans on was broken and no gate caught it (not in the gated
+`test` suite). Now 15 passed. Full gates green (build/lint/typecheck/1463 unit/eval). App soak
+untouched (fix is test-only). Scope: "correct" answers **Q1 (is 0-trade a defect? no)** — it does NOT
+close **Q2 (is the model too passive?)**, which stays n=4-unresolvable under #29; the redeploy
+condition keys on Q1. Owner SQL to confirm the 4 holds' `rationale` + indicator snapshot is in LOG.md.
+**Empty-pass counter RESET to 0** — the addendum shipped `1f90ff6`, a real improvement, so the
+two-empty streak is broken; the cost-floor-vs-throughput recommendation now stands on its own merits,
+not on the two-empty rule.
 
 ## Last pass
 
@@ -278,6 +299,8 @@ owns them).
 | 27  | True-spend cost accounting: persist cache_read/cache_creation tokens to `agent_decisions` (nullable analytics columns — scoped migration exception, mandatory reviewer) + journal plumbing, and fold cache economics (0.3 read / 6.0 1h-write $/MTok) into the $/day reads; changing the promotion gate's `llmCostUsd` formula is stricter-but-different ⇒ OWNER sign-off (flagged Pass 8)                                                                                                                                                   | 1     | M      | pending (new, seeded by Pass 8's cache verdict: flat 3/15 undercounted true spend ~1.5× in the first measured window; columns+plumbing autonomous, gate formula owner-gated)                                                                                                                                                                                                                                                                                                                                                                       |
 | 28  | `model` label on token/decide metrics: `agent_tokens_total` / `agent_decide_total` carry no `model` label, so once Opus reflection fires its tokens comingle with Sonnet decides in the `kind` buckets and Prometheus can't split per-model $/day. DB gauge `agentic_promotion_llm_cost_usd` is the intended per-model read (§2.3) ⇒ observability convenience gap, not a defect. Add a `model` label to the token/decide counters (observability, agentic-lane, autonomous)                                                                 | 1     | S      | pending (new, Pass 9 2026-07-08) — low priority until Opus reflection actually runs and its cost needs isolating from decide cost in Prometheus                                                                                                                                                                                                                                                                                                                                                                                                    |
 | 29  | **100%-hold watch** (Pass 9 saw 4/4 `hold`, n too small to conclude): re-check next pass with a full day of decides. Trigger (a) `agent_decide_total{outcome="hold"}` ~100% + `fills_total`=0 + 0 proposes after a day ⇒ model too passive (prompt/prescreen). Trigger (b) proposes appear but `signals_rejected_total` climbs with fills=0 ⇒ W3 plan-gate R:R floors (SL≥fee, TP/SL≥1.5) over-rejecting — a Stage-2-blocking regression as "quiet market". Now: 0 proposes+0 rejections ⇒ holds are model-driven, floors NOT yet implicated | 2     | S      | WATCH (carried Pass 10→11) — Pass 10 STILL n=4 (0 new decides in 68 min; prescreen gated the bars), cannot conclude. Now the **single highest-value next-pass read** (§Flagged): it decides whether the no-trade state is quiet-market or genuine passivity, which gates the cost-floor-vs-throughput recommendation. Re-verify against a full day of decides; escalate only if trigger (a)/(b) fires                                                                                                                                              |
+
+| 30 | Gate `pnpm eval:agentic`: the $0 offline replay harness (Stage-2 candidate scoring) sat RED ~1 day (stale system-prompt assertion, fixed `1f90ff6`) because `ci.yml` never runs `test/eval` — add its non-live specs (all but the two `EVAL_LIVE`-guarded files) to a gate/CI job so it cannot silently re-break | 1 | S | pending (new, Pass 10 addendum 2026-07-08) |
 
 ## Flagged for human review (open)
 

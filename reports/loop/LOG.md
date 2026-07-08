@@ -599,3 +599,75 @@ iterating); tune `AGENTIC_MIN_RR` / prescreen thresholds against the new calibra
 - **Meta:** ~10 parallel implementer dispatches; agents stalled mid-stream repeatedly (the known
   pattern) — resumed ≤2× with narrow remainders, then orchestrator took over (W4 gate-math, W5
   evaluator done inline). Every merge gated by the orchestrator's own sandbox-disabled test run.
+
+## 2026-07-08 — Pass 9 (scheduled run, ~10:23Z) — SHIP NOTHING (soak-verification)
+
+**Data window:** boot `47a66bba` only, 2026-07-08 09:54:54Z → 10:23Z (**~29 min of runtime**). This
+scheduled pass fired ~30 min behind the owner-run aggressive-improvement session's deploy, so the
+evidence window is the tail of that session's own soak, not a fresh day of data.
+
+**Provenance (settled before writing — did NOT assume "fresh deploy"):** git `bac974c` (code)
+committed 09:53:54Z, `c348aee` (docs) 10:03:17Z; `docker inspect` → Created 09:54:52Z / StartedAt
+09:54:54Z / **RestartCount=0**; `docker logs --since 24h` opens exactly at the boot marker (19.7-min
+span at first read). Coherent build-from-tree→deploy→commit ordering; **one continuous process, no
+restart, no unexplained recreate**. Prometheus/Grafana/Postgres uptimes (18h/24h/3d) are untouched
+older containers — only the app was rebuilt this morning.
+
+**Headline metrics (promtool, boot 47a66bba):**
+
+- **Scoreboard** (epoch `2026-07-08T09:52:35Z`): 0 RT · net **−$0.05** (= −llmCost; realized/fees 0) ·
+  llmCost **$0.05** · window 0d · ready=0. Reads honestly from the new epoch.
+- **Decides:** `agent_decide_total` = **4, all `outcome="hold"`** (0 propose / 0 skip / 0 error).
+  `fills_total`=0, `round_trips_total`=0. `signals_rejected_total` **empty (no `EXPIRED`)**.
+- **Tokens:** input 6163 · output 943 · **cache_read 5760 · cache_creation 5760** → cache working
+  (Pass 8 verdict holds). $/day: ~$0.0125/decide ⇒ ~$2/day decide-side projected, Opus reflection
+  adds on top, **within the $5/day breaker** (the 5m `rate()` of 32.6 tok/s is a bar-close burst
+  artifact, not steady state — DB gauge is the honest read).
+- **Prescreen:** `vol_expansion`=4 (LLM called every bar; 0 skips — noise at n=4).
+- **Reconciliation:** 47 `result="mismatch"` runs (foreign-order WARN steady state), **0 halt, 0 error**.
+- **Learning loop:** `agentic_reflection_outcomes_total` **series absent** (no reflection has run) ·
+  `playbook_validator_rejections_total` empty (the loop-killing banned-word reject is gone) ·
+  `agentic_playbook_info` still **v1 seed** · version attribution v1 only (lifetime −$4.88 / 32 RT).
+- **Health:** `kill_switch_state{RUNNING}`=1 · equity 4996.73 · drawdown 0.065% · expectancy ladder
+  ACTIVE · boot recovery 3 orders / 0 degraded. No stop condition present.
+
+**Decision + rationale — SHIP NOTHING (first empty pass; a timing artifact, not backlog exhaustion):**
+No correctness bug surfaced. The Stage-2 signals the whole program hinges on (first `minted`
+reflection, `agentic_playbook_info{version}`>1, round-trip / R:R realized accrual) have not had time
+to appear 29 min into a fresh boot. The only autonomous items available (W12 lane logging, the
+`model`-label token gap) require an **app redeploy**, which would reset the owner session's
+continuous-uptime soak of a 51-file rebuild — the one thing positioned to catch a slow-burn
+regression (a latch firing after hours, an `EXPIRED` that only appears once a plan-managed position
+ages). Shipping code with zero evidence it's needed _this instant_, at that cost, is forcing a change
+the playbook warns against (§3). W9 (Grafana, no redeploy) is the only no-restart option, but half
+its target series are empty right now (reflection-outcomes, A/B → "No data") and it carries the
+dashboard-collision history — not worth shipping just to have shipped. Advisor consulted; concurred.
+
+**Empty-pass counter: 1 of 2.** Cause is a schedule collision with a fresh manual deploy, NOT a
+stalled backlog — the next pass will have a full day of data plus a loaded backlog, so the "two
+consecutive empties → recommend cadence change" rule should not be tripped by this one.
+
+**Gates:** N/A — no code change. **Soak verdict:** clean early bill of health at ~29 min (healthy,
+decides flowing, no EXPIRED/errors/HALT, cost in band); the full soak continues under the owner's
+boot, uninterrupted by this pass.
+
+**Flagged / watches (added to state.md):**
+
+- **100%-hold watch** (NOT a finding at n=4 — recorded so the next pass acts on it). Two-pronged
+  trigger: (a) if `agent_decide_total{outcome="hold"}` stays ~100% with `fills_total`=0 AND 0
+  proposes after a full day ⇒ the model is too passive (prompt/prescreen), investigate; (b) if
+  proposes appear but `signals_rejected_total` climbs with fills still 0 ⇒ W3's plan-gate R:R floors
+  (SL≥fee, TP/SL≥1.5) may be rejecting every candidate — a Stage-2-blocking regression masquerading
+  as "quiet market." Current state (0 proposes, 0 rejections) means the 4 holds are **model-driven,
+  R:R floors not yet implicated** — the distinction the next pass must preserve.
+- **`model`-label gap:** `agent_tokens_total` / `agent_decide_total` carry no `model` label, so once
+  Opus reflection fires its tokens comingle with Sonnet decides in the `kind` buckets and Prometheus
+  can't split per-model $/day. The DB gauge `agentic_promotion_llm_cost_usd` IS the intended
+  per-model read (§2.3), so this is an observability convenience gap, not a defect. Backlogged (#28).
+
+**Next-pass candidates (top of backlog):** watch the learning loop for the first `minted` reflection
+
+- `version`>1 + RT accrual (the Stage-2 evidence lands here once data exists); re-verify the
+  100%-hold triggers; W12 agentic-lane decide/reflection event logging (no signal-sink); W9 Grafana
+  panels once the reflection/A-B series carry data; `model` label on token metrics (#28); tune
+  `AGENTIC_MIN_RR`/prescreen against the calibration digest once a day of decides accrues.

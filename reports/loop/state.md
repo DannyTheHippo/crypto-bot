@@ -113,7 +113,37 @@ condition keys on Q1. Owner SQL to confirm the 4 holds' `rationale` + indicator 
 two-empty streak is broken; the cost-floor-vs-throughput recommendation now stands on its own merits,
 not on the two-empty rule.
 
+**Pass 11 (2026-07-08 ~16:07Z) — #29 answered at n=11, blocker is confirmed owner-strategic.** Same
+boot `47a66bba`, ~6h13m in. Decides grew 4→**11, still 100% hold**; crucially all 11 prescreen
+`called` bars were the higher-signal classes (`breakout_proximity` 7 + `vol_expansion` 4) and the
+model held on every one, with **0 proposes + 0 rejections**. That resolves the #29 structural
+question: holds are model-driven (gate not implicated). Loosening the prescreen (option b) surfaces
+MORE ≈0-to-−3bps bars against the 20bps fee hurdle — even if some traded they are −EV and cannot move
+net-of-cost to ≥0, so (b) cannot reach the Stage-2 exit (**strongly indicated**; the owner-SQL on the
+hold rationales is the last confirmer, flagged not run). The Stage-2 blocker is **edge/cold-start in a
+genuinely low-edge market**, which no autonomous pass can fix within settled constraints — the
+throughput-vs-cost-floor decision is squarely the owner's (see §Flagged). Shipped a docs-only guard
+(`pnpm eval:agentic` now an every-pass §2.6 harness-health probe + §6.4 lint:md gate) and flagged the
+CI step (#30); no redeploy.
+
 ## Last pass
+
+**Pass 11, 2026-07-08** (scheduled run, ~16:07Z) — **SHIP one in-bounds process improvement; #29
+resolved to a conclusion.** Same continuous boot `47a66bba` (`RestartCount=0`, up ~6h13m, no
+redeploy). Evidence clean: **11 decides, ALL hold** (up from n=4), 0 proposes / 0 rejections
+(`signals_rejected_total` empty) / 0 fills / 0 RT; prescreen 39/50 quiet (78%), all 11 `called` bars
+were higher-signal (`breakout_proximity` 7 + `vol_expansion` 4) yet all held; reconcile 753 mismatch
+/ **0 halt / 0 error**; logs 0 error/warn/HALT/EXPIRED; cost $0.189 since epoch (DB gauge = hand-priced
+tokens exactly, ≈$0.72/day), kill switch RUNNING, equity 4996.73 static. **#29 resolved (structural):**
+holds are model-driven (0 proposes + 0 rejections ⇒ trigger b not firing, gate not implicated).
+Option (b) prescreen-loosening can't reach the Stage-2 exit — it surfaces more −EV (≈0-to-−3bps vs
+20bps) bars, not net-≥0 (**strongly indicated**; owner-SQL on hold rationales is the last confirmer).
+Blocker is edge/cold-start = owner-strategic (Pass 10 flag now firmed). **Shipped:** `pnpm eval:agentic`
+wired into the playbook as an every-pass §2.6 harness-health probe (+ §6.4 lint:md gate, §5.1
+ship-gate), docs/, verified green incl. under CI env — the loop's own guard against the Pass-10
+silent-breakage class. **Flagged #30** (the CI-step systemic fix) with exact diff — `ci.yml` is
+owner-territory, unverifiable from a no-push pass.
+No redeploy (docs-only). Empty-pass counter stays 0. Full detail in LOG.md.
 
 **Pass 10, 2026-07-08** (scheduled run, ~11:31Z) — **SHIP NOTHING, learning loop throughput-starved.**
 Same continuous boot 47a66bba (RestartCount=0), ~1h37m in — no redeploy since Pass 9. Evidence clean:
@@ -298,9 +328,9 @@ owns them).
 | 26  | Recovered resting orders don't count into Risk's E1 in-flight exposure clamp (intents aren't persisted, `evaluate.ts:171` iterates inFlightIntents only) — reviewer nice-to-have from the Pass-7 review; pre-existing, partially mitigated by the TTL sweep now seeing recovered orders                                                                                                                                                                                                                                                      | 2     | M      | pending (needs design: persist minimal intent columns or clamp on openOrders too)                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | 27  | True-spend cost accounting: persist cache_read/cache_creation tokens to `agent_decisions` (nullable analytics columns — scoped migration exception, mandatory reviewer) + journal plumbing, and fold cache economics (0.3 read / 6.0 1h-write $/MTok) into the $/day reads; changing the promotion gate's `llmCostUsd` formula is stricter-but-different ⇒ OWNER sign-off (flagged Pass 8)                                                                                                                                                   | 1     | M      | pending (new, seeded by Pass 8's cache verdict: flat 3/15 undercounted true spend ~1.5× in the first measured window; columns+plumbing autonomous, gate formula owner-gated)                                                                                                                                                                                                                                                                                                                                                                       |
 | 28  | `model` label on token/decide metrics: `agent_tokens_total` / `agent_decide_total` carry no `model` label, so once Opus reflection fires its tokens comingle with Sonnet decides in the `kind` buckets and Prometheus can't split per-model $/day. DB gauge `agentic_promotion_llm_cost_usd` is the intended per-model read (§2.3) ⇒ observability convenience gap, not a defect. Add a `model` label to the token/decide counters (observability, agentic-lane, autonomous)                                                                 | 1     | S      | pending (new, Pass 9 2026-07-08) — low priority until Opus reflection actually runs and its cost needs isolating from decide cost in Prometheus                                                                                                                                                                                                                                                                                                                                                                                                    |
-| 29  | **100%-hold watch** (Pass 9 saw 4/4 `hold`, n too small to conclude): re-check next pass with a full day of decides. Trigger (a) `agent_decide_total{outcome="hold"}` ~100% + `fills_total`=0 + 0 proposes after a day ⇒ model too passive (prompt/prescreen). Trigger (b) proposes appear but `signals_rejected_total` climbs with fills=0 ⇒ W3 plan-gate R:R floors (SL≥fee, TP/SL≥1.5) over-rejecting — a Stage-2-blocking regression as "quiet market". Now: 0 proposes+0 rejections ⇒ holds are model-driven, floors NOT yet implicated | 2     | S      | WATCH (carried Pass 10→11) — Pass 10 STILL n=4 (0 new decides in 68 min; prescreen gated the bars), cannot conclude. Now the **single highest-value next-pass read** (§Flagged): it decides whether the no-trade state is quiet-market or genuine passivity, which gates the cost-floor-vs-throughput recommendation. Re-verify against a full day of decides; escalate only if trigger (a)/(b) fires                                                                                                                                              |
+| 29  | **100%-hold watch** (Pass 9 saw 4/4 `hold`, n too small to conclude): re-check next pass with a full day of decides. Trigger (a) `agent_decide_total{outcome="hold"}` ~100% + `fills_total`=0 + 0 proposes after a day ⇒ model too passive (prompt/prescreen). Trigger (b) proposes appear but `signals_rejected_total` climbs with fills=0 ⇒ W3 plan-gate R:R floors (SL≥fee, TP/SL≥1.5) over-rejecting — a Stage-2-blocking regression as "quiet market". Now: 0 proposes+0 rejections ⇒ holds are model-driven, floors NOT yet implicated | 2     | S      | RESOLVED (structural) 2026-07-08 Pass 11: n=11, 0 proposes + 0 rejections ⇒ holds model-driven (gate not implicated, n-independent). Option (b) prescreen-loosening can't reach the Stage-2 exit — it surfaces more −EV (≈0-to-−3bps vs 20bps) bars, not net-≥0 (strongly indicated; all 11 higher-signal `called` bars held corroborates; owner-SQL on hold rationales is the last confirmer). Blocker = edge/cold-start (owner-strategic), not a bug. Re-open on proposes-with-rejections or fills                                               |
 
-| 30 | Gate `pnpm eval:agentic`: the $0 offline replay harness (Stage-2 candidate scoring) sat RED ~1 day (stale system-prompt assertion, fixed `1f90ff6`) because `ci.yml` never runs `test/eval` — add its non-live specs (all but the two `EVAL_LIVE`-guarded files) to a gate/CI job so it cannot silently re-break | 1 | S | pending (new, Pass 10 addendum 2026-07-08) |
+| 30 | Gate `pnpm eval:agentic`: the $0 offline replay harness (Stage-2 candidate scoring) sat RED ~1 day (stale system-prompt assertion, fixed `1f90ff6`) because `ci.yml` never runs `test/eval` — add its non-live specs (all but the two `EVAL_LIVE`-guarded files) to a gate/CI job so it cannot silently re-break | 1 | S | FLAGGED 2026-07-08 Pass 11 — the CI step is owner-territory (`ci.yml` outside §4 MAY, unverifiable from a no-push pass); exact one-line diff in LOG.md Pass 11. INTERIM shipped same pass: `pnpm eval:agentic` wired into playbook §2.6 as an every-pass harness-health probe (loop-local guard, verified green incl. under CI env). Both networked eval specs self-skip without `EVAL_LIVE`/`DATABASE_URL`, so the CI step needs no env |
 
 ## Flagged for human review (open)
 
@@ -313,8 +343,19 @@ owns them).
   (cheapest; Stage 2 may take weeks); (b) **raise trade opportunity within settled constraints** —
   loosen prescreen sensitivity toward the low end of the skip band so more decides reach the model
   and more trips close (NB no 3rd symbol / no 1m-5m are settled-off); (c) **first confirm 100%-hold is
-  passivity** via the #29 full-day check before touching anything. Pass read: do (c) next pass, then
-  (b) only if the full-day data shows genuine passivity rather than a genuinely quiet market.
+  passivity** via the #29 full-day check before touching anything.
+  **UPDATE 2026-07-08 Pass 11 — (c) done; (b) strongly indicated dead.** Structural finding
+  (n-independent): at n=11 (all hold) 0 proposes + 0 rejections ⇒ holds are model-driven, no gate
+  suppression. Decisive argument against (b), also sample-size-independent: loosening the prescreen
+  only surfaces MORE ≈0-to-−3bps bars vs the 20bps fee hurdle — even if some traded they are −EV and
+  cannot move net-of-cost to ≥0 (the Stage-2 exit), so (b) spends more LLM without advancing the exit.
+  Corroboration (n=11, weaker): all 11 higher-signal `called` bars still held. The one un-run confirmer
+  is the owner-SQL on the holds' `rationale`/`input_payload` (flagged Pass 10); until it runs, treat
+  "(b) dead" as strongly indicated, not proven. The live remaining choices are **(a) accept slow
+  accrual** OR a NEW owner-scope lever that adds real edge without a settled-off constraint (e.g. a
+  different signal source / a change to the seed-playbook entry criteria), which only the owner can
+  authorize. Pass recommendation: **(a)** unless the owner wants to open the edge question — a pass
+  cannot manufacture edge within current constraints.
   - **Sub-option, FLAGGED NOT RECOMMENDED — wall-clock reflection trigger** (`AGENTIC_REFLECTION_MAX_IDLE_MS`):
     lets reflection fire without new trades, BUT with no new closed trips it re-processes the same 32
     historical trips → almost certainly hits the `NO_CHANGE` hash guard (`reflection.service.ts:638`)

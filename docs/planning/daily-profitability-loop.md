@@ -73,6 +73,12 @@ blocks docker/promtool. Host `psql` and host `curl` are **auto-denied**; do not 
 5. **Grafana** renders the same Prometheus data — promtool is the canonical read. The dashboard
    JSON (`observability/grafana/dashboards/crypto-bot.json`) is in-repo and editable when a pass
    ships a metrics change.
+6. **Harness-health probe ($0, EVERY pass — including ship-nothing):** `pnpm eval:agentic` green.
+   This is the offline replay harness Stage-2 candidate scoring depends on; it is NOT in the gated
+   `test` suite and `ci.yml` does not run it, so it can (and did, ~1 day until Pass 10's `1f90ff6`)
+   break silently. Without `EVAL_LIVE`/`DATABASE_URL` it makes no network or DB call and the two
+   live specs self-skip (offline subset: 4 files / 15 tests). A RED harness is itself a flagged
+   finding — measurement, not the running app — and outranks other candidates in §3 when it fires.
 
 ## 3. Decide (one improvement per pass)
 
@@ -148,7 +154,10 @@ authored (`git add <paths>`, never `git add -A`/`-u`) — a pass never commits w
 1. **Gates (all green before commit):** `pnpm build`, `pnpm lint`, `pnpm typecheck`, `pnpm test` —
    run with `pnpm -C <repo-root>` (never `cd`; the fnm hook breaks), sandbox-disabled, `pipefail`
    on chains. `test:db` needs `DB_SUITE_ALLOW_RESET=1` and
-   `DATABASE_URL=postgres://cryptobot:cryptobot@127.0.0.1:5432/cryptobot_test`.
+   `DATABASE_URL=postgres://cryptobot:cryptobot@127.0.0.1:5432/cryptobot_test`. A pass that ships
+   an agentic-lane change also runs `pnpm eval:agentic` (the $0 offline replay harness) as a
+   candidate/regression gate. (The unconditional every-pass harness-health probe lives in §2.6 so
+   it fires on ship-nothing passes too; markdown gating for the report files is in §6.)
 2. **Cap:** 3 consecutive validation failures → revert the working tree, record the failure in the
    report, end the pass.
 3. **Deploy:** `docker compose build app && docker compose up -d app`.
@@ -167,6 +176,10 @@ authored (`git add <paths>`, never `git add -A`/`-u`) — a pass never commits w
    open flagged items awaiting the owner.
 3. Both files are the loop's cross-session memory — keep them current enough that the next pass
    needs nothing else. (Pattern precedent: `reports/archive/nightly/loop-state.md`.)
+4. **Gate the report edits (every pass):** `pnpm lint:md` green after writing LOG.md/state.md.
+   Since owner commit `1ae2100` markdownlint owns `.md` (prettier's `format:check` now excludes
+   `*.md`); the `reports/loop/` backlog table is MD060 "aligned" — editing a cell must keep the
+   row's closing pipe column-aligned, and `--fix` does not repair MD060.
 
 ## 7. Stop conditions (report-only, change nothing)
 

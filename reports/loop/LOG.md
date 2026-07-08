@@ -862,3 +862,124 @@ prose) — recorded in project memory `crypto-bot-env-quirks`. No prettier-confi
 warnings) · `test` 1463 passed ✓ · `eval:agentic` 15 passed ✓. **No redeploy** — 0-trade is correct,
 and the eval fix touches only a test file (running app unaffected). Boot 47a66bba soak continues
 uninterrupted. Commits this follow-up: `1f90ff6` (eval fix), this doc addendum.
+
+## 2026-07-08 — Pass 11 (scheduled run, ~16:07Z)
+
+**SHIP: one in-bounds process improvement (playbook §5 harness-health gate); no money-path change,
+no redeploy. #29 (100%-hold) resolved to a conclusion at n=11.**
+
+**Window:** same continuous boot `47a66bba` (`docker inspect`: `RestartCount=0`,
+`StartedAt=2026-07-08T09:54:54Z`), now ~6h13m in — no redeploy since the owner session; Passes 9/10
+did not redeploy either. Evidence read 09:54Z→16:07Z (epoch `2026-07-08T09:52:35Z`).
+
+**Stack health:** all four containers up, app healthy, kill switch `RUNNING`. Logs (5266 lines,
+all this boot): **0 error / 0 warn / 0 HALT / 0 EXPIRED / 0 protective-exit / 0 fatal**. The only
+non-HTTP/non-heartbeat lines are boot/init (boot recovery: 3 orders seeded / 0 degraded; expectancy
+ladder ACTIVE; active playbook `version=1 source=seed`; `mode=testnet downgrades=[]`). Decides and
+reconcile passes emit to metrics, not stdout — prior-pass "N decides / M mismatch" numbers are
+promtool reads, not log greps (recorded here so no future pass re-greps the log for them).
+
+**Headline metrics (promtool):**
+
+- **Gate scoreboard (epoch-scoped):** `round_trips=0`, `net_pnl_usd=-0.189357`,
+  `llm_cost_usd=0.189357`, `window_days=0`, `ready=0`. Net = −LLM exactly ⇒ realized trading PnL
+  since epoch is $0 (no closed trips).
+- **Decides:** `agent_decide_total{outcome="hold"}=11` — **11 decides, ALL hold** (up from Pass 10's
+  4). No `propose`/`error`/`noop` outcome present. `signals_rejected_total` **empty** (0 rejections).
+  `fills_total=0`, `round_trips_total` empty.
+- **Prescreen:** 50 evals → `skipped_quiet=39` (**78%** skip), `called=11` (`breakout_proximity=7`,
+  `vol_expansion=4`) — matches the 11 decides exactly. No `position_open` reason (positions are dust,
+  not tracked exposure).
+- **Cost:** tokens `input=19601 output=2598 cache_read=17280 cache_creation=14400`; cache working
+  (reads > 0). Hand-priced at Sonnet-5 (in $3, out $15, cache_read $0.30, 1h-write $6 /MTok) =
+  **$0.18936**, matching the DB gauge `agentic_promotion_llm_cost_usd=0.189357` to the cent ⇒
+  measurement trustworthy (no §7 gauge-vs-DB contradiction). ≈ **$0.72/day** projected — well under
+  the $5 breaker and even the retired $1 floor. Stage-1 cost floor solidly held.
+- **Reconcile:** `reconciliation_runs_total{result="mismatch"}=753`, **0 halt / 0 error** — the
+  shared-wallet foreign-order steady state (WARN-and-ignore class), healthy.
+- **Learning loop:** `agentic_playbook_info{version="1"}` (seed, no promotion);
+  `agentic_reflection_outcomes_total` **empty** (no reflection has run — trade-gated, 0 closed trips).
+- **Equity:** `equity_usdt=4996.73`, `drawdown_ratio=0.065%`. Static; positions dust only
+  (0.00000106 BTC, 0.0000996 ETH), `openOrders=3`.
+
+**Stop conditions (§7):** none. No kill-switch trip, no HALT, no halt-class reconciliation mismatch,
+no unexplained drawdown (equity static, 0 fills), gauge matches DB. Free to decide.
+
+**#29 (100%-hold watch) — resolved on the structural finding; option (b) strongly indicated dead,
+pending one owner-SQL confirmer (was n=4-unresolvable at Pass 10):**
+
+- **Structural finding — holds are model-driven (n-independent, solid).** 0 proposes AND 0 rejections
+  (`signals_rejected_total` empty) ⇒ the LLM chose `hold` at the decide step; no plan-gate/Risk/
+  expectancy floor suppressed a would-be entry. Trigger (b) is not firing; the W3 R:R floors are not
+  implicated. This holds regardless of sample size — it is a presence/absence of proposes+rejections,
+  not a rate estimate.
+- **Option (b) [loosen prescreen] cannot reach the Stage-2 exit — decisive argument is
+  sample-size-independent.** Loosening the prescreen surfaces MORE bars in the ≈0-to-−3bps next-bar
+  edge band (the rebuild's own calibration) against a ~20bps fee hurdle; even if some of those became
+  trades they are −EV and cannot move net-of-cost PnL to ≥0, which IS the Stage-2 exit. So loosening
+  spends more on LLM without advancing the exit criterion, independent of how many bars it surfaces.
+- **Corroboration (n=11, weaker):** all 11 higher-signal `called` bars (`breakout_proximity` 7 +
+  `vol_expansion` 4) already held, consistent with the model declining even the strongest bars — so
+  loosening would only feed _lower_-signal bars to a model already declining higher-signal ones. This
+  is n-dependent and assumes those were strong holds; the direct confirmer is the owner-SQL on the
+  holds' `rationale`/`input_payload` (flagged Pass 10, not runnable here). Until that runs, read
+  "(b) is dead" as **strongly indicated, not proven**.
+- **Net:** the Stage-2 blocker is **edge / cold-start** in a genuinely low-edge window (78%
+  deterministically quiet; holding is profit-maximizing at ≈0-to-−3bps vs 20bps) — owner-strategic,
+  not a pass-fixable bug. #29 downgraded WATCH → **resolved** on the structural finding; the
+  option-(b) dead-end is strongly indicated (rationale-SQL is the last confirmer). Re-open only if a
+  future window shows proposes-with-climbing-rejections (trigger b) or fills.
+
+**Decision (ranked by net-of-cost-PnL ÷ effort):** No correctness bug on the trading path (logs
+clean, holds verified correct). The one strategic lever (throughput vs cost-floor) is correctly
+owner-flagged and unchanged. With trading correctly idle pending owner input, the only in-bounds
+lever is **trustworthiness of measurement** — so ship the strongest such item and flag the rest.
+
+**Shipped (docs/, in-bounds, S-effort):** wired `pnpm eval:agentic` into the playbook as an
+**every-pass** harness-health probe. Placement matters and the first draft got it wrong (advisor
+caught it): the check went into §5 "Validate, then deploy", which ship-nothing passes SKIP — exactly
+the empty-pass runs where a silent harness rot would go unnoticed. Corrected placement: **§2.6**
+evidence sweep (the $0 probe, runs EVERY pass including empty ones; a RED harness is itself a flagged
+finding that outranks other §3 candidates), **§5.1** (agentic-lane-shipping passes also run it as a
+candidate/regression gate), and **§6.4** (every pass runs `pnpm lint:md` on the LOG/state edits, with
+the MD060 aligned-table gotcha noted). Rationale: the $0 offline replay harness all of Stage-2
+candidate scoring depends on is not in the gated `test` suite and `ci.yml` does not run it, so it
+broke silently ~1 day (Pass 10's `1f90ff6`); an every-pass probe catches that at daily cadence
+regardless of whether the owner wires the CI step (#30). Belt-and-suspenders to #30, not a substitute.
+Verified: `pnpm eval:agentic` green, and green again under the exact CI env `NODE_ENV=test CI=true`
+(4 files / 15 tests pass, 3 self-skip).
+
+**#30 (gate `eval:agentic` in CI) — FLAGGED for owner, not shipped.** The systemic fix is a CI step,
+but `.github/workflows/ci.yml` is outside the pass's §4 MAY allowlist (owner-managed — the `lint:md`
+step `1ae2100` is an owner commit from today), and a no-push pass cannot verify a CI change. Exact
+one-line diff for the owner (no env needed — CI already sets `NODE_ENV=test`/`CI=true`, and both
+networked eval specs self-skip without `EVAL_LIVE`/`DATABASE_URL`):
+
+```yaml
+      - name: Test (unit + livegate)
+        run: pnpm test
+
+      - name: Agentic offline eval harness
+        run: pnpm eval:agentic
+```
+
+**Diff summary:** `docs/planning/daily-profitability-loop.md` (§2.6 harness probe + §5.1 ship-gate +
+§6.4 lint:md gate), `reports/loop/LOG.md` (this entry), `reports/loop/state.md` (stage/backlog/flag
+update) — this entry's single docs commit. No app code touched.
+
+**Gates:** `lint:md` ✓ · `format:check` ✓ · `build` ✓ · `typecheck` ✓ · `lint` ✓ (pre-existing
+boundaries-legacy warnings only) · `test` ✓ · `eval:agentic` 15 passed ✓. (Docs-only change; build/
+typecheck/test cannot regress from `.md` edits but run for the §4 gate discipline.)
+
+**Soak:** N/A — docs-only, no redeploy. Boot `47a66bba` soak continues uninterrupted (correct: a
+redeploy for a docs change would reset the owner's continuous-uptime soak for zero benefit).
+
+**Empty-pass counter:** stays 0 — a real (if modest) improvement shipped. The cost-floor-vs-
+throughput recommendation (Flagged) stands on its own merits, awaiting the owner.
+
+**Next-pass candidates:** (1) **owner decision on the throughput flag** is now the gating input — no
+autonomous pass can advance Stage 2 without either a trade or an owner scope call; (2) first `minted`
+reflection / `version`>1 / RT accrual IF any trip closes; (3) W12 lane event logging (today's log had
+zero decide/reflect/reconcile lines — pure metrics), #28 `model` label, W9 panels — bundle into the
+next owner-authorized redeploy; (4) if the owner declines CI for #30, the §5 per-pass check now
+covers it.

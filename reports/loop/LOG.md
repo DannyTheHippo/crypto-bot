@@ -118,8 +118,8 @@ after the plan and a later pass would implement it. Recording this so a future p
 to see one dated entry cover both a plan writeup and a shipped/deployed change.
 
 **Root-caused:** `prescreen.ts:87-89`'s `positionOpen` branch short-circuits before the
-vol_expansion/breakout_proximity cascade ever runs, so tuning `VOL_RATIO`/`BREAKOUT_PCT` (backlog
-#10 as literally worded) cannot move the skip rate for held positions — but which reason actually
+vol_expansion/breakout_proximity cascade ever runs, so tuning `VOL_RATIO`/`BREAKOUT_PCT` (backlog #10
+as literally worded) cannot move the skip rate for held positions — but which reason actually
 dominates `called` was inferred from portfolio logs, not measured (`agentic_prescreen_total` only
 labeled by outcome). An advisor consult mid-pass caught that selling a `positionOpen`-branch
 behavior change on a single 57-minute window would repeat the exact mistake Pass 2's re-verify rule

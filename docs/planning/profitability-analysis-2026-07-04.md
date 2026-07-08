@@ -199,7 +199,7 @@ tests. Rebuilt + redeployed.
 
 ## Appendix — raw metric readings (boot 6f50ba98, uptime ~2.49h)
 
-```
+```text
 agent_client_info{kind="anthropic"} = 1
 agent_decide_total{outcome="proposed"} = 18 ; {outcome="hold"} = 11
 agent_decide_latency_seconds: count=30 sum=215.68  (p50 7.6s, p95 17.5s)

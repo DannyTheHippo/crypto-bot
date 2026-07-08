@@ -13,7 +13,7 @@ decision 2026-07-03; this module is now the only strategy lane under active deve
 
 ## Self-improvement loop
 
-```
+```text
 journal → reflection (hypothesis generation) → human review (eval scorecards) → promotion → active
                                                                                   (or: reflection auto-promotes directly, below)
 ```

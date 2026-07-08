@@ -1,0 +1,29 @@
+// markdownlint-cli2 config. Markdownlint (not prettier) owns `.md` files — prettier is a reflowing
+// formatter that mangles long-form technical prose (e.g. a `+`/`-` landing at a wrapped line-start
+// gets parsed as a list marker), so `.md` is excluded from prettier via .prettierignore and linted
+// here instead. Rules disabled below are the ones that fight dense engineering docs, not quality
+// gates; structural rules (blank lines around headings/code/lists, fenced-code language, trailing
+// newline) stay ON.
+{
+  "config": {
+    "default": true,
+    "MD013": false, // line-length — reports/loop tables and prose run well past any column cap
+    "MD024": { "siblings_only": true }, // duplicate headings OK across sections (repeated pass-entry sub-headings), not under one parent
+    "MD029": false, // ordered-list prefix — fights the common "numbered steps interleaved with code fences" README pattern; re-indenting fences to satisfy it changes rendering for no real gain
+    "MD033": false, // inline HTML — allowed (occasional <br>, <details> in docs)
+    "MD034": false, // bare URLs — allowed in notes/references
+    "MD041": false, // first line need not be a top-level heading (some docs open with frontmatter/badges)
+  },
+  "globs": ["**/*.md"],
+  // Archived dirs are frozen historical records, not maintained docs — linting them is pointless
+  // churn on immutable history, so they are excluded (as they are from active review).
+  "ignores": [
+    "node_modules",
+    "dist",
+    "coverage",
+    ".pnpm-store",
+    ".pnpm-cache",
+    "docs/archive",
+    "reports/archive",
+  ],
+}

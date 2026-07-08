@@ -162,7 +162,7 @@ FROM llm_usage;
 sampled on its own 5-minute interval — `evaluate()` runs full-table scans, deliberately kept off
 the 5s sampling loop):
 
-```
+```text
 agentic_promotion_round_trips
 agentic_promotion_net_pnl_usd
 agentic_promotion_llm_cost_usd

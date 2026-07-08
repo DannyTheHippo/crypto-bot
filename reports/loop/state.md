@@ -259,8 +259,8 @@ counter resets naturally now that live data unblocks #10.
 ## Backlog (ranked; re-rank each pass)
 
 **2026-07-08 session closed these:** #11 (reflection model) — Opus-4.8 with mandatory per-model
-pricing (W13); #16 (A/B enable + attributed auto-promote) — live at 25% + evaluator shipped (W5);
-#27 (true-spend accounting + cache columns + gate-formula fold) — DONE (W4/W13, owner-approved
+pricing (W13); #16 (A/B enable + attributed auto-promote) — live at 25% + evaluator shipped (W5); #27
+(true-spend accounting + cache columns + gate-formula fold) — DONE (W4/W13, owner-approved
 epoch). PARTIAL: #17 (cross-symbol/self-track-record) — the regime + own-track-record evidence now
 reaches REFLECTION (W14); the decide-prompt version waits on the offline harness. OPEN follow-ups
 (not this session): W12 operational event logging, W15 `eval:candidates` runner, W9 Grafana panels

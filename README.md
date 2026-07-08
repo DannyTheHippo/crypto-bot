@@ -221,7 +221,7 @@ paper-honesty checks) are in [docs/runbook.md](docs/runbook.md).
 
 ## Project layout
 
-```
+```text
 src/
   domain/          pure domain logic — strategy, risk rules, sizing, OMS reducer, paper fill model
     types/         branded Decimal types (Price, Qty, Notional, …), MarketEvent, Signal, OrderIntent

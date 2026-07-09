@@ -983,3 +983,131 @@ reflection / `version`>1 / RT accrual IF any trip closes; (3) W12 lane event log
 zero decide/reflect/reconcile lines — pure metrics), #28 `model` label, W9 panels — bundle into the
 next owner-authorized redeploy; (4) if the owner declines CI for #30, the §5 per-pass check now
 covers it.
+
+## 2026-07-09 — Pass 12 (scheduled run, ~16:00–16:50Z)
+
+**SHIP: a correctness fix on the LEARNING-critical path (agentic-lane, S-effort, gates-green,
+redeployed). The lane finally traded (4 round trips, net −$2.02) and reflection finally triggered —
+and died on a 30s timeout abort. Fixed the timeout so the learning loop can iterate.**
+
+**Window:** two boots this pass. Evidence read off continuous boot `f75b6dfc`
+(`StartedAt=2026-07-08T17:47:54Z`, `RestartCount=0`, ~22.7h up) — a whole-stack recreate at 17:47Z
+07-08 that superseded boot `47a66bba` (all four containers restarted together; no app-code commit
+since `e67e956`, so same `bac974c` image; provenance = owner/host event, not a loop pass). Redeployed
+to boot `3d6bc0d7` at ~16:31Z with this pass's fix. Gate epoch unchanged `2026-07-08T09:52:35Z`.
+
+**Stack health:** all four containers up, app healthy, kill switch `RUNNING`, `agent_client_info{kind=
+"anthropic"}=1` (client wired, not latched). Logs (20153 lines, boot `f75b6dfc`): 0 HALT / 0 EXPIRED /
+0 UNKNOWN_OURS / 0 protective-exit; the sole `level:50` belongs to the PRIOR boot `47a66bba`'s
+shutdown (`PersistenceModule "Idle pool client error"` at 17:47:10Z — benign idle-pool disconnect
+during the recreate, not this boot). Reconciler healthy via metrics: `reconciliation_runs_total{result=
+"mismatch"}=2699` (the known foreign-order steady state #24, WARN-and-ignore), **0 `halt` / 0 `error`
+result labels**; `reconciliation_mismatch_total=8098`.
+
+**Headline metrics (promtool, boot `f75b6dfc` unless noted). The lane BROKE OUT of 100% hold:**
+
+- **Gate scoreboard (epoch-scoped, DB-backed):** `round_trips=4`, `net_pnl_usd=−2.0162518`,
+  `llm_cost_usd=0.811509`, `window_days=0.552`, `ready=0`. **−$2.02 net-of-cost over 4 closed round
+  trips — the first non-zero, and negative, Stage-2 signal.**
+- **Decides (since-boot process counters):** `proposed=6`, `hold=30`, `error_retryable=1` (37 model
+  calls). Hold rate 81% (down from Pass 11's 100%). `signals_rejected_total` **empty** (0 rejections)
+  ⇒ Risk sized/vetoed nothing away; the 6 proposes reached execution.
+- **Fills / round trips:** `fills_total=9`; `round_trips_total{result="loss"}=3`, `{result="win"}=1`
+  — **1 win / 3 losses, 25% win rate.**
+- **Realized PnL (since-boot gauge):** `agentic-1 (BTC/USDT)=−1.3063`, `agentic-2 (ETH/USDT)=−1.0144`
+  ⇒ −$2.32 both symbols losing. Equity `4996.15` (dd `0.077%`), −$0.58 vs boot open — fully explained
+  by the 4 trips + fees (NOT unexplained drawdown).
+- **Three PnL figures, three windows (§7 gate-vs-DB affirmatively CLEARED, not skipped):** gate
+  **−$2.016** = since-epoch DB read (4 RT, reportable figure); summed `realized_pnl_usdt` **−$2.32** =
+  since-boot in-memory gauge; `agentic_version_net_pnl_usd{version="1"}` **−$6.066** over
+  `agentic_version_round_trips{version="1"}=36` = all-time v1 sampler (cumulative across boots/epochs).
+  Different sources/windows, no contradiction — measurement is trustworthy.
+- **Prescreen:** 108 evals → `skipped_quiet=71` (**65.7%** skip, now IN the 50–70% band),
+  `called=37` (`breakout_proximity=26` + `vol_expansion=11`) = the 37 decides exactly.
+- **Cost (since-boot tokens):** `input=87913 output=10402 cache_read=80640 cache_creation=23040`;
+  cache working. Gate `llm_cost_usd=0.811509` over `window_days=0.552` ≈ **$1.47/day** — under the $5
+  breaker.
+
+**THE FINDING — reflection fired once and aborted (root cause + fix):**
+`agentic_reflection_outcomes_total{outcome="attempt_started"}=1`, `{outcome="transport_error"}=1` —
+**no `minted` / `validator_reject` / `no_change`.** Log (02:14Z 07-09): `reflection: transport error:
+This operation was aborted`. That message is `AbortController.abort()` firing at the deadline — the
+ONLY abort in `runReflection` is `setTimeout(() => controller.abort(), cfg.timeoutMs)`. Reflection
+runs `AGENTIC_REFLECTION_MODEL=claude-opus-4-8` with `thinking:{type:'adaptive'}` over a large
+calibration/attribution/regime/realized-round-trip prompt, but `createReflectionService` read
+`AGENTIC_TIMEOUT_MS` (the 30s **decide** timeout). Opus + adaptive thinking cannot answer in 30s, so
+every attempt aborts — and each aborted attempt still consumes the trigger (`tradesSinceLastAttempt`
+reset + `lastAttemptAt` advanced at `reflection.service.ts:480` BEFORE the fetch) and a budget call,
+so under the 6h cooldown the loop can't retry promptly and the retry would hit the same 30s wall.
+Net: the Stage-2 learning funnel was **structurally incapable of completing** — playbook stuck at the
+net-negative `v1` seed. Differential proof (advisor): Sonnet decides succeed at 30s on the same
+API/network; only the Opus+thinking reflection aborts, at the deadline — a client-timer kill, not a
+400 or a network fault.
+
+**Decision (ranked by net-of-cost-PnL ÷ effort):** This is a **playbook §3 priority-1 candidate** —
+a correctness bug on the learning-critical path surfaced by today's evidence, and the learning loop
+is the ONLY machinery that can move net-of-cost PnL toward ≥0 within settled constraints (the edge
+question is owner-strategic; a broken reflection loop blocks Stage-2 regardless). It outranks every
+backlog item (observability/pending-data). The 4-trip −$2.02 loss itself is NOT a bug — 25% win rate
+on 4 small trades in a low-edge window is noise, R:R floors held (0 EXPIRED, 0 rejections); that is
+the edge/cold-start question the reflection loop exists to chew on.
+
+**Shipped (`ef325f6`, agentic-lane, S-effort):** a separate `AGENTIC_REFLECTION_TIMEOUT_MS` knob
+(schema default **240s**), threaded config → `agenticEnv` → `createReflectionService`. Reflection
+reads it and falls back to `DEFAULT_REFLECTION_TIMEOUT_MS` (240s), **never to `AGENTIC_TIMEOUT_MS`** —
+a config missing the reflection knob can never silently reintroduce the 30s abort. Decide path keeps
+its fast 30s (fail-fast). 240s (not a tight estimate) on the advisor's cost-asymmetry argument:
+too-short costs another consumed-trigger + 6h-cooldown cycle; too-long costs a rare, detached,
+off-hot-path hang. Compose + `.env.example` pin `240000`. Regression tests encode the bug: the abort
+deadline reads `AGENTIC_REFLECTION_TIMEOUT_MS`, and with only `AGENTIC_TIMEOUT_MS` set the call is
+NOT aborted at 30s.
+
+**VERIFICATION BOUNDARY (advisor):** the soak does NOT and cannot confirm "reflection now completes"
+— reflection fires only on a closed round trip (~1 per ~5h at current throughput) and post-redeploy
+the per-strategy trigger needs its next 5th trip; a 15–30 min soak won't see one. **This pass removed
+the 30s-abort blocker; the first live confirmation (an attempt resolving to `minted`/`no_change`/
+`validator_reject` instead of `transport_error`) is PENDING and lands on a future pass.** Nothing
+offline verifies Opus-in-240s; the unit tests verify only the plumbing.
+
+**Diff summary:** `src/ports/app-config.ts`, `src/config/environment/environment.config.ts`,
+`src/features/trading/agentic/agentic-strategy.module.ts`,
+`src/features/trading/agentic/reflection.service.ts`, `docker-compose.yml`, `.env.example`,
+`test/unit/agentic-strategy/reflection.service.spec.ts` (+2 tests),
+`test/unit/config/validate.spec.ts`, `test/unit/agentic-strategy/agent-client-selection.spec.ts` —
+single commit `ef325f6` (9 files, +116/−4). Report: this LOG entry + state.md — separate docs commit.
+
+**Gates:** `build` ✓ · `lint` ✓ (pre-existing boundaries-legacy warnings only) · `typecheck` ✓ ·
+`test` 1465 unit+livegate ✓ · `eval:agentic` 15 passed/3 skipped ✓ · `lint:md` (report edits) ✓.
+
+**Deploy + soak:** rebuilt (`docker compose build app`) + `up -d app` → boot `3d6bc0d7` at ~16:31Z,
+healthy in 12s; playbook `v1 source=seed`, recovery 3 orders/0 degraded, expectancy ladder ACTIVE,
+`mode=testnet downgrades=[]`, clean boot (0 error/warn beyond the ACTIVE_STRATEGY banner). Gate
+gauges read 0 immediately post-boot then repopulated to `RT=4` at the ~5-min DB sample (DB-backed
+gauges survived the recreate — §2.3, §7 gate-vs-DB affirmatively cleared). **Soak ~19 min: GREEN, no
+regression.** App healthy throughout; at the 16:45Z bar the lane decided and **proposed** (prescreen
+1 quiet / 1 called ⇒ lane alive and deciding on the new image); a round trip closed mid-soak (gate
+`RT 4→5`, another small loss → net `−2.143`), `fills_total=1`, **0 EXPIRED**; token cost tiny (single
+fresh decide: 1505 in / 257 out / 2880 cache-creation). Log scan (321 lines): **0 HALT / 0 EXPIRED /
+0 "transport error" / 0 "This operation was aborted" / 0 "run failed" / 0 level-50/60** — no new
+aborts, no regression. **Reflection did NOT fire in the window** (`agentic_reflection_outcomes_total`
+empty, 0 reflection log lines) — expected and consistent with the verification boundary above: the
+30s-abort blocker is removed, but a completed reflection needs a per-strategy 5th closed trip and
+cannot surface in a 19-min soak. First live `minted`/`no_change`/`validator_reject` confirmation
+remains PENDING for a future pass.
+
+**Empty-pass counter:** stays 0 — a real correctness fix shipped.
+
+**Flagged for human review:** unchanged this pass (cost-floor-vs-throughput recommendation, #30 CI
+gate, true-spend accounting). NB the throughput half of the cost-floor flag is now partly overtaken by
+events — the lane IS closing trips (4 this window), so Stage-2 throughput is no longer strictly
+starved; the live question is whether the reflection loop, once un-blocked, can turn the v1 seed's
+−EV entries into net-≥0 edge, or whether the owner-strategic edge lever is still needed.
+
+**Next-pass candidates:** (1) **first live reflection outcome** — confirm an attempt resolves to
+`minted`/`no_change`/`validator_reject` (not `transport_error`); if `minted`, watch
+`agentic_playbook_info{version}`>1 and A/B version attribution begin; (2) **stream the reflection
+call** (advisor backlog seed) — removes the arbitrary wall-clock ceiling entirely, the durable fix
+behind the timeout bump; (3) if reflection keeps consuming the trigger on any future transient error,
+roll back `tradesSinceLastAttempt`/`lastAttemptAt` on transport/http/malformed errors so a transient
+failure retries on the next trip instead of waiting the 6h cooldown (deferred defect #2 this pass);
+(4) W12 lane event logging / #28 `model` label / W9 panels bundled into the next redeploy.

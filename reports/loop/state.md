@@ -126,7 +126,47 @@ throughput-vs-cost-floor decision is squarely the owner's (see §Flagged). Shipp
 (`pnpm eval:agentic` now an every-pass §2.6 harness-health probe + §6.4 lint:md gate) and flagged the
 CI step (#30); no redeploy.
 
+**Pass 12 (2026-07-09 ~16:31Z) — lane BROKE OUT of 100% hold; reflection-abort bug found + fixed,
+redeployed.** A whole-stack recreate at 17:47Z 07-08 (owner/host event, same `bac974c` image — no
+app-code commit since `e67e956`) put boot `f75b6dfc` up ~22.7h, the first full-day window. It flipped
+the picture Passes 9–11 held: the model now **proposes** (`agent_decide_total`: proposed=6, hold=30,
+error=1 ⇒ 81% hold, not 100%), `signals_rejected_total` still empty ⇒ #29 trigger (a) "too passive"
+is retired by evidence, (b) gate never implicated. The lane closed **4 round trips (1W/3L)**, gate
+net-of-cost **−$2.02** since epoch (realized −$2.32 both symbols; equity −$0.58, dd 0.077%, fully
+trade-explained — no unexplained drawdown). Cost ~$1.47/day (under the $5 breaker); prescreen skip
+65.7% (in the 50–70% band). **Root finding:** reflection triggered for the first time and **aborted** —
+`agentic_reflection_outcomes_total{attempt_started=1, transport_error=1}`, log `reflection: transport
+error: This operation was aborted` (02:14Z). Cause: reflection runs Opus-4.8 + adaptive thinking over
+a large prompt but read the 30s **decide** timeout (`AGENTIC_TIMEOUT_MS`); it can't answer in 30s, so
+every attempt aborts, consumes the trigger (6h cooldown + 5 trips) + a budget call, and the playbook
+stays at the net-negative `v1` seed (v1: 36 all-time RT, −$6.07). The whole Stage-2 learning funnel
+was structurally unable to complete — NOT throughput-starved (throughput is now flowing). **Fixed
+`ef325f6`:** separate `AGENTIC_REFLECTION_TIMEOUT_MS` (default 240s), never falls back to the 30s
+decide timeout; decide path keeps 30s. Redeployed to boot `3d6bc0d7`, clean. **Verification boundary:
+the fix's live confirmation (an attempt resolving to `minted`/`no_change`/`validator_reject` instead
+of `transport_error`) is PENDING — reflection fires ~1/5h and a 15–30 min soak can't observe it; first
+confirmation lands on a future pass.** Reconciler healthy (2699 mismatch passes, 0 halt/0 error).
+
 ## Last pass
+
+**Pass 12, 2026-07-09** (scheduled run, ~16:00–16:50Z) — **SHIP a correctness fix on the
+learning-critical path; agentic-lane, gates-green, redeployed.** The lane finally traded (4 RT, 1W/3L,
+gate net-of-cost **−$2.02** since epoch) and reflection finally triggered — and **died on a 30s timeout
+abort** (`transport error: This operation was aborted`). Root cause: reflection runs Opus-4.8 +
+adaptive thinking but read the 30s decide timeout `AGENTIC_TIMEOUT_MS`; it can't answer in 30s, so
+every attempt aborts and consumes the trigger, leaving the playbook stuck at the net-negative `v1`
+seed. This is a **playbook §3 priority-1 correctness bug** on the ONLY machinery that can move
+net-of-cost toward ≥0 within settled constraints — it outranks all backlog items. **Shipped `ef325f6`
+(9 files, +116/−4):** separate `AGENTIC_REFLECTION_TIMEOUT_MS` (default 240s, never falls back to the
+decide timeout); decide path keeps its 30s fail-fast; +2 regression tests encoding the bug. Gates
+green (build/lint/typecheck, 1465 unit+livegate, eval:agentic 15). Redeployed to boot `3d6bc0d7`
+(clean; playbook v1 seed, expectancy ladder ACTIVE). **Verification boundary (advisor): the soak
+CANNOT confirm reflection now completes** — it fires ~1/5h; the fix removed the 30s-abort blocker,
+first live `minted`/`no_change` confirmation is PENDING on a future pass. Evidence otherwise clean: 0
+HALT/EXPIRED/kill-switch, reconciler healthy (0 halt/0 error), kill switch RUNNING. #29 trigger (a)
+retired by evidence (model now proposes: 6/37). Empty-pass counter stays 0. New backlog #31 (transient-
+error trigger rollback), #32 (stream the reflection call — durable fix behind the timeout bump). Full
+detail in LOG.md.
 
 **Pass 11, 2026-07-08** (scheduled run, ~16:07Z) — **SHIP one in-bounds process improvement; #29
 resolved to a conclusion.** Same continuous boot `47a66bba` (`RestartCount=0`, up ~6h13m, no
@@ -332,6 +372,10 @@ owns them).
 
 | 30 | Gate `pnpm eval:agentic`: the $0 offline replay harness (Stage-2 candidate scoring) sat RED ~1 day (stale system-prompt assertion, fixed `1f90ff6`) because `ci.yml` never runs `test/eval` — add its non-live specs (all but the two `EVAL_LIVE`-guarded files) to a gate/CI job so it cannot silently re-break | 1 | S | FLAGGED 2026-07-08 Pass 11 — the CI step is owner-territory (`ci.yml` outside §4 MAY, unverifiable from a no-push pass); exact one-line diff in LOG.md Pass 11. INTERIM shipped same pass: `pnpm eval:agentic` wired into playbook §2.6 as an every-pass harness-health probe (loop-local guard, verified green incl. under CI env). Both networked eval specs self-skip without `EVAL_LIVE`/`DATABASE_URL`, so the CI step needs no env |
 
+| 31 | Reflection trigger consumed on transient error: `runReflection` resets `tradesSinceLastAttempt`/`lastAttemptAt` at `reflection.service.ts:480` BEFORE the fetch, so a transport/http/malformed error (post-line-480) consumes the trigger + a budget call and waits the full 6h cooldown + 5 trips to retry. Pass 12's timeout fix makes the timeout case rare, but any transient error still strands the loop. Roll back both counters on transport/http/malformed exits (guard re-entrancy via the existing `inFlight` flag) so a transient failure retries on the next closed trip | 2 | S | pending (new, Pass 12 2026-07-09 — deferred defect #2 of the reflection-abort finding; lower priority now the 30s abort is fixed) |
+
+| 32 | Stream the reflection LLM call (SSE) instead of a single non-streaming POST: removes the arbitrary wall-clock timeout ceiling entirely (the durable fix behind Pass 12's `AGENTIC_REFLECTION_TIMEOUT_MS` bump — a fixed timeout is still a guess about Opus worst-case). Advisor backlog seed. Agentic-lane, `reflection.service.ts` fetch body + envelope parsing | 2 | M | pending (new, Pass 12 2026-07-09) |
+
 ## Flagged for human review (open)
 
 - **RECOMMENDATION — cost-floor vs learning-throughput** (2026-07-08 Pass 10, playbook §3 mandate on
@@ -356,6 +400,15 @@ owns them).
   different signal source / a change to the seed-playbook entry criteria), which only the owner can
   authorize. Pass recommendation: **(a)** unless the owner wants to open the edge question — a pass
   cannot manufacture edge within current constraints.
+  **UPDATE 2026-07-09 Pass 12 — throughput is no longer strictly starved.** Boot `f75b6dfc`'s full-day
+  window closed **4 round trips** and the model **proposed** (6/37 decides) — so the "learning loop is
+  throughput-starved" half of this flag is partly overtaken by events. BUT the loop still couldn't
+  learn, for a different reason: the one reflection that triggered aborted on a 30s timeout (fixed this
+  pass, `ef325f6`). Once reflection actually completes (pending confirmation), the live question narrows
+  to exactly (a)-vs-edge: can the reflection loop turn the v1 seed's −EV entries (4 RT, net −$2.02) into
+  net-≥0, or is the owner-scope edge lever still needed? That answer needs ≥1 completed reflection +
+  its A/B attribution — which the timeout fix now makes reachable. Recommendation stands at **(a) accept
+  slow accrual** and watch the first post-fix reflection outcome before any scope change.
   - **Sub-option, FLAGGED NOT RECOMMENDED — wall-clock reflection trigger** (`AGENTIC_REFLECTION_MAX_IDLE_MS`):
     lets reflection fire without new trades, BUT with no new closed trips it re-processes the same 32
     historical trips → almost certainly hits the `NO_CHANGE` hash guard (`reflection.service.ts:638`)

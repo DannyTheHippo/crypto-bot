@@ -73,7 +73,13 @@ services:
       # Reflection on the Opus tier (owner decision 2026-07-08: strengthen Tier-2 learning; 1-4
       # calls/day ≈ $0.10-0.15 each at 5/25 rates). Per-model pricing below keeps the gate honest.
       AGENTIC_REFLECTION_MODEL: 'claude-opus-4-8'
-      AGENTIC_TIMEOUT_MS: 30000 # per-call LLM request timeout
+      AGENTIC_TIMEOUT_MS: 30000 # per-call DECIDE request timeout (Sonnet, fast — fail fast)
+      # Reflection-path timeout, separate from the decide timeout above. Opus + adaptive thinking over
+      # the large calibration/attribution prompt cannot answer in 30s — the shared 30s decide timeout
+      # aborted every live reflection attempt (2026-07-09 "transport error: This operation was aborted"),
+      # stranding the learning loop at the v1 seed. Reflection is off the trading hot path (detached), so
+      # 240s is free headroom against Opus worst-case rather than a tight estimate.
+      AGENTIC_REFLECTION_TIMEOUT_MS: 240000
       AGENTIC_MAX_TOKENS: 1024 # max output tokens per LLM call
       AGENTIC_MIN_DECISION_INTERVAL_MS: 0 # floor between agent decisions; 0 = every closed candle
       AGENTIC_WARMUP_BARS: 340 # closed candles retained; ≥336 keeps h4 (and h1) HTF indicators non-null at 15m — below that the prompt's 1h/4h confluence data is silently null (prompt still slices 50)

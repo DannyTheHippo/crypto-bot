@@ -123,6 +123,7 @@ describe('agenticEnv', () => {
     const agentic: AppConfig['agentic'] = {
       model: 'claude-config-model',
       timeoutMs: 12345,
+      reflectionTimeoutMs: 111000,
       maxTokens: 777,
       minDecisionIntervalMs: 1000,
       warmupBars: 50,
@@ -162,6 +163,7 @@ describe('agenticEnv', () => {
     expect(agenticEnv(config)).toMatchObject({
       AGENTIC_MODEL: 'claude-config-model',
       AGENTIC_TIMEOUT_MS: '12345',
+      AGENTIC_REFLECTION_TIMEOUT_MS: '111000',
       AGENTIC_MAX_TOKENS: '777',
       AGENTIC_MAX_CALLS_PER_DAY: '42',
       AGENTIC_MAX_TOKENS_PER_DAY: '999999',

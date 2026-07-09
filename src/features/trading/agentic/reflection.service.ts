@@ -40,7 +40,13 @@ const MAX_CLOSED_TRADES = 10;
 const REFLECTION_ROUND_TRIP_FEE_BPS = 20;
 const MAX_CHANGELOG_LOG_CHARS = 300;
 const DEFAULT_EVERY_N_TRADES = 10;
-const DEFAULT_TIMEOUT_MS = 30000;
+// Reflection's OWN timeout default — deliberately NOT the 30s decide default. Reflection runs a
+// pricier model (see cfg.model) with adaptive thinking over a large evidence prompt; 30s aborted
+// every live attempt (2026-07-09 "This operation was aborted"). createReflectionService reads
+// AGENTIC_REFLECTION_TIMEOUT_MS and falls back to THIS, never to AGENTIC_TIMEOUT_MS — so a config
+// missing the reflection knob can never silently reintroduce the 30s abort. Off the hot path, so a
+// generous default is free.
+const DEFAULT_REFLECTION_TIMEOUT_MS = 240000;
 // Matches AGENTIC_MODEL's schema default and the AGENTIC_TOKEN_PRICE_* defaults (Sonnet-5 at 3/15)
 // so an unconfigured fallback can never bill a pricier model at cheaper rates inside the
 // earned-live cost math.
@@ -703,7 +709,9 @@ export function createReflectionService(
   return new ReflectionService(
     {
       everyNTrades: intEnv(env['AGENTIC_REFLECTION_EVERY_N_TRADES'], DEFAULT_EVERY_N_TRADES),
-      timeoutMs: intEnv(env['AGENTIC_TIMEOUT_MS'], DEFAULT_TIMEOUT_MS),
+      // Reflection-specific timeout; falls back to DEFAULT_REFLECTION_TIMEOUT_MS (240s), NOT to
+      // AGENTIC_TIMEOUT_MS — the 30s decide timeout must never leak into the Opus reflection call.
+      timeoutMs: intEnv(env['AGENTIC_REFLECTION_TIMEOUT_MS'], DEFAULT_REFLECTION_TIMEOUT_MS),
       // Reflection model precedence: explicit override > the decide model > the shared default —
       // absent an override, decide and reflection share one model so the flat AGENTIC_TOKEN_PRICE_*
       // math stays honest.

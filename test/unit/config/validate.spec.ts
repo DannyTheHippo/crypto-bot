@@ -181,6 +181,7 @@ describe('validate()', () => {
         model: 'claude-sonnet-5',
         reflectionModel: undefined,
         timeoutMs: 30000,
+        reflectionTimeoutMs: 240000,
         maxTokens: 1024,
         minDecisionIntervalMs: 0,
         warmupBars: 50,
@@ -236,6 +237,7 @@ describe('validate()', () => {
         AGENTIC_DRAIN_COOLDOWN_MAX_MS: '600000',
         AGENTIC_REFLECTION_EVERY_N_TRADES: '5',
         AGENTIC_REFLECTION_COOLDOWN_MS: '3600000',
+        AGENTIC_REFLECTION_TIMEOUT_MS: '90000',
         AGENTIC_PRESCREEN_ENABLED: 'false',
         AGENTIC_PRESCREEN_VOL_SHORT_BARS: '15',
         AGENTIC_PRESCREEN_VOL_LONG_BARS: '60',
@@ -256,6 +258,7 @@ describe('validate()', () => {
       expect(cfg.agentic.drainCooldownMaxMs).toBe(600000);
       expect(cfg.agentic.reflectionEveryNTrades).toBe(5);
       expect(cfg.agentic.reflectionCooldownMs).toBe(3600000);
+      expect(cfg.agentic.reflectionTimeoutMs).toBe(90000);
       expect(cfg.agentic.prescreenEnabled).toBe(false);
       expect(cfg.agentic.prescreenVolShortBars).toBe(15);
       expect(cfg.agentic.prescreenVolLongBars).toBe(60);

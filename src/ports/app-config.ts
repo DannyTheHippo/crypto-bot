@@ -37,6 +37,11 @@ export interface AppConfig {
     // pinning a pricier model requires raising AGENTIC_TOKEN_PRICE_* to its rates, fail-closed).
     reflectionModel?: string;
     timeoutMs: number;
+    // Reflection-path request timeout. Separate from timeoutMs (the decide path): reflection runs a
+    // pricier model (reflectionModel, e.g. Opus) with adaptive thinking over a large evidence prompt,
+    // so it legitimately needs far longer than a fast decide — sharing the 30s decide timeout aborted
+    // every attempt live (2026-07-09). Off the trading hot path, so a generous value costs nothing.
+    reflectionTimeoutMs: number;
     maxTokens: number;
     minDecisionIntervalMs: number;
     warmupBars: number;

@@ -896,6 +896,80 @@ describe('createReflectionService', () => {
     };
     expect(body.model).toBe(expected);
   });
+
+  // The reflection call's abort deadline reads its OWN knob, not the decide timeout — see
+  // AGENTIC_REFLECTION_TIMEOUT_MS's schema comment. Asserted off the AbortSignal because the timer is
+  // the only place the choice becomes observable (the stalled-body pattern from the detachment suite).
+  const stalledSignal = (
+    fetchFn: ReturnType<typeof vi.fn>,
+  ): (() => AbortSignal | null | undefined) => {
+    const capture = (): AbortSignal | null | undefined =>
+      (fetchFn.mock.calls[0]?.[1] as unknown as RequestInit | undefined)?.signal;
+    fetchFn.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () =>
+        new Promise((_resolve, reject) => {
+          capture()?.addEventListener('abort', () => reject(new Error('aborted')));
+        }),
+    });
+    return capture;
+  };
+
+  it('threads AGENTIC_REFLECTION_TIMEOUT_MS through to the reflection abort deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      const h = buildHarness();
+      const signal = stalledSignal(h.fetchFn);
+      const service = createReflectionService(
+        {
+          ANTHROPIC_API_KEY: 'k',
+          AGENTIC_REFLECTION_EVERY_N_TRADES: '1',
+          AGENTIC_REFLECTION_TIMEOUT_MS: '120000',
+        },
+        h.deps,
+      );
+      service.onClosedTrade(SID, 1);
+      await vi.advanceTimersByTimeAsync(0); // headers resolved; res.json() now the pending await
+      expect(signal()?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(30_000); // the old 30s decide timeout — must NOT abort here
+      expect(signal()?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(90_000); // reaches the configured 120s
+      expect(signal()?.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Regression (2026-07-09): reflection ran Opus + adaptive thinking under the SHARED 30s decide
+  // timeout (AGENTIC_TIMEOUT_MS) and aborted every live attempt ("transport error: This operation was
+  // aborted"), stranding the learning loop at the v1 seed. The reflection timeout must NOT inherit the
+  // decide knob — with only AGENTIC_TIMEOUT_MS set, the call uses the generous reflection default.
+  it('does NOT inherit AGENTIC_TIMEOUT_MS: the reflection call is not aborted at the 30s decide timeout', async () => {
+    vi.useFakeTimers();
+    try {
+      const h = buildHarness();
+      const signal = stalledSignal(h.fetchFn);
+      const service = createReflectionService(
+        {
+          ANTHROPIC_API_KEY: 'k',
+          AGENTIC_REFLECTION_EVERY_N_TRADES: '1',
+          AGENTIC_TIMEOUT_MS: '30000', // decide timeout present; NO reflection knob
+        },
+        h.deps,
+      );
+      service.onClosedTrade(SID, 1);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(signal()?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(60_000); // well past 30s — the bug would have aborted by now
+      expect(signal()?.aborted).toBe(false);
+      // Still armed: aborts at the generous reflection default (240s), proving the timer is live.
+      await vi.advanceTimersByTimeAsync(180_000);
+      expect(signal()?.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 // ── Realized round-trip evidence + durable trigger seed ─────────────────────

@@ -123,6 +123,7 @@ export function agenticEnv(config?: TypedConfigService): Record<string, string |
     AGENTIC_MODEL: agentic.model,
     AGENTIC_REFLECTION_MODEL: agentic.reflectionModel,
     AGENTIC_TIMEOUT_MS: String(agentic.timeoutMs),
+    AGENTIC_REFLECTION_TIMEOUT_MS: String(agentic.reflectionTimeoutMs),
     AGENTIC_MAX_TOKENS: String(agentic.maxTokens),
     AGENTIC_MAX_CALLS_PER_DAY: String(agentic.maxCallsPerDay),
     AGENTIC_MAX_TOKENS_PER_DAY: String(agentic.maxTokensPerDay),

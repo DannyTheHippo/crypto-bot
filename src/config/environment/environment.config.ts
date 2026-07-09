@@ -159,6 +159,13 @@ const envSchema = z
     // the flat pricing then OVER-counts decide-path cost, which is the fail-closed direction.
     AGENTIC_REFLECTION_MODEL: z.string().min(1).optional(),
     AGENTIC_TIMEOUT_MS: z.coerce.number().int().positive().default(30000),
+    // Reflection-path request timeout, DELIBERATELY separate from (and much larger than) the decide
+    // timeout above. Reflection runs AGENTIC_REFLECTION_MODEL (a pricier tier, e.g. Opus) with
+    // adaptive thinking over a large calibration/attribution prompt; the 30s decide timeout aborted
+    // every live attempt (2026-07-09: "transport error: This operation was aborted"), stranding the
+    // learning loop at the seed playbook. Off the trading hot path (reflection is detached), so
+    // headroom is free — 240s buys margin against Opus worst-case rather than a tight wall-clock guess.
+    AGENTIC_REFLECTION_TIMEOUT_MS: z.coerce.number().int().positive().default(240000),
     AGENTIC_MAX_TOKENS: z.coerce.number().int().positive().default(1024),
     AGENTIC_MIN_DECISION_INTERVAL_MS: z.coerce.number().int().min(0).default(0),
     AGENTIC_WARMUP_BARS: z.coerce.number().int().positive().default(50),
@@ -407,6 +414,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     AGENTIC_MODEL: agenticModel,
     AGENTIC_REFLECTION_MODEL: agenticReflectionModel,
     AGENTIC_TIMEOUT_MS: agenticTimeoutMs,
+    AGENTIC_REFLECTION_TIMEOUT_MS: agenticReflectionTimeoutMs,
     AGENTIC_MAX_TOKENS: agenticMaxTokens,
     AGENTIC_MIN_DECISION_INTERVAL_MS: agenticMinDecisionIntervalMs,
     AGENTIC_WARMUP_BARS: agenticWarmupBars,
@@ -486,6 +494,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       model: agenticModel,
       reflectionModel: agenticReflectionModel,
       timeoutMs: agenticTimeoutMs,
+      reflectionTimeoutMs: agenticReflectionTimeoutMs,
       maxTokens: agenticMaxTokens,
       minDecisionIntervalMs: agenticMinDecisionIntervalMs,
       warmupBars: agenticWarmupBars,

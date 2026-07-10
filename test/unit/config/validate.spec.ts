@@ -605,6 +605,20 @@ describe('validate()', () => {
         /PERP_LEVERAGE_CAP/,
       );
     });
+
+    it('PERP_LIQ_BUFFER_PCT defaults to 0.20 and overrides as an exact decimal string', () => {
+      expect(validate({ PORT: '3100' }).perp.liqBufferPct).toBe('0.20');
+      expect(validate({ PORT: '3100', PERP_LIQ_BUFFER_PCT: '0.5' }).perp.liqBufferPct).toBe('0.5');
+    });
+
+    it('throws on a PERP_LIQ_BUFFER_PCT value outside the 0..1 fraction range', () => {
+      expect(() => validate({ PORT: '3100', PERP_LIQ_BUFFER_PCT: '2' })).toThrow(
+        /PERP_LIQ_BUFFER_PCT/,
+      );
+      expect(() => validate({ PORT: '3100', PERP_LIQ_BUFFER_PCT: '-0.1' })).toThrow(
+        /PERP_LIQ_BUFFER_PCT/,
+      );
+    });
   });
 
   describe('strategy config', () => {

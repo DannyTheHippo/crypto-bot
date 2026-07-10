@@ -413,6 +413,23 @@ describe('ReconciliationService (§6.4)', () => {
     expect(r.halted).toBe(false);
   });
 
+  it('a non-TransitionError from an adopt-terminal fold still aborts the pass (rethrown past the refusal guard)', async () => {
+    const runs = { inc: vi.fn() } as unknown as Counter<string>;
+    const ctx = build(
+      { openOrders: [], fetchOrder: () => venueOrder('any', 'canceled') },
+      undefined,
+      runs,
+    );
+    seedOpenOrder(ctx);
+    // The refusal guard swallows only reducer refusals (TransitionError); an infrastructure
+    // throw (store down) must escape it and abort through the PASS_ERROR machinery.
+    ctx.store.appendOrderEvent = () => {
+      throw new Error('store down');
+    };
+    await expect(ctx.recon.reconcile()).rejects.toThrow('store down');
+    expect((runs.inc as ReturnType<typeof vi.fn>).mock.calls.at(-1)).toEqual([{ result: 'error' }]);
+  });
+
   it('backfills a missed fill for a known order via the FillIngestor (WARN)', async () => {
     const coid = makeIntent().clientOrderId;
     const ctx = build({

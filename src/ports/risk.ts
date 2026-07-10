@@ -53,6 +53,16 @@ export interface SizerDeps {
   // 'LIMIT' (disabled — byte-identical to pre-knob behavior), mirroring risk.module's SIZER_DEPS
   // factory. Exits (reduceOnly) always stay 'LIMIT'+IOC regardless of this knob.
   readonly entryOrderType?: 'LIMIT' | 'LIMIT_MAKER';
+  // Perp/swap entry-sizing caps (B2, domain/risk/perp-sizing.ts). Optional so existing spot-only
+  // fixtures keep booting unchanged — absent ⇒ a perp-venue entry sizes with no additional cap,
+  // which is moot anyway since nothing emits a perp-venue Signal yet (B1's adapter is unwired).
+  readonly perp?: {
+    readonly leverageCap: string;
+    readonly mmrFallback: string;
+    readonly liqBufferPct: string;
+    // Funding-aware sizing hook — see perp-sizing.ts's applyFundingScaling. No consumer yet.
+    readonly expectedFundingBpsPerHold?: string;
+  };
 }
 
 // Injected RiskEngine dependencies. The signing key is process-lifetime random

@@ -8,13 +8,26 @@ import {
   type SizerDeps,
 } from '../../../ports/risk';
 import { positionKey } from '../../../domain/risk/evaluate';
+import {
+  marginNotionalCap,
+  liqSafeNotionalCap,
+  applyFundingScaling,
+} from '../../../domain/risk/perp-sizing';
 import type { Signal } from '../../../domain/types/signal';
 import type { OrderIntent } from '../../../domain/types/order-intent';
 import type { PortfolioSnapshot } from '../../../domain/types/portfolio';
 import { splitSymbol } from '../../../domain/types/symbol';
 import { roundToStep, roundToTick, type Qty } from '../../../domain/types/money';
-import { intentId, encodeClientOrderId, epochMs } from '../../../domain/types/ids';
+import { intentId, encodeClientOrderId, epochMs, venueId } from '../../../domain/types/ids';
 import { uuidv7 } from './uuidv7';
+
+// binanceusdm (USD-M swap): the only venue this pass wires perp detection against. A symbol's own
+// :SETTLE suffix (splitSymbol) is the second, venue-independent signal — either one is sufficient.
+const PERP_VENUE_ID = venueId('binanceusdm');
+
+function isPerpSignal(signal: Signal): boolean {
+  return signal.venue === PERP_VENUE_ID || splitSymbol(signal.symbol).settle !== undefined;
+}
 
 // Pure, exhaustive kind → {side, reduceOnly} mapping. The switch covers every Signal kind and returns
 // in each arm, so adding a kind without a case is a COMPILE error (the function then "lacks an ending
@@ -175,28 +188,70 @@ export class PositionSizerService implements PositionSizerPort {
   // Falls back to the legacy fixed baseNotional × strength otherwise — byte-identical to the
   // pre-P5 behavior for every deployment that leaves SIZER_EQUITY_FRACTION at its disabled default.
   //
-  // A single extra clamp applies to BUY entries only: capped at 95% of the symbol's free quote
+  // A single extra clamp applies to spot BUY entries only: capped at 95% of the symbol's free quote
   // balance, so a compounding size can never request more quote cash than is actually free (the
   // RiskEngine's maxOrderNotional/exposure limits are a separate, independent ceiling — this clamp
-  // is the sizer's own affordability check). SELL entries (opening a short) spend no quote cash up
-  // front, so the clamp does not apply. Absent balance data ⇒ no cap here — the engine/venue still
-  // vetoes an unaffordable order downstream.
+  // is the sizer's own affordability check). SELL entries (opening a spot short — never happens —
+  // or a perp short) spend no quote cash up front, so the clamp does not apply. Absent balance
+  // data ⇒ no cap here — the engine/venue still vetoes an unaffordable order downstream. Perp
+  // (margined) venues skip this spot-specific cash clamp entirely and go through applyPerpCaps
+  // instead (margin×leverageCap + liq-buffer, applied to BOTH sides — a perp short still locks
+  // margin, unlike a spot sell).
   private entryNotional(
     signal: Signal,
     snapshot: PortfolioSnapshot,
     side: 'BUY' | 'SELL',
   ): Decimal {
+    const isPerp = isPerpSignal(signal);
     const fraction = new Decimal(this.deps.equityFraction ?? '0');
     const legacyNotional = new Decimal(this.deps.baseNotional).mul(signal.strength);
-    if (fraction.lte(0) || !snapshot.equity.isFinite() || snapshot.equity.lte(0)) {
-      return legacyNotional;
-    }
-    const target = snapshot.equity.mul(fraction).mul(signal.strength);
-    if (side !== 'BUY') return target;
 
-    const quoteAsset = splitSymbol(signal.symbol).quote;
-    const freeQuote = snapshot.balances.get(quoteAsset)?.free;
-    if (freeQuote === undefined) return target;
-    return Decimal.min(target, freeQuote.mul('0.95'));
+    let base: Decimal;
+    if (fraction.lte(0) || !snapshot.equity.isFinite() || snapshot.equity.lte(0)) {
+      base = legacyNotional;
+    } else {
+      const target = snapshot.equity.mul(fraction).mul(signal.strength);
+      if (side === 'BUY' && !isPerp) {
+        const quoteAsset = splitSymbol(signal.symbol).quote;
+        const freeQuote = snapshot.balances.get(quoteAsset)?.free;
+        base = freeQuote === undefined ? target : Decimal.min(target, freeQuote.mul('0.95'));
+      } else {
+        base = target;
+      }
+    }
+
+    return isPerp ? this.applyPerpCaps(base, signal, snapshot) : base;
+  }
+
+  // Perp entry-sizing caps (B2): notional = min(currentBehavior, margin×leverageCap,
+  // liqSafeNotional), then the optional funding-scaling hook. deps.perp absent (module-isolation
+  // fixtures that never configure it) ⇒ no additional cap, matching every other optional-deps
+  // fallback in this service.
+  private applyPerpCaps(base: Decimal, signal: Signal, snapshot: PortfolioSnapshot): Decimal {
+    const perp = this.deps.perp;
+    if (!perp) return base;
+
+    const marginAsset = splitSymbol(signal.symbol).settle ?? splitSymbol(signal.symbol).quote;
+    const freeMargin = snapshot.balances.get(marginAsset)?.free;
+    const leverageCap = new Decimal(perp.leverageCap);
+
+    let notional = base;
+    // Absent margin-balance data ⇒ no margin cap here, mirroring the spot free-quote clamp's own
+    // "absent balance ⇒ no cap" fallback — the engine/venue still vetoes an unaffordable order.
+    if (freeMargin !== undefined) {
+      notional = Decimal.min(notional, marginNotionalCap(freeMargin, leverageCap));
+    }
+    const liqCap = liqSafeNotionalCap(
+      leverageCap,
+      new Decimal(perp.mmrFallback),
+      new Decimal(perp.liqBufferPct),
+    );
+    notional = Decimal.min(notional, liqCap);
+
+    const fundingBps =
+      perp.expectedFundingBpsPerHold === undefined
+        ? undefined
+        : new Decimal(perp.expectedFundingBpsPerHold);
+    return applyFundingScaling(notional, fundingBps);
   }
 }

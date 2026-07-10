@@ -12,6 +12,23 @@
   "templating": {
     "list": [
       {
+        "type": "query",
+        "name": "strategy",
+        "label": "Strategy",
+        "description": "Per-strategy filter (agentic-1..agentic-5). Sourced from strategy_lifecycle, which emits one series per registered strategy every tick regardless of PnL, so newly-added strategies appear immediately.",
+        "datasource": null,
+        "query": "label_values(strategy_lifecycle, strategy)",
+        "refresh": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "sort": 1,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
         "type": "textbox",
         "name": "price_in_per_mtok",
         "label": "Input $ / 1M tokens",
@@ -743,7 +760,7 @@
       },
       "targets": [
         {
-          "expr": "realized_pnl_usdt",
+          "expr": "realized_pnl_usdt{strategy=~\"$strategy\"}",
           "refId": "A",
           "legendFormat": "{{ strategy }} {{ symbol }}"
         }
@@ -762,7 +779,7 @@
       },
       "targets": [
         {
-          "expr": "position_qty",
+          "expr": "position_qty{strategy=~\"$strategy\"}",
           "refId": "A",
           "legendFormat": "{{ symbol }}"
         }
@@ -781,7 +798,7 @@
       },
       "targets": [
         {
-          "expr": "position_notional_usdt",
+          "expr": "position_notional_usdt{strategy=~\"$strategy\"}",
           "refId": "A",
           "legendFormat": "{{ symbol }}"
         }

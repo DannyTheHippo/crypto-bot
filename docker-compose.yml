@@ -137,8 +137,10 @@ services:
       STARTING_CASH: 5000 # in-memory quote balance the bot tracks (set near the demo account's USDT)
 
       # C1: read-only public derivatives-data feed (funding rate, open interest, mark/index basis)
-      # polled from the USDT-margined perp market, surfaced to the agentic prompt when fresh. Off.
-      DERIVATIVES_FEED_ENABLED: 'false'
+      # polled from the USDT-margined perp market, surfaced to the agentic prompt when fresh.
+      # ENABLED 2026-07-10 (owner program): promptHash gains +d1 from this boot — the enable
+      # timestamp is the attribution epoch recorded in reports/loop/state.md.
+      DERIVATIVES_FEED_ENABLED: 'true'
       DERIVATIVES_FEED_POLL_MS: 60000 # REST poll interval (ms); schema default 60000
 
       # C4: read-only free news/sentiment feed (headlines only, no numeric scores) polled from

@@ -77,6 +77,16 @@ function exitCrossBufferBpsFor(config: TypedConfigService | undefined): number {
 function equityFractionFor(config: TypedConfigService | undefined): string {
   return config?.risk.equityFraction ?? '0';
 }
+// B2 perp entry-sizing caps: absent TypedConfigService (module-isolation boots) leaves SizerDeps.perp
+// undefined, so the sizer's applyPerpCaps no-ops — byte-identical to a deployment with no perp config.
+function perpDepsFor(config: TypedConfigService | undefined): SizerDeps['perp'] {
+  if (!config) return undefined;
+  return {
+    leverageCap: config.perp.leverageCap,
+    mmrFallback: config.perp.mmrFallback,
+    liqBufferPct: config.perp.liqBufferPct,
+  };
+}
 // Overlays the RISK_* env knobs onto DEFAULT_LIMITS (single source of truth for both RISK_LIMITS —
 // consumed by RiskEngineService/ModeControl's LIMITS_COMPLETE gate — and RISK_ENGINE_DEPS). Absent
 // TypedConfigService (module-isolation boots) falls straight through to DEFAULT_LIMITS, unchanged
@@ -130,6 +140,7 @@ const CONFIG_OPTIONAL = { token: TypedConfigService, optional: true } as const;
         randomBytes,
         exitCrossBufferBps: exitCrossBufferBpsFor(config),
         equityFraction: equityFractionFor(config),
+        perp: perpDepsFor(config),
       }),
       inject: [CONFIG_OPTIONAL],
     },

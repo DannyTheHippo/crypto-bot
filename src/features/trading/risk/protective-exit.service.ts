@@ -19,9 +19,9 @@ import type { EpochMs } from '../../../domain/types/ids';
 type ProtectReason = 'STOP_LOSS' | 'TRAILING_STOP';
 
 // §S3 bot-enforced protective backstop for the agentic (LLM) lane, which decides only on closed
-// candles and can go dark (budget-blocked, degraded, outage) — this service fires an EXIT_LONG
-// Signal through the FULL Strategy→Risk→Execution chokepoint (CLAUDE.md rule 2: never bypass risk;
-// it never touches execution/the adapter directly, only SIGNAL_SINK).
+// candles and can go dark (budget-blocked, degraded, outage) — this service fires an EXIT_LONG or
+// EXIT_SHORT Signal through the FULL Strategy→Risk→Execution chokepoint (CLAUDE.md rule 2: never
+// bypass risk; it never touches execution/the adapter directly, only SIGNAL_SINK).
 // @Optional injection so the directly-constructed unit tests cover the metric-absent branch.
 export const PROTECTIVE_EXITS_COUNTER = makeCounterProvider({
   name: 'protective_exits_total',
@@ -31,13 +31,16 @@ export const PROTECTIVE_EXITS_COUNTER = makeCounterProvider({
 
 @Injectable()
 export class ProtectiveExitService {
-  // High-water mark per position key (positionKey(strategyId, venue, symbol) — see
+  // High-water mark per LONG position key (positionKey(strategyId, venue, symbol) — see
   // domain/risk/evaluate.ts). Seeded at max(avgEntry, ref) the first tick a position is seen: BOOT
   // AMNESIA IS ACCEPTED — after a process restart this map is empty, so trailing protection re-arms
   // from max(entry, current) rather than the pre-restart peak. A real trailing stop that had already
   // ratcheted above that point loses its prior peak on restart; this is a deliberate simplicity
   // trade-off (no persistence for this map), not an oversight.
   private readonly hwm = new Map<string, Decimal>();
+  // Low-water mark per SHORT position key — the mirror of hwm: seeded at min(avgEntry, ref) and
+  // ratchets DOWN as price falls in the short's favor, never back up. Same boot-amnesia trade-off.
+  private readonly lwm = new Map<string, Decimal>();
   private readonly lastFiredAt = new Map<string, EpochMs>();
 
   constructor(
@@ -64,7 +67,8 @@ export class ProtectiveExitService {
 
     const liveKeys = new Set<string>();
     for (const [key, pos] of snapshot.positions) {
-      if (!pos.signedQty.gt(0)) continue; // long-only lane; ignore shorts/flat
+      if (pos.signedQty.isZero()) continue; // flat; nothing to protect
+      const isLong = pos.signedQty.gt(0);
       liveKeys.add(key);
 
       if (this.isDust(pos)) continue;
@@ -72,15 +76,30 @@ export class ProtectiveExitService {
       const ref = this.feed.getRefPrice(pos.symbol);
       if (ref === undefined) continue; // cannot price this tick — retry next tick
 
-      const seeded = this.hwm.get(key);
-      const hwm =
-        seeded === undefined ? Decimal.max(pos.avgEntry, ref.mid) : Decimal.max(seeded, ref.mid);
-      this.hwm.set(key, hwm);
+      // A sign flip reusing the same key changes direction — drop the stale opposite-direction
+      // watermark so the newly-opened side reseeds fresh rather than trailing off a peak/trough
+      // that belonged to the position it just replaced.
+      const extremeMap = isLong ? this.hwm : this.lwm;
+      (isLong ? this.lwm : this.hwm).delete(key);
 
-      const stopTriggered =
-        stopLossPct.gt(0) && ref.mid.lte(pos.avgEntry.mul(new Decimal(1).sub(stopLossPct)));
-      const trailTriggered =
-        trailingPct.gt(0) && ref.mid.lte(hwm.mul(new Decimal(1).sub(trailingPct)));
+      const seeded = extremeMap.get(key);
+      const extreme = isLong
+        ? seeded === undefined
+          ? Decimal.max(pos.avgEntry, ref.mid)
+          : Decimal.max(seeded, ref.mid)
+        : seeded === undefined
+          ? Decimal.min(pos.avgEntry, ref.mid)
+          : Decimal.min(seeded, ref.mid);
+      extremeMap.set(key, extreme);
+
+      // Long: stop fires below entry, trailing fires below the ratcheted peak. Short: inverted —
+      // stop fires above entry, trailing fires above the ratcheted trough.
+      const stopTriggered = isLong
+        ? stopLossPct.gt(0) && ref.mid.lte(pos.avgEntry.mul(new Decimal(1).sub(stopLossPct)))
+        : stopLossPct.gt(0) && ref.mid.gte(pos.avgEntry.mul(new Decimal(1).add(stopLossPct)));
+      const trailTriggered = isLong
+        ? trailingPct.gt(0) && ref.mid.lte(extreme.mul(new Decimal(1).sub(trailingPct)))
+        : trailingPct.gt(0) && ref.mid.gte(extreme.mul(new Decimal(1).add(trailingPct)));
       if (!stopTriggered && !trailTriggered) continue;
       const reason: ProtectReason = stopTriggered ? 'STOP_LOSS' : 'TRAILING_STOP';
 
@@ -89,13 +108,16 @@ export class ProtectiveExitService {
       const lastFired = this.lastFiredAt.get(key);
       if (lastFired !== undefined && now - lastFired < this.config.cooldownMs) continue;
 
-      await this.fire(pos, ref.mid, now, reason, key, snapshot.snapshotSeq);
+      await this.fire(pos, ref.mid, now, reason, key, snapshot.snapshotSeq, isLong);
     }
 
-    // Cleanup: drop HWM/cooldown state for symbols that no longer carry a long position, so a later
-    // re-entry seeds a fresh peak rather than reusing the old one.
+    // Cleanup: drop HWM/LWM/cooldown state for symbols that no longer carry a position, so a later
+    // re-entry seeds a fresh peak/trough rather than reusing the old one.
     for (const key of this.hwm.keys()) {
       if (!liveKeys.has(key)) this.hwm.delete(key);
+    }
+    for (const key of this.lwm.keys()) {
+      if (!liveKeys.has(key)) this.lwm.delete(key);
     }
     for (const key of this.lastFiredAt.keys()) {
       if (!liveKeys.has(key)) this.lastFiredAt.delete(key);
@@ -109,12 +131,13 @@ export class ProtectiveExitService {
     reason: ProtectReason,
     key: string,
     snapshotSeq: bigint,
+    isLong: boolean,
   ): Promise<void> {
     const signal: Signal = {
       strategyId: pos.strategyId,
       venue: pos.venue,
       symbol: pos.symbol,
-      kind: 'EXIT_LONG',
+      kind: isLong ? 'EXIT_LONG' : 'EXIT_SHORT',
       strength: 1,
       refPrice: mid,
       basedOnSeq: snapshotSeq,

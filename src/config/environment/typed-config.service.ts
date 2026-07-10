@@ -36,6 +36,10 @@ export class TypedConfigService {
     return this.config.get('risk', { infer: true });
   }
 
+  get perp(): AppConfig['perp'] {
+    return this.config.get('perp', { infer: true });
+  }
+
   get strategy(): AppConfig['strategy'] {
     return this.config.get('strategy', { infer: true });
   }

@@ -452,4 +452,146 @@ describe('PositionSizerService', () => {
       if (r.ok) expect(r.intent.qty.toFixed()).toBe('5'); // |signedQty|, not equity-fraction-derived
     });
   });
+
+  // ── Perp entry-sizing caps (B2): notional = min(currentBehavior, margin×leverageCap, liqSafeNotional) ──
+  describe('perp entry-sizing caps', () => {
+    const V_PERP = venueId('binanceusdm');
+    const SYM_PERP = symbolId('BTC/USDT:USDT');
+
+    function perpFilters(): Map<string, SymbolFilters> {
+      return new Map([
+        [String(SYM), FILTERS],
+        [String(SYM_PERP), FILTERS],
+      ]);
+    }
+
+    function marginBalance(free: string): Map<string, { free: Decimal; locked: Decimal }> {
+      return new Map([['USDT', { free: new Decimal(free), locked: new Decimal(0) }]]);
+    }
+
+    it('detects a perp signal off the venue alone (plain BASE/QUOTE symbol, binanceusdm venue)', () => {
+      const r = new PositionSizerService(
+        clock,
+        deps({
+          filters: perpFilters(),
+          perp: { leverageCap: '2', mmrFallback: '0.005', liqBufferPct: '0.2' },
+        }),
+      ).size(
+        signal({ venue: V_PERP, symbol: SYM }),
+        snapshot(new Map(), { balances: marginBalance('50') }),
+      );
+      expect(r.ok).toBe(true);
+      // margin×leverageCap = 50×2 = 100 binds under the 1000 legacy notional ⇒ qty = 100/100 = 1.
+      if (r.ok) expect(r.intent.qty.toFixed()).toBe('1');
+    });
+
+    it('detects a perp signal off the :SETTLE symbol suffix alone (spot venue id)', () => {
+      const r = new PositionSizerService(
+        clock,
+        deps({
+          filters: perpFilters(),
+          perp: { leverageCap: '2', mmrFallback: '0.005', liqBufferPct: '0.2' },
+        }),
+      ).size(
+        signal({ venue: V, symbol: SYM_PERP }),
+        snapshot(new Map(), { balances: marginBalance('50') }),
+      );
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.intent.qty.toFixed()).toBe('1');
+    });
+
+    it('leverage cap binds under the legacy notional (margin×leverageCap < baseNotional×strength)', () => {
+      const r = new PositionSizerService(
+        clock,
+        deps({
+          filters: perpFilters(),
+          baseNotional: '1000',
+          perp: { leverageCap: '2', mmrFallback: '0.005', liqBufferPct: '0.2' },
+        }),
+      ).size(
+        signal({ venue: V_PERP, symbol: SYM_PERP, kind: 'ENTER_LONG' }),
+        snapshot(new Map(), { balances: marginBalance('50') }),
+      );
+      expect(r.ok).toBe(true);
+      // legacy 1000 vs margin cap 50×2=100 vs liq cap ∞ ⇒ min = 100 ⇒ qty = 100/100 = 1.
+      if (r.ok) expect(r.intent.qty.toFixed()).toBe('1');
+    });
+
+    it('liq buffer binds and rejects the entry outright when leverage/MMR fall short of the buffer, on both directions', () => {
+      // 1/5 - 0.005 = 0.195 < 0.2 buffer ⇒ liqSafeNotional collapses to 0 regardless of margin.
+      const perpDeps = {
+        filters: perpFilters(),
+        perp: { leverageCap: '5', mmrFallback: '0.005', liqBufferPct: '0.2' },
+      };
+      const long = new PositionSizerService(clock, deps(perpDeps)).size(
+        signal({ venue: V_PERP, symbol: SYM_PERP, kind: 'ENTER_LONG' }),
+        snapshot(new Map(), { balances: marginBalance('10000') }),
+      );
+      expect(long).toEqual({ ok: false, reason: 'NO_POSITION' });
+
+      const short = new PositionSizerService(clock, deps(perpDeps)).size(
+        signal({ venue: V_PERP, symbol: SYM_PERP, kind: 'ENTER_SHORT' }),
+        snapshot(new Map(), { balances: marginBalance('10000') }),
+      );
+      expect(short).toEqual({ ok: false, reason: 'NO_POSITION' });
+    });
+
+    it('applies the margin cap identically to ENTER_SHORT (both directions symmetric, unlike the spot BUY-only quote clamp)', () => {
+      const r = new PositionSizerService(
+        clock,
+        deps({
+          filters: perpFilters(),
+          baseNotional: '1000',
+          perp: { leverageCap: '2', mmrFallback: '0.005', liqBufferPct: '0.2' },
+        }),
+      ).size(
+        signal({ venue: V_PERP, symbol: SYM_PERP, kind: 'ENTER_SHORT' }),
+        snapshot(new Map(), { balances: marginBalance('50') }),
+      );
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(r.intent.side).toBe('SELL');
+        expect(r.intent.qty.toFixed()).toBe('1'); // same margin×leverageCap = 100 ⇒ qty 1
+      }
+    });
+
+    it('scales notional down via the funding-aware hook when expectedFundingBpsPerHold is set', () => {
+      const r = new PositionSizerService(
+        clock,
+        deps({
+          filters: perpFilters(),
+          baseNotional: '1000',
+          perp: {
+            leverageCap: '100',
+            mmrFallback: '0.001',
+            liqBufferPct: '0.001',
+            expectedFundingBpsPerHold: '500', // 5% ⇒ 1000 × 0.95 = 950
+          },
+        }),
+      ).size(
+        signal({ venue: V_PERP, symbol: SYM_PERP, kind: 'ENTER_LONG' }),
+        snapshot(new Map(), { balances: marginBalance('1000000') }), // ample margin — not the binding constraint
+      );
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.intent.qty.toFixed()).toBe('9.5'); // 950 / 100 (refPrice)
+    });
+
+    it('applies no additional cap when deps.perp is absent, even for a perp-detected signal', () => {
+      const r = new PositionSizerService(clock, deps({ filters: perpFilters() })).size(
+        signal({ venue: V_PERP, symbol: SYM_PERP, kind: 'ENTER_LONG' }),
+        snapshot(),
+      );
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.intent.qty.toFixed()).toBe('10'); // legacy 1000×1/100, unclamped
+    });
+
+    it('leaves the spot path byte-identical (no perp detection, no perp caps applied)', () => {
+      const r = new PositionSizerService(
+        clock,
+        deps({ perp: { leverageCap: '2', mmrFallback: '0.005', liqBufferPct: '0.2' } }),
+      ).size(signal(), snapshot());
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.intent.qty.toFixed()).toBe('10'); // 1000 × 1 / 100, exactly as the spot fixture above
+    });
+  });
 });

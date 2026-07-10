@@ -149,6 +149,7 @@ services:
       PERP_VENUE_ENABLED: false # keep off — scaffolding only this pass
       PERP_LEVERAGE_CAP: 1 # isolated-margin leverage cap
       PERP_MMR_FALLBACK: 0.005 # conservative fallback maintenance-margin-rate (1-2x BTC/ETH bracket)
+      PERP_LIQ_BUFFER_PCT: 0.20 # B2: required liq-price buffer a perp entry must clear (fraction)
 
       # ── Persistence (optional; paper/demo run fine with no DB) ──
       DATABASE_URL: postgres://cryptobot:cryptobot@postgres:5432/cryptobot

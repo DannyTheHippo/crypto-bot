@@ -156,13 +156,17 @@ export interface AppConfig {
     maxBandBps: number;
     staleMaxAgeMs: number;
   };
-  // Perp/swap paper adapter knobs (B1). PaperPerpAdapter is not wired into app.module.ts this
-  // pass — enabled stays false so an unconfigured deployment sees zero behavior change; these
-  // are scaffolding for the future composition-root wiring.
+  // Perp/swap paper adapter knobs (B1) + entry-sizing knob (B2, position-sizer's perp branch).
+  // PaperPerpAdapter is not wired into app.module.ts this pass — enabled stays false so an
+  // unconfigured deployment sees zero behavior change; these are scaffolding for the future
+  // composition-root wiring.
   perp: {
     enabled: boolean;
     leverageCap: string;
     mmrFallback: string;
+    // B2: required liquidation-price buffer (fraction) a perp entry must clear — see
+    // domain/risk/perp-sizing.ts's liqSafeNotionalCap.
+    liqBufferPct: string;
   };
   // Strategy-lane knobs (symbol/interval/active lane selection) read via ConfigService.
   strategy: {

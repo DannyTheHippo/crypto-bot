@@ -184,15 +184,9 @@ describe('ProtectiveExitService', () => {
     expect((sink.recordSignal as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
   });
 
-  it('ignores short and flat positions (long-only lane)', async () => {
-    const short = pos({ signedQty: new Decimal('-1') });
+  it('ignores flat positions', async () => {
     const flat = pos({ signedQty: new Decimal('0') });
-    const snap = snapshot({
-      positions: new Map([
-        [`${SID}:${V}:${symbolId('ETH/USDT')}`, short],
-        [KEY, flat],
-      ]),
-    });
+    const snap = snapshot({ positions: new Map([[KEY, flat]]) });
     const { svc, sink } = build({ snap, mid: '1' });
     await svc.tick(epochMs(T));
     expect((sink.recordSignal as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
@@ -510,5 +504,174 @@ describe('ProtectiveExitService', () => {
     currentSnap = snapshot({ positions: new Map() });
     await svc.tick(epochMs(T + 1000));
     expect(internal.lastFiredAt.has(KEY)).toBe(false);
+  });
+
+  // ── Short support: LWM (low-water mark) trailing + inverted stop, kind EXIT_SHORT ──
+  function shortPos(over: Partial<Position> = {}): Position {
+    return pos({ signedQty: new Decimal('-1'), ...over });
+  }
+
+  describe('short positions', () => {
+    it('fires an inverted STOP_LOSS at exactly the boundary (ref == avgEntry * (1 + stopLossPct))', async () => {
+      // avgEntry 100, stopLossPct 0.02 ⇒ boundary 102. ref exactly 102 must trigger (≥, not >).
+      const snap = snapshot({ positions: new Map([[KEY, shortPos({ avgEntry: price('100') })]]) });
+      const { svc, sink } = build({
+        snap,
+        mid: '102',
+        config: { stopLossPct: '0.02', trailingPct: '0' },
+      });
+      await svc.tick(epochMs(T));
+      expect((sink.recordSignal as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
+      const signal = (sink.recordSignal as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as Signal;
+      expect(signal.kind).toBe('EXIT_SHORT');
+      expect(signal.reason).toBe('STOP_LOSS');
+      expect(signal.refPrice.toFixed()).toBe('102');
+    });
+
+    it('does not fire the inverted STOP_LOSS just below the boundary', async () => {
+      const snap = snapshot({ positions: new Map([[KEY, shortPos({ avgEntry: price('100') })]]) });
+      const { svc, sink } = build({
+        snap,
+        mid: '101.99',
+        config: { stopLossPct: '0.02', trailingPct: '0' },
+      });
+      await svc.tick(epochMs(T));
+      expect((sink.recordSignal as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
+    });
+
+    it('seeds the LWM from avgEntry when avgEntry < ref on first sight (no premature trail trigger)', async () => {
+      const snap = snapshot({ positions: new Map([[KEY, shortPos({ avgEntry: price('100') })]]) });
+      const { svc, sink } = build({
+        snap,
+        mid: '90',
+        config: { stopLossPct: '0', trailingPct: '0.015' },
+      });
+      await svc.tick(epochMs(T));
+      // lwm seeds at min(100, 90)=90; trail threshold 90*1.015=91.35; ref 90 <= threshold ⇒ no fire
+      // (price fell further in the short's favor, not against it).
+      expect((sink.recordSignal as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
+    });
+
+    it('ratchets the LWM down across ticks and never back up, firing TRAILING_STOP from the trough', async () => {
+      const snap = snapshot({ positions: new Map([[KEY, shortPos({ avgEntry: price('100') })]]) });
+      const sink: SignalSinkPort = { recordSignal: vi.fn() };
+      let mid = '80';
+      const feedRef: FeedHealthPort = {
+        getRefPrice: () => ({ mid: price(mid), at: epochMs(T) }),
+        health: () => 'LIVE',
+        fetchCandles: () => Promise.resolve([]),
+      };
+      const svc = new ProtectiveExitService(
+        clock,
+        killSwitch('RUNNING'),
+        feedRef,
+        portfolioView(snap),
+        sink,
+        config({ stopLossPct: '0', trailingPct: '0.015' }),
+      );
+      await svc.tick(epochMs(T)); // lwm -> 80, ref 80, threshold 80*1.015=81.2, no fire
+      expect((sink.recordSignal as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
+
+      // Price rises to 90 — well above the ratcheted 80 trough's trail threshold (81.2). If the LWM
+      // had reseeded to the higher current price instead of ratcheting down, this would NOT fire.
+      mid = '90';
+      await svc.tick(epochMs(T + 1000));
+      expect((sink.recordSignal as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
+      const signal = (sink.recordSignal as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as Signal;
+      expect(signal.kind).toBe('EXIT_SHORT');
+      expect(signal.reason).toBe('TRAILING_STOP');
+    });
+
+    it('cleans up the LWM once a short position closes, so re-entry reseeds a fresh trough', async () => {
+      const withPos = snapshot({
+        positions: new Map([[KEY, shortPos({ avgEntry: price('100') })]]),
+      });
+      const sink: SignalSinkPort = { recordSignal: vi.fn() };
+      const cfg = config({ stopLossPct: '0', trailingPct: '0.015' });
+      let currentSnap = withPos;
+      const view: PortfolioViewPort = {
+        snapshot: () => currentSnap,
+        forStrategy: () => ({ strategyId: SID, positions: currentSnap.positions, openOrders: [] }),
+      };
+      let mid = '50';
+      const feedRef: FeedHealthPort = {
+        getRefPrice: () => ({ mid: price(mid), at: epochMs(T) }),
+        health: () => 'LIVE',
+        fetchCandles: () => Promise.resolve([]),
+      };
+      const svc = new ProtectiveExitService(clock, killSwitch('RUNNING'), feedRef, view, sink, cfg);
+
+      await svc.tick(epochMs(T));
+      const internal = svc as unknown as { lwm: Map<string, Decimal> };
+      expect(internal.lwm.get(KEY)?.toFixed()).toBe('50');
+
+      currentSnap = snapshot({ positions: new Map() });
+      await svc.tick(epochMs(T + 1000));
+      expect(internal.lwm.has(KEY)).toBe(false);
+
+      currentSnap = snapshot({ positions: new Map([[KEY, shortPos({ avgEntry: price('200') })]]) });
+      mid = '200';
+      await svc.tick(epochMs(T + 2000));
+      expect(internal.lwm.get(KEY)?.toFixed()).toBe('200');
+    });
+
+    it('drops the stale opposite-direction watermark on a sign flip (long → short reusing the same key)', async () => {
+      let currentSnap = snapshot({ positions: new Map([[KEY, pos({ avgEntry: price('100') })]]) });
+      const view: PortfolioViewPort = {
+        snapshot: () => currentSnap,
+        forStrategy: () => ({ strategyId: SID, positions: currentSnap.positions, openOrders: [] }),
+      };
+      const sink: SignalSinkPort = { recordSignal: vi.fn() };
+      const cfg = config({ stopLossPct: '0', trailingPct: '0.015' });
+      let mid = '150';
+      const feedRef: FeedHealthPort = {
+        getRefPrice: () => ({ mid: price(mid), at: epochMs(T) }),
+        health: () => 'LIVE',
+        fetchCandles: () => Promise.resolve([]),
+      };
+      const svc = new ProtectiveExitService(clock, killSwitch('RUNNING'), feedRef, view, sink, cfg);
+
+      // Long leg ratchets hwm to 150.
+      await svc.tick(epochMs(T));
+      const internal = svc as unknown as { hwm: Map<string, Decimal>; lwm: Map<string, Decimal> };
+      expect(internal.hwm.get(KEY)?.toFixed()).toBe('150');
+
+      // Position flips to a short at the same key — the stale long hwm must not leak into the
+      // short's inverted-direction math (a hwm read on the short branch would be a bug).
+      currentSnap = snapshot({ positions: new Map([[KEY, shortPos({ avgEntry: price('150') })]]) });
+      mid = '150';
+      await svc.tick(epochMs(T + 1000));
+      expect(internal.lwm.get(KEY)?.toFixed()).toBe('150');
+      expect(internal.hwm.has(KEY)).toBe(false);
+    });
+
+    it('gives STOP_LOSS precedence over TRAILING_STOP on a short when both fire the same tick', async () => {
+      const snap = snapshot({ positions: new Map([[KEY, shortPos({ avgEntry: price('100') })]]) });
+      const { svc, sink } = build({
+        snap,
+        mid: '150', // far above both the 102 stop boundary and the seeded 100×1.015=101.5 trail boundary
+        config: { stopLossPct: '0.02', trailingPct: '0.015' },
+      });
+      await svc.tick(epochMs(T));
+      const signal = (sink.recordSignal as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as Signal;
+      expect(signal.reason).toBe('STOP_LOSS');
+    });
+
+    it('applies the stacking guard and dust check to shorts identically to longs', async () => {
+      const busySnap = snapshot({
+        positions: new Map([[KEY, shortPos({ avgEntry: price('100') })]]),
+        openOrders: [openOrder()],
+      });
+      const busy = build({ snap: busySnap, mid: '150' });
+      await busy.svc.tick(epochMs(T));
+      expect((busy.sink.recordSignal as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
+
+      const dustSnap = snapshot({
+        positions: new Map([[KEY, shortPos({ signedQty: new Decimal('-0.001') })]]), // notional 0.15 < minNotional 5
+      });
+      const dust = build({ snap: dustSnap, mid: '150' });
+      await dust.svc.tick(epochMs(T));
+      expect((dust.sink.recordSignal as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
+    });
   });
 });

@@ -327,6 +327,12 @@ const envSchema = z
     // Conservative fallback maintenance-margin-rate (see PaperPerpAdapter's why-comment on the
     // TODO fetchLeverageTiers wiring): ≈0.005 for the 1-2× BTC/ETH bracket at time of writing.
     PERP_MMR_FALLBACK: decimalString.default('0.005'),
+    // B2: required liquidation-price buffer (fraction of price) a perp entry's liq price must
+    // clear at PERP_LEVERAGE_CAP/PERP_MMR_FALLBACK — domain/risk/perp-sizing.ts's
+    // liqSafeNotionalCap. '0.20' default (liq at least 20% away) is deliberately conservative;
+    // moot until a perp-venue Signal exists (B1's adapter is unwired), so this default changes
+    // nothing observable yet.
+    PERP_LIQ_BUFFER_PCT: fractionString.default('0.20'),
     // Strategy-lane knobs. ACTIVE_STRATEGY is a closed enum: 'agentic' is the only registered lane
     // (the deterministic pure lane was retired 2026-07-03).
     TRADING_SYMBOL: z.string().min(1).default('BTC/USDT'),
@@ -485,6 +491,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     PERP_VENUE_ENABLED: perpVenueEnabled,
     PERP_LEVERAGE_CAP: perpLeverageCap,
     PERP_MMR_FALLBACK: perpMmrFallback,
+    PERP_LIQ_BUFFER_PCT: perpLiqBufferPct,
     TRADING_SYMBOL: tradingSymbol,
     TRADING_SYMBOLS: tradingSymbols,
     STRATEGY_INTERVAL: strategyInterval,
@@ -572,6 +579,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       enabled: perpVenueEnabled,
       leverageCap: perpLeverageCap,
       mmrFallback: perpMmrFallback,
+      liqBufferPct: perpLiqBufferPct,
     },
     strategy: {
       symbol: tradingSymbol,

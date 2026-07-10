@@ -20,7 +20,7 @@ export interface PlaybookSeed {
 export interface PlaybookVersionEntry {
   readonly version: number;
   readonly content: string;
-  readonly source: 'seed' | 'reflection' | 'promotion';
+  readonly source: 'seed' | 'reflection' | 'promotion' | 'loop-candidate';
   readonly parentVersion: number | null;
   readonly createdAt: number;
 }

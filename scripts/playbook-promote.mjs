@@ -6,6 +6,7 @@
 // here — see src/features/trading/agentic/README.md for the evidence gate that gaits it.
 
 import pg from 'pg';
+import { resolveActiveVersion, mapUniqueViolation } from './lib/playbook-shared.mjs';
 
 const { Pool } = pg;
 
@@ -13,23 +14,6 @@ function usageError(message) {
   console.error(`playbook:promote: ${message}`);
   console.error('usage: pnpm playbook:promote <version>');
   process.exitCode = 1;
-}
-
-// Mirrors PlaybookStoreAdapter.resolve()'s precedence (pin > newest promotion's parentVersion >
-// seed) closely enough for an operator "is this already active?" hint — not authoritative; the
-// running process resolves this itself, independently, at boot.
-function resolveActiveVersion(rows, pinEnv) {
-  const pin = pinEnv ? Number(pinEnv) : undefined;
-  if (pin !== undefined && rows.some((r) => r.version === pin)) return pin;
-
-  const newestPromotion = rows
-    .filter((r) => r.source === 'promotion')
-    .sort((a, b) => b.version - a.version)[0];
-  if (newestPromotion && rows.some((r) => r.version === newestPromotion.parent_version)) {
-    return newestPromotion.parent_version;
-  }
-
-  return rows.find((r) => r.source === 'seed')?.version;
 }
 
 async function main() {
@@ -80,16 +64,9 @@ async function main() {
         [nextVersion, auditNote, version],
       );
     } catch (err) {
-      if (err?.code === '23505') {
-        if (err.constraint === 'agent_playbook_versions_promotion_per_day_uidx') {
-          console.error(
-            'playbook:promote: a promotion has already landed today — promotion is limited to once per UTC day.',
-          );
-        } else {
-          console.error(
-            `playbook:promote: version collision on constraint ${err.constraint ?? 'unknown'} (likely a concurrent reflection append) — retry.`,
-          );
-        }
+      const mapped = mapUniqueViolation(err, 'playbook:promote');
+      if (mapped) {
+        console.error(mapped);
         process.exitCode = 1;
         return;
       }

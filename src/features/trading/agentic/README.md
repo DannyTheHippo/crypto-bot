@@ -75,6 +75,22 @@ once-per-UTC-day partial unique index; if that write fails (e.g. a manual promot
 that day), auto-promotion is non-fatal — the candidate simply stays INACTIVE and remains promotable
 later, by either path.
 
+## Loop-drafted candidates (offline research path)
+
+The daily loop (a Claude session on subscription — `docs/planning/daily-profitability-loop.md`)
+can propose playbook candidates without spending in-app LLM budget: draft the candidate file
+in-session → score it offline against recorded decide rows
+(`AGENTIC_CANDIDATE_PLAYBOOK_FILE=<file>` with `test/eval/agentic/recorded-payload-live-compare.spec.ts`;
+every scored variant, winners AND losers, is logged to the append-only `experiments` registry
+for honest trial accounting) → inject only a champion-beating draft via
+`pnpm playbook:candidate <file> [--metrics <scorecard.json>]`. The CLI validates through the
+same compiled `validatePlaybook` gate the runtime uses (refusing on a stale `dist/`), inserts
+INACTIVE with `source='loop-candidate'`, and refuses while any reflection or loop candidate is
+still unresolved in A/B. From there the standard machinery owns it: the 25% A/B router treats
+`loop-candidate` rows exactly like `reflection` rows, attribution accrues per version, and
+promotion (auto or manual) is unchanged. Read-side re-validation still applies on every
+compose — injection grants no new trust.
+
 ## Safety bounds on every loop iteration
 
 - `DailyLlmBudget` (`agent-budget.ts`) caps calls and tokens per UTC day, shared across the decide

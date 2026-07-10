@@ -22,12 +22,14 @@
 // same query journal.recent() issues under the hood, spelled out for manual inspection):
 //   psql "$DATABASE_URL" -c "SELECT id, event_time, model, prompt_hash FROM agent_decisions
 //     WHERE input_payload IS NOT NULL ORDER BY event_time ASC LIMIT 50;"
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
 import { Pool } from 'pg';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import * as schema from '../../../src/database/schemas/trading';
 import { AgentDecisionJournalAdapter } from '../../../src/database/repositories/agent-decision-journal.adapter';
+import { PlaybookStoreAdapter } from '../../../src/database/repositories/playbook-store.adapter';
 import {
   DECISION_TOOL,
   PROMPT_TEMPLATE_VERSION,
@@ -35,6 +37,7 @@ import {
   computePromptHash,
 } from '../../../src/features/trading/agentic/agent-prompt';
 import { SEED_PLAYBOOK } from '../../../src/features/trading/agentic/agentic-strategy.module';
+import { validatePlaybook } from '../../../src/features/trading/agentic/playbook-validator';
 import {
   compare,
   scoreRows,
@@ -52,6 +55,11 @@ const LIVE_ENABLED = process.env['EVAL_LIVE'] === '1';
 const DB_URL = process.env['DATABASE_URL'];
 const MODEL = process.env['AGENTIC_MODEL'] ?? 'claude-opus-4-8';
 const ROW_LIMIT = Number(process.env['AGENTIC_EVAL_ROW_LIMIT'] ?? '10');
+// N2.4: loop-side override — swap the fixed CANDIDATE_PLAYBOOK_CONTENT tweak below for a real
+// loop-minted candidate file (scripts/playbook-candidate.mjs's own input, or its DB row's content
+// re-exported to a file) so this eval can score an ACTUAL candidate before it's promoted. Absent,
+// this file's behavior is byte-identical to before N2.4.
+const CANDIDATE_PLAYBOOK_FILE = process.env['AGENTIC_CANDIDATE_PLAYBOOK_FILE'];
 
 // Mirrors recorded-rows.spec.ts's read-only DB gate — see that file for the full rationale.
 function dbNameEndsWithTest(url: string): boolean {
@@ -142,6 +150,20 @@ describe.skipIf(SKIP)(
   'agentic eval — recorded input_payload live prompt-variant compare (optional, requires ANTHROPIC_API_KEY + EVAL_LIVE=1 + DATABASE_URL + db-test gate)',
   () => {
     it('replays recorded rows through champion vs candidate playbooks against the real API and prints a scorecard', async () => {
+      // Fail fast on an invalid loop-minted candidate BEFORE any real API spend below — the same
+      // structural gate the runtime read-path (ValidatingPlaybookProvider) applies.
+      let candidatePlaybookContent = CANDIDATE_PLAYBOOK_CONTENT;
+      if (CANDIDATE_PLAYBOOK_FILE) {
+        const fileContent = readFileSync(CANDIDATE_PLAYBOOK_FILE, 'utf8');
+        const validation = validatePlaybook(fileContent);
+        if (!validation.ok) {
+          throw new Error(
+            `AGENTIC_CANDIDATE_PLAYBOOK_FILE=${CANDIDATE_PLAYBOOK_FILE} failed validation: ${validation.reason}`,
+          );
+        }
+        candidatePlaybookContent = fileContent;
+      }
+
       const pool = new Pool({ connectionString: DB_URL! });
       try {
         const db = drizzle(pool, { schema });
@@ -149,12 +171,28 @@ describe.skipIf(SKIP)(
         const rows = (await journal.recent(ROW_LIMIT)).filter((r) => r.inputPayload !== null);
         expect(rows.length).toBeGreaterThan(0);
 
+        // Champion resolution: when a loop-minted candidate file is supplied, resolve the CHAMPION
+        // from the DB's actual active version (same pin > promotion > seed precedence the running
+        // process uses — PlaybookStoreAdapter.resolve()) rather than assuming SEED, so the candidate
+        // is scored against what's really active. Absent AGENTIC_CANDIDATE_PLAYBOOK_FILE, this stays
+        // SEED_PLAYBOOK exactly as before (byte-identical default behavior).
+        let championContent = SEED_PLAYBOOK.content;
+        let championVersion = SEED_PLAYBOOK.version;
+        if (CANDIDATE_PLAYBOOK_FILE) {
+          const pinEnv = process.env['AGENTIC_PLAYBOOK_PIN'];
+          const store = new PlaybookStoreAdapter(
+            db,
+            SEED_PLAYBOOK,
+            pinEnv ? Number(pinEnv) : undefined,
+          );
+          const resolved = await store.current(); // SEED fallback when the DB has none (ensureSeed)
+          championContent = resolved.content;
+          championVersion = resolved.version;
+        }
+
         const systemPrompt = buildSystemPrompt(EVAL_PROFILE);
-        const championIdentity = promptIdentityFor(SEED_PLAYBOOK.content, SEED_PLAYBOOK.version);
-        const candidateIdentity = promptIdentityFor(
-          CANDIDATE_PLAYBOOK_CONTENT,
-          SEED_PLAYBOOK.version + 1,
-        );
+        const championIdentity = promptIdentityFor(championContent, championVersion);
+        const candidateIdentity = promptIdentityFor(candidatePlaybookContent, championVersion + 1);
 
         const championRows: ScoringRow[] = [];
         const candidateRows: ScoringRow[] = [];
@@ -162,11 +200,11 @@ describe.skipIf(SKIP)(
           const payloadJson = row.inputPayload!;
           const championDecision = await callAnthropicLive(
             systemPrompt,
-            composeRecordedUserMessage(payloadJson, SEED_PLAYBOOK.content),
+            composeRecordedUserMessage(payloadJson, championContent),
           );
           const candidateDecision = await callAnthropicLive(
             systemPrompt,
-            composeRecordedUserMessage(payloadJson, CANDIDATE_PLAYBOOK_CONTENT),
+            composeRecordedUserMessage(payloadJson, candidatePlaybookContent),
           );
           championRows.push(scoringRowFromPayload(payloadJson, championDecision, championIdentity));
           candidateRows.push(

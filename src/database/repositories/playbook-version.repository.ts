@@ -8,7 +8,7 @@ import { requireDb } from './persistence-guard';
 export interface PlaybookVersionInsert {
   version: number;
   content: string;
-  source: 'seed' | 'reflection' | 'promotion';
+  source: 'seed' | 'reflection' | 'promotion' | 'loop-candidate';
   parentVersion?: number;
 }
 

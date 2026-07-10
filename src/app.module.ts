@@ -783,6 +783,13 @@ interface PlaybookStorePort extends PlaybookProvider {
 // Exported (unlike the sibling ValidatingPlaybookProvider) so its own unit spec can import and
 // exercise it directly against a fake PlaybookStorePort — same precedent as MetricsWrappingAgentClient
 // below, which agent-decide-outcome.spec.ts imports from this module the same way.
+//
+// N2: 'loop-candidate' rows (scripts/playbook-candidate.mjs — the loop-side injection path) route
+// exactly like 'reflection' rows here — same INACTIVE-until-promoted shape, same "newest wins above
+// active" precedence, same local structural gate below. promotion/seed never route (they ARE, or
+// resolve to, the active version already).
+const CANDIDATE_SOURCES = new Set<PlaybookVersionEntry['source']>(['reflection', 'loop-candidate']);
+
 export class PlaybookAbRoutingProvider implements PlaybookStorePort {
   private static readonly BUCKET_MS = 60_000;
 
@@ -818,15 +825,15 @@ export class PlaybookAbRoutingProvider implements PlaybookStorePort {
     return { version: candidate.version, content: candidate.content };
   }
 
-  // Newest INACTIVE reflection-minted row with version > the resolved active version — mirrors
-  // PlaybookStoreAdapter.resolve()'s own "newest wins" convention for other sources. A cap of 50 rows
-  // matches InMemoryPlaybookStore.MAX_VERSIONS, so both backings are scanned in full.
+  // Newest INACTIVE row (source in CANDIDATE_SOURCES) with version > the resolved active version —
+  // mirrors PlaybookStoreAdapter.resolve()'s own "newest wins" convention for other sources. A cap of
+  // 50 rows matches InMemoryPlaybookStore.MAX_VERSIONS, so both backings are scanned in full.
   private async latestCandidate(activeVersion: number): Promise<PlaybookVersionEntry | undefined> {
     const versions = await this.inner.listVersions(50);
     let latest: PlaybookVersionEntry | undefined;
     for (const row of versions) {
       if (
-        row.source === 'reflection' &&
+        CANDIDATE_SOURCES.has(row.source) &&
         row.version > activeVersion &&
         (latest === undefined || row.version > latest.version)
       ) {

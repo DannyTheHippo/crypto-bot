@@ -1267,3 +1267,51 @@ reconciler 0 halt/0 error, kill switch RUNNING).
 every-pass watch; E2 model-eval runnable at ≥200 rows (instructions in state.md § Last pass);
 owner action: reschedule routine to 2–4 passes/day; commit-attribution note (`3c1adc7` carries
 the archive deletions `ea10621` describes).
+
+## 2026-07-10 — Owner-directed pass (fable5, ~22:00–22:50Z): CANDIDATE pass aborted into INCIDENT RESPONSE
+
+**Pass type:** started as the first CANDIDATE pass (no unresolved candidate, evidence clean,
+2 new fills on ETH/XRP from the 5-symbol boot); ended as incident response. Both are reported.
+
+**Candidate work (before the incident):** drafted 2 playbook variants grounded in the measured
+evidence (v1's inverted R:R, the 20bps fee wall, the new derivatives block, 5-symbol vol
+classes): `reports/loop/candidates/2026-07-10/candidate-{a,b}.md` — A = cost-disciplined 3×-cost
+entries + funding/basis regime filter + 1.8× TP/SL asymmetry; B = breakout-continuation-only.
+Both pass the compiled validator (2478/2183 chars).
+
+**INCIDENT (SEV, self-inflicted): production DB schema dropped at ~20:26Z.** While scoring the
+candidates, a re-run attempted to fix vitest's console interception by placing the flag BEFORE
+the file path; pnpm swallowed it and vitest ran the ENTIRE suite with the scoring env exported —
+including `DB_SUITE_ALLOW_RESET=1` + the PRODUCTION `DATABASE_URL`. `test/db/persistence.spec.ts`'s
+`beforeAll` then executed `DROP SCHEMA public CASCADE` against the live `cryptobot` database.
+**Lost:** all local history before 20:26Z — the 11-RT/−$2.52 promotion ledger, ~196 recorded
+`input_payload` rows (the E2 corpus), pre-wipe orders/fills/llm_usage/audit history. **Survived:**
+the demo venue's real balances/positions (source of truth), the app's in-memory portfolio
+(ETH/XRP longs + 3 open orders, app never restarted), `reports/*` evidence files, and all code.
+**Residue remediated (owner-approved deletes):** 8 synthetic playbook versions (A/B-routing
+pollution), 10 fixture decides (incl. the rows that broke scoring with `epochMs(undefined)`),
+all fixture fills/intents/llm_usage (future-dated rows were poisoning the gate's cost read), and
+the `BOGUS_STATE` order that would have crashed a paper-mode boot recovery. Three fixture orders
+remain, pinned by append-only `order_events` FKs (paper/live modes — invisible to testnet boot
+recovery; the live-mode ACKED row must be resolved before any far-future live arming; audit_log
+9 + order_events 4 fixture rows remain as a permanent append-only scar). Post-remediation
+`pg_dump` snapshot saved to the session scratchpad.
+
+**Shipped (the durable fix):** `test/db/persistence.spec.ts` now HARD-REFUSES (throws, never
+skips) to run its destructive setup against any database whose name does not end in `_test`,
+regardless of `DB_SUITE_ALLOW_RESET` — the flag's only legitimate meaning is now "acknowledge a
+production URL for READ-ONLY suites". Verified both directions: 50/50 green on `cryptobot_test`;
+loud refusal + schema untouched on `cryptobot`.
+
+**Consequences for the program:** the promotion-gate scoreboard restarted from zero at the wipe
+(functionally a new evidence epoch at 2026-07-10T20:26Z — owner may want to set
+`PROMOTION_EVIDENCE_EPOCH` to that instant for cleanliness); candidate scoring and E2 are
+DEFERRED until `input_payload` rows re-accrue (2 usable rows at pass end; ≥20 for candidate
+scoring, ≥200 for E2 — hours-to-days at the 5-symbol rate). Next candidate-capable pass: score
+`candidates/2026-07-10/{a,b}` with the SAFE recipe (single spec FILE path first, flags after,
+export ONLY the needed vars — never `set -a; . .env`, never test:db against production).
+**Owner flag: no DB backups exist** — the wipe was unrecoverable by construction; recommend a
+scheduled `pg_dump` (cron or loop duty).
+
+**Spend:** ~$3.2 of eval API calls whose scorecards were lost to the interception/misfire
+mishaps (within the ≤$20 gate budget, logged for cost honesty). Gates at commit: see commit.

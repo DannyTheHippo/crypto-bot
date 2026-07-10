@@ -54,6 +54,22 @@ const resetAllowed =
 
 const SKIP = !DB_URL || !resetAllowed;
 
+// HARD SAFETY WALL, independent of every env flag above: this suite DROPs the public schema, so
+// it must be structurally impossible to aim it at a non-_test database. DB_SUITE_ALLOW_RESET
+// exists so READ-ONLY suites (test/eval) can acknowledge a production DATABASE_URL — it must
+// never double as a license to reset one. Incident 2026-07-10: an accidental full-suite vitest
+// invocation with ALLOW_RESET=1 + the production URL dropped the live `cryptobot` schema; this
+// throw (not a skip — a skip would hide the misconfiguration) is the guarantee it cannot recur.
+function assertDestructiveTargetIsTestDb(url: string): void {
+  if (!dbNameEndsWithTest(url)) {
+    throw new Error(
+      `persistence.spec.ts refuses to DROP SCHEMA on database "${new URL(url).pathname.replace(/^\//, '')}": ` +
+        'destructive DB suites only ever run against a database whose name ends in _test, ' +
+        'regardless of DB_SUITE_ALLOW_RESET.',
+    );
+  }
+}
+
 // drizzle ≥0.44 wraps query failures in DrizzleQueryError with the pg error (code 23505,
 // "duplicate key value violates unique constraint") on the `cause` chain, so unique-violation
 // assertions must walk the chain rather than match the top-level message.
@@ -81,6 +97,7 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
   let db: ReturnType<typeof drizzle<typeof schema>>;
 
   beforeAll(async () => {
+    assertDestructiveTargetIsTestDb(DB_URL!);
     pool = new Pool({ connectionString: DB_URL! });
 
     // The generated DDL schema-qualifies references (public.*), so the migrations

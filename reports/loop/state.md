@@ -216,12 +216,16 @@ rows and the boot-loud guard exited 1; fixed by rebuild; lesson recorded in the 
 deploy step (always `build` when src/ changed). **Commit-history note:** the reports/archive
 deletions + `nighly` rename landed in `3c1adc7` (pre-staged index swept into the first
 commit) though `ea10621`'s message describes them — content correct, attribution off by one
-commit. **E2 handoff (next loop pass, measurement duty):** `input_payload` rows were 196/200
-at close; once ≥200, run `DB_SUITE_ALLOW_RESET=1
-DATABASE_URL=postgres://cryptobot:cryptobot@127.0.0.1:5432/cryptobot ANTHROPIC_API_KEY=<from
-.env> ROW_LIMIT=50 pnpm eval:candidates` (≤$20; scorecard prints a FLIP VERDICT; flip
-`AGENTIC_MODEL` in docker-compose.yml only on ALL-pass parity, then redeploy + soak + watch
-$/day a full day; reflection stays Opus).
+commit. **E2 handoff — SUPERSEDED by the 2026-07-10 ~22:00Z incident pass (see the LOG entry below
+this one): the 196-row corpus was LOST in the DB wipe; rows re-accrue (~hours-to-days at the
+5-symbol rate). Once ≥200 again, run E2 with the SAFE recipe ONLY:** export ONLY the needed
+vars (never `set -a; . .env` — TRADING_MODE leaks break unrelated suites), single spec FILE
+path FIRST and flags AFTER the path (a flag before the path made pnpm/vitest run the ENTIRE
+suite — the incident's root cause), `DB_SUITE_ALLOW_RESET=1` with the production URL is
+legitimate ONLY for the read-only eval specs (`pnpm eval:candidates` invokes exactly one file
+— safe); NEVER run `test:db` or an unscoped vitest with that env (the destructive suite now
+hard-refuses non-`_test` databases regardless, commit pending this pass). Flip `AGENTIC_MODEL`
+in docker-compose.yml only on ALL-pass parity; reflection stays Opus.
 
 **Pass 13, 2026-07-10** (scheduled run, ~16:30–17:20Z) — **SHIP a correctness fix on the
 LEARNING-critical path; the direct successor to Pass 12.** First loop pass since Pass 12; between
@@ -479,6 +483,22 @@ owns them).
 | 34 | Funding-carry $0 offline backtest study (owner-mandated carry sub-plan, the pivotal GO/NO-GO gate before any paper-carry build): fetch `--funding` history + perp OHLCV for BTC/ETH (`test/backtest/fetch-data.mjs`, network, sandbox-disabled), build a delta-neutral carry P&L study (net = Σ funding − 4-fill round-trip fees − basis convergence), sweep hold length, report per-window net bps + worst window. Attach each ~8h funding event to its SINGLE bar (never broadcast per-bar — ~32× overcount → false GO). State carry policy up front (unconditional-hold "carry beta" vs funding-threshold-gated entry). `test/backtest/`, off the production gate | 2 | M | DONE 2026-07-10 (owner session, `979de5e`): ran as `reports/loop/carry-study-2026-07-10.md` — NO-GO 0/126 cells (conditional-harvest design, per-event funding accounting per this row's spec, N=178 deflation union with PRIOR_TRIALS); carry build skipped per the pre-declared gate; `test/backtest/carry/` is the standing re-test harness |
 
 ## Flagged for human review (open)
+
+- **INCIDENT 2026-07-10 ~20:26Z — production DB schema dropped by a runaway test invocation
+  (self-inflicted, remediated same session; full account in LOG.md).** Lost: all local history
+  pre-20:26Z (promotion ledger 11 RT/−$2.52, the ~196-row E2 corpus, pre-wipe
+  orders/fills/llm_usage/audit rows). Survived: demo-venue balances/positions (source of truth),
+  the app's in-memory portfolio (never restarted), all code + reports. Remediation
+  (owner-approved): synthetic residue deleted; 3 fixture orders remain pinned by append-only
+  `order_events` FKs (paper/live modes — inert for testnet; the live-mode ACKED row must be
+  resolved before any far-future live arming); audit_log/order_events carry 9+4 fixture rows as
+  a permanent append-only scar. Durable fix shipped: `test/db/persistence.spec.ts` hard-refuses
+  destructive setup on any non-`_test` database regardless of `DB_SUITE_ALLOW_RESET`
+  (throw-verified both directions). **Owner decisions requested:** (1) set
+  `PROMOTION_EVIDENCE_EPOCH=2026-07-10T20:26:00Z` to formalize the restarted ledger (gauges
+  already read from the empty ledger; this makes it explicit); (2) **no DB backups exist — the
+  wipe was unrecoverable by construction**; recommend a scheduled `pg_dump` (a post-remediation
+  snapshot sits in the session scratchpad; a daily dump could be a loop §5 duty if blessed).
 
 - **CARRY TRACK RESOLVED 2026-07-10 (this session) — NO-GO, verdict supersedes the carry-sub-plan
   bullets below.** The funding-carry offline study ran (`reports/loop/carry-study-2026-07-10.md`,

@@ -18,6 +18,7 @@ import type {
   AgentTradingProfile,
 } from '../../../src/ports/agentic-strategy';
 import type { DerivativesSnapshot } from '../../../src/ports/derivatives-feed';
+import type { SentimentSnapshot } from '../../../src/ports/sentiment-feed';
 import type {
   CandleEvent,
   TickerEvent,
@@ -138,6 +139,20 @@ function derivativesSnapshot(over: Partial<DerivativesSnapshot> = {}): Derivativ
   };
 }
 
+function sentimentSnapshot(over: Partial<SentimentSnapshot> = {}): SentimentSnapshot {
+  return {
+    asOf: epochMs(T),
+    items: [
+      {
+        title: 'BTC breaks resistance',
+        source: 'example.com',
+        publishedAt: '2026-07-10T00:00:00Z',
+      },
+    ],
+    ...over,
+  };
+}
+
 function buildInput(
   opts: {
     candles?: CandleEvent[];
@@ -146,6 +161,7 @@ function buildInput(
     context?: AgentContext;
     execReports?: ExecReport[];
     derivatives?: DerivativesSnapshot;
+    sentiment?: SentimentSnapshot;
   } = {},
 ): AgentDecisionInput {
   const snapshot: AgentMarketSnapshot = {
@@ -156,6 +172,7 @@ function buildInput(
     execReports: opts.execReports ?? [],
     portfolio: { strategyId: SID, positions: new Map(), openOrders: [] },
     ...(opts.derivatives ? { derivatives: opts.derivatives } : {}),
+    ...(opts.sentiment ? { sentiment: opts.sentiment } : {}),
   };
   return {
     strategyId: SID,
@@ -279,6 +296,41 @@ describe('buildSystemPrompt', () => {
       expect(prompt.toLowerCase()).toContain('funding');
       expect(prompt.toLowerCase()).toContain('open interest');
       expect(prompt.toLowerCase()).toContain('basis');
+    });
+  });
+
+  describe('sentiment block sentence (C4, SENTIMENT_FEED_ENABLED gate)', () => {
+    it('SENTIMENT_FEED_ENABLED off (opts omitted) ⇒ the prompt is BYTE-IDENTICAL to pre-C4 output (no mention of sentiment/headlines)', () => {
+      const prompt = buildSystemPrompt(fixtureProfile());
+
+      expect(prompt.toLowerCase()).not.toContain('sentiment');
+      expect(prompt.toLowerCase()).not.toContain('headline');
+    });
+
+    it('sentimentFeedEnabled: false is explicitly byte-identical to opts omitted entirely', () => {
+      const withOmitted = buildSystemPrompt(fixtureProfile());
+      const withExplicitFalse = buildSystemPrompt(fixtureProfile(), {
+        sentimentFeedEnabled: false,
+      });
+
+      expect(withExplicitFalse).toBe(withOmitted);
+    });
+
+    it('documents the sentiment block (recent headlines) only when sentimentFeedEnabled is true', () => {
+      const prompt = buildSystemPrompt(fixtureProfile(), { sentimentFeedEnabled: true });
+
+      expect(prompt.toLowerCase()).toContain('sentiment');
+      expect(prompt.toLowerCase()).toContain('headline');
+    });
+
+    it('both derivativesFeedEnabled and sentimentFeedEnabled true documents both blocks', () => {
+      const prompt = buildSystemPrompt(fixtureProfile(), {
+        derivativesFeedEnabled: true,
+        sentimentFeedEnabled: true,
+      });
+
+      expect(prompt.toLowerCase()).toContain('funding');
+      expect(prompt.toLowerCase()).toContain('sentiment');
     });
   });
 
@@ -710,6 +762,107 @@ describe('buildUserMessage', () => {
 
       expect(withoutDerivativesFlag).toBe(explicitlyNoDerivatives);
       expect(withoutDerivativesFlag).not.toContain('derivatives');
+    });
+  });
+
+  // C4: free news/sentiment headlines — a REST-polled sibling to the derivatives block above, gated
+  // the identical way (present/absent on the snapshot).
+  describe('sentiment block rendering (C4)', () => {
+    it('renders capped headlines (title/source/publishedAt) when a fresh snapshot is attached', () => {
+      const sentiment = sentimentSnapshot({
+        items: [
+          {
+            title: 'BTC breaks resistance',
+            source: 'coindesk.com',
+            publishedAt: '2026-07-10T00:00:00Z',
+          },
+        ],
+      });
+      const payload = JSON.parse(buildUserMessage(buildInput({ sentiment }))) as {
+        sentiment: { items: { title: string; source: string; publishedAt: string }[] };
+      };
+
+      expect(payload.sentiment).toEqual({
+        items: [
+          {
+            title: 'BTC breaks resistance',
+            source: 'coindesk.com',
+            publishedAt: '2026-07-10T00:00:00Z',
+          },
+        ],
+      });
+    });
+
+    it('caps rendered headlines at 5 even when the snapshot carries more', () => {
+      const items = Array.from({ length: 8 }, (_, i) => ({
+        title: `headline ${i}`,
+        source: 'example.com',
+        publishedAt: '2026-07-10T00:00:00Z',
+      }));
+      const payload = JSON.parse(
+        buildUserMessage(buildInput({ sentiment: sentimentSnapshot({ items }) })),
+      ) as { sentiment: { items: unknown[] } };
+
+      expect(payload.sentiment.items).toHaveLength(5);
+    });
+
+    it('omits the sentiment key entirely (no empty scaffolding) when no sentiment snapshot is available — the flag-off / stale / absent-poll / no-key case', () => {
+      const raw = buildUserMessage(buildInput());
+      const payload = JSON.parse(raw) as Record<string, unknown>;
+
+      expect(payload).not.toHaveProperty('sentiment');
+      expect(raw).not.toContain('publishedAt');
+    });
+
+    it('omits the sentiment key when the snapshot carries no items (no empty scaffolding)', () => {
+      const raw = buildUserMessage(buildInput({ sentiment: sentimentSnapshot({ items: [] }) }));
+      const payload = JSON.parse(raw) as Record<string, unknown>;
+
+      expect(payload).not.toHaveProperty('sentiment');
+    });
+
+    it('a stale/absent sentiment snapshot never throws — buildUserMessage still returns valid JSON', () => {
+      expect(() => {
+        JSON.parse(buildUserMessage(buildInput()));
+      }).not.toThrow();
+    });
+
+    it('SENTIMENT_FEED_ENABLED off ⇒ the rendered user message for a representative snapshot is BYTE-IDENTICAL to the no-sentiment render (flag-off byte-identity)', () => {
+      const context: AgentContext = {
+        indicators: {
+          lastClose: 100,
+          emaFast: 99,
+          emaSlow: 98,
+          rsi14: 55,
+          atr14: 1,
+          ret1: 0.1,
+          ret5: 0.5,
+          ret20: 1,
+        },
+        position: {
+          side: 'LONG',
+          qty: '2',
+          avgEntry: '90',
+          realizedPnl: '5',
+          unrealizedPnlPct: 10,
+          openOrders: 1,
+        },
+        recentDecisions: [{ eventTime: epochMs(T), action: 'long', close: 100, reason: 'r' }],
+        htf: { h1: { emaFast: 101, emaSlow: 99, rsi14: 60 }, h4: null },
+      };
+      const candles = Array.from({ length: 20 }, (_, i) => candle(i));
+      const withoutSentimentFlag = buildUserMessage(
+        buildInput({ candles, ticker: ticker(), book: book(), context }),
+      );
+      // SENTIMENT_FEED_ENABLED off means the strategy layer never attaches a snapshot
+      // (AgenticStrategy.withSentiment), so the port-level render is identical to never having
+      // wired the feed at all — asserted here at the render boundary itself.
+      const explicitlyNoSentiment = buildUserMessage(
+        buildInput({ candles, ticker: ticker(), book: book(), context, sentiment: undefined }),
+      );
+
+      expect(withoutSentimentFlag).toBe(explicitlyNoSentiment);
+      expect(withoutSentimentFlag).not.toContain('sentiment');
     });
   });
 

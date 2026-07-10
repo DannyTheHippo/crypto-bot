@@ -16,6 +16,7 @@ import {
   type StrategyLifecycle,
 } from '../../../ports/strategy';
 import { DERIVATIVES_FEED, type DerivativesFeedPort } from '../../../ports/derivatives-feed';
+import { SENTIMENT_FEED, type SentimentFeedPort } from '../../../ports/sentiment-feed';
 import { EventLoopHealthIndicator } from './event-loop-health.indicator';
 
 export const EVENT_LOOP_DELAY_GAUGE = makeGaugeProvider({
@@ -169,6 +170,18 @@ export const DERIVATIVES_FEED_POLL_ERRORS_COUNTER = makeCounterProvider({
   help: 'Cumulative derivatives-feed poll failures',
 });
 
+// C4: sentiment-feed health, sampled in the same 5s pull loop below — mirrors the derivatives-feed
+// gauge/counter pair above. Present regardless of SENTIMENT_FEED_ENABLED — staleness simply never
+// drops while the feed is unwired/disabled/keyless.
+export const SENTIMENT_FEED_STALENESS_GAUGE = makeGaugeProvider({
+  name: 'sentiment_feed_staleness_seconds',
+  help: 'Seconds since the sentiment feed last polled successfully (-1 if never)',
+});
+export const SENTIMENT_FEED_POLL_ERRORS_COUNTER = makeCounterProvider({
+  name: 'sentiment_feed_poll_errors_total',
+  help: 'Cumulative sentiment-feed poll failures',
+});
+
 // §strategy lifecycle — sampled in the 5s loop below (same pull pattern as kill_switch_state):
 // each strategy carries exactly one state at 1, all others in the union explicit 0 (not just absent),
 // so a terminal DRAINING/HALTED strategy is directly alertable rather than a "no data" gap.
@@ -218,6 +231,10 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
     private readonly derivativesStalenessGauge: Gauge<string>,
     @InjectMetric('derivatives_feed_poll_errors_total')
     private readonly derivativesPollErrorsCounter: Counter<string>,
+    @InjectMetric('sentiment_feed_staleness_seconds')
+    private readonly sentimentStalenessGauge: Gauge<string>,
+    @InjectMetric('sentiment_feed_poll_errors_total')
+    private readonly sentimentPollErrorsCounter: Counter<string>,
     private readonly configService: TypedConfigService,
     private readonly eventLoopIndicator: EventLoopHealthIndicator,
     // @Optional so observability can boot standalone (no kill switch) — the gauge is simply not set.
@@ -232,6 +249,10 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
     // MarketFeedModule is @Global so this always resolves to the real DERIVATIVES_FEED provider
     // (NOOP_DERIVATIVES_FEED when the flag is off — see app.module.ts).
     @Optional() @Inject(DERIVATIVES_FEED) private readonly derivativesFeed?: DerivativesFeedPort,
+    // C4: @Optional so observability boots standalone (module-isolation tests); in the running app
+    // MarketFeedModule is @Global so this always resolves to the real SENTIMENT_FEED provider
+    // (NOOP_SENTIMENT_FEED when the flag/key is off/absent — see app.module.ts).
+    @Optional() @Inject(SENTIMENT_FEED) private readonly sentimentFeed?: SentimentFeedPort,
   ) {}
 
   onModuleInit() {
@@ -247,6 +268,8 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
     // C1: cumulative poll-error count as of the previous sample — diffed each tick into the Counter
     // (prom-client Counters only support .inc(), never .set()), same technique as prevElu above.
     let prevDerivativesPollErrors = 0;
+    // C4: same delta-against-previous-sample technique as prevDerivativesPollErrors above.
+    let prevSentimentPollErrors = 0;
 
     this.sampleInterval = setInterval(() => {
       const monitor = this.eventLoopIndicator.getMonitor();
@@ -313,6 +336,18 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
           this.derivativesPollErrorsCounter.inc(totalErrors - prevDerivativesPollErrors);
         }
         prevDerivativesPollErrors = totalErrors;
+      }
+
+      if (this.sentimentFeed) {
+        const lastSuccessAt = this.sentimentFeed.lastSuccessfulPollAt();
+        this.sentimentStalenessGauge.set(
+          lastSuccessAt === null ? -1 : (Date.now() - lastSuccessAt) / 1000,
+        );
+        const totalErrors = this.sentimentFeed.pollErrorCount();
+        if (totalErrors > prevSentimentPollErrors) {
+          this.sentimentPollErrorsCounter.inc(totalErrors - prevSentimentPollErrors);
+        }
+        prevSentimentPollErrors = totalErrors;
       }
     }, 5000);
   }

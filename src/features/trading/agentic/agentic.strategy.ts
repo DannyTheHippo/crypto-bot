@@ -38,6 +38,7 @@ import {
 } from './prescreen';
 import type { RoundTripEvidencePort } from '../../../ports/promotion';
 import type { DerivativesFeedPort } from '../../../ports/derivatives-feed';
+import type { SentimentFeedPort } from '../../../ports/sentiment-feed';
 import { evaluatePlan, type PlanExecutorState } from './plan-executor';
 
 export interface AgenticStrategyParams {
@@ -101,6 +102,11 @@ export interface AgenticStrategyDeps {
   // buildContext's caller in decide()). Optional — absent means the prompt's derivatives block never
   // renders (byte-identical to pre-C1 output), same convention as `evidence` above.
   readonly derivativesFeed?: DerivativesFeedPort;
+  // C4: read-only free news/sentiment headlines, consulted once per decide() and threaded onto the
+  // outgoing snapshot's `sentiment` field (see buildContext's caller in decide()). Optional — absent
+  // means the prompt's sentiment block never renders (byte-identical to pre-C4 output), same
+  // convention as `derivativesFeed` above.
+  readonly sentimentFeed?: SentimentFeedPort;
   readonly logger?: LoggerLike;
 }
 
@@ -182,6 +188,7 @@ export class AgenticStrategy implements AsyncStrategy {
   private readonly expectancyLadderEnabled: boolean;
   private readonly evidence?: RoundTripEvidencePort;
   private readonly derivativesFeed?: DerivativesFeedPort;
+  private readonly sentimentFeed?: SentimentFeedPort;
   // W2.1 stale-entry sweep state. OpenOrderSummary carries no timestamps, so age is measured in
   // observed decide cycles: clientOrderId → the snapshot eventTime this strategy FIRST saw the order
   // resting. cancelRequestedAt records when a CANCEL_OPEN was emitted for an id so it isn't re-spammed
@@ -232,6 +239,7 @@ export class AgenticStrategy implements AsyncStrategy {
     this.expectancyLadderEnabled = params.expectancyLadderEnabled ?? false;
     this.evidence = deps.evidence;
     this.derivativesFeed = deps.derivativesFeed;
+    this.sentimentFeed = deps.sentimentFeed;
     this.subscriptions = {
       venue: params.venue,
       symbols: [params.symbol],
@@ -251,7 +259,7 @@ export class AgenticStrategy implements AsyncStrategy {
     // else reads `input` — every downstream use (buildContext, staleEntryCancels, client.propose,
     // the quiet-hold journal sample) sees the same enriched snapshot. No-op (same object) when the
     // feed isn't wired or has no fresh poll, so that deployment stays byte-identical.
-    const input = this.withDerivatives(rawInput);
+    const input = this.withSentiment(this.withDerivatives(rawInput));
     // Deterministic and prescreen-independent: resting GTC entries otherwise rest forever (nothing
     // enforces expiresAt on ACKED orders — boot 10c8af0c recovered 55 of them). Computed first so
     // both the quiet-hold path and the LLM path return it.
@@ -612,6 +620,16 @@ export class AgenticStrategy implements AsyncStrategy {
     const derivatives = this.derivativesFeed?.latest(this.symbol) ?? undefined;
     if (!derivatives) return input;
     return { ...input, snapshot: { ...input.snapshot, derivatives } };
+  }
+
+  // C4: merges a fresh sentiment-feed snapshot onto the host-supplied snapshot when the port is
+  // wired and a fresh poll exists; otherwise returns `input` UNCHANGED (same object reference), so a
+  // deployment without the feed wired (or a stale/absent poll) stays byte-identical all the way
+  // through buildMarketPayload. No symbol argument (see SentimentFeedPort's own header comment).
+  private withSentiment(input: AgentDecisionInput): AgentDecisionInput {
+    const sentiment = this.sentimentFeed?.latest() ?? undefined;
+    if (!sentiment) return input;
+    return { ...input, snapshot: { ...input.snapshot, sentiment } };
   }
 
   // Computed indicators (own timeframe + HTF) + own position + decision trail, over the host's

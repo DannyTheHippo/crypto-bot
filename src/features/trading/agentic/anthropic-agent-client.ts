@@ -15,6 +15,7 @@ import {
 import {
   DECISION_TOOL,
   DERIVATIVES_TEMPLATE_VERSION,
+  SENTIMENT_TEMPLATE_VERSION,
   PLAN_BOUNDS,
   PLAN_TOOL,
   PLAN_TEMPLATE_VERSION,
@@ -125,6 +126,9 @@ export interface AnthropicAgentClientConfig {
   // C1: documents the optional derivatives block in the system prompt (agent-prompt.ts's
   // buildSystemPrompt derivativesFeedEnabled option). Absent/false ⇒ byte-identical legacy prompt.
   readonly derivativesFeedEnabled?: boolean;
+  // C4: documents the optional sentiment block in the system prompt (agent-prompt.ts's
+  // buildSystemPrompt sentimentFeedEnabled option). Absent/false ⇒ byte-identical legacy prompt.
+  readonly sentimentFeedEnabled?: boolean;
 }
 
 // Placeholder profile used only when no real AgentTradingProfile has been wired yet — keeps the
@@ -262,6 +266,7 @@ export class AnthropicAgentClient implements AgentClientPort {
             }
           : {}),
         derivativesFeedEnabled: this.cfg.derivativesFeedEnabled ?? false,
+        sentimentFeedEnabled: this.cfg.sentimentFeedEnabled ?? false,
       },
     );
     // inputPayload is the market JSON ALONE — buildMarketPayload's signature carries no
@@ -285,12 +290,17 @@ export class AnthropicAgentClient implements AgentClientPort {
       : inputPayload;
     const activeTool = this.cfg.planMode ? PLAN_TOOL : DECISION_TOOL;
     const baseTemplateVersion = this.cfg.planMode ? PLAN_TEMPLATE_VERSION : PROMPT_TEMPLATE_VERSION;
+    // Flag-ON appends the corresponding system-prompt sentence, so it is a distinct template for
+    // attribution purposes (mirrors plan mode's own tag); flag-OFF hashes are byte-identical. Both
+    // flags stack in a fixed order (`+d1+s1`) so a both-on hash is deterministic regardless of which
+    // flag flipped first.
+    const feedTags = [
+      ...(this.cfg.derivativesFeedEnabled ? [DERIVATIVES_TEMPLATE_VERSION] : []),
+      ...(this.cfg.sentimentFeedEnabled ? [SENTIMENT_TEMPLATE_VERSION] : []),
+    ];
     const promptHash = computePromptHash({
-      // Flag-ON appends the derivatives system-prompt sentence, so it is a distinct template for
-      // attribution purposes (mirrors plan mode's own tag); flag-OFF hashes are byte-identical.
-      templateVersion: this.cfg.derivativesFeedEnabled
-        ? `${baseTemplateVersion}+${DERIVATIVES_TEMPLATE_VERSION}`
-        : baseTemplateVersion,
+      templateVersion:
+        feedTags.length > 0 ? `${baseTemplateVersion}+${feedTags.join('+')}` : baseTemplateVersion,
       playbookContent: playbookContent ?? '',
       toolSchemaJson: JSON.stringify(activeTool),
       modelId: this.cfg.model,

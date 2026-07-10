@@ -11,6 +11,7 @@ import type { StrategyId, VenueId, SymbolId, EpochMs } from '../domain/types/ids
 import type { SubscriptionSpec } from '../domain/types/subscription';
 import type { Price, Qty } from '../domain/types/money';
 import type { DerivativesSnapshot } from './derivatives-feed';
+import type { SentimentSnapshot } from './sentiment-feed';
 
 // ── StrategyInitContext ───────────────────────────────────────────────────────
 //
@@ -64,6 +65,11 @@ export interface AgentMarketSnapshot {
   // field stays byte-identical; threaded in by AgenticStrategy.decide() (agentic.strategy.ts), never
   // by the host's own buildSnapshot.
   readonly derivatives?: DerivativesSnapshot;
+  // C4: latest polled sentiment/news headlines — absent unless SENTIMENT_FEED_ENABLED is on, a key
+  // is configured, AND a fresh poll landed (see SentimentFeedPort.latest). Optional so every existing
+  // caller/fixture that predates this field stays byte-identical; threaded in by
+  // AgenticStrategy.decide() (agentic.strategy.ts), never by the host's own buildSnapshot.
+  readonly sentiment?: SentimentSnapshot;
 }
 
 // Per-strategy position summary the host derives from the live PORTFOLIO_VIEW, handed to the

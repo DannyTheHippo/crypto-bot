@@ -9,6 +9,8 @@ export const REDACT_PATHS = [
   '*.password',
   '*.ARMING_SECRET',
   '*.armingSecret',
+  '*.SENTIMENT_FEED_API_KEY',
+  '*.sentimentFeedApiKey',
 ] as const;
 
 export interface PinoLoggerOptions {

@@ -179,6 +179,14 @@ export interface AppConfig {
     enabled: boolean;
     pollIntervalMs: number;
   };
+  // C4: read-only free news/sentiment feed (headlines only) — feature-flagged OFF by default.
+  // Off ⇒ zero behavior change (no poll starts, the agentic prompt's sentiment block never renders).
+  // The API key is NOT carried here (see environment.config.ts's SENTIMENT_FEED_API_KEY comment) —
+  // read directly off process.env at the composition root, same convention as ANTHROPIC_API_KEY.
+  sentimentFeed: {
+    enabled: boolean;
+    pollIntervalMs: number;
+  };
   // Strategy-lane knobs (symbol/interval/active lane selection) read via ConfigService.
   strategy: {
     // Deprecated single-symbol knob; still honored as the fallback when TRADING_SYMBOLS is unset.

@@ -38,6 +38,12 @@ export const DERIVATIVES_TEMPLATE_VERSION = 'd1';
 // `+s1` suffix at the computePromptHash call site (anthropic-agent-client.ts), stacking after `+d1`
 // when both flags are on (`${base}+d1+s1`); flag-OFF hashes stay byte-identical to pre-C4.
 export const SENTIMENT_TEMPLATE_VERSION = 's1';
+// B3 shorts-capability attribution tag: flag-ON both swaps the LONG/FLAT-only constraint sentence
+// and appends one short-semantics sentence (see buildSystemPrompt), so it must also distinguish the
+// hash. Composed as a `+x1` suffix, stacking last (`${base}+d1+s1+x1`) — flag-OFF hashes stay
+// byte-identical to pre-B3. LEGACY decision path only: mutually exclusive with planMode (enforced at
+// AnthropicAgentClient construction, not here — this module has no flag-combination to reject).
+export const SHORTS_TEMPLATE_VERSION = 'x1';
 
 // Delimiters wrapping the advisory playbook block quoted into the user message. Unique and
 // non-trivial so a playbook can never forge a close/open of its own — playbook-validator.ts
@@ -60,6 +66,38 @@ export const DECISION_TOOL = {
         enum: ['long', 'flat', 'hold'],
         description:
           "'long' to open or hold a long position, 'flat' to close an open position (if already flat, use 'hold'), 'hold' to leave the current position unchanged",
+      },
+      confidence: {
+        type: 'number',
+        description: '0..1 conviction; scales position size',
+      },
+      rationale: {
+        type: 'string',
+        description: 'One short paragraph explaining the decision',
+      },
+    },
+    required: ['action', 'confidence', 'rationale'],
+    additionalProperties: false,
+  },
+} as const;
+
+// B3 shorts capability: a parameterized sibling of DECISION_TOOL (same name/tool_choice target —
+// still the legacy submit_decision path, just a wider action enum) rather than a mutation of
+// DECISION_TOOL itself, mirroring how PLAN_TOOL coexists with DECISION_TOOL without altering it.
+// Selected in place of DECISION_TOOL only when AnthropicAgentClientConfig.shortsEnabled is true (and
+// never alongside planMode — see the client's constructor guard).
+export const SHORTS_DECISION_TOOL = {
+  name: 'submit_decision',
+  description: 'Submit your trading decision for this symbol.',
+  strict: true,
+  input_schema: {
+    type: 'object',
+    properties: {
+      action: {
+        type: 'string',
+        enum: ['long', 'short', 'flat', 'hold'],
+        description:
+          "'long' to open or hold a long position, 'short' to open or hold a short position, 'flat' to close an open position of either side (if already flat, use 'hold'), 'hold' to leave the current position unchanged",
       },
       confidence: {
         type: 'number',
@@ -232,6 +270,13 @@ export interface BuildSystemPromptOptions {
   // Absent/false ⇒ byte-identical to pre-C4 output — gated separately from the block's own per-call
   // presence, same convention as derivativesFeedEnabled above.
   readonly sentimentFeedEnabled?: boolean;
+  // B3: when true, swaps the LONG/FLAT-only constraint sentence for a LONG/SHORT/FLAT one and
+  // appends one sentence explaining short semantics (open/hold via 'short', close via 'flat' — no
+  // separate cover action). Unlike derivativesFeedEnabled/sentimentFeedEnabled this is NOT a pure
+  // append: the standing "never short" sentence is factually wrong once shorting is enabled, so it
+  // must be replaced rather than left alongside a contradicting addition. Absent/false ⇒
+  // byte-identical to pre-B3 output.
+  readonly shortsEnabled?: boolean;
 }
 
 export function buildSystemPrompt(
@@ -243,9 +288,20 @@ export function buildSystemPrompt(
   const planMode = opts.planMode ?? false;
   const derivativesFeedEnabled = opts.derivativesFeedEnabled ?? false;
   const sentimentFeedEnabled = opts.sentimentFeedEnabled ?? false;
+  const shortsEnabled = opts.shortsEnabled ?? false;
   return [
     'You are a disciplined crypto SPOT trading agent trading a single symbol.',
-    'You may only go LONG or stay FLAT — never short, never use leverage or margin.',
+    // B3: the LONG/FLAT-only constraint is factually wrong once shorting is enabled, so it is
+    // swapped (not appended-around) — flag-off keeps the exact original string, preserving byte
+    // identity.
+    shortsEnabled
+      ? 'You may go LONG, SHORT, or stay FLAT — no margin/leverage beyond the short position itself.'
+      : 'You may only go LONG or stay FLAT — never short, never use leverage or margin.',
+    ...(shortsEnabled
+      ? [
+          "A 'short' action opens or holds a short position (profits when price falls); close ANY open position, long or short, via the 'flat' action — there is no separate cover/close action.",
+        ]
+      : []),
     'You decide only on CLOSED candles; never react to the still-forming current candle.',
     `Round-trip trading cost is approximately ${roundTripBps} basis points (${profile.makerBps} maker + ${profile.takerBps} taker) — only act when the expected edge clears fees.`,
     profile.equityFraction !== undefined
@@ -450,6 +506,17 @@ export function buildMarketPayload(input: AgentDecisionInput): string {
     ];
   });
   const ticker = input.snapshot.tickers.get(symbol);
+  // B3 position rendering (verified, not extended): `position` below is a direct passthrough of
+  // AgentContext['position'] (AgentPositionSummary), not a hand-written 'long'/'flat' string map —
+  // it already renders any `side` value verbatim, so no render-code change is needed to "express a
+  // short" once one exists. AgentPositionSummary.side stays 'LONG' | 'FLAT' (not widened to include
+  // 'SHORT') because agentic.strategy.ts's position bookkeeping is typed narrowly all the way
+  // through (trackClosedTrade's `side` param → lastPositionSide → annotatePreviousOutcome's
+  // `heldDuring` → AgentDecisionRecord.outcome.heldDuring, which renderDecisionLines below renders
+  // and is byte-identity-critical) — widening the port type would ripple into that strategy-owned
+  // chain, which is out of scope here (no strategy instance may enable shortsEnabled yet). A short
+  // position cannot occur on the spot lane today (agentic.strategy.ts only ever assigns 'LONG' or
+  // 'FLAT'), so leaving the type/render path untouched is verified safe.
   const recentDecisions = input.context?.recentDecisions ?? [];
   const orderBook = buildOrderBookBlock(input, symbol);
   const derivatives = buildDerivativesBlock(input);

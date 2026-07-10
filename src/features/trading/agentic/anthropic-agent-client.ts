@@ -16,6 +16,8 @@ import {
   DECISION_TOOL,
   DERIVATIVES_TEMPLATE_VERSION,
   SENTIMENT_TEMPLATE_VERSION,
+  SHORTS_DECISION_TOOL,
+  SHORTS_TEMPLATE_VERSION,
   PLAN_BOUNDS,
   PLAN_TOOL,
   PLAN_TEMPLATE_VERSION,
@@ -29,6 +31,15 @@ import { validatePlaybook } from './playbook-validator';
 
 const decisionSchema = z.object({
   action: z.enum(['long', 'flat', 'hold']),
+  confidence: z.number().min(0).max(1),
+  rationale: z.string().min(1).max(2000),
+});
+
+// B3 shorts capability: a parameterized sibling of decisionSchema (widened action enum only),
+// selected in place of decisionSchema only when cfg.shortsEnabled is true — decisionSchema itself
+// stays untouched (never a global widening) so flag-off validation is byte-identical to pre-B3.
+const shortsDecisionSchema = z.object({
+  action: z.enum(['long', 'short', 'flat', 'hold']),
   confidence: z.number().min(0).max(1),
   rationale: z.string().min(1).max(2000),
 });
@@ -129,6 +140,12 @@ export interface AnthropicAgentClientConfig {
   // C4: documents the optional sentiment block in the system prompt (agent-prompt.ts's
   // buildSystemPrompt sentimentFeedEnabled option). Absent/false ⇒ byte-identical legacy prompt.
   readonly sentimentFeedEnabled?: boolean;
+  // B3 shorts capability: widens the decision tool/schema to accept 'short' and maps it to
+  // ENTER_SHORT/EXIT_SHORT (see propose()'s mapping table). LEGACY decision path ONLY — mutually
+  // exclusive with planMode (the plan schema is long-oriented; shorts-in-plan-mode belongs to the
+  // carry sub-plan). Absent/false ⇒ byte-identical legacy behavior; combining both flags throws at
+  // construction.
+  readonly shortsEnabled?: boolean;
 }
 
 // Placeholder profile used only when no real AgentTradingProfile has been wired yet — keeps the
@@ -213,7 +230,16 @@ export class AnthropicAgentClient implements AgentClientPort {
     private readonly fetchFn: typeof fetch = fetch,
     private readonly logger: LoggerLike = NOOP_LOGGER,
     private readonly playbookProvider?: PlaybookProvider,
-  ) {}
+  ) {
+    // B3: fail fast at construction rather than silently picking one flag at decide() time — the
+    // plan schema is long-oriented (entry offset/stop/TP all sized off a long fill) and
+    // shorts-in-plan-mode is out of scope here (carry sub-plan's own design).
+    if (cfg.shortsEnabled && cfg.planMode) {
+      throw new Error(
+        'AnthropicAgentClient: shortsEnabled and planMode are mutually exclusive (plan schema is long-oriented; shorts-in-plan-mode is out of scope)',
+      );
+    }
+  }
 
   async propose(input: AgentDecisionInput): Promise<AgentProposal> {
     if (this.degraded) {
@@ -267,6 +293,7 @@ export class AnthropicAgentClient implements AgentClientPort {
           : {}),
         derivativesFeedEnabled: this.cfg.derivativesFeedEnabled ?? false,
         sentimentFeedEnabled: this.cfg.sentimentFeedEnabled ?? false,
+        shortsEnabled: this.cfg.shortsEnabled ?? false,
       },
     );
     // inputPayload is the market JSON ALONE — buildMarketPayload's signature carries no
@@ -288,15 +315,25 @@ export class AnthropicAgentClient implements AgentClientPort {
           { type: 'text', text: `\n\n${inputPayload}` },
         ]
       : inputPayload;
-    const activeTool = this.cfg.planMode ? PLAN_TOOL : DECISION_TOOL;
+    // B3: shortsEnabled selects SHORTS_DECISION_TOOL in place of DECISION_TOOL (never alongside
+    // planMode — enforced at construction). This is the tool actually SENT to the API (see
+    // attemptOnce below, which now takes `activeTool` rather than re-deriving it) — a client that
+    // computed the hash/schema from the wide tool but sent the narrow one would silently make the
+    // capability unreachable.
+    const activeTool = this.cfg.planMode
+      ? PLAN_TOOL
+      : this.cfg.shortsEnabled
+        ? SHORTS_DECISION_TOOL
+        : DECISION_TOOL;
     const baseTemplateVersion = this.cfg.planMode ? PLAN_TEMPLATE_VERSION : PROMPT_TEMPLATE_VERSION;
     // Flag-ON appends the corresponding system-prompt sentence, so it is a distinct template for
-    // attribution purposes (mirrors plan mode's own tag); flag-OFF hashes are byte-identical. Both
-    // flags stack in a fixed order (`+d1+s1`) so a both-on hash is deterministic regardless of which
-    // flag flipped first.
+    // attribution purposes (mirrors plan mode's own tag); flag-OFF hashes are byte-identical. All
+    // flags stack in a fixed order (`+d1+s1+x1`) so a multi-flag hash is deterministic regardless of
+    // which flag flipped first.
     const feedTags = [
       ...(this.cfg.derivativesFeedEnabled ? [DERIVATIVES_TEMPLATE_VERSION] : []),
       ...(this.cfg.sentimentFeedEnabled ? [SENTIMENT_TEMPLATE_VERSION] : []),
+      ...(this.cfg.shortsEnabled ? [SHORTS_TEMPLATE_VERSION] : []),
     ];
     const promptHash = computePromptHash({
       templateVersion:
@@ -313,7 +350,7 @@ export class AnthropicAgentClient implements AgentClientPort {
     let res: Response;
     try {
       try {
-        res = await this.attemptOnce(systemPrompt, userContent, controller.signal);
+        res = await this.attemptOnce(systemPrompt, userContent, activeTool, controller.signal);
       } catch (firstErr) {
         const classified = firstErr as AgentProposeError;
         const remainingMs = deadline - Date.now();
@@ -327,7 +364,7 @@ export class AnthropicAgentClient implements AgentClientPort {
         );
         await delay(backoffMs);
         try {
-          res = await this.attemptOnce(systemPrompt, userContent, controller.signal);
+          res = await this.attemptOnce(systemPrompt, userContent, activeTool, controller.signal);
         } catch (secondErr) {
           const secondClassified = secondErr as AgentProposeError;
           this.handleFailure(secondClassified);
@@ -358,7 +395,7 @@ export class AnthropicAgentClient implements AgentClientPort {
       this.logger.warn('anthropic api: model refused to decide');
       return { signals: [], usage, latencyMs, playbookVersion, promptHash, inputPayload };
     }
-    const toolName = this.cfg.planMode ? PLAN_TOOL.name : DECISION_TOOL.name;
+    const toolName = activeTool.name;
     const toolBlock = envelope.data.content?.find(
       (b) => b.type === 'tool_use' && b.name === toolName,
     );
@@ -368,13 +405,26 @@ export class AnthropicAgentClient implements AgentClientPort {
     }
     const parsedDecision = this.cfg.planMode
       ? planSchema.safeParse(toolBlock.input)
-      : decisionSchema.safeParse(toolBlock.input);
+      : this.cfg.shortsEnabled
+        ? shortsDecisionSchema.safeParse(toolBlock.input)
+        : decisionSchema.safeParse(toolBlock.input);
     if (!parsedDecision.success) {
       this.logger.warn(`anthropic api: ${toolName} payload failed schema validation`);
       return { signals: [], usage, latencyMs, playbookVersion, promptHash, inputPayload };
     }
 
-    const side = input.context?.position.side ?? 'FLAT';
+    // B3: widened to 'LONG' | 'SHORT' | 'FLAT' locally via `as` (a type-level upcast only — the
+    // runtime value is still ever only 'LONG'/'FLAT') so the mapping table below can compare against
+    // 'SHORT'. A type ANNOTATION here (`const side: 'LONG'|'SHORT'|'FLAT' = ...`) does NOT achieve
+    // this: TS's control-flow narrowing tracks the initializer expression's own inferred type
+    // ('LONG'|'FLAT') for subsequent `===` comparisons regardless of the wider declared annotation,
+    // so every `side === 'SHORT'` check below would still 2367 as a no-overlap comparison — only an
+    // explicit `as` cast on the initializer resets the flow-narrowed type to the wider union.
+    // AgentPositionSummary.side itself stays 'LONG' | 'FLAT' at the port level (see agent-prompt.ts's
+    // buildMarketPayload comment for why); no strategy instance can populate 'SHORT' today, so every
+    // SHORT-side arm below is presently unreachable dead code, kept only for forward compatibility
+    // and gated by shortsEnabled.
+    const side = (input.context?.position.side ?? 'FLAT') as 'LONG' | 'SHORT' | 'FLAT';
     const { action, confidence, rationale } = parsedDecision.data;
     // Explicitly re-typed: the decision/plan schema union erases `plan` under `in`-narrowing.
     const rawPlan: z.infer<typeof planSchema>['plan'] = this.cfg.planMode
@@ -422,7 +472,10 @@ export class AnthropicAgentClient implements AgentClientPort {
         return {
           signals: [],
           decision: {
-            action,
+            // planMode and shortsEnabled are mutually exclusive (constructor guard) — action can
+            // never actually be 'short' on this path, but see the cast comment on the final return
+            // below for why a cast (not a port widening) is used regardless.
+            action: action as 'long' | 'flat' | 'hold',
             confidence,
             rationale: `[plan rejected: ${rejectionTag}] ${rationale}`,
           },
@@ -468,15 +521,47 @@ export class AnthropicAgentClient implements AgentClientPort {
       ];
     } else if (action === 'flat' && side === 'LONG') {
       signals = [{ ...common, kind: 'EXIT_LONG', strength: MAX_STRENGTH }];
+    } else if (this.cfg.shortsEnabled && action === 'short' && side === 'FLAT') {
+      // No book-aware limitPriceHint here: bookEntryHint (below) is long-specific — a resting BID
+      // near refPrice is a cheaper LONG entry, but the equivalent cheaper SHORT entry would be a
+      // resting ASK, the opposite side of the book. Reusing bookEntryHint would price a short entry
+      // on the wrong side, so a short entry always uses the plain refPrice-based sizing path.
+      signals = [
+        {
+          ...common,
+          kind: 'ENTER_SHORT',
+          strength: Math.min(MAX_STRENGTH, Math.max(MIN_STRENGTH, confidence)),
+        },
+      ];
+    } else if (this.cfg.shortsEnabled && action === 'flat' && side === 'SHORT') {
+      signals = [{ ...common, kind: 'EXIT_SHORT', strength: MAX_STRENGTH }];
+    } else if (this.cfg.shortsEnabled && action === 'long' && side === 'SHORT') {
+      // Close the short first — never a same-bar flip straight to ENTER_LONG. The model re-decides
+      // next bar once flat, the same close-then-reenter discipline as every other direction change.
+      signals = [{ ...common, kind: 'EXIT_SHORT', strength: MAX_STRENGTH }];
+    } else if (this.cfg.shortsEnabled && action === 'short' && side === 'LONG') {
+      // Symmetric to the arm above: close the long first, never a same-bar flip to ENTER_SHORT.
+      signals = [{ ...common, kind: 'EXIT_LONG', strength: MAX_STRENGTH }];
     } else {
-      // 'hold', or 'long' while already LONG, or 'flat' while already FLAT — shorts deliberately
-      // unmapped (spot long/flat v1).
+      // 'hold'; 'long' while already LONG; 'flat' while already FLAT; 'short' while already SHORT
+      // (shortsEnabled only — side can never actually be 'SHORT' today, see the `side` comment
+      // above) — all no-ops. A flag-off 'short' action can't even reach here: decisionSchema/
+      // DECISION_TOOL never accept 'short' as a valid action in the first place.
       signals = [];
     }
 
     return {
       signals,
-      decision: { action, confidence, rationale },
+      // AgentDecisionMeta.action stays 'long' | 'flat' | 'hold' at the port level (see its own
+      // comment) — widening it ripples into agentic.strategy.ts's decision-history ring, the
+      // persisted agent_decisions journal, and counterfactual-scoring.ts's calibration module,
+      // none of which is this flag-gated, presently-unconsumed capability's call to make. `action`'s
+      // real runtime value IS 'short' when shortsEnabled fires (asserted directly in tests); this
+      // cast only narrows the TYPE at the port boundary. Removing this cast is the breadcrumb for
+      // whichever future change (the carry sub-plan) wires shortsEnabled live and must then decide
+      // those three widenings deliberately — and add a fail-loud runtime guard at the persistence
+      // boundary until they land (INT-B3 reviewer + security-auditor requirement).
+      decision: { action: action as 'long' | 'flat' | 'hold', confidence, rationale },
       ...(acceptedPlan ? { plan: acceptedPlan } : {}),
       usage,
       latencyMs,
@@ -542,6 +627,7 @@ export class AnthropicAgentClient implements AgentClientPort {
   private async attemptOnce(
     systemPrompt: string,
     userContent: string | AnthropicTextBlock[],
+    tool: typeof DECISION_TOOL | typeof SHORTS_DECISION_TOOL | typeof PLAN_TOOL,
     signal: AbortSignal,
   ): Promise<Response> {
     let res: Response;
@@ -561,11 +647,11 @@ export class AnthropicAgentClient implements AgentClientPort {
           // cache_control block. Cache reads are observed via usage.cache_read_input_tokens.
           system: [{ type: 'text', text: systemPrompt, cache_control: EPHEMERAL_1H }],
           messages: [{ role: 'user', content: userContent }],
-          tools: [this.cfg.planMode ? PLAN_TOOL : DECISION_TOOL],
-          tool_choice: {
-            type: 'tool',
-            name: this.cfg.planMode ? PLAN_TOOL.name : DECISION_TOOL.name,
-          },
+          // B3: `tool` is the caller's precomputed `activeTool` (DECISION_TOOL / SHORTS_DECISION_TOOL
+          // / PLAN_TOOL) — previously re-derived here from cfg.planMode alone, which would have sent
+          // the narrow DECISION_TOOL even when shortsEnabled was on, making 'short' unreachable.
+          tools: [tool],
+          tool_choice: { type: 'tool', name: tool.name },
           // Omitting `thinking` on claude-sonnet-5 silently runs (billed) adaptive thinking; the
           // decide call has no use for it (structured tool-use, not open-ended reasoning), so it's
           // explicitly disabled here. Reflection has its own separate request builder (see

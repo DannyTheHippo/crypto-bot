@@ -5,7 +5,10 @@ import {
   type AnthropicAgentClientConfig,
   type LoggerLike,
 } from '../../../src/features/trading/agentic/anthropic-agent-client';
-import { DECISION_TOOL } from '../../../src/features/trading/agentic/agent-prompt';
+import {
+  DECISION_TOOL,
+  SHORTS_DECISION_TOOL,
+} from '../../../src/features/trading/agentic/agent-prompt';
 import {
   AgentProposeError,
   type AgentDecisionInput,
@@ -38,6 +41,23 @@ const LONG_CONTEXT: AgentContext = {
   indicators: null,
   position: {
     side: 'LONG',
+    qty: '1',
+    avgEntry: '100',
+    realizedPnl: '0',
+    unrealizedPnlPct: null,
+    openOrders: 0,
+  },
+  recentDecisions: [],
+};
+
+// B3: AgentPositionSummary.side stays 'LONG' | 'FLAT' at the port level (see
+// anthropic-agent-client.ts's `side` cast comment — no strategy instance can ever emit 'SHORT'
+// today). The client's shorts mapping table is written to also handle a SHORT side defensively, so
+// this fixture forces the value via a double cast purely to exercise those arms in isolation.
+const SHORT_CONTEXT: AgentContext = {
+  indicators: null,
+  position: {
+    side: 'SHORT' as unknown as 'LONG' | 'FLAT',
     qty: '1',
     avgEntry: '100',
     realizedPnl: '0',
@@ -1168,6 +1188,208 @@ describe('AnthropicAgentClient', () => {
       expect(warn).toHaveBeenCalledWith(
         'plan rejected: takeProfitPct/stopLossPct 1.4 below AGENTIC_MIN_RR 1.5',
       );
+    });
+  });
+
+  describe('shorts capability (B3, shortsEnabled gate)', () => {
+    it('throws at construction when shortsEnabled and planMode are both set', () => {
+      expect(
+        () => new AnthropicAgentClient(buildCfg({ shortsEnabled: true, planMode: true })),
+      ).toThrow(/shortsEnabled and planMode are mutually exclusive/);
+    });
+
+    it('sends SHORTS_DECISION_TOOL (not DECISION_TOOL) as tools/tool_choice when shortsEnabled is true', async () => {
+      const fetchFn = vi.fn();
+      const client = new AnthropicAgentClient(buildCfg({ shortsEnabled: true }), fetchFn);
+      fetchFn.mockResolvedValue(
+        apiResponse(toolUseBody({ action: 'hold', confidence: 0.5, rationale: 'r' })),
+      );
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+      });
+
+      await client.propose(input);
+
+      const [, init] = fetchFn.mock.calls[0] as [string, RequestInit];
+      const body = JSON.parse(init.body as string) as Record<string, unknown>;
+      // Regression: attemptOnce previously re-derived the tool from cfg.planMode alone, which would
+      // have sent the narrow DECISION_TOOL even with shortsEnabled on, making 'short' unreachable.
+      expect(body['tools']).toEqual([SHORTS_DECISION_TOOL]);
+      expect(body['tool_choice']).toEqual({ type: 'tool', name: 'submit_decision' });
+    });
+
+    it('shortsEnabled: false is explicitly byte-identical to omitted — still sends DECISION_TOOL', async () => {
+      const fetchFn = vi.fn();
+      const client = new AnthropicAgentClient(buildCfg({ shortsEnabled: false }), fetchFn);
+      fetchFn.mockResolvedValue(
+        apiResponse(toolUseBody({ action: 'hold', confidence: 0.5, rationale: 'r' })),
+      );
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+      });
+
+      await client.propose(input);
+
+      const [, init] = fetchFn.mock.calls[0] as [string, RequestInit];
+      const body = JSON.parse(init.body as string) as Record<string, unknown>;
+      expect(body['tools']).toEqual([DECISION_TOOL]);
+    });
+
+    it("rejects action 'short' with signals: [] when shortsEnabled is off (schema still long/flat/hold only)", async () => {
+      const fetchFn = vi.fn();
+      const warn = vi.fn();
+      const client = new AnthropicAgentClient(buildCfg(), fetchFn, { warn });
+      fetchFn.mockResolvedValue(
+        apiResponse(toolUseBody({ action: 'short', confidence: 0.5, rationale: 'r' })),
+      );
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+      });
+
+      const proposal = await client.propose(input);
+
+      expect(proposal.signals).toEqual([]);
+      expect(warn).toHaveBeenCalled();
+    });
+
+    it("accepts action 'short' (no schema-validation warn) when shortsEnabled is on", async () => {
+      const fetchFn = vi.fn();
+      const warn = vi.fn();
+      const client = new AnthropicAgentClient(buildCfg({ shortsEnabled: true }), fetchFn, { warn });
+      fetchFn.mockResolvedValue(
+        apiResponse(toolUseBody({ action: 'short', confidence: 0.6, rationale: 'r' })),
+      );
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+      });
+
+      const proposal = await client.propose(input);
+
+      expect(warn).not.toHaveBeenCalled();
+      expect(proposal.decision?.action).toBe('short');
+    });
+
+    describe('mapping table (six arms)', () => {
+      it("'short' action from FLAT maps to a single ENTER_SHORT signal", async () => {
+        const fetchFn = vi.fn();
+        const client = new AnthropicAgentClient(buildCfg({ shortsEnabled: true }), fetchFn);
+        fetchFn.mockResolvedValue(
+          apiResponse(toolUseBody({ action: 'short', confidence: 0.8, rationale: 'r' })),
+        );
+        const input = buildInput({
+          tickers: new Map([[SYM, ticker('100', 1n)]]),
+          context: FLAT_CONTEXT,
+        });
+
+        const { signals } = await client.propose(input);
+
+        expect(signals).toHaveLength(1);
+        expect(signals[0]!.kind).toBe('ENTER_SHORT');
+        expect(signals[0]!.strength).toBe(0.8);
+      });
+
+      it("'flat' action from SHORT maps to a single EXIT_SHORT signal at full strength", async () => {
+        const fetchFn = vi.fn();
+        const client = new AnthropicAgentClient(buildCfg({ shortsEnabled: true }), fetchFn);
+        fetchFn.mockResolvedValue(
+          apiResponse(toolUseBody({ action: 'flat', confidence: 0.9, rationale: 'r' })),
+        );
+        const input = buildInput({
+          tickers: new Map([[SYM, ticker('100', 1n)]]),
+          context: SHORT_CONTEXT,
+        });
+
+        const { signals } = await client.propose(input);
+
+        expect(signals).toHaveLength(1);
+        expect(signals[0]!.kind).toBe('EXIT_SHORT');
+        expect(signals[0]!.strength).toBe(1);
+      });
+
+      it("'long' action from SHORT maps to EXIT_SHORT only — never a same-bar flip to ENTER_LONG", async () => {
+        const fetchFn = vi.fn();
+        const client = new AnthropicAgentClient(buildCfg({ shortsEnabled: true }), fetchFn);
+        fetchFn.mockResolvedValue(
+          apiResponse(toolUseBody({ action: 'long', confidence: 0.8, rationale: 'r' })),
+        );
+        const input = buildInput({
+          tickers: new Map([[SYM, ticker('100', 1n)]]),
+          context: SHORT_CONTEXT,
+        });
+
+        const { signals } = await client.propose(input);
+
+        expect(signals).toHaveLength(1);
+        expect(signals[0]!.kind).toBe('EXIT_SHORT');
+      });
+
+      it("'short' action from LONG maps to EXIT_LONG only — never a same-bar flip to ENTER_SHORT", async () => {
+        const fetchFn = vi.fn();
+        const client = new AnthropicAgentClient(buildCfg({ shortsEnabled: true }), fetchFn);
+        fetchFn.mockResolvedValue(
+          apiResponse(toolUseBody({ action: 'short', confidence: 0.8, rationale: 'r' })),
+        );
+        const input = buildInput({
+          tickers: new Map([[SYM, ticker('100', 1n)]]),
+          context: LONG_CONTEXT,
+        });
+
+        const { signals } = await client.propose(input);
+
+        expect(signals).toHaveLength(1);
+        expect(signals[0]!.kind).toBe('EXIT_LONG');
+      });
+
+      it("'short' action while already SHORT is a no-op (hold-equivalent)", async () => {
+        const fetchFn = vi.fn();
+        const client = new AnthropicAgentClient(buildCfg({ shortsEnabled: true }), fetchFn);
+        fetchFn.mockResolvedValue(
+          apiResponse(toolUseBody({ action: 'short', confidence: 0.8, rationale: 'r' })),
+        );
+        const input = buildInput({
+          tickers: new Map([[SYM, ticker('100', 1n)]]),
+          context: SHORT_CONTEXT,
+        });
+
+        const { signals } = await client.propose(input);
+
+        expect(signals).toEqual([]);
+      });
+
+      it('existing long/flat/hold arms stay byte-identical with shortsEnabled on', async () => {
+        const fetchFn = vi.fn();
+        const client = new AnthropicAgentClient(buildCfg({ shortsEnabled: true }), fetchFn);
+
+        fetchFn.mockResolvedValueOnce(
+          apiResponse(toolUseBody({ action: 'long', confidence: 0.7, rationale: 'r' })),
+        );
+        const enterLong = await client.propose(
+          buildInput({ tickers: new Map([[SYM, ticker('100', 1n)]]), context: FLAT_CONTEXT }),
+        );
+        expect(enterLong.signals).toHaveLength(1);
+        expect(enterLong.signals[0]!.kind).toBe('ENTER_LONG');
+
+        fetchFn.mockResolvedValueOnce(
+          apiResponse(toolUseBody({ action: 'flat', confidence: 0.9, rationale: 'r' })),
+        );
+        const exitLong = await client.propose(
+          buildInput({ tickers: new Map([[SYM, ticker('100', 1n)]]), context: LONG_CONTEXT }),
+        );
+        expect(exitLong.signals).toHaveLength(1);
+        expect(exitLong.signals[0]!.kind).toBe('EXIT_LONG');
+
+        fetchFn.mockResolvedValueOnce(
+          apiResponse(toolUseBody({ action: 'hold', confidence: 0.5, rationale: 'r' })),
+        );
+        const hold = await client.propose(
+          buildInput({ tickers: new Map([[SYM, ticker('100', 1n)]]), context: FLAT_CONTEXT }),
+        );
+        expect(hold.signals).toEqual([]);
+      });
     });
   });
 });

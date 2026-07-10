@@ -140,11 +140,34 @@ groups:
       # model still emits a banned token so the loop can never iterate — instead of it dying
       # invisibly again. Warning, not critical: one rejection is recoverable (the seed stays
       # active); a sustained pattern is the real failure. Requires agentic_reflection_outcomes_total
-      # (added W2, AgentMetricsRecorder).
+      # (added W2, AgentMetricsRecorder). Threshold dropped to >=1 (from >=2): reflection.service.ts
+      # now retries a rejected draft once with feedback before recording validator_reject (backlog
+      # #31), so a recorded validator_reject is already a two-strike event — the old >=2-in-6h bar
+      # would have required FOUR consecutive draft rejections to fire.
       - alert: AgenticReflectionRejects
-        expr: sum(increase(agentic_reflection_outcomes_total{outcome="validator_reject"}[6h])) >= 2
+        expr: sum(increase(agentic_reflection_outcomes_total{outcome="validator_reject"}[6h])) >= 1
         for: 0m
         labels: { severity: warning }
         annotations:
-          summary: 'Reflection candidates are being rejected by the playbook validator (≥2 in 6h) — the learning loop cannot iterate'
+          summary: 'A reflection candidate was rejected by the playbook validator after its feedback retry (validator_reject in 6h) — the learning loop cannot iterate'
+          runbook: 'docs/runbook.md'
+
+      # Backlog #31: a level-based (max_over_time, not increase/rate) companion to
+      # AgenticReflectionRejects — increase() and rate() both miss a counter's first sample after a
+      # container recreate resets it (a fresh series has nothing to increase FROM), so a lane that
+      # reflects exactly once right after a redeploy and gets rejected would never trip a
+      # increase()-based alert. sum(max_over_time(...[24h])) instead reads the highest value the
+      # counter held at any scrape in the window, which survives a mid-window reset because the
+      # pre-reset high-water mark is still in the range. `unless` fires only when rejects are present
+      # AND minted is absent in the same 24h window — a lane that eventually mints (even after
+      # earlier rejects) does not trip this.
+      - alert: AgenticReflectionNeverMinted
+        expr: |
+          sum(max_over_time(agentic_reflection_outcomes_total{outcome="validator_reject"}[24h])) > 0
+          unless
+          sum(max_over_time(agentic_reflection_outcomes_total{outcome="minted"}[24h])) > 0
+        for: 0m
+        labels: { severity: warning }
+        annotations:
+          summary: 'Reflection has rejected candidates in the last 24h but minted none — the learning loop is rejecting and never advancing the playbook'
           runbook: 'docs/runbook.md'

@@ -162,7 +162,14 @@ function apiResponse(body: unknown, opts: { ok?: boolean; status?: number } = {}
 function revisionToolBody(input: unknown, stopReason = 'tool_use'): unknown {
   return {
     stop_reason: stopReason,
-    content: [{ type: 'tool_use', name: 'submit_playbook_revision', input }],
+    // Mirrors the real Anthropic Messages API under adaptive thinking: responses carry a SIGNED
+    // thinking block ahead of the tool_use, and the validator-reject retry (backlog #31) must echo
+    // BOTH verbatim in the follow-up's assistant turn (omitting the thinking block is a guaranteed
+    // 400 on the continuation) and reference the tool_use id from its tool_result.
+    content: [
+      { type: 'thinking', thinking: 'test-thinking-trace', signature: 'sig_test_1' },
+      { type: 'tool_use', id: 'toolu_test_1', name: 'submit_playbook_revision', input },
+    ],
     usage: { input_tokens: 10, output_tokens: 20 },
   };
 }
@@ -811,6 +818,274 @@ describe('ReflectionService', () => {
       service.onClosedTrade(SID, 2);
       await flush();
       expect(h.fetchFn).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('backlog #31: validator-reject retry-with-feedback + additive trigger rollback', () => {
+    const invalidDraft = revisionToolBody({
+      playbook: 'not a valid playbook',
+      changelog: 'first attempt',
+    });
+    const validDraft = (tag: string): unknown =>
+      revisionToolBody({ playbook: validPlaybookContent(tag), changelog: `fixed: ${tag}` });
+
+    it('retries once with feedback after a first-draft validator rejection, then mints on the accepted retry (2 fetch calls, 2 budget reservations)', async () => {
+      const h = buildHarness();
+      h.fetchFn
+        .mockResolvedValueOnce(apiResponse(invalidDraft))
+        .mockResolvedValueOnce(apiResponse(validDraft('retried')));
+      const reserveSpy = vi.spyOn(h.budget, 'tryReserveCall');
+      const service = new ReflectionService(baseCfg({ everyNTrades: 1 }), h.deps);
+
+      service.onClosedTrade(SID, 1);
+      await flush();
+
+      expect(h.fetchFn).toHaveBeenCalledTimes(2);
+      expect(reserveSpy).toHaveBeenCalledTimes(2); // precondition reservation + the retry's own
+      expect(h.storeApi.appended).toEqual([
+        { content: validPlaybookContent('retried'), source: 'reflection', parentVersion: 1 },
+      ]);
+      expect(h.recorderApi.outcomes).toEqual(['attempt_started', 'minted']);
+      expect(h.recorderApi.rejections).toEqual([]); // no validator_reject on the accepted retry
+
+      // The retry's assistant turn echoes the first response's FULL ordered content — the signed
+      // thinking block verbatim FIRST (mandatory in a tool_result continuation), then the tool_use
+      // — and its user turn is a tool_result error referencing the same id with the reason.
+      const retryBody = requestBodyOf(h.fetchFn, 1) as unknown as {
+        messages: Array<{
+          role: string;
+          content: string | Array<Record<string, unknown>>;
+        }>;
+      };
+      expect(retryBody.messages).toHaveLength(3);
+      const assistantTurn = retryBody.messages[1]!;
+      expect(assistantTurn.role).toBe('assistant');
+      const assistantBlocks = assistantTurn.content as Array<Record<string, unknown>>;
+      expect(assistantBlocks).toHaveLength(2);
+      expect(assistantBlocks[0]).toEqual({
+        type: 'thinking',
+        thinking: 'test-thinking-trace',
+        signature: 'sig_test_1',
+      });
+      expect(assistantBlocks[1]).toMatchObject({
+        type: 'tool_use',
+        id: 'toolu_test_1',
+      });
+      const toolResultTurn = retryBody.messages[2]!;
+      expect(toolResultTurn.role).toBe('user');
+      const toolResultBlock = (toolResultTurn.content as Array<Record<string, unknown>>)[0]!;
+      expect(toolResultBlock['type']).toBe('tool_result');
+      expect(toolResultBlock['tool_use_id']).toBe('toolu_test_1');
+      expect(toolResultBlock['is_error']).toBe(true);
+      expect(toolResultBlock['content']).toContain('failed validation');
+    });
+
+    it('records a single validator_reject (not two) when the retry is also rejected, and rolls back the trigger', async () => {
+      const h = buildHarness();
+      h.fetchFn
+        .mockResolvedValueOnce(apiResponse(invalidDraft))
+        .mockResolvedValueOnce(apiResponse(invalidDraft));
+      const service = new ReflectionService(baseCfg({ everyNTrades: 2 }), h.deps);
+
+      service.onClosedTrade(SID, 1);
+      service.onClosedTrade(SID, 2); // reaches N=2, launches
+      await flush();
+
+      expect(h.fetchFn).toHaveBeenCalledTimes(2);
+      expect(h.storeApi.appended).toHaveLength(0);
+      expect(h.recorderApi.rejections).toEqual([false]); // recorded once, for the FINAL rejected draft
+      expect(h.recorderApi.outcomes).toEqual(['attempt_started', 'validator_reject']);
+      expect(
+        h.logger.messages.some((m) => m.includes('failed validation') && m.includes('changelog:')),
+      ).toBe(true);
+
+      // Rollback: the trigger was additively restored to >= N — the very next closed trade re-fires
+      // immediately rather than requiring a fresh N (contrast with the no-rollback suite below).
+      service.onClosedTrade(SID, 3);
+      await flush();
+      expect(h.fetchFn).toHaveBeenCalledTimes(3);
+    });
+
+    it('skips the retry (and goes straight to a final validator_reject) when the retry budget reservation is exhausted', async () => {
+      const h = buildHarness({ budgetCaps: { maxCallsPerDay: 1, maxTokensPerDay: 1_000_000 } });
+      h.fetchFn.mockResolvedValueOnce(apiResponse(invalidDraft));
+      const service = new ReflectionService(baseCfg({ everyNTrades: 1 }), h.deps);
+
+      service.onClosedTrade(SID, 1);
+      await flush();
+
+      expect(h.fetchFn).toHaveBeenCalledTimes(1); // the reserved-but-exhausted retry never calls out
+      expect(h.recorderApi.outcomes).toEqual(['attempt_started', 'validator_reject']);
+    });
+
+    it('skips the retry when the tool_use block carries no id (a tool_result cannot reference it — the continuation would 400)', async () => {
+      const h = buildHarness();
+      const idlessDraft = {
+        stop_reason: 'tool_use',
+        content: [
+          { type: 'thinking', thinking: 'test-thinking-trace', signature: 'sig_test_1' },
+          {
+            type: 'tool_use',
+            name: 'submit_playbook_revision',
+            input: { playbook: 'not a valid playbook', changelog: 'oops' },
+          },
+        ],
+        usage: { input_tokens: 10, output_tokens: 20 },
+      };
+      h.fetchFn.mockResolvedValueOnce(apiResponse(idlessDraft));
+      const service = new ReflectionService(baseCfg({ everyNTrades: 1 }), h.deps);
+
+      service.onClosedTrade(SID, 1);
+      await flush();
+
+      expect(h.fetchFn).toHaveBeenCalledTimes(1); // no doomed continuation attempted
+      expect(h.recorderApi.outcomes).toEqual(['attempt_started', 'validator_reject']);
+      // Trigger still rolled back — the next closed trade re-fires immediately.
+      service.onClosedTrade(SID, 2);
+      await flush();
+      expect(h.fetchFn).toHaveBeenCalledTimes(2);
+    });
+
+    // Each setup registers exactly one mockResolvedValueOnce/mockRejectedValueOnce call on the
+    // given fetchFn — a `setup` callback (rather than a returned Promise/Response) sidesteps
+    // @typescript-eslint/no-misused-promises on the untyped vi.fn() mock parameter.
+    it.each([
+      [
+        'transport_error',
+        (fetchFn: ReturnType<typeof vi.fn>) =>
+          fetchFn.mockRejectedValueOnce(new Error('network down')),
+      ],
+      [
+        'http_error',
+        (fetchFn: ReturnType<typeof vi.fn>) =>
+          fetchFn.mockResolvedValueOnce(apiResponse({}, { ok: false, status: 500 })),
+      ],
+      // content must be an array per reflectionResponseSchema — a string fails schema parsing.
+      [
+        'malformed_envelope',
+        (fetchFn: ReturnType<typeof vi.fn>) =>
+          fetchFn.mockResolvedValueOnce(apiResponse({ content: 'not-an-array' })),
+      ],
+      [
+        'no_tool_block',
+        (fetchFn: ReturnType<typeof vi.fn>) =>
+          fetchFn.mockResolvedValueOnce(
+            apiResponse({ stop_reason: 'tool_use', content: [], usage: undefined }),
+          ),
+      ],
+      [
+        'schema_fail',
+        (fetchFn: ReturnType<typeof vi.fn>) =>
+          fetchFn.mockResolvedValueOnce(
+            apiResponse({
+              stop_reason: 'tool_use',
+              content: [
+                { type: 'tool_use', id: 't1', name: 'submit_playbook_revision', input: {} },
+              ],
+              usage: undefined,
+            }),
+          ),
+      ],
+    ] as const)(
+      'additively rolls back the trigger on a %s first-call failure — the very next closed trade re-fires immediately',
+      async (_label, setup) => {
+        const h = buildHarness();
+        setup(h.fetchFn);
+        const service = new ReflectionService(baseCfg({ everyNTrades: 2 }), h.deps);
+
+        service.onClosedTrade(SID, 1);
+        service.onClosedTrade(SID, 2); // reaches N=2, launches
+        await flush();
+        expect(h.fetchFn).toHaveBeenCalledTimes(1);
+        expect(h.storeApi.appended).toHaveLength(0);
+
+        // Rolled back to >= N: the very next closed trade re-fires without needing a fresh N.
+        h.fetchFn.mockResolvedValueOnce(apiResponse(validDraft('after-rollback')));
+        service.onClosedTrade(SID, 3);
+        await flush();
+        expect(h.fetchFn).toHaveBeenCalledTimes(2);
+      },
+    );
+
+    it.each([
+      ['minted', () => apiResponse(validDraft('m'))],
+      [
+        'no_change',
+        () =>
+          apiResponse(
+            revisionToolBody({ playbook: validPlaybookContent('seed'), changelog: 'nc' }),
+          ),
+      ],
+      ['refusal', () => apiResponse({ stop_reason: 'refusal', content: [], usage: undefined })],
+    ] as const)(
+      'does NOT roll back the trigger on %s — the trigger is legitimately consumed, so a fresh N is required to re-fire',
+      async (_label, response) => {
+        const h = buildHarness({ seedContent: validPlaybookContent('seed') });
+        h.fetchFn.mockResolvedValueOnce(response());
+        const service = new ReflectionService(baseCfg({ everyNTrades: 2 }), h.deps);
+
+        service.onClosedTrade(SID, 1);
+        service.onClosedTrade(SID, 2); // reaches N=2, launches, consumes the trigger
+        await flush();
+        expect(h.fetchFn).toHaveBeenCalledTimes(1);
+
+        // No rollback: one more closed trade is below the fresh N=2 floor — does not re-fire.
+        // lastAttemptAt was legitimately stamped (not rolled back), so the 7-day cooldown floor
+        // must also elapse before the fresh N=2 can fire again.
+        h.clock.now += SEVEN_DAYS_MS;
+        h.fetchFn.mockResolvedValueOnce(apiResponse(validDraft('later')));
+        service.onClosedTrade(SID, 3);
+        await flush();
+        expect(h.fetchFn).toHaveBeenCalledTimes(1);
+
+        // A second closed trade completes the fresh N=2 — now it re-fires.
+        service.onClosedTrade(SID, 4);
+        await flush();
+        expect(h.fetchFn).toHaveBeenCalledTimes(2);
+      },
+    );
+
+    it('preserves trades closed during an in-flight attempt: a refusal (no rollback) still carries forward the in-flight count rather than losing it', async () => {
+      const h = buildHarness();
+      let resolveFetch: (res: Response) => void;
+      h.fetchFn.mockReturnValueOnce(
+        new Promise<Response>((resolve) => {
+          resolveFetch = resolve;
+        }),
+      );
+      const service = new ReflectionService(baseCfg({ everyNTrades: 5 }), h.deps);
+
+      service.onClosedTrade(SID, 1);
+      service.onClosedTrade(SID, 2);
+      service.onClosedTrade(SID, 3);
+      service.onClosedTrade(SID, 4);
+      service.onClosedTrade(SID, 5); // reaches N=5, launches, resets to 0, in flight
+      await flush();
+      expect(h.fetchFn).toHaveBeenCalledTimes(1);
+
+      // 3 more trades close WHILE the attempt is in flight — blocked from launching a 2nd attempt,
+      // but still counted (onClosedTrade increments before checking `inFlight`).
+      service.onClosedTrade(SID, 6);
+      service.onClosedTrade(SID, 7);
+      service.onClosedTrade(SID, 8);
+      await flush();
+      expect(h.fetchFn).toHaveBeenCalledTimes(1); // still just the one in-flight call
+
+      resolveFetch!(apiResponse({ stop_reason: 'refusal', content: [], usage: undefined }));
+      await flush();
+      expect(h.recorderApi.outcomes).toEqual(['attempt_started', 'refusal']);
+
+      // If the 3 in-flight trades had been lost, 5 fresh closes would be needed to re-fire; since
+      // they were preserved, only 2 more (5 - 3) are needed. lastAttemptAt was legitimately stamped
+      // (refusal does not roll it back either), so the 7-day cooldown floor must also elapse.
+      h.clock.now += SEVEN_DAYS_MS;
+      h.fetchFn.mockResolvedValueOnce(apiResponse(validDraft('after-refusal')));
+      service.onClosedTrade(SID, 9);
+      await flush();
+      expect(h.fetchFn).toHaveBeenCalledTimes(1); // 1 more (total 8 accrued) — still below 10 needed
+      service.onClosedTrade(SID, 10);
+      await flush();
+      expect(h.fetchFn).toHaveBeenCalledTimes(2); // the 2nd of the 2 needed closes fires it
     });
   });
 });

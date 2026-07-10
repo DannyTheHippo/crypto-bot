@@ -452,4 +452,78 @@ describe('PositionSizerService', () => {
       if (r.ok) expect(r.intent.qty.toFixed()).toBe('5'); // |signedQty|, not equity-fraction-derived
     });
   });
+
+  // ── D1: maker entries (ENTRY_ORDER_TYPE), default OFF and flag-gated ──
+  describe('entry order type (ENTRY_ORDER_TYPE knob)', () => {
+    it('default (deps.entryOrderType omitted) emits byte-identical LIMIT entries, exact-string money', () => {
+      const r = new PositionSizerService(clock, deps()).size(signal(), snapshot());
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(r.intent.type).toBe('LIMIT');
+        expect(r.intent.qty.toFixed()).toBe('10');
+        expect(r.intent.limitPrice?.toFixed()).toBe('100');
+        expect(r.intent.timeInForce).toBe('GTC');
+      }
+    });
+
+    it("knob 'LIMIT' explicitly is byte-identical to the default", () => {
+      const r = new PositionSizerService(clock, deps({ entryOrderType: 'LIMIT' })).size(
+        signal(),
+        snapshot(),
+      );
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.intent.type).toBe('LIMIT');
+    });
+
+    it('knob LIMIT_MAKER emits a maker ENTER_LONG when no hint prices it (basePrice === refPrice, not crossing)', () => {
+      const r = new PositionSizerService(clock, deps({ entryOrderType: 'LIMIT_MAKER' })).size(
+        signal({ refPrice: price('100') }),
+        snapshot(),
+      );
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(r.intent.type).toBe('LIMIT_MAKER');
+        expect(r.intent.qty.toFixed()).toBe('10'); // unaffected by the order-type knob
+      }
+    });
+
+    it('knob LIMIT_MAKER emits a maker ENTER_LONG for a passive hint below refPrice (positive entryOffsetBps)', () => {
+      const r = new PositionSizerService(clock, deps({ entryOrderType: 'LIMIT_MAKER' })).size(
+        signal({ refPrice: price('100'), limitPriceHint: price('99.5') }),
+        snapshot(),
+      );
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.intent.type).toBe('LIMIT_MAKER');
+    });
+
+    it('knob LIMIT_MAKER falls back to plain LIMIT for a BUY entry priced above refPrice (crossing / negative entryOffsetBps)', () => {
+      const r = new PositionSizerService(clock, deps({ entryOrderType: 'LIMIT_MAKER' })).size(
+        signal({ refPrice: price('100'), limitPriceHint: price('100.5') }),
+        snapshot(),
+      );
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.intent.type).toBe('LIMIT');
+    });
+
+    it('knob LIMIT_MAKER falls back to plain LIMIT for a SELL entry (ENTER_SHORT) priced below refPrice (crossing)', () => {
+      const r = new PositionSizerService(clock, deps({ entryOrderType: 'LIMIT_MAKER' })).size(
+        signal({ kind: 'ENTER_SHORT', refPrice: price('100'), limitPriceHint: price('99.5') }),
+        snapshot(),
+      );
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.intent.type).toBe('LIMIT');
+    });
+
+    it('knob LIMIT_MAKER never affects exits — EXIT_LONG stays plain LIMIT + IOC regardless', () => {
+      const r = new PositionSizerService(clock, deps({ entryOrderType: 'LIMIT_MAKER' })).size(
+        signal({ kind: 'EXIT_LONG', refPrice: price('100') }),
+        snapshot(longPosition()),
+      );
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(r.intent.type).toBe('LIMIT');
+        expect(r.intent.timeInForce).toBe('IOC');
+      }
+    });
+  });
 });

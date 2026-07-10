@@ -57,7 +57,10 @@ export class CcxtExchangeAdapter implements ExchangePort {
         break;
       case 'LIMIT_MAKER':
         ccxtType = 'limit';
-        params['timeInForce'] = req.timeInForce;
+        // No timeInForce param: Binance rejects extras on LIMIT_MAKER (-1106 "Parameter
+        // 'timeInForce' sent when not required") and pinned ccxt 4.5.58 forwards it verbatim
+        // (timeInForceIsRequired unset for this type, only 'PO' is stripped). postOnly alone is
+        // the idiomatic ccxt post-only expression; the intent still persists its GTC.
         params['postOnly'] = true;
         break;
     }

@@ -77,6 +77,12 @@ function exitCrossBufferBpsFor(config: TypedConfigService | undefined): number {
 function equityFractionFor(config: TypedConfigService | undefined): string {
   return config?.risk.equityFraction ?? '0';
 }
+// Falls back to the schema's own default ('LIMIT', disabled) so module-isolation unit boots
+// (RiskModule imported without AppConfigModule) still size entries the same as a real,
+// unconfigured deployment.
+function entryOrderTypeFor(config: TypedConfigService | undefined): 'LIMIT' | 'LIMIT_MAKER' {
+  return config?.risk.entryOrderType ?? 'LIMIT';
+}
 // Overlays the RISK_* env knobs onto DEFAULT_LIMITS (single source of truth for both RISK_LIMITS —
 // consumed by RiskEngineService/ModeControl's LIMITS_COMPLETE gate — and RISK_ENGINE_DEPS). Absent
 // TypedConfigService (module-isolation boots) falls straight through to DEFAULT_LIMITS, unchanged
@@ -130,6 +136,7 @@ const CONFIG_OPTIONAL = { token: TypedConfigService, optional: true } as const;
         randomBytes,
         exitCrossBufferBps: exitCrossBufferBpsFor(config),
         equityFraction: equityFractionFor(config),
+        entryOrderType: entryOrderTypeFor(config),
       }),
       inject: [CONFIG_OPTIONAL],
     },

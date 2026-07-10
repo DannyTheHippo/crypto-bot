@@ -116,7 +116,7 @@ export class PositionSizerService implements PositionSizerPort {
       venue: signal.venue,
       symbol: signal.symbol,
       side,
-      type: 'LIMIT',
+      type: reduceOnly ? 'LIMIT' : this.entryType(side, basePrice, refPrice),
       qty: steppedQty,
       limitPrice,
       timeInForce: reduceOnly ? 'IOC' : 'GTC',
@@ -144,6 +144,29 @@ export class PositionSizerService implements PositionSizerPort {
     const bufferBps = this.deps.exitCrossBufferBps ?? 25;
     const buffer = new Decimal(bufferBps).div(10_000);
     return side === 'SELL' ? refPrice.mul(new Decimal(1).sub(buffer)) : refPrice.mul(buffer.add(1));
+  }
+
+  // ENTRY_ORDER_TYPE=LIMIT_MAKER (deps.entryOrderType) rests non-reduce-only intents post-only
+  // (maker fee, never taker); 'LIMIT' (the default) is byte-identical to pre-knob behavior. Only
+  // called for entries — exits always stay plain 'LIMIT'+IOC (the caller branches on reduceOnly).
+  //
+  // Fallback to plain 'LIMIT': the sizer has no order-book access, so it cannot see whether basePrice
+  // would actually cross the current bid/ask. As a proxy, basePrice on the marketable side of refPrice
+  // (BUY priced above, SELL priced below — the plan mode signature of a negative entryOffsetBps, which
+  // rests the entry ABOVE the last close instead of below it, see anthropic-agent-client.ts) is treated
+  // as a likely crossing entry: a post-only order priced there would immediately match and be
+  // venue-rejected. Falling back to plain LIMIT there is the safe direction — worst case it costs a
+  // taker fee on a fill that would have succeeded as maker. A passively-priced LIMIT_MAKER can still
+  // cross if the book moves before placement; that fails safely (OrderImmediatelyFillable →
+  // TERMINAL_REJECT, no blind resubmit) and the plan/strategy re-fires.
+  private entryType(
+    side: 'BUY' | 'SELL',
+    basePrice: Decimal,
+    refPrice: Decimal,
+  ): 'LIMIT' | 'LIMIT_MAKER' {
+    if ((this.deps.entryOrderType ?? 'LIMIT') !== 'LIMIT_MAKER') return 'LIMIT';
+    const wouldCross = side === 'BUY' ? basePrice.gt(refPrice) : basePrice.lt(refPrice);
+    return wouldCross ? 'LIMIT' : 'LIMIT_MAKER';
   }
 
   // Entry (non-reduce-only) notional, quote-denominated. P5 compounding path: equity × fraction ×

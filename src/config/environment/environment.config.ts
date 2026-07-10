@@ -291,6 +291,12 @@ const envSchema = z
     // away from market. Capped at 99 (< DEFAULT_LIMITS.maxBandBps=100 in risk.module) so a crossed
     // exit price never trips domain/risk/evaluate.ts's price-band veto.
     EXIT_CROSS_BUFFER_BPS: z.coerce.number().int().min(0).max(99).default(25),
+    // Entry order type (PositionSizerService). 'LIMIT' (default) is byte-identical to pre-knob
+    // behavior. 'LIMIT_MAKER' rests entries post-only (maker-fee, never taker) — the sizer falls
+    // back to plain LIMIT per-intent when the plan-derived entry price would cross the book (a
+    // post-only order priced there is venue-rejected). A residual at-touch/moved-book cross still
+    // rejects, but fails safely (TERMINAL_REJECT, no blind resubmit; strategy re-fires).
+    ENTRY_ORDER_TYPE: z.enum(['LIMIT', 'LIMIT_MAKER']).default('LIMIT'),
     // Quote-currency (USDT) notional per order. Default 100 matches the deployed .env — the prior
     // in-code fallback of '1000' (risk.module.ts/app.module.ts) was drift, never an intended default.
     BASE_NOTIONAL: decimalString.default('100'),
@@ -478,6 +484,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     AGENTIC_PLAN_EXIT_TTL_BARS: agenticPlanExitTtlBars,
     AGENTIC_QUIET_PAYLOAD_SAMPLE_BARS: agenticQuietPayloadSampleBars,
     EXIT_CROSS_BUFFER_BPS: exitCrossBufferBps,
+    ENTRY_ORDER_TYPE: entryOrderType,
     BASE_NOTIONAL: baseNotional,
     SIZER_EQUITY_FRACTION: sizerEquityFraction,
     PROTECT_STOP_LOSS_PCT: protectStopLossPct,
@@ -565,6 +572,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     },
     risk: {
       exitCrossBufferBps,
+      entryOrderType,
       baseNotional,
       equityFraction: sizerEquityFraction,
       protectStopLossPct,

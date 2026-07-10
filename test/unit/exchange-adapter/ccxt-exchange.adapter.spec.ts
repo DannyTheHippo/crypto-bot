@@ -98,16 +98,20 @@ describe('CcxtExchangeAdapter.placeOrder', () => {
     expect(params['timeInForce']).toBeUndefined();
   });
 
-  it('calls createOrder with type=limit and postOnly=true for LIMIT_MAKER', async () => {
+  it('calls createOrder with type=limit, postOnly=true, and NO timeInForce for LIMIT_MAKER', async () => {
     const client = fakeClient();
     const adapter = makeCcxtAdapter(client);
 
-    await adapter.placeOrder({ ...baseReq, type: 'LIMIT_MAKER' });
+    await adapter.placeOrder({ ...baseReq, type: 'LIMIT_MAKER', timeInForce: 'GTC' });
 
     const [, type, , , , params] = (client.createOrder as ReturnType<typeof vi.fn>).mock
       .calls[0] as [string, string, string, string, string | undefined, Record<string, unknown>];
     expect(type).toBe('limit');
     expect(params['postOnly']).toBe(true);
+    // Binance rejects extras on LIMIT_MAKER (-1106) and pinned ccxt forwards params verbatim —
+    // postOnly alone expresses post-only; the intent's GTC persists but never reaches the venue.
+    expect(params['timeInForce']).toBeUndefined();
+    expect(params['clientOrderId']).toBe(COID);
   });
 
   it('passes clientOrderId in params', async () => {

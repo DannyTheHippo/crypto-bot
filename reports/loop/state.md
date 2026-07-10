@@ -378,7 +378,21 @@ owns them).
 
 ## Flagged for human review (open)
 
-- **OWNER DECISION 2026-07-10 — edge question OPENED; consolidated edge program authorized and
+- **EDGE DIAGNOSTIC 2026-07-10 — NO-GO; escalation: fund the carry path, drop the directional
+  candidate** (`reports/loop/edge-diagnostic-2026-07-10.md`). 52 selection-corrected buckets
+  (BTC/ETH × 15m–1d and 5 volatile alts × 15m, seed rule + expected-move filter k∈{1..3}): zero
+  seams. Quantified gap: best qualified bucket (BTC 4h) holds +10.2bps/RT out-of-sample over 61 RT
+  but deflated Sharpe 0.152 vs the 0.95 bar — an order of magnitude short; every 15m bucket
+  (incl. all five volatile alts) loses 12–13bps/RT net. This extends the 2026-06-15 study's
+  verdict to >1h timeframes AND to the volatile-symbol lever: the seed-rule directional edge does
+  not clear the ~20bps fee wall anywhere tested. CONSEQUENCE (per the approved program's gate):
+  C2/C3 candidate work (higher-timeframe/new-symbol playbook) is SKIPPED — building it would
+  monetize noise. RECOMMENDED owner-gated lever, in order: (1) **delta-neutral funding carry
+  (workstream E)** — the one strategy needing no directional call; its prerequisites landed this
+  program (perp adapter b078f64, derivatives feed d76e639, funding-aware backtest b30ed05) and B2
+  risk extension is in flight; (2) enable the derivatives/sentiment prompt feeds (flagged, $0) for
+  LLM context — cheap, but expect no fee-clearing miracle; (3) fee-tier/BNB remains weak (prior:
+  0/64 even @7.5bps). Directional shorts stay unfunded (52 prior short trials failed).
   underway** (plan `open-replicated-platypus`, session-approved). Scope locked by owner: **A**
   backtest/validation spine rebuilt from `5a17615` (landed with this bullet's commit — supersedes the
   harness-retirement note of 2026-07-03; the pure strategy lane stays retired), then the offline edge

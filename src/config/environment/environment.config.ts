@@ -26,6 +26,13 @@ const decimalString = z.string().regex(/^\d+(\.\d+)?$/, 'must be a non-negative 
 const fractionString = z
   .string()
   .regex(/^(0(\.\d+)?|1(\.0+)?)$/, 'must be a decimal string between 0 and 1 inclusive');
+// Positive decimal knob (PERP_LEVERAGE_CAP): a plain decimalString accepts '0', which zeroes the
+// divisor in every margin/liqPrice computation in PaperPerpAdapter (openOrAdd, liqPrice) — fail
+// closed at parse time instead of surfacing as a division-by-zero deep in the adapter.
+const positiveDecimalString = decimalString.refine(
+  (v) => !/^0+(\.0+)?$/.test(v),
+  'must be a positive decimal string',
+);
 
 function isTestOrCiEnv(env: Record<string, string | undefined>): boolean {
   const nodeEnv = env['NODE_ENV'] ?? '';
@@ -309,6 +316,17 @@ const envSchema = z
     RISK_MAX_DRAWDOWN_PCT: decimalString.default('0.2'),
     RISK_MAX_BAND_BPS: z.coerce.number().int().positive().default(100),
     RISK_STALE_MAX_AGE_MS: z.coerce.number().int().positive().default(5000),
+    // Perp/swap paper adapter knobs (B1: PaperPerpAdapter, not yet wired into app.module.ts).
+    // 'true'/'false' (not z.coerce.boolean(), same rationale as AGENTIC_PRESCREEN_ENABLED above).
+    // Default 'false': an unconfigured deployment sees zero behavior change.
+    PERP_VENUE_ENABLED: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
+    PERP_LEVERAGE_CAP: positiveDecimalString.default('1'),
+    // Conservative fallback maintenance-margin-rate (see PaperPerpAdapter's why-comment on the
+    // TODO fetchLeverageTiers wiring): ≈0.005 for the 1-2× BTC/ETH bracket at time of writing.
+    PERP_MMR_FALLBACK: decimalString.default('0.005'),
     // Strategy-lane knobs. ACTIVE_STRATEGY is a closed enum: 'agentic' is the only registered lane
     // (the deterministic pure lane was retired 2026-07-03).
     TRADING_SYMBOL: z.string().min(1).default('BTC/USDT'),
@@ -464,6 +482,9 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     RISK_MAX_DRAWDOWN_PCT: riskMaxDrawdownPct,
     RISK_MAX_BAND_BPS: riskMaxBandBps,
     RISK_STALE_MAX_AGE_MS: riskStaleMaxAgeMs,
+    PERP_VENUE_ENABLED: perpVenueEnabled,
+    PERP_LEVERAGE_CAP: perpLeverageCap,
+    PERP_MMR_FALLBACK: perpMmrFallback,
     TRADING_SYMBOL: tradingSymbol,
     TRADING_SYMBOLS: tradingSymbols,
     STRATEGY_INTERVAL: strategyInterval,
@@ -546,6 +567,11 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       maxDrawdownPct: riskMaxDrawdownPct,
       maxBandBps: riskMaxBandBps,
       staleMaxAgeMs: riskStaleMaxAgeMs,
+    },
+    perp: {
+      enabled: perpVenueEnabled,
+      leverageCap: perpLeverageCap,
+      mmrFallback: perpMmrFallback,
     },
     strategy: {
       symbol: tradingSymbol,

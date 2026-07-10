@@ -399,3 +399,26 @@ export const llmUsage = pgTable('llm_usage', {
   cacheCreationInputTokens: integer('cache_creation_input_tokens'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
+
+// ── funding_events ────────────────────────────────────────────────────────────
+// Append-only journal of perp funding-payment settlements (PaperPerpAdapter.applyFunding, B1):
+// one row per (position, funding timestamp) accrual. payment_quote = −signed_qty × mark_price ×
+// funding_rate (Binance convention: a long with positive funding_rate PAYS — payment_quote
+// negative — a short RECEIVES). Same REVOKE + immutable-trigger treatment as audit_log/order_events
+// (migration 0008 mirrors 0001) — CLAUDE.md rule 6 scopes append-only hardening to rows that are a
+// durable settlement/audit trail, which a funding payment is, unlike agent_decisions' plain-insert
+// analytics table above.
+
+export const fundingEvents = pgTable('funding_events', {
+  id: bigint('id', { mode: 'number' }).generatedAlwaysAsIdentity().primaryKey(),
+  strategyId: text('strategy_id').notNull(),
+  venue: text('venue').notNull(),
+  symbol: text('symbol').notNull(),
+  fundingRate: numericMoney('funding_rate').notNull(),
+  markPrice: numericMoney('mark_price').notNull(),
+  signedQty: numericMoney('signed_qty').notNull(),
+  paymentQuote: numericMoney('payment_quote').notNull(),
+  fundingTime: timestamp('funding_time', { withTimezone: true }).notNull(),
+  mode: text('mode').notNull().$type<'paper' | 'testnet' | 'live'>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+});

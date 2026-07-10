@@ -156,6 +156,14 @@ export interface AppConfig {
     maxBandBps: number;
     staleMaxAgeMs: number;
   };
+  // Perp/swap paper adapter knobs (B1). PaperPerpAdapter is not wired into app.module.ts this
+  // pass — enabled stays false so an unconfigured deployment sees zero behavior change; these
+  // are scaffolding for the future composition-root wiring.
+  perp: {
+    enabled: boolean;
+    leverageCap: string;
+    mmrFallback: string;
+  };
   // Strategy-lane knobs (symbol/interval/active lane selection) read via ConfigService.
   strategy: {
     // Deprecated single-symbol knob; still honored as the fallback when TRADING_SYMBOLS is unset.

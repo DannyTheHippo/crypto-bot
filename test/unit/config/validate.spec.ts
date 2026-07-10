@@ -593,6 +593,20 @@ describe('validate()', () => {
     });
   });
 
+  describe('perp config', () => {
+    it('PERP_LEVERAGE_CAP defaults to 1 and overrides as an exact decimal string', () => {
+      expect(validate({ PORT: '3100' }).perp.leverageCap).toBe('1');
+      expect(validate({ PORT: '3100', PERP_LEVERAGE_CAP: '5' }).perp.leverageCap).toBe('5');
+    });
+
+    it('rejects PERP_LEVERAGE_CAP=0 (fail closed: a zero cap divides margin/liqPrice by zero)', () => {
+      expect(() => validate({ PORT: '3100', PERP_LEVERAGE_CAP: '0' })).toThrow(/PERP_LEVERAGE_CAP/);
+      expect(() => validate({ PORT: '3100', PERP_LEVERAGE_CAP: '0.0' })).toThrow(
+        /PERP_LEVERAGE_CAP/,
+      );
+    });
+  });
+
   describe('strategy config', () => {
     it('TRADING_SYMBOLS absent → symbols falls back to [TRADING_SYMBOL]', () => {
       expect(validate({ PORT: '3100' }).strategy.symbols).toEqual(['BTC/USDT']);

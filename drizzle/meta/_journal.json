@@ -57,6 +57,13 @@
       "when": 1781282295784,
       "tag": "0007_stamp_terminal_at",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1781282295785,
+      "tag": "0008_funding_events",
+      "breakpoints": true
     }
   ]
 }

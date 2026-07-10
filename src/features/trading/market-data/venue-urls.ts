@@ -2,6 +2,11 @@ export interface ResolvedVenueUrls {
   readonly restSpot: string;
   readonly wsSpot: string;
   readonly wsApiSpot: string;
+  // USD-M swap (binanceusdm) REST bases — empty string for spot venues. public/private resolve to
+  // the same fapi host at ccxt 4.5.58 (both market data and trading go through
+  // fapiPublic/fapiPrivate); kept as two fields so a future venue can diverge without a shape change.
+  readonly restSwapPublic: string;
+  readonly restSwapPrivate: string;
 }
 
 /**
@@ -13,6 +18,7 @@ export interface ResolvedVenueUrls {
  *
  * Binance: urls.api.public (REST spot), urls.api.ws.spot (WS streams),
  *          urls.api['ws-api'].spot (WS-API).
+ * Binanceusdm (USD-M swap): urls.api.fapiPublic / urls.api.fapiPrivate (REST).
  */
 export function resolveVenueUrls(
   exchange: {
@@ -38,6 +44,18 @@ export function resolveVenueUrls(
       restSpot: sub(api['public']),
       wsSpot: sub(ws?.['spot']),
       wsApiSpot: sub(wsApi?.['spot']),
+      restSwapPublic: '',
+      restSwapPrivate: '',
+    };
+  }
+
+  if (venueId === 'binanceusdm') {
+    return {
+      restSpot: '',
+      wsSpot: '',
+      wsApiSpot: '',
+      restSwapPublic: sub(api['fapiPublic']),
+      restSwapPrivate: sub(api['fapiPrivate']),
     };
   }
 
@@ -47,5 +65,7 @@ export function resolveVenueUrls(
     restSpot: sub(api['public'] ?? api['rest']),
     wsSpot: sub(ws?.['spot'] ?? ws?.['public']),
     wsApiSpot: '',
+    restSwapPublic: '',
+    restSwapPrivate: '',
   };
 }

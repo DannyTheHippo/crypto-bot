@@ -112,12 +112,12 @@ describe('AgentMetricsRecorder', () => {
     expect(metric).not.toContain('version="1"');
   });
 
-  it('recordValidatorRejection tags banned_token true/false', async () => {
-    recorder.recordValidatorRejection(true);
-    recorder.recordValidatorRejection(false);
+  it('recordValidatorRejection tags banned_token true/false and the concept token', async () => {
+    recorder.recordValidatorRejection(true, 'leverage');
+    recorder.recordValidatorRejection(false); // structural rejection: token defaults to 'none'
     const metric = await register.getSingleMetricAsString('playbook_validator_rejections_total');
-    expect(metric).toContain('banned_token="true"} 1');
-    expect(metric).toContain('banned_token="false"} 1');
+    expect(metric).toContain('banned_token="true",token="leverage"} 1');
+    expect(metric).toContain('banned_token="false",token="none"} 1');
   });
 
   it('setClientInfo sets agent_client_info{kind} to 1', async () => {

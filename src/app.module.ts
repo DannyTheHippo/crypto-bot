@@ -870,7 +870,10 @@ class ValidatingPlaybookProvider implements PlaybookStorePort {
     const stored = await this.inner.current();
     const validation = validatePlaybook(stored.content);
     if (!validation.ok) {
-      this.recorder.recordValidatorRejection(validation.bannedTokenHit ?? false);
+      this.recorder.recordValidatorRejection(
+        validation.bannedTokenHit ?? false,
+        validation.bannedToken,
+      );
       return { ...SEED_PLAYBOOK, source: 'seed' };
     }
     return stored;

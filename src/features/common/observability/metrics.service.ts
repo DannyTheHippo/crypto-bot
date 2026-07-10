@@ -130,8 +130,10 @@ export const AGENTIC_PLAYBOOK_INFO_GAUGE = makeGaugeProvider({
 });
 export const PLAYBOOK_VALIDATOR_REJECTIONS_COUNTER = makeCounterProvider({
   name: 'playbook_validator_rejections_total',
-  help: 'Playbook validator rejections, tagged by whether the denylist tripwire fired',
-  labelNames: ['banned_token'] as const,
+  help: 'Playbook validator rejections, tagged by whether the denylist tripwire fired and which concept',
+  // `token` is the matched denylist concept label (bounded ~20-value set) or 'none' for a structural
+  // rejection — low cardinality, so the exact trigger is queryable without the ephemeral warn log.
+  labelNames: ['banned_token', 'token'] as const,
 });
 // (E) Which agent client the lane bound at boot: 'stub' = inert (no ANTHROPIC_API_KEY, or test/ci) so
 // the demo proposes nothing; 'anthropic' = a live client that actually decides. One series carries 1.

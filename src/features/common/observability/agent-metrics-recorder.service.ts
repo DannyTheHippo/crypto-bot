@@ -98,9 +98,12 @@ export class AgentMetricsRecorder {
     }
   }
 
-  recordValidatorRejection(bannedToken: boolean): void {
+  recordValidatorRejection(bannedTokenHit: boolean, token?: string): void {
     try {
-      this.validatorRejectionsCounter.inc({ banned_token: String(bannedToken) });
+      this.validatorRejectionsCounter.inc({
+        banned_token: String(bannedTokenHit),
+        token: token ?? 'none',
+      });
     } catch {
       /* metrics must never throw into a trading path */
     }

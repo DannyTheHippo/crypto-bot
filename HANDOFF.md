@@ -28,32 +28,24 @@ tracks execution state against its `## Todo Steps` DAG, not the design itself.
 
 ## In Progress / Open
 
-- **#5 C4** (news/sentiment feed) — NOT STARTED. Two prior dispatch attempts died at a ~25-tool-
-  call background-subagent ceiling with zero edits made. Third attempt should mirror the MERGED
-  derivatives-feed wiring on `main` (`d76e639`) as a template: port + DI + prompt-block + flag
-  pattern, same shape as C1 in `src/features/trading/market-data/` + `agent-prompt.ts`.
-- **#10 INT-C4** — blocked on #5.
-- **#11 INT-D1** — D1 worktree exists: `.claude/worktrees/agent-a5d625c66dab3e055`, base `eb3d64a`
-  (stale — predates P0 and everything after). Reconcile via **branch-commit + 3-way merge, NOT
-  stash** — shared surfaces (`environment.config.ts`, `.env.example`, `docker-compose.yml`,
-  `package.json`, `venue-urls.ts`+spec) have churned heavily since `eb3d64a`.
-- **#14 B2 gate+merge** — B2 worktree `.claude/worktrees/agent-a238a483b2c0b529d`, base `b078f64`
-  (fresh — this is exactly INT-B1's commit). Work is COMPLETE in-worktree: 154 targeted tests +
-  1529 full suite green. Needs, in order: `reviewer` + `security-auditor` dispatch → money-path
-  gate → merge → commit. Carried requirements pinned to this task (do not drop when merging):
-  - Security: guard on ccxt-resolved private URL post-`setSandboxMode` at wiring time; boot config
-    must be mandatory non-paper.
-  - Reviewer: OMS terminalization semantics for `reduceOnly`-capped orders must be checked before
-    wiring.
-  - Funding-bypasses-margin fidelity note (funding accrues independent of margin state — confirm
-    the risk extension doesn't implicitly assume margin-gated funding).
-  - Its binary liq-gate deviation from the plan's continuous liq-distance-buffer language is
-    correct-by-construction (isolated one-way liq is inherently a threshold, not a continuous
-    buffer) — do not flag as a deviation needing rework.
-- **#15 B3** (shorts mapping + testnet swap smoke) — BLOCKED on owner supplying Binance Futures
-  Testnet keys (withdrawals-disabled). No further action possible until keys arrive.
-- **#20 E** (funding-carry convergence stub) — blocked on #14 (B2 merge).
-- **#22 FINAL** gate — blocked on #11, #15, #20; scope was amended to also require #21 (done).
+**PROGRAM COMPLETE except B3.** Everything below landed after the handoff above was first written:
+
+- **#5 C4 / #10 INT-C4** `06dc777` — sentiment feed (CryptoPanic), flagged OFF; reviewer-approved
+  (should-fix applied: per-field headline caps). Third dispatch with C1-as-template worked.
+- **#11 INT-D1** `bbf3508` — ENTRY_ORDER_TYPE flag; security-auditor approve; reviewer should-fix
+  applied: adapter no longer forwards timeInForce for LIMIT_MAKER (Binance -1106); venue acceptance
+  of postOnly-only params MUST be verified in B3's testnet pass before the knob is ever enabled.
+- **#14 INT-B2** `6a94bc4` — perp risk extension; reviewer+auditor approve after fixes (freeMargin
+  branch coverage; flip drops cooldown stamp). Also closed a PRE-EXISTING execution coverage hole
+  (reconciliation.service.ts:212 rethrow) — `test:cov` is fully green for the first time since
+  f5ce2c0.
+- **#20 E** `8e3a4bb` — funding-carry convergence stub recorded in state.md § Flagged.
+- **#15 B3** — STILL BLOCKED on owner Binance Futures Testnet keys (withdrawals-disabled).
+  Task #15's description carries all wiring requirements (guard-on-resolved-URL, mandatory boot
+  config, OMS reduceOnly terminalization, LIMIT_MAKER venue acceptance).
+- **#22 FINAL** — full sweep run 2026-07-10 post-`8e3a4bb`: build/lint/lint:md/typecheck/format,
+  test 1572, eval 15+3skip, livegate 41, paper 11, db 44skip (owner-runnable), **test:cov green**,
+  backtest 10+1skip; tree clean. Formally closes when B3 lands.
 
 ## Open Decisions
 

@@ -1,16 +1,34 @@
 import type { SymbolId } from './ids';
 
-// Unified ccxt symbol format is BASE/QUOTE (e.g. BTC/USDT). v1 supports only this shape;
-// anything else is a config error surfaced at parse time, never silently mis-split.
+// Unified ccxt symbol format is BASE/QUOTE (e.g. BTC/USDT), or ccxt's linear-swap perp form
+// BASE/QUOTE:SETTLE (e.g. BTC/USDT:USDT) where the :SETTLE suffix names the settlement asset —
+// almost always identical to QUOTE, but kept separate rather than folded into quote so
+// base/quote asset comparisons (fee classification, position sizing) never see the raw
+// "USDT:USDT" string. Anything else is a config error surfaced at parse time, never silently
+// mis-split.
 export interface AssetPair {
   readonly base: string;
   readonly quote: string;
+  readonly settle?: string;
 }
 
 export function splitSymbol(symbol: SymbolId): AssetPair {
   const parts = symbol.split('/');
   if (parts.length !== 2 || parts[0] === '' || parts[1] === '') {
-    throw new Error(`unsupported symbol format (expected BASE/QUOTE): "${symbol}"`);
+    throw new Error(
+      `unsupported symbol format (expected BASE/QUOTE or BASE/QUOTE:SETTLE): "${symbol}"`,
+    );
   }
-  return { base: parts[0]!, quote: parts[1]! };
+  const colonIdx = parts[1]!.indexOf(':');
+  if (colonIdx === -1) {
+    return { base: parts[0]!, quote: parts[1]! };
+  }
+  const quote = parts[1]!.slice(0, colonIdx);
+  const settle = parts[1]!.slice(colonIdx + 1);
+  if (quote === '' || settle === '') {
+    throw new Error(
+      `unsupported symbol format (expected BASE/QUOTE or BASE/QUOTE:SETTLE): "${symbol}"`,
+    );
+  }
+  return { base: parts[0]!, quote, settle };
 }

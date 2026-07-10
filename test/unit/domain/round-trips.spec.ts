@@ -156,6 +156,31 @@ describe('domain/risk round-trip walk', () => {
     expect(cycles[0]!.feesQuote.toFixed()).toBe('0.21');
   });
 
+  it("treats a linear-swap BASE/QUOTE:SETTLE symbol's quote fee as convertible (settle suffix stripped)", () => {
+    const { cycles, unconvertibleFeeAsset } = walkRoundTrips(
+      [
+        fill({
+          symbol: 'BTC/USDT:USDT',
+          qty: '1',
+          price: '100',
+          fee: '0.1',
+          feeAsset: 'USDT',
+          executedAt: 1,
+        }),
+        fill({
+          symbol: 'BTC/USDT:USDT',
+          side: 'SELL',
+          qty: '1',
+          price: '110',
+          executedAt: 2,
+        }),
+      ],
+      DUST,
+    );
+    expect(unconvertibleFeeAsset).toBe(false);
+    expect(cycles[0]!.feesQuote.toFixed()).toBe('0.1');
+  });
+
   it('flags an unconvertible fee asset and excludes it from the per-cycle sum', () => {
     const { cycles, unconvertibleFeeAsset } = walkRoundTrips(
       [
@@ -211,6 +236,16 @@ describe('domain/risk sumFeesQuote', () => {
   it('excludes unconvertible fee assets from the sum', () => {
     const total = sumFeesQuote([fill({ fee: '3', feeAsset: 'BNB' })]);
     expect(total.toFixed()).toBe('0');
+  });
+
+  it("sums a linear-swap symbol's quote fee (settle suffix stripped, not dropped)", () => {
+    // Pre-fix, quoteAssetOf('BTC/USDT:USDT') returned 'USDT:USDT', so a USDT perp fee fell out
+    // of this sum — the cross-cycle fee total the promotion verdict subtracts for net-of-cost.
+    const total = sumFeesQuote([
+      fill({ symbol: 'BTC/USDT:USDT', fee: '0.5', feeAsset: 'USDT' }),
+      fill({ symbol: 'BTC/USDT:USDT', fee: '0.001', feeAsset: 'BTC', price: '200' }), // 0.2
+    ]);
+    expect(total.toFixed()).toBe('0.7');
   });
 
   it('treats a slashless symbol as having no quote asset (unconvertible quote-looking fee)', () => {

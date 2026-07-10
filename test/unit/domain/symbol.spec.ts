@@ -16,4 +16,20 @@ describe('splitSymbol', () => {
     expect(() => splitSymbol(symbolId('/USDT'))).toThrow(/unsupported symbol format/);
     expect(() => splitSymbol(symbolId('BTC/'))).toThrow(/unsupported symbol format/);
   });
+
+  it('splits a linear-swap BASE/QUOTE:SETTLE symbol, stripping the settle suffix from quote', () => {
+    expect(splitSymbol(symbolId('BTC/USDT:USDT'))).toEqual({
+      base: 'BTC',
+      quote: 'USDT',
+      settle: 'USDT',
+    });
+  });
+
+  it('rejects a colon form with an empty settle asset', () => {
+    expect(() => splitSymbol(symbolId('BTC/USDT:'))).toThrow(/unsupported symbol format/);
+  });
+
+  it('rejects a colon form with an empty quote asset', () => {
+    expect(() => splitSymbol(symbolId('BTC/:USDT'))).toThrow(/unsupported symbol format/);
+  });
 });

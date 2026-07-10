@@ -378,8 +378,20 @@ owns them).
 
 ## Flagged for human review (open)
 
-- **FUNDING-CARRY CONVERGENCE STUB 2026-07-10 — prerequisites landed; awaiting its own gated
-  sub-plan (owner approval to build).** Delta-neutral carry (long spot + short equal-notional perp,
+- **OWNER DECISIONS 2026-07-10 (supersede this program's owner-proposal posture).** (1) **No owner
+  gate on redeploy** — validated-better versions are always committed AND deployed (demo/paper
+  stack) autonomously; "better" still means the unchanged ship criterion (gates green +
+  out-of-sample / net-of-cost evidence + playbook §5 soak), only the human sign-off on the
+  redeploy itself is removed. (2) **The daily loop (or equivalent automated process) drives the
+  program** — carry sub-plan progression, feed A/B enablement, candidate iteration are loop work,
+  not owner proposals. (3) **The ONLY human touch is the live-money flip** — the four live gates,
+  bootId arming ceremony, and promotion gate are unchanged and remain the sole owner checkpoint.
+  (4) **BINANCE_DEMO_\* keys cover futures-demo (demo-fapi) testing** — B3 runs against the demo
+  environment with existing keys, no new testnet keys. Loop mandate accordingly: pick up the carry
+  sub-plan (design → $0 offline funding-carry backtest on the spine → paper build behind
+  PERP_VENUE_ENABLED with the B3-tracked wiring requirements → demo soak), enable-and-A/B the
+  derivatives/sentiment feeds with net-of-cost attribution (+d1/+s1 promptHash tags), and deploy
+  each green increment. Delta-neutral carry (long spot + short equal-notional perp,
   earning funding with no directional call — the diagnostic-recommended lever) can now be designed
   on: `PaperPerpAdapter` + `funding_events` append-only accounting (b078f64), perp Risk sizing
   caps + short protective-exit + the unconsumed `expectedFundingBpsPerHold` sizing hook (6a94bc4),

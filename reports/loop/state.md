@@ -32,7 +32,10 @@ never changes for strategy evolution.
      (`21c9b2d` — retry-with-feedback + additive trigger rollback + reset-robust alerts, backlog #31,
      shipped this session, not a loop pass). Live MINT confirmation (a reflection resolving to
      `minted`/`no_change` rather than `validator_reject`/`transport_error`) is still PENDING the next
-     reflection firing.
+     reflection firing. NB the 20:26Z wipe reset the reflection trip counters to 0 and Pass 14
+     (`3e5773f`) lowered `AGENTIC_REFLECTION_EVERY_N_TRADES` 5→2 (the counter is PER STRATEGY;
+     the 5-symbol widening had silently slowed lane cadence ~5×) — reflection now fires on the
+     first strategy to close 2 fresh trips.
   3. **Earned-live** — pass the coded promotion gate (`PromotionReadinessService`: ≥30 closed demo
      round trips, net-of-cost > 0, ≥14d window), then the unchanged human four-gate arming
      ceremony. Nothing automates live.
@@ -194,6 +197,26 @@ candidates; whether the minted candidates then earn A/B-attributed promotion is 
 exit question.
 
 ## Last pass
+
+**Pass 14, 2026-07-10** (scheduled run, ~21:22–21:55Z) — **SHIP a learning-cadence compensation;
+first scheduled pass after the wipe + incident-follow-up redeploys.** Evidence clean on boot
+`e3e19aa0` (28 min at pass start): 0 errors, reconcile 68/68 clean, kill switch RUNNING, 0
+EXPIRED, eval:agentic green, equity $4,996.5 (dd 0.069%, trade-explained). Model flattened the
+wipe-surviving ETH/XRP longs (2 RT losses in-memory) then opened a fresh XRP long at 21:33Z —
+the first position whose ENTRY fill is post-epoch/DB-visible (its close is the first trip that
+can score on the gate). **Durable finding: scoreboard RT=0 vs in-memory 2 RT is the documented
+promotion-walk STRADDLE BOUND** (both trips opened pre-epoch; exit-only cycles can't form —
+conservative, self-fading, NOT the §7 trust-breach condition; no epoch move recommended — a new
+XRP long is open, moving it would mint a new straddle). **Shipped `3e5773f` (MAINTENANCE,
+config-only):** `AGENTIC_REFLECTION_EVERY_N_TRADES` 5→2 — the trigger counts trips PER STRATEGY
+(P7 single-instrument digests), so the 5-symbol widening had silently slowed lane-level
+reflection cadence ~5×; N=2 restores the owner's calibrated trips-to-trigger; 6h cooldown +
+$5/day breaker unchanged. Gates full green (1659 unit), redeployed boot `c0e2ef7a` 21:34:57Z,
+env verified in-container, soak clean. Backup `cryptobot-20260710T213524Z.sql.gz` taken (§5
+standing duty). Corpus at pass end: 7 payload rows — candidate scoring (`candidates/2026-07-10/
+{a,b}`, needs ≥10–20) likely eligible NEXT pass; E2 at ≥200 still days out. Next-pass
+candidates: score a/b; **#28 model label BEFORE the first Opus reflection fires** (N=2 makes it
+near); E2; #32. Empty-pass counter 0. Full detail in LOG.md.
 
 **Owner session, 2026-07-10 (~17:30–21:50Z) — self-learning platform shipped; 12 commits
 (`3c1adc7`..HEAD), every increment gates-green, deployed, soaked.** Shipped: reflection

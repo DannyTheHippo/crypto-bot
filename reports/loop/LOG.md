@@ -1316,6 +1316,85 @@ scheduled `pg_dump` (cron or loop duty).
 **Spend:** ~$3.2 of eval API calls whose scorecards were lost to the interception/misfire
 mishaps (within the ≤$20 gate budget, logged for cost honesty). Gates at commit: see commit.
 
+## 2026-07-10 — Pass 14 (scheduled run, ~21:22–21:55Z): MAINTENANCE — reflection cadence compensated for the 5-symbol widening
+
+**Data window:** boot `e3e19aa0` (the incident-follow-up redeploy, up 28 min at pass start) +
+DB/Prometheus since the 20:26Z epoch. This pass fired ~30 min behind the owner-directed
+incident-follow-up pass — a short window by schedule collision, same as Pass 9.
+
+**Headline metrics (scoreboard + $/day):** gate RT **0**, net-of-cost **−$0.19** (LLM $0.101,
+fees $0.089, realized $0 — see the straddle finding below), window 0d, ready=0. True spend
+$0.101 over the epoch's first ~56 min — a decide-heavy window (position flattening);
+in line with the ~$2.2–2.5/day 5-symbol projection, under the $5 breaker. Prescreen 10 skip /
+3 called (~77% skip, n too small to tune on). Equity $4,996.54, dd 0.069%, fully
+trade-explained. Reconciliation **68/68 clean**, kill switch RUNNING, 0 error/warn lines,
+0 EXPIRED, harness probe `pnpm eval:agentic` GREEN (15 passed / 4 self-skipped).
+
+**Lane activity since epoch:** 3 LLM decides (1 hold, 2 proposed) + prior-boot decides = 5
+Sonnet rows, all with `input_payload` (capture is 100% on LLM decides — corpus accrual is
+decide-rate-bound; 7 payload rows total at pass start, so candidate scoring [needs ≥10–20]
+and E2 [≥200] stay queued). The 2 proposes flattened the wipe-surviving ETH/XRP longs
+(fills 168/169, both losses, −$0.58/−$0.089 realized in-memory). At 21:33Z (during this
+pass) the model opened a fresh XRP long (fill 170, 31.6 @ 1.1055, ~$35 notional —
+expectancy-ladder-reduced sizing) — the FIRST position whose entry fill is post-epoch and
+DB-visible: its eventual round trip is the first that can count on the gate scoreboard.
+
+**DURABLE FINDING — scoreboard RT=0 vs `round_trips_total`=2 is EXPLAINED, not a §7 trust
+breach.** Both of today's closed trips opened BEFORE the 20:26Z wipe-epoch; the promotion
+walk filters fills to `venue_timestamp >= epoch` BEFORE walking
+(`promotion-readiness.service.ts` STRADDLE BOUND comment, reviewer 2026-07-08), so exit-only
+cycles cannot form: RT=0, realized=$0, and the gate's net charges only the exits' fees
+($0.089) + LLM cost. The artifact is bounded and conservative (never inflates), and fades as
+post-epoch trips accrue. **No epoch move recommended:** positions are no longer flat (the
+21:33Z XRP long is open), so re-declaring the epoch now would just mint a NEW straddle and
+orphan the first clean entry. Recorded so no future pass burns time re-deriving it or
+mistakes it for the §7 "scoreboard contradicts logs" stop condition.
+
+**Pass type: MAINTENANCE** (no trading-path correctness bug; PROMOTION ineligible — no
+candidate in A/B, playbook v1 seed only; CANDIDATE ineligible — 7 payload rows < the 10–20
+scoring floor). **Shipped `3e5773f`:** `AGENTIC_REFLECTION_EVERY_N_TRADES` 5→2
+(docker-compose.yml + .env.example). Evidence chain: the trigger counter is PER STRATEGY
+(`reflection.service.ts:489` keys by strategyId — deliberate, P7 single-instrument digests),
+so the 2026-07-10 widening to 5 symbols spread trips across `agentic-1..5` and silently
+slowed the lane-level reflection cadence ~5× — directly against the owner's 2026-07-08
+rationale for 10→5 ("iteration speed is the learning bottleneck"). N=2 at 5 symbols ≈ the
+calibrated N=5-at-2-symbols lane trips-to-trigger (~6–9 vs ~10). Cadence knobs are explicitly
+in §4 MAY (owner 2026-07-08 learning-system mandate). Spend stays bounded: 6h global
+cooldown (≤4 reflections/day), per-call budget reservation, $5/day breaker. Trade-off noted
+for the owner: a reflection now fires on 2 own-trips of closed-trade evidence (plus
+hold/calibration digests over all decisions) — thinner per-attempt evidence, guarded
+downstream by the validator + offline replay + 25% A/B + attributed promotion.
+
+**Also observed (no action):** the wipe reset the reflection trip counters — the DB seed
+reads the fills walk, which cannot see the 2 straddle trips, so their in-memory trigger
+progress (agentic-2: 1, agentic-4: 1) was lost in this redeploy; it was doomed on ANY future
+restart, which is why the redeploy wasn't deferred for it. All future trips are walk-visible.
+
+**Gates:** build / lint / lint:md / typecheck / format green, **1659 unit**, eval:agentic 15
+(pre-commit hook re-ran the suite at commit). **Deploy:** image rebuilt (build-before-up
+honored), boot `c0e2ef7a` 21:34:57Z clean — env verified IN the container (`printenv`=2),
+playbook v1 resolved, portfolio restored exactly (incl. the 21:33Z XRP long), 0 orders
+seeded, expectancy ladder ACTIVE, 0 errors. Soak: see verdict line appended below.
+
+**Standing duty:** `scripts/db-backup.sh` run — `cryptobot-20260710T213524Z.sql.gz` (48K,
+second backup of the day, keep-14).
+
+**Flagged for human review:** nothing new requiring a decision. FYI-only: (1) the straddle
+finding above (self-resolving); (2) reflection cadence trade-off above (revert = one env
+line).
+
+**Next-pass candidates:** (1) score `candidates/2026-07-10/{a,b}` once payload rows ≥10–20
+(likely by the next pass at ~100–150 rows/day; SAFE recipe in the incident entry — single
+spec FILE path first, flags after, export only needed vars); (2) **#28 model label on
+`agent_tokens_total`/`agent_decide_total`** — bumped in priority: with N=2 the first Opus
+reflection is near, and shipping the label BEFORE it fires means per-model $/day splits
+cleanly from sample one; (3) E2 `eval:candidates` at ≥200 rows; (4) #32 reflection SSE
+streaming (M, after first-mint confirms the current path).
+
+**Soak verdict (appended at pass end):** 21:45Z bar processed clean on boot `c0e2ef7a` —
+prescreen/decide counters advancing, 0 EXPIRED, 0 new error/warn, kill switch RUNNING,
+reconciliation clean. Deploy verdict: KEEP.
+
 ## 2026-07-10 — Owner-directed pass 2 (fable5, ~20:50–21:30Z): MAINTENANCE — incident follow-ups closed, redeployed, clean
 
 **Pass type:** maintenance (correctness of measurement outranked candidate work: the scoring

@@ -42,7 +42,7 @@ export interface StrategyInitContext {
 // EARNED, not assumed — assertAgenticLaneNotLive refuses a live boot unless the
 // PromotionReadinessService verdict passes (>=30 closed demo round trips AND positive net-of-cost
 // PnL over >=14 days), and the four-gate arming ceremony still binds on top. See
-// docs/archive/nighly-improvement.md (historical step-D program) and CLAUDE.md rule 4.
+// docs/archive/nightly-improvement.md (historical step-D program) and CLAUDE.md rule 4.
 
 // An immutable, point-in-time copy of market state handed to an agent at decide() time. Unlike the
 // live host `MarketView`, every container here is COPIED at call time (arrays/maps cloned; the

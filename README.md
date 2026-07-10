@@ -1,9 +1,13 @@
 # crypto-bot
 
 A Binance spot trading bot with paper-first defaults, a four-gate live interlock, strict money-safety,
-a risk engine, a kill-switch, and full observability. Written in NestJS 11 / TypeScript strict. Runs
-an EMA-cross strategy on configurable timeframes; paper mode requires no credentials and no network
-access to the exchange.
+a risk engine, a kill-switch, and full observability. Written in NestJS 11 / TypeScript strict. The
+active strategy lane is agentic — an LLM (`ACTIVE_STRATEGY=agentic`) proposes Signals on a configurable
+candle interval; the older deterministic EMA-cross/donchian lane was retired (owner decision
+2026-07-03; see `docs/archive/nightly-improvement.md`, historical). The agentic lane is gated: it stays
+paper/demo until `PromotionReadinessService` certifies it (>=30 closed demo round trips and positive
+net-of-cost PnL over >=14 days), on top of the unchanged four-gate live interlock below. Paper mode
+requires no credentials and no network access to the exchange.
 
 Three modes: **paper** (default — fully in-memory simulator driven by real market data, no credentials
 required), **testnet** (real `CcxtExchangeAdapter` against a Binance sandbox — either Binance Demo
@@ -113,8 +117,8 @@ pnpm build
 pnpm start
 ```
 
-A complete annotated round-trip run (EMA-cross BUY → SELL on BTC/USDT, fills matched against the
-demo account ledger) is documented in [docs/demo-trading-run.md](docs/demo-trading-run.md).
+For sandbox internals (Demo vs Spot Testnet URL selection, venue capabilities, multi-symbol operation),
+see the "Running against a sandbox" section of [docs/runbook.md](docs/runbook.md).
 
 > **Note:** Binance Spot Testnet (`SANDBOX_ENV=testnet`) uses `BINANCE_TESTNET_*` keys and connects
 > to `testnet.binance.vision`. The two key pairs are non-interchangeable. Testnet books are thin and
@@ -135,9 +139,10 @@ Key environment variables (full list with comments in `.env.example`):
 | `BINANCE_TESTNET_API_KEY` / `_SECRET` | Binance Spot Testnet credentials (used when `SANDBOX_ENV=testnet`)             | —                         |
 | `BINANCE_LIVE_API_KEY` / `_SECRET`    | Live credentials — read only when `TRADING_MODE=live`                          | —                         |
 | `ARMING_SECRET`                       | HMAC key for the live arming handshake                                         | —                         |
-| `TRADING_SYMBOL`                      | Symbol to trade (must have a filter entry in risk module)                      | `BTC/USDT`                |
-| `STRATEGY_INTERVAL`                   | Candle interval: `1m` \| `5m` \| `15m` \| `1h` \| `4h` \| `1d`                 | `1m`                      |
-| `EMA_FAST` / `EMA_SLOW`               | EMA periods for the cross strategy                                             | `3` / `5`                 |
+| `TRADING_SYMBOL`                      | DEPRECATED single-symbol fallback (used only when `TRADING_SYMBOLS` is unset)  | `BTC/USDT`                |
+| `TRADING_SYMBOLS`                     | Symbols the agentic lane trades (must each have a filter entry in risk module) | `BTC/USDT,ETH/USDT`       |
+| `STRATEGY_INTERVAL`                   | Candle interval: `1m` \| `5m` \| `15m` \| `1h` \| `4h` \| `1d`                 | `15m`                     |
+| `ACTIVE_STRATEGY`                     | Strategy lane — closed enum, `agentic` is the only registered lane             | `agentic`                 |
 | `BASE_NOTIONAL`                       | Quote (USDT) per order                                                         | `100`                     |
 | `STARTING_CASH`                       | In-memory quote balance the bot tracks (set near the account's USDT balance)   | `5000`                    |
 | `DATABASE_URL`                        | Postgres connection string — optional; paper/demo run fine without it          | _(unset)_                 |
@@ -184,18 +189,26 @@ events across a boot session.
 ## Architecture
 
 The codebase is hexagonal (ports & adapters) in three rings. `src/domain/` is pure: no I/O, no
-NestJS, no ccxt, no `Date.now`, no `process.env` — only typed domain logic (strategy, risk rules,
-sizing, OMS state-machine reducer, paper fill model). `src/ports/` holds interfaces and DI tokens.
-`src/modules/` contains the impure NestJS shells (market-data, strategy, risk, execution,
-exchange-adapter, persistence, observability, config, mode-control, trading). `app.module.ts` is the
-composition root — the only file that knows concretions.
+NestJS, no ccxt, no `Date.now`, no `process.env` — only typed domain logic (indicators, risk rules,
+OMS state-machine reducer, paper fill model, mode/arming resolution). `src/ports/` holds interfaces
+and DI tokens. `src/features/` contains the impure NestJS shells: `trading/agentic` (the LLM strategy
+lane — StrategyHost, agent client, plan executor, promotion evaluator), `trading/market-data`,
+`trading/risk`, `trading/execution`, `trading/exchange` (ccxt adapters + paper/perp adapters),
+`trading/mode-control` (arming interlock, key probe, promotion readiness), and `common/observability`.
+`src/database/` holds Drizzle repositories and schemas. `src/config/environment/` validates `AppConfig`
+(Zod). `app.module.ts` is the composition root — the only file that knows concretions. The agentic lane
+sits outside `src/domain`: it is async and calls an out-of-process LLM, so it is intentionally not
+pure/deterministic (see CLAUDE.md rule 4).
 
-Order path: **Strategy** emits Signals (conviction, no quantities) → **Risk** sizes and vetoes →
-**Execution** stamps a `RiskApprovedIntent` (brand + HMAC proof) → **ExchangeAdapter** places the
-order. Execution never widens its signature; strategies cannot import execution or adapter code.
+Order path: **Strategy** (the agentic lane) emits Signals (conviction, no quantities) → **Risk** sizes
+and vetoes → **Execution** stamps a `RiskApprovedIntent` (brand + HMAC proof) → **ExchangeAdapter**
+places the order. Execution never widens its signature; strategies cannot import execution or adapter
+code (`eslint-plugin-boundaries` enforces the wall).
 
-See [docs/archive/design-plan.md](docs/archive/design-plan.md) for the full architecture, module contracts, OMS
-design, risk rules, persistence schema, and phased build order.
+This section and [Project layout](#project-layout) below are the current source of truth.
+[docs/archive/design-plan.md](docs/archive/design-plan.md) is retained as a historical reference for
+the original phased build order; it predates the agentic-lane rebuild and no longer describes the
+current module layout.
 
 ---
 
@@ -223,35 +236,38 @@ paper-honesty checks) are in [docs/runbook.md](docs/runbook.md).
 
 ```text
 src/
-  domain/          pure domain logic — strategy, risk rules, sizing, OMS reducer, paper fill model
-    types/         branded Decimal types (Price, Qty, Notional, …), MarketEvent, Signal, OrderIntent
-    strategy/      EMA-cross and other strategy implementations
-    risk/          pure rule functions
-    sizing/        pure sizing math
-    oms/           state-machine reducer
-    paper/         paper fill model
-  ports/           interfaces + DI tokens only; imports domain types only
-  modules/         NestJS modules (impure shells)
-    config/        AppConfig validation (Zod)
-    market-data/   WS ingestion, normalization, feed health
-    strategy/      StrategyHost, signal dispatch
-    risk/          RiskEngine, sizer, filters
-    execution/     ExecutionService, OMS, fill ingestor
-    exchange-adapter/  CcxtExchangeAdapter (testnet/demo/live) + PaperExchangeAdapter
-    persistence/   Drizzle repositories, migration runner
-    mode-control/  ModeControl, arming interlock, key probe
-    observability/ Prometheus metrics, health endpoints
-    trading/       TeeingMarketStream, DemoFillPollerService, boot driver
-  app.module.ts    composition root
-drizzle/           schema definitions and migrations
-observability/     Prometheus config, Grafana provisioning (dashboards + datasources)
-docs/             runbook.md, archive/design-plan.md, demo-trading-run.md
+  domain/                    pure domain logic — no I/O, NestJS, ccxt, Date.now, or process.env
+    types/                   branded Decimal types (Price, Qty, Notional, …), Signal, OrderIntent, money
+    indicators/              candle aggregation, technical indicators
+    mode/                    arming + mode resolution (pure)
+    oms/                     state-machine reducer, reconcile, recovery, position/fill math
+    paper/                   paper fill model
+    risk/                    pure rule functions, sizing, kill-switch, round-trips
+    rng/                     seeded PRNG
+  ports/                     interfaces + DI tokens only; imports domain types only
+  config/environment/        AppConfig validation (Zod)
+  database/                  Drizzle repositories, schemas, migration runner
+  features/
+    trading/
+      agentic/                the LLM strategy lane — StrategyHost, agent client, prompt, plan
+                               executor, promotion evaluator, reflection, playbook validator
+      market-data/            ccxt stream adapter, normalization, feed health, derivatives/sentiment feeds
+      risk/                   RiskEngine, sizer, kill-switch, signal gateway
+      execution/               ExecutionService, OMS, fill ingestor, reconciliation, boot recovery
+      exchange/                CcxtExchangeAdapter, live/paper/paper-perp adapters, error classifier
+      mode-control/            ModeControl, arming interlock, key probe, promotion readiness
+    common/observability/     Prometheus metrics, health endpoints, logger config
+  shared/                     correlation middleware, exception filters, venue-safety guards
+  app.module.ts               composition root
+drizzle/                      schema definitions and migrations
+observability/                Prometheus config, Grafana provisioning (dashboards + datasources)
+docs/                         runbook.md, archive/ (historical), planning/, specs/
 ```
 
 ---
 
 ## Links
 
-- [Architecture & design](docs/archive/design-plan.md)
+- [Architecture & design](#architecture) (current — this README)
+- [Architecture & design (historical)](docs/archive/design-plan.md)
 - [Operations runbook](docs/runbook.md)
-- [Demo trading run walkthrough](docs/demo-trading-run.md)

@@ -1,9 +1,12 @@
 # Daily profitability loop — playbook
 
-Audience: a Claude session executing **one pass per day**. Trigger (owner-run):
+Audience: a Claude session executing a pass. Cadence: **2-4 passes/day** (owner decision
+2026-07-10 — the loop runs on subscription, not a per-day API budget). Trigger (owner-run):
 `/loop 1d Read docs/planning/daily-profitability-loop.md and execute one pass`, or a scheduled
-routine at a fixed hour. This document is the task spec for each pass; execute it top to bottom.
-It is an operational playbook, not application code.
+routine at fixed times through the day. This document is the task spec for each pass; execute it
+top to bottom. Every pass runs §1 (rehydrate) and §2 (evidence sweep, including §2.6's harness
+probe) unchanged, then §3 selects exactly ONE pass type for that pass. It is an operational
+playbook, not application code.
 
 ## 0. Mission and objective function
 
@@ -11,10 +14,13 @@ Maximize **net-of-cost PnL** — `realizedPnl − fees − llmCostUsd` — towar
 promotion gate (`PromotionReadinessService`; criteria encoded in code and
 `reports/nightly/PROMOTION.md`). Every improvement is judged by its expected effect on
 net-of-cost PnL or on the trustworthiness of its measurement — nothing else counts as
-"high-value". The **current strategic frame** (active spec, stage, exit criteria, target capital)
-is NOT written here — it lives in `reports/loop/state.md` § Strategic frame, so this playbook
-stays a timeless procedure while strategy evolves. Each pass checks the current stage's exit
-criterion there and advances the stage when met (record the advance in the report).
+"high-value". This objective ranks work identically across all three §3 pass types — a CANDIDATE
+draft, a PROMOTION verdict, and a MAINTENANCE fix are judged by the same
+net-of-cost-PnL-or-measurement-trust yardstick, never by pass-type quota. The **current strategic
+frame** (active spec, stage, exit criteria, target capital) is NOT written here — it lives in
+`reports/loop/state.md` § Strategic frame, so this playbook stays a timeless procedure while
+strategy evolves. Each pass checks the current stage's exit criterion there and advances the
+stage when met (record the advance in the report).
 
 ## 1. Rehydrate (read, never re-derive)
 
@@ -80,26 +86,68 @@ blocks docker/promtool. Host `psql` and host `curl` are **auto-denied**; do not 
    live specs self-skip (offline subset: 4 files / 15 tests). A RED harness is itself a flagged
    finding — measurement, not the running app — and outranks other candidates in §3 when it fires.
 
-## 3. Decide (one improvement per pass)
+## 3. Decide (select one pass type)
 
-Rank candidates by **expected net-of-cost PnL impact ÷ effort**; prefer S-effort, low-risk,
-agentic-lane-only. Candidate sources, in priority order:
+Priority order across a day's passes (owner decision 2026-07-10): **correctness bugs on the
+trading path > promotion-ready evidence > candidate work > maintenance**. A pass selects exactly
+ONE pass type — the highest-priority type below that is currently eligible.
 
-1. **Correctness bugs on the trading path surfaced by today's evidence** — these outrank
-   everything (precedents: the 2026-07-04 signal-TTL bug, the 2026-07-05 dust trap).
-2. The **current stage's items** not yet done (per state.md § Strategic frame).
-3. The rolling backlog in `reports/loop/state.md`.
-4. New ideas from today's evidence (add to the backlog even when not chosen).
+**Correctness bugs on the trading path surfaced by today's evidence always outrank everything**
+(precedents: the 2026-07-04 signal-TTL bug, the 2026-07-05 dust trap). A pass that finds one
+fixes it under the MAINTENANCE pass type regardless of which type would otherwise be eligible.
 
-Implement up to **one M-effort plus two S-effort** improvements per pass while the 2026-07-07
-approved-plan backlog exists (owner decision 2026-07-07) — deployed sequentially with individual
-soaks, and **never two money-path items in one pass**; when that backlog is exhausted, revert to
-one improvement per pass (two only if both are S-effort). **Before implementing,
-re-verify the item is still real against current code** — backlog items inherited from dated
-analyses go stale (2026-07-06 Pass 2 precedent: two Stage-2 seeds from the 07-04 analysis were
-already fixed in the codebase; the pass's value was pruning them with evidence, not shipping). If
-nothing clears the bar, ship nothing — record why, and after **two consecutive** empty passes
-recommend a cadence or scope change in the report instead of forcing a change.
+### Pass types
+
+**(a) CANDIDATE pass** — eligible only when no unresolved candidate sits in A/B. Check: the
+newest `agent_playbook_versions` row with `source IN ('reflection', 'loop-candidate')` and
+`version > active`, via the §2.4 SQL-to-owner path (write the query into the report, proceed
+without blocking). When that answer isn't available in-session, use
+`agentic_reflection_outcomes_total{outcome="minted"}` (§2.3) having advanced without a matching
+`auto_promoted` as a proxy for "still pending" and skip this pass type until resolved.
+
+- Draft 1-3 playbook variants IN-SESSION (subscription cost, not a $ line item) grounded in §2's
+  calibration/attribution/regime evidence — each draft's rationale must cite a specific metric,
+  log line, or DB row, never a hunch.
+- Score each variant offline: `AGENTIC_CANDIDATE_PLAYBOOK_FILE=<file>` with the recorded-payload
+  live-compare eval (`test/eval/agentic/recorded-payload-live-compare.spec.ts`). Budget ≤$20/gate,
+  ~2 API calls per replayed row — cap the row count to stay under budget.
+- **Log every scored variant** — winner AND losers — to the experiments registry
+  (`test/backtest/experiment-log.ts` + CLI `--metrics`). This is the honest-N discipline: a
+  candidate pass that records only the winner is not reproducible evidence.
+- Inject ONLY the best-scoring variant, and ONLY if it beat the champion on the scorecard:
+  `pnpm playbook:candidate <file> --metrics <scorecard.json>`. The live 25% A/B
+  (`AGENTIC_PLAYBOOK_AB_PCT`) and attributed auto-promotion take over from there — a candidate
+  pass never manually promotes.
+
+**(b) PROMOTION pass** — eligible when a live candidate has accumulated enough attributed round
+trips for a verdict.
+
+- Verify the promotion evaluator's verdict against `agentic_version_net_pnl_usd{version}` /
+  `agentic_version_round_trips{version}` (§2 item 3) — the evaluator's decision must match what
+  the gauges show, not just what it logged.
+- Manual `pnpm playbook:promote` ONLY when auto-promotion is legitimately stuck (enough trips and
+  a clear net-pnl edge, but no promotion fired within a reasonable window) — record why
+  auto-promotion didn't fire.
+- Rollback: `AGENTIC_PLAYBOOK_PIN` (verified name —
+  `src/config/environment/environment.config.ts`).
+
+**(c) MAINTENANCE pass** — the default when neither (a) nor (b) is eligible, or when a
+correctness bug needs fixing.
+
+- Correctness bugs on the trading path (still outrank everything else within this pass type too).
+- The current stage's items not yet done (per state.md § Strategic frame).
+- The rolling backlog in `reports/loop/state.md`. **Before implementing a backlog item,
+  re-verify it is still real against current code** — backlog items inherited from dated
+  analyses go stale (2026-07-06 Pass 2 precedent: two Stage-2 seeds from the 07-04 analysis were
+  already fixed in the codebase; the pass's value was pruning them with evidence, not shipping).
+- Carry-study refresh: re-run the carry grid when the funding regime shifts materially, or on a
+  ~14-day cadence otherwise — append trials to the experiments registry.
+- New ideas from today's evidence (add to the backlog even when not chosen).
+
+If nothing clears the bar in the eligible pass type, ship nothing — record why. Because 2-4
+passes/day make per-pass emptiness normal, the escalation threshold is **per UTC day**: two
+consecutive UTC days where every pass that day shipped nothing → recommend a cadence or scope
+change in the report instead of forcing a change.
 
 ## 4. Autonomy boundaries (task-spec authorization for these runs)
 
@@ -118,10 +166,19 @@ recommend a cadence or scope change in the report instead of forcing a change.
 - **Offline eval harnesses** (`test/eval/agentic/`, `pnpm eval:*`): run them to validate a playbook
   candidate or a prompt/executor change at $0 against recorded `input_payload` rows BEFORE any live
   flip (this is the sanctioned place to evaluate a decide-model change or thinking-on-decides —
-  neither is a blind config flip).
+  neither is a blind config flip). This includes the candidate-file eval run
+  (`AGENTIC_CANDIDATE_PLAYBOOK_FILE=<file>` against `recorded-payload-live-compare.spec.ts`) that
+  §3(a) scores a CANDIDATE pass draft on.
+- **Candidate-lane injection and the experiments registry (2026-07-10 learning-system extension):**
+  `scripts/playbook-candidate.mjs` (`pnpm playbook:candidate <file> --metrics <scorecard.json>`) —
+  agentic-lane only; the playbook validator and the existing read-side A/B/promotion gates bind on
+  whatever it injects exactly as they do on a reflection-minted version. Writes to the experiments
+  registry (`test/backtest/experiment-log.ts` + its CLI `--metrics` flag) are append-only and
+  non-money — they record scored variants, they never touch a trading table.
 - **Scoped money-path exceptions (owner decision 2026-07-07), each ONLY with a mandatory
-  reviewer-agent dispatch before commit, full gates + `test:livegate` + `test:paper` green, and
-  risk-reducing/metrics-only semantics:**
+  reviewer-agent dispatch before commit, full gates + `test:livegate` + `test:paper` green,
+  risk-reducing/metrics-only semantics, and never two money-path items in one pass regardless of
+  pass type:**
   - `src/features/trading/execution/signal-sink.service.ts` — CANCEL_OPEN routing only
     (cancelling a strategy's own resting orders; never order placement).
   - `src/features/trading/execution/portfolio-state.service.ts` — FillApplication metrics
@@ -142,6 +199,12 @@ review" — the 2026-07-05 marketable-exits flag is the template):
 - Append-only tables/triggers (`audit_log`, `order_events`), money-table schema and their
   migrations.
 - Secrets, `.env` (the example file is fine), pino redact lists.
+- **Perp-venue (shorts) wiring landed 2026-07-10** under reviewer + security-auditor gates
+  (`src/features/trading/agentic/agent-prompt.ts`, `anthropic-agent-client.ts`,
+  `src/ports/agentic-strategy.ts`, `test/testnet/swap-order-lifecycle.spec.ts`): flag-gated OFF
+  and deliberately unwired — even though these paths sit under the agentic-lane MAY above, they
+  remain owner-scoped for ordinary passes until the carry sub-plan formally wires them (pinned in
+  state.md's carry stub).
 
 Hard rules 1–7 in the project `CLAUDE.md` bind in full. **Never push to any remote.** Commits to
 local `main` are authorized for gates-green changes within the MAY list; one commit per shipped
@@ -170,12 +233,14 @@ authored (`git add <paths>`, never `git add -A`/`-u`) — a pass never commits w
 ## 6. Report and state (every pass, even empty ones)
 
 1. **Append** a dated entry to `reports/loop/LOG.md`: data window read, headline metrics
-   (gate scoreboard + $/day), decision + rationale, diff summary (files + commit hash), gate
-   results, soak verdict, flagged-for-human items, next-pass candidates.
+   (gate scoreboard + $/day), pass type (§3), decision + rationale, diff summary (files + commit
+   hash), gate results, soak verdict, flagged-for-human items, next-pass candidates. **CANDIDATE
+   passes also record the experiments-registry row id of every scored variant** (winner and
+   losers) — the honest-N discipline needs the ids traceable from LOG.md, not just the registry.
 2. **Update** `reports/loop/state.md`: current stage, backlog with statuses, last-pass pointer,
    open flagged items awaiting the owner.
 3. Both files are the loop's cross-session memory — keep them current enough that the next pass
-   needs nothing else. (Pattern precedent: `reports/archive/nightly/loop-state.md`.)
+   needs nothing else.
 4. **Gate the report edits (every pass):** `pnpm lint:md` green after writing LOG.md/state.md.
    Since owner commit `1ae2100` markdownlint owns `.md` (prettier's `format:check` now excludes
    `*.md`); the `reports/loop/` backlog table is MD060 "aligned" — editing a cell must keep the

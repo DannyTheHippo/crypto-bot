@@ -27,17 +27,17 @@ build+lint+typecheck+test MUST be green before any completion claim.
    or the config stripping of live secrets. test:livegate is sacred — never skip or
    delete it to make a suite pass.
 4. src/domain imports nothing impure (no @nestjs/\*, ccxt, Date.now, process.env). The strategy
-   lane is SOLELY the agentic / LLM-driven lane in src/modules/agentic-strategy/ (NOT src/domain):
+   lane is SOLELY the agentic / LLM-driven lane in src/features/trading/agentic/ (NOT src/domain):
    async and non-deterministic (calls an out-of-process LLM at runtime), so it remains
    step-D-uncertifiable — live access is EARNED, not assumed. assertAgenticLaneNotLive refuses
-   any live boot unless PromotionReadinessService (src/modules/mode-control/) returns a permitted
-   verdict: >=30 closed demo round trips AND positive net-of-cost PnL (realized − fees − LLM
-   spend) over >=14 days. A permitted boot still faces the unchanged four live gates and
+   any live boot unless PromotionReadinessService (src/features/trading/mode-control/) returns a
+   permitted verdict: >=30 closed demo round trips AND positive net-of-cost PnL (realized − fees −
+   LLM spend) over >=14 days. A permitted boot still faces the unchanged four live gates and
    bootId-bound arming ceremony on top — the promotion gate narrows who may attempt arming, it
    does not replace it. Rules 1, 2, 3, 5, 6 bind on the lane exactly as elsewhere — it only
    proposes a Signal, Risk still sizes/vetoes it, and the four live gates still bind. The
    deterministic pure lane (ema-cross/donchian) and its replay-determinism gate were RETIRED by
-   owner decision 2026-07-03 (docs/archive/nighly-improvement.md records the historical program);
+   owner decision 2026-07-03 (docs/archive/nightly-improvement.md records the historical program);
    the test/backtest research harness was REBUILT 2026-07-10 by owner decision (edge program —
    reports/loop/state.md § Flagged) and stays OFF the production test gate (`pnpm backtest`).
 5. OMS: never blind-resubmit — unknown outcome ⇒ query by clientOrderId first

@@ -490,10 +490,11 @@ owns them).
   on a ~14-day cadence, whichever comes first (a loop maintenance-pass duty, playbook v2 §3(c)).
   This resolves — but does not delete — the three 2026-07-10 § Flagged bullets below that pointed at
   the carry sub-plan as live work; each is now annotated resolved-by-study in place.
-- **OWNER ACTION 2026-07-10 — update the scheduled loop routine to 2-4 passes/day.** Playbook v2
-  (`docs/planning/daily-profitability-loop.md`) re-specs cadence from 1 pass/day to 2-4 passes/day
-  (e.g. every 6-12h). The schedule itself lives outside this repo (the owner-run trigger / scheduled
-  routine), so a pass cannot change it — the owner needs to update the routine's frequency to match.
+- ~~**OWNER ACTION 2026-07-10 — update the scheduled loop routine to 2-4 passes/day.**~~ DONE
+  2026-07-10 same session (owner-directed): the `daily-profitability-loop` scheduled routine now
+  fires 3x/day (cron `0 2,10,18 * * *` local, 8h spacing — inside the playbook-v2 2-4 band); its
+  prompt was refreshed for the pass-type model, the `docker compose exec` fix (plain `docker exec`
+  is permission-denied), the build-before-up deploy rule, and the standing reflection/E2 watches.
 - **FYI — out-of-band API contract verification spend ~$0.2 this session** (5 minimal `/v1/messages`
   calls from the app container, same pattern as the 2026-07-07 Pass-5 precedent below): real spend
   on the lane's API key that bypasses `DailyLlmBudget` accounting, incurred verifying the

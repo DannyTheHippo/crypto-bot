@@ -6,6 +6,7 @@ import {
   PLAYBOOK_BLOCK_START,
   PLAYBOOK_BLOCK_END,
   PROMPT_TEMPLATE_VERSION,
+  SHORTS_DECISION_TOOL,
   buildMarketPayload,
   buildSystemPrompt,
   buildUserMessage,
@@ -331,6 +332,33 @@ describe('buildSystemPrompt', () => {
 
       expect(prompt.toLowerCase()).toContain('funding');
       expect(prompt.toLowerCase()).toContain('sentiment');
+    });
+  });
+
+  describe('shorts capability (B3, shortsEnabled gate)', () => {
+    it('shortsEnabled off (opts omitted) ⇒ the prompt is BYTE-IDENTICAL to pre-B3 output', () => {
+      const prompt = buildSystemPrompt(fixtureProfile());
+
+      expect(prompt).toContain(
+        'You may only go LONG or stay FLAT — never short, never use leverage or margin.',
+      );
+      expect(prompt.toLowerCase()).not.toContain('short position');
+    });
+
+    it('shortsEnabled: false is explicitly byte-identical to opts omitted entirely', () => {
+      const withOmitted = buildSystemPrompt(fixtureProfile());
+      const withExplicitFalse = buildSystemPrompt(fixtureProfile(), { shortsEnabled: false });
+
+      expect(withExplicitFalse).toBe(withOmitted);
+    });
+
+    it('swaps the LONG/FLAT-only constraint sentence and adds one short-semantics sentence when shortsEnabled is true', () => {
+      const prompt = buildSystemPrompt(fixtureProfile(), { shortsEnabled: true });
+
+      expect(prompt).not.toContain('never short, never use leverage or margin');
+      expect(prompt).toContain('You may go LONG, SHORT, or stay FLAT');
+      expect(prompt.toLowerCase()).toContain('short position');
+      expect(prompt).toContain("close ANY open position, long or short, via the 'flat' action");
     });
   });
 
@@ -917,6 +945,32 @@ describe('DECISION_TOOL', () => {
   });
 });
 
+describe('SHORTS_DECISION_TOOL (B3)', () => {
+  it('is the same submit_decision tool name — strict, disallows additional properties, requires action/confidence/rationale', () => {
+    expect(SHORTS_DECISION_TOOL.name).toBe('submit_decision');
+    expect(SHORTS_DECISION_TOOL.strict).toBe(true);
+    expect(SHORTS_DECISION_TOOL.input_schema.additionalProperties).toBe(false);
+    expect(SHORTS_DECISION_TOOL.input_schema.required).toEqual([
+      'action',
+      'confidence',
+      'rationale',
+    ]);
+  });
+
+  it('constrains action to exactly long, short, flat, hold', () => {
+    expect(SHORTS_DECISION_TOOL.input_schema.properties.action.enum).toEqual([
+      'long',
+      'short',
+      'flat',
+      'hold',
+    ]);
+  });
+
+  it('DECISION_TOOL itself stays untouched (still only long/flat/hold)', () => {
+    expect(DECISION_TOOL.input_schema.properties.action.enum).toEqual(['long', 'flat', 'hold']);
+  });
+});
+
 describe('strict tool schemas stay within the API-accepted JSON-schema subset', () => {
   // Anthropic strict tool use rejects constraint keywords with HTTP 400 at request time ("For
   // 'integer' type, properties maximum, minimum are not supported" — observed live 2026-07-07,
@@ -954,6 +1008,7 @@ describe('strict tool schemas stay within the API-accepted JSON-schema subset', 
   it.each([
     ['DECISION_TOOL', DECISION_TOOL],
     ['PLAN_TOOL', PLAN_TOOL],
+    ['SHORTS_DECISION_TOOL', SHORTS_DECISION_TOOL],
   ])('%s uses only schema keywords the strict API accepts', (_label, tool) => {
     expect(tool.strict).toBe(true);
     assertSchemaNode(tool.input_schema, 'input_schema');

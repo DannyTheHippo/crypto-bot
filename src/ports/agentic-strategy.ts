@@ -176,6 +176,12 @@ export const AGENT_CLIENT = Symbol('AGENT_CLIENT');
 // tool-use payload, verbatim. Always populated by the real client on a successful call; absent from
 // the stub and from a degraded/short-circuited call (there was no call to account for).
 export interface AgentDecisionMeta {
+  // B3: stays 'long' | 'flat' | 'hold' — widening this ripples into agentic.strategy.ts's
+  // decision-history ring, the persisted agent_decisions journal, and the counterfactual-scoring.ts
+  // calibration module (which would then need to decide how to treat 'short' rows — a semantic call
+  // belonging to the carry sub-plan that actually wires shortsEnabled live, not to this flag-gated,
+  // presently-unconsumed capability). AnthropicAgentClient casts its raw 'short' action down to this
+  // narrow type at the single construction site (see its own comment) rather than widening the port.
   readonly action: 'long' | 'flat' | 'hold';
   readonly confidence: number;
   readonly rationale: string;

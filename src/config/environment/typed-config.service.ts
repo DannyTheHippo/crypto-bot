@@ -44,6 +44,10 @@ export class TypedConfigService {
     return this.config.get('derivativesFeed', { infer: true });
   }
 
+  get sentimentFeed(): AppConfig['sentimentFeed'] {
+    return this.config.get('sentimentFeed', { infer: true });
+  }
+
   get observability(): AppConfig['observability'] {
     return this.config.get('observability', { infer: true });
   }

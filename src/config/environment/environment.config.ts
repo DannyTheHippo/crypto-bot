@@ -358,6 +358,15 @@ const envSchema = z
       .default('false')
       .transform((v) => v === 'true'),
     DERIVATIVES_FEED_POLL_MS: z.coerce.number().int().positive().default(60_000),
+    // C4: read-only free news/sentiment feed (headlines only), surfaced to the agentic prompt when
+    // fresh. Off by default — zero behavior change unconfigured. SENTIMENT_FEED_API_KEY deliberately
+    // excluded from this schema (secret; stays out of AppConfig per the ANTHROPIC_API_KEY precedent
+    // above) — read directly off process.env in the app.module.ts factory, never logged/hashed.
+    SENTIMENT_FEED_ENABLED: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
+    SENTIMENT_FEED_POLL_MS: z.coerce.number().int().positive().default(300_000),
   })
   .superRefine((data, ctx) => {
     // The prescreen gate (prescreen.ts) needs AGENTIC_WARMUP_BARS bars of history before its
@@ -499,6 +508,8 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     ACTIVE_STRATEGY: activeStrategy,
     DERIVATIVES_FEED_ENABLED: derivativesFeedEnabled,
     DERIVATIVES_FEED_POLL_MS: derivativesFeedPollMs,
+    SENTIMENT_FEED_ENABLED: sentimentFeedEnabled,
+    SENTIMENT_FEED_POLL_MS: sentimentFeedPollMs,
   } = parsed.data;
   const bootId = crypto.randomUUID();
   const venues = parseVenues(env);
@@ -593,6 +604,10 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     derivativesFeed: {
       enabled: derivativesFeedEnabled,
       pollIntervalMs: derivativesFeedPollMs,
+    },
+    sentimentFeed: {
+      enabled: sentimentFeedEnabled,
+      pollIntervalMs: sentimentFeedPollMs,
     },
     ...liveFields,
   };

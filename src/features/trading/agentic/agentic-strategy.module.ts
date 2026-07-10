@@ -249,6 +249,8 @@ export function selectAgentClient(
       minRr: env['AGENTIC_MIN_RR'],
       // C1: off by default ⇒ byte-identical legacy prompt (no derivatives sentence).
       derivativesFeedEnabled: env['DERIVATIVES_FEED_ENABLED'] === 'true',
+      // C4: off by default ⇒ byte-identical legacy prompt (no sentiment sentence).
+      sentimentFeedEnabled: env['SENTIMENT_FEED_ENABLED'] === 'true',
     },
     fetch,
     new Logger('AnthropicAgentClient'),

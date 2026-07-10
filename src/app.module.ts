@@ -72,6 +72,10 @@ import {
   type DerivativesRestSource,
 } from './features/trading/market-data/derivatives-feed.service';
 import {
+  SentimentFeedService,
+  type SentimentHttpSource,
+} from './features/trading/market-data/sentiment-feed.service';
+import {
   FeedHealthServiceWithBackfill,
   type OhlcvSource,
 } from './features/trading/market-data/feed-health.service';
@@ -197,6 +201,7 @@ import {
   type MarketStreamPort,
 } from './ports/market-data';
 import { DERIVATIVES_FEED, type DerivativesFeedPort } from './ports/derivatives-feed';
+import { SENTIMENT_FEED, type SentimentFeedPort } from './ports/sentiment-feed';
 import {
   EXCHANGE_STREAM,
   type ExchangeStreamPort,
@@ -567,6 +572,29 @@ const NOOP_DERIVATIVES_FEED: DerivativesFeedPort = {
   lastSuccessfulPollAt: () => null,
   pollErrorCount: () => 0,
 };
+// C4: bound whenever SENTIMENT_FEED_ENABLED is off (default), under test/ci, or the API key is
+// absent — no poll ever starts, latest() always answers null, so the agentic prompt's sentiment
+// block never renders.
+const NOOP_SENTIMENT_FEED: SentimentFeedPort = {
+  latest: () => null,
+  lastSuccessfulPollAt: () => null,
+  pollErrorCount: () => 0,
+};
+// Free-tier CryptoPanic REST client (public headlines endpoint; no ccxt involved — this is a news
+// feed, not an exchange). apiKey is read directly off process.env (never through TypedConfigService/
+// AppConfig — see environment.config.ts's SENTIMENT_FEED_API_KEY comment), so it is never logged or
+// folded into configHash. Fixed currencies filter (BTC,ETH) matches this deployment's trading symbols.
+function buildSentimentHttpSource(apiKey: string): SentimentHttpSource {
+  return {
+    fetchPosts: async () => {
+      const res = await fetch(
+        `https://cryptopanic.com/api/v1/posts/?auth_token=${apiKey}&currencies=BTC,ETH`,
+      );
+      if (!res.ok) throw new Error(`cryptopanic fetch failed: ${res.status}`);
+      return await res.json();
+    },
+  };
+}
 // Public-only REST client for the USDT-margined perp market (funding rate / open interest have no
 // spot-market equivalent) — mirrors buildCcxtExchange's no-credentials construction (same file
 // header comment) but plain REST (ccxt.binanceusdm), not ccxt.pro: fetchFundingRate/fetchOpenInterest
@@ -688,8 +716,35 @@ const MD_EXCHANGE = Symbol('MD_EXCHANGE');
       },
       inject: [TypedConfigService, CLOCK],
     },
+    {
+      provide: SENTIMENT_FEED,
+      useFactory: (config: TypedConfigService, clock: ClockPort): SentimentFeedPort => {
+        const { enabled, pollIntervalMs } = config.sentimentFeed;
+        const apiKey = process.env['SENTIMENT_FEED_API_KEY'];
+        // Same test/ci short-circuit as DERIVATIVES_FEED above, plus the feature flag and the API
+        // key itself — CryptoPanic's free tier requires auth_token, so a keyless deployment must
+        // stay inert rather than poll an endpoint it can never authenticate against.
+        if (isTestEnv() || !enabled || !apiKey) return NOOP_SENTIMENT_FEED;
+        const source = buildSentimentHttpSource(apiKey);
+        const service = new SentimentFeedService(source, {
+          pollIntervalMs,
+          clock,
+          logger: new Logger('SentimentFeedService'),
+        });
+        service.start();
+        return service;
+      },
+      inject: [TypedConfigService, CLOCK],
+    },
   ],
-  exports: [MARKET_STREAM, FEED_HEALTH, REAL_FEED_HEALTH, EXCHANGE_STREAM, DERIVATIVES_FEED],
+  exports: [
+    MARKET_STREAM,
+    FEED_HEALTH,
+    REAL_FEED_HEALTH,
+    EXCHANGE_STREAM,
+    DERIVATIVES_FEED,
+    SENTIMENT_FEED,
+  ],
 })
 class MarketFeedModule {}
 
@@ -1197,6 +1252,9 @@ export class AppModule
     // C1: always bound (MarketFeedModule's DERIVATIVES_FEED factory returns NOOP_DERIVATIVES_FEED
     // when DERIVATIVES_FEED_ENABLED is off/test-ci) — never @Optional.
     @Inject(DERIVATIVES_FEED) private readonly derivativesFeed: DerivativesFeedPort,
+    // C4: always bound (MarketFeedModule's SENTIMENT_FEED factory returns NOOP_SENTIMENT_FEED when
+    // SENTIMENT_FEED_ENABLED/key is off/absent/test-ci) — never @Optional, mirrors derivativesFeed.
+    @Inject(SENTIMENT_FEED) private readonly sentimentFeed: SentimentFeedPort,
     @Inject(REFLECTION_SERVICE) private readonly reflectionService: ReflectionService,
     @Inject(PROMOTION_READINESS) private readonly promotionReadiness: PromotionReadinessPort,
     // W5 attributed auto-promotion: the evaluator promotes a reflection candidate to ACTIVE on its
@@ -1385,6 +1443,7 @@ export class AppModule
         onPrescreen: (outcome, reason) => this.agentMetrics.recordPrescreen(outcome, reason),
         evidence: this.roundTripEvidence,
         derivativesFeed: this.derivativesFeed,
+        sentimentFeed: this.sentimentFeed,
       };
       return new AgenticStrategy(id, p as AgenticStrategyParams, this.agentClient, deps);
     });

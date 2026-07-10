@@ -37,6 +37,7 @@ import { Pool } from 'pg';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import * as schema from '../../../src/database/schemas/trading';
 import { AgentDecisionJournalAdapter } from '../../../src/database/repositories/agent-decision-journal.adapter';
+import { writeFileSync } from 'node:fs';
 import type { AgentDecisionRow } from '../../../src/ports/agentic-strategy';
 import {
   PLAN_BOUNDS,
@@ -493,7 +494,8 @@ describe.skipIf(SKIP)(
               action: result.action,
               confidence: result.confidence,
             };
-            candidateScoringRows.push(scoringRowFromPayload(row.inputPayload!, outcome, identity));
+            const scoringRow = scoringRowFromPayload(row.inputPayload!, outcome, identity);
+            if (scoringRow !== null) candidateScoringRows.push(scoringRow);
 
             if (result.action === 'long') {
               candidateProposeCount++;
@@ -580,25 +582,30 @@ describe.skipIf(SKIP)(
 
         expect(candidateScorecards).toHaveLength(CANDIDATE_MODELS.length);
 
-        // The printed scorecard IS this script's deliverable — paste into an experiments-registry row.
-        console.log(
-          JSON.stringify(
-            {
-              rowsLoaded: loadedRows.length,
-              rowsReplayed: replayRows.length,
-              champion: {
-                schemaValidRate: championSchemaValidRate,
-                proposeCount: championProposeCount,
-                planSanityRate: championPlanSanityRate,
-                forwardReturnProxyBps: championForwardReturnProxyBps,
-                costPerDecideUsd: championCostPerDecideUsd,
-              },
-              candidates: candidateScorecards,
+        // The scorecard IS this script's deliverable — paste into an experiments-registry row.
+        // Console alone is NOT durable (vitest can intercept/suppress it — 2026-07-10 incident);
+        // AGENTIC_EVAL_SCORECARD_FILE additionally persists it verbatim.
+        const scorecard = JSON.stringify(
+          {
+            rowsLoaded: loadedRows.length,
+            rowsReplayed: replayRows.length,
+            champion: {
+              schemaValidRate: championSchemaValidRate,
+              proposeCount: championProposeCount,
+              planSanityRate: championPlanSanityRate,
+              forwardReturnProxyBps: championForwardReturnProxyBps,
+              costPerDecideUsd: championCostPerDecideUsd,
             },
-            null,
-            2,
-          ),
+            candidates: candidateScorecards,
+          },
+          null,
+          2,
         );
+        console.log(scorecard);
+        const scorecardFile = process.env['AGENTIC_EVAL_SCORECARD_FILE'];
+        if (scorecardFile) {
+          writeFileSync(scorecardFile, scorecard);
+        }
       } finally {
         await pool.end();
       }

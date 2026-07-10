@@ -128,7 +128,10 @@ services:
       # longer gates promotion). Set to the 2026-07-08 deploy instant, chosen at a FLAT-position
       # moment (both agentic strategies were dust-flat) so no round trip straddles the boundary.
       # Empty = all-time.
-      PROMOTION_EVIDENCE_EPOCH: '2026-07-08T09:52:35Z'
+      # Moved 2026-07-08T09:52:35Z -> the 2026-07-10 DB-wipe instant (owner-directed, "fix the
+      # documented items" session): the local ledger restarted empty at the wipe, so the epoch
+      # formalizes the restart instead of overstating the window with zero-trade days.
+      PROMOTION_EVIDENCE_EPOCH: '2026-07-10T20:26:00Z'
       PROMOTION_DUST_NOTIONAL: 5 # residual-position notional (quote ccy) below which a round-trip cycle counts as CLOSED
       SIGNAL_TTL_MS: 120000 # signal validity window
       BASE_NOTIONAL: 100 # quote (USDT) per order; keep below the account balance, above minNotional

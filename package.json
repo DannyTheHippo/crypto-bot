@@ -34,6 +34,7 @@
     "--- RESEARCH ---": "--------------------------------",
     "eval:agentic": "vitest run test/eval",
     "eval:candidates": "EVAL_CANDIDATES=1 vitest run test/eval/agentic/candidate-model-eval.spec.ts",
+    "eval:playbook": "vitest run test/eval/agentic/recorded-payload-live-compare.spec.ts",
     "backtest": "vitest run test/backtest",
     "openapi:write": "OPENAPI_WRITE=1 vitest run test/unit/config/openapi-snapshot.spec.ts",
     "--- HOOKS ---": "--------------------------------",

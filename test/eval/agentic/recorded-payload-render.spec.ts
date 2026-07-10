@@ -118,19 +118,23 @@ describe('agentic eval — recorded input_payload render checks (offline, no net
     // one per recorded row, in the same chronological order.
     const scriptedActions: readonly ('long' | 'flat' | 'hold')[] = ['long', 'hold', 'flat', 'hold'];
 
-    const championRows = RECORDED_PAYLOAD_ROWS.map((row, i) =>
-      scoringRowFromPayload(
-        row,
-        { action: scriptedActions[i]!, confidence: 0.6 },
-        championIdentity,
-      ),
+    // Fixture payloads always carry a valid eventTime — the non-null assertions document that
+    // this CI-safe path never exercises the malformed-row skip the live scripts tolerate.
+    const championRows = RECORDED_PAYLOAD_ROWS.map(
+      (row, i) =>
+        scoringRowFromPayload(
+          row,
+          { action: scriptedActions[i]!, confidence: 0.6 },
+          championIdentity,
+        )!,
     );
-    const candidateRows = RECORDED_PAYLOAD_ROWS.map((row, i) =>
-      scoringRowFromPayload(
-        row,
-        { action: scriptedActions[i]!, confidence: 0.6 },
-        candidateIdentity,
-      ),
+    const candidateRows = RECORDED_PAYLOAD_ROWS.map(
+      (row, i) =>
+        scoringRowFromPayload(
+          row,
+          { action: scriptedActions[i]!, confidence: 0.6 },
+          candidateIdentity,
+        )!,
     );
 
     const championCards = scoreRows(championRows);

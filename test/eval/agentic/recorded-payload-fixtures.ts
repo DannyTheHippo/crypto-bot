@@ -236,12 +236,19 @@ export interface PromptIdentity {
 // does for the live-input case. Shared by the CI-safe render spec (scripted decisions) and the
 // key-gated live-compare script (real API decisions) so both exercise the identical row shape that
 // scoreRows()/compare() consume.
+// Returns null (never throws) for a payload missing a usable eventTime: recorded rows are
+// untrusted-shape data — one malformed/residue row must cost one skipped row, not the whole
+// scoring run (2026-07-10 incident: fixture-seeded rows without eventTime crashed epochMs()
+// and aborted candidate scoring outright). Callers skip-and-count nulls.
 export function scoringRowFromPayload(
   payloadJson: string,
   decision: RecordedDecisionOutcome,
   identity: PromptIdentity,
-): ScoringRow {
+): ScoringRow | null {
   const payload = JSON.parse(payloadJson) as RecordedMarketPayload;
+  if (!Number.isFinite(payload.eventTime) || !Number.isInteger(payload.eventTime)) {
+    return null;
+  }
   const lastCandle = payload.candles[payload.candles.length - 1];
   const close = lastCandle ? lastCandle[4] : null;
   return {

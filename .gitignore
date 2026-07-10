@@ -18,3 +18,5 @@ test/backtest/data/ohlcv-*.json
 # Funding-rate history caches for the carry study — same reproducibility contract
 # (test/backtest/fetch-data.mjs --funding; ranges recorded in reports/loop/carry-study-*.md).
 test/backtest/data/funding-*.json
+# Local pg_dump snapshots (scripts/db-backup.sh) — operational artifacts, never committed.
+backups/

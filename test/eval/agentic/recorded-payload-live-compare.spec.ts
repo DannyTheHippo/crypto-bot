@@ -22,7 +22,7 @@
 // same query journal.recent() issues under the hood, spelled out for manual inspection):
 //   psql "$DATABASE_URL" -c "SELECT id, event_time, model, prompt_hash FROM agent_decisions
 //     WHERE input_payload IS NOT NULL ORDER BY event_time ASC LIMIT 50;"
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
 import { Pool } from 'pg';
@@ -196,8 +196,20 @@ describe.skipIf(SKIP)(
 
         const championRows: ScoringRow[] = [];
         const candidateRows: ScoringRow[] = [];
+        let skippedRows = 0;
         for (const row of rows) {
           const payloadJson = row.inputPayload!;
+          // Screen the payload BEFORE spending two live calls on it — a malformed/residue row
+          // (no usable eventTime) costs one skipped row, never an aborted run or wasted spend.
+          const screen = scoringRowFromPayload(
+            payloadJson,
+            { action: 'hold', confidence: 0 },
+            championIdentity,
+          );
+          if (screen === null) {
+            skippedRows += 1;
+            continue;
+          }
           const championDecision = await callAnthropicLive(
             systemPrompt,
             composeRecordedUserMessage(payloadJson, championContent),
@@ -206,11 +218,14 @@ describe.skipIf(SKIP)(
             systemPrompt,
             composeRecordedUserMessage(payloadJson, candidatePlaybookContent),
           );
-          championRows.push(scoringRowFromPayload(payloadJson, championDecision, championIdentity));
+          championRows.push(
+            scoringRowFromPayload(payloadJson, championDecision, championIdentity)!,
+          );
           candidateRows.push(
-            scoringRowFromPayload(payloadJson, candidateDecision, candidateIdentity),
+            scoringRowFromPayload(payloadJson, candidateDecision, candidateIdentity)!,
           );
         }
+        expect(championRows.length).toBeGreaterThan(0);
 
         const [championCard] = scoreRows(championRows);
         const [candidateCard] = scoreRows(candidateRows);
@@ -218,20 +233,28 @@ describe.skipIf(SKIP)(
         expect(candidateCard).toBeDefined();
         const result = compare(championCard!, candidateCard!, { assertSameTemplate: true });
 
-        // The printed scorecard IS this script's deliverable.
-        console.log(
-          JSON.stringify(
-            {
-              rowsScored: rows.length,
-              championHorizonStats: championCard!.horizonStats,
-              candidateHorizonStats: candidateCard!.horizonStats,
-              finalEquityDelta: result.finalEquityDelta,
-              hitRateDeltas: result.hitRateDeltas,
-            },
-            null,
-            2,
-          ),
+        // The scorecard IS this script's deliverable. Console alone is NOT durable — vitest's
+        // reporter can intercept/suppress console output (2026-07-10: two paid scoring runs lost
+        // their scorecards exactly this way) — so when AGENTIC_EVAL_SCORECARD_FILE is set the
+        // scorecard is ALSO written there verbatim.
+        const scorecard = JSON.stringify(
+          {
+            rowsScored: championRows.length,
+            rowsSkipped: skippedRows,
+            championVersion,
+            championHorizonStats: championCard!.horizonStats,
+            candidateHorizonStats: candidateCard!.horizonStats,
+            finalEquityDelta: result.finalEquityDelta,
+            hitRateDeltas: result.hitRateDeltas,
+          },
+          null,
+          2,
         );
+        console.log(scorecard);
+        const scorecardFile = process.env['AGENTIC_EVAL_SCORECARD_FILE'];
+        if (scorecardFile) {
+          writeFileSync(scorecardFile, scorecard);
+        }
       } finally {
         await pool.end();
       }

@@ -11,23 +11,51 @@ never changes for strategy evolution.
 - **Active spec:** `docs/specs/2026-07-06-profitability-design.md` (owner-approved 2026-07-06).
 - **Goal:** real live profitability at **$1k–$5k capital** (owner, 2026-07-06). Objective
   function: net-of-cost PnL = `realizedPnl − fees − llmCostUsd`.
+- **Active frame (owner decisions 2026-07-10, this session):** the LLM agentic lane is the
+  program centerpiece — it trades AND self-learns. The daily loop (a Claude session on
+  subscription, ~zero marginal cost) is the heavyweight researcher driving that self-learning:
+  **"LLM proposes, backtest disposes."** Playbook v2 (`docs/planning/daily-profitability-loop.md`,
+  this session) codifies the pipeline: draft candidate playbooks IN-SESSION → score offline
+  (`AGENTIC_CANDIDATE_PLAYBOOK_FILE` recorded-payload live-compare eval, ≤$20/gate) → log EVERY
+  scored variant (winner and losers) to the append-only experiments registry (migration 0009,
+  `test/backtest/experiment-log.ts`) → inject champion-beaters via `pnpm playbook:candidate` →
+  live 25% A/B (`AGENTIC_PLAYBOOK_AB_PCT`) + attributed auto-promotion decide. Loop cadence
+  re-specced to **2-4 passes/day** (playbook v2). The funding-carry sub-plan is resolved NO-GO
+  (see § Flagged) and is NOT part of this active frame.
 - **Stage ladder + exit criteria (condensed from the active spec):**
   1. **Cost floor** — LLM spend ≤$1/day for ≥3 consecutive days AND round trips ≥2/day AND no
      `EXPIRED`/starved-exit regressions.
   2. **Learning-loop edge** — ≥2 playbook promotions with version-attributed PnL AND rolling-7d
-     net-of-cost PnL ≥0.
+     net-of-cost PnL ≥0. **Stage 2 status (2026-07-10, this session):** still the active stage; the
+     learning loop was repaired twice this session-day on the playbook-validator denylist (`f0c5e14`
+     then `8ca1997`, by the loop, Pass 13) and once more on the reflection trigger/retry path
+     (`21c9b2d` — retry-with-feedback + additive trigger rollback + reset-robust alerts, backlog #31,
+     shipped this session, not a loop pass). Live MINT confirmation (a reflection resolving to
+     `minted`/`no_change` rather than `validator_reject`/`transport_error`) is still PENDING the next
+     reflection firing.
   3. **Earned-live** — pass the coded promotion gate (`PromotionReadinessService`: ≥30 closed demo
      round trips, net-of-cost > 0, ≥14d window), then the unchanged human four-gate arming
      ceremony. Nothing automates live.
 - **Settled owner decisions (not re-openable by a pass; argue in "Flagged for human review"
-  instead):** no shorts/futures/margin; no third symbol until the Stage-2 exit criterion holds;
-  no return to 1m/5m DECIDE cadence. _("No prompt caching" pruned 2026-07-07 — the cache is verified
-  working and now priced honestly, W4/W13.)_
+  instead):** no shorts/futures/margin; ~~no third symbol until the Stage-2 exit criterion
+  holds~~; no return to 1m/5m DECIDE cadence. _("No prompt caching" pruned 2026-07-07 — the cache is
+  verified working and now priced honestly, W4/W13.)_
+  - **REOPENED 2026-07-10 (owner, this session): symbol set widens.** The struck "no third symbol"
+    line above is superseded — symbols widen from BTC/ETH to **BTC, ETH, SOL, XRP, LINK at 15m**.
+    Projected cost ~$2.2–2.5/day, under the unchanged `AGENTIC_DAILY_COST_STOP_USD=$5/day` breaker.
+    Fallback: drop LINK on sustained >$3/day spend or on attribution starvation (too few closed
+    trips per symbol to attribute PnL). "No 1m/5m DECIDE cadence" REMAINS settled, unchanged by this
+    decision.
   - **UN-SETTLED 2026-07-08 (owner learning-system mandate, "improve aggressively" session):** the
     "no model below/other-than Sonnet-5" and "≤$1/day" framings are lifted. Reflection now runs on
     Opus-4.8 (1–4 calls/day); the decide model stays Sonnet-5 **until the offline replay harness can
     measure a change at $0** (a daily-loop experiment, W15, not a blind flip); the cost ceiling is
-    now the `AGENTIC_DAILY_COST_STOP_USD=$5/day` breaker (expected true spend ~$1.5–2.5/day).
+    now the `AGENTIC_DAILY_COST_STOP_USD=$5/day` breaker (expected true spend, updated 2026-07-10 for
+    the 5-symbol widening above: ~$2.2–2.5/day).
+- **Budgets (restated 2026-07-10):** `AGENTIC_DAILY_COST_STOP_USD=$5/day` runtime breaker
+  (unchanged); **≤$20/gate** for offline candidate-playbook evals (playbook v2 §3(a),
+  `AGENTIC_CANDIDATE_PLAYBOOK_FILE` live-compare, ~2 API calls/replayed row — cap row count to stay
+  under budget).
 - **Pre-authorizations (owner):**
   - (2026-07-07) IF net-of-cost > 0 AND round trips ≥ 30 before the 14-day window fills,
     `MIN_WINDOW_DAYS` 14→10 (`promotion-readiness.service.ts`) may be applied with owner sign-off in
@@ -424,6 +452,26 @@ owns them).
 
 ## Flagged for human review (open)
 
+- **CARRY TRACK RESOLVED 2026-07-10 (this session) — NO-GO, verdict supersedes the carry-sub-plan
+  bullets below.** The funding-carry offline study ran (`reports/loop/carry-study-2026-07-10.md`,
+  commit `979de5e`): **0/126 cells** clear the GO bar (best cells carry 2–5 holdout episodes vs the
+  ≥8 floor; nothing clears tStat>3 or WF-positive-every-segment). Per the program's pre-declared
+  contingency, the perp-venue wiring and the carry lane are **NOT built** — quoting the shipping
+  commit verbatim: "only the -2022 classifier rule ships." The study harness
+  (`test/backtest/carry/`) is the standing re-test: re-run on a materially-shifted funding regime or
+  on a ~14-day cadence, whichever comes first (a loop maintenance-pass duty, playbook v2 §3(c)).
+  This resolves — but does not delete — the three 2026-07-10 § Flagged bullets below that pointed at
+  the carry sub-plan as live work; each is now annotated resolved-by-study in place.
+- **OWNER ACTION 2026-07-10 — update the scheduled loop routine to 2-4 passes/day.** Playbook v2
+  (`docs/planning/daily-profitability-loop.md`) re-specs cadence from 1 pass/day to 2-4 passes/day
+  (e.g. every 6-12h). The schedule itself lives outside this repo (the owner-run trigger / scheduled
+  routine), so a pass cannot change it — the owner needs to update the routine's frequency to match.
+- **FYI — out-of-band API contract verification spend ~$0.2 this session** (5 minimal `/v1/messages`
+  calls from the app container, same pattern as the 2026-07-07 Pass-5 precedent below): real spend
+  on the lane's API key that bypasses `DailyLlmBudget` accounting, incurred verifying the
+  `21c9b2d` reflection retry-with-feedback fix (backlog #31) live against `claude-opus-4-8`.
+  Deliberate, small, logged here for cost honesty — consistent with the Pass-5 precedent's own
+  logging rationale.
 - **OWNER DECISIONS 2026-07-10 (supersede this program's owner-proposal posture).** (1) **No owner
   gate on redeploy** — validated-better versions are always committed AND deployed (demo/paper
   stack) autonomously; "better" still means the unchanged ship criterion (gates green +
@@ -437,9 +485,17 @@ owns them).
   sub-plan (design → $0 offline funding-carry backtest on the spine → paper build behind
   PERP_VENUE_ENABLED with the B3-tracked wiring requirements → demo soak), enable-and-A/B the
   derivatives/sentiment feeds with net-of-cost attribution (+d1/+s1 promptHash tags), and deploy
-  each green increment.
-- **FUNDING-CARRY CONVERGENCE STUB 2026-07-10 — prerequisites landed; the loop owns the sub-plan
-  (build gated on its own offline validation).** Delta-neutral carry (long spot + short
+  each green increment. **RESOLVED-BY-STUDY 2026-07-10 (this session), carry clause only:** the
+  offline funding-carry backtest ran (`979de5e`, NO-GO 0/126) — the paper-build/demo-soak steps of
+  this mandate do NOT proceed; see the CARRY TRACK RESOLVED bullet above. The feed-A/B and
+  ungated-redeploy/loop-driven clauses of this decision are unaffected and remain live.
+- ~~**FUNDING-CARRY CONVERGENCE STUB 2026-07-10 — prerequisites landed; the loop owns the sub-plan
+  (build gated on its own offline validation).**~~ **RESOLVED-BY-STUDY 2026-07-10 (this session):**
+  the sub-plan's own gate (offline validation before any build) fired NO-GO — `979de5e`, see the
+  CARRY TRACK RESOLVED bullet above. None of this bullet's "deliberately NOT built here" items
+  (two-legged position intent, carry entry/unwind gate, the backtest study itself) proceed to
+  build; the prerequisites below stay landed and available for the next regime-shift re-test.
+  Original text preserved for provenance: Delta-neutral carry (long spot + short
   equal-notional perp, earning funding with no directional call — the diagnostic-recommended
   lever) can now be designed
   on: `PaperPerpAdapter` + `funding_events` append-only accounting (b078f64), perp Risk sizing
@@ -473,6 +529,10 @@ owns them).
   risk extension is in flight; (2) enable the derivatives/sentiment prompt feeds (flagged, $0) for
   LLM context — cheap, but expect no fee-clearing miracle; (3) fee-tier/BNB remains weak (prior:
   0/64 even @7.5bps). Directional shorts stay unfunded (52 prior short trials failed).
+  **RESOLVED-BY-STUDY 2026-07-10 (this session), lever (1) only:** the recommended escalation to
+  delta-neutral funding carry was itself tested and is NO-GO (`979de5e`, see the CARRY TRACK
+  RESOLVED bullet above) — lever (1) is dead, not merely deferred. Levers (2) (derivatives/sentiment
+  prompt feeds) and (3) (fee-tier/BNB, already weak) are unaffected by this update.
 - **OWNER DECISION 2026-07-10 — edge question OPENED; consolidated edge program authorized and
   underway** (plan `open-replicated-platypus`, session-approved). Scope locked by owner: **A**
   backtest/validation spine rebuilt from `5a17615` (landed with this bullet's commit — supersedes the

@@ -164,6 +164,13 @@ export interface AppConfig {
     leverageCap: string;
     mmrFallback: string;
   };
+  // C1: read-only public derivatives-data feed (funding rate, open interest, mark/index basis) —
+  // feature-flagged OFF by default. Off ⇒ zero behavior change (no poll starts, the agentic prompt's
+  // derivatives block never renders).
+  derivativesFeed: {
+    enabled: boolean;
+    pollIntervalMs: number;
+  };
   // Strategy-lane knobs (symbol/interval/active lane selection) read via ConfigService.
   strategy: {
     // Deprecated single-symbol knob; still honored as the fallback when TRADING_SYMBOLS is unset.

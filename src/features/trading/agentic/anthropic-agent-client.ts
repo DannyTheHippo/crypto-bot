@@ -14,6 +14,7 @@ import {
 } from '../../../ports/agentic-strategy';
 import {
   DECISION_TOOL,
+  DERIVATIVES_TEMPLATE_VERSION,
   PLAN_BOUNDS,
   PLAN_TOOL,
   PLAN_TEMPLATE_VERSION,
@@ -121,6 +122,9 @@ export interface AnthropicAgentClientConfig {
   readonly minEdgeMultiple?: string;
   // W3 payoff-floor multiple (decimal string; default '1.5') — see the mapping's stop-floor/RR check.
   readonly minRr?: string;
+  // C1: documents the optional derivatives block in the system prompt (agent-prompt.ts's
+  // buildSystemPrompt derivativesFeedEnabled option). Absent/false ⇒ byte-identical legacy prompt.
+  readonly derivativesFeedEnabled?: boolean;
 }
 
 // Placeholder profile used only when no real AgentTradingProfile has been wired yet — keeps the
@@ -249,13 +253,16 @@ export class AnthropicAgentClient implements AgentClientPort {
     const constraints = this.cfg.constraintsFor?.(String(symbol)) ?? baseProfile.constraints;
     const systemPrompt = buildSystemPrompt(
       { ...baseProfile, constraints },
-      this.cfg.planMode
-        ? {
-            planMode: true,
-            minEdgeMultiple: this.cfg.minEdgeMultiple ?? '1.5',
-            minRr: this.cfg.minRr ?? '1.5',
-          }
-        : {},
+      {
+        ...(this.cfg.planMode
+          ? {
+              planMode: true,
+              minEdgeMultiple: this.cfg.minEdgeMultiple ?? '1.5',
+              minRr: this.cfg.minRr ?? '1.5',
+            }
+          : {}),
+        derivativesFeedEnabled: this.cfg.derivativesFeedEnabled ?? false,
+      },
     );
     // inputPayload is the market JSON ALONE — buildMarketPayload's signature carries no
     // playbookContent parameter, so it structurally cannot echo playbook text (see its own comment).
@@ -277,8 +284,13 @@ export class AnthropicAgentClient implements AgentClientPort {
         ]
       : inputPayload;
     const activeTool = this.cfg.planMode ? PLAN_TOOL : DECISION_TOOL;
+    const baseTemplateVersion = this.cfg.planMode ? PLAN_TEMPLATE_VERSION : PROMPT_TEMPLATE_VERSION;
     const promptHash = computePromptHash({
-      templateVersion: this.cfg.planMode ? PLAN_TEMPLATE_VERSION : PROMPT_TEMPLATE_VERSION,
+      // Flag-ON appends the derivatives system-prompt sentence, so it is a distinct template for
+      // attribution purposes (mirrors plan mode's own tag); flag-OFF hashes are byte-identical.
+      templateVersion: this.cfg.derivativesFeedEnabled
+        ? `${baseTemplateVersion}+${DERIVATIVES_TEMPLATE_VERSION}`
+        : baseTemplateVersion,
       playbookContent: playbookContent ?? '',
       toolSchemaJson: JSON.stringify(activeTool),
       modelId: this.cfg.model,

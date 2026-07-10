@@ -37,6 +37,7 @@ import {
   type PrescreenThresholds,
 } from './prescreen';
 import type { RoundTripEvidencePort } from '../../../ports/promotion';
+import type { DerivativesFeedPort } from '../../../ports/derivatives-feed';
 import { evaluatePlan, type PlanExecutorState } from './plan-executor';
 
 export interface AgenticStrategyParams {
@@ -95,6 +96,11 @@ export interface AgenticStrategyDeps {
   // comment); no in-strategy fallback is computed, since the strategy has no other access to
   // realized fills.
   readonly evidence?: RoundTripEvidencePort;
+  // C1: read-only derivatives-market context (funding rate, open interest, mark/index basis),
+  // consulted once per decide() and threaded onto the outgoing snapshot's `derivatives` field (see
+  // buildContext's caller in decide()). Optional — absent means the prompt's derivatives block never
+  // renders (byte-identical to pre-C1 output), same convention as `evidence` above.
+  readonly derivativesFeed?: DerivativesFeedPort;
   readonly logger?: LoggerLike;
 }
 
@@ -175,6 +181,7 @@ export class AgenticStrategy implements AsyncStrategy {
   } | null = null;
   private readonly expectancyLadderEnabled: boolean;
   private readonly evidence?: RoundTripEvidencePort;
+  private readonly derivativesFeed?: DerivativesFeedPort;
   // W2.1 stale-entry sweep state. OpenOrderSummary carries no timestamps, so age is measured in
   // observed decide cycles: clientOrderId → the snapshot eventTime this strategy FIRST saw the order
   // resting. cancelRequestedAt records when a CANCEL_OPEN was emitted for an id so it isn't re-spammed
@@ -224,6 +231,7 @@ export class AgenticStrategy implements AsyncStrategy {
     this.quietPayloadSampleBars = Math.max(0, params.quietPayloadSampleBars ?? 0);
     this.expectancyLadderEnabled = params.expectancyLadderEnabled ?? false;
     this.evidence = deps.evidence;
+    this.derivativesFeed = deps.derivativesFeed;
     this.subscriptions = {
       venue: params.venue,
       symbols: [params.symbol],
@@ -238,7 +246,12 @@ export class AgenticStrategy implements AsyncStrategy {
     this.minNotional = ctx.symbolConstraints.get(this.symbol)?.minNotional ?? null;
   }
 
-  async decide(input: AgentDecisionInput): Promise<Signal[]> {
+  async decide(rawInput: AgentDecisionInput): Promise<Signal[]> {
+    // C1: thread a fresh derivatives-feed snapshot onto the host-supplied snapshot before anything
+    // else reads `input` — every downstream use (buildContext, staleEntryCancels, client.propose,
+    // the quiet-hold journal sample) sees the same enriched snapshot. No-op (same object) when the
+    // feed isn't wired or has no fresh poll, so that deployment stays byte-identical.
+    const input = this.withDerivatives(rawInput);
     // Deterministic and prescreen-independent: resting GTC entries otherwise rest forever (nothing
     // enforces expiresAt on ACKED orders — boot 10c8af0c recovered 55 of them). Computed first so
     // both the quiet-hold path and the LLM path return it.
@@ -589,6 +602,16 @@ export class AgenticStrategy implements AsyncStrategy {
     this.history.length = 0;
     this.lastCombinedPnl = null;
     this.lastPositionSide = null;
+  }
+
+  // C1: merges a fresh derivatives-feed snapshot onto the host-supplied snapshot when the port is
+  // wired and a fresh poll exists; otherwise returns `input` UNCHANGED (same object reference), so a
+  // deployment without the feed wired (or a stale/absent poll) stays byte-identical all the way
+  // through buildMarketPayload.
+  private withDerivatives(input: AgentDecisionInput): AgentDecisionInput {
+    const derivatives = this.derivativesFeed?.latest(this.symbol) ?? undefined;
+    if (!derivatives) return input;
+    return { ...input, snapshot: { ...input.snapshot, derivatives } };
   }
 
   // Computed indicators (own timeframe + HTF) + own position + decision trail, over the host's

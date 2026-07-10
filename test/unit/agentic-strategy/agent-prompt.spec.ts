@@ -17,6 +17,7 @@ import type {
   AgentMarketSnapshot,
   AgentTradingProfile,
 } from '../../../src/ports/agentic-strategy';
+import type { DerivativesSnapshot } from '../../../src/ports/derivatives-feed';
 import type {
   CandleEvent,
   TickerEvent,
@@ -126,6 +127,17 @@ function fixtureProfile(over: Partial<AgentTradingProfile> = {}): AgentTradingPr
   };
 }
 
+function derivativesSnapshot(over: Partial<DerivativesSnapshot> = {}): DerivativesSnapshot {
+  return {
+    asOf: epochMs(T),
+    fundingRate: 0.0001,
+    fundingAnnualizedPct: 10.95,
+    openInterest: 5000,
+    basisBps: 50,
+    ...over,
+  };
+}
+
 function buildInput(
   opts: {
     candles?: CandleEvent[];
@@ -133,6 +145,7 @@ function buildInput(
     book?: OrderBookSnapshotEvent;
     context?: AgentContext;
     execReports?: ExecReport[];
+    derivatives?: DerivativesSnapshot;
   } = {},
 ): AgentDecisionInput {
   const snapshot: AgentMarketSnapshot = {
@@ -142,6 +155,7 @@ function buildInput(
     books: opts.book ? new Map([[SYM, opts.book]]) : new Map(),
     execReports: opts.execReports ?? [],
     portfolio: { strategyId: SID, positions: new Map(), openOrders: [] },
+    ...(opts.derivatives ? { derivatives: opts.derivatives } : {}),
   };
   return {
     strategyId: SID,
@@ -239,6 +253,33 @@ describe('buildSystemPrompt', () => {
     expect(prompt).toContain('orderBook');
     expect(prompt.toLowerCase()).toContain('spread');
     expect(prompt.toLowerCase()).toContain('imbalance');
+  });
+
+  describe('derivatives block sentence (C1, DERIVATIVES_FEED_ENABLED gate)', () => {
+    it('DERIVATIVES_FEED_ENABLED off (opts omitted) ⇒ the prompt is BYTE-IDENTICAL to pre-C1 output (no mention of funding/derivatives)', () => {
+      const prompt = buildSystemPrompt(fixtureProfile());
+
+      expect(prompt).not.toContain('derivatives');
+      expect(prompt.toLowerCase()).not.toContain('funding');
+      expect(prompt.toLowerCase()).not.toContain('open interest');
+    });
+
+    it('derivativesFeedEnabled: false is explicitly byte-identical to opts omitted entirely', () => {
+      const withOmitted = buildSystemPrompt(fixtureProfile());
+      const withExplicitFalse = buildSystemPrompt(fixtureProfile(), {
+        derivativesFeedEnabled: false,
+      });
+
+      expect(withExplicitFalse).toBe(withOmitted);
+    });
+
+    it('documents the derivatives block (funding rate, open interest, basis) only when derivativesFeedEnabled is true', () => {
+      const prompt = buildSystemPrompt(fixtureProfile(), { derivativesFeedEnabled: true });
+
+      expect(prompt.toLowerCase()).toContain('funding');
+      expect(prompt.toLowerCase()).toContain('open interest');
+      expect(prompt.toLowerCase()).toContain('basis');
+    });
   });
 
   describe('plan mode (W3 payoff-floor sentence)', () => {
@@ -588,6 +629,87 @@ describe('buildUserMessage', () => {
 
       expect(payload).not.toHaveProperty('orderBook');
       expect(raw).not.toContain('spreadBps');
+    });
+  });
+
+  // C1: derivatives-market context (funding rate, open interest, mark/index basis) — a REST-polled
+  // sibling to the order-book block above, gated the identical way (present/absent on the snapshot).
+  describe('derivatives block rendering (C1)', () => {
+    it('renders funding rate, annualized funding, open interest, and basis bps when a fresh snapshot is attached', () => {
+      const derivatives = derivativesSnapshot({
+        fundingRate: 0.00025,
+        fundingAnnualizedPct: 27.375,
+        openInterest: 8123.5,
+        basisBps: 12.4,
+      });
+      const payload = JSON.parse(buildUserMessage(buildInput({ derivatives }))) as {
+        derivatives: {
+          fundingRate: number;
+          fundingAnnualizedPct: number;
+          openInterest: number;
+          basisBps: number;
+        };
+      };
+
+      expect(payload.derivatives).toEqual({
+        fundingRate: 0.00025,
+        fundingAnnualizedPct: 27.375,
+        openInterest: 8123.5,
+        basisBps: 12.4,
+      });
+    });
+
+    it('omits the derivatives key entirely (no empty scaffolding) when no derivatives snapshot is available — the flag-off / stale / absent-poll case', () => {
+      const raw = buildUserMessage(buildInput());
+      const payload = JSON.parse(raw) as Record<string, unknown>;
+
+      expect(payload).not.toHaveProperty('derivatives');
+      expect(raw).not.toContain('fundingRate');
+      expect(raw).not.toContain('basisBps');
+    });
+
+    it('a stale/absent derivatives snapshot never throws — buildUserMessage still returns valid JSON', () => {
+      expect(() => {
+        JSON.parse(buildUserMessage(buildInput()));
+      }).not.toThrow();
+    });
+
+    it('DERIVATIVES_FEED_ENABLED off ⇒ the rendered user message for a representative snapshot is BYTE-IDENTICAL to the no-derivatives render (flag-off byte-identity)', () => {
+      const context: AgentContext = {
+        indicators: {
+          lastClose: 100,
+          emaFast: 99,
+          emaSlow: 98,
+          rsi14: 55,
+          atr14: 1,
+          ret1: 0.1,
+          ret5: 0.5,
+          ret20: 1,
+        },
+        position: {
+          side: 'LONG',
+          qty: '2',
+          avgEntry: '90',
+          realizedPnl: '5',
+          unrealizedPnlPct: 10,
+          openOrders: 1,
+        },
+        recentDecisions: [{ eventTime: epochMs(T), action: 'long', close: 100, reason: 'r' }],
+        htf: { h1: { emaFast: 101, emaSlow: 99, rsi14: 60 }, h4: null },
+      };
+      const candles = Array.from({ length: 20 }, (_, i) => candle(i));
+      const withoutDerivativesFlag = buildUserMessage(
+        buildInput({ candles, ticker: ticker(), book: book(), context }),
+      );
+      // DERIVATIVES_FEED_ENABLED off means the strategy layer never attaches a snapshot
+      // (AgenticStrategy.withDerivatives), so the port-level render is identical to never having
+      // wired the feed at all — asserted here at the render boundary itself.
+      const explicitlyNoDerivatives = buildUserMessage(
+        buildInput({ candles, ticker: ticker(), book: book(), context, derivatives: undefined }),
+      );
+
+      expect(withoutDerivativesFlag).toBe(explicitlyNoDerivatives);
+      expect(withoutDerivativesFlag).not.toContain('derivatives');
     });
   });
 

@@ -40,6 +40,10 @@ export class TypedConfigService {
     return this.config.get('strategy', { infer: true });
   }
 
+  get derivativesFeed(): AppConfig['derivativesFeed'] {
+    return this.config.get('derivativesFeed', { infer: true });
+  }
+
   get observability(): AppConfig['observability'] {
     return this.config.get('observability', { infer: true });
   }

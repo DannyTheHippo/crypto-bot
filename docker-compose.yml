@@ -133,6 +133,7 @@ services:
       PROTECT_STOP_LOSS_PCT: 0.02 # bot-side backstop: force-exits a long via the normal risk path if price falls 2% below entry; schema default 0 disables
       PROTECT_TRAILING_PCT: 0.015 # bot-side backstop: force-exits a long via the normal risk path if price falls 1.5% below its peak since entry; schema default 0 disables
       EXIT_CROSS_BUFFER_BPS: 25 # reduce-only IOC exit crossing buffer (bps); must stay below RISK_MAX_BAND_BPS
+      ENTRY_ORDER_TYPE: LIMIT # LIMIT (default, byte-identical) | LIMIT_MAKER (post-only entries; sizer falls back to LIMIT per-intent if the plan-derived price would cross the book)
       STARTING_CASH: 5000 # in-memory quote balance the bot tracks (set near the demo account's USDT)
 
       # ── Risk limits (optional; defaults = the values RiskModule shipped with — override deliberately) ──

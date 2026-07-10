@@ -48,6 +48,11 @@ export interface SizerDeps {
   // existing test fixtures that omit it keep booting; PositionSizerService falls back to '0'
   // (disabled — legacy baseNotional × strength path), mirroring risk.module's SIZER_DEPS factory.
   readonly equityFraction?: string;
+  // Entry order type: 'LIMIT_MAKER' rests non-reduce-only intents post-only (maker fee). Optional
+  // so existing test fixtures that omit it keep booting; PositionSizerService falls back to
+  // 'LIMIT' (disabled — byte-identical to pre-knob behavior), mirroring risk.module's SIZER_DEPS
+  // factory. Exits (reduceOnly) always stay 'LIMIT'+IOC regardless of this knob.
+  readonly entryOrderType?: 'LIMIT' | 'LIMIT_MAKER';
 }
 
 // Injected RiskEngine dependencies. The signing key is process-lifetime random

@@ -134,6 +134,10 @@ export interface AppConfig {
   risk: {
     // Marketable-exit crossing buffer (bps) for reduce-only intents — see the schema comment.
     exitCrossBufferBps: number;
+    // Entry order type (PositionSizerService). 'LIMIT' (default) is byte-identical to pre-knob
+    // behavior. 'LIMIT_MAKER' rests entries post-only; the sizer falls back to 'LIMIT' per-intent
+    // when the plan-derived entry price would cross the book (see the schema comment).
+    entryOrderType: 'LIMIT' | 'LIMIT_MAKER';
     // Quote-currency (USDT) notional per order, sized below the account balance / above minNotional.
     baseNotional: string;
     // Compounding position sizing (P5): fraction of equity sized per entry (0..1). '0' disables —

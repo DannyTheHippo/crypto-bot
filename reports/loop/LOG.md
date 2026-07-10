@@ -1315,3 +1315,32 @@ scheduled `pg_dump` (cron or loop duty).
 
 **Spend:** ~$3.2 of eval API calls whose scorecards were lost to the interception/misfire
 mishaps (within the ≤$20 gate budget, logged for cost honesty). Gates at commit: see commit.
+
+## 2026-07-10 — Owner-directed pass 2 (fable5, ~20:50–21:30Z): MAINTENANCE — incident follow-ups closed, redeployed, clean
+
+**Pass type:** maintenance (correctness of measurement outranked candidate work: the scoring
+pipeline had three defects and the corpus is still re-accruing — 4 payload rows at pass time).
+
+**Shipped (`git log -1`, all gates green — build/lint/lint:md/typecheck/format, 1659 unit,
+eval 15+4skip):** (1) durable scorecards — `AGENTIC_EVAL_SCORECARD_FILE` persists the deliverable
+in BOTH eval scripts (vitest interception lost two paid runs yesterday-today); (2)
+`scoringRowFromPayload` tolerates malformed rows (null-skip, screened BEFORE spending live
+calls, `rowsSkipped` reported) — one bad row can no longer abort a run; (3) `pnpm eval:playbook`
+pins the single-file invocation (the flag-before-path whole-suite misfire is structurally
+retired alongside the persistence.spec hard guard); (4) `scripts/db-backup.sh` — gzip pg_dump,
+keep-14 retention, `backups/` gitignored; FIRST REAL BACKUP taken (28K); (5)
+`PROMOTION_EVIDENCE_EPOCH → 2026-07-10T20:26:00Z` (the wipe instant, owner-directed).
+
+**Deploy + soak:** image rebuilt (build-before-up honored), boot clean, epoch verified in the
+container, 0 errors. Post-restart recovery proved the wipe left no operational residue: boot
+recovery seeded 0 orders (correct — no local testnet order rows), the portfolio restored
+EXACTLY from the post-wipe positions/equity rows (ETH 0.025 + XRP 40.56 longs + BTC dust), and
+reconciliation came back **clean 3/3** (not even the foreign-order mismatch steady state) with
+the kill switch RUNNING. The feared UNKNOWN_OURS HALT did not materialize — the pre-restart
+open orders had already resolved venue-side.
+
+**Next:** candidate scoring (`reports/loop/candidates/2026-07-10/{a,b}`) is queued for the
+first pass with ≥10 payload rows — with the new safe recipe: `AGENTIC_EVAL_SCORECARD_FILE=...
+AGENTIC_CANDIDATE_PLAYBOOK_FILE=... EVAL_LIVE=1 ANTHROPIC_API_KEY=... DATABASE_URL=<prod>
+DB_SUITE_ALLOW_RESET=1 pnpm eval:playbook`. E2 remains queued at ≥200 rows. Reflection
+first-mint watch unchanged.

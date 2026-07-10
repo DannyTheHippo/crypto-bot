@@ -494,11 +494,14 @@ owns them).
   resolved before any far-future live arming); audit_log/order_events carry 9+4 fixture rows as
   a permanent append-only scar. Durable fix shipped: `test/db/persistence.spec.ts` hard-refuses
   destructive setup on any non-`_test` database regardless of `DB_SUITE_ALLOW_RESET`
-  (throw-verified both directions). **Owner decisions requested:** (1) set
-  `PROMOTION_EVIDENCE_EPOCH=2026-07-10T20:26:00Z` to formalize the restarted ledger (gauges
-  already read from the empty ledger; this makes it explicit); (2) **no DB backups exist — the
-  wipe was unrecoverable by construction**; recommend a scheduled `pg_dump` (a post-remediation
-  snapshot sits in the session scratchpad; a daily dump could be a loop §5 duty if blessed).
+  (throw-verified both directions). **Both owner decisions RESOLVED same session
+  (owner-directed follow-up pass):** (1) `PROMOTION_EVIDENCE_EPOCH=2026-07-10T20:26:00Z`
+  deployed and verified in the container; (2) `scripts/db-backup.sh` shipped (gzip pg_dump,
+  keep-14 retention, `backups/` gitignored) with the first real backup taken — running it is a
+  standing loop §5 duty (once per pass is cheap at ~28K/dump). Measurement fixes shipped in the
+  same pass: durable scorecard files (`AGENTIC_EVAL_SCORECARD_FILE`), malformed-row tolerance
+  in scoring, and the pinned `pnpm eval:playbook` entry point. Post-restart recovery was clean
+  (reconciliation 3/3 clean, portfolio restored exactly, no UNKNOWN_OURS HALT).
 
 - **CARRY TRACK RESOLVED 2026-07-10 (this session) — NO-GO, verdict supersedes the carry-sub-plan
   bullets below.** The funding-carry offline study ran (`reports/loop/carry-study-2026-07-10.md`,

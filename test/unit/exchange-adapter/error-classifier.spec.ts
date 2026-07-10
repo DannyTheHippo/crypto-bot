@@ -130,6 +130,38 @@ describe('classifyCcxtError', () => {
   });
 });
 
+describe('Binance USD-M futures -2022 (ReduceOnly Order is rejected) regression', () => {
+  // §OMS rule 5: a venue-definitive reject must classify TERMINAL_REJECT, never OUTCOME_AMBIGUOUS
+  // (that would route it into the query loop / possible kill switch for an order that is already
+  // final at the venue). The classifier itself needs no -2022-specific rule: ccxt's own exact-code
+  // map (binanceusdm inherits binance.js's per-market-type 'exceptions') already wraps -2022 on
+  // fapi (linear/USD-M futures — the exchange class app.module.ts constructs) as InvalidOrder,
+  // which the classifier's existing InvalidOrder → TERMINAL_REJECT rule (line 59) already covers.
+  // ccxt maps -2022 differently per market type — spot resolves to BadResponse (OUTCOME_AMBIGUOUS)
+  // — so this drives the REAL ccxt error path (not a synthetic InvalidOrder) to pin both halves:
+  // ccxt's code→class map for the linear market type AND this file's class→errorClass map. A ccxt
+  // bump that silently remaps the linear -2022 entry fails this test before it reaches production.
+  it('a fapi -2022 response throws ccxt.InvalidOrder and classifies TERMINAL_REJECT', () => {
+    const exchange = new ccxt.binanceusdm();
+    const url = 'https://fapi.binance.com/fapi/v1/order';
+    const response = { code: -2022, msg: 'ReduceOnly Order is rejected.' };
+    const body = JSON.stringify(response);
+
+    let thrown: unknown;
+    try {
+      exchange.handleErrors(400, 'Bad Request', url, 'POST', {}, body, response, {}, {});
+    } catch (e) {
+      thrown = e;
+    }
+
+    expect(thrown).toBeInstanceOf(ccxt.InvalidOrder);
+    expect(classifyCcxtError(thrown)).toEqual({
+      errorClass: 'TERMINAL_REJECT',
+      code: 'InvalidOrder',
+    });
+  });
+});
+
 describe('toAdapterError', () => {
   it('wraps a ccxt error as a typed AdapterError', () => {
     const e = toAdapterError(new ccxt.InsufficientFunds('broke'));

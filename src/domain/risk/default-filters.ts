@@ -9,4 +9,8 @@ import type { SymbolFilters } from './evaluate';
 export const DEFAULT_FILTERS: ReadonlyMap<string, SymbolFilters> = new Map<string, SymbolFilters>([
   ['BTC/USDT', { tickSize: '0.01', stepSize: '0.00001', minQty: '0.00001', minNotional: '5' }],
   ['ETH/USDT', { tickSize: '0.01', stepSize: '0.0001', minQty: '0.0001', minNotional: '5' }],
+  // Binance spot exchangeInfo, fetched 2026-07-10.
+  ['SOL/USDT', { tickSize: '0.01', stepSize: '0.001', minQty: '0.001', minNotional: '5' }],
+  ['XRP/USDT', { tickSize: '0.0001', stepSize: '0.1', minQty: '0.1', minNotional: '5' }],
+  ['LINK/USDT', { tickSize: '0.001', stepSize: '0.01', minQty: '0.01', minNotional: '5' }],
 ]);

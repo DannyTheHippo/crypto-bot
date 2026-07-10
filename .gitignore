@@ -11,3 +11,7 @@ coverage
 .claude/settings.local.json
 .serena/
 .DS_Store
+# Diagnostic OHLCV caches (~40MB, reproducible via test/backtest/fetch-data.mjs; exact fetch
+# ranges recorded in the diagnostic report). The four legacy BTCUSDT-<tf>.json fixtures the
+# sanity gates depend on predate this pattern and stay committed.
+test/backtest/data/ohlcv-*.json

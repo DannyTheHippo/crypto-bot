@@ -83,6 +83,8 @@ export function runBacktest(
   for (const f of opts.funding ?? []) fundingByBar.set(f.barIndex, new Decimal(f.rate));
 
   const opens = bars.map((b) => new Decimal(b[1]!));
+  const highs = bars.map((b) => new Decimal(b[2]!));
+  const lows = bars.map((b) => new Decimal(b[3]!));
   const closes = bars.map((b) => new Decimal(b[4]!));
 
   const strat = makeStrategy();
@@ -91,17 +93,23 @@ export function runBacktest(
   let fundingPaid = new Decimal(0);
   const equityCurve: string[] = [];
   const fills: RoundTripFill[] = [];
-  // The SAME array is pushed into and handed to every decide() call (see strategy.ts's BarContext
+  // The SAME arrays are pushed into and handed to every decide() call (see strategy.ts's BarContext
   // doc) — O(1) amortized per bar rather than an O(n) slice/copy, which matters at 30k-bar 1m series.
   const closeStrs: string[] = [];
+  const highStrs: string[] = [];
+  const lowStrs: string[] = [];
 
   for (let i = 0; i < bars.length; i++) {
     closeStrs.push(closes[i]!.toFixed());
+    highStrs.push(highs[i]!.toFixed());
+    lowStrs.push(lows[i]!.toFixed());
     const nextOpen = i + 1 < bars.length ? opens[i + 1]! : null;
     const fundingRate = fundingByBar.get(i) ?? null;
 
     const ctx: BarContext = {
       closes: closeStrs,
+      highs: highStrs,
+      lows: lowStrs,
       nextOpen: nextOpen ? nextOpen.toFixed() : null,
       markPrice: closes[i]!.toFixed(),
       fundingRate: fundingRate ? fundingRate.toFixed() : null,

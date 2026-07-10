@@ -20,6 +20,7 @@ import { runBacktest, type Bar } from './harness';
 import type { SharpeStats } from './stats';
 import type { CandleInterval } from '../../src/domain/types/market-events';
 import type { BarStrategy } from './strategy';
+import { SeedEntryStrategy, type SeedEntryConfig } from './strategies/seed-entry-strategy';
 
 export const INTERVALS: CandleInterval[] = ['1h', '15m', '5m', '1m'];
 export const FEE_BPS_VIP0 = 10; // Binance spot VIP0 taker per side (conservative)
@@ -30,23 +31,77 @@ const DATA = join(__dirname, 'data');
 export interface TrialSpec {
   readonly cls: string; // strategy family
   readonly label: string; // param signature
+  // Data-file symbol prefix this trial ran against (e.g. 'BTCUSDT') — the deflation accounting is
+  // honest only if every symbol x interval x param combination ever tried is present, not just
+  // BTCUSDT; loadBars(interval, symbol) resolves the matching cached series.
+  readonly symbol: string;
+  // The bucket's own interval — explicit (not just implied by which key of harvest()'s
+  // barsByInterval a caller iterates) so a 1:1 bucket study can resolve its single series directly.
+  readonly interval: CandleInterval;
   readonly make: (interval: CandleInterval) => () => BarStrategy;
 }
 
-export const PRIOR_TRIALS: TrialSpec[] = [];
+// PRIOR_TRIALS: the edge-diagnostic 52-bucket SeedEntryStrategy grid (reports/loop/
+// edge-diagnostic-2026-07-10.md) — {BTC,ETH} x {15m,1h,4h,1d} x k{1,1.5,2,3} (32) plus
+// {SOL,DOGE,XRP,AVAX,LINK} x 15m x k{1,1.5,2,3} (20). See strategies/seed-entry-strategy.ts for the
+// rule; maxHoldBars is fixed at 20 across every bucket (not swept — see the report's method section).
+const SEED_ENTRY_MAX_HOLD_BARS = 20;
+const SEED_ENTRY_K_GRID = [1, 1.5, 2, 3] as const;
+const SEED_ENTRY_MAJORS = ['BTCUSDT', 'ETHUSDT'] as const;
+const SEED_ENTRY_MAJOR_INTERVALS: CandleInterval[] = ['15m', '1h', '4h', '1d'];
+const SEED_ENTRY_ALTS = ['SOLUSDT', 'DOGEUSDT', 'XRPUSDT', 'AVAXUSDT', 'LINKUSDT'] as const;
 
-export function loadBars(interval: CandleInterval): Bar[] | null {
-  const file = join(DATA, `BTCUSDT-${interval}.json`);
-  if (!existsSync(file)) return null;
-  return JSON.parse(readFileSync(file, 'utf8')) as Bar[];
+function makeSeedEntry(kMultiple: number): (interval: CandleInterval) => () => BarStrategy {
+  const cfg: SeedEntryConfig = { maxHoldBars: SEED_ENTRY_MAX_HOLD_BARS, kMultiple };
+  return () => () => new SeedEntryStrategy(cfg);
+}
+
+function seedEntryTrials(): TrialSpec[] {
+  const out: TrialSpec[] = [];
+  for (const symbol of SEED_ENTRY_MAJORS) {
+    for (const interval of SEED_ENTRY_MAJOR_INTERVALS) {
+      for (const k of SEED_ENTRY_K_GRID) {
+        out.push({
+          cls: 'SeedEntryStrategy',
+          label: `${symbol}-${interval}-k${k}`,
+          symbol,
+          interval,
+          make: makeSeedEntry(k),
+        });
+      }
+    }
+  }
+  for (const symbol of SEED_ENTRY_ALTS) {
+    for (const k of SEED_ENTRY_K_GRID) {
+      out.push({
+        cls: 'SeedEntryStrategy',
+        label: `${symbol}-15m-k${k}`,
+        symbol,
+        interval: '15m',
+        make: makeSeedEntry(k),
+      });
+    }
+  }
+  return out;
+}
+
+export const PRIOR_TRIALS: TrialSpec[] = seedEntryTrials();
+
+export function loadBars(interval: CandleInterval, symbol = 'BTCUSDT'): Bar[] | null {
+  const extended = join(DATA, `ohlcv-${symbol}-${interval}.json`);
+  if (existsSync(extended)) return JSON.parse(readFileSync(extended, 'utf8')) as Bar[];
+  const legacy = join(DATA, `${symbol}-${interval}.json`);
+  if (!existsSync(legacy)) return null;
+  return JSON.parse(readFileSync(legacy, 'utf8')) as Bar[];
 }
 
 export function loadAllBars(
   intervals: readonly CandleInterval[] = INTERVALS,
+  symbol = 'BTCUSDT',
 ): Map<CandleInterval, Bar[]> {
   const m = new Map<CandleInterval, Bar[]>();
   for (const iv of intervals) {
-    const b = loadBars(iv);
+    const b = loadBars(iv, symbol);
     if (b) m.set(iv, b);
   }
   return m;

@@ -18,6 +18,10 @@ export interface BarContext {
   // passes the SAME backing array on every call (not a copy, for O(1) amortized push cost over long
   // series) — read it synchronously within decide(); do not retain the reference across bars.
   readonly closes: readonly string[];
+  // Highs/lows up to and including the current bar — same shared-backing-array convention as closes.
+  // Added for ATR-family indicators (true range needs the bar's own high/low, not just its close).
+  readonly highs: readonly string[];
+  readonly lows: readonly string[];
   // Next bar's open — the fill reference for any action returned this bar. null on the final bar (no
   // lookahead: there is nothing to fill against, so enter/exit proposed on the last bar is a no-op).
   readonly nextOpen: string | null;

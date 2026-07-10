@@ -195,6 +195,34 @@ exit question.
 
 ## Last pass
 
+**Owner session, 2026-07-10 (~17:30–21:50Z) — self-learning platform shipped; 12 commits
+(`3c1adc7`..HEAD), every increment gates-green, deployed, soaked.** Shipped: reflection
+retry-with-feedback + additive trigger rollback + reset-robust alerts (`21c9b2d`, backlog #31,
+reviewer must-fix applied and live-verified); append-only `experiments` registry (migration
+0009, honest cumulative-N ledger); loop candidate-injection path (`pnpm playbook:candidate`,
+A/B routes `loop-candidate` rows); `pnpm eval:candidates` offline decide-model comparison;
+carry study NO-GO 0/126 (`979de5e` — perp wiring + carry lane skipped per gate; `-2022`
+classifier regression pin shipped); derivatives feed ENABLED (promptHash `+d1` epoch
+2026-07-10T18:42Z, hash flip verified in `agent_decisions`); universe widened to 5 symbols
+(BTC/ETH/SOL/XRP/LINK @15m, `agentic-1..5` all ACTIVE, calls cap 500→700); template backend
+conventions + committed `openapi.json` freshness gate; docs truth pass + loop playbook v2
+(2–4 passes/day pass-typed operation). Final sweep at HEAD: build/lint/lint:md/typecheck/
+format green, 1659 unit, 41 livegate, 11 paper, 15 eval, 17+1 backtest, 50 db; tree clean.
+**Scoreboard at close:** 11 RT since epoch, net-of-cost −$2.51 (LLM $1.95), playbook v1,
+equity $4,996.79, kill switch RUNNING, reconciler clean; first post-fix reflection outcome
+still PENDING (trade-gated). **Incident (honesty):** ~7 min app downtime 19:05–19:12Z — the
+5-symbol deploy ran `up -d` without `build`, so the old image lacked the new DEFAULT_FILTERS
+rows and the boot-loud guard exited 1; fixed by rebuild; lesson recorded in the playbook's
+deploy step (always `build` when src/ changed). **Commit-history note:** the reports/archive
+deletions + `nighly` rename landed in `3c1adc7` (pre-staged index swept into the first
+commit) though `ea10621`'s message describes them — content correct, attribution off by one
+commit. **E2 handoff (next loop pass, measurement duty):** `input_payload` rows were 196/200
+at close; once ≥200, run `DB_SUITE_ALLOW_RESET=1
+DATABASE_URL=postgres://cryptobot:cryptobot@127.0.0.1:5432/cryptobot ANTHROPIC_API_KEY=<from
+.env> ROW_LIMIT=50 pnpm eval:candidates` (≤$20; scorecard prints a FLIP VERDICT; flip
+`AGENTIC_MODEL` in docker-compose.yml only on ALL-pass parity, then redeploy + soak + watch
+$/day a full day; reflection stays Opus).
+
 **Pass 13, 2026-07-10** (scheduled run, ~16:30–17:20Z) — **SHIP a correctness fix on the
 LEARNING-critical path; the direct successor to Pass 12.** First loop pass since Pass 12; between
 passes the owner edge-program session (plan `open-replicated-platypus`: workstreams A–E + B3 shorts +
@@ -442,13 +470,13 @@ owns them).
 
 | 30 | Gate `pnpm eval:agentic`: the $0 offline replay harness (Stage-2 candidate scoring) sat RED ~1 day (stale system-prompt assertion, fixed `1f90ff6`) because `ci.yml` never runs `test/eval` — add its non-live specs (all but the two `EVAL_LIVE`-guarded files) to a gate/CI job so it cannot silently re-break | 1 | S | FLAGGED 2026-07-08 Pass 11 — the CI step is owner-territory (`ci.yml` outside §4 MAY, unverifiable from a no-push pass); exact one-line diff in LOG.md Pass 11. INTERIM shipped same pass: `pnpm eval:agentic` wired into playbook §2.6 as an every-pass harness-health probe (loop-local guard, verified green incl. under CI env). Both networked eval specs self-skip without `EVAL_LIVE`/`DATABASE_URL`, so the CI step needs no env |
 
-| 31 | Reflection trigger consumed on transient error: `runReflection` resets `tradesSinceLastAttempt`/`lastAttemptAt` at `reflection.service.ts:480` BEFORE the fetch, so a transport/http/malformed error (post-line-480) consumes the trigger + a budget call and waits the full 6h cooldown + 5 trips to retry. Pass 12's timeout fix makes the timeout case rare, but any transient error still strands the loop. Roll back both counters on transport/http/malformed exits (guard re-entrancy via the existing `inFlight` flag) so a transient failure retries on the next closed trip | 2 | S | pending (new, Pass 12 2026-07-09 — deferred defect #2 of the reflection-abort finding; lower priority now the 30s abort is fixed) |
+| 31 | Reflection trigger consumed on transient error: `runReflection` resets `tradesSinceLastAttempt`/`lastAttemptAt` at `reflection.service.ts:480` BEFORE the fetch, so a transport/http/malformed error (post-line-480) consumes the trigger + a budget call and waits the full 6h cooldown + 5 trips to retry. Pass 12's timeout fix makes the timeout case rare, but any transient error still strands the loop. Roll back both counters on transport/http/malformed exits (guard re-entrancy via the existing `inFlight` flag) so a transient failure retries on the next closed trip | 2 | S | DONE 2026-07-10 (owner session, `21c9b2d`): additive rollback on transport/http/malformed/no_tool_block/schema_fail AND final validator_reject, plus ONE bounded retry-with-feedback (full assistant-content echo incl. thinking blocks — continuation contract live-verified against claude-opus-4-8); reset-robust `AgenticReflectionNeverMinted` alert added |
 
 | 32 | Stream the reflection LLM call (SSE) instead of a single non-streaming POST: removes the arbitrary wall-clock timeout ceiling entirely (the durable fix behind Pass 12's `AGENTIC_REFLECTION_TIMEOUT_MS` bump — a fixed timeout is still a guess about Opus worst-case). Advisor backlog seed. Agentic-lane, `reflection.service.ts` fetch body + envelope parsing | 2 | M | pending (new, Pass 12 2026-07-09) |
 
 | 33 | Playbook-validator concept precision: the substring denylist (`lower.includes`) false-rejected benign trading prose ("marginal"→`margin`, "leverage the trend"→`leverage`, "act as support"→`act as`), killing every completed reflection candidate (2/2 `validator_reject` live) and pinning the playbook at v1. Root successor to Pass 12's timeout fix. Agentic-lane + observability | 2 | M | DONE 2026-07-10 Pass 13 (`f0c5e14`): word-boundary/concept-phrase `BANNED_PATTERNS` (uniform read+write), bounded `token` metric label + `bannedToken` result. Reviewer-approved (2 must-fix coverage regressions found + fixed + pinned). WATCH: first live post-fix reflection outcome must be `minted`/`no_change`, not `validator_reject` |
 
-| 34 | Funding-carry $0 offline backtest study (owner-mandated carry sub-plan, the pivotal GO/NO-GO gate before any paper-carry build): fetch `--funding` history + perp OHLCV for BTC/ETH (`test/backtest/fetch-data.mjs`, network, sandbox-disabled), build a delta-neutral carry P&L study (net = Σ funding − 4-fill round-trip fees − basis convergence), sweep hold length, report per-window net bps + worst window. Attach each ~8h funding event to its SINGLE bar (never broadcast per-bar — ~32× overcount → false GO). State carry policy up front (unconditional-hold "carry beta" vs funding-threshold-gated entry). `test/backtest/`, off the production gate | 2 | M | NEXT-PASS TOP CANDIDATE (deferred Pass 13 — the #33 learning-loop bug outranked it per §3.1); advisor design brief captured in Pass 13 LOG.md |
+| 34 | Funding-carry $0 offline backtest study (owner-mandated carry sub-plan, the pivotal GO/NO-GO gate before any paper-carry build): fetch `--funding` history + perp OHLCV for BTC/ETH (`test/backtest/fetch-data.mjs`, network, sandbox-disabled), build a delta-neutral carry P&L study (net = Σ funding − 4-fill round-trip fees − basis convergence), sweep hold length, report per-window net bps + worst window. Attach each ~8h funding event to its SINGLE bar (never broadcast per-bar — ~32× overcount → false GO). State carry policy up front (unconditional-hold "carry beta" vs funding-threshold-gated entry). `test/backtest/`, off the production gate | 2 | M | DONE 2026-07-10 (owner session, `979de5e`): ran as `reports/loop/carry-study-2026-07-10.md` — NO-GO 0/126 cells (conditional-harvest design, per-event funding accounting per this row's spec, N=178 deflation union with PRIOR_TRIALS); carry build skipped per the pre-declared gate; `test/backtest/carry/` is the standing re-test harness |
 
 ## Flagged for human review (open)
 

@@ -1222,3 +1222,48 @@ post-fix reflection outcome is `minted`/`no_change` (watch `agentic_reflection_o
 for BTC/ETH perp + a delta-neutral carry P&L study — Σ funding − 4-fill fees − basis, hold-length
 swept; attach each 8h funding event to its single bar, never broadcast per-bar); (3) backlog #31
 (transient-error trigger rollback), #32 (stream the reflection call).
+
+## 2026-07-10 — Owner session (self-learning platform program, ~17:30–21:50Z)
+
+Owner-directed `/goal` session (net-of-cost profitability; plan interview settled: LLM lane =
+centerpiece, loop = subscription researcher, 5 symbols, parallel carry track, 2–4 passes/day).
+12 commits `3c1adc7`..HEAD, each increment gates-green before commit; three deploy windows,
+each soaked.
+
+**Data window read:** live promtool + `agent_decisions`/`llm_usage` (docker compose psql).
+Findings that drove the plan: reflection completed but 2/2 validator-rejected (the loop's Pass
+13 fixed the validator in `f0c5e14` mid-session); trigger consumed pre-call (backlog #31);
+185→196 `input_payload` rows; carry regime research (2025–26 funding compressed/negative).
+
+**Shipped (by commit):** `3c1adc7` scripts surface + test:db serialization (real race found:
+parallel db workers dropped schema mid-suite); `21c9b2d` reflection retry-with-feedback +
+additive trigger rollback + `AgenticReflectionNeverMinted` (reviewer must-fix: retry now echoes
+the FULL assistant content incl. thinking blocks — empirically forced tool_choice suppresses
+thinking emission on both production models today (0 thinking tokens even on Opus with a
+reasoning prompt), full-echo continuation verified 200 live from the app container, ~$0.2
+out-of-band spend); `96692cb` experiments registry (append-only 0009; in-code PRIOR_TRIALS
+stays the deflation-N authority, table = ledger + drift tripwire); `adab234` candidate
+injection (CLI validates via compiled dist validator; A/B CANDIDATE_SOURCES allowlist; eval
+candidate-file hook; scratch-DB verified inject/refuse/reject); `4fb2262` eval:candidates;
+`a6680b5` api-docs conventions + openapi freshness gate; `979de5e` carry study **NO-GO 0/126**
+(best cells 2–5 holdout episodes vs ≥8 floor; nothing clears tStat>3 or WF; verdict robust to
+the documented small-sample DSR inflation) — Phase B/C skipped per the pre-declared gate;
+`ea10621` docs truth + playbook v2; filters+`-2022` pin (B2 verdict: ccxt already maps futures
+-2022→InvalidOrder→TERMINAL_REJECT; regression test pins it because SPOT maps the same code to
+OUTCOME_AMBIGUOUS — a real ccxt-bump hazard); state frame v2; F1 derivatives feed ON (+d1 hash
+flip verified at 18:45Z); 5-symbol widening (`agentic-1..5` ACTIVE, 2 proposes in the first
+soak window).
+
+**Gate results:** final sweep at HEAD all green — 1659 unit / 41 livegate / 11 paper / 15 eval
+/ 17+1 backtest / 50 db; tree clean. Reviewer: approve-with-must-fix (applied + live-verified);
+security-auditor: approve (0 must-fix).
+
+**Soak verdicts:** P0 window clean (30m); F1 clean (+d1 verified); N3 window: INCIDENT — first
+deploy ran `up -d` without `build`, old image lacked the new DEFAULT_FILTERS rows, boot-loud
+guard exited 1, ~7 min downtime 19:05–19:12Z; rebuilt, then clean (all 5 ACTIVE, 0 EXPIRED,
+reconciler 0 halt/0 error, kill switch RUNNING).
+
+**Flagged/next:** first post-fix reflection outcome (minted/no_change expected) PENDING —
+every-pass watch; E2 model-eval runnable at ≥200 rows (instructions in state.md § Last pass);
+owner action: reschedule routine to 2–4 passes/day; commit-attribution note (`3c1adc7` carries
+the archive deletions `ea10621` describes).

@@ -135,6 +135,11 @@ services:
       EXIT_CROSS_BUFFER_BPS: 25 # reduce-only IOC exit crossing buffer (bps); must stay below RISK_MAX_BAND_BPS
       STARTING_CASH: 5000 # in-memory quote balance the bot tracks (set near the demo account's USDT)
 
+      # C1: read-only public derivatives-data feed (funding rate, open interest, mark/index basis)
+      # polled from the USDT-margined perp market, surfaced to the agentic prompt when fresh. Off.
+      DERIVATIVES_FEED_ENABLED: 'false'
+      DERIVATIVES_FEED_POLL_MS: 60000 # REST poll interval (ms); schema default 60000
+
       # ── Risk limits (optional; defaults = the values RiskModule shipped with — override deliberately) ──
       RISK_MAX_ORDER_NOTIONAL: 100000 # quote-notional cap per order
       RISK_MAX_POSITION_PER_SYMBOL: 1000 # base-qty cap per symbol position

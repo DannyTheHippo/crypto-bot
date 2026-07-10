@@ -10,6 +10,7 @@ import type { StrategyPortfolioView } from '../domain/types/portfolio';
 import type { StrategyId, VenueId, SymbolId, EpochMs } from '../domain/types/ids';
 import type { SubscriptionSpec } from '../domain/types/subscription';
 import type { Price, Qty } from '../domain/types/money';
+import type { DerivativesSnapshot } from './derivatives-feed';
 
 // ── StrategyInitContext ───────────────────────────────────────────────────────
 //
@@ -57,6 +58,12 @@ export interface AgentMarketSnapshot {
   // Exec/fill reports accumulated since the previous decide (folded in, never dropped).
   readonly execReports: readonly ExecReport[];
   readonly portfolio: StrategyPortfolioView;
+  // C1: latest polled derivatives-market context (funding rate, open interest, mark/index basis) for
+  // the snapshot's symbol — absent unless DERIVATIVES_FEED_ENABLED is on AND a fresh poll landed
+  // (see DerivativesFeedPort.latest). Optional so every existing caller/fixture that predates this
+  // field stays byte-identical; threaded in by AgenticStrategy.decide() (agentic.strategy.ts), never
+  // by the host's own buildSnapshot.
+  readonly derivatives?: DerivativesSnapshot;
 }
 
 // Per-strategy position summary the host derives from the live PORTFOLIO_VIEW, handed to the

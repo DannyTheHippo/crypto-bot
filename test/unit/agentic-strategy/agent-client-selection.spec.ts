@@ -158,7 +158,10 @@ describe('agenticEnv', () => {
       prescreenBreakoutLookbackBars: 20,
       prescreenBreakoutPct: 0.005,
     };
-    const config = { agentic } as unknown as TypedConfigService;
+    // C1: agenticEnv also reads config.derivativesFeed (a sibling AppConfig top-level key, not part
+    // of the `agentic` block) — present here so the fixture matches the real TypedConfigService shape.
+    const derivativesFeed: AppConfig['derivativesFeed'] = { enabled: true, pollIntervalMs: 60000 };
+    const config = { agentic, derivativesFeed } as unknown as TypedConfigService;
 
     expect(agenticEnv(config)).toMatchObject({
       AGENTIC_MODEL: 'claude-config-model',
@@ -173,6 +176,7 @@ describe('agenticEnv', () => {
       AGENTIC_REFLECTION_EVERY_N_TRADES: '7',
       AGENTIC_REFLECTION_COOLDOWN_MS: '86400000',
       AGENTIC_AUTO_PROMOTE_MIN_TRADES: '9',
+      DERIVATIVES_FEED_ENABLED: 'true',
     });
   });
 });

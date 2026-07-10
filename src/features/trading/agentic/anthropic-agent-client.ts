@@ -121,6 +121,9 @@ export interface AnthropicAgentClientConfig {
   readonly minEdgeMultiple?: string;
   // W3 payoff-floor multiple (decimal string; default '1.5') — see the mapping's stop-floor/RR check.
   readonly minRr?: string;
+  // C1: documents the optional derivatives block in the system prompt (agent-prompt.ts's
+  // buildSystemPrompt derivativesFeedEnabled option). Absent/false ⇒ byte-identical legacy prompt.
+  readonly derivativesFeedEnabled?: boolean;
 }
 
 // Placeholder profile used only when no real AgentTradingProfile has been wired yet — keeps the
@@ -249,13 +252,16 @@ export class AnthropicAgentClient implements AgentClientPort {
     const constraints = this.cfg.constraintsFor?.(String(symbol)) ?? baseProfile.constraints;
     const systemPrompt = buildSystemPrompt(
       { ...baseProfile, constraints },
-      this.cfg.planMode
-        ? {
-            planMode: true,
-            minEdgeMultiple: this.cfg.minEdgeMultiple ?? '1.5',
-            minRr: this.cfg.minRr ?? '1.5',
-          }
-        : {},
+      {
+        ...(this.cfg.planMode
+          ? {
+              planMode: true,
+              minEdgeMultiple: this.cfg.minEdgeMultiple ?? '1.5',
+              minRr: this.cfg.minRr ?? '1.5',
+            }
+          : {}),
+        derivativesFeedEnabled: this.cfg.derivativesFeedEnabled ?? false,
+      },
     );
     // inputPayload is the market JSON ALONE — buildMarketPayload's signature carries no
     // playbookContent parameter, so it structurally cannot echo playbook text (see its own comment).

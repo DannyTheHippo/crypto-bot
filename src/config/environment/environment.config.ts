@@ -332,6 +332,14 @@ const envSchema = z
       .optional(),
     STRATEGY_INTERVAL: z.enum(CANDLE_INTERVALS).default('5m'),
     ACTIVE_STRATEGY: z.enum(['agentic']).default('agentic'),
+    // C1: read-only public derivatives-data feed (funding rate, open interest, mark/index basis),
+    // surfaced to the agentic prompt when fresh. Off by default — zero behavior change unconfigured.
+    // 'true'/'false' (not z.coerce.boolean()), same rationale as AGENTIC_PRESCREEN_ENABLED above.
+    DERIVATIVES_FEED_ENABLED: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
+    DERIVATIVES_FEED_POLL_MS: z.coerce.number().int().positive().default(60_000),
   })
   .superRefine((data, ctx) => {
     // The prescreen gate (prescreen.ts) needs AGENTIC_WARMUP_BARS bars of history before its
@@ -468,6 +476,8 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     TRADING_SYMBOLS: tradingSymbols,
     STRATEGY_INTERVAL: strategyInterval,
     ACTIVE_STRATEGY: activeStrategy,
+    DERIVATIVES_FEED_ENABLED: derivativesFeedEnabled,
+    DERIVATIVES_FEED_POLL_MS: derivativesFeedPollMs,
   } = parsed.data;
   const bootId = crypto.randomUUID();
   const venues = parseVenues(env);
@@ -553,6 +563,10 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       symbols: tradingSymbols ?? [tradingSymbol],
       interval: strategyInterval,
       active: activeStrategy,
+    },
+    derivativesFeed: {
+      enabled: derivativesFeedEnabled,
+      pollIntervalMs: derivativesFeedPollMs,
     },
     ...liveFields,
   };

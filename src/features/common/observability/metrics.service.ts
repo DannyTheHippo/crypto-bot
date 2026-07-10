@@ -5,7 +5,7 @@ import {
   makeCounterProvider,
   makeHistogramProvider,
 } from '@willsoto/nestjs-prometheus';
-import { Gauge } from 'prom-client';
+import { Gauge, Counter } from 'prom-client';
 import { performance } from 'perf_hooks';
 import { TypedConfigService } from '../../../config/environment/typed-config.service';
 import { KILL_SWITCH, type KillSwitchPort } from '../../../ports/risk';
@@ -15,6 +15,7 @@ import {
   type StrategyRegistryPort,
   type StrategyLifecycle,
 } from '../../../ports/strategy';
+import { DERIVATIVES_FEED, type DerivativesFeedPort } from '../../../ports/derivatives-feed';
 import { EventLoopHealthIndicator } from './event-loop-health.indicator';
 
 export const EVENT_LOOP_DELAY_GAUGE = makeGaugeProvider({
@@ -155,6 +156,19 @@ export const AGENTIC_REFLECTION_OUTCOMES_COUNTER = makeCounterProvider({
   labelNames: ['outcome'] as const,
 });
 
+// C1: derivatives-feed health, sampled in the 5s loop below (same pull pattern as kill_switch_state
+// and event_loop_utilization). Present regardless of DERIVATIVES_FEED_ENABLED — staleness simply
+// never drops while the feed is unwired/disabled (NOOP_DERIVATIVES_FEED.lastSuccessfulPollAt is
+// always null, sampled as -1 below so "never polled" is distinguishable from "just polled").
+export const DERIVATIVES_FEED_STALENESS_GAUGE = makeGaugeProvider({
+  name: 'derivatives_feed_staleness_seconds',
+  help: 'Seconds since the derivatives feed last polled successfully (-1 if never)',
+});
+export const DERIVATIVES_FEED_POLL_ERRORS_COUNTER = makeCounterProvider({
+  name: 'derivatives_feed_poll_errors_total',
+  help: 'Cumulative derivatives-feed poll failures',
+});
+
 // §strategy lifecycle — sampled in the 5s loop below (same pull pattern as kill_switch_state):
 // each strategy carries exactly one state at 1, all others in the union explicit 0 (not just absent),
 // so a terminal DRAINING/HALTED strategy is directly alertable rather than a "no data" gap.
@@ -200,6 +214,10 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
     @InjectMetric('open_orders') private readonly openOrdersGauge: Gauge<string>,
     @InjectMetric('in_flight_intents') private readonly inFlightGauge: Gauge<string>,
     @InjectMetric('strategy_lifecycle') private readonly strategyLifecycleGauge: Gauge<string>,
+    @InjectMetric('derivatives_feed_staleness_seconds')
+    private readonly derivativesStalenessGauge: Gauge<string>,
+    @InjectMetric('derivatives_feed_poll_errors_total')
+    private readonly derivativesPollErrorsCounter: Counter<string>,
     private readonly configService: TypedConfigService,
     private readonly eventLoopIndicator: EventLoopHealthIndicator,
     // @Optional so observability can boot standalone (no kill switch) — the gauge is simply not set.
@@ -210,6 +228,10 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
     // @Optional: STRATEGY_REGISTRY is not yet bridged into global scope (pending G3c) and is absent in
     // every unit test — sampling below silently skips when it is undefined.
     @Optional() @Inject(STRATEGY_REGISTRY) private readonly registry?: StrategyRegistryPort,
+    // C1: @Optional so observability boots standalone (module-isolation tests); in the running app
+    // MarketFeedModule is @Global so this always resolves to the real DERIVATIVES_FEED provider
+    // (NOOP_DERIVATIVES_FEED when the flag is off — see app.module.ts).
+    @Optional() @Inject(DERIVATIVES_FEED) private readonly derivativesFeed?: DerivativesFeedPort,
   ) {}
 
   onModuleInit() {
@@ -222,6 +244,9 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
     this.bootInfoGauge.labels({ boot_id: app.bootId }).set(1);
 
     let prevElu = performance.eventLoopUtilization();
+    // C1: cumulative poll-error count as of the previous sample — diffed each tick into the Counter
+    // (prom-client Counters only support .inc(), never .set()), same technique as prevElu above.
+    let prevDerivativesPollErrors = 0;
 
     this.sampleInterval = setInterval(() => {
       const monitor = this.eventLoopIndicator.getMonitor();
@@ -276,6 +301,18 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
               .set(state === lifecycle ? 1 : 0);
           }
         }
+      }
+
+      if (this.derivativesFeed) {
+        const lastSuccessAt = this.derivativesFeed.lastSuccessfulPollAt();
+        this.derivativesStalenessGauge.set(
+          lastSuccessAt === null ? -1 : (Date.now() - lastSuccessAt) / 1000,
+        );
+        const totalErrors = this.derivativesFeed.pollErrorCount();
+        if (totalErrors > prevDerivativesPollErrors) {
+          this.derivativesPollErrorsCounter.inc(totalErrors - prevDerivativesPollErrors);
+        }
+        prevDerivativesPollErrors = totalErrors;
       }
     }, 5000);
   }

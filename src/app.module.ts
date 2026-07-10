@@ -13,6 +13,7 @@ import {
 import { randomBytes, createHash } from 'node:crypto';
 import { APP_FILTER } from '@nestjs/core';
 import type { Exchange } from 'ccxt';
+import { binanceusdm as BinanceUsdmExchange } from 'ccxt';
 import Decimal from 'decimal.js';
 import { AppConfigModule } from './config/config.module';
 import { TypedConfigService } from './config/environment/typed-config.service';
@@ -66,6 +67,10 @@ import {
   type ChannelStateTracker,
   type WatchSource,
 } from './features/trading/market-data/ccxt-stream.adapter';
+import {
+  DerivativesFeedService,
+  type DerivativesRestSource,
+} from './features/trading/market-data/derivatives-feed.service';
 import {
   FeedHealthServiceWithBackfill,
   type OhlcvSource,
@@ -191,6 +196,7 @@ import {
   type FeedHealthPort,
   type MarketStreamPort,
 } from './ports/market-data';
+import { DERIVATIVES_FEED, type DerivativesFeedPort } from './ports/derivatives-feed';
 import {
   EXCHANGE_STREAM,
   type ExchangeStreamPort,
@@ -554,6 +560,25 @@ const NOOP_FEED_HEALTH: FeedHealthPort = {
   getRefPrice: () => undefined,
   fetchCandles: () => Promise.resolve([]),
 };
+// C1: bound whenever DERIVATIVES_FEED_ENABLED is off (default) or under test/ci — no poll ever
+// starts, latest() always answers null, so the agentic prompt's derivatives block never renders.
+const NOOP_DERIVATIVES_FEED: DerivativesFeedPort = {
+  latest: () => null,
+  lastSuccessfulPollAt: () => null,
+  pollErrorCount: () => 0,
+};
+// Public-only REST client for the USDT-margined perp market (funding rate / open interest have no
+// spot-market equivalent) — mirrors buildCcxtExchange's no-credentials construction (same file
+// header comment) but plain REST (ccxt.binanceusdm), not ccxt.pro: fetchFundingRate/fetchOpenInterest
+// are REST-only unified methods, never streamed. Never wired through venue-urls.ts (that module's
+// VenueUrlOverride shape has no swap-market entry yet — see DerivativesFeedService's own header
+// comment on the C1 plan's venue-urls deferral).
+function buildDerivativesRestSource(): DerivativesRestSource {
+  return new BinanceUsdmExchange({
+    number: String,
+    enableRateLimit: true,
+  });
+}
 function isTestEnv(): boolean {
   return (
     process.env['NODE_ENV'] === 'test' ||
@@ -642,8 +667,29 @@ const MD_EXCHANGE = Symbol('MD_EXCHANGE');
       inject: [EXCHANGE_STREAM, CLOCK, REAL_FEED_HEALTH, EXCHANGE_PORT],
     },
     { provide: FEED_HEALTH, useExisting: REAL_FEED_HEALTH },
+    {
+      provide: DERIVATIVES_FEED,
+      useFactory: (config: TypedConfigService, clock: ClockPort): DerivativesFeedPort => {
+        const { enabled, pollIntervalMs } = config.derivativesFeed;
+        // Same test/ci short-circuit as MD_EXCHANGE above (no network client under test), plus the
+        // feature flag itself — off by default, so an unconfigured deployment never polls.
+        if (isTestEnv() || !enabled) return NOOP_DERIVATIVES_FEED;
+        const source = buildDerivativesRestSource();
+        const service = new DerivativesFeedService(source, {
+          symbols: config.strategy.symbols.map((s) => symbolId(s)),
+          pollIntervalMs,
+          clock,
+          logger: new Logger('DerivativesFeedService'),
+        });
+        // Explicit start (never relies on Nest's factory-provider lifecycle-hook wiring): idempotent
+        // (start() no-ops if already running), mirrors StrategyHost's own explicit host.start() below.
+        service.start();
+        return service;
+      },
+      inject: [TypedConfigService, CLOCK],
+    },
   ],
-  exports: [MARKET_STREAM, FEED_HEALTH, REAL_FEED_HEALTH, EXCHANGE_STREAM],
+  exports: [MARKET_STREAM, FEED_HEALTH, REAL_FEED_HEALTH, EXCHANGE_STREAM, DERIVATIVES_FEED],
 })
 class MarketFeedModule {}
 
@@ -1148,6 +1194,9 @@ export class AppModule
     @Inject(AGENT_LLM_BUDGET) agentBudget: DailyLlmBudget,
     @Inject(AGENT_DECISION_JOURNAL) private readonly agentJournal: AgentDecisionJournalPort,
     @Inject(PLAYBOOK_PROVIDER) private readonly playbookProvider: PlaybookProvider,
+    // C1: always bound (MarketFeedModule's DERIVATIVES_FEED factory returns NOOP_DERIVATIVES_FEED
+    // when DERIVATIVES_FEED_ENABLED is off/test-ci) — never @Optional.
+    @Inject(DERIVATIVES_FEED) private readonly derivativesFeed: DerivativesFeedPort,
     @Inject(REFLECTION_SERVICE) private readonly reflectionService: ReflectionService,
     @Inject(PROMOTION_READINESS) private readonly promotionReadiness: PromotionReadinessPort,
     // W5 attributed auto-promotion: the evaluator promotes a reflection candidate to ACTIVE on its
@@ -1335,6 +1384,7 @@ export class AppModule
         },
         onPrescreen: (outcome, reason) => this.agentMetrics.recordPrescreen(outcome, reason),
         evidence: this.roundTripEvidence,
+        derivativesFeed: this.derivativesFeed,
       };
       return new AgenticStrategy(id, p as AgenticStrategyParams, this.agentClient, deps);
     });

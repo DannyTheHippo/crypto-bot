@@ -141,6 +141,9 @@ export function agenticEnv(config?: TypedConfigService): Record<string, string |
     AGENTIC_QUIET_PAYLOAD_SAMPLE_BARS: String(agentic.quietPayloadSampleBars),
     AGENTIC_TOKEN_PRICE_CACHE_READ_PER_MTOK: agentic.tokenPriceCacheReadPerMtok,
     AGENTIC_TOKEN_PRICE_CACHE_WRITE_PER_MTOK: agentic.tokenPriceCacheWritePerMtok,
+    // C1: documents the optional derivatives block in the system prompt — off by default, so an
+    // unconfigured deployment's prompt stays byte-identical.
+    DERIVATIVES_FEED_ENABLED: String(config.derivativesFeed.enabled),
   };
 }
 
@@ -244,6 +247,8 @@ export function selectAgentClient(
       planMode: env['AGENTIC_PLAN_MODE'] === 'true',
       minEdgeMultiple: env['AGENTIC_MIN_EDGE_MULTIPLE'],
       minRr: env['AGENTIC_MIN_RR'],
+      // C1: off by default ⇒ byte-identical legacy prompt (no derivatives sentence).
+      derivativesFeedEnabled: env['DERIVATIVES_FEED_ENABLED'] === 'true',
     },
     fetch,
     new Logger('AnthropicAgentClient'),

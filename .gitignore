@@ -15,3 +15,6 @@ coverage
 # ranges recorded in the diagnostic report). The four legacy BTCUSDT-<tf>.json fixtures the
 # sanity gates depend on predate this pattern and stay committed.
 test/backtest/data/ohlcv-*.json
+# Funding-rate history caches for the carry study — same reproducibility contract
+# (test/backtest/fetch-data.mjs --funding; ranges recorded in reports/loop/carry-study-*.md).
+test/backtest/data/funding-*.json

@@ -1,10 +1,13 @@
 import swc from 'unplugin-swc';
-import { defineConfig } from 'vitest/config';
+import { configDefaults, defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
     globals: false,
     environment: 'node',
+    // Harness agent worktrees live under .claude/worktrees/ and contain full repo copies —
+    // without this exclude, positional filters like `vitest run test/unit` match their copies too.
+    exclude: [...configDefaults.exclude, '**/.claude/**'],
     coverage: {
       provider: 'v8',
       thresholds: {

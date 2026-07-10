@@ -25,5 +25,7 @@
     ".pnpm-cache",
     "docs/archive",
     "reports/archive",
+    // Harness agent worktrees — full repo copies; linting them double-reports everything.
+    ".claude",
   ],
 }

@@ -16,6 +16,10 @@ export default tseslint.config(
       // Operator CLI scripts, run directly via `node` — not part of any tsconfig project (see
       // tsconfig.eslint.json's include list), so typed linting has no project context for them.
       'scripts/**',
+      // Same class: the backtest data-fetch CLI is a bare .mjs run via `node`, outside tsconfig.
+      'test/backtest/fetch-data.mjs',
+      // Harness agent worktrees — full repo copies whose files have no tsconfig project context.
+      '.claude/**',
     ],
   },
   ...tseslint.configs.recommendedTypeChecked,

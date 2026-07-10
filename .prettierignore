@@ -4,6 +4,8 @@ coverage
 .pnpm-cache
 pnpm-lock.yaml
 drizzle/meta
+# Harness agent worktrees — full repo copies under .claude/worktrees.
+.claude
 
 # Markdown is owned by markdownlint (.markdownlint-cli2.jsonc), not prettier — prettier's reflow
 # mangles long-form technical prose. See `pnpm lint:md`.

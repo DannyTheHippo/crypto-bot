@@ -378,8 +378,19 @@ owns them).
 
 ## Flagged for human review (open)
 
-- **EDGE DIAGNOSTIC 2026-07-10 — NO-GO; escalation: fund the carry path, drop the directional
-  candidate** (`reports/loop/edge-diagnostic-2026-07-10.md`). 52 selection-corrected buckets
+- **FUNDING-CARRY CONVERGENCE STUB 2026-07-10 — prerequisites landed; awaiting its own gated
+  sub-plan (owner approval to build).** Delta-neutral carry (long spot + short equal-notional perp,
+  earning funding with no directional call — the diagnostic-recommended lever) can now be designed
+  on: `PaperPerpAdapter` + `funding_events` append-only accounting (b078f64), perp Risk sizing
+  caps + short protective-exit + the unconsumed `expectedFundingBpsPerHold` sizing hook (6a94bc4),
+  live funding/OI/basis via the derivatives feed (d76e639, flag), and funding-aware backtesting on
+  the rebuilt spine (`test/backtest/funding.ts`, b30ed05, with `fetchFundingRateHistory` caching in
+  `fetch-data.mjs`). Deliberately NOT built here: the two-legged position/`linkedGroupId` intent
+  question, the carry entry/unwind gate (funding meaningfully positive net of fees; regime-flip
+  exit), and the funding-carry backtest study — each belongs to the sub-plan, which must also
+  carry the B3-tracked wiring requirements (guard-on-resolved-URL, mandatory boot config, OMS
+  reduceOnly terminalization) before any adapter wiring. Sequencing note: carry validation
+  (backtest over cached funding history) is runnable offline at $0 before any build decision. (`reports/loop/edge-diagnostic-2026-07-10.md`). 52 selection-corrected buckets
   (BTC/ETH × 15m–1d and 5 volatile alts × 15m, seed rule + expected-move filter k∈{1..3}): zero
   seams. Quantified gap: best qualified bucket (BTC 4h) holds +10.2bps/RT out-of-sample over 61 RT
   but deflated Sharpe 0.152 vs the 0.95 bar — an order of magnitude short; every 15m bucket

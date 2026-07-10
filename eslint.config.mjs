@@ -308,4 +308,20 @@ export default tseslint.config(
       ],
     },
   },
+  // Template mirror: api-examples exports are Record<string, ApiResponseOptions> literals keyed by
+  // outcome name (success/refused/...) — warn (not error) since these are docs fixtures, not
+  // wire-contract code.
+  {
+    files: ['src/**/*.api-examples.ts'],
+    rules: {
+      '@typescript-eslint/naming-convention': [
+        'warn',
+        {
+          selector: 'variable',
+          modifiers: ['exported'],
+          format: ['camelCase'],
+        },
+      ],
+    },
+  },
 );

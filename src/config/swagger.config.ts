@@ -1,15 +1,15 @@
 import type { INestApplication } from '@nestjs/common';
 import { Logger } from '@nestjs/common';
-import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import { DocumentBuilder, SwaggerModule, type OpenAPIObject } from '@nestjs/swagger';
 import { writeFileSync } from 'node:fs';
 
 const logger = new Logger('SwaggerConfig');
 
-// Template-mirror docs mount (CLAUDE.md P4). openapi.json is written to disk only under
-// NODE_ENV=local — never in the deployed container (docker-compose sets NODE_ENV=production) and
-// never under test/ci, keeping the hermetic suite and the demo boot free of a generated artifact.
-export function createSwaggerConfig(app: INestApplication): void {
-  const document = SwaggerModule.createDocument(
+// Extracted so both the runtime bootstrap path and the openapi-snapshot spec
+// (test/unit/config/openapi-snapshot.spec.ts) build the document off the exact same
+// DocumentBuilder — the spec would otherwise drift from whatever main.ts actually serves.
+export function buildOpenApiDocument(app: INestApplication): OpenAPIObject {
+  return SwaggerModule.createDocument(
     app,
     new DocumentBuilder()
       .setVersion('0.0.1')
@@ -17,6 +17,13 @@ export function createSwaggerConfig(app: INestApplication): void {
       .setDescription('crypto-bot arming/mode-control API specification')
       .build(),
   );
+}
+
+// Template-mirror docs mount (CLAUDE.md P4). openapi.json is written to disk only under
+// NODE_ENV=local — never in the deployed container (docker-compose sets NODE_ENV=production) and
+// never under test/ci, keeping the hermetic suite and the demo boot free of a generated artifact.
+export function createSwaggerConfig(app: INestApplication): void {
+  const document = buildOpenApiDocument(app);
 
   SwaggerModule.setup('docs', app, document);
 

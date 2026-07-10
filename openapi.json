@@ -1,0 +1,537 @@
+{
+  "openapi": "3.0.0",
+  "paths": {
+    "/health/live": {
+      "get": {
+        "operationId": "HealthController_live",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Process is alive.\n\nThe Health Check is successful",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "example": "ok"
+                    },
+                    "info": {
+                      "type": "object",
+                      "example": {
+                        "database": {
+                          "status": "up"
+                        }
+                      },
+                      "additionalProperties": {
+                        "type": "object",
+                        "required": [
+                          "status"
+                        ],
+                        "properties": {
+                          "status": {
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": true
+                      },
+                      "nullable": true
+                    },
+                    "error": {
+                      "type": "object",
+                      "example": {},
+                      "additionalProperties": {
+                        "type": "object",
+                        "required": [
+                          "status"
+                        ],
+                        "properties": {
+                          "status": {
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": true
+                      },
+                      "nullable": true
+                    },
+                    "details": {
+                      "type": "object",
+                      "example": {
+                        "database": {
+                          "status": "up"
+                        }
+                      },
+                      "additionalProperties": {
+                        "type": "object",
+                        "required": [
+                          "status"
+                        ],
+                        "properties": {
+                          "status": {
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": true
+                      }
+                    }
+                  }
+                },
+                "examples": {
+                  "example": {
+                    "summary": "Liveness check passing",
+                    "value": {
+                      "status": "ok",
+                      "info": {},
+                      "error": {},
+                      "details": {}
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The Health Check is not successful",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "example": "error"
+                    },
+                    "info": {
+                      "type": "object",
+                      "example": {
+                        "database": {
+                          "status": "up"
+                        }
+                      },
+                      "additionalProperties": {
+                        "type": "object",
+                        "required": [
+                          "status"
+                        ],
+                        "properties": {
+                          "status": {
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": true
+                      },
+                      "nullable": true
+                    },
+                    "error": {
+                      "type": "object",
+                      "example": {
+                        "redis": {
+                          "status": "down",
+                          "message": "Could not connect"
+                        }
+                      },
+                      "additionalProperties": {
+                        "type": "object",
+                        "required": [
+                          "status"
+                        ],
+                        "properties": {
+                          "status": {
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": true
+                      },
+                      "nullable": true
+                    },
+                    "details": {
+                      "type": "object",
+                      "example": {
+                        "database": {
+                          "status": "up"
+                        },
+                        "redis": {
+                          "status": "down",
+                          "message": "Could not connect"
+                        }
+                      },
+                      "additionalProperties": {
+                        "type": "object",
+                        "required": [
+                          "status"
+                        ],
+                        "properties": {
+                          "status": {
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": true
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Health"
+        ]
+      }
+    },
+    "/health/ready": {
+      "get": {
+        "operationId": "HealthController_ready",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Process is ready to serve traffic (event loop, config, and, when configured, DB).\n\nThe Health Check is successful",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "example": "ok"
+                    },
+                    "info": {
+                      "type": "object",
+                      "example": {
+                        "database": {
+                          "status": "up"
+                        }
+                      },
+                      "additionalProperties": {
+                        "type": "object",
+                        "required": [
+                          "status"
+                        ],
+                        "properties": {
+                          "status": {
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": true
+                      },
+                      "nullable": true
+                    },
+                    "error": {
+                      "type": "object",
+                      "example": {},
+                      "additionalProperties": {
+                        "type": "object",
+                        "required": [
+                          "status"
+                        ],
+                        "properties": {
+                          "status": {
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": true
+                      },
+                      "nullable": true
+                    },
+                    "details": {
+                      "type": "object",
+                      "example": {
+                        "database": {
+                          "status": "up"
+                        }
+                      },
+                      "additionalProperties": {
+                        "type": "object",
+                        "required": [
+                          "status"
+                        ],
+                        "properties": {
+                          "status": {
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": true
+                      }
+                    }
+                  }
+                },
+                "examples": {
+                  "example": {
+                    "summary": "Readiness check passing (paper mode, DB-less)",
+                    "value": {
+                      "status": "ok",
+                      "info": {
+                        "event_loop_delay": {
+                          "status": "up"
+                        },
+                        "config": {
+                          "status": "up",
+                          "effectiveMode": "paper",
+                          "killSwitchState": "RUNNING"
+                        }
+                      },
+                      "error": {},
+                      "details": {
+                        "event_loop_delay": {
+                          "status": "up"
+                        },
+                        "config": {
+                          "status": "up",
+                          "effectiveMode": "paper",
+                          "killSwitchState": "RUNNING"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The Health Check is not successful",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "example": "error"
+                    },
+                    "info": {
+                      "type": "object",
+                      "example": {
+                        "database": {
+                          "status": "up"
+                        }
+                      },
+                      "additionalProperties": {
+                        "type": "object",
+                        "required": [
+                          "status"
+                        ],
+                        "properties": {
+                          "status": {
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": true
+                      },
+                      "nullable": true
+                    },
+                    "error": {
+                      "type": "object",
+                      "example": {
+                        "redis": {
+                          "status": "down",
+                          "message": "Could not connect"
+                        }
+                      },
+                      "additionalProperties": {
+                        "type": "object",
+                        "required": [
+                          "status"
+                        ],
+                        "properties": {
+                          "status": {
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": true
+                      },
+                      "nullable": true
+                    },
+                    "details": {
+                      "type": "object",
+                      "example": {
+                        "database": {
+                          "status": "up"
+                        },
+                        "redis": {
+                          "status": "down",
+                          "message": "Could not connect"
+                        }
+                      },
+                      "additionalProperties": {
+                        "type": "object",
+                        "required": [
+                          "status"
+                        ],
+                        "properties": {
+                          "status": {
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": true
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Health"
+        ]
+      }
+    },
+    "/metrics": {
+      "get": {
+        "operationId": "PrometheusController_index",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Prometheus"
+        ]
+      }
+    },
+    "/mode/arm/request": {
+      "post": {
+        "operationId": "ArmingController_request",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArmRequestRequestDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Arm request refused (precondition not met).\n\nArming challenge issued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArmResultResponseDto"
+                },
+                "examples": {
+                  "example": {
+                    "summary": "Challenge issued",
+                    "value": {
+                      "ok": true,
+                      "challengeId": "3f9d2e1a-6b4c-4e2a-9c1a-0f2e1d3c4b5a"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Arming"
+        ]
+      }
+    },
+    "/mode/arm/confirm": {
+      "post": {
+        "operationId": "ArmingController_confirm",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArmConfirmRequestDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Arm confirmation refused.\n\nArming confirmed; mode transitions to ARMED.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArmResultResponseDto"
+                },
+                "examples": {
+                  "example": {
+                    "summary": "Armed",
+                    "value": {
+                      "ok": true
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Arming"
+        ]
+      }
+    },
+    "/mode/disarm": {
+      "post": {
+        "operationId": "ArmingController_disarm",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": "Disarm recorded; mode reverts to the resolved effective mode."
+          }
+        },
+        "tags": [
+          "Arming"
+        ]
+      }
+    }
+  },
+  "info": {
+    "title": "crypto-bot API",
+    "description": "crypto-bot arming/mode-control API specification",
+    "version": "0.0.1",
+    "contact": {}
+  },
+  "tags": [],
+  "servers": [],
+  "components": {
+    "schemas": {
+      "ArmRequestRequestDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "ArmResultResponseDto": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "example": true,
+            "description": "Whether the arm step succeeded."
+          },
+          "challengeId": {
+            "type": "string",
+            "example": "3f9d2e1a-6b4c-4e2a-9c1a-0f2e1d3c4b5a",
+            "description": "Challenge id issued on a successful REQUEST step."
+          },
+          "reason": {
+            "type": "string",
+            "example": "HMAC_MISMATCH",
+            "enum": [
+              "TTL_EXPIRED",
+              "REPLAY",
+              "HMAC_MISMATCH",
+              "PRECONDITION"
+            ],
+            "description": "Failure reason, present when ok is false."
+          }
+        },
+        "required": [
+          "ok"
+        ]
+      },
+      "ArmConfirmRequestDto": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  }
+}

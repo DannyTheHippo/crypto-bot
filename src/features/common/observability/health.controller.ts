@@ -1,5 +1,6 @@
 import { Controller, Get, Inject, Optional } from '@nestjs/common';
 import { HealthCheck, HealthCheckService, HealthIndicatorResult } from '@nestjs/terminus';
+import { ApiResponse } from '@nestjs/swagger';
 import { TypedConfigService } from '../../../config/environment/typed-config.service';
 import { EventLoopHealthIndicator } from './event-loop-health.indicator';
 import { DB_HEALTH, type DbHealthPort } from '../../../ports/db-health';
@@ -9,6 +10,7 @@ import {
   type StrategyLifecycle,
   type DrainReason,
 } from '../../../ports/strategy';
+import { healthLiveApiExamples, healthReadyApiExamples } from './api-examples/health.api-examples';
 
 interface StrategyDetail {
   readonly lifecycle: StrategyLifecycle;
@@ -33,12 +35,14 @@ export class HealthController {
 
   @Get('live')
   @HealthCheck()
+  @ApiResponse(healthLiveApiExamples.ok)
   live() {
     return this.health.check([]);
   }
 
   @Get('ready')
   @HealthCheck()
+  @ApiResponse(healthReadyApiExamples.ok)
   ready() {
     const mode = this.configService.mode;
     const configDetail: {

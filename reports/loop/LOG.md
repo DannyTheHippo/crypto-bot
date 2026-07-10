@@ -1111,3 +1111,114 @@ behind the timeout bump; (3) if reflection keeps consuming the trigger on any fu
 roll back `tradesSinceLastAttempt`/`lastAttemptAt` on transport/http/malformed errors so a transient
 failure retries on the next trip instead of waiting the 6h cooldown (deferred defect #2 this pass);
 (4) W12 lane event logging / #28 `model` label / W9 panels bundled into the next redeploy.
+
+## 2026-07-10 — Pass 13 (scheduled run, ~16:30–17:20Z)
+
+**SHIP: a correctness fix on the LEARNING-critical path (agentic-lane, gates-green, reviewer-approved,
+redeployed). Pass 12's reflection-timeout fix is CONFIRMED WORKING — reflection now completes — but
+today's evidence shows every completed candidate is killed at the NEXT stage: the banned-word
+validator false-rejects benign trading prose. This is the direct successor blocker to Pass 12 and
+outranks the funding-carry backtest per §3.1. Rewrote the denylist to be concept-precise.**
+
+**Window / provenance.** First loop pass since Pass 12 (2026-07-09). Between then and now an
+owner-directed edge-program session (plan `open-replicated-platypus`) landed workstreams A–E + B3
+shorts + free feeds on `main` (commits `20c2ff9`…`e5b5d35`, 2026-07-10 11:07–14:43 CEST) — all
+flag-gated OFF; NOT a loop pass. Owner deployed that image at 12:45Z (boot `ddfd3ce3`,
+`RestartCount=0`, evidence read off it). This pass redeployed to boot **`17:03:47Z`** (`RestartCount=0`,
+clean) with fix `f0c5e14`. Gate epoch unchanged `2026-07-08T09:52:35Z`. Dirty tree: none — only the 7
+files this pass authored.
+
+**Stack health.** All four containers up, app healthy; prometheus/grafana/postgres up ~47h. Boot
+`ddfd3ce3` logs (2877 lines): 0 error / 0 HALT / 0 kill-switch / 0 EXPIRED / 0 abort / 0 fatal; 4
+benign warns (2× NestJS `LegacyRouteConverter`, 1× the earned-live UNVALIDATED banner, 1× reflection
+trigger-state seed). Reconcile `reconciliation_runs_total{mismatch}=412`, **0 halt / 0 error** (the
+known foreign-order steady state, #24). mode=testnet, downgrades=[] (no live downgrade).
+
+**Headline metrics (promtool, boot `ddfd3ce3` unless noted).**
+
+- **Gate scoreboard (epoch-scoped, DB-backed):** `round_trips=11`, `net_pnl_usd=−2.2633`,
+  `llm_cost_usd=1.7888`, `window_days=1.625`, `ready=0`. Cost ~$1.1/day, well under the $5 breaker.
+  (`window_days` 1.625 vs ~2.25 since epoch is benign — measured from the first post-epoch trip.)
+- **This boot:** `agent_decide_total` proposed=1 / hold=5 (6 decides, 83% hold); `fills_total=1`;
+  `round_trips_total{loss}=1`; `signals_rejected_total` EMPTY (0 EXPIRED); prescreen skip 20/26 ≈ 77%
+  (quiet 20; called: breakout_proximity 1 + position_open 2 + vol_expansion 3); tokens input 10213 /
+  output 1718 / cache_read 11520 / cache_creation 5760 (cache working).
+- **Portfolio:** `equity_usdt=4996.90`, `drawdown_ratio=0.00062` (0.06%), realized BTC −$0.97 / ETH
+  −$0.40 — fully trade-explained, no unexplained drawdown.
+- **Learning loop:** `agentic_playbook_info{version=1}=1` (v1 seed ONLY, 0 promotions);
+  `agentic_version_net_pnl_usd{v1}=−5.35` over `agentic_version_round_trips{v1}=43` (the net-negative
+  champion the loop must beat).
+
+**THE DISCRIMINATOR (advisor-directed): Pass-12 reflection-fix verification, answered.** Prometheus
+(up 47h) retained the PRIOR boot's series across the 12:45Z app restart, so the 10:45Z reflection
+attempt is queryable. Instant query at 12:30Z (`--time=1783686600`):
+`agentic_reflection_outcomes_total{attempt_started=2, validator_reject=2}` +
+`playbook_validator_rejections_total{banned_token="true"}=2`. **Verdict: the timeout fix WORKS —
+reflection now COMPLETES (no more `transport_error`) — but both completed candidates were killed by
+the banned-word validator** (`bannedTokenHit=true`), the SAME failure class that originally killed the
+loop (state.md § Current stage). Playbook stuck at v1.
+
+**Root cause.** `validatePlaybook`'s denylist used raw substring matching (`lower.includes`), which
+false-positives on benign trading prose — "marginal" trips `margin`, "leverage the trend" trips
+`leverage`, "act as support" trips `act as`. W2 (2026-07-08) had deliberately kept the validator dumb
+and pinned that with a test, moving the fix to the PROMPT ("warn the model off the words"). Today's
+evidence FALSIFIES that premise: the reflection prompt already warns these exact sequences
+(`buildReflectionSystemPrompt`) and Opus emitted them anyway. The candidate content is NOT persisted
+(`llm_usage` stores only token counts), so the exact token is unrecoverable — but (per advisor) the
+fix is **safety-preserving regardless of which token hit**: it only loosens benign-collision matching
+while every injection/exfil/non-spot concept stays hard-blocked on both sides. The missing token
+confirmation gates an EFFICACY claim (is the loop unblocked?), not a safety claim.
+
+**Decision (§3.1).** A correctness bug on the learning-critical path surfaced by today's evidence
+outranks everything, including the owner-mandated funding-carry backtest (deferred to a future pass —
+it is the next candidate). Two advisor consults + one reconcile (surfacing the W2 pin, which is a
+prior-session engineering choice, not an owner-settled decision, with a now-falsified premise).
+
+**Shipped `f0c5e14`** (agentic-lane + observability, 7 files, +212/−67):
+
+- `playbook-validator.ts` — rewrote the substring `BANNED_TOKENS` denylist as word-boundary /
+  concept-phrase `BANNED_PATTERNS`. Benign prose passes ("marginal", "profit margin", "leverage the
+  trend", "act as support", "you are now holding", "short-term"); every prompt-injection /
+  exfiltration / non-spot directive still hard-blocks. PRECISION, not polarity-awareness — a
+  cautionary "do not use leverage" still contains "use leverage" and is still rejected. Same shared
+  matcher on the write (reflection mint) and read (compose-into-prompt) sides — cannot diverge.
+- Observability — added a bounded `token` label to `playbook_validator_rejections_total` (~20 fixed
+  concept labels or 'none') + a `bannedToken` result field, so the exact trigger is observable on the
+  NEXT rejection without the ephemeral warn log. Threaded through `recordValidatorRejection` (the
+  recorder and the `ReflectionMetricsRecorder` port) and both call sites (`reflection.service.ts`,
+  `app.module.ts`).
+- `reflection.service.ts` — reconciled the prompt's warned-list with the new concept set (explicitly
+  tells the model ordinary trading words in their plain sense are fine).
+- W2's pinned polarity-blind test — comment rewritten to record the falsified premise; the cautionary
+  assertion kept (still blocks via "use leverage"); benign-pass + injection-block corpora ADDED.
+
+**Reviewer (opus, mandatory) — APPROVE after one fix round.** First pass found 2 must-fix coverage
+regressions the precision refactor introduced (`withdraw` multi-qualifier "withdraw all your funds";
+`leverage` directive forms "apply/increase/maximum leverage") + should-fix persona/new-instructions
+slips. All fixed and pinned by regression tests; re-review verified the exact evasions are now caught,
+no new benign over-block across 38 realistic phrasings, read/write symmetry preserved. One
+reviewer-found dead-branch bug in my own `new instructions` regex (double `\s` consumption) fixed too.
+
+**Gates:** build, lint, typecheck, **1638 unit (+18)**, eval:agentic 15. **Deploy:** boot `17:03:47Z`
+clean — migrations applied, expectancy ladder ACTIVE, boot recovery 3 seeded / 0 degraded, playbook v1
+seed, 0 error/HALT/EXPIRED/level-50, kill switch running. **Soak (~16 min):** boot-clean confirmed;
+decides continue on the 15m cadence; no new error-class lines; protective config unchanged.
+
+**Verification boundary (per Pass 12 / advisor).** PRIMARY = unit tests (benign prose passes;
+injection/non-spot prose hard-blocks — tested). NEWLY OBSERVABLE = the exact banned concept on the
+next rejection (`token` metric label). **PENDING = live mint.** Reflection is trade-gated and fires
+~1/5h, so a 15–30 min soak cannot observe a mint. Claim: _the validator no longer false-positives on
+benign prose (tested)_ — NOT _the loop is unblocked_. First live `minted`/`no_change` (instead of
+`validator_reject`) lands on a future pass once a round trip closes post-fix.
+
+**Flagged for human review:** none new. The edge-program landed (owner session) and the owner-mandated
+**funding-carry $0 offline backtest** (the pivotal GO/NO-GO gate for the carry sub-plan) is the top
+next-pass candidate — deferred this pass only because the learning-loop bug outranked it.
+
+**Empty-pass counter: 0** (shipped a real fix). **Next-pass candidates, ranked:** (1) confirm the first
+post-fix reflection outcome is `minted`/`no_change` (watch `agentic_reflection_outcomes_total` +
+`agentic_playbook_info{version}`>1; if a rejection recurs, the new `token` label names the concept);
+(2) **funding-carry offline backtest study** (owner-mandated carry sub-plan; needs a `--funding` fetch
+for BTC/ETH perp + a delta-neutral carry P&L study — Σ funding − 4-fill fees − basis, hold-length
+swept; attach each 8h funding event to its single bar, never broadcast per-bar); (3) backlog #31
+(transient-error trigger rollback), #32 (stream the reflection call).

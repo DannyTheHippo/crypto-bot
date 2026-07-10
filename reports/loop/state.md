@@ -147,7 +147,49 @@ the fix's live confirmation (an attempt resolving to `minted`/`no_change`/`valid
 of `transport_error`) is PENDING — reflection fires ~1/5h and a 15–30 min soak can't observe it; first
 confirmation lands on a future pass.** Reconciler healthy (2699 mismatch passes, 0 halt/0 error).
 
+**Pass 13 (2026-07-10 ~17:00Z) — Pass-12 fix CONFIRMED working; next-stage blocker found + fixed,
+redeployed.** The owner edge-program session landed A–E + B3 + feeds (all flag-gated OFF) and deployed
+boot `ddfd3ce3` at 12:45Z (not a loop pass). Prometheus retained the prior boot's series, so the
+discriminator is answerable: `agentic_reflection_outcomes_total{attempt_started=2, validator_reject=2}`
+at 12:30Z ⇒ **reflection now COMPLETES (Pass-12 timeout fix works — no `transport_error`) but every
+completed candidate is killed by the banned-word validator** (`banned_token="true"`=2), pinning the
+playbook at the net-negative v1 seed (43 RT, −$5.35). Root cause: `validatePlaybook`'s substring
+denylist false-positives on benign trading prose; W2's prompt-only remedy is empirically falsified (the
+prompt warns the sequences, Opus emits them anyway). **Fixed `f0c5e14`:** concept-precise
+word-boundary/phrase denylist (benign prose passes; every injection/exfil/non-spot concept still
+hard-blocks; uniform shared read+write matcher) + a bounded `token` metric label + `bannedToken` result
+so the exact concept is observable on the next rejection. Reviewer (opus) APPROVE after one fix round.
+Redeployed to boot `17:03:47Z`, clean. **Stage-2 status unchanged pending the first live post-fix
+reflection: does a reflection now `minted`/`no_change` (playbook advances past v1)?** — the last
+untested link in the learning funnel. The funnel now completes reflection AND no longer discards benign
+candidates; whether the minted candidates then earn A/B-attributed promotion is the remaining Stage-2
+exit question.
+
 ## Last pass
+
+**Pass 13, 2026-07-10** (scheduled run, ~16:30–17:20Z) — **SHIP a correctness fix on the
+LEARNING-critical path; the direct successor to Pass 12.** First loop pass since Pass 12; between
+passes the owner edge-program session (plan `open-replicated-platypus`: workstreams A–E + B3 shorts +
+free feeds, all flag-gated OFF) landed on `main` and owner-deployed at 12:45Z (boot `ddfd3ce3`).
+**Discriminator answered (advisor-directed):** Prometheus (up 47h) retained the prior boot's series, so
+the 10:45Z reflection attempt is readable — `agentic_reflection_outcomes_total{attempt_started=2,
+validator_reject=2}`. So Pass 12's timeout fix WORKS (reflection completes, no `transport_error`) but
+every completed candidate is now killed by the banned-word validator (`banned_token="true"`=2) — the
+same class that first killed the loop. Root cause: `validatePlaybook`'s substring denylist
+false-positives on benign trading prose ("marginal"→`margin`, "leverage the trend"→`leverage`, "act as
+support"→`act as`); W2's "fix it in the prompt" premise is empirically falsified (the prompt warned the
+sequences; Opus emitted them anyway). Exact token unrecoverable (`llm_usage` stores only token counts),
+but the fix is safety-preserving regardless of which token hit. **Shipped `f0c5e14`** (7 files,
++212/−67): concept-precise word-boundary/phrase denylist (benign passes; injection/exfil/non-spot still
+hard-blocks; uniform read+write) + a bounded `token` metric label so the exact concept is observable on
+the next rejection + prompt warned-list reconciled. Reviewer (opus) APPROVE after one fix round (2
+must-fix coverage regressions I introduced — `withdraw` multi-qualifier, `leverage` directive forms —
+fixed + pinned by regression tests). Gates: build/lint/typecheck, 1638 unit (+18), eval:agentic 15.
+Redeployed to boot `17:03:47Z`, clean; ~16-min soak clean (0 error/EXPIRED, decides flowing).
+**Verification boundary:** the validator no longer false-positives on benign prose (TESTED); the live
+MINT confirmation is PENDING (reflection trade-gated, ~1/5h — a soak cannot observe it). Deferred the
+owner-mandated funding-carry backtest to a future pass — the learning-loop bug outranked it (§3.1).
+Empty-pass counter 0. Full detail in LOG.md.
 
 **Pass 12, 2026-07-09** (scheduled run, ~16:00–16:50Z) — **SHIP a correctness fix on the
 learning-critical path; agentic-lane, gates-green, redeployed.** The lane finally traded (4 RT, 1W/3L,
@@ -375,6 +417,10 @@ owns them).
 | 31 | Reflection trigger consumed on transient error: `runReflection` resets `tradesSinceLastAttempt`/`lastAttemptAt` at `reflection.service.ts:480` BEFORE the fetch, so a transport/http/malformed error (post-line-480) consumes the trigger + a budget call and waits the full 6h cooldown + 5 trips to retry. Pass 12's timeout fix makes the timeout case rare, but any transient error still strands the loop. Roll back both counters on transport/http/malformed exits (guard re-entrancy via the existing `inFlight` flag) so a transient failure retries on the next closed trip | 2 | S | pending (new, Pass 12 2026-07-09 — deferred defect #2 of the reflection-abort finding; lower priority now the 30s abort is fixed) |
 
 | 32 | Stream the reflection LLM call (SSE) instead of a single non-streaming POST: removes the arbitrary wall-clock timeout ceiling entirely (the durable fix behind Pass 12's `AGENTIC_REFLECTION_TIMEOUT_MS` bump — a fixed timeout is still a guess about Opus worst-case). Advisor backlog seed. Agentic-lane, `reflection.service.ts` fetch body + envelope parsing | 2 | M | pending (new, Pass 12 2026-07-09) |
+
+| 33 | Playbook-validator concept precision: the substring denylist (`lower.includes`) false-rejected benign trading prose ("marginal"→`margin`, "leverage the trend"→`leverage`, "act as support"→`act as`), killing every completed reflection candidate (2/2 `validator_reject` live) and pinning the playbook at v1. Root successor to Pass 12's timeout fix. Agentic-lane + observability | 2 | M | DONE 2026-07-10 Pass 13 (`f0c5e14`): word-boundary/concept-phrase `BANNED_PATTERNS` (uniform read+write), bounded `token` metric label + `bannedToken` result. Reviewer-approved (2 must-fix coverage regressions found + fixed + pinned). WATCH: first live post-fix reflection outcome must be `minted`/`no_change`, not `validator_reject` |
+
+| 34 | Funding-carry $0 offline backtest study (owner-mandated carry sub-plan, the pivotal GO/NO-GO gate before any paper-carry build): fetch `--funding` history + perp OHLCV for BTC/ETH (`test/backtest/fetch-data.mjs`, network, sandbox-disabled), build a delta-neutral carry P&L study (net = Σ funding − 4-fill round-trip fees − basis convergence), sweep hold length, report per-window net bps + worst window. Attach each ~8h funding event to its SINGLE bar (never broadcast per-bar — ~32× overcount → false GO). State carry policy up front (unconditional-hold "carry beta" vs funding-threshold-gated entry). `test/backtest/`, off the production gate | 2 | M | NEXT-PASS TOP CANDIDATE (deferred Pass 13 — the #33 learning-loop bug outranked it per §3.1); advisor design brief captured in Pass 13 LOG.md |
 
 ## Flagged for human review (open)
 

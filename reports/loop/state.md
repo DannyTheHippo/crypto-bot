@@ -378,6 +378,20 @@ owns them).
 
 ## Flagged for human review (open)
 
+- **OWNER DECISION 2026-07-10 — edge question OPENED; consolidated edge program authorized and
+  underway** (plan `open-replicated-platypus`, session-approved). Scope locked by owner: **A**
+  backtest/validation spine rebuilt from `5a17615` (landed with this bullet's commit — supersedes the
+  harness-retirement note of 2026-07-03; the pure strategy lane stays retired), then the offline edge
+  diagnostic (timeframe >1h + volatile-symbol screens, out-of-sample, selection-corrected); **B**
+  paper-first perp adapter (`binanceusdm` swap, local liq model, `funding_events`, shorts route to
+  perp only); **C** free derivatives/sentiment feeds (flagged OFF) + diagnostic-gated prompt features
+  and v2 candidate (INACTIVE, auto-promote pinned human-only); **D** `ENTRY_ORDER_TYPE` maker-entry
+  flag (default LIMIT, unchanged); **E** funding-carry converges after A+B+C as its own gated
+  sub-plan. Commit-per-green-gate; testnet keys arrive mid-run; LLM offline validation capped
+  ~$10–20/gate; rails KEPT (four live gates, promotion gate, decimal money, append-only tables) —
+  nothing flips live without owner sign-off. This RESOLVES the Pass-10/11 owner-decision request
+  below: the chosen lever is this new owner-scope edge program (not (a) accept-slow-accrual alone,
+  not (b) prescreen loosening).
 - **RECOMMENDATION — cost-floor vs learning-throughput** (2026-07-08 Pass 10, playbook §3 mandate on
   two consecutive empty passes): every Stage-2 stage (reflection → INACTIVE candidate → 25% A/B →
   attributed auto-promotion) is downstream of closed round trips (all trade-gated via `onClosedTrade`,

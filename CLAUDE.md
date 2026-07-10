@@ -36,9 +36,10 @@ build+lint+typecheck+test MUST be green before any completion claim.
    bootId-bound arming ceremony on top — the promotion gate narrows who may attempt arming, it
    does not replace it. Rules 1, 2, 3, 5, 6 bind on the lane exactly as elsewhere — it only
    proposes a Signal, Risk still sizes/vetoes it, and the four live gates still bind. The
-   deterministic pure lane (ema-cross/donchian), its replay-determinism gate, and the
-   test/backtest research harness were RETIRED by owner decision 2026-07-03
-   (docs/archive/nighly-improvement.md records the historical program).
+   deterministic pure lane (ema-cross/donchian) and its replay-determinism gate were RETIRED by
+   owner decision 2026-07-03 (docs/archive/nighly-improvement.md records the historical program);
+   the test/backtest research harness was REBUILT 2026-07-10 by owner decision (edge program —
+   reports/loop/state.md § Flagged) and stays OFF the production test gate (`pnpm backtest`).
 5. OMS: never blind-resubmit — unknown outcome ⇒ query by clientOrderId first
    (same-id dedupe is NOT a safety net on Binance: open-orders-only). Persist intent
    before any network call. Unknown >60s ⇒ kill switch. Unmapped errors are

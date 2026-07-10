@@ -25,6 +25,7 @@
     "test:db": "vitest run --passWithNoTests test/db",
     "test:testnet": "vitest run --passWithNoTests test/testnet",
     "eval:agentic": "vitest run test/eval",
+    "backtest": "vitest run test/backtest",
     "checks": "pnpm format:check && pnpm lint:md && pnpm lint && pnpm typecheck && pnpm test",
     "prepare": "husky"
   },

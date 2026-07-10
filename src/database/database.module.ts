@@ -31,6 +31,7 @@ import {
   RECONCILIATION_REPO,
   MODE_TRANSITION_REPO,
   INTENT_REPO,
+  EXPERIMENT_REPO,
 } from './database.tokens';
 import { DB_HEALTH } from '../ports/db-health';
 
@@ -47,6 +48,7 @@ import { ConfigSnapshotRepository } from './repositories/config-snapshot.reposit
 import { EquityRepository } from './repositories/equity.repository';
 import { ReconciliationRepository } from './repositories/reconciliation.repository';
 import { ModeTransitionRepository } from './repositories/mode-transition.repository';
+import { ExperimentRepository } from './repositories/experiment.repository';
 import { DbHealthIndicator } from './db-health.indicator';
 
 const poolProvider: Provider = {
@@ -101,6 +103,7 @@ const repoProviders: Provider[] = [
   { provide: EQUITY_REPO, useClass: EquityRepository },
   { provide: RECONCILIATION_REPO, useClass: ReconciliationRepository },
   { provide: MODE_TRANSITION_REPO, useClass: ModeTransitionRepository },
+  { provide: EXPERIMENT_REPO, useClass: ExperimentRepository },
 ];
 
 const dbHealthProvider: Provider = {
@@ -146,6 +149,7 @@ function isTestEnv(): boolean {
     EQUITY_REPO,
     RECONCILIATION_REPO,
     MODE_TRANSITION_REPO,
+    EXPERIMENT_REPO,
     DB_HEALTH,
     // Exported so the global DbHealthBridgeModule (composition root) can alias
     // DB_HEALTH via `useExisting` without re-exporting an imported token (which

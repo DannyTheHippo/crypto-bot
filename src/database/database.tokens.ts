@@ -14,4 +14,5 @@ export const EQUITY_REPO = Symbol('EQUITY_REPO');
 export const RECONCILIATION_REPO = Symbol('RECONCILIATION_REPO');
 export const MODE_TRANSITION_REPO = Symbol('MODE_TRANSITION_REPO');
 export const INTENT_REPO = Symbol('INTENT_REPO');
+export const EXPERIMENT_REPO = Symbol('EXPERIMENT_REPO');
 export const DB_TRANSACTION = Symbol('DB_TRANSACTION');

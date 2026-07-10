@@ -364,7 +364,11 @@ export const agentPlaybookVersions = pgTable(
     id: bigint('id', { mode: 'number' }).generatedAlwaysAsIdentity().primaryKey(),
     version: integer('version').notNull(),
     content: text('content').notNull(),
-    source: text('source').notNull().$type<'seed' | 'reflection' | 'promotion'>(),
+    // 'loop-candidate' (N2 sibling workstream): a daily-loop-proposed draft awaiting promotion,
+    // distinct from 'reflection' (ad hoc reflection-triggered draft).
+    source: text('source')
+      .notNull()
+      .$type<'seed' | 'reflection' | 'promotion' | 'loop-candidate'>(),
     parentVersion: integer('parent_version'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
@@ -422,3 +426,27 @@ export const fundingEvents = pgTable('funding_events', {
   mode: text('mode').notNull().$type<'paper' | 'testnet' | 'live'>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
+
+// ── experiments ───────────────────────────────────────────────────────────────
+// Append-only registry of every backtest/study trial ever run (research-side writer:
+// test/backtest/experiment-log.ts), so the deflated-Sharpe multiple-testing count (N) is honest
+// across sessions rather than reset per-process. source is TS-level only ($type<>()), matching the
+// repo's convention (signals.kind / agent_playbook_versions.source) — no DB CHECK constraint.
+// Same REVOKE + immutable-trigger treatment as audit_log/order_events/funding_events (migration
+// 0009 mirrors 0001/0008): a trial row is a durable research-audit trail, never corrected in place —
+// a re-run logs a NEW row instead.
+
+export const experiments = pgTable(
+  'experiments',
+  {
+    id: bigint('id', { mode: 'number' }).generatedAlwaysAsIdentity().primaryKey(),
+    family: text('family').notNull(),
+    paramsHash: text('params_hash').notNull(),
+    datasetHash: text('dataset_hash').notNull(),
+    source: text('source').notNull().$type<'loop' | 'reflection' | 'human' | 'study'>(),
+    label: text('label'),
+    metrics: jsonb('metrics'),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [index('experiments_family_params_dataset_idx').on(t.family, t.paramsHash, t.datasetHash)],
+);

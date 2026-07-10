@@ -14,6 +14,12 @@
 // PRIOR_TRIALS starts EMPTY: any new BarStrategy family MUST append its full parameter grid here
 // before a candidate from that family is deflated-Sharpe-gated — the gate is only honest if N counts
 // every combination ever tried, not just the survivors.
+//
+// REGISTRATION DISCIPLINE (since the experiments registry, migration 0009): the in-code grid here
+// remains AUTHORITATIVE for the deflation N (reproducible offline/CI, auditable in git); the
+// append-only `experiments` DB table is the durable LEDGER + drift tripwire. Every new family's
+// grid lands in BOTH — appended here AND written via test/backtest/experiment-log.ts logTrials()
+// (no-op without DATABASE_URL). test/db/experiment-registry.spec.ts asserts the two never drift.
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { runBacktest, type Bar } from './harness';

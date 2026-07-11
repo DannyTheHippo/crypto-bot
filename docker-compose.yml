@@ -4,6 +4,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    # Host reboot stopped the stack 2026-07-10T23:28Z and nothing restarted it (~50 min lane
+    # downtime until the next loop pass). unless-stopped survives daemon/host restarts while
+    # keeping a deliberate `docker stop`/`compose stop` sticky.
+    restart: unless-stopped
     ports:
       - '3100:3100'
     env_file:
@@ -204,6 +208,7 @@ services:
 
   postgres:
     image: postgres:16
+    restart: unless-stopped
     ports:
       - '5432:5432'
     environment:
@@ -220,6 +225,7 @@ services:
 
   prometheus:
     image: prom/prometheus:v3.4.1
+    restart: unless-stopped
     ports:
       - '9090:9090'
     volumes:
@@ -232,6 +238,7 @@ services:
 
   grafana:
     image: grafana/grafana:12.0.1
+    restart: unless-stopped
     ports:
       - '3101:3101'
     environment:

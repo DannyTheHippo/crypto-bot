@@ -1423,3 +1423,81 @@ first pass with ≥10 payload rows — with the new safe recipe: `AGENTIC_EVAL_S
 AGENTIC_CANDIDATE_PLAYBOOK_FILE=... EVAL_LIVE=1 ANTHROPIC_API_KEY=... DATABASE_URL=<prod>
 DB_SUITE_ALLOW_RESET=1 pnpm eval:playbook`. E2 remains queued at ≥200 rows. Reflection
 first-mint watch unchanged.
+
+## 2026-07-11 — Pass 15 (scheduled run, ~00:05–00:40Z): MAINTENANCE — host reboot took the stack down; restart policy shipped, stack recovered clean
+
+**Data window:** the 24h since Pass 14, spanning three states: boot `c0e2ef7a` (Pass 14's
+deploy, ran 21:34:57Z→23:28:02Z), a **43-minute full-stack outage** (23:28:02Z→00:11:07Z),
+and recovery boot `fab516c9` (this pass). Prometheus TSDB survived the reboot (offset
+queries read the pre-reboot series), so the overnight window is fully attributable.
+
+**INCIDENT — host reboot, stack did not come back (root cause: no compose restart policy).**
+The host Mac rebooted ~23:28–23:36Z (host uptime 32 min at pass start): postgres, prometheus
+and grafana stopped gracefully (exit 0), the app was SIGKILLed after the stop grace (exit
+137, `OOMKilled=false`; its last log line is a benign idle-pool error as postgres vanished
+first). The Docker daemon came back after the reboot, but every container had
+`RestartPolicy=no`, so the stack stayed down until this scheduled pass found it —
+**~43 min of lane darkness with two real longs open (BTC ~$40, ETH ~$45) and in-process
+protective exits (stop-loss/trailing) not running**. No fills/PnL were lost (DB volume
+intact; the demo venue is the source of truth) and equity was unaffected, but the outage
+class is real: an unattended reboot (macOS update, power event) at a worse moment leaves
+positions unmanaged indefinitely.
+
+**Pass type: MAINTENANCE** (§3 priority 1 — availability defect on the trading path,
+surfaced by today's evidence; it outranks the now-eligible CANDIDATE work). **Shipped
+`e4542fb`:** `restart: unless-stopped` on all four services (docker-compose.yml only).
+Chosen over `always` so a deliberate `docker stop`/`compose stop` stays sticky. Verified
+applied on all four running containers (`docker inspect` → `unless-stopped`). Residual risk
+accepted and noted: on daemon-restore Docker restarts containers without honoring
+`depends_on`, so the app may crash-loop briefly until postgres is healthy — the restart
+policy retries it, and boot recovery is idempotent. FYI-only owner dependency: the policy
+only helps when the Docker daemon itself starts on boot/login — it did today; keep Docker
+Desktop's "start at sign-in" enabled.
+
+**Recovery (deploy):** config-only — no image rebuild needed (HEAD src unchanged since the
+20:52Z image; `3e5773f` was compose-only, `45a585d` docs). `docker compose up -d` recreated
+with the policy; boot `fab516c9` 00:11:07Z clean: recovery seeded **1 open order, 1
+registered, 0 degraded** (the order open at SIGKILL), portfolio restored EXACTLY
+(BTC 0.00062714 + ETH 0.0250731 + XRP dust, equity $4,996.33), reconciliation clean from
+the first pass, kill switch RUNNING, 0 errors, 0 EXPIRED. The lane resumed trading **3 min
+after boot** — a LINK maker entry filled 00:14:04Z.
+
+**Headline metrics (scoreboard + $/day, sampled post-boot and DB-consistent):** gate RT
+**1** (first fully post-epoch round trip: the Pass-14 XRP long 31.6 @ 1.1055 closed 23:15Z
+@ 1.1037, ≈−$0.13 net of fees — the straddle bound is fading as predicted), net-of-cost
+**−$1.11**, LLM **$0.461** since the 20:26Z epoch (~3.9h ⇒ ~$2.9/day pro-rated — above the
+~$2.2–2.5/day projection, under the $5 breaker; the LINK-drop fallback keys on SUSTAINED
+>$3/day — watch, not act, at n=4h), window 0d, ready=0. Overnight lane activity on
+`c0e2ef7a`: decides reached 11 hold / 3 proposed, ETH long re-entered 21:45Z, BTC long
+22:52Z, XRP exit 23:15Z; 0 rejections. New boot: 4 decides (2 hold / 2 proposed), prescreen
+1 quiet / 2 breakout / 2 position_open, cache healthy (reads≈creations). **Reflection has
+still not fired** (llm_usage 0 rows, no outcomes series) — first-mint watch unchanged;
+with N=2 per strategy the next 1–2 closed trips on one symbol should trigger it.
+
+**Corpus:** 29 `input_payload` rows (was 7 at Pass 14) → **candidate scoring
+(`candidates/2026-07-10/{a,b}`) is ELIGIBLE for the next pass** (≥10–20 floor met; one
+pass type per pass keeps it out of this one). E2 (≥200) still accruing.
+
+**Gates:** build / lint / typecheck green, **1659 unit**, harness probe `pnpm eval:agentic`
+GREEN (15 passed / 4 self-skipped); pre-commit hook re-ran format / lint:md / lint /
+typecheck at commit. **Standing duty:** `scripts/db-backup.sh` run —
+`cryptobot-20260711T001840Z.sql.gz` (100K, keep-14).
+
+**Flagged for human review:** nothing needing a decision. FYI: (1) the outage + fix above
+(revert = four compose lines); (2) Docker-Desktop-at-login dependency above; (3) $/day
+tracking ~$2.9 pro-rated on a 4h window — fallback threshold is sustained >$3/day.
+
+**Next-pass candidates:** (1) **CANDIDATE pass — score `candidates/2026-07-10/{a,b}`**
+(corpus 29 ≥ floor; SAFE recipe in the 2026-07-10 incident entry: single spec FILE path
+first, flags after, export only needed vars); (2) #28 model label on token/decide metrics
+BEFORE the first Opus reflection fires (N=2 makes it imminent); (3) E2 `eval:candidates`
+at ≥200 rows; (4) #32 reflection SSE streaming.
+
+**Soak verdict (appended at pass end):** boot `fab516c9` clean at 34 min — 00:15Z and
+00:30Z bars both processed (10 decides: 8 hold / 2 proposed; prescreen 13 outcomes incl. 3
+quiet skips), 0 rejections / 0 EXPIRED, 0 error/warn in the trailing window, kill switch
+RUNNING, containers healthy. Reconciliation 14 clean + 54 mismatch with **0 halt / 0
+error** — the mismatch count is the documented foreign-order warning-level steady state
+(#24) returning on the shared demo wallet, not a regression (post-wipe it was briefly
+all-clean because the venue happened to have no foreign resting orders). Deploy verdict:
+KEEP.

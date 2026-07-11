@@ -198,6 +198,24 @@ exit question.
 
 ## Last pass
 
+**Pass 15, 2026-07-11** (scheduled run, ~00:05–00:40Z) — **SHIP the outage-class fix after a
+host reboot took the whole stack down.** The host Mac rebooted ~23:28Z; all four containers
+had `RestartPolicy=no`, so the stack stayed dark **43 min** (23:28:02Z→00:11:07Z) with two
+real longs (BTC ~$40, ETH ~$45) unmanaged — protective exits run in-process. This pass found
+it, **shipped `e4542fb`** (`restart: unless-stopped` on all four services, compose-only,
+§3 priority-1 availability defect), and recovered the stack: boot `fab516c9` 00:11:07Z clean
+(recovery 1 order seeded / 0 degraded, portfolio exact, reconciliation clean, kill switch
+RUNNING, 0 errors/EXPIRED), lane trading again 3 min later (LINK maker fill 00:14Z).
+Prometheus TSDB survived; scoreboard DB-consistent: **RT=1 first fully post-epoch trip**
+(Pass-14's XRP long closed 23:15Z, ≈−$0.13 net — straddle bound fading as documented),
+net-of-cost −$1.11, LLM $0.461/3.9h ≈ $2.9/day pro-rated (watch: LINK-drop fallback is
+SUSTAINED >$3/day). Reflection still not fired (llm_usage 0 rows) — first-mint watch open;
+N=2 makes it imminent. **Corpus 29 payload rows → candidate scoring
+(`candidates/2026-07-10/{a,b}`) ELIGIBLE next pass** (kept out of this pass by the
+one-pass-type rule). Gates full green (1659 unit, eval 15), backup
+`cryptobot-20260711T001840Z.sql.gz` taken. FYI-only: restart policy depends on Docker
+Desktop starting at login (owner-side setting). Empty-pass counter 0. Full detail in LOG.md.
+
 **Pass 14, 2026-07-10** (scheduled run, ~21:22–21:55Z) — **SHIP a learning-cadence compensation;
 first scheduled pass after the wipe + incident-follow-up redeploys.** Evidence clean on boot
 `e3e19aa0` (28 min at pass start): 0 errors, reconcile 68/68 clean, kill switch RUNNING, 0
@@ -507,6 +525,12 @@ owns them).
 
 ## Flagged for human review (open)
 
+- **FYI 2026-07-11 (Pass 15) — host-reboot outage class closed at the compose layer, one
+  owner-side dependency remains.** The ~23:28Z host reboot left the stack down 43 min because
+  no service had a restart policy; `e4542fb` ships `restart: unless-stopped` on all four.
+  Residual dependency the loop cannot fix: the policy only acts when the Docker daemon itself
+  comes back after a reboot — keep Docker Desktop's "start at sign-in" enabled (it did start
+  today). Revert = four compose lines.
 - **INCIDENT 2026-07-10 ~20:26Z — production DB schema dropped by a runaway test invocation
   (self-inflicted, remediated same session; full account in LOG.md).** Lost: all local history
   pre-20:26Z (promotion ledger 11 RT/−$2.52, the ~196-row E2 corpus, pre-wipe

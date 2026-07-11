@@ -123,16 +123,18 @@ function fakePlaybookStore(
 function fakeRecorder(): {
   recorder: ReflectionMetricsRecorder;
   rejections: boolean[];
-  tokens: Array<[number, number, number | undefined, number | undefined]>;
+  tokens: Array<[number, number, number | undefined, number | undefined, string | undefined]>;
   outcomes: string[];
 } {
   const rejections: boolean[] = [];
-  const tokens: Array<[number, number, number | undefined, number | undefined]> = [];
+  const tokens: Array<
+    [number, number, number | undefined, number | undefined, string | undefined]
+  > = [];
   const outcomes: string[] = [];
   return {
     recorder: {
       recordValidatorRejection: (b) => void rejections.push(b),
-      recordTokens: (i, o, cr, cc) => void tokens.push([i, o, cr, cc]),
+      recordTokens: (i, o, cr, cc, m) => void tokens.push([i, o, cr, cc, m]),
       recordReflectionOutcome: (outcome) => void outcomes.push(outcome),
     },
     rejections,
@@ -757,9 +759,10 @@ describe('ReflectionService', () => {
       expect(h.budget.snapshot().inputTokens).toBe(10);
       expect(h.budget.snapshot().outputTokens).toBe(20);
       // D: reflection-path tokens also feed the metrics recorder (agent_tokens_total) for the cost
-      // view. Cache args are undefined (not 0) when the response carried neither field — the
+      // view, tagged with the reflection model (#28: split Opus reflection from Sonnet decide $/day).
+      // Cache args are undefined (not 0) when the response carried neither field — the
       // absent-vs-confirmed-zero distinction the cost analysis depends on.
-      expect(h.recorderApi.tokens).toEqual([[10, 20, undefined, undefined]]);
+      expect(h.recorderApi.tokens).toEqual([[10, 20, undefined, undefined, 'claude-test-model']]);
     });
 
     it('records reflection-path usage into the optional LLM usage sink when present', async () => {

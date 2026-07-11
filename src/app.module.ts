@@ -959,10 +959,14 @@ function agentTradingProfileFor(
 // that exact token locally (the local provider would shadow — and thus self-reference — the import
 // it's trying to wrap), so this wraps at the point of consumption instead of via a second DI binding.
 export class MetricsWrappingAgentClient implements AgentClientPort {
+  // `model` is the configured decide model (config.agentic.model), not read off the proposal —
+  // AgentUsage carries no model field, and every call this wrapper sees is a decide call (#28:
+  // reflection tags its own tokens with cfg.model in reflection.service.ts).
   constructor(
     private readonly inner: AgentClientPort,
     private readonly recorder: AgentMetricsRecorder,
     private readonly budget: DailyLlmBudget,
+    private readonly model: string,
   ) {}
 
   async propose(input: AgentDecisionInput): Promise<AgentProposal> {
@@ -976,13 +980,14 @@ export class MetricsWrappingAgentClient implements AgentClientPort {
           proposal.usage.outputTokens,
           proposal.usage.cacheReadInputTokens,
           proposal.usage.cacheCreationInputTokens,
+          this.model,
         );
       }
-      this.recorder.recordDecide(this.outcomeForProposal(proposal));
+      this.recorder.recordDecide(this.outcomeForProposal(proposal), this.model);
       return proposal;
     } catch (err) {
       this.recorder.observeDecideLatency((Date.now() - started) / 1000);
-      this.recorder.recordDecide(this.outcomeForError(err));
+      this.recorder.recordDecide(this.outcomeForError(err), this.model);
       throw err;
     }
   }
@@ -1285,6 +1290,7 @@ export class AppModule
       rawAgentClient,
       this.agentMetrics,
       agentBudget,
+      this.config.agentic.model,
     );
     this.agentClientKind = rawAgentClient.constructor.name;
     this.promotionEvaluator = createPromotionEvaluator(agenticEnv(this.config), {

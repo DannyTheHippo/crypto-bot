@@ -108,15 +108,19 @@ export const IN_FLIGHT_GAUGE = makeGaugeProvider({
 
 // Agentic-lane metrics (G3b). Recorded via AgentMetricsRecorder, NOT sampled by this service's loop —
 // the agentic lane calls the recorder's methods directly as decisions/tokens/rejections occur.
+// `model` on both counters (#28): decide (Sonnet) and reflection (Opus) tokens land in the same
+// counter, and their per-MTok prices differ ~5× — without the label Prometheus cannot split $/day
+// per model once reflection fires. Bounded cardinality: values come from AGENTIC_MODEL /
+// AGENTIC_REFLECTION_MODEL config (1-2 ids), 'unknown' only from call sites that predate the label.
 export const AGENT_DECIDE_COUNTER = makeCounterProvider({
   name: 'agent_decide_total',
   help: 'Agentic lane decide() outcomes',
-  labelNames: ['outcome'] as const,
+  labelNames: ['outcome', 'model'] as const,
 });
 export const AGENT_TOKENS_COUNTER = makeCounterProvider({
   name: 'agent_tokens_total',
-  help: 'Agentic lane LLM token usage, by kind',
-  labelNames: ['kind'] as const,
+  help: 'Agentic lane LLM token usage, by kind and model',
+  labelNames: ['kind', 'model'] as const,
 });
 export const AGENT_DECIDE_LATENCY_HISTOGRAM = makeHistogramProvider({
   name: 'agent_decide_latency_seconds',

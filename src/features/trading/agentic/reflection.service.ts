@@ -95,6 +95,7 @@ export interface ReflectionMetricsRecorder {
     outputTokens: number,
     cacheReadInputTokens?: number,
     cacheCreationInputTokens?: number,
+    model?: string,
   ): void;
   // Optional (same isolation-from-test-recorders reasoning as recordTokens above): every silent exit
   // in onClosedTrade/runReflection/maybeAutoPromote increments this with a closed-set outcome label —
@@ -653,6 +654,7 @@ export class ReflectionService {
         usage.outputTokens,
         usage.cacheReadInputTokens,
         usage.cacheCreationInputTokens,
+        this.cfg.model,
       );
       this.deps.usageSink?.record({
         kind: 'reflection',

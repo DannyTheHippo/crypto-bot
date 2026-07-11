@@ -59,9 +59,11 @@ function outcomeFor(proposal: AgentProposal): Promise<AgentDecideOutcome> {
     recordDecide: (outcome: AgentDecideOutcome) => captured.push(outcome),
   } as unknown as AgentMetricsRecorder;
   const budget = new DailyLlmBudget({ maxCallsPerDay: 1, maxTokensPerDay: 1 });
-  const client = new MetricsWrappingAgentClient(inner, recorder, budget);
+  const client = new MetricsWrappingAgentClient(inner, recorder, budget, DECIDE_MODEL);
   return client.propose(minimalInput()).then(() => captured[0]!);
 }
+
+const DECIDE_MODEL = 'claude-sonnet-5';
 
 describe('MetricsWrappingAgentClient outcome classification (agent_decide_total{outcome})', () => {
   it('hold action -> hold', async () => {
@@ -108,7 +110,7 @@ describe('MetricsWrappingAgentClient token forwarding (agent_tokens_total)', () 
       recordDecide: () => undefined,
     } as unknown as AgentMetricsRecorder;
     const budget = new DailyLlmBudget({ maxCallsPerDay: 1, maxTokensPerDay: 1 });
-    const client = new MetricsWrappingAgentClient(inner, recorder, budget);
+    const client = new MetricsWrappingAgentClient(inner, recorder, budget, DECIDE_MODEL);
     return client.propose(minimalInput()).then(() => captured[0]!);
   }
 
@@ -119,11 +121,11 @@ describe('MetricsWrappingAgentClient token forwarding (agent_tokens_total)', () 
       cacheReadInputTokens: 1500,
       cacheCreationInputTokens: 30,
     });
-    expect(args).toEqual([100, 20, 1500, 30]);
+    expect(args).toEqual([100, 20, 1500, 30, DECIDE_MODEL]);
   });
 
   it('forwards undefined (not 0) when cache fields are absent — absent must stay distinguishable', async () => {
     const args = await tokensFor({ inputTokens: 100, outputTokens: 20 });
-    expect(args).toEqual([100, 20, undefined, undefined]);
+    expect(args).toEqual([100, 20, undefined, undefined, DECIDE_MODEL]);
   });
 });

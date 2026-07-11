@@ -50,9 +50,11 @@ export class AgentMetricsRecorder {
     private readonly reflectionOutcomesCounter: Counter<string>,
   ) {}
 
-  recordDecide(outcome: AgentDecideOutcome): void {
+  // `model` on both methods (#28): optional with an 'unknown' fallback so the label is always
+  // materialized (never prom-client's implicit "") and pre-label call sites/test fakes keep working.
+  recordDecide(outcome: AgentDecideOutcome, model?: string): void {
     try {
-      this.decideCounter.inc({ outcome });
+      this.decideCounter.inc({ outcome, model: model ?? 'unknown' });
     } catch {
       /* metrics must never throw into a trading path */
     }
@@ -63,13 +65,22 @@ export class AgentMetricsRecorder {
   // the W2.4 falsifiability check differently (see AgentUsage in ports/agentic-strategy.ts).
   // These series also expose the cache-write premium the flat 3/15 accounting can't see —
   // cache_creation tokens bill above base input rate and appear in NEITHER input nor output.
-  recordTokens(input: number, output: number, cacheRead?: number, cacheCreation?: number): void {
+  recordTokens(
+    input: number,
+    output: number,
+    cacheRead?: number,
+    cacheCreation?: number,
+    model?: string,
+  ): void {
     try {
-      this.tokensCounter.inc({ kind: 'input' }, input);
-      this.tokensCounter.inc({ kind: 'output' }, output);
-      if (cacheRead !== undefined) this.tokensCounter.inc({ kind: 'cache_read' }, cacheRead);
+      const m = model ?? 'unknown';
+      this.tokensCounter.inc({ kind: 'input', model: m }, input);
+      this.tokensCounter.inc({ kind: 'output', model: m }, output);
+      if (cacheRead !== undefined) {
+        this.tokensCounter.inc({ kind: 'cache_read', model: m }, cacheRead);
+      }
       if (cacheCreation !== undefined) {
-        this.tokensCounter.inc({ kind: 'cache_creation' }, cacheCreation);
+        this.tokensCounter.inc({ kind: 'cache_creation', model: m }, cacheCreation);
       }
     } catch {
       /* metrics must never throw into a trading path */

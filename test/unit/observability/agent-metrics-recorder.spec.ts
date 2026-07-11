@@ -57,19 +57,41 @@ describe('AgentMetricsRecorder', () => {
     }
   });
 
-  it('recordDecide increments agent_decide_total{outcome}', async () => {
-    recorder.recordDecide('proposed');
-    recorder.recordDecide('timeout');
+  it('recordDecide increments agent_decide_total{outcome,model}', async () => {
+    recorder.recordDecide('proposed', 'claude-sonnet-5');
+    recorder.recordDecide('timeout', 'claude-sonnet-5');
     const metric = await register.getSingleMetricAsString('agent_decide_total');
-    expect(metric).toContain('outcome="proposed"} 1');
-    expect(metric).toContain('outcome="timeout"} 1');
+    expect(metric).toContain('outcome="proposed",model="claude-sonnet-5"} 1');
+    expect(metric).toContain('outcome="timeout",model="claude-sonnet-5"} 1');
+  });
+
+  it('recordDecide falls back to model="unknown" when no model is given', async () => {
+    recorder.recordDecide('hold');
+    const metric = await register.getSingleMetricAsString('agent_decide_total');
+    expect(metric).toContain('outcome="hold",model="unknown"} 1');
   });
 
   it('recordTokens increments the input and output series independently', async () => {
+    recorder.recordTokens(120, 45, undefined, undefined, 'claude-sonnet-5');
+    const metric = await register.getSingleMetricAsString('agent_tokens_total');
+    expect(metric).toContain('kind="input",model="claude-sonnet-5"} 120');
+    expect(metric).toContain('kind="output",model="claude-sonnet-5"} 45');
+  });
+
+  it('recordTokens keeps per-model series separate (#28: decide vs reflection $/day split)', async () => {
+    recorder.recordTokens(120, 45, undefined, undefined, 'claude-sonnet-5');
+    recorder.recordTokens(500, 90, undefined, undefined, 'claude-opus-4-8');
+    const metric = await register.getSingleMetricAsString('agent_tokens_total');
+    expect(metric).toContain('kind="input",model="claude-sonnet-5"} 120');
+    expect(metric).toContain('kind="input",model="claude-opus-4-8"} 500');
+    expect(metric).toContain('kind="output",model="claude-opus-4-8"} 90');
+  });
+
+  it('recordTokens falls back to model="unknown" when no model is given', async () => {
     recorder.recordTokens(120, 45);
     const metric = await register.getSingleMetricAsString('agent_tokens_total');
-    expect(metric).toContain('kind="input"} 120');
-    expect(metric).toContain('kind="output"} 45');
+    expect(metric).toContain('kind="input",model="unknown"} 120');
+    expect(metric).toContain('kind="output",model="unknown"} 45');
   });
 
   it('recordTokens leaves the cache series absent when the response carried no cache fields', async () => {
@@ -80,18 +102,18 @@ describe('AgentMetricsRecorder', () => {
   });
 
   it('recordTokens materializes cache series at explicit zero (W2.4: absent ≠ confirmed-zero)', async () => {
-    recorder.recordTokens(120, 45, 0, 0);
+    recorder.recordTokens(120, 45, 0, 0, 'claude-sonnet-5');
     const metric = await register.getSingleMetricAsString('agent_tokens_total');
-    expect(metric).toContain('kind="cache_read"} 0');
-    expect(metric).toContain('kind="cache_creation"} 0');
+    expect(metric).toContain('kind="cache_read",model="claude-sonnet-5"} 0');
+    expect(metric).toContain('kind="cache_creation",model="claude-sonnet-5"} 0');
   });
 
   it('recordTokens accumulates cache_read and cache_creation counts', async () => {
-    recorder.recordTokens(120, 45, 1500, 0);
-    recorder.recordTokens(80, 30, 0, 2000);
+    recorder.recordTokens(120, 45, 1500, 0, 'claude-sonnet-5');
+    recorder.recordTokens(80, 30, 0, 2000, 'claude-sonnet-5');
     const metric = await register.getSingleMetricAsString('agent_tokens_total');
-    expect(metric).toContain('kind="cache_read"} 1500');
-    expect(metric).toContain('kind="cache_creation"} 2000');
+    expect(metric).toContain('kind="cache_read",model="claude-sonnet-5"} 1500');
+    expect(metric).toContain('kind="cache_creation",model="claude-sonnet-5"} 2000');
   });
 
   it('observeDecideLatency records into the latency histogram', async () => {

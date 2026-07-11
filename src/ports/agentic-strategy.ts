@@ -372,4 +372,16 @@ export interface PlaybookProvider {
     readonly content: string;
     readonly source?: 'pin' | 'promotion' | 'seed';
   }>;
+  // Active-only read: like current() but NEVER routed to an A/B candidate — pin/promotion/seed
+  // precedence only. The boot "active playbook" log + agentic_playbook_info gauge must read this,
+  // not current(): with a live candidate and AGENTIC_PLAYBOOK_AB_PCT>0, a boot landing in a
+  // candidate minute-bucket would otherwise stamp the INACTIVE candidate's version as active
+  // (observed live 2026-07-11, first boot after the first reflection mint). Optional: implemented
+  // by the composition-root routing chain; absent on providers with no routing layer, where
+  // current() already IS the active read — callers fall back accordingly.
+  active?(): Promise<{
+    readonly version: number;
+    readonly content: string;
+    readonly source?: 'pin' | 'promotion' | 'seed';
+  }>;
 }

@@ -780,7 +780,7 @@ interface PlaybookStorePort extends PlaybookProvider {
 // re-derives its bucket off the live clock and re-reads listVersions, so a freshly minted candidate or
 // a promotion is picked up on the very next call, never stale.
 //
-// Exported (unlike the sibling ValidatingPlaybookProvider) so its own unit spec can import and
+// Exported (like the sibling ValidatingPlaybookProvider) so its own unit spec can import and
 // exercise it directly against a fake PlaybookStorePort — same precedent as MetricsWrappingAgentClient
 // below, which agent-decide-outcome.spec.ts imports from this module the same way.
 //
@@ -825,6 +825,16 @@ export class PlaybookAbRoutingProvider implements PlaybookStorePort {
     return { version: candidate.version, content: candidate.content };
   }
 
+  // The unrouted read (PlaybookProvider.active): the inner store has no routing layer, so its own
+  // current() IS the pin/promotion/seed resolution.
+  active(): Promise<{
+    version: number;
+    content: string;
+    source?: 'pin' | 'promotion' | 'seed';
+  }> {
+    return this.inner.current();
+  }
+
   // Newest INACTIVE row (source in CANDIDATE_SOURCES) with version > the resolved active version —
   // mirrors PlaybookStoreAdapter.resolve()'s own "newest wins" convention for other sources. A cap of
   // 50 rows matches InMemoryPlaybookStore.MAX_VERSIONS, so both backings are scanned in full.
@@ -863,7 +873,7 @@ export class PlaybookAbRoutingProvider implements PlaybookStorePort {
 // always receives SOME playbook (SEED_PLAYBOOK) rather than the client's own tripwire, which silently
 // composes no playbook at all. append/listVersions pass through unvalidated — validation only gates
 // what reaches the LLM prompt, never the store's write side (reflection/promotion write raw content).
-class ValidatingPlaybookProvider implements PlaybookStorePort {
+export class ValidatingPlaybookProvider implements PlaybookStorePort {
   constructor(
     private readonly inner: PlaybookStorePort,
     private readonly recorder: AgentMetricsRecorder,
@@ -874,7 +884,24 @@ class ValidatingPlaybookProvider implements PlaybookStorePort {
     content: string;
     source?: 'pin' | 'promotion' | 'seed';
   }> {
-    const stored = await this.inner.current();
+    return this.validated(this.inner.current());
+  }
+
+  // Forwards the unrouted active read through the SAME validation as current() — the boot info
+  // stamp must never surface unvalidated content either. Falls back to inner.current() when the
+  // inner chain has no routing layer (active absent ⇒ current already is the active read).
+  async active(): Promise<{
+    version: number;
+    content: string;
+    source?: 'pin' | 'promotion' | 'seed';
+  }> {
+    return this.validated(this.inner.active?.() ?? this.inner.current());
+  }
+
+  private async validated(
+    read: Promise<{ version: number; content: string; source?: 'pin' | 'promotion' | 'seed' }>,
+  ): Promise<{ version: number; content: string; source?: 'pin' | 'promotion' | 'seed' }> {
+    const stored = await read;
     const validation = validatePlaybook(stored.content);
     if (!validation.ok) {
       this.recorder.recordValidatorRejection(
@@ -1332,7 +1359,12 @@ export class AppModule
     }
 
     try {
-      const { version, source } = await this.playbookProvider.current();
+      // active() (never current()): with a live A/B candidate, current() serves the candidate in
+      // routed minute-buckets — a boot landing there would stamp agentic_playbook_info with the
+      // INACTIVE candidate's version (observed live 2026-07-11 boot e7d94350, gauge read v2 while
+      // active was v1). The gauge and this log line are the "was it promoted?" read — active only.
+      const { version, source } = await (this.playbookProvider.active?.() ??
+        this.playbookProvider.current());
       this.agentMetrics.setPlaybookInfo(version);
       this.log.log(`active playbook resolved: version=${version} source=${source ?? 'unknown'}`);
     } catch (err) {

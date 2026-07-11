@@ -1501,3 +1501,96 @@ error** — the mismatch count is the documented foreign-order warning-level ste
 (#24) returning on the shared demo wallet, not a regression (post-wipe it was briefly
 all-clean because the venue happened to have no foreign resting orders). Deploy verdict:
 KEEP.
+
+## 2026-07-11 — Pass 16 (scheduled run, ~08:08–08:50Z): MAINTENANCE — FIRST LIVE MINT confirmed (playbook v2); #28 model label shipped; boot info-gauge bug found live and fixed
+
+**Data window:** the ~7.5h since Pass 15, one continuous boot `fab516c9` (Pass 15's recovery
+boot, up 8h at pass start) until this pass's two redeploys (`e7d94350` 08:20Z, `4a1e7fc3`
+08:30Z). Logs 0 errors / 8 benign warns; 0 HALT / 0 EXPIRED / 0 protective-exit anomalies;
+reconciliation 14 clean + 942 mismatch with **0 halt / 0 error** (the documented #24
+foreign-order warning steady state — the only firing alert); kill switch RUNNING.
+
+**HEADLINE — the learning funnel completed end-to-end for the first time.** At 04:45:29Z
+reflection fired on `agentic-4` (XRP closed its 2nd fresh trip under Pass 14's N=2) and
+**minted playbook version 2** — `agentic_reflection_outcomes_total{attempt_started=1,
+minted=1}`, no `validator_reject`, no `transport_error`. The Pass-12 timeout fix, Pass-13
+validator fix, and Pass-14 cadence fix are all live-verified in one event; the standing
+first-mint watch (open since Pass 12) RESOLVES POSITIVE. v2's changelog: raised the entry
+bar (decisive, not borderline, triggers) after all three realized round trips closed
+net-negative — a sane, evidence-cited revision. **A/B serving verified in the DB journal:**
+since the mint, 11 decides served v1 and 2 served v2 (06:45Z, 07:00Z — consistent with the
+25% minute-bucket router; `AGENTIC_PLAYBOOK_AB_PCT=25` confirmed in-container).
+`agentic_version_*{version="2"}` gauges are absent as expected — no v2-attributed trip has
+closed yet; auto-promotion needs `AGENTIC_AUTO_PROMOTE_MIN_ATTRIBUTED_TRADES=10`.
+
+**Headline metrics (scoreboard, DB-backed):** gate RT **5** (was 1 at Pass 15 — the straddle
+bound is fully faded), net-of-cost **−$2.66**, LLM **$1.13** since the 20:26Z epoch (~11.7h ⇒
+~$2.3/day pro-rated — inside the ~$2.2–2.5 projection, under the sustained->$3 LINK-drop
+watch), window 0.39d, ready=0. Lane: 33 hold / 11 proposed, **0 rejections**, 18 fills, 6
+in-memory RT, equity $4,996.15 (dd 0.077%, trade-explained), realized −$1.69 this boot.
+Prescreen: 22 quiet / 35 breakout / 8 position_open / 1 vol_expansion (skip ~33% — below the
+50–70 band, but cost is the binding constraint and it is inside projection). Corpus: **90
+`input_payload` rows** (was 29) — E2 (≥200) roughly a day out at this rate.
+
+**Pass type: MAINTENANCE.** No correctness bug in the sweep. PROMOTION ineligible (v2 has 0
+of 10 attributed trips). CANDIDATE ineligible per §3(a) — **the `candidates/2026-07-10/{a,b}`
+scoring inherited from Pass 15 is now BLOCKED by the reflection-minted v2 sitting unresolved
+in A/B** (both routes compete for the same newest-candidate slot; injecting would shadow the
+reflection candidate mid-evidence). It stays blocked until v2 resolves (promoted or
+superseded).
+
+**Shipped 1 — `b1b9455` (#28, planned):** `model` label on `agent_tokens_total` /
+`agent_decide_total`. Precisely timed: the first Opus reflection fired TODAY, so its tokens
+had already begun comingling with Sonnet decide tokens at ~5× the price — Prometheus could
+not split $/day per model (the DB gauge stays the canonical cost read; this is the
+convenience split #28 predicted). Decide path tags `config.agentic.model` via
+MetricsWrappingAgentClient; reflection tags `cfg.model` at its recordUsage site; 'unknown'
+fallback keeps the label always materialized. All dashboard/alert consumers aggregate with
+`sum()`/`sum by()` — unaffected. +4 unit tests (per-model split, fallback).
+
+**Shipped 2 — `5ff5594` (found live this pass):** the first post-mint boot (`e7d94350`,
+08:20Z) logged `active playbook resolved: version=2 source=unknown` and stamped
+`agentic_playbook_info{version="2"}` — **while the active playbook is v1.** Root cause:
+`onModuleInit` read `playbookProvider.current()`, which routes through
+PlaybookAbRoutingProvider; the boot minute-bucket fell inside the 25% candidate window, so
+the "was it promoted?" gauge (playbook §2.3's exact promotion signal) reported the INACTIVE
+candidate as active. Latent since W4.1 — unobservable until a candidate existed, manifested
+on the FIRST boot after the first mint (~25% chance per boot-with-candidate). Fix: optional
+`PlaybookProvider.active()` that bypasses routing (pin/promotion/seed only), forwarded
+through ValidatingPlaybookProvider with identical validation/seed fallback; boot stamp reads
+it. Observability-only — per-decide serving and A/B attribution untouched. +4 unit tests.
+**Live-verified:** redeploy boot `4a1e7fc3` (08:30Z) landed in bucket 10 (inside the window —
+the old code would have stamped v2 again) and logged `version=1 source=seed`; the gauge reads
+`version="1"`.
+
+**Gates:** build / lint / typecheck green ×2, **1666 unit** (was 1659; +3 then +4 new),
+harness probe + post-change `pnpm eval:agentic` GREEN (15 passed / 4 self-skipped). Two
+honest wobbles, both resolved: one transient `nest build` exit-1 (immediately clean on
+re-run, no diff), one lint unbound-method error in a new spec (fixed by asserting on the
+`vi.fn()` spy directly). **Standing duty:** `scripts/db-backup.sh` run —
+`cryptobot-20260711T082114Z.sql.gz` (276K, keep-14).
+
+**Deploys:** two `build`+`up -d` cycles. `e7d94350` 08:20:26Z clean (portfolio exact, 4
+positions, 1 order seeded, 0 degraded, 0 errors) — this boot's info-gauge lie is what
+surfaced Shipped-2. `4a1e7fc3` 08:30:26Z clean (same recovery shape, 0 errors).
+
+**Flagged for human review:** nothing needing a decision. FYI: (1) playbook v2 is live in
+25% A/B — the next passes' watch is `agentic_version_round_trips{version="2"}` climbing
+toward 10 (auto-promotion floor), verdict likely days out at current trip rate; (2) $/day
+~$2.3 pro-rated, inside projection; (3) two same-day redeploys reset the continuous-uptime
+soak baseline — deliberate, both boots verified clean.
+
+**Next-pass candidates:** (1) v2 A/B attribution watch (PROMOTION pass once trips approach
+10); (2) E2 `eval:candidates` at ≥200 payload rows (90 now, ~a day out); (3) #32 reflection
+SSE streaming; (4) Grafana panel for the new per-model split (#19 residue); (5)
+`candidates/2026-07-10/{a,b}` scoring stays blocked while v2 is unresolved in A/B.
+
+**Soak verdict (appended at pass end, ~08:47Z):** boot `4a1e7fc3` clean at 17 min — the
+08:45Z bar processed on all symbols (5 decides: 4 hold / 1 proposed), **both fixes verified
+live on real traffic**: `agent_tokens_total` now carries `model="claude-sonnet-5"` on all
+four kinds and `agent_decide_total{outcome,model}` splits correctly (reflection's Opus
+series will appear labeled when it next fires); `agentic_playbook_info` reads `version="1"`
+(boot bucket 10 was inside the A/B window — the old code would have stamped v2).
+`signals_rejected_total` empty, 0 EXPIRED, 0 error lines, container healthy, kill switch
+RUNNING. Counter reset on redeploy is the expected in-process behavior; the DB-backed
+promotion gauges carried through unaffected (RT=5 pre/post). Deploy verdict: KEEP.

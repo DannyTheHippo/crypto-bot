@@ -719,9 +719,15 @@ owns them).
   `plan_json` rows; `cache_read` 6,392 on a 37-min boot). **Cross-symbol relative-strength
   context SHIPPED + deployed ON** (the search's strongest family fed to the lane as context;
   `+xs1` tag; rides the derivatives control arm as ONE information-context A/B — the standing
-  A/B verdict now measures the info bundle jointly). Offline NON-price sweep (funding-direction
-  plus Fear&Greed, honest-N pooled with the prior 4,882 trials) dispatched —
-  `reports/loop/nonprice-sweep-2026-07-12.md` when done.
+  A/B verdict now measures the info bundle jointly). **NON-price sweep DONE
+  (`reports/loop/nonprice-sweep-2026-07-12.md`): funding contrarian at 1h is the program's
+  strongest frontier ever** — 492 cells, 0 honest survivors, but 25 pass all gates except
+  deflation (price search had zero such cells); top cell LINK Sharpe 3.07 walk-forward-consistent,
+  ~97% price-timing not carry. Caveat: one bear-regime holdout, short-biased. **NEXT-PASS
+  CANDIDATE (pre-specced, $0): re-run the funding frontier on a second non-overlapping
+  bull-regime holdout window; if it survives, draft a funding-contrarian playbook/knob candidate
+  and score it through the standard offline gate + A/B.** The funding series already reaches the
+  model via the derivatives block, so exploiting a validated signal needs no new plumbing.
 
 - **ULTRACODE SESSION 2026-07-12 (~19:30–21:30Z) — THE DEFINITIVE PROFITABILITY FINDING + most of
   the roadmap shipped. Read `reports/loop/multi-strategy-search-2026-07-12.md`.** A self-contained

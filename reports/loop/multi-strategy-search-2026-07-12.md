@@ -25,7 +25,9 @@ Prado 2014) and must be walk-forward sign-consistent across 3 holdout sub-segmen
   visibly distinguished from one that clears spot-taker.
 - **Single-cell sweep: 4,092 backtests.** **Portfolio sweep: 150 backtests** (equal-weight 5-symbol
   Donchian basket, a small pre-registered grid — the diversification hypothesis the single-cell
-  sweep can't express).
+  sweep can't express). **Cross-sectional sweep: 320 backtests** (relative strength — long the
+  strongest / short the weakest of the basket, distinct from each symbol's own absolute trend, the
+  one literature-endorsed family the first two runs don't cover).
 
 ## Result: zero survivors, at any fee level, in either sweep
 
@@ -33,6 +35,7 @@ Prado 2014) and must be walk-forward sign-consistent across 3 holdout sub-segmen
 | --- | --- | --- |
 | Single-cell (7 families × params × 5 sym × TFs × long/short × 6 fees) | 4,092 | **0** |
 | Portfolio (Donchian basket, 5 sym × n-grid × 3 TFs × long/short × 5 fees) | 150 | **0** |
+| Cross-sectional (relative strength, k × top-m × rebalance × long/short × 4 fees) | 320 | **0** |
 
 The frontier — the best cells, none of which survive:
 
@@ -56,17 +59,24 @@ The frontier — the best cells, none of which survive:
    shorting — trend-following is symmetric and its short leg carries half the (thin) edge. Any future
    trend attempt should be long-short, which means the **perp venue**, whose 3.6 bps maker fee also
    makes it the cheapest place to run it.
-2. **Long-short 1h/4h trend is the frontier** — the closest anything came. If any price-based edge
-   exists here, it is diversified long-short higher-timeframe trend on perps, and the honest way to
-   confirm-or-kill it is a small **pre-registered forward/paper test** (not another in-sample sweep,
-   which only re-inflates the deflation penalty).
+2. **The frontier is long-short, higher-timeframe, and requires perps.** Across all three sweeps the
+   closest-to-passing cells are long-short trend (1h/4h) and — strongest of everything tested —
+   **long-short daily cross-sectional momentum** (long the strongest 2 of 5 majors, short the
+   weakest 2, rebalanced every ~6 days): holdout Sharpe **1.12**, **+45% total return**, +49 bps/
+   round-trip, and it still clears the perp-maker fee (3.6 bps). It fails only walk-forward
+   consistency (the +45% is concentrated in part of the window, not persistent) and honest
+   deflation (DSR 0.33). If the owner ever pursues systematic non-LLM trading, THIS is the single
+   best-evidenced direction — a long-short daily cross-sectional momentum book on perps — and the
+   honest way to confirm-or-kill it is a small **pre-registered forward/paper test**, never funding
+   on a backtest that already failed deflation.
 
 ## The load-bearing conclusion (this is the one that matters)
 
 **No simple price-based systematic strategy clears an honest out-of-sample deflated-Sharpe bar on
-this universe — none, across 4,242 backtests spanning 7 families, both directions, single-symbol and
-portfolio, and every fee level from free to 20 bps.** The program's original pessimism was right, but
-it now rests on a search ~80× broader than the single rule it was based on.
+this universe — none, across 4,562 backtests spanning 8 families (trend, momentum, mean-reversion,
+volatility, and cross-sectional relative strength), both directions, single-symbol / portfolio /
+cross-sectional, and every fee level from free to 20 bps.** The program's original pessimism was
+right, but it now rests on a search ~90× broader than the single rule it was based on.
 
 The implication for the LLM lane is sharp and was not obvious before this search:
 
@@ -86,12 +96,14 @@ search is strong reason to believe price-pattern trading never will.
 
 ## Artifacts
 
-- `test/backtest/multi-strategy/{engine,strategies,sweep,portfolio}.mjs` — the harness (rerun any
-  time: `node test/backtest/multi-strategy/sweep.mjs --out <f>`, `… portfolio.mjs --out <f>`).
+- `test/backtest/multi-strategy/{engine,strategies,sweep,portfolio,cross-sectional}.mjs` — the
+  harness (rerun any time: `node …/sweep.mjs --out <f>`, `… portfolio.mjs`, `… cross-sectional.mjs`).
 - `candidates/multi-strategy-sweep-2026-07-12.json` — all 4,092 single-cell results + per-fee
   frontier.
-- `candidates/portfolio-trend-2026-07-12.json` — the 150 portfolio cells (with the selection-bias
-  caveat recorded in the file).
+- `candidates/portfolio-trend-2026-07-12.json` — the 150 portfolio cells (selection-bias caveat in
+  the file).
+- `candidates/cross-sectional-2026-07-12.json` — the 320 cross-sectional cells (the strongest raw
+  frontier, still sub-threshold on honest gating).
 
 ## Honesty notes
 

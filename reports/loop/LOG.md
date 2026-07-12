@@ -2097,3 +2097,42 @@ minted/no_change); (2) v2 entry watch (clock starts on its first filled entry); 
 172/200 at sweep, likely crosses ≥200 within ~a day (SAFE recipe in the 07-10 owner-session
 entry); (4) #32 reflection SSE streaming; (5) verify the 14:45Z BTC/ETH resting entries filled
 or TTL-swept cleanly.
+
+## 2026-07-12 — Owner-directed research + ship session (~15:30–19:15Z): 12-agent evidence sweep, adversarial review, and the self-learning engine v2 package (defect fixes + honest promotion + knobs channel + cache prefix fix)
+
+**Research half:** full report at `reports/loop/autonomy-profitability-research-2026-07-12.md`
+(12-agent repo/web fan-out + live probes + independent adversarial review of the four contestable
+calls). Durable verified facts: demo fees are REAL, exactly 10bps per leg, maker=taker, no
+discount (measured from the fills table — fee levers cannot move demo PnL; live-parity only);
+`cache_read=0` root cause is the per-symbol system prompt (five prefixes, each recurring less
+often than the 1h TTL); Sonnet-5 training cutoff is Jan 2026 (offline backtests must use
+Feb-2026+ data); the eval spec's Opus price table was 3x overstated (deployed gate map was
+correct); no prompt-block A/B mechanism exists, so the always-on derivatives block has been
+unmeasurable since 2026-07-10.
+
+**Ship half (`self-learning engine v2`, agentic-lane + config + tests only, no money-path
+files):** (1) reflection + promotion-evaluator read unrouted `active()` — closes the ~25%
+A/B-routed contamination of the revision basis, mint parentVersion, and champion identity found
+by tracing DI wiring; (2) `runReflection` unresolved-candidate guard — pre-budget,
+trigger-preserving, `AGENTIC_CANDIDATE_LAPSE_HOURS=720` lapse; new outcome label
+`skipped_unresolved_candidate` EXPECTED while v2 sits in A/B (this replaces the v3-shadows-v2
+failure mode from Pass 17's watch); (3) promotion verdict: symmetric attributed-trip floors
+(champion ≥10 in-window too — was 1) + Mann–Whitney probability-of-superiority ≥
+`AGENTIC_PROMOTE_MIN_POS=0.70` alongside the mean comparison (a lucky outlier trip can no longer
+promote); (4) NEW playbook knobs channel: one optional validated
+`knobs: minConfidence=… minRr=… minEdgeMultiple=…` line, tighten-only, enforced
+deterministically in the client on NEW entries only (exits/re-arms never gated — the Pass-20
+bare-position class is structurally excluded), bounds checked at mint AND read (invalid knobs =
+loud `validator_reject` + retry-with-feedback), documented to reflection with a pointer at the
+calibration digest; (5) symbol-agnostic cached prefix: venue minimums moved from system prompt
+to payload `constraints`; `PROMPT_TEMPLATE_VERSION` v4→v5, `PLAN_TEMPLATE_VERSION` p2→p3 (honest
+promptHash flip; both A/B arms share templates); (6) eval Opus price fix. Gates: build, lint,
+typecheck, format, **1718 unit (+27), 41 livegate, 11 paper, 15 eval — all green**. Deployed via
+compose build+up; soak notes in state.md § Flagged handoff bullet.
+
+**New standing watches:** `cache_read_input_tokens` should finally rise (same-prefix calls within
+the 1h TTL now share one prefix across all 5 symbols); reflection outcomes may legitimately show
+`skipped_unresolved_candidate` until v2 resolves; v2's promotion verdict now ALSO requires
+champion v1 to reach 10 post-epoch attributed trips (symmetric floor) — do not misread the
+longer wait as a stall; first reflection-authored `knobs:` line is the knobs-channel first-mint
+watch.

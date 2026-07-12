@@ -686,6 +686,31 @@ owns them).
 
 ## Flagged for human review (open)
 
+- **RESEARCH HANDOFF + SHIP 2026-07-12 (owner-directed session, not a loop pass) — read
+  `reports/loop/autonomy-profitability-research-2026-07-12.md` before the next pass's §3
+  selection.** A 12-agent evidence sweep + live probes + adversarial review produced the cited
+  roadmap AND the session shipped the **self-learning engine v2** package (all gates green,
+  deployed): (1) reflection + promotion-evaluator now read the unrouted `active()` — closes the
+  ~25% A/B contamination of revision basis/parentVersion/champion identity; (2) reflection gained
+  an unresolved-candidate guard (pre-budget, trigger-preserving, 720h lapse via
+  `AGENTIC_CANDIDATE_LAPSE_HOURS`) — EXPECT `skipped_unresolved_candidate` reflection outcomes
+  while v2 sits in A/B, that is the fix working, NOT a regression (resolves Pass 17's shadowing
+  watch in the safe direction); (3) promotion is now statistically honest — SYMMETRIC attributed
+  floors (champion needs ≥10 in-window trips too) + Mann–Whitney PoS ≥ `AGENTIC_PROMOTE_MIN_POS`
+  (0.70) — so v2's verdict also waits on champion v1 reaching 10 post-epoch trips (slower,
+  honest); (4) NEW playbook `knobs:` line channel (tighten-only minConfidence/minRr/
+  minEdgeMultiple, validated at mint+read, enforced deterministically on NEW entries only,
+  documented to reflection) — the loop's first parametric learning degrees of freedom; (5)
+  symbol-agnostic cached prefix (constraints moved to payload; templates v4→v5/p2→p3 — promptHash
+  flips, WATCH `cache_read_input_tokens` finally rising); (6) eval Opus price table fixed
+  ($15/$75→$5/$25; deployed gate map was already correct). Also verified: demo fees are REAL and
+  exactly 10bps flat per leg (maker=taker ⇒ fee levers cannot move demo PnL; live-parity only).
+  Owner-side ask in the report: always-on host (duty cycle 8–36% throttles everything).
+  Top loop follow-ups from the report: persist plan fields on `agent_decisions` (unlocks
+  real-settlement replay), prompt-block A/B mechanism (the derivatives block is ON unmeasured),
+  $0 plan-param sweep over the real corpus, backtest-extension for 4h/1d (offline only), Phase-4
+  live-arming gaps (ARM_PRECONDITIONS stub, zombie sweep, ACKED fixture row, risk-limit sizing).
+
 - **AVAILABILITY 2026-07-12 (Pass 17) — the host sleeps; duty cycle is now the program's
   binding constraint.** The stack runs on the owner's MacBook: `pmset -g log` shows battery
   clamshell-sleep cycles through 07-11, a reboot at 21:27Z, then ~10h at the login screen —

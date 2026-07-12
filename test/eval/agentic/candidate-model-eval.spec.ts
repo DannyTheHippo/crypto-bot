@@ -244,7 +244,9 @@ interface ModelRate {
 const DEFAULT_TOKEN_PRICES_PER_MTOK: Readonly<Record<string, ModelRate>> = {
   'claude-sonnet-5': { input: 3, output: 15 },
   'claude-haiku-4-5-20251001': { input: 1, output: 5 },
-  'claude-opus-4-8': { input: 15, output: 75 },
+  // Corrected 2026-07-12: list price is $5/$25 per MTok (was mistyped $15/$75 — every prior
+  // scorecard's Opus cost projection was 3x overstated).
+  'claude-opus-4-8': { input: 5, output: 25 },
 };
 // Sonnet-tier fallback for a model id absent from both the override map and the defaults above —
 // this is a toy cost estimate (never a promotion input), so failing closed to a mid-tier guess rather

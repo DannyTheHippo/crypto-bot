@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { validatePlaybook } from '../../../src/features/trading/agentic/playbook-validator';
+import {
+  extractPlaybookKnobs,
+  parsePlaybookKnobs,
+  validatePlaybook,
+} from '../../../src/features/trading/agentic/playbook-validator';
 import {
   PLAYBOOK_BLOCK_START,
   PLAYBOOK_BLOCK_END,
@@ -26,9 +30,58 @@ function playbookOfExactLength(len: number): string {
   return `${base}\n${padding}`;
 }
 
+// A valid playbook carrying a knobs line under "## entry rules".
+function validPlaybookWithKnobs(knobsLine: string): string {
+  return validPlaybook().replace(
+    'Enter long on a confirmed EMA cross with RSI above 50.',
+    `Enter long on a confirmed EMA cross with RSI above 50.\n${knobsLine}`,
+  );
+}
+
 describe('validatePlaybook', () => {
   it('accepts a well-formed 4-section playbook', () => {
     expect(validatePlaybook(validPlaybook())).toEqual({ ok: true });
+  });
+
+  it('accepts a well-formed knobs line and extractPlaybookKnobs returns the parsed values', () => {
+    const content = validPlaybookWithKnobs('knobs: minConfidence=0.65 minRr=2 minEdgeMultiple=2.5');
+    expect(validatePlaybook(content)).toEqual({ ok: true });
+    expect(extractPlaybookKnobs(content)).toEqual({
+      minConfidence: '0.65',
+      minRr: '2',
+      minEdgeMultiple: '2.5',
+    });
+  });
+
+  it('accepts a knobs line with a subset of keys', () => {
+    const content = validPlaybookWithKnobs('knobs: minConfidence=0.5');
+    expect(validatePlaybook(content)).toEqual({ ok: true });
+    expect(extractPlaybookKnobs(content)).toEqual({ minConfidence: '0.5' });
+  });
+
+  it('returns undefined knobs for a playbook without a knobs line', () => {
+    expect(extractPlaybookKnobs(validPlaybook())).toBeUndefined();
+    expect(parsePlaybookKnobs(validPlaybook())).toEqual({ ok: true });
+  });
+
+  it.each([
+    ['out-of-bounds minConfidence', 'knobs: minConfidence=0.95'],
+    ['out-of-bounds minRr', 'knobs: minRr=11'],
+    ['out-of-bounds minEdgeMultiple', 'knobs: minEdgeMultiple=0.5'],
+    ['unknown key', 'knobs: maxLeverage=2'],
+    ['malformed value', 'knobs: minRr=abc'],
+    ['duplicate key', 'knobs: minRr=2 minRr=3'],
+    ['empty line', 'knobs:'],
+  ])('rejects a playbook whose knobs line has %s (loud mint-time failure)', (_label, line) => {
+    const result = validatePlaybook(validPlaybookWithKnobs(line));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain('knobs');
+  });
+
+  it('rejects two knobs lines', () => {
+    const content = `${validPlaybookWithKnobs('knobs: minRr=2')}\nknobs: minRr=3`;
+    const result = validatePlaybook(content);
+    expect(result.ok).toBe(false);
   });
 
   it('rejects a playbook missing a required section', () => {

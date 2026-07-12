@@ -27,7 +27,7 @@ import {
   buildSystemPrompt,
   computePromptHash,
 } from './agent-prompt';
-import { validatePlaybook } from './playbook-validator';
+import { extractPlaybookKnobs, validatePlaybook, type PlaybookKnobs } from './playbook-validator';
 
 const decisionSchema = z.object({
   action: z.enum(['long', 'flat', 'hold']),
@@ -279,23 +279,27 @@ export class AnthropicAgentClient implements AgentClientPort {
       input.trigger.kind === 'candle' ? input.trigger.event.closeTime : input.snapshot.eventTime;
 
     const { content: playbookContent, version: playbookVersion } = await this.resolvePlaybook();
+    // Playbook knobs (tighten-only parametric channel — see playbook-validator.ts). Extracted from
+    // the ALREADY-VALIDATED playbook content, so an out-of-bounds line can never reach here.
+    const knobs: PlaybookKnobs | undefined = playbookContent
+      ? extractPlaybookKnobs(playbookContent)
+      : undefined;
     const baseProfile = this.cfg.profile ?? DEFAULT_TRADING_PROFILE;
     const constraints = this.cfg.constraintsFor?.(String(symbol)) ?? baseProfile.constraints;
-    const systemPrompt = buildSystemPrompt(
-      { ...baseProfile, constraints },
-      {
-        ...(this.cfg.planMode
-          ? {
-              planMode: true,
-              minEdgeMultiple: this.cfg.minEdgeMultiple ?? '1.5',
-              minRr: this.cfg.minRr ?? '1.5',
-            }
-          : {}),
-        derivativesFeedEnabled: this.cfg.derivativesFeedEnabled ?? false,
-        sentimentFeedEnabled: this.cfg.sentimentFeedEnabled ?? false,
-        shortsEnabled: this.cfg.shortsEnabled ?? false,
-      },
-    );
+    // v5: constraints no longer render into the system prompt (they ride the payload below), so the
+    // cached tools+system prefix is byte-identical across all symbols this shared client serves.
+    const systemPrompt = buildSystemPrompt(baseProfile, {
+      ...(this.cfg.planMode
+        ? {
+            planMode: true,
+            minEdgeMultiple: this.cfg.minEdgeMultiple ?? '1.5',
+            minRr: this.cfg.minRr ?? '1.5',
+          }
+        : {}),
+      derivativesFeedEnabled: this.cfg.derivativesFeedEnabled ?? false,
+      sentimentFeedEnabled: this.cfg.sentimentFeedEnabled ?? false,
+      shortsEnabled: this.cfg.shortsEnabled ?? false,
+    });
     // inputPayload is the market JSON ALONE — buildMarketPayload's signature carries no
     // playbookContent parameter, so it structurally cannot echo playbook text (see its own comment).
     // W2.4 cache experiment: the playbook block (the only sizeable stable prefix) rides in its own
@@ -304,7 +308,7 @@ export class AnthropicAgentClient implements AgentClientPort {
     // buildUserMessage's single-string form (see buildPlaybookBlock's comment). Falsifiable:
     // Sonnet-5's minimum cacheable prefix is unpublished — if usage.cache_read_input_tokens stays 0
     // in production the blocks revert (config-free, cheap to remove).
-    const inputPayload = buildMarketPayload(input);
+    const inputPayload = buildMarketPayload(input, { constraints });
     const userContent: string | AnthropicTextBlock[] = playbookContent
       ? [
           {
@@ -454,10 +458,54 @@ export class AnthropicAgentClient implements AgentClientPort {
     // executor by arriving on a 'hold' instead.
     const opensNewLong = action === 'long' && side === 'FLAT';
     const rearmsOpenLong = side === 'LONG' && (action === 'hold' || action === 'long');
+
+    // Playbook-knob confidence floor (tighten-only channel): a NEW entry whose stated confidence
+    // sits below the playbook's minConfidence knob is downgraded to a journal-visible hold — the
+    // same rejection shape as the plan gate below. Scope is deliberately NEW ENTRIES ONLY: exits
+    // are never blocked (never trap a position behind a knob) and re-arms are never blocked (a
+    // knob must not strand an open position bare — the Pass-20 restart class).
+    const entersNewPosition = side === 'FLAT' && (action === 'long' || action === 'short');
+    if (knobs?.minConfidence !== undefined && entersNewPosition) {
+      const confidenceFloor = new Decimal(knobs.minConfidence);
+      if (new Decimal(String(confidence)).lt(confidenceFloor)) {
+        this.logger.warn(
+          `knob gate: entry confidence ${confidence} below playbook minConfidence ${knobs.minConfidence} — downgrading to hold`,
+        );
+        return {
+          signals: [],
+          decision: {
+            action: action as 'long' | 'flat' | 'hold',
+            confidence,
+            rationale: `[knob gate: confidence below playbook floor ${knobs.minConfidence}] ${rationale}`,
+          },
+          usage,
+          latencyMs,
+          playbookVersion,
+          promptHash,
+          inputPayload,
+        };
+      }
+    }
+
     if (this.cfg.planMode && rawPlan && (opensNewLong || rearmsOpenLong)) {
       const feeFraction = new Decimal(baseProfile.makerBps).plus(baseProfile.takerBps).div(10_000);
-      const edgeFloor = new Decimal(this.cfg.minEdgeMultiple ?? '1.5').mul(feeFraction);
-      const minRr = new Decimal(this.cfg.minRr ?? '1.5');
+      // Knob floors raise (never lower) the configured floors, and bind on FRESH entries only —
+      // a re-arm keeps the config floors so re-attaching management to an existing position never
+      // gets harder mid-flight (see the confidence-gate comment above for the rationale).
+      const configMinEdgeMultiple = new Decimal(this.cfg.minEdgeMultiple ?? '1.5');
+      const configMinRr = new Decimal(this.cfg.minRr ?? '1.5');
+      const knobMinEdgeMultiple =
+        opensNewLong && knobs?.minEdgeMultiple !== undefined
+          ? new Decimal(knobs.minEdgeMultiple)
+          : undefined;
+      const knobMinRr =
+        opensNewLong && knobs?.minRr !== undefined ? new Decimal(knobs.minRr) : undefined;
+      const effectiveMinEdgeMultiple =
+        knobMinEdgeMultiple !== undefined && knobMinEdgeMultiple.gt(configMinEdgeMultiple)
+          ? knobMinEdgeMultiple
+          : configMinEdgeMultiple;
+      const edgeFloor = effectiveMinEdgeMultiple.mul(feeFraction);
+      const minRr = knobMinRr !== undefined && knobMinRr.gt(configMinRr) ? knobMinRr : configMinRr;
       const stopLossPct = new Decimal(String(rawPlan.stopLossPct));
       const takeProfitPct = new Decimal(String(rawPlan.takeProfitPct));
       let rejectionWarn: string | undefined;

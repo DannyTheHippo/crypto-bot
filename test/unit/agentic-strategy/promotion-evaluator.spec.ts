@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
+import Decimal from 'decimal.js';
 import {
   PromotionEvaluator,
   createPromotionEvaluator,
+  probabilityOfSuperiority,
   type EvaluatorPlaybookStore,
   type PromotionEvaluatorDeps,
 } from '../../../src/features/trading/agentic/promotion-evaluator';
@@ -122,23 +124,26 @@ function harness(opts: {
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
 describe('PromotionEvaluator (W5 attributed auto-promotion)', () => {
-  // Champion v1 with 3 losing trips (mean −0.1×qty), candidate v2 with 10 winning trips.
+  // Champion v1 with 10 losing trips (symmetric floor needs champion n ≥ floor too), candidate v2
+  // with `candidateTrips` winning trips — candidate wins every pairwise comparison (PoS = 1.0).
   function championAndCandidate(candidateTrips: number) {
     const decisions = [decisionRow(1, 1_000), decisionRow(2, 100_000)];
     const fills: PromotionFillRow[] = [];
-    // champion v1: 3 trips opened just after the v1 decision, each losing (buy 100 sell 99).
-    for (let i = 0; i < 3; i++) fills.push(...tripFills('100', '99', 2_000 + i * 10));
+    // champion v1: 10 trips opened just after the v1 decision, each losing (buy 100 sell 99).
+    for (let i = 0; i < 10; i++) fills.push(...tripFills('100', '99', 2_000 + i * 10));
     // candidate v2: `candidateTrips` trips opened after the v2 decision, each winning (buy 100 sell 110).
     for (let i = 0; i < candidateTrips; i++)
       fills.push(...tripFills('100', '110', 200_000 + i * 10));
     return { decisions, fills };
   }
 
-  it('promotes the candidate when it clears the attributed-trip floor AND beats the champion mean', async () => {
+  const CFG = { minAttributedTrades: 10, minPos: 0.7, dustNotional: '5' };
+
+  it('promotes the candidate when it clears the floors AND beats the champion (mean + PoS)', async () => {
     const { decisions, fills } = championAndCandidate(10);
     const h = harness({ fills, decisions, championVersion: 1 });
-    const evalr = new PromotionEvaluator({ minAttributedTrades: 10, dustNotional: '5' }, h.deps);
-    evalr.onClosedTrade(strategyId(SID), 13);
+    const evalr = new PromotionEvaluator(CFG, h.deps);
+    evalr.onClosedTrade(strategyId(SID), 20);
     await flush();
     expect(h.appended).toHaveLength(1);
     expect(h.appended[0]!.source).toBe('promotion');
@@ -149,8 +154,8 @@ describe('PromotionEvaluator (W5 attributed auto-promotion)', () => {
   it('does NOT promote below the attributed-trip floor', async () => {
     const { decisions, fills } = championAndCandidate(9); // 9 < floor 10
     const h = harness({ fills, decisions, championVersion: 1 });
-    const evalr = new PromotionEvaluator({ minAttributedTrades: 10, dustNotional: '5' }, h.deps);
-    evalr.onClosedTrade(strategyId(SID), 12);
+    const evalr = new PromotionEvaluator(CFG, h.deps);
+    evalr.onClosedTrade(strategyId(SID), 19);
     await flush();
     expect(h.appended).toHaveLength(0);
     expect(h.outcomes).toEqual([]);
@@ -160,20 +165,71 @@ describe('PromotionEvaluator (W5 attributed auto-promotion)', () => {
     // champion v1 WINS (buy 100 sell 110), candidate v2 loses (buy 100 sell 99).
     const decisions = [decisionRow(1, 1_000), decisionRow(2, 100_000)];
     const fills: PromotionFillRow[] = [];
-    for (let i = 0; i < 3; i++) fills.push(...tripFills('100', '110', 2_000 + i * 10));
+    for (let i = 0; i < 10; i++) fills.push(...tripFills('100', '110', 2_000 + i * 10));
     for (let i = 0; i < 10; i++) fills.push(...tripFills('100', '99', 200_000 + i * 10));
     const h = harness({ fills, decisions, championVersion: 1 });
-    const evalr = new PromotionEvaluator({ minAttributedTrades: 10, dustNotional: '5' }, h.deps);
+    const evalr = new PromotionEvaluator(CFG, h.deps);
+    evalr.onClosedTrade(strategyId(SID), 20);
+    await flush();
+    expect(h.appended).toHaveLength(0);
+  });
+
+  it('symmetric floor: does NOT promote while the champion has fewer in-window trips than the floor', async () => {
+    // Champion v1 has only 3 trips (< 10); candidate v2 has 10 clean wins. The pre-2026-07-12
+    // evaluator promoted here (champion floor was trips > 0) — the symmetric floor holds instead.
+    const decisions = [decisionRow(1, 1_000), decisionRow(2, 100_000)];
+    const fills: PromotionFillRow[] = [];
+    for (let i = 0; i < 3; i++) fills.push(...tripFills('100', '99', 2_000 + i * 10));
+    for (let i = 0; i < 10; i++) fills.push(...tripFills('100', '110', 200_000 + i * 10));
+    const h = harness({ fills, decisions, championVersion: 1 });
+    const evalr = new PromotionEvaluator(CFG, h.deps);
     evalr.onClosedTrade(strategyId(SID), 13);
     await flush();
     expect(h.appended).toHaveLength(0);
+    expect(h.outcomes).toEqual([]);
+  });
+
+  it('PoS floor: does NOT promote a mean carried by one outlier trip that loses most pairwise comparisons', async () => {
+    // Candidate: 9 trips at −2 and one at +100 ⇒ mean +8.2 beats champion mean −1, but PoS is
+    // 10/100 = 0.10 — the bare mean comparison would have promoted this; the rank floor holds.
+    const decisions = [decisionRow(1, 1_000), decisionRow(2, 100_000)];
+    const fills: PromotionFillRow[] = [];
+    for (let i = 0; i < 10; i++) fills.push(...tripFills('100', '99', 2_000 + i * 10));
+    for (let i = 0; i < 9; i++) fills.push(...tripFills('100', '98', 200_000 + i * 10));
+    fills.push(...tripFills('100', '200', 201_000));
+    const h = harness({ fills, decisions, championVersion: 1 });
+    const evalr = new PromotionEvaluator(CFG, h.deps);
+    evalr.onClosedTrade(strategyId(SID), 20);
+    await flush();
+    expect(h.appended).toHaveLength(0);
+  });
+
+  it('reads the champion identity via the unrouted active() when the store provides it', async () => {
+    // current() lies (serves the A/B candidate v2, the routed read); active() tells the truth (v1).
+    // A current()-based champion identity would self-exclude v2 (version <= champion) and no-op.
+    const { decisions, fills } = championAndCandidate(10);
+    const h = harness({ fills, decisions, championVersion: 1 });
+    const store = h.deps.playbookStore!;
+    h.deps = {
+      ...h.deps,
+      playbookStore: {
+        ...store,
+        current: () => Promise.resolve({ version: 2, content: 'candidate content' }),
+        active: () => Promise.resolve({ version: 1, content: 'champion content' }),
+      },
+    };
+    const evalr = new PromotionEvaluator(CFG, h.deps);
+    evalr.onClosedTrade(strategyId(SID), 20);
+    await flush();
+    expect(h.appended).toHaveLength(1);
+    expect(h.appended[0]!.parentVersion).toBe(2);
   });
 
   it('is inert when minAttributedTrades is 0', async () => {
     const { decisions, fills } = championAndCandidate(10);
     const h = harness({ fills, decisions, championVersion: 1 });
-    const evalr = new PromotionEvaluator({ minAttributedTrades: 0, dustNotional: '5' }, h.deps);
-    evalr.onClosedTrade(strategyId(SID), 13);
+    const evalr = new PromotionEvaluator({ ...CFG, minAttributedTrades: 0 }, h.deps);
+    evalr.onClosedTrade(strategyId(SID), 20);
     await flush();
     expect(h.appended).toHaveLength(0);
   });
@@ -181,8 +237,8 @@ describe('PromotionEvaluator (W5 attributed auto-promotion)', () => {
   it('aborts when the kill switch is not RUNNING', async () => {
     const { decisions, fills } = championAndCandidate(10);
     const h = harness({ fills, decisions, championVersion: 1, killState: 'HALTED' });
-    const evalr = new PromotionEvaluator({ minAttributedTrades: 10, dustNotional: '5' }, h.deps);
-    evalr.onClosedTrade(strategyId(SID), 13);
+    const evalr = new PromotionEvaluator(CFG, h.deps);
+    evalr.onClosedTrade(strategyId(SID), 20);
     await flush();
     expect(h.appended).toHaveLength(0);
   });
@@ -190,8 +246,8 @@ describe('PromotionEvaluator (W5 attributed auto-promotion)', () => {
   it('records promote_failed and never throws when the append fails', async () => {
     const { decisions, fills } = championAndCandidate(10);
     const h = harness({ fills, decisions, championVersion: 1, appendThrows: true });
-    const evalr = new PromotionEvaluator({ minAttributedTrades: 10, dustNotional: '5' }, h.deps);
-    expect(() => evalr.onClosedTrade(strategyId(SID), 13)).not.toThrow();
+    const evalr = new PromotionEvaluator(CFG, h.deps);
+    expect(() => evalr.onClosedTrade(strategyId(SID), 20)).not.toThrow();
     await flush();
     expect(h.appended).toHaveLength(0);
     expect(h.outcomes).toEqual(['promote_failed']);
@@ -203,10 +259,34 @@ describe('PromotionEvaluator (W5 attributed auto-promotion)', () => {
     const fills: PromotionFillRow[] = [];
     for (let i = 0; i < 10; i++) fills.push(...tripFills('100', '110', 200_000 + i * 10));
     const h = harness({ fills, decisions, championVersion: 1 });
-    const evalr = new PromotionEvaluator({ minAttributedTrades: 10, dustNotional: '5' }, h.deps);
+    const evalr = new PromotionEvaluator(CFG, h.deps);
     evalr.onClosedTrade(strategyId(SID), 10);
     await flush();
     expect(h.appended).toHaveLength(0);
+  });
+
+  it('probabilityOfSuperiority: pairwise wins with ties counted half', () => {
+    const dec = (vals: string[]) => vals.map((v) => new Decimal(v));
+    // (1v1 tie .5) + (1v0 win) + (2v1 win) + (2v0 win) = 3.5 of 4 pairs.
+    expect(probabilityOfSuperiority(dec(['1', '2']), dec(['1', '0'])).toFixed(4)).toBe('0.8750');
+    expect(probabilityOfSuperiority(dec(['5']), dec(['5'])).toFixed(1)).toBe('0.5');
+    expect(probabilityOfSuperiority(dec(['-1']), dec(['1'])).toFixed(1)).toBe('0.0');
+  });
+
+  it('createPromotionEvaluator parses AGENTIC_PROMOTE_MIN_POS and clamps it to [0.5, 1]', async () => {
+    // A permissive 0.05 clamps to 0.5; championAndCandidate(10) has PoS 1.0 so it promotes either
+    // way — the observable is that a malformed/low value never crashes construction or evaluation.
+    const { decisions, fills } = championAndCandidate(10);
+    for (const raw of ['0.05', 'garbage', undefined]) {
+      const h = harness({ fills, decisions, championVersion: 1 });
+      const env: Record<string, string | undefined> = {
+        AGENTIC_AUTO_PROMOTE_MIN_ATTRIBUTED_TRADES: '10',
+        ...(raw !== undefined ? { AGENTIC_PROMOTE_MIN_POS: raw } : {}),
+      };
+      createPromotionEvaluator(env, h.deps).onClosedTrade(strategyId(SID), 20);
+      await flush();
+      expect(h.appended).toHaveLength(1);
+    }
   });
 
   it('threads evidenceEpochMs into the fills read (the gate and the evaluator share one window)', async () => {
@@ -222,10 +302,7 @@ describe('PromotionEvaluator (W5 attributed auto-promotion)', () => {
         llmTokenTotals: () => Promise.resolve({ perModel: [] }),
       },
     };
-    const evalr = new PromotionEvaluator(
-      { minAttributedTrades: 10, dustNotional: '5', evidenceEpochMs: 1_752_182_760_000 },
-      h.deps,
-    );
+    const evalr = new PromotionEvaluator({ ...CFG, evidenceEpochMs: 1_752_182_760_000 }, h.deps);
     evalr.onClosedTrade(strategyId(SID), 1);
     await flush();
     expect(seen).toEqual([1_752_182_760_000]);

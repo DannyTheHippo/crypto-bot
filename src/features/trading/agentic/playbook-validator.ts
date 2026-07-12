@@ -1,3 +1,4 @@
+import Decimal from 'decimal.js';
 import { PLAYBOOK_BLOCK_START, PLAYBOOK_BLOCK_END } from './agent-prompt';
 
 // Structural gate for a stored playbook before it's ever composed into a prompt: this is the real
@@ -102,6 +103,86 @@ const BANNED_PATTERNS: readonly { readonly label: string; readonly re: RegExp }[
   },
 ] as const;
 
+// ── Playbook knobs — the bounded numeric-knob learning channel (2026-07-12) ─────────────────────
+// A playbook MAY carry exactly one machine-readable line of the form
+//   knobs: minConfidence=0.65 minRr=2 minEdgeMultiple=2
+// (any subset of the three keys, whitespace-separated key=value pairs). The knobs are the learning
+// loop's first PARAMETRIC degrees of freedom: reflection can set them, they ride the playbook
+// version (so the existing A/B attribution measures their effect for free), and the decide client
+// enforces them deterministically. Semantics are TIGHTEN-ONLY by construction — the client applies
+// each knob as max(configured floor, knob), and minConfidence only gates NEW entries — so a knob
+// can make the lane more selective but can never loosen a configured safety floor, widen sizing,
+// or touch an exit/re-arm path. Bounds are validated here on BOTH the mint (write) and the
+// compose-into-prompt (read) side via validatePlaybook, so an out-of-bounds knob line is a loud
+// validator_reject at mint (retry-with-feedback fires), never a silent no-op at decide time.
+export interface PlaybookKnobs {
+  // Minimum stated confidence for a NEW entry (decimal string, 0..0.9). Entries below it are
+  // downgraded to hold by the client. Exits and plan re-arms are NEVER gated by this.
+  readonly minConfidence?: string;
+  // Raises the plan-gate takeProfit/stopLoss payoff-ratio floor: effective = max(AGENTIC_MIN_RR,
+  // this). New-entry plans only (1..10).
+  readonly minRr?: string;
+  // Raises the plan-gate fee-multiple edge floor: effective = max(AGENTIC_MIN_EDGE_MULTIPLE,
+  // this). New-entry plans only (1..10).
+  readonly minEdgeMultiple?: string;
+}
+
+const KNOBS_LINE_RE = /^\s*knobs\s*:/i;
+const KNOB_PAIR_RE = /^(minConfidence|minRr|minEdgeMultiple)=(\d+(?:\.\d+)?)$/;
+const KNOB_BOUNDS: Readonly<Record<keyof PlaybookKnobs, { min: string; max: string }>> = {
+  minConfidence: { min: '0', max: '0.9' },
+  minRr: { min: '1', max: '10' },
+  minEdgeMultiple: { min: '1', max: '10' },
+};
+
+export type PlaybookKnobsParseResult =
+  | { readonly ok: true; readonly knobs?: PlaybookKnobs }
+  | { readonly ok: false; readonly reason: string };
+
+export function parsePlaybookKnobs(content: string): PlaybookKnobsParseResult {
+  const knobLines = content.split('\n').filter((line) => KNOBS_LINE_RE.test(line));
+  if (knobLines.length === 0) return { ok: true };
+  if (knobLines.length > 1) {
+    return { ok: false, reason: `at most one "knobs:" line is allowed (got ${knobLines.length})` };
+  }
+  const body = knobLines[0]!.slice(knobLines[0]!.indexOf(':') + 1).trim();
+  if (body.length === 0) {
+    return { ok: false, reason: 'empty "knobs:" line (omit the line or give key=value pairs)' };
+  }
+  const knobs: Record<string, string> = {};
+  for (const token of body.split(/\s+/)) {
+    const match = KNOB_PAIR_RE.exec(token);
+    if (!match) {
+      return {
+        ok: false,
+        reason: `unrecognized knobs token "${token}" (allowed: minConfidence=<0..0.9> minRr=<1..10> minEdgeMultiple=<1..10>)`,
+      };
+    }
+    const key = match[1] as keyof PlaybookKnobs;
+    const value = match[2] as string;
+    if (knobs[key] !== undefined) {
+      return { ok: false, reason: `duplicate knobs key "${key}"` };
+    }
+    const bounds = KNOB_BOUNDS[key];
+    const parsed = new Decimal(value);
+    if (parsed.lt(bounds.min) || parsed.gt(bounds.max)) {
+      return {
+        ok: false,
+        reason: `knobs key "${key}"=${value} outside bounds [${bounds.min}, ${bounds.max}]`,
+      };
+    }
+    knobs[key] = value;
+  }
+  return { ok: true, knobs: knobs };
+}
+
+// Convenience for the read side AFTER validatePlaybook has passed: returns the parsed knobs or
+// undefined. Never throws; an invalid line (impossible post-validation) reads as no-knobs.
+export function extractPlaybookKnobs(content: string): PlaybookKnobs | undefined {
+  const parsed = parsePlaybookKnobs(content);
+  return parsed.ok ? parsed.knobs : undefined;
+}
+
 export type PlaybookValidationResult =
   | { readonly ok: true }
   | {
@@ -161,6 +242,13 @@ export function validatePlaybook(content: string): PlaybookValidationResult {
         bannedToken: label,
       };
     }
+  }
+
+  // Knobs line (optional): structurally validated on both read and write so an out-of-bounds or
+  // malformed knob is a loud mint-time rejection (retry-with-feedback), never a silent runtime skip.
+  const knobsResult = parsePlaybookKnobs(content);
+  if (!knobsResult.ok) {
+    return { ok: false, reason: `invalid knobs line: ${knobsResult.reason}` };
   }
 
   return { ok: true };

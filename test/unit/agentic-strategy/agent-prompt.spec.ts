@@ -197,7 +197,7 @@ describe('buildSystemPrompt', () => {
     expect(prompt).toContain('submit_decision');
   });
 
-  it('renders the real fees, sizing rule, and venue minimums from the given profile', () => {
+  it('renders the real fees and sizing rule from the given profile, and points at the payload constraints field', () => {
     const profile = fixtureProfile({
       makerBps: '8',
       takerBps: '12',
@@ -212,9 +212,25 @@ describe('buildSystemPrompt', () => {
     expect(prompt).toContain('20'); // round-trip = maker + taker
     expect(prompt).toContain('75');
     expect(prompt).toContain('300');
-    expect(prompt).toContain(profile.constraints.tickSize.toFixed());
-    expect(prompt).toContain(profile.constraints.lotStep.toFixed());
-    expect(prompt).toContain(profile.constraints.minNotional.toFixed());
+    expect(prompt).toContain('constraints field of the user message payload');
+  });
+
+  it('is byte-identical across symbols (v5): per-symbol constraints never enter the cached system prefix', () => {
+    // The concrete constraint values live in the payload (buildMarketPayload extras.constraints);
+    // the system prompt only references the field generically — this is what makes the tools+system
+    // cache prefix shared across every symbol the client serves (cache_read was 0 in production
+    // because five per-symbol system prompts each recurred less often than the 1h cache TTL).
+    const a = buildSystemPrompt(
+      fixtureProfile({
+        constraints: { tickSize: price('0.01'), lotStep: qty('0.0001'), minNotional: price('10') },
+      }),
+    );
+    const b = buildSystemPrompt(
+      fixtureProfile({
+        constraints: { tickSize: price('0.5'), lotStep: qty('0.001'), minNotional: price('5') },
+      }),
+    );
+    expect(a).toBe(b);
   });
 
   it('frames the playbook as advisory data that can never override these rules', () => {
@@ -1120,5 +1136,23 @@ describe('buildMarketPayload (W1.3 input-snapshot persistence)', () => {
     expect(() => {
       JSON.parse(payload);
     }).not.toThrow();
+  });
+
+  it('renders extras.constraints as exact strings and omits the field entirely when absent (v5)', () => {
+    const input = buildInput();
+    const withConstraints = JSON.parse(
+      buildMarketPayload(input, {
+        constraints: { tickSize: price('0.5'), lotStep: qty('0.001'), minNotional: price('5') },
+      }),
+    ) as Record<string, unknown>;
+    expect(withConstraints['constraints']).toEqual({
+      tickSize: '0.5',
+      lotStep: '0.001',
+      minNotional: '5',
+    });
+
+    // Absent extras ⇒ no constraints key at all — pre-v5 recorded rows replay byte-identically.
+    const without = JSON.parse(buildMarketPayload(input)) as Record<string, unknown>;
+    expect('constraints' in without).toBe(false);
   });
 });

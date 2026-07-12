@@ -1520,4 +1520,168 @@ describe('AnthropicAgentClient', () => {
       });
     });
   });
+
+  describe('playbook knobs (tighten-only parametric channel)', () => {
+    // A valid 4-section playbook carrying the given knobs line under "## entry rules".
+    function playbookWithKnobs(knobsLine: string): string {
+      return [
+        '## regime notes',
+        'ranging',
+        '## entry rules',
+        `x\n${knobsLine}`,
+        '## exit rules',
+        'y',
+        '## mistakes to avoid',
+        'z',
+      ].join('\n');
+    }
+    function providerWith(knobsLine: string) {
+      return {
+        current: vi.fn().mockResolvedValue({ version: 9, content: playbookWithKnobs(knobsLine) }),
+      };
+    }
+    const tickerInput = (context: AgentContext) =>
+      buildInput({ tickers: new Map([[SYM, ticker('100', 1n)]]), context });
+
+    it('downgrades a NEW long entry below minConfidence to a journal-visible hold', async () => {
+      const fetchFn = vi.fn();
+      const client = new AnthropicAgentClient(
+        buildCfg(),
+        fetchFn,
+        undefined,
+        providerWith('knobs: minConfidence=0.7'),
+      );
+      fetchFn.mockResolvedValue(
+        apiResponse(toolUseBody({ action: 'long', confidence: 0.6, rationale: 'r' })),
+      );
+
+      const proposal = await client.propose(tickerInput(FLAT_CONTEXT));
+
+      expect(proposal.signals).toEqual([]);
+      expect(proposal.decision?.action).toBe('long');
+      expect(proposal.decision?.rationale).toContain('[knob gate: confidence below playbook floor');
+    });
+
+    it('passes a NEW long entry at/above minConfidence through unchanged', async () => {
+      const fetchFn = vi.fn();
+      const client = new AnthropicAgentClient(
+        buildCfg(),
+        fetchFn,
+        undefined,
+        providerWith('knobs: minConfidence=0.7'),
+      );
+      fetchFn.mockResolvedValue(
+        apiResponse(toolUseBody({ action: 'long', confidence: 0.7, rationale: 'r' })),
+      );
+
+      const proposal = await client.propose(tickerInput(FLAT_CONTEXT));
+
+      expect(proposal.signals).toHaveLength(1);
+      expect(proposal.signals[0]!.kind).toBe('ENTER_LONG');
+    });
+
+    it('NEVER gates an exit on minConfidence (a knob must not trap a position)', async () => {
+      const fetchFn = vi.fn();
+      const client = new AnthropicAgentClient(
+        buildCfg(),
+        fetchFn,
+        undefined,
+        providerWith('knobs: minConfidence=0.9'),
+      );
+      fetchFn.mockResolvedValue(
+        apiResponse(toolUseBody({ action: 'flat', confidence: 0.1, rationale: 'r' })),
+      );
+
+      const proposal = await client.propose(tickerInput(LONG_CONTEXT));
+
+      expect(proposal.signals).toHaveLength(1);
+      expect(proposal.signals[0]!.kind).toBe('EXIT_LONG');
+    });
+
+    it('raises the plan RR floor for a FRESH entry (knob minRr rejects a plan the config floor allows)', async () => {
+      const fetchFn = vi.fn();
+      const client = new AnthropicAgentClient(
+        buildCfg({ planMode: true, minRr: '1.5' }),
+        fetchFn,
+        undefined,
+        providerWith('knobs: minRr=3'),
+      );
+      // RR = 0.02/0.01 = 2 — clears the config floor 1.5, fails the knob floor 3.
+      fetchFn.mockResolvedValue(
+        apiResponse(
+          toolUseBody(
+            {
+              action: 'long',
+              confidence: 0.9,
+              rationale: 'r',
+              plan: {
+                entryOffsetBps: 10,
+                stopLossPct: 0.01,
+                takeProfitPct: 0.02,
+                entryValidityBars: 2,
+                maxHoldBars: 10,
+              },
+            },
+            'tool_use',
+            'submit_plan',
+          ),
+        ),
+      );
+
+      const proposal = await client.propose(
+        buildInput({
+          tickers: new Map([[SYM, ticker('100', 1n)]]),
+          candles: new Map([[SYM, [candle('100', 1n)]]]),
+          context: FLAT_CONTEXT,
+        }),
+      );
+
+      expect(proposal.signals).toEqual([]);
+      expect(proposal.plan).toBeUndefined();
+      expect(proposal.decision?.rationale).toContain('[plan rejected: RR below floor]');
+    });
+
+    it('does NOT apply knob floors to a re-arm (an open position must always be re-manageable)', async () => {
+      const fetchFn = vi.fn();
+      const client = new AnthropicAgentClient(
+        buildCfg({ planMode: true, minRr: '1.5' }),
+        fetchFn,
+        undefined,
+        providerWith('knobs: minRr=3 minConfidence=0.9'),
+      );
+      // Same RR-2 plan, but arriving as a re-arm (hold while LONG): config floors bind, knob
+      // floors and minConfidence deliberately do not — the plan re-attaches.
+      fetchFn.mockResolvedValue(
+        apiResponse(
+          toolUseBody(
+            {
+              action: 'hold',
+              confidence: 0.3,
+              rationale: 'r',
+              plan: {
+                entryOffsetBps: 10,
+                stopLossPct: 0.01,
+                takeProfitPct: 0.02,
+                entryValidityBars: 2,
+                maxHoldBars: 10,
+              },
+            },
+            'tool_use',
+            'submit_plan',
+          ),
+        ),
+      );
+
+      const proposal = await client.propose(
+        buildInput({
+          tickers: new Map([[SYM, ticker('100', 1n)]]),
+          candles: new Map([[SYM, [candle('100', 1n)]]]),
+          context: LONG_CONTEXT,
+        }),
+      );
+
+      expect(proposal.signals).toEqual([]);
+      expect(proposal.plan).toBeDefined();
+    });
+  });
 });

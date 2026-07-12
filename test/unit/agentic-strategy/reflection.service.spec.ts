@@ -1473,3 +1473,100 @@ describe('ReflectionService realized evidence + trigger seeding', () => {
     expect(promotion!.content).toContain('after 35 closed trades');
   });
 });
+
+describe('unrouted active() read + unresolved-candidate guard (2026-07-12)', () => {
+  const okRevision = () =>
+    apiResponse(
+      revisionToolBody({ playbook: validPlaybookContent('revised'), changelog: 'tweak' }),
+    );
+
+  it('bases the revision and parentVersion on the unrouted active() read, never the routed current()', async () => {
+    const h = buildHarness();
+    h.deps = {
+      ...h.deps,
+      playbookStore: {
+        ...h.storeApi.store,
+        // The routed read lies (serves the A/B candidate); the unrouted read tells the truth.
+        current: () => Promise.resolve({ version: 9, content: validPlaybookContent('candidate') }),
+        active: () => Promise.resolve({ version: 1, content: validPlaybookContent('champion') }),
+      },
+    };
+    h.fetchFn.mockResolvedValue(okRevision());
+    const service = new ReflectionService(baseCfg({ everyNTrades: 1 }), h.deps);
+
+    service.onClosedTrade(SID, 1);
+    await flush();
+
+    expect(h.storeApi.appended).toHaveLength(1);
+    expect(h.storeApi.appended[0]!.parentVersion).toBe(1);
+    const [, init] = h.fetchFn.mock.calls[0] as [string, RequestInit];
+    expect(init.body as string).toContain('champion');
+    expect(init.body as string).not.toContain('candidate');
+  });
+
+  it('skips the mint entirely (no LLM call, trigger preserved) while an unresolved candidate sits in A/B', async () => {
+    const h = buildHarness();
+    h.deps = {
+      ...h.deps,
+      playbookStore: {
+        ...h.storeApi.store,
+        listVersions: () =>
+          Promise.resolve([{ version: 2, source: 'reflection', createdAt: T - 1_000 }]),
+      },
+    };
+    const service = new ReflectionService(baseCfg({ everyNTrades: 1 }), h.deps);
+
+    service.onClosedTrade(SID, 1);
+    await flush();
+
+    expect(h.fetchFn).not.toHaveBeenCalled();
+    expect(h.storeApi.appended).toHaveLength(0);
+    expect(h.recorderApi.outcomes).toEqual(['skipped_unresolved_candidate']);
+  });
+
+  it('mints over a candidate that has LAPSED past candidateLapseMs (deliberate, logged orphaning)', async () => {
+    const THIRTY_ONE_DAYS_MS = 31 * 24 * 60 * 60 * 1000;
+    const h = buildHarness();
+    h.deps = {
+      ...h.deps,
+      playbookStore: {
+        ...h.storeApi.store,
+        listVersions: () =>
+          Promise.resolve([
+            { version: 2, source: 'loop-candidate', createdAt: T - THIRTY_ONE_DAYS_MS },
+          ]),
+      },
+    };
+    h.fetchFn.mockResolvedValue(okRevision());
+    const service = new ReflectionService(baseCfg({ everyNTrades: 1 }), h.deps);
+
+    service.onClosedTrade(SID, 1);
+    await flush();
+
+    expect(h.storeApi.appended).toHaveLength(1);
+    expect(h.logger.messages.some((m) => m.includes('lapsed'))).toBe(true);
+  });
+
+  it('ignores non-candidate rows and versions at/below active — promotion history never blocks a mint', async () => {
+    const h = buildHarness();
+    h.deps = {
+      ...h.deps,
+      playbookStore: {
+        ...h.storeApi.store,
+        listVersions: () =>
+          Promise.resolve([
+            { version: 1, source: 'seed', createdAt: T - 5_000 },
+            { version: 2, source: 'promotion', createdAt: T - 1_000 },
+          ]),
+      },
+    };
+    h.fetchFn.mockResolvedValue(okRevision());
+    const service = new ReflectionService(baseCfg({ everyNTrades: 1 }), h.deps);
+
+    service.onClosedTrade(SID, 1);
+    await flush();
+
+    expect(h.fetchFn).toHaveBeenCalledTimes(1);
+    expect(h.storeApi.appended).toHaveLength(1);
+  });
+});

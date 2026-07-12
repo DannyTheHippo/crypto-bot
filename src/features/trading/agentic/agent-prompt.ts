@@ -22,14 +22,20 @@ const REDUCED_SIGNIFICANT_DIGITS = 6;
 // liquidity/imbalance without ballooning token count on deep books.
 const BOOK_DEPTH_LEVELS = 5;
 
-export const PROMPT_TEMPLATE_VERSION = 'v4';
+// v5 (2026-07-12): symbol-agnostic cached prefix — the per-symbol venue-minimums sentence moved
+// out of the system prompt into the payload's `constraints` field, so all symbols share ONE
+// tools+system cache prefix. Root cause of the measured cache_read=0: five per-symbol system
+// prompts, each re-consulted less often than the 1h cache TTL (plan-quiet gaps are 4h).
+export const PROMPT_TEMPLATE_VERSION = 'v5';
 // W3.1 plan-mode path's own template tag — fed into computePromptHash alongside PLAN_TOOL's schema
 // JSON so a plan-mode hash can never collide with a legacy-path hash even if both happened to quote
-// the same playbook/model. PROMPT_TEMPLATE_VERSION above stays v4 unconditionally: the legacy
-// submit_decision path is byte-identical whether or not plan mode exists elsewhere in the codebase.
+// the same playbook/model. PROMPT_TEMPLATE_VERSION above bumps for prompt-shape changes on the
+// shared sentences; this tag tracks plan-path-only changes.
 // p2 (2026-07-12): plan re-arm path — managedPlan position field + the hold+plan re-arm sentence
 // and tool-description updates (restart self-heal; see AgentPositionSummary.managedPlan).
-export const PLAN_TEMPLATE_VERSION = 'p2';
+// p3 (2026-07-12): rides the v5 symbol-agnostic-prefix change above (same prompt-shape flip on the
+// plan path; both arms of the playbook A/B share the template, so attribution is unaffected).
+export const PLAN_TEMPLATE_VERSION = 'p3';
 // C1 derivatives-feed attribution tag: flag-ON appends a constant system-prompt sentence (the
 // derivatives block guidance), so the hash must distinguish flag-ON-boot decides from flag-OFF —
 // mirroring the plan-mode precedent above. Composed as a `+d1` suffix at the computePromptHash
@@ -314,7 +320,9 @@ export function buildSystemPrompt(
     profile.equityFraction !== undefined
       ? `Your confidence scales the order: target notional ≈ equity × ${profile.equityFraction} × confidence, capped at maxOrderNotional (${profile.maxOrderNotional}). An independent Risk engine has final authority and may veto, shrink, or resize every proposal you make; it, not you, controls final position size.`
       : `Your confidence scales the order: target notional ≈ baseNotional (${profile.baseNotional}) × confidence, capped at maxOrderNotional (${profile.maxOrderNotional}). An independent Risk engine has final authority and may veto, shrink, or resize every proposal you make; it, not you, controls final position size.`,
-    `Venue minimums for this symbol: tick size ${profile.constraints.tickSize.toFixed()}, lot step ${profile.constraints.lotStep.toFixed()}, minimum notional ${profile.constraints.minNotional.toFixed()}.`,
+    // v5: the concrete per-symbol values moved into the payload's `constraints` field so the system
+    // prompt (and with it the tools+system cache prefix) is byte-identical across symbols.
+    'Venue minimums for the symbol (tick size, lot step, minimum notional) are provided as exact strings in the constraints field of the user message payload.',
     ...(backstopSentence !== null ? [backstopSentence] : []),
     'When uncertain, choose "hold".',
     `The candles array holds up to ${MAX_CANDLES} closed bars, oldest first. The newest ${MAX_CANDLES_FULL_PRECISION} keep full price/volume precision; any older bars in the window are reduced to ${REDUCED_SIGNIFICANT_DIGITS} significant digits — treat the older bars as coarse trend/regime context, not exact levels.`,
@@ -489,7 +497,17 @@ export function buildUserMessage(
 // no playbookContent, so there is no code path by which playbook text could reach its return value —
 // buildUserMessage composes the two (this payload + an optional playbook block) AFTER this returns,
 // never before.
-export function buildMarketPayload(input: AgentDecisionInput): string {
+// extras.constraints (v5): the per-symbol venue minimums previously rendered into the system
+// prompt — moved here so the cached system prefix is symbol-agnostic. Optional so pre-v5 recorded
+// rows and existing offline callers replay byte-identically (field omitted when absent).
+export interface BuildMarketPayloadExtras {
+  readonly constraints?: AgentTradingProfile['constraints'];
+}
+
+export function buildMarketPayload(
+  input: AgentDecisionInput,
+  extras: BuildMarketPayloadExtras = {},
+): string {
   const symbol = input.trigger.event.symbol;
   const candles = input.snapshot.candles.get(symbol) ?? [];
   const interval = candles.length > 0 ? candles[candles.length - 1]!.interval : null;
@@ -537,6 +555,17 @@ export function buildMarketPayload(input: AgentDecisionInput): string {
     ticker: ticker
       ? { bid: ticker.bid.toFixed(), ask: ticker.ask.toFixed(), last: ticker.last.toFixed() }
       : null,
+    // v5: per-symbol venue minimums (formerly a system-prompt sentence). Omit-entirely convention
+    // when the caller supplies none (offline replays of pre-v5 rows stay byte-identical).
+    ...(extras.constraints
+      ? {
+          constraints: {
+            tickSize: extras.constraints.tickSize.toFixed(),
+            lotStep: extras.constraints.lotStep.toFixed(),
+            minNotional: extras.constraints.minNotional.toFixed(),
+          },
+        }
+      : {}),
     // Omitted entirely (no key, not null) when no book snapshot is available — no empty scaffolding
     // sent for a feed that never populated.
     ...(orderBook ? { orderBook } : {}),

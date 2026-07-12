@@ -39,6 +39,12 @@ const NOOP_LOGGER: LoggerLike = { warn: () => undefined };
 // across the module boundary (the established convention — see PLAYBOOK_PROVIDER_OVERRIDE's comment).
 export interface EvaluatorPlaybookStore {
   current(): Promise<{ readonly version: number; readonly content: string }>;
+  // Unrouted active read (pin/promotion/seed precedence, NEVER an A/B candidate). The champion
+  // identity MUST come from here: current() serves the candidate in ~AGENTIC_PLAYBOOK_AB_PCT% of
+  // minute-buckets, and a champion misread as the candidate self-excludes every version from the
+  // `version > champion` scan and silently no-ops the round (defect found 2026-07-12). Optional
+  // (structural); evaluate() falls back to current() when the bound store predates active().
+  active?(): Promise<{ readonly version: number; readonly content: string }>;
   append(
     content: string,
     source: 'reflection' | 'promotion',
@@ -54,8 +60,17 @@ export interface EvaluatorMetricsRecorder {
 
 export interface PromotionEvaluatorConfig {
   // Candidate-attributed closed-trip floor before a candidate may auto-promote. 0 disables the
-  // evaluator entirely (the legacy count-only path or manual promotion governs instead).
+  // evaluator entirely (the legacy count-only path or manual promotion governs instead). Since
+  // 2026-07-12 the floor is SYMMETRIC: the champion must also have this many attributed trips in
+  // the same evidence window — previously one champion trip seated a comparison baseline.
   readonly minAttributedTrades: number;
+  // Probability-of-superiority floor (Mann–Whitney: fraction of candidate-vs-champion trip pairs
+  // the candidate wins, ties counted half). The prior bare mean-vs-mean comparison promoted on
+  // pure noise at n=10 (~50% false-promote under the null); PoS >= ~0.70 cuts that to ~25-30%
+  // while still resolving a genuinely better candidate in weeks at demo trade rates. Deliberately
+  // NOT a significance test: any alpha<=0.05 rule at these n has single-digit power and would
+  // stall the loop for quarters — honesty beyond this floor belongs to the offline verifier gate.
+  readonly minPos: number;
   readonly dustNotional: string;
   // PROMOTION_EVIDENCE_EPOCH in ms — the SAME bound the earned-live gate applies. Unbounded, the
   // walk keeps epoch/wipe-straddling stray fills forever: a symbol group whose signedQty never
@@ -79,8 +94,31 @@ export interface PromotionEvaluatorDeps {
 }
 
 interface VersionStats {
-  trips: number;
-  netSum: Decimal;
+  // Per-trip net (realized − fees) values — kept individually (not just a sum) so the verdict can
+  // compute the pairwise probability-of-superiority alongside the mean.
+  nets: Decimal[];
+}
+
+function meanOf(nets: readonly Decimal[]): Decimal {
+  return nets.reduce((acc, n) => acc.plus(n), new Decimal(0)).div(nets.length);
+}
+
+// Mann–Whitney probability of superiority: P(candidate trip net > champion trip net), ties at 0.5.
+// Deterministic (no bootstrap RNG), scale-free, and robust to the heavy-tailed per-trip PnL that
+// makes a bare mean comparison promote on noise. Exported for tests.
+export function probabilityOfSuperiority(
+  candidate: readonly Decimal[],
+  champion: readonly Decimal[],
+): Decimal {
+  let wins = new Decimal(0);
+  for (const c of candidate) {
+    for (const ch of champion) {
+      const cmp = c.cmp(ch);
+      if (cmp > 0) wins = wins.plus(1);
+      else if (cmp === 0) wins = wins.plus('0.5');
+    }
+  }
+  return wins.div(candidate.length * champion.length);
 }
 
 export class PromotionEvaluator {
@@ -146,51 +184,66 @@ export class PromotionEvaluator {
     const [fills, decisions, current] = await Promise.all([
       stats.fillsForMode(DEMO_MODE, this.cfg.evidenceEpochMs),
       journal.recent(DECISION_LOOKBACK_ROWS),
-      playbookStore.current(),
+      // Champion identity from the UNROUTED read — see EvaluatorPlaybookStore.active's comment.
+      playbookStore.active?.() ?? playbookStore.current(),
     ]);
     const champion = current.version;
 
     const dust = new Decimal(this.cfg.dustNotional);
     const { cycles } = walkRoundTrips(fills, dust);
 
-    // Per-version attributed {trips, netSum}. net = realized − fees (LLM cost excluded, see header).
+    // Per-version attributed per-trip nets. net = realized − fees (LLM cost excluded, see header).
     const byVersion = new Map<number, VersionStats>();
     for (const cycle of cycles) {
       const version = attributeVersion(decisions, cycle.strategyId, cycle.symbol, cycle.openedAt);
       if (version === null) continue; // 'unknown' — unattributable, never counts toward promotion
       const net = cycle.realizedPnl.minus(cycle.feesQuote);
-      const prev = byVersion.get(version) ?? { trips: 0, netSum: new Decimal(0) };
-      byVersion.set(version, { trips: prev.trips + 1, netSum: prev.netSum.plus(net) });
+      const prev = byVersion.get(version) ?? { nets: [] };
+      prev.nets.push(net);
+      byVersion.set(version, prev);
     }
 
     const championStats = byVersion.get(champion);
-    // No champion evidence in-window ⇒ no basis to compare a candidate against; hold off (fail-safe
-    // toward NOT promoting).
-    if (championStats === undefined || championStats.trips === 0) return;
-    const championMean = championStats.netSum.div(championStats.trips);
+    // Symmetric evidence floor (2026-07-12): the champion needs the SAME attributed-trip floor the
+    // candidate does — previously a single champion trip seated the baseline, so the comparison was
+    // one noisy mean against one data point. Fail-safe toward NOT promoting.
+    if (championStats === undefined || championStats.nets.length < this.cfg.minAttributedTrades) {
+      const trips = championStats?.nets.length ?? 0;
+      if (trips > 0) {
+        this.warn(
+          `promotion-eval: champion v${champion} has ${trips} attributed trips < symmetric floor ${this.cfg.minAttributedTrades} — holding`,
+        );
+      }
+      return;
+    }
+    const championMean = meanOf(championStats.nets);
 
     // Candidate = a version strictly NEWER than the champion (a reflection mint bumps the version).
     // Pick the highest such candidate that clears the attributed-trip floor.
-    let best: { version: number; mean: Decimal } | null = null;
+    let best: { version: number; nets: readonly Decimal[]; mean: Decimal } | null = null;
     for (const [version, s] of byVersion) {
       if (version <= champion) continue;
-      if (s.trips < this.cfg.minAttributedTrades) continue;
+      if (s.nets.length < this.cfg.minAttributedTrades) continue;
       if (best === null || version > best.version) {
-        best = { version, mean: s.netSum.div(s.trips) };
+        best = { version, nets: s.nets, mean: meanOf(s.nets) };
       }
     }
     if (best === null) return; // no eligible candidate yet
 
-    if (best.mean.lte(championMean)) {
+    // Two-part verdict: the candidate's mean must beat the champion's AND the pairwise probability
+    // of superiority must clear the configured floor — a heavy-tailed lucky trip can move a mean a
+    // long way, but it cannot move rank statistics past ~0.70 on its own.
+    const pos = probabilityOfSuperiority(best.nets, championStats.nets);
+    if (best.mean.lte(championMean) || pos.lt(this.cfg.minPos)) {
       this.warn(
-        `promotion-eval: candidate v${best.version} mean net ${best.mean.toFixed(4)} does not beat champion v${champion} ${championMean.toFixed(4)} — holding`,
+        `promotion-eval: candidate v${best.version} (mean net ${best.mean.toFixed(4)}, PoS ${pos.toFixed(3)} over ${best.nets.length}x${championStats.nets.length} pairs) does not clear champion v${champion} (mean ${championMean.toFixed(4)}, PoS floor ${this.cfg.minPos}) — holding`,
       );
       return;
     }
 
     try {
       const promoted = await playbookStore.append(
-        `auto-promoted v${best.version} on attributed evidence: mean net/trip ${best.mean.toFixed(4)} > champion v${champion} ${championMean.toFixed(4)}`,
+        `auto-promoted v${best.version} on attributed evidence: mean net/trip ${best.mean.toFixed(4)} > champion v${champion} ${championMean.toFixed(4)}, PoS ${pos.toFixed(3)} >= ${this.cfg.minPos} (n=${best.nets.length} vs ${championStats.nets.length})`,
         'promotion',
         best.version,
       );
@@ -247,11 +300,27 @@ export function createPromotionEvaluator(
     0,
     new Decimal(env['AGENTIC_AUTO_PROMOTE_MIN_ATTRIBUTED_TRADES'] ?? 0).toNumber(),
   );
+  // Probability-of-superiority floor (default 0.70; clamped to [0.5, 1] — below 0.5 would promote
+  // candidates that LOSE most pairwise comparisons). Raw-env parsed like the other factory knobs;
+  // a malformed value falls back to the default rather than failing boot (non-money, fail-safe
+  // toward the stricter default).
+  let minPos = 0.7;
+  const minPosRaw = env['AGENTIC_PROMOTE_MIN_POS'];
+  if (minPosRaw !== undefined && minPosRaw !== '') {
+    try {
+      minPos = Math.min(1, Math.max(0.5, new Decimal(minPosRaw).toNumber()));
+    } catch {
+      minPos = 0.7;
+    }
+  }
   const dustNotional = env['PROMOTION_DUST_NOTIONAL'] ?? '5';
   // Same parse as mode-control's readinessConfigProvider: schema-validated ISO instant (or absent
   // ⇒ all-time); an unparseable value from a raw-env context reads as undefined rather than NaN.
   const epochRaw = env['PROMOTION_EVIDENCE_EPOCH'];
   const epochParsed = epochRaw === undefined || epochRaw === '' ? NaN : Date.parse(epochRaw);
   const evidenceEpochMs = Number.isNaN(epochParsed) ? undefined : epochParsed;
-  return new PromotionEvaluator({ minAttributedTrades, dustNotional, evidenceEpochMs }, deps);
+  return new PromotionEvaluator(
+    { minAttributedTrades, minPos, dustNotional, evidenceEpochMs },
+    deps,
+  );
 }

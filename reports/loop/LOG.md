@@ -2013,3 +2013,87 @@ untracked `.DS_Store` files (test/, docs/ — the only other NUL-byte carriers i
 deleted. Gates full green (1681 unit, eval 15, build/lint/typecheck/format), redeployed
 (comment-only src change), container healthy, kill switch RUNNING. E2 is now safe to run the
 moment the corpus reaches 200 payload rows.
+
+## 2026-07-12 — Pass 20 (scheduled run, ~14:04–15:10Z): MAINTENANCE — plan-mode restart defect fixed (`6e95542`): the "model issues a fresh plan" self-heal never existed; re-arm path shipped and live-verified the same bar
+
+**Data window:** Pass 19 addendum close (~12:20Z) → now, boots `bcb9f691` (the addendum's
+12:14Z redeploy) → `c0afee82` (this pass, 14:42:46Z). No commits between passes.
+
+**Evidence sweep (boot `bcb9f691`, ~2h):** stack 4/4 up, app healthy; 0 error/warn lines,
+0 EXPIRED, 0 rejections; reconcile 224/224 clean, 0 halt; kill switch healthy. Scoreboard
+(epoch 08:30Z): RT=0, net −$0.86, LLM $0.667 over 5.6h ≈ $2.9/day pace, window 0d, ready=0.
+Post-epoch decides: v1 37 hold + 5 long, v2 7 hold (≈14% serving, low-n vs 25% target,
+ZERO v2 entries — verdict clock still unstarted); NULL-version rows decompose cleanly into
+45 prescreen skips + 21 plan-executor bars. No reflection since epoch (0 post-epoch trips at
+sweep time). Corpus 172/200 payload rows (E2 not yet runnable). §2.6 harness probe green
+(15 passed / 4 skipped). Equity $4,994.20, dd 0.116%, trade-explained.
+
+**FINDING (§3 correctness-class, on the position-lifecycle/cost path):** the lane was long
+ALL FIVE symbols, and three of them (BTC entry 12:00Z, ETH 11:45Z, LINK 09:45Z — all opened
+before the 12:14Z addendum recreate) were BARE: `activePlan` is in-memory, the recreate wiped
+their plans, and the documented self-heal ("the position_open prescreen forces a consult and
+the model issues a fresh plan", agentic.strategy.ts) turned out to be aspirational — it had
+no implementation on any side: (a) the model had NO signal the plan was gone (the prompt
+promises "you will not be asked again every bar while a plan is active" — so being asked
+every bar is uninterpretable); (b) the tool defines 'long' as "open a NEW long", so a model
+holding a position won't emit it; (c) even a hold+plan response had its plan silently dropped
+— the client populated `acceptedPlan` ONLY in the long-from-FLAT branch. Live proof: 24/24
+position_open consults on the three bare longs returned plain hold (rationales read "Already
+long … holding"; the model believed management was in place). Consequences measured: the
+model-set TP and maxHoldBars are gone (only the global 2%/1.5% protective backstops remain —
+no guaranteed exit in quiet chop, the same starvation class that froze walk evidence before),
+and every bare position bills ~$0.011/bar ≈ $1.06/day/symbol; a deploy catching 5 open
+positions would push the lane past the $5/day breaker (~$5.5/day projected). Loop deploys
+1–3×/day make this a recurring, compounding leak — this outranked the remaining backlog.
+
+**Shipped `6e95542`** (4 src + 3 test files, +290/−6): `AgentPositionSummary.managedPlan?`
+(plan-mode + LONG only; absent otherwise so legacy/flat payloads stay byte-identical) renders
+into the market payload; a plan-mode system-prompt sentence + PLAN_TOOL description updates
+teach the model that `managedPlan: false` means its plan is lost and a plan attached to
+'hold' re-arms deterministic management (entry fields ignored; stop/TP anchor to the REAL
+avgEntry on the first managed bar — plan-executor's LONG arm never reads entry fields);
+the client accepts a re-arm plan (hold/long while LONG, plan mode only) through the SAME
+fee/RR viability floors and emits NO signal (no double entry; FLAT holds never arm);
+`PLAN_TEMPLATE_VERSION` p1→p2 so promptHash flips honestly (calibration groups restart at p2;
+the A/B verdict is unaffected — both arms share the prompt). +10 tests: client re-arm
+acceptance/floors/FLAT-drop, strategy re-arm lifecycle incl. an avgEntry-vs-offset anchor
+discriminator (102.95 close must hold, 103 exits), payload serialization pin
+(`"managedPlan":false`). **Reviewer (opus): APPROVE, zero must-fix** (2 of 4 nice-to-haves
+applied same pass). Gates: build / lint / typecheck / format:check / lint:md green, **1691
+unit** (+10), eval:agentic 15. Commit used `--no-verify` with all four pre-commit hook
+commands run green manually first — bare `pnpm` isn't resolvable in this harness session
+(corepack-only), noted for honesty.
+
+**Mid-pass live events (old boot, before the deploy):** at the 14:15Z bar the model ITSELF
+flattened all three bare longs (thesis-broken rationales) — the **first 3 post-epoch round
+trips** closed on the unfrozen measurement layer (all v1-attributed; reflection trip counters
+now 1/2 on agentic-1/-2/-5; exits left sub-dust residues, the dust-tolerant accounting
+counts them). This does not soften the defect — the exits were per-bar discretion, exactly
+the expensive substitute for the lost plans.
+
+**Deploy + soak (boot `c0afee82`, 14:42:46Z):** recovery clean (portfolio exact incl. dust
+residues, XRP/SOL longs intact), expectancy ladder ACTIVE, backup
+`cryptobot-20260712T144330Z.sql.gz` (§5). The deploy itself wiped XRP/SOL's plans — a
+built-in natural experiment for the fix. **14:45Z bar (first post-fix consults): re-arm
+CONFIRMED LIVE, 2/2.** Both bare positions' payloads carried `"managedPlan":false` (journal
+`input_payload` verified) and BOTH models returned hold+plan with explicit narration —
+agentic-3/SOL: "Re-attaching a managed plan since managedPlan is false…"; agentic-4/XRP:
+"I reattach a managed plan to the existing position … while capping hold time." Same bar:
+agentic-1/BTC and agentic-2/ETH re-entered fresh (plan-priced resting entries ACKED —
+normal long-from-FLAT flow, byte-identical per review), agentic-5/LINK prescreen-quiet
+skipped. **15:00Z bar (executor takeover): CONFIRMED** — agentic-1/-2/-3/-4 ALL journaled
+`plan-executor` deterministic holds (zero LLM calls on managed positions; the re-armed
+SOL/XRP plans and the fresh BTC/ETH entry plans all live), agentic-5 proposed a fresh LINK
+breakout long. Gate first sample on the new boot: **RT=3 post-epoch,
+`agentic_version_round_trips{version="1"}=3`** — the first real closes counted on the
+unfrozen layer, correctly attributed, no straddle/freeze artifacts (Pass 18's `cc72a10`
+epoch threading verified on live data). 0 error/EXPIRED/HALT through soak end (~15:01Z).
+
+**Flagged for human review:** none new. FYI: reflection is now one closed trip away on THREE
+strategies (agentic-1/-2/-5 each 1/2 post-epoch) — the first post-epoch mint watch is hot.
+
+**Next-pass candidates:** (1) reflection outcome watch (first post-epoch attempt must resolve
+minted/no_change); (2) v2 entry watch (clock starts on its first filled entry); (3) E2 — corpus
+172/200 at sweep, likely crosses ≥200 within ~a day (SAFE recipe in the 07-10 owner-session
+entry); (4) #32 reflection SSE streaming; (5) verify the 14:45Z BTC/ETH resting entries filled
+or TTL-swept cleanly.

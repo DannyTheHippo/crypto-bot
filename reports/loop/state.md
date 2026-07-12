@@ -219,6 +219,32 @@ exit question.
 
 ## Last pass
 
+**Pass 20, 2026-07-12** (scheduled run, ~14:04–15:10Z) — **SHIP the plan-mode restart fix
+(`6e95542`): the in-memory `activePlan` dies on every container recreate and the documented
+"model issues a fresh plan" self-heal NEVER EXISTED — no signal to the model (the prompt
+promises it won't be re-asked while a plan is active), 'long' means "open a NEW long", and
+the client dropped any plan outside long-from-FLAT. Live proof on boot `bcb9f691`: 3 of 5
+longs (BTC/ETH/LINK, opened before the Pass-19-addendum 12:14Z recreate) were bare — 24/24
+position_open consults returned plain hold, positions ran without model-set TP/maxHoldBars
+(~$0.011/bar/symbol burn; a 5-position recreate projects past the $5/day breaker).** Fix:
+`AgentPositionSummary.managedPlan` (plan-mode+LONG only) rendered into the payload; prompt +
+tool-description re-arm instructions; client accepts hold/long+plan while LONG through the
+same fee/RR floors, NO signal emitted; `PLAN_TEMPLATE_VERSION` p1→p2 (honest promptHash flip;
+A/B unaffected — both arms share the prompt). +10 tests (1691 unit), reviewer (opus) APPROVE
+no-must-fix, eval 15, deployed boot `c0afee82` 14:42:46Z. **Re-arm CONFIRMED LIVE the first
+bar (14:45Z), 2/2:** the deploy itself bared XRP/SOL; both payloads carried
+`"managedPlan":false` and both models returned hold+plan with explicit narration
+("Re-attaching a managed plan since managedPlan is false…"); at 15:00Z all four positions
+ran `plan-executor` deterministic holds ($0 bars — executor takeover verified), and the gate's
+first sample read **RT=3 / v1=3** (today's closes counted correctly on the unfrozen layer —
+`cc72a10` verified on live data). Mid-pass live events: at 14:15Z
+(old boot) the model itself flattened the 3 bare longs — **first 3 post-epoch round trips**
+on the unfrozen layer, all v1; reflection counters now 1/2 on agentic-1/-2/-5 (**next close
+on any of them fires the first post-epoch reflection**); BTC/ETH re-entered fresh at 14:45Z
+(plan-priced ACKED entries). v2 still ZERO entries (7 post-epoch decides, all hold) — verdict
+clock unstarted. Corpus 172/200 (E2 likely eligible ~next pass). Backup
+`cryptobot-20260712T144330Z.sql.gz`. Empty-pass counter 0. Full detail in LOG.md.
+
 **Pass 19, 2026-07-12** (owner-triggered, ~11:35–12:20Z) — **SHIP symbol-aware offline scoring
 (`5da2630`): the recorded-payload scoring harness grouped rows by (version, promptHash) with NO
 symbol, so the 5-symbol corpus interleaved instruments and every scorecard in the multi-symbol
@@ -655,6 +681,8 @@ owns them).
 | 36 | Evidence-epoch asymmetry (found Pass 18, the follow-through on #35's epoch-move residual): only `promotion-readiness.service.ts` passed `PROMOTION_EVIDENCE_EPOCH` to `fillsForMode` — `version-attribution-metrics.service.ts` (v2's A/B gauges), `promotion-evaluator.ts` (attributed auto-promotion), and `round-trip-evidence.reader.ts` (reflection evidence + trigger seeds) walked ALL fills unbounded, so an epoch move would have unfrozen the gate ONLY and left the Stage-2 learning measurement layer frozen. Companion finding: the straddle "phase shift" is NOT count-preserving — with drifting entry sizes the group never re-enters dust (live: ETH frozen 00:15Z 07-11, 2 real trips absorbed; agentic-2's reflection seed read 0 where truth is 1) | 2 | S | DONE 2026-07-12 Pass 18 (`cc72a10`): all three consumers thread the gate's epoch (validated-config sourced; absent ⇒ all-time); +5 regression tests incl. the live ETH-freeze scenario; deployed boot `d5942b9b`. Epoch declaration APPLIED same day (Pass 18 addendum, owner delegation): `2026-07-12T08:30:00Z` live on boot `9ff1eb40`, reset verified — gate + attribution + evaluator + reflection all on one clean window; ETH/XRP/LINK freezes erased |
 
 | 37 | E2 forward-proxy cross-symbol pollution (found Pass 19, same class as the `scoreRows` defect `5da2630` fixed): `candidate-model-eval.spec.ts`'s `forwardProxyBps` feeds ALL recorded rows (5 symbols interleaved) into `summarizeRecentDecisionOutcomes`, whose positional forward returns assume a single instrument's price path — the champion-vs-candidate model comparison's forward metric would be noise. Fix is spec-side only: group `ScoringRow`s by symbol, digest each group, combine as the entry-count-weighted mean. MUST land before E2 first runs (corpus ≥200 `input_payload` rows; 135 at Pass 19) | 2 | S | DONE 2026-07-12 Pass 19 addendum (`2f546f3`, owner-directed "fix the flaws"): per-symbol digest + entry-count-weighted recombine (also fixes the cross-symbol exposure-walk misclassification); single-instrument caller contract now stated on all three positional digest docstrings; landed well before the corpus reaches 200 (135). candidates/ added to .prettierignore (artifact byte-exactness) |
+
+| 38 | Plan-mode restart defect (found Pass 20): `activePlan` is in-memory; every container recreate stranded plan-managed longs as bare positions — the documented "model issues a fresh plan" self-heal had no implementation (no prompt signal, 'long' = NEW long, client dropped plans outside long-from-FLAT). Bare positions lose model-set TP/maxHoldBars (only protective backstops remain) and bill every bar (~$0.011/bar/symbol; recreate with 5 open positions projects past the $5/day breaker). Loop deploys 1–3×/day made this recurring | 2 | M | DONE 2026-07-12 Pass 20 (`6e95542`): `managedPlan` position field + prompt/tool re-arm instructions + client hold/long+plan acceptance while LONG through the unchanged fee/RR floors (no signal emitted; FLAT never arms); PLAN_TEMPLATE_VERSION p1→p2. Reviewer APPROVE no-must-fix, 1691 unit, eval 15. Live-verified first bar post-deploy: 2/2 bare positions (XRP/SOL) re-armed with explicit model narration |
 
 ## Flagged for human review (open)
 

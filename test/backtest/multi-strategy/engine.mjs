@@ -195,6 +195,67 @@ export function simulate(bars, positions, feeBps) {
   return { netReturns, roundTrips, wins, entries };
 }
 
+// ── Funding-rate accrual (2026-07-12 non-price sweep) ────────────────────────────────────────────
+// Attach each ~8h funding event to the SINGLE underlying bar whose interval contains its timestamp
+// — never broadcast one event's rate across multiple bars (the exact trap
+// reports/loop/carry-study-2026-07-10.md documents). fundingRows must be sorted ascending by
+// timestamp (fetch-data.mjs's --funding writer guarantees this). Returns Map<barIndex, rateDecimal>.
+export function attachFundingToBars(bars, fundingRows) {
+  const map = new Map();
+  let bi = 0;
+  for (const row of fundingRows) {
+    const ts = row.timestamp;
+    while (bi < bars.length - 1 && bars[bi + 1].t <= ts) bi += 1;
+    if (bars[bi].t <= ts) map.set(bi, (map.get(bi) ?? 0) + Number(row.fundingRate));
+  }
+  return map;
+}
+
+// Same fill model as simulate() (signal at t -> executed at open[t+1] -> marked to open[t+2]), plus a
+// funding settlement term. A funding event attached to bar (i+1) (attachFundingToBars' index) falls
+// exactly inside netReturns[i]'s realized interval [open[i+1], open[i+2]) — see engine.mjs's header
+// fill-model comment — so it is charged against positions[i], the position held over that interval,
+// with the standard perp convention payment = −signedQty·mark·rate, which for a unit-notional
+// position (signedQty = pos/mark) reduces to fundingReturn = −pos·rate (verified in
+// reports/loop/carry-study-2026-07-10.md's algebra).
+export function simulateWithFunding(bars, positions, feeBps, fundingMap) {
+  const feeLeg = feeBps / 2 / 10000;
+  const netReturns = [];
+  let prevPos = 0;
+  let roundTrips = 0;
+  let wins = 0;
+  let entries = 0;
+  let tradeGross = 0;
+  for (let i = 0; i < bars.length - 2; i += 1) {
+    const pos = positions[i] ?? 0;
+    const openNext = bars[i + 1].o;
+    const openAfter = bars[i + 2].o;
+    if (!Number.isFinite(openNext) || !Number.isFinite(openAfter) || openNext <= 0) {
+      netReturns.push(0);
+      continue;
+    }
+    const gross = pos * (openAfter / openNext - 1);
+    const turnover = Math.abs(pos - prevPos);
+    const cost = turnover * feeLeg;
+    const fundingRate = fundingMap.get(i + 1) ?? 0;
+    const fundingReturn = -pos * fundingRate;
+    const stepReturn = gross - cost + fundingReturn;
+    netReturns.push(stepReturn);
+
+    if (pos !== prevPos) {
+      if (prevPos !== 0) {
+        roundTrips += 1;
+        if (tradeGross - 2 * feeLeg > 0) wins += 1;
+        tradeGross = 0;
+      }
+      if (pos !== 0) entries += 1;
+    }
+    if (pos !== 0) tradeGross += pos * (openAfter / openNext - 1) + fundingReturn;
+    prevPos = pos;
+  }
+  return { netReturns, roundTrips, wins, entries };
+}
+
 export function annualizedSharpe(netReturns, tf) {
   const n = netReturns.length;
   if (n < 2) return { sharpe: 0, mean: 0, std: 0, skew: 0, kurt: 3 };
@@ -293,13 +354,21 @@ function normCdf(x) {
 
 // SR0*: expected maximum Sharpe under the null across N independent trials with per-trial SR
 // variance V. Winsorize the trial SR set before estimating V.
-export function deflationBenchmark(trialSharpes, winsorCap = 3) {
+//
+// totalN (optional): override the trial count fed to the max-Z benchmark independently of how many
+// Sharpes are in trialSharpes. Added 2026-07-12 for the non-price sweep, whose own new-cell count is
+// far smaller than the program's true multiple-testing exposure (this session's price-based search
+// alone ran 4,562 backtests) — V still comes from THIS trial set's own winsorized variance (the only
+// per-cell Sharpes actually on hand), but N reflects the honest cumulative search size, per
+// reports/loop/nonprice-sweep-2026-07-12.md's methodology note. Omitted, this is byte-identical to
+// the pre-2026-07-12 behavior (N = trialSharpes.length).
+export function deflationBenchmark(trialSharpes, winsorCap = 3, totalN) {
   const clipped = trialSharpes.map((s) => Math.max(-winsorCap, Math.min(winsorCap, s)));
   const n = clipped.length;
   const mean = clipped.reduce((a, b) => a + b, 0) / n;
   const v = clipped.reduce((a, b) => a + (b - mean) ** 2, 0) / Math.max(1, n - 1);
   const sqrtV = Math.sqrt(v);
-  const N = Math.max(2, n);
+  const N = Math.max(2, totalN ?? n);
   const z1 = normInv(1 - 1 / N);
   const z2 = normInv(1 - 1 / (N * Math.E));
   const sr0 = sqrtV * ((1 - EULER_GAMMA) * z1 + EULER_GAMMA * z2);

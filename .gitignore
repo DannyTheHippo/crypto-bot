@@ -18,5 +18,8 @@ test/backtest/data/ohlcv-*.json
 # Funding-rate history caches for the carry study — same reproducibility contract
 # (test/backtest/fetch-data.mjs --funding; ranges recorded in reports/loop/carry-study-*.md).
 test/backtest/data/funding-*.json
+# Fear & Greed index cache (alternative.me, free/no-key) for the non-price sweep — same
+# reproducibility contract (test/backtest/fetch-fng.mjs; range recorded in reports/loop/nonprice-*.md).
+test/backtest/data/fng.json
 # Local pg_dump snapshots (scripts/db-backup.sh) — operational artifacts, never committed.
 backups/

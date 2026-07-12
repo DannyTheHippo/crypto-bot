@@ -2219,3 +2219,23 @@ dry-run-first, venue-query-by-clientOrderId); (c) **edge-ext** — SUBSUMED by t
 search above (its 4h/1d-trend question is answered NO far more broadly); the only unharvested piece
 is porting the winsorized-deflation fix into the production `test/backtest/stats.ts` for future carry
 re-runs (low priority).
+
+**Session continuation (~22:00–22:45Z, same owner mandate: "keep working towards profitability;
+be creative; ANYTHING"):** two watches from the previous stretch resolved POSITIVE on re-check —
+**plan persistence live** (10 non-null `plan_json` rows) and **the v5 cache fix works**
+(`cache_read` 6,392 tokens vs 9,588 written on a 37-min boot — reads finally nonzero after the
+symbol-agnostic prefix). Then SHIPPED the search's one actionable price-derived signal into the
+lane: **cross-symbol relative-strength context** (the in-flight tree recovered and completed —
+tests were the missing piece). Each instance now records its trailing 20-bar return into a shared
+basket and every decide payload carries the ranking (`crossSymbol` block, `+xs1` promptHash tag,
+90-min staleness, omitted below 2 fresh symbols); reflection is taught to encode
+relative-strength preference into playbook rules. Measurement design: the block rides the SAME
+control arm as the derivatives block (one information-context A/B on the deployed
+`AGENTIC_DERIVATIVES_AB_PCT=30` knob) so the live arms stay a clean price-only vs
+price+information contrast — a 4-way split would quarter per-variant trade counts. Gates green
+(1742 unit, +8), deployed, boot clean, env verified in-container. Watches: first `crossSymbol`
+payload row; the A/B verdict now measures the derivatives+cross-symbol bundle jointly. Also
+dispatched: an offline NON-price sweep (funding-conditioned direction + Fear&Greed families, the
+two freely-fetchable information series, same winsorized-DSR/walk-forward methodology, honest-N
+pooled with the prior 4,882 trials) — running in background, report lands at
+`reports/loop/nonprice-sweep-2026-07-12.md`.

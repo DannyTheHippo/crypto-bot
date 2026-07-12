@@ -715,6 +715,13 @@ owns them).
   needed rows natively), backtest-extension for 4h/1d (offline only), remaining Phase-4
   live-arming gaps (ARM_PRECONDITIONS stub, zombie sweep #25, ACKED fixture row, risk-limit
   sizing for $1k–5k).
+  CONTINUATION (~22:00Z): plan-persistence + v5-cache watches both RESOLVED POSITIVE (10
+  `plan_json` rows; `cache_read` 6,392 on a 37-min boot). **Cross-symbol relative-strength
+  context SHIPPED + deployed ON** (the search's strongest family fed to the lane as context;
+  `+xs1` tag; rides the derivatives control arm as ONE information-context A/B — the standing
+  A/B verdict now measures the info bundle jointly). Offline NON-price sweep (funding-direction
+  plus Fear&Greed, honest-N pooled with the prior 4,882 trials) dispatched —
+  `reports/loop/nonprice-sweep-2026-07-12.md` when done.
 
 - **ULTRACODE SESSION 2026-07-12 (~19:30–21:30Z) — THE DEFINITIVE PROFITABILITY FINDING + most of
   the roadmap shipped. Read `reports/loop/multi-strategy-search-2026-07-12.md`.** A self-contained

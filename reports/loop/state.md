@@ -706,10 +706,15 @@ owns them).
   ($15/$75→$5/$25; deployed gate map was already correct). Also verified: demo fees are REAL and
   exactly 10bps flat per leg (maker=taker ⇒ fee levers cannot move demo PnL; live-parity only).
   Owner-side ask in the report: always-on host (duty cycle 8–36% throttles everything).
-  Top loop follow-ups from the report: persist plan fields on `agent_decisions` (unlocks
-  real-settlement replay), prompt-block A/B mechanism (the derivatives block is ON unmeasured),
-  $0 plan-param sweep over the real corpus, backtest-extension for 4h/1d (offline only), Phase-4
-  live-arming gaps (ARM_PRECONDITIONS stub, zombie sweep, ACKED fixture row, risk-limit sizing).
+  SAME-SESSION ADDENDUM: two follow-ups already shipped by delegated implementers (gates green,
+  deployed) — plan persistence (`agent_decisions.plan_json`, migration 0010, reviewer APPROVE;
+  fresh entries AND re-arms journal the accepted plan verbatim; the real-settlement replay
+  unlock) and the one-command arm ceremony (`pnpm arm`; `--disarm` needs no secret by design).
+  Remaining top loop follow-ups from the report: prompt-block A/B mechanism (the derivatives
+  block is ON unmeasured), $0 plan-param sweep over the real corpus (plan_json now accrues the
+  needed rows natively), backtest-extension for 4h/1d (offline only), remaining Phase-4
+  live-arming gaps (ARM_PRECONDITIONS stub, zombie sweep #25, ACKED fixture row, risk-limit
+  sizing for $1k–5k).
 
 - **AVAILABILITY 2026-07-12 (Pass 17) — the host sleeps; duty cycle is now the program's
   binding constraint.** The stack runs on the owner's MacBook: `pmset -g log` shows battery

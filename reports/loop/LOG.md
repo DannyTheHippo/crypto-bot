@@ -2136,3 +2136,21 @@ the 1h TTL now share one prefix across all 5 symbols); reflection outcomes may l
 champion v1 to reach 10 post-epoch attributed trips (symmetric floor) — do not misread the
 longer wait as a stall; first reflection-authored `knobs:` line is the knobs-channel first-mint
 watch.
+
+**Session addendum (delegated implementers, ~17:05–17:40Z):** two more roadmap items shipped the
+same session, each gates-green on the combined tree (typecheck/lint/lint:md/format/build; 1727
+unit, 41 livegate, 11 paper, 15 eval, 50 db) and deployed. (1) **Plan persistence** (migration
+0010, reviewer APPROVE no-must-fix under the scoped nullable-analytics exception): the accepted
+plan-mode plan journals verbatim on `agent_decisions.plan_json` for fresh entries AND re-arms
+(rejected plans/errors/quiet holds journal null), read back via `journal.recent()` on both
+adapters — the unlock for replaying recorded decisions through the real settlement harness
+(report Phase 2); migration auto-applies at boot (`database.module.ts` onModuleInit), verified
+live post-deploy (column present, boot clean). (2) **One-command arm ceremony** (`pnpm arm`,
+`scripts/arm-ceremony.mjs`): operator-side automation only (request → HMAC over
+`challengeId:bootId` → confirm inside the 60s TTL; bootId auto-discovered from the `/metrics`
+`boot_info` gauge — the runbook's old "/health" pointer was wrong and is fixed); every
+server-side gate untouched; `--disarm` deliberately needs NO secret (the server takes no proof
+to disarm — the safety direction must never block on a missing env var). First post-deploy
+17:00Z bar soak: all five symbols made real Sonnet decides sharing ONE promptHash (`d292e0a6`,
+the v5/p3 template — symbol-agnostic prefix live-confirmed), 0 errors/HALT. Watches armed:
+first non-null `plan_json` row; first positive `cache_read` window.

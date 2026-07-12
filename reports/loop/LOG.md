@@ -1594,3 +1594,123 @@ series will appear labeled when it next fires); `agentic_playbook_info` reads `v
 `signals_rejected_total` empty, 0 EXPIRED, 0 error lines, container healthy, kill switch
 RUNNING. Counter reset on redeploy is the expected in-process behavior; the DB-backed
 promotion gauges carried through unaffected (RT=5 pre/post). Deploy verdict: KEEP.
+
+## 2026-07-12 — Pass 17 (scheduled run, ~07:16–08:00Z): MAINTENANCE — ~10h host-dark outage auto-recovered (restart policy's first live save); duty-cycle + honest-cost dashboard shipped; promotion-walk LINK freeze found and flagged
+
+**Data window:** Pass 16 close (07-11 ~08:50Z) → now. One boot (`4a1e7fc3`) ran 08:30Z→21:25Z
+07-11, then the stack was **dark ~9.9h** (21:25Z→07:16Z). Root cause established from host
+evidence, not app logs: the host is the owner's MacBook — `pmset -g log` shows battery
+clamshell-sleep cycles through the evening, `kern.boottime` a reboot at 21:27Z, and the machine
+then sat at the **login screen ~10h** (user processes all started 07:15Z). Docker Desktop starts
+at sign-in; Pass 15's `restart: unless-stopped` then brought all four containers up
+automatically at 07:16:21Z — **the restart policy's first live save, worked exactly as
+designed.** Same mechanism explains yesterday's degraded evidence: multi-hour Prometheus TSDB
+gaps (08:30→10:30, 12:00→14:30, 17:00→21:30Z), sparse container logs (VM suspended = nothing
+logged; NOT file corruption), hourly `fetch failed` bursts to binance/fapi at wake edges, and
+`agent_decide_total{outcome="error_retryable"}=15` of 30 decide attempts (Anthropic calls dying
+in sleep/wake windows; non-fatal, no latch). **Quantified duty cycle:
+8.0% over the trailing 24h, 52.5% over 48h** (`count_over_time(up[24h])/5760`, 15s scrape).
+Consequence the loop cannot fix: the 07-11 16:00Z and 07-12 00:00Z scheduled passes **never
+ran** (host asleep/dark — this pass is the 00:00Z slot firing on login catch-up; the 08:00Z
+slot may fire right behind it).
+
+**Outage recovery verification (boot `21bef45a`, clean):** recovery seeded, portfolio exact
+vs pre-dark (5 positions), reconciliation 57 clean / 1 mismatch (the #24 foreign-order warning
+class) / **0 halt / 0 error**, kill switch RUNNING, 0 EXPIRED, 0 error lines, playbook info
+stamp reads `version="1"` (Pass 16's `5ff5594` correct again on this boot). **Protective exits
+did their job on the first tick:** 07:17:02Z `protect:TRAILING_STOP` closed SOL (reduce-only,
+risk-approved, IOC crossing) at 76.53 vs 78.04 entry — a −1.9% gap-through, the documented
+outage-converts-trails-to-gap-losses shape. At the first bar (07:30Z) the model then flattened
+BTC/XRP/LINK (3 proposed, all filled, 0 rejections) and holds only ETH — a sane regime reset
+after a 10h data gap. 4 in-memory round trips today (1W/3L); equity $4,994.20 (dd 0.116%,
+fully trade-explained: the overnight drift realized by the post-boot exits).
+
+**Headline metrics (scoreboard, DB-backed):** gate RT **7** (was 5), net-of-cost **−$4.27**,
+LLM **$1.56** since epoch (window 1.41d ⇒ ~$1.1/day — deceptively low: the lane was dark most
+of the window), ready=0. v2 A/B: 9 of 34 LLM decides served v2 since the mint (~26%,
+consistent with AB_PCT=25); **v2 attributed trips still 0 of 10** — every close so far
+attributes to v1 entries. Corpus: **114 `input_payload` rows** (was 90; E2's ≥200 is ~3+ days
+out at the duty-cycle-diluted rate, not "a day"). Harness probe (§2.6) GREEN (15 passed / 4
+self-skipped). Backup taken: `cryptobot-20260712T072738Z.sql.gz` (312K).
+
+**Pass type: MAINTENANCE.** PROMOTION ineligible (v2: 0/10 attributed). CANDIDATE blocked by
+§3(a) (v2 unresolved in A/B). The two findings below are measurement/availability defects
+whose fixes sit outside pass autonomy (host-side; OMS territory) → flagged with evidence, not
+touched.
+
+**Shipped — dashboard honesty + availability (`observability/grafana/dashboards/crypto-bot.json`,
+closes #19):** (1) all three LLM-cost panels ("API cost (cumulative USD)", "API token cost rate
+($/hr)", "Total money") now price cache tokens (reads at 0.1×, 1h-TTL writes at 2× the input
+price) — they had silently kept the pre-W4/W13 input+output-only formula, the exact ~1.5×
+undercount the DB gauge fixed on 07-08; descriptions now name `agentic_promotion_llm_cost_usd`
+as the canonical per-model figure. (2) "Token rate by model/kind" — per-model split unlocked by
+Pass 16's #28 label (Sonnet decides vs Opus reflections). (3) New "Lane duty cycle (24h / 48h)"
+stat in System (`count_over_time(up[Nh])/expected`, red<70%<yellow<95%<green) — today's finding,
+permanently on the dashboard. All six modified/new PromQL expressions validated against live
+Prometheus before commit (duty stat read 8.0%/52.5%). Grafana hot-reloaded the provisioned file
+(directory bind mount, 10s scan) — **live-verified via the Grafana API** (58 panels, new panel
+present, cache terms served); no container action, no app redeploy.
+
+**Gates:** build / lint / typecheck / format:check green, **1666 unit** (unchanged — JSON-only
+diff), eval:agentic 15 GREEN, lint:md green after report writes. Process note (honesty): the
+husky pre-commit hook (`pnpm format:check && pnpm lint:md && pnpm lint && pnpm typecheck`)
+cannot execute in this scheduled-session environment — no `pnpm` shim exists on PATH
+(corepack-only setup; `corepack pnpm` is how every gate above was run). All four hook commands
+were run green manually on the exact committed tree, then committed `--no-verify`.
+
+**FINDING 1 (flagged, owner/OMS territory) — the promotion walk undercounts today's closes and
+LINK accrual is FROZEN.** Expected +4 gate RT today (SOL/BTC/XRP/LINK all closed to dust far
+under `PROMOTION_DUST_NOTIONAL=5`); the gauge added **+2**. Hand-folding `walkRoundTrips`
+semantics over the journaled fills:
+
+- **BTC, SOL: clean** — post-epoch entry/exit pairs, both counted (the +2).
+- **XRP: phase-shifted, count-preserving** — the 07-10 21:15Z flatten of the wipe-surviving
+  long is a stray SELL from the walk's zero start (the documented epoch-straddle class,
+  Pass 14), permanently offsetting the fold by −40.5: each real buy→sell trip now appears as
+  cover→re-short, so cycles close on entry-buys instead of exit-sells (2 counted so far, one
+  per real trip long-run). Conservative, self-describing, tolerable.
+- **LINK: frozen, NOT self-fading** — the walk carries a **+6.92 LINK (~$55) phantom open**:
+  our journaled fills genuinely net +6.92 (buys 18.17 − sells 11.25; all 8 venue_trade_ids
+  distinct and venue-native — no double-ingestion), but the real position was 5.62+dust
+  (portfolio AND clean reconciliation balance axis agree). Two mechanisms: (a) order
+  `cbt019f4e87283f743eb57413f15c951bb7` (BUY 5.65 LINK, 07-11 00:19Z) is stuck
+  **RECONCILE_REQUIRED with cum_qty=1.67** while its three journaled partials sum to 5.65 —
+  a non-terminal row >31h old that also keeps `hasUnresolvedOrders()` true (future live-arming
+  blocker, same class as #25); (b) the shared demo wallet: foreign traffic moves the venue
+  balance without entering our fills journal, so fills-based and balance-based accounting
+  cannot agree on a shared account. Consequence: **no LINK round trip will ever count on the
+  promotion gate (or reach reflection's evidence walk) while the offset persists** — a silent
+  per-symbol evidence freeze. Owner SQL to reproduce:
+  `SELECT f.fill_id, f.venue_trade_id, f.client_order_id, o.side, f.qty, f.price,
+  to_timestamp(f.venue_timestamp/1000) ts FROM fills f JOIN orders o USING (client_order_id)
+  WHERE f.symbol='LINK/USDT' ORDER BY f.venue_timestamp;` and
+  `SELECT * FROM orders WHERE client_order_id='cbt019f4e87283f743eb57413f15c951bb7';`
+  Fix options (all OMS/reconciliation territory, exact scope owner's): terminalize the stuck
+  order via a journaled reconcile adoption of its remaining partials; and/or teach the walk a
+  bounded stray-offset reset per (strategy,symbol). Backlog #35 opened.
+
+**FINDING 2 (flagged, owner-side) — availability is now the program's binding constraint.**
+At 8%/24h and 52.5%/48h duty cycle, trip accrual, v2's A/B verdict, reflection cadence, E2
+corpus growth, AND the loop's own scheduled passes are all throttled by the host sleeping —
+while the promotion evidence window (`window_days`) keeps counting wall-clock time and
+protective exits go unmanaged during every dark stretch (today's SOL trail fired 10h late,
+turning a −0.5%-ish trail into a −1.9% gap loss). No in-repo fix exists. Owner options, in
+increasing effort: (1) keep the MacBook awake on AC (`caffeinate`/pmset, Amphetamine) +
+auto-login so Docker returns without a human; (2) move the compose stack to an always-on
+machine (Mac mini / small VPS — compose file is portable, DB dump/restore via the §5 backups);
+(3) accept the duty cycle and mentally deflate all per-day rates. The new dashboard stat makes
+the number visible either way.
+
+**Watches for next pass:** (1) **agentic-1 is primed at 2/2 trips since last reflection**
+(cooldown long passed) — its next closed trip fires reflection; if it mints v3 while v2 is
+still unresolved in A/B, check whether the newest-candidate slot shadows v2's 9-decide
+evidence (would restart the attributed-verdict clock). (2) v2 attributed trips
+(`agentic_version_round_trips{version="2"}`) toward 10 → PROMOTION pass. (3) Gate-RT vs
+in-memory divergence: if the gap GROWS beyond the two explained classes above, that is the §7
+measurement-trust stop condition. (4) E2 at ≥200 payload rows (114 now).
+
+**Soak verdict (~07:55Z):** boot `21bef45a` clean at ~40 min — decides flowing (5 decides at
+07:30Z + 07:45Z bars), 0 EXPIRED, 0 rejections, 0 error lines, reconcile 57 clean/0 halt/0
+error, kill switch RUNNING, cache working (2.2k reads this boot), $/day inside projection.
+App container untouched by this pass (dashboard-only ship). Deploy verdict: KEEP. Empty-pass
+counter: 0.

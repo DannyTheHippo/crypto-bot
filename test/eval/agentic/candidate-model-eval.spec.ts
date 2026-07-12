@@ -327,9 +327,27 @@ function meanCostUsd(
 
 // null-safe: DecisionOutcomeDigest.entries.meanForwardReturnPct is already a PERCENT (0.1 → 10, see
 // counterfactual-scoring.ts's own comment); this eval reports bps, so ×100.
+// Per-symbol first (#37, same defect class 5da2630 fixed in scoreRows): the digest's positional
+// t+1 forward returns AND its long/flat exposure walk both assume one instrument's row sequence —
+// a mixed 5-symbol window reads a different symbol's close as row i's outcome and lets one
+// symbol's open long misclassify the next symbol's rows. Digest each symbol's own subsequence,
+// then combine the entry buckets count-weighted.
 function forwardProxyBps(rows: readonly ScoringRow[]): number | null {
-  const pct = summarizeRecentDecisionOutcomes(rows).entries.meanForwardReturnPct;
-  return pct === null ? null : pct * 100;
+  const groups = new Map<string, ScoringRow[]>();
+  for (const row of rows) {
+    const group = groups.get(row.symbol);
+    if (group) group.push(row);
+    else groups.set(row.symbol, [row]);
+  }
+  let count = 0;
+  let weightedPctSum = 0;
+  for (const groupRows of groups.values()) {
+    const entries = summarizeRecentDecisionOutcomes(groupRows).entries;
+    if (entries.count === 0 || entries.meanForwardReturnPct === null) continue;
+    count += entries.count;
+    weightedPctSum += entries.meanForwardReturnPct * entries.count;
+  }
+  return count === 0 ? null : (weightedPctSum / count) * 100;
 }
 
 function assertNoNaN(label: string, value: number | null): void {

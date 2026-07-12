@@ -422,7 +422,10 @@ function finalizeBucket(bucket: MutableBucket): DecisionOutcomeBucket {
  * defined t+1 forward return is bucketed by what it DID (entry / exit / held-long / stayed-flat) and,
  * for 'long' decisions, by confidence split at 0.5 — each bucket reporting its count and mean t+1
  * forward return. Unlike scoreRows, the whole window is treated as one continuous position sequence
- * (it is the actual decision journal in order), not grouped per playbook/prompt.
+ * (it is the actual decision journal in order), not grouped per playbook/prompt. That makes it the
+ * CALLER's contract to pass a single instrument's rows (reflection passes P7 strategy-scoped rows;
+ * candidate-model-eval groups per symbol first, #37): a mixed-symbol window corrupts both the
+ * forward returns and the exposure walk, exactly the scoreRows defect 5da2630 fixed.
  *
  * Prescreen quiet-HOLD rows (model === 'prescreen') stay in the sequence for the exposure walk and
  * forward-return adjacency (they are real, chronologically ordered decisions), but are excluded from
@@ -508,6 +511,9 @@ function confidenceBucketIndex(confidence: number): number {
  * decisions that lose money read as a negative mean here regardless of confidence, which is exactly
  * the systematic-miscalibration signal the reflection prompt needs to see.
  *
+ * Positional forward returns: rows MUST share one instrument (caller's contract — see
+ * summarizeRecentDecisionOutcomes' docstring; same #37/5da2630 defect class otherwise).
+ *
  * TOY RESEARCH METRIC — see this module's header comment.
  */
 export function summarizeCalibration(rows: readonly ScoringRow[]): CalibrationDigest {
@@ -586,6 +592,10 @@ export interface RegimeSplitDigest {
  * 'active' (> median), and each half reports count + mean forward return in bps per action. Rows
  * without VOLATILITY_WINDOW prior closes in their own group (or with an undefined t+1 forward
  * return) are excluded from both halves — never silently placed in a default regime.
+ *
+ * Positional forward returns AND trailing stdevs: rows MUST share one instrument (caller's
+ * contract — see summarizeRecentDecisionOutcomes' docstring; same #37/5da2630 defect class
+ * otherwise).
  *
  * TOY RESEARCH METRIC — see this module's header comment.
  */

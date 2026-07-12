@@ -18,3 +18,9 @@ openapi.json
 # Fetched market-data caches (gitignored; raw fetch-data.mjs output, not hand-formatted).
 test/backtest/data/ohlcv-*.json
 test/backtest/data/funding-*.json
+
+# Candidate-playbook exports (byte-exact agent_playbook_versions copies — the experiments
+# registry's params_hash is the sha256 of those bytes) and their eval-written scorecards
+# (AGENTIC_EVAL_SCORECARD_FILE output). Artifacts, not authored code; also excluded from
+# markdownlint (.markdownlint-cli2.jsonc).
+candidates

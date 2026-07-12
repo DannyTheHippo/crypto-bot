@@ -1999,3 +1999,17 @@ the tree (macOS cruft, gitignored-or-untracked; owner may delete).
 watch — first v2-routed ENTRY starts its 10-trip clock; (3) reflection watch — 2 post-epoch
 closed trips on one strategy fires it (LINK and ETH longs are open; their closes arm it);
 (4) #32 reflection SSE streaming.
+
+**Pass 19 addendum (owner-directed "if you found flaws: fix them", ~12:10–12:20Z): #37 CLOSED
+same pass.** Shipped `2f546f3`: `forwardProxyBps` now groups rows per symbol before the
+outcome digest and recombines the entry buckets count-weighted — this also fixes the
+subtler half of the defect, the cross-symbol EXPOSURE walk (one symbol's open long was
+misclassifying the next symbol's rows as held-long). The single-instrument caller contract is
+now stated on all three positional digest docstrings (`summarizeRecentDecisionOutcomes`,
+`summarizeCalibration`, `summarizeRegimeSplit`) so the misuse cannot silently recur;
+reflection already complies (P7 strategy-scoped rows). `candidates/` joined `.prettierignore`
+(same byte-exactness rationale as its markdownlint exclusion). Housekeeping: the two
+untracked `.DS_Store` files (test/, docs/ — the only other NUL-byte carriers in the tree)
+deleted. Gates full green (1681 unit, eval 15, build/lint/typecheck/format), redeployed
+(comment-only src change), container healthy, kill switch RUNNING. E2 is now safe to run the
+moment the corpus reaches 200 payload rows.

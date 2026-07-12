@@ -237,9 +237,10 @@ verdict remains the decider** (id 127 = the n=2 pre-fix run, logged INVALID for 
 Live lane meanwhile: first post-epoch entries are on — LINK 4.98 (10:02Z, 3 partials folded
 FILLED = first live validation of `b00c886`'s D1 fix) and ETH 0.0221 (11:47Z); v2 still has
 ZERO entries in A/B (8 hold/2 flat of 10 decides) so its 10-trip clock hasn't started. Corpus
-135/200. New #37: E2's forward-proxy shares the cross-symbol flaw — fix before the corpus
-reaches 200. Backup `cryptobot-20260712T115914Z.sql.gz`. Empty-pass counter 0. Full detail in
-LOG.md.
+135/200. New #37: E2's forward-proxy shares the cross-symbol flaw — **CLOSED same pass**
+(addendum, owner-directed "fix the flaws": `2f546f3` per-symbol digest + weighted recombine +
+single-instrument contract on all three positional digests; E2 safe to run at 200 rows).
+Backup `cryptobot-20260712T115914Z.sql.gz`. Empty-pass counter 0. Full detail in LOG.md.
 
 **Pass 18, 2026-07-12** (scheduled run, ~08:08–09:35Z, paused 08:10–09:05Z while the
 owner-directed OMS session below ran) — **SHIP evidence-epoch threading (`cc72a10`): the
@@ -653,7 +654,7 @@ owns them).
 
 | 36 | Evidence-epoch asymmetry (found Pass 18, the follow-through on #35's epoch-move residual): only `promotion-readiness.service.ts` passed `PROMOTION_EVIDENCE_EPOCH` to `fillsForMode` — `version-attribution-metrics.service.ts` (v2's A/B gauges), `promotion-evaluator.ts` (attributed auto-promotion), and `round-trip-evidence.reader.ts` (reflection evidence + trigger seeds) walked ALL fills unbounded, so an epoch move would have unfrozen the gate ONLY and left the Stage-2 learning measurement layer frozen. Companion finding: the straddle "phase shift" is NOT count-preserving — with drifting entry sizes the group never re-enters dust (live: ETH frozen 00:15Z 07-11, 2 real trips absorbed; agentic-2's reflection seed read 0 where truth is 1) | 2 | S | DONE 2026-07-12 Pass 18 (`cc72a10`): all three consumers thread the gate's epoch (validated-config sourced; absent ⇒ all-time); +5 regression tests incl. the live ETH-freeze scenario; deployed boot `d5942b9b`. Epoch declaration APPLIED same day (Pass 18 addendum, owner delegation): `2026-07-12T08:30:00Z` live on boot `9ff1eb40`, reset verified — gate + attribution + evaluator + reflection all on one clean window; ETH/XRP/LINK freezes erased |
 
-| 37 | E2 forward-proxy cross-symbol pollution (found Pass 19, same class as the `scoreRows` defect `5da2630` fixed): `candidate-model-eval.spec.ts`'s `forwardProxyBps` feeds ALL recorded rows (5 symbols interleaved) into `summarizeRecentDecisionOutcomes`, whose positional forward returns assume a single instrument's price path — the champion-vs-candidate model comparison's forward metric would be noise. Fix is spec-side only: group `ScoringRow`s by symbol, digest each group, combine as the entry-count-weighted mean. MUST land before E2 first runs (corpus ≥200 `input_payload` rows; 135 at Pass 19) | 2 | S | pending (new, Pass 19 2026-07-12) |
+| 37 | E2 forward-proxy cross-symbol pollution (found Pass 19, same class as the `scoreRows` defect `5da2630` fixed): `candidate-model-eval.spec.ts`'s `forwardProxyBps` feeds ALL recorded rows (5 symbols interleaved) into `summarizeRecentDecisionOutcomes`, whose positional forward returns assume a single instrument's price path — the champion-vs-candidate model comparison's forward metric would be noise. Fix is spec-side only: group `ScoringRow`s by symbol, digest each group, combine as the entry-count-weighted mean. MUST land before E2 first runs (corpus ≥200 `input_payload` rows; 135 at Pass 19) | 2 | S | DONE 2026-07-12 Pass 19 addendum (`2f546f3`, owner-directed "fix the flaws"): per-symbol digest + entry-count-weighted recombine (also fixes the cross-symbol exposure-walk misclassification); single-instrument caller contract now stated on all three positional digest docstrings; landed well before the corpus reaches 200 (135). candidates/ added to .prettierignore (artifact byte-exactness) |
 
 ## Flagged for human review (open)
 

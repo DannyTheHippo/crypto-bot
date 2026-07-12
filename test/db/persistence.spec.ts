@@ -828,6 +828,13 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
   // `db`/`pool` here avoids that hazard entirely.
   it('(j) agent_decisions round-trips exact decimal strings; AgentDecisionJournalAdapter.recent() maps branded types oldest→newest', async () => {
     const repo = new AgentDecisionRepository(db);
+    const plan = {
+      entryOffsetBps: 10,
+      stopLossPct: '0.02',
+      takeProfitPct: '0.03',
+      entryValidityBars: 2,
+      maxHoldBars: 8,
+    };
     const base = {
       strategyId: 'agentic-dt-1',
       symbol: 'BTC/USDT',
@@ -846,7 +853,12 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
       playbookVersion: 1,
       inputPayload: '{"candles":[]}',
     };
-    await repo.insert({ ...base, eventTime: 1_700_000_500_000, promptHash: 'hash-dt-1' });
+    await repo.insert({
+      ...base,
+      eventTime: 1_700_000_500_000,
+      promptHash: 'hash-dt-1',
+      planJson: plan,
+    });
     await repo.insert({ ...base, eventTime: 1_700_000_600_000, promptHash: 'hash-dt-2' });
     // Two rows sharing the same eventTime: the desc(id) tiebreak (id is the insertion-ordered PK)
     // must resolve them in insertion order, matching InMemoryAgentDecisionJournal's plain
@@ -864,6 +876,9 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
     expect(ours[0]!.refPrice).toBe(pad18('50000.123456789012345678'));
     expect(ours[0]!.strategyId).toBe('agentic-dt-1');
     expect(typeof ours[0]!.id).toBe('string');
+    // plan_json (W1.3 follow-on): round-trips verbatim when carried, null when absent.
+    expect(ours[0]!.plan).toEqual(plan);
+    expect(ours[1]!.plan).toBeNull();
 
     const tied = rows.filter((r) => r.promptHash === 'hash-dt-3a' || r.promptHash === 'hash-dt-3b');
     expect(tied.map((r) => r.promptHash)).toEqual(['hash-dt-3a', 'hash-dt-3b']);

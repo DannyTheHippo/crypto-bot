@@ -854,6 +854,11 @@ export class AgenticStrategy implements AsyncStrategy {
         playbookVersion: proposal?.playbookVersion ?? null,
         promptHash: proposal?.promptHash ?? '',
         inputPayload: proposal?.inputPayload ?? null,
+        // W3.1 follow-on: the accepted plan this decision carried (fresh entry AND restart re-arm —
+        // this is the single call site for both, see the plan-bookkeeping block right after this
+        // call), for offline replay through the settlement backtest harness. Null on every
+        // 'flat'/'hold'-without-plan decision.
+        plan: proposal?.plan ?? null,
       });
     } catch {
       // A journal failure must never affect trading — it's an analysis artifact, not a safety

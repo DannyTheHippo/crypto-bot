@@ -1,7 +1,15 @@
 import { describe, it, expect } from 'vitest';
 import { InMemoryAgentDecisionJournal } from '../../../src/database/repositories/in-memory-agent-decision-journal';
-import type { AgentDecisionEntry } from '../../../src/ports/agentic-strategy';
+import type { AgentDecisionEntry, AgentPlan } from '../../../src/ports/agentic-strategy';
 import { strategyId, symbolId, venueId, epochMs } from '../../../src/domain/types/ids';
+
+const PLAN: AgentPlan = {
+  entryOffsetBps: 10,
+  stopLossPct: '0.02',
+  takeProfitPct: '0.03',
+  entryValidityBars: 2,
+  maxHoldBars: 8,
+};
 
 function entry(eventTime: number, overrides: Partial<AgentDecisionEntry> = {}): AgentDecisionEntry {
   return {
@@ -85,5 +93,15 @@ describe('InMemoryAgentDecisionJournal', () => {
     expect(row!.strategyId).toBe('s1');
     expect(typeof row!.id).toBe('string');
     expect(typeof row!.createdAt).toBe('number');
+  });
+
+  it('round-trips a carried plan, and defaults absent plan to undefined on the row', async () => {
+    const journal = new InMemoryAgentDecisionJournal();
+    journal.record(entry(1, { plan: PLAN }));
+    journal.record(entry(2));
+
+    const [withPlan, withoutPlan] = await journal.recent(2);
+    expect(withPlan!.plan).toEqual(PLAN);
+    expect(withoutPlan!.plan).toBeUndefined();
   });
 });

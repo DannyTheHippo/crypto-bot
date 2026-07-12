@@ -317,6 +317,11 @@ export interface AgentDecisionEntry {
   readonly promptHash: string;
   // See AgentProposal.inputPayload — null when no call was made (e.g. the error/quiet-hold paths).
   readonly inputPayload: string | null;
+  // See AgentProposal.plan — the accepted plan-mode trade plan this decision carried, verbatim (no
+  // money-path conversion — pct fields stay the strings AgentPlan already carries); null/absent on
+  // every decision that carried no accepted plan (flat/hold-without-plan/error). Optional so
+  // pre-this-column writers and fixtures compile; absent and null both map to a NULL column.
+  readonly plan?: AgentPlan | null;
 }
 
 export interface AgentDecisionRow extends AgentDecisionEntry {

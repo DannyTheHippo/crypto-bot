@@ -71,6 +71,13 @@
       "when": 1781282295786,
       "tag": "0009_experiments",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1781282295787,
+      "tag": "0010_agent_decision_plan",
+      "breakpoints": true
     }
   ]
 }

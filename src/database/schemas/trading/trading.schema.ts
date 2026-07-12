@@ -346,6 +346,16 @@ export const agentDecisions = pgTable(
     // Rendered market-context JSON the model saw (playbook/system excluded — see agent-prompt.ts's
     // buildMarketPayload) for offline prompt-variant replay; null on error/quiet-hold rows.
     inputPayload: text('input_payload'),
+    // Accepted plan-mode trade plan (mirrors ports/agentic-strategy.ts's AgentPlan shape), verbatim,
+    // for offline replay through the settlement backtest harness; null whenever the decision carried
+    // no accepted plan (flat/hold-without-plan/error).
+    planJson: jsonb('plan_json').$type<{
+      readonly entryOffsetBps: number;
+      readonly stopLossPct: string;
+      readonly takeProfitPct: string;
+      readonly entryValidityBars: number;
+      readonly maxHoldBars: number;
+    }>(),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => [index('agent_decisions_strategy_event_idx').on(t.strategyId, t.eventTime)],

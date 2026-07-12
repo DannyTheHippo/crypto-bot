@@ -48,6 +48,7 @@ export class AgentDecisionJournalAdapter implements AgentDecisionJournalPort {
       playbookVersion: entry.playbookVersion,
       promptHash: entry.promptHash,
       inputPayload: entry.inputPayload,
+      planJson: entry.plan ?? null,
     };
     void this.repo.insert(row).catch((err: unknown) => {
       this.log.error(`agent_decisions insert failed: ${String(err)}`);
@@ -77,6 +78,7 @@ export class AgentDecisionJournalAdapter implements AgentDecisionJournalPort {
       playbookVersion: r.playbookVersion,
       promptHash: r.promptHash,
       inputPayload: r.inputPayload,
+      plan: r.planJson,
       id: String(r.id),
       createdAt: r.createdAt.getTime() as EpochMs,
     }));

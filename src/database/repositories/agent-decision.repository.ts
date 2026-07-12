@@ -4,6 +4,7 @@ import { desc, eq } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../database.tokens';
 import * as schema from '../schemas/trading';
 import { requireDb } from './persistence-guard';
+import type { AgentPlan } from '../../ports/agentic-strategy';
 
 export interface AgentDecisionInsert {
   strategyId: string;
@@ -28,6 +29,9 @@ export interface AgentDecisionInsert {
   playbookVersion: number | null;
   promptHash: string;
   inputPayload: string | null;
+  // Optional so pre-this-column callers and test fixtures stay valid (same absent-vs-null
+  // convention as the cache-token fields above); absent and null both insert as NULL.
+  planJson?: AgentPlan | null;
 }
 
 export type AgentDecisionDbRow = typeof schema.agentDecisions.$inferSelect;

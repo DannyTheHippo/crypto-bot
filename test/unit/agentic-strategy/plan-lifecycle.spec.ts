@@ -386,3 +386,72 @@ describe('AgenticStrategy plan re-arm on an open position (restart self-heal)', 
     expect(client.seenManagedPlan).toEqual([undefined]);
   });
 });
+
+// W1.3 follow-on: the accepted plan a decision carried must reach the journal row (persistence
+// unlock for offline replay through the settlement backtest harness) — these pin the mapping at
+// the strategy boundary (recordJournalEntry), not the DB adapter/schema (covered in test/db).
+describe('AgenticStrategy journals the accepted plan (persistence)', () => {
+  // Plain hold, no plan — the client-omits-decision negative case for the journal mapping below.
+  class FlatHoldClient implements AgentClientPort {
+    propose(): Promise<AgentProposal> {
+      return Promise.resolve({
+        signals: [],
+        decision: { action: 'hold', confidence: 0.5, rationale: 'no edge' },
+      });
+    }
+  }
+
+  // hold+plan on a bare LONG position — the re-arm acceptance path (see the
+  // 'AgenticStrategy plan re-arm on an open position' describe block above for the full lifecycle).
+  class ReArmOnceClient implements AgentClientPort {
+    propose(): Promise<AgentProposal> {
+      return Promise.resolve({
+        signals: [],
+        decision: { action: 'hold', confidence: 0.5, rationale: 'r' },
+        plan: PLAN,
+      });
+    }
+  }
+
+  it('journals the accepted plan fields on a fresh long-with-plan entry', async () => {
+    const client = new PlanningClient();
+    const entries: Array<{ plan?: AgentPlan | null }> = [];
+    const strategy = new AgenticStrategy(SID, makeParams(), client, {
+      journal: {
+        record: (e) => entries.push({ plan: e.plan }),
+        recent: () => Promise.resolve([]),
+      },
+    });
+    await strategy.decide(buildInput(0));
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.plan).toEqual(PLAN);
+  });
+
+  it('journals null for a plan-less hold decision', async () => {
+    const client = new FlatHoldClient();
+    const entries: Array<{ plan?: AgentPlan | null }> = [];
+    const strategy = new AgenticStrategy(SID, makeParams(), client, {
+      journal: {
+        record: (e) => entries.push({ plan: e.plan }),
+        recent: () => Promise.resolve([]),
+      },
+    });
+    await strategy.decide(buildInput(0));
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.plan).toBeNull();
+  });
+
+  it('journals the accepted plan on the restart re-arm consult (hold+plan while LONG)', async () => {
+    const client = new ReArmOnceClient();
+    const entries: Array<{ plan?: AgentPlan | null }> = [];
+    const strategy = new AgenticStrategy(SID, makeParams(), client, {
+      journal: {
+        record: (e) => entries.push({ plan: e.plan }),
+        recent: () => Promise.resolve([]),
+      },
+    });
+    await strategy.decide(buildInput(0, { position: longPosition('100') })); // bare LONG → re-arm
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.plan).toEqual(PLAN);
+  });
+});

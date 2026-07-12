@@ -723,11 +723,16 @@ owns them).
   (`reports/loop/nonprice-sweep-2026-07-12.md`): funding contrarian at 1h is the program's
   strongest frontier ever** — 492 cells, 0 honest survivors, but 25 pass all gates except
   deflation (price search had zero such cells); top cell LINK Sharpe 3.07 walk-forward-consistent,
-  ~97% price-timing not carry. Caveat: one bear-regime holdout, short-biased. **NEXT-PASS
-  CANDIDATE (pre-specced, $0): re-run the funding frontier on a second non-overlapping
-  bull-regime holdout window; if it survives, draft a funding-contrarian playbook/knob candidate
-  and score it through the standard offline gate + A/B.** The funding series already reaches the
-  model via the derivatives block, so exploiting a validated signal needs no new plumbing.
+  ~97% price-timing not carry. **Second-holdout validation RAN SAME SESSION — VERDICT: KILLED**
+  (do NOT redo): on a non-overlapping 2023-10→2024-06 bull window 134/150 frontier cells died,
+  all three top cells flipped negative (LINK 3.07→−0.96, BTC 2.87→−1.56, XRP 2.61→−0.00);
+  parameter grids are isolated spikes, not plateaus. Regime beta, not signal — the deflation
+  gate's refusal was independently confirmed correct. Consequence: BOTH cheap non-price series
+  are now honestly dead as directional signals; the remaining edge channels are the LIVE
+  information-feed A/B (derivatives+cross-symbol bundle, verdict at ≥30 matched RT/arm) and
+  event/news-class information with no fetchable history. Same session: AB_PCT 25→50 +
+  candidate lapse 720h→168h deployed (v2 had 0 attributed trips in 36h — evidence rate doubled,
+  stall bounded).
 
 - **ULTRACODE SESSION 2026-07-12 (~19:30–21:30Z) — THE DEFINITIVE PROFITABILITY FINDING + most of
   the roadmap shipped. Read `reports/loop/multi-strategy-search-2026-07-12.md`.** A self-contained

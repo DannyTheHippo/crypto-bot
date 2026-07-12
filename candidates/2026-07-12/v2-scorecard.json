@@ -1,0 +1,66 @@
+{
+  "rowsScored": 2,
+  "rowsSkipped": 0,
+  "championVersion": 1,
+  "championHorizonStats": [
+    {
+      "horizon": 1,
+      "sampleCount": 1,
+      "hitCount": 0,
+      "hitRate": 0
+    },
+    {
+      "horizon": 4,
+      "sampleCount": 0,
+      "hitCount": 0,
+      "hitRate": null
+    },
+    {
+      "horizon": 24,
+      "sampleCount": 0,
+      "hitCount": 0,
+      "hitRate": null
+    }
+  ],
+  "candidateHorizonStats": [
+    {
+      "horizon": 1,
+      "sampleCount": 1,
+      "hitCount": 0,
+      "hitRate": 0
+    },
+    {
+      "horizon": 4,
+      "sampleCount": 0,
+      "hitCount": 0,
+      "hitRate": null
+    },
+    {
+      "horizon": 24,
+      "sampleCount": 0,
+      "hitCount": 0,
+      "hitRate": null
+    }
+  ],
+  "finalEquityDelta": 0,
+  "hitRateDeltas": [
+    {
+      "horizon": 1,
+      "championHitRate": 0,
+      "candidateHitRate": 0,
+      "delta": 0
+    },
+    {
+      "horizon": 4,
+      "championHitRate": null,
+      "candidateHitRate": null,
+      "delta": null
+    },
+    {
+      "horizon": 24,
+      "championHitRate": null,
+      "candidateHitRate": null,
+      "delta": null
+    }
+  ]
+}

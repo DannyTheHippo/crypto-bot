@@ -25,6 +25,10 @@
     ".pnpm-cache",
     "docs/archive",
     "reports/archive",
+    // Candidate-playbook exports are BYTE-EXACT copies of agent_playbook_versions rows — the
+    // experiments registry's params_hash is the sha256 of these bytes, so a lint fix (e.g.
+    // MD047 trailing newline) would silently break hash reproducibility. Data, not prose.
+    "candidates",
     // Harness agent worktrees — full repo copies; linting them double-reports everything.
     ".claude",
   ],

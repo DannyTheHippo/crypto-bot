@@ -219,6 +219,28 @@ exit question.
 
 ## Last pass
 
+**Pass 19, 2026-07-12** (owner-triggered, ~11:35–12:20Z) — **SHIP symbol-aware offline scoring
+(`5da2630`): the recorded-payload scoring harness grouped rows by (version, promptHash) with NO
+symbol, so the 5-symbol corpus interleaved instruments and every scorecard in the multi-symbol
+era was cross-symbol noise (BTC→LINK close transitions scored as −99.99% "returns"); then v2
+finally scored honestly — n=34, v2 ≥ v1 on every measure, stays in A/B.** Fix: `symbol` joins
+`ScoringRow`+groupKey (one card per instrument), new `combineScorecards()` portfolio aggregate,
+env-tunable eval timeout (`AGENTIC_EVAL_TIMEOUT_MS`), +3 unit tests incl. the interleave defect
+pin; also removed a NUL byte embedded in the source (it made grep read the file as binary —
+the chronic flaky-grep explanation). Reflection digests were never affected (P7 strategy-scoped
+rows); auto-promotion uses the fills-walk, unaffected. Gates full green (1681 unit, eval 15),
+deployed boot `950963f0` ~11:56Z, 12:00Z-bar soak clean. **v2 offline verdict (registry id 128,
+sonnet-5, all 5 symbols, ~$0.85 out-of-band):** h1 hit 0.483 vs 0.448, h4 0.643 vs 0.500, toy
+equity 1.000 vs 0.9905 — v2's raised entry bar skipped v1's losing trade, exactly its mint
+rationale; toy-grade/n-small ⇒ **patience justified, no pin, no manual promote; the live A/B
+verdict remains the decider** (id 127 = the n=2 pre-fix run, logged INVALID for honest-N).
+Live lane meanwhile: first post-epoch entries are on — LINK 4.98 (10:02Z, 3 partials folded
+FILLED = first live validation of `b00c886`'s D1 fix) and ETH 0.0221 (11:47Z); v2 still has
+ZERO entries in A/B (8 hold/2 flat of 10 decides) so its 10-trip clock hasn't started. Corpus
+135/200. New #37: E2's forward-proxy shares the cross-symbol flaw — fix before the corpus
+reaches 200. Backup `cryptobot-20260712T115914Z.sql.gz`. Empty-pass counter 0. Full detail in
+LOG.md.
+
 **Pass 18, 2026-07-12** (scheduled run, ~08:08–09:35Z, paused 08:10–09:05Z while the
 owner-directed OMS session below ran) — **SHIP evidence-epoch threading (`cc72a10`): the
 promotion-walk straddle "phase shift" is NOT count-preserving — under entry-size drift it
@@ -630,6 +652,8 @@ owns them).
 | 35 | Promotion-walk LINK freeze + stuck RECONCILE_REQUIRED order (found Pass 17; root-caused same day): THREE composing recovery defects — (D1) demo-fill-poller folded same-poll partials from a stale snapshot (journal shows non-monotone FILL cums 1.99/1.99/1.67, orders-row cum regressed), (D2) no code path rebuilt cum from the fill journal so the mis-fold was unrecoverable (TTL sweep "cancelled" the venue-FILLED order → resolver froze it RECONCILE_REQUIRED, live-arming blocker), (D3) boot recovery restored orders WITHOUT their persisted write-ahead intent so recovered-order fills skipped portfolio application — the 6.9-LINK fill (00:14Z 07-11) never moved position/cash: THAT is the walk phantom (+6.92 = 6.9 unapplied + fold residue); Pass 17's foreign-traffic hypothesis RETRACTED. NOT a shared-wallet artifact | 2 | M | FIXED 2026-07-12 owner-directed (`b00c886`, reviewer APPROVE no-must-fix, 1673 unit/41 livegate/11 paper/15 eval green): poller folds from the live book record; boot recovery rebuilds cum from SUM(fills) journaled+idempotent (live-verified: first boot healed the stuck order 1.67→5.65 FILLED, terminal_at stamped, unresolved testnet orders now 0); intents rehydrated at recovery (also closes #26's E1 gap). RESIDUAL (owner): the historical 6.9-LINK scar — ~$55 unmanaged in the wallet, LINK walk still frozen — cleanest fix is an epoch move at the next flat instant (see § Flagged); WATCH unchanged: gate-RT vs in-memory gap growing beyond the explained classes = §7 stop condition |
 
 | 36 | Evidence-epoch asymmetry (found Pass 18, the follow-through on #35's epoch-move residual): only `promotion-readiness.service.ts` passed `PROMOTION_EVIDENCE_EPOCH` to `fillsForMode` — `version-attribution-metrics.service.ts` (v2's A/B gauges), `promotion-evaluator.ts` (attributed auto-promotion), and `round-trip-evidence.reader.ts` (reflection evidence + trigger seeds) walked ALL fills unbounded, so an epoch move would have unfrozen the gate ONLY and left the Stage-2 learning measurement layer frozen. Companion finding: the straddle "phase shift" is NOT count-preserving — with drifting entry sizes the group never re-enters dust (live: ETH frozen 00:15Z 07-11, 2 real trips absorbed; agentic-2's reflection seed read 0 where truth is 1) | 2 | S | DONE 2026-07-12 Pass 18 (`cc72a10`): all three consumers thread the gate's epoch (validated-config sourced; absent ⇒ all-time); +5 regression tests incl. the live ETH-freeze scenario; deployed boot `d5942b9b`. Epoch declaration APPLIED same day (Pass 18 addendum, owner delegation): `2026-07-12T08:30:00Z` live on boot `9ff1eb40`, reset verified — gate + attribution + evaluator + reflection all on one clean window; ETH/XRP/LINK freezes erased |
+
+| 37 | E2 forward-proxy cross-symbol pollution (found Pass 19, same class as the `scoreRows` defect `5da2630` fixed): `candidate-model-eval.spec.ts`'s `forwardProxyBps` feeds ALL recorded rows (5 symbols interleaved) into `summarizeRecentDecisionOutcomes`, whose positional forward returns assume a single instrument's price path — the champion-vs-candidate model comparison's forward metric would be noise. Fix is spec-side only: group `ScoringRow`s by symbol, digest each group, combine as the entry-count-weighted mean. MUST land before E2 first runs (corpus ≥200 `input_payload` rows; 135 at Pass 19) | 2 | S | pending (new, Pass 19 2026-07-12) |
 
 ## Flagged for human review (open)
 

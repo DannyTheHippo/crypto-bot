@@ -1922,3 +1922,80 @@ fresh, honestly-counted trips per strategy. The 6.9-LINK wallet scar is now invi
 walks — it remains wallet hygiene only (FYI, no action). Watches reset accordingly: v2's A/B
 verdict clock still starts at v2's first filled entry; reflection fires on the first strategy
 to close 2 post-epoch trips.
+
+## 2026-07-12 — Pass 19 (owner-triggered, ~11:35–12:20Z): MAINTENANCE — the offline scoring harness was cross-symbol-polluted; fixed (`5da2630`), then v2 finally scored honestly (n=34: v2 ≥ v1 on every measure, stays in A/B)
+
+**Data window:** Pass 18 addendum close (~10:00Z) → now, boots `9ff1eb40` → `950963f0` (this
+pass's deploy). Owner directive standing from the addendum: loop-domain decisions, aim =
+profitability.
+
+**Evidence sweep (boot `9ff1eb40`, ~2h):** clean — 0 error/EXPIRED/HALT, 0 rejections, kill
+switch RUNNING, reconcile clean. Scoreboard counting from the fresh epoch: RT=0, net −$0.27,
+LLM $0.23 (~$1.8/day pace), window 0d (no closed post-epoch trip yet), ready=0.
+**First post-epoch entry is live:** agentic-5 proposed a LINK long at the 09:45Z bar (conf
+0.4, v1-routed), filled 10:02Z in THREE partials (0.64+1.97+2.37 = 4.98 LINK ≈ $40) — and the
+orders row reads FILLED cum 4.98: the first live exercise of the owner-pass D1 partial-fold
+fix on exactly the fill class that used to mangle (`b00c886` validated on real traffic). A
+fresh ETH long (~$40) followed at 11:47Z; both entries are post-epoch so their closes count
+on the unfrozen measurement layer. v2 A/B: 10 of 39 versioned decides ≈26% serving, but 8
+hold / 2 flat — ZERO entries, so v2's 10-trip verdict clock hasn't started. Corpus 135/200
+(E2 not runnable). §2.6 probe green (15 passed). Decides this boot: 14 hold / 1 proposed.
+
+**Pass selection (§3):** no correctness bug in the live lane; PROMOTION ineligible (0
+attributed trips); CANDIDATE blocked (v2 unresolved). Highest-value MAINTENANCE: v2 had sat
+31h in A/B with zero entries — score it OFFLINE against v1 via the sanctioned
+recorded-payload live-compare (≤$20 gate). The first run (registry id 127: n=2 — the 10 most
+recent journal rows held only 2 payloads) exposed TWO harness defects instead, which became
+the pass's ship:
+
+**FINDING 1 (correctness, measurement path): `scoreRows` grouped by (playbookVersion,
+promptHash) only — `ScoringRow` carried no symbol.** A multi-symbol corpus (5 symbols since
+07-10) interleaves instruments within one group, so `forwardReturn` read a DIFFERENT symbol's
+close as row i's future price (BTC 64,185 → LINK 8.02 scored −99.99%) and `computeToyEquity`
+filled entries/exits across instruments. Every scorecard the recorded-payload eval produced
+in the multi-symbol era was noise. Reflection's digests were never affected — its call site
+passes strategy-scoped rows (P7, single instrument) — and the auto-promotion evaluator uses
+the fills-walk, not this scorer. Blast radius: the offline candidate-scoring pipeline (the
+"backtest disposes" leg) and E2's forward-proxy metric (flagged #37, E2 is days from
+runnable). **FINDING 2:** the spec's fixed 120s vitest timeout contradicted its own tunable
+`AGENTIC_EVAL_ROW_LIMIT` — a raised row budget would die on the cap AFTER spending the API
+budget. **FINDING 3 (incidental):** a NUL byte sat inside `groupKey`'s template literal
+(committed long ago) — functionally a harmless separator, but it made grep classify the file
+as BINARY, explaining this file's chronic grep flakiness; repaired, and a repo scan found no
+other NUL in tracked text.
+
+**Shipped `5da2630`** (7 files, +301/−109): `symbol` joins `ScoringRow` and the group key
+(one card per instrument, each on its own price path); new `combineScorecards()` aggregates
+one variant's per-symbol cards (counts sum, hit rates recompute, toy equities multiply) so
+`compare()` keeps one card per side; live-compare spec combines per-symbol cards, records
+model+symbols in the scorecard, timeout now env-tunable (`AGENTIC_EVAL_TIMEOUT_MS`); +3 unit
+tests incl. the BTC/LINK interleave defect pin. Gates: build / lint / typecheck /
+format:check green, **1681 unit** (+3), eval 15. Deployed boot `950963f0` ~11:56Z — clean
+(0 errors, v1/seed, portfolio exact incl. both open longs), 12:00Z bar processed on all five
+strategies (1 proposed / 3 hold / prescreen 1 quiet + 2 position_open + 2 breakout), 0
+rejections, reconcile clean, kill switch RUNNING.
+
+**v2 scored honestly (registry id 128; n=34 rows, all 5 symbols, sonnet-5, ~$0.85):**
+horizon-1 hit rate v2 0.483 vs v1 0.448 (+3.4pp); horizon-4 v2 0.643 vs v1 0.500 (+14.3pp);
+toy equity v2 1.000 (0 trips — stayed out) vs v1 0.9905 (took one losing trip),
+finalEquityDelta +0.0095 to v2. On this window v2's raised entry bar did exactly what its
+mint rationale promised: skipped the losing trade. Toy-grade and n-small (one flipped hit ≈
+3.4pp) — NOT promotion evidence, and auto-promotion isn't "stuck" (§3(b) needs attributed
+trips), so **verdict: v2 stays in A/B; the offline evidence justifies patience, not action.**
+Honest-N: BOTH runs logged — id 127 (n=2, labeled INVALID: pre-fix cross-symbol harness) and
+id 128 (n=34, fixed harness).
+
+**Cost honesty:** ~$0.90 out-of-band API spend this pass (68+4 real calls from the eval
+harness on the lane's key, bypasses DailyLlmBudget — same class as prior eval/verification
+spend, inside the ≤$20 offline-eval gate). Backup `cryptobot-20260712T115914Z.sql.gz` (§5).
+
+**Flagged / new backlog:** #37 — E2's `forwardProxyBps` feeds mixed-symbol rows into
+`summarizeRecentDecisionOutcomes` (same cross-symbol class; fix = per-symbol digest +
+entry-count-weighted mean, spec-side only) — must land before E2 first runs (~200-row corpus,
+days out). Untracked `.DS_Store` files in test/ and docs/ carry the only other NUL bytes in
+the tree (macOS cruft, gitignored-or-untracked; owner may delete).
+
+**Next-pass candidates:** (1) #37 E2 proxy fix (S, before corpus hits 200); (2) v2 verdict
+watch — first v2-routed ENTRY starts its 10-trip clock; (3) reflection watch — 2 post-epoch
+closed trips on one strategy fires it (LINK and ETH longs are open; their closes arm it);
+(4) #32 reflection SSE streaming.

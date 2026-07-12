@@ -1,0 +1,78 @@
+{
+  "rowsScored": 34,
+  "rowsSkipped": 0,
+  "model": "claude-sonnet-5",
+  "symbols": "BTC/USDT+ETH/USDT+LINK/USDT+SOL/USDT+XRP/USDT",
+  "championVersion": 1,
+  "championHorizonStats": [
+    {
+      "horizon": 1,
+      "sampleCount": 29,
+      "hitCount": 13,
+      "hitRate": 0.4482758620689655
+    },
+    {
+      "horizon": 4,
+      "sampleCount": 14,
+      "hitCount": 7,
+      "hitRate": 0.5
+    },
+    {
+      "horizon": 24,
+      "sampleCount": 0,
+      "hitCount": 0,
+      "hitRate": null
+    }
+  ],
+  "candidateHorizonStats": [
+    {
+      "horizon": 1,
+      "sampleCount": 29,
+      "hitCount": 14,
+      "hitRate": 0.4827586206896552
+    },
+    {
+      "horizon": 4,
+      "sampleCount": 14,
+      "hitCount": 9,
+      "hitRate": 0.6428571428571429
+    },
+    {
+      "horizon": 24,
+      "sampleCount": 0,
+      "hitCount": 0,
+      "hitRate": null
+    }
+  ],
+  "championToyEquity": {
+    "finalEquity": 0.990509652372924,
+    "roundTrips": 1,
+    "openAtEnd": true
+  },
+  "candidateToyEquity": {
+    "finalEquity": 1,
+    "roundTrips": 0,
+    "openAtEnd": false
+  },
+  "finalEquityDelta": 0.009490347627076012,
+  "hitRateDeltas": [
+    {
+      "horizon": 1,
+      "championHitRate": 0.4482758620689655,
+      "candidateHitRate": 0.4827586206896552,
+      "delta": 0.03448275862068967
+    },
+    {
+      "horizon": 4,
+      "championHitRate": 0.5,
+      "candidateHitRate": 0.6428571428571429,
+      "delta": 0.1428571428571429
+    },
+    {
+      "horizon": 24,
+      "championHitRate": null,
+      "candidateHitRate": null,
+      "delta": null
+    }
+  ]
+}

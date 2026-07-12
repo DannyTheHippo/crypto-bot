@@ -308,3 +308,149 @@ backtest result alone, per the program's standing rule.
   check was run only for the rank-1 cell (LINK) — BTC/XRP's regime exposure, and the funding-extreme
   gate variant's best cells, were not checked and are listed as future work rather than assumed to
   share the same profile.
+
+**Update 2026-07-13: the second-holdout validation below directly tests this caveat and confirms
+it — see the addendum.**
+
+---
+
+## Addendum (2026-07-13): second-holdout validation
+
+Follow-up to the single-regime-dependence caveat above. This addendum is a **validation re-test of
+already-registered cells on new data, not a new set of honest-N trials** — the parameters under test
+were fixed by the 2026-07-12 sweep before this window was ever examined, so nothing here adds to the
+5,054 multiple-testing pool. All code is new (`funding-second-holdout.mjs`), all findings below are
+new; the original sections above are unedited except for the one cross-reference line just added.
+
+### Second, non-overlapping bull-regime holdout
+
+**Window:** 2023-10-01 → 2024-06-30 (BTC perp: $26,977 → $72,900 → $61,016 over this span — a clear
+bull regime). This ends 11 days before the original sweep's data starts (2024-07-11), so there is no
+overlap. Data was fetched by extending the existing 1h OHLCV/funding caches backward (`fetch-data.mjs`,
+now 26,000 1h bars / 3,250 funding rows per symbol, 2023-07-25 → 2026-07-12) — the tail of these files
+still reproduces the original sweep's data (verified: `bars.slice(-17520)` matches the original
+2024-07-11 → 2026-07-12 window used in every result above). **4h was not re-tested**: the 4h cache
+only covers 2024-07-11 onward, so there is no data in this earlier window at that timeframe — a
+coverage limitation, not a scope cut, and immaterial since all 3 top frontier cells are 1h.
+
+**Methodology deviation (disclosed):** no further train/holdout split within this window — the whole
+window IS the test, since parameters were already fixed on the earlier (disjoint) sweep. Walk-forward
+means 3 equal sub-segments of this window. Grid, fee, and scoring logic are imported verbatim from
+`funding-sweep.mjs` (now exported, not redeclared) so nothing can drift between the original and
+validation runs.
+
+**Result: KILLED. Of 150 cells joined against the original 5-symbol family (1h only), 134 flip sign
+or collapse to non-positive Sharpe, 7 weaken sharply, and only 9 "survive" — none of which are the
+frontier.** Every one of the original top-10 cells (all funding-contrarian, Sharpe 1.8–3.07 in the
+first window) is **KILLED** in the bull window:
+
+| Cell (rank in original) | Original Sharpe (WF) | Second-holdout Sharpe (WF) | Second-holdout RT | Verdict |
+| --- | --- | --- | --- | --- |
+| LINK contrarian T=5%,s=1,flip (#1) | 3.067 (yes) | **-0.959** (no) | 49 | KILLED |
+| BTC contrarian T=5%,s=3,h=8 (#2) | 2.873 (yes) | **-1.557** (no) | 17 | KILLED |
+| XRP contrarian T=10%,s=1,flip (#3) | 2.607 (yes) | **-0.002** (no) | 51 | KILLED |
+| ETH contrarian T=10%,s=9,h=24 (#4) | 2.370 (no) | -0.786 (no) | 7 | KILLED |
+| BTC contrarian T=5%,s=9,h=24 (#5) | 2.225 (yes) | -1.620 (no) | 5 | KILLED |
+| gate donchian(20) ETH ls T=10% | 1.808 (yes) | -1.766 (yes) | 94 | KILLED |
+
+Aggregate over all 150 joined cells: **134 KILLED, 7 WEAKENED, 9 SURVIVED** (threshold: survived =
+same sign AND second-holdout Sharpe > 0.5). The 9 survivors are NOT the contrarian frontier — they are
+mostly the `gate` variant wrapping a **long-only** trend rule (`donchian`/`tsmom` `dir=long`) on ETH/BTC
+(Sharpe 0.4→0.8–1.6 in the bull window) plus two thin-sample SOL momentum cells (4–19 round trips).
+A long-only trend rule doing better in a bull market is the expected, unsurprising result already
+established by the price-based search — it says nothing new about funding as a signal.
+
+### Out-of-family check: DOGE and AVAX (never in the original 300-cell grid)
+
+Fetched fresh (1h OHLCV + funding, same bull window) as symbols with NO original-sweep baseline to
+compare against — a pure generalization check. **Contrarian is uniformly negative on both**: e.g.
+AVAX contrarian T=20%,s=1,flip: Sharpe **-0.62**, 0 long bars / 1,480 short bars (100% short-biased);
+DOGE contrarian T=20%,s=1,flip: Sharpe **-0.26**, 8 long / 1,640 short. **Momentum (follow the funding
+sign, the WEAKER variant in the original sweep) is the one that does well here**: AVAX momentum
+T=5%,s=9,h=24: Sharpe **2.02**, 5,839 long bars / 25 short bars (near-100% long-biased). This is the
+same pattern inverted: contrarian is short-biased and dies in a bull market; momentum is long-biased
+and thrives in one. Neither is a direction-agnostic edge — each variant's apparent "Sharpe" tracks
+whichever side of the trade happens to match the prevailing regime.
+
+### Rank-2/3 decomposition (BTC, XRP) — carry vs. timing and position bias
+
+Same checks run for LINK in the Carry vs. price-timing decomposition section above, now completed for
+the other two original top-3 cells (on the ORIGINAL 2024-07-11→2026-07-12 window):
+
+| Cell | Funding's contribution to total return | Holdout long/short bars | Holdout price move |
+| --- | --- | --- | --- |
+| BTC contrarian T=5%,s=3,h=8 | +1.86 pp of 52.71% (≈4%) | 441 long / 1,553 short | BTC -28.0% |
+| XRP contrarian T=10%,s=1,flip | +1.54 pp of 60.17% (≈3%) | 752 long / 288 short | XRP -45.9% |
+
+BTC matches LINK's profile exactly: short-biased, profiting from a broad decline. **XRP is different
+and worth flagging honestly**: it is net LONG-biased (752 vs. 288 bars) despite XRP falling harder
+(-45.9%) than either BTC or LINK over the same window — its Sharpe is not simple trend-following beta,
+it more likely reflects contrarian long entries clustering around localized capitulation/short-covering
+rallies within the broader decline (a more interesting hypothesis than plain regime beta). It does not
+change the bottom line: this cell was ALSO killed in the second holdout (Sharpe -0.002), so whatever
+its original edge was, it did not generalize to a new market regime either.
+
+### Parameter-plateau check: 3×3 (T × smooth) holdout Sharpe, hold fixed at each cell's own value
+
+Decouples smoothing from its original hold pairing to probe the neighborhood around each winning cell
+(same original 2024-07-11→2026-07-12 window, contrarian mode, 1h, fee 3.6bps):
+
+**LINK (hold=flip):**
+
+| T \ smooth | 1 | 3 | 9 |
+| --- | --- | --- | --- |
+| 5% | **3.065** | 0.841 | 1.833 |
+| 10% | 1.081 | 0.583 | -0.713 |
+| 20% | -0.229 | 0.000 | 0.000 |
+
+**BTC (hold=8):**
+
+| T \ smooth | 1 | 3 | 9 |
+| --- | --- | --- | --- |
+| 5% | 0.644 | **2.877** | 2.523 |
+| 10% | 1.729 | 0.346 | 0.000 |
+| 20% | 0.000 | 0.000 | 0.000 |
+
+**XRP (hold=flip):**
+
+| T \ smooth | 1 | 3 | 9 |
+| --- | --- | --- | --- |
+| 5% | 1.471 | 1.544 | 0.474 |
+| 10% | **2.607** | -0.373 | -0.262 |
+| 20% | 1.373 | 0.405 | 0.000 |
+
+**None of the three sit on a plateau.** LINK's peak (3.065 at smooth=1) drops to 0.841 one smoothing
+notch away, non-monotonically recovering to 1.833 at smooth=9 — an erratic surface, not a smooth
+ridge. BTC's T=5% row has a genuine local plateau across smooth=3–9 (2.877 → 2.523), but collapses to
+near-zero at T≥10%. **XRP's peak is the starkest spike in the set**: Sharpe 2.607 at smooth=1 FLIPS
+SIGN to -0.373 at smooth=3, one notch away — the signature of a noise-selected cell, not underlying
+structure. This is independent confirmation, from a different angle than the second-holdout test, that
+the multiple-testing deflation gate's "not yet distinguishable from the best of 5,054 draws from a
+zero-edge null" verdict was the right call.
+
+### Second-holdout verdict: **KILLED**
+
+**The funding-contrarian frontier does not survive a genuinely different market regime.** All 3 top
+cells (LINK, BTC, XRP) and 7 of the original top-10 flip to negative Sharpe on a non-overlapping bull
+window; the 2 fresh out-of-family symbols (DOGE, AVAX) show the identical failure mode (contrarian
+negative/short-biased, momentum positive/long-biased — the inverse pairing a genuine regime artifact
+would produce); the parameter-plateau check independently shows all 3 winning parameter combinations
+are isolated spikes, not robust neighborhoods. Combined with the original deflated-Sharpe gate already
+failing every cell, this closes the door on funding-contrarian as it stands: **it was regime beta, not
+a directional signal**, and the honest next step from the original report (a pre-registered
+forward/paper test) is no longer warranted for this specific rule — it is superseded by this second
+backtest window's negative result, which is exactly the kind of new evidence a forward test would
+otherwise have had to discover the hard way.
+
+### Addendum artifacts
+
+- `test/backtest/multi-strategy/funding-second-holdout.mjs` — the second-holdout runner (rerun:
+  `node …/funding-second-holdout.mjs --out <f>`); imports its grid from `funding-sweep.mjs` (now
+  exported behind an `isMain` guard so importing it no longer re-runs the original sweep as a side
+  effect — a correctness fix bundled with this addendum, not a methodology change).
+- `candidates/nonprice-funding-second-holdout-2026-07-13.json` — all 210 second-holdout cells (150
+  joined against the original + 60 DOGE/AVAX) plus the full join-and-verdict table.
+- Extended 1h OHLCV/funding caches (`test/backtest/data/ohlcv-*USDT-1h.json`,
+  `test/backtest/data/funding-*.json`, gitignored, reproducible via `fetch-data.mjs`) now span
+  2023-07-25 → 2026-07-12 for BTC/ETH/SOL/XRP/LINK/DOGE/AVAX (previously 2024-07-11 → 2026-07-12 for
+  the original 5) — the tail is unchanged for reproducing every number in the original sections above.

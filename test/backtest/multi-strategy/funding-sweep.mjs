@@ -7,6 +7,7 @@
 //   node test/backtest/multi-strategy/funding-sweep.mjs --out <file.json>
 
 import { writeFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 import {
   loadOhlcv,
   simulateWithFunding,
@@ -25,10 +26,12 @@ function arg(name, def) {
 const OUT = arg('--out', null);
 
 // ── Pre-registered grid (locked before running) ───────────────────────────────────────────────────
-const SYMBOLS = ['BTCUSDTUSDT', 'ETHUSDTUSDT', 'SOLUSDTUSDT', 'XRPUSDTUSDT', 'LINKUSDTUSDT'];
-const TFS = ['1h', '4h'];
-const T_GRID = [0.05, 0.1, 0.2]; // annualized funding threshold
-const FEE_BPS = 3.6; // perp maker + BNB — the only venue that can hold the short leg
+// Exported so funding-second-holdout.mjs (2026-07-13 validation re-test) can reuse the EXACT same
+// grid definitions on a different data window rather than redeclaring a copy that could drift.
+export const SYMBOLS = ['BTCUSDTUSDT', 'ETHUSDTUSDT', 'SOLUSDTUSDT', 'XRPUSDTUSDT', 'LINKUSDTUSDT'];
+export const TFS = ['1h', '4h'];
+export const T_GRID = [0.05, 0.1, 0.2]; // annualized funding threshold
+export const FEE_BPS = 3.6; // perp maker + BNB — the only venue that can hold the short leg
 const HOLDOUT = 0.3;
 const WF_SEGMENTS = 3;
 
@@ -37,20 +40,20 @@ const WF_SEGMENTS = 3;
 // smoothed signal reacts fastest, so paired with the fastest exit ('flip'); a 9-event (smoothest,
 // slowest) signal is paired with the longest fixed hold (24 bars) — the pairing spans fast<->slow
 // consistently rather than crossing every combination.
-const SMOOTH_HOLD_PAIRS = [
+export const SMOOTH_HOLD_PAIRS = [
   { smooth: 1, hold: 'flip' },
   { smooth: 3, hold: 8 },
   { smooth: 9, hold: 24 },
 ];
-const MODES = ['contrarian', 'momentum'];
+export const MODES = ['contrarian', 'momentum'];
 
 // Variant (iii): funding-extreme gate over a plain trend rule. Two base rules (both long/long-short
 // capable), T grid shared with (i)/(ii), dir swept since the base rule itself is directional.
-const BASE_RULES = [
+export const BASE_RULES = [
   { kind: 'donchian', fn: donchian, params: { n: 20 } },
   { kind: 'tsmom', fn: tsmom, params: { lookback: 20 } },
 ];
-const DIRS = ['long', 'ls'];
+export const DIRS = ['long', 'ls'];
 
 function segSign(a) {
   const m = a.reduce((x, y) => x + y, 0) / Math.max(1, a.length);
@@ -97,96 +100,103 @@ function scoreCell(bars, positions, fundingMap, meta) {
   };
 }
 
-const cells = [];
+// Guarded so funding-second-holdout.mjs (2026-07-13) can `import { SYMBOLS, T_GRID, ... }` without
+// re-running this sweep as a side effect of the import. pathToFileURL (not manual `file://` string
+// concat) is required — paths with spaces (this repo's own directory name) percent-encode in
+// import.meta.url but not in a naive concatenation, which silently breaks the comparison.
+const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isMain) {
+  const cells = [];
 
-for (const symbol of SYMBOLS) {
-  for (const tf of TFS) {
-    let bars;
-    let fundingRows;
-    try {
-      bars = loadOhlcv(symbol, tf);
-      fundingRows = loadFunding(symbol);
-    } catch {
-      continue; // missing cache for this symbol/tf combo
-    }
-    const fundingMap = attachFundingToBars(bars, fundingRows);
+  for (const symbol of SYMBOLS) {
+    for (const tf of TFS) {
+      let bars;
+      let fundingRows;
+      try {
+        bars = loadOhlcv(symbol, tf);
+        fundingRows = loadFunding(symbol);
+      } catch {
+        continue; // missing cache for this symbol/tf combo
+      }
+      const fundingMap = attachFundingToBars(bars, fundingRows);
 
-    // Variants (i) contrarian, (ii) momentum.
-    for (const { smooth, hold } of SMOOTH_HOLD_PAIRS) {
-      const signal = fundingSignalSeries(bars, fundingMap, smooth);
-      for (const mode of MODES) {
-        for (const T of T_GRID) {
-          const positions = fundingPositions(bars, signal, { T, mode, hold });
-          cells.push(
-            scoreCell(bars, positions, fundingMap, {
-              variant: mode,
-              symbol,
-              tf,
-              thresholdAnnualized: T,
-              smooth,
-              hold: String(hold),
-              feeBps: FEE_BPS,
-            }),
-          );
+      // Variants (i) contrarian, (ii) momentum.
+      for (const { smooth, hold } of SMOOTH_HOLD_PAIRS) {
+        const signal = fundingSignalSeries(bars, fundingMap, smooth);
+        for (const mode of MODES) {
+          for (const T of T_GRID) {
+            const positions = fundingPositions(bars, signal, { T, mode, hold });
+            cells.push(
+              scoreCell(bars, positions, fundingMap, {
+                variant: mode,
+                symbol,
+                tf,
+                thresholdAnnualized: T,
+                smooth,
+                hold: String(hold),
+                feeBps: FEE_BPS,
+              }),
+            );
+          }
         }
       }
-    }
 
-    // Variant (iii) funding-extreme gate over a plain trend rule.
-    const gateSmoothN = 3; // fixed mid-smoothing for the gate signal (not swept — a veto, not a bet)
-    const gateSignal = fundingSignalSeries(bars, fundingMap, gateSmoothN);
-    for (const rule of BASE_RULES) {
-      for (const dir of DIRS) {
-        const basePositions = rule.fn(bars, rule.params, dir);
-        for (const T of T_GRID) {
-          const positions = fundingGatedTrend(basePositions, gateSignal, T);
-          cells.push(
-            scoreCell(bars, positions, fundingMap, {
-              variant: 'gate',
-              baseRule: `${rule.kind}(${Object.values(rule.params).join(',')})`,
-              dir,
-              symbol,
-              tf,
-              thresholdAnnualized: T,
-              feeBps: FEE_BPS,
-            }),
-          );
+      // Variant (iii) funding-extreme gate over a plain trend rule.
+      const gateSmoothN = 3; // fixed mid-smoothing for the gate signal (not swept — a veto, not a bet)
+      const gateSignal = fundingSignalSeries(bars, fundingMap, gateSmoothN);
+      for (const rule of BASE_RULES) {
+        for (const dir of DIRS) {
+          const basePositions = rule.fn(bars, rule.params, dir);
+          for (const T of T_GRID) {
+            const positions = fundingGatedTrend(basePositions, gateSignal, T);
+            cells.push(
+              scoreCell(bars, positions, fundingMap, {
+                variant: 'gate',
+                baseRule: `${rule.kind}(${Object.values(rule.params).join(',')})`,
+                dir,
+                symbol,
+                tf,
+                thresholdAnnualized: T,
+                feeBps: FEE_BPS,
+              }),
+            );
+          }
         }
       }
     }
   }
-}
 
-// eslint-disable-next-line no-console
-console.log(`Family A (funding): ${cells.length} cells`);
-const byVariant = new Map();
-for (const c of cells) byVariant.set(c.variant, (byVariant.get(c.variant) ?? 0) + 1);
-for (const [v, n] of byVariant) console.log(`  ${v}: ${n} cells`); // eslint-disable-line no-console
-
-if (OUT) {
-  writeFileSync(
-    OUT,
-    JSON.stringify(
-      {
-        generatedAt: new Date().toISOString(),
-        family: 'funding',
-        config: {
-          symbols: SYMBOLS,
-          tfs: TFS,
-          tGrid: T_GRID,
-          smoothHoldPairs: SMOOTH_HOLD_PAIRS,
-          modes: MODES,
-          baseRules: BASE_RULES.map((r) => ({ kind: r.kind, params: r.params })),
-          dirs: DIRS,
-          feeBps: FEE_BPS,
-          holdout: HOLDOUT,
-        },
-        cells,
-      },
-      null,
-      1,
-    ),
-  );
   // eslint-disable-next-line no-console
-  console.log(`wrote ${OUT}`);
+  console.log(`Family A (funding): ${cells.length} cells`);
+  const byVariant = new Map();
+  for (const c of cells) byVariant.set(c.variant, (byVariant.get(c.variant) ?? 0) + 1);
+  for (const [v, n] of byVariant) console.log(`  ${v}: ${n} cells`); // eslint-disable-line no-console
+
+  if (OUT) {
+    writeFileSync(
+      OUT,
+      JSON.stringify(
+        {
+          generatedAt: new Date().toISOString(),
+          family: 'funding',
+          config: {
+            symbols: SYMBOLS,
+            tfs: TFS,
+            tGrid: T_GRID,
+            smoothHoldPairs: SMOOTH_HOLD_PAIRS,
+            modes: MODES,
+            baseRules: BASE_RULES.map((r) => ({ kind: r.kind, params: r.params })),
+            dirs: DIRS,
+            feeBps: FEE_BPS,
+            holdout: HOLDOUT,
+          },
+          cells,
+        },
+        null,
+        1,
+      ),
+    );
+    // eslint-disable-next-line no-console
+    console.log(`wrote ${OUT}`);
+  }
 }

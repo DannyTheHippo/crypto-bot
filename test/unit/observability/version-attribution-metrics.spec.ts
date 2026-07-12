@@ -128,4 +128,33 @@ describe('VersionAttributionMetricsService', () => {
     expect(net.set).not.toHaveBeenCalled();
     expect(trips.set).not.toHaveBeenCalled();
   });
+
+  it('passes the evidence epoch to the fills read (attribution shares the gate window)', async () => {
+    const seen: Array<number | undefined> = [];
+    const stats: PromotionStatsPort = {
+      fillsForMode: (_mode, sinceMs) => {
+        seen.push(sinceMs);
+        return Promise.resolve([]);
+      },
+      llmTokenTotals: () => Promise.resolve({ perModel: [] }),
+    };
+    const journal: AgentDecisionJournalPort = {
+      record: () => undefined,
+      recent: () => Promise.resolve([]),
+    };
+    const config = {
+      agentic: { promotionDustNotional: '5', promotionEvidenceEpoch: '2026-07-10T20:26:00Z' },
+    } as unknown as TypedConfigService;
+    const svc = new VersionAttributionMetricsService(
+      gaugeFake() as never,
+      gaugeFake() as never,
+      config,
+      stats,
+      journal,
+    );
+
+    await svc.tick();
+
+    expect(seen).toEqual([Date.parse('2026-07-10T20:26:00Z')]);
+  });
 });

@@ -1154,7 +1154,16 @@ export class MetricsWrappingAgentClient implements AgentClientPort {
       ): RoundTripEvidencePort | undefined =>
         stats === undefined
           ? undefined
-          : new RoundTripEvidenceReader(stats, config.agentic.promotionDustNotional),
+          : new RoundTripEvidenceReader(
+              stats,
+              config.agentic.promotionDustNotional,
+              // Same PROMOTION_EVIDENCE_EPOCH parse as mode-control's readinessConfigProvider — the
+              // reflection evidence walk must share the gate's fill window or straddle strays
+              // freeze it (see RoundTripEvidenceReader's ctor comment).
+              config.agentic.promotionEvidenceEpoch === undefined
+                ? undefined
+                : Date.parse(config.agentic.promotionEvidenceEpoch),
+            ),
       inject: [PROMOTION_STATS, TypedConfigService],
     },
   ],

@@ -114,4 +114,37 @@ describe('RoundTripEvidenceReader', () => {
     );
     expect(await reader.recentRoundTrips(0)).toEqual([]);
   });
+
+  it('threads the evidence epoch into every fills read (recentRoundTrips AND reflectionSeed)', async () => {
+    const seen: Array<number | undefined> = [];
+    const stats: PromotionStatsPort = {
+      fillsForMode: (_mode, sinceMs) => {
+        seen.push(sinceMs);
+        return Promise.resolve([]);
+      },
+      llmTokenTotals: () => Promise.reject(new Error('unused')),
+    };
+    const reader = new RoundTripEvidenceReader(stats, '5', 1_752_182_760_000);
+    await reader.recentRoundTrips(10);
+    await reader.reflectionSeed('agentic-1');
+    expect(seen).toEqual([1_752_182_760_000, 1_752_182_760_000]);
+  });
+
+  it('an epoch bound recovers cycles a straddle stray would otherwise freeze (2026-07-12 ETH class)', async () => {
+    // A leading exit-only SELL (its entry predates the epoch/wipe) offsets signedQty by −0.025;
+    // subsequent entry sizes drift, so the group never returns to dust and closes ZERO cycles.
+    const stray = fill({ side: 'SELL', qty: '0.025', price: '1800', executedAt: 1_000 });
+    const realTrips: PromotionFillRow[] = [
+      fill({ qty: '0.0194', price: '1800', executedAt: 2_000 }),
+      fill({ side: 'SELL', qty: '0.0194', price: '1810', executedAt: 3_000 }),
+      fill({ qty: '0.0278', price: '1800', executedAt: 4_000 }),
+      fill({ side: 'SELL', qty: '0.0278', price: '1810', executedAt: 5_000 }),
+    ];
+    const unbounded = new RoundTripEvidenceReader(statsOf([stray, ...realTrips]), '5');
+    expect(await unbounded.recentRoundTrips(10)).toHaveLength(0); // frozen: the observed defect
+    // The epoch-bounded read excludes the stray (the stats port applies sinceMs server-side; the
+    // stub mimics that) and the same real fills close both cycles.
+    const bounded = new RoundTripEvidenceReader(statsOf(realTrips), '5', 1_500);
+    expect(await bounded.recentRoundTrips(10)).toHaveLength(2);
+  });
 });

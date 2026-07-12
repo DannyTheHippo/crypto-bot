@@ -69,8 +69,13 @@ export class VersionAttributionMetricsService implements OnModuleInit, OnModuleD
   async tick(): Promise<void> {
     if (this.stats === undefined || this.journal === undefined) return;
     try {
+      // Same evidence epoch as the earned-live gate (mode-control's readinessConfigProvider parse):
+      // unbounded, an epoch/wipe-straddling stray fill freezes a symbol group's walk permanently
+      // once entry sizes drift, and that symbol's trips silently stop attributing to any version.
+      const epoch = this.config.agentic.promotionEvidenceEpoch;
+      const epochMs = epoch === undefined ? undefined : Date.parse(epoch);
       const [fills, decisions] = await Promise.all([
-        this.stats.fillsForMode(DEMO_MODE),
+        this.stats.fillsForMode(DEMO_MODE, epochMs),
         this.journal.recent(DECISION_LOOKBACK_ROWS),
       ]);
       const dust = new Decimal(this.config.agentic.promotionDustNotional);

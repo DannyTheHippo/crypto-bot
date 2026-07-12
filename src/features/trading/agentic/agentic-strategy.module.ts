@@ -141,6 +141,10 @@ export function agenticEnv(config?: TypedConfigService): Record<string, string |
     AGENTIC_QUIET_PAYLOAD_SAMPLE_BARS: String(agentic.quietPayloadSampleBars),
     AGENTIC_TOKEN_PRICE_CACHE_READ_PER_MTOK: agentic.tokenPriceCacheReadPerMtok,
     AGENTIC_TOKEN_PRICE_CACHE_WRITE_PER_MTOK: agentic.tokenPriceCacheWritePerMtok,
+    // The promotion evaluator's fill walk shares the earned-live gate's evidence epoch — sourced
+    // from the validated config field so the two reads can never drift (raw process.env would
+    // bypass the schema's ISO refine).
+    PROMOTION_EVIDENCE_EPOCH: agentic.promotionEvidenceEpoch,
     // C1: documents the optional derivatives block in the system prompt — off by default, so an
     // unconfigured deployment's prompt stays byte-identical.
     DERIVATIVES_FEED_ENABLED: String(config.derivativesFeed.enabled),

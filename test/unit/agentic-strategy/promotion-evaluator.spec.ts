@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   PromotionEvaluator,
+  createPromotionEvaluator,
   type EvaluatorPlaybookStore,
   type PromotionEvaluatorDeps,
 } from '../../../src/features/trading/agentic/promotion-evaluator';
@@ -206,5 +207,61 @@ describe('PromotionEvaluator (W5 attributed auto-promotion)', () => {
     evalr.onClosedTrade(strategyId(SID), 10);
     await flush();
     expect(h.appended).toHaveLength(0);
+  });
+
+  it('threads evidenceEpochMs into the fills read (the gate and the evaluator share one window)', async () => {
+    const h = harness({ fills: [], decisions: [], championVersion: 1 });
+    const seen: Array<number | undefined> = [];
+    h.deps = {
+      ...h.deps,
+      stats: {
+        fillsForMode: (_mode, sinceMs) => {
+          seen.push(sinceMs);
+          return Promise.resolve([]);
+        },
+        llmTokenTotals: () => Promise.resolve({ perModel: [] }),
+      },
+    };
+    const evalr = new PromotionEvaluator(
+      { minAttributedTrades: 10, dustNotional: '5', evidenceEpochMs: 1_752_182_760_000 },
+      h.deps,
+    );
+    evalr.onClosedTrade(strategyId(SID), 1);
+    await flush();
+    expect(seen).toEqual([1_752_182_760_000]);
+  });
+
+  it('createPromotionEvaluator parses PROMOTION_EVIDENCE_EPOCH like the gate (absent ⇒ all-time)', async () => {
+    const capture = () => {
+      const seen: Array<number | undefined> = [];
+      const h = harness({ fills: [], decisions: [], championVersion: 1 });
+      const deps: PromotionEvaluatorDeps = {
+        ...h.deps,
+        stats: {
+          fillsForMode: (_mode, sinceMs) => {
+            seen.push(sinceMs);
+            return Promise.resolve([]);
+          },
+          llmTokenTotals: () => Promise.resolve({ perModel: [] }),
+        },
+      };
+      return { seen, deps };
+    };
+    const withEpoch = capture();
+    createPromotionEvaluator(
+      {
+        AGENTIC_AUTO_PROMOTE_MIN_ATTRIBUTED_TRADES: '10',
+        PROMOTION_EVIDENCE_EPOCH: '2026-07-10T20:26:00Z',
+      },
+      withEpoch.deps,
+    ).onClosedTrade(strategyId(SID), 1);
+    const without = capture();
+    createPromotionEvaluator(
+      { AGENTIC_AUTO_PROMOTE_MIN_ATTRIBUTED_TRADES: '10' },
+      without.deps,
+    ).onClosedTrade(strategyId(SID), 1);
+    await flush();
+    expect(withEpoch.seen).toEqual([Date.parse('2026-07-10T20:26:00Z')]);
+    expect(without.seen).toEqual([undefined]);
   });
 });

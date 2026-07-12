@@ -57,6 +57,11 @@ export interface PromotionEvaluatorConfig {
   // evaluator entirely (the legacy count-only path or manual promotion governs instead).
   readonly minAttributedTrades: number;
   readonly dustNotional: string;
+  // PROMOTION_EVIDENCE_EPOCH in ms — the SAME bound the earned-live gate applies. Unbounded, the
+  // walk keeps epoch/wipe-straddling stray fills forever: a symbol group whose signedQty never
+  // returns to dust stops attributing round trips entirely, starving the candidate-vs-champion
+  // comparison (undefined ⇒ all-time, the pre-epoch behavior).
+  readonly evidenceEpochMs?: number;
 }
 
 export interface PromotionEvaluatorDeps {
@@ -139,7 +144,7 @@ export class PromotionEvaluator {
     }
 
     const [fills, decisions, current] = await Promise.all([
-      stats.fillsForMode(DEMO_MODE),
+      stats.fillsForMode(DEMO_MODE, this.cfg.evidenceEpochMs),
       journal.recent(DECISION_LOOKBACK_ROWS),
       playbookStore.current(),
     ]);
@@ -243,5 +248,10 @@ export function createPromotionEvaluator(
     new Decimal(env['AGENTIC_AUTO_PROMOTE_MIN_ATTRIBUTED_TRADES'] ?? 0).toNumber(),
   );
   const dustNotional = env['PROMOTION_DUST_NOTIONAL'] ?? '5';
-  return new PromotionEvaluator({ minAttributedTrades, dustNotional }, deps);
+  // Same parse as mode-control's readinessConfigProvider: schema-validated ISO instant (or absent
+  // ⇒ all-time); an unparseable value from a raw-env context reads as undefined rather than NaN.
+  const epochRaw = env['PROMOTION_EVIDENCE_EPOCH'];
+  const epochParsed = epochRaw === undefined || epochRaw === '' ? NaN : Date.parse(epochRaw);
+  const evidenceEpochMs = Number.isNaN(epochParsed) ? undefined : epochParsed;
+  return new PromotionEvaluator({ minAttributedTrades, dustNotional, evidenceEpochMs }, deps);
 }

@@ -20,11 +20,17 @@ export class RoundTripEvidenceReader implements RoundTripEvidencePort {
     // Same knob as the promotion verdict (PROMOTION_DUST_NOTIONAL) so "closed" means the same
     // thing in both places.
     private readonly dustNotional: string,
+    // Same epoch as the promotion verdict (PROMOTION_EVIDENCE_EPOCH, ms). Without it this walk
+    // starts at DB row zero, where an epoch/wipe-straddling position leaves a leading exit-only
+    // fill that offsets signedQty permanently once entry sizes drift — the group stops closing
+    // cycles and reflection evidence + trigger seeds silently freeze (observed live: ETH frozen
+    // from 2026-07-11T00:15Z, two real round trips absorbed).
+    private readonly evidenceEpochMs?: number,
   ) {}
 
   async recentRoundTrips(limit: number): Promise<readonly RoundTripEvidence[]> {
     if (limit <= 0) return []; // slice(-0) would return everything
-    const fills = await this.stats.fillsForMode(DEMO_MODE);
+    const fills = await this.stats.fillsForMode(DEMO_MODE, this.evidenceEpochMs);
     const { cycles } = walkRoundTrips(fills, new Decimal(this.dustNotional));
     return cycles.slice(-limit).map(toEvidence);
   }
@@ -36,7 +42,7 @@ export class RoundTripEvidenceReader implements RoundTripEvidencePort {
   // floors the auto-promotion gate, which guards the lane-global playbook).
   async reflectionSeed(strategyId?: string): Promise<ReflectionTriggerSeed> {
     const [fills, lastReflectionAt] = await Promise.all([
-      this.stats.fillsForMode(DEMO_MODE),
+      this.stats.fillsForMode(DEMO_MODE, this.evidenceEpochMs),
       this.stats.latestReflectionAt?.() ?? Promise.resolve(null),
     ]);
     const { cycles } = walkRoundTrips(fills, new Decimal(this.dustNotional));

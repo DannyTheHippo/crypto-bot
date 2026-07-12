@@ -1714,3 +1714,80 @@ measurement-trust stop condition. (4) E2 at ≥200 payload rows (114 now).
 error, kill switch RUNNING, cache working (2.2k reads this boot), $/day inside projection.
 App container untouched by this pass (dashboard-only ship). Deploy verdict: KEEP. Empty-pass
 counter: 0.
+
+## 2026-07-12 — Owner-directed pass (same session as Pass 17, ~08:05–09:05Z): OMS FIX — Pass 17's flag #35 root-caused to three composing recovery defects; fixed, reviewed, deployed, stuck order healed live on first boot
+
+**Owner directive:** "fix second flag; ignore host availability for now" — explicit authorization
+for the OMS/reconciliation work Pass 17 had flagged report-only (Pass-7 precedent: flagged OMS
+package implemented once owner-authorized, with mandatory reviewer + full gates).
+
+**Root cause (three composing defects, all evidence from the append-only `order_events` journal +
+DB rows — LOG.md Pass 17 has the discovery trail):**
+
+1. **D1 — poller stale-snapshot fold.** `DemoFillPollerService.poll()` built its
+   venueOrderId→OrderRecord map once per poll; the three partials of the 00:19Z LINK buy
+   (1.99/1.99/1.67 of 5.65) each folded from the same cumQty=0 snapshot. Journal rows carry
+   non-monotone FILL cums ("1.99","1.99","1.67" — per-trade values in a cumulative field), the
+   reducer dropped #2/#3 as stale duplicates, and the last commit REGRESSED the orders-row cum to
+   1.67. The venue-FILLED order stayed PARTIALLY_FILLED locally.
+2. **D2 — a mis-fold was unrecoverable.** The 45-min entry-TTL sweep "cancelled" the
+   venue-FILLED order → `CANCEL_REJECT_UNKNOWN` → the unknown-resolver's fill backfill routes
+   through FillIngestor, whose venueTradeId dedupe SKIPS the fold for already-saved fills — so
+   no retry could ever advance cum; five backoff polls (01:00:06→01:00:18, matching the
+   250ms–4s schedule exactly) then froze it `QUERY_INCONCLUSIVE` → RECONCILE_REQUIRED, >31h,
+   `hasUnresolvedOrders()` true (live-arming blocker). The codebase's own invariant ("cumQty is
+   rebuilt from the fill table, never the venue's running field") had no rebuilding code path.
+3. **D3 — recovered orders lose their intent.** Boot recovery restored the ORDER but never the
+   persisted write-ahead intent, so `FillIngestor` skipped `portfolio.applyFill` for recovered
+   orders' fills (intent undefined). The 23:15Z-07-10 6.9-LINK GTC entry (placed pre-outage,
+   recovered by Pass 15's boot, filled 00:14Z) journaled its fill but never moved position/cash —
+   an UNMANAGED ~$55 position (no protective exits, invisible to the strategy) and the true
+   source of the promotion-walk LINK phantom (+6.92 = 6.9 unapplied + 0.02 partial-fold residue;
+   Pass 17's shared-wallet-foreign-traffic hypothesis is RETRACTED — the fills are all ours and
+   the LINK is still in the wallet). Same gap: the resolver can't poll recovered unknowns
+   (sync() needs the intent) and Risk's E1 clamp never saw recovered exposure (= backlog #26).
+
+**Shipped `b00c886`** (8 files, +384/−23): poller folds every fill from the LIVE order-book
+record; boot recovery rebuilds cum from SUM(fills) through the pure reducer, journaled with an
+idempotent `boot:cum-rebuild:<total>` key (terminal rebuild stamps terminal_at at the existing
+chokepoint; NEW-row and I4-overflow corruption guarded — logged, bounded, never a boot
+crash-loop); `loadOpenOrders` rehydrates the persisted `order_intents` row into a full
+OrderIntent and recovery re-registers it for the same VENUE_CONFIRMED_OPEN set (fill
+application + resolver polling + E1 exposure all restored; closes #26's gap). +7 regression
+tests pinning all three defects (verified to fail on the old code by the reviewer).
+
+**Review (mandatory, money-path):** reviewer (opus) — **APPROVE, no must-fix**; traced blast
+radius incl. E1 clamp (conservative over-reserve only, pre-existing shape), expiresAt consumers
+(only the submit-kind resolver path reads it; unreachable for rehydrated states),
+protective-exit/halt-coordinator busy sets (no-op: symbol already present via the open-order
+half). Both should-fix items applied: stale-row-cache heal path now returns the healed record
+(non-atomic appendOrderEvent crash window), + overflow-catch regression test.
+
+**Gates (final tree):** build / lint / typecheck / format:check green, **1673 unit** (+7),
+**41 livegate**, **11 paper**, **15 eval:agentic**. Pre-commit hook commands run manually green,
+committed `--no-verify` (no pnpm shim in this environment — same as Pass 17's process note).
+
+**Deploy + live verification (boot `fc6ceedb`, 08:44:03Z):** build → up -d. FIRST boot healed
+the stranded order exactly as designed — log: `rebuilt cum for cbt019f4e87283f743eb57413f15c951bb7
+… 1.67 → 5.65 (RECONCILE_REQUIRED → FILLED)`; DB: orders row FILLED cum 5.65 terminal_at
+08:44:03Z; journal: exactly one appended `boot:cum-rebuild:5.65` FILL event; **unresolved
+testnet orders: 0** (live-arming blocker class cleared). Portfolio restored exact (5 positions,
+equity $4,994.20); healed-terminal order correctly NOT registered open; 0 intents rehydrated
+(none open — D3's effect starts at the next outage recovery with resting orders).
+
+**What this does NOT fix (owner action remains):** the historical 6.9-LINK scar — the fill is
+ingested (deduped) so the portfolio will never retroactively hold it, ~6.9 LINK (~$55) sits in
+the demo wallet unmanaged, and the promotion walk's LINK group stays frozen at a +6.92 phantom
+open (LINK trips still don't accrue on the gate). Clean resolution = **owner declares a new
+`PROMOTION_EVIDENCE_EPOCH` at the next flat instant** (erases the LINK phantom AND Pass 14's
+XRP straddle phase-shift; costs the open ETH trip's eventual count — conservative). Proposed in
+state.md § Flagged; a pass never moves the epoch unilaterally. Alternative: owner manually
+sells 6.9 LINK venue-side (cleans the wallet, but the walk stays frozen — our journal never
+sees a non-cbt order's fills).
+
+**Soak verdict (verified ~09:03Z):** boot `fc6ceedb` clean at ~20 min — the 09:00Z bar
+processed on all five strategies (5 decides journaled, all prescreen-gated holds on a quiet
+bar — pipeline live, zero LLM spend), 0 EXPIRED, 0 rejections, 0 error lines (only the boot
+banner + the expected rebuild warn), reconcile clean (0 halt / 0 error), kill switch RUNNING,
+playbook info stamps v1, and the DB-backed scoreboard repopulated to RT=7 unchanged — the heal
+altered OMS state only, never the fills the walk reads. Deploy verdict: KEEP.

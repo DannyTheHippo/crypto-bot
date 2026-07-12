@@ -132,6 +132,8 @@ describe('agenticEnv', () => {
       entryTtlBars: 2,
       playbookAbPct: 0,
       derivativesAbPct: 30,
+      crossSymbolEnabled: false,
+      crossSymbolLookbackBars: 20,
       expectancyLadderEnabled: false,
       planMode: false,
       minEdgeMultiple: '1.5',

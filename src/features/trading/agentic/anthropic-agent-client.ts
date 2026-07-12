@@ -13,6 +13,7 @@ import {
   type PlaybookProvider,
 } from '../../../ports/agentic-strategy';
 import {
+  CROSS_SYMBOL_TEMPLATE_VERSION,
   DECISION_TOOL,
   DERIVATIVES_TEMPLATE_VERSION,
   SENTIMENT_TEMPLATE_VERSION,
@@ -146,6 +147,10 @@ export interface AnthropicAgentClientConfig {
   // C4: documents the optional sentiment block in the system prompt (agent-prompt.ts's
   // buildSystemPrompt sentimentFeedEnabled option). Absent/false ⇒ byte-identical legacy prompt.
   readonly sentimentFeedEnabled?: boolean;
+  // 2026-07-12: documents + renders the cross-symbol relative-strength block. Gated together with the
+  // derivatives block under the information-context A/B control arm (see propose()). Absent/false ⇒
+  // byte-identical legacy prompt/payload.
+  readonly crossSymbolFeedEnabled?: boolean;
   // B3 shorts capability: widens the decision tool/schema to accept 'short' and maps it to
   // ENTER_SHORT/EXIT_SHORT (see propose()'s mapping table). LEGACY decision path ONLY — mutually
   // exclusive with planMode (the plan schema is long-oriented; shorts-in-plan-mode belongs to the
@@ -298,22 +303,34 @@ export class AnthropicAgentClient implements AgentClientPort {
     // land on the same minute as the playbook router's (the two A/B mechanisms stay decorrelated).
     // Only ever fires when the feed is actually on: with the feed off there is nothing to withhold,
     // so derivativesAbPct is a no-op and the pct=0 default stays byte-identical to pre-A/B behavior.
-    const derivativesAbPct = this.cfg.derivativesAbPct ?? 0;
-    const derivativesControlArm =
-      (this.cfg.derivativesFeedEnabled ?? false) &&
-      derivativesAbPct > 0 &&
-      Math.floor(Date.now() / 60_000 + 37) % 100 < derivativesAbPct;
-    // The invariant this whole mechanism exists to hold: system sentence, promptHash's `+d1` tag, and
-    // the payload's derivatives key all move TOGETHER per arm — a single boolean gates all three below
-    // rather than three independently-computed conditions that could drift apart.
+    // Information-context A/B (2026-07-12): one control arm gates the whole EXTRA-INFORMATION bundle
+    // — the derivatives block AND the cross-symbol relative-strength block move together, so the two
+    // live arms are a clean "baseline (price only) vs baseline + extra information" contrast rather
+    // than a 4-way split that would quarter the already-thin per-variant trade count. Fires when the
+    // A/B pct > 0 AND at least one info feed is on (nothing to withhold otherwise). Bucketed like the
+    // playbook router (app.module.ts) — `floor(Date.now()/60_000) % 100 < pct` — but +37 before the
+    // modulo so its minute-boundary transitions never coincide with the playbook router's (the two
+    // A/B mechanisms stay decorrelated). Reuses the deployed AGENTIC_DERIVATIVES_AB_PCT knob.
+    const infoContextAbPct = this.cfg.derivativesAbPct ?? 0;
+    const anyInfoFeed =
+      (this.cfg.derivativesFeedEnabled ?? false) || (this.cfg.crossSymbolFeedEnabled ?? false);
+    const infoContextControlArm =
+      anyInfoFeed &&
+      infoContextAbPct > 0 &&
+      Math.floor(Date.now() / 60_000 + 37) % 100 < infoContextAbPct;
+    // The invariant this whole mechanism exists to hold: for each block, its system sentence, its
+    // promptHash tag, and its payload key all move TOGETHER per arm — a single boolean gates all
+    // three rather than independently-computed conditions that could drift apart.
     const effectiveDerivativesEnabled =
-      (this.cfg.derivativesFeedEnabled ?? false) && !derivativesControlArm;
-    if (derivativesControlArm) {
+      (this.cfg.derivativesFeedEnabled ?? false) && !infoContextControlArm;
+    const effectiveCrossSymbolEnabled =
+      (this.cfg.crossSymbolFeedEnabled ?? false) && !infoContextControlArm;
+    if (infoContextControlArm) {
       // No recorder seam reaches this client (MetricsWrappingAgentClient wraps AgentClientPort at the
       // composition root, outside AnthropicAgentClientConfig) — one structured log line per
       // control-arm decide is the observability surface until/unless that seam is threaded through.
       this.logger.warn(
-        `agentic derivatives ab: control arm — symbol=${symbol} pct=${derivativesAbPct}`,
+        `agentic info-context ab: control arm (derivatives+crossSymbol withheld) — symbol=${symbol} pct=${infoContextAbPct}`,
       );
     }
     // v5: constraints no longer render into the system prompt (they ride the payload below), so the
@@ -329,16 +346,20 @@ export class AnthropicAgentClient implements AgentClientPort {
       derivativesFeedEnabled: effectiveDerivativesEnabled,
       sentimentFeedEnabled: this.cfg.sentimentFeedEnabled ?? false,
       shortsEnabled: this.cfg.shortsEnabled ?? false,
+      crossSymbolFeedEnabled: effectiveCrossSymbolEnabled,
     });
-    // Control arm: strip any derivatives snapshot the strategy attached (agentic.strategy.ts's
-    // withDerivatives) before building the payload, so buildMarketPayload's own
-    // input.snapshot.derivatives gate (agent-prompt.ts) omits the block — the same
-    // "input.snapshot-derived derivatives absent ⇒ no key" path a feed-off/stale-poll deployment
-    // already takes, reused rather than duplicated. Every other use of `input` in this method
-    // (signals, eventTime, refPrice, ...) stays on the ORIGINAL input — only payload construction
-    // sees the stripped copy.
-    const payloadInput = derivativesControlArm
-      ? { ...input, snapshot: { ...input.snapshot, derivatives: undefined } }
+    // Control arm: strip BOTH the derivatives snapshot (agentic.strategy.ts's withDerivatives) and
+    // the cross-symbol ranking (context.crossSymbol) the strategy attached, before building the
+    // payload — buildMarketPayload's own omit-when-absent gates then leave both blocks out, the same
+    // path a feed-off/stale-poll deployment already takes, reused rather than duplicated. Every other
+    // use of `input` in this method (signals, eventTime, refPrice, ...) stays on the ORIGINAL input —
+    // only payload construction sees the stripped copy.
+    const payloadInput = infoContextControlArm
+      ? {
+          ...input,
+          snapshot: { ...input.snapshot, derivatives: undefined },
+          ...(input.context ? { context: { ...input.context, crossSymbol: undefined } } : {}),
+        }
       : input;
     // inputPayload is the market JSON ALONE — buildMarketPayload's signature carries no
     // playbookContent parameter, so it structurally cannot echo playbook text (see its own comment).
@@ -378,6 +399,7 @@ export class AnthropicAgentClient implements AgentClientPort {
       ...(effectiveDerivativesEnabled ? [DERIVATIVES_TEMPLATE_VERSION] : []),
       ...(this.cfg.sentimentFeedEnabled ? [SENTIMENT_TEMPLATE_VERSION] : []),
       ...(this.cfg.shortsEnabled ? [SHORTS_TEMPLATE_VERSION] : []),
+      ...(effectiveCrossSymbolEnabled ? [CROSS_SYMBOL_TEMPLATE_VERSION] : []),
     ];
     const promptHash = computePromptHash({
       templateVersion:

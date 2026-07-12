@@ -165,6 +165,13 @@ services:
       # treatment/control split; the offline scorer's existing (playbookVersion, promptHash, symbol)
       # grouping picks the two arms apart with zero new scoring code. 0 disables (byte-identical).
       AGENTIC_DERIVATIVES_AB_PCT: 30
+      # Cross-symbol relative-strength context (2026-07-12): each instance sees where its symbol
+      # ranks by trailing 20-bar return within the 5-symbol basket — the strongest systematic signal
+      # in the 2026-07-12 multi-strategy search (cross-sectional momentum). Rides the SAME control
+      # arm as the derivatives block above (one information-context A/B, +xs1 promptHash tag), so
+      # the two live arms stay a clean price-only vs price+information contrast.
+      AGENTIC_CROSS_SYMBOL_ENABLED: 'true'
+      AGENTIC_CROSS_SYMBOL_LOOKBACK_BARS: 20
 
       # C4: read-only free news/sentiment feed (headlines only, no numeric scores) polled from
       # CryptoPanic, surfaced to the agentic prompt when fresh. Off by default; requires

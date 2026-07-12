@@ -152,6 +152,8 @@ export function agenticEnv(config?: TypedConfigService): Record<string, string |
     // schema's 0-50 bound can never be bypassed here — same convention as PROMOTION_EVIDENCE_EPOCH
     // above.
     AGENTIC_DERIVATIVES_AB_PCT: String(agentic.derivativesAbPct),
+    AGENTIC_CROSS_SYMBOL_ENABLED: String(agentic.crossSymbolEnabled),
+    AGENTIC_CROSS_SYMBOL_LOOKBACK_BARS: String(agentic.crossSymbolLookbackBars),
   };
 }
 
@@ -261,6 +263,9 @@ export function selectAgentClient(
       derivativesAbPct: intEnv(env['AGENTIC_DERIVATIVES_AB_PCT'], 0),
       // C4: off by default ⇒ byte-identical legacy prompt (no sentiment sentence).
       sentimentFeedEnabled: env['SENTIMENT_FEED_ENABLED'] === 'true',
+      // Cross-symbol relative-strength block: off by default ⇒ byte-identical. Gated together with
+      // the derivatives block under the info-context A/B (derivativesAbPct) inside the client.
+      crossSymbolFeedEnabled: env['AGENTIC_CROSS_SYMBOL_ENABLED'] === 'true',
     },
     fetch,
     new Logger('AnthropicAgentClient'),

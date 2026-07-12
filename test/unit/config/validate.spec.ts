@@ -199,6 +199,8 @@ describe('validate()', () => {
         playbookPin: undefined,
         playbookAbPct: 0,
         derivativesAbPct: 0,
+        crossSymbolEnabled: false,
+        crossSymbolLookbackBars: 20,
         expectancyLadderEnabled: false,
         planMode: false,
         minEdgeMultiple: '1.5',

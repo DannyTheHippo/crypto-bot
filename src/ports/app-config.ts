@@ -69,6 +69,11 @@ export interface AppConfig {
     // so the flag's effect becomes measurable via promptHash grouping. 0 disables (default; also a
     // no-op whenever derivativesFeedEnabled is off — nothing to withhold).
     derivativesAbPct: number;
+    // Cross-symbol relative-strength context (2026-07-12): when true, the model sees where its symbol
+    // ranks by trailing return within the basket (cross-symbol-context.ts). Gated together with the
+    // derivatives block under the information-context A/B (derivativesAbPct).
+    crossSymbolEnabled: boolean;
+    crossSymbolLookbackBars: number;
     // PromotionReadinessService LLM-cost math: USD per 1M tokens, operator-adjustable.
     tokenPriceInputPerMtok: string;
     tokenPriceOutputPerMtok: string;

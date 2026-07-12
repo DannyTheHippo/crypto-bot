@@ -1847,4 +1847,110 @@ describe('AnthropicAgentClient', () => {
       expect(JSON.parse(late.inputPayload!)).not.toHaveProperty('derivatives');
     });
   });
+
+  describe('cross-symbol block + information-context A/B (2026-07-12)', () => {
+    // Same bucket math as the derivatives A/B suite above — the two share one control arm.
+    const CONTROL_TIME_MS = 70 * 60_000; // (70+37)%100 = 7 < 30 -> CONTROL
+    const TREATMENT_TIME_MS = 100 * 60_000; // (100+37)%100 = 37 >= 30 -> TREATMENT
+    const AB_PCT = 30;
+
+    const CROSS_SYMBOL = {
+      rank: 2,
+      of: 5,
+      ownReturnPct: '1.5',
+      strongest: { symbol: 'BTC/USDT', returnPct: '4.2' },
+      weakest: { symbol: 'XRP/USDT', returnPct: '-2.1' },
+    };
+    const CROSS_CONTEXT = { ...FLAT_CONTEXT, crossSymbol: CROSS_SYMBOL };
+
+    function holdResponse(): unknown {
+      return toolUseBody({ action: 'hold', confidence: 0.5, rationale: 'r' });
+    }
+
+    it('flag on: crossSymbol guidance sentence, +xs1 promptHash tag, and payload key all present', async () => {
+      const fetchFn = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const fetchFnOff = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const client = new AnthropicAgentClient(buildCfg({ crossSymbolFeedEnabled: true }), fetchFn);
+      const offClient = new AnthropicAgentClient(buildCfg({}), fetchFnOff);
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: CROSS_CONTEXT,
+      });
+
+      const proposal = await client.propose(input);
+      const offProposal = await offClient.propose(input);
+
+      // The +xs1 tag makes the flag-on hash a distinct attribution group from flag-off.
+      expect(proposal.promptHash).not.toBe(offProposal.promptHash);
+      const [, init] = fetchFn.mock.calls[0] as [string, RequestInit];
+      const body = JSON.parse(init.body as string) as { system: { text: string }[] };
+      expect(body.system[0]!.text).toContain('crossSymbol block');
+      expect(JSON.parse(proposal.inputPayload!)).toHaveProperty('crossSymbol', CROSS_SYMBOL);
+    });
+
+    it('control arm withholds the WHOLE information bundle: neither derivatives nor crossSymbol survives, hash matches the both-feeds-off reference', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(CONTROL_TIME_MS));
+      const fetchFn = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const fetchFnOff = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const client = new AnthropicAgentClient(
+        buildCfg({
+          derivativesFeedEnabled: true,
+          crossSymbolFeedEnabled: true,
+          derivativesAbPct: AB_PCT,
+        }),
+        fetchFn,
+      );
+      const offClient = new AnthropicAgentClient(buildCfg({}), fetchFnOff);
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: CROSS_CONTEXT,
+        derivatives: derivativesSnapshot(),
+      });
+
+      const proposal = await client.propose(input);
+      const offProposal = await offClient.propose(input);
+
+      expect(proposal.promptHash).toBe(offProposal.promptHash);
+      const [, init] = fetchFn.mock.calls[0] as [string, RequestInit];
+      const body = JSON.parse(init.body as string) as { system: { text: string }[] };
+      expect(body.system[0]!.text).not.toContain('derivatives block');
+      expect(body.system[0]!.text).not.toContain('crossSymbol block');
+      const payload = JSON.parse(proposal.inputPayload!) as Record<string, unknown>;
+      expect(payload).not.toHaveProperty('derivatives');
+      expect(payload).not.toHaveProperty('crossSymbol');
+    });
+
+    it('treatment arm carries the whole bundle and matches the no-A/B both-feeds-on hash', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(TREATMENT_TIME_MS));
+      const fetchFn = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const fetchFnOn = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const client = new AnthropicAgentClient(
+        buildCfg({
+          derivativesFeedEnabled: true,
+          crossSymbolFeedEnabled: true,
+          derivativesAbPct: AB_PCT,
+        }),
+        fetchFn,
+      );
+      const onClient = new AnthropicAgentClient(
+        buildCfg({ derivativesFeedEnabled: true, crossSymbolFeedEnabled: true }),
+        fetchFnOn,
+      );
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: CROSS_CONTEXT,
+        derivatives: derivativesSnapshot(),
+      });
+
+      const proposal = await client.propose(input);
+      const onProposal = await onClient.propose(input);
+
+      expect(proposal.promptHash).toBe(onProposal.promptHash);
+      const payload = JSON.parse(proposal.inputPayload!) as Record<string, unknown>;
+      expect(payload).toHaveProperty('derivatives');
+      expect(payload).toHaveProperty('crossSymbol', CROSS_SYMBOL);
+    });
+  });
 });

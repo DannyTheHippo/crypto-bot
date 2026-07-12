@@ -111,6 +111,7 @@ import {
   type AgenticStrategyParams,
   type AgenticStrategyDeps,
 } from './features/trading/agentic/agentic.strategy';
+import { CrossSymbolContextService } from './features/trading/agentic/cross-symbol-context';
 import { assertAgenticLaneNotLive } from './features/trading/agentic/agentic-live-interlock';
 import { validatePlaybook } from './features/trading/agentic/playbook-validator';
 import {
@@ -1280,6 +1281,9 @@ export class AppModule
   // selected.
   private readonly agentClientKind: string;
   private readonly promotionEvaluator: PromotionEvaluator;
+  // One shared cross-symbol relative-strength context for the whole agentic lane (2026-07-12). Each
+  // agentic-N instance records its symbol's trailing return into it and reads the basket ranking.
+  private readonly crossSymbolContext = new CrossSymbolContextService();
 
   constructor(
     @Inject(CLOCK) private readonly clock: ClockPort,
@@ -1501,6 +1505,10 @@ export class AppModule
         evidence: this.roundTripEvidence,
         derivativesFeed: this.derivativesFeed,
         sentimentFeed: this.sentimentFeed,
+        // Cross-symbol relative-strength context: ONE service shared across every agentic-N instance
+        // (this closure runs once per registration but `deps` is captured by the factory), so each
+        // instance records its own symbol's trailing return and reads the whole basket's ranking.
+        crossSymbolContext: this.crossSymbolContext,
       };
       return new AgenticStrategy(id, p as AgenticStrategyParams, this.agentClient, deps);
     });
@@ -1629,6 +1637,8 @@ export class AppModule
       planMaxQuietBars: agentic.planMaxQuietBars,
       planExitTtlBars: agentic.planExitTtlBars,
       quietPayloadSampleBars: agentic.quietPayloadSampleBars,
+      crossSymbolEnabled: agentic.crossSymbolEnabled,
+      crossSymbolLookbackBars: agentic.crossSymbolLookbackBars,
     };
   }
 }

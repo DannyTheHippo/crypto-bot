@@ -237,6 +237,16 @@ const envSchema = z
     // Capped at 50, mirroring AGENTIC_PLAYBOOK_AB_PCT above (a control arm can never outweigh the
     // treatment arm's own evidence share).
     AGENTIC_DERIVATIVES_AB_PCT: z.coerce.number().int().min(0).max(50).default(0),
+    // Cross-symbol relative-strength context (2026-07-12): when true, each agentic instance records
+    // its symbol's trailing return into a shared basket and the model sees where its symbol ranks
+    // (see cross-symbol-context.ts). The strongest signal found in the 2026-07-12 multi-strategy
+    // search — for a spot long-only lane it means concentrating longs in relatively strong symbols
+    // and avoiding laggards. Gated together with the derivatives block under the information-context
+    // A/B (AGENTIC_DERIVATIVES_AB_PCT). Default false ⇒ byte-identical to pre-feature.
+    AGENTIC_CROSS_SYMBOL_ENABLED: z.coerce.boolean().default(false),
+    // Trailing-return lookback (bars) for the cross-symbol ranking. Default 20 (the winning
+    // cross-sectional lookback from the search). Bounded to keep it inside typical warmup windows.
+    AGENTIC_CROSS_SYMBOL_LOOKBACK_BARS: z.coerce.number().int().min(2).max(200).default(20),
     // Cumulative closed-trade floor before a reflection candidate auto-promotes to ACTIVE (G4b); 0
     // (default) disables auto-promotion — see reflection.service.ts's autoPromoteMinTrades comment.
     // LEGACY count-only path: superseded by AGENTIC_AUTO_PROMOTE_MIN_ATTRIBUTED_TRADES below (the
@@ -485,6 +495,8 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     AGENTIC_PLAYBOOK_PIN: agenticPlaybookPin,
     AGENTIC_PLAYBOOK_AB_PCT: agenticPlaybookAbPct,
     AGENTIC_DERIVATIVES_AB_PCT: agenticDerivativesAbPct,
+    AGENTIC_CROSS_SYMBOL_ENABLED: agenticCrossSymbolEnabled,
+    AGENTIC_CROSS_SYMBOL_LOOKBACK_BARS: agenticCrossSymbolLookbackBars,
     AGENTIC_AUTO_PROMOTE_MIN_TRADES: agenticAutoPromoteMinTrades,
     AGENTIC_AUTO_PROMOTE_MIN_ATTRIBUTED_TRADES: agenticAutoPromoteMinAttributedTrades,
     AGENTIC_TOKEN_PRICE_INPUT_PER_MTOK: agenticTokenPriceInputPerMtok,
@@ -577,6 +589,8 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       playbookPin: agenticPlaybookPin,
       playbookAbPct: agenticPlaybookAbPct,
       derivativesAbPct: agenticDerivativesAbPct,
+      crossSymbolEnabled: agenticCrossSymbolEnabled,
+      crossSymbolLookbackBars: agenticCrossSymbolLookbackBars,
       tokenPriceInputPerMtok: agenticTokenPriceInputPerMtok,
       tokenPriceOutputPerMtok: agenticTokenPriceOutputPerMtok,
       tokenPriceCacheReadPerMtok: agenticTokenPriceCacheReadPerMtok,

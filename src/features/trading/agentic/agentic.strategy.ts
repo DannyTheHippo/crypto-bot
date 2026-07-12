@@ -19,6 +19,7 @@ import {
   type AgentClientPort,
   type AgentDecisionInput,
   type AgentContext,
+  type AgentCrossSymbol,
   type AgentDecisionMeta,
   type AgentHtfIndicators,
   type AgentIndicators,
@@ -40,6 +41,7 @@ import type { RoundTripEvidencePort } from '../../../ports/promotion';
 import type { DerivativesFeedPort } from '../../../ports/derivatives-feed';
 import type { SentimentFeedPort } from '../../../ports/sentiment-feed';
 import { evaluatePlan, type PlanExecutorState } from './plan-executor';
+import { CrossSymbolContextService } from './cross-symbol-context';
 
 export interface AgenticStrategyParams {
   readonly symbol: SymbolId;
@@ -79,6 +81,14 @@ export interface AgenticStrategyParams {
   // for the ladder). Optional/absent ⇒ disabled, so existing callers stay byte-identical. Also inert
   // without AgenticStrategyDeps.evidence — a true flag with no evidence port is a no-op, not an error.
   readonly expectancyLadderEnabled?: boolean;
+  // Cross-symbol relative-strength context (2026-07-12): when enabled AND deps.crossSymbolContext is
+  // wired, buildContext records this symbol's trailing-return into the shared service and attaches
+  // its basket ranking to the outgoing context (see cross-symbol-context.ts). Absent/false ⇒ never
+  // recorded, never attached — byte-identical to pre-feature output. Inert without the shared dep.
+  readonly crossSymbolEnabled?: boolean;
+  // Trailing-return lookback (bars) used for the cross-symbol ranking. Default 20 (the winning
+  // cross-sectional lookback from the 2026-07-12 multi-strategy search).
+  readonly crossSymbolLookbackBars?: number;
 }
 
 export interface AgenticStrategyDeps {
@@ -107,6 +117,11 @@ export interface AgenticStrategyDeps {
   // means the prompt's sentiment block never renders (byte-identical to pre-C4 output), same
   // convention as `derivativesFeed` above.
   readonly sentimentFeed?: SentimentFeedPort;
+  // Cross-symbol relative-strength context (2026-07-12): a SINGLE instance shared across every
+  // agentic-N strategy (wired in app.module.ts's register factory), so each instance records its own
+  // symbol's trailing return and reads the whole basket's ranking. Absent ⇒ crossSymbolEnabled is a
+  // no-op (the ranking never attaches), the same convention as `evidence`/`derivativesFeed` above.
+  readonly crossSymbolContext?: CrossSymbolContextService;
   readonly logger?: LoggerLike;
 }
 
@@ -190,9 +205,12 @@ export class AgenticStrategy implements AsyncStrategy {
     barsElapsed: number;
   } | null = null;
   private readonly expectancyLadderEnabled: boolean;
+  private readonly crossSymbolEnabled: boolean;
+  private readonly crossSymbolLookbackBars: number;
   private readonly evidence?: RoundTripEvidencePort;
   private readonly derivativesFeed?: DerivativesFeedPort;
   private readonly sentimentFeed?: SentimentFeedPort;
+  private readonly crossSymbolContext?: CrossSymbolContextService;
   // W2.1 stale-entry sweep state. OpenOrderSummary carries no timestamps, so age is measured in
   // observed decide cycles: clientOrderId → the snapshot eventTime this strategy FIRST saw the order
   // resting. cancelRequestedAt records when a CANCEL_OPEN was emitted for an id so it isn't re-spammed
@@ -241,9 +259,12 @@ export class AgenticStrategy implements AsyncStrategy {
     this.planExitTtlBars = Math.max(2, params.planExitTtlBars ?? 2);
     this.quietPayloadSampleBars = Math.max(0, params.quietPayloadSampleBars ?? 0);
     this.expectancyLadderEnabled = params.expectancyLadderEnabled ?? false;
+    this.crossSymbolEnabled = params.crossSymbolEnabled ?? false;
+    this.crossSymbolLookbackBars = Math.max(1, params.crossSymbolLookbackBars ?? 20);
     this.evidence = deps.evidence;
     this.derivativesFeed = deps.derivativesFeed;
     this.sentimentFeed = deps.sentimentFeed;
+    this.crossSymbolContext = deps.crossSymbolContext;
     this.subscriptions = {
       venue: params.venue,
       symbols: [params.symbol],
@@ -713,7 +734,29 @@ export class AgenticStrategy implements AsyncStrategy {
       position,
       recentDecisions: [...this.history],
       htf: this.buildHtfContext(candles),
+      ...this.buildCrossSymbolContext(candles, input.snapshot.eventTime),
     };
+  }
+
+  // Cross-symbol relative-strength ranking (2026-07-12). When enabled AND the shared service is
+  // wired AND enough candles exist for the lookback, record THIS symbol's trailing return into the
+  // shared basket and attach its ranking to the context. Returns {} otherwise, so a disabled/
+  // unwired/warming instance stays byte-identical (no crossSymbol key). Decimal-computed off the
+  // reference-grade candle closes — a ranking signal, never a money-path value.
+  private buildCrossSymbolContext(
+    candles: readonly CandleEvent[],
+    eventTime: EpochMs,
+  ): { crossSymbol?: AgentCrossSymbol | null } {
+    if (!this.crossSymbolEnabled || this.crossSymbolContext === undefined) return {};
+    const n = this.crossSymbolLookbackBars;
+    if (candles.length <= n) return {};
+    const nowClose = new Decimal(candles[candles.length - 1]!.close.toFixed());
+    const pastClose = new Decimal(candles[candles.length - 1 - n]!.close.toFixed());
+    if (pastClose.lte(0)) return {};
+    const ret = nowClose.div(pastClose).minus(1);
+    // EpochMs is a branded number — assignable to the service's plain-number clock directly.
+    this.crossSymbolContext.record(String(this.symbol), ret, eventTime);
+    return { crossSymbol: this.crossSymbolContext.rank(String(this.symbol), eventTime) };
   }
 
   private buildHtfContext(candles: readonly CandleEvent[]): AgentContext['htf'] {

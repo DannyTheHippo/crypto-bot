@@ -133,6 +133,17 @@ export interface AgentHtfIndicators {
 
 // Enrichment the host attaches on top of the raw AgentMarketSnapshot: indicators, the strategy's
 // own position, and a short rolling trail of its own past decisions (self-consistency context).
+// Cross-symbol relative-strength ranking of this symbol within the traded basket (see
+// cross-symbol-context.ts). All return figures are percentage strings (reference-grade context, not
+// a money path). Absent when fewer than 2 symbols have fresh recorded returns.
+export interface AgentCrossSymbol {
+  readonly rank: number; // 1 = strongest of `of`
+  readonly of: number;
+  readonly ownReturnPct: string;
+  readonly strongest: { readonly symbol: string; readonly returnPct: string };
+  readonly weakest: { readonly symbol: string; readonly returnPct: string };
+}
+
 export interface AgentContext {
   readonly indicators: AgentIndicators | null; // null while candle history < 21 closes
   readonly position: AgentPositionSummary;
@@ -143,6 +154,10 @@ export interface AgentContext {
     readonly h1: AgentHtfIndicators | null;
     readonly h4: AgentHtfIndicators | null;
   };
+  // Cross-symbol relative-strength ranking (present only when AGENTIC_CROSS_SYMBOL_ENABLED and ≥2
+  // symbols have fresh returns). The client may still withhold it under the information-context A/B
+  // control arm — see anthropic-agent-client.ts.
+  readonly crossSymbol?: AgentCrossSymbol | null;
 }
 
 // What woke the agent, plus the snapshot it reasons over.

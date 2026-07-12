@@ -139,7 +139,9 @@ describe('agentic eval — recorded input_payload render checks (offline, no net
 
     const championCards = scoreRows(championRows);
     const candidateCards = scoreRows(candidateRows);
-    // One promptHash per variant throughout -> exactly one scorecard each.
+    // One promptHash per variant AND one symbol (all fixtures are BTC/USDT) -> exactly one
+    // scorecard each; a multi-symbol corpus would yield one card per symbol (combineScorecards
+    // aggregates those — the live-compare script's path).
     expect(championCards).toHaveLength(1);
     expect(candidateCards).toHaveLength(1);
     const [championCard] = championCards;

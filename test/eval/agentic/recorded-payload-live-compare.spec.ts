@@ -39,6 +39,7 @@ import {
 import { SEED_PLAYBOOK } from '../../../src/features/trading/agentic/agentic-strategy.module';
 import { validatePlaybook } from '../../../src/features/trading/agentic/playbook-validator';
 import {
+  combineScorecards,
   compare,
   scoreRows,
   type ScoringRow,
@@ -55,6 +56,10 @@ const LIVE_ENABLED = process.env['EVAL_LIVE'] === '1';
 const DB_URL = process.env['DATABASE_URL'];
 const MODEL = process.env['AGENTIC_MODEL'] ?? 'claude-opus-4-8';
 const ROW_LIMIT = Number(process.env['AGENTIC_EVAL_ROW_LIMIT'] ?? '10');
+// Wall-clock budget must scale with the row budget (each row is 2 sequential real API calls,
+// ~3-5s each) — a fixed cap silently contradicts a raised AGENTIC_EVAL_ROW_LIMIT: the run dies on
+// the vitest timeout AFTER the API spend. Default preserves the original 120s.
+const TIMEOUT_MS = Number(process.env['AGENTIC_EVAL_TIMEOUT_MS'] ?? '120000');
 // N2.4: loop-side override — swap the fixed CANDIDATE_PLAYBOOK_CONTENT tweak below for a real
 // loop-minted candidate file (scripts/playbook-candidate.mjs's own input, or its DB row's content
 // re-exported to a file) so this eval can score an ACTUAL candidate before it's promoted. Absent,
@@ -149,115 +154,128 @@ function promptIdentityFor(playbookContent: string, playbookVersion: number): Pr
 describe.skipIf(SKIP)(
   'agentic eval — recorded input_payload live prompt-variant compare (optional, requires ANTHROPIC_API_KEY + EVAL_LIVE=1 + DATABASE_URL + db-test gate)',
   () => {
-    it('replays recorded rows through champion vs candidate playbooks against the real API and prints a scorecard', async () => {
-      // Fail fast on an invalid loop-minted candidate BEFORE any real API spend below — the same
-      // structural gate the runtime read-path (ValidatingPlaybookProvider) applies.
-      let candidatePlaybookContent = CANDIDATE_PLAYBOOK_CONTENT;
-      if (CANDIDATE_PLAYBOOK_FILE) {
-        const fileContent = readFileSync(CANDIDATE_PLAYBOOK_FILE, 'utf8');
-        const validation = validatePlaybook(fileContent);
-        if (!validation.ok) {
-          throw new Error(
-            `AGENTIC_CANDIDATE_PLAYBOOK_FILE=${CANDIDATE_PLAYBOOK_FILE} failed validation: ${validation.reason}`,
-          );
-        }
-        candidatePlaybookContent = fileContent;
-      }
-
-      const pool = new Pool({ connectionString: DB_URL! });
-      try {
-        const db = drizzle(pool, { schema });
-        const journal = new AgentDecisionJournalAdapter(db);
-        const rows = (await journal.recent(ROW_LIMIT)).filter((r) => r.inputPayload !== null);
-        expect(rows.length).toBeGreaterThan(0);
-
-        // Champion resolution: when a loop-minted candidate file is supplied, resolve the CHAMPION
-        // from the DB's actual active version (same pin > promotion > seed precedence the running
-        // process uses — PlaybookStoreAdapter.resolve()) rather than assuming SEED, so the candidate
-        // is scored against what's really active. Absent AGENTIC_CANDIDATE_PLAYBOOK_FILE, this stays
-        // SEED_PLAYBOOK exactly as before (byte-identical default behavior).
-        let championContent = SEED_PLAYBOOK.content;
-        let championVersion = SEED_PLAYBOOK.version;
+    it(
+      'replays recorded rows through champion vs candidate playbooks against the real API and prints a scorecard',
+      async () => {
+        // Fail fast on an invalid loop-minted candidate BEFORE any real API spend below — the same
+        // structural gate the runtime read-path (ValidatingPlaybookProvider) applies.
+        let candidatePlaybookContent = CANDIDATE_PLAYBOOK_CONTENT;
         if (CANDIDATE_PLAYBOOK_FILE) {
-          const pinEnv = process.env['AGENTIC_PLAYBOOK_PIN'];
-          const store = new PlaybookStoreAdapter(
-            db,
-            SEED_PLAYBOOK,
-            pinEnv ? Number(pinEnv) : undefined,
-          );
-          const resolved = await store.current(); // SEED fallback when the DB has none (ensureSeed)
-          championContent = resolved.content;
-          championVersion = resolved.version;
-        }
-
-        const systemPrompt = buildSystemPrompt(EVAL_PROFILE);
-        const championIdentity = promptIdentityFor(championContent, championVersion);
-        const candidateIdentity = promptIdentityFor(candidatePlaybookContent, championVersion + 1);
-
-        const championRows: ScoringRow[] = [];
-        const candidateRows: ScoringRow[] = [];
-        let skippedRows = 0;
-        for (const row of rows) {
-          const payloadJson = row.inputPayload!;
-          // Screen the payload BEFORE spending two live calls on it — a malformed/residue row
-          // (no usable eventTime) costs one skipped row, never an aborted run or wasted spend.
-          const screen = scoringRowFromPayload(
-            payloadJson,
-            { action: 'hold', confidence: 0 },
-            championIdentity,
-          );
-          if (screen === null) {
-            skippedRows += 1;
-            continue;
+          const fileContent = readFileSync(CANDIDATE_PLAYBOOK_FILE, 'utf8');
+          const validation = validatePlaybook(fileContent);
+          if (!validation.ok) {
+            throw new Error(
+              `AGENTIC_CANDIDATE_PLAYBOOK_FILE=${CANDIDATE_PLAYBOOK_FILE} failed validation: ${validation.reason}`,
+            );
           }
-          const championDecision = await callAnthropicLive(
-            systemPrompt,
-            composeRecordedUserMessage(payloadJson, championContent),
-          );
-          const candidateDecision = await callAnthropicLive(
-            systemPrompt,
-            composeRecordedUserMessage(payloadJson, candidatePlaybookContent),
-          );
-          championRows.push(
-            scoringRowFromPayload(payloadJson, championDecision, championIdentity)!,
-          );
-          candidateRows.push(
-            scoringRowFromPayload(payloadJson, candidateDecision, candidateIdentity)!,
-          );
+          candidatePlaybookContent = fileContent;
         }
-        expect(championRows.length).toBeGreaterThan(0);
 
-        const [championCard] = scoreRows(championRows);
-        const [candidateCard] = scoreRows(candidateRows);
-        expect(championCard).toBeDefined();
-        expect(candidateCard).toBeDefined();
-        const result = compare(championCard!, candidateCard!, { assertSameTemplate: true });
+        const pool = new Pool({ connectionString: DB_URL! });
+        try {
+          const db = drizzle(pool, { schema });
+          const journal = new AgentDecisionJournalAdapter(db);
+          const rows = (await journal.recent(ROW_LIMIT)).filter((r) => r.inputPayload !== null);
+          expect(rows.length).toBeGreaterThan(0);
 
-        // The scorecard IS this script's deliverable. Console alone is NOT durable — vitest's
-        // reporter can intercept/suppress console output (2026-07-10: two paid scoring runs lost
-        // their scorecards exactly this way) — so when AGENTIC_EVAL_SCORECARD_FILE is set the
-        // scorecard is ALSO written there verbatim.
-        const scorecard = JSON.stringify(
-          {
-            rowsScored: championRows.length,
-            rowsSkipped: skippedRows,
-            championVersion,
-            championHorizonStats: championCard!.horizonStats,
-            candidateHorizonStats: candidateCard!.horizonStats,
-            finalEquityDelta: result.finalEquityDelta,
-            hitRateDeltas: result.hitRateDeltas,
-          },
-          null,
-          2,
-        );
-        console.log(scorecard);
-        const scorecardFile = process.env['AGENTIC_EVAL_SCORECARD_FILE'];
-        if (scorecardFile) {
-          writeFileSync(scorecardFile, scorecard);
+          // Champion resolution: when a loop-minted candidate file is supplied, resolve the CHAMPION
+          // from the DB's actual active version (same pin > promotion > seed precedence the running
+          // process uses — PlaybookStoreAdapter.resolve()) rather than assuming SEED, so the candidate
+          // is scored against what's really active. Absent AGENTIC_CANDIDATE_PLAYBOOK_FILE, this stays
+          // SEED_PLAYBOOK exactly as before (byte-identical default behavior).
+          let championContent = SEED_PLAYBOOK.content;
+          let championVersion = SEED_PLAYBOOK.version;
+          if (CANDIDATE_PLAYBOOK_FILE) {
+            const pinEnv = process.env['AGENTIC_PLAYBOOK_PIN'];
+            const store = new PlaybookStoreAdapter(
+              db,
+              SEED_PLAYBOOK,
+              pinEnv ? Number(pinEnv) : undefined,
+            );
+            const resolved = await store.current(); // SEED fallback when the DB has none (ensureSeed)
+            championContent = resolved.content;
+            championVersion = resolved.version;
+          }
+
+          const systemPrompt = buildSystemPrompt(EVAL_PROFILE);
+          const championIdentity = promptIdentityFor(championContent, championVersion);
+          const candidateIdentity = promptIdentityFor(
+            candidatePlaybookContent,
+            championVersion + 1,
+          );
+
+          const championRows: ScoringRow[] = [];
+          const candidateRows: ScoringRow[] = [];
+          let skippedRows = 0;
+          for (const row of rows) {
+            const payloadJson = row.inputPayload!;
+            // Screen the payload BEFORE spending two live calls on it — a malformed/residue row
+            // (no usable eventTime) costs one skipped row, never an aborted run or wasted spend.
+            const screen = scoringRowFromPayload(
+              payloadJson,
+              { action: 'hold', confidence: 0 },
+              championIdentity,
+            );
+            if (screen === null) {
+              skippedRows += 1;
+              continue;
+            }
+            const championDecision = await callAnthropicLive(
+              systemPrompt,
+              composeRecordedUserMessage(payloadJson, championContent),
+            );
+            const candidateDecision = await callAnthropicLive(
+              systemPrompt,
+              composeRecordedUserMessage(payloadJson, candidatePlaybookContent),
+            );
+            championRows.push(
+              scoringRowFromPayload(payloadJson, championDecision, championIdentity)!,
+            );
+            candidateRows.push(
+              scoringRowFromPayload(payloadJson, candidateDecision, candidateIdentity)!,
+            );
+          }
+          expect(championRows.length).toBeGreaterThan(0);
+
+          // scoreRows() yields one card per (version, hash, SYMBOL) — recorded rows span the whole
+          // 5-symbol universe, so each variant gets per-symbol cards that combineScorecards()
+          // aggregates into the one-card-per-side shape compare() judges. Before symbol-aware
+          // grouping, this scored cross-symbol close transitions (BTC→LINK) as forward returns.
+          const championCard = combineScorecards(scoreRows(championRows));
+          const candidateCard = combineScorecards(scoreRows(candidateRows));
+          const result = compare(championCard, candidateCard, { assertSameTemplate: true });
+
+          // The scorecard IS this script's deliverable. Console alone is NOT durable — vitest's
+          // reporter can intercept/suppress console output (2026-07-10: two paid scoring runs lost
+          // their scorecards exactly this way) — so when AGENTIC_EVAL_SCORECARD_FILE is set the
+          // scorecard is ALSO written there verbatim.
+          const scorecard = JSON.stringify(
+            {
+              rowsScored: championRows.length,
+              rowsSkipped: skippedRows,
+              model: MODEL,
+              symbols: championCard.symbol,
+              championVersion,
+              championHorizonStats: championCard.horizonStats,
+              candidateHorizonStats: candidateCard.horizonStats,
+              championToyEquity: championCard.toyEquity,
+              candidateToyEquity: candidateCard.toyEquity,
+              finalEquityDelta: result.finalEquityDelta,
+              hitRateDeltas: result.hitRateDeltas,
+            },
+            null,
+            2,
+          );
+          console.log(scorecard);
+          const scorecardFile = process.env['AGENTIC_EVAL_SCORECARD_FILE'];
+          if (scorecardFile) {
+            writeFileSync(scorecardFile, scorecard);
+          }
+        } finally {
+          await pool.end();
         }
-      } finally {
-        await pool.end();
-      }
-    }, 120_000);
+      },
+      TIMEOUT_MS,
+    );
   },
 );

@@ -19,6 +19,11 @@ import type { AgentDecisionRow } from '../../../ports/agentic-strategy';
 // helper (Decimal→number, never Number()/parseFloat() — both banned by lint outside src/domain) —
 // this file is not itself a money path (no Price/Qty is minted or moved here).
 
+// `symbol` is declared as plain string (AgentDecisionRow's branded SymbolId is assignable to it)
+// because grouping is the ONLY thing it drives here — no money/venue call is keyed off it. Without
+// it, rows from different instruments interleave into one group and forwardReturn()/computeToyEquity()
+// read a DIFFERENT symbol's close/refPrice as row i's future price path (observed 2026-07-12: a
+// 5-symbol recorded corpus scored BTC→LINK transitions as −99.99% "forward returns").
 export type ScoringRow = Pick<
   AgentDecisionRow,
   | 'eventTime'
@@ -29,7 +34,7 @@ export type ScoringRow = Pick<
   | 'playbookVersion'
   | 'promptHash'
   | 'model'
->;
+> & { readonly symbol: string };
 
 export const FORWARD_RETURN_HORIZONS = [1, 4, 24] as const;
 export type ForwardReturnHorizon = (typeof FORWARD_RETURN_HORIZONS)[number];
@@ -64,6 +69,8 @@ export interface ToyEquityResult {
 export interface Scorecard {
   readonly playbookVersion: number | null;
   readonly promptHash: string;
+  /** Single instrument for a scoreRows() group; a '+'-joined list for combineScorecards() output. */
+  readonly symbol: string;
   readonly rowCount: number;
   readonly horizonStats: readonly HorizonStats[];
   readonly calibration: readonly CalibrationBucket[];
@@ -244,16 +251,20 @@ function computeToyEquity(rows: readonly ScoringRow[]): ToyEquityResult {
 }
 
 function groupKey(row: ScoringRow): string {
-  return `${row.playbookVersion ?? 'null'} ${row.promptHash}`;
+  return `${row.playbookVersion ?? 'null'} ${row.promptHash} ${row.symbol}`;
 }
 
 /**
  * Scores an ordered (oldest→newest) journal-shaped row sequence into one Scorecard per distinct
- * (playbookVersion, promptHash) pair — a version whose rows span multiple promptHashes (e.g. a
- * promotion boundary, or two variants replayed and concatenated) is split per hash, one Scorecard
- * each. Forward returns/hit-rate/calibration/toy-equity are all computed WITHIN each group's own
- * chronological subsequence (grouping happens first, stably preserving each row's relative order)
- * — never across a different variant's price path, even when groups are interleaved in the input.
+ * (playbookVersion, promptHash, symbol) triple — a version whose rows span multiple promptHashes
+ * (e.g. a promotion boundary, or two variants replayed and concatenated) is split per hash, one
+ * Scorecard each, and a multi-instrument corpus is split per symbol: forward returns, the long/flat
+ * exposure state machine, and toy-equity fills are only meaningful along ONE instrument's price
+ * path (before symbol joined the key, a 5-symbol journal scored cross-symbol close transitions as
+ * returns). Forward returns/hit-rate/calibration/toy-equity are all computed WITHIN each group's
+ * own chronological subsequence (grouping happens first, stably preserving each row's relative
+ * order) — never across a different variant's or instrument's price path, even when groups are
+ * interleaved in the input. Use combineScorecards() to aggregate one variant's per-symbol cards.
  *
  * TOY RESEARCH METRIC — see this module's header comment. Never step-D certification, never an
  * auto-promotion input at current trade rates.
@@ -269,11 +280,96 @@ export function scoreRows(rows: readonly ScoringRow[]): readonly Scorecard[] {
   return Array.from(groups.values()).map((groupRows) => ({
     playbookVersion: groupRows[0]!.playbookVersion,
     promptHash: groupRows[0]!.promptHash,
+    symbol: groupRows[0]!.symbol,
     rowCount: groupRows.length,
     horizonStats: computeHorizonStats(groupRows),
     calibration: computeCalibration(groupRows),
     toyEquity: computeToyEquity(groupRows),
   }));
+}
+
+/**
+ * Aggregates one variant's per-symbol Scorecards (same playbookVersion + promptHash, distinct
+ * symbols) into a single portfolio-level card so compare() can keep judging one card per side.
+ * Refuses mixed variants — combining across different (version, hash) pairs would silently average
+ * two different prompts. Aggregation rules, all evidence-preserving: horizon sample/hit counts sum
+ * (hit rate recomputed from the sums); calibration buckets recombine count-weighted; toy equity is
+ * the PRODUCT of per-symbol final equities (each sleeve compounds its own NAV from 1 — the
+ * equal-notional-sleeves toy portfolio convention) with round trips summed and openAtEnd true when
+ * any sleeve ends open.
+ *
+ * TOY RESEARCH METRIC — see this module's header comment.
+ */
+export function combineScorecards(cards: readonly Scorecard[]): Scorecard {
+  if (cards.length === 0) {
+    throw new Error('combineScorecards: no scorecards to combine');
+  }
+  const first = cards[0]!;
+  for (const card of cards) {
+    if (card.playbookVersion !== first.playbookVersion || card.promptHash !== first.promptHash) {
+      throw new Error(
+        'combineScorecards refuses to combine scorecards from different (playbookVersion, ' +
+          `promptHash) variants: got (${String(first.playbookVersion)}, ${first.promptHash}) and ` +
+          `(${String(card.playbookVersion)}, ${card.promptHash}) — aggregate one variant's ` +
+          'per-symbol cards only.',
+      );
+    }
+  }
+
+  const horizonStats: HorizonStats[] = FORWARD_RETURN_HORIZONS.map((horizon) => {
+    let sampleCount = 0;
+    let hitCount = 0;
+    for (const card of cards) {
+      const stat = card.horizonStats.find((s) => s.horizon === horizon);
+      if (!stat) continue;
+      sampleCount += stat.sampleCount;
+      hitCount += stat.hitCount;
+    }
+    return {
+      horizon,
+      sampleCount,
+      hitCount,
+      hitRate: sampleCount === 0 ? null : hitCount / sampleCount,
+    };
+  });
+
+  const calibration: CalibrationBucket[] = Array.from(
+    { length: CALIBRATION_BUCKET_COUNT },
+    (_, idx) => {
+      let count = 0;
+      let weightedSum = 0;
+      for (const card of cards) {
+        const bucket = card.calibration.find((b) => b.bucketIndex === idx);
+        if (!bucket || bucket.sampleCount === 0 || bucket.meanForwardReturn === null) continue;
+        count += bucket.sampleCount;
+        weightedSum += bucket.meanForwardReturn * bucket.sampleCount;
+      }
+      return {
+        bucketIndex: idx,
+        lowerBound: idx / CALIBRATION_BUCKET_COUNT,
+        upperBound: (idx + 1) / CALIBRATION_BUCKET_COUNT,
+        sampleCount: count,
+        meanForwardReturn: count === 0 ? null : weightedSum / count,
+      };
+    },
+  );
+
+  return {
+    playbookVersion: first.playbookVersion,
+    promptHash: first.promptHash,
+    symbol: cards
+      .map((c) => c.symbol)
+      .sort()
+      .join('+'),
+    rowCount: cards.reduce((sum, c) => sum + c.rowCount, 0),
+    horizonStats,
+    calibration,
+    toyEquity: {
+      finalEquity: cards.reduce((prod, c) => prod * c.toyEquity.finalEquity, 1),
+      roundTrips: cards.reduce((sum, c) => sum + c.toyEquity.roundTrips, 0),
+      openAtEnd: cards.some((c) => c.toyEquity.openAtEnd),
+    },
+  };
 }
 
 // ── Forward-outcome digest for the reflection loop (F1) ──────────────────────

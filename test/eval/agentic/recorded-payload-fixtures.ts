@@ -260,5 +260,9 @@ export function scoringRowFromPayload(
     playbookVersion: identity.playbookVersion,
     promptHash: identity.promptHash,
     model: identity.model,
+    // Lenient like eventTime above is strict: a residue row without a usable symbol groups under
+    // '' rather than aborting the run — scoreRows() then keeps it out of every real symbol's
+    // price path, which is the property that matters (see groupKey's symbol term).
+    symbol: typeof payload.symbol === 'string' ? payload.symbol : '',
   };
 }

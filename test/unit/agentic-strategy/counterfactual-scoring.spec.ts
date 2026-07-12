@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   scoreRows,
+  combineScorecards,
   compare,
   summarizeCalibration,
   summarizeRegimeSplit,
@@ -21,6 +22,7 @@ function row(index: number, over: Partial<ScoringRow> = {}): ScoringRow {
     playbookVersion: 1,
     promptHash: 'hash-a',
     model: 'test-model',
+    symbol: 'BTC/USDT',
     ...over,
   };
 }
@@ -65,6 +67,74 @@ describe('scoreRows — grouping', () => {
     expect(scorecards).toHaveLength(1);
     expect(scorecards[0]!.playbookVersion).toBeNull();
     expect(scorecards[0]!.rowCount).toBe(2);
+  });
+
+  it('splits interleaved symbols into per-symbol groups — forward returns never cross instruments (2026-07-12 defect pin)', () => {
+    // The live defect: one (version, hash) group interleaving BTC (~64k closes) and LINK (~8)
+    // scored the BTC→LINK close transition as a −99.99% forward return. Per-symbol grouping must
+    // keep each instrument on its own price path.
+    const rows: ScoringRow[] = [
+      row(0, { action: 'long', close: '64000', symbol: 'BTC/USDT' }),
+      row(1, { action: 'long', close: '8', symbol: 'LINK/USDT' }),
+      row(2, { action: 'hold', close: '64640', symbol: 'BTC/USDT' }),
+      row(3, { action: 'hold', close: '8.08', symbol: 'LINK/USDT' }),
+    ];
+
+    const scorecards = scoreRows(rows);
+    expect(scorecards).toHaveLength(2);
+
+    const btc = scorecards.find((s) => s.symbol === 'BTC/USDT')!;
+    const link = scorecards.find((s) => s.symbol === 'LINK/USDT')!;
+    // Both symbols rose +1% along their own path — a LONG hit each. Under the old single-group
+    // walk, BTC's "forward close" was LINK's 8 (a −99.99% miss).
+    expect(horizonStats(btc, 1).sampleCount).toBe(1);
+    expect(horizonStats(btc, 1).hitCount).toBe(1);
+    expect(horizonStats(link, 1).sampleCount).toBe(1);
+    expect(horizonStats(link, 1).hitCount).toBe(1);
+  });
+});
+
+describe('combineScorecards', () => {
+  it("aggregates one variant's per-symbol cards: counts sum, hit rate recomputes, toy equity multiplies", () => {
+    const rows: ScoringRow[] = [
+      // BTC sleeve: long@100, next refPrice 110 fills the entry; flat@110 exits at 105 — one trip.
+      row(0, { action: 'long', close: '100', refPrice: '100', symbol: 'BTC/USDT' }),
+      row(2, { action: 'flat', close: '110', refPrice: '110', symbol: 'BTC/USDT' }),
+      row(4, { action: 'hold', close: '105', refPrice: '105', symbol: 'BTC/USDT' }),
+      // LINK sleeve: long@8 fills at 8.08; never exits — open at end, zero trips.
+      row(1, { action: 'long', close: '8', refPrice: '8', symbol: 'LINK/USDT' }),
+      row(3, { action: 'hold', close: '8.08', refPrice: '8.08', symbol: 'LINK/USDT' }),
+    ];
+    const cards = scoreRows(rows);
+    expect(cards).toHaveLength(2);
+
+    const combined = combineScorecards(cards);
+    expect(combined.symbol).toBe('BTC/USDT+LINK/USDT');
+    expect(combined.rowCount).toBe(5);
+    // Horizon-1 samples: BTC contributes 2 (i0, i1 of its own subsequence), LINK contributes 1.
+    const btcH1 = horizonStats(cards.find((c) => c.symbol === 'BTC/USDT')!, 1);
+    const linkH1 = horizonStats(cards.find((c) => c.symbol === 'LINK/USDT')!, 1);
+    const combinedH1 = horizonStats(combined, 1);
+    expect(combinedH1.sampleCount).toBe(btcH1.sampleCount + linkH1.sampleCount);
+    expect(combinedH1.hitCount).toBe(btcH1.hitCount + linkH1.hitCount);
+    // Toy equity: product of the sleeves; trips sum; any open sleeve marks the combined card open.
+    const btcEquity = cards.find((c) => c.symbol === 'BTC/USDT')!.toyEquity;
+    const linkEquity = cards.find((c) => c.symbol === 'LINK/USDT')!.toyEquity;
+    // Exact: reduce((p,c)=>p*c, 1) over two cards is literally 1*btc*link, and 1*x === x in
+    // IEEE-754 — same operands, same operation, bit-identical result (toy floats, not money).
+    expect(combined.toyEquity.finalEquity).toBe(btcEquity.finalEquity * linkEquity.finalEquity);
+    expect(combined.toyEquity.roundTrips).toBe(btcEquity.roundTrips + linkEquity.roundTrips);
+    expect(combined.toyEquity.openAtEnd).toBe(true);
+  });
+
+  it('refuses to combine cards from different (playbookVersion, promptHash) variants', () => {
+    const cards = scoreRows([
+      row(0, { promptHash: 'h1', symbol: 'BTC/USDT' }),
+      row(1, { promptHash: 'h2', symbol: 'BTC/USDT' }),
+    ]);
+    expect(cards).toHaveLength(2);
+    expect(() => combineScorecards(cards)).toThrow(/refuses to combine/);
+    expect(() => combineScorecards([])).toThrow(/no scorecards/);
   });
 });
 

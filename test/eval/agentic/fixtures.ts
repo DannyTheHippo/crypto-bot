@@ -163,6 +163,7 @@ export async function replay(
       playbookVersion: proposal.playbookVersion ?? null,
       promptHash: proposal.promptHash ?? 'unknown',
       model,
+      symbol: String(candle.symbol),
     });
   }
   return { rows, requestLog };

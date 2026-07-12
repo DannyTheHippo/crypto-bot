@@ -449,7 +449,12 @@ export class AnthropicAgentClient implements AgentClientPort {
     // guarantees a loss on the stop-out alone, and a takeProfitPct/stopLossPct ratio below
     // AGENTIC_MIN_RR lets a plan lose money even at a winning-trade rate above 50% — both are
     // rejected before the plan ever reaches the market.
-    if (this.cfg.planMode && action === 'long' && side === 'FLAT' && rawPlan) {
+    // The same floors bind a RE-ARM plan (hold/long while already LONG — accepted in the final
+    // mapping arm below): a plan that would be rejected as a fresh entry must not reach the
+    // executor by arriving on a 'hold' instead.
+    const opensNewLong = action === 'long' && side === 'FLAT';
+    const rearmsOpenLong = side === 'LONG' && (action === 'hold' || action === 'long');
+    if (this.cfg.planMode && rawPlan && (opensNewLong || rearmsOpenLong)) {
       const feeFraction = new Decimal(baseProfile.makerBps).plus(baseProfile.takerBps).div(10_000);
       const edgeFloor = new Decimal(this.cfg.minEdgeMultiple ?? '1.5').mul(feeFraction);
       const minRr = new Decimal(this.cfg.minRr ?? '1.5');
@@ -548,6 +553,20 @@ export class AnthropicAgentClient implements AgentClientPort {
       // above) — all no-ops. A flag-off 'short' action can't even reach here: decisionSchema/
       // DECISION_TOOL never accept 'short' as a valid action in the first place.
       signals = [];
+      // W3.1 re-arm: a floors-passing plan on hold/long while LONG emits no signal — it only
+      // re-attaches deterministic management to the existing position (restart self-heal; the
+      // strategy arms it and the first managed bar anchors stop/TP to the real avgEntry). FLAT
+      // holds never arm: a plan with no position and no resting entry would only tick down to
+      // plan_expired noise.
+      if (this.cfg.planMode && rawPlan && rearmsOpenLong) {
+        acceptedPlan = {
+          entryOffsetBps: rawPlan.entryOffsetBps,
+          stopLossPct: String(rawPlan.stopLossPct),
+          takeProfitPct: String(rawPlan.takeProfitPct),
+          entryValidityBars: rawPlan.entryValidityBars,
+          maxHoldBars: rawPlan.maxHoldBars,
+        };
+      }
     }
 
     return {

@@ -1191,6 +1191,134 @@ describe('AnthropicAgentClient', () => {
     });
   });
 
+  describe('plan mode: re-arm on an open position (restart self-heal)', () => {
+    // The active plan is strategy-held in-memory and lost on restart; the model re-attaches
+    // management by including a plan with its 'hold' (or a redundant 'long') while already LONG.
+    // The client must pass that plan through — with the same viability floors as a fresh entry —
+    // while emitting NO signal (no double entry, no exit).
+    function plan(over: Partial<Record<string, number>> = {}): Record<string, number> {
+      return {
+        entryOffsetBps: 0,
+        stopLossPct: 0.003,
+        takeProfitPct: 0.0045,
+        entryValidityBars: 4,
+        maxHoldBars: 8,
+        ...over,
+      };
+    }
+
+    it("accepts a plan on 'hold' while LONG: no signals, proposal.plan populated", async () => {
+      const fetchFn = vi.fn();
+      const client = new AnthropicAgentClient(buildCfg({ planMode: true }), fetchFn);
+      fetchFn.mockResolvedValue(
+        apiResponse(
+          toolUseBody(
+            { action: 'hold', confidence: 0.6, rationale: 'r', plan: plan() },
+            'tool_use',
+            'submit_plan',
+          ),
+        ),
+      );
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: LONG_CONTEXT,
+      });
+
+      const proposal = await client.propose(input);
+
+      expect(proposal.signals).toEqual([]);
+      expect(proposal.decision?.action).toBe('hold');
+      expect(proposal.plan).toEqual({
+        entryOffsetBps: 0,
+        stopLossPct: '0.003',
+        takeProfitPct: '0.0045',
+        entryValidityBars: 4,
+        maxHoldBars: 8,
+      });
+    });
+
+    it("accepts a plan on a redundant 'long' while already LONG: still no signals (no double entry)", async () => {
+      const fetchFn = vi.fn();
+      const client = new AnthropicAgentClient(buildCfg({ planMode: true }), fetchFn);
+      fetchFn.mockResolvedValue(
+        apiResponse(
+          toolUseBody(
+            { action: 'long', confidence: 0.6, rationale: 'r', plan: plan() },
+            'tool_use',
+            'submit_plan',
+          ),
+        ),
+      );
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: LONG_CONTEXT,
+      });
+
+      const proposal = await client.propose(input);
+
+      expect(proposal.signals).toEqual([]);
+      expect(proposal.plan).toBeDefined();
+    });
+
+    it('applies the same viability floors to a re-arm plan: RR-floor breach strips the plan, journal-visible rationale, no signals', async () => {
+      const fetchFn = vi.fn();
+      const warn = vi.fn();
+      const client = new AnthropicAgentClient(buildCfg({ planMode: true, minRr: '1.5' }), fetchFn, {
+        warn,
+      });
+      fetchFn.mockResolvedValue(
+        apiResponse(
+          toolUseBody(
+            {
+              action: 'hold',
+              confidence: 0.6,
+              rationale: 'r',
+              plan: plan({ stopLossPct: 0.003, takeProfitPct: 0.004 }),
+            },
+            'tool_use',
+            'submit_plan',
+          ),
+        ),
+      );
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: LONG_CONTEXT,
+      });
+
+      const proposal = await client.propose(input);
+
+      expect(proposal.signals).toEqual([]);
+      expect(proposal.plan).toBeUndefined();
+      expect(proposal.decision?.action).toBe('hold');
+      expect(proposal.decision?.rationale).toBe('[plan rejected: RR below floor] r');
+    });
+
+    it("never arms a plan on 'hold' while FLAT (no position, no resting entry — it would only expire)", async () => {
+      const fetchFn = vi.fn();
+      const client = new AnthropicAgentClient(buildCfg({ planMode: true }), fetchFn);
+      fetchFn.mockResolvedValue(
+        apiResponse(
+          toolUseBody(
+            { action: 'hold', confidence: 0.6, rationale: 'r', plan: plan() },
+            'tool_use',
+            'submit_plan',
+          ),
+        ),
+      );
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+      });
+
+      const proposal = await client.propose(input);
+
+      expect(proposal.signals).toEqual([]);
+      expect(proposal.plan).toBeUndefined();
+      // No rejection prefix either — the plan wasn't invalid, it was simply not applicable.
+      expect(proposal.decision?.rationale).toBe('r');
+    });
+  });
+
   describe('shorts capability (B3, shortsEnabled gate)', () => {
     it('throws at construction when shortsEnabled and planMode are both set', () => {
       expect(

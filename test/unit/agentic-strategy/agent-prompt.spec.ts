@@ -389,6 +389,19 @@ describe('buildSystemPrompt', () => {
 
       expect(prompt).not.toContain('AGENTIC_MIN_RR');
     });
+
+    it('explains the managedPlan re-arm path (hold+plan on an unmanaged position) when planMode is on, never otherwise', () => {
+      const planPrompt = buildSystemPrompt(fixtureProfile(), {
+        planMode: true,
+        minEdgeMultiple: '1.5',
+        minRr: '1.5',
+      });
+      const legacyPrompt = buildSystemPrompt(fixtureProfile());
+
+      expect(planPrompt).toContain('managedPlan: false');
+      expect(planPrompt).toContain("including a plan object with your 'hold'");
+      expect(legacyPrompt).not.toContain('managedPlan');
+    });
   });
 });
 
@@ -488,6 +501,28 @@ describe('buildUserMessage', () => {
     expect(payload.indicators).toEqual(context.indicators);
     expect(payload.htf).toEqual(context.htf);
     expect(payload.position).toEqual(context.position);
+  });
+
+  it('serializes position.managedPlan into the payload JSON the model reads (re-arm signal)', () => {
+    const context: AgentContext = {
+      indicators: null,
+      position: {
+        side: 'LONG',
+        qty: '2',
+        avgEntry: '90',
+        realizedPnl: '5',
+        unrealizedPnlPct: 10,
+        openOrders: 0,
+        managedPlan: false,
+      },
+      recentDecisions: [],
+    };
+    const raw = buildUserMessage(buildInput({ context }));
+    const payload = JSON.parse(raw) as { position: { managedPlan?: boolean } };
+
+    // The exact byte sequence matters — this is the model's only signal its plan was lost.
+    expect(raw).toContain('"managedPlan":false');
+    expect(payload.position.managedPlan).toBe(false);
   });
 
   it('defaults indicators/htf/position to null and recentDecisions to [] with no context', () => {

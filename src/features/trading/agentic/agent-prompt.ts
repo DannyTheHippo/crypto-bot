@@ -27,7 +27,9 @@ export const PROMPT_TEMPLATE_VERSION = 'v4';
 // JSON so a plan-mode hash can never collide with a legacy-path hash even if both happened to quote
 // the same playbook/model. PROMPT_TEMPLATE_VERSION above stays v4 unconditionally: the legacy
 // submit_decision path is byte-identical whether or not plan mode exists elsewhere in the codebase.
-export const PLAN_TEMPLATE_VERSION = 'p1';
+// p2 (2026-07-12): plan re-arm path — managedPlan position field + the hold+plan re-arm sentence
+// and tool-description updates (restart self-heal; see AgentPositionSummary.managedPlan).
+export const PLAN_TEMPLATE_VERSION = 'p2';
 // C1 derivatives-feed attribution tag: flag-ON appends a constant system-prompt sentence (the
 // derivatives block guidance), so the hash must distinguish flag-ON-boot decides from flag-OFF —
 // mirroring the plan-mode precedent above. Composed as a `+d1` suffix at the computePromptHash
@@ -143,7 +145,7 @@ export const PLAN_TOOL = {
         type: 'string',
         enum: ['long', 'flat', 'hold'],
         description:
-          "'long' to open a new long (must include a plan), 'flat' to close an open position (if already flat, use 'hold'), 'hold' to leave the current position/plan unchanged",
+          "'long' to open a new long (must include a plan), 'flat' to close an open position (if already flat, use 'hold'), 'hold' to leave the current position/plan unchanged — optionally attach a plan to a 'hold' to (re)arm managed execution of an open position",
       },
       confidence: {
         type: 'number',
@@ -155,7 +157,8 @@ export const PLAN_TOOL = {
       },
       plan: {
         type: 'object',
-        description: "The managed trade plan — REQUIRED when action is 'long'.",
+        description:
+          "The managed trade plan — REQUIRED when action is 'long'; may also accompany 'hold' while a position is open, to re-attach managed execution (entry fields are then ignored).",
         // No JSON-schema minimum/maximum anywhere in here: strict tool use rejects numeric bounds
         // with HTTP 400 ("For 'integer'/'number' type, properties maximum, minimum are not
         // supported" — observed live 2026-07-07, the first plan-mode boot latched the client
@@ -247,6 +250,10 @@ function planModeSentences(minEdgeMultiple: string, minRr: string): string[] {
     // a TP/SL ratio below minRr means the plan can be losing money even at a winning-trade rate above
     // 50% — both are rejected before the plan ever reaches the market (see anthropic-agent-client.ts).
     `Plans are auto-rejected unless stopLossPct is at least the round-trip fee fraction and takeProfitPct is at least AGENTIC_MIN_RR (${minRr}) times stopLossPct — propose plans with genuine asymmetry, not thin targets with loose stops.`,
+    // Restart self-heal: plans are in-memory, so a restart leaves an open position unmanaged. The
+    // position summary's managedPlan field is the model's only signal of that state; this sentence
+    // is what makes the field actionable (re-arm via hold+plan — accepted by the client while LONG).
+    "The position summary's managedPlan field tells you whether the bot is currently managing your open position under a plan. If it shows managedPlan: false, your position has NO active plan (a restart clears plans) and you are being consulted every bar — re-attach managed execution by including a plan object with your 'hold': its stopLossPct/takeProfitPct anchor to the position's existing average entry price, and entryOffsetBps/entryValidityBars are ignored (no new entry is placed).",
     'Respond ONLY by calling the submit_plan tool.',
   ];
 }

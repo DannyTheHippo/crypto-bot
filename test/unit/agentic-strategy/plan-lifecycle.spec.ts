@@ -308,3 +308,81 @@ describe('AgenticStrategy plan lifecycle (W3.1)', () => {
     expect(client.calls).toBe(3);
   });
 });
+
+// The active plan is in-memory and lost on restart, leaving an open position consulted every bar.
+// The model sees that state as position.managedPlan === false and re-attaches management by
+// returning a plan with its 'hold' (the client's re-arm acceptance path) — these tests pin the
+// strategy half: the context flag rendering and the arm-without-signal lifecycle.
+describe('AgenticStrategy plan re-arm on an open position (restart self-heal)', () => {
+  // hold+plan on the first consult (the re-arm), plain hold afterwards; captures every context the
+  // LLM was actually shown so the managedPlan flag can be asserted per consult.
+  class RearmingClient implements AgentClientPort {
+    calls = 0;
+    readonly seenManagedPlan: Array<boolean | undefined> = [];
+    propose(input: AgentDecisionInput): Promise<AgentProposal> {
+      this.calls += 1;
+      this.seenManagedPlan.push(input.context?.position.managedPlan);
+      return Promise.resolve({
+        signals: [],
+        decision: { action: 'hold', confidence: 0.5, rationale: 'r' },
+        ...(this.calls === 1 ? { plan: PLAN } : {}),
+      });
+    }
+  }
+
+  it('re-arms from a bare LONG (managedPlan false → hold+plan → deterministic bars → TP exit off avgEntry)', async () => {
+    const client = new RearmingClient();
+    const strategy = makeStrategy(client);
+    const held = longPosition('100');
+
+    // Post-restart shape: LONG position, no active plan → forced consult, flagged unmanaged.
+    const first = await strategy.decide(buildInput(0, { position: held }));
+    expect(client.calls).toBe(1);
+    expect(client.seenManagedPlan[0]).toBe(false);
+    expect(first).toEqual([]); // re-arm carries no signal — no double entry, no exit
+
+    // Next quiet bar: plan-executor manages, LLM not consulted, entry anchored to avgEntry.
+    const second = await strategy.decide(buildInput(1, { position: held }));
+    expect(client.calls).toBe(1);
+    expect(second).toEqual([]);
+
+    // Anchor discriminator: avgEntry-anchored TP = 100 × 1.03 = 103, while a (wrong)
+    // entryOffsetBps-anchored TP would be 99.9 × 1.03 = 102.897 — a 102.95 close exits only
+    // under the wrong anchoring, so it must still HOLD here.
+    const between = await strategy.decide(buildInput(2, { close: '102.95', position: held }));
+    expect(between).toEqual([]);
+
+    const third = await strategy.decide(buildInput(3, { close: '103', position: held }));
+    expect(client.calls).toBe(1);
+    expect(third).toHaveLength(1);
+    expect(third[0]!.kind).toBe('EXIT_LONG');
+    expect(third[0]!.reason).toBe('plan exit: take_profit');
+  });
+
+  it('reports managedPlan true on the safety-cadence consult of a re-armed plan', async () => {
+    const client = new RearmingClient();
+    const strategy = makeStrategy(client); // planMaxQuietBars = 4
+    const held = longPosition('100');
+    await strategy.decide(buildInput(0, { position: held })); // consult 1: bare → re-arm
+    await strategy.decide(buildInput(1, { position: held })); // bars 1-3 managed
+    await strategy.decide(buildInput(2, { position: held }));
+    await strategy.decide(buildInput(3, { position: held }));
+    await strategy.decide(buildInput(4, { position: held })); // barsElapsed=4 → safety consult
+    expect(client.calls).toBe(2);
+    expect(client.seenManagedPlan).toEqual([false, true]);
+  });
+
+  it('renders no managedPlan field outside plan mode (legacy payloads stay byte-identical)', async () => {
+    const client = new RearmingClient();
+    const strategy = makeStrategy(client, false);
+    await strategy.decide(buildInput(0, { position: longPosition('100') }));
+    expect(client.seenManagedPlan).toEqual([undefined]);
+  });
+
+  it('renders no managedPlan field while FLAT (plan mode on)', async () => {
+    const client = new RearmingClient();
+    const strategy = makeStrategy(client);
+    await strategy.decide(buildInput(0));
+    expect(client.seenManagedPlan).toEqual([undefined]);
+  });
+});

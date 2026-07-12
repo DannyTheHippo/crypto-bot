@@ -179,7 +179,11 @@ export class AgenticStrategy implements AsyncStrategy {
   private readonly planExitTtlBars: number;
   private readonly quietPayloadSampleBars: number;
   // W3.1 active managed plan — in-memory by design: a restart loses it, the position_open prescreen
-  // then forces a consult and the model issues a fresh plan (documented self-heal path).
+  // then forces a consult, and the model re-arms by attaching a plan to its 'hold' (it sees
+  // managedPlan: false in the position summary; the client accepts a re-arm plan while LONG —
+  // see anthropic-agent-client.ts). Before that path existed the "model issues a fresh plan"
+  // self-heal was aspirational: the model had no signal the plan was gone and the client dropped
+  // any plan outside long-from-flat, so restarts silently degraded positions to per-bar consults.
   private activePlan: {
     plan: NonNullable<AgentProposal['plan']>;
     entryPrice: string | null;
@@ -322,7 +326,9 @@ export class AgenticStrategy implements AsyncStrategy {
     this.recordJournalEntry(input, decision, proposal);
 
     // W3.1 plan bookkeeping: a returned plan REPLACES any active one (fresh clock); an explicit
-    // 'flat' clears it (the exit signal above closes the position the plan was managing).
+    // 'flat' clears it (the exit signal above closes the position the plan was managing). A plan
+    // returned on 'hold' while LONG is the restart re-arm (entryPrice: null here — the first
+    // managed bar anchors it to the position's real avgEntry, see runActivePlan).
     if (this.planMode) {
       if (proposal.plan) {
         this.activePlan = { plan: proposal.plan, entryPrice: null, barsElapsed: 0 };
@@ -688,6 +694,10 @@ export class AgenticStrategy implements AsyncStrategy {
             unrealizedPnlPct:
               lastClose !== null ? (lastClose / toIndicatorNumber(held.avgEntry) - 1) * 100 : null,
             openOrders,
+            // Plan-mode only (absent otherwise — legacy payloads stay byte-identical): lets the
+            // model see whether plan-executor is managing this position. false ⇒ the plan was lost
+            // (restart) and the model may re-arm via hold+plan (see AgentPositionSummary).
+            ...(this.planMode ? { managedPlan: this.activePlan !== null } : {}),
           }
         : {
             side: 'FLAT',

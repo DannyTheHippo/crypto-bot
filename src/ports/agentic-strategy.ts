@@ -81,6 +81,13 @@ export interface AgentPositionSummary {
   readonly realizedPnl: string;
   readonly unrealizedPnlPct: number | null; // indicator-grade float, not money
   readonly openOrders: number;
+  // W3.1 plan-mode only, LONG only (absent otherwise so legacy/flat payloads stay byte-identical):
+  // whether plan-executor currently manages this position. The active plan is in-memory and does
+  // not survive a restart, so `false` tells the model its position is UNMANAGED and it may re-arm
+  // by attaching a plan to a 'hold' (see planModeSentences / the client's re-arm acceptance path) —
+  // without this field the model cannot distinguish "managed, safety-cadence consult" from
+  // "plan lost, I am being billed every bar", and the documented restart self-heal never happens.
+  readonly managedPlan?: boolean;
 }
 
 // Host-computed technical indicators over the closed-candle history — the agent gets these

@@ -73,7 +73,7 @@
       "id": 142,
       "type": "stat",
       "title": "Total money (equity \u2212 fees \u2212 API cost, USD)",
-      "description": "All money right now: equity_usdt minus cumulative fees paid minus cumulative LLM spend. The single bottom-line USD figure.",
+      "description": "All money right now: equity_usdt minus cumulative fees paid minus cumulative LLM spend (cache-aware: reads 0.1×, 1h-TTL writes 2× the input price). The single bottom-line USD figure.",
       "gridPos": {
         "h": 4,
         "w": 4,
@@ -103,7 +103,7 @@
       },
       "targets": [
         {
-          "expr": "equity_usdt - scalar(sum(fees_paid_total) or vector(0)) - scalar(sum(agent_tokens_total{kind=\"input\"}) or vector(0)) / 1e6 * ${price_in_per_mtok} - scalar(sum(agent_tokens_total{kind=\"output\"}) or vector(0)) / 1e6 * ${price_out_per_mtok}",
+          "expr": "equity_usdt - scalar(sum(fees_paid_total) or vector(0)) - scalar(sum(agent_tokens_total{kind=\"input\"}) or vector(0)) / 1e6 * ${price_in_per_mtok} - scalar(sum(agent_tokens_total{kind=\"output\"}) or vector(0)) / 1e6 * ${price_out_per_mtok} - scalar(sum(agent_tokens_total{kind=\"cache_read\"}) or vector(0)) / 1e6 * (0.1 * ${price_in_per_mtok}) - scalar(sum(agent_tokens_total{kind=\"cache_creation\"}) or vector(0)) / 1e6 * (2 * ${price_in_per_mtok})",
           "refId": "A"
         }
       ]
@@ -337,7 +337,7 @@
       "id": 117,
       "type": "stat",
       "title": "API cost (cumulative USD)",
-      "description": "Cumulative LLM spend since process start (token totals \u00d7 the per-1M price template vars). Resets on restart.",
+      "description": "Cumulative LLM spend since process start (token totals \u00d7 the per-1M price template vars), cache-aware: reads at 0.1\u00d7 and 1h-TTL writes at 2\u00d7 the input price. Flat template-var pricing \u2014 the per-model canonical figure is agentic_promotion_llm_cost_usd. Resets on restart.",
       "gridPos": {
         "h": 4,
         "w": 4,
@@ -351,7 +351,7 @@
       },
       "targets": [
         {
-          "expr": "sum(agent_tokens_total{kind=\"input\"}) / 1e6 * ${price_in_per_mtok} + sum(agent_tokens_total{kind=\"output\"}) / 1e6 * ${price_out_per_mtok}",
+          "expr": "sum(agent_tokens_total{kind=\"input\"}) / 1e6 * ${price_in_per_mtok} + sum(agent_tokens_total{kind=\"output\"}) / 1e6 * ${price_out_per_mtok} + (sum(agent_tokens_total{kind=\"cache_read\"}) or vector(0)) / 1e6 * (0.1 * ${price_in_per_mtok}) + (sum(agent_tokens_total{kind=\"cache_creation\"}) or vector(0)) / 1e6 * (2 * ${price_in_per_mtok})",
           "refId": "A"
         }
       ]
@@ -1366,7 +1366,7 @@
       "id": 84,
       "type": "timeseries",
       "title": "API token cost rate ($/hr)",
-      "description": "5m token rate \u00d7 the per-1M price template variables, projected to USD per hour. Tracks live LLM spend as the lane decides.",
+      "description": "5m token rate \u00d7 the per-1M price template variables, projected to USD per hour, cache-aware (reads 0.1\u00d7, 1h-TTL writes 2\u00d7 the input price). Tracks live LLM spend as the lane decides.",
       "gridPos": {
         "h": 8,
         "w": 8,
@@ -1380,7 +1380,7 @@
       },
       "targets": [
         {
-          "expr": "(sum(rate(agent_tokens_total{kind=\"input\"}[5m])) * ${price_in_per_mtok} + sum(rate(agent_tokens_total{kind=\"output\"}[5m])) * ${price_out_per_mtok}) / 1e6 * 3600",
+          "expr": "(sum(rate(agent_tokens_total{kind=\"input\"}[5m])) * ${price_in_per_mtok} + sum(rate(agent_tokens_total{kind=\"output\"}[5m])) * ${price_out_per_mtok} + (sum(rate(agent_tokens_total{kind=\"cache_read\"}[5m])) or vector(0)) * (0.1 * ${price_in_per_mtok}) + (sum(rate(agent_tokens_total{kind=\"cache_creation\"}[5m])) or vector(0)) * (2 * ${price_in_per_mtok})) / 1e6 * 3600",
           "refId": "A",
           "legendFormat": "$/hr"
         }
@@ -1481,8 +1481,8 @@
     {
       "id": 87,
       "type": "timeseries",
-      "title": "Token rate by kind (per s, 5m rate)",
-      "description": "agent_tokens_total by kind (input / output) \u2014 the raw throughput the cost panels above monetize.",
+      "title": "Token rate by model/kind (per s, 5m rate)",
+      "description": "agent_tokens_total by model and kind (input / output / cache_read / cache_creation) \u2014 the raw throughput the cost panels above monetize; the model label splits Sonnet decides from Opus reflections.",
       "gridPos": {
         "h": 8,
         "w": 8,
@@ -1491,9 +1491,9 @@
       },
       "targets": [
         {
-          "expr": "sum by (kind) (rate(agent_tokens_total[5m]))",
+          "expr": "sum by (model, kind) (rate(agent_tokens_total[5m]))",
           "refId": "A",
-          "legendFormat": "{{ kind }}"
+          "legendFormat": "{{ model }}/{{ kind }}"
         }
       ]
     },
@@ -1682,6 +1682,57 @@
         {
           "expr": "up{job=\"crypto-bot\"}",
           "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 155,
+      "type": "stat",
+      "title": "Lane duty cycle (24h / 48h)",
+      "description": "Fraction of expected 15s scrapes actually present (count_over_time of up ÷ expected) — host sleep, reboots, and login-screen dark time all show up here. The promotion evidence window keeps counting wall-clock days while the lane is dark.",
+      "gridPos": {
+        "h": 6,
+        "w": 4,
+        "x": 0,
+        "y": 97
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.7
+              },
+              {
+                "color": "green",
+                "value": 0.95
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "count_over_time(up{job=\"crypto-bot\"}[24h]) / 5760",
+          "refId": "A",
+          "legendFormat": "24h"
+        },
+        {
+          "expr": "count_over_time(up{job=\"crypto-bot\"}[48h]) / 11520",
+          "refId": "B",
+          "legendFormat": "48h"
         }
       ]
     },

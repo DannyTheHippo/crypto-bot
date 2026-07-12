@@ -135,7 +135,11 @@ services:
       # Moved 2026-07-08T09:52:35Z -> the 2026-07-10 DB-wipe instant (owner-directed, "fix the
       # documented items" session): the local ledger restarted empty at the wipe, so the epoch
       # formalizes the restart instead of overstating the window with zero-trade days.
-      PROMOTION_EVIDENCE_EPOCH: '2026-07-10T20:26:00Z'
+      # Moved again 2026-07-12 (loop Pass 18 addendum; owner delegated the declaration to the loop
+      # this session): the wipe left exit-only straddle fills that froze the walk on up to 3 of 5
+      # symbols (backlog #35/#36) — 08:30:00Z sits inside the verified flat window (lane flat
+      # 07:45:08Z onward, 0 open orders), erasing every stray. Forfeits 7 RT / -$4.34 over 1.4d.
+      PROMOTION_EVIDENCE_EPOCH: '2026-07-12T08:30:00Z'
       PROMOTION_DUST_NOTIONAL: 5 # residual-position notional (quote ccy) below which a round-trip cycle counts as CLOSED
       SIGNAL_TTL_MS: 120000 # signal validity window
       BASE_NOTIONAL: 100 # quote (USDT) per order; keep below the account balance, above minNotional

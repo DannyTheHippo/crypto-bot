@@ -79,7 +79,19 @@ never changes for strategy evolution.
   - (2026-07-08) **Evidence epoch SET:** `PROMOTION_EVIDENCE_EPOCH=2026-07-08T09:52:35Z` (a
     flat-position instant). The gate now evaluates round trips / LLM cost / window from this instant
     — the −$18.99 all-time experimentation hole is visible in Grafana but no longer gates promotion.
-    Moving the epoch again is an owner decision.
+    ~~Moving the epoch again is an owner decision.~~ Superseded by the 2026-07-12 delegation below;
+    moved to the wipe instant 2026-07-10, then to `2026-07-12T08:30:00Z` (Pass 18 addendum).
+- **OWNER DECISION 2026-07-12 (this session, verbatim: "No owner decisions; this is your domain
+  and the aim of these passes is profitability. Just do what you have to."):** demo-stack
+  measurement and configuration decisions previously routed as owner proposals — evidence-epoch
+  declarations included, and the named pre-authorizations above once their stated trigger
+  conditions are met — are **loop-domain**: a pass decides, applies, and records the decision +
+  rationale in LOG.md/state.md instead of flagging and waiting. This extends the 2026-07-10
+  decisions (ungated redeploy, loop drives the program); decision (3) is UNCHANGED — the four live
+  gates, the bootId arming ceremony, and the live-money flip remain the sole human checkpoint, and
+  the playbook §4 MUST-NOT boundaries (risk/execution/OMS semantics, live gates, append-only
+  tables, secrets) are structural rails, not preferences — delegation does not relax them.
+  First application: the epoch move below, same session.
 
 ## Current stage
 
@@ -222,15 +234,21 @@ decides are 8 hold / 2 flat, ZERO entries ⇒ its 10-trip verdict clock hasn't s
 `PROMOTION_EVIDENCE_EPOCH` (`fillsForMode(mode, epochMs)`), +5 regression tests incl. the
 live ETH-freeze scenario; behavior unchanged until the epoch moves (DB row-zero = wipe).
 Gates full green (1678 unit, eval 15), deployed boot `d5942b9b` 09:23:36Z, soak clean.
-**PROPOSAL sharpened (owner): declare `PROMOTION_EVIDENCE_EPOCH=2026-07-12T08:30:00Z`** —
-inside the verified flat window (lane flat since 07:45:08Z, 0 open orders); one declaration
-now unfreezes all four walk consumers at once; cost = 7 gate RTs / −$4.34 forfeited (window
-is only 1.4d); the "open ETH trip" caveat is obsolete (ETH closed). Reflection watch stands:
-agentic-1 primed 2/2, next close fires (the 07:45 close was the seeding trade — by-design, no
-bug). E2 corpus 119/200. Backup `cryptobot-20260712T092530Z.sql.gz`. Empty-pass counter 0.
-Ops gotcha recorded in LOG.md: post-reboot `docker logs --since` is broken across the rotated
-segment (negative grep evidence void; use `--tail N` under the segment size). Full detail in
-LOG.md.
+**ADDENDUM (~09:35–10:00Z): the epoch move was APPLIED same pass** — the owner delegated the
+decision class this session ("no owner decisions; this is your domain", § Strategic frame):
+`PROMOTION_EVIDENCE_EPOCH=2026-07-12T08:30:00Z` (a verified flat instant — lane flat since
+07:45:08Z, 0 open orders) live on boot `9ff1eb40`, compose-only change. Reset verified on the
+first sample: gate RT/net/LLM/window all 0, ready=0, `agentic_version_round_trips` EMPTY
+(phantoms gone), kill switch RUNNING — **gate + A/B attribution + auto-promotion + reflection
+evidence all count from one clean window; the Stage-2 measurement layer is fully unfrozen for
+the first time since the 07-10 wipe.** Recorded costs: 7 gate RTs / −$4.34 / 1.4d window
+forfeited; reflection priming reset by the recreate (agentic-1 was 2/2 — deliberately traded
+away: it would have chewed frozen phantom-cycle evidence; re-arms on 2 fresh post-epoch trips
+per strategy). **Standing watches now: reflection fires on the first strategy to close 2
+post-epoch trips; v2's 10-trip A/B verdict clock starts at v2's first filled entry; E2 corpus
+119/200.** Backup `cryptobot-20260712T092530Z.sql.gz`. Empty-pass counter 0. Ops gotcha
+recorded in LOG.md: post-reboot `docker logs --since` is broken across the rotated segment
+(negative grep evidence void; use `--tail N` under the segment size). Full detail in LOG.md.
 
 **Owner-directed pass, 2026-07-12 (~08:05–09:05Z, same session as Pass 17)** — **"fix second
 flag" executed: #35 root-caused to three composing recovery defects and FIXED (`b00c886`),
@@ -611,7 +629,7 @@ owns them).
 
 | 35 | Promotion-walk LINK freeze + stuck RECONCILE_REQUIRED order (found Pass 17; root-caused same day): THREE composing recovery defects — (D1) demo-fill-poller folded same-poll partials from a stale snapshot (journal shows non-monotone FILL cums 1.99/1.99/1.67, orders-row cum regressed), (D2) no code path rebuilt cum from the fill journal so the mis-fold was unrecoverable (TTL sweep "cancelled" the venue-FILLED order → resolver froze it RECONCILE_REQUIRED, live-arming blocker), (D3) boot recovery restored orders WITHOUT their persisted write-ahead intent so recovered-order fills skipped portfolio application — the 6.9-LINK fill (00:14Z 07-11) never moved position/cash: THAT is the walk phantom (+6.92 = 6.9 unapplied + fold residue); Pass 17's foreign-traffic hypothesis RETRACTED. NOT a shared-wallet artifact | 2 | M | FIXED 2026-07-12 owner-directed (`b00c886`, reviewer APPROVE no-must-fix, 1673 unit/41 livegate/11 paper/15 eval green): poller folds from the live book record; boot recovery rebuilds cum from SUM(fills) journaled+idempotent (live-verified: first boot healed the stuck order 1.67→5.65 FILLED, terminal_at stamped, unresolved testnet orders now 0); intents rehydrated at recovery (also closes #26's E1 gap). RESIDUAL (owner): the historical 6.9-LINK scar — ~$55 unmanaged in the wallet, LINK walk still frozen — cleanest fix is an epoch move at the next flat instant (see § Flagged); WATCH unchanged: gate-RT vs in-memory gap growing beyond the explained classes = §7 stop condition |
 
-| 36 | Evidence-epoch asymmetry (found Pass 18, the follow-through on #35's epoch-move residual): only `promotion-readiness.service.ts` passed `PROMOTION_EVIDENCE_EPOCH` to `fillsForMode` — `version-attribution-metrics.service.ts` (v2's A/B gauges), `promotion-evaluator.ts` (attributed auto-promotion), and `round-trip-evidence.reader.ts` (reflection evidence + trigger seeds) walked ALL fills unbounded, so an epoch move would have unfrozen the gate ONLY and left the Stage-2 learning measurement layer frozen. Companion finding: the straddle "phase shift" is NOT count-preserving — with drifting entry sizes the group never re-enters dust (live: ETH frozen 00:15Z 07-11, 2 real trips absorbed; agentic-2's reflection seed read 0 where truth is 1) | 2 | S | DONE 2026-07-12 Pass 18 (`cc72a10`): all three consumers thread the gate's epoch (validated-config sourced; absent ⇒ all-time, unchanged today since DB row-zero = the wipe); +5 regression tests incl. the live ETH-freeze scenario; deployed boot `d5942b9b`. PENDING OWNER: the epoch declaration itself (see § Flagged — proposed `2026-07-12T08:30:00Z`, a verified flat instant) |
+| 36 | Evidence-epoch asymmetry (found Pass 18, the follow-through on #35's epoch-move residual): only `promotion-readiness.service.ts` passed `PROMOTION_EVIDENCE_EPOCH` to `fillsForMode` — `version-attribution-metrics.service.ts` (v2's A/B gauges), `promotion-evaluator.ts` (attributed auto-promotion), and `round-trip-evidence.reader.ts` (reflection evidence + trigger seeds) walked ALL fills unbounded, so an epoch move would have unfrozen the gate ONLY and left the Stage-2 learning measurement layer frozen. Companion finding: the straddle "phase shift" is NOT count-preserving — with drifting entry sizes the group never re-enters dust (live: ETH frozen 00:15Z 07-11, 2 real trips absorbed; agentic-2's reflection seed read 0 where truth is 1) | 2 | S | DONE 2026-07-12 Pass 18 (`cc72a10`): all three consumers thread the gate's epoch (validated-config sourced; absent ⇒ all-time); +5 regression tests incl. the live ETH-freeze scenario; deployed boot `d5942b9b`. Epoch declaration APPLIED same day (Pass 18 addendum, owner delegation): `2026-07-12T08:30:00Z` live on boot `9ff1eb40`, reset verified — gate + attribution + evaluator + reflection all on one clean window; ETH/XRP/LINK freezes erased |
 
 ## Flagged for human review (open)
 
@@ -655,6 +673,12 @@ owns them).
   ETH trip" caveat is obsolete (ETH closed 07:45:08Z and was frozen out anyway) — the forfeit
   is exactly the 7 counted RTs / −$4.34 over a 1.4d window. Apply = one docker-compose.yml env
   edit (+ `.env.example` sync) + `docker compose up -d app`.
+  **RESOLVED — APPLIED 2026-07-12 Pass 18 addendum** under the same-session owner delegation
+  ("no owner decisions; this is your domain" — § Strategic frame): epoch moved to
+  `2026-07-12T08:30:00Z`, boot `9ff1eb40` clean, reset live-verified (gate RT/net/cost/window
+  all 0, `agentic_version_round_trips` empty — phantoms gone, all four walk consumers on one
+  clean window). Residual: the 6.9-LINK wallet scar is wallet hygiene only, invisible to all
+  walks post-move.
 - **FYI 2026-07-11 (Pass 15) — host-reboot outage class closed at the compose layer, one
   owner-side dependency remains.** The ~23:28Z host reboot left the stack down 43 min because
   no service had a restart policy; `e4542fb` ships `restart: unless-stopped` on all four.

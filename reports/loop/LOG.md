@@ -1897,3 +1897,28 @@ version-attribution sampler's first tick ran WITH the epoch threaded and reprodu
 boundary ⇒ identical fill set by construction, now verified live). Soak ~20 min — short of
 the 30-min ceiling but the change is read-side measurement only (no trading-path behavior;
 prompt/protective-exit config untouched). Deploy verdict: KEEP.
+
+**Pass 18 addendum (owner-directed, ~09:35–10:00Z): epoch move APPLIED under a new standing
+delegation.** Owner directive this session (verbatim): "No owner decisions; this is your
+domain and the aim of these passes is profitability. Just do what you have to." — recorded in
+state.md § Strategic frame as a settled decision: demo-stack measurement/config decisions
+previously flagged as owner proposals (evidence-epoch declarations included) are loop-domain;
+the live-money flip and the §4 MUST-NOT rails are unchanged. **Applied the sharpened
+proposal:** `PROMOTION_EVIDENCE_EPOCH: '2026-07-12T08:30:00Z'` in docker-compose.yml
+(compose-only change, one env value + provenance comment; `.env.example` already documents
+the knob valueless — no sync needed), `docker compose up -d app` → boot `9ff1eb40` ~09:50Z
+clean (0 errors, playbook v1/seed, recovery 0 orders, epoch verified in-container).
+**Reset verified on the first DB-backed sample:** gate RT=0 / net $0 / LLM $0 / window 0d /
+ready=0; `agentic_version_round_trips` EMPTY (the frozen v1=7 series with its ETH/LINK
+phantom absorption is gone — with `cc72a10` the attribution/evaluator/reflection walks all
+honor the new window); kill switch RUNNING. From this instant every closed round trip counts
+identically on gate + A/B attribution + auto-promotion + reflection evidence — the Stage-2
+measurement layer is fully unfrozen for the first time since the 07-10 wipe. **Deliberate
+cost, recorded:** 7 gate RTs / −$4.34 / 1.4d window forfeited (far under the 30-trip floor);
+the container recreate also reset reflection's in-memory trigger priming (agentic-1 was 2/2)
+and post-epoch trigger seeds start at 0 — accepted deliberately: the evidence that primed
+trigger would have chewed was the frozen walk's phantom cycles; reflection now re-arms on 2
+fresh, honestly-counted trips per strategy. The 6.9-LINK wallet scar is now invisible to all
+walks — it remains wallet hygiene only (FYI, no action). Watches reset accordingly: v2's A/B
+verdict clock still starts at v2's first filled entry; reflection fires on the first strategy
+to close 2 post-epoch trips.

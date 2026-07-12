@@ -1791,3 +1791,109 @@ bar — pipeline live, zero LLM spend), 0 EXPIRED, 0 rejections, 0 error lines (
 banner + the expected rebuild warn), reconcile clean (0 halt / 0 error), kill switch RUNNING,
 playbook info stamps v1, and the DB-backed scoreboard repopulated to RT=7 unchanged — the heal
 altered OMS state only, never the fills the walk reads. Deploy verdict: KEEP.
+
+## 2026-07-12 — Pass 18 (scheduled run, ~08:08–09:35Z; paused 08:10–09:05Z for the owner OMS session): MAINTENANCE — evidence-epoch threading shipped: straddle strays froze the walk for attribution/evaluator/reflection too, not just the gate
+
+**Data window:** Pass 17 close (~08:00Z) → now — this is the regular 08:00Z slot firing 8 min
+after Pass 17's late catch-up run ended, so the fresh-evidence window is minutes, not hours.
+Mid-sweep the owner-directed OMS session (entry above; `b00c886`/`3648282`, boot `fc6ceedb`
+08:44Z) ran concurrently; this pass paused and resumed against the new boot at ~09:05Z.
+
+**Evidence sweep (boot `21bef45a`, then `fc6ceedb`):** logs clean — 0 error, 0 HALT, 0
+EXPIRED, 0 kill-switch events; warns only the known route-converter pair + strategy banner +
+reflection trigger seeds. Scoreboard 08:08Z: RT=7, net −$4.34, LLM $1.58, window 1.41d,
+ready=0. This boot-day's lane action (all within Pass 17's window or minutes after): 5 fills,
+5 in-memory RT (1W/4L), decides 4 proposed / 1 hold, `signals_rejected_total` empty. **ETH
+closed at 07:45:08Z** (the 08:00:02Z reflection-seed log line lags the venue fill) — all five
+symbols are now dust-flat with 0 open orders: **the lane has been fully flat since
+07:45:08Z.** v2 A/B serving: 10 of 39 versioned decides ≈26% (target 25) — but v2's 10
+decides are 8 hold / 2 flat, **zero entries**, so v2 structurally cannot accrue attributed
+trips yet (attribution keys on the entry's version; v2's changelog raised the entry bar, so
+slow verdict accrual is by-design, not a defect — the 10-trip clock starts at v2's first
+filled entry). E2 corpus 119/200 payload rows (not yet runnable). §2.6 harness probe: `pnpm
+eval:agentic` green (15 passed / 4 skipped). Reflection seeds decoded: agentic-1 primed 2/2 —
+the 07:45 BTC close was the SEEDING trade (the detached seed lands after the in-memory
+trigger check by design, `reflection.service.ts` onClosedTrade), so **the next agentic-1
+close fires reflection** — Pass 17's watch stands, no bug. Backup
+`cryptobot-20260712T092530Z.sql.gz` taken (§5 duty).
+
+**Ops gotcha (durable):** after the host reboot, `docker logs` on the app container is
+broken across the rotated segment — `--since` (relative AND absolute) returns empty, and any
+read crossing the rotation boundary truncates at the boundary (~700 lines of the OLD boot),
+which silently voids negative grep evidence. Only `--tail N` with N below the current
+segment's line count reads the live boot. Probe with descending N until the first line's
+bootId matches the current boot.
+
+**FINDING (the pass's core): the promotion-walk "phase shift" is NOT count-preserving — under
+entry-size drift it is a permanent freeze, and it starves attribution/evaluator/reflection,
+not just the gate.** ETH's DB fill walk since epoch: leading exit-only SELL 0.0249 (07-10
+21:00Z, closes the wiped pre-epoch long) → the group's signedQty oscillates around −0.025 and
+— because entry sizes drift (0.025 → 0.0194 → 0.0278) — never re-enters the dust band
+(`walkRoundTrips` closes a cycle only at residual notional < PROMOTION_DUST_NOTIONAL).
+**ETH's walk froze at 00:15Z 07-11** after one phantom SELL→BUY pair closed; the two real ETH
+round trips since (01:35→04:30Z 07-11, and 04:50 07-11→07:45Z 07-12) were silently absorbed
+into a never-closing cycle. That falsifies Pass 14/17's "count-preserving, self-fading"
+assumption (true only when consecutive sizes happen to match within dust). Symbol status:
+BTC/SOL clean, XRP phase-shifted (Pass 17), ETH frozen (this pass), LINK frozen (#35 scar) —
+up to 3 of 5 symbols not accruing walk evidence. Classification: explained + conservative
+(undercount only) ⇒ NOT the §7 trust-breach stop, but Stage-2-starving. Checked and dropped:
+the frozen ETH trip would have attributed to v1, not v2 (the 04:45:07Z entry decide carried
+`playbook_version=1`), so v2's verdict has not yet lost evidence to the freeze.
+
+**The deeper defect (root cause of the ship): evidence-epoch asymmetry.** Only
+`promotion-readiness.service.ts` passed `PROMOTION_EVIDENCE_EPOCH` to `fillsForMode`; the
+other three walk consumers — `version-attribution-metrics.service.ts` (v2's A/B gauges),
+`promotion-evaluator.ts` (attributed auto-promotion), `round-trip-evidence.reader.ts`
+(reflection evidence AND trigger seeds — agentic-2's seed read 0 where DB truth since the
+last reflection is 1) — walked ALL fills unbounded. Consequence: the owner-proposed epoch
+move (previous entry) would have unfrozen ONLY the gate; the whole Stage-2 learning
+measurement layer would have stayed frozen.
+
+**Shipped `cc72a10`** (8 files, +159/−6): all three consumers now thread the gate's evidence
+epoch into `fillsForMode` — version-attribution parses it from validated config in `tick()`,
+the evaluator takes `evidenceEpochMs` via `createPromotionEvaluator` (sourced through
+`agenticEnv`'s validated-config mapping), the evidence reader takes a ctor param wired at the
+`REFLECTION_EVIDENCE` factory (same `Date.parse` pattern as mode-control's
+readinessConfigProvider). Absent epoch ⇒ `undefined` ⇒ all-time (unchanged); with the CURRENT
+epoch equal to the wipe boundary the DB has no earlier fills, so behavior today is identical
+— the change pays out the moment the owner declares a new epoch. +5 regression tests
+including a scenario test encoding the live ETH freeze (leading stray + size drift ⇒ 0 cycles
+unbounded, 2 cycles epoch-bounded).
+
+**Gates:** build / lint / typecheck / format:check green, **1678 unit** (+5), eval:agentic 15.
+Hook commands run manually, committed `--no-verify` (no pnpm shim — Pass-17 process note).
+
+**Deploy + soak:** `docker compose build app && up -d app` → boot `d5942b9b` 09:23:36Z clean —
+0 error lines, playbook resolved v1/seed, boot recovery 0 orders (lane flat), expectancy
+ladder ACTIVE. Soak verdict appended below.
+
+**PROPOSAL (sharpens the owner-pass epoch-move proposal):** declare
+`PROMOTION_EVIDENCE_EPOCH=2026-07-12T08:30:00Z` — the lane is verified flat from 07:45:08Z
+(last fill lane-wide) with 0 open orders, so 08:30:00Z sits inside a known flat window and
+stays valid whenever the owner applies it (later entries open after it; no new straddle).
+With `cc72a10` the one declaration now unfreezes gate + attribution + evaluator + reflection
+seeds simultaneously. Cost: forfeit the 7 counted gate RTs / −$4.34 net (far below the
+30-trip floor; window restarts — it is 1.4d now); the owner-pass's "costs the open ETH trip"
+caveat is OBSOLETE (ETH closed 07:45:08Z, and its trip was frozen out anyway). The 6.9-LINK
+wallet scar remains a separate wallet-hygiene question the walk no longer sees post-move.
+
+**Flagged for human review:** the epoch declaration above (owner-only). Durable walk
+robustness (skip leading exit-only fills per group in `walkRoundTrips`) noted as the
+epoch-move-independent alternative — src/domain + gate semantics = owner territory; the
+epoch-threading ship makes it non-urgent.
+
+**Next-pass candidates:** (1) after the owner's epoch move: verify all four consumers unfreeze
+(gate RT resets, ETH/XRP/LINK accrue again) — then the v2-verdict watch resumes cleanly; (2)
+reflection watch: next agentic-1 close fires — if it mints v3 while v2 is unresolved, check
+newest-candidate A/B shadowing (Pass-17 watch); (3) E2 `eval:candidates` at ≥200 rows (119
+now); (4) #32 reflection SSE streaming.
+
+**Soak verdict (appended at pass end, ~09:28–09:32Z):** boot `d5942b9b` clean — the 09:30Z
+bar processed on all five strategies (5 `quiet` prescreen skips, $0 LLM — quiet market), 0
+error lines, 0 EXPIRED, 0 rejections, reconcile 11+ passes 0 halt / 0 error, kill switch
+RUNNING (`kill_switch_state{state="RUNNING"}=1`). **Change-specific no-regression proof:** the
+version-attribution sampler's first tick ran WITH the epoch threaded and reproduced
+`agentic_version_round_trips{version="1"}=7` and gate RT=7 exactly (current epoch = the wipe
+boundary ⇒ identical fill set by construction, now verified live). Soak ~20 min — short of
+the 30-min ceiling but the change is read-side measurement only (no trading-path behavior;
+prompt/protective-exit config untouched). Deploy verdict: KEEP.

@@ -112,8 +112,38 @@ from any source, key-probe failure (re-probed every 60s), reconcile mismatch, ma
 
 Re-arm after a restart: a **new process has a new bootId**, so a captured token cannot arm it — the
 operator must run a fresh request→confirm against the new bootId. The HMAC binds to the process's own
-`cfg.bootId`; obtain it from `/health` / boot logs. ARMING endpoints are localhost-bound + token-authed
-_(transport hardening is out-of-session runtime glue)_.
+`cfg.bootId`; obtain it from `/metrics` (`boot_info{boot_id="..."}` — `/health` does not expose it) /
+boot logs. ARMING endpoints are localhost-bound + token-authed _(transport hardening is
+out-of-session runtime glue)_.
+
+### One-command arming — `pnpm arm`
+
+`scripts/arm-ceremony.mjs` automates the operator's client-side steps above (request → compute the
+HMAC proof → confirm, within the 60s TTL) into a single command. It changes nothing server-side —
+every gate above (challenge TTL, bootId binding to the process's own `cfg.bootId`, constant-time
+HMAC verify, ARM preconditions, the four live gates) is enforced exactly as before.
+
+```sh
+ARMING_SECRET=<secret> pnpm arm
+```
+
+bootId is auto-discovered from `GET /metrics` (the `boot_info{boot_id="..."}` gauge); override with
+`pnpm arm -- --boot-id <id>` if `/metrics` is unreachable. Other flags: `pnpm arm -- --base-url
+<url>` (default `http://localhost:3100`), `pnpm arm -- --disarm` (calls `POST
+/api/v1/mode/disarm`). `ARMING_SECRET` is read from the environment only — never a flag, never
+logged. Exits 0 only when the confirm response reports armed; any refusal (missing secret, non-2xx,
+`ok: false`) exits 1 with the failure reason printed (never the secret or the full proof).
+
+### Manual fallback (the two calls above, by hand)
+
+If the CLI is unavailable, run the two steps directly:
+
+1. Obtain the current `bootId` from `/metrics` (`boot_info{boot_id="..."}`) or boot logs.
+2. `POST /api/v1/mode/arm/request` with `{ "bootId": "<bootId>" }` → note the returned `challengeId`.
+3. Compute `HMAC-SHA256(challengeId + ':' + bootId, ARMING_SECRET)` as hex.
+4. `POST /api/v1/mode/arm/confirm` with
+   `{ "challengeId": "<challengeId>", "hmacHex": "<hmac>", "bootId": "<bootId>" }` within 60s of
+   step 2.
 
 ## Paper-honesty (§10) — the CI-cannot-reach-live guarantee
 

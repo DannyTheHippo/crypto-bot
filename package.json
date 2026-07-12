@@ -16,6 +16,8 @@
     "--- PLAYBOOK OPS ---": "--------------------------------",
     "playbook:promote": "node scripts/playbook-promote.mjs",
     "playbook:candidate": "node scripts/playbook-candidate.mjs",
+    "--- MODE CONTROL OPS ---": "--------------------------------",
+    "arm": "node scripts/arm-ceremony.mjs",
     "--- CHECKS ---": "--------------------------------",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit -p tsconfig.eslint.json",

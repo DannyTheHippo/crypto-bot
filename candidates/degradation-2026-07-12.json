@@ -1,0 +1,88 @@
+{
+  "rowsRequested": 15,
+  "rowsScored": 15,
+  "rowsSkipped": 0,
+  "model": "claude-sonnet-5",
+  "championVersion": 1,
+  "promptHash": "d292e0a6a6beb4ec118188bdfe7218935104f3285e83779992646b9a2d98fc79",
+  "perSymbol": [
+    {
+      "symbol": "BTC/USDT",
+      "n": 4,
+      "errorRows": 0,
+      "agreementRate": 1,
+      "proposeRateA": 0.25,
+      "proposeRateB": 0.25,
+      "bothProposedRows": 1,
+      "meanAbsDeltaStopLossPct": "0.000000",
+      "meanAbsDeltaTakeProfitPct": "0.000000",
+      "meanAbsDeltaMaxHoldBars": 0
+    },
+    {
+      "symbol": "ETH/USDT",
+      "n": 3,
+      "errorRows": 0,
+      "agreementRate": 1,
+      "proposeRateA": 0.3333333333333333,
+      "proposeRateB": 0.3333333333333333,
+      "bothProposedRows": 1,
+      "meanAbsDeltaStopLossPct": "0.000000",
+      "meanAbsDeltaTakeProfitPct": "0.000000",
+      "meanAbsDeltaMaxHoldBars": 0
+    },
+    {
+      "symbol": "LINK/USDT",
+      "n": 2,
+      "errorRows": 0,
+      "agreementRate": 1,
+      "proposeRateA": 0,
+      "proposeRateB": 0,
+      "bothProposedRows": 0,
+      "meanAbsDeltaStopLossPct": null,
+      "meanAbsDeltaTakeProfitPct": null,
+      "meanAbsDeltaMaxHoldBars": null
+    },
+    {
+      "symbol": "SOL/USDT",
+      "n": 3,
+      "errorRows": 0,
+      "agreementRate": 1,
+      "proposeRateA": 0.3333333333333333,
+      "proposeRateB": 0.3333333333333333,
+      "bothProposedRows": 1,
+      "meanAbsDeltaStopLossPct": "0.001000",
+      "meanAbsDeltaTakeProfitPct": "0.001000",
+      "meanAbsDeltaMaxHoldBars": 0
+    },
+    {
+      "symbol": "XRP/USDT",
+      "n": 3,
+      "errorRows": 0,
+      "agreementRate": 0.6666666666666666,
+      "proposeRateA": 0.3333333333333333,
+      "proposeRateB": 0,
+      "bothProposedRows": 0,
+      "meanAbsDeltaStopLossPct": null,
+      "meanAbsDeltaTakeProfitPct": null,
+      "meanAbsDeltaMaxHoldBars": null
+    }
+  ],
+  "combined": {
+    "symbol": "ALL",
+    "n": 15,
+    "errorRows": 0,
+    "agreementRate": 0.9333333333333333,
+    "proposeRateA": 0.26666666666666666,
+    "proposeRateB": 0.2,
+    "bothProposedRows": 3,
+    "meanAbsDeltaStopLossPct": "0.000333",
+    "meanAbsDeltaTakeProfitPct": "0.000333",
+    "meanAbsDeltaMaxHoldBars": 0
+  },
+  "interpretationThresholds": {
+    "fairProxy": "agreement >= 0.85 => OHLCV-only reconstruction is a fair proxy",
+    "usableWithCaution": "0.70 <= agreement < 0.85 => usable with caution, label results",
+    "refutesPremise": "agreement < 0.70 => REFUTES the OHLCV-only backtest premise"
+  },
+  "verdict": "OHLCV-only reconstruction is a fair proxy"
+}

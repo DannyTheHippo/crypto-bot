@@ -18,6 +18,9 @@ export default tseslint.config(
       'scripts/**',
       // Same class: the backtest data-fetch CLI is a bare .mjs run via `node`, outside tsconfig.
       'test/backtest/fetch-data.mjs',
+      // Same class: the standalone multi-strategy research sweep — bare .mjs run via `node`
+      // (self-contained, no src/ imports), outside any tsconfig project.
+      'test/backtest/multi-strategy/**',
       // Same class: this spec imports scripts/arm-ceremony.mjs (itself outside tsconfig, see
       // scripts/** above) and is plain .mjs itself for the same reason — no tsconfig project.
       'test/unit/scripts/arm-ceremony.spec.mjs',

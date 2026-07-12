@@ -1,0 +1,194 @@
+{
+ "generatedAt": "2026-07-12T19:29:21.997Z",
+ "config": {
+  "minRt": 20,
+  "holdout": 0.3,
+  "dsrGate": 0.95,
+  "feeLevels": [
+   0,
+   3.6,
+   7.5,
+   10,
+   15,
+   20
+  ]
+ },
+ "datasets": [
+  [
+   "BTCUSDT",
+   [
+    "15m",
+    "1h",
+    "4h",
+    "1d"
+   ]
+  ],
+  [
+   "ETHUSDT",
+   [
+    "15m",
+    "1h",
+    "4h",
+    "1d"
+   ]
+  ],
+  [
+   "SOLUSDT",
+   [
+    "15m",
+    "1h"
+   ]
+  ],
+  [
+   "XRPUSDT",
+   [
+    "15m",
+    "1h"
+   ]
+  ],
+  [
+   "LINKUSDT",
+   [
+    "15m",
+    "1h"
+   ]
+  ]
+ ],
+ "totalCells": 4092,
+ "survivorCount": 0,
+ "survivors": [],
+ "bestByFee": [
+  {
+   "symbol": "LINKUSDT",
+   "tf": "15m",
+   "family": "bollinger",
+   "params": "period=20,k=2",
+   "dir": "ls",
+   "feeBps": 0,
+   "roundTrips": 801,
+   "winRate": 0.6878901373283396,
+   "totalReturnPct": 110.0360817489503,
+   "netBpsPerRt": 13.737338545436991,
+   "sharpe": 2.596974255505003,
+   "skew": -0.17194752172102684,
+   "kurt": 28.013320297852886,
+   "maxDdPct": 22.1119634445945,
+   "T": 21022,
+   "wfConsistent": true,
+   "sr0": 3.01380334734811,
+   "dsr": 0.3736286438189138,
+   "passesDsr": false,
+   "survivor": false
+  },
+  {
+   "symbol": "LINKUSDT",
+   "tf": "15m",
+   "family": "bollinger",
+   "params": "period=20,k=2",
+   "dir": "ls",
+   "feeBps": 3.6,
+   "roundTrips": 801,
+   "winRate": 0.6754057428214731,
+   "totalReturnPct": 57.41308074089244,
+   "netBpsPerRt": 7.167675498238757,
+   "sharpe": 1.6904816027894214,
+   "skew": -0.17689013658904432,
+   "kurt": 28.03273452096694,
+   "maxDdPct": 25.522761957408736,
+   "T": 21022,
+   "wfConsistent": false,
+   "sr0": 3.6238224943523702,
+   "dsr": 0.06734687063964764,
+   "passesDsr": false,
+   "survivor": false
+  },
+  {
+   "symbol": "ETHUSDT",
+   "tf": "1h",
+   "family": "donchian",
+   "params": "n=20",
+   "dir": "ls",
+   "feeBps": 7.5,
+   "roundTrips": 96,
+   "winRate": 0.4375,
+   "totalReturnPct": 57.45354712431403,
+   "netBpsPerRt": 59.84744492116045,
+   "sharpe": 1.547405399923833,
+   "skew": 0.4702123674115863,
+   "kurt": 12.263210873593716,
+   "maxDdPct": 31.106231584462257,
+   "T": 5254,
+   "wfConsistent": true,
+   "sr0": 3.91523045401257,
+   "dsr": 0.032881021894937135,
+   "passesDsr": false,
+   "survivor": false
+  },
+  {
+   "symbol": "ETHUSDT",
+   "tf": "1h",
+   "family": "donchian",
+   "params": "n=20",
+   "dir": "ls",
+   "feeBps": 10,
+   "roundTrips": 96,
+   "winRate": 0.4375,
+   "totalReturnPct": 53.71564843625107,
+   "netBpsPerRt": 55.953800454428205,
+   "sharpe": 1.481478610744315,
+   "skew": 0.46859234402543265,
+   "kurt": 12.258441304271638,
+   "maxDdPct": 31.296310891154917,
+   "T": 5254,
+   "wfConsistent": true,
+   "sr0": 4.008331161456642,
+   "dsr": 0.024803680827531333,
+   "passesDsr": false,
+   "survivor": false
+  },
+  {
+   "symbol": "ETHUSDT",
+   "tf": "1h",
+   "family": "donchian",
+   "params": "n=20",
+   "dir": "ls",
+   "feeBps": 15,
+   "roundTrips": 96,
+   "winRate": 0.4270833333333333,
+   "totalReturnPct": 46.50131011447092,
+   "netBpsPerRt": 48.43886470257387,
+   "sharpe": 1.349565589739054,
+   "skew": 0.4651496692436689,
+   "kurt": 12.246626114837666,
+   "maxDdPct": 31.675039964839225,
+   "T": 5254,
+   "wfConsistent": true,
+   "sr0": 4.157275259207835,
+   "dsr": 0.014595045456193988,
+   "passesDsr": false,
+   "survivor": false
+  },
+  {
+   "symbol": "ETHUSDT",
+   "tf": "1h",
+   "family": "donchian",
+   "params": "n=20",
+   "dir": "ls",
+   "feeBps": 20,
+   "roundTrips": 96,
+   "winRate": 0.4270833333333333,
+   "totalReturnPct": 39.62219973232921,
+   "netBpsPerRt": 41.273124721176266,
+   "sharpe": 1.2176083995904352,
+   "skew": 0.4614009568721135,
+   "kurt": 12.231827859588526,
+   "maxDdPct": 32.05187015479766,
+   "T": 5254,
+   "wfConsistent": true,
+   "sr0": 4.231580414058067,
+   "dsr": 0.009630924646357685,
+   "passesDsr": false,
+   "survivor": false
+  }
+ ]
+}

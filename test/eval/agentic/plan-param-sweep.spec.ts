@@ -136,3 +136,68 @@ describe('plan-executor offline parameter sweep (W4.3)', () => {
     expect(top!.meanNetReturn).toBe('0');
   });
 });
+
+// Live-corpus sweep (2026-07-12): the header's "feed real rows via SQL" recipe, made runnable.
+// Gated exactly like the sibling live evals — SWEEP_LIVE=1 + DATABASE_URL, self-skips otherwise;
+// read-only against agent_decisions (never a reset), so the production URL is legitimate here.
+// The grid is pre-filtered to LIVE-PROPOSABLE combos only (the plan gate's floors: SL >= 20bps fee
+// fraction, TP >= 1.5x fee edge floor, TP/SL >= 1.5 RR) so every ranked row maps to a plan the
+// model could actually submit. TOY RESEARCH METRIC (bar closes only) — seeds defaults, never
+// certifies them.
+const SWEEP_LIVE = process.env['SWEEP_LIVE'] === '1';
+const SWEEP_DB_URL = process.env['DATABASE_URL'];
+
+describe.skipIf(!SWEEP_LIVE || !SWEEP_DB_URL)('plan-param sweep over the LIVE corpus', () => {
+  it('ranks proposable combos over all recorded input_payload rows', async () => {
+    const { Pool } = await import('pg');
+    const pool = new Pool({ connectionString: SWEEP_DB_URL });
+    try {
+      const res = await pool.query<{ input_payload: string; symbol: string }>(
+        'SELECT input_payload, symbol FROM agent_decisions WHERE input_payload IS NOT NULL ORDER BY id',
+      );
+      const rows = res.rows.map((r) => r.input_payload);
+      expect(rows.length).toBeGreaterThan(0);
+      const perSymbol = new Map<string, number>();
+      for (const r of res.rows) perSymbol.set(r.symbol, (perSymbol.get(r.symbol) ?? 0) + 1);
+
+      const grid = {
+        stopLossPct: ['0.005', '0.0075', '0.01', '0.015', '0.02', '0.03'],
+        takeProfitPct: ['0.0075', '0.01', '0.015', '0.02', '0.03', '0.045'],
+        entryValidityBars: [2, 4, 8],
+        maxHoldBars: [8, 16, 32, 64],
+      };
+      const FEE = new Decimal('0.002');
+      const EDGE_FLOOR = new Decimal('1.5').mul(FEE);
+      const MIN_RR = new Decimal('1.5');
+      const proposable = (slp: string, tpp: string): boolean => {
+        const sl = new Decimal(slp);
+        const tp = new Decimal(tpp);
+        return sl.gte(FEE) && tp.gte(EDGE_FLOOR) && tp.div(sl).gte(MIN_RR);
+      };
+      const ranked = sweepPlanParams(rows, grid).filter((r) =>
+        proposable(r.plan.stopLossPct, r.plan.takeProfitPct),
+      );
+      expect(ranked.length).toBeGreaterThan(0);
+
+      const fmt = (r: SweepResult): string =>
+        `SL=${r.plan.stopLossPct} TP=${r.plan.takeProfitPct} validity=${r.plan.entryValidityBars} hold=${r.plan.maxHoldBars} trades=${r.trades} meanNet=${r.meanNetReturn}`;
+      const lines = [
+        `[live-sweep] corpus rows=${rows.length} per-symbol: ${[...perSymbol.entries()].map(([s, n]) => `${s}=${n}`).join(' ')}`,
+        '[live-sweep] TOP 10 proposable combos:',
+        ...ranked.slice(0, 10).map((r) => `  ${fmt(r)}`),
+        '[live-sweep] BOTTOM 5:',
+        ...ranked.slice(-5).map((r) => `  ${fmt(r)}`),
+      ];
+      console.log(lines.join('\n'));
+      // vitest's console interception can swallow stdout in run mode — a durable artifact wins
+      // (same rationale as AGENTIC_EVAL_SCORECARD_FILE on the sibling evals).
+      const outFile = process.env['SWEEP_OUTPUT_FILE'];
+      if (outFile) {
+        const { writeFileSync } = await import('node:fs');
+        writeFileSync(outFile, `${lines.join('\n')}\n`, 'utf8');
+      }
+    } finally {
+      await pool.end();
+    }
+  });
+});

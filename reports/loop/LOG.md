@@ -2153,4 +2153,69 @@ server-side gate untouched; `--disarm` deliberately needs NO secret (the server 
 to disarm — the safety direction must never block on a missing env var). First post-deploy
 17:00Z bar soak: all five symbols made real Sonnet decides sharing ONE promptHash (`d292e0a6`,
 the v5/p3 template — symbol-agnostic prefix live-confirmed), 0 errors/HALT. Watches armed:
-first non-null `plan_json` row; first positive `cache_read` window.
+first non-null `plan_json` row; first positive `cache_read` window. BOTH RESOLVED POSITIVE
+same session: plan_json journaled non-null on 5/5 post-deploy LLM consults; `cache_read` rose
+to 15,980 tokens (0 before) — the v5 symbol-agnostic prefix fix is live-verified.
+
+## 2026-07-12 — "ultracode" full-push session (~19:30–21:30Z): 8 parallel implementers + a broad multi-strategy edge search; the definitive profitability finding
+
+Owner directive: "run a lot more backtests with a lot more strategies, possibly revisit shorts,
+ANYTHING toward profitability while Fable is available; don't hand big items to the loop."
+Executed the entire roadmap in-session plus an original edge search.
+
+**SHIPPED (committed, gates-green, derivatives A/B deployed):**
+
+1. **Derivatives-block A/B** (`AGENTIC_DERIVATIVES_AB_PCT=30`): the block was ON lane-globally with
+   no control arm since 2026-07-10 (unmeasurable). Control arm deterministically withholds the
+   derivatives sentence + `+d1` promptHash tag + payload key together (minute-bucketed, +37 offset
+   from the playbook router). Deployed boot `e3c54c07`, env-verified. WATCH: first control-arm
+   promptHash appears on the next LLM re-consult (all 5 symbols currently in plan-managed positions);
+   attributed net-of-cost delta at ≥30 matched RT/arm is the derivatives-block verdict — the first
+   real test of whether ANY information feed adds edge.
+2. **Offline-first evaluation stack** (the program's biggest structural gap, now filled):
+   LLM-in-the-loop walk-forward backtest (`test/backtest/agentic-replay.ts` + `scripts/backtest-
+   agentic.mjs`, `pnpm backtest:agentic`) — production-faithful request shape, real settlement, hard
+   $ budget, post-cutoff data. Live smoke BTC 4h: 4 RT, +34bps/RT total but walk-forward-INCONSISTENT
+   (−166/+256/−209 per segment) — the engine correctly refuses to certify n=4. Runner bug fixed
+   (bare-`pnpm` ENOENT under corepack → `process.execPath` + resolved vitest bin).
+3. **Live-corpus plan-param sweep** (`SWEEP_LIVE=1`, $0): over all 204 corpus rows, best proposable
+   combos are mildly positive (SL 0.5%/TP 0.75%/validity-4/hold-32: +5.9bps net over 61 fills;
+   wide-stop 16-bar-hold: +3.3bps); 8-bar entry-validity combos are disasters (−132bps). Seeds plan
+   defaults / the knobs channel.
+4. **OHLCV-degradation live pre-check** ($0.6): stripping orderBook+ticker reproduces live decides at
+   **93.3% action agreement** with negligible plan deltas ⇒ OHLCV-only backtest is a FAIR PROXY
+   (validates the backtest premise; `candidates/degradation-2026-07-12.json`).
+5. **E2 decide-model eval** (Haiku vs Sonnet, ~$0.2): Haiku does NOT flip the champion (hold
+   agreement 0.78 < 0.85, propose ratio 1.8, forward proxy 0.3 vs 22.6 bps) — Sonnet-5 stays.
+
+**THE DEFINITIVE PROFITABILITY FINDING** (`reports/loop/multi-strategy-search-2026-07-12.md`): the
+program's "no edge" verdict rested on ONE retired rule. I ran a self-contained honest search —
+**4,562 backtests**, 8 families (trend, momentum, mean-reversion, volatility, cross-sectional
+relative strength), LONG AND SHORT, 5 symbols, 15m–1d, 6 fee levels (0→20bps), no-lookahead fills,
+winsorized deflated-Sharpe + walk-forward gating. **ZERO survivors at any fee level including 0bps**,
+across single-cell (4,092), diversified portfolio (150), and cross-sectional (320) sweeps. Two
+nuggets: (a) **shorts add value** — every frontier cell is long-short (owner's instinct confirmed);
+(b) the frontier is **long-short daily cross-sectional momentum on perps** (Sharpe 1.12, +45%
+holdout, survives 3.6bps perp-maker fee) — the single best-evidenced systematic direction, but it
+STILL fails walk-forward consistency and honest deflation. **Load-bearing conclusion:** simple
+price-based strategy is empty on this universe, so the LLM lane — which trades OHLCV+indicators —
+CANNOT be profitable by reading price better, no matter the reflection sophistication. Its only
+possible edge is information the price series does not contain (news/events/positioning), which is
+exactly what the derivatives-block A/B (now live) begins to measure. Honest program posture: keep the
+demo lane learning cheaply, measure each information feed's attributed edge in A/B, and do not risk
+live capital until the gate genuinely goes green — this search is strong reason to believe
+price-pattern trading never will.
+
+**Gates:** build/lint/typecheck/format/lint:md green; **1734 unit**, 41 livegate, 11 paper, 15 eval,
+24 backtest, 50 db. Commits `dd93eda`→HEAD (self-learning v2, plan persistence, arm CLI, derivatives
+A/B + risk profile, offline backtest engine + multi-strategy sweep, cross-sectional).
+
+**Stopped mid-session, re-dispatch as loop items (all live-arming prep — NOT blocking, since the
+gate is far from green per the finding above):** (a) **arm-hardening** — wire the real
+ARM_PRECONDITIONS provider (currently an always-`{ok:true}` stub) + an `x-arming-token` transport
+guard on the arm endpoints; (b) **zombie-sweep** — the journaled one-time resolution of the ~57
+SUBMIT_UNKNOWN zombies + the live-mode ACKED fixture row (`scripts/resolve-stale-orders.mjs`,
+dry-run-first, venue-query-by-clientOrderId); (c) **edge-ext** — SUBSUMED by the multi-strategy
+search above (its 4h/1d-trend question is answered NO far more broadly); the only unharvested piece
+is porting the winsorized-deflation fix into the production `test/backtest/stats.ts` for future carry
+re-runs (low priority).

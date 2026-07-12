@@ -716,6 +716,35 @@ owns them).
   live-arming gaps (ARM_PRECONDITIONS stub, zombie sweep #25, ACKED fixture row, risk-limit
   sizing for $1k–5k).
 
+- **ULTRACODE SESSION 2026-07-12 (~19:30–21:30Z) — THE DEFINITIVE PROFITABILITY FINDING + most of
+  the roadmap shipped. Read `reports/loop/multi-strategy-search-2026-07-12.md`.** A self-contained
+  honest edge search — **4,562 backtests** (8 families: trend/momentum/mean-reversion/volatility/
+  cross-sectional, long AND short, 5 symbols, 15m–1d, 6 fee levels 0→20bps, no-lookahead fills,
+  winsorized deflated-Sharpe + walk-forward gating) — found **ZERO survivors at any fee level
+  including 0bps** (single-cell 4,092 / portfolio 150 / cross-sectional 320). **LOAD-BEARING
+  CONCLUSION, binding on all future passes: simple price-based strategy is empty on this universe,
+  so the LLM lane (OHLCV+indicators) cannot profit by reading price better — its only possible edge
+  is information the price series does NOT contain (news/events/derivatives positioning). Do NOT
+  re-run price-TA edge searches; that answer is settled.** Two nuggets: shorts add value (every
+  frontier cell is long-short — owner's instinct confirmed); the frontier is long-short daily
+  cross-sectional momentum on perps (Sharpe 1.12, +45% holdout, survives 3.6bps perp-maker) but
+  still fails honest gating — the single best systematic direction if the owner ever wants one, but
+  forward-test-only. The live question is now whether ANY information feed adds attributed
+  net-of-cost edge — the **derivatives-block A/B (`AGENTIC_DERIVATIVES_AB_PCT=30`, deployed boot
+  `e3c54c07`)** now measures it. WATCH: attributed delta at ≥30 matched RT/arm is the first real
+  information-edge verdict; a null result there is strong evidence the whole approach cannot reach
+  live-green, and the honest posture is to keep the demo lane learning cheaply and NOT risk live
+  capital. Also shipped this session (`dd93eda`→HEAD, all gates green): the offline LLM-in-loop
+  backtest engine (`pnpm backtest:agentic`, live smoke ran) + the reusable multi-strategy sweep
+  harness (`test/backtest/multi-strategy/`), live-corpus plan-param sweep, OHLCV-degradation
+  pre-check (93.3% fair-proxy — an OHLCV-only backtest faithfully predicts live decides), E2 model
+  eval (Haiku does not flip Sonnet). plan_json + cache_read watches from the earlier addendum both
+  RESOLVED POSITIVE (5/5 non-null plans; cache_read 0→15,980). **Re-dispatch as loop items
+  (live-arming prep, NOT blocking — the gate is far from green): (1) real ARM_PRECONDITIONS provider
+  replacing the always-true stub in `mode-control.module.ts` + an `x-arming-token` transport guard;
+  (2) journaled zombie/ACKED-fixture resolution (`scripts/resolve-stale-orders.mjs`, dry-run-first);
+  (3) port the winsorized-deflation fix into production `test/backtest/stats.ts` (low priority).**
+
 - **AVAILABILITY 2026-07-12 (Pass 17) — the host sleeps; duty cycle is now the program's
   binding constraint.** The stack runs on the owner's MacBook: `pmset -g log` shows battery
   clamshell-sleep cycles through 07-11, a reboot at 21:27Z, then ~10h at the login screen —

@@ -269,7 +269,8 @@ export class DrizzleExecutionStore implements ExecutionStorePort {
     // orders table has no step_size / attempt / cancelWanted columns — these are runtime-only
     // fields for the OMS reducer. Recovery routes through reconciliation (§4.2), not reducer
     // replay, so we synthesize safe defaults here.
-    return rows.map((r) => {
+    const out: RecoveredOpenOrder[] = [];
+    for (const r of rows) {
       // Never trust a persisted state string blindly (I7). A row whose `state` is outside the
       // OrderState allow-list is corruption — fail the boot loudly rather than synthesize a
       // malformed OrderRecord that downstream recovery/reconciliation would treat as truth.
@@ -288,7 +289,7 @@ export class DrizzleExecutionStore implements ExecutionStorePort {
         attempt: 0,
         cancelWanted: false,
       };
-      return {
+      out.push({
         record,
         strategyId: r.strategyId as StrategyId,
         summary: {
@@ -298,8 +299,49 @@ export class DrizzleExecutionStore implements ExecutionStorePort {
           qty: qty(r.qty),
           limitPrice: r.limitPrice === null ? undefined : price(r.limitPrice),
         },
-      };
-    });
+        intent: await this.loadIntentForRecovery(r.intentId),
+      });
+    }
+    return out;
+  }
+
+  async loadFilledQty(clientOrderId: ClientOrderId): Promise<string> {
+    return this.fills.sumQtyByClientOrderId(clientOrderId);
+  }
+
+  // Rehydrate the persisted write-ahead intent (tx1) for a recovered order so the runtime gets
+  // the full (order, intent) pair back — fill application, the unknown-resolver's query loop,
+  // and Risk's E1 in-flight clamp all key on the in-memory intent. A missing row degrades to
+  // null (tolerated residue), never a throw: the order itself still recovers book-only.
+  private async loadIntentForRecovery(intentId: string): Promise<OrderIntent | null> {
+    const r = await this.intents.findById(intentId);
+    if (r === null) return null;
+    return {
+      intentId: r.intentId as OrderIntent['intentId'],
+      clientOrderId: r.clientOrderId as ClientOrderId,
+      strategyId: r.strategyId as StrategyId,
+      venue: r.venue as VenueId,
+      symbol: r.symbol as SymbolId,
+      side: r.side,
+      type: r.type,
+      qty: qty(r.qty),
+      limitPrice: r.limitPrice === null ? undefined : price(r.limitPrice),
+      timeInForce: r.timeInForce,
+      reduceOnly: r.reduceOnly,
+      mode: r.mode,
+      refPrice: price(r.refPrice),
+      refSeq: r.refSeq,
+      createdAt: r.createdAt as EpochMs,
+      expiresAt: r.expiresAt as EpochMs,
+      source: {
+        dedupeKey: r.sourceDedupeKey,
+        eventTime: r.sourceEventTime as EpochMs,
+        basedOnSeq: r.sourceBasedOnSeq,
+        // Signal.strength is a plain number (not money); Decimal round-trips the stored text
+        // through the sanctioned .toNumber() export boundary.
+        strength: new Decimal(r.sourceStrength).toNumber(),
+      },
+    };
   }
 }
 

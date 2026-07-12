@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, sum } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../database.tokens';
 import * as schema from '../schemas/trading';
 import { requireDb } from './persistence-guard';
@@ -56,5 +56,15 @@ export class FillRepository {
         ),
       );
     return rows[0] ?? null;
+  }
+
+  // Authoritative filled total for one order — SUM over the idempotent fill journal, the source
+  // the OMS cum cache is rebuilt from at recovery.
+  async sumQtyByClientOrderId(clientOrderId: string): Promise<string> {
+    const rows = await requireDb(this.db)
+      .select({ total: sum(schema.fills.qty) })
+      .from(schema.fills)
+      .where(eq(schema.fills.clientOrderId, clientOrderId));
+    return rows[0]?.total ?? '0';
   }
 }

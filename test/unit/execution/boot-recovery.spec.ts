@@ -10,11 +10,13 @@ import type {
   ExecutionStorePort,
   EquitySample,
   RecoveredOpenOrder,
+  PersistedOrderEvent,
 } from '../../../src/ports/execution';
 import type { Position } from '../../../src/domain/types/portfolio';
+import type { OrderIntent } from '../../../src/domain/types/order-intent';
 import type { OrderRecord, OrderState } from '../../../src/domain/oms/reducer';
 import { price, qty } from '../../../src/domain/types/money';
-import { clientOrderId, epochMs } from '../../../src/domain/types/ids';
+import { clientOrderId, intentId, epochMs } from '../../../src/domain/types/ids';
 import { SID, V, SYM } from './helpers';
 
 type RecoverySnap = Awaited<ReturnType<ExecutionStorePort['loadRecoverySnapshot']>>;
@@ -26,20 +28,63 @@ function makePortfolio(): PortfolioStateService {
   );
 }
 
-// store fake: BootRecoveryService only calls loadRecoverySnapshot + loadOpenOrders.
-function fakeStore(snap: RecoverySnap, open: RecoveredOpenOrder[]): ExecutionStorePort {
+// store fake: BootRecoveryService calls loadRecoverySnapshot + loadOpenOrders + loadFilledQty,
+// and journals cum rebuilds through appendOrderEvent (captured for assertions).
+function fakeStore(
+  snap: RecoverySnap,
+  open: RecoveredOpenOrder[],
+  filledQty: Record<string, string> = {},
+): ExecutionStorePort & { journaled: PersistedOrderEvent[] } {
+  const journaled: PersistedOrderEvent[] = [];
   return {
+    journaled,
     loadRecoverySnapshot: () => Promise.resolve(snap),
     loadOpenOrders: () => Promise.resolve(open),
-  } as unknown as ExecutionStorePort;
+    loadFilledQty: (coid: string) => Promise.resolve(filledQty[String(coid)] ?? '0'),
+    appendOrderEvent: (ev: PersistedOrderEvent) => {
+      journaled.push(ev);
+      return Promise.resolve({ applied: true });
+    },
+  } as unknown as ExecutionStorePort & { journaled: PersistedOrderEvent[] };
 }
 
-function recovered(state: OrderState, coid: string): RecoveredOpenOrder {
+function intentFor(coid: string): OrderIntent {
+  return {
+    intentId: intentId('0190abcd-1234-7abc-89ab-0123456789ab'),
+    clientOrderId: clientOrderId(coid),
+    strategyId: SID,
+    venue: V,
+    symbol: SYM,
+    side: 'BUY',
+    type: 'LIMIT',
+    qty: qty('1'),
+    limitPrice: price('100'),
+    timeInForce: 'GTC',
+    reduceOnly: false,
+    mode: 'testnet',
+    refPrice: price('100'),
+    refSeq: 1n,
+    createdAt: epochMs(1_700_000_000_000),
+    expiresAt: epochMs(1_700_000_060_000),
+    source: {
+      dedupeKey: 'sig-1',
+      eventTime: epochMs(1_700_000_000_000),
+      basedOnSeq: 1n,
+      strength: 1,
+    },
+  };
+}
+
+function recovered(
+  state: OrderState,
+  coid: string,
+  over: { qty?: string; cumQty?: string; intent?: OrderIntent | null } = {},
+): RecoveredOpenOrder {
   const record: OrderRecord = {
     clientOrderId: clientOrderId(coid),
     state,
-    qty: new Decimal('1'),
-    cumQty: new Decimal('0'),
+    qty: new Decimal(over.qty ?? '1'),
+    cumQty: new Decimal(over.cumQty ?? '0'),
     stepSize: '0.00000001',
     attempt: 0,
     cancelWanted: false,
@@ -51,9 +96,10 @@ function recovered(state: OrderState, coid: string): RecoveredOpenOrder {
       clientOrderId: clientOrderId(coid),
       symbol: SYM,
       side: 'BUY',
-      qty: qty('1'),
+      qty: qty(over.qty ?? '1'),
       limitPrice: price('100'),
     },
+    intent: over.intent ?? null,
   };
 }
 
@@ -180,5 +226,135 @@ describe('BootRecoveryService (§4.2 snapshot-restore)', () => {
 
     // sodEquity null (down across UTC midnight) → anchor = restored equity.
     expect(portfolio.snapshot().sodEquityUtc.toFixed()).toBe('49850.5');
+  });
+
+  // 2026-07-11 regression: a venue-FILLED order stranded at RECONCILE_REQUIRED with a regressed
+  // cum cache (1.67 of 5.65) while the fill journal held all three partials. Recovery rebuilds
+  // cum from the fill journal, terminalizing the order via a journaled FILL fold.
+  it('rebuilds cum from the fill journal and terminalizes an order whose journal already holds full qty', async () => {
+    const portfolio = makePortfolio();
+    const orderBook = new OrderBookService();
+    const coid = 'cbp-recover-00000000000000000000021';
+    const store = fakeStore(
+      { latest: null, sodEquity: null, positions: [] },
+      [recovered('RECONCILE_REQUIRED', coid, { qty: '5.65', cumQty: '1.67' })],
+      { [coid]: '5.65' },
+    );
+    const svc = new BootRecoveryService(store, portfolio, orderBook, crashRecoveryStub({ n: 0 }));
+
+    await svc.recoverOnBoot('testnet');
+
+    const rec = orderBook.get(clientOrderId(coid));
+    expect(rec?.state).toBe('FILLED');
+    expect(rec?.cumQty.toFixed()).toBe('5.65');
+    // The rebuild is journaled (idempotent dedupe key carries the rebuilt total) so the store
+    // chokepoint stamps terminal_at; a healed-terminal order never registers open.
+    expect(store.journaled).toHaveLength(1);
+    expect(store.journaled[0]?.dedupeKey).toBe('boot:cum-rebuild:5.65');
+    expect(store.journaled[0]?.derivedState).toBe('FILLED');
+    expect(portfolio.snapshot().openOrders).toHaveLength(0);
+  });
+
+  it('rebuilds a lagging partial cum without terminalizing and still registers the order open', async () => {
+    const portfolio = makePortfolio();
+    const orderBook = new OrderBookService();
+    const coid = 'cbp-recover-00000000000000000000022';
+    const store = fakeStore(
+      { latest: null, sodEquity: null, positions: [] },
+      [recovered('PARTIALLY_FILLED', coid, { qty: '5.65', cumQty: '1.67' })],
+      { [coid]: '3.98' },
+    );
+    const svc = new BootRecoveryService(store, portfolio, orderBook, crashRecoveryStub({ n: 0 }));
+
+    await svc.recoverOnBoot('testnet');
+
+    const rec = orderBook.get(clientOrderId(coid));
+    expect(rec?.state).toBe('PARTIALLY_FILLED');
+    expect(rec?.cumQty.toFixed()).toBe('3.98');
+    expect(portfolio.snapshot().openOrders).toHaveLength(1);
+  });
+
+  it('leaves a row untouched when the fill journal overflows the order qty (I4 — logged, boot survives)', async () => {
+    const portfolio = makePortfolio();
+    const orderBook = new OrderBookService();
+    const coid = 'cbp-recover-00000000000000000000024';
+    const store = fakeStore(
+      { latest: null, sodEquity: null, positions: [] },
+      [recovered('ACKED', coid, { qty: '1', cumQty: '0' })],
+      { [coid]: '2' }, // journal holds double the order qty — reducer refuses (cum overflow)
+    );
+    const svc = new BootRecoveryService(store, portfolio, orderBook, crashRecoveryStub({ n: 0 }));
+
+    await svc.recoverOnBoot('testnet'); // must not throw — bounded to the one order
+
+    const rec = orderBook.get(clientOrderId(coid));
+    expect(rec?.state).toBe('ACKED');
+    expect(rec?.cumQty.toFixed()).toBe('0');
+    expect(store.journaled).toHaveLength(0);
+  });
+
+  it('heals the in-memory record even when a prior boot already journaled the rebuild (stale row cache)', async () => {
+    // A prior boot crashed between the order_events insert and the orders-row cache update:
+    // the dedupe key exists (appendOrderEvent → applied:false) but the loaded record still
+    // shows the stale cum. The healed record must win on both paths.
+    const portfolio = makePortfolio();
+    const orderBook = new OrderBookService();
+    const coid = 'cbp-recover-00000000000000000000025';
+    const store = fakeStore(
+      { latest: null, sodEquity: null, positions: [] },
+      [recovered('RECONCILE_REQUIRED', coid, { qty: '5.65', cumQty: '1.67' })],
+      { [coid]: '5.65' },
+    );
+    store.appendOrderEvent = () => Promise.resolve({ applied: false }); // dedupe hit
+    const svc = new BootRecoveryService(store, portfolio, orderBook, crashRecoveryStub({ n: 0 }));
+
+    await svc.recoverOnBoot('testnet');
+
+    const rec = orderBook.get(clientOrderId(coid));
+    expect(rec?.state).toBe('FILLED');
+    expect(rec?.cumQty.toFixed()).toBe('5.65');
+    expect(portfolio.snapshot().openOrders).toHaveLength(0);
+  });
+
+  it('leaves a NEW row with journaled fills untouched (corruption is logged, never folded or thrown)', async () => {
+    const portfolio = makePortfolio();
+    const orderBook = new OrderBookService();
+    const coid = 'cbp-recover-00000000000000000000023';
+    const store = fakeStore(
+      { latest: null, sodEquity: null, positions: [] },
+      [recovered('NEW', coid, { qty: '1', cumQty: '0' })],
+      { [coid]: '1' },
+    );
+    const svc = new BootRecoveryService(store, portfolio, orderBook, crashRecoveryStub({ n: 0 }));
+
+    await svc.recoverOnBoot('testnet');
+
+    expect(orderBook.get(clientOrderId(coid))?.state).toBe('NEW');
+    expect(store.journaled).toHaveLength(0);
+  });
+
+  // 2026-07-11 regression: a recovered order's later fill was journaled but never applied to the
+  // portfolio (no in-memory intent → FillIngestor skipped applyFill → an unmanaged 6.9-LINK
+  // position). Recovery restores the persisted write-ahead intent alongside the order.
+  it('rehydrates the persisted intent for venue-confirmed recovered orders so later fills apply', async () => {
+    const portfolio = makePortfolio();
+    const ackedCoid = 'cbp-recover-00000000000000000000031';
+    const newCoid = 'cbp-recover-00000000000000000000032';
+    const svc = new BootRecoveryService(
+      fakeStore({ latest: null, sodEquity: null, positions: [] }, [
+        recovered('ACKED', ackedCoid, { intent: intentFor(ackedCoid) }),
+        recovered('NEW', newCoid, { intent: intentFor(newCoid) }),
+      ]),
+      portfolio,
+      new OrderBookService(),
+      crashRecoveryStub({ n: 0 }),
+    );
+
+    await svc.recoverOnBoot('testnet');
+
+    // Venue-confirmed → intent restored (fill application / resolver / E1 clamp all see it).
+    expect(portfolio.inFlightIntent(clientOrderId(ackedCoid))).toBeDefined();
+    // Never-landed rows stay book-only: no open registration, no intent.
+    expect(portfolio.inFlightIntent(clientOrderId(newCoid))).toBeUndefined();
   });
 });

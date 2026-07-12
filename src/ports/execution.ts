@@ -165,16 +165,28 @@ export interface ExecutionStorePort {
   ): Promise<{ latest: EquitySample | null; sodEquity: string | null; positions: Position[] }>;
   // Recovery read: load orders with no terminal_at (open/in-flight states).
   loadOpenOrders(mode: TradingMode): Promise<RecoveredOpenOrder[]>;
+  // Recovery read: total base qty of the journaled fills for one order — the fill table is the
+  // authoritative cumQty source ("cumQty is rebuilt from the fill table, never the venue's
+  // running field"); boot recovery folds this back over a persisted record whose derived cum
+  // lags it (2026-07-11: three partials in one poll folded from a stale snapshot, regressing
+  // the cached cum and stranding a venue-FILLED order at RECONCILE_REQUIRED).
+  loadFilledQty(clientOrderId: ClientOrderId): Promise<string>;
 }
 
 // A non-terminal order restored at boot: the OMS record for the order-book projection plus the
 // strategy attribution + summary the portfolio open-order set needs. Without the summary half,
 // recovered orders were invisible to reconciliation's venue-truth adoption and the stale-entry
-// sweep (2026-07-07: a stranded cancel + 57 unsweepable zombies).
+// sweep (2026-07-07: a stranded cancel + 57 unsweepable zombies). The persisted intent completes
+// the pair: without it a recovered order's later fills were journaled but never applied to the
+// portfolio (position/cash silently diverged from venue truth, 2026-07-11: a recovered 6.9-LINK
+// entry filled into an unmanaged position), the unknown-resolver could not poll it, and Risk's
+// E1 in-flight clamp never saw its reserved exposure. null tolerates a missing intent row
+// (pre-write-ahead residue) — consumers degrade to the pre-rehydration behavior for that order.
 export interface RecoveredOpenOrder {
   readonly record: OrderRecord;
   readonly strategyId: StrategyId;
   readonly summary: OpenOrderSummary;
+  readonly intent: OrderIntent | null;
 }
 
 // §6.4 reconciliation audit row.

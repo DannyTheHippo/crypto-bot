@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import Decimal from 'decimal.js';
 import type { ClientOrderId } from '../../../domain/types/ids';
 import type { OrderIntent } from '../../../domain/types/order-intent';
 import type { ApprovalProof } from '../../../domain/types/risk-decision';
@@ -102,6 +103,14 @@ export class InMemoryExecutionStore implements ExecutionStorePort {
 
   loadOpenOrders(): Promise<RecoveredOpenOrder[]> {
     return Promise.resolve([]);
+  }
+
+  loadFilledQty(clientOrderId: ClientOrderId): Promise<string> {
+    let total = new Decimal(0);
+    for (const f of this.fills.values()) {
+      if (f.clientOrderId === clientOrderId) total = total.add(f.qty);
+    }
+    return Promise.resolve(total.toFixed());
   }
 
   // ── Inspection (tests) ───────────────────────────────────────────────────────

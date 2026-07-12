@@ -60,11 +60,16 @@ export class DemoFillPollerService {
       const fills = await this.exchange.fetchMyTrades(symbol, this.since);
       for (const f of fills) {
         if (f.venueTimestamp > maxTs) maxTs = f.venueTimestamp;
-        const rec = byVenueId.get(f.clientOrderId); // f.clientOrderId holds the venue order id (ccxt trade.order)
-        if (rec === undefined) {
+        const matched = byVenueId.get(f.clientOrderId); // f.clientOrderId holds the venue order id (ccxt trade.order)
+        if (matched === undefined) {
           skippedUnknown += 1; // a fill with no matching local order (foreign or pre-boot) — never halt here
           continue;
         }
+        // Fold from the LIVE book record, never the per-poll snapshot: the snapshot goes stale
+        // the moment an earlier fill in this same loop advances the order (2026-07-11: three
+        // partials of one order in one poll each folded from cumQty 0, journaling non-monotone
+        // FILL events and regressing the book — the venue-FILLED order stranded non-terminal).
+        const rec = this.orders.get(matched.clientOrderId) ?? matched;
         const { applied } = await this.ingestor.ingest(
           rec,
           this.toFillRecord(f, rec.clientOrderId),

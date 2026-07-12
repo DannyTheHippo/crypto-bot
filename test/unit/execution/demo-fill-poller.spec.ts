@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import Decimal from 'decimal.js';
 import { DemoFillPollerService } from '../../../src/features/trading/execution/demo-fill-poller.service';
 import type { OrderBookService } from '../../../src/features/trading/execution/order-book.service';
 import type {
@@ -43,6 +44,7 @@ function fill(
 
 function build(trades: VenueFill[], localOrders: OrderRecord[], applied = true) {
   const ingested: FillRecord[] = [];
+  const foldedFrom: OrderRecord[] = [];
   const sinceCalls: number[] = [];
   const clock = { now: () => epochMs(T) };
   const exchange = {
@@ -51,17 +53,30 @@ function build(trades: VenueFill[], localOrders: OrderRecord[], applied = true) 
       return Promise.resolve(trades);
     },
   } as unknown as ExchangePort;
-  const orders = { all: () => localOrders } as unknown as OrderBookService;
+  // Live book mock: get() serves the committed record, and the ingestor mock commits its fold
+  // result back — mirroring FillIngestor's reduce → journal → OrderBook.commit pipeline so the
+  // poller's live-record lookup (not the per-poll snapshot) is what the assertions observe.
+  const book = new Map<string, OrderRecord>(localOrders.map((o) => [String(o.clientOrderId), o]));
+  const orders = {
+    all: () => localOrders,
+    get: (coid: ClientOrderId) => book.get(String(coid)),
+  } as unknown as OrderBookService;
   const ingestor = {
     ingest: (rec: OrderRecord, f: FillRecord): Promise<IngestResult> => {
       ingested.push(f);
-      return Promise.resolve({ applied, record: rec });
+      foldedFrom.push(rec);
+      if (!applied) return Promise.resolve({ applied, record: rec }); // duplicate: no fold, no commit
+      const next = { ...rec, cumQty: rec.cumQty.add(f.qty) } as OrderRecord;
+      book.set(String(rec.clientOrderId), next);
+      return Promise.resolve({ applied, record: next });
     },
   } as unknown as FillIngestorService;
   return {
     poller: new DemoFillPollerService(clock, exchange, orders, ingestor),
     ingested,
+    foldedFrom,
     sinceCalls,
+    book,
   };
 }
 
@@ -70,7 +85,7 @@ const localOrder = (over: Partial<OrderRecord> = {}): OrderRecord =>
     clientOrderId: OUR,
     venueOrderId: VENUE_ID,
     state: 'ACKED',
-    cumQty: epochMs(0) as never,
+    cumQty: new Decimal(0),
     ...over,
   }) as unknown as OrderRecord;
 
@@ -165,5 +180,26 @@ describe('DemoFillPollerService', () => {
     await poller.poll([SYM]);
     await poller.poll([SYM]);
     expect(sinceCalls).toEqual([T, T]); // no trades ⇒ since stays anchored at boot
+  });
+
+  // 2026-07-11 regression: three partials of ONE order arrived in ONE poll; each folded from the
+  // per-poll snapshot (cumQty 0), journaling non-monotone FILL events and regressing the book —
+  // the venue-FILLED order stranded non-terminal and the TTL sweep "cancelled" it into
+  // RECONCILE_REQUIRED. The poller must fold every fill from the LIVE book record.
+  it('folds multiple partials of the same order in one poll from the live record, not the snapshot', async () => {
+    const { poller, foldedFrom, book } = build(
+      [
+        fill({ clientOrderId: clientOrderId(VENUE_ID), venueTradeId: 'p1', qty: '1.99' }),
+        fill({ clientOrderId: clientOrderId(VENUE_ID), venueTradeId: 'p2', qty: '1.99' }),
+        fill({ clientOrderId: clientOrderId(VENUE_ID), venueTradeId: 'p3', qty: '1.67' }),
+      ],
+      [localOrder()],
+    );
+    poller.init();
+    const r = await poller.poll([SYM]);
+    expect(r.ingested).toBe(3);
+    // Each fold starts from the record the PREVIOUS fill produced — monotone, never the snapshot.
+    expect(foldedFrom.map((rec) => rec.cumQty.toFixed())).toEqual(['0', '1.99', '3.98']);
+    expect(book.get(String(OUR))?.cumQty.toFixed()).toBe('5.65');
   });
 });

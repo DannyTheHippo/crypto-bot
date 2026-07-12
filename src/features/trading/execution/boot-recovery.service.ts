@@ -2,7 +2,12 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import Decimal from 'decimal.js';
 import { EXECUTION_STORE, type ExecutionStorePort } from '../../../ports/execution';
 import type { TradingMode } from '../../../domain/types/mode';
-import type { OrderState } from '../../../domain/oms/reducer';
+import {
+  reduce,
+  TERMINAL_ORDER_STATES,
+  type OrderRecord,
+  type OrderState,
+} from '../../../domain/oms/reducer';
 import { PortfolioStateService } from './portfolio-state.service';
 import { OrderBookService } from './order-book.service';
 import { CrashRecoveryService } from './crash-recovery.service';
@@ -65,16 +70,82 @@ export class BootRecoveryService {
 
     const open = await this.store.loadOpenOrders(mode);
     let registered = 0;
+    let rebuilt = 0;
+    let rehydrated = 0;
     for (const o of open) {
-      this.orderBook.create(o.record);
-      if (VENUE_CONFIRMED_OPEN.has(o.record.state)) {
+      const record = await this.rebuildCumFromFills(o.record);
+      if (record !== o.record) rebuilt += 1;
+      this.orderBook.create(record);
+      // A rebuild can land the record terminal (the fill table already held full qty — the
+      // 2026-07-11 stranded RECONCILE_REQUIRED order) — terminal orders never register open.
+      if (TERMINAL_ORDER_STATES.has(record.state)) continue;
+      if (VENUE_CONFIRMED_OPEN.has(record.state)) {
         this.portfolio.openOrder(o.strategyId, o.summary);
         registered += 1;
+        // Restore the write-ahead intent alongside the order (the persisted pair, §6.2): fill
+        // application, the unknown-resolver's query loop, and Risk's E1 in-flight clamp all read
+        // the in-memory intent — recovering the order without it left later fills journaled but
+        // never applied to position/cash (2026-07-11: an unmanaged 6.9-LINK position).
+        if (o.intent !== null) {
+          this.portfolio.addInFlight(o.intent);
+          rehydrated += 1;
+        }
       }
     }
     const degraded = await this.crashRecovery.recoverOnBoot();
     this.log.log(
-      `boot recovery: ${open.length} open order(s) seeded (${registered} registered open), ${degraded.length} degraded to *_UNKNOWN`,
+      `boot recovery: ${open.length} open order(s) seeded (${registered} registered open, ` +
+        `${rehydrated} intent(s) rehydrated, ${rebuilt} cum rebuilt from fills), ` +
+        `${degraded.length} degraded to *_UNKNOWN`,
     );
+  }
+
+  // Rebuild the reducer cum from the idempotent fill journal when the persisted derived state
+  // lags it — the fill table is the authoritative source ("cumQty is rebuilt from the fill
+  // table, never the venue's running field"). Folded through the reducer and journaled like any
+  // other FILL (idempotent dedupe key carries the rebuilt total), so a full-qty rebuild
+  // terminalizes the order and stamps terminal_at at the store chokepoint. NEW never accepts a
+  // FILL — a NEW row with journaled fills is corruption; log loudly and leave it frozen rather
+  // than throw the whole boot away.
+  private async rebuildCumFromFills(record: OrderRecord): Promise<OrderRecord> {
+    const tableCum = new Decimal(await this.store.loadFilledQty(record.clientOrderId));
+    if (!tableCum.gt(record.cumQty)) return record;
+    if (record.state === 'NEW') {
+      this.log.error(
+        `boot recovery: NEW order ${record.clientOrderId} has ${tableCum.toFixed()} filled in the journal — corrupt row left untouched`,
+      );
+      return record;
+    }
+    let next: OrderRecord;
+    try {
+      next = reduce(record, { type: 'FILL', cumQty: tableCum });
+    } catch (err) {
+      // I4 overflow (journal holds more than the order's qty) or another illegal fold: bounded
+      // to this one order — log loudly and leave the persisted state untouched rather than
+      // crash-loop the boot under the compose restart policy. Nothing trades on a stuck order.
+      this.log.error(
+        `boot recovery: cum rebuild for ${record.clientOrderId} refused by the reducer (${String(err)}) — row left untouched`,
+      );
+      return record;
+    }
+    const { applied } = await this.store.appendOrderEvent({
+      clientOrderId: record.clientOrderId,
+      dedupeKey: `boot:cum-rebuild:${tableCum.toFixed()}`,
+      event: { type: 'FILL', cumQty: tableCum },
+      derivedState: next.state,
+      cumQty: next.cumQty.toFixed(),
+      venueOrderId: next.venueOrderId,
+    });
+    // applied:false = the dedupe key was journaled by a prior boot. That prior boot may have
+    // crashed BETWEEN the journal insert and the orders-row cache update (appendOrderEvent is
+    // non-atomic), leaving the persisted row stale forever — so the healed record is returned
+    // on BOTH paths; the in-memory book (which hasUnresolvedOrders/arming reads) is correct
+    // every boot even if the row cache never catches up.
+    this.log.warn(
+      `boot recovery: rebuilt cum for ${record.clientOrderId} from the fill journal — ` +
+        `${record.cumQty.toFixed()} → ${tableCum.toFixed()} (${record.state} → ${next.state})` +
+        (applied ? '' : ' [journal already held the rebuild — row cache was stale]'),
+    );
+    return next;
   }
 }

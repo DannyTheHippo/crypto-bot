@@ -229,6 +229,14 @@ const envSchema = z
     // promotion. 0 (default) disables routing — every decide sees ACTIVE, byte-identical to pre-W4.1.
     // Capped at 50 so a candidate can never outweigh the active version's own evidence share.
     AGENTIC_PLAYBOOK_AB_PCT: z.coerce.number().int().min(0).max(50).default(0),
+    // Derivatives-block A/B (measurement start 2026-07-12, owner-authorized — see the DERIVATIVES
+    // prompt block, on lane-globally since 2026-07-10 with no control arm): percent (0-50) of decides
+    // deterministically routed to a CONTROL arm that withholds the derivatives block entirely (system
+    // sentence, promptHash's `+d1` tag, and the payload's derivatives key all withheld together — see
+    // the client's derivativesControlArm comment). 0 (default) disables — byte-identical to today.
+    // Capped at 50, mirroring AGENTIC_PLAYBOOK_AB_PCT above (a control arm can never outweigh the
+    // treatment arm's own evidence share).
+    AGENTIC_DERIVATIVES_AB_PCT: z.coerce.number().int().min(0).max(50).default(0),
     // Cumulative closed-trade floor before a reflection candidate auto-promotes to ACTIVE (G4b); 0
     // (default) disables auto-promotion — see reflection.service.ts's autoPromoteMinTrades comment.
     // LEGACY count-only path: superseded by AGENTIC_AUTO_PROMOTE_MIN_ATTRIBUTED_TRADES below (the
@@ -476,6 +484,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     AGENTIC_REFLECTION_COOLDOWN_MS: agenticReflectionCooldownMs,
     AGENTIC_PLAYBOOK_PIN: agenticPlaybookPin,
     AGENTIC_PLAYBOOK_AB_PCT: agenticPlaybookAbPct,
+    AGENTIC_DERIVATIVES_AB_PCT: agenticDerivativesAbPct,
     AGENTIC_AUTO_PROMOTE_MIN_TRADES: agenticAutoPromoteMinTrades,
     AGENTIC_AUTO_PROMOTE_MIN_ATTRIBUTED_TRADES: agenticAutoPromoteMinAttributedTrades,
     AGENTIC_TOKEN_PRICE_INPUT_PER_MTOK: agenticTokenPriceInputPerMtok,
@@ -567,6 +576,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       autoPromoteMinAttributedTrades: agenticAutoPromoteMinAttributedTrades,
       playbookPin: agenticPlaybookPin,
       playbookAbPct: agenticPlaybookAbPct,
+      derivativesAbPct: agenticDerivativesAbPct,
       tokenPriceInputPerMtok: agenticTokenPriceInputPerMtok,
       tokenPriceOutputPerMtok: agenticTokenPriceOutputPerMtok,
       tokenPriceCacheReadPerMtok: agenticTokenPriceCacheReadPerMtok,

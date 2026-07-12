@@ -64,6 +64,11 @@ export interface AppConfig {
     // W4.1 champion/candidate A/B: percent (0-50) of decides deterministically routed to a newer
     // INACTIVE reflection-minted candidate instead of ACTIVE. 0 disables (default).
     playbookAbPct: number;
+    // Derivatives-block A/B (measurement start 2026-07-12): percent (0-50) of decides deterministically
+    // routed to a CONTROL arm that withholds the derivatives prompt block/sentence/hash-tag entirely,
+    // so the flag's effect becomes measurable via promptHash grouping. 0 disables (default; also a
+    // no-op whenever derivativesFeedEnabled is off — nothing to withhold).
+    derivativesAbPct: number;
     // PromotionReadinessService LLM-cost math: USD per 1M tokens, operator-adjustable.
     tokenPriceInputPerMtok: string;
     tokenPriceOutputPerMtok: string;

@@ -137,6 +137,12 @@ export interface AnthropicAgentClientConfig {
   // C1: documents the optional derivatives block in the system prompt (agent-prompt.ts's
   // buildSystemPrompt derivativesFeedEnabled option). Absent/false ⇒ byte-identical legacy prompt.
   readonly derivativesFeedEnabled?: boolean;
+  // Derivatives-block A/B (measurement start 2026-07-12): percent (0-50) of decides deterministically
+  // routed to a CONTROL arm that withholds the derivatives block entirely — system sentence,
+  // promptHash's `+d1` tag, and the payload's derivatives key all withheld TOGETHER (see propose()'s
+  // derivativesControlArm). Absent/0, or derivativesFeedEnabled false, ⇒ byte-identical to no A/B
+  // (nothing to withhold when the feed is already off).
+  readonly derivativesAbPct?: number;
   // C4: documents the optional sentiment block in the system prompt (agent-prompt.ts's
   // buildSystemPrompt sentimentFeedEnabled option). Absent/false ⇒ byte-identical legacy prompt.
   readonly sentimentFeedEnabled?: boolean;
@@ -286,6 +292,30 @@ export class AnthropicAgentClient implements AgentClientPort {
       : undefined;
     const baseProfile = this.cfg.profile ?? DEFAULT_TRADING_PROFILE;
     const constraints = this.cfg.constraintsFor?.(String(symbol)) ?? baseProfile.constraints;
+    // Derivatives A/B control arm: a deterministic UTC-minute bucket, same shape as
+    // PlaybookAbRoutingProvider's own routing (app.module.ts) — `floor(Date.now()/60_000) % 100 <
+    // pct` — but offset by +37 before the modulo so this bucket's minute-boundary transitions never
+    // land on the same minute as the playbook router's (the two A/B mechanisms stay decorrelated).
+    // Only ever fires when the feed is actually on: with the feed off there is nothing to withhold,
+    // so derivativesAbPct is a no-op and the pct=0 default stays byte-identical to pre-A/B behavior.
+    const derivativesAbPct = this.cfg.derivativesAbPct ?? 0;
+    const derivativesControlArm =
+      (this.cfg.derivativesFeedEnabled ?? false) &&
+      derivativesAbPct > 0 &&
+      Math.floor(Date.now() / 60_000 + 37) % 100 < derivativesAbPct;
+    // The invariant this whole mechanism exists to hold: system sentence, promptHash's `+d1` tag, and
+    // the payload's derivatives key all move TOGETHER per arm — a single boolean gates all three below
+    // rather than three independently-computed conditions that could drift apart.
+    const effectiveDerivativesEnabled =
+      (this.cfg.derivativesFeedEnabled ?? false) && !derivativesControlArm;
+    if (derivativesControlArm) {
+      // No recorder seam reaches this client (MetricsWrappingAgentClient wraps AgentClientPort at the
+      // composition root, outside AnthropicAgentClientConfig) — one structured log line per
+      // control-arm decide is the observability surface until/unless that seam is threaded through.
+      this.logger.warn(
+        `agentic derivatives ab: control arm — symbol=${symbol} pct=${derivativesAbPct}`,
+      );
+    }
     // v5: constraints no longer render into the system prompt (they ride the payload below), so the
     // cached tools+system prefix is byte-identical across all symbols this shared client serves.
     const systemPrompt = buildSystemPrompt(baseProfile, {
@@ -296,10 +326,20 @@ export class AnthropicAgentClient implements AgentClientPort {
             minRr: this.cfg.minRr ?? '1.5',
           }
         : {}),
-      derivativesFeedEnabled: this.cfg.derivativesFeedEnabled ?? false,
+      derivativesFeedEnabled: effectiveDerivativesEnabled,
       sentimentFeedEnabled: this.cfg.sentimentFeedEnabled ?? false,
       shortsEnabled: this.cfg.shortsEnabled ?? false,
     });
+    // Control arm: strip any derivatives snapshot the strategy attached (agentic.strategy.ts's
+    // withDerivatives) before building the payload, so buildMarketPayload's own
+    // input.snapshot.derivatives gate (agent-prompt.ts) omits the block — the same
+    // "input.snapshot-derived derivatives absent ⇒ no key" path a feed-off/stale-poll deployment
+    // already takes, reused rather than duplicated. Every other use of `input` in this method
+    // (signals, eventTime, refPrice, ...) stays on the ORIGINAL input — only payload construction
+    // sees the stripped copy.
+    const payloadInput = derivativesControlArm
+      ? { ...input, snapshot: { ...input.snapshot, derivatives: undefined } }
+      : input;
     // inputPayload is the market JSON ALONE — buildMarketPayload's signature carries no
     // playbookContent parameter, so it structurally cannot echo playbook text (see its own comment).
     // W2.4 cache experiment: the playbook block (the only sizeable stable prefix) rides in its own
@@ -308,7 +348,7 @@ export class AnthropicAgentClient implements AgentClientPort {
     // buildUserMessage's single-string form (see buildPlaybookBlock's comment). Falsifiable:
     // Sonnet-5's minimum cacheable prefix is unpublished — if usage.cache_read_input_tokens stays 0
     // in production the blocks revert (config-free, cheap to remove).
-    const inputPayload = buildMarketPayload(input, { constraints });
+    const inputPayload = buildMarketPayload(payloadInput, { constraints });
     const userContent: string | AnthropicTextBlock[] = playbookContent
       ? [
           {
@@ -335,7 +375,7 @@ export class AnthropicAgentClient implements AgentClientPort {
     // flags stack in a fixed order (`+d1+s1+x1`) so a multi-flag hash is deterministic regardless of
     // which flag flipped first.
     const feedTags = [
-      ...(this.cfg.derivativesFeedEnabled ? [DERIVATIVES_TEMPLATE_VERSION] : []),
+      ...(effectiveDerivativesEnabled ? [DERIVATIVES_TEMPLATE_VERSION] : []),
       ...(this.cfg.sentimentFeedEnabled ? [SENTIMENT_TEMPLATE_VERSION] : []),
       ...(this.cfg.shortsEnabled ? [SHORTS_TEMPLATE_VERSION] : []),
     ];

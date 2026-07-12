@@ -15,6 +15,7 @@ import {
   type AgentMarketSnapshot,
   type AgentContext,
 } from '../../../src/ports/agentic-strategy';
+import type { DerivativesSnapshot } from '../../../src/ports/derivatives-feed';
 import type { CandleEvent, TickerEvent } from '../../../src/domain/types/market-events';
 import { price, qty, moneyToString } from '../../../src/domain/types/money';
 import { strategyId, venueId, symbolId, epochMs } from '../../../src/domain/types/ids';
@@ -109,6 +110,9 @@ function buildInput(
     candles?: Map<typeof SYM, CandleEvent[]>;
     context?: AgentContext;
     eventTime?: number;
+    // Derivatives A/B fixtures attach a fresh snapshot the same way agentic.strategy.ts's
+    // withDerivatives does (see anthropic-agent-client.ts's control-arm stripping comment).
+    derivatives?: DerivativesSnapshot;
   } = {},
 ): AgentDecisionInput {
   const et = opts.eventTime ?? T;
@@ -119,12 +123,25 @@ function buildInput(
     books: new Map(),
     execReports: [],
     portfolio: { strategyId: SID, positions: new Map(), openOrders: [] },
+    ...(opts.derivatives ? { derivatives: opts.derivatives } : {}),
   };
   return {
     strategyId: SID,
     trigger: { kind: 'candle', event: candle('100', 1n, et) },
     snapshot,
     context: opts.context,
+  };
+}
+
+// Same fixture shape as agent-prompt.spec.ts's derivativesSnapshot() — a fresh C1 snapshot for the
+// A/B control-arm tests below.
+function derivativesSnapshot(): DerivativesSnapshot {
+  return {
+    asOf: epochMs(T),
+    fundingRate: 0.0001,
+    fundingAnnualizedPct: 10.95,
+    openInterest: 12345.6,
+    basisBps: 4.2,
   };
 }
 
@@ -1682,6 +1699,152 @@ describe('AnthropicAgentClient', () => {
 
       expect(proposal.signals).toEqual([]);
       expect(proposal.plan).toBeDefined();
+    });
+  });
+
+  describe('derivatives A/B (control arm, measurement start 2026-07-12)', () => {
+    // Bucket math mirrors the client's own `Math.floor(Date.now() / 60_000 + 37) % 100 < pct`. At an
+    // exact-minute timestamp `Date.now() / 60_000` is already an integer minute count `m`, so the
+    // bucket is `(m + 37) % 100`.
+    // m=70 -> (70+37)%100=7, inside [0, AB_PCT) -> CONTROL.
+    const CONTROL_TIME_MS = 70 * 60_000;
+    // m=100 -> (100+37)%100=37, outside [0, AB_PCT) -> TREATMENT. (Not m=0/ms=0 — avoids exercising
+    // the Unix-epoch edge case for an unrelated reason.)
+    const TREATMENT_TIME_MS = 100 * 60_000;
+    const AB_PCT = 30;
+
+    function holdResponse(): unknown {
+      return toolUseBody({ action: 'hold', confidence: 0.5, rationale: 'r' });
+    }
+
+    it('derivativesAbPct absent or 0 is byte-identical to pre-A/B behavior — the control arm never fires regardless of the clock', async () => {
+      const fetchFnAbsent = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const fetchFnZero = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const clientAbsent = new AnthropicAgentClient(
+        buildCfg({ derivativesFeedEnabled: true }),
+        fetchFnAbsent,
+      );
+      const clientZero = new AnthropicAgentClient(
+        buildCfg({ derivativesFeedEnabled: true, derivativesAbPct: 0 }),
+        fetchFnZero,
+      );
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+        derivatives: derivativesSnapshot(),
+      });
+
+      const proposalAbsent = await clientAbsent.propose(input);
+      const proposalZero = await clientZero.propose(input);
+
+      expect(proposalAbsent.promptHash).toBe(proposalZero.promptHash);
+      expect(proposalAbsent.inputPayload).toBe(proposalZero.inputPayload);
+      const [, initAbsent] = fetchFnAbsent.mock.calls[0] as [string, RequestInit];
+      const [, initZero] = fetchFnZero.mock.calls[0] as [string, RequestInit];
+      expect(JSON.parse(initAbsent.body as string)).toEqual(JSON.parse(initZero.body as string));
+      // Sanity: the block IS present on both — the equality above isn't vacuously true because the
+      // feed was off.
+      expect(JSON.parse(proposalAbsent.inputPayload!)).toHaveProperty('derivatives');
+    });
+
+    it('control arm: no derivatives sentence, no +d1 promptHash tag, no derivatives payload key', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(CONTROL_TIME_MS));
+      const fetchFn = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const fetchFnOff = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const client = new AnthropicAgentClient(
+        buildCfg({ derivativesFeedEnabled: true, derivativesAbPct: AB_PCT }),
+        fetchFn,
+      );
+      // Reference client: derivativesFeedEnabled false, no A/B — its promptHash is what a
+      // successfully-withheld control-arm decide must match (the +d1 tag must be absent from both).
+      const offClient = new AnthropicAgentClient(
+        buildCfg({ derivativesFeedEnabled: false }),
+        fetchFnOff,
+      );
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+        derivatives: derivativesSnapshot(),
+      });
+
+      const proposal = await client.propose(input);
+      const offProposal = await offClient.propose(input);
+
+      expect(proposal.promptHash).toBe(offProposal.promptHash);
+      const [, init] = fetchFn.mock.calls[0] as [string, RequestInit];
+      const body = JSON.parse(init.body as string) as { system: { text: string }[] };
+      expect(body.system[0]!.text).not.toContain('derivatives block');
+      expect(JSON.parse(proposal.inputPayload!)).not.toHaveProperty('derivatives');
+    });
+
+    it('treatment arm: derivatives sentence, +d1 promptHash tag, and derivatives payload key all present', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(TREATMENT_TIME_MS));
+      const fetchFn = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const fetchFnOn = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const client = new AnthropicAgentClient(
+        buildCfg({ derivativesFeedEnabled: true, derivativesAbPct: AB_PCT }),
+        fetchFn,
+      );
+      // Reference client: derivativesFeedEnabled true, no A/B (pct 0) — the treatment arm's hash must
+      // match this exactly (the +d1 tag present on both).
+      const onClient = new AnthropicAgentClient(
+        buildCfg({ derivativesFeedEnabled: true, derivativesAbPct: 0 }),
+        fetchFnOn,
+      );
+      const derivatives = derivativesSnapshot();
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+        derivatives,
+      });
+
+      const proposal = await client.propose(input);
+      const onProposal = await onClient.propose(input);
+
+      expect(proposal.promptHash).toBe(onProposal.promptHash);
+      const [, init] = fetchFn.mock.calls[0] as [string, RequestInit];
+      const body = JSON.parse(init.body as string) as { system: { text: string }[] };
+      expect(body.system[0]!.text).toContain('derivatives block');
+      const payload = JSON.parse(proposal.inputPayload!) as {
+        derivatives: { fundingRate: number; openInterest: number; basisBps: number };
+      };
+      expect(payload.derivatives).toEqual({
+        fundingRate: derivatives.fundingRate,
+        fundingAnnualizedPct: derivatives.fundingAnnualizedPct,
+        openInterest: derivatives.openInterest,
+        basisBps: derivatives.basisBps,
+      });
+    });
+
+    it('is deterministic within the same UTC-minute bucket, regardless of the exact millisecond', async () => {
+      vi.useFakeTimers();
+      const fetchFnEarly = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const fetchFnLate = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const clientEarly = new AnthropicAgentClient(
+        buildCfg({ derivativesFeedEnabled: true, derivativesAbPct: AB_PCT }),
+        fetchFnEarly,
+      );
+      const clientLate = new AnthropicAgentClient(
+        buildCfg({ derivativesFeedEnabled: true, derivativesAbPct: AB_PCT }),
+        fetchFnLate,
+      );
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+        derivatives: derivativesSnapshot(),
+      });
+
+      vi.setSystemTime(new Date(CONTROL_TIME_MS));
+      const early = await clientEarly.propose(input);
+      // +45s: still floor(ms / 60_000) === 70, the same minute bucket.
+      vi.setSystemTime(new Date(CONTROL_TIME_MS + 45_000));
+      const late = await clientLate.propose(input);
+
+      expect(early.promptHash).toBe(late.promptHash);
+      expect(JSON.parse(early.inputPayload!)).not.toHaveProperty('derivatives');
+      expect(JSON.parse(late.inputPayload!)).not.toHaveProperty('derivatives');
     });
   });
 });

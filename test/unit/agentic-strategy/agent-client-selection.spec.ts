@@ -131,6 +131,7 @@ describe('agenticEnv', () => {
       maxTokensPerDay: 999999,
       entryTtlBars: 2,
       playbookAbPct: 0,
+      derivativesAbPct: 30,
       expectancyLadderEnabled: false,
       planMode: false,
       minEdgeMultiple: '1.5',
@@ -177,6 +178,7 @@ describe('agenticEnv', () => {
       AGENTIC_REFLECTION_COOLDOWN_MS: '86400000',
       AGENTIC_AUTO_PROMOTE_MIN_TRADES: '9',
       DERIVATIVES_FEED_ENABLED: 'true',
+      AGENTIC_DERIVATIVES_AB_PCT: '30',
     });
   });
 });

@@ -148,6 +148,10 @@ export function agenticEnv(config?: TypedConfigService): Record<string, string |
     // C1: documents the optional derivatives block in the system prompt — off by default, so an
     // unconfigured deployment's prompt stays byte-identical.
     DERIVATIVES_FEED_ENABLED: String(config.derivativesFeed.enabled),
+    // Derivatives-block A/B: sourced off the validated config field (never raw process.env) so the
+    // schema's 0-50 bound can never be bypassed here — same convention as PROMOTION_EVIDENCE_EPOCH
+    // above.
+    AGENTIC_DERIVATIVES_AB_PCT: String(agentic.derivativesAbPct),
   };
 }
 
@@ -253,6 +257,8 @@ export function selectAgentClient(
       minRr: env['AGENTIC_MIN_RR'],
       // C1: off by default ⇒ byte-identical legacy prompt (no derivatives sentence).
       derivativesFeedEnabled: env['DERIVATIVES_FEED_ENABLED'] === 'true',
+      // Derivatives-block A/B: 0 by default ⇒ byte-identical (no control arm ever fires).
+      derivativesAbPct: intEnv(env['AGENTIC_DERIVATIVES_AB_PCT'], 0),
       // C4: off by default ⇒ byte-identical legacy prompt (no sentiment sentence).
       sentimentFeedEnabled: env['SENTIMENT_FEED_ENABLED'] === 'true',
     },

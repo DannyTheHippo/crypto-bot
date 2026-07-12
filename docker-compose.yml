@@ -158,6 +158,13 @@ services:
       # timestamp is the attribution epoch recorded in reports/loop/state.md.
       DERIVATIVES_FEED_ENABLED: 'true'
       DERIVATIVES_FEED_POLL_MS: 60000 # REST poll interval (ms); schema default 60000
+      # Derivatives-block A/B (owner-authorized measurement start 2026-07-12): the block has been ON
+      # lane-globally since the 2026-07-10 enable above with no control arm, so its effect has never
+      # been measurable. 30% of decides route to a CONTROL arm that withholds the block entirely
+      # (system sentence, promptHash's +d1 tag, and the payload's derivatives key together) — a ~70/30
+      # treatment/control split; the offline scorer's existing (playbookVersion, promptHash, symbol)
+      # grouping picks the two arms apart with zero new scoring code. 0 disables (byte-identical).
+      AGENTIC_DERIVATIVES_AB_PCT: 30
 
       # C4: read-only free news/sentiment feed (headlines only, no numeric scores) polled from
       # CryptoPanic, surfaced to the agentic prompt when fresh. Off by default; requires

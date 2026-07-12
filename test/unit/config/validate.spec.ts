@@ -198,6 +198,7 @@ describe('validate()', () => {
         autoPromoteMinAttributedTrades: 0,
         playbookPin: undefined,
         playbookAbPct: 0,
+        derivativesAbPct: 0,
         expectancyLadderEnabled: false,
         planMode: false,
         minEdgeMultiple: '1.5',
@@ -305,6 +306,22 @@ describe('validate()', () => {
     it('throws on AGENTIC_PLAYBOOK_AB_PCT above 50', () => {
       expect(() => validate({ PORT: '3100', AGENTIC_PLAYBOOK_AB_PCT: '51' })).toThrow(
         /AGENTIC_PLAYBOOK_AB_PCT/,
+      );
+    });
+
+    it('AGENTIC_DERIVATIVES_AB_PCT absent → 0 (control arm disabled)', () => {
+      const cfg = validate({ PORT: '3100' });
+      expect(cfg.agentic.derivativesAbPct).toBe(0);
+    });
+
+    it('AGENTIC_DERIVATIVES_AB_PCT present → parsed within 0-50', () => {
+      const cfg = validate({ PORT: '3100', AGENTIC_DERIVATIVES_AB_PCT: '30' });
+      expect(cfg.agentic.derivativesAbPct).toBe(30);
+    });
+
+    it('throws on AGENTIC_DERIVATIVES_AB_PCT above 50', () => {
+      expect(() => validate({ PORT: '3100', AGENTIC_DERIVATIVES_AB_PCT: '51' })).toThrow(
+        /AGENTIC_DERIVATIVES_AB_PCT/,
       );
     });
 

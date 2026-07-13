@@ -60,6 +60,10 @@ export class TypedConfigService {
     return this.config.get('positioningFeed', { infer: true });
   }
 
+  get liquidationFeed(): AppConfig['liquidationFeed'] {
+    return this.config.get('liquidationFeed', { infer: true });
+  }
+
   get observability(): AppConfig['observability'] {
     return this.config.get('observability', { infer: true });
   }

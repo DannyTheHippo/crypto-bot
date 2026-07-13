@@ -16,9 +16,13 @@ import {
   type PlaybookProvider,
 } from '../../../ports/agentic-strategy';
 import {
+  BOOK_STRUCTURE_TEMPLATE_VERSION,
   CROSS_SYMBOL_TEMPLATE_VERSION,
   DECISION_TOOL,
   DERIVATIVES_TEMPLATE_VERSION,
+  DERIVATIVES_V2_TEMPLATE_VERSION,
+  LIQUIDATION_TEMPLATE_VERSION,
+  TRACK_RECORD_TEMPLATE_VERSION,
   PORTFOLIO_TEMPLATE_VERSION,
   PORTFOLIO_TOOL,
   PORTFOLIO_SHORTS_TEMPLATE_VERSION,
@@ -212,6 +216,13 @@ export interface AnthropicAgentClientConfig {
   // C1: documents the optional derivatives block in the system prompt (agent-prompt.ts's
   // buildSystemPrompt derivativesFeedEnabled option). Absent/false ⇒ byte-identical legacy prompt.
   readonly derivativesFeedEnabled?: boolean;
+  // d2 (Push 3 P6 Unit 1): when true ALONGSIDE derivativesFeedEnabled, switches the derivatives
+  // block/sentence/tag from d1 to d2 (three extra fields: spot-perp basis, OI percent change,
+  // funding trend — see agent-prompt.ts's DERIVATIVES_V2_TEMPLATE_VERSION comment). Inert on its own
+  // (derivativesFeedEnabled false ⇒ no derivatives block at all, v2 or not). ENABLING MID-FACTORIAL
+  // IS FORBIDDEN — never flip this while an A/B or offline sweep is comparing d1-tagged rows; see the
+  // same constant's comment for why the two template versions are not cross-comparable.
+  readonly derivativesV2Enabled?: boolean;
   // Derivatives-block A/B (measurement start 2026-07-12): percent (0-50) of decides deterministically
   // routed to a CONTROL arm that withholds the derivatives block entirely — system sentence,
   // promptHash's `+d1` tag, and the payload's derivatives key all withheld TOGETHER (see propose()'s
@@ -236,6 +247,20 @@ export interface AnthropicAgentClientConfig {
   // with the derivatives block under the same information-context A/B control arm. Absent/false ⇒
   // byte-identical legacy prompt/payload.
   readonly positioningFeedEnabled?: boolean;
+  // Push 3 P6 Unit 2 (#43): documents + renders the liquidation (rolling notional + long/short
+  // side-skew) block. Gated together with the derivatives block under the same information-context
+  // A/B control arm. Absent/false ⇒ byte-identical legacy prompt/payload.
+  readonly liquidationsFeedEnabled?: boolean;
+  // Push 3 P6 Unit 3: documents + renders the bookStructure (microprice/depth-weighted imbalance/
+  // depth notional) block, computed from the already-streaming order book. Does NOT ride the
+  // information-context A/B control arm (no new external feed/cost — see agent-prompt.ts's
+  // BOOK_STRUCTURE_TEMPLATE_VERSION comment). Absent/false ⇒ byte-identical legacy prompt/payload.
+  readonly bookStructureFeedEnabled?: boolean;
+  // Push 3 P6 Unit 4 (#17 residual): documents + renders the trackRecord (tripCount/winRate/
+  // meanNetBpsPerTrip/trailingWindowTrips) block — a passthrough of AgentContext.trackRecord the
+  // strategy attaches. Does NOT ride the information-context A/B control arm (decide-side read of
+  // realized performance, no external feed/cost). Absent/false ⇒ byte-identical legacy prompt/payload.
+  readonly trackRecordFeedEnabled?: boolean;
   // B3 shorts capability, widened by Push II Phase 8 to ALSO cover plan mode: with planMode false
   // this widens the legacy decision tool/schema to accept 'short' and maps it to ENTER_SHORT/
   // EXIT_SHORT (see propose()'s mapping table) — unchanged from B3. With planMode true, it instead
@@ -425,6 +450,7 @@ export class AnthropicAgentClient implements AgentClientPort {
             derivatives: undefined,
             tradeFlow: undefined,
             positioning: undefined,
+            liquidation: undefined,
           },
           ...(input.context ? { context: { ...input.context, crossSymbol: undefined } } : {}),
         }
@@ -435,7 +461,11 @@ export class AnthropicAgentClient implements AgentClientPort {
     // cache_control content block while the volatile market JSON follows uncached; block 2 carries
     // the '\n\n' separator, so the concatenated model-visible text stays byte-identical to
     // buildUserMessage's single-string form (see buildPlaybookBlock's comment).
-    const inputPayload = buildMarketPayload(payloadInput, { constraints });
+    const inputPayload = buildMarketPayload(payloadInput, {
+      constraints,
+      derivativesV2Enabled: ctx.derivativesV2Enabled,
+      bookStructureEnabled: this.cfg.bookStructureFeedEnabled ?? false,
+    });
     const userContent: string | AnthropicTextBlock[] = ctx.playbookContent
       ? [
           {
@@ -626,11 +656,16 @@ export class AnthropicAgentClient implements AgentClientPort {
               derivatives: undefined,
               tradeFlow: undefined,
               positioning: undefined,
+              liquidation: undefined,
             },
             ...(input.context ? { context: { ...input.context, crossSymbol: undefined } } : {}),
           }
         : input;
-      const inputPayload = buildMarketPayload(payloadInput, { constraints });
+      const inputPayload = buildMarketPayload(payloadInput, {
+        constraints,
+        derivativesV2Enabled: ctx.derivativesV2Enabled,
+        bookStructureEnabled: this.cfg.bookStructureFeedEnabled ?? false,
+      });
       resolved.push({
         symbolKey,
         symbolId,
@@ -914,6 +949,7 @@ export class AnthropicAgentClient implements AgentClientPort {
     readonly feedTags: readonly string[];
     readonly infoContextControlArm: boolean;
     readonly thinkingArm: boolean;
+    readonly derivativesV2Enabled: boolean;
   }> {
     const { content: playbookContent, version: playbookVersion } = await this.resolvePlaybook();
     // Playbook knobs (tighten-only parametric channel — see playbook-validator.ts). Extracted from
@@ -939,7 +975,8 @@ export class AnthropicAgentClient implements AgentClientPort {
       (this.cfg.derivativesFeedEnabled ?? false) ||
       (this.cfg.crossSymbolFeedEnabled ?? false) ||
       (this.cfg.tradeFlowFeedEnabled ?? false) ||
-      (this.cfg.positioningFeedEnabled ?? false);
+      (this.cfg.positioningFeedEnabled ?? false) ||
+      (this.cfg.liquidationsFeedEnabled ?? false);
     const infoContextControlArm =
       anyInfoFeed &&
       infoContextAbPct > 0 &&
@@ -949,19 +986,25 @@ export class AnthropicAgentClient implements AgentClientPort {
     // four rather than independently-computed conditions that could drift apart.
     const effectiveDerivativesEnabled =
       (this.cfg.derivativesFeedEnabled ?? false) && !infoContextControlArm;
+    // d2: inert whenever the derivatives block itself is withheld (control arm, or the feed off) —
+    // gated INSIDE effectiveDerivativesEnabled so a control-arm decide can never tag d2.
+    const effectiveDerivativesV2Enabled =
+      effectiveDerivativesEnabled && (this.cfg.derivativesV2Enabled ?? false);
     const effectiveCrossSymbolEnabled =
       (this.cfg.crossSymbolFeedEnabled ?? false) && !infoContextControlArm;
     const effectiveTradeFlowEnabled =
       (this.cfg.tradeFlowFeedEnabled ?? false) && !infoContextControlArm;
     const effectivePositioningEnabled =
       (this.cfg.positioningFeedEnabled ?? false) && !infoContextControlArm;
+    const effectiveLiquidationsEnabled =
+      (this.cfg.liquidationsFeedEnabled ?? false) && !infoContextControlArm;
     if (infoContextControlArm) {
       // No recorder seam reaches this client (MetricsWrappingAgentClient wraps AgentClientPort at the
       // composition root, outside AnthropicAgentClientConfig) — one structured log line per
       // control-arm decide (or, when batched, per control-arm BATCH) is the observability surface
       // until/unless that seam is threaded through.
       this.logger.warn(
-        `agentic info-context ab: control arm (derivatives+crossSymbol+tradeFlow+positioning withheld) — pct=${infoContextAbPct}`,
+        `agentic info-context ab: control arm (derivatives+crossSymbol+tradeFlow+positioning+liquidation withheld) — pct=${infoContextAbPct}`,
       );
     }
     // Thinking-on-decide A/B (backlog #42, mechanism only — pct defaults 0): the treatment arm's
@@ -985,11 +1028,15 @@ export class AnthropicAgentClient implements AgentClientPort {
           }
         : {}),
       derivativesFeedEnabled: effectiveDerivativesEnabled,
+      derivativesV2Enabled: effectiveDerivativesV2Enabled,
       sentimentFeedEnabled: this.cfg.sentimentFeedEnabled ?? false,
       shortsEnabled: this.cfg.shortsEnabled ?? false,
       crossSymbolFeedEnabled: effectiveCrossSymbolEnabled,
       tradeFlowFeedEnabled: effectiveTradeFlowEnabled,
       positioningFeedEnabled: effectivePositioningEnabled,
+      liquidationsFeedEnabled: effectiveLiquidationsEnabled,
+      bookStructureFeedEnabled: this.cfg.bookStructureFeedEnabled ?? false,
+      trackRecordFeedEnabled: this.cfg.trackRecordFeedEnabled ?? false,
     });
     // B3: shortsEnabled selects SHORTS_DECISION_TOOL in place of DECISION_TOOL on the legacy path.
     // Push II Phase 8: shortsEnabled + planMode selects PLAN_SHORTS_TOOL in place of PLAN_TOOL
@@ -1017,7 +1064,15 @@ export class AnthropicAgentClient implements AgentClientPort {
     // caller when this batch was served via submit_portfolio) so a multi-flag hash is deterministic
     // regardless of which flag flipped first.
     const feedTags = [
-      ...(effectiveDerivativesEnabled ? [DERIVATIVES_TEMPLATE_VERSION] : []),
+      // d2: a SWITCH within the same slot (never `+d1+d2` stacked) — see DERIVATIVES_V2_TEMPLATE_
+      // VERSION's own comment.
+      ...(effectiveDerivativesEnabled
+        ? [
+            effectiveDerivativesV2Enabled
+              ? DERIVATIVES_V2_TEMPLATE_VERSION
+              : DERIVATIVES_TEMPLATE_VERSION,
+          ]
+        : []),
       ...(this.cfg.sentimentFeedEnabled ? [SENTIMENT_TEMPLATE_VERSION] : []),
       // x1 marks the LEGACY (non-plan) shorts prompt shape only — the plan-shorts combination is
       // already fully identified by the p4 base tag, so stacking x1 onto p4 would contradict the
@@ -1026,6 +1081,9 @@ export class AnthropicAgentClient implements AgentClientPort {
       ...(effectiveCrossSymbolEnabled ? [CROSS_SYMBOL_TEMPLATE_VERSION] : []),
       ...(effectiveTradeFlowEnabled ? [TRADEFLOW_TEMPLATE_VERSION] : []),
       ...(effectivePositioningEnabled ? [POSITIONING_TEMPLATE_VERSION] : []),
+      ...(effectiveLiquidationsEnabled ? [LIQUIDATION_TEMPLATE_VERSION] : []),
+      ...(this.cfg.bookStructureFeedEnabled ? [BOOK_STRUCTURE_TEMPLATE_VERSION] : []),
+      ...(this.cfg.trackRecordFeedEnabled ? [TRACK_RECORD_TEMPLATE_VERSION] : []),
       // #42: last slot by design — a REQUEST-param arm, not a prompt-content tag; see above.
       ...(thinkingArm ? [THINKING_TEMPLATE_VERSION] : []),
     ];
@@ -1041,6 +1099,7 @@ export class AnthropicAgentClient implements AgentClientPort {
       feedTags,
       infoContextControlArm,
       thinkingArm,
+      derivativesV2Enabled: effectiveDerivativesV2Enabled,
     };
   }
 

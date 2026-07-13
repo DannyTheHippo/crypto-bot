@@ -15,6 +15,22 @@ export interface DerivativesSnapshot {
   readonly openInterest: number;
   // (mark − index) / index, in basis points.
   readonly basisBps: number;
+  // d2 (AGENTIC_DERIVATIVES_V2_ENABLED) fields — ALWAYS COMPUTED whenever the derivatives feed itself
+  // is polling (accumulation is independent of the v2 flag, so a full lookback of ring-buffer history
+  // already exists the moment v2 is switched on); the FLAG gates only whether agent-prompt.ts's
+  // buildDerivativesBlock includes them in the rendered payload (see that file's DERIVATIVES_V2_
+  // TEMPLATE_VERSION comment on why enabling mid-factorial is forbidden). null while the underlying
+  // spot ticker/buffer data isn't available yet (first poll(s), or the source has no fetchTicker).
+  // True spot-vs-perp basis: (perp mark − spot last) / spot last, in basis points — distinct from
+  // basisBps above (which is mark-vs-INDEX, a venue-internal fair-value reference, not a tradable
+  // spot price).
+  readonly spotPerpBasisBps: number | null;
+  // Percent change in open interest from the oldest sample retained in the ring buffer (as close to
+  // the lookback window's start as the poll cadence allows) to the current value.
+  readonly oiChangePct: number | null;
+  // Same ring-buffer approach as oiChangePct, applied to fundingRate: raw fraction delta and its sign.
+  readonly fundingTrendDelta: number | null;
+  readonly fundingTrendDirection: 'up' | 'down' | 'flat' | null;
 }
 
 export interface DerivativesFeedPort {

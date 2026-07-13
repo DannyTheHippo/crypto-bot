@@ -32,6 +32,10 @@ function fixtureSource(
     openInterestAmount?: string | number;
     failFunding?: boolean;
     failOi?: boolean;
+    // d2: absent by default (mirrors a pre-v2 fixture/double) — supplying it opts a test into the
+    // spot-perp basis path; failTicker exercises the "spot fetch failure fails the whole poll" path.
+    spotLast?: string | number;
+    failTicker?: boolean;
   } = {},
 ): DerivativesRestSource & { calledSymbols: string[] } {
   const calledSymbols: string[] = [];
@@ -54,6 +58,15 @@ function fixtureSource(
       if (overrides.failOi) return Promise.reject(new Error('open interest fetch failed'));
       return Promise.resolve({ openInterestAmount: overrides.openInterestAmount ?? '12345' });
     },
+    ...(overrides.spotLast !== undefined || overrides.failTicker
+      ? {
+          fetchTicker: (symbol: string) => {
+            calledSymbols.push(symbol);
+            if (overrides.failTicker) return Promise.reject(new Error('ticker fetch failed'));
+            return Promise.resolve({ last: overrides.spotLast });
+          },
+        }
+      : {}),
   };
 }
 
@@ -84,6 +97,12 @@ describe('DerivativesFeedService', () => {
     // (100.5 - 100) / 100 * 10000 = 50 bps
     expectCloseTo(snap!.basisBps, 50, 10);
     expect(snap!.asOf).toBe(1_000_000);
+    // d2 fields: null on the very first poll (no ring-buffer history yet, no fetchTicker supplied by
+    // this fixture) — accumulation always runs, but a single sample can never yield a trend.
+    expect(snap!.spotPerpBasisBps).toBeNull();
+    expect(snap!.oiChangePct).toBeNull();
+    expect(snap!.fundingTrendDelta).toBeNull();
+    expect(snap!.fundingTrendDirection).toBeNull();
   });
 
   it('translates a spot symbol (BASE/QUOTE) to the ccxt linear-swap perp form (BASE/QUOTE:QUOTE) before polling', async () => {
@@ -189,5 +208,133 @@ describe('DerivativesFeedService', () => {
     await svc.pollAll();
 
     expect(svc.latest(SYM)).toBeNull();
+  });
+
+  // d2 (AGENTIC_DERIVATIVES_V2_ENABLED): the service ALWAYS accumulates the OI/funding ring buffers
+  // and computes spotPerpBasisBps whenever the feed itself polls — the flag only gates whether
+  // agent-prompt.ts's buildDerivativesBlock renders these fields, tested separately in
+  // agent-prompt.spec.ts. This suite covers the field math itself.
+  describe('d2 fields (spot-perp basis, OI-change ring buffer, funding trend)', () => {
+    it('computes true spot-perp basis ((mark - spotLast) / spotLast in bps) when the source supplies fetchTicker', async () => {
+      const { clock } = mutableClock();
+      const source = fixtureSource({ markPrice: '101', spotLast: '100' });
+      const svc = new DerivativesFeedService(source, {
+        symbols: [SYM],
+        pollIntervalMs: 60_000,
+        clock,
+      });
+
+      await svc.pollAll();
+
+      // (101 - 100) / 100 * 10000 = 100 bps
+      expectCloseTo(svc.latest(SYM)!.spotPerpBasisBps!, 100, 10);
+      expect(source.calledSymbols).toContain('BTC/USDT'); // spot form, not the perp form
+    });
+
+    it('spotPerpBasisBps is null when the source has no fetchTicker at all (pre-v2 fixture/double)', async () => {
+      const { clock } = mutableClock();
+      const svc = new DerivativesFeedService(fixtureSource(), {
+        symbols: [SYM],
+        pollIntervalMs: 60_000,
+        clock,
+      });
+
+      await svc.pollAll();
+
+      expect(svc.latest(SYM)!.spotPerpBasisBps).toBeNull();
+    });
+
+    it('a fetchTicker failure fails the whole poll (never a silently partial v2-less snapshot)', async () => {
+      const { clock } = mutableClock();
+      const source = fixtureSource({ spotLast: '100', failTicker: true });
+      const svc = new DerivativesFeedService(source, {
+        symbols: [SYM],
+        pollIntervalMs: 60_000,
+        clock,
+      });
+
+      await svc.pollAll();
+
+      expect(svc.latest(SYM)).toBeNull();
+      expect(svc.pollErrorCount()).toBe(1);
+    });
+
+    it('oiChangePct is null until a second sample lands, then reflects the percent change since the oldest retained sample', async () => {
+      const { clock, set } = mutableClock(1_000_000);
+      let oi = '1000';
+      const source: DerivativesRestSource = {
+        fetchFundingRate: () =>
+          Promise.resolve({ fundingRate: 0.0001, markPrice: 100, indexPrice: 100 }),
+        fetchOpenInterest: () => Promise.resolve({ openInterestAmount: oi }),
+      };
+      const svc = new DerivativesFeedService(source, {
+        symbols: [SYM],
+        pollIntervalMs: 60_000,
+        clock,
+      });
+
+      await svc.pollAll();
+      expect(svc.latest(SYM)!.oiChangePct).toBeNull();
+
+      set(1_000_000 + 60_000);
+      oi = '1100';
+      await svc.pollAll();
+
+      // (1100 - 1000) / 1000 * 100 = 10%
+      expectCloseTo(svc.latest(SYM)!.oiChangePct!, 10, 10);
+    });
+
+    it('the OI ring buffer prunes samples older than the 1h lookback, so the reference point slides forward', async () => {
+      const { clock, set } = mutableClock(0);
+      let oi = '1000';
+      const source: DerivativesRestSource = {
+        fetchFundingRate: () =>
+          Promise.resolve({ fundingRate: 0.0001, markPrice: 100, indexPrice: 100 }),
+        fetchOpenInterest: () => Promise.resolve({ openInterestAmount: oi }),
+      };
+      const svc = new DerivativesFeedService(source, {
+        symbols: [SYM],
+        pollIntervalMs: 60_000,
+        clock,
+      });
+
+      await svc.pollAll(); // t=0, oi=1000 (first sample, becomes the initial reference)
+
+      set(30 * 60_000); // t=30m
+      oi = '1200';
+      await svc.pollAll(); // reference is still t=0 (within the 1h window)
+      expectCloseTo(svc.latest(SYM)!.oiChangePct!, 20, 10); // (1200-1000)/1000*100
+
+      set(90 * 60_000); // t=90m — the t=0 sample is now older than the 1h lookback and gets pruned
+      oi = '1260';
+      await svc.pollAll(); // new reference is the t=30m sample (oi=1200)
+      expectCloseTo(svc.latest(SYM)!.oiChangePct!, 5, 10); // (1260-1200)/1200*100
+    });
+
+    it('fundingTrendDelta/Direction are null until a second sample, then report the raw delta and sign', async () => {
+      const { clock, set } = mutableClock(1_000_000);
+      let funding: number = 0.0001;
+      const source: DerivativesRestSource = {
+        fetchFundingRate: () =>
+          Promise.resolve({ fundingRate: funding, markPrice: 100, indexPrice: 100 }),
+        fetchOpenInterest: () => Promise.resolve({ openInterestAmount: 1 }),
+      };
+      const svc = new DerivativesFeedService(source, {
+        symbols: [SYM],
+        pollIntervalMs: 60_000,
+        clock,
+      });
+
+      await svc.pollAll();
+      expect(svc.latest(SYM)!.fundingTrendDelta).toBeNull();
+      expect(svc.latest(SYM)!.fundingTrendDirection).toBeNull();
+
+      set(1_000_000 + 60_000);
+      funding = 0.00005;
+      await svc.pollAll();
+
+      expectCloseTo(svc.latest(SYM)!.fundingTrendDelta!, -0.00005, 10);
+      expect(svc.latest(SYM)!.fundingTrendDirection).toBe('down');
+    });
   });
 });

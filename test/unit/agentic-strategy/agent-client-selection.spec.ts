@@ -201,9 +201,12 @@ describe('agenticEnv', () => {
       entryTtlBars: 2,
       playbookAbPct: 0,
       derivativesAbPct: 30,
+      derivativesV2Enabled: false,
       thinkingAbPct: 15,
       crossSymbolEnabled: false,
       crossSymbolLookbackBars: 20,
+      bookStructureFeedEnabled: false,
+      trackRecordEnabled: false,
       portfolioConsultEnabled: true,
       portfolioWindowMs: 4000,
       expectancyLadderEnabled: false,
@@ -245,6 +248,8 @@ describe('agenticEnv', () => {
     // Same sibling-key convention as derivativesFeed above (2026-07-13).
     const tradeFlowFeed: AppConfig['tradeFlowFeed'] = { enabled: true, pollIntervalMs: 60000 };
     const positioningFeed: AppConfig['positioningFeed'] = { enabled: true, pollIntervalMs: 300000 };
+    // Same sibling-key convention as derivativesFeed above (Push 3 P6 Unit 2).
+    const liquidationFeed: AppConfig['liquidationFeed'] = { enabled: false };
     // Portfolio-consult batching's AGENTIC_PORTFOLIO_SYMBOL_COUNT overlay reads config.strategy.symbols
     // (a sibling AppConfig top-level key, not part of the `agentic` block) — present here so the
     // fixture matches the real TypedConfigService shape (mirrors derivativesFeed/tradeFlowFeed above).
@@ -263,6 +268,7 @@ describe('agenticEnv', () => {
       derivativesFeed,
       tradeFlowFeed,
       positioningFeed,
+      liquidationFeed,
       strategy,
       venues,
     } as unknown as TypedConfigService;

@@ -14,6 +14,7 @@ import type { DerivativesSnapshot } from './derivatives-feed';
 import type { SentimentSnapshot } from './sentiment-feed';
 import type { TradeFlowSnapshot } from './trade-flow-feed';
 import type { PositioningSnapshot } from './positioning-feed';
+import type { LiquidationSnapshot } from './liquidation-feed';
 
 // ── StrategyInitContext ───────────────────────────────────────────────────────
 //
@@ -82,6 +83,11 @@ export interface AgentMarketSnapshot {
   // is on AND a fresh poll landed (see PositioningFeedPort.latest). Same optionality/gating
   // convention as tradeFlow above.
   readonly positioning?: PositioningSnapshot;
+  // #43 liquidation-order flow (Push 3 P6 Unit 2) — absent unless AGENTIC_LIQUIDATIONS_ENABLED is on
+  // AND the WS stream is currently healthy (see LiquidationFeedPort.latest; a healthy stream with
+  // zero events in its trailing window still supplies a snapshot — count: 0, never absent for that
+  // reason). Same optionality/gating convention as tradeFlow above.
+  readonly liquidation?: LiquidationSnapshot;
 }
 
 // Per-strategy position summary the host derives from the live PORTFOLIO_VIEW, handed to the
@@ -163,6 +169,18 @@ export interface AgentCrossSymbol {
   readonly weakest: { readonly symbol: string; readonly returnPct: string };
 }
 
+// Push 3 P6 Unit 4 (#17 residual): the strategy's own realized decide-side track record over a
+// trailing window of CLOSED round trips — the same window/floor the expectancy ladder (W4.2,
+// agentic.strategy.ts's EXPECTANCY_LADDER_* consts) already computes from, surfaced as read-only
+// context rather than a second risk-modulating mechanism. Present only when
+// AGENTIC_TRACK_RECORD_ENABLED is on, a RoundTripEvidencePort is wired, and enough trips exist.
+export interface AgentTrackRecord {
+  readonly tripCount: number;
+  readonly winRate: number; // 0..1, fraction of tripCount with netPnl > 0
+  readonly meanNetBpsPerTrip: number; // mean of netPnl / (entryVwap * boughtQty) * 10_000
+  readonly trailingWindowTrips: number; // the configured window size, not necessarily === tripCount
+}
+
 export interface AgentContext {
   readonly indicators: AgentIndicators | null; // null while candle history < 21 closes
   readonly position: AgentPositionSummary;
@@ -177,6 +195,9 @@ export interface AgentContext {
   // symbols have fresh returns). The client may still withhold it under the information-context A/B
   // control arm — see anthropic-agent-client.ts.
   readonly crossSymbol?: AgentCrossSymbol | null;
+  // Push 3 P6 Unit 4: present only when AGENTIC_TRACK_RECORD_ENABLED is on AND enough trips exist —
+  // see AgentTrackRecord's own comment. Absent ⇒ byte-identical to pre-feature output.
+  readonly trackRecord?: AgentTrackRecord;
 }
 
 // What woke the agent, plus the snapshot it reasons over.

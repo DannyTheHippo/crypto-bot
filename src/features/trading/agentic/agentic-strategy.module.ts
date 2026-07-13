@@ -159,9 +159,16 @@ export function agenticEnv(config?: TypedConfigService): Record<string, string |
     // schema's 0-50 bound can never be bypassed here — same convention as PROMOTION_EVIDENCE_EPOCH
     // above.
     AGENTIC_DERIVATIVES_AB_PCT: String(agentic.derivativesAbPct),
+    // d2: off by default ⇒ byte-identical d1 prompt/payload/tag (see AnthropicAgentClientConfig's
+    // derivativesV2Enabled comment).
+    AGENTIC_DERIVATIVES_V2_ENABLED: String(agentic.derivativesV2Enabled),
     AGENTIC_THINKING_AB_PCT: String(agentic.thinkingAbPct),
     AGENTIC_CROSS_SYMBOL_ENABLED: String(agentic.crossSymbolEnabled),
     AGENTIC_CROSS_SYMBOL_LOOKBACK_BARS: String(agentic.crossSymbolLookbackBars),
+    // Book-structure block: off by default ⇒ byte-identical. No A/B interaction.
+    AGENTIC_BOOK_STRUCTURE_ENABLED: String(agentic.bookStructureFeedEnabled),
+    // Track-record block: off by default ⇒ byte-identical. No A/B interaction.
+    AGENTIC_TRACK_RECORD_ENABLED: String(agentic.trackRecordEnabled),
     // Portfolio-consult batching: sourced off the validated config fields (never raw process.env),
     // same convention as the A/B pct above. AGENTIC_PORTFOLIO_SYMBOL_COUNT is NOT a schema field —
     // it is derived here from the SAME config.strategy.symbols array TRADING_SYMBOLS resolves to
@@ -176,6 +183,8 @@ export function agenticEnv(config?: TypedConfigService): Record<string, string |
     // above: sourced off the top-level feed config block, not the `agentic` sub-object.
     AGENTIC_TRADEFLOW_ENABLED: String(config.tradeFlowFeed.enabled),
     AGENTIC_POSITIONING_ENABLED: String(config.positioningFeed.enabled),
+    // #43: off by default ⇒ byte-identical legacy prompt. Same convention/A/B arm as above.
+    AGENTIC_LIQUIDATIONS_ENABLED: String(config.liquidationFeed.enabled),
   };
 }
 
@@ -294,6 +303,8 @@ export function selectAgentClient(
       minRr: env['AGENTIC_MIN_RR'],
       // C1: off by default ⇒ byte-identical legacy prompt (no derivatives sentence).
       derivativesFeedEnabled: env['DERIVATIVES_FEED_ENABLED'] === 'true',
+      // d2: off by default ⇒ byte-identical d1 prompt/payload/tag.
+      derivativesV2Enabled: env['AGENTIC_DERIVATIVES_V2_ENABLED'] === 'true',
       // Derivatives-block A/B: 0 by default ⇒ byte-identical (no control arm ever fires).
       derivativesAbPct: intEnv(env['AGENTIC_DERIVATIVES_AB_PCT'], 0),
       thinkingAbPct: intEnv(env['AGENTIC_THINKING_AB_PCT'], 0),
@@ -306,6 +317,12 @@ export function selectAgentClient(
       // derivatives block under the SAME info-context A/B (derivativesAbPct) inside the client.
       tradeFlowFeedEnabled: env['AGENTIC_TRADEFLOW_ENABLED'] === 'true',
       positioningFeedEnabled: env['AGENTIC_POSITIONING_ENABLED'] === 'true',
+      // #43: off by default ⇒ byte-identical. Gated together under the SAME info-context A/B.
+      liquidationsFeedEnabled: env['AGENTIC_LIQUIDATIONS_ENABLED'] === 'true',
+      // Book-structure block: off by default ⇒ byte-identical. No info-context A/B interaction.
+      bookStructureFeedEnabled: env['AGENTIC_BOOK_STRUCTURE_ENABLED'] === 'true',
+      // Track-record block: off by default ⇒ byte-identical. No info-context A/B interaction.
+      trackRecordFeedEnabled: env['AGENTIC_TRACK_RECORD_ENABLED'] === 'true',
     },
     fetch,
     new Logger('AnthropicAgentClient'),

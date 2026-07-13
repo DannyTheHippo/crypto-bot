@@ -25,6 +25,7 @@ import {
   type AgentDecisionInput,
   type AgentContext,
   type AgentCrossSymbol,
+  type AgentTrackRecord,
   type AgentDecisionMeta,
   type AgentHtfIndicators,
   type AgentIndicators,
@@ -47,6 +48,7 @@ import type { DerivativesFeedPort } from '../../../ports/derivatives-feed';
 import type { SentimentFeedPort } from '../../../ports/sentiment-feed';
 import type { TradeFlowFeedPort } from '../../../ports/trade-flow-feed';
 import type { PositioningFeedPort } from '../../../ports/positioning-feed';
+import type { LiquidationFeedPort } from '../../../ports/liquidation-feed';
 import { evaluatePlan, type PlanExecutorAction, type PlanExecutorState } from './plan-executor';
 import { CrossSymbolContextService } from './cross-symbol-context';
 import { positionKey } from '../../../domain/risk/evaluate';
@@ -90,6 +92,12 @@ export interface AgenticStrategyParams {
   // for the ladder). Optional/absent ⇒ disabled, so existing callers stay byte-identical. Also inert
   // without AgenticStrategyDeps.evidence — a true flag with no evidence port is a no-op, not an error.
   readonly expectancyLadderEnabled?: boolean;
+  // Push 3 P6 Unit 4 (#17 residual): when enabled AND deps.evidence is wired, decide() surfaces
+  // {tripCount, winRate, meanNetBpsPerTrip, trailingWindowTrips} over the SAME trailing window/floor
+  // the expectancy ladder already uses (EXPECTANCY_LADDER_WINDOW_TRIPS/MIN_TRIPS below) onto the
+  // outgoing AgentContext.trackRecord — a decide-side read of realized performance, never a second
+  // risk-modulating mechanism. Absent/false ⇒ never computed, never attached — byte-identical.
+  readonly trackRecordEnabled?: boolean;
   // Cross-symbol relative-strength context (2026-07-12): when enabled AND deps.crossSymbolContext is
   // wired, buildContext records this symbol's trailing-return into the shared service and attaches
   // its basket ranking to the outgoing context (see cross-symbol-context.ts). Absent/false ⇒ never
@@ -185,6 +193,10 @@ export interface AgenticStrategyDeps {
   // onto the outgoing snapshot's `positioning` field. Optional — absent means the prompt's
   // positioning block never renders, same convention as `derivativesFeed` above.
   readonly positioningFeed?: PositioningFeedPort;
+  // #43 liquidation-order flow (Push 3 P6 Unit 2), consulted once per decide() and threaded onto the
+  // outgoing snapshot's `liquidation` field. Optional — absent means the prompt's liquidation block
+  // never renders, same convention as `derivativesFeed` above.
+  readonly liquidationFeed?: LiquidationFeedPort;
   // Cross-symbol relative-strength context (2026-07-12): a SINGLE instance shared across every
   // agentic-N strategy (wired in app.module.ts's register factory), so each instance records its own
   // symbol's trailing return and reads the whole basket's ranking. Absent ⇒ crossSymbolEnabled is a
@@ -278,6 +290,7 @@ export class AgenticStrategy implements AsyncStrategy {
   // any plan outside long-from-flat, so restarts silently degraded positions to per-bar consults.
   private activePlan: ActivePlanState | null = null;
   private readonly expectancyLadderEnabled: boolean;
+  private readonly trackRecordEnabled: boolean;
   private readonly crossSymbolEnabled: boolean;
   private readonly crossSymbolLookbackBars: number;
   private readonly evidence?: RoundTripEvidencePort;
@@ -285,6 +298,7 @@ export class AgenticStrategy implements AsyncStrategy {
   private readonly sentimentFeed?: SentimentFeedPort;
   private readonly tradeFlowFeed?: TradeFlowFeedPort;
   private readonly positioningFeed?: PositioningFeedPort;
+  private readonly liquidationFeed?: LiquidationFeedPort;
   private readonly crossSymbolContext?: CrossSymbolContextService;
   private readonly venueTpEnabled: boolean;
   private readonly venueTpReplaceDriftBps: number;
@@ -342,6 +356,7 @@ export class AgenticStrategy implements AsyncStrategy {
     this.planExitTtlBars = Math.max(2, params.planExitTtlBars ?? 2);
     this.quietPayloadSampleBars = Math.max(0, params.quietPayloadSampleBars ?? 0);
     this.expectancyLadderEnabled = params.expectancyLadderEnabled ?? false;
+    this.trackRecordEnabled = params.trackRecordEnabled ?? false;
     this.crossSymbolEnabled = params.crossSymbolEnabled ?? false;
     this.crossSymbolLookbackBars = Math.max(1, params.crossSymbolLookbackBars ?? 20);
     this.evidence = deps.evidence;
@@ -349,6 +364,7 @@ export class AgenticStrategy implements AsyncStrategy {
     this.sentimentFeed = deps.sentimentFeed;
     this.tradeFlowFeed = deps.tradeFlowFeed;
     this.positioningFeed = deps.positioningFeed;
+    this.liquidationFeed = deps.liquidationFeed;
     this.crossSymbolContext = deps.crossSymbolContext;
     this.venueTpEnabled = params.venueTpEnabled ?? false;
     this.venueTpReplaceDriftBps = Math.max(0, params.venueTpReplaceDriftBps ?? 10);
@@ -397,13 +413,13 @@ export class AgenticStrategy implements AsyncStrategy {
   }
 
   async decide(rawInput: AgentDecisionInput): Promise<Signal[]> {
-    // C1: thread fresh feed snapshots (derivatives, sentiment, trade-flow, positioning) onto the
-    // host-supplied snapshot before anything else reads `input` — every downstream use
+    // C1: thread fresh feed snapshots (derivatives, sentiment, trade-flow, positioning, liquidation)
+    // onto the host-supplied snapshot before anything else reads `input` — every downstream use
     // (buildContext, staleEntryCancels, client.propose, the quiet-hold journal sample) sees the
     // same enriched snapshot. No-op (same object) when a feed isn't wired or has no fresh poll, so
     // that deployment stays byte-identical.
-    const input = this.withPositioning(
-      this.withTradeFlow(this.withSentiment(this.withDerivatives(rawInput))),
+    const input = this.withLiquidation(
+      this.withPositioning(this.withTradeFlow(this.withSentiment(this.withDerivatives(rawInput)))),
     );
     // Deterministic and prescreen-independent: resting GTC entries otherwise rest forever (nothing
     // enforces expiresAt on ACKED orders — boot 10c8af0c recovered 55 of them). Computed first so
@@ -433,9 +449,17 @@ export class AgenticStrategy implements AsyncStrategy {
       ];
     }
 
+    // Push 3 P6 Unit 4: fetched HERE (not inside buildContext, which is synchronous) and only right
+    // before the one call site that actually renders it to the model — the plan-managed/prescreen-
+    // quiet paths above never reach this line, so a bar the LLM isn't even consulted on never spends
+    // an extra evidence-port round trip on track-record context it would never send.
+    const trackRecordCtx = await this.computeTrackRecordContext();
     let proposal: AgentProposal;
     try {
-      proposal = await this.client.propose({ ...input, context });
+      proposal = await this.client.propose({
+        ...input,
+        context: { ...context, ...trackRecordCtx },
+      });
     } catch (err) {
       this.recordErrorJournalEntry(input, err);
       throw err;
@@ -1031,6 +1055,50 @@ export class AgenticStrategy implements AsyncStrategy {
     }
   }
 
+  // Push 3 P6 Unit 4 (#17 residual): surfaces {tripCount, winRate, meanNetBpsPerTrip,
+  // trailingWindowTrips} over the SAME trailing window/floor the expectancy ladder computes from
+  // (EXPECTANCY_LADDER_WINDOW_TRIPS/MIN_TRIPS above) — decide-side read-only context, never a second
+  // risk-modulating mechanism. Disabled, no evidence port wired, insufficient trips, or any failure
+  // all resolve to {} (the omit-entirely convention buildCrossSymbolContext already uses) — never a
+  // populated key with garbage data.
+  private async computeTrackRecordContext(): Promise<{ trackRecord?: AgentTrackRecord }> {
+    if (!this.trackRecordEnabled || !this.evidence) return {};
+    try {
+      const trips = await this.evidence.recentRoundTrips(EXPECTANCY_LADDER_FETCH_LIMIT);
+      const mine = trips
+        .filter((t) => t.strategyId === this.id)
+        .slice(-EXPECTANCY_LADDER_WINDOW_TRIPS);
+      if (mine.length < EXPECTANCY_LADDER_MIN_TRIPS) return {};
+
+      let wins = 0;
+      let bpsSum = new Decimal(0);
+      let bpsCount = 0;
+      for (const t of mine) {
+        if (new Decimal(t.netPnl).gt(0)) wins += 1;
+        if (t.entryVwap !== null) {
+          const notional = new Decimal(t.entryVwap).mul(t.boughtQty);
+          if (notional.gt(0)) {
+            bpsSum = bpsSum.plus(new Decimal(t.netPnl).div(notional).mul(10_000));
+            bpsCount += 1;
+          }
+        }
+      }
+      return {
+        trackRecord: {
+          tripCount: mine.length,
+          winRate: wins / mine.length,
+          meanNetBpsPerTrip: bpsCount > 0 ? bpsSum.div(bpsCount).toNumber() : 0,
+          trailingWindowTrips: EXPECTANCY_LADDER_WINDOW_TRIPS,
+        },
+      };
+    } catch (err) {
+      this.logger.warn(
+        `track-record context failed, omitting: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return {};
+    }
+  }
+
   // Deterministic HOLD path taken when the prescreen gate skips the LLM call entirely: no client
   // call, no token/decide counters (MetricsWrappingAgentClient never runs), an honest journal row
   // naming the prescreen reason under a distinct 'prescreen' model tag, and the same empty-signal
@@ -1095,6 +1163,15 @@ export class AgenticStrategy implements AsyncStrategy {
     const positioning = this.positioningFeed?.latest(this.symbol) ?? undefined;
     if (!positioning) return input;
     return { ...input, snapshot: { ...input.snapshot, positioning } };
+  }
+
+  // #43 liquidation-order flow: same merge-if-fresh convention as withDerivatives above — `latest`
+  // answers null while the stream is unhealthy (never started, or currently erroring/reconnecting),
+  // NOT merely because the trailing window has zero events (see LiquidationFeedPort's own comment).
+  private withLiquidation(input: AgentDecisionInput): AgentDecisionInput {
+    const liquidation = this.liquidationFeed?.latest(this.symbol) ?? undefined;
+    if (!liquidation) return input;
+    return { ...input, snapshot: { ...input.snapshot, liquidation } };
   }
 
   // Computed indicators (own timeframe + HTF) + own position + decision trail, over the host's

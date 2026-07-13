@@ -170,6 +170,77 @@ and the per-phase commits. Current per-phase state:
   `PERP_LEVERAGE_CAP`; a fractional cap kills the boot by design), re-run the arm preconditions,
   start with ONE symbol.
 
+### Push 3 program (owner session 2026-07-13/14, plan `humming-sprouting-crab` v3) — IN PROGRESS
+
+Owner-approved four fronts ("make it all first-class"): perp lane live + shorts ladder; full
+stop-side architecture (watcher + venue-native trigger stops); factorial info×thinking
+measurement; every free info channel built flag-off. Commits so far: `3c8b1a1` (P0 studies),
+`39a43cd` (P1 A/B PRF), `8609722` (P2 stop watcher flag-off), `c1be07f` (P3 perp compose
+profile), `3da8e4d` (P4 reduceOnly forwarding), `c0d53bd` (P5 reflection seed race). Decision
+records:
+
+- **P0a stop-slippage study (`reports/loop/stop-slippage-2026-07-13.md`): watcher enable NOT
+  JUSTIFIED at N=3** (mean total stop leak +3.2bps/exit vs the pre-registered −10bps bar; zero
+  re-fires; worst +47bps; one exit favorable). `PLAN_STOP_WATCH_ENABLED` stays 'false'.
+  **PRE-AUTH (loop-domain):** re-run the study once stop-exit N≥10; enable iff the criterion
+  (mean worse than −10bps/exit OR any single event ≤ −100bps) is then met. CORRECTION to the
+  Push II Phase-2 line "executor bar-close stop remains the only stop": the S3 1s protective
+  backstop has been ARMED all along in compose (`PROTECT_STOP_LOSS_PCT=0.02`,
+  `PROTECT_TRAILING_PCT=0.015` — the 2026-07-12 SOL trail event WAS S3 firing); the plan stop is
+  bar-close, the 2%/1.5% backstop is intra-bar. This coheres with the small measured leak.
+- **P0b entry fill-quality study (`reports/loop/entry-fill-quality-2026-07-13.md`):** maker-entry
+  population is N=1 post-LIMIT_MAKER-deploy (filled maker in 0.13 bars). No guidance change
+  supportable. **PRE-AUTH (loop-domain):** re-run once LIMIT_MAKER entry N≥15. Confirmed the #40
+  stamp gap live: `first_fill_at` NULL on a FILLED order — the fills-table join is ground truth.
+- **P0d venue stop-capability probe (live on demo, orders placed far-from-market and cancelled;
+  account left clean):** (1) spot `STOP_LOSS_LIMIT` is FULLY OMS-compatible — regular order rail,
+  surfaces in fetchOpenOrders (unified type echoes 'limit' + stopPrice/triggerPrice; raw
+  info.type STOP_LOSS_LIMIT), regular cancel, clientOrderId honored. (2) perp `STOP_MARKET` is
+  created on the **ALGO/conditional rail** — response carries algoId/clientAlgoId/algoStatus;
+  INVISIBLE to fetchOpenOrders/fetchOrder/cancelOrder (-2013/-2011); round-trip needs
+  `fapiPrivateGetOpenAlgoOrders` / `fapiPrivateDeleteAlgoOrder({algoId})` (both exposed by pinned
+  ccxt 4.5.58). reduceOnly STOP_MARKET is ACCEPTED with no position and is EXEMPT from the $50
+  trigger-notional floor (-4164 binds only non-reduceOnly). OMS dedupe key on the algo rail =
+  clientAlgoId. (3) `watchLiquidations`/`watchLiquidationsForSymbols` supported in pinned ccxt
+  pro. P7 builds to these facts; the perp stop lifecycle must reconcile via the algo endpoints.
+- **Factorial 2×2 pre-registration (info-context × thinking; owner approved superseding
+  "one measured channel at a time" FOR THESE TWO ARMS, 2026-07-13):** arms assigned by
+  independent keyed PRFs (`ab-assignment.ts`, salts 'info-ctx-v1'/'th-v1'; the old affine
+  offsets shared one minute counter — the (info-control × thinking-on) cell was provably empty
+  at 30/30). Cells recovered per-row (see prerequisite below). **Primary metric:** net-of-cost
+  bps per closed trip per cell = (realizedPnl − fees − attributed LLM cost)/notional. **Evidence
+  floor:** ≥15 closed trips per cell (60 total) or 30 calendar days, whichever first. **Adoption
+  rule:** adopt a factor iff its main effect ≥ +10bps/trip net AND sign-consistent across both
+  levels of the other factor. **Harm stop:** single interim peek at 8 trips/cell — any cell
+  < −50bps/trip ⇒ that factor's pct → 0 immediately. **Interaction rule:** |interaction| >
+  max(|main effects|) ⇒ extend to 25/cell before deciding. **Cost rule:** two daily-spend
+  breaches of $4.50 ⇒ `AGENTIC_THINKING_AB_PCT` 50→30 (spot lane breaker stays $5). Exit-mechanic
+  deploys mid-experiment shift all cells equally — record dates, do NOT reset the window.
+  Verdict = loop judgment over `test/backtest/ab-cells/run.mjs` output; winners become always-on
+  flags and both pcts → 0, restoring one-channel-at-a-time for future channels.
+  **PREREQUISITE before the enable (must-fix):** the cell script cannot yet attribute trips
+  (plan-mode entry orders stamp source_event_time bars after the decide row) and cannot resolve
+  the thinking arm on batched-consult rows (pf1/pf2 + PORTFOLIO_TOOL not reconstructed) — fix =
+  explicit arm journaling (additive migration: agent_decisions gains info_arm/thinking_arm
+  booleans stamped by the client at decide time) + cell-script consumption; hash forensics stays
+  the fallback for pre-migration rows.
+- **P5 funnel fix shipped (`c0d53bd`):** the first close after every redeploy now evaluates the
+  reflection trigger on the DB-seeded count (was: fire-and-forget seed ⇒ unseeded zero counters;
+  a real starvation source given recreate frequency). Fail-open on seed errors preserved.
+- **Post-factorial enable queue (one measured slot at a time resumes after the factorial
+  verdict):** tr1 (decide-side track record) → d2 (spot-perp basis + OI delta + funding trend;
+  single d1→d2 tag bump, FORBIDDEN mid-factorial) → lq1/bs1 (liquidations, book structure) →
+  sn1 (sentiment; tag hygiene shipped so its enable is no longer attribution-blind). All built
+  flag-off in Push 3 P6.
+- **OCO REJECTED (decided, do not re-litigate):** spot orderList/OCO would make reconciliation/
+  fills treat orderLists as alien objects; the identity-tagged dual-resting design (vtp:/vsl:
+  clientOrderId prefixes + prefix-targeted CANCEL_OPEN + mutual sibling-cancel) achieves the
+  same protection OMS-natively. Backlog #44 closes with this rationale when P7 ships.
+- **Thompson routing (#46), adaptive cadence (#47), trailing-stop plan field (#45): deliberately
+  EXCLUDED from Push 3** — the first two replace measurement machinery mid-experiment; any
+  plan-schema/template change cannot ENABLE mid-factorial (build-only is fine). Not deferrals —
+  scheduling decisions tied to the factorial window.
+
 ## Current stage
 
 **Stage 2 — learning-loop edge** (deployed 2026-07-08; Stage 1 cost floor CLOSED — see ladder

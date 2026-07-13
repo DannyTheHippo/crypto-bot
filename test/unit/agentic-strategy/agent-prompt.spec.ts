@@ -22,6 +22,7 @@ import type { DerivativesSnapshot } from '../../../src/ports/derivatives-feed';
 import type { SentimentSnapshot } from '../../../src/ports/sentiment-feed';
 import type { TradeFlowSnapshot } from '../../../src/ports/trade-flow-feed';
 import type { PositioningSnapshot } from '../../../src/ports/positioning-feed';
+import type { LiquidationSnapshot } from '../../../src/ports/liquidation-feed';
 import type {
   CandleEvent,
   TickerEvent,
@@ -138,6 +139,11 @@ function derivativesSnapshot(over: Partial<DerivativesSnapshot> = {}): Derivativ
     fundingAnnualizedPct: 10.95,
     openInterest: 5000,
     basisBps: 50,
+    // d2 fields — null by default (no buffer history); d2-specific tests override via `over`.
+    spotPerpBasisBps: null,
+    oiChangePct: null,
+    fundingTrendDelta: null,
+    fundingTrendDirection: null,
     ...over,
   };
 }
@@ -176,6 +182,17 @@ function positioningSnapshot(over: Partial<PositioningSnapshot> = {}): Positioni
   };
 }
 
+function liquidationSnapshot(over: Partial<LiquidationSnapshot> = {}): LiquidationSnapshot {
+  return {
+    asOf: epochMs(T),
+    windowMin: 60,
+    liqNotionalUsd: 12_500,
+    longShareOfLiqs: 0.62,
+    count: 5,
+    ...over,
+  };
+}
+
 function buildInput(
   opts: {
     candles?: CandleEvent[];
@@ -187,6 +204,7 @@ function buildInput(
     sentiment?: SentimentSnapshot;
     tradeFlow?: TradeFlowSnapshot;
     positioning?: PositioningSnapshot;
+    liquidation?: LiquidationSnapshot;
   } = {},
 ): AgentDecisionInput {
   const snapshot: AgentMarketSnapshot = {
@@ -200,6 +218,7 @@ function buildInput(
     ...(opts.sentiment ? { sentiment: opts.sentiment } : {}),
     ...(opts.tradeFlow ? { tradeFlow: opts.tradeFlow } : {}),
     ...(opts.positioning ? { positioning: opts.positioning } : {}),
+    ...(opts.liquidation ? { liquidation: opts.liquidation } : {}),
   };
   return {
     strategyId: SID,
@@ -342,6 +361,41 @@ describe('buildSystemPrompt', () => {
     });
   });
 
+  describe('d2 derivatives-v2 sentence (Push 3 P6 Unit 1, AGENTIC_DERIVATIVES_V2_ENABLED gate)', () => {
+    it('derivativesV2Enabled true ALONE (derivativesFeedEnabled omitted/false) is inert — byte-identical to the flag-off prompt', () => {
+      const withoutV2 = buildSystemPrompt(fixtureProfile());
+      const withV2Alone = buildSystemPrompt(fixtureProfile(), { derivativesV2Enabled: true });
+
+      expect(withV2Alone).toBe(withoutV2);
+    });
+
+    it('derivativesV2Enabled: false is byte-identical to the d1 sentence (identity baseline is d1-on, not all-off)', () => {
+      const d1 = buildSystemPrompt(fixtureProfile(), { derivativesFeedEnabled: true });
+      const explicitlyOff = buildSystemPrompt(fixtureProfile(), {
+        derivativesFeedEnabled: true,
+        derivativesV2Enabled: false,
+      });
+
+      expect(explicitlyOff).toBe(d1);
+    });
+
+    it('derivativesFeedEnabled + derivativesV2Enabled both true SWAPS the sentence to document the three extra fields, never stacking alongside the d1 wording', () => {
+      const d1 = buildSystemPrompt(fixtureProfile(), { derivativesFeedEnabled: true });
+      const d2 = buildSystemPrompt(fixtureProfile(), {
+        derivativesFeedEnabled: true,
+        derivativesV2Enabled: true,
+      });
+
+      expect(d2).not.toBe(d1);
+      expect(d2.toLowerCase()).toContain('spot-vs-perp basis');
+      expect(d2.toLowerCase()).toContain('open-interest percent change');
+      expect(d2.toLowerCase()).toContain('funding-rate trend');
+      // Exactly one derivatives sentence — d2 replaces d1's, it does not append alongside it.
+      const derivativesSentenceCount = d2.split('may include a derivatives block').length - 1;
+      expect(derivativesSentenceCount).toBe(1);
+    });
+  });
+
   describe('sentiment block sentence (C4, SENTIMENT_FEED_ENABLED gate)', () => {
     it('SENTIMENT_FEED_ENABLED off (opts omitted) ⇒ the prompt is BYTE-IDENTICAL to pre-C4 output (no mention of sentiment/headlines)', () => {
       const prompt = buildSystemPrompt(fixtureProfile());
@@ -425,6 +479,80 @@ describe('buildSystemPrompt', () => {
 
       expect(prompt).toContain('positioning block');
       expect(prompt).toContain('longShortRatio');
+    });
+  });
+
+  describe('liquidation block sentence (Push 3 P6 Unit 2, AGENTIC_LIQUIDATIONS_ENABLED gate)', () => {
+    it('liquidationsFeedEnabled off (opts omitted) ⇒ the prompt is BYTE-IDENTICAL to pre-feature output (no mention of liquidation)', () => {
+      const prompt = buildSystemPrompt(fixtureProfile());
+
+      expect(prompt.toLowerCase()).not.toContain('liquidation');
+    });
+
+    it('liquidationsFeedEnabled: false is explicitly byte-identical to opts omitted entirely', () => {
+      const withOmitted = buildSystemPrompt(fixtureProfile());
+      const withExplicitFalse = buildSystemPrompt(fixtureProfile(), {
+        liquidationsFeedEnabled: false,
+      });
+
+      expect(withExplicitFalse).toBe(withOmitted);
+    });
+
+    it('documents the liquidation block (rolling notional + long/short share) only when liquidationsFeedEnabled is true', () => {
+      const prompt = buildSystemPrompt(fixtureProfile(), { liquidationsFeedEnabled: true });
+
+      expect(prompt.toLowerCase()).toContain('liquidation block');
+      expect(prompt).toContain('longShareOfLiqs');
+    });
+  });
+
+  describe('bookStructure block sentence (Push 3 P6 Unit 3, AGENTIC_BOOK_STRUCTURE_ENABLED gate)', () => {
+    it('bookStructureFeedEnabled off (opts omitted) ⇒ the prompt is BYTE-IDENTICAL to pre-feature output (no mention of bookStructure)', () => {
+      const prompt = buildSystemPrompt(fixtureProfile());
+
+      expect(prompt).not.toContain('bookStructure');
+    });
+
+    it('bookStructureFeedEnabled: false is explicitly byte-identical to opts omitted entirely', () => {
+      const withOmitted = buildSystemPrompt(fixtureProfile());
+      const withExplicitFalse = buildSystemPrompt(fixtureProfile(), {
+        bookStructureFeedEnabled: false,
+      });
+
+      expect(withExplicitFalse).toBe(withOmitted);
+    });
+
+    it('documents the bookStructure block (microprice/depth-weighted imbalance/depth notional) only when bookStructureFeedEnabled is true', () => {
+      const prompt = buildSystemPrompt(fixtureProfile(), { bookStructureFeedEnabled: true });
+
+      expect(prompt).toContain('bookStructure');
+      expect(prompt).toContain('micropriceBps');
+      expect(prompt).toContain('depthWeightedImbalance10');
+    });
+  });
+
+  describe('trackRecord block sentence (Push 3 P6 Unit 4, AGENTIC_TRACK_RECORD_ENABLED gate)', () => {
+    it('trackRecordFeedEnabled off (opts omitted) ⇒ the prompt is BYTE-IDENTICAL to pre-feature output (no mention of trackRecord)', () => {
+      const prompt = buildSystemPrompt(fixtureProfile());
+
+      expect(prompt).not.toContain('trackRecord');
+    });
+
+    it('trackRecordFeedEnabled: false is explicitly byte-identical to opts omitted entirely', () => {
+      const withOmitted = buildSystemPrompt(fixtureProfile());
+      const withExplicitFalse = buildSystemPrompt(fixtureProfile(), {
+        trackRecordFeedEnabled: false,
+      });
+
+      expect(withExplicitFalse).toBe(withOmitted);
+    });
+
+    it('documents the trackRecord block (tripCount/winRate/meanNetBpsPerTrip/trailingWindowTrips) only when trackRecordFeedEnabled is true', () => {
+      const prompt = buildSystemPrompt(fixtureProfile(), { trackRecordFeedEnabled: true });
+
+      expect(prompt).toContain('trackRecord');
+      expect(prompt).toContain('winRate');
+      expect(prompt).toContain('meanNetBpsPerTrip');
     });
   });
 
@@ -840,6 +968,137 @@ describe('buildUserMessage', () => {
     });
   });
 
+  // Push 3 P6 Unit 3: bookStructure reads the SAME already-streaming book snapshot as orderBook
+  // above — the existing orderBook block stays untouched (asserted below); bookStructure is an
+  // ADDITIONAL, separately flag-gated block (via buildMarketPayload's extras, not snapshot presence).
+  describe('bookStructure block rendering (Push 3 P6 Unit 3)', () => {
+    function symmetricBook(): OrderBookSnapshotEvent {
+      return book({
+        bids: [
+          ['100', '10'],
+          ['99.99', '5'],
+        ],
+        asks: [
+          ['100.01', '10'],
+          ['100.02', '5'],
+        ],
+      });
+    }
+
+    it('bookStructureEnabled omitted/false ⇒ the bookStructure key is never computed, existing orderBook stays byte-identical', () => {
+      const input = buildInput({ book: symmetricBook() });
+      const withoutFlag = buildMarketPayload(input);
+      const explicitlyOff = buildMarketPayload(input, { bookStructureEnabled: false });
+
+      expect(withoutFlag).toBe(explicitlyOff);
+      const payload = JSON.parse(withoutFlag) as Record<string, unknown>;
+      expect(payload).not.toHaveProperty('bookStructure');
+      expect(payload).toHaveProperty('orderBook');
+    });
+
+    it('renders micropriceBps ≈ 0 and near-zero depthWeightedImbalance10 for a symmetric book, plus positive depth notional within the 25bps band', () => {
+      const payload = JSON.parse(
+        buildMarketPayload(buildInput({ book: symmetricBook() }), { bookStructureEnabled: true }),
+      ) as {
+        bookStructure: {
+          micropriceBps: number;
+          depthWeightedImbalance10: number;
+          bidDepthNotional25bps: number;
+          askDepthNotional25bps: number;
+        };
+      };
+
+      // Symmetric qty at best bid/ask (10/10) -> microprice === mid -> 0bps offset.
+      expect(payload.bookStructure.micropriceBps).toBe(0);
+      // Symmetric depth at every level (10/10, 5/5) -> perfectly balanced -> 0.
+      expect(payload.bookStructure.depthWeightedImbalance10).toBe(0);
+      // mid = 100.005; both levels of both sides sit within 25bps (~0.25) of mid, so all is counted:
+      // bid notional = 100*10 + 99.99*5, ask notional = 100.01*10 + 100.02*5. Same float expression
+      // form as the builder itself evaluates (mirrors the order-book spreadBps test above), not
+      // toBeCloseTo (banned project-wide — eslint.config.mjs's no-restricted-syntax selector).
+      expect(payload.bookStructure.bidDepthNotional25bps).toBe(100 * 10 + 99.99 * 5);
+      expect(payload.bookStructure.askDepthNotional25bps).toBe(100.01 * 10 + 100.02 * 5);
+    });
+
+    it('renders a signed depthWeightedImbalance10 favoring the heavier side, and stops the depth-notional walk once a level is outside the 25bps band', () => {
+      const skewedBook = book({
+        bids: [
+          ['100', '20'], // heavy bid depth
+        ],
+        asks: [
+          ['101', '1'], // mid ~100.5; 101 is ~50bps away -> outside the 25bps band entirely
+        ],
+      });
+      const payload = JSON.parse(
+        buildMarketPayload(buildInput({ book: skewedBook }), { bookStructureEnabled: true }),
+      ) as { bookStructure: { depthWeightedImbalance10: number; askDepthNotional25bps: number } };
+
+      expect(payload.bookStructure.depthWeightedImbalance10).toBeGreaterThan(0);
+      expect(payload.bookStructure.askDepthNotional25bps).toBe(0);
+    });
+
+    it('omits the bookStructure key when no book snapshot is available, even with the flag on', () => {
+      const payload = JSON.parse(
+        buildMarketPayload(buildInput(), { bookStructureEnabled: true }),
+      ) as Record<string, unknown>;
+
+      expect(payload).not.toHaveProperty('bookStructure');
+    });
+  });
+
+  // Push 3 P6 Unit 4 (#17 residual): trackRecord is a plain passthrough of AgentContext.trackRecord
+  // (the strategy attaches it, gated by AGENTIC_TRACK_RECORD_ENABLED + evidence-port availability) —
+  // mirrors crossSymbol's own wiring: no dedicated builder function, no extras flag.
+  describe('trackRecord block rendering (Push 3 P6 Unit 4)', () => {
+    const minimalContext: AgentContext = {
+      indicators: null,
+      position: {
+        side: 'FLAT',
+        qty: '0',
+        avgEntry: null,
+        realizedPnl: '0',
+        unrealizedPnlPct: null,
+        openOrders: 0,
+      },
+      recentDecisions: [],
+    };
+
+    it('renders tripCount/winRate/meanNetBpsPerTrip/trailingWindowTrips when the context carries a trackRecord', () => {
+      const context: AgentContext = {
+        ...minimalContext,
+        trackRecord: {
+          tripCount: 12,
+          winRate: 0.58,
+          meanNetBpsPerTrip: 4.2,
+          trailingWindowTrips: 15,
+        },
+      };
+      const payload = JSON.parse(buildUserMessage(buildInput({ context }))) as {
+        trackRecord: {
+          tripCount: number;
+          winRate: number;
+          meanNetBpsPerTrip: number;
+          trailingWindowTrips: number;
+        };
+      };
+
+      expect(payload.trackRecord).toEqual({
+        tripCount: 12,
+        winRate: 0.58,
+        meanNetBpsPerTrip: 4.2,
+        trailingWindowTrips: 15,
+      });
+    });
+
+    it('omits the trackRecord key entirely (no empty scaffolding) when the context carries none — the flag-off / no-evidence-port / too-few-trips case', () => {
+      const raw = buildUserMessage(buildInput({ context: minimalContext }));
+      const payload = JSON.parse(raw) as Record<string, unknown>;
+
+      expect(payload).not.toHaveProperty('trackRecord');
+      expect(raw).not.toContain('meanNetBpsPerTrip');
+    });
+  });
+
   // C1: derivatives-market context (funding rate, open interest, mark/index basis) — a REST-polled
   // sibling to the order-book block above, gated the identical way (present/absent on the snapshot).
   describe('derivatives block rendering (C1)', () => {
@@ -921,6 +1180,81 @@ describe('buildUserMessage', () => {
     });
   });
 
+  // d2 (Push 3 P6 Unit 1): the three extra fields are ALWAYS present on the underlying
+  // DerivativesSnapshot (the feed accumulates regardless of the flag) — buildMarketPayload's
+  // extras.derivativesV2Enabled is what gates whether buildDerivativesBlock spreads them in.
+  describe('d2 derivatives-v2 payload fields (AGENTIC_DERIVATIVES_V2_ENABLED gate)', () => {
+    const v2Derivatives = derivativesSnapshot({
+      fundingRate: 0.0002,
+      fundingAnnualizedPct: 21.9,
+      openInterest: 9000,
+      basisBps: 8,
+      spotPerpBasisBps: 15.5,
+      oiChangePct: -3.2,
+      fundingTrendDelta: 0.00005,
+      fundingTrendDirection: 'up',
+    });
+
+    it('v2Enabled omitted/false ⇒ the four pre-d2 fields only, byte-identical to the d1 render', () => {
+      const input = buildInput({ derivatives: v2Derivatives });
+      const d1Payload = buildMarketPayload(input);
+      const explicitlyOffPayload = buildMarketPayload(input, { derivativesV2Enabled: false });
+
+      expect(d1Payload).toBe(explicitlyOffPayload);
+      const parsed = JSON.parse(d1Payload) as { derivatives: Record<string, unknown> };
+      expect(parsed.derivatives).toEqual({
+        fundingRate: 0.0002,
+        fundingAnnualizedPct: 21.9,
+        openInterest: 9000,
+        basisBps: 8,
+      });
+      expect(d1Payload).not.toContain('spotPerpBasisBps');
+      expect(d1Payload).not.toContain('oiChangePct');
+      expect(d1Payload).not.toContain('fundingTrendDelta');
+    });
+
+    it('v2Enabled true spreads spotPerpBasisBps/oiChangePct/fundingTrendDelta/fundingTrendDirection into the same block', () => {
+      const input = buildInput({ derivatives: v2Derivatives });
+      const payload = buildMarketPayload(input, { derivativesV2Enabled: true });
+      const parsed = JSON.parse(payload) as { derivatives: Record<string, unknown> };
+
+      expect(parsed.derivatives).toEqual({
+        fundingRate: 0.0002,
+        fundingAnnualizedPct: 21.9,
+        openInterest: 9000,
+        basisBps: 8,
+        spotPerpBasisBps: 15.5,
+        oiChangePct: -3.2,
+        fundingTrendDelta: 0.00005,
+        fundingTrendDirection: 'up',
+      });
+    });
+
+    it('v2Enabled true with no derivatives snapshot still omits the whole block (no empty scaffolding)', () => {
+      const payload = buildMarketPayload(buildInput(), { derivativesV2Enabled: true });
+
+      expect(JSON.parse(payload)).not.toHaveProperty('derivatives');
+    });
+
+    it('v2Enabled true renders null v2 fields as JSON null (insufficient buffer history), never dropping the keys', () => {
+      const input = buildInput({
+        derivatives: derivativesSnapshot({
+          spotPerpBasisBps: null,
+          oiChangePct: null,
+          fundingTrendDelta: null,
+          fundingTrendDirection: null,
+        }),
+      });
+      const payload = buildMarketPayload(input, { derivativesV2Enabled: true });
+      const parsed = JSON.parse(payload) as { derivatives: Record<string, unknown> };
+
+      expect(parsed.derivatives).toHaveProperty('spotPerpBasisBps', null);
+      expect(parsed.derivatives).toHaveProperty('oiChangePct', null);
+      expect(parsed.derivatives).toHaveProperty('fundingTrendDelta', null);
+      expect(parsed.derivatives).toHaveProperty('fundingTrendDirection', null);
+    });
+  });
+
   // Trade-flow/CVD context — a REST-polled sibling to the derivatives block above, gated the
   // identical way (present/absent on the snapshot).
   describe('tradeFlow block rendering', () => {
@@ -968,6 +1302,56 @@ describe('buildUserMessage', () => {
 
       expect(payload).not.toHaveProperty('positioning');
       expect(raw).not.toContain('longShortRatio');
+    });
+  });
+
+  // #43 liquidation-order flow (Push 3 P6 Unit 2) — a WS-fed sibling to the REST-polled positioning
+  // block above, gated the identical way (present/absent on the snapshot).
+  describe('liquidation block rendering', () => {
+    it('renders windowMin, liqNotionalUsd, longShareOfLiqs, and count when a fresh snapshot is attached', () => {
+      const liquidation = liquidationSnapshot({
+        windowMin: 60,
+        liqNotionalUsd: 25_000,
+        longShareOfLiqs: 0.3,
+        count: 7,
+      });
+      const payload = JSON.parse(buildUserMessage(buildInput({ liquidation }))) as {
+        liquidation: {
+          windowMin: number;
+          liqNotionalUsd: number;
+          longShareOfLiqs: number | null;
+          count: number;
+        };
+      };
+
+      expect(payload.liquidation).toEqual({
+        windowMin: 60,
+        liqNotionalUsd: 25_000,
+        longShareOfLiqs: 0.3,
+        count: 7,
+      });
+    });
+
+    it('renders longShareOfLiqs as JSON null (a healthy, quiet window) rather than dropping the key', () => {
+      const liquidation = liquidationSnapshot({
+        liqNotionalUsd: 0,
+        longShareOfLiqs: null,
+        count: 0,
+      });
+      const payload = JSON.parse(buildUserMessage(buildInput({ liquidation }))) as {
+        liquidation: Record<string, unknown>;
+      };
+
+      expect(payload.liquidation).toHaveProperty('longShareOfLiqs', null);
+      expect(payload.liquidation).toHaveProperty('count', 0);
+    });
+
+    it('omits the liquidation key entirely (no empty scaffolding) when no snapshot is available — the flag-off / unhealthy-stream case', () => {
+      const raw = buildUserMessage(buildInput());
+      const payload = JSON.parse(raw) as Record<string, unknown>;
+
+      expect(payload).not.toHaveProperty('liquidation');
+      expect(raw).not.toContain('longShareOfLiqs');
     });
   });
 

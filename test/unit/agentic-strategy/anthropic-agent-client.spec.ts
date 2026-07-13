@@ -20,6 +20,7 @@ import {
 import type { DerivativesSnapshot } from '../../../src/ports/derivatives-feed';
 import type { TradeFlowSnapshot } from '../../../src/ports/trade-flow-feed';
 import type { PositioningSnapshot } from '../../../src/ports/positioning-feed';
+import type { LiquidationSnapshot } from '../../../src/ports/liquidation-feed';
 import type { CandleEvent, TickerEvent } from '../../../src/domain/types/market-events';
 import { price, qty, moneyToString } from '../../../src/domain/types/money';
 import { strategyId, venueId, symbolId, epochMs } from '../../../src/domain/types/ids';
@@ -117,6 +118,7 @@ function buildInput(
     derivatives?: DerivativesSnapshot;
     tradeFlow?: TradeFlowSnapshot;
     positioning?: PositioningSnapshot;
+    liquidation?: LiquidationSnapshot;
   } = {},
 ): AgentDecisionInput {
   const et = opts.eventTime ?? T;
@@ -130,6 +132,7 @@ function buildInput(
     ...(opts.derivatives ? { derivatives: opts.derivatives } : {}),
     ...(opts.tradeFlow ? { tradeFlow: opts.tradeFlow } : {}),
     ...(opts.positioning ? { positioning: opts.positioning } : {}),
+    ...(opts.liquidation ? { liquidation: opts.liquidation } : {}),
   };
   return {
     strategyId: SID,
@@ -148,6 +151,11 @@ function derivativesSnapshot(): DerivativesSnapshot {
     fundingAnnualizedPct: 10.95,
     openInterest: 12345.6,
     basisBps: 4.2,
+    // d2 fields — null here (no buffer history in this fixture); the d2-tests below override them.
+    spotPerpBasisBps: null,
+    oiChangePct: null,
+    fundingTrendDelta: null,
+    fundingTrendDirection: null,
   };
 }
 
@@ -157,6 +165,16 @@ function tradeFlowSnapshot(): TradeFlowSnapshot {
 
 function positioningSnapshot(): PositioningSnapshot {
   return { asOf: epochMs(T), longShortRatio: 0.9, longAccountPct: 47.4, shortAccountPct: 52.6 };
+}
+
+function liquidationSnapshot(): LiquidationSnapshot {
+  return {
+    asOf: epochMs(T),
+    windowMin: 60,
+    liqNotionalUsd: 18_000,
+    longShareOfLiqs: 0.4,
+    count: 3,
+  };
 }
 
 function apiResponse(
@@ -1956,6 +1974,79 @@ describe('AnthropicAgentClient', () => {
     });
   });
 
+  // Push 3 P6 Unit 5 (sentiment tag hygiene): closes a coverage gap, not a code gap — the sentiment
+  // block ALREADY carries a promptHash attribution tag (SENTIMENT_TEMPLATE_VERSION = 's1', stacked in
+  // feedTags gated by the SAME sentimentFeedEnabled boolean the block/sentence already use — see
+  // agent-prompt.ts's own C4 comment), it was just never asserted at the client/tag level (only the
+  // sentence itself was tested, in agent-prompt.spec.ts). No new tag was added: a second sentiment
+  // tag would double-tag the hash the moment the feed is enabled, violating the one-boolean-drives-
+  // sentence-and-tag-together invariant every other feed tag in this file follows.
+  describe('sentiment tag hygiene (Push 3 P6 Unit 5, s1 present iff SENTIMENT_FEED_ENABLED)', () => {
+    function holdResponse(): unknown {
+      return toolUseBody({ action: 'hold', confidence: 0.5, rationale: 'r' });
+    }
+
+    it('sentimentFeedEnabled off (opts omitted) ⇒ byte-identical promptHash to explicit false, no sentiment sentence', async () => {
+      const fetchFnOmitted = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const fetchFnExplicitFalse = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const clientOmitted = new AnthropicAgentClient(buildCfg(), fetchFnOmitted);
+      const clientExplicitFalse = new AnthropicAgentClient(
+        buildCfg({ sentimentFeedEnabled: false }),
+        fetchFnExplicitFalse,
+      );
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+      });
+
+      const proposalOmitted = await clientOmitted.propose(input);
+      const proposalExplicitFalse = await clientExplicitFalse.propose(input);
+
+      expect(proposalOmitted.promptHash).toBe(proposalExplicitFalse.promptHash);
+      const [, init] = fetchFnOmitted.mock.calls[0] as [string, RequestInit];
+      const body = JSON.parse(init.body as string) as { system: { text: string }[] };
+      expect(body.system[0]!.text.toLowerCase()).not.toContain('sentiment');
+    });
+
+    it('sentimentFeedEnabled true ⇒ the s1-tagged promptHash differs from the flag-off baseline, and the sentence documents headlines', async () => {
+      const fetchFnOn = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const fetchFnOff = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const clientOn = new AnthropicAgentClient(
+        buildCfg({ sentimentFeedEnabled: true }),
+        fetchFnOn,
+      );
+      const clientOff = new AnthropicAgentClient(buildCfg(), fetchFnOff);
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+      });
+
+      const proposalOn = await clientOn.propose(input);
+      const proposalOff = await clientOff.propose(input);
+
+      expect(proposalOn.promptHash).not.toBe(proposalOff.promptHash);
+      const [, init] = fetchFnOn.mock.calls[0] as [string, RequestInit];
+      const body = JSON.parse(init.body as string) as { system: { text: string }[] };
+      expect(body.system[0]!.text.toLowerCase()).toContain('headline');
+    });
+
+    it('two separately-constructed clients with sentimentFeedEnabled true produce the SAME promptHash (the tag is deterministic, not per-instance)', async () => {
+      const fetchFnA = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const fetchFnB = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const clientA = new AnthropicAgentClient(buildCfg({ sentimentFeedEnabled: true }), fetchFnA);
+      const clientB = new AnthropicAgentClient(buildCfg({ sentimentFeedEnabled: true }), fetchFnB);
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+      });
+
+      const proposalA = await clientA.propose(input);
+      const proposalB = await clientB.propose(input);
+
+      expect(proposalA.promptHash).toBe(proposalB.promptHash);
+    });
+  });
+
   describe('derivatives A/B (control arm, measurement start 2026-07-12)', () => {
     // Bucket math mirrors the client's own `abArm(floor(Date.now()/60_000), 'info-ctx-v1', pct)`
     // (ab-assignment.ts's keyed FNV-1a PRF, not derivable by inspection — these minutes are pinned
@@ -2099,6 +2190,146 @@ describe('AnthropicAgentClient', () => {
       expect(early.promptHash).toBe(late.promptHash);
       expect(JSON.parse(early.inputPayload!)).not.toHaveProperty('derivatives');
       expect(JSON.parse(late.inputPayload!)).not.toHaveProperty('derivatives');
+    });
+  });
+
+  describe('d2 derivatives-v2 (Push 3 P6 Unit 1, AGENTIC_DERIVATIVES_V2_ENABLED)', () => {
+    function holdResponse(): unknown {
+      return toolUseBody({ action: 'hold', confidence: 0.5, rationale: 'r' });
+    }
+    const v2Derivatives: DerivativesSnapshot = {
+      ...derivativesSnapshot(),
+      spotPerpBasisBps: 12.5,
+      oiChangePct: 4.1,
+      fundingTrendDelta: -0.00002,
+      fundingTrendDirection: 'down',
+    };
+
+    it('derivativesV2Enabled true ALONE (derivativesFeedEnabled omitted) is inert — byte-identical to the flag-off baseline', async () => {
+      const fetchFnV2Alone = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const fetchFnOff = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const clientV2Alone = new AnthropicAgentClient(
+        buildCfg({ derivativesV2Enabled: true }),
+        fetchFnV2Alone,
+      );
+      const clientOff = new AnthropicAgentClient(buildCfg(), fetchFnOff);
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+        derivatives: v2Derivatives,
+      });
+
+      const proposalV2Alone = await clientV2Alone.propose(input);
+      const proposalOff = await clientOff.propose(input);
+
+      // derivativesFeedEnabled is false on BOTH clients — v2Enabled alone cannot turn the block/
+      // sentence/tag on (only the base four fields render, since input.snapshot.derivatives is
+      // attached directly here regardless of cfg; the flag gates the SENTENCE/tag, not this key).
+      expect(proposalV2Alone.promptHash).toBe(proposalOff.promptHash);
+      expect(proposalV2Alone.inputPayload).toBe(proposalOff.inputPayload);
+      const payload = JSON.parse(proposalV2Alone.inputPayload!) as {
+        derivatives: Record<string, unknown>;
+      };
+      expect(payload.derivatives).not.toHaveProperty('spotPerpBasisBps');
+    });
+
+    it('derivativesFeedEnabled true + derivativesV2Enabled false ⇒ byte-identical to the pre-Unit-1 d1 baseline (identity is d1-on, not all-off)', async () => {
+      const fetchFnExplicitOff = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const fetchFnD1 = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const clientExplicitOff = new AnthropicAgentClient(
+        buildCfg({ derivativesFeedEnabled: true, derivativesV2Enabled: false }),
+        fetchFnExplicitOff,
+      );
+      const clientD1 = new AnthropicAgentClient(
+        buildCfg({ derivativesFeedEnabled: true }),
+        fetchFnD1,
+      );
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+        derivatives: v2Derivatives,
+      });
+
+      const proposalExplicitOff = await clientExplicitOff.propose(input);
+      const proposalD1 = await clientD1.propose(input);
+
+      expect(proposalExplicitOff.promptHash).toBe(proposalD1.promptHash);
+      expect(proposalExplicitOff.inputPayload).toBe(proposalD1.inputPayload);
+      const payload = JSON.parse(proposalExplicitOff.inputPayload!) as {
+        derivatives: Record<string, unknown>;
+      };
+      expect(payload.derivatives).not.toHaveProperty('spotPerpBasisBps');
+    });
+
+    it('derivativesFeedEnabled + derivativesV2Enabled both true ⇒ d2 sentence, a DIFFERENT promptHash than d1, and the three extra payload fields', async () => {
+      const fetchFnD1 = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const fetchFnD2 = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const clientD1 = new AnthropicAgentClient(
+        buildCfg({ derivativesFeedEnabled: true }),
+        fetchFnD1,
+      );
+      const clientD2 = new AnthropicAgentClient(
+        buildCfg({ derivativesFeedEnabled: true, derivativesV2Enabled: true }),
+        fetchFnD2,
+      );
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+        derivatives: v2Derivatives,
+      });
+
+      const proposalD1 = await clientD1.propose(input);
+      const proposalD2 = await clientD2.propose(input);
+
+      // The tag SWITCHES (d1 -> d2), so the two hashes must differ — never a stack (+d1+d2).
+      expect(proposalD2.promptHash).not.toBe(proposalD1.promptHash);
+      const [, init] = fetchFnD2.mock.calls[0] as [string, RequestInit];
+      const body = JSON.parse(init.body as string) as { system: { text: string }[] };
+      expect(body.system[0]!.text).toContain('spot-vs-perp basis');
+      const payload = JSON.parse(proposalD2.inputPayload!) as {
+        derivatives: Record<string, unknown>;
+      };
+      expect(payload.derivatives).toEqual({
+        fundingRate: v2Derivatives.fundingRate,
+        fundingAnnualizedPct: v2Derivatives.fundingAnnualizedPct,
+        openInterest: v2Derivatives.openInterest,
+        basisBps: v2Derivatives.basisBps,
+        spotPerpBasisBps: 12.5,
+        oiChangePct: 4.1,
+        fundingTrendDelta: -0.00002,
+        fundingTrendDirection: 'down',
+      });
+    });
+
+    it('the info-context control arm withholds d2 exactly like d1 — no derivatives block, no tag, regardless of derivativesV2Enabled', async () => {
+      vi.useFakeTimers();
+      const CONTROL_TIME_MS = 100 * 60_000; // abArm(100, 'info-ctx-v1', 30) === true -> CONTROL
+      vi.setSystemTime(new Date(CONTROL_TIME_MS));
+      const fetchFnControl = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const fetchFnOff = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const clientControl = new AnthropicAgentClient(
+        buildCfg({
+          derivativesFeedEnabled: true,
+          derivativesV2Enabled: true,
+          derivativesAbPct: 30,
+        }),
+        fetchFnControl,
+      );
+      const clientOff = new AnthropicAgentClient(
+        buildCfg({ derivativesFeedEnabled: false }),
+        fetchFnOff,
+      );
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+        derivatives: v2Derivatives,
+      });
+
+      const proposalControl = await clientControl.propose(input);
+      const proposalOff = await clientOff.propose(input);
+
+      expect(proposalControl.promptHash).toBe(proposalOff.promptHash);
+      expect(JSON.parse(proposalControl.inputPayload!)).not.toHaveProperty('derivatives');
     });
   });
 
@@ -2327,6 +2558,233 @@ describe('AnthropicAgentClient', () => {
       const payload = JSON.parse(proposal.inputPayload!) as Record<string, unknown>;
       expect(payload).not.toHaveProperty('tradeFlow');
       expect(payload).not.toHaveProperty('positioning');
+    });
+  });
+
+  describe('liquidation block (Push 3 P6 Unit 2, AGENTIC_LIQUIDATIONS_ENABLED)', () => {
+    function holdResponse(): unknown {
+      return toolUseBody({ action: 'hold', confidence: 0.5, rationale: 'r' });
+    }
+
+    it('flag off (opts omitted) ⇒ promptHash and system prompt are BYTE-IDENTICAL to the no-liquidation baseline, even with a snapshot attached (the flag gates the SENTENCE/tag, not the port-level payload presence — mirrors tradeFlow/positioning)', async () => {
+      const fetchFnOff = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const fetchFnBaseline = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const clientOff = new AnthropicAgentClient(buildCfg(), fetchFnOff);
+      const clientBaseline = new AnthropicAgentClient(buildCfg(), fetchFnBaseline);
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+        liquidation: liquidationSnapshot(),
+      });
+
+      const proposalOff = await clientOff.propose(input);
+      const proposalBaseline = await clientBaseline.propose(
+        buildInput({
+          tickers: new Map([[SYM, ticker('100', 1n)]]),
+          context: FLAT_CONTEXT,
+        }),
+      );
+
+      expect(proposalOff.promptHash).toBe(proposalBaseline.promptHash);
+      const [, init] = fetchFnOff.mock.calls[0] as [string, RequestInit];
+      const body = JSON.parse(init.body as string) as { system: { text: string }[] };
+      expect(body.system[0]!.text.toLowerCase()).not.toContain('liquidation');
+    });
+
+    it('flag on: liquidation guidance sentence, +lq1 promptHash tag, and payload key all present', async () => {
+      const fetchFn = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const fetchFnOff = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const client = new AnthropicAgentClient(buildCfg({ liquidationsFeedEnabled: true }), fetchFn);
+      const offClient = new AnthropicAgentClient(buildCfg({}), fetchFnOff);
+      const liquidation = liquidationSnapshot();
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+        liquidation,
+      });
+
+      const proposal = await client.propose(input);
+      const offProposal = await offClient.propose(input);
+
+      expect(proposal.promptHash).not.toBe(offProposal.promptHash);
+      const [, init] = fetchFn.mock.calls[0] as [string, RequestInit];
+      const body = JSON.parse(init.body as string) as { system: { text: string }[] };
+      expect(body.system[0]!.text).toContain('liquidation block');
+      expect(JSON.parse(proposal.inputPayload!)).toHaveProperty('liquidation', {
+        windowMin: liquidation.windowMin,
+        liqNotionalUsd: liquidation.liqNotionalUsd,
+        longShareOfLiqs: liquidation.longShareOfLiqs,
+        count: liquidation.count,
+      });
+    });
+
+    it('an info-context-A/B control-arm decide withholds liquidation too (shares the same control arm as derivatives/tradeFlow/positioning)', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(100 * 60_000)); // abArm(100, 'info-ctx-v1', 30) === true -> CONTROL
+      const fetchFn = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const client = new AnthropicAgentClient(
+        buildCfg({ liquidationsFeedEnabled: true, derivativesAbPct: 30 }),
+        fetchFn,
+      );
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+        liquidation: liquidationSnapshot(),
+      });
+
+      const proposal = await client.propose(input);
+
+      const payload = JSON.parse(proposal.inputPayload!) as Record<string, unknown>;
+      expect(payload).not.toHaveProperty('liquidation');
+    });
+  });
+
+  describe('bookStructure block (Push 3 P6 Unit 3, AGENTIC_BOOK_STRUCTURE_ENABLED)', () => {
+    function holdResponse(): unknown {
+      return toolUseBody({ action: 'hold', confidence: 0.5, rationale: 'r' });
+    }
+    function bookSnapshot(): AgentMarketSnapshot['books'] {
+      return new Map([
+        [
+          SYM,
+          {
+            kind: 'ORDER_BOOK_SNAPSHOT' as const,
+            venue: V,
+            symbol: SYM,
+            channel: 'book',
+            seq: 1n,
+            eventTime: epochMs(T),
+            ingestTime: epochMs(T + 1),
+            bids: [{ price: price('100'), qty: qty('10') }],
+            asks: [{ price: price('100.01'), qty: qty('10') }],
+          },
+        ],
+      ]);
+    }
+
+    it('flag off (opts omitted) ⇒ byte-identical to the pre-feature baseline even with a book attached', async () => {
+      const fetchFnOff = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const fetchFnBaseline = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const clientOff = new AnthropicAgentClient(buildCfg(), fetchFnOff);
+      const clientBaseline = new AnthropicAgentClient(buildCfg(), fetchFnBaseline);
+      const base = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+      });
+      const input = { ...base, snapshot: { ...base.snapshot, books: bookSnapshot() } };
+
+      const proposalOff = await clientOff.propose(input);
+      const proposalBaseline = await clientBaseline.propose(input);
+
+      expect(proposalOff.promptHash).toBe(proposalBaseline.promptHash);
+      expect(proposalOff.inputPayload).toBe(proposalBaseline.inputPayload);
+      expect(JSON.parse(proposalOff.inputPayload!)).not.toHaveProperty('bookStructure');
+    });
+
+    it('flag on: bookStructure guidance sentence, +bs1 promptHash tag, and payload key all present — the existing orderBook block is untouched', async () => {
+      const fetchFn = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const fetchFnOff = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const client = new AnthropicAgentClient(
+        buildCfg({ bookStructureFeedEnabled: true }),
+        fetchFn,
+      );
+      const offClient = new AnthropicAgentClient(buildCfg({}), fetchFnOff);
+      const base = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+      });
+      const input = { ...base, snapshot: { ...base.snapshot, books: bookSnapshot() } };
+
+      const proposal = await client.propose(input);
+      const offProposal = await offClient.propose(input);
+
+      expect(proposal.promptHash).not.toBe(offProposal.promptHash);
+      const [, init] = fetchFn.mock.calls[0] as [string, RequestInit];
+      const body = JSON.parse(init.body as string) as { system: { text: string }[] };
+      expect(body.system[0]!.text).toContain('bookStructure');
+      const payload = JSON.parse(proposal.inputPayload!) as Record<string, unknown>;
+      expect(payload).toHaveProperty('bookStructure');
+      expect(payload).toHaveProperty('orderBook'); // untouched, still rendered
+    });
+
+    it('an info-context-A/B control-arm decide still renders bookStructure (no A/B interaction, unlike the feed blocks)', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(100 * 60_000)); // abArm(100, 'info-ctx-v1', 30) === true -> CONTROL
+      const fetchFn = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const client = new AnthropicAgentClient(
+        buildCfg({
+          bookStructureFeedEnabled: true,
+          derivativesFeedEnabled: true,
+          derivativesAbPct: 30,
+        }),
+        fetchFn,
+      );
+      const base = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+      });
+      const input = { ...base, snapshot: { ...base.snapshot, books: bookSnapshot() } };
+
+      const proposal = await client.propose(input);
+
+      const payload = JSON.parse(proposal.inputPayload!) as Record<string, unknown>;
+      expect(payload).not.toHaveProperty('derivatives'); // control arm withholds this
+      expect(payload).toHaveProperty('bookStructure'); // but never this
+    });
+  });
+
+  describe('trackRecord block (Push 3 P6 Unit 4, AGENTIC_TRACK_RECORD_ENABLED)', () => {
+    function holdResponse(): unknown {
+      return toolUseBody({ action: 'hold', confidence: 0.5, rationale: 'r' });
+    }
+    const trackRecordContext: AgentContext = {
+      ...FLAT_CONTEXT,
+      trackRecord: { tripCount: 10, winRate: 0.5, meanNetBpsPerTrip: 2, trailingWindowTrips: 15 },
+    };
+
+    it('flag off (opts omitted) ⇒ byte-identical to the pre-feature baseline even with trackRecord attached to context', async () => {
+      const fetchFnOff = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const fetchFnBaseline = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const clientOff = new AnthropicAgentClient(buildCfg(), fetchFnOff);
+      const clientBaseline = new AnthropicAgentClient(buildCfg(), fetchFnBaseline);
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: trackRecordContext,
+      });
+
+      const proposalOff = await clientOff.propose(input);
+      const proposalBaseline = await clientBaseline.propose(input);
+
+      expect(proposalOff.promptHash).toBe(proposalBaseline.promptHash);
+      const [, init] = fetchFnOff.mock.calls[0] as [string, RequestInit];
+      const body = JSON.parse(init.body as string) as { system: { text: string }[] };
+      expect(body.system[0]!.text).not.toContain('trackRecord');
+    });
+
+    it('flag on: trackRecord guidance sentence, +tr1 promptHash tag, and payload key all present', async () => {
+      const fetchFn = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const fetchFnOff = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const client = new AnthropicAgentClient(buildCfg({ trackRecordFeedEnabled: true }), fetchFn);
+      const offClient = new AnthropicAgentClient(buildCfg({}), fetchFnOff);
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: trackRecordContext,
+      });
+
+      const proposal = await client.propose(input);
+      const offProposal = await offClient.propose(input);
+
+      expect(proposal.promptHash).not.toBe(offProposal.promptHash);
+      const [, init] = fetchFn.mock.calls[0] as [string, RequestInit];
+      const body = JSON.parse(init.body as string) as { system: { text: string }[] };
+      expect(body.system[0]!.text).toContain('trackRecord');
+      const payload = JSON.parse(proposal.inputPayload!) as Record<string, unknown>;
+      expect(payload).toHaveProperty('trackRecord', {
+        tripCount: 10,
+        winRate: 0.5,
+        meanNetBpsPerTrip: 2,
+        trailingWindowTrips: 15,
+      });
     });
   });
 

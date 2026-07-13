@@ -26,6 +26,15 @@ export default tseslint.config(
       // Same class: the TP/SL/maxHold calibration study — bare .mjs run via `node`
       // (self-contained, no src/ imports), outside any tsconfig project.
       'test/backtest/bounds-calibration/**',
+      // Same class: the entry fill-quality study — bare .mjs run via `node` (DB reads via `pg`
+      // directly, no src/ imports), outside any tsconfig project.
+      'test/backtest/entry-fill-quality/**',
+      // Same class: the stop-slippage exit-leak study — bare .mjs run via `node` (DB reads via
+      // `pg` directly, no src/ imports), outside any tsconfig project.
+      'test/backtest/stop-slippage/**',
+      // Same class: the info-context×thinking A/B cell-table script — bare .mjs run via `node`
+      // (DB reads via `pg` directly, no src/ imports), outside any tsconfig project.
+      'test/backtest/ab-cells/**',
       // Same class: these specs import scripts/*.mjs (themselves outside tsconfig, see
       // scripts/** above) and are plain .mjs for the same reason — no tsconfig project.
       'test/unit/scripts/arm-ceremony.spec.mjs',

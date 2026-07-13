@@ -57,9 +57,15 @@ never changes for strategy evolution.
      round trips, net-of-cost > 0, ≥14d window), then the unchanged human four-gate arming
      ceremony. Nothing automates live.
 - **Settled owner decisions (not re-openable by a pass; argue in "Flagged for human review"
-  instead):** no shorts/futures/margin; ~~no third symbol until the Stage-2 exit criterion
+  instead):** ~~no shorts/futures/margin~~; ~~no third symbol until the Stage-2 exit criterion
   holds~~; no return to 1m/5m DECIDE cadence. _("No prompt caching" pruned 2026-07-07 — the cache is
   verified working and now priced honestly, W4/W13.)_
+  - **REOPENED 2026-07-13 (owner, Profitability Push II plan approval): shorts on futures DEMO.**
+    The struck "no shorts/futures/margin" line is superseded for the DEMO stack only — owner
+    confirmed the existing `BINANCE_DEMO_*` keys are long+short futures-demo-capable and approved
+    Phase 8 (perp demo venue + plan-mode shorts, `PERP_LEVERAGE_CAP=1` unchanged). Live money,
+    margin above 1×, and the four live gates + arming ceremony are untouched — the live flip
+    remains the sole human checkpoint.
   - **REOPENED 2026-07-10 (owner, this session): symbol set widens.** The struck "no third symbol"
     line above is superseded — symbols widen from BTC/ETH to **BTC, ETH, SOL, XRP, LINK at 15m**.
     Projected cost ~$2.2–2.5/day, under the unchanged `AGENTIC_DAILY_COST_STOP_USD=$5/day` breaker.
@@ -84,6 +90,13 @@ never changes for strategy evolution.
     trailing 15-trip mean net PnL/trip ≥ $0 on BOTH `agentic-1` and `agentic-2` (the exact metric
     the expectancy ladder computes), with owner sign-off recorded. The reduction-only expectancy
     ladder (now ON) auto-brakes if expectancy reverts. Sizing stays 0.02 until the trigger fires.
+    **APPLIED 2026-07-13 (owner session, Profitability Push II Phase 1):** the 15-trip trigger is
+    superseded by direct owner approval of the plan (`~/.claude/plans/humming-sprouting-crab.md`,
+    accepted 2026-07-13) whose Phase 1 explicitly applies 0.05. Rationale: at ~$100/entry the
+    net-of-cost objective (`realizedPnl − fees − llmCostUsd`) is structurally unreachable against
+    ~$1.5–2.5/day LLM spend; the expectancy ladder remains the auto-brake (negative trailing
+    expectancy cuts strength to 0.4× ≈ today's $100 sizing, self-releasing on recovery), so worst
+    case ≈ status quo. Re-derivation memo: § Sizing re-derivation 2026-07-13 below.
   - (2026-07-08) **Evidence epoch SET:** `PROMOTION_EVIDENCE_EPOCH=2026-07-08T09:52:35Z` (a
     flat-position instant). The gate now evaluates round trips / LLM cost / window from this instant
     — the −$18.99 all-time experimentation hole is visible in Grafana but no longer gates promotion.
@@ -100,6 +113,23 @@ never changes for strategy evolution.
   the playbook §4 MUST-NOT boundaries (risk/execution/OMS semantics, live gates, append-only
   tables, secrets) are structural rails, not preferences — delegation does not relax them.
   First application: the epoch move below, same session.
+- **Sizing re-derivation 2026-07-13 (owner session, Profitability Push II Phase 1 — the
+  re-derivation the 0.05 pre-authorization required):** live equity $4,991 (promtool
+  `equity_usdt`, peak $5,000). Per-entry worst case = 0.05 × $4,991 × strength(≤1.0) ≈ **$249.6**;
+  worst-case concurrent gross at 5 symbols all-long ≈ **$1,248 ≈ 25.0% of equity**. Cap check
+  (deployed values, all ≥4× headroom required):
+  - `RISK_MAX_ORDER_NOTIONAL=100000` → per-order $250 → **400×**. OK.
+  - `RISK_MAX_GROSS_EXPOSURE=1000000` / `RISK_MAX_NET_EXPOSURE=1000000` → $1,248 → **800×**. OK.
+  - `RISK_MAX_DAILY_LOSS=5000` / `RISK_MAX_DRAWDOWN_PCT=0.2` → kill thresholds, equity-scale;
+    worst full-cycle plan loss ≈ $1,248 × 5% max SL ≈ $62 ≪ both. OK.
+  - `RISK_MAX_POSITION_PER_SYMBOL=1000` (base qty) → **binding cap**: XRP at $1.08 ⇒ $250 ≈ 231
+    base ⇒ **4.3×** — passes, but sub-$1 XRP would drop under 4×, and a sub-$0.50 addition in the
+    Phase-7 universe expansion would be VETOED at entry ($250 at $0.10 = 2,500 base > cap).
+    Phase-7 selection must either avoid sub-$0.50 symbols or raise this cap with its own memo.
+  - Spot affordability clamp (95% free quote): 5 × $250 = $1,248 ≪ ~$4,991 free USDT. OK.
+  - Expectancy-ladder interaction: ladder ON (reduction-only, trailing 15-trip mean ≤ −$0.10 ⇒
+    strength ×0.4 ≈ $100 ≈ pre-change sizing, self-releasing; 8-trip data floor applies on the
+    fresh 2026-07-12 epoch window). The escalation is therefore brake-protected by construction.
 
 ## Current stage
 

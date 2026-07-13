@@ -2411,3 +2411,98 @@ pct=30). (4) #32 reflection SSE streaming. (5) carry re-test due ~07-24 under th
 benchmark (NEW dated report). (6) #25 zombie/ACKED-fixture resolution script
 (`scripts/resolve-stale-orders.mjs`, dry-run-first) — the last live-arming-prep re-dispatch
 item still open.
+
+## 2026-07-13 — Pass 23 (scheduled run, ~16:05–17:45Z): MAINTENANCE report-only — Push-II Phase-1 and Phase-3 watches RESOLVED POSITIVE; orders-timestamp gap flagged (#40); mid-pass the owner session landed Phase 8 + portfolio-consult enable and redeployed
+
+**Data window:** Pass 22 close (~09:15Z) → ~17:45Z. The owner Push-II session ran through the
+whole window with several build+deploys; the sweep ran on boot `09c6bcaa` (13:39:58Z, the
+Phase-4 image), and mid-pass the owner deployed boot `f9c2b321` (17:09:22Z — Phase 8 flag-off +
+`AGENTIC_PORTFOLIO_CONSULT=true`). Earlier boots' log segments are gone with their containers
+(known rotation gotcha); DB + Prometheus carried the durable evidence. Duty cycle **100%/24h**.
+
+**Evidence sweep (boot `09c6bcaa`, ~2.5h at sweep):** stack 4/4 up, app healthy; 0 error lines,
+4 warns all benign (2 boot route notices, the standing ACTIVE_STRATEGY banner, one info-A/B
+control-arm assignment line); 0 EXPIRED, `signals_rejected_total` empty; reconcile **308 clean /
+0 mismatch / 0 halt** (first sweep with zero foreign-order mismatches); kill switch RUNNING
+(`kill_switch_state{state="RUNNING"}=1`). Scoreboard (epoch 08:30Z 07-12): **RT=10 (all v1, all
+losses), net −$7.82, LLM $3.74, window 0.90d, ready=0**; equity $4,990.45, dd 0.19%,
+trade-explained. Cost: epoch-average ≈**$2.83/day** — under the sustained->$3 LINK-drop trigger;
+the 09→16Z burst (~$3.7/day pro-rated) was position-open consult load on 5 concurrent longs, and
+the flat-market boot rate is ~$1.6/day ⇒ **cost watch stays armed, does not fire**. Prescreen
+this boot 40/50 quiet = 80% skip (above the 50–70% band; flat tape, n=50 — no knob change).
+Corpus **373** payload rows. §2.6 harness probe **green** (eval:agentic 15 passed, run over the
+then-dirty tree). Unresolved-terminal orders: only the 2 known fixture rows.
+
+**Watch verdicts (the pass's main deliverable):**
+
+- **Phase 1 (LIMIT_MAKER + 0.05 sizing) RESOLVED POSITIVE:** the first post-`22af50d` entry —
+  LINK 10:02:03Z — journaled `type=LIMIT_MAKER` TIF GTC @ 7.993, **filled maker** (fee in LINK),
+  notional $87.3 ≈ the ladder-braked ≈$100 band (trailing expectancy negative ⇒ 0.4×, expected
+  PASS per the watch). No post-only would-cross reject storm (single ACK, single fill). Its close
+  (11:45:34Z SELL LIMIT IOC @ 7.921, filled 7.94 taker, ≈−0.66% ≈−$0.66+fees) is RT #10 and the
+  whole net delta since Pass 22 (realized −$0.83, LLM +$1.07).
+- **Phase 3 (trade-flow/CVD + positioning blocks) RESOLVED POSITIVE:** post-12:40Z-deploy
+  payloads split cleanly — 17 treatment rows carry `tradeFlow`+`positioning` (16 of them also
+  `crossSymbol`; the 1 without is a sibling-data fallback, not a defect), 6 control rows carry
+  none of the four; zero feed warn lines in the window.
+- **Phase 2 (venue-resting TP) PENDING:** no plan entry has filled since its 11:41Z deploy —
+  `agentic_venue_tp_total` has no series yet; first fill after a fresh entry decides it.
+- **Phase 4 + #39 (mint-backtest, v2 abstain-lapse → v3) PENDING:** no reflection attempt today
+  at all (`llm_usage` 0 rows 07-13). The 11:45:34Z LINK close landed ~1–2 min after the Phase-2
+  boot came up — the documented first-close-after-boot seed race primed but could not fire; the
+  17:09Z recreate reset in-memory primes again (first close per strategy re-seeds, second fires).
+  v2 lapse + v3 mint both wait on the next reflection trigger, i.e. on closed trips.
+
+**New finding → backlog #40 (report-only, OMS territory):** `orders.submitted_at`, `acked_at`,
+and `first_fill_at` are NULL on **all 54 rows** — `OrderRepository.updateState` accepts them as
+optional extras but no caller ever stamps them, and nothing in `src/` reads them (`terminal_at`
+IS stamped since W7; the state machine runs off `order_events`). Not a trading-path defect —
+an analytics/latency-audit gap (submit→ack→first-fill latency is unmeasurable from the DB).
+Fix belongs in the OMS state gate (outside §4 MAY): stamp the three timestamps at their
+transitions, backfill best-effort from `order_events` payloads.
+
+**Pass-start constraint (dirty tree, playbook §4 rule):** the tree carried 22 modified files
+(+1202/−225, mtimes 15:12–15:23Z — the owner session's Phase-8 perp/shorts work in progress).
+Consequences honored: touched NONE of them, and ruled out any image build, deploy, or container
+recreate for the whole pass (`docker-compose.yml` itself was dirty — a recreate would have
+applied uncommitted config). **Mid-pass resolution (17:04–17:11Z): the owner session landed
+`34e4728` (futures-demo perp venue + plan-mode shorts, flag-off — spot deploy byte-identical),
+`46996aa` (consult-id attribution + enable-gate review fixes), `1d33326`
+(`AGENTIC_PORTFOLIO_CONSULT=true`), `d2e7601` (Push-II close-out state), and deployed boot
+`f9c2b321`** — tree clean at pass end, zero file overlap with pass-authored paths. First look at
+the new boot: banner shows `agentClient=BatchingAgentClient` (consult chain live), 0 errors, no
+`submit_portfolio` call yet (nothing prescreen-called in the first ~15 min) — the Phase-5 WATCH
+is the next pass's first check.
+
+**Process note (Pass 3 precedent):** the session was switched into plan mode mid-pass, after the
+read-only sweep. The remaining write actions were written up as a plan
+(`~/.claude/plans/expressive-strolling-seal.md`) and approved same session ("reinspect, then
+execute"); the reinspect found the mid-pass commits/deploy above and this entry reflects them.
+
+**Pass type MAINTENANCE, report-only** (§3: no correctness bug on the trading path today;
+CANDIDATE blocked — v2 unresolved in A/B; PROMOTION ineligible — v2 has 0 attributed trips;
+NB champion v1 reached the symmetric 10-trip floor this window, so once v2 trades or lapses the
+verdict machinery is no longer champion-starved). Nothing shipped in `src/` by constraint and by
+selection: the owner session was actively landing the highest-value items, and every §3(c)
+backlog item either needs a deploy (blocked all pass) or is owner territory. Ship = this report,
+the two watch resolutions in state.md, backlog #40, and the standing backup.
+
+**Gates:** build / lint / typecheck / **1904 unit** all green at the post-land HEAD
+(`d2e7601`); eval:agentic 15 (§2.6, ran at sweep time); lint:md green after the report edits. No deploy (docs-only commit). Backup
+`cryptobot-20260713T172335Z.sql.gz` (§5 standing duty; note it predates the mid-pass commits by
+minutes — DB state, not code, is what it protects).
+
+**Flagged for human review:** none new (#40 is a backlog seed, not urgent).
+
+**Next-pass candidates:** (1) **Phase-5 portfolio-consult WATCH** (first sweep with it live):
+`consult_id` non-null and shared on multi-symbol bars, per-day decide calls dropping vs
+baseline, no correlated strike/DRAIN across all 5 strategies, no persistent 'holding all'
+warn-storm. (2) **Reflection watch** (primes reset by the 17:09Z recreate): next trigger →
+v2 'provably abstains live' lapse → v3 mint through entry-rate floor + mint-backtest — expect
+`minted` or `abstain_reject`/`expectancy_reject`; `validator_reject`/`transport_error` = new
+defect. (3) **Phase-2 venue-TP watch** on the first fresh plan entry (`placed` →
+`skipped_existing`, maker fee at exact TP price). (4) **5→8 universe expansion pre-auth**
+(ZEC/AAVE/NEAR per `universe-study-2026-07-13.md`) once the consult soak shows ≥2 clean days —
+loop-domain, includes the 0.05→0.04 sizing re-derivation. (5) carry re-test ~07-24 (winsorized
+benchmark, NEW dated report). (6) #25 zombie/ACKED-fixture script. (7) #40 timestamp stamping
+(owner/OMS).

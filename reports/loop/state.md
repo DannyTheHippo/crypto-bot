@@ -140,7 +140,9 @@ never changes for strategy evolution.
     fallback when the price would cross). **WATCH (Phase 1):** first post-deploy entry must
     journal as `LIMIT_MAKER` with notional ≈ $250 (ladder-braked ≈ $100 is also PASS while
     trailing expectancy is negative); a venue-reject storm on post-only entries (would-cross
-    rejections) = flip back to LIMIT and record.
+    rejections) = flip back to LIMIT and record. **RESOLVED POSITIVE 2026-07-13 Pass 23:** first
+    post-deploy entry (LINK 10:02:03Z) journaled `LIMIT_MAKER` GTC @ 7.993 and filled MAKER,
+    notional $87.3 ≈ the ladder-braked band; no would-cross rejects observed.
 - **Venue-resting take-profit SHIPPED + ENABLED 2026-07-13 (owner session, Push II Phase 2):**
   plan-mode longs now rest their TP at the venue (reduce-only LIMIT GTC at the exact TP price,
   maker-priced via the new `RISK_MAX_PASSIVE_EXIT_BAND_BPS=1200` passive lane) instead of bar-close
@@ -179,7 +181,9 @@ never changes for strategy evolution.
   1 should-fix applied: sibling-bar recovery tests for both feeds). **WATCH (Phase 3):**
   treatment-arm `input_payload` rows must show `tradeFlow` + `positioning` blocks (control rows
   none of the four); the two feeds' warn-log rate stays near zero; decide latency unchanged
-  (feeds are pre-polled, not on the hot path).
+  (feeds are pre-polled, not on the hot path). **RESOLVED POSITIVE 2026-07-13 Pass 23:**
+  post-deploy payloads split cleanly — 17 treatment rows carry `tradeFlow`+`positioning` (16
+  also `crossSymbol`), 6 control rows carry none of the four; zero feed warn lines.
 - **Mint-time candidate-vs-champion expectancy backtest SHIPPED + ENABLED 2026-07-13 (owner
   session, Push II Phase 4 — the learning accelerant):** every reflection draft that clears the
   entry-rate floor is now ALSO replayed head-to-head against the champion over the newest 60
@@ -412,6 +416,28 @@ candidates; whether the minted candidates then earn A/B-attributed promotion is 
 exit question.
 
 ## Last pass
+
+**Pass 23, 2026-07-13** (scheduled run, ~16:05–17:45Z) — **MAINTENANCE report-only: Push-II
+Phase-1 and Phase-3 watches RESOLVED POSITIVE; orders-timestamp analytics gap flagged (#40);
+nothing shipped in src/ (owner session actively landing Phase 8 + consult-enable mid-pass).**
+Evidence sweep on boot `09c6bcaa` (Phase-4 image, 13:40Z): 0 errors, 0 EXPIRED, reconcile
+**308/0/0 (first zero-foreign-mismatch sweep)**, kill switch RUNNING, duty cycle 100%/24h.
+Scoreboard: RT=10 (all v1, all losses; champion v1 now AT the symmetric 10-trip floor), net
+−$7.82, LLM $3.74, window 0.90d; equity $4,990.45 (dd 0.19%, trade-explained — RT #10 = the
+LIMIT_MAKER-watch LINK trip, −$0.66%+fees). Cost epoch-average $2.83/day (burst ~$3.7/day
+09→16Z was 5-open-position consult load; flat-market boot rate ~$1.6/day) — **cost watch armed,
+not firing**. Prescreen 80% skip (above band; flat tape, n=50, no knob change). Corpus 373.
+Harness probe green (15). Phase-2 (venue TP) and Phase-4/#39 (v2 lapse → v3 mint) watches
+PENDING — no reflection attempt all day (`llm_usage` 0 rows; the 11:45:34Z close hit the
+first-close-after-boot seed race, and the 17:09Z recreate re-reset primes). Pass-start dirty
+tree (22 files, Phase-8 WIP) honored: no builds/deploys/recreates all pass; mid-pass the owner
+landed `34e4728` (perp venue + shorts, flag-off) / `46996aa` / `1d33326` (portfolio consult
+ON) / `d2e7601` (close-out) and deployed boot `f9c2b321` 17:09Z (banner shows
+`BatchingAgentClient`; no `submit_portfolio` yet at pass end — **Phase-5 WATCH is next pass's
+first check**). Gates full green at post-land HEAD (build/lint/typecheck/**1904 unit** + eval
+15). Backup `cryptobot-20260713T172335Z.sql.gz`. Process note: plan-mode interrupt mid-pass
+(plan approved same session — Pass 3 precedent). Empty-pass counter 0 (day shipped via Passes
+21/22 + owner session; this pass ships report+watch-verdicts only). Full detail in LOG.md.
 
 **Pass 22, 2026-07-13** (scheduled run, ~08:08–09:15Z) — **SHIP the winsorized deflation
 variance port (`1042930`, ultracode re-dispatch item 3): `trial-registry.ts`'s raw `variance()`
@@ -926,6 +952,8 @@ owns them).
 | 38 | Plan-mode restart defect (found Pass 20): `activePlan` is in-memory; every container recreate stranded plan-managed longs as bare positions — the documented "model issues a fresh plan" self-heal had no implementation (no prompt signal, 'long' = NEW long, client dropped plans outside long-from-FLAT). Bare positions lose model-set TP/maxHoldBars (only protective backstops remain) and bill every bar (~$0.011/bar/symbol; recreate with 5 open positions projects past the $5/day breaker). Loop deploys 1–3×/day made this recurring | 2 | M | DONE 2026-07-12 Pass 20 (`6e95542`): `managedPlan` position field + prompt/tool re-arm instructions + client hold/long+plan acceptance while LONG through the unchanged fee/RR floors (no signal emitted; FLAT never arms); PLAN_TEMPLATE_VERSION p1→p2. Reviewer APPROVE no-must-fix, 1691 unit, eval 15. Live-verified first bar post-deploy: 2/2 bare positions (XRP/SOL) re-armed with explicit model narration |
 
 | 39 | Candidate abstention deadlock (found Pass 21, structural): the promotion framework measures candidates ONLY through their own attributed trips, but reflection minted from all-loss evidence rationally raises the entry bar — v2 entered 0 of 17 FLAT consults since mint (P≈0.4% under v1's 28% rate), so its 10-trip verdict clock never starts and resolution comes only via the 168h lapse; the next mint from the same evidence will repeat the pattern. Promoting an abstainer is NOT the fix — reflection is trade-gated, so a never-trading champion freezes the whole learning loop. Cheapest real fix: an offline entry-rate floor at mint time — replay every reflection mint against the recorded corpus (§3(a) scoring machinery exists) and reject candidates whose entry conditions fire ~never BEFORE they occupy the A/B slot; alternatives (per-opportunity attribution; accept weekly lapse churn) analyzed in LOG.md Pass 21 | 2 | M | DONE 2026-07-13 (owner session): mint-time entry-rate floor (`entry-rate-floor.ts` — 12 newest FLAT-consult payloads replayed with the DECIDE model, ~$0.15/mint budget-reserved; failure → existing retry-with-feedback → `abstain_reject`+rollback; fail-open on young corpus/budget/transport — reviewer should-fix applied: successful consults gate the veto) PLUS live-abstention lapse (`AGENTIC_ABSTAIN_LAPSE_DECIDES=15`: ≥15 attributed decides with 0 entries ⇒ immediate lapse — retro-applies to v2 on the next reflection trigger, no 07-18 wait). Reviewer APPROVE no-must-fix; 1765 unit; deployed. WATCH: next reflection trigger logs 'provably abstains live' → v3 mints through the floor — expect `minted` (tradeable v3) or `abstain_reject` (floor caught another abstainer) |
+
+| 40 | Order lifecycle timestamps never stamped (found Pass 23): `orders.submitted_at`, `acked_at`, and `first_fill_at` are NULL on all 54 rows — `OrderRepository.updateState` accepts them as optional extras but no caller passes them, and nothing in `src/` reads them (`terminal_at` IS stamped since W7; the state machine runs off `order_events`). Not a trading-path defect — an analytics/latency-audit gap: submit→ack→first-fill latency is unmeasurable from the DB, which live-arming diagnostics and any execution-quality study will want. Fix: stamp the three timestamps at their transitions in the OMS state gate; best-effort backfill from `order_events` payloads | 2 | S | pending (owner/OMS territory — outside §4 MAY; report-only per Pass 23) |
 
 ## Flagged for human review (open)
 

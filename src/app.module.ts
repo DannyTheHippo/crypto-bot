@@ -13,7 +13,7 @@ import {
 import { randomBytes, createHash } from 'node:crypto';
 import { APP_FILTER } from '@nestjs/core';
 import type { Exchange } from 'ccxt';
-import { binanceusdm as BinanceUsdmExchange } from 'ccxt';
+import { binanceusdm as BinanceUsdmExchange, binance as BinanceSpotExchange } from 'ccxt';
 import Decimal from 'decimal.js';
 import { AppConfigModule } from './config/config.module';
 import { TypedConfigService } from './config/environment/typed-config.service';
@@ -75,6 +75,14 @@ import {
   SentimentFeedService,
   type SentimentHttpSource,
 } from './features/trading/market-data/sentiment-feed.service';
+import {
+  TradeFlowFeedService,
+  type TradeFlowRestSource,
+} from './features/trading/market-data/trade-flow-feed.service';
+import {
+  PositioningFeedService,
+  type PositioningRestSource,
+} from './features/trading/market-data/positioning-feed.service';
 import {
   FeedHealthServiceWithBackfill,
   type OhlcvSource,
@@ -207,6 +215,8 @@ import {
 } from './ports/market-data';
 import { DERIVATIVES_FEED, type DerivativesFeedPort } from './ports/derivatives-feed';
 import { SENTIMENT_FEED, type SentimentFeedPort } from './ports/sentiment-feed';
+import { TRADE_FLOW_FEED, type TradeFlowFeedPort } from './ports/trade-flow-feed';
+import { POSITIONING_FEED, type PositioningFeedPort } from './ports/positioning-feed';
 import {
   EXCHANGE_STREAM,
   type ExchangeStreamPort,
@@ -641,6 +651,20 @@ const NOOP_SENTIMENT_FEED: SentimentFeedPort = {
   lastSuccessfulPollAt: () => null,
   pollErrorCount: () => 0,
 };
+// Bound whenever AGENTIC_TRADEFLOW_ENABLED is off (default) or under test/ci — no poll ever starts,
+// latest() always answers null, so the agentic prompt's tradeFlow block never renders.
+const NOOP_TRADE_FLOW_FEED: TradeFlowFeedPort = {
+  latest: () => null,
+  lastSuccessfulPollAt: () => null,
+  pollErrorCount: () => 0,
+};
+// Bound whenever AGENTIC_POSITIONING_ENABLED is off (default) or under test/ci — no poll ever
+// starts, latest() always answers null, so the agentic prompt's positioning block never renders.
+const NOOP_POSITIONING_FEED: PositioningFeedPort = {
+  latest: () => null,
+  lastSuccessfulPollAt: () => null,
+  pollErrorCount: () => 0,
+};
 // Free-tier CryptoPanic REST client (public headlines endpoint; no ccxt involved — this is a news
 // feed, not an exchange). apiKey is read directly off process.env (never through TypedConfigService/
 // AppConfig — see environment.config.ts's SENTIMENT_FEED_API_KEY comment), so it is never logged or
@@ -667,6 +691,48 @@ function buildDerivativesRestSource(): DerivativesRestSource {
     number: String,
     enableRateLimit: true,
   });
+}
+// Public-only REST client for the SPOT market's raw (unparsed) klines endpoint — the CVD feed calls
+// ccxt's implicit `publicGetKlines` method directly (bypassing the unified fetchOHLCV/parseOHLCV,
+// which unconditionally drops the taker-buy-base-volume field; see trade-flow-feed.ts's header
+// comment) rather than the derivatives feed's futures client above, since the strategy trades spot
+// symbols and this reads the SAME market it trades.
+function buildTradeFlowRestSource(): TradeFlowRestSource {
+  const exchange = new BinanceSpotExchange({ number: String, enableRateLimit: true });
+  return {
+    fetchRawKlines: (symbol, interval, limit) =>
+      (
+        exchange as unknown as {
+          publicGetKlines: (params: Record<string, unknown>) => Promise<unknown[][]>;
+        }
+      ).publicGetKlines({ symbol, interval, limit }),
+  };
+}
+// Public-only REST client for market-wide futures positioning (global long/short account ratio) —
+// mirrors buildDerivativesRestSource's no-credentials construction. Calls the RAW (unparsed)
+// `fapiDataGetGlobalLongShortAccountRatio` implicit method directly rather than ccxt's unified
+// fetchLongShortRatioHistory wrapper — that wrapper's parseLongShortRatio keeps only longShortRatio,
+// dropping longAccount/shortAccount from its parsed structure (see positioning-feed.service.ts's
+// header comment) — a public endpoint, no API key required.
+function buildPositioningRestSource(): PositioningRestSource {
+  const exchange = new BinanceUsdmExchange({ number: String, enableRateLimit: true });
+  return {
+    fetchRawLongShortRatio: (symbol, period, limit) =>
+      (
+        exchange as unknown as {
+          fapiDataGetGlobalLongShortAccountRatio: (
+            params: Record<string, unknown>,
+          ) => Promise<unknown[]>;
+        }
+      ).fapiDataGetGlobalLongShortAccountRatio({ symbol, period, limit }) as Promise<
+        Array<{
+          readonly longAccount?: string | number;
+          readonly shortAccount?: string | number;
+          readonly longShortRatio?: string | number;
+          readonly timestamp?: number;
+        }>
+      >,
+  };
 }
 function isTestEnv(): boolean {
   return (
@@ -797,6 +863,45 @@ const MD_EXCHANGE = Symbol('MD_EXCHANGE');
       },
       inject: [TypedConfigService, CLOCK],
     },
+    {
+      provide: TRADE_FLOW_FEED,
+      useFactory: (config: TypedConfigService, clock: ClockPort): TradeFlowFeedPort => {
+        const { enabled, pollIntervalMs } = config.tradeFlowFeed;
+        // Same test/ci short-circuit as DERIVATIVES_FEED above, plus the feature flag itself.
+        if (isTestEnv() || !enabled) return NOOP_TRADE_FLOW_FEED;
+        const source = buildTradeFlowRestSource();
+        const service = new TradeFlowFeedService(source, {
+          symbols: config.strategy.symbols.map((s) => symbolId(s)),
+          interval: config.strategy.interval,
+          lookbackBars: 20,
+          pollIntervalMs,
+          clock,
+          logger: new Logger('TradeFlowFeedService'),
+        });
+        service.start();
+        return service;
+      },
+      inject: [TypedConfigService, CLOCK],
+    },
+    {
+      provide: POSITIONING_FEED,
+      useFactory: (config: TypedConfigService, clock: ClockPort): PositioningFeedPort => {
+        const { enabled, pollIntervalMs } = config.positioningFeed;
+        // Same test/ci short-circuit as DERIVATIVES_FEED above, plus the feature flag itself.
+        if (isTestEnv() || !enabled) return NOOP_POSITIONING_FEED;
+        const source = buildPositioningRestSource();
+        const service = new PositioningFeedService(source, {
+          symbols: config.strategy.symbols.map((s) => symbolId(s)),
+          ratioPeriod: '15m',
+          pollIntervalMs,
+          clock,
+          logger: new Logger('PositioningFeedService'),
+        });
+        service.start();
+        return service;
+      },
+      inject: [TypedConfigService, CLOCK],
+    },
   ],
   exports: [
     MARKET_STREAM,
@@ -805,6 +910,8 @@ const MD_EXCHANGE = Symbol('MD_EXCHANGE');
     EXCHANGE_STREAM,
     DERIVATIVES_FEED,
     SENTIMENT_FEED,
+    TRADE_FLOW_FEED,
+    POSITIONING_FEED,
   ],
 })
 class MarketFeedModule {}
@@ -1371,6 +1478,12 @@ export class AppModule
     // C4: always bound (MarketFeedModule's SENTIMENT_FEED factory returns NOOP_SENTIMENT_FEED when
     // SENTIMENT_FEED_ENABLED/key is off/absent/test-ci) — never @Optional, mirrors derivativesFeed.
     @Inject(SENTIMENT_FEED) private readonly sentimentFeed: SentimentFeedPort,
+    // Always bound (MarketFeedModule's TRADE_FLOW_FEED factory returns NOOP_TRADE_FLOW_FEED when
+    // AGENTIC_TRADEFLOW_ENABLED is off/test-ci) — never @Optional, mirrors derivativesFeed.
+    @Inject(TRADE_FLOW_FEED) private readonly tradeFlowFeed: TradeFlowFeedPort,
+    // Always bound (MarketFeedModule's POSITIONING_FEED factory returns NOOP_POSITIONING_FEED when
+    // AGENTIC_POSITIONING_ENABLED is off/test-ci) — never @Optional, mirrors derivativesFeed.
+    @Inject(POSITIONING_FEED) private readonly positioningFeed: PositioningFeedPort,
     @Inject(REFLECTION_SERVICE) private readonly reflectionService: ReflectionService,
     @Inject(PROMOTION_READINESS) private readonly promotionReadiness: PromotionReadinessPort,
     // W5 attributed auto-promotion: the evaluator promotes a reflection candidate to ACTIVE on its
@@ -1567,6 +1680,8 @@ export class AppModule
         evidence: this.roundTripEvidence,
         derivativesFeed: this.derivativesFeed,
         sentimentFeed: this.sentimentFeed,
+        tradeFlowFeed: this.tradeFlowFeed,
+        positioningFeed: this.positioningFeed,
         // Cross-symbol relative-strength context: ONE service shared across every agentic-N instance
         // (this closure runs once per registration but `deps` is captured by the factory), so each
         // instance records its own symbol's trailing return and reads the whole basket's ranking.

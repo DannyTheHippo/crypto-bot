@@ -45,6 +45,8 @@ import {
 import type { RoundTripEvidencePort } from '../../../ports/promotion';
 import type { DerivativesFeedPort } from '../../../ports/derivatives-feed';
 import type { SentimentFeedPort } from '../../../ports/sentiment-feed';
+import type { TradeFlowFeedPort } from '../../../ports/trade-flow-feed';
+import type { PositioningFeedPort } from '../../../ports/positioning-feed';
 import { evaluatePlan, type PlanExecutorAction, type PlanExecutorState } from './plan-executor';
 import { CrossSymbolContextService } from './cross-symbol-context';
 
@@ -172,6 +174,14 @@ export interface AgenticStrategyDeps {
   // means the prompt's sentiment block never renders (byte-identical to pre-C4 output), same
   // convention as `derivativesFeed` above.
   readonly sentimentFeed?: SentimentFeedPort;
+  // Trade-flow/CVD context (taker aggressor imbalance), consulted once per decide() and threaded
+  // onto the outgoing snapshot's `tradeFlow` field. Optional — absent means the prompt's tradeFlow
+  // block never renders, same convention as `derivativesFeed` above.
+  readonly tradeFlowFeed?: TradeFlowFeedPort;
+  // Positioning context (global long/short account ratio), consulted once per decide() and threaded
+  // onto the outgoing snapshot's `positioning` field. Optional — absent means the prompt's
+  // positioning block never renders, same convention as `derivativesFeed` above.
+  readonly positioningFeed?: PositioningFeedPort;
   // Cross-symbol relative-strength context (2026-07-12): a SINGLE instance shared across every
   // agentic-N strategy (wired in app.module.ts's register factory), so each instance records its own
   // symbol's trailing return and reads the whole basket's ranking. Absent ⇒ crossSymbolEnabled is a
@@ -265,6 +275,8 @@ export class AgenticStrategy implements AsyncStrategy {
   private readonly evidence?: RoundTripEvidencePort;
   private readonly derivativesFeed?: DerivativesFeedPort;
   private readonly sentimentFeed?: SentimentFeedPort;
+  private readonly tradeFlowFeed?: TradeFlowFeedPort;
+  private readonly positioningFeed?: PositioningFeedPort;
   private readonly crossSymbolContext?: CrossSymbolContextService;
   private readonly venueTpEnabled: boolean;
   private readonly venueTpReplaceDriftBps: number;
@@ -323,6 +335,8 @@ export class AgenticStrategy implements AsyncStrategy {
     this.evidence = deps.evidence;
     this.derivativesFeed = deps.derivativesFeed;
     this.sentimentFeed = deps.sentimentFeed;
+    this.tradeFlowFeed = deps.tradeFlowFeed;
+    this.positioningFeed = deps.positioningFeed;
     this.crossSymbolContext = deps.crossSymbolContext;
     this.venueTpEnabled = params.venueTpEnabled ?? false;
     this.venueTpReplaceDriftBps = Math.max(0, params.venueTpReplaceDriftBps ?? 10);
@@ -343,11 +357,14 @@ export class AgenticStrategy implements AsyncStrategy {
   }
 
   async decide(rawInput: AgentDecisionInput): Promise<Signal[]> {
-    // C1: thread a fresh derivatives-feed snapshot onto the host-supplied snapshot before anything
-    // else reads `input` — every downstream use (buildContext, staleEntryCancels, client.propose,
-    // the quiet-hold journal sample) sees the same enriched snapshot. No-op (same object) when the
-    // feed isn't wired or has no fresh poll, so that deployment stays byte-identical.
-    const input = this.withSentiment(this.withDerivatives(rawInput));
+    // C1: thread fresh feed snapshots (derivatives, sentiment, trade-flow, positioning) onto the
+    // host-supplied snapshot before anything else reads `input` — every downstream use
+    // (buildContext, staleEntryCancels, client.propose, the quiet-hold journal sample) sees the
+    // same enriched snapshot. No-op (same object) when a feed isn't wired or has no fresh poll, so
+    // that deployment stays byte-identical.
+    const input = this.withPositioning(
+      this.withTradeFlow(this.withSentiment(this.withDerivatives(rawInput))),
+    );
     // Deterministic and prescreen-independent: resting GTC entries otherwise rest forever (nothing
     // enforces expiresAt on ACKED orders — boot 10c8af0c recovered 55 of them). Computed first so
     // both the quiet-hold path and the LLM path return it.
@@ -950,6 +967,20 @@ export class AgenticStrategy implements AsyncStrategy {
     const sentiment = this.sentimentFeed?.latest() ?? undefined;
     if (!sentiment) return input;
     return { ...input, snapshot: { ...input.snapshot, sentiment } };
+  }
+
+  // Trade-flow/CVD: same merge-if-fresh convention as withDerivatives above.
+  private withTradeFlow(input: AgentDecisionInput): AgentDecisionInput {
+    const tradeFlow = this.tradeFlowFeed?.latest(this.symbol) ?? undefined;
+    if (!tradeFlow) return input;
+    return { ...input, snapshot: { ...input.snapshot, tradeFlow } };
+  }
+
+  // Positioning (global long/short ratio): same merge-if-fresh convention as withDerivatives above.
+  private withPositioning(input: AgentDecisionInput): AgentDecisionInput {
+    const positioning = this.positioningFeed?.latest(this.symbol) ?? undefined;
+    if (!positioning) return input;
+    return { ...input, snapshot: { ...input.snapshot, positioning } };
   }
 
   // Computed indicators (own timeframe + HTF) + own position + decision trail, over the host's

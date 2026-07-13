@@ -166,7 +166,15 @@ describe('agenticEnv', () => {
     // C1: agenticEnv also reads config.derivativesFeed (a sibling AppConfig top-level key, not part
     // of the `agentic` block) — present here so the fixture matches the real TypedConfigService shape.
     const derivativesFeed: AppConfig['derivativesFeed'] = { enabled: true, pollIntervalMs: 60000 };
-    const config = { agentic, derivativesFeed } as unknown as TypedConfigService;
+    // Same sibling-key convention as derivativesFeed above (2026-07-13).
+    const tradeFlowFeed: AppConfig['tradeFlowFeed'] = { enabled: true, pollIntervalMs: 60000 };
+    const positioningFeed: AppConfig['positioningFeed'] = { enabled: true, pollIntervalMs: 300000 };
+    const config = {
+      agentic,
+      derivativesFeed,
+      tradeFlowFeed,
+      positioningFeed,
+    } as unknown as TypedConfigService;
 
     expect(agenticEnv(config)).toMatchObject({
       AGENTIC_MODEL: 'claude-config-model',
@@ -183,6 +191,8 @@ describe('agenticEnv', () => {
       AGENTIC_AUTO_PROMOTE_MIN_TRADES: '9',
       DERIVATIVES_FEED_ENABLED: 'true',
       AGENTIC_DERIVATIVES_AB_PCT: '30',
+      AGENTIC_TRADEFLOW_ENABLED: 'true',
+      AGENTIC_POSITIONING_ENABLED: 'true',
     });
   });
 });

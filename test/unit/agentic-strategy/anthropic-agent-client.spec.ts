@@ -16,6 +16,8 @@ import {
   type AgentContext,
 } from '../../../src/ports/agentic-strategy';
 import type { DerivativesSnapshot } from '../../../src/ports/derivatives-feed';
+import type { TradeFlowSnapshot } from '../../../src/ports/trade-flow-feed';
+import type { PositioningSnapshot } from '../../../src/ports/positioning-feed';
 import type { CandleEvent, TickerEvent } from '../../../src/domain/types/market-events';
 import { price, qty, moneyToString } from '../../../src/domain/types/money';
 import { strategyId, venueId, symbolId, epochMs } from '../../../src/domain/types/ids';
@@ -113,6 +115,8 @@ function buildInput(
     // Derivatives A/B fixtures attach a fresh snapshot the same way agentic.strategy.ts's
     // withDerivatives does (see anthropic-agent-client.ts's control-arm stripping comment).
     derivatives?: DerivativesSnapshot;
+    tradeFlow?: TradeFlowSnapshot;
+    positioning?: PositioningSnapshot;
   } = {},
 ): AgentDecisionInput {
   const et = opts.eventTime ?? T;
@@ -124,6 +128,8 @@ function buildInput(
     execReports: [],
     portfolio: { strategyId: SID, positions: new Map(), openOrders: [] },
     ...(opts.derivatives ? { derivatives: opts.derivatives } : {}),
+    ...(opts.tradeFlow ? { tradeFlow: opts.tradeFlow } : {}),
+    ...(opts.positioning ? { positioning: opts.positioning } : {}),
   };
   return {
     strategyId: SID,
@@ -143,6 +149,14 @@ function derivativesSnapshot(): DerivativesSnapshot {
     openInterest: 12345.6,
     basisBps: 4.2,
   };
+}
+
+function tradeFlowSnapshot(): TradeFlowSnapshot {
+  return { asOf: epochMs(T), barImbalance: 0.3, cvd: 55.5, lookbackBars: 20 };
+}
+
+function positioningSnapshot(): PositioningSnapshot {
+  return { asOf: epochMs(T), longShortRatio: 0.9, longAccountPct: 47.4, shortAccountPct: 52.6 };
 }
 
 function apiResponse(
@@ -1888,7 +1902,7 @@ describe('AnthropicAgentClient', () => {
       expect(JSON.parse(proposal.inputPayload!)).toHaveProperty('crossSymbol', CROSS_SYMBOL);
     });
 
-    it('control arm withholds the WHOLE information bundle: neither derivatives nor crossSymbol survives, hash matches the both-feeds-off reference', async () => {
+    it('control arm withholds the WHOLE information bundle: neither derivatives, crossSymbol, tradeFlow, nor positioning survives, hash matches the all-feeds-off reference', async () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date(CONTROL_TIME_MS));
       const fetchFn = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
@@ -1897,6 +1911,8 @@ describe('AnthropicAgentClient', () => {
         buildCfg({
           derivativesFeedEnabled: true,
           crossSymbolFeedEnabled: true,
+          tradeFlowFeedEnabled: true,
+          positioningFeedEnabled: true,
           derivativesAbPct: AB_PCT,
         }),
         fetchFn,
@@ -1906,6 +1922,8 @@ describe('AnthropicAgentClient', () => {
         tickers: new Map([[SYM, ticker('100', 1n)]]),
         context: CROSS_CONTEXT,
         derivatives: derivativesSnapshot(),
+        tradeFlow: tradeFlowSnapshot(),
+        positioning: positioningSnapshot(),
       });
 
       const proposal = await client.propose(input);
@@ -1916,32 +1934,37 @@ describe('AnthropicAgentClient', () => {
       const body = JSON.parse(init.body as string) as { system: { text: string }[] };
       expect(body.system[0]!.text).not.toContain('derivatives block');
       expect(body.system[0]!.text).not.toContain('crossSymbol block');
+      expect(body.system[0]!.text).not.toContain('tradeFlow block');
+      expect(body.system[0]!.text).not.toContain('positioning block');
       const payload = JSON.parse(proposal.inputPayload!) as Record<string, unknown>;
       expect(payload).not.toHaveProperty('derivatives');
       expect(payload).not.toHaveProperty('crossSymbol');
+      expect(payload).not.toHaveProperty('tradeFlow');
+      expect(payload).not.toHaveProperty('positioning');
     });
 
-    it('treatment arm carries the whole bundle and matches the no-A/B both-feeds-on hash', async () => {
+    it('treatment arm carries the whole bundle (derivatives+crossSymbol+tradeFlow+positioning) and matches the no-A/B all-feeds-on hash', async () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date(TREATMENT_TIME_MS));
       const fetchFn = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
       const fetchFnOn = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const cfgOver = {
+        derivativesFeedEnabled: true,
+        crossSymbolFeedEnabled: true,
+        tradeFlowFeedEnabled: true,
+        positioningFeedEnabled: true,
+      };
       const client = new AnthropicAgentClient(
-        buildCfg({
-          derivativesFeedEnabled: true,
-          crossSymbolFeedEnabled: true,
-          derivativesAbPct: AB_PCT,
-        }),
+        buildCfg({ ...cfgOver, derivativesAbPct: AB_PCT }),
         fetchFn,
       );
-      const onClient = new AnthropicAgentClient(
-        buildCfg({ derivativesFeedEnabled: true, crossSymbolFeedEnabled: true }),
-        fetchFnOn,
-      );
+      const onClient = new AnthropicAgentClient(buildCfg(cfgOver), fetchFnOn);
       const input = buildInput({
         tickers: new Map([[SYM, ticker('100', 1n)]]),
         context: CROSS_CONTEXT,
         derivatives: derivativesSnapshot(),
+        tradeFlow: tradeFlowSnapshot(),
+        positioning: positioningSnapshot(),
       });
 
       const proposal = await client.propose(input);
@@ -1951,6 +1974,119 @@ describe('AnthropicAgentClient', () => {
       const payload = JSON.parse(proposal.inputPayload!) as Record<string, unknown>;
       expect(payload).toHaveProperty('derivatives');
       expect(payload).toHaveProperty('crossSymbol', CROSS_SYMBOL);
+      expect(payload).toHaveProperty('tradeFlow');
+      expect(payload).toHaveProperty('positioning');
+    });
+
+    it('tradeFlow/positioning flags off leave the bundle at just derivatives+crossSymbol (partial-flag byte-identity, no false stripping)', async () => {
+      const fetchFn = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const client = new AnthropicAgentClient(
+        buildCfg({ derivativesFeedEnabled: true, crossSymbolFeedEnabled: true }),
+        fetchFn,
+      );
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: CROSS_CONTEXT,
+        derivatives: derivativesSnapshot(),
+        tradeFlow: tradeFlowSnapshot(),
+        positioning: positioningSnapshot(),
+      });
+
+      const proposal = await client.propose(input);
+
+      // tradeFlow/positioning were attached on the snapshot but the flags are off — never
+      // rendered, since buildMarketPayload gates strictly on input.snapshot presence and the
+      // client never strips them itself outside the control arm (only the strategy would attach
+      // them in production, gated by its own deps wiring).
+      const payload = JSON.parse(proposal.inputPayload!) as Record<string, unknown>;
+      expect(payload).toHaveProperty('derivatives');
+      expect(payload).toHaveProperty('crossSymbol');
+      expect(payload).toHaveProperty('tradeFlow');
+      expect(payload).toHaveProperty('positioning');
+    });
+  });
+
+  describe('tradeFlow + positioning blocks (2026-07-13)', () => {
+    function holdResponse(): unknown {
+      return toolUseBody({ action: 'hold', confidence: 0.5, rationale: 'r' });
+    }
+
+    it('flag on: tradeFlow guidance sentence, +tf1 promptHash tag, and payload key all present', async () => {
+      const fetchFn = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const fetchFnOff = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const client = new AnthropicAgentClient(buildCfg({ tradeFlowFeedEnabled: true }), fetchFn);
+      const offClient = new AnthropicAgentClient(buildCfg({}), fetchFnOff);
+      const tradeFlow = tradeFlowSnapshot();
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+        tradeFlow,
+      });
+
+      const proposal = await client.propose(input);
+      const offProposal = await offClient.propose(input);
+
+      expect(proposal.promptHash).not.toBe(offProposal.promptHash);
+      const [, init] = fetchFn.mock.calls[0] as [string, RequestInit];
+      const body = JSON.parse(init.body as string) as { system: { text: string }[] };
+      expect(body.system[0]!.text).toContain('tradeFlow block');
+      expect(JSON.parse(proposal.inputPayload!)).toHaveProperty('tradeFlow', {
+        barImbalance: tradeFlow.barImbalance,
+        cvd: tradeFlow.cvd,
+        lookbackBars: tradeFlow.lookbackBars,
+      });
+    });
+
+    it('flag on: positioning guidance sentence, +pos1 promptHash tag, and payload key all present', async () => {
+      const fetchFn = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const fetchFnOff = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const client = new AnthropicAgentClient(buildCfg({ positioningFeedEnabled: true }), fetchFn);
+      const offClient = new AnthropicAgentClient(buildCfg({}), fetchFnOff);
+      const positioning = positioningSnapshot();
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+        positioning,
+      });
+
+      const proposal = await client.propose(input);
+      const offProposal = await offClient.propose(input);
+
+      expect(proposal.promptHash).not.toBe(offProposal.promptHash);
+      const [, init] = fetchFn.mock.calls[0] as [string, RequestInit];
+      const body = JSON.parse(init.body as string) as { system: { text: string }[] };
+      expect(body.system[0]!.text).toContain('positioning block');
+      expect(JSON.parse(proposal.inputPayload!)).toHaveProperty('positioning', {
+        longShortRatio: positioning.longShortRatio,
+        longAccountPct: positioning.longAccountPct,
+        shortAccountPct: positioning.shortAccountPct,
+      });
+    });
+
+    it('an info-context-A/B control-arm decide withholds tradeFlow+positioning even when derivatives/crossSymbol are both off (either new flag alone triggers the shared arm)', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(70 * 60_000)); // (70+37)%100=7 < 30 -> CONTROL
+      const fetchFn = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const client = new AnthropicAgentClient(
+        buildCfg({
+          tradeFlowFeedEnabled: true,
+          positioningFeedEnabled: true,
+          derivativesAbPct: 30,
+        }),
+        fetchFn,
+      );
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+        tradeFlow: tradeFlowSnapshot(),
+        positioning: positioningSnapshot(),
+      });
+
+      const proposal = await client.propose(input);
+
+      const payload = JSON.parse(proposal.inputPayload!) as Record<string, unknown>;
+      expect(payload).not.toHaveProperty('tradeFlow');
+      expect(payload).not.toHaveProperty('positioning');
     });
   });
 });

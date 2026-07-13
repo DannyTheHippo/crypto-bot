@@ -413,6 +413,23 @@ const envSchema = z
       .default('false')
       .transform((v) => v === 'true'),
     SENTIMENT_FEED_POLL_MS: z.coerce.number().int().positive().default(300_000),
+    // Trade-flow/CVD context (taker aggressor imbalance), surfaced to the agentic prompt when fresh.
+    // Off by default — zero behavior change unconfigured. Rides the SAME information-context A/B
+    // control arm as DERIVATIVES_FEED_ENABLED/AGENTIC_CROSS_SYMBOL_ENABLED above.
+    AGENTIC_TRADEFLOW_ENABLED: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
+    AGENTIC_TRADEFLOW_POLL_MS: z.coerce.number().int().positive().default(60_000),
+    // Positioning context (global long/short account ratio), surfaced to the agentic prompt when
+    // fresh. Off by default — zero behavior change unconfigured. Same A/B convention as above.
+    // Liquidation-order flow has no knob here — no public REST source in ccxt 4.5.58 (see
+    // positioning-feed.ts's header comment).
+    AGENTIC_POSITIONING_ENABLED: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
+    AGENTIC_POSITIONING_POLL_MS: z.coerce.number().int().positive().default(300_000),
   })
   .superRefine((data, ctx) => {
     // The prescreen gate (prescreen.ts) needs AGENTIC_WARMUP_BARS bars of history before its
@@ -564,6 +581,10 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     DERIVATIVES_FEED_POLL_MS: derivativesFeedPollMs,
     SENTIMENT_FEED_ENABLED: sentimentFeedEnabled,
     SENTIMENT_FEED_POLL_MS: sentimentFeedPollMs,
+    AGENTIC_TRADEFLOW_ENABLED: agenticTradeFlowEnabled,
+    AGENTIC_TRADEFLOW_POLL_MS: agenticTradeFlowPollMs,
+    AGENTIC_POSITIONING_ENABLED: agenticPositioningEnabled,
+    AGENTIC_POSITIONING_POLL_MS: agenticPositioningPollMs,
   } = parsed.data;
   const bootId = crypto.randomUUID();
   const venues = parseVenues(env);
@@ -670,6 +691,14 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     sentimentFeed: {
       enabled: sentimentFeedEnabled,
       pollIntervalMs: sentimentFeedPollMs,
+    },
+    tradeFlowFeed: {
+      enabled: agenticTradeFlowEnabled,
+      pollIntervalMs: agenticTradeFlowPollMs,
+    },
+    positioningFeed: {
+      enabled: agenticPositioningEnabled,
+      pollIntervalMs: agenticPositioningPollMs,
     },
     ...liveFields,
   };

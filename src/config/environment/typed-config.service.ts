@@ -52,6 +52,14 @@ export class TypedConfigService {
     return this.config.get('sentimentFeed', { infer: true });
   }
 
+  get tradeFlowFeed(): AppConfig['tradeFlowFeed'] {
+    return this.config.get('tradeFlowFeed', { infer: true });
+  }
+
+  get positioningFeed(): AppConfig['positioningFeed'] {
+    return this.config.get('positioningFeed', { infer: true });
+  }
+
   get observability(): AppConfig['observability'] {
     return this.config.get('observability', { infer: true });
   }

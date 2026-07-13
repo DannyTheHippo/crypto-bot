@@ -20,6 +20,8 @@ import type {
 } from '../../../src/ports/agentic-strategy';
 import type { DerivativesSnapshot } from '../../../src/ports/derivatives-feed';
 import type { SentimentSnapshot } from '../../../src/ports/sentiment-feed';
+import type { TradeFlowSnapshot } from '../../../src/ports/trade-flow-feed';
+import type { PositioningSnapshot } from '../../../src/ports/positioning-feed';
 import type {
   CandleEvent,
   TickerEvent,
@@ -154,6 +156,26 @@ function sentimentSnapshot(over: Partial<SentimentSnapshot> = {}): SentimentSnap
   };
 }
 
+function tradeFlowSnapshot(over: Partial<TradeFlowSnapshot> = {}): TradeFlowSnapshot {
+  return {
+    asOf: epochMs(T),
+    barImbalance: 0.4,
+    cvd: 123.5,
+    lookbackBars: 20,
+    ...over,
+  };
+}
+
+function positioningSnapshot(over: Partial<PositioningSnapshot> = {}): PositioningSnapshot {
+  return {
+    asOf: epochMs(T),
+    longShortRatio: 0.8376,
+    longAccountPct: 45.58,
+    shortAccountPct: 54.42,
+    ...over,
+  };
+}
+
 function buildInput(
   opts: {
     candles?: CandleEvent[];
@@ -163,6 +185,8 @@ function buildInput(
     execReports?: ExecReport[];
     derivatives?: DerivativesSnapshot;
     sentiment?: SentimentSnapshot;
+    tradeFlow?: TradeFlowSnapshot;
+    positioning?: PositioningSnapshot;
   } = {},
 ): AgentDecisionInput {
   const snapshot: AgentMarketSnapshot = {
@@ -174,6 +198,8 @@ function buildInput(
     portfolio: { strategyId: SID, positions: new Map(), openOrders: [] },
     ...(opts.derivatives ? { derivatives: opts.derivatives } : {}),
     ...(opts.sentiment ? { sentiment: opts.sentiment } : {}),
+    ...(opts.tradeFlow ? { tradeFlow: opts.tradeFlow } : {}),
+    ...(opts.positioning ? { positioning: opts.positioning } : {}),
   };
   return {
     strategyId: SID,
@@ -348,6 +374,57 @@ describe('buildSystemPrompt', () => {
 
       expect(prompt.toLowerCase()).toContain('funding');
       expect(prompt.toLowerCase()).toContain('sentiment');
+    });
+  });
+
+  describe('tradeFlow block sentence (AGENTIC_TRADEFLOW_ENABLED gate)', () => {
+    it('tradeFlowFeedEnabled off (opts omitted) ⇒ the prompt is BYTE-IDENTICAL to pre-feature output (no mention of tradeFlow/CVD)', () => {
+      const prompt = buildSystemPrompt(fixtureProfile());
+
+      expect(prompt).not.toContain('tradeFlow');
+      expect(prompt.toLowerCase()).not.toContain('cvd');
+    });
+
+    it('tradeFlowFeedEnabled: false is explicitly byte-identical to opts omitted entirely', () => {
+      const withOmitted = buildSystemPrompt(fixtureProfile());
+      const withExplicitFalse = buildSystemPrompt(fixtureProfile(), {
+        tradeFlowFeedEnabled: false,
+      });
+
+      expect(withExplicitFalse).toBe(withOmitted);
+    });
+
+    it('documents the tradeFlow block (barImbalance, cvd) only when tradeFlowFeedEnabled is true', () => {
+      const prompt = buildSystemPrompt(fixtureProfile(), { tradeFlowFeedEnabled: true });
+
+      expect(prompt).toContain('tradeFlow block');
+      expect(prompt).toContain('barImbalance');
+      expect(prompt.toLowerCase()).toContain('cvd');
+    });
+  });
+
+  describe('positioning block sentence (AGENTIC_POSITIONING_ENABLED gate)', () => {
+    it('positioningFeedEnabled off (opts omitted) ⇒ the prompt is BYTE-IDENTICAL to pre-feature output (no mention of positioning/long-short)', () => {
+      const prompt = buildSystemPrompt(fixtureProfile());
+
+      expect(prompt).not.toContain('positioning block');
+      expect(prompt.toLowerCase()).not.toContain('long/short');
+    });
+
+    it('positioningFeedEnabled: false is explicitly byte-identical to opts omitted entirely', () => {
+      const withOmitted = buildSystemPrompt(fixtureProfile());
+      const withExplicitFalse = buildSystemPrompt(fixtureProfile(), {
+        positioningFeedEnabled: false,
+      });
+
+      expect(withExplicitFalse).toBe(withOmitted);
+    });
+
+    it('documents the positioning block (long/short account ratio) only when positioningFeedEnabled is true', () => {
+      const prompt = buildSystemPrompt(fixtureProfile(), { positioningFeedEnabled: true });
+
+      expect(prompt).toContain('positioning block');
+      expect(prompt).toContain('longShortRatio');
     });
   });
 
@@ -841,6 +918,56 @@ describe('buildUserMessage', () => {
 
       expect(withoutDerivativesFlag).toBe(explicitlyNoDerivatives);
       expect(withoutDerivativesFlag).not.toContain('derivatives');
+    });
+  });
+
+  // Trade-flow/CVD context — a REST-polled sibling to the derivatives block above, gated the
+  // identical way (present/absent on the snapshot).
+  describe('tradeFlow block rendering', () => {
+    it('renders barImbalance, cvd, and lookbackBars when a fresh snapshot is attached', () => {
+      const tradeFlow = tradeFlowSnapshot({ barImbalance: -0.25, cvd: -42.5, lookbackBars: 20 });
+      const payload = JSON.parse(buildUserMessage(buildInput({ tradeFlow }))) as {
+        tradeFlow: { barImbalance: number; cvd: number; lookbackBars: number };
+      };
+
+      expect(payload.tradeFlow).toEqual({ barImbalance: -0.25, cvd: -42.5, lookbackBars: 20 });
+    });
+
+    it('omits the tradeFlow key entirely (no empty scaffolding) when no snapshot is available — the flag-off / stale / absent-poll case', () => {
+      const raw = buildUserMessage(buildInput());
+      const payload = JSON.parse(raw) as Record<string, unknown>;
+
+      expect(payload).not.toHaveProperty('tradeFlow');
+      expect(raw).not.toContain('barImbalance');
+    });
+  });
+
+  // Positioning context — a REST-polled sibling to the derivatives block above, gated the identical
+  // way (present/absent on the snapshot).
+  describe('positioning block rendering', () => {
+    it('renders longShortRatio, longAccountPct, and shortAccountPct when a fresh snapshot is attached', () => {
+      const positioning = positioningSnapshot({
+        longShortRatio: 1.2,
+        longAccountPct: 55,
+        shortAccountPct: 45,
+      });
+      const payload = JSON.parse(buildUserMessage(buildInput({ positioning }))) as {
+        positioning: { longShortRatio: number; longAccountPct: number; shortAccountPct: number };
+      };
+
+      expect(payload.positioning).toEqual({
+        longShortRatio: 1.2,
+        longAccountPct: 55,
+        shortAccountPct: 45,
+      });
+    });
+
+    it('omits the positioning key entirely (no empty scaffolding) when no snapshot is available — the flag-off / stale / absent-poll case', () => {
+      const raw = buildUserMessage(buildInput());
+      const payload = JSON.parse(raw) as Record<string, unknown>;
+
+      expect(payload).not.toHaveProperty('positioning');
+      expect(raw).not.toContain('longShortRatio');
     });
   });
 

@@ -154,6 +154,12 @@ export function agenticEnv(config?: TypedConfigService): Record<string, string |
     AGENTIC_DERIVATIVES_AB_PCT: String(agentic.derivativesAbPct),
     AGENTIC_CROSS_SYMBOL_ENABLED: String(agentic.crossSymbolEnabled),
     AGENTIC_CROSS_SYMBOL_LOOKBACK_BARS: String(agentic.crossSymbolLookbackBars),
+    // Trade-flow/CVD + positioning blocks: off by default ⇒ byte-identical legacy prompt. Both ride
+    // the SAME information-context A/B control arm as derivatives/crossSymbol above (see
+    // anthropic-agent-client.ts's infoContextControlArm). Same convention as DERIVATIVES_FEED_ENABLED
+    // above: sourced off the top-level feed config block, not the `agentic` sub-object.
+    AGENTIC_TRADEFLOW_ENABLED: String(config.tradeFlowFeed.enabled),
+    AGENTIC_POSITIONING_ENABLED: String(config.positioningFeed.enabled),
   };
 }
 
@@ -266,6 +272,10 @@ export function selectAgentClient(
       // Cross-symbol relative-strength block: off by default ⇒ byte-identical. Gated together with
       // the derivatives block under the info-context A/B (derivativesAbPct) inside the client.
       crossSymbolFeedEnabled: env['AGENTIC_CROSS_SYMBOL_ENABLED'] === 'true',
+      // Trade-flow/CVD + positioning blocks: off by default ⇒ byte-identical. Gated together with the
+      // derivatives block under the SAME info-context A/B (derivativesAbPct) inside the client.
+      tradeFlowFeedEnabled: env['AGENTIC_TRADEFLOW_ENABLED'] === 'true',
+      positioningFeedEnabled: env['AGENTIC_POSITIONING_ENABLED'] === 'true',
     },
     fetch,
     new Logger('AnthropicAgentClient'),

@@ -164,6 +164,22 @@ never changes for strategy evolution.
   XRP means the tick-aware drift fix missed a case (re-check venueTpTickSize threading); (4) an
   `orphan_cancel` spike = external flattens are racing the lane. Backlog seed: sink cross-signal
   pair atomicity (protective fire vs concurrent TP re-place — self-healing TERMINAL_REJECT today).
+- **Information channels SHIPPED + ENABLED 2026-07-13 (owner session, Push II Phase 3):** two new
+  treatment-arm payload blocks — trade-flow/CVD (taker aggressor imbalance + rolling 20-bar CVD,
+  raw-klines REST poll bypassing ccxt's parseOHLCV which drops taker volume; tag `tf1`) and
+  positioning (market-wide futures global long/short account ratio via the raw
+  `fapiDataGetGlobalLongShortAccountRatio` endpoint; tag `pos1`). Both ride the ONE existing
+  info-context A/B (`AGENTIC_DERIVATIVES_AB_PCT=30`) — **the treatment bundle composition changed
+  2026-07-13** (now derivatives + crossSymbol + tradeFlow + positioning; control strips all four);
+  attribute the info-A/B verdict to the bundle-from-now. Liquidation-order flow deliberately NOT
+  shipped (market-wide feed is WS-only `!forceOrder@arr`; ccxt REST forceOrders is private
+  per-account) — backlog seed if the WS plumbing is ever justified. HTF context verified already
+  present (h1/h4 EMA/RSI base blocks) — nothing added. Cached system prefix untouched
+  (flag-gated sentences only; PROMPT_TEMPLATE_VERSION unchanged). Reviewer APPROVE (risk LOW;
+  1 should-fix applied: sibling-bar recovery tests for both feeds). **WATCH (Phase 3):**
+  treatment-arm `input_payload` rows must show `tradeFlow` + `positioning` blocks (control rows
+  none of the four); the two feeds' warn-log rate stays near zero; decide latency unchanged
+  (feeds are pre-polled, not on the hot path).
 - **E2 decide-model comparison VERDICT 2026-07-13 (owner session, Push II Phase 6; corpus 331
   rows, 50 replayed per candidate, ~$2.5 total of the ≤$20 gate):** **NO FLIP — claude-sonnet-5
   stays decide champion** under the harness's pre-registered criteria.

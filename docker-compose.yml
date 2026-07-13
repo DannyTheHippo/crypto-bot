@@ -187,6 +187,24 @@ services:
       # CryptoPanic auth_token (secret — never commit a real key; free tier).
       #SENTIMENT_FEED_API_KEY=
 
+      # Trade-flow/CVD context (2026-07-13): taker aggressor imbalance + rolling CVD, read off a raw
+      # (unparsed) klines REST poll — ccxt's unified fetchOHLCV/parseOHLCV drops the venue's
+      # taker-buy-base-volume field unconditionally, so this bypasses it (see trade-flow-feed.ts's
+      # header comment). Rides the SAME information-context A/B control arm as the derivatives
+      # block above (AGENTIC_DERIVATIVES_AB_PCT). ENABLED 2026-07-13 (Push II Phase 3) — the
+      # treatment-arm bundle composition changed on this date (tags +tf1+pos1); attribute the info
+      # A/B verdict to the bundle-from-now, not the pre-Phase-3 bundle.
+      AGENTIC_TRADEFLOW_ENABLED: 'true'
+      AGENTIC_TRADEFLOW_POLL_MS: 60000 # REST poll interval (ms); schema default 60000
+
+      # Positioning context (2026-07-13): market-wide futures long/short account ratio. Rides the
+      # same information-context A/B control arm as above; ENABLED 2026-07-13 with tradeFlow (one
+      # bundle-composition change, one date). Liquidation-order flow is NOT shipped — ccxt 4.5.58
+      # exposes no public REST source for it (only a private per-account forceOrders endpoint, or a
+      # WS-only public liquidation stream) — see positioning-feed.ts's header comment.
+      AGENTIC_POSITIONING_ENABLED: 'true'
+      AGENTIC_POSITIONING_POLL_MS: 300000 # REST poll interval (ms); schema default 300000
+
       # ── Risk limits (optional; defaults = the values RiskModule shipped with — override deliberately) ──
       RISK_MAX_ORDER_NOTIONAL: 100000 # quote-notional cap per order
       RISK_MAX_POSITION_PER_SYMBOL: 1000 # base-qty cap per symbol position

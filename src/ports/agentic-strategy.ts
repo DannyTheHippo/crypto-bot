@@ -12,6 +12,8 @@ import type { SubscriptionSpec } from '../domain/types/subscription';
 import type { Price, Qty } from '../domain/types/money';
 import type { DerivativesSnapshot } from './derivatives-feed';
 import type { SentimentSnapshot } from './sentiment-feed';
+import type { TradeFlowSnapshot } from './trade-flow-feed';
+import type { PositioningSnapshot } from './positioning-feed';
 
 // ── StrategyInitContext ───────────────────────────────────────────────────────
 //
@@ -70,6 +72,16 @@ export interface AgentMarketSnapshot {
   // caller/fixture that predates this field stays byte-identical; threaded in by
   // AgenticStrategy.decide() (agentic.strategy.ts), never by the host's own buildSnapshot.
   readonly sentiment?: SentimentSnapshot;
+  // Trade-flow/CVD context (taker aggressor imbalance) — absent unless AGENTIC_TRADEFLOW_ENABLED is
+  // on AND a fresh poll landed (see TradeFlowFeedPort.latest). Optional so every existing caller/
+  // fixture that predates this field stays byte-identical; threaded in by AgenticStrategy.decide(),
+  // never by the host's own buildSnapshot. Gated together with derivatives/crossSymbol/positioning
+  // under the information-context A/B (see anthropic-agent-client.ts).
+  readonly tradeFlow?: TradeFlowSnapshot;
+  // Positioning context (global long/short account ratio) — absent unless AGENTIC_POSITIONING_ENABLED
+  // is on AND a fresh poll landed (see PositioningFeedPort.latest). Same optionality/gating
+  // convention as tradeFlow above.
+  readonly positioning?: PositioningSnapshot;
 }
 
 // Per-strategy position summary the host derives from the live PORTFOLIO_VIEW, handed to the

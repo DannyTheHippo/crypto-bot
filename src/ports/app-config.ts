@@ -208,6 +208,22 @@ export interface AppConfig {
     enabled: boolean;
     pollIntervalMs: number;
   };
+  // Trade-flow/CVD context (taker aggressor imbalance) — feature-flagged OFF by default, same
+  // zero-behavior-change convention as derivativesFeed above. Rides the SAME information-context A/B
+  // control arm as derivativesFeed/crossSymbol (agentic.derivativesAbPct).
+  tradeFlowFeed: {
+    enabled: boolean;
+    pollIntervalMs: number;
+  };
+  // Positioning context (global long/short account ratio) — feature-flagged OFF by default, same
+  // zero-behavior-change convention as derivativesFeed above. Rides the SAME information-context A/B
+  // control arm as derivativesFeed/crossSymbol (agentic.derivativesAbPct). Liquidation-order flow is
+  // NOT part of this config: no public REST source exists in ccxt 4.5.58 (see
+  // positioning-feed.ts's header comment).
+  positioningFeed: {
+    enabled: boolean;
+    pollIntervalMs: number;
+  };
   // Strategy-lane knobs (symbol/interval/active lane selection) read via ConfigService.
   strategy: {
     // Deprecated single-symbol knob; still honored as the fallback when TRADING_SYMBOLS is unset.

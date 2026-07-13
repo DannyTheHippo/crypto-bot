@@ -16,9 +16,11 @@ import {
   CROSS_SYMBOL_TEMPLATE_VERSION,
   DECISION_TOOL,
   DERIVATIVES_TEMPLATE_VERSION,
+  POSITIONING_TEMPLATE_VERSION,
   SENTIMENT_TEMPLATE_VERSION,
   SHORTS_DECISION_TOOL,
   SHORTS_TEMPLATE_VERSION,
+  TRADEFLOW_TEMPLATE_VERSION,
   PLAN_BOUNDS,
   PLAN_TOOL,
   PLAN_TEMPLATE_VERSION,
@@ -151,6 +153,14 @@ export interface AnthropicAgentClientConfig {
   // derivatives block under the information-context A/B control arm (see propose()). Absent/false ⇒
   // byte-identical legacy prompt/payload.
   readonly crossSymbolFeedEnabled?: boolean;
+  // 2026-07-13: documents + renders the tradeFlow (CVD) block. Gated together with the derivatives
+  // block under the SAME information-context A/B control arm as crossSymbolFeedEnabled above.
+  // Absent/false ⇒ byte-identical legacy prompt/payload.
+  readonly tradeFlowFeedEnabled?: boolean;
+  // 2026-07-13: documents + renders the positioning (global long/short ratio) block. Gated together
+  // with the derivatives block under the same information-context A/B control arm. Absent/false ⇒
+  // byte-identical legacy prompt/payload.
+  readonly positioningFeedEnabled?: boolean;
   // B3 shorts capability: widens the decision tool/schema to accept 'short' and maps it to
   // ENTER_SHORT/EXIT_SHORT (see propose()'s mapping table). LEGACY decision path ONLY — mutually
   // exclusive with planMode (the plan schema is long-oriented; shorts-in-plan-mode belongs to the
@@ -303,34 +313,43 @@ export class AnthropicAgentClient implements AgentClientPort {
     // land on the same minute as the playbook router's (the two A/B mechanisms stay decorrelated).
     // Only ever fires when the feed is actually on: with the feed off there is nothing to withhold,
     // so derivativesAbPct is a no-op and the pct=0 default stays byte-identical to pre-A/B behavior.
-    // Information-context A/B (2026-07-12): one control arm gates the whole EXTRA-INFORMATION bundle
-    // — the derivatives block AND the cross-symbol relative-strength block move together, so the two
-    // live arms are a clean "baseline (price only) vs baseline + extra information" contrast rather
-    // than a 4-way split that would quarter the already-thin per-variant trade count. Fires when the
-    // A/B pct > 0 AND at least one info feed is on (nothing to withhold otherwise). Bucketed like the
-    // playbook router (app.module.ts) — `floor(Date.now()/60_000) % 100 < pct` — but +37 before the
-    // modulo so its minute-boundary transitions never coincide with the playbook router's (the two
-    // A/B mechanisms stay decorrelated). Reuses the deployed AGENTIC_DERIVATIVES_AB_PCT knob.
+    // Information-context A/B (2026-07-12; widened 2026-07-13 to also cover tradeFlow/positioning):
+    // one control arm gates the whole EXTRA-INFORMATION bundle — derivatives, cross-symbol relative
+    // strength, trade-flow/CVD, and positioning all move together, so the two live arms stay a clean
+    // "baseline (price only) vs baseline + extra information" contrast rather than an N-way split
+    // that would fragment the already-thin per-variant trade count. Fires when the A/B pct > 0 AND at
+    // least one info feed is on (nothing to withhold otherwise). Bucketed like the playbook router
+    // (app.module.ts) — `floor(Date.now()/60_000) % 100 < pct` — but +37 before the modulo so its
+    // minute-boundary transitions never coincide with the playbook router's (the two A/B mechanisms
+    // stay decorrelated). Reuses the deployed AGENTIC_DERIVATIVES_AB_PCT knob (unrenamed: it is the
+    // one shared info-context A/B percentage, not derivatives-specific).
     const infoContextAbPct = this.cfg.derivativesAbPct ?? 0;
     const anyInfoFeed =
-      (this.cfg.derivativesFeedEnabled ?? false) || (this.cfg.crossSymbolFeedEnabled ?? false);
+      (this.cfg.derivativesFeedEnabled ?? false) ||
+      (this.cfg.crossSymbolFeedEnabled ?? false) ||
+      (this.cfg.tradeFlowFeedEnabled ?? false) ||
+      (this.cfg.positioningFeedEnabled ?? false);
     const infoContextControlArm =
       anyInfoFeed &&
       infoContextAbPct > 0 &&
       Math.floor(Date.now() / 60_000 + 37) % 100 < infoContextAbPct;
     // The invariant this whole mechanism exists to hold: for each block, its system sentence, its
     // promptHash tag, and its payload key all move TOGETHER per arm — a single boolean gates all
-    // three rather than independently-computed conditions that could drift apart.
+    // four rather than independently-computed conditions that could drift apart.
     const effectiveDerivativesEnabled =
       (this.cfg.derivativesFeedEnabled ?? false) && !infoContextControlArm;
     const effectiveCrossSymbolEnabled =
       (this.cfg.crossSymbolFeedEnabled ?? false) && !infoContextControlArm;
+    const effectiveTradeFlowEnabled =
+      (this.cfg.tradeFlowFeedEnabled ?? false) && !infoContextControlArm;
+    const effectivePositioningEnabled =
+      (this.cfg.positioningFeedEnabled ?? false) && !infoContextControlArm;
     if (infoContextControlArm) {
       // No recorder seam reaches this client (MetricsWrappingAgentClient wraps AgentClientPort at the
       // composition root, outside AnthropicAgentClientConfig) — one structured log line per
       // control-arm decide is the observability surface until/unless that seam is threaded through.
       this.logger.warn(
-        `agentic info-context ab: control arm (derivatives+crossSymbol withheld) — symbol=${symbol} pct=${infoContextAbPct}`,
+        `agentic info-context ab: control arm (derivatives+crossSymbol+tradeFlow+positioning withheld) — symbol=${symbol} pct=${infoContextAbPct}`,
       );
     }
     // v5: constraints no longer render into the system prompt (they ride the payload below), so the
@@ -347,17 +366,25 @@ export class AnthropicAgentClient implements AgentClientPort {
       sentimentFeedEnabled: this.cfg.sentimentFeedEnabled ?? false,
       shortsEnabled: this.cfg.shortsEnabled ?? false,
       crossSymbolFeedEnabled: effectiveCrossSymbolEnabled,
+      tradeFlowFeedEnabled: effectiveTradeFlowEnabled,
+      positioningFeedEnabled: effectivePositioningEnabled,
     });
-    // Control arm: strip BOTH the derivatives snapshot (agentic.strategy.ts's withDerivatives) and
-    // the cross-symbol ranking (context.crossSymbol) the strategy attached, before building the
-    // payload — buildMarketPayload's own omit-when-absent gates then leave both blocks out, the same
-    // path a feed-off/stale-poll deployment already takes, reused rather than duplicated. Every other
-    // use of `input` in this method (signals, eventTime, refPrice, ...) stays on the ORIGINAL input —
-    // only payload construction sees the stripped copy.
+    // Control arm: strip the derivatives/tradeFlow/positioning snapshots (agentic.strategy.ts's
+    // withDerivatives/withTradeFlow/withPositioning) and the cross-symbol ranking (context.crossSymbol)
+    // the strategy attached, before building the payload — buildMarketPayload's own omit-when-absent
+    // gates then leave all four blocks out, the same path a feed-off/stale-poll deployment already
+    // takes, reused rather than duplicated. Every other use of `input` in this method (signals,
+    // eventTime, refPrice, ...) stays on the ORIGINAL input — only payload construction sees the
+    // stripped copy.
     const payloadInput = infoContextControlArm
       ? {
           ...input,
-          snapshot: { ...input.snapshot, derivatives: undefined },
+          snapshot: {
+            ...input.snapshot,
+            derivatives: undefined,
+            tradeFlow: undefined,
+            positioning: undefined,
+          },
           ...(input.context ? { context: { ...input.context, crossSymbol: undefined } } : {}),
         }
       : input;
@@ -393,13 +420,15 @@ export class AnthropicAgentClient implements AgentClientPort {
     const baseTemplateVersion = this.cfg.planMode ? PLAN_TEMPLATE_VERSION : PROMPT_TEMPLATE_VERSION;
     // Flag-ON appends the corresponding system-prompt sentence, so it is a distinct template for
     // attribution purposes (mirrors plan mode's own tag); flag-OFF hashes are byte-identical. All
-    // flags stack in a fixed order (`+d1+s1+x1`) so a multi-flag hash is deterministic regardless of
-    // which flag flipped first.
+    // flags stack in a fixed order (`+d1+s1+x1+xs1+tf1+pos1`) so a multi-flag hash is deterministic
+    // regardless of which flag flipped first.
     const feedTags = [
       ...(effectiveDerivativesEnabled ? [DERIVATIVES_TEMPLATE_VERSION] : []),
       ...(this.cfg.sentimentFeedEnabled ? [SENTIMENT_TEMPLATE_VERSION] : []),
       ...(this.cfg.shortsEnabled ? [SHORTS_TEMPLATE_VERSION] : []),
       ...(effectiveCrossSymbolEnabled ? [CROSS_SYMBOL_TEMPLATE_VERSION] : []),
+      ...(effectiveTradeFlowEnabled ? [TRADEFLOW_TEMPLATE_VERSION] : []),
+      ...(effectivePositioningEnabled ? [POSITIONING_TEMPLATE_VERSION] : []),
     ];
     const promptHash = computePromptHash({
       templateVersion:

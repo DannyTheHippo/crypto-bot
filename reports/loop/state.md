@@ -202,6 +202,26 @@ never changes for strategy evolution.
   warn-storm = budget sizing needs the sub-budget follow-up. Backlog seed: outer `run failed`
   catch in runReflection records no outcome and does not roll back (pre-existing, hit only by
   malformed journal data — near-unreachable with Postgres NUMERIC closes).
+- **PUSH II CLOSE-OUT 2026-07-13 (owner session, plan `humming-sprouting-crab`): 7 of 8 phases
+  shipped, 5 deployed live, all committed local with per-phase adversarial review.** Live on this
+  stack: LIMIT_MAKER entries + 0.05 sizing (Phase 1), venue-resting TP (Phase 2), tradeFlow +
+  positioning treatment blocks (Phase 3), mint-time expectancy backtest (Phase 4), portfolio
+  consult (Phase 5). Built flag-off awaiting their own deployment decisions: perp-demo venue +
+  plan-mode shorts (Phase 8). Studies: model program (Phase 6 — no flip; adaptive-thinking A/B is
+  the seeded follow-up) and universe study (Phase 7 — flip deferred to post-soak). **Loop-domain
+  pre-auth (owner-approved plan):** after a clean ≥2-day portfolio-consult soak (WATCH above
+  green), the loop may execute the 5→8 expansion with ZEC/AAVE/NEAR per
+  `reports/loop/universe-study-2026-07-13.md` (add the three DEFAULT_FILTERS rows from the report,
+  re-derive gross exposure — 8 × 0.05 ⇒ consider 0.04, record why — APPEND to TRADING_SYMBOLS,
+  never reorder). **New backlog seeds from this program:** PORTFOLIO_SHORTS_TOOL (direction field
+  for batched shorts — until then boot refuses the combination); AGENTIC_THINKING_AB_PCT live
+  experiment AFTER the info-context A/B resolves; liquidation-order flow via WS `!forceOrder@arr`;
+  spot OCO exits (needs demo `orderList/oco` support proof); trailing-stop plan field (wait for
+  venue-TP capture data); Thompson multi-candidate A/B routing; adaptive consult cadence; weekly
+  vol-ranked symbol rotation; signal-sink cross-signal pair atomicity (protective fire vs
+  concurrent TP re-place — self-healing today); runReflection outer 'run failed' catch records no
+  outcome + no rollback (near-unreachable, malformed journal data only); perp-deployment
+  leverage/margin-mode pinning (deploy checklist above).
 - **Portfolio consult ENABLED 2026-07-13 (owner session, Push II Phase 5 complete):** the lane's
   up-to-5 per-bar decide calls now coalesce into ONE `submit_portfolio` Anthropic call
   (`AGENTIC_PORTFOLIO_CONSULT=true`, window 3000ms; `pf1` promptHash tag; `consult_id` — migration

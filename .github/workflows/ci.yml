@@ -75,6 +75,13 @@ jobs:
       - name: Test (unit + livegate)
         run: pnpm test
 
+      # Backlog #30: the $0 offline replay harness (Stage-2 candidate scoring) sat RED ~1 day
+      # unnoticed because nothing ran test/eval in CI (2026-07-08, fixed 1f90ff6). No env needed:
+      # the job already sets NODE_ENV=test/CI=true and every networked eval spec self-skips
+      # without EVAL_LIVE/DATABASE_URL — this step runs exactly the offline subset.
+      - name: Agentic offline eval harness
+        run: pnpm eval:agentic
+
       - name: Test paper (passWithNoTests)
         run: pnpm test:paper
 

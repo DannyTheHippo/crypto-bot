@@ -195,8 +195,9 @@ services:
       # call via submit_portfolio (pf1 promptHash tag; consult_id groups the batch's journal rows).
       # ENABLED 2026-07-13 after the attribution plumbing (migration 0011) + enable-gate opus review
       # (must-fix applied: post-200 schema failures soft-hold the batch, never a correlated strike).
-      # Incompatible with AGENTIC_SHORTS_ENABLED (boot refuses — the strict portfolio tool has no
-      # plan.direction). Rollback = flip to 'false' (byte-identical legacy chain by construction).
+      # Shorts+consult is supported since backlog #41 via PORTFOLIO_SHORTS_TOOL (plan.direction per
+      # element, pf2 tag) — PLAN MODE required; boot still refuses legacy non-plan shorts with
+      # consult. Rollback = flip to 'false' (byte-identical legacy chain by construction).
       AGENTIC_PORTFOLIO_CONSULT: 'true'
       AGENTIC_PORTFOLIO_WINDOW_MS: 3000
 
@@ -299,6 +300,10 @@ services:
       # Without this mount the config's rule_files glob silently matches nothing and every alert
       # is dead (discovered 2026-07-07: /api/v1/rules returned zero groups since first boot).
       - ./observability/alerts.rules.yml:/etc/prometheus/alerts.rules.yml:ro
+      # Backlog #22: named TSDB volume. The image's anonymous VOLUME /prometheus survived plain
+      # recreates but not `down -v`/--renew-anon-volumes; history was migrated from the anonymous
+      # volume at the 2026-07-13 switchover (docker run cp between volumes, see LOG.md).
+      - prometheus_data:/prometheus
     command:
       - --config.file=/etc/prometheus/prometheus.yml
 
@@ -326,3 +331,4 @@ services:
 volumes:
   postgres_data:
   grafana_data:
+  prometheus_data:

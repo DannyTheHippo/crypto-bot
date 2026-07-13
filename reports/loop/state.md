@@ -159,14 +159,16 @@ and the per-phase commits. Current per-phase state:
 - **Phase 8 — perp-demo venue + plan-mode shorts (`34e4728`), BUILT flag-off, NOT deployed.**
   Everything commented-out/false in compose — the spot deployment is byte-identical; **enabling
   is a SECOND deployment (own env), a separate decision.** Constructor guards: shorts require
-  planMode AND a perp venue (spot+shorts throws); **boot refuses shorts+portfolio-consult** (the
-  strict portfolio tool has no direction field) → backlog #41 is the unblock. Two adversarial
-  review rounds, all findings fixed + test-pinned (incl. the pre-existing protective-exit
-  BUY-block rule that would have frozen a SHORT's stop; list: LOG.md). Perp DEFAULT_FILTERS rows
-  are live fapi exchangeInfo figures fetched 2026-07-13. **DEPLOY CHECKLIST (before the perp
-  deployment ever arms):** pin venue-side leverage=1 + isolated margin mode explicitly at adapter
-  init (account defaults NOT trusted), re-run the arm preconditions, start with ONE symbol
-  (+ backlog #51).
+  planMode AND a perp venue (spot+shorts throws). **#41 SHIPPED 2026-07-13 build-out
+  (`eff1d95`): the shorts+consult blocker is CLEARED** — PORTFOLIO_SHORTS_TOOL (pf2) carries
+  plan.direction per element; boot now refuses only the legacy non-plan shorts + consult
+  combination. Two adversarial review rounds, all findings fixed + test-pinned (incl. the
+  pre-existing protective-exit BUY-block rule that would have frozen a SHORT's stop; list:
+  LOG.md). Perp DEFAULT_FILTERS rows are live fapi exchangeInfo figures fetched 2026-07-13.
+  **DEPLOY CHECKLIST (before the perp deployment ever arms):** the venue-side isolated+leverage
+  pin now runs fail-closed at boot automatically (#51, `3252c1e` — needs an INTEGER
+  `PERP_LEVERAGE_CAP`; a fractional cap kills the boot by design), re-run the arm preconditions,
+  start with ONE symbol.
 
 ## Current stage
 
@@ -230,6 +232,13 @@ first check**). Gates full green at post-land HEAD (build/lint/typecheck/**1904 
 (plan approved same session — Pass 3 precedent). Empty-pass counter 0 (day shipped via Passes
 21/22 + owner session; this pass ships report+watch-verdicts only). Full detail in LOG.md.
 
+**Since Pass 23 (owner-directed, not passes):** the state.md deep clean (`66c3fac`) and the
+backlog build-out — 9 rows shipped across 7 commits (`e909664`..`dafe9aa`), #25 APPLIED, deployed
+boot `e44b6497` 19:34Z — both in LOG.md 2026-07-13. **The next scheduled pass's first checks:**
+Phase-5 consult watch on the new boot, the first STREAMED reflection (#32), venue-TP first fill,
+and the duty-cycle stat reading low until 24h of fresh prometheus samples (named-volume
+migration, history not carried).
+
 **Passes 2–22 and the owner-session summaries:** `reports/loop/LOG.md` (dated entries; state.md
 stopped duplicating them 2026-07-13).
 
@@ -237,32 +246,25 @@ stopped duplicating them 2026-07-13).
 
 Conventions: IDs are stable and never renumbered (LOG.md references them). **Re-verify a backlog
 item against current code before implementing it** (Pass 2 precedent — inherited items go stale).
-Open items first; the closed ledger keeps one line per retired ID. Current top of the queue:
-**#41** (unblocks Phase-8 enablement), **#25** (last live-arming-prep item), **#42** (queued
-behind the info-context A/B verdict).
+Open items first; the closed ledger keeps one line per retired ID. After the 2026-07-13
+owner-directed build-out (9 rows shipped — LOG.md entry of that date) every remaining open row is
+condition- or data-gated: **#42-ENABLE** fires when the info-context A/B resolves; **#44/#45**
+wait on venue-TP capture data; **#18/#46/#47/#48** wait on their stated data/sequencing gates;
+**#43/#49/#52** need a justification/design a pass should only pick up with new evidence.
 
 ### Open
 
 | # | Item | Stage | Effort | Status / next check |
 | --- | --- | --- | --- | --- |
-| 18 | Per-hour/session expectancy gating (last residual of the W4.4 seeds — fee-tier/BNB dropped: demo fees flat 10bps, § Standing verdicts; trade-flow widening shipped Phase 3) | 2+ | M | seed — needs design + data |
-| 22 | Named prometheus TSDB volume (`prometheus_data:/prometheus`) — verified 2026-07-13 still absent; anon volume survives recreates but not `down -v` | 1 | S | open, low priority; one compose line + one recreate |
-| 24 | Split `reconciliation_mismatch_total` by mismatch class (foreign / adopted-terminal / sweep-failure / would-halt) so the alert can page critical again — verified 2026-07-13 still class-blind (`reconciliation.service.ts:51`) | 1 | S | open — OWNER/OMS territory; urgency reduced (current boot: 0 foreign mismatches) but split still right for halt-class visibility |
-| 25 | Resolve the 2 remaining unresolved-terminal fixture rows (live-mode ACKED + paper NEW, 2026-07-10 wipe remediation) that keep `hasUnresolvedOrders()` true outside testnet — the 57 SUBMIT_UNKNOWN zombies are healed history (`b00c886`+W7; testnet unresolved = 0, verified Pass 23) | 1 | M | open — LAST live-arming-prep item; vehicle `scripts/resolve-stale-orders.mjs`, dry-run-first; touches OMS rows ⇒ reviewer-gated |
-| 30 | CI step for `pnpm eval:agentic` non-live specs — verified 2026-07-13 `ci.yml` still has no eval step; exact one-line diff in LOG.md Pass 11; interim §2.6 every-pass probe holds | 1 | S | open — OWNER territory (ci.yml, no-push rule) |
-| 32 | Stream the reflection LLM call (SSE) — removes the wall-clock timeout ceiling behind `AGENTIC_REFLECTION_TIMEOUT_MS`; verified 2026-07-13 still a single non-streaming POST | 2 | M | open — agentic-lane, autonomous |
-| 40 | Stamp `orders.submitted_at`/`acked_at`/`first_fill_at` at their OMS state-gate transitions (+ best-effort backfill from `order_events`) — NULL on all rows today; `updateState` accepts them, no caller passes, nothing reads them (`terminal_at` IS stamped, W7). Analytics/latency-audit gap, not a trading defect | 2 | S | open — OWNER/OMS territory (found Pass 23) |
-| 41 | PORTFOLIO_SHORTS_TOOL — direction field for batched shorts. **Load-bearing:** boot refuses `AGENTIC_SHORTS_ENABLED` + `AGENTIC_PORTFOLIO_CONSULT` (strict portfolio tool has no direction field), so Phase-8 enablement is blocked on this while consult is ON | 2 | M | open — agentic-lane (Push II seed) |
-| 42 | `AGENTIC_THINKING_AB_PCT` live adaptive-thinking A/B arm (low/medium effort) — Phase-6 study: +12bps proxy, 4× propose, 1.9× cost, no-flip but strongest lever surfaced | 2 | M | QUEUED behind the info-context A/B verdict — one measured channel at a time |
+| 18 | Per-hour/session expectancy gating (last residual of the W4.4 seeds — fee-tier/BNB dropped: demo fees flat 10bps, § Standing verdicts; trade-flow widening shipped Phase 3) | 2+ | M | seed — needs design + data (2026-07-13 build-out skip: 10 post-epoch trips ⇒ per-hour buckets are statistically empty) |
+| 42 | ENABLE `AGENTIC_THINKING_AB_PCT` (mechanism SHIPPED `eff1d95` 2026-07-13: `+th1` tag, retry-identical threading, default 0 — byte-identical) — Phase-6 study: +12bps proxy, 4× propose, 1.9× cost | 2 | S | QUEUED behind the info-context A/B verdict — one measured channel at a time; enabling = one env flip |
 | 43 | Liquidation-order flow feed — market-wide is WS-only `!forceOrder@arr` (REST forceOrders is private per-account); needs WS plumbing justification | 2+ | L | seed (Push II Phase 3) |
-| 44 | Spot OCO exits (fuse executor stop + venue TP into one venue-side pair) — needs demo `orderList/oco` support proof; ccxt 4.5.58 has no unified spot OCO | 2 | M | seed (Push II Phase 2) |
+| 44 | Spot OCO exits (fuse executor stop + venue TP into one venue-side pair) — needs demo `orderList/oco` support proof; ccxt 4.5.58 has no unified spot OCO | 2 | M | seed (Push II Phase 2); do not touch before the venue-TP watch resolves with capture data |
 | 45 | Trailing-stop plan field — wait for venue-TP capture data (Phase-2 WATCH counters) before designing | 2 | M | seed (Push II) |
-| 46 | Thompson multi-candidate A/B routing (replaces the newest-candidate-only slot) | 2+ | M | seed (Push II) |
-| 47 | Adaptive consult cadence (vary the 15m consult rhythm by regime) | 2 | M | seed (Push II) |
-| 48 | Weekly vol-ranked symbol rotation (universe-study follow-on) | 2 | M | seed (Push II Phase 7) |
-| 49 | Signal-sink cross-signal pair atomicity — protective fire vs concurrent TP re-place (self-healing TERMINAL_REJECT today). Exceeds the signal-sink scope exception (CANCEL_OPEN routing only) | 2 | M | seed — OWNER/reviewer-gated (Push II Phase 2) |
-| 50 | `runReflection` outer 'run failed' catch records no outcome and does not roll back the trigger — near-unreachable (malformed journal data only) | 2 | S | seed (Push II Phase 4) |
-| 51 | Perp deploy pinning — venue-side leverage=1 + isolated margin at adapter init, arm-precondition re-run, one-symbol start (the Phase-8 deploy checklist) | 2 | S | travels with #41/Phase-8 enablement — OWNER-scoped |
+| 46 | Thompson multi-candidate A/B routing (replaces the newest-candidate-only slot) | 2+ | M | seed (Push II); blocked while the v2→v3 candidate cycle is mid-flight |
+| 47 | Adaptive consult cadence (vary the 15m consult rhythm by regime) | 2 | M | seed (Push II); needs the Phase-5 consult baseline first |
+| 48 | Weekly vol-ranked symbol rotation (universe-study follow-on) | 2 | M | seed (Push II Phase 7); sequenced behind the 5→8 expansion; needs a rotation-vs-promotion-walk attribution design |
+| 49 | Signal-sink cross-signal pair atomicity — protective fire vs concurrent TP re-place (self-healing TERMINAL_REJECT today). Exceeds the signal-sink scope exception (CANCEL_OPEN routing only) | 2 | M | seed — OWNER/reviewer-gated (Push II Phase 2); revisit with observed `tp_race_hold`/`orphan_cancel` data |
 | 52 | W12 operational event logging (structured ops events; 2026-07-08 follow-up, deferred since) | 1–2 | M | seed — needs design |
 
 ### Closed ledger (provenance one-liners; detail in LOG.md by date)
@@ -307,6 +309,29 @@ behind the info-context A/B verdict).
 - #38 — plan-mode restart defect: DONE 2026-07-12 Pass 20 (`6e95542`), re-arm live-verified 2/2.
 - #39 — candidate abstention deadlock: DONE 2026-07-13 (`b9dddc2`) — mint-time entry-rate floor +
   `AGENTIC_ABSTAIN_LAPSE_DECIDES=15`; WATCH lives in the Stage-2 ladder entry above.
+- **2026-07-13 owner-directed build-out (LOG.md entry of that date; reviewer-gated, full gates
+  1,940 unit / 41 livegate / 14+1 paper / 15 eval / 51 db):**
+- #22 — prometheus named TSDB volume: DONE (`dafe9aa`); history NOT migrated (docker run
+  permission-denied, boundary honored) — old anonymous volume `f8878188f136…` preserved for an
+  optional owner-side copy; duty-cycle stats read low until 24h of fresh samples.
+- #24 — mismatch class split: DONE (`e909664`) — 10-class taxonomy on the counter; alert excludes
+  the benign classes; HALT semantics unchanged.
+- #25 — stale fixture rows: DONE + **APPLIED** (`76d68a2`) — both wipe fixtures terminalized with
+  audit events; post-check 0 non-testnet unresolved rows ⇒ `hasUnresolvedOrders()` false in every
+  mode — live-arming-prep blocker class CLEARED.
+- #30 — CI eval step: DONE (`dafe9aa`) — remote CI effect verifiable on the next push.
+- #32 — reflection SSE: DONE (`7de8ea0`) — idle-gap + 3× cap timers; #31 retry echo pinned
+  byte-equal; WATCH: the next live reflection is the first streamed one.
+- #40 — order lifecycle timestamps: DONE (`e02217d`) — chokepoint stamps, COALESCE
+  first-write-wins pinned on real Postgres; no historical backfill by design.
+- #41 — PORTFOLIO_SHORTS_TOOL: DONE (`eff1d95`) — pf2 wire tool; **Phase-8's shorts+consult boot
+  blocker cleared** (legacy non-plan shorts + consult still refuses); enablement remains its own
+  deployment.
+- #50 — runReflection outer catch: DONE (`7de8ea0`) — `run_failed` outcome + once-only rollback;
+  settled outcomes never un-consumed.
+- #51 — perp pin: DONE dormant (`3252c1e`) — fail-closed isolated+leverage pin on the perp boot
+  path; **the Phase-8 deployment needs an INTEGER `PERP_LEVERAGE_CAP`** (fractional kills the
+  boot by design); real-venue verification at that deployment's ceremony.
 
 ## Flagged for human review (open)
 
@@ -321,7 +346,8 @@ behind the info-context A/B verdict).
   hygiene only.
 - **FYI — `ReconciliationMismatch` pages at warning** (interim since Pass 8 `a25389a`; restore
   critical when #24's class split lands).
-- **CI gap:** backlog #30 (eval specs in ci.yml) — owner-territory; exact diff in LOG.md Pass 11.
+- **CI gap:** RESOLVED 2026-07-13 build-out (`dafe9aa`, #30 shipped) — the remote CI effect is
+  verifiable only on the next push to the remote (no-push rule); keep the §2.6 every-pass probe.
 
 ### Standing verdicts (binding evidence — passes must NOT re-derive these)
 

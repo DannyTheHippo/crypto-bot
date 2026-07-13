@@ -80,6 +80,11 @@ export interface AppConfig {
     // so the flag's effect becomes measurable via promptHash grouping. 0 disables (default; also a
     // no-op whenever derivativesFeedEnabled is off — nothing to withhold).
     derivativesAbPct: number;
+    // Thinking-on-decide A/B (backlog #42, mechanism only): percent (0-50) of decides/batches whose
+    // request carries thinking:{type:'adaptive'} instead of the hard 'disabled'; arm recoverable
+    // from promptHash via the '+th1' tag. 0 disables (default) — enabling is queued behind the
+    // info-context A/B verdict (one measured channel at a time).
+    thinkingAbPct: number;
     // Cross-symbol relative-strength context (2026-07-12): when true, the model sees where its symbol
     // ranks by trailing return within the basket (cross-symbol-context.ts). Gated together with the
     // derivatives block under the information-context A/B (derivativesAbPct).

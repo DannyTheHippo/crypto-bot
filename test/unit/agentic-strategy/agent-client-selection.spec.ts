@@ -105,7 +105,36 @@ describe('selectAgentClient', () => {
     expect(client).not.toBeInstanceOf(BudgetedAgentClient);
   });
 
-  it('refuses AGENTIC_PORTFOLIO_CONSULT + AGENTIC_SHORTS_ENABLED at construction (review must-fix: the strict submit_portfolio tool cannot emit plan.direction, so every batched plan entry would silently hold)', () => {
+  it('AGENTIC_PORTFOLIO_CONSULT + AGENTIC_SHORTS_ENABLED constructs a BatchingAgentClient (#41: the shorts-capable submit_portfolio tool carries plan.direction, so the former boot refusal is gone)', () => {
+    const budget = createAgentLlmBudget({});
+    const client = selectAgentClient(
+      {
+        ANTHROPIC_API_KEY: 'k',
+        AGENTIC_PORTFOLIO_CONSULT: 'true',
+        AGENTIC_SHORTS_ENABLED: 'true',
+        AGENTIC_PLAN_MODE: 'true',
+        AGENTIC_PERP_VENUE: 'true',
+      },
+      budget,
+    );
+    expect(client).toBeInstanceOf(BatchingAgentClient);
+  });
+
+  it('legacy (non-plan) shorts with portfolio consult refuses at boot — the batched tool cannot express a short without plan.direction (reviewer S1)', () => {
+    const budget = createAgentLlmBudget({});
+    expect(() =>
+      selectAgentClient(
+        {
+          ANTHROPIC_API_KEY: 'k',
+          AGENTIC_PORTFOLIO_CONSULT: 'true',
+          AGENTIC_SHORTS_ENABLED: 'true',
+        },
+        budget,
+      ),
+    ).toThrow(/requires AGENTIC_PLAN_MODE/);
+  });
+
+  it('shorts without a perp-capable venue still refuses construction under portfolio consult (the constructor guard binds before batching wraps)', () => {
     const budget = createAgentLlmBudget({});
     expect(() =>
       selectAgentClient(
@@ -114,11 +143,10 @@ describe('selectAgentClient', () => {
           AGENTIC_PORTFOLIO_CONSULT: 'true',
           AGENTIC_SHORTS_ENABLED: 'true',
           AGENTIC_PLAN_MODE: 'true',
-          AGENTIC_PERP_VENUE: 'true',
         },
         budget,
       ),
-    ).toThrow(/cannot be combined/);
+    ).toThrow(/perp/i);
   });
 });
 
@@ -173,6 +201,7 @@ describe('agenticEnv', () => {
       entryTtlBars: 2,
       playbookAbPct: 0,
       derivativesAbPct: 30,
+      thinkingAbPct: 15,
       crossSymbolEnabled: false,
       crossSymbolLookbackBars: 20,
       portfolioConsultEnabled: true,
@@ -253,6 +282,7 @@ describe('agenticEnv', () => {
       AGENTIC_AUTO_PROMOTE_MIN_TRADES: '9',
       DERIVATIVES_FEED_ENABLED: 'true',
       AGENTIC_DERIVATIVES_AB_PCT: '30',
+      AGENTIC_THINKING_AB_PCT: '15',
       AGENTIC_TRADEFLOW_ENABLED: 'true',
       AGENTIC_POSITIONING_ENABLED: 'true',
       AGENTIC_PORTFOLIO_CONSULT: 'true',

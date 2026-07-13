@@ -159,6 +159,7 @@ export function agenticEnv(config?: TypedConfigService): Record<string, string |
     // schema's 0-50 bound can never be bypassed here — same convention as PROMOTION_EVIDENCE_EPOCH
     // above.
     AGENTIC_DERIVATIVES_AB_PCT: String(agentic.derivativesAbPct),
+    AGENTIC_THINKING_AB_PCT: String(agentic.thinkingAbPct),
     AGENTIC_CROSS_SYMBOL_ENABLED: String(agentic.crossSymbolEnabled),
     AGENTIC_CROSS_SYMBOL_LOOKBACK_BARS: String(agentic.crossSymbolLookbackBars),
     // Portfolio-consult batching: sourced off the validated config fields (never raw process.env),
@@ -295,6 +296,7 @@ export function selectAgentClient(
       derivativesFeedEnabled: env['DERIVATIVES_FEED_ENABLED'] === 'true',
       // Derivatives-block A/B: 0 by default ⇒ byte-identical (no control arm ever fires).
       derivativesAbPct: intEnv(env['AGENTIC_DERIVATIVES_AB_PCT'], 0),
+      thinkingAbPct: intEnv(env['AGENTIC_THINKING_AB_PCT'], 0),
       // C4: off by default ⇒ byte-identical legacy prompt (no sentiment sentence).
       sentimentFeedEnabled: env['SENTIMENT_FEED_ENABLED'] === 'true',
       // Cross-symbol relative-strength block: off by default ⇒ byte-identical. Gated together with
@@ -311,16 +313,19 @@ export function selectAgentClient(
   );
   const model = env['AGENTIC_MODEL'] ?? DEFAULT_MODEL;
   if (env['AGENTIC_PORTFOLIO_CONSULT'] === 'true') {
-    // Review must-fix (shorts round 2): the batch path sends PORTFOLIO_TOOL, whose strict schema
-    // has no plan.direction field, while the shorts element schema REQUIRES direction on every
-    // plan — the combination would silently degrade EVERY plan entry (longs included) to a hold.
-    // Until a PORTFOLIO_SHORTS_TOOL exists (backlog seed), refuse the combination loudly at boot
-    // instead of failing open per decision.
-    if (env['AGENTIC_SHORTS_ENABLED'] === 'true') {
+    // shorts+consult is a supported combination since backlog #41 — IN PLAN MODE: the batch path
+    // selects PORTFOLIO_SHORTS_TOOL (plan.direction required per element, pf2 tag) inside
+    // proposeBatch, and the constructor guard has already required a perp-capable venue. The
+    // LEGACY (non-plan) shorts path has no batched short expression (PORTFOLIO_TOOL's action enum
+    // has no 'short'), so that combination would silently run long-only — refuse it loudly at
+    // boot, exactly the silent-degrade class the original #41-predecessor guard existed to stop
+    // (reviewer S1).
+    if (env['AGENTIC_SHORTS_ENABLED'] === 'true' && env['AGENTIC_PLAN_MODE'] !== 'true') {
       throw new Error(
-        'AGENTIC_PORTFOLIO_CONSULT and AGENTIC_SHORTS_ENABLED cannot be combined: the strict ' +
-          'submit_portfolio tool cannot emit plan.direction, so every batched plan entry would ' +
-          'silently degrade to a hold. Disable one of the two flags.',
+        'AGENTIC_PORTFOLIO_CONSULT with AGENTIC_SHORTS_ENABLED requires AGENTIC_PLAN_MODE: the ' +
+          'batched portfolio tool expresses shorts only via plan.direction — without plan mode ' +
+          'every batched decide would silently run long-only. Enable AGENTIC_PLAN_MODE or ' +
+          'disable one of the two flags.',
       );
     }
     // Batching wraps AnthropicAgentClient DIRECTLY (not BudgetedAgentClient — see

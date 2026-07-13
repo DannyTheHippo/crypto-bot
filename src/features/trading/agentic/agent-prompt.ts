@@ -79,6 +79,16 @@ export const SHORTS_TEMPLATE_VERSION = 'x1';
 // it, so a hash never confuses a batched decide with a single-symbol one even when every other
 // component (playbook, model, feed flags) is identical.
 export const PORTFOLIO_TEMPLATE_VERSION = 'pf1';
+// Shorts-capable portfolio-consult tag (backlog #41): when shorts + portfolio consult are BOTH
+// enabled the batch rides PORTFOLIO_SHORTS_TOOL (plan.direction required per element), a different
+// wire schema — pf2 replaces pf1 in the same stacking slot so the two batch shapes never share a
+// hash. Shorts-off batches keep pf1 byte-identical.
+export const PORTFOLIO_SHORTS_TEMPLATE_VERSION = 'pf2';
+// Thinking-on-decide A/B tag (backlog #42): the treatment arm changes a REQUEST PARAM (thinking
+// adaptive vs the hard disabled), not the prompt text — this tag is what makes the arm recoverable
+// from promptHash. Appended as the LAST feed-tag slot (`...+pos1+th1`); arm-off (and pct=0) hashes
+// stay byte-identical.
+export const THINKING_TEMPLATE_VERSION = 'th1';
 
 // Delimiters wrapping the advisory playbook block quoted into the user message. Unique and
 // non-trivial so a playbook can never forge a close/open of its own — playbook-validator.ts
@@ -383,6 +393,101 @@ export const PORTFOLIO_TOOL = {
                 },
               },
               required: [
+                'entryOffsetBps',
+                'stopLossPct',
+                'takeProfitPct',
+                'entryValidityBars',
+                'maxHoldBars',
+              ],
+              additionalProperties: false,
+            },
+          },
+          required: ['symbol', 'action', 'confidence', 'rationale'],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ['decisions'],
+    additionalProperties: false,
+  },
+} as const;
+
+// Shorts-capable portfolio tool (backlog #41): PORTFOLIO_TOOL with plan.direction required per
+// element — the strict submit_portfolio schema otherwise has no way to express a short entry, which
+// is why shorts + portfolio consult used to be refused at boot. Selected only when planMode AND
+// shortsEnabled AND portfolio consult are all on (construction has already required a perp-capable
+// venue for shorts); per-element validation reuses planShortsElementSchema, so a plan element
+// missing direction degrades that symbol to a hold exactly like the single-symbol path rejects it.
+export const PORTFOLIO_SHORTS_TOOL = {
+  name: 'submit_portfolio',
+  description:
+    'Submit your trading decisions for ALL symbols presented in this consult in ONE call. The `decisions` array must contain exactly one entry per symbol shown in the user message, matched back by its `symbol` field (copy it verbatim) — including an entry whose action is "hold" for any symbol you are not acting on. A "long" action opens a NEW plan-managed position of EITHER direction (see plan.direction).',
+  strict: true,
+  input_schema: {
+    type: 'object',
+    properties: {
+      decisions: {
+        type: 'array',
+        description: 'One decision per symbol shown in the user message, in any order.',
+        items: {
+          type: 'object',
+          properties: {
+            symbol: {
+              type: 'string',
+              description:
+                'The exact symbol string this decision is for, copied from its user-message block.',
+            },
+            action: {
+              type: 'string',
+              enum: ['long', 'flat', 'hold'],
+              description: PLAN_SHORTS_TOOL.input_schema.properties.action.description,
+            },
+            confidence: {
+              type: 'number',
+              description: '0..1 conviction; scales position size',
+            },
+            rationale: {
+              type: 'string',
+              description: 'One short paragraph explaining the decision',
+            },
+            plan: {
+              type: 'object',
+              description: PLAN_SHORTS_TOOL.input_schema.properties.plan.description,
+              properties: {
+                direction: {
+                  type: 'string',
+                  enum: ['long', 'short'],
+                  description:
+                    PLAN_SHORTS_TOOL.input_schema.properties.plan.properties.direction.description,
+                },
+                entryOffsetBps: {
+                  type: 'integer',
+                  description:
+                    PLAN_TOOL.input_schema.properties.plan.properties.entryOffsetBps.description,
+                },
+                stopLossPct: {
+                  type: 'number',
+                  description:
+                    PLAN_TOOL.input_schema.properties.plan.properties.stopLossPct.description,
+                },
+                takeProfitPct: {
+                  type: 'number',
+                  description:
+                    PLAN_TOOL.input_schema.properties.plan.properties.takeProfitPct.description,
+                },
+                entryValidityBars: {
+                  type: 'integer',
+                  description:
+                    PLAN_TOOL.input_schema.properties.plan.properties.entryValidityBars.description,
+                },
+                maxHoldBars: {
+                  type: 'integer',
+                  description:
+                    PLAN_TOOL.input_schema.properties.plan.properties.maxHoldBars.description,
+                },
+              },
+              required: [
+                'direction',
                 'entryOffsetBps',
                 'stopLossPct',
                 'takeProfitPct',

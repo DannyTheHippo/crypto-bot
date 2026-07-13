@@ -202,6 +202,7 @@ describe('validate()', () => {
         playbookPin: undefined,
         playbookAbPct: 0,
         derivativesAbPct: 0,
+        thinkingAbPct: 0,
         crossSymbolEnabled: false,
         crossSymbolLookbackBars: 20,
         portfolioConsultEnabled: false,
@@ -316,6 +317,22 @@ describe('validate()', () => {
     it('throws on AGENTIC_PLAYBOOK_AB_PCT above 50', () => {
       expect(() => validate({ PORT: '3100', AGENTIC_PLAYBOOK_AB_PCT: '51' })).toThrow(
         /AGENTIC_PLAYBOOK_AB_PCT/,
+      );
+    });
+
+    it('AGENTIC_THINKING_AB_PCT absent → 0 (thinking arm disabled, #42)', () => {
+      const cfg = validate({ PORT: '3100' });
+      expect(cfg.agentic.thinkingAbPct).toBe(0);
+    });
+
+    it('AGENTIC_THINKING_AB_PCT present → parsed within 0-50', () => {
+      const cfg = validate({ PORT: '3100', AGENTIC_THINKING_AB_PCT: '25' });
+      expect(cfg.agentic.thinkingAbPct).toBe(25);
+    });
+
+    it('throws on AGENTIC_THINKING_AB_PCT above 50 (mirrors the peer A/B caps)', () => {
+      expect(() => validate({ PORT: '3100', AGENTIC_THINKING_AB_PCT: '51' })).toThrow(
+        /AGENTIC_THINKING_AB_PCT/,
       );
     });
 

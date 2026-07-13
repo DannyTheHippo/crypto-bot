@@ -8,6 +8,10 @@ import {
   type AnthropicAgentClientConfig,
 } from '../../../src/features/trading/agentic/anthropic-agent-client';
 import { DailyLlmBudget } from '../../../src/features/trading/agentic/agent-budget';
+import {
+  PORTFOLIO_TOOL,
+  PORTFOLIO_SHORTS_TOOL,
+} from '../../../src/features/trading/agentic/agent-prompt';
 import type {
   AgentDecisionInput,
   AgentMarketSnapshot,
@@ -695,5 +699,105 @@ describe('AnthropicAgentClient.proposeBatch', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  function shortsCfg(): AnthropicAgentClientConfig {
+    return buildCfg({ planMode: true, shortsEnabled: true, perpCapableVenue: true });
+  }
+
+  function shortsPlan(
+    over: Partial<Record<string, number | string>> = {},
+  ): Record<string, unknown> {
+    return {
+      direction: 'short',
+      entryOffsetBps: 0,
+      stopLossPct: 0.003,
+      takeProfitPct: 0.0045,
+      entryValidityBars: 4,
+      maxHoldBars: 8,
+      ...over,
+    };
+  }
+
+  it('#41 shorts batch sends PORTFOLIO_SHORTS_TOOL and a direction:short plan element maps to ENTER_SHORT', async () => {
+    const fetchFn = vi.fn();
+    const client = new AnthropicAgentClient(shortsCfg(), fetchFn);
+    fetchFn.mockResolvedValue(
+      apiResponse(
+        portfolioBody([
+          {
+            symbol: 'BTC/USDT',
+            action: 'long',
+            confidence: 0.8,
+            rationale: 'r',
+            plan: shortsPlan(),
+          },
+        ]),
+      ),
+    );
+
+    const result = await client.proposeBatch([buildInput('BTC/USDT', 'agentic-1')]);
+
+    const sentBody = JSON.parse((fetchFn.mock.calls[0]![1] as RequestInit).body as string) as {
+      tools: unknown[];
+    };
+    expect(sentBody.tools[0]).toEqual(PORTFOLIO_SHORTS_TOOL);
+    const proposal = result.proposals.get('BTC/USDT');
+    expect(proposal?.signals[0]).toMatchObject({ kind: 'ENTER_SHORT', symbol: 'BTC/USDT' });
+    // plan attachment (incl. direction) requires a lastCandle to price the resting entry and is
+    // pinned by the single-symbol shorts specs — this fixture has no candles by design.
+  });
+
+  it('#41 a plan element missing direction under shorts degrades ONLY that symbol to a hold — the sibling with direction still enters', async () => {
+    const fetchFn = vi.fn();
+    const warn = vi.fn();
+    const client = new AnthropicAgentClient(shortsCfg(), fetchFn, { warn });
+    fetchFn.mockResolvedValue(
+      apiResponse(
+        portfolioBody([
+          {
+            symbol: 'BTC/USDT',
+            action: 'long',
+            confidence: 0.8,
+            rationale: 'r',
+            // deliberately no direction — planShortsElementSchema requires it under shorts
+            plan: shortsPlan({ direction: undefined as unknown as string }),
+          },
+          {
+            symbol: 'ETH/USDT',
+            action: 'long',
+            confidence: 0.8,
+            rationale: 'r',
+            plan: shortsPlan({ direction: 'long' }),
+          },
+        ]),
+      ),
+    );
+
+    const result = await client.proposeBatch([
+      buildInput('BTC/USDT', 'agentic-1'),
+      buildInput('ETH/USDT', 'agentic-2'),
+    ]);
+
+    expect(result.proposals.get('BTC/USDT')?.signals).toEqual([]);
+    expect(result.proposals.get('ETH/USDT')?.signals[0]).toMatchObject({ kind: 'ENTER_LONG' });
+  });
+
+  it('#41 shorts OFF keeps the batch request on PORTFOLIO_TOOL byte-identically — no direction field reaches the wire schema', async () => {
+    const fetchFn = vi.fn();
+    const client = new AnthropicAgentClient(buildCfg({ planMode: true }), fetchFn);
+    fetchFn.mockResolvedValue(
+      apiResponse(
+        portfolioBody([{ symbol: 'BTC/USDT', action: 'hold', confidence: 0.5, rationale: 'r' }]),
+      ),
+    );
+
+    await client.proposeBatch([buildInput('BTC/USDT', 'agentic-1')]);
+
+    const sentBody = JSON.parse((fetchFn.mock.calls[0]![1] as RequestInit).body as string) as {
+      tools: unknown[];
+    };
+    expect(sentBody.tools[0]).toEqual(PORTFOLIO_TOOL);
+    expect(JSON.stringify(sentBody.tools[0])).not.toContain('direction');
   });
 });

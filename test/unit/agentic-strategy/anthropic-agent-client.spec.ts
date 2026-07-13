@@ -2329,4 +2329,58 @@ describe('AnthropicAgentClient', () => {
       expect(payload).not.toHaveProperty('positioning');
     });
   });
+
+  describe('thinking A/B (#42, mechanism only)', () => {
+    function holdBody(): unknown {
+      return toolUseBody({ action: 'hold', confidence: 0.5, rationale: 'r' });
+    }
+
+    it('pct=0 (default): thinking stays explicitly disabled — byte-identical request to pre-#42', async () => {
+      const fetchFn = vi.fn().mockResolvedValue(apiResponse(holdBody()));
+      const client = new AnthropicAgentClient(buildCfg(), fetchFn);
+      await client.propose(
+        buildInput({ tickers: new Map([[SYM, ticker('100', 1n)]]), context: FLAT_CONTEXT }),
+      );
+      const sent = JSON.parse((fetchFn.mock.calls[0]![1] as RequestInit).body as string) as {
+        thinking: unknown;
+      };
+      expect(sent.thinking).toEqual({ type: 'disabled' });
+    });
+
+    it('treatment arm sends thinking adaptive and flips promptHash via the +th1 tag; the off-bucket minute keeps disabled and the untagged hash', async () => {
+      vi.useFakeTimers();
+      try {
+        // (27+73)%100 = 0 < 50 ⇒ treatment arm.
+        vi.setSystemTime(new Date(27 * 60_000));
+        const armFetch = vi.fn().mockResolvedValue(apiResponse(holdBody()));
+        const armClient = new AnthropicAgentClient(buildCfg({ thinkingAbPct: 50 }), armFetch);
+        const armProposal = await armClient.propose(
+          buildInput({ tickers: new Map([[SYM, ticker('100', 1n)]]), context: FLAT_CONTEXT }),
+        );
+        const armSent = JSON.parse((armFetch.mock.calls[0]![1] as RequestInit).body as string) as {
+          thinking: unknown;
+        };
+        expect(armSent.thinking).toEqual({ type: 'adaptive' });
+
+        // (0+73)%100 = 73 ≥ 50 ⇒ off bucket, same config.
+        vi.setSystemTime(new Date(0));
+        const offFetch = vi.fn().mockResolvedValue(apiResponse(holdBody()));
+        const offClient = new AnthropicAgentClient(buildCfg({ thinkingAbPct: 50 }), offFetch);
+        const offProposal = await offClient.propose(
+          buildInput({ tickers: new Map([[SYM, ticker('100', 1n)]]), context: FLAT_CONTEXT }),
+        );
+        const offSent = JSON.parse((offFetch.mock.calls[0]![1] as RequestInit).body as string) as {
+          thinking: unknown;
+        };
+        expect(offSent.thinking).toEqual({ type: 'disabled' });
+
+        // The +th1 tag makes the arm recoverable from promptHash — the two arms must never share
+        // a hash for an otherwise-identical decision.
+        expect(armProposal.promptHash).toBeDefined();
+        expect(armProposal.promptHash).not.toBe(offProposal.promptHash);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
 });

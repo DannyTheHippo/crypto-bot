@@ -170,8 +170,10 @@ const envSchema = z
     // timeout above. Reflection runs AGENTIC_REFLECTION_MODEL (a pricier tier, e.g. Opus) with
     // adaptive thinking over a large calibration/attribution prompt; the 30s decide timeout aborted
     // every live attempt (2026-07-09: "transport error: This operation was aborted"), stranding the
-    // learning loop at the seed playbook. Off the trading hot path (reflection is detached), so
-    // headroom is free — 240s buys margin against Opus worst-case rather than a tight wall-clock guess.
+    // learning loop at the seed playbook. Since backlog #32 the reflection call STREAMS (SSE), so
+    // this value is the IDLE-gap budget (aborts when no chunk arrives for this long — liveness, not
+    // total duration) plus a 3× hard cap on the whole call; a healthy long generation keeps
+    // emitting deltas and never trips it, removing the wall-clock guess about Opus's worst case.
     AGENTIC_REFLECTION_TIMEOUT_MS: z.coerce.number().int().positive().default(240000),
     AGENTIC_MAX_TOKENS: z.coerce.number().int().positive().default(1024),
     AGENTIC_MIN_DECISION_INTERVAL_MS: z.coerce.number().int().min(0).default(0),
@@ -257,6 +259,15 @@ const envSchema = z
     // Capped at 50, mirroring AGENTIC_PLAYBOOK_AB_PCT above (a control arm can never outweigh the
     // treatment arm's own evidence share).
     AGENTIC_DERIVATIVES_AB_PCT: z.coerce.number().int().min(0).max(50).default(0),
+    // Thinking-on-decide A/B (backlog #42, mechanism only — ENABLING is queued behind the
+    // info-context A/B verdict, one measured channel at a time): percent (0-50) of decides/batches
+    // deterministically routed to a treatment arm whose request carries thinking:{type:'adaptive'}
+    // instead of the hard 'disabled' (Phase-6 study: +12bps forward proxy, 4x propose, ~1.9x cost
+    // per decide — cost flows into the AGENTIC_DAILY_COST_STOP_USD breaker as usual). The arm is
+    // recoverable from promptHash via the '+th1' template tag (feed-tag precedent — the prompt
+    // text itself does not change). 0 (default) disables — byte-identical requests to today.
+    // Capped at 50, mirroring the two A/B knobs above.
+    AGENTIC_THINKING_AB_PCT: z.coerce.number().int().min(0).max(50).default(0),
     // Cross-symbol relative-strength context (2026-07-12): when true, each agentic instance records
     // its symbol's trailing return into a shared basket and the model sees where its symbol ranks
     // (see cross-symbol-context.ts). The strongest signal found in the 2026-07-12 multi-strategy
@@ -569,6 +580,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     AGENTIC_PLAYBOOK_PIN: agenticPlaybookPin,
     AGENTIC_PLAYBOOK_AB_PCT: agenticPlaybookAbPct,
     AGENTIC_DERIVATIVES_AB_PCT: agenticDerivativesAbPct,
+    AGENTIC_THINKING_AB_PCT: agenticThinkingAbPct,
     AGENTIC_CROSS_SYMBOL_ENABLED: agenticCrossSymbolEnabled,
     AGENTIC_CROSS_SYMBOL_LOOKBACK_BARS: agenticCrossSymbolLookbackBars,
     AGENTIC_PORTFOLIO_CONSULT: agenticPortfolioConsult,
@@ -679,6 +691,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       playbookPin: agenticPlaybookPin,
       playbookAbPct: agenticPlaybookAbPct,
       derivativesAbPct: agenticDerivativesAbPct,
+      thinkingAbPct: agenticThinkingAbPct,
       crossSymbolEnabled: agenticCrossSymbolEnabled,
       crossSymbolLookbackBars: agenticCrossSymbolLookbackBars,
       portfolioConsultEnabled: agenticPortfolioConsult,

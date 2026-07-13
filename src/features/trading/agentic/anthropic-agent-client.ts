@@ -21,11 +21,14 @@ import {
   DERIVATIVES_TEMPLATE_VERSION,
   PORTFOLIO_TEMPLATE_VERSION,
   PORTFOLIO_TOOL,
+  PORTFOLIO_SHORTS_TEMPLATE_VERSION,
+  PORTFOLIO_SHORTS_TOOL,
   POSITIONING_TEMPLATE_VERSION,
   SENTIMENT_TEMPLATE_VERSION,
   SHORTS_DECISION_TOOL,
   SHORTS_TEMPLATE_VERSION,
   TRADEFLOW_TEMPLATE_VERSION,
+  THINKING_TEMPLATE_VERSION,
   PLAN_BOUNDS,
   PLAN_TOOL,
   PLAN_SHORTS_TOOL,
@@ -214,6 +217,9 @@ export interface AnthropicAgentClientConfig {
   // derivativesControlArm). Absent/0, or derivativesFeedEnabled false, ⇒ byte-identical to no A/B
   // (nothing to withhold when the feed is already off).
   readonly derivativesAbPct?: number;
+  // Thinking-on-decide A/B (backlog #42, mechanism only): percent (0-50) of decides/batches whose
+  // request carries thinking:{type:'adaptive'}; 0/absent disables (byte-identical requests).
+  readonly thinkingAbPct?: number;
   // C4: documents the optional sentiment block in the system prompt (agent-prompt.ts's
   // buildSystemPrompt sentimentFeedEnabled option). Absent/false ⇒ byte-identical legacy prompt.
   readonly sentimentFeedEnabled?: boolean;
@@ -456,6 +462,7 @@ export class AnthropicAgentClient implements AgentClientPort {
       userContent,
       ctx.activeTool,
       this.cfg.timeoutMs,
+      ctx.thinkingArm ? { type: 'adaptive' } : { type: 'disabled' },
     );
 
     const latencyMs = Date.now() - started;
@@ -646,14 +653,24 @@ export class AnthropicAgentClient implements AgentClientPort {
     // absent-when-no-call convention.
     const consultId = randomUUID();
 
+    // #41: a shorts-capable batch rides PORTFOLIO_SHORTS_TOOL (plan.direction required per
+    // element) under the pf2 tag — the strict pf1 tool cannot express a short entry, which is what
+    // used to force the shorts+consult boot refusal. Shorts-off batches stay byte-identical pf1.
+    const portfolioTool =
+      this.cfg.planMode && this.cfg.shortsEnabled ? PORTFOLIO_SHORTS_TOOL : PORTFOLIO_TOOL;
+    const portfolioTag =
+      this.cfg.planMode && this.cfg.shortsEnabled
+        ? PORTFOLIO_SHORTS_TEMPLATE_VERSION
+        : PORTFOLIO_TEMPLATE_VERSION;
+
     const promptHash = computePromptHash({
       templateVersion: `${
         ctx.feedTags.length > 0
           ? `${ctx.baseTemplateVersion}+${ctx.feedTags.join('+')}`
           : ctx.baseTemplateVersion
-      }+${PORTFOLIO_TEMPLATE_VERSION}`,
+      }+${portfolioTag}`,
       playbookContent: ctx.playbookContent ?? '',
-      toolSchemaJson: JSON.stringify(PORTFOLIO_TOOL),
+      toolSchemaJson: JSON.stringify(portfolioTool),
       modelId: this.cfg.model,
     });
 
@@ -681,8 +698,9 @@ export class AnthropicAgentClient implements AgentClientPort {
     const res = await this.attemptWithRetry(
       ctx.systemPrompt,
       userContent,
-      PORTFOLIO_TOOL,
+      portfolioTool,
       timeoutMs,
+      ctx.thinkingArm ? { type: 'adaptive' } : { type: 'disabled' },
     );
     const latencyMs = Date.now() - started;
 
@@ -894,6 +912,7 @@ export class AnthropicAgentClient implements AgentClientPort {
     readonly baseTemplateVersion: string;
     readonly feedTags: readonly string[];
     readonly infoContextControlArm: boolean;
+    readonly thinkingArm: boolean;
   }> {
     const { content: playbookContent, version: playbookVersion } = await this.resolvePlaybook();
     // Playbook knobs (tighten-only parametric channel — see playbook-validator.ts). Extracted from
@@ -943,6 +962,14 @@ export class AnthropicAgentClient implements AgentClientPort {
         `agentic info-context ab: control arm (derivatives+crossSymbol+tradeFlow+positioning withheld) — pct=${infoContextAbPct}`,
       );
     }
+    // Thinking-on-decide A/B (backlog #42, mechanism only — pct defaults 0): the treatment arm's
+    // request carries thinking:{type:'adaptive'} instead of attemptOnce's hard 'disabled'. Bucketed
+    // like the two mechanisms above but +73 before the modulo, so all three A/Bs transition on
+    // different minute boundaries and stay decorrelated. The prompt text does not change — the arm
+    // is recoverable from promptHash via the '+th1' tag appended as the LAST feed-tag slot below.
+    const thinkingAbPct = this.cfg.thinkingAbPct ?? 0;
+    const thinkingArm =
+      thinkingAbPct > 0 && Math.floor(Date.now() / 60_000 + 73) % 100 < thinkingAbPct;
     // v5: constraints no longer render into the system prompt (they ride the payload below), so the
     // cached tools+system prefix is byte-identical across all symbols this shared client serves —
     // and, for the batch path, across every symbol in the SAME batch too.
@@ -996,6 +1023,8 @@ export class AnthropicAgentClient implements AgentClientPort {
       ...(effectiveCrossSymbolEnabled ? [CROSS_SYMBOL_TEMPLATE_VERSION] : []),
       ...(effectiveTradeFlowEnabled ? [TRADEFLOW_TEMPLATE_VERSION] : []),
       ...(effectivePositioningEnabled ? [POSITIONING_TEMPLATE_VERSION] : []),
+      // #42: last slot by design — a REQUEST-param arm, not a prompt-content tag; see above.
+      ...(thinkingArm ? [THINKING_TEMPLATE_VERSION] : []),
     ];
 
     return {
@@ -1008,6 +1037,7 @@ export class AnthropicAgentClient implements AgentClientPort {
       baseTemplateVersion,
       feedTags,
       infoContextControlArm,
+      thinkingArm,
     };
   }
 
@@ -1385,15 +1415,19 @@ export class AnthropicAgentClient implements AgentClientPort {
       | typeof SHORTS_DECISION_TOOL
       | typeof PLAN_TOOL
       | typeof PLAN_SHORTS_TOOL
-      | typeof PORTFOLIO_TOOL,
+      | typeof PORTFOLIO_TOOL
+      | typeof PORTFOLIO_SHORTS_TOOL,
     timeoutMs: number,
+    // #42: the caller's precomputed thinking arm — threaded explicitly (never re-derived here) so
+    // a retry resends the IDENTICAL request, the same invariant the prompt strings follow.
+    thinking: { type: 'adaptive' } | { type: 'disabled' } = { type: 'disabled' },
   ): Promise<Response> {
     const deadline = Date.now() + timeoutMs;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       try {
-        return await this.attemptOnce(systemPrompt, userContent, tool, controller.signal);
+        return await this.attemptOnce(systemPrompt, userContent, tool, controller.signal, thinking);
       } catch (firstErr) {
         const classified = firstErr as AgentProposeError;
         const remainingMs = deadline - Date.now();
@@ -1407,7 +1441,13 @@ export class AnthropicAgentClient implements AgentClientPort {
         );
         await delay(backoffMs);
         try {
-          return await this.attemptOnce(systemPrompt, userContent, tool, controller.signal);
+          return await this.attemptOnce(
+            systemPrompt,
+            userContent,
+            tool,
+            controller.signal,
+            thinking,
+          );
         } catch (secondErr) {
           const secondClassified = secondErr as AgentProposeError;
           this.handleFailure(secondClassified);
@@ -1431,8 +1471,10 @@ export class AnthropicAgentClient implements AgentClientPort {
       | typeof SHORTS_DECISION_TOOL
       | typeof PLAN_TOOL
       | typeof PLAN_SHORTS_TOOL
-      | typeof PORTFOLIO_TOOL,
+      | typeof PORTFOLIO_TOOL
+      | typeof PORTFOLIO_SHORTS_TOOL,
     signal: AbortSignal,
+    thinking: { type: 'adaptive' } | { type: 'disabled' } = { type: 'disabled' },
   ): Promise<Response> {
     let res: Response;
     try {
@@ -1456,11 +1498,11 @@ export class AnthropicAgentClient implements AgentClientPort {
           // even when shortsEnabled was on, making 'short' unreachable.
           tools: [tool],
           tool_choice: { type: 'tool', name: tool.name },
-          // Omitting `thinking` on claude-sonnet-5 silently runs (billed) adaptive thinking; the
-          // decide call has no use for it (structured tool-use, not open-ended reasoning), so it's
-          // explicitly disabled here. Reflection has its own separate request builder (see
-          // reflection.service.ts) and is unaffected by this.
-          thinking: { type: 'disabled' },
+          // Omitting `thinking` on claude-sonnet-5 silently runs (billed) adaptive thinking, so it
+          // is always explicit here: 'disabled' by default (structured tool-use has no use for it),
+          // or 'adaptive' when the caller's #42 thinking-A/B treatment arm fired. Reflection has
+          // its own separate request builder (see reflection.service.ts) and is unaffected.
+          thinking,
         }),
         signal,
       });

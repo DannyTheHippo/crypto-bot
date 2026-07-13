@@ -3,7 +3,11 @@ import { DEFAULT_FILTERS } from '../../../src/domain/risk/default-filters';
 
 describe('DEFAULT_FILTERS', () => {
   it('carries the demo universe (BTC, ETH, SOL, XRP, LINK /USDT) with exact filter strings', () => {
-    expect(DEFAULT_FILTERS.size).toBe(5);
+    // 5 spot rows + 2 futures-demo perp rows (BTC/ETH :USDT — Push II Phase 8; REVERIFY note in
+    // default-filters.ts applies to the perp figures).
+    expect(DEFAULT_FILTERS.size).toBe(7);
+    expect(DEFAULT_FILTERS.has('BTC/USDT:USDT')).toBe(true);
+    expect(DEFAULT_FILTERS.has('ETH/USDT:USDT')).toBe(true);
     expect(DEFAULT_FILTERS.get('BTC/USDT')).toEqual({
       tickSize: '0.01',
       stepSize: '0.00001',

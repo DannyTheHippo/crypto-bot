@@ -34,6 +34,13 @@ services:
       # Market-data feed venue/environment. 'live' gives realistic depth for fills; order placement still goes to the SANDBOX_ENV venue above.
       FEED_ENV: live
       # VENUES='[{"id":"binance","environment":"demo"}]'   # optional; default venue is binance
+      # Push II Phase 8 (futures-demo venue, deploy decision separate from this commit): pointing
+      # VENUES at binanceusdm/demo (SAME BINANCE_DEMO_* keys above, probe-verified to authenticate
+      # against demo-fapi.binance.com) turns THIS deployment into the futures-demo lane instead of
+      # spot — a separate service/stack, never both at once in one process. TRADING_SYMBOLS would
+      # also need to name the futures market id (e.g. BTC/USDT:USDT), and AGENTIC_SHORTS_ENABLED
+      # below would need AGENTIC_PLAN_MODE on too (shorts require plan mode + a perp-capable venue).
+      # VENUES='[{"id":"binanceusdm","environment":"demo"}]'
 
       # ── Credentials ──
       # Demo Trading keys (used when SANDBOX_ENV=demo). Withdrawals must be disabled.
@@ -112,6 +119,7 @@ services:
       AGENTIC_MINT_BACKTEST_MARGIN_BPS: 10 # noise HANDICAP, not a hurdle: the candidate mints unless its mean net bps/trip trails the champion's by MORE than this (candidate >= champion − margin passes); trailing by more feeds the SAME bounded retry-with-feedback as the floor, then 'expectancy_reject' (rollback, no mint) if the retry also trails
       AGENTIC_MINT_BACKTEST_MIN_TRIPS: 3 # minimum simulated round trips BOTH arms need before the backtest verdict is trusted; below this the backtest fails open (mint proceeds unbacktested)
       AGENTIC_PLAN_MODE: 'true' # W3.1 plan-based trading (submit_plan + deterministic executor); ENABLED by owner 2026-07-07 (offline-A/B pre-check waived by owner; the recorded-input harness remains the post-hoc validator)
+      # AGENTIC_SHORTS_ENABLED: 'false' # Push II Phase 8 (plan-mode shorts) — schema default is already 'false'; commented out deliberately (deploy decision is a separate step, per owner). Requires a perp-capable venue (VENUES pointed at binanceusdm/demo, see above) — flipping this on a spot-only deployment throws at boot (AnthropicAgentClient's constructor guard).
       AGENTIC_MIN_EDGE_MULTIPLE: '1.5' # plan viability floor: reject plans with takeProfitPct < multiple x round-trip fee fraction
       AGENTIC_MIN_RR: '1.5' # R:R structure floor: reject plans with takeProfitPct/stopLossPct < ratio (the old gate floored only the win side — measured payoff 0.29:1, breakeven win rate ~78%)
       AGENTIC_PLAN_MAX_QUIET_BARS: 16 # safety re-consult cadence while a plan is active without executor action

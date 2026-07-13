@@ -202,6 +202,27 @@ never changes for strategy evolution.
   warn-storm = budget sizing needs the sub-budget follow-up. Backlog seed: outer `run failed`
   catch in runReflection records no outcome and does not roll back (pre-existing, hit only by
   malformed journal data — near-unreachable with Postgres NUMERIC closes).
+- **Perp venue + plan-mode shorts BUILT (flag-off) 2026-07-13 (owner session, Push II Phase 8):**
+  futures-DEMO venue (`VENUES` id `binanceusdm` env `demo` — authenticated ccxt binanceusdm +
+  enableDemoTrading, swap-url guard fail-closed; SymbolId IS the ccxt id, no translation shim) and
+  plan-mode shorts (`AGENTIC_SHORTS_ENABLED`, PLAN_SHORTS_TOOL with required `plan.direction`, tag
+  `p4`; executor/venue-TP/protective/PnL arms mirrored; constructor guard: shorts require planMode
+  AND a perp venue — spot+shorts throws). EVERYTHING commented-out/false in compose — the spot
+  deployment is byte-identical; enabling is a SECOND deployment (own env), a separate decision.
+  Two adversarial review rounds (double-verified findings, ALL fixed + test-pinned): direction-
+  blind kill-switch flatten hint (a SHORT's cover now prices ABOVE mark — convergence no longer
+  depends on the band clamp), shorts×portfolio-batching structurally broken (strict
+  submit_portfolio cannot emit plan.direction ⇒ construction now refuses the combination loudly;
+  PORTFOLIO_SHORTS_TOOL is the backlog seed), fail-open direction guard on shorts-off clients,
+  outgoing-plan resting-entry orphan on clear/flip, tick-direction drift reference, x1/p4 tag
+  design. Also fixed IN PASSING (pre-existing): protective-exit's blanket BUY-blocks rule would
+  have frozen a SHORT's stop behind its own resting cover. Perp DEFAULT_FILTERS rows are LIVE
+  fapi exchangeInfo figures fetched 2026-07-13 in-session (a round-2 reviewer flagged the comment
+  as unverified off a stale brief — refuted: the fetch happened; minNotional 50/20, tick 0.10/0.01).
+  Gate: 1898 unit / 41 livegate / 14+1 paper, statics green. **DEPLOY CHECKLIST (before the perp
+  deployment ever arms, contested finding honored):** pin venue-side leverage=1 + isolated margin
+  mode explicitly at adapter init (account defaults are NOT trusted), re-run the arm preconditions,
+  and start with ONE symbol.
 - **Thinking-on decide study VERDICT 2026-07-13 (owner session, Push II Phase 6; 50 rows, ~$1.3):**
   claude-sonnet-5 with ADAPTIVE thinking (effort medium; Claude 5 API rejects budgeted
   `thinking.enabled` — the harness's `AGENTIC_EVAL_THINKING_BUDGET` knob maps to

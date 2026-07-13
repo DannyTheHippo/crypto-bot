@@ -206,6 +206,7 @@ describe('validate()', () => {
         crossSymbolLookbackBars: 20,
         portfolioConsultEnabled: false,
         portfolioWindowMs: 3000,
+        shortsEnabled: false,
         expectancyLadderEnabled: false,
         planMode: false,
         minEdgeMultiple: '1.5',

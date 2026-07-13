@@ -179,6 +179,142 @@ describe('evaluatePlan — LONG position (entry filled)', () => {
   });
 });
 
+// Push II Phase 8: SHORT arm, mirrored off the LONG suite above — stop ABOVE entry, take-profit
+// BELOW entry, maxHoldBars unchanged (direction-agnostic).
+describe('evaluatePlan — SHORT position (entry filled)', () => {
+  it('holds when close is strictly between the take-profit and stop prices, under maxHoldBars', () => {
+    const result = evaluatePlan(
+      input({
+        state: state({ entryPrice: '100', barsElapsed: 5 }),
+        closePrice: '99',
+        positionSide: 'SHORT',
+      }),
+    );
+    expect(result).toEqual({ type: 'hold' });
+  });
+
+  it('exits on stop when close is strictly above entry × (1 + stopLossPct)', () => {
+    const result = evaluatePlan(
+      input({
+        state: state({ entryPrice: '100', barsElapsed: 1 }),
+        closePrice: '102.01',
+        positionSide: 'SHORT',
+      }),
+    );
+    expect(result).toEqual({ type: 'exit', reason: 'stop' });
+  });
+
+  it('exits on stop at the exact boundary (close === entry × (1 + stopLossPct)) — boundary equality triggers', () => {
+    // entry 100, stopLossPct 0.02 ⇒ stop price exactly 102.
+    const result = evaluatePlan(
+      input({
+        state: state({ entryPrice: '100', barsElapsed: 1 }),
+        closePrice: '102',
+        positionSide: 'SHORT',
+      }),
+    );
+    expect(result).toEqual({ type: 'exit', reason: 'stop' });
+  });
+
+  it('exits on take_profit when close is strictly below entry × (1 − takeProfitPct)', () => {
+    const result = evaluatePlan(
+      input({
+        state: state({ entryPrice: '100', barsElapsed: 1 }),
+        closePrice: '95.99',
+        positionSide: 'SHORT',
+      }),
+    );
+    expect(result).toEqual({ type: 'exit', reason: 'take_profit' });
+  });
+
+  it('exits on take_profit at the exact boundary (close === entry × (1 − takeProfitPct)) — boundary equality triggers', () => {
+    // entry 100, takeProfitPct 0.04 ⇒ take-profit price exactly 96.
+    const result = evaluatePlan(
+      input({
+        state: state({ entryPrice: '100', barsElapsed: 1 }),
+        closePrice: '96',
+        positionSide: 'SHORT',
+      }),
+    );
+    expect(result).toEqual({ type: 'exit', reason: 'take_profit' });
+  });
+
+  it('exits on max_hold at the exact boundary (barsElapsed === maxHoldBars), stop/take-profit not hit', () => {
+    const result = evaluatePlan(
+      input({
+        state: state({ entryPrice: '100', barsElapsed: 20 }),
+        closePrice: '99',
+        positionSide: 'SHORT',
+      }),
+    );
+    expect(result).toEqual({ type: 'exit', reason: 'max_hold' });
+  });
+
+  it('prioritizes stop over max_hold when both would trigger on the same bar', () => {
+    const result = evaluatePlan(
+      input({
+        state: state({ entryPrice: '100', barsElapsed: 20 }),
+        closePrice: '103',
+        positionSide: 'SHORT',
+      }),
+    );
+    expect(result).toEqual({ type: 'exit', reason: 'stop' });
+  });
+
+  it('prioritizes take_profit over max_hold when both would trigger on the same bar', () => {
+    const result = evaluatePlan(
+      input({
+        state: state({ entryPrice: '100', barsElapsed: 20 }),
+        closePrice: '95',
+        positionSide: 'SHORT',
+      }),
+    );
+    expect(result).toEqual({ type: 'exit', reason: 'take_profit' });
+  });
+
+  it('holds rather than fabricating an exit when entryPrice is null on a SHORT position (invariant guard)', () => {
+    const result = evaluatePlan(
+      input({
+        state: state({ entryPrice: null, barsElapsed: 999 }),
+        closePrice: '1',
+        positionSide: 'SHORT',
+      }),
+    );
+    expect(result).toEqual({ type: 'hold' });
+  });
+
+  it('computes the stop/take-profit boundary with exact Decimal precision off a non-round entry price', () => {
+    // entry 63965.66, stopLossPct 0.02 ⇒ stop price exactly 65245 (approx: 63965.66 × 1.02 = 65244.9732).
+    const plan: AgentPlan = { ...PLAN, stopLossPct: '0.02', takeProfitPct: '0.05' };
+    const belowStop = evaluatePlan(
+      input({
+        state: state({ plan, entryPrice: '63965.66', barsElapsed: 1 }),
+        closePrice: '65244.9731',
+        positionSide: 'SHORT',
+      }),
+    );
+    expect(belowStop).toEqual({ type: 'hold' });
+
+    const atStopExact = evaluatePlan(
+      input({
+        state: state({ plan, entryPrice: '63965.66', barsElapsed: 1 }),
+        closePrice: '65244.9732',
+        positionSide: 'SHORT',
+      }),
+    );
+    expect(atStopExact).toEqual({ type: 'exit', reason: 'stop' });
+
+    const aboveStop = evaluatePlan(
+      input({
+        state: state({ plan, entryPrice: '63965.66', barsElapsed: 1 }),
+        closePrice: '65244.9733',
+        positionSide: 'SHORT',
+      }),
+    );
+    expect(aboveStop).toEqual({ type: 'exit', reason: 'stop' });
+  });
+});
+
 describe('evaluatePlan — FLAT position (resting or unfilled entry)', () => {
   it('holds while a resting entry is younger than entryValidityBars', () => {
     const result = evaluatePlan(

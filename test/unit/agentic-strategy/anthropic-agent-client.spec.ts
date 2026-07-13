@@ -8,6 +8,8 @@ import {
 import {
   DECISION_TOOL,
   SHORTS_DECISION_TOOL,
+  PLAN_TOOL,
+  PLAN_SHORTS_TOOL,
 } from '../../../src/features/trading/agentic/agent-prompt';
 import {
   AgentProposeError,
@@ -53,14 +55,12 @@ const LONG_CONTEXT: AgentContext = {
   recentDecisions: [],
 };
 
-// B3: AgentPositionSummary.side stays 'LONG' | 'FLAT' at the port level (see
-// anthropic-agent-client.ts's `side` cast comment — no strategy instance can ever emit 'SHORT'
-// today). The client's shorts mapping table is written to also handle a SHORT side defensively, so
-// this fixture forces the value via a double cast purely to exercise those arms in isolation.
+// AgentPositionSummary.side was widened to 'LONG' | 'SHORT' | 'FLAT' by Push II Phase 8 (plan-mode
+// shorts) — no cast needed anymore (see anthropic-agent-client.ts's `side` comment).
 const SHORT_CONTEXT: AgentContext = {
   indicators: null,
   position: {
-    side: 'SHORT' as unknown as 'LONG' | 'FLAT',
+    side: 'SHORT',
     qty: '1',
     avgEntry: '100',
     realizedPnl: '0',
@@ -1187,6 +1187,39 @@ describe('AnthropicAgentClient', () => {
       });
     });
 
+    it('ignores a spurious plan.direction on a shorts-OFF client — never emits ENTER_SHORT on a spot deployment (review finding)', async () => {
+      // Strict tool use should make this unreachable (PLAN_TOOL declares no direction field), but
+      // isShortEntry must still be gated on shortsEnabled: a direction value that somehow survives
+      // must fall through to the legacy LONG mapping, byte-identical to pre-Phase-8 — a spot
+      // deployment never passed the perp construction guard and cannot execute a short.
+      const fetchFn = vi.fn();
+      const client = new AnthropicAgentClient(buildCfg({ planMode: true }), fetchFn);
+      fetchFn.mockResolvedValue(
+        apiResponse(
+          toolUseBody(
+            {
+              action: 'long',
+              confidence: 0.8,
+              rationale: 'r',
+              plan: { ...plan({ stopLossPct: 0.01, takeProfitPct: 0.02 }), direction: 'short' },
+            },
+            'tool_use',
+            'submit_plan',
+          ),
+        ),
+      );
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        candles: new Map([[SYM, [candle('100', 1n)]]]),
+        context: FLAT_CONTEXT,
+      });
+
+      const proposal = await client.propose(input);
+
+      expect(proposal.signals).toHaveLength(1);
+      expect(proposal.signals[0]!.kind).toBe('ENTER_LONG');
+    });
+
     it('applies the 1.5 default RR floor when cfg.minRr is omitted', async () => {
       const fetchFn = vi.fn();
       const warn = vi.fn();
@@ -1350,11 +1383,202 @@ describe('AnthropicAgentClient', () => {
     });
   });
 
+  describe('plan mode: shorts (Push II Phase 8, shortsEnabled + planMode + perpCapableVenue)', () => {
+    function plan(over: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
+      return {
+        direction: 'short',
+        entryOffsetBps: 10,
+        stopLossPct: 0.02,
+        takeProfitPct: 0.04,
+        entryValidityBars: 4,
+        maxHoldBars: 20,
+        ...over,
+      };
+    }
+    function shortsCfg(over: Partial<AnthropicAgentClientConfig> = {}) {
+      return buildCfg({ planMode: true, shortsEnabled: true, perpCapableVenue: true, ...over });
+    }
+
+    it('sends PLAN_SHORTS_TOOL (not PLAN_TOOL) as tools/tool_choice when shortsEnabled is true', async () => {
+      const fetchFn = vi.fn();
+      const client = new AnthropicAgentClient(shortsCfg(), fetchFn);
+      fetchFn.mockResolvedValue(
+        apiResponse(
+          toolUseBody(
+            { action: 'hold', confidence: 0.5, rationale: 'r' },
+            'tool_use',
+            'submit_plan',
+          ),
+        ),
+      );
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+      });
+
+      await client.propose(input);
+
+      const [, init] = fetchFn.mock.calls[0] as [string, RequestInit];
+      const body = JSON.parse(init.body as string) as Record<string, unknown>;
+      expect(body['tools']).toEqual([PLAN_SHORTS_TOOL]);
+    });
+
+    it('shortsEnabled: false with planMode true is byte-identical to pre-Phase-8 — still sends PLAN_TOOL', async () => {
+      const fetchFn = vi.fn();
+      const client = new AnthropicAgentClient(buildCfg({ planMode: true }), fetchFn);
+      fetchFn.mockResolvedValue(
+        apiResponse(
+          toolUseBody(
+            { action: 'hold', confidence: 0.5, rationale: 'r' },
+            'tool_use',
+            'submit_plan',
+          ),
+        ),
+      );
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+      });
+
+      await client.propose(input);
+
+      const [, init] = fetchFn.mock.calls[0] as [string, RequestInit];
+      const body = JSON.parse(init.body as string) as Record<string, unknown>;
+      expect(body['tools']).toEqual([PLAN_TOOL]);
+    });
+
+    it("action 'long' from FLAT with plan.direction 'short' maps to a single ENTER_SHORT, offset priced ABOVE close (mirrored)", async () => {
+      const fetchFn = vi.fn();
+      const client = new AnthropicAgentClient(shortsCfg(), fetchFn);
+      fetchFn.mockResolvedValue(
+        apiResponse(
+          toolUseBody(
+            { action: 'long', confidence: 0.8, rationale: 'r', plan: plan() },
+            'tool_use',
+            'submit_plan',
+          ),
+        ),
+      );
+      const candles = new Map([[SYM, [candle('100', 1n)]]]);
+      const input = buildInput({ candles, context: FLAT_CONTEXT });
+
+      const proposal = await client.propose(input);
+
+      expect(proposal.signals).toHaveLength(1);
+      expect(proposal.signals[0]!.kind).toBe('ENTER_SHORT');
+      // entryOffsetBps 10 (positive) rests a SHORT entry ABOVE close: 100 × (1 + 10/10000) = 100.1.
+      expect(moneyToString(proposal.signals[0]!.limitPriceHint!)).toBe('100.1');
+      expect(proposal.plan).toEqual({
+        entryOffsetBps: 10,
+        stopLossPct: '0.02',
+        takeProfitPct: '0.04',
+        entryValidityBars: 4,
+        maxHoldBars: 20,
+        direction: 'short',
+      });
+    });
+
+    it("action 'flat' while SHORT maps to a single EXIT_SHORT and clears the plan", async () => {
+      const fetchFn = vi.fn();
+      const client = new AnthropicAgentClient(shortsCfg(), fetchFn);
+      fetchFn.mockResolvedValue(
+        apiResponse(
+          toolUseBody(
+            { action: 'flat', confidence: 0.9, rationale: 'r' },
+            'tool_use',
+            'submit_plan',
+          ),
+        ),
+      );
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: SHORT_CONTEXT,
+      });
+
+      const { signals } = await client.propose(input);
+
+      expect(signals).toHaveLength(1);
+      expect(signals[0]!.kind).toBe('EXIT_SHORT');
+      expect(signals[0]!.strength).toBe(1);
+    });
+
+    it("re-arms on 'hold' while SHORT: no signal, proposal.plan carries direction 'short' from the position's own side (never the model's plan.direction)", async () => {
+      const fetchFn = vi.fn();
+      const client = new AnthropicAgentClient(shortsCfg(), fetchFn);
+      fetchFn.mockResolvedValue(
+        apiResponse(
+          toolUseBody(
+            // Model sends direction 'long' on a re-arm plan — must be IGNORED; the open position is
+            // SHORT, and a re-arm can never flip direction mid-position.
+            { action: 'hold', confidence: 0.6, rationale: 'r', plan: plan({ direction: 'long' }) },
+            'tool_use',
+            'submit_plan',
+          ),
+        ),
+      );
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: SHORT_CONTEXT,
+      });
+
+      const proposal = await client.propose(input);
+
+      expect(proposal.signals).toEqual([]);
+      expect(proposal.plan?.direction).toBe('short');
+    });
+
+    it('rejects a submit_plan payload missing plan.direction when shortsEnabled is true (schema-required)', async () => {
+      const fetchFn = vi.fn();
+      const warn = vi.fn();
+      const client = new AnthropicAgentClient(shortsCfg(), fetchFn, { warn });
+      const planWithoutDirection: Record<string, unknown> = { ...plan() };
+      delete planWithoutDirection['direction'];
+      fetchFn.mockResolvedValue(
+        apiResponse(
+          toolUseBody(
+            { action: 'long', confidence: 0.8, rationale: 'r', plan: planWithoutDirection },
+            'tool_use',
+            'submit_plan',
+          ),
+        ),
+      );
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+      });
+
+      const proposal = await client.propose(input);
+
+      expect(proposal.signals).toEqual([]);
+      expect(warn).toHaveBeenCalled();
+    });
+  });
+
   describe('shorts capability (B3, shortsEnabled gate)', () => {
-    it('throws at construction when shortsEnabled and planMode are both set', () => {
+    it('shortsEnabled without planMode never throws (legacy path, any venue)', () => {
+      expect(() => new AnthropicAgentClient(buildCfg({ shortsEnabled: true }))).not.toThrow();
+    });
+
+    it('shortsEnabled with planMode on a non-perp (spot) venue throws — spot cannot short', () => {
+      expect(
+        () =>
+          new AnthropicAgentClient(
+            buildCfg({ shortsEnabled: true, planMode: true, perpCapableVenue: false }),
+          ),
+      ).toThrow(/requires a perp-capable venue/);
+      // Absent perpCapableVenue is the same as false (spot deployments never set it).
       expect(
         () => new AnthropicAgentClient(buildCfg({ shortsEnabled: true, planMode: true })),
-      ).toThrow(/shortsEnabled and planMode are mutually exclusive/);
+      ).toThrow(/requires a perp-capable venue/);
+    });
+
+    it('shortsEnabled with planMode on a perp-capable venue does not throw (Push II Phase 8)', () => {
+      expect(
+        () =>
+          new AnthropicAgentClient(
+            buildCfg({ shortsEnabled: true, planMode: true, perpCapableVenue: true }),
+          ),
+      ).not.toThrow();
     });
 
     it('sends SHORTS_DECISION_TOOL (not DECISION_TOOL) as tools/tool_choice when shortsEnabled is true', async () => {

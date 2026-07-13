@@ -136,6 +136,12 @@ export function agenticEnv(config?: TypedConfigService): Record<string, string |
     AGENTIC_AUTO_PROMOTE_MIN_TRADES: String(agentic.autoPromoteMinTrades),
     AGENTIC_AUTO_PROMOTE_MIN_ATTRIBUTED_TRADES: String(agentic.autoPromoteMinAttributedTrades),
     AGENTIC_PLAN_MODE: String(agentic.planMode),
+    AGENTIC_SHORTS_ENABLED: String(agentic.shortsEnabled),
+    // Push II Phase 8: perp-capability is derived from config.venues (never a separate env knob —
+    // one source of truth for "is this boot's venue short-capable") so selectAgentClient can refuse
+    // shortsEnabled+planMode construction on a spot-only deployment. Mirrors position-sizer.service.ts's
+    // own local PERP_VENUE_ID convention (binanceusdm is the only perp venue this pass wires).
+    AGENTIC_PERP_VENUE: String(config.venues.some((v) => v.id === 'binanceusdm')),
     AGENTIC_MIN_EDGE_MULTIPLE: agentic.minEdgeMultiple,
     AGENTIC_MIN_RR: agentic.minRr,
     AGENTIC_PLAN_EXIT_TTL_BARS: String(agentic.planExitTtlBars),
@@ -278,6 +284,11 @@ export function selectAgentClient(
       // W3.1 plan mode: submit_plan tool + deterministic plan executor (strategy side). Flag off ⇒
       // byte-identical legacy submit_decision behavior.
       planMode: env['AGENTIC_PLAN_MODE'] === 'true',
+      // Push II Phase 8: plan-mode shorts. perpCapableVenue is what actually gates construction (see
+      // the client's constructor guard) — AGENTIC_SHORTS_ENABLED alone on a spot-only deployment
+      // throws rather than silently no-opping (spot cannot short).
+      shortsEnabled: env['AGENTIC_SHORTS_ENABLED'] === 'true',
+      perpCapableVenue: env['AGENTIC_PERP_VENUE'] === 'true',
       minEdgeMultiple: env['AGENTIC_MIN_EDGE_MULTIPLE'],
       minRr: env['AGENTIC_MIN_RR'],
       // C1: off by default ⇒ byte-identical legacy prompt (no derivatives sentence).
@@ -300,6 +311,18 @@ export function selectAgentClient(
   );
   const model = env['AGENTIC_MODEL'] ?? DEFAULT_MODEL;
   if (env['AGENTIC_PORTFOLIO_CONSULT'] === 'true') {
+    // Review must-fix (shorts round 2): the batch path sends PORTFOLIO_TOOL, whose strict schema
+    // has no plan.direction field, while the shorts element schema REQUIRES direction on every
+    // plan — the combination would silently degrade EVERY plan entry (longs included) to a hold.
+    // Until a PORTFOLIO_SHORTS_TOOL exists (backlog seed), refuse the combination loudly at boot
+    // instead of failing open per decision.
+    if (env['AGENTIC_SHORTS_ENABLED'] === 'true') {
+      throw new Error(
+        'AGENTIC_PORTFOLIO_CONSULT and AGENTIC_SHORTS_ENABLED cannot be combined: the strict ' +
+          'submit_portfolio tool cannot emit plan.direction, so every batched plan entry would ' +
+          'silently degrade to a hold. Disable one of the two flags.',
+      );
+    }
     // Batching wraps AnthropicAgentClient DIRECTLY (not BudgetedAgentClient — see
     // batching-agent-client.ts's own header comment on why): it holds the SAME budget instance and
     // performs its own single tryReserveCall/recordUsage per BATCH rather than per symbol.

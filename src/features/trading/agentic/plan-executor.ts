@@ -28,9 +28,14 @@ export interface PlanExecutorInput {
   readonly state: PlanExecutorState;
   // Last closed candle's close, as an exact decimal string.
   readonly closePrice: string;
-  readonly positionSide: 'LONG' | 'FLAT';
-  // Whether a resting (unfilled) BUY entry for this plan is currently open — derived by the caller
-  // from portfolio.openOrders (same symbol+BUY filter staleEntryCancels uses).
+  // Push II Phase 8: widened to include 'SHORT' — plan-mode shorts key their exit-arm formulas off
+  // this (mirrored: stop ABOVE / take-profit BELOW entry, vs. LONG's stop BELOW / take-profit
+  // ABOVE). A shorts-disabled deployment's position side can never actually be 'SHORT', so the LONG
+  // arm below stays byte-identical there.
+  readonly positionSide: 'LONG' | 'SHORT' | 'FLAT';
+  // Whether a resting (unfilled) entry for this plan is currently open — a BUY for a LONG plan, a
+  // SELL for a SHORT plan (mirrored; derived by the caller from portfolio.openOrders, same
+  // side-per-direction filter staleEntryCancels uses).
   readonly hasRestingEntry: boolean;
 }
 
@@ -67,9 +72,26 @@ export function evaluatePlan(input: PlanExecutorInput): PlanExecutorAction {
     return { type: 'hold' };
   }
 
-  // FLAT with a previously-captured entry price: the position that was LONG is gone without this
-  // executor ever having emitted the exit itself — checked before the never-filled-entry branches
-  // below (entryPrice null there).
+  // Push II Phase 8: SHORT arm, mirrored off the LONG arm above — stop fires ABOVE entry (close
+  // crossing UP), take-profit fires BELOW entry (close crossing DOWN); maxHoldBars is unchanged
+  // (direction-agnostic — a duration cap, not a price level).
+  if (positionSide === 'SHORT') {
+    // Same invariant as the LONG arm above: entryPrice is non-null once filled.
+    if (entryPrice === null) return { type: 'hold' };
+
+    const entry = new Decimal(entryPrice);
+    const stopPrice = entry.mul(new Decimal(1).plus(plan.stopLossPct));
+    const takeProfitPrice = entry.mul(new Decimal(1).minus(plan.takeProfitPct));
+
+    if (close.gte(stopPrice)) return { type: 'exit', reason: 'stop' };
+    if (close.lte(takeProfitPrice)) return { type: 'exit', reason: 'take_profit' };
+    if (barsElapsed >= plan.maxHoldBars) return { type: 'exit', reason: 'max_hold' };
+    return { type: 'hold' };
+  }
+
+  // FLAT with a previously-captured entry price: the position that was LONG or SHORT is gone
+  // without this executor ever having emitted the exit itself — checked before the never-filled-
+  // entry branches below (entryPrice null there).
   if (entryPrice !== null) return { type: 'position_closed' };
 
   // FLAT, entry never filled: either a resting unfilled entry, or nothing resting yet (in-flight

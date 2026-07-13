@@ -27,7 +27,9 @@ import {
   TRADEFLOW_TEMPLATE_VERSION,
   PLAN_BOUNDS,
   PLAN_TOOL,
+  PLAN_SHORTS_TOOL,
   PLAN_TEMPLATE_VERSION,
+  PLAN_SHORTS_TEMPLATE_VERSION,
   PROMPT_TEMPLATE_VERSION,
   buildMarketPayload,
   buildPlaybookBlock,
@@ -70,6 +72,10 @@ const planFieldSchema = z
       .min(PLAN_BOUNDS.entryValidityBars.min)
       .max(PLAN_BOUNDS.entryValidityBars.max),
     maxHoldBars: z.number().int().min(PLAN_BOUNDS.maxHoldBars.min).max(PLAN_BOUNDS.maxHoldBars.max),
+    // Push II Phase 8 (plan-mode shorts): optional on the base schema so its presence/absence never
+    // changes parsing for a shortsEnabled=false deployment (byte-identical) — planShortsSchema below
+    // is the schema that actually REQUIRES it (superRefine), selected only when cfg.shortsEnabled.
+    direction: z.enum(['long', 'short']).optional(),
   })
   .optional();
 
@@ -81,6 +87,28 @@ const planSchema = decisionSchema.extend({ plan: planFieldSchema }).superRefine(
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       message: "plan is required when action is 'long'",
+    });
+  }
+});
+
+// Push II Phase 8: parameterized sibling of planSchema, selected in place of it only when
+// cfg.shortsEnabled is true (mirrors shortsDecisionSchema's relationship to decisionSchema above) —
+// planSchema itself stays untouched so a shortsEnabled=false deployment's plan-mode validation is
+// byte-identical. Additionally requires plan.direction whenever a plan is present (a plan-mode
+// shorts deployment needs to know which side a fresh entry opens; a re-arm plan on an existing
+// position still carries it structurally but the strategy ignores it — the position's own side
+// wins, see anthropic-agent-client.ts's buildProposalFromDecision).
+const planShortsSchema = decisionSchema.extend({ plan: planFieldSchema }).superRefine((v, ctx) => {
+  if (v.action === 'long' && v.plan === undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "plan is required when action is 'long'",
+    });
+  }
+  if (v.plan !== undefined && v.plan.direction === undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'plan.direction is required when shorts are enabled',
     });
   }
 });
@@ -98,6 +126,24 @@ const planElementSchema = decisionSchema
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: "plan is required when action is 'long'",
+      });
+    }
+  });
+// Push II Phase 8: plan-shorts sibling of planElementSchema, mirroring planShortsSchema's own
+// relationship to planSchema above.
+const planShortsElementSchema = decisionSchema
+  .extend({ symbol: z.string().min(1), plan: planFieldSchema })
+  .superRefine((v, ctx) => {
+    if (v.action === 'long' && v.plan === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "plan is required when action is 'long'",
+      });
+    }
+    if (v.plan !== undefined && v.plan.direction === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'plan.direction is required when shorts are enabled',
       });
     }
   });
@@ -182,12 +228,20 @@ export interface AnthropicAgentClientConfig {
   // with the derivatives block under the same information-context A/B control arm. Absent/false ⇒
   // byte-identical legacy prompt/payload.
   readonly positioningFeedEnabled?: boolean;
-  // B3 shorts capability: widens the decision tool/schema to accept 'short' and maps it to
-  // ENTER_SHORT/EXIT_SHORT (see propose()'s mapping table). LEGACY decision path ONLY — mutually
-  // exclusive with planMode (the plan schema is long-oriented; shorts-in-plan-mode belongs to the
-  // carry sub-plan). Absent/false ⇒ byte-identical legacy behavior; combining both flags throws at
-  // construction.
+  // B3 shorts capability, widened by Push II Phase 8 to ALSO cover plan mode: with planMode false
+  // this widens the legacy decision tool/schema to accept 'short' and maps it to ENTER_SHORT/
+  // EXIT_SHORT (see propose()'s mapping table) — unchanged from B3. With planMode true, it instead
+  // selects PLAN_SHORTS_TOOL/planShortsSchema (submit_plan gains a required plan.direction field)
+  // and the mapping table's plan-mode arms branch on rawPlan.direction. Either combination requires
+  // perpCapableVenue — spot cannot short (see the constructor guard). Absent/false ⇒ byte-identical
+  // legacy behavior in both modes.
   readonly shortsEnabled?: boolean;
+  // Push II Phase 8: true only when the configured venue is perp-capable (binanceusdm/demo — see
+  // agentic-strategy.module.ts's AGENTIC_PERP_VENUE derivation off config.venues). Gates
+  // shortsEnabled + planMode together at construction: shorts in plan mode on a non-perp (spot)
+  // venue throws rather than silently no-opping. Irrelevant to the legacy (non-plan) shorts path,
+  // which this pass leaves exactly as B3 shipped it.
+  readonly perpCapableVenue?: boolean;
 }
 
 // Placeholder profile used only when no real AgentTradingProfile has been wired yet — keeps the
@@ -295,12 +349,15 @@ export class AnthropicAgentClient implements AgentClientPort {
     private readonly logger: LoggerLike = NOOP_LOGGER,
     private readonly playbookProvider?: PlaybookProvider,
   ) {
-    // B3: fail fast at construction rather than silently picking one flag at decide() time — the
-    // plan schema is long-oriented (entry offset/stop/TP all sized off a long fill) and
-    // shorts-in-plan-mode is out of scope here (carry sub-plan's own design).
-    if (cfg.shortsEnabled && cfg.planMode) {
+    // Push II Phase 8: fail fast at construction rather than silently picking a flag combination at
+    // decide() time. shortsEnabled + planMode together is now a supported capability (PLAN_SHORTS_TOOL/
+    // planShortsSchema, direction-aware plan-executor arms) — but ONLY on a perp-capable venue: spot
+    // has no short-selling mechanism, so shorts + planMode on a spot deployment still throws (this was
+    // an unconditional throw pre-Phase-8; it is now conditional on perpCapableVenue). The LEGACY
+    // (non-plan) shorts path is unaffected by perpCapableVenue — it never throws regardless.
+    if (cfg.shortsEnabled && cfg.planMode && !cfg.perpCapableVenue) {
       throw new Error(
-        'AnthropicAgentClient: shortsEnabled and planMode are mutually exclusive (plan schema is long-oriented; shorts-in-plan-mode is out of scope)',
+        'AnthropicAgentClient: shortsEnabled with planMode requires a perp-capable venue (spot cannot short)',
       );
     }
   }
@@ -449,7 +506,9 @@ export class AnthropicAgentClient implements AgentClientPort {
       };
     }
     const parsedDecision = this.cfg.planMode
-      ? planSchema.safeParse(toolBlock.input)
+      ? this.cfg.shortsEnabled
+        ? planShortsSchema.safeParse(toolBlock.input)
+        : planSchema.safeParse(toolBlock.input)
       : this.cfg.shortsEnabled
         ? shortsDecisionSchema.safeParse(toolBlock.input)
         : decisionSchema.safeParse(toolBlock.input);
@@ -685,7 +744,9 @@ export class AnthropicAgentClient implements AgentClientPort {
       if (symbolField.success) bySymbol.set(symbolField.data.symbol, raw);
     }
     const elementSchema = this.cfg.planMode
-      ? planElementSchema
+      ? this.cfg.shortsEnabled
+        ? planShortsElementSchema
+        : planElementSchema
       : this.cfg.shortsEnabled
         ? shortsDecisionElementSchema
         : decisionElementSchema;
@@ -762,7 +823,11 @@ export class AnthropicAgentClient implements AgentClientPort {
     readonly knobs: PlaybookKnobs | undefined;
     readonly baseProfile: AgentTradingProfile;
     readonly systemPrompt: string;
-    readonly activeTool: typeof DECISION_TOOL | typeof SHORTS_DECISION_TOOL | typeof PLAN_TOOL;
+    readonly activeTool:
+      | typeof DECISION_TOOL
+      | typeof SHORTS_DECISION_TOOL
+      | typeof PLAN_TOOL
+      | typeof PLAN_SHORTS_TOOL;
     readonly baseTemplateVersion: string;
     readonly feedTags: readonly string[];
     readonly infoContextControlArm: boolean;
@@ -833,15 +898,26 @@ export class AnthropicAgentClient implements AgentClientPort {
       tradeFlowFeedEnabled: effectiveTradeFlowEnabled,
       positioningFeedEnabled: effectivePositioningEnabled,
     });
-    // B3: shortsEnabled selects SHORTS_DECISION_TOOL in place of DECISION_TOOL (never alongside
-    // planMode — enforced at construction). This is the tool actually SENT to the API for the
-    // single-symbol path (proposeBatch always sends PORTFOLIO_TOOL instead — see its own body).
+    // B3: shortsEnabled selects SHORTS_DECISION_TOOL in place of DECISION_TOOL on the legacy path.
+    // Push II Phase 8: shortsEnabled + planMode selects PLAN_SHORTS_TOOL in place of PLAN_TOOL
+    // instead (construction already refused this combination on a non-perp venue — see the
+    // constructor guard). This is the tool actually SENT to the API for the single-symbol path
+    // (proposeBatch always sends PORTFOLIO_TOOL instead — see its own body).
     const activeTool = this.cfg.planMode
-      ? PLAN_TOOL
+      ? this.cfg.shortsEnabled
+        ? PLAN_SHORTS_TOOL
+        : PLAN_TOOL
       : this.cfg.shortsEnabled
         ? SHORTS_DECISION_TOOL
         : DECISION_TOOL;
-    const baseTemplateVersion = this.cfg.planMode ? PLAN_TEMPLATE_VERSION : PROMPT_TEMPLATE_VERSION;
+    // p3→p4: the plan-mode template tag bumps ONLY when shortsEnabled is also on (a distinct
+    // constant, not a mutation of PLAN_TEMPLATE_VERSION — see agent-prompt.ts's own comment) so a
+    // shortsEnabled=false deployment's plan-mode hash stays byte-identically 'p3'.
+    const baseTemplateVersion = this.cfg.planMode
+      ? this.cfg.shortsEnabled
+        ? PLAN_SHORTS_TEMPLATE_VERSION
+        : PLAN_TEMPLATE_VERSION
+      : PROMPT_TEMPLATE_VERSION;
     // Flag-ON appends the corresponding system-prompt sentence, so it is a distinct template for
     // attribution purposes (mirrors plan mode's own tag); flag-OFF hashes are byte-identical. All
     // flags stack in a fixed order (`+d1+s1+x1+xs1+tf1+pos1`, `+pf1` appended by proposeBatch's own
@@ -850,7 +926,10 @@ export class AnthropicAgentClient implements AgentClientPort {
     const feedTags = [
       ...(effectiveDerivativesEnabled ? [DERIVATIVES_TEMPLATE_VERSION] : []),
       ...(this.cfg.sentimentFeedEnabled ? [SENTIMENT_TEMPLATE_VERSION] : []),
-      ...(this.cfg.shortsEnabled ? [SHORTS_TEMPLATE_VERSION] : []),
+      // x1 marks the LEGACY (non-plan) shorts prompt shape only — the plan-shorts combination is
+      // already fully identified by the p4 base tag, so stacking x1 onto p4 would contradict the
+      // documented design (review nice-to-have: code now matches SHORTS_TEMPLATE_VERSION's comment).
+      ...(this.cfg.shortsEnabled && !this.cfg.planMode ? [SHORTS_TEMPLATE_VERSION] : []),
       ...(effectiveCrossSymbolEnabled ? [CROSS_SYMBOL_TEMPLATE_VERSION] : []),
       ...(effectiveTradeFlowEnabled ? [TRADEFLOW_TEMPLATE_VERSION] : []),
       ...(effectivePositioningEnabled ? [POSITIONING_TEMPLATE_VERSION] : []),
@@ -913,13 +992,13 @@ export class AnthropicAgentClient implements AgentClientPort {
     } = params;
     const { action, confidence, rationale } = params.decision;
 
-    // B3: widened to 'LONG' | 'SHORT' | 'FLAT' locally via `as` (a type-level upcast only — the
-    // runtime value is still ever only 'LONG'/'FLAT') so the mapping table below can compare against
-    // 'SHORT'. AgentPositionSummary.side stays 'LONG' | 'FLAT' at the port level (see agent-prompt.ts's
-    // buildMarketPayload comment for why); no strategy instance can populate 'SHORT' today, so every
-    // SHORT-side arm below is presently unreachable dead code, kept only for forward compatibility
-    // and gated by shortsEnabled.
-    const side = (input.context?.position.side ?? 'FLAT') as 'LONG' | 'SHORT' | 'FLAT';
+    // AgentPositionSummary.side is 'LONG' | 'SHORT' | 'FLAT' at the port level (widened by Push II
+    // Phase 8 — see its own comment); no `as` upcast needed here anymore. A shorts-disabled
+    // deployment's side can never actually be 'SHORT' (agentic.strategy.ts's buildContext never
+    // populates it without a strategy that emits ENTER_SHORT), so every SHORT-side arm below stays
+    // unreachable dead code there — reachable now via plan-mode shorts (this client's own
+    // shortsEnabled + planMode combination) and via the legacy non-plan shortsEnabled path.
+    const side = input.context?.position.side ?? 'FLAT';
     const common = {
       strategyId: input.strategyId,
       venue,
@@ -942,8 +1021,12 @@ export class AnthropicAgentClient implements AgentClientPort {
     // The same floors bind a RE-ARM plan (hold/long while already LONG — accepted in the final
     // mapping arm below): a plan that would be rejected as a fresh entry must not reach the
     // executor by arriving on a 'hold' instead.
-    const opensNewLong = action === 'long' && side === 'FLAT';
-    const rearmsOpenLong = side === 'LONG' && (action === 'hold' || action === 'long');
+    // Push II Phase 8: renamed from opensNewLong/rearmsOpenLong — in plan mode, action 'long' opens
+    // a NEW plan-managed position of EITHER direction (rawPlan.direction picks it; see the mapping
+    // table below), and a re-arm now also applies while the open position is SHORT.
+    const opensNewPosition = action === 'long' && side === 'FLAT';
+    const rearmsOpenPosition =
+      (side === 'LONG' || side === 'SHORT') && (action === 'hold' || action === 'long');
 
     // Playbook-knob confidence floor (tighten-only channel): a NEW entry whose stated confidence
     // sits below the playbook's minConfidence knob is downgraded to a journal-visible hold — the
@@ -973,7 +1056,7 @@ export class AnthropicAgentClient implements AgentClientPort {
       }
     }
 
-    if (this.cfg.planMode && rawPlan && (opensNewLong || rearmsOpenLong)) {
+    if (this.cfg.planMode && rawPlan && (opensNewPosition || rearmsOpenPosition)) {
       const feeFraction = new Decimal(baseProfile.makerBps).plus(baseProfile.takerBps).div(10_000);
       // Knob floors raise (never lower) the configured floors, and bind on FRESH entries only —
       // a re-arm keeps the config floors so re-attaching management to an existing position never
@@ -981,11 +1064,11 @@ export class AnthropicAgentClient implements AgentClientPort {
       const configMinEdgeMultiple = new Decimal(this.cfg.minEdgeMultiple ?? '1.5');
       const configMinRr = new Decimal(this.cfg.minRr ?? '1.5');
       const knobMinEdgeMultiple =
-        opensNewLong && knobs?.minEdgeMultiple !== undefined
+        opensNewPosition && knobs?.minEdgeMultiple !== undefined
           ? new Decimal(knobs.minEdgeMultiple)
           : undefined;
       const knobMinRr =
-        opensNewLong && knobs?.minRr !== undefined ? new Decimal(knobs.minRr) : undefined;
+        opensNewPosition && knobs?.minRr !== undefined ? new Decimal(knobs.minRr) : undefined;
       const effectiveMinEdgeMultiple =
         knobMinEdgeMultiple !== undefined && knobMinEdgeMultiple.gt(configMinEdgeMultiple)
           ? knobMinEdgeMultiple
@@ -1011,9 +1094,10 @@ export class AnthropicAgentClient implements AgentClientPort {
         return {
           signals: [],
           decision: {
-            // planMode and shortsEnabled are mutually exclusive (constructor guard) — action can
-            // never actually be 'short' on this path, but see the cast comment on the final return
-            // below for why a cast (not a port widening) is used regardless.
+            // action can never actually be 'short' on the plan-mode path (planSchema/planShortsSchema
+            // both keep the enum 'long' | 'flat' | 'hold' — direction rides on rawPlan.direction
+            // instead, see the mapping table below); see the cast comment on the final return below
+            // for why a cast (not a port widening) is used regardless.
             action: action as 'long' | 'flat' | 'hold',
             confidence,
             rationale: `[plan rejected: ${rejectionTag}] ${rationale}`,
@@ -1030,12 +1114,26 @@ export class AnthropicAgentClient implements AgentClientPort {
     let signals: Signal[];
     let acceptedPlan: AgentPlan | undefined;
     if (action === 'long' && side === 'FLAT') {
+      // Push II Phase 8: in plan mode, action 'long' means "open a new plan-managed position" —
+      // rawPlan.direction (schema-required whenever shortsEnabled) picks the actual side; absent
+      // (shortsEnabled off, or the legacy non-plan path) ⇒ long, byte-identical to pre-Phase-8.
+      // shortsEnabled is a REQUIRED conjunct (review finding): without it a spurious direction
+      // field surviving strict tool use would emit ENTER_SHORT on a shorts-off spot deployment
+      // that never passed the perp construction guard — fail closed, ignore the field instead.
+      const isShortEntry =
+        this.cfg.shortsEnabled === true && this.cfg.planMode && rawPlan?.direction === 'short';
       // Plan mode: the plan's own entry offset prices the resting entry (positive bps = below the
-      // last close) and supersedes the book-touch hint; legacy mode keeps the bestBid hint.
+      // last close for a long, ABOVE close for a short — mirrored, each side's own cheaper resting
+      // price) and supersedes the book-touch hint; legacy mode keeps the bestBid hint.
       let limitPriceHint: Price | undefined;
       if (this.cfg.planMode && rawPlan && lastCandle) {
+        const offsetFraction = new Decimal(rawPlan.entryOffsetBps).div(10_000);
         const offsetHint = new Decimal(lastCandle.close.toFixed())
-          .mul(new Decimal(1).minus(new Decimal(rawPlan.entryOffsetBps).div(10_000)))
+          .mul(
+            isShortEntry
+              ? new Decimal(1).plus(offsetFraction)
+              : new Decimal(1).minus(offsetFraction),
+          )
           .toDecimalPlaces(8);
         limitPriceHint = price(offsetHint.toFixed());
         acceptedPlan = {
@@ -1044,14 +1142,15 @@ export class AnthropicAgentClient implements AgentClientPort {
           takeProfitPct: String(rawPlan.takeProfitPct),
           entryValidityBars: rawPlan.entryValidityBars,
           maxHoldBars: rawPlan.maxHoldBars,
+          ...(rawPlan.direction ? { direction: rawPlan.direction } : {}),
         };
-      } else {
+      } else if (!isShortEntry) {
         limitPriceHint = this.bookEntryHint(input.snapshot.books.get(symbol), refPrice);
       }
       signals = [
         {
           ...common,
-          kind: 'ENTER_LONG',
+          kind: isShortEntry ? 'ENTER_SHORT' : 'ENTER_LONG',
           strength: Math.min(MAX_STRENGTH, Math.max(MIN_STRENGTH, confidence)),
           // Omitted entirely (no key) rather than undefined when no book/no near-touch bid — see
           // bookEntryHint's own comment.
@@ -1060,11 +1159,24 @@ export class AnthropicAgentClient implements AgentClientPort {
       ];
     } else if (action === 'flat' && side === 'LONG') {
       signals = [{ ...common, kind: 'EXIT_LONG', strength: MAX_STRENGTH }];
-    } else if (this.cfg.shortsEnabled && action === 'short' && side === 'FLAT') {
-      // No book-aware limitPriceHint here: bookEntryHint (below) is long-specific — a resting BID
-      // near refPrice is a cheaper LONG entry, but the equivalent cheaper SHORT entry would be a
-      // resting ASK, the opposite side of the book. Reusing bookEntryHint would price a short entry
-      // on the wrong side, so a short entry always uses the plain refPrice-based sizing path.
+    } else if (this.cfg.shortsEnabled && action === 'flat' && side === 'SHORT') {
+      // Direction-agnostic: 'flat' always closes whatever is open. Reachable from BOTH the legacy
+      // (non-plan) shorts path and plan-mode shorts (a SHORT position can only exist if one of the
+      // two opened it) — the exit itself is identical either way, so no cfg.planMode branch needed.
+      signals = [{ ...common, kind: 'EXIT_SHORT', strength: MAX_STRENGTH }];
+    } else if (
+      !this.cfg.planMode &&
+      this.cfg.shortsEnabled &&
+      action === 'short' &&
+      side === 'FLAT'
+    ) {
+      // Legacy decision path ONLY — action 'short' can never arrive in plan mode (planSchema/
+      // planShortsSchema both keep the action enum long/flat/hold; direction rides on
+      // rawPlan.direction instead, handled by the entry branch above). No book-aware limitPriceHint
+      // here: bookEntryHint (below) is long-specific — a resting BID near refPrice is a cheaper LONG
+      // entry, but the equivalent cheaper SHORT entry would be a resting ASK, the opposite side of
+      // the book. Reusing bookEntryHint would price a short entry on the wrong side, so a short
+      // entry always uses the plain refPrice-based sizing path.
       signals = [
         {
           ...common,
@@ -1072,33 +1184,49 @@ export class AnthropicAgentClient implements AgentClientPort {
           strength: Math.min(MAX_STRENGTH, Math.max(MIN_STRENGTH, confidence)),
         },
       ];
-    } else if (this.cfg.shortsEnabled && action === 'flat' && side === 'SHORT') {
+    } else if (
+      !this.cfg.planMode &&
+      this.cfg.shortsEnabled &&
+      action === 'long' &&
+      side === 'SHORT'
+    ) {
+      // Legacy decision path ONLY (guarded by !planMode): close the short first — never a same-bar
+      // flip straight to ENTER_LONG. The model re-decides next bar once flat, the same
+      // close-then-reenter discipline as every other direction change. In PLAN mode this exact
+      // (action, side) pair means something different — re-arming the open SHORT position — see the
+      // final else branch below; the !planMode guard keeps the two from colliding.
       signals = [{ ...common, kind: 'EXIT_SHORT', strength: MAX_STRENGTH }];
-    } else if (this.cfg.shortsEnabled && action === 'long' && side === 'SHORT') {
-      // Close the short first — never a same-bar flip straight to ENTER_LONG. The model re-decides
-      // next bar once flat, the same close-then-reenter discipline as every other direction change.
-      signals = [{ ...common, kind: 'EXIT_SHORT', strength: MAX_STRENGTH }];
-    } else if (this.cfg.shortsEnabled && action === 'short' && side === 'LONG') {
+    } else if (
+      !this.cfg.planMode &&
+      this.cfg.shortsEnabled &&
+      action === 'short' &&
+      side === 'LONG'
+    ) {
       // Symmetric to the arm above: close the long first, never a same-bar flip to ENTER_SHORT.
+      // action 'short' can never arrive in plan mode, so no planMode guard is needed here (unlike
+      // the arm above, there is no plan-mode meaning of this pair to collide with).
       signals = [{ ...common, kind: 'EXIT_LONG', strength: MAX_STRENGTH }];
     } else {
-      // 'hold'; 'long' while already LONG; 'flat' while already FLAT; 'short' while already SHORT
-      // (shortsEnabled only — side can never actually be 'SHORT' today, see the `side` comment
-      // above) — all no-ops. A flag-off 'short' action can't even reach here: decisionSchema/
-      // DECISION_TOOL never accept 'short' as a valid action in the first place.
+      // 'hold'; 'long'/'hold' while already LONG or SHORT (plan mode: a re-arm, see below); 'flat'
+      // while already FLAT; 'short' while already SHORT (legacy only) — all no-ops. A flag-off
+      // 'short' action can't even reach here: decisionSchema/DECISION_TOOL never accept 'short' as a
+      // valid action in the first place.
       signals = [];
-      // W3.1 re-arm: a floors-passing plan on hold/long while LONG emits no signal — it only
-      // re-attaches deterministic management to the existing position (restart self-heal; the
-      // strategy arms it and the first managed bar anchors stop/TP to the real avgEntry). FLAT
-      // holds never arm: a plan with no position and no resting entry would only tick down to
-      // plan_expired noise.
-      if (this.cfg.planMode && rawPlan && rearmsOpenLong) {
+      // W3.1 re-arm, widened by Push II Phase 8 to also cover an open SHORT: a floors-passing plan
+      // on hold/long while LONG or SHORT emits no signal — it only re-attaches deterministic
+      // management to the existing position (restart self-heal; the strategy arms it and the first
+      // managed bar anchors stop/TP to the real avgEntry). FLAT holds never arm: a plan with no
+      // position and no resting entry would only tick down to plan_expired noise. rawPlan.direction
+      // is NEVER used here — the position's OWN side is what the executor manages; a re-arm cannot
+      // flip direction mid-position (see AgentPlan.direction's own comment).
+      if (this.cfg.planMode && rawPlan && rearmsOpenPosition) {
         acceptedPlan = {
           entryOffsetBps: rawPlan.entryOffsetBps,
           stopLossPct: String(rawPlan.stopLossPct),
           takeProfitPct: String(rawPlan.takeProfitPct),
           entryValidityBars: rawPlan.entryValidityBars,
           maxHoldBars: rawPlan.maxHoldBars,
+          ...(side === 'SHORT' ? { direction: 'short' as const } : {}),
         };
       }
     }
@@ -1186,6 +1314,7 @@ export class AnthropicAgentClient implements AgentClientPort {
       | typeof DECISION_TOOL
       | typeof SHORTS_DECISION_TOOL
       | typeof PLAN_TOOL
+      | typeof PLAN_SHORTS_TOOL
       | typeof PORTFOLIO_TOOL,
     timeoutMs: number,
   ): Promise<Response> {
@@ -1231,6 +1360,7 @@ export class AnthropicAgentClient implements AgentClientPort {
       | typeof DECISION_TOOL
       | typeof SHORTS_DECISION_TOOL
       | typeof PLAN_TOOL
+      | typeof PLAN_SHORTS_TOOL
       | typeof PORTFOLIO_TOOL,
     signal: AbortSignal,
   ): Promise<Response> {

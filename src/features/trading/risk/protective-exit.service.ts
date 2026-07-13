@@ -61,17 +61,19 @@ export class ProtectiveExitService {
     if (this.killSwitch.state() !== 'RUNNING') return; // HALTING/FLATTENING belongs to HaltCoordinator
 
     const snapshot = this.portfolio.snapshot();
-    // Busy-set scope: a resting SELL (venue take-profit) locks base balance but must not permanently
-    // disable this stop once such orders can rest — fire() clears it first (see below). Only a
-    // resting BUY entry or an in-flight submission (either side) still stacks a slice onto this
-    // symbol, so only those count as busy.
-    const busy = new Set<string>();
+    // Push II Phase 8: split by RAW order side (not a pre-decided busy/sellOpen split) — which side
+    // is "the unfilled entry" (stacking guard) vs "the venue take-profit" (cancel-before-exit, never
+    // blocking) depends on the POSITION's own direction, resolved per-position below. A LONG's entry
+    // is a resting BUY and its TP is a resting SELL; a SHORT's entry is a resting SELL and its TP is
+    // a resting BUY — mirrored. An in-flight submission (either side) always stacks a slice
+    // regardless of direction.
+    const buyOpen = new Set<string>();
     const sellOpen = new Set<string>();
     for (const o of snapshot.openOrders) {
-      if (o.side === 'BUY') busy.add(o.symbol);
-      else sellOpen.add(o.symbol);
+      (o.side === 'BUY' ? buyOpen : sellOpen).add(o.symbol);
     }
-    for (const f of snapshot.inFlightIntents) busy.add(f.symbol);
+    const inFlightSymbols = new Set<string>();
+    for (const f of snapshot.inFlightIntents) inFlightSymbols.add(f.symbol);
 
     const liveKeys = new Set<string>();
     for (const [key, pos] of snapshot.positions) {
@@ -117,21 +119,20 @@ export class ProtectiveExitService {
       if (!stopTriggered && !trailTriggered) continue;
       const reason: ProtectReason = stopTriggered ? 'STOP_LOSS' : 'TRAILING_STOP';
 
-      if (busy.has(pos.symbol)) continue; // STACKING GUARD: a slice is already working this symbol
+      // Direction-aware STACKING GUARD (Push II Phase 8): the entry-blocking side is BUY for a
+      // LONG, SELL for a SHORT — mirrored. An in-flight submission (either side) always blocks,
+      // regardless of direction.
+      const entryBusy =
+        (isLong ? buyOpen : sellOpen).has(pos.symbol) || inFlightSymbols.has(pos.symbol);
+      if (entryBusy) continue; // STACKING GUARD: a slice is already working this symbol
 
       const lastFired = this.lastFiredAt.get(key);
       if (lastFired !== undefined && now - lastFired < this.config.cooldownMs) continue;
 
-      await this.fire(
-        pos,
-        ref.mid,
-        now,
-        reason,
-        key,
-        snapshot.snapshotSeq,
-        isLong,
-        sellOpen.has(pos.symbol),
-      );
+      // The venue take-profit side is the OPPOSITE of the entry side — SELL for a LONG, BUY for a
+      // SHORT — never blocking (fire() cancels it first when present).
+      const hasOpenTp = (isLong ? sellOpen : buyOpen).has(pos.symbol);
+      await this.fire(pos, ref.mid, now, reason, key, snapshot.snapshotSeq, isLong, hasOpenTp);
     }
 
     // Cleanup: drop HWM/LWM/cooldown state for symbols that no longer carry a position, so a later
@@ -155,7 +156,7 @@ export class ProtectiveExitService {
     key: string,
     snapshotSeq: bigint,
     isLong: boolean,
-    hasOpenSell: boolean,
+    hasOpenTp: boolean,
   ): Promise<void> {
     const signal: Signal = {
       strategyId: pos.strategyId,
@@ -170,23 +171,27 @@ export class ProtectiveExitService {
       dedupeKey: `protect:${reason}:${pos.symbol}:${now}`,
       reason,
     };
+    // Push II Phase 8: the venue take-profit side mirrors direction — SELL for a LONG, BUY (cover)
+    // for a SHORT.
+    const tpSide: 'BUY' | 'SELL' = isLong ? 'SELL' : 'BUY';
     try {
-      if (hasOpenSell) {
-        // A resting SELL (venue take-profit) locks the base balance on spot — a full-size exit
-        // would otherwise be rejected. Cancel it and await the ack before submitting the exit.
+      if (hasOpenTp) {
+        // A resting TP order locks the base balance (spot LONG) or margin (SHORT cover) — a
+        // full-size exit would otherwise be rejected. Cancel it and await the ack before submitting
+        // the exit.
         await this.sink.recordSignal({
           strategyId: pos.strategyId,
           venue: pos.venue,
           symbol: pos.symbol,
           kind: 'CANCEL_OPEN',
-          cancelSide: 'SELL',
+          cancelSide: tpSide,
           strength: 1,
           refPrice: mid,
           basedOnSeq: snapshotSeq,
           eventTime: now,
           ttlMs: 60_000,
-          dedupeKey: `protect:cancel_sell:${pos.symbol}:${now}`,
-          reason: `${reason}: clear resting SELL before protective exit`,
+          dedupeKey: `protect:cancel_${tpSide.toLowerCase()}:${pos.symbol}:${now}`,
+          reason: `${reason}: clear resting ${tpSide} before protective exit`,
         });
       }
       await this.sink.recordSignal(signal);

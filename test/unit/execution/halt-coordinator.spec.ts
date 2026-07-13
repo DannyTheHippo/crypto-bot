@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import Decimal from 'decimal.js';
 import { HaltCoordinatorService } from '../../../src/features/trading/execution/halt-coordinator.service';
 import { PortfolioStateService } from '../../../src/features/trading/execution/portfolio-state.service';
 import { FeeLedgerService } from '../../../src/features/trading/execution/fee-ledger.service';
@@ -283,6 +284,12 @@ describe('HaltCoordinatorService — FLATTENING', () => {
     expect(ctx.submits).toHaveLength(1);
     expect(ctx.submits[0]!.intent.reduceOnly).toBe(true);
     expect(ctx.submits[0]!.intent.side).toBe('BUY'); // cover
+    // The marketable hint must be ABOVE mark for a BUY cover (review finding: a direction-blind
+    // 0.98 hint would rest below the market and, under an operator-widened band >= 200bps where
+    // the flatten clamp never fires, the IOC cover would never fill — FLATTENING never converges).
+    // Mark = last trade 100 (seedShort's fill); band clamp at the default 100bps reprices the 1.02
+    // hint to the 1.01 edge — either way strictly above mark.
+    expect(new Decimal(ctx.submits[0]!.intent.limitPrice!.toFixed()).gt(100)).toBe(true);
     expect(ctx.killSwitch.state()).toBe('FLATTENING'); // cover in flight, not yet flat
   });
 

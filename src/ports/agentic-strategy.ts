@@ -87,7 +87,12 @@ export interface AgentMarketSnapshot {
 // Per-strategy position summary the host derives from the live PORTFOLIO_VIEW, handed to the
 // agent alongside the market snapshot so it reasons over its own book, not just price action.
 export interface AgentPositionSummary {
-  readonly side: 'LONG' | 'FLAT';
+  // Push II Phase 8: widened to include 'SHORT' — plan-mode shorts (AGENTIC_SHORTS_ENABLED, perp-
+  // capable venue only) key their bookkeeping off THIS field, never off AgentDecisionMeta.action
+  // (which stays 'long' | 'flat' | 'hold' — see that type's own comment on why action itself is not
+  // widened). A deployment with shorts disabled can never populate 'SHORT' here, so this stays
+  // byte-identical for every existing (long-only) caller.
+  readonly side: 'LONG' | 'SHORT' | 'FLAT';
   readonly qty: string; // exact decimal string; '0' when flat
   readonly avgEntry: string | null;
   readonly realizedPnl: string;
@@ -130,7 +135,9 @@ export interface AgentDecisionRecord {
   readonly outcome?: {
     readonly priceMovePct: number | null;
     readonly positionPnlDelta: string;
-    readonly heldDuring: 'LONG' | 'FLAT';
+    // Widened alongside AgentPositionSummary.side above (Push II Phase 8) — a shorts-disabled
+    // deployment's position side can never actually be 'SHORT', so this stays byte-identical there.
+    readonly heldDuring: 'LONG' | 'SHORT' | 'FLAT';
   };
 }
 
@@ -244,6 +251,14 @@ export interface AgentPlan {
   readonly takeProfitPct: string;
   readonly entryValidityBars: number;
   readonly maxHoldBars: number;
+  // Push II Phase 8 (plan-mode shorts): which side a NEW entry opens — 'short' rests a SELL entry
+  // (stop ABOVE fill, take-profit BELOW fill; mirrored math, see plan-executor.ts). Absent means
+  // 'long' (the pre-Phase-8 default) — every deployment with AGENTIC_SHORTS_ENABLED off (or a plan
+  // minted before this field existed) never sees anything but 'long'/undefined here, so long-side
+  // plan behavior stays byte-identical. Ignored on a re-arm (hold+plan while already positioned):
+  // the position's OWN side wins there, never a value the model could use to flip direction
+  // mid-position (see anthropic-agent-client.ts's rearm handling).
+  readonly direction?: 'long' | 'short';
 }
 
 export interface AgentProposal {

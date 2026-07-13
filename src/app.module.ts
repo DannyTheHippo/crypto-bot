@@ -166,6 +166,7 @@ import type { SymbolFilters } from './domain/risk/evaluate';
 import { DEFAULT_FILTERS } from './domain/risk/default-filters';
 import type { CandleInterval } from './domain/types/market-events';
 import type { VenueConfig, VenueEnvironment } from './ports/app-config';
+import { assertSwapPrivateUrlSafe } from './shared/venue-safety/swap-url-guard';
 import { ModeControlModule } from './features/trading/mode-control/mode-control.module';
 import {
   LIVE_ADAPTER_CAP,
@@ -509,6 +510,20 @@ const DEFAULT_PAPER_CONFIG: PaperConfig = {
   startingBalances: { USDT: '100000' },
 };
 
+// binanceusdm (USDⓈ-M perp): the only perp-capable venue this pass wires — mirrors
+// position-sizer.service.ts's own local PERP_VENUE_ID convention (that constant is not exported;
+// this string literal is the composition root's independent copy of the same fact).
+const PERP_VENUE_ID = 'binanceusdm';
+
+// Push II Phase 8: the futures-demo venue's private base URL, read off the ccxt instance AFTER
+// enableDemoTrading/setSandboxMode has mutated it (buildCcxtExchange already applied the flavor).
+// Verified empirically against pinned ccxt 4.5.58: enableDemoTrading(true) on binanceusdm sets
+// urls.api.fapiPrivate to "https://demo-fapi.binance.com/fapi/v1" — the host swap-url-guard already
+// allowlists. ccxt's own Exchange type does not narrow `urls.api` to a known key set, hence the cast.
+function swapPrivateUrl(exchange: ReturnType<typeof buildCcxtExchange>): string {
+  return (exchange as unknown as { urls: { api: { fapiPrivate: string } } }).urls.api.fapiPrivate;
+}
+
 // Build a credentialed ccxt order client for a real venue (testnet/live). Reached only on a non-paper
 // boot — under test/ci configMode is forced paper, so this never runs in CI (no network, no keys).
 // The real order path is verified at the out-of-session testnet RUN; here it is typecheck-verified.
@@ -520,6 +535,13 @@ function buildOrderClient(
 ): RealCcxtOrderClient {
   const venueConfig: VenueConfig = { id: venue, environment };
   const exchange = buildCcxtExchange(venueConfig);
+  // Push II Phase 8: fail-closed boot guard for the futures-demo venue — refuses to construct a
+  // non-live binanceusdm client whose private base URL does not resolve to a known non-live host
+  // (mirrors paper-perp.adapter.ts's own use of the same guard). `environment` IS a SwapBootMode
+  // ('paper' | 'testnet' | 'demo' | 'live' — the same four-value union), so no mapping is needed.
+  if (venue === PERP_VENUE_ID) {
+    assertSwapPrivateUrlSafe(swapPrivateUrl(exchange), environment);
+  }
   exchange.apiKey = apiKey;
   exchange.secret = secret;
   return new RealCcxtOrderClient(exchange);

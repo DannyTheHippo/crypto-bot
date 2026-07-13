@@ -728,21 +728,41 @@ describe('ProtectiveExitService', () => {
       expect(signal.reason).toBe('STOP_LOSS');
     });
 
-    it('applies the stacking guard and dust check to shorts identically to longs', async () => {
-      const busySnap = snapshot({
-        positions: new Map([[KEY, shortPos({ avgEntry: price('100') })]]),
-        openOrders: [openOrder(SYM, 'BUY')],
-      });
-      const busy = build({ snap: busySnap, mid: '150' });
-      await busy.svc.tick(epochMs(T));
-      expect((busy.sink.recordSignal as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
-
+    it('applies the dust check to shorts identically to longs', async () => {
       const dustSnap = snapshot({
         positions: new Map([[KEY, shortPos({ signedQty: new Decimal('-0.001') })]]), // notional 0.15 < minNotional 5
       });
       const dust = build({ snap: dustSnap, mid: '150' });
       await dust.svc.tick(epochMs(T));
       expect((dust.sink.recordSignal as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
+    });
+
+    // Push II Phase 8: the stacking guard's entry-blocking side MIRRORS for a SHORT — a short's own
+    // unfilled entry is a SELL, so a resting SELL blocks (never a BUY, which is the short's own
+    // venue take-profit / cover order and must never permanently disable this stop — same
+    // "busy-set" bug class the S3 fix above corrected for LONG's BUY-vs-SELL split).
+    it('stacking guard: skips firing when the symbol has a resting SELL open order (the short’s own unfilled entry)', async () => {
+      const snap = snapshot({
+        positions: new Map([[KEY, shortPos({ avgEntry: price('100') })]]),
+        openOrders: [openOrder(SYM, 'SELL')],
+      });
+      const { svc, sink } = build({ snap, mid: '150' });
+      await svc.tick(epochMs(T));
+      expect((sink.recordSignal as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
+    });
+
+    it('a resting BUY open order (the short’s own venue take-profit/cover) does NOT block — cancels it then fires EXIT_SHORT', async () => {
+      const snap = snapshot({
+        positions: new Map([[KEY, shortPos({ avgEntry: price('100') })]]),
+        openOrders: [openOrder(SYM, 'BUY')],
+      });
+      const { svc, sink } = build({ snap, mid: '150' });
+      await svc.tick(epochMs(T));
+      const calls = (sink.recordSignal as ReturnType<typeof vi.fn>).mock.calls;
+      expect(calls).toHaveLength(2);
+      expect((calls[0]?.[0] as Signal).kind).toBe('CANCEL_OPEN');
+      expect((calls[0]?.[0] as Signal).cancelSide).toBe('BUY');
+      expect((calls[1]?.[0] as Signal).kind).toBe('EXIT_SHORT');
     });
   });
 });

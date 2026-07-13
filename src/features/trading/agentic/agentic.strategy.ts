@@ -150,8 +150,9 @@ interface ActivePlanState {
 
 export interface AgenticStrategyDeps {
   readonly journal?: AgentDecisionJournalPort;
-  // Fires once per detected LONG→FLAT round trip, with the running closed-trade count. A later
-  // reflection task subscribes; the strategy itself takes no action beyond counting and calling it.
+  // Fires once per detected LONG→FLAT or (Push II Phase 8) SHORT→FLAT round trip, with the running
+  // closed-trade count. A later reflection task subscribes; the strategy itself takes no action
+  // beyond counting and calling it.
   readonly onClosedTrade?: (count: number) => void;
   // Fires once per decide() call when the prescreen gate is enabled, with its outcome — mirrors the
   // onClosedTrade seam. Optional/no-op-defaulted so existing tests/callers stay valid. `reason` is
@@ -303,7 +304,9 @@ export class AgenticStrategy implements AsyncStrategy {
   // history record was made — diffed against the next call's combined PnL to fill that record's
   // outcome.positionPnlDelta just before it is superseded by the new decision.
   private lastCombinedPnl: Decimal | null = null;
-  private lastPositionSide: 'LONG' | 'FLAT' | null = null;
+  // Push II Phase 8: widened to include 'SHORT' — a shorts-disabled deployment's position can never
+  // actually be SHORT (buildContext/position-sizer never assign it), so this stays byte-identical.
+  private lastPositionSide: 'LONG' | 'SHORT' | 'FLAT' | null = null;
   private closedTrades = 0;
 
   constructor(
@@ -430,7 +433,9 @@ export class AgenticStrategy implements AsyncStrategy {
     // 'flat' clears it (the exit signal above closes the position the plan was managing). A plan
     // returned on 'hold' while LONG is the restart re-arm (entryPrice: null here — the first
     // managed bar anchors it to the position's real avgEntry, see runActivePlan).
+    const orphanEntryCancels: Signal[] = [];
     if (this.planMode) {
+      const prior = this.activePlan;
       if (proposal.plan) {
         this.activePlan = {
           plan: proposal.plan,
@@ -441,9 +446,36 @@ export class AgenticStrategy implements AsyncStrategy {
       } else if (decision.action === 'flat') {
         this.activePlan = null;
       }
+      // Review finding (shorts round 2): the stale-entry sweep derives its side from the CURRENT
+      // plan direction, so a cleared/direction-flipped plan whose entry still rests (only possible
+      // with planMaxQuietBars < entryValidityBars — unreachable at deployed defaults 16 vs max 8)
+      // would leave that entry unsweepable and it could later fill into an unmanaged position.
+      // Cancel the outgoing plan's own entry side at the moment of clear/flip, FLAT only (a
+      // non-FLAT position means the entry filled — the exit paths own those orders).
+      const priorDirection = prior?.plan.direction === 'short' ? 'short' : 'long';
+      const newDirection =
+        this.activePlan?.plan.direction === 'short' ? 'short' : ('long' as const);
+      if (
+        prior !== null &&
+        (this.activePlan === null || priorDirection !== newDirection) &&
+        context.position.side === 'FLAT'
+      ) {
+        const priorEntrySide: 'BUY' | 'SELL' = priorDirection === 'short' ? 'SELL' : 'BUY';
+        const lastCandle = (input.snapshot.candles.get(this.symbol) ?? []).at(-1);
+        if (lastCandle && this.restingOrderForSide(input, priorEntrySide)) {
+          orphanEntryCancels.push(
+            this.buildCancelOpenSignal(
+              input,
+              lastCandle,
+              priorEntrySide,
+              `plan ${this.activePlan === null ? 'cleared' : 'direction flipped'}: cancel the outgoing plan's resting ${priorEntrySide} entry`,
+            ),
+          );
+        }
+      }
     }
 
-    return [...staleCancels, ...signals];
+    return [...staleCancels, ...orphanEntryCancels, ...signals];
   }
 
   // W3.1 per-bar management of the active plan. Non-null return = this bar is fully handled without
@@ -451,14 +483,25 @@ export class AgenticStrategy implements AsyncStrategy {
   private runActivePlan(
     input: AgentDecisionInput,
     context: AgentContext,
-    heldDuringPrev: 'LONG' | 'FLAT',
+    heldDuringPrev: 'LONG' | 'SHORT' | 'FLAT',
   ): Signal[] | null {
     const active = this.activePlan!;
     active.barsElapsed += 1;
+    // Push II Phase 8: which side this plan manages — 'short' rests a SELL entry / manages a SHORT
+    // position; absent (or 'long') is the pre-Phase-8 default. Never re-derived from context.position
+    // mid-plan (a re-arm keeps the position's own side, never the model's plan.direction — see
+    // anthropic-agent-client.ts's rearm handling), so this reads the STORED plan's own direction only.
+    const isShort = active.plan.direction === 'short';
+    const entrySide: 'BUY' | 'SELL' = isShort ? 'SELL' : 'BUY';
+    const tpSide: 'BUY' | 'SELL' = isShort ? 'BUY' : 'SELL';
 
-    // Capture the realized entry price on the first bar the position shows LONG — the executor's
-    // stop/TP levels anchor to the actual average fill, not the plan's intended offset price.
-    if (context.position.side === 'LONG' && active.entryPrice === null) {
+    // Capture the realized entry price on the first bar the position shows the plan's managed side
+    // (LONG or SHORT) — the executor's stop/TP levels anchor to the actual average fill, not the
+    // plan's intended offset price.
+    if (
+      (context.position.side === 'LONG' || context.position.side === 'SHORT') &&
+      active.entryPrice === null
+    ) {
       active.entryPrice = context.position.avgEntry;
     }
 
@@ -466,8 +509,9 @@ export class AgenticStrategy implements AsyncStrategy {
     const lastCandle = candles.length > 0 ? candles[candles.length - 1] : undefined;
     if (!lastCandle) return null; // no basis bar — let the normal path decide
 
+    // Push II Phase 8: mirrored — a SHORT plan's resting (unfilled) entry is a SELL, not a BUY.
     const hasRestingEntry = input.snapshot.portfolio.openOrders.some(
-      (o) => o.symbol === this.symbol && o.side === 'BUY',
+      (o) => o.symbol === this.symbol && o.side === entrySide,
     );
     const state: PlanExecutorState = {
       plan: active.plan,
@@ -510,16 +554,17 @@ export class AgenticStrategy implements AsyncStrategy {
       );
       this.onVenueTp?.('filled_flat');
       // External-flatten orphan (review nice-to-have): if the position closed WITHOUT the TP
-      // filling, the reduce-only SELL still rests — the BUY-only stale sweep never touches it and
-      // it could fill against a later re-entry at this stale plan's TP. Risk-reducing cancel.
-      if (this.restingSellOrder(input)) {
+      // filling, the reduce-only resting order still rests (SELL for a LONG plan, BUY for a SHORT
+      // plan — mirrored) — the entry-only stale sweep never touches it and it could fill against a
+      // later re-entry at this stale plan's TP. Risk-reducing cancel.
+      if (this.restingOrderForSide(input, tpSide)) {
         this.onVenueTp?.('orphan_cancel');
         return [
           this.buildCancelOpenSignal(
             input,
             lastCandle,
-            'SELL',
-            'venue take-profit: position closed externally — cancel the orphaned resting SELL',
+            tpSide,
+            `venue take-profit: position closed externally — cancel the orphaned resting ${tpSide}`,
           ),
         ];
       }
@@ -527,21 +572,22 @@ export class AgenticStrategy implements AsyncStrategy {
     }
     if (verdict.type === 'exit') {
       // AGENTIC_VENUE_TP take_profit race (review finding): the close crossed the TP while the
-      // resting SELL is still observed open — that order is marketable at this close, so its own
-      // venue fill IS the exit; a full-size IOC here would collide with the base it locks and
-      // venue-reject. The same hold applies through the one-bar in-flight placement window (second
-      // review finding): a TP emitted last bar may not be acked into openOrders yet, and the IOC
-      // would race it — mirror manageVenueTp's own suppression window. Next bar observes either
-      // FLAT (position_closed journals the fill) or, with nothing resting and the window closed,
-      // the normal exit path fires. Stop/max_hold never enter here (they cancel-first below).
+      // resting TP order (SELL for LONG, BUY for SHORT) is still observed open — that order is
+      // marketable at this close, so its own venue fill IS the exit; a full-size IOC here would
+      // collide with the base/margin it locks and venue-reject. The same hold applies through the
+      // one-bar in-flight placement window (second review finding): a TP emitted last bar may not
+      // be acked into openOrders yet, and the IOC would race it — mirror manageVenueTp's own
+      // suppression window. Next bar observes either FLAT (position_closed journals the fill) or,
+      // with nothing resting and the window closed, the normal exit path fires. Stop/max_hold never
+      // enter here (they cancel-first below).
       if (this.venueTpEnabled && verdict.reason === 'take_profit') {
         const inFlightTp =
           active.venueTpPlacedAtBar !== null && active.barsElapsed <= active.venueTpPlacedAtBar + 1;
-        if (this.restingSellOrder(input) || inFlightTp) {
+        if (this.restingOrderForSide(input, tpSide) || inFlightTp) {
           this.onVenueTp?.('tp_race_hold');
           this.recordQuietJournalEntry(
             input,
-            'plan hold: close crossed the TP while the venue SELL rests or is in flight — awaiting its fill',
+            `plan hold: close crossed the TP while the venue ${tpSide} rests or is in flight — awaiting its fill`,
             'plan-executor',
           );
           return [];
@@ -554,7 +600,7 @@ export class AgenticStrategy implements AsyncStrategy {
         strategyId: this.id,
         venue: this.venue,
         symbol: this.symbol,
-        kind: 'EXIT_LONG',
+        kind: isShort ? 'EXIT_SHORT' : 'EXIT_LONG',
         strength: 1,
         refPrice: lastCandle.close,
         basedOnSeq: lastCandle.seq,
@@ -565,21 +611,21 @@ export class AgenticStrategy implements AsyncStrategy {
         dedupeKey: `${this.id}:${this.symbol}:agentic:plan_exit:${input.snapshot.eventTime}`,
         reason: `plan exit: ${verdict.reason}`,
       };
-      // AGENTIC_VENUE_TP: a resting TP SELL locks the base balance at the venue — cancel it BEFORE
+      // AGENTIC_VENUE_TP: a resting TP order locks the base/margin at the venue — cancel it BEFORE
       // this full-size IOC exit, else the exit venue-rejects for insufficient balance. Stop/max_hold
       // only: a take_profit crossing this close-price check while a TP still rests is the venue
       // order's own fill path racing this bar's evaluation, not a case this cancel-first guard
       // targets (out of the explicit brief scope for this feature).
       if (this.venueTpEnabled && (verdict.reason === 'stop' || verdict.reason === 'max_hold')) {
-        const restingSell = this.restingSellOrder(input);
-        if (restingSell) {
+        const restingTp = this.restingOrderForSide(input, tpSide);
+        if (restingTp) {
           this.onVenueTp?.('cancel_for_exit');
           return [
             this.buildCancelOpenSignal(
               input,
               lastCandle,
-              'SELL',
-              'venue take-profit: cancel resting SELL ahead of full-size exit',
+              tpSide,
+              `venue take-profit: cancel resting ${tpSide} ahead of full-size exit`,
             ),
             exitSignal,
           ];
@@ -630,31 +676,40 @@ export class AgenticStrategy implements AsyncStrategy {
     );
     // AGENTIC_VENUE_TP: idempotent per-bar reconciliation of the resting take-profit (place if
     // missing, cancel-to-re-place on drift). No-op ([]) whenever the flag is off, position isn't
-    // LONG, or the resting order is already correctly priced — see manageVenueTp.
-    return this.manageVenueTp(input, context, active, lastCandle);
+    // LONG/SHORT, or the resting order is already correctly priced — see manageVenueTp.
+    return this.manageVenueTp(input, context, active, lastCandle, isShort, tpSide);
   }
 
   // AGENTIC_VENUE_TP: places or reconciles the plan's resting take-profit at the venue instead of
   // waiting for the executor's own close-price crossing to fire an IOC exit. Idempotent by
-  // construction: a correctly-priced resting SELL is a no-op (skipped_existing), so a restart re-arm
-  // (which loses only this in-memory bookkeeping, never the venue order itself) simply re-observes
-  // the existing order on its next managed bar and does nothing.
+  // construction: a correctly-priced resting TP order is a no-op (skipped_existing), so a restart
+  // re-arm (which loses only this in-memory bookkeeping, never the venue order itself) simply
+  // re-observes the existing order on its next managed bar and does nothing. Push II Phase 8:
+  // mirrored for SHORT — the resting TP is a reduce-only BUY (cover) instead of a SELL, priced
+  // entry × (1 − takeProfitPct) instead of entry × (1 + takeProfitPct).
   private manageVenueTp(
     input: AgentDecisionInput,
     context: AgentContext,
     active: ActivePlanState,
     lastCandle: CandleEvent,
+    isShort: boolean,
+    tpSide: 'BUY' | 'SELL',
   ): Signal[] {
     if (!this.venueTpEnabled) return [];
-    if (context.position.side !== 'LONG' || active.entryPrice === null) return [];
+    if (
+      (context.position.side !== 'LONG' && context.position.side !== 'SHORT') ||
+      active.entryPrice === null
+    ) {
+      return [];
+    }
 
-    const currentTp = this.venueTpPrice(active.entryPrice, active.plan.takeProfitPct);
-    const restingSell = this.restingSellOrder(input);
+    const currentTp = this.venueTpPrice(active.entryPrice, active.plan.takeProfitPct, isShort);
+    const restingTp = this.restingOrderForSide(input, tpSide);
 
-    if (!restingSell) {
+    if (!restingTp) {
       // In-flight suppression (review finding): a placement emitted on bar N may not be acked into
       // openOrders when bar N+1 evaluates, and a second placement would duplicate the reduce-only
-      // SELL. One bar of suppression bounds the duplicate window; a placement that died unacked
+      // order. One bar of suppression bounds the duplicate window; a placement that died unacked
       // (risk veto, TTL) re-places on bar N+2 rather than being suppressed forever.
       if (
         active.venueTpPlacedAtBar !== null &&
@@ -670,7 +725,7 @@ export class AgenticStrategy implements AsyncStrategy {
           strategyId: this.id,
           venue: this.venue,
           symbol: this.symbol,
-          kind: 'EXIT_LONG',
+          kind: isShort ? 'EXIT_SHORT' : 'EXIT_LONG',
           strength: 1,
           refPrice: lastCandle.close,
           exitStyle: 'RESTING',
@@ -689,43 +744,45 @@ export class AgenticStrategy implements AsyncStrategy {
 
     // No price on the resting order ⇒ drift cannot be assessed; treat as fine rather than guessing
     // a cancel off no information.
-    if (restingSell.limitPrice === undefined) {
+    if (restingTp.limitPrice === undefined) {
       this.onVenueTp?.('skipped_existing');
       return [];
     }
 
     // Drift compares against the tick-rounded EXPECTED resting price, not the raw hint: the sizer
-    // rounds the hint UP to the venue tick, so raw-hint comparison reads that [0, tick) bias as
-    // permanent drift and churns cancel/re-place on any symbol whose tick exceeds the threshold
-    // (review finding). No tick configured ⇒ raw hint (test harnesses; fine-tick symbols).
+    // rounds the hint to the venue tick in the order's own conservative direction (UP for a SELL
+    // TP, DOWN for a SHORT's BUY cover — position-sizer.service.ts's isRestingExit branch), so a
+    // raw-hint or wrong-direction comparison reads that [0, tick) bias as permanent drift and
+    // churns cancel/re-place on any symbol whose tick exceeds the threshold (review findings). No
+    // tick configured ⇒ raw hint (test harnesses; fine-tick symbols).
     const expectedTp = this.venueTpTickSize
-      ? roundToTick(currentTp, this.venueTpTickSize, 'up')
+      ? roundToTick(currentTp, this.venueTpTickSize, isShort ? 'down' : 'up')
       : currentTp;
-    const driftBps = restingSell.limitPrice.minus(expectedTp).abs().div(expectedTp).mul(10_000);
+    const driftBps = restingTp.limitPrice.minus(expectedTp).abs().div(expectedTp).mul(10_000);
     if (driftBps.gt(this.venueTpReplaceDriftBps)) {
       this.onVenueTp?.('drift_cancel');
       return [
         this.buildCancelOpenSignal(
           input,
           lastCandle,
-          'SELL',
-          `venue take-profit: resting SELL drifted ${driftBps.toFixed(1)}bps from the plan TP — cancel to re-place`,
+          tpSide,
+          `venue take-profit: resting ${tpSide} drifted ${driftBps.toFixed(1)}bps from the plan TP — cancel to re-place`,
         ),
       ];
     }
 
     // Qty reconciliation (review finding): the TP was sized to the position at placement; an entry
-    // remainder filling AFTERWARD grows the position while the resting SELL stays at the old size,
+    // remainder filling AFTERWARD grows the position while the resting order stays at the old size,
     // leaving the growth slice uncovered at the venue. A TP partial fill shrinks order and position
     // together, so steady state is exact equality — any mismatch means re-size via cancel/re-place.
-    if (!restingSell.qty.eq(context.position.qty)) {
+    if (!restingTp.qty.eq(context.position.qty)) {
       this.onVenueTp?.('qty_cancel');
       return [
         this.buildCancelOpenSignal(
           input,
           lastCandle,
-          'SELL',
-          `venue take-profit: resting SELL qty ${restingSell.qty.toFixed()} != position ${context.position.qty} — cancel to re-size`,
+          tpSide,
+          `venue take-profit: resting ${tpSide} qty ${restingTp.qty.toFixed()} != position ${context.position.qty} — cancel to re-size`,
         ),
       ];
     }
@@ -734,18 +791,27 @@ export class AgenticStrategy implements AsyncStrategy {
     return [];
   }
 
-  // entry × (1 + takeProfitPct), rounded to the 18dp money-precision ceiling BEFORE minting a Price
-  // (same overflow rationale as roundToTick's own header comment — a multiplication-derived price can
-  // exceed 18 places). This is a HINT: PositionSizerService tick-rounds it to the venue's real tick
-  // when it prices the resting order (position-sizer.service.ts), so no tick size is needed here.
-  private venueTpPrice(entryPrice: string, takeProfitPct: string): Price {
-    const raw = new Decimal(entryPrice).mul(new Decimal(1).plus(takeProfitPct));
+  // entry × (1 + takeProfitPct) for LONG, entry × (1 − takeProfitPct) for SHORT (mirrored), rounded
+  // to the 18dp money-precision ceiling BEFORE minting a Price (same overflow rationale as
+  // roundToTick's own header comment — a multiplication-derived price can exceed 18 places). This is
+  // a HINT: PositionSizerService tick-rounds it to the venue's real tick when it prices the resting
+  // order (position-sizer.service.ts), so no tick size is needed here.
+  private venueTpPrice(entryPrice: string, takeProfitPct: string, isShort: boolean): Price {
+    const raw = new Decimal(entryPrice).mul(
+      isShort ? new Decimal(1).minus(takeProfitPct) : new Decimal(1).plus(takeProfitPct),
+    );
     return price(roundToMoneyPrecision(raw).toFixed());
   }
 
-  private restingSellOrder(input: AgentDecisionInput): OpenOrderSummary | undefined {
+  // Push II Phase 8: generalized from restingSellOrder — a LONG plan's resting TP is a SELL, a
+  // SHORT plan's is a BUY (mirrored); the entry-validity sweep above and the stale-entry sweep below
+  // pass their own side explicitly rather than assuming SELL.
+  private restingOrderForSide(
+    input: AgentDecisionInput,
+    side: 'BUY' | 'SELL',
+  ): OpenOrderSummary | undefined {
     return input.snapshot.portfolio.openOrders.find(
-      (o) => o.symbol === this.symbol && o.side === 'SELL',
+      (o) => o.symbol === this.symbol && o.side === side,
     );
   }
 
@@ -772,15 +838,19 @@ export class AgenticStrategy implements AsyncStrategy {
   }
 
   // W2.1 stale-entry sweep — runs every decide cycle, prescreen-skipped ones included. Emits
-  // CANCEL_OPEN for this strategy's own resting BUY orders whose observed resting age (event-time
+  // CANCEL_OPEN for this strategy's own resting entry orders whose observed resting age (event-time
   // since first sighting) exceeds entryTtlBars × the base interval: risk-reducing by construction
   // (never places orders), exempt from the entry cap and the DRAINING filter (strategy-host
   // RISK_REDUCING), intercepted by SignalSink before the gateway. Reduce-only exits are IOC and
-  // never rest, so only BUY entries are swept.
+  // never rest, so only entries are swept. Push II Phase 8: the entry side is BUY for a LONG plan,
+  // SELL for a SHORT plan — keyed off the ACTIVE plan's own direction (the only state that knows
+  // which side a currently-resting entry could be); absent an active plan (legacy/no-plan bars) it
+  // defaults to BUY, byte-identical to pre-Phase-8.
   private staleEntryCancels(input: AgentDecisionInput): Signal[] {
     if (this.entryTtlBars <= 0) return [];
+    const entrySide: 'BUY' | 'SELL' = this.activePlan?.plan.direction === 'short' ? 'SELL' : 'BUY';
     const open = input.snapshot.portfolio.openOrders.filter(
-      (o) => o.symbol === this.symbol && o.side === 'BUY',
+      (o) => o.symbol === this.symbol && o.side === entrySide,
     );
     const openIds = new Set<string>(open.map((o) => o.clientOrderId as string));
     for (const id of [...this.entryFirstSeen.keys()]) {
@@ -824,9 +894,10 @@ export class AgenticStrategy implements AsyncStrategy {
         venue: this.venue,
         symbol: this.symbol,
         kind: 'CANCEL_OPEN',
-        // The sweep detects BUY entries only (filter above) — scope the cancel to match, else it
-        // would also take out a resting venue-TP SELL sharing the symbol (review finding).
-        cancelSide: 'BUY',
+        // The sweep detects one entry side only (filter above) — scope the cancel to match, else it
+        // would also take out a resting venue-TP order on the OPPOSITE side sharing the symbol
+        // (review finding, extended by Push II Phase 8 to the SHORT-plan SELL-entry case).
+        cancelSide: entrySide,
         strength: 1,
         refPrice,
         // Never consumed by Risk (SignalSink intercepts CANCEL_OPEN before the gateway), so the
@@ -854,7 +925,9 @@ export class AgenticStrategy implements AsyncStrategy {
         closes: candles.map((c) => toIndicatorNumber(c.close)),
         highs: candles.map((c) => toIndicatorNumber(c.high)),
         lows: candles.map((c) => toIndicatorNumber(c.low)),
-        positionOpen: context.position.side === 'LONG',
+        // Push II Phase 8: position-open is direction-agnostic — a shorts-disabled deployment's side
+        // can never actually be 'SHORT', so this stays byte-identical there.
+        positionOpen: context.position.side === 'LONG' || context.position.side === 'SHORT',
         thresholds: this.prescreenThresholds,
       });
       if (result.consult) {
@@ -928,7 +1001,7 @@ export class AgenticStrategy implements AsyncStrategy {
   private recordQuietHold(
     input: AgentDecisionInput,
     context: AgentContext,
-    heldDuringPrev: 'LONG' | 'FLAT',
+    heldDuringPrev: 'LONG' | 'SHORT' | 'FLAT',
     reason: string,
   ): Signal[] {
     const candles = input.snapshot.candles.get(this.symbol) ?? [];
@@ -1008,36 +1081,50 @@ export class AgenticStrategy implements AsyncStrategy {
 
     const openOrders = input.snapshot.portfolio.openOrders.length;
     // applyFillToPortfolio deletes a position once signedQty hits zero (portfolio-state.service.ts),
-    // so a matched entry is always LONG and always carries a real avgEntry — there is no separate
-    // "flat position record" to special-case.
+    // so a matched entry always carries a real avgEntry — there is no separate "flat position
+    // record" to special-case. Push II Phase 8: widened from a LONG-only (signedQty > 0) search to
+    // any non-zero signedQty — a shorts-disabled deployment can never actually populate a negative
+    // signedQty (no strategy path emits ENTER_SHORT), so this stays byte-identical there.
     let held: Position | undefined;
+    let heldSide: 'LONG' | 'SHORT' | undefined;
     for (const p of input.snapshot.portfolio.positions.values()) {
-      if (p.symbol === this.symbol && p.signedQty.gt(0)) {
+      if (p.symbol === this.symbol && !p.signedQty.isZero()) {
         held = p;
+        heldSide = p.signedQty.gt(0) ? 'LONG' : 'SHORT';
         break;
       }
     }
 
     // A held position whose notional is below the venue minimum is DUST: a reduce-only exit sized to
     // that sub-minNotional qty is rejected BELOW_MINIMUM by the sizer, so it can never be closed.
-    // Surfacing it as LONG only makes the agent spam un-executable exits (and never reach flat, which
-    // also starves round-trip accounting). Treat it as FLAT so the agent holds or re-enters — a fresh
-    // entry absorbs the dust into a tradable position. minNotional comes from onInit; null ⇒ skip the
-    // reclassification. Decimal comparison only — no float on the money path.
+    // Surfacing it as LONG/SHORT only makes the agent spam un-executable exits (and never reach
+    // flat, which also starves round-trip accounting). Treat it as FLAT so the agent holds or
+    // re-enters — a fresh entry absorbs the dust into a tradable position. minNotional comes from
+    // onInit; null ⇒ skip the reclassification. Decimal comparison only — no float on the money
+    // path. abs(): notional is direction-agnostic (a short's signedQty is negative).
     const heldIsDust =
       held !== undefined &&
       this.minNotional !== null &&
-      held.signedQty.mul(held.avgEntry).lt(this.minNotional);
+      held.signedQty.abs().mul(held.avgEntry).lt(this.minNotional);
 
     const position: AgentPositionSummary =
       held !== undefined && !heldIsDust
         ? {
-            side: 'LONG',
-            qty: held.signedQty.toFixed(),
+            side: heldSide!,
+            // qty is always a positive MAGNITUDE regardless of side (never the raw signed value) —
+            // direction is conveyed entirely via `side`, so the model never has to interpret a
+            // negative "quantity".
+            qty: held.signedQty.abs().toFixed(),
             avgEntry: held.avgEntry.toFixed(),
             realizedPnl: held.realizedPnl.toFixed(),
+            // Mirrored for SHORT: profit is positive when price FALLS below avgEntry, i.e. the
+            // negation of the LONG formula.
             unrealizedPnlPct:
-              lastClose !== null ? (lastClose / toIndicatorNumber(held.avgEntry) - 1) * 100 : null,
+              lastClose === null
+                ? null
+                : heldSide === 'LONG'
+                  ? (lastClose / toIndicatorNumber(held.avgEntry) - 1) * 100
+                  : (1 - lastClose / toIndicatorNumber(held.avgEntry)) * 100,
             openOrders,
             // Plan-mode only (absent otherwise — legacy payloads stay byte-identical): lets the
             // model see whether plan-executor is managing this position. false ⇒ the plan was lost
@@ -1132,7 +1219,7 @@ export class AgenticStrategy implements AsyncStrategy {
     currentClose: number,
     position: AgentPositionSummary,
     lastCandle: CandleEvent | undefined,
-    heldDuring: 'LONG' | 'FLAT',
+    heldDuring: 'LONG' | 'SHORT' | 'FLAT',
   ): void {
     const currentCombinedPnl = this.computeCombinedPnl(position, lastCandle?.close);
     if (this.lastCombinedPnl !== null && this.history.length > 0) {
@@ -1158,14 +1245,30 @@ export class AgenticStrategy implements AsyncStrategy {
     closePrice: Price | undefined,
   ): Decimal {
     const realized = new Decimal(position.realizedPnl);
-    if (position.side !== 'LONG' || closePrice === undefined) return realized;
-    // avgEntry is always non-null on a LONG summary (buildContext's held/LONG invariant above).
-    const unrealized = closePrice.minus(new Decimal(position.avgEntry!)).times(position.qty);
+    if ((position.side !== 'LONG' && position.side !== 'SHORT') || closePrice === undefined) {
+      return realized;
+    }
+    // avgEntry is always non-null on a LONG/SHORT summary (buildContext's held invariant above).
+    // qty is always a positive MAGNITUDE regardless of side (see buildContext's own comment) — the
+    // sign of the unrealized PnL comes from which direction closePrice moved relative to avgEntry,
+    // mirrored between the two sides (Push II Phase 8: SHORT profits when price FALLS).
+    const entry = new Decimal(position.avgEntry!);
+    const qty = new Decimal(position.qty);
+    const unrealized =
+      position.side === 'LONG'
+        ? closePrice.minus(entry).times(qty)
+        : entry.minus(closePrice).times(qty);
     return realized.plus(unrealized);
   }
 
-  private trackClosedTrade(side: 'LONG' | 'FLAT'): void {
-    if (this.lastPositionSide === 'LONG' && side === 'FLAT') {
+  private trackClosedTrade(side: 'LONG' | 'SHORT' | 'FLAT'): void {
+    // Push II Phase 8: counts a SHORT→FLAT round trip too (reflection/promotion evidence reads
+    // "closed round trips" direction-agnostically) — a shorts-disabled deployment's side can never
+    // actually be SHORT, so this stays byte-identical there.
+    if (
+      (this.lastPositionSide === 'LONG' || this.lastPositionSide === 'SHORT') &&
+      side === 'FLAT'
+    ) {
       this.closedTrades += 1;
       this.onClosedTrade?.(this.closedTrades);
     }

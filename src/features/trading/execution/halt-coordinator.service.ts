@@ -25,10 +25,15 @@ import type { EpochMs } from '../../../domain/types/ids';
 
 const CANCEL_TIMEOUT_MS = 10_000; // §5: cancels unconfirmed in 10s ⇒ HALTED_DEGRADED
 const FLATTEN_TTL_MS = 60_000;
-// Marketable hint 2% below mark: below the touch (a marketable reduce-only SELL) and, for a default
-// 1% band, out-of-band so evaluate's flatten PRICE_BAND clamp reprices it to the exact edge. Kept
-// near mark (not e.g. 0.5) so the sizer's minNotional check isn't falsely tripped on small lots.
-const MARKETABLE_FACTOR = '0.98';
+// Marketable hint 2% through the touch on the position's OWN exit side: below mark for a long's
+// SELL, ABOVE mark for a short's BUY cover (review finding: a direction-blind 0.98 factor priced
+// short covers on the passive side, and with an operator-widened RISK_MAX_BAND_BPS >= 200 the
+// flatten clamp would never repair it — an IOC BUY below mark fills nothing and FLATTENING never
+// converges). For the default 1% band both directions are out-of-band, so evaluate's flatten
+// PRICE_BAND clamp reprices to the exact edge. Kept near mark (not e.g. 0.5) so the sizer's
+// minNotional check isn't falsely tripped on small lots.
+const MARKETABLE_FACTOR_SELL = '0.98';
+const MARKETABLE_FACTOR_BUY_COVER = '1.02';
 
 // Per-position flatten outcome. UNFLATTENABLE (below the exchange minimum at the venue, or risk
 // rejects the clamped slice) is residual dust that can never be sold — it counts toward ALL_FLAT so
@@ -131,7 +136,11 @@ export class HaltCoordinatorService {
       symbol: pos.symbol,
       kind: 'FLATTEN',
       strength: 1,
-      limitPriceHint: price(mark.mul(MARKETABLE_FACTOR)), // clamped to the band edge by evaluate
+      // Short positions flatten via a BUY cover that must cross UP — orient the marketable hint by
+      // the position's sign. Clamped to the band edge by evaluate either way.
+      limitPriceHint: price(
+        mark.mul(pos.signedQty.isNegative() ? MARKETABLE_FACTOR_BUY_COVER : MARKETABLE_FACTOR_SELL),
+      ),
       refPrice: mark,
       basedOnSeq: seq,
       eventTime: now,

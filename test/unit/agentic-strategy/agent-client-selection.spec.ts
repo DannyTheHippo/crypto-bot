@@ -104,6 +104,22 @@ describe('selectAgentClient', () => {
     expect(client).toBeInstanceOf(BatchingAgentClient);
     expect(client).not.toBeInstanceOf(BudgetedAgentClient);
   });
+
+  it('refuses AGENTIC_PORTFOLIO_CONSULT + AGENTIC_SHORTS_ENABLED at construction (review must-fix: the strict submit_portfolio tool cannot emit plan.direction, so every batched plan entry would silently hold)', () => {
+    const budget = createAgentLlmBudget({});
+    expect(() =>
+      selectAgentClient(
+        {
+          ANTHROPIC_API_KEY: 'k',
+          AGENTIC_PORTFOLIO_CONSULT: 'true',
+          AGENTIC_SHORTS_ENABLED: 'true',
+          AGENTIC_PLAN_MODE: 'true',
+          AGENTIC_PERP_VENUE: 'true',
+        },
+        budget,
+      ),
+    ).toThrow(/cannot be combined/);
+  });
 });
 
 describe('createAgentLlmBudget', () => {
@@ -163,6 +179,7 @@ describe('agenticEnv', () => {
       portfolioWindowMs: 4000,
       expectancyLadderEnabled: false,
       planMode: false,
+      shortsEnabled: false,
       minEdgeMultiple: '1.5',
       planMaxQuietBars: 16,
       dailyCostStopUsd: 6,
@@ -208,12 +225,17 @@ describe('agenticEnv', () => {
       interval: '15m',
       active: 'agentic',
     };
+    // Push II Phase 8: agenticEnv reads config.venues (a sibling AppConfig top-level key) to derive
+    // AGENTIC_PERP_VENUE — present here so the fixture matches the real TypedConfigService shape
+    // (mirrors derivativesFeed/tradeFlowFeed/strategy above).
+    const venues: AppConfig['venues'] = [{ id: 'binanceusdm', environment: 'demo' }];
     const config = {
       agentic,
       derivativesFeed,
       tradeFlowFeed,
       positioningFeed,
       strategy,
+      venues,
     } as unknown as TypedConfigService;
 
     expect(agenticEnv(config)).toMatchObject({
@@ -236,6 +258,8 @@ describe('agenticEnv', () => {
       AGENTIC_PORTFOLIO_CONSULT: 'true',
       AGENTIC_PORTFOLIO_WINDOW_MS: '4000',
       AGENTIC_PORTFOLIO_SYMBOL_COUNT: '3',
+      AGENTIC_SHORTS_ENABLED: 'false',
+      AGENTIC_PERP_VENUE: 'true',
     });
   });
 });

@@ -192,6 +192,15 @@ const envSchema = z
       .enum(['true', 'false'])
       .default('false')
       .transform((v) => v === 'true'),
+    // Push II Phase 8: plan-mode shorts. Distinct from the legacy B3 shortsEnabled capability (the
+    // bar-by-bar submit_decision path, unaffected by this knob) — this one only ever combines with
+    // AGENTIC_PLAN_MODE, and only on a perp-capable venue (agentic-strategy.module.ts's
+    // selectAgentClient refuses construction otherwise — spot cannot short). Off by default ⇒
+    // byte-identical (no direction field, no PLAN_SHORTS_TOOL, PLAN_TEMPLATE_VERSION stays 'p3').
+    AGENTIC_SHORTS_ENABLED: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
     // Fee-aware plan viability floor: a plan is rejected when takeProfitPct < multiple × the
     // round-trip fee fraction (maker+taker bps / 10000). Decimal string — money-adjacent math.
     AGENTIC_MIN_EDGE_MULTIPLE: decimalString.default('1.5'),
@@ -584,6 +593,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     AGENTIC_PRESCREEN_BREAKOUT_PCT: agenticPrescreenBreakoutPct,
     AGENTIC_EXPECTANCY_LADDER: agenticExpectancyLadder,
     AGENTIC_PLAN_MODE: agenticPlanMode,
+    AGENTIC_SHORTS_ENABLED: agenticShortsEnabled,
     AGENTIC_MIN_EDGE_MULTIPLE: agenticMinEdgeMultiple,
     AGENTIC_MIN_RR: agenticMinRr,
     AGENTIC_PLAN_MAX_QUIET_BARS: agenticPlanMaxQuietBars,
@@ -690,6 +700,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       venueTpEnabled: agenticVenueTp,
       venueTpReplaceDriftBps: agenticVenueTpReplaceDriftBps,
       planMode: agenticPlanMode,
+      shortsEnabled: agenticShortsEnabled,
       minEdgeMultiple: agenticMinEdgeMultiple,
       planMaxQuietBars: agenticPlanMaxQuietBars,
       minRr: agenticMinRr,

@@ -164,6 +164,12 @@ export interface AppConfig {
     // Owner-declared evidence epoch (ISO-8601): the promotion gate evaluates fills/tokens/window
     // from this instant instead of all-time. Absent ⇒ all-time (byte-identical legacy behavior).
     promotionEvidenceEpoch?: string;
+    // Push II Phase 8: plan-mode shorts (AGENTIC_SHORTS_ENABLED). Distinct from the pre-existing
+    // legacy shorts capability (B3's shortsEnabled on the bar-by-bar submit_decision path, which this
+    // flag does NOT gate) — this one only ever combines with planMode, and only on a perp-capable
+    // venue (agentic-strategy.module.ts's selectAgentClient derives that from config.venues and
+    // refuses construction otherwise — spot cannot short). Default false ⇒ byte-identical.
+    shortsEnabled: boolean;
   };
   // Risk-lane knobs read via ConfigService (mirrors the agentic block above).
   risk: {

@@ -103,11 +103,11 @@ function portfolioView(snap: PortfolioSnapshot): PortfolioViewPort {
 
 const clock: ClockPort = { now: () => epochMs(T) };
 
-function openOrder(symbol = SYM): OpenOrderSummary {
+function openOrder(symbol = SYM, side: 'BUY' | 'SELL' = 'SELL'): OpenOrderSummary {
   return {
     clientOrderId: clientOrderId('cbp' + '0'.repeat(32)),
     symbol,
-    side: 'SELL',
+    side,
     qty: qty('1'),
   };
 }
@@ -344,14 +344,58 @@ describe('ProtectiveExitService', () => {
     expect(signal.reason).toBe('STOP_LOSS');
   });
 
-  it('stacking guard: skips firing when the symbol has an open order', async () => {
+  it("stacking guard: skips firing when the symbol has a resting BUY open order (today's behavior)", async () => {
     const snap = snapshot({
       positions: new Map([[KEY, pos({ avgEntry: price('100') })]]),
-      openOrders: [openOrder()],
+      openOrders: [openOrder(SYM, 'BUY')],
     });
     const { svc, sink } = build({ snap, mid: '50' });
     await svc.tick(epochMs(T));
     expect((sink.recordSignal as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
+  });
+
+  it('S3: a resting SELL open order does NOT block the protective stop from firing', async () => {
+    const snap = snapshot({
+      positions: new Map([[KEY, pos({ avgEntry: price('100') })]]),
+      openOrders: [openOrder(SYM, 'SELL')],
+    });
+    const { svc, sink } = build({ snap, mid: '50' });
+    await svc.tick(epochMs(T));
+    const calls = (sink.recordSignal as ReturnType<typeof vi.fn>).mock.calls;
+    // fire() clears the resting SELL first, then submits the exit — two signals, not a skip.
+    expect(calls).toHaveLength(2);
+    expect((calls[0]?.[0] as Signal).kind).toBe('CANCEL_OPEN');
+    expect((calls[0]?.[0] as Signal).cancelSide).toBe('SELL');
+    expect((calls[1]?.[0] as Signal).kind).toBe('EXIT_LONG');
+  });
+
+  it('fire(): submits the exit only after the SELL-cancel signal resolves (call order)', async () => {
+    const snap = snapshot({
+      positions: new Map([[KEY, pos({ avgEntry: price('100') })]]),
+      openOrders: [openOrder(SYM, 'SELL')],
+    });
+    const order: string[] = [];
+    const sink: SignalSinkPort = {
+      recordSignal: vi.fn(async (s: Signal) => {
+        if (s.kind === 'CANCEL_OPEN') {
+          order.push('cancel-start');
+          await new Promise((r) => setTimeout(r, 0)); // macrotask delay — proves fire() awaits it
+          order.push('cancel-resolved');
+          return;
+        }
+        order.push(`submit-${s.kind}`);
+      }),
+    };
+    const svc = new ProtectiveExitService(
+      clock,
+      killSwitch('RUNNING'),
+      feed('50'),
+      portfolioView(snap),
+      sink,
+      config({ stopLossPct: '0.02', trailingPct: '0' }),
+    );
+    await svc.tick(epochMs(T));
+    expect(order).toEqual(['cancel-start', 'cancel-resolved', 'submit-EXIT_LONG']);
   });
 
   it('stacking guard: skips firing when the symbol has an in-flight intent', async () => {
@@ -687,7 +731,7 @@ describe('ProtectiveExitService', () => {
     it('applies the stacking guard and dust check to shorts identically to longs', async () => {
       const busySnap = snapshot({
         positions: new Map([[KEY, shortPos({ avgEntry: price('100') })]]),
-        openOrders: [openOrder()],
+        openOrders: [openOrder(SYM, 'BUY')],
       });
       const busy = build({ snap: busySnap, mid: '150' });
       await busy.svc.tick(epochMs(T));

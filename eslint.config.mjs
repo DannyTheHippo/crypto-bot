@@ -23,6 +23,9 @@ export default tseslint.config(
       // Same class: the standalone multi-strategy research sweep — bare .mjs run via `node`
       // (self-contained, no src/ imports), outside any tsconfig project.
       'test/backtest/multi-strategy/**',
+      // Same class: the TP/SL/maxHold calibration study — bare .mjs run via `node`
+      // (self-contained, no src/ imports), outside any tsconfig project.
+      'test/backtest/bounds-calibration/**',
       // Same class: this spec imports scripts/arm-ceremony.mjs (itself outside tsconfig, see
       // scripts/** above) and is plain .mjs itself for the same reason — no tsconfig project.
       'test/unit/scripts/arm-ceremony.spec.mjs',

@@ -113,6 +113,8 @@ services:
       AGENTIC_MIN_RR: '1.5' # R:R structure floor: reject plans with takeProfitPct/stopLossPct < ratio (the old gate floored only the win side — measured payoff 0.29:1, breakeven win rate ~78%)
       AGENTIC_PLAN_MAX_QUIET_BARS: 16 # safety re-consult cadence while a plan is active without executor action
       AGENTIC_QUIET_PAYLOAD_SAMPLE_BARS: 4 # snapshot the decide payload every Nth plan-managed bar so the offline replay harness accrues rows (plan mode otherwise journals inputPayload null); 0 disables
+      AGENTIC_VENUE_TP: 'true' # venue-resting take-profit for plan-mode longs (ENABLED 2026-07-13, Push II Phase 2): TP rests at the venue as post-band maker LIMIT GTC — intra-bar touches fill at the exact TP price instead of bar-close detection + IOC taker crossing (bounds study measured +23bps/trade at wide-TP cells). Executor bar-close stop stays the only stop; schema default false
+      AGENTIC_VENUE_TP_REPLACE_DRIFT_BPS: 10 # re-place threshold: a resting TP SELL priced >N bps from the plan's current TP price is cancelled for next-bar re-placement
       AGENTIC_PLAYBOOK_AB_PCT: 25 # W4.1 champion/candidate A/B LIVE (owner 2026-07-08): % of decides routed to the newest INACTIVE reflection candidate for per-version attribution. 50→25 (loop-domain, 2026-07-13 Pass 21): the 50% premise is falsified — v2 entered on 0 of 17 FLAT-state consults since mint (v1: 16/57; P≈0.4% under v1's rate), so serving share cannot create candidate evidence for an abstaining candidate; it only halves the champion entry stream that feeds the symmetric floor, reflection cadence, and the info-context A/B; 0 disables
       AGENTIC_EXPECTANCY_LADDER: 'true' # W4.2 reduction-only ENTER_LONG strength ladder ENABLED (owner 2026-07-08): trailing 15-trip mean net ≤ -$0.10 cuts entry strength to 0.4x, self-releases on recovery; per-strategy trip counts clear the 8-trip data floor
       AGENTIC_PRESCREEN_ENABLED: 'true' # deterministic gate: LLM consulted only on open position / vol expansion / breakout proximity; fail-open
@@ -193,6 +195,7 @@ services:
       RISK_MAX_DAILY_LOSS: 5000 # daily loss kill threshold (quote)
       RISK_MAX_DRAWDOWN_PCT: 0.2 # peak-to-trough drawdown kill threshold (fraction)
       RISK_MAX_BAND_BPS: 100 # max limit-price deviation from ref price (bps)
+      RISK_MAX_PASSIVE_EXIT_BAND_BPS: 1200 # passive reduce-only exits only; TP prices legitimately sit far above ref
       RISK_STALE_MAX_AGE_MS: 5000 # ref-price staleness veto threshold (ms)
 
       # ── Perp/swap paper adapter (B1; PaperPerpAdapter is not wired into app.module.ts yet) ──

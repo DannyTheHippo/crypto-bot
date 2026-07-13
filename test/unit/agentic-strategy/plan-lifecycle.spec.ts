@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   AgenticStrategy,
   type AgenticStrategyParams,
+  type VenueTpEvent,
 } from '../../../src/features/trading/agentic/agentic.strategy';
 import type {
   AgentClientPort,
@@ -453,5 +454,312 @@ describe('AgenticStrategy journals the accepted plan (persistence)', () => {
     await strategy.decide(buildInput(0, { position: longPosition('100') })); // bare LONG → re-arm
     expect(entries).toHaveLength(1);
     expect(entries[0]!.plan).toEqual(PLAN);
+  });
+});
+
+// AGENTIC_VENUE_TP: venue-resting take-profit lifecycle for plan-mode longs (see agentic.strategy.ts's
+// manageVenueTp/runActivePlan). PLAN here: avgEntry 100, takeProfitPct 0.03 ⇒ TP price 103 exactly;
+// stopLossPct 0.02 ⇒ stop price 98 exactly. planMaxQuietBars is set well above every bar driven in
+// these tests so the safety-consult cadence never interrupts venue-TP management.
+describe('AgenticStrategy venue-resting take-profit lifecycle (AGENTIC_VENUE_TP)', () => {
+  function venueTpParams(overrides: Partial<AgenticStrategyParams> = {}): AgenticStrategyParams {
+    return {
+      symbol: SYM,
+      venue: V,
+      interval: '15m',
+      warmupBars: 5,
+      model: 'test-model',
+      planMode: true,
+      planMaxQuietBars: 20,
+      venueTpEnabled: true,
+      ...overrides,
+    };
+  }
+
+  function restingSell(limitPriceStr: string, qtyStr = '0.001'): OpenOrderSummary {
+    return {
+      clientOrderId: clientOrderId('cbp0000000000000007000800000000000002'),
+      symbol: SYM,
+      side: 'SELL',
+      qty: qty(qtyStr),
+      limitPrice: price(limitPriceStr),
+    };
+  }
+
+  it('places a RESTING EXIT_LONG at the exact TP price on the fill-observation bar', async () => {
+    const client = new PlanningClient();
+    const strategy = new AgenticStrategy(SID, venueTpParams(), client);
+    await strategy.decide(buildInput(0)); // consult → plan stored
+
+    // Bar 1: position now shows LONG at avgEntry 100 — entry captured, close 100 → hold verdict,
+    // no resting SELL yet ⇒ TP placement.
+    const out = await strategy.decide(buildInput(1, { position: longPosition('100') }));
+    expect(client.calls).toBe(1); // still no LLM consult
+    expect(out).toHaveLength(1);
+    expect(out[0]!.kind).toBe('EXIT_LONG');
+    expect(out[0]!.exitStyle).toBe('RESTING');
+    expect(out[0]!.limitPriceHint!.toFixed()).toBe('103'); // 100 × 1.03 exactly
+    expect(out[0]!.strategyId).toBe(SID);
+  });
+
+  it('emits nothing once a correctly-priced SELL already rests (skipped_existing, idempotent)', async () => {
+    const client = new PlanningClient();
+    const events: VenueTpEvent[] = [];
+    const strategy = new AgenticStrategy(SID, venueTpParams(), client, {
+      onVenueTp: (e) => events.push(e),
+    });
+    await strategy.decide(buildInput(0));
+    await strategy.decide(buildInput(1, { position: longPosition('100') })); // places TP (events: ['placed'])
+    events.length = 0;
+
+    // Bar 2: the TP now rests at exactly 103 — no drift, no new signal.
+    const out = await strategy.decide(
+      buildInput(2, { position: longPosition('100'), openOrders: [restingSell('103')] }),
+    );
+    expect(out).toEqual([]);
+    expect(events).toEqual(['skipped_existing']);
+  });
+
+  it('cancels the resting SELL (cancelSide SELL) BEFORE the IOC EXIT_LONG on a stop exit', async () => {
+    const client = new PlanningClient();
+    const strategy = new AgenticStrategy(SID, venueTpParams(), client);
+    await strategy.decide(buildInput(0));
+
+    // Bar 1: entry captured at 100, close breaches the stop (98) while a TP already rests at 103 —
+    // the resting SELL must be cancelled before the full-size IOC exit (else it venue-rejects for
+    // insufficient balance, the base qty being locked by the resting order).
+    const out = await strategy.decide(
+      buildInput(1, {
+        close: '98',
+        position: longPosition('100'),
+        openOrders: [restingSell('103')],
+      }),
+    );
+    expect(out).toHaveLength(2);
+    expect(out[0]!.kind).toBe('CANCEL_OPEN');
+    expect(out[0]!.cancelSide).toBe('SELL');
+    expect(out[1]!.kind).toBe('EXIT_LONG');
+    expect(out[1]!.reason).toBe('plan exit: stop');
+  });
+
+  it('cancels the resting SELL when its price drifts beyond the replace-drift threshold', async () => {
+    const client = new PlanningClient();
+    const events: VenueTpEvent[] = [];
+    const strategy = new AgenticStrategy(SID, venueTpParams(), client, {
+      onVenueTp: (e) => events.push(e),
+    });
+    await strategy.decide(buildInput(0));
+    await strategy.decide(buildInput(1, { position: longPosition('100') })); // places TP at 103
+    events.length = 0;
+
+    // Bar 2: a SELL rests at 104 instead of the plan's 103 — drift = |104-103|/103 × 10000 ≈ 97bps,
+    // well past the default 10bps threshold ⇒ cancel for next-bar re-placement, no exit.
+    const out = await strategy.decide(
+      buildInput(2, { position: longPosition('100'), openOrders: [restingSell('104')] }),
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0]!.kind).toBe('CANCEL_OPEN');
+    expect(out[0]!.cancelSide).toBe('SELL');
+    expect(out[0]!.reason).toContain('drifted');
+    expect(events).toEqual(['drift_cancel']);
+  });
+
+  it('clears the plan with no signal when the resting TP fills between bars (position_closed)', async () => {
+    const client = new PlanningClient();
+    const events: VenueTpEvent[] = [];
+    const strategy = new AgenticStrategy(SID, venueTpParams(), client, {
+      onVenueTp: (e) => events.push(e),
+    });
+    await strategy.decide(buildInput(0)); // consult 1 → plan stored
+    await strategy.decide(buildInput(1, { position: longPosition('100') })); // places TP
+    events.length = 0;
+
+    // Bar 2: the venue TP filled — position is now FLAT (no `position` in this bar's snapshot) with
+    // no resting orders. No exit signal (the position is already flat); the plan clears silently.
+    const out = await strategy.decide(buildInput(2));
+    expect(out).toEqual([]);
+    expect(events).toEqual(['filled_flat']);
+    expect(client.calls).toBe(1);
+
+    // Bar 3: activePlan is now null — the next bar forces a fresh LLM consult (proves the plan was
+    // actually cleared, not just silently skipped this one bar).
+    await strategy.decide(buildInput(3));
+    expect(client.calls).toBe(2);
+  });
+
+  it('flag off: never emits a RESTING exit or a SELL-scoped CANCEL_OPEN (byte-identical to pre-feature)', async () => {
+    const client = new PlanningClient();
+    const events: VenueTpEvent[] = [];
+    const strategy = new AgenticStrategy(SID, venueTpParams({ venueTpEnabled: false }), client, {
+      onVenueTp: (e) => events.push(e),
+    });
+    await strategy.decide(buildInput(0)); // consult → plan stored
+
+    // Bar 1: LONG at avgEntry 100 — entry captured, close 100 → hold. With the flag off, no TP is
+    // ever placed regardless of the absent resting SELL.
+    const held = await strategy.decide(buildInput(1, { position: longPosition('100') }));
+    expect(held).toEqual([]);
+
+    // Bar 2: entryValidityBars(2) reached with the position externally FLAT (no `position` this
+    // bar) — plan-executor.ts now reports position_closed unconditionally, but the flag-off remap
+    // in runActivePlan reproduces the EXACT pre-position_closed verdict for this state (no resting
+    // BUY ⇒ plan_expired), so the plan clears with no signal — same observable output as before
+    // this feature existed.
+    const cleared = await strategy.decide(buildInput(2));
+    expect(cleared).toEqual([]);
+
+    // Bar 3: plan is gone — forces a fresh consult, same as the legacy plan_expired path.
+    await strategy.decide(buildInput(3));
+    expect(client.calls).toBe(2);
+
+    expect(events).toEqual([]); // no venue-TP metric ever fires with the flag off
+  });
+
+  it('holds without an exit when the close crosses the TP while the SELL still rests (tp_race_hold)', async () => {
+    const client = new PlanningClient();
+    const events: VenueTpEvent[] = [];
+    const strategy = new AgenticStrategy(SID, venueTpParams(), client, {
+      onVenueTp: (e) => events.push(e),
+    });
+    await strategy.decide(buildInput(0));
+
+    // Bar 1: close 104 ≥ TP 103 while the resting SELL is still observed open — its own venue fill
+    // is the exit; an IOC here would collide with the base the resting order locks. No signal, plan
+    // retained.
+    const out = await strategy.decide(
+      buildInput(1, {
+        close: '104',
+        position: longPosition('100'),
+        openOrders: [restingSell('103')],
+      }),
+    );
+    expect(out).toEqual([]);
+    expect(events).toEqual(['tp_race_hold']);
+
+    // Bar 2: the fill lands (FLAT, no orders) — the retained plan clears via position_closed.
+    events.length = 0;
+    const cleared = await strategy.decide(buildInput(2));
+    expect(cleared).toEqual([]);
+    expect(events).toEqual(['filled_flat']);
+    expect(client.calls).toBe(1); // never re-consulted through the race
+  });
+
+  it('cancels the resting SELL when its qty no longer matches the position (qty_cancel)', async () => {
+    const client = new PlanningClient();
+    const events: VenueTpEvent[] = [];
+    const strategy = new AgenticStrategy(SID, venueTpParams(), client, {
+      onVenueTp: (e) => events.push(e),
+    });
+    await strategy.decide(buildInput(0));
+    await strategy.decide(buildInput(1, { position: longPosition('100') })); // places TP
+    events.length = 0;
+
+    // Bar 2: the SELL rests at the correct price but sized to an earlier partial fill (0.0005 vs
+    // the position's 0.001) — the growth slice is uncovered at the venue ⇒ cancel to re-size.
+    const out = await strategy.decide(
+      buildInput(2, {
+        position: longPosition('100'),
+        openOrders: [restingSell('103', '0.0005')],
+      }),
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0]!.kind).toBe('CANCEL_OPEN');
+    expect(out[0]!.cancelSide).toBe('SELL');
+    expect(out[0]!.reason).toContain('qty');
+    expect(events).toEqual(['qty_cancel']);
+  });
+
+  it('suppresses a duplicate placement for one bar while the first is unacked (skipped_inflight), then re-places', async () => {
+    const client = new PlanningClient();
+    const events: VenueTpEvent[] = [];
+    const strategy = new AgenticStrategy(SID, venueTpParams(), client, {
+      onVenueTp: (e) => events.push(e),
+    });
+    await strategy.decide(buildInput(0));
+
+    // Bar 1: no SELL ⇒ placed.
+    const first = await strategy.decide(buildInput(1, { position: longPosition('100') }));
+    expect(first).toHaveLength(1);
+
+    // Bar 2: STILL no SELL observed (ack in flight) ⇒ suppressed, no duplicate.
+    const second = await strategy.decide(buildInput(2, { position: longPosition('100') }));
+    expect(second).toEqual([]);
+
+    // Bar 3: still nothing resting — the placement evidently died (veto/TTL) ⇒ re-place.
+    const third = await strategy.decide(buildInput(3, { position: longPosition('100') }));
+    expect(third).toHaveLength(1);
+    expect(third[0]!.exitStyle).toBe('RESTING');
+
+    expect(events).toEqual(['placed', 'skipped_inflight', 'placed']);
+  });
+
+  it('holds a TP-crossing close through the in-flight placement window too (no IOC racing the unacked SELL)', async () => {
+    const client = new PlanningClient();
+    const events: VenueTpEvent[] = [];
+    const strategy = new AgenticStrategy(SID, venueTpParams(), client, {
+      onVenueTp: (e) => events.push(e),
+    });
+    await strategy.decide(buildInput(0));
+    await strategy.decide(buildInput(1, { position: longPosition('100') })); // places TP (in flight)
+    events.length = 0;
+
+    // Bar 2: close 104 crosses the TP but the SELL is NOT yet observed in openOrders (ack in
+    // flight) — the IOC exit would race the unacked resting order. Hold, same as the observed case.
+    const out = await strategy.decide(
+      buildInput(2, { close: '104', position: longPosition('100') }),
+    );
+    expect(out).toEqual([]);
+    expect(events).toEqual(['tp_race_hold']);
+
+    // Bar 3: still no SELL and the window is over (placement died) — the normal exit fires.
+    events.length = 0;
+    const exit = await strategy.decide(
+      buildInput(3, { close: '104', position: longPosition('100') }),
+    );
+    expect(exit).toHaveLength(1);
+    expect(exit[0]!.kind).toBe('EXIT_LONG');
+    expect(exit[0]!.reason).toBe('plan exit: take_profit');
+    expect(events).toEqual([]);
+  });
+
+  it('cancels an orphaned resting SELL when the position closed externally (orphan_cancel)', async () => {
+    const client = new PlanningClient();
+    const events: VenueTpEvent[] = [];
+    const strategy = new AgenticStrategy(SID, venueTpParams(), client, {
+      onVenueTp: (e) => events.push(e),
+    });
+    await strategy.decide(buildInput(0));
+    await strategy.decide(buildInput(1, { position: longPosition('100') })); // places TP
+    events.length = 0;
+
+    // Bar 2: FLAT (external flatten) while the SELL still rests — the reduce-only SELL is orphaned
+    // (the BUY-only stale sweep never touches it) and could fill against a later re-entry at this
+    // stale plan's TP. Cancel it; plan still clears.
+    const out = await strategy.decide(buildInput(2, { openOrders: [restingSell('103')] }));
+    expect(out).toHaveLength(1);
+    expect(out[0]!.kind).toBe('CANCEL_OPEN');
+    expect(out[0]!.cancelSide).toBe('SELL');
+    expect(out[0]!.reason).toContain('orphaned');
+    expect(events).toEqual(['filled_flat', 'orphan_cancel']);
+  });
+
+  it('does not read the [0, tick) rounding bias as drift when the venue tick is configured', async () => {
+    const client = new PlanningClient();
+    const events: VenueTpEvent[] = [];
+    // Entry 100.2 → raw TP hint 103.206; tick 0.5 ⇒ the sizer rests the SELL at 103.5 (rounded UP).
+    // Raw-hint comparison would read that as ~28bps of permanent drift (> 10bps threshold) and
+    // churn cancel/re-place forever; the tick-aware expectation sees 0bps.
+    const strategy = new AgenticStrategy(SID, venueTpParams({ venueTpTickSize: '0.5' }), client, {
+      onVenueTp: (e) => events.push(e),
+    });
+    await strategy.decide(buildInput(0));
+    await strategy.decide(buildInput(1, { position: longPosition('100.2') })); // places TP
+    events.length = 0;
+
+    const out = await strategy.decide(
+      buildInput(2, { position: longPosition('100.2'), openOrders: [restingSell('103.5')] }),
+    );
+    expect(out).toEqual([]);
+    expect(events).toEqual(['skipped_existing']);
   });
 });

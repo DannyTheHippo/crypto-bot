@@ -116,8 +116,21 @@ export function evaluate(input: RiskEvalInput): RiskEvaluation {
   let workingPrice: Decimal = intent.limitPrice ?? refMid;
   let workingQty: Decimal = intent.qty;
 
-  // P2 — price band
-  const maxBand = new Decimal(limits.maxBandBps).mul(bandMultiplier).div(10_000);
+  // P2 — price band. A reduce-only intent priced on the PASSIVE side of the reference (a resting
+  // take-profit: SELL ≥ mid, BUY-cover ≤ mid) checks against the wider maxPassiveExitBandBps
+  // instead — a live TP legitimately sits far from ref. Aggressive-side reduce-only intents
+  // (crossing toward the market) and every non-reduce-only intent keep the tight maxBandBps.
+  // Kill-switch flattens (flattenClamp) are ALWAYS excluded: the band-edge clamp below is the
+  // mechanism that repairs a mis-directed marketable price (e.g. a short-cover priced long-side
+  // at mark×0.98 — accidentally passive), and the wide band would swallow that repair, leaving an
+  // unmarketable resting flatten and a >60s-unknown escalation (review finding).
+  const isPassiveReduceOnlyExit =
+    reduceOnly &&
+    !flattenClamp &&
+    ((intent.side === 'SELL' && workingPrice.gte(refMid)) ||
+      (intent.side === 'BUY' && workingPrice.lte(refMid)));
+  const bandBps = isPassiveReduceOnlyExit ? limits.maxPassiveExitBandBps : limits.maxBandBps;
+  const maxBand = new Decimal(bandBps).mul(bandMultiplier).div(10_000);
   const bandDeviation = workingPrice.sub(refMid).abs().div(refMid);
   if (bandDeviation.gt(maxBand)) {
     if (flattenClamp) {

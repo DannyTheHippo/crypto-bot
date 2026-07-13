@@ -32,6 +32,17 @@ export const SIGNAL_REJECTIONS_COUNTER = makeCounterProvider({
 // gate. Strategies reach a venue ONLY through this path — never the adapter directly.
 @Injectable()
 export class SignalSinkService implements SignalSinkPort {
+  // Per-(strategyId,symbol) tail promise. Every recordSignal for the same key chains onto the prior
+  // one, so individual signals for a key process strictly in arrival order (a cancel recorded before
+  // an exit fully completes — venue ack included — before the exit submits). NOTE the guarantee is
+  // per-SIGNAL, not per-SEQUENCE: two awaited recordSignal calls from one caller (protective-exit's
+  // cancel-then-exit) can have a third caller's signal chain BETWEEN them — e.g. an agentic TP
+  // re-placement slotting in after the cancel re-locks base and the exit venue-rejects
+  // (TERMINAL_REJECT, retried next protective tick — self-healing, review-assessed). Bounded: an
+  // entry is dropped once its chain settles and no later call has re-chained onto it (see the
+  // `this.chains.get(key) === tracked` check below).
+  private readonly chains = new Map<string, Promise<void>>();
+
   constructor(
     @Inject(SIGNAL_GATEWAY) private readonly gateway: SignalGatewayPort,
     @Inject(PORTFOLIO_VIEW) private readonly portfolio: PortfolioViewPort,
@@ -40,7 +51,21 @@ export class SignalSinkService implements SignalSinkPort {
     @Optional() @InjectMetric('signals_rejected_total') private readonly rejects?: Counter<string>,
   ) {}
 
-  async recordSignal(signal: Signal): Promise<void> {
+  recordSignal(signal: Signal): Promise<void> {
+    const key = `${signal.strategyId}:${signal.symbol}`;
+    const prior = this.chains.get(key) ?? Promise.resolve();
+    const next = prior.then(() => this.processSignal(signal));
+    // Stored in the map, never rejects — a rejection here would otherwise wedge every later call
+    // queued on this key. The caller's own `next` still rejects/resolves on this signal's outcome.
+    const tracked = next.catch(() => undefined);
+    this.chains.set(key, tracked);
+    void tracked.finally(() => {
+      if (this.chains.get(key) === tracked) this.chains.delete(key);
+    });
+    return next;
+  }
+
+  private async processSignal(signal: Signal): Promise<void> {
     // CANCEL_OPEN never reaches the gateway/sizer: position-sizer.service.ts maps it to null (no
     // sizing to do), which the gateway would otherwise pass through only to have it land as a benign
     // NO_POSITION reject — noise, not a decision. It is risk-reducing-only (cancel, never place), so
@@ -70,10 +95,16 @@ export class SignalSinkService implements SignalSinkPort {
   // new venue call is introduced. cancelAllFor(strategyId) is not reused as-is: it is whole-strategy
   // (all symbols), and CANCEL_OPEN is scoped to one symbol only — using it here would risk cancelling
   // the strategy's resting orders on OTHER symbols. Idempotent: no matching open orders ⇒ no-op.
+  // signal.cancelSide narrows the cancel to one side (e.g. the S3 protective-exit path clears a
+  // resting SELL before its own exit); absent ⇒ both sides, byte-identical to pre-cancelSide behavior.
   private async cancelOpenForSignal(signal: Signal): Promise<void> {
     const toCancel = this.portfolio
       .forStrategy(signal.strategyId)
-      .openOrders.filter((o) => o.symbol === signal.symbol);
+      .openOrders.filter(
+        (o) =>
+          o.symbol === signal.symbol &&
+          (signal.cancelSide === undefined || o.side === signal.cancelSide),
+      );
     for (const o of toCancel) {
       await this.gate.cancel(o.clientOrderId, 'CANCEL_OPEN_SIGNAL');
     }

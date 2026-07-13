@@ -116,6 +116,14 @@ export interface AppConfig {
     // Sample the decide-time input payload every Nth plan-managed (quiet) bar so the offline
     // replay harness accrues rows while plan mode manages positions. 0 disables sampling.
     quietPayloadSampleBars: number;
+    // AGENTIC_VENUE_TP: rests the plan's take-profit at the venue (reduce-only EXIT_LONG,
+    // exitStyle RESTING) instead of waiting for plan-executor's own close-price crossing to fire an
+    // IOC exit. Off by default — byte-identical to pre-feature until enabled (agentic.strategy.ts's
+    // manageVenueTp).
+    venueTpEnabled: boolean;
+    // Re-place threshold (bps): a resting TP SELL priced more than this many bps from the plan's
+    // current TP price gets cancelled this bar for next-bar re-placement.
+    venueTpReplaceDriftBps: number;
     // Cache-token pricing for the DEFAULT model (USD per 1M tokens, decimal strings): reads bill
     // at ~0.1x input, 1h-TTL writes at ~2x input. Priced $0 before W4/W13 — an undercount of true
     // spend inside a promotion gate (fail-open) — now first-class.
@@ -168,6 +176,9 @@ export interface AppConfig {
     maxDailyLoss: string;
     maxDrawdownPct: string;
     maxBandBps: number;
+    // P2 passive-exit override (domain/risk/limits.ts): reduce-only intents priced on the passive
+    // side of ref (resting take-profits) check against this wider band instead of maxBandBps.
+    maxPassiveExitBandBps: number;
     staleMaxAgeMs: number;
   };
   // Perp/swap paper adapter knobs (B1) + entry-sizing knob (B2, position-sizer's perp branch).

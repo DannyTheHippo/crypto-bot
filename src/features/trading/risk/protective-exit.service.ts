@@ -61,8 +61,16 @@ export class ProtectiveExitService {
     if (this.killSwitch.state() !== 'RUNNING') return; // HALTING/FLATTENING belongs to HaltCoordinator
 
     const snapshot = this.portfolio.snapshot();
+    // Busy-set scope: a resting SELL (venue take-profit) locks base balance but must not permanently
+    // disable this stop once such orders can rest — fire() clears it first (see below). Only a
+    // resting BUY entry or an in-flight submission (either side) still stacks a slice onto this
+    // symbol, so only those count as busy.
     const busy = new Set<string>();
-    for (const o of snapshot.openOrders) busy.add(o.symbol);
+    const sellOpen = new Set<string>();
+    for (const o of snapshot.openOrders) {
+      if (o.side === 'BUY') busy.add(o.symbol);
+      else sellOpen.add(o.symbol);
+    }
     for (const f of snapshot.inFlightIntents) busy.add(f.symbol);
 
     const liveKeys = new Set<string>();
@@ -114,7 +122,16 @@ export class ProtectiveExitService {
       const lastFired = this.lastFiredAt.get(key);
       if (lastFired !== undefined && now - lastFired < this.config.cooldownMs) continue;
 
-      await this.fire(pos, ref.mid, now, reason, key, snapshot.snapshotSeq, isLong);
+      await this.fire(
+        pos,
+        ref.mid,
+        now,
+        reason,
+        key,
+        snapshot.snapshotSeq,
+        isLong,
+        sellOpen.has(pos.symbol),
+      );
     }
 
     // Cleanup: drop HWM/LWM/cooldown state for symbols that no longer carry a position, so a later
@@ -138,6 +155,7 @@ export class ProtectiveExitService {
     key: string,
     snapshotSeq: bigint,
     isLong: boolean,
+    hasOpenSell: boolean,
   ): Promise<void> {
     const signal: Signal = {
       strategyId: pos.strategyId,
@@ -153,6 +171,24 @@ export class ProtectiveExitService {
       reason,
     };
     try {
+      if (hasOpenSell) {
+        // A resting SELL (venue take-profit) locks the base balance on spot — a full-size exit
+        // would otherwise be rejected. Cancel it and await the ack before submitting the exit.
+        await this.sink.recordSignal({
+          strategyId: pos.strategyId,
+          venue: pos.venue,
+          symbol: pos.symbol,
+          kind: 'CANCEL_OPEN',
+          cancelSide: 'SELL',
+          strength: 1,
+          refPrice: mid,
+          basedOnSeq: snapshotSeq,
+          eventTime: now,
+          ttlMs: 60_000,
+          dedupeKey: `protect:cancel_sell:${pos.symbol}:${now}`,
+          reason: `${reason}: clear resting SELL before protective exit`,
+        });
+      }
       await this.sink.recordSignal(signal);
     } catch {
       return; // sink failure must not crash the tick — retries next tick, no lastFiredAt update

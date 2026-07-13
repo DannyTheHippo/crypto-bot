@@ -5,6 +5,11 @@ import Decimal from 'decimal.js';
 // Money/qty fields are plain decimal strings (validated into Decimal here).
 export interface RiskLimitsConfig {
   readonly maxBandBps: number; // P2: |limit − mid| / mid ≤ this (basis points)
+  // P2 passive-exit override: a reduce-only intent priced on the PASSIVE side of the reference
+  // (SELL ≥ mid, BUY-cover ≤ mid — a resting take-profit) checks against this wider band instead
+  // of maxBandBps. Aggressive-side reduce-only intents and every non-reduce-only intent are
+  // unaffected — see domain/risk/evaluate.ts P2.
+  readonly maxPassiveExitBandBps: number;
   readonly maxOrderNotional: string; // P3: qty × price ≤ this (quote)
   readonly maxDriftBps: number; // P4: |refPrice − mark| / mark ≤ this
   readonly maxPositionPerSymbol: string; // E1: post-trade |position| ≤ this (base qty)
@@ -28,6 +33,7 @@ export function validateLimits(
   if (!limits) return null;
   const numericFields: ReadonlyArray<keyof RiskLimitsConfig> = [
     'maxBandBps',
+    'maxPassiveExitBandBps',
     'maxDriftBps',
     'staleMaxAgeMs',
   ];

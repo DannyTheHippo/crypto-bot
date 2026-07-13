@@ -325,6 +325,37 @@ describe('PositionSizerService', () => {
     }
   });
 
+  // ── Passive resting exits (exitStyle 'RESTING'): plan-mode take-profit rests GTC at the hint ──
+  it("exitStyle 'RESTING' with a hint prices the exit LIMIT+GTC at the hint, tick-rounded UP for SELL (exact string)", () => {
+    const r = new PositionSizerService(clock, deps({ exitCrossBufferBps: 25 })).size(
+      signal({
+        kind: 'EXIT_LONG',
+        refPrice: price('100'),
+        exitStyle: 'RESTING',
+        limitPriceHint: price('110.006'),
+      }),
+      snapshot(longPosition()),
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.intent.type).toBe('LIMIT');
+      expect(r.intent.timeInForce).toBe('GTC');
+      expect(r.intent.limitPrice?.toFixed()).toBe('110.01'); // 110.006 rounded UP to the 0.01 tick
+    }
+  });
+
+  it("exitStyle 'RESTING' with no hint falls back to the ordinary crossed-IOC exit path (never guesses a price)", () => {
+    const r = new PositionSizerService(clock, deps({ exitCrossBufferBps: 25 })).size(
+      signal({ kind: 'EXIT_LONG', refPrice: price('100'), exitStyle: 'RESTING' }),
+      snapshot(longPosition()),
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.intent.timeInForce).toBe('IOC');
+      expect(r.intent.limitPrice?.toFixed()).toBe('99.75'); // same crossed-down pricing as the non-RESTING case
+    }
+  });
+
   it('crosses a non-tick-aligned exit price down (SELL) to the nearest tick below', () => {
     // refPrice 101, buffer 25bps ⇒ 101 × 0.9975 = 100.7475, floored to the 0.01 tick ⇒ 100.74.
     const r = new PositionSizerService(clock, deps({ exitCrossBufferBps: 25 })).size(

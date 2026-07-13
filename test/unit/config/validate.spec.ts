@@ -208,6 +208,8 @@ describe('validate()', () => {
         planMaxQuietBars: 16,
         planExitTtlBars: 2,
         quietPayloadSampleBars: 0,
+        venueTpEnabled: false,
+        venueTpReplaceDriftBps: 10,
         tokenPriceInputPerMtok: '3',
         tokenPriceOutputPerMtok: '15',
         tokenPriceCacheReadPerMtok: '0.3',
@@ -568,6 +570,7 @@ describe('validate()', () => {
       expect(risk.maxDailyLoss).toBe('5000');
       expect(risk.maxDrawdownPct).toBe('0.2');
       expect(risk.maxBandBps).toBe(100);
+      expect(risk.maxPassiveExitBandBps).toBe(1200);
       expect(risk.staleMaxAgeMs).toBe(5000);
     });
 
@@ -577,10 +580,12 @@ describe('validate()', () => {
         RISK_MAX_ORDER_NOTIONAL: '500',
         RISK_MAX_DAILY_LOSS: '100.25',
         RISK_MAX_BAND_BPS: '50',
+        RISK_MAX_PASSIVE_EXIT_BAND_BPS: '900',
       }).risk;
       expect(risk.maxOrderNotional).toBe('500');
       expect(risk.maxDailyLoss).toBe('100.25');
       expect(risk.maxBandBps).toBe(50);
+      expect(risk.maxPassiveExitBandBps).toBe(900);
     });
 
     it('throws on a non-decimal RISK_MAX_ORDER_NOTIONAL', () => {

@@ -36,6 +36,7 @@ import { SignalGatewayService } from './signal-gateway.service';
 
 const DEFAULT_LIMITS: PartialRiskLimits = {
   maxBandBps: 100,
+  maxPassiveExitBandBps: 1200,
   maxOrderNotional: '100000',
   maxDriftBps: 100,
   maxPositionPerSymbol: '1000',
@@ -109,6 +110,7 @@ function limitsFor(config: TypedConfigService | undefined): PartialRiskLimits {
     maxDailyLoss: risk.maxDailyLoss,
     maxDrawdownPct: risk.maxDrawdownPct,
     maxBandBps: risk.maxBandBps,
+    maxPassiveExitBandBps: risk.maxPassiveExitBandBps,
     staleMaxAgeMs: risk.staleMaxAgeMs,
   };
 }

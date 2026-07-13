@@ -62,11 +62,15 @@ function makeSink(
   };
 }
 
-function openOrder(symbol = makeIntent().symbol, coidSeed = '0'): OpenOrderSummary {
+function openOrder(
+  symbol = makeIntent().symbol,
+  coidSeed = '0',
+  side: 'BUY' | 'SELL' = 'BUY',
+): OpenOrderSummary {
   return {
     clientOrderId: clientOrderId('cbp' + coidSeed.repeat(32)),
     symbol,
-    side: 'BUY',
+    side,
     qty: qty('1'),
   };
 }
@@ -248,6 +252,135 @@ describe('SignalSinkService', () => {
       );
       await sink.recordSignal(cancelSignal());
       expect(inc).not.toHaveBeenCalled();
+    });
+
+    it('cancelSide scopes the cancel to only that side, leaving the other side resting', async () => {
+      const { sink, cancelled } = makeSink(
+        { status: 'GATEWAY_REJECTED', reason: 'DUPLICATE' },
+        undefined,
+        undefined,
+        [openOrder(undefined, '0', 'BUY'), openOrder(undefined, '1', 'SELL')],
+      );
+      await sink.recordSignal({ ...cancelSignal(), cancelSide: 'SELL' });
+      expect(cancelled).toEqual([
+        { clientOrderId: 'cbp' + '1'.repeat(32), reason: 'CANCEL_OPEN_SIGNAL' },
+      ]);
+    });
+
+    it('with no cancelSide, cancels both BUY and SELL open orders (pinned absent-scope behavior)', async () => {
+      const { sink, cancelled } = makeSink(
+        { status: 'GATEWAY_REJECTED', reason: 'DUPLICATE' },
+        undefined,
+        undefined,
+        [openOrder(undefined, '0', 'BUY'), openOrder(undefined, '1', 'SELL')],
+      );
+      await sink.recordSignal(cancelSignal());
+      expect(cancelled).toHaveLength(2);
+    });
+  });
+
+  describe('per-(strategyId,symbol) serialization', () => {
+    it('a slow signal does not let a later concurrent signal for the same symbol overtake it', async () => {
+      const symX = symbolId('BTC/USDT');
+      const approvedFor = (coid: string) =>
+        mintApproval(makeIntent({ clientOrderId: clientOrderId(coid) }), Buffer.alloc(32, 1), {
+          nonce: 'n',
+          approvedAtMs: epochMs(0),
+          limitsVersion: 'v1',
+          snapshotSeq: 1n,
+        });
+      const submitted: string[] = [];
+      const gateway: SignalGatewayPort = {
+        accept: (s) => ({
+          status: 'DECIDED',
+          decision: {
+            verdict: 'APPROVED',
+            approved: approvedFor(
+              s.dedupeKey === 'first' ? 'cbp' + 'a'.repeat(32) : 'cbp' + 'b'.repeat(32),
+            ),
+          },
+        }),
+      };
+      const portfolio: PortfolioViewPort = {
+        snapshot: () => ({}) as PortfolioSnapshot,
+        forStrategy: () => ({ strategyId: SID, positions: new Map(), openOrders: [] }),
+      };
+      let releaseFirst: () => void = () => {};
+      const blockFirst = new Promise<void>((r) => {
+        releaseFirst = r;
+      });
+      const gate: ExecutionGatePort = {
+        submit: async (a) => {
+          if (a.intent.clientOrderId === 'cbp' + 'a'.repeat(32)) await blockFirst;
+          submitted.push(a.intent.clientOrderId);
+          return { clientOrderId: a.intent.clientOrderId, outcome: 'SUBMITTED' };
+        },
+        cancel: () => Promise.resolve(),
+        cancelAllFor: () => Promise.resolve(),
+        flattenAll: () => Promise.resolve(),
+      };
+      const sink = new SignalSinkService(gateway, portfolio, gate);
+
+      const p1 = sink.recordSignal({ ...signal(), symbol: symX, dedupeKey: 'first' });
+      const p2 = sink.recordSignal({ ...signal(), symbol: symX, dedupeKey: 'second' });
+
+      // The second call must not even reach submit yet — it is queued behind the first.
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(submitted).toHaveLength(0);
+
+      releaseFirst();
+      await Promise.all([p1, p2]);
+      expect(submitted).toEqual(['cbp' + 'a'.repeat(32), 'cbp' + 'b'.repeat(32)]);
+    });
+
+    it('does not serialize across different symbols — a blocked signal for one symbol never delays another', async () => {
+      const symX = symbolId('BTC/USDT');
+      const symY = symbolId('ETH/USDT');
+      const submitted: string[] = [];
+      const approvedFor = (symbol: typeof symX) =>
+        mintApproval(makeIntent({ symbol }), Buffer.alloc(32, 1), {
+          nonce: 'n',
+          approvedAtMs: epochMs(0),
+          limitsVersion: 'v1',
+          snapshotSeq: 1n,
+        });
+      const gateway: SignalGatewayPort = {
+        accept: (s) => ({
+          status: 'DECIDED',
+          decision: { verdict: 'APPROVED', approved: approvedFor(s.symbol) },
+        }),
+      };
+      const portfolio: PortfolioViewPort = {
+        snapshot: () => ({}) as PortfolioSnapshot,
+        forStrategy: () => ({ strategyId: SID, positions: new Map(), openOrders: [] }),
+      };
+      let releaseX: () => void = () => {};
+      const blockX = new Promise<void>((r) => {
+        releaseX = r;
+      });
+      const gate: ExecutionGatePort = {
+        submit: async (a) => {
+          if (a.intent.symbol === symX) await blockX;
+          submitted.push(a.intent.symbol);
+          return { clientOrderId: a.intent.clientOrderId, outcome: 'SUBMITTED' };
+        },
+        cancel: () => Promise.resolve(),
+        cancelAllFor: () => Promise.resolve(),
+        flattenAll: () => Promise.resolve(),
+      };
+      const sink = new SignalSinkService(gateway, portfolio, gate);
+
+      const pX = sink.recordSignal({ ...signal(), symbol: symX });
+      const pY = sink.recordSignal({ ...signal(), symbol: symY });
+
+      await pY; // resolves even though X is still blocked
+      expect(submitted).toEqual([symY]);
+
+      releaseX();
+      await pX;
+      expect(submitted).toEqual([symY, symX]);
     });
   });
 });

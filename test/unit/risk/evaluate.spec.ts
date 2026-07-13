@@ -21,6 +21,7 @@ const IID = intentId('0190abcd-1234-7abc-89ab-0123456789ab');
 
 const FULL_LIMITS: PartialRiskLimits = {
   maxBandBps: 100, // 1%
+  maxPassiveExitBandBps: 1200, // 12%
   maxOrderNotional: '1000000',
   maxDriftBps: 100,
   maxPositionPerSymbol: '1000',
@@ -194,6 +195,61 @@ describe('RiskEngine.evaluate — §5 decision table', () => {
     if (r.verdict === 'RESIZED') {
       expect(r.reasons).toContain('PRICE_BAND');
       expect(r.intent.limitPrice!.toFixed()).toBe('99'); // 100 × (1 − 0.01)
+    }
+  });
+
+  // P2 passive-exit override: a reduce-only intent priced on the PASSIVE side of ref (a resting
+  // take-profit) checks against the wider maxPassiveExitBandBps (1200) instead of maxBandBps (100).
+  it('P2: a passive-side reduce-only exit (SELL priced +10% over ref) PASSES under the wider passive band', () => {
+    const r = evaluate(
+      makeInput({
+        intent: makeIntent({ side: 'SELL', reduceOnly: true, limitPrice: price('110') }), // +1000bps < 1200bps
+        snapshot: snapshot({ positions: pos('5') }),
+      }),
+    );
+    expect(r.verdict).toBe('APPROVED');
+  });
+  it('P2: an aggressive-side reduce-only exit (SELL priced 2% below ref, crossing down) still checks the tight band and FAILS', () => {
+    const r = evaluate(
+      makeInput({
+        intent: makeIntent({ side: 'SELL', reduceOnly: true, limitPrice: price('98') }), // −200bps > 100bps tight band
+        snapshot: snapshot({ positions: pos('5') }),
+      }),
+    );
+    expect(r).toMatchObject({ verdict: 'REJECTED', reasons: ['PRICE_BAND'] });
+  });
+  it('P2: a non-reduce-only entry priced +2% over ref still FAILS the tight band (passive-exit override never applies to entries)', () => {
+    const r = evaluate(
+      makeInput({ intent: makeIntent({ side: 'BUY', limitPrice: price('102') }) }),
+    );
+    expect(r).toMatchObject({ verdict: 'REJECTED', reasons: ['PRICE_BAND'] });
+  });
+  it('P2: a passive-side reduce-only BUY cover (priced 10% below ref) PASSES under the wider passive band', () => {
+    const r = evaluate(
+      makeInput({
+        intent: makeIntent({ side: 'BUY', reduceOnly: true, limitPrice: price('90') }), // −1000bps < 1200bps
+        snapshot: snapshot({ positions: pos('-5') }),
+      }),
+    );
+    expect(r.verdict).toBe('APPROVED');
+  });
+  it('P2: a kill-switch flatten NEVER gets the passive band — a mis-directed BUY-cover at −2% is clamped to the tight band edge, not accepted wide', () => {
+    // A short-cover flatten priced long-side (mark×0.98, below mid ⇒ accidentally passive-side)
+    // must stay on the tight band + clamp path: the band-edge clamp is what repairs the
+    // mis-directed price into a marketable limit. The wide passive band would accept it as-is,
+    // leaving an unmarketable resting flatten and a >60s-unknown escalation (review finding).
+    const r = evaluate(
+      makeInput({
+        isFlatten: true,
+        killState: 'FLATTENING',
+        intent: makeIntent({ side: 'BUY', reduceOnly: true, limitPrice: price('98') }), // −200bps: > 100bps tight, < 1200bps passive
+        snapshot: snapshot({ positions: pos('-5') }),
+      }),
+    );
+    expect(r.verdict).toBe('RESIZED');
+    if (r.verdict === 'RESIZED') {
+      expect(r.reasons).toContain('PRICE_BAND'); // clamped, not band-accepted
+      expect(r.intent.limitPrice?.toFixed()).toBe('101'); // BUY edge = mid × (1 + 100bps)
     }
   });
 

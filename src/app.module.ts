@@ -1563,6 +1563,7 @@ export class AppModule
           this.promotionEvaluator.onClosedTrade(id, count);
         },
         onPrescreen: (outcome, reason) => this.agentMetrics.recordPrescreen(outcome, reason),
+        onVenueTp: (event) => this.agentMetrics.recordVenueTp(event),
         evidence: this.roundTripEvidence,
         derivativesFeed: this.derivativesFeed,
         sentimentFeed: this.sentimentFeed,
@@ -1700,6 +1701,13 @@ export class AppModule
       quietPayloadSampleBars: agentic.quietPayloadSampleBars,
       crossSymbolEnabled: agentic.crossSymbolEnabled,
       crossSymbolLookbackBars: agentic.crossSymbolLookbackBars,
+      venueTpEnabled: agentic.venueTpEnabled,
+      venueTpReplaceDriftBps: agentic.venueTpReplaceDriftBps,
+      // The venue tick the sizer will round the TP hint to — lets manageVenueTp compare the resting
+      // price against the tick-rounded expectation instead of the raw hint (review finding: the
+      // [0, tick) rounding bias reads as permanent drift on coarse-tick symbols). Boot asserts every
+      // traded symbol has a DEFAULT_FILTERS row, so this is present for all live instances.
+      venueTpTickSize: DEFAULT_FILTERS.get(symbol)?.tickSize,
     };
   }
 }

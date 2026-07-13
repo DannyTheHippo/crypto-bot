@@ -3,9 +3,14 @@ import type { CandleEvent, CandleInterval } from '../../../domain/types/market-e
 import type { Signal } from '../../../domain/types/signal';
 import type { StrategyId, VenueId, SymbolId, EpochMs } from '../../../domain/types/ids';
 import type { SubscriptionSpec } from '../../../domain/types/subscription';
-import type { Position } from '../../../domain/types/portfolio';
+import type { Position, OpenOrderSummary } from '../../../domain/types/portfolio';
 import type { Price } from '../../../domain/types/money';
-import { toIndicatorNumber } from '../../../domain/types/money';
+import {
+  toIndicatorNumber,
+  price,
+  roundToMoneyPrecision,
+  roundToTick,
+} from '../../../domain/types/money';
 import { aggregateCandles } from '../../../domain/indicators/candle-aggregate';
 import {
   emaFromNumbers,
@@ -40,7 +45,7 @@ import {
 import type { RoundTripEvidencePort } from '../../../ports/promotion';
 import type { DerivativesFeedPort } from '../../../ports/derivatives-feed';
 import type { SentimentFeedPort } from '../../../ports/sentiment-feed';
-import { evaluatePlan, type PlanExecutorState } from './plan-executor';
+import { evaluatePlan, type PlanExecutorAction, type PlanExecutorState } from './plan-executor';
 import { CrossSymbolContextService } from './cross-symbol-context';
 
 export interface AgenticStrategyParams {
@@ -89,6 +94,56 @@ export interface AgenticStrategyParams {
   // Trailing-return lookback (bars) used for the cross-symbol ranking. Default 20 (the winning
   // cross-sectional lookback from the 2026-07-12 multi-strategy search).
   readonly crossSymbolLookbackBars?: number;
+  // AGENTIC_VENUE_TP: rests the plan's take-profit at the venue (a reduce-only EXIT_LONG with
+  // exitStyle 'RESTING') instead of waiting for the executor's own close-price crossing check to
+  // fire an IOC exit — better fill quality (the order can fill intrabar, at the exact TP price,
+  // rather than only after a bar closes past it). Optional/absent ⇒ disabled, so existing callers
+  // stay byte-identical (no RESTING signal, no venue-order cancels, plan-executor's own
+  // stop/take_profit/max_hold price-crossing checks are the only exit path, same as today).
+  readonly venueTpEnabled?: boolean;
+  // Re-place threshold (bps) for the resting TP: when the resting SELL's own price has drifted from
+  // the plan's current TP price by more than this many bps, it is cancelled this bar so the next bar
+  // re-places it at the correct price (see manageVenueTp). Default 10.
+  readonly venueTpReplaceDriftBps?: number;
+  // Venue tick size for this symbol (DEFAULT_FILTERS row). The sizer rounds the TP hint UP to this
+  // tick when pricing the resting order, so the drift comparison must use the tick-rounded
+  // expectation — comparing against the raw hint reads the [0, tick) rounding bias as drift and
+  // churns cancel/re-place forever on any symbol whose tick exceeds the threshold (review finding).
+  // Absent ⇒ compare against the raw hint (test harnesses; fine-tick symbols).
+  readonly venueTpTickSize?: string;
+}
+
+// AGENTIC_VENUE_TP lifecycle events (see manageVenueTp / AgenticStrategyDeps.onVenueTp): 'placed' — no
+// SELL was resting, one was placed; 'skipped_existing' — a correctly-priced SELL already rests
+// (idempotent no-op, covers the restart re-arm case); 'skipped_inflight' — a placement was emitted
+// this bar or last and its ack hasn't been observed yet, so re-placing would race a duplicate;
+// 'cancel_for_exit' — a stop/max_hold exit cancelled the resting SELL ahead of its own full-size IOC
+// exit; 'drift_cancel' — the resting SELL's price drifted past venueTpReplaceDriftBps and was
+// cancelled for next-bar re-placement; 'qty_cancel' — the resting SELL's qty no longer matches the
+// position (entry remainder filled after placement) and was cancelled for full-size re-placement;
+// 'tp_race_hold' — the close crossed the TP while the SELL still rests (its own venue fill is the
+// exit; an IOC here would collide with the base it locks), so the bar holds awaiting the fill;
+// 'filled_flat' — the resting SELL filled at the venue (position went FLAT without this executor
+// ever emitting the exit itself), clearing the plan with no signal.
+export type VenueTpEvent =
+  | 'placed'
+  | 'skipped_existing'
+  | 'skipped_inflight'
+  | 'cancel_for_exit'
+  | 'drift_cancel'
+  | 'qty_cancel'
+  | 'tp_race_hold'
+  | 'orphan_cancel'
+  | 'filled_flat';
+
+interface ActivePlanState {
+  plan: NonNullable<AgentProposal['plan']>;
+  entryPrice: string | null;
+  barsElapsed: number;
+  // Bar index of the last venue-TP placement whose ack hasn't been observed in openOrders yet —
+  // suppresses a duplicate placement while the first is in flight (StrategyPortfolioView exposes
+  // no in-flight intents, so openOrders alone cannot close this window). null once observed.
+  venueTpPlacedAtBar: number | null;
 }
 
 export interface AgenticStrategyDeps {
@@ -122,6 +177,10 @@ export interface AgenticStrategyDeps {
   // symbol's trailing return and reads the whole basket's ranking. Absent ⇒ crossSymbolEnabled is a
   // no-op (the ranking never attaches), the same convention as `evidence`/`derivativesFeed` above.
   readonly crossSymbolContext?: CrossSymbolContextService;
+  // AGENTIC_VENUE_TP: fires once per manageVenueTp/position_closed observation with the lifecycle
+  // event (see VenueTpEvent) — mirrors the onPrescreen seam above. Optional/no-op-defaulted; absent
+  // means the venue-TP lane runs unobserved (no metric), never a behavior change.
+  readonly onVenueTp?: (event: VenueTpEvent) => void;
   readonly logger?: LoggerLike;
 }
 
@@ -199,11 +258,7 @@ export class AgenticStrategy implements AsyncStrategy {
   // see anthropic-agent-client.ts). Before that path existed the "model issues a fresh plan"
   // self-heal was aspirational: the model had no signal the plan was gone and the client dropped
   // any plan outside long-from-flat, so restarts silently degraded positions to per-bar consults.
-  private activePlan: {
-    plan: NonNullable<AgentProposal['plan']>;
-    entryPrice: string | null;
-    barsElapsed: number;
-  } | null = null;
+  private activePlan: ActivePlanState | null = null;
   private readonly expectancyLadderEnabled: boolean;
   private readonly crossSymbolEnabled: boolean;
   private readonly crossSymbolLookbackBars: number;
@@ -211,6 +266,10 @@ export class AgenticStrategy implements AsyncStrategy {
   private readonly derivativesFeed?: DerivativesFeedPort;
   private readonly sentimentFeed?: SentimentFeedPort;
   private readonly crossSymbolContext?: CrossSymbolContextService;
+  private readonly venueTpEnabled: boolean;
+  private readonly venueTpReplaceDriftBps: number;
+  private readonly venueTpTickSize?: string;
+  private readonly onVenueTp?: (event: VenueTpEvent) => void;
   // W2.1 stale-entry sweep state. OpenOrderSummary carries no timestamps, so age is measured in
   // observed decide cycles: clientOrderId → the snapshot eventTime this strategy FIRST saw the order
   // resting. cancelRequestedAt records when a CANCEL_OPEN was emitted for an id so it isn't re-spammed
@@ -265,6 +324,10 @@ export class AgenticStrategy implements AsyncStrategy {
     this.derivativesFeed = deps.derivativesFeed;
     this.sentimentFeed = deps.sentimentFeed;
     this.crossSymbolContext = deps.crossSymbolContext;
+    this.venueTpEnabled = params.venueTpEnabled ?? false;
+    this.venueTpReplaceDriftBps = Math.max(0, params.venueTpReplaceDriftBps ?? 10);
+    this.venueTpTickSize = params.venueTpTickSize;
+    this.onVenueTp = deps.onVenueTp;
     this.subscriptions = {
       venue: params.venue,
       symbols: [params.symbol],
@@ -352,7 +415,12 @@ export class AgenticStrategy implements AsyncStrategy {
     // managed bar anchors it to the position's real avgEntry, see runActivePlan).
     if (this.planMode) {
       if (proposal.plan) {
-        this.activePlan = { plan: proposal.plan, entryPrice: null, barsElapsed: 0 };
+        this.activePlan = {
+          plan: proposal.plan,
+          entryPrice: null,
+          barsElapsed: 0,
+          venueTpPlacedAtBar: null,
+        };
       } else if (decision.action === 'flat') {
         this.activePlan = null;
       }
@@ -390,35 +458,117 @@ export class AgenticStrategy implements AsyncStrategy {
       planStartedBar: 0,
       barsElapsed: active.barsElapsed,
     };
-    const verdict = evaluatePlan({
+    const rawVerdict = evaluatePlan({
       state,
       closePrice: lastCandle.close.toFixed(),
       positionSide: context.position.side,
       hasRestingEntry,
     });
+    // AGENTIC_VENUE_TP off: byte-identical to the pre-position_closed evaluatePlan, which never
+    // inspected entryPrice in the FLAT branch — an externally-flattened-while-active-plan bar (the
+    // only way FLAT+entryPrice!==null arises without a resting venue TP) fell through to the
+    // ordinary resting-entry/expiry checks instead. plan-executor.ts stays a pure, flag-unaware
+    // function (see its own header comment), so the remap lives here rather than there.
+    const verdict: PlanExecutorAction =
+      rawVerdict.type === 'position_closed' && !this.venueTpEnabled
+        ? active.barsElapsed >= active.plan.entryValidityBars
+          ? hasRestingEntry
+            ? { type: 'cancel_entry' }
+            : { type: 'plan_expired' }
+          : { type: 'hold' }
+        : rawVerdict;
 
     const lastClose = toIndicatorNumber(lastCandle.close);
+
+    if (verdict.type === 'position_closed') {
+      // Only reachable when venueTpEnabled (see the remap above) — the resting venue TP filled
+      // between bars (or an external flatten while it was in place), so the position is already
+      // FLAT: no exit signal to emit, just clear the plan.
+      this.activePlan = null;
+      this.annotatePreviousOutcome(lastClose, context.position, lastCandle, heldDuringPrev);
+      this.recordQuietJournalEntry(
+        input,
+        'venue_tp_filled: resting take-profit closed the position — plan cleared',
+        'plan-executor',
+      );
+      this.onVenueTp?.('filled_flat');
+      // External-flatten orphan (review nice-to-have): if the position closed WITHOUT the TP
+      // filling, the reduce-only SELL still rests — the BUY-only stale sweep never touches it and
+      // it could fill against a later re-entry at this stale plan's TP. Risk-reducing cancel.
+      if (this.restingSellOrder(input)) {
+        this.onVenueTp?.('orphan_cancel');
+        return [
+          this.buildCancelOpenSignal(
+            input,
+            lastCandle,
+            'SELL',
+            'venue take-profit: position closed externally — cancel the orphaned resting SELL',
+          ),
+        ];
+      }
+      return [];
+    }
     if (verdict.type === 'exit') {
+      // AGENTIC_VENUE_TP take_profit race (review finding): the close crossed the TP while the
+      // resting SELL is still observed open — that order is marketable at this close, so its own
+      // venue fill IS the exit; a full-size IOC here would collide with the base it locks and
+      // venue-reject. The same hold applies through the one-bar in-flight placement window (second
+      // review finding): a TP emitted last bar may not be acked into openOrders yet, and the IOC
+      // would race it — mirror manageVenueTp's own suppression window. Next bar observes either
+      // FLAT (position_closed journals the fill) or, with nothing resting and the window closed,
+      // the normal exit path fires. Stop/max_hold never enter here (they cancel-first below).
+      if (this.venueTpEnabled && verdict.reason === 'take_profit') {
+        const inFlightTp =
+          active.venueTpPlacedAtBar !== null && active.barsElapsed <= active.venueTpPlacedAtBar + 1;
+        if (this.restingSellOrder(input) || inFlightTp) {
+          this.onVenueTp?.('tp_race_hold');
+          this.recordQuietJournalEntry(
+            input,
+            'plan hold: close crossed the TP while the venue SELL rests or is in flight — awaiting its fill',
+            'plan-executor',
+          );
+          return [];
+        }
+      }
       this.activePlan = null;
       this.annotatePreviousOutcome(lastClose, context.position, lastCandle, heldDuringPrev);
       this.recordQuietJournalEntry(input, `plan exit: ${verdict.reason}`, 'plan-executor');
-      return [
-        {
-          strategyId: this.id,
-          venue: this.venue,
-          symbol: this.symbol,
-          kind: 'EXIT_LONG',
-          strength: 1,
-          refPrice: lastCandle.close,
-          basedOnSeq: lastCandle.seq,
-          eventTime: input.snapshot.eventTime,
-          // planExitTtlBars × interval, never one bar: this EXIT faces the gateway TTL check and
-          // its age is already ≈ one bar at emission (eventTime anchors to the evaluated close).
-          ttlMs: this.planExitTtlBars * this.baseIntervalMs,
-          dedupeKey: `${this.id}:${this.symbol}:agentic:plan_exit:${input.snapshot.eventTime}`,
-          reason: `plan exit: ${verdict.reason}`,
-        },
-      ];
+      const exitSignal: Signal = {
+        strategyId: this.id,
+        venue: this.venue,
+        symbol: this.symbol,
+        kind: 'EXIT_LONG',
+        strength: 1,
+        refPrice: lastCandle.close,
+        basedOnSeq: lastCandle.seq,
+        eventTime: input.snapshot.eventTime,
+        // planExitTtlBars × interval, never one bar: this EXIT faces the gateway TTL check and
+        // its age is already ≈ one bar at emission (eventTime anchors to the evaluated close).
+        ttlMs: this.planExitTtlBars * this.baseIntervalMs,
+        dedupeKey: `${this.id}:${this.symbol}:agentic:plan_exit:${input.snapshot.eventTime}`,
+        reason: `plan exit: ${verdict.reason}`,
+      };
+      // AGENTIC_VENUE_TP: a resting TP SELL locks the base balance at the venue — cancel it BEFORE
+      // this full-size IOC exit, else the exit venue-rejects for insufficient balance. Stop/max_hold
+      // only: a take_profit crossing this close-price check while a TP still rests is the venue
+      // order's own fill path racing this bar's evaluation, not a case this cancel-first guard
+      // targets (out of the explicit brief scope for this feature).
+      if (this.venueTpEnabled && (verdict.reason === 'stop' || verdict.reason === 'max_hold')) {
+        const restingSell = this.restingSellOrder(input);
+        if (restingSell) {
+          this.onVenueTp?.('cancel_for_exit');
+          return [
+            this.buildCancelOpenSignal(
+              input,
+              lastCandle,
+              'SELL',
+              'venue take-profit: cancel resting SELL ahead of full-size exit',
+            ),
+            exitSignal,
+          ];
+        }
+      }
+      return [exitSignal];
     }
     if (verdict.type === 'cancel_entry' || verdict.type === 'plan_expired') {
       this.activePlan = null;
@@ -461,7 +611,147 @@ export class AgenticStrategy implements AsyncStrategy {
       'plan-executor',
       sampledPayload,
     );
+    // AGENTIC_VENUE_TP: idempotent per-bar reconciliation of the resting take-profit (place if
+    // missing, cancel-to-re-place on drift). No-op ([]) whenever the flag is off, position isn't
+    // LONG, or the resting order is already correctly priced — see manageVenueTp.
+    return this.manageVenueTp(input, context, active, lastCandle);
+  }
+
+  // AGENTIC_VENUE_TP: places or reconciles the plan's resting take-profit at the venue instead of
+  // waiting for the executor's own close-price crossing to fire an IOC exit. Idempotent by
+  // construction: a correctly-priced resting SELL is a no-op (skipped_existing), so a restart re-arm
+  // (which loses only this in-memory bookkeeping, never the venue order itself) simply re-observes
+  // the existing order on its next managed bar and does nothing.
+  private manageVenueTp(
+    input: AgentDecisionInput,
+    context: AgentContext,
+    active: ActivePlanState,
+    lastCandle: CandleEvent,
+  ): Signal[] {
+    if (!this.venueTpEnabled) return [];
+    if (context.position.side !== 'LONG' || active.entryPrice === null) return [];
+
+    const currentTp = this.venueTpPrice(active.entryPrice, active.plan.takeProfitPct);
+    const restingSell = this.restingSellOrder(input);
+
+    if (!restingSell) {
+      // In-flight suppression (review finding): a placement emitted on bar N may not be acked into
+      // openOrders when bar N+1 evaluates, and a second placement would duplicate the reduce-only
+      // SELL. One bar of suppression bounds the duplicate window; a placement that died unacked
+      // (risk veto, TTL) re-places on bar N+2 rather than being suppressed forever.
+      if (
+        active.venueTpPlacedAtBar !== null &&
+        active.barsElapsed <= active.venueTpPlacedAtBar + 1
+      ) {
+        this.onVenueTp?.('skipped_inflight');
+        return [];
+      }
+      active.venueTpPlacedAtBar = active.barsElapsed;
+      this.onVenueTp?.('placed');
+      return [
+        {
+          strategyId: this.id,
+          venue: this.venue,
+          symbol: this.symbol,
+          kind: 'EXIT_LONG',
+          strength: 1,
+          refPrice: lastCandle.close,
+          exitStyle: 'RESTING',
+          limitPriceHint: currentTp,
+          basedOnSeq: lastCandle.seq,
+          eventTime: input.snapshot.eventTime,
+          ttlMs: this.planExitTtlBars * this.baseIntervalMs,
+          dedupeKey: `${this.id}:${this.symbol}:agentic:venue_tp_place:${input.snapshot.eventTime}`,
+          reason: 'venue take-profit: resting exit placed',
+        },
+      ];
+    }
+
+    // The ack is observed — the in-flight suppression window is closed.
+    active.venueTpPlacedAtBar = null;
+
+    // No price on the resting order ⇒ drift cannot be assessed; treat as fine rather than guessing
+    // a cancel off no information.
+    if (restingSell.limitPrice === undefined) {
+      this.onVenueTp?.('skipped_existing');
+      return [];
+    }
+
+    // Drift compares against the tick-rounded EXPECTED resting price, not the raw hint: the sizer
+    // rounds the hint UP to the venue tick, so raw-hint comparison reads that [0, tick) bias as
+    // permanent drift and churns cancel/re-place on any symbol whose tick exceeds the threshold
+    // (review finding). No tick configured ⇒ raw hint (test harnesses; fine-tick symbols).
+    const expectedTp = this.venueTpTickSize
+      ? roundToTick(currentTp, this.venueTpTickSize, 'up')
+      : currentTp;
+    const driftBps = restingSell.limitPrice.minus(expectedTp).abs().div(expectedTp).mul(10_000);
+    if (driftBps.gt(this.venueTpReplaceDriftBps)) {
+      this.onVenueTp?.('drift_cancel');
+      return [
+        this.buildCancelOpenSignal(
+          input,
+          lastCandle,
+          'SELL',
+          `venue take-profit: resting SELL drifted ${driftBps.toFixed(1)}bps from the plan TP — cancel to re-place`,
+        ),
+      ];
+    }
+
+    // Qty reconciliation (review finding): the TP was sized to the position at placement; an entry
+    // remainder filling AFTERWARD grows the position while the resting SELL stays at the old size,
+    // leaving the growth slice uncovered at the venue. A TP partial fill shrinks order and position
+    // together, so steady state is exact equality — any mismatch means re-size via cancel/re-place.
+    if (!restingSell.qty.eq(context.position.qty)) {
+      this.onVenueTp?.('qty_cancel');
+      return [
+        this.buildCancelOpenSignal(
+          input,
+          lastCandle,
+          'SELL',
+          `venue take-profit: resting SELL qty ${restingSell.qty.toFixed()} != position ${context.position.qty} — cancel to re-size`,
+        ),
+      ];
+    }
+
+    this.onVenueTp?.('skipped_existing');
     return [];
+  }
+
+  // entry × (1 + takeProfitPct), rounded to the 18dp money-precision ceiling BEFORE minting a Price
+  // (same overflow rationale as roundToTick's own header comment — a multiplication-derived price can
+  // exceed 18 places). This is a HINT: PositionSizerService tick-rounds it to the venue's real tick
+  // when it prices the resting order (position-sizer.service.ts), so no tick size is needed here.
+  private venueTpPrice(entryPrice: string, takeProfitPct: string): Price {
+    const raw = new Decimal(entryPrice).mul(new Decimal(1).plus(takeProfitPct));
+    return price(roundToMoneyPrecision(raw).toFixed());
+  }
+
+  private restingSellOrder(input: AgentDecisionInput): OpenOrderSummary | undefined {
+    return input.snapshot.portfolio.openOrders.find(
+      (o) => o.symbol === this.symbol && o.side === 'SELL',
+    );
+  }
+
+  private buildCancelOpenSignal(
+    input: AgentDecisionInput,
+    lastCandle: CandleEvent,
+    cancelSide: 'BUY' | 'SELL',
+    reason: string,
+  ): Signal {
+    return {
+      strategyId: this.id,
+      venue: this.venue,
+      symbol: this.symbol,
+      kind: 'CANCEL_OPEN',
+      cancelSide,
+      strength: 1,
+      refPrice: lastCandle.close,
+      basedOnSeq: lastCandle.seq,
+      eventTime: input.snapshot.eventTime,
+      ttlMs: this.planExitTtlBars * this.baseIntervalMs,
+      dedupeKey: `${this.id}:${this.symbol}:agentic:venue_tp_cancel:${input.snapshot.eventTime}`,
+      reason,
+    };
   }
 
   // W2.1 stale-entry sweep — runs every decide cycle, prescreen-skipped ones included. Emits
@@ -517,6 +807,9 @@ export class AgenticStrategy implements AsyncStrategy {
         venue: this.venue,
         symbol: this.symbol,
         kind: 'CANCEL_OPEN',
+        // The sweep detects BUY entries only (filter above) — scope the cancel to match, else it
+        // would also take out a resting venue-TP SELL sharing the symbol (review finding).
+        cancelSide: 'BUY',
         strength: 1,
         refPrice,
         // Never consumed by Risk (SignalSink intercepts CANCEL_OPEN before the gateway), so the

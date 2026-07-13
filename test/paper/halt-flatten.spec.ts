@@ -57,6 +57,7 @@ const FILTERS: ExecFilters = new Map<string, SymbolFilters>([
 const EQUITY_LIMITS: EquityLimits = { maxDailyLoss: '999999', maxDrawdownPct: '0.05' }; // only drawdown can trip here
 const RISK_LIMITS: PartialRiskLimits = {
   maxBandBps: 100,
+  maxPassiveExitBandBps: 1200,
   maxOrderNotional: '10000000',
   maxDriftBps: 100,
   maxPositionPerSymbol: '100000',

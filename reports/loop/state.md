@@ -66,6 +66,11 @@ never changes for strategy evolution.
     Phase 8 (perp demo venue + plan-mode shorts, `PERP_LEVERAGE_CAP=1` unchanged). Live money,
     margin above 1×, and the four live gates + arming ceremony are untouched — the live flip
     remains the sole human checkpoint.
+    **Venue-path probe PASSED 2026-07-13 (read-only, scratchpad):** pinned ccxt 4.5.58
+    `binanceusdm.enableDemoTrading(true)` swaps URLs to `demo-fapi.binance.com` and the existing
+    demo keys authenticate — fetchBalance OK (futures demo wallet $5,000 USDT), fetchOpenOrders OK,
+    fetchPositions OK. **Chosen path: real futures-demo venue** (venue-grade fills/fees/funding);
+    the PaperPerpAdapter fallback and any ccxt bump are unnecessary.
   - **REOPENED 2026-07-10 (owner, this session): symbol set widens.** The struck "no third symbol"
     line above is superseded — symbols widen from BTC/ETH to **BTC, ETH, SOL, XRP, LINK at 15m**.
     Projected cost ~$2.2–2.5/day, under the unchanged `AGENTIC_DAILY_COST_STOP_USD=$5/day` breaker.
@@ -130,6 +135,45 @@ never changes for strategy evolution.
   - Expectancy-ladder interaction: ladder ON (reduction-only, trailing 15-trip mean ≤ −$0.10 ⇒
     strength ×0.4 ≈ $100 ≈ pre-change sizing, self-releasing; 8-trip data floor applies on the
     fresh 2026-07-12 epoch window). The escalation is therefore brake-protected by construction.
+  - Shipped `22af50d` (boot 8b7927c3) together with `ENTRY_ORDER_TYPE=LIMIT_MAKER` (post-only
+    entries — pins the maker fee plan-mode entries were already resting for; per-intent LIMIT
+    fallback when the price would cross). **WATCH (Phase 1):** first post-deploy entry must
+    journal as `LIMIT_MAKER` with notional ≈ $250 (ladder-braked ≈ $100 is also PASS while
+    trailing expectancy is negative); a venue-reject storm on post-only entries (would-cross
+    rejections) = flip back to LIMIT and record.
+- **Venue-resting take-profit SHIPPED + ENABLED 2026-07-13 (owner session, Push II Phase 2):**
+  plan-mode longs now rest their TP at the venue (reduce-only LIMIT GTC at the exact TP price,
+  maker-priced via the new `RISK_MAX_PASSIVE_EXIT_BAND_BPS=1200` passive lane) instead of bar-close
+  detection + IOC taker crossing; executor bar-close stop stays the only stop (OCO deferred — ccxt
+  4.5.58 has no unified spot OCO). Evidence for the change: bounds study
+  (`reports/loop/bounds-calibration-2026-07-13.md`) measured **+23.1bps/trade** close-vs-touch at
+  tp=2%/sl=0.5%/hold=64 (N=26, descriptive). Safety package shipped with it: S3 protective-stop
+  busy-set no longer disabled by a resting SELL (+ SELL-scoped cancel-first fire), `cancelSide`
+  scoping on CANCEL_OPEN (stale sweep now BUY-scoped), per-(strategy,symbol) serialized signal
+  sink. Adversarially reviewed (two workflow rounds, 4 lenses, every serious finding
+  double-verified): 8 confirmed findings ALL fixed same-session — unscoped sweep cancel, in-flight
+  duplicate-TP window, qty reconciliation, tp-race IOC collision (observed + in-flight arms),
+  tick-bias drift churn (tick-aware expectation via DEFAULT_FILTERS), passive-band × kill-switch
+  flatten interaction (`!flattenClamp` — the shorts-hard-gate finding, closed BEFORE Phase 8),
+  sink pair-atomicity comment, orphaned-SELL cancel on external flatten. Gate: 1798 unit / 41
+  livegate / 14+1 paper / 15 eval, all static green. **WATCH (Phase 2):** (1) first plan entry
+  fill must journal a resting SELL at exactly entry×(1+tpPct) — `agentic_venue_tp_total{event}`
+  counters start moving (`placed`, then `skipped_existing` on managed bars); (2) first
+  `venue_tp_filled` journal row must show a maker fee in the fee ledger at the exact TP price;
+  (3) `tp_race_hold`/`qty_cancel`/`drift_cancel` should stay rare — a churn of `drift_cancel` on
+  XRP means the tick-aware drift fix missed a case (re-check venueTpTickSize threading); (4) an
+  `orphan_cancel` spike = external flattens are racing the lane. Backlog seed: sink cross-signal
+  pair atomicity (protective fire vs concurrent TP re-place — self-healing TERMINAL_REJECT today).
+- **E2 decide-model comparison VERDICT 2026-07-13 (owner session, Push II Phase 6; corpus 331
+  rows, 50 replayed per candidate, ~$2.5 total of the ≤$20 gate):** **NO FLIP — claude-sonnet-5
+  stays decide champion** under the harness's pre-registered criteria.
+  `claude-haiku-4-5-20251001`: schema-valid 1.0, plan-sanity 1.0, forward proxy +2.5bps, cost
+  $0.0058/decide (53% of champion — misses the ≤50% bar), but hold-agreement 75.5% (<85%) and
+  propose ratio 3× (outside [0.5,1.5]; N=3 proposes — noise-dominated). Re-test haiku at corpus
+  ≥600 rows: cheaper AND more-proposing with sane plans is the one profile worth revisiting.
+  `claude-opus-4-8`: 0 proposes in 50 rows at 3.1× champion cost — decisively rejected for decide.
+  Scorecard JSON archived in the session scratchpad; harness `test/eval/agentic/
+  candidate-model-eval.spec.ts` (read-only vs prod DB via DB_SUITE_ALLOW_RESET=1, verified).
 
 ## Current stage
 

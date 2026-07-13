@@ -15,6 +15,19 @@ export type AgentTokenKind = 'input' | 'output' | 'cache_read' | 'cache_creation
 
 export type AgentPrescreenOutcome = 'called' | 'skipped_quiet' | 'failopen_error';
 
+// Mirrors agentic.strategy.ts's VenueTpEvent — duplicated rather than imported (the boundaries wall
+// forbids this feature importing trading/agentic, same convention as AgentPrescreenReason below).
+export type AgentVenueTpEvent =
+  | 'placed'
+  | 'skipped_existing'
+  | 'skipped_inflight'
+  | 'cancel_for_exit'
+  | 'drift_cancel'
+  | 'qty_cancel'
+  | 'tp_race_hold'
+  | 'orphan_cancel'
+  | 'filled_flat';
+
 // Mirrors prescreen.ts's PrescreenReason — duplicated rather than imported because the
 // eslint-plugin-boundaries wall forbids this feature (common/observability) importing from
 // trading/agentic; same convention as AgentPrescreenOutcome above. 'n/a' is this module's own
@@ -48,6 +61,8 @@ export class AgentMetricsRecorder {
     private readonly prescreenCounter: Counter<string>,
     @InjectMetric('agentic_reflection_outcomes_total')
     private readonly reflectionOutcomesCounter: Counter<string>,
+    @InjectMetric('agentic_venue_tp_total')
+    private readonly venueTpCounter: Counter<string>,
   ) {}
 
   // `model` on both methods (#28): optional with an 'unknown' fallback so the label is always
@@ -146,6 +161,15 @@ export class AgentMetricsRecorder {
   recordReflectionOutcome(outcome: string): void {
     try {
       this.reflectionOutcomesCounter.inc({ outcome });
+    } catch {
+      /* metrics must never throw into a trading path */
+    }
+  }
+
+  // AGENTIC_VENUE_TP: bound closed set of lifecycle events — see AgentVenueTpEvent above.
+  recordVenueTp(event: AgentVenueTpEvent): void {
+    try {
+      this.venueTpCounter.inc({ event });
     } catch {
       /* metrics must never throw into a trading path */
     }

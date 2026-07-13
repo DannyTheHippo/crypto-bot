@@ -3,6 +3,7 @@ import { validateLimits, type PartialRiskLimits } from '../../../src/domain/risk
 
 const VALID: PartialRiskLimits = {
   maxBandBps: 100,
+  maxPassiveExitBandBps: 1200,
   maxOrderNotional: '1000000',
   maxDriftBps: 100,
   maxPositionPerSymbol: '1000',
@@ -23,6 +24,9 @@ describe('validateLimits (§5 G2)', () => {
   });
   it('rejects a missing numeric field', () => {
     expect(validateLimits({ ...VALID, maxBandBps: null })).toBeNull();
+  });
+  it('rejects a missing maxPassiveExitBandBps', () => {
+    expect(validateLimits({ ...VALID, maxPassiveExitBandBps: null })).toBeNull();
   });
   it('rejects a non-positive numeric field', () => {
     expect(validateLimits({ ...VALID, maxDriftBps: 0 })).toBeNull();

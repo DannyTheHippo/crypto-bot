@@ -109,6 +109,9 @@ describe('AgenticStrategy stale-entry sweep (W2.1)', () => {
     expect(signals[0]!.kind).toBe('CANCEL_OPEN');
     expect(signals[0]!.symbol).toBe(SYM);
     expect(signals[0]!.strategyId).toBe(SID);
+    // BUY-scoped to match the sweep's own BUY-only detection — an unscoped cancel would also take
+    // out a resting venue-TP SELL sharing the symbol (review finding).
+    expect(signals[0]!.cancelSide).toBe('BUY');
   });
 
   it('suppresses re-emission on the next bar, then re-arms after another full TTL window', async () => {

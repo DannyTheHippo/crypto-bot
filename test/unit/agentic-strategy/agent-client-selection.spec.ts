@@ -149,6 +149,8 @@ describe('agenticEnv', () => {
       minRr: '1.5',
       planExitTtlBars: 2,
       quietPayloadSampleBars: 4,
+      venueTpEnabled: false,
+      venueTpReplaceDriftBps: 10,
       tokenPriceInputPerMtok: '3',
       tokenPriceOutputPerMtok: '15',
       tokenPriceCacheReadPerMtok: '0.3',

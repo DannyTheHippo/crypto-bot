@@ -87,8 +87,15 @@ export class PositionSizerService implements PositionSizerPort {
     // above the ask) — so a partial IOC fill never leaves sub-minNotional dust resting away from
     // market. A caller-supplied hint (e.g. the kill-switch flatten path's own band-edge pricing)
     // always wins, unchanged, using the conservative direction.
+    //
+    // exitStyle 'RESTING' (plan-mode take-profit) with a hint present overrides the crossed-exit
+    // path entirely: the exit rests GTC at the hint, rounded the conservative direction (SELL up —
+    // never receive worse than the TP price). A RESTING exit with no hint has no price to rest at,
+    // so it falls back to the ordinary crossed-IOC path rather than guessing a price.
     const refPrice = signal.refPrice;
-    const isCrossedExit = reduceOnly && signal.limitPriceHint === undefined;
+    const isRestingExit =
+      reduceOnly && signal.exitStyle === 'RESTING' && signal.limitPriceHint !== undefined;
+    const isCrossedExit = reduceOnly && !isRestingExit && signal.limitPriceHint === undefined;
     const basePrice =
       signal.limitPriceHint ?? (isCrossedExit ? this.crossedExitPrice(side, refPrice) : refPrice);
     const tickDirection = isCrossedExit
@@ -132,7 +139,7 @@ export class PositionSizerService implements PositionSizerPort {
       type: reduceOnly ? 'LIMIT' : this.entryType(side, basePrice, refPrice),
       qty: steppedQty,
       limitPrice,
-      timeInForce: reduceOnly ? 'IOC' : 'GTC',
+      timeInForce: reduceOnly ? (isRestingExit ? 'GTC' : 'IOC') : 'GTC',
       reduceOnly,
       mode: this.deps.mode,
       refPrice,

@@ -209,6 +209,17 @@ const envSchema = z
     // replay harness accrues rows under plan mode (which otherwise journals inputPayload: null on
     // every managed bar). 0 (default) disables — no journal-volume change unconfigured.
     AGENTIC_QUIET_PAYLOAD_SAMPLE_BARS: z.coerce.number().int().min(0).default(0),
+    // Venue-resting take-profit lifecycle for plan-mode longs: rests the plan's TP at the venue
+    // (reduce-only EXIT_LONG, exitStyle RESTING) instead of waiting for plan-executor's own
+    // close-price crossing to fire an IOC exit. Off by default — behavior stays byte-identical to
+    // pre-feature until enabled (agentic.strategy.ts's manageVenueTp).
+    AGENTIC_VENUE_TP: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
+    // Re-place threshold (bps): a resting TP SELL priced more than this many bps away from the
+    // plan's current TP price gets cancelled this bar for next-bar re-placement.
+    AGENTIC_VENUE_TP_REPLACE_DRIFT_BPS: z.coerce.number().int().positive().default(10),
     AGENTIC_MAX_ENTRIES_PER_DAY: z.coerce.number().int().positive().default(12),
     AGENTIC_DRAIN_COOLDOWN_BASE_MS: z.coerce.number().int().positive().default(30_000),
     AGENTIC_DRAIN_COOLDOWN_MAX_MS: z.coerce.number().int().positive().default(900_000),
@@ -339,6 +350,11 @@ const envSchema = z
     RISK_MAX_DAILY_LOSS: decimalString.default('5000'),
     RISK_MAX_DRAWDOWN_PCT: decimalString.default('0.2'),
     RISK_MAX_BAND_BPS: z.coerce.number().int().positive().default(100),
+    // P2 passive-exit override (domain/risk/limits.ts): a reduce-only intent priced on the passive
+    // side of ref (a resting take-profit) checks against this wider band instead of
+    // RISK_MAX_BAND_BPS. Default 1200 (12%) covers plan-mode TP offsets well beyond the tight
+    // RISK_MAX_BAND_BPS=100 (1%) that would otherwise veto every resting exit.
+    RISK_MAX_PASSIVE_EXIT_BAND_BPS: z.coerce.number().int().positive().default(1200),
     RISK_STALE_MAX_AGE_MS: z.coerce.number().int().positive().default(5000),
     // Perp/swap paper adapter knobs (B1: PaperPerpAdapter, not yet wired into app.module.ts).
     // 'true'/'false' (not z.coerce.boolean(), same rationale as AGENTIC_PRESCREEN_ENABLED above).
@@ -519,6 +535,8 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     AGENTIC_PLAN_MAX_QUIET_BARS: agenticPlanMaxQuietBars,
     AGENTIC_PLAN_EXIT_TTL_BARS: agenticPlanExitTtlBars,
     AGENTIC_QUIET_PAYLOAD_SAMPLE_BARS: agenticQuietPayloadSampleBars,
+    AGENTIC_VENUE_TP: agenticVenueTp,
+    AGENTIC_VENUE_TP_REPLACE_DRIFT_BPS: agenticVenueTpReplaceDriftBps,
     EXIT_CROSS_BUFFER_BPS: exitCrossBufferBps,
     ENTRY_ORDER_TYPE: entryOrderType,
     BASE_NOTIONAL: baseNotional,
@@ -532,6 +550,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     RISK_MAX_DAILY_LOSS: riskMaxDailyLoss,
     RISK_MAX_DRAWDOWN_PCT: riskMaxDrawdownPct,
     RISK_MAX_BAND_BPS: riskMaxBandBps,
+    RISK_MAX_PASSIVE_EXIT_BAND_BPS: riskMaxPassiveExitBandBps,
     RISK_STALE_MAX_AGE_MS: riskStaleMaxAgeMs,
     PERP_VENUE_ENABLED: perpVenueEnabled,
     PERP_LEVERAGE_CAP: perpLeverageCap,
@@ -605,6 +624,8 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       prescreenBreakoutLookbackBars: agenticPrescreenBreakoutLookbackBars,
       prescreenBreakoutPct: agenticPrescreenBreakoutPct,
       expectancyLadderEnabled: agenticExpectancyLadder,
+      venueTpEnabled: agenticVenueTp,
+      venueTpReplaceDriftBps: agenticVenueTpReplaceDriftBps,
       planMode: agenticPlanMode,
       minEdgeMultiple: agenticMinEdgeMultiple,
       planMaxQuietBars: agenticPlanMaxQuietBars,
@@ -626,6 +647,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       maxDailyLoss: riskMaxDailyLoss,
       maxDrawdownPct: riskMaxDrawdownPct,
       maxBandBps: riskMaxBandBps,
+      maxPassiveExitBandBps: riskMaxPassiveExitBandBps,
       staleMaxAgeMs: riskStaleMaxAgeMs,
     },
     perp: {

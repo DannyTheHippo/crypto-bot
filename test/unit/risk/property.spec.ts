@@ -22,6 +22,7 @@ const IID = intentId('0190abcd-1234-7abc-89ab-0123456789ab');
 const MARK: MarkInfo = { mid: price('100'), ageMs: 0, feedHealth: 'LIVE' };
 const LIMITS: PartialRiskLimits = {
   maxBandBps: 100,
+  maxPassiveExitBandBps: 1200,
   maxOrderNotional: '100000000',
   maxDriftBps: 100,
   maxPositionPerSymbol: '1000',

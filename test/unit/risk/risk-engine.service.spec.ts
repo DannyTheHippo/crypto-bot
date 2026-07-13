@@ -38,6 +38,7 @@ const FILTERS: SymbolFilters = {
 };
 const LIMITS: PartialRiskLimits = {
   maxBandBps: 100,
+  maxPassiveExitBandBps: 1200,
   maxOrderNotional: '1000000',
   maxDriftBps: 100,
   maxPositionPerSymbol: '1000',

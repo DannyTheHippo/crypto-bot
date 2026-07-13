@@ -246,3 +246,78 @@ describe('evaluatePlan — FLAT position (resting or unfilled entry)', () => {
     expect(result).toEqual({ type: 'plan_expired' });
   });
 });
+
+// AGENTIC_VENUE_TP: FLAT + a previously-captured entryPrice means the entry HAD filled and the
+// position is now gone (the resting venue TP filled between bars, or an external flatten) — distinct
+// from the never-filled-entry FLAT branches above (entryPrice still null there), which must stay
+// reachable exactly as before whenever entryPrice is null.
+describe('evaluatePlan — FLAT position with a previously-captured entryPrice (position_closed)', () => {
+  it('reports position_closed once the entry has filled and the position is now flat', () => {
+    const result = evaluatePlan(
+      input({
+        state: state({ entryPrice: '100', barsElapsed: 5 }),
+        positionSide: 'FLAT',
+        hasRestingEntry: false,
+      }),
+    );
+    expect(result).toEqual({ type: 'position_closed' });
+  });
+
+  it('reports position_closed regardless of hasRestingEntry once entryPrice is captured', () => {
+    // A resting entry is orthogonal here — entryPrice non-null means the ORIGINAL entry already
+    // filled; a coincidentally-resting order (e.g. a fresh unrelated signal) must not mask the
+    // closed-position verdict.
+    const result = evaluatePlan(
+      input({
+        state: state({ entryPrice: '100', barsElapsed: 1 }),
+        positionSide: 'FLAT',
+        hasRestingEntry: true,
+      }),
+    );
+    expect(result).toEqual({ type: 'position_closed' });
+  });
+
+  it('reports position_closed regardless of barsElapsed vs entryValidityBars once entryPrice is captured', () => {
+    const result = evaluatePlan(
+      input({
+        state: state({ entryPrice: '100', barsElapsed: 0 }),
+        positionSide: 'FLAT',
+        hasRestingEntry: false,
+      }),
+    );
+    expect(result).toEqual({ type: 'position_closed' });
+  });
+
+  it('never-filled-entry FLAT paths (entryPrice null) stay unchanged: still holds within validity', () => {
+    const result = evaluatePlan(
+      input({
+        state: state({ entryPrice: null, barsElapsed: 3 }),
+        positionSide: 'FLAT',
+        hasRestingEntry: true,
+      }),
+    );
+    expect(result).toEqual({ type: 'hold' });
+  });
+
+  it('never-filled-entry FLAT paths (entryPrice null) stay unchanged: still cancel_entry at the boundary', () => {
+    const result = evaluatePlan(
+      input({
+        state: state({ entryPrice: null, barsElapsed: 4 }),
+        positionSide: 'FLAT',
+        hasRestingEntry: true,
+      }),
+    );
+    expect(result).toEqual({ type: 'cancel_entry' });
+  });
+
+  it('never-filled-entry FLAT paths (entryPrice null) stay unchanged: still plan_expired past the boundary with no resting entry', () => {
+    const result = evaluatePlan(
+      input({
+        state: state({ entryPrice: null, barsElapsed: 100 }),
+        positionSide: 'FLAT',
+        hasRestingEntry: false,
+      }),
+    );
+    expect(result).toEqual({ type: 'plan_expired' });
+  });
+});

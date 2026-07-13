@@ -162,6 +162,14 @@ export const AGENTIC_REFLECTION_OUTCOMES_COUNTER = makeCounterProvider({
   help: 'Reflection loop attempt outcomes, labeled by the exit reason (bound closed set)',
   labelNames: ['outcome'] as const,
 });
+// AGENTIC_VENUE_TP: venue-resting take-profit lifecycle events for plan-mode longs, emitted by
+// agentic.strategy.ts's manageVenueTp/runActivePlan (see VenueTpEvent there for the bound label set:
+// placed / skipped_existing / cancel_for_exit / drift_cancel / filled_flat).
+export const AGENTIC_VENUE_TP_COUNTER = makeCounterProvider({
+  name: 'agentic_venue_tp_total',
+  help: 'Venue-resting take-profit lifecycle events (bound closed set — see VenueTpEvent)',
+  labelNames: ['event'] as const,
+});
 
 // C1: derivatives-feed health, sampled in the 5s loop below (same pull pattern as kill_switch_state
 // and event_loop_utilization). Present regardless of DERIVATIVES_FEED_ENABLED — staleness simply

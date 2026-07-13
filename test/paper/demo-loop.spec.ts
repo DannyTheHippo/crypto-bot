@@ -60,6 +60,7 @@ const FILTERS = new Map<string, SymbolFilters>([
 ]);
 const RISK_LIMITS: PartialRiskLimits = {
   maxBandBps: 100,
+  maxPassiveExitBandBps: 1200,
   maxOrderNotional: '10000000',
   maxDriftBps: 100,
   maxPositionPerSymbol: '100000',

@@ -38,7 +38,12 @@ export type PlanExecutorAction =
   | { readonly type: 'hold' }
   | { readonly type: 'exit'; readonly reason: 'stop' | 'take_profit' | 'max_hold' }
   | { readonly type: 'cancel_entry' }
-  | { readonly type: 'plan_expired' };
+  | { readonly type: 'plan_expired' }
+  // AGENTIC_VENUE_TP: the entry HAD filled (entryPrice was captured) and the position is now FLAT —
+  // the resting venue take-profit filled between bars (or an external flatten). Distinct from the
+  // never-filled-entry FLAT branches below (entryPrice still null there); checked first so a filled
+  // entry's disappearance is never misread as a lapsed/cancelled unfilled entry.
+  | { readonly type: 'position_closed' };
 
 export function evaluatePlan(input: PlanExecutorInput): PlanExecutorAction {
   const { state, closePrice, positionSide, hasRestingEntry } = input;
@@ -62,8 +67,13 @@ export function evaluatePlan(input: PlanExecutorInput): PlanExecutorAction {
     return { type: 'hold' };
   }
 
-  // FLAT: either a resting unfilled entry, or nothing resting yet (in-flight submission, or the
-  // window has lapsed with no fill and no resting order at all).
+  // FLAT with a previously-captured entry price: the position that was LONG is gone without this
+  // executor ever having emitted the exit itself — checked before the never-filled-entry branches
+  // below (entryPrice null there).
+  if (entryPrice !== null) return { type: 'position_closed' };
+
+  // FLAT, entry never filled: either a resting unfilled entry, or nothing resting yet (in-flight
+  // submission, or the window has lapsed with no fill and no resting order at all).
   if (hasRestingEntry) {
     if (barsElapsed >= plan.entryValidityBars) return { type: 'cancel_entry' };
     return { type: 'hold' };

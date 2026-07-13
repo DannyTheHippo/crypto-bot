@@ -50,6 +50,7 @@ function build(opts: { mark?: string | null; engine?: RiskEnginePort } = {}) {
       key: Buffer.alloc(32, 1),
       limits: {
         maxBandBps: 100,
+        maxPassiveExitBandBps: 1200,
         maxOrderNotional: '1000000',
         maxDriftBps: 100,
         maxPositionPerSymbol: '1000',

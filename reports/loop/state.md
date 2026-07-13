@@ -44,7 +44,11 @@ never changes for strategy evolution.
      (2026-07-13): v2 provably abstains (0 entries in 17 FLAT consults since mint) — its clock
      will not start; expected resolution is the 168h candidate lapse at 2026-07-18 04:45:29Z,
      after which reflection may mint v3 (see backlog #39 for why v3 likely repeats the
-     pattern and the proposed mint-time entry-rate floor).** NB the 20:26Z wipe reset the
+     pattern and the proposed mint-time entry-rate floor).** **UPDATE 2026-07-13 (Pass 22 +
+     owner session): abstention hardened to 0 entries in 49 decides since mint; #39 shipped
+     (`b9dddc2`) — `AGENTIC_ABSTAIN_LAPSE_DECIDES=15` retro-applies to v2, so the NEXT
+     reflection trigger lapses it immediately (no 07-18 wait) and mints v3 through the new
+     entry-rate floor; watch for `minted` or `abstain_reject`.** NB the 20:26Z wipe reset the
      reflection trip counters to 0 and Pass 14
      (`3e5773f`) lowered `AGENTIC_REFLECTION_EVERY_N_TRADES` 5→2 (the counter is PER STRATEGY;
      the 5-symbol widening had silently slowed lane cadence ~5×) — reflection now fires on the
@@ -222,6 +226,28 @@ candidates; whether the minted candidates then earn A/B-attributed promotion is 
 exit question.
 
 ## Last pass
+
+**Pass 22, 2026-07-13** (scheduled run, ~08:08–09:15Z) — **SHIP the winsorized deflation
+variance port (`1042930`, ultracode re-dispatch item 3): `trial-registry.ts`'s raw `variance()`
+fed V to `expectedMaxSharpe`, letting thin-sample outlier cells set the DSR benchmark (the
+07-10 carry study's SR0\*=140.41 from 10/178 cells with |SR|>10) — `winsorizedVariance`
+(clip |SR|≤3) now backs both production call sites (carry study, edge-diagnostic scan) + 4
+pinning tests; the 07-10 NO-GO verdict is unaffected; the ~07-24 carry re-test runs honest
+and should write a NEW dated report (the validation rerun's rewrite of
+`carry-study-2026-07-10.md` was deliberately restored — dated artifacts keep their era's
+method).** Evidence sweep clean on boot `24cdd185` (7.75h): 0 errors/EXPIRED/HALT, reconcile
+clean, kill switch RUNNING, duty cycle **100%/24h**, prescreen skip 66.7% (in band), corpus
+306; scoreboard RT=9 (ALL v1, all losses), net −$5.92, LLM $2.67, window 0.493d — window
+semantics verified correct against `promotion-readiness.service.ts` (closes-to-closes), NOT a
+bug; cost $2.3/day pro-rated ⇒ **Pass 21's cost watch RESOLVED** (LINK-drop pre-auth does not
+fire). Reflection: no attempt this boot (trips 8/9 were first-close-after-boot seed-race
+primes; agentic-2 sat 3/2). **Mid-pass, an owner session committed + deployed the work found
+uncommitted in the tree at pass start** (#39 entry-rate floor + abstain lapse `b9dddc2`,
+arm-hardening `e75db49`, boot `19f677b3` clean) — this pass had pre-verified gates green over
+that dirty tree, touched none of its files, and ruled out deploys until it landed; zero
+overlap. Pass type MAINTENANCE (CANDIDATE blocked, PROMOTION ineligible: v2 0 trips, v1 9<10).
+Gates full green (backtest 28, 1765 unit, eval 15). No deploy (test-only). Backup
+`cryptobot-20260713T085958Z.sql.gz`. Empty-pass counter 0. Full detail in LOG.md.
 
 **Pass 21, 2026-07-13** (scheduled run, ~00:08–00:50Z) — **SHIP the AB_PCT correction
 (`d538ce1`, 50→25) + gate repair (`230196a`): v2 provably cannot convert serving share into
@@ -790,9 +816,12 @@ owns them).
   eval (Haiku does not flip Sonnet). plan_json + cache_read watches from the earlier addendum both
   RESOLVED POSITIVE (5/5 non-null plans; cache_read 0→15,980). **Re-dispatch as loop items
   (live-arming prep, NOT blocking — the gate is far from green): (1) real ARM_PRECONDITIONS provider
-  replacing the always-true stub in `mode-control.module.ts` + an `x-arming-token` transport guard;
-  (2) journaled zombie/ACKED-fixture resolution (`scripts/resolve-stale-orders.mjs`, dry-run-first);
-  (3) port the winsorized-deflation fix into production `test/backtest/stats.ts` (low priority).**
+  replacing the always-true stub in `mode-control.module.ts` + an `x-arming-token` transport guard
+  — DONE 2026-07-13 (owner session, `e75db49`, deployed boot `19f677b3`);
+  (2) journaled zombie/ACKED-fixture resolution (`scripts/resolve-stale-orders.mjs`, dry-run-first)
+  — still open, the last live-arming-prep item;
+  (3) port the winsorized-deflation fix into production `test/backtest/stats.ts` (low priority) —
+  DONE 2026-07-13 Pass 22 (`1042930`).**
 
 - **AVAILABILITY 2026-07-12 (Pass 17) — the host sleeps; duty cycle is now the program's
   binding constraint.** The stack runs on the owner's MacBook: `pmset -g log` shows battery

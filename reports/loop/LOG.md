@@ -2329,3 +2329,85 @@ the LINK-drop pre-auth fires); (3) v2 entry watch — any v2 entry starts its cl
 the abstention analysis (re-check before acting on it); (4) design option (i) offline
 entry-rate floor at mint; (5) #32 reflection SSE streaming; (6) info-context A/B accrual
 check (matched trips per arm).
+
+## 2026-07-13 — Pass 22 (scheduled run, ~08:08–09:15Z): MAINTENANCE — winsorized deflation variance ported into the production backtest stats path; mid-pass an owner session shipped #39 + arm-hardening and redeployed
+
+**Data window:** Pass 21 close (~00:50Z) → now, boot `24cdd185` continuous for the whole sweep
+window (recreated mid-pass by the owner session, see below). Host awake throughout — **duty
+cycle 100%/24h** (`count_over_time(up[24h])/5760 = 1`; the availability fix is holding).
+
+**Evidence sweep (boot `24cdd185`, ~7.75h):** stack 4/4 up, app healthy; 0 error lines, 0
+EXPIRED, 0 rejections, 0 HALT; reconcile 0 halt / 0 error; kill switch RUNNING. Scoreboard
+(epoch 08:30Z 07-12): **RT=9 (all v1, ALL losses), net −$5.92, LLM $2.67, window 0.493d,
+ready=0**; equity $4,991.21, dd 0.176%, trade-explained. Anomaly chased to ground:
+window 0.493d looked short against a 0.98d-old epoch — verified against
+`promotion-readiness.service.ts:72-77`, the window is lastClosedAt − max(firstClosedAt, epoch)
+(closes-to-closes: first post-epoch close ~14:15Z 07-12 → last 02:11Z 07-13 ≈ 0.49d) —
+**measurement correct, no bug**. Prescreen 96/144 quiet = 66.7% skip (in band). Cost this boot:
+111k in / 13k out / 130k cache_read / 35k cache_creation ≈ $0.78/8h ≈ **$2.3/day — Pass 21's
+cost watch RESOLVED, back under $3 at AB_PCT=25** (LINK-drop pre-auth does not fire). §2.6
+harness probe green (15 passed). Corpus 306 payload rows. **Reflection watch still pending:**
+outcome counters empty all boot — trips 8 (agentic-3, 01:56Z) and 9 (agentic-2, 02:11Z) were
+each a first-close-after-boot that primed but could not fire (the documented seed race);
+agentic-2 sat primed 3/2 with no later close. **v2 abstention hardened: 49 decides since mint,
+0 entries** (v1: 17/152) — superseded as a watch by the owner session's abstain-lapse (below).
+Unresolved-terminal orders: only the 2 known fixture rows (ACKED live-mode + NEW) — no testnet
+residue.
+
+**Pass-start constraint (dirty tree, playbook §4 rule):** the tree carried ~650 uncommitted
+lines this pass did not author (11 modified + 4 untracked, mtimes 07:26–07:35Z — an in-flight
+session implementing #39 + the arm-hardening re-dispatch items, touching `reflection.service.ts`,
+`app.module.ts`, `mode-control/*`, compose/env/docs). Consequences honored: this pass touched
+NONE of those files, staged only pass-authored paths, and ruled out any app build/deploy (a
+rebuild would have silently shipped the ungated code). Full gates were verified green over the
+dirty tree before proceeding (typecheck, 1762 unit at 08:17Z). **Mid-pass resolution
+(08:34–08:36Z): that session committed `b9dddc2` (#39 mint-time entry-rate floor +
+`AGENTIC_ABSTAIN_LAPSE_DECIDES=15` live-abstention lapse), `e75db49` (arm-hardening: real
+fail-closed ARM_PRECONDITIONS + x-arming-token transport guard), `c5f3102` (state), and
+deployed boot `19f677b3`** — clean at 25 min (0 errors). Zero file overlap with this pass's
+work; the v2 resolution path is now the lapse-on-next-reflection-trigger, not the 07-18 wait.
+
+**Pass type MAINTENANCE** (CANDIDATE blocked §3(a): v2 unresolved in A/B; PROMOTION
+ineligible: v2 has 0 attributed trips, v1 at 9 is also under the symmetric floor of 10).
+Selected the highest-value item disjoint from the in-flight session: the 2026-07-12 ultracode
+re-dispatch item (3) — **winsorized cross-trial variance into the production deflation path**.
+Re-verified real against current code: `trial-registry.ts:150`'s raw `variance()` fed V to
+`expectedMaxSharpe`, so thin-sample outlier trials (|SR| in the tens from a handful of trades)
+inflate the deflation benchmark — the 2026-07-10 carry study measured **SR0\*=140.41 from 10 of
+178 cells with |SR|>10**, an unpassable DSR bar for every honest cell; the winsorized fix
+(clip |SR|≤3 before V, N untouched) existed only in `multi-strategy/engine.mjs`. The 07-10
+NO-GO verdict is robust to the fix (those cells independently failed the episode floor,
+tStat>3, and walk-forward), so this is measurement honesty for the standing re-test, not a
+verdict change.
+
+**Shipped (`1042930` fix(backtest), 5 files):** `stats.ts` gains `winsorizedVariance(xs,
+cap=3)` (sample variance over clipped SRs, n<2 ⇒ 0, rationale comment citing the degeneracy);
+both production V call sites swapped — `carry/carry-study.spec.ts:84` and
+`diagnostic/run-scan.ts:115`; `carry/report.ts` V labels now say winsorized; new
+`stats-deflation.spec.ts` (4 tests) pins raw-parity under the cap, the 178-trial
+outlier-degeneracy bound (raw benchmark >10, winsorized <5), cap behavior, and the n<2
+convention. **Validation side effect handled:** running `pnpm backtest` deterministically
+regenerates `reports/loop/carry-study-2026-07-10.md` — under the new V it rewrote 136 lines;
+the dated artifact documents the 07-10 method and verdict, so it was deliberately restored
+(`git checkout`). The next carry re-test (~14-day cadence, due ~07-24) runs under the honest
+benchmark and should write a NEW dated report rather than overwrite this one.
+
+**Gates:** backtest 28 passed / 2 env-gated skips (8 files — was 24 tests, +4 new),
+build / lint / typecheck green, **1765 unit** (current tree incl. the owner session's commits),
+eval:agentic 15 (§2.6, ran at sweep time), lint:md green. No deploy (test-only change; no src/).
+Backup `cryptobot-20260713T085958Z.sql.gz` (§5 standing duty).
+
+**Flagged for human review:** none new. The pass-start dirty tree resolved itself mid-pass
+(owner session committed + deployed); recorded here for provenance only.
+
+**Next-pass candidates:** (1) **reflection watch, updated per `b9dddc2`:** the next reflection
+trigger should log v2 'provably abstains live' → immediate lapse → v3 mint attempt through the
+new entry-rate floor — expect `minted` (tradeable v3) or `abstain_reject` (floor caught another
+abstainer); `validator_reject`/`transport_error` = new defect. NB the 08:36Z recreate reset the
+in-memory primes again (first close per strategy re-seeds, second fires). (2) soak-check the
+`19f677b3` boot + the arm-hardening in the next sweep (`pnpm arm` ceremony still works against
+the new transport guard). (3) info-context A/B accrual check (matched trips per arm at
+pct=30). (4) #32 reflection SSE streaming. (5) carry re-test due ~07-24 under the winsorized
+benchmark (NEW dated report). (6) #25 zombie/ACKED-fixture resolution script
+(`scripts/resolve-stale-orders.mjs`, dry-run-first) — the last live-arming-prep re-dispatch
+item still open.

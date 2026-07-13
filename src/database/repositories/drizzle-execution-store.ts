@@ -142,9 +142,16 @@ export class DrizzleExecutionStore implements ExecutionStorePort {
 
     // Refresh the cached reducer state on the orders row. Stamping terminal_at here is the
     // single OMS persistence chokepoint for it (findOpenByMode/BootRecovery rely on it being
-    // non-null for every order that will never transition again).
+    // non-null for every order that will never transition again). Backlog #40 adds the other
+    // lifecycle stamps at the same seam — journal-time wall clock, the same convention as
+    // terminalAt (no venue clock reaches here: ACK carries none and FILL's venue timestamp lives
+    // on the fills row); updateState writes them first-write-wins so a requeued submit, re-ack,
+    // or second partial fill never moves an earlier stamp.
     await this.orders.updateState(order.intentId, ev.derivedState, ev.cumQty, {
       venueOrderId: ev.venueOrderId,
+      ...(ev.event.type === 'SUBMIT_SENT' ? { submittedAt: Date.now() } : {}),
+      ...(ev.event.type === 'ACK' ? { ackedAt: Date.now() } : {}),
+      ...(ev.event.type === 'FILL' ? { firstFillAt: Date.now() } : {}),
       ...(TERMINAL_ORDER_STATES.has(ev.derivedState) ? { terminalAt: Date.now() } : {}),
     });
 

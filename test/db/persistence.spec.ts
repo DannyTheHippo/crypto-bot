@@ -24,6 +24,7 @@ import { JournalRepository } from '../../src/database/repositories/journal.repos
 import { OutboxRepository } from '../../src/database/repositories/outbox.repository';
 import { FillRepository } from '../../src/database/repositories/fill.repository';
 import { DrizzleExecutionStore } from '../../src/database/repositories/drizzle-execution-store';
+import type { PersistedOrderEvent } from '../../src/ports/execution';
 import { OrderRepository } from '../../src/database/repositories/order.repository';
 import { RiskDecisionRepository } from '../../src/database/repositories/risk-decision.repository';
 import { SignalRepository } from '../../src/database/repositories/signal.repository';
@@ -730,6 +731,62 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
     const openCoids = (await store.loadOpenOrders('live')).map((o) => o.record.clientOrderId);
     expect(openCoids).toContain('cbp-oo-tat-open0000000000000001');
     expect(openCoids).not.toContain('cbp-oo-tat-term0000000000000001');
+  });
+
+  // ── (h3) #40: submitted_at/acked_at/first_fill_at are first-write-wins at the SQL layer —
+  // the COALESCE in OrderRepository.updateState must keep the EARLIEST stamp when a requeued
+  // submit, re-ack, or later partial fill re-sends one (review must-fix: only a real-Postgres
+  // test exercises the COALESCE; the unit spec pins the chokepoint mapping only) ───────────────
+  it('(h3) lifecycle stamps are first-write-wins: a second ACK and a second FILL never move acked_at/first_fill_at', async () => {
+    const store = new DrizzleExecutionStore(db, {
+      mode: 'paper',
+      runId: 'run-fww',
+      bootId: 'boot-fww',
+    });
+    const orderRepo = new OrderRepository(db);
+    await seedIntent(
+      'oo-fww-1',
+      'cbp-oo-fww-0000000000000000000001',
+      'paper',
+      'run-fww',
+      'boot-fww',
+    );
+    await pool.query(
+      `INSERT INTO public.orders
+      (intent_id, client_order_id, strategy_id, venue, symbol, side, type, qty, time_in_force, state, cum_qty, terminal_at, mode, run_id, boot_id)
+      VALUES ('oo-fww-1','cbp-oo-fww-0000000000000000000001','s','binance','BTC/USDT','BUY','LIMIT','1.000000000000000000','GTC','SUBMITTING','0.000000000000000000',NULL,'paper','run-fww','boot-fww')`,
+    );
+    const coid = clientOrderId('cbp-oo-fww-0000000000000000000001');
+    const ev = (
+      dedupeKey: string,
+      event: PersistedOrderEvent['event'],
+      derivedState: PersistedOrderEvent['derivedState'],
+      cumQty = '0',
+    ): PersistedOrderEvent => ({ clientOrderId: coid, dedupeKey, event, derivedState, cumQty });
+
+    await store.appendOrderEvent(ev('submit', { type: 'SUBMIT_SENT' }, 'SUBMITTING'));
+    await store.appendOrderEvent(ev('ack', { type: 'ACK', venueOrderId: 'v-fww' }, 'ACKED'));
+    const afterFirstAck = await orderRepo.findByClientOrderId(String(coid));
+    expect(afterFirstAck!.submittedAt).not.toBeNull();
+    expect(afterFirstAck!.ackedAt).not.toBeNull();
+
+    // Ensure a distinct wall-clock ms, then re-send an ACK and the fills.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await store.appendOrderEvent(ev('ack-2', { type: 'ACK', venueOrderId: 'v-fww' }, 'ACKED'));
+    await store.appendOrderEvent(
+      ev('fill-1', { type: 'FILL', cumQty: new Decimal('0.5') }, 'PARTIALLY_FILLED', '0.5'),
+    );
+    const afterPartial = await orderRepo.findByClientOrderId(String(coid));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await store.appendOrderEvent(
+      ev('fill-2', { type: 'FILL', cumQty: new Decimal('1') }, 'FILLED', '1'),
+    );
+
+    const final = await orderRepo.findByClientOrderId(String(coid));
+    expect(final!.submittedAt).toBe(afterFirstAck!.submittedAt); // never moved by later events
+    expect(final!.ackedAt).toBe(afterFirstAck!.ackedAt); // second ACK could not move it
+    expect(final!.firstFillAt).toBe(afterPartial!.firstFillAt); // full fill could not move it
+    expect(final!.terminalAt).not.toBeNull();
   });
 
   // ── (i) Decision-trail persistence (§8): risk_decisions + signals rows land ──

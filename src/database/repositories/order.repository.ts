@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { eq, and, isNull } from 'drizzle-orm';
+import { eq, and, isNull, sql } from 'drizzle-orm';
 import type { TradingMode } from '../../domain/types/mode';
 import { DRIZZLE_DB } from '../database.tokens';
 import * as schema from '../schemas/trading';
@@ -60,9 +60,26 @@ export class OrderRepository {
       rawAck: unknown;
     }>,
   ): Promise<void> {
+    const { submittedAt, ackedAt, firstFillAt, ...rest } = extra ?? {};
     await requireDb(this.db)
       .update(schema.orders)
-      .set({ state, cumQty, updatedAt: new Date(), ...extra })
+      .set({
+        state,
+        cumQty,
+        updatedAt: new Date(),
+        ...rest,
+        // Backlog #40: lifecycle stamps are first-write-wins — COALESCE keeps the earliest value
+        // so a requeued submit, re-ack, or later partial fill never moves an existing stamp.
+        ...(submittedAt !== undefined
+          ? { submittedAt: sql`COALESCE(${schema.orders.submittedAt}, ${submittedAt})` }
+          : {}),
+        ...(ackedAt !== undefined
+          ? { ackedAt: sql`COALESCE(${schema.orders.ackedAt}, ${ackedAt})` }
+          : {}),
+        ...(firstFillAt !== undefined
+          ? { firstFillAt: sql`COALESCE(${schema.orders.firstFillAt}, ${firstFillAt})` }
+          : {}),
+      })
       .where(eq(schema.orders.intentId, intentId));
   }
 

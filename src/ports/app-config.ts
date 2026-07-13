@@ -57,6 +57,17 @@ export interface AppConfig {
     drainCooldownMaxMs: number;
     reflectionEveryNTrades: number;
     reflectionCooldownMs: number;
+    // Mint-time candidate-vs-champion offline expectancy backtest (reflection.service.ts's
+    // runMintBacktest): rows of the newest recorded decisions replayed against BOTH the draft
+    // candidate and the current champion playbook, simulating each 'long' plan's outcome. 0 disables
+    // (default; the actual reflection wiring reads this off raw process.env, not this field — see
+    // environment.config.ts's own comment).
+    mintBacktestRows: number;
+    // Noise handicap (bps): the candidate mints unless its mean net bps/trip trails the champion's
+    // by MORE than this (candidate >= champion − margin passes).
+    mintBacktestMarginBps: number;
+    // Minimum simulated round trips BOTH arms need before the backtest verdict is trusted.
+    mintBacktestMinTrips: number;
     // Cumulative closed-trade floor before a reflection candidate auto-promotes (G4b); 0 disables.
     autoPromoteMinTrades: number;
     // Absent means unpinned.

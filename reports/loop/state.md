@@ -180,6 +180,28 @@ never changes for strategy evolution.
   treatment-arm `input_payload` rows must show `tradeFlow` + `positioning` blocks (control rows
   none of the four); the two feeds' warn-log rate stays near zero; decide latency unchanged
   (feeds are pre-polled, not on the hot path).
+- **Mint-time candidate-vs-champion expectancy backtest SHIPPED + ENABLED 2026-07-13 (owner
+  session, Push II Phase 4 — the learning accelerant):** every reflection draft that clears the
+  entry-rate floor is now ALSO replayed head-to-head against the champion over the newest 60
+  recorded rows (`AGENTIC_MINT_BACKTEST_ROWS=60`; schema default 0=off), each `long`+plan decision
+  simulated with pure plan-executor semantics over the row's own sparse forward-close path
+  (per-symbol grouped — #37 discipline; honest approximation: decide-cadence closes, not intra-bar
+  series). Candidate trailing champion's mean net bps/trip by >10bps (`_MARGIN_BPS` — a noise
+  HANDICAP: candidate ≥ champion − margin passes) with ≥3 simulated trips both arms ⇒ the existing
+  bounded retry-with-feedback, then `expectancy_reject` + trigger rollback. Fail-open everywhere
+  (disabled/young corpus/budget/thin sample/throw — veto-only, mint never blocked by a measurement
+  failure). Champion replays cached across the retry within one run (halves retry cost; identical
+  corpus keeps the comparison honest). ~$0.7–1.4/mint at 60 rows; reserves through the shared
+  DailyLlmBudget (133 calls happy-path incl. floor ≈ 19% of the 700/day cap — reviewer-sized,
+  fail-safe on exhaustion). Reviewer APPROVE, 4 should-fixes applied (throw fail-open wrap,
+  champion-replay cache, margin-doc inversion in 5 places, budget sizing note). Verdict priors now
+  arrive in HOURS at mint instead of weeks of live A/B trips — the live A/B remains the
+  confirmatory stage, unchanged. **WATCH (Phase 4):** next reflection trigger logs
+  `mint-backtest: candidate Xbps/trip vs champion Ybps/trip` — outcome `minted` (journaled with
+  the prior) or `expectancy_reject` (rollback, next trip retries); a `mint-backtest skipped`
+  warn-storm = budget sizing needs the sub-budget follow-up. Backlog seed: outer `run failed`
+  catch in runReflection records no outcome and does not roll back (pre-existing, hit only by
+  malformed journal data — near-unreachable with Postgres NUMERIC closes).
 - **E2 decide-model comparison VERDICT 2026-07-13 (owner session, Push II Phase 6; corpus 331
   rows, 50 replayed per candidate, ~$2.5 total of the ≤$20 gate):** **NO FLIP — claude-sonnet-5
   stays decide champion** under the harness's pre-registered criteria.

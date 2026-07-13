@@ -19,7 +19,11 @@ import { PLAN_TOOL, buildPlaybookBlock, buildSystemPrompt } from './agent-prompt
 // anthropic-agent-client.ts's own DEFAULT_TRADING_PROFILE / test/eval/agentic/fixtures.ts's
 // EVAL_PROFILE (redefined here, not imported — the eval fixture lives under test/, and this file is
 // production code the eval harness itself may one day reuse in the other direction).
-const DEFAULT_FLOOR_PROFILE: AgentTradingProfile = {
+// Exported so candidate-backtest.ts (the mint-time expectancy backtest, one stage further along the
+// same replay pipeline) reuses the exact same illustrative profile rather than defining its own
+// slightly-different copy — both modules ask a structural/comparative question, never "what is the
+// strategy's live fee tier right now".
+export const DEFAULT_FLOOR_PROFILE: AgentTradingProfile = {
   makerBps: '10',
   takerBps: '10',
   baseNotional: '50',
@@ -62,18 +66,141 @@ const floorResponseSchema = z.object({
     .optional(),
 });
 
-// Only the field the floor cares about — 'long' means the entry bar fired. A full planSchema parse
-// (anthropic-agent-client.ts) isn't needed: the floor never places an order, it only counts.
-const floorActionSchema = z.object({ action: z.enum(['long', 'flat', 'hold']) });
+// The action, plus the plan (when present) — a full planSchema parse (anthropic-agent-client.ts's
+// own bounds-enforcing schema) isn't reused here: this is an OFFLINE replay probe, never the live
+// gate, so a plan whose fields sit outside PLAN_BOUNDS is still observed rather than schema-failed
+// (the live gate re-enforces those bounds on every real decide regardless of what this replay saw).
+// plan is optional because a 'long' response can theoretically omit it (the raw Anthropic API call
+// this file makes bypasses AnthropicAgentClient's own schema, which is what normally requires it).
+const replayPlanSchema = z.object({
+  action: z.enum(['long', 'flat', 'hold']),
+  plan: z
+    .object({
+      entryOffsetBps: z.number().int(),
+      stopLossPct: z.number(),
+      takeProfitPct: z.number(),
+      entryValidityBars: z.number().int(),
+      maxHoldBars: z.number().int(),
+    })
+    .optional(),
+});
 
-export interface EntryRateFloorConfig {
+export interface PlanReplayCallConfig {
   readonly apiKey: string;
-  // The DECIDE model, not the reflection model — the floor's question is "would the model that
-  // actually trades enter under this playbook", never "would the (often pricier, Opus) reflection
-  // model enter" (see reflection.service.ts's own comment on this distinction).
+  // The DECIDE model, not the reflection model — see EntryRateFloorConfig.model's own comment.
   readonly model: string;
   readonly baseUrl?: string;
   readonly timeoutMs: number;
+}
+
+// Bounded result of ONE replay call — never throws (every failure mode collapses to `ok: false`).
+// `usage` is populated whenever the response envelope itself parsed, even on a later failure (no
+// tool block / bad schema) — same accounting-honesty convention as the pre-extraction code this
+// replaces: a call that burned tokens must never vanish from cost tracking just because its payload
+// was unusable.
+export interface PlanReplayResult {
+  readonly ok: boolean;
+  readonly action?: 'long' | 'flat' | 'hold';
+  readonly plan?: {
+    readonly entryOffsetBps: number;
+    readonly stopLossPct: string;
+    readonly takeProfitPct: string;
+    readonly entryValidityBars: number;
+    readonly maxHoldBars: number;
+  };
+  readonly usage?: AgentUsage;
+}
+
+// The shared call-builder both measureEntryRate (this file) and candidate-backtest.ts's mint-time
+// expectancy backtest replay through: ONE plan-mode (submit_plan) Anthropic call for a single
+// (systemPrompt, playbookBlock, rowPayload) triple, forced tool_choice, thinking off, playbook block
+// cached — the exact request shape the live decide path sends under plan mode. Extracted so the two
+// callers can never let their request-building drift apart (backlog #39's companion feature reuses
+// this verbatim rather than duplicating the fetch/timeout/parse plumbing).
+export async function replayPlanRow(
+  cfg: PlanReplayCallConfig,
+  systemPrompt: string,
+  playbookBlock: string,
+  rowPayload: string,
+  fetchFn: typeof fetch,
+): Promise<PlanReplayResult> {
+  // W2.4-style cache split: the playbook block (the stable prefix shared by every row in this batch)
+  // rides its own cache_control block; the volatile per-row market payload follows uncached — same
+  // two-block layout as anthropic-agent-client.ts's own userContent.
+  const userContent: FloorTextBlock[] = [
+    { type: 'text', text: playbookBlock, cache_control: EPHEMERAL_1H },
+    { type: 'text', text: `\n\n${rowPayload}` },
+  ];
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), cfg.timeoutMs);
+  try {
+    const res = await fetchFn(`${cfg.baseUrl ?? 'https://api.anthropic.com'}/v1/messages`, {
+      method: 'POST',
+      headers: {
+        'x-api-key': cfg.apiKey,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: cfg.model,
+        max_tokens: 512,
+        system: [{ type: 'text', text: systemPrompt, cache_control: EPHEMERAL_1H }],
+        messages: [{ role: 'user', content: userContent }],
+        tools: [PLAN_TOOL],
+        tool_choice: { type: 'tool', name: PLAN_TOOL.name },
+        // Structured tool-use replay, not open-ended reasoning — disabled exactly like the live
+        // decide call (anthropic-agent-client.ts's attemptOnce).
+        thinking: { type: 'disabled' },
+      }),
+      signal: controller.signal,
+    });
+    if (!res.ok) return { ok: false };
+    const body: unknown = await res.json();
+    const envelope = floorResponseSchema.safeParse(body);
+    if (!envelope.success) return { ok: false };
+    const usage: AgentUsage | undefined = envelope.data.usage
+      ? {
+          inputTokens: envelope.data.usage.input_tokens,
+          outputTokens: envelope.data.usage.output_tokens,
+          cacheReadInputTokens: envelope.data.usage.cache_read_input_tokens,
+          cacheCreationInputTokens: envelope.data.usage.cache_creation_input_tokens,
+        }
+      : undefined;
+    const toolBlock = envelope.data.content?.find(
+      (b) => b.type === 'tool_use' && b.name === PLAN_TOOL.name,
+    );
+    if (!toolBlock) return { ok: false, usage };
+    const parsed = replayPlanSchema.safeParse(toolBlock.input);
+    if (!parsed.success) return { ok: false, usage };
+    return {
+      ok: true,
+      action: parsed.data.action,
+      usage,
+      // Pct fields converted to strings at the boundary — same money-safe Decimal-on-strings
+      // convention AnthropicAgentClient's own mapping applies to AgentPlan (see its acceptedPlan
+      // construction); entryOffsetBps/entryValidityBars/maxHoldBars stay plain numbers (bar counts /
+      // bps offsets, never a money value themselves).
+      ...(parsed.data.plan
+        ? {
+            plan: {
+              entryOffsetBps: parsed.data.plan.entryOffsetBps,
+              stopLossPct: String(parsed.data.plan.stopLossPct),
+              takeProfitPct: String(parsed.data.plan.takeProfitPct),
+              entryValidityBars: parsed.data.plan.entryValidityBars,
+              maxHoldBars: parsed.data.plan.maxHoldBars,
+            },
+          }
+        : {}),
+    };
+  } catch {
+    // Transport error / timeout / body-read failure — skip this row, never fail the whole caller.
+    return { ok: false };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export interface EntryRateFloorConfig extends PlanReplayCallConfig {
   readonly playbookContent: string;
   // Always true today (the floor only ever replays the plan-mode request shape) — kept as an
   // explicit literal rather than a bare boolean so a future legacy-path replay would have to be a
@@ -113,62 +240,11 @@ export async function measureEntryRate(
   const usages: AgentUsage[] = [];
 
   for (const rowPayload of rows) {
-    // W2.4-style cache split: the playbook block (the stable prefix shared by every row in this
-    // batch) rides its own cache_control block; the volatile per-row market payload follows uncached
-    // — same two-block layout as anthropic-agent-client.ts's own userContent.
-    const userContent: FloorTextBlock[] = [
-      { type: 'text', text: playbookBlock, cache_control: EPHEMERAL_1H },
-      { type: 'text', text: `\n\n${rowPayload}` },
-    ];
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), cfg.timeoutMs);
-    try {
-      const res = await fetchFn(`${cfg.baseUrl ?? 'https://api.anthropic.com'}/v1/messages`, {
-        method: 'POST',
-        headers: {
-          'x-api-key': cfg.apiKey,
-          'anthropic-version': '2023-06-01',
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: cfg.model,
-          max_tokens: 512,
-          system: [{ type: 'text', text: systemPrompt, cache_control: EPHEMERAL_1H }],
-          messages: [{ role: 'user', content: userContent }],
-          tools: [PLAN_TOOL],
-          tool_choice: { type: 'tool', name: PLAN_TOOL.name },
-          // Structured tool-use replay, not open-ended reasoning — disabled exactly like the live
-          // decide call (anthropic-agent-client.ts's attemptOnce).
-          thinking: { type: 'disabled' },
-        }),
-        signal: controller.signal,
-      });
-      if (!res.ok) continue;
-      const body: unknown = await res.json();
-      const envelope = floorResponseSchema.safeParse(body);
-      if (!envelope.success) continue;
-      if (envelope.data.usage) {
-        usages.push({
-          inputTokens: envelope.data.usage.input_tokens,
-          outputTokens: envelope.data.usage.output_tokens,
-          cacheReadInputTokens: envelope.data.usage.cache_read_input_tokens,
-          cacheCreationInputTokens: envelope.data.usage.cache_creation_input_tokens,
-        });
-      }
-      const toolBlock = envelope.data.content?.find(
-        (b) => b.type === 'tool_use' && b.name === PLAN_TOOL.name,
-      );
-      if (!toolBlock) continue;
-      const parsed = floorActionSchema.safeParse(toolBlock.input);
-      if (!parsed.success) continue;
-      consults += 1;
-      if (parsed.data.action === 'long') entries += 1;
-    } catch {
-      // Transport error / timeout / body-read failure — skip this row, never fail the whole floor.
-      continue;
-    } finally {
-      clearTimeout(timer);
-    }
+    const result = await replayPlanRow(cfg, systemPrompt, playbookBlock, rowPayload, fetchFn);
+    if (result.usage) usages.push(result.usage);
+    if (!result.ok) continue;
+    consults += 1;
+    if (result.action === 'long') entries += 1;
   }
 
   return { consults, entries, usages };

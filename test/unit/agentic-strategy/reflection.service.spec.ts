@@ -1909,3 +1909,383 @@ describe('backlog #39: mint-time entry-rate floor', () => {
     expect(h.fetchFn).toHaveBeenCalledTimes(1); // floor skipped (5 qualifying rows < default min 6)
   });
 });
+
+// ── Mint-time candidate-vs-champion offline expectancy backtest ────────────────────────────────
+
+interface BacktestPlanInput {
+  readonly entryOffsetBps: number;
+  readonly stopLossPct: number;
+  readonly takeProfitPct: number;
+  readonly entryValidityBars: number;
+  readonly maxHoldBars: number;
+}
+
+// A real (model starts 'claude') row carrying a marker + close — regardless-of-action rows (unlike
+// flatConsultRow above, the backtest wants the full decision mix, not just FLAT consults).
+function backtestRow(id: string, close: string): AgentDecisionRow {
+  return row({
+    id,
+    model: 'claude-sonnet-5',
+    close,
+    inputPayload: JSON.stringify({ marker: id, position: { side: 'FLAT' } }),
+    eventTime: epochMs(T + Number(id.replace(/\D/g, ''))),
+  });
+}
+
+function backtestPlanBody(action: 'long' | 'flat' | 'hold', plan?: BacktestPlanInput): unknown {
+  return {
+    stop_reason: 'tool_use',
+    content: [
+      {
+        type: 'tool_use',
+        id: 'toolu_backtest',
+        name: 'submit_plan',
+        input: {
+          action,
+          confidence: 0.4,
+          rationale: 'backtest replay fixture',
+          ...(plan ? { plan } : {}),
+        },
+      },
+    ],
+    usage: { input_tokens: 5, output_tokens: 5 },
+  };
+}
+
+// Dispatches a shared fetch mock across THREE call kinds: the reflection draft
+// (submit_playbook_revision, sequential like mockDualFetch), and the backtest's per-row replay
+// (submit_plan) — routed by (a) which playbook block rode in the request (candidate draft vs
+// champion `current.content`, distinguished via a tag substring unique to each) and (b) which row's
+// `marker` is embedded in the row payload text. `rowResponses` maps rowId -> per-arm action/plan;
+// any row absent from the map gets a 'hold' response on both arms.
+function mockBacktestFetch(
+  fetchFn: { mockImplementation(impl: typeof fetch): unknown },
+  reflectionBodies: readonly unknown[],
+  candidateTag: string,
+  championTag: string,
+  rowResponses: Record<
+    string,
+    {
+      candidate: { action: 'long' | 'flat' | 'hold'; plan?: BacktestPlanInput };
+      champion: { action: 'long' | 'flat' | 'hold'; plan?: BacktestPlanInput };
+    }
+  >,
+): void {
+  let reflectionCallIndex = 0;
+  const impl: typeof fetch = (_url, init) => {
+    const parsedBody = JSON.parse(init?.body as string) as {
+      tools: Array<{ name: string }>;
+      messages: Array<{ content: string | Array<{ text?: string }> }>;
+    };
+    if (parsedBody.tools[0]!.name === 'submit_playbook_revision') {
+      const body = reflectionBodies[reflectionCallIndex]!;
+      reflectionCallIndex += 1;
+      return Promise.resolve(apiResponse(body));
+    }
+    const content = parsedBody.messages[0]!.content as Array<{ text?: string }>;
+    const playbookText = content[0]!.text ?? '';
+    const rowText = content[1]!.text ?? '';
+    const isCandidate = playbookText.includes(candidateTag);
+    const isChampion = playbookText.includes(championTag);
+    const rowMatch = /"marker":"([^"]+)"/.exec(rowText);
+    const rowId = rowMatch?.[1];
+    const resp = rowId ? rowResponses[rowId] : undefined;
+    if (!resp) return Promise.resolve(apiResponse(backtestPlanBody('hold')));
+    const arm = isCandidate ? resp.candidate : isChampion ? resp.champion : undefined;
+    return Promise.resolve(apiResponse(backtestPlanBody(arm?.action ?? 'hold', arm?.plan)));
+  };
+  fetchFn.mockImplementation(impl);
+}
+
+describe('mint-time candidate-vs-champion offline expectancy backtest', () => {
+  const BT_ROWS = [
+    backtestRow('row-0', '100'),
+    backtestRow('row-1', '104'),
+    backtestRow('row-2', '90'),
+  ];
+
+  // Candidate plan: never hits TP by bar1 (tp far away) and stops out on bar2 at 90 → big loss.
+  const LOSING_PLAN: BacktestPlanInput = {
+    entryOffsetBps: 10,
+    stopLossPct: 0.02,
+    takeProfitPct: 0.1,
+    entryValidityBars: 2,
+    maxHoldBars: 4,
+  };
+  // Champion plan: TP hits immediately on bar1 (close=104) → clean win.
+  const WINNING_PLAN: BacktestPlanInput = {
+    entryOffsetBps: 10,
+    stopLossPct: 0.02,
+    takeProfitPct: 0.04,
+    entryValidityBars: 2,
+    maxHoldBars: 4,
+  };
+
+  function backtestCfg(over: Partial<ReflectionServiceConfig> = {}): ReflectionServiceConfig {
+    return baseCfg({
+      everyNTrades: 1,
+      mintFloorRows: 0, // isolate the backtest from the (separately-tested) entry-rate floor
+      mintBacktestRows: 3,
+      mintBacktestMinTrips: 1,
+      mintBacktestMarginBps: 10,
+      ...over,
+    });
+  }
+
+  it("rejects a candidate that backtests worse than the champion by more than the margin, retries with both arms' numbers, rejects again, and records expectancy_reject with a rolled-back trigger", async () => {
+    const h = buildHarness({
+      budgetCaps: { maxCallsPerDay: 20, maxTokensPerDay: 1_000_000 },
+      rows: BT_ROWS,
+      seedContent: validPlaybookContent('seed-champion-tag'),
+    });
+    mockBacktestFetch(
+      h.fetchFn,
+      [
+        revisionToolBody({
+          playbook: validPlaybookContent('draft-candidate-tag-1'),
+          changelog: 'first draft',
+        }),
+        revisionToolBody({
+          playbook: validPlaybookContent('draft-candidate-tag-2'),
+          changelog: 'second draft, still worse',
+        }),
+      ],
+      'draft-candidate-tag',
+      'seed-champion-tag',
+      {
+        'row-0': {
+          candidate: { action: 'long', plan: LOSING_PLAN },
+          champion: { action: 'long', plan: WINNING_PLAN },
+        },
+      },
+    );
+    const service = new ReflectionService(backtestCfg(), h.deps);
+
+    service.onClosedTrade(SID, 1);
+    await flush();
+
+    expect(h.storeApi.appended).toHaveLength(0);
+    expect(h.recorderApi.outcomes).toEqual(['attempt_started', 'expectancy_reject']);
+    expect(h.logger.messages.some((m) => m.includes('backtested worse than the champion'))).toBe(
+      true,
+    );
+    expect(h.logger.messages.some((m) => m.includes('bps/trip'))).toBe(true);
+
+    // Rollback: the very next closed trade re-fires immediately (same convention as the floor's own
+    // rollback test above).
+    h.fetchFn.mockResolvedValue(
+      apiResponse({ stop_reason: 'refusal', content: [], usage: undefined }),
+    );
+    service.onClosedTrade(SID, 2);
+    await flush();
+    expect(h.recorderApi.outcomes).toEqual([
+      'attempt_started',
+      'expectancy_reject',
+      'attempt_started',
+      'refusal',
+    ]);
+  });
+
+  it('mints when the candidate does not trail the champion by more than the margin', async () => {
+    const h = buildHarness({
+      budgetCaps: { maxCallsPerDay: 20, maxTokensPerDay: 1_000_000 },
+      rows: BT_ROWS,
+      seedContent: validPlaybookContent('seed-champion-tag'),
+    });
+    mockBacktestFetch(
+      h.fetchFn,
+      [
+        revisionToolBody({
+          playbook: validPlaybookContent('draft-candidate-tag'),
+          changelog: 'better',
+        }),
+      ],
+      'draft-candidate-tag',
+      'seed-champion-tag',
+      {
+        'row-0': {
+          candidate: { action: 'long', plan: WINNING_PLAN },
+          champion: { action: 'long', plan: LOSING_PLAN },
+        },
+      },
+    );
+    const service = new ReflectionService(backtestCfg(), h.deps);
+
+    service.onClosedTrade(SID, 1);
+    await flush();
+
+    expect(h.storeApi.appended).toEqual([
+      {
+        content: validPlaybookContent('draft-candidate-tag'),
+        source: 'reflection',
+        parentVersion: 1,
+      },
+    ]);
+    expect(h.recorderApi.outcomes).toEqual(['attempt_started', 'minted']);
+  });
+
+  it('skips the backtest (fail-open) when no rows qualify (no real-model rows with a recorded close+payload), and mints normally', async () => {
+    // model 'stub' (not 'claude'-prefixed) — fails the same real-decide qualifying filter the floor
+    // itself applies, just regardless of action.
+    const h = buildHarness({ rows: [row({ model: 'stub', close: '100', inputPayload: null })] });
+    h.fetchFn.mockResolvedValue(
+      apiResponse(revisionToolBody({ playbook: validPlaybookContent('v2'), changelog: 'tweak' })),
+    );
+    const service = new ReflectionService(backtestCfg({ mintBacktestRows: 3 }), h.deps);
+
+    service.onClosedTrade(SID, 1);
+    await flush();
+
+    expect(h.storeApi.appended).toEqual([
+      { content: validPlaybookContent('v2'), source: 'reflection', parentVersion: 1 },
+    ]);
+    expect(h.recorderApi.outcomes).toEqual(['attempt_started', 'minted']);
+    expect(h.fetchFn).toHaveBeenCalledTimes(1); // no backtest replay calls
+    expect(h.logger.messages.some((m) => m.includes('no qualifying recorded rows'))).toBe(true);
+  });
+
+  it('fails open (mint proceeds) when the daily budget is exhausted mid-backtest reservation', async () => {
+    const h = buildHarness({
+      budgetCaps: { maxCallsPerDay: 1, maxTokensPerDay: 1_000_000 },
+      rows: BT_ROWS,
+    });
+    h.fetchFn.mockResolvedValue(
+      apiResponse(revisionToolBody({ playbook: validPlaybookContent('v2'), changelog: 'tweak' })),
+    );
+    const service = new ReflectionService(backtestCfg(), h.deps);
+
+    service.onClosedTrade(SID, 1);
+    await flush();
+
+    expect(h.storeApi.appended).toEqual([
+      { content: validPlaybookContent('v2'), source: 'reflection', parentVersion: 1 },
+    ]);
+    expect(h.recorderApi.outcomes).toEqual(['attempt_started', 'minted']);
+    expect(h.fetchFn).toHaveBeenCalledTimes(1); // the backtest never made a single replay call
+    expect(h.logger.messages.some((m) => m.includes('mint-backtest skipped: budget'))).toBe(true);
+  });
+
+  it('fails open (mint proceeds unbacktested) when simulated round trips fall below mintBacktestMinTrips', async () => {
+    const h = buildHarness({
+      budgetCaps: { maxCallsPerDay: 20, maxTokensPerDay: 1_000_000 },
+      rows: BT_ROWS,
+      seedContent: validPlaybookContent('seed-champion-tag'),
+    });
+    // Both arms hold on every row (rowResponses empty ⇒ every replay defaults to 'hold') — zero
+    // simulated round trips on either arm, below mintBacktestMinTrips=1.
+    mockBacktestFetch(
+      h.fetchFn,
+      [
+        revisionToolBody({
+          playbook: validPlaybookContent('draft-candidate-tag'),
+          changelog: 'tweak',
+        }),
+      ],
+      'draft-candidate-tag',
+      'seed-champion-tag',
+      {},
+    );
+    const service = new ReflectionService(backtestCfg(), h.deps);
+
+    service.onClosedTrade(SID, 1);
+    await flush();
+
+    expect(h.storeApi.appended).toEqual([
+      {
+        content: validPlaybookContent('draft-candidate-tag'),
+        source: 'reflection',
+        parentVersion: 1,
+      },
+    ]);
+    expect(h.recorderApi.outcomes).toEqual(['attempt_started', 'minted']);
+    expect(h.logger.messages.some((m) => m.includes('too few simulated round trips'))).toBe(true);
+  });
+
+  it('is a byte-identical no-op when the backtest is disabled (mintBacktestRows=0) — legacy mint behavior preserved', async () => {
+    const h = buildHarness({ rows: BT_ROWS });
+    h.fetchFn.mockResolvedValue(
+      apiResponse(revisionToolBody({ playbook: validPlaybookContent('v2'), changelog: 'tweak' })),
+    );
+    const service = new ReflectionService(backtestCfg({ mintBacktestRows: 0 }), h.deps);
+
+    service.onClosedTrade(SID, 1);
+    await flush();
+
+    expect(h.storeApi.appended).toEqual([
+      { content: validPlaybookContent('v2'), source: 'reflection', parentVersion: 1 },
+    ]);
+    expect(h.recorderApi.outcomes).toEqual(['attempt_started', 'minted']);
+    expect(h.fetchFn).toHaveBeenCalledTimes(1); // no backtest calls whatsoever
+  });
+
+  it('createReflectionService defaults the backtest to rows=0 (disabled) — an unconfigured deployment never doubles LLM spend', async () => {
+    const h = buildHarness({ rows: BT_ROWS });
+    h.fetchFn.mockResolvedValue(
+      apiResponse(revisionToolBody({ playbook: validPlaybookContent('v2'), changelog: 'tweak' })),
+    );
+    const service = createReflectionService(
+      { ANTHROPIC_API_KEY: 'k', AGENTIC_REFLECTION_EVERY_N_TRADES: '1' },
+      h.deps,
+    );
+
+    service.onClosedTrade(SID, 1);
+    await flush();
+
+    expect(h.recorderApi.outcomes).toEqual(['attempt_started', 'minted']);
+    expect(h.fetchFn).toHaveBeenCalledTimes(1); // backtest disabled by default
+  });
+
+  it('replays the champion arm ONCE per reflection run — the retry reuses the cached champion replays (reviewer finding)', async () => {
+    const h = buildHarness({
+      budgetCaps: { maxCallsPerDay: 20, maxTokensPerDay: 1_000_000 },
+      rows: BT_ROWS,
+      seedContent: validPlaybookContent('seed-champion-tag'),
+    });
+    mockBacktestFetch(
+      h.fetchFn,
+      [
+        revisionToolBody({
+          playbook: validPlaybookContent('draft-candidate-tag-1'),
+          changelog: 'first draft',
+        }),
+        revisionToolBody({
+          playbook: validPlaybookContent('draft-candidate-tag-2'),
+          changelog: 'second draft, still worse',
+        }),
+      ],
+      'draft-candidate-tag',
+      'seed-champion-tag',
+      {
+        'row-0': {
+          candidate: { action: 'long', plan: LOSING_PLAN },
+          champion: { action: 'long', plan: WINNING_PLAN },
+        },
+      },
+    );
+    const service = new ReflectionService(backtestCfg(), h.deps);
+
+    service.onClosedTrade(SID, 1);
+    await flush();
+    expect(h.recorderApi.outcomes).toEqual(['attempt_started', 'expectancy_reject']);
+
+    // Replay calls force submit_plan and carry exactly one arm's playbook block: the champion arm
+    // ran once (3 rows) across BOTH gate evaluations, while the candidate arm ran twice (3 + 3).
+    const replayBodies = h.fetchFn.mock.calls
+      .map((c) => {
+        const body = (c[1] as { body?: unknown } | undefined)?.body;
+        return typeof body === 'string' ? body : '';
+      })
+      .filter((b) => b.includes('submit_plan'));
+    const championReplays = replayBodies.filter((b) => b.includes('seed-champion-tag'));
+    const candidateReplays = replayBodies.filter((b) => b.includes('draft-candidate-tag'));
+    expect(championReplays).toHaveLength(BT_ROWS.length);
+    expect(candidateReplays).toHaveLength(BT_ROWS.length * 2);
+  });
+
+  // NOTE (reviewer finding, throw fail-open): runMintBacktest wraps runCandidateBacktest in a
+  // fail-open try/catch. A journal-level malformed close CANNOT reach that wrap in this harness —
+  // earlier evidence machinery (summarize/reconstruct paths) converts every recent row's close
+  // first and runReflection's own outer catch absorbs it ('run failed'), a pre-existing conversion
+  // order outside this change's scope. The wrap's raw hazard (runCandidateBacktest throwing on a
+  // malformed forward close) is pinned where it IS reachable: candidate-backtest.spec.ts.
+});

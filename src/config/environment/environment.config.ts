@@ -263,6 +263,24 @@ const envSchema = z
     // LEGACY count-only path: superseded by AGENTIC_AUTO_PROMOTE_MIN_ATTRIBUTED_TRADES below (the
     // count-only gate promotes on LANE-WIDE trade count with zero candidate-attributed evidence).
     AGENTIC_AUTO_PROMOTE_MIN_TRADES: z.coerce.number().int().min(0).default(0),
+    // Mint-time candidate-vs-champion offline expectancy backtest (reflection.service.ts's
+    // runMintBacktest): rows of the newest recorded decisions (regardless of action) replayed against
+    // BOTH the draft candidate and the current champion playbook, simulating each 'long' plan's
+    // outcome. 0 (default) disables it entirely — a brand-new, LLM-call-doubling knob (2 arms × rows
+    // calls per mint attempt) defaults OFF for any unconfigured deployment, like other experimental
+    // knobs; this deployment's docker-compose.yml opts in explicitly. NOTE: reflection.service.ts's
+    // createReflectionService reads this off raw process.env (same convention as the mint-floor
+    // knobs below, which have no schema entry at all) rather than through this validated field —
+    // this schema entry exists so the knob is documented/bounded/configHash-visible, not because the
+    // reflection wiring consumes AppConfig.agentic.mintBacktestRows directly.
+    AGENTIC_MINT_BACKTEST_ROWS: z.coerce.number().int().min(0).default(0),
+    // Noise HANDICAP (bps), not a beat-the-champion hurdle: the candidate mints unless its mean net
+    // bps/trip trails the champion's by MORE than this (candidate >= champion − margin passes);
+    // trailing by more is treated exactly like a floor rejection.
+    AGENTIC_MINT_BACKTEST_MARGIN_BPS: z.coerce.number().int().min(0).default(10),
+    // Minimum simulated round trips BOTH arms need before the backtest verdict is trusted — below
+    // this the sample is too thin to judge and the backtest fails open (mint proceeds unbacktested).
+    AGENTIC_MINT_BACKTEST_MIN_TRIPS: z.coerce.number().int().min(0).default(3),
     // Attributed auto-promotion (owner decision 2026-07-08): the promotion evaluator promotes a
     // reflection candidate only once the CANDIDATE's own attributed closed trips reach this floor
     // AND its mean net/trip (realized − fees) beats the champion's over the same trailing window.
@@ -530,6 +548,9 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     AGENTIC_DERIVATIVES_AB_PCT: agenticDerivativesAbPct,
     AGENTIC_CROSS_SYMBOL_ENABLED: agenticCrossSymbolEnabled,
     AGENTIC_CROSS_SYMBOL_LOOKBACK_BARS: agenticCrossSymbolLookbackBars,
+    AGENTIC_MINT_BACKTEST_ROWS: agenticMintBacktestRows,
+    AGENTIC_MINT_BACKTEST_MARGIN_BPS: agenticMintBacktestMarginBps,
+    AGENTIC_MINT_BACKTEST_MIN_TRIPS: agenticMintBacktestMinTrips,
     AGENTIC_AUTO_PROMOTE_MIN_TRADES: agenticAutoPromoteMinTrades,
     AGENTIC_AUTO_PROMOTE_MIN_ATTRIBUTED_TRADES: agenticAutoPromoteMinAttributedTrades,
     AGENTIC_TOKEN_PRICE_INPUT_PER_MTOK: agenticTokenPriceInputPerMtok,
@@ -624,6 +645,9 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       drainCooldownMaxMs: agenticDrainCooldownMaxMs,
       reflectionEveryNTrades: agenticReflectionEveryNTrades,
       reflectionCooldownMs: agenticReflectionCooldownMs,
+      mintBacktestRows: agenticMintBacktestRows,
+      mintBacktestMarginBps: agenticMintBacktestMarginBps,
+      mintBacktestMinTrips: agenticMintBacktestMinTrips,
       autoPromoteMinTrades: agenticAutoPromoteMinTrades,
       autoPromoteMinAttributedTrades: agenticAutoPromoteMinAttributedTrades,
       playbookPin: agenticPlaybookPin,

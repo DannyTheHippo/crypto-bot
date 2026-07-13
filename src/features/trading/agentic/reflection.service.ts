@@ -23,7 +23,8 @@ import {
 import { validatePlaybook, type PlaybookValidationResult } from './playbook-validator';
 import type { DailyLlmBudget } from './agent-budget';
 import type { LoggerLike } from './anthropic-agent-client';
-import { measureEntryRate } from './entry-rate-floor';
+import { measureEntryRate, type PlanReplayResult } from './entry-rate-floor';
+import { runCandidateBacktest } from './candidate-backtest';
 
 // Default cooldown between attempts, independent of the trade-count trigger (see ReflectionService's
 // own header comment). Owner decision (F7): this is now the DEFAULT of a tunable knob
@@ -75,6 +76,16 @@ const DEFAULT_ABSTAIN_LAPSE_DECIDES = 15;
 // JOURNAL_LOOKBACK (200, per-strategy) because the floor wants the newest FLAT rows across every
 // symbol this lane trades, not one instrument's own recent window.
 const MINT_FLOOR_JOURNAL_LOOKBACK = 400;
+
+// Mint-time candidate-vs-champion offline expectancy backtest (candidate-backtest.ts): runs strictly
+// AFTER the entry-rate floor passes (see gateReflectionDraft) — the floor's cheaper "does it ever
+// enter" structural question gates first; this pricier "is entering here actually profitable versus
+// the champion" question gates second. 0 disables (byte-identical to pre-feature); the schema default
+// in environment.config.ts is ALSO 0 (a brand-new, LLM-call-doubling knob defaults off everywhere
+// unconfigured) — this deployment's docker-compose.yml opts in explicitly at 60.
+const DEFAULT_MINT_BACKTEST_ROWS = 0;
+const DEFAULT_MINT_BACKTEST_MARGIN_BPS = 10;
+const DEFAULT_MINT_BACKTEST_MIN_TRIPS = 3;
 
 const NOOP_LOGGER: LoggerLike = { warn: () => undefined };
 
@@ -185,6 +196,19 @@ export interface ReflectionServiceConfig {
   // provably untestable, so blocking mints on it serves nothing. 0 disables. Absent ⇒
   // DEFAULT_ABSTAIN_LAPSE_DECIDES (15).
   readonly abstainLapseDecides?: number;
+  // Mint-time candidate-vs-champion expectancy backtest (see runMintBacktest's own comment). 0
+  // disables it entirely — byte-identical legacy mint behavior (same convention as mintFloorRows).
+  // Absent ⇒ DEFAULT_MINT_BACKTEST_ROWS (0).
+  readonly mintBacktestRows?: number;
+  // Noise HANDICAP, not a beat-the-champion hurdle: the candidate mints unless its mean net
+  // bps/trip trails the champion's by MORE than this margin (candidate >= champion − margin
+  // passes); trailing by more is treated exactly like a floor rejection. Absent ⇒
+  // DEFAULT_MINT_BACKTEST_MARGIN_BPS (10).
+  readonly mintBacktestMarginBps?: number;
+  // Minimum simulated round trips BOTH arms need before the backtest verdict is trusted — below this,
+  // the sample is too thin to judge and the backtest fails open (mint proceeds unbacktested). Absent
+  // ⇒ DEFAULT_MINT_BACKTEST_MIN_TRIPS (3).
+  readonly mintBacktestMinTrips?: number;
 }
 
 export interface ReflectionServiceDeps {
@@ -440,9 +464,10 @@ interface ReflectionCallResult {
 
 // Backlog #39: the bounded outcome of gateReflectionDraft — 'ok' means the draft may mint, 'no_change'
 // means it hashes identical to the current playbook (mint nothing, no rollback — legitimately
-// consumed), and 'reject' carries the tool_result feedback text plus which of the two gate MODES
-// (structural validatePlaybook vs the mint-time entry-rate floor) produced it, so runReflection can
-// label the final outcome ('validator_reject' vs 'abstain_reject') without re-deriving the reason.
+// consumed), and 'reject' carries the tool_result feedback text plus which of the three gate MODES
+// (structural validatePlaybook, the mint-time entry-rate floor, or the mint-time expectancy backtest)
+// produced it, so runReflection can label the final outcome ('validator_reject' vs 'abstain_reject'
+// vs 'expectancy_reject') without re-deriving the reason.
 type ReflectionDraftGate =
   | { readonly kind: 'ok' }
   | { readonly kind: 'no_change' }
@@ -451,6 +476,10 @@ type ReflectionDraftGate =
       readonly feedback: string;
       readonly structural: boolean;
       readonly validation?: Extract<PlaybookValidationResult, { readonly ok: false }>;
+      // True only when this rejection came from runMintBacktest — never the structural validator or
+      // the entry-rate floor. Absent/false on those two so existing floor call sites (and their
+      // tests) stay byte-identical.
+      readonly backtestReject?: boolean;
     };
 
 // Reflection input is hypothesis-generation prompt material, never a trading decision — Decimal→
@@ -557,6 +586,19 @@ export class ReflectionService {
   private readonly decideModel: string;
   private readonly minEdgeMultiple: string;
   private readonly minRr: string;
+  // Mint-time expectancy backtest knobs — see ReflectionServiceConfig's own comments.
+  private readonly mintBacktestRows: number;
+  private readonly mintBacktestMarginBps: number;
+  private readonly mintBacktestMinTrips: number;
+  // Per-reflection-run champion replay cache (cleared at each run's gate entry): the champion arm
+  // is invariant within a run, so the retry's backtest reuses these instead of re-replaying — see
+  // runMintBacktest. rows are cached WITH the replays so both gate evaluations judge the retry
+  // candidate on the identical corpus.
+  private mintBacktestChampionCache: {
+    readonly championVersion: number;
+    readonly rows: readonly AgentDecisionRow[];
+    readonly replays: readonly PlanReplayResult[];
+  } | null = null;
   // Per-strategy (P7): each instance trades one symbol and accrues its own every-N-trades trigger;
   // lastAttemptAt/inFlight stay LANE-GLOBAL because the playbook (and the API spend the cooldown
   // throttles) is lane-global — two instances never reflect concurrently or double-mint.
@@ -590,6 +632,15 @@ export class ReflectionService {
     this.decideModel = cfg.decideModel ?? DEFAULT_MODEL;
     this.minEdgeMultiple = cfg.minEdgeMultiple ?? '1.5';
     this.minRr = cfg.minRr ?? '1.5';
+    this.mintBacktestRows = Math.max(0, cfg.mintBacktestRows ?? DEFAULT_MINT_BACKTEST_ROWS);
+    this.mintBacktestMarginBps = Math.max(
+      0,
+      cfg.mintBacktestMarginBps ?? DEFAULT_MINT_BACKTEST_MARGIN_BPS,
+    );
+    this.mintBacktestMinTrips = Math.max(
+      0,
+      cfg.mintBacktestMinTrips ?? DEFAULT_MINT_BACKTEST_MIN_TRIPS,
+    );
   }
 
   // Synchronous and cheap by construction — NEVER awaited by the strategy that calls it (a slow or
@@ -866,6 +917,11 @@ export class ReflectionService {
     // floor calls) the mint-time entry-rate floor. Shared by both the first draft and the retry draft
     // below so a rejection reason the model was never told about can never surface as a silent mint
     // failure.
+    // Champion-backtest cache is per reflection RUN: the champion arm is invariant across this
+    // run's initial + retry gate evaluations (same playbook, same rows), so the retry reuses the
+    // cached replays instead of burning rows-many identical API calls (reviewer finding). Cleared
+    // here so a later run never judges against a stale corpus.
+    this.mintBacktestChampionCache = null;
     let gate = await this.gateReflectionDraft(revision, current, recordUsage);
     if (gate.kind === 'reject') {
       // Backlog #31: ONE bounded retry-with-feedback, gated behind its own budget reservation so a
@@ -915,6 +971,15 @@ export class ReflectionService {
             `reflection: revised playbook failed validation (${gate.validation!.reason}) — discarding (changelog: ${revision.changelog.replace(/\s+/g, ' ').slice(0, MAX_CHANGELOG_LOG_CHARS)})`,
           );
           this.deps.recorder?.recordReflectionOutcome?.('validator_reject');
+        } else if (gate.backtestReject) {
+          // Mint-time expectancy backtest: structurally valid, passes the entry-rate floor, but
+          // backtested worse than the champion by more than the configured margin even after the one
+          // bounded retry — discarded under its OWN outcome label ('expectancy_reject') so the three
+          // rejection modes stay distinguishable in the metrics.
+          this.warn(
+            `reflection: revised playbook backtested worse than the champion under the mint-time expectancy backtest — discarding (changelog: ${revision.changelog.replace(/\s+/g, ' ').slice(0, MAX_CHANGELOG_LOG_CHARS)})`,
+          );
+          this.deps.recorder?.recordReflectionOutcome?.('expectancy_reject');
         } else {
           // Backlog #39: structurally valid but abstains under the mint-time entry-rate floor even
           // after the one bounded retry — a candidate whose entry bar never fires can never accrue
@@ -978,6 +1043,15 @@ export class ReflectionService {
     const floorFeedback = await this.runMintFloor(revision.playbook, recordUsage);
     if (floorFeedback !== null) {
       return { kind: 'reject', feedback: floorFeedback, structural: false };
+    }
+    const backtestFeedback = await this.runMintBacktest(revision.playbook, current, recordUsage);
+    if (backtestFeedback !== null) {
+      return {
+        kind: 'reject',
+        feedback: backtestFeedback,
+        structural: false,
+        backtestReject: true,
+      };
     }
     return { kind: 'ok' };
   }
@@ -1088,6 +1162,145 @@ export class ReflectionService {
       'to stay selective but tradeable — loosen the entry conditions enough that at least some ' +
       'genuine setups fire.'
     );
+  }
+
+  // Mint-time candidate-vs-champion offline expectancy backtest (candidate-backtest.ts): runs AFTER
+  // runMintFloor passes (see gateReflectionDraft) — replays the draft candidate AND the current
+  // champion (`current.content`) against the same newest recorded rows (regardless of action, unlike
+  // the floor's FLAT-only filter) and simulates each 'long' plan's outcome over the row's own sparse
+  // forward-close path. Returns null when disabled, fail-open, or the candidate does not trail the
+  // champion by more than mintBacktestMarginBps; returns tool_result feedback text (both arms' numbers
+  // included, per the retry contract) when the candidate trails by more than that margin. Structurally
+  // UNABLE to mint or promote anything itself — same veto-or-not contract as runMintFloor.
+  private async runMintBacktest(
+    playbook: string,
+    current: { readonly version: number; readonly content: string },
+    recordUsage: (usage: AgentUsage | undefined) => void,
+  ): Promise<string | null> {
+    if (this.mintBacktestRows <= 0) return null; // disabled — byte-identical legacy behavior
+    const journal = this.deps.journal;
+    if (!journal) return null; // nothing to replay against — fail open
+
+    let candidateRows: readonly AgentDecisionRow[];
+    try {
+      // Shares the floor's own lane-wide lookback window (MINT_FLOOR_JOURNAL_LOOKBACK) — the
+      // backtest wants the same newest-across-every-symbol corpus, just unfiltered by action.
+      candidateRows = await journal.recent(MINT_FLOOR_JOURNAL_LOOKBACK);
+    } catch (err) {
+      this.warn(
+        `mint-backtest: journal read failed (${err instanceof Error ? err.message : String(err)}) — skipping backtest, mint proceeds`,
+      );
+      return null;
+    }
+
+    // Real (model starts 'claude') rows with a recorded close and inputPayload — regardless of
+    // action (item 1 of the spec brief: unlike the floor, every action is a candidate row here, not
+    // just FLAT consults). journal.recent() returns oldest→newest; slice(-N) takes the newest N.
+    const qualifying: AgentDecisionRow[] = [];
+    for (const row of candidateRows) {
+      if (row.inputPayload === null || row.close === null || !row.model.startsWith('claude')) {
+        continue;
+      }
+      qualifying.push(row);
+    }
+    let rows: readonly AgentDecisionRow[] = qualifying.slice(-this.mintBacktestRows);
+    if (rows.length === 0) {
+      this.warn('mint-backtest: no qualifying recorded rows — skipping, mint proceeds');
+      return null;
+    }
+
+    // Retry reuse (reviewer finding): within one reflection run the champion arm is invariant, so
+    // the retry draft replays ONLY the candidate arm against the cached run's corpus — identical
+    // rows keep the comparison apples-to-apples AND halve the retry's API cost.
+    const cache =
+      this.mintBacktestChampionCache !== null &&
+      this.mintBacktestChampionCache.championVersion === current.version
+        ? this.mintBacktestChampionCache
+        : null;
+    if (cache) rows = cache.rows;
+
+    // Budget: (2 arms, or 1 with a cached champion) × rows.length calls, reserved up front
+    // (fail-open on any shortfall) — same all-or-nothing reservation discipline as runMintFloor's
+    // own loop above.
+    const callsNeeded = rows.length * (cache ? 1 : 2);
+    for (let i = 0; i < callsNeeded; i++) {
+      if (!this.deps.budget.tryReserveCall()) {
+        this.warn(
+          'mint-backtest skipped: budget exhausted mid-reservation — mint proceeds (fail-open)',
+        );
+        return null;
+      }
+    }
+
+    // Fail-open on ANY throw (reviewer finding, the #31 stranding class): a malformed recorded
+    // close would otherwise propagate past the consumed trigger with no rollback. The backtest is
+    // veto-only — a measurement crash is a measurement failure, never a mint blocker.
+    let measurement: Awaited<ReturnType<typeof runCandidateBacktest>>;
+    try {
+      measurement = await runCandidateBacktest(
+        {
+          apiKey: this.cfg.apiKey!,
+          // The DECIDE model, not `this.cfg.model` (the reflection model) — see decideModel's own
+          // ReflectionServiceConfig comment.
+          model: this.decideModel,
+          baseUrl: this.cfg.baseUrl,
+          timeoutMs: this.cfg.timeoutMs,
+          candidatePlaybook: playbook,
+          championPlaybook: current.content,
+          minEdgeMultiple: this.minEdgeMultiple,
+          minRr: this.minRr,
+        },
+        rows,
+        this.deps.fetchFn ?? fetch,
+        cache?.replays,
+      );
+    } catch (err) {
+      this.warn(
+        `mint-backtest: replay/simulation threw (${err instanceof Error ? err.message : String(err)}) — skipping backtest, mint proceeds`,
+      );
+      return null;
+    }
+    if ('skipped' in measurement) {
+      this.warn(`mint-backtest: ${measurement.skipped} — mint proceeds`);
+      return null;
+    }
+    this.mintBacktestChampionCache = {
+      championVersion: current.version,
+      rows,
+      replays: measurement.championReplays,
+    };
+    for (const usage of measurement.candidate.usages) recordUsage(usage);
+    // Cached-champion retry: the champion arm's usages were already recorded on the first gate
+    // evaluation — recording the cached copies again would double-count the spend.
+    if (!cache) for (const usage of measurement.champion.usages) recordUsage(usage);
+
+    const { candidate, champion } = measurement;
+    // Fail open below the min-trips floor: a thin simulated sample (either arm) can't distinguish a
+    // real expectancy gap from noise — same "measurement failure, not a verdict" stance as the
+    // floor's own consults<mintFloorMinRows fail-open branch above.
+    if (
+      candidate.simulatedRoundTrips < this.mintBacktestMinTrips ||
+      champion.simulatedRoundTrips < this.mintBacktestMinTrips
+    ) {
+      this.warn(
+        `mint-backtest: too few simulated round trips to judge (candidate ${candidate.simulatedRoundTrips}, champion ${champion.simulatedRoundTrips}, need ${this.mintBacktestMinTrips} each) — mint proceeds unbacktested`,
+      );
+      return null;
+    }
+
+    this.warn(
+      `mint-backtest: candidate ${candidate.meanNetBps.toFixed(1)}bps/trip (${candidate.simulatedRoundTrips} trips) vs champion ${champion.meanNetBps.toFixed(1)}bps/trip (${champion.simulatedRoundTrips} trips), ${measurement.divergentDecisions}/${rows.length} divergent decisions`,
+    );
+
+    if (candidate.meanNetBps < champion.meanNetBps - this.mintBacktestMarginBps) {
+      return (
+        `Your revised playbook backtested WORSE than the champion: candidate ${candidate.meanNetBps.toFixed(1)}bps/trip ` +
+        `(${candidate.simulatedRoundTrips} simulated round trips) vs champion ${champion.meanNetBps.toFixed(1)}bps/trip ` +
+        `(${champion.simulatedRoundTrips} simulated round trips), short of the required ${this.mintBacktestMarginBps}bps ` +
+        'margin. Revise to close this expectancy gap before this draft can mint.'
+      );
+    }
+    return null;
   }
 
   // Single Anthropic call: builds the request from `messages` (either the initial user turn or the
@@ -1298,6 +1511,19 @@ export function createReflectionService(
       decideModel: env['AGENTIC_MODEL'] ?? DEFAULT_MODEL,
       minEdgeMultiple: env['AGENTIC_MIN_EDGE_MULTIPLE'],
       minRr: env['AGENTIC_MIN_RR'],
+      // Mint-time candidate-vs-champion expectancy backtest knobs — see ReflectionServiceConfig's own
+      // comments. Read off raw env (same convention as the mint-floor knobs above, NOT threaded
+      // through agenticEnv's ConfigService overlay) — 0 disables (default; environment.config.ts's
+      // schema also defaults to 0, off everywhere unconfigured).
+      mintBacktestRows: intEnv(env['AGENTIC_MINT_BACKTEST_ROWS'], DEFAULT_MINT_BACKTEST_ROWS),
+      mintBacktestMarginBps: intEnv(
+        env['AGENTIC_MINT_BACKTEST_MARGIN_BPS'],
+        DEFAULT_MINT_BACKTEST_MARGIN_BPS,
+      ),
+      mintBacktestMinTrips: intEnv(
+        env['AGENTIC_MINT_BACKTEST_MIN_TRIPS'],
+        DEFAULT_MINT_BACKTEST_MIN_TRIPS,
+      ),
       apiKey,
     },
     deps,

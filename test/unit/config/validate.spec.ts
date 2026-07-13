@@ -194,6 +194,9 @@ describe('validate()', () => {
         drainCooldownMaxMs: 900_000,
         reflectionEveryNTrades: 10,
         reflectionCooldownMs: 604_800_000,
+        mintBacktestRows: 0,
+        mintBacktestMarginBps: 10,
+        mintBacktestMinTrips: 3,
         autoPromoteMinTrades: 0,
         autoPromoteMinAttributedTrades: 0,
         playbookPin: undefined,
@@ -373,6 +376,23 @@ describe('validate()', () => {
         validate({ PORT: '3100', AGENTIC_AUTO_PROMOTE_MIN_TRADES: '30' }).agentic
           .autoPromoteMinTrades,
       ).toBe(30);
+    });
+
+    it('AGENTIC_MINT_BACKTEST_* default to (0, 10, 3) — off unless a deployment opts in — and coerce', () => {
+      const defaults = validate({ PORT: '3100' }).agentic;
+      expect(defaults.mintBacktestRows).toBe(0);
+      expect(defaults.mintBacktestMarginBps).toBe(10);
+      expect(defaults.mintBacktestMinTrips).toBe(3);
+
+      const overridden = validate({
+        PORT: '3100',
+        AGENTIC_MINT_BACKTEST_ROWS: '60',
+        AGENTIC_MINT_BACKTEST_MARGIN_BPS: '15',
+        AGENTIC_MINT_BACKTEST_MIN_TRIPS: '5',
+      }).agentic;
+      expect(overridden.mintBacktestRows).toBe(60);
+      expect(overridden.mintBacktestMarginBps).toBe(15);
+      expect(overridden.mintBacktestMinTrips).toBe(5);
     });
 
     it('AGENTIC_TOKEN_PRICE_*_PER_MTOK and PROMOTION_DUST_NOTIONAL default and override as decimal strings', () => {

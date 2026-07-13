@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import Decimal from 'decimal.js';
 import { price, qty, type Price } from '../../../domain/types/money';
-import type { OrderBookSnapshotEvent } from '../../../domain/types/market-events';
+import type { CandleEvent, OrderBookSnapshotEvent } from '../../../domain/types/market-events';
+import type { EpochMs, SymbolId, VenueId } from '../../../domain/types/ids';
 import type { Signal } from '../../../domain/types/signal';
 import {
   AgentProposeError,
@@ -10,12 +11,15 @@ import {
   type AgentPlan,
   type AgentProposal,
   type AgentTradingProfile,
+  type AgentUsage,
   type PlaybookProvider,
 } from '../../../ports/agentic-strategy';
 import {
   CROSS_SYMBOL_TEMPLATE_VERSION,
   DECISION_TOOL,
   DERIVATIVES_TEMPLATE_VERSION,
+  PORTFOLIO_TEMPLATE_VERSION,
+  PORTFOLIO_TOOL,
   POSITIONING_TEMPLATE_VERSION,
   SENTIMENT_TEMPLATE_VERSION,
   SHORTS_DECISION_TOOL,
@@ -47,39 +51,48 @@ const shortsDecisionSchema = z.object({
   rationale: z.string().min(1).max(2000),
 });
 
-// W3.1 submit_plan payload: the decision fields plus a managed trade plan, REQUIRED when opening a
-// long (schema-enforced — a plan-less 'long' is malformed, not a bare entry). Pct fields arrive as
-// JSON numbers (fractions, bounded well inside double precision) and are converted to strings at
-// the mapping boundary so all downstream math stays Decimal-on-strings. This zod schema is the
-// REAL bounds gate: the wire tool schema cannot carry minimum/maximum (strict tool use 400s on
-// them), so PLAN_TOOL states the ranges in prose and both sides render from PLAN_BOUNDS.
-const planSchema = decisionSchema
-  .extend({
-    plan: z
-      .object({
-        entryOffsetBps: z
-          .number()
-          .int()
-          .min(PLAN_BOUNDS.entryOffsetBps.min)
-          .max(PLAN_BOUNDS.entryOffsetBps.max),
-        stopLossPct: z.number().min(PLAN_BOUNDS.stopLossPct.min).max(PLAN_BOUNDS.stopLossPct.max),
-        takeProfitPct: z
-          .number()
-          .min(PLAN_BOUNDS.takeProfitPct.min)
-          .max(PLAN_BOUNDS.takeProfitPct.max),
-        entryValidityBars: z
-          .number()
-          .int()
-          .min(PLAN_BOUNDS.entryValidityBars.min)
-          .max(PLAN_BOUNDS.entryValidityBars.max),
-        maxHoldBars: z
-          .number()
-          .int()
-          .min(PLAN_BOUNDS.maxHoldBars.min)
-          .max(PLAN_BOUNDS.maxHoldBars.max),
-      })
-      .optional(),
+// W3.1 submit_plan payload's `plan` sub-schema, factored out of planSchema below so
+// proposeBatch's per-element planElementSchema can reuse the SAME bounds/shape rather than a second
+// hand-maintained copy (see PLAN_BOUNDS's own comment on why the wire tool schema can't carry these
+// bounds itself — this zod schema is the real gate).
+const planFieldSchema = z
+  .object({
+    entryOffsetBps: z
+      .number()
+      .int()
+      .min(PLAN_BOUNDS.entryOffsetBps.min)
+      .max(PLAN_BOUNDS.entryOffsetBps.max),
+    stopLossPct: z.number().min(PLAN_BOUNDS.stopLossPct.min).max(PLAN_BOUNDS.stopLossPct.max),
+    takeProfitPct: z.number().min(PLAN_BOUNDS.takeProfitPct.min).max(PLAN_BOUNDS.takeProfitPct.max),
+    entryValidityBars: z
+      .number()
+      .int()
+      .min(PLAN_BOUNDS.entryValidityBars.min)
+      .max(PLAN_BOUNDS.entryValidityBars.max),
+    maxHoldBars: z.number().int().min(PLAN_BOUNDS.maxHoldBars.min).max(PLAN_BOUNDS.maxHoldBars.max),
   })
+  .optional();
+
+// REQUIRED when opening a long (schema-enforced — a plan-less 'long' is malformed, not a bare
+// entry). Pct fields arrive as JSON numbers (fractions, bounded well inside double precision) and
+// are converted to strings at the mapping boundary so all downstream math stays Decimal-on-strings.
+const planSchema = decisionSchema.extend({ plan: planFieldSchema }).superRefine((v, ctx) => {
+  if (v.action === 'long' && v.plan === undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "plan is required when action is 'long'",
+    });
+  }
+});
+
+// Portfolio-batch per-element schemas (BatchingAgentClient, Push II Phase 5 DESIGN Task 2): the SAME
+// decision/shorts/plan schemas above, each with a `symbol` field added so a decisions[] element can
+// be matched back to the resolved input it answers — reusing rather than re-deriving the
+// action/confidence/rationale/plan validation the single-symbol path already enforces.
+const decisionElementSchema = decisionSchema.extend({ symbol: z.string().min(1) });
+const shortsDecisionElementSchema = shortsDecisionSchema.extend({ symbol: z.string().min(1) });
+const planElementSchema = decisionSchema
+  .extend({ symbol: z.string().min(1), plan: planFieldSchema })
   .superRefine((v, ctx) => {
     if (v.action === 'long' && v.plan === undefined) {
       ctx.addIssue({
@@ -88,6 +101,14 @@ const planSchema = decisionSchema
       });
     }
   });
+// Whole-call shape check for submit_portfolio's top-level payload — deliberately lenient
+// (`z.unknown()` per element): a malformed INDIVIDUAL element must degrade only that symbol (see
+// proposeBatch), so per-element validation happens separately via decisionElementSchema/
+// shortsDecisionElementSchema/planElementSchema, never here.
+const portfolioDecisionsSchema = z.object({ decisions: z.array(z.unknown()) });
+// Lenient symbol-only extraction so a decisions[] element that otherwise fails full validation can
+// still be attributed to (and thus warned/held against) the right requested symbol.
+const elementSymbolSchema = z.object({ symbol: z.string().min(1) });
 
 // Only the envelope fields this client reads — not a full Messages-API response model.
 const anthropicResponseSchema = z.object({
@@ -234,13 +255,35 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// BatchingAgentClient's own batch-vs-caller contract: proposeBatch resolves (never rejects) for
+// every response outcome that ALSO resolves in the single-symbol propose() path (soft holds:
+// refusal, malformed element, missing symbol) — only a genuine whole-call transport/HTTP/schema
+// failure throws, so BatchingAgentClient can reject every waiting caller with the SAME error class
+// propose() would throw for the equivalent failure (see proposeBatch's own comments).
+export interface AgentProposeBatchOptions {
+  // Overrides cfg.timeoutMs for THIS call only — BatchingAgentClient folds its own coalescing window
+  // into this so the total wall time a batch's first-arrival caller experiences (window + HTTP) never
+  // exceeds the host's decide backstop (see batching-agent-client.ts's window/timeout comment).
+  readonly timeoutMsOverride?: number;
+}
+export interface AgentProposeBatchResult {
+  readonly proposals: ReadonlyMap<string, AgentProposal>;
+  // Aggregate usage for the ONE HTTP call this batch spent, exposed separately from `proposals` (see
+  // BatchingAgentClient) so the caller can record it against the shared daily budget exactly once
+  // regardless of which symbols round-trip successfully — the SAME AgentUsage object also rides on
+  // exactly the first resolved symbol's own AgentProposal.usage (absent-vs-zero convention preserved:
+  // every OTHER symbol's proposal omits `usage` entirely, mirroring recordUsage's own semantics).
+  readonly usage?: AgentUsage;
+}
+
 // Concrete AGENT_CLIENT adapter: calls the real Anthropic Messages API and maps its tool-use
 // decision to a proposed AgentProposal. Stateless across decisions — the strategy owns the
 // decision-history trail — but stateful across FAILURES: a FATAL classification latches this
 // instance to degraded so a bad key/request can't be hammered at candle cadence. Risk still
 // sizes/vetoes whatever signal is returned.
 export class AnthropicAgentClient implements AgentClientPort {
-  // Set once by a FATAL failure; every propose() call after that short-circuits with no HTTP call.
+  // Set once by a FATAL failure; every propose()/proposeBatch() call after that short-circuits with
+  // no HTTP call.
   private degraded = false;
   // Dedupes the "stored playbook failed validation" warn to once per distinct invalid content,
   // rather than once per candle-cadence propose() call while the same bad playbook sits stored.
@@ -299,6 +342,431 @@ export class AnthropicAgentClient implements AgentClientPort {
     const eventTime =
       input.trigger.kind === 'candle' ? input.trigger.event.closeTime : input.snapshot.eventTime;
 
+    const ctx = await this.prepareDecideContext();
+    const constraints = this.cfg.constraintsFor?.(String(symbol)) ?? ctx.baseProfile.constraints;
+
+    // Control arm: strip the derivatives/tradeFlow/positioning snapshots (agentic.strategy.ts's
+    // withDerivatives/withTradeFlow/withPositioning) and the cross-symbol ranking (context.crossSymbol)
+    // the strategy attached, before building the payload — buildMarketPayload's own omit-when-absent
+    // gates then leave all four blocks out, the same path a feed-off/stale-poll deployment already
+    // takes, reused rather than duplicated. Every other use of `input` in this method (signals,
+    // eventTime, refPrice, ...) stays on the ORIGINAL input — only payload construction sees the
+    // stripped copy.
+    const payloadInput = ctx.infoContextControlArm
+      ? {
+          ...input,
+          snapshot: {
+            ...input.snapshot,
+            derivatives: undefined,
+            tradeFlow: undefined,
+            positioning: undefined,
+          },
+          ...(input.context ? { context: { ...input.context, crossSymbol: undefined } } : {}),
+        }
+      : input;
+    // inputPayload is the market JSON ALONE — buildMarketPayload's signature carries no
+    // playbookContent parameter, so it structurally cannot echo playbook text (see its own comment).
+    // W2.4 cache experiment: the playbook block (the only sizeable stable prefix) rides in its own
+    // cache_control content block while the volatile market JSON follows uncached; block 2 carries
+    // the '\n\n' separator, so the concatenated model-visible text stays byte-identical to
+    // buildUserMessage's single-string form (see buildPlaybookBlock's comment).
+    const inputPayload = buildMarketPayload(payloadInput, { constraints });
+    const userContent: string | AnthropicTextBlock[] = ctx.playbookContent
+      ? [
+          {
+            type: 'text',
+            text: buildPlaybookBlock(ctx.playbookContent),
+            cache_control: EPHEMERAL_1H,
+          },
+          { type: 'text', text: `\n\n${inputPayload}` },
+        ]
+      : inputPayload;
+
+    const promptHash = computePromptHash({
+      templateVersion:
+        ctx.feedTags.length > 0
+          ? `${ctx.baseTemplateVersion}+${ctx.feedTags.join('+')}`
+          : ctx.baseTemplateVersion,
+      playbookContent: ctx.playbookContent ?? '',
+      toolSchemaJson: JSON.stringify(ctx.activeTool),
+      modelId: this.cfg.model,
+    });
+
+    const started = Date.now();
+    const res = await this.attemptWithRetry(
+      ctx.systemPrompt,
+      userContent,
+      ctx.activeTool,
+      this.cfg.timeoutMs,
+    );
+
+    const latencyMs = Date.now() - started;
+    const body: unknown = await res.json();
+    const envelope = anthropicResponseSchema.safeParse(body);
+    if (!envelope.success) {
+      this.logger.warn('anthropic api: malformed response envelope');
+      return {
+        signals: [],
+        latencyMs,
+        playbookVersion: ctx.playbookVersion,
+        promptHash,
+        inputPayload,
+      };
+    }
+    const usage = envelope.data.usage
+      ? {
+          inputTokens: envelope.data.usage.input_tokens,
+          outputTokens: envelope.data.usage.output_tokens,
+          cacheCreationInputTokens: envelope.data.usage.cache_creation_input_tokens,
+          cacheReadInputTokens: envelope.data.usage.cache_read_input_tokens,
+        }
+      : undefined;
+
+    if (envelope.data.stop_reason === 'refusal') {
+      this.logger.warn('anthropic api: model refused to decide');
+      return {
+        signals: [],
+        usage,
+        latencyMs,
+        playbookVersion: ctx.playbookVersion,
+        promptHash,
+        inputPayload,
+      };
+    }
+    const toolName = ctx.activeTool.name;
+    const toolBlock = envelope.data.content?.find(
+      (b) => b.type === 'tool_use' && b.name === toolName,
+    );
+    if (!toolBlock) {
+      this.logger.warn(`anthropic api: no ${toolName} tool_use block in response`);
+      return {
+        signals: [],
+        usage,
+        latencyMs,
+        playbookVersion: ctx.playbookVersion,
+        promptHash,
+        inputPayload,
+      };
+    }
+    const parsedDecision = this.cfg.planMode
+      ? planSchema.safeParse(toolBlock.input)
+      : this.cfg.shortsEnabled
+        ? shortsDecisionSchema.safeParse(toolBlock.input)
+        : decisionSchema.safeParse(toolBlock.input);
+    if (!parsedDecision.success) {
+      this.logger.warn(`anthropic api: ${toolName} payload failed schema validation`);
+      return {
+        signals: [],
+        usage,
+        latencyMs,
+        playbookVersion: ctx.playbookVersion,
+        promptHash,
+        inputPayload,
+      };
+    }
+
+    // Explicitly re-typed: the decision/plan schema union erases `plan` under `in`-narrowing.
+    const rawPlan: z.infer<typeof planFieldSchema> = this.cfg.planMode
+      ? (parsedDecision.data as z.infer<typeof planSchema>).plan
+      : undefined;
+
+    return this.buildProposalFromDecision({
+      input,
+      symbol,
+      venue,
+      refPrice,
+      basedOnSeq,
+      eventTime,
+      lastCandle,
+      decision: parsedDecision.data,
+      rawPlan,
+      knobs: ctx.knobs,
+      baseProfile: ctx.baseProfile,
+      usage,
+      latencyMs,
+      playbookVersion: ctx.playbookVersion,
+      promptHash,
+      inputPayload,
+    });
+  }
+
+  // Portfolio-consult batching (BatchingAgentClient, Push II Phase 5 DESIGN Task 2): ONE Anthropic
+  // call answering every resolvable symbol in `inputs` via submit_portfolio instead of N separate
+  // submit_decision calls. Shares prepareDecideContext/attemptWithRetry/buildProposalFromDecision
+  // with propose() so playbook/knob/A/B-arm resolution and the per-symbol plan/knob/floor validation
+  // are IDENTICAL between the two paths — only the request shape (one call, many symbol blocks) and
+  // response fan-out differ. Resolves (never rejects) for every outcome propose() would also resolve
+  // for (soft holds: refusal, a malformed/missing element); only a genuine whole-call transport/HTTP/
+  // schema failure throws, so the caller (BatchingAgentClient) can reject every waiting promise with
+  // the SAME error class propose() would throw for the equivalent single-symbol failure.
+  async proposeBatch(
+    inputs: readonly AgentDecisionInput[],
+    opts: AgentProposeBatchOptions = {},
+  ): Promise<AgentProposeBatchResult> {
+    if (inputs.length === 0) return { proposals: new Map() };
+    if (this.degraded) {
+      return {
+        proposals: new Map<string, AgentProposal>(
+          inputs.map((i) => [String(i.trigger.event.symbol), { signals: [] }]),
+        ),
+      };
+    }
+
+    const ctx = await this.prepareDecideContext();
+
+    interface ResolvedInput {
+      readonly symbolKey: string;
+      readonly symbolId: SymbolId;
+      readonly input: AgentDecisionInput;
+      readonly venue: VenueId;
+      readonly refPrice: Price;
+      readonly basedOnSeq: bigint;
+      readonly eventTime: EpochMs;
+      readonly lastCandle: CandleEvent | undefined;
+      readonly inputPayload: string;
+    }
+    const resolved: ResolvedInput[] = [];
+    const proposals = new Map<string, AgentProposal>();
+    for (const input of inputs) {
+      const symbolId = input.trigger.event.symbol;
+      const symbolKey = String(symbolId);
+      const tickerEvt = input.snapshot.tickers.get(symbolId);
+      const candles = input.snapshot.candles.get(symbolId) ?? [];
+      const lastCandle = candles.length > 0 ? candles[candles.length - 1] : undefined;
+      let refPrice: Price;
+      let basedOnSeq: bigint;
+      if (tickerEvt) {
+        refPrice = tickerEvt.last;
+        basedOnSeq = tickerEvt.seq;
+      } else if (lastCandle) {
+        refPrice = lastCandle.close;
+        basedOnSeq = lastCandle.seq;
+      } else {
+        // No usable ref price — mirrors propose()'s own early `{ signals: [] }` return; this symbol
+        // never enters the HTTP request (nothing useful to ask the model about it).
+        proposals.set(symbolKey, { signals: [] });
+        continue;
+      }
+      const eventTime =
+        input.trigger.kind === 'candle' ? input.trigger.event.closeTime : input.snapshot.eventTime;
+      const constraints = this.cfg.constraintsFor?.(symbolKey) ?? ctx.baseProfile.constraints;
+      const payloadInput = ctx.infoContextControlArm
+        ? {
+            ...input,
+            snapshot: {
+              ...input.snapshot,
+              derivatives: undefined,
+              tradeFlow: undefined,
+              positioning: undefined,
+            },
+            ...(input.context ? { context: { ...input.context, crossSymbol: undefined } } : {}),
+          }
+        : input;
+      const inputPayload = buildMarketPayload(payloadInput, { constraints });
+      resolved.push({
+        symbolKey,
+        symbolId,
+        input,
+        venue: input.trigger.event.venue,
+        refPrice,
+        basedOnSeq,
+        eventTime,
+        lastCandle,
+        inputPayload,
+      });
+    }
+
+    if (resolved.length === 0) return { proposals };
+
+    const promptHash = computePromptHash({
+      templateVersion: `${
+        ctx.feedTags.length > 0
+          ? `${ctx.baseTemplateVersion}+${ctx.feedTags.join('+')}`
+          : ctx.baseTemplateVersion
+      }+${PORTFOLIO_TEMPLATE_VERSION}`,
+      playbookContent: ctx.playbookContent ?? '',
+      toolSchemaJson: JSON.stringify(PORTFOLIO_TOOL),
+      modelId: this.cfg.model,
+    });
+
+    // Each resolved symbol's own market JSON rides as its own uncached text block (mirrors
+    // propose()'s single uncached block); the playbook (when present) still rides in its own
+    // cache_control block ahead of them, so the tools+system+playbook prefix stays identical to the
+    // single-symbol path's cache shape — only the volatile per-symbol blocks multiply with the batch.
+    const playbookBlock = ctx.playbookContent
+      ? ({
+          type: 'text',
+          text: buildPlaybookBlock(ctx.playbookContent),
+          cache_control: EPHEMERAL_1H,
+        } satisfies AnthropicTextBlock)
+      : undefined;
+    const symbolBlocks: AnthropicTextBlock[] = resolved.map((r, i) => ({
+      type: 'text',
+      text: `${i === 0 && !playbookBlock ? '' : '\n\n'}Symbol ${i + 1} of ${resolved.length} (${r.symbolKey}):\n${r.inputPayload}`,
+    }));
+    const userContent: AnthropicTextBlock[] = playbookBlock
+      ? [playbookBlock, ...symbolBlocks]
+      : symbolBlocks;
+
+    const timeoutMs = opts.timeoutMsOverride ?? this.cfg.timeoutMs;
+    const started = Date.now();
+    const res = await this.attemptWithRetry(
+      ctx.systemPrompt,
+      userContent,
+      PORTFOLIO_TOOL,
+      timeoutMs,
+    );
+    const latencyMs = Date.now() - started;
+
+    const body: unknown = await res.json();
+    const envelope = anthropicResponseSchema.safeParse(body);
+    if (!envelope.success) {
+      // Whole-call schema failure: no symbol in this batch has any usable per-decision data (unlike
+      // an individual malformed element, degraded singly below) — every waiting caller rejects with
+      // the SAME error, 1 strike per strategy, matching what 5 independently-failing single-symbol
+      // calls would each throw today.
+      this.logger.warn('anthropic api: malformed response envelope (portfolio batch)');
+      throw new AgentProposeError(
+        'anthropic api: malformed response envelope (portfolio batch)',
+        'RETRYABLE',
+      );
+    }
+    const usage = envelope.data.usage
+      ? {
+          inputTokens: envelope.data.usage.input_tokens,
+          outputTokens: envelope.data.usage.output_tokens,
+          cacheCreationInputTokens: envelope.data.usage.cache_creation_input_tokens,
+          cacheReadInputTokens: envelope.data.usage.cache_read_input_tokens,
+        }
+      : undefined;
+
+    // A refusal is a well-formed response, just a decline — the same soft-hold shape propose() gives
+    // a single symbol, generalized across the batch (usage still attaches to the FIRST resolved
+    // symbol only, mirroring the per-symbol loop below).
+    if (envelope.data.stop_reason === 'refusal') {
+      this.logger.warn('anthropic api: model refused to decide (portfolio batch)');
+      resolved.forEach((r, i) => {
+        proposals.set(r.symbolKey, {
+          signals: [],
+          ...(i === 0 && usage ? { usage } : {}),
+          latencyMs,
+          playbookVersion: ctx.playbookVersion,
+          promptHash,
+          inputPayload: r.inputPayload,
+        });
+      });
+      return { proposals, usage };
+    }
+
+    const toolBlock = envelope.data.content?.find(
+      (b) => b.type === 'tool_use' && b.name === PORTFOLIO_TOOL.name,
+    );
+    if (!toolBlock) {
+      this.logger.warn(`anthropic api: no ${PORTFOLIO_TOOL.name} tool_use block in response`);
+      throw new AgentProposeError(
+        `anthropic api: no ${PORTFOLIO_TOOL.name} tool_use block in response (portfolio batch)`,
+        'RETRYABLE',
+      );
+    }
+    const portfolioParsed = portfolioDecisionsSchema.safeParse(toolBlock.input);
+    if (!portfolioParsed.success) {
+      this.logger.warn(`anthropic api: ${PORTFOLIO_TOOL.name} payload failed schema validation`);
+      throw new AgentProposeError(
+        `anthropic api: ${PORTFOLIO_TOOL.name} payload failed schema validation (portfolio batch)`,
+        'RETRYABLE',
+      );
+    }
+
+    // Element-level: a decisions[] entry that fails full validation (or a requested symbol absent
+    // from decisions[] entirely) degrades ONLY that symbol to a hold — never the whole batch.
+    const bySymbol = new Map<string, unknown>();
+    for (const raw of portfolioParsed.data.decisions) {
+      const symbolField = elementSymbolSchema.safeParse(raw);
+      if (symbolField.success) bySymbol.set(symbolField.data.symbol, raw);
+    }
+    const elementSchema = this.cfg.planMode
+      ? planElementSchema
+      : this.cfg.shortsEnabled
+        ? shortsDecisionElementSchema
+        : decisionElementSchema;
+
+    resolved.forEach((r, i) => {
+      const usageForThis = i === 0 ? usage : undefined;
+      const raw = bySymbol.get(r.symbolKey);
+      if (raw === undefined) {
+        this.logger.warn(
+          `anthropic api: symbol ${r.symbolKey} missing from submit_portfolio decisions — holding`,
+        );
+        proposals.set(r.symbolKey, {
+          signals: [],
+          ...(usageForThis ? { usage: usageForThis } : {}),
+          latencyMs,
+          playbookVersion: ctx.playbookVersion,
+          promptHash,
+          inputPayload: r.inputPayload,
+        });
+        return;
+      }
+      const parsedElement = elementSchema.safeParse(raw);
+      if (!parsedElement.success) {
+        this.logger.warn(
+          `anthropic api: submit_portfolio element for symbol ${r.symbolKey} failed schema validation — holding`,
+        );
+        proposals.set(r.symbolKey, {
+          signals: [],
+          ...(usageForThis ? { usage: usageForThis } : {}),
+          latencyMs,
+          playbookVersion: ctx.playbookVersion,
+          promptHash,
+          inputPayload: r.inputPayload,
+        });
+        return;
+      }
+      const { action, confidence, rationale } = parsedElement.data;
+      const rawPlan: z.infer<typeof planFieldSchema> = this.cfg.planMode
+        ? (parsedElement.data as z.infer<typeof planElementSchema>).plan
+        : undefined;
+      proposals.set(
+        r.symbolKey,
+        this.buildProposalFromDecision({
+          input: r.input,
+          symbol: r.symbolId,
+          venue: r.venue,
+          refPrice: r.refPrice,
+          basedOnSeq: r.basedOnSeq,
+          eventTime: r.eventTime,
+          lastCandle: r.lastCandle,
+          decision: { action, confidence, rationale },
+          rawPlan,
+          knobs: ctx.knobs,
+          baseProfile: ctx.baseProfile,
+          usage: usageForThis,
+          latencyMs,
+          playbookVersion: ctx.playbookVersion,
+          promptHash,
+          inputPayload: r.inputPayload,
+        }),
+      );
+    });
+
+    return { proposals, usage };
+  }
+
+  // Shared decide-time context: playbook/knobs resolution, the information-context A/B control-arm
+  // bucket, the resulting system prompt/tool/template tags. IDENTICAL computation for propose() (one
+  // symbol) and proposeBatch() (called ONCE per batch — the A/B arm and playbook read are hoisted to
+  // the whole batch rather than re-resolved per symbol, per the batching design).
+  private async prepareDecideContext(): Promise<{
+    readonly playbookContent: string | undefined;
+    readonly playbookVersion: number | undefined;
+    readonly knobs: PlaybookKnobs | undefined;
+    readonly baseProfile: AgentTradingProfile;
+    readonly systemPrompt: string;
+    readonly activeTool: typeof DECISION_TOOL | typeof SHORTS_DECISION_TOOL | typeof PLAN_TOOL;
+    readonly baseTemplateVersion: string;
+    readonly feedTags: readonly string[];
+    readonly infoContextControlArm: boolean;
+  }> {
     const { content: playbookContent, version: playbookVersion } = await this.resolvePlaybook();
     // Playbook knobs (tighten-only parametric channel — see playbook-validator.ts). Extracted from
     // the ALREADY-VALIDATED playbook content, so an out-of-bounds line can never reach here.
@@ -306,13 +774,7 @@ export class AnthropicAgentClient implements AgentClientPort {
       ? extractPlaybookKnobs(playbookContent)
       : undefined;
     const baseProfile = this.cfg.profile ?? DEFAULT_TRADING_PROFILE;
-    const constraints = this.cfg.constraintsFor?.(String(symbol)) ?? baseProfile.constraints;
-    // Derivatives A/B control arm: a deterministic UTC-minute bucket, same shape as
-    // PlaybookAbRoutingProvider's own routing (app.module.ts) — `floor(Date.now()/60_000) % 100 <
-    // pct` — but offset by +37 before the modulo so this bucket's minute-boundary transitions never
-    // land on the same minute as the playbook router's (the two A/B mechanisms stay decorrelated).
-    // Only ever fires when the feed is actually on: with the feed off there is nothing to withhold,
-    // so derivativesAbPct is a no-op and the pct=0 default stays byte-identical to pre-A/B behavior.
+
     // Information-context A/B (2026-07-12; widened 2026-07-13 to also cover tradeFlow/positioning):
     // one control arm gates the whole EXTRA-INFORMATION bundle — derivatives, cross-symbol relative
     // strength, trade-flow/CVD, and positioning all move together, so the two live arms stay a clean
@@ -347,13 +809,15 @@ export class AnthropicAgentClient implements AgentClientPort {
     if (infoContextControlArm) {
       // No recorder seam reaches this client (MetricsWrappingAgentClient wraps AgentClientPort at the
       // composition root, outside AnthropicAgentClientConfig) — one structured log line per
-      // control-arm decide is the observability surface until/unless that seam is threaded through.
+      // control-arm decide (or, when batched, per control-arm BATCH) is the observability surface
+      // until/unless that seam is threaded through.
       this.logger.warn(
-        `agentic info-context ab: control arm (derivatives+crossSymbol+tradeFlow+positioning withheld) — symbol=${symbol} pct=${infoContextAbPct}`,
+        `agentic info-context ab: control arm (derivatives+crossSymbol+tradeFlow+positioning withheld) — pct=${infoContextAbPct}`,
       );
     }
     // v5: constraints no longer render into the system prompt (they ride the payload below), so the
-    // cached tools+system prefix is byte-identical across all symbols this shared client serves.
+    // cached tools+system prefix is byte-identical across all symbols this shared client serves —
+    // and, for the batch path, across every symbol in the SAME batch too.
     const systemPrompt = buildSystemPrompt(baseProfile, {
       ...(this.cfg.planMode
         ? {
@@ -369,49 +833,9 @@ export class AnthropicAgentClient implements AgentClientPort {
       tradeFlowFeedEnabled: effectiveTradeFlowEnabled,
       positioningFeedEnabled: effectivePositioningEnabled,
     });
-    // Control arm: strip the derivatives/tradeFlow/positioning snapshots (agentic.strategy.ts's
-    // withDerivatives/withTradeFlow/withPositioning) and the cross-symbol ranking (context.crossSymbol)
-    // the strategy attached, before building the payload — buildMarketPayload's own omit-when-absent
-    // gates then leave all four blocks out, the same path a feed-off/stale-poll deployment already
-    // takes, reused rather than duplicated. Every other use of `input` in this method (signals,
-    // eventTime, refPrice, ...) stays on the ORIGINAL input — only payload construction sees the
-    // stripped copy.
-    const payloadInput = infoContextControlArm
-      ? {
-          ...input,
-          snapshot: {
-            ...input.snapshot,
-            derivatives: undefined,
-            tradeFlow: undefined,
-            positioning: undefined,
-          },
-          ...(input.context ? { context: { ...input.context, crossSymbol: undefined } } : {}),
-        }
-      : input;
-    // inputPayload is the market JSON ALONE — buildMarketPayload's signature carries no
-    // playbookContent parameter, so it structurally cannot echo playbook text (see its own comment).
-    // W2.4 cache experiment: the playbook block (the only sizeable stable prefix) rides in its own
-    // cache_control content block while the volatile market JSON follows uncached; block 2 carries
-    // the '\n\n' separator, so the concatenated model-visible text stays byte-identical to
-    // buildUserMessage's single-string form (see buildPlaybookBlock's comment). Falsifiable:
-    // Sonnet-5's minimum cacheable prefix is unpublished — if usage.cache_read_input_tokens stays 0
-    // in production the blocks revert (config-free, cheap to remove).
-    const inputPayload = buildMarketPayload(payloadInput, { constraints });
-    const userContent: string | AnthropicTextBlock[] = playbookContent
-      ? [
-          {
-            type: 'text',
-            text: buildPlaybookBlock(playbookContent),
-            cache_control: EPHEMERAL_1H,
-          },
-          { type: 'text', text: `\n\n${inputPayload}` },
-        ]
-      : inputPayload;
     // B3: shortsEnabled selects SHORTS_DECISION_TOOL in place of DECISION_TOOL (never alongside
-    // planMode — enforced at construction). This is the tool actually SENT to the API (see
-    // attemptOnce below, which now takes `activeTool` rather than re-deriving it) — a client that
-    // computed the hash/schema from the wide tool but sent the narrow one would silently make the
-    // capability unreachable.
+    // planMode — enforced at construction). This is the tool actually SENT to the API for the
+    // single-symbol path (proposeBatch always sends PORTFOLIO_TOOL instead — see its own body).
     const activeTool = this.cfg.planMode
       ? PLAN_TOOL
       : this.cfg.shortsEnabled
@@ -420,7 +844,8 @@ export class AnthropicAgentClient implements AgentClientPort {
     const baseTemplateVersion = this.cfg.planMode ? PLAN_TEMPLATE_VERSION : PROMPT_TEMPLATE_VERSION;
     // Flag-ON appends the corresponding system-prompt sentence, so it is a distinct template for
     // attribution purposes (mirrors plan mode's own tag); flag-OFF hashes are byte-identical. All
-    // flags stack in a fixed order (`+d1+s1+x1+xs1+tf1+pos1`) so a multi-flag hash is deterministic
+    // flags stack in a fixed order (`+d1+s1+x1+xs1+tf1+pos1`, `+pf1` appended by proposeBatch's own
+    // caller when this batch was served via submit_portfolio) so a multi-flag hash is deterministic
     // regardless of which flag flipped first.
     const feedTags = [
       ...(effectiveDerivativesEnabled ? [DERIVATIVES_TEMPLATE_VERSION] : []),
@@ -430,101 +855,71 @@ export class AnthropicAgentClient implements AgentClientPort {
       ...(effectiveTradeFlowEnabled ? [TRADEFLOW_TEMPLATE_VERSION] : []),
       ...(effectivePositioningEnabled ? [POSITIONING_TEMPLATE_VERSION] : []),
     ];
-    const promptHash = computePromptHash({
-      templateVersion:
-        feedTags.length > 0 ? `${baseTemplateVersion}+${feedTags.join('+')}` : baseTemplateVersion,
-      playbookContent: playbookContent ?? '',
-      toolSchemaJson: JSON.stringify(activeTool),
-      modelId: this.cfg.model,
-    });
 
-    const deadline = Date.now() + this.cfg.timeoutMs;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.cfg.timeoutMs);
-    const started = Date.now();
-    let res: Response;
-    try {
-      try {
-        res = await this.attemptOnce(systemPrompt, userContent, activeTool, controller.signal);
-      } catch (firstErr) {
-        const classified = firstErr as AgentProposeError;
-        const remainingMs = deadline - Date.now();
-        if (classified.kind === 'FATAL' || remainingMs < RETRY_BUDGET_FLOOR_MS) {
-          this.handleFailure(classified);
-          throw classified;
-        }
-        const backoffMs = Math.min(
-          classified.retryAfterMs ?? DEFAULT_RETRY_BACKOFF_MS,
-          remainingMs,
-        );
-        await delay(backoffMs);
-        try {
-          res = await this.attemptOnce(systemPrompt, userContent, activeTool, controller.signal);
-        } catch (secondErr) {
-          const secondClassified = secondErr as AgentProposeError;
-          this.handleFailure(secondClassified);
-          throw secondClassified;
-        }
-      }
-    } finally {
-      clearTimeout(timer);
-    }
+    return {
+      playbookContent,
+      playbookVersion,
+      knobs,
+      baseProfile,
+      systemPrompt,
+      activeTool,
+      baseTemplateVersion,
+      feedTags,
+      infoContextControlArm,
+    };
+  }
 
-    const latencyMs = Date.now() - started;
-    const body: unknown = await res.json();
-    const envelope = anthropicResponseSchema.safeParse(body);
-    if (!envelope.success) {
-      this.logger.warn('anthropic api: malformed response envelope');
-      return { signals: [], latencyMs, playbookVersion, promptHash, inputPayload };
-    }
-    const usage = envelope.data.usage
-      ? {
-          inputTokens: envelope.data.usage.input_tokens,
-          outputTokens: envelope.data.usage.output_tokens,
-          cacheCreationInputTokens: envelope.data.usage.cache_creation_input_tokens,
-          cacheReadInputTokens: envelope.data.usage.cache_read_input_tokens,
-        }
-      : undefined;
-
-    if (envelope.data.stop_reason === 'refusal') {
-      this.logger.warn('anthropic api: model refused to decide');
-      return { signals: [], usage, latencyMs, playbookVersion, promptHash, inputPayload };
-    }
-    const toolName = activeTool.name;
-    const toolBlock = envelope.data.content?.find(
-      (b) => b.type === 'tool_use' && b.name === toolName,
-    );
-    if (!toolBlock) {
-      this.logger.warn(`anthropic api: no ${toolName} tool_use block in response`);
-      return { signals: [], usage, latencyMs, playbookVersion, promptHash, inputPayload };
-    }
-    const parsedDecision = this.cfg.planMode
-      ? planSchema.safeParse(toolBlock.input)
-      : this.cfg.shortsEnabled
-        ? shortsDecisionSchema.safeParse(toolBlock.input)
-        : decisionSchema.safeParse(toolBlock.input);
-    if (!parsedDecision.success) {
-      this.logger.warn(`anthropic api: ${toolName} payload failed schema validation`);
-      return { signals: [], usage, latencyMs, playbookVersion, promptHash, inputPayload };
-    }
+  // The per-symbol proposal-mapping tail SHARED by propose() (one symbol) and proposeBatch() (once
+  // per resolved decisions[] element) — the plan/knob/floor validation and Signal-kind mapping table
+  // are byte-identical between the two callers by construction (one method, not two copies).
+  private buildProposalFromDecision(params: {
+    readonly input: AgentDecisionInput;
+    readonly symbol: SymbolId;
+    readonly venue: VenueId;
+    readonly refPrice: Price;
+    readonly basedOnSeq: bigint;
+    readonly eventTime: EpochMs;
+    readonly lastCandle: CandleEvent | undefined;
+    readonly decision: {
+      readonly action: 'long' | 'short' | 'flat' | 'hold';
+      readonly confidence: number;
+      readonly rationale: string;
+    };
+    readonly rawPlan: z.infer<typeof planFieldSchema>;
+    readonly knobs: PlaybookKnobs | undefined;
+    readonly baseProfile: AgentTradingProfile;
+    readonly usage: AgentUsage | undefined;
+    readonly latencyMs: number;
+    readonly playbookVersion: number | undefined;
+    readonly promptHash: string;
+    readonly inputPayload: string;
+  }): AgentProposal {
+    const {
+      input,
+      symbol,
+      venue,
+      refPrice,
+      basedOnSeq,
+      eventTime,
+      lastCandle,
+      rawPlan,
+      knobs,
+      baseProfile,
+      usage,
+      latencyMs,
+      playbookVersion,
+      promptHash,
+      inputPayload,
+    } = params;
+    const { action, confidence, rationale } = params.decision;
 
     // B3: widened to 'LONG' | 'SHORT' | 'FLAT' locally via `as` (a type-level upcast only — the
     // runtime value is still ever only 'LONG'/'FLAT') so the mapping table below can compare against
-    // 'SHORT'. A type ANNOTATION here (`const side: 'LONG'|'SHORT'|'FLAT' = ...`) does NOT achieve
-    // this: TS's control-flow narrowing tracks the initializer expression's own inferred type
-    // ('LONG'|'FLAT') for subsequent `===` comparisons regardless of the wider declared annotation,
-    // so every `side === 'SHORT'` check below would still 2367 as a no-overlap comparison — only an
-    // explicit `as` cast on the initializer resets the flow-narrowed type to the wider union.
-    // AgentPositionSummary.side itself stays 'LONG' | 'FLAT' at the port level (see agent-prompt.ts's
+    // 'SHORT'. AgentPositionSummary.side stays 'LONG' | 'FLAT' at the port level (see agent-prompt.ts's
     // buildMarketPayload comment for why); no strategy instance can populate 'SHORT' today, so every
     // SHORT-side arm below is presently unreachable dead code, kept only for forward compatibility
     // and gated by shortsEnabled.
     const side = (input.context?.position.side ?? 'FLAT') as 'LONG' | 'SHORT' | 'FLAT';
-    const { action, confidence, rationale } = parsedDecision.data;
-    // Explicitly re-typed: the decision/plan schema union erases `plan` under `in`-narrowing.
-    const rawPlan: z.infer<typeof planSchema>['plan'] = this.cfg.planMode
-      ? (parsedDecision.data as z.infer<typeof planSchema>).plan
-      : undefined;
     const common = {
       strategyId: input.strategyId,
       venue,
@@ -778,6 +1173,53 @@ export class AnthropicAgentClient implements AgentClientPort {
     }
   }
 
+  // One attempt + one bounded retry, shared by propose()/proposeBatch(): builds the request via
+  // attemptOnce, classifies any failure, and on a RETRYABLE failure with enough remaining budget
+  // backs off once and retries with the SAME prompt strings (never re-derived, so a retry can't
+  // silently diverge from the first attempt). `timeoutMs` is caller-supplied (not always
+  // this.cfg.timeoutMs) so proposeBatch can fold its own coalescing window into the budget — see
+  // AgentProposeBatchOptions.timeoutMsOverride.
+  private async attemptWithRetry(
+    systemPrompt: string,
+    userContent: string | AnthropicTextBlock[],
+    tool:
+      | typeof DECISION_TOOL
+      | typeof SHORTS_DECISION_TOOL
+      | typeof PLAN_TOOL
+      | typeof PORTFOLIO_TOOL,
+    timeoutMs: number,
+  ): Promise<Response> {
+    const deadline = Date.now() + timeoutMs;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      try {
+        return await this.attemptOnce(systemPrompt, userContent, tool, controller.signal);
+      } catch (firstErr) {
+        const classified = firstErr as AgentProposeError;
+        const remainingMs = deadline - Date.now();
+        if (classified.kind === 'FATAL' || remainingMs < RETRY_BUDGET_FLOOR_MS) {
+          this.handleFailure(classified);
+          throw classified;
+        }
+        const backoffMs = Math.min(
+          classified.retryAfterMs ?? DEFAULT_RETRY_BACKOFF_MS,
+          remainingMs,
+        );
+        await delay(backoffMs);
+        try {
+          return await this.attemptOnce(systemPrompt, userContent, tool, controller.signal);
+        } catch (secondErr) {
+          const secondClassified = secondErr as AgentProposeError;
+          this.handleFailure(secondClassified);
+          throw secondClassified;
+        }
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   // One HTTP attempt: builds the request, classifies any failure (transport or non-ok status) into
   // an AgentProposeError, and returns the ok Response otherwise. Never called once degraded. The
   // system/user prompt strings are built once by the caller (not per-attempt) so a retry resends
@@ -785,7 +1227,11 @@ export class AnthropicAgentClient implements AgentClientPort {
   private async attemptOnce(
     systemPrompt: string,
     userContent: string | AnthropicTextBlock[],
-    tool: typeof DECISION_TOOL | typeof SHORTS_DECISION_TOOL | typeof PLAN_TOOL,
+    tool:
+      | typeof DECISION_TOOL
+      | typeof SHORTS_DECISION_TOOL
+      | typeof PLAN_TOOL
+      | typeof PORTFOLIO_TOOL,
     signal: AbortSignal,
   ): Promise<Response> {
     let res: Response;
@@ -805,9 +1251,9 @@ export class AnthropicAgentClient implements AgentClientPort {
           // cache_control block. Cache reads are observed via usage.cache_read_input_tokens.
           system: [{ type: 'text', text: systemPrompt, cache_control: EPHEMERAL_1H }],
           messages: [{ role: 'user', content: userContent }],
-          // B3: `tool` is the caller's precomputed `activeTool` (DECISION_TOOL / SHORTS_DECISION_TOOL
-          // / PLAN_TOOL) — previously re-derived here from cfg.planMode alone, which would have sent
-          // the narrow DECISION_TOOL even when shortsEnabled was on, making 'short' unreachable.
+          // B3: `tool` is the caller's precomputed `activeTool`/PORTFOLIO_TOOL — previously
+          // re-derived here from cfg.planMode alone, which would have sent the narrow DECISION_TOOL
+          // even when shortsEnabled was on, making 'short' unreachable.
           tools: [tool],
           tool_choice: { type: 'tool', name: tool.name },
           // Omitting `thinking` on claude-sonnet-5 silently runs (billed) adaptive thinking; the

@@ -67,6 +67,12 @@ export const POSITIONING_TEMPLATE_VERSION = 'pos1';
 // with planMode (enforced at AnthropicAgentClient construction, not here — this module has no
 // flag-combination to reject).
 export const SHORTS_TEMPLATE_VERSION = 'x1';
+// Portfolio-consult batching attribution tag (Push II Phase 5, DESIGN Task 2): appended AFTER pos1
+// (stacking order `${base}+d1+s1+x1+xs1+tf1+pos1+pf1`) ONLY on a decision actually served by
+// BatchingAgentClient's coalesced submit_portfolio call — the flag-off / non-batched path never adds
+// it, so a hash never confuses a batched decide with a single-symbol one even when every other
+// component (playbook, model, feed flags) is identical.
+export const PORTFOLIO_TEMPLATE_VERSION = 'pf1';
 
 // Delimiters wrapping the advisory playbook block quoted into the user message. Unique and
 // non-trivial so a playbook can never forge a close/open of its own — playbook-validator.ts
@@ -218,6 +224,99 @@ export const PLAN_TOOL = {
       },
     },
     required: ['action', 'confidence', 'rationale'],
+    additionalProperties: false,
+  },
+} as const;
+
+// Portfolio-consult batching tool (BatchingAgentClient, Push II Phase 5 DESIGN Task 2): coalesces up
+// to N single-symbol consults arriving within one window into ONE Anthropic call. Strict tool use
+// cannot demand N separate tool_use blocks per call, so every symbol's decision instead rides as one
+// element of a single `decisions` array — the model is instructed (description below) to return
+// exactly one element per symbol block shown in the user message, matched back by the `symbol`
+// field. `plan` is optional on every element regardless of AGENTIC_PLAN_MODE (mirrors PLAN_TOOL's own
+// no-inline-bounds convention — strict tool use 400s on JSON-schema min/max, see PLAN_TOOL's header
+// comment); AnthropicAgentClient.proposeBatch enforces the actual planMode-gated shape/floor
+// validation per element via the SAME zod schemas the single-symbol path uses.
+export const PORTFOLIO_TOOL = {
+  name: 'submit_portfolio',
+  description:
+    'Submit your trading decisions for ALL symbols presented in this consult in ONE call. The `decisions` array must contain exactly one entry per symbol shown in the user message, matched back by its `symbol` field (copy it verbatim) — including an entry whose action is "hold" for any symbol you are not acting on.',
+  strict: true,
+  input_schema: {
+    type: 'object',
+    properties: {
+      decisions: {
+        type: 'array',
+        description: 'One decision per symbol shown in the user message, in any order.',
+        items: {
+          type: 'object',
+          properties: {
+            symbol: {
+              type: 'string',
+              description:
+                'The exact symbol string this decision is for, copied from its user-message block.',
+            },
+            action: {
+              type: 'string',
+              enum: ['long', 'flat', 'hold'],
+              description:
+                "'long' to open or hold a long position, 'flat' to close an open position (if already flat, use 'hold'), 'hold' to leave the current position unchanged",
+            },
+            confidence: {
+              type: 'number',
+              description: '0..1 conviction; scales position size',
+            },
+            rationale: {
+              type: 'string',
+              description: 'One short paragraph explaining the decision',
+            },
+            plan: {
+              type: 'object',
+              description:
+                "The managed trade plan (see PLAN MODE instructions in the system prompt, when active) — REQUIRED when action is 'long' and PLAN MODE is active; omit otherwise.",
+              properties: {
+                entryOffsetBps: {
+                  type: 'integer',
+                  description:
+                    PLAN_TOOL.input_schema.properties.plan.properties.entryOffsetBps.description,
+                },
+                stopLossPct: {
+                  type: 'number',
+                  description:
+                    PLAN_TOOL.input_schema.properties.plan.properties.stopLossPct.description,
+                },
+                takeProfitPct: {
+                  type: 'number',
+                  description:
+                    PLAN_TOOL.input_schema.properties.plan.properties.takeProfitPct.description,
+                },
+                entryValidityBars: {
+                  type: 'integer',
+                  description:
+                    PLAN_TOOL.input_schema.properties.plan.properties.entryValidityBars.description,
+                },
+                maxHoldBars: {
+                  type: 'integer',
+                  description:
+                    PLAN_TOOL.input_schema.properties.plan.properties.maxHoldBars.description,
+                },
+              },
+              required: [
+                'entryOffsetBps',
+                'stopLossPct',
+                'takeProfitPct',
+                'entryValidityBars',
+                'maxHoldBars',
+              ],
+              additionalProperties: false,
+            },
+          },
+          required: ['symbol', 'action', 'confidence', 'rationale'],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ['decisions'],
     additionalProperties: false,
   },
 } as const;

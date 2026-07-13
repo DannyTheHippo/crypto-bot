@@ -182,6 +182,13 @@ services:
       AGENTIC_CROSS_SYMBOL_ENABLED: 'true'
       AGENTIC_CROSS_SYMBOL_LOOKBACK_BARS: 20
 
+      # Portfolio-consult batching (Push II Phase 5, DESIGN Task 2): coalesces the 5 concurrent
+      # single-symbol propose() calls (one per agentic-N instance, same bar close) into ONE Anthropic
+      # call via submit_portfolio. Off for now (CODE + TESTS ONLY this task — attribution plumbing for
+      # the shared usage/promptHash is a follow-up before enabling live).
+      AGENTIC_PORTFOLIO_CONSULT: 'false'
+      AGENTIC_PORTFOLIO_WINDOW_MS: 3000
+
       # C4: read-only free news/sentiment feed (headlines only, no numeric scores) polled from
       # CryptoPanic, surfaced to the agentic prompt when fresh. Off by default; requires
       # SENTIMENT_FEED_API_KEY — a missing key keeps the feed inert even when enabled.

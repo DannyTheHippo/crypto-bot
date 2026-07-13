@@ -85,6 +85,12 @@ export interface AppConfig {
     // derivatives block under the information-context A/B (derivativesAbPct).
     crossSymbolEnabled: boolean;
     crossSymbolLookbackBars: number;
+    // Portfolio-consult batching (Push II Phase 5, DESIGN Task 2): coalesces concurrent single-symbol
+    // decide() calls landing within one window into ONE Anthropic call (BatchingAgentClient,
+    // submit_portfolio). Off by default — BatchingAgentClient is not even constructed unconfigured.
+    portfolioConsultEnabled: boolean;
+    // Coalescing window (ms). Inert unless portfolioConsultEnabled is true.
+    portfolioWindowMs: number;
     // PromotionReadinessService LLM-cost math: USD per 1M tokens, operator-adjustable.
     tokenPriceInputPerMtok: string;
     tokenPriceOutputPerMtok: string;

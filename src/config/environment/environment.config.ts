@@ -258,6 +258,20 @@ const envSchema = z
     // Trailing-return lookback (bars) for the cross-symbol ranking. Default 20 (the winning
     // cross-sectional lookback from the search). Bounded to keep it inside typical warmup windows.
     AGENTIC_CROSS_SYMBOL_LOOKBACK_BARS: z.coerce.number().int().min(2).max(200).default(20),
+    // Portfolio-consult batching (Push II Phase 5, DESIGN Task 2): coalesces the up-to-5 concurrent
+    // single-symbol propose() calls landing within one window into ONE Anthropic call via
+    // BatchingAgentClient/submit_portfolio, instead of 5 separate submit_decision calls. 'true'/
+    // 'false' (not z.coerce.boolean(), same rationale as AGENTIC_PRESCREEN_ENABLED above). Default
+    // 'false': an unconfigured deployment sees zero behavior change — BatchingAgentClient is not
+    // even constructed (see agentic-strategy.module.ts's selectAgentClient).
+    AGENTIC_PORTFOLIO_CONSULT: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
+    // Coalescing window (ms): the first propose() call to arrive opens it; every call arriving
+    // before it closes (or before all configured symbols have checked in, whichever first) joins
+    // the same batch. Inert unless AGENTIC_PORTFOLIO_CONSULT is on.
+    AGENTIC_PORTFOLIO_WINDOW_MS: z.coerce.number().int().positive().default(3000),
     // Cumulative closed-trade floor before a reflection candidate auto-promotes to ACTIVE (G4b); 0
     // (default) disables auto-promotion — see reflection.service.ts's autoPromoteMinTrades comment.
     // LEGACY count-only path: superseded by AGENTIC_AUTO_PROMOTE_MIN_ATTRIBUTED_TRADES below (the
@@ -548,6 +562,8 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     AGENTIC_DERIVATIVES_AB_PCT: agenticDerivativesAbPct,
     AGENTIC_CROSS_SYMBOL_ENABLED: agenticCrossSymbolEnabled,
     AGENTIC_CROSS_SYMBOL_LOOKBACK_BARS: agenticCrossSymbolLookbackBars,
+    AGENTIC_PORTFOLIO_CONSULT: agenticPortfolioConsult,
+    AGENTIC_PORTFOLIO_WINDOW_MS: agenticPortfolioWindowMs,
     AGENTIC_MINT_BACKTEST_ROWS: agenticMintBacktestRows,
     AGENTIC_MINT_BACKTEST_MARGIN_BPS: agenticMintBacktestMarginBps,
     AGENTIC_MINT_BACKTEST_MIN_TRIPS: agenticMintBacktestMinTrips,
@@ -655,6 +671,8 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       derivativesAbPct: agenticDerivativesAbPct,
       crossSymbolEnabled: agenticCrossSymbolEnabled,
       crossSymbolLookbackBars: agenticCrossSymbolLookbackBars,
+      portfolioConsultEnabled: agenticPortfolioConsult,
+      portfolioWindowMs: agenticPortfolioWindowMs,
       tokenPriceInputPerMtok: agenticTokenPriceInputPerMtok,
       tokenPriceOutputPerMtok: agenticTokenPriceOutputPerMtok,
       tokenPriceCacheReadPerMtok: agenticTokenPriceCacheReadPerMtok,

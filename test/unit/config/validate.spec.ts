@@ -204,6 +204,8 @@ describe('validate()', () => {
         derivativesAbPct: 0,
         crossSymbolEnabled: false,
         crossSymbolLookbackBars: 20,
+        portfolioConsultEnabled: false,
+        portfolioWindowMs: 3000,
         expectancyLadderEnabled: false,
         planMode: false,
         minEdgeMultiple: '1.5',

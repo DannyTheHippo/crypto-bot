@@ -8,6 +8,7 @@ import {
 } from '../../../src/features/trading/agentic/agentic-strategy.module';
 import { StubAgentClient } from '../../../src/features/trading/agentic/agent-client.adapter';
 import { AnthropicAgentClient } from '../../../src/features/trading/agentic/anthropic-agent-client';
+import { BatchingAgentClient } from '../../../src/features/trading/agentic/batching-agent-client';
 import { BudgetedAgentClient } from '../../../src/features/trading/agentic/agent-budget';
 import { validatePlaybook } from '../../../src/features/trading/agentic/playbook-validator';
 import type { AppConfig } from '../../../src/ports/app-config';
@@ -79,6 +80,30 @@ describe('selectAgentClient', () => {
     expect(client).toBeInstanceOf(BudgetedAgentClient);
     expect(client.inner).toBeInstanceOf(AnthropicAgentClient);
   });
+
+  it('AGENTIC_PORTFOLIO_CONSULT absent/false: BatchingAgentClient is never constructed — the legacy BudgetedAgentClient(AnthropicAgentClient) chain is byte-identical', () => {
+    const client = selectAgentClient({ ANTHROPIC_API_KEY: 'k' });
+    expect(client).toBeInstanceOf(BudgetedAgentClient);
+    expect(client).not.toBeInstanceOf(BatchingAgentClient);
+
+    const explicitOff = selectAgentClient({
+      ANTHROPIC_API_KEY: 'k',
+      AGENTIC_PORTFOLIO_CONSULT: 'false',
+    });
+    expect(explicitOff).toBeInstanceOf(BudgetedAgentClient);
+    expect(explicitOff).not.toBeInstanceOf(BatchingAgentClient);
+  });
+
+  it('AGENTIC_PORTFOLIO_CONSULT=true wires BatchingAgentClient (wrapping the same AnthropicAgentClient, sharing the caller-supplied budget) in place of BudgetedAgentClient', () => {
+    const budget = createAgentLlmBudget({});
+    const client = selectAgentClient(
+      { ANTHROPIC_API_KEY: 'k', AGENTIC_PORTFOLIO_CONSULT: 'true' },
+      budget,
+    );
+
+    expect(client).toBeInstanceOf(BatchingAgentClient);
+    expect(client).not.toBeInstanceOf(BudgetedAgentClient);
+  });
 });
 
 describe('createAgentLlmBudget', () => {
@@ -134,6 +159,8 @@ describe('agenticEnv', () => {
       derivativesAbPct: 30,
       crossSymbolEnabled: false,
       crossSymbolLookbackBars: 20,
+      portfolioConsultEnabled: true,
+      portfolioWindowMs: 4000,
       expectancyLadderEnabled: false,
       planMode: false,
       minEdgeMultiple: '1.5',
@@ -172,11 +199,21 @@ describe('agenticEnv', () => {
     // Same sibling-key convention as derivativesFeed above (2026-07-13).
     const tradeFlowFeed: AppConfig['tradeFlowFeed'] = { enabled: true, pollIntervalMs: 60000 };
     const positioningFeed: AppConfig['positioningFeed'] = { enabled: true, pollIntervalMs: 300000 };
+    // Portfolio-consult batching's AGENTIC_PORTFOLIO_SYMBOL_COUNT overlay reads config.strategy.symbols
+    // (a sibling AppConfig top-level key, not part of the `agentic` block) — present here so the
+    // fixture matches the real TypedConfigService shape (mirrors derivativesFeed/tradeFlowFeed above).
+    const strategy: AppConfig['strategy'] = {
+      symbol: 'BTC/USDT',
+      symbols: ['BTC/USDT', 'ETH/USDT', 'SOL/USDT'],
+      interval: '15m',
+      active: 'agentic',
+    };
     const config = {
       agentic,
       derivativesFeed,
       tradeFlowFeed,
       positioningFeed,
+      strategy,
     } as unknown as TypedConfigService;
 
     expect(agenticEnv(config)).toMatchObject({
@@ -196,6 +233,9 @@ describe('agenticEnv', () => {
       AGENTIC_DERIVATIVES_AB_PCT: '30',
       AGENTIC_TRADEFLOW_ENABLED: 'true',
       AGENTIC_POSITIONING_ENABLED: 'true',
+      AGENTIC_PORTFOLIO_CONSULT: 'true',
+      AGENTIC_PORTFOLIO_WINDOW_MS: '4000',
+      AGENTIC_PORTFOLIO_SYMBOL_COUNT: '3',
     });
   });
 });

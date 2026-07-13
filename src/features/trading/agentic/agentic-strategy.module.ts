@@ -19,6 +19,7 @@ import { price, qty } from '../../../domain/types/money';
 import { STRATEGY_REGISTRY, type StrategyRegistryPort } from '../../../ports/strategy';
 import { StubAgentClient } from './agent-client.adapter';
 import { AnthropicAgentClient } from './anthropic-agent-client';
+import { BatchingAgentClient } from './batching-agent-client';
 import { BudgetedAgentClient, DailyLlmBudget, type ModelTokenRates } from './agent-budget';
 import {
   createReflectionService,
@@ -154,6 +155,14 @@ export function agenticEnv(config?: TypedConfigService): Record<string, string |
     AGENTIC_DERIVATIVES_AB_PCT: String(agentic.derivativesAbPct),
     AGENTIC_CROSS_SYMBOL_ENABLED: String(agentic.crossSymbolEnabled),
     AGENTIC_CROSS_SYMBOL_LOOKBACK_BARS: String(agentic.crossSymbolLookbackBars),
+    // Portfolio-consult batching: sourced off the validated config fields (never raw process.env),
+    // same convention as the A/B pct above. AGENTIC_PORTFOLIO_SYMBOL_COUNT is NOT a schema field —
+    // it is derived here from the SAME config.strategy.symbols array TRADING_SYMBOLS resolves to
+    // (app.module.ts registers one agentic-N instance per entry), so BatchingAgentClient's
+    // early-flush threshold can never drift from the actual configured symbol count.
+    AGENTIC_PORTFOLIO_CONSULT: String(agentic.portfolioConsultEnabled),
+    AGENTIC_PORTFOLIO_WINDOW_MS: String(agentic.portfolioWindowMs),
+    AGENTIC_PORTFOLIO_SYMBOL_COUNT: String(config.strategy.symbols.length),
     // Trade-flow/CVD + positioning blocks: off by default ⇒ byte-identical legacy prompt. Both ride
     // the SAME information-context A/B control arm as derivatives/crossSymbol above (see
     // anthropic-agent-client.ts's infoContextControlArm). Same convention as DERIVATIVES_FEED_ENABLED
@@ -234,11 +243,19 @@ function seedPlaybookProvider(): PlaybookProvider {
   return { current: () => Promise.resolve(SEED_PLAYBOOK) };
 }
 
+// Matches AGENTIC_PORTFOLIO_WINDOW_MS's schema default and BatchingAgentClient's own
+// DEFAULT_MAX_BATCH_SIZE fallback (this deployment's P7 symbol count).
+const DEFAULT_PORTFOLIO_WINDOW_MS = 3000;
+const DEFAULT_PORTFOLIO_SYMBOL_COUNT = 5;
+
 // Pure selection so it's unit-testable without touching global env. Falls back to the inert
 // StubAgentClient whenever there is no API key, or under test/CI (never call a real LLM from a
 // test run) — unbudgeted and playbook-free, since it never calls out. Otherwise wires the concrete
 // Anthropic adapter behind the shared BudgetedAgentClient, with a playbookProvider (defaulting to
-// the seed playbook when the caller supplies none).
+// the seed playbook when the caller supplies none). AGENTIC_PORTFOLIO_CONSULT ('true') swaps
+// BudgetedAgentClient for BatchingAgentClient instead — flag-off never constructs the batcher, so
+// the legacy chain (and its promptHash) stays byte-identical by construction (see
+// portfolio-consult.spec.ts's flag-off identity test).
 export function selectAgentClient(
   env: Record<string, string | undefined>,
   budget: DailyLlmBudget = createAgentLlmBudget(env),
@@ -281,14 +298,26 @@ export function selectAgentClient(
     new Logger('AnthropicAgentClient'),
     playbookProvider,
   );
+  const model = env['AGENTIC_MODEL'] ?? DEFAULT_MODEL;
+  if (env['AGENTIC_PORTFOLIO_CONSULT'] === 'true') {
+    // Batching wraps AnthropicAgentClient DIRECTLY (not BudgetedAgentClient — see
+    // batching-agent-client.ts's own header comment on why): it holds the SAME budget instance and
+    // performs its own single tryReserveCall/recordUsage per BATCH rather than per symbol.
+    return new BatchingAgentClient(
+      client,
+      budget,
+      {
+        windowMs: intEnv(env['AGENTIC_PORTFOLIO_WINDOW_MS'], DEFAULT_PORTFOLIO_WINDOW_MS),
+        maxBatchSize: intEnv(env['AGENTIC_PORTFOLIO_SYMBOL_COUNT'], DEFAULT_PORTFOLIO_SYMBOL_COUNT),
+        agentTimeoutMs: intEnv(env['AGENTIC_TIMEOUT_MS'], DEFAULT_TIMEOUT_MS),
+        model,
+      },
+      new Logger('BatchingAgentClient'),
+    );
+  }
   // model threaded through so recordUsage (agent-budget.ts) can resolve per-model cache/token
   // rates (W4+W13) — this client only ever calls the ONE model it was constructed with above.
-  return new BudgetedAgentClient(
-    client,
-    budget,
-    new Logger('AgentBudget'),
-    env['AGENTIC_MODEL'] ?? DEFAULT_MODEL,
-  );
+  return new BudgetedAgentClient(client, budget, new Logger('AgentBudget'), model);
 }
 
 // Multi-symbol (P7): per-decide venue-constraint resolution for the shared client, sourced from the

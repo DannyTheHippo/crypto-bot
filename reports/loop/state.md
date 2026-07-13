@@ -202,6 +202,21 @@ never changes for strategy evolution.
   warn-storm = budget sizing needs the sub-budget follow-up. Backlog seed: outer `run failed`
   catch in runReflection records no outcome and does not roll back (pre-existing, hit only by
   malformed journal data — near-unreachable with Postgres NUMERIC closes).
+- **Thinking-on decide study VERDICT 2026-07-13 (owner session, Push II Phase 6; 50 rows, ~$1.3):**
+  claude-sonnet-5 with ADAPTIVE thinking (effort medium; Claude 5 API rejects budgeted
+  `thinking.enabled` — the harness's `AGENTIC_EVAL_THINKING_BUDGET` knob maps to
+  adaptive+output_config.effort, forced tool_choice retained, no auto-tool confound): schema-valid
+  100%, plan-sanity 100%, hold-agreement 89.8%, **forward proxy +12.0bps vs the recorded
+  thinking-off champion's −57.5bps on the same window**, propose ratio 4× (4 vs 1 — thinking makes
+  the model ACT more), cost $0.0174/decide ≈ 1.9× champion. NO FLIP by the pre-registered criteria
+  (propose ratio + cost bars fail), and propose-N of 4-vs-1 is noise-dominated — but the direction
+  (thinking proposes pointed right while the champion's pointed wrong, with perfect tool
+  discipline) makes this the strongest single lever surfaced by the model program. **PROPOSAL
+  (backlog seed, do NOT stack now):** a live thinking A/B arm (AGENTIC_THINKING_AB_PCT, adaptive
+  low/medium) AFTER the info-context A/B resolves — one measured channel at a time. Side-note the
+  study surfaced: the CURRENT champion's own recent proposes carry a −57.5bps forward proxy — the
+  reflection loop's new expectancy backtest (Phase 4) now exists precisely to mint better than
+  this.
 - **E2 decide-model comparison VERDICT 2026-07-13 (owner session, Push II Phase 6; corpus 331
   rows, 50 replayed per candidate, ~$2.5 total of the ≤$20 gate):** **NO FLIP — claude-sonnet-5
   stays decide champion** under the harness's pre-registered criteria.

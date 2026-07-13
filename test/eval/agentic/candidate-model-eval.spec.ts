@@ -65,6 +65,9 @@ const DB_URL = process.env['DATABASE_URL'];
 const MIN_LOADED_ROWS = 200;
 const ROW_QUERY_LIMIT = Number(process.env['ROW_QUERY_LIMIT'] ?? '1000');
 const ROW_LIMIT = Number(process.env['ROW_LIMIT'] ?? '50');
+// Thinking-on study variant (Push II Phase 6): >0 enables extended thinking with this budget on
+// every candidate call — see callAnthropicPlanLive's comment for the tool_choice consequence.
+const THINKING_BUDGET = Number(process.env['AGENTIC_EVAL_THINKING_BUDGET'] ?? '0');
 
 // Same edge-multiple/R:R floors AGENTIC_MIN_EDGE_MULTIPLE/AGENTIC_MIN_RR default to
 // (environment.config.ts) — quoted into the system prompt below AND used by isPlanSane's local
@@ -187,12 +190,25 @@ async function callAnthropicPlanLive(
     },
     body: JSON.stringify({
       model,
-      max_tokens: 1024,
+      // AGENTIC_EVAL_THINKING_BUDGET > 0 runs the thinking-on study variant. Claude 5 models
+      // reject budgeted `thinking.enabled` (400: use adaptive + output_config.effort), so the
+      // variant sends ADAPTIVE thinking with an effort tier mapped from the budget knob — and
+      // keeps the forced tool_choice (adaptive thinking is compatible with it; the reflection
+      // path runs exactly that combination live), so the comparison has no auto-tool confound.
+      // Thinking tokens bill as output and count toward max_tokens, hence the raised ceiling.
+      max_tokens: THINKING_BUDGET > 0 ? 1024 + THINKING_BUDGET : 1024,
       system: systemPrompt,
       messages: [{ role: 'user', content: userMessage }],
       tools: [PLAN_TOOL],
       tool_choice: { type: 'tool', name: PLAN_TOOL.name },
-      thinking: { type: 'disabled' },
+      ...(THINKING_BUDGET > 0
+        ? {
+            thinking: { type: 'adaptive' },
+            output_config: {
+              effort: THINKING_BUDGET <= 1024 ? 'low' : THINKING_BUDGET <= 4096 ? 'medium' : 'high',
+            },
+          }
+        : { thinking: { type: 'disabled' } }),
     }),
   });
   if (!res.ok)

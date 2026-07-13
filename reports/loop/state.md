@@ -202,6 +202,24 @@ never changes for strategy evolution.
   warn-storm = budget sizing needs the sub-budget follow-up. Backlog seed: outer `run failed`
   catch in runReflection records no outcome and does not roll back (pre-existing, hit only by
   malformed journal data — near-unreachable with Postgres NUMERIC closes).
+- **Portfolio consult ENABLED 2026-07-13 (owner session, Push II Phase 5 complete):** the lane's
+  up-to-5 per-bar decide calls now coalesce into ONE `submit_portfolio` Anthropic call
+  (`AGENTIC_PORTFOLIO_CONSULT=true`, window 3000ms; `pf1` promptHash tag; `consult_id` — migration
+  0011 — groups a batch's journal rows; usage on the first-arrived symbol only, absent-vs-zero
+  preserved). Enable-gate opus review REQUEST CHANGES → all findings resolved: post-200 schema
+  failures now SOFT-HOLD the whole batch (the throw would have struck all 5 strategies toward a
+  correlated lane-wide auto-DRAIN — the single-symbol path soft-holds these modes; comments
+  claiming otherwise corrected), boot assertion refuses window/timeout configs whose floor-
+  inclusive worst case exceeds the host backstop, refusal-path consultId pinned. Rollback = flip
+  the flag (byte-identical legacy chain by construction, test-pinned). Expected effects: decide
+  CALL COUNT drops toward ≤1 per bar-window (budget headroom vs the 700/day cap), native
+  cross-symbol reasoning replaces the bolt-on ranking block, ~1.5–2.5× dollar savings (cache was
+  already working). **WATCH (Phase 5):** (1) `consult_id` non-null on new multi-symbol-bar rows,
+  shared within a bar; (2) per-day decide calls drop vs the pre-enable baseline; (3) a
+  batch-holding warn-storm ('holding all') = API-overload burst — fine unless persistent; (4)
+  strike/DRAIN counters must NOT correlate across all 5 strategies (that pattern = the soft-hold
+  regressed). Known accepted quirks: 1-symbol batches wait the full 3s window (latency, not
+  correctness); the info-context A/B arm is read once per batch at flush time.
 - **Perp venue + plan-mode shorts BUILT (flag-off) 2026-07-13 (owner session, Push II Phase 8):**
   futures-DEMO venue (`VENUES` id `binanceusdm` env `demo` — authenticated ccxt binanceusdm +
   enableDemoTrading, swap-url guard fail-closed; SymbolId IS the ccxt id, no translation shim) and

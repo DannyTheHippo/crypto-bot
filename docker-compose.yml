@@ -192,9 +192,12 @@ services:
 
       # Portfolio-consult batching (Push II Phase 5, DESIGN Task 2): coalesces the 5 concurrent
       # single-symbol propose() calls (one per agentic-N instance, same bar close) into ONE Anthropic
-      # call via submit_portfolio. Off for now (CODE + TESTS ONLY this task — attribution plumbing for
-      # the shared usage/promptHash is a follow-up before enabling live).
-      AGENTIC_PORTFOLIO_CONSULT: 'false'
+      # call via submit_portfolio (pf1 promptHash tag; consult_id groups the batch's journal rows).
+      # ENABLED 2026-07-13 after the attribution plumbing (migration 0011) + enable-gate opus review
+      # (must-fix applied: post-200 schema failures soft-hold the batch, never a correlated strike).
+      # Incompatible with AGENTIC_SHORTS_ENABLED (boot refuses — the strict portfolio tool has no
+      # plan.direction). Rollback = flip to 'false' (byte-identical legacy chain by construction).
+      AGENTIC_PORTFOLIO_CONSULT: 'true'
       AGENTIC_PORTFOLIO_WINDOW_MS: 3000
 
       # C4: read-only free news/sentiment feed (headlines only, no numeric scores) polled from

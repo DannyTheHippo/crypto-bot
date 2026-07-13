@@ -41,6 +41,7 @@ import {
   computePromptHash,
 } from './agent-prompt';
 import { extractPlaybookKnobs, validatePlaybook, type PlaybookKnobs } from './playbook-validator';
+import { abArm } from './ab-assignment';
 
 const decisionSchema = z.object({
   action: z.enum(['long', 'flat', 'hold']),
@@ -927,11 +928,12 @@ export class AnthropicAgentClient implements AgentClientPort {
     // strength, trade-flow/CVD, and positioning all move together, so the two live arms stay a clean
     // "baseline (price only) vs baseline + extra information" contrast rather than an N-way split
     // that would fragment the already-thin per-variant trade count. Fires when the A/B pct > 0 AND at
-    // least one info feed is on (nothing to withhold otherwise). Bucketed like the playbook router
-    // (app.module.ts) — `floor(Date.now()/60_000) % 100 < pct` — but +37 before the modulo so its
-    // minute-boundary transitions never coincide with the playbook router's (the two A/B mechanisms
-    // stay decorrelated). Reuses the deployed AGENTIC_DERIVATIVES_AB_PCT knob (unrenamed: it is the
-    // one shared info-context A/B percentage, not derivatives-specific).
+    // least one info feed is on (nothing to withhold otherwise). Bucketed by abArm (ab-assignment.ts)
+    // — an independent keyed PRF over `'info-ctx-v1':minute` — so this arm's assignment is unrelated
+    // to any other arm's (a shared minute counter with per-arm offsets, the prior scheme, is a phase
+    // shift of one signal and stays mathematically dependent across arms). Reuses the deployed
+    // AGENTIC_DERIVATIVES_AB_PCT knob (unrenamed: it is the one shared info-context A/B percentage,
+    // not derivatives-specific).
     const infoContextAbPct = this.cfg.derivativesAbPct ?? 0;
     const anyInfoFeed =
       (this.cfg.derivativesFeedEnabled ?? false) ||
@@ -941,7 +943,7 @@ export class AnthropicAgentClient implements AgentClientPort {
     const infoContextControlArm =
       anyInfoFeed &&
       infoContextAbPct > 0 &&
-      Math.floor(Date.now() / 60_000 + 37) % 100 < infoContextAbPct;
+      abArm(Math.floor(Date.now() / 60_000), 'info-ctx-v1', infoContextAbPct);
     // The invariant this whole mechanism exists to hold: for each block, its system sentence, its
     // promptHash tag, and its payload key all move TOGETHER per arm — a single boolean gates all
     // four rather than independently-computed conditions that could drift apart.
@@ -964,12 +966,13 @@ export class AnthropicAgentClient implements AgentClientPort {
     }
     // Thinking-on-decide A/B (backlog #42, mechanism only — pct defaults 0): the treatment arm's
     // request carries thinking:{type:'adaptive'} instead of attemptOnce's hard 'disabled'. Bucketed
-    // like the two mechanisms above but +73 before the modulo, so all three A/Bs transition on
-    // different minute boundaries and stay decorrelated. The prompt text does not change — the arm
-    // is recoverable from promptHash via the '+th1' tag appended as the LAST feed-tag slot below.
+    // by abArm (ab-assignment.ts) with its own salt ('th-v1'), an independent keyed PRF from the
+    // info-context arm above — so all A/Bs vary independently rather than sharing one minute counter
+    // under different offsets. The prompt text does not change — the arm is recoverable from
+    // promptHash via the '+th1' tag appended as the LAST feed-tag slot below.
     const thinkingAbPct = this.cfg.thinkingAbPct ?? 0;
     const thinkingArm =
-      thinkingAbPct > 0 && Math.floor(Date.now() / 60_000 + 73) % 100 < thinkingAbPct;
+      thinkingAbPct > 0 && abArm(Math.floor(Date.now() / 60_000), 'th-v1', thinkingAbPct);
     // v5: constraints no longer render into the system prompt (they ride the payload below), so the
     // cached tools+system prefix is byte-identical across all symbols this shared client serves —
     // and, for the batch path, across every symbol in the SAME batch too.

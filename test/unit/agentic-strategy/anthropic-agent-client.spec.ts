@@ -1957,14 +1957,14 @@ describe('AnthropicAgentClient', () => {
   });
 
   describe('derivatives A/B (control arm, measurement start 2026-07-12)', () => {
-    // Bucket math mirrors the client's own `Math.floor(Date.now() / 60_000 + 37) % 100 < pct`. At an
-    // exact-minute timestamp `Date.now() / 60_000` is already an integer minute count `m`, so the
-    // bucket is `(m + 37) % 100`.
-    // m=70 -> (70+37)%100=7, inside [0, AB_PCT) -> CONTROL.
-    const CONTROL_TIME_MS = 70 * 60_000;
-    // m=100 -> (100+37)%100=37, outside [0, AB_PCT) -> TREATMENT. (Not m=0/ms=0 — avoids exercising
-    // the Unix-epoch edge case for an unrelated reason.)
-    const TREATMENT_TIME_MS = 100 * 60_000;
+    // Bucket math mirrors the client's own `abArm(floor(Date.now()/60_000), 'info-ctx-v1', pct)`
+    // (ab-assignment.ts's keyed FNV-1a PRF, not derivable by inspection — these minutes are pinned
+    // against the same golden values as ab-assignment.spec.ts). abArm === true fires the CONTROL arm
+    // (infoContextControlArm withholds the info bundle); false leaves the treatment/full-info path.
+    // m=100 -> abArm(100, 'info-ctx-v1', 30) === true -> CONTROL.
+    const CONTROL_TIME_MS = 100 * 60_000;
+    // m=70 -> abArm(70, 'info-ctx-v1', 30) === false -> TREATMENT.
+    const TREATMENT_TIME_MS = 70 * 60_000;
     const AB_PCT = 30;
 
     function holdResponse(): unknown {
@@ -2092,7 +2092,7 @@ describe('AnthropicAgentClient', () => {
 
       vi.setSystemTime(new Date(CONTROL_TIME_MS));
       const early = await clientEarly.propose(input);
-      // +45s: still floor(ms / 60_000) === 70, the same minute bucket.
+      // +45s: still floor(ms / 60_000) === 100, the same minute bucket.
       vi.setSystemTime(new Date(CONTROL_TIME_MS + 45_000));
       const late = await clientLate.propose(input);
 
@@ -2104,8 +2104,8 @@ describe('AnthropicAgentClient', () => {
 
   describe('cross-symbol block + information-context A/B (2026-07-12)', () => {
     // Same bucket math as the derivatives A/B suite above — the two share one control arm.
-    const CONTROL_TIME_MS = 70 * 60_000; // (70+37)%100 = 7 < 30 -> CONTROL
-    const TREATMENT_TIME_MS = 100 * 60_000; // (100+37)%100 = 37 >= 30 -> TREATMENT
+    const CONTROL_TIME_MS = 100 * 60_000; // abArm(100, 'info-ctx-v1', 30) === true -> CONTROL
+    const TREATMENT_TIME_MS = 70 * 60_000; // abArm(70, 'info-ctx-v1', 30) === false -> TREATMENT
     const AB_PCT = 30;
 
     const CROSS_SYMBOL = {
@@ -2305,7 +2305,7 @@ describe('AnthropicAgentClient', () => {
 
     it('an info-context-A/B control-arm decide withholds tradeFlow+positioning even when derivatives/crossSymbol are both off (either new flag alone triggers the shared arm)', async () => {
       vi.useFakeTimers();
-      vi.setSystemTime(new Date(70 * 60_000)); // (70+37)%100=7 < 30 -> CONTROL
+      vi.setSystemTime(new Date(100 * 60_000)); // abArm(100, 'info-ctx-v1', 30) === true -> CONTROL
       const fetchFn = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
       const client = new AnthropicAgentClient(
         buildCfg({
@@ -2350,8 +2350,9 @@ describe('AnthropicAgentClient', () => {
     it('treatment arm sends thinking adaptive and flips promptHash via the +th1 tag; the off-bucket minute keeps disabled and the untagged hash', async () => {
       vi.useFakeTimers();
       try {
-        // (27+73)%100 = 0 < 50 ⇒ treatment arm.
-        vi.setSystemTime(new Date(27 * 60_000));
+        // abArm(0, 'th-v1', 50) === true ⇒ treatment arm (minute derived by scanning ab-assignment's
+        // PRF for the desired outcome — see ab-assignment.spec.ts for the same golden value).
+        vi.setSystemTime(new Date(0));
         const armFetch = vi.fn().mockResolvedValue(apiResponse(holdBody()));
         const armClient = new AnthropicAgentClient(buildCfg({ thinkingAbPct: 50 }), armFetch);
         const armProposal = await armClient.propose(
@@ -2362,8 +2363,8 @@ describe('AnthropicAgentClient', () => {
         };
         expect(armSent.thinking).toEqual({ type: 'adaptive' });
 
-        // (0+73)%100 = 73 ≥ 50 ⇒ off bucket, same config.
-        vi.setSystemTime(new Date(0));
+        // abArm(27, 'th-v1', 50) === false ⇒ off bucket, same config.
+        vi.setSystemTime(new Date(27 * 60_000));
         const offFetch = vi.fn().mockResolvedValue(apiResponse(holdBody()));
         const offClient = new AnthropicAgentClient(buildCfg({ thinkingAbPct: 50 }), offFetch);
         const offProposal = await offClient.propose(

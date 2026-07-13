@@ -164,9 +164,13 @@ import {
   LIMITS_COMPLETE,
   KEY_PROBE,
   MODE_AUDIT_OVERRIDE,
+  ARM_PRECONDITIONS,
   type KeyProbePort,
   type ModeAuditPort,
+  type ArmPreconditionsPort,
+  type ArmPreconditionResult,
 } from './ports/mode-control';
+import { CrashRecoveryService } from './features/trading/execution/crash-recovery.service';
 import { CLOCK, SystemClock, type ClockPort } from './ports/clock';
 import {
   RISK_SIGNING_KEY,
@@ -426,6 +430,62 @@ const INVALID_KEY_PROBE: KeyProbePort = {
   exports: [KEY_PROBE],
 })
 class KeyProbeModule {}
+
+// §10b arm-hardening: real ARM_PRECONDITIONS check, replacing the always-`{ok:true}` stub
+// (mode-control.module.ts no longer self-provides this token — same "not self-provided" pattern as
+// KEY_PROBE above — because ModeControl's feature boundary cannot import ExecutionModule directly,
+// eslint-plugin-boundaries's features→own-feature-only wall). Fail-closed by construction: any
+// unreadable source refuses arming rather than assuming it healthy. Reconciliation has no cheap
+// synchronous read of its own (ReconciliationService.reconcile() is async/network-bound); a bad
+// reconciliation pass already lands here for free — reconcile.ts's HALT path engages the SAME
+// KILL_SWITCH (never auto-flattens), so checking kill-switch RUNNING transitively covers it without
+// inventing a second, redundant state read. Exported (like ValidatingPlaybookProvider/
+// PlaybookAbRoutingProvider above) so its own unit spec can exercise it directly against fakes,
+// without booting CrashRecoveryService's own EXECUTION_STORE/OrderBookService dependencies.
+export interface UnresolvedOrdersReader {
+  hasUnresolvedOrders(): boolean;
+}
+export function createArmPreconditions(
+  killSwitch: KillSwitchPort,
+  unresolvedOrders: UnresolvedOrdersReader,
+): ArmPreconditionsPort {
+  return {
+    check: (): ArmPreconditionResult => {
+      let state: ReturnType<KillSwitchPort['state']>;
+      try {
+        state = killSwitch.state();
+      } catch {
+        return { ok: false, reason: 'kill switch state unavailable' };
+      }
+      if (state !== 'RUNNING') {
+        return { ok: false, reason: `kill switch not RUNNING (state=${state})` };
+      }
+      let unresolved: boolean;
+      try {
+        unresolved = unresolvedOrders.hasUnresolvedOrders();
+      } catch {
+        return { ok: false, reason: 'unresolved-orders check unavailable' };
+      }
+      if (unresolved) {
+        return { ok: false, reason: 'unresolved orders present (*_UNKNOWN/RECONCILE_REQUIRED)' };
+      }
+      return { ok: true };
+    },
+  };
+}
+@Global()
+@Module({
+  imports: [ExecutionModule],
+  providers: [
+    {
+      provide: ARM_PRECONDITIONS,
+      useFactory: createArmPreconditions,
+      inject: [KILL_SWITCH, CrashRecoveryService],
+    },
+  ],
+  exports: [ARM_PRECONDITIONS],
+})
+class ArmPreconditionsModule {}
 
 // §1.5: only the composition root binds a concrete adapter to EXCHANGE_PORT. Paper mode uses the
 // PaperExchangeAdapter fed by ExecutionModule's outbox/notify; non-paper modes swap in the
@@ -1196,6 +1256,7 @@ class AgenticCompositionBridgeModule {}
     KillSwitchModule,
     LimitsCompleteModule,
     KeyProbeModule,
+    ArmPreconditionsModule,
     ModeControlModule,
     RiskModule,
     ExecutionModule,

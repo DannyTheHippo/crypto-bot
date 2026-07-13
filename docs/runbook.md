@@ -104,46 +104,63 @@ Live trading requires arming AFTER boot (you arm last). Two-step, bootId-bound, 
 1. `POST /api/v1/mode/arm/request` → a crypto-random challenge bound to the current `bootId`, TTL 60s, single-use.
 2. `POST /api/v1/mode/arm/confirm` with `HMAC-SHA256(challengeId + ':' + bootId, ARMING_SECRET)` (constant-time).
 
-Preconditions (all must hold; arm last): kill switch RUNNING, reconciliation clean, **no
-`*_UNKNOWN` / `RECONCILE_REQUIRED` orders**, and the other three gates already true (env flag requesting
-live, keys valid with withdrawals disabled, risk limits complete). Armed-session TTL is **8h ⇒
-auto-disarm + kill-switch engage** (so the operator notices). Auto-disarm also on: kill-switch engage
-from any source, key-probe failure (re-probed every 60s), reconcile mismatch, manual disarm.
+Preconditions (all must hold; arm last, checked by the real `ARM_PRECONDITIONS` provider at
+arm/confirm time): **kill switch RUNNING**, **no `*_UNKNOWN` / `RECONCILE_REQUIRED` orders**
+(`CrashRecoveryService.hasUnresolvedOrders()`, §6.1), and the other three gates already true (env
+flag requesting live, keys valid with withdrawals disabled, risk limits complete). Reconciliation
+has no cheap synchronous health read of its own — a mismatch already engages the SAME kill switch
+(reconciliation is async/network-bound and never auto-flattens), so the kill-switch check above
+covers a bad reconciliation pass for free rather than inventing a second state read. Any
+precondition source that cannot be read (e.g. an unreadable kill switch) fails CLOSED — refused,
+never assumed healthy. Armed-session TTL is **8h ⇒ auto-disarm + kill-switch engage** (so the
+operator notices). Auto-disarm also on: kill-switch engage from any source, key-probe failure
+(re-probed every 60s), reconcile mismatch, manual disarm.
 
 Re-arm after a restart: a **new process has a new bootId**, so a captured token cannot arm it — the
 operator must run a fresh request→confirm against the new bootId. The HMAC binds to the process's own
 `cfg.bootId`; obtain it from `/metrics` (`boot_info{boot_id="..."}` — `/health` does not expose it) /
-boot logs. ARMING endpoints are localhost-bound + token-authed _(transport hardening is
-out-of-session runtime glue)_.
+boot logs.
+
+**Transport-layer second factor (`ArmingTransportGuard`):** `arm/request` and `arm/confirm` (never
+`disarm` — an emergency disarm must never be blocked) additionally require a header
+`x-arming-token` equal to env `ARMING_TRANSPORT_TOKEN`, compared constant-time. When
+`ARMING_TRANSPORT_TOKEN` is unset the guard refuses outright in `TRADING_MODE=live` (fail-closed
+where it matters) and passes through with no extra friction in paper/testnet. Localhost-bind
+remains deferred out-of-session runtime glue.
 
 ### One-command arming — `pnpm arm`
 
 `scripts/arm-ceremony.mjs` automates the operator's client-side steps above (request → compute the
 HMAC proof → confirm, within the 60s TTL) into a single command. It changes nothing server-side —
 every gate above (challenge TTL, bootId binding to the process's own `cfg.bootId`, constant-time
-HMAC verify, ARM preconditions, the four live gates) is enforced exactly as before.
+HMAC verify, ARM preconditions, the transport-layer token, the four live gates) is enforced exactly
+as before.
 
 ```sh
-ARMING_SECRET=<secret> pnpm arm
+ARMING_SECRET=<secret> ARMING_TRANSPORT_TOKEN=<token> pnpm arm
 ```
 
 bootId is auto-discovered from `GET /metrics` (the `boot_info{boot_id="..."}` gauge); override with
 `pnpm arm -- --boot-id <id>` if `/metrics` is unreachable. Other flags: `pnpm arm -- --base-url
 <url>` (default `http://localhost:3100`), `pnpm arm -- --disarm` (calls `POST
-/api/v1/mode/disarm`). `ARMING_SECRET` is read from the environment only — never a flag, never
-logged. Exits 0 only when the confirm response reports armed; any refusal (missing secret, non-2xx,
-`ok: false`) exits 1 with the failure reason printed (never the secret or the full proof).
+/api/v1/mode/disarm`, no header/proof required). `ARMING_SECRET` and `ARMING_TRANSPORT_TOKEN` are
+read from the environment only — never a flag, never logged; `ARMING_TRANSPORT_TOKEN` is optional
+(sent as `x-arming-token` on arm/request + arm/confirm only when set). Exits 0 only when the confirm
+response reports armed; any refusal (missing secret, non-2xx, `ok: false`) exits 1 with the failure
+reason printed (never the secret, the token, or the full proof).
 
 ### Manual fallback (the two calls above, by hand)
 
 If the CLI is unavailable, run the two steps directly:
 
 1. Obtain the current `bootId` from `/metrics` (`boot_info{boot_id="..."}`) or boot logs.
-2. `POST /api/v1/mode/arm/request` with `{ "bootId": "<bootId>" }` → note the returned `challengeId`.
+2. `POST /api/v1/mode/arm/request` with `{ "bootId": "<bootId>" }` (plus header
+   `x-arming-token: <ARMING_TRANSPORT_TOKEN>` if that env is configured on the server) → note the
+   returned `challengeId`.
 3. Compute `HMAC-SHA256(challengeId + ':' + bootId, ARMING_SECRET)` as hex.
 4. `POST /api/v1/mode/arm/confirm` with
-   `{ "challengeId": "<challengeId>", "hmacHex": "<hmac>", "bootId": "<bootId>" }` within 60s of
-   step 2.
+   `{ "challengeId": "<challengeId>", "hmacHex": "<hmac>", "bootId": "<bootId>" }` (same
+   `x-arming-token` header) within 60s of step 2.
 
 ## Before arming at live capital
 

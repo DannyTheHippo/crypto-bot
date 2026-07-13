@@ -53,4 +53,37 @@ describe('Logger pino config redact paths', () => {
     expect(output).not.toContain('super-secret-key');
     expect(output).not.toContain('super-secret-secret');
   });
+
+  // §10b arm-hardening regression: pino-http serializes the full req.headers object on every
+  // request-completed line (CorrelationMiddleware's own request, exercised in
+  // app-module.boot.spec.ts) — without this path the ArmingTransportGuard's x-arming-token header
+  // would appear in plaintext in every arm/request + arm/confirm log line.
+  it('behaviorally redacts the x-arming-token request header', () => {
+    const lines: string[] = [];
+    const dest = new Writable({
+      write(chunk: Buffer, _enc, cb) {
+        lines.push(chunk.toString());
+        cb();
+      },
+    });
+
+    const logger = pino(
+      {
+        level: 'info',
+        redact: {
+          paths: [...REDACT_PATHS],
+          censor: '[REDACTED]',
+        },
+      },
+      dest,
+    );
+
+    logger.info({
+      req: { headers: { 'x-arming-token': 'super-secret-transport-token' } },
+    });
+
+    const output = lines.join('');
+    expect(output).toContain('[REDACTED]');
+    expect(output).not.toContain('super-secret-transport-token');
+  });
 });

@@ -28,8 +28,9 @@ function usage() {
     'usage: pnpm arm [-- --base-url <url>] [-- --boot-id <id>] [-- --disarm]',
     '',
     'Environment:',
-    '  ARMING_SECRET   required for ARMING — the HMAC secret. Env only: never a flag, never logged. Not needed for --disarm (the server takes no proof to disarm; an emergency disarm must never block on a missing env var).',
-    '  BASE_URL        optional — default base URL, overridden by --base-url.',
+    '  ARMING_SECRET             required for ARMING — the HMAC secret. Env only: never a flag, never logged. Not needed for --disarm (the server takes no proof to disarm; an emergency disarm must never block on a missing env var).',
+    '  ARMING_TRANSPORT_TOKEN    optional second factor — sent as the x-arming-token header on arm/request + arm/confirm when set. Not needed for --disarm.',
+    '  BASE_URL                  optional — default base URL, overridden by --base-url.',
     '',
     'Flags:',
     '  --base-url <url>  API base URL (default http://localhost:3100).',
@@ -100,10 +101,10 @@ async function fetchBootId(baseUrl) {
   return match[1];
 }
 
-async function postJson(url, payload) {
+async function postJson(url, payload, extraHeaders = {}) {
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...extraHeaders },
     body: payload === undefined ? undefined : JSON.stringify(payload),
   });
   const text = await res.text();
@@ -114,6 +115,16 @@ async function postJson(url, payload) {
     body = text;
   }
   return { status: res.status, ok: res.ok, body };
+}
+
+// §10b arm-hardening transport guard (ArmingTransportGuard): a second, non-cryptographic factor at
+// the HTTP layer, distinct from the HMAC challenge/response above. Sent on arm/request + arm/confirm
+// only — disarm is intentionally unguarded server-side (see runDisarm's own comment), so it never
+// needs this header. Omitted entirely when unset: the server's guard already passes through when
+// ARMING_TRANSPORT_TOKEN is unconfigured outside TRADING_MODE=live.
+function armingTransportHeaders() {
+  const token = process.env.ARMING_TRANSPORT_TOKEN;
+  return token ? { 'x-arming-token': token } : {};
 }
 
 async function runDisarm(baseUrl) {
@@ -144,7 +155,11 @@ async function runArm(baseUrl, bootIdFlag, secret) {
   }
 
   const requestStartMs = Date.now();
-  const requestRes = await postJson(`${baseUrl}/api/v1/mode/arm/request`, { bootId });
+  const requestRes = await postJson(
+    `${baseUrl}/api/v1/mode/arm/request`,
+    { bootId },
+    armingTransportHeaders(),
+  );
   if (!requestRes.ok || requestRes.body?.ok !== true || !requestRes.body?.challengeId) {
     console.error(
       `arm-ceremony: arm/request failed (HTTP ${requestRes.status}): ${summarize(requestRes.body)}`,
@@ -164,11 +179,11 @@ async function runArm(baseUrl, bootIdFlag, secret) {
     );
   }
 
-  const confirmRes = await postJson(`${baseUrl}/api/v1/mode/arm/confirm`, {
-    challengeId,
-    hmacHex: proof,
-    bootId,
-  });
+  const confirmRes = await postJson(
+    `${baseUrl}/api/v1/mode/arm/confirm`,
+    { challengeId, hmacHex: proof, bootId },
+    armingTransportHeaders(),
+  );
   if (!confirmRes.ok || confirmRes.body?.ok !== true) {
     console.error(
       `arm-ceremony: arm/confirm failed (HTTP ${confirmRes.status}): ${summarize(confirmRes.body)}`,

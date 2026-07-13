@@ -4,12 +4,10 @@ import { TypedConfigService } from '../../../config/environment/typed-config.ser
 import {
   MODE_CONTROL,
   MODE_AUDIT,
-  ARM_PRECONDITIONS,
   MODE_CONTROL_CONFIG,
   LIMITS_COMPLETE,
   MODE_AUDIT_OVERRIDE,
   type ModeAuditPort,
-  type ArmPreconditionsPort,
   type ModeControlConfig,
 } from '../../../ports/mode-control';
 import {
@@ -20,6 +18,7 @@ import {
 import { ModeControlService } from './mode-control.service';
 import { PromotionReadinessService } from './promotion-readiness.service';
 import { ArmingController } from './arming.controller';
+import { ArmingTransportGuard } from './arming-transport.guard';
 
 const noopAudit: ModeAuditPort = { record: () => undefined };
 
@@ -27,8 +26,11 @@ const noopAudit: ModeAuditPort = { record: () => undefined };
 // exchange-adapter concern this module must not import). The composition root binds KEY_PROBE
 // globally — a forced-invalid probe in paper, the real KeyProbeService in testnet/live — and
 // ModeControl consumes that single global. Same lift pattern as KILL_SWITCH / LIMITS_COMPLETE.
-
-const defaultPreconditions: ArmPreconditionsPort = { check: () => ({ ok: true }) };
+//
+// §10b arm-hardening: ARM_PRECONDITIONS is likewise NOT self-provided here (as of the always-`
+// {ok:true}` stub's retirement) — the real check reads CrashRecoveryService's hasUnresolvedOrders(),
+// an ExecutionModule concern this module must not import (eslint-plugin-boundaries). The composition
+// root (app.module.ts's ArmPreconditionsModule) binds the real, fail-closed implementation globally.
 
 // MODE_CONTROL_CONFIG is derived from the validated AppConfig at boot: the config authority
 // (configMode — forced paper under test/ci), the per-process bootId the arming interlock binds to,
@@ -79,9 +81,9 @@ const providers: Provider[] = [
     useFactory: (override?: ModeAuditPort): ModeAuditPort => override ?? noopAudit,
     inject: [{ token: MODE_AUDIT_OVERRIDE, optional: true }],
   },
-  { provide: ARM_PRECONDITIONS, useValue: defaultPreconditions },
   configProvider,
   readinessConfigProvider,
+  ArmingTransportGuard,
   ModeControlService,
   { provide: MODE_CONTROL, useExisting: ModeControlService },
   PromotionReadinessService,

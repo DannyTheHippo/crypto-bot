@@ -1,4 +1,4 @@
-import { Controller, Post, Body, Inject } from '@nestjs/common';
+import { Controller, Post, Body, Inject, UseGuards } from '@nestjs/common';
 import { ApiResponse } from '@nestjs/swagger';
 import { MODE_CONTROL, type ModeControlPort, type ArmResult } from '../../../ports/mode-control';
 import { ArmRequestRequestDto } from './dtos/request/arm-request.request.dto';
@@ -8,11 +8,14 @@ import {
   armRequestApiExamples,
   disarmApiExamples,
 } from './api-examples/arming.api-examples';
+import { ArmingTransportGuard } from './arming-transport.guard';
 
-// Thin HTTP delegation only. Localhost-bind + token-auth middleware and the CLI wrapper
-// are deferred to Phase 8d runtime glue; this layer stays branch-free for 100% coverage. The return
-// type stays the port's ArmResult union (see dtos/response/arm-result.response.dto.ts for the typed
-// wire-contract label) rather than a class-transformer response DTO — the union's two shapes
+// Thin HTTP delegation only. Localhost-bind middleware and the CLI wrapper are deferred to Phase 8d
+// runtime glue; this layer stays branch-free for 100% coverage. The transport-layer x-arming-token
+// second factor (§10b) is enforced by ArmingTransportGuard on arm/request + arm/confirm ONLY — disarm
+// stays UNGUARDED (emergency disarm must never be blocked by a missing/misconfigured token). The
+// return type stays the port's ArmResult union (see dtos/response/arm-result.response.dto.ts for the
+// typed wire-contract label) rather than a class-transformer response DTO — the union's two shapes
 // (success carries an optional challengeId, failure carries reason) cannot be modeled as one fixed
 // class without losing or inventing fields.
 // version: '1' moves this controller under the versioned+prefixed surface (/api/v1/mode/...) —
@@ -23,6 +26,7 @@ export class ArmingController {
   constructor(@Inject(MODE_CONTROL) private readonly service: ModeControlPort) {}
 
   @Post('arm/request')
+  @UseGuards(ArmingTransportGuard)
   @ApiResponse(armRequestApiExamples.success)
   @ApiResponse(armRequestApiExamples.refused)
   request(@Body() b: ArmRequestRequestDto): ArmResult {
@@ -30,6 +34,7 @@ export class ArmingController {
   }
 
   @Post('arm/confirm')
+  @UseGuards(ArmingTransportGuard)
   @ApiResponse(armConfirmApiExamples.success)
   @ApiResponse(armConfirmApiExamples.refused)
   confirm(@Body() b: ArmConfirmRequestDto): ArmResult {

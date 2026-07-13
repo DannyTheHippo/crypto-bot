@@ -16,12 +16,13 @@
 // uses one 70/30 split per the task's bucket-count budget (52 total backtests, not 52 x segments).
 import Decimal from 'decimal.js';
 import { runBacktest } from '../harness';
-import { PRIOR_TRIALS, loadBars, variance, type TrialSpec } from '../trial-registry';
+import { PRIOR_TRIALS, loadBars, type TrialSpec } from '../trial-registry';
 import {
   sharpeStats,
   deflatedSharpe,
   expectedMaxSharpe,
   expectedMaxZ,
+  winsorizedVariance,
   type SharpeStats,
 } from '../stats';
 
@@ -112,7 +113,7 @@ export function runEdgeScan(): ScanReport {
   }
 
   const N = PRIOR_TRIALS.length;
-  const V = variance(buckets.map((b) => b.holdoutStats.sr));
+  const V = winsorizedVariance(buckets.map((b) => b.holdoutStats.sr));
   const zMax = expectedMaxZ(N);
   const srMaxNull = expectedMaxSharpe(V, N);
 

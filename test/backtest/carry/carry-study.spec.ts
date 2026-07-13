@@ -22,9 +22,9 @@ import {
   SYMBOLS,
 } from './carry-grid';
 import type { Bar, FundingRow } from './carry-sim';
-import { variance, PRIOR_TRIALS } from '../trial-registry';
+import { PRIOR_TRIALS } from '../trial-registry';
 import { logTrials, paramsHash, datasetHash } from '../experiment-log';
-import { expectedMaxZ, expectedMaxSharpe } from '../stats';
+import { expectedMaxZ, expectedMaxSharpe, winsorizedVariance } from '../stats';
 import { renderCarryReport, type CarryReportRow } from './report';
 
 const SKIP = !carryDataAvailable() || !priorDataAvailable();
@@ -81,7 +81,7 @@ describe.skipIf(SKIP)('funding-carry offline study (task S2, carry-build GO/NO-G
     const unionSharpes = [...results.map((r) => r.holdoutStats.sr), ...priorSharpes];
     expect(unionSharpes.length).toBe(178);
     const N = unionSharpes.length;
-    const V = variance(unionSharpes);
+    const V = winsorizedVariance(unionSharpes);
     expect(Number.isFinite(V)).toBe(true);
     expect(V).toBeGreaterThanOrEqual(0);
 

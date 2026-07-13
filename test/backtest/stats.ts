@@ -162,6 +162,23 @@ export function expectedMaxSharpe(V: number, N: number): number {
   return Math.sqrt(Math.max(0, V)) * expectedMaxZ(N);
 }
 
+// ── Winsorized cross-trial SR variance (the V fed to expectedMaxSharpe) ──────
+//
+// V estimates the trial-SR dispersion under the null, but a thin-sample trial with a degenerate SR
+// estimate (a handful of trades, near-zero std) can carry |SR| in the tens and dominate the raw
+// variance — the 2026-07-10 carry study hit exactly this degeneracy (SR0* = 140.41 driven by 10 of
+// 178 cells with |SR| > 10), making the DSR benchmark unpassable for every honest cell. Clipping the
+// trial SRs to |SR| ≤ cap before estimating V bounds each trial's leverage on the benchmark while
+// leaving N (the multiple-testing breadth) untouched. Ported from the 2026-07-12 multi-strategy
+// engine (test/backtest/multi-strategy/engine.mjs, deflationBenchmark). Sample variance (÷(n−1)),
+// matching trial-registry.ts's raw variance(); n < 2 ⇒ 0, same as there.
+export function winsorizedVariance(xs: readonly number[], cap = 3): number {
+  if (xs.length < 2) return 0;
+  const clipped = xs.map((x) => Math.max(-cap, Math.min(cap, x)));
+  const m = clipped.reduce((a, b) => a + b, 0) / clipped.length;
+  return clipped.reduce((a, b) => a + (b - m) * (b - m), 0) / (clipped.length - 1);
+}
+
 // ── Probabilistic Sharpe Ratio PSR(sr0) ──────────────────────────────────────
 //
 // Probability that the true SR exceeds the benchmark sr0, given the observed SR and the

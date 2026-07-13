@@ -184,7 +184,8 @@ export function renderCarryReport(data: CarryReportData): string {
   lines.push(
     `N = 178 = this study's 126 cells + the ${data.priorCount} pre-existing \`PRIOR_TRIALS\` entries ` +
       '(`test/backtest/trial-registry.ts`, the SeedEntryStrategy edge-diagnostic grid, ' +
-      '`reports/loop/edge-diagnostic-2026-07-10.md`). V is the cross-trial variance of the UNION of ' +
+      '`reports/loop/edge-diagnostic-2026-07-10.md`). V is the WINSORIZED (|SR| clipped to 3, ' +
+      "`stats.ts`'s `winsorizedVariance`) cross-trial variance of the UNION of " +
       '126 per-cell HOLDOUT Sharpe ratios (this study) and 52 FULL-SAMPLE Sharpe ratios ' +
       "(`trial-registry.ts`'s `harvest()`, as the task spec names it). `harvest()` cross-products every " +
       'spec against every interval in its bars map rather than filtering by `spec.symbol`/`spec.interval` ' +
@@ -198,7 +199,7 @@ export function renderCarryReport(data: CarryReportData): string {
   lines.push('');
   lines.push(`- N (total trials, this study + PRIOR_TRIALS) = **${data.N}**`);
   lines.push(
-    `- V (cross-trial variance of the union of holdout/full-sample Sharpes) = **${data.V.toFixed(7)}**`,
+    `- V (winsorized cross-trial variance of the union of holdout/full-sample Sharpes) = **${data.V.toFixed(7)}**`,
   );
   lines.push(
     `- E[max Z_${data.N}] (False-Strategy-Theorem benchmark) = **${data.expectedMaxZ.toFixed(4)}**`,

@@ -165,6 +165,8 @@ services:
       SIZER_EQUITY_FRACTION: 0.05 # 5% of equity per entry (compounding sizing; overrides BASE_NOTIONAL on entries when > 0; schema default 0 disables). 0.02→0.05 applied 2026-07-13 (owner-approved Profitability Push II Phase 1; re-derivation in reports/loop/state.md § Sizing re-derivation 2026-07-13): worst case 5 × ~$250 ≈ $1,248 ≈ 25% of $5k equity; binding cap is RISK_MAX_POSITION_PER_SYMBOL base qty on XRP at 4.3×; expectancy ladder (below) is the reduction-only auto-brake.
       PROTECT_STOP_LOSS_PCT: 0.02 # bot-side backstop: force-exits a long via the normal risk path if price falls 2% below entry; schema default 0 disables
       PROTECT_TRAILING_PCT: 0.015 # bot-side backstop: force-exits a long via the normal risk path if price falls 1.5% below its peak since entry; schema default 0 disables
+      PLAN_STOP_WATCH_ENABLED: 'false' # plan-aware 1s stop watcher (Push 3 P2, built 2026-07-13): fires the ACTIVE PLAN's own stop intra-bar via the protective-exit clock instead of waiting for 15m bar close. OFF per the pre-registered stop-slippage study verdict (NOT JUSTIFIED at N=3, mean leak +3.2bps — reports/loop/stop-slippage-2026-07-13.md); loop pre-auth: re-run study at N>=10 stop exits, enable iff criterion met
+      PLAN_STOP_FORCE_BPS: 30 # watcher deep-breach failsafe (bps beyond the plan stop) — force-fires even while a venue-native stop rests unfilled; inert while the watcher flag is off
       EXIT_CROSS_BUFFER_BPS: 25 # reduce-only IOC exit crossing buffer (bps); must stay below RISK_MAX_BAND_BPS
       ENTRY_ORDER_TYPE: LIMIT_MAKER # post-only entries (guaranteed maker or venue-rejected); sizer falls back to plain LIMIT per-intent if the plan-derived price would cross the book. LIMIT was the pre-2026-07-13 default; flipped with Profitability Push II Phase 1 (entries already rest passively in plan mode — this pins the maker fee instead of merely hoping for it)
       STARTING_CASH: 5000 # in-memory quote balance the bot tracks (set near the demo account's USDT)
@@ -328,7 +330,237 @@ services:
     depends_on:
       - prometheus
 
+  # ── Perp lane (Push 3 P3) ──
+  # The app is single-venue-per-process (reads venues[0]) — a perp deployment is a SECOND app
+  # container on the SAME image with its own env, own Postgres, and own Prometheus. Measurement
+  # isolation is STRUCTURAL, not a convenience: the promotion/reflection/attribution queries have
+  # no venue filter, so a shared DB would poison the spot lane's evidence with perp fills and
+  # vice versa; shared Prometheus would collide on metric names/job labels between the two lanes.
+  # Behind the `perp` Compose profile — a plain `docker compose up -d` creates NONE of this.
+  #   Enable:   docker compose --profile perp up -d
+  #   Rollback: docker compose --profile perp down          (named volumes RETAINED)
+  #             docker compose --profile perp down -v        (also drops perp DB/TSDB history)
+  postgres-perp:
+    profiles: ['perp']
+    image: postgres:16
+    restart: unless-stopped
+    ports:
+      - '5433:5432'
+    environment:
+      POSTGRES_USER: cryptobot
+      POSTGRES_PASSWORD: cryptobot
+      POSTGRES_DB: cryptobot
+    volumes:
+      - postgres_perp_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U cryptobot']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app-perp:
+    profiles: ['perp']
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - '3102:3100'
+    env_file:
+      - .env
+    environment:
+      # ── Server ──
+      PORT: 3100
+      LOG_LEVEL: 'debug' # fatal|error|warn|info|debug|trace
+      NODE_ENV: 'production' # MUST NOT be test/ci (those force paper + skip the runtime)
+      HOST: '0.0.0.0'
+
+      # ── Mode ──
+      TRADING_MODE: 'testnet'
+      SANDBOX_ENV: 'demo'
+      FEED_ENV: live
+      # This IS the futures-demo lane the spot app's VENUES comment describes: binanceusdm/demo,
+      # probe-verified to authenticate against demo-fapi.binance.com with the SAME BINANCE_DEMO_*
+      # keys the spot app uses (env_file below covers both).
+      VENUES: '[{"id":"binanceusdm","environment":"demo"}]'
+
+      # ── Credentials ──
+      # Demo Trading keys (used when SANDBOX_ENV=demo). Withdrawals must be disabled. Same keys
+      # as the spot `app` service — provided via env_file above, not repeated here.
+      #BINANCE_DEMO_API_KEY=
+      #BINANCE_DEMO_API_SECRET=
+
+      # Live keys — read ONLY when TRADING_MODE=live (stripped under NODE_ENV=test/ci).
+      #BINANCE_LIVE_API_KEY=
+      #BINANCE_LIVE_API_SECRET=
+      #ARMING_SECRET=
+      #LIVE_BASE_URL_OVERRIDE=
+
+      # ── Strategy (agentic LLM lane) ──
+      ACTIVE_STRATEGY: 'agentic'
+      # Single perp market, settle-suffixed ccxt symbol id — required exact form for a
+      # binanceusdm venue (domain/risk/default-filters.ts already carries a BTC/USDT:USDT row).
+      TRADING_SYMBOLS: 'BTC/USDT:USDT'
+      STRATEGY_INTERVAL: '15m' # candle interval the agent decides on; one symbol only here, far under AGENTIC_MAX_CALLS_PER_DAY
+      #ANTHROPIC_API_KEY=
+      AGENTIC_MODEL: 'claude-sonnet-5'
+      AGENTIC_REFLECTION_MODEL: 'claude-opus-4-8'
+      AGENTIC_TIMEOUT_MS: 30000
+      AGENTIC_REFLECTION_TIMEOUT_MS: 240000
+      AGENTIC_MAX_TOKENS: 1024
+      AGENTIC_MIN_DECISION_INTERVAL_MS: 0
+      AGENTIC_WARMUP_BARS: 340
+      AGENTIC_MAX_CALLS_PER_DAY: 700
+      AGENTIC_MAX_TOKENS_PER_DAY: 2000000
+      AGENTIC_DAILY_COST_STOP_USD: 2 # lower than the spot lane's 5 — a fresh single-symbol perp lane earning its own live-promotion evidence, tighter cost breaker while it does
+      AGENTIC_MAX_ENTRIES_PER_DAY: 12
+      AGENTIC_ENTRY_TTL_BARS: 2
+      AGENTIC_PLAN_EXIT_TTL_BARS: 2
+      AGENTIC_DRAIN_COOLDOWN_BASE_MS: 30000
+      AGENTIC_DRAIN_COOLDOWN_MAX_MS: 900000
+      AGENTIC_REFLECTION_EVERY_N_TRADES: 2
+      AGENTIC_REFLECTION_COOLDOWN_MS: 21600000
+      AGENTIC_AUTO_PROMOTE_MIN_TRADES: 0
+      AGENTIC_AUTO_PROMOTE_MIN_ATTRIBUTED_TRADES: 10
+      AGENTIC_PROMOTE_MIN_POS: '0.70'
+      AGENTIC_CANDIDATE_LAPSE_HOURS: 168
+      AGENTIC_MINT_FLOOR_ROWS: 12
+      AGENTIC_MINT_FLOOR_MIN_ROWS: 6
+      AGENTIC_MINT_FLOOR_MIN_ENTRIES: 1
+      AGENTIC_ABSTAIN_LAPSE_DECIDES: 15
+      AGENTIC_MINT_BACKTEST_ROWS: 60
+      AGENTIC_MINT_BACKTEST_MARGIN_BPS: 10
+      AGENTIC_MINT_BACKTEST_MIN_TRIPS: 3
+      AGENTIC_PLAN_MODE: 'true' # W3.1 plan-based trading — required for perp: shorts and venue-resting TP both depend on plan mode
+      # L0 (longs-only) is the deliberate initial enable tier for this lane (see docs/runbook.md's
+      # perp enable ladder) even though binanceusdm is perp-capable and could take AGENTIC_SHORTS_ENABLED
+      # 'true' — flipping to S1 (shorts) is a separate, later decision.
+      AGENTIC_SHORTS_ENABLED: 'false'
+      AGENTIC_MIN_EDGE_MULTIPLE: '1.5'
+      AGENTIC_MIN_RR: '1.5'
+      AGENTIC_PLAN_MAX_QUIET_BARS: 16
+      AGENTIC_QUIET_PAYLOAD_SAMPLE_BARS: 4
+      AGENTIC_VENUE_TP: 'true' # venue-resting take-profit for plan-mode longs
+      AGENTIC_VENUE_TP_REPLACE_DRIFT_BPS: 10
+      AGENTIC_PLAYBOOK_AB_PCT: 25
+      AGENTIC_EXPECTANCY_LADDER: 'true'
+      AGENTIC_PRESCREEN_ENABLED: 'true'
+      AGENTIC_PRESCREEN_VOL_SHORT_BARS: 10
+      AGENTIC_PRESCREEN_VOL_LONG_BARS: 50
+      AGENTIC_PRESCREEN_VOL_RATIO: 1.3
+      AGENTIC_PRESCREEN_BREAKOUT_LOOKBACK_BARS: 20
+      AGENTIC_PRESCREEN_BREAKOUT_PCT: 0.0025
+      AGENTIC_PLAYBOOK_PIN: ''
+      AGENTIC_TOKEN_PRICE_INPUT_PER_MTOK: 3
+      AGENTIC_TOKEN_PRICE_OUTPUT_PER_MTOK: 15
+      AGENTIC_TOKEN_PRICE_CACHE_READ_PER_MTOK: '0.3'
+      AGENTIC_TOKEN_PRICE_CACHE_WRITE_PER_MTOK: '6'
+      AGENTIC_TOKEN_PRICES_JSON: '{"claude-sonnet-5":{"inputPerMtok":"3","outputPerMtok":"15","cacheReadPerMtok":"0.3","cacheWritePerMtok":"6"},"claude-opus-4-8":{"inputPerMtok":"5","outputPerMtok":"25","cacheReadPerMtok":"0.5","cacheWritePerMtok":"10"}}'
+      # PROMOTION_EVIDENCE_EPOCH intentionally OMITTED (absent ⇒ all-time, per environment.config.ts):
+      # the spot lane's epoch is pinned to spot-DB wipe/straddle incidents that do not apply to this
+      # lane's own fresh, isolated Postgres — this lane's own history starts clean at first boot.
+      PROMOTION_DUST_NOTIONAL: 5
+      SIGNAL_TTL_MS: 120000
+      BASE_NOTIONAL: 100
+      SIZER_EQUITY_FRACTION: 0.05
+      PROTECT_STOP_LOSS_PCT: 0.02
+      PROTECT_TRAILING_PCT: 0.015
+      PLAN_STOP_WATCH_ENABLED: 'false' # L0 boots watcher-off like spot; flip is a P8d/ladder decision
+      PLAN_STOP_FORCE_BPS: 30
+      EXIT_CROSS_BUFFER_BPS: 25
+      ENTRY_ORDER_TYPE: LIMIT_MAKER
+      STARTING_CASH: 5000
+
+      # ── Info-context feeds (kept as the spot app has them; positioning/derivatives poll fapi
+      # regardless of venue, so they are already perp-native) ──
+      DERIVATIVES_FEED_ENABLED: 'true'
+      DERIVATIVES_FEED_POLL_MS: 60000
+      # Info-context A/B disabled here (0, vs the spot lane's 30): this is a separate, isolated
+      # evidence lane, not a participant in the spot lane's derivatives/cross-symbol measurement —
+      # every decide sees the full info bundle, no control-arm split.
+      AGENTIC_DERIVATIVES_AB_PCT: 0
+      AGENTIC_THINKING_AB_PCT: 0 # explicit off — this lane is not part of the thinking-on-decide A/B either
+      AGENTIC_CROSS_SYMBOL_ENABLED: 'true'
+      AGENTIC_CROSS_SYMBOL_LOOKBACK_BARS: 20
+
+      # Single-symbol lane: no concurrent same-bar-close propose() calls to batch, so portfolio
+      # consult is off (vs the spot 5-symbol lane's 'true').
+      AGENTIC_PORTFOLIO_CONSULT: 'false'
+      AGENTIC_PORTFOLIO_WINDOW_MS: 3000
+
+      SENTIMENT_FEED_ENABLED: 'false'
+      SENTIMENT_FEED_POLL_MS: 300000
+      #SENTIMENT_FEED_API_KEY=
+
+      AGENTIC_TRADEFLOW_ENABLED: 'true'
+      AGENTIC_TRADEFLOW_POLL_MS: 60000
+
+      AGENTIC_POSITIONING_ENABLED: 'true'
+      AGENTIC_POSITIONING_POLL_MS: 300000
+
+      # ── Risk limits (same caps as the spot lane — one account-wide risk posture) ──
+      RISK_MAX_ORDER_NOTIONAL: 100000
+      RISK_MAX_POSITION_PER_SYMBOL: 1000
+      RISK_MAX_GROSS_EXPOSURE: 1000000
+      RISK_MAX_NET_EXPOSURE: 1000000
+      RISK_MAX_DAILY_LOSS: 5000
+      RISK_MAX_DRAWDOWN_PCT: 0.2
+      RISK_MAX_BAND_BPS: 100
+      RISK_MAX_PASSIVE_EXIT_BAND_BPS: 1200
+      RISK_STALE_MAX_AGE_MS: 5000
+
+      # ── Perp/swap paper adapter (B1; PaperPerpAdapter is not wired into app.module.ts yet) ──
+      # Unrelated to VENUES=binanceusdm above (that path runs through CcxtExchangeAdapter, not this
+      # scaffold) — kept false/as-is for parity with the spot app's env, byte-identical scaffolding.
+      PERP_VENUE_ENABLED: false
+      PERP_LEVERAGE_CAP: 1 # isolated-margin leverage cap
+      PERP_MMR_FALLBACK: 0.005
+      PERP_LIQ_BUFFER_PCT: 0.20
+
+      # ── Persistence ── own Postgres, same creds pattern, different service DNS name/port
+      DATABASE_URL: postgres://cryptobot:cryptobot@postgres-perp:5432/cryptobot
+
+      # ── Observability ──
+      #GRAFANA_ADMIN_PASSWORD=
+
+    depends_on:
+      postgres-perp:
+        condition: service_healthy
+      prometheus-perp:
+        condition: service_started
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - |
+          const http = require('http');
+          const req = http.get('http://localhost:3100/health/live', (res) => {
+            process.exit(res.statusCode === 200 ? 0 : 1);
+          });
+          req.on('error', () => process.exit(1));
+          req.end();
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  prometheus-perp:
+    profiles: ['perp']
+    image: prom/prometheus:v3.4.1
+    restart: unless-stopped
+    ports:
+      - '9091:9090'
+    volumes:
+      - ./observability/prometheus-perp.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/alerts.rules.yml:/etc/prometheus/alerts.rules.yml:ro
+      - prometheus_perp_data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+
 volumes:
   postgres_data:
   grafana_data:
   prometheus_data:
+  postgres_perp_data:
+  prometheus_perp_data:

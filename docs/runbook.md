@@ -251,6 +251,67 @@ Operational run:
 3. Far-from-market limits must stay inside Binance's `PERCENT_PRICE_BY_SIDE` band (a price too far from
    the mark is rejected `TERMINAL_REJECT`); the suite derives its passive bid from the live price.
 
+## Perp lane (Push 3 P3) — `docker compose --profile perp`
+
+A second app container (`app-perp`) on the same image as the spot `app`, pointed at
+`VENUES='[{"id":"binanceusdm","environment":"demo"}]'` (Binance USDM futures-demo) instead of spot
+binance. It runs single-symbol (`TRADING_SYMBOLS=BTC/USDT:USDT`) against its **own** Postgres
+(`postgres-perp`) and its **own** Prometheus (`prometheus-perp`) — see docker-compose.yml's header
+comment on the `postgres-perp` service for why the isolation is structural, not a convenience.
+Behind the `perp` Compose profile: a plain `docker compose up -d` creates none of `postgres-perp` /
+`app-perp` / `prometheus-perp`.
+
+### Up / down
+
+```sh
+docker compose --project-directory <repo> --profile perp up -d      # enable
+docker compose --project-directory <repo> --profile perp ps         # status
+docker compose --project-directory <repo> --profile perp down       # disable (volumes retained)
+docker compose --project-directory <repo> --profile perp down -v    # disable + drop perp DB/TSDB history
+```
+
+### Enable ladder
+
+The lane starts at the most conservative tier and advances only by deliberate config change (not
+auto-promoted):
+
+- **L0 — longs-only** (initial/current): `AGENTIC_SHORTS_ENABLED=false`. Plan-mode longs with
+  venue-resting TP, same risk caps as spot.
+- **S1 — shorts enabled**: flip `AGENTIC_SHORTS_ENABLED=true` on `app-perp` (plan mode + a
+  perp-capable venue are already satisfied; `AnthropicAgentClient`'s constructor guard would
+  otherwise refuse shorts on a spot-only deployment). A separate, later, owner-gated decision —
+  not part of standing up the lane.
+
+### DB-isolation proof query
+
+Run a fills count against the **spot** Postgres immediately before and after a perp-only round
+trip (no spot trading activity in between); the count must be identical — proving the perp lane's
+fills never land in the spot DB:
+
+```sh
+docker compose --project-directory <repo> exec -T postgres psql -U cryptobot -d cryptobot -c "SELECT count(*) FROM fills;"
+# ... let a perp round trip close on app-perp ...
+docker compose --project-directory <repo> exec -T postgres psql -U cryptobot -d cryptobot -c "SELECT count(*) FROM fills;"
+```
+
+(The perp lane's own fills are visible instead via
+`docker compose --project-directory <repo> --profile perp exec -T postgres-perp psql -U cryptobot -d cryptobot -c "SELECT count(*) FROM fills;"`.)
+
+### Port map
+
+| Service           | Host port | Container port | Notes                             |
+| ----------------- | --------- | -------------- | --------------------------------- |
+| `app-perp`        | 3102      | 3100           | health/metrics, mirrors `app`     |
+| `postgres-perp`   | 5433      | 5432           | own DB, evidence-isolated         |
+| `prometheus-perp` | 9091      | 9090           | own TSDB, scrapes `app-perp` only |
+
+### Backup coverage
+
+`scripts/db-backup.sh` dumps `postgres-perp` too, but only when it is actually running (silent
+skip otherwise, so the script stays safe to run against a default, perp-profile-less deployment).
+Perp dumps land at `backups/cryptobot-perp-<STAMP>.sql.gz` with the same 14-dump retention policy
+as the spot dumps, kept as a separate `cryptobot-perp-*` prefix.
+
 ## Open / deferred (verified at the out-of-session RUN, not in CI)
 
 The sandbox order-lifecycle scenarios (`pnpm test:testnet`) are **RUN-verified against both Binance

@@ -2239,3 +2239,93 @@ dispatched: an offline NON-price sweep (funding-conditioned direction + Fear&Gre
 two freely-fetchable information series, same winsorized-DSR/walk-forward methodology, honest-N
 pooled with the prior 4,882 trials) — running in background, report lands at
 `reports/loop/nonprice-sweep-2026-07-12.md`.
+
+## 2026-07-13 — Pass 21 (scheduled run, ~00:08–00:50Z): MAINTENANCE — AB_PCT 50→25: v2 provably cannot convert serving share into evidence (0/17 FLAT consults); lint+format gates found RED at HEAD and repaired
+
+**Data window:** Pass 20 close (~15:10Z 07-12) → now. Between passes: two owner sessions
+(research+ship ~15:30–19:15Z, "ultracode" ~19:30–21:30Z) landed 15 commits (`dd93eda`..`b088429`)
+— self-learning engine v2 (unrouted reads, unresolved-candidate guard, symmetric+PoS promotion,
+knobs channel, v5 cache prefix), derivatives+crossSymbol info-context A/B (pct=30), plan
+persistence, `pnpm arm`, the definitive multi-strategy negative, the funding-contrarian
+second-holdout KILL, and AB_PCT 25→50 + lapse 720h→168h. Boots: `c0afee82` → (session deploys)
+→ `defffcb1` (21:17Z, the AB_PCT=50 boot) → `24cdd185` (this pass, 00:23Z). Host awake on AC
+since ~21:27Z 07-11 — duty cycle 70.4%/24h (was 8%: the owner acted on the availability flag).
+
+**Evidence sweep (boot `defffcb1`, ~2.9h):** stack 4/4 up, app healthy; 0 error lines, 0
+EXPIRED, 0 rejections, 0 HALT; reconcile 345 clean / 1 mismatch / 0 halt / 0 error; kill switch
+RUNNING. Scoreboard (epoch 08:30Z 07-12): **RT=7 (all v1), net −$4.27, LLM $1.85, window 0.33d,
+ready=0**; equity $4,992.24, dd 0.155%, trade-explained (4 losing trips closed this boot:
+agentic-4 ~21:45Z, agentic-1/-2/-5 ~22:30Z — all 7 post-epoch trips are LOSSES). §2.6 harness
+probe green (15 passed). v5 cache prefix confirmed working at scale (cache_read 60,263 >
+input 53,462 this boot). Cost: gate read ≈ $2.83/day since epoch; this-boot pro-rate ≈ $3.9/day
+(**watch — LINK-drop pre-auth keys on SUSTAINED >$3/day; a 2.9h window is not sustained**).
+Corpus **252 payload rows — ≥200 crossed**; E2 itself already ran in the ultracode session
+(Haiku does not flip Sonnet), so the standing E2 watch is RETIRED. Reflection outcome counters
+empty all boot — explained by design, not a defect: `onClosedTrade` evaluates the trigger
+synchronously with the in-memory counter (0→1 on each strategy's first post-boot close) while
+the DB seed lands asynchronously milliseconds later, so first-close-after-boot can prime but
+never fire; agentic-1/-2/-5 are primed 2/2 and the NEXT close fires the attempt.
+
+**Pass type MAINTENANCE** (PROMOTION ineligible: v1 7 < symmetric floor 10, v2 0; CANDIDATE
+blocked §3(a): v2 unresolved, newest `agent_playbook_versions` row = v2/reflection minted
+2026-07-11 04:45:29Z).
+
+**Decision evidence (DB, since v2's mint):** v1: 118 decides, 57 from FLAT, **16 entries
+(28%)**; v2: 35 decides, 17 from FLAT, **0 entries** — P(0/17 | v1's rate) ≈ 0.4%. v2
+structurally abstains (its mint changelog raised the entry bar; its offline scorecard won BY
+skipping v1's losing trades). Consequences: (a) v2's 10-trip verdict clock can never start —
+resolution comes ONLY via the 168h lapse (2026-07-18 04:45Z); (b) at AB_PCT=50 every v2-routed
+FLAT consult is an entry opportunity destroyed, halving the champion entry stream that feeds
+the symmetric promotion floor, reflection cadence (trade-gated), and the info-context A/B —
+the program's decisive experiment (control arm at 30% needs ~100 total trips for ≥30/arm;
+halving entries pushes that from ~2 weeks toward ~a month). The 25→50 premise ("doubles
+candidate evidence rate", `afed7d8`) is falsified by the candidate's own behavior.
+
+**Shipped (2 commits, both gates-green):**
+
+1. **`230196a` fix(gates):** lint + format were RED at HEAD from the non-price sweep session —
+   `fetch-fng.mjs` lacked the bare-node-CLI eslint ignore its class requires (eslint crashed
+   exit 2 on every run) and `funding-sweep.mjs`/`funding-second-holdout.mjs` were committed
+   unformatted. One ignore line + prettier --write; every gate re-verified green.
+2. **`d538ce1` feat(agentic):** `AGENTIC_PLAYBOOK_AB_PCT` 50→25 (compose + `.env.example`),
+   restoring the calibrated baseline. Candidate lapse deliberately KEPT at 168h: shortening it
+   only accelerates mint churn — a v3 minted from 7/7-loss evidence would rationally abstain
+   too (see the flagged structural finding). Loop-domain decision under the 2026-07-12 owner
+   delegation.
+
+**Gates:** build / lint / typecheck / format:check / lint:md green, **1742 unit**, eval:agentic
+15. Pre-commit hook ran green (PATH-prefixed corepack pnpm — no `--no-verify` needed).
+
+**Deploy + soak (boot `24cdd185`, 00:23Z):** env-only recreate (no src change → no image
+build). Recovery clean (0 orders seeded, 0 degraded), `AGENTIC_PLAYBOOK_AB_PCT=25` verified
+in-container, backup `cryptobot-20260713T002423Z.sql.gz` (§5). **Soak verdict CLEAN (00:35Z):**
+the 00:30Z bar ran full-width — 5 prescreen calls (1 position_open, 4 vol_expansion on a
+market-wide spike), 5 LLM consults journaled, all hold, 0 errors/EXPIRED; the whole minute
+bucket routed to v2 (bucket-level A/B — averages to 25% over buckets); **agentic-3's bare SOL
+position RE-ARMED on the first consult (hold + plan_json attached — Pass-20 mechanism now 3/3
+lifetime)** while the four FLAT symbols correctly held bare; cross-symbol context visibly used
+in rationales ("rank 5/5, −29bps trailing").
+
+**FLAGGED (structural, design work — the program's current central tension):** the learning
+loop can only measure candidates through trips, but the honest lesson of the evidence (all
+post-epoch entries lose) produces candidates that abstain and therefore starve their own
+measurement. Promoting an abstainer is NOT the fix: reflection is trade-gated, so a
+never-trading champion freezes the entire learning system (evaluated and rejected this pass).
+Design options for a future pass/owner: (i) offline entry-rate floor at mint time — score every
+reflection mint against the recorded corpus (the §3(a) machinery already exists) and reject
+candidates whose entry conditions fire ~never, BEFORE they occupy the A/B slot; (ii)
+per-opportunity (not per-trip) attribution with a deterministic dominance rule — but ties
+swamp Mann–Whitney at these n, so this needs real design; (iii) accept weekly candidate churn
+via lapse and let the info-context A/B verdict decide the program. (i) is cheapest and
+strictly additive.
+
+**Flagged for human review:** none new beyond the structural finding above (loop-domain items
+were decided in-pass). FYI: the owner acted on the availability flag — duty cycle 70%/24h.
+
+**Next-pass candidates:** (1) reflection watch — next close on agentic-1/-2/-5 must resolve
+`skipped_unresolved_candidate` (the guard working; `validator_reject` or `transport_error` =
+new defect); (2) cost watch — confirm $/day back under ~$3 at AB_PCT=25 (if sustained >$3/day,
+the LINK-drop pre-auth fires); (3) v2 entry watch — any v2 entry starts its clock and voids
+the abstention analysis (re-check before acting on it); (4) design option (i) offline
+entry-rate floor at mint; (5) #32 reflection SSE streaming; (6) info-context A/B accrual
+check (matched trips per arm).

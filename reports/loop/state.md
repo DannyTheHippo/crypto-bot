@@ -40,7 +40,11 @@ never changes for strategy evolution.
      ~2.25h of the mint, AB_PCT=25 confirmed in-container). **The live Stage-2 watch is now v2's
      attributed verdict:** `AGENTIC_AUTO_PROMOTE_MIN_ATTRIBUTED_TRADES=10` — a PROMOTION pass
      becomes eligible once `agentic_version_round_trips{version="2"}` approaches 10; CANDIDATE
-     passes stay ineligible (§3(a)) while v2 sits unresolved in A/B. NB the 20:26Z wipe reset the
+     passes stay ineligible (§3(a)) while v2 sits unresolved in A/B. **UPDATE Pass 21
+     (2026-07-13): v2 provably abstains (0 entries in 17 FLAT consults since mint) — its clock
+     will not start; expected resolution is the 168h candidate lapse at 2026-07-18 04:45:29Z,
+     after which reflection may mint v3 (see backlog #39 for why v3 likely repeats the
+     pattern and the proposed mint-time entry-rate floor).** NB the 20:26Z wipe reset the
      reflection trip counters to 0 and Pass 14
      (`3e5773f`) lowered `AGENTIC_REFLECTION_EVERY_N_TRADES` 5→2 (the counter is PER STRATEGY;
      the 5-symbol widening had silently slowed lane cadence ~5×) — reflection now fires on the
@@ -218,6 +222,31 @@ candidates; whether the minted candidates then earn A/B-attributed promotion is 
 exit question.
 
 ## Last pass
+
+**Pass 21, 2026-07-13** (scheduled run, ~00:08–00:50Z) — **SHIP the AB_PCT correction
+(`d538ce1`, 50→25) + gate repair (`230196a`): v2 provably cannot convert serving share into
+evidence — since its mint it entered on 0 of 17 FLAT-state consults (v1: 16/57, 28%;
+P≈0.4% under v1's rate), so the 50% share bought zero candidate evidence while halving the
+champion entry stream that feeds the symmetric promotion floor, trade-gated reflection, and
+the info-context A/B.** v2's verdict can now come ONLY via the 168h lapse (2026-07-18
+04:45:29Z); lapse deliberately kept — a v3 minted from 7/7-loss evidence would rationally
+abstain too. **New structural flag (design work): the learning loop measures candidates
+only through trips, but honest all-loss evidence mints abstainers that starve their own
+measurement; promoting an abstainer would freeze trade-gated reflection — cheapest fix is
+an offline entry-rate floor at mint time (§3(a) machinery exists), queued as backlog #39.**
+Also repaired lint+format found RED at HEAD (fetch-fng.mjs eslint crash; two unformatted
+sweep files — non-price-sweep session leftovers). Evidence sweep otherwise clean on boot
+`defffcb1`: 0 errors, reconcile 345/1/0, kill switch RUNNING; scoreboard RT=7 (ALL v1, all
+LOSSES), net −$4.27, LLM $1.85 (~$2.8/day; this-boot pro-rate $3.9/day — cost watch armed,
+LINK-drop pre-auth keys on SUSTAINED >$3), equity $4,992.24 (dd 0.155%, trade-explained).
+Reflection empty-counter explained by design (first-close-after-boot primes but cannot fire:
+the trigger check runs synchronously before the async DB seed lands); agentic-1/-2/-5 primed
+2/2 — next close fires the attempt, EXPECT `skipped_unresolved_candidate`. **Corpus 252 —
+≥200 crossed; E2 already ran (ultracode session, Haiku ≠ flip): E2 watch RETIRED.** Duty
+cycle 70.4%/24h (owner acted on the availability flag). Gates full green (1742 unit, eval
+15), deployed boot `24cdd185` 00:23Z env-only, recovery clean, AB_PCT=25 verified
+in-container. Backup `cryptobot-20260713T002423Z.sql.gz`. Empty-pass counter 0. Full detail
+in LOG.md.
 
 **Pass 20, 2026-07-12** (scheduled run, ~14:04–15:10Z) — **SHIP the plan-mode restart fix
 (`6e95542`): the in-memory `activePlan` dies on every container recreate and the documented
@@ -683,6 +712,8 @@ owns them).
 | 37 | E2 forward-proxy cross-symbol pollution (found Pass 19, same class as the `scoreRows` defect `5da2630` fixed): `candidate-model-eval.spec.ts`'s `forwardProxyBps` feeds ALL recorded rows (5 symbols interleaved) into `summarizeRecentDecisionOutcomes`, whose positional forward returns assume a single instrument's price path — the champion-vs-candidate model comparison's forward metric would be noise. Fix is spec-side only: group `ScoringRow`s by symbol, digest each group, combine as the entry-count-weighted mean. MUST land before E2 first runs (corpus ≥200 `input_payload` rows; 135 at Pass 19) | 2 | S | DONE 2026-07-12 Pass 19 addendum (`2f546f3`, owner-directed "fix the flaws"): per-symbol digest + entry-count-weighted recombine (also fixes the cross-symbol exposure-walk misclassification); single-instrument caller contract now stated on all three positional digest docstrings; landed well before the corpus reaches 200 (135). candidates/ added to .prettierignore (artifact byte-exactness) |
 
 | 38 | Plan-mode restart defect (found Pass 20): `activePlan` is in-memory; every container recreate stranded plan-managed longs as bare positions — the documented "model issues a fresh plan" self-heal had no implementation (no prompt signal, 'long' = NEW long, client dropped plans outside long-from-FLAT). Bare positions lose model-set TP/maxHoldBars (only protective backstops remain) and bill every bar (~$0.011/bar/symbol; recreate with 5 open positions projects past the $5/day breaker). Loop deploys 1–3×/day made this recurring | 2 | M | DONE 2026-07-12 Pass 20 (`6e95542`): `managedPlan` position field + prompt/tool re-arm instructions + client hold/long+plan acceptance while LONG through the unchanged fee/RR floors (no signal emitted; FLAT never arms); PLAN_TEMPLATE_VERSION p1→p2. Reviewer APPROVE no-must-fix, 1691 unit, eval 15. Live-verified first bar post-deploy: 2/2 bare positions (XRP/SOL) re-armed with explicit model narration |
+
+| 39 | Candidate abstention deadlock (found Pass 21, structural): the promotion framework measures candidates ONLY through their own attributed trips, but reflection minted from all-loss evidence rationally raises the entry bar — v2 entered 0 of 17 FLAT consults since mint (P≈0.4% under v1's 28% rate), so its 10-trip verdict clock never starts and resolution comes only via the 168h lapse; the next mint from the same evidence will repeat the pattern. Promoting an abstainer is NOT the fix — reflection is trade-gated, so a never-trading champion freezes the whole learning loop. Cheapest real fix: an offline entry-rate floor at mint time — replay every reflection mint against the recorded corpus (§3(a) scoring machinery exists) and reject candidates whose entry conditions fire ~never BEFORE they occupy the A/B slot; alternatives (per-opportunity attribution; accept weekly lapse churn) analyzed in LOG.md Pass 21 | 2 | M | pending (new, Pass 21 2026-07-13) — design work; agentic-lane + eval harness, in §4 MAY scope |
 
 ## Flagged for human review (open)
 

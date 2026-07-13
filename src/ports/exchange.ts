@@ -101,6 +101,12 @@ export interface ExchangePort {
   fetchBalances(): Promise<ReadonlyMap<string, { free: string; locked: string }>>;
   fetchMyTrades(symbol: SymbolId, since: EpochMs): Promise<readonly VenueFill[]>;
   validateCredentials(): Promise<CredentialCheck>;
+  // Backlog #51 (Phase-8 perp deploy checklist): pin venue-side isolated margin + the configured
+  // leverage per symbol at boot, BEFORE the first order — account defaults are never trusted.
+  // Optional: only perp-capable adapters expose it (spot/paper adapters lack the method and the
+  // boot call no-ops via `?.`). Implementations are fail-closed — a pin failure throws and the
+  // boot dies rather than trading on unknown venue-side leverage/margin mode.
+  pinPerpVenueDefaults?(symbols: readonly SymbolId[], leverage: number): Promise<void>;
 }
 
 // Re-exported so adapters and the OMS share the reducer's state vocabulary at the seam.

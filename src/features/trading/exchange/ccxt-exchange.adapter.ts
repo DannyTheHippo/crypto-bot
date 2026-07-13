@@ -139,4 +139,21 @@ export class CcxtExchangeAdapter implements ExchangePort {
       keyFingerprint: 'ccxt',
     });
   }
+
+  // Backlog #51 (Phase-8 perp deploy checklist): delegate the venue-side margin/leverage pin to
+  // the client. Gated by venue — on a spot venue there is nothing to pin and the method is a
+  // deliberate no-op (the boot call site invokes it unconditionally on every non-paper boot).
+  // Client-side the implementation is fail-closed; see RealCcxtOrderClient.pinPerpVenueDefaults.
+  async pinPerpVenueDefaults(symbols: readonly SymbolId[], leverage: number): Promise<void> {
+    if (String(this.venue) !== 'binanceusdm') return;
+    if (this.client.pinPerpVenueDefaults === undefined) {
+      throw new Error(
+        'perp pin: the perp venue client does not implement pinPerpVenueDefaults (fail-closed)',
+      );
+    }
+    await this.client.pinPerpVenueDefaults(
+      symbols.map((s) => String(s)),
+      leverage,
+    );
+  }
 }

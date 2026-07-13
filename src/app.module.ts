@@ -1508,6 +1508,9 @@ export class AppModule
     @Inject(POSITIONING_FEED) private readonly positioningFeed: PositioningFeedPort,
     @Inject(REFLECTION_SERVICE) private readonly reflectionService: ReflectionService,
     @Inject(PROMOTION_READINESS) private readonly promotionReadiness: PromotionReadinessPort,
+    // Backlog #51: the adapter behind EXCHANGE_PORT, for the perp deploy pin in startTrading —
+    // only perp-capable adapters implement pinPerpVenueDefaults, everything else no-ops via `?.`.
+    @Inject(EXCHANGE_PORT) private readonly exchangePort: ExchangePort,
     // W5 attributed auto-promotion: the evaluator promotes a reflection candidate to ACTIVE on its
     // own A/B-attributed evidence beating the champion (see promotion-evaluator.ts). Built here from
     // the same store the reflection loop writes and the DB-backed stats/journal, and wired as a
@@ -1670,6 +1673,21 @@ export class AppModule
 
     if (mode !== 'paper') {
       await this.refreshKeyProbe();
+      // Backlog #51 (Phase-8 perp deploy checklist): pin venue-side isolated margin + leverage
+      // BEFORE the first order — account defaults are never trusted. Today's spot deployment
+      // no-ops (CcxtExchangeAdapter gates by venue; the paper adapter and the live wrapper lack
+      // the method entirely). On the future perp-demo deployment this runs fail-closed: a pin
+      // failure throws here and the boot dies — including a FRACTIONAL PERP_LEVERAGE_CAP, passed
+      // through UNfloored so the client's integer guard refuses it (silently truncating a cap the
+      // sizer still reads as a decimal would diverge venue leverage from sizing math — reviewer
+      // S2). NB LiveExchangeAdapter does not delegate the hook — a live perp deployment (far
+      // future, own ceremony) must wire that deliberately.
+      await this.exchangePort.pinPerpVenueDefaults?.(
+        this.tradingSymbols,
+        // Decimal round-trip (not Number()): leverage is a multiplier, not money, but the money
+        // lint rule is deliberately blanket; toNumber() is exact for any sane integer cap.
+        new Decimal(this.config.perp.leverageCap).toNumber(),
+      );
       this.driverTimers.push(
         setInterval(() => {
           void this.refreshKeyProbe();

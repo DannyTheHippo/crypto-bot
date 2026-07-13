@@ -65,6 +65,11 @@ export interface CcxtOrderClient {
   // Binance implicit endpoint GET /sapi/v1/account/apiRestrictions (§10c key-restriction probe).
   // Absent on Spot Testnet (throws NotSupported) — the KeyProbe degrades by environment.
   sapiGetAccountApiRestrictions(): Promise<Record<string, unknown>>;
+
+  // Backlog #51 (Phase-8 perp deploy checklist): pin venue-side isolated margin + leverage per
+  // symbol. Optional — only meaningful on a swap-capable exchange; the adapter gates the call by
+  // venue so a spot instance never receives it.
+  pinPerpVenueDefaults?(symbols: readonly string[], leverage: number): Promise<void>;
 }
 
 // Delegates each method to the live ccxt Exchange using the same as unknown as {...}
@@ -166,5 +171,48 @@ export class RealCcxtOrderClient implements CcxtOrderClient {
         sapiGetAccountApiRestrictions(): Promise<Record<string, unknown>>;
       }
     ).sapiGetAccountApiRestrictions();
+  }
+
+  // Backlog #51: venue-side account-config pin, fail-closed. Binance answers an already-set margin
+  // mode with error -4046 ("No need to change margin type") and an unchanged leverage either
+  // succeeds or reports "not modified" — both are the DESIRED state, so they count as success;
+  // every other failure throws and kills the boot (trading on unknown venue-side leverage/margin
+  // is exactly what the deploy checklist forbids).
+  async pinPerpVenueDefaults(symbols: readonly string[], leverage: number): Promise<void> {
+    if (!Number.isInteger(leverage) || leverage < 1) {
+      throw new Error(
+        `perp pin: leverage must be a positive integer, got ${leverage} (fail-closed)`,
+      );
+    }
+    const ex = this.exchange as unknown as {
+      setMarginMode(mode: string, symbol: string): Promise<unknown>;
+      setLeverage(leverage: number, symbol: string): Promise<unknown>;
+    };
+    const alreadySet = (err: unknown): boolean => {
+      const msg = err instanceof Error ? err.message : String(err);
+      return msg.includes('-4046') || /no need to change|not modified/i.test(msg);
+    };
+    for (const symbol of symbols) {
+      try {
+        await ex.setMarginMode('isolated', symbol);
+      } catch (err) {
+        if (!alreadySet(err)) {
+          const msg = err instanceof Error ? err.message : String(err);
+          throw new Error(
+            `perp pin: setMarginMode(isolated, ${symbol}) failed: ${msg} (fail-closed)`,
+          );
+        }
+      }
+      try {
+        await ex.setLeverage(leverage, symbol);
+      } catch (err) {
+        if (!alreadySet(err)) {
+          const msg = err instanceof Error ? err.message : String(err);
+          throw new Error(
+            `perp pin: setLeverage(${leverage}, ${symbol}) failed: ${msg} (fail-closed)`,
+          );
+        }
+      }
+    }
   }
 }

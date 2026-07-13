@@ -20,6 +20,9 @@ import { toAdapterError } from './error-classifier';
 import { CCXT_ORDER_CLIENT, type CcxtOrderClient } from './ccxt-order-client';
 import { normalizeOrderState, normalizeTrade, normalizeBalances } from './ccxt-normalize';
 
+// Shared with pinPerpVenueDefaults below: the only swap-capable venue this pass wires.
+const PERP_VENUE_ID = 'binanceusdm';
+
 @Injectable()
 export class CcxtExchangeAdapter implements ExchangePort {
   readonly venue: VenueId;
@@ -63,6 +66,12 @@ export class CcxtExchangeAdapter implements ExchangePort {
         // the idiomatic ccxt post-only expression; the intent still persists its GTC.
         params['postOnly'] = true;
         break;
+    }
+
+    // Gated to the swap venue: on spot, reduceOnly is meaningless and some order paths
+    // reject unknown params outright, so the flag never reaches a spot createOrder call.
+    if (req.reduceOnly && String(this.venue) === PERP_VENUE_ID) {
+      params['reduceOnly'] = true;
     }
 
     try {
@@ -145,7 +154,7 @@ export class CcxtExchangeAdapter implements ExchangePort {
   // deliberate no-op (the boot call site invokes it unconditionally on every non-paper boot).
   // Client-side the implementation is fail-closed; see RealCcxtOrderClient.pinPerpVenueDefaults.
   async pinPerpVenueDefaults(symbols: readonly SymbolId[], leverage: number): Promise<void> {
-    if (String(this.venue) !== 'binanceusdm') return;
+    if (String(this.venue) !== PERP_VENUE_ID) return;
     if (this.client.pinPerpVenueDefaults === undefined) {
       throw new Error(
         'perp pin: the perp venue client does not implement pinPerpVenueDefaults (fail-closed)',

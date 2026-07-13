@@ -154,6 +154,63 @@ describe('CcxtExchangeAdapter.placeOrder', () => {
   });
 });
 
+// ── placeOrder reduceOnly (Push 3 P4) ──────────────────────────────────────────
+
+describe('CcxtExchangeAdapter.placeOrder reduceOnly forwarding', () => {
+  function paramsOf(client: CcxtOrderClient): Record<string, unknown> {
+    const [, , , , , params] = (client.createOrder as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      string,
+      string,
+      string,
+      string,
+      string | undefined,
+      Record<string, unknown>,
+    ];
+    return params;
+  }
+
+  it('forwards reduceOnly:true on binanceusdm for LIMIT', async () => {
+    const client = fakeClient();
+    const adapter = new CcxtExchangeAdapter(client, venueId('binanceusdm'), true);
+
+    await adapter.placeOrder({ ...baseReq, reduceOnly: true });
+
+    expect(paramsOf(client)['reduceOnly']).toBe(true);
+  });
+
+  it('forwards reduceOnly:true on binanceusdm for MARKET', async () => {
+    const client = fakeClient();
+    const adapter = new CcxtExchangeAdapter(client, venueId('binanceusdm'), true);
+
+    await adapter.placeOrder({
+      ...baseReq,
+      type: 'MARKET',
+      limitPrice: undefined,
+      reduceOnly: true,
+    });
+
+    expect(paramsOf(client)['reduceOnly']).toBe(true);
+  });
+
+  it('never sends reduceOnly on a spot venue even when the request asks for it', async () => {
+    const client = fakeClient();
+    const adapter = new CcxtExchangeAdapter(client, venueId('binance'), true);
+
+    await adapter.placeOrder({ ...baseReq, reduceOnly: true });
+
+    expect(paramsOf(client)).not.toHaveProperty('reduceOnly');
+  });
+
+  it('omits reduceOnly on binanceusdm when the request has it false', async () => {
+    const client = fakeClient();
+    const adapter = new CcxtExchangeAdapter(client, venueId('binanceusdm'), true);
+
+    await adapter.placeOrder({ ...baseReq, reduceOnly: false });
+
+    expect(paramsOf(client)).not.toHaveProperty('reduceOnly');
+  });
+});
+
 // ── cancelOrder ───────────────────────────────────────────────────────────────
 
 describe('CcxtExchangeAdapter.cancelOrder', () => {

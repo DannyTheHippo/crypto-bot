@@ -26,9 +26,10 @@ export default tseslint.config(
       // Same class: the TP/SL/maxHold calibration study — bare .mjs run via `node`
       // (self-contained, no src/ imports), outside any tsconfig project.
       'test/backtest/bounds-calibration/**',
-      // Same class: this spec imports scripts/arm-ceremony.mjs (itself outside tsconfig, see
-      // scripts/** above) and is plain .mjs itself for the same reason — no tsconfig project.
+      // Same class: these specs import scripts/*.mjs (themselves outside tsconfig, see
+      // scripts/** above) and are plain .mjs for the same reason — no tsconfig project.
       'test/unit/scripts/arm-ceremony.spec.mjs',
+      'test/unit/scripts/resolve-stale-orders.spec.mjs',
       // Harness agent worktrees — full repo copies whose files have no tsconfig project context.
       '.claude/**',
     ],

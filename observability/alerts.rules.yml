@@ -78,17 +78,19 @@ groups:
           summary: 'Reconciliation hit a halting mismatch class — kill switch engaged, never auto-flattened'
           runbook: 'docs/runbook.md#reconciliation-mismatch-64'
 
-      # reconciliation_mismatch_total conflates halting classes with WARN-and-ignore classes
-      # (foreign orders / adopted terminals / backfilled fills). On the shared demo wallet the
-      # ~3-4 foreign resting orders are a permanent ~3-per-pass steady state, so this fires
-      # continuously by design — severity warning until the counter is split by mismatch class
-      # (loop backlog #24); halting classes page via ReconciliationHalt + KillSwitchEngaged above.
+      # reconciliation_mismatch_total is split by mismatch class since backlog #24. The benign
+      # classes are excluded here: foreign_open_order (the shared demo wallet's manual-trading
+      # steady state — the reason this alert used to fire 24/7), adopted_terminal and
+      # backfilled_fill (stream misses healed from venue truth — self-correcting by definition).
+      # Everything else (sweep/query failures, non-adoptable statuses, and the halting classes) is
+      # actionable signal; halting classes ALSO page critical via ReconciliationHalt +
+      # KillSwitchEngaged above.
       - alert: ReconciliationMismatch
-        expr: increase(reconciliation_mismatch_total[5m]) > 0
+        expr: increase(reconciliation_mismatch_total{class!~"foreign_open_order|adopted_terminal|backfilled_fill"}[5m]) > 0
         for: 0m
         labels: { severity: warning }
         annotations:
-          summary: 'Reconciliation mismatches in the last 5m (class-blind counter; foreign-order noise expected on the shared demo wallet)'
+          summary: 'Actionable reconciliation mismatches in the last 5m (benign classes excluded — see class label)'
           runbook: 'docs/runbook.md#reconciliation-mismatch-64'
 
       # A stalled reconciler is itself a fault (§8): a pass that throws leaves venue truth

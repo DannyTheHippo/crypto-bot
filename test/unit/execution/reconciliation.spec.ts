@@ -176,7 +176,7 @@ describe('ReconciliationService (§6.4)', () => {
     expect(r).toEqual({ mismatches: 0, halted: false }); // position symbol swept, balances agree
   });
 
-  it('increments the reconciliation_mismatch_total metric by the pass mismatch count', async () => {
+  it('increments reconciliation_mismatch_total with the mismatch class label (#24): a foreign open order counts as foreign_open_order', async () => {
     const counter = { inc: vi.fn() } as unknown as Counter<string>;
     // A foreign venue open order is a WARN mismatch (count 1) — a deterministic non-zero pass.
     // SYM is in the configured sweep set (no local state yet — the per-symbol sweep must still run).
@@ -191,7 +191,10 @@ describe('ReconciliationService (§6.4)', () => {
     );
     const r = await ctx.recon.reconcile();
     expect(r.mismatches).toBeGreaterThan(0);
-    expect((counter.inc as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual([r.mismatches]);
+    expect((counter.inc as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual([
+      { class: 'foreign_open_order' },
+      r.mismatches,
+    ]);
   });
 
   it('records reconciliation_runs_total{result} and stamps last-success only on a clean pass', async () => {
@@ -269,6 +272,33 @@ describe('ReconciliationService (§6.4)', () => {
     expect(r.halted).toBe(true);
     expect(ctx.engages[0]!.flatten).toBe(false); // HALT, never auto-flatten
     expect(ctx.engages[0]!.reason).toContain('UNKNOWN_OURS_OPEN');
+  });
+
+  it('labels a halting class and a benign class separately on one pass (#24): unknown_ours_open + foreign_open_order', async () => {
+    const counter = { inc: vi.fn() } as unknown as Counter<string>;
+    const ctx = build(
+      { openOrders: [venueOrder(OTHER_COID, 'open'), venueOrder('someoneElseOrder', 'open')] },
+      counter,
+      undefined,
+      undefined,
+      { sweepSymbols: [SYM] },
+    );
+    const r = await ctx.recon.reconcile();
+    expect(r.mismatches).toBe(2);
+    const calls = (counter.inc as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls).toContainEqual([{ class: 'unknown_ours_open' }, 1]);
+    expect(calls).toContainEqual([{ class: 'foreign_open_order' }, 1]);
+  });
+
+  it('labels a failed per-symbol sweep as sweep_failure (#24)', async () => {
+    const counter = { inc: vi.fn() } as unknown as Counter<string>;
+    const ctx = build({ openOrdersThrow: true }, counter);
+    seedOpenOrder(ctx);
+    await ctx.recon.reconcile();
+    expect((counter.inc as ReturnType<typeof vi.fn>).mock.calls).toContainEqual([
+      { class: 'sweep_failure' },
+      1,
+    ]);
   });
 
   it('a failed per-symbol open-order sweep is a WARN mismatch and skips terminal adoption', async () => {

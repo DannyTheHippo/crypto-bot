@@ -30,9 +30,35 @@ import { OrderBookService } from './order-book.service';
 import { PortfolioStateService } from './portfolio-state.service';
 import { FillIngestorService } from './fill-ingestor.service';
 
+// Backlog #24: every mismatch carries a class so the counter (and its alert) can separate the
+// shared-wallet foreign-order steady state and other benign classes from actionable ones. Halting
+// classes keep their historical halts[] names; the warn-only classes had no in-code discriminator
+// before this (only comments), so these names are the canonical taxonomy.
+type MismatchClass =
+  | 'unknown_ours_open' // halting: our COID prefix on the venue, no local row
+  | 'fill_for_unknown_order' // halting: our-prefix trade, no local order
+  | 'balance_drift' // halting: balance beyond ε
+  | 'balance_leak' // halting: within ε but monotone-growing drift
+  | 'foreign_open_order' // benign: manual trading on the shared key
+  | 'adopted_terminal' // benign: a cancel/expiry we missed via the stream, adopted from venue truth
+  | 'backfilled_fill' // benign: a fill we missed via the stream, re-applied
+  | 'adopt_query_failure' // transient: order held open locally but fetchOrder failed
+  | 'adopt_non_adoptable' // suspicious: venue status inconsistent with absence from open orders
+  | 'sweep_failure'; // transient: a per-symbol open-orders/trades/balances sweep threw
+
 interface PassAccumulator {
-  mismatches: number;
+  readonly mismatches: Map<MismatchClass, number>;
   readonly halts: string[];
+}
+
+function bump(acc: PassAccumulator, cls: MismatchClass): void {
+  acc.mismatches.set(cls, (acc.mismatches.get(cls) ?? 0) + 1);
+}
+
+function totalMismatches(acc: PassAccumulator): number {
+  let total = 0;
+  for (const n of acc.mismatches.values()) total += n;
+  return total;
 }
 
 // Compact, redaction-safe error description for the reconciliations row: class name + a truncated
@@ -44,12 +70,15 @@ function describeError(err: unknown): string {
   return `${name}:${message}`.slice(0, 160);
 }
 
-// §8/§10 reconciliation_mismatch_total — incremented per pass by the pass's mismatch count (0 on a
-// clean pass). Registers to the default prom-client registry that /metrics scrapes; @Optional so
-// the directly-constructed unit tests need not supply it. Drives the ReconciliationMismatch alert.
+// §8/§10 reconciliation_mismatch_total — incremented per pass by the pass's mismatch count, split
+// by mismatch class since backlog #24 (a clean pass increments nothing — increase() handles the
+// absent series). Registers to the default prom-client registry that /metrics scrapes; @Optional so
+// the directly-constructed unit tests need not supply it. Drives the ReconciliationMismatch alert,
+// which excludes the benign classes (foreign_open_order/adopted_terminal/backfilled_fill).
 export const RECON_MISMATCH_COUNTER = makeCounterProvider({
   name: 'reconciliation_mismatch_total',
-  help: 'Reconciliation mismatches detected per pass (§6.4)',
+  help: 'Reconciliation mismatches detected per pass, by class (§6.4, backlog #24)',
+  labelNames: ['class'] as const,
 });
 
 // §8 reconciliation visibility: count every pass by result, and stamp the last clean pass so a
@@ -98,7 +127,7 @@ export class ReconciliationService {
   ) {}
 
   async reconcile(): Promise<{ mismatches: number; halted: boolean }> {
-    const acc: PassAccumulator = { mismatches: 0, halts: [] };
+    const acc: PassAccumulator = { mismatches: new Map(), halts: [] };
 
     // An axis throw past its own per-item guards must still land in the reconciliations row and the
     // runs counter — a pass that silently never completes is indistinguishable from a healthy idle
@@ -115,23 +144,26 @@ export class ReconciliationService {
     const halted = acc.halts.length > 0;
     if (halted) this.killSwitch.engage(`RECONCILE_MISMATCH:${acc.halts.join(',')}`, false); // never auto-flatten
 
+    const mismatchTotal = totalMismatches(acc);
     await this.store.saveReconciliation({
       ts: this.clock.now(),
       venue: this.exchange.venue,
-      mismatches: acc.mismatches,
+      mismatches: mismatchTotal,
       halted,
       detail:
         passError !== undefined
           ? `PASS_ERROR:${describeError(passError)}`
           : acc.halts.join(',') || 'clean',
     });
-    this.mismatchCounter?.inc(acc.mismatches); // 0 on a clean pass; the alert fires on an increase
+    // Per-class increments (#24); a clean pass increments nothing — increase() over an absent
+    // series is 0, so the alert semantics are unchanged from the old 0-inc.
+    for (const [cls, n] of acc.mismatches) this.mismatchCounter?.inc({ class: cls }, n);
     const result =
       passError !== undefined
         ? 'error'
         : halted
           ? 'halt'
-          : acc.mismatches > 0
+          : mismatchTotal > 0
             ? 'mismatch'
             : 'clean';
     this.runsCounter?.inc({ result });
@@ -140,7 +172,7 @@ export class ReconciliationService {
     // surfaces the true cause.
     // eslint-disable-next-line @typescript-eslint/only-throw-error -- original throw, type unknown
     if (passError !== undefined) throw passError;
-    return { mismatches: acc.mismatches, halted };
+    return { mismatches: mismatchTotal, halted };
   }
 
   // Axis 1 — open orders joined on clientOrderId. Swept PER SYMBOL: ccxt's binance throws on a
@@ -155,7 +187,7 @@ export class ReconciliationService {
       try {
         venueOpen.push(...(await this.exchange.fetchOpenOrders(symbol)));
       } catch {
-        acc.mismatches += 1; // could not sweep this symbol's open orders — surfaced, re-checked next pass
+        bump(acc, 'sweep_failure'); // could not sweep this symbol's open orders — surfaced, re-checked next pass
         failedSymbols.add(symbol);
       }
     }
@@ -166,10 +198,10 @@ export class ReconciliationService {
     for (const vo of venueOpen) {
       const verdict = classifyVenueOpenOrder(vo.clientOrderId, localCoids.has(vo.clientOrderId));
       if (verdict === 'UNKNOWN_OURS') {
-        acc.mismatches += 1;
+        bump(acc, 'unknown_ours_open');
         acc.halts.push('UNKNOWN_OURS_OPEN'); // I1: our prefix, no local row ⇒ corruption (no auto-cancel)
       } else if (verdict === 'FOREIGN') {
-        acc.mismatches += 1; // manual trading on the key — WARN + ignore
+        bump(acc, 'foreign_open_order'); // manual trading on the key — WARN + ignore
       }
     }
 
@@ -193,15 +225,15 @@ export class ReconciliationService {
     try {
       venue = await this.exchange.fetchOrder(coid, symbol);
     } catch {
-      acc.mismatches += 1; // an order we hold open but cannot query — surfaced, re-checked next pass
+      bump(acc, 'adopt_query_failure'); // an order we hold open but cannot query — surfaced, re-checked next pass
       return;
     }
     const event = this.terminalEventFor(venue.status);
     if (event === undefined) {
-      acc.mismatches += 1; // 'open'/'closed' here is inconsistent with absence from open orders — WARN
+      bump(acc, 'adopt_non_adoptable'); // 'open'/'closed' here is inconsistent with absence from open orders — WARN
       return;
     }
-    acc.mismatches += 1; // adopting a terminal we missed via the stream
+    bump(acc, 'adopted_terminal'); // adopting a terminal we missed via the stream
     try {
       await this.fold(coid, event);
     } catch (err) {
@@ -238,7 +270,7 @@ export class ReconciliationService {
       try {
         trades = await this.exchange.fetchMyTrades(symbol, since);
       } catch {
-        acc.mismatches += 1; // could not sweep this symbol's trades — surfaced
+        bump(acc, 'sweep_failure'); // could not sweep this symbol's trades — surfaced
         continue;
       }
       for (const t of trades) {
@@ -253,7 +285,7 @@ export class ReconciliationService {
     if (!isOurClientOrderId(t.clientOrderId)) return; // foreign trade on the key — ignore
     const rec = this.orders.get(t.clientOrderId);
     if (rec === undefined) {
-      acc.mismatches += 1;
+      bump(acc, 'fill_for_unknown_order');
       acc.halts.push('FILL_FOR_UNKNOWN_ORDER'); // our prefix, no local order ⇒ corruption (§6.4)
       return;
     }
@@ -262,7 +294,7 @@ export class ReconciliationService {
       this.toFillRecord(t),
       `reconcile:${t.venueTradeId}`,
     );
-    if (applied) acc.mismatches += 1; // a fill we had missed via the stream — backfilled + WARN
+    if (applied) bump(acc, 'backfilled_fill'); // a fill we had missed via the stream — backfilled + WARN
   }
 
   // Axis 3 — balances per asset within ε; within-ε drift recorded, monotone growth escalates.
@@ -271,7 +303,7 @@ export class ReconciliationService {
     try {
       venueBalances = await this.exchange.fetchBalances();
     } catch {
-      acc.mismatches += 1;
+      bump(acc, 'sweep_failure');
       return;
     }
     const local = this.portfolio.snapshot().balances;
@@ -286,10 +318,10 @@ export class ReconciliationService {
       this.driftHistory.set(asset, history);
 
       if (!within) {
-        acc.mismatches += 1;
+        bump(acc, 'balance_drift');
         acc.halts.push(`BALANCE_DRIFT:${asset}`); // beyond ε ⇒ HALT, no auto-flatten
       } else if (driftStrictlyGrowing(history, this.cfg.driftPasses)) {
-        acc.mismatches += 1;
+        bump(acc, 'balance_leak');
         acc.halts.push(`BALANCE_LEAK:${asset}`); // within ε but a systematic, growing leak ⇒ HALT
       }
     }

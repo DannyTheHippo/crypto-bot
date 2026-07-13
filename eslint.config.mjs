@@ -18,6 +18,8 @@ export default tseslint.config(
       'scripts/**',
       // Same class: the backtest data-fetch CLI is a bare .mjs run via `node`, outside tsconfig.
       'test/backtest/fetch-data.mjs',
+      // Same class: the Fear&Greed-index fetch CLI for the non-price sweep, bare .mjs via `node`.
+      'test/backtest/fetch-fng.mjs',
       // Same class: the standalone multi-strategy research sweep — bare .mjs run via `node`
       // (self-contained, no src/ imports), outside any tsconfig project.
       'test/backtest/multi-strategy/**',

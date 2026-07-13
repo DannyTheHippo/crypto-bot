@@ -17,7 +17,12 @@ import {
   totalReturn,
 } from './engine.mjs';
 import { donchian, tsmom } from './strategies.mjs';
-import { loadFunding, fundingSignalSeries, fundingPositions, fundingGatedTrend } from './funding-signal.mjs';
+import {
+  loadFunding,
+  fundingSignalSeries,
+  fundingPositions,
+  fundingGatedTrend,
+} from './funding-signal.mjs';
 
 function arg(name, def) {
   const i = process.argv.indexOf(name);

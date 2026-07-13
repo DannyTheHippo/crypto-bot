@@ -41,7 +41,12 @@ import {
   BASE_RULES,
   DIRS,
 } from './funding-sweep.mjs';
-import { loadFunding, fundingSignalSeries, fundingPositions, fundingGatedTrend } from './funding-signal.mjs';
+import {
+  loadFunding,
+  fundingSignalSeries,
+  fundingPositions,
+  fundingGatedTrend,
+} from './funding-signal.mjs';
 
 const DATA_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'data');
 
@@ -76,7 +81,9 @@ function wfConsistent(r) {
 
 function windowSlice(bars, fundingRows) {
   const wBars = bars.filter((b) => b.t >= WINDOW_START && b.t <= WINDOW_END);
-  const wFunding = fundingRows.filter((r) => r.timestamp >= WINDOW_START && r.timestamp <= WINDOW_END);
+  const wFunding = fundingRows.filter(
+    (r) => r.timestamp >= WINDOW_START && r.timestamp <= WINDOW_END,
+  );
   return { wBars, wFunding };
 }
 
@@ -170,7 +177,14 @@ console.log(
 );
 
 // ── Join against the original (candidates/nonprice-funding-2026-07-12.json) for the 5 family symbols
-const ORIGINAL_JSON = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'candidates', 'nonprice-funding-2026-07-12.json');
+const ORIGINAL_JSON = join(
+  dirname(fileURLToPath(import.meta.url)),
+  '..',
+  '..',
+  '..',
+  'candidates',
+  'nonprice-funding-2026-07-12.json',
+);
 let originalCells = [];
 try {
   originalCells = JSON.parse(readFileSync(ORIGINAL_JSON, 'utf8')).cells;

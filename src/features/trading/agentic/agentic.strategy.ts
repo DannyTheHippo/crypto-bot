@@ -49,6 +49,8 @@ import type { TradeFlowFeedPort } from '../../../ports/trade-flow-feed';
 import type { PositioningFeedPort } from '../../../ports/positioning-feed';
 import { evaluatePlan, type PlanExecutorAction, type PlanExecutorState } from './plan-executor';
 import { CrossSymbolContextService } from './cross-symbol-context';
+import { positionKey } from '../../../domain/risk/evaluate';
+import type { PlanStopRegistryPort } from '../../../ports/risk';
 
 export interface AgenticStrategyParams {
   readonly symbol: SymbolId;
@@ -192,6 +194,11 @@ export interface AgenticStrategyDeps {
   // event (see VenueTpEvent) — mirrors the onPrescreen seam above. Optional/no-op-defaulted; absent
   // means the venue-TP lane runs unobserved (no metric), never a behavior change.
   readonly onVenueTp?: (event: VenueTpEvent) => void;
+  // Plan-stop watcher (Push 3 P2): shared with ProtectiveExitService (see app.module.ts's single
+  // PLAN_STOP_REGISTRY provider) so its 1s tick can fire against THIS strategy's plan stop price
+  // between bar closes. Populated the moment a plan's entry fills and cleared on every plan-clear
+  // path (see clearPlan/setPlanStop below). Absent ⇒ no-op — byte-identical to pre-feature.
+  readonly planStopRegistry?: PlanStopRegistryPort;
   readonly logger?: LoggerLike;
 }
 
@@ -283,6 +290,8 @@ export class AgenticStrategy implements AsyncStrategy {
   private readonly venueTpReplaceDriftBps: number;
   private readonly venueTpTickSize?: string;
   private readonly onVenueTp?: (event: VenueTpEvent) => void;
+  // Plan-stop watcher (Push 3 P2) — see AgenticStrategyDeps.planStopRegistry's own comment.
+  private readonly planStopRegistry?: PlanStopRegistryPort;
   // W2.1 stale-entry sweep state. OpenOrderSummary carries no timestamps, so age is measured in
   // observed decide cycles: clientOrderId → the snapshot eventTime this strategy FIRST saw the order
   // resting. cancelRequestedAt records when a CANCEL_OPEN was emitted for an id so it isn't re-spammed
@@ -345,6 +354,7 @@ export class AgenticStrategy implements AsyncStrategy {
     this.venueTpReplaceDriftBps = Math.max(0, params.venueTpReplaceDriftBps ?? 10);
     this.venueTpTickSize = params.venueTpTickSize;
     this.onVenueTp = deps.onVenueTp;
+    this.planStopRegistry = deps.planStopRegistry;
     this.subscriptions = {
       venue: params.venue,
       symbols: [params.symbol],
@@ -357,6 +367,33 @@ export class AgenticStrategy implements AsyncStrategy {
     // Capture the venue minimum-notional for this symbol so buildContext can treat a sub-minimum
     // "dust" position as flat (see its own comment). Absent ⇒ null ⇒ no dust reclassification.
     this.minNotional = ctx.symbolConstraints.get(this.symbol)?.minNotional ?? null;
+  }
+
+  // Plan-stop watcher (Push 3 P2): the single choke point for dropping activePlan, so the plan-stop
+  // registry (ProtectiveExitService's tick reads it) can never outlive the plan it describes. Every
+  // `this.activePlan = null` site in this file routes through here instead of assigning directly.
+  private clearPlan(): void {
+    this.activePlan = null;
+    this.planStopRegistry?.clear(positionKey(this.id, this.venue, this.symbol));
+  }
+
+  // Populates the plan-stop registry the moment a plan's entry fills (entryPrice transitions
+  // null → non-null in runActivePlan — see that call site's own comment, which covers BOTH a fresh
+  // entry fill and the restart re-arm case identically). Mirrors plan-executor.ts's own stop-price
+  // formula exactly (entry × (1∓stopLossPct), no additional rounding) so the watcher's crossing
+  // check can never disagree with the executor's own bar-close check. venueStopResting is always
+  // false here — no venue-side stop order exists yet (a later phase places one and maintains it).
+  private setPlanStop(active: ActivePlanState, isShort: boolean): void {
+    if (!this.planStopRegistry || active.entryPrice === null) return;
+    const entry = new Decimal(active.entryPrice);
+    const stopPrice = isShort
+      ? entry.mul(new Decimal(1).plus(active.plan.stopLossPct))
+      : entry.mul(new Decimal(1).minus(active.plan.stopLossPct));
+    this.planStopRegistry.set(positionKey(this.id, this.venue, this.symbol), {
+      side: isShort ? 'SHORT' : 'LONG',
+      stopPrice: stopPrice.toFixed(),
+      venueStopResting: false,
+    });
   }
 
   async decide(rawInput: AgentDecisionInput): Promise<Signal[]> {
@@ -444,7 +481,7 @@ export class AgenticStrategy implements AsyncStrategy {
           venueTpPlacedAtBar: null,
         };
       } else if (decision.action === 'flat') {
-        this.activePlan = null;
+        this.clearPlan();
       }
       // Review finding (shorts round 2): the stale-entry sweep derives its side from the CURRENT
       // plan direction, so a cleared/direction-flipped plan whose entry still rests (only possible
@@ -497,12 +534,16 @@ export class AgenticStrategy implements AsyncStrategy {
 
     // Capture the realized entry price on the first bar the position shows the plan's managed side
     // (LONG or SHORT) — the executor's stop/TP levels anchor to the actual average fill, not the
-    // plan's intended offset price.
+    // plan's intended offset price. This is ALSO the boot re-arm site: a restart loses activePlan
+    // in-memory, the model re-attaches one via 'hold'+plan while already LONG/SHORT (entryPrice:
+    // null — see the decide() bookkeeping above), and the re-armed plan reaches this exact branch on
+    // its first managed bar, same as a fresh entry fill — there is no separate restore path.
     if (
       (context.position.side === 'LONG' || context.position.side === 'SHORT') &&
       active.entryPrice === null
     ) {
       active.entryPrice = context.position.avgEntry;
+      this.setPlanStop(active, isShort);
     }
 
     const candles = input.snapshot.candles.get(this.symbol) ?? [];
@@ -545,7 +586,7 @@ export class AgenticStrategy implements AsyncStrategy {
       // Only reachable when venueTpEnabled (see the remap above) — the resting venue TP filled
       // between bars (or an external flatten while it was in place), so the position is already
       // FLAT: no exit signal to emit, just clear the plan.
-      this.activePlan = null;
+      this.clearPlan();
       this.annotatePreviousOutcome(lastClose, context.position, lastCandle, heldDuringPrev);
       this.recordQuietJournalEntry(
         input,
@@ -593,7 +634,7 @@ export class AgenticStrategy implements AsyncStrategy {
           return [];
         }
       }
-      this.activePlan = null;
+      this.clearPlan();
       this.annotatePreviousOutcome(lastClose, context.position, lastCandle, heldDuringPrev);
       this.recordQuietJournalEntry(input, `plan exit: ${verdict.reason}`, 'plan-executor');
       const exitSignal: Signal = {
@@ -634,7 +675,7 @@ export class AgenticStrategy implements AsyncStrategy {
       return [exitSignal];
     }
     if (verdict.type === 'cancel_entry' || verdict.type === 'plan_expired') {
-      this.activePlan = null;
+      this.clearPlan();
       this.annotatePreviousOutcome(lastClose, context.position, lastCandle, heldDuringPrev);
       this.recordQuietJournalEntry(input, `plan cleared: ${verdict.type}`, 'plan-executor');
       if (verdict.type === 'cancel_entry') {

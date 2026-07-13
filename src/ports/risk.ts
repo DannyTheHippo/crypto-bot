@@ -20,6 +20,12 @@ export const RISK_JOURNAL_OVERRIDE = Symbol('RISK_JOURNAL_OVERRIDE');
 export const SIZER_DEPS = Symbol('SIZER_DEPS');
 export const RISK_ENGINE_DEPS = Symbol('RISK_ENGINE_DEPS');
 export const PROTECTIVE_EXIT_CONFIG = Symbol('PROTECTIVE_EXIT_CONFIG');
+// Plan-stop watcher (Push 3 P2): the plan-managed stop price per open position, populated by
+// AgenticStrategy the moment a plan's entry fills (see PlanStopRegistryPort below) and consulted by
+// ProtectiveExitService's 1s tick BEFORE the global-% backstop logic. Symbol'd (not a class token)
+// so both the strategy factory and ProtectiveExitService resolve the SAME singleton without either
+// importing the other's concrete class (mirrors SIGNAL_SINK's own token convention).
+export const PLAN_STOP_REGISTRY = Symbol('PLAN_STOP_REGISTRY');
 
 // ProtectiveExitService tunables (bot-side stop-loss/trailing-stop backstop). stopLossPct/
 // trailingPct are decimal-string fractions ('0' disables each independently); cooldownMs floors how
@@ -30,6 +36,35 @@ export interface ProtectiveExitConfig {
   readonly trailingPct: string;
   readonly cooldownMs: number;
   readonly filters: ReadonlyMap<string, SymbolFilters>;
+  // Plan-stop watcher (Push 3 P2): '0' behavior stays byte-identical (the registry is never
+  // consulted). When true, tick() checks the plan-stop registry for each live position BEFORE the
+  // global stopLossPct/trailingPct logic above — a hit fully owns that position for the tick
+  // (registry-based crossing check instead of the global-% one), a miss falls through unchanged.
+  // Rollback = flip this back to false.
+  readonly planStopWatchEnabled: boolean;
+  // Force-fire threshold (bps): a registry entry whose venueStopResting is true stands down UNLESS
+  // the breach beyond the plan's stop price exceeds this many bps — a resting venue stop should
+  // already have filled at a small breach, so a wide miss means the venue order failed and the
+  // bot-side watcher must not defer to it indefinitely.
+  readonly planStopForceBps: number;
+}
+
+// Plan-stop watcher (Push 3 P2): one entry per plan-managed LONG/SHORT position, keyed by
+// positionKey(strategyId, venue, symbol) (domain/risk/evaluate.ts) — the SAME key
+// ProtectiveExitService's own hwm/lwm/cooldown maps use. venueStopResting is future-proofing for a
+// later venue-side-stop build (a later phase places and maintains a real resting stop order there);
+// it defaults false today, so the watcher never stands down on it yet.
+export interface PlanStop {
+  readonly side: 'LONG' | 'SHORT';
+  readonly stopPrice: string;
+  readonly venueStopResting: boolean;
+}
+
+export interface PlanStopRegistryPort {
+  set(key: string, stop: PlanStop): void;
+  clear(key: string): void;
+  get(key: string): PlanStop | undefined;
+  entries(): ReadonlyMap<string, PlanStop>;
 }
 
 // Injected sizing dependencies. baseNotional (quote) scales by signal strength;

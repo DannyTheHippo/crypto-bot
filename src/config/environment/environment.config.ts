@@ -392,6 +392,21 @@ const envSchema = z
     // disables each independently — an unconfigured deployment sees zero behavior change.
     PROTECT_STOP_LOSS_PCT: fractionString.default('0'),
     PROTECT_TRAILING_PCT: fractionString.default('0'),
+    // Plan-stop watcher (Push 3 P2): when true, ProtectiveExitService's 1s tick consults the
+    // plan-stop registry (ports/risk.ts's PlanStopRegistryPort, populated by AgenticStrategy on plan
+    // entry-fill) for each live position BEFORE the global stop/trailing logic above, firing the
+    // SAME EXIT_LONG/EXIT_SHORT path off the plan's own stop price instead of avgEntry/hwm. Default
+    // 'false' — the registry is never consulted, byte-identical to pre-feature. Rollback = flip back
+    // to 'false'.
+    PLAN_STOP_WATCH_ENABLED: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
+    // Force-fire threshold (bps): a registry entry whose venueStopResting is true stands down unless
+    // the breach beyond the plan's stop exceeds this many bps (a resting venue stop should already
+    // have filled at a small breach; a wide miss means the venue-side order failed). Inert while
+    // PLAN_STOP_WATCH_ENABLED is false.
+    PLAN_STOP_FORCE_BPS: z.coerce.number().int().min(0).default(30),
     // RiskLimitsConfig overlay knobs (domain/risk/limits.ts) — RiskModule merges these onto
     // DEFAULT_LIMITS. Defaults equal the CURRENT hardcoded values, so an unconfigured deployment sees
     // zero behavior change. maxDriftBps has no knob in this pass; it stays hardcoded in DEFAULT_LIMITS.
@@ -619,6 +634,8 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     SIZER_EQUITY_FRACTION: sizerEquityFraction,
     PROTECT_STOP_LOSS_PCT: protectStopLossPct,
     PROTECT_TRAILING_PCT: protectTrailingPct,
+    PLAN_STOP_WATCH_ENABLED: planStopWatchEnabled,
+    PLAN_STOP_FORCE_BPS: planStopForceBps,
     RISK_MAX_ORDER_NOTIONAL: riskMaxOrderNotional,
     RISK_MAX_POSITION_PER_SYMBOL: riskMaxPositionPerSymbol,
     RISK_MAX_GROSS_EXPOSURE: riskMaxGrossExposure,
@@ -727,6 +744,8 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       equityFraction: sizerEquityFraction,
       protectStopLossPct,
       protectTrailingPct,
+      planStopWatchEnabled,
+      planStopForceBps,
       maxOrderNotional: riskMaxOrderNotional,
       maxPositionPerSymbol: riskMaxPositionPerSymbol,
       maxGrossExposure: riskMaxGrossExposure,

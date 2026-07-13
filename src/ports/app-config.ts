@@ -194,6 +194,13 @@ export interface AppConfig {
     // independently.
     protectStopLossPct: string;
     protectTrailingPct: string;
+    // Plan-stop watcher (Push 3 P2): default false — the 1s protective tick never consults the
+    // plan-stop registry (ports/risk.ts's PlanStopRegistryPort), byte-identical to pre-feature.
+    // Rollback = flip back to false.
+    planStopWatchEnabled: boolean;
+    // Force-fire threshold (bps) for a registry entry whose venueStopResting is true — see
+    // ports/risk.ts's ProtectiveExitConfig.planStopForceBps for the full rationale.
+    planStopForceBps: number;
     // RiskLimitsConfig overlay knobs (domain/risk/limits.ts) — RiskModule merges these onto its
     // DEFAULT_LIMITS hardcoded fallback. maxDriftBps has no env knob (not part of this pass); it
     // stays hardcoded in DEFAULT_LIMITS.

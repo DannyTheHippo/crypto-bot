@@ -13,7 +13,11 @@ import type {
 } from '../../../src/ports/agentic-strategy';
 import type { Signal } from '../../../src/domain/types/signal';
 import type { CandleEvent } from '../../../src/domain/types/market-events';
-import type { OpenOrderSummary, Position } from '../../../src/domain/types/portfolio';
+import type {
+  OpenOrderSummary,
+  Position,
+  PortfolioSnapshot,
+} from '../../../src/domain/types/portfolio';
 import { price, qty } from '../../../src/domain/types/money';
 import Decimal from 'decimal.js';
 import {
@@ -23,12 +27,31 @@ import {
   epochMs,
   clientOrderId,
 } from '../../../src/domain/types/ids';
+import { positionKey, type SymbolFilters } from '../../../src/domain/risk/evaluate';
+import type { PlanStop, PlanStopRegistryPort } from '../../../src/ports/risk';
+import type { ClockPort } from '../../../src/ports/clock';
+import { PositionSizerService } from '../../../src/features/trading/risk/position-sizer.service';
 
 const SID = strategyId('agentic-1');
 const V = venueId('binance');
 const SYM = symbolId('BTC/USDT');
 const STEP_MS = 900_000;
 const BASE_TIME = 14_400_000 * 100_000;
+const REG_KEY = positionKey(SID, V, SYM);
+
+// Push 3 P2: trivial in-test double of PlanStopRegistryService (features/trading/risk) — mirrors the
+// one in test/unit/risk/protective-exit.service.spec.ts.
+function planStopRegistry(
+  entries: ReadonlyMap<string, PlanStop> = new Map(),
+): PlanStopRegistryPort {
+  const stops = new Map(entries);
+  return {
+    set: (key, stop) => void stops.set(key, stop),
+    clear: (key) => void stops.delete(key),
+    get: (key) => stops.get(key),
+    entries: () => stops,
+  };
+}
 
 function candle(index: number, close = '100'): CandleEvent {
   const t = BASE_TIME + index * STEP_MS;
@@ -1002,5 +1025,207 @@ describe('AgenticStrategy venue-resting take-profit lifecycle — SHORT (Push II
     expect(cancel).toBeDefined();
     expect(cancel!.cancelSide).toBe('SELL');
     expect(cancel!.reason).toContain('outgoing');
+  });
+});
+
+// Push 3 P2 (plan-aware stop watcher, flag-off): AgenticStrategy populates the plan-stop registry
+// (ports/risk.ts's PlanStopRegistryPort) the moment a plan's entry fills, and clears it through the
+// SAME clearPlan() choke point every `this.activePlan = null` site now routes through. The registry
+// itself is inert here (its consumer, ProtectiveExitService, gates on PLAN_STOP_WATCH_ENABLED) — these
+// tests pin the strategy-side bookkeeping only.
+describe('AgenticStrategy plan-stop registry bookkeeping (Push 3 P2)', () => {
+  it('sets the registry with the exact Decimal stop price on the entry-fill bar (LONG)', async () => {
+    const client = new PlanningClient();
+    const registry = planStopRegistry();
+    const strategy = new AgenticStrategy(SID, makeParams(), client, {
+      planStopRegistry: registry,
+    });
+    await strategy.decide(buildInput(0)); // plan stored — entryPrice still null, no registry entry
+    expect(registry.get(REG_KEY)).toBeUndefined();
+
+    // Bar 1: position now shows LONG at avgEntry 100 — entry captured. PLAN.stopLossPct = '0.02' ⇒
+    // 100 × (1 − 0.02) = 98 exactly (mirrors plan-executor.ts:66's own formula).
+    await strategy.decide(buildInput(1, { position: longPosition('100') }));
+    expect(registry.get(REG_KEY)).toEqual({
+      side: 'LONG',
+      stopPrice: '98',
+      venueStopResting: false,
+    });
+  });
+
+  it('clears the registry on a plan exit (stop/take-profit/max_hold clear site)', async () => {
+    const client = new PlanningClient();
+    const registry = planStopRegistry();
+    const strategy = new AgenticStrategy(SID, makeParams(), client, {
+      planStopRegistry: registry,
+    });
+    await strategy.decide(buildInput(0));
+    await strategy.decide(buildInput(1, { position: longPosition('100') }));
+    expect(registry.get(REG_KEY)).toBeDefined();
+
+    // Bar 2: close 103.5 ≥ 100×1.03 → TP exit clears the plan (and the registry with it).
+    await strategy.decide(buildInput(2, { close: '103.5', position: longPosition('100') }));
+    expect(registry.get(REG_KEY)).toBeUndefined();
+  });
+
+  it('clears the registry on cancel_entry/plan_expired (an unfilled entry lapsing — a no-op clear, since it was never set)', async () => {
+    const client = new PlanningClient();
+    const registry = planStopRegistry();
+    const strategy = new AgenticStrategy(SID, makeParams(), client, {
+      planStopRegistry: registry,
+    });
+    const restingEntry: OpenOrderSummary = {
+      clientOrderId: clientOrderId('cbp0000000000000007000800000000000005'),
+      symbol: SYM,
+      side: 'BUY',
+      qty: qty('0.001'),
+    };
+    await strategy.decide(buildInput(0)); // plan stored (validity 2 bars), entry never fills
+    await strategy.decide(buildInput(1, { openOrders: [restingEntry] }));
+    await strategy.decide(buildInput(2, { openOrders: [restingEntry] })); // lapses → clearPlan()
+    expect(registry.get(REG_KEY)).toBeUndefined();
+  });
+
+  it("clears the registry when the LLM returns an explicit 'flat' decision (decide()'s own clear site)", async () => {
+    class FlatAfterPlanClient implements AgentClientPort {
+      calls = 0;
+      propose(): Promise<AgentProposal> {
+        this.calls += 1;
+        if (this.calls === 1) {
+          return Promise.resolve({
+            signals: [],
+            decision: { action: 'long', confidence: 0.8, rationale: 'r' },
+            plan: PLAN,
+          });
+        }
+        return Promise.resolve({
+          signals: [],
+          decision: { action: 'flat', confidence: 0.8, rationale: 'done' },
+        });
+      }
+    }
+    const client = new FlatAfterPlanClient();
+    const registry = planStopRegistry();
+    // planMaxQuietBars=1 forces a re-consult on the very next managed bar (after entryPrice is
+    // captured), reaching decide()'s own 'flat' bookkeeping site rather than runActivePlan's.
+    const strategy = new AgenticStrategy(SID, { ...makeParams(), planMaxQuietBars: 1 }, client, {
+      planStopRegistry: registry,
+    });
+    await strategy.decide(buildInput(0)); // plan stored
+    await strategy.decide(buildInput(1, { position: longPosition('100') })); // entry captured, then re-consult → flat
+    expect(client.calls).toBe(2);
+    expect(registry.get(REG_KEY)).toBeUndefined();
+  });
+
+  it('clears the registry when the venue take-profit fills externally (position_closed clear site, AGENTIC_VENUE_TP)', async () => {
+    const client = new PlanningClient();
+    const registry = planStopRegistry();
+    const strategy = new AgenticStrategy(
+      SID,
+      {
+        symbol: SYM,
+        venue: V,
+        interval: '15m',
+        warmupBars: 5,
+        model: 'test-model',
+        planMode: true,
+        planMaxQuietBars: 20,
+        venueTpEnabled: true,
+      },
+      client,
+      { planStopRegistry: registry },
+    );
+    await strategy.decide(buildInput(0));
+    await strategy.decide(buildInput(1, { position: longPosition('100') })); // places TP, registry set
+    expect(registry.get(REG_KEY)).toBeDefined();
+
+    // Bar 2: the venue TP filled between bars — position_closed clears the plan (no `position` this
+    // bar, no resting orders).
+    await strategy.decide(buildInput(2));
+    expect(registry.get(REG_KEY)).toBeUndefined();
+  });
+
+  it('sets the registry on the boot re-arm path (same entry-fill-capture site — no separate restore code exists)', async () => {
+    class RearmingClient implements AgentClientPort {
+      calls = 0;
+      propose(): Promise<AgentProposal> {
+        this.calls += 1;
+        return Promise.resolve({
+          signals: [],
+          decision: { action: 'hold', confidence: 0.5, rationale: 'r' },
+          ...(this.calls === 1 ? { plan: PLAN } : {}),
+        });
+      }
+    }
+    const client = new RearmingClient();
+    const registry = planStopRegistry();
+    const strategy = new AgenticStrategy(SID, makeParams(), client, {
+      planStopRegistry: registry,
+    });
+    const held = longPosition('100');
+
+    // Post-restart shape: LONG position, no active plan → forced consult (the re-arm). entryPrice is
+    // still null at this point — same as a fresh plan — so no registry entry yet.
+    await strategy.decide(buildInput(0, { position: held }));
+    expect(registry.get(REG_KEY)).toBeUndefined();
+
+    // Next bar: plan-executor manages, entry anchored to avgEntry — the SAME capture site as a fresh
+    // entry fill sets the registry.
+    await strategy.decide(buildInput(1, { position: held }));
+    expect(registry.get(REG_KEY)).toEqual({
+      side: 'LONG',
+      stopPrice: '98',
+      venueStopResting: false,
+    });
+  });
+});
+
+// Push 3 P2: if the plan-stop watcher (ProtectiveExitService) fires an exit that flattens the
+// position between bars, the plan-executor's own bar-close exit attempt for the SAME plan has
+// nothing left to reduce — this pins the existing sizer invariant the watcher relies on rather than
+// duplicating a position (position-sizer.service.ts:118's NO_POSITION branch).
+describe('Plan-stop watcher — sizer interaction on a double-fire (Push 3 P2)', () => {
+  it('sizes a bar-close exit against an already-flattened position as NO_POSITION, not a duplicate reduce', () => {
+    const clock: ClockPort = { now: () => epochMs(BASE_TIME) };
+    const filters: SymbolFilters = {
+      tickSize: '0.01',
+      stepSize: '0.0001',
+      minQty: '0.0001',
+      minNotional: '5',
+    };
+    const sizer = new PositionSizerService(clock, {
+      baseNotional: '100',
+      mode: 'paper',
+      filters: new Map([[String(SYM), filters]]),
+      randomBytes: (n) => new Uint8Array(n),
+    });
+    const exitSignal: Signal = {
+      strategyId: SID,
+      venue: V,
+      symbol: SYM,
+      kind: 'EXIT_LONG',
+      strength: 1,
+      refPrice: price('100'),
+      basedOnSeq: 1n,
+      eventTime: epochMs(BASE_TIME),
+      ttlMs: 60_000,
+      dedupeKey: 'plan-exit-after-watcher',
+      reason: 'plan exit: stop',
+    };
+    // The watcher already flattened this position (no entry under this key in `positions`).
+    const snapshot: PortfolioSnapshot = {
+      positions: new Map(),
+      balances: new Map(),
+      openOrders: [],
+      inFlightIntents: [],
+      equity: new Decimal('100000'),
+      unrealized: new Decimal('0'),
+      startingCash: new Decimal('100000'),
+      peakEquity: new Decimal('100000'),
+      sodEquityUtc: new Decimal('100000'),
+      reconcileStatus: 'CLEAN',
+      snapshotSeq: 1n,
+    };
+    expect(sizer.size(exitSignal, snapshot)).toEqual({ ok: false, reason: 'NO_POSITION' });
   });
 });

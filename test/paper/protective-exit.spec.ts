@@ -146,6 +146,8 @@ function buildLoop() {
     trailingPct: '0',
     cooldownMs: 30_000,
     filters: FILTERS,
+    planStopWatchEnabled: false,
+    planStopForceBps: 30,
   };
   const protective = new ProtectiveExitService(
     clock,

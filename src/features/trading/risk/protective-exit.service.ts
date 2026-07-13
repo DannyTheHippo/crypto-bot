@@ -7,8 +7,10 @@ import { FEED_HEALTH, type FeedHealthPort } from '../../../ports/market-data';
 import {
   KILL_SWITCH,
   PROTECTIVE_EXIT_CONFIG,
+  PLAN_STOP_REGISTRY,
   type KillSwitchPort,
   type ProtectiveExitConfig,
+  type PlanStopRegistryPort,
 } from '../../../ports/risk';
 import { PORTFOLIO_VIEW, type PortfolioViewPort } from '../../../ports/execution';
 import { SIGNAL_SINK, type SignalSinkPort } from '../../../ports/strategy';
@@ -16,7 +18,17 @@ import type { Signal } from '../../../domain/types/signal';
 import type { Position } from '../../../domain/types/portfolio';
 import type { EpochMs } from '../../../domain/types/ids';
 
-type ProtectReason = 'STOP_LOSS' | 'TRAILING_STOP';
+// Push 3 P2: 'PLAN_STOP' is the plan-stop watcher's own reason — a registry hit fires through the
+// exact same fire() machinery (cancel-first, stacking guard, cooldown, kill-switch) as the legacy
+// global-% reasons below, just off a different price source (the plan's own stop, not avgEntry/hwm).
+type ProtectReason = 'STOP_LOSS' | 'TRAILING_STOP' | 'PLAN_STOP';
+// fire()'s Signal.reason carries a human string, not the bare label above (metrics use the label —
+// see PROTECTIVE_EXITS_COUNTER's inc() call).
+const REASON_TEXT: Record<ProtectReason, string> = {
+  STOP_LOSS: 'STOP_LOSS',
+  TRAILING_STOP: 'TRAILING_STOP',
+  PLAN_STOP: 'plan stop (watcher)',
+};
 
 // §S3 bot-enforced protective backstop for the agentic (LLM) lane, which decides only on closed
 // candles and can go dark (budget-blocked, degraded, outage) — this service fires an EXIT_LONG or
@@ -25,7 +37,7 @@ type ProtectReason = 'STOP_LOSS' | 'TRAILING_STOP';
 // @Optional injection so the directly-constructed unit tests cover the metric-absent branch.
 export const PROTECTIVE_EXITS_COUNTER = makeCounterProvider({
   name: 'protective_exits_total',
-  help: 'Bot-enforced protective exits fired (stop-loss/trailing-stop), by reason',
+  help: 'Bot-enforced protective exits fired (stop-loss/trailing-stop/plan-stop watcher), by reason',
   labelNames: ['reason'] as const,
 });
 
@@ -51,12 +63,21 @@ export class ProtectiveExitService {
     @Inject(SIGNAL_SINK) private readonly sink: SignalSinkPort,
     @Inject(PROTECTIVE_EXIT_CONFIG) private readonly config: ProtectiveExitConfig,
     @Optional() @InjectMetric('protective_exits_total') private readonly exits?: Counter<string>,
+    // Push 3 P2: @Optional so every pre-existing call site (unit tests, module-isolation boots)
+    // keeps constructing without it — absent ⇒ the watcher branch never activates (config.
+    // planStopWatchEnabled is also gated below), byte-identical to pre-feature.
+    @Optional()
+    @Inject(PLAN_STOP_REGISTRY)
+    private readonly planStops?: PlanStopRegistryPort,
   ) {}
 
   async tick(now: EpochMs): Promise<void> {
     const stopLossPct = new Decimal(this.config.stopLossPct);
     const trailingPct = new Decimal(this.config.trailingPct);
-    if (stopLossPct.lte(0) && trailingPct.lte(0)) return; // inert — both knobs disabled
+    // Push 3 P2: the plan-stop watcher rides this SAME tick, so the global-% inert short-circuit must
+    // not also skip it — the watcher's own default deployment (both PROTECT_* knobs at '0') would
+    // otherwise never run despite planStopWatchEnabled being on.
+    if (stopLossPct.lte(0) && trailingPct.lte(0) && !this.config.planStopWatchEnabled) return;
 
     if (this.killSwitch.state() !== 'RUNNING') return; // HALTING/FLATTENING belongs to HaltCoordinator
 
@@ -85,6 +106,22 @@ export class ProtectiveExitService {
 
       const ref = this.feed.getRefPrice(pos.symbol);
       if (ref === undefined) continue; // cannot price this tick — retry next tick
+
+      // Push 3 P2: a plan-managed position with a registry entry is handled ENTIRELY by the watcher
+      // below — never falls through to the global-% logic this tick (no double-processing), even if
+      // the watcher itself declines to fire (stand-down/stacking/cooldown). A position with no
+      // registry entry (no active plan, or the watcher flag is off) is untouched, legacy path only.
+      if (this.config.planStopWatchEnabled) {
+        const stop = this.planStops?.get(key);
+        if (stop !== undefined) {
+          await this.tickPlanStop(pos, ref.mid, now, key, isLong, stop, snapshot.snapshotSeq, {
+            buyOpen,
+            sellOpen,
+            inFlightSymbols,
+          });
+          continue;
+        }
+      }
 
       // A sign flip reusing the same key changes direction — drop the stale opposite-direction
       // watermark so the newly-opened side reseeds fresh rather than trailing off a peak/trough
@@ -148,6 +185,47 @@ export class ProtectiveExitService {
     }
   }
 
+  // Push 3 P2 watcher: the plan's own stop price (registry entry), not avgEntry/hwm-derived —
+  // crossing test mirrors plan-executor.ts's own LONG/SHORT stop comparison exactly (≤ / ≥). Runs
+  // through the SAME stacking guard, cooldown, and fire() machinery as the global-% path — only the
+  // trigger price source and the reason differ.
+  private async tickPlanStop(
+    pos: Position,
+    mid: Signal['refPrice'],
+    now: EpochMs,
+    key: string,
+    isLong: boolean,
+    stop: { readonly stopPrice: string; readonly venueStopResting: boolean },
+    snapshotSeq: bigint,
+    orders: {
+      readonly buyOpen: Set<string>;
+      readonly sellOpen: Set<string>;
+      readonly inFlightSymbols: Set<string>;
+    },
+  ): Promise<void> {
+    const stopPrice = new Decimal(stop.stopPrice);
+    const crossed = isLong ? mid.lte(stopPrice) : mid.gte(stopPrice);
+    if (!crossed) return;
+
+    // A resting venue stop should already have filled at a small breach — stand down UNLESS the
+    // breach has grown past the force threshold, meaning the venue order evidently failed.
+    if (stop.venueStopResting) {
+      const breachBps = mid.minus(stopPrice).abs().div(stopPrice).mul(10_000);
+      if (breachBps.lte(this.config.planStopForceBps)) return;
+    }
+
+    const { buyOpen, sellOpen, inFlightSymbols } = orders;
+    const entryBusy =
+      (isLong ? buyOpen : sellOpen).has(pos.symbol) || inFlightSymbols.has(pos.symbol);
+    if (entryBusy) return; // STACKING GUARD: mirrors the global-% path above
+
+    const lastFired = this.lastFiredAt.get(key);
+    if (lastFired !== undefined && now - lastFired < this.config.cooldownMs) return;
+
+    const hasOpenTp = (isLong ? sellOpen : buyOpen).has(pos.symbol);
+    await this.fire(pos, mid, now, 'PLAN_STOP', key, snapshotSeq, isLong, hasOpenTp);
+  }
+
   private async fire(
     pos: Position,
     mid: Signal['refPrice'],
@@ -158,6 +236,7 @@ export class ProtectiveExitService {
     isLong: boolean,
     hasOpenTp: boolean,
   ): Promise<void> {
+    const reasonText = REASON_TEXT[reason];
     const signal: Signal = {
       strategyId: pos.strategyId,
       venue: pos.venue,
@@ -169,7 +248,7 @@ export class ProtectiveExitService {
       eventTime: now,
       ttlMs: 60_000,
       dedupeKey: `protect:${reason}:${pos.symbol}:${now}`,
-      reason,
+      reason: reasonText,
     };
     // Push II Phase 8: the venue take-profit side mirrors direction — SELL for a LONG, BUY (cover)
     // for a SHORT.
@@ -191,7 +270,7 @@ export class ProtectiveExitService {
           eventTime: now,
           ttlMs: 60_000,
           dedupeKey: `protect:cancel_${tpSide.toLowerCase()}:${pos.symbol}:${now}`,
-          reason: `${reason}: clear resting ${tpSide} before protective exit`,
+          reason: `${reasonText}: clear resting ${tpSide} before protective exit`,
         });
       }
       await this.sink.recordSignal(signal);

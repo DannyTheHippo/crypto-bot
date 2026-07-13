@@ -1,6 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
 import { ProtectiveExitService } from '../../../src/features/trading/risk/protective-exit.service';
-import type { ProtectiveExitConfig, KillSwitchPort } from '../../../src/ports/risk';
+import type {
+  ProtectiveExitConfig,
+  KillSwitchPort,
+  PlanStop,
+  PlanStopRegistryPort,
+} from '../../../src/ports/risk';
 import type { PortfolioViewPort } from '../../../src/ports/execution';
 import type { FeedHealthPort } from '../../../src/ports/market-data';
 import type { SignalSinkPort } from '../../../src/ports/strategy';
@@ -68,7 +73,21 @@ function config(over: Partial<ProtectiveExitConfig> = {}): ProtectiveExitConfig 
     trailingPct: '0.015',
     cooldownMs: 30_000,
     filters: FILTERS,
+    planStopWatchEnabled: false,
+    planStopForceBps: 30,
     ...over,
+  };
+}
+
+function planStopRegistry(
+  entries: ReadonlyMap<string, PlanStop> = new Map(),
+): PlanStopRegistryPort {
+  const stops = new Map(entries);
+  return {
+    set: (key, stop) => void stops.set(key, stop),
+    clear: (key) => void stops.delete(key),
+    get: (key) => stops.get(key),
+    entries: () => stops,
   };
 }
 
@@ -143,6 +162,7 @@ function build(
     noRef?: boolean;
     sink?: SignalSinkPort;
     counter?: { inc: (labels: Record<string, string>) => void };
+    planStops?: PlanStopRegistryPort;
   } = {},
 ) {
   const snap = over.snap ?? snapshot();
@@ -157,6 +177,7 @@ function build(
     sink,
     config(over.config),
     counterArg as unknown as import('prom-client').Counter<string>,
+    over.planStops,
   );
   return { svc, sink, snap, inc };
 }
@@ -763,6 +784,237 @@ describe('ProtectiveExitService', () => {
       expect((calls[0]?.[0] as Signal).kind).toBe('CANCEL_OPEN');
       expect((calls[0]?.[0] as Signal).cancelSide).toBe('BUY');
       expect((calls[1]?.[0] as Signal).kind).toBe('EXIT_SHORT');
+    });
+  });
+
+  // Push 3 P2: plan-stop watcher — a registry hit (positionKey-keyed) fires off the plan's own stop
+  // price instead of avgEntry/hwm, through the SAME fire() machinery. Global stopLossPct/trailingPct
+  // are '0' throughout this suite so only the watcher branch is under test.
+  describe('plan-stop watcher (Push 3 P2)', () => {
+    it('fires EXIT_LONG when mid crosses at/below the registry stop price', async () => {
+      const snap = snapshot({ positions: new Map([[KEY, pos({ avgEntry: price('100') })]]) });
+      const registry = planStopRegistry(
+        new Map([[KEY, { side: 'LONG', stopPrice: '98', venueStopResting: false }]]),
+      );
+      const { svc, sink } = build({
+        snap,
+        mid: '98',
+        config: { stopLossPct: '0', trailingPct: '0', planStopWatchEnabled: true },
+        planStops: registry,
+      });
+      await svc.tick(epochMs(T));
+      const calls = (sink.recordSignal as ReturnType<typeof vi.fn>).mock.calls;
+      expect(calls).toHaveLength(1);
+      const signal = calls[0]?.[0] as Signal;
+      expect(signal.kind).toBe('EXIT_LONG');
+      expect(signal.reason).toBe('plan stop (watcher)');
+    });
+
+    it('fires EXIT_SHORT when mid crosses at/above the registry stop price', async () => {
+      const snap = snapshot({ positions: new Map([[KEY, shortPos({ avgEntry: price('100') })]]) });
+      const registry = planStopRegistry(
+        new Map([[KEY, { side: 'SHORT', stopPrice: '102', venueStopResting: false }]]),
+      );
+      const { svc, sink } = build({
+        snap,
+        mid: '102',
+        config: { stopLossPct: '0', trailingPct: '0', planStopWatchEnabled: true },
+        planStops: registry,
+      });
+      await svc.tick(epochMs(T));
+      const calls = (sink.recordSignal as ReturnType<typeof vi.fn>).mock.calls;
+      expect(calls).toHaveLength(1);
+      expect((calls[0]?.[0] as Signal).kind).toBe('EXIT_SHORT');
+      expect((calls[0]?.[0] as Signal).reason).toBe('plan stop (watcher)');
+    });
+
+    it('does not fire before the registry stop price is crossed', async () => {
+      const snap = snapshot({ positions: new Map([[KEY, pos({ avgEntry: price('100') })]]) });
+      const registry = planStopRegistry(
+        new Map([[KEY, { side: 'LONG', stopPrice: '98', venueStopResting: false }]]),
+      );
+      const { svc, sink } = build({
+        snap,
+        mid: '98.01',
+        config: { stopLossPct: '0', trailingPct: '0', planStopWatchEnabled: true },
+        planStops: registry,
+      });
+      await svc.tick(epochMs(T));
+      expect((sink.recordSignal as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
+    });
+
+    it('flag off: a registry entry that would fire is never consulted (zero behavior delta, pinned)', async () => {
+      const snap = snapshot({ positions: new Map([[KEY, pos({ avgEntry: price('100') })]]) });
+      const registry = planStopRegistry(
+        new Map([[KEY, { side: 'LONG', stopPrice: '98', venueStopResting: false }]]),
+      );
+      const { svc, sink } = build({
+        snap,
+        mid: '50', // deep past the registry stop — would fire if the watcher ran
+        config: { stopLossPct: '0', trailingPct: '0', planStopWatchEnabled: false },
+        planStops: registry,
+      });
+      await svc.tick(epochMs(T));
+      expect((sink.recordSignal as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
+    });
+
+    it('legacy global-% path fires normally when the flag is on but no registry entry exists for this key', async () => {
+      const snap = snapshot({ positions: new Map([[KEY, pos({ avgEntry: price('100') })]]) });
+      const { svc, sink } = build({
+        snap,
+        mid: '98',
+        config: { stopLossPct: '0.02', trailingPct: '0', planStopWatchEnabled: true },
+        planStops: planStopRegistry(), // empty — no entry for KEY
+      });
+      await svc.tick(epochMs(T));
+      const calls = (sink.recordSignal as ReturnType<typeof vi.fn>).mock.calls;
+      expect(calls).toHaveLength(1);
+      expect((calls[0]?.[0] as Signal).reason).toBe('STOP_LOSS');
+    });
+
+    it('stands down when venueStopResting is true and the breach stays within the force-bps tolerance', async () => {
+      const snap = snapshot({ positions: new Map([[KEY, pos({ avgEntry: price('100') })]]) });
+      // stop 98; breach at mid=97.9 ≈ 10.2bps < the 30bps threshold ⇒ defer to the (assumed-filled)
+      // venue stop rather than force-firing.
+      const registry = planStopRegistry(
+        new Map([[KEY, { side: 'LONG', stopPrice: '98', venueStopResting: true }]]),
+      );
+      const { svc, sink } = build({
+        snap,
+        mid: '97.9',
+        config: {
+          stopLossPct: '0',
+          trailingPct: '0',
+          planStopWatchEnabled: true,
+          planStopForceBps: 30,
+        },
+        planStops: registry,
+      });
+      await svc.tick(epochMs(T));
+      expect((sink.recordSignal as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
+    });
+
+    it('force-fires when venueStopResting is true but the breach exceeds the force-bps threshold', async () => {
+      const snap = snapshot({ positions: new Map([[KEY, pos({ avgEntry: price('100') })]]) });
+      // stop 98; breach at mid=90 ≈ 816bps, far past the 30bps threshold ⇒ the venue-side stop
+      // evidently failed — force-fire rather than deferring to it indefinitely.
+      const registry = planStopRegistry(
+        new Map([[KEY, { side: 'LONG', stopPrice: '98', venueStopResting: true }]]),
+      );
+      const { svc, sink } = build({
+        snap,
+        mid: '90',
+        config: {
+          stopLossPct: '0',
+          trailingPct: '0',
+          planStopWatchEnabled: true,
+          planStopForceBps: 30,
+        },
+        planStops: registry,
+      });
+      await svc.tick(epochMs(T));
+      expect((sink.recordSignal as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
+    });
+
+    it('respects the stacking guard: a resting entry (BUY) blocks the watcher exactly like the global-% path', async () => {
+      const snap = snapshot({
+        positions: new Map([[KEY, pos({ avgEntry: price('100') })]]),
+        openOrders: [openOrder(SYM, 'BUY')],
+      });
+      const registry = planStopRegistry(
+        new Map([[KEY, { side: 'LONG', stopPrice: '98', venueStopResting: false }]]),
+      );
+      const { svc, sink } = build({
+        snap,
+        mid: '90',
+        config: { stopLossPct: '0', trailingPct: '0', planStopWatchEnabled: true },
+        planStops: registry,
+      });
+      await svc.tick(epochMs(T));
+      expect((sink.recordSignal as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
+    });
+
+    it('does nothing when the kill switch is not RUNNING (the watcher never runs)', async () => {
+      const snap = snapshot({ positions: new Map([[KEY, pos({ avgEntry: price('100') })]]) });
+      const registry = planStopRegistry(
+        new Map([[KEY, { side: 'LONG', stopPrice: '98', venueStopResting: false }]]),
+      );
+      const { svc, sink } = build({
+        snap,
+        mid: '90',
+        killState: 'HALTING',
+        config: { stopLossPct: '0', trailingPct: '0', planStopWatchEnabled: true },
+        planStops: registry,
+      });
+      await svc.tick(epochMs(T));
+      expect((sink.recordSignal as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
+    });
+
+    it('treats a below-minNotional position as dust and skips it before the registry is even consulted', async () => {
+      const dustSnap = snapshot({
+        positions: new Map([
+          [KEY, pos({ signedQty: new Decimal('0.001'), avgEntry: price('100') })],
+        ]),
+      });
+      const registry = planStopRegistry(
+        new Map([[KEY, { side: 'LONG', stopPrice: '98', venueStopResting: false }]]),
+      );
+      const { svc, sink } = build({
+        snap: dustSnap,
+        mid: '1',
+        config: { stopLossPct: '0', trailingPct: '0', planStopWatchEnabled: true },
+        planStops: registry,
+      });
+      await svc.tick(epochMs(T));
+      expect((sink.recordSignal as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
+    });
+
+    it('cooldown blocks an immediate re-fire, then allows one after it expires', async () => {
+      const snap = snapshot({ positions: new Map([[KEY, pos({ avgEntry: price('100') })]]) });
+      const registry = planStopRegistry(
+        new Map([[KEY, { side: 'LONG', stopPrice: '98', venueStopResting: false }]]),
+      );
+      const sink: SignalSinkPort = { recordSignal: vi.fn() };
+      const svc = new ProtectiveExitService(
+        clock,
+        killSwitch('RUNNING'),
+        feed('90'),
+        portfolioView(snap),
+        sink,
+        config({
+          stopLossPct: '0',
+          trailingPct: '0',
+          planStopWatchEnabled: true,
+          cooldownMs: 30_000,
+        }),
+        undefined,
+        registry,
+      );
+      await svc.tick(epochMs(T));
+      expect((sink.recordSignal as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
+
+      await svc.tick(epochMs(T + 1000)); // within cooldown ⇒ no re-fire
+      expect((sink.recordSignal as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
+
+      await svc.tick(epochMs(T + 30_000)); // cooldown elapsed ⇒ fires again
+      expect((sink.recordSignal as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(2);
+    });
+
+    it('increments the counter with the PLAN_STOP reason label on a watcher fire', async () => {
+      const snap = snapshot({ positions: new Map([[KEY, pos({ avgEntry: price('100') })]]) });
+      const registry = planStopRegistry(
+        new Map([[KEY, { side: 'LONG', stopPrice: '98', venueStopResting: false }]]),
+      );
+      const inc = vi.fn();
+      const { svc } = build({
+        snap,
+        mid: '90',
+        config: { stopLossPct: '0', trailingPct: '0', planStopWatchEnabled: true },
+        counter: { inc },
+        planStops: registry,
+      });
+      await svc.tick(epochMs(T));
+      expect(inc).toHaveBeenCalledWith({ reason: 'PLAN_STOP' });
     });
   });
 });

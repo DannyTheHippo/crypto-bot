@@ -45,6 +45,7 @@ import {
   ProtectiveExitService,
   PROTECTIVE_EXITS_COUNTER,
 } from './features/trading/risk/protective-exit.service';
+import { PlanStopRegistryService } from './features/trading/risk/plan-stop-registry.service';
 import { UnknownResolverService } from './features/trading/execution/unknown-resolver.service';
 import { ReconciliationService } from './features/trading/execution/reconciliation.service';
 import { EquitySamplerService } from './features/trading/execution/equity-sampler.service';
@@ -187,9 +188,11 @@ import {
   RISK_LIMITS,
   RISK_JOURNAL_OVERRIDE,
   PROTECTIVE_EXIT_CONFIG,
+  PLAN_STOP_REGISTRY,
   type RiskJournalPort,
   type KillSwitchPort,
   type ProtectiveExitConfig,
+  type PlanStopRegistryPort,
 } from './ports/risk';
 import { validateLimits, type PartialRiskLimits } from './domain/risk/limits';
 import { EXCHANGE_PORT, type ExchangePort } from './ports/exchange';
@@ -1416,9 +1419,15 @@ class AgenticCompositionBridgeModule {}
         trailingPct: config.risk.protectTrailingPct,
         cooldownMs: 30_000,
         filters: DEFAULT_FILTERS,
+        planStopWatchEnabled: config.risk.planStopWatchEnabled,
+        planStopForceBps: config.risk.planStopForceBps,
       }),
       inject: [TypedConfigService],
     },
+    // Push 3 P2: single shared instance — ProtectiveExitService resolves it via this token, and the
+    // agentic strategy factory below resolves the SAME instance through the AppModule constructor
+    // injection just below (mirrors PROTECTIVE_EXIT_CONFIG's single-source-of-truth convention).
+    { provide: PLAN_STOP_REGISTRY, useClass: PlanStopRegistryService },
     ProtectiveExitService,
     PROTECTIVE_EXITS_COUNTER,
     { provide: SIGNAL_SINK, useExisting: SignalSinkService },
@@ -1479,6 +1488,9 @@ export class AppModule
     @Inject(CLOCK) private readonly clock: ClockPort,
     private readonly coordinator: HaltCoordinatorService,
     private readonly protectiveExit: ProtectiveExitService,
+    // Push 3 P2: the SAME instance ProtectiveExitService resolved via PLAN_STOP_REGISTRY (both bind
+    // to the one provider above) — threaded into the agentic strategy factory's deps below.
+    @Inject(PLAN_STOP_REGISTRY) private readonly planStopRegistry: PlanStopRegistryPort,
     private readonly resolver: UnknownResolverService,
     private readonly reconciliation: ReconciliationService,
     private readonly sampler: EquitySamplerService,
@@ -1726,6 +1738,9 @@ export class AppModule
         // (this closure runs once per registration but `deps` is captured by the factory), so each
         // instance records its own symbol's trailing return and reads the whole basket's ranking.
         crossSymbolContext: this.crossSymbolContext,
+        // Push 3 P2: the SAME instance ProtectiveExitService reads each 1s tick (PLAN_STOP_REGISTRY,
+        // provided once above) — this strategy instance populates it on plan entry-fill/clear.
+        planStopRegistry: this.planStopRegistry,
       };
       return new AgenticStrategy(id, p as AgenticStrategyParams, this.agentClient, deps);
     });

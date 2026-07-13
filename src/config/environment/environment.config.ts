@@ -259,6 +259,19 @@ const envSchema = z
     // Capped at 50, mirroring AGENTIC_PLAYBOOK_AB_PCT above (a control arm can never outweigh the
     // treatment arm's own evidence share).
     AGENTIC_DERIVATIVES_AB_PCT: z.coerce.number().int().min(0).max(50).default(0),
+    // d2 (Push 3 P6 Unit 1): switches the derivatives block/sentence/promptHash tag from d1 to d2,
+    // adding three fields the feed ALREADY accumulates whenever it polls (true spot-vs-perp basis,
+    // OI percent change over a 1h lookback, funding-rate trend) — see derivatives-feed.service.ts's
+    // V2_LOOKBACK_MS comment. Inert unless DERIVATIVES_FEED_ENABLED is also on. 'true'/'false' (not
+    // z.coerce.boolean(), same rationale as AGENTIC_PORTFOLIO_CONSULT below). Default 'false' ⇒
+    // byte-identical d1 behavior. ENABLING MID-FACTORIAL IS FORBIDDEN — never flip this while an A/B
+    // or offline sweep is comparing d1-tagged rows against a baseline; see agent-prompt.ts's
+    // DERIVATIVES_V2_TEMPLATE_VERSION comment for why the two template versions are not
+    // cross-comparable (d1 and d2 render structurally different payload blocks).
+    AGENTIC_DERIVATIVES_V2_ENABLED: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
     // Thinking-on-decide A/B (backlog #42, mechanism only — ENABLING is queued behind the
     // info-context A/B verdict, one measured channel at a time): percent (0-50) of decides/batches
     // deterministically routed to a treatment arm whose request carries thinking:{type:'adaptive'}
@@ -278,6 +291,25 @@ const envSchema = z
     // Trailing-return lookback (bars) for the cross-symbol ranking. Default 20 (the winning
     // cross-sectional lookback from the search). Bounded to keep it inside typical warmup windows.
     AGENTIC_CROSS_SYMBOL_LOOKBACK_BARS: z.coerce.number().int().min(2).max(200).default(20),
+    // Book-structure block (Push 3 P6 Unit 3): microprice offset from mid, depth-weighted top-10
+    // imbalance, and ±25bps depth notional — computed from the ALREADY-STREAMING order book, no new
+    // feed/cost. Does NOT ride the information-context A/B (see agent-prompt.ts's own comment). 'true'/
+    // 'false' (not z.coerce.boolean(), same rationale as AGENTIC_PORTFOLIO_CONSULT below). Default
+    // 'false' ⇒ byte-identical to pre-feature.
+    AGENTIC_BOOK_STRUCTURE_ENABLED: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
+    // Track-record block (Push 3 P6 Unit 4, #17 residual): surfaces this strategy's own realized
+    // tripCount/winRate/meanNetBpsPerTrip/trailingWindowTrips over the SAME trailing window the
+    // expectancy ladder already computes from (EXPECTANCY_LADDER_* consts, agentic.strategy.ts) — a
+    // decide-side read, inert without a RoundTripEvidencePort wired. Does NOT ride the
+    // information-context A/B. 'true'/'false' (not z.coerce.boolean(), same rationale as above).
+    // Default 'false' ⇒ byte-identical to pre-feature.
+    AGENTIC_TRACK_RECORD_ENABLED: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
     // Portfolio-consult batching (Push II Phase 5, DESIGN Task 2): coalesces the up-to-5 concurrent
     // single-symbol propose() calls landing within one window into ONE Anthropic call via
     // BatchingAgentClient/submit_portfolio, instead of 5 separate submit_decision calls. 'true'/
@@ -422,6 +454,15 @@ const envSchema = z
     // RISK_MAX_BAND_BPS. Default 1200 (12%) covers plan-mode TP offsets well beyond the tight
     // RISK_MAX_BAND_BPS=100 (1%) that would otherwise veto every resting exit.
     RISK_MAX_PASSIVE_EXIT_BAND_BPS: z.coerce.number().int().positive().default(1200),
+    // P7b protective-stop trigger checks (domain/risk/evaluate.ts's hasTrigger branch): a trigger
+    // order's |trigger − mid| / mid must be ≤ this (basis points). Default 2000 (20%) — wide enough
+    // for a deliberately distant stop, tight enough to catch a badly-priced trigger as a bug.
+    RISK_MAX_STOP_TRIGGER_BAND_BPS: z.coerce.number().int().positive().default(2000),
+    // P7b: a spot STOP_LOSS_LIMIT's limit leg sits this many bps past its own trigger (buffered so
+    // the leg is immediately marketable once the trigger fires — PositionSizerService); evaluate.ts's
+    // T3 check then requires the leg to stay within 2× this many bps of the trigger (sanity). Capped
+    // at 200 (2%) — a wider buffer would leave the leg unmarketable-adjacent on a fast move.
+    STOP_LIMIT_BUFFER_BPS: z.coerce.number().int().positive().max(200).default(50),
     RISK_STALE_MAX_AGE_MS: z.coerce.number().int().positive().default(5000),
     // Perp/swap paper adapter knobs (B1: PaperPerpAdapter, not yet wired into app.module.ts).
     // 'true'/'false' (not z.coerce.boolean(), same rationale as AGENTIC_PRESCREEN_ENABLED above).
@@ -490,13 +531,24 @@ const envSchema = z
     AGENTIC_TRADEFLOW_POLL_MS: z.coerce.number().int().positive().default(60_000),
     // Positioning context (global long/short account ratio), surfaced to the agentic prompt when
     // fresh. Off by default — zero behavior change unconfigured. Same A/B convention as above.
-    // Liquidation-order flow has no knob here — no public REST source in ccxt 4.5.58 (see
-    // positioning-feed.ts's header comment).
+    // Liquidation-order flow was NOT shippable via this REST-poll knob — no public REST source in
+    // ccxt 4.5.58 (see positioning-feed.ts's header comment) — but IS shipped separately below via a
+    // WS subscription (AGENTIC_LIQUIDATIONS_ENABLED), which the original brief had deferred pending
+    // verification that ccxt PRO's watchLiquidationsForSymbols was usable (Push 3 P6 Unit 2).
     AGENTIC_POSITIONING_ENABLED: z
       .enum(['true', 'false'])
       .default('false')
       .transform((v) => v === 'true'),
     AGENTIC_POSITIONING_POLL_MS: z.coerce.number().int().positive().default(300_000),
+    // #43 (Push 3 P6 Unit 2): public liquidation-order flow (rolling notional + long/short side-skew)
+    // via ccxt PRO's watchLiquidationsForSymbols WS stream on binanceusdm — surfaced to the agentic
+    // prompt when the stream is healthy. Off by default — zero behavior change unconfigured. No poll
+    // interval knob (WS-driven, not REST-polled); rides the SAME information-context A/B control arm
+    // as the feeds above.
+    AGENTIC_LIQUIDATIONS_ENABLED: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
   })
   .superRefine((data, ctx) => {
     // The prescreen gate (prescreen.ts) needs AGENTIC_WARMUP_BARS bars of history before its
@@ -595,9 +647,12 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     AGENTIC_PLAYBOOK_PIN: agenticPlaybookPin,
     AGENTIC_PLAYBOOK_AB_PCT: agenticPlaybookAbPct,
     AGENTIC_DERIVATIVES_AB_PCT: agenticDerivativesAbPct,
+    AGENTIC_DERIVATIVES_V2_ENABLED: agenticDerivativesV2Enabled,
     AGENTIC_THINKING_AB_PCT: agenticThinkingAbPct,
     AGENTIC_CROSS_SYMBOL_ENABLED: agenticCrossSymbolEnabled,
     AGENTIC_CROSS_SYMBOL_LOOKBACK_BARS: agenticCrossSymbolLookbackBars,
+    AGENTIC_BOOK_STRUCTURE_ENABLED: agenticBookStructureEnabled,
+    AGENTIC_TRACK_RECORD_ENABLED: agenticTrackRecordEnabled,
     AGENTIC_PORTFOLIO_CONSULT: agenticPortfolioConsult,
     AGENTIC_PORTFOLIO_WINDOW_MS: agenticPortfolioWindowMs,
     AGENTIC_MINT_BACKTEST_ROWS: agenticMintBacktestRows,
@@ -644,6 +699,8 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     RISK_MAX_DRAWDOWN_PCT: riskMaxDrawdownPct,
     RISK_MAX_BAND_BPS: riskMaxBandBps,
     RISK_MAX_PASSIVE_EXIT_BAND_BPS: riskMaxPassiveExitBandBps,
+    RISK_MAX_STOP_TRIGGER_BAND_BPS: riskMaxStopTriggerBandBps,
+    STOP_LIMIT_BUFFER_BPS: stopLimitBufferBps,
     RISK_STALE_MAX_AGE_MS: riskStaleMaxAgeMs,
     PERP_VENUE_ENABLED: perpVenueEnabled,
     PERP_LEVERAGE_CAP: perpLeverageCap,
@@ -661,6 +718,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     AGENTIC_TRADEFLOW_POLL_MS: agenticTradeFlowPollMs,
     AGENTIC_POSITIONING_ENABLED: agenticPositioningEnabled,
     AGENTIC_POSITIONING_POLL_MS: agenticPositioningPollMs,
+    AGENTIC_LIQUIDATIONS_ENABLED: agenticLiquidationsEnabled,
   } = parsed.data;
   const bootId = crypto.randomUUID();
   const venues = parseVenues(env);
@@ -708,9 +766,12 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       playbookPin: agenticPlaybookPin,
       playbookAbPct: agenticPlaybookAbPct,
       derivativesAbPct: agenticDerivativesAbPct,
+      derivativesV2Enabled: agenticDerivativesV2Enabled,
       thinkingAbPct: agenticThinkingAbPct,
       crossSymbolEnabled: agenticCrossSymbolEnabled,
       crossSymbolLookbackBars: agenticCrossSymbolLookbackBars,
+      bookStructureFeedEnabled: agenticBookStructureEnabled,
+      trackRecordEnabled: agenticTrackRecordEnabled,
       portfolioConsultEnabled: agenticPortfolioConsult,
       portfolioWindowMs: agenticPortfolioWindowMs,
       tokenPriceInputPerMtok: agenticTokenPriceInputPerMtok,
@@ -754,6 +815,8 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       maxDrawdownPct: riskMaxDrawdownPct,
       maxBandBps: riskMaxBandBps,
       maxPassiveExitBandBps: riskMaxPassiveExitBandBps,
+      maxStopTriggerBandBps: riskMaxStopTriggerBandBps,
+      stopLimitBufferBps,
       staleMaxAgeMs: riskStaleMaxAgeMs,
     },
     perp: {
@@ -784,6 +847,9 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     positioningFeed: {
       enabled: agenticPositioningEnabled,
       pollIntervalMs: agenticPositioningPollMs,
+    },
+    liquidationFeed: {
+      enabled: agenticLiquidationsEnabled,
     },
     ...liveFields,
   };

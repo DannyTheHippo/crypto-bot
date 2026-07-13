@@ -239,6 +239,16 @@ export class PaperPerpAdapter implements ExchangePort {
 
   // ── ExchangePort ──────────────────────────────────────────────────────────────────────────
   async placeOrder(req: PlaceOrderRequest): Promise<ExchangeAck> {
+    // Push 3 P7a: the real swap venue's STOP_MARKET is a separate ALGO/conditional rail this
+    // adapter does not simulate (no local liq-style trigger-watch loop exists for it); silently
+    // treating one as a plain MARKET order would corrupt paper P&L/behavior tests. Fail closed.
+    if (req.triggerPrice !== undefined) {
+      throw new AdapterError(
+        'TERMINAL_REJECT',
+        'UNSUPPORTED_ORDER_TYPE',
+        `paper-perp: trigger orders (${req.type}) are unsupported in paper simulation`,
+      );
+    }
     const orderQty = new Decimal(req.qty);
     const venueOrderId = `paper-perp-ord-${this.next()}`;
 

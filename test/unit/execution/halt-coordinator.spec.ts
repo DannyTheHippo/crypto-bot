@@ -52,6 +52,8 @@ function build(opts: { mark?: string | null; engine?: RiskEnginePort } = {}) {
       limits: {
         maxBandBps: 100,
         maxPassiveExitBandBps: 1200,
+        maxStopTriggerBandBps: 2000,
+        stopLimitBufferBps: 50,
         maxOrderNotional: '1000000',
         maxDriftBps: 100,
         maxPositionPerSymbol: '1000',

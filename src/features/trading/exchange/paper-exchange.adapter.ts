@@ -145,6 +145,17 @@ export class PaperExchangeAdapter implements ExchangePort {
 
   // ── ExchangePort ──────────────────────────────────────────────────────────────────────────
   async placeOrder(req: PlaceOrderRequest): Promise<ExchangeAck> {
+    // Push 3 P7a: trigger orders have no venue-order-rail simulation here (the spot rail's
+    // STOP_LOSS_LIMIT still fills against a book walk like any other resting order, but this
+    // adapter's fill mechanics never watch for a trigger crossing) — silently treating one as a
+    // plain LIMIT would corrupt paper P&L/behavior tests. Fail closed instead.
+    if (req.triggerPrice !== undefined) {
+      throw new AdapterError(
+        'TERMINAL_REJECT',
+        'UNSUPPORTED_ORDER_TYPE',
+        `paper: trigger orders (${req.type}) are unsupported in paper simulation`,
+      );
+    }
     const { base, quote } = splitSymbol(req.symbol);
     const orderQty = new Decimal(req.qty);
     const venueOrderId = `paper-ord-${this.next()}`;

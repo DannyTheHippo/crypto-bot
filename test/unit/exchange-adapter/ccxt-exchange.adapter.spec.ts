@@ -211,6 +211,189 @@ describe('CcxtExchangeAdapter.placeOrder reduceOnly forwarding', () => {
   });
 });
 
+// ── placeOrder trigger orders (Push 3 P7a) ─────────────────────────────────────
+
+describe('CcxtExchangeAdapter.placeOrder trigger orders', () => {
+  function paramsOf(client: CcxtOrderClient): Record<string, unknown> {
+    const [, , , , , params] = (client.createOrder as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      string,
+      string,
+      string,
+      string,
+      string | undefined,
+      Record<string, unknown>,
+    ];
+    return params;
+  }
+
+  it('maps STOP_LOSS_LIMIT to ccxt limit + stopLossPrice on the spot rail', async () => {
+    const client = fakeClient();
+    const adapter = new CcxtExchangeAdapter(client, venueId('binance'), true);
+
+    await adapter.placeOrder({
+      ...baseReq,
+      type: 'STOP_LOSS_LIMIT',
+      limitPrice: '49000',
+      triggerPrice: '49500',
+    });
+
+    const [, type, , , price] = (client.createOrder as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      string,
+      string,
+      string,
+      string,
+      string | undefined,
+      Record<string, unknown>,
+    ];
+    expect(type).toBe('limit');
+    expect(price).toBe('49000'); // the limit leg price, distinct from the trigger price
+    const params = paramsOf(client);
+    expect(params['stopLossPrice']).toBe('49500');
+    expect(params['timeInForce']).toBe('GTC');
+    expect(params['clientOrderId']).toBe(COID);
+  });
+
+  it('maps STOP_MARKET to ccxt market + stopPrice + reduceOnly + clientAlgoId on the swap venue', async () => {
+    const client = fakeClient();
+    const adapter = new CcxtExchangeAdapter(client, venueId('binanceusdm'), true);
+
+    await adapter.placeOrder({
+      ...baseReq,
+      type: 'STOP_MARKET',
+      limitPrice: undefined,
+      triggerPrice: '48000',
+      reduceOnly: true,
+    });
+
+    const [, type] = (client.createOrder as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      string,
+      string,
+      string,
+      string,
+      string | undefined,
+      Record<string, unknown>,
+    ];
+    expect(type).toBe('market');
+    const params = paramsOf(client);
+    expect(params['stopPrice']).toBe('48000');
+    expect(params['reduceOnly']).toBe(true);
+    // OMS rule 5: the algo rail's dedupe key is clientAlgoId, set to the same clientOrderId string.
+    expect(params['clientAlgoId']).toBe(COID);
+  });
+
+  it('throws fail-closed when STOP_LOSS_LIMIT is placed on the swap venue', async () => {
+    const client = fakeClient();
+    const adapter = new CcxtExchangeAdapter(client, venueId('binanceusdm'), true);
+
+    await expect(
+      adapter.placeOrder({
+        ...baseReq,
+        type: 'STOP_LOSS_LIMIT',
+        triggerPrice: '49500',
+      }),
+    ).rejects.toThrow(/STOP_LOSS_LIMIT is spot-only.*fail-closed/);
+  });
+
+  it('throws fail-closed when STOP_MARKET is placed on a spot venue', async () => {
+    const client = fakeClient();
+    const adapter = new CcxtExchangeAdapter(client, venueId('binance'), true);
+
+    await expect(
+      adapter.placeOrder({
+        ...baseReq,
+        type: 'STOP_MARKET',
+        limitPrice: undefined,
+        triggerPrice: '48000',
+      }),
+    ).rejects.toThrow(/STOP_MARKET is swap-only.*fail-closed/);
+  });
+});
+
+// ── algo rail (Push 3 P7a) ──────────────────────────────────────────────────────
+
+describe('CcxtExchangeAdapter algo rail (fetchOpenAlgoOrders/cancelAlgoOrder)', () => {
+  const rawAlgo = {
+    algoId: 999,
+    clientAlgoId: COID,
+    symbol: 'BTC/USDT:USDT',
+    side: 'SELL',
+    orderType: 'STOP_MARKET',
+    quantity: '0.5',
+    triggerPrice: '48000',
+    algoStatus: 'NEW',
+    reduceOnly: true,
+  };
+
+  it('calls the raw fapi endpoint and normalizes the response on the swap venue', async () => {
+    const fetchAlgo = vi.fn().mockResolvedValue({ orders: [rawAlgo] });
+    const client = fakeClient({ fapiPrivateGetOpenAlgoOrders: fetchAlgo });
+    const adapter = new CcxtExchangeAdapter(client, venueId('binanceusdm'), true);
+
+    const result = await adapter.fetchOpenAlgoOrders(symbolId('BTC/USDT:USDT'));
+
+    expect(fetchAlgo).toHaveBeenCalledWith();
+    expect(result).toEqual([
+      {
+        algoId: '999',
+        clientAlgoId: COID,
+        symbol: symbolId('BTC/USDT:USDT'),
+        side: 'SELL',
+        type: 'STOP_MARKET',
+        qty: '0.5',
+        triggerPrice: '48000',
+        status: 'NEW',
+        reduceOnly: true,
+      },
+    ]);
+  });
+
+  it('returns an empty list on a spot venue without calling the client', async () => {
+    const fetchAlgo = vi.fn().mockResolvedValue({ orders: [rawAlgo] });
+    const client = fakeClient({ fapiPrivateGetOpenAlgoOrders: fetchAlgo });
+    const adapter = new CcxtExchangeAdapter(client, venueId('binance'), true);
+
+    const result = await adapter.fetchOpenAlgoOrders();
+
+    expect(result).toEqual([]);
+    expect(fetchAlgo).not.toHaveBeenCalled();
+  });
+
+  it('throws fail-closed on the swap venue when the client lacks the hook', async () => {
+    const adapter = new CcxtExchangeAdapter({} as CcxtOrderClient, venueId('binanceusdm'), true);
+
+    await expect(adapter.fetchOpenAlgoOrders()).rejects.toThrow(/fail-closed/);
+  });
+
+  it('calls the raw fapi cancel endpoint with algoId on the swap venue', async () => {
+    const cancelAlgo = vi.fn().mockResolvedValue({});
+    const client = fakeClient({ fapiPrivateDeleteAlgoOrder: cancelAlgo });
+    const adapter = new CcxtExchangeAdapter(client, venueId('binanceusdm'), true);
+
+    await adapter.cancelAlgoOrder('999', symbolId('BTC/USDT:USDT'));
+
+    expect(cancelAlgo).toHaveBeenCalledWith({ algoId: '999' });
+  });
+
+  it('throws fail-closed when cancelAlgoOrder is called on a spot venue', async () => {
+    const cancelAlgo = vi.fn().mockResolvedValue({});
+    const client = fakeClient({ fapiPrivateDeleteAlgoOrder: cancelAlgo });
+    const adapter = new CcxtExchangeAdapter(client, venueId('binance'), true);
+
+    await expect(adapter.cancelAlgoOrder('999', symbolId('BTC/USDT'))).rejects.toThrow(
+      /swap-only.*fail-closed/,
+    );
+    expect(cancelAlgo).not.toHaveBeenCalled();
+  });
+
+  it('throws fail-closed on the swap venue when the client lacks the cancel hook', async () => {
+    const adapter = new CcxtExchangeAdapter({} as CcxtOrderClient, venueId('binanceusdm'), true);
+
+    await expect(adapter.cancelAlgoOrder('999', symbolId('BTC/USDT:USDT'))).rejects.toThrow(
+      /fail-closed/,
+    );
+  });
+});
+
 // ── cancelOrder ───────────────────────────────────────────────────────────────
 
 describe('CcxtExchangeAdapter.cancelOrder', () => {

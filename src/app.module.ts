@@ -13,7 +13,11 @@ import {
 import { randomBytes, createHash } from 'node:crypto';
 import { APP_FILTER } from '@nestjs/core';
 import type { Exchange } from 'ccxt';
-import { binanceusdm as BinanceUsdmExchange, binance as BinanceSpotExchange } from 'ccxt';
+import {
+  binanceusdm as BinanceUsdmExchange,
+  binance as BinanceSpotExchange,
+  pro as ccxtPro,
+} from 'ccxt';
 import Decimal from 'decimal.js';
 import { AppConfigModule } from './config/config.module';
 import { TypedConfigService } from './config/environment/typed-config.service';
@@ -84,6 +88,10 @@ import {
   PositioningFeedService,
   type PositioningRestSource,
 } from './features/trading/market-data/positioning-feed.service';
+import {
+  LiquidationFeedService,
+  type LiquidationWatchSource,
+} from './features/trading/market-data/liquidation-feed.service';
 import {
   FeedHealthServiceWithBackfill,
   type OhlcvSource,
@@ -221,6 +229,7 @@ import { DERIVATIVES_FEED, type DerivativesFeedPort } from './ports/derivatives-
 import { SENTIMENT_FEED, type SentimentFeedPort } from './ports/sentiment-feed';
 import { TRADE_FLOW_FEED, type TradeFlowFeedPort } from './ports/trade-flow-feed';
 import { POSITIONING_FEED, type PositioningFeedPort } from './ports/positioning-feed';
+import { LIQUIDATION_FEED, type LiquidationFeedPort } from './ports/liquidation-feed';
 import {
   EXCHANGE_STREAM,
   type ExchangeStreamPort,
@@ -690,6 +699,14 @@ const NOOP_POSITIONING_FEED: PositioningFeedPort = {
   lastSuccessfulPollAt: () => null,
   pollErrorCount: () => 0,
 };
+// Bound whenever AGENTIC_LIQUIDATIONS_ENABLED is off (default) or under test/ci — the WS loop never
+// starts, latest() always answers null, streamHealthy() stays false, so the agentic prompt's
+// liquidation block never renders (mirrors NOOP_POSITIONING_FEED's own contract).
+const NOOP_LIQUIDATION_FEED: LiquidationFeedPort = {
+  latest: () => null,
+  streamHealthy: () => false,
+  reconnectCount: () => 0,
+};
 // Free-tier CryptoPanic REST client (public headlines endpoint; no ccxt involved — this is a news
 // feed, not an exchange). apiKey is read directly off process.env (never through TypedConfigService/
 // AppConfig — see environment.config.ts's SENTIMENT_FEED_API_KEY comment), so it is never logged or
@@ -711,11 +728,18 @@ function buildSentimentHttpSource(apiKey: string): SentimentHttpSource {
 // are REST-only unified methods, never streamed. Never wired through venue-urls.ts (that module's
 // VenueUrlOverride shape has no swap-market entry yet — see DerivativesFeedService's own header
 // comment on the C1 plan's venue-urls deferral).
+// d2 (Push 3 P6 Unit 1) true spot-perp basis needs the SPOT market's last price alongside the perp
+// client's funding/OI — mirrors buildTradeFlowRestSource's own spot-client precedent below. A plain
+// object (not a bare ccxt instance) so fetchTicker binds to the spot exchange while
+// fetchFundingRate/fetchOpenInterest keep binding to the perp exchange.
 function buildDerivativesRestSource(): DerivativesRestSource {
-  return new BinanceUsdmExchange({
-    number: String,
-    enableRateLimit: true,
-  });
+  const perp = new BinanceUsdmExchange({ number: String, enableRateLimit: true });
+  const spot = new BinanceSpotExchange({ number: String, enableRateLimit: true });
+  return {
+    fetchFundingRate: (symbol) => perp.fetchFundingRate(symbol),
+    fetchOpenInterest: (symbol) => perp.fetchOpenInterest(symbol),
+    fetchTicker: (symbol) => spot.fetchTicker(symbol),
+  };
 }
 // Public-only REST client for the SPOT market's raw (unparsed) klines endpoint — the CVD feed calls
 // ccxt's implicit `publicGetKlines` method directly (bypassing the unified fetchOHLCV/parseOHLCV,
@@ -756,6 +780,31 @@ function buildPositioningRestSource(): PositioningRestSource {
           readonly longShortRatio?: string | number;
           readonly timestamp?: number;
         }>
+      >,
+  };
+}
+// Public-only ccxt PRO client for the perp forceOrder (liquidation) stream — a WS subscription, not a
+// REST poll (distinct from every other builder above), constructed with no credentials (the stream is
+// public). Mirrors buildCcxtExchange's own no-credentials construction (ccxt-stream.adapter.ts) but
+// against a dedicated instance rather than the shared market-data one, since this stream is only ever
+// subscribed once at feed-construction time, never per-symbol like the ticker/book/candle channels.
+function buildLiquidationWatchSource(): LiquidationWatchSource {
+  const exchange = new ccxtPro.binanceusdm({ number: String, enableRateLimit: true });
+  return {
+    watchLiquidationsForSymbols: (symbols) =>
+      (
+        exchange as unknown as {
+          watchLiquidationsForSymbols: (symbols: readonly string[]) => Promise<unknown[]>;
+        }
+      ).watchLiquidationsForSymbols(symbols) as Promise<
+        readonly {
+          readonly symbol: string;
+          readonly side: string;
+          readonly quoteValue?: number;
+          readonly contracts?: number;
+          readonly price?: number;
+          readonly timestamp?: number;
+        }[]
       >,
   };
 }
@@ -927,6 +976,23 @@ const MD_EXCHANGE = Symbol('MD_EXCHANGE');
       },
       inject: [TypedConfigService, CLOCK],
     },
+    {
+      provide: LIQUIDATION_FEED,
+      useFactory: (config: TypedConfigService, clock: ClockPort): LiquidationFeedPort => {
+        const { enabled } = config.liquidationFeed;
+        // Same test/ci short-circuit as DERIVATIVES_FEED above, plus the feature flag itself.
+        if (isTestEnv() || !enabled) return NOOP_LIQUIDATION_FEED;
+        const source = buildLiquidationWatchSource();
+        const service = new LiquidationFeedService(source, {
+          symbols: config.strategy.symbols.map((s) => symbolId(s)),
+          clock,
+          logger: new Logger('LiquidationFeedService'),
+        });
+        service.start();
+        return service;
+      },
+      inject: [TypedConfigService, CLOCK],
+    },
   ],
   exports: [
     MARKET_STREAM,
@@ -937,6 +1003,7 @@ const MD_EXCHANGE = Symbol('MD_EXCHANGE');
     SENTIMENT_FEED,
     TRADE_FLOW_FEED,
     POSITIONING_FEED,
+    LIQUIDATION_FEED,
   ],
 })
 class MarketFeedModule {}
@@ -1518,6 +1585,9 @@ export class AppModule
     // Always bound (MarketFeedModule's POSITIONING_FEED factory returns NOOP_POSITIONING_FEED when
     // AGENTIC_POSITIONING_ENABLED is off/test-ci) — never @Optional, mirrors derivativesFeed.
     @Inject(POSITIONING_FEED) private readonly positioningFeed: PositioningFeedPort,
+    // Always bound (MarketFeedModule's LIQUIDATION_FEED factory returns NOOP_LIQUIDATION_FEED when
+    // AGENTIC_LIQUIDATIONS_ENABLED is off/test-ci) — never @Optional, mirrors derivativesFeed.
+    @Inject(LIQUIDATION_FEED) private readonly liquidationFeed: LiquidationFeedPort,
     @Inject(REFLECTION_SERVICE) private readonly reflectionService: ReflectionService,
     @Inject(PROMOTION_READINESS) private readonly promotionReadiness: PromotionReadinessPort,
     // Backlog #51: the adapter behind EXCHANGE_PORT, for the perp deploy pin in startTrading —
@@ -1734,6 +1804,7 @@ export class AppModule
         sentimentFeed: this.sentimentFeed,
         tradeFlowFeed: this.tradeFlowFeed,
         positioningFeed: this.positioningFeed,
+        liquidationFeed: this.liquidationFeed,
         // Cross-symbol relative-strength context: ONE service shared across every agentic-N instance
         // (this closure runs once per registration but `deps` is captured by the factory), so each
         // instance records its own symbol's trailing return and reads the whole basket's ranking.
@@ -1865,6 +1936,9 @@ export class AppModule
         breakoutPct: agentic.prescreenBreakoutPct,
       },
       expectancyLadderEnabled: agentic.expectancyLadderEnabled,
+      // Push 3 P6 Unit 4 (#17 residual): off by default ⇒ byte-identical (see agentic.strategy.ts's
+      // computeTrackRecordContext).
+      trackRecordEnabled: agentic.trackRecordEnabled,
       planMode: agentic.planMode,
       planMaxQuietBars: agentic.planMaxQuietBars,
       planExitTtlBars: agentic.planExitTtlBars,

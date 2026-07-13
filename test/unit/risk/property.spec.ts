@@ -23,6 +23,8 @@ const MARK: MarkInfo = { mid: price('100'), ageMs: 0, feedHealth: 'LIVE' };
 const LIMITS: PartialRiskLimits = {
   maxBandBps: 100,
   maxPassiveExitBandBps: 1200,
+  maxStopTriggerBandBps: 2000,
+  stopLimitBufferBps: 50,
   maxOrderNotional: '100000000',
   maxDriftBps: 100,
   maxPositionPerSymbol: '1000',

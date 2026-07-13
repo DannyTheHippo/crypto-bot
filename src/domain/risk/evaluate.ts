@@ -85,6 +85,11 @@ export function evaluate(input: RiskEvalInput): RiskEvaluation {
     input;
   const reduceOnly = intent.reduceOnly;
   const flattenClamp = isFlatten && reduceOnly; // FLATTEN gets clamps where strategy intents hard-reject
+  // Push 3 P7b: a triggerPrice marks a venue trigger order (STOP_LOSS_LIMIT/STOP_MARKET) — a
+  // protective stop, by definition an exit. Never an entry: fail closed rather than let a
+  // non-reduce-only trigger order (out of scope for this pass) slip through unchecked.
+  const hasTrigger = intent.triggerPrice !== undefined;
+  if (hasTrigger && !reduceOnly) return reject(intent, 'REDUCE_ONLY_VIOLATION');
 
   // G0 — kill switch (reduce-only FLATTEN carve-out during FLATTENING)
   if (!(killState === 'RUNNING' || (killState === 'FLATTENING' && flattenClamp))) {
@@ -116,33 +121,62 @@ export function evaluate(input: RiskEvalInput): RiskEvaluation {
   let workingPrice: Decimal = intent.limitPrice ?? refMid;
   let workingQty: Decimal = intent.qty;
 
-  // P2 — price band. A reduce-only intent priced on the PASSIVE side of the reference (a resting
-  // take-profit: SELL ≥ mid, BUY-cover ≤ mid) checks against the wider maxPassiveExitBandBps
-  // instead — a live TP legitimately sits far from ref. Aggressive-side reduce-only intents
-  // (crossing toward the market) and every non-reduce-only intent keep the tight maxBandBps.
-  // Kill-switch flattens (flattenClamp) are ALWAYS excluded: the band-edge clamp below is the
-  // mechanism that repairs a mis-directed marketable price (e.g. a short-cover priced long-side
-  // at mark×0.98 — accidentally passive), and the wide band would swallow that repair, leaving an
-  // unmarketable resting flatten and a >60s-unknown escalation (review finding).
-  const isPassiveReduceOnlyExit =
-    reduceOnly &&
-    !flattenClamp &&
-    ((intent.side === 'SELL' && workingPrice.gte(refMid)) ||
-      (intent.side === 'BUY' && workingPrice.lte(refMid)));
-  const bandBps = isPassiveReduceOnlyExit ? limits.maxPassiveExitBandBps : limits.maxBandBps;
-  const maxBand = new Decimal(bandBps).mul(bandMultiplier).div(10_000);
-  const bandDeviation = workingPrice.sub(refMid).abs().div(refMid);
-  if (bandDeviation.gt(maxBand)) {
-    if (flattenClamp) {
-      // clamp to the band edge on the order's side (marketable-limit at the edge)
-      const edge =
-        intent.side === 'BUY'
-          ? refMid.mul(maxBand.add(1))
-          : refMid.mul(new Decimal(1).sub(maxBand));
-      workingPrice = edge;
-      reasons.push('PRICE_BAND');
-    } else {
-      return reject(intent, 'PRICE_BAND'); // an out-of-band strategy price is a bug, never silently repriced
+  // P2 — price band. A trigger order (hasTrigger) is priced around its TRIGGER, not around a
+  // resting/crossing limit price, so it swaps this whole gate for its own trigger-specific matrix
+  // (T1-T3) below rather than running both — see that branch's own comments. Every other intent
+  // keeps the pre-existing band logic unchanged.
+  if (hasTrigger) {
+    const trigger = intent.triggerPrice;
+    // T1 — protective side: a SELL stop (protects a long) must trigger BELOW mid; a BUY-cover stop
+    // (protects a short) must trigger ABOVE mid — the opposite side would fire immediately on
+    // submission instead of protecting against an adverse move.
+    const protectiveSideOk = intent.side === 'SELL' ? trigger.lt(refMid) : trigger.gt(refMid);
+    if (!protectiveSideOk) return reject(intent, 'PRICE_BAND');
+
+    // T2 — distance: the trigger must not sit further from mid than maxStopTriggerBandBps — a
+    // trigger far beyond this is far more likely a bug than a deliberately wide stop.
+    const maxTriggerBand = new Decimal(limits.maxStopTriggerBandBps).div(10_000);
+    const triggerDeviation = trigger.sub(refMid).abs().div(refMid);
+    if (triggerDeviation.gt(maxTriggerBand)) return reject(intent, 'PRICE_BAND');
+
+    // T3 — spot limit-leg sanity (STOP_LOSS_LIMIT only; STOP_MARKET carries no limit leg): the leg
+    // must hug the trigger within 2× the configured buffer — PositionSizerService only ever buffers
+    // by exactly stopLimitBufferBps, so anything further out is corruption, not a legitimate wider
+    // buffer.
+    if (intent.limitPrice !== undefined) {
+      const maxLegBand = new Decimal(limits.stopLimitBufferBps).mul(2).div(10_000);
+      const legDeviation = intent.limitPrice.sub(trigger).abs().div(trigger);
+      if (legDeviation.gt(maxLegBand)) return reject(intent, 'PRICE_BAND');
+    }
+  } else {
+    // A reduce-only intent priced on the PASSIVE side of the reference (a resting take-profit:
+    // SELL ≥ mid, BUY-cover ≤ mid) checks against the wider maxPassiveExitBandBps instead — a live
+    // TP legitimately sits far from ref. Aggressive-side reduce-only intents (crossing toward the
+    // market) and every non-reduce-only intent keep the tight maxBandBps. Kill-switch flattens
+    // (flattenClamp) are ALWAYS excluded: the band-edge clamp below is the mechanism that repairs a
+    // mis-directed marketable price (e.g. a short-cover priced long-side at mark×0.98 — accidentally
+    // passive), and the wide band would swallow that repair, leaving an unmarketable resting
+    // flatten and a >60s-unknown escalation (review finding).
+    const isPassiveReduceOnlyExit =
+      reduceOnly &&
+      !flattenClamp &&
+      ((intent.side === 'SELL' && workingPrice.gte(refMid)) ||
+        (intent.side === 'BUY' && workingPrice.lte(refMid)));
+    const bandBps = isPassiveReduceOnlyExit ? limits.maxPassiveExitBandBps : limits.maxBandBps;
+    const maxBand = new Decimal(bandBps).mul(bandMultiplier).div(10_000);
+    const bandDeviation = workingPrice.sub(refMid).abs().div(refMid);
+    if (bandDeviation.gt(maxBand)) {
+      if (flattenClamp) {
+        // clamp to the band edge on the order's side (marketable-limit at the edge)
+        const edge =
+          intent.side === 'BUY'
+            ? refMid.mul(maxBand.add(1))
+            : refMid.mul(new Decimal(1).sub(maxBand));
+        workingPrice = edge;
+        reasons.push('PRICE_BAND');
+      } else {
+        return reject(intent, 'PRICE_BAND'); // an out-of-band strategy price is a bug, never silently repriced
+      }
     }
   }
 

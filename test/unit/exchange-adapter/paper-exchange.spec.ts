@@ -200,4 +200,18 @@ describe('PaperExchangeAdapter', () => {
     expect(await adapter.fetchMyTrades(SYM, epochMs(0))).toHaveLength(1);
     expect((await adapter.validateCredentials()).withdrawalsEnabled).toBe(false);
   });
+
+  // ── trigger orders (Push 3 P7a) ────────────────────────────────────────────
+  it('rejects a trigger order (STOP_LOSS_LIMIT) fail-closed rather than silently placing a plain LIMIT', async () => {
+    const { adapter } = make();
+    adapter.ingestBook(SYM, bids, asks);
+
+    await expect(
+      adapter.placeOrder(req({ type: 'STOP_LOSS_LIMIT', limitPrice: '99', triggerPrice: '98' })),
+    ).rejects.toMatchObject({
+      name: 'AdapterError',
+      errorClass: 'TERMINAL_REJECT',
+      code: 'UNSUPPORTED_ORDER_TYPE',
+    });
+  });
 });

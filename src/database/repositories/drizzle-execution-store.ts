@@ -37,6 +37,18 @@ function serializeEvent(event: PersistedOrderEvent['event']): unknown {
   return { type: event.type };
 }
 
+// Push 3 P7a deferred STOP_LOSS_LIMIT/STOP_MARKET persistence (narrowed defensively, throwing on a
+// trigger intent) because Risk did not yet emit them. Push 3 P7b widens IntentInsert/OrderInsert/
+// trading.schema's `type` columns to the full OrderIntent union (TS-level only — the underlying
+// order_intents.type/orders.type columns are plain unconstrained `text`, so no migration is
+// needed), so this is now a straight pass-through. Kept as a named seam (rather than inlining
+// `intent.type` at both call sites) so a future persisted-type narrowing has one place to change.
+// OMS rule 5: a trigger intent is persisted here BEFORE the venue call, exactly like every other
+// order — on the perp ALGO rail the dedupe key is clientAlgoId (= the same clientOrderId string).
+function persistedOrderType(type: OrderIntent['type']): OrderIntent['type'] {
+  return type;
+}
+
 // DrizzleExecutionStore: satisfies ExecutionStorePort by delegating to the existing
 // per-table repositories. The `orders` row is keyed by intentId (PK); `order_events`
 // references it as `orderId`. We resolve clientOrderId → intentId via the unique
@@ -75,7 +87,7 @@ export class DrizzleExecutionStore implements ExecutionStorePort {
       venue: intent.venue,
       symbol: intent.symbol,
       side: intent.side,
-      type: intent.type,
+      type: persistedOrderType(intent.type),
       qty: intent.qty.toFixed(),
       limitPrice: intent.limitPrice?.toFixed(),
       timeInForce: intent.timeInForce,
@@ -108,7 +120,7 @@ export class DrizzleExecutionStore implements ExecutionStorePort {
       venue: intent.venue,
       symbol: intent.symbol,
       side: intent.side,
-      type: intent.type,
+      type: persistedOrderType(intent.type),
       qty: record.qty.toFixed(),
       limitPrice: intent.limitPrice?.toFixed(),
       timeInForce: intent.timeInForce,

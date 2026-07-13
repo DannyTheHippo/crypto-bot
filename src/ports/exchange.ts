@@ -22,9 +22,12 @@ export interface PlaceOrderRequest {
   readonly clientOrderId: ClientOrderId;
   readonly symbol: SymbolId;
   readonly side: 'BUY' | 'SELL';
-  readonly type: 'LIMIT' | 'MARKET' | 'LIMIT_MAKER';
+  // STOP_LOSS_LIMIT/STOP_MARKET mirror OrderIntent's trigger-order variants (Push 3 P7a).
+  readonly type: 'LIMIT' | 'MARKET' | 'LIMIT_MAKER' | 'STOP_LOSS_LIMIT' | 'STOP_MARKET';
   readonly qty: string;
   readonly limitPrice?: string;
+  // Trigger/stop price for STOP_LOSS_LIMIT/STOP_MARKET; absent for every other type.
+  readonly triggerPrice?: string;
   readonly timeInForce: 'GTC' | 'IOC' | 'FOK';
   readonly reduceOnly: boolean;
 }
@@ -45,6 +48,24 @@ export interface ExchangeOrderState {
   readonly status: 'open' | 'closed' | 'canceled' | 'rejected' | 'expired';
   readonly cumQty: string;
   readonly qty: string;
+}
+
+// Push 3 P7a: the swap venue's ALGO/conditional-order rail (binanceusdm STOP_MARKET). It is NOT
+// the regular order book (fetchOpenOrders/cancelOrder 404 against it — -2013/-2011) so it is
+// surfaced through its own pair of primitives, gated the same way as pinPerpVenueDefaults: only a
+// swap-capable adapter implements them, spot/paper adapters lack the methods. clientAlgoId is the
+// OMS dedupe key on this rail (mirrors clientOrderId on the regular rail) — see the mapping-site
+// comment in CcxtExchangeAdapter.placeOrder for the persistence contract this implies.
+export interface AlgoOrderState {
+  readonly algoId: string;
+  readonly clientAlgoId?: string;
+  readonly symbol: SymbolId;
+  readonly side: 'BUY' | 'SELL';
+  readonly type: string;
+  readonly qty: string;
+  readonly triggerPrice: string;
+  readonly status: string;
+  readonly reduceOnly: boolean;
 }
 
 // One realized trade as reported by the venue (fetchMyTrades / paper mint). Money as strings.
@@ -107,6 +128,11 @@ export interface ExchangePort {
   // boot call no-ops via `?.`). Implementations are fail-closed — a pin failure throws and the
   // boot dies rather than trading on unknown venue-side leverage/margin mode.
   pinPerpVenueDefaults?(symbols: readonly SymbolId[], leverage: number): Promise<void>;
+  // Push 3 P7a (backlog: P7d lifecycle consumes these): the swap algo rail's round-trip
+  // primitives. Optional — only the swap-capable adapter implements them (spot/paper adapters
+  // omit both; a caller must `?.`-guard exactly like pinPerpVenueDefaults above).
+  fetchOpenAlgoOrders?(symbol?: SymbolId): Promise<readonly AlgoOrderState[]>;
+  cancelAlgoOrder?(algoId: string, symbol: SymbolId): Promise<void>;
 }
 
 // Re-exported so adapters and the OMS share the reducer's state vocabulary at the seam.

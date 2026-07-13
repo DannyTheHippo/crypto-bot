@@ -6,8 +6,8 @@ import {
   type SymbolId,
   type VenueId,
 } from '../../../domain/types/ids';
-import type { ExchangeOrderState, VenueFill } from '../../../ports/exchange';
-import type { CcxtBalances, CcxtOrder, CcxtTrade } from './ccxt-order-client';
+import type { AlgoOrderState, ExchangeOrderState, VenueFill } from '../../../ports/exchange';
+import type { CcxtBalances, CcxtOrder, CcxtTrade, RawAlgoOrder } from './ccxt-order-client';
 
 // ── String discipline ─────────────────────────────────────────────────────────
 // Money values in ccxt with number:String arrive as strings; we accept a number
@@ -110,4 +110,25 @@ export function normalizeBalances(b: CcxtBalances): Map<string, { free: string; 
     });
   }
   return out;
+}
+
+// ── Algo-order normalization (Push 3 P7a) ──────────────────────────────────────
+
+export function normalizeAlgoOrder(o: RawAlgoOrder, fallbackSymbol: SymbolId): AlgoOrderState {
+  if (o.algoId === undefined) {
+    throw new Error('normalizeAlgoOrder: raw algo order is missing algoId');
+  }
+  const symbol = (o.symbol as SymbolId | undefined) ?? fallbackSymbol;
+  const side: 'BUY' | 'SELL' = o.side?.toUpperCase() === 'SELL' ? 'SELL' : 'BUY';
+  return {
+    algoId: String(o.algoId),
+    clientAlgoId: o.clientAlgoId,
+    symbol,
+    side,
+    type: o.orderType ?? 'STOP_MARKET',
+    qty: toStr(o.quantity, '0'),
+    triggerPrice: toStr(o.triggerPrice, '0'),
+    status: o.algoStatus ?? 'UNKNOWN',
+    reduceOnly: o.reduceOnly === true,
+  };
 }

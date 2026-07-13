@@ -230,8 +230,12 @@ records:
 - **Post-factorial enable queue (one measured slot at a time resumes after the factorial
   verdict):** tr1 (decide-side track record) → d2 (spot-perp basis + OI delta + funding trend;
   single d1→d2 tag bump, FORBIDDEN mid-factorial) → lq1/bs1 (liquidations, book structure) →
-  sn1 (sentiment; tag hygiene shipped so its enable is no longer attribution-blind). All built
-  flag-off in Push 3 P6.
+  s1 (sentiment — CORRECTION: the s1 tag already existed, correctly gated on
+  sentimentFeedEnabled; the plan's "attribution hole" premise was stale, so P6 added only the
+  missing client-level tag tests, no second tag). All built flag-off in Push 3 P6. NOTE: the
+  book-structure block deliberately does NOT ride the info-context A/B control arm (pure
+  transform of data every payload already carries — nothing external to withhold; documented at
+  its tag definition).
 - **OCO REJECTED (decided, do not re-litigate):** spot orderList/OCO would make reconciliation/
   fills treat orderLists as alien objects; the identity-tagged dual-resting design (vtp:/vsl:
   clientOrderId prefixes + prefix-targeted CANCEL_OPEN + mutual sibling-cancel) achieves the

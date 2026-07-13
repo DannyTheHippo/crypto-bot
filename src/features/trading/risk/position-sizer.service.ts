@@ -17,7 +17,7 @@ import type { Signal } from '../../../domain/types/signal';
 import type { OrderIntent } from '../../../domain/types/order-intent';
 import type { PortfolioSnapshot } from '../../../domain/types/portfolio';
 import { splitSymbol } from '../../../domain/types/symbol';
-import { roundToStep, roundToTick, type Qty } from '../../../domain/types/money';
+import { roundToStep, roundToTick, type Price, type Qty } from '../../../domain/types/money';
 import { intentId, encodeClientOrderId, epochMs, venueId } from '../../../domain/types/ids';
 import { uuidv7 } from './uuidv7';
 
@@ -92,27 +92,79 @@ export class PositionSizerService implements PositionSizerPort {
     // path entirely: the exit rests GTC at the hint, rounded the conservative direction (SELL up —
     // never receive worse than the TP price). A RESTING exit with no hint has no price to rest at,
     // so it falls back to the ordinary crossed-IOC path rather than guessing a price.
+    //
+    // exitStyle 'RESTING_STOP' (Push 3 P7b) is a distinct protective-stop variant, handled entirely
+    // below (see the isRestingStopExit branch): it builds a venue trigger order (STOP_MARKET/
+    // STOP_LOSS_LIMIT) off triggerPriceHint instead of a plain limit price, so it is excluded from
+    // isRestingExit/isCrossedExit here — this legacy-path block never sees it.
     const refPrice = signal.refPrice;
+    const isRestingStopExit =
+      reduceOnly && signal.exitStyle === 'RESTING_STOP' && signal.triggerPriceHint !== undefined;
     const isRestingExit =
-      reduceOnly && signal.exitStyle === 'RESTING' && signal.limitPriceHint !== undefined;
-    const isCrossedExit = reduceOnly && !isRestingExit && signal.limitPriceHint === undefined;
-    const basePrice =
-      signal.limitPriceHint ?? (isCrossedExit ? this.crossedExitPrice(side, refPrice) : refPrice);
-    const tickDirection = isCrossedExit
-      ? side === 'BUY'
-        ? 'up'
-        : 'down'
-      : side === 'BUY'
-        ? 'down'
-        : 'up';
-    const limitPrice = roundToTick(basePrice, filters.tickSize, tickDirection);
+      reduceOnly &&
+      !isRestingStopExit &&
+      signal.exitStyle === 'RESTING' &&
+      signal.limitPriceHint !== undefined;
+    const isCrossedExit =
+      reduceOnly && !isRestingExit && !isRestingStopExit && signal.limitPriceHint === undefined;
+
+    let type: OrderIntent['type'];
+    let limitPrice: Price | undefined;
+    let triggerPrice: Price | undefined;
+    let timeInForce: OrderIntent['timeInForce'];
+
+    if (isRestingStopExit) {
+      // Protective stop (reduce-only exit resting at the venue): trigger rounds AWAY from the
+      // market on the protective side — SELL (long stop-loss) rounds DOWN, BUY-cover (short
+      // stop-loss) rounds UP — so tick-rounding can only ever loosen the stop, never fire it
+      // earlier/tighter than the strategy requested.
+      const trigger = signal.triggerPriceHint;
+      const triggerDirection = side === 'SELL' ? 'down' : 'up';
+      triggerPrice = roundToTick(trigger, filters.tickSize, triggerDirection);
+      if (isPerpSignal(signal)) {
+        // Perp venues carry a native conditional/ALGO rail — no limit leg needed.
+        type = 'STOP_MARKET';
+      } else {
+        // Spot has no native stop order; STOP_LOSS_LIMIT rests a limit leg once triggered, buffered
+        // past the trigger so it is immediately marketable on the fill side (SELL leg below the
+        // trigger, BUY-cover leg above it) rather than resting passively and never filling.
+        type = 'STOP_LOSS_LIMIT';
+        const bufferBps = this.deps.stopLimitBufferBps ?? 50;
+        const buffer = new Decimal(bufferBps).div(10_000);
+        const rawLeg =
+          side === 'SELL' ? trigger.mul(new Decimal(1).sub(buffer)) : trigger.mul(buffer.add(1));
+        limitPrice = roundToTick(rawLeg, filters.tickSize, side === 'SELL' ? 'down' : 'up');
+      }
+      timeInForce = 'GTC';
+    } else {
+      // Limit price: hint or decision-time reference, rounded directionally to the tick. A hint or
+      // an entry price rounds conservatively (BUY down, SELL up — never pay/receive worse than
+      // intended). Reduce-only intents with no caller-supplied hint are instead made marketable
+      // (crossed past the spread by EXIT_CROSS_BUFFER_BPS): the tick-rounding direction FLIPS to
+      // stay crossed rather than retreat toward passive — SELL rounds down (still below the bid),
+      // BUY-cover rounds up (still above the ask) — so a partial IOC fill never leaves sub-minNotional
+      // dust resting away from market. A caller-supplied hint (e.g. the kill-switch flatten path's
+      // own band-edge pricing) always wins, unchanged, using the conservative direction.
+      const basePrice =
+        signal.limitPriceHint ?? (isCrossedExit ? this.crossedExitPrice(side, refPrice) : refPrice);
+      const tickDirection = isCrossedExit
+        ? side === 'BUY'
+          ? 'up'
+          : 'down'
+        : side === 'BUY'
+          ? 'down'
+          : 'up';
+      limitPrice = roundToTick(basePrice, filters.tickSize, tickDirection);
+      type = reduceOnly ? 'LIMIT' : this.entryType(side, basePrice, refPrice);
+      timeInForce = reduceOnly ? (isRestingExit ? 'GTC' : 'IOC') : 'GTC';
+    }
 
     // Sizing: reduce-only legs (exit-long, cover-short, flatten) reduce the attributed position;
     // entries (long or short) scale by conviction — compounding equity-fraction sizing when enabled,
     // else the legacy fixed baseNotional.
     const rawQty: Decimal = reduceOnly
       ? posQty.abs()
-      : this.entryNotional(signal, snapshot, side).div(limitPrice);
+      : this.entryNotional(signal, snapshot, side).div(limitPrice!);
     // A reduce-only with nothing attributed is a strategy no-op, not a dust order — report it
     // distinctly so trade analysis can separate "flat, nothing to exit" from a genuine sub-min size.
     if (rawQty.lte(0)) return { ok: false, reason: 'NO_POSITION' };
@@ -120,9 +172,12 @@ export class PositionSizerService implements PositionSizerPort {
     // Round the raw (possibly high-precision, e.g. baseNotional/price) quantity to the step FIRST;
     // wrapping it in qty() before rounding would throw on the 18-place precision limit.
     const steppedQty: Qty = roundToStep(rawQty, filters.stepSize, 'down');
+    // Notional check: STOP_MARKET carries no limit leg, so the trigger price is the best available
+    // proxy for the eventual fill price (a STOP_LOSS_LIMIT/plain-limit intent always has limitPrice).
+    const notionalPrice = limitPrice ?? triggerPrice!;
     if (
       steppedQty.lt(new Decimal(filters.minQty)) ||
-      steppedQty.mul(limitPrice).lt(new Decimal(filters.minNotional))
+      steppedQty.mul(notionalPrice).lt(new Decimal(filters.minNotional))
     ) {
       return { ok: false, reason: 'BELOW_MINIMUM' };
     }
@@ -136,10 +191,11 @@ export class PositionSizerService implements PositionSizerPort {
       venue: signal.venue,
       symbol: signal.symbol,
       side,
-      type: reduceOnly ? 'LIMIT' : this.entryType(side, basePrice, refPrice),
+      type,
       qty: steppedQty,
       limitPrice,
-      timeInForce: reduceOnly ? (isRestingExit ? 'GTC' : 'IOC') : 'GTC',
+      triggerPrice,
+      timeInForce,
       reduceOnly,
       mode: this.deps.mode,
       refPrice,

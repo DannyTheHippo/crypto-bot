@@ -10,6 +10,14 @@ export interface RiskLimitsConfig {
   // of maxBandBps. Aggressive-side reduce-only intents and every non-reduce-only intent are
   // unaffected — see domain/risk/evaluate.ts P2.
   readonly maxPassiveExitBandBps: number;
+  // P7b protective-stop trigger checks (domain/risk/evaluate.ts's hasTrigger branch): a trigger
+  // order's |trigger − mid| / mid must be ≤ this (basis points) — a trigger far beyond this is far
+  // more likely a bug than a deliberately wide stop.
+  readonly maxStopTriggerBandBps: number;
+  // P7b: a spot STOP_LOSS_LIMIT's limit leg must sit within 2× this many bps of its own trigger
+  // (sanity — the sizer only ever buffers by exactly this many bps) — see evaluate.ts's T3 check.
+  // Also the exact bps PositionSizerService uses to build the leg (SizerDeps.stopLimitBufferBps).
+  readonly stopLimitBufferBps: number;
   readonly maxOrderNotional: string; // P3: qty × price ≤ this (quote)
   readonly maxDriftBps: number; // P4: |refPrice − mark| / mark ≤ this
   readonly maxPositionPerSymbol: string; // E1: post-trade |position| ≤ this (base qty)
@@ -34,6 +42,8 @@ export function validateLimits(
   const numericFields: ReadonlyArray<keyof RiskLimitsConfig> = [
     'maxBandBps',
     'maxPassiveExitBandBps',
+    'maxStopTriggerBandBps',
+    'stopLimitBufferBps',
     'maxDriftBps',
     'staleMaxAgeMs',
   ];

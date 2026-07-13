@@ -37,6 +37,8 @@ import { SignalGatewayService } from './signal-gateway.service';
 const DEFAULT_LIMITS: PartialRiskLimits = {
   maxBandBps: 100,
   maxPassiveExitBandBps: 1200,
+  maxStopTriggerBandBps: 2000,
+  stopLimitBufferBps: 50,
   maxOrderNotional: '100000',
   maxDriftBps: 100,
   maxPositionPerSymbol: '1000',
@@ -84,6 +86,12 @@ function equityFractionFor(config: TypedConfigService | undefined): string {
 function entryOrderTypeFor(config: TypedConfigService | undefined): 'LIMIT' | 'LIMIT_MAKER' {
   return config?.risk.entryOrderType ?? 'LIMIT';
 }
+// P7b: falls back to the schema's own default (50) so module-isolation unit boots (RiskModule
+// imported without AppConfigModule) still build a RESTING_STOP spot limit leg the same way a real,
+// unconfigured deployment would.
+function stopLimitBufferBpsFor(config: TypedConfigService | undefined): number {
+  return config?.risk.stopLimitBufferBps ?? 50;
+}
 // B2 perp entry-sizing caps: absent TypedConfigService (module-isolation boots) leaves SizerDeps.perp
 // undefined, so the sizer's applyPerpCaps no-ops — byte-identical to a deployment with no perp config.
 function perpDepsFor(config: TypedConfigService | undefined): SizerDeps['perp'] {
@@ -111,6 +119,8 @@ function limitsFor(config: TypedConfigService | undefined): PartialRiskLimits {
     maxDrawdownPct: risk.maxDrawdownPct,
     maxBandBps: risk.maxBandBps,
     maxPassiveExitBandBps: risk.maxPassiveExitBandBps,
+    maxStopTriggerBandBps: risk.maxStopTriggerBandBps,
+    stopLimitBufferBps: risk.stopLimitBufferBps,
     staleMaxAgeMs: risk.staleMaxAgeMs,
   };
 }
@@ -149,6 +159,7 @@ const CONFIG_OPTIONAL = { token: TypedConfigService, optional: true } as const;
         exitCrossBufferBps: exitCrossBufferBpsFor(config),
         equityFraction: equityFractionFor(config),
         entryOrderType: entryOrderTypeFor(config),
+        stopLimitBufferBps: stopLimitBufferBpsFor(config),
         perp: perpDepsFor(config),
       }),
       inject: [CONFIG_OPTIONAL],

@@ -356,6 +356,179 @@ describe('PositionSizerService', () => {
     }
   });
 
+  // ── Protective-stop resting exits (exitStyle 'RESTING_STOP', Push 3 P7b) ──
+  describe("exitStyle 'RESTING_STOP' — venue trigger orders", () => {
+    const V_PERP = venueId('binanceusdm');
+    const SYM_PERP = symbolId('BTC/USDT:USDT');
+
+    function perpFilters(): Map<string, SymbolFilters> {
+      return new Map([
+        [String(SYM), FILTERS],
+        [String(SYM_PERP), FILTERS],
+      ]);
+    }
+
+    // Position map keyed against the PERP venue/symbol — longPosition()/shortPosition() above key
+    // against the spot (V, SYM) pair, so a perp-venue signal would otherwise find NO_POSITION.
+    function perpLongPosition(): Map<string, Position> {
+      return new Map<string, Position>([
+        [
+          `${SID}:${V_PERP}:${SYM_PERP}`,
+          {
+            strategyId: SID,
+            venue: V_PERP,
+            symbol: SYM_PERP,
+            signedQty: new Decimal('5'),
+            avgEntry: price('100'),
+            realizedPnl: new Decimal(0),
+          },
+        ],
+      ]);
+    }
+    function perpShortPosition(): Map<string, Position> {
+      return new Map<string, Position>([
+        [
+          `${SID}:${V_PERP}:${SYM_PERP}`,
+          {
+            strategyId: SID,
+            venue: V_PERP,
+            symbol: SYM_PERP,
+            signedQty: new Decimal('-4'),
+            avgEntry: price('100'),
+            realizedPnl: new Decimal(0),
+          },
+        ],
+      ]);
+    }
+
+    it('a perp SELL stop builds a STOP_MARKET with no limit leg, GTC reduceOnly', () => {
+      const r = new PositionSizerService(clock, deps({ filters: perpFilters() })).size(
+        signal({
+          venue: V_PERP,
+          symbol: SYM_PERP,
+          kind: 'EXIT_LONG',
+          refPrice: price('100'),
+          exitStyle: 'RESTING_STOP',
+          triggerPriceHint: price('95.006'),
+        }),
+        snapshot(perpLongPosition()),
+      );
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(r.intent.type).toBe('STOP_MARKET');
+        expect(r.intent.limitPrice).toBeUndefined();
+        expect(r.intent.timeInForce).toBe('GTC');
+        expect(r.intent.reduceOnly).toBe(true);
+        // Protective direction: a SELL stop rounds its trigger DOWN — never tighter/closer to the
+        // current price than requested.
+        expect(r.intent.triggerPrice?.toFixed()).toBe('95');
+      }
+    });
+
+    it('a perp BUY-cover stop builds a STOP_MARKET with a trigger rounded UP (protective direction)', () => {
+      const r = new PositionSizerService(clock, deps({ filters: perpFilters() })).size(
+        signal({
+          venue: V_PERP,
+          symbol: SYM_PERP,
+          kind: 'EXIT_SHORT',
+          refPrice: price('100'),
+          exitStyle: 'RESTING_STOP',
+          triggerPriceHint: price('105.001'),
+        }),
+        snapshot(perpShortPosition()),
+      );
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(r.intent.type).toBe('STOP_MARKET');
+        expect(r.intent.limitPrice).toBeUndefined();
+        expect(r.intent.triggerPrice?.toFixed()).toBe('105.01'); // rounded UP — never tighter
+      }
+    });
+
+    it('a spot SELL stop builds a STOP_LOSS_LIMIT whose leg sits the buffer below the trigger, both tick-rounded down', () => {
+      const r = new PositionSizerService(clock, deps({ stopLimitBufferBps: 50 })).size(
+        signal({
+          kind: 'EXIT_LONG',
+          refPrice: price('100'),
+          exitStyle: 'RESTING_STOP',
+          triggerPriceHint: price('95'),
+        }),
+        snapshot(longPosition()),
+      );
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(r.intent.type).toBe('STOP_LOSS_LIMIT');
+        expect(r.intent.timeInForce).toBe('GTC');
+        expect(r.intent.reduceOnly).toBe(true);
+        expect(r.intent.triggerPrice?.toFixed()).toBe('95');
+        // 95 × (1 − 50bps) = 94.525, tick-rounded DOWN (marketable once triggered) ⇒ 94.52.
+        expect(r.intent.limitPrice?.toFixed()).toBe('94.52');
+      }
+    });
+
+    it('a spot BUY-cover stop builds a STOP_LOSS_LIMIT whose leg sits the buffer above the trigger, both tick-rounded up', () => {
+      const r = new PositionSizerService(clock, deps({ stopLimitBufferBps: 50 })).size(
+        signal({
+          kind: 'EXIT_SHORT',
+          refPrice: price('100'),
+          exitStyle: 'RESTING_STOP',
+          triggerPriceHint: price('105'),
+        }),
+        snapshot(shortPosition()),
+      );
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(r.intent.type).toBe('STOP_LOSS_LIMIT');
+        expect(r.intent.triggerPrice?.toFixed()).toBe('105');
+        // 105 × (1 + 50bps) = 105.525, tick-rounded UP (marketable once triggered) ⇒ 105.53.
+        expect(r.intent.limitPrice?.toFixed()).toBe('105.53');
+      }
+    });
+
+    it('falls back to a 50bps stop-limit buffer when deps omit stopLimitBufferBps', () => {
+      const depsWithoutBuffer = deps();
+      expect(depsWithoutBuffer.stopLimitBufferBps).toBeUndefined();
+      const r = new PositionSizerService(clock, depsWithoutBuffer).size(
+        signal({
+          kind: 'EXIT_LONG',
+          refPrice: price('100'),
+          exitStyle: 'RESTING_STOP',
+          triggerPriceHint: price('95'),
+        }),
+        snapshot(longPosition()),
+      );
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.intent.limitPrice?.toFixed()).toBe('94.52'); // same as the explicit-50bps case
+    });
+
+    it('a RESTING_STOP with no triggerPriceHint falls back to the ordinary crossed-IOC exit path (never guesses a trigger)', () => {
+      const r = new PositionSizerService(clock, deps({ exitCrossBufferBps: 25 })).size(
+        signal({ kind: 'EXIT_LONG', refPrice: price('100'), exitStyle: 'RESTING_STOP' }),
+        snapshot(longPosition()),
+      );
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(r.intent.type).toBe('LIMIT');
+        expect(r.intent.timeInForce).toBe('IOC');
+        expect(r.intent.triggerPrice).toBeUndefined();
+      }
+    });
+
+    it('sizes a RESTING_STOP off the attributed position size (F2 caps downstream)', () => {
+      const r = new PositionSizerService(clock, deps()).size(
+        signal({
+          kind: 'EXIT_LONG',
+          refPrice: price('100'),
+          exitStyle: 'RESTING_STOP',
+          triggerPriceHint: price('95'),
+        }),
+        snapshot(longPosition()),
+      );
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.intent.qty.toFixed()).toBe('5'); // |signedQty| from longPosition()
+    });
+  });
+
   it('crosses a non-tick-aligned exit price down (SELL) to the nearest tick below', () => {
     // refPrice 101, buffer 25bps ⇒ 101 × 0.9975 = 100.7475, floored to the 0.01 tick ⇒ 100.74.
     const r = new PositionSizerService(clock, deps({ exitCrossBufferBps: 25 })).size(

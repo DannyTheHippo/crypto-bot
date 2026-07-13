@@ -7,6 +7,7 @@ import {
   type ExchangeOrderState,
   type VenueFill,
   type CredentialCheck,
+  type AlgoOrderState,
 } from '../../../ports/exchange';
 import {
   clientOrderId,
@@ -18,7 +19,12 @@ import {
 } from '../../../domain/types/ids';
 import { toAdapterError } from './error-classifier';
 import { CCXT_ORDER_CLIENT, type CcxtOrderClient } from './ccxt-order-client';
-import { normalizeOrderState, normalizeTrade, normalizeBalances } from './ccxt-normalize';
+import {
+  normalizeOrderState,
+  normalizeTrade,
+  normalizeBalances,
+  normalizeAlgoOrder,
+} from './ccxt-normalize';
 
 // Shared with pinPerpVenueDefaults below: the only swap-capable venue this pass wires.
 const PERP_VENUE_ID = 'binanceusdm';
@@ -65,6 +71,41 @@ export class CcxtExchangeAdapter implements ExchangePort {
         // (timeInForceIsRequired unset for this type, only 'PO' is stripped). postOnly alone is
         // the idiomatic ccxt post-only expression; the intent still persists its GTC.
         params['postOnly'] = true;
+        break;
+      case 'STOP_LOSS_LIMIT':
+        // Probe-verified (binance demo): a STOP_LOSS_LIMIT rests on the REGULAR spot order rail
+        // (unified type still echoes 'limit'; raw info.type='STOP_LOSS_LIMIT') — fully
+        // OMS-compatible via fetchOpenOrders/cancelOrder as-is. STOP_MARKET is a different,
+        // non-fungible swap-only rail (see below); fail closed on a mismatched venue rather than
+        // silently place the wrong kind of order.
+        if (String(this.venue) === PERP_VENUE_ID) {
+          throw new Error(
+            `STOP_LOSS_LIMIT is spot-only; venue ${String(this.venue)} is the swap venue (fail-closed)`,
+          );
+        }
+        ccxtType = 'limit';
+        params['timeInForce'] = req.timeInForce;
+        params['stopLossPrice'] = req.triggerPrice;
+        break;
+      case 'STOP_MARKET':
+        // Probe-verified: on the swap venue a STOP_MARKET is an ALGO/conditional order (a
+        // separate rail — response carries info.algoId/algoStatus, never appears in
+        // fetchOpenOrders, and regular fetchOrder/cancelOrder 404 against it with -2013/-2011).
+        // Spot has no equivalent rail; fail closed rather than place a plain market order the
+        // caller never asked for.
+        if (String(this.venue) !== PERP_VENUE_ID) {
+          throw new Error(
+            `STOP_MARKET is swap-only; venue ${String(this.venue)} is not the swap venue (fail-closed)`,
+          );
+        }
+        ccxtType = 'market';
+        params['stopPrice'] = req.triggerPrice;
+        // OMS rule 5 note: the algo rail is NOT the regular order book (fetchOpenOrders/
+        // cancelOrder don't see it), so its dedupe key is clientAlgoId, not clientOrderId.
+        // clientAlgoId here is the SAME generated clientOrderId string — intent persistence
+        // upstream (signal-sink/execution) already journaled that id before this call, so the
+        // dedupe contract holds on this rail too, just under a different venue-side name.
+        params['clientAlgoId'] = req.clientOrderId;
         break;
     }
 
@@ -164,5 +205,50 @@ export class CcxtExchangeAdapter implements ExchangePort {
       symbols.map((s) => String(s)),
       leverage,
     );
+  }
+
+  // Push 3 P7a (backlog: P7d lifecycle consumes these). Venue-gated like pinPerpVenueDefaults
+  // above, but the spot answer differs: a query for a rail that never exists on spot is
+  // vacuously an empty list, not an error — mirrors fetchOpenOrders(symbol) returning [] rather
+  // than throwing when there is simply nothing open.
+  async fetchOpenAlgoOrders(symbol?: SymbolId): Promise<readonly AlgoOrderState[]> {
+    if (String(this.venue) !== PERP_VENUE_ID) return [];
+    if (this.client.fapiPrivateGetOpenAlgoOrders === undefined) {
+      throw new Error(
+        'algo rail: the perp venue client does not implement fapiPrivateGetOpenAlgoOrders (fail-closed)',
+      );
+    }
+    try {
+      const { orders } = await this.client.fapiPrivateGetOpenAlgoOrders();
+      return orders
+        .filter((o) => symbol === undefined || o.symbol === String(symbol))
+        .map((o) => normalizeAlgoOrder(o, symbol ?? symbolId('')));
+    } catch (e) {
+      throw toAdapterError(e);
+    }
+  }
+
+  // Unlike the query above, an explicit cancel-by-id against a rail that cannot exist on this
+  // venue is a caller bug, not a benign empty answer — fail closed rather than silently no-op,
+  // the same posture as the STOP_MARKET venue-mismatch throw in placeOrder.
+  async cancelAlgoOrder(algoId: string, symbol: SymbolId): Promise<void> {
+    if (String(this.venue) !== PERP_VENUE_ID) {
+      throw new Error(
+        `cancelAlgoOrder is swap-only; venue ${String(this.venue)} is not the swap venue (fail-closed)`,
+      );
+    }
+    if (this.client.fapiPrivateDeleteAlgoOrder === undefined) {
+      throw new Error(
+        'algo rail: the perp venue client does not implement fapiPrivateDeleteAlgoOrder (fail-closed)',
+      );
+    }
+    // symbol is accepted for ExchangePort symmetry with cancelOrder(coid, symbol); the raw
+    // Binance algo-cancel endpoint keys on algoId alone (probe-verified), so it is not forwarded.
+    void symbol;
+    try {
+      await this.client.fapiPrivateDeleteAlgoOrder({ algoId });
+    } catch (e) {
+      throw toAdapterError(e);
+    }
   }
 }

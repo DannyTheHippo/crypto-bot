@@ -88,6 +88,12 @@ export interface SizerDeps {
   // 'LIMIT' (disabled — byte-identical to pre-knob behavior), mirroring risk.module's SIZER_DEPS
   // factory. Exits (reduceOnly) always stay 'LIMIT'+IOC regardless of this knob.
   readonly entryOrderType?: 'LIMIT' | 'LIMIT_MAKER';
+  // Protective-stop limit-leg buffer (Push 3 P7b, bps): a RESTING_STOP exit on a spot venue rests a
+  // STOP_LOSS_LIMIT whose limit leg sits this many bps past the trigger (SELL leg below, BUY-cover
+  // leg above), so the leg is immediately marketable once the trigger fires. Optional so existing
+  // test fixtures that omit it keep booting; PositionSizerService falls back to 50, mirroring
+  // risk.module's SIZER_DEPS factory default.
+  readonly stopLimitBufferBps?: number;
   // Perp/swap entry-sizing caps (B2, domain/risk/perp-sizing.ts). Optional so existing spot-only
   // fixtures keep booting unchanged — absent ⇒ a perp-venue entry sizes with no additional cap,
   // which is moot anyway since nothing emits a perp-venue Signal yet (B1's adapter is unwired).

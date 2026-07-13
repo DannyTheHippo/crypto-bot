@@ -12,7 +12,9 @@ export interface IntentInsert {
   venue: string;
   symbol: string;
   side: 'BUY' | 'SELL';
-  type: 'LIMIT' | 'MARKET' | 'LIMIT_MAKER';
+  // Push 3 P7b: widened to the full OrderIntent['type'] union (STOP_LOSS_LIMIT/STOP_MARKET venue
+  // trigger orders) — TS-level only; the underlying column is plain unconstrained text.
+  type: 'LIMIT' | 'MARKET' | 'LIMIT_MAKER' | 'STOP_LOSS_LIMIT' | 'STOP_MARKET';
   qty: string;
   limitPrice?: string;
   timeInForce: 'GTC' | 'IOC' | 'FOK';

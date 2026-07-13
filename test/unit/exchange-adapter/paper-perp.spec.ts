@@ -449,4 +449,18 @@ describe('PaperPerpAdapter', () => {
     expect(await adapter.fetchMyTrades(SYM, epochMs(0))).toHaveLength(1);
     expect((await adapter.validateCredentials()).withdrawalsEnabled).toBe(false);
   });
+
+  // ── trigger orders (Push 3 P7a) ────────────────────────────────────────────
+  it('rejects a trigger order (STOP_MARKET) fail-closed rather than silently placing a plain MARKET', async () => {
+    const { adapter } = make();
+    adapter.ingestBook(SYM, [lvl('99', '10')], [lvl('100', '10')]);
+
+    await expect(
+      adapter.placeOrder(req({ type: 'STOP_MARKET', triggerPrice: '95', reduceOnly: true })),
+    ).rejects.toMatchObject({
+      name: 'AdapterError',
+      errorClass: 'TERMINAL_REJECT',
+      code: 'UNSUPPORTED_ORDER_TYPE',
+    });
+  });
 });

@@ -22,6 +22,8 @@ const IID = intentId('0190abcd-1234-7abc-89ab-0123456789ab');
 const FULL_LIMITS: PartialRiskLimits = {
   maxBandBps: 100, // 1%
   maxPassiveExitBandBps: 1200, // 12%
+  maxStopTriggerBandBps: 2000, // 20%
+  stopLimitBufferBps: 50, // 0.5%
   maxOrderNotional: '1000000',
   maxDriftBps: 100,
   maxPositionPerSymbol: '1000',
@@ -685,5 +687,158 @@ describe('RiskEngine.evaluate — §5 decision table', () => {
     // 99.999 rounds up to 100.00 on a 0.01 tick; reduce-only qty == position ⇒ APPROVED.
     expect(r.verdict).toBe('APPROVED');
     if (r.verdict === 'APPROVED') expect(r.intent.limitPrice!.toFixed()).toBe('100');
+  });
+
+  // ── Push 3 P7b: protective-stop trigger orders (STOP_LOSS_LIMIT/STOP_MARKET) ──
+  describe('trigger orders (triggerPrice present) — T0-T3', () => {
+    it('a passive protective SELL stop 5% below mid (STOP_MARKET) is APPROVED', () => {
+      const r = evaluate(
+        makeInput({
+          intent: makeIntent({
+            side: 'SELL',
+            reduceOnly: true,
+            type: 'STOP_MARKET',
+            limitPrice: undefined,
+            triggerPrice: price('95'), // 5% below mid=100, within the 20% max band
+            qty: qty('5'),
+          }),
+          snapshot: snapshot({ positions: pos('5') }),
+        }),
+      );
+      expect(r.verdict).toBe('APPROVED');
+    });
+
+    it('T0: a non-reduce-only trigger intent is rejected outright (an entry stop is out of scope)', () => {
+      const r = evaluate(
+        makeInput({
+          intent: makeIntent({
+            side: 'SELL',
+            reduceOnly: false,
+            type: 'STOP_MARKET',
+            limitPrice: undefined,
+            triggerPrice: price('95'),
+          }),
+        }),
+      );
+      expect(r).toMatchObject({ verdict: 'REJECTED', reasons: ['REDUCE_ONLY_VIOLATION'] });
+    });
+
+    it('T1: a wrong-side SELL stop trigger (above mid) is rejected — would fire immediately', () => {
+      const r = evaluate(
+        makeInput({
+          intent: makeIntent({
+            side: 'SELL',
+            reduceOnly: true,
+            type: 'STOP_MARKET',
+            limitPrice: undefined,
+            triggerPrice: price('105'), // above mid — wrong side for a SELL stop
+          }),
+          snapshot: snapshot({ positions: pos('5') }),
+        }),
+      );
+      expect(r).toMatchObject({ verdict: 'REJECTED', reasons: ['PRICE_BAND'] });
+    });
+
+    it('T1: a wrong-side BUY-cover stop trigger (below mid) is rejected — would fire immediately', () => {
+      const r = evaluate(
+        makeInput({
+          intent: makeIntent({
+            side: 'BUY',
+            reduceOnly: true,
+            type: 'STOP_MARKET',
+            limitPrice: undefined,
+            triggerPrice: price('95'), // below mid — wrong side for a BUY-cover stop
+          }),
+          snapshot: snapshot({ positions: pos('-5') }),
+        }),
+      );
+      expect(r).toMatchObject({ verdict: 'REJECTED', reasons: ['PRICE_BAND'] });
+    });
+
+    it('T2: a trigger beyond the 20% max stop-trigger band is rejected', () => {
+      const r = evaluate(
+        makeInput({
+          intent: makeIntent({
+            side: 'SELL',
+            reduceOnly: true,
+            type: 'STOP_MARKET',
+            limitPrice: undefined,
+            triggerPrice: price('75'), // 25% below mid > 20% (maxStopTriggerBandBps)
+          }),
+          snapshot: snapshot({ positions: pos('5') }),
+        }),
+      );
+      expect(r).toMatchObject({ verdict: 'REJECTED', reasons: ['PRICE_BAND'] });
+    });
+
+    it('T2: a trigger exactly at the 20% band edge PASSES the distance check', () => {
+      const r = evaluate(
+        makeInput({
+          intent: makeIntent({
+            side: 'SELL',
+            reduceOnly: true,
+            type: 'STOP_MARKET',
+            limitPrice: undefined,
+            triggerPrice: price('80'), // exactly 20% below mid
+          }),
+          snapshot: snapshot({ positions: pos('5') }),
+        }),
+      );
+      expect(r.verdict).not.toBe('REJECTED');
+    });
+
+    it('T3: a spot STOP_LOSS_LIMIT within the 2×buffer leg tolerance is APPROVED', () => {
+      const r = evaluate(
+        makeInput({
+          intent: makeIntent({
+            side: 'SELL',
+            reduceOnly: true,
+            type: 'STOP_LOSS_LIMIT',
+            triggerPrice: price('95'),
+            limitPrice: price('94.53'), // 0.49% below trigger, within 2×50bps = 1%
+            qty: qty('5'),
+          }),
+          snapshot: snapshot({ positions: pos('5') }),
+        }),
+      );
+      expect(r.verdict).toBe('APPROVED');
+    });
+
+    it('T3: a spot STOP_LOSS_LIMIT whose limit leg strays past 2×buffer from the trigger is rejected', () => {
+      const r = evaluate(
+        makeInput({
+          intent: makeIntent({
+            side: 'SELL',
+            reduceOnly: true,
+            type: 'STOP_LOSS_LIMIT',
+            triggerPrice: price('95'),
+            limitPrice: price('80'), // ~15.8% below trigger, way past 2×50bps = 1%
+          }),
+          snapshot: snapshot({ positions: pos('5') }),
+        }),
+      );
+      expect(r).toMatchObject({ verdict: 'REJECTED', reasons: ['PRICE_BAND'] });
+    });
+
+    it('F2 still caps a trigger order qty at the attributed position size', () => {
+      const r = evaluate(
+        makeInput({
+          intent: makeIntent({
+            side: 'SELL',
+            reduceOnly: true,
+            type: 'STOP_MARKET',
+            limitPrice: undefined,
+            triggerPrice: price('95'),
+            qty: qty('10'),
+          }),
+          snapshot: snapshot({ positions: pos('4') }),
+        }),
+      );
+      expect(r.verdict).toBe('RESIZED');
+      if (r.verdict === 'RESIZED') {
+        expect(r.reasons).toContain('REDUCE_ONLY_VIOLATION');
+        expect(r.intent.qty.toFixed()).toBe('4');
+      }
+    });
   });
 });

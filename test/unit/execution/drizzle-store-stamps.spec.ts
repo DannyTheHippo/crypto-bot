@@ -4,7 +4,18 @@ import Decimal from 'decimal.js';
 import { DrizzleExecutionStore } from '../../../src/database/repositories/drizzle-execution-store';
 import type * as schema from '../../../src/database/schemas/trading';
 import type { PersistedOrderEvent } from '../../../src/ports/execution';
-import type { ClientOrderId } from '../../../src/domain/types/ids';
+import type { OrderIntent } from '../../../src/domain/types/order-intent';
+import type { ApprovalProof } from '../../../src/domain/types/risk-decision';
+import { price, qty } from '../../../src/domain/types/money';
+import {
+  intentId,
+  encodeClientOrderId,
+  strategyId,
+  venueId,
+  symbolId,
+  epochMs,
+  type ClientOrderId,
+} from '../../../src/domain/types/ids';
 
 // Backlog #40: the appendOrderEvent chokepoint stamps submittedAt/ackedAt/firstFillAt (journal-time
 // wall clock, the W7 terminalAt convention) keyed on the EVENT type — the repository's COALESCE
@@ -106,5 +117,131 @@ describe('DrizzleExecutionStore.appendOrderEvent lifecycle stamps (#40)', () => 
     expect(extra.submittedAt).toBeUndefined();
     expect(extra.ackedAt).toBeUndefined();
     expect(extra.firstFillAt).toBeUndefined();
+  });
+});
+
+// Push 3 P7b: persistedOrderType() now passes STOP_LOSS_LIMIT/STOP_MARKET through unchanged
+// (order_intents.type/orders.type are plain unconstrained text — verified against
+// drizzle/0000_initial.sql — so no migration was needed, only the TS-level IntentInsert/OrderInsert
+// widening).
+describe('DrizzleExecutionStore trigger-order persistence pass-through (Push 3 P7b)', () => {
+  const IID = intentId('0190abcd-1234-7abc-89ab-0123456789ab');
+  const proof: ApprovalProof = {
+    intentHash: 'h',
+    hmac: 'm',
+    nonce: 'n',
+    approvedAtMs: epochMs(1),
+    ttlMs: 1000,
+    limitsVersion: 'v1',
+    snapshotSeq: 1n,
+  };
+
+  function makeIntent(o: Partial<OrderIntent> = {}): OrderIntent {
+    return {
+      intentId: IID,
+      clientOrderId: encodeClientOrderId(IID, 'paper'),
+      strategyId: strategyId('s1'),
+      venue: venueId('binance'),
+      symbol: symbolId('BTC/USDT'),
+      side: 'SELL',
+      type: 'LIMIT',
+      qty: qty('1'),
+      timeInForce: 'GTC',
+      reduceOnly: true,
+      mode: 'paper',
+      refPrice: price('100'),
+      refSeq: 1n,
+      createdAt: epochMs(0),
+      expiresAt: epochMs(10_000),
+      source: { dedupeKey: 'k', eventTime: epochMs(0), basedOnSeq: 1n, strength: 1 },
+      ...o,
+    };
+  }
+
+  function storeWithCapturedIntent(): {
+    store: DrizzleExecutionStore;
+    captured: () => Record<string, unknown> | undefined;
+  } {
+    const store = new DrizzleExecutionStore({} as NodePgDatabase<typeof schema>, {
+      mode: 'paper',
+      runId: 'run-test',
+      bootId: 'boot-test',
+    });
+    let captured: Record<string, unknown> | undefined;
+    (store as unknown as { intents: unknown }).intents = {
+      insert: (row: Record<string, unknown>) => {
+        captured = row;
+        return Promise.resolve();
+      },
+    };
+    return { store, captured: () => captured };
+  }
+
+  function storeWithCapturedOrder(): {
+    store: DrizzleExecutionStore;
+    captured: () => Record<string, unknown> | undefined;
+  } {
+    const store = new DrizzleExecutionStore({} as NodePgDatabase<typeof schema>, {
+      mode: 'paper',
+      runId: 'run-test',
+      bootId: 'boot-test',
+    });
+    let captured: Record<string, unknown> | undefined;
+    (store as unknown as { orders: unknown }).orders = {
+      insert: (row: Record<string, unknown>) => {
+        captured = row;
+        return Promise.resolve();
+      },
+    };
+    return { store, captured: () => captured };
+  }
+
+  it('saveIntent persists a STOP_MARKET trigger intent (perp) without throwing', async () => {
+    const { store, captured } = storeWithCapturedIntent();
+    await store.saveIntent(
+      makeIntent({ type: 'STOP_MARKET', triggerPrice: price('95'), limitPrice: undefined }),
+      proof,
+    );
+    expect(captured()?.['type']).toBe('STOP_MARKET');
+  });
+
+  it('saveIntent persists a STOP_LOSS_LIMIT trigger intent (spot) without throwing', async () => {
+    const { store, captured } = storeWithCapturedIntent();
+    await store.saveIntent(
+      makeIntent({
+        type: 'STOP_LOSS_LIMIT',
+        triggerPrice: price('95'),
+        limitPrice: price('94.53'),
+      }),
+      proof,
+    );
+    expect(captured()?.['type']).toBe('STOP_LOSS_LIMIT');
+  });
+
+  it('saveNewOrder persists a STOP_LOSS_LIMIT trigger order without throwing', async () => {
+    const { store, captured } = storeWithCapturedOrder();
+    await store.saveNewOrder(
+      {
+        clientOrderId: encodeClientOrderId(IID, 'paper'),
+        state: 'NEW',
+        qty: qty('1'),
+        cumQty: new Decimal(0),
+        stepSize: '0.001',
+        attempt: 0,
+        cancelWanted: false,
+      },
+      makeIntent({
+        type: 'STOP_LOSS_LIMIT',
+        triggerPrice: price('95'),
+        limitPrice: price('94.53'),
+      }),
+    );
+    expect(captured()?.['type']).toBe('STOP_LOSS_LIMIT');
+  });
+
+  it('still persists ordinary LIMIT intents byte-identically (no trigger fields)', async () => {
+    const { store, captured } = storeWithCapturedIntent();
+    await store.saveIntent(makeIntent({ type: 'LIMIT', limitPrice: price('100') }), proof);
+    expect(captured()?.['type']).toBe('LIMIT');
   });
 });

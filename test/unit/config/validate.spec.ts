@@ -203,6 +203,9 @@ describe('validate()', () => {
         playbookAbPct: 0,
         derivativesAbPct: 0,
         thinkingAbPct: 0,
+        derivativesV2Enabled: false,
+        bookStructureFeedEnabled: false,
+        trackRecordEnabled: false,
         crossSymbolEnabled: false,
         crossSymbolLookbackBars: 20,
         portfolioConsultEnabled: false,
@@ -611,6 +614,8 @@ describe('validate()', () => {
       expect(risk.maxDrawdownPct).toBe('0.2');
       expect(risk.maxBandBps).toBe(100);
       expect(risk.maxPassiveExitBandBps).toBe(1200);
+      expect(risk.maxStopTriggerBandBps).toBe(2000);
+      expect(risk.stopLimitBufferBps).toBe(50);
       expect(risk.staleMaxAgeMs).toBe(5000);
     });
 
@@ -621,11 +626,21 @@ describe('validate()', () => {
         RISK_MAX_DAILY_LOSS: '100.25',
         RISK_MAX_BAND_BPS: '50',
         RISK_MAX_PASSIVE_EXIT_BAND_BPS: '900',
+        RISK_MAX_STOP_TRIGGER_BAND_BPS: '1500',
+        STOP_LIMIT_BUFFER_BPS: '75',
       }).risk;
       expect(risk.maxOrderNotional).toBe('500');
       expect(risk.maxDailyLoss).toBe('100.25');
       expect(risk.maxBandBps).toBe(50);
       expect(risk.maxPassiveExitBandBps).toBe(900);
+      expect(risk.maxStopTriggerBandBps).toBe(1500);
+      expect(risk.stopLimitBufferBps).toBe(75);
+    });
+
+    it('rejects a STOP_LIMIT_BUFFER_BPS above the 200 cap', () => {
+      expect(() => validate({ PORT: '3100', STOP_LIMIT_BUFFER_BPS: '201' })).toThrow(
+        /STOP_LIMIT_BUFFER_BPS/,
+      );
     });
 
     it('throws on a non-decimal RISK_MAX_ORDER_NOTIONAL', () => {

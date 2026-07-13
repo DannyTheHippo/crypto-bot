@@ -29,6 +29,21 @@ export interface CcxtTrade {
 
 export type CcxtBalances = Record<string, unknown>;
 
+// Push 3 P7a: the swap venue's ALGO/conditional-order rail (STOP_MARKET). ccxt has no unified
+// support for it — these are raw fapi endpoint response shapes, narrowed defensively like every
+// other CcxtOrder field above.
+export interface RawAlgoOrder {
+  algoId?: string | number;
+  clientAlgoId?: string;
+  symbol?: string;
+  side?: string;
+  orderType?: string;
+  quantity?: string | number;
+  triggerPrice?: string | number;
+  algoStatus?: string;
+  reduceOnly?: boolean;
+}
+
 export interface CcxtOrderClient {
   createOrder(
     symbol: string,
@@ -70,6 +85,13 @@ export interface CcxtOrderClient {
   // symbol. Optional — only meaningful on a swap-capable exchange; the adapter gates the call by
   // venue so a spot instance never receives it.
   pinPerpVenueDefaults?(symbols: readonly string[], leverage: number): Promise<void>;
+
+  // Push 3 P7a (backlog: P7d lifecycle consumes these): raw fapi algo-rail round-trip. ccxt has no
+  // unified createOrder-adjacent query/cancel for conditional/algo orders, so these call the
+  // implicit endpoints directly (probe-verified 2026-07-13). Optional — swap-capable exchange only;
+  // the adapter gates by venue so a spot instance never receives it.
+  fapiPrivateGetOpenAlgoOrders?(): Promise<{ orders: RawAlgoOrder[] }>;
+  fapiPrivateDeleteAlgoOrder?(params: { algoId: string }): Promise<unknown>;
 }
 
 // Delegates each method to the live ccxt Exchange using the same as unknown as {...}
@@ -214,5 +236,24 @@ export class RealCcxtOrderClient implements CcxtOrderClient {
         }
       }
     }
+  }
+
+  // Push 3 P7a: raw fapi algo-rail round-trip (probe-verified 2026-07-13). No unified ccxt method
+  // exists for either call — same defensive `as unknown as {...}` narrowing as every other method
+  // above.
+  fapiPrivateGetOpenAlgoOrders(): Promise<{ orders: RawAlgoOrder[] }> {
+    return (
+      this.exchange as unknown as {
+        fapiPrivateGetOpenAlgoOrders(): Promise<{ orders: RawAlgoOrder[] }>;
+      }
+    ).fapiPrivateGetOpenAlgoOrders();
+  }
+
+  fapiPrivateDeleteAlgoOrder(params: { algoId: string }): Promise<unknown> {
+    return (
+      this.exchange as unknown as {
+        fapiPrivateDeleteAlgoOrder(params: { algoId: string }): Promise<unknown>;
+      }
+    ).fapiPrivateDeleteAlgoOrder(params);
   }
 }

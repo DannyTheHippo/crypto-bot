@@ -14,7 +14,8 @@ export interface OrderInsert {
   venue: string;
   symbol: string;
   side: 'BUY' | 'SELL';
-  type: 'LIMIT' | 'MARKET' | 'LIMIT_MAKER';
+  // Push 3 P7b: widened alongside IntentInsert.type — same rationale.
+  type: 'LIMIT' | 'MARKET' | 'LIMIT_MAKER' | 'STOP_LOSS_LIMIT' | 'STOP_MARKET';
   qty: string;
   limitPrice?: string;
   timeInForce: 'GTC' | 'IOC' | 'FOK';

@@ -80,6 +80,12 @@ export interface AppConfig {
     // so the flag's effect becomes measurable via promptHash grouping. 0 disables (default; also a
     // no-op whenever derivativesFeedEnabled is off — nothing to withhold).
     derivativesAbPct: number;
+    // d2 (Push 3 P6 Unit 1): switches the derivatives block/sentence/promptHash tag from d1 to d2,
+    // surfacing three fields the feed already accumulates (spot-perp basis, OI percent change,
+    // funding trend). Inert unless derivativesFeed.enabled is also true. Default false ⇒ byte-
+    // identical d1 behavior. ENABLING MID-FACTORIAL IS FORBIDDEN (see environment.config.ts's
+    // AGENTIC_DERIVATIVES_V2_ENABLED comment) — d1/d2 rows are not cross-comparable.
+    derivativesV2Enabled: boolean;
     // Thinking-on-decide A/B (backlog #42, mechanism only): percent (0-50) of decides/batches whose
     // request carries thinking:{type:'adaptive'} instead of the hard 'disabled'; arm recoverable
     // from promptHash via the '+th1' tag. 0 disables (default) — enabling is queued behind the
@@ -90,6 +96,15 @@ export interface AppConfig {
     // derivatives block under the information-context A/B (derivativesAbPct).
     crossSymbolEnabled: boolean;
     crossSymbolLookbackBars: number;
+    // Book-structure block (Push 3 P6 Unit 3): microprice/depth-weighted-imbalance/depth-notional,
+    // computed from the already-streaming order book — no new feed, no A/B interaction. Default
+    // false ⇒ byte-identical.
+    bookStructureFeedEnabled: boolean;
+    // Track-record block (Push 3 P6 Unit 4, #17 residual): surfaces this strategy's own realized
+    // tripCount/winRate/meanNetBpsPerTrip/trailingWindowTrips over the same trailing window the
+    // expectancy ladder computes from. Inert without a RoundTripEvidencePort wired. No A/B
+    // interaction. Default false ⇒ byte-identical.
+    trackRecordEnabled: boolean;
     // Portfolio-consult batching (Push II Phase 5, DESIGN Task 2): coalesces concurrent single-symbol
     // decide() calls landing within one window into ONE Anthropic call (BatchingAgentClient,
     // submit_portfolio). Off by default — BatchingAgentClient is not even constructed unconfigured.
@@ -214,6 +229,12 @@ export interface AppConfig {
     // P2 passive-exit override (domain/risk/limits.ts): reduce-only intents priced on the passive
     // side of ref (resting take-profits) check against this wider band instead of maxBandBps.
     maxPassiveExitBandBps: number;
+    // P7b protective-stop trigger checks (domain/risk/evaluate.ts): a trigger order's |trigger −
+    // mid| / mid must be ≤ this (basis points).
+    maxStopTriggerBandBps: number;
+    // P7b: bps a spot STOP_LOSS_LIMIT's limit leg sits past its own trigger (PositionSizerService),
+    // and the sanity tolerance (×2) evaluate.ts's T3 check enforces on that leg.
+    stopLimitBufferBps: number;
     staleMaxAgeMs: number;
   };
   // Perp/swap paper adapter knobs (B1) + entry-sizing knob (B2, position-sizer's perp branch).
@@ -252,12 +273,18 @@ export interface AppConfig {
   };
   // Positioning context (global long/short account ratio) — feature-flagged OFF by default, same
   // zero-behavior-change convention as derivativesFeed above. Rides the SAME information-context A/B
-  // control arm as derivativesFeed/crossSymbol (agentic.derivativesAbPct). Liquidation-order flow is
-  // NOT part of this config: no public REST source exists in ccxt 4.5.58 (see
-  // positioning-feed.ts's header comment).
+  // control arm as derivativesFeed/crossSymbol (agentic.derivativesAbPct). REST-poll liquidation-order
+  // flow is NOT part of this config (no public REST source exists in ccxt 4.5.58, see
+  // positioning-feed.ts's header comment) — a WS-based liquidation feed is shipped separately below.
   positioningFeed: {
     enabled: boolean;
     pollIntervalMs: number;
+  };
+  // #43 (Push 3 P6 Unit 2): public liquidation-order flow via ccxt PRO's watchLiquidationsForSymbols
+  // WS stream — feature-flagged OFF by default, same zero-behavior-change convention as
+  // derivativesFeed above. No pollIntervalMs (WS-driven, not REST-polled).
+  liquidationFeed: {
+    enabled: boolean;
   };
   // Strategy-lane knobs (symbol/interval/active lane selection) read via ConfigService.
   strategy: {

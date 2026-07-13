@@ -31,7 +31,13 @@ export const orderIntents = pgTable('order_intents', {
   venue: text('venue').notNull(),
   symbol: text('symbol').notNull(),
   side: text('side').notNull().$type<'BUY' | 'SELL'>(),
-  type: text('type').notNull().$type<'LIMIT' | 'MARKET' | 'LIMIT_MAKER'>(),
+  // Push 3 P7b: widened to the full OrderIntent['type'] union (STOP_LOSS_LIMIT/STOP_MARKET venue
+  // trigger orders) — TS-level only, matching the repo's $type<>() convention (no DB CHECK; the
+  // underlying column is plain unconstrained text, verified against drizzle/0000_initial.sql before
+  // this widening).
+  type: text('type')
+    .notNull()
+    .$type<'LIMIT' | 'MARKET' | 'LIMIT_MAKER' | 'STOP_LOSS_LIMIT' | 'STOP_MARKET'>(),
   qty: numericMoney('qty').notNull(),
   limitPrice: numericMoney('limit_price'),
   timeInForce: text('time_in_force').notNull().$type<'GTC' | 'IOC' | 'FOK'>(),
@@ -69,7 +75,10 @@ export const orders = pgTable('orders', {
   venue: text('venue').notNull(),
   symbol: text('symbol').notNull(),
   side: text('side').notNull().$type<'BUY' | 'SELL'>(),
-  type: text('type').notNull().$type<'LIMIT' | 'MARKET' | 'LIMIT_MAKER'>(),
+  // Push 3 P7b: widened alongside order_intents.type above — same rationale.
+  type: text('type')
+    .notNull()
+    .$type<'LIMIT' | 'MARKET' | 'LIMIT_MAKER' | 'STOP_LOSS_LIMIT' | 'STOP_MARKET'>(),
   qty: numericMoney('qty').notNull(),
   limitPrice: numericMoney('limit_price'),
   timeInForce: text('time_in_force').notNull().$type<'GTC' | 'IOC' | 'FOK'>(),

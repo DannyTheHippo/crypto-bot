@@ -379,6 +379,9 @@ export class ExecutionGateService implements ExecutionGatePort {
       type: intent.type,
       qty: intent.qty.toFixed(),
       limitPrice: intent.limitPrice?.toFixed(),
+      // Push 3 P7a: forward the trigger price so STOP_LOSS_LIMIT/STOP_MARKET intents reach the
+      // adapter mapping intact — otherwise the trigger silently drops on the real order path.
+      triggerPrice: intent.triggerPrice?.toFixed(),
       timeInForce: intent.timeInForce,
       reduceOnly: intent.reduceOnly,
     };

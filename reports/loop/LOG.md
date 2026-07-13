@@ -2506,3 +2506,42 @@ defect. (3) **Phase-2 venue-TP watch** on the first fresh plan entry (`placed` �
 loop-domain, includes the 0.05→0.04 sizing re-derivation. (5) carry re-test ~07-24 (winsorized
 benchmark, NEW dated report). (6) #25 zombie/ACKED-fixture script. (7) #40 timestamp stamping
 (owner/OMS).
+
+## 2026-07-13 — Owner-directed housekeeping (~17:50–18:30Z): state.md deep clean — backlog verified row-by-row, seeds promoted (#41–#52), history compacted to pointers
+
+**Not a loop pass** — owner-directed ("inspect deeply and clean it all up"), plan-mode approved.
+state.md had grown into a history file: **1,307 lines (~58K tokens) read by every pass**, with
+stale backlog cells, eleven unnumbered seeds in prose, and ~600 lines of per-pass narrative
+duplicating LOG.md. Result: **375 lines**, zero operative content deleted — every pruned block
+has a LOG.md/report pointer, and git history preserves the prior text verbatim.
+
+**Backlog dispositions (each verified against current code before the cell changed):**
+
+- CLOSED with evidence: **#10** (0.0025 deployed — compose:136 — and skip rate reached band
+  66.7%/80%; reopen below 50%), **#11** (Opus-4.8 live, compose:89), **#12** (superseded: plan
+  mode compose:121 + portfolio consult compose:200; `prescreen.ts:88` early-return by design),
+  **#13**, **#14** (Stage 1 closed), **#15**, **#16** (AB 25% + ladder ON + legacy
+  count-promotion disabled, compose:110–130), **#17** (crossSymbol confirmed in
+  `agent-prompt.ts:497–562`; decide-side self-track-record confirmed absent → parked), **#27**.
+- KEPT OPEN, re-verified real 2026-07-13: **#22** (no named prom volume in compose), **#24**
+  (`reconciliation_mismatch_total` still class-blind, reconciliation.service.ts:51), **#25**
+  (rewritten to current truth: 57 zombies healed; residual = the 2 fixture rows), **#30** (zero
+  `eval` matches in ci.yml), **#32** (zero `stream` matches in reflection.service.ts), **#40**,
+  **#18** (rewritten to its real residual; fee-tier/BNB dropped per the flat-10bps verdict).
+- ADDED **#41–#52** from the Push-II close-out seeds + the deferred W12 follow-up — notably #41
+  (PORTFOLIO_SHORTS_TOOL) is load-bearing: with consult ON, boot refuses shorts, so Phase-8
+  enablement is blocked on it.
+
+**Structural changes:** backlog split into Open table (19 rows, compact style) + Closed
+provenance ledger (IDs never renumbered); Flagged split into Open (4 items) + **new "Standing
+verdicts (binding)"** block (price-TA-empty, carry NO-GO + contrarian KILLED, flat-10bps demo
+fees, decide-model champion + thinking no-flip, seed-rule diagnostic) + Resolved provenance
+index; § Current stage compressed to forensics + funnel + a **Durable findings** list
+(trade-gated funnel, seed race, straddle bound, holds-model-driven, reflection repair chain);
+§ Last pass keeps Pass 23 only (older passes: this file); § Strategic frame keeps all operative
+text (delegation verbatim, pre-auths, pending Phase-2/4/5 WATCHes, Phase-8 deploy checklist,
+5→8 pre-auth) and compresses resolved watches + study prose to pointers. The 2026-07-10
+standing owner decisions moved from Flagged into the frame (they are policy, not a flag).
+
+**Gates:** `pnpm lint:md` green (one MD060 compact-style fix on the new Open table header);
+md-only diff, no deploy. Committed with the husky hook checks.

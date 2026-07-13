@@ -104,4 +104,14 @@ describe('InMemoryAgentDecisionJournal', () => {
     expect(withPlan!.plan).toEqual(PLAN);
     expect(withoutPlan!.plan).toBeUndefined();
   });
+
+  it('round-trips a carried consultId, and defaults absent consultId to undefined on the row', async () => {
+    const journal = new InMemoryAgentDecisionJournal();
+    journal.record(entry(1, { consultId: 'consult-abc' }));
+    journal.record(entry(2));
+
+    const [withConsultId, withoutConsultId] = await journal.recent(2);
+    expect(withConsultId!.consultId).toBe('consult-abc');
+    expect(withoutConsultId!.consultId).toBeUndefined();
+  });
 });

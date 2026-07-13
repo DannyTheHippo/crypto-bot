@@ -281,6 +281,12 @@ export interface AgentProposal {
   // prompt, so a stored row can never carry playbook content. Absent whenever no call was made (same
   // convention as latencyMs/promptHash); persisted for offline prompt-variant replay (W1.3).
   readonly inputPayload?: string;
+  // Batch-attribution join key (Push II Phase 5 follow-on): proposeBatch mints ONE id per batch
+  // and stamps it on every proposal in that batch (including degraded-to-hold elements — the row
+  // still belongs to the batch), so offline cost/attribution analytics can join the N per-symbol
+  // journal rows born from one batched call back together. Absent on the single-symbol propose()
+  // path — no batch, no join key.
+  readonly consultId?: string;
 }
 
 export interface AgentClientPort {
@@ -364,6 +370,10 @@ export interface AgentDecisionEntry {
   // every decision that carried no accepted plan (flat/hold-without-plan/error). Optional so
   // pre-this-column writers and fixtures compile; absent and null both map to a NULL column.
   readonly plan?: AgentPlan | null;
+  // See AgentProposal.consultId — the batch join key this decision's proposal carried; null/absent
+  // on every non-batched decision. Optional so pre-this-column writers and fixtures compile; absent
+  // and null both map to a NULL column.
+  readonly consultId?: string | null;
 }
 
 export interface AgentDecisionRow extends AgentDecisionEntry {

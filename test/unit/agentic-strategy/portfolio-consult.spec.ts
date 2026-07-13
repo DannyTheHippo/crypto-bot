@@ -302,22 +302,35 @@ describe('BatchingAgentClient', () => {
     expect(3000 + 27000).toBeLessThanOrEqual(HOST_BACKSTOP_MS);
   });
 
-  it('window/timeout math: the HTTP timeout never drops below the 5s floor even with a large window', async () => {
+  it('window/timeout math: the 5s HTTP floor engages on a valid config (window 3000, timeout 7000 ⇒ attempt 5000, worst case 8000 ≤ 9000 backstop)', async () => {
     const proposeBatch = vi
       .fn()
       .mockResolvedValue({ proposals: new Map([['BTC/USDT', { signals: [] }]]) });
     const inner: BatchCapableAgentClient = { proposeBatch };
     const client = new BatchingAgentClient(inner, makeBudget(), {
-      windowMs: 28000,
+      windowMs: 3000,
       maxBatchSize: 5,
-      agentTimeoutMs: 30000,
+      agentTimeoutMs: 7000,
     });
 
     const pending = client.propose(buildInput('BTC/USDT', 'agentic-1'));
-    await vi.advanceTimersByTimeAsync(28000);
+    await vi.advanceTimersByTimeAsync(3000);
     await pending;
 
     expect(proposeBatch).toHaveBeenCalledWith(expect.any(Array), { timeoutMsOverride: 5000 });
+  });
+
+  it('refuses at construction any window/timeout config whose floor-inclusive worst case exceeds the host backstop (enable-gate review should-fix)', () => {
+    // window 28000 + max(5000, 30000−28000) = 33000 > 32000 backstop — the exact config that would
+    // otherwise spurious-strike the first-arrival strategy every bar.
+    expect(
+      () =>
+        new BatchingAgentClient({ proposeBatch: vi.fn() }, makeBudget(), {
+          windowMs: 28000,
+          maxBatchSize: 5,
+          agentTimeoutMs: 30000,
+        }),
+    ).toThrow(/exceeds the strategy-host backstop/);
   });
 });
 
@@ -410,6 +423,34 @@ describe('AnthropicAgentClient.proposeBatch', () => {
     });
   });
 
+  it('stamps ONE identical consultId on every proposal of a batch — including a degraded (malformed) element and a symbol missing from decisions[] entirely', async () => {
+    const fetchFn = vi.fn();
+    const client = new AnthropicAgentClient(buildCfg(), fetchFn);
+    fetchFn.mockResolvedValue(
+      apiResponse(
+        portfolioBody([
+          { symbol: 'BTC/USDT', action: 'long', confidence: 0.8, rationale: 'r' },
+          // 'moon' is not a valid action — fails decisionElementSchema for this element only.
+          { symbol: 'ETH/USDT', action: 'moon', confidence: 0.5, rationale: 'r' },
+          // SOL/USDT deliberately absent from decisions[] — the missing-symbol hold path.
+        ]),
+      ),
+    );
+
+    const result = await client.proposeBatch([
+      buildInput('BTC/USDT', 'agentic-1'),
+      buildInput('ETH/USDT', 'agentic-2'),
+      buildInput('SOL/USDT', 'agentic-3'),
+    ]);
+
+    const btcId = result.proposals.get('BTC/USDT')?.consultId;
+    const ethId = result.proposals.get('ETH/USDT')?.consultId;
+    const solId = result.proposals.get('SOL/USDT')?.consultId;
+    expect(btcId).toEqual(expect.any(String));
+    expect(ethId).toBe(btcId);
+    expect(solId).toBe(btcId);
+  });
+
   it('a malformed element degrades ONLY that symbol to an empty proposal + warn, other symbols unaffected', async () => {
     const fetchFn = vi.fn();
     const warn = vi.fn();
@@ -454,33 +495,50 @@ describe('AnthropicAgentClient.proposeBatch', () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('missing from submit_portfolio'));
   });
 
-  it('a malformed response envelope throws an AgentProposeError — whole batch rejects, never a per-symbol hold', async () => {
+  // Enable-gate review must-fix: the three post-200 schema-failure modes SOFT-HOLD every symbol
+  // (the single-symbol path soft-holds these exact modes — a rejection would strike every strategy
+  // in the batch simultaneously and auto-DRAIN the lane in correlation). Only transport/HTTP
+  // failures reject (true single-path parity, pinned separately below).
+  it('a malformed response envelope soft-holds EVERY symbol — never a batch-wide rejection', async () => {
     const fetchFn = vi.fn();
     const client = new AnthropicAgentClient(buildCfg(), fetchFn);
     fetchFn.mockResolvedValue(apiResponse('not-an-object'));
 
-    await expect(
-      client.proposeBatch([
-        buildInput('BTC/USDT', 'agentic-1'),
-        buildInput('ETH/USDT', 'agentic-2'),
-      ]),
-    ).rejects.toMatchObject({ name: 'AgentProposeError', kind: 'RETRYABLE' });
+    const result = await client.proposeBatch([
+      buildInput('BTC/USDT', 'agentic-1'),
+      buildInput('ETH/USDT', 'agentic-2'),
+    ]);
+
+    expect(result.proposals.get('BTC/USDT')?.signals).toEqual([]);
+    expect(result.proposals.get('ETH/USDT')?.signals).toEqual([]);
+    expect(result.proposals.get('BTC/USDT')?.consultId).toBeDefined();
+    expect(result.proposals.get('BTC/USDT')?.consultId).toBe(
+      result.proposals.get('ETH/USDT')?.consultId,
+    );
   });
 
-  it('no submit_portfolio tool_use block throws an AgentProposeError', async () => {
+  it('no submit_portfolio tool_use block soft-holds every symbol (usage still recorded on the first)', async () => {
     const fetchFn = vi.fn();
     const client = new AnthropicAgentClient(buildCfg(), fetchFn);
     fetchFn.mockResolvedValue(
-      apiResponse({ stop_reason: 'tool_use', content: [{ type: 'text', text: 'nope' }] }),
+      apiResponse({
+        stop_reason: 'tool_use',
+        content: [{ type: 'text', text: 'nope' }],
+        usage: { input_tokens: 10, output_tokens: 2 },
+      }),
     );
 
-    await expect(client.proposeBatch([buildInput('BTC/USDT', 'agentic-1')])).rejects.toMatchObject({
-      name: 'AgentProposeError',
-      kind: 'RETRYABLE',
-    });
+    const result = await client.proposeBatch([
+      buildInput('BTC/USDT', 'agentic-1'),
+      buildInput('ETH/USDT', 'agentic-2'),
+    ]);
+
+    expect(result.proposals.get('BTC/USDT')?.signals).toEqual([]);
+    expect(result.proposals.get('BTC/USDT')?.usage).toBeDefined();
+    expect(result.proposals.get('ETH/USDT')?.usage).toBeUndefined();
   });
 
-  it('a top-level decisions field missing from the tool payload throws an AgentProposeError', async () => {
+  it('a top-level decisions field missing from the tool payload soft-holds every symbol', async () => {
     const fetchFn = vi.fn();
     const client = new AnthropicAgentClient(buildCfg(), fetchFn);
     fetchFn.mockResolvedValue(
@@ -490,10 +548,8 @@ describe('AnthropicAgentClient.proposeBatch', () => {
       }),
     );
 
-    await expect(client.proposeBatch([buildInput('BTC/USDT', 'agentic-1')])).rejects.toMatchObject({
-      name: 'AgentProposeError',
-      kind: 'RETRYABLE',
-    });
+    const result = await client.proposeBatch([buildInput('BTC/USDT', 'agentic-1')]);
+    expect(result.proposals.get('BTC/USDT')?.signals).toEqual([]);
   });
 
   it('a transport failure throws an AgentProposeError (RETRYABLE), same error class the single-symbol path throws', async () => {
@@ -522,6 +578,11 @@ describe('AnthropicAgentClient.proposeBatch', () => {
     expect(result.proposals.get('BTC/USDT')?.usage).toBeDefined();
     expect(result.proposals.get('ETH/USDT')?.signals).toEqual([]);
     expect(result.proposals.get('ETH/USDT')?.usage).toBeUndefined();
+    // Review nice-to-have: the refusal fan-out stamps the shared batch consultId too.
+    expect(result.proposals.get('BTC/USDT')?.consultId).toBeDefined();
+    expect(result.proposals.get('BTC/USDT')?.consultId).toBe(
+      result.proposals.get('ETH/USDT')?.consultId,
+    );
   });
 
   it('the promptHash carries the pf1 tag — a batched decide can never collide with the single-symbol hash for an otherwise-identical decision', async () => {

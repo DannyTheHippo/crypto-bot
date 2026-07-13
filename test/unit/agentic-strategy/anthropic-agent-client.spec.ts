@@ -388,6 +388,22 @@ describe('AnthropicAgentClient', () => {
 
       expect(proposal.usage).toBeUndefined();
     });
+
+    it('leaves consultId absent on the single-symbol path — byte-identical to pre-batching, no join key without a batch', async () => {
+      const fetchFn = vi.fn();
+      const client = new AnthropicAgentClient(buildCfg(), fetchFn);
+      fetchFn.mockResolvedValue(
+        apiResponse(toolUseBody({ action: 'hold', confidence: 0.5, rationale: 'r' })),
+      );
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+      });
+
+      const proposal = await client.propose(input);
+
+      expect(proposal.consultId).toBeUndefined();
+    });
   });
 
   describe('playbook composition and prompt hash', () => {

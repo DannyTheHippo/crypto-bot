@@ -457,6 +457,50 @@ describe('AgenticStrategy journals the accepted plan (persistence)', () => {
   });
 });
 
+// Push II Phase 5 follow-on: the batch join key a batched proposal carried (AgentProposal.consultId)
+// must reach the journal row the same way AgentProposal.plan does — pinned at the same strategy
+// boundary (recordJournalEntry), not the DB adapter/schema (covered in test/db).
+describe('AgenticStrategy journals the batch consultId (persistence)', () => {
+  class ConsultIdClient implements AgentClientPort {
+    constructor(private readonly consultId?: string) {}
+    propose(): Promise<AgentProposal> {
+      return Promise.resolve({
+        signals: [],
+        decision: { action: 'hold', confidence: 0.5, rationale: 'no edge' },
+        ...(this.consultId ? { consultId: this.consultId } : {}),
+      });
+    }
+  }
+
+  it('journals the batch consultId when the proposal carried one', async () => {
+    const client = new ConsultIdClient('consult-xyz');
+    const entries: Array<{ consultId?: string | null }> = [];
+    const strategy = new AgenticStrategy(SID, makeParams(), client, {
+      journal: {
+        record: (e) => entries.push({ consultId: e.consultId }),
+        recent: () => Promise.resolve([]),
+      },
+    });
+    await strategy.decide(buildInput(0));
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.consultId).toBe('consult-xyz');
+  });
+
+  it('journals null for a decision from an unbatched (single-symbol) proposal', async () => {
+    const client = new ConsultIdClient();
+    const entries: Array<{ consultId?: string | null }> = [];
+    const strategy = new AgenticStrategy(SID, makeParams(), client, {
+      journal: {
+        record: (e) => entries.push({ consultId: e.consultId }),
+        recent: () => Promise.resolve([]),
+      },
+    });
+    await strategy.decide(buildInput(0));
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.consultId).toBeNull();
+  });
+});
+
 // AGENTIC_VENUE_TP: venue-resting take-profit lifecycle for plan-mode longs (see agentic.strategy.ts's
 // manageVenueTp/runActivePlan). PLAN here: avgEntry 100, takeProfitPct 0.03 ⇒ TP price 103 exactly;
 // stopLossPct 0.02 ⇒ stop price 98 exactly. planMaxQuietBars is set well above every bar driven in

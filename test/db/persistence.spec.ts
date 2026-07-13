@@ -858,6 +858,7 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
       eventTime: 1_700_000_500_000,
       promptHash: 'hash-dt-1',
       planJson: plan,
+      consultId: 'consult-dt-1',
     });
     await repo.insert({ ...base, eventTime: 1_700_000_600_000, promptHash: 'hash-dt-2' });
     // Two rows sharing the same eventTime: the desc(id) tiebreak (id is the insertion-ordered PK)
@@ -879,6 +880,9 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
     // plan_json (W1.3 follow-on): round-trips verbatim when carried, null when absent.
     expect(ours[0]!.plan).toEqual(plan);
     expect(ours[1]!.plan).toBeNull();
+    // consult_id (Push II Phase 5 follow-on): round-trips verbatim when carried, null when absent.
+    expect(ours[0]!.consultId).toBe('consult-dt-1');
+    expect(ours[1]!.consultId).toBeNull();
 
     const tied = rows.filter((r) => r.promptHash === 'hash-dt-3a' || r.promptHash === 'hash-dt-3b');
     expect(tied.map((r) => r.promptHash)).toEqual(['hash-dt-3a', 'hash-dt-3b']);

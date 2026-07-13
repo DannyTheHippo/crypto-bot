@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import Decimal from 'decimal.js';
 import { price, qty, type Price } from '../../../domain/types/money';
@@ -637,6 +638,14 @@ export class AnthropicAgentClient implements AgentClientPort {
 
     if (resolved.length === 0) return { proposals };
 
+    // One consultId per batched call, stamped on EVERY resulting proposal below (including
+    // degraded-to-hold elements — the row still belongs to the batch) so offline cost/attribution
+    // analytics can join the N per-symbol journal rows this one call produced. Minted here (not
+    // earlier) — the symbols that never reached `resolved` (no ref price) never entered the batch's
+    // HTTP request, so they carry no consultId, matching promptHash/latencyMs's own
+    // absent-when-no-call convention.
+    const consultId = randomUUID();
+
     const promptHash = computePromptHash({
       templateVersion: `${
         ctx.feedTags.length > 0
@@ -680,14 +689,21 @@ export class AnthropicAgentClient implements AgentClientPort {
     const body: unknown = await res.json();
     const envelope = anthropicResponseSchema.safeParse(body);
     if (!envelope.success) {
-      // Whole-call schema failure: no symbol in this batch has any usable per-decision data (unlike
-      // an individual malformed element, degraded singly below) — every waiting caller rejects with
-      // the SAME error, 1 strike per strategy, matching what 5 independently-failing single-symbol
-      // calls would each throw today.
-      this.logger.warn('anthropic api: malformed response envelope (portfolio batch)');
-      throw new AgentProposeError(
-        'anthropic api: malformed response envelope (portfolio batch)',
-        'RETRYABLE',
+      // Post-200 schema failure: SOFT-HOLD every symbol, never throw (enable-gate review must-fix).
+      // The single-symbol path soft-holds these exact modes — throwing here would convert a bursty
+      // API-overload 200 into a strike on EVERY strategy in the batch simultaneously and
+      // auto-DRAIN the whole lane in correlation. Transport/HTTP failures still throw (true parity:
+      // the single path throws those too, via attemptWithRetry above).
+      this.logger.warn(
+        'anthropic api: malformed response envelope (portfolio batch) — holding all',
+      );
+      return this.softHoldBatch(
+        resolved,
+        undefined,
+        latencyMs,
+        ctx.playbookVersion,
+        promptHash,
+        consultId,
       );
     }
     const usage = envelope.data.usage
@@ -712,6 +728,7 @@ export class AnthropicAgentClient implements AgentClientPort {
           playbookVersion: ctx.playbookVersion,
           promptHash,
           inputPayload: r.inputPayload,
+          consultId,
         });
       });
       return { proposals, usage };
@@ -721,18 +738,32 @@ export class AnthropicAgentClient implements AgentClientPort {
       (b) => b.type === 'tool_use' && b.name === PORTFOLIO_TOOL.name,
     );
     if (!toolBlock) {
-      this.logger.warn(`anthropic api: no ${PORTFOLIO_TOOL.name} tool_use block in response`);
-      throw new AgentProposeError(
-        `anthropic api: no ${PORTFOLIO_TOOL.name} tool_use block in response (portfolio batch)`,
-        'RETRYABLE',
+      // Soft-hold, same rationale as the malformed-envelope path above (enable-gate must-fix).
+      this.logger.warn(
+        `anthropic api: no ${PORTFOLIO_TOOL.name} tool_use block in response (portfolio batch) — holding all`,
+      );
+      return this.softHoldBatch(
+        resolved,
+        usage,
+        latencyMs,
+        ctx.playbookVersion,
+        promptHash,
+        consultId,
       );
     }
     const portfolioParsed = portfolioDecisionsSchema.safeParse(toolBlock.input);
     if (!portfolioParsed.success) {
-      this.logger.warn(`anthropic api: ${PORTFOLIO_TOOL.name} payload failed schema validation`);
-      throw new AgentProposeError(
-        `anthropic api: ${PORTFOLIO_TOOL.name} payload failed schema validation (portfolio batch)`,
-        'RETRYABLE',
+      // Soft-hold, same rationale as the malformed-envelope path above (enable-gate must-fix).
+      this.logger.warn(
+        `anthropic api: ${PORTFOLIO_TOOL.name} payload failed schema validation (portfolio batch) — holding all`,
+      );
+      return this.softHoldBatch(
+        resolved,
+        usage,
+        latencyMs,
+        ctx.playbookVersion,
+        promptHash,
+        consultId,
       );
     }
 
@@ -765,6 +796,7 @@ export class AnthropicAgentClient implements AgentClientPort {
           playbookVersion: ctx.playbookVersion,
           promptHash,
           inputPayload: r.inputPayload,
+          consultId,
         });
         return;
       }
@@ -780,6 +812,7 @@ export class AnthropicAgentClient implements AgentClientPort {
           playbookVersion: ctx.playbookVersion,
           promptHash,
           inputPayload: r.inputPayload,
+          consultId,
         });
         return;
       }
@@ -806,10 +839,40 @@ export class AnthropicAgentClient implements AgentClientPort {
           playbookVersion: ctx.playbookVersion,
           promptHash,
           inputPayload: r.inputPayload,
+          consultId,
         }),
       );
     });
 
+    return { proposals, usage };
+  }
+
+  // Enable-gate review must-fix: the whole-batch POST-200 schema-failure paths (malformed
+  // envelope, missing tool block, payload schema fail) SOFT-HOLD every symbol exactly like the
+  // single-symbol path does for the same modes — a throw here would strike every strategy in the
+  // batch simultaneously (strategy-host counts a rejected decide toward auto-DRAIN) and turn one
+  // bursty API-overload 200 into a correlated lane-wide drain. Usage (when parseable) attaches to
+  // the first resolved symbol only, preserving the absent-vs-zero convention.
+  private softHoldBatch(
+    resolved: ReadonlyArray<{ readonly symbolKey: string; readonly inputPayload: string }>,
+    usage: AgentUsage | undefined,
+    latencyMs: number,
+    playbookVersion: number | undefined,
+    promptHash: string,
+    consultId: string,
+  ): AgentProposeBatchResult {
+    const proposals = new Map<string, AgentProposal>();
+    resolved.forEach((r, i) => {
+      proposals.set(r.symbolKey, {
+        signals: [],
+        ...(i === 0 && usage ? { usage } : {}),
+        latencyMs,
+        playbookVersion,
+        promptHash,
+        inputPayload: r.inputPayload,
+        consultId,
+      });
+    });
     return { proposals, usage };
   }
 
@@ -972,6 +1035,9 @@ export class AnthropicAgentClient implements AgentClientPort {
     readonly playbookVersion: number | undefined;
     readonly promptHash: string;
     readonly inputPayload: string;
+    // Batch-attribution join key (Push II Phase 5 follow-on) — see AgentProposal.consultId.
+    // Absent on the single-symbol propose() path; proposeBatch passes its one per-batch id.
+    readonly consultId?: string;
   }): AgentProposal {
     const {
       input,
@@ -989,6 +1055,7 @@ export class AnthropicAgentClient implements AgentClientPort {
       playbookVersion,
       promptHash,
       inputPayload,
+      consultId,
     } = params;
     const { action, confidence, rationale } = params.decision;
 
@@ -1052,6 +1119,7 @@ export class AnthropicAgentClient implements AgentClientPort {
           playbookVersion,
           promptHash,
           inputPayload,
+          ...(consultId ? { consultId } : {}),
         };
       }
     }
@@ -1107,6 +1175,7 @@ export class AnthropicAgentClient implements AgentClientPort {
           playbookVersion,
           promptHash,
           inputPayload,
+          ...(consultId ? { consultId } : {}),
         };
       }
     }
@@ -1249,6 +1318,7 @@ export class AnthropicAgentClient implements AgentClientPort {
       playbookVersion,
       promptHash,
       inputPayload,
+      ...(consultId ? { consultId } : {}),
     };
   }
 

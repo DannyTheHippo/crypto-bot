@@ -95,6 +95,20 @@ export class BatchingAgentClient implements AgentClientPort {
     this.agentTimeoutMs = cfg.agentTimeoutMs;
     this.model = cfg.model;
     this.logger = logger;
+    // Enable-gate review should-fix: worst-case first-arrival wall time (window + HTTP attempt,
+    // floor included) must fit inside the host's decide backstop (agentTimeoutMs + 2s) — otherwise
+    // the backstop fires first and spurious-strikes the first-arrival strategy every bar. Refuse
+    // the config at boot rather than striking silently at runtime.
+    const worstCaseMs =
+      this.windowMs + Math.max(HTTP_TIMEOUT_FLOOR_MS, this.agentTimeoutMs - this.windowMs);
+    if (worstCaseMs > this.agentTimeoutMs + 2_000) {
+      throw new Error(
+        `AGENTIC_PORTFOLIO_WINDOW_MS(${this.windowMs}) + max(${HTTP_TIMEOUT_FLOOR_MS}, ` +
+          `AGENTIC_TIMEOUT_MS − window) = ${worstCaseMs}ms exceeds the strategy-host backstop ` +
+          `(AGENTIC_TIMEOUT_MS + 2000 = ${this.agentTimeoutMs + 2_000}ms) — shrink the window or ` +
+          'raise AGENTIC_TIMEOUT_MS.',
+      );
+    }
   }
 
   propose(input: AgentDecisionInput): Promise<AgentProposal> {
@@ -148,9 +162,10 @@ export class BatchingAgentClient implements AgentClientPort {
     // Worst case (first-arrival waited the FULL window, then the attempt runs to its own timeout):
     // total wall time = windowMs + httpTimeoutMs. When agentTimeoutMs - windowMs >= the floor, that
     // total collapses to exactly agentTimeoutMs — inside the host's backstop with the full 2s margin
-    // to spare. Only a windowMs configured close to (or above) agentTimeoutMs erodes that margin —
-    // see the fake-timer test in portfolio-consult.spec.ts pinning the arithmetic for the deployed
-    // defaults (windowMs=3000, agentTimeoutMs=30000).
+    // to spare. The margin erodes BOTH when windowMs approaches agentTimeoutMs AND when the floor
+    // engages (agentTimeoutMs < windowMs + floor makes total = windowMs + floor, which exceeds the
+    // backstop once agentTimeoutMs < windowMs + floor − 2s) — the constructor assertion below
+    // refuses those configs at boot (enable-gate review should-fix).
     const httpTimeoutMs = Math.max(HTTP_TIMEOUT_FLOOR_MS, this.agentTimeoutMs - this.windowMs);
 
     let result: AgentProposeBatchResult;
@@ -160,9 +175,11 @@ export class BatchingAgentClient implements AgentClientPort {
         { timeoutMsOverride: httpTimeoutMs },
       );
     } catch (err) {
-      // Whole-call transport/schema failure: reject EVERY waiting caller with the SAME error, so
-      // each strategy's own strike accounting takes exactly 1 strike from its own rejected promise —
-      // identical to what 5 independently-failing single-symbol calls would do today.
+      // Whole-call TRANSPORT/HTTP failure only (post-200 schema failures soft-hold inside
+      // proposeBatch — enable-gate review must-fix; a rejection here strikes every strategy in the
+      // batch, which is true parity ONLY for the failure modes the single-symbol path also throws):
+      // reject EVERY waiting caller with the SAME error, so each strategy's own strike accounting
+      // takes exactly 1 strike from its own rejected promise.
       for (const entry of batch) entry.reject(err);
       return;
     }

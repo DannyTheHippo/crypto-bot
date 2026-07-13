@@ -32,6 +32,8 @@ export interface AgentDecisionInsert {
   // Optional so pre-this-column callers and test fixtures stay valid (same absent-vs-null
   // convention as the cache-token fields above); absent and null both insert as NULL.
   planJson?: AgentPlan | null;
+  // See AgentDecisionEntry.consultId — the batch join key; absent and null both insert as NULL.
+  consultId?: string | null;
 }
 
 export type AgentDecisionDbRow = typeof schema.agentDecisions.$inferSelect;

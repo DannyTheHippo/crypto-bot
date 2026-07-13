@@ -1329,6 +1329,9 @@ export class AgenticStrategy implements AsyncStrategy {
         // call), for offline replay through the settlement backtest harness. Null on every
         // 'flat'/'hold'-without-plan decision.
         plan: proposal?.plan ?? null,
+        // Batch-attribution join key (Push II Phase 5 follow-on) — see AgentProposal.consultId.
+        // Null on every non-batched decision.
+        consultId: proposal?.consultId ?? null,
       });
     } catch {
       // A journal failure must never affect trading — it's an analysis artifact, not a safety

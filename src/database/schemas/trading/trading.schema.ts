@@ -356,6 +356,12 @@ export const agentDecisions = pgTable(
       readonly entryValidityBars: number;
       readonly maxHoldBars: number;
     }>(),
+    // Batch-attribution join key (Push II Phase 5 follow-on): BatchingAgentClient coalesces up to
+    // 5 per-symbol propose() calls into ONE AnthropicAgentClient.proposeBatch call, and every
+    // resulting proposal (including degraded-to-hold elements) carries the SAME consultId, so
+    // offline cost/attribution analytics can join the N rows born from one batched call back
+    // together. Null on every non-batched (single-symbol propose()) row.
+    consultId: text('consult_id'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => [index('agent_decisions_strategy_event_idx').on(t.strategyId, t.eventTime)],

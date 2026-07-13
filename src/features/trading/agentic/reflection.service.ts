@@ -23,6 +23,7 @@ import {
 import { validatePlaybook, type PlaybookValidationResult } from './playbook-validator';
 import type { DailyLlmBudget } from './agent-budget';
 import type { LoggerLike } from './anthropic-agent-client';
+import { measureEntryRate } from './entry-rate-floor';
 
 // Default cooldown between attempts, independent of the trade-count trigger (see ReflectionService's
 // own header comment). Owner decision (F7): this is now the DEFAULT of a tunable knob
@@ -57,6 +58,23 @@ const DEFAULT_MODEL = 'claude-sonnet-5';
 // shares this same output budget with the tool-use response, so 4096 risked truncating the revision
 // mid-thought — 8192 leaves headroom for both.
 const REFLECTION_MAX_TOKENS = 8192;
+// Backlog #39 mint-time entry-rate floor defaults (see runMintFloor). rows/minRows sized off the
+// live incident that motivated this (v2: 17 FLAT consults since mint, 0 entries) — 12 recent rows is
+// enough to distinguish "structurally never fires" from noise without spending a large replay
+// budget per mint attempt; minRows=6 keeps a young lane (few FLAT consults recorded yet) from being
+// blocked by a floor with nothing real to replay against (fail-open below this).
+const DEFAULT_MINT_FLOOR_ROWS = 12;
+const DEFAULT_MINT_FLOOR_MIN_ROWS = 6;
+const DEFAULT_MINT_FLOOR_MIN_ENTRIES = 1;
+// #39 companion: live-abstention lapse threshold (attributed real decides with zero entries before
+// an unresolved candidate lapses early). 15 ≈ v2's own freeze evidence (0 entries / 17 consults,
+// P≈0.4% under the champion's 28% entry rate) — conservative enough that a merely-selective
+// candidate (say 10% entry rate) still fails this test only ~20% of the time by luck at n=15.
+const DEFAULT_ABSTAIN_LAPSE_DECIDES = 15;
+// Lane-wide (unscoped) journal read the floor draws its FLAT-consult corpus from — wider than
+// JOURNAL_LOOKBACK (200, per-strategy) because the floor wants the newest FLAT rows across every
+// symbol this lane trades, not one instrument's own recent window.
+const MINT_FLOOR_JOURNAL_LOOKBACK = 400;
 
 const NOOP_LOGGER: LoggerLike = { warn: () => undefined };
 
@@ -145,6 +163,28 @@ export interface ReflectionServiceConfig {
   // permanently inert, mirroring selectAgentClient's own real-client condition (agentic-strategy.module.ts).
   readonly apiKey?: string;
   readonly baseUrl?: string;
+  // Backlog #39 mint-time entry-rate floor (see runMintFloor's own comment). 0 disables the floor
+  // entirely — byte-identical legacy mint behavior. Absent ⇒ DEFAULT_MINT_FLOOR_ROWS (12).
+  readonly mintFloorRows?: number;
+  // Minimum qualifying FLAT-consult rows before the floor runs at all. Absent ⇒
+  // DEFAULT_MINT_FLOOR_MIN_ROWS (6); a corpus thinner than this fails OPEN (mint proceeds unchecked)
+  // rather than blocking a young lane that hasn't accrued enough real consults yet.
+  readonly mintFloorMinRows?: number;
+  // Minimum replayed entries the floor requires to pass. Absent ⇒ DEFAULT_MINT_FLOOR_MIN_ENTRIES (1).
+  readonly mintFloorMinEntries?: number;
+  // The DECIDE model (AGENTIC_MODEL) the floor replays with — deliberately separate from `model`
+  // above (the REFLECTION model, e.g. Opus): the floor's question is "would the model that actually
+  // trades enter under this draft", never "would the reflection model". Absent ⇒ DEFAULT_MODEL.
+  readonly decideModel?: string;
+  // Plan-mode system-prompt options the floor's replay must match live decide's own composition
+  // (AGENTIC_MIN_EDGE_MULTIPLE / AGENTIC_MIN_RR). Absent ⇒ agent-prompt.ts's own defaults ('1.5').
+  readonly minEdgeMultiple?: string;
+  readonly minRr?: string;
+  // Live-abstention lapse (#39 companion): an unresolved candidate with ≥ this many attributed real
+  // decides and ZERO entries lapses immediately (evidence-based, ahead of the age lapse) — it is
+  // provably untestable, so blocking mints on it serves nothing. 0 disables. Absent ⇒
+  // DEFAULT_ABSTAIN_LAPSE_DECIDES (15).
+  readonly abstainLapseDecides?: number;
 }
 
 export interface ReflectionServiceDeps {
@@ -398,6 +438,21 @@ interface ReflectionCallResult {
   readonly assistantBlocks?: readonly ReflectionAssistantBlock[];
 }
 
+// Backlog #39: the bounded outcome of gateReflectionDraft — 'ok' means the draft may mint, 'no_change'
+// means it hashes identical to the current playbook (mint nothing, no rollback — legitimately
+// consumed), and 'reject' carries the tool_result feedback text plus which of the two gate MODES
+// (structural validatePlaybook vs the mint-time entry-rate floor) produced it, so runReflection can
+// label the final outcome ('validator_reject' vs 'abstain_reject') without re-deriving the reason.
+type ReflectionDraftGate =
+  | { readonly kind: 'ok' }
+  | { readonly kind: 'no_change' }
+  | {
+      readonly kind: 'reject';
+      readonly feedback: string;
+      readonly structural: boolean;
+      readonly validation?: Extract<PlaybookValidationResult, { readonly ok: false }>;
+    };
+
 // Reflection input is hypothesis-generation prompt material, never a trading decision — Decimal→
 // number here mirrors domain/types/money.ts's toIndicatorNumber, applied to the journal's own
 // decimal STRING fields (refPrice/close) rather than a branded Price, since AgentDecisionRow already
@@ -494,6 +549,14 @@ export class ReflectionService {
   private readonly cooldownMs: number;
   private readonly candidateLapseMs: number;
   private readonly autoPromoteMinTrades: number;
+  // Backlog #39 mint-time entry-rate floor knobs — see ReflectionServiceConfig's own comments.
+  private readonly mintFloorRows: number;
+  private readonly mintFloorMinRows: number;
+  private readonly abstainLapseDecides: number;
+  private readonly mintFloorMinEntries: number;
+  private readonly decideModel: string;
+  private readonly minEdgeMultiple: string;
+  private readonly minRr: string;
   // Per-strategy (P7): each instance trades one symbol and accrues its own every-N-trades trigger;
   // lastAttemptAt/inFlight stay LANE-GLOBAL because the playbook (and the API spend the cooldown
   // throttles) is lane-global — two instances never reflect concurrently or double-mint.
@@ -514,6 +577,19 @@ export class ReflectionService {
     this.cooldownMs = Math.max(0, cfg.cooldownMs ?? SEVEN_DAYS_MS);
     this.candidateLapseMs = Math.max(0, cfg.candidateLapseMs ?? THIRTY_DAYS_MS);
     this.autoPromoteMinTrades = Math.max(0, cfg.autoPromoteMinTrades ?? 0);
+    this.mintFloorRows = Math.max(0, cfg.mintFloorRows ?? DEFAULT_MINT_FLOOR_ROWS);
+    this.mintFloorMinRows = Math.max(0, cfg.mintFloorMinRows ?? DEFAULT_MINT_FLOOR_MIN_ROWS);
+    this.abstainLapseDecides = Math.max(
+      0,
+      cfg.abstainLapseDecides ?? DEFAULT_ABSTAIN_LAPSE_DECIDES,
+    );
+    this.mintFloorMinEntries = Math.max(
+      0,
+      cfg.mintFloorMinEntries ?? DEFAULT_MINT_FLOOR_MIN_ENTRIES,
+    );
+    this.decideModel = cfg.decideModel ?? DEFAULT_MODEL;
+    this.minEdgeMultiple = cfg.minEdgeMultiple ?? '1.5';
+    this.minRr = cfg.minRr ?? '1.5';
   }
 
   // Synchronous and cheap by construction — NEVER awaited by the strategy that calls it (a slow or
@@ -647,16 +723,41 @@ export class ReflectionService {
         }
         if (unresolved !== undefined) {
           const ageMs = triggeredAt - unresolved.createdAt;
-          if (ageMs < this.candidateLapseMs) {
+          // Live-abstention lapse (backlog #39 companion, 2026-07-13): a candidate with plenty of
+          // attributed REAL decides and zero entries is provably untestable — its 10-trip verdict
+          // clock can never start, so waiting out the age lapse serves nothing (v2 froze the loop
+          // this exact way: 0 entries in 17 FLAT consults, 5 days of dead air ahead). Evidence-based
+          // lapse beats age: mint over it now, through the entry-rate floor. 0 disables.
+          let liveAbstention = false;
+          if (this.abstainLapseDecides > 0 && ageMs < this.candidateLapseMs) {
+            const rows = await journal.recent(400);
+            let decides = 0;
+            let entries = 0;
+            for (const row of rows) {
+              if (row.playbookVersion !== unresolved.version) continue;
+              if (!row.model.startsWith('claude')) continue;
+              decides += 1;
+              if (row.action === 'long') entries += 1;
+            }
+            liveAbstention = decides >= this.abstainLapseDecides && entries === 0;
+            if (liveAbstention) {
+              this.warn(
+                `reflection: candidate v${unresolved.version} provably abstains live (${entries} entries in ${decides} attributed decides ≥ ${this.abstainLapseDecides}) — lapsing it early, proceeding to mint over it`,
+              );
+            }
+          }
+          if (!liveAbstention && ageMs < this.candidateLapseMs) {
             this.warn(
               `reflection: candidate v${unresolved.version} (${unresolved.source}) is still unresolved in A/B (age ${Math.round(ageMs / 3_600_000)}h < lapse ${Math.round(this.candidateLapseMs / 3_600_000)}h) — skipping mint, trigger preserved`,
             );
             this.deps.recorder?.recordReflectionOutcome?.('skipped_unresolved_candidate');
             return;
           }
-          this.warn(
-            `reflection: candidate v${unresolved.version} lapsed after ${Math.round(ageMs / 3_600_000)}h without resolving — proceeding to mint over it (deliberate, logged orphaning)`,
-          );
+          if (!liveAbstention) {
+            this.warn(
+              `reflection: candidate v${unresolved.version} lapsed after ${Math.round(ageMs / 3_600_000)}h without resolving — proceeding to mint over it (deliberate, logged orphaning)`,
+            );
+          }
         }
       } catch (err) {
         // Best-effort guard: a failed history read degrades to the pre-guard behavior rather than
@@ -760,14 +861,21 @@ export class ReflectionService {
     }
 
     let revision = first.revision!;
-    let validation: PlaybookValidationResult = validatePlaybook(revision.playbook);
-    if (!validation.ok) {
+    // Backlog #39: gateReflectionDraft runs structural validation, THEN (only on a structurally-valid
+    // draft that differs from `current` — hash check before floor, so a NO_CHANGE draft spends zero
+    // floor calls) the mint-time entry-rate floor. Shared by both the first draft and the retry draft
+    // below so a rejection reason the model was never told about can never surface as a silent mint
+    // failure.
+    let gate = await this.gateReflectionDraft(revision, current, recordUsage);
+    if (gate.kind === 'reject') {
       // Backlog #31: ONE bounded retry-with-feedback, gated behind its own budget reservation so a
-      // starved budget degrades to the pre-retry behavior (immediate validator_reject) rather than
-      // spending a call it can't account for. The tool_result MUST reference the tool_use id and
-      // the assistant turn MUST carry the response's full ordered blocks (signed thinking blocks
-      // included) — a missing id or stripped thinking block makes the continuation a guaranteed
-      // 400, so absent-id degrades to the pre-retry behavior instead of burning a doomed call.
+      // starved budget degrades to the pre-retry behavior (immediate reject) rather than spending a
+      // call it can't account for. The tool_result MUST reference the tool_use id and the assistant
+      // turn MUST carry the response's full ordered blocks (signed thinking blocks included) — a
+      // missing id or stripped thinking block makes the continuation a guaranteed 400, so absent-id
+      // degrades to the pre-retry behavior instead of burning a doomed call. Backlog #39 reuses this
+      // SAME bounded machinery for a floor rejection — only the tool_result feedback text differs
+      // (gate.feedback is either validatePlaybook's own reason or the floor's abstention text).
       if (first.toolBlock!.id !== undefined && this.deps.budget.tryReserveCall()) {
         const retryMessages: readonly ReflectionMessage[] = [
           { role: 'user', content: userMessage },
@@ -781,7 +889,7 @@ export class ReflectionService {
               {
                 type: 'tool_result',
                 tool_use_id: first.toolBlock!.id,
-                content: buildValidationFeedbackText(validation),
+                content: gate.feedback,
                 is_error: true,
               },
             ],
@@ -795,25 +903,35 @@ export class ReflectionService {
           return;
         }
         revision = second.revision!;
-        validation = validatePlaybook(revision.playbook);
+        gate = await this.gateReflectionDraft(revision, current, recordUsage);
       }
-      if (!validation.ok) {
-        this.deps.recorder?.recordValidatorRejection(
-          validation.bannedTokenHit ?? false,
-          validation.bannedToken,
-        );
-        this.warn(
-          `reflection: revised playbook failed validation (${validation.reason}) — discarding (changelog: ${revision.changelog.replace(/\s+/g, ' ').slice(0, MAX_CHANGELOG_LOG_CHARS)})`,
-        );
-        this.deps.recorder?.recordReflectionOutcome?.('validator_reject');
+      if (gate.kind === 'reject') {
+        if (gate.structural) {
+          this.deps.recorder?.recordValidatorRejection(
+            gate.validation!.bannedTokenHit ?? false,
+            gate.validation!.bannedToken,
+          );
+          this.warn(
+            `reflection: revised playbook failed validation (${gate.validation!.reason}) — discarding (changelog: ${revision.changelog.replace(/\s+/g, ' ').slice(0, MAX_CHANGELOG_LOG_CHARS)})`,
+          );
+          this.deps.recorder?.recordReflectionOutcome?.('validator_reject');
+        } else {
+          // Backlog #39: structurally valid but abstains under the mint-time entry-rate floor even
+          // after the one bounded retry — a candidate whose entry bar never fires can never accrue
+          // the attributed trips its own promotion verdict needs (this file's own header comment), so
+          // it is discarded here, under its OWN outcome label so the two rejection modes stay
+          // distinguishable in the metrics rather than both reading as 'validator_reject'.
+          this.warn(
+            `reflection: revised playbook abstains under the mint-time entry-rate floor — discarding (changelog: ${revision.changelog.replace(/\s+/g, ' ').slice(0, MAX_CHANGELOG_LOG_CHARS)})`,
+          );
+          this.deps.recorder?.recordReflectionOutcome?.('abstain_reject');
+        }
         rollback();
         return;
       }
     }
 
-    const newHash = createHash('sha256').update(revision.playbook, 'utf8').digest('hex');
-    const currentHash = createHash('sha256').update(current.content, 'utf8').digest('hex');
-    if (newHash === currentHash) {
+    if (gate.kind === 'no_change') {
       this.warn(
         'reflection: revised playbook is identical to the current one (NO_CHANGE) — minting nothing',
       );
@@ -831,6 +949,144 @@ export class ReflectionService {
       playbookStore,
       minted.version,
       Math.max(closedTradeCount, dbClosedTradesTotal),
+    );
+  }
+
+  // Backlog #39 combined draft gate: structural validation (validatePlaybook), then — only for a
+  // draft that both passes structural validation AND differs from `current` (NO_CHANGE spends zero
+  // floor calls) — the mint-time entry-rate floor. Shared by the first draft and the backlog #31
+  // retry draft (see runReflection) so retry feedback and mint eligibility can never diverge.
+  private async gateReflectionDraft(
+    revision: { readonly playbook: string; readonly changelog: string },
+    current: { readonly version: number; readonly content: string },
+    recordUsage: (usage: AgentUsage | undefined) => void,
+  ): Promise<ReflectionDraftGate> {
+    const validation = validatePlaybook(revision.playbook);
+    if (!validation.ok) {
+      return {
+        kind: 'reject',
+        feedback: buildValidationFeedbackText(validation),
+        structural: true,
+        validation,
+      };
+    }
+    const newHash = createHash('sha256').update(revision.playbook, 'utf8').digest('hex');
+    const currentHash = createHash('sha256').update(current.content, 'utf8').digest('hex');
+    if (newHash === currentHash) {
+      return { kind: 'no_change' };
+    }
+    const floorFeedback = await this.runMintFloor(revision.playbook, recordUsage);
+    if (floorFeedback !== null) {
+      return { kind: 'reject', feedback: floorFeedback, structural: false };
+    }
+    return { kind: 'ok' };
+  }
+
+  // Backlog #39 mint-time entry-rate floor: BEFORE a structurally-valid, non-NO_CHANGE draft ever
+  // occupies the A/B slot, replay it against the newest real FLAT-consult payloads recorded
+  // LANE-WIDE (this.deps.journal.recent — unscoped: the floor wants the newest FLAT rows across
+  // every symbol this lane trades, not one instrument's own recent window). A candidate whose entry
+  // bar never fires against real recent market states can never accrue the attributed trips its own
+  // promotion verdict needs (see this file's own header comment) — this is the veto that stops that
+  // candidate from squatting the A/B slot until the unresolved-candidate lapse. Returns null when the
+  // floor PASSES or is fail-open SKIPPED (mint may proceed); returns tool_result feedback text when
+  // it FAILS (the caller retries-with-feedback exactly like a structural rejection). Structurally
+  // UNABLE to mint or promote anything itself — it only ever returns a veto-or-not signal.
+  private async runMintFloor(
+    playbook: string,
+    recordUsage: (usage: AgentUsage | undefined) => void,
+  ): Promise<string | null> {
+    if (this.mintFloorRows <= 0) return null; // disabled — byte-identical legacy behavior
+    const journal = this.deps.journal;
+    if (!journal) return null; // nothing to replay against — fail open
+
+    let candidateRows: readonly AgentDecisionRow[];
+    try {
+      candidateRows = await journal.recent(MINT_FLOOR_JOURNAL_LOOKBACK);
+    } catch (err) {
+      this.warn(
+        `entry-floor: journal read failed (${err instanceof Error ? err.message : String(err)}) — skipping floor, mint proceeds`,
+      );
+      return null;
+    }
+
+    // Real (model starts 'claude'), FLAT-position consult payloads only — the floor's whole premise
+    // is replaying against REAL recorded market states, so an error/stub row or an unparseable/
+    // non-FLAT payload is excluded rather than padding the corpus with noise. journal.recent()
+    // returns oldest→newest; slice(-N) below takes the newest N qualifying rows.
+    const flatPayloads: string[] = [];
+    for (const row of candidateRows) {
+      if (row.inputPayload === null || !row.model.startsWith('claude')) continue;
+      let side: unknown;
+      try {
+        side = (JSON.parse(row.inputPayload) as { position?: { side?: unknown } } | null)?.position
+          ?.side;
+      } catch {
+        continue; // unparseable payload — skip this row, never fail the whole floor
+      }
+      if (side !== 'FLAT') continue;
+      flatPayloads.push(row.inputPayload);
+    }
+    const rows = flatPayloads.slice(-this.mintFloorRows);
+    if (rows.length < this.mintFloorMinRows) {
+      this.warn(
+        `entry-floor: only ${rows.length} qualifying FLAT-consult rows (below floor min ${this.mintFloorMinRows}) — corpus too young, skipping floor, mint proceeds`,
+      );
+      return null;
+    }
+
+    // One budget reservation per replay row, reserved BEFORE any replay call: a reservation
+    // shortfall partway through means the remaining rows can't be honestly replayed either, so the
+    // whole floor aborts (fail-open) rather than judging a candidate on a partial, budget-truncated
+    // sample.
+    for (let i = 0; i < rows.length; i++) {
+      if (!this.deps.budget.tryReserveCall()) {
+        this.warn('entry-floor skipped: budget exhausted mid-replay — mint proceeds (fail-open)');
+        return null;
+      }
+    }
+
+    const measurement = await measureEntryRate(
+      {
+        apiKey: this.cfg.apiKey!,
+        // The DECIDE model, not `this.cfg.model` (the reflection model) — see decideModel's own
+        // ReflectionServiceConfig comment.
+        model: this.decideModel,
+        baseUrl: this.cfg.baseUrl,
+        timeoutMs: this.cfg.timeoutMs,
+        playbookContent: playbook,
+        planMode: true,
+        minEdgeMultiple: this.minEdgeMultiple,
+        minRr: this.minRr,
+      },
+      rows,
+      this.deps.fetchFn ?? fetch,
+    );
+    if ('skipped' in measurement) {
+      this.warn(`entry-floor: ${measurement.skipped} — mint proceeds`);
+      return null;
+    }
+    for (const usage of measurement.usages) recordUsage(usage);
+    // Veto only on evidence from SUCCESSFUL replays: with too few parseable consults (transport
+    // failures, a bad decide-model id, an API outage — measureEntryRate skips those rows), a "0
+    // entries" reading is a measurement failure, not an abstention, and rejecting on it would
+    // mislabel an outage as candidate behavior and halt learning until the API recovers. Fail OPEN
+    // with a transport-distinct log instead (reviewer should-fix, 2026-07-13).
+    if (measurement.consults < this.mintFloorMinRows) {
+      this.warn(
+        `entry-floor: only ${measurement.consults}/${rows.length} replay calls returned a parseable action (transport/model failure, not abstention) — mint proceeds unfloored`,
+      );
+      return null;
+    }
+    if (measurement.entries >= this.mintFloorMinEntries) {
+      return null; // passes — mint may proceed
+    }
+    return (
+      `Your revised playbook produced ${measurement.entries} entries when replayed against the ` +
+      `${measurement.consults} most recent real FLAT-position market states (champion enters ~28% ` +
+      'of such consults). An entry rule that never fires cannot be evaluated or promoted. Revise ' +
+      'to stay selective but tradeable — loosen the entry conditions enough that at least some ' +
+      'genuine setups fire.'
     );
   }
 
@@ -1025,6 +1281,23 @@ export function createReflectionService(
       // ConfigService value onto this env record before it reaches createReflectionService. 0
       // (default) disables auto-promotion.
       autoPromoteMinTrades: intEnv(env['AGENTIC_AUTO_PROMOTE_MIN_TRADES'], 0),
+      // Backlog #39 mint-time entry-rate floor knobs — see ReflectionServiceConfig's own comments.
+      // 0 disables the floor entirely (byte-identical legacy mint behavior).
+      mintFloorRows: intEnv(env['AGENTIC_MINT_FLOOR_ROWS'], DEFAULT_MINT_FLOOR_ROWS),
+      mintFloorMinRows: intEnv(env['AGENTIC_MINT_FLOOR_MIN_ROWS'], DEFAULT_MINT_FLOOR_MIN_ROWS),
+      mintFloorMinEntries: intEnv(
+        env['AGENTIC_MINT_FLOOR_MIN_ENTRIES'],
+        DEFAULT_MINT_FLOOR_MIN_ENTRIES,
+      ),
+      abstainLapseDecides: intEnv(
+        env['AGENTIC_ABSTAIN_LAPSE_DECIDES'],
+        DEFAULT_ABSTAIN_LAPSE_DECIDES,
+      ),
+      // The floor replays with the DECIDE model (AGENTIC_MODEL), never the reflection `model` above
+      // — see decideModel's own ReflectionServiceConfig comment.
+      decideModel: env['AGENTIC_MODEL'] ?? DEFAULT_MODEL,
+      minEdgeMultiple: env['AGENTIC_MIN_EDGE_MULTIPLE'],
+      minRr: env['AGENTIC_MIN_RR'],
       apiKey,
     },
     deps,

@@ -186,6 +186,59 @@ function baseCfg(over: Partial<ReflectionServiceConfig> = {}): ReflectionService
   };
 }
 
+// ── Backlog #39: mint-time entry-rate floor fixtures ────────────────────────
+
+// A real (model starts 'claude'), FLAT-position consult row — exactly what the floor's journal
+// scan qualifies. eventTime spreads rows so journal.recent()'s oldest→newest ordering is meaningful.
+function flatConsultRow(i: number): AgentDecisionRow {
+  return row({
+    id: `flat-${i}`,
+    model: 'claude-sonnet-5',
+    inputPayload: JSON.stringify({ position: { side: 'FLAT' } }),
+    eventTime: epochMs(T + i),
+  });
+}
+
+// A submit_plan tool-use response, mirroring the live decide path's plan-mode envelope in miniature
+// (no thinking block: the floor's replay disables thinking, same as decide's own attemptOnce).
+function floorPlanBody(action: 'long' | 'flat' | 'hold'): unknown {
+  return {
+    stop_reason: 'tool_use',
+    content: [
+      {
+        type: 'tool_use',
+        id: 'toolu_floor',
+        name: 'submit_plan',
+        input: { action, confidence: 0.4, rationale: 'floor replay fixture' },
+      },
+    ],
+    usage: { input_tokens: 5, output_tokens: 5 },
+  };
+}
+
+// Dispatches a shared fetch mock between the reflection draft calls (tool submit_playbook_revision)
+// and the floor's replay calls (tool submit_plan) by inspecting the request body's tool name —
+// exactly the distinguishing signal a fake fetch has, per this suite's own design brief. Typed via a
+// narrow structural param (rather than ReturnType<typeof vi.fn>) so the implementation's real
+// `typeof fetch` signature — a Promise-returning function — is what TS/eslint actually check against.
+function mockDualFetch(
+  fetchFn: { mockImplementation(impl: typeof fetch): unknown },
+  reflectionBodies: readonly unknown[],
+  floorAction: 'long' | 'flat' | 'hold',
+): void {
+  let reflectionCallIndex = 0;
+  const impl: typeof fetch = (_url, init) => {
+    const parsedBody = JSON.parse(init?.body as string) as { tools: Array<{ name: string }> };
+    if (parsedBody.tools[0]!.name === 'submit_playbook_revision') {
+      const body = reflectionBodies[reflectionCallIndex]!;
+      reflectionCallIndex += 1;
+      return Promise.resolve(apiResponse(body));
+    }
+    return Promise.resolve(apiResponse(floorPlanBody(floorAction)));
+  };
+  fetchFn.mockImplementation(impl);
+}
+
 interface Harness {
   deps: ReflectionServiceDeps;
   fetchFn: ReturnType<typeof vi.fn>;
@@ -1450,7 +1503,13 @@ describe('ReflectionService realized evidence + trigger seeding', () => {
     const service = new ReflectionService(baseCfg({ everyNTrades: 1 }), { ...h.deps, journal });
     service.onClosedTrade(SID, 1);
     await flush();
-    expect(recentCalls).toEqual([[200, String(SID)]]);
+    expect(recentCalls).toEqual([
+      [200, String(SID)], // per-strategy digest read (unchanged)
+      // Backlog #39: the mint-time entry-rate floor's own corpus read is deliberately LANE-WIDE
+      // (unscoped strategyId) — it wants the newest FLAT-consult rows across every symbol, not one
+      // instrument's own recent window (see reflection.service.ts's runMintFloor).
+      [400, undefined],
+    ]);
   });
 
   it('the DB closed-trip total floors the auto-promotion count across redeploys', async () => {
@@ -1547,6 +1606,78 @@ describe('unrouted active() read + unresolved-candidate guard (2026-07-12)', () 
     expect(h.logger.messages.some((m) => m.includes('lapsed'))).toBe(true);
   });
 
+  it('lapses a provably-abstaining candidate EARLY (≥ abstainLapseDecides attributed decides, zero entries) and mints over it before the age lapse', async () => {
+    // 15 candidate-attributed real decides, all holds — the v2 freeze signature (#39 companion).
+    const abstainRows = Array.from({ length: 15 }, (_, i) =>
+      row({
+        id: `v2-hold-${i}`,
+        model: 'claude-sonnet-5',
+        playbookVersion: 2,
+        action: 'hold',
+        eventTime: epochMs(T + i),
+      }),
+    );
+    const h = buildHarness({ rows: abstainRows });
+    h.deps = {
+      ...h.deps,
+      playbookStore: {
+        ...h.storeApi.store,
+        // Candidate is only 1s old — the AGE lapse alone would skip this mint for another week.
+        listVersions: () =>
+          Promise.resolve([{ version: 2, source: 'reflection', createdAt: T - 1_000 }]),
+      },
+    };
+    h.fetchFn.mockResolvedValue(okRevision());
+    // Floor disabled to isolate the lapse path (the abstain rows would otherwise feed the floor's
+    // replay too — covered by the #39 floor suite below).
+    const service = new ReflectionService(baseCfg({ everyNTrades: 1, mintFloorRows: 0 }), h.deps);
+
+    service.onClosedTrade(SID, 1);
+    await flush();
+
+    expect(h.storeApi.appended).toHaveLength(1);
+    expect(h.logger.messages.some((m) => m.includes('provably abstains live'))).toBe(true);
+    expect(h.recorderApi.outcomes).toContain('minted');
+  });
+
+  it('does NOT abstention-lapse a candidate that has entered at least once — the age lapse still governs', async () => {
+    const mixedRows = [
+      ...Array.from({ length: 14 }, (_, i) =>
+        row({
+          id: `v2-hold-${i}`,
+          model: 'claude-sonnet-5',
+          playbookVersion: 2,
+          action: 'hold',
+          eventTime: epochMs(T + i),
+        }),
+      ),
+      row({
+        id: 'v2-entry',
+        model: 'claude-sonnet-5',
+        playbookVersion: 2,
+        action: 'long',
+        eventTime: epochMs(T + 14),
+      }),
+    ];
+    const h = buildHarness({ rows: mixedRows });
+    h.deps = {
+      ...h.deps,
+      playbookStore: {
+        ...h.storeApi.store,
+        listVersions: () =>
+          Promise.resolve([{ version: 2, source: 'reflection', createdAt: T - 1_000 }]),
+      },
+    };
+    const service = new ReflectionService(baseCfg({ everyNTrades: 1, mintFloorRows: 0 }), h.deps);
+
+    service.onClosedTrade(SID, 1);
+    await flush();
+
+    expect(h.fetchFn).not.toHaveBeenCalled();
+    expect(h.storeApi.appended).toHaveLength(0);
+    expect(h.recorderApi.outcomes).toEqual(['skipped_unresolved_candidate']);
+  });
+
   it('ignores non-candidate rows and versions at/below active — promotion history never blocks a mint', async () => {
     const h = buildHarness();
     h.deps = {
@@ -1568,5 +1699,213 @@ describe('unrouted active() read + unresolved-candidate guard (2026-07-12)', () 
 
     expect(h.fetchFn).toHaveBeenCalledTimes(1);
     expect(h.storeApi.appended).toHaveLength(1);
+  });
+});
+
+describe('backlog #39: mint-time entry-rate floor', () => {
+  const FLOOR_ROWS = 2;
+
+  function floorCfg(over: Partial<ReflectionServiceConfig> = {}): ReflectionServiceConfig {
+    return baseCfg({
+      everyNTrades: 1,
+      mintFloorRows: FLOOR_ROWS,
+      mintFloorMinRows: FLOOR_ROWS,
+      mintFloorMinEntries: 1,
+      ...over,
+    });
+  }
+
+  it('rejects an abstaining draft through the floor, retries with the floor feedback, abstains again, and records abstain_reject with a rolled-back trigger', async () => {
+    const h = buildHarness({
+      budgetCaps: { maxCallsPerDay: 20, maxTokensPerDay: 1_000_000 },
+      rows: [flatConsultRow(0), flatConsultRow(1)],
+    });
+    mockDualFetch(
+      h.fetchFn,
+      [
+        revisionToolBody({
+          playbook: validPlaybookContent('abstain-1'),
+          changelog: 'raise the bar',
+        }),
+        revisionToolBody({
+          playbook: validPlaybookContent('abstain-2'),
+          changelog: 'raise it more',
+        }),
+      ],
+      'hold', // the candidate playbook never enters — the floor sees 0 entries on every replay
+    );
+    const service = new ReflectionService(floorCfg(), h.deps);
+
+    service.onClosedTrade(SID, 1);
+    await flush();
+
+    expect(h.storeApi.appended).toHaveLength(0);
+    expect(h.recorderApi.outcomes).toEqual(['attempt_started', 'abstain_reject']);
+    expect(
+      h.logger.messages.some((m) => m.includes('abstains under the mint-time entry-rate floor')),
+    ).toBe(true);
+
+    // Call order: 0 = first reflection draft, 1..FLOOR_ROWS = its floor replay, FLOOR_ROWS+1 = the
+    // retry reflection draft — its tool_result must carry the floor's own feedback text.
+    const retryBody = requestBodyOf(h.fetchFn, FLOOR_ROWS + 1) as unknown as {
+      messages: Array<{ role: string; content: string | Array<Record<string, unknown>> }>;
+    };
+    const toolResultTurn = retryBody.messages[2]!;
+    expect(toolResultTurn.role).toBe('user');
+    const toolResultBlock = (toolResultTurn.content as Array<Record<string, unknown>>)[0]!;
+    expect(toolResultBlock['content']).toContain('cannot be evaluated or promoted');
+
+    // Rollback: the trigger was additively restored to >= everyNTrades — the very next closed trade
+    // re-fires immediately rather than requiring a fresh N (same convention as backlog #31's own
+    // rollback tests above).
+    h.fetchFn.mockResolvedValue(
+      apiResponse({ stop_reason: 'refusal', content: [], usage: undefined }),
+    );
+    service.onClosedTrade(SID, 2);
+    await flush();
+    expect(h.recorderApi.outcomes).toEqual([
+      'attempt_started',
+      'abstain_reject',
+      'attempt_started',
+      'refusal',
+    ]);
+  });
+
+  it('mints when the replayed floor produces at least one entry', async () => {
+    const h = buildHarness({
+      budgetCaps: { maxCallsPerDay: 20, maxTokensPerDay: 1_000_000 },
+      rows: [flatConsultRow(0), flatConsultRow(1)],
+    });
+    mockDualFetch(
+      h.fetchFn,
+      [revisionToolBody({ playbook: validPlaybookContent('enters'), changelog: 'loosen bar' })],
+      'long',
+    );
+    const service = new ReflectionService(floorCfg(), h.deps);
+
+    service.onClosedTrade(SID, 1);
+    await flush();
+
+    expect(h.storeApi.appended).toEqual([
+      { content: validPlaybookContent('enters'), source: 'reflection', parentVersion: 1 },
+    ]);
+    expect(h.recorderApi.outcomes).toEqual(['attempt_started', 'minted']);
+    // 1 reflection draft + FLOOR_ROWS floor replay calls, no retry needed.
+    expect(h.fetchFn).toHaveBeenCalledTimes(1 + FLOOR_ROWS);
+  });
+
+  it('skips the floor (fail-open) when fewer than mintFloorMinRows FLAT-consult rows qualify, and mints normally', async () => {
+    const h = buildHarness({ rows: [flatConsultRow(0)] }); // 1 qualifying row, below FLOOR_ROWS=2
+    h.fetchFn.mockResolvedValue(
+      apiResponse(revisionToolBody({ playbook: validPlaybookContent('v2'), changelog: 'tweak' })),
+    );
+    const service = new ReflectionService(floorCfg(), h.deps);
+
+    service.onClosedTrade(SID, 1);
+    await flush();
+
+    expect(h.storeApi.appended).toEqual([
+      { content: validPlaybookContent('v2'), source: 'reflection', parentVersion: 1 },
+    ]);
+    expect(h.recorderApi.outcomes).toEqual(['attempt_started', 'minted']);
+    expect(h.fetchFn).toHaveBeenCalledTimes(1); // no floor replay calls at all
+    expect(h.logger.messages.some((m) => m.includes('corpus too young'))).toBe(true);
+  });
+
+  it('fails open (mint proceeds) when every floor replay call fails transport — measurement failure is not abstention', async () => {
+    const h = buildHarness({
+      budgetCaps: { maxCallsPerDay: 20, maxTokensPerDay: 1_000_000 },
+      rows: [flatConsultRow(0), flatConsultRow(1)],
+    });
+    // Reflection draft succeeds; every floor replay rejects at transport level. measureEntryRate
+    // skips failed rows, so consults=0 — the veto must read that as an unmeasurable floor (fail
+    // open), never as "0 entries = abstention" (reviewer should-fix, 2026-07-13: a bad decide-model
+    // id or an API outage must not mislabel every candidate abstaining and halt learning).
+    const impl: typeof fetch = (_url, init) => {
+      const parsedBody = JSON.parse(init?.body as string) as { tools: Array<{ name: string }> };
+      if (parsedBody.tools[0]!.name === 'submit_playbook_revision') {
+        return Promise.resolve(
+          apiResponse(
+            revisionToolBody({
+              playbook: validPlaybookContent('unmeasurable'),
+              changelog: 'tweak',
+            }),
+          ),
+        );
+      }
+      return Promise.reject(new Error('ECONNREFUSED'));
+    };
+    // Same narrow structural cast as mockDualFetch's param — vi.fn()'s own mockImplementation
+    // signature trips no-misused-promises on a `typeof fetch` impl.
+    (h.fetchFn as { mockImplementation(i: typeof fetch): unknown }).mockImplementation(impl);
+    const service = new ReflectionService(floorCfg(), h.deps);
+
+    service.onClosedTrade(SID, 1);
+    await flush();
+
+    expect(h.storeApi.appended).toEqual([
+      { content: validPlaybookContent('unmeasurable'), source: 'reflection', parentVersion: 1 },
+    ]);
+    expect(h.recorderApi.outcomes).toEqual(['attempt_started', 'minted']);
+    expect(
+      h.logger.messages.some((m) => m.includes('transport/model failure, not abstention')),
+    ).toBe(true);
+  });
+
+  it('fails open (mint proceeds) when the daily budget is exhausted mid-floor-replay', async () => {
+    const h = buildHarness({
+      // attempt_started's own reservation already spends the only allowed call — the floor's first
+      // per-row reservation then fails immediately.
+      budgetCaps: { maxCallsPerDay: 1, maxTokensPerDay: 1_000_000 },
+      rows: [flatConsultRow(0), flatConsultRow(1)],
+    });
+    h.fetchFn.mockResolvedValue(
+      apiResponse(revisionToolBody({ playbook: validPlaybookContent('v2'), changelog: 'tweak' })),
+    );
+    const service = new ReflectionService(floorCfg(), h.deps);
+
+    service.onClosedTrade(SID, 1);
+    await flush();
+
+    expect(h.storeApi.appended).toEqual([
+      { content: validPlaybookContent('v2'), source: 'reflection', parentVersion: 1 },
+    ]);
+    expect(h.recorderApi.outcomes).toEqual(['attempt_started', 'minted']);
+    expect(h.fetchFn).toHaveBeenCalledTimes(1); // the floor never made a single replay call
+    expect(h.logger.messages.some((m) => m.includes('entry-floor skipped: budget'))).toBe(true);
+  });
+
+  it('is a byte-identical no-op when the floor is disabled (mintFloorRows=0) — legacy mint behavior preserved', async () => {
+    const h = buildHarness({ rows: [flatConsultRow(0), flatConsultRow(1)] });
+    h.fetchFn.mockResolvedValue(
+      apiResponse(revisionToolBody({ playbook: validPlaybookContent('v2'), changelog: 'tweak' })),
+    );
+    const service = new ReflectionService(baseCfg({ everyNTrades: 1, mintFloorRows: 0 }), h.deps);
+
+    service.onClosedTrade(SID, 1);
+    await flush();
+
+    expect(h.storeApi.appended).toEqual([
+      { content: validPlaybookContent('v2'), source: 'reflection', parentVersion: 1 },
+    ]);
+    expect(h.recorderApi.outcomes).toEqual(['attempt_started', 'minted']);
+    expect(h.fetchFn).toHaveBeenCalledTimes(1); // no floor calls whatsoever
+  });
+
+  it('createReflectionService defaults the mint floor to rows=12/minRows=6/minEntries=1 (5 rows < default min 6 → floor skipped)', async () => {
+    const h = buildHarness({ rows: Array.from({ length: 5 }, (_, i) => flatConsultRow(i)) });
+    h.fetchFn.mockResolvedValue(
+      apiResponse(revisionToolBody({ playbook: validPlaybookContent('v2'), changelog: 'tweak' })),
+    );
+    const service = createReflectionService(
+      { ANTHROPIC_API_KEY: 'k', AGENTIC_REFLECTION_EVERY_N_TRADES: '1' },
+      h.deps,
+    );
+
+    service.onClosedTrade(SID, 1);
+    await flush();
+
+    expect(h.recorderApi.outcomes).toEqual(['attempt_started', 'minted']);
+    expect(h.fetchFn).toHaveBeenCalledTimes(1); // floor skipped (5 qualifying rows < default min 6)
   });
 });

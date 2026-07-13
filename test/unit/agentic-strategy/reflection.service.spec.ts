@@ -648,7 +648,11 @@ describe('ReflectionService', () => {
 
       await vi.advanceTimersByTimeAsync(5000); // timeoutMs elapses while json() is still stuck
       expect(capturedSignal()?.aborted).toBe(true);
-      expect(h.logger.messages.some((m) => m.includes('run failed'))).toBe(true);
+      // #32 behavior change: a body-read abort is now caught INSIDE callReflectionOnce and
+      // classified transport_error (with #31 rollback), instead of escaping to the last-resort
+      // 'run failed' catch as before.
+      expect(h.logger.messages.some((m) => m.includes('transport error'))).toBe(true);
+      expect(h.recorderApi.outcomes).toContain('transport_error');
 
       // in-flight guard released (finally): a later genuine attempt can still fire.
       h.clock.now += SEVEN_DAYS_MS;
@@ -2288,4 +2292,230 @@ describe('mint-time candidate-vs-champion offline expectancy backtest', () => {
   // first and runReflection's own outer catch absorbs it ('run failed'), a pre-existing conversion
   // order outside this change's scope. The wrap's raw hazard (runCandidateBacktest throwing on a
   // malformed forward close) is pinned where it IS reachable: candidate-backtest.spec.ts.
+});
+
+// ── Backlog #32 (reflection SSE streaming) + #50 (run_failed outcome + rollback) ─────────────────
+
+describe('backlog #32/#50: SSE streaming + run_failed rollback', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function sseResponse(
+    events: readonly unknown[],
+    opts: { hang?: boolean; signal?: AbortSignal | null } = {},
+  ): Response {
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const evt of events) {
+          const type = (evt as { type?: string }).type ?? 'message';
+          controller.enqueue(encoder.encode(`event: ${type}\ndata: ${JSON.stringify(evt)}\n\n`));
+        }
+        if (opts.hang) {
+          // Mirrors real fetch: aborting the request signal errors a pending body read.
+          opts.signal?.addEventListener('abort', () =>
+            controller.error(new Error('This operation was aborted')),
+          );
+        } else {
+          controller.close();
+        }
+      },
+    });
+    return {
+      ok: true,
+      status: 200,
+      headers: {
+        get: (k: string) => (k.toLowerCase() === 'content-type' ? 'text/event-stream' : null),
+      },
+      body,
+    } as unknown as Response;
+  }
+
+  // The full streamed shape of a signed-thinking + tool_use response: thinking text and signature
+  // arrive as deltas, the tool input arrives split across TWO input_json_delta chunks, and the
+  // final output_tokens arrives only in message_delta — the reassembly must stitch all of it.
+  function sseEventsForDraft(input: unknown): unknown[] {
+    const json = JSON.stringify(input);
+    const mid = Math.floor(json.length / 2);
+    return [
+      { type: 'message_start', message: { usage: { input_tokens: 10, output_tokens: 1 } } },
+      { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } },
+      {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'thinking_delta', thinking: 'sse-thinking-' },
+      },
+      {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'thinking_delta', thinking: 'trace' },
+      },
+      {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'signature_delta', signature: 'sig_sse_1' },
+      },
+      { type: 'content_block_stop', index: 0 },
+      {
+        type: 'content_block_start',
+        index: 1,
+        content_block: { type: 'tool_use', id: 'toolu_sse_1', name: 'submit_playbook_revision' },
+      },
+      {
+        type: 'content_block_delta',
+        index: 1,
+        delta: { type: 'input_json_delta', partial_json: json.slice(0, mid) },
+      },
+      {
+        type: 'content_block_delta',
+        index: 1,
+        delta: { type: 'input_json_delta', partial_json: json.slice(mid) },
+      },
+      { type: 'content_block_stop', index: 1 },
+      { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 25 } },
+      { type: 'message_stop' },
+    ];
+  }
+
+  it('mints from a streamed response: split input_json_delta reassembles the tool input, usage carries message_start input and message_delta output tokens', async () => {
+    const h = buildHarness();
+    const draft = { playbook: validPlaybookContent('sse-mint'), changelog: 'streamed tweak' };
+    h.fetchFn.mockResolvedValue(sseResponse(sseEventsForDraft(draft)));
+    const service = new ReflectionService(baseCfg({ everyNTrades: 1 }), h.deps);
+
+    service.onClosedTrade(SID, 1);
+    await flush();
+
+    expect(h.storeApi.appended).toHaveLength(1);
+    expect(h.storeApi.appended[0]!.content).toBe(draft.playbook);
+    expect(h.recorderApi.outcomes).toContain('minted');
+    expect(h.recorderApi.tokens[0]).toEqual([10, 25, undefined, undefined, 'claude-test-model']);
+  });
+
+  it('the #31 retry echoes the STREAMED thinking block (text + signature stitched from deltas) and the tool_use id verbatim in the assistant turn', async () => {
+    const h = buildHarness();
+    const invalid = { playbook: 'not a valid playbook', changelog: 'bad' };
+    const valid = { playbook: validPlaybookContent('sse-retry'), changelog: 'fixed' };
+    h.fetchFn
+      .mockResolvedValueOnce(sseResponse(sseEventsForDraft(invalid)))
+      .mockResolvedValueOnce(sseResponse(sseEventsForDraft(valid)));
+    const service = new ReflectionService(baseCfg({ everyNTrades: 1 }), h.deps);
+
+    service.onClosedTrade(SID, 1);
+    await flush();
+
+    expect(h.fetchFn).toHaveBeenCalledTimes(2);
+    const retryBody = JSON.parse((h.fetchFn.mock.calls[1]![1] as RequestInit).body as string) as {
+      messages: Array<{ role: string; content: unknown }>;
+    };
+    expect(retryBody.messages[1]).toEqual({
+      role: 'assistant',
+      content: [
+        { type: 'thinking', thinking: 'sse-thinking-trace', signature: 'sig_sse_1' },
+        {
+          type: 'tool_use',
+          id: 'toolu_sse_1',
+          name: 'submit_playbook_revision',
+          input: invalid,
+        },
+      ],
+    });
+    expect(retryBody.messages[2]).toMatchObject({
+      role: 'user',
+      content: [{ type: 'tool_result', tool_use_id: 'toolu_sse_1', is_error: true }],
+    });
+    expect(h.storeApi.appended).toHaveLength(1);
+    expect(h.recorderApi.outcomes).toContain('minted');
+  });
+
+  it('a stream that stalls mid-body aborts on the IDLE timer, classifies transport_error, and rolls back the trigger (the very next closed trade re-fires)', async () => {
+    vi.useFakeTimers();
+    const h = buildHarness();
+    // Same narrow structural cast as mockDualFetch's param — vi.fn()'s own mockImplementation
+    // signature is void-typed, which trips no-misused-promises on a Promise-returning impl.
+    const impl: typeof fetch = (_url, init) =>
+      Promise.resolve(
+        sseResponse(
+          [{ type: 'message_start', message: { usage: { input_tokens: 10, output_tokens: 1 } } }],
+          { hang: true, signal: init?.signal },
+        ),
+      );
+    (h.fetchFn as { mockImplementation(i: typeof fetch): unknown }).mockImplementation(impl);
+    const service = new ReflectionService(baseCfg({ everyNTrades: 2, timeoutMs: 5000 }), h.deps);
+
+    service.onClosedTrade(SID, 1);
+    service.onClosedTrade(SID, 2);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.fetchFn).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(5000); // idle-gap budget elapses with no further chunk
+    expect(h.recorderApi.outcomes).toContain('transport_error');
+
+    // Rolled back: the very next closed trade re-fires without a fresh N.
+    h.fetchFn.mockResolvedValue(
+      sseResponse(
+        sseEventsForDraft({ playbook: validPlaybookContent('recovered'), changelog: 'ok' }),
+      ),
+    );
+    service.onClosedTrade(SID, 3);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.fetchFn).toHaveBeenCalledTimes(2);
+  });
+
+  it('#50: a throw AFTER the trigger consume (journal down) records run_failed and rolls back — the very next closed trade re-fires', async () => {
+    const h = buildHarness();
+    const service = new ReflectionService(baseCfg({ everyNTrades: 2 }), {
+      ...h.deps,
+      journal: { record: () => undefined, recent: () => Promise.reject(new Error('db down')) },
+    });
+
+    service.onClosedTrade(SID, 1);
+    service.onClosedTrade(SID, 2); // reaches N=2, consumes the trigger, then journal.recent throws
+    await flush();
+
+    expect(h.recorderApi.outcomes).toContain('attempt_started');
+    expect(h.recorderApi.outcomes).toContain('run_failed');
+    expect(h.fetchFn).not.toHaveBeenCalled();
+    expect(h.logger.messages.some((m) => m.includes('run failed after trigger consume'))).toBe(
+      true,
+    );
+
+    // Rolled back: one more closed trade re-fires immediately (attempt_started twice).
+    service.onClosedTrade(SID, 3);
+    await flush();
+    expect(h.recorderApi.outcomes.filter((outcome) => outcome === 'attempt_started')).toHaveLength(
+      2,
+    );
+  });
+
+  it('a JSON (non-stream) response still parses through the legacy path — test doubles and stream-stripping proxies keep working', async () => {
+    const h = buildHarness();
+    h.fetchFn.mockResolvedValue(
+      apiResponse(revisionToolBody({ playbook: validPlaybookContent('json'), changelog: 'c' })),
+    );
+    const service = new ReflectionService(baseCfg({ everyNTrades: 1 }), h.deps);
+
+    service.onClosedTrade(SID, 1);
+    await flush();
+
+    expect(h.storeApi.appended).toHaveLength(1);
+    expect(h.recorderApi.outcomes).toContain('minted');
+  });
+
+  it('every reflection request body carries stream: true', async () => {
+    const h = buildHarness();
+    h.fetchFn.mockResolvedValue(
+      apiResponse(revisionToolBody({ playbook: validPlaybookContent('s'), changelog: 'c' })),
+    );
+    const service = new ReflectionService(baseCfg({ everyNTrades: 1 }), h.deps);
+
+    service.onClosedTrade(SID, 1);
+    await flush();
+
+    const sent = JSON.parse((h.fetchFn.mock.calls[0]![1] as RequestInit).body as string) as {
+      stream?: boolean;
+    };
+    expect(sent.stream).toBe(true);
+  });
 });

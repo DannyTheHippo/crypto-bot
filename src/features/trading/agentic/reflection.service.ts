@@ -827,7 +827,8 @@ export class ReflectionService {
 
     this.deps.recorder?.recordReflectionOutcome?.('attempt_started');
     // Backlog #31 rollback: snapshot the pre-reset trigger state before zeroing it below — the
-    // `rollback` closure defined further down restores it additively off this snapshot.
+    // `rollback` closure restores it additively off this snapshot. Once-only (#50): an inner path
+    // that already rolled back and then threw in its own tail must never double-restore.
     const key = String(strategyId);
     const preAttempt = {
       trades: this.tradesSinceLastAttempt.get(key) ?? 0,
@@ -835,186 +836,214 @@ export class ReflectionService {
     };
     this.tradesSinceLastAttempt.set(key, 0);
     this.lastAttemptAt = triggeredAt;
-
-    // (`current` — the unrouted ACTIVE playbook — was read above, before the guard.)
-    // Scoped to the triggering instance (P7): each instance trades one symbol, and the toy digests
-    // below walk a single-instrument position sequence — mixed-strategy rows would corrupt them.
-    const rows = await journal.recent(JOURNAL_LOOKBACK, String(strategyId));
-    // Realized venue truth (fills-walked round trips, net-of-fee, with slippage) alongside the
-    // journal's t+1 proxies. Additive evidence: a DB failure degrades to proxies-only, never
-    // aborts the attempt. The DB closed-trip total also floors the auto-promotion count, which
-    // otherwise resets with the strategy's in-memory counter on every redeploy.
-    let realizedRoundTrips: readonly RoundTripEvidence[] = [];
-    let dbClosedTradesTotal = 0;
-    if (this.deps.evidence !== undefined) {
-      try {
-        const [trips, seed] = await Promise.all([
-          this.deps.evidence.recentRoundTrips(MAX_CLOSED_TRADES),
-          this.deps.evidence.reflectionSeed(),
-        ]);
-        realizedRoundTrips = trips;
-        dbClosedTradesTotal = seed.closedTradesTotal;
-      } catch (err) {
-        this.warn(
-          `reflection: realized round-trip evidence unavailable (proceeding on journal proxies): ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-    }
-    const userMessage = buildReflectionUserMessage({
-      closedTrades: reconstructClosedTrades(rows, MAX_CLOSED_TRADES),
-      holdSummary: summarizeHolds(rows),
-      decisionOutcomes: summarizeRecentDecisionOutcomes(rows),
-      calibration: summarizeCalibration(rows),
-      regimeSplit: summarizeRegimeSplit(rows),
-      costContext: {
-        roundTripFeeBps: REFLECTION_ROUND_TRIP_FEE_BPS,
-        note: 'net-of-cost PnL = realized − fees − LLM cost; wins must clear ~20bps round-trip fees',
-      },
-      realizedRoundTrips,
-      currentPlaybook: current.content,
-    });
-
-    // Additive rollback (backlog #31) for every exit below that does NOT legitimately consume the
+    // Additive rollback (backlog #31) for every exit that does NOT legitimately consume the
     // trigger — 'refusal' is deliberately excluded (see the callers below): a model that refuses
     // outright already made a genuine attempt, unlike a transport/schema/validator failure.
+    let triggerRestored = false;
+    // #50 (reviewer N2): once an outcome legitimately consumes the trigger (minted / no_change /
+    // refusal), a LATE throw (e.g. a throwing metrics recorder) must not un-consume it — the catch
+    // below skips run_failed+rollback whenever this is set.
+    let outcomeSettled = false;
     const rollback = (): void => {
+      if (triggerRestored) return;
+      triggerRestored = true;
       const nowTrades = this.tradesSinceLastAttempt.get(key) ?? 0;
       this.tradesSinceLastAttempt.set(key, nowTrades + preAttempt.trades);
       this.lastAttemptAt = preAttempt.lastAttemptAt;
     };
-    const recordUsage = (usage: AgentUsage | undefined): void => {
-      if (!usage) return;
-      this.deps.budget.recordUsage(usage);
-      this.deps.recorder?.recordTokens?.(
-        usage.inputTokens,
-        usage.outputTokens,
-        usage.cacheReadInputTokens,
-        usage.cacheCreationInputTokens,
-        this.cfg.model,
-      );
-      this.deps.usageSink?.record({
-        kind: 'reflection',
-        model: this.cfg.model,
-        strategyId,
-        inputTokens: usage.inputTokens,
-        outputTokens: usage.outputTokens,
-        cacheReadInputTokens: usage.cacheReadInputTokens,
-        cacheCreationInputTokens: usage.cacheCreationInputTokens,
-      });
-    };
-
-    const first = await this.callReflectionOnce([{ role: 'user', content: userMessage }]);
-    recordUsage(first.usage);
-    if (first.kind !== 'ok') {
-      this.deps.recorder?.recordReflectionOutcome?.(first.kind);
-      if (first.kind !== 'refusal') rollback();
-      return;
-    }
-
-    let revision = first.revision!;
-    // Backlog #39: gateReflectionDraft runs structural validation, THEN (only on a structurally-valid
-    // draft that differs from `current` — hash check before floor, so a NO_CHANGE draft spends zero
-    // floor calls) the mint-time entry-rate floor. Shared by both the first draft and the retry draft
-    // below so a rejection reason the model was never told about can never surface as a silent mint
-    // failure.
-    // Champion-backtest cache is per reflection RUN: the champion arm is invariant across this
-    // run's initial + retry gate evaluations (same playbook, same rows), so the retry reuses the
-    // cached replays instead of burning rows-many identical API calls (reviewer finding). Cleared
-    // here so a later run never judges against a stale corpus.
-    this.mintBacktestChampionCache = null;
-    let gate = await this.gateReflectionDraft(revision, current, recordUsage);
-    if (gate.kind === 'reject') {
-      // Backlog #31: ONE bounded retry-with-feedback, gated behind its own budget reservation so a
-      // starved budget degrades to the pre-retry behavior (immediate reject) rather than spending a
-      // call it can't account for. The tool_result MUST reference the tool_use id and the assistant
-      // turn MUST carry the response's full ordered blocks (signed thinking blocks included) — a
-      // missing id or stripped thinking block makes the continuation a guaranteed 400, so absent-id
-      // degrades to the pre-retry behavior instead of burning a doomed call. Backlog #39 reuses this
-      // SAME bounded machinery for a floor rejection — only the tool_result feedback text differs
-      // (gate.feedback is either validatePlaybook's own reason or the floor's abstention text).
-      if (first.toolBlock!.id !== undefined && this.deps.budget.tryReserveCall()) {
-        const retryMessages: readonly ReflectionMessage[] = [
-          { role: 'user', content: userMessage },
-          {
-            role: 'assistant',
-            content: first.assistantBlocks!,
-          },
-          {
-            role: 'user',
-            content: [
-              {
-                type: 'tool_result',
-                tool_use_id: first.toolBlock!.id,
-                content: gate.feedback,
-                is_error: true,
-              },
-            ],
-          },
-        ];
-        const second = await this.callReflectionOnce(retryMessages);
-        recordUsage(second.usage);
-        if (second.kind !== 'ok') {
-          this.deps.recorder?.recordReflectionOutcome?.(second.kind);
-          if (second.kind !== 'refusal') rollback();
-          return;
+    // #50: any throw between the trigger consume above and a recorded outcome would otherwise
+    // unwind to onClosedTrade's last-resort catch with the trigger burned and NOTHING recorded —
+    // the awaited journal/evidence/store calls in the body are real network/DB work and can throw.
+    try {
+      // (`current` — the unrouted ACTIVE playbook — was read above, before the guard.)
+      // Scoped to the triggering instance (P7): each instance trades one symbol, and the toy digests
+      // below walk a single-instrument position sequence — mixed-strategy rows would corrupt them.
+      const rows = await journal.recent(JOURNAL_LOOKBACK, String(strategyId));
+      // Realized venue truth (fills-walked round trips, net-of-fee, with slippage) alongside the
+      // journal's t+1 proxies. Additive evidence: a DB failure degrades to proxies-only, never
+      // aborts the attempt. The DB closed-trip total also floors the auto-promotion count, which
+      // otherwise resets with the strategy's in-memory counter on every redeploy.
+      let realizedRoundTrips: readonly RoundTripEvidence[] = [];
+      let dbClosedTradesTotal = 0;
+      if (this.deps.evidence !== undefined) {
+        try {
+          const [trips, seed] = await Promise.all([
+            this.deps.evidence.recentRoundTrips(MAX_CLOSED_TRADES),
+            this.deps.evidence.reflectionSeed(),
+          ]);
+          realizedRoundTrips = trips;
+          dbClosedTradesTotal = seed.closedTradesTotal;
+        } catch (err) {
+          this.warn(
+            `reflection: realized round-trip evidence unavailable (proceeding on journal proxies): ${err instanceof Error ? err.message : String(err)}`,
+          );
         }
-        revision = second.revision!;
-        gate = await this.gateReflectionDraft(revision, current, recordUsage);
       }
-      if (gate.kind === 'reject') {
-        if (gate.structural) {
-          this.deps.recorder?.recordValidatorRejection(
-            gate.validation!.bannedTokenHit ?? false,
-            gate.validation!.bannedToken,
-          );
-          this.warn(
-            `reflection: revised playbook failed validation (${gate.validation!.reason}) — discarding (changelog: ${revision.changelog.replace(/\s+/g, ' ').slice(0, MAX_CHANGELOG_LOG_CHARS)})`,
-          );
-          this.deps.recorder?.recordReflectionOutcome?.('validator_reject');
-        } else if (gate.backtestReject) {
-          // Mint-time expectancy backtest: structurally valid, passes the entry-rate floor, but
-          // backtested worse than the champion by more than the configured margin even after the one
-          // bounded retry — discarded under its OWN outcome label ('expectancy_reject') so the three
-          // rejection modes stay distinguishable in the metrics.
-          this.warn(
-            `reflection: revised playbook backtested worse than the champion under the mint-time expectancy backtest — discarding (changelog: ${revision.changelog.replace(/\s+/g, ' ').slice(0, MAX_CHANGELOG_LOG_CHARS)})`,
-          );
-          this.deps.recorder?.recordReflectionOutcome?.('expectancy_reject');
-        } else {
-          // Backlog #39: structurally valid but abstains under the mint-time entry-rate floor even
-          // after the one bounded retry — a candidate whose entry bar never fires can never accrue
-          // the attributed trips its own promotion verdict needs (this file's own header comment), so
-          // it is discarded here, under its OWN outcome label so the two rejection modes stay
-          // distinguishable in the metrics rather than both reading as 'validator_reject'.
-          this.warn(
-            `reflection: revised playbook abstains under the mint-time entry-rate floor — discarding (changelog: ${revision.changelog.replace(/\s+/g, ' ').slice(0, MAX_CHANGELOG_LOG_CHARS)})`,
-          );
-          this.deps.recorder?.recordReflectionOutcome?.('abstain_reject');
-        }
-        rollback();
+      const userMessage = buildReflectionUserMessage({
+        closedTrades: reconstructClosedTrades(rows, MAX_CLOSED_TRADES),
+        holdSummary: summarizeHolds(rows),
+        decisionOutcomes: summarizeRecentDecisionOutcomes(rows),
+        calibration: summarizeCalibration(rows),
+        regimeSplit: summarizeRegimeSplit(rows),
+        costContext: {
+          roundTripFeeBps: REFLECTION_ROUND_TRIP_FEE_BPS,
+          note: 'net-of-cost PnL = realized − fees − LLM cost; wins must clear ~20bps round-trip fees',
+        },
+        realizedRoundTrips,
+        currentPlaybook: current.content,
+      });
+
+      const recordUsage = (usage: AgentUsage | undefined): void => {
+        if (!usage) return;
+        this.deps.budget.recordUsage(usage);
+        this.deps.recorder?.recordTokens?.(
+          usage.inputTokens,
+          usage.outputTokens,
+          usage.cacheReadInputTokens,
+          usage.cacheCreationInputTokens,
+          this.cfg.model,
+        );
+        this.deps.usageSink?.record({
+          kind: 'reflection',
+          model: this.cfg.model,
+          strategyId,
+          inputTokens: usage.inputTokens,
+          outputTokens: usage.outputTokens,
+          cacheReadInputTokens: usage.cacheReadInputTokens,
+          cacheCreationInputTokens: usage.cacheCreationInputTokens,
+        });
+      };
+
+      const first = await this.callReflectionOnce([{ role: 'user', content: userMessage }]);
+      recordUsage(first.usage);
+      if (first.kind !== 'ok') {
+        if (first.kind === 'refusal') outcomeSettled = true;
+        this.deps.recorder?.recordReflectionOutcome?.(first.kind);
+        if (first.kind !== 'refusal') rollback();
         return;
       }
-    }
 
-    if (gate.kind === 'no_change') {
+      let revision = first.revision!;
+      // Backlog #39: gateReflectionDraft runs structural validation, THEN (only on a structurally-valid
+      // draft that differs from `current` — hash check before floor, so a NO_CHANGE draft spends zero
+      // floor calls) the mint-time entry-rate floor. Shared by both the first draft and the retry draft
+      // below so a rejection reason the model was never told about can never surface as a silent mint
+      // failure.
+      // Champion-backtest cache is per reflection RUN: the champion arm is invariant across this
+      // run's initial + retry gate evaluations (same playbook, same rows), so the retry reuses the
+      // cached replays instead of burning rows-many identical API calls (reviewer finding). Cleared
+      // here so a later run never judges against a stale corpus.
+      this.mintBacktestChampionCache = null;
+      let gate = await this.gateReflectionDraft(revision, current, recordUsage);
+      if (gate.kind === 'reject') {
+        // Backlog #31: ONE bounded retry-with-feedback, gated behind its own budget reservation so a
+        // starved budget degrades to the pre-retry behavior (immediate reject) rather than spending a
+        // call it can't account for. The tool_result MUST reference the tool_use id and the assistant
+        // turn MUST carry the response's full ordered blocks (signed thinking blocks included) — a
+        // missing id or stripped thinking block makes the continuation a guaranteed 400, so absent-id
+        // degrades to the pre-retry behavior instead of burning a doomed call. Backlog #39 reuses this
+        // SAME bounded machinery for a floor rejection — only the tool_result feedback text differs
+        // (gate.feedback is either validatePlaybook's own reason or the floor's abstention text).
+        if (first.toolBlock!.id !== undefined && this.deps.budget.tryReserveCall()) {
+          const retryMessages: readonly ReflectionMessage[] = [
+            { role: 'user', content: userMessage },
+            {
+              role: 'assistant',
+              content: first.assistantBlocks!,
+            },
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'tool_result',
+                  tool_use_id: first.toolBlock!.id,
+                  content: gate.feedback,
+                  is_error: true,
+                },
+              ],
+            },
+          ];
+          const second = await this.callReflectionOnce(retryMessages);
+          recordUsage(second.usage);
+          if (second.kind !== 'ok') {
+            if (second.kind === 'refusal') outcomeSettled = true;
+            this.deps.recorder?.recordReflectionOutcome?.(second.kind);
+            if (second.kind !== 'refusal') rollback();
+            return;
+          }
+          revision = second.revision!;
+          gate = await this.gateReflectionDraft(revision, current, recordUsage);
+        }
+        if (gate.kind === 'reject') {
+          if (gate.structural) {
+            this.deps.recorder?.recordValidatorRejection(
+              gate.validation!.bannedTokenHit ?? false,
+              gate.validation!.bannedToken,
+            );
+            this.warn(
+              `reflection: revised playbook failed validation (${gate.validation!.reason}) — discarding (changelog: ${revision.changelog.replace(/\s+/g, ' ').slice(0, MAX_CHANGELOG_LOG_CHARS)})`,
+            );
+            this.deps.recorder?.recordReflectionOutcome?.('validator_reject');
+          } else if (gate.backtestReject) {
+            // Mint-time expectancy backtest: structurally valid, passes the entry-rate floor, but
+            // backtested worse than the champion by more than the configured margin even after the one
+            // bounded retry — discarded under its OWN outcome label ('expectancy_reject') so the three
+            // rejection modes stay distinguishable in the metrics.
+            this.warn(
+              `reflection: revised playbook backtested worse than the champion under the mint-time expectancy backtest — discarding (changelog: ${revision.changelog.replace(/\s+/g, ' ').slice(0, MAX_CHANGELOG_LOG_CHARS)})`,
+            );
+            this.deps.recorder?.recordReflectionOutcome?.('expectancy_reject');
+          } else {
+            // Backlog #39: structurally valid but abstains under the mint-time entry-rate floor even
+            // after the one bounded retry — a candidate whose entry bar never fires can never accrue
+            // the attributed trips its own promotion verdict needs (this file's own header comment), so
+            // it is discarded here, under its OWN outcome label so the two rejection modes stay
+            // distinguishable in the metrics rather than both reading as 'validator_reject'.
+            this.warn(
+              `reflection: revised playbook abstains under the mint-time entry-rate floor — discarding (changelog: ${revision.changelog.replace(/\s+/g, ' ').slice(0, MAX_CHANGELOG_LOG_CHARS)})`,
+            );
+            this.deps.recorder?.recordReflectionOutcome?.('abstain_reject');
+          }
+          rollback();
+          return;
+        }
+      }
+
+      if (gate.kind === 'no_change') {
+        outcomeSettled = true;
+        this.warn(
+          'reflection: revised playbook is identical to the current one (NO_CHANGE) — minting nothing',
+        );
+        this.deps.recorder?.recordReflectionOutcome?.('no_change');
+        return;
+      }
+
+      const minted = await playbookStore.append(revision.playbook, 'reflection', current.version);
+      outcomeSettled = true; // the mint persisted — a late throw must not un-consume the trigger
       this.warn(
-        'reflection: revised playbook is identical to the current one (NO_CHANGE) — minting nothing',
+        `reflection: minted playbook version ${minted.version} (INACTIVE, awaiting promotion) — changelog: ${revision.changelog.replace(/\s+/g, ' ').slice(0, MAX_CHANGELOG_LOG_CHARS)}`,
       );
-      this.deps.recorder?.recordReflectionOutcome?.('no_change');
-      return;
+      this.deps.recorder?.recordReflectionOutcome?.('minted');
+
+      await this.maybeAutoPromote(
+        playbookStore,
+        minted.version,
+        Math.max(closedTradeCount, dbClosedTradesTotal),
+      );
+    } catch (err) {
+      // #50: record + restore instead of leaking to the fire-and-forget catch in onClosedTrade
+      // (which only warns). rollback() is once-only, so a rethrow AFTER an inner rollback (e.g. a
+      // throwing metrics recorder on a reject tail) cannot double-restore the counters; and a
+      // throw AFTER a settled outcome (minted/no_change/refusal) neither re-records nor
+      // un-consumes the legitimately-spent trigger (reviewer N2).
+      this.warn(
+        `reflection: run failed after trigger consume: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      if (!outcomeSettled) {
+        this.deps.recorder?.recordReflectionOutcome?.('run_failed');
+        rollback();
+      }
     }
-
-    const minted = await playbookStore.append(revision.playbook, 'reflection', current.version);
-    this.warn(
-      `reflection: minted playbook version ${minted.version} (INACTIVE, awaiting promotion) — changelog: ${revision.changelog.replace(/\s+/g, ' ').slice(0, MAX_CHANGELOG_LOG_CHARS)}`,
-    );
-    this.deps.recorder?.recordReflectionOutcome?.('minted');
-
-    await this.maybeAutoPromote(
-      playbookStore,
-      minted.version,
-      Math.max(closedTradeCount, dbClosedTradesTotal),
-    );
   }
 
   // Backlog #39 combined draft gate: structural validation (validatePlaybook), then — only for a
@@ -1311,12 +1340,27 @@ export class ReflectionService {
   private async callReflectionOnce(
     messages: readonly ReflectionMessage[],
   ): Promise<ReflectionCallResult> {
-    // The abort deadline must stay armed through the body read below, not just the initial fetch —
-    // a connection that returns headers promptly but then stalls on the body would otherwise pin
-    // `inFlight` forever (the AbortController's signal cancels body reads too, so keeping it live
-    // costs nothing on the happy path). The timer is cleared exactly once on every exit path.
+    // The abort deadline must stay armed through the whole body read below, not just the initial
+    // fetch — a connection that returns headers promptly but then stalls would otherwise pin
+    // `inFlight` forever (the AbortController's signal cancels body reads too). Streaming (#32)
+    // splits the single wall-clock deadline into (a) an IDLE timer, reset on every received chunk,
+    // budget cfg.timeoutMs — a healthy long generation keeps emitting deltas, so idle-gap is the
+    // honest liveness signal, and no fixed whole-call ceiling has to guess Opus's worst case — and
+    // (b) a hard overall cap of 3× cfg.timeoutMs so an infinite dribble cannot hold the reflection
+    // slot forever either. Both timers are cleared exactly once on every exit path; the JSON
+    // (non-stream) fallback path never resets the idle timer, so it keeps today's single-deadline
+    // behavior byte-identically.
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.cfg.timeoutMs);
+    let idleTimer = setTimeout(() => controller.abort(), this.cfg.timeoutMs);
+    const capTimer = setTimeout(() => controller.abort(), this.cfg.timeoutMs * 3);
+    const resetIdle = (): void => {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => controller.abort(), this.cfg.timeoutMs);
+    };
+    const clearTimers = (): void => {
+      clearTimeout(idleTimer);
+      clearTimeout(capTimer);
+    };
     let res: Response;
     try {
       res = await (this.deps.fetchFn ?? fetch)(
@@ -1342,27 +1386,44 @@ export class ReflectionService {
             // comment), unlike decide's structured tool-use — adaptive thinking gets real use here.
             // The decide call explicitly disables it (see anthropic-agent-client.ts's attemptOnce).
             thinking: { type: 'adaptive' },
+            // #32: stream the response. A fixed whole-call timeout is a guess about Opus's
+            // worst-case generation time (the Pass-12 abort class); with SSE the deadline guards
+            // idle gaps instead — see the timer comment above.
+            stream: true,
           }),
           signal: controller.signal,
         },
       );
     } catch (err) {
-      clearTimeout(timer);
+      clearTimers();
       this.warn(`reflection: transport error: ${err instanceof Error ? err.message : String(err)}`);
       return { kind: 'transport_error' };
     }
 
     if (!res.ok) {
-      clearTimeout(timer);
+      clearTimers();
       this.warn(`reflection: anthropic api http ${res.status}`);
       return { kind: 'http_error' };
     }
 
+    // Dual parse (#32): the real API answers a stream:true request with text/event-stream; a JSON
+    // body (test doubles, proxies that strip `stream`) still parses through the legacy path, so
+    // the change degrades gracefully instead of hard-requiring SSE. A throw from either reader
+    // (aborted stream, malformed transfer, invalid JSON) classifies as transport_error — before
+    // #32 a res.json() throw escaped this method entirely (the #50 gap caught it one level up).
+    const contentType =
+      typeof res.headers?.get === 'function' ? (res.headers.get('content-type') ?? '') : '';
     let body: unknown;
     try {
-      body = await res.json();
+      body =
+        contentType.includes('text/event-stream') && res.body
+          ? await this.readSseEnvelope(res.body as ReadableStream<Uint8Array>, resetIdle)
+          : await res.json();
+    } catch (err) {
+      this.warn(`reflection: transport error: ${err instanceof Error ? err.message : String(err)}`);
+      return { kind: 'transport_error' };
     } finally {
-      clearTimeout(timer);
+      clearTimers();
     }
     const envelope = reflectionResponseSchema.safeParse(body);
     if (!envelope.success) {
@@ -1430,6 +1491,182 @@ export class ReflectionService {
         input: toolBlock.input,
       },
       assistantBlocks,
+    };
+  }
+
+  // #32 SSE reassembly: accumulates the streamed events back into EXACTLY the non-streaming
+  // envelope shape reflectionResponseSchema validates — ordered content blocks with thinking
+  // signatures verbatim and the tool_use id intact — so everything downstream (schema gate, usage
+  // accounting, and critically the backlog #31 retry echo, which must resend the signed thinking
+  // blocks unmodified or the continuation 400s) is unchanged. Unknown event types (ping,
+  // content_block_stop, message_stop) are ignored; an explicit `error` event throws and the caller
+  // classifies it transport_error. resetIdle is invoked per received chunk — the idle-timeout
+  // contract documented at the callReflectionOnce timer setup.
+  private async readSseEnvelope(
+    stream: ReadableStream<Uint8Array>,
+    resetIdle: () => void,
+  ): Promise<unknown> {
+    interface MutableBlock {
+      type: string;
+      id?: string;
+      name?: string;
+      thinking?: string;
+      signature?: string;
+      data?: string;
+      text?: string;
+      inputJson?: string;
+    }
+    const asRecord = (v: unknown): Record<string, unknown> | undefined =>
+      typeof v === 'object' && v !== null ? (v as Record<string, unknown>) : undefined;
+    const asString = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
+    const asNumber = (v: unknown): number | undefined => (typeof v === 'number' ? v : undefined);
+
+    const blocks = new Map<number, MutableBlock>();
+    let stopReason: string | undefined;
+    let usageStart: Record<string, unknown> | undefined;
+    let outputTokens: number | undefined;
+
+    const processEvent = (json: string): void => {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(json);
+      } catch {
+        return; // a non-JSON data line is keep-alive noise, never fatal on its own
+      }
+      const evt = asRecord(parsed);
+      if (!evt) return;
+      switch (evt.type) {
+        case 'error': {
+          const detail = asRecord(evt.error);
+          throw new Error(`sse error event: ${asString(detail?.message) ?? 'unknown'}`);
+        }
+        case 'message_start': {
+          const usage = asRecord(asRecord(evt.message)?.usage);
+          usageStart = usage;
+          outputTokens = asNumber(usage?.output_tokens) ?? outputTokens;
+          break;
+        }
+        case 'content_block_start': {
+          const index = asNumber(evt.index);
+          const cb = asRecord(evt.content_block);
+          if (index === undefined || !cb) break;
+          const type = asString(cb.type) ?? 'unknown';
+          blocks.set(index, {
+            type,
+            id: asString(cb.id),
+            name: asString(cb.name),
+            thinking: type === 'thinking' ? (asString(cb.thinking) ?? '') : undefined,
+            signature: asString(cb.signature),
+            data: type === 'redacted_thinking' ? (asString(cb.data) ?? '') : undefined,
+            text: type === 'text' ? (asString(cb.text) ?? '') : undefined,
+            inputJson: type === 'tool_use' ? '' : undefined,
+          });
+          break;
+        }
+        case 'content_block_delta': {
+          const index = asNumber(evt.index);
+          const block = index === undefined ? undefined : blocks.get(index);
+          const delta = asRecord(evt.delta);
+          if (!block || !delta) break;
+          if (delta.type === 'thinking_delta') {
+            block.thinking = (block.thinking ?? '') + (asString(delta.thinking) ?? '');
+          } else if (delta.type === 'signature_delta') {
+            block.signature = (block.signature ?? '') + (asString(delta.signature) ?? '');
+          } else if (delta.type === 'text_delta') {
+            block.text = (block.text ?? '') + (asString(delta.text) ?? '');
+          } else if (delta.type === 'input_json_delta') {
+            block.inputJson = (block.inputJson ?? '') + (asString(delta.partial_json) ?? '');
+          }
+          break;
+        }
+        case 'message_delta': {
+          stopReason = asString(asRecord(evt.delta)?.stop_reason) ?? stopReason;
+          outputTokens = asNumber(asRecord(evt.usage)?.output_tokens) ?? outputTokens;
+          break;
+        }
+        default:
+          break;
+      }
+    };
+
+    const reader = stream.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        resetIdle();
+        buffer += decoder.decode(value, { stream: true });
+        // SSE events are separated by a blank line; an event's payload may span several data: lines.
+        let sep = buffer.indexOf('\n\n');
+        while (sep !== -1) {
+          const rawEvent = buffer.slice(0, sep);
+          buffer = buffer.slice(sep + 2);
+          const data = rawEvent
+            .split('\n')
+            .filter((line) => line.startsWith('data:'))
+            .map((line) => line.slice(5).trimStart())
+            .join('\n');
+          if (data.length > 0) processEvent(data);
+          sep = buffer.indexOf('\n\n');
+        }
+      }
+    } finally {
+      // Release the underlying socket even when processEvent throws (the `error` event path) —
+      // without this an unwound loop leaves the stream locked until GC (reviewer N1). cancel() on
+      // an already-done stream is a no-op.
+      await reader.cancel().catch(() => undefined);
+    }
+
+    const content = [...blocks.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([, b]) => {
+        if (b.type === 'tool_use') {
+          // Empty accumulated JSON means the tool call streamed no input at all — {} keeps the
+          // envelope schema-valid and fails revisionSchema downstream (an honest schema_fail);
+          // truncated/invalid JSON resolves to undefined input with the same downstream effect.
+          let input: unknown;
+          try {
+            input = b.inputJson === undefined || b.inputJson === '' ? {} : JSON.parse(b.inputJson);
+          } catch {
+            input = undefined;
+          }
+          return {
+            type: b.type,
+            ...(b.id !== undefined ? { id: b.id } : {}),
+            ...(b.name !== undefined ? { name: b.name } : {}),
+            input,
+          };
+        }
+        return {
+          type: b.type,
+          ...(b.id !== undefined ? { id: b.id } : {}),
+          ...(b.name !== undefined ? { name: b.name } : {}),
+          ...(b.thinking !== undefined ? { thinking: b.thinking } : {}),
+          ...(b.signature !== undefined ? { signature: b.signature } : {}),
+          ...(b.data !== undefined ? { data: b.data } : {}),
+          ...(b.text !== undefined ? { text: b.text } : {}),
+        };
+      });
+
+    return {
+      ...(stopReason !== undefined ? { stop_reason: stopReason } : {}),
+      content,
+      ...(usageStart !== undefined
+        ? {
+            usage: {
+              input_tokens: asNumber(usageStart.input_tokens) ?? 0,
+              output_tokens: outputTokens ?? 0,
+              ...(asNumber(usageStart.cache_read_input_tokens) !== undefined
+                ? { cache_read_input_tokens: asNumber(usageStart.cache_read_input_tokens) }
+                : {}),
+              ...(asNumber(usageStart.cache_creation_input_tokens) !== undefined
+                ? { cache_creation_input_tokens: asNumber(usageStart.cache_creation_input_tokens) }
+                : {}),
+            },
+          }
+        : {}),
     };
   }
 

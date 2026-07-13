@@ -1395,6 +1395,34 @@ describe('ReflectionService realized evidence + trigger seeding', () => {
     expect(h.fetchFn).toHaveBeenCalledTimes(1);
   });
 
+  // Push 3 P5: first-close seed race fix. The seed used to be fire-and-forget (`void
+  // this.seedTriggerState(key).catch(...)`), so THIS triggering close's own threshold check ran
+  // against the still-zero/unseeded in-memory counter and could never fire on its own — only a LATER
+  // close (after the seed had landed) could. The fix defers the threshold evaluation behind the seed
+  // read for exactly this close, so a DB seed that already crosses the threshold fires immediately.
+  it('the FIRST post-boot close seeds synchronously and fires the reflection attempt in the SAME invocation', async () => {
+    const h = buildHarness();
+    // DB truth already shows 2 closed round trips since last reflection by the time this close's
+    // seed read resolves (the round-trip evidence row lands before onClosedTrade fires) — under the
+    // OLD detached seed, this exact close would evaluate on the unseeded in-memory count (1) and
+    // never fire; only a SECOND close would ever observe the landed seed.
+    const ev = fakeEvidence({
+      seed: { closedTradesTotal: 2, closedSinceLastReflection: 2, lastReflectionAt: null },
+    });
+    h.fetchFn.mockResolvedValue(
+      apiResponse(revisionToolBody({ playbook: validPlaybookContent('v2'), changelog: 'c' })),
+    );
+    const service = new ReflectionService(baseCfg({ everyNTrades: 2 }), {
+      ...h.deps,
+      evidence: ev.port,
+    });
+
+    service.onClosedTrade(SID, 1); // in-memory 1 of 2; seeds BEFORE the threshold check runs
+    await flush(); // seed lands first: max(1, 2) = 2 >= 2 → fires in this SAME invocation
+
+    expect(h.fetchFn).toHaveBeenCalledTimes(1);
+  });
+
   it('a failed seed logs, falls back to in-memory counters, and retries on the next trade', async () => {
     const h = buildHarness();
     const ev = fakeEvidence({ seedError: new Error('db down') });
@@ -1409,6 +1437,41 @@ describe('ReflectionService realized evidence + trigger seeding', () => {
     await flush();
     expect(ev.seedCalls()).toBe(2); // unseeded again after the failure → retried
     expect(h.fetchFn).not.toHaveBeenCalled();
+  });
+
+  // Push 3 P5 companion: the seed failure must never block the trigger — a broken seed degrades to
+  // the unseeded in-memory counter and the threshold is still evaluated (fail-open) on BOTH the
+  // seeding close and the retried close, exactly like the pre-seed-feature behavior.
+  it('a rejected seed logs + retries on the next close, but the trigger evaluation still runs fail-open on both closes', async () => {
+    const h = buildHarness();
+    const ev = fakeEvidence({ seedError: new Error('db down') });
+    h.fetchFn.mockResolvedValue(
+      apiResponse(revisionToolBody({ playbook: validPlaybookContent('v2'), changelog: 'c' })),
+    );
+    const service = new ReflectionService(baseCfg({ everyNTrades: 1 }), {
+      ...h.deps,
+      evidence: ev.port,
+    });
+
+    // First close: the seed rejects — logged, and the seedState entry is cleared so the NEXT close
+    // retries — but the trigger evaluation still runs fail-open on the unseeded in-memory counter
+    // (1 >= everyNTrades=1) rather than blocking on the seed failure.
+    service.onClosedTrade(SID, 1);
+    await flush();
+    expect(h.logger.messages.filter((m) => m.includes('trigger seed failed'))).toHaveLength(1);
+    expect(h.fetchFn).toHaveBeenCalledTimes(1);
+
+    // Second close: seedState was cleared, so it retries the seed (rejects again) and STILL evaluates
+    // fail-open — a genuine second attempt fires despite the seed never once landing.
+    h.clock.now += SEVEN_DAYS_MS; // past the cooldown so the second genuine attempt can fire
+    h.fetchFn.mockResolvedValueOnce(
+      apiResponse(revisionToolBody({ playbook: validPlaybookContent('v3'), changelog: 'c2' })),
+    );
+    service.onClosedTrade(SID, 2);
+    await flush();
+
+    expect(h.logger.messages.filter((m) => m.includes('trigger seed failed'))).toHaveLength(2);
+    expect(h.fetchFn).toHaveBeenCalledTimes(2);
   });
 
   it('a seeded lastReflectionAt arms the cooldown across restarts', async () => {

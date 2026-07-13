@@ -657,16 +657,41 @@ export class ReflectionService {
       this.tradesSinceLastAttempt.set(key, (this.tradesSinceLastAttempt.get(key) ?? 0) + 1);
       if (!this.seedState.has(key) && this.deps.evidence !== undefined) {
         this.seedState.set(key, 'seeding');
-        // Detached like runReflection itself: this trigger still evaluates on in-memory numbers;
-        // the seed lands before the next closed trade (trades are hours apart, the seed is one
-        // DB read). max() below means a seed can only ever bring a starved trigger FORWARD.
-        void this.seedTriggerState(key).catch((err) => {
-          this.seedState.delete(key); // retry on the next closed trade
-          this.warn(
-            `reflection: trigger seed failed (staying on in-memory counters): ${err instanceof Error ? err.message : String(err)}`,
-          );
-        });
+        // Synchronous for THIS triggering close (first-close seed race fix): the trigger-threshold
+        // evaluation below is deferred behind the seed read, so the very close that discovers no
+        // seed evaluates against DB-restored counters instead of racing the fire-and-forget seed on
+        // zero — the redeploy-starved bug this seed exists to fix could otherwise never resolve on
+        // its own first post-boot close. Deferred via a detached async chain (never awaited by
+        // onClosedTrade itself) so the caller's synchronous return contract is unchanged. Fail-open
+        // on a seed error: log, clear the seedState entry so the next close retries the seed, and
+        // STILL evaluate the trigger on today's (unseeded) in-memory counters — a broken seed must
+        // never block the trade-gated funnel. Subsequent closes (seedState already has the key) skip
+        // this branch entirely and evaluate synchronously below, awaiting nothing new.
+        void this.seedTriggerState(key)
+          .catch((err) => {
+            this.seedState.delete(key); // retry on the next closed trade
+            this.warn(
+              `reflection: trigger seed failed (staying on in-memory counters): ${err instanceof Error ? err.message : String(err)}`,
+            );
+          })
+          .then(() => this.evaluateTrigger(strategyId, key, count));
+        return;
       }
+      this.evaluateTrigger(strategyId, key, count);
+    } catch (err) {
+      this.warn(
+        `reflection: onClosedTrade failed unexpectedly: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  // Split out of onClosedTrade so the first-close seed fix can defer this evaluation behind the
+  // seed read (chained via .then) without making onClosedTrade itself async — onClosedTrade must
+  // keep returning synchronously (detachment suite pins this). Own try/catch: called both
+  // synchronously (no seed needed) and from the detached post-seed chain, where an uncaught throw
+  // would otherwise surface as an unhandled rejection instead of the usual last-resort log.
+  private evaluateTrigger(strategyId: StrategyId, key: string, count: number): void {
+    try {
       const now = (this.deps.nowFn ?? Date.now)();
       if ((this.tradesSinceLastAttempt.get(key) ?? 0) < this.cfg.everyNTrades) return;
       if (now - this.lastAttemptAt < this.cooldownMs) return;

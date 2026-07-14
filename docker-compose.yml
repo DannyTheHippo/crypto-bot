@@ -185,7 +185,18 @@ services:
       # (system sentence, promptHash's +d1 tag, and the payload's derivatives key together) — a ~70/30
       # treatment/control split; the offline scorer's existing (playbookVersion, promptHash, symbol)
       # grouping picks the two arms apart with zero new scoring code. 0 disables (byte-identical).
-      AGENTIC_DERIVATIVES_AB_PCT: 30
+      # FACTORIAL ENABLE 2026-07-14 (Push 3 P8a): 30→50. Paired with the thinking arm below, this is
+      # the pre-registered info×thinking 2×2 (reports/loop/state.md § Factorial 2×2). The arms are
+      # now INDEPENDENT keyed PRFs (Push 3 P1 ab-assignment.ts — they were affine offsets of one
+      # minute counter, one cell provably empty at 30/30) and each decide row stamps its explicit
+      # info_arm/thinking_arm (migration 0012, Push 3 P8a-prep), so test/backtest/ab-cells reads
+      # cells directly. Adoption/harm/cost rules pre-registered; verdict is loop-domain.
+      AGENTIC_DERIVATIVES_AB_PCT: 50
+      # Thinking-on-decide arm (Push 3 P8a, the second factorial axis): 50% of decides run
+      # claude-sonnet-5 with adaptive thinking (Phase-6 study: +12bps forward proxy vs champion's
+      # −57.5bps, 1.9× cost). Cost governor: two daily-spend breaches of $4.50 ⇒ drop to 30 (the
+      # $5/day hard breaker AGENTIC_DAILY_COST_STOP_USD is unchanged underneath). 0 disables.
+      AGENTIC_THINKING_AB_PCT: 50
       # Cross-symbol relative-strength context (2026-07-12): each instance sees where its symbol
       # ranks by trailing 20-bar return within the 5-symbol basket — the strongest systematic signal
       # in the 2026-07-12 multi-strategy search (cross-sectional momentum). Rides the SAME control

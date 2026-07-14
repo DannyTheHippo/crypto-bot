@@ -12,6 +12,7 @@ import {
   AGENTIC_PRESCREEN_COUNTER,
   AGENTIC_REFLECTION_OUTCOMES_COUNTER,
   AGENTIC_VENUE_TP_COUNTER,
+  AGENTIC_VENUE_STOP_COUNTER,
 } from '../../../src/features/common/observability/metrics.service';
 import { AgentMetricsRecorder } from '../../../src/features/common/observability/agent-metrics-recorder.service';
 
@@ -32,6 +33,7 @@ describe('AgentMetricsRecorder', () => {
         AGENTIC_PRESCREEN_COUNTER,
         AGENTIC_REFLECTION_OUTCOMES_COUNTER,
         AGENTIC_VENUE_TP_COUNTER,
+        AGENTIC_VENUE_STOP_COUNTER,
         AgentMetricsRecorder,
       ],
     }).compile();
@@ -43,7 +45,7 @@ describe('AgentMetricsRecorder', () => {
     register.clear();
   });
 
-  it('registers all nine agentic-lane metrics', async () => {
+  it('registers all ten agentic-lane metrics', async () => {
     const names = (await register.getMetricsAsJSON()).map((m) => m.name);
     for (const name of [
       'agent_decide_total',
@@ -55,6 +57,7 @@ describe('AgentMetricsRecorder', () => {
       'agentic_prescreen_total',
       'agentic_reflection_outcomes_total',
       'agentic_venue_tp_total',
+      'agentic_venue_stop_total',
     ]) {
       expect(names, name).toContain(name);
     }
@@ -179,6 +182,15 @@ describe('AgentMetricsRecorder', () => {
     expect(metric).toContain('event="placed"} 1');
     expect(metric).toContain('event="drift_cancel"} 2');
   });
+
+  it('recordVenueStop increments agentic_venue_stop_total{event}', async () => {
+    recorder.recordVenueStop('placed');
+    recorder.recordVenueStop('force_fired');
+    recorder.recordVenueStop('force_fired');
+    const metric = await register.getSingleMetricAsString('agentic_venue_stop_total');
+    expect(metric).toContain('event="placed"} 1');
+    expect(metric).toContain('event="force_fired"} 2');
+  });
 });
 
 describe('AgentMetricsRecorder — never throws into a trading path', () => {
@@ -207,6 +219,7 @@ describe('AgentMetricsRecorder — never throws into a trading path', () => {
       throwing as unknown as Counter<string>,
       throwing as unknown as Counter<string>,
       throwing as unknown as Counter<string>,
+      throwing as unknown as Counter<string>,
     );
     expect(() => recorder.recordDecide('proposed')).not.toThrow();
     expect(() => recorder.recordTokens(1, 1)).not.toThrow();
@@ -217,5 +230,6 @@ describe('AgentMetricsRecorder — never throws into a trading path', () => {
     expect(() => recorder.recordPrescreen('called')).not.toThrow();
     expect(() => recorder.recordReflectionOutcome('minted')).not.toThrow();
     expect(() => recorder.recordVenueTp('placed')).not.toThrow();
+    expect(() => recorder.recordVenueStop('placed')).not.toThrow();
   });
 });

@@ -14,6 +14,7 @@ import {
 } from '../../../ports/risk';
 import { PORTFOLIO_VIEW, type PortfolioViewPort } from '../../../ports/execution';
 import { SIGNAL_SINK, type SignalSinkPort } from '../../../ports/strategy';
+import { EXCHANGE_PORT, type ExchangePort } from '../../../ports/exchange';
 import type { Signal } from '../../../domain/types/signal';
 import type { Position } from '../../../domain/types/portfolio';
 import type { EpochMs } from '../../../domain/types/ids';
@@ -69,6 +70,13 @@ export class ProtectiveExitService {
     @Optional()
     @Inject(PLAN_STOP_REGISTRY)
     private readonly planStops?: PlanStopRegistryPort,
+    // Push 3 P7d: the perp algo-rail cancel seam documented in fire()'s own comment — @Optional so
+    // every pre-existing direct-construction unit test keeps constructing without it. Absent (no
+    // exchange port wired, or a spot-only deployment) makes the algo-cancel a no-op; it is never
+    // reached anyway unless a registry entry carries `algoId` (Push 3 P7d, perp-only).
+    @Optional()
+    @Inject(EXCHANGE_PORT)
+    private readonly exchange?: Pick<ExchangePort, 'cancelAlgoOrder'>,
   ) {}
 
   async tick(now: EpochMs): Promise<void> {
@@ -198,7 +206,15 @@ export class ProtectiveExitService {
     now: EpochMs,
     key: string,
     isLong: boolean,
-    stop: { readonly stopPrice: string; readonly venueStopResting: boolean },
+    stop: {
+      readonly stopPrice: string;
+      readonly venueStopResting: boolean;
+      // Push 3 P7d: present only for a CONFIRMED-resting perp algo-rail stop (see PlanStop's own
+      // header comment in ports/risk.ts) — threaded through to fire() so it can best-effort cancel
+      // the algo order before submitting the exit (never populated for a spot vsl, which the
+      // existing hasOpenTp/CANCEL_OPEN path already clears).
+      readonly algoId?: string;
+    },
     snapshotSeq: bigint,
     orders: {
       readonly buyOpen: Set<string>;
@@ -226,7 +242,7 @@ export class ProtectiveExitService {
     if (lastFired !== undefined && now - lastFired < this.config.cooldownMs) return;
 
     const hasOpenTp = (isLong ? sellOpen : buyOpen).has(pos.symbol);
-    await this.fire(pos, mid, now, 'PLAN_STOP', key, snapshotSeq, isLong, hasOpenTp);
+    await this.fire(pos, mid, now, 'PLAN_STOP', key, snapshotSeq, isLong, hasOpenTp, stop.algoId);
   }
 
   private async fire(
@@ -238,6 +254,10 @@ export class ProtectiveExitService {
     snapshotSeq: bigint,
     isLong: boolean,
     hasOpenTp: boolean,
+    // Push 3 P7d: present only when tickPlanStop's registry entry carries a CONFIRMED-resting perp
+    // algo-rail stop — undefined on every other call site (the global-% path, and every spot call),
+    // so the algo-cancel below is unreachable there, byte-identical to pre-feature.
+    algoStopId?: string,
   ): Promise<void> {
     const reasonText = REASON_TEXT[reason];
     const signal: Signal = {
@@ -256,6 +276,21 @@ export class ProtectiveExitService {
     // Push II Phase 8: the venue take-profit side mirrors direction — SELL for a LONG, BUY (cover)
     // for a SHORT.
     const tpSide: 'BUY' | 'SELL' = isLong ? 'SELL' : 'BUY';
+    // Push 3 P7d: the perp algo-rail cancel, AWAITED before the exit submits but FAIL-SAFE in
+    // direction — a cancel failure/timeout here must never block the protective exit itself (this is
+    // the S3 bot-enforced backstop; refusing to fire because cleanup failed would defeat its entire
+    // purpose). A stray resting STOP_MARKET left behind self-heals: once the exit below flattens the
+    // position, the stop's own eventual fill attempt reduce-only-rejects against a NO_POSITION book
+    // (TERMINAL_REJECT), never a duplicate reduction. Swallowed, not retried here — the orphan sweep
+    // (agentic.strategy.ts's position_closed branch) is the retry path.
+    if (algoStopId !== undefined && this.exchange?.cancelAlgoOrder) {
+      try {
+        await this.exchange.cancelAlgoOrder(algoStopId, pos.symbol);
+      } catch {
+        // Fail-safe direction: proceed to fire the protective exit regardless — see this method's
+        // own header comment above.
+      }
+    }
     try {
       if (hasOpenTp) {
         // A resting TP order locks the base balance (spot LONG) or margin (SHORT cover) — a
@@ -264,12 +299,10 @@ export class ProtectiveExitService {
         // Push 3 P7c: deliberately NO cancelRole — a side-matching CANCEL_OPEN with no role clears
         // EVERY resting order on tpSide in one signal (SignalSinkService.cancelOpenForSignal), so
         // this already cancels a resting venue-TP AND a resting spot venue-stop (P7d's STOP_LOSS_
-        // LIMIT rests on the SAME open-order rail, same side) with no further change here. Seam for
-        // P7d's PERP path: a resting STOP_MARKET lives on the swap ALGO/conditional rail, never in
-        // openOrders, so `hasOpenTp`/this cancel can never see or clear it — the plan-stop
-        // registry's own `venueStopResting` flag (tickPlanStop's `stop` param above) is where P7d
-        // hooks an algo-cancel call before this exit submits; not built here (out of this task's
-        // scope).
+        // LIMIT rests on the SAME open-order rail, same side) with no further change here. PERP: a
+        // resting STOP_MARKET lives on the swap ALGO/conditional rail, never in openOrders, so
+        // `hasOpenTp`/this cancel can never see or clear it — the algo-cancel above (keyed off the
+        // registry's own `algoId`) is that seam, built.
         await this.sink.recordSignal({
           strategyId: pos.strategyId,
           venue: pos.venue,

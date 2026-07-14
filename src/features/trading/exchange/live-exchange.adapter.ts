@@ -7,6 +7,7 @@ import type {
   ExchangeOrderState,
   VenueFill,
   CredentialCheck,
+  AlgoOrderState,
 } from '../../../ports/exchange';
 import { LIVE_ADAPTER_CAP } from '../../../ports/mode-control';
 import type { VenueId, SymbolId, ClientOrderId, EpochMs } from '../../../domain/types/ids';
@@ -68,5 +69,25 @@ export class LiveExchangeAdapter implements ExchangePort {
 
   validateCredentials(): Promise<CredentialCheck> {
     return this.inner.validateCredentials();
+  }
+
+  // Push 3 P7d (P7a gap): the swap algo-rail round-trip, delegated like every other method above —
+  // unlike pinPerpVenueDefaults (deliberately NOT delegated; see app.module.ts's own comment on that
+  // omission), a live perp deployment's protective-stop lifecycle needs these from boot one, so there
+  // is no separate "own ceremony" deferral here. `?.` guards the inner adapter lacking either method
+  // (spot/paper) — fetchOpenAlgoOrders answers vacuously empty (mirrors CcxtExchangeAdapter's own
+  // spot answer), cancelAlgoOrder rejects loudly (fail-closed: a caller that reaches this method
+  // believes an algo order exists and must not be told the cancel silently no-opped).
+  fetchOpenAlgoOrders(symbol?: SymbolId): Promise<readonly AlgoOrderState[]> {
+    return this.inner.fetchOpenAlgoOrders?.(symbol) ?? Promise.resolve([]);
+  }
+
+  cancelAlgoOrder(algoId: string, symbol: SymbolId): Promise<void> {
+    if (!this.inner.cancelAlgoOrder) {
+      return Promise.reject(
+        new Error('LiveExchangeAdapter: inner adapter does not implement cancelAlgoOrder'),
+      );
+    }
+    return this.inner.cancelAlgoOrder(algoId, symbol);
   }
 }

@@ -161,6 +161,15 @@ export interface AppConfig {
     // Re-place threshold (bps): a resting TP SELL priced more than this many bps from the plan's
     // current TP price gets cancelled this bar for next-bar re-placement.
     venueTpReplaceDriftBps: number;
+    // Push 3 P7d (AGENTIC_VENUE_STOP): rests the plan's protective stop at the venue (SPOT:
+    // STOP_LOSS_LIMIT on the regular open-orders rail; PERP: STOP_MARKET on the swap algo/
+    // conditional rail) instead of relying solely on plan-executor's own bar-close stop-price
+    // crossing. Off by default — byte-identical to pre-feature until enabled
+    // (agentic.strategy.ts's manageVenueStop). Independent of venueTpEnabled and of
+    // risk.planStopWatchEnabled below.
+    venueStopEnabled: boolean;
+    // Re-place threshold (bps), mirrors venueTpReplaceDriftBps above.
+    venueStopReplaceDriftBps: number;
     // Cache-token pricing for the DEFAULT model (USD per 1M tokens, decimal strings): reads bill
     // at ~0.1x input, 1h-TTL writes at ~2x input. Priced $0 before W4/W13 — an undercount of true
     // spend inside a promotion gate (fail-open) — now first-class.

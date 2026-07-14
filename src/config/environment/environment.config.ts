@@ -231,6 +231,17 @@ const envSchema = z
     // Re-place threshold (bps): a resting TP SELL priced more than this many bps away from the
     // plan's current TP price gets cancelled this bar for next-bar re-placement.
     AGENTIC_VENUE_TP_REPLACE_DRIFT_BPS: z.coerce.number().int().positive().default(10),
+    // Push 3 P7d: venue-resting protective stop lifecycle for plan-mode positions — rests the plan's
+    // stop at the venue (SPOT: STOP_LOSS_LIMIT on the regular open-orders rail; PERP: STOP_MARKET on
+    // the swap algo/conditional rail) instead of relying solely on the executor's own bar-close
+    // stop-price crossing. Off by default — behavior stays byte-identical to pre-feature until
+    // enabled (agentic.strategy.ts's manageVenueStop).
+    AGENTIC_VENUE_STOP: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
+    // Re-place threshold (bps), mirrors AGENTIC_VENUE_TP_REPLACE_DRIFT_BPS above.
+    AGENTIC_VENUE_STOP_REPLACE_DRIFT_BPS: z.coerce.number().int().positive().default(10),
     AGENTIC_MAX_ENTRIES_PER_DAY: z.coerce.number().int().positive().default(12),
     AGENTIC_DRAIN_COOLDOWN_BASE_MS: z.coerce.number().int().positive().default(30_000),
     AGENTIC_DRAIN_COOLDOWN_MAX_MS: z.coerce.number().int().positive().default(900_000),
@@ -683,6 +694,8 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     AGENTIC_QUIET_PAYLOAD_SAMPLE_BARS: agenticQuietPayloadSampleBars,
     AGENTIC_VENUE_TP: agenticVenueTp,
     AGENTIC_VENUE_TP_REPLACE_DRIFT_BPS: agenticVenueTpReplaceDriftBps,
+    AGENTIC_VENUE_STOP: agenticVenueStop,
+    AGENTIC_VENUE_STOP_REPLACE_DRIFT_BPS: agenticVenueStopReplaceDriftBps,
     EXIT_CROSS_BUFFER_BPS: exitCrossBufferBps,
     ENTRY_ORDER_TYPE: entryOrderType,
     BASE_NOTIONAL: baseNotional,
@@ -790,6 +803,8 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       expectancyLadderEnabled: agenticExpectancyLadder,
       venueTpEnabled: agenticVenueTp,
       venueTpReplaceDriftBps: agenticVenueTpReplaceDriftBps,
+      venueStopEnabled: agenticVenueStop,
+      venueStopReplaceDriftBps: agenticVenueStopReplaceDriftBps,
       planMode: agenticPlanMode,
       shortsEnabled: agenticShortsEnabled,
       minEdgeMultiple: agenticMinEdgeMultiple,

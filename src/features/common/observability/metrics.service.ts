@@ -170,6 +170,19 @@ export const AGENTIC_VENUE_TP_COUNTER = makeCounterProvider({
   help: 'Venue-resting take-profit lifecycle events (bound closed set — see VenueTpEvent)',
   labelNames: ['event'] as const,
 });
+// Push 3 P7d (AGENTIC_VENUE_STOP): venue-resting protective stop lifecycle events for plan-mode
+// positions, emitted by agentic.strategy.ts's manageVenueStop/runActivePlan (see VenueStopEvent
+// there for the bound label set: placed / skipped_existing / skipped_inflight / cancel_for_exit /
+// drift_cancel / qty_cancel / orphan_cancel / filled_flat / stood_down / force_fired). Query
+// patterns: `rate(agentic_venue_stop_total{event="force_fired"}[1h]) > 0` flags a venue stop that
+// evidently failed to fill on its own (worth an operator look at the venue's algo-order health);
+// `sum by (event) (agentic_venue_stop_total)` gives the same at-a-glance lifecycle mix
+// agentic_venue_tp_total already provides for the TP side.
+export const AGENTIC_VENUE_STOP_COUNTER = makeCounterProvider({
+  name: 'agentic_venue_stop_total',
+  help: 'Venue-resting protective stop lifecycle events (bound closed set — see VenueStopEvent)',
+  labelNames: ['event'] as const,
+});
 
 // C1: derivatives-feed health, sampled in the 5s loop below (same pull pattern as kill_switch_state
 // and event_loop_utilization). Present regardless of DERIVATIVES_FEED_ENABLED — staleness simply

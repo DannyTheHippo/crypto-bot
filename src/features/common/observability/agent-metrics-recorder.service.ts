@@ -28,6 +28,20 @@ export type AgentVenueTpEvent =
   | 'orphan_cancel'
   | 'filled_flat';
 
+// Mirrors agentic.strategy.ts's VenueStopEvent (Push 3 P7d) — duplicated rather than imported, same
+// convention as AgentVenueTpEvent above.
+export type AgentVenueStopEvent =
+  | 'placed'
+  | 'skipped_existing'
+  | 'skipped_inflight'
+  | 'cancel_for_exit'
+  | 'drift_cancel'
+  | 'qty_cancel'
+  | 'orphan_cancel'
+  | 'filled_flat'
+  | 'stood_down'
+  | 'force_fired';
+
 // Mirrors prescreen.ts's PrescreenReason — duplicated rather than imported because the
 // eslint-plugin-boundaries wall forbids this feature (common/observability) importing from
 // trading/agentic; same convention as AgentPrescreenOutcome above. 'n/a' is this module's own
@@ -63,6 +77,8 @@ export class AgentMetricsRecorder {
     private readonly reflectionOutcomesCounter: Counter<string>,
     @InjectMetric('agentic_venue_tp_total')
     private readonly venueTpCounter: Counter<string>,
+    @InjectMetric('agentic_venue_stop_total')
+    private readonly venueStopCounter: Counter<string>,
   ) {}
 
   // `model` on both methods (#28): optional with an 'unknown' fallback so the label is always
@@ -170,6 +186,16 @@ export class AgentMetricsRecorder {
   recordVenueTp(event: AgentVenueTpEvent): void {
     try {
       this.venueTpCounter.inc({ event });
+    } catch {
+      /* metrics must never throw into a trading path */
+    }
+  }
+
+  // Push 3 P7d (AGENTIC_VENUE_STOP): bound closed set of lifecycle events — see AgentVenueStopEvent
+  // above.
+  recordVenueStop(event: AgentVenueStopEvent): void {
+    try {
+      this.venueStopCounter.inc({ event });
     } catch {
       /* metrics must never throw into a trading path */
     }

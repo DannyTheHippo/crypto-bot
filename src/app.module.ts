@@ -1804,6 +1804,7 @@ export class AppModule
         },
         onPrescreen: (outcome, reason) => this.agentMetrics.recordPrescreen(outcome, reason),
         onVenueTp: (event) => this.agentMetrics.recordVenueTp(event),
+        onVenueStop: (event) => this.agentMetrics.recordVenueStop(event),
         evidence: this.roundTripEvidence,
         derivativesFeed: this.derivativesFeed,
         sentimentFeed: this.sentimentFeed,
@@ -1819,6 +1820,12 @@ export class AppModule
         planStopRegistry: this.planStopRegistry,
         // Push 3 P7c: resting-order role resolution (vtp/vsl) — see AgenticStrategyDeps.intentStore.
         intentStore: this.executionStore,
+        // Push 3 P7d: the swap algo-rail round-trip, narrowed off the SAME EXCHANGE_PORT instance
+        // the perp deploy pin (startTrading) already holds — see AgenticStrategyDeps.algoOrders'
+        // own comment. Structurally satisfies the narrowed Pick<ExchangePort, ...> even when the
+        // bound adapter is spot/paper (both methods stay `undefined` there; every call site guards
+        // with `?.`).
+        algoOrders: this.exchangePort,
       };
       return new AgenticStrategy(id, p as AgenticStrategyParams, this.agentClient, deps);
     });
@@ -1959,6 +1966,20 @@ export class AppModule
       // [0, tick) rounding bias reads as permanent drift on coarse-tick symbols). Boot asserts every
       // traded symbol has a DEFAULT_FILTERS row, so this is present for all live instances.
       venueTpTickSize: DEFAULT_FILTERS.get(symbol)?.tickSize,
+      venueStopEnabled: agentic.venueStopEnabled,
+      venueStopReplaceDriftBps: agentic.venueStopReplaceDriftBps,
+      // Same DEFAULT_FILTERS tick — mirrors venueTpTickSize above (manageVenueStop's own drift
+      // reconciliation, both rails).
+      venueStopTickSize: DEFAULT_FILTERS.get(symbol)?.tickSize,
+      // The SAME buffer PositionSizerService applies past the trigger for a spot STOP_LOSS_LIMIT's
+      // limit leg (SIZER_DEPS.stopLimitBufferBps) — manageVenueStopSpot's drift check must compare
+      // against this exact value or it reads the buffer itself as permanent drift.
+      stopLimitBufferBps: this.config.risk.stopLimitBufferBps,
+      // ProtectiveExitService's OWN force-band threshold (ports/risk.ts's planStopForceBps) — the
+      // strategy's bar-close 'stop' branch applies the SAME band on its own coarser cadence (see
+      // AgenticStrategyParams.planStopForceBps's own comment on why this is independent of
+      // PLAN_STOP_WATCH_ENABLED).
+      planStopForceBps: this.config.risk.planStopForceBps,
     };
   }
 }

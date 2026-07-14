@@ -220,6 +220,8 @@ describe('validate()', () => {
         quietPayloadSampleBars: 0,
         venueTpEnabled: false,
         venueTpReplaceDriftBps: 10,
+        venueStopEnabled: false,
+        venueStopReplaceDriftBps: 10,
         tokenPriceInputPerMtok: '3',
         tokenPriceOutputPerMtok: '15',
         tokenPriceCacheReadPerMtok: '0.3',

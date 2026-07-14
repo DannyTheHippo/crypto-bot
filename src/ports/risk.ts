@@ -51,13 +51,23 @@ export interface ProtectiveExitConfig {
 
 // Plan-stop watcher (Push 3 P2): one entry per plan-managed LONG/SHORT position, keyed by
 // positionKey(strategyId, venue, symbol) (domain/risk/evaluate.ts) — the SAME key
-// ProtectiveExitService's own hwm/lwm/cooldown maps use. venueStopResting is future-proofing for a
-// later venue-side-stop build (a later phase places and maintains a real resting stop order there);
-// it defaults false today, so the watcher never stands down on it yet.
+// ProtectiveExitService's own hwm/lwm/cooldown maps use. venueStopResting was future-proofing for a
+// later venue-side-stop build; Push 3 P7d is that build — AgenticStrategy (the sole writer) now
+// flips it true only once a placed stop is CONFIRMED resting (ack observed via restingOrderForRole
+// on spot, or a matching fetchOpenAlgoOrders row on a perp — never optimistically at signal-emission
+// time, so the watcher/executor never stand down on a stop that may not have actually landed) and
+// false again the moment a reconcile bar finds it missing (filled, cancelled, or never acked).
 export interface PlanStop {
   readonly side: 'LONG' | 'SHORT';
   readonly stopPrice: string;
   readonly venueStopResting: boolean;
+  // Push 3 P7d: the venue's own algo-rail id for a resting PERP STOP_MARKET (binanceusdm's algo
+  // rail — never populated for a spot STOP_LOSS_LIMIT, which rests on the regular open-orders rail
+  // and is cancelled via the ordinary CANCEL_OPEN/cancelRole 'vsl' path instead). Set the same bar
+  // venueStopResting flips true on the perp path; cleared alongside it. Cancel callers (the
+  // strategy's own cancel-first, ProtectiveExitService.fire()) key off THIS field's presence to
+  // decide "perp algo-rail cancel" vs "spot open-orders cancel" without re-deriving venue-ness.
+  readonly algoId?: string;
 }
 
 export interface PlanStopRegistryPort {

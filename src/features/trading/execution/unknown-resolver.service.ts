@@ -7,10 +7,12 @@ import {
   AdapterError,
   type ExchangePort,
   type ExchangeOrderState,
+  type AlgoOrderState,
   type VenueFill,
 } from '../../../ports/exchange';
 import { EXECUTION_STORE, type ExecutionStorePort } from '../../../ports/execution';
 import { reduce, TERMINAL_ORDER_STATES, type OrderEvent } from '../../../domain/oms/reducer';
+import { isAlgoRailIntent } from '../../../domain/oms/reconcile';
 import { mulberry32 } from '../../../domain/rng/prng';
 import {
   queryBackoffMs,
@@ -118,6 +120,17 @@ export class UnknownResolverService {
   }
 
   private async resolveOne(p: Pending, now: EpochMs): Promise<void> {
+    // Push 3 P7f fix 2: an algo-rail intent (isAlgoRailIntent) can never be resolved through
+    // fetchOrder — that is the REGULAR rail, and a perp STOP_MARKET 404s there (-2013 →
+    // OrderNotFound), which the regular-rail branch below would read as a genuine not-found and
+    // FALSELY retire the pending entry on the first poll, bypassing the rule-5 60s kill-switch
+    // watchdog while a phantom reserve stays held. Route to the algo-rail's own truth instead.
+    const intent = this.portfolio.inFlightIntent(p.coid);
+    if (p.kind === 'submit' && intent !== undefined && isAlgoRailIntent(intent)) {
+      await this.resolveAlgoOne(p, now);
+      return;
+    }
+
     let venue: ExchangeOrderState;
     try {
       venue = await this.exchange.fetchOrder(p.coid, p.symbol);
@@ -141,6 +154,43 @@ export class UnknownResolverService {
     }
 
     await this.mapVenueStatus(p, now, venue);
+  }
+
+  // Push 3 P7f fix 2: the algo rail's own truth for a SUBMIT_UNKNOWN. fetchOpenAlgoOrders is the
+  // ONLY positive signal here — a matching clientAlgoId proves the order landed/is resting, folded
+  // through the SAME ACK transition a regular-rail 'open' status would (query-confirmed open, see
+  // mapVenueStatus's own 'open' arm). Absence proves NOTHING: a triggered, filled, or cancelled
+  // algo order also vanishes from the open-algos list, exactly like a regular-rail 'closed'/gone
+  // order — so a miss (or an adapter that lacks fetchOpenAlgoOrders, i.e. spot/paper) never
+  // resolves anything. Fail direction, explicit: unknown stays unknown; the entry is left pending
+  // (nextDueAt only) so tick()'s own firstUnknownAt check is the SOLE backstop — deliberately never
+  // routed through defer()'s MAX_QUERY_ATTEMPTS budget, which would freeze to RECONCILE_REQUIRED on
+  // an absence that proves nothing (an outcome finding 2 exists specifically to prevent).
+  private async resolveAlgoOne(p: Pending, now: EpochMs): Promise<void> {
+    let open: readonly AlgoOrderState[];
+    try {
+      open = (await this.exchange.fetchOpenAlgoOrders?.(p.symbol)) ?? [];
+    } catch {
+      this.deferAlgoPending(p, now); // transient query failure — retry later, never freezes here
+      return;
+    }
+    const found = open.find((o) => o.clientAlgoId === String(p.coid));
+    if (found === undefined) {
+      this.deferAlgoPending(p, now); // absence proves nothing on this rail — stays pending
+      return;
+    }
+    if (found.algoId.length > 0) this.orders.setVenueOrderId(p.coid, found.algoId);
+    if (this.orders.get(p.coid)!.state === 'SUBMIT_UNKNOWN') {
+      await this.fold(p, 'query-algo-ack', { type: 'ACK', venueOrderId: found.algoId });
+    }
+    this.pending.delete(p.coid);
+  }
+
+  // Reschedules the next poll WITHOUT touching the attempt budget (defer()'s own MAX_QUERY_ATTEMPTS
+  // freeze) — see resolveAlgoOne's own header comment on why an algo-rail absence must never freeze.
+  private deferAlgoPending(p: Pending, now: EpochMs): void {
+    p.attempts += 1; // backoff-curve input only, never compared against MAX_QUERY_ATTEMPTS here
+    p.nextDueAt = now + this.backoff(p.attempts + 1);
   }
 
   private async mapVenueStatus(p: Pending, now: EpochMs, venue: ExchangeOrderState): Promise<void> {

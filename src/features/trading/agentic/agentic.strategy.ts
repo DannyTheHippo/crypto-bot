@@ -532,6 +532,10 @@ export class AgenticStrategy implements AsyncStrategy {
     // both the quiet-hold path and the LLM path return it.
     const staleCancels = this.staleEntryCancels(input);
     const context = this.buildContext(input);
+    // Push 3 P7f fix 7b: boot/restart orphan check — see reconcileOrphanedAlgoStop's own header
+    // comment. No-op unless planMode+venueStopEnabled+perp AND there is no active plan tracking this
+    // reconcile already (the normal case, every bar with a live plan).
+    if (this.planMode) await this.reconcileOrphanedAlgoStop(context);
     // Captured before trackClosedTrade advances lastPositionSide to THIS call's side — this is the
     // side the strategy was actually carrying while the PREVIOUS (still-unannotated) decision's
     // outcome accrued, which is what annotatePreviousOutcome needs to render "(held long)"/"(flat)"
@@ -1154,7 +1158,36 @@ export class AgenticStrategy implements AsyncStrategy {
     context: AgentContext,
     key: string,
   ): Promise<Signal[]> {
-    const restingVsl = await this.restingOrderForRole(input, stopSide, 'vsl');
+    // Push 3 P7f fix 6: scans inline (rather than restingOrderForRole) so a STORE-ERROR on any
+    // candidate is visible to the placement decision below — restingOrderForRole's own collapsed
+    // 'unknown' would read a store throw identically to "no stop rests here", placing a DUPLICATE
+    // next to one already resting server-side. See roleForOrderChecked's own header comment.
+    const stopCandidates = input.snapshot.portfolio.openOrders.filter(
+      (o) => o.symbol === this.symbol && o.side === stopSide,
+    );
+    let restingVsl: OpenOrderSummary | undefined;
+    let storeError = false;
+    for (const o of stopCandidates) {
+      const checked = await this.roleForOrderChecked(o.clientOrderId);
+      if (checked.storeError) storeError = true;
+      if (checked.role === 'vsl') {
+        restingVsl = o;
+        break;
+      }
+      if (checked.role === 'unknown' && !checked.storeError) this.warnUnknownRoleOnce(o, input);
+    }
+
+    if (!restingVsl && storeError) {
+      // Fail-toward-no-op: a transient store failure proves nothing about whether a stop already
+      // rests — SKIP placement this bar (retry next bar) rather than risk placing a duplicate.
+      // Deliberately does NOT touch setVenueStopResting: an unverified `true` here would falsely
+      // stand down the bar-close force-band/watcher backstop (CLAUDE.md fail-direction: leaving it
+      // at its last-known value, never optimistically flipping it, is the safe direction).
+      this.logger.warn(
+        `venue-stop reconcile: intent-store lookup failed for ${this.symbol} — skipping this bar's placement decision to avoid a duplicate stop`,
+      );
+      return [];
+    }
 
     if (!restingVsl) {
       // Confirm-before-flag, mirrored on the way DOWN too: a reconcile bar that finds nothing
@@ -1237,12 +1270,27 @@ export class AgenticStrategy implements AsyncStrategy {
   ): Promise<Signal[]> {
     const open = (await this.algoOrders?.fetchOpenAlgoOrders?.(this.symbol)) ?? [];
     let restingAlgo: AlgoOrderState | undefined;
+    // Push 3 P7f fix 6: same STORE-ERROR distinction as manageVenueStopSpot above — a transient
+    // intent-store throw while classifying a candidate must not read as "nothing resting" (see
+    // roleForOrderChecked's own header comment for the duplicate-stop this prevents).
+    let storeError = false;
     for (const o of open) {
       if (o.side !== stopSide || o.clientAlgoId === undefined) continue;
-      if ((await this.roleForOrder(clientOrderId(o.clientAlgoId))) === 'vsl') {
+      const checked = await this.roleForOrderChecked(clientOrderId(o.clientAlgoId));
+      if (checked.storeError) storeError = true;
+      if (checked.role === 'vsl') {
         restingAlgo = o;
         break;
       }
+    }
+
+    if (!restingAlgo && storeError) {
+      // Fail-toward-no-op — see manageVenueStopSpot's own comment on the failure direction (never
+      // touches setVenueStopResting either, for the same reason).
+      this.logger.warn(
+        `venue-stop reconcile: intent-store lookup failed for ${this.symbol} (perp) — skipping this bar's placement decision to avoid a duplicate stop`,
+      );
+      return [];
     }
 
     if (!restingAlgo) {
@@ -1331,6 +1379,67 @@ export class AgenticStrategy implements AsyncStrategy {
     return String(this.venue) === PERP_VENUE_ID || splitSymbol(this.symbol).settle !== undefined;
   }
 
+  // Push 3 P7f fix 7b: process-restart (or any bar with no in-memory activePlan) can strand a
+  // resting perp algo stop — manageVenueStopPerp's own per-bar reconcile only runs INSIDE
+  // runActivePlan, which requires `this.activePlan` (wiped in-memory by a restart); the plan-stop
+  // registry is wiped right along with it (it lives in the SAME process). A restart that happens
+  // while a perp stop is genuinely resting therefore leaves it unobserved by EITHER this strategy
+  // OR ProtectiveExitService's registry-driven watcher (empty registry ⇒ nothing to watch) until the
+  // model re-attaches a plan on its next consult — a multi-bar protection gap. This runs every bar
+  // with no active plan (cheap early-outs below make it a no-op once nothing is stranded), covering
+  // BOTH outcomes: the stop still protects a real position (re-adopt) or the position is already
+  // gone (cancel the orphan) — never left resting unrecognized either way.
+  private async reconcileOrphanedAlgoStop(context: AgentContext): Promise<void> {
+    if (this.activePlan !== null) return; // manageVenueStopPerp's own reconcile already owns this bar
+    if (!this.venueStopEnabled || !this.isPerpVenue()) return;
+    if (!this.algoOrders?.fetchOpenAlgoOrders || !this.planStopRegistry) return;
+    const key = positionKey(this.id, this.venue, this.symbol);
+    if (this.planStopRegistry.get(key) !== undefined) return; // already adopted this session
+
+    let open: readonly AlgoOrderState[];
+    try {
+      open = await this.algoOrders.fetchOpenAlgoOrders(this.symbol);
+    } catch {
+      return; // best-effort — retried next bar, same failure direction as the rest of this lane
+    }
+    let ours: AlgoOrderState | undefined;
+    for (const o of open) {
+      if (o.clientAlgoId === undefined) continue;
+      if ((await this.roleForOrder(clientOrderId(o.clientAlgoId))) === 'vsl') {
+        ours = o;
+        break;
+      }
+    }
+    if (ours === undefined) return; // nothing stranded
+
+    if (context.position.side === 'LONG' || context.position.side === 'SHORT') {
+      // Branch (a) — re-adopt: it IS our stop for the CURRENT position (preferred per the finding —
+      // cancelling and re-placing would leave a real gap the re-adopt avoids entirely). Seeded off
+      // the resting order's OWN triggerPrice, never a re-derived entry×(1∓stopLossPct) — there is no
+      // active plan to re-derive that from post-restart, and the venue's own resting price is the
+      // more accurate truth anyway. Immediately unblocks ProtectiveExitService's watcher/force-band,
+      // without waiting for the model's next consult to re-attach a plan.
+      this.planStopRegistry.set(key, {
+        side: context.position.side,
+        stopPrice: ours.triggerPrice,
+        venueStopResting: true,
+        algoId: ours.algoId,
+      });
+      return;
+    }
+
+    // Branch (b) — flat: the position this stop protected is gone (closed some other way while this
+    // strategy had no active plan tracking it) — a genuine orphan with nothing left to protect.
+    // Best-effort cancel, same fail-safe direction as cancelPerpAlgoStopIfResting (never blocks
+    // decide(); a cancel failure here is retried on a later bar since nothing was adopted).
+    if (!this.algoOrders.cancelAlgoOrder) return;
+    try {
+      await this.algoOrders.cancelAlgoOrder(ours.algoId, this.symbol);
+    } catch {
+      // Best-effort — see cancelPerpAlgoStopIfResting's own comment on the failure direction.
+    }
+  }
+
   // Shared placement-signal shape for both rails — PositionSizerService's isRestingStopExit branch
   // (position-sizer.service.ts) is what actually decides STOP_MARKET (perp) vs STOP_LOSS_LIMIT
   // (spot) off signal.venue/symbol, so this strategy never needs to encode that choice itself.
@@ -1381,13 +1490,25 @@ export class AgenticStrategy implements AsyncStrategy {
 
     let algoId = entry.algoId;
     if (algoId === undefined) {
-      const open = (await this.algoOrders.fetchOpenAlgoOrders?.(this.symbol)) ?? [];
-      for (const o of open) {
-        if (o.side !== stopSide || o.clientAlgoId === undefined) continue;
-        if ((await this.roleForOrder(clientOrderId(o.clientAlgoId))) === 'vsl') {
-          algoId = o.algoId;
-          break;
+      // Push 3 P7f fix 5: the fallback lookup itself must be as best-effort as the cancel below —
+      // this was the one throw-capable call in this method NOT under try/catch (roleForOrder
+      // swallows internally). A network hiccup here used to propagate OUT of this method, past both
+      // call sites (the position_closed orphan cleanup and the stop/max_hold cancel-first ahead of
+      // the timed-out plan exit), after clearPlan() had already torn down the registry row — the
+      // exit Signal already built by the caller was then never returned (the whole runActivePlan
+      // call rejected instead), leaving a naked position with no crossed exit and no resting stop.
+      // Swallowed here so this method can never throw, honoring its own "best-effort" header comment.
+      try {
+        const open = (await this.algoOrders.fetchOpenAlgoOrders?.(this.symbol)) ?? [];
+        for (const o of open) {
+          if (o.side !== stopSide || o.clientAlgoId === undefined) continue;
+          if ((await this.roleForOrder(clientOrderId(o.clientAlgoId))) === 'vsl') {
+            algoId = o.algoId;
+            break;
+          }
         }
+      } catch {
+        // Best-effort — see this method's own header comment on the failure direction.
       }
     }
     if (algoId === undefined) return;
@@ -1420,16 +1541,34 @@ export class AgenticStrategy implements AsyncStrategy {
   private async roleForOrder(
     clientOrderId: OpenOrderSummary['clientOrderId'],
   ): Promise<RestingOrderRole> {
+    return (await this.roleForOrderChecked(clientOrderId)).role;
+  }
+
+  // Push 3 P7f fix 6: roleForOrder's own store-lookup, split out so a caller making a PLACEMENT
+  // decision (manageVenueStopSpot/manageVenueStopPerp's own "is a stop already resting?" scan) can
+  // distinguish a genuine transient STORE-ERROR from a genuine role miss/absence — both collapse to
+  // 'unknown' in roleForOrder above (correct for its own callers: the TP race-hold/orphan checks
+  // and warnUnknownRoleOnce, which fail OPEN to "leave it alone" either way, a measurement/veto-only
+  // read). The venue-stop reconcile loop is different: "nothing resolves to vsl" there does not
+  // mean "leave it alone", it means "place a new stop" — and a false negative caused by a store
+  // throw (not a genuine absence) would place a DUPLICATE stop next to one already resting. See
+  // this method's own callers for the skip-this-bar fail direction that distinction enables.
+  private async roleForOrderChecked(
+    clientOrderId: OpenOrderSummary['clientOrderId'],
+  ): Promise<{ role: RestingOrderRole; storeError: boolean }> {
     // Called through the member expression (never destructured into a bare variable first) — a
     // destructured reference loses `this` when invoked, and a real ExecutionStorePort
     // implementation reads its own instance state (see signal-sink.service.ts's own roleForOrder,
     // which hit exactly this bug against InMemoryExecutionStore).
-    if (!this.intentStore?.loadIntentByClientOrderId) return 'unknown';
+    if (!this.intentStore?.loadIntentByClientOrderId) return { role: 'unknown', storeError: false };
     try {
       const intent = await this.intentStore.loadIntentByClientOrderId(clientOrderId);
-      return intent ? roleForDedupeKey(intent.source.dedupeKey) : 'unknown';
+      return {
+        role: intent ? roleForDedupeKey(intent.source.dedupeKey) : 'unknown',
+        storeError: false,
+      };
     } catch {
-      return 'unknown';
+      return { role: 'unknown', storeError: true };
     }
   }
 

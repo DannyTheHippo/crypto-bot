@@ -16,7 +16,7 @@ import type { Position } from '../../../src/domain/types/portfolio';
 import type { OrderIntent } from '../../../src/domain/types/order-intent';
 import type { OrderRecord, OrderState } from '../../../src/domain/oms/reducer';
 import { price, qty } from '../../../src/domain/types/money';
-import { clientOrderId, intentId, epochMs } from '../../../src/domain/types/ids';
+import { clientOrderId, intentId, epochMs, venueId } from '../../../src/domain/types/ids';
 import { SID, V, SYM } from './helpers';
 
 type RecoverySnap = Awaited<ReturnType<ExecutionStorePort['loadRecoverySnapshot']>>;
@@ -72,6 +72,15 @@ function intentFor(coid: string): OrderIntent {
       basedOnSeq: 1n,
       strength: 1,
     },
+  };
+}
+
+function algoIntentFor(coid: string): OrderIntent {
+  return {
+    ...intentFor(coid),
+    venue: venueId('binanceusdm'),
+    type: 'STOP_MARKET',
+    triggerPrice: price('90'),
   };
 }
 
@@ -356,5 +365,54 @@ describe('BootRecoveryService (§4.2 snapshot-restore)', () => {
     expect(portfolio.inFlightIntent(clientOrderId(ackedCoid))).toBeDefined();
     // Never-landed rows stay book-only: no open registration, no intent.
     expect(portfolio.inFlightIntent(clientOrderId(newCoid))).toBeUndefined();
+  });
+
+  // Push 3 P7f fix 3: mirrors execution-gate.service.ts's own fix 1 — a crash-recovered algo-rail
+  // order must not resurrect into the regular open-orders set either, though its intent still
+  // rehydrates (both rails need the in-flight reservation for fix 2's unknown-resolver + the E1
+  // clamp).
+  it('fix 3: a recovered ACKED algo-rail order (perp + triggerPrice) does not register open, but still rehydrates its intent', async () => {
+    const portfolio = makePortfolio();
+    const orderBook = new OrderBookService();
+    const algoCoid = 'cbp-recover-00000000000000000000041';
+    const regularCoid = 'cbp-recover-00000000000000000000042';
+    const svc = new BootRecoveryService(
+      fakeStore({ latest: null, sodEquity: null, positions: [] }, [
+        recovered('ACKED', algoCoid, { intent: algoIntentFor(algoCoid) }),
+        recovered('ACKED', regularCoid, { intent: intentFor(regularCoid) }),
+      ]),
+      portfolio,
+      orderBook,
+      crashRecoveryStub({ n: 0 }),
+    );
+
+    await svc.recoverOnBoot('testnet');
+
+    const openIds = portfolio
+      .snapshot()
+      .openOrders.map((o) => String(o.clientOrderId))
+      .sort();
+    expect(openIds).toEqual([regularCoid]); // algo-rail order excluded, regular order registered
+    expect(orderBook.all()).toHaveLength(2); // both order ROWS still seeded (audit unaffected)
+    expect(portfolio.inFlightIntent(clientOrderId(algoCoid))).toBeDefined(); // intent still rehydrated
+    expect(portfolio.inFlightIntent(clientOrderId(regularCoid))).toBeDefined();
+  });
+
+  it('fix 3: an algo-rail order with a null recovered intent falls back to registering it regular-rail (cannot classify)', async () => {
+    const portfolio = makePortfolio();
+    const orderBook = new OrderBookService();
+    const coid = 'cbp-recover-00000000000000000000043';
+    const svc = new BootRecoveryService(
+      fakeStore({ latest: null, sodEquity: null, positions: [] }, [
+        recovered('ACKED', coid, { intent: null }),
+      ]),
+      portfolio,
+      orderBook,
+      crashRecoveryStub({ n: 0 }),
+    );
+
+    await svc.recoverOnBoot('testnet');
+
+    expect(portfolio.snapshot().openOrders.map((o) => String(o.clientOrderId))).toEqual([coid]);
   });
 });

@@ -736,6 +736,26 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
   const bootId = crypto.randomUUID();
   const venues = parseVenues(env);
 
+  // Push 3 P7f fix 4: AGENTIC_VENUE_TP and AGENTIC_VENUE_STOP resting SIMULTANEOUSLY is only safe
+  // on a perp-only deployment. A resting TP SELL already locks the FULL base balance (spot has no
+  // margin to partially commit against); a second full-size protective STOP SELL would then have no
+  // balance left to back it the moment the TP is armed — spot needs an atomic OCO pair to run both
+  // legs at once, which this codebase does not wire (backlog #44). Perp margin has no such
+  // single-balance conflict (both legs are reduce-only against the same position, never a balance
+  // lock), so a deployment where every configured venue is swap-capable (binanceusdm — the only
+  // perp venue this pass wires, mirrors position-sizer.service.ts's own local PERP_VENUE_ID
+  // convention) may run both. Config refusal AT CONSTRUCTION (never a runtime place-then-reject):
+  // an unconfigured VENUES (paper/test default, empty array) never trips this — only an EXPLICITLY
+  // configured spot venue does.
+  if (agenticVenueTp && agenticVenueStop && venues.some((v) => v.id !== 'binanceusdm')) {
+    throw new Error(
+      'AGENTIC_VENUE_TP and AGENTIC_VENUE_STOP cannot both be enabled while any configured venue ' +
+        'is spot: a resting take-profit SELL locks the full base balance, leaving nothing to back ' +
+        'a second full-size protective stop SELL (spot has no OCO here — backlog #44). Perp-only ' +
+        'deployments (every configured venue swap-capable) may run both.',
+    );
+  }
+
   // Live secrets are read into the validated config ONLY outside test/ci. Under test/ci they are
   // both stripped from env (below) AND never read here, so the AppConfig object cannot carry a live
   // credential — the in-code backstop behind the four gates (§10), independent of the env strip.

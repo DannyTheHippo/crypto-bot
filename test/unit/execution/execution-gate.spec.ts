@@ -21,6 +21,7 @@ import type { RiskApprovedIntent } from '../../../src/domain/types/risk-decision
 import { initialOrder } from '../../../src/domain/oms/reducer';
 import { makeIntent, fixedClock, SYM, T } from './helpers';
 import { epochMs, venueId, symbolId, type ClientOrderId } from '../../../src/domain/types/ids';
+import { price } from '../../../src/domain/types/money';
 
 const KEY = Buffer.alloc(32, 7);
 const CTX: ExecRunContext = { mode: 'paper', runId: 'run', bootId: 'boot' };
@@ -271,6 +272,35 @@ describe('ExecutionGateService.submit', () => {
     expect(res).toMatchObject({ outcome: 'SUBMITTED', state: 'FILLED' });
     expect(built.orders.get(approved.intent.clientOrderId)?.state).toBe('FILLED');
     expect(built.portfolio.snapshot().openOrders).toHaveLength(0); // no phantom
+  });
+
+  it('fix 1: does not register an algo-rail order (perp venue + triggerPrice) in the local open-orders set', async () => {
+    // Push 3 P7f fix 1 — an algo-rail order is invisible to fetchOpenOrders/cancelOrder/fetchOrder
+    // (the regular rail); registering it locally would make CANCEL_OPEN target it → guaranteed
+    // false CANCEL_UNKNOWN → RECONCILE_REQUIRED freeze. It must still ACK normally and reserve
+    // in-flight exposure — only the open-orders registration is gated.
+    const { port } = fakeExchange((req) => Promise.resolve(ackOf(req)));
+    const { gate, orders, portfolio } = build(port);
+    const approved = approve({
+      venue: venueId('binanceusdm'),
+      type: 'STOP_MARKET',
+      triggerPrice: price('90'),
+    });
+    const res = await gate.submit(approved);
+    expect(res).toMatchObject({ outcome: 'SUBMITTED' });
+    expect(orders.get(approved.intent.clientOrderId)).toBeDefined(); // order ROW still recorded
+    expect(portfolio.snapshot().openOrders).toHaveLength(0); // but not in the regular-rail set
+    expect(portfolio.snapshot().inFlightIntents).toHaveLength(1); // in-flight reservation unaffected
+  });
+
+  it('fix 1: a regular SPOT STOP_LOSS_LIMIT (triggerPrice, non-perp) still registers open normally', async () => {
+    // Control case: triggerPrice alone must not be the discriminator — a spot STOP_LOSS_LIMIT rests
+    // on the REGULAR open-orders rail (see OrderIntent's own header comment).
+    const { port } = fakeExchange((req) => Promise.resolve(ackOf(req)));
+    const { gate, portfolio } = build(port);
+    const approved = approve({ type: 'STOP_LOSS_LIMIT', triggerPrice: price('90') });
+    await gate.submit(approved);
+    expect(portfolio.snapshot().openOrders).toHaveLength(1);
   });
 
   it('throws ModeViolationError for a live-stamped intent on a paper-authority run (no network call)', async () => {

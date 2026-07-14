@@ -593,6 +593,71 @@ describe('validate()', () => {
         expect(cfg.agentic.warmupBars).toBe(5);
       });
     });
+
+    // Push 3 P7f fix 4: a resting venue TP already locks the full base balance — a spot deployment
+    // has no balance left to back a second full-size protective stop, so both-on + any spot venue
+    // must refuse loudly at construction rather than place-then-reject at runtime.
+    describe('AGENTIC_VENUE_TP + AGENTIC_VENUE_STOP spot cross-field refusal', () => {
+      const SPOT_VENUE = JSON.stringify([{ id: 'binance', environment: 'paper' }]);
+      const PERP_VENUE = JSON.stringify([{ id: 'binanceusdm', environment: 'paper' }]);
+      const MIXED_VENUES = JSON.stringify([
+        { id: 'binanceusdm', environment: 'paper' },
+        { id: 'binance', environment: 'paper' },
+      ]);
+
+      it('throws when both are enabled and the only configured venue is spot', () => {
+        expect(() =>
+          validate({
+            PORT: '3100',
+            AGENTIC_VENUE_TP: 'true',
+            AGENTIC_VENUE_STOP: 'true',
+            VENUES: SPOT_VENUE,
+          }),
+        ).toThrow(/AGENTIC_VENUE_TP and AGENTIC_VENUE_STOP/);
+      });
+
+      it('throws when both are enabled and ANY configured venue is spot (mixed deployment)', () => {
+        expect(() =>
+          validate({
+            PORT: '3100',
+            AGENTIC_VENUE_TP: 'true',
+            AGENTIC_VENUE_STOP: 'true',
+            VENUES: MIXED_VENUES,
+          }),
+        ).toThrow(/AGENTIC_VENUE_TP and AGENTIC_VENUE_STOP/);
+      });
+
+      it('passes when both are enabled and every configured venue is perp', () => {
+        const cfg = validate({
+          PORT: '3100',
+          AGENTIC_VENUE_TP: 'true',
+          AGENTIC_VENUE_STOP: 'true',
+          VENUES: PERP_VENUE,
+        });
+        expect(cfg.agentic.venueTpEnabled).toBe(true);
+        expect(cfg.agentic.venueStopEnabled).toBe(true);
+      });
+
+      it('passes on a spot venue when only AGENTIC_VENUE_TP is enabled (single-leg)', () => {
+        const cfg = validate({
+          PORT: '3100',
+          AGENTIC_VENUE_TP: 'true',
+          VENUES: SPOT_VENUE,
+        });
+        expect(cfg.agentic.venueTpEnabled).toBe(true);
+        expect(cfg.agentic.venueStopEnabled).toBe(false);
+      });
+
+      it('passes with both enabled and no VENUES configured (paper default, empty array)', () => {
+        const cfg = validate({
+          PORT: '3100',
+          AGENTIC_VENUE_TP: 'true',
+          AGENTIC_VENUE_STOP: 'true',
+        });
+        expect(cfg.agentic.venueTpEnabled).toBe(true);
+        expect(cfg.agentic.venueStopEnabled).toBe(true);
+      });
+    });
   });
 
   describe('risk config', () => {

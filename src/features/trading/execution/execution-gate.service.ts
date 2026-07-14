@@ -32,6 +32,7 @@ import {
   type OrderEvent,
   type OrderState,
 } from '../../../domain/oms/reducer';
+import { isAlgoRailIntent } from '../../../domain/oms/reconcile';
 import type { RiskApprovedIntent } from '../../../domain/types/risk-decision';
 import type { OrderIntent } from '../../../domain/types/order-intent';
 import type { OpenOrderSummary } from '../../../domain/types/portfolio';
@@ -215,8 +216,19 @@ export class ExecutionGateService implements ExecutionGatePort {
     // order on terminal). Re-registering it as open would strand a phantom open order no cancel can
     // clear — and a later HALTING drain would never see openOrders empty, forcing a needless
     // cancel-timeout → HALTED_DEGRADED. Only a still-live order joins the open set.
+    // Push 3 P7f fix 1: an algo-rail order (triggerPrice + swap venue — isAlgoRailIntent) is
+    // STRATEGY-managed (manageVenueStopPerp + the plan-stop registry), never regular-OMS-managed —
+    // it must NOT join the local open-orders set. fetchOpenOrders/cancelOrder/fetchOrder (the
+    // regular rail) can never see it (it lives on fetchOpenAlgoOrders instead), so a registered
+    // algo order is invisible to CANCEL_OPEN's target scan and to reconciliation's venue-truth
+    // sweep — CANCEL_OPEN would fetchOrder-404 a phantom cancel into a guaranteed false
+    // CANCEL_UNKNOWN → RECONCILE_REQUIRED freeze (held reserve), and a HALTING drain would wait on
+    // an order that can never confirm cancelled. addInFlight (above) still runs unconditionally —
+    // the in-flight reservation is what fix 2's unknown-resolver sync() and the rule-5 60s
+    // kill-switch watchdog both key off, and the order ROW/audit trail (orders.create/store.save*)
+    // is unaffected — only THIS local open-orders registration is rail-split.
     const finalState = this.orders.get(coid)!.state;
-    if (!TERMINAL_ORDER_STATES.has(finalState)) {
+    if (!TERMINAL_ORDER_STATES.has(finalState) && !isAlgoRailIntent(intent)) {
       this.portfolio.openOrder(intent.strategyId, this.toOpenSummary(intent));
     }
     return {

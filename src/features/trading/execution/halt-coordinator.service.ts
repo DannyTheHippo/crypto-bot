@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import Decimal from 'decimal.js';
 import { CLOCK, type ClockPort } from '../../../ports/clock';
 import { FEED_HEALTH, type FeedHealthPort } from '../../../ports/market-data';
@@ -6,9 +6,11 @@ import {
   KILL_SWITCH,
   RISK_ENGINE,
   POSITION_SIZER,
+  PLAN_STOP_REGISTRY,
   type KillSwitchPort,
   type RiskEnginePort,
   type PositionSizerPort,
+  type PlanStopRegistryPort,
 } from '../../../ports/risk';
 import {
   EXECUTION_GATE,
@@ -18,6 +20,7 @@ import {
   type PortfolioViewPort,
   type ExecFilters,
 } from '../../../ports/execution';
+import { EXCHANGE_PORT, type ExchangePort } from '../../../ports/exchange';
 import { price, type Price } from '../../../domain/types/money';
 import type { Signal } from '../../../domain/types/signal';
 import type { Position } from '../../../domain/types/portfolio';
@@ -62,6 +65,17 @@ export class HaltCoordinatorService {
     @Inject(POSITION_SIZER) private readonly sizer: PositionSizerPort,
     @Inject(FEED_HEALTH) private readonly feed: FeedHealthPort,
     @Inject(EXEC_FILTERS) private readonly filters: ExecFilters,
+    // Push 3 P7f fix 7a: the perp algo-rail cancel seam, mirroring ProtectiveExitService.fire()'s
+    // own @Optional PLAN_STOP_REGISTRY/EXCHANGE_PORT pair — @Optional so every pre-existing
+    // direct-construction unit test keeps constructing without them. Absent (no registry wired, or
+    // a spot-only deployment whose adapter lacks cancelAlgoOrder) makes the algo-cancel below a
+    // no-op, byte-identical to pre-fix behavior.
+    @Optional()
+    @Inject(PLAN_STOP_REGISTRY)
+    private readonly planStops?: PlanStopRegistryPort,
+    @Optional()
+    @Inject(EXCHANGE_PORT)
+    private readonly exchange?: Pick<ExchangePort, 'cancelAlgoOrder'>,
   ) {}
 
   async tick(now: EpochMs): Promise<void> {
@@ -83,6 +97,7 @@ export class HaltCoordinatorService {
     if (!this.cancelAllIssued) {
       this.cancelAllIssued = true;
       this.haltingSince = now;
+      await this.cancelRestingAlgoStops(); // best-effort, WITH the regular-rail flatten below
       await this.gate.flattenAll('HALT'); // cancel every known open order
     }
     if (this.portfolio.snapshot().openOrders.length === 0) {
@@ -91,6 +106,33 @@ export class HaltCoordinatorService {
     } else if (this.haltingSince !== undefined && now - this.haltingSince >= CANCEL_TIMEOUT_MS) {
       this.killSwitch.cancelTimeout(); // → HALTED_DEGRADED + page
       this.resetEpisode();
+    }
+  }
+
+  // Push 3 P7f fix 7a: a resting perp algo-rail stop (STOP_MARKET) is invisible to
+  // gate.flattenAll()/portfolio.snapshot().openOrders (fix 1 keeps it off the regular-rail set by
+  // design), so the HALT drain above would otherwise never touch it — stranding it resting through
+  // a halt. Best-effort AWAITED cancel of every registry entry carrying an algoId, mirroring
+  // ProtectiveExitService.fire()'s own algo-cancel: a failed/timed-out cancel here must NEVER block
+  // the flatten (this is a risk-REDUCING drain; refusing to proceed because best-effort cleanup
+  // failed would defeat its purpose). A stray resting stop left behind self-heals — its own
+  // eventual fill attempt reduce-only-rejects once the flatten below empties the position (never a
+  // duplicate reduction). Symbol comes from the portfolio snapshot's OWN position map (keyed by the
+  // SAME positionKey the registry uses), never parsed out of the registry key string — the key's
+  // symbol segment can itself contain colons (perp settle-suffix symbols, e.g. "BTC/USDT:USDT").
+  private async cancelRestingAlgoStops(): Promise<void> {
+    if (!this.planStops || !this.exchange?.cancelAlgoOrder) return;
+    const positions = this.portfolio.snapshot().positions;
+    for (const [key, stop] of this.planStops.entries()) {
+      if (stop.algoId === undefined) continue;
+      const pos = positions.get(key);
+      if (pos === undefined) continue; // registry entry stale/foreign to this snapshot — no symbol to cancel against
+      try {
+        await this.exchange.cancelAlgoOrder(stop.algoId, pos.symbol);
+      } catch {
+        // Fail-safe direction: proceed to the regular-rail flatten regardless — see this method's
+        // own header comment.
+      }
     }
   }
 

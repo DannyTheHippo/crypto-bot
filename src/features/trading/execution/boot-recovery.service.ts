@@ -8,6 +8,7 @@ import {
   type OrderRecord,
   type OrderState,
 } from '../../../domain/oms/reducer';
+import { isAlgoRailIntent } from '../../../domain/oms/reconcile';
 import { PortfolioStateService } from './portfolio-state.service';
 import { OrderBookService } from './order-book.service';
 import { CrashRecoveryService } from './crash-recovery.service';
@@ -80,12 +81,28 @@ export class BootRecoveryService {
       // 2026-07-11 stranded RECONCILE_REQUIRED order) — terminal orders never register open.
       if (TERMINAL_ORDER_STATES.has(record.state)) continue;
       if (VENUE_CONFIRMED_OPEN.has(record.state)) {
-        this.portfolio.openOrder(o.strategyId, o.summary);
-        registered += 1;
-        // Restore the write-ahead intent alongside the order (the persisted pair, §6.2): fill
-        // application, the unknown-resolver's query loop, and Risk's E1 in-flight clamp all read
-        // the in-memory intent — recovering the order without it left later fills journaled but
-        // never applied to position/cash (2026-07-11: an unmanaged 6.9-LINK position).
+        // Push 3 P7f fix 3: mirrors execution-gate.service.ts's own fix 1 (same isAlgoRailIntent
+        // predicate) — a crash-recovered algo-rail order must not resurrect into the regular
+        // open-orders set either, or it pollutes CANCEL_OPEN's target scan and reconciliation's
+        // venue-truth sweep exactly like a freshly-placed one would (fix 1's own comment explains
+        // the false CANCEL_UNKNOWN → RECONCILE_REQUIRED freeze this prevents). Classifiable only
+        // off the recovered INTENT (triggerPrice + venue) — the persisted OpenOrderSummary alone
+        // carries neither, so a null intent (row missing/corrupt) falls back to the pre-fix
+        // behavior: register it regular-rail rather than silently drop it from both. The algo
+        // rail's own boot truth lives in AgenticStrategy's plan-stop registry (re-armed from the
+        // model's next 'hold'+plan proposal) plus manageVenueStopPerp's fetchOpenAlgoOrders
+        // reconcile scan and HaltCoordinatorService's own registry sweep (Push 3 P7f fix 7) — never
+        // here, which only ever restores the regular-rail book.
+        const algoRail = o.intent !== null && isAlgoRailIntent(o.intent);
+        if (!algoRail) {
+          this.portfolio.openOrder(o.strategyId, o.summary);
+          registered += 1;
+        }
+        // Restore the write-ahead intent alongside the order (the persisted pair, §6.2) regardless
+        // of rail: fill application, the unknown-resolver's query loop (both rails, fix 2), and
+        // Risk's E1 in-flight clamp all read the in-memory intent — recovering the order without it
+        // left later fills journaled but never applied to position/cash (2026-07-11: an unmanaged
+        // 6.9-LINK position).
         if (o.intent !== null) {
           this.portfolio.addInFlight(o.intent);
           rehydrated += 1;

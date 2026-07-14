@@ -524,6 +524,25 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
       venueStopResting: false, // placed, not yet confirmed resting (no ack observed this bar)
     });
   });
+
+  // Push 3 P7f fix 6 regression: a transient intent-store throw while classifying the resting SELL
+  // must skip placement this bar (fail toward no-op), never read as "nothing resting" and place a
+  // DUPLICATE stop next to the one already resting.
+  it('fix 6: an intent-store throw during SPOT reconcile skips placement this bar (no duplicate stop)', async () => {
+    const client = new PlanningClient();
+    const throwingStore: Pick<ExecutionStorePort, 'loadIntentByClientOrderId'> = {
+      loadIntentByClientOrderId: () => Promise.reject(new Error('db down')),
+    };
+    const strategy = new AgenticStrategy(SID, makeParams(), client, {
+      intentStore: throwingStore,
+    });
+    await strategy.decide(buildInput(0));
+    await strategy.decide(buildInput(1, { position: longPosition('100') })); // placed
+    const out = await strategy.decide(
+      buildInput(2, { position: longPosition('100'), openOrders: [restingSell('97.51')] }),
+    );
+    expect(out).toEqual([]); // skipped, NOT a second 'placed' RESTING_STOP signal
+  });
 });
 
 describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE_STOP) — PERP (unit-mocked adapter)', () => {
@@ -611,7 +630,10 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
       algoOrders: {
         fetchOpenAlgoOrders: () => {
           fetchCalls += 1;
-          return Promise.resolve(fetchCalls === 1 ? [] : [resting]);
+          // Push 3 P7f fix 7b: bar 0 (no active plan yet) now also runs the orphaned-algo-stop
+          // boot check, consuming call #1 (harmlessly — nothing resting, FLAT). manageVenueStopPerp's
+          // own placement scan is therefore call #2 ("placed" bar), reconcile is call #3 ("drift" bar).
+          return Promise.resolve(fetchCalls <= 2 ? [] : [resting]);
         },
         cancelAlgoOrder: (algoId, symbol) => {
           cancelled.push({ algoId, symbol: String(symbol) });
@@ -739,7 +761,11 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
       algoOrders: {
         fetchOpenAlgoOrders: () => {
           fetchCalls += 1;
-          return Promise.resolve([resting]);
+          // Push 3 P7f fix 7b: bar 0 (no active plan yet, FLAT) also runs the orphaned-algo-stop
+          // boot check first — it must see nothing resting yet (call #1) so it does not cancel this
+          // fixture's order a bar early; the fallback lookup inside cancelPerpAlgoStopIfResting is
+          // the real call #2, which is when this test intends the resting order to first appear.
+          return Promise.resolve(fetchCalls === 1 ? [] : [resting]);
         },
         cancelAlgoOrder: (algoId) => {
           cancelled.push(algoId);
@@ -755,5 +781,180 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
     expect(out).toHaveLength(1); // no CANCEL_OPEN Signal on the algo rail — exit only
     expect(out[0]!.kind).toBe('EXIT_LONG');
     expect(out[0]!.reason).toBe('plan exit: max_hold');
+  });
+
+  // Push 3 P7f fix 5 regression: the SAME on-demand fallback scenario as above, but
+  // fetchOpenAlgoOrders REJECTS instead of resolving. Before the fix, that throw propagated out of
+  // cancelPerpAlgoStopIfResting (the only call in that method not under try/catch), past the
+  // already-torn-down plan (clearPlan() runs before the cancel-first block), losing the exit Signal
+  // entirely — a naked position with no crossed exit and no resting stop. The fix wraps the fallback
+  // lookup so this method can never throw; the timed-out (max_hold) exit must still return exactly
+  // one EXIT signal after the (failed, swallowed) cancel attempt.
+  it('fix 5: a max_hold exit still emits exactly one EXIT signal when the fallback fetchOpenAlgoOrders lookup rejects', async () => {
+    const shortPlan: AgentPlan = { ...PLAN, maxHoldBars: 1 };
+    class ShortPlanClient implements AgentClientPort {
+      calls = 0;
+      propose(input: AgentDecisionInput): Promise<AgentProposal> {
+        this.calls += 1;
+        const signal: Signal = {
+          strategyId: SID,
+          venue: PERP_V,
+          symbol: PERP_SYM,
+          kind: 'ENTER_LONG',
+          strength: 0.8,
+          refPrice: price('100'),
+          basedOnSeq: 1n,
+          eventTime: input.snapshot.eventTime,
+          ttlMs: 120_000,
+          dedupeKey: `k${this.calls}`,
+          reason: 'r',
+        };
+        return Promise.resolve({
+          signals: [signal],
+          decision: { action: 'long', confidence: 0.8, rationale: 'r' },
+          plan: shortPlan,
+        });
+      }
+    }
+    const client = new ShortPlanClient();
+    const registry = planStopRegistry();
+    const strategy = new AgenticStrategy(SID, perpParams(), client, {
+      algoOrders: {
+        fetchOpenAlgoOrders: () => Promise.reject(new Error('network down')),
+      },
+      planStopRegistry: registry,
+    });
+    await strategy.decide(perpInput(0));
+    const out = await strategy.decide(perpInput(1, { position: perpLongPosition('100') }));
+    expect(out).toHaveLength(1); // the exit Signal was NOT dropped by the rejected fallback lookup
+    expect(out[0]!.kind).toBe('EXIT_LONG');
+    expect(out[0]!.reason).toBe('plan exit: max_hold');
+  });
+
+  // Push 3 P7f fix 6 regression: a transient intent-store throw while classifying a candidate must
+  // read as "cannot tell" (skip placement this bar), never as "nothing resting" (which would place a
+  // DUPLICATE stop next to one already resting server-side).
+  it('fix 6: an intent-store throw during PERP reconcile skips placement this bar (no duplicate stop)', async () => {
+    const resting = algoOrder('98');
+    const throwingStore: Pick<ExecutionStorePort, 'loadIntentByClientOrderId'> = {
+      loadIntentByClientOrderId: () => Promise.reject(new Error('db down')),
+    };
+    let fetchCalls = 0;
+    const client = new PlanningClient();
+    const strategy = new AgenticStrategy(SID, perpParams(), client, {
+      intentStore: throwingStore,
+      algoOrders: {
+        fetchOpenAlgoOrders: () => {
+          fetchCalls += 1;
+          return Promise.resolve(fetchCalls === 1 ? [] : [resting]);
+        },
+      },
+    });
+    await strategy.decide(perpInput(0));
+    await strategy.decide(perpInput(1, { position: perpLongPosition('100') })); // placed
+    const out = await strategy.decide(perpInput(2, { position: perpLongPosition('100') })); // reconcile bar — store throws
+    expect(out).toEqual([]); // skipped, NOT a second 'placed' signal
+  });
+});
+
+// Push 3 P7f fix 7b: process-restart (or any bar with no in-memory activePlan) can strand a
+// resting perp algo stop — nothing in the normal reconcile flow scans for it while activePlan is
+// null. Both branches are unit-mocked here: re-adopt (a real position still needs the stop) and
+// cancel-if-flat (the position it protected is already gone).
+describe('AgenticStrategy — orphaned perp algo stop reconcile on boot/no-active-plan (fix 7b)', () => {
+  function perpParams(overrides: Partial<AgenticStrategyParams> = {}): AgenticStrategyParams {
+    return {
+      symbol: PERP_SYM,
+      venue: PERP_V,
+      interval: '15m',
+      warmupBars: 5,
+      model: 'test-model',
+      planMode: true,
+      planMaxQuietBars: 20,
+      venueStopEnabled: true,
+      ...overrides,
+    };
+  }
+
+  // Never attaches a plan — activePlan stays null across every decide() call, mirroring a restart
+  // that wiped in-memory plan state but hasn't yet had the model re-attach one.
+  class NoPlanClient implements AgentClientPort {
+    propose(): Promise<AgentProposal> {
+      return Promise.resolve({
+        signals: [],
+        decision: { action: 'hold', confidence: 0.5, rationale: 'r' },
+      });
+    }
+  }
+
+  it('branch (a) re-adopts a lane-owned resting stop into the registry when the position is LONG/SHORT', async () => {
+    const resting = algoOrder('97'); // the venue's OWN resting trigger — adopted verbatim
+    const registry = planStopRegistry();
+    const strategy = new AgenticStrategy(SID, perpParams(), new NoPlanClient(), {
+      intentStore: roledIntentStore(new Map([[resting.clientAlgoId!, 'vsl']])),
+      algoOrders: { fetchOpenAlgoOrders: () => Promise.resolve([resting]) },
+      planStopRegistry: registry,
+    });
+    await strategy.decide(
+      buildInput(0, {
+        position: longPosition('100', PERP_SYM, PERP_V),
+        symbol: PERP_SYM,
+        venue: PERP_V,
+      }),
+    );
+    expect(registry.get(PERP_REG_KEY)).toEqual({
+      side: 'LONG',
+      stopPrice: '97',
+      venueStopResting: true,
+      algoId: resting.algoId,
+    });
+  });
+
+  it('branch (b) cancels the orphan when the position is FLAT (nothing left to protect)', async () => {
+    const resting = algoOrder('97');
+    const cancelled: string[] = [];
+    const registry = planStopRegistry();
+    const strategy = new AgenticStrategy(SID, perpParams(), new NoPlanClient(), {
+      intentStore: roledIntentStore(new Map([[resting.clientAlgoId!, 'vsl']])),
+      algoOrders: {
+        fetchOpenAlgoOrders: () => Promise.resolve([resting]),
+        cancelAlgoOrder: (algoId) => {
+          cancelled.push(algoId);
+          return Promise.resolve();
+        },
+      },
+      planStopRegistry: registry,
+    });
+    await strategy.decide(buildInput(0, { symbol: PERP_SYM, venue: PERP_V })); // no position ⇒ FLAT
+    expect(cancelled).toEqual([resting.algoId]);
+    expect(registry.get(PERP_REG_KEY)).toBeUndefined(); // never adopted — nothing to protect
+  });
+
+  it('no-ops once the registry already holds an entry for this key (avoids re-scanning every flat bar)', async () => {
+    const resting = algoOrder('97');
+    let fetchCalls = 0;
+    const registry = planStopRegistry(
+      new Map([
+        [PERP_REG_KEY, { side: 'LONG', stopPrice: '97', venueStopResting: true, algoId: 'cached' }],
+      ]),
+    );
+    const strategy = new AgenticStrategy(SID, perpParams(), new NoPlanClient(), {
+      intentStore: roledIntentStore(new Map([[resting.clientAlgoId!, 'vsl']])),
+      algoOrders: {
+        fetchOpenAlgoOrders: () => {
+          fetchCalls += 1;
+          return Promise.resolve([resting]);
+        },
+      },
+      planStopRegistry: registry,
+    });
+    await strategy.decide(
+      buildInput(0, {
+        position: longPosition('100', PERP_SYM, PERP_V),
+        symbol: PERP_SYM,
+        venue: PERP_V,
+      }),
+    );
+    expect(fetchCalls).toBe(0); // already-adopted guard short-circuits before the venue call
   });
 });

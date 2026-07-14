@@ -11,12 +11,13 @@ import {
   AdapterError,
   type ExchangePort,
   type ExchangeOrderState,
+  type AlgoOrderState,
   type VenueFill,
 } from '../../../src/ports/exchange';
 import type { KillSwitchPort } from '../../../src/ports/risk';
-import { epochMs } from '../../../src/domain/types/ids';
+import { epochMs, venueId } from '../../../src/domain/types/ids';
 import { makeIntent, fixedFeed, killSwitchStub, SYM, V, T } from './helpers';
-import { qty } from '../../../src/domain/types/money';
+import { qty, price } from '../../../src/domain/types/money';
 import type { OrderIntent } from '../../../src/domain/types/order-intent';
 
 const QUOTE = '0.001'; // step size used in tests
@@ -35,7 +36,16 @@ function venueState(over: Partial<ExchangeOrderState> = {}): ExchangeOrderState 
   };
 }
 
-function build(opts: { fetch?: FetchBehavior; trades?: VenueFill[]; tradesThrow?: boolean } = {}) {
+function build(
+  opts: {
+    fetch?: FetchBehavior;
+    trades?: VenueFill[];
+    tradesThrow?: boolean;
+    // Push 3 P7f fix 2: opt-in fetchOpenAlgoOrders — absent means the adapter lacks the method
+    // entirely (spot/paper), exactly the "treat as NOT FOUND" fallback fix 2's own comment covers.
+    fetchOpenAlgoOrders?: () => Promise<AlgoOrderState[]>;
+  } = {},
+) {
   let nowMs = T;
   const clock = { now: () => epochMs(nowMs) };
   const setNow = (t: number) => {
@@ -86,6 +96,7 @@ function build(opts: { fetch?: FetchBehavior; trades?: VenueFill[]; tradesThrow?
         ? Promise.reject(ambiguous('RequestTimeout'))
         : Promise.resolve(opts.trades ?? []),
     validateCredentials: () => Promise.reject(new Error('unused')),
+    ...(opts.fetchOpenAlgoOrders ? { fetchOpenAlgoOrders: opts.fetchOpenAlgoOrders } : {}),
   };
 
   const resolver = new UnknownResolverService(
@@ -422,5 +433,102 @@ describe('UnknownResolverService — backfill edge cases', () => {
     await settle(ctx);
     expect(ctx.orders.get(coid)?.state).toBe('SUBMIT_UNKNOWN'); // fold skipped — journal said duplicate
     expect(ctx.resolver.trackedCount()).toBe(0); // but still untracked (resolution attempted)
+  });
+});
+
+// Push 3 P7f fix 2: an algo-rail SUBMIT_UNKNOWN is resolved off fetchOpenAlgoOrders, never
+// fetchOrder (the regular rail, which 404s for a perp STOP_MARKET).
+function algoIntent(over: Partial<OrderIntent> = {}): OrderIntent {
+  return makeIntent({
+    venue: venueId('binanceusdm'),
+    type: 'STOP_MARKET',
+    triggerPrice: price('90'),
+    ...over,
+  });
+}
+
+describe('UnknownResolverService — algo-rail SUBMIT_UNKNOWN resolution (fix 2)', () => {
+  it('never calls fetchOrder (the regular rail) for an algo-rail intent', async () => {
+    let fetchOrderCalls = 0;
+    const ctx = build({
+      fetch: () => {
+        fetchOrderCalls += 1;
+        return venueState({ status: 'open' });
+      },
+      fetchOpenAlgoOrders: () => Promise.resolve([]),
+    });
+    seedUnknown(ctx, 'submit', algoIntent());
+    await settle(ctx);
+    expect(fetchOrderCalls).toBe(0);
+  });
+
+  it('FOUND on fetchOpenAlgoOrders (matching clientAlgoId) folds the ACK and stops tracking', async () => {
+    const intent = algoIntent();
+    const coid = intent.clientOrderId;
+    const ctx = build({
+      fetchOpenAlgoOrders: () =>
+        Promise.resolve([
+          {
+            algoId: 'venue-algo-1',
+            clientAlgoId: String(coid),
+            symbol: SYM,
+            side: 'SELL',
+            type: 'STOP_MARKET',
+            qty: '1',
+            triggerPrice: '90',
+            status: 'NEW',
+            reduceOnly: true,
+          },
+        ]),
+    });
+    seedUnknown(ctx, 'submit', intent);
+    await settle(ctx);
+    expect(ctx.orders.get(coid)?.state).toBe('ACKED');
+    expect(ctx.orders.get(coid)?.venueOrderId).toBe('venue-algo-1');
+    expect(ctx.resolver.trackedCount()).toBe(0);
+  });
+
+  it('NOT FOUND proves nothing — stays pending indefinitely, never freezes to RECONCILE_REQUIRED', async () => {
+    const intent = algoIntent();
+    const coid = intent.clientOrderId;
+    const ctx = build({ fetchOpenAlgoOrders: () => Promise.resolve([]) });
+    seedUnknown(ctx, 'submit', intent);
+    await register(ctx);
+    await polls(ctx, 10); // far past MAX_QUERY_ATTEMPTS (5) — the regular rail would have frozen by now
+    expect(ctx.orders.get(coid)?.state).toBe('SUBMIT_UNKNOWN'); // never resolved, never fabricated
+    expect(ctx.resolver.trackedCount()).toBe(1); // still tracked
+    expect(ctx.resolver.isFrozen(SYM)).toBe(false); // no false RECONCILE_REQUIRED freeze
+  });
+
+  it('an adapter that lacks fetchOpenAlgoOrders (spot/paper) is treated identically to NOT FOUND', async () => {
+    const intent = algoIntent();
+    const coid = intent.clientOrderId;
+    const ctx = build(); // no fetchOpenAlgoOrders wired at all
+    seedUnknown(ctx, 'submit', intent);
+    await settle(ctx);
+    expect(ctx.orders.get(coid)?.state).toBe('SUBMIT_UNKNOWN');
+    expect(ctx.resolver.trackedCount()).toBe(1);
+  });
+
+  it('a query failure on fetchOpenAlgoOrders defers (transient), never freezes', async () => {
+    const intent = algoIntent();
+    const coid = intent.clientOrderId;
+    const ctx = build({
+      fetchOpenAlgoOrders: () => Promise.reject(new Error('network down')),
+    });
+    seedUnknown(ctx, 'submit', intent);
+    await register(ctx);
+    await polls(ctx, 10);
+    expect(ctx.orders.get(coid)?.state).toBe('SUBMIT_UNKNOWN');
+    expect(ctx.resolver.isFrozen(SYM)).toBe(false);
+  });
+
+  it('the rule-5 60s kill-switch watchdog still escalates for an unresolved algo-rail unknown', async () => {
+    const ctx = build({ fetchOpenAlgoOrders: () => Promise.resolve([]) });
+    seedUnknown(ctx, 'submit', algoIntent());
+    await settle(ctx);
+    await ctx.resolver.tick(epochMs(T + 61_000));
+    const sixtySec = ctx.kills.filter((k) => k.reason === 'UNKNOWN_UNRESOLVED_60S');
+    expect(sixtySec).toHaveLength(1);
   });
 });

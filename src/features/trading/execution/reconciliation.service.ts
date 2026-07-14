@@ -180,6 +180,19 @@ export class ReconciliationService {
   // used to abort the whole pass before any row/counter was written. Cost of the per-symbol sweep:
   // FOREIGN orders on symbols outside the sweep set are no longer observed — acceptable, they were
   // WARN-only and the sweep set covers everything the bot trades or holds.
+  //
+  // Push 3 P7f fix 3: this whole axis is REGULAR-RAIL ONLY by construction, not by an explicit
+  // filter here — `venueOpen` comes from fetchOpenOrders (which never returns an algo/conditional
+  // order; that rail is fetchOpenAlgoOrders, a separate primitive) and `localOpen` comes from
+  // portfolio.snapshot().openOrders, which execution-gate.service.ts's own fix 1 and
+  // boot-recovery.service.ts's fix 3 both keep free of algo-rail orders (isAlgoRailIntent-gated at
+  // their own registration sites). So neither `adoptTerminal`'s per-order fetchOrder query (never
+  // sees an algo clientOrderId — no adopt_query_failure spam off this axis) nor UNKNOWN_OURS/
+  // FOREIGN classification ever has an algo order to misclassify. A venue-side algo cancel/expiry
+  // is the STRATEGY's own reconcile concern (AgenticStrategy.manageVenueStopPerp's
+  // fetchOpenAlgoOrders scan, plus HaltCoordinatorService's registry sweep — Push 3 P7f fix 7),
+  // never this service's — the algo rail's boot truth lives there, not in this axis or in
+  // boot-recovery's regular-rail restore.
   private async reconcileOpenOrders(acc: PassAccumulator): Promise<void> {
     const venueOpen: ExchangeOrderState[] = [];
     const failedSymbols = new Set<SymbolId>();

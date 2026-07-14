@@ -9,19 +9,39 @@ import { CrossingRegistryService } from '../../../src/features/trading/risk/cros
 import { PositionSizerService } from '../../../src/features/trading/risk/position-sizer.service';
 import { RiskEngineService } from '../../../src/features/trading/risk/risk-engine.service';
 import type { ExecutionGatePort, ExecFilters, SubmitAck } from '../../../src/ports/execution';
-import type { RiskEnginePort } from '../../../src/ports/risk';
+import type { RiskEnginePort, PlanStop, PlanStopRegistryPort } from '../../../src/ports/risk';
+import type { ExchangePort } from '../../../src/ports/exchange';
 import type { RiskApprovedIntent } from '../../../src/domain/types/risk-decision';
 import type { SymbolFilters } from '../../../src/domain/risk/evaluate';
 import type { FeedHealthPort } from '../../../src/ports/market-data';
 import { price, qty } from '../../../src/domain/types/money';
-import { epochMs, symbolId } from '../../../src/domain/types/ids';
+import { epochMs, symbolId, strategyId, venueId } from '../../../src/domain/types/ids';
+import { positionKey } from '../../../src/domain/risk/evaluate';
 import { makeIntent, makeFill, SYM, T } from './helpers';
+
+// Minimal in-memory PlanStopRegistryPort fake for the fix-7a algo-cancel tests below.
+function fakePlanStops(seed: ReadonlyMap<string, PlanStop> = new Map()): PlanStopRegistryPort {
+  const store = new Map(seed);
+  return {
+    set: (key, stop) => store.set(key, stop),
+    clear: (key) => store.delete(key),
+    get: (key) => store.get(key),
+    entries: () => store,
+  };
+}
 
 const FILTERS: ExecFilters = new Map<string, SymbolFilters>([
   [String(SYM), { tickSize: '0.01', stepSize: '0.001', minQty: '0.001', minNotional: '5' }],
 ]);
 
-function build(opts: { mark?: string | null; engine?: RiskEnginePort } = {}) {
+function build(
+  opts: {
+    mark?: string | null;
+    engine?: RiskEnginePort;
+    planStops?: PlanStopRegistryPort;
+    exchange?: Pick<ExchangePort, 'cancelAlgoOrder'>;
+  } = {},
+) {
   let nowMs = T;
   const clock = { now: () => epochMs(nowMs) };
   const setNow = (t: number) => {
@@ -112,6 +132,8 @@ function build(opts: { mark?: string | null; engine?: RiskEnginePort } = {}) {
     sizer,
     feed,
     FILTERS,
+    opts.planStops,
+    opts.exchange,
   );
   return { clock, setNow, killSwitch, portfolio, coord, submits, flattenAllReasons };
 }
@@ -335,6 +357,93 @@ describe('HaltCoordinatorService — FLATTENING', () => {
     await ctx.coord.tick(epochMs(T + 200)); // flattens the position created during HALTING
     expect(ctx.submits).toHaveLength(1);
     expect(ctx.submits[0]!.intent.side).toBe('SELL');
+  });
+});
+
+// Push 3 P7f fix 7a: a resting perp algo-rail stop is invisible to gate.flattenAll()/openOrders
+// (fix 1 keeps it off the regular-rail set), so the HALT drain must separately best-effort cancel
+// any registry entry carrying an algoId, WITH the regular-rail flatten, never blocking on failure.
+describe('HaltCoordinatorService — HALTING algo-rail stop cancel (fix 7a)', () => {
+  const KEY = positionKey(strategyId('s1'), venueId('binance'), SYM);
+
+  it('best-effort cancels a registry-tracked algo stop alongside the regular-rail flatten', async () => {
+    const cancelCalls: [string, string][] = [];
+    const planStops = fakePlanStops(
+      new Map([
+        [
+          KEY,
+          {
+            side: 'LONG',
+            stopPrice: '95',
+            venueStopResting: true,
+            algoId: 'algo-1',
+          } satisfies PlanStop,
+        ],
+      ]),
+    );
+    const exchange: Pick<ExchangePort, 'cancelAlgoOrder'> = {
+      cancelAlgoOrder: (algoId, symbol) => {
+        cancelCalls.push([algoId, String(symbol)]);
+        return Promise.resolve();
+      },
+    };
+    const ctx = build({ planStops, exchange });
+    seedPosition(ctx, '2'); // position must exist under KEY for the symbol lookup to resolve
+    ctx.killSwitch.engage('anomaly', false); // HALTING
+    await ctx.coord.tick(epochMs(T));
+    expect(cancelCalls).toEqual([['algo-1', String(SYM)]]);
+    expect(ctx.flattenAllReasons).toEqual(['HALT']); // regular-rail flatten still ran
+  });
+
+  it('a failed algo cancel never blocks the regular-rail flatten (fail-safe)', async () => {
+    const planStops = fakePlanStops(
+      new Map([
+        [
+          KEY,
+          {
+            side: 'LONG',
+            stopPrice: '95',
+            venueStopResting: true,
+            algoId: 'algo-1',
+          } satisfies PlanStop,
+        ],
+      ]),
+    );
+    const exchange: Pick<ExchangePort, 'cancelAlgoOrder'> = {
+      cancelAlgoOrder: () => Promise.reject(new Error('venue down')),
+    };
+    const ctx = build({ planStops, exchange });
+    seedPosition(ctx, '2');
+    ctx.killSwitch.engage('anomaly', false);
+    await expect(ctx.coord.tick(epochMs(T))).resolves.toBeUndefined();
+    expect(ctx.flattenAllReasons).toEqual(['HALT']);
+  });
+
+  it('skips registry entries with no algoId (spot vsl — nothing to cancel here)', async () => {
+    const cancelCalls: string[] = [];
+    const planStops = fakePlanStops(
+      new Map([
+        [KEY, { side: 'LONG', stopPrice: '95', venueStopResting: false } satisfies PlanStop],
+      ]),
+    );
+    const exchange: Pick<ExchangePort, 'cancelAlgoOrder'> = {
+      cancelAlgoOrder: (algoId) => {
+        cancelCalls.push(algoId);
+        return Promise.resolve();
+      },
+    };
+    const ctx = build({ planStops, exchange });
+    seedPosition(ctx, '2');
+    ctx.killSwitch.engage('anomaly', false);
+    await ctx.coord.tick(epochMs(T));
+    expect(cancelCalls).toHaveLength(0);
+  });
+
+  it('no-ops (byte-identical) when neither planStops nor exchange is wired', async () => {
+    const ctx = build(); // no planStops/exchange — pre-fix construction shape
+    ctx.killSwitch.engage('anomaly', false);
+    await expect(ctx.coord.tick(epochMs(T))).resolves.toBeUndefined();
+    expect(ctx.flattenAllReasons).toEqual(['HALT']);
   });
 });
 

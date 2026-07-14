@@ -34,6 +34,10 @@ export interface AgentDecisionInsert {
   planJson?: AgentPlan | null;
   // See AgentDecisionEntry.consultId — the batch join key; absent and null both insert as NULL.
   consultId?: string | null;
+  // See AgentDecisionEntry.infoArm/thinkingArm — A/B treatment truth; absent and null both insert
+  // as NULL.
+  infoArm?: boolean | null;
+  thinkingArm?: boolean | null;
 }
 
 export type AgentDecisionDbRow = typeof schema.agentDecisions.$inferSelect;

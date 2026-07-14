@@ -455,6 +455,33 @@ describe('AnthropicAgentClient.proposeBatch', () => {
     expect(solId).toBe(btcId);
   });
 
+  it('stamps infoArm/thinkingArm (treatment truth, migration 0012) on every batch proposal — resolved, degraded, and missing-symbol alike', async () => {
+    const fetchFn = vi.fn();
+    const client = new AnthropicAgentClient(buildCfg(), fetchFn);
+    fetchFn.mockResolvedValue(
+      apiResponse(
+        portfolioBody([
+          { symbol: 'BTC/USDT', action: 'long', confidence: 0.8, rationale: 'r' },
+          { symbol: 'ETH/USDT', action: 'moon', confidence: 0.5, rationale: 'r' },
+        ]),
+      ),
+    );
+
+    const result = await client.proposeBatch([
+      buildInput('BTC/USDT', 'agentic-1'),
+      buildInput('ETH/USDT', 'agentic-2'),
+      buildInput('SOL/USDT', 'agentic-3'),
+    ]);
+
+    for (const symbol of ['BTC/USDT', 'ETH/USDT', 'SOL/USDT']) {
+      const p = result.proposals.get(symbol);
+      // Both pcts default 0 in buildCfg ⇒ info treatment (bundle present: control arm never
+      // assigned) and thinking off — the stamps must still be concrete booleans, never undefined.
+      expect(p?.infoArm, `${symbol} infoArm`).toBe(true);
+      expect(p?.thinkingArm, `${symbol} thinkingArm`).toBe(false);
+    }
+  });
+
   it('a malformed element degrades ONLY that symbol to an empty proposal + warn, other symbols unaffected', async () => {
     const fetchFn = vi.fn();
     const warn = vi.fn();

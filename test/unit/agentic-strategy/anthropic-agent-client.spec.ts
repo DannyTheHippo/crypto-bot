@@ -629,6 +629,24 @@ describe('AnthropicAgentClient', () => {
       expect(warn).toHaveBeenCalled();
     });
 
+    it('stamps infoArm/thinkingArm on a soft-hold (refusal) proposal — a call WAS attempted, so the arm truth is real even though the response was unusable', async () => {
+      const fetchFn = vi.fn();
+      const client = new AnthropicAgentClient(buildCfg(), fetchFn);
+      fetchFn.mockResolvedValue(apiResponse({ stop_reason: 'refusal', content: [] }));
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+      });
+
+      const proposal = await client.propose(input);
+
+      // Default buildCfg() runs no info-context/thinking A/B: no feed enabled means the control arm
+      // never fires (infoArm = !infoContextControlArm = true), and thinkingAbPct is unset (thinkingArm
+      // = false) — see anthropic-agent-client.ts's prepareDecideContext.
+      expect(proposal.infoArm).toBe(true);
+      expect(proposal.thinkingArm).toBe(false);
+    });
+
     it.each([
       {
         label: 'no submit_decision tool_use block in the response',
@@ -2121,6 +2139,9 @@ describe('AnthropicAgentClient', () => {
       const body = JSON.parse(init.body as string) as { system: { text: string }[] };
       expect(body.system[0]!.text).not.toContain('derivatives block');
       expect(JSON.parse(proposal.inputPayload!)).not.toHaveProperty('derivatives');
+      // Push 3 P8a-prep: infoArm is infoContextControlArm's negation — control fires here, so
+      // infoArm (bundle PRESENT truth) reads false.
+      expect(proposal.infoArm).toBe(false);
     });
 
     it('treatment arm: derivatives sentence, +d1 promptHash tag, and derivatives payload key all present', async () => {
@@ -2161,6 +2182,8 @@ describe('AnthropicAgentClient', () => {
         openInterest: derivatives.openInterest,
         basisBps: derivatives.basisBps,
       });
+      // Push 3 P8a-prep: control did NOT fire here, so infoArm (bundle PRESENT truth) reads true.
+      expect(proposal.infoArm).toBe(true);
     });
 
     it('is deterministic within the same UTC-minute bucket, regardless of the exact millisecond', async () => {
@@ -2837,6 +2860,10 @@ describe('AnthropicAgentClient', () => {
         // a hash for an otherwise-identical decision.
         expect(armProposal.promptHash).toBeDefined();
         expect(armProposal.promptHash).not.toBe(offProposal.promptHash);
+        // Push 3 P8a-prep: thinkingArm passes ctx.thinkingArm through unchanged (already
+        // treatment-truth polarity — no negation, unlike infoArm).
+        expect(armProposal.thinkingArm).toBe(true);
+        expect(offProposal.thinkingArm).toBe(false);
       } finally {
         vi.useRealTimers();
       }

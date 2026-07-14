@@ -50,6 +50,8 @@ export class AgentDecisionJournalAdapter implements AgentDecisionJournalPort {
       inputPayload: entry.inputPayload,
       planJson: entry.plan ?? null,
       consultId: entry.consultId ?? null,
+      infoArm: entry.infoArm ?? null,
+      thinkingArm: entry.thinkingArm ?? null,
     };
     void this.repo.insert(row).catch((err: unknown) => {
       this.log.error(`agent_decisions insert failed: ${String(err)}`);
@@ -81,6 +83,8 @@ export class AgentDecisionJournalAdapter implements AgentDecisionJournalPort {
       inputPayload: r.inputPayload,
       plan: r.planJson,
       consultId: r.consultId,
+      infoArm: r.infoArm,
+      thinkingArm: r.thinkingArm,
       id: String(r.id),
       createdAt: r.createdAt.getTime() as EpochMs,
     }));

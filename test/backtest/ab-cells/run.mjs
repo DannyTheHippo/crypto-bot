@@ -13,47 +13,58 @@
 //     2026-07-13, commit eff1d95).
 //
 // METHOD — read this before trusting a cell:
-//   info-context arm: PAYLOAD-BASED (deterministic, preferred per task brief over hash-guessing). A
-//   prompt_hash GROUP is classified 'treatment' if ANY row in the group carries a derivatives/
-//   crossSymbol/tradeFlow/positioning key in its input_payload JSON (the four move together under
-//   one control arm), 'control' otherwise. Caveat: a group can under-count as 'control' if every
-//   feed happened to be stale on every row in that group despite running the treatment arm — this
-//   script cannot distinguish "arm stripped it" from "feed never had fresh data" for an all-empty
-//   group; it is reported as 'control' either way (documented, not silently assumed correct).
+//   arm resolution (v2, Push 3 P8a-prep): PER ROW, explicit-first. agent_decisions.info_arm/
+//   thinking_arm (migration 0012) record the TREATMENT truth the client itself stamped at
+//   journal-write time — when a row's column is non-NULL, that value is used directly and is exact,
+//   no guessing. A row whose column is NULL (pre-migration row, or the 0012 columns not deployed
+//   yet — this script checks information_schema before every run and prints which case it hit) falls
+//   back to the ORIGINAL payload/hash inference below, applied at that row's own prompt_hash GROUP.
+//   Each printed cell counts how many of its rows resolved 'explicit' vs 'inferred' so a reader can
+//   see how much of a cell's evidence is still guesswork.
 //
-//   thinking arm: HASH-FORWARD-COMPUTATION, best-effort, per distinct prompt_hash. Since the +th1
-//   tag changes no visible bytes, this script reconstructs BOTH candidate templateVersion strings
-//   (with and without the trailing +th1 tag) for each group — using that group's own info-arm
-//   classification above for the feed tags, a globally-detected sentiment flag and plan-mode flag
-//   (booleans inferred from whether ANY row in the whole --since window shows a sentiment block /
-//   a non-null plan_json — a per-boot config constant, not a per-row one), the group's
-//   playbookContent (joined from agent_playbook_versions by playbook_version) and model (row.model)
-//   — then forward-computes both candidate hashes via the SAME computePromptHash formula
-//   (agent-prompt.ts) and compares against the group's actual observed hash. Hardcoded constants
-//   (template-version tags, DECISION_TOOL/PLAN_TOOL schemas) mirror agent-prompt.ts AS WRITTEN —
-//   if those bump, this script's copies need updating too, or every group will read UNKNOWN.
-//   Shorts (x1/PLAN_SHORTS) are assumed OFF; a group with a 'short' action anywhere flips a global
-//   guard that forces every group's thinking arm to UNKNOWN rather than guessing the wrong tool
-//   schema. A group whose observed hash matches NEITHER candidate (unresolved playbook version,
-//   wrong tool/shorts assumption, ...) is reported UNKNOWN for that group specifically. If EVERY
-//   non-empty group ends up UNKNOWN, the script prints a 2×1 (info-arm only) table plus a note
-//   instead of fabricating a 2×2 split it cannot support.
+//   info-context inference (fallback only): PAYLOAD-BASED. A prompt_hash GROUP is classified
+//   'treatment' if ANY row in the group carries a derivatives/crossSymbol/tradeFlow/positioning key
+//   in its input_payload JSON (the four move together under one control arm), 'control' otherwise.
+//   Caveat: a group can under-count as 'control' if every feed happened to be stale on every row in
+//   that group despite running the treatment arm — this script cannot distinguish "arm stripped it"
+//   from "feed never had fresh data" for an all-empty group; it is reported as 'control' either way
+//   (documented, not silently assumed correct).
 //
-// Closed-trip attribution: a 'long' decide row is joined to the order_intents row it produced via
-// (strategy_id, symbol, event_time = source_event_time, side = 'BUY') — the same triple
-// agentic.strategy.ts stamps onto every Signal it emits. Fills for every (strategy_id, symbol)
-// pair touched by the window are then walked into closed round trips with a simplified port of
-// domain/risk/round-trips.ts's walkRoundTrips (no slippage evidence needed here); a cycle is
-// attributed to a cell iff its OPENING fill's intent_id is one of that cell's mapped entry intents.
-// KNOWN LIMITATION: this join assumes the legacy (non-plan-mode) immediate-entry path, where the
-// entry intent's source_event_time equals the decide row's own event_time — under AGENTIC_PLAN_MODE
-// the actual resting entry is placed by plan-executor bars later, at a different event_time, so
-// this script will under-attribute (never over-attribute) trips for a plan-mode deployment; such
-// cycles are simply excluded from every cell's trip count rather than mis-attributed. VERIFIED
-// against the live DB (2026-07-13): AGENTIC_PLAN_MODE is on for this deployment (plan_json rows
-// exist) and every closed round trip walked so far opened via a plan-executor-placed resting
-// entry, so trips/grossPnl/fees/netBps read zero for EVERY cell right now — that is this join gap
-// firing, not "no trades happened yet." Finding a decide→plan-executor-entry link is future work.
+//   thinking inference (fallback only): HASH-FORWARD-COMPUTATION, best-effort, per distinct
+//   prompt_hash. Since the +th1 tag changes no visible bytes, this script reconstructs BOTH
+//   candidate templateVersion strings (with and without the trailing +th1 tag) for each group —
+//   using that group's own info-arm classification above for the feed tags, a globally-detected
+//   sentiment flag and plan-mode flag (booleans inferred from whether ANY row in the whole --since
+//   window shows a sentiment block / a non-null plan_json — a per-boot config constant, not a
+//   per-row one), the group's playbookContent (joined from agent_playbook_versions by
+//   playbook_version) and model (row.model) — then forward-computes both candidate hashes via the
+//   SAME computePromptHash formula (agent-prompt.ts) and compares against the group's actual
+//   observed hash. Hardcoded constants (template-version tags, DECISION_TOOL/PLAN_TOOL schemas)
+//   mirror agent-prompt.ts AS WRITTEN — if those bump, this script's copies need updating too, or
+//   every group will read UNKNOWN. Shorts (x1/PLAN_SHORTS) are assumed OFF; a group with a 'short'
+//   action anywhere flips a global guard that forces every group's inferred thinking arm to UNKNOWN
+//   rather than guessing the wrong tool schema. A group whose observed hash matches NEITHER
+//   candidate (unresolved playbook version, wrong tool/shorts assumption, ...) is reported UNKNOWN
+//   for that group specifically. If EVERY row's effective thinking arm ends up UNKNOWN, the script
+//   prints a 2×1 (info-arm only) table plus a note instead of fabricating a 2×2 split it cannot
+//   support.
+//
+// Closed-trip attribution (v2, Push 3 P8a-prep): the v1 join above (strategy_id, symbol, event_time
+// = source_event_time, side = 'BUY') attached 0 of 12 real closed trips — under AGENTIC_PLAN_MODE
+// the entry Signal's own eventTime is the triggering CANDLE'S CLOSE time (anthropic-agent-client.ts
+// propose()/proposeBatch(): `input.trigger.kind === 'candle' ? input.trigger.event.closeTime : ...`,
+// which becomes both the Signal's dedupeKey and order_intents.source_event_time), while the SAME
+// decide call's own journaled agent_decisions.event_time is the candle's OPEN time
+// (agentic.strategy.ts's recordJournalEntry: `eventTime: input.snapshot.eventTime`) — an exact
+// equality join between the two columns can never match. v2 instead mirrors the ASOF join
+// promotion-evaluator.ts's attributeVersion / version-attribution-metrics.service.ts's own
+// attributeVersion already use successfully in production to attribute closed trips to playbook
+// versions: "the newest journaled 'long' decide row for this (strategy_id, symbol) at-or-before the
+// cycle's OPENING FILL time wins" — openTime <= closeTime <= fill time always holds regardless of
+// the plan-executor's later bar-by-bar management, so this join is robust to the exact offset. No
+// order_intents lookup is needed at all for this join (walkRoundTrips already carries each cycle's
+// own openedAt fill timestamp) — order_intents is still used by fetchFills to resolve each fill's
+// owning strategy_id/side.
 //
 // Thinking-arm scope note: a small number of decide rows are served by BatchingAgentClient's
 // coalesced submit_portfolio call (consult_id populated) rather than the single-symbol path this
@@ -260,11 +271,24 @@ function fallbackDatabaseUrlFromCompose(repoRoot) {
   return match[1].replace('@postgres:', '@localhost:');
 }
 
-async function fetchDecisions(pool, sinceDate) {
+// Push 3 P8a-prep: migration 0012 (info_arm/thinking_arm) may not have run yet on the live DB this
+// script targets (the migrator is journal-driven, applied at next app boot — see drizzle/meta/
+// _journal.json idx 12) — checked via information_schema rather than a bare SELECT-and-catch so a
+// genuinely broken connection still surfaces its own real error instead of being swallowed here.
+async function agentDecisionsHasArmColumns(pool) {
+  const { rows } = await pool.query(
+    `SELECT column_name FROM information_schema.columns
+     WHERE table_name = 'agent_decisions' AND column_name IN ('info_arm', 'thinking_arm')`,
+  );
+  const cols = new Set(rows.map((r) => r.column_name));
+  return cols.has('info_arm') && cols.has('thinking_arm');
+}
+
+async function fetchDecisions(pool, sinceDate, hasArmColumns) {
   const { rows } = await pool.query(
     `SELECT id, strategy_id, symbol, model, action, event_time, prompt_hash, playbook_version,
             input_payload, plan_json, input_tokens, output_tokens, cache_read_input_tokens,
-            cache_creation_input_tokens, created_at
+            cache_creation_input_tokens, created_at${hasArmColumns ? ', info_arm, thinking_arm' : ''}
      FROM agent_decisions
      WHERE created_at >= $1
      ORDER BY created_at ASC`,
@@ -286,6 +310,10 @@ async function fetchDecisions(pool, sinceDate) {
     cacheReadInputTokens: r.cache_read_input_tokens,
     cacheCreationInputTokens: r.cache_creation_input_tokens,
     createdAt: r.created_at,
+    // NULL when the columns don't exist yet (hasArmColumns false) or on a pre-migration/non-client
+    // row — both fall back to inference below (see classifyGroups + the per-row resolution pass).
+    infoArm: hasArmColumns ? r.info_arm : null,
+    thinkingArm: hasArmColumns ? r.thinking_arm : null,
   }));
 }
 
@@ -316,25 +344,6 @@ function payloadBlocks(inputPayloadText) {
 async function fetchPlaybookVersions(pool) {
   const { rows } = await pool.query('SELECT version, content FROM agent_playbook_versions');
   return new Map(rows.map((r) => [r.version, r.content]));
-}
-
-async function fetchEntryIntents(pool, sinceMs) {
-  const { rows } = await pool.query(
-    `SELECT intent_id, strategy_id, symbol, source_event_time
-     FROM order_intents
-     WHERE side = 'BUY' AND created_at >= $1::bigint`,
-    [sinceMs],
-  );
-  // Keyed by (strategyId, symbol, sourceEventTime) — the same triple a 'long' decide row's Signal
-  // carries (agentic.strategy.ts stamps eventTime/strategyId/symbol onto every emitted Signal).
-  const map = new Map();
-  for (const r of rows) {
-    const key = `${r.strategy_id}\u0000${r.symbol}\u0000${Number(r.source_event_time)}`;
-    const bucket = map.get(key);
-    if (bucket) bucket.push(r.intent_id);
-    else map.set(key, [r.intent_id]);
-  }
-  return map;
 }
 
 async function fetchFills(pool, strategyIds) {
@@ -430,6 +439,10 @@ function walkRoundTrips(fills, dustNotional) {
           feesQuote,
           entryNotional: boughtQty.gt(0) ? cost : null,
           openingIntentId,
+          // Push 3 P8a-prep: the opening fill's own executedAt — the ASOF anchor for the v2
+          // decide-row attribution join (see this file's header comment); openTime <= closeTime <=
+          // this timestamp always holds, so it is robust to plan-mode's decide/entry event_time gap.
+          openedAt,
         });
         signedQty = new Decimal(0);
         cost = new Decimal(0);
@@ -585,7 +598,65 @@ function emptyCell() {
     fees: new Decimal(0),
     llmCost: new Decimal(0),
     notional: new Decimal(0),
+    // Push 3 P8a-prep: how many of this cell's decideCount rows resolved their arm via the explicit
+    // info_arm/thinking_arm columns vs. the payload/hash fallback — see resolveEffectiveArms.
+    explicitRows: 0,
+    inferredRows: 0,
   };
+}
+
+// Push 3 P8a-prep: per-row explicit-first arm resolution (this file's header METHOD section).
+// Mutates each row in place — effectiveInfoArm/effectiveThinkingArm are what cell membership keys
+// off; infoArmSource/thinkingArmSource ('explicit'|'inferred') feed the per-cell explicit/inferred
+// counts in the printed table.
+function resolveEffectiveArms(groups) {
+  for (const g of groups) {
+    for (const row of g.rows) {
+      if (row.infoArm !== null) {
+        row.effectiveInfoArm = row.infoArm ? 'treatment' : 'control';
+        row.infoArmSource = 'explicit';
+      } else {
+        row.effectiveInfoArm = g.infoArm;
+        row.infoArmSource = 'inferred';
+      }
+      if (row.thinkingArm !== null) {
+        row.effectiveThinkingArm = row.thinkingArm ? 'on' : 'off';
+        row.thinkingArmSource = 'explicit';
+      } else {
+        row.effectiveThinkingArm = g.thinkingArm;
+        row.thinkingArmSource = 'inferred';
+      }
+    }
+  }
+}
+
+// Push 3 P8a-prep: v2 closed-trip attribution index — see this file's header comment for why this
+// replaces the v1 exact (strategy_id, symbol, event_time = source_event_time) join. Buckets every
+// LLM-called 'long' decide row by (strategyId, symbol), sorted ascending by eventTime, so
+// attributeEntryDecision can binary-scan-backward for the newest row at-or-before a cycle's entry.
+function buildLongDecisionIndex(llmDecisions) {
+  const byKey = new Map();
+  for (const row of llmDecisions) {
+    if (row.action !== 'long') continue;
+    const key = `${row.strategyId} ${row.symbol}`;
+    const bucket = byKey.get(key);
+    if (bucket) bucket.push(row);
+    else byKey.set(key, [row]);
+  }
+  for (const bucket of byKey.values()) bucket.sort((a, b) => a.eventTime - b.eventTime);
+  return byKey;
+}
+
+// Mirrors promotion-evaluator.ts's attributeVersion / version-attribution-metrics.service.ts's own
+// attributeVersion: the newest matching row at-or-before entryAt wins (rows arrive oldest→newest
+// within each bucket, so scanning backward finds it in one pass, same as those two callers).
+function attributeEntryDecision(longDecisionIndex, strategyId, symbol, entryAt) {
+  const bucket = longDecisionIndex.get(`${strategyId} ${symbol}`);
+  if (!bucket) return null;
+  for (let i = bucket.length - 1; i >= 0; i -= 1) {
+    if (bucket[i].eventTime <= entryAt) return bucket[i];
+  }
+  return null;
 }
 
 async function main() {
@@ -596,7 +667,6 @@ async function main() {
     process.exitCode = 1;
     return;
   }
-  const sinceMs = sinceDate.getTime();
 
   const env = parseDotEnv(REPO_ROOT);
   const databaseUrl = env.get('DATABASE_URL') ?? fallbackDatabaseUrlFromCompose(REPO_ROOT);
@@ -613,10 +683,15 @@ async function main() {
 
   const pool = new Pool({ connectionString: databaseUrl });
   try {
-    const [decisions, playbookMap, entryIntents] = await Promise.all([
-      fetchDecisions(pool, sinceDate),
+    // Push 3 P8a-prep: 0012 (info_arm/thinking_arm) may not have run yet — the migrator is
+    // journal-driven, applied at next app boot (see drizzle/meta/_journal.json idx 12). Checked
+    // once, up front, so every row's arm resolution below can trust hasArmColumns rather than
+    // re-checking per row.
+    const hasArmColumns = await agentDecisionsHasArmColumns(pool);
+
+    const [decisions, playbookMap] = await Promise.all([
+      fetchDecisions(pool, sinceDate, hasArmColumns),
       fetchPlaybookVersions(pool),
-      fetchEntryIntents(pool, sinceMs),
     ]);
 
     const strategyIds = [...new Set(decisions.map((r) => r.strategyId))];
@@ -637,46 +712,53 @@ async function main() {
 
     const groups = groupByPromptHash(llmDecisions);
     classifyGroups(groups, playbookMap);
+    resolveEffectiveArms(groups);
 
-    // intentId -> owning group's promptHash, for closed-trip attribution below. Only 'long' rows
-    // ever open a position, so only they are looked up against the entry-intents map.
-    const intentIdToPromptHash = new Map();
-    for (const g of groups) {
-      for (const row of g.rows) {
-        if (row.action !== 'long') continue;
-        const key = `${row.strategyId}\u0000${row.symbol}\u0000${row.eventTime}`;
-        const intentIds = entryIntents.get(key);
-        if (!intentIds) continue;
-        for (const intentId of intentIds) intentIdToPromptHash.set(intentId, g.promptHash);
-      }
-    }
+    const longDecisionIndex = buildLongDecisionIndex(llmDecisions);
 
-    const anyUnknownThinking = groups.some((g) => g.rows.length > 0 && g.thinkingArm === 'UNKNOWN');
+    const anyUnknownThinking = llmDecisions.some((r) => r.effectiveThinkingArm === 'UNKNOWN');
 
-    // Cell key: 'info|thinking' in the full 2x2, or just 'info' in the 2x1 degrade.
-    const cellKeyFor = (g) => (anyUnknownThinking ? g.infoArm : `${g.infoArm}|${g.thinkingArm}`);
+    // Cell key: 'info|thinking' in the full 2x2, or just 'info' in the 2x1 degrade — resolved PER
+    // ROW (explicit-first; see resolveEffectiveArms), not per prompt_hash group.
+    const cellKeyForRow = (row) =>
+      anyUnknownThinking
+        ? row.effectiveInfoArm
+        : `${row.effectiveInfoArm}|${row.effectiveThinkingArm}`;
 
     const cells = new Map();
-    const cellKeyForGroup = new Map();
-    for (const g of groups) {
-      const key = cellKeyFor(g);
-      cellKeyForGroup.set(g.promptHash, key);
+    const cellKeyByDecisionId = new Map();
+    for (const row of llmDecisions) {
+      const key = cellKeyForRow(row);
+      cellKeyByDecisionId.set(row.id, key);
       const cell = cells.get(key) ?? emptyCell();
-      cell.decideCount += g.rows.length;
-      cell.proposeCount += g.rows.filter((r) => r.action === 'long').length;
-      for (const row of g.rows) cell.llmCost = cell.llmCost.plus(rowCost(row, ratesFor));
+      cell.decideCount += 1;
+      if (row.action === 'long') cell.proposeCount += 1;
+      cell.llmCost = cell.llmCost.plus(rowCost(row, ratesFor));
+      if (row.infoArmSource === 'explicit' || row.thinkingArmSource === 'explicit') {
+        cell.explicitRows += 1;
+      } else {
+        cell.inferredRows += 1;
+      }
       cells.set(key, cell);
     }
 
+    // Push 3 P8a-prep v2: ASOF decide-row attribution — see this file's header comment and
+    // attributeEntryDecision's own comment for why this replaces the v1 exact-eventTime join.
+    let attributedTrips = 0;
     for (const cycle of cycles) {
-      if (cycle.openingIntentId === null) continue;
-      const promptHash = intentIdToPromptHash.get(cycle.openingIntentId);
-      if (promptHash === undefined) continue;
-      const key = cellKeyForGroup.get(promptHash);
+      const decisionRow = attributeEntryDecision(
+        longDecisionIndex,
+        cycle.strategyId,
+        cycle.symbol,
+        cycle.openedAt,
+      );
+      if (decisionRow === null) continue;
+      const key = cellKeyByDecisionId.get(decisionRow.id);
       if (key === undefined) continue;
       const cell = cells.get(key);
       if (!cell) continue;
       cell.trips += 1;
+      attributedTrips += 1;
       cell.grossPnl = cell.grossPnl.plus(cycle.realizedPnl);
       cell.fees = cell.fees.plus(cycle.feesQuote);
       if (cycle.entryNotional) cell.notional = cell.notional.plus(cycle.entryNotional);
@@ -691,11 +773,23 @@ async function main() {
       `ab-cells: since=${sinceIso} decisions=${decisions.length} (excluding ${nonLlmCount} non-LLM ` +
         `prescreen/plan-executor rows) llmDecisions=${llmDecisions.length} distinct prompt_hash groups=${groups.length}`,
     );
+    // eslint-disable-next-line no-console
+    console.log(
+      hasArmColumns
+        ? 'ab-cells: agent_decisions.info_arm/thinking_arm columns FOUND — preferring explicit ' +
+            'stamps per row, falling back to payload/hash inference only for NULL rows.'
+        : 'ab-cells: agent_decisions.info_arm/thinking_arm columns NOT FOUND (migration 0012 not ' +
+            'yet applied on this DB) — every row falls back to payload/hash inference this run.',
+    );
+    // eslint-disable-next-line no-console
+    console.log(
+      `ab-cells: closed round trips walked=${cycles.length} attributed=${attributedTrips}`,
+    );
     if (anyUnknownThinking) {
       // eslint-disable-next-line no-console
       console.log(
-        '\nthinking-arm inference was AMBIGUOUS for at least one prompt_hash group — printing the' +
-          ' 2x1 info-context table only. See the per-group notes below for why.',
+        '\nthinking-arm resolution was AMBIGUOUS for at least one row — printing the 2x1' +
+          ' info-context table only. See the per-group notes below for why.',
       );
     }
     // eslint-disable-next-line no-console
@@ -717,7 +811,7 @@ async function main() {
           `llmCost=${cell.llmCost.toFixed(6)} netUsd=${netUsd.toFixed(2)} netBps/trip=${netBpsPerTrip} ` +
           `proposeRate=${proposeRate === null ? 'n/a' : (proposeRate * 100).toFixed(1) + '%'} ` +
           `abstainRate=${abstainRate === null ? 'n/a' : (abstainRate * 100).toFixed(1) + '%'} ` +
-          `cost/decide=${costPerDecide}`,
+          `cost/decide=${costPerDecide} explicit=${cell.explicitRows} inferred=${cell.inferredRows}`,
       );
     }
 

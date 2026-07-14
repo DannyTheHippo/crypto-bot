@@ -371,6 +371,13 @@ export const agentDecisions = pgTable(
     // offline cost/attribution analytics can join the N rows born from one batched call back
     // together. Null on every non-batched (single-symbol propose()) row.
     consultId: text('consult_id'),
+    // Push 3 P8a-prep: explicit A/B arm truth, stamped by AnthropicAgentClient at journal-write
+    // time (TREATMENT truth per axis — true = treatment). Replaces the prompt_hash reverse-
+    // engineering the cell script previously relied on. Null on pre-migration rows and on rows
+    // written outside the client (prescreen, plan-executor) — see trading.schema.ts's own history
+    // for the consultId precedent (0011) this mirrors additively.
+    infoArm: boolean('info_arm'),
+    thinkingArm: boolean('thinking_arm'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => [index('agent_decisions_strategy_event_idx').on(t.strategyId, t.eventTime)],

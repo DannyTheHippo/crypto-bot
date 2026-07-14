@@ -308,6 +308,15 @@ export interface AgentProposal {
   // journal rows born from one batched call back together. Absent on the single-symbol propose()
   // path — no batch, no join key.
   readonly consultId?: string;
+  // Push 3 P8a-prep: TREATMENT truth per axis, stamped by AnthropicAgentClient.prepareDecideContext
+  // on every proposal it returns (see anthropic-agent-client.ts's write sites for the polarity
+  // conversion). infoArm = NOT infoContextControlArm (true = the extra-information bundle was
+  // PRESENT); thinkingArm passes ctx.thinkingArm through unchanged (already treatment-truth
+  // polarity — true = adaptive thinking on). Absent only when no client call was attempted at all
+  // (the pre-ctx `degraded`/no-market-data stubs) — same absent-when-no-call convention as
+  // promptHash/latencyMs.
+  readonly infoArm?: boolean;
+  readonly thinkingArm?: boolean;
 }
 
 export interface AgentClientPort {
@@ -395,6 +404,12 @@ export interface AgentDecisionEntry {
   // on every non-batched decision. Optional so pre-this-column writers and fixtures compile; absent
   // and null both map to a NULL column.
   readonly consultId?: string | null;
+  // See AgentProposal.infoArm/thinkingArm — the A/B treatment truth this decision's proposal
+  // carried, forwarded verbatim (no further polarity conversion here). Optional so pre-this-column
+  // writers and fixtures compile; absent and null both map to a NULL column (rows written outside
+  // a client call — prescreen quiet-holds, plan-executor bookkeeping — never set these).
+  readonly infoArm?: boolean | null;
+  readonly thinkingArm?: boolean | null;
 }
 
 export interface AgentDecisionRow extends AgentDecisionEntry {

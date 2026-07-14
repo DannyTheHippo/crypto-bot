@@ -507,6 +507,10 @@ export class AnthropicAgentClient implements AgentClientPort {
         playbookVersion: ctx.playbookVersion,
         promptHash,
         inputPayload,
+        // A call WAS attempted (ctx resolved, request sent) — the arm truth is real even though the
+        // response itself was unusable. See AgentProposal.infoArm/thinkingArm for the polarity note.
+        infoArm: !ctx.infoContextControlArm,
+        thinkingArm: ctx.thinkingArm,
       };
     }
     const usage = envelope.data.usage
@@ -527,6 +531,8 @@ export class AnthropicAgentClient implements AgentClientPort {
         playbookVersion: ctx.playbookVersion,
         promptHash,
         inputPayload,
+        infoArm: !ctx.infoContextControlArm,
+        thinkingArm: ctx.thinkingArm,
       };
     }
     const toolName = ctx.activeTool.name;
@@ -542,6 +548,8 @@ export class AnthropicAgentClient implements AgentClientPort {
         playbookVersion: ctx.playbookVersion,
         promptHash,
         inputPayload,
+        infoArm: !ctx.infoContextControlArm,
+        thinkingArm: ctx.thinkingArm,
       };
     }
     const parsedDecision = this.cfg.planMode
@@ -560,6 +568,8 @@ export class AnthropicAgentClient implements AgentClientPort {
         playbookVersion: ctx.playbookVersion,
         promptHash,
         inputPayload,
+        infoArm: !ctx.infoContextControlArm,
+        thinkingArm: ctx.thinkingArm,
       };
     }
 
@@ -585,6 +595,8 @@ export class AnthropicAgentClient implements AgentClientPort {
       playbookVersion: ctx.playbookVersion,
       promptHash,
       inputPayload,
+      infoArm: !ctx.infoContextControlArm,
+      thinkingArm: ctx.thinkingArm,
     });
   }
 
@@ -758,6 +770,8 @@ export class AnthropicAgentClient implements AgentClientPort {
         ctx.playbookVersion,
         promptHash,
         consultId,
+        !ctx.infoContextControlArm,
+        ctx.thinkingArm,
       );
     }
     const usage = envelope.data.usage
@@ -783,6 +797,8 @@ export class AnthropicAgentClient implements AgentClientPort {
           promptHash,
           inputPayload: r.inputPayload,
           consultId,
+          infoArm: !ctx.infoContextControlArm,
+          thinkingArm: ctx.thinkingArm,
         });
       });
       return { proposals, usage };
@@ -803,6 +819,8 @@ export class AnthropicAgentClient implements AgentClientPort {
         ctx.playbookVersion,
         promptHash,
         consultId,
+        !ctx.infoContextControlArm,
+        ctx.thinkingArm,
       );
     }
     const portfolioParsed = portfolioDecisionsSchema.safeParse(toolBlock.input);
@@ -818,6 +836,8 @@ export class AnthropicAgentClient implements AgentClientPort {
         ctx.playbookVersion,
         promptHash,
         consultId,
+        !ctx.infoContextControlArm,
+        ctx.thinkingArm,
       );
     }
 
@@ -851,6 +871,8 @@ export class AnthropicAgentClient implements AgentClientPort {
           promptHash,
           inputPayload: r.inputPayload,
           consultId,
+          infoArm: !ctx.infoContextControlArm,
+          thinkingArm: ctx.thinkingArm,
         });
         return;
       }
@@ -867,6 +889,8 @@ export class AnthropicAgentClient implements AgentClientPort {
           promptHash,
           inputPayload: r.inputPayload,
           consultId,
+          infoArm: !ctx.infoContextControlArm,
+          thinkingArm: ctx.thinkingArm,
         });
         return;
       }
@@ -894,6 +918,8 @@ export class AnthropicAgentClient implements AgentClientPort {
           promptHash,
           inputPayload: r.inputPayload,
           consultId,
+          infoArm: !ctx.infoContextControlArm,
+          thinkingArm: ctx.thinkingArm,
         }),
       );
     });
@@ -914,6 +940,8 @@ export class AnthropicAgentClient implements AgentClientPort {
     playbookVersion: number | undefined,
     promptHash: string,
     consultId: string,
+    infoArm: boolean,
+    thinkingArm: boolean,
   ): AgentProposeBatchResult {
     const proposals = new Map<string, AgentProposal>();
     resolved.forEach((r, i) => {
@@ -925,6 +953,8 @@ export class AnthropicAgentClient implements AgentClientPort {
         promptHash,
         inputPayload: r.inputPayload,
         consultId,
+        infoArm,
+        thinkingArm,
       });
     });
     return { proposals, usage };
@@ -1130,6 +1160,10 @@ export class AnthropicAgentClient implements AgentClientPort {
     // Batch-attribution join key (Push II Phase 5 follow-on) — see AgentProposal.consultId.
     // Absent on the single-symbol propose() path; proposeBatch passes its one per-batch id.
     readonly consultId?: string;
+    // Push 3 P8a-prep — see AgentProposal.infoArm/thinkingArm. Both callers (propose/proposeBatch)
+    // always pass these once ctx has resolved; never absent here.
+    readonly infoArm: boolean;
+    readonly thinkingArm: boolean;
   }): AgentProposal {
     const {
       input,
@@ -1148,6 +1182,8 @@ export class AnthropicAgentClient implements AgentClientPort {
       promptHash,
       inputPayload,
       consultId,
+      infoArm,
+      thinkingArm,
     } = params;
     const { action, confidence, rationale } = params.decision;
 
@@ -1212,6 +1248,8 @@ export class AnthropicAgentClient implements AgentClientPort {
           promptHash,
           inputPayload,
           ...(consultId ? { consultId } : {}),
+          infoArm,
+          thinkingArm,
         };
       }
     }
@@ -1268,6 +1306,8 @@ export class AnthropicAgentClient implements AgentClientPort {
           promptHash,
           inputPayload,
           ...(consultId ? { consultId } : {}),
+          infoArm,
+          thinkingArm,
         };
       }
     }
@@ -1411,6 +1451,8 @@ export class AnthropicAgentClient implements AgentClientPort {
       promptHash,
       inputPayload,
       ...(consultId ? { consultId } : {}),
+      infoArm,
+      thinkingArm,
     };
   }
 

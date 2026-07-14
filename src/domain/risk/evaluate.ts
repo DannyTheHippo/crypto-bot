@@ -8,6 +8,7 @@ import type { ChannelHealth } from '../types/market-events';
 import type { TradingMode } from '../types/mode';
 import type { EpochMs, StrategyId, VenueId, SymbolId } from '../types/ids';
 import { validateLimits, type PartialRiskLimits } from './limits';
+import { splitSymbol } from '../types/symbol';
 import type { KillSwitchState } from './kill-switch';
 
 // ── Inputs (all facts pre-computed by the stateful layer; evaluate stays pure) ──
@@ -292,7 +293,13 @@ export function evaluate(input: RiskEvalInput): RiskEvaluation {
     filters.tickSize,
     intent.side === 'BUY' ? 'down' : 'up',
   );
-  if (steppedQty.mul(tickedPrice).lt(new Decimal(filters.minNotional)))
+  // Reduce-only perp intents are venue-exempt from MIN_NOTIONAL (Binance USD-M -4164 binds
+  // "unless reduce only"; P0d probe verified a sub-floor reduce-only STOP_MARKET is accepted).
+  // Mirrors the sizer's carve-out — rejecting here would strand a small position's protective
+  // stop the venue itself accepts (P7e finding). This gate is a pre-flight mirror of a venue
+  // rule, so over-admitting fails safe: the venue re-checks. Spot keeps the full gate.
+  const minNotionalExempt = intent.reduceOnly && splitSymbol(intent.symbol).settle !== undefined;
+  if (!minNotionalExempt && steppedQty.mul(tickedPrice).lt(new Decimal(filters.minNotional)))
     return reject(intent, 'BELOW_EXCHANGE_MIN');
 
   // Build the final (possibly resized) intent.

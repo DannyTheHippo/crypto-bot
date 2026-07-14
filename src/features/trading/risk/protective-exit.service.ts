@@ -110,8 +110,6 @@ export class ProtectiveExitService {
       const isLong = pos.signedQty.gt(0);
       liveKeys.add(key);
 
-      if (this.isDust(pos)) continue;
-
       const ref = this.feed.getRefPrice(pos.symbol);
       if (ref === undefined) continue; // cannot price this tick — retry next tick
 
@@ -119,6 +117,11 @@ export class ProtectiveExitService {
       // below — never falls through to the global-% logic this tick (no double-processing), even if
       // the watcher itself declines to fire (stand-down/stacking/cooldown). A position with no
       // registry entry (no active plan, or the watcher flag is off) is untouched, legacy path only.
+      // P7e review fix: this branch runs BEFORE the dust skip below. In the perp band where
+      // trigger-notional < minNotional the venue stop cannot rest, and qty×mid falls under the
+      // dust threshold exactly as price approaches the stop — a dust-skip here blinded the LAST
+      // protection layer precisely when it was needed. The watcher's own reduce-only perp fire is
+      // venue-exempt from minNotional (-4164), so it remains placeable at dust size.
       if (this.config.planStopWatchEnabled) {
         const stop = this.planStops?.get(key);
         if (stop !== undefined) {
@@ -130,6 +133,8 @@ export class ProtectiveExitService {
           continue;
         }
       }
+
+      if (this.isDust(pos)) continue;
 
       // A sign flip reusing the same key changes direction — drop the stale opposite-direction
       // watermark so the newly-opened side reseeds fresh rather than trailing off a peak/trough

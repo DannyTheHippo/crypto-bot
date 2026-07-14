@@ -12,6 +12,7 @@ import {
   venueId,
   symbolId,
   epochMs,
+  type SymbolId,
 } from '../../../src/domain/types/ids';
 
 const SID = strategyId('s1');
@@ -95,14 +96,14 @@ function makeInput(o: Partial<RiskEvalInput> = {}): RiskEvalInput {
   };
 }
 
-function pos(signed: string): Map<string, Position> {
+function pos(signed: string, symbol: SymbolId = SYM): Map<string, Position> {
   return new Map([
     [
-      `${SID}:${V}:${SYM}`,
+      `${SID}:${V}:${symbol}`,
       {
         strategyId: SID,
         venue: V,
-        symbol: SYM,
+        symbol,
         signedQty: new Decimal(signed),
         avgEntry: price('100'),
         realizedPnl: new Decimal(0),
@@ -706,6 +707,45 @@ describe('RiskEngine.evaluate — §5 decision table', () => {
         }),
       );
       expect(r.verdict).toBe('APPROVED');
+    });
+
+    it('P7e fix: a reduce-only PERP stop below minNotional is APPROVED (venue -4164 exempts reduce-only)', () => {
+      // 5 × ~95 = 475 < 1000: pre-fix this rejected BELOW_EXCHANGE_MIN and stranded the
+      // protective stop the venue itself accepts. Spot keeps the gate (next case).
+      const r = evaluate(
+        makeInput({
+          intent: makeIntent({
+            symbol: symbolId('BTC/USDT:USDT'),
+            side: 'SELL',
+            reduceOnly: true,
+            type: 'STOP_MARKET',
+            limitPrice: undefined,
+            triggerPrice: price('95'),
+            qty: qty('5'),
+          }),
+          snapshot: snapshot({ positions: pos('5', symbolId('BTC/USDT:USDT')) }),
+          filters: { tickSize: '0.01', stepSize: '0.001', minQty: '0.001', minNotional: '1000' },
+        }),
+      );
+      expect(r.verdict).toBe('APPROVED');
+    });
+
+    it('P7e fix scope: a reduce-only SPOT stop below minNotional still rejects (no spot exemption)', () => {
+      const r = evaluate(
+        makeInput({
+          intent: makeIntent({
+            side: 'SELL',
+            reduceOnly: true,
+            type: 'STOP_MARKET',
+            limitPrice: undefined,
+            triggerPrice: price('95'),
+            qty: qty('5'),
+          }),
+          snapshot: snapshot({ positions: pos('5') }),
+          filters: { tickSize: '0.01', stepSize: '0.001', minQty: '0.001', minNotional: '1000' },
+        }),
+      );
+      expect(r).toMatchObject({ verdict: 'REJECTED', reasons: ['BELOW_EXCHANGE_MIN'] });
     });
 
     it('T0: a non-reduce-only trigger intent is rejected outright (an entry stop is out of scope)', () => {

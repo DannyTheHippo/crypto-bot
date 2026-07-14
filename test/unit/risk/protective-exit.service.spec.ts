@@ -815,6 +815,26 @@ describe('ProtectiveExitService', () => {
       expect(signal.reason).toBe('plan stop (watcher)');
     });
 
+    it('P7e fix: a DUST-size position with a registry entry still gets the watcher (dust skip runs after)', async () => {
+      // 0.001 × 98 = 0.098 < minNotional 5 ⇒ pre-fix the isDust continue blinded the watcher in
+      // exactly the band where the venue stop cannot rest — the last protection layer went dark.
+      const dust = pos({ avgEntry: price('100'), signedQty: new Decimal('0.001') });
+      const snap = snapshot({ positions: new Map([[KEY, dust]]) });
+      const registry = planStopRegistry(
+        new Map([[KEY, { side: 'LONG', stopPrice: '98', venueStopResting: false }]]),
+      );
+      const { svc, sink } = build({
+        snap,
+        mid: '98',
+        config: { stopLossPct: '0', trailingPct: '0', planStopWatchEnabled: true },
+        planStops: registry,
+      });
+      await svc.tick(epochMs(T));
+      const calls = (sink.recordSignal as ReturnType<typeof vi.fn>).mock.calls;
+      expect(calls).toHaveLength(1);
+      expect((calls[0]?.[0] as Signal).reason).toBe('plan stop (watcher)');
+    });
+
     it('fires EXIT_SHORT when mid crosses at/above the registry stop price', async () => {
       const snap = snapshot({ positions: new Map([[KEY, shortPos({ avgEntry: price('100') })]]) });
       const registry = planStopRegistry(
@@ -955,7 +975,10 @@ describe('ProtectiveExitService', () => {
       expect((sink.recordSignal as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
     });
 
-    it('treats a below-minNotional position as dust and skips it before the registry is even consulted', async () => {
+    it('P7e fix: dust never silences a REGISTERED watcher (fires), but an UNREGISTERED dust position still gets no legacy fire', async () => {
+      // Pre-P7e this suite pinned the inverse ("dust skips before the registry is consulted") —
+      // that ordering blinded the watcher in exactly the band where the venue stop cannot rest.
+      // The dust skip now governs only the legacy global-% path.
       const dustSnap = snapshot({
         positions: new Map([
           [KEY, pos({ signedQty: new Decimal('0.001'), avgEntry: price('100') })],
@@ -964,14 +987,26 @@ describe('ProtectiveExitService', () => {
       const registry = planStopRegistry(
         new Map([[KEY, { side: 'LONG', stopPrice: '98', venueStopResting: false }]]),
       );
-      const { svc, sink } = build({
+      const registered = build({
         snap: dustSnap,
         mid: '1',
         config: { stopLossPct: '0', trailingPct: '0', planStopWatchEnabled: true },
         planStops: registry,
       });
-      await svc.tick(epochMs(T));
-      expect((sink.recordSignal as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
+      await registered.svc.tick(epochMs(T));
+      expect((registered.sink.recordSignal as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
+
+      const unregistered = build({
+        snap: dustSnap,
+        mid: '1',
+        // Non-zero global % so a fire WOULD happen were the position not dust-skipped.
+        config: { stopLossPct: '0.02', trailingPct: '0.015', planStopWatchEnabled: true },
+        planStops: planStopRegistry(new Map()),
+      });
+      await unregistered.svc.tick(epochMs(T));
+      expect((unregistered.sink.recordSignal as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(
+        0,
+      );
     });
 
     it('cooldown blocks an immediate re-fire, then allows one after it expires', async () => {

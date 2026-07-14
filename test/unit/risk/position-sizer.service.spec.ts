@@ -445,6 +445,46 @@ describe('PositionSizerService', () => {
       }
     });
 
+    it('P7e fix: a reduce-only perp stop BELOW minNotional is allowed (venue -4164 exempts reduce-only; minQty still binds)', () => {
+      // Trigger-notional 4 × 95 = 380 < 500 — pre-fix this self-rejected BELOW_MINIMUM and left
+      // the position without its venue stop in the [minNotional, minNotional/(1−slPct)) band.
+      const bigFloor = new Map([
+        [String(SYM), { ...FILTERS, minNotional: '500' }],
+        [String(SYM_PERP), { ...FILTERS, minNotional: '500' }],
+      ]);
+      const r = new PositionSizerService(clock, deps({ filters: bigFloor })).size(
+        signal({
+          venue: V_PERP,
+          symbol: SYM_PERP,
+          kind: 'EXIT_LONG',
+          refPrice: price('100'),
+          exitStyle: 'RESTING_STOP',
+          triggerPriceHint: price('95'),
+        }),
+        snapshot(perpLongPosition()),
+      );
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.intent.type).toBe('STOP_MARKET');
+    });
+
+    it('P7e fix scope: a SPOT reduce-only stop below minNotional still rejects (no spot exemption)', () => {
+      const bigFloor = new Map([[String(SYM), { ...FILTERS, minNotional: '500' }]]);
+      const r = new PositionSizerService(
+        clock,
+        deps({ filters: bigFloor, stopLimitBufferBps: 50 }),
+      ).size(
+        signal({
+          kind: 'EXIT_LONG',
+          refPrice: price('100'),
+          exitStyle: 'RESTING_STOP',
+          triggerPriceHint: price('95'),
+        }),
+        snapshot(longPosition()),
+      );
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.reason).toBe('BELOW_MINIMUM');
+    });
+
     it('a spot SELL stop builds a STOP_LOSS_LIMIT whose leg sits the buffer below the trigger, both tick-rounded down', () => {
       const r = new PositionSizerService(clock, deps({ stopLimitBufferBps: 50 })).size(
         signal({

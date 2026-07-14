@@ -175,9 +175,16 @@ export class PositionSizerService implements PositionSizerPort {
     // Notional check: STOP_MARKET carries no limit leg, so the trigger price is the best available
     // proxy for the eventual fill price (a STOP_LOSS_LIMIT/plain-limit intent always has limitPrice).
     const notionalPrice = limitPrice ?? triggerPrice!;
+    // Binance USD-M exempts reduce-only orders from MIN_NOTIONAL (-4164 binds "unless reduce
+    // only"; P0d probe 2026-07-13 verified a sub-floor reduce-only STOP_MARKET is accepted).
+    // Without this carve-out a small perp position's protective stop is self-rejected here while
+    // the venue would take it — the P7e-confirmed protection-gap band [minNotional,
+    // minNotional/(1−stopLossPct)). minQty/stepSize still bind. Spot has no such exemption and
+    // keeps the full gate.
+    const minNotionalExempt = reduceOnly && isPerpSignal(signal);
     if (
       steppedQty.lt(new Decimal(filters.minQty)) ||
-      steppedQty.mul(notionalPrice).lt(new Decimal(filters.minNotional))
+      (!minNotionalExempt && steppedQty.mul(notionalPrice).lt(new Decimal(filters.minNotional)))
     ) {
       return { ok: false, reason: 'BELOW_MINIMUM' };
     }

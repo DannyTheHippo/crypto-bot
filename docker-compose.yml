@@ -455,8 +455,14 @@ services:
       AGENTIC_QUIET_PAYLOAD_SAMPLE_BARS: 4
       AGENTIC_VENUE_TP: 'true' # venue-resting take-profit for plan-mode longs
       AGENTIC_VENUE_TP_REPLACE_DRIFT_BPS: 10
-      # AGENTIC_VENUE_STOP: 'true' # Push 3 P7d: venue-resting protective stop (perp algo-rail STOP_MARKET on this service) — commented out, NOT enabled here; schema default false
-      # AGENTIC_VENUE_STOP_REPLACE_DRIFT_BPS: 10
+      # Push 3 P8d (L0 ENABLE): venue-resting protective STOP_MARKET on the binanceusdm algo rail —
+      # the reviewed (P7d + P7e/P7f OMS-containment) primary intra-bar protection. Perp margin runs
+      # TP+STOP together with no base-lock conflict, so the P7f spot boot-refusal does not apply here
+      # (all venues swap). Rollback = comment out (schema default false, byte-identical). This is the
+      # FIRST live exercise of the algo-rail lifecycle anywhere — see the perp WATCH lines in
+      # reports/loop/state.md.
+      AGENTIC_VENUE_STOP: 'true'
+      AGENTIC_VENUE_STOP_REPLACE_DRIFT_BPS: 10
       AGENTIC_PLAYBOOK_AB_PCT: 25
       AGENTIC_EXPECTANCY_LADDER: 'true'
       AGENTIC_PRESCREEN_ENABLED: 'true'

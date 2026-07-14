@@ -2628,3 +2628,115 @@ primes reset by the recreate (documented seed-race behavior). Backup
 (2) Phase-5 consult watch unchanged (first `submit_portfolio` decides on the new boot); (3)
 Phase-2 venue-TP watch unchanged; (4) `reconciliation_mismatch_total{class=…}` series appear on
 the first mismatch — Grafana sum() panels unaffected; (5) v2 lapse → v3 mint watch unchanged.
+
+## 2026-07-14 — Pass 24 (scheduled run, ~16:20–16:55Z): MAINTENANCE report-only — first scheduled pass after Push 3 went live; factorial arm-stamping + consult WATCHes RESOLVED POSITIVE, perp L0 healthy in warmup, reflection dormancy root-caused (expected-pending, self-resolving, no defect)
+
+**Data window:** Pass 23 close (~17:45Z 07-13) → now (~16:55Z 07-14). Everything between was
+owner-directed (not loop passes): the state.md deep clean (`66c3fac`), the backlog build-out (9
+rows, boot `e44b6497` 19:34Z 07-13), and the **Push 3 program** (`3c8b1a1`..`42a4158`, 07-13/14
+owner session — perp L0 lane live + info×thinking factorial enabled on spot; recorded in full in
+state.md § Push 3 program, not separately in LOG.md). Two lanes now run: spot `app-1` (boot
+`695b6abf`, ~15:20Z, factorial-enable `a6f0573`), perp `app-perp-1` (boot `51b685f1`, ~15:35Z, L0
+`aca7fb1`). Both containers only ~1–1.5h old at sweep — 24h `docker logs` captures post-boot
+only; DB + Prometheus carried the durable history. Host awake (`PreventUserIdleSystemSleep=1`).
+
+**Evidence sweep:** stack 10 containers up incl. both bot lanes healthy; spot 0 error / 4 benign
+warns (2 route notices, ACTIVE_STRATEGY banner, one info-A/B control-arm line pct=50), perp 0
+error / 3 benign warns; 0 EXPIRED, `signals_rejected_total` empty; kill switch RUNNING both lanes
+(`kill_switch_state{state="RUNNING"}=1`), `up=1`. **Reconciliation under the current spot boot:
+179 clean / 0 mismatch** — the `increase(reconciliation_mismatch_total[21h])` figures (a spurious
+`sweep_failure` ~11.8k) are counter-reset extrapolation artifacts across the day's multiple boots,
+not real mismatches; raw current counters carry no mismatch series and no HALT. Spot scoreboard
+(epoch 08:30Z 07-12): **RT=12 (was 10 at Pass 23), net −$4.10 (was −$7.82 — improved), LLM $5.45,
+window 1.96d, ready=0**; equity **$4,996.16**, dd 0.08%, trade-explained. Version attribution:
+v1 realized-minus-fees **+$1.35 / 12 trips**; gate net = 1.35 − 5.45 LLM = −4.10 (internally
+consistent — no §7 measurement contradiction; the gate charges all in-window LLM incl. any
+reflection, the version gauge is decide-attributed realized-minus-fees). Per-symbol realized
+(all-time): LINK +2.97, ETH −0.28, SOL −0.90, XRP −1.03, BTC −1.60. Cost **≈$2.78/day** in-window
+— under the $4.50 thinking-cost rule and the $5 breaker; **cost watch stays armed, does not
+fire**. Prescreen this boot 20 quiet / 5 called = 80% skip (above band; flat tape). Corpus
+**1,222 decisions / 513 with `input_payload`** (E2 ≥200 capability now met; the haiku re-test
+wants ≥600 — approaching). §2.6 harness probe **green** (eval:agentic 15 passed / 6 self-skipped).
+Today's trips: ETH (buy 10:20Z → sell 12:30Z, +) and LINK (buy 12:01Z → sell 13:21Z, +) = the
+RT 10→12 move, **both under boot `e44b6497`** (pre-factorial). Perp lane: RT=0, 1 hold decide,
+equity $5,000, no positions/orders (warmup), boot clean (the #51 fail-closed leverage/margin pin
+passed by construction — a bad cap crash-loops the boot; it is healthy).
+
+**Watch verdicts (the pass's main deliverable):**
+
+- **P8a factorial arm-stamping RESOLVED POSITIVE:** arms stamp on exactly the rows that reached the
+  LLM — 5 `info_arm`/`thinking_arm` non-null rows = the 5 prescreen `called` rows; the 30 NULL-arm
+  rows are prescreen `skipped_quiet` (no LLM call, correctly NULL, not a gap). Cells beginning to
+  fill (info×thinking: `f|t`=4, `t|t`=1). Thinking split is N=5 all-thinking-on — noise at that N
+  ((0.5)^5), **stays a watch** for the ~50% distribution once N grows.
+- **Phase 5 portfolio consult RESOLVED POSITIVE:** spot banner `agentClient=BatchingAgentClient`;
+  `consult_id` present on called rows; mostly 1-symbol consult batches this window (flat tape /
+  80% prescreen skip ⇒ usually one symbol per bar passes prescreen — the documented 1-symbol-batch
+  quirk). No correlated strike/DRAIN across strategies, no `holding all` warn-storm.
+- **P8d perp L0 HEALTHY IN WARMUP:** boot clean, 1 hold decide, 0 trips ⇒ the algo-rail STOP_MARKET
+  stop lifecycle is **UNEXERCISED** (first perp entry is ~3.5d of warmup out). WATCH stays PENDING.
+- **Phase 2 venue-TP PENDING:** today's TP-looking exits (ETH/LINK sold higher) predate the current
+  boot; `agentic_venue_tp_total` instant query is empty only because the series went stale across
+  the 15:20Z boot. Needs a fresh plan-entry fill under boot `695b6abf` + a DB role check.
+
+**Reflection dormancy — ROOT-CAUSED (the pass's forensic deliverable):** no reflection has run since
+the v2 mint at **07-11 04:45Z** (3+ days; `agent_playbook_versions` = v1 seed + v2 only,
+`llm_usage` 2 rows, reflection-outcomes counter empty across the full ~21h Prometheus retention).
+Cause (query-verified, not inferred): **every boot from the 07-11 mint until today was pre-Push-3
+(pre-`c0d53bd` seed-race fix), and — decisively — no single (strategy, boot) ever reached ≥2 closes
+across that window (max closes per strategy-boot = 1; today's ETH/LINK closes were each the FIRST
+close for their strategy under boot `e44b6497`).** The pre-`c0d53bd` code fires only on a strategy's
+SECOND close under one boot (the fire-and-forget seed lands after the 1st close's synchronous
+evaluate), so the frequent short-lived redeploys (11 boots since 07-11, each ≤1 close/strategy)
+reset the in-memory prime before any strategy reached its 2nd close — this is exactly the
+redeploy-starvation `c0d53bd` was written to fix. `c0d53bd` (first close after boot evaluates on the
+DB-seeded count) only went live today ~15:20Z on boot `695b6abf`, which has had **zero closes** — so
+the trigger has not yet been evaluated under the fixed image. Both mechanisms are correctly primed for the next close under
+`695b6abf`: (a) `c0d53bd` makes the first post-boot close evaluate on the DB-seeded count; (b) the
+abstain-lapse is armed — **46 v2-attributed `claude` decides with 0 entries in the recent 400
+journal rows** (≥ the 15 `AGENTIC_ABSTAIN_LAPSE_DECIDES` floor) ⇒ the unresolved-candidate guard
+will lapse v2 and mint v3 through the entry-rate floor + mint-backtest. Verdict: **expected-pending,
+self-resolving on the next closed trip; NOT a defect.** Note the guard-skip path DOES record
+`skipped_unresolved_candidate` (`reflection.service.ts:829`) before returning, so the empty outcome
+counter confirms the trigger is being stopped upstream at `evaluateTrigger`'s
+`tradesSinceLastAttempt < 2` gate (cooldown is 6h, long past) — it is not silently skipping. The
+standing task watch ("first post-fix reflection = minted/no_change; `validator_reject` = new
+defect") remains PENDING on that next close.
+
+**New backlog seed → #53 (agentic observability, deferred):** `evaluateTrigger` returns silently
+when trips-since-attempt < N or on cooldown, so a close-that-evaluated-but-did-not-fire leaves no
+metric/log — this diagnosis needed manual boot-timeline forensics. A
+`agentic_reflection_trigger_total{outcome=below_threshold|cooldown|inflight|fired}` counter would
+make the next such diagnosis instant. **Not shipped this pass:** it touches the reflection hot path,
+there is no confirmed defect, and a redeploy would perturb the active factorial and reset boot
+primes for zero net benefit — recorded as a seed, do NOT enable mid-factorial without cause.
+
+**Pass type MAINTENANCE, report-only** (§3: no correctness bug on the trading path — stack clean,
+reconciliation 179/0 under the current boot, both kill switches RUNNING, 0 errors; PROMOTION
+ineligible — gate ready=0, v2 has 0 attributed trips; CANDIDATE blocked — v2 unresolved in A/B,
+lapses on the next close). Nothing cleared the ship bar in the eligible pass type: the reflection
+dormancy is a no-defect expected-pending state, and the only code idea surfaced (#53) is a
+mid-factorial-perturbing nice-to-have. Ship = this report + the state.md WATCH verdicts + the
+backlog #53 seed + the standing backup. Not an escalation day (07-14 UTC shipped heavily via the
+owner Push 3 session).
+
+**Gates:** docs-only pass, clean tree, no `src/` change ⇒ build/lint/typecheck/test are N/A (the
+§2.6 harness probe ran green independently). `pnpm lint:md` green after the report edits (§6.4).
+Backups `cryptobot-20260714T165047Z.sql.gz` (spot 1.5M) + `cryptobot-perp-20260714T165047Z.sql.gz`
+(perp 28K), §5 standing duty.
+
+**Flagged for human review:** none new. Standing AVAILABILITY ask unchanged (host currently awake,
+duty cycle healthy).
+
+**Next-pass candidates:** (1) **Reflection watch** — the FIRST closed trip under boot `695b6abf`
+is the test: expect the seed to fire the trigger, the abstain-lapse to lapse v2, and v3 to mint
+(entry-rate floor + mint-backtest); expect `minted` / `abstain_reject` / `expectancy_reject`;
+`validator_reject`/`transport_error`/`run_failed` = new defect. It is also the first STREAMED
+reflection (#32). (2) **P8d perp L0** — first perp entry (~3.5d warmup) = the FIRST LIVE algo-rail
+stop lifecycle exercise anywhere (STOP_MARKET via `fapiPrivateGetOpenAlgoOrders`, `venue_stop_filled`
+journal, no reconciliation HALT, funding rows, zero cross-lane leakage). (3) **P8a factorial** —
+cells filling, harm-stop peek at 8 trips/cell, thinking distribution toward ~50% as N grows, daily
+spend < $4.50. (4) **Phase-2 venue-TP** on the first fresh plan entry under `695b6abf`. (5) **E2
+eval:candidates** — corpus 513/600 for the haiku re-test (runnable capability met at ≥200). (6)
+**5→8 universe expansion pre-auth** (ZEC/AAVE/NEAR) once the consult soak shows ≥2 clean days. (7)
+carry re-test ~07-24 (winsorized benchmark, new dated report).

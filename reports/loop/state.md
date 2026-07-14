@@ -170,14 +170,20 @@ and the per-phase commits. Current per-phase state:
   `PERP_LEVERAGE_CAP`; a fractional cap kills the boot by design), re-run the arm preconditions,
   start with ONE symbol.
 
-### Push 3 program (owner session 2026-07-13/14, plan `humming-sprouting-crab` v3) — IN PROGRESS
+### Push 3 program (owner session 2026-07-13/14, plan `humming-sprouting-crab` v3) — COMPLETE, 2 lanes live
 
 Owner-approved four fronts ("make it all first-class"): perp lane live + shorts ladder; full
 stop-side architecture (watcher + venue-native trigger stops); factorial info×thinking
-measurement; every free info channel built flag-off. Commits so far: `3c8b1a1` (P0 studies),
-`39a43cd` (P1 A/B PRF), `8609722` (P2 stop watcher flag-off), `c1be07f` (P3 perp compose
-profile), `3da8e4d` (P4 reduceOnly forwarding), `c0d53bd` (P5 reflection seed race). Decision
-records:
+measurement; every free info channel built flag-off. All committed local, per-phase gates green,
+TWO adversarial review rounds on the stop architecture (8 findings, all fixed + test-pinned).
+Commit manifest: `3c8b1a1` (P0 studies), `39a43cd` (P1 A/B PRF), `8609722` (P2 stop watcher
+flag-off), `c1be07f` (P3 perp compose profile), `3da8e4d` (P4 reduceOnly forwarding), `c0d53bd`
+(P5 reflection seed race), `17b37b4` (P0c factorial cell script), `d7783de` (P6 five info
+channels flag-off), `2046b31` (P7a/P7b venue trigger-order path), `7de96ba` (P7c resting-order
+role identity), `4ce1fe0` (P8a-prep arm journaling), `830f556` (P7d venue-stop lifecycle
+flag-off), `749c88b` (P7e review fix: perp small-position protection gap), `c50d4ac` (P7f review
+fix: OMS algo-rail containment, 7 sub-fixes), `a6f0573` (P8a factorial ENABLE, spot), `359e4a7`
+(P8d binanceusdm capability fix), `aca7fb1` (P8d perp L0 ENABLE). Decision records:
 
 - **P0a stop-slippage study (`reports/loop/stop-slippage-2026-07-13.md`): watcher enable NOT
   JUSTIFIED at N=3** (mean total stop leak +3.2bps/exit vs the pre-registered −10bps bar; zero
@@ -218,12 +224,15 @@ records:
   deploys mid-experiment shift all cells equally — record dates, do NOT reset the window.
   Verdict = loop judgment over `test/backtest/ab-cells/run.mjs` output; winners become always-on
   flags and both pcts → 0, restoring one-channel-at-a-time for future channels.
-  **PREREQUISITE before the enable (must-fix):** the cell script cannot yet attribute trips
-  (plan-mode entry orders stamp source_event_time bars after the decide row) and cannot resolve
-  the thinking arm on batched-consult rows (pf1/pf2 + PORTFOLIO_TOOL not reconstructed) — fix =
-  explicit arm journaling (additive migration: agent_decisions gains info_arm/thinking_arm
-  booleans stamped by the client at decide time) + cell-script consumption; hash forensics stays
-  the fallback for pre-migration rows.
+  **PREREQUISITE — SHIPPED (`4ce1fe0` P8a-prep):** migration 0012 adds nullable
+  info_arm/thinking_arm; the client stamps treatment truth on every proposal path
+  (info_arm = NOT infoContextControlArm, thinking_arm = thinkingArm) and the strategy journal
+  persists them (NULL on quiet/prescreen rows). The cell script v2 prefers explicit arms (hash
+  forensics fallback for pre-migration rows) and its trip-attribution join was FIXED — the v1 join
+  keyed decide `event_time` (candle-OPEN) against intent `source_event_time` (candle-CLOSE) and
+  attributed 0/12; the v2 ASOF join (mirrored from the promotion evaluator) attributes 11/12 live
+  (the 12th has no preceding LLM decide). Early live signal: the info-treatment arm drives nearly
+  all proposes (8.4% vs 1.9% propose rate).
 - **P5 funnel fix shipped (`c0d53bd`):** the first close after every redeploy now evaluates the
   reflection trigger on the DB-seeded count (was: fire-and-forget seed ⇒ unseeded zero counters;
   a real starvation source given recreate frequency). Fail-open on seed errors preserved.
@@ -237,9 +246,90 @@ records:
   transform of data every payload already carries — nothing external to withhold; documented at
   its tag definition).
 - **OCO REJECTED (decided, do not re-litigate):** spot orderList/OCO would make reconciliation/
-  fills treat orderLists as alien objects; the identity-tagged dual-resting design (vtp:/vsl:
-  clientOrderId prefixes + prefix-targeted CANCEL_OPEN + mutual sibling-cancel) achieves the
-  same protection OMS-natively. Backlog #44 closes with this rationale when P7 ships.
+  fills treat orderLists as alien objects. P7c's resting-order role identity (`7de96ba`) achieves
+  the same TP/stop discrimination OMS-natively WITHOUT touching the frozen clientOrderId format:
+  role = f(intent.source.dedupeKey) — `venue_tp_`/`venue_stop_` — resolved by clientOrderId via
+  `ExecutionStorePort.loadIntentByClientOrderId` (the id encodes the intentId; the abandoned
+  vtp:/vsl: id-prefix design would have broken the money-path CLIENT_ORDER_ID_RE that
+  reconciliation/fill-ingestor depend on). Spot still cannot rest TP+stop TOGETHER (base
+  double-lock — the P7f boot refusal enforces this); backlog #44 (spot OCO) is the only path to
+  spot venue-side stop+TP, and it stays a seed.
+
+#### Push 3 completion records (2026-07-14, this session)
+
+- **P7c resting-order role identity (`7de96ba`), SHIPPED flag-neutral.** See the OCO note above for
+  the design. restingOrderForRole scopes manageVenueTp to `vtp`; CANCEL_OPEN gained `cancelRole`
+  (absent = side-only, byte-identical). 1390 specs green.
+- **P7d venue-resting protective stop lifecycle (`830f556`), SHIPPED flag-off, then ENABLED on the
+  perp lane (P8d).** manageVenueStop mirrors the TP lifecycle behind `AGENTIC_VENUE_STOP`: spot
+  STOP_LOSS_LIMIT on the open-orders rail (role `vsl`), perp STOP_MARKET on the algo rail
+  (reconciled via fetchOpenAlgoOrders; clientAlgoId dedupe). Registry `venueStopResting` flips true
+  only on CONFIRMED-resting (never at emission); executor + watcher stand down behind it except
+  beyond `PLAN_STOP_FORCE_BPS` (fail-safe backstop for a gapped venue stop). Restart re-arm
+  registry-timing bug found + fixed in-build.
+- **P7e/P7f adversarial money-path review (Workflow, 4 lenses × 2 refuters), 8 confirmed findings
+  ALL FIXED + test-pinned.** Round 1 (`749c88b`): a reachable perp band lost BOTH protections —
+  the sizer/evaluate rejected a reduce-only STOP_MARKET below minNotional (but Binance USD-M
+  -4164 exempts reduce-only — the venue would take the stop the bot refused), AND the 1s watcher's
+  isDust skip sat above its registry branch, blinding it in the same band. Fix: reduce-only PERP
+  intents are minNotional-exempt in sizer + evaluate (spot keeps the gate); watcher consults the
+  registry before the dust skip. Round 2 (`c50d4ac`, the program's deepest defects): the OMS
+  execution layer was BLIND to the perp algo rail. 7 sub-fixes rooted in one rail-split
+  (isAlgoRailIntent = triggerPrice + swap venue): (1) execution-gate no longer registers an algo
+  order in the local open-orders set (was → false CANCEL_UNKNOWN → RECONCILE_REQUIRED freeze with
+  held reserve); (2) unknown-resolver resolves algo SUBMIT_UNKNOWN via fetchOpenAlgoOrders — a
+  match = ACK, ABSENCE PROVES NOTHING so the entry stays pending and the rule-5 60s kill-switch is
+  the sole backstop (was: false not-found bypassed the watchdog); (3) reconciliation + boot-recovery
+  skip algo intents; (4) BOOT REFUSES venue_tp+venue_stop both-true on any spot venue (base
+  double-lock); (5) timed-out plan exit now emits its replacement crossed IOC (was: naked position);
+  (6) transient store-failure during stop reconcile skips placement (was: duplicate stop); (7)
+  halt-flatten + boot re-arm cancel/adopt a stranded perp algo stop.
+- **P8a factorial ENABLE (`a6f0573`), LIVE on the spot lane 2026-07-14.** `AGENTIC_DERIVATIVES_AB_PCT`
+  30→50, `AGENTIC_THINKING_AB_PCT` 0→50. Deploy verified: env in-container 50/50, migration 0012
+  columns present, zero boot errors, app healthy; the pre-deploy 15:00 rows carry NULL arms (old
+  code). Rollback = restore 30/0. **WATCH (P8a), PENDING:** (1) new decide rows (from the first
+  post-deploy bar) stamp non-null info_arm/thinking_arm — all four cells begin filling; (2)
+  `test/backtest/ab-cells/run.mjs` shows explicit-arm rows (explicit>0, not all inferred); (3)
+  daily spend stays under $4.50 (else thinking→30 per the cost rule); (4) llm_usage shows adaptive
+  thinking on ~50% of decides. Harm-stop peek at 8 trips/cell.
+- **P8d perp L0 DEPLOYED + LIVE (`aca7fb1` config, `359e4a7` the unblock).** `docker compose
+  --profile perp up`: app-perp on binanceusdm demo (demo-fapi, testnet mode), BTC/USDT:USDT only,
+  LONGS-ONLY, full stop architecture ON (venue TP + venue STOP_MARKET on the algo rail + executor +
+  S3; watcher off, matching spot), leverage 1 isolated (integer cap, fail-closed boot pin passed),
+  $2/day breaker, own isolated Postgres (5433, fresh — 0012 applied, zero rows; spot DB intact at
+  1202 decisions) + Prometheus (9091), port 3102. In WARMUP (340 bars ≈ 3.5 days to first decide).
+  **DEPLOY-TIME BLOCKER FOUND + FIXED (`359e4a7`):** the first boot crash-looped —
+  `binanceusdm does not support watchTicker`. Root cause: ccxt 4.5.58's binanceusdm.describe()
+  UNDER-REPORTS its inherited pro-streaming capabilities (the `watch*` methods work — empirically
+  verified against demo-fapi: ticker/OHLCV/book/trades all return live data — but `has.watch*`
+  comes back undefined). buildCcxtExchange now patches the verified-true flags for binanceusdm only;
+  pinned in the ccxt-bump regression suite. The P8 (2026-07-13) probe missed this — it verified
+  REST auth/orders, not the WS streaming path; the L0 one-symbol boot gate caught it before any
+  trade. **WATCH (P8d perp), PENDING — FIRST LIVE EXERCISE OF THE ALGO-RAIL STOP LIFECYCLE
+  ANYWHERE:** (1) first perp entry places a resting STOP_MARKET visible via
+  `fapiPrivateGetOpenAlgoOrders` (algoId populated, registry venueStopResting→true only then); (2)
+  a venue-stop fill journals `venue_stop_filled`; (3) NO reconciliation mismatch/HALT on the new
+  order type (rule 6 HALTs, never auto-flattens — a HALT here = the algo-rail containment missed a
+  case, investigate before re-arm); (4) funding settlement rows appear; (5) zero cross-lane leakage
+  (perp trips stay in postgres-perp; spot promotion gate/epoch unpolluted); (6) reflection fires on
+  this lane's own fresh evidence after 2 closed trips.
+
+- **PERP SHORTS LADDER pre-auths (loop-domain; the ONLY human touch remains the live-money flip):**
+  - **L0→L1 (shorts on the PERP lane):** after an L0 soak — ≥3 days clean AND ≥5 closed perp trips
+    AND zero reconciliation mismatches AND the algo-rail stop lifecycle verified live (WATCH 1-3
+    above green) — the loop may set `AGENTIC_SHORTS_ENABLED='true'` on app-perp (plan-mode shorts,
+    pf2 tool). Portfolio consult stays OFF on the perp lane (single symbol; and the shorts+consult
+    path wants its own soak). Leverage stays 1, isolated.
+  - **Perp symbol expansion (L1→L2):** add a second perp symbol only after L1 shows ≥5 short trips
+    clean; re-derive gross exposure first.
+- **Watcher enable pre-auth (spot, unchanged from P0a):** re-run `test/backtest/stop-slippage`
+  once spot stop-exit N≥10; enable `PLAN_STOP_WATCH_ENABLED` iff mean leak worse than −10bps/exit
+  OR any event ≤ −100bps. The perp lane's venue stop already supersedes the watcher there.
+- **Next-program seeds (backlog, not scheduled):** trailing-stop plan field (#45, wait for
+  venue-TP+stop capture data), Thompson multi-candidate routing (#46), adaptive consult cadence
+  (#47), weekly vol-ranked symbol rotation (#48), liquidation feed ENABLE (lq1 built flag-off, in
+  the post-factorial queue), spot OCO (#44), SSE reflection streaming (#32), orders-timestamp
+  stamps (#40).
 - **Thompson routing (#46), adaptive cadence (#47), trailing-stop plan field (#45): deliberately
   EXCLUDED from Push 3** — the first two replace measurement machinery mid-experiment; any
   plan-schema/template change cannot ENABLE mid-factorial (build-only is fine). Not deferrals —

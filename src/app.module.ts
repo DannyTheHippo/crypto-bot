@@ -209,6 +209,7 @@ import {
   EXEC_REPORT_NOTIFY,
   PORTFOLIO_VIEW,
   EXEC_OUTBOX_OVERRIDE,
+  EXECUTION_STORE,
   EXECUTION_STORE_OVERRIDE,
   INSTANCE_LOCK_OVERRIDE,
   type ExecOutboxPort,
@@ -1606,6 +1607,10 @@ export class AppModule
     @Optional() @Inject(PROMOTION_STATS) promotionStats?: PromotionStatsPort,
     @Optional() @Inject(PLAYBOOK_PROVIDER_OVERRIDE) playbookStore?: EvaluatorPlaybookStore,
     @Optional() @Inject(KILL_SWITCH) killSwitch?: KillSwitchPort,
+    // Push 3 P7c: resting-order role resolution (vtp/vsl), threaded into AgenticStrategyDeps.
+    // intentStore below. @Optional like the other DB-backed deps: absent under test/ci/no-DB
+    // leaves every role lookup 'unknown' (warn-once, leave-alone — never a blind cancel).
+    @Optional() @Inject(EXECUTION_STORE) private readonly executionStore?: ExecutionStorePort,
   ) {
     this.agentClient = new MetricsWrappingAgentClient(
       rawAgentClient,
@@ -1812,6 +1817,8 @@ export class AppModule
         // Push 3 P2: the SAME instance ProtectiveExitService reads each 1s tick (PLAN_STOP_REGISTRY,
         // provided once above) — this strategy instance populates it on plan entry-fill/clear.
         planStopRegistry: this.planStopRegistry,
+        // Push 3 P7c: resting-order role resolution (vtp/vsl) — see AgenticStrategyDeps.intentStore.
+        intentStore: this.executionStore,
       };
       return new AgenticStrategy(id, p as AgenticStrategyParams, this.agentClient, deps);
     });

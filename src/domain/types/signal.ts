@@ -16,6 +16,13 @@ export interface Signal {
   // Only meaningful on kind CANCEL_OPEN: scopes the cancel to one side. Absent ⇒ cancel both sides
   // (today's behavior, unchanged) — see SignalSinkService.cancelOpenForSignal.
   readonly cancelSide?: 'BUY' | 'SELL';
+  // Push 3 P7c: role-scoped narrowing alongside cancelSide — 'vtp' cancels only the resting
+  // take-profit, 'vsl' only the resting protective stop (role resolved off the order's own intent
+  // dedupeKey — see SignalSinkService.cancelOpenForSignal / domain/oms/resting-order-role.ts).
+  // Absent ⇒ every order matching cancelSide is cancelled (today's behavior, unchanged) — this is
+  // the deliberate path for a cancel-first ahead of a full-size exit, which must clear BOTH a
+  // resting TP and a resting stop.
+  readonly cancelRole?: 'vtp' | 'vsl';
   readonly limitPriceHint?: Price;
   // Protective-stop hint (Push 3 P7b): a reduce-only exit signal with exitStyle 'RESTING_STOP' rests
   // a venue trigger order (STOP_MARKET on a perp, STOP_LOSS_LIMIT on spot) built off this trigger

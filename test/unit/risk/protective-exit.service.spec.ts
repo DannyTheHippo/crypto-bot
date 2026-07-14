@@ -387,6 +387,10 @@ describe('ProtectiveExitService', () => {
     expect(calls).toHaveLength(2);
     expect((calls[0]?.[0] as Signal).kind).toBe('CANCEL_OPEN');
     expect((calls[0]?.[0] as Signal).cancelSide).toBe('SELL');
+    // Push 3 P7c: deliberately NO cancelRole — this cancel-first must clear BOTH a resting venue-TP
+    // and a resting protective stop with the ONE signal (SignalSinkService cancels every
+    // side-matching order when cancelRole is absent — see resting-order-role.ts / signal-sink.service.ts).
+    expect((calls[0]?.[0] as Signal).cancelRole).toBeUndefined();
     expect((calls[1]?.[0] as Signal).kind).toBe('EXIT_LONG');
   });
 
@@ -783,6 +787,7 @@ describe('ProtectiveExitService', () => {
       expect(calls).toHaveLength(2);
       expect((calls[0]?.[0] as Signal).kind).toBe('CANCEL_OPEN');
       expect((calls[0]?.[0] as Signal).cancelSide).toBe('BUY');
+      expect((calls[0]?.[0] as Signal).cancelRole).toBeUndefined(); // clears BOTH resting roles
       expect((calls[1]?.[0] as Signal).kind).toBe('EXIT_SHORT');
     });
   });

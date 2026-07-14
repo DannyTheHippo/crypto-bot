@@ -147,9 +147,18 @@ function buildLoop() {
     portfolio,
   );
   const signalOutcomes: string[] = [];
-  const sink = new SignalSinkService(gateway, portfolio, gate, {
-    record: (_signal, outcome) => void signalOutcomes.push(outcome),
-  });
+  // Push 3 P7c: `store` threaded as SignalSinkService's EXECUTION_STORE dep — cancelOpenForSignal's
+  // roleForOrder resolves a resting order's role off the SAME persisted intent saveIntent wrote
+  // (position-sizer.service.ts → PositionSizerService.size → ExecutionGateService.submit's
+  // write-ahead), so no extra fixture wiring is needed beyond passing the real store through.
+  const sink = new SignalSinkService(
+    gateway,
+    portfolio,
+    gate,
+    { record: (_signal, outcome) => void signalOutcomes.push(outcome) },
+    undefined,
+    store,
+  );
   return { adapter, sink, orders, portfolio, store, mid, signalOutcomes, advance };
 }
 
@@ -206,6 +215,26 @@ function cancelSellSignal(seq: number, mid: string): Signal {
     ttlMs: 60_000,
     dedupeKey: `venue_tp_cancel:${seq}`,
     reason: 'venue take-profit: cancel resting SELL ahead of full-size exit',
+  };
+}
+
+// Push 3 P7c: cancelRole-scoped variant of cancelSellSignal — resolves against the resting order's
+// OWN persisted intent (via SignalSinkService's EXECUTION_STORE dep), not a fixture double.
+function cancelSellSignalWithRole(seq: number, mid: string, cancelRole: 'vtp' | 'vsl'): Signal {
+  return {
+    strategyId: SID,
+    venue: VEN,
+    symbol: SYM,
+    kind: 'CANCEL_OPEN',
+    cancelSide: 'SELL',
+    cancelRole,
+    strength: 1,
+    refPrice: price(mid),
+    basedOnSeq: BigInt(seq),
+    eventTime: epochMs(T + seq),
+    ttlMs: 60_000,
+    dedupeKey: `venue_tp_cancel_role:${seq}`,
+    reason: `cancel resting SELL, role ${cancelRole} only`,
   };
 }
 
@@ -374,6 +403,43 @@ describe('AGENTIC_VENUE_TP: venue-resting take-profit (paper end-to-end)', () =>
     expect(sellStates.filter((st) => st === 'REJECTED')).toHaveLength(2); // the repeats terminal-reject
     expect(loop.portfolio.snapshot().openOrders.filter((o) => o.side === 'SELL')).toHaveLength(1);
     expect([...loop.portfolio.snapshot().positions.values()][0]!.signedQty.toFixed()).toBe('10'); // untouched
+  });
+
+  it('Push 3 P7c: CANCEL_OPEN with cancelRole only cancels a role-matching resting order (real store-backed dedupeKey resolution)', async () => {
+    const loop = buildLoop();
+    loop.adapter.ingestBook(SYM, [lvl('99', '50')], [lvl('100', '50')]);
+    await loop.sink.recordSignal(enterLong());
+    loop.advance(2_000);
+    await loop.sink.recordSignal(restingTp('102', 2)); // dedupeKey 'venue_tp_place:2' ⇒ role 'vtp'
+    expect(loop.portfolio.snapshot().openOrders).toHaveLength(1);
+
+    // A cancelRole that does NOT match this order's real role (resolved off its own persisted
+    // intent's dedupeKey, via SignalSinkService's EXECUTION_STORE dep) is a no-op — the resting SELL
+    // survives untouched.
+    loop.advance(2_000);
+    await loop.sink.recordSignal(cancelSellSignalWithRole(3, '100', 'vsl'));
+    expect(loop.portfolio.snapshot().openOrders).toHaveLength(1);
+    expect(loop.signalOutcomes.at(-1)).toBe('CANCEL_OPEN:0');
+
+    // The matching role DOES cancel it.
+    loop.advance(2_000);
+    await loop.sink.recordSignal(cancelSellSignalWithRole(4, '100', 'vtp'));
+    expect(loop.portfolio.snapshot().openOrders).toHaveLength(0);
+    expect(loop.signalOutcomes.at(-1)).toBe('CANCEL_OPEN:1');
+  });
+
+  it('Push 3 P7c: CANCEL_OPEN with no cancelRole stays side-only — byte-identical to pre-cancelRole behavior', async () => {
+    const loop = buildLoop();
+    loop.adapter.ingestBook(SYM, [lvl('99', '50')], [lvl('100', '50')]);
+    await loop.sink.recordSignal(enterLong());
+    loop.advance(2_000);
+    await loop.sink.recordSignal(restingTp('102', 2));
+    expect(loop.portfolio.snapshot().openOrders).toHaveLength(1);
+
+    loop.advance(2_000);
+    await loop.sink.recordSignal(cancelSellSignal(3, '100')); // no cancelRole
+    expect(loop.portfolio.snapshot().openOrders).toHaveLength(0);
+    expect(loop.signalOutcomes.at(-1)).toBe('CANCEL_OPEN:1');
   });
 
   // UNREACHABLE in this harness (see the dispatch brief's scenario 4): every test/paper/*.spec.ts

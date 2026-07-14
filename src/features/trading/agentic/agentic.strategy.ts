@@ -53,6 +53,8 @@ import { evaluatePlan, type PlanExecutorAction, type PlanExecutorState } from '.
 import { CrossSymbolContextService } from './cross-symbol-context';
 import { positionKey } from '../../../domain/risk/evaluate';
 import type { PlanStopRegistryPort } from '../../../ports/risk';
+import type { ExecutionStorePort } from '../../../ports/execution';
+import { roleForDedupeKey, type RestingOrderRole } from '../../../domain/oms/resting-order-role';
 
 export interface AgenticStrategyParams {
   readonly symbol: SymbolId;
@@ -212,6 +214,11 @@ export interface AgenticStrategyDeps {
   // path (see clearPlan/setPlanStop below). Absent ⇒ no-op — byte-identical to pre-feature.
   readonly planStopRegistry?: PlanStopRegistryPort;
   readonly logger?: LoggerLike;
+  // Push 3 P7c: resting-order role resolution (vtp/vsl) — narrowed to the single read method
+  // manageVenueTp's reconciliation actually uses (see roleForOrder). Optional: absent (no DB wired
+  // — paper/test boots without EXECUTION_STORE_OVERRIDE) resolves every order 'unknown', which
+  // manageVenueTp/restingOrderForRole treat as "leave it alone, warn once" — never a blind cancel.
+  readonly intentStore?: Pick<ExecutionStorePort, 'loadIntentByClientOrderId'>;
 }
 
 const MAX_DECISION_HISTORY = 10;
@@ -306,6 +313,12 @@ export class AgenticStrategy implements AsyncStrategy {
   private readonly onVenueTp?: (event: VenueTpEvent) => void;
   // Plan-stop watcher (Push 3 P2) — see AgenticStrategyDeps.planStopRegistry's own comment.
   private readonly planStopRegistry?: PlanStopRegistryPort;
+  // Push 3 P7c — see AgenticStrategyDeps.intentStore's own comment.
+  private readonly intentStore?: Pick<ExecutionStorePort, 'loadIntentByClientOrderId'>;
+  // Warn-once bookkeeping for an unknown-role resting order on the exit side (see roleForOrder /
+  // restingOrderForRole) — pruned to the currently-open set each cycle, same convention as
+  // entryFirstSeen/entryCancelRequestedAt below.
+  private readonly unknownRoleWarned = new Set<string>();
   // W2.1 stale-entry sweep state. OpenOrderSummary carries no timestamps, so age is measured in
   // observed decide cycles: clientOrderId → the snapshot eventTime this strategy FIRST saw the order
   // resting. cancelRequestedAt records when a CANCEL_OPEN was emitted for an id so it isn't re-spammed
@@ -371,6 +384,7 @@ export class AgenticStrategy implements AsyncStrategy {
     this.venueTpTickSize = params.venueTpTickSize;
     this.onVenueTp = deps.onVenueTp;
     this.planStopRegistry = deps.planStopRegistry;
+    this.intentStore = deps.intentStore;
     this.subscriptions = {
       venue: params.venue,
       symbols: [params.symbol],
@@ -437,7 +451,7 @@ export class AgenticStrategy implements AsyncStrategy {
     // W3.1: an active plan is managed deterministically — the LLM is consulted only on the safety
     // cadence (planMaxQuietBars) or once the plan clears. Returns null to fall through to a consult.
     if (this.planMode && this.activePlan) {
-      const planSignals = this.runActivePlan(input, context, heldDuringPrev);
+      const planSignals = await this.runActivePlan(input, context, heldDuringPrev);
       if (planSignals !== null) return [...staleCancels, ...planSignals];
     }
 
@@ -541,11 +555,11 @@ export class AgenticStrategy implements AsyncStrategy {
 
   // W3.1 per-bar management of the active plan. Non-null return = this bar is fully handled without
   // an LLM call; null = fall through to the normal consult path (safety re-consult cadence).
-  private runActivePlan(
+  private async runActivePlan(
     input: AgentDecisionInput,
     context: AgentContext,
     heldDuringPrev: 'LONG' | 'SHORT' | 'FLAT',
-  ): Signal[] | null {
+  ): Promise<Signal[] | null> {
     const active = this.activePlan!;
     active.barsElapsed += 1;
     // Push II Phase 8: which side this plan manages — 'short' rests a SELL entry / manages a SHORT
@@ -621,8 +635,11 @@ export class AgenticStrategy implements AsyncStrategy {
       // External-flatten orphan (review nice-to-have): if the position closed WITHOUT the TP
       // filling, the reduce-only resting order still rests (SELL for a LONG plan, BUY for a SHORT
       // plan — mirrored) — the entry-only stale sweep never touches it and it could fill against a
-      // later re-entry at this stale plan's TP. Risk-reducing cancel.
-      if (this.restingOrderForSide(input, tpSide)) {
+      // later re-entry at this stale plan's TP. Risk-reducing cancel. Push 3 P7c: role-scoped to
+      // 'vtp' — a resting order here that resolves to a DIFFERENT role (a future vsl stop, once
+      // P7d ships) is not this branch's orphan to clean up; restingOrderForRole warns once and
+      // leaves it for the stale sweep.
+      if (await this.restingOrderForRole(input, tpSide, 'vtp')) {
         this.onVenueTp?.('orphan_cancel');
         return [
           this.buildCancelOpenSignal(
@@ -630,6 +647,7 @@ export class AgenticStrategy implements AsyncStrategy {
             lastCandle,
             tpSide,
             `venue take-profit: position closed externally — cancel the orphaned resting ${tpSide}`,
+            'vtp',
           ),
         ];
       }
@@ -648,7 +666,10 @@ export class AgenticStrategy implements AsyncStrategy {
       if (this.venueTpEnabled && verdict.reason === 'take_profit') {
         const inFlightTp =
           active.venueTpPlacedAtBar !== null && active.barsElapsed <= active.venueTpPlacedAtBar + 1;
-        if (this.restingOrderForSide(input, tpSide) || inFlightTp) {
+        // Push 3 P7c: role-scoped to 'vtp' — this hold is specifically about the TP's OWN fill
+        // racing the bar-close evaluation, so a resting order that resolves to a different role
+        // must not suppress this bar's exit on its account.
+        if ((await this.restingOrderForRole(input, tpSide, 'vtp')) || inFlightTp) {
           this.onVenueTp?.('tp_race_hold');
           this.recordQuietJournalEntry(
             input,
@@ -681,9 +702,17 @@ export class AgenticStrategy implements AsyncStrategy {
       // only: a take_profit crossing this close-price check while a TP still rests is the venue
       // order's own fill path racing this bar's evaluation, not a case this cancel-first guard
       // targets (out of the explicit brief scope for this feature).
+      // Push 3 P7c: deliberately ROLE-AGNOSTIC (restingOrderForSide, not restingOrderForRole) — a
+      // full-size exit is blocked by ANY resting reduce-only order on this side, TP or protective
+      // stop alike, and the CANCEL_OPEN below carries no cancelRole so SignalSinkService's
+      // cancelOpenForSignal cancels every side-matching order in one signal (both roles cleared
+      // before the exit submits). Perp seam (P7d): a resting venue STOP_MARKET lives on the algo
+      // rail, never in openOrders, so this side-scan can never see it — the plan-stop registry's
+      // own `venueStopResting` flag (see setPlanStop/tickPlanStop) is where P7d's algo-cancel call
+      // hooks in; documented here, not built (out of this task's scope).
       if (this.venueTpEnabled && (verdict.reason === 'stop' || verdict.reason === 'max_hold')) {
-        const restingTp = this.restingOrderForSide(input, tpSide);
-        if (restingTp) {
+        const restingExit = this.restingOrderForSide(input, tpSide);
+        if (restingExit) {
           this.onVenueTp?.('cancel_for_exit');
           return [
             this.buildCancelOpenSignal(
@@ -742,7 +771,7 @@ export class AgenticStrategy implements AsyncStrategy {
     // AGENTIC_VENUE_TP: idempotent per-bar reconciliation of the resting take-profit (place if
     // missing, cancel-to-re-place on drift). No-op ([]) whenever the flag is off, position isn't
     // LONG/SHORT, or the resting order is already correctly priced — see manageVenueTp.
-    return this.manageVenueTp(input, context, active, lastCandle, isShort, tpSide);
+    return await this.manageVenueTp(input, context, active, lastCandle, isShort, tpSide);
   }
 
   // AGENTIC_VENUE_TP: places or reconciles the plan's resting take-profit at the venue instead of
@@ -752,14 +781,14 @@ export class AgenticStrategy implements AsyncStrategy {
   // re-observes the existing order on its next managed bar and does nothing. Push II Phase 8:
   // mirrored for SHORT — the resting TP is a reduce-only BUY (cover) instead of a SELL, priced
   // entry × (1 − takeProfitPct) instead of entry × (1 + takeProfitPct).
-  private manageVenueTp(
+  private async manageVenueTp(
     input: AgentDecisionInput,
     context: AgentContext,
     active: ActivePlanState,
     lastCandle: CandleEvent,
     isShort: boolean,
     tpSide: 'BUY' | 'SELL',
-  ): Signal[] {
+  ): Promise<Signal[]> {
     if (!this.venueTpEnabled) return [];
     if (
       (context.position.side !== 'LONG' && context.position.side !== 'SHORT') ||
@@ -769,7 +798,10 @@ export class AgenticStrategy implements AsyncStrategy {
     }
 
     const currentTp = this.venueTpPrice(active.entryPrice, active.plan.takeProfitPct, isShort);
-    const restingTp = this.restingOrderForSide(input, tpSide);
+    // Push 3 P7c: role-scoped — this reconciliation loop owns ONLY the 'vtp'-role resting order. A
+    // 'vsl' (future P7d) or otherwise-unknown order resting on the same side is not this loop's to
+    // place/drift/qty-reconcile against (restingOrderForRole warns once and leaves it alone).
+    const restingTp = await this.restingOrderForRole(input, tpSide, 'vtp');
 
     if (!restingTp) {
       // In-flight suppression (review finding): a placement emitted on bar N may not be acked into
@@ -832,6 +864,7 @@ export class AgenticStrategy implements AsyncStrategy {
           lastCandle,
           tpSide,
           `venue take-profit: resting ${tpSide} drifted ${driftBps.toFixed(1)}bps from the plan TP — cancel to re-place`,
+          'vtp',
         ),
       ];
     }
@@ -848,6 +881,7 @@ export class AgenticStrategy implements AsyncStrategy {
           lastCandle,
           tpSide,
           `venue take-profit: resting ${tpSide} qty ${restingTp.qty.toFixed()} != position ${context.position.qty} — cancel to re-size`,
+          'vtp',
         ),
       ];
     }
@@ -880,11 +914,73 @@ export class AgenticStrategy implements AsyncStrategy {
     );
   }
 
+  // Push 3 P7c: role classification for an open order — decodes to the persisted intent (via
+  // intentStore) and reads roleForDedupeKey off its own source.dedupeKey. A store failure, an
+  // absent intentStore (no DB wired), or a lookup miss (foreign/undecodable clientOrderId) all
+  // resolve 'unknown' — fail OPEN to "don't touch it", never a guess (this is a reconciliation
+  // helper, not a safety gate: CLAUDE.md's fail-direction rule for measurement/veto-only paths).
+  private async roleForOrder(
+    clientOrderId: OpenOrderSummary['clientOrderId'],
+  ): Promise<RestingOrderRole> {
+    // Called through the member expression (never destructured into a bare variable first) — a
+    // destructured reference loses `this` when invoked, and a real ExecutionStorePort
+    // implementation reads its own instance state (see signal-sink.service.ts's own roleForOrder,
+    // which hit exactly this bug against InMemoryExecutionStore).
+    if (!this.intentStore?.loadIntentByClientOrderId) return 'unknown';
+    try {
+      const intent = await this.intentStore.loadIntentByClientOrderId(clientOrderId);
+      return intent ? roleForDedupeKey(intent.source.dedupeKey) : 'unknown';
+    } catch {
+      return 'unknown';
+    }
+  }
+
+  // Push 3 P7c: restingOrderForSide, narrowed to ONE resting-order role — manageVenueTp's own
+  // reconciliation (place/drift/qty/orphan) and the tp-race/orphan checks above must never mistake
+  // a resting protective stop (P7d's 'vsl') for the take-profit they own, or vice versa. Any
+  // side-matching order that resolves to a DIFFERENT role (or 'unknown') is left alone — warned
+  // once so a genuinely stale/misclassified order is still visible, but never blindly cancelled;
+  // the existing stale-entry sweep is the backstop for orders that are actually abandoned.
+  private async restingOrderForRole(
+    input: AgentDecisionInput,
+    side: 'BUY' | 'SELL',
+    role: 'vtp' | 'vsl',
+  ): Promise<OpenOrderSummary | undefined> {
+    const candidates = input.snapshot.portfolio.openOrders.filter(
+      (o) => o.symbol === this.symbol && o.side === side,
+    );
+    for (const o of candidates) {
+      const found = await this.roleForOrder(o.clientOrderId);
+      if (found === role) return o;
+      if (found === 'unknown') this.warnUnknownRoleOnce(o, input);
+    }
+    return undefined;
+  }
+
+  private warnUnknownRoleOnce(order: OpenOrderSummary, input: AgentDecisionInput): void {
+    const openIds = new Set(
+      input.snapshot.portfolio.openOrders.map((o) => String(o.clientOrderId)),
+    );
+    for (const id of [...this.unknownRoleWarned]) {
+      if (!openIds.has(id)) this.unknownRoleWarned.delete(id);
+    }
+    const id = String(order.clientOrderId);
+    if (this.unknownRoleWarned.has(id)) return;
+    this.unknownRoleWarned.add(id);
+    this.logger.warn(
+      `unknown-role resting ${order.side} order ${id} on ${this.symbol} — leaving it for the stale sweep`,
+    );
+  }
+
   private buildCancelOpenSignal(
     input: AgentDecisionInput,
     lastCandle: CandleEvent,
     cancelSide: 'BUY' | 'SELL',
     reason: string,
+    // Push 3 P7c: absent ⇒ side-only cancel (today's behavior — used by the entry-side sweeps and
+    // the stop/max_hold cancel-first, which must clear every resting role on this side). 'vtp'/
+    // 'vsl' narrows to that one role's own resting order (manageVenueTp's own reconciliation).
+    cancelRole?: 'vtp' | 'vsl',
   ): Signal {
     return {
       strategyId: this.id,
@@ -892,6 +988,7 @@ export class AgenticStrategy implements AsyncStrategy {
       symbol: this.symbol,
       kind: 'CANCEL_OPEN',
       cancelSide,
+      ...(cancelRole ? { cancelRole } : {}),
       strength: 1,
       refPrice: lastCandle.close,
       basedOnSeq: lastCandle.seq,
@@ -1450,6 +1547,11 @@ export class AgenticStrategy implements AsyncStrategy {
         // Batch-attribution join key (Push II Phase 5 follow-on) — see AgentProposal.consultId.
         // Null on every non-batched decision.
         consultId: proposal?.consultId ?? null,
+        // Factorial-cell truth (migration 0012): treatment polarity — info_arm true = info bundle
+        // PRESENT, thinking_arm true = adaptive thinking ON. Null when no LLM call was attempted
+        // (quiet/prescreen rows never carry a proposal).
+        infoArm: proposal?.infoArm ?? null,
+        thinkingArm: proposal?.thinkingArm ?? null,
       });
     } catch {
       // A journal failure must never affect trading — it's an analysis artifact, not a safety

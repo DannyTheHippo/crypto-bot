@@ -171,6 +171,13 @@ export interface ExecutionStorePort {
   // lags it (2026-07-11: three partials in one poll folded from a stale snapshot, regressing
   // the cached cum and stranding a venue-FILLED order at RECONCILE_REQUIRED).
   loadFilledQty(clientOrderId: ClientOrderId): Promise<string>;
+  // Push 3 P7c: resting-order role resolution (vtp/vsl) — recovers the persisted intent for an open
+  // order's clientOrderId so the caller can classify it off intent.source.dedupeKey (see
+  // domain/oms/resting-order-role.ts). Optional because it is a NEW read path: the in-memory store
+  // implements it directly (paper/test); a store that hasn't wired it yet is simply absent here, and
+  // every call site treats that identically to a lookup miss — resolves 'unknown' and leaves the
+  // order alone (warn-once, never a blind cancel/reconcile). Read-only; never on the order-submit path.
+  loadIntentByClientOrderId?(clientOrderId: ClientOrderId): Promise<OrderIntent | null>;
 }
 
 // A non-terminal order restored at boot: the OMS record for the order-book projection plus the

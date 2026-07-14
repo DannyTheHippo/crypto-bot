@@ -26,10 +26,13 @@ import {
   symbolId,
   epochMs,
   clientOrderId,
+  intentId,
 } from '../../../src/domain/types/ids';
 import { positionKey, type SymbolFilters } from '../../../src/domain/risk/evaluate';
 import type { PlanStop, PlanStopRegistryPort } from '../../../src/ports/risk';
 import type { ClockPort } from '../../../src/ports/clock';
+import type { ExecutionStorePort } from '../../../src/ports/execution';
+import type { OrderIntent } from '../../../src/domain/types/order-intent';
 import { PositionSizerService } from '../../../src/features/trading/risk/position-sizer.service';
 
 const SID = strategyId('agentic-1');
@@ -524,6 +527,62 @@ describe('AgenticStrategy journals the batch consultId (persistence)', () => {
   });
 });
 
+// Push 3 P7c: minimal-but-full OrderIntent fixture — only source.dedupeKey is ever read
+// (AgenticStrategy.roleForOrder), the rest is filler matching test/unit/risk/property.spec.ts's own
+// convention for a throwaway intent literal.
+const TEST_IID = intentId('0190abcd-1234-7abc-89ab-0123456789ab');
+function intentWithDedupeKey(
+  coid: OpenOrderSummary['clientOrderId'],
+  dedupeKey: string,
+): OrderIntent {
+  return {
+    intentId: TEST_IID,
+    clientOrderId: coid,
+    strategyId: SID,
+    venue: V,
+    symbol: SYM,
+    side: 'SELL',
+    type: 'LIMIT',
+    qty: qty('0.001'),
+    limitPrice: price('100'),
+    timeInForce: 'GTC',
+    reduceOnly: true,
+    mode: 'paper',
+    refPrice: price('100'),
+    refSeq: 1n,
+    createdAt: epochMs(0),
+    expiresAt: epochMs(10_000),
+    source: { dedupeKey, eventTime: epochMs(0), basedOnSeq: 1n, strength: 1 },
+  };
+}
+
+// Every resting SELL/BUY fixture in the two venue-TP describe blocks below represents the plan's OWN
+// venue-TP order (this suite predates P7c's vtp/vsl role split) — resolving ANY clientOrderId to a
+// legacy-shaped 'agentic:venue_tp_place' dedupeKey proves the "legacy compatibility is free" design:
+// no fixture needed updating beyond wiring this store, the SAME dedupeKey shape manageVenueTp itself
+// has stamped on every venue-TP placement since inception (see manageVenueTp's own dedupeKey).
+function vtpOnlyIntentStore(): Pick<ExecutionStorePort, 'loadIntentByClientOrderId'> {
+  return {
+    loadIntentByClientOrderId: (coid) =>
+      Promise.resolve(intentWithDedupeKey(coid, 'agentic:venue_tp_place:legacy-fixture')),
+  };
+}
+
+// Push 3 P7c: two-resting-order discrimination — resolves EACH clientOrderId to its OWN dedupeKey so
+// a single bar can carry a 'vtp' order and a 'vsl' order (P7d convention) simultaneously.
+function roledIntentStore(
+  roleByClientOrderId: ReadonlyMap<string, 'vtp' | 'vsl'>,
+): Pick<ExecutionStorePort, 'loadIntentByClientOrderId'> {
+  return {
+    loadIntentByClientOrderId: (coid) => {
+      const role = roleByClientOrderId.get(String(coid));
+      if (role === undefined) return Promise.resolve(null);
+      const marker = role === 'vtp' ? 'agentic:venue_tp_place' : 'agentic:venue_stop_place';
+      return Promise.resolve(intentWithDedupeKey(coid, `${marker}:fixture`));
+    },
+  };
+}
+
 // AGENTIC_VENUE_TP: venue-resting take-profit lifecycle for plan-mode longs (see agentic.strategy.ts's
 // manageVenueTp/runActivePlan). PLAN here: avgEntry 100, takeProfitPct 0.03 ⇒ TP price 103 exactly;
 // stopLossPct 0.02 ⇒ stop price 98 exactly. planMaxQuietBars is set well above every bar driven in
@@ -574,6 +633,7 @@ describe('AgenticStrategy venue-resting take-profit lifecycle (AGENTIC_VENUE_TP)
     const events: VenueTpEvent[] = [];
     const strategy = new AgenticStrategy(SID, venueTpParams(), client, {
       onVenueTp: (e) => events.push(e),
+      intentStore: vtpOnlyIntentStore(),
     });
     await strategy.decide(buildInput(0));
     await strategy.decide(buildInput(1, { position: longPosition('100') })); // places TP (events: ['placed'])
@@ -605,6 +665,10 @@ describe('AgenticStrategy venue-resting take-profit lifecycle (AGENTIC_VENUE_TP)
     expect(out).toHaveLength(2);
     expect(out[0]!.kind).toBe('CANCEL_OPEN');
     expect(out[0]!.cancelSide).toBe('SELL');
+    // Push 3 P7c: deliberately NO cancelRole — a stop/max_hold cancel-first must clear BOTH a
+    // resting TP and a resting protective stop with the ONE signal (SignalSinkService's
+    // cancelOpenForSignal cancels every side-matching order when cancelRole is absent).
+    expect(out[0]!.cancelRole).toBeUndefined();
     expect(out[1]!.kind).toBe('EXIT_LONG');
     expect(out[1]!.reason).toBe('plan exit: stop');
   });
@@ -614,6 +678,7 @@ describe('AgenticStrategy venue-resting take-profit lifecycle (AGENTIC_VENUE_TP)
     const events: VenueTpEvent[] = [];
     const strategy = new AgenticStrategy(SID, venueTpParams(), client, {
       onVenueTp: (e) => events.push(e),
+      intentStore: vtpOnlyIntentStore(),
     });
     await strategy.decide(buildInput(0));
     await strategy.decide(buildInput(1, { position: longPosition('100') })); // places TP at 103
@@ -627,6 +692,9 @@ describe('AgenticStrategy venue-resting take-profit lifecycle (AGENTIC_VENUE_TP)
     expect(out).toHaveLength(1);
     expect(out[0]!.kind).toBe('CANCEL_OPEN');
     expect(out[0]!.cancelSide).toBe('SELL');
+    // Push 3 P7c: manageVenueTp's own reconciliation cancels scope to cancelRole:'vtp' — it never
+    // touches a coexisting resting protective stop (see the two-resting-SELLs discrimination test).
+    expect(out[0]!.cancelRole).toBe('vtp');
     expect(out[0]!.reason).toContain('drifted');
     expect(events).toEqual(['drift_cancel']);
   });
@@ -687,6 +755,7 @@ describe('AgenticStrategy venue-resting take-profit lifecycle (AGENTIC_VENUE_TP)
     const events: VenueTpEvent[] = [];
     const strategy = new AgenticStrategy(SID, venueTpParams(), client, {
       onVenueTp: (e) => events.push(e),
+      intentStore: vtpOnlyIntentStore(),
     });
     await strategy.decide(buildInput(0));
 
@@ -716,6 +785,7 @@ describe('AgenticStrategy venue-resting take-profit lifecycle (AGENTIC_VENUE_TP)
     const events: VenueTpEvent[] = [];
     const strategy = new AgenticStrategy(SID, venueTpParams(), client, {
       onVenueTp: (e) => events.push(e),
+      intentStore: vtpOnlyIntentStore(),
     });
     await strategy.decide(buildInput(0));
     await strategy.decide(buildInput(1, { position: longPosition('100') })); // places TP
@@ -732,6 +802,7 @@ describe('AgenticStrategy venue-resting take-profit lifecycle (AGENTIC_VENUE_TP)
     expect(out).toHaveLength(1);
     expect(out[0]!.kind).toBe('CANCEL_OPEN');
     expect(out[0]!.cancelSide).toBe('SELL');
+    expect(out[0]!.cancelRole).toBe('vtp');
     expect(out[0]!.reason).toContain('qty');
     expect(events).toEqual(['qty_cancel']);
   });
@@ -794,6 +865,7 @@ describe('AgenticStrategy venue-resting take-profit lifecycle (AGENTIC_VENUE_TP)
     const events: VenueTpEvent[] = [];
     const strategy = new AgenticStrategy(SID, venueTpParams(), client, {
       onVenueTp: (e) => events.push(e),
+      intentStore: vtpOnlyIntentStore(),
     });
     await strategy.decide(buildInput(0));
     await strategy.decide(buildInput(1, { position: longPosition('100') })); // places TP
@@ -806,6 +878,7 @@ describe('AgenticStrategy venue-resting take-profit lifecycle (AGENTIC_VENUE_TP)
     expect(out).toHaveLength(1);
     expect(out[0]!.kind).toBe('CANCEL_OPEN');
     expect(out[0]!.cancelSide).toBe('SELL');
+    expect(out[0]!.cancelRole).toBe('vtp');
     expect(out[0]!.reason).toContain('orphaned');
     expect(events).toEqual(['filled_flat', 'orphan_cancel']);
   });
@@ -818,6 +891,7 @@ describe('AgenticStrategy venue-resting take-profit lifecycle (AGENTIC_VENUE_TP)
     // churn cancel/re-place forever; the tick-aware expectation sees 0bps.
     const strategy = new AgenticStrategy(SID, venueTpParams({ venueTpTickSize: '0.5' }), client, {
       onVenueTp: (e) => events.push(e),
+      intentStore: vtpOnlyIntentStore(),
     });
     await strategy.decide(buildInput(0));
     await strategy.decide(buildInput(1, { position: longPosition('100.2') })); // places TP
@@ -826,6 +900,47 @@ describe('AgenticStrategy venue-resting take-profit lifecycle (AGENTIC_VENUE_TP)
     const out = await strategy.decide(
       buildInput(2, { position: longPosition('100.2'), openOrders: [restingSell('103.5')] }),
     );
+    expect(out).toEqual([]);
+    expect(events).toEqual(['skipped_existing']);
+  });
+
+  it('two resting SELLs (vtp + vsl) reconcile independently — manageVenueTp only ever touches the vtp order', async () => {
+    const client = new PlanningClient();
+    const events: VenueTpEvent[] = [];
+    const vtpOrder = restingSell('103'); // correctly priced/sized ⇒ would be skipped_existing alone
+    // A second resting SELL, same symbol/side, WRONG price AND qty relative to the plan's TP — if
+    // manageVenueTp were still role-agnostic (pre-P7c .find), it would non-deterministically pick
+    // this one and drift/qty-cancel it. A distinct clientOrderId from vtpOrder's is required for the
+    // role map to tell them apart.
+    const vslOrder: OpenOrderSummary = {
+      clientOrderId: clientOrderId('cbp0000000000000007000800000000000009'),
+      symbol: SYM,
+      side: 'SELL',
+      qty: qty('0.5'),
+      limitPrice: price('50'),
+    };
+    const strategy = new AgenticStrategy(SID, venueTpParams(), client, {
+      onVenueTp: (e) => events.push(e),
+      intentStore: roledIntentStore(
+        new Map([
+          [String(vtpOrder.clientOrderId), 'vtp'],
+          [String(vslOrder.clientOrderId), 'vsl'],
+        ]),
+      ),
+    });
+    await strategy.decide(buildInput(0));
+    await strategy.decide(buildInput(1, { position: longPosition('100') })); // places the vtp TP
+    events.length = 0;
+
+    const out = await strategy.decide(
+      buildInput(2, {
+        position: longPosition('100'),
+        openOrders: [vslOrder, vtpOrder],
+      }),
+    );
+    // No churn: the vtp order is correctly priced/sized (skipped_existing); the vsl order is a KNOWN
+    // different role, never examined by manageVenueTp's drift/qty checks, so it never generates a
+    // cancel even though its own price/qty would trip both thresholds if it were mistaken for the TP.
     expect(out).toEqual([]);
     expect(events).toEqual(['skipped_existing']);
   });
@@ -924,6 +1039,7 @@ describe('AgenticStrategy venue-resting take-profit lifecycle — SHORT (Push II
     const events: VenueTpEvent[] = [];
     const strategy = new AgenticStrategy(SID, venueTpParams(), client, {
       onVenueTp: (e) => events.push(e),
+      intentStore: vtpOnlyIntentStore(),
     });
     await strategy.decide(buildInput(0));
     await strategy.decide(buildInput(1, { position: shortPosition('100') })); // places TP at 97
@@ -953,6 +1069,7 @@ describe('AgenticStrategy venue-resting take-profit lifecycle — SHORT (Push II
     expect(out).toHaveLength(2);
     expect(out[0]!.kind).toBe('CANCEL_OPEN');
     expect(out[0]!.cancelSide).toBe('BUY');
+    expect(out[0]!.cancelRole).toBeUndefined(); // role-agnostic: clears BOTH resting roles
     expect(out[1]!.kind).toBe('EXIT_SHORT');
     expect(out[1]!.reason).toBe('plan exit: stop');
   });
@@ -962,6 +1079,7 @@ describe('AgenticStrategy venue-resting take-profit lifecycle — SHORT (Push II
     const events: VenueTpEvent[] = [];
     const strategy = new AgenticStrategy(SID, venueTpParams(), client, {
       onVenueTp: (e) => events.push(e),
+      intentStore: vtpOnlyIntentStore(),
     });
     await strategy.decide(buildInput(0));
 

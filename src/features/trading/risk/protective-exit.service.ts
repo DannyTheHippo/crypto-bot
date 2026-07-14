@@ -167,7 +167,10 @@ export class ProtectiveExitService {
       if (lastFired !== undefined && now - lastFired < this.config.cooldownMs) continue;
 
       // The venue take-profit side is the OPPOSITE of the entry side — SELL for a LONG, BUY for a
-      // SHORT — never blocking (fire() cancels it first when present).
+      // SHORT — never blocking (fire() cancels it first when present). Push 3 P7c: role-agnostic by
+      // design — ANY resting order on this side (TP or spot venue-stop) blocks a full-size exit, so
+      // "has something resting there" is the right question, not "has a TP specifically" (see
+      // fire()'s own cancel-first comment).
       const hasOpenTp = (isLong ? sellOpen : buyOpen).has(pos.symbol);
       await this.fire(pos, ref.mid, now, reason, key, snapshot.snapshotSeq, isLong, hasOpenTp);
     }
@@ -258,6 +261,15 @@ export class ProtectiveExitService {
         // A resting TP order locks the base balance (spot LONG) or margin (SHORT cover) — a
         // full-size exit would otherwise be rejected. Cancel it and await the ack before submitting
         // the exit.
+        // Push 3 P7c: deliberately NO cancelRole — a side-matching CANCEL_OPEN with no role clears
+        // EVERY resting order on tpSide in one signal (SignalSinkService.cancelOpenForSignal), so
+        // this already cancels a resting venue-TP AND a resting spot venue-stop (P7d's STOP_LOSS_
+        // LIMIT rests on the SAME open-order rail, same side) with no further change here. Seam for
+        // P7d's PERP path: a resting STOP_MARKET lives on the swap ALGO/conditional rail, never in
+        // openOrders, so `hasOpenTp`/this cancel can never see or clear it — the plan-stop
+        // registry's own `venueStopResting` flag (tickPlanStop's `stop` param above) is where P7d
+        // hooks an algo-cancel call before this exit submits; not built here (out of this task's
+        // scope).
         await this.sink.recordSignal({
           strategyId: pos.strategyId,
           venue: pos.venue,

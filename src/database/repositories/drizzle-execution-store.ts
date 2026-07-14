@@ -3,6 +3,7 @@ import Decimal from 'decimal.js';
 import { price, qty } from '../../domain/types/money';
 import type { TradingMode } from '../../domain/types/mode';
 import type { StrategyId, VenueId, SymbolId, ClientOrderId, EpochMs } from '../../domain/types/ids';
+import { decodeClientOrderId, isOurClientOrderId } from '../../domain/types/ids';
 import type { Position } from '../../domain/types/portfolio';
 import type { OrderIntent } from '../../domain/types/order-intent';
 import type { ApprovalProof } from '../../domain/types/risk-decision';
@@ -326,6 +327,16 @@ export class DrizzleExecutionStore implements ExecutionStorePort {
 
   async loadFilledQty(clientOrderId: ClientOrderId): Promise<string> {
     return this.fills.sumQtyByClientOrderId(clientOrderId);
+  }
+
+  // Resting-order role resolution (P7c) keys on the intent's dedupeKey lineage; the production
+  // store must answer this or every live role degrades to 'unknown' and the venue-TP/stop
+  // reconcilers go blind (the in-memory store answers from its map). The clientOrderId encodes
+  // the intentId, so this is decode + the recovery loader — no new SQL shape. Foreign or
+  // malformed ids resolve null (fail-open to 'unknown'), matching the resolver's contract.
+  async loadIntentByClientOrderId(clientOrderId: ClientOrderId): Promise<OrderIntent | null> {
+    if (!isOurClientOrderId(clientOrderId)) return null;
+    return this.loadIntentForRecovery(decodeClientOrderId(clientOrderId).intentId);
   }
 
   // Rehydrate the persisted write-ahead intent (tx1) for a recovered order so the runtime gets

@@ -113,6 +113,13 @@ export class InMemoryExecutionStore implements ExecutionStorePort {
     return Promise.resolve(total.toFixed());
   }
 
+  // Push 3 P7c: resting-order role resolution's read path — the `intents` map above already keys
+  // the full OrderIntent (dedupeKey included) by clientOrderId from saveIntent, so this is a plain
+  // lookup, no extra bookkeeping.
+  loadIntentByClientOrderId(clientOrderId: ClientOrderId): Promise<OrderIntent | null> {
+    return Promise.resolve(this.intents.get(clientOrderId)?.intent ?? null);
+  }
+
   // ── Inspection (tests) ───────────────────────────────────────────────────────
   stateOf(clientOrderId: ClientOrderId): OrderState | undefined {
     return this.orders.get(clientOrderId)?.state;

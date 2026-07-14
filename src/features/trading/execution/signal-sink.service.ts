@@ -5,8 +5,10 @@ import { SIGNAL_GATEWAY, type SignalGatewayPort } from '../../../ports/risk';
 import {
   PORTFOLIO_VIEW,
   EXECUTION_GATE,
+  EXECUTION_STORE,
   type PortfolioViewPort,
   type ExecutionGatePort,
+  type ExecutionStorePort,
 } from '../../../ports/execution';
 import {
   SIGNAL_JOURNAL,
@@ -14,6 +16,9 @@ import {
   type SignalJournalPort,
 } from '../../../ports/strategy';
 import type { Signal } from '../../../domain/types/signal';
+import type { ClientOrderId } from '../../../domain/types/ids';
+import type { OpenOrderSummary } from '../../../domain/types/portfolio';
+import { roleForDedupeKey, type RestingOrderRole } from '../../../domain/oms/resting-order-role';
 
 // Front-door rejection counter: signals dropped at the gateway (kill-switch/TTL/dedupe) or sizer
 // (below-min / no-ref / no-position) before reaching the RiskEngine. These were only journaled to
@@ -49,7 +54,33 @@ export class SignalSinkService implements SignalSinkPort {
     @Inject(EXECUTION_GATE) private readonly gate: ExecutionGatePort,
     @Optional() @Inject(SIGNAL_JOURNAL) private readonly journal?: SignalJournalPort,
     @Optional() @InjectMetric('signals_rejected_total') private readonly rejects?: Counter<string>,
+    // Push 3 P7c: resting-order role resolution for CANCEL_OPEN's cancelRole filter — narrowed to
+    // the single read method it actually uses (see roleForOrder). @Optional so every pre-existing
+    // direct-construction unit test keeps constructing without it; absent ⇒ every cancelRole lookup
+    // resolves 'unknown', which never matches a requested role — a cancelRole-scoped signal becomes
+    // a safe no-op (never a side-only cancel it didn't ask for) rather than a silent behavior change.
+    @Optional()
+    @Inject(EXECUTION_STORE)
+    private readonly store?: Pick<ExecutionStorePort, 'loadIntentByClientOrderId'>,
   ) {}
+
+  // Push 3 P7c: shared with AgenticStrategy's own roleForOrder (feature-boundary walls forbid
+  // importing one from the other — both call the same pure domain/oms/resting-order-role.ts
+  // classifier over their own store lookup). A store failure must never affect trading — fails open
+  // to 'unknown', the same as an absent store or a foreign/undecodable order.
+  private async roleForOrder(clientOrderId: ClientOrderId): Promise<RestingOrderRole> {
+    // Called through the member expression (never destructured into a bare variable first) — a
+    // destructured reference loses `this` when invoked, and InMemoryExecutionStore's real
+    // implementation reads `this.intents` (a plain-object store double with an arrow-function
+    // property, as most unit tests use, would not have surfaced this).
+    if (!this.store?.loadIntentByClientOrderId) return 'unknown';
+    try {
+      const intent = await this.store.loadIntentByClientOrderId(clientOrderId);
+      return intent ? roleForDedupeKey(intent.source.dedupeKey) : 'unknown';
+    } catch {
+      return 'unknown';
+    }
+  }
 
   recordSignal(signal: Signal): Promise<void> {
     const key = `${signal.strategyId}:${signal.symbol}`;
@@ -97,14 +128,29 @@ export class SignalSinkService implements SignalSinkPort {
   // the strategy's resting orders on OTHER symbols. Idempotent: no matching open orders ⇒ no-op.
   // signal.cancelSide narrows the cancel to one side (e.g. the S3 protective-exit path clears a
   // resting SELL before its own exit); absent ⇒ both sides, byte-identical to pre-cancelSide behavior.
+  // Push 3 P7c: signal.cancelRole further narrows a cancelSide match to one resting-order role
+  // ('vtp'/'vsl', resolved via roleForOrder) — absent ⇒ every side-matching order cancels, BYTE-
+  // IDENTICAL to pre-cancelRole behavior (see the CANCEL_OPEN spec pinning this). This is also the
+  // deliberate no-role path a cancel-first ahead of a full-size exit takes, so it clears BOTH a
+  // resting TP and a resting stop with the ONE signal (see ProtectiveExitService.fire /
+  // AgenticStrategy's stop/max_hold exit branch).
   private async cancelOpenForSignal(signal: Signal): Promise<void> {
-    const toCancel = this.portfolio
+    const bySide = this.portfolio
       .forStrategy(signal.strategyId)
       .openOrders.filter(
         (o) =>
           o.symbol === signal.symbol &&
           (signal.cancelSide === undefined || o.side === signal.cancelSide),
       );
+    const toCancel: OpenOrderSummary[] = [];
+    for (const o of bySide) {
+      if (
+        signal.cancelRole === undefined ||
+        (await this.roleForOrder(o.clientOrderId)) === signal.cancelRole
+      ) {
+        toCancel.push(o);
+      }
+    }
     for (const o of toCancel) {
       await this.gate.cancel(o.clientOrderId, 'CANCEL_OPEN_SIGNAL');
     }

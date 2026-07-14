@@ -97,6 +97,25 @@ export function buildCcxtExchange(venueConfig: VenueConfig): Exchange {
   }
   // live: no modification; paper: caller should not invoke network methods
 
+  // ccxt's `has` capability map UNDER-REPORTS inherited pro-streaming methods for derived Binance
+  // futures exchanges: binanceusdm extends binance and inherits its working watch* implementations,
+  // but binanceusdm.describe() leaves has.watchTicker/watchOHLCV/watchOrderBook/watchTrades
+  // undefined — so assertCapabilities (which correctly trusts `has`) false-negatives and refuses to
+  // stream a venue that in fact streams fine. Empirically verified 2026-07-14 against
+  // demo-fapi.binance.com: all four return live data (ticker last, a 15m bar, a 1000-level book, a
+  // trade). Reflect that verified truth so the capability gate matches reality; every other venue's
+  // `has` is trusted as-is (no blanket widening of the assertion). Re-verify if the pinned ccxt
+  // 4.5.58 is bumped (the metadata may be corrected upstream, making this a harmless no-op).
+  if (venueConfig.id === 'binanceusdm') {
+    exchange.has = {
+      ...exchange.has,
+      watchTicker: true,
+      watchOHLCV: true,
+      watchOrderBook: true,
+      watchTrades: true,
+    };
+  }
+
   return exchange;
 }
 

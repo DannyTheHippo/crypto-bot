@@ -126,3 +126,29 @@ describe('assertSwapPrivateUrlSafe (fail-closed swap boot guard)', () => {
     ).not.toThrow();
   });
 });
+
+// CCXT CAPABILITY-METADATA REGRESSION (CLAUDE.md: bumping ccxt requires re-running this).
+// ccxt 4.5.58's binanceusdm.describe() UNDER-REPORTS its inherited pro-streaming capabilities:
+// the watch* methods are inherited from binance and work (empirically verified 2026-07-14 against
+// demo-fapi — ticker/OHLCV/book/trades all return live data), but has.watch* come back undefined,
+// which made assertCapabilities false-negative and crash-loop the perp lane at boot. buildCcxtExchange
+// patches the verified-true capabilities. If a ccxt bump corrects the upstream metadata this stays
+// green (idempotent); if a bump instead REMOVES a method, the boot probe would catch it — but pin the
+// metadata contract here so the fix is not silently lost.
+describe('binanceusdm pro-streaming capability augmentation (ccxt 4.5.58 has-map quirk)', () => {
+  it('reports watchTicker/watchOHLCV/watchOrderBook/watchTrades as supported', () => {
+    const ex = buildCcxtExchange({ id: 'binanceusdm', environment: 'demo' });
+    const has = ex.has as Record<string, unknown>;
+    expect(has['watchTicker']).toBe(true);
+    expect(has['watchOHLCV']).toBe(true);
+    expect(has['watchOrderBook']).toBe(true);
+    expect(has['watchTrades']).toBe(true);
+  });
+
+  it('does NOT touch a spot binance venue (its has-map is already correct)', () => {
+    const ex = buildCcxtExchange({ id: 'binance', environment: 'demo' });
+    const has = ex.has as Record<string, unknown>;
+    // untouched — binance already reports these; assertion guards against an over-broad patch
+    expect(has['watchTicker']).toBe(true);
+  });
+});

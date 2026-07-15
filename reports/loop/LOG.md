@@ -2740,3 +2740,122 @@ spend < $4.50. (4) **Phase-2 venue-TP** on the first fresh plan entry under `695
 eval:candidates** — corpus 513/600 for the haiku re-test (runnable capability met at ≥200). (6)
 **5→8 universe expansion pre-auth** (ZEC/AAVE/NEAR) once the consult soak shows ≥2 clean days. (7)
 carry re-test ~07-24 (winsorized benchmark, new dated report).
+
+## 2026-07-15 — Pass 25 (scheduled run; evidence sweep ~00:10Z, deploy+soak ~07:28–07:50Z after a ~6h host-sleep gap mid-pass): MAINTENANCE — CORRECTNESS BUG on the trading path FIXED (`debef0f`): venue-exit qty reconciliation churned cancel/re-place on every managed bar because it compared the step-rounded resting qty against the raw full-precision position.qty
+
+**Data window:** Pass 24 close (~16:55Z 07-14) → sweep (~00:10Z 07-15); new UTC day. No commits
+between (last was the Pass 24 report `517ffa9`). At sweep, both lanes had run ~9h uninterrupted on
+their Pass-24 boots (spot `695b6abf`, perp `51b685f1`). **Host-sleep note (standing AVAILABILITY
+flag):** the host slept ~01:00–07:20Z mid-pass; during the gap the app cycled several short boots
+(duty-cycle churn) and BTC/ETH/SOL positions closed to sub-step dust (real round trips). The fix
+work (commit + build + deploy + soak) ran ~07:28–07:50Z on wake; the metrics/DB figures below split
+into pre-fix (sweep) and post-fix (wake) accordingly.
+
+**Evidence sweep (pre-fix):** 10 containers up, both bot lanes healthy. Spot 0 error / 9 warn, perp
+0 error / 3 warn; 0 EXPIRED, `signals_rejected{EXPIRED}` empty, kill switch RUNNING both, `up=1`.
+Reconciliation **1067 clean / 0 mismatch (spot), 1036 clean / 0 (perp)** — no HALT. Spot scoreboard
+(epoch 08:30Z 07-12): **RT=12 (flat since Pass 24 — zero closes in 7.5h), net −$4.81 (was −$4.10),
+LLM $5.69, window 1.96d, ready=0**; equity **$4,997.18**, dd 0.06%. v1 attribution ≈ +$0.87
+realized-minus-fees / 12 trips ⇒ gate net = 0.87 − 5.69 LLM = −4.81 (internally consistent, no §7
+contradiction). Per-symbol realized: LINK +2.97, ETH −0.28, SOL −0.90, XRP −1.03, BTC −1.60 (sum
+−0.84). Cost **≈$2.90/day** — under the $4.50 thinking rule + $5 breaker. Decide flow this boot: 15
+prescreen-called (128 quiet = **89.5% skip**) → 5 proposed / 5 hold / 4 noop / 1 retryable; **5
+fills, 0 closed round_trips this boot** (all 5 symbols opened, none closed — RT-flat + reflection
+dormancy continue exactly as Pass 24 described). Playbook v1 active. §2.6 harness probe **green**
+(eval:agentic 15/6-skip). Perp: RT=0, net −$0.083 (LLM-only with 0 fills, expected — not a §7
+contradiction), equity $5,000, 1 propose resting unfilled, 3 hold, warmup; algo-rail stop
+UNEXERCISED (0 fills), all P8d WATCH items still legitimately PENDING.
+
+**THE BUG (correctness on the trading path — outranks all other pass types per §3):** the spot
+venue-resting take-profit was churning. `agentic_venue_tp_total` under boot `695b6abf`: **placed=15,
+qty_cancel=14, and ZERO `skipped_existing`** across 5 managed positions — the reconciliation never
+reached steady state. DB ground truth (3 ACKED resting reduce-only SELLs): **LINK 12.030000 vs
+position 12.0396; SOL 1.924000 vs 1.924173; ETH 0.059800 vs 0.0598266** — each resting qty =
+`roundToStep(position.qty, stepSize, 'down')` (LINK step 0.01, SOL 0.001, ETH 0.0001). Root cause:
+`manageVenueTp` compared `restingTp.qty.eq(context.position.qty)` EXACTLY. The venue can only rest a
+step-rounded reduce-only qty (≤ the full-precision position by the sub-step dust residue
+`position.qty mod step ∈ [0, step)`), so the equality is **structurally always false** ⇒ `qty_cancel`
+→ cancel/re-place every managed bar; the TP rarely rests stably. The identical exact check existed at
+two more sites — `manageVenueStopSpot` (STOP_LOSS_LIMIT open-orders rail) and `manageVenueStopPerp`
+(STOP_MARKET algo rail) — **latent** (venue-stop is enabled only on the perp lane, which has 0 fills;
+it would churn `cancelAlgoOrder` round trips on the algo rail the instant the first perp position
+fills — exactly the "first live algo-rail stop lifecycle" the P8d WATCH is guarding). This RESOLVES
+Pass 24's "Phase-2 venue-TP PENDING" watch (placement IS confirmed under `695b6abf` — 15 placed) and
+uncovers the churn within it.
+
+**Fix (`debef0f`, agentic lane + wiring only):** thread `venueTpStepSize` / `venueStopStepSize` from
+`DEFAULT_FILTERS.get(symbol).stepSize` — the SAME map + wiring pattern as the existing
+`venueTpTickSize`, and the SAME constant the sizer rounds reduce-only exit qty with
+(`position-sizer.service.ts` `roundToStep(posQty.abs(), filters.stepSize, 'down')`, so the invariant
+`restingQty == roundToStep(position.qty, step, 'down')` holds by construction) — and compare against
+`roundToStep(new Decimal(context.position.qty), step, 'down')` (the sellable/protectable qty) at all
+three sites. A real ≥1-step growth or shrink still re-sizes (`qty_cancel`); only the un-sellable
+sub-step dust residue is now steady state (`skipped_existing`). Absent-step fallback is byte-identical
+to prior behaviour. `context.position.qty` is a decimal STRING (`.eq()` accepted it; `roundToStep`
+needs a real Decimal — hence the `new Decimal()` wrap). NOTE (honest framing): this is a provably-wrong
+qty check; whether it lifts the close-rate or unblocks the reflection dormancy is a WATCH, NOT a
+claimed outcome — the churn does not obviously suppress fills (the order rests at the correct price
+most of each bar).
+
+**Reviewer (dispatched pre-commit, money-path exit semantics):** APPROVE, **0 must-fix**. Traced the
+sizer invariant to source, confirmed all 6 adversarial points (≥1-step growth still cancels; shrink
+never over-reduces — `OpenOrderSummary.qty` is the original intent qty, never decremented on partial
+fill, so a partial fill trips `qty_cancel` and re-sizes; wrongly-skipped residue is un-sellable
+sub-minQty dust incl. the XRP 0.0057-vs-step-0.1 case; `new Decimal(qty)` safe — qty is
+`signedQty.abs().toFixed()`, never `'0'` here; strategy stepSize == sizer stepSize; all three sites
+consistent, none missed — plan-executor has no parallel reconciliation). Applied both non-blocking
+findings: the should-fix (comment accuracy re partial-fill re-size) and the nice-to-have (symmetric
+≥step-mismatch `qty_cancel` tests on both stop rails).
+
+**Tests:** 6 new regressions — sub-step dust → `skipped_existing`, real ≥step mismatch → `qty_cancel`,
+across the TP rail (`plan-lifecycle.spec.ts`) and both stop rails (`venue-stop-lifecycle.spec.ts`);
+all use a non-step-aligned fixture (`0.0012345`) with a step configured, so they FAIL under the old
+exact-equality code (true regressions). Pre-existing `qty_cancel` tests keep asserting on a genuine
+≥step mismatch (unchanged).
+
+**Gates (all green, sandbox-disabled):** build ✓, lint ✓ (only pre-existing boundaries warnings),
+typecheck ✓, **test 136 files / 2137 passed** (was 2135 + 2 symmetry tests), **eval:agentic 15
+passed** (agentic-lane regression gate). Commit `debef0f` (4 files, +257/−7); staged only the 4
+authored files; tree clean at pass start.
+
+**Deploy — BOTH lanes (build-before-up on each; a stale image cost 7min on 07-10):** spot `docker
+compose build app && up -d app` → boot **`29e22ada`**, healthy, 0 errors, boot recovery clean (2
+orders seeded / 2 intents rehydrated / 0 degraded). Perp `--profile perp build app-perp && up -d
+app-perp` → new boot, healthy — the fix now protects the perp lane's imminent FIRST algo-rail stop
+exercise (deploying before the first fill was the whole point of fixing the latent site). **RECORDED
+as an exit-mechanic mid-factorial deploy (P8a factorial pre-registration §): shifts all cells
+equally, dates recorded here, DO NOT reset the experiment window.** The redeploy reset both boots'
+in-memory reflection primes again, but `c0d53bd` (seed-race fix, live on both boots) makes the FIRST
+close after boot evaluate on the DB-seeded count — so the reflection recovery is unharmed; the
+next-close test just re-points from boot `695b6abf` to `29e22ada`.
+
+**Soak (§5): PASS (health-green; no regression).** Both lanes healthy post-deploy — spot boot
+`29e22ada`, perp `88420be0`; `docker ps` healthy, **0 errors** since boot on both, boot recovery
+clean (2 orders seeded / 2 intents rehydrated / **0 degraded**). Decides flowing (spot 5: 2
+proposed / 3 hold; perp warmup, 1 propose), `signals_rejected{EXPIRED}` empty, no HALT / no
+reconciliation mismatch, **1 round trip closed cleanly** under the fixed spot boot, cost rate sane,
+protective-exit config unchanged. **Direct churn confirmation is DEFERRED to the next pass (honest):**
+`agentic_venue_tp_total` had not incremented `skipped_existing` (or any event) by ~07:50Z because the
+young boot had no position under an active plan-managed-HOLD `manageVenueTp` cycle in the ~20-min
+window (the counter only moves when a plan re-evaluates a resting TP; the remaining LINK/XRP positions
+weren't in one). The fix's behaviour is deterministically proven in the 6 unit regressions +
+reviewer; the live before/after (`skipped_existing` climbs / `qty_cancel` stays flat under `29e22ada`)
+is the recorded next-pass WATCH — no churn or any other regression was observed in the soak window.
+
+**Backups (§5 standing duty):** `cryptobot-20260715T004536Z.sql.gz` (spot 1.7M) +
+`cryptobot-perp-20260715T004536Z.sql.gz` (perp 116K).
+
+**Flagged for human review:** none new. Standing AVAILABILITY ask unchanged (host awake, duty cycle
+healthy).
+
+**Next-pass candidates:** (1) **Venue-TP churn-fix confirmation** — under boot `29e22ada`,
+`agentic_venue_tp_total{event="skipped_existing"}` should climb while `qty_cancel` stays flat; the
+DB resting-qty should equal `roundToStep(position, step, 'down')` and hold. (2) **Reflection watch**
+— the first closed trip under `29e22ada` fires the seed + abstain-lapse → expect `minted` /
+`abstain_reject` / `expectancy_reject` (v3 mint); `validator_reject`/`transport_error`/`run_failed` =
+new defect; also the first STREAMED reflection (#32). (3) **P8d perp L0** — first perp fill = first
+live algo-rail STOP_MARKET lifecycle (now on the fixed image); watch `fapiPrivateGetOpenAlgoOrders`
+resting, `venue_stop_filled`, NO reconciliation HALT, funding rows, zero cross-lane leakage. (4)
+**P8a factorial** — cells filling, harm-stop peek at 8 trips/cell, thinking → ~50% as N grows, daily
+spend < $4.50. (5) **E2 eval:candidates** — corpus 513/600 for the haiku re-test. (6) **5→8 universe
+pre-auth** (ZEC/AAVE/NEAR) after the consult soak shows ≥2 clean days. (7) carry re-test ~07-24.

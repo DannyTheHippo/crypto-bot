@@ -57,8 +57,10 @@ never changes for strategy evolution.
      the pre-fix code needs to fire; the frequent short-lived redeploys reset the in-memory prime
      first. `c0d53bd` went live only today ~15:20Z on boot `695b6abf`, which has had zero closes. The
      abstain-lapse is confirmed armed (46 v2-attributed `claude` decides / 0 entries in the recent
-     400 journal rows ≥ the 15 floor). **The first closed trip under boot `695b6abf` is the test** —
-     it should seed the trigger, lapse v2, and mint v3.
+     400 journal rows ≥ the 15 floor). **The first closed trip after boot is the test** — it should
+     seed the trigger, lapse v2, and mint v3. (Pass 25 2026-07-15 redeployed both lanes on the
+     venue-exit churn fix `debef0f`; the spot boot is now `29e22ada` — the `c0d53bd` seed-race fix is
+     live on it, so the next-close test simply re-points from `695b6abf` to `29e22ada`.)
      Reflection fires per strategy after 2 closed trips (`AGENTIC_REFLECTION_EVERY_N_TRADES=2`,
      `3e5773f`); NB the trigger check races the async DB seed on first-close-after-boot (primes
      but cannot fire — documented quirk, § Durable findings). PROMOTION pass eligibility:
@@ -121,13 +123,15 @@ and the per-phase commits. Current per-phase state:
   deferred → backlog #44). Evidence: +23.1bps/trade close-vs-touch
   (`reports/loop/bounds-calibration-2026-07-13.md`, N=26 descriptive). Shipped with the S3
   busy-set fix, BUY-scoped stale sweep (`cancelSide`), per-(strategy,symbol) serialized sink; 8
-  adversarial-review findings all fixed same-session (list: LOG.md). **WATCH (Phase 2), PENDING:**
-  (1) first plan entry fill must journal a resting SELL at exactly entry×(1+tpPct) —
-  `agentic_venue_tp_total{event}` counters start moving (`placed`, then `skipped_existing` on
-  managed bars); (2) first `venue_tp_filled` journal row must show a maker fee at the exact TP
-  price; (3) `tp_race_hold`/`qty_cancel`/`drift_cancel` stay rare — `drift_cancel` churn on XRP
-  means the tick-aware drift fix missed a case (re-check venueTpTickSize threading); (4) an
-  `orphan_cancel` spike = external flattens racing the lane.
+  adversarial-review findings all fixed same-session (list: LOG.md). **WATCH (Phase 2):**
+  (1) placement RESOLVED POSITIVE (Pass 25: 15 `placed` under boot `695b6abf`, resting SELL at the
+  plan TP); (2) first `venue_tp_filled` journal row (maker fee at exact TP price) still PENDING (0
+  closes since boot); (3) **`qty_cancel` was NOT rare — it was the CHURN BUG, FIXED Pass 25
+  (`debef0f`):** placed=15 / qty_cancel=14 / 0 skipped_existing because `manageVenueTp` compared the
+  step-rounded resting qty against the raw full-precision `position.qty` (exact `.eq()`, structurally
+  always false — LINK 12.03 vs 12.0396 etc.); now compares against `roundToStep(pos, step, 'down')`
+  ⇒ steady-state `skipped_existing`. **Post-fix watch:** `skipped_existing` climbs / `qty_cancel`
+  flat under boot `29e22ada`; (4) an `orphan_cancel` spike = external flattens racing the lane.
 - **Phase 3 — trade-flow/CVD + positioning payload blocks (`045967c`), LIVE.** Tags `tf1`/`pos1`;
   both ride the ONE info-context A/B (`AGENTIC_DERIVATIVES_AB_PCT=30`). **Treatment bundle
   composition changed 2026-07-13** (derivatives + crossSymbol + tradeFlow + positioning; control
@@ -299,8 +303,12 @@ fix: OMS algo-rail containment, 7 sub-fixes), `a6f0573` (P8a factorial ENABLE, s
   arms stamp on exactly the rows that reached the LLM (5 non-null = the 5 prescreen `called` rows;
   the 30 NULL-arm rows are `skipped_quiet`, correctly NULL); cells beginning to fill (`f|t`=4,
   `t|t`=1). **Still PENDING:** (2) `test/backtest/ab-cells/run.mjs` explicit-arm rows (explicit>0)
-  as N grows; (3) daily spend < $4.50 (Pass 24: ≈$2.78/day, fine); (4) thinking distribution → ~50%
-  (Pass 24: N=5 all-thinking-on, noise). Harm-stop peek at 8 trips/cell.
+  as N grows; (3) daily spend < $4.50 (Pass 24: ≈$2.78/day; Pass 25: ≈$2.90/day, fine); (4) thinking
+  distribution → ~50% (Pass 24: N=5 all-thinking-on, noise). Harm-stop peek at 8 trips/cell.
+  **Exit-mechanic mid-experiment deploys (pre-registration §: shift all cells equally, do NOT reset
+  the window):** 2026-07-15 ~00:45Z — venue-exit qty-reconciliation churn fix (`debef0f`) deployed
+  to BOTH lanes (spot boot `29e22ada`, perp new boot). Both boots reset the reflection prime;
+  `c0d53bd` seed-race fix (live) keeps the first-close-after-boot trigger intact.
 - **P8d perp L0 DEPLOYED + LIVE (`aca7fb1` config, `359e4a7` the unblock).** `docker compose
   --profile perp up`: app-perp on binanceusdm demo (demo-fapi, testnet mode), BTC/USDT:USDT only,
   LONGS-ONLY, full stop architecture ON (venue TP + venue STOP_MARKET on the algo rail + executor +
@@ -386,28 +394,34 @@ PoS ≥ 0.70). Exit criterion: ≥2 promotions with version-attributed PnL AND r
 
 ## Last pass
 
-**Pass 24, 2026-07-14** (scheduled run, ~16:20–16:55Z) — **MAINTENANCE report-only: first
-scheduled pass after Push 3 went live.** Two lanes healthy — spot boot `695b6abf` (factorial
-`a6f0573`, ~15:20Z) + perp boot `51b685f1` (L0 `aca7fb1`, ~15:35Z). Sweep: 0 errors both lanes,
-0 EXPIRED, kill switch RUNNING both, `up=1`; **reconciliation 179 clean / 0 mismatch under the
-current spot boot** (the alarming `increase()[21h]` `sweep_failure` figure was a counter-reset
-artifact across the day's boots — raw counters carry no mismatch series, no HALT). Spot
-scoreboard (epoch 08:30Z 07-12): **RT=12 (was 10), net −$4.10 (was −$7.82, improved), LLM $5.45,
-window 1.96d, ready=0**; equity $4,996.16, dd 0.08%. v1 attribution +$1.35/12 trips (gate net =
-1.35 − 5.45 LLM; no §7 contradiction). Cost ≈$2.78/day — under the $4.50 thinking rule + $5
-breaker. Prescreen 80% skip. Corpus 1,222 / **513 input_payload** (E2 ≥200 met; haiku re-test
-wants ≥600). Perp: RT=0, 1 hold, equity $5,000, warmup, leverage pin passed. Harness probe green
-(15). **WATCH verdicts:** P8a factorial arm-stamping RESOLVED POSITIVE (arms on exactly the 5
-`called` rows; NULL on 20 quiet-skips; cells `f|t`=4/`t|t`=1; thinking N=5 all-on = noise, stays
-watch); Phase-5 consult RESOLVED POSITIVE (`BatchingAgentClient`, `consult_id` present, 1-symbol
-batches in the flat tape); P8d perp L0 healthy-in-warmup (algo-rail stop UNEXERCISED, PENDING);
-Phase-2 venue-TP PENDING (exits predate the boot). **Reflection dormancy ROOT-CAUSED (no
-defect):** today's 2 closes ran under boot `e44b6497` (pre-`c0d53bd` seed-race fix) and each hit
-the first-close seed race; the fixed boot `695b6abf` has had zero closes ⇒ trigger not yet
-evaluated under the fix. Both mechanisms primed for the next close: `c0d53bd` seed + abstain-lapse
-(46 v2 decides / 0 entries in recent 400 ≥ 15 floor ⇒ lapse v2, mint v3). Shipped: LOG.md report +
-these verdicts + backlog #53 + backups `cryptobot-20260714T165047Z.sql.gz` (+ perp). No `src/`
-change (docs-only; lint:md green). Not an escalation day (07-14 shipped via owner Push 3).
+**Pass 25, 2026-07-15** (sweep ~00:10Z, deploy+soak ~07:28–07:50Z after a ~6h host-sleep gap) —
+**MAINTENANCE: CORRECTNESS BUG on the trading path FIXED + deployed both lanes (`debef0f`).** Sweep (pre-fix, boots `695b6abf` spot +
+`51b685f1` perp, ~9h uninterrupted): 0 errors both, 0 EXPIRED, kill switch RUNNING both,
+reconciliation 1067/0 (spot) + 1036/0 (perp), no HALT. Spot scoreboard (epoch 08:30Z 07-12):
+**RT=12 (flat — 0 closes in 7.5h), net −$4.81, LLM $5.69, window 1.96d, ready=0**; equity
+$4,997.18, dd 0.06%. 15 called (89.5% skip) → 5 proposed/5 hold/4 noop/1 retryable; **5 fills, 0
+closed round_trips this boot**. Perp RT=0, 1 propose resting, equity $5,000, warmup. Harness probe
+green (15). **THE BUG (found via the venue-TP counters + DB ground truth):**
+`agentic_venue_tp_total` placed=15 / **qty_cancel=14 / ZERO skipped_existing** — the venue-resting
+TP churned cancel/re-place every managed bar because `manageVenueTp` compared the step-rounded
+resting qty against the raw full-precision `context.position.qty` with exact `.eq()`. DB: LINK
+resting 12.03 vs pos 12.0396, SOL 1.924 vs 1.924173, ETH 0.0598 vs 0.0598266 = `roundToStep(pos,
+step, 'down')` — equality structurally always false. Same latent bug at `manageVenueStopSpot` +
+`manageVenueStopPerp` (perp algo rail, 0 fills so far — would churn `cancelAlgoOrder` on the first
+perp fill). **Fix `debef0f`:** thread `venueTpStepSize`/`venueStopStepSize` from
+`DEFAULT_FILTERS.stepSize` (same source the sizer rounds with), compare against `roundToStep(pos,
+step,'down')` at all 3 sites; real ≥1-step change still re-sizes, only sub-step dust is steady
+state; fallback byte-identical. Reviewer APPROVE 0 must-fix (both non-blocking findings applied).
+Gates green (build/lint/typecheck/**test 2137**/eval:agentic 15); 6 new regression tests. Deployed
+both lanes (spot boot `29e22ada`, perp new boot; boot recovery clean 0-degraded) —
+**RECORDED as an exit-mechanic mid-factorial deploy: shifts all P8a cells equally, window NOT
+reset.** Honest framing: this is a provably-wrong qty check; close-rate/dormancy improvement is a
+WATCH, not a claimed outcome. Soak: qty_cancel stops climbing / `skipped_existing` appears (see
+LOG.md). Backups `cryptobot-20260715T004536Z.sql.gz` (+ perp). Not an escalation day.
+
+**Pass 24, 2026-07-14** (scheduled, report-only) — first scheduled pass after Push 3; factorial
+arm-stamping + Phase-5 consult WATCHes RESOLVED POSITIVE, perp L0 healthy-in-warmup, reflection
+dormancy root-caused (expected-pending, no defect). Full entry: `reports/loop/LOG.md`.
 
 **Pass 23, 2026-07-13** (report-only) and everything since — state.md deep clean (`66c3fac`),
 backlog build-out (boot `e44b6497` 19:34Z), and the **Push 3 owner program** (`3c8b1a1`..
@@ -510,12 +524,15 @@ wait on venue-TP capture data; **#18/#46/#47/#48** wait on their stated data/seq
 
 ## Flagged for human review (open)
 
-- **AVAILABILITY (Pass 17, 2026-07-12; updated Pass 23):** the stack runs on the owner's MacBook;
-  host sleep throttles everything (worst measured: 8%/24h duty cycle; the SOL trail fired 10h
-  late → gap loss). Owner acted — duty cycle has read **100%/24h for two consecutive days** —
-  but the standing ask remains: keep the Mac awake on AC + auto-login (or move the stack to an
-  always-on host; compose is portable, §5 backups cover the DB). Residual dependency: Docker
-  Desktop "start at sign-in" (restart policy `e4542fb` only acts once the daemon is up).
+- **AVAILABILITY (Pass 17, 2026-07-12; updated Pass 23; REGRESSED Pass 25):** the stack runs on the
+  owner's MacBook; host sleep throttles everything (worst measured: 8%/24h duty cycle; the SOL trail
+  fired 10h late → gap loss). Pass 23 read **100%/24h for two consecutive days**, but **Pass 25
+  observed a fresh ~6h host-sleep gap mid-pass (~01:00–07:20Z 07-15)** — the app cycled several short
+  boots and the loop pass itself stalled ~6h between commit and deploy. The 100%/24h improvement did
+  NOT hold. Standing ask unchanged and now re-evidenced: keep the Mac awake on AC + auto-login (or
+  move the stack to an always-on host; compose is portable, §5 backups cover the DB). Residual
+  dependency: Docker Desktop "start at sign-in" (restart policy `e4542fb` only acts once the daemon
+  is up).
 - **6.9-LINK wallet scar (~$55):** historical unapplied recovered-order fill (pre-`b00c886`),
   journaled+deduped so no walk sees it post-epoch; venue-side manual sell is optional wallet
   hygiene only.

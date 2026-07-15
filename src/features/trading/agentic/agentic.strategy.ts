@@ -10,6 +10,7 @@ import {
   price,
   roundToMoneyPrecision,
   roundToTick,
+  roundToStep,
 } from '../../../domain/types/money';
 import { splitSymbol } from '../../../domain/types/symbol';
 import { aggregateCandles } from '../../../domain/indicators/candle-aggregate';
@@ -134,6 +135,16 @@ export interface AgenticStrategyParams {
   // churns cancel/re-place forever on any symbol whose tick exceeds the threshold (review finding).
   // Absent ⇒ compare against the raw hint (test harnesses; fine-tick symbols).
   readonly venueTpTickSize?: string;
+  // Venue LOT_SIZE step for this symbol (the SAME DEFAULT_FILTERS row the sizer rounds with). The
+  // sizer sizes a reduce-only RESTING exit to roundToStep(position.qty, step, 'down'), so the resting
+  // order's qty is structurally ≤ the position by the sub-step residue (position.qty mod step ∈
+  // [0, step)) and can NEVER exactly equal the full-precision position.qty. The qty-reconciliation in
+  // manageVenueTp must therefore compare against the step-rounded (sellable) qty, not the raw
+  // position.qty — an exact-equality check reads the always-present dust residue as a mismatch and
+  // churns cancel/re-place every managed bar (2026-07-15 loop fix: live DB showed LINK 12.03 vs
+  // position 12.0396, SOL 1.924 vs 1.924173, etc.). Absent ⇒ compare against the raw qty (test
+  // harnesses whose fixtures are already step-aligned).
+  readonly venueTpStepSize?: string;
   // AGENTIC_VENUE_STOP (Push 3 P7d): rests the plan's protective stop at the venue (a reduce-only
   // exit with exitStyle 'RESTING_STOP') instead of relying solely on the executor's own bar-close
   // stop-price crossing to fire an IOC exit — SPOT rests a STOP_LOSS_LIMIT on the regular open-orders
@@ -149,6 +160,12 @@ export interface AgenticStrategyParams {
   // order's price against the tick-rounded expectation, not the raw hint, so the [0, tick) rounding
   // bias is never read as drift). Absent ⇒ compare against the raw (buffered, for spot) expectation.
   readonly venueStopTickSize?: string;
+  // Venue LOT_SIZE step — mirrors venueTpStepSize's rationale for the protective stop's own qty
+  // reconciliation (manageVenueStop). The reduce-only STOP order is sized to the step-rounded
+  // position exactly as the TP is, so the same exact-equality dust churn applies (latent on the perp
+  // algo rail until the first perp fill; a cancel/re-place there is an algo-endpoint round trip).
+  // Absent ⇒ compare against the raw qty.
+  readonly venueStopStepSize?: string;
   // Spot-only: the SAME buffer PositionSizerService applies past the trigger when it builds the
   // STOP_LOSS_LIMIT's limit leg (position-sizer.service.ts's isRestingStopExit branch) — the resting
   // order's own limitPrice is this buffered leg, never the raw trigger, so drift reconciliation must
@@ -386,6 +403,7 @@ export class AgenticStrategy implements AsyncStrategy {
   private readonly venueTpEnabled: boolean;
   private readonly venueTpReplaceDriftBps: number;
   private readonly venueTpTickSize?: string;
+  private readonly venueTpStepSize?: string;
   private readonly onVenueTp?: (event: VenueTpEvent) => void;
   // Plan-stop watcher (Push 3 P2) — see AgenticStrategyDeps.planStopRegistry's own comment.
   private readonly planStopRegistry?: PlanStopRegistryPort;
@@ -395,6 +413,7 @@ export class AgenticStrategy implements AsyncStrategy {
   private readonly venueStopEnabled: boolean;
   private readonly venueStopReplaceDriftBps: number;
   private readonly venueStopTickSize?: string;
+  private readonly venueStopStepSize?: string;
   private readonly stopLimitBufferBps: number;
   private readonly planStopForceBps: number;
   private readonly onVenueStop?: (event: VenueStopEvent) => void;
@@ -466,12 +485,14 @@ export class AgenticStrategy implements AsyncStrategy {
     this.venueTpEnabled = params.venueTpEnabled ?? false;
     this.venueTpReplaceDriftBps = Math.max(0, params.venueTpReplaceDriftBps ?? 10);
     this.venueTpTickSize = params.venueTpTickSize;
+    this.venueTpStepSize = params.venueTpStepSize;
     this.onVenueTp = deps.onVenueTp;
     this.planStopRegistry = deps.planStopRegistry;
     this.intentStore = deps.intentStore;
     this.venueStopEnabled = params.venueStopEnabled ?? false;
     this.venueStopReplaceDriftBps = Math.max(0, params.venueStopReplaceDriftBps ?? 10);
     this.venueStopTickSize = params.venueStopTickSize;
+    this.venueStopStepSize = params.venueStopStepSize;
     this.stopLimitBufferBps = params.stopLimitBufferBps ?? 50;
     this.planStopForceBps = Math.max(0, params.planStopForceBps ?? 30);
     this.onVenueStop = deps.onVenueStop;
@@ -1050,16 +1071,26 @@ export class AgenticStrategy implements AsyncStrategy {
 
     // Qty reconciliation (review finding): the TP was sized to the position at placement; an entry
     // remainder filling AFTERWARD grows the position while the resting order stays at the old size,
-    // leaving the growth slice uncovered at the venue. A TP partial fill shrinks order and position
-    // together, so steady state is exact equality — any mismatch means re-size via cancel/re-place.
-    if (!restingTp.qty.eq(context.position.qty)) {
+    // leaving the growth slice uncovered at the venue. Compare against the STEP-ROUNDED sellable qty,
+    // NOT the raw position.qty: the sizer rests roundToStep(position.qty, step, 'down'), so the resting
+    // order is structurally short by the sub-step residue (position.qty mod step ∈ [0, step)) and a
+    // raw-equality check reads that permanent dust as a mismatch, churning cancel/re-place every
+    // managed bar (2026-07-15 loop fix — live DB: LINK 12.03 vs position 12.0396, etc.). A no-change
+    // bar reaches step-granular equality (skipped_existing); a real ≥1-step position move re-sizes via
+    // cancel/re-place — an entry remainder growing the position, or a partial TP fill shrinking it
+    // (OpenOrderSummary.qty stays the ORIGINAL intent size until cancelled, so the shrunk position
+    // trips this branch, never a raw-dust churn).
+    const sellableQty = this.venueTpStepSize
+      ? roundToStep(new Decimal(context.position.qty), this.venueTpStepSize, 'down')
+      : new Decimal(context.position.qty);
+    if (!restingTp.qty.eq(sellableQty)) {
       this.onVenueTp?.('qty_cancel');
       return [
         this.buildCancelOpenSignal(
           input,
           lastCandle,
           tpSide,
-          `venue take-profit: resting ${tpSide} qty ${restingTp.qty.toFixed()} != position ${context.position.qty} — cancel to re-size`,
+          `venue take-profit: resting ${tpSide} qty ${restingTp.qty.toFixed()} != sellable ${sellableQty.toFixed()} — cancel to re-size`,
           'vtp',
         ),
       ];
@@ -1234,7 +1265,14 @@ export class AgenticStrategy implements AsyncStrategy {
       ];
     }
 
-    if (!restingVsl.qty.eq(context.position.qty)) {
+    // Step-rounded reconciliation, identical rationale to manageVenueTp's qty check (see there): the
+    // reduce-only STOP_LOSS_LIMIT is sized to roundToStep(position.qty, step, 'down'), so a raw
+    // position.qty comparison reads the permanent sub-step dust residue as a mismatch and churns
+    // cancel/re-place every managed bar.
+    const protectableQty = this.venueStopStepSize
+      ? roundToStep(new Decimal(context.position.qty), this.venueStopStepSize, 'down')
+      : new Decimal(context.position.qty);
+    if (!restingVsl.qty.eq(protectableQty)) {
       this.setVenueStopResting(key, false);
       this.onVenueStop?.('qty_cancel');
       return [
@@ -1242,7 +1280,7 @@ export class AgenticStrategy implements AsyncStrategy {
           input,
           lastCandle,
           stopSide,
-          `venue stop: resting ${stopSide} qty ${restingVsl.qty.toFixed()} != position ${context.position.qty} — cancel to re-size`,
+          `venue stop: resting ${stopSide} qty ${restingVsl.qty.toFixed()} != protectable ${protectableQty.toFixed()} — cancel to re-size`,
           'vsl',
         ),
       ];
@@ -1330,7 +1368,14 @@ export class AgenticStrategy implements AsyncStrategy {
       return [];
     }
 
-    if (!new Decimal(restingAlgo.qty).eq(context.position.qty)) {
+    // Step-rounded reconciliation, identical rationale to manageVenueTp's qty check: the reduce-only
+    // stop is sized to roundToStep(position.qty, step, 'down'), so comparing against the raw
+    // full-precision position.qty reads the permanent sub-step dust as a mismatch and churns
+    // cancel/re-place — here an algo-endpoint cancelAlgoOrder round trip — every managed bar.
+    const protectableQty = this.venueStopStepSize
+      ? roundToStep(new Decimal(context.position.qty), this.venueStopStepSize, 'down')
+      : new Decimal(context.position.qty);
+    if (!new Decimal(restingAlgo.qty).eq(protectableQty)) {
       this.setVenueStopResting(key, false);
       this.onVenueStop?.('qty_cancel');
       try {

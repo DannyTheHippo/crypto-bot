@@ -807,6 +807,73 @@ describe('AgenticStrategy venue-resting take-profit lifecycle (AGENTIC_VENUE_TP)
     expect(events).toEqual(['qty_cancel']);
   });
 
+  // 2026-07-15 loop fix regression: the venue rounds a reduce-only SELL to the LOT_SIZE step, so the
+  // resting qty is structurally ≤ the full-precision position by the sub-step dust residue and can
+  // NEVER equal position.qty exactly. Before the fix the exact-equality qty check read that dust as a
+  // mismatch and emitted qty_cancel every managed bar (live DB 2026-07-15: LINK 12.03 vs 12.0396).
+  function longPositionSubStep(): Position {
+    return {
+      strategyId: SID,
+      venue: V,
+      symbol: SYM,
+      signedQty: new Decimal('0.0012345'), // roundToStep(_, 0.00001, 'down') = 0.00123 (sub-step dust)
+      avgEntry: price('100'),
+      realizedPnl: new Decimal(0),
+    };
+  }
+
+  it('does NOT churn when the resting SELL is the step-rounded sellable qty (dust residue → skipped_existing)', async () => {
+    const client = new PlanningClient();
+    const events: VenueTpEvent[] = [];
+    const strategy = new AgenticStrategy(
+      SID,
+      venueTpParams({ venueTpStepSize: '0.00001' }), // BTC LOT_SIZE step
+      client,
+      { onVenueTp: (e) => events.push(e), intentStore: vtpOnlyIntentStore() },
+    );
+    await strategy.decide(buildInput(0));
+    await strategy.decide(buildInput(1, { position: longPositionSubStep() })); // places TP at 103
+    events.length = 0;
+
+    // Bar 2: the SELL rests at 103, qty 0.00123 = roundToStep(0.0012345, 0.00001, 'down'). The 0.0000045
+    // residue is un-sellable dust (below one step) — a correctly-sized order, NOT a mismatch to churn.
+    const out = await strategy.decide(
+      buildInput(2, {
+        position: longPositionSubStep(),
+        openOrders: [restingSell('103', '0.00123')],
+      }),
+    );
+    expect(out).toEqual([]);
+    expect(events).toEqual(['skipped_existing']);
+  });
+
+  it('still cancels on a real ≥1-step qty mismatch when a step is configured (qty_cancel)', async () => {
+    const client = new PlanningClient();
+    const events: VenueTpEvent[] = [];
+    const strategy = new AgenticStrategy(
+      SID,
+      venueTpParams({ venueTpStepSize: '0.00001' }),
+      client,
+      { onVenueTp: (e) => events.push(e), intentStore: vtpOnlyIntentStore() },
+    );
+    await strategy.decide(buildInput(0));
+    await strategy.decide(buildInput(1, { position: longPositionSubStep() }));
+    events.length = 0;
+
+    // Bar 2: the SELL rests at 0.001 — short of the 0.00123 sellable by 23 steps (a genuine uncovered
+    // growth slice), so the step-rounded comparison still fires qty_cancel.
+    const out = await strategy.decide(
+      buildInput(2, {
+        position: longPositionSubStep(),
+        openOrders: [restingSell('103', '0.001')],
+      }),
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0]!.kind).toBe('CANCEL_OPEN');
+    expect(out[0]!.cancelRole).toBe('vtp');
+    expect(events).toEqual(['qty_cancel']);
+  });
+
   it('suppresses a duplicate placement for one bar while the first is unacked (skipped_inflight), then re-places', async () => {
     const client = new PlanningClient();
     const events: VenueTpEvent[] = [];

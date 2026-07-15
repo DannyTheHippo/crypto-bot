@@ -1966,11 +1966,18 @@ export class AppModule
       // [0, tick) rounding bias reads as permanent drift on coarse-tick symbols). Boot asserts every
       // traded symbol has a DEFAULT_FILTERS row, so this is present for all live instances.
       venueTpTickSize: DEFAULT_FILTERS.get(symbol)?.tickSize,
+      // The venue LOT_SIZE step from the SAME row the sizer rounds reduce-only exit qty with — lets
+      // manageVenueTp compare the resting order against the step-rounded (sellable) qty instead of the
+      // raw full-precision position.qty (2026-07-15 fix: exact equality reads the always-present
+      // sub-step dust residue as a mismatch and churns cancel/re-place every managed bar).
+      venueTpStepSize: DEFAULT_FILTERS.get(symbol)?.stepSize,
       venueStopEnabled: agentic.venueStopEnabled,
       venueStopReplaceDriftBps: agentic.venueStopReplaceDriftBps,
       // Same DEFAULT_FILTERS tick — mirrors venueTpTickSize above (manageVenueStop's own drift
       // reconciliation, both rails).
       venueStopTickSize: DEFAULT_FILTERS.get(symbol)?.tickSize,
+      // Same DEFAULT_FILTERS step — mirrors venueTpStepSize (manageVenueStop's qty reconciliation).
+      venueStopStepSize: DEFAULT_FILTERS.get(symbol)?.stepSize,
       // The SAME buffer PositionSizerService applies past the trigger for a spot STOP_LOSS_LIMIT's
       // limit leg (SIZER_DEPS.stopLimitBufferBps) — manageVenueStopSpot's drift check must compare
       // against this exact value or it reads the buffer itself as permanent drift.

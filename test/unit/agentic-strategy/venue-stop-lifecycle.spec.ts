@@ -91,6 +91,21 @@ function longPosition(avgEntry: string, symbol = SYM, venue = V): Position {
   };
 }
 
+// 2026-07-15 loop fix regression fixture: a position whose qty carries sub-step dust (0.0012345 —
+// roundToStep 'down' to any of these venues' LOT_SIZE steps is strictly smaller), so a reduce-only
+// stop resting at the step-rounded protectable qty can never equal position.qty exactly. Before the
+// fix the exact-equality check read that residue as a mismatch and churned qty_cancel every bar.
+function longPositionSubStep(symbol = SYM, venue = V): Position {
+  return {
+    strategyId: SID,
+    venue,
+    symbol,
+    signedQty: new Decimal('0.0012345'),
+    avgEntry: price('100'),
+    realizedPnl: new Decimal(0),
+  };
+}
+
 function buildInput(
   index: number,
   opts: {
@@ -356,6 +371,57 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
     expect(out[0]!.kind).toBe('CANCEL_OPEN');
     expect(out[0]!.cancelRole).toBe('vsl');
     expect(out[0]!.reason).toContain('qty');
+    expect(events).toEqual(['qty_cancel']);
+  });
+
+  it('does NOT churn a spot stop when its qty is the position step-rounded (dust residue → skipped_existing)', async () => {
+    const client = new PlanningClient();
+    const events: VenueStopEvent[] = [];
+    const strategy = new AgenticStrategy(
+      SID,
+      makeParams({ venueStopStepSize: '0.00001' }), // BTC LOT_SIZE step
+      client,
+      { onVenueStop: (e) => events.push(e), intentStore: vslOnlyIntentStore() },
+    );
+    await strategy.decide(buildInput(0));
+    await strategy.decide(buildInput(1, { position: longPositionSubStep() })); // places STOP at 97.51
+    events.length = 0;
+
+    // Bar 2: the STOP_LOSS_LIMIT rests at the buffered leg 97.51, qty 0.00123 = roundToStep(0.0012345,
+    // 0.00001, 'down'). The 0.0000045 residue is un-protectable dust (below one step), not a mismatch.
+    const out = await strategy.decide(
+      buildInput(2, {
+        position: longPositionSubStep(),
+        openOrders: [restingSell('97.51', '0.00123')],
+      }),
+    );
+    expect(out).toEqual([]);
+    expect(events).toEqual(['skipped_existing']);
+  });
+
+  it('still cancels a spot stop on a real ≥1-step qty mismatch when a step is configured (qty_cancel)', async () => {
+    const client = new PlanningClient();
+    const events: VenueStopEvent[] = [];
+    const strategy = new AgenticStrategy(
+      SID,
+      makeParams({ venueStopStepSize: '0.00001' }),
+      client,
+      { onVenueStop: (e) => events.push(e), intentStore: vslOnlyIntentStore() },
+    );
+    await strategy.decide(buildInput(0));
+    await strategy.decide(buildInput(1, { position: longPositionSubStep() }));
+    events.length = 0;
+
+    // Resting 0.001 vs the 0.00123 protectable — a genuine uncovered slice (many steps), so the
+    // step-rounded comparison still fires qty_cancel.
+    const out = await strategy.decide(
+      buildInput(2, {
+        position: longPositionSubStep(),
+        openOrders: [restingSell('97.51', '0.001')],
+      }),
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0]!.cancelRole).toBe('vsl');
     expect(events).toEqual(['qty_cancel']);
   });
 
@@ -677,6 +743,71 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
     events.length = 0;
 
     const out = await strategy.decide(perpInput(2, { position: perpLongPosition('100') })); // qty mismatch
+    expect(out).toEqual([]);
+    expect(events).toEqual(['qty_cancel']);
+    expect(cancelled).toEqual([resting.algoId]);
+  });
+
+  it('does NOT churn a perp algo stop when its qty is the position step-rounded (dust residue → skipped_existing)', async () => {
+    const events: VenueStopEvent[] = [];
+    // Perp LOT_SIZE step 0.001 → roundToStep(0.0012345, 0.001, 'down') = 0.001, the algo stop's qty.
+    const resting = algoOrder('98', '0.001');
+    const cancelled: string[] = [];
+    let fetchCalls = 0;
+    const client = new PlanningClient();
+    const perpSubStep = () => longPositionSubStep(PERP_SYM, PERP_V);
+    const strategy = new AgenticStrategy(SID, perpParams({ venueStopStepSize: '0.001' }), client, {
+      onVenueStop: (e) => events.push(e),
+      intentStore: roledIntentStore(new Map([[resting.clientAlgoId!, 'vsl']])),
+      algoOrders: {
+        fetchOpenAlgoOrders: () => {
+          fetchCalls += 1;
+          return Promise.resolve(fetchCalls === 1 ? [] : [resting]);
+        },
+        cancelAlgoOrder: (algoId) => {
+          cancelled.push(algoId);
+          return Promise.resolve();
+        },
+      },
+    });
+    await strategy.decide(perpInput(0));
+    await strategy.decide(perpInput(1, { position: perpSubStep() })); // placed
+    events.length = 0;
+
+    const out = await strategy.decide(perpInput(2, { position: perpSubStep() })); // reconcile
+    expect(out).toEqual([]);
+    expect(events).toEqual(['skipped_existing']);
+    expect(cancelled).toEqual([]); // the dust residue must NOT trigger a cancelAlgoOrder round trip
+  });
+
+  it('still cancels a perp algo stop on a real ≥1-step qty mismatch when a step is configured (qty_cancel)', async () => {
+    const events: VenueStopEvent[] = [];
+    const resting = algoOrder('98', '0.001'); // 0.001 vs the 0.00123 protectable — genuine mismatch
+    const cancelled: string[] = [];
+    let fetchCalls = 0;
+    const client = new PlanningClient();
+    const perpSubStep = () => longPositionSubStep(PERP_SYM, PERP_V);
+    const strategy = new AgenticStrategy(SID, perpParams({ venueStopStepSize: '0.0001' }), client, {
+      onVenueStop: (e) => events.push(e),
+      intentStore: roledIntentStore(new Map([[resting.clientAlgoId!, 'vsl']])),
+      algoOrders: {
+        fetchOpenAlgoOrders: () => {
+          fetchCalls += 1;
+          return Promise.resolve(fetchCalls === 1 ? [] : [resting]);
+        },
+        cancelAlgoOrder: (algoId) => {
+          cancelled.push(algoId);
+          return Promise.resolve();
+        },
+      },
+    });
+    await strategy.decide(perpInput(0));
+    await strategy.decide(perpInput(1, { position: perpSubStep() })); // placed
+    events.length = 0;
+
+    // Step 0.0001 → roundToStep(0.0012345, 0.0001, 'down') = 0.0012 protectable, vs the 0.001 resting
+    // (a genuine ≥1-step uncovered slice) ⇒ qty_cancel via the direct cancelAlgoOrder call.
+    const out = await strategy.decide(perpInput(2, { position: perpSubStep() }));
     expect(out).toEqual([]);
     expect(events).toEqual(['qty_cancel']);
     expect(cancelled).toEqual([resting.algoId]);

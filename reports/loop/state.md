@@ -44,23 +44,21 @@ never changes for strategy evolution.
   1. **Cost floor** — CLOSED 2026-07-08: true spend ~$0.77/day under the $5 breaker, skip rate
      70–83% (original criterion: ≤$1/day ×3 days + ≥2 RT/day + no EXPIRED regressions).
   2. **Learning-loop edge** — ACTIVE. Exit: ≥2 playbook promotions with version-attributed PnL
-     AND rolling-7d net-of-cost ≥0. Current status (2026-07-13): playbook active v1; **v2 minted
-     2026-07-11 04:45Z (first live mint — the Pass 12→13→14 repair chain verified)** but v2
-     provably abstains (0 entries in 49 attributed decides since mint) so its 10-trip verdict
-     clock never starts; #39 shipped `b9dddc2` — **the NEXT reflection trigger lapses v2
-     immediately (`AGENTIC_ABSTAIN_LAPSE_DECIDES=15`, retro-applies) and mints v3 through the new
-     mint-time entry-rate floor + expectancy backtest; WATCH for `minted` or
-     `abstain_reject`/`expectancy_reject` (`validator_reject`/`transport_error` = new defect).**
-     **Pass 24 root-cause (why it is still dormant, NO defect):** the reflection loop has not fired
-     since the 07-11 mint because every boot since predates the `c0d53bd` seed-race fix and — by
-     direct query — no single (strategy, boot) reached ≥2 closes across that window (max=1), which
-     the pre-fix code needs to fire; the frequent short-lived redeploys reset the in-memory prime
-     first. `c0d53bd` went live only today ~15:20Z on boot `695b6abf`, which has had zero closes. The
-     abstain-lapse is confirmed armed (46 v2-attributed `claude` decides / 0 entries in the recent
-     400 journal rows ≥ the 15 floor). **The first closed trip after boot is the test** — it should
-     seed the trigger, lapse v2, and mint v3. (Pass 25 2026-07-15 redeployed both lanes on the
-     venue-exit churn fix `debef0f`; the spot boot is now `29e22ada` — the `c0d53bd` seed-race fix is
-     live on it, so the next-close test simply re-points from `695b6abf` to `29e22ada`.)
+     AND rolling-7d net-of-cost ≥0. **Current status (Pass 26, 2026-07-15) — reflection loop ALIVE
+     & HEALTHY on BOTH lanes, `c0d53bd` seed-race fix LIVE-VERIFIED:** SPOT playbook active v1, v2
+     unresolved in A/B. **v2 is now PARTICIPATING — 2/10 attributed trips (was 0/abstaining at Pass
+     24) — so the abstention deadlock resolved NATURALLY.** The Pass-24 prediction ("the abstain-lapse
+     `AGENTIC_ABSTAIN_LAPSE_DECIDES=15` mints v3 immediately") is **OBE**: the abstain-lapse condition
+     is `decides≥15 && entries===0` (`reflection.service.ts:818`) and v2 now has `long` entries, so
+     `entries===0` is false — the lapse is armed but doesn't fire. The BINDING guard is the **age-lapse**
+     (`candidateLapseMs`, configured **168h**; boot log: `candidate v2 … still unresolved in A/B
+     (age 99h < lapse 168h) — skipping mint, trigger preserved` ⇒ outcome `skipped_unresolved_candidate`,
+     a healthy guard, NOT a defect). v2 minted 07-11 04:45Z ⇒ **mint-over at ~07-18 04:45Z unless it
+     resolves via 10 attributed trips first.** `c0d53bd` verified: first close after boot `29e22ada`
+     logged `trigger state seeded from DB … 17 closed trips lane-wide, 4 for this strategy` and fired
+     the evaluation (no prime-but-fail). **PERP lane minted its OWN v2 (Pass 26, first live perp mint)**
+     through the Phase-4 mint-backtest path (`attempt_started=1, minted=1`; separate DB/epoch;
+     `minRr=2`/`minEdgeMultiple=2` changelog) — awaits its own 10-trip verdict.
      Reflection fires per strategy after 2 closed trips (`AGENTIC_REFLECTION_EVERY_N_TRADES=2`,
      `3e5773f`); NB the trigger check races the async DB seed on first-close-after-boot (primes
      but cannot fire — documented quirk, § Durable findings). PROMOTION pass eligibility:
@@ -130,8 +128,11 @@ and the per-phase commits. Current per-phase state:
   (`debef0f`):** placed=15 / qty_cancel=14 / 0 skipped_existing because `manageVenueTp` compared the
   step-rounded resting qty against the raw full-precision `position.qty` (exact `.eq()`, structurally
   always false — LINK 12.03 vs 12.0396 etc.); now compares against `roundToStep(pos, step, 'down')`
-  ⇒ steady-state `skipped_existing`. **Post-fix watch:** `skipped_existing` climbs / `qty_cancel`
-  flat under boot `29e22ada`; (4) an `orphan_cancel` spike = external flattens racing the lane.
+  ⇒ steady-state `skipped_existing`. **Post-fix watch — Pass 26 PARTIAL POSITIVE:** under boot
+  `29e22ada`, ZERO `venue_%` order_events this boot and the LINK venue TP (SELL LIMIT 12.03 @ 8.458 GTC,
+  ACKED) rests stably with NO cancel/replace churn (`12.03 == roundToStep(12.0396, step, 'down')`);
+  Pass 25's `qty_cancel=14` churn is GONE. Full `skipped_existing`-climbs confirmation still PENDING
+  (counter hasn't moved on the young boot); (4) an `orphan_cancel` spike = external flattens racing the lane.
 - **Phase 3 — trade-flow/CVD + positioning payload blocks (`045967c`), LIVE.** Tags `tf1`/`pos1`;
   both ride the ONE info-context A/B (`AGENTIC_DERIVATIVES_AB_PCT=30`). **Treatment bundle
   composition changed 2026-07-13** (derivatives + crossSymbol + tradeFlow + positioning; control
@@ -302,9 +303,11 @@ fix: OMS algo-rail containment, 7 sub-fixes), `a6f0573` (P8a factorial ENABLE, s
   code). Rollback = restore 30/0. **WATCH (P8a): (1) arm-stamping RESOLVED POSITIVE (Pass 24)** —
   arms stamp on exactly the rows that reached the LLM (5 non-null = the 5 prescreen `called` rows;
   the 30 NULL-arm rows are `skipped_quiet`, correctly NULL); cells beginning to fill (`f|t`=4,
-  `t|t`=1). **Still PENDING:** (2) `test/backtest/ab-cells/run.mjs` explicit-arm rows (explicit>0)
-  as N grows; (3) daily spend < $4.50 (Pass 24: ≈$2.78/day; Pass 25: ≈$2.90/day, fine); (4) thinking
-  distribution → ~50% (Pass 24: N=5 all-thinking-on, noise). Harm-stop peek at 8 trips/cell.
+  `t|t`=1). **Pass 26: cells filling well** — `f|f=9, f|t=14, t|f=18, t|t=17` (58 arm-stamped;
+  282 null=`skipped_quiet`); (4) thinking distribution RESOLVED — 31/58 ≈ 53% (the Pass 24 all-on was
+  small-N noise); (3) daily spend ≈$2.36/day < $4.50. **Still PENDING:** (2) `test/backtest/ab-cells/
+  run.mjs` explicit-arm TRIP rows (cells are decide-counts, not the ≥15-trip evidence floor) as N grows.
+  Harm-stop peek at 8 trips/cell.
   **Exit-mechanic mid-experiment deploys (pre-registration §: shift all cells equally, do NOT reset
   the window):** 2026-07-15 ~00:45Z — venue-exit qty-reconciliation churn fix (`debef0f`) deployed
   to BOTH lanes (spot boot `29e22ada`, perp new boot). Both boots reset the reflection prime;
@@ -332,6 +335,17 @@ fix: OMS algo-rail containment, 7 sub-fixes), `a6f0573` (P8a factorial ENABLE, s
   this lane's own fresh evidence after 2 closed trips. **(Pass 24: boot re-verified healthy — 1
   hold decide, leverage pin passed, equity $5,000, 0 errors; warmup, 0 trips ⇒ the algo-rail stop
   lifecycle is UNEXERCISED — all six items stay PENDING until the first perp entry ~3.5d out.)**
+  **(Pass 26, 2026-07-15 — FIRST PERP TRADES landed early; warmup ended fast via 340-bar backfill.)**
+  2 closed round trips (BUY LIMIT_MAKER entry → SELL LIMIT IOC exit; held ~11 and ~6 bars; both small
+  losers, equity $5000→$4999.20), all ACK/FILL clean, **0 reconciliation mismatch/HALT/degraded** (item
+  3 GREEN so far), zero cross-lane leakage (item 5 GREEN), and **item 6 GREEN — reflection minted v2 on
+  this lane's own evidence.** **But items 1-2 surface FLAG 1 (NEW, see § Flagged): NO venue STOP_MARKET
+  NOR venue TP was placed on either trip despite `AGENTIC_VENUE_STOP=true`+`AGENTIC_VENUE_TP=true` —
+  both `agentic_venue_*` series absent, zero `manageVenue*`/algo lines in 24h logs. The algo-rail stop
+  lifecycle is not merely unexercised, it appears NOT TO ENGAGE on perp** (spot's venue TP DOES place
+  under the same flag ⇒ perp-specific). Positions had executor+S3 protection (not naked). **This BLOCKS
+  the L0→L1 shorts pre-auth** until root-caused. `PERP_VENUE_ENABLED=false` is a RED HERRING (gates the
+  unwired PaperPerpAdapter per `environment.config.ts:478`, not the real binanceusdm demo venue).
 
 - **PERP SHORTS LADDER pre-auths (loop-domain; the ONLY human touch remains the live-money flip):**
   - **L0→L1 (shorts on the PERP lane):** after an L0 soak — ≥3 days clean AND ≥5 closed perp trips
@@ -394,30 +408,30 @@ PoS ≥ 0.70). Exit criterion: ≥2 promotions with version-attributed PnL AND r
 
 ## Last pass
 
-**Pass 25, 2026-07-15** (sweep ~00:10Z, deploy+soak ~07:28–07:50Z after a ~6h host-sleep gap) —
-**MAINTENANCE: CORRECTNESS BUG on the trading path FIXED + deployed both lanes (`debef0f`).** Sweep (pre-fix, boots `695b6abf` spot +
-`51b685f1` perp, ~9h uninterrupted): 0 errors both, 0 EXPIRED, kill switch RUNNING both,
-reconciliation 1067/0 (spot) + 1036/0 (perp), no HALT. Spot scoreboard (epoch 08:30Z 07-12):
-**RT=12 (flat — 0 closes in 7.5h), net −$4.81, LLM $5.69, window 1.96d, ready=0**; equity
-$4,997.18, dd 0.06%. 15 called (89.5% skip) → 5 proposed/5 hold/4 noop/1 retryable; **5 fills, 0
-closed round_trips this boot**. Perp RT=0, 1 propose resting, equity $5,000, warmup. Harness probe
-green (15). **THE BUG (found via the venue-TP counters + DB ground truth):**
-`agentic_venue_tp_total` placed=15 / **qty_cancel=14 / ZERO skipped_existing** — the venue-resting
-TP churned cancel/re-place every managed bar because `manageVenueTp` compared the step-rounded
-resting qty against the raw full-precision `context.position.qty` with exact `.eq()`. DB: LINK
-resting 12.03 vs pos 12.0396, SOL 1.924 vs 1.924173, ETH 0.0598 vs 0.0598266 = `roundToStep(pos,
-step, 'down')` — equality structurally always false. Same latent bug at `manageVenueStopSpot` +
-`manageVenueStopPerp` (perp algo rail, 0 fills so far — would churn `cancelAlgoOrder` on the first
-perp fill). **Fix `debef0f`:** thread `venueTpStepSize`/`venueStopStepSize` from
-`DEFAULT_FILTERS.stepSize` (same source the sizer rounds with), compare against `roundToStep(pos,
-step,'down')` at all 3 sites; real ≥1-step change still re-sizes, only sub-step dust is steady
-state; fallback byte-identical. Reviewer APPROVE 0 must-fix (both non-blocking findings applied).
-Gates green (build/lint/typecheck/**test 2137**/eval:agentic 15); 6 new regression tests. Deployed
-both lanes (spot boot `29e22ada`, perp new boot; boot recovery clean 0-degraded) —
-**RECORDED as an exit-mechanic mid-factorial deploy: shifts all P8a cells equally, window NOT
-reset.** Honest framing: this is a provably-wrong qty check; close-rate/dormancy improvement is a
-WATCH, not a claimed outcome. Soak: qty_cancel stops climbing / `skipped_existing` appears (see
-LOG.md). Backups `cryptobot-20260715T004536Z.sql.gz` (+ perp). Not an escalation day.
+**Pass 26, 2026-07-15** (scheduled, sweep ~08:20Z, **report-only**) — both app boots fresh
+(`29e22ada` spot / `88420be0` perp, ~55min into the Pass 25 `debef0f` redeploy), host awake, harness
+probe GREEN, **0 error/HALT/mismatch/EXPIRED over 24h on both lanes**. Spot scoreboard (epoch 07-12
+08:30Z): **RT=17 (+5), net-of-cost −$9.46, LLM $6.42, window 2.72d, ready=0**; equity $4993, dd 0.14%;
+≈$2.36/day. Pass type MAINTENANCE report-only — no NEW trading-path bug, candidates unresolved in A/B
+on BOTH lanes (CANDIDATE blocked), backlog gated, factorial forbids hot-path changes. **Positives:**
+`c0d53bd` seed-race fix LIVE-VERIFIED (spot); reflection HEALTHY both lanes — spot
+`skipped_unresolved_candidate` (v2 age 99h<168h age-lapse; abstention deadlock resolved naturally, v2
+now 2/10 trips, the Pass-24 "abstain-lapse mints v3" prediction is OBE), **PERP minted its own v2**
+(first live perp mint, mint-backtest path, healthy); `debef0f` PARTIAL positive (no venue-TP churn this
+boot); P8a cells filling (`f|f=9/f|t=14/t|f=18/t|t=17`, thinking ~53% normalized). **2 NEW FLAGS:**
+(1) **perp venue-stop/TP does not engage** (held longs 6–11 bars, `AGENTIC_VENUE_*`=true, placed
+neither; blocks L0→L1 shorts — § Flagged + backlog #54); (2) **backlog #49 base double-lock now OBSERVED**
+(3 self-healing LINK IOC-exit rejects/bar, venue-TP base-lock; latent protective-stop risk; local
+rejects emit zero app-log). Not an escalation day (07-15 already shipped Pass 25). Full entry:
+`reports/loop/LOG.md`.
+
+**Pass 25, 2026-07-15** (report-only-in-hindsight was a fix pass) — **MAINTENANCE: venue-exit
+qty-reconciliation CHURN BUG FIXED + deployed both lanes (`debef0f`).** `agentic_venue_tp_total`
+placed=15 / qty_cancel=14 / 0 skipped_existing — `manageVenueTp` compared step-rounded resting qty vs
+raw `position.qty` via exact `.eq()` (structurally always false); fix threads `DEFAULT_FILTERS.stepSize`
+and compares `roundToStep(pos, step,'down')` at all 3 sites (spot TP + spot/perp stop). Reviewer APPROVE
+0 must-fix; gates green (test 2137, 6 new regressions); spot boot `29e22ada`. Full entry:
+`reports/loop/LOG.md`.
 
 **Pass 24, 2026-07-14** (scheduled, report-only) — first scheduled pass after Push 3; factorial
 arm-stamping + Phase-5 consult WATCHes RESOLVED POSITIVE, perp L0 healthy-in-warmup, reflection
@@ -452,7 +466,8 @@ wait on venue-TP capture data; **#18/#46/#47/#48** wait on their stated data/seq
 | 46 | Thompson multi-candidate A/B routing (replaces the newest-candidate-only slot) | 2+ | M | seed (Push II); blocked while the v2→v3 candidate cycle is mid-flight |
 | 47 | Adaptive consult cadence (vary the 15m consult rhythm by regime) | 2 | M | seed (Push II); needs the Phase-5 consult baseline first |
 | 48 | Weekly vol-ranked symbol rotation (universe-study follow-on) | 2 | M | seed (Push II Phase 7); sequenced behind the 5→8 expansion; needs a rotation-vs-promotion-walk attribution design |
-| 49 | Signal-sink cross-signal pair atomicity — protective fire vs concurrent TP re-place (self-healing TERMINAL_REJECT today). Exceeds the signal-sink scope exception (CANCEL_OPEN routing only) | 2 | M | seed — OWNER/reviewer-gated (Push II Phase 2); revisit with observed `tp_race_hold`/`orphan_cancel` data |
+| 49 | Signal-sink cross-signal pair atomicity — protective fire vs concurrent TP re-place (self-healing TERMINAL_REJECT today). Exceeds the signal-sink scope exception (CANCEL_OPEN routing only) | 2 | M | **Pass 26 OBSERVED** (was "revisit with data"): 3 self-healing LINK IOC-exit rejects, one/bar, `raw_ack`=null LOCAL refusal — resting venue-TP GTC (12.03) locks the base a concurrent 12.03 marketable sell needs (~0.0096 free). Benign as seen (profit-take exits ≥ entry, position held); LATENT — an S3/protective stop on a TP-locked base is defeated unless the TP is cancelled first. Local rejects emit ZERO app-log (DB-forensics-only). OWNER/reviewer-gated (exceeds CANCEL_OPEN scope) |
+| 54 | Perp venue-stop/TP path does not engage (FLAG 1, Pass 26) — app-perp held longs ~6–11 bars with `AGENTIC_VENUE_STOP`+`_TP`=true but placed neither; spot's venue-TP DOES place ⇒ perp-specific. Blocks the L0→L1 shorts pre-auth | 2 | M | investigate — MUST-NOT-TOUCH (OMS/execution/risk), owner/reviewer. Discriminator: hold a perp position ≥3 bars, grep for a `manageVenue*` line / `fapiPrivateGetOpenAlgoOrders` resting order. `PERP_VENUE_ENABLED` is a red herring (gates the unwired PaperPerpAdapter) |
 | 52 | W12 operational event logging (structured ops events; 2026-07-08 follow-up, deferred since) | 1–2 | M | seed — needs design |
 | 53 | Reflection-trigger observability — `evaluateTrigger` returns silently when trips-since-attempt < N or on cooldown, so a close that evaluated-but-did-not-fire leaves no metric/log (Pass 24 needed manual boot-timeline forensics to diagnose the 3-day dormancy) | 2 | S | seed — a `agentic_reflection_trigger_total{outcome=below_threshold\|cooldown\|inflight\|fired}` counter; touches the reflection hot path, do NOT enable mid-factorial without a confirmed defect |
 
@@ -524,6 +539,20 @@ wait on venue-TP capture data; **#18/#46/#47/#48** wait on their stated data/seq
 
 ## Flagged for human review (open)
 
+- **PERP VENUE-STOP DOES NOT ENGAGE (FLAG 1, Pass 26, 2026-07-15; backlog #54):** app-perp took its
+  first live trades — 2 closed BTC long round trips held ~11 and ~6 bars — with
+  `AGENTIC_VENUE_STOP=true` + `AGENTIC_VENUE_TP=true`, yet placed **NEITHER a venue STOP_MARKET NOR a
+  venue TP**. Evidence: both `agentic_venue_*` metric series absent on the perp Prometheus; **zero**
+  `manageVenue*`/`STOP_MARKET`/`algo*`/`reduceOnly` lines in 24h of perp logs; `order_events` = 4
+  SUBMIT/4 ACK/4 FILL (entry+exit only). The **spot** venue-TP path DOES place under the same
+  `AGENTIC_VENUE_TP=true` (LINK resting) ⇒ the gap is perp-specific. `PERP_VENUE_ENABLED=false` is a
+  RED HERRING (its schema comment, `environment.config.ts:478`, gates the unwired PaperPerpAdapter;
+  app-perp trades the real binanceusdm demo venue). No safety compromise OBSERVED (executor bar-close
+  stop + S3 2%/1.5% backstop active; both exits clean IOC fills, −$0.80 total), but the P8d algo-rail
+  stop lifecycle — the entire rationale for the perp lane — is UNVERIFIED and appears non-functional.
+  **This BLOCKS the L0→L1 perp-shorts pre-auth** (which requires "algo-rail stop lifecycle verified
+  live"). MUST-NOT-TOUCH (OMS/execution/risk) ⇒ owner/reviewer root-cause: is `manageVenueTp`/
+  `manageVenueStopPerp` gated off, not scheduled on the perp lane's managed bars, or failing silently?
 - **AVAILABILITY (Pass 17, 2026-07-12; updated Pass 23; REGRESSED Pass 25):** the stack runs on the
   owner's MacBook; host sleep throttles everything (worst measured: 8%/24h duty cycle; the SOL trail
   fired 10h late → gap loss). Pass 23 read **100%/24h for two consecutive days**, but **Pass 25

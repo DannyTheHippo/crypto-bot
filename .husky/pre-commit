@@ -1,1 +1,6 @@
+# Non-interactive hook shells (agent sessions, some GUIs) lack pnpm on PATH — the fnm shell hook
+# only runs in interactive shells here. Fall back to corepack (ships with node) so commits never
+# fail "pnpm: command not found"; native pnpm still wins when present. Backlog #57.
+command -v pnpm >/dev/null 2>&1 || pnpm() { corepack pnpm "$@"; }
+
 pnpm format:check && pnpm lint:md && pnpm lint && pnpm typecheck

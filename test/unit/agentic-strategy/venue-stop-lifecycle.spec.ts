@@ -119,7 +119,7 @@ function buildInput(
   const symbol = opts.symbol ?? SYM;
   const venue = opts.venue ?? V;
   const candles = Array.from({ length: index + 1 }, (_, i) =>
-    candle(i, symbol, venue, i === index ? opts.close ?? '100' : '100'),
+    candle(i, symbol, venue, i === index ? (opts.close ?? '100') : '100'),
   );
   const positions = new Map<string, Position>();
   if (opts.position) positions.set(`${SID}|${venue}|${symbol}`, opts.position);
@@ -985,6 +985,38 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
     await strategy.decide(perpInput(1, { position: perpLongPosition('100') })); // placed
     const out = await strategy.decide(perpInput(2, { position: perpLongPosition('100') })); // reconcile bar — store throws
     expect(out).toEqual([]); // skipped, NOT a second 'placed' signal
+  });
+
+  // Backlog #54 (FLAG 1) regression: a fetchOpenAlgoOrders rejection during the PERP managed-bar
+  // reconcile must stay INSIDE manageVenueStopPerp. Before the fix it propagated out of decide(),
+  // discarding the venue-TP signal manageVenueTp had already built on the SAME bar (metric'd
+  // 'placed', never emitted — 0 venue-TP intents ever on the perp lane) and feeding auto-DRAIN.
+  // Live signature: demo-fapi answers the raw openAlgoOrders GET with a bare array, so the
+  // adapter's `{ orders }` destructure throws on EVERY call (probe 2026-07-16; the adapter-shape
+  // fix itself is owner-gated — exchange adapters are outside loop autonomy).
+  it('#54: a fetchOpenAlgoOrders rejection during PERP reconcile resolves decide() — venue-TP signal survives, reconcile_error emitted, stop placement skipped', async () => {
+    const stopEvents: VenueStopEvent[] = [];
+    const tpEvents: VenueTpEvent[] = [];
+    const registry = planStopRegistry();
+    const client = new PlanningClient();
+    const strategy = new AgenticStrategy(SID, perpParams({ venueTpEnabled: true }), client, {
+      onVenueStop: (e) => stopEvents.push(e),
+      onVenueTp: (e) => tpEvents.push(e),
+      algoOrders: {
+        fetchOpenAlgoOrders: () => Promise.reject(new Error('adapter shape throw')),
+      },
+      planStopRegistry: registry,
+    });
+    await strategy.decide(perpInput(0));
+    const out = await strategy.decide(perpInput(1, { position: perpLongPosition('100') }));
+    expect(out).toHaveLength(1); // the TP placement — NOT discarded by the stop reconcile throw
+    expect(out[0]!.exitStyle).toBe('RESTING');
+    expect(out[0]!.limitPriceHint!.toFixed()).toBe('103');
+    expect(tpEvents).toContain('placed');
+    expect(stopEvents).toEqual(['reconcile_error']); // no 'placed' — placement decision skipped
+    // The registry's stand-down flag is untouched by the failed read (set at plan attach, never
+    // flipped by an unverified reconcile) — the watcher/force-band backstops stay armed.
+    expect(registry.get(PERP_REG_KEY)?.venueStopResting).not.toBe(true);
   });
 });
 

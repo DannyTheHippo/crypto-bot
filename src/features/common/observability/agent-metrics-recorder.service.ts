@@ -40,7 +40,8 @@ export type AgentVenueStopEvent =
   | 'orphan_cancel'
   | 'filled_flat'
   | 'stood_down'
-  | 'force_fired';
+  | 'force_fired'
+  | 'reconcile_error';
 
 // Mirrors prescreen.ts's PrescreenReason — duplicated rather than imported because the
 // eslint-plugin-boundaries wall forbids this feature (common/observability) importing from

@@ -209,11 +209,13 @@ export type VenueTpEvent =
 
 // AGENTIC_VENUE_STOP lifecycle events (see manageVenueStop / AgenticStrategyDeps.onVenueStop) —
 // mirrors VenueTpEvent's own set, minus 'tp_race_hold' (the stop's own venue fill racing a bar-close
-// check is 'stood_down'/'force_fired' below, a distinct decision from the TP's race-hold) plus two
+// check is 'stood_down'/'force_fired' below, a distinct decision from the TP's race-hold) plus three
 // stop-specific additions: 'stood_down' — the bar-close executor deferred a 'stop' exit to the
 // confirmed-resting venue stop (breach within the force band); 'force_fired' — the SAME check found
 // the breach past the force band and let the bar-close IOC exit proceed (the venue order evidently
-// failed to fill on its own).
+// failed to fill on its own); 'reconcile_error' — the perp reconcile's fetchOpenAlgoOrders read
+// threw (adapter/venue failure): the placement decision was skipped that bar, backstops stay armed
+// (backlog #54 — a sustained rate on this event means the venue stop never rests on this venue).
 export type VenueStopEvent =
   | 'placed'
   | 'skipped_existing'
@@ -224,7 +226,8 @@ export type VenueStopEvent =
   | 'orphan_cancel'
   | 'filled_flat'
   | 'stood_down'
-  | 'force_fired';
+  | 'force_fired'
+  | 'reconcile_error';
 
 interface ActivePlanState {
   plan: NonNullable<AgentProposal['plan']>;
@@ -1306,7 +1309,26 @@ export class AgenticStrategy implements AsyncStrategy {
     context: AgentContext,
     key: string,
   ): Promise<Signal[]> {
-    const open = (await this.algoOrders?.fetchOpenAlgoOrders?.(this.symbol)) ?? [];
+    // Backlog #54 (FLAG 1): this read was the ONE throw-capable algo call on the managed-bar hot
+    // path not under try/catch — its rejection propagated out of decide(), discarding the venue-TP
+    // signal manageVenueTp had already built on the SAME bar (metric'd 'placed', never emitted) and
+    // feeding onDecideFailure's auto-DRAIN, every managed perp bar. Same fail-toward-no-op direction
+    // as the storeError branch below: skip this bar's placement decision (a blind placement could
+    // duplicate a stop this read failed to see), never touch setVenueStopResting (an unverified flip
+    // either way corrupts the watcher/force-band stand-down read), and surface loudly via the
+    // 'reconcile_error' lifecycle event. Executor bar-close + S3 backstops stay armed throughout —
+    // the position is never naked on this path. Mirrors P7f fix 5's swallow in
+    // cancelPerpAlgoStopIfResting's fallback lookup, which documented this exact bug class.
+    let open: readonly AlgoOrderState[];
+    try {
+      open = (await this.algoOrders?.fetchOpenAlgoOrders?.(this.symbol)) ?? [];
+    } catch (err) {
+      this.onVenueStop?.('reconcile_error');
+      this.logger.warn(
+        `venue-stop reconcile: fetchOpenAlgoOrders failed for ${this.symbol} (perp) — skipping this bar's placement decision: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return [];
+    }
     let restingAlgo: AlgoOrderState | undefined;
     // Push 3 P7f fix 6: same STORE-ERROR distinction as manageVenueStopSpot above — a transient
     // intent-store throw while classifying a candidate must not read as "nothing resting" (see

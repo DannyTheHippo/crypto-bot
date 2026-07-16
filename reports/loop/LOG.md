@@ -2963,3 +2963,123 @@ highest value (protection gap on a live money lane + blocks L0→L1). (2) **`deb
 `run.mjs` explicit-arm trips as N grows. (5) **Phase-5 consult** — consult_id on multi-symbol bars +
 per-day decide-call drop (gates the 5→8 pre-auth). (6) E2 eval:candidates (corpus 513/600); (7) carry
 re-test ~07-24.
+
+## 2026-07-16 — Pass 27 (scheduled; report-only — FLAG 1 / #54 ROOT-CAUSED)
+
+**Window:** sweep ~08:15Z. Both apps healthy but **freshly restarted ~57min ago on host wake**
+(spot `29e22ada`→`dcbcc641`, perp `88420be0`→`70155015`; host on **battery, 15% charge**, a 27s
+maintenance sleep at 08:59 local — AVAILABILITY, see Flagged). Harness probe (`pnpm eval:agentic`)
+**GREEN** (4 files / 15 tests, 6 skipped). No kill-switch / HALT / reconciliation mismatch / EXPIRED
+on either lane.
+
+**Spot scoreboard** (epoch 07-12 08:30Z): **RT=18 (+1 vs Pass 26), net-of-cost −$7.55 (improved from
+−$9.46), LLM $6.74, window 2.94d, ready=0**; equity $4994.5, dd 0.11%; ≈$2.36/day. Realized by
+symbol: **LINK +$5.37** (lone winner), BTC −$2.47, ETH −$1.92, SOL −$1.70, XRP −$1.03. **Perp
+scoreboard** (own epoch): RT=2, net −$1.90, LLM $1.10, window 0.21d, ready=0; equity $4999.20, flat
+now. Spot decides all holds this young boot (model-driven, no proposes/rejections — durable finding);
+14 called / 6 skipped_quiet.
+
+**Positive — spot A/B candidate is winning early:** `agentic_version_round_trips` v1=15 / **v2=3**
+(was 2/10 at Pass 26 — v2 advanced), `agentic_version_net_pnl_usd` v1=**−$1.90** / v2=**+$1.09**. The
+Stage-2 candidate (v2) is net-positive and outrunning the champion; needs 7 more attributed trips for
+a verdict (age-lapse ~07-18 04:45Z otherwise). Reflection healthy both lanes (no `validator_reject`;
+perp minted its own v2 Pass 26). **E2 watch crossed:** spot `agent_decisions.input_payload` = **623**
+rows (≥200) ⇒ `eval:candidates` now runnable (deferred — report-only pass; not today's priority).
+
+**Pass type: MAINTENANCE, report-only.** §3 correctness-bug priority applied to FLAG 1 (#54): a
+trading-path correctness bug WAS found and fully root-caused, but the fix spans an adapter/venue
+reality (MUST-NOT-TOUCH) and a live owner-architectural question, and the host (battery 15%, sleeping)
+cannot safely soak a protective-path deploy right now — so it is flagged with an exact remedy, not
+shipped (advisor-concurred). CANDIDATE ineligible (candidates unresolved in A/B on BOTH lanes);
+PROMOTION ineligible (spot v2 3/10 trips). No other trading-path bug surfaced.
+
+### FLAG 1 / backlog #54 — perp venue-stop/TP: ROOT CAUSE CONFIRMED (upgrades Pass 26's "does not engage")
+
+Pass 26 saw the symptom (no venue TP/stop placed despite both flags on); this pass reconstructed the
+mechanism from the durable DB + historical Prometheus (docker log buffer had rotated past the trips).
+**It is NOT dust, NOT symbol-mismatch, NOT a config gap** — all three eliminated with evidence
+(position keyed `BTC/USDT:USDT:0.001@64888`, notional ~$64.9 > DEFAULT_FILTERS minNotional $50 ⇒ seen
+LONG; runtime env verified `AGENTIC_VENUE_TP=AGENTIC_VENUE_STOP=AGENTIC_PLAN_MODE=true`; wiring in
+`app.module.ts:1962/1974/1806/1807/1828` correct; `entryPrice` DID anchor — proven below).
+
+**Confirmed chain:**
+
+1. On each plan-managed hold bar (`runActivePlan`, journal `plan active — deterministic hold` at
+   `agentic.strategy.ts:951`), `manageVenueTp` (line 960) runs to completion: fires
+   `onVenueTp('placed')` and BUILDS the RESTING `EXIT_LONG` take-profit signal.
+   **Evidence:** perp `max_over_time(agentic_venue_tp_total[2d])` = `placed=7, skipped_inflight=6`,
+   and **NO `skipped_existing`, NO `filled_flat`** — the build-and-discard signature (a TP that
+   actually rested would show `skipped_existing` on the next bar; contrast the SPOT series:
+   `placed=54, skipped_existing=3, filled_flat=2` — spot's TP demonstrably rests and fills).
+2. `manageVenueStop` (line 966) → `manageVenueStopPerp` → line **1309**
+   `await this.algoOrders.fetchOpenAlgoOrders(this.symbol)` **THROWS** on the binanceusdm demo venue.
+   The adapter (`ccxt-exchange.adapter.ts:214-228`) throws at line **226** (`throw toAdapterError(e)`)
+   — NOT the fail-closed `=== undefined` at 216: `fapiPrivateGetOpenAlgoOrders` IS defined in pinned
+   ccxt 4.5.58 (`binance.js:7448`, `abstract/binanceusdm.d.ts`) ⇒ the method exists and the **demo-fapi
+   API call itself is rejected** (a venue reality, NOT a capability under-report like the `359e4a7`
+   watchTicker patch).
+3. That throw is **uncaught** in `manageVenueStopPerp` (line 1309's `?? []` only handles a `undefined`
+   return, not a throw) — unlike the sibling `reconcileOrphanedAlgoStop` (try/catch at 1445-1449) and
+   `cancelPerpAlgoStopIfResting` (try/catch at 1546-1557/1561-1566). The throw propagates
+   `manageVenueStopPerp` → `manageVenueStop` → `runActivePlan` → `decide()` **rejects**, so the
+   already-built+metric'd TP signal (step 1) is **discarded, never returned/emitted** (Defect A: 7
+   `placed` metrics but 0 venue-TP `order_intents`/`signals` — perp `signals`=5 rows, `order_intents`=4
+   rows, both entries+IOC exits only), and `onVenueStop` never fires (Defect B: `agentic_venue_stop_total`
+   has NO series, ever).
+4. A `decide()` reject routes through strategy-host `.catch → onDecideFailure` (`strategy-host.ts:502-506`)
+   — it is NOT recorded in `agent_decide_total` (why "only 2 error rows" did not rule it out); its sole
+   observable is auto-DRAIN. **Confirmed:** `max_over_time(strategy_lifecycle{state="DRAINING"}[2d])=1`
+   — the perp lane DID auto-drain. Recovery: the EXIT bar's algo call goes through the _swallowing_
+   `cancelPerpAlgoStopIfResting` (line 910), so that decide succeeds (risk-reducing signal passes the
+   DRAINING filter) and the lane returns ACTIVE — explaining why exits still fire while hold bars crash.
+5. **Perp-specific** because SPOT runs `AGENTIC_VENUE_STOP=false` (forced by the P7f boot double-lock
+   refusal, `environment.config.ts:750`), so spot's `manageVenueStop` no-ops at line 1129 and the TP
+   signal survives — spot's venue TP rests/fills normally.
+
+**Smoking gun:** `cancelPerpAlgoStopIfResting`'s own comment (lines 1538-1545) documents this EXACT
+bug class — P7f fix 5 already fixed "uncaught `fetchOpenAlgoOrders` → `runActivePlan` rejects → the
+built exit Signal is never returned → naked position" in that sibling method, but the identical
+uncaught call at **line 1309** in `manageVenueStopPerp`'s placement path was missed by that review.
+
+**Impact:** the P8d venue-stop architecture (the entire rationale for the perp lane) is non-functional
+on the demo venue; every plan-managed perp bar silently crashes `decide()`, the lane periodically
+auto-drains (degrading throughput), and the venue TP never rests. **No safety compromise OBSERVED** —
+both trips exited cleanly via the executor bar-close stop + S3 2%/1.5% backstop (−$0.80 total, no
+naked position). **Blocks the L0→L1 shorts pre-auth** ("algo-rail stop lifecycle verified live").
+
+**Proposed remedy (report-only; owner/reviewer):** two layers —
+
+- _(agentic-lane, MAY — recommended next-pass fix)_ wrap `manageVenueStopPerp`'s `fetchOpenAlgoOrders`
+  (line 1309) in the SAME fail-safe try/catch pattern as `reconcileOrphanedAlgoStop` and the
+  `storeError` branch (line 1325): on throw, skip this bar's stop placement decision (fail toward
+  no-op — never a blind duplicate stop) AND emit a **loud** new `agentic_venue_stop_total{event=
+  "reconcile_error"}` so the degradation can NEVER again be silent. This alone stops the decide()
+  crash/auto-drain churn and **restores the venue TP** (manageVenueStop no longer throws ⇒ the TP
+  signal survives). Add a regression test (perp `fetchOpenAlgoOrders` throwing ⇒ TP still emitted,
+  no reject, `reconcile_error` counted). Requires a reviewer dispatch (money-path-adjacent).
+- _(adapter/venue, MUST-NOT-TOUCH — owner question)_ WHY does demo-fapi reject
+  `fapiPrivateGetOpenAlgoOrders`? If Binance futures demo does not honor the algo-order query endpoint
+  as called, the venue-native STOP_MARKET stop cannot round-trip on demo at all — the owner must decide
+  whether to rework the algo-rail call, accept executor+S3 as the perp stop on demo, or defer perp
+  venue-stop to a live-only capability. Also verify the sibling uncaught pattern at
+  `unknown-resolver.service.ts:172` (execution layer) is genuinely caught before scoping any fix.
+  Confirming the exact demo error needs a live perp position (or a direct endpoint probe) — a future
+  pass with the lane holding a position ≥1 managed bar can grep the (un-rotated) log for the
+  `toAdapterError` line.
+
+### Other flags (unchanged this pass)
+
+- **#49 base double-lock** (Pass 26 OBSERVED on spot LINK): no new evidence; unchanged, owner/reviewer.
+- **AVAILABILITY:** host on battery 15% with maintenance sleeps; both apps restarted ~57min into the
+  sweep. Standing ask unchanged (keep the Mac on AC + auto-login, or move to an always-on host).
+
+**Gates:** none run (no code shipped). Harness probe GREEN. **Deploy:** none. **Soak:** n/a (both
+boots soaking clean, 0 errors/HALT/mismatch/EXPIRED in 24h). **Backups:** Pass 25's
+`cryptobot-20260715T004536Z.sql.gz` (+perp) current; no pass-authored DB change.
+
+**Next-pass candidates:** (1) **FLAG 1 agentic-lane resilience fix** (the try/catch + `reconcile_error`
+metric above) — highest value if the owner clears the adapter/venue question or accepts executor+S3 on
+demo. (2) **Spot v2 A/B** resolves at 10 attributed trips or age-lapses ~07-18 04:45Z → v3 mint.
+(3) **E2 `eval:candidates`** now runnable (623 payload rows ≥200) — spot decide-model re-test.
+(4) **P8a** harm-stop peek at 8 trips/cell; `run.mjs` explicit-arm trips as N grows. (5) **Phase-5
+consult** metrics once a multi-symbol bar occurs (gates the 5→8 pre-auth). (6) carry re-test ~07-24.

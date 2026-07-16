@@ -46,8 +46,9 @@ never changes for strategy evolution.
   2. **Learning-loop edge** — ACTIVE. Exit: ≥2 playbook promotions with version-attributed PnL
      AND rolling-7d net-of-cost ≥0. **Current status (Pass 26, 2026-07-15) — reflection loop ALIVE
      & HEALTHY on BOTH lanes, `c0d53bd` seed-race fix LIVE-VERIFIED:** SPOT playbook active v1, v2
-     unresolved in A/B. **v2 is now PARTICIPATING — 2/10 attributed trips (was 0/abstaining at Pass
-     24) — so the abstention deadlock resolved NATURALLY.** The Pass-24 prediction ("the abstain-lapse
+     unresolved in A/B. **v2 is now PARTICIPATING and WINNING EARLY — 3/10 attributed trips (Pass 27;
+     2/10 at Pass 26; 0/abstaining at Pass 24), net-of-cost +$1.09 vs champion v1 −$1.90 — so the
+     abstention deadlock resolved NATURALLY.** The Pass-24 prediction ("the abstain-lapse
      `AGENTIC_ABSTAIN_LAPSE_DECIDES=15` mints v3 immediately") is **OBE**: the abstain-lapse condition
      is `decides≥15 && entries===0` (`reflection.service.ts:818`) and v2 now has `long` entries, so
      `entries===0` is false — the lapse is armed but doesn't fire. The BINDING guard is the **age-lapse**
@@ -408,6 +409,22 @@ PoS ≥ 0.70). Exit criterion: ≥2 promotions with version-attributed PnL AND r
 
 ## Last pass
 
+**Pass 27, 2026-07-16** (scheduled, sweep ~08:15Z, **report-only — FLAG 1 / #54 ROOT-CAUSED**) —
+both apps healthy but freshly restarted ~57min ago on host wake (spot `dcbcc641`, perp `70155015`;
+host on **battery 15%**, maintenance sleep — AVAILABILITY). Harness probe GREEN; 0
+error/HALT/mismatch/EXPIRED both lanes. Spot scoreboard (epoch 07-12 08:30Z): **RT=18 (+1),
+net-of-cost −$7.55 (improved from −$9.46), LLM $6.74, window 2.94d, ready=0**; equity $4994.5, dd
+0.11%; LINK +$5.37 lone realized winner. **Positive:** spot A/B v2 now **3/10 trips, net +$1.09 vs
+v1 −$1.90** (candidate winning early); E2 watch crossed (spot input_payload=623 ≥200, `eval:candidates`
+runnable). Pass type MAINTENANCE report-only: **FLAG 1 (#54) fully root-caused** — uncaught
+`fetchOpenAlgoOrders` throw in `manageVenueStopPerp` (agentic.strategy.ts:1309) on the demo venue
+crashes `decide()` every managed perp bar ⇒ TP signal discarded (built and metric'd, never placed),
+no venue stop, and auto-DRAIN (`strategy_lifecycle{DRAINING}=1` confirmed); perp-specific because spot
+runs venueStop off (P7f double-lock). Fix flagged not shipped (adapter/venue owner-Q + can't soak on
+battery). Full chain + exact remedy: § Flagged + LOG.md. CANDIDATE/PROMOTION ineligible (candidates
+unresolved in A/B both lanes; v2 3/10). No new #49 evidence. Not an escalation day. Full entry:
+`reports/loop/LOG.md`.
+
 **Pass 26, 2026-07-15** (scheduled, sweep ~08:20Z, **report-only**) — both app boots fresh
 (`29e22ada` spot / `88420be0` perp, ~55min into the Pass 25 `debef0f` redeploy), host awake, harness
 probe GREEN, **0 error/HALT/mismatch/EXPIRED over 24h on both lanes**. Spot scoreboard (epoch 07-12
@@ -467,7 +484,7 @@ wait on venue-TP capture data; **#18/#46/#47/#48** wait on their stated data/seq
 | 47 | Adaptive consult cadence (vary the 15m consult rhythm by regime) | 2 | M | seed (Push II); needs the Phase-5 consult baseline first |
 | 48 | Weekly vol-ranked symbol rotation (universe-study follow-on) | 2 | M | seed (Push II Phase 7); sequenced behind the 5→8 expansion; needs a rotation-vs-promotion-walk attribution design |
 | 49 | Signal-sink cross-signal pair atomicity — protective fire vs concurrent TP re-place (self-healing TERMINAL_REJECT today). Exceeds the signal-sink scope exception (CANCEL_OPEN routing only) | 2 | M | **Pass 26 OBSERVED** (was "revisit with data"): 3 self-healing LINK IOC-exit rejects, one/bar, `raw_ack`=null LOCAL refusal — resting venue-TP GTC (12.03) locks the base a concurrent 12.03 marketable sell needs (~0.0096 free). Benign as seen (profit-take exits ≥ entry, position held); LATENT — an S3/protective stop on a TP-locked base is defeated unless the TP is cancelled first. Local rejects emit ZERO app-log (DB-forensics-only). OWNER/reviewer-gated (exceeds CANCEL_OPEN scope) |
-| 54 | Perp venue-stop/TP path does not engage (FLAG 1, Pass 26) — app-perp held longs ~6–11 bars with `AGENTIC_VENUE_STOP`+`_TP`=true but placed neither; spot's venue-TP DOES place ⇒ perp-specific. Blocks the L0→L1 shorts pre-auth | 2 | M | investigate — MUST-NOT-TOUCH (OMS/execution/risk), owner/reviewer. Discriminator: hold a perp position ≥3 bars, grep for a `manageVenue*` line / `fapiPrivateGetOpenAlgoOrders` resting order. `PERP_VENUE_ENABLED` is a red herring (gates the unwired PaperPerpAdapter) |
+| 54 | Perp venue-stop/TP path does not engage (FLAG 1) — root cause: `manageVenueStopPerp`'s uncaught `fetchOpenAlgoOrders` throw (agentic.strategy.ts:1309) on the demo venue crashes `decide()` every managed bar ⇒ TP signal discarded + no stop + auto-DRAIN. Blocks the L0→L1 shorts pre-auth | 2 | M | **ROOT-CAUSED Pass 27** (see Flagged for the full chain + evidence). Fix (2 layers): agentic-lane try/catch @1309 mirroring `reconcileOrphanedAlgoStop`/`cancelPerpAlgoStopIfResting` (P7f fix 5 precedent) + loud `agentic_venue_stop_total{event=reconcile_error}`; AND owner Q — does demo-fapi honor `fapiPrivateGetOpenAlgoOrders` at all? Reviewer + owner-gated |
 | 52 | W12 operational event logging (structured ops events; 2026-07-08 follow-up, deferred since) | 1–2 | M | seed — needs design |
 | 53 | Reflection-trigger observability — `evaluateTrigger` returns silently when trips-since-attempt < N or on cooldown, so a close that evaluated-but-did-not-fire leaves no metric/log (Pass 24 needed manual boot-timeline forensics to diagnose the 3-day dormancy) | 2 | S | seed — a `agentic_reflection_trigger_total{outcome=below_threshold\|cooldown\|inflight\|fired}` counter; touches the reflection hot path, do NOT enable mid-factorial without a confirmed defect |
 
@@ -539,20 +556,35 @@ wait on venue-TP capture data; **#18/#46/#47/#48** wait on their stated data/seq
 
 ## Flagged for human review (open)
 
-- **PERP VENUE-STOP DOES NOT ENGAGE (FLAG 1, Pass 26, 2026-07-15; backlog #54):** app-perp took its
-  first live trades — 2 closed BTC long round trips held ~11 and ~6 bars — with
-  `AGENTIC_VENUE_STOP=true` + `AGENTIC_VENUE_TP=true`, yet placed **NEITHER a venue STOP_MARKET NOR a
-  venue TP**. Evidence: both `agentic_venue_*` metric series absent on the perp Prometheus; **zero**
-  `manageVenue*`/`STOP_MARKET`/`algo*`/`reduceOnly` lines in 24h of perp logs; `order_events` = 4
-  SUBMIT/4 ACK/4 FILL (entry+exit only). The **spot** venue-TP path DOES place under the same
-  `AGENTIC_VENUE_TP=true` (LINK resting) ⇒ the gap is perp-specific. `PERP_VENUE_ENABLED=false` is a
-  RED HERRING (its schema comment, `environment.config.ts:478`, gates the unwired PaperPerpAdapter;
-  app-perp trades the real binanceusdm demo venue). No safety compromise OBSERVED (executor bar-close
-  stop + S3 2%/1.5% backstop active; both exits clean IOC fills, −$0.80 total), but the P8d algo-rail
-  stop lifecycle — the entire rationale for the perp lane — is UNVERIFIED and appears non-functional.
-  **This BLOCKS the L0→L1 perp-shorts pre-auth** (which requires "algo-rail stop lifecycle verified
-  live"). MUST-NOT-TOUCH (OMS/execution/risk) ⇒ owner/reviewer root-cause: is `manageVenueTp`/
-  `manageVenueStopPerp` gated off, not scheduled on the perp lane's managed bars, or failing silently?
+- **PERP VENUE-STOP/TP: ROOT CAUSE CONFIRMED (FLAG 1, Pass 26→27; backlog #54):** the P8d algo-rail
+  stop lifecycle is non-functional on the demo venue. **Confirmed chain** (full evidence trail: LOG.md
+  Pass 27): on every plan-managed perp hold bar, `manageVenueTp` (agentic.strategy.ts:960) runs and
+  BUILDS the resting TP signal (`agentic_venue_tp_total`: `placed=7, skipped_inflight=6`, **zero
+  `skipped_existing`/`filled_flat`** = built-and-discarded; SPOT by contrast has `skipped_existing=3,
+  filled_flat=2` — spot's TP genuinely rests/fills). Then `manageVenueStopPerp` (line 966→1300) calls
+  `fetchOpenAlgoOrders` at **line 1309 UNCAUGHT** (`?? []` handles only `undefined`, not a throw); on
+  the binanceusdm demo venue that call **throws** — adapter `ccxt-exchange.adapter.ts:226`
+  (`throw toAdapterError`), NOT the `=== undefined` fail-close (the method IS in pinned ccxt 4.5.58,
+  `binance.js:7448`) ⇒ **demo-fapi rejects the API call**. The throw propagates
+  `manageVenueStopPerp`→`manageVenueStop`→`runActivePlan`→`decide()` **reject**, so the already-built TP
+  signal is **discarded** (Defect A: 7 `placed` metrics, 0 venue-TP intents/signals) and `onVenueStop`
+  never fires (Defect B: `agentic_venue_stop_total` has no series). The reject routes via
+  `strategy-host.ts:502 .catch→onDecideFailure` (NOT `agent_decide_total`), whose only observable is
+  auto-DRAIN — **confirmed** `max_over_time(strategy_lifecycle{state="DRAINING"}[2d])=1`. Exits still
+  fire because the exit path's algo call (`cancelPerpAlgoStopIfResting`, line 910) IS try/caught, so the
+  exit-bar decide succeeds and recovers ACTIVE. **Perp-specific** because SPOT runs
+  `AGENTIC_VENUE_STOP=false` (P7f boot double-lock refusal, `environment.config.ts:750`) ⇒ spot's
+  `manageVenueStop` no-ops and its TP survives. **Smoking gun:** `cancelPerpAlgoStopIfResting`'s comment
+  (lines 1538-1545) documents this EXACT bug class fixed by P7f fix 5 in that sibling — the identical
+  uncaught call at line 1309 was missed. No safety compromise OBSERVED (executor bar-close + S3 backstop
+  caught both exits, −$0.80, no naked position); **BLOCKS the L0→L1 perp-shorts pre-auth**.
+  **Fix (report-only; 2 layers):** *(a, agentic-lane MAY, reviewer-gated)* try/catch @1309 mirroring
+  `reconcileOrphanedAlgoStop`/`storeError` branch (fail toward no-op) + a loud new
+  `agentic_venue_stop_total{event=reconcile_error}` + regression test — this stops the decide-crash /
+  auto-drain and RESTORES the venue TP; *(b, MUST-NOT-TOUCH, owner Q)* does Binance futures demo honor
+  `fapiPrivateGetOpenAlgoOrders` at all? If not, the venue-native stop cannot round-trip on demo —
+  owner decides: rework the algo call / accept executor+S3 on demo / defer to live-only. Also confirm
+  the sibling uncaught pattern at `unknown-resolver.service.ts:172` is caught before scoping.
 - **AVAILABILITY (Pass 17, 2026-07-12; updated Pass 23; REGRESSED Pass 25):** the stack runs on the
   owner's MacBook; host sleep throttles everything (worst measured: 8%/24h duty cycle; the SOL trail
   fired 10h late → gap loss). Pass 23 read **100%/24h for two consecutive days**, but **Pass 25

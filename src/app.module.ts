@@ -1805,6 +1805,10 @@ export class AppModule
         onPrescreen: (outcome, reason) => this.agentMetrics.recordPrescreen(outcome, reason),
         onVenueTp: (event) => this.agentMetrics.recordVenueTp(event),
         onVenueStop: (event) => this.agentMetrics.recordVenueStop(event),
+        // Backlog #55: without this the strategy falls back to its NOOP_LOGGER and every warn it
+        // emits (venue-stop reconcile_error, intent-store failures, prescreen fail-open,
+        // unknown-role) is invisible in production logs — metrics were the only observable.
+        logger: { warn: (m) => this.log.warn(`[${id}] ${m}`) },
         evidence: this.roundTripEvidence,
         derivativesFeed: this.derivativesFeed,
         sentimentFeed: this.sentimentFeed,

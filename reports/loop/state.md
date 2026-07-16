@@ -655,8 +655,13 @@ wait on venue-TP capture data; **#18/#46/#47/#48** wait on their stated data/seq
 - **6.9-LINK wallet scar (~$55):** historical unapplied recovered-order fill (pre-`b00c886`),
   journaled+deduped so no walk sees it post-epoch; venue-side manual sell is optional wallet
   hygiene only.
-- **FYI — `ReconciliationMismatch` pages at warning** (interim since Pass 8 `a25389a`; restore
-  critical when #24's class split lands).
+- **`ReconciliationMismatch` severity — RESOLVED-STALE 2026-07-16:** the Pass-8 flag said "restore
+  critical when #24's class split lands"; #24 landed (`e909664`) with a deliberate severity design
+  the flag predates — benign classes excluded from the alert entirely, HALTING classes paging
+  critical via `ReconciliationHalt`/`KillSwitchEngaged`, and the residual actionable-but-non-halting
+  classes (sweep/query failures, non-adoptable statuses) at warning (rationale in
+  `observability/alerts.rules.yml`'s own comment). Restoring critical here would over-page
+  non-halting mismatches; the implemented design supersedes the interim note. No change.
 - **CI gap:** RESOLVED 2026-07-13 build-out (`dafe9aa`, #30 shipped) — the remote CI effect is
   verifiable only on the next push to the remote (no-push rule); keep the §2.6 every-pass probe.
 

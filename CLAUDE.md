@@ -10,6 +10,25 @@ pnpm build | lint | typecheck | format:check | test | test:livegate | test:paper
 test:cov | test:testnet (env-gated, nightly)
 build+lint+typecheck+test MUST be green before any completion claim.
 
+## Configuration
+
+Deploy knobs live in committed lane files; secrets live in gitignored `.env` only.
+
+| File | Role |
+|------|------|
+| `.env.app` | Spot lane deploy knobs (+ comments) |
+| `.env.app-perp` | Perp lane knobs (`docker compose --profile perp`) |
+| `.env` / `.env.example` | Secrets only (API keys, arming tokens, Grafana password) |
+| `docker-compose.yml` | `env_file` wiring + infra env only — no app knob `environment:` blocks |
+
+**Compose:** `env_file: [.env.app \| .env.app-perp, .env]` — later file wins (secrets override).
+
+**Host `pnpm start`:** `AppConfigModule` loads `envFilePath: ['.env', '.env.app']` — first path wins (same effective precedence). Test/CI: `ignoreEnvFile: true` (unchanged).
+
+**Standing sync rule:** deploy knob changes go to `.env.app` (+ `.env.app-perp` when perp differs), zod schema in `environment.config.ts`, and docs — not inline compose `environment:`. Secrets template stays in `.env.example` only.
+
+**env_file quirk:** `VAR=` means UNSET; never put an inline comment after an empty assignment (compose delivers the comment as the value).
+
 ## Hard rules
 
 1. MONEY IS NEVER A NATIVE FLOAT. decimal.js + branded types minted only in
@@ -46,5 +65,5 @@ build+lint+typecheck+test MUST be green before any completion claim.
    OUTCOME_AMBIGUOUS, never retried blind.
 6. audit_log and order_events are append-only — never UPDATE/DELETE, never relax
    their triggers. Reconciliation mismatch HALTs and never auto-flattens.
-7. No secrets in code/logs/fixtures; pino redact list mandatory for new loggers;
+7. No secrets in code/logs/fixtures/committed env files (`.env.app`, `.env.app-perp`); pino redact list mandatory for new loggers;
    key fingerprints only.

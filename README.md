@@ -55,7 +55,8 @@ No credentials required. The bot runs fully in-memory against live Binance marke
 
 ```bash
 pnpm install
-cp .env.example .env        # review; defaults to TRADING_MODE=testnet — change to paper if desired
+cp .env.example .env        # secrets only — fill API keys
+# Deploy knobs (mode, strategy, risk) are in committed .env.app — edit there if needed.
 pnpm build
 pnpm start
 ```
@@ -82,7 +83,8 @@ Brings up Postgres 16, Prometheus, Grafana, and (once the `app` service is wired
 docker compose up --build
 ```
 
-With no credentials in the environment, the app resolves to paper mode automatically. Service URLs:
+With no credentials in `.env`, the app still boots but cannot place sandbox orders until keys are set.
+Deploy knobs (including `TRADING_MODE`) come from committed `.env.app`; secrets from gitignored `.env`.
 
 | Service    | URL                   | Default credentials                          |
 | ---------- | --------------------- | -------------------------------------------- |
@@ -101,16 +103,15 @@ live-mirroring data and your real Binance account keys (with demo enabled on the
 
 1. Create a Demo Trading API key at [demo.binance.com](https://demo.binance.com). Disable
    withdrawals on the key.
-2. Set in `.env`:
+2. Set `TRADING_MODE=testnet` and `SANDBOX_ENV=demo` in `.env.app` (already the compose defaults).
+3. Set demo keys in `.env`:
 
 ```dotenv
-TRADING_MODE=testnet
-SANDBOX_ENV=demo
 BINANCE_DEMO_API_KEY=your-demo-key-here
 BINANCE_DEMO_API_SECRET=your-demo-secret-here
 ```
 
-3. Run:
+4. Run:
 
 ```bash
 pnpm build
@@ -128,27 +129,32 @@ see the "Running against a sandbox" section of [docs/runbook.md](docs/runbook.md
 
 ## Configuration
 
-Key environment variables (full list with comments in `.env.example`):
+**Secrets** (API keys, arming tokens): gitignored `.env` — copy from `.env.example`.
 
-| Variable                              | Meaning                                                                        | Default in `.env.example` |
-| ------------------------------------- | ------------------------------------------------------------------------------ | ------------------------- |
-| `TRADING_MODE`                        | `paper` \| `testnet` \| `live`                                                 | `testnet`                 |
-| `SANDBOX_ENV`                         | `demo` \| `testnet` — picks the Binance sandbox when `TRADING_MODE=testnet`    | `demo`                    |
-| `FEED_ENV`                            | Market-data feed environment (`live` = public Binance streams, no credentials) | `live`                    |
-| `BINANCE_DEMO_API_KEY` / `_SECRET`    | Binance Demo Trading credentials (used when `SANDBOX_ENV=demo`)                | —                         |
-| `BINANCE_TESTNET_API_KEY` / `_SECRET` | Binance Spot Testnet credentials (used when `SANDBOX_ENV=testnet`)             | —                         |
-| `BINANCE_LIVE_API_KEY` / `_SECRET`    | Live credentials — read only when `TRADING_MODE=live`                          | —                         |
-| `ARMING_SECRET`                       | HMAC key for the live arming handshake                                         | —                         |
-| `TRADING_SYMBOL`                      | DEPRECATED single-symbol fallback (used only when `TRADING_SYMBOLS` is unset)  | `BTC/USDT`                |
-| `TRADING_SYMBOLS`                     | Symbols the agentic lane trades (must each have a filter entry in risk module) | `BTC/USDT,ETH/USDT`       |
-| `STRATEGY_INTERVAL`                   | Candle interval: `1m` \| `5m` \| `15m` \| `1h` \| `4h` \| `1d`                 | `15m`                     |
-| `ACTIVE_STRATEGY`                     | Strategy lane — closed enum, `agentic` is the only registered lane             | `agentic`                 |
-| `BASE_NOTIONAL`                       | Quote (USDT) per order                                                         | `100`                     |
-| `STARTING_CASH`                       | In-memory quote balance the bot tracks (set near the account's USDT balance)   | `5000`                    |
-| `DATABASE_URL`                        | Postgres connection string — optional; paper/demo run fine without it          | _(unset)_                 |
-| `GRAFANA_ADMIN_PASSWORD`              | Grafana admin password (docker-compose)                                        | `grafana`                 |
-| `PORT`                                | HTTP server port                                                               | `3100`                    |
-| `LOG_LEVEL`                           | `fatal` \| `error` \| `warn` \| `info` \| `debug` \| `trace`                   | `debug`                   |
+**Deploy knobs** (mode, strategy, risk limits, agentic tuning): committed `.env.app` (spot lane) and
+`.env.app-perp` (perp profile). Docker compose loads `env_file: [lane file, .env]`; host `pnpm start`
+loads `.env` then `.env.app` via `AppConfigModule`.
+
+| Variable                              | File        | Meaning                                                                        |
+| ------------------------------------- | ----------- | ------------------------------------------------------------------------------ |
+| `TRADING_MODE`                        | `.env.app`  | `paper` \| `testnet` \| `live`                                                 |
+| `SANDBOX_ENV`                         | `.env.app`  | `demo` \| `testnet` — picks the Binance sandbox when `TRADING_MODE=testnet`    |
+| `FEED_ENV`                            | `.env.app`  | Market-data feed environment (`live` = public Binance streams, no credentials) |
+| `BINANCE_DEMO_API_KEY` / `_SECRET`    | `.env`      | Binance Demo Trading credentials (used when `SANDBOX_ENV=demo`)                |
+| `BINANCE_TESTNET_API_KEY` / `_SECRET` | `.env`      | Binance Spot Testnet credentials (used when `SANDBOX_ENV=testnet`)             |
+| `BINANCE_LIVE_API_KEY` / `_SECRET`    | `.env`      | Live credentials — read only when `TRADING_MODE=live`                          |
+| `ARMING_SECRET`                       | `.env`      | HMAC key for the live arming handshake                                         |
+| `TRADING_SYMBOLS`                     | `.env.app`  | Symbols the agentic lane trades (must each have a filter entry in risk module) |
+| `STRATEGY_INTERVAL`                   | `.env.app`  | Candle interval: `1m` \| `5m` \| `15m` \| `1h` \| `4h` \| `1d`                 |
+| `ACTIVE_STRATEGY`                     | `.env.app`  | Strategy lane — closed enum, `agentic` is the only registered lane             |
+| `BASE_NOTIONAL`                       | `.env.app`  | Quote (USDT) per order                                                         |
+| `STARTING_CASH`                       | `.env.app`  | In-memory quote balance the bot tracks (set near the account's USDT balance)   |
+| `DATABASE_URL`                        | `.env.app`  | Postgres connection string — optional; paper/demo run fine without it          |
+| `GRAFANA_ADMIN_PASSWORD`              | `.env`      | Grafana admin password (docker-compose)                                        |
+| `PORT`                                | `.env.app`  | HTTP server port                                                               |
+| `LOG_LEVEL`                           | `.env.app`  | `fatal` \| `error` \| `warn` \| `info` \| `debug` \| `trace`                   |
+
+Full knob list with comments: [`.env.app`](.env.app). Perp lane: [`.env.app-perp`](.env.app-perp).
 
 ---
 

@@ -1437,7 +1437,7 @@ export class ReflectionService {
     // (aborted stream, malformed transfer, invalid JSON) classifies as transport_error — before
     // #32 a res.json() throw escaped this method entirely (the #50 gap caught it one level up).
     const contentType =
-      typeof res.headers?.get === 'function' ? (res.headers.get('content-type') ?? '') : '';
+      typeof res.headers?.get === 'function' ? res.headers.get('content-type') ?? '' : '';
     let body: unknown;
     try {
       body =
@@ -1580,10 +1580,10 @@ export class ReflectionService {
             type,
             id: asString(cb.id),
             name: asString(cb.name),
-            thinking: type === 'thinking' ? (asString(cb.thinking) ?? '') : undefined,
+            thinking: type === 'thinking' ? asString(cb.thinking) ?? '' : undefined,
             signature: asString(cb.signature),
-            data: type === 'redacted_thinking' ? (asString(cb.data) ?? '') : undefined,
-            text: type === 'text' ? (asString(cb.text) ?? '') : undefined,
+            data: type === 'redacted_thinking' ? asString(cb.data) ?? '' : undefined,
+            text: type === 'text' ? asString(cb.text) ?? '' : undefined,
             inputJson: type === 'tool_use' ? '' : undefined,
           });
           break;

@@ -72,7 +72,7 @@ export function normalizeTrade(
   // t.order carries the venue's own order id but VenueFill requires the client order id.
   // The caller passes fallbackCoid (the coid we queried with) when t.order is absent.
   const coid: ClientOrderId =
-    t.order !== undefined ? clientOrderId(t.order) : (fallbackCoid ?? clientOrderId(''));
+    t.order !== undefined ? clientOrderId(t.order) : fallbackCoid ?? clientOrderId('');
 
   // takerOrMaker can be absent; default to 'taker' as the conservative assumption for fees.
   const liquidity: 'maker' | 'taker' = t.takerOrMaker === 'maker' ? 'maker' : 'taker';

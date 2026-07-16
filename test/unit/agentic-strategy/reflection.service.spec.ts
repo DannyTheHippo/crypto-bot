@@ -276,7 +276,7 @@ function buildHarness(
     playbookStore: storeApi.store,
     journal: fakeJournal(opts.rows ?? []),
     recorder: recorderApi.recorder,
-    usageSink: (opts.withUsageSink ?? true) ? usageSinkApi.sink : undefined,
+    usageSink: opts.withUsageSink ?? true ? usageSinkApi.sink : undefined,
     killSwitch: killSwitchWithState(opts.killSwitchState ?? 'RUNNING'),
     registry: registryWithLifecycle(opts.lifecycle ?? 'ACTIVE'),
     fetchFn,

@@ -154,7 +154,7 @@ change in the report instead of forcing a change.
 **MAY** — implement, validate, commit to `main`, rebuild + redeploy the demo compose stack:
 
 - Agentic-lane code: `src/features/trading/agentic/`.
-- Config: `docker-compose.yml`, `.env.example` (keep in sync — standing rule), zod schema knobs in
+- Config: `.env.app` / `.env.app-perp` (deploy knobs), `.env.example` (secrets template — keep in sync — standing rule), zod schema knobs in
   `src/config/environment/environment.config.ts` for agentic/observability settings. This now
   includes (owner decision 2026-07-08, learning-system mandate): the reflection model / cadence /
   `AGENTIC_TOKEN_PRICES_JSON` per-model rate map (within the `AGENTIC_DAILY_COST_STOP_USD` breaker,

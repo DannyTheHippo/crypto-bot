@@ -165,13 +165,13 @@ If the CLI is unavailable, run the two steps directly:
 ## Before arming at live capital
 
 _(Adjacent to, not part of, the Re-arm section above — added separately so it does not collide
-with concurrent edits there.)_ The shipped `.env.example` `RISK_MAX_*` defaults are sized for an
+with concurrent edits there.)_ The shipped `.env.app` `RISK_MAX_*` defaults are sized for an
 account ~100-1000x a $1k-$5k live-capital account; at that scale none of them would ever bind, so
 they are decorative breakers, not real risk limits. Before arming with real funds:
 
 1. Set every `RISK_MAX_*` value (and `RISK_STALE_MAX_AGE_MS`) for the account's **actual** equity
    `E`, not a copy of the demo/testnet config. See the commented "LIVE-CAPITAL PROFILE ($1k-$5k)"
-   block in `.env.example` (below the active `RISK_MAX_*` lines) for the derivation and worked
+   block in `.env.app` (below the active `RISK_MAX_*` lines) for the derivation and worked
    `E=$1,000` / `E=$5,000` numbers.
 2. Re-derive if `SIZER_EQUITY_FRACTION` (documented default `0.02`) has changed — every limit in
    the profile is a multiple of `equity x this fraction`; a changed fraction invalidates the
@@ -186,7 +186,7 @@ they are decorative breakers, not real risk limits. Before arming with real fund
    present and strictly positive so `validateLimits` (`domain/risk/limits.ts:25-58`) resolves
    non-null — `limitsComplete` is derived from this same `RISK_LIMITS` set at boot (see
    Paper-honesty §10 below).
-5. Leave `RISK_MAX_BAND_BPS` unchanged unless you also re-verify `EXIT_CROSS_BUFFER_BPS` (`.env.example`)
+5. Leave `RISK_MAX_BAND_BPS` unchanged unless you also re-verify `EXIT_CROSS_BUFFER_BPS` (`.env.app`)
    stays strictly below it.
 6. Only then proceed to the arming ceremony above, against the account's actual funded equity.
 

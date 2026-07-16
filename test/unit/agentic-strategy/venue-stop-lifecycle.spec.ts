@@ -119,7 +119,7 @@ function buildInput(
   const symbol = opts.symbol ?? SYM;
   const venue = opts.venue ?? V;
   const candles = Array.from({ length: index + 1 }, (_, i) =>
-    candle(i, symbol, venue, i === index ? (opts.close ?? '100') : '100'),
+    candle(i, symbol, venue, i === index ? opts.close ?? '100' : '100'),
   );
   const positions = new Map<string, Position>();
   if (opts.position) positions.set(`${SID}|${venue}|${symbol}`, opts.position);

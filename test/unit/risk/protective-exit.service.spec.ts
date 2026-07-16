@@ -172,7 +172,7 @@ function build(
   const svc = new ProtectiveExitService(
     clock,
     killSwitch(over.killState ?? 'RUNNING'),
-    feed(over.noRef ? undefined : (over.mid ?? '100')),
+    feed(over.noRef ? undefined : over.mid ?? '100'),
     portfolioView(snap),
     sink,
     config(over.config),

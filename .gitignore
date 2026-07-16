@@ -7,6 +7,8 @@ coverage
 .env
 .env.*
 !.env.example
+!.env.app
+!.env.app-perp
 *.tsbuildinfo
 .claude/settings.local.json
 .serena/

@@ -26,6 +26,9 @@ const isTestOrCi =
       isGlobal: true,
       skipProcessEnv: true,
       ignoreEnvFile: isTestOrCi,
+      // Secrets first (.env), then deploy knobs (.env.app). Nest loadEnvFile gives first path
+      // precedence — same order as docker compose env_file: [.env.app, .env] where later wins.
+      envFilePath: ['.env', '.env.app'],
       validate: (env: Record<string, string | undefined>) => validate(env),
     }),
   ],

@@ -153,7 +153,7 @@ export class CcxtExchangeAdapter implements ExchangePort {
       const orders = await this.client.fetchOpenOrders(symbol);
       return orders.map((o) => {
         // Each open-order row carries its own symbol; ExchangeOrderState.symbol is required.
-        const orderSymbol = o.symbol !== undefined ? symbolId(o.symbol) : (symbol ?? symbolId(''));
+        const orderSymbol = o.symbol !== undefined ? symbolId(o.symbol) : symbol ?? symbolId('');
         const coid = clientOrderId(o.clientOrderId ?? '');
         return normalizeOrderState(o, coid, orderSymbol);
       });

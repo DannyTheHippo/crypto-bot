@@ -96,6 +96,15 @@ ONE pass type — the highest-priority type below that is currently eligible.
 (precedents: the 2026-07-04 signal-TTL bug, the 2026-07-05 dust trap). A pass that finds one
 fixes it under the MAINTENANCE pass type regardless of which type would otherwise be eligible.
 
+**Bug-routing discipline (owner decision 2026-07-16): bugs are NEVER backlog material.** The
+backlog (and any similar queue) holds only improvements that move net-of-cost PnL or measurement
+trust — a defect found by a pass is fixed IN that pass. The only sanctioned deferral is a fix that
+exceeds §4's autonomy boundaries (MUST-NOT rails): that goes to the report's "Flagged for human
+review" with evidence and the exact proposed diff, and is picked up at the first authorized
+opportunity — it is an OPEN DEFECT awaiting authorization, never a backlog seed. Practical bar:
+"can't soak right now" delays a deploy, not a fix-and-validate; "needs design" on a confirmed
+defect means the pass does the design.
+
 ### Pass types
 
 **(a) CANDIDATE pass** — eligible only when no unresolved candidate sits in A/B. Check: the

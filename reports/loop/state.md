@@ -40,6 +40,11 @@ never changes for strategy evolution.
   decision (3) is UNCHANGED — the live-money flip remains the sole human checkpoint, and the
   playbook §4 MUST-NOT boundaries (risk/execution/OMS semantics, live gates, append-only tables,
   secrets) are structural rails, not preferences — delegation does not relax them.
+- **OWNER DECISION 2026-07-16 — bug-routing discipline (encoded in playbook §3):** the backlog,
+  the loop, and similar mechanisms are NOT bug collectors — a bug found by a pass is FIXED in that
+  pass; the backlog holds only improvements that move net-of-cost PnL or measurement trust. Fixes
+  exceeding the §4 rails go to "Flagged for human review" as OPEN DEFECTS (evidence + exact diff),
+  never to the backlog. Applied retroactively: #49 reclassified from backlog seed to § Flagged.
 - **Stage ladder + exit criteria (condensed from the active spec):**
   1. **Cost floor** — CLOSED 2026-07-08: true spend ~$0.77/day under the $5 breaker, skip rate
      70–83% (original criterion: ≤$1/day ×3 days + ≥2 RT/day + no EXPIRED regressions).
@@ -502,7 +507,10 @@ stopped duplicating them 2026-07-13).
 
 Conventions: IDs are stable and never renumbered (LOG.md references them). **Re-verify a backlog
 item against current code before implementing it** (Pass 2 precedent — inherited items go stale).
-Open items first; the closed ledger keeps one line per retired ID. After the 2026-07-13
+**Improvements ONLY — never bugs** (owner decision 2026-07-16, playbook §3 bug-routing
+discipline): a defect is fixed in the pass that finds it, or — when it exceeds the §4 rails —
+lives in § Flagged as an open defect until authorized. Open items first; the closed ledger keeps
+one line per retired ID. After the 2026-07-13
 owner-directed build-out (9 rows shipped — LOG.md entry of that date) every remaining open row is
 condition- or data-gated: **#42-ENABLE** fires when the info-context A/B resolves; **#44/#45**
 wait on venue-TP capture data; **#18/#46/#47/#48** wait on their stated data/sequencing gates;
@@ -519,7 +527,6 @@ wait on venue-TP capture data; **#18/#46/#47/#48** wait on their stated data/seq
 | 46 | Thompson multi-candidate A/B routing (replaces the newest-candidate-only slot) | 2+ | M | seed (Push II); blocked while the v2→v3 candidate cycle is mid-flight |
 | 47 | Adaptive consult cadence (vary the 15m consult rhythm by regime) | 2 | M | seed (Push II); needs the Phase-5 consult baseline first |
 | 48 | Weekly vol-ranked symbol rotation (universe-study follow-on) | 2 | M | seed (Push II Phase 7); sequenced behind the 5→8 expansion; needs a rotation-vs-promotion-walk attribution design |
-| 49 | Signal-sink cross-signal pair atomicity — protective fire vs concurrent TP re-place (self-healing TERMINAL_REJECT today). Exceeds the signal-sink scope exception (CANCEL_OPEN routing only) | 2 | M | **Pass 26 OBSERVED** (was "revisit with data"): 3 self-healing LINK IOC-exit rejects, one/bar, `raw_ack`=null LOCAL refusal — resting venue-TP GTC (12.03) locks the base a concurrent 12.03 marketable sell needs (~0.0096 free). Benign as seen (profit-take exits ≥ entry, position held); LATENT — an S3/protective stop on a TP-locked base is defeated unless the TP is cancelled first. Local rejects emit ZERO app-log (DB-forensics-only). OWNER/reviewer-gated (exceeds CANCEL_OPEN scope) |
 | 52 | W12 operational event logging (structured ops events; 2026-07-08 follow-up, deferred since) | 1–2 | M | seed — needs design |
 | 53 | Reflection-trigger observability — `evaluateTrigger` returns silently when trips-since-attempt < N or on cooldown, so a close that evaluated-but-did-not-fire leaves no metric/log (Pass 24 needed manual boot-timeline forensics to diagnose the 3-day dormancy) | 2 | S | seed — a `agentic_reflection_trigger_total{outcome=below_threshold\|cooldown\|inflight\|fired}` counter; touches the reflection hot path, do NOT enable mid-factorial without a confirmed defect |
 
@@ -586,6 +593,8 @@ wait on venue-TP capture data; **#18/#46/#47/#48** wait on their stated data/seq
 - #42 — thinking A/B enable: CLOSED-OBE 2026-07-16 Pass 29 — the P8a factorial (`a6f0573`) absorbed
   it (`AGENTIC_THINKING_AB_PCT=50` live-verified on the spot container + committed `.env.app`);
   verdict comes from the pre-registered factorial rules, not a separate channel slot.
+- #49 — signal-sink pair atomicity: RECLASSIFIED 2026-07-16 (bug-routing policy) — a known latent
+  DEFECT, not an improvement; lives in § Flagged awaiting the owner-gated money-path fix.
 - #50 — runReflection outer catch: DONE (`7de8ea0`) — `run_failed` outcome + once-only rollback;
   settled outcomes never un-consumed.
 - #51 — perp pin: DONE dormant (`3252c1e`) — fail-closed isolated+leverage pin on the perp boot
@@ -621,6 +630,19 @@ wait on venue-TP capture data; **#18/#46/#47/#48** wait on their stated data/seq
   `venue_stop_filled`/`venue_tp_filled` journal rows on the next closed perp trip = P8d WATCH 2.
   **L0→L1 shorts pre-auth:** technical blocker CLEARED; the soak criteria still bind (≥3 days clean,
   ≥5 closed perp trips, zero reconciliation mismatches, WATCH 2 green).
+- **OPEN DEFECT — #49 signal-sink cross-signal pair atomicity (reclassified from the backlog
+  2026-07-16 under the bug-routing policy; observed Pass 26, SPOT):** a resting venue-TP GTC locks
+  the base qty a concurrent same-price marketable sell needs — 3 self-healing LINK IOC-exit
+  TERMINAL_REJECTs (one/bar, `raw_ack`=null local refusal, ~0.0096 free vs 12.03 needed). Benign as
+  observed (profit-take exits ≥ entry, position held), but LATENT: an S3/protective-stop fire on a
+  TP-locked base is defeated unless the TP is cancelled FIRST — a cancel-before-fire ordering the
+  signal sink does not guarantee today. Exceeds the signal-sink scope exception (CANCEL_OPEN routing
+  only) ⇒ owner-gated money-path design: protective exits must atomically cancel the resting
+  same-side venue order before (or with) the exit submission. Note: spot-only exposure — on perp the
+  margin model has no base-lock, and the venue stop now rests server-side (#54 fixed); on spot the
+  P7f double-lock forbids venue TP+stop together, so the executor/S3 stop is exactly the path the
+  TP base-lock can defeat. Awaiting owner authorization to design + fix (reviewer-gated when it
+  proceeds).
 - **AVAILABILITY (Pass 17, 2026-07-12; updated Pass 23; REGRESSED Pass 25):** the stack runs on the
   owner's MacBook; host sleep throttles everything (worst measured: 8%/24h duty cycle; the SOL trail
   fired 10h late → gap loss). Pass 23 read **100%/24h for two consecutive days**, but **Pass 25

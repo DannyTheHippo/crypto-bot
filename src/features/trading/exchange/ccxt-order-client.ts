@@ -90,7 +90,11 @@ export interface CcxtOrderClient {
   // unified createOrder-adjacent query/cancel for conditional/algo orders, so these call the
   // implicit endpoints directly (probe-verified 2026-07-13). Optional — swap-capable exchange only;
   // the adapter gates by venue so a spot instance never receives it.
-  fapiPrivateGetOpenAlgoOrders?(): Promise<{ orders: RawAlgoOrder[] }>;
+  // Response shape differs by environment (#54, probe-verified 2026-07-16): demo-fapi answers with
+  // a BARE ARRAY of rows (empty and non-empty alike); the documented production shape is
+  // { total, orders }. The adapter accepts both — declaring only {orders} made the destructure
+  // throw on every live demo call.
+  fapiPrivateGetOpenAlgoOrders?(): Promise<{ orders: RawAlgoOrder[] } | RawAlgoOrder[]>;
   fapiPrivateDeleteAlgoOrder?(params: { algoId: string }): Promise<unknown>;
 }
 
@@ -238,13 +242,13 @@ export class RealCcxtOrderClient implements CcxtOrderClient {
     }
   }
 
-  // Push 3 P7a: raw fapi algo-rail round-trip (probe-verified 2026-07-13). No unified ccxt method
-  // exists for either call — same defensive `as unknown as {...}` narrowing as every other method
-  // above.
-  fapiPrivateGetOpenAlgoOrders(): Promise<{ orders: RawAlgoOrder[] }> {
+  // Push 3 P7a: raw fapi algo-rail round-trip (probe-verified 2026-07-13; response-shape union
+  // corrected 2026-07-16, see the interface comment). No unified ccxt method exists for either
+  // call — same defensive `as unknown as {...}` narrowing as every other method above.
+  fapiPrivateGetOpenAlgoOrders(): Promise<{ orders: RawAlgoOrder[] } | RawAlgoOrder[]> {
     return (
       this.exchange as unknown as {
-        fapiPrivateGetOpenAlgoOrders(): Promise<{ orders: RawAlgoOrder[] }>;
+        fapiPrivateGetOpenAlgoOrders(): Promise<{ orders: RawAlgoOrder[] } | RawAlgoOrder[]>;
       }
     ).fapiPrivateGetOpenAlgoOrders();
   }

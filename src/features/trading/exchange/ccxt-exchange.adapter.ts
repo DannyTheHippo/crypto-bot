@@ -17,6 +17,7 @@ import {
   type VenueId,
   type EpochMs,
 } from '../../../domain/types/ids';
+import { splitSymbol } from '../../../domain/types/symbol';
 import { toAdapterError } from './error-classifier';
 import { CCXT_ORDER_CLIENT, type CcxtOrderClient } from './ccxt-order-client';
 import {
@@ -28,6 +29,15 @@ import {
 
 // Shared with pinPerpVenueDefaults below: the only swap-capable venue this pass wires.
 const PERP_VENUE_ID = 'binanceusdm';
+
+// Binance's raw market id for a linear swap: base+quote with the :SETTLE suffix dropped
+// ("BTC/USDT:USDT" → "BTCUSDT"). The raw algo-order rows carry THIS form in their `symbol`
+// field, never the unified symbol (#54, probe-verified 2026-07-16) — a filter comparing only
+// the unified form silently dropped every row.
+function rawMarketId(symbol: SymbolId): string {
+  const { base, quote } = splitSymbol(symbol);
+  return `${base}${quote}`;
+}
 
 @Injectable()
 export class CcxtExchangeAdapter implements ExchangePort {
@@ -219,10 +229,23 @@ export class CcxtExchangeAdapter implements ExchangePort {
       );
     }
     try {
-      const { orders } = await this.client.fapiPrivateGetOpenAlgoOrders();
-      return orders
-        .filter((o) => symbol === undefined || o.symbol === String(symbol))
-        .map((o) => normalizeAlgoOrder(o, symbol ?? symbolId('')));
+      // #54 (probe-verified 2026-07-16): demo-fapi answers with a BARE ARRAY (empty and non-empty
+      // alike); the documented production shape is { total, orders }. The {orders}-only destructure
+      // threw TypeError on every live demo call — FLAG 1's root cause.
+      const raw = await this.client.fapiPrivateGetOpenAlgoOrders();
+      const rows = Array.isArray(raw) ? raw : (raw?.orders ?? []);
+      // Raw rows carry the VENUE market id ("BTCUSDT"), never the unified symbol (same probe) —
+      // match either form, and stamp the unified symbol on the row handed to normalizeAlgoOrder so
+      // AlgoOrderState.symbol keeps its unified-SymbolId contract.
+      const rawId = symbol === undefined ? undefined : rawMarketId(symbol);
+      return rows
+        .filter((o) => symbol === undefined || o.symbol === String(symbol) || o.symbol === rawId)
+        .map((o) =>
+          normalizeAlgoOrder(
+            symbol === undefined ? o : { ...o, symbol: String(symbol) },
+            symbol ?? symbolId(''),
+          ),
+        );
     } catch (e) {
       throw toAdapterError(e);
     }

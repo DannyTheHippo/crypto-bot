@@ -312,10 +312,13 @@ describe('CcxtExchangeAdapter.placeOrder trigger orders', () => {
 // ── algo rail (Push 3 P7a) ──────────────────────────────────────────────────────
 
 describe('CcxtExchangeAdapter algo rail (fetchOpenAlgoOrders/cancelAlgoOrder)', () => {
+  // Live demo-fapi row shape (#54, probe 2026-07-16): `symbol` is the VENUE market id
+  // ("BTCUSDT"), never the unified form — the pre-fix filter compared only the unified form and
+  // silently dropped every genuine row.
   const rawAlgo = {
     algoId: 999,
     clientAlgoId: COID,
-    symbol: 'BTC/USDT:USDT',
+    symbol: 'BTCUSDT',
     side: 'SELL',
     orderType: 'STOP_MARKET',
     quantity: '0.5',
@@ -323,8 +326,19 @@ describe('CcxtExchangeAdapter algo rail (fetchOpenAlgoOrders/cancelAlgoOrder)', 
     algoStatus: 'NEW',
     reduceOnly: true,
   };
+  const normalizedAlgo = {
+    algoId: '999',
+    clientAlgoId: COID,
+    symbol: symbolId('BTC/USDT:USDT'),
+    side: 'SELL',
+    type: 'STOP_MARKET',
+    qty: '0.5',
+    triggerPrice: '48000',
+    status: 'NEW',
+    reduceOnly: true,
+  };
 
-  it('calls the raw fapi endpoint and normalizes the response on the swap venue', async () => {
+  it('normalizes the documented { orders } response shape on the swap venue', async () => {
     const fetchAlgo = vi.fn().mockResolvedValue({ orders: [rawAlgo] });
     const client = fakeClient({ fapiPrivateGetOpenAlgoOrders: fetchAlgo });
     const adapter = new CcxtExchangeAdapter(client, venueId('binanceusdm'), true);
@@ -332,19 +346,41 @@ describe('CcxtExchangeAdapter algo rail (fetchOpenAlgoOrders/cancelAlgoOrder)', 
     const result = await adapter.fetchOpenAlgoOrders(symbolId('BTC/USDT:USDT'));
 
     expect(fetchAlgo).toHaveBeenCalledWith();
-    expect(result).toEqual([
-      {
-        algoId: '999',
-        clientAlgoId: COID,
-        symbol: symbolId('BTC/USDT:USDT'),
-        side: 'SELL',
-        type: 'STOP_MARKET',
-        qty: '0.5',
-        triggerPrice: '48000',
-        status: 'NEW',
-        reduceOnly: true,
-      },
-    ]);
+    expect(result).toEqual([normalizedAlgo]);
+  });
+
+  // #54 regression: demo-fapi answers with a BARE ARRAY (probe-verified for both the empty and
+  // non-empty case) — the pre-fix `const { orders } = …` destructure made `.filter` throw
+  // TypeError on EVERY live call, which the strategy saw as an AdapterError on every managed bar.
+  it('#54: normalizes the live bare-array response shape identically (demo-fapi reality)', async () => {
+    const fetchAlgo = vi.fn().mockResolvedValue([rawAlgo]);
+    const client = fakeClient({ fapiPrivateGetOpenAlgoOrders: fetchAlgo });
+    const adapter = new CcxtExchangeAdapter(client, venueId('binanceusdm'), true);
+
+    const result = await adapter.fetchOpenAlgoOrders(symbolId('BTC/USDT:USDT'));
+
+    expect(result).toEqual([normalizedAlgo]);
+  });
+
+  it('#54: the symbol filter matches the venue market id AND the unified form, and drops other symbols', async () => {
+    const ethRow = { ...rawAlgo, algoId: 1000, symbol: 'ETHUSDT' };
+    const unifiedRow = { ...rawAlgo, algoId: 1001, symbol: 'BTC/USDT:USDT' };
+    const fetchAlgo = vi.fn().mockResolvedValue([rawAlgo, ethRow, unifiedRow]);
+    const client = fakeClient({ fapiPrivateGetOpenAlgoOrders: fetchAlgo });
+    const adapter = new CcxtExchangeAdapter(client, venueId('binanceusdm'), true);
+
+    const result = await adapter.fetchOpenAlgoOrders(symbolId('BTC/USDT:USDT'));
+
+    expect(result.map((o) => o.algoId)).toEqual(['999', '1001']);
+    expect(result.every((o) => o.symbol === symbolId('BTC/USDT:USDT'))).toBe(true);
+  });
+
+  it('#54: an empty bare-array response resolves to [] (the demo empty case that used to throw)', async () => {
+    const fetchAlgo = vi.fn().mockResolvedValue([]);
+    const client = fakeClient({ fapiPrivateGetOpenAlgoOrders: fetchAlgo });
+    const adapter = new CcxtExchangeAdapter(client, venueId('binanceusdm'), true);
+
+    await expect(adapter.fetchOpenAlgoOrders(symbolId('BTC/USDT:USDT'))).resolves.toEqual([]);
   });
 
   it('returns an empty list on a spot venue without calling the client', async () => {

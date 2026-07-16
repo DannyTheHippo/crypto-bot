@@ -437,8 +437,8 @@ const INVALID_KEY_PROBE: KeyProbePort = {
         // Live keys from AppConfig (stripped under test/ci); sandbox keys + environment (testnet|demo)
         // from SANDBOX_ENV via resolveSandbox — keeping demo/testnet keys non-interchangeable.
         const sandbox = resolveSandbox(config);
-        const apiKey = isLive ? config.liveSecrets.liveApiKey ?? '' : sandbox.apiKey;
-        const secret = isLive ? config.liveSecrets.liveApiSecret ?? '' : sandbox.secret;
+        const apiKey = isLive ? (config.liveSecrets.liveApiKey ?? '') : sandbox.apiKey;
+        const secret = isLive ? (config.liveSecrets.liveApiSecret ?? '') : sandbox.secret;
         const client = buildOrderClient(
           primaryVenue(config),
           isLive ? 'live' : sandbox.environment,

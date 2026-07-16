@@ -87,7 +87,7 @@ export class StrategyRegistry implements StrategyRegistryPort {
         ...entry,
         lifecycle: lc,
         drainReason:
-          entry.drainReason === 'OPERATOR' ? 'OPERATOR' : drainReason ?? entry.drainReason,
+          entry.drainReason === 'OPERATOR' ? 'OPERATOR' : (drainReason ?? entry.drainReason),
       });
       return;
     }

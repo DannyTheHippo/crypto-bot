@@ -15,7 +15,7 @@ build+lint+typecheck+test MUST be green before any completion claim.
 Deploy knobs live in committed lane files; secrets live in gitignored `.env` only.
 
 | File | Role |
-|------|------|
+| ------ | ------ |
 | `.env.app` | Spot lane deploy knobs (+ comments) |
 | `.env.app-perp` | Perp lane knobs (`docker compose --profile perp`) |
 | `.env` / `.env.example` | Secrets only (API keys, arming tokens, Grafana password) |

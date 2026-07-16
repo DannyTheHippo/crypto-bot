@@ -351,6 +351,9 @@ fix: OMS algo-rail containment, 7 sub-fixes), `a6f0573` (P8a factorial ENABLE, s
   **(Pass 28, 2026-07-16: root cause = adapter response-shape bug; layer-(a) containment SHIPPED
   `25563bc` and live-verified — the venue TP now RESTS on perp, so item 2's `venue_tp_filled` watch is
   live again; item 1 (resting STOP_MARKET) stays blocked on the owner-gated adapter fix — § Flagged.)**
+  **(Pass 29, 2026-07-16: adapter fix `34bdddd` DEPLOYED — item 1 GREEN: STOP_MARKET placed, resting
+  on the algo rail, reconcile-confirmed with registry stand-down; item 3 still green. Remaining:
+  item 2 — a venue TP/stop FILL journaling correctly on the next closed trip; item 4 funding rows.)**
 
 - **PERP SHORTS LADDER pre-auths (loop-domain; the ONLY human touch remains the live-money flip):**
   - **L0→L1 (shorts on the PERP lane):** after an L0 soak — ≥3 days clean AND ≥5 closed perp trips
@@ -412,6 +415,20 @@ PoS ≥ 0.70). Exit criterion: ≥2 promotions with version-attributed PnL AND r
   deadlock diagnosed (Pass 21, #39) → entry-rate floor + abstain lapse (`b9dddc2`).
 
 ## Last pass
+
+**Pass 29, 2026-07-16** (owner-directed `/goal` backlog execution, ~16:05–17:10Z) — **FIVE rows
+closed: #54(b) `34bdddd`, #55 `dc98068`, #56 `2f8ed48`, #57 `015bc70`, #42 CLOSED-OBE.** Second
+P0d-style probe found the flagged #54 diff was INSUFFICIENT (raw rows carry the venue market id
+"BTCUSDT" — the unified-form filter could never match); the shipped adapter fix handles both response
+shapes AND both symbol forms. Reviewer APPROVE 0 must-fix; full gates + livegate + paper green;
+perp-only deploy (boot `803e9d0b`; spot/factorial untouched). **Soak: the ENTIRE perp stop
+architecture verified live for the first time** — STOP_MARKET placed → ACKED → resting on the algo
+rail (probe) → reconcile-confirmed (`skipped_existing`, registry stand-down engaged); TP
+drift-cancel/re-place clean; zero errors/reconcile_error/DRAIN. P8d WATCH 1 GREEN; L0→L1 technical
+blocker CLEARED (soak-count criteria still bind). Rows NOT taken, each per its stated gate:
+rows #18/#43/#44/#45/#46/#47/#48/#49/#52/#53 (rationale: LOG.md Pass 29). Owner edits mid-session:
+`ab-cells/run.mjs` (in-flight, untouched), dashboard var hide (folded into the report commit).
+Full entry: `reports/loop/LOG.md`.
 
 **Pass 28, 2026-07-16** (scheduled, ~14:44–16:00Z, **MAINTENANCE — #54 layer-(a) FIXED, SHIPPED,
 LIVE-VERIFIED (`25563bc`)**) — host on AC 100% (Pass 27's soak blocker gone); harness probe GREEN; 0
@@ -496,7 +513,6 @@ wait on venue-TP capture data; **#18/#46/#47/#48** wait on their stated data/seq
 | # | Item | Stage | Effort | Status / next check |
 | --- | --- | --- | --- | --- |
 | 18 | Per-hour/session expectancy gating (last residual of the W4.4 seeds — fee-tier/BNB dropped: demo fees flat 10bps, § Standing verdicts; trade-flow widening shipped Phase 3) | 2+ | M | seed — needs design + data (2026-07-13 build-out skip: 10 post-epoch trips ⇒ per-hour buckets are statistically empty) |
-| 42 | ENABLE `AGENTIC_THINKING_AB_PCT` (mechanism SHIPPED `eff1d95` 2026-07-13: `+th1` tag, retry-identical threading, default 0 — byte-identical) — Phase-6 study: +12bps proxy, 4× propose, 1.9× cost | 2 | S | QUEUED behind the info-context A/B verdict — one measured channel at a time; enabling = one env flip |
 | 43 | Liquidation-order flow feed — market-wide is WS-only `!forceOrder@arr` (REST forceOrders is private per-account); needs WS plumbing justification | 2+ | L | seed (Push II Phase 3) |
 | 44 | Spot OCO exits (fuse executor stop + venue TP into one venue-side pair) — needs demo `orderList/oco` support proof; ccxt 4.5.58 has no unified spot OCO | 2 | M | seed (Push II Phase 2); do not touch before the venue-TP watch resolves with capture data |
 | 45 | Trailing-stop plan field — wait for venue-TP capture data (Phase-2 WATCH counters) before designing | 2 | M | seed (Push II) |
@@ -504,12 +520,8 @@ wait on venue-TP capture data; **#18/#46/#47/#48** wait on their stated data/seq
 | 47 | Adaptive consult cadence (vary the 15m consult rhythm by regime) | 2 | M | seed (Push II); needs the Phase-5 consult baseline first |
 | 48 | Weekly vol-ranked symbol rotation (universe-study follow-on) | 2 | M | seed (Push II Phase 7); sequenced behind the 5→8 expansion; needs a rotation-vs-promotion-walk attribution design |
 | 49 | Signal-sink cross-signal pair atomicity — protective fire vs concurrent TP re-place (self-healing TERMINAL_REJECT today). Exceeds the signal-sink scope exception (CANCEL_OPEN routing only) | 2 | M | **Pass 26 OBSERVED** (was "revisit with data"): 3 self-healing LINK IOC-exit rejects, one/bar, `raw_ack`=null LOCAL refusal — resting venue-TP GTC (12.03) locks the base a concurrent 12.03 marketable sell needs (~0.0096 free). Benign as seen (profit-take exits ≥ entry, position held); LATENT — an S3/protective stop on a TP-locked base is defeated unless the TP is cancelled first. Local rejects emit ZERO app-log (DB-forensics-only). OWNER/reviewer-gated (exceeds CANCEL_OPEN scope) |
-| 54 | Perp venue-stop residual (FLAG 1): adapter `fetchOpenAlgoOrders` expects `{orders}` but demo-fapi returns a BARE ARRAY (probe-proven Pass 28) ⇒ every call throws ⇒ venue stop never rests; also starves unknown-resolver's algo rail. Blocks the L0→L1 shorts pre-auth | 2 | S | **Layer (a) SHIPPED Pass 28 (`25563bc`, reviewer APPROVE, live-verified):** decide() survives, TP rests on perp (first ever), `reconcile_error` metric counts each adapter throw. **Remaining = layer (b) adapter shape fix, OWNER-gated** (exchange adapters MUST-NOT): exact diff in LOG.md Pass 28; verify non-empty shape with a P0d-style probe at fix time |
-| 55 | AgenticStrategy runs on NOOP_LOGGER in production — deps wiring (app.module.ts ~1807) passes no `logger`, so ALL its warns (venue-stop reconcile_error, storeError, prescreen fail-open, unknown-role) are log-invisible; metrics are the only observable | 2 | S | seed Pass 28 — one-line deps change (`logger: new Logger('AgenticStrategy')`); bundle with the next agentic-lane deploy, not its own churn |
 | 52 | W12 operational event logging (structured ops events; 2026-07-08 follow-up, deferred since) | 1–2 | M | seed — needs design |
 | 53 | Reflection-trigger observability — `evaluateTrigger` returns silently when trips-since-attempt < N or on cooldown, so a close that evaluated-but-did-not-fire leaves no metric/log (Pass 24 needed manual boot-timeline forensics to diagnose the 3-day dormancy) | 2 | S | seed — a `agentic_reflection_trigger_total{outcome=below_threshold\|cooldown\|inflight\|fired}` counter; touches the reflection hot path, do NOT enable mid-factorial without a confirmed defect |
-| 56 | Grafana overview: show current TOTAL CREDITS next to (small stat or same block as) the API-cost panel (`observability/grafana/dashboards/crypto-bot.json`; cost panels from Pass 17 `#19`) | 1–2 | S | **OWNER REQUEST 2026-07-16.** Open design Q: no metric holds the Anthropic credit balance today — options (a) poll the Anthropic usage/billing admin API into a gauge (needs admin key — secrets caution, rule 7), (b) env-configured credit-grant total minus cumulative measured spend (drifts vs out-of-band spend — the 07-07/07-10 verification spends are the precedent), (c) dashboard-only variable the owner updates. If "credits" means cumulative spend-to-date instead, it is one stat on the existing series — clarify before building (a) |
-| 57 | Husky pre-commit fails "pnpm: command not found" in every loop-session commit — `.husky/pre-commit` invokes bare `pnpm`, but non-interactive hook shells here lack pnpm on PATH (broken fnm hook; pnpm resolves only via `corepack pnpm`), forcing the scratchpad-shim workaround each pass | 1–2 | S | **OWNER REQUEST 2026-07-16.** Fix: make the hook self-resolving — prepend `command -v pnpm >/dev/null 2>&1 \|\| pnpm() { corepack pnpm "$@"; }` (keeps native pnpm when present, falls back to corepack); verify a commit from BOTH an interactive owner shell and a loop session, then retire the `crypto-bot-husky-pnpm-shim` memory |
 
 ### Closed ledger (provenance one-liners; detail in LOG.md by date)
 
@@ -571,30 +583,44 @@ wait on venue-TP capture data; **#18/#46/#47/#48** wait on their stated data/seq
 - #41 — PORTFOLIO_SHORTS_TOOL: DONE (`eff1d95`) — pf2 wire tool; **Phase-8's shorts+consult boot
   blocker cleared** (legacy non-plan shorts + consult still refuses); enablement remains its own
   deployment.
+- #42 — thinking A/B enable: CLOSED-OBE 2026-07-16 Pass 29 — the P8a factorial (`a6f0573`) absorbed
+  it (`AGENTIC_THINKING_AB_PCT=50` live-verified on the spot container + committed `.env.app`);
+  verdict comes from the pre-registered factorial rules, not a separate channel slot.
 - #50 — runReflection outer catch: DONE (`7de8ea0`) — `run_failed` outcome + once-only rollback;
   settled outcomes never un-consumed.
 - #51 — perp pin: DONE dormant (`3252c1e`) — fail-closed isolated+leverage pin on the perp boot
   path; **the Phase-8 deployment needs an INTEGER `PERP_LEVERAGE_CAP`** (fractional kills the
   boot by design); real-venue verification at that deployment's ceremony.
+- #54 — perp venue-stop/TP (FLAG 1): CLOSED 2026-07-16 — layer (a) `25563bc` Pass 28 (throw
+  containment, `reconcile_error` metric); layer (b) `34bdddd` Pass 29 (owner-directed): adapter
+  parses the probe-proven bare-array response AND matches the venue market id ("BTCUSDT") the rows
+  actually carry (second probe finding — the flagged one-line diff alone was insufficient).
+  Full stop architecture live-verified 16:45–17:00Z: STOP_MARKET rests on the algo rail,
+  reconcile-confirms (`skipped_existing`, registry stand-down), TP drift-cancel/re-place clean.
+- #55 — AgenticStrategy NOOP_LOGGER: DONE 2026-07-16 Pass 29 (`dc98068`) — deps pass an
+  id-prefixed TradingRuntime logger; all strategy warns now production-visible.
+- #56 — Grafana credits stat: DONE 2026-07-16 Pass 29 (`2f8ed48`) — "Credits left (est., USD)"
+  (baseline textbox pair − window spend) + "API spend (window, DB)" stacked in the API-cost block.
+  Residual owner option: exact balance needs the Anthropic Admin API (separate admin key —
+  deliberately not wired, rule 7); reopen only if the estimate proves insufficient.
+- #57 — husky pnpm self-resolution: DONE 2026-07-16 Pass 29 (`015bc70`) — hook falls back to
+  corepack; verified shim-free by its own commit and every commit since; shim memory retired.
 
 ## Flagged for human review (open)
 
-- **PERP VENUE-STOP (FLAG 1, #54) — layer (a) SHIPPED Pass 28; remaining = ONE owner decision, the
-  adapter response-shape fix.** Pass 28's read-only in-container probe CORRECTED Pass 27's mechanism:
-  demo-fapi **ACCEPTS** `fapiPrivateGetOpenAlgoOrders` and returns a **BARE ARRAY** — the throw is the
-  adapter's `const { orders } = …` destructure (`ccxt-exchange.adapter.ts:222`; `orders` undefined ⇒
-  `.filter` TypeError ⇒ `toAdapterError`), not a venue rejection. Downstream chain (uncaught @1309 →
-  decide() reject → TP discarded → intermittent auto-DRAIN; spot immune via P7f double-lock) stood
-  confirmed and is now FIXED in the agentic lane (`25563bc`, reviewer APPROVE 0 must-fix,
-  live-verified 15:45Z bar: first-ever perp venue-TP intent ACKED+RESTING, `reconcile_error=1`,
-  decide survives, DRAINING=0). **Containment, not restoration:** the venue STOP stays inert on perp
-  (every reconcile read still throws → placement skipped, loud) until the owner lands the adapter fix —
-  exact diff in LOG.md Pass 28 (`Array.isArray(res) ? res : (res?.orders ?? [])` + client type
-  widening); verify the non-empty demo shape with a P0d-style probe at fix time. Until then executor
-  bar-close + S3 2%/1.5% protect perp positions (as they did through both closed trips).
-  Side effect the adapter fix also heals: `unknown-resolver`'s algo rail (caught, but currently defers
-  forever on every poll — rule-5 kill-switch is the sole SUBMIT_UNKNOWN backstop). **L0→L1 shorts
-  pre-auth stays BLOCKED** until the stop lifecycle is live-verified post-adapter-fix.
+- **PERP VENUE-STOP (FLAG 1, #54) — RESOLVED 2026-07-16 (both layers shipped; Pass 29 closed it).**
+  Layer (a) `25563bc` (throw containment + `reconcile_error`); layer (b) `34bdddd` (owner-directed
+  `/goal` session): adapter parses the bare-array response AND matches the venue market id
+  ("BTCUSDT") the rows actually carry — the second probe finding; the Pass-28 flagged diff alone
+  would have left resting stops invisible to their own reconciler (duplicate-placement hazard).
+  **Full stop architecture live-verified** (boot `803e9d0b`, 16:45–17:00Z): STOP_MARKET placed
+  through the full OMS path, RESTING on the algo rail (probe-confirmed), reconcile-confirmed next
+  bar (`skipped_existing`, registry `venueStopResting=true` ⇒ executor/S3 stand-down inside the
+  force band); venue TP drift-cancel/re-place clean; `unknown-resolver`'s algo rail healed with the
+  same fix. **Residual watch:** `reconcile_error` should now stay 0 (non-zero = NEW failure mode);
+  `venue_stop_filled`/`venue_tp_filled` journal rows on the next closed perp trip = P8d WATCH 2.
+  **L0→L1 shorts pre-auth:** technical blocker CLEARED; the soak criteria still bind (≥3 days clean,
+  ≥5 closed perp trips, zero reconciliation mismatches, WATCH 2 green).
 - **AVAILABILITY (Pass 17, 2026-07-12; updated Pass 23; REGRESSED Pass 25):** the stack runs on the
   owner's MacBook; host sleep throttles everything (worst measured: 8%/24h duty cycle; the SOL trail
   fired 10h late → gap loss). Pass 23 read **100%/24h for two consecutive days**, but **Pass 25

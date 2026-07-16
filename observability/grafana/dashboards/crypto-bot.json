@@ -1,9 +1,7 @@
 {
   "uid": "crypto-bot",
   "title": "crypto-bot",
-  "tags": [
-    "crypto-bot"
-  ],
+  "tags": ["crypto-bot"],
   "timezone": "utc",
   "schemaVersion": 39,
   "refresh": "10s",
@@ -548,9 +546,7 @@
         "colorMode": "background",
         "textMode": "value",
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ]
+          "calcs": ["lastNotNull"]
         }
       },
       "targets": [
@@ -594,9 +590,7 @@
         "colorMode": "background",
         "textMode": "value_and_name",
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ]
+          "calcs": ["lastNotNull"]
         }
       },
       "targets": [
@@ -685,9 +679,7 @@
         "colorMode": "background",
         "textMode": "name",
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ]
+          "calcs": ["lastNotNull"]
         }
       },
       "targets": [
@@ -712,9 +704,7 @@
       "options": {
         "textMode": "name",
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ]
+          "calcs": ["lastNotNull"]
         }
       },
       "targets": [
@@ -805,9 +795,7 @@
       "options": {
         "colorMode": "background",
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ]
+          "calcs": ["lastNotNull"]
         }
       },
       "targets": [
@@ -1439,9 +1427,7 @@
       "options": {
         "textMode": "value_and_name",
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ]
+          "calcs": ["lastNotNull"]
         }
       },
       "targets": [
@@ -1672,9 +1658,7 @@
         "legend": {
           "displayMode": "table",
           "placement": "right",
-          "calcs": [
-            "lastNotNull"
-          ]
+          "calcs": ["lastNotNull"]
         }
       },
       "targets": [
@@ -1715,9 +1699,7 @@
         "legend": {
           "displayMode": "table",
           "placement": "right",
-          "calcs": [
-            "lastNotNull"
-          ]
+          "calcs": ["lastNotNull"]
         }
       },
       "targets": [

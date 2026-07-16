@@ -3201,3 +3201,79 @@ lifecycle live (P8d WATCH 1-3) and re-open the L0→L1 ladder. (3) **Spot v2 A/B
 age-lapse ~07-18 04:45Z). (4) **P8a** harm-stop peek at 8 trips/cell. (5) **#55** logger wiring (one-line
 deps change; hot-path-adjacent — bundle with the next agentic-lane deploy rather than its own). (6) carry
 re-test ~07-24.
+
+## 2026-07-16 — Pass 29 (owner-directed, ~16:05–17:10Z, `/goal` "do everything you can from the backlog"): FIVE backlog rows closed — #54(b) adapter fix SHIPPED + the FULL perp stop architecture LIVE-VERIFIED end-to-end (first venue STOP_MARKET ever rests + reconcile-confirms); #55, #56, #57 shipped; #42 closed OBE
+
+**Authorization:** the owner set a session goal to execute the backlog ("do EVERYTHING you can (only
+helpful) from the backlog, now"), given immediately after the Pass 28 summary that flagged #54 layer
+(b) as the awaiting-owner item — read as the owner decision that gate asked for. The fix still ran the
+full money-path apparatus: live probes, reviewer dispatch, full gates + `test:livegate` + `test:paper`,
+perp-only deploy, two-bar soak.
+
+**Shipped, in order:**
+
+1. **#57 (`015bc70`)** — `.husky/pre-commit` now self-resolves pnpm
+   (`command -v pnpm || pnpm() { corepack pnpm "$@"; }`). Verified by that very commit running the
+   hook shim-free; every later commit this session re-confirmed. The `crypto-bot-husky-pnpm-shim`
+   memory is retired (kept as a regression note only).
+2. **Second live probe (P0d-style, account left clean)** — placed a far-from-market reduce-only
+   STOP_MARKET (trigger 32000), fetched raw, cancelled. TWO findings: the NON-EMPTY response is a
+   bare array too (same fix covers both), and the rows carry the VENUE market id (`"BTCUSDT"`) —
+   the adapter's unified-form filter could NEVER match, so even shape-fixed, a resting stop would
+   have been invisible to its own reconciler (duplicate-placement hazard, bounded only by
+   reduceOnly). Pass 28's flagged one-line diff was therefore INSUFFICIENT — the probe-first
+   discipline caught it before deploy.
+3. **#54 layer (b) (`34bdddd`)** — adapter accepts both response shapes, filters by both symbol
+   forms (new `rawMarketId` off domain `splitSymbol`), stamps the unified symbol on normalized rows;
+   client return type widened to the truthful union; 4 regression tests (each fails pre-fix — the
+   old fixture had assumed unified symbols in raw rows, which is exactly how the bug escaped P7d's
+   suite). **Reviewer: APPROVE, 0 must-fix** (nice-to-have noted: the unreachable no-arg branch
+   still echoes raw ids). **Gates:** build/lint/typecheck, unit 2141 (+3), livegate 41, paper 17,
+   eval:agentic 15 — all green.
+4. **#55 (`dc98068`)** — AgenticStrategy deps now pass a real logger
+   (`[<id>]`-prefixed TradingRuntime warn); the class no longer runs on NOOP_LOGGER — reconcile,
+   store-error, prescreen-fail-open and unknown-role warns are production-visible.
+5. **#56 (`2f8ed48`)** — Grafana overview: the API-cost block now stacks "Credits left (est., USD)"
+   (`credits_baseline_usd` − window spend since the paired baseline; two new textbox vars; honest
+   description — estimate only, blind to out-of-band/perp-lane spend; exact balance would need the
+   Anthropic Admin API and a separate admin key, deliberately not wired per rule 7) and "API spend
+   (window, DB)" (`agentic_promotion_llm_cost_usd` — survives the restarts that reset the cumulative
+   stat). Dashboards are bind-mounted; live via the provisioning watch. Owner tweaked mid-session
+   (`hide` on the anchor var) — folded into the report commit.
+6. **#42 — CLOSED-OBE (verified):** `AGENTIC_THINKING_AB_PCT=50` live on the spot container AND in
+   committed `.env.app` (perp deliberately 0) — the P8a factorial (`a6f0573`) absorbed what #42
+   queued; thinking is a measured factorial arm with pre-registered adoption rules.
+
+**Deploy + soak (perp only; spot/factorial untouched):** boot `803e9d0b` ~16:19Z, healthy, position
+restored (0.001 BTC @ 64577.6). 16:30Z-close consult re-attached the plan. **16:45Z-close managed bar —
+the algo-rail stop lifecycle worked end-to-end for the first time:** `venue_stop placed=1` (NO
+reconcile_error — the adapter read succeeds now), STOP_MARKET journaled through the full OMS path
+(`cbt019f6bd140…`, ACKED 16:45:03Z, dedupe `venue_stop_place`), read-only probe confirmed it RESTING on
+the algo rail (`algoId 1000000137621559`, clientAlgoId = the OMS order id, trigger 64190.1, reduceOnly);
+venue TP `drift_cancel` (old-plan TP 65610.9 correctly cancelled for the new plan's price). **17:00Z
+reconcile bar:** `venue_stop skipped_existing=1` — the reconciler SAW its own stop and confirmed it
+(registry `venueStopResting=true` ⇒ executor + S3 stand down within the force band; force-band backstop
+beyond), TP re-`placed` (resting again, openOrders=1). Zero level-50 lines, zero reconcile_error, no
+DRAIN. **P8d WATCH item 1 GREEN** (resting STOP_MARKET visible via the algo endpoints); item 2
+(`venue_stop_filled`/`venue_tp_filled` journal on a real fill) pending the next closed trip; item 3
+(no mismatch/HALT on the new order type) green so far. `reconcile_error` should now stay 0 — a
+sustained non-zero rate after this deploy is a NEW failure mode.
+
+**Backlog rows NOT taken, with the gate that held (goal honesty):** rows #18/#47 (need design +
+data), row #43 (L-effort WS plumbing, post-factorial queue), rows #44/#45 (venue-TP capture-data
+gates), row #46 (blocked mid v2→v3 cycle), row #48 (sequenced behind 5→8), row #49 (money-path
+atomicity redesign with NO settled design and its stated data-gate unmet — an invented design under
+a broad directive is not "helpful"), row #52 (needs design), row #53 (its own row forbids
+mid-factorial enable without a confirmed defect).
+
+**Owner activity mid-session (not this pass's work):** uncommitted `test/backtest/ab-cells/run.mjs`
+edit in flight (adapts its DATABASE_URL fallback to the `ab359e1` env-file layout) — left untouched.
+
+**L0→L1 posture:** the technical blocker is CLEARED (stop lifecycle verified live); the pre-auth's
+soak criteria still bind — ≥3 days clean, ≥5 closed perp trips, zero reconciliation mismatches, WATCH
+2 (a venue-order fill journaling correctly). No shorts enable this session.
+
+**Next-pass candidates:** (1) E2 `eval:candidates` (corpus 623 ≥ 200) — now genuinely top of the
+list. (2) Spot v2 A/B verdict (10 trips or age-lapse ~07-18 04:45Z). (3) P8a harm-stop peek at 8
+trips/cell. (4) Watch `venue_stop_filled`/`venue_tp_filled` on the next perp trip close; L0→L1 once
+the pre-auth counts are met. (5) carry re-test ~07-24.

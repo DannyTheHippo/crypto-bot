@@ -132,8 +132,9 @@ and the per-phase commits. Current per-phase state:
   ⇒ steady-state `skipped_existing`. **Post-fix watch — Pass 26 PARTIAL POSITIVE:** under boot
   `29e22ada`, ZERO `venue_%` order_events this boot and the LINK venue TP (SELL LIMIT 12.03 @ 8.458 GTC,
   ACKED) rests stably with NO cancel/replace churn (`12.03 == roundToStep(12.0396, step, 'down')`);
-  Pass 25's `qty_cancel=14` churn is GONE. Full `skipped_existing`-climbs confirmation still PENDING
-  (counter hasn't moved on the young boot); (4) an `orphan_cancel` spike = external flattens racing the lane.
+  Pass 25's `qty_cancel=14` churn is GONE. **`skipped_existing`-climbs CONFIRMED Pass 28** (spot
+  `placed=1, skipped_existing=2` — steady-state signature; watch CLOSED POSITIVE);
+  (4) an `orphan_cancel` spike = external flattens racing the lane.
 - **Phase 3 — trade-flow/CVD + positioning payload blocks (`045967c`), LIVE.** Tags `tf1`/`pos1`;
   both ride the ONE info-context A/B (`AGENTIC_DERIVATIVES_AB_PCT=30`). **Treatment bundle
   composition changed 2026-07-13** (derivatives + crossSymbol + tradeFlow + positioning; control
@@ -347,6 +348,9 @@ fix: OMS algo-rail containment, 7 sub-fixes), `a6f0573` (P8a factorial ENABLE, s
   under the same flag ⇒ perp-specific). Positions had executor+S3 protection (not naked). **This BLOCKS
   the L0→L1 shorts pre-auth** until root-caused. `PERP_VENUE_ENABLED=false` is a RED HERRING (gates the
   unwired PaperPerpAdapter per `environment.config.ts:478`, not the real binanceusdm demo venue).
+  **(Pass 28, 2026-07-16: root cause = adapter response-shape bug; layer-(a) containment SHIPPED
+  `25563bc` and live-verified — the venue TP now RESTS on perp, so item 2's `venue_tp_filled` watch is
+  live again; item 1 (resting STOP_MARKET) stays blocked on the owner-gated adapter fix — § Flagged.)**
 
 - **PERP SHORTS LADDER pre-auths (loop-domain; the ONLY human touch remains the live-money flip):**
   - **L0→L1 (shorts on the PERP lane):** after an L0 soak — ≥3 days clean AND ≥5 closed perp trips
@@ -408,6 +412,22 @@ PoS ≥ 0.70). Exit criterion: ≥2 promotions with version-attributed PnL AND r
   deadlock diagnosed (Pass 21, #39) → entry-rate floor + abstain lapse (`b9dddc2`).
 
 ## Last pass
+
+**Pass 28, 2026-07-16** (scheduled, ~14:44–16:00Z, **MAINTENANCE — #54 layer-(a) FIXED, SHIPPED,
+LIVE-VERIFIED (`25563bc`)**) — host on AC 100% (Pass 27's soak blocker gone); harness probe GREEN; 0
+HALT/mismatch/EXPIRED both lanes. **Probe overturned Pass 27's mechanism:** demo-fapi ACCEPTS
+`fapiPrivateGetOpenAlgoOrders` and returns a BARE ARRAY — the throw is the adapter's `{orders}`
+destructure (shape bug), not a venue rejection; owner-Q answered, venue-native stop CAN round-trip on
+demo once the adapter parses the real shape (exact diff in LOG.md; owner-gated). Fix: try/catch @1309 +
+`reconcile_error` metric + regression test; reviewer APPROVE 0 must-fix; gates green (2138 tests);
+deployed app-perp ONLY (spot/factorial untouched; env parity vs the new `.env.app-perp` layout verified
+pre-recreate; boot `302934d4`). **Soak: first-ever perp venue-TP intent ACKED+RESTING (SELL 0.001 @
+65610.9), `reconcile_error=1`, decide survives, DRAINING=0.** Mid-pass owner commit `ab359e1` (env-file
+refactor) landed hook-bypassed; normalized in `72eb968` (prettier 3.8.4 + MD060, token-identical, gates
+re-verified). New seed #55 (AgenticStrategy NOOP_LOGGER). Spot scoreboard: RT=18 (no new trips), net
+−$8.42 (LLM accrual $7.51, ≈$2.55/day), v2 A/B 3/10 +$1.09 vs v1 −$1.90. `debef0f` watch CLOSED
+POSITIVE. CANDIDATE/PROMOTION ineligible (unchanged); E2 `eval:candidates` deferred again (correctness
+outranked) — next-pass candidate #1. Full entry: `reports/loop/LOG.md`.
 
 **Pass 27, 2026-07-16** (scheduled, sweep ~08:15Z, **report-only — FLAG 1 / #54 ROOT-CAUSED**) —
 both apps healthy but freshly restarted ~57min ago on host wake (spot `dcbcc641`, perp `70155015`;
@@ -484,7 +504,8 @@ wait on venue-TP capture data; **#18/#46/#47/#48** wait on their stated data/seq
 | 47 | Adaptive consult cadence (vary the 15m consult rhythm by regime) | 2 | M | seed (Push II); needs the Phase-5 consult baseline first |
 | 48 | Weekly vol-ranked symbol rotation (universe-study follow-on) | 2 | M | seed (Push II Phase 7); sequenced behind the 5→8 expansion; needs a rotation-vs-promotion-walk attribution design |
 | 49 | Signal-sink cross-signal pair atomicity — protective fire vs concurrent TP re-place (self-healing TERMINAL_REJECT today). Exceeds the signal-sink scope exception (CANCEL_OPEN routing only) | 2 | M | **Pass 26 OBSERVED** (was "revisit with data"): 3 self-healing LINK IOC-exit rejects, one/bar, `raw_ack`=null LOCAL refusal — resting venue-TP GTC (12.03) locks the base a concurrent 12.03 marketable sell needs (~0.0096 free). Benign as seen (profit-take exits ≥ entry, position held); LATENT — an S3/protective stop on a TP-locked base is defeated unless the TP is cancelled first. Local rejects emit ZERO app-log (DB-forensics-only). OWNER/reviewer-gated (exceeds CANCEL_OPEN scope) |
-| 54 | Perp venue-stop/TP path does not engage (FLAG 1) — root cause: `manageVenueStopPerp`'s uncaught `fetchOpenAlgoOrders` throw (agentic.strategy.ts:1309) on the demo venue crashes `decide()` every managed bar ⇒ TP signal discarded + no stop + auto-DRAIN. Blocks the L0→L1 shorts pre-auth | 2 | M | **ROOT-CAUSED Pass 27** (see Flagged for the full chain + evidence). Fix (2 layers): agentic-lane try/catch @1309 mirroring `reconcileOrphanedAlgoStop`/`cancelPerpAlgoStopIfResting` (P7f fix 5 precedent) + loud `agentic_venue_stop_total{event=reconcile_error}`; AND owner Q — does demo-fapi honor `fapiPrivateGetOpenAlgoOrders` at all? Reviewer + owner-gated |
+| 54 | Perp venue-stop residual (FLAG 1): adapter `fetchOpenAlgoOrders` expects `{orders}` but demo-fapi returns a BARE ARRAY (probe-proven Pass 28) ⇒ every call throws ⇒ venue stop never rests; also starves unknown-resolver's algo rail. Blocks the L0→L1 shorts pre-auth | 2 | S | **Layer (a) SHIPPED Pass 28 (`25563bc`, reviewer APPROVE, live-verified):** decide() survives, TP rests on perp (first ever), `reconcile_error` metric counts each adapter throw. **Remaining = layer (b) adapter shape fix, OWNER-gated** (exchange adapters MUST-NOT): exact diff in LOG.md Pass 28; verify non-empty shape with a P0d-style probe at fix time |
+| 55 | AgenticStrategy runs on NOOP_LOGGER in production — deps wiring (app.module.ts ~1807) passes no `logger`, so ALL its warns (venue-stop reconcile_error, storeError, prescreen fail-open, unknown-role) are log-invisible; metrics are the only observable | 2 | S | seed Pass 28 — one-line deps change (`logger: new Logger('AgenticStrategy')`); bundle with the next agentic-lane deploy, not its own churn |
 | 52 | W12 operational event logging (structured ops events; 2026-07-08 follow-up, deferred since) | 1–2 | M | seed — needs design |
 | 53 | Reflection-trigger observability — `evaluateTrigger` returns silently when trips-since-attempt < N or on cooldown, so a close that evaluated-but-did-not-fire leaves no metric/log (Pass 24 needed manual boot-timeline forensics to diagnose the 3-day dormancy) | 2 | S | seed — a `agentic_reflection_trigger_total{outcome=below_threshold\|cooldown\|inflight\|fired}` counter; touches the reflection hot path, do NOT enable mid-factorial without a confirmed defect |
 
@@ -556,35 +577,22 @@ wait on venue-TP capture data; **#18/#46/#47/#48** wait on their stated data/seq
 
 ## Flagged for human review (open)
 
-- **PERP VENUE-STOP/TP: ROOT CAUSE CONFIRMED (FLAG 1, Pass 26→27; backlog #54):** the P8d algo-rail
-  stop lifecycle is non-functional on the demo venue. **Confirmed chain** (full evidence trail: LOG.md
-  Pass 27): on every plan-managed perp hold bar, `manageVenueTp` (agentic.strategy.ts:960) runs and
-  BUILDS the resting TP signal (`agentic_venue_tp_total`: `placed=7, skipped_inflight=6`, **zero
-  `skipped_existing`/`filled_flat`** = built-and-discarded; SPOT by contrast has `skipped_existing=3,
-  filled_flat=2` — spot's TP genuinely rests/fills). Then `manageVenueStopPerp` (line 966→1300) calls
-  `fetchOpenAlgoOrders` at **line 1309 UNCAUGHT** (`?? []` handles only `undefined`, not a throw); on
-  the binanceusdm demo venue that call **throws** — adapter `ccxt-exchange.adapter.ts:226`
-  (`throw toAdapterError`), NOT the `=== undefined` fail-close (the method IS in pinned ccxt 4.5.58,
-  `binance.js:7448`) ⇒ **demo-fapi rejects the API call**. The throw propagates
-  `manageVenueStopPerp`→`manageVenueStop`→`runActivePlan`→`decide()` **reject**, so the already-built TP
-  signal is **discarded** (Defect A: 7 `placed` metrics, 0 venue-TP intents/signals) and `onVenueStop`
-  never fires (Defect B: `agentic_venue_stop_total` has no series). The reject routes via
-  `strategy-host.ts:502 .catch→onDecideFailure` (NOT `agent_decide_total`), whose only observable is
-  auto-DRAIN — **confirmed** `max_over_time(strategy_lifecycle{state="DRAINING"}[2d])=1`. Exits still
-  fire because the exit path's algo call (`cancelPerpAlgoStopIfResting`, line 910) IS try/caught, so the
-  exit-bar decide succeeds and recovers ACTIVE. **Perp-specific** because SPOT runs
-  `AGENTIC_VENUE_STOP=false` (P7f boot double-lock refusal, `environment.config.ts:750`) ⇒ spot's
-  `manageVenueStop` no-ops and its TP survives. **Smoking gun:** `cancelPerpAlgoStopIfResting`'s comment
-  (lines 1538-1545) documents this EXACT bug class fixed by P7f fix 5 in that sibling — the identical
-  uncaught call at line 1309 was missed. No safety compromise OBSERVED (executor bar-close + S3 backstop
-  caught both exits, −$0.80, no naked position); **BLOCKS the L0→L1 perp-shorts pre-auth**.
-  **Fix (report-only; 2 layers):** *(a, agentic-lane MAY, reviewer-gated)* try/catch @1309 mirroring
-  `reconcileOrphanedAlgoStop`/`storeError` branch (fail toward no-op) + a loud new
-  `agentic_venue_stop_total{event=reconcile_error}` + regression test — this stops the decide-crash /
-  auto-drain and RESTORES the venue TP; *(b, MUST-NOT-TOUCH, owner Q)* does Binance futures demo honor
-  `fapiPrivateGetOpenAlgoOrders` at all? If not, the venue-native stop cannot round-trip on demo —
-  owner decides: rework the algo call / accept executor+S3 on demo / defer to live-only. Also confirm
-  the sibling uncaught pattern at `unknown-resolver.service.ts:172` is caught before scoping.
+- **PERP VENUE-STOP (FLAG 1, #54) — layer (a) SHIPPED Pass 28; remaining = ONE owner decision, the
+  adapter response-shape fix.** Pass 28's read-only in-container probe CORRECTED Pass 27's mechanism:
+  demo-fapi **ACCEPTS** `fapiPrivateGetOpenAlgoOrders` and returns a **BARE ARRAY** — the throw is the
+  adapter's `const { orders } = …` destructure (`ccxt-exchange.adapter.ts:222`; `orders` undefined ⇒
+  `.filter` TypeError ⇒ `toAdapterError`), not a venue rejection. Downstream chain (uncaught @1309 →
+  decide() reject → TP discarded → intermittent auto-DRAIN; spot immune via P7f double-lock) stood
+  confirmed and is now FIXED in the agentic lane (`25563bc`, reviewer APPROVE 0 must-fix,
+  live-verified 15:45Z bar: first-ever perp venue-TP intent ACKED+RESTING, `reconcile_error=1`,
+  decide survives, DRAINING=0). **Containment, not restoration:** the venue STOP stays inert on perp
+  (every reconcile read still throws → placement skipped, loud) until the owner lands the adapter fix —
+  exact diff in LOG.md Pass 28 (`Array.isArray(res) ? res : (res?.orders ?? [])` + client type
+  widening); verify the non-empty demo shape with a P0d-style probe at fix time. Until then executor
+  bar-close + S3 2%/1.5% protect perp positions (as they did through both closed trips).
+  Side effect the adapter fix also heals: `unknown-resolver`'s algo rail (caught, but currently defers
+  forever on every poll — rule-5 kill-switch is the sole SUBMIT_UNKNOWN backstop). **L0→L1 shorts
+  pre-auth stays BLOCKED** until the stop lifecycle is live-verified post-adapter-fix.
 - **AVAILABILITY (Pass 17, 2026-07-12; updated Pass 23; REGRESSED Pass 25):** the stack runs on the
   owner's MacBook; host sleep throttles everything (worst measured: 8%/24h duty cycle; the SOL trail
   fired 10h late → gap loss). Pass 23 read **100%/24h for two consecutive days**, but **Pass 25

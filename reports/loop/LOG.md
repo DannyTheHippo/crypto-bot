@@ -3083,3 +3083,121 @@ demo. (2) **Spot v2 A/B** resolves at 10 attributed trips or age-lapses ~07-18 0
 (3) **E2 `eval:candidates`** now runnable (623 payload rows ≥200) — spot decide-model re-test.
 (4) **P8a** harm-stop peek at 8 trips/cell; `run.mjs` explicit-arm trips as N grows. (5) **Phase-5
 consult** metrics once a multi-symbol bar occurs (gates the 5→8 pre-auth). (6) carry re-test ~07-24.
+
+## 2026-07-16 — Pass 28 (scheduled, ~14:44–16:00Z): MAINTENANCE — #54 layer-(a) FIX SHIPPED + LIVE-VERIFIED (`25563bc`); Pass 27's venue-rejection mechanism CORRECTED by live probe (adapter response-shape bug); first venue-TP ever RESTS on the perp lane
+
+**Window/context:** second pass today (Pass 27 swept ~08:15Z). Host on **AC, 100% charge** — Pass 27's
+"can't soak on battery" blocker GONE. **Mid-pass owner activity:** `ab359e1` (16:50 local, landed while
+this pass was mid-sweep) — the env-file refactor (compose `environment:` blocks → committed `.env.app` /
+`.env.app-perp`, secrets stay in gitignored `.env`; project CLAUDE.md gained a Configuration section;
+playbook §4 MAY updated accordingly). It landed with hooks bypassed: 8 TS files failing
+`prettier --check` (3.8.4 `??`-parenthesization) + CLAUDE.md's new table failing MD060 — the full-tree
+pre-commit gate then blocked EVERY commit. Normalized mechanically in `72eb968` (token-identical;
+typecheck + 2138 tests re-verified green before committing). Not this pass's work product — recorded
+for provenance; the refactor itself is the owner's.
+
+**Evidence sweep (~14:44Z):** all 7 containers up/healthy; both apps restarted on host wake ~06:31–06:44Z
+(spot `29e22ada` still running from 07-15… spot restarted too — current boots pre-dated this pass).
+Harness probe `pnpm eval:agentic` GREEN (4 files / 15 tests). **0 kill-switch / HALT / mismatch /
+EXPIRED on both lanes.** Only log errors: pre-restart host-wake churn (~05:47–06:27Z — one RETRYABLE
+XRP decide + journal-insert failure while the DB was down, idle-pool drops; no defect class). **Spot
+scoreboard** (epoch 07-12 08:30Z): RT=18 (unchanged — no new trips today), net-of-cost **−$8.42** (drift
+from −$7.55 is LLM accrual: $7.51, window 2.94d ⇒ ≈$2.55/day), ready=0; equity $4994.96, dd 0.10%.
+**A/B unchanged:** v1 15 trips/−$1.90 vs **v2 3 trips/+$1.09** (candidate still ahead; age-lapse
+~07-18 04:45Z). **`debef0f` watch CLOSED POSITIVE:** spot venue-TP now shows the steady-state signature
+(`placed=1, skipped_existing=2` this boot — the churn fix's exact intended shape). **Perp:** RT=2, and a
+LIVE #54 exhibit — open BTC long 0.001@64577.6 (entered 14:15Z) held with **zero venue protection**
+(`openOrders=0`, no TP/stop intents ever with `venue_%` dedupe keys) while `venue_tp placed=1` metric'd —
+built-and-discarded, live, right now. Refinement of Pass 27: `DRAINING` max=0 over 24h on this boot —
+the auto-drain is intermittent (strike-dependent), NOT every-bar; the TP-discard IS every managed bar.
+
+**Pass type: MAINTENANCE (§3 correctness-bug priority) — #54 fix layer (a) shipped.**
+
+### Probe first: Pass 27's mechanism was wrong about the venue — the bug is the ADAPTER's response shape
+
+Read-only in-container probe (scratchpad `probe-algo.cjs` docker-cp'd into app-perp; constructs
+`ccxt.pro.binanceusdm` exactly as `buildCcxtExchange` — `number: String`, `enableDemoTrading(true)` —
+and calls `fapiPrivateGetOpenAlgoOrders()` raw): **SUCCESS — demo-fapi ACCEPTS the call and returns a
+BARE ARRAY `[]`.** Pass 27's step-2 inference ("demo-fapi rejects the API call") is CORRECTED: the venue
+honors the endpoint; the throw is `ccxt-exchange.adapter.ts:222`'s `const { orders } = await …` —
+destructuring `{ orders }` from an array yields `undefined`, `.filter` throws TypeError, `toAdapterError`
+wraps it, and THAT is the AdapterError propagating uncaught from agentic.strategy.ts:1309 on every
+managed bar. Everything downstream of Pass 27's step 2 (uncaught propagation → decide() reject → TP
+discard → intermittent auto-DRAIN; spot immune via the P7f double-lock) stands confirmed. The owner
+question "does demo honor the endpoint?" is **ANSWERED: yes** — the venue-native stop CAN round-trip on
+demo once the adapter parses the real shape. Sibling check the flag asked for: `unknown-resolver.service.ts`
+`resolveAlgoOne` IS try/caught (defers, never freezes) — but with the shape-throw firing on every call,
+algo-rail SUBMIT_UNKNOWN resolution currently defers forever (rule-5 60s kill-switch remains the sole
+backstop); the adapter fix heals that for free.
+
+### Shipped: `25563bc` fix(agentic) — contain the reconcile throw (reviewer APPROVE, 0 must-fix)
+
+`manageVenueStopPerp`'s fetch (line 1309) was the ONE throw-capable algo read on the managed-bar hot
+path without try/catch (P7f fix 5 fixed the identical class in `cancelPerpAlgoStopIfResting`; the
+placement path was missed). Fix mirrors the `storeError` branch's fail-toward-no-op: catch → emit new
+`agentic_venue_stop_total{event="reconcile_error"}` + warn → return `[]` (skip this bar's placement
+decision — a blind placement could duplicate a stop the failed read couldn't see; registry
+`venueStopResting` deliberately untouched so the executor/watcher stand-down reads stay uncorrupted).
+`VenueStopEvent` + the recorder's mirrored `AgentVenueStopEvent` gain the member in sync. Regression
+test pins the defect: fetch always-rejecting ⇒ `decide()` RESOLVES, the same-bar venue-TP signal
+survives (exitStyle RESTING, hint 103), `stopEvents == ['reconcile_error']`, registry flag not flipped
+(pre-fix code fails this test — decide() rejects). **Reviewer dispatch (per the flag's gate): APPROVE,
+0 must-fix / 0 should-fix**, with two framings adopted here: (1) this is **containment, not
+restoration** — the venue STOP stays inert on perp until the adapter fix lands (executor bar-close +
+S3 2%/1.5% protect, as they did through both closed trips); (2) the 1s-granularity leg of "never naked"
+is S3's config (watcher off on perp, matching spot). **Gates:** build/lint/typecheck green, **2138 unit
+(+1 new)**, targeted spec 28/28, `eval:agentic` 15 green. **Deploy:** app-perp ONLY (spot untouched —
+factorial window undisturbed; exit-mechanic ledger: this deploy is perp-lane-only, spot cells
+unaffected). Pre-recreate env parity verified: rendered new-layout compose config vs running container —
+operative knobs byte-identical (`VENUES`, `AGENTIC_TOKEN_PRICES_JSON`, all `AGENTIC_*`/`RISK_*`/`PERP_*`;
+new placeholder vars inert — `SENTIMENT_FEED_ENABLED=false` gates the placeholder key). New boot
+`302934d4` 15:18Z.
+
+**Soak (15:18–15:55Z) — FIX LIVE-VERIFIED on the first managed bar:** boot clean (position restored
+0.001@64577.6; leverage pin passed). 15:30Z-close bar: model consult re-attached the plan (`has_plan=t`,
+hold). 15:45Z-close bar (first plan-managed bar on the fixed code): **(a) FIRST venue-TP intent EVER on
+the perp lane** — reduce-only SELL LIMIT 0.001 @ 65610.9, dedupe `venue_tp_place:1784215800000` —
+**ACKED at 15:45:04Z and RESTING** (`openOrders=1`); **(b) `reconcile_error` = 1** (the catch fired —
+adapter still throws, expected until the owner fix); **(c) decide survived** (journal `plan active —
+deterministic hold`, no reject); **(d) DRAINING = 0, zero error/warn lines.** All soak criteria green.
+One forensic note: the catch's warn line does NOT appear in docker logs — `AgenticStrategy` deps wiring
+passes no `logger`, so the class runs on `NOOP_LOGGER` in production (pre-existing; ALL its sibling
+warns — storeError, unknown-role, prescreen fail-open — are equally invisible). The metric is the loud
+channel, which is why the flag demanded it. Seeded as backlog #55.
+
+### Remaining #54 layer (b) — adapter response-shape fix, OWNER-GATED (exchange adapters are MUST-NOT)
+
+Exact proposed diff, `src/features/trading/exchange/ccxt-exchange.adapter.ts:221-228`:
+
+```ts
+    try {
+      const res = await this.client.fapiPrivateGetOpenAlgoOrders();
+      // demo-fapi returns the open-algo list as a BARE ARRAY (probe 2026-07-16); the documented
+      // production shape is { total, orders }. Accept both; absent/empty resolves to [].
+      const orders = Array.isArray(res) ? res : (res?.orders ?? []);
+      return orders
+        .filter((o) => symbol === undefined || o.symbol === String(symbol))
+        .map((o) => normalizeAlgoOrder(o, symbol ?? symbolId('')));
+    } catch (e) {
+      throw toAdapterError(e);
+    }
+```
+
+plus widening `ccxt-order-client.ts:93/244` to `Promise<{ orders: RawAlgoOrder[] } | RawAlgoOrder[]>`.
+Caveat: the probe observed only the EMPTY response; the non-empty demo shape is unverified — verify at
+fix time with a P0d-style far-from-market reduce-only STOP_MARKET probe (place, fetch, cancel; account
+left clean). Once landed: the venue stop can finally rest on perp (P8d WATCH items 1–2 become testable),
+`unknown-resolver`'s algo rail resolves again, and `reconcile_error` should fall to 0 — a sustained
+non-zero rate after the adapter fix means a NEW failure mode, investigate. **The L0→L1 shorts pre-auth
+stays BLOCKED** until the stop lifecycle is verified live post-adapter-fix.
+
+**Ineligible pass types:** CANDIDATE (unresolved candidates in A/B on both lanes), PROMOTION (v2 3/10).
+**E2 `eval:candidates`** deferred again — the trading-path correctness fix outranked it (§3); it remains
+next-pass candidate #1. **Backups:** no pass-authored DB change; Pass 25's dumps current.
+
+**Next-pass candidates:** (1) **E2 `eval:candidates`** (spot corpus 623 rows ≥200 — decide-model
+re-test). (2) **Adapter shape fix** if the owner approves layer (b) — then re-verify the full perp stop
+lifecycle live (P8d WATCH 1-3) and re-open the L0→L1 ladder. (3) **Spot v2 A/B verdict** (10 trips or
+age-lapse ~07-18 04:45Z). (4) **P8a** harm-stop peek at 8 trips/cell. (5) **#55** logger wiring (one-line
+deps change; hot-path-adjacent — bundle with the next agentic-lane deploy rather than its own). (6) carry
+re-test ~07-24.

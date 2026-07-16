@@ -1,7 +1,8 @@
 // Info-context × thinking 2×2 factorial cell table — RESEARCH TOOLING (test/backtest/, off the
 // production gate). $0, no LLM calls: reads agent_decisions/order_intents/fills directly off the
-// live DB (DATABASE_URL loaded from <repo>/.env, NEVER printed) and prints the cell table the
-// daily loop is expected to run every pass once enough volume accrues.
+// live DB (DATABASE_URL from the environment, else <repo>/.env, else the `.env.app` fallback —
+// NEVER printed) and prints the cell table the daily loop is expected to run every pass once
+// enough volume accrues.
 //
 // The two arms (anthropic-agent-client.ts's prepareDecideContext):
 //   info-context — control strips the derivatives+crossSymbol+tradeFlow+positioning bundle from
@@ -250,23 +251,25 @@ function parseDotEnv(repoRoot) {
   return map;
 }
 
-// Fallback for DATABASE_URL: this repo's checked-in `.env` does not define it (verified —
-// docker-compose.yml is the only place it's wired, for the app CONTAINER's own network). Host-side
+// Fallback for DATABASE_URL: this repo's gitignored `.env` holds secrets only and does not define
+// it — since the env-file refactor (`ab359e1`, 2026-07-16) the app's URL lives in the committed
+// lane file `.env.app` (compose wires it to the container via `env_file`; the old
+// `DATABASE_URL: ...` compose `environment:` line this fallback used to grep is gone). Host-side
 // scripts are otherwise expected to export it manually (see scripts/playbook-promote.mjs's own
 // "no default" refusal) — rather than guess credentials, this reads the SAME
-// `DATABASE_URL: postgres://...@postgres:5432/...` line docker-compose.yml already declares for
-// the `app` service and rewrites the compose-network hostname `postgres` to `localhost` (the
-// published port-5432 mapping), since this script runs on the host, not inside the compose
-// network. Never used when .env (or the real environment) already supplies DATABASE_URL.
-function fallbackDatabaseUrlFromCompose(repoRoot) {
-  const composePath = path.join(repoRoot, 'docker-compose.yml');
+// `DATABASE_URL=postgres://...@postgres:5432/...` line `.env.app` already declares for the spot
+// app and rewrites the compose-network hostname `postgres` to `localhost` (the published
+// port-5432 mapping), since this script runs on the host, not inside the compose network. Never
+// used when the real environment (or .env) already supplies DATABASE_URL.
+function fallbackDatabaseUrlFromEnvApp(repoRoot) {
+  const envAppPath = path.join(repoRoot, '.env.app');
   let text;
   try {
-    text = readFileSync(composePath, 'utf8');
+    text = readFileSync(envAppPath, 'utf8');
   } catch {
     return undefined;
   }
-  const match = text.match(/DATABASE_URL:\s*(\S+)/);
+  const match = text.match(/^DATABASE_URL=(\S+)/m);
   if (!match) return undefined;
   return match[1].replace('@postgres:', '@localhost:');
 }
@@ -669,11 +672,12 @@ async function main() {
   }
 
   const env = parseDotEnv(REPO_ROOT);
-  const databaseUrl = env.get('DATABASE_URL') ?? fallbackDatabaseUrlFromCompose(REPO_ROOT);
+  const databaseUrl =
+    process.env.DATABASE_URL ?? env.get('DATABASE_URL') ?? fallbackDatabaseUrlFromEnvApp(REPO_ROOT);
   if (!databaseUrl) {
     console.error(
-      `ab-cells: DATABASE_URL not found in ${path.join(REPO_ROOT, '.env')} and no fallback ` +
-        'could be read from docker-compose.yml',
+      `ab-cells: DATABASE_URL not set in the environment, not found in ` +
+        `${path.join(REPO_ROOT, '.env')}, and no fallback could be read from .env.app`,
     );
     process.exitCode = 1;
     return;

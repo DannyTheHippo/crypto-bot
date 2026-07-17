@@ -3560,3 +3560,100 @@ RECONCILE_REQUIRED→FILLED, `positions=[]` (equity=cash $4,998.77), first recon
 clean-soak clock restarts from this boot. Lesson reinforced (three distinct instances in ONE
 defect): live demo-venue shapes are unknowable from code — keyed probes BEFORE trusting any new
 endpoint consumption, and metrics (not logs) are the HALT/drift source of truth.
+
+## 2026-07-17 — Pass 32 (scheduled, ~16:07–17:50Z): MAINTENANCE — TWO trading-path correctness bugs found and BOTH FIXED+SHIPPED: abstention-lapse false positive nearly orphaned winning candidate v2 (`cfb2ed3`); ws resubscribe-burst livelock killed every spot candle channel, venue code 1008 (`f9b7d56`)
+
+**Data window:** owner-session close (~13:30Z) → 17:50Z. Landed since Pass 31 (owner session
+`1e88a83`..`fc23203`): full money-path delegation; Bug B phantom HEALED (perp boot `051939bd`
+~13:25Z); #49 atomic cancel-before-exit (`1b8d872`); 5→8 universe + sizing 0.04 + playbook A/B
+25→40 + age-lapse 168→336h (`1a70a51`, spot boot `482d5ab1` ~09:36Z). Host on AC 100% all pass.
+
+**Evidence sweep (16:07–16:30Z):** stack 4/4 + perp profile up, both apps healthy. Harness probe
+GREEN (offline subset 4 files / 15 tests). Spot scoreboard (epoch 07-12 08:30Z): **RT=25 (+5),
+net-of-cost −$22.49, LLM $10.24, window 4.96d, ready=0**; equity $4,984.29, dd 0.31%; A/B **v1 22
+trips −$13.23 / v2 3 trips +$1.09** (all 5 new trips routed v1; 4 closed losses this boot, 3
+concurrent entries 11:45Z). Perp post-heal: RT=3 net −$3.73, book flat (positions table EMPTY),
+equity=cash $4,998.77, **351 consecutive CLEAN reconcile passes 13:23:53→16:18Z** (HALT rows end
+13:22:55Z = pre-heal era), kill switch RUNNING, 0 mismatches this boot — the Bug B heal is soaking
+positive. Watchdog (`c105e8a`) first live fire: boot `482d5ab1` +184s, 5 candle channels,
+recovered after ONE reconnect (that instance was real recovery — see Bug D for why it was luck).
+`adopt_non_adoptable=2` at 11:49:17Z: the reconcile pass raced three in-flight fills (ACKed
+11:45Z, FILLs landing 11:49:18Z) — warning-band by design, self-cleared, every pass since CLEAN.
+One consult schema-validation soft-hold 15:30Z (single, by design) and one transient XRP
+derivatives-feed poll failure; otherwise 0 warn. 0 HALT/EXPIRED/DRAIN both lanes.
+
+**5→8 day-1 (WATCH advancing):** all three new symbols DECIDING post-backfill — ZEC 23 hold +
+**3 long proposes** (open ZEC position 0.2017 @ 543.94 with venue TP resting), AAVE 26 hold, NEAR
+26 hold; **zero risk rejections** (no cap/notional vetoes — the $0.50-floor pre-check held).
+Spend pace day-1: ~$3.5–4.8/day depending on window (boot hours are cache-creation-heavy at 2×
+input rate; DB-gauge delta says ~$3.3–4.0, boot counters ~$4.8) — upper edge of the expected
+$3.5–4 band, breaker $5; fallback (drop candidates per the study order) arms only on SUSTAINED
+>$4.5 — re-measure next pass. Factorial peek (ab-cells v2 run): 7 attributed trips total
+(treatment 6 @ −178bps/trip, control 1 @ −545) — **harm-stop peek NOT due** (<8/cell); thinking
+axis resolvable only for explicit-arm rows (pre-migration hash groups stay ambiguous, expected).
+
+**Bug C — learning path (spot): the live-abstention lapse false-positived on the WINNING
+candidate; FIXED+SHIPPED `cfb2ed3`.** llm_usage showed 26 opus calls 07:45–07:48Z (~$1.7): a full
+reflection attempt — draft → 12-row mint-backtest (candidate arm) → retry → same 12 rows
+(champion arm) — under the pre-recreate boot, while v2 sat unresolved at 147h < the then-168h age
+lapse. The guard should have skipped; it drafted because the abstention lapse measured "entries"
+over `journal.recent(400)` — and the 5→8 expansion shrank that row window below v2's lifetime.
+DB forensics reproduced it exactly: the newest-400 window at 07:45Z reached back only to 07-15
+08:00Z; v2's 4 long entries all sit 07-14 21:30→07-15 06:00Z — outside it; in-window v2 = 34
+decides / 0 longs ⇒ `liveAbstention=true` ⇒ "provably abstains" ⇒ mint-over attempt on a
+candidate that is 3/10 trips and net-POSITIVE. Only the Phase-4 expectancy backtest's reject
+(twice, incl. the bounded retry) prevented v3 from orphaning v2 — and the owner's same-day 336h
+runway protection was silently bypassed (the abstention path ignores age). Every future
+reflection trigger would have retried the mint-over. Fix: new optional
+`AgentDecisionJournalPort.versionEntryStats(version)` — LIFETIME `{decides, entries}` per
+playbook version (SQL count in the Drizzle repo, ring scan in-memory); the lapse consumes it and
+fails toward NOT lapsing on absent/failed reads (orphaning is destructive; squatting is bounded
+by the age lapse). True abstainers still lapse: perp v2 reads 23 lifetime decides / 0 entries —
+the #39 semantics are preserved exactly. Adversarial review: **APPROVE, 0 must-fix**; both
+should-fixes landed (shorts-widening breadcrumb now names the entry-count consumer;
+real-Postgres + in-memory coverage) + comment nit. Gates: build/lint/typecheck green, **2212
+unit + 52 db + 41 livegate + 17 paper + 15 eval**. Deployed BOTH lanes ~16:45Z.
+
+**Bug D — market data (spot): synchronized ws resubscribe burst = permanent candle-channel
+livelock (venue 1008); FIXED+SHIPPED `f9b7d56`.** The 16:45Z deploy boot exposed it: all 8
+candle:15m channels silent while ticker/trade/book stayed fresh (0.06–0.14s), watchdog
+force-reconnecting every 120s (10 fires), candles never recovering — spot bar-close decides
+fully stalled 16:44→17:31Z (~47 min, ~3 bars; S3 1s protection stayed live off the fresh ticker,
+venue TP resting server-side, so positions were never naked). Probes (the #54 discipline):
+(1) fresh raw WS to the same venue host = 12 klines/40s + REST klines OK ⇒ venue HEALTHY ⇒
+app-side; (2) pinned-ccxt repro vs the live venue: 1 loop recovers ~2.5s after close(), but at
+the app's real shape (8 sym × 4 ch = 32 loops) EVERY candle re-watch dies in a lockstep
+`NetworkError: closing code 1008` loop forever — Binance closes a connection receiving >5
+inbound msgs/s, the FIXED shared 1s backoff re-bursts 32 SUBSCRIBEs in lockstep eternally.
+Mechanism generalizes: boot bursts the same way (this morning's +184s watchdog fire and the
+17:08Z restart both lost the same lottery; 5 symbols = 20 subs sat under the cliff, 8 × 4 = 32
+crossed it — the expansion armed the bomb, the watchdog close() pulled the trigger). The error
+was INVISIBLE: `handleLoopError` set tracker health and logged nothing (same silence class as
+Bug A). Fix: global time-based subscribe gate (350ms spacing ⇒ ~3 msg/s < 5) passed only by a
+loop's first watch and first-watch-after-error — steady-state yields unpaced; recovery converges
+deterministically (~11s for 32 channels); fails delayed-never-dropped. Plus rate-limited loop-
+error logging (once per channel per 60s). Adversarial review: **APPROVE, 0 must-fix** (verified:
+race-free slot claim; no runaway slot queue — equilibrium ~11s; the only other WS consumer, the
+liquidation feed, is a separate connection/bucket; stop() leaks nothing new); both should-fixes
+(failure-direction declaration, clock-comment accuracy) landed. Gates: 2214 unit (2 new
+regressions pin the lockstep burst and the silent error path) + eval green. Deployed SPOT
+~17:31Z (boot `9b8a6c0a`… superseded; final boot post-fix). **Soak: first clean 32-subscription
+boot of the day — all 8 candle channels fresh (0.07–16s) at +8 min, 0 forced reconnects, 0
+errors.** Perp lane image intentionally NOT redeployed (runs `cfb2ed3`: has Bug C fix; its 4
+subscriptions sit far under the 1008 cliff) — pick up `f9b7d56` at the next natural perp deploy.
+
+**Pass type (§3): MAINTENANCE** — correctness bugs on the trading path outrank everything; both
+found by this pass's evidence, both fixed in-pass per the bug-routing discipline (neither is
+money-path, so "never two money-path items" is not implicated; both got mandatory adversarial
+review anyway). CANDIDATE ineligible (candidates unresolved in A/B on both lanes), PROMOTION
+ineligible (v2 3/10 attributed trips).
+
+**Flagged for human review:** nothing new. AVAILABILITY nominal (AC, awake, no gaps).
+
+**Next-pass candidates:** (1) verify spot candle channels STAY clean across the next watchdog
+event (any future fire should now recover in ~11s — `market_stream_forced_reconnects_total`
+non-zero + staleness re-converging is the signature); (2) spend re-measure at 8 symbols (the
+>$4.5 sustained fallback); (3) v2 verdict watch — at A/B 40% the 10-trip floor should fill
+faster (7 more trips needed); (4) perp lane: fold `f9b7d56` into its next deploy; L0→L1 clean-
+soak clock runs from 13:25Z (needs ≥3d + ≥5 trips + zero mismatches); (5) P8a harm-stop peek
+once ≥8 trips/cell; (6) carry re-test due ~2026-07-24.

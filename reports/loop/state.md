@@ -85,6 +85,11 @@ never changes for strategy evolution.
      but cannot fire — documented quirk, § Durable findings). PROMOTION pass eligibility:
      candidate needs ≥10 of its OWN attributed trips (symmetric — champion needs ≥10 in-window
      too); CANDIDATE passes stay blocked (§3(a)) while a candidate sits unresolved in A/B.
+     **Update 2026-07-17 (owner session + Pass 32):** v2's runway re-protected — age-lapse 336h
+     (mint-over ~07-25 04:45Z) + A/B 40% (`1a70a51`); the 07:45Z reflection attempt that bypassed
+     the guard was the abstention-lapse WINDOW bug (v2's 4 longs beyond the recent-400 horizon
+     post-5→8), fixed `cfb2ed3` with lifetime evidence — v2 now resolves on its 10-trip verdict
+     or the 336h clock, nothing else mints over it.
   3. **Earned-live** — pass the coded promotion gate (`PromotionReadinessService`: ≥30 closed demo
      round trips, net-of-cost > 0, ≥14d window), then the unchanged human four-gate arming
      ceremony. Nothing automates live.
@@ -133,7 +138,10 @@ never changes for strategy evolution.
     `AGENTIC_MAX_CALLS_PER_DAY` 700→1100 (768 opportunities/day; breaker unchanged at $5).
     **WATCH:** first decides on ZEC/AAVE/NEAR post-warmup; daily spend ~$3.5–4 expected, breaker
     $5; no cap/notional entry vetoes on the new symbols; a sustained >$4.5/day = drop candidates
-    per the study's fallback order.
+    per the study's fallback order. **Day-1 (Pass 32): decides GREEN all three** (ZEC 3 long
+    proposes + open position with resting venue TP; AAVE/NEAR deciding), **zero risk vetoes**;
+    spend ~$3.5–4.8/day (boot-cache-heavy window — not yet "sustained", re-measure); side effect:
+    32 ws subscriptions crossed the venue 1008 burst cliff (Bug D, fixed `f9b7d56` — LOG.md).
 
 ### Push II program (owner session 2026-07-13, plan `humming-sprouting-crab`) — 7/8 phases shipped, 5 live
 
@@ -449,6 +457,32 @@ PoS ≥ 0.70). Exit criterion: ≥2 promotions with version-attributed PnL AND r
   deadlock diagnosed (Pass 21, #39) → entry-rate floor + abstain lapse (`b9dddc2`).
 
 ## Last pass
+
+**Pass 32, 2026-07-17** (scheduled, ~16:07–17:50Z, **MAINTENANCE — two trading-path bugs found,
+BOTH FIXED+SHIPPED**) — **Bug C (`cfb2ed3`, both lanes):** the live-abstention lapse measured
+entries over `journal.recent(400)`; the 5→8 expansion shrank that window below v2's lifetime, so
+the 07:45Z reflection declared the WINNING spot candidate (3/10, +$1.09) "provably abstaining"
+and attempted a mint-over — only the Phase-4 expectancy reject (×2) saved it, and the fresh 336h
+runway protection was silently bypassed (abstention path ignores age). Fix: lifetime
+`versionEntryStats` per version (port + Drizzle + in-memory), fail-toward-not-lapsing; true
+abstainers (perp v2: 23 decides/0 entries lifetime) still lapse. Reviewer APPROVE 0 must-fix; 2212
+unit + 52 db + livegate + paper + eval green. **Bug D (`f9b7d56`, spot):** synchronized ws
+resubscribe burst after any `exchange.close()` (watchdog fire or boot) trips Binance's >5 inbound
+msgs/s limit ⇒ lockstep 1008 livelock — all 8 candle channels dead 16:44→17:31Z (~3 bars; S3 off
+fresh ticker + resting venue TP kept positions protected) while ticker/trade/book flowed. Probes:
+venue healthy (fresh raw WS 12 klines/40s); pinned-ccxt repro at 32 loops = candle 0/8 forever vs
+1-loop ~2.5s. 20 subs (5 sym) sat under the cliff; 32 crossed it. Fix: global 350ms subscribe gate
+(first-watch + first-after-error only; ~3 msg/s < 5; delayed-never-dropped) + rate-limited loop-
+error logging (the error path was silent — same class as Bug A). Reviewer APPROVE 0 must-fix; 2214
+tests. Soak: first clean 32-sub boot of the day — all candles fresh at +8 min, 0 reconnects.
+Perp NOT redeployed for D (runs `cfb2ed3`; 4 subs, under the cliff) — fold in next perp deploy.
+Sweep otherwise: spot RT=25 net −$22.49 LLM $10.24 ready=0; v1 22/−$13.23 vs v2 3/+$1.09; perp
+heal SOAKING POSITIVE (351 consecutive CLEAN 13:23→16:18Z, book flat, RUNNING); 5→8 day-1 GREEN
+(ZEC/AAVE/NEAR all deciding, ZEC 3 longs + position with resting TP, zero risk vetoes); spend
+day-1 ~$3.5–4.8/day (upper band, boot-cache-heavy — re-measure before any fallback);
+`adopt_non_adoptable=2` benign (reconcile raced 3 in-flight fills 11:49Z, self-cleared);
+factorial 7 attributed trips ⇒ harm-stop peek not due. CANDIDATE/PROMOTION ineligible
+(unchanged). Full entry: `reports/loop/LOG.md`.
 
 **Pass 31, 2026-07-17** (scheduled, ~06:45–07:30Z, **MAINTENANCE — E2 decide-model re-test
 EXECUTED: haiku-4.5 HOLD, sonnet-5 stays champion**) — clean sweep otherwise: 0 error/warn both
@@ -769,7 +803,10 @@ wait on venue-TP capture data; **#18/#46/#47/#48** wait on their stated data/seq
   **P8d WATCH 2 → GREEN** (the venue-stop fill is journaled and folded — retroactive but real).
   **L0→L1 shorts pre-auth: technical blockers ALL cleared — the ≥3-day / ≥5-closed-trips clean
   soak restarts from this boot; loop-domain to fire when met.** Evidence lane restored (3 closed
-  perp trips on the book).
+  perp trips on the book). **Pass 32 soak check: POSITIVE — 351 consecutive CLEAN reconcile
+  passes 13:23:53→16:18Z, positions table empty (book flat), kill switch RUNNING, 0 mismatches.**
+  Perp image note: the lane runs `cfb2ed3` (Bug C fix in, Bug D stream fix not — its 4 ws
+  subscriptions sit far under the 1008 burst cliff); fold `f9b7d56` into the next perp deploy.
 - **PERP VENUE-STOP (FLAG 1, #54) — RESOLVED 2026-07-16 (both layers shipped; Pass 29 closed it).**
   Layer (a) `25563bc` (throw containment + `reconcile_error`); layer (b) `34bdddd` (owner-directed
   `/goal` session): adapter parses the bare-array response AND matches the venue market id

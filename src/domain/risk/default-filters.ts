@@ -13,6 +13,12 @@ export const DEFAULT_FILTERS: ReadonlyMap<string, SymbolFilters> = new Map<strin
   ['SOL/USDT', { tickSize: '0.01', stepSize: '0.001', minQty: '0.001', minNotional: '5' }],
   ['XRP/USDT', { tickSize: '0.0001', stepSize: '0.1', minQty: '0.1', minNotional: '5' }],
   ['LINK/USDT', { tickSize: '0.001', stepSize: '0.01', minQty: '0.01', minNotional: '5' }],
+  // 5→8 universe expansion (pre-auth fired 2026-07-17, reports/loop/universe-study-2026-07-13.md).
+  // Values probe-verified against the LIVE demo venue (demo-api.binance.com loadMarkets,
+  // 2026-07-17): all three TRADING/active; NOTIONAL filter (applyMinToMarket=true) mirrors prod.
+  ['ZEC/USDT', { tickSize: '0.01', stepSize: '0.001', minQty: '0.001', minNotional: '5' }],
+  ['AAVE/USDT', { tickSize: '0.01', stepSize: '0.001', minQty: '0.001', minNotional: '5' }],
+  ['NEAR/USDT', { tickSize: '0.001', stepSize: '0.1', minQty: '0.1', minNotional: '5' }],
   // Push II Phase 8 (futures-demo venue, binanceusdm): USDⓈ-M perpetual filters — additive only
   // (never touched unless TRADING_SYMBOLS names one of these futures market ids), so the existing
   // spot deployment stays byte-identical. Values are the live fapi.binance.com/fapi/v1/exchangeInfo

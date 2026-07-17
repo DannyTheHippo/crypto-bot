@@ -59,11 +59,25 @@ export class DemoFillPollerService {
     // dedupes it on venueTradeId. Includes skipped (foreign/pre-boot) trades — all have ts ≤ now,
     // while our not-yet-placed fills carry future ts, so the watermark can never outrun an own fill.
     let maxTs = this.since;
-    // Defect A commit-1: a fill matching no local order, on a symbol carrying a live algo-rail
-    // intent, is the phantom-position signature (a venue-fired stop's spawned market order is
+    // Defect A commit-1: a fill matching no local order, on a symbol carrying an algo-rail anchor,
+    // is the phantom-position signature (a venue-fired stop's spawned market order is
     // venue-generated and unmappable by clientOrderId — see this class's own MATCHING comment).
-    // hasLiveAlgoIntent is a cheap local predicate; the venue query it gates (recoverSymbol) never
-    // runs inline in the match loop below.
+    // hasAlgoAnchor does store I/O (candidateAlgoIntents scans every non-terminal order, resolving
+    // each one's intent) — NOT cheap, so it is computed ONCE PER SYMBOL here, before the fill loop,
+    // rather than once per unmatched fill (a busy shared-wallet symbol can see many unmatched fills
+    // in one poll). Wrapped fail OPEN per symbol: a store hiccup must never abort the poll — treated
+    // as not-anchored THIS pass only, matching this file's existing per-symbol tolerance (the
+    // recoverSymbol throw-catch below).
+    const anchoredSymbols = new Set<SymbolId>();
+    for (const symbol of symbols) {
+      try {
+        if (await this.recovery.hasAlgoAnchor(symbol)) anchoredSymbols.add(symbol);
+      } catch (err) {
+        this.log.warn(
+          `algo-stop anchor check for ${symbol} threw (${err instanceof Error ? err.message : String(err)}) — treated as not-anchored this poll`,
+        );
+      }
+    }
     const algoSuspects = new Set<SymbolId>();
     for (const symbol of symbols) {
       const fills = await this.exchange.fetchMyTrades(symbol, this.since);
@@ -72,7 +86,7 @@ export class DemoFillPollerService {
         const matched = byVenueId.get(f.clientOrderId); // f.clientOrderId holds the venue order id (ccxt trade.order)
         if (matched === undefined) {
           skippedUnknown += 1; // a fill with no matching local order (foreign or pre-boot) — never halt here
-          if (this.recovery.hasLiveAlgoIntent(symbol)) algoSuspects.add(symbol);
+          if (anchoredSymbols.has(symbol)) algoSuspects.add(symbol);
           continue;
         }
         // Fold from the LIVE book record, never the per-poll snapshot: the snapshot goes stale

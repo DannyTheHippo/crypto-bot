@@ -43,16 +43,18 @@ function fill(
   };
 }
 
-// Default: no symbol carries a live algo intent, so recoverSymbol is never reached — every
-// pre-existing test (none of which know about Defect A recovery) stays byte-identical.
+// Default: no symbol carries an algo anchor, so recoverSymbol is never reached — every
+// pre-existing test (none of which know about Defect A recovery) stays byte-identical. The poller
+// hook awaits hasAlgoAnchor (the async superset reaching a post-restart, store-rehydrated anchor,
+// not just the in-flight map hasLiveAlgoIntent covers) — see algo-stop-recovery.service.ts.
 function stubRecovery(
   over: Partial<{
-    hasLiveAlgoIntent: (symbol: unknown) => boolean;
+    hasAlgoAnchor: (symbol: unknown) => boolean | Promise<boolean>;
     recoverSymbol: ReturnType<typeof vi.fn>;
   }> = {},
 ): AlgoStopRecoveryService {
   return {
-    hasLiveAlgoIntent: over.hasLiveAlgoIntent ?? (() => false),
+    hasAlgoAnchor: over.hasAlgoAnchor ?? (() => false),
     recoverSymbol: over.recoverSymbol ?? vi.fn().mockResolvedValue('none'),
   } as unknown as AlgoStopRecoveryService;
 }
@@ -227,7 +229,7 @@ describe('DemoFillPollerService', () => {
   describe('algo-stop recovery hook (Defect A)', () => {
     it('unmatched fill + live algo intent on the symbol: recoverSymbol invoked exactly once for it after the sweep', async () => {
       const recoverSymbol = vi.fn().mockResolvedValue('triggered');
-      const recovery = stubRecovery({ hasLiveAlgoIntent: () => true, recoverSymbol });
+      const recovery = stubRecovery({ hasAlgoAnchor: () => true, recoverSymbol });
       const { poller, ingested } = build(
         [fill({ clientOrderId: clientOrderId('other-venue-id'), venueTradeId: 't8' })],
         [localOrder()],
@@ -243,7 +245,7 @@ describe('DemoFillPollerService', () => {
 
     it('unmatched fill with NO live algo intent: recoverSymbol not called, skippedUnknown unchanged', async () => {
       const recoverSymbol = vi.fn().mockResolvedValue('none');
-      const recovery = stubRecovery({ hasLiveAlgoIntent: () => false, recoverSymbol });
+      const recovery = stubRecovery({ hasAlgoAnchor: () => false, recoverSymbol });
       const { poller, ingested } = build(
         [fill({ clientOrderId: clientOrderId('other-venue-id'), venueTradeId: 't9' })],
         [localOrder()],
@@ -258,7 +260,7 @@ describe('DemoFillPollerService', () => {
 
     it('recoverSymbol throwing does not break the poll or the watermark', async () => {
       const recoverSymbol = vi.fn().mockRejectedValue(new Error('venue down'));
-      const recovery = stubRecovery({ hasLiveAlgoIntent: () => true, recoverSymbol });
+      const recovery = stubRecovery({ hasAlgoAnchor: () => true, recoverSymbol });
       const { poller, ingested, sinceCalls } = build(
         [
           fill({
@@ -278,6 +280,25 @@ describe('DemoFillPollerService', () => {
       expect(recoverSymbol).toHaveBeenCalledTimes(1);
       await poller.poll([SYM]);
       expect(sinceCalls[1]).toBe(T + 30); // watermark advanced despite the recovery throw
+    });
+
+    it('hasAlgoAnchor throwing does not abort the poll (fail OPEN: treated as not-anchored this pass, retried next poll)', async () => {
+      const recoverSymbol = vi.fn().mockResolvedValue('none');
+      const hasAlgoAnchor = vi.fn().mockRejectedValue(new Error('store down'));
+      const recovery = stubRecovery({ hasAlgoAnchor, recoverSymbol });
+      const { poller, ingested } = build(
+        [fill({ clientOrderId: clientOrderId('other-venue-id'), venueTradeId: 't11' })],
+        [localOrder()],
+        true,
+        recovery,
+      );
+      const r = await poller.poll([SYM]);
+      expect(r).toEqual({ ingested: 0, skippedUnknown: 1 }); // poll completes despite the throw
+      expect(ingested).toHaveLength(0);
+      expect(hasAlgoAnchor).toHaveBeenCalledTimes(1);
+      // Not-anchored this pass (fail OPEN = skip, matching the file's per-symbol tolerance
+      // elsewhere) ⇒ never added to algoSuspects ⇒ recoverSymbol never reached.
+      expect(recoverSymbol).not.toHaveBeenCalled();
     });
   });
 });

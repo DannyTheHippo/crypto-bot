@@ -7,7 +7,7 @@ import {
   type VenueFill,
 } from '../../../ports/exchange';
 import { EXECUTION_STORE, type ExecutionStorePort } from '../../../ports/execution';
-import { reduce, type OrderEvent } from '../../../domain/oms/reducer';
+import { reduce, TERMINAL_ORDER_STATES, type OrderEvent } from '../../../domain/oms/reducer';
 import { isAlgoRailIntent } from '../../../domain/oms/reconcile';
 import { clientOrderId, type ClientOrderId, type SymbolId } from '../../../domain/types/ids';
 import { price, qty, feeAmount } from '../../../domain/types/money';
@@ -43,7 +43,12 @@ export class AlgoStopRecoveryService {
 
   // True iff a non-terminal order record's in-flight intent rides the algo rail for this symbol —
   // the same isAlgoRailIntent predicate execution-gate/unknown-resolver/boot-recovery already share
-  // (domain/oms/reconcile.ts), so this can never classify a rail differently than they do.
+  // (domain/oms/reconcile.ts), so this can never classify a rail differently than they do. SYNC
+  // (in-flight map only) for callers that cannot await — kept byte-identical; hasAlgoAnchor below is
+  // the async superset that also reaches a post-restart, store-only anchor. DemoFillPollerService no
+  // longer calls this (it awaits hasAlgoAnchor instead, to reach the same anchor recoverSymbol
+  // does) — kept for any future sync-only caller; not dead code, just currently unreferenced outside
+  // this file's own tests.
   hasLiveAlgoIntent(symbol: SymbolId): boolean {
     return this.liveAlgoIntents(symbol).length > 0;
   }
@@ -54,11 +59,57 @@ export class AlgoStopRecoveryService {
       .inFlightIntents.filter((intent) => isAlgoRailIntent(intent) && intent.symbol === symbol);
   }
 
+  // Async superset of hasLiveAlgoIntent for callers that can await (the poller hook) — true iff
+  // candidateAlgoIntents finds an anchor through EITHER source (in-flight or store-rehydrated).
+  async hasAlgoAnchor(symbol: SymbolId): Promise<boolean> {
+    return (await this.candidateAlgoIntents(symbol)).length > 0;
+  }
+
+  // The recovery anchor. P7f(3) boot-recovery seeds every non-terminal order's RECORD into
+  // OrderBookService on restart, but does not always rehydrate its intent into the in-flight map
+  // (a boot with a persisted order_intents row loadable rehydrates it; one without does not) — so
+  // liveAlgoIntents (in-flight only) structurally misses an algo-rail stop that survived a restart,
+  // exactly the live phantom's geometry (a HALT's cancel-in-flight race can also leave a resting
+  // stop's order NON-terminal with its intent already cleared from in-flight). This widens the
+  // anchor to every non-terminal order record, resolving each one's intent from whichever source
+  // still has it — in-flight first (the common, same-boot case — free, no I/O), the persisted
+  // write-ahead store second (the P7c primitive boot-recovery itself uses to rehydrate). A record
+  // whose intent resolves from NEITHER source contributes nothing (we cannot even confirm its
+  // symbol) — fail OPEN, dropped from every symbol's candidate set, never surfaced as a false
+  // 'unknown'.
+  //
+  // Discriminator: isAlgoRailIntent (domain/oms/reconcile.ts) gates on intent.triggerPrice, which
+  // the Drizzle store never persists (order_intents carries no trigger_price column) or restores
+  // (loadIntentForRecovery omits it) — a pre-existing gap out of this change's scope to close via
+  // migration. A store-rehydrated intent's triggerPrice is therefore always undefined, so
+  // isAlgoRailIntent would silently return false for every DB-backed candidate, defeating this exact
+  // path in the demo/live lane it targets. type==='STOP_MARKET' is the schema-safe equivalent:
+  // position-sizer.service.ts sets it iff isPerpSignal (spot's trigger variant is STOP_LOSS_LIMIT,
+  // never STOP_MARKET) — the same semantic content, sourced from a column the store actually
+  // restores (drizzle-execution-store.ts:374 `type: r.type`). On a swap venue this is byte-identical
+  // to isAlgoRailIntent's own verdict, so the in-flight (already-triggerPrice-bearing) path is
+  // unaffected either way.
+  private async candidateAlgoIntents(symbol: SymbolId): Promise<readonly OrderIntent[]> {
+    const out: OrderIntent[] = [];
+    for (const rec of this.orders.all()) {
+      if (TERMINAL_ORDER_STATES.has(rec.state)) continue;
+      const intent =
+        this.portfolio.inFlightIntent(rec.clientOrderId) ??
+        (await this.store.loadIntentByClientOrderId?.(rec.clientOrderId)) ??
+        undefined;
+      if (intent === undefined || intent.symbol !== symbol || intent.type !== 'STOP_MARKET') {
+        continue;
+      }
+      out.push(intent);
+    }
+    return out;
+  }
+
   // Per-symbol recovery pass. Aggregation priority when a symbol carries more than one live algo
   // intent (rare — normally exactly one resting stop): triggered > canceled > unknown > none, so a
   // single triggered/canceled stop is never masked by a sibling that is still resting.
   async recoverSymbol(symbol: SymbolId): Promise<AlgoRecoverOutcome> {
-    const liveIntents = this.liveAlgoIntents(symbol);
+    const liveIntents = await this.candidateAlgoIntents(symbol);
     if (liveIntents.length === 0) return 'none';
 
     let sawTriggered = false;
@@ -147,6 +198,27 @@ export class AlgoStopRecoveryService {
     if (candidates.length === 0) return 'unknown';
 
     const coid = intent.clientOrderId;
+    const rec0 = this.orders.get(coid);
+    // Absent, or already terminal (a race outside this pass already retired it before the fold
+    // started) — nothing to fold onto through the normal reducer path. Fail OPEN: no mutation,
+    // retried next sweep; the drift axis stays the fail-closed backstop for a resolution this path
+    // cannot complete. Checked ONCE, before the loop — a fold WITHIN this loop legitimately reaching
+    // FILLED (multiple trades covering one sweep) must still accept the next trade's fill detail
+    // (reduceTerminal's own documented FILLED+FILL fold), so this is not re-checked per iteration.
+    if (rec0 === undefined || TERMINAL_ORDER_STATES.has(rec0.state)) return 'unknown';
+
+    // Re-establish the in-flight reservation FillIngestorService.ingest folds position/cash off of
+    // (portfolio.inFlightIntent) — a no-op overwrite when intent is already the SAME in-flight
+    // object (byte-identical regression for the ordinary same-boot path), and the ONLY way a
+    // store-rehydrated (post-restart) intent's fill reaches the portfolio: candidateAlgoIntents can
+    // find the intent even when boot recovery never rehydrated it into the in-flight map, but the
+    // fold itself still keys off that map. No new state semantics — this is the SAME addInFlight
+    // execution-gate/boot-recovery already use for a freshly-placed or freshly-recovered order.
+    // wasInFlight records whether WE own this registration, so the cleanup below only ever retires
+    // what this call added — an intent already in-flight before we got here (the ordinary same-boot
+    // path) is left exactly as its owner (execution-gate / a live sweep) put it.
+    const wasInFlight = this.portfolio.inFlightIntent(coid) !== undefined;
+    this.portfolio.addInFlight(intent);
     for (const t of candidates) {
       const rec = this.orders.get(coid);
       // No local row, or already terminal (a prior sweep already retired it) — nothing left to
@@ -159,6 +231,22 @@ export class AlgoStopRecoveryService {
         `algo-trig:${t.venueTradeId}`,
         `venue_stop_filled:algoId=${view.algoId}`,
       );
+    }
+    const recAfter = this.orders.get(coid);
+    // Every candidate this pass was a duplicate (saveFill inserted:false — already ingested through
+    // some other path) or otherwise didn't fold: cumQty never advanced past rec0's. The reservation
+    // WE added above would otherwise strand an in-flight intent nothing will ever clear (ingest only
+    // clears on a TERMINAL fold) — the halt-coordinator treats a stray in-flight registration as
+    // symbol-busy, blocking HALT flatten until the next boot. Only unwind what we own; a real,
+    // still-progressing fold (cumQty advanced, non-terminal) legitimately stays in-flight for the
+    // next sweep, unchanged from before this fix.
+    if (
+      !wasInFlight &&
+      recAfter !== undefined &&
+      !TERMINAL_ORDER_STATES.has(recAfter.state) &&
+      recAfter.cumQty.eq(rec0.cumQty)
+    ) {
+      this.portfolio.clearInFlight(coid);
     }
     return 'triggered';
   }

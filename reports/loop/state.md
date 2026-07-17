@@ -125,10 +125,15 @@ never changes for strategy evolution.
     portfolio-consult soak (Phase-5 WATCH green), the loop may add **ZEC/AAVE/NEAR** per
     `reports/loop/universe-study-2026-07-13.md` — add the three DEFAULT_FILTERS rows from the
     report, re-derive gross exposure (8 × 0.05 ⇒ consider 0.04, record why), APPEND to
-    TRADING_SYMBOLS, never reorder. **FIRED 2026-07-17 (owner session):** Phase-5 consult WATCH
-    resolved positive Pass 24; consult clean since the 07-13 enable (the 07-16 outage was
-    market-data, not consult). Applied that session behind a live demo-venue market probe
-    (fallback per the study: ZEC-only if AAVE/NEAR unavailable); decision record in the LOG entry.
+    TRADING_SYMBOLS, never reorder. **FIRED + APPLIED 2026-07-17 (owner session, `1a70a51`,
+    spot boot `482d5ab1`):** Phase-5 consult WATCH resolved positive Pass 24; consult clean since
+    the 07-13 enable (the 07-16 outage was market-data, not consult). Live demo-venue probe PASSED
+    all three (TRADING; filters exactly match the study; ZEC $528.53 / AAVE $90.47 / NEAR $1.94 —
+    all clear the $0.50 floor). Sizing 0.05→0.04 (8×0.04 ⇒ ~0.32 gross);
+    `AGENTIC_MAX_CALLS_PER_DAY` 700→1100 (768 opportunities/day; breaker unchanged at $5).
+    **WATCH:** first decides on ZEC/AAVE/NEAR post-warmup; daily spend ~$3.5–4 expected, breaker
+    $5; no cap/notional entry vetoes on the new symbols; a sustained >$4.5/day = drop candidates
+    per the study's fallback order.
 
 ### Push II program (owner session 2026-07-13, plan `humming-sprouting-crab`) — 7/8 phases shipped, 5 live
 
@@ -336,7 +341,10 @@ fix: OMS algo-rail containment, 7 sub-fixes), `a6f0573` (P8a factorial ENABLE, s
   **Exit-mechanic mid-experiment deploys (pre-registration §: shift all cells equally, do NOT reset
   the window):** 2026-07-15 ~00:45Z — venue-exit qty-reconciliation churn fix (`debef0f`) deployed
   to BOTH lanes (spot boot `29e22ada`, perp new boot). Both boots reset the reflection prime;
-  `c0d53bd` seed-race fix (live) keeps the first-close-after-boot trigger intact.
+  `c0d53bd` seed-race fix (live) keeps the first-close-after-boot trigger intact. 2026-07-17
+  ~09:55Z — spot recreate (boot `482d5ab1`) carrying #49 atomic cancel-before-exit (`1b8d872`),
+  the 5→8 expansion + sizing 0.04, and playbook A/B 25→40 + lapse 336h (`1a70a51`); all-cells-equal
+  shift, window NOT reset (playbook-version mix shifts equally across cells — independent PRFs).
 - **P8d perp L0 DEPLOYED + LIVE (`aca7fb1` config, `359e4a7` the unblock).** `docker compose
   --profile perp up`: app-perp on binanceusdm demo (demo-fapi, testnet mode), BTC/USDT:USDT only,
   LONGS-ONLY, full stop architecture ON (venue TP + venue STOP_MARKET on the algo rail + executor +
@@ -749,12 +757,17 @@ wait on venue-TP capture data; **#18/#46/#47/#48** wait on their stated data/seq
   same-side venue order before (or with) the exit submission. Note: spot-only exposure — on perp the
   margin model has no base-lock, and the venue stop now rests server-side (#54 fixed); on spot the
   P7f double-lock forbids venue TP+stop together, so the executor/S3 stop is exactly the path the
-  TP base-lock can defeat. **AUTHORIZED 2026-07-17 (owner session; sequenced AFTER the phantom
-  fix, separate commit + review).** Approved design: compound signal — optional
-  `cancelBeforeSubmit` on protective/managed exits; the signal sink cancels the resting same-side
-  venue order (awaited) then submits the exit inside ONE per-key chain entry so nothing
-  interleaves; cancel failure still submits the exit (fail OPEN for the protective action — venue
-  rejects, next tick retries).
+  TP base-lock can defeat. **RESOLVED 2026-07-17 (owner session, `1b8d872`, spot boot
+  `482d5ab1`).** Shipped design: compound signal — optional `cancelBeforeSubmit` on
+  protective/managed exits; the signal sink cancels the resting same-side venue order (awaited to
+  CANCEL_ACK) then submits the exit inside ONE per-key chain entry so nothing interleaves; cancel
+  failure still submits the exit (fail OPEN for the protective action — venue rejects, next tick
+  retries; reduce-only sizing bounds the race). 2-lens adversarial review, 1 should-fix found +
+  fixed (the cancel-step journal row uses a `:cbe`-suffixed dedupeKey — same-PK collision was
+  silently dropping the APPROVED+intentId row). **WATCH:** the next S3/protective or stop/max_hold
+  exit against a resting TP journals `CANCEL_BEFORE_EXIT:<n>` then the gateway verdict on distinct
+  rows, and the exit FILLS (no TERMINAL_REJECT insufficient-base loop); a `signals insert failed`
+  ERROR on this path = the PK fix regressed.
 - **AVAILABILITY (Pass 17, 2026-07-12; updated Pass 23; REGRESSED Pass 25):** the stack runs on the
   owner's MacBook; host sleep throttles everything (worst measured: 8%/24h duty cycle; the SOL trail
   fired 10h late → gap loss). Pass 23 read **100%/24h for two consecutive days**, but **Pass 25

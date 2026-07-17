@@ -45,6 +45,21 @@ never changes for strategy evolution.
   pass; the backlog holds only improvements that move net-of-cost PnL or measurement trust. Fixes
   exceeding the §4 rails go to "Flagged for human review" as OPEN DEFECTS (evidence + exact diff),
   never to the backlog. Applied retroactively: #49 reclassified from backlog seed to § Flagged.
+- **OWNER DECISIONS 2026-07-17 (interactive session; plan `should-we-not-just-elegant-locket`):**
+  (1) **Full money-path delegation, encoded in playbook §4 — the ONLY owner gate in the program
+  is the live-money flip.** Demo-lane risk/execution/OMS/adapter work — defect fixes AND new
+  capability — is loop-domain under the standing discipline: mandatory adversarial reviewer
+  dispatch, full gates + livegate/paper, deploy soak, decision record + WATCH, two-step enables
+  for behavior-changing capability, never two money-path items per pass. The §4 MUST-NOT list
+  shrinks to the live-flip/audit invariants (live gates + arming, append-only tables +
+  money-table schema, secrets/redaction) — invariants on what a change may do, not gates on who
+  approves it. Supersedes the 2026-07-07 scoped exceptions and the 2026-07-10 perp-venue
+  owner-scope note. (2) Both § Flagged defects (perp phantom position; #49 atomicity) AUTHORIZED
+  — sequenced, phantom first. (3) app-perp stays RUNNING until the fix deploys (containment
+  holding per Pass 31). (4) Evidence gates re-affirmed exactly as pre-registered (promotion
+  floors, factorial floor, shorts soak, watcher study) — no loosening; v2's runway is protected
+  via config instead (lapse 168→336h, playbook A/B 25→40). (5) The 5→8 universe pre-auth is
+  FIRED this session (see § Pre-authorizations).
 - **Stage ladder + exit criteria (condensed from the active spec):**
   1. **Cost floor** — CLOSED 2026-07-08: true spend ~$0.77/day under the $5 breaker, skip rate
      70–83% (original criterion: ≤$1/day ×3 days + ≥2 RT/day + no EXPIRED regressions).
@@ -110,7 +125,10 @@ never changes for strategy evolution.
     portfolio-consult soak (Phase-5 WATCH green), the loop may add **ZEC/AAVE/NEAR** per
     `reports/loop/universe-study-2026-07-13.md` — add the three DEFAULT_FILTERS rows from the
     report, re-derive gross exposure (8 × 0.05 ⇒ consider 0.04, record why), APPEND to
-    TRADING_SYMBOLS, never reorder.
+    TRADING_SYMBOLS, never reorder. **FIRED 2026-07-17 (owner session):** Phase-5 consult WATCH
+    resolved positive Pass 24; consult clean since the 07-13 enable (the 07-16 outage was
+    market-data, not consult). Applied that session behind a live demo-venue market probe
+    (fallback per the study: ZEC-only if AAVE/NEAR unavailable); decision record in the LOG entry.
 
 ### Push II program (owner session 2026-07-13, plan `humming-sprouting-crab`) — 7/8 phases shipped, 5 live
 
@@ -682,7 +700,12 @@ wait on venue-TP capture data; **#18/#46/#47/#48** wait on their stated data/seq
   if that risk is unacceptable, stop app-perp until the fix session. **P8d WATCH 2 = RED; L0→L1
   shorts pre-auth re-BLOCKED.** (Pass 31 posture check: containment HOLDING — one phantom exit
   REJECT per bar, no new entries — the phantom book itself blocks them, venue flat, cash
-  unchanged; spend bounded by the $2/day breaker.)
+  unchanged; spend bounded by the $2/day breaker.) **AUTHORIZED 2026-07-17 (owner session; fix in
+  flight that session, sequenced first).** Implementation correction from the fix session's code
+  probe: pinned ccxt 4.5.58 has NO `fapiPrivateGetAlgoHistoricalOrders` — the remedy uses
+  `fapiPrivateGetAllAlgoOrders` (historical sweep) + `fapiPrivateGetAlgoOrder({algoId})` (single
+  query), both verified present on binanceusdm; parse bare-array AND `{orders}` shapes; the
+  similarly-named `sapiGetAlgoFuturesHistoricalOrders` is the legacy VP/TWAP service — wrong rail.
 - **PERP VENUE-STOP (FLAG 1, #54) — RESOLVED 2026-07-16 (both layers shipped; Pass 29 closed it).**
   Layer (a) `25563bc` (throw containment + `reconcile_error`); layer (b) `34bdddd` (owner-directed
   `/goal` session): adapter parses the bare-array response AND matches the venue market id
@@ -707,8 +730,12 @@ wait on venue-TP capture data; **#18/#46/#47/#48** wait on their stated data/seq
   same-side venue order before (or with) the exit submission. Note: spot-only exposure — on perp the
   margin model has no base-lock, and the venue stop now rests server-side (#54 fixed); on spot the
   P7f double-lock forbids venue TP+stop together, so the executor/S3 stop is exactly the path the
-  TP base-lock can defeat. Awaiting owner authorization to design + fix (reviewer-gated when it
-  proceeds).
+  TP base-lock can defeat. **AUTHORIZED 2026-07-17 (owner session; sequenced AFTER the phantom
+  fix, separate commit + review).** Approved design: compound signal — optional
+  `cancelBeforeSubmit` on protective/managed exits; the signal sink cancels the resting same-side
+  venue order (awaited) then submits the exit inside ONE per-key chain entry so nothing
+  interleaves; cancel failure still submits the exit (fail OPEN for the protective action — venue
+  rejects, next tick retries).
 - **AVAILABILITY (Pass 17, 2026-07-12; updated Pass 23; REGRESSED Pass 25):** the stack runs on the
   owner's MacBook; host sleep throttles everything (worst measured: 8%/24h duty cycle; the SOL trail
   fired 10h late → gap loss). Pass 23 read **100%/24h for two consecutive days**, but **Pass 25

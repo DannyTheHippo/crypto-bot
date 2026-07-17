@@ -3459,3 +3459,40 @@ attempt fires on the first close after it, outcome minted/no_change, mint-backte
 (2) P8a harm-stop peek once ≥8 trips/cell. (3) Carry re-test due ~2026-07-24. (4) Bug B — pick up
 the moment the owner authorizes the OMS fix. (5) `market_stream_forced_reconnects_total` — keep
 the non-zero watch.
+
+## 2026-07-17 — Owner session (~09:30Z→, plan `should-we-not-just-elegant-locket`): FULL MONEY-PATH DELEGATION; both flagged defects AUTHORIZED + fixes in flight; 5→8 FIRED; v2 runway protected
+
+**Trigger:** owner challenged the gating posture ("should we not just enable demo promotion and
+other features… do we really need to sit on anything?"). Audit answer recorded here for the
+record: demo auto-promotion was ALREADY live (v2 sat at its pre-registered 10-trip evidence
+floor, 3/10 and winning, not behind any flag); the only human-gated items in the whole program
+were the two § Flagged money-path defects.
+
+**Owner decisions (recorded in state.md § Strategic frame; playbook §4 amended):**
+
+1. **Full money-path delegation — the ONLY owner gate anywhere is the live-money flip.** Demo-lane
+   risk/execution/OMS/adapter work, defect fixes AND new capability, is loop-domain under the
+   standing discipline (adversarial review, full gates + livegate/paper, deploy soak, decision
+   record + WATCH, two-step enables, one money-path item per pass). §4 MUST-NOT shrinks to the
+   live-flip/audit invariants. Supersedes the 2026-07-07 scoped exceptions and the 2026-07-10
+   perp-venue owner-scope note.
+2. **Bug B (perp phantom position) AUTHORIZED** — fix first, this session. Code-probe correction
+   to the flagged remedy: pinned ccxt 4.5.58 has no `fapiPrivateGetAlgoHistoricalOrders`; use
+   `fapiPrivateGetAllAlgoOrders` + `fapiPrivateGetAlgoOrder({algoId})` (both verified present).
+3. **#49 (exit-vs-resting-TP atomicity) AUTHORIZED** — second, separate commit; compound
+   `cancelBeforeSubmit` signal executed atomically inside one sink chain entry.
+4. **app-perp left RUNNING** until the fix deploys (Pass 31 containment check: venue flat, one
+   phantom REJECT/bar, no new entries possible, $2/day breaker).
+5. **Evidence gates KEPT exactly as pre-registered** (10-trip promotion floor, factorial
+   ≥15/cell, shorts L0→L1 soak, watcher N≥10). v2's early profit is 3 trips — below the noise
+   floor; the correct lever is runway, not early promotion: `AGENTIC_CANDIDATE_LAPSE_HOURS`
+   168→336 + `AGENTIC_PLAYBOOK_AB_PCT` 25→40 (config commit, deploy before the ~07-18 04:45Z
+   lapse would discard the winning candidate).
+6. **5→8 universe pre-auth FIRED** (consult WATCH green since Pass 24; 07-16 outage was
+   market-data, not consult): ZEC/AAVE/NEAR behind a live market probe, sizing 0.05→0.04
+   (8×0.04 = 0.32 gross), TRADING_SYMBOLS append-only.
+
+**Session workplan:** S1 policy/records (this entry) → S2–S6 Bug B fix + adversarial review +
+perp deploy + phantom self-heal soak → S7–S8 #49 fix + review → S9 expansion → S10 v2 runway →
+S11 one spot recreate (factorial all-cells-equal shift, window NOT reset) → S12 full gates.
+Per-step results appended below as they land.

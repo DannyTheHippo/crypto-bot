@@ -184,10 +184,9 @@ change in the report instead of forcing a change.
   whatever it injects exactly as they do on a reflection-minted version. Writes to the experiments
   registry (`test/backtest/experiment-log.ts` + its CLI `--metrics` flag) are append-only and
   non-money — they record scored variants, they never touch a trading table.
-- **Scoped money-path exceptions (owner decision 2026-07-07), each ONLY with a mandatory
-  reviewer-agent dispatch before commit, full gates + `test:livegate` + `test:paper` green,
-  risk-reducing/metrics-only semantics, and never two money-path items in one pass regardless of
-  pass type:**
+- **Scoped money-path exceptions (owner decision 2026-07-07; SUPERSEDED 2026-07-17 by the full
+  money-path delegation below — kept for provenance, the review/gates discipline it introduced
+  now applies to ALL money-path work):**
   - `src/features/trading/execution/signal-sink.service.ts` — CANCEL_OPEN routing only
     (cancelling a strategy's own resting orders; never order placement).
   - `src/features/trading/execution/portfolio-state.service.ts` — FillApplication metrics
@@ -197,23 +196,26 @@ change in the report instead of forcing a change.
     sizing or veto semantics.
   - Drizzle migrations that ADD nullable analytics columns to non-money tables (e.g.
     `agent_decisions`); never money tables, never append-only triggers.
+- **Money-path delegation (owner decision 2026-07-17 — the ONLY owner gate in the program is the
+  live-money flip):** demo-lane work on risk, execution, OMS, and exchange adapters — defect
+  fixes AND new capability alike — is loop-domain, under ALL of: mandatory adversarial reviewer
+  dispatch before commit (multi-lens for OMS-semantics changes); full gates + `test:livegate` +
+  `test:paper` green; deploy soak per §5; a decision record + WATCH line in state.md;
+  behavior-changing capability additionally ships two-step (code flag-off, separate enable commit
+  with its own review — `rules` change-discipline). "Never two money-path items in one pass"
+  still binds. This supersedes the former per-item owner flags (the 2026-07-05 marketable-exits
+  template) and the 2026-07-10 perp-venue owner-scope note. The MUST-NOT list below is what
+  remains — the invariants protecting the live flip and audit trust, not work gates.
 
 **MUST NOT touch** (report-only, with evidence + exact proposed diff in "Flagged for human
-review" — the 2026-07-05 marketable-exits flag is the template):
+review"):
 
-- Risk sizing/veto semantics (`src/features/trading/risk/` beyond the hint/TIF exception above),
-  Execution and OMS beyond the two scoped files above, exchange adapters.
 - The four live gates, mode resolution, arming interlock, `test:livegate` (sacred — never skip,
-  weaken, or delete).
+  weaken, or delete). The live-money flip itself — four gates + bootId arming ceremony — is the
+  single human checkpoint (owner decisions 2026-07-10/12/17).
 - Append-only tables/triggers (`audit_log`, `order_events`), money-table schema and their
   migrations.
 - Secrets, `.env` (the example file is fine), pino redact lists.
-- **Perp-venue (shorts) wiring landed 2026-07-10** under reviewer + security-auditor gates
-  (`src/features/trading/agentic/agent-prompt.ts`, `anthropic-agent-client.ts`,
-  `src/ports/agentic-strategy.ts`, `test/testnet/swap-order-lifecycle.spec.ts`): flag-gated OFF
-  and deliberately unwired — even though these paths sit under the agentic-lane MAY above, they
-  remain owner-scoped for ordinary passes until the carry sub-plan formally wires them (pinned in
-  state.md's carry stub).
 
 Hard rules 1–7 in the project `CLAUDE.md` bind in full. **Never push to any remote.** Commits to
 local `main` are authorized for gates-green changes within the MAY list; one commit per shipped

@@ -3535,3 +3535,28 @@ Per-step results appended below as they land.
 - **WATCH lines armed:** #49 first protective-exit-vs-TP trail (two distinct journal rows, exit
   fills); expansion first decides post-warmup + spend <$5; v2 attribution rate ~×1.6; perp heal
   probe = next pass's top item.
+
+**Session continuation (~12:15–13:30Z) — S6b closed: PHANTOM HEALED, Bug B fully RESOLVED.**
+The owner returned ("continue"); the keyed probe the morning session couldn't run became
+possible (scratch-node ccxt + pg against demo-fapi/5433 — the psql/promtool denials don't bind
+node). Findings and fixes, in order: (1) **The "did not HALT" soak note was WRONG** — metrics
+showed `kill_switch{HALTED_DEGRADED}` + `position_drift` climbing since ~1min after the first
+deploy; the fail-closed axis worked all along (engage line sat outside the log-grep windows;
+drift bumps are metric-only). (2) `fetchPositions` round-trips clean on demo — the throw
+hypothesis was wrong too. (3) Real cause #1: demo algo-history rows carry the spawned order id
+as `actualOrderId` (FINISHED row, = the fill's own order id exactly; CANCELED rows carry '');
+fixed + live-shape-pinned (`333db28`, reviewer APPROVE). (4) Real cause #2 exposed by the next
+boot: P7f(3) skips algo intents at boot-recovery, so recovery's in-flight anchor is structurally
+dead after ANY restart; DB probe confirmed the write-ahead `order_intents` row exists and loads
+⇒ DB-anchored fallback shipped (`555cd48`: order-record anchor + `loadIntentByClientOrderId`,
+`type==='STOP_MARKET'` discriminator since triggerPrice isn't persisted, in-flight-leak guard,
+once-per-poll anchor scan; reviewer APPROVE 0 must-fix, 4 should-fixes landed; live-geometry
+test heals from RECONCILE_REQUIRED — the actual DB state). (5) Real cause #3 on the next boot:
+demo delivers algo timestamps as JSON STRINGS — the EpochMs mint threw and recovery failed OPEN
+exactly as declared; coercion + string-shape pin (`bd1cab2`). **Boot `051939bd` verification:
+`fills_total` 0→1, fill row exact (518032435 / 64181.4 / 0.001 + fee), order
+RECONCILE_REQUIRED→FILLED, `positions=[]` (equity=cash $4,998.77), first reconcile
+`result="clean"`, `kill_switch{RUNNING}`.** P8d WATCH 2 GREEN; L0→L1 technical blockers cleared,
+clean-soak clock restarts from this boot. Lesson reinforced (three distinct instances in ONE
+defect): live demo-venue shapes are unknowable from code — keyed probes BEFORE trusting any new
+endpoint consumption, and metrics (not logs) are the HALT/drift source of truth.

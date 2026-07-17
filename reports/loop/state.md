@@ -733,6 +733,43 @@ wait on venue-TP capture data; **#18/#46/#47/#48** wait on their stated data/seq
   actual shapes; fix the parse + regression-test; also verify the rehydrated in-flight intent is
   algo-classified (`hasLiveAlgoIntent`). Lane SAFE meanwhile (warmup ~3.5d, venue flat, no orders,
   $2/day breaker). **P8d WATCH 2 stays RED; L0→L1 stays BLOCKED until the heal is live-verified.**
+  **SAME-DAY ADDENDUM (owner session ~12:30–13:00Z, keyed probe executed after all): BOTH
+  hypotheses above were WRONG — and the "did not HALT" soak note too.** Probe + metrics truth:
+  (1) **The axis DID HALT** — `kill_switch_state{HALTED_DEGRADED}=1`,
+  `reconciliation_mismatch_total{class="position_drift"}` climbing every pass since ~1min after
+  the `1ff1fc7` deploy; the engage line sat outside the soak grep windows and drift bumps are
+  metric-only. The fail-closed backstop WORKS as designed. (2) `fetchPositions` round-trips CLEAN
+  on demo (flat ⇒ `[]`, no throw). (3) The real no-heal cause: the fired stop's history row
+  (`algoStatus=FINISHED`) carries the spawned order id as **`actualOrderId`** ('22141017991' —
+  exactly the fill's own order id), not `orderId`; CANCELED rows carry `''`. Normalizer FIXED,
+  live-shape regression-pinned, reviewer APPROVE 0 must-fix, gates green, deployed (boot
+  `5403a8e0`). (4) That boot exposed the SECOND gap: recovery anchors only on LIVE in-flight algo
+  intents, and the stop intent is now TERMINAL in the DB (0 intents rehydrated; a prior HALT's
+  cancel path consumed it) ⇒ `recoverSymbol` returns 'none' without querying the venue ⇒ lane
+  re-HALTed (correct, fail-closed). **Fix in flight (same session): DB-anchored recovery
+  fallback** — persisted algo intents (incl. terminal) + late-fill application through the
+  portfolio fill path, append-only event rows only. Heal target fill (probe-pinned): venueTradeId
+  518032435 / order 22141017991 / SELL 0.001 @ 64181.4 / venueTs 1784222166363. Lane posture:
+  HALTED = SAFE (kill switch refuses orders, venue flat, breaker bounds spend).
+  **RESOLVED 2026-07-17 ~13:25Z (owner session) — PHANTOM HEALED, FULL CHAIN LIVE-VERIFIED (boot
+  `051939bd`).** Three follow-up commits closed it: `333db28` (spawned order id lives in
+  `actualOrderId` on demo — probe-proven, live-shape-pinned; reviewer APPROVE), `555cd48`
+  (DB-anchored recovery — P7f(3) skips algo intents at boot so the in-flight anchor was
+  structurally dead post-restart; anchor now = non-terminal order records + the P7c
+  `loadIntentByClientOrderId` write-ahead row, discriminator `type==='STOP_MARKET'` because
+  `order_intents` doesn't persist triggerPrice; reviewer APPROVE 0 must-fix, all 4 should-fixes
+  landed incl. the halt-coordinator in-flight-leak guard and the once-per-poll anchor scan),
+  `bd1cab2` (demo delivers algo timestamps as JSON STRINGS — the EpochMs mint threw, fail-open
+  caught it exactly as declared, coercion + string-shape pin). **Live verification:**
+  `fills_total` 0→1 (venueTradeId 518032435 ingested with exact strings 64181.4/0.001 + fee,
+  under the stop's own coid); order row RECONCILE_REQUIRED→FILLED; `positions=[]` (book flat,
+  equity=cash $4,998.77); FIRST reconcile pass `result="clean"`; `kill_switch_state{RUNNING}`.
+  Interim-note correction: the drift axis HAD been HALTing the lane (HALTED_DEGRADED) between the
+  first fix deploy and this resolution — the fail-closed backstop worked the whole time.
+  **P8d WATCH 2 → GREEN** (the venue-stop fill is journaled and folded — retroactive but real).
+  **L0→L1 shorts pre-auth: technical blockers ALL cleared — the ≥3-day / ≥5-closed-trips clean
+  soak restarts from this boot; loop-domain to fire when met.** Evidence lane restored (3 closed
+  perp trips on the book).
 - **PERP VENUE-STOP (FLAG 1, #54) — RESOLVED 2026-07-16 (both layers shipped; Pass 29 closed it).**
   Layer (a) `25563bc` (throw containment + `reconcile_error`); layer (b) `34bdddd` (owner-directed
   `/goal` session): adapter parses the bare-array response AND matches the venue market id

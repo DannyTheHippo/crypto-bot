@@ -700,12 +700,31 @@ wait on venue-TP capture data; **#18/#46/#47/#48** wait on their stated data/seq
   if that risk is unacceptable, stop app-perp until the fix session. **P8d WATCH 2 = RED; L0→L1
   shorts pre-auth re-BLOCKED.** (Pass 31 posture check: containment HOLDING — one phantom exit
   REJECT per bar, no new entries — the phantom book itself blocks them, venue flat, cash
-  unchanged; spend bounded by the $2/day breaker.) **AUTHORIZED 2026-07-17 (owner session; fix in
-  flight that session, sequenced first).** Implementation correction from the fix session's code
-  probe: pinned ccxt 4.5.58 has NO `fapiPrivateGetAlgoHistoricalOrders` — the remedy uses
-  `fapiPrivateGetAllAlgoOrders` (historical sweep) + `fapiPrivateGetAlgoOrder({algoId})` (single
-  query), both verified present on binanceusdm; parse bare-array AND `{orders}` shapes; the
-  similarly-named `sapiGetAlgoFuturesHistoricalOrders` is the legacy VP/TWAP service — wrong rail.
+  unchanged; spend bounded by the $2/day breaker.)
+  **FIX SHIPPED 2026-07-17 (`1ff1fc7`), BUT LIVE HEAL NOT YET CONFIRMED — the standing phantom
+  persists; needs a keyed demo-venue probe next pass.** The 3-part remedy is coded, reviewed
+  (4-lens adversarial, 2 must-fix + 1 should-fix all fixed), gates green (2190 tests + livegate +
+  paper + eval), and DEPLOYED to app-perp (boot `c2b1043b`, healthy, no errors/HALT). ccxt
+  correction applied: the flagged `fapiPrivateGetAlgoHistoricalOrders` does NOT exist in pinned
+  4.5.58 — the adapter uses `fapiPrivateGetAllAlgoOrders` + `fapiPrivateGetAlgoOrder`. Extra
+  review must-fixes folded in: the position axis is PERP-ONLY by config (`reconConfigFrom`, not
+  method presence — spot would else spuriously HALT) and DEBOUNCED to 2 consecutive divergent
+  passes (an ordinary stop fire flattens the venue ~10s before recovery heals the book; a
+  single-pass HALT would fire on every stop); the spawnedOrderId-absent fallback matcher was
+  REMOVED (exclusion-based ownership could fold a foreign fill). **SOAK RESULT (S6, honest):** the
+  boot sweep left NO recovery warn and did NOT heal (local still `BTC/USDT:USDT 0.001@64577.6`),
+  AND the armed position axis did NOT HALT. Both silences point to a LIVE demo-venue behavior the
+  mocked unit tests can't reach and I couldn't pre-probe without keys (the #54 pattern):
+  `fetchAlgoOrderStatus` returns undefined when no row matches the intent's clientAlgoId (row
+  aged out / id mismatch ⇒ silent 'unknown', no heal), and `fetchPositions` most likely THROWS on
+  the demo `fetchPositions` shape (⇒ silent `sweep_failure`, no HALT). Adapter code is structurally
+  correct (delegations wired, both response shapes parsed) — the gap is real venue behavior.
+  **NEXT PASS (needs live metrics/DB/keyed probe — all denied this session):** confirm via
+  `reconciliation_mismatch_total{class=sweep_failure}` + the reconciliations row detail; P0d-style
+  probe the demo-fapi `fapiPrivateGetAllAlgoOrders`/`fapiPrivateGetAlgoOrder`/`fetchPositions`
+  actual shapes; fix the parse + regression-test; also verify the rehydrated in-flight intent is
+  algo-classified (`hasLiveAlgoIntent`). Lane SAFE meanwhile (warmup ~3.5d, venue flat, no orders,
+  $2/day breaker). **P8d WATCH 2 stays RED; L0→L1 stays BLOCKED until the heal is live-verified.**
 - **PERP VENUE-STOP (FLAG 1, #54) — RESOLVED 2026-07-16 (both layers shipped; Pass 29 closed it).**
   Layer (a) `25563bc` (throw containment + `reconcile_error`); layer (b) `34bdddd` (owner-directed
   `/goal` session): adapter parses the bare-array response AND matches the venue market id

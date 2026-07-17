@@ -161,7 +161,7 @@ describe('supervised channel loops deliver normalized raw events', () => {
       .marketRaw({ venue: V, symbols: [S], channels: { trades: true } })
       [Symbol.asyncIterator]();
     const pending = it.next();
-    await vi.advanceTimersByTimeAsync(1100);
+    await vi.advanceTimersByTimeAsync(2000); // 1s backoff + the subscribe-gate slot
     const first = await pending;
     if (first.done) throw new Error('no event');
     expect(first.value.type).toBe('trade');
@@ -210,7 +210,7 @@ describe('supervised channel loops deliver normalized raw events', () => {
       .marketRaw({ venue: V, symbols: [S], channels: { ticker: true } })
       [Symbol.asyncIterator]();
     const pending = it.next();
-    await vi.advanceTimersByTimeAsync(1100); // let the 1s backoff fire and the loop resume
+    await vi.advanceTimersByTimeAsync(2000); // 1s backoff + the subscribe-gate slot, then resume
     const first = await pending;
     if (first.done) throw new Error('no event');
     expect(first.value.type).toBe('ticker');

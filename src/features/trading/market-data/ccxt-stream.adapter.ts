@@ -41,6 +41,23 @@ const WATCHDOG_CHECK_MS = 30_000;
 const WATCHDOG_STALL_THRESHOLD_MS = 180_000;
 const WATCHDOG_RECONNECT_COOLDOWN_MS = 120_000;
 
+// (Re)subscribe pacing: Binance closes a WS connection receiving >5 inbound messages/second with
+// code 1008 (policy violation). Every supervised loop (re)subscribes through one exchange, and an
+// exchange.close() — watchdog-forced or venue-initiated — rejects ALL pending watch futures at
+// once: with a fixed, shared backoff the herd re-SUBSCRIBEs in lockstep, trips the limit, gets
+// 1008-closed, and repeats forever (observed live 2026-07-17: at 8 symbols × 4 channels every
+// candle re-watch 1008-looped indefinitely while a lone subscription recovered in ~2s — the 5→8
+// universe expansion crossed the cliff; boot-time initial subscription bursts the same way).
+// Serializing subscription entries at this spacing caps the global rate at ~3/s < 5/s so recovery
+// converges deterministically (~11s for 32 channels) instead of by lottery. Only a loop's first
+// watch and the first watch after an error pass the gate — steady-state yields are unpaced.
+const SUBSCRIBE_MIN_SPACING_MS = 350;
+// A supervised loop's error path was fully silent (health-tracker-only) — the 1008 livelock above
+// and the 2026-07-16 candle stall were both invisible until probed from outside the process. One
+// line per channel per interval keeps a persistent failure observable without a tight error loop
+// flooding the log.
+const LOOP_ERROR_LOG_INTERVAL_MS = 60_000;
+
 export interface ChannelStateTracker {
   setHealth(venue: VenueId, symbol: SymbolId, channel: string, health: ChannelHealth): void;
   recordEvent(venue: VenueId, symbol: SymbolId, channel: string): void;
@@ -209,6 +226,8 @@ export class CcxtExchangeStreamAdapter implements ExchangeStreamPort {
   private readonly lastYieldAt = new Map<string, EpochMs>();
   private watchdog: ReturnType<typeof setInterval> | null = null;
   private lastForcedReconnectAt = 0;
+  private subscribeNextSlotAt = 0;
+  private readonly lastErrorLogAt = new Map<string, number>();
 
   constructor(
     @Inject(CLOCK) private readonly clock: ClockPort,
@@ -313,8 +332,14 @@ export class CcxtExchangeStreamAdapter implements ExchangeStreamPort {
   private async runTickerLoop(push: (ev: RawVenueEvent) => void, symbol: SymbolId): Promise<void> {
     const channel = 'ticker';
     this.seedChannel(symbol, channel);
+    let needsSlot = true;
     while (this.running) {
       try {
+        if (needsSlot) {
+          await this.subscribeSlot();
+          if (!this.running) break;
+          needsSlot = false;
+        }
         const ticker = await this.watchSource.watchTicker(this.exchange, symbol);
         const ts = typeof ticker.timestamp === 'number' ? epochMs(ticker.timestamp) : undefined;
         push({ type: 'ticker', venue: this.venueId, symbol, timestamp: ts, raw: ticker });
@@ -323,6 +348,7 @@ export class CcxtExchangeStreamAdapter implements ExchangeStreamPort {
         this.scheduleStaleCheck(symbol, channel);
       } catch (err) {
         if (!this.running) break;
+        needsSlot = true;
         await this.handleLoopError(err, symbol, channel);
       }
     }
@@ -331,8 +357,14 @@ export class CcxtExchangeStreamAdapter implements ExchangeStreamPort {
   private async runTradesLoop(push: (ev: RawVenueEvent) => void, symbol: SymbolId): Promise<void> {
     const channel = 'trade';
     this.seedChannel(symbol, channel);
+    let needsSlot = true;
     while (this.running) {
       try {
+        if (needsSlot) {
+          await this.subscribeSlot();
+          if (!this.running) break;
+          needsSlot = false;
+        }
         const trades = await this.watchSource.watchTrades(this.exchange, symbol);
         for (const trade of trades) {
           const ts = typeof trade.timestamp === 'number' ? epochMs(trade.timestamp) : undefined;
@@ -343,6 +375,7 @@ export class CcxtExchangeStreamAdapter implements ExchangeStreamPort {
         this.scheduleStaleCheck(symbol, channel);
       } catch (err) {
         if (!this.running) break;
+        needsSlot = true;
         await this.handleLoopError(err, symbol, channel);
       }
     }
@@ -355,8 +388,14 @@ export class CcxtExchangeStreamAdapter implements ExchangeStreamPort {
   ): Promise<void> {
     const channel = `candle:${interval}`;
     this.seedChannel(symbol, channel);
+    let needsSlot = true;
     while (this.running) {
       try {
+        if (needsSlot) {
+          await this.subscribeSlot();
+          if (!this.running) break;
+          needsSlot = false;
+        }
         const bars = await this.watchSource.watchOHLCV(this.exchange, symbol, interval);
         for (const bar of bars) {
           const ts = typeof bar[0] === 'number' ? epochMs(bar[0]) : undefined;
@@ -367,6 +406,7 @@ export class CcxtExchangeStreamAdapter implements ExchangeStreamPort {
         this.scheduleStaleCheck(symbol, channel);
       } catch (err) {
         if (!this.running) break;
+        needsSlot = true;
         await this.handleLoopError(err, symbol, channel);
       }
     }
@@ -375,8 +415,14 @@ export class CcxtExchangeStreamAdapter implements ExchangeStreamPort {
   private async runBookLoop(push: (ev: RawVenueEvent) => void, symbol: SymbolId): Promise<void> {
     const channel = 'book';
     this.seedChannel(symbol, channel);
+    let needsSlot = true;
     while (this.running) {
       try {
+        if (needsSlot) {
+          await this.subscribeSlot();
+          if (!this.running) break;
+          needsSlot = false;
+        }
         const book = await this.watchSource.watchOrderBook(this.exchange, symbol);
         const ts = typeof book.timestamp === 'number' ? epochMs(book.timestamp) : undefined;
         push({ type: 'book', venue: this.venueId, symbol, timestamp: ts, raw: book });
@@ -385,16 +431,30 @@ export class CcxtExchangeStreamAdapter implements ExchangeStreamPort {
         this.scheduleStaleCheck(symbol, channel);
       } catch (err) {
         if (!this.running) break;
+        needsSlot = true;
         await this.handleLoopError(err, symbol, channel);
       }
     }
   }
 
   // Single error policy for every supervised loop (one place, one set of branches):
-  //   - book + ChecksumError → GAP, no backoff (ccxt dropped the book; resubscribe at once)
+  //   - book + ChecksumError → GAP, no backoff (ccxt dropped the book; resubscribe at once —
+  //     though the resubscribe still passes the subscribe gate like every other re-entry)
   //   - transient (network/rate/maintenance) → DEGRADED, backoff before retry
   //   - anything else → GAP, backoff (never tight-loop on an unknown error)
+  // Every branch logs (rate-limited per channel) BEFORE classifying — see
+  // LOOP_ERROR_LOG_INTERVAL_MS for why silence here is not an option.
   private async handleLoopError(err: unknown, symbol: SymbolId, channel: string): Promise<void> {
+    const key = `${symbol}|${channel}`;
+    const now = this.clock.now();
+    if (now - (this.lastErrorLogAt.get(key) ?? -Infinity) >= LOOP_ERROR_LOG_INTERVAL_MS) {
+      this.lastErrorLogAt.set(key, now);
+      this.logger?.warn(
+        `market-stream ${key} loop error (resubscribing): ${
+          err instanceof Error ? `${err.constructor.name}: ${err.message}` : String(err)
+        }`,
+      );
+    }
     if (channel === 'book' && isChecksumError(err)) {
       this.stateTracker.setHealth(this.venueId, symbol, channel, 'GAP');
       return;
@@ -406,6 +466,20 @@ export class CcxtExchangeStreamAdapter implements ExchangeStreamPort {
       isTransient(err) ? 'DEGRADED' : 'GAP',
     );
     await this.backoff();
+  }
+
+  // See SUBSCRIBE_MIN_SPACING_MS. Time-based token bucket: the next slot is claimed synchronously
+  // before any await, so concurrent acquirers serialize deterministically; the wait itself runs on
+  // wall timers. Fails delayed-never-dropped: the gate only ever awaits a timer, never rejects — a
+  // subscription is postponed, at most, never abandoned. The production CLOCK is wall-aligned
+  // (SystemClock), so clock.now() and setTimeout share a time base; specs that freeze the clock at
+  // 0 still see real gate waits of (N−1)×spacing per extra acquirer.
+  private async subscribeSlot(): Promise<void> {
+    const now = this.clock.now();
+    const at = Math.max(now, this.subscribeNextSlotAt);
+    this.subscribeNextSlotAt = at + SUBSCRIBE_MIN_SPACING_MS;
+    const wait = at - now;
+    if (wait > 0) await new Promise<void>((res) => setTimeout(res, wait));
   }
 
   private scheduleStaleCheck(symbol: SymbolId, channel: string): void {

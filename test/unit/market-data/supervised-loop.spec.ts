@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { ChecksumError } from 'ccxt';
+import { ChecksumError, NetworkError } from 'ccxt';
 import {
   CcxtExchangeStreamAdapter,
   type WatchSource,
@@ -61,7 +61,11 @@ describe('CcxtExchangeStreamAdapter supervised book loop', () => {
     const spec: SubscriptionSpec = { venue: V, symbols: [SYM], channels: { book: true } };
     const iterator = adapter.marketRaw(spec)[Symbol.asyncIterator]();
 
-    const first = await iterator.next();
+    // The post-error re-watch passes the subscribe gate (≤SUBSCRIBE_MIN_SPACING_MS wait) — pump
+    // fake timers so the gated resubscribe actually runs.
+    const firstP = iterator.next();
+    await vi.advanceTimersByTimeAsync(2_000);
+    const first = await firstP;
 
     if (first.done) throw new Error('expected a market event, got iterator done');
     expect(first.value.type).toBe('book'); // recovered: a real book event was delivered
@@ -73,6 +77,124 @@ describe('CcxtExchangeStreamAdapter supervised book loop', () => {
     expect(recordEvent).toHaveBeenCalledWith(V, SYM, 'book');
 
     await iterator.return?.();
+  });
+
+  it('paces (re)subscriptions through the gate — no synchronized burst at boot or after a shared failure (2026-07-17 code-1008 livelock)', async () => {
+    // 4 channels on one symbol: every first watch throws a transient NetworkError (the shape of a
+    // venue 1008 close), every second watch parks. Pre-fix, the four initial watches fired in one
+    // tick and the four retries fired in one tick 1s later — the lockstep burst Binance answers
+    // with another 1008, forever. The gate must space BOTH batches ≥ SUBSCRIBE_MIN_SPACING_MS.
+    vi.useFakeTimers();
+    const calls: { ch: string; at: number }[] = [];
+    const failOnceThenPark = (ch: string) => {
+      let n = 0;
+      return () => {
+        calls.push({ ch, at: Date.now() });
+        n += 1;
+        if (n === 1)
+          return Promise.reject(
+            new NetworkError('connection closed by remote server, closing code 1008'),
+          );
+        return new Promise<never>(() => {});
+      };
+    };
+    const watchSource: WatchSource = {
+      watchTicker: failOnceThenPark('ticker'),
+      watchTrades: failOnceThenPark('trade'),
+      watchOHLCV: failOnceThenPark('candle'),
+      watchOrderBook: failOnceThenPark('book'),
+    };
+    const stateTracker: ChannelStateTracker = {
+      setHealth: vi.fn(),
+      recordEvent: vi.fn(),
+      checkStaleness: vi.fn(),
+    };
+    const exchange = {
+      id: 'binance',
+      has: { watchTicker: true, watchTrades: true, watchOHLCV: true, watchOrderBook: true },
+    } as never;
+    const timerClock: ClockPort = { now: () => epochMs(Date.now()) };
+    const adapter = new CcxtExchangeStreamAdapter(
+      timerClock,
+      watchSource,
+      exchange,
+      V,
+      stateTracker,
+    );
+    const spec: SubscriptionSpec = {
+      venue: V,
+      symbols: [SYM],
+      channels: { ticker: true, trades: true, book: true, candles: ['15m'] },
+    };
+    const iterator = adapter.marketRaw(spec)[Symbol.asyncIterator]();
+
+    await vi.advanceTimersByTimeAsync(15_000);
+    await iterator.return?.();
+
+    expect(calls).toHaveLength(8);
+    const spacingOk = (batch: number[]): void => {
+      const sorted = [...batch].sort((a, b) => a - b);
+      for (let i = 1; i < sorted.length; i++) {
+        expect(sorted[i]! - sorted[i - 1]!).toBeGreaterThanOrEqual(349);
+      }
+    };
+    const firsts = new Map<string, number>();
+    const seconds: number[] = [];
+    for (const c of calls) {
+      if (firsts.has(c.ch)) seconds.push(c.at);
+      else firsts.set(c.ch, c.at);
+    }
+    spacingOk([...firsts.values()]);
+    spacingOk(seconds);
+  });
+
+  it('logs a loop error once per channel per interval — a persistent failure is visible, a tight loop does not flood', async () => {
+    vi.useFakeTimers();
+    let n = 0;
+    const watchSource: WatchSource = {
+      watchTicker: () => {
+        throw new Error('unused');
+      },
+      watchTrades: () => {
+        throw new Error('unused');
+      },
+      watchOHLCV: () => {
+        throw new Error('unused');
+      },
+      watchOrderBook: () => {
+        n += 1;
+        if (n <= 2) return Promise.reject(new NetworkError('closing code 1008'));
+        return new Promise<never>(() => {});
+      },
+    };
+    const stateTracker: ChannelStateTracker = {
+      setHealth: vi.fn(),
+      recordEvent: vi.fn(),
+      checkStaleness: vi.fn(),
+    };
+    const warn = vi.fn();
+    const exchange = { id: 'binance', has: { watchOrderBook: true } } as never;
+    const timerClock: ClockPort = { now: () => epochMs(Date.now()) };
+    const adapter = new CcxtExchangeStreamAdapter(
+      timerClock,
+      watchSource,
+      exchange,
+      V,
+      stateTracker,
+      {
+        warn,
+        error: vi.fn(),
+      },
+    );
+    const spec: SubscriptionSpec = { venue: V, symbols: [SYM], channels: { book: true } };
+    const iterator = adapter.marketRaw(spec)[Symbol.asyncIterator]();
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    await iterator.return?.();
+
+    const errorLines = warn.mock.calls.filter(([m]) => String(m).includes('loop error'));
+    expect(errorLines).toHaveLength(1);
+    expect(String(errorLines[0]![0])).toContain('NetworkError');
   });
 
   it('fails fast when a required capability is missing', () => {

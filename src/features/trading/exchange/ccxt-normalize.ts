@@ -162,11 +162,17 @@ function mapAlgoHistoryStatus(raw: string | undefined): AlgoOrderHistoryView['st
 export function normalizeAlgoHistory(o: RawAlgoOrder): AlgoOrderHistoryView | undefined {
   if (o.algoId === undefined) return undefined;
   const rawUpdateMs = o.updateTime ?? o.triggerTime;
+  // The demo venue carries the triggered market order's id as `actualOrderId` (keyed probe
+  // 2026-07-17: the FINISHED row's actualOrderId equals the fill's own order id exactly; CANCELED
+  // rows carry '' — empty string means absent, never a valid id). `orderId` stays as the
+  // documented-prod-shape fallback. Missing this field was the S6b no-heal: spawnedOrderId came
+  // out undefined, and recovery correctly refuses to guess without it.
+  const spawnedRaw = [o.actualOrderId, o.orderId].find((v) => v != null && String(v) !== '');
   return {
     algoId: String(o.algoId),
     clientAlgoId: o.clientAlgoId,
     status: mapAlgoHistoryStatus(o.algoStatus),
-    spawnedOrderId: o.orderId !== undefined ? String(o.orderId) : undefined,
+    spawnedOrderId: spawnedRaw !== undefined ? String(spawnedRaw) : undefined,
     qty: toStr(o.quantity, '0'),
     triggerPrice: toStr(o.triggerPrice, '0'),
     updateTimeMs: rawUpdateMs !== undefined ? epochMs(rawUpdateMs) : undefined,

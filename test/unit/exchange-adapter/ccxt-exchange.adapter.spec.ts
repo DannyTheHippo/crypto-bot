@@ -485,6 +485,57 @@ describe('CcxtExchangeAdapter.fetchAlgoOrderStatus', () => {
     expect(result?.spawnedOrderId).toBe('555');
   });
 
+  it("S6b: reads the spawned order id from the demo venue's actualOrderId field (live-captured FINISHED row)", async () => {
+    // Verbatim shape from the keyed probe 2026-07-17 against demo-fapi: the fired stop's row —
+    // status FINISHED, spawned id under actualOrderId (NOT orderId), matching the fill's own
+    // order id exactly. Missing this field mapping was the S6b no-heal.
+    const liveFinishedRow = {
+      algoId: '1000000137621559',
+      clientAlgoId: COID,
+      symbol: 'BTCUSDT',
+      orderType: 'STOP_MARKET',
+      side: 'SELL',
+      quantity: '0.0010',
+      triggerPrice: '64348.60',
+      algoStatus: 'FINISHED',
+      actualOrderId: '22141017991',
+      actualPrice: '64181.400000',
+      actualQty: '0.0010',
+      triggerTime: 1_784_222_166_355,
+      updateTime: 1_784_222_166_423,
+    };
+    const fetchHist = vi.fn().mockResolvedValue([liveFinishedRow]);
+    const client = fakeClient({ fapiPrivateGetAllAlgoOrders: fetchHist });
+    const adapter = new CcxtExchangeAdapter(client, venueId('binanceusdm'), true);
+
+    const result = await adapter.fetchAlgoOrderStatus(COID, symbolId('BTC/USDT:USDT'), epochMs(0));
+
+    expect(result?.status).toBe('TRIGGERED');
+    expect(result?.spawnedOrderId).toBe('22141017991');
+    expect(result?.qty).toBe('0.0010');
+  });
+
+  it("S6b: treats the demo venue's empty-string actualOrderId as absent (live-captured CANCELED row)", async () => {
+    const liveCanceledRow = {
+      algoId: '1000000137595982',
+      clientAlgoId: COID,
+      symbol: 'BTCUSDT',
+      algoStatus: 'CANCELED',
+      actualOrderId: '',
+      triggerPrice: '0.000000',
+      triggerTime: 0,
+      updateTime: 1_784_218_005_448,
+    };
+    const fetchHist = vi.fn().mockResolvedValue([liveCanceledRow]);
+    const client = fakeClient({ fapiPrivateGetAllAlgoOrders: fetchHist });
+    const adapter = new CcxtExchangeAdapter(client, venueId('binanceusdm'), true);
+
+    const result = await adapter.fetchAlgoOrderStatus(COID, symbolId('BTC/USDT:USDT'), epochMs(0));
+
+    expect(result?.status).toBe('CANCELED');
+    expect(result?.spawnedOrderId).toBeUndefined();
+  });
+
   it('matches ONLY by clientAlgoId among foreign rows, ignoring a foreign row sharing our orderId', async () => {
     const foreignRow = {
       ...rawHistRow,

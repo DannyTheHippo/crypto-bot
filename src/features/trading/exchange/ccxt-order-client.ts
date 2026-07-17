@@ -52,8 +52,10 @@ export interface RawAlgoOrder {
   triggerPrice?: string | number;
   algoStatus?: string;
   reduceOnly?: boolean;
-  // Defect A: present on a TRIGGERED/FINISHED row (the regular-rail order the algo spawned) and on
-  // the historical-sweep/single-query endpoints; absent on a still-resting row.
+  // Defect A: the regular-rail order the algo spawned. The demo venue's allAlgoOrders/algoOrder
+  // rows carry it as `actualOrderId` (keyed probe 2026-07-17; CANCELED rows carry '' = absent);
+  // `orderId` is the documented-prod-shape name kept as fallback. Absent on a still-resting row.
+  actualOrderId?: string | number;
   orderId?: string | number;
   updateTime?: number;
   triggerTime?: number;

@@ -1,4 +1,4 @@
-import { Inject, Injectable, Optional } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { InjectMetric, makeCounterProvider } from '@willsoto/nestjs-prometheus';
 import { Counter } from 'prom-client';
 import { SIGNAL_GATEWAY, type SignalGatewayPort } from '../../../ports/risk';
@@ -40,13 +40,18 @@ export class SignalSinkService implements SignalSinkPort {
   // Per-(strategyId,symbol) tail promise. Every recordSignal for the same key chains onto the prior
   // one, so individual signals for a key process strictly in arrival order (a cancel recorded before
   // an exit fully completes — venue ack included — before the exit submits). NOTE the guarantee is
-  // per-SIGNAL, not per-SEQUENCE: two awaited recordSignal calls from one caller (protective-exit's
-  // cancel-then-exit) can have a third caller's signal chain BETWEEN them — e.g. an agentic TP
-  // re-placement slotting in after the cancel re-locks base and the exit venue-rejects
-  // (TERMINAL_REJECT, retried next protective tick — self-healing, review-assessed). Bounded: an
-  // entry is dropped once its chain settles and no later call has re-chained onto it (see the
+  // per-SIGNAL, not per-SEQUENCE: two SEPARATE awaited recordSignal calls from one caller can still
+  // have a third caller's signal chain interleave BETWEEN them — e.g. an agentic TP re-placement
+  // slotting in after a cancel and re-locking the base before the paired exit submits. Defect B (#49)
+  // fix: ProtectiveExitService.fire() and the agentic stop/max_hold path close this gap for their
+  // own cancel-then-exit pairing by riding Signal.cancelBeforeSubmit — the cancel and the exit process
+  // inside the SAME processSignal call (one chain entry), so nothing can interleave between them (see
+  // processSignal below). The per-SIGNAL caveat above still applies to any caller that splits a
+  // multi-step operation across separate recordSignal calls instead. Bounded: an entry is dropped
+  // once its chain settles and no later call has re-chained onto it (see the
   // `this.chains.get(key) === tracked` check below).
   private readonly chains = new Map<string, Promise<void>>();
+  private readonly log = new Logger(SignalSinkService.name);
 
   constructor(
     @Inject(SIGNAL_GATEWAY) private readonly gateway: SignalGatewayPort,
@@ -106,6 +111,36 @@ export class SignalSinkService implements SignalSinkPort {
       return;
     }
 
+    // Defect B (#49): a resting venue TP/stop locks the base a full-size exit needs — cancel it
+    // FIRST, inside this SAME processSignal call, so no other same-key signal (see the `chains`
+    // comment above) can interleave and re-lock the base between the cancel ack and the exit
+    // submit below. Failure direction: fails OPEN toward the protective action — a cancel
+    // throw/timeout must never block the exit itself (this is a protective/S3 backstop path); if
+    // the base is genuinely still locked the venue TERMINAL_REJECTs and the caller's own next
+    // tick/bar retries (the exit is reduce-only-sized, so a stale resting order never doubles
+    // exposure).
+    if (signal.cancelBeforeSubmit) {
+      try {
+        const count = await this.cancelOrdersForSide(
+          signal.strategyId,
+          signal.symbol,
+          signal.cancelBeforeSubmit.side,
+        );
+        // Journal under a derived dedupeKey: signalId is `${dedupeKey}:${eventTime}` (a PRIMARY
+        // KEY), and this same signal gets its gateway-verdict row below — same key would collide
+        // and silently drop the APPROVED+intentId row (adversarial review 2026-07-17). The `:cbe`
+        // suffix keeps the cancel step as its own trail row, like the old separate-signal path.
+        this.journal?.record(
+          { ...signal, dedupeKey: `${signal.dedupeKey}:cbe` },
+          `CANCEL_BEFORE_EXIT:${count}`,
+        );
+      } catch (err) {
+        this.log.warn(
+          `cancelBeforeSubmit failed ahead of ${signal.kind} for ${signal.strategyId}:${signal.symbol} — exit still submits: ${String(err)}`,
+        );
+      }
+    }
+
     const outcome = this.gateway.accept(signal, this.portfolio.snapshot());
     if (outcome.status !== 'DECIDED') {
       this.journal?.record(signal, `${outcome.status}:${outcome.reason}`);
@@ -135,25 +170,37 @@ export class SignalSinkService implements SignalSinkPort {
   // resting TP and a resting stop with the ONE signal (see ProtectiveExitService.fire /
   // AgenticStrategy's stop/max_hold exit branch).
   private async cancelOpenForSignal(signal: Signal): Promise<void> {
+    const count = await this.cancelOrdersForSide(
+      signal.strategyId,
+      signal.symbol,
+      signal.cancelSide,
+      signal.cancelRole,
+    );
+    this.journal?.record(signal, `CANCEL_OPEN:${count}`);
+  }
+
+  // Shared cancel primitive behind both the standalone CANCEL_OPEN signal path above and the
+  // compound cancelBeforeSubmit path in processSignal (Defect B #49) — side undefined ⇒ both sides
+  // (today's CANCEL_OPEN default-scope behavior, unchanged); cancelBeforeSubmit always passes a
+  // concrete side. Returns the cancelled count so each caller can journal its own outcome string.
+  private async cancelOrdersForSide(
+    strategyId: Signal['strategyId'],
+    symbol: Signal['symbol'],
+    side: 'BUY' | 'SELL' | undefined,
+    cancelRole?: 'vtp' | 'vsl',
+  ): Promise<number> {
     const bySide = this.portfolio
-      .forStrategy(signal.strategyId)
-      .openOrders.filter(
-        (o) =>
-          o.symbol === signal.symbol &&
-          (signal.cancelSide === undefined || o.side === signal.cancelSide),
-      );
+      .forStrategy(strategyId)
+      .openOrders.filter((o) => o.symbol === symbol && (side === undefined || o.side === side));
     const toCancel: OpenOrderSummary[] = [];
     for (const o of bySide) {
-      if (
-        signal.cancelRole === undefined ||
-        (await this.roleForOrder(o.clientOrderId)) === signal.cancelRole
-      ) {
+      if (cancelRole === undefined || (await this.roleForOrder(o.clientOrderId)) === cancelRole) {
         toCancel.push(o);
       }
     }
     for (const o of toCancel) {
       await this.gate.cancel(o.clientOrderId, 'CANCEL_OPEN_SIGNAL');
     }
-    this.journal?.record(signal, `CANCEL_OPEN:${toCancel.length}`);
+    return toCancel.length;
   }
 }

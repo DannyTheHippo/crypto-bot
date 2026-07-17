@@ -18,6 +18,7 @@ import type {
 import type { SymbolFilters } from '../../../src/domain/risk/evaluate';
 import type { Signal } from '../../../src/domain/types/signal';
 import type { OrderIntent } from '../../../src/domain/types/order-intent';
+import type { ExchangePort } from '../../../src/ports/exchange';
 import { price, qty } from '../../../src/domain/types/money';
 import {
   strategyId,
@@ -375,7 +376,7 @@ describe('ProtectiveExitService', () => {
     expect((sink.recordSignal as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
   });
 
-  it('S3: a resting SELL open order does NOT block the protective stop from firing', async () => {
+  it('S3: a resting SELL open order does NOT block the protective stop — fires ONE EXIT_LONG carrying cancelBeforeSubmit (Defect B #49)', async () => {
     const snap = snapshot({
       positions: new Map([[KEY, pos({ avgEntry: price('100') })]]),
       openOrders: [openOrder(SYM, 'SELL')],
@@ -383,44 +384,67 @@ describe('ProtectiveExitService', () => {
     const { svc, sink } = build({ snap, mid: '50' });
     await svc.tick(epochMs(T));
     const calls = (sink.recordSignal as ReturnType<typeof vi.fn>).mock.calls;
-    // fire() clears the resting SELL first, then submits the exit — two signals, not a skip.
-    expect(calls).toHaveLength(2);
-    expect((calls[0]?.[0] as Signal).kind).toBe('CANCEL_OPEN');
-    expect((calls[0]?.[0] as Signal).cancelSide).toBe('SELL');
-    // Push 3 P7c: deliberately NO cancelRole — this cancel-first must clear BOTH a resting venue-TP
-    // and a resting protective stop with the ONE signal (SignalSinkService cancels every
-    // side-matching order when cancelRole is absent — see resting-order-role.ts / signal-sink.service.ts).
-    expect((calls[0]?.[0] as Signal).cancelRole).toBeUndefined();
-    expect((calls[1]?.[0] as Signal).kind).toBe('EXIT_LONG');
+    // Defect B (#49) fix: ONE compound signal, not a separate CANCEL_OPEN + exit pair — the cancel
+    // and the exit now process inside the SAME SignalSinkService chain entry (see that service's own
+    // processSignal), closing the interleave window the old two-recordSignal pairing left open.
+    expect(calls).toHaveLength(1);
+    const signal = calls[0]?.[0] as Signal;
+    expect(signal.kind).toBe('EXIT_LONG');
+    // Deliberately no cancelRole on the compound field — the cancel-first must clear BOTH a resting
+    // venue-TP and a resting protective stop (SignalSinkService cancels every side-matching order
+    // when cancelRole is absent — see resting-order-role.ts / signal-sink.service.ts).
+    expect(signal.cancelBeforeSubmit).toEqual({ side: 'SELL' });
   });
 
-  it('fire(): submits the exit only after the SELL-cancel signal resolves (call order)', async () => {
-    const snap = snapshot({
-      positions: new Map([[KEY, pos({ avgEntry: price('100') })]]),
-      openOrders: [openOrder(SYM, 'SELL')],
-    });
+  it('no resting TP ⇒ the exit signal carries no cancelBeforeSubmit (byte-identical to pre-feature)', async () => {
+    const snap = snapshot({ positions: new Map([[KEY, pos({ avgEntry: price('100') })]]) });
+    const { svc, sink } = build({ snap, mid: '50' });
+    await svc.tick(epochMs(T));
+    const calls = (sink.recordSignal as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls).toHaveLength(1);
+    expect((calls[0]?.[0] as Signal).cancelBeforeSubmit).toBeUndefined();
+  });
+
+  it('perp algo-cancel: cancelAlgoOrder is still awaited before the (now single) exit signal is recorded', async () => {
+    // Same fixture as "force-fires when venueStopResting is true but the breach exceeds the
+    // force-bps threshold" below, plus a registry algoId — proves the pre-existing algo-cancel
+    // ordering (Push 3 P7d) is untouched by the Defect B (#49) single-signal change.
+    const snap = snapshot({ positions: new Map([[KEY, pos({ avgEntry: price('100') })]]) });
+    const registry = planStopRegistry(
+      new Map([[KEY, { side: 'LONG', stopPrice: '98', venueStopResting: true, algoId: 'algo-1' }]]),
+    );
     const order: string[] = [];
     const sink: SignalSinkPort = {
-      recordSignal: vi.fn(async (s: Signal) => {
-        if (s.kind === 'CANCEL_OPEN') {
-          order.push('cancel-start');
-          await new Promise((r) => setTimeout(r, 0)); // macrotask delay — proves fire() awaits it
-          order.push('cancel-resolved');
-          return;
-        }
-        order.push(`submit-${s.kind}`);
+      recordSignal: vi.fn((s: Signal) => {
+        order.push(`sink:${s.kind}`);
+        return Promise.resolve();
+      }),
+    };
+    const exchange: Pick<ExchangePort, 'cancelAlgoOrder'> = {
+      cancelAlgoOrder: vi.fn(() => {
+        order.push('cancelAlgoOrder');
+        return Promise.resolve();
       }),
     };
     const svc = new ProtectiveExitService(
       clock,
       killSwitch('RUNNING'),
-      feed('50'),
+      feed('90'),
       portfolioView(snap),
       sink,
-      config({ stopLossPct: '0.02', trailingPct: '0' }),
+      config({
+        stopLossPct: '0',
+        trailingPct: '0',
+        planStopWatchEnabled: true,
+        planStopForceBps: 30,
+      }),
+      undefined,
+      registry,
+      exchange,
     );
     await svc.tick(epochMs(T));
-    expect(order).toEqual(['cancel-start', 'cancel-resolved', 'submit-EXIT_LONG']);
+    expect(order).toEqual(['cancelAlgoOrder', 'sink:EXIT_LONG']);
+    expect((sink.recordSignal as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
   });
 
   it('stacking guard: skips firing when the symbol has an in-flight intent', async () => {
@@ -776,7 +800,7 @@ describe('ProtectiveExitService', () => {
       expect((sink.recordSignal as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
     });
 
-    it('a resting BUY open order (the short’s own venue take-profit/cover) does NOT block — cancels it then fires EXIT_SHORT', async () => {
+    it('a resting BUY open order (the short’s own venue take-profit/cover) does NOT block — fires ONE EXIT_SHORT carrying cancelBeforeSubmit (Defect B #49)', async () => {
       const snap = snapshot({
         positions: new Map([[KEY, shortPos({ avgEntry: price('100') })]]),
         openOrders: [openOrder(SYM, 'BUY')],
@@ -784,11 +808,11 @@ describe('ProtectiveExitService', () => {
       const { svc, sink } = build({ snap, mid: '150' });
       await svc.tick(epochMs(T));
       const calls = (sink.recordSignal as ReturnType<typeof vi.fn>).mock.calls;
-      expect(calls).toHaveLength(2);
-      expect((calls[0]?.[0] as Signal).kind).toBe('CANCEL_OPEN');
-      expect((calls[0]?.[0] as Signal).cancelSide).toBe('BUY');
-      expect((calls[0]?.[0] as Signal).cancelRole).toBeUndefined(); // clears BOTH resting roles
-      expect((calls[1]?.[0] as Signal).kind).toBe('EXIT_SHORT');
+      // Defect B (#49) fix: ONE compound signal, not a separate CANCEL_OPEN + exit pair.
+      expect(calls).toHaveLength(1);
+      const signal = calls[0]?.[0] as Signal;
+      expect(signal.kind).toBe('EXIT_SHORT');
+      expect(signal.cancelBeforeSubmit).toEqual({ side: 'BUY' }); // clears BOTH resting roles
     });
   });
 

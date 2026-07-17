@@ -35,6 +35,14 @@ export interface Signal {
   // existing IOC crossing path — see PositionSizerService.size. 'RESTING_STOP' (Push 3 P7b) is a
   // distinct protective-stop variant keyed off triggerPriceHint instead — see that field's comment.
   readonly exitStyle?: 'RESTING' | 'RESTING_STOP';
+  // Defect B (#49) fix: compounds a side-scoped cancel-first with THIS signal's own submission into
+  // ONE SignalSinkService chain entry (see SignalSinkService.processSignal) — a resting venue TP/stop
+  // otherwise locks the base a concurrent protective/marketable exit needs, and emitting the cancel
+  // and the exit as two separate recordSignal calls (today's ProtectiveExitService.fire / the agentic
+  // stop/max_hold path, pre-fix) left a same-key-signal-sized interleave window where a third signal
+  // (e.g. a TP re-placement) could re-lock the base between them. Absent ⇒ byte-identical to today —
+  // no cancel-first, straight to the gateway/submit path.
+  readonly cancelBeforeSubmit?: { readonly side: 'BUY' | 'SELL' };
   readonly refPrice: Price;
   readonly basedOnSeq: bigint;
   readonly eventTime: EpochMs;

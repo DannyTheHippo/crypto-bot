@@ -647,14 +647,15 @@ describe('AgenticStrategy venue-resting take-profit lifecycle (AGENTIC_VENUE_TP)
     expect(events).toEqual(['skipped_existing']);
   });
 
-  it('cancels the resting SELL (cancelSide SELL) BEFORE the IOC EXIT_LONG on a stop exit', async () => {
+  it('carries cancelBeforeSubmit (side SELL) on the IOC EXIT_LONG when a resting SELL TP is present on a stop exit (Defect B #49)', async () => {
     const client = new PlanningClient();
     const strategy = new AgenticStrategy(SID, venueTpParams(), client);
     await strategy.decide(buildInput(0));
 
     // Bar 1: entry captured at 100, close breaches the stop (98) while a TP already rests at 103 —
     // the resting SELL must be cancelled before the full-size IOC exit (else it venue-rejects for
-    // insufficient balance, the base qty being locked by the resting order).
+    // insufficient balance, the base qty being locked by the resting order). Defect B (#49) fix:
+    // the cancel and the exit are now ONE compound signal, not a separate CANCEL_OPEN + exit pair.
     const out = await strategy.decide(
       buildInput(1, {
         close: '98',
@@ -662,15 +663,13 @@ describe('AgenticStrategy venue-resting take-profit lifecycle (AGENTIC_VENUE_TP)
         openOrders: [restingSell('103')],
       }),
     );
-    expect(out).toHaveLength(2);
-    expect(out[0]!.kind).toBe('CANCEL_OPEN');
-    expect(out[0]!.cancelSide).toBe('SELL');
-    // Push 3 P7c: deliberately NO cancelRole — a stop/max_hold cancel-first must clear BOTH a
-    // resting TP and a resting protective stop with the ONE signal (SignalSinkService's
-    // cancelOpenForSignal cancels every side-matching order when cancelRole is absent).
-    expect(out[0]!.cancelRole).toBeUndefined();
-    expect(out[1]!.kind).toBe('EXIT_LONG');
-    expect(out[1]!.reason).toBe('plan exit: stop');
+    expect(out).toHaveLength(1);
+    expect(out[0]!.kind).toBe('EXIT_LONG');
+    // Deliberately no cancelRole inside cancelBeforeSubmit — a stop/max_hold cancel-first must
+    // clear BOTH a resting TP and a resting protective stop with the ONE signal (SignalSinkService
+    // cancels every side-matching order when cancelRole is absent).
+    expect(out[0]!.cancelBeforeSubmit).toEqual({ side: 'SELL' });
+    expect(out[0]!.reason).toBe('plan exit: stop');
   });
 
   it('cancels the resting SELL when its price drifts beyond the replace-drift threshold', async () => {
@@ -1119,13 +1118,14 @@ describe('AgenticStrategy venue-resting take-profit lifecycle — SHORT (Push II
     expect(events).toEqual(['skipped_existing']);
   });
 
-  it('cancels the resting BUY (cancelSide BUY) BEFORE the IOC EXIT_SHORT on a stop exit', async () => {
+  it('carries cancelBeforeSubmit (side BUY) on the IOC EXIT_SHORT when a resting BUY TP is present on a stop exit (Defect B #49)', async () => {
     const client = new PlanningShortClient();
     const strategy = new AgenticStrategy(SID, venueTpParams(), client);
     await strategy.decide(buildInput(0));
 
     // Bar 1: entry captured at 100, close breaches the stop (102) while a TP already rests at 97 —
-    // the resting BUY (cover) must be cancelled before the full-size IOC exit.
+    // the resting BUY (cover) must be cancelled before the full-size IOC exit. Defect B (#49) fix:
+    // ONE compound signal, not a separate CANCEL_OPEN + exit pair.
     const out = await strategy.decide(
       buildInput(1, {
         close: '102',
@@ -1133,12 +1133,10 @@ describe('AgenticStrategy venue-resting take-profit lifecycle — SHORT (Push II
         openOrders: [restingBuy('97')],
       }),
     );
-    expect(out).toHaveLength(2);
-    expect(out[0]!.kind).toBe('CANCEL_OPEN');
-    expect(out[0]!.cancelSide).toBe('BUY');
-    expect(out[0]!.cancelRole).toBeUndefined(); // role-agnostic: clears BOTH resting roles
-    expect(out[1]!.kind).toBe('EXIT_SHORT');
-    expect(out[1]!.reason).toBe('plan exit: stop');
+    expect(out).toHaveLength(1);
+    expect(out[0]!.kind).toBe('EXIT_SHORT');
+    expect(out[0]!.cancelBeforeSubmit).toEqual({ side: 'BUY' }); // role-agnostic: clears BOTH roles
+    expect(out[0]!.reason).toBe('plan exit: stop');
   });
 
   it('holds without an exit when the close crosses the TP while the BUY still rests (tp_race_hold), then clears via position_closed', async () => {

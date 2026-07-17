@@ -451,7 +451,7 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
     expect(events).toEqual(['stood_down']);
   });
 
-  it('force-fire: a breach past the force band lets the bar-close IOC exit proceed, cancelling both resting roles first (force_fired)', async () => {
+  it('force-fire: a breach past the force band lets the bar-close IOC exit proceed, carrying cancelBeforeSubmit for both resting roles (force_fired, Defect B #49)', async () => {
     const client = new PlanningClient();
     const events: VenueStopEvent[] = [];
     const registry = planStopRegistry();
@@ -468,7 +468,8 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
     events.length = 0;
 
     // close 97 breaches the stop (98) by ~102bps — past the 30bps force band; the resting stop
-    // (cancelRole-agnostic on the spot side scan) is cancelled first, then the IOC exit fires.
+    // (role-agnostic on the spot side scan) rides the exit's own cancelBeforeSubmit field — Defect
+    // B (#49) fix: ONE signal, not a separate CANCEL_OPEN + exit pair.
     const out = await strategy.decide(
       buildInput(3, {
         close: '97',
@@ -477,15 +478,13 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
       }),
     );
     expect(events).toEqual(['force_fired', 'cancel_for_exit']);
-    expect(out).toHaveLength(2);
-    expect(out[0]!.kind).toBe('CANCEL_OPEN');
-    expect(out[0]!.cancelSide).toBe('SELL');
-    expect(out[0]!.cancelRole).toBeUndefined(); // role-agnostic — clears vtp+vsl in one signal
-    expect(out[1]!.kind).toBe('EXIT_LONG');
-    expect(out[1]!.reason).toBe('plan exit: stop');
+    expect(out).toHaveLength(1);
+    expect(out[0]!.kind).toBe('EXIT_LONG');
+    expect(out[0]!.cancelBeforeSubmit).toEqual({ side: 'SELL' }); // role-agnostic — clears vtp+vsl
+    expect(out[0]!.reason).toBe('plan exit: stop');
   });
 
-  it('cancel-first on a max_hold exit clears the resting stop even when AGENTIC_VENUE_TP is off (venueStopEnabled alone gates the cancel-first block)', async () => {
+  it('cancel-first on a max_hold exit clears the resting stop even when AGENTIC_VENUE_TP is off (venueStopEnabled alone gates the cancel-first block, Defect B #49)', async () => {
     const client = new PlanningClient();
     const strategy = new AgenticStrategy(SID, makeParams(), client);
     await strategy.decide(buildInput(0));
@@ -496,11 +495,11 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
     const out = await strategy.decide(
       buildInput(8, { position: longPosition('100'), openOrders: [restingSell('97.51')] }),
     );
-    expect(out).toHaveLength(2);
-    expect(out[0]!.kind).toBe('CANCEL_OPEN');
-    expect(out[0]!.cancelSide).toBe('SELL');
-    expect(out[1]!.kind).toBe('EXIT_LONG');
-    expect(out[1]!.reason).toBe('plan exit: max_hold');
+    // Defect B (#49) fix: ONE signal, not a separate CANCEL_OPEN + exit pair.
+    expect(out).toHaveLength(1);
+    expect(out[0]!.kind).toBe('EXIT_LONG');
+    expect(out[0]!.cancelBeforeSubmit).toEqual({ side: 'SELL' });
+    expect(out[0]!.reason).toBe('plan exit: max_hold');
   });
 
   it('position_closed: the stop fills externally — the remaining orphaned vtp is cancelled (mirror image of the TP-fills path)', async () => {

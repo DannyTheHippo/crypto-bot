@@ -279,6 +279,178 @@ describe('SignalSinkService', () => {
     });
   });
 
+  describe('cancelBeforeSubmit (Defect B #49): compound atomic cancel-then-exit', () => {
+    const restingSell = openOrder(undefined, '9', 'SELL');
+    const compoundSignal = () => ({
+      ...signal(),
+      kind: 'EXIT_LONG' as const,
+      cancelBeforeSubmit: { side: 'SELL' as const },
+    });
+
+    it('cancels the side-matching resting order strictly before the exit submits (call order)', async () => {
+      const order: string[] = [];
+      const gateway: SignalGatewayPort = {
+        accept: () => ({
+          status: 'DECIDED',
+          decision: { verdict: 'APPROVED', approved: approved() },
+        }),
+      };
+      const portfolio: PortfolioViewPort = {
+        snapshot: () => ({}) as PortfolioSnapshot,
+        forStrategy: () => ({ strategyId: SID, positions: new Map(), openOrders: [restingSell] }),
+      };
+      const gate: ExecutionGatePort = {
+        submit: (a) => {
+          order.push('submit');
+          return Promise.resolve({
+            clientOrderId: a.intent.clientOrderId,
+            outcome: 'SUBMITTED',
+          } as SubmitAck);
+        },
+        cancel: (coid) => {
+          order.push(`cancel:${coid}`);
+          return Promise.resolve();
+        },
+        cancelAllFor: () => Promise.resolve(),
+        flattenAll: () => Promise.resolve(),
+      };
+      const sink = new SignalSinkService(gateway, portfolio, gate);
+      await sink.recordSignal(compoundSignal());
+      expect(order).toEqual([`cancel:${restingSell.clientOrderId}`, 'submit']);
+    });
+
+    it('journals the cancel-before-exit count, then the exit outcome, for the ONE signal', async () => {
+      const record = vi.fn();
+      const journal: SignalJournalPort = { record };
+      const { sink } = makeSink(
+        { status: 'DECIDED', decision: { verdict: 'APPROVED', approved: approved() } },
+        journal,
+        undefined,
+        [restingSell],
+      );
+      await sink.recordSignal(compoundSignal());
+      // The cancel-step row journals under a DERIVED dedupeKey (`:cbe` suffix): signalId is
+      // `${dedupeKey}:${eventTime}` and is the signals-table PRIMARY KEY — the same key on both
+      // rows would collide and silently drop the APPROVED+intentId row (review 2026-07-17).
+      expect(record.mock.calls[0]).toEqual([
+        expect.objectContaining({ dedupeKey: 'k:cbe' }),
+        'CANCEL_BEFORE_EXIT:1',
+      ]);
+      expect(record.mock.calls[1]).toEqual([
+        expect.objectContaining({ dedupeKey: 'k' }),
+        'APPROVED',
+        approved().intent.intentId,
+      ]);
+    });
+
+    it('a third same-key signal enqueued mid-processing lands AFTER the compound exit (no interleave)', async () => {
+      const symX = symbolId('BTC/USDT');
+      const order: string[] = [];
+      let releaseCancel: () => void = () => {};
+      const blockCancel = new Promise<void>((r) => {
+        releaseCancel = r;
+      });
+      const approvedFor = (coid: string) =>
+        mintApproval(makeIntent({ clientOrderId: clientOrderId(coid) }), Buffer.alloc(32, 1), {
+          nonce: 'n',
+          approvedAtMs: epochMs(0),
+          limitsVersion: 'v1',
+          snapshotSeq: 1n,
+        });
+      const gateway: SignalGatewayPort = {
+        accept: (s) => ({
+          status: 'DECIDED',
+          decision: {
+            verdict: 'APPROVED',
+            approved: approvedFor(
+              s.dedupeKey === 'first' ? 'cbp' + 'a'.repeat(32) : 'cbp' + 'b'.repeat(32),
+            ),
+          },
+        }),
+      };
+      const portfolio: PortfolioViewPort = {
+        snapshot: () => ({}) as PortfolioSnapshot,
+        forStrategy: () => ({ strategyId: SID, positions: new Map(), openOrders: [restingSell] }),
+      };
+      const gate: ExecutionGatePort = {
+        submit: (a) => {
+          order.push(`submit:${a.intent.clientOrderId}`);
+          return Promise.resolve({
+            clientOrderId: a.intent.clientOrderId,
+            outcome: 'SUBMITTED',
+          } as SubmitAck);
+        },
+        cancel: async () => {
+          order.push('cancel-start');
+          await blockCancel;
+          order.push('cancel-resolved');
+        },
+        cancelAllFor: () => Promise.resolve(),
+        flattenAll: () => Promise.resolve(),
+      };
+      const sink = new SignalSinkService(gateway, portfolio, gate);
+
+      const p1 = sink.recordSignal({ ...compoundSignal(), symbol: symX, dedupeKey: 'first' });
+      // Let the first signal's cancel-before-submit start (and block) before the second same-key
+      // signal is recorded — it must chain BEHIND the whole compound entry (one chain entry per
+      // recordSignal call — see SignalSinkService's own `chains` comment), never slot in between
+      // the cancel ack and the exit submit (the pre-fix two-recordSignal pairing's exact bug).
+      await Promise.resolve();
+      await Promise.resolve();
+      const p2 = sink.recordSignal({ ...signal(), symbol: symX, dedupeKey: 'second' });
+
+      releaseCancel();
+      await Promise.all([p1, p2]);
+      expect(order).toEqual([
+        'cancel-start',
+        'cancel-resolved',
+        'submit:' + 'cbp' + 'a'.repeat(32),
+        'submit:' + 'cbp' + 'b'.repeat(32),
+      ]);
+    });
+
+    it('a cancel failure is caught — the exit still submits (fail OPEN toward the protective action)', async () => {
+      const submitted: RiskApprovedIntent[] = [];
+      const gateway: SignalGatewayPort = {
+        accept: () => ({
+          status: 'DECIDED',
+          decision: { verdict: 'APPROVED', approved: approved() },
+        }),
+      };
+      const portfolio: PortfolioViewPort = {
+        snapshot: () => ({}) as PortfolioSnapshot,
+        forStrategy: () => ({ strategyId: SID, positions: new Map(), openOrders: [restingSell] }),
+      };
+      const gate: ExecutionGatePort = {
+        submit: (a) => {
+          submitted.push(a);
+          return Promise.resolve({
+            clientOrderId: a.intent.clientOrderId,
+            outcome: 'SUBMITTED',
+          } as SubmitAck);
+        },
+        cancel: () => Promise.reject(new Error('venue cancel down')),
+        cancelAllFor: () => Promise.resolve(),
+        flattenAll: () => Promise.resolve(),
+      };
+      const sink = new SignalSinkService(gateway, portfolio, gate);
+      await expect(sink.recordSignal(compoundSignal())).resolves.toBeUndefined();
+      expect(submitted).toHaveLength(1);
+    });
+
+    it('absent cancelBeforeSubmit never cancels — byte-identical to pre-fix behavior (regression pin)', async () => {
+      const { sink, submitted, cancelled } = makeSink(
+        { status: 'DECIDED', decision: { verdict: 'APPROVED', approved: approved() } },
+        undefined,
+        undefined,
+        [restingSell],
+      );
+      await sink.recordSignal(signal()); // no cancelBeforeSubmit field
+      expect(cancelled).toHaveLength(0);
+      expect(submitted).toHaveLength(1);
+    });
+  });
+
   describe('per-(strategyId,symbol) serialization', () => {
     it('a slow signal does not let a later concurrent signal for the same symbol overtake it', async () => {
       const symX = symbolId('BTC/USDT');

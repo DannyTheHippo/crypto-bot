@@ -265,12 +265,24 @@ export class ProtectiveExitService {
     algoStopId?: string,
   ): Promise<void> {
     const reasonText = REASON_TEXT[reason];
+    // Push II Phase 8: the venue take-profit side mirrors direction — SELL for a LONG, BUY (cover)
+    // for a SHORT.
+    const tpSide: 'BUY' | 'SELL' = isLong ? 'SELL' : 'BUY';
     const signal: Signal = {
       strategyId: pos.strategyId,
       venue: pos.venue,
       symbol: pos.symbol,
       kind: isLong ? 'EXIT_LONG' : 'EXIT_SHORT',
       strength: 1,
+      // Defect B (#49) fix: a resting TP order locks the base balance (spot LONG) or margin (SHORT
+      // cover) — this signal-sink compound cancel-first (SignalSinkService.processSignal) clears it
+      // and the exit submits in the SAME chain entry, so no third same-key signal can interleave
+      // between the cancel ack and this submit and re-lock the base (the pre-fix two-recordSignal
+      // pairing left exactly that window open). Deliberately no cancelRole here — a side-matching
+      // cancel-first with no role clears EVERY resting order on tpSide (TP and a resting spot venue-
+      // stop alike, same open-order rail — see resting-order-role.ts). Absent when !hasOpenTp,
+      // byte-identical to today's no-cancel exit.
+      ...(hasOpenTp ? { cancelBeforeSubmit: { side: tpSide } } : {}),
       refPrice: mid,
       basedOnSeq: snapshotSeq,
       eventTime: now,
@@ -278,9 +290,6 @@ export class ProtectiveExitService {
       dedupeKey: `protect:${reason}:${pos.symbol}:${now}`,
       reason: reasonText,
     };
-    // Push II Phase 8: the venue take-profit side mirrors direction — SELL for a LONG, BUY (cover)
-    // for a SHORT.
-    const tpSide: 'BUY' | 'SELL' = isLong ? 'SELL' : 'BUY';
     // Push 3 P7d: the perp algo-rail cancel, AWAITED before the exit submits but FAIL-SAFE in
     // direction — a cancel failure/timeout here must never block the protective exit itself (this is
     // the S3 bot-enforced backstop; refusing to fire because cleanup failed would defeat its entire
@@ -297,32 +306,11 @@ export class ProtectiveExitService {
       }
     }
     try {
-      if (hasOpenTp) {
-        // A resting TP order locks the base balance (spot LONG) or margin (SHORT cover) — a
-        // full-size exit would otherwise be rejected. Cancel it and await the ack before submitting
-        // the exit.
-        // Push 3 P7c: deliberately NO cancelRole — a side-matching CANCEL_OPEN with no role clears
-        // EVERY resting order on tpSide in one signal (SignalSinkService.cancelOpenForSignal), so
-        // this already cancels a resting venue-TP AND a resting spot venue-stop (P7d's STOP_LOSS_
-        // LIMIT rests on the SAME open-order rail, same side) with no further change here. PERP: a
-        // resting STOP_MARKET lives on the swap ALGO/conditional rail, never in openOrders, so
-        // `hasOpenTp`/this cancel can never see or clear it — the algo-cancel above (keyed off the
-        // registry's own `algoId`) is that seam, built.
-        await this.sink.recordSignal({
-          strategyId: pos.strategyId,
-          venue: pos.venue,
-          symbol: pos.symbol,
-          kind: 'CANCEL_OPEN',
-          cancelSide: tpSide,
-          strength: 1,
-          refPrice: mid,
-          basedOnSeq: snapshotSeq,
-          eventTime: now,
-          ttlMs: 60_000,
-          dedupeKey: `protect:cancel_${tpSide.toLowerCase()}:${pos.symbol}:${now}`,
-          reason: `${reasonText}: clear resting ${tpSide} before protective exit`,
-        });
-      }
+      // Defect B (#49) fix: hasOpenTp ⇒ signal already carries cancelBeforeSubmit above, so the
+      // resting-TP cancel and this exit submit are ONE recordSignal call (one SignalSinkService
+      // chain entry) — PERP: a resting STOP_MARKET lives on the swap ALGO/conditional rail, never in
+      // openOrders, so hasOpenTp/cancelBeforeSubmit can never see or clear it — the algo-cancel above
+      // (keyed off the registry's own `algoId`) is that seam, unchanged.
       await this.sink.recordSignal(signal);
     } catch {
       return; // sink failure must not crash the tick — retries next tick, no lastFiredAt update

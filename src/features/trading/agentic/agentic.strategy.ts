@@ -888,12 +888,41 @@ export class AgenticStrategy implements AsyncStrategy {
       this.clearPlan();
       this.annotatePreviousOutcome(lastClose, context.position, lastCandle, heldDuringPrev);
       this.recordQuietJournalEntry(input, `plan exit: ${verdict.reason}`, 'plan-executor');
+      // AGENTIC_VENUE_TP/AGENTIC_VENUE_STOP: a resting TP/stop order locks the base/margin at the
+      // venue — cancel it BEFORE this full-size IOC exit, else the exit venue-rejects for
+      // insufficient balance. Stop/max_hold only: a take_profit crossing this close-price check
+      // while a TP still rests is the venue order's own fill path racing this bar's evaluation, not
+      // a case this cancel-first guard targets (out of the explicit brief scope for this feature).
+      // Push 3 P7c/P7d: deliberately ROLE-AGNOSTIC on the SPOT open-orders rail
+      // (restingOrderForSide, not restingOrderForRole) — a full-size exit is blocked by ANY resting
+      // reduce-only order on this side, TP or protective stop alike. Defect B (#49) fix: rather than
+      // a separate CANCEL_OPEN signal ahead of the exit (a two-recordSignal pairing that left an
+      // interleave window for a third same-key signal — e.g. a TP re-placement — to slot in between
+      // and re-lock the base), the cancel rides the exit signal's own cancelBeforeSubmit field
+      // (role-agnostic — SignalSinkService clears every side-matching order in the SAME chain entry
+      // as the exit submit, both roles cleared before it, no interleave possible). PERP: a resting
+      // venue STOP_MARKET lives on the algo rail, never in openOrders, so the side-scan below can
+      // never see it — cancelPerpAlgoStopIfResting reaches it directly off `stopEntry` (captured
+      // above, BEFORE clearPlan() deleted the registry row), best-effort (see that method's own
+      // comment), unchanged by this fix.
+      const cancelFirstEligible =
+        (this.venueTpEnabled || this.venueStopEnabled) &&
+        (verdict.reason === 'stop' || verdict.reason === 'max_hold');
+      const restingExit = cancelFirstEligible ? this.restingOrderForSide(input, tpSide) : undefined;
+      if (restingExit) {
+        this.onVenueTp?.('cancel_for_exit');
+        if (this.venueStopEnabled) this.onVenueStop?.('cancel_for_exit');
+      }
+      if (cancelFirstEligible && this.venueStopEnabled && this.isPerpVenue()) {
+        await this.cancelPerpAlgoStopIfResting(stopEntry, tpSide, 'cancel_for_exit');
+      }
       const exitSignal: Signal = {
         strategyId: this.id,
         venue: this.venue,
         symbol: this.symbol,
         kind: isShort ? 'EXIT_SHORT' : 'EXIT_LONG',
         strength: 1,
+        ...(restingExit ? { cancelBeforeSubmit: { side: tpSide } } : {}),
         refPrice: lastCandle.close,
         basedOnSeq: lastCandle.seq,
         eventTime: input.snapshot.eventTime,
@@ -903,42 +932,6 @@ export class AgenticStrategy implements AsyncStrategy {
         dedupeKey: `${this.id}:${this.symbol}:agentic:plan_exit:${input.snapshot.eventTime}`,
         reason: `plan exit: ${verdict.reason}`,
       };
-      // AGENTIC_VENUE_TP/AGENTIC_VENUE_STOP: a resting TP/stop order locks the base/margin at the
-      // venue — cancel it BEFORE this full-size IOC exit, else the exit venue-rejects for
-      // insufficient balance. Stop/max_hold only: a take_profit crossing this close-price check
-      // while a TP still rests is the venue order's own fill path racing this bar's evaluation, not
-      // a case this cancel-first guard targets (out of the explicit brief scope for this feature).
-      // Push 3 P7c/P7d: deliberately ROLE-AGNOSTIC on the SPOT open-orders rail
-      // (restingOrderForSide, not restingOrderForRole) — a full-size exit is blocked by ANY resting
-      // reduce-only order on this side, TP or protective stop alike, and the CANCEL_OPEN below
-      // carries no cancelRole so SignalSinkService's cancelOpenForSignal cancels every side-matching
-      // order in one signal (both roles cleared before the exit submits). PERP: a resting venue
-      // STOP_MARKET lives on the algo rail, never in openOrders, so the side-scan above can never
-      // see it — cancelPerpAlgoStopIfResting reaches it directly off `stopEntry` (captured above,
-      // BEFORE clearPlan() deleted the registry row), best-effort (see that method's own comment).
-      if (
-        (this.venueTpEnabled || this.venueStopEnabled) &&
-        (verdict.reason === 'stop' || verdict.reason === 'max_hold')
-      ) {
-        const cancelSignals: Signal[] = [];
-        const restingExit = this.restingOrderForSide(input, tpSide);
-        if (restingExit) {
-          this.onVenueTp?.('cancel_for_exit');
-          if (this.venueStopEnabled) this.onVenueStop?.('cancel_for_exit');
-          cancelSignals.push(
-            this.buildCancelOpenSignal(
-              input,
-              lastCandle,
-              tpSide,
-              `venue take-profit/stop: cancel resting ${tpSide} ahead of full-size exit`,
-            ),
-          );
-        }
-        if (this.venueStopEnabled && this.isPerpVenue()) {
-          await this.cancelPerpAlgoStopIfResting(stopEntry, tpSide, 'cancel_for_exit');
-        }
-        if (cancelSignals.length > 0) return [...cancelSignals, exitSignal];
-      }
       return [exitSignal];
     }
     if (verdict.type === 'cancel_entry' || verdict.type === 'plan_expired') {

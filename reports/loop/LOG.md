@@ -3277,3 +3277,117 @@ soak criteria still bind — ≥3 days clean, ≥5 closed perp trips, zero recon
 list. (2) Spot v2 A/B verdict (10 trips or age-lapse ~07-18 04:45Z). (3) P8a harm-stop peek at 8
 trips/cell. (4) Watch `venue_stop_filled`/`venue_tp_filled` on the next perp trip close; L0→L1 once
 the pre-auth counts are met. (5) carry re-test ~07-24.
+
+## 2026-07-17 — Pass 30 (scheduled, ~00:05–01:15Z): MAINTENANCE — TWO correctness bugs on the trading path found by the sweep; SPOT candle-stream silent stall (8h outage) FIXED + SHIPPED (`c105e8a`); PERP phantom position (venue stop triggered, fill invisible to the OMS) root-caused, owner-gated, FLAGGED
+
+**Data window read:** 24h logs both lanes; spot Prometheus + DB; perp Prometheus + DB; pmset;
+harness probe. Pass began 00:05Z (first pass of the UTC day).
+
+**Headline metrics (spot, epoch 07-12 08:30Z, read ~00:11Z pre-fix):** RT=18 (+0 since Pass 28 —
+see Bug A), net-of-cost −$8.65, LLM $7.60 (≈$2.59/day), window 2.94d, ready=0; equity $4,990.27,
+dd 0.19%; A/B v2 3/10 trips +$1.09 vs v1 −$1.90 (unchanged — no trips closed, see Bug A). Post-fix
+(~00:30Z) the lane closed BOTH stale positions (XRP −2.3%, BTC −1.6% — see impact below) ⇒ RT=20.
+Perp: equity $4,998.39, RT=2, playbook v1 + v2 unresolved in A/B. Harness probe GREEN (offline
+subset 4 files / 15 tests). Host awake on AC; no sleep gap since 07-16 09:00+0200.
+
+### Bug A (SPOT, fixed this pass): candle pipeline silently dead 16:00Z 07-16 → 00:12Z 07-17 (~8.2h)
+
+**Detection:** steady 20 `agent_decisions`/hour all day, then NOTHING after 16:00:10Z;
+`increase(agentic_prescreen_total[6h])=0` at 00:11Z while the app reported healthy, portfolio
+marks kept updating (ticker alive), and `/health/live` served 200. The XRP venue TP was
+drift-cancelled 16:00:06Z and never re-placed; BTC (entered 15:45Z, ~$137) and XRP (entered
+14:00Z, ~$100) sat WITHOUT a venue TP and without bar-close plan management the whole window
+(S3 1s ticker backstop remained armed — the only protection layer that survived).
+
+**Mechanism (code-confirmed, `ccxt-stream.adapter.ts`):** ccxt pro `watch*` futures settle only
+when the venue pushes a message for that subscription. A server-side subscription drop leaves the
+future pending FOREVER; the supervised `while` loops act only when the promise settles, so all
+five candle channels parked with no error to catch. Ticker kept flowing on the same process —
+connection alive, klines subscription dead. The 30s `checkStaleness` path only flips an in-memory
+health enum that nothing exported, logged, or acted on: zero recovery, zero observability.
+Timing correlates with Pass 29's heavy `docker compose build` on this host (16:05–16:45Z) but the
+proximate venue-side cause is not recoverable from logs; the fix is shape-robust either way.
+
+**Mitigation (00:12Z):** `docker compose restart app` — decides resumed on the 00:15Z bar
+(verified: 5 rows at 00:30:12Z).
+
+**Impact (honest accounting):** the lane traded blind through a falling tape. On resume it exited
+XRP at 1.0842 vs 1.1094 entry (−2.3%, ~−$2.3) and BTC at 63,642 vs 64,676 entry (−1.6%, ~−$2.2),
+both plus fees — roughly −$4.5 realized that bar-close stops/TP management might have cut. The S3
+2%-intrabar backstop was armed throughout (ticker-driven) but neither position crossed it until
+~00:25Z, so no S3 fire — the loss rode the unprotected middle band the plan's bar-close stop
+exists to manage.
+
+**Fix shipped (`c105e8a`, reviewer APPROVE 0 must-fix):** stall watchdog in
+`CcxtExchangeStreamAdapter` — per-(symbol,channel) last-yield map seeded at loop start, 30s check
+interval, `exchange.close()` forced when any CORE channel (ticker/candle:*) is silent >180s, 120s
+cooldown, strictly fail-open (every watchdog failure swallowed; its only possible action is a
+reconnect blip). Recovery contract verified by the reviewer against pinned ccxt 4.5.58 source:
+`close()` deletes the ws client and rejects all pending futures ⇒ the supervised loops re-watch
+on a fresh client. Observability shipped with it: `market_channel_staleness_seconds{symbol,channel}`
+gauge + `market_stream_forced_reconnects_total` counter (new `MARKET_STREAM_TELEMETRY` port —
+deliberately NOT a `FeedHealthPort` extension so the risk/execution isolation noops stay
+untouched), `MarketChannelStale` (critical, >600s for 5m — the backstop for the watchdog itself
+failing) + `MarketStreamReconnectStorm` (warning, ≥5/h) alert rules. Reviewer should-fixes all
+applied: connection-wide blast-radius documented, happy-path never-fires test added, loop-start
+channel seeding so boot-dead subscriptions surface in the gauge. Gates: build/lint/typecheck green,
+full suite 2,147 green, eval harness green. Deployed spot-only ~00:56Z (perp untouched — its
+redeploy is pointless until Bug B's owner-gated fix lands; the watchdog rides along then).
+
+### Bug B (PERP, report-only — owner-gated, § Flagged): venue STOP_MARKET triggered at the venue; its fill is INVISIBLE to the OMS ⇒ phantom local position since 17:16Z 07-16
+
+**Timeline (all DB/metric-confirmed):** BTC long 0.001 @64,577.6 entered 14:15Z. Venue TP resting;
+Pass 29's redeploy cycle re-armed the stop 16:45:03Z (STOP_MARKET trigger 64,348.6, algo rail,
+reconcile-confirmed — the Pass 29 verification was real). TP re-place 17:00Z EXPIRED at the venue.
+**~17:16Z the mark crossed the trigger and the venue stop FIRED** — correct venue-side behavior —
+closing the position at the venue (equity gauge dropped consistently, ~$4,999.2→$4,998.4). From
+17:16:07Z every ~10s fill poll logs `skippedUnknown=1` (2,560+ polls by 00:20Z): the triggered
+algo order's spawned market order carries a venue-generated id our `decodeClientOrderId` matching
+(fill-ingestor.service.ts:116-119) cannot decode ⇒ the fill is never ingested, the position table
+still says 0.001 long, and `orders` still shows the stop ACKED. From 17:30Z the strategy submits a
+SELL LIMIT exit for the phantom position EVERY BAR — 29+ consecutive REJECTED rows (SUBMIT_SENT →
+REJECT ~0.5s, raw_ack NULL; the venue refuses reduce-side orders with no position behind them).
+
+**Why nothing HALTed (rule-6 analysis):** the 38 reconciliation MISMATCH rows 16:45–17:16Z were
+the RESTING stop visible venue-side while P7f(3) correctly excludes algo intents from the local
+open set — a benign-class mismatch that STOPPED exactly when the stop fired. Post-trigger the
+order-set comparison is genuinely clean on both sides (venue: nothing resting; local open set:
+algo intents excluded) and NO consumer reconciles POSITIONS on the perp venue ⇒ the book divergence
+is structurally invisible to reconciliation. The REJECT order_events carry a bare
+`{"type":"REJECT"}` payload and no log line — the venue's reason is classified then discarded (the
+same journaling gap #49 noted for local rejects).
+
+**Consequences while open:** perp lane burns decide spend proposing phantom exits (bounded by the
+$2/day breaker), its A/B/promotion evidence is corrupt from 17:16Z (a real closed trip never
+closed locally; RT stuck at 2), and a new LLM-proposed BUY would stack a REAL venue position under
+a phantom book. P8d WATCH 2 (`venue_stop_filled` journaling) = RED — the exact watch item caught
+it. **L0→L1 shorts pre-auth re-BLOCKED.** Fix is execution/OMS money-path (fill-ingestor + algo
+lifecycle + position reconciliation) ⇒ outside §4 rails; full mechanism + proposed remedy in
+state.md § Flagged, awaiting owner authorization. Left the lane running deliberately: venue-side
+account is flat and every phantom exit rejects, so no money can move; stopping it would also stop
+the evidence stream the owner-gated fix session needs.
+
+**Pass type:** MAINTENANCE (correctness bugs outrank everything; two found, one fixable within
+rails — fixed and shipped; one owner-gated — flagged with evidence and remedy).
+CANDIDATE/PROMOTION remain ineligible (candidates unresolved in A/B both lanes). E2
+`eval:candidates` deferred AGAIN on correctness priority — stays next-pass candidate #1.
+
+**Soak (spot, boot post-`c105e8a`, ~00:56–01:25Z):** app healthy, zero level-50 lines; bars
+flowing (01:00Z bar processed on all 5 symbols — 5 prescreen rows, `skipped_quiet`, correct for a
+quiet bar); `market_channel_staleness_seconds` LIVE and nominal (ticker 0.8s / book 0.4s /
+candle:15m 3.2s / trade 3.8s max across symbols — this gauge alone would have made the incident
+visible in seconds); `market_stream_forced_reconnects_total=0` (no false fires — the happy-path
+regression test's live confirmation). Alert rules: promtool SUCCESS 15 rules. **Deploy gotcha
+worth remembering:** the prometheus container's file-level bind of `alerts.rules.yml` served a
+STALE/TRUNCATED view after the host-side rewrite (Edit = replace-by-rename ⇒ new inode; the old
+promtool check failed on a mid-rule cut that did not exist on the host) — `docker compose up -d
+--force-recreate prometheus` re-resolved the bind; TSDB named volume (#22) made it non-destructive.
+
+**Flagged for human review:** Bug B (see § Flagged in state.md — new top item);
+REJECT-reason journaling gap (execution layer, owner-gated, folded into the Bug B flag);
+AVAILABILITY unchanged (host was awake this window on AC).
+
+**Next-pass candidates:** (1) E2 `eval:candidates`. (2) Spot v2 A/B verdict (10 trips or age-lapse
+~07-18 04:45Z; the two post-outage exits may have advanced attribution — verify). (3) Watch
+`market_stream_forced_reconnects_total` — a non-zero value means the watchdog earned its keep (or
+is flapping; either way look). (4) P8a harm-stop peek at 8 trips/cell. (5) carry re-test ~07-24.

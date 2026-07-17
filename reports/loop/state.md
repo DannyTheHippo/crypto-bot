@@ -359,6 +359,9 @@ fix: OMS algo-rail containment, 7 sub-fixes), `a6f0573` (P8a factorial ENABLE, s
   **(Pass 29, 2026-07-16: adapter fix `34bdddd` DEPLOYED — item 1 GREEN: STOP_MARKET placed, resting
   on the algo rail, reconcile-confirmed with registry stand-down; item 3 still green. Remaining:
   item 2 — a venue TP/stop FILL journaling correctly on the next closed trip; item 4 funding rows.)**
+  **(Pass 30, 2026-07-17: item 2 = RED — the stop FIRED at the venue ~17:16Z 07-16 and its fill is
+  INVISIBLE to the OMS ⇒ phantom local position, evidence lane corrupt since; full mechanism +
+  owner-gated remedy in § Flagged. L0→L1 re-BLOCKED.)**
 
 - **PERP SHORTS LADDER pre-auths (loop-domain; the ONLY human touch remains the live-money flip):**
   - **L0→L1 (shorts on the PERP lane):** after an L0 soak — ≥3 days clean AND ≥5 closed perp trips
@@ -420,6 +423,24 @@ PoS ≥ 0.70). Exit criterion: ≥2 promotions with version-attributed PnL AND r
   deadlock diagnosed (Pass 21, #39) → entry-rate floor + abstain lapse (`b9dddc2`).
 
 ## Last pass
+
+**Pass 30, 2026-07-17** (scheduled, ~00:05–01:15Z, **MAINTENANCE — two trading-path correctness
+bugs found; one FIXED+SHIPPED (`c105e8a`), one owner-gated FLAGGED**) — **Bug A (spot): the candle
+pipeline was silently DEAD 16:00Z 07-16 → 00:12Z 07-17 (~8.2h)** — ccxt watch* futures pend forever
+on a server-side subscription drop; the supervised loops only act when the promise settles; nothing
+exported channel age. Mitigated by restart (decides resumed 00:15Z bar), then shipped a stall
+watchdog (force `exchange.close()` at 180s core-channel silence, fail-open, recovery contract
+reviewer-verified against pinned ccxt source) + `market_channel_staleness_seconds` /
+`market_stream_forced_reconnects_total` metrics + MarketChannelStale/MarketStreamReconnectStorm
+alerts. Reviewer APPROVE 0 must-fix; 2,147 tests green; deployed SPOT-only. Outage cost ~−$4.5
+realized (both stale positions exited on resume: XRP −2.3%, BTC −1.6%) ⇒ spot RT=20. **Bug B
+(perp): the #54 venue stop FIRED at the venue ~17:16Z but its algo-rail fill is INVISIBLE to the
+OMS ⇒ phantom local position, `skippedUnknown=1` every poll since, 29+ phantom exit rejects, no
+HALT (no position reconciliation on perp; algo intents excluded from order-set reconcile by
+design). P8d WATCH 2 RED; L0→L1 re-BLOCKED; evidence lane corrupt since 17:16Z; owner-gated
+3-part remedy in § Flagged.** Perp lane deliberately left running (venue flat, exits all reject,
+$2/day breaker bounds spend). CANDIDATE/PROMOTION ineligible (unchanged); E2 `eval:candidates`
+deferred again on correctness priority. Full entry: `reports/loop/LOG.md`.
 
 **Pass 29, 2026-07-16** (owner-directed `/goal` backlog execution, ~16:05–17:10Z) — **FIVE rows
 closed: #54(b) `34bdddd`, #55 `dc98068`, #56 `2f8ed48`, #57 `015bc70`, #42 CLOSED-OBE.** Second
@@ -617,6 +638,33 @@ wait on venue-TP capture data; **#18/#46/#47/#48** wait on their stated data/seq
 
 ## Flagged for human review (open)
 
+- **OPEN DEFECT — PERP ALGO-STOP FILL INVISIBLE TO THE OMS ⇒ PHANTOM POSITION (Pass 30,
+  2026-07-17; ACTIVE divergence since 2026-07-16 17:16Z; owner-gated money-path fix).** The #54
+  stop architecture worked venue-side: the resting STOP_MARKET (trigger 64,348.6) FIRED ~17:16Z
+  and closed the BTC 0.001 long at the venue. But the triggered algo order's spawned market order
+  carries a venue-generated clientOrderId that `decodeClientOrderId` cannot map to an intent
+  (fill-ingestor.service.ts:116-119) ⇒ the fill is never ingested (`fill poll: skippedUnknown=1`
+  every ~10s since 17:16:07Z), the local book still holds the position, the stop intent stays
+  ACKED forever, and the strategy submits a phantom SELL exit EVERY BAR (29+ SUBMIT_SENT→REJECT
+  pairs since 17:30Z, raw_ack NULL, reason discarded). NO HALT fires because (a) P7f(3) correctly
+  excludes algo intents from order-set reconciliation, and (b) NOTHING reconciles POSITIONS on the
+  perp venue — the divergence class is structurally invisible. Evidence lane is corrupt from
+  17:16Z (a real closed trip never closed locally; reflection/A/B starved). **Proposed remedy (3
+  parts, all execution/OMS — outside §4 rails):** (1) `manageVenueStopPerp`'s reconcile: when a
+  CONFIRMED-resting stop disappears from `fetchOpenAlgoOrders`, discriminate CANCELED vs TRIGGERED
+  via `fapiPrivateGetAlgoHistoricalOrders({algoId})` and on TRIGGERED ingest the spawned order's
+  fill through FillApplication (match by the algo response's orderId, not clientOrderId), journal
+  `venue_stop_filled`, terminalize the intent; (2) fill-poll: an unmatched fill on a symbol with a
+  live algo intent triggers the same algo-history lookup instead of skip-and-forget (today's
+  skippedUnknown is a silent forever-loop); (3) systemic backstop: perp position reconciliation
+  (`fetchPositions` vs local book) in the reconcile cycle — divergence is a HALTING mismatch class
+  per rule 6. Also fold in: REJECT order_events journal a bare `{"type":"REJECT"}` — persist the
+  venue error code/reason on the event payload (append-only-compatible: new rows only). Interim
+  posture (deliberate): lane left running — venue account is flat, every phantom exit REJECTS so
+  no money can move, and the $2/day breaker bounds the decide spend; do NOT let it open new
+  positions before the fix (a real BUY would stack a live venue position under a phantom book) —
+  if that risk is unacceptable, stop app-perp until the fix session. **P8d WATCH 2 = RED; L0→L1
+  shorts pre-auth re-BLOCKED.**
 - **PERP VENUE-STOP (FLAG 1, #54) — RESOLVED 2026-07-16 (both layers shipped; Pass 29 closed it).**
   Layer (a) `25563bc` (throw containment + `reconcile_error`); layer (b) `34bdddd` (owner-directed
   `/goal` session): adapter parses the bare-array response AND matches the venue market id

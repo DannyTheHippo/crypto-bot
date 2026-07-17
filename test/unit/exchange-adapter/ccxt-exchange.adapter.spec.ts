@@ -501,8 +501,10 @@ describe('CcxtExchangeAdapter.fetchAlgoOrderStatus', () => {
       actualOrderId: '22141017991',
       actualPrice: '64181.400000',
       actualQty: '0.0010',
-      triggerTime: 1_784_222_166_355,
-      updateTime: 1_784_222_166_423,
+      // STRINGS, deliberately: live demo-fapi delivers the timestamps as JSON strings — the
+      // first live heal attempt threw inside the EpochMs brand mint on exactly this shape.
+      triggerTime: '1784222166355',
+      updateTime: '1784222166423',
     };
     const fetchHist = vi.fn().mockResolvedValue([liveFinishedRow]);
     const client = fakeClient({ fapiPrivateGetAllAlgoOrders: fetchHist });
@@ -513,6 +515,7 @@ describe('CcxtExchangeAdapter.fetchAlgoOrderStatus', () => {
     expect(result?.status).toBe('TRIGGERED');
     expect(result?.spawnedOrderId).toBe('22141017991');
     expect(result?.qty).toBe('0.0010');
+    expect(result?.updateTimeMs).toBe(1_784_222_166_423);
   });
 
   it("S6b: treats the demo venue's empty-string actualOrderId as absent (live-captured CANCELED row)", async () => {

@@ -57,8 +57,9 @@ export interface RawAlgoOrder {
   // `orderId` is the documented-prod-shape name kept as fallback. Absent on a still-resting row.
   actualOrderId?: string | number;
   orderId?: string | number;
-  updateTime?: number;
-  triggerTime?: number;
+  // Live demo-fapi rows deliver these as JSON strings; the normalizer coerces via Number.
+  updateTime?: string | number;
+  triggerTime?: string | number;
 }
 
 export interface CcxtOrderClient {

@@ -804,21 +804,30 @@ export class ReflectionService {
           // clock can never start, so waiting out the age lapse serves nothing (v2 froze the loop
           // this exact way: 0 entries in 17 FLAT consults, 5 days of dead air ahead). Evidence-based
           // lapse beats age: mint over it now, through the entry-rate floor. 0 disables.
+          // Evidence base is the candidate's LIFETIME journal (versionEntryStats), never a
+          // recent(N) row window: row-count windows shrink in wall-clock terms as the universe
+          // grows, and a candidate's early entries scrolling past one misclassified a TRADING
+          // candidate as abstaining (v2, 2026-07-17 — 4 longs just beyond the 400-row horizon
+          // after the 5→8 expansion). This sub-read fails toward NOT lapsing (measurement gate on
+          // a destructive orphaning — stats absent or failing must preserve the candidate; the
+          // outer guard catch would instead proceed to mint).
           let liveAbstention = false;
-          if (this.abstainLapseDecides > 0 && ageMs < this.candidateLapseMs) {
-            const rows = await journal.recent(400);
-            let decides = 0;
-            let entries = 0;
-            for (const row of rows) {
-              if (row.playbookVersion !== unresolved.version) continue;
-              if (!row.model.startsWith('claude')) continue;
-              decides += 1;
-              if (row.action === 'long') entries += 1;
-            }
-            liveAbstention = decides >= this.abstainLapseDecides && entries === 0;
-            if (liveAbstention) {
+          if (
+            this.abstainLapseDecides > 0 &&
+            ageMs < this.candidateLapseMs &&
+            journal.versionEntryStats
+          ) {
+            try {
+              const stats = await journal.versionEntryStats(unresolved.version);
+              liveAbstention = stats.decides >= this.abstainLapseDecides && stats.entries === 0;
+              if (liveAbstention) {
+                this.warn(
+                  `reflection: candidate v${unresolved.version} provably abstains live (${stats.entries} entries in ${stats.decides} lifetime attributed decides ≥ ${this.abstainLapseDecides}) — lapsing it early, proceeding to mint over it`,
+                );
+              }
+            } catch (err) {
               this.warn(
-                `reflection: candidate v${unresolved.version} provably abstains live (${entries} entries in ${decides} attributed decides ≥ ${this.abstainLapseDecides}) — lapsing it early, proceeding to mint over it`,
+                `reflection: abstention-lapse evidence read failed (not lapsing): ${err instanceof Error ? err.message : String(err)}`,
               );
             }
           }

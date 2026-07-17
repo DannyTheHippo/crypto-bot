@@ -945,6 +945,76 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
     expect(tied.map((r) => r.promptHash)).toEqual(['hash-dt-3a', 'hash-dt-3b']);
   });
 
+  it('(j) countVersionEntryStats counts lifetime real-LLM decides/entries for ONE version (abstention-lapse evidence base)', async () => {
+    const repo = new AgentDecisionRepository(db);
+    const base = {
+      strategyId: 'agentic-ves-1',
+      symbol: 'BTC/USDT',
+      venue: 'binance',
+      triggerKind: 'candle' as const,
+      basedOnSeq: 1n,
+      confidence: 0.5,
+      rationale: 'r',
+      refPrice: null,
+      close: null,
+      inputTokens: null,
+      outputTokens: null,
+      latencyMs: null,
+      inputPayload: null,
+    };
+    // Version 91: the single entry is deliberately the OLDEST row — a recent()-window read can
+    // miss it (the 2026-07-17 v2 false-abstention); the lifetime count must not. A non-claude
+    // replay row on the same version is excluded from the decide count entirely.
+    await repo.insert({
+      ...base,
+      model: 'claude-sonnet-5',
+      action: 'long',
+      playbookVersion: 91,
+      eventTime: 10,
+      promptHash: 'ves-a',
+    });
+    await repo.insert({
+      ...base,
+      model: 'claude-sonnet-5',
+      action: 'hold',
+      playbookVersion: 91,
+      eventTime: 11,
+      promptHash: 'ves-b',
+    });
+    await repo.insert({
+      ...base,
+      model: 'replay-sim',
+      action: 'long',
+      playbookVersion: 91,
+      eventTime: 12,
+      promptHash: 'ves-c',
+    });
+    await repo.insert({
+      ...base,
+      model: 'claude-sonnet-5',
+      action: 'hold',
+      playbookVersion: 92,
+      eventTime: 13,
+      promptHash: 'ves-d',
+    });
+    // NULL playbook_version rows (prescreen/plan-executor bookkeeping) never count for any version.
+    await repo.insert({
+      ...base,
+      model: 'claude-sonnet-5',
+      action: 'long',
+      playbookVersion: null,
+      eventTime: 14,
+      promptHash: 'ves-e',
+    });
+
+    expect(await repo.countVersionEntryStats(91)).toEqual({ decides: 2, entries: 1 });
+    expect(await repo.countVersionEntryStats(92)).toEqual({ decides: 1, entries: 0 });
+    expect(await repo.countVersionEntryStats(93)).toEqual({ decides: 0, entries: 0 });
+
+    const adapter = new AgentDecisionJournalAdapter(db);
+    expect(await adapter.versionEntryStats(92)).toEqual({ decides: 1, entries: 0 });
+  });
+
   it('(j) recent(limit, strategyId) scopes the window to one instance (P7)', async () => {
     const repo = new AgentDecisionRepository(db);
     const base = {

@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { desc, eq } from 'drizzle-orm';
+import { and, count, desc, eq, like, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../database.tokens';
 import * as schema from '../schemas/trading';
 import { requireDb } from './persistence-guard';
@@ -75,5 +75,25 @@ export class AgentDecisionRepository {
             .orderBy(desc(schema.agentDecisions.eventTime), desc(schema.agentDecisions.id))
             .limit(limit);
     return rows.reverse();
+  }
+
+  // Lifetime decide/entry counts for one playbook version (the abstention lapse's evidence base —
+  // see AgentDecisionJournalPort.versionEntryStats): real-LLM rows only, ReflectionService's
+  // model.startsWith('claude') filter in SQL form.
+  async countVersionEntryStats(version: number): Promise<{ decides: number; entries: number }> {
+    const db = requireDb(this.db);
+    const [row] = await db
+      .select({
+        decides: count(),
+        entries: count(sql`case when ${schema.agentDecisions.action} = 'long' then 1 end`),
+      })
+      .from(schema.agentDecisions)
+      .where(
+        and(
+          eq(schema.agentDecisions.playbookVersion, version),
+          like(schema.agentDecisions.model, 'claude%'),
+        ),
+      );
+    return { decides: row?.decides ?? 0, entries: row?.entries ?? 0 };
   }
 }

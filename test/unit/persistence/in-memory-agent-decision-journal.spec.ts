@@ -114,4 +114,17 @@ describe('InMemoryAgentDecisionJournal', () => {
     expect(withConsultId!.consultId).toBe('consult-abc');
     expect(withoutConsultId!.consultId).toBeUndefined();
   });
+
+  it('versionEntryStats counts lifetime real-LLM decides/entries for one version (abstention-lapse evidence base)', async () => {
+    const journal = new InMemoryAgentDecisionJournal();
+    journal.record(entry(1, { model: 'claude-sonnet-5', action: 'long', playbookVersion: 2 }));
+    journal.record(entry(2, { model: 'claude-sonnet-5', action: 'hold', playbookVersion: 2 }));
+    // Non-LLM replay/synthetic rows are excluded from the decide count entirely.
+    journal.record(entry(3, { model: 'replay-sim', action: 'long', playbookVersion: 2 }));
+    journal.record(entry(4, { model: 'claude-sonnet-5', action: 'long', playbookVersion: 1 }));
+
+    expect(await journal.versionEntryStats(2)).toEqual({ decides: 2, entries: 1 });
+    expect(await journal.versionEntryStats(1)).toEqual({ decides: 1, entries: 1 });
+    expect(await journal.versionEntryStats(3)).toEqual({ decides: 0, entries: 0 });
+  });
 });

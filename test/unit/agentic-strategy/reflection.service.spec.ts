@@ -93,7 +93,24 @@ function registryWithLifecycle(lifecycle: StrategyLifecycle): StrategyRegistryPo
 }
 
 function fakeJournal(rows: readonly AgentDecisionRow[] = []): AgentDecisionJournalPort {
-  return { record: () => undefined, recent: () => Promise.resolve(rows) };
+  return {
+    record: () => undefined,
+    // Mirrors the runtime adapters: newest-`limit` tail of the oldest→newest row list (every
+    // current fixture fits under the smallest lookback limit, so existing tests see identical
+    // windows — this is parity with runtime, not a behavior change).
+    recent: (limit) => Promise.resolve(rows.slice(Math.max(0, rows.length - limit))),
+    versionEntryStats: (version) => {
+      let decides = 0;
+      let entries = 0;
+      for (const r of rows) {
+        if (r.playbookVersion !== version) continue;
+        if (!r.model.startsWith('claude')) continue;
+        decides += 1;
+        if (r.action === 'long') entries += 1;
+      }
+      return Promise.resolve({ decides, entries });
+    },
+  };
 }
 
 function fakePlaybookStore(
@@ -1729,6 +1746,116 @@ describe('unrouted active() read + unresolved-candidate guard (2026-07-12)', () 
     const h = buildHarness({ rows: mixedRows });
     h.deps = {
       ...h.deps,
+      playbookStore: {
+        ...h.storeApi.store,
+        listVersions: () =>
+          Promise.resolve([{ version: 2, source: 'reflection', createdAt: T - 1_000 }]),
+      },
+    };
+    const service = new ReflectionService(baseCfg({ everyNTrades: 1, mintFloorRows: 0 }), h.deps);
+
+    service.onClosedTrade(SID, 1);
+    await flush();
+
+    expect(h.fetchFn).not.toHaveBeenCalled();
+    expect(h.storeApi.appended).toHaveLength(0);
+    expect(h.recorderApi.outcomes).toEqual(['skipped_unresolved_candidate']);
+  });
+
+  it('does NOT abstention-lapse a candidate whose only entries scrolled past the recent() window — lifetime evidence governs (2026-07-17 v2 false-abstention)', async () => {
+    // 1 real entry older than the 400-row horizon, then 405 other-version rows + 15 candidate
+    // holds — a recent(400) evidence base sees 15 candidate decides and ZERO entries and would
+    // lapse a TRADING candidate; the lifetime read must not.
+    const rows = [
+      row({
+        id: 'v2-old-entry',
+        model: 'claude-sonnet-5',
+        playbookVersion: 2,
+        action: 'long',
+        eventTime: epochMs(T - 10_000),
+      }),
+      ...Array.from({ length: 405 }, (_, i) =>
+        row({
+          id: `v1-noise-${i}`,
+          model: 'claude-sonnet-5',
+          playbookVersion: 1,
+          action: 'hold',
+          eventTime: epochMs(T + i),
+        }),
+      ),
+      ...Array.from({ length: 15 }, (_, i) =>
+        row({
+          id: `v2-hold-${i}`,
+          model: 'claude-sonnet-5',
+          playbookVersion: 2,
+          action: 'hold',
+          eventTime: epochMs(T + 500 + i),
+        }),
+      ),
+    ];
+    const h = buildHarness({ rows });
+    h.deps = {
+      ...h.deps,
+      playbookStore: {
+        ...h.storeApi.store,
+        listVersions: () =>
+          Promise.resolve([{ version: 2, source: 'reflection', createdAt: T - 20_000 }]),
+      },
+    };
+    const service = new ReflectionService(baseCfg({ everyNTrades: 1, mintFloorRows: 0 }), h.deps);
+
+    service.onClosedTrade(SID, 1);
+    await flush();
+
+    expect(h.fetchFn).not.toHaveBeenCalled();
+    expect(h.storeApi.appended).toHaveLength(0);
+    expect(h.recorderApi.outcomes).toEqual(['skipped_unresolved_candidate']);
+  });
+
+  it('treats an abstention-evidence read failure as NOT abstaining — the guard still skips (fail toward preserving the candidate)', async () => {
+    const h = buildHarness();
+    h.deps = {
+      ...h.deps,
+      journal: {
+        record: () => undefined,
+        recent: () => Promise.resolve([]),
+        versionEntryStats: () => Promise.reject(new Error('journal down')),
+      },
+      playbookStore: {
+        ...h.storeApi.store,
+        listVersions: () =>
+          Promise.resolve([{ version: 2, source: 'reflection', createdAt: T - 1_000 }]),
+      },
+    };
+    const service = new ReflectionService(baseCfg({ everyNTrades: 1, mintFloorRows: 0 }), h.deps);
+
+    service.onClosedTrade(SID, 1);
+    await flush();
+
+    expect(h.fetchFn).not.toHaveBeenCalled();
+    expect(h.storeApi.appended).toHaveLength(0);
+    expect(h.recorderApi.outcomes).toEqual(['skipped_unresolved_candidate']);
+    expect(h.logger.messages.some((m) => m.includes('abstention-lapse evidence read failed'))).toBe(
+      true,
+    );
+  });
+
+  it('never abstention-lapses through a journal that lacks versionEntryStats — absence is not evidence', async () => {
+    // 15 candidate holds visible via recent() — the pre-fix evidence base — but no lifetime read:
+    // the lapse must not fire off the window alone.
+    const rows = Array.from({ length: 15 }, (_, i) =>
+      row({
+        id: `v2-hold-${i}`,
+        model: 'claude-sonnet-5',
+        playbookVersion: 2,
+        action: 'hold',
+        eventTime: epochMs(T + i),
+      }),
+    );
+    const h = buildHarness();
+    h.deps = {
+      ...h.deps,
+      journal: { record: () => undefined, recent: () => Promise.resolve(rows) },
       playbookStore: {
         ...h.storeApi.store,
         listVersions: () =>

@@ -1436,7 +1436,10 @@ export class AnthropicAgentClient implements AgentClientPort {
       signals,
       // AgentDecisionMeta.action stays 'long' | 'flat' | 'hold' at the port level (see its own
       // comment) — widening it ripples into agentic.strategy.ts's decision-history ring, the
-      // persisted agent_decisions journal, and counterfactual-scoring.ts's calibration module,
+      // persisted agent_decisions journal, counterfactual-scoring.ts's calibration module, AND the
+      // abstention-lapse entry counts (AgentDecisionJournalPort.versionEntryStats — both
+      // implementations count action='long' as the only entry kind, so a shorts-only candidate
+      // would read entries=0 and be falsely lapsed until that widening lands),
       // none of which is this flag-gated, presently-unconsumed capability's call to make. `action`'s
       // real runtime value IS 'short' when shortsEnabled fires (asserted directly in tests); this
       // cast only narrows the TYPE at the port boundary. Removing this cast is the breadcrumb for

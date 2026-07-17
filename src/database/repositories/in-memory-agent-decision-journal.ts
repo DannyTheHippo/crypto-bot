@@ -38,4 +38,18 @@ export class InMemoryAgentDecisionJournal implements AgentDecisionJournalPort {
       strategyId === undefined ? this.rows : this.rows.filter((r) => r.strategyId === strategyId);
     return Promise.resolve(scoped.slice(Math.max(0, scoped.length - limit)));
   }
+
+  versionEntryStats(version: number): Promise<{ decides: number; entries: number }> {
+    // "Lifetime" here is bounded by the MAX_ROWS ring — honest only within the buffer, which is
+    // acceptable for the DB-less paper/test substrate this journal serves (see the port comment).
+    let decides = 0;
+    let entries = 0;
+    for (const r of this.rows) {
+      if (r.playbookVersion !== version) continue;
+      if (!r.model.startsWith('claude')) continue;
+      decides += 1;
+      if (r.action === 'long') entries += 1;
+    }
+    return Promise.resolve({ decides, entries });
+  }
 }

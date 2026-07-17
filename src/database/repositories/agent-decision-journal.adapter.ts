@@ -89,4 +89,8 @@ export class AgentDecisionJournalAdapter implements AgentDecisionJournalPort {
       createdAt: r.createdAt.getTime() as EpochMs,
     }));
   }
+
+  versionEntryStats(version: number): Promise<{ decides: number; entries: number }> {
+    return this.repo.countVersionEntryStats(version);
+  }
 }

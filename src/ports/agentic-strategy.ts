@@ -427,6 +427,15 @@ export interface AgentDecisionJournalPort {
   // would corrupt the reflection loop's single-instrument position walks (each instance trades one
   // symbol). Absent ⇒ the historical unscoped read.
   recent(limit: number, strategyId?: string): Promise<readonly AgentDecisionRow[]>;
+  // Lifetime decide/entry counts for ONE playbook version — the abstention lapse's evidence base.
+  // A recent(N) row-count window shrinks in wall-clock terms as the traded universe grows, and a
+  // candidate's early entries scrolling past it misclassified a TRADING candidate as abstaining
+  // (v2, 2026-07-17: its 4 longs sat just beyond the 400-row horizon after the 5→8 expansion).
+  // decides counts real-LLM rows only (model 'claude…', mirroring ReflectionService's filter),
+  // entries the 'long' subset, both over the version's WHOLE journal. Optional so pre-this-method
+  // fakes compile; absent ⇒ callers must NOT abstention-lapse (fail toward preserving the
+  // candidate — orphaning is destructive, squatting is bounded by the age lapse).
+  versionEntryStats?(version: number): Promise<{ decides: number; entries: number }>;
 }
 
 // ── LLM usage sink ────────────────────────────────────────────────────────────

@@ -93,6 +93,7 @@ import {
   type LiquidationWatchSource,
 } from './features/trading/market-data/liquidation-feed.service';
 import {
+  FeedHealthService,
   FeedHealthServiceWithBackfill,
   type OhlcvSource,
 } from './features/trading/market-data/feed-health.service';
@@ -223,8 +224,10 @@ import {
   MARKET_STREAM,
   FEED_HEALTH,
   REAL_FEED_HEALTH,
+  MARKET_STREAM_TELEMETRY,
   type FeedHealthPort,
   type MarketStreamPort,
+  type MarketStreamTelemetryPort,
 } from './ports/market-data';
 import { DERIVATIVES_FEED, type DerivativesFeedPort } from './ports/derivatives-feed';
 import { SENTIMENT_FEED, type SentimentFeedPort } from './ports/sentiment-feed';
@@ -871,9 +874,20 @@ const MD_EXCHANGE = Symbol('MD_EXCHANGE');
               exchange,
               venueId(feedVenueConfig(config).id),
               feedHealth as unknown as ChannelStateTracker,
+              new Logger('MarketStreamWatchdog'),
             )
           : NOOP_STREAM,
       inject: [CLOCK, WATCH_SOURCE, REAL_FEED_HEALTH, TypedConfigService, MD_EXCHANGE],
+    },
+    {
+      // Telemetry for the metrics pull loop (see ports/market-data.ts on why this is a separate
+      // token). instanceof keeps NOOP_FEED_HEALTH (test/ci, no exchange) out of the sample path.
+      provide: MARKET_STREAM_TELEMETRY,
+      useFactory: (real: FeedHealthPort): MarketStreamTelemetryPort =>
+        real instanceof FeedHealthService
+          ? real
+          : { channelAges: () => [], forcedReconnectCount: () => 0 },
+      inject: [REAL_FEED_HEALTH],
     },
     {
       provide: MARKET_STREAM,
@@ -999,6 +1013,7 @@ const MD_EXCHANGE = Symbol('MD_EXCHANGE');
     MARKET_STREAM,
     FEED_HEALTH,
     REAL_FEED_HEALTH,
+    MARKET_STREAM_TELEMETRY,
     EXCHANGE_STREAM,
     DERIVATIVES_FEED,
     SENTIMENT_FEED,

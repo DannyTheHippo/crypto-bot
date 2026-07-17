@@ -35,3 +35,23 @@ export interface FeedHealthPort {
     n: number,
   ): Promise<readonly CandleEvent[]>;
 }
+
+// Market-stream telemetry for the metrics pull loop — a SEPARATE token/port rather than an
+// extension of FeedHealthPort, so the risk/execution modules' isolation noops (which implement
+// FeedHealthPort) stay untouched. The composition root binds it to the live FeedHealthService when
+// one exists (real runtime) and to an inert stub otherwise (test/ci); MetricsService consumes it
+// @Optional, mirroring the derivatives-feed staleness pattern.
+export const MARKET_STREAM_TELEMETRY = Symbol('MARKET_STREAM_TELEMETRY');
+
+export interface MarketChannelAge {
+  readonly venue: VenueId;
+  readonly symbol: SymbolId;
+  readonly channel: string;
+  readonly ageSeconds: number;
+  readonly health: ChannelHealth;
+}
+
+export interface MarketStreamTelemetryPort {
+  channelAges(): readonly MarketChannelAge[];
+  forcedReconnectCount(): number;
+}

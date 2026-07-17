@@ -119,6 +119,34 @@ groups:
           summary: 'Reconciliation passes are erroring (result="error" in the last 15m)'
           runbook: 'docs/runbook.md#reconciliation-mismatch-64'
 
+  - name: crypto-bot-market-data
+    rules:
+      # 2026-07-16 incident (Pass 30): all five spot candle channels hung silently for 8h — ccxt's
+      # watch* future stays pending forever when the venue drops a subscription server-side, the
+      # supervised loops only act when the promise settles, and nothing exported channel age. The
+      # in-process watchdog now force-reconnects at 180s of core-channel silence; this alert is the
+      # independent backstop for the watchdog itself failing to recover the stream (10m of staleness
+      # = at least 3 forced-reconnect attempts that did not help). Core channels only: trade/book
+      # power info blocks and paper fills, and legitimately idle longer on quiet markets.
+      - alert: MarketChannelStale
+        expr: max by (symbol, channel) (market_channel_staleness_seconds{channel=~"ticker|candle:.*"}) > 600
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: 'Market-data channel {{ $labels.channel }} for {{ $labels.symbol }} silent >10m despite the stream watchdog — strategies are trading blind'
+          runbook: 'docs/runbook.md'
+
+      # The watchdog firing occasionally is the fix working; a sustained reconnect cadence means
+      # the venue connection is flapping (or the stall diagnosis is wrong) and deserves a look
+      # before it degrades decide cadence.
+      - alert: MarketStreamReconnectStorm
+        expr: increase(market_stream_forced_reconnects_total[1h]) >= 5
+        for: 0m
+        labels: { severity: warning }
+        annotations:
+          summary: 'Stream watchdog forced {{ $value }} reconnects in the last hour — market-data connection is flapping'
+          runbook: 'docs/runbook.md'
+
   - name: crypto-bot-agentic
     rules:
       # The Anthropic client latches itself degraded on the first FATAL API error (bad key, rejected

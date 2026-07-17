@@ -8,6 +8,10 @@ import {
 import { Gauge, Counter } from 'prom-client';
 import { performance } from 'perf_hooks';
 import { TypedConfigService } from '../../../config/environment/typed-config.service';
+import {
+  MARKET_STREAM_TELEMETRY,
+  type MarketStreamTelemetryPort,
+} from '../../../ports/market-data';
 import { KILL_SWITCH, type KillSwitchPort } from '../../../ports/risk';
 import { PORTFOLIO_VIEW, type PortfolioViewPort } from '../../../ports/execution';
 import {
@@ -209,6 +213,21 @@ export const SENTIMENT_FEED_POLL_ERRORS_COUNTER = makeCounterProvider({
   help: 'Cumulative sentiment-feed poll failures',
 });
 
+// Market-stream channel staleness + watchdog reconnects, sampled in the same 5s pull loop
+// (MARKET_STREAM_TELEMETRY). Motivated by the 2026-07-16 incident: all five spot candle channels
+// hung silently for 8h with zero log/metric/alert surface — a stalled ccxt watch* future is
+// invisible to the supervised loops, so staleness must be exported and alerted on independently.
+// Bounded cardinality: symbols × 4 channel kinds (ticker/trade/book/candle:<tf>) ≈ 20 series.
+export const MARKET_CHANNEL_STALENESS_GAUGE = makeGaugeProvider({
+  name: 'market_channel_staleness_seconds',
+  help: 'Seconds since each market-data websocket channel last delivered an event',
+  labelNames: ['symbol', 'channel'] as const,
+});
+export const MARKET_STREAM_FORCED_RECONNECTS_COUNTER = makeCounterProvider({
+  name: 'market_stream_forced_reconnects_total',
+  help: 'Watchdog-forced websocket reconnects after a core channel (ticker/candle) stalled silently',
+});
+
 // §strategy lifecycle — sampled in the 5s loop below (same pull pattern as kill_switch_state):
 // each strategy carries exactly one state at 1, all others in the union explicit 0 (not just absent),
 // so a terminal DRAINING/HALTED strategy is directly alertable rather than a "no data" gap.
@@ -262,6 +281,10 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
     private readonly sentimentStalenessGauge: Gauge<string>,
     @InjectMetric('sentiment_feed_poll_errors_total')
     private readonly sentimentPollErrorsCounter: Counter<string>,
+    @InjectMetric('market_channel_staleness_seconds')
+    private readonly marketChannelStalenessGauge: Gauge<string>,
+    @InjectMetric('market_stream_forced_reconnects_total')
+    private readonly marketStreamReconnectsCounter: Counter<string>,
     private readonly configService: TypedConfigService,
     private readonly eventLoopIndicator: EventLoopHealthIndicator,
     // @Optional so observability can boot standalone (no kill switch) — the gauge is simply not set.
@@ -280,6 +303,11 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
     // MarketFeedModule is @Global so this always resolves to the real SENTIMENT_FEED provider
     // (NOOP_SENTIMENT_FEED when the flag/key is off/absent — see app.module.ts).
     @Optional() @Inject(SENTIMENT_FEED) private readonly sentimentFeed?: SentimentFeedPort,
+    // @Optional for the same standalone-boot reason; in the running app MarketFeedModule is @Global
+    // so this resolves to the live FeedHealthService (or its inert stub under test/ci).
+    @Optional()
+    @Inject(MARKET_STREAM_TELEMETRY)
+    private readonly marketStreamTelemetry?: MarketStreamTelemetryPort,
   ) {}
 
   onModuleInit() {
@@ -297,6 +325,8 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
     let prevDerivativesPollErrors = 0;
     // C4: same delta-against-previous-sample technique as prevDerivativesPollErrors above.
     let prevSentimentPollErrors = 0;
+    // Same delta technique for the watchdog's cumulative forced-reconnect count.
+    let prevForcedReconnects = 0;
 
     this.sampleInterval = setInterval(() => {
       const monitor = this.eventLoopIndicator.getMonitor();
@@ -375,6 +405,22 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
           this.sentimentPollErrorsCounter.inc(totalErrors - prevSentimentPollErrors);
         }
         prevSentimentPollErrors = totalErrors;
+      }
+
+      if (this.marketStreamTelemetry) {
+        // Reset labeled series each tick so a channel dropped from the subscription set goes
+        // absent instead of freezing at its last age (same pattern as the position gauges above).
+        this.marketChannelStalenessGauge.reset();
+        for (const age of this.marketStreamTelemetry.channelAges()) {
+          this.marketChannelStalenessGauge
+            .labels({ symbol: age.symbol, channel: age.channel })
+            .set(age.ageSeconds);
+        }
+        const totalReconnects = this.marketStreamTelemetry.forcedReconnectCount();
+        if (totalReconnects > prevForcedReconnects) {
+          this.marketStreamReconnectsCounter.inc(totalReconnects - prevForcedReconnects);
+        }
+        prevForcedReconnects = totalReconnects;
       }
     }, 5000);
   }

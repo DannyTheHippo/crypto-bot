@@ -13,7 +13,7 @@ import type {
   RawUserEvent,
 } from '../../../ports/exchange-stream';
 import type { SubscriptionSpec } from '../../../ports/market-data';
-import type { VenueId, SymbolId } from '../../../domain/types/ids';
+import type { VenueId, SymbolId, EpochMs } from '../../../domain/types/ids';
 import { epochMs } from '../../../domain/types/ids';
 import type { ClockPort } from '../../../ports/clock';
 import { CLOCK } from '../../../ports/clock';
@@ -23,10 +23,37 @@ import type { ChannelHealth } from '../../../domain/types/market-events';
 // Staleness threshold before a stream is marked DEGRADED
 const STALE_THRESHOLD_MS = 30_000;
 
+// Watchdog: ccxt pro watch* futures resolve only when the venue pushes a message for that
+// subscription — a server-side subscription silently dropped leaves the future pending FOREVER,
+// which the supervised loops cannot see (they only act when the promise settles). Observed live
+// 2026-07-16 16:00Z: all five spot candle channels went silent for 8h while the ticker channel on
+// the same process kept flowing — no error, no log, no recovery. The only client-side lever that
+// forces a resubscribe is closing the connection: close() rejects every pending watch future, and
+// the supervised loops then re-watch (fresh subscription) through their normal error path.
+// Blast radius: exchange.close() is CONNECTION-WIDE (ccxt has no per-channel close) — one stalled
+// core channel forces every channel, healthy ones included, through the reject/re-watch cycle,
+// repeating each cooldown until recovery; a persistent unrecoverable stall therefore degrades
+// healthy channels too (the MarketStreamReconnectStorm alert is the human pull for that case).
+// Thresholds: core channels (ticker, candle:*) push every ~1-2s on the liquid symbols this bot
+// trades, so 180s of silence is ~90× the expected cadence — decisive for a dead subscription while
+// cheap when wrong (a forced reconnect is a seconds-long data blip, bounded by the cooldown).
+const WATCHDOG_CHECK_MS = 30_000;
+const WATCHDOG_STALL_THRESHOLD_MS = 180_000;
+const WATCHDOG_RECONNECT_COOLDOWN_MS = 120_000;
+
 export interface ChannelStateTracker {
   setHealth(venue: VenueId, symbol: SymbolId, channel: string, health: ChannelHealth): void;
   recordEvent(venue: VenueId, symbol: SymbolId, channel: string): void;
   checkStaleness(venue: VenueId, symbol: SymbolId, channel: string, thresholdMs: number): void;
+  // Optional so existing fakes keep compiling; the real FeedHealthService implements it and the
+  // metrics pull loop exports it (market_stream_forced_reconnects_total).
+  recordForcedReconnect?(): void;
+}
+
+/** Minimal logger surface so the adapter stays constructible without Nest (tests, factories). */
+export interface StreamAdapterLogger {
+  warn(message: string): void;
+  error(message: string): void;
 }
 
 /**
@@ -176,6 +203,12 @@ function isChecksumError(err: unknown): boolean {
 @Injectable()
 export class CcxtExchangeStreamAdapter implements ExchangeStreamPort {
   private running = true;
+  // Per-(symbol,channel) last successful yield, seeded at loop start so a subscription that never
+  // delivers a single event still trips the watchdog. Adapter-local on purpose: FeedHealthService's
+  // channel map serves consumers; this map serves only the recovery decision.
+  private readonly lastYieldAt = new Map<string, EpochMs>();
+  private watchdog: ReturnType<typeof setInterval> | null = null;
+  private lastForcedReconnectAt = 0;
 
   constructor(
     @Inject(CLOCK) private readonly clock: ClockPort,
@@ -183,10 +216,15 @@ export class CcxtExchangeStreamAdapter implements ExchangeStreamPort {
     private readonly exchange: Exchange,
     private readonly venueId: VenueId,
     private readonly stateTracker: ChannelStateTracker,
+    private readonly logger?: StreamAdapterLogger,
   ) {}
 
   stop(): void {
     this.running = false;
+    if (this.watchdog) {
+      clearInterval(this.watchdog);
+      this.watchdog = null;
+    }
   }
 
   /**
@@ -242,6 +280,8 @@ export class CcxtExchangeStreamAdapter implements ExchangeStreamPort {
           }
         }
 
+        this.startWatchdog();
+
         Promise.all(loops).then(
           () => finish(),
           () => finish(),
@@ -272,11 +312,13 @@ export class CcxtExchangeStreamAdapter implements ExchangeStreamPort {
 
   private async runTickerLoop(push: (ev: RawVenueEvent) => void, symbol: SymbolId): Promise<void> {
     const channel = 'ticker';
+    this.seedChannel(symbol, channel);
     while (this.running) {
       try {
         const ticker = await this.watchSource.watchTicker(this.exchange, symbol);
         const ts = typeof ticker.timestamp === 'number' ? epochMs(ticker.timestamp) : undefined;
         push({ type: 'ticker', venue: this.venueId, symbol, timestamp: ts, raw: ticker });
+        this.noteYield(symbol, channel);
         this.stateTracker.recordEvent(this.venueId, symbol, channel);
         this.scheduleStaleCheck(symbol, channel);
       } catch (err) {
@@ -288,6 +330,7 @@ export class CcxtExchangeStreamAdapter implements ExchangeStreamPort {
 
   private async runTradesLoop(push: (ev: RawVenueEvent) => void, symbol: SymbolId): Promise<void> {
     const channel = 'trade';
+    this.seedChannel(symbol, channel);
     while (this.running) {
       try {
         const trades = await this.watchSource.watchTrades(this.exchange, symbol);
@@ -295,6 +338,7 @@ export class CcxtExchangeStreamAdapter implements ExchangeStreamPort {
           const ts = typeof trade.timestamp === 'number' ? epochMs(trade.timestamp) : undefined;
           push({ type: 'trade', venue: this.venueId, symbol, timestamp: ts, raw: trade });
         }
+        this.noteYield(symbol, channel);
         this.stateTracker.recordEvent(this.venueId, symbol, channel);
         this.scheduleStaleCheck(symbol, channel);
       } catch (err) {
@@ -310,6 +354,7 @@ export class CcxtExchangeStreamAdapter implements ExchangeStreamPort {
     interval: string,
   ): Promise<void> {
     const channel = `candle:${interval}`;
+    this.seedChannel(symbol, channel);
     while (this.running) {
       try {
         const bars = await this.watchSource.watchOHLCV(this.exchange, symbol, interval);
@@ -317,6 +362,7 @@ export class CcxtExchangeStreamAdapter implements ExchangeStreamPort {
           const ts = typeof bar[0] === 'number' ? epochMs(bar[0]) : undefined;
           push({ type: 'candle', venue: this.venueId, symbol, timestamp: ts, raw: bar });
         }
+        this.noteYield(symbol, channel);
         this.stateTracker.recordEvent(this.venueId, symbol, channel);
         this.scheduleStaleCheck(symbol, channel);
       } catch (err) {
@@ -328,11 +374,13 @@ export class CcxtExchangeStreamAdapter implements ExchangeStreamPort {
 
   private async runBookLoop(push: (ev: RawVenueEvent) => void, symbol: SymbolId): Promise<void> {
     const channel = 'book';
+    this.seedChannel(symbol, channel);
     while (this.running) {
       try {
         const book = await this.watchSource.watchOrderBook(this.exchange, symbol);
         const ts = typeof book.timestamp === 'number' ? epochMs(book.timestamp) : undefined;
         push({ type: 'book', venue: this.venueId, symbol, timestamp: ts, raw: book });
+        this.noteYield(symbol, channel);
         this.stateTracker.recordEvent(this.venueId, symbol, channel);
         this.scheduleStaleCheck(symbol, channel);
       } catch (err) {
@@ -365,6 +413,56 @@ export class CcxtExchangeStreamAdapter implements ExchangeStreamPort {
       if (!this.running) return;
       this.stateTracker.checkStaleness(this.venueId, symbol, channel, STALE_THRESHOLD_MS);
     }, STALE_THRESHOLD_MS);
+  }
+
+  private noteYield(symbol: SymbolId, channel: string): void {
+    this.lastYieldAt.set(`${symbol}|${channel}`, this.clock.now());
+  }
+
+  // Loop-start registration: anchors the watchdog clock AND creates the tracker's channel entry so
+  // a subscription that never delivers a single event is still visible to channelAges()/the
+  // staleness gauge (recordEvent alone would only register it on its first successful yield). GAP
+  // matches the tracker's default answer for unknown channels, so health readers see no change.
+  private seedChannel(symbol: SymbolId, channel: string): void {
+    this.noteYield(symbol, channel);
+    this.stateTracker.setHealth(this.venueId, symbol, channel, 'GAP');
+  }
+
+  private startWatchdog(): void {
+    if (this.watchdog) return;
+    this.watchdog = setInterval(() => this.watchdogTick(), WATCHDOG_CHECK_MS);
+  }
+
+  // Fails OPEN: the watchdog is a recovery-only device — a broken watchdog must never block or
+  // degrade the data path it guards, so every failure inside it is swallowed (logged at warn). Its
+  // only action is exchange.close(), which the supervised loops already recover from (pending watch
+  // futures reject → handleLoopError → backoff → re-watch = fresh subscription).
+  private watchdogTick(): void {
+    try {
+      if (!this.running) return;
+      const now = this.clock.now();
+      if (now - this.lastForcedReconnectAt < WATCHDOG_RECONNECT_COOLDOWN_MS) return;
+      const stalled: string[] = [];
+      for (const [key, at] of this.lastYieldAt) {
+        const channel = key.slice(key.indexOf('|') + 1);
+        const core = channel === 'ticker' || channel.startsWith('candle:');
+        if (core && now - at > WATCHDOG_STALL_THRESHOLD_MS) stalled.push(key);
+      }
+      if (stalled.length === 0) return;
+      this.lastForcedReconnectAt = now;
+      this.stateTracker.recordForcedReconnect?.();
+      this.logger?.error(
+        `market-stream watchdog: core channel(s) silent >${WATCHDOG_STALL_THRESHOLD_MS}ms, forcing ` +
+          `reconnect via exchange.close(): ${stalled.join(', ')}`,
+      );
+      void Promise.resolve((this.exchange as unknown as { close(): Promise<void> }).close()).catch(
+        (err: unknown) => {
+          this.logger?.warn(`market-stream watchdog: close() failed (fail-open): ${String(err)}`);
+        },
+      );
+    } catch (err) {
+      this.logger?.warn(`market-stream watchdog: tick failed (fail-open): ${String(err)}`);
+    }
   }
 
   private async backoff(): Promise<void> {

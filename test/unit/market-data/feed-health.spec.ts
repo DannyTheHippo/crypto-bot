@@ -71,6 +71,31 @@ describe('FeedHealthService', () => {
     const svc = new FeedHealthService(clock, stubStream);
     expect(await svc.fetchCandles(V, S, '1m', 10)).toEqual([]);
   });
+
+  it('channelAges reports per-channel identity, age, and health for the metrics exporter', () => {
+    const { clock, set } = mutableClock(1000);
+    const svc = new FeedHealthService(clock, stubStream);
+    const perpSym = symbolId('BTC/USDT:USDT'); // colon-bearing symbol must survive round-trip
+    svc.recordEvent(V, S, 'ticker');
+    svc.recordEvent(V, perpSym, 'candle:15m');
+    set(1000 + 42_000);
+    svc.checkStaleness(V, S, 'ticker', 30_000); // → DEGRADED
+    const ages = svc.channelAges();
+    expect(ages).toHaveLength(2);
+    const ticker = ages.find((a) => a.channel === 'ticker');
+    const candle = ages.find((a) => a.channel === 'candle:15m');
+    expect(ticker).toMatchObject({ venue: V, symbol: S, ageSeconds: 42, health: 'DEGRADED' });
+    expect(candle).toMatchObject({ venue: V, symbol: perpSym, ageSeconds: 42, health: 'LIVE' });
+  });
+
+  it('forcedReconnectCount accumulates recordForcedReconnect calls', () => {
+    const { clock } = mutableClock();
+    const svc = new FeedHealthService(clock, stubStream);
+    expect(svc.forcedReconnectCount()).toBe(0);
+    svc.recordForcedReconnect();
+    svc.recordForcedReconnect();
+    expect(svc.forcedReconnectCount()).toBe(2);
+  });
 });
 
 describe('FeedHealthServiceWithBackfill.fetchCandles (REST OHLCV warmup)', () => {

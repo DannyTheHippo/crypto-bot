@@ -8,7 +8,11 @@ import type {
 import type { VenueId, SymbolId, EpochMs } from '../../../domain/types/ids';
 import type { Price } from '../../../domain/types/money';
 import { epochMs } from '../../../domain/types/ids';
-import type { FeedHealthPort } from '../../../ports/market-data';
+import type {
+  FeedHealthPort,
+  MarketChannelAge,
+  MarketStreamTelemetryPort,
+} from '../../../ports/market-data';
 import { CLOCK, type ClockPort } from '../../../ports/clock';
 import { normalizeRawEvent } from './normalize';
 import type { ExchangeStreamPort } from '../../../ports/exchange-stream';
@@ -18,6 +22,12 @@ import type { VenueConfig } from '../../../ports/app-config';
 interface ChannelState {
   health: ChannelHealth;
   lastEventAt: EpochMs;
+  // Identity parts kept alongside the state: the composite map key cannot be split back apart
+  // (symbols and channels both legitimately contain ':', e.g. "BTC/USDT:USDT" / "candle:15m"),
+  // and channelAges() must report per-channel identities to the metrics exporter.
+  venue: VenueId;
+  symbol: SymbolId;
+  channel: string;
 }
 
 interface RefPrice {
@@ -26,9 +36,10 @@ interface RefPrice {
 }
 
 @Injectable()
-export class FeedHealthService implements FeedHealthPort {
+export class FeedHealthService implements FeedHealthPort, MarketStreamTelemetryPort {
   private readonly channelStates = new Map<string, ChannelState>();
   private readonly refPrices = new Map<string, RefPrice>();
+  private forcedReconnects = 0;
 
   constructor(
     // protected: FeedHealthServiceWithBackfill reads the clock for ingestTime stamping.
@@ -51,6 +62,9 @@ export class FeedHealthService implements FeedHealthPort {
     this.channelStates.set(key, {
       health: status,
       lastEventAt: existing?.lastEventAt ?? this.clock.now(),
+      venue,
+      symbol,
+      channel,
     });
   }
 
@@ -59,7 +73,32 @@ export class FeedHealthService implements FeedHealthPort {
     // A fresh event always restores LIVE and re-anchors the staleness clock.
     // Ref-price updates are driven separately by updateRefPrice (which carries the
     // mid), since recordEvent only knows the channel, not the quote.
-    this.channelStates.set(key, { health: 'LIVE', lastEventAt: this.clock.now() });
+    this.channelStates.set(key, {
+      health: 'LIVE',
+      lastEventAt: this.clock.now(),
+      venue,
+      symbol,
+      channel,
+    });
+  }
+
+  recordForcedReconnect(): void {
+    this.forcedReconnects += 1;
+  }
+
+  forcedReconnectCount(): number {
+    return this.forcedReconnects;
+  }
+
+  channelAges(): readonly MarketChannelAge[] {
+    const now = this.clock.now();
+    return [...this.channelStates.values()].map((s) => ({
+      venue: s.venue,
+      symbol: s.symbol,
+      channel: s.channel,
+      ageSeconds: Math.max(0, (now - s.lastEventAt) / 1000),
+      health: s.health,
+    }));
   }
 
   updateRefPrice(symbol: SymbolId, mid: Price, at: EpochMs): void {

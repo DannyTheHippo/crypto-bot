@@ -3391,3 +3391,71 @@ AVAILABILITY unchanged (host was awake this window on AC).
 ~07-18 04:45Z; the two post-outage exits may have advanced attribution — verify). (3) Watch
 `market_stream_forced_reconnects_total` — a non-zero value means the watchdog earned its keep (or
 is flapping; either way look). (4) P8a harm-stop peek at 8 trips/cell. (5) carry re-test ~07-24.
+
+## 2026-07-17 — Pass 31 (scheduled run, ~06:45–07:30Z): MAINTENANCE — E2 decide-model re-test EXECUTED (pre-registered at corpus ≥600): haiku-4.5 HOLD, sonnet-5 stays champion; registry row 129
+
+**Data window:** Pass 30 close (~01:15Z) → 06:45Z. No commits between passes (tip `fe5865c`).
+Boots: spot ~00:45Z (the `c105e8a` watchdog deploy, up ~6h), perp `803e9d0b` (up ~14h — no perp
+redeploy since Pass 29, deliberate while Bug B is open). Host awake on AC 100%.
+
+**Evidence sweep:** stack 4/4 + perp profile up, both apps healthy; **0 error/warn lines on both
+lanes (24h)**; 0 HALT/kill-switch/mismatch/EXPIRED; §2.6 harness probe GREEN (offline subset
+4 files / 15 tests). Spot scoreboard (epoch 07-12 08:30Z): **RT=20, net-of-cost −$14.18, LLM
+$8.16, window 4.43d, ready=0** (net worsened by Pass 30's outage exits plus LLM accrual; ≈$1.84/day
+averaged over the epoch window); equity $4,989.45, dd 0.21%; LINK (+$5.37) still the only realized
+winner. **Watchdog (`c105e8a`) soak extends POSITIVE:** `market_channel_staleness_seconds` live and
+nominal (max ~3s across all 20 symbol×channel series), `market_stream_forced_reconnects_total=0`
+over ~6h — no stall recurrence, no false fires. A/B: v1 17 trips −$7.02 / v2 3 trips +$1.09 (the
+two outage exits attributed to v1; v2 unchanged at 3/10) — **v2's 168h age-lapse lands ~07-18
+04:45Z**: absent 7 more v2 trips today, the first spot close after that mints v3 (arming the
+post-fix reflection-outcome watch: minted/no_change expected; validator_reject = NEW defect; the
+Phase-4 mint-backtest line must log). Reflection quiet this boot — trade-gated, 0 spot closes since
+the Pass 30 outage exits (RT 20→20). P8a factorial: harm-stop peek NOT yet due — arms stamp only
+since the 07-14 ~15:00Z enable, so ~7–8 arm-stamped trips ≈ ≤2/cell vs the 8/cell peek threshold
+(estimate from RT deltas, not a per-cell PnL read — the single pre-registered peek stays unspent).
+Corpus: 728 `input_payload` rows.
+
+**Perp (Bug B posture check — unchanged, containment HOLDING):** local book still carries the
+phantom 0.001 BTC long @64,577.6 (venue flat); `skippedUnknown` 4,859/24h (~1 per 10s poll);
+order_events since 01:15Z: 23 SUBMIT_SENT / 22 REJECT — exactly one phantom exit per 15m bar, venue
+refuses each, no money moves — plus one 05:30Z SUBMIT_AMBIGUOUS → QUERY_NOT_FOUND resolved by the
+unknown-resolver (regular-rail SELL exit: absence proves terminal there; worked as designed). No
+new BUY (single position, cash unchanged $4,934.61) — the phantom book itself blocks new entries,
+as Pass 30 predicted. Decides this boot: 52 proposed / 1 hold; spend bounded by the $2/day breaker.
+**Bug B stays the top owner-gated flag; L0→L1 remains re-BLOCKED.**
+
+**Pass type: MAINTENANCE — E2 `eval:candidates` re-test** (§3: no new correctness bug in today's
+evidence; CANDIDATE blocked — candidates unresolved in A/B on both lanes; PROMOTION ineligible —
+v2 at 3 < 10 attributed trips). The re-test was pre-registered (standing verdict: "re-test at
+corpus ≥600 rows") and had been deferred three passes on correctness priority; 728 ≥ 600 ⇒ due.
+
+**E2 re-test (executed this pass, ~$0.58 of the ≤$20 gate): HOLD — haiku-4.5 does NOT flip
+sonnet-5, now decisively.** `ROW_LIMIT=100` newest payload rows (window 07-16 09:00Z → 07-17
+06:45Z — consult-era payloads spanning both factorial arms), plan mode, thinking disabled, SAFE
+recipe (only the needed env vars exported). Scorecard `candidates/e2-model-eval-2026-07-17.json`;
+experiments-registry **row 129** (family `decide-model-eval` — loser logged per honest-N). Against
+the 07-12 n=50 baseline: schema-valid **0.83** (was 1.00 — 17/100 calls yielded no schema-valid
+tool response, API error or malformed), hold-agreement 0.779 (flat vs 0.778, still < 0.85 bar),
+propose ratio 0.8 (was 1.8 — now in band, but propose-AGREEMENT is 0.2: haiku proposes on
+DIFFERENT bars than the champion did), plan sanity 1.0 (was 0.78), **forward proxy −27.9bps vs
+champion +17.8bps** (the kill criterion: haiku's proposals select negative-forward-return bars),
+cost/decide $0.0058 vs $0.0239 (0.24×, passes; naive cache-blind rates, informational). 3/6
+criteria FAIL. **Consequence:** the 07-12 "cheaper-and-more-proposing profile worth revisiting"
+hypothesis is dead — the profile did not persist (haiku now proposes less AND worse). Standing
+verdict updated in state.md: sonnet-5 champion; the ≥600-row re-test trigger is CONSUMED; no
+further scheduled E2 re-test — revisit only on a material payload/regime change (e.g. post-factorial
+always-on info blocks changing the decide task).
+
+**Diff summary:** `candidates/e2-model-eval-2026-07-17.json` (new scorecard), LOG.md, state.md.
+No src change ⇒ no deploy, no soak. Gates: `pnpm lint:md` green on the report files; §2.6 harness
+probe green. Registry write: experiments row 129 (append-only, non-money, §4 MAY).
+
+**Flagged for human review:** unchanged — Bug B (perp phantom position; owner-gated 3-part OMS
+remedy in state.md § Flagged) remains the top open defect; #49 unchanged; AVAILABILITY nominal
+this window (AC, awake).
+
+**Next-pass candidates:** (1) **spot v2 verdict via age-lapse ~07-18 04:45Z** — verify the v3 mint
+attempt fires on the first close after it, outcome minted/no_change, mint-backtest line logged.
+(2) P8a harm-stop peek once ≥8 trips/cell. (3) Carry re-test due ~2026-07-24. (4) Bug B — pick up
+the moment the owner authorizes the OMS fix. (5) `market_stream_forced_reconnects_total` — keep
+the non-zero watch.

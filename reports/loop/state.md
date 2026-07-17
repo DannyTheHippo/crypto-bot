@@ -424,6 +424,22 @@ PoS ≥ 0.70). Exit criterion: ≥2 promotions with version-attributed PnL AND r
 
 ## Last pass
 
+**Pass 31, 2026-07-17** (scheduled, ~06:45–07:30Z, **MAINTENANCE — E2 decide-model re-test
+EXECUTED: haiku-4.5 HOLD, sonnet-5 stays champion**) — clean sweep otherwise: 0 error/warn both
+lanes, harness probe GREEN, watchdog (`c105e8a`) soak extends positive (staleness nominal, 0 forced
+reconnects over 6h). Spot scoreboard: RT=20, net −$14.18, LLM $8.16, window 4.43d, ready=0; A/B
+unchanged (v1 17 trips −$7.02 / v2 3 trips +$1.09) — **v2's 168h age-lapse lands ~07-18 04:45Z ⇒
+expect a v3 mint attempt on the first spot close after it** (post-fix reflection-outcome watch arms
+then). Perp Bug B containment verified holding (one phantom exit REJECT per bar, no new entries,
+venue flat, cash unchanged; one transient SUBMIT_AMBIGUOUS self-resolved on the regular rail).
+**E2 re-test** (pre-registered at corpus ≥600; 728 now): n=100 newest rows, ~$0.58 — HOLD, 3/6
+criteria fail (schema 0.83, hold-agree 0.78 < 0.85, **forward proxy −27.9bps vs champion
++17.8bps**); passes only cost/plan-sanity/propose-ratio. The 07-12 "cheaper-and-more-proposing"
+profile did NOT persist. Scorecard `candidates/e2-model-eval-2026-07-17.json`; registry row 129;
+standing verdict updated (re-test trigger CONSUMED). P8a harm-stop peek not yet due (≈≤2
+arm-stamped trips/cell vs the 8 threshold). CANDIDATE/PROMOTION ineligible (unchanged). Full
+entry: `reports/loop/LOG.md`.
+
 **Pass 30, 2026-07-17** (scheduled, ~00:05–01:15Z, **MAINTENANCE — two trading-path correctness
 bugs found; one FIXED+SHIPPED (`c105e8a`), one owner-gated FLAGGED**) — **Bug A (spot): the candle
 pipeline was silently DEAD 16:00Z 07-16 → 00:12Z 07-17 (~8.2h)** — ccxt watch* futures pend forever
@@ -664,7 +680,9 @@ wait on venue-TP capture data; **#18/#46/#47/#48** wait on their stated data/seq
   no money can move, and the $2/day breaker bounds the decide spend; do NOT let it open new
   positions before the fix (a real BUY would stack a live venue position under a phantom book) —
   if that risk is unacceptable, stop app-perp until the fix session. **P8d WATCH 2 = RED; L0→L1
-  shorts pre-auth re-BLOCKED.**
+  shorts pre-auth re-BLOCKED.** (Pass 31 posture check: containment HOLDING — one phantom exit
+  REJECT per bar, no new entries — the phantom book itself blocks them, venue flat, cash
+  unchanged; spend bounded by the $2/day breaker.)
 - **PERP VENUE-STOP (FLAG 1, #54) — RESOLVED 2026-07-16 (both layers shipped; Pass 29 closed it).**
   Layer (a) `25563bc` (throw containment + `reconcile_error`); layer (b) `34bdddd` (owner-directed
   `/goal` session): adapter parses the bare-array response AND matches the venue market id
@@ -730,11 +748,16 @@ wait on venue-TP capture data; **#18/#46/#47/#48** wait on their stated data/seq
   information with no fetchable history.
 - **Demo fees are REAL and exactly 10bps flat per leg, maker=taker** (verified 2026-07-12) ⇒ fee
   levers cannot move demo PnL; fee-tier/BNB work is live-parity prep only.
-- **Decide model: claude-sonnet-5 stays champion** (E2 2026-07-13: haiku-4.5 fails
-  hold-agreement + propose bars — re-test at corpus ≥600 rows, cheaper-and-more-proposing is the
-  one profile worth revisiting; opus-4.8 decisively rejected). **Thinking-on: NO FLIP** by
-  pre-registered criteria but strongest lever surfaced → backlog #42. E2 re-run recipe (env
-  hygiene — the SAFE recipe): LOG.md 2026-07-10 ~22:00Z incident-pass entry.
+- **Decide model: claude-sonnet-5 stays champion — E2 re-test trigger CONSUMED 2026-07-17
+  (Pass 31).** First run (07-12, n=50): haiku-4.5 fails hold-agreement + propose bars. Re-test at
+  corpus ≥600 (728; n=100 newest rows, registry row 129, scorecard
+  `candidates/e2-model-eval-2026-07-17.json`): HOLD decisively — schema-valid 0.83, hold-agree
+  0.78 < 0.85, forward proxy −27.9bps vs champion +17.8bps; the "cheaper-and-more-proposing"
+  profile did NOT persist (propose ratio 1.8→0.8, propose-agreement 0.2). No further scheduled
+  re-test — revisit only on a material payload/regime change (e.g. post-factorial always-on info
+  blocks). Opus-4.8 decisively rejected (07-13). **Thinking-on: NO FLIP** by pre-registered
+  criteria but strongest lever surfaced → absorbed into the P8a factorial (#42 CLOSED-OBE). E2
+  re-run recipe (env hygiene — the SAFE recipe): LOG.md 2026-07-10 ~22:00Z incident-pass entry.
 - **Directional seed-rule edge clears fees nowhere ≤1d** (edge diagnostic 2026-07-10, 52
   selection-corrected buckets; `reports/loop/edge-diagnostic-2026-07-10.md`).
 

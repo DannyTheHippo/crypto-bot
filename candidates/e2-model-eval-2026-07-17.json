@@ -1,0 +1,56 @@
+{
+  "rowsLoaded": 361,
+  "rowsReplayed": 100,
+  "champion": {
+    "schemaValidRate": 1,
+    "proposeCount": 5,
+    "planSanityRate": 1,
+    "forwardReturnProxyBps": 17.78915265662291,
+    "costPerDecideUsd": 0.02387013157894737
+  },
+  "candidates": [
+    {
+      "model": "claude-haiku-4-5-20251001",
+      "rowsReplayed": 100,
+      "schemaValidRate": 0.83,
+      "actionAgreement": {
+        "overall": 0.75,
+        "holdAgreement": 0.7789473684210526,
+        "proposeAgreement": 0.2
+      },
+      "proposeRateRatio": 0.8,
+      "planSanityRate": 1,
+      "forwardReturnProxyBps": -27.940513744929074,
+      "costPerDecideUsd": 0.00576966265060241,
+      "flipVerdict": {
+        "pass": false,
+        "criteria": [
+          {
+            "label": "schema-valid (0.830) >= champion (1.000)",
+            "pass": false
+          },
+          {
+            "label": "hold-agreement (0.7789473684210526) >= 0.85",
+            "pass": false
+          },
+          {
+            "label": "propose ratio (0.8) in [0.5, 1.5]",
+            "pass": true
+          },
+          {
+            "label": "plan sanity (1) >= champion (1.000)",
+            "pass": true
+          },
+          {
+            "label": "forward proxy (-27.940513744929074 bps) >= champion - 2bps (17.78915265662291)",
+            "pass": false
+          },
+          {
+            "label": "cost/decide ($0.00576966265060241) <= 50% of champion ($0.02387013157894737)",
+            "pass": true
+          }
+        ]
+      }
+    }
+  ]
+}

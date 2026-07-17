@@ -216,6 +216,11 @@ export type VenueTpEvent =
 // failed to fill on its own); 'reconcile_error' — the perp reconcile's fetchOpenAlgoOrders read
 // threw (adapter/venue failure): the placement decision was skipped that bar, backstops stay armed
 // (backlog #54 — a sustained rate on this event means the venue stop never rests on this venue).
+// 'triggered' — Defect A commit-1 (2026-07-16 phantom perp position): a CONFIRMED-resting perp algo
+// stop vanished from fetchOpenAlgoOrders and AgenticStrategyDeps.onAlgoStopGone confirmed it
+// actually fired (venue algo-history rail, not a local guess) — recovery already ingested the fill
+// onto the OMS, so this bar neither re-places the stop nor emits an exit signal (see
+// manageVenueStopPerp's gone-branch).
 export type VenueStopEvent =
   | 'placed'
   | 'skipped_existing'
@@ -227,7 +232,8 @@ export type VenueStopEvent =
   | 'filled_flat'
   | 'stood_down'
   | 'force_fired'
-  | 'reconcile_error';
+  | 'reconcile_error'
+  | 'triggered';
 
 interface ActivePlanState {
   plan: NonNullable<AgentProposal['plan']>;
@@ -315,6 +321,20 @@ export interface AgenticStrategyDeps {
   // always wires the real adapter here). Both methods are themselves optional on ExchangePort (only
   // the swap-capable adapter implements them) — every call site guards with `?.`.
   readonly algoOrders?: Pick<ExchangePort, 'fetchOpenAlgoOrders' | 'cancelAlgoOrder'>;
+  // Defect A commit-1 (2026-07-16 phantom perp position): the ONLY route back to
+  // AlgoStopRecoveryService (features/trading/execution) — the eslint-plugin-boundaries wall forbids
+  // this feature importing execution code directly, so app.module.ts wires this closure over the
+  // real service. Consulted ONLY when a CONFIRMED-resting perp algo stop vanishes from
+  // fetchOpenAlgoOrders (manageVenueStopPerp's gone-branch): asks the venue's algo-history rail
+  // whether it triggered (folded onto the OMS already), was canceled/never-placed (nothing to
+  // recover), or the answer was inconclusive. Return type mirrors
+  // AlgoStopRecoveryService.AlgoRecoverOutcome verbatim (duplicated, not imported — same
+  // boundary-crossing convention as VenueStopEvent's own mirror in agent-metrics-recorder.service.ts).
+  // Optional: absent (spot lane, or a boot that doesn't wire it) leaves the gone-branch
+  // byte-identical to pre-feature — see manageVenueStopPerp's own comment on this.
+  readonly onAlgoStopGone?: (
+    symbol: SymbolId,
+  ) => Promise<'triggered' | 'canceled' | 'none' | 'unknown'>;
 }
 
 const MAX_DECISION_HISTORY = 10;
@@ -421,6 +441,10 @@ export class AgenticStrategy implements AsyncStrategy {
   private readonly planStopForceBps: number;
   private readonly onVenueStop?: (event: VenueStopEvent) => void;
   private readonly algoOrders?: Pick<ExchangePort, 'fetchOpenAlgoOrders' | 'cancelAlgoOrder'>;
+  // Defect A commit-1 — see AgenticStrategyDeps.onAlgoStopGone's own comment.
+  private readonly onAlgoStopGone?: (
+    symbol: SymbolId,
+  ) => Promise<'triggered' | 'canceled' | 'none' | 'unknown'>;
   // Warn-once bookkeeping for an unknown-role resting order on the exit side (see roleForOrder /
   // restingOrderForRole) — pruned to the currently-open set each cycle, same convention as
   // entryFirstSeen/entryCancelRequestedAt below.
@@ -500,6 +524,7 @@ export class AgenticStrategy implements AsyncStrategy {
     this.planStopForceBps = Math.max(0, params.planStopForceBps ?? 30);
     this.onVenueStop = deps.onVenueStop;
     this.algoOrders = deps.algoOrders;
+    this.onAlgoStopGone = deps.onAlgoStopGone;
     this.subscriptions = {
       venue: params.venue,
       symbols: [params.symbol],
@@ -1354,7 +1379,40 @@ export class AgenticStrategy implements AsyncStrategy {
     }
 
     if (!restingAlgo) {
+      // Defect A commit-1 (2026-07-16 phantom perp position): a vanished algo stop may have
+      // TRIGGERED (spawned a market order whose fill never reached the OMS through the regular fill
+      // path — decodeClientOrderId can't map the venue-generated spawned id — stranding a phantom
+      // position) rather than simply cancelled/never-placed. Only worth asking when this strategy
+      // had CONFIRMED it resting last bar (registry venueStopResting true) — an unconfirmed vanish
+      // has nothing new to recover, and the flag is about to flip false below, so a later bar would
+      // never re-ask anyway; this avoids hammering the venue algo-history rail on every quiet bar.
+      // Captured BEFORE the flip, which would otherwise always read false.
+      const wasResting = this.planStopRegistry?.get(key)?.venueStopResting === true;
       this.setVenueStopResting(key, false);
+      // Dep absent (spot lane, or a boot that doesn't wire it) ⇒ this whole branch is skipped and
+      // the placement logic below runs exactly as it did before this feature — regression-pinned.
+      if (wasResting && this.onAlgoStopGone) {
+        const verdict = await this.onAlgoStopGone(this.symbol);
+        if (verdict === 'triggered') {
+          // Recovery already ingested the fill under the stop intent's own clientOrderId — the
+          // position is flat at the OMS NOW, so this bar must neither re-place the stop (nothing
+          // left to protect) nor emit an exit signal (nothing left to exit; a signal here would
+          // race the fill already booked). The NEXT bar's position_closed branch (~747) observes
+          // the position gone and runs the SAME plan-clear/orphan-TP cleanup a normal venue fill
+          // already gets.
+          this.onVenueStop?.('triggered');
+          return [];
+        }
+        if (verdict === 'unknown') {
+          // Fail-toward-no-op — same direction as the reconcile_error/store-error branches above:
+          // an inconclusive venue answer must not risk placing a DUPLICATE stop next to one that
+          // may still be resolving server-side. Skip only this bar's placement decision; the
+          // bar-close executor and ProtectiveExitService's 1s watcher stay armed as backstops.
+          return [];
+        }
+        // 'canceled' | 'none' — nothing to recover; the existing re-place logic below proceeds
+        // unchanged.
+      }
       if (
         active.venueStopPlacedAtBar !== null &&
         active.barsElapsed <= active.venueStopPlacedAtBar + 1

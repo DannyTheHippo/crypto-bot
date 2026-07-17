@@ -28,12 +28,23 @@ import { PositionRepository } from './position.repository';
 
 // Serialize an OrderEvent to a JSON-safe payload. FILL carries a Decimal cumQty that must
 // be stored as a string for exact round-trip. All other event types carry no numeric money.
-function serializeEvent(event: PersistedOrderEvent['event']): unknown {
+function serializeEvent(event: PersistedOrderEvent['event']): Record<string, unknown> {
   if (event.type === 'FILL') {
     return { type: event.type, cumQty: event.cumQty.toFixed() };
   }
   if (event.type === 'ACK') {
     return { type: event.type, venueOrderId: event.venueOrderId };
+  }
+  if (event.type === 'REJECT') {
+    // Defect A commit-1 (REJECT venue-reason persistence, 2026-07-16): code/message are additive
+    // to the base REJECT payload — a NEW field on NEW rows, never a migration/UPDATE (Hard Rule 6).
+    // Omitted when absent so a bare REJECT (unknown-resolver's query-rejected fold) serializes
+    // byte-identically to before this feature.
+    return {
+      type: event.type,
+      ...(event.code !== undefined ? { code: event.code } : {}),
+      ...(event.message !== undefined ? { message: event.message } : {}),
+    };
   }
   return { type: event.type };
 }
@@ -141,7 +152,14 @@ export class DrizzleExecutionStore implements ExecutionStorePort {
       orderId: order.intentId,
       dedupeKey: ev.dedupeKey,
       eventType: ev.event.type,
-      payload: serializeEvent(ev.event),
+      // Defect A commit-1: reason (cancel audit context / venue REJECT text) merged into the SAME
+      // JSONB payload column — additive to NEW rows only, never a migration or an UPDATE of an
+      // existing row (order_events is append-only, Hard Rule 6). Omitted when absent, so an event
+      // with no reason serializes byte-identically to before.
+      payload: {
+        ...serializeEvent(ev.event),
+        ...(ev.reason !== undefined ? { reason: ev.reason } : {}),
+      },
       // seq is used for ordering within this order's event log. We derive it from the
       // current timestamp in milliseconds cast to bigint — guaranteed monotone within a
       // single process and sufficient for ordering purposes.

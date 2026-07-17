@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { CLOCK, type ClockPort } from '../../../ports/clock';
 import { EXCHANGE_PORT, type ExchangePort, type VenueFill } from '../../../ports/exchange';
 import type { SymbolId, EpochMs, ClientOrderId } from '../../../domain/types/ids';
@@ -7,6 +7,7 @@ import type { OrderRecord } from '../../../domain/oms/reducer';
 import type { FillRecord } from '../../../domain/types/exec-report';
 import { OrderBookService } from './order-book.service';
 import { FillIngestorService } from './fill-ingestor.service';
+import { AlgoStopRecoveryService } from './algo-stop-recovery.service';
 
 // Demo/testnet fill discovery without the WS user stream (deferred). The CcxtExchangeAdapter places
 // orders on the venue but does not push fills to the outbox; this poller sweeps fetchMyTrades since
@@ -28,12 +29,14 @@ import { FillIngestorService } from './fill-ingestor.service';
 @Injectable()
 export class DemoFillPollerService {
   private since: EpochMs = 0 as EpochMs;
+  private readonly log = new Logger('DemoFillPoller');
 
   constructor(
     @Inject(CLOCK) private readonly clock: ClockPort,
     @Inject(EXCHANGE_PORT) private readonly exchange: ExchangePort,
     private readonly orders: OrderBookService,
     private readonly ingestor: FillIngestorService,
+    private readonly recovery: AlgoStopRecoveryService,
   ) {}
 
   // Anchor the sweep window at boot so the first poll never re-ingests historical demo trades.
@@ -56,6 +59,12 @@ export class DemoFillPollerService {
     // dedupes it on venueTradeId. Includes skipped (foreign/pre-boot) trades — all have ts ≤ now,
     // while our not-yet-placed fills carry future ts, so the watermark can never outrun an own fill.
     let maxTs = this.since;
+    // Defect A commit-1: a fill matching no local order, on a symbol carrying a live algo-rail
+    // intent, is the phantom-position signature (a venue-fired stop's spawned market order is
+    // venue-generated and unmappable by clientOrderId — see this class's own MATCHING comment).
+    // hasLiveAlgoIntent is a cheap local predicate; the venue query it gates (recoverSymbol) never
+    // runs inline in the match loop below.
+    const algoSuspects = new Set<SymbolId>();
     for (const symbol of symbols) {
       const fills = await this.exchange.fetchMyTrades(symbol, this.since);
       for (const f of fills) {
@@ -63,6 +72,7 @@ export class DemoFillPollerService {
         const matched = byVenueId.get(f.clientOrderId); // f.clientOrderId holds the venue order id (ccxt trade.order)
         if (matched === undefined) {
           skippedUnknown += 1; // a fill with no matching local order (foreign or pre-boot) — never halt here
+          if (this.recovery.hasLiveAlgoIntent(symbol)) algoSuspects.add(symbol);
           continue;
         }
         // Fold from the LIVE book record, never the per-poll snapshot: the snapshot goes stale
@@ -79,6 +89,18 @@ export class DemoFillPollerService {
       }
     }
     this.since = maxTs;
+    // Recovered against the intent's OWN createdAt lookback, never this poller's `since` watermark
+    // (just advanced above) — the watermark can already sit past the trigger trade, exactly the
+    // live phantom's geometry. Fail OPEN: a throw here is retried next poll, never breaks this one.
+    for (const symbol of algoSuspects) {
+      try {
+        await this.recovery.recoverSymbol(symbol);
+      } catch (err) {
+        this.log.warn(
+          `algo-stop recovery: ${symbol} threw (${err instanceof Error ? err.message : String(err)}) — retried next poll`,
+        );
+      }
+    }
     return { ingested, skippedUnknown };
   }
 

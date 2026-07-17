@@ -6,7 +6,12 @@ import {
   type SymbolId,
   type VenueId,
 } from '../../../domain/types/ids';
-import type { AlgoOrderState, ExchangeOrderState, VenueFill } from '../../../ports/exchange';
+import type {
+  AlgoOrderHistoryView,
+  AlgoOrderState,
+  ExchangeOrderState,
+  VenueFill,
+} from '../../../ports/exchange';
 import type { CcxtBalances, CcxtOrder, CcxtTrade, RawAlgoOrder } from './ccxt-order-client';
 
 // ── String discipline ─────────────────────────────────────────────────────────
@@ -130,5 +135,40 @@ export function normalizeAlgoOrder(o: RawAlgoOrder, fallbackSymbol: SymbolId): A
     triggerPrice: toStr(o.triggerPrice, '0'),
     status: o.algoStatus ?? 'UNKNOWN',
     reduceOnly: o.reduceOnly === true,
+  };
+}
+
+// ── Algo-history normalization (Defect A) ──────────────────────────────────────
+
+// NEW collapses to RESTING, TRIGGERED/FINISHED collapse to TRIGGERED (both mean the algo rail's job
+// is done — the reducer only needs to know a fill may exist), CANCELED/EXPIRED pass through, and any
+// other value is UNKNOWN rather than trusted (recoverSymbol retries UNKNOWN/RESTING identically).
+function mapAlgoHistoryStatus(raw: string | undefined): AlgoOrderHistoryView['status'] {
+  switch (raw) {
+    case 'NEW':
+      return 'RESTING';
+    case 'TRIGGERED':
+    case 'FINISHED':
+      return 'TRIGGERED';
+    case 'CANCELED':
+      return 'CANCELED';
+    case 'EXPIRED':
+      return 'EXPIRED';
+    default:
+      return 'UNKNOWN';
+  }
+}
+
+export function normalizeAlgoHistory(o: RawAlgoOrder): AlgoOrderHistoryView | undefined {
+  if (o.algoId === undefined) return undefined;
+  const rawUpdateMs = o.updateTime ?? o.triggerTime;
+  return {
+    algoId: String(o.algoId),
+    clientAlgoId: o.clientAlgoId,
+    status: mapAlgoHistoryStatus(o.algoStatus),
+    spawnedOrderId: o.orderId !== undefined ? String(o.orderId) : undefined,
+    qty: toStr(o.quantity, '0'),
+    triggerPrice: toStr(o.triggerPrice, '0'),
+    updateTimeMs: rawUpdateMs !== undefined ? epochMs(rawUpdateMs) : undefined,
   };
 }

@@ -63,6 +63,19 @@ describe('OMS reducer (§6.1)', () => {
     it('REJECT → REJECTED', () => {
       expect(reduce(rec('SUBMITTING'), { type: 'REJECT' }).state).toBe('REJECTED');
     });
+    // Defect A commit-1 (REJECT venue-reason persistence, 2026-07-16): code/message are additive —
+    // reduce() switches on rec.state + event.type only, so a REJECT carrying them reduces to the
+    // SAME OrderRecord (barring the widened event's own extra fields, which the reducer never
+    // reads or copies onto the record) as a bare REJECT.
+    it('REJECT with code/message reduces identically to a bare REJECT (additive fields are inert)', () => {
+      const bare = reduce(rec('SUBMITTING'), { type: 'REJECT' });
+      const withReason = reduce(rec('SUBMITTING'), {
+        type: 'REJECT',
+        code: '-2022',
+        message: 'ReduceOnly Order is rejected',
+      });
+      expect(withReason).toEqual(bare);
+    });
     it('SUBMIT_FAILED_NOT_SENT → NEW (attempt++), and → REJECTED past 3', () => {
       expect(reduce(rec('SUBMITTING'), { type: 'SUBMIT_FAILED_NOT_SENT' }).state).toBe('NEW');
       expect(

@@ -221,7 +221,9 @@ export class UnknownResolverService {
         return;
       case 'rejected':
         if (p.kind === 'submit') {
-          await this.fold(p, 'query-rejected', { type: 'REJECT' });
+          // Defect A commit-1: no venue reason text is available on this path (ExchangeOrderState
+          // carries no rejection message) — 'query-rejected' records at least the resolution source.
+          await this.fold(p, 'query-rejected', { type: 'REJECT' }, 'query-rejected');
           this.pending.delete(p.coid);
         } else {
           await this.freeze(p, 'query-inconclusive'); // a rejected order we hold a cancel-ack for: contradiction
@@ -308,7 +310,12 @@ export class UnknownResolverService {
   // Fold one resolver-derived event: pure reduce → journal (idempotent on the dedupe key) → commit
   // only if the journal accepted it (replay-safe) → retire on a terminal. A tracked entry's order
   // is always in the book, so the record is read unconditionally.
-  private async fold(p: Pending, dedupeKey: string, event: OrderEvent): Promise<void> {
+  private async fold(
+    p: Pending,
+    dedupeKey: string,
+    event: OrderEvent,
+    reason?: string,
+  ): Promise<void> {
     const next = reduce(this.orders.get(p.coid)!, event);
     const { applied } = await this.store.appendOrderEvent({
       clientOrderId: p.coid,
@@ -317,6 +324,7 @@ export class UnknownResolverService {
       derivedState: next.state,
       cumQty: next.cumQty.toFixed(),
       venueOrderId: next.venueOrderId,
+      ...(reason !== undefined ? { reason } : {}),
     });
     if (!applied) return;
     this.orders.commit(next);

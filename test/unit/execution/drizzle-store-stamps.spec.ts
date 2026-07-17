@@ -120,6 +120,85 @@ describe('DrizzleExecutionStore.appendOrderEvent lifecycle stamps (#40)', () => 
   });
 });
 
+// Defect A commit-1 (REJECT venue-reason persistence, 2026-07-16): appendOrderEvent's `payload`
+// merges the serialized event with ev.reason (additive JSONB fields, NEW rows only — see
+// serializeEvent/appendOrderEvent's own comments). Captures the payload sent to orders.appendEvent
+// directly (updateState's own extra-stamps map, pinned above, carries no payload/reason).
+describe('DrizzleExecutionStore.appendOrderEvent payload serialization (Defect A commit-1)', () => {
+  let appendCalls: Array<{ payload: unknown }>;
+  let store: DrizzleExecutionStore;
+
+  beforeEach(() => {
+    appendCalls = [];
+    store = new DrizzleExecutionStore({} as NodePgDatabase<typeof schema>, {
+      mode: 'testnet',
+      runId: 'run-test',
+      bootId: 'boot-test',
+    });
+    (store as unknown as { orders: unknown }).orders = {
+      findByClientOrderId: () => Promise.resolve({ intentId: 'i1' }),
+      appendEvent: (args: { payload: unknown }) => {
+        appendCalls.push(args);
+        return Promise.resolve({ inserted: true });
+      },
+      updateState: () => Promise.resolve(),
+    };
+  });
+
+  function ev(over: Partial<PersistedOrderEvent>): PersistedOrderEvent {
+    return {
+      clientOrderId: 'cbt-test-1' as ClientOrderId,
+      dedupeKey: 'k',
+      event: { type: 'SUBMIT_SENT' },
+      derivedState: 'SUBMITTING',
+      cumQty: '0',
+      ...over,
+    };
+  }
+
+  it('a REJECT with code/message round-trips both into the payload', async () => {
+    await store.appendOrderEvent(
+      ev({
+        event: { type: 'REJECT', code: '-2022', message: 'ReduceOnly Order is rejected' },
+        derivedState: 'REJECTED',
+      }),
+    );
+    expect(appendCalls[0]!.payload).toEqual({
+      type: 'REJECT',
+      code: '-2022',
+      message: 'ReduceOnly Order is rejected',
+    });
+  });
+
+  it('a bare REJECT (no code/message) serializes byte-identically to before this feature', async () => {
+    await store.appendOrderEvent(ev({ event: { type: 'REJECT' }, derivedState: 'REJECTED' }));
+    expect(appendCalls[0]!.payload).toEqual({ type: 'REJECT' });
+  });
+
+  it('ev.reason merges into the payload when present', async () => {
+    await store.appendOrderEvent(
+      ev({
+        event: { type: 'REJECT', code: '-2022', message: 'ReduceOnly Order is rejected' },
+        derivedState: 'REJECTED',
+        reason: '-2022:ReduceOnly Order is rejected',
+      }),
+    );
+    expect(appendCalls[0]!.payload).toEqual({
+      type: 'REJECT',
+      code: '-2022',
+      message: 'ReduceOnly Order is rejected',
+      reason: '-2022:ReduceOnly Order is rejected',
+    });
+  });
+
+  it('an event with no reason serializes byte-identically to before (no reason key)', async () => {
+    await store.appendOrderEvent(
+      ev({ event: { type: 'VENUE_CANCELED' }, derivedState: 'CANCELED' }),
+    );
+    expect(appendCalls[0]!.payload).toEqual({ type: 'VENUE_CANCELED' });
+  });
+});
+
 // Push 3 P7b: persistedOrderType() now passes STOP_LOSS_LIMIT/STOP_MARKET through unchanged
 // (order_intents.type/orders.type are plain unconstrained text — verified against
 // drizzle/0000_initial.sql — so no migration was needed, only the TS-level IntentInsert/OrderInsert

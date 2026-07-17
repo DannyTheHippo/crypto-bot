@@ -19,6 +19,7 @@ import { NonceLedgerService } from '../../src/features/trading/execution/nonce-l
 import { FillIngestorService } from '../../src/features/trading/execution/fill-ingestor.service';
 import { ExecutionGateService } from '../../src/features/trading/execution/execution-gate.service';
 import { DemoFillPollerService } from '../../src/features/trading/execution/demo-fill-poller.service';
+import { AlgoStopRecoveryService } from '../../src/features/trading/execution/algo-stop-recovery.service';
 import { SignalSinkService } from '../../src/features/trading/execution/signal-sink.service';
 import { CcxtExchangeAdapter } from '../../src/features/trading/exchange/ccxt-exchange.adapter';
 import type {
@@ -189,7 +190,8 @@ function build() {
   );
   const gateway = new SignalGatewayService(clock, killSwitch, sizer, engine);
   const sink = new SignalSinkService(gateway, portfolio, gate);
-  const poller = new DemoFillPollerService(clock, adapter, orders, ingestor);
+  const recovery = new AlgoStopRecoveryService(clock, adapter, store, orders, portfolio, ingestor);
+  const poller = new DemoFillPollerService(clock, adapter, orders, ingestor, recovery);
   return { portfolio, orders, sink, poller, killSwitch };
 }
 

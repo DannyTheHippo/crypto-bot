@@ -213,6 +213,10 @@ export interface ReconciliationRow {
 // BALANCE_DRIFT there would HALT on holdings the bot never touched. Order/trade axes always run.
 // sweepSymbols is the configured trading universe, unioned with symbols that have live local state,
 // so the open-order/trade sweeps see venue truth even before the bot holds anything.
+// positionAxis (Defect A) mirrors balanceAxis's opt-out shape but defaults ON when absent (unlike
+// balanceAxis, always explicitly set by callers): optional so existing ReconConfig literals compile
+// unchanged, and the axis is gated primarily by exchange.fetchPositions being defined at all
+// (spot/paper adapters omit it, so the flag is moot there).
 export const RECON_CONFIG = Symbol('RECON_CONFIG');
 export interface ReconConfig {
   readonly epsAbs: string;
@@ -221,6 +225,7 @@ export interface ReconConfig {
   readonly driftPasses: number;
   readonly balanceAxis: boolean;
   readonly sweepSymbols: readonly string[];
+  readonly positionAxis?: boolean;
 }
 
 // §1/§6 single-writer interlock: a per-(venue, apiKey) lock acquired at startup so a second bot

@@ -430,6 +430,159 @@ describe('CcxtExchangeAdapter algo rail (fetchOpenAlgoOrders/cancelAlgoOrder)', 
   });
 });
 
+// ── fetchAlgoOrderStatus (Defect A) ────────────────────────────────────────────
+
+describe('CcxtExchangeAdapter.fetchAlgoOrderStatus', () => {
+  const rawHistRow = {
+    algoId: 999,
+    clientAlgoId: COID,
+    symbol: 'BTCUSDT',
+    orderType: 'STOP_MARKET',
+    side: 'SELL',
+    quantity: '0.5',
+    triggerPrice: '48000',
+    algoStatus: 'TRIGGERED',
+    orderId: 555,
+    updateTime: 1_700_000_000_000,
+  };
+
+  it('normalizes the documented { orders } response shape, matching by clientAlgoId', async () => {
+    const fetchHist = vi.fn().mockResolvedValue({ orders: [rawHistRow] });
+    const client = fakeClient({ fapiPrivateGetAllAlgoOrders: fetchHist });
+    const adapter = new CcxtExchangeAdapter(client, venueId('binanceusdm'), true);
+
+    const result = await adapter.fetchAlgoOrderStatus(
+      COID,
+      symbolId('BTC/USDT:USDT'),
+      epochMs(1_699_000_000_000),
+    );
+
+    expect(fetchHist).toHaveBeenCalledWith({
+      symbol: 'BTCUSDT',
+      startTime: epochMs(1_699_000_000_000),
+      limit: 100,
+    });
+    expect(result).toEqual({
+      algoId: '999',
+      clientAlgoId: COID,
+      status: 'TRIGGERED',
+      spawnedOrderId: '555',
+      qty: '0.5',
+      triggerPrice: '48000',
+      updateTimeMs: 1_700_000_000_000,
+    });
+  });
+
+  it('#54-style: normalizes the live bare-array response shape identically', async () => {
+    const fetchHist = vi.fn().mockResolvedValue([rawHistRow]);
+    const client = fakeClient({ fapiPrivateGetAllAlgoOrders: fetchHist });
+    const adapter = new CcxtExchangeAdapter(client, venueId('binanceusdm'), true);
+
+    const result = await adapter.fetchAlgoOrderStatus(COID, symbolId('BTC/USDT:USDT'), epochMs(0));
+
+    expect(result?.algoId).toBe('999');
+    expect(result?.status).toBe('TRIGGERED');
+    expect(result?.spawnedOrderId).toBe('555');
+  });
+
+  it('matches ONLY by clientAlgoId among foreign rows, ignoring a foreign row sharing our orderId', async () => {
+    const foreignRow = {
+      ...rawHistRow,
+      algoId: 1,
+      clientAlgoId: 'someone-elses-coid',
+      orderId: 999,
+    };
+    const fetchHist = vi.fn().mockResolvedValue([foreignRow, rawHistRow]);
+    const client = fakeClient({ fapiPrivateGetAllAlgoOrders: fetchHist });
+    const adapter = new CcxtExchangeAdapter(client, venueId('binanceusdm'), true);
+
+    const result = await adapter.fetchAlgoOrderStatus(COID, symbolId('BTC/USDT:USDT'), epochMs(0));
+
+    expect(result?.algoId).toBe('999');
+  });
+
+  it('returns undefined when no row matches the requested clientAlgoId', async () => {
+    const fetchHist = vi.fn().mockResolvedValue([{ ...rawHistRow, clientAlgoId: 'not-ours' }]);
+    const client = fakeClient({ fapiPrivateGetAllAlgoOrders: fetchHist });
+    const adapter = new CcxtExchangeAdapter(client, venueId('binanceusdm'), true);
+
+    const result = await adapter.fetchAlgoOrderStatus(COID, symbolId('BTC/USDT:USDT'), epochMs(0));
+
+    expect(result).toBeUndefined();
+  });
+
+  it('maps an unrecognized algoStatus to UNKNOWN', async () => {
+    const weirdRow = { ...rawHistRow, algoStatus: 'SOMETHING_NEW' };
+    const fetchHist = vi.fn().mockResolvedValue([weirdRow]);
+    const client = fakeClient({ fapiPrivateGetAllAlgoOrders: fetchHist });
+    const adapter = new CcxtExchangeAdapter(client, venueId('binanceusdm'), true);
+
+    const result = await adapter.fetchAlgoOrderStatus(COID, symbolId('BTC/USDT:USDT'), epochMs(0));
+
+    expect(result?.status).toBe('UNKNOWN');
+  });
+
+  it('returns undefined on a spot venue without calling the client', async () => {
+    const fetchHist = vi.fn().mockResolvedValue([rawHistRow]);
+    const client = fakeClient({ fapiPrivateGetAllAlgoOrders: fetchHist });
+    const adapter = new CcxtExchangeAdapter(client, venueId('binance'), true);
+
+    const result = await adapter.fetchAlgoOrderStatus(COID, SYM, epochMs(0));
+
+    expect(result).toBeUndefined();
+    expect(fetchHist).not.toHaveBeenCalled();
+  });
+
+  it('throws fail-closed on the swap venue when the client lacks the hook', async () => {
+    const adapter = new CcxtExchangeAdapter({} as CcxtOrderClient, venueId('binanceusdm'), true);
+
+    await expect(
+      adapter.fetchAlgoOrderStatus(COID, symbolId('BTC/USDT:USDT'), epochMs(0)),
+    ).rejects.toThrow(/fail-closed/);
+  });
+});
+
+// ── fetchPositions (Defect A) ───────────────────────────────────────────────────
+
+describe('CcxtExchangeAdapter.fetchPositions', () => {
+  it('returns [] on a spot venue without calling the client', async () => {
+    const fetchPositions = vi.fn().mockResolvedValue([]);
+    const client = fakeClient({ fetchPositions });
+    const adapter = new CcxtExchangeAdapter(client, venueId('binance'), true);
+
+    const result = await adapter.fetchPositions([SYM]);
+
+    expect(result).toEqual([]);
+    expect(fetchPositions).not.toHaveBeenCalled();
+  });
+
+  it('surfaces info.positionAmt as an EXACT string, never the unified float contracts', async () => {
+    const rawPos = {
+      symbol: 'BTC/USDT:USDT',
+      contracts: 0.001, // unified float — must never be read
+      info: { symbol: 'BTCUSDT', positionAmt: '0.00100', entryPrice: '117000.5' },
+    };
+    const fetchPositions = vi.fn().mockResolvedValue([rawPos]);
+    const client = fakeClient({ fetchPositions });
+    const adapter = new CcxtExchangeAdapter(client, venueId('binanceusdm'), true);
+
+    const result = await adapter.fetchPositions([symbolId('BTC/USDT:USDT')]);
+
+    expect(fetchPositions).toHaveBeenCalledWith(['BTC/USDT:USDT'], {});
+    expect(result).toEqual([
+      { symbol: symbolId('BTC/USDT:USDT'), signedQty: '0.00100', entryPrice: '117000.5' },
+    ]);
+  });
+
+  it('throws fail-closed on the swap venue when the client lacks fetchPositions', async () => {
+    const adapter = new CcxtExchangeAdapter({} as CcxtOrderClient, venueId('binanceusdm'), true);
+
+    await expect(adapter.fetchPositions([symbolId('BTC/USDT:USDT')])).rejects.toThrow(
+      /fail-closed/,
+    );
+  });
+});
+
 // ── cancelOrder ───────────────────────────────────────────────────────────────
 
 describe('CcxtExchangeAdapter.cancelOrder', () => {

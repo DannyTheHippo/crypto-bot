@@ -9,6 +9,7 @@ import {
   type ExchangePort,
   type ExchangeOrderState,
   type VenueFill,
+  type VenuePosition,
 } from '../../../ports/exchange';
 import {
   EXECUTION_STORE,
@@ -39,6 +40,7 @@ type MismatchClass =
   | 'fill_for_unknown_order' // halting: our-prefix trade, no local order
   | 'balance_drift' // halting: balance beyond ε
   | 'balance_leak' // halting: within ε but monotone-growing drift
+  | 'position_drift' // halting: Defect A — venue/local signed-position qty beyond ε
   | 'foreign_open_order' // benign: manual trading on the shared key
   | 'adopted_terminal' // benign: a cancel/expiry we missed via the stream, adopted from venue truth
   | 'backfilled_fill' // benign: a fill we missed via the stream, re-applied
@@ -105,6 +107,7 @@ export const RECON_LAST_SUCCESS_GAUGE = makeGaugeProvider({
 export class ReconciliationService {
   private readonly checkpoints = new Map<string, EpochMs>();
   private readonly driftHistory = new Map<string, Decimal[]>();
+  private readonly positionDivergenceStreak = new Map<string, number>();
 
   constructor(
     @Inject(CLOCK) private readonly clock: ClockPort,
@@ -136,6 +139,9 @@ export class ReconciliationService {
     try {
       await this.reconcileOpenOrders(acc);
       await this.reconcileTrades(acc);
+      if ((this.cfg.positionAxis ?? true) && this.exchange.fetchPositions !== undefined) {
+        await this.reconcilePositions(acc);
+      }
       if (this.cfg.balanceAxis) await this.reconcileBalances(acc);
     } catch (err) {
       passError = err;
@@ -310,7 +316,55 @@ export class ReconciliationService {
     if (applied) bump(acc, 'backfilled_fill'); // a fill we had missed via the stream — backfilled + WARN
   }
 
-  // Axis 3 — balances per asset within ε; within-ε drift recorded, monotone growth escalates.
+  // Axis 3 (Defect A fail-closed backstop) — venue net signed position per symbol vs the local
+  // aggregate. PERP-ONLY by config (positionAxis, set in reconConfigFrom): the shared adapter
+  // defines fetchPositions on every venue (vacuous off-perp) while the local positions map holds
+  // spot positions too, so method presence alone must never enable this axis. This is the backstop
+  // for exactly the geometry an unrecovered venue-fired algo stop produces (a phantom local
+  // position with no venue counterpart, or vice versa) when AlgoStopRecoveryService's own retries
+  // never resolve it. Safety gate, fail CLOSED — but debounced ONE pass: a fired stop flattens the
+  // venue instantly while the local book heals only when recovery runs (≤10s fill poll), and the
+  // 30s reconcile timer is independent, so the FIRST divergent pass records the mismatch without
+  // halting and the SECOND consecutive one HALTs through the same kill-switch path as every other
+  // axis — never an order, never a flatten (CLAUDE.md rule 6). A divergence that outlives a full
+  // reconcile period is precisely the unrecovered case the axis exists for.
+  private async reconcilePositions(acc: PassAccumulator): Promise<void> {
+    const symbols = this.sweepSymbols();
+    let venuePositions: readonly VenuePosition[];
+    try {
+      venuePositions = await this.exchange.fetchPositions!(symbols);
+    } catch {
+      bump(acc, 'sweep_failure'); // could not read venue positions — surfaced, re-checked next pass (fail OPEN)
+      return;
+    }
+    const venueBySymbol = new Map<string, Decimal>();
+    for (const p of venuePositions) venueBySymbol.set(p.symbol, new Decimal(p.signedQty));
+
+    const localBySymbol = new Map<string, Decimal>();
+    for (const p of this.portfolio.snapshot().positions.values()) {
+      if (p.venue !== this.exchange.venue) continue;
+      const prior = localBySymbol.get(p.symbol) ?? new Decimal(0);
+      localBySymbol.set(p.symbol, prior.add(p.signedQty));
+    }
+
+    for (const symbol of symbols) {
+      const venueQty = venueBySymbol.get(symbol) ?? new Decimal(0);
+      const localQty = localBySymbol.get(symbol) ?? new Decimal(0);
+      const within = balanceWithinEpsilon(localQty, venueQty, this.cfg.epsAbs, this.cfg.epsRel);
+      if (!within) {
+        bump(acc, 'position_drift'); // counted every divergent pass — visibility precedes the halt
+        const streak = (this.positionDivergenceStreak.get(symbol) ?? 0) + 1;
+        this.positionDivergenceStreak.set(symbol, streak);
+        if (streak >= 2) {
+          acc.halts.push(`POSITION_DRIFT:${symbol}`); // second consecutive divergent pass ⇒ HALT, no auto-flatten
+        }
+      } else {
+        this.positionDivergenceStreak.delete(symbol);
+      }
+    }
+  }
+
+  // Axis 4 — balances per asset within ε; within-ε drift recorded, monotone growth escalates.
   private async reconcileBalances(acc: PassAccumulator): Promise<void> {
     let venueBalances: ReadonlyMap<string, { free: string; locked: string }>;
     try {

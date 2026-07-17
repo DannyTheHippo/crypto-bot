@@ -65,7 +65,13 @@ export interface OrderRecord {
 export type OrderEvent =
   | { type: 'SUBMIT_SENT' }
   | { type: 'ACK'; venueOrderId: string }
-  | { type: 'REJECT' }
+  // Defect A commit-1 (REJECT venue-reason persistence, 2026-07-16): code/message are additive and
+  // OPTIONAL — reduce() below switches on rec.state + event.type only, never these fields, so a
+  // REJECT with or without them reduces identically. Populated at the two sites that know a venue
+  // reason (execution-gate.service.ts's onPlaceError from AdapterError; exec-report-consumer.service
+  // .ts's REJECT report if the report carries one); every other REJECT site (unknown-resolver's
+  // query-rejected fold) stays bare, same as before.
+  | { type: 'REJECT'; code?: string; message?: string }
   | { type: 'SUBMIT_FAILED_NOT_SENT' }
   | { type: 'SUBMIT_AMBIGUOUS' }
   | { type: 'FILL'; cumQty: Decimal }

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   AgenticStrategy,
   type AgenticStrategyParams,
+  type AgenticStrategyDeps,
   type VenueStopEvent,
   type VenueTpEvent,
 } from '../../../src/features/trading/agentic/agentic.strategy';
@@ -1017,6 +1018,115 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
     // The registry's stand-down flag is untouched by the failed read (set at plan attach, never
     // flipped by an unverified reconcile) — the watcher/force-band backstops stay armed.
     expect(registry.get(PERP_REG_KEY)?.venueStopResting).not.toBe(true);
+  });
+
+  // Defect A commit-1 (2026-07-16 phantom perp position): AgenticStrategyDeps.onAlgoStopGone —
+  // consulted ONLY when a CONFIRMED-resting perp algo stop vanishes from fetchOpenAlgoOrders. Every
+  // test in this block runs the same 3-bar setup: bar1 places, bar2 confirms resting (registry
+  // venueStopResting: true), bar3 the stop vanishes (fetchOpenAlgoOrders → []).
+  describe('onAlgoStopGone (Defect A commit-1 phantom perp position recovery)', () => {
+    function threeBarVanishSetup(
+      deps: Pick<AgenticStrategyDeps, 'onVenueStop' | 'onAlgoStopGone'>,
+    ) {
+      const resting = algoOrder('98');
+      let fetchCalls = 0;
+      const registry = planStopRegistry();
+      const client = new PlanningClient();
+      const strategy = new AgenticStrategy(SID, perpParams(), client, {
+        ...deps,
+        intentStore: roledIntentStore(new Map([[resting.clientAlgoId!, 'vsl']])),
+        algoOrders: {
+          fetchOpenAlgoOrders: () => {
+            fetchCalls += 1;
+            // Push 3 P7f fix 7b: bar 0 (no active plan yet) runs the orphaned-algo-stop boot check
+            // first, consuming call #1 (harmlessly — nothing resting, FLAT). manageVenueStopPerp's
+            // own placement scan is therefore call #2 (bar1: placed), call #3 confirms (bar2), and
+            // call #4+ (bar3) is the vanish this describe block exists to exercise.
+            if (fetchCalls <= 2) return Promise.resolve([]); // bar0 boot check + bar1: placed
+            if (fetchCalls === 3) return Promise.resolve([resting]); // bar2: confirmed resting
+            return Promise.resolve([]); // bar3+: vanished
+          },
+        },
+        planStopRegistry: registry,
+      });
+      return { strategy, registry };
+    }
+
+    it('"triggered": no re-placement, no exit signal, journals "triggered" — recovery already ingested the fill', async () => {
+      const events: VenueStopEvent[] = [];
+      const goneCalls: Array<ReturnType<typeof symbolId>> = [];
+      const { strategy, registry } = threeBarVanishSetup({
+        onVenueStop: (e) => events.push(e),
+        onAlgoStopGone: (symbol) => {
+          goneCalls.push(symbol);
+          return Promise.resolve('triggered');
+        },
+      });
+      await strategy.decide(perpInput(0));
+      await strategy.decide(perpInput(1, { position: perpLongPosition('100') })); // placed
+      await strategy.decide(perpInput(2, { position: perpLongPosition('100') })); // confirmed resting
+      expect(registry.get(PERP_REG_KEY)?.venueStopResting).toBe(true);
+      events.length = 0;
+
+      const out = await strategy.decide(perpInput(3, { position: perpLongPosition('100') })); // vanished
+      expect(out).toEqual([]);
+      expect(events).toEqual(['triggered']);
+      expect(goneCalls).toEqual([PERP_SYM]);
+      expect(registry.get(PERP_REG_KEY)?.venueStopResting).toBe(false);
+    });
+
+    it('"canceled": nothing to recover — the existing re-place logic proceeds unchanged', async () => {
+      const events: VenueStopEvent[] = [];
+      const { strategy, registry } = threeBarVanishSetup({
+        onVenueStop: (e) => events.push(e),
+        onAlgoStopGone: () => Promise.resolve('canceled'),
+      });
+      await strategy.decide(perpInput(0));
+      await strategy.decide(perpInput(1, { position: perpLongPosition('100') })); // placed
+      await strategy.decide(perpInput(2, { position: perpLongPosition('100') })); // confirmed resting
+      events.length = 0;
+
+      const out = await strategy.decide(perpInput(3, { position: perpLongPosition('100') })); // vanished
+      expect(out).toHaveLength(1);
+      expect(out[0]!.exitStyle).toBe('RESTING_STOP');
+      expect(events).toEqual(['placed']);
+      expect(registry.get(PERP_REG_KEY)?.venueStopResting).toBe(false); // placed, not yet re-confirmed
+    });
+
+    it('"unknown": this bar\'s placement is skipped (fail-toward-no-op) — no placement, no exit signal', async () => {
+      const events: VenueStopEvent[] = [];
+      const { strategy } = threeBarVanishSetup({
+        onVenueStop: (e) => events.push(e),
+        onAlgoStopGone: () => Promise.resolve('unknown'),
+      });
+      await strategy.decide(perpInput(0));
+      await strategy.decide(perpInput(1, { position: perpLongPosition('100') })); // placed
+      await strategy.decide(perpInput(2, { position: perpLongPosition('100') })); // confirmed resting
+      events.length = 0;
+
+      const out = await strategy.decide(perpInput(3, { position: perpLongPosition('100') })); // vanished
+      expect(out).toEqual([]);
+      expect(events).toEqual([]); // no 'placed' — this bar's placement decision was skipped
+    });
+
+    it('dep ABSENT: behavior is byte-identical to today (proceeds straight to re-placement)', async () => {
+      const events: VenueStopEvent[] = [];
+      const { strategy, registry } = threeBarVanishSetup({
+        onVenueStop: (e) => events.push(e),
+        // onAlgoStopGone intentionally omitted.
+      });
+      await strategy.decide(perpInput(0));
+      await strategy.decide(perpInput(1, { position: perpLongPosition('100') })); // placed
+      await strategy.decide(perpInput(2, { position: perpLongPosition('100') })); // confirmed resting
+      events.length = 0;
+
+      const out = await strategy.decide(perpInput(3, { position: perpLongPosition('100') })); // vanished
+      expect(out).toHaveLength(1);
+      expect(out[0]!.exitStyle).toBe('RESTING_STOP');
+      expect(out[0]!.triggerPriceHint!.toFixed()).toBe('98');
+      expect(events).toEqual(['placed']); // same as the pre-feature "reconciles" test's own placed bar
+      expect(registry.get(PERP_REG_KEY)?.venueStopResting).toBe(false);
+    });
   });
 });
 

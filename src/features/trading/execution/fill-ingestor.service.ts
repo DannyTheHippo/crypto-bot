@@ -112,7 +112,12 @@ export class FillIngestorService {
     private readonly tradePnl?: Histogram<string>,
   ) {}
 
-  async ingest(rec: OrderRecord, fill: FillRecord, dedupeKey: string): Promise<IngestResult> {
+  async ingest(
+    rec: OrderRecord,
+    fill: FillRecord,
+    dedupeKey: string,
+    reason?: string,
+  ): Promise<IngestResult> {
     const coid = fill.clientOrderId;
     const { inserted, conflict } = await this.store.saveFill(
       fill,
@@ -134,6 +139,7 @@ export class FillIngestorService {
       event: { type: 'FILL', cumQty: newCum },
       derivedState: next.state,
       cumQty: next.cumQty.toFixed(),
+      reason,
     });
     this.orders.commit(next);
 

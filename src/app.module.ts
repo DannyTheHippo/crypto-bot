@@ -106,6 +106,7 @@ import {
   type PaperFeedSink,
 } from './features/trading/market-data/teeing-market-stream';
 import { DemoFillPollerService } from './features/trading/execution/demo-fill-poller.service';
+import { AlgoStopRecoveryService } from './features/trading/execution/algo-stop-recovery.service';
 import { ModeControlService } from './features/trading/mode-control/mode-control.service';
 import {
   AgenticStrategyModule,
@@ -1584,6 +1585,10 @@ export class AppModule
     private readonly modeControl: ModeControlService,
     private readonly fillPoller: DemoFillPollerService,
     private readonly bootRecovery: BootRecoveryService,
+    // Defect A commit-1 (2026-07-16 phantom perp position): wired into the agentic strategy's
+    // onAlgoStopGone dep below (bar-level recovery) AND swept directly at boot in startTrading
+    // (heals an already-phantom position before the first reconcile tick can HALT on it).
+    private readonly algoStopRecovery: AlgoStopRecoveryService,
     @Inject(AGENT_CLIENT) rawAgentClient: AgentClientPort,
     private readonly agentMetrics: AgentMetricsRecorder,
     @Inject(AGENT_LLM_BUDGET) agentBudget: DailyLlmBudget,
@@ -1774,6 +1779,22 @@ export class AppModule
     this.tradingSymbols = symbols.map((s) => symbolId(s));
 
     if (mode !== 'paper') {
+      // Defect A commit-1 (2026-07-16 phantom perp position): heal any already-phantom position
+      // BEFORE the reconciliation timer's first 30s tick (registered in onApplicationBootstrap,
+      // ahead of this fire-and-forget startTrading call) can observe the latent local/venue
+      // divergence and HALT on it — asks the venue's algo-history rail about every live algo-rail
+      // intent and folds any missed TRIGGERED fill onto the OMS under the stop intent's own
+      // clientOrderId. Runs FIRST in this block, before the slower refreshKeyProbe/pin network
+      // calls below, to close the race window as tightly as this synchronous boot sequence allows.
+      // Fail OPEN (warn, never throw) even though sweep() already swallows every per-symbol error
+      // itself — a boot-time recovery failure must never block trading; the bar-level
+      // onAlgoStopGone hook (agentic.strategy.ts) and this same sweep's own periodic backstops
+      // (none yet wired — sweep is boot-only today) retry on their own cadence.
+      await this.algoStopRecovery.sweep(this.tradingSymbols).catch((err: unknown) => {
+        this.log.warn(
+          `algo-stop recovery sweep failed at boot: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
       await this.refreshKeyProbe();
       // Backlog #51 (Phase-8 perp deploy checklist): pin venue-side isolated margin + leverage
       // BEFORE the first order — account defaults are never trusted. Today's spot deployment
@@ -1845,6 +1866,10 @@ export class AppModule
         // bound adapter is spot/paper (both methods stay `undefined` there; every call site guards
         // with `?.`).
         algoOrders: this.exchangePort,
+        // Defect A commit-1: the ONLY route back to AlgoStopRecoveryService — see
+        // AgenticStrategyDeps.onAlgoStopGone's own comment for why this is a closure, never a
+        // direct import (eslint-plugin-boundaries forbids the agentic feature importing execution).
+        onAlgoStopGone: (symbol) => this.algoStopRecovery.recoverSymbol(symbol),
       };
       return new AgenticStrategy(id, p as AgenticStrategyParams, this.agentClient, deps);
     });

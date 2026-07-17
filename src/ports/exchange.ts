@@ -112,6 +112,33 @@ export class AdapterError extends Error {
   }
 }
 
+// Defect A (2026-07-16): a venue-fired algo stop's history record, queried by clientAlgoId — the
+// only lookup key that survives the ambiguity that started this (the spawned market order's
+// clientOrderId is venue-generated and unmappable by decodeClientOrderId). status is deliberately
+// coarser than the raw algoStatus vocabulary: NEW collapses to RESTING, TRIGGERED/FINISHED collapse
+// to TRIGGERED (both mean "the order fired and the algo rail's job is done"), and anything the
+// adapter does not recognize collapses to UNKNOWN rather than being trusted — recoverSymbol treats
+// UNKNOWN/RESTING identically (retry next sweep, never a fold).
+export interface AlgoOrderHistoryView {
+  readonly algoId: string;
+  readonly clientAlgoId?: string;
+  readonly status: 'RESTING' | 'TRIGGERED' | 'CANCELED' | 'EXPIRED' | 'UNKNOWN';
+  readonly spawnedOrderId?: string;
+  readonly qty: string;
+  readonly triggerPrice: string;
+  readonly updateTimeMs?: EpochMs;
+}
+
+// Defect A: venue-truth position read, the fail-closed backstop a later dispatch wires into
+// reconciliation's position axis (a phantom local position with no venue-side counterpart, or vice
+// versa, is exactly what an unrecovered algo-stop fill produces). signedQty is the raw venue string
+// (never the unified float `contracts`) — money never crosses this seam as a native number.
+export interface VenuePosition {
+  readonly symbol: SymbolId;
+  readonly signedQty: string;
+  readonly entryPrice?: string;
+}
+
 export interface ExchangePort {
   readonly venue: VenueId;
   readonly capabilities: VenueCapabilities;
@@ -133,6 +160,19 @@ export interface ExchangePort {
   // omit both; a caller must `?.`-guard exactly like pinPerpVenueDefaults above).
   fetchOpenAlgoOrders?(symbol?: SymbolId): Promise<readonly AlgoOrderState[]>;
   cancelAlgoOrder?(algoId: string, symbol: SymbolId): Promise<void>;
+  // Defect A (algo-stop-recovery.service.ts, commit-1 of 2): a bounded history query for one
+  // clientAlgoId, sinceMs-scoped to the intent's own createdAt (never an unbounded sweep). Optional,
+  // same venue-gating posture as the algo pair above — spot/paper adapters omit it, callers `?.`-guard.
+  // Measurement primitive: a throw/undefined answer is fail-OPEN for the caller (recoverSymbol retries
+  // next sweep; it is never treated as proof the stop is safe).
+  fetchAlgoOrderStatus?(
+    clientAlgoId: string,
+    symbol: SymbolId,
+    sinceMs: EpochMs,
+  ): Promise<AlgoOrderHistoryView | undefined>;
+  // Defect A: venue position read (the position-recon fail-closed backstop a later dispatch wires
+  // up). Optional — spot/paper adapters have no perp position concept and omit it.
+  fetchPositions?(symbols?: readonly SymbolId[]): Promise<readonly VenuePosition[]>;
 }
 
 // Re-exported so adapters and the OMS share the reducer's state vocabulary at the seam.

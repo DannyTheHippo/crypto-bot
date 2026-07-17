@@ -66,6 +66,7 @@ import {
 import { CrashRecoveryService } from './crash-recovery.service';
 import { BootRecoveryService } from './boot-recovery.service';
 import { DemoFillPollerService } from './demo-fill-poller.service';
+import { AlgoStopRecoveryService } from './algo-stop-recovery.service';
 
 // ExecutionModule owns the OMS edge: the outbox/store, the canonical portfolio, the gate and the
 // report consumer. EXCHANGE_PORT is NOT bound here — binding it to a concrete adapter (paper or
@@ -109,6 +110,7 @@ const DEFAULT_RECON_CONFIG: ReconConfig = {
   overlapMs: 300_000,
   driftPasses: 3,
   balanceAxis: true,
+  positionAxis: false,
   sweepSymbols: [],
 };
 // The balances axis compares local balances (seeded from the synthetic STARTING_CASH) against venue
@@ -117,12 +119,18 @@ const DEFAULT_RECON_CONFIG: ReconConfig = {
 // disabled for that flavor only. Paper (the adapter IS the venue) and the dedicated Spot Testnet
 // keep it. sweepSymbols carries the configured trading symbol so the order/trade sweeps observe the
 // venue even when no local state exists yet.
+// The position axis (Defect A) is PERP-ONLY by config, not by method presence: the shared
+// CcxtExchangeAdapter defines fetchPositions on every venue (vacuously [] off-perp) while the local
+// positions map holds spot positions too — running the axis on spot would compare real local
+// positions against an always-empty venue read and spuriously HALT.
+const PERP_VENUE_ID = 'binanceusdm'; // local convention, mirrors app.module/position-sizer (not exported there)
 function reconConfigFrom(config: TypedConfigService | undefined): ReconConfig {
   if (config === undefined) return DEFAULT_RECON_CONFIG;
   const demoAccount = config.mode.configMode === 'testnet' && config.mode.sandboxEnv === 'demo';
   return {
     ...DEFAULT_RECON_CONFIG,
     balanceAxis: !demoAccount,
+    positionAxis: (config.venues[0]?.id ?? 'binance') === PERP_VENUE_ID,
     sweepSymbols: config.strategy.symbols,
   };
 }
@@ -197,6 +205,7 @@ const providers: Provider[] = [
   CrashRecoveryService,
   BootRecoveryService,
   DemoFillPollerService,
+  AlgoStopRecoveryService,
   {
     // In-process delivery hook (an optimisation over the consumer's own cursor/ack loop): a
     // report source can call this to drain promptly. Awaiting it synchronously is how reorder
@@ -243,6 +252,10 @@ const providers: Provider[] = [
     // The composition-root trading runtime drives this demo fill poller (fetchMyTrades →
     // FillIngestor) to land venue fills in the portfolio without the (deferred) WS user stream.
     DemoFillPollerService,
+    // Defect A commit-1 (2026-07-16): the composition root wires this into the agentic strategy's
+    // onAlgoStopGone dep (bar-level recovery) and calls it directly at boot (sweep — see
+    // app.module.ts's startTrading).
+    AlgoStopRecoveryService,
   ],
 })
 export class ExecutionModule {}

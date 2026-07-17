@@ -29,6 +29,16 @@ export interface CcxtTrade {
 
 export type CcxtBalances = Record<string, unknown>;
 
+// Defect A (position-recon backstop): ccxt's unified fetchPositions row. `contracts` is the unified
+// FLOAT field — never read (float ban); `info.positionAmt`/`info.entryPrice` are the raw venue
+// strings the adapter surfaces instead. `info.symbol` is the raw market id ("BTCUSDT"), the same
+// form RawAlgoOrder.symbol carries.
+export interface CcxtPosition {
+  symbol?: string;
+  contracts?: string | number;
+  info?: { symbol?: string; positionAmt?: string; entryPrice?: string };
+}
+
 // Push 3 P7a: the swap venue's ALGO/conditional-order rail (STOP_MARKET). ccxt has no unified
 // support for it — these are raw fapi endpoint response shapes, narrowed defensively like every
 // other CcxtOrder field above.
@@ -42,6 +52,11 @@ export interface RawAlgoOrder {
   triggerPrice?: string | number;
   algoStatus?: string;
   reduceOnly?: boolean;
+  // Defect A: present on a TRIGGERED/FINISHED row (the regular-rail order the algo spawned) and on
+  // the historical-sweep/single-query endpoints; absent on a still-resting row.
+  orderId?: string | number;
+  updateTime?: number;
+  triggerTime?: number;
 }
 
 export interface CcxtOrderClient {
@@ -96,6 +111,25 @@ export interface CcxtOrderClient {
   // throw on every live demo call.
   fapiPrivateGetOpenAlgoOrders?(): Promise<{ orders: RawAlgoOrder[] } | RawAlgoOrder[]>;
   fapiPrivateDeleteAlgoOrder?(params: { algoId: string }): Promise<unknown>;
+
+  // Defect A (algo-stop-recovery.service.ts): the historical-sweep and single-query counterparts to
+  // fapiPrivateGetOpenAlgoOrders above — GET /fapi/v1/allAlgoOrders and GET /fapi/v1/algoOrder
+  // (pinned ccxt 4.5.58, verified present; fapiPrivateGetAlgoHistoricalOrders does NOT exist).
+  // Response-shape union mirrors the open-orders endpoint (#54): demo-fapi may answer a bare array
+  // where prod answers { total, orders }; the single-query endpoint answers one bare row object.
+  // Both optional — same swap-capable-only gating as every other fapiPrivate* method here.
+  fapiPrivateGetAllAlgoOrders?(
+    params: Record<string, unknown>,
+  ): Promise<{ orders: RawAlgoOrder[] } | RawAlgoOrder[]>;
+  fapiPrivateGetAlgoOrder?(params: Record<string, unknown>): Promise<RawAlgoOrder>;
+
+  // Defect A (position-recon backstop): ccxt's unified position query. Optional — spot/paper
+  // adapters have no perp position concept; the adapter gates by venue like every other
+  // perp-only method here.
+  fetchPositions?(
+    symbols: string[] | undefined,
+    params: Record<string, unknown>,
+  ): Promise<CcxtPosition[]>;
 }
 
 // Delegates each method to the live ccxt Exchange using the same as unknown as {...}
@@ -259,5 +293,40 @@ export class RealCcxtOrderClient implements CcxtOrderClient {
         fapiPrivateDeleteAlgoOrder(params: { algoId: string }): Promise<unknown>;
       }
     ).fapiPrivateDeleteAlgoOrder(params);
+  }
+
+  // Defect A: same `as unknown as {...}` narrowing as every other fapiPrivate* delegation above.
+  fapiPrivateGetAllAlgoOrders(
+    params: Record<string, unknown>,
+  ): Promise<{ orders: RawAlgoOrder[] } | RawAlgoOrder[]> {
+    return (
+      this.exchange as unknown as {
+        fapiPrivateGetAllAlgoOrders(
+          params: Record<string, unknown>,
+        ): Promise<{ orders: RawAlgoOrder[] } | RawAlgoOrder[]>;
+      }
+    ).fapiPrivateGetAllAlgoOrders(params);
+  }
+
+  fapiPrivateGetAlgoOrder(params: Record<string, unknown>): Promise<RawAlgoOrder> {
+    return (
+      this.exchange as unknown as {
+        fapiPrivateGetAlgoOrder(params: Record<string, unknown>): Promise<RawAlgoOrder>;
+      }
+    ).fapiPrivateGetAlgoOrder(params);
+  }
+
+  fetchPositions(
+    symbols: string[] | undefined,
+    params: Record<string, unknown>,
+  ): Promise<CcxtPosition[]> {
+    return (
+      this.exchange as unknown as {
+        fetchPositions(
+          symbols: string[] | undefined,
+          params: Record<string, unknown>,
+        ): Promise<CcxtPosition[]>;
+      }
+    ).fetchPositions(symbols, params);
   }
 }

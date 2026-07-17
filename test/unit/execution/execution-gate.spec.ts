@@ -219,6 +219,26 @@ describe('ExecutionGateService.submit', () => {
     expect(portfolio.snapshot().inFlightIntents).toHaveLength(0);
   });
 
+  // Defect A commit-1 (REJECT venue-reason persistence, 2026-07-16): the journaled REJECT event and
+  // the persisted `reason` both carry the adapter's own code/message — an operator reading
+  // order_events no longer has to cross-reference a log line to see WHY the venue rejected.
+  it('a TERMINAL_REJECT journals REJECT code/message and persists a "code:message" reason', async () => {
+    const { port } = fakeExchange(() =>
+      Promise.reject(new AdapterError('TERMINAL_REJECT', '-2022', 'ReduceOnly Order is rejected')),
+    );
+    const { gate, store } = build(port);
+    const approved = approve();
+    await gate.submit(approved);
+
+    const rejectEvent = store.events.find((e) => e.event.type === 'REJECT');
+    expect(rejectEvent?.event).toEqual({
+      type: 'REJECT',
+      code: '-2022',
+      message: 'ReduceOnly Order is rejected',
+    });
+    expect(rejectEvent?.reason).toBe('-2022:ReduceOnly Order is rejected');
+  });
+
   it('routes an ambiguous adapter error to SUBMIT_UNKNOWN (exposure reserved)', async () => {
     const { port } = fakeExchange(() =>
       Promise.reject(new AdapterError('OUTCOME_AMBIGUOUS', 'TIMEOUT', 'maybe sent')),

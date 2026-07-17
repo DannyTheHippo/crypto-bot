@@ -29,7 +29,8 @@ export type AgentVenueTpEvent =
   | 'filled_flat';
 
 // Mirrors agentic.strategy.ts's VenueStopEvent (Push 3 P7d) — duplicated rather than imported, same
-// convention as AgentVenueTpEvent above.
+// convention as AgentVenueTpEvent above. 'triggered' (Defect A commit-1, 2026-07-16) — see
+// VenueStopEvent's own comment.
 export type AgentVenueStopEvent =
   | 'placed'
   | 'skipped_existing'
@@ -41,7 +42,8 @@ export type AgentVenueStopEvent =
   | 'filled_flat'
   | 'stood_down'
   | 'force_fired'
-  | 'reconcile_error';
+  | 'reconcile_error'
+  | 'triggered';
 
 // Mirrors prescreen.ts's PrescreenReason — duplicated rather than imported because the
 // eslint-plugin-boundaries wall forbids this feature (common/observability) importing from

@@ -71,7 +71,17 @@ export class ExecReportConsumerService {
         await this.foldEvent(coid, rec, report.reportId, { type: 'VENUE_EXPIRED' });
         return;
       case 'REJECT':
-        await this.foldEvent(coid, rec, report.reportId, { type: 'REJECT' });
+        // Defect A commit-1: RejectReport carries the venue's own reason/code (exec-report.ts) —
+        // thread it through so this path is no less informative than execution-gate's own REJECT
+        // fold. No production source constructs a RejectReport today (WS user-stream REJECT is a
+        // deferred follow-up), so this is currently exercised only by direct unit construction.
+        await this.foldEvent(
+          coid,
+          rec,
+          report.reportId,
+          { type: 'REJECT', code: report.code, message: report.reason },
+          report.code !== undefined ? `${report.code}:${report.reason}` : report.reason,
+        );
         return;
       case 'ACK':
         if (rec.state === 'SUBMITTING' || rec.state === 'SUBMIT_UNKNOWN') {
@@ -109,6 +119,7 @@ export class ExecReportConsumerService {
     rec: OrderRecord,
     dedupeKey: string,
     event: OrderEvent,
+    reason?: string,
   ): Promise<void> {
     const next = reduce(rec, event);
     const { applied } = await this.store.appendOrderEvent({
@@ -117,6 +128,7 @@ export class ExecReportConsumerService {
       event,
       derivedState: next.state,
       cumQty: next.cumQty.toFixed(),
+      ...(reason !== undefined ? { reason } : {}),
     });
     if (!applied) return; // redelivered report — journal already has it, do not re-fold
     this.orders.commit(next);

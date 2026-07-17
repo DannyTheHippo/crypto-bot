@@ -177,7 +177,8 @@ export const AGENTIC_VENUE_TP_COUNTER = makeCounterProvider({
 // Push 3 P7d (AGENTIC_VENUE_STOP): venue-resting protective stop lifecycle events for plan-mode
 // positions, emitted by agentic.strategy.ts's manageVenueStop/runActivePlan (see VenueStopEvent
 // there for the bound label set: placed / skipped_existing / skipped_inflight / cancel_for_exit /
-// drift_cancel / qty_cancel / orphan_cancel / filled_flat / stood_down / force_fired). Query
+// drift_cancel / qty_cancel / orphan_cancel / filled_flat / stood_down / force_fired / triggered —
+// Defect A commit-1, 2026-07-16). Query
 // patterns: `rate(agentic_venue_stop_total{event="force_fired"}[1h]) > 0` flags a venue stop that
 // evidently failed to fill on its own (worth an operator look at the venue's algo-order health);
 // `sum by (event) (agentic_venue_stop_total)` gives the same at-a-glance lifecycle mix

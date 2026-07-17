@@ -91,6 +91,32 @@ describe('FillIngestorService', () => {
     expect(ctx.store.equity.length).toBe(1);
   });
 
+  it('threads the optional reason onto the persisted event; a 3-arg call leaves it undefined', async () => {
+    const ctx = build();
+    const { coid, acked } = seed(ctx, makeIntent({ qty: qty('2') }));
+    await ctx.ingestor.ingest(
+      acked,
+      makeFill({ clientOrderId: coid, qty: qty('1'), venueTradeId: 'r1' }),
+      'rep-reason',
+      'venue_stop_filled:algoId=999',
+    );
+    const withReason = ctx.store.events.find((e) => e.dedupeKey === 'rep-reason');
+    expect(withReason?.reason).toBe('venue_stop_filled:algoId=999');
+
+    // Byte-identical on the pre-existing 3-arg call shape: no 4th arg ⇒ reason stays undefined.
+    const { coid: coid2, acked: acked2 } = seed(
+      ctx,
+      makeIntent({ qty: qty('2'), intentId: SELL_IID }),
+    );
+    await ctx.ingestor.ingest(
+      acked2,
+      makeFill({ clientOrderId: coid2, qty: qty('1'), venueTradeId: 'r2' }),
+      'rep-no-reason',
+    );
+    const noReason = ctx.store.events.find((e) => e.dedupeKey === 'rep-no-reason');
+    expect(noReason?.reason).toBeUndefined();
+  });
+
   it('is idempotent on (venue, symbol, venueTradeId): a duplicate applies nothing', async () => {
     const ctx = build();
     const { coid, acked } = seed(ctx, makeIntent({ qty: qty('2') }));

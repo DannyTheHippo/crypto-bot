@@ -166,6 +166,31 @@ describe('ExecReportConsumerService', () => {
     expect(ctx.orders.get(coid)?.state).toBe('REJECTED');
   });
 
+  // Defect A commit-1 (REJECT venue-reason persistence, 2026-07-16): RejectReport already carries
+  // reason/code (exec-report.ts) — this path threads it through the same as execution-gate's own
+  // REJECT fold, even though no production source constructs a RejectReport today.
+  it("folds REJECT with the report's own code/reason threaded onto the journaled event + persisted reason", async () => {
+    const ctx = build();
+    const intent = makeIntent();
+    const coid = intent.clientOrderId;
+    ctx.orders.create(initialOrder(coid, intent.qty, '0.001'));
+    ctx.orders.apply(coid, { type: 'SUBMIT_SENT' }); // SUBMITTING
+    ctx.portfolio.addInFlight(intent);
+    await ctx.outbox.append({
+      reportId: 'rj2',
+      report: { ...reject(coid, 'rj2'), code: '-2022', reason: 'ReduceOnly Order is rejected' },
+    });
+    await ctx.consumer.pump();
+    expect(ctx.orders.get(coid)?.state).toBe('REJECTED');
+    const rejectEvent = ctx.store.events.find((e) => e.event.type === 'REJECT');
+    expect(rejectEvent?.event).toEqual({
+      type: 'REJECT',
+      code: '-2022',
+      message: 'ReduceOnly Order is rejected',
+    });
+    expect(rejectEvent?.reason).toBe('-2022:ReduceOnly Order is rejected');
+  });
+
   it('folds a stream ACK when SUBMITTING, and treats a redundant ACK as metadata only', async () => {
     const ctx = build();
     const intent = makeIntent();

@@ -83,6 +83,10 @@ export const ORDER_SUBMIT_LATENCY = makeHistogramProvider({
 });
 
 const DEFAULT_STEP = '0.00000001';
+// Defect A commit-1 (REJECT venue-reason persistence): caps the raw AdapterError.message folded
+// into the REJECT event/persisted reason — ccxt/venue exception text is unbounded and this is an
+// audit field, not a truncation-sensitive money value.
+const REJECT_MESSAGE_MAX_LEN = 160;
 
 // EXECUTION_GATE (§2.4): the sole entry from Risk to a venue. A failed proof refuses before
 // any persistence or network call (the order-authorization chokepoint). The write-ahead
@@ -337,13 +341,25 @@ export class ExecutionGateService implements ExecutionGatePort {
     const cls = err instanceof AdapterError ? err.errorClass : 'OUTCOME_AMBIGUOUS';
     const code = err instanceof AdapterError ? err.code : 'UNKNOWN';
     if (cls === 'TERMINAL_REJECT') {
-      const rejected = this.orders.apply(coid, { type: 'REJECT' });
+      // Defect A commit-1 (REJECT venue-reason persistence): fold the adapter's own code/message
+      // onto the REJECT event (additive — reduce() switches on event.type only, see reducer.ts) and
+      // into persistEvent's `reason`, so order_events carries WHY the venue refused without an
+      // operator cross-referencing a log line. err is guaranteed an AdapterError here — cls is only
+      // ever 'TERMINAL_REJECT' when `err instanceof AdapterError` (see the ternary above).
+      const rawMessage = err instanceof AdapterError ? err.message : String(err);
+      const message =
+        rawMessage.length > REJECT_MESSAGE_MAX_LEN
+          ? rawMessage.slice(0, REJECT_MESSAGE_MAX_LEN)
+          : rawMessage;
+      const rejectEvent: OrderEvent = { type: 'REJECT', code, message };
+      const rejected = this.orders.apply(coid, rejectEvent);
       await this.persistEvent(
         coid,
         'reject',
-        { type: 'REJECT' },
+        rejectEvent,
         rejected.state,
         rejected.cumQty.toFixed(),
+        `${code}:${message}`,
       );
       this.portfolio.clearInFlight(coid);
       return this.reject(coid, code, 'exchange', rejected.state);

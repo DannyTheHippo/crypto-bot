@@ -8,6 +8,8 @@ import {
   type VenueFill,
   type CredentialCheck,
   type AlgoOrderState,
+  type AlgoOrderHistoryView,
+  type VenuePosition,
 } from '../../../ports/exchange';
 import {
   clientOrderId,
@@ -25,6 +27,7 @@ import {
   normalizeTrade,
   normalizeBalances,
   normalizeAlgoOrder,
+  normalizeAlgoHistory,
 } from './ccxt-normalize';
 
 // Shared with pinPerpVenueDefaults below: the only swap-capable venue this pass wires.
@@ -270,6 +273,96 @@ export class CcxtExchangeAdapter implements ExchangePort {
     void symbol;
     try {
       await this.client.fapiPrivateDeleteAlgoOrder({ algoId });
+    } catch (e) {
+      throw toAdapterError(e);
+    }
+  }
+
+  // Defect A (algo-stop-recovery.service.ts): a bounded history query for one clientAlgoId. Venue-
+  // gated identically to fetchOpenAlgoOrders/cancelAlgoOrder above. This is a MEASUREMENT primitive
+  // for the caller — recoverSymbol treats a throw the same as an undefined answer (fail OPEN: retry
+  // next sweep, never proof the stop is safe); the adapter itself still throws fail-closed when the
+  // perp client is missing the implicit method, matching every other perp-only primitive's posture.
+  async fetchAlgoOrderStatus(
+    clientAlgoId: string,
+    symbol: SymbolId,
+    sinceMs: EpochMs,
+  ): Promise<AlgoOrderHistoryView | undefined> {
+    if (String(this.venue) !== PERP_VENUE_ID) return undefined;
+    if (this.client.fapiPrivateGetAllAlgoOrders === undefined) {
+      throw new Error(
+        'algo rail: the perp venue client does not implement fapiPrivateGetAllAlgoOrders (fail-closed)',
+      );
+    }
+    try {
+      const raw = await this.client.fapiPrivateGetAllAlgoOrders({
+        symbol: rawMarketId(symbol),
+        startTime: sinceMs,
+        limit: 100,
+      });
+      const rows = Array.isArray(raw) ? raw : (raw?.orders ?? []);
+      // Match by clientAlgoId ONLY (never orderId, never a decoded venue id) — clientAlgoId is the
+      // same clientOrderId string the intent minted at placement, the one stable key this rail and
+      // our OMS both index on.
+      const row = rows.find((o) => o.clientAlgoId === clientAlgoId);
+      if (row === undefined) return undefined;
+      let view = normalizeAlgoHistory(row);
+      // Best-effort refinement: the sweep endpoint's algoStatus can lag the terminal transition by
+      // one poll on some rows; the single-query endpoint is the more current source when available.
+      // A refinement failure is silently ignored — the sweep-derived view (already fail-OPEN on
+      // RESTING/UNKNOWN) stands.
+      if (
+        view !== undefined &&
+        (view.status === 'RESTING' || view.status === 'UNKNOWN') &&
+        this.client.fapiPrivateGetAlgoOrder !== undefined
+      ) {
+        try {
+          const refined = normalizeAlgoHistory(
+            await this.client.fapiPrivateGetAlgoOrder({ algoId: row.algoId }),
+          );
+          if (refined !== undefined) view = refined;
+        } catch {
+          // best-effort only; fall through with the sweep-derived view
+        }
+      }
+      return view;
+    } catch (e) {
+      throw toAdapterError(e);
+    }
+  }
+
+  // Defect A: the position-recon fail-closed backstop (wired into reconciliation by a later
+  // dispatch). Venue-gated like every other perp-only primitive above.
+  async fetchPositions(symbols?: readonly SymbolId[]): Promise<readonly VenuePosition[]> {
+    if (String(this.venue) !== PERP_VENUE_ID) return [];
+    if (this.client.fetchPositions === undefined) {
+      throw new Error(
+        'position read: the perp venue client does not implement fetchPositions (fail-closed)',
+      );
+    }
+    try {
+      const raw = await this.client.fetchPositions(
+        symbols === undefined ? undefined : symbols.map((s) => String(s)),
+        {},
+      );
+      // Raw rows carry the VENUE market id in info.symbol ("BTCUSDT", same convention as the algo
+      // rail) — resolve it back to the unified SymbolId the caller requested with, mirroring
+      // fetchOpenAlgoOrders' own rawMarketId matching; ccxt's own unified `symbol` is the fallback
+      // for a row the caller didn't request by unified id (e.g. a full sweep with symbols omitted).
+      const byRawId = new Map<string, SymbolId>((symbols ?? []).map((s) => [rawMarketId(s), s]));
+      // #54's own lesson: never filter rows here — a flat (positionAmt "0") row is still a fact the
+      // caller compares against local state; only the caller's own comparison decides significance.
+      return raw.map((p) => {
+        const rawId = p.info?.symbol;
+        const resolved =
+          (rawId !== undefined ? byRawId.get(rawId) : undefined) ??
+          (p.symbol !== undefined ? symbolId(p.symbol) : symbolId(rawId ?? ''));
+        return {
+          symbol: resolved,
+          signedQty: p.info?.positionAmt ?? '0',
+          entryPrice: p.info?.entryPrice,
+        };
+      });
     } catch (e) {
       throw toAdapterError(e);
     }

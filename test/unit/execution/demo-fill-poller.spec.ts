@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import Decimal from 'decimal.js';
 import { DemoFillPollerService } from '../../../src/features/trading/execution/demo-fill-poller.service';
 import type { OrderBookService } from '../../../src/features/trading/execution/order-book.service';
@@ -6,6 +6,7 @@ import type {
   FillIngestorService,
   IngestResult,
 } from '../../../src/features/trading/execution/fill-ingestor.service';
+import type { AlgoStopRecoveryService } from '../../../src/features/trading/execution/algo-stop-recovery.service';
 import type { ExchangePort, VenueFill } from '../../../src/ports/exchange';
 import type { OrderRecord } from '../../../src/domain/oms/reducer';
 import type { FillRecord } from '../../../src/domain/types/exec-report';
@@ -42,7 +43,26 @@ function fill(
   };
 }
 
-function build(trades: VenueFill[], localOrders: OrderRecord[], applied = true) {
+// Default: no symbol carries a live algo intent, so recoverSymbol is never reached — every
+// pre-existing test (none of which know about Defect A recovery) stays byte-identical.
+function stubRecovery(
+  over: Partial<{
+    hasLiveAlgoIntent: (symbol: unknown) => boolean;
+    recoverSymbol: ReturnType<typeof vi.fn>;
+  }> = {},
+): AlgoStopRecoveryService {
+  return {
+    hasLiveAlgoIntent: over.hasLiveAlgoIntent ?? (() => false),
+    recoverSymbol: over.recoverSymbol ?? vi.fn().mockResolvedValue('none'),
+  } as unknown as AlgoStopRecoveryService;
+}
+
+function build(
+  trades: VenueFill[],
+  localOrders: OrderRecord[],
+  applied = true,
+  recovery: AlgoStopRecoveryService = stubRecovery(),
+) {
   const ingested: FillRecord[] = [];
   const foldedFrom: OrderRecord[] = [];
   const sinceCalls: number[] = [];
@@ -72,7 +92,7 @@ function build(trades: VenueFill[], localOrders: OrderRecord[], applied = true) 
     },
   } as unknown as FillIngestorService;
   return {
-    poller: new DemoFillPollerService(clock, exchange, orders, ingestor),
+    poller: new DemoFillPollerService(clock, exchange, orders, ingestor, recovery),
     ingested,
     foldedFrom,
     sinceCalls,
@@ -201,5 +221,63 @@ describe('DemoFillPollerService', () => {
     // Each fold starts from the record the PREVIOUS fill produced — monotone, never the snapshot.
     expect(foldedFrom.map((rec) => rec.cumQty.toFixed())).toEqual(['0', '1.99', '3.98']);
     expect(book.get(String(OUR))?.cumQty.toFixed()).toBe('5.65');
+  });
+
+  // Defect A commit-1: the poller hook onto AlgoStopRecoveryService.
+  describe('algo-stop recovery hook (Defect A)', () => {
+    it('unmatched fill + live algo intent on the symbol: recoverSymbol invoked exactly once for it after the sweep', async () => {
+      const recoverSymbol = vi.fn().mockResolvedValue('triggered');
+      const recovery = stubRecovery({ hasLiveAlgoIntent: () => true, recoverSymbol });
+      const { poller, ingested } = build(
+        [fill({ clientOrderId: clientOrderId('other-venue-id'), venueTradeId: 't8' })],
+        [localOrder()],
+        true,
+        recovery,
+      );
+      const r = await poller.poll([SYM]);
+      expect(r).toEqual({ ingested: 0, skippedUnknown: 1 }); // skippedUnknown behavior unchanged
+      expect(ingested).toHaveLength(0);
+      expect(recoverSymbol).toHaveBeenCalledTimes(1);
+      expect(recoverSymbol).toHaveBeenCalledWith(SYM);
+    });
+
+    it('unmatched fill with NO live algo intent: recoverSymbol not called, skippedUnknown unchanged', async () => {
+      const recoverSymbol = vi.fn().mockResolvedValue('none');
+      const recovery = stubRecovery({ hasLiveAlgoIntent: () => false, recoverSymbol });
+      const { poller, ingested } = build(
+        [fill({ clientOrderId: clientOrderId('other-venue-id'), venueTradeId: 't9' })],
+        [localOrder()],
+        true,
+        recovery,
+      );
+      const r = await poller.poll([SYM]);
+      expect(r).toEqual({ ingested: 0, skippedUnknown: 1 });
+      expect(ingested).toHaveLength(0);
+      expect(recoverSymbol).not.toHaveBeenCalled();
+    });
+
+    it('recoverSymbol throwing does not break the poll or the watermark', async () => {
+      const recoverSymbol = vi.fn().mockRejectedValue(new Error('venue down'));
+      const recovery = stubRecovery({ hasLiveAlgoIntent: () => true, recoverSymbol });
+      const { poller, ingested, sinceCalls } = build(
+        [
+          fill({
+            clientOrderId: clientOrderId('other-venue-id'),
+            venueTradeId: 't10',
+            venueTimestamp: epochMs(T + 30),
+          }),
+        ],
+        [localOrder()],
+        true,
+        recovery,
+      );
+      poller.init(); // anchors since = now = T
+      const r = await poller.poll([SYM]);
+      expect(r).toEqual({ ingested: 0, skippedUnknown: 1 });
+      expect(ingested).toHaveLength(0);
+      expect(recoverSymbol).toHaveBeenCalledTimes(1);
+      await poller.poll([SYM]);
+      expect(sinceCalls[1]).toBe(T + 30); // watermark advanced despite the recovery throw
+    });
   });
 });

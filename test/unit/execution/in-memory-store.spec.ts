@@ -127,6 +127,33 @@ describe('InMemoryExecutionStore', () => {
     expect(store.fills.size).toBe(1); // the conflicting record is never written
   });
 
+  // Defect A commit-1 (REJECT venue-reason persistence, 2026-07-16): the in-memory store pushes the
+  // whole PersistedOrderEvent verbatim (never a serialized/stripped payload like the drizzle store),
+  // so REJECT code/message and ev.reason already round-trip with no code change here — this pins
+  // that as a regression, not an assumption.
+  it('appendOrderEvent round-trips REJECT code/message and reason verbatim', async () => {
+    const store = new InMemoryExecutionStore();
+    const intent = makeIntent();
+    const rec = initialOrder(intent.clientOrderId, new Decimal('1'), '0.001');
+    await store.saveNewOrder(rec, intent);
+
+    await store.appendOrderEvent({
+      clientOrderId: intent.clientOrderId,
+      dedupeKey: 'reject',
+      event: { type: 'REJECT', code: '-2022', message: 'ReduceOnly Order is rejected' },
+      derivedState: 'REJECTED',
+      cumQty: '0',
+      reason: '-2022:ReduceOnly Order is rejected',
+    });
+    expect(store.events).toHaveLength(1);
+    expect(store.events[0]!.event).toEqual({
+      type: 'REJECT',
+      code: '-2022',
+      message: 'ReduceOnly Order is rejected',
+    });
+    expect(store.events[0]!.reason).toBe('-2022:ReduceOnly Order is rejected');
+  });
+
   it('saveReconciliation accumulates rows', async () => {
     const store = new InMemoryExecutionStore();
     await store.saveReconciliation({

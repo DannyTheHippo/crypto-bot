@@ -9,10 +9,15 @@ import { EquitySamplerService } from '../../../src/features/trading/execution/eq
 import { FillIngestorService } from '../../../src/features/trading/execution/fill-ingestor.service';
 import { InMemoryExecutionStore } from '../../../src/features/trading/execution/in-memory-store';
 import { initialOrder } from '../../../src/domain/oms/reducer';
-import type { ExchangePort, ExchangeOrderState, VenueFill } from '../../../src/ports/exchange';
+import type {
+  ExchangePort,
+  ExchangeOrderState,
+  VenueFill,
+  VenuePosition,
+} from '../../../src/ports/exchange';
 import type { ReconConfig } from '../../../src/ports/execution';
 import { encodeClientOrderId, intentId, epochMs } from '../../../src/domain/types/ids';
-import { price } from '../../../src/domain/types/money';
+import { price, qty } from '../../../src/domain/types/money';
 import { makeIntent, makeFill, fixedFeed, killSwitchStub, SYM, V, T } from './helpers';
 
 const CFG: ReconConfig = {
@@ -33,6 +38,10 @@ interface ExchangeScript {
   tradesThrow?: boolean;
   balances?: () => Map<string, { free: string; locked: string }>;
   balancesThrow?: boolean;
+  // Absent (both undefined) leaves ExchangePort.fetchPositions undefined, matching a spot/paper
+  // adapter — the position axis must skip entirely, exactly the pre-Defect-A behavior.
+  positions?: () => VenuePosition[];
+  positionsThrow?: boolean;
 }
 
 function build(
@@ -91,6 +100,14 @@ function build(
         ? Promise.reject(new Error('trades down'))
         : Promise.resolve(script.trades ?? []),
     validateCredentials: () => Promise.reject(new Error('unused')),
+    ...(script.positions !== undefined || script.positionsThrow
+      ? {
+          fetchPositions: () =>
+            script.positionsThrow
+              ? Promise.reject(new Error('positions down'))
+              : Promise.resolve(script.positions!()),
+        }
+      : {}),
   };
 
   const recon = new ReconciliationService(
@@ -631,5 +648,120 @@ describe('ReconciliationService (§6.4)', () => {
     await ctx.recon.reconcile();
     expect(ctx.store.fills.size).toBe(1); // only ours ingested; the foreign trade is ignored
     expect([...ctx.store.fills.values()][0]!.fee?.amount.toFixed()).toBe('0.1');
+  });
+
+  describe('position axis (Defect A fail-closed backstop)', () => {
+    // balanceAxis:false isolates every case below to the position axis alone — the local BUY fill
+    // moves quote cash away from the default venue balance stub, which would otherwise add an
+    // unrelated BALANCE_DRIFT mismatch to these assertions.
+    function seedLocalLong(ctx: Ctx, sz = '0.001') {
+      const intent = makeIntent({ qty: qty(sz) });
+      ctx.portfolio.applyFill(intent, makeFill({ qty: intent.qty, price: intent.refPrice }));
+    }
+
+    it('first divergent pass: position_drift counted, NO halt (debounce lets in-flight recovery land)', async () => {
+      const counter = { inc: vi.fn() } as unknown as Counter<string>;
+      const ctx = build({ positions: () => [] }, counter, undefined, undefined, {
+        balanceAxis: false,
+      });
+      seedLocalLong(ctx);
+      const r = await ctx.recon.reconcile();
+      expect(r.halted).toBe(false);
+      expect(ctx.engages).toHaveLength(0);
+      expect((counter.inc as ReturnType<typeof vi.fn>).mock.calls).toContainEqual([
+        { class: 'position_drift' },
+        1,
+      ]);
+    });
+
+    it('second CONSECUTIVE divergent pass HALTs with POSITION_DRIFT, never auto-flattens', async () => {
+      const ctx = build({ positions: () => [] }, undefined, undefined, undefined, {
+        balanceAxis: false,
+      });
+      seedLocalLong(ctx);
+      const first = await ctx.recon.reconcile();
+      expect(first.halted).toBe(false);
+      const second = await ctx.recon.reconcile();
+      expect(second.halted).toBe(true);
+      expect(ctx.engages.some((e) => e.reason.includes(`POSITION_DRIFT:${SYM}`))).toBe(true);
+      expect(ctx.engages.every((e) => e.flatten === false)).toBe(true); // HALT, never auto-flatten
+    });
+
+    it('divergent → clean → divergent: no HALT (consecutive streak resets on a clean pass)', async () => {
+      let venueQty = '0';
+      const ctx = build(
+        { positions: () => (venueQty === 'absent' ? [] : [{ symbol: SYM, signedQty: venueQty }]) },
+        undefined,
+        undefined,
+        undefined,
+        { balanceAxis: false },
+      );
+      seedLocalLong(ctx); // local 0.001
+      expect((await ctx.recon.reconcile()).halted).toBe(false); // divergent #1 (venue 0)
+      venueQty = '0.001';
+      expect((await ctx.recon.reconcile()).halted).toBe(false); // clean — streak resets
+      venueQty = '0';
+      expect((await ctx.recon.reconcile()).halted).toBe(false); // divergent #1 again, still no HALT
+      expect(ctx.engages).toHaveLength(0);
+    });
+
+    it('venue matches local exactly ⇒ clean', async () => {
+      const ctx = build(
+        { positions: () => [{ symbol: SYM, signedQty: '0.001' }] },
+        undefined,
+        undefined,
+        undefined,
+        { balanceAxis: false },
+      );
+      seedLocalLong(ctx);
+      const r = await ctx.recon.reconcile();
+      expect(r).toEqual({ mismatches: 0, halted: false });
+    });
+
+    it('positionAxis:false ⇒ axis skipped even when fetchPositions is defined (spot-lane config)', async () => {
+      // The shared adapter defines fetchPositions on every venue (vacuous [] off-perp), so config —
+      // not method presence — is the decider; reconConfigFrom sets this false off-perp.
+      const ctx = build({ positions: () => [] }, undefined, undefined, undefined, {
+        balanceAxis: false,
+        positionAxis: false,
+      });
+      seedLocalLong(ctx); // would drift every pass if the axis ran
+      expect((await ctx.recon.reconcile()).halted).toBe(false);
+      expect((await ctx.recon.reconcile()).halted).toBe(false); // past the debounce too — axis truly off
+      expect(ctx.engages).toHaveLength(0);
+    });
+
+    it('fetchPositions undefined ⇒ axis skipped (existing behavior byte-identical)', async () => {
+      const ctx = build({}, undefined, undefined, undefined, { balanceAxis: false });
+      seedLocalLong(ctx); // would drift POSITION_DRIFT if the axis ran — no venue truth ⇒ never observed
+      const r = await ctx.recon.reconcile();
+      expect(r).toEqual({ mismatches: 0, halted: false });
+    });
+
+    it('fetchPositions throw ⇒ sweep_failure only, no halt', async () => {
+      const counter = { inc: vi.fn() } as unknown as Counter<string>;
+      const ctx = build({ positionsThrow: true }, counter, undefined, undefined, {
+        balanceAxis: false,
+      });
+      const r = await ctx.recon.reconcile();
+      expect(r.halted).toBe(false);
+      expect((counter.inc as ReturnType<typeof vi.fn>).mock.calls).toContainEqual([
+        { class: 'sweep_failure' },
+        1,
+      ]);
+    });
+
+    it('exact-string qty comparison: venue 0.00100 vs local 0.001 MATCH (Decimal, not string equality)', async () => {
+      const ctx = build(
+        { positions: () => [{ symbol: SYM, signedQty: '0.00100' }] },
+        undefined,
+        undefined,
+        undefined,
+        { balanceAxis: false },
+      );
+      seedLocalLong(ctx, '0.001');
+      const r = await ctx.recon.reconcile();
+      expect(r).toEqual({ mismatches: 0, halted: false });
+    });
   });
 });

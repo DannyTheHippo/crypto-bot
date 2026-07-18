@@ -265,6 +265,55 @@ describe('PromotionEvaluator (W5 attributed auto-promotion)', () => {
     expect(h.appended).toHaveLength(0);
   });
 
+  it('prefers the versioned attribution read when the journal provides it (a NULL-row flood must not starve attribution)', async () => {
+    // Regression pin (2026-07-18): the shared recent(2000) window shrank to ~3 days once quiet
+    // NULL-version rows dominated the journal — versioned entry decides scrolled out and every
+    // trip attributed 'unknown', making the symmetric floors unreachable. recent() returning
+    // NOTHING here proves attribution came from recentVersioned alone.
+    const { decisions, fills } = championAndCandidate(10);
+    const calls: Array<{ limit: number; sinceMs: number | undefined }> = [];
+    const h = harness({ fills, decisions: [], championVersion: 1 });
+    h.deps = {
+      ...h.deps,
+      journal: {
+        record: () => undefined,
+        recent: () => Promise.resolve([]),
+        recentVersioned: (limit, sinceMs) => {
+          calls.push({ limit, sinceMs });
+          return Promise.resolve(decisions);
+        },
+      },
+    };
+    const evalr = new PromotionEvaluator({ ...CFG, evidenceEpochMs: 200_000_000 }, h.deps);
+    evalr.onClosedTrade(strategyId(SID), 20);
+    await flush();
+    expect(h.appended).toHaveLength(1);
+    // Cap + epoch-margin contract: versioned cap 20k, sinceMs = epoch − 24h decide margin.
+    expect(calls).toEqual([{ limit: 20_000, sinceMs: 200_000_000 - 24 * 60 * 60 * 1000 }]);
+  });
+
+  it('recentVersioned gets an unbounded sinceMs when no evidence epoch is configured', async () => {
+    const { decisions, fills } = championAndCandidate(10);
+    const calls: Array<{ limit: number; sinceMs: number | undefined }> = [];
+    const h = harness({ fills, decisions: [], championVersion: 1 });
+    h.deps = {
+      ...h.deps,
+      journal: {
+        record: () => undefined,
+        recent: () => Promise.resolve([]),
+        recentVersioned: (limit, sinceMs) => {
+          calls.push({ limit, sinceMs });
+          return Promise.resolve(decisions);
+        },
+      },
+    };
+    const evalr = new PromotionEvaluator(CFG, h.deps);
+    evalr.onClosedTrade(strategyId(SID), 20);
+    await flush();
+    expect(h.appended).toHaveLength(1);
+    expect(calls).toEqual([{ limit: 20_000, sinceMs: undefined }]);
+  });
+
   it('probabilityOfSuperiority: pairwise wins with ties counted half', () => {
     const dec = (vals: string[]) => vals.map((v) => new Decimal(v));
     // (1v1 tie .5) + (1v0 win) + (2v1 win) + (2v0 win) = 3.5 of 4 pairs.

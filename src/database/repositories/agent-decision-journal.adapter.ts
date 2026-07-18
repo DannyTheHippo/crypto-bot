@@ -60,37 +60,48 @@ export class AgentDecisionJournalAdapter implements AgentDecisionJournalPort {
 
   async recent(limit: number, strategyId?: string): Promise<readonly AgentDecisionRow[]> {
     const rows = await this.repo.selectRecent(limit, strategyId);
-    return rows.map((r) => ({
-      strategyId: r.strategyId as StrategyId,
-      symbol: r.symbol as SymbolId,
-      venue: r.venue as VenueId,
-      triggerKind: r.triggerKind,
-      basedOnSeq: r.basedOnSeq,
-      eventTime: r.eventTime as EpochMs,
-      model: r.model,
-      action: r.action,
-      confidence: r.confidence,
-      rationale: r.rationale,
-      refPrice: r.refPrice,
-      close: r.close,
-      inputTokens: r.inputTokens,
-      outputTokens: r.outputTokens,
-      cacheReadInputTokens: r.cacheReadInputTokens,
-      cacheCreationInputTokens: r.cacheCreationInputTokens,
-      latencyMs: r.latencyMs,
-      playbookVersion: r.playbookVersion,
-      promptHash: r.promptHash,
-      inputPayload: r.inputPayload,
-      plan: r.planJson,
-      consultId: r.consultId,
-      infoArm: r.infoArm,
-      thinkingArm: r.thinkingArm,
-      id: String(r.id),
-      createdAt: r.createdAt.getTime() as EpochMs,
-    }));
+    return rows.map((r) => toRow(r));
+  }
+
+  async recentVersioned(limit: number, sinceMs?: number): Promise<readonly AgentDecisionRow[]> {
+    const rows = await this.repo.selectRecentVersioned(limit, sinceMs);
+    return rows.map((r) => toRow(r));
   }
 
   versionEntryStats(version: number): Promise<{ decides: number; entries: number }> {
     return this.repo.countVersionEntryStats(version);
   }
+}
+
+function toRow(
+  r: Awaited<ReturnType<AgentDecisionRepository['selectRecent']>>[number],
+): AgentDecisionRow {
+  return {
+    strategyId: r.strategyId as StrategyId,
+    symbol: r.symbol as SymbolId,
+    venue: r.venue as VenueId,
+    triggerKind: r.triggerKind,
+    basedOnSeq: r.basedOnSeq,
+    eventTime: r.eventTime as EpochMs,
+    model: r.model,
+    action: r.action,
+    confidence: r.confidence,
+    rationale: r.rationale,
+    refPrice: r.refPrice,
+    close: r.close,
+    inputTokens: r.inputTokens,
+    outputTokens: r.outputTokens,
+    cacheReadInputTokens: r.cacheReadInputTokens,
+    cacheCreationInputTokens: r.cacheCreationInputTokens,
+    latencyMs: r.latencyMs,
+    playbookVersion: r.playbookVersion,
+    promptHash: r.promptHash,
+    inputPayload: r.inputPayload,
+    plan: r.planJson,
+    consultId: r.consultId,
+    infoArm: r.infoArm,
+    thinkingArm: r.thinkingArm,
+    id: String(r.id),
+    createdAt: r.createdAt.getTime() as EpochMs,
+  };
 }

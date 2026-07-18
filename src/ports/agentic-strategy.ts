@@ -436,6 +436,17 @@ export interface AgentDecisionJournalPort {
   // fakes compile; absent ⇒ callers must NOT abstention-lapse (fail toward preserving the
   // candidate — orphaning is destructive, squatting is bounded by the age lapse).
   versionEntryStats?(version: number): Promise<{ decides: number; entries: number }>;
+  // Versioned rows only (playbookVersion !== null) at-or-after sinceMs (absent ⇒ no time bound),
+  // oldest→newest like recent(), capped to the NEWEST `limit` rows. The attribution evidence base
+  // (promotion evaluator + version-attribution metrics): quiet/prescreen rows carry NULL versions,
+  // so sharing recent(N)'s row-count window with them shrinks attribution's wall-clock reach as
+  // the traded universe grows — at 8-symbol volume (~620 rows/day, ~1/3 versioned) recent(2000)
+  // covered ~3 days, clipped the evidence epoch, and made the promotion evaluator's symmetric
+  // attributed-trip floors unreachable (2026-07-18, same window-shrink class as versionEntryStats'
+  // 2026-07-17 note above). Over-cap drops oldest-first — the failure direction stays "label old
+  // trips unknown", never mis-attribute. Optional so pre-this-method fakes compile; absent ⇒
+  // callers fall back to recent() (the historical window).
+  recentVersioned?(limit: number, sinceMs?: number): Promise<readonly AgentDecisionRow[]>;
 }
 
 // ── LLM usage sink ────────────────────────────────────────────────────────────

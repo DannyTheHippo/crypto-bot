@@ -115,6 +115,22 @@ describe('InMemoryAgentDecisionJournal', () => {
     expect(withoutConsultId!.consultId).toBeUndefined();
   });
 
+  it('recentVersioned() returns versioned rows only, honors sinceMs and keeps the newest under the cap', async () => {
+    const journal = new InMemoryAgentDecisionJournal();
+    journal.record(entry(1, { playbookVersion: 1 }));
+    journal.record(entry(2, { playbookVersion: null }));
+    journal.record(entry(3, { playbookVersion: 2 }));
+    journal.record(entry(4, { playbookVersion: null }));
+    journal.record(entry(5, { playbookVersion: 3 }));
+
+    // NULL-version (quiet/prescreen) rows never consume the attribution window.
+    expect((await journal.recentVersioned(10)).map((r) => r.eventTime)).toEqual([1, 3, 5]);
+    // Over-cap keeps the NEWEST versioned rows, still oldest→newest.
+    expect((await journal.recentVersioned(2)).map((r) => r.eventTime)).toEqual([3, 5]);
+    // sinceMs bounds at-or-after the instant.
+    expect((await journal.recentVersioned(10, 3)).map((r) => r.eventTime)).toEqual([3, 5]);
+  });
+
   it('versionEntryStats counts lifetime real-LLM decides/entries for one version (abstention-lapse evidence base)', async () => {
     const journal = new InMemoryAgentDecisionJournal();
     journal.record(entry(1, { model: 'claude-sonnet-5', action: 'long', playbookVersion: 2 }));

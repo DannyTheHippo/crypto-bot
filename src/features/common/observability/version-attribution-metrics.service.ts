@@ -31,10 +31,15 @@ export const VERSION_ROUND_TRIPS_GAUGE = makeGaugeProvider({
 
 // Same demo-evidence mode pin as promotion-readiness.service.ts / round-trip-evidence.reader.ts.
 const DEMO_MODE = 'testnet' as const;
-// Attribution looks back over the journal's most recent rows only (the read port is a recency
-// window, not a full-table scan); cycles older than the window label version="unknown" rather than
-// mis-attributing. ~2 weeks of decides at current cadence.
+// Fallback recency window, used ONLY when the bound journal predates recentVersioned; cycles older
+// than the window label version="unknown" rather than mis-attributing. The primary read is
+// versioned-rows-only since the evidence epoch: quiet/prescreen rows carry NULL versions, so this
+// shared row-count window shrank to ~3 days of wall-clock at 8-symbol journal volume and leaked
+// old trips to 'unknown' (2026-07-18; see AgentDecisionJournalPort.recentVersioned). Cap/margin
+// semantics mirror promotion-evaluator.ts's — the two attribution reads must stay consistent.
 const DECISION_LOOKBACK_ROWS = 2000;
+const VERSIONED_LOOKBACK_CAP = 20_000;
+const EPOCH_DECIDE_MARGIN_MS = 24 * 60 * 60 * 1000;
 const SAMPLE_INTERVAL_MS = 5 * 60 * 1000;
 
 // Stage-2's measurement lever: without per-version attribution, playbook promotions are judged
@@ -74,9 +79,19 @@ export class VersionAttributionMetricsService implements OnModuleInit, OnModuleD
       // once entry sizes drift, and that symbol's trips silently stop attributing to any version.
       const epoch = this.config.agentic.promotionEvidenceEpoch;
       const epochMs = epoch === undefined ? undefined : Date.parse(epoch);
+      const journal = this.journal;
+      const decisionsRead =
+        journal.recentVersioned !== undefined
+          ? journal.recentVersioned(
+              VERSIONED_LOOKBACK_CAP,
+              epochMs === undefined || Number.isNaN(epochMs)
+                ? undefined
+                : epochMs - EPOCH_DECIDE_MARGIN_MS,
+            )
+          : journal.recent(DECISION_LOOKBACK_ROWS);
       const [fills, decisions] = await Promise.all([
         this.stats.fillsForMode(DEMO_MODE, epochMs),
-        this.journal.recent(DECISION_LOOKBACK_ROWS),
+        decisionsRead,
       ]);
       const dust = new Decimal(this.config.agentic.promotionDustNotional);
       const { cycles } = walkRoundTrips(fills, dust);

@@ -129,6 +129,49 @@ describe('VersionAttributionMetricsService', () => {
     expect(trips.set).not.toHaveBeenCalled();
   });
 
+  it('prefers the versioned journal read and derives sinceMs from the epoch minus the decide margin', async () => {
+    // Regression pin (2026-07-18): recent() returns nothing (the shared window after a quiet-row
+    // flood); recentVersioned carries the truth — attribution must come from it, with the
+    // cap/epoch-margin contract promotion-evaluator.ts shares.
+    const fills = [
+      fill({ side: 'BUY', executedAt: T }),
+      fill({ side: 'SELL', price: '51000', executedAt: T + 2000 }),
+    ];
+    const versionedRows = [decision({ eventTime: T as EpochMs, playbookVersion: 4, id: '9' })];
+    const calls: Array<{ limit: number; sinceMs: number | undefined }> = [];
+    const net = gaugeFake();
+    const trips = gaugeFake();
+    const stats: PromotionStatsPort = {
+      fillsForMode: () => Promise.resolve(fills),
+      llmTokenTotals: () => Promise.resolve({ perModel: [] }),
+    };
+    const journal: AgentDecisionJournalPort = {
+      record: () => undefined,
+      recent: () => Promise.resolve([]),
+      recentVersioned: (limit, sinceMs) => {
+        calls.push({ limit, sinceMs });
+        return Promise.resolve(versionedRows);
+      },
+    };
+    const config = {
+      agentic: { promotionDustNotional: '5', promotionEvidenceEpoch: '2026-07-12T08:30:00Z' },
+    } as unknown as TypedConfigService;
+    const svc = new VersionAttributionMetricsService(
+      net as never,
+      trips as never,
+      config,
+      stats,
+      journal,
+    );
+
+    await svc.tick();
+
+    expect(trips.set).toHaveBeenCalledWith({ version: '4' }, 1);
+    expect(calls).toEqual([
+      { limit: 20_000, sinceMs: Date.parse('2026-07-12T08:30:00Z') - 24 * 60 * 60 * 1000 },
+    ]);
+  });
+
   it('passes the evidence epoch to the fills read (attribution shares the gate window)', async () => {
     const seen: Array<number | undefined> = [];
     const stats: PromotionStatsPort = {

@@ -10,10 +10,21 @@ import type { LoggerLike } from './anthropic-agent-client';
 // Same demo-evidence pin as promotion-readiness.service.ts / version-attribution-metrics.service.ts:
 // the demo (testnet) fills ARE the live business case, so attribution + promotion are judged on them.
 const DEMO_MODE = 'testnet' as const;
-// Recency window over the journal — matches version-attribution-metrics.service.ts's own lookback so
-// the two attribution reads stay consistent. Cycles older than the window label 'unknown' and never
+// Fallback recency window over the journal, used ONLY when the bound journal predates
+// recentVersioned — matches version-attribution-metrics.service.ts's own fallback so the two
+// attribution reads stay consistent. Cycles older than the window label 'unknown' and never
 // promote (they can neither be the champion nor a candidate by number).
 const DECISION_LOOKBACK_ROWS = 2000;
+// Primary attribution read: versioned rows only, since the evidence epoch. Quiet/prescreen rows
+// carry NULL versions, so the shared recent(2000) window shrank to ~3 days of wall-clock at
+// 8-symbol journal volume — old trips leaked to 'unknown' and the symmetric attributed-trip
+// floors became unreachable (2026-07-18; see AgentDecisionJournalPort.recentVersioned). The cap
+// is a runaway guard (~months of versioned decides), over-cap drops oldest — same 'unknown'
+// fail direction. The margin admits an entry decide preceding its epoch-bounded entry fill —
+// at the deployed intraday timeframe (15m, entryValidityBars ≤ 8 ⇒ ~2h max rest) 24h has >12×
+// headroom; a 4h/1d timeframe would need this margin re-derived.
+const VERSIONED_LOOKBACK_CAP = 20_000;
+const EPOCH_DECIDE_MARGIN_MS = 24 * 60 * 60 * 1000;
 
 const NOOP_LOGGER: LoggerLike = { warn: () => undefined };
 
@@ -181,9 +192,23 @@ export class PromotionEvaluator {
       }
     }
 
+    // Same NaN guard shape as version-attribution-metrics.service.ts — createPromotionEvaluator
+    // already sanitizes NaN→undefined, but a directly-constructed config must not slip a NaN bound
+    // into the query (defensive symmetry between the two attribution reads).
+    const epochMs =
+      this.cfg.evidenceEpochMs === undefined || Number.isNaN(this.cfg.evidenceEpochMs)
+        ? undefined
+        : this.cfg.evidenceEpochMs;
+    const decisionsRead =
+      journal.recentVersioned !== undefined
+        ? journal.recentVersioned(
+            VERSIONED_LOOKBACK_CAP,
+            epochMs === undefined ? undefined : epochMs - EPOCH_DECIDE_MARGIN_MS,
+          )
+        : journal.recent(DECISION_LOOKBACK_ROWS);
     const [fills, decisions, current] = await Promise.all([
       stats.fillsForMode(DEMO_MODE, this.cfg.evidenceEpochMs),
-      journal.recent(DECISION_LOOKBACK_ROWS),
+      decisionsRead,
       // Champion identity from the UNROUTED read — see EvaluatorPlaybookStore.active's comment.
       playbookStore.active?.() ?? playbookStore.current(),
     ]);

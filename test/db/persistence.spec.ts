@@ -1047,6 +1047,81 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
     expect(limited.map((r) => r.promptHash)).toEqual(['p7-c']);
   });
 
+  it('(j) selectRecentVersioned: versioned rows only, sinceMs-bounded, cap keeps the newest (attribution read)', async () => {
+    const repo = new AgentDecisionRepository(db);
+    const base = {
+      strategyId: 'agentic-rv-1',
+      symbol: 'BTC/USDT',
+      venue: 'binance',
+      triggerKind: 'candle' as const,
+      basedOnSeq: 1n,
+      model: 'm',
+      action: 'hold' as const,
+      confidence: 0.5,
+      rationale: 'r',
+      refPrice: null,
+      close: null,
+      inputTokens: null,
+      outputTokens: null,
+      latencyMs: null,
+      inputPayload: null,
+    };
+    // eventTimes above every other row this suite inserts, so the cap assertions below are
+    // deterministic against the shared table.
+    await repo.insert({
+      ...base,
+      eventTime: 1_800_000_000_100,
+      playbookVersion: 7,
+      promptHash: 'rv-a',
+    });
+    await repo.insert({
+      ...base,
+      eventTime: 1_800_000_000_200,
+      playbookVersion: null,
+      promptHash: 'rv-b',
+    });
+    await repo.insert({
+      ...base,
+      eventTime: 1_800_000_000_300,
+      playbookVersion: 8,
+      promptHash: 'rv-c',
+    });
+    await repo.insert({
+      ...base,
+      eventTime: 1_800_000_000_400,
+      playbookVersion: 9,
+      promptHash: 'rv-d',
+    });
+    // Two versioned rows sharing an eventTime: the desc(id) tiebreak must resolve them in
+    // insertion order, matching selectRecent (attributeVersion's backwards scan depends on it).
+    await repo.insert({
+      ...base,
+      eventTime: 1_800_000_000_500,
+      playbookVersion: 10,
+      promptHash: 'rv-e',
+    });
+    await repo.insert({
+      ...base,
+      eventTime: 1_800_000_000_500,
+      playbookVersion: 11,
+      promptHash: 'rv-f',
+    });
+
+    const adapter = new AgentDecisionJournalAdapter(db);
+    // NULL-version rows are excluded outright — they must not consume the attribution window.
+    const ours = (await adapter.recentVersioned(500)).filter(
+      (r) => r.strategyId === 'agentic-rv-1',
+    );
+    expect(ours.map((r) => r.promptHash)).toEqual(['rv-a', 'rv-c', 'rv-d', 'rv-e', 'rv-f']);
+    // Over-cap keeps the NEWEST versioned rows table-wide, returned oldest→newest — including the
+    // same-eventTime pair in insertion order.
+    const capped = await adapter.recentVersioned(2);
+    expect(capped.map((r) => r.promptHash)).toEqual(['rv-e', 'rv-f']);
+    // sinceMs bounds at-or-after the instant.
+    const since = await adapter.recentVersioned(500, 1_800_000_000_300);
+    expect(since.map((r) => r.promptHash)).toEqual(['rv-c', 'rv-d', 'rv-e', 'rv-f']);
+  });
+
   it('(j) playbook store: current() lazily seeds the row on first call when absent', async () => {
     const seed = { version: 1001, content: 'seed-1001' };
     const store = new PlaybookStoreAdapter(db, seed);

@@ -39,6 +39,16 @@ export class InMemoryAgentDecisionJournal implements AgentDecisionJournalPort {
     return Promise.resolve(scoped.slice(Math.max(0, scoped.length - limit)));
   }
 
+  recentVersioned(limit: number, sinceMs?: number): Promise<readonly AgentDecisionRow[]> {
+    // Same tail-of-oldest→newest shape as recent(), over versioned rows only — see the port's
+    // recentVersioned comment. "Since" honesty is bounded by the MAX_ROWS ring, like
+    // versionEntryStats' lifetime below.
+    const scoped = this.rows.filter(
+      (r) => r.playbookVersion !== null && (sinceMs === undefined || r.eventTime >= sinceMs),
+    );
+    return Promise.resolve(scoped.slice(Math.max(0, scoped.length - limit)));
+  }
+
   versionEntryStats(version: number): Promise<{ decides: number; entries: number }> {
     // "Lifetime" here is bounded by the MAX_ROWS ring — honest only within the buffer, which is
     // acceptable for the DB-less paper/test substrate this journal serves (see the port comment).

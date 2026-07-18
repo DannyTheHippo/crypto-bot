@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { and, count, desc, eq, like, sql } from 'drizzle-orm';
+import { and, count, desc, eq, gte, isNotNull, like, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../database.tokens';
 import * as schema from '../schemas/trading';
 import { requireDb } from './persistence-guard';
@@ -74,6 +74,26 @@ export class AgentDecisionRepository {
             .where(eq(schema.agentDecisions.strategyId, strategyId))
             .orderBy(desc(schema.agentDecisions.eventTime), desc(schema.agentDecisions.id))
             .limit(limit);
+    return rows.reverse();
+  }
+
+  // Versioned-only variant of selectRecent for the attribution reads — see
+  // AgentDecisionJournalPort.recentVersioned for why quiet NULL-version rows must not share the
+  // window. sinceMs bounds the scan when the caller carries an evidence epoch; the cap binds either
+  // way (newest rows win, same desc(eventTime), desc(id) tiebreak as selectRecent).
+  async selectRecentVersioned(limit: number, sinceMs?: number): Promise<AgentDecisionDbRow[]> {
+    const db = requireDb(this.db);
+    const versioned = isNotNull(schema.agentDecisions.playbookVersion);
+    const rows = await db
+      .select()
+      .from(schema.agentDecisions)
+      .where(
+        sinceMs === undefined
+          ? versioned
+          : and(versioned, gte(schema.agentDecisions.eventTime, sinceMs)),
+      )
+      .orderBy(desc(schema.agentDecisions.eventTime), desc(schema.agentDecisions.id))
+      .limit(limit);
     return rows.reverse();
   }
 

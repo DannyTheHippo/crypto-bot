@@ -1,7 +1,9 @@
 {
   "uid": "crypto-bot",
   "title": "crypto-bot",
-  "tags": ["crypto-bot"],
+  "tags": [
+    "crypto-bot"
+  ],
   "timezone": "utc",
   "schemaVersion": 39,
   "refresh": "10s",
@@ -49,29 +51,6 @@
           "text": "15",
           "value": "15"
         }
-      },
-      {
-        "type": "textbox",
-        "name": "credits_baseline_usd",
-        "label": "Credits baseline (USD)",
-        "description": "Backlog #56: your Anthropic credit balance, copied from the Anthropic console. Set it TOGETHER with 'Window spend at baseline' (copy the 'API spend (window, DB)' stat at the same moment) — the Credits-left stat subtracts spend accrued since that instant.",
-        "query": "0",
-        "current": {
-          "text": "0",
-          "value": "0"
-        }
-      },
-      {
-        "type": "textbox",
-        "name": "credits_spend_at_baseline_usd",
-        "label": "Window spend at baseline (USD)",
-        "description": "The value the 'API spend (window, DB)' stat showed at the moment you entered the credits baseline. Anchors the estimate so already-counted spend is not double-subtracted.",
-        "query": "0",
-        "current": {
-          "text": "0",
-          "value": "0"
-        },
-        "hide": true
       }
     ]
   },
@@ -380,57 +359,14 @@
       ]
     },
     {
-      "id": 156,
-      "type": "stat",
-      "title": "Credits left (est., USD)",
-      "description": "Backlog #56: estimated Anthropic credits remaining = credits_baseline_usd \u2212 (window spend since the baseline was entered). Update recipe: open the Anthropic console, copy the balance into the 'Credits baseline' variable and this dashboard's 'API spend (window, DB)' value into 'Window spend at baseline' at the same moment. ESTIMATE ONLY \u2014 blind to out-of-band spend (owner sessions, offline evals) and to the perp lane's own Prometheus; reads 0 until the baseline vars are set. Exact balance needs the Anthropic Admin API (separate admin key \u2014 deliberately not wired, rule 7).",
-      "gridPos": {
-        "h": 2,
-        "w": 2,
-        "x": 16,
-        "y": 7
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "currencyUSD",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 5
-              },
-              {
-                "color": "green",
-                "value": 20
-              }
-            ]
-          },
-          "color": {
-            "mode": "thresholds"
-          }
-        }
-      },
-      "targets": [
-        {
-          "expr": "${credits_baseline_usd} - (agentic_promotion_llm_cost_usd - ${credits_spend_at_baseline_usd})",
-          "refId": "A"
-        }
-      ]
-    },
-    {
       "id": 157,
       "type": "stat",
       "title": "API spend (window, DB)",
       "description": "agentic_promotion_llm_cost_usd \u2014 the DB-backed, per-model, cache-aware spend over the evidence window (survives restarts, unlike the cumulative stat above, which resets each boot). Also the number to copy into 'Window spend at baseline' when setting the credits baseline.",
       "gridPos": {
         "h": 2,
-        "w": 2,
-        "x": 18,
+        "w": 4,
+        "x": 16,
         "y": 7
       },
       "fieldConfig": {
@@ -546,7 +482,9 @@
         "colorMode": "background",
         "textMode": "value",
         "reduceOptions": {
-          "calcs": ["lastNotNull"]
+          "calcs": [
+            "lastNotNull"
+          ]
         }
       },
       "targets": [
@@ -590,7 +528,9 @@
         "colorMode": "background",
         "textMode": "value_and_name",
         "reduceOptions": {
-          "calcs": ["lastNotNull"]
+          "calcs": [
+            "lastNotNull"
+          ]
         }
       },
       "targets": [
@@ -679,7 +619,9 @@
         "colorMode": "background",
         "textMode": "name",
         "reduceOptions": {
-          "calcs": ["lastNotNull"]
+          "calcs": [
+            "lastNotNull"
+          ]
         }
       },
       "targets": [
@@ -704,7 +646,9 @@
       "options": {
         "textMode": "name",
         "reduceOptions": {
-          "calcs": ["lastNotNull"]
+          "calcs": [
+            "lastNotNull"
+          ]
         }
       },
       "targets": [
@@ -795,7 +739,9 @@
       "options": {
         "colorMode": "background",
         "reduceOptions": {
-          "calcs": ["lastNotNull"]
+          "calcs": [
+            "lastNotNull"
+          ]
         }
       },
       "targets": [
@@ -1427,7 +1373,9 @@
       "options": {
         "textMode": "value_and_name",
         "reduceOptions": {
-          "calcs": ["lastNotNull"]
+          "calcs": [
+            "lastNotNull"
+          ]
         }
       },
       "targets": [
@@ -1658,7 +1606,9 @@
         "legend": {
           "displayMode": "table",
           "placement": "right",
-          "calcs": ["lastNotNull"]
+          "calcs": [
+            "lastNotNull"
+          ]
         }
       },
       "targets": [
@@ -1699,7 +1649,9 @@
         "legend": {
           "displayMode": "table",
           "placement": "right",
-          "calcs": ["lastNotNull"]
+          "calcs": [
+            "lastNotNull"
+          ]
         }
       },
       "targets": [

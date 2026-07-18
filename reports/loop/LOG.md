@@ -3657,3 +3657,87 @@ non-zero + staleness re-converging is the signature); (2) spend re-measure at 8 
 faster (7 more trips needed); (4) perp lane: fold `f9b7d56` into its next deploy; L0→L1 clean-
 soak clock runs from 13:25Z (needs ≥3d + ≥5 trips + zero mismatches); (5) P8a harm-stop peek
 once ≥8 trips/cell; (6) carry re-test due ~2026-07-24.
+
+## 2026-07-18 — Pass 33 (scheduled, ~00:05–01:10Z): MAINTENANCE — trading-path measurement bug found + FIXED+SHIPPED (`309bbfc`): version attribution shared the quiet-row recency window, so post-5→8 the promotion floors were becoming structurally unreachable (third instance of the window-shrink class)
+
+**Data window:** Pass 32 close (07-17 17:50Z) → 07-18 00:45Z. Nothing landed in between (the
+tree opened clean at `94d7f8d`, Pass 32's own report commit). Host awake on AC all pass.
+
+**Evidence sweep (00:08–00:35Z):** stack 4/4 + perp profile up, both apps healthy 7h+ (spot boot
+`58f0264b` 17:30Z = Pass 32's Bug-D deploy; perp boot `f0d4ee31` 16:38Z = Pass 32's Bug-C perp
+deploy — that restart was Pass 32's own doing, confirmed benign). Harness probe GREEN (offline
+subset 4 files / 15 tests). **0 errors both lanes**; spot warns = boot banner + routine info-A/B
+control-arm lines + ONE transient AAVE positioning-feed poll fail (venue "service load too
+heavy", fail-open feed, single occurrence); perp warns = banner only. 0 HALT / mismatch /
+EXPIRED / kill-switch events. Spot scoreboard (epoch 07-12 08:30Z): **RT=26 (+1), net-of-cost
+−$21.24 (improved from −$22.49), LLM $10.95, window 5.12d, ready=0**; equity $4,986.46, dd
+0.27%. **Phase-2 WATCH item (2) RESOLVED GREEN — FIRST spot venue-TP FILL:** ZEC's resting SELL
+LIMIT TP filled at the venue 17:05:01Z (ingested via fill-poll, intent FILLED), closing ZEC's
+first-ever trip at **+$1.35 realized — the second green symbol after LINK**, on day 1 of the 5→8
+expansion. A new LINK entry filled 23:55Z (BUY LIMIT_MAKER, maker) with its venue TP now resting
+(the persistent `inFlight=1` on portfolio lines is that ACKED resting TP intent — benign,
+verified against the boot baseline `inFlight=0`). **Bug D (`f9b7d56`) soak POSITIVE:** across
+the full 7h/32-subscription boot, max candle staleness 42s, `market_stream_forced_reconnects_total`
+= 0. **Spend re-measure (5→8 day 2): ~$2.0–2.7/day** (boot token counters ≈$0.56/6.6h ≈$2.0;
+DB-gauge accrual delta $10.24→$10.95 over 6.3h ≈$2.7) — day-1's $3.5–4.8 upper band was
+boot-cache-heavy as suspected; the >$4.5-sustained fallback is NOT armed. Perp: RT=3 net −$3.93
+(DB-backed), book flat, kill switch RUNNING, 0 reconcile mismatches; the 16:38Z boot produced 1
+proposed decide → BUY LIMIT_MAKER rested 2 bars unfilled → **TTL-canceled cleanly 17:30Z** (no
+incident; no new trips). L0→L1 clean-soak clock intact from 07-17 13:25Z; trips 3/5.
+
+**Bug E — promotion/measurement path (BOTH lanes): version attribution read the shared
+recent(2000) journal window; FIXED+SHIPPED `309bbfc`.** The sweep's A/B read showed the live
+signature: champion v1 dropped 22→18 attributed trips in 6h with a NEW `version="unknown"`
+bucket of 5 (−$0.69) — trips were losing their version. Root cause (third instance of the
+window-shrink class, after the #39 abstain window and Pass 32's Bug C): BOTH attribution
+consumers — `promotion-evaluator.ts` (decides ACTUAL auto-promotion; its comment said the two
+must stay consistent) and `version-attribution-metrics.service.ts` (the gauges every pass and
+§3(b) verdict-verification read) — attributed each closed trip from `journal.recent(2000)`, a
+row-count window shared with quiet/prescreen NULL-version rows. DB forensics: 624 journal rows
+on 07-17 alone (first full 8-symbol day; only 205 versioned — 419 quiet rows are pure dilution),
+so the newest-2000 window reached back only to 07-12 13:45Z — already 5h15m PAST the evidence
+epoch, exactly the 5 unknown trips. Projection: at ~620 rows/day the window covers ~3.2 days,
+but the promotion window is 14 days and the symmetric floor needs 10 attributed trips per arm —
+v2 closes ~1.6 trips/day at 40% A/B, so ~5 trips max would ever sit in-window: **the 10-trip
+floor was structurally unreachable; auto-promotion starves and the A/B could only resolve by the
+336h mint-over clock, discarding v2's real (positive) evidence** — the Stage-2 exit criterion
+was silently unreachable too. Fix: new optional `AgentDecisionJournalPort.recentVersioned(limit,
+sinceMs)` — versioned rows ONLY (`playbook_version IS NOT NULL`), bounded at evidence-epoch
+−24h decide margin, capped 20,000 newest (~97 days at the current 205 versioned rows/day);
+Drizzle + in-memory implementations (same desc(eventTime), desc(id) tiebreak as recent());
+both consumers prefer it and fall back to recent(2000) only when a bound journal predates the
+method. Failure direction unchanged and declared: over-cap/over-margin labels old trips
+'unknown', NEVER mis-attributes. Adversarial review (opus, 7 attack angles A–G): **APPROVE,
+0 must-fix, 4 nits — 3 applied** (timeframe-qualified margin comment; same-eventTime desc(id)
+tiebreak now test-pinned on real Postgres; NaN-guard symmetry between the two consumers), 1
+accepted-as-is (no index on the versioned scan — same cost profile as the existing unscoped
+read at these volumes). Notable review proof: the new read can only move attributions between
+correct-version and 'unknown', never flip one version to another (recent() clipped oldest-first
+and attributeVersion already skipped NULL rows). Gates: build/lint/typecheck green, **2218 unit
+(+4) / 53 db (+1) / 41 livegate / 17 paper / 15 eval**; regression pins in both consumer specs
+(a NULL-row flood with recent()=[] must still attribute), the in-memory journal, and the db
+suite.
+
+**Pass type (§3): MAINTENANCE** — a correctness bug on the trading path (the promotion evaluator
+IS the promotion decision; the gauges are the loop's §3(b) verification read), found by this
+pass's sweep, fixed in-pass per the bug-routing discipline. ONE money-path-adjacent item; got
+the mandatory adversarial review. CANDIDATE ineligible (candidates unresolved in A/B on both
+lanes), PROMOTION ineligible (v2 3/10 attributed — and the counter itself was the defect).
+
+**Deploy + soak:** built + recreated BOTH lanes ~00:36Z (spot boot `473d76fc`, perp boot
+`b1995dce`; the perp recreate also folds in `f9b7d56` — Pass 32's carry item (4) DONE; note the
+perp service needs its OWN `docker compose --profile perp build app-perp`, the spot image build
+does not cover it). Soak: both healthy, 0 errors; first attribution sampler tick post-fix:
+**v1=23 / v2=3 / unknown=0 — the 5 'unknown' trips re-attributed to v1 and the pre-fix v1=18
+recovered to 23** (23+3=26=RT ✓); decides flowing on both lanes; no EXPIRED; protective-exit
+config intact (S3 backstop + resting venue TPs).
+
+**Flagged for human review:** nothing new. AVAILABILITY nominal (AC, awake, no gaps).
+
+**Next-pass candidates:** (1) attribution WATCH — `agentic_version_round_trips` must stay
+stable across passes (v1+v2+unknown=RT, unknown≈0; any re-growth of 'unknown' = a new leak);
+(2) v2 verdict watch — 7 more attributed trips to the 10-floor, now actually reachable;
+(3) candle-channel watch across the next watchdog fire (Bug D signature); (4) L0→L1 soak
+(≥3d + ≥5 perp trips from 07-17 13:25Z; 3/5 trips, day 1/3); (5) P8a harm-stop peek at ≥8
+trips/cell; (6) carry re-test due ~2026-07-24; (7) E2 `eval:candidates` remains runnable
+(corpus ≥200) if a candidate-scoring pass becomes eligible.

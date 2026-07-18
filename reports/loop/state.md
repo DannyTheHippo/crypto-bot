@@ -142,6 +142,8 @@ never changes for strategy evolution.
     proposes + open position with resting venue TP; AAVE/NEAR deciding), **zero risk vetoes**;
     spend ~$3.5–4.8/day (boot-cache-heavy window — not yet "sustained", re-measure); side effect:
     32 ws subscriptions crossed the venue 1008 burst cliff (Bug D, fixed `f9b7d56` — LOG.md).
+    **Day-2 (Pass 33): spend re-measured ~$2.0–2.7/day — the day-1 band was boot-cache noise,
+    fallback NOT armed; ZEC closed its first trip +$1.35 via the first-ever spot venue-TP fill.**
 
 ### Push II program (owner session 2026-07-13, plan `humming-sprouting-crab`) — 7/8 phases shipped, 5 live
 
@@ -445,6 +447,13 @@ PoS ≥ 0.70). Exit criterion: ≥2 promotions with version-attributed PnL AND r
 - **First-close-after-boot seed race:** the trigger check runs synchronously before the async DB
   seed lands, so the first close per strategy after a recreate primes but cannot fire; the second
   fires. Every redeploy resets in-memory primes. (Pass 21, 2026-07-13.)
+- **Row-count journal windows are volume-fragile:** `recent(N)` shrinks in wall-clock terms as
+  the universe/journal volume grows — three live defects from one class (#39 abstain window;
+  Bug C `cfb2ed3` abstention-lapse 400-row window; Bug E `309bbfc` attribution 2000-row window).
+  Any consumer measuring PER-VERSION or lifetime evidence must read lifetime stats
+  (`versionEntryStats`) or epoch-bounded versioned rows (`recentVersioned`), never a shared
+  recent(N); recency windows remain correct only where recency IS the semantics (reflection's
+  evidence corpus). (Pass 33, 2026-07-18.)
 - **Epoch-straddle bound:** promotion-walk cycles straddling an epoch can freeze a symbol group
   under entry-size drift (not count-preserving). Fixed by threading the epoch through all four
   consumers (`cc72a10`) + the 07-12 epoch move; declare new epochs only at flat instants.
@@ -457,6 +466,28 @@ PoS ≥ 0.70). Exit criterion: ≥2 promotions with version-attributed PnL AND r
   deadlock diagnosed (Pass 21, #39) → entry-rate floor + abstain lapse (`b9dddc2`).
 
 ## Last pass
+
+**Pass 33, 2026-07-18** (scheduled, ~00:05–01:10Z, **MAINTENANCE — trading-path measurement bug
+found + FIXED+SHIPPED (`309bbfc`)**) — **Bug E (both lanes): version attribution read the shared
+`journal.recent(2000)` window; quiet NULL-version rows (419 of 624 rows on 07-17) shrank it to
+~3.2 days post-5→8 — it already clipped the epoch by 5h15m (live signature: v1 22→18 attributed
+trips in 6h, new `unknown`=5 bucket), and at ~620 rows/day the promotion evaluator's symmetric
+10-trip floors were structurally unreachable (v2 could never hold >~5 in-window) — auto-promotion
+starved, the A/B resolvable only by mint-over clock.** Third window-shrink-class instance (#39,
+Bug C). Fix: optional `AgentDecisionJournalPort.recentVersioned(limit, sinceMs)` — versioned rows
+only, epoch−24h bound, 20k cap; both consumers (promotion-evaluator + version-attribution
+gauges) prefer it, fail direction unchanged ('unknown', never mis-attribute). Reviewer APPROVE
+0 must-fix (3 nits applied); 2218 unit + 53 db + livegate + paper + eval green. Deployed BOTH
+lanes ~00:36Z (spot `473d76fc`, perp `b1995dce` — perp folds in `f9b7d56`, Pass 32 carry DONE;
+NB the perp image needs its own `--profile perp build app-perp`). Soak: post-fix sampler tick
+v1=23 / v2=3 / unknown=0 (=RT 26 ✓). Sweep otherwise ALL GREEN: 0 errors/HALT/mismatch both
+lanes; **first spot venue-TP FILL (Phase-2 WATCH 2 RESOLVED GREEN): ZEC TP filled 17:05Z, trip
+closed +$1.35 — second green symbol**; Bug D soak positive (42s max staleness, 0 forced
+reconnects, 7h/32 subs); spend day-2 re-measured **~$2.0–2.7/day** (day-1 band was boot-cache
+noise; fallback NOT armed); perp 16:38Z boot's 1 proposal → LIMIT_MAKER rested 2 bars → TTL-
+canceled cleanly; L0→L1 soak intact (3/5 trips, clean since 07-17 13:25Z). Spot RT=26 net
+−$21.24 LLM $10.95 ready=0. CANDIDATE/PROMOTION ineligible (unchanged). Full entry:
+`reports/loop/LOG.md`.
 
 **Pass 32, 2026-07-17** (scheduled, ~16:07–17:50Z, **MAINTENANCE — two trading-path bugs found,
 BOTH FIXED+SHIPPED**) — **Bug C (`cfb2ed3`, both lanes):** the live-abstention lapse measured
@@ -805,8 +836,8 @@ wait on venue-TP capture data; **#18/#46/#47/#48** wait on their stated data/seq
   soak restarts from this boot; loop-domain to fire when met.** Evidence lane restored (3 closed
   perp trips on the book). **Pass 32 soak check: POSITIVE — 351 consecutive CLEAN reconcile
   passes 13:23:53→16:18Z, positions table empty (book flat), kill switch RUNNING, 0 mismatches.**
-  Perp image note: the lane runs `cfb2ed3` (Bug C fix in, Bug D stream fix not — its 4 ws
-  subscriptions sit far under the 1008 burst cliff); fold `f9b7d56` into the next perp deploy.
+  Perp image note: RESOLVED Pass 33 (2026-07-18) — the Bug E redeploy (`309bbfc`, perp boot
+  `b1995dce`) folded `f9b7d56` into the perp lane.
 - **PERP VENUE-STOP (FLAG 1, #54) — RESOLVED 2026-07-16 (both layers shipped; Pass 29 closed it).**
   Layer (a) `25563bc` (throw containment + `reconcile_error`); layer (b) `34bdddd` (owner-directed
   `/goal` session): adapter parses the bare-array response AND matches the venue market id

@@ -3741,3 +3741,67 @@ stable across passes (v1+v2+unknown=RT, unknown≈0; any re-growth of 'unknown' 
 (≥3d + ≥5 perp trips from 07-17 13:25Z; 3/5 trips, day 1/3); (5) P8a harm-stop peek at ≥8
 trips/cell; (6) carry re-test due ~2026-07-24; (7) E2 `eval:candidates` remains runnable
 (corpus ≥200) if a candidate-scoring pass becomes eligible.
+
+## 2026-07-18 — Pass 34 (scheduled, ~08:07–08:40Z)
+
+**Window read:** both lanes since the Pass 33 redeploy boots (~00:36Z; spot `473d76fc`, perp
+`b1995dce`), promtool + DB + 8h logs. Host awake on AC (100%), tree clean at pass start.
+
+**Sweep: ALL GREEN.** 0 error lines both lanes; warns benign (24 spot info-A/B control-arm
+lines, 1 ZEC consult element schema soft-hold — the accepted Phase-5 quirk, single occurrence —
+plus boot banners and 2 stray HTTP route-path probes). No HALT / kill-switch / reconciliation
+mismatch / EXPIRED on either lane; perp `kill_switch_state{RUNNING}=1`, 0 mismatch classes.
+Harness probe GREEN (`pnpm eval:agentic`: 4 files / 15 tests, live specs self-skip).
+
+**Pass 33 attribution WATCH (item 1): HOLDING.** `agentic_version_round_trips` v1=23 / v2=3 /
+unknown=0 — v1+v2=26=RT exactly; no 'unknown' regrowth across the pass boundary. Bug E fix
+stays live-verified.
+
+**Scoreboard (spot, epoch 07-12 08:30Z):** RT=26 (+0 since Pass 33), net-of-cost **−$23.25**
+(LLM accrual $12.86), window 5.12d, ready=0; equity $4,986.17, dd 0.28%. Realized by symbol:
+LINK +$5.37 and ZEC +$1.35 the two greens. **Spend:** last-24h **$3.99** (< the $4.50 5→8
+fallback bar; no fallback armed) — but the boot-to-now 6h pace annualizes ~$6.3/day with
+prescreen skip at only 29% (60 quiet / 207) vs the historical 70–83%: an active-market morning
+(BTC breakout), not a defect; the $5/day breaker binds first if it persists. WATCH next pass:
+if a full UTC day closes >$4.50 that's breach 1-of-2 for the factorial cost rule.
+
+**Live trading since boot:** same-bar BTC longs on BOTH lanes at 07:45Z (spot 0.00155 @
+63993.56, maker-filled; perp 0.001 @ 63960.4, maker-filled by ~08:02Z — perp trip 4 now OPEN).
+**Perp stop architecture engaged organically at 08:15:01–03Z: venue TP (SELL LIMIT 64344.2 =
+entry×1.006) AND venue STOP_MARKET (63954.8) both ACKED within 3s of the bar** — first fully
+organic (non-probe) engagement on a fresh entry since the Bug B resolution; P8d WATCH item 2
+(a venue TP/stop FILL journaling a closed trip) is now live-armed on this position. Spot: LINK
+13.27 @ 8.262 held with resting venue TP (SELL 8.386, ACKED 05:15Z; two prior drift
+cancel/re-places clean — steady-state lifecycle, no churn signature).
+
+**Pass type (§3): MAINTENANCE — pre-authorized P0b entry fill-quality re-run EXECUTED (data
+floor met).** No correctness bug surfaced by the sweep; CANDIDATE ineligible (v2 unresolved in
+A/B, 3/10 attributed both floors symmetric); PROMOTION ineligible (3<10). The P0a stop-slippage
+re-run floor is NOT met (stop-exit fills `plan exit: stop` N=7 < 10 — S3 fires TRAILING_STOP=5
+/ STOP_LOSS=1 are a different mechanism, not in that study's population) — stays gated.
+
+**P0b re-run (pre-registered floor ≥15; N=25):** `test/backtest/entry-fill-quality/run.mjs`
+unchanged, $0, DB-reads + public candles. **Verdict: post-only maker-entry discipline VALIDATED
+— no guidance change.** Fill rate 76% (19/25), median 0.13 bars-to-fill; 6 terminal misses
+(5 venue would-cross REJECTs + 1 cancel_entry) priced via the settlement replay (first real
+exercise of that path): **signed foregone net −353.5bps — 5 of 6 misses were dodged losers**
+(SOL −52/−152, BTC −90, ZEC −162/−157; lone forgone winner LINK 07-14 +259). The miss
+population is a loss filter, not a fill leak. Full report:
+`reports/loop/entry-fill-quality-2026-07-18.md`; **experiments registry row 130** (honest-N:
+single study run, one row, aggregate metrics JSON). Next re-run at N≈50 or on an entry-mechanic
+change; the number to watch is the would-cross reject share (20% of all entries).
+
+**Diff summary:** docs/reports only — `reports/loop/entry-fill-quality-2026-07-18.md` (new),
+LOG.md + state.md (this entry; pre-auth marked consumed). Registry row 130 (append-only,
+non-money). No src change, no deploy, no config change. Gates for the report commit:
+`pnpm lint:md` green; §2.6 harness probe green (above).
+
+**Flagged for human review:** nothing new.
+
+**Next-pass candidates:** (1) attribution WATCH continues (v1+v2+unknown=RT, unknown≈0);
+(2) v2 verdict watch (needs 7 more attributed trips; A/B 40%); (3) **perp trip-4 close = P8d
+WATCH item 2's first real venue TP-or-stop fill journaling** (`venue_tp_filled` /
+`venue_stop_filled` + clean reconcile) — check FIRST next pass; (4) L0→L1 soak (day 1/3 from
+07-17 13:25Z; 3/5 closed trips, 4th open); (5) spend: full-UTC-day read vs the $4.50 bar;
+(6) P8a harm-stop peek once ≥8 arm-stamped trips/cell; (7) carry re-test due ~2026-07-24;
+(8) stop-slippage re-run when `plan exit: stop` N≥10 (7 now).

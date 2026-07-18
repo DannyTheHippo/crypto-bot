@@ -251,6 +251,11 @@ fix: OMS algo-rail containment, 7 sub-fixes), `a6f0573` (P8a factorial ENABLE, s
   population is N=1 post-LIMIT_MAKER-deploy (filled maker in 0.13 bars). No guidance change
   supportable. **PRE-AUTH (loop-domain):** re-run once LIMIT_MAKER entry N≥15. Confirmed the #40
   stamp gap live: `first_fill_at` NULL on a FILLED order — the fills-table join is ground truth.
+  **RE-RUN EXECUTED 2026-07-18 Pass 34 at N=25 (`reports/loop/entry-fill-quality-2026-07-18.md`,
+  registry row 130): post-only maker entry VALIDATED** — fill rate 76%, median 0.13 bars; 6 misses
+  priced at −353.5bps signed foregone (5/6 dodged losers; 5 were venue would-cross rejects) ⇒ no
+  bounds change. Next re-run at N≈50 or on an entry-mechanic change; watch the would-cross reject
+  share (20%). Pre-auth CONSUMED — future re-runs are ordinary data-gated maintenance.
 - **P0d venue stop-capability probe (live on demo, orders placed far-from-market and cancelled;
   account left clean):** (1) spot `STOP_LOSS_LIMIT` is FULLY OMS-compatible — regular order rail,
   surfaces in fetchOpenOrders (unified type echoes 'limit' + stopPrice/triggerPrice; raw
@@ -466,6 +471,25 @@ PoS ≥ 0.70). Exit criterion: ≥2 promotions with version-attributed PnL AND r
   deadlock diagnosed (Pass 21, #39) → entry-rate floor + abstain lapse (`b9dddc2`).
 
 ## Last pass
+
+**Pass 34, 2026-07-18** (scheduled, ~08:07–08:40Z, **MAINTENANCE — P0b entry fill-quality
+pre-auth re-run EXECUTED at N=25: maker discipline VALIDATED, no guidance change**) — sweep ALL
+GREEN both lanes (0 errors, 0 HALT/mismatch/EXPIRED, harness probe green, host AC/awake).
+**Attribution WATCH holding:** v1=23 / v2=3 / unknown=0 (=RT 26 ✓, no unknown regrowth).
+Scoreboard: RT=26 (+0), net −$23.25, LLM $12.86, window 5.12d, ready=0; equity $4,986.17.
+Spend: last-24h **$3.99** (< $4.50 bar, fallback NOT armed) but the since-boot 6h pace
+annualizes ~$6.3/day on a 29% prescreen-skip morning (BTC breakout activity) — first full-UTC-day
+>$4.50 would be breach 1-of-2 for the factorial cost rule; re-read next pass. **Live: same-bar
+BTC maker entries BOTH lanes 07:45Z; perp trip 4 OPEN (0.001 @ 63960.4) and the stop architecture
+engaged organically at 08:15:01–03Z — venue TP (64344.2) + STOP_MARKET (63954.8) both ACKED
+within 3s of the bar (first non-probe engagement since Bug B); P8d WATCH item 2 (fill journaling)
+is live-armed on this position — check FIRST next pass.** Spot holds LINK 13.27 @ 8.262 with
+resting venue TP (8.386, drift-managed clean). Study: fill rate 76%, median 0.13 bars; 6 misses
+= −353.5bps signed foregone (5/6 dodged losers) ⇒ post-only validated; report
+`reports/loop/entry-fill-quality-2026-07-18.md`, registry row 130; P0a stop-slippage re-run
+still gated (`plan exit: stop` N=7 < 10). L0→L1 soak day 1/3, 3/5 trips. CANDIDATE/PROMOTION
+ineligible (v2 3/10 unresolved). Ship: docs + registry row only, no deploy. Full entry:
+`reports/loop/LOG.md`.
 
 **Pass 33, 2026-07-18** (scheduled, ~00:05–01:10Z, **MAINTENANCE — trading-path measurement bug
 found + FIXED+SHIPPED (`309bbfc`)**) — **Bug E (both lanes): version attribution read the shared

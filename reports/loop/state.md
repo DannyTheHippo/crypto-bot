@@ -470,6 +470,150 @@ PoS ≥ 0.70). Exit criterion: ≥2 promotions with version-attributed PnL AND r
   rollback + retry-with-feedback (`21c9b2d`) → **first live mint Pass 16 (v2)** → abstention
   deadlock diagnosed (Pass 21, #39) → entry-rate floor + abstain lapse (`b9dddc2`).
 
+## v2 contract cutover (2026-07-18) — decision record
+
+**What changed:** the entire agentic lane moved from the boxed v1 signal-emitter to the v2 rich
+decision contract (owner-approved plan, six-round interview 2026-07-17/18; plan file
+`~/.claude/plans/let-s-make-the-bot-app-synthetic-quail.md`): model-owned sizeFraction sizing
+(spot 0.15 / perp 0.50 caps), revisable exit directives + scale-ins/partial closes, portfolio
+consult self-scheduling (wake-on-move 1.5%, fallback 16 bars; prescreen DELETED), thesis
+persistence, always-on adaptive thinking (4096 tokens), $1k effective book (SIZER_EQUITY_CAP)
+with book-scale breakers ($1.50/$0.75 per day) and risk envelope (gross/net 1200, order 500),
+24-symbol spot basket with scanner-gated top-12 menu (filters live-probe-verified — 8 of 16
+groundwork rows were wrong and corrected), perp shorts + 2x leverage cap + funding-PnL capture
+(new `funding_payments` table, migration 0013), expert seed playbooks v2 per lane, reflection
+reframed (v2 digest walk incl. SHORT sign-mirroring fix, weekly cadence, regret digest,
+exec-quality digest), promotion entry-counting widened (`open_long`/`open_short`). Full gate
+green at cutover: build/lint/typecheck clean, 2372/2372 tests, livegate 41/41.
+
+**Why (evidence):** Pass-31 scoreboard — champion −$7.02 trading with $8.16 LLM cost over 20
+trips; cost drag exceeded the trading loss and v1's clamps blocked conviction expression. At the
+owner's ~$1k production-capital cap, v1 economics could never clear the promotion bar.
+
+**Cutover mechanics:** local prod-like soak (owner directive) IS the cutover. GCP migration
+DEFERRED (owner, 2026-07-18) — the local stack remains the deployment (host-sleep duty cycle
+stays in force); if revived, lift-and-shift stack + DB with NO second epoch reset.
+
+- Perp `PROMOTION_EVIDENCE_EPOCH=2026-07-18T15:36:14Z` — set at a log-verified FLAT instant.
+- Spot epoch: PENDING FLAT (open work) — LINK ~$110 + AAVE ~$90 v1 leftovers re-armed under v2
+  management; stamp the epoch + recreate at the first flat portfolio tick (epoch-straddle bound,
+  Passes 14/17/18, forbids stamping now).
+- Soak findings already fixed + regression-specced: liquidation-feed venue-listing prune
+  (PEPE/SHIB have no same-named perp market — feed was in a 1s reconnect loop) and scanner
+  quorum guard (boot scan raced warmup and froze an arbitrary alphabetical menu for the day).
+- Funding poller's boot-time poll raced migration 0013 (fail-open, logged) — first hourly poll
+  must succeed (WATCH-V2-5).
+
+**WATCH (resolve each explicitly at next observation):**
+
+- WATCH-V2-1: first 24h LLM cost within $1.50 (spot) / $0.75 (perp); breaker exhaustion mid-day
+  = economize via prompt/cadence, never raise the breaker.
+- WATCH-V2-2: consult-gate outcomes show `skipped_scheduled` dominating quiet bars; a
+  consulted-every-bar storm = scheduler defect, fix before GCP.
+- WATCH-V2-3: journal rows carry v2 actions + directives + thesis; any journal-guard
+  dropped-row log or `error`-action storm = defect-class, fix before GCP.
+- WATCH-V2-4: first quorum-met universe scan produces real scores (not null) and a stable menu
+  under hysteresis; repeated `universe_scan_skipped` past ~4h of streaming = ingestion defect.
+- WATCH-V2-5: perp funding poll succeeds on its first hourly cycle; rows accumulate with the
+  documented sign convention.
+- WATCH-V2-6: zero OMS unknown-outcome escalations, reconcile mismatches, or kill-switch
+  engagements through the soak; ANY = halt the GCP move and fix first.
+- WATCH-V2-7: **RESOLVED 2026-07-19** — spot `PROMOTION_EVIDENCE_EPOCH=2026-07-19T18:57:09Z`
+  stamped at a log-verified dust-flat instant (LINK closed at its re-armed exit, all
+  remaining positions < $5 dust, 0 open orders); spot container recreated on the stamped
+  epoch, healthy. Perp epoch unchanged (2026-07-18T15:36:14Z). W5 closed CLEAN at the same
+  cycle (owner threshold); W6 9-hour soak started ~19:00Z on the final round-8 build.
+
+**Deferred/noted:** sentiment feed off (needs a CryptoPanic key — owner decision when desired);
+thinking A/B factorial retired (always-on); basket-alpha + portfolio btcBeta unpopulated pending
+a multi-symbol price-history store (honest omission, port comments); BNB fee discount = live-flip
+prep (a ~25% spot fee cut demo cannot measure); exec-report → strategy fan-out has zero
+production callers (fill-triggered consults arrive via a different path — exec-quality digest
+stays fail-open-undefined until that seam is wired; deferred feature).
+
+## Round-8 pre-cutover cleanup + W4 adversarial audit (2026-07-18/19) — decision record
+
+**Owner decisions (rounds 7+8, 2026-07-18):** GCP revival UN-deferred (lift-and-shift, NO
+epoch re-reset); full scanner-gated perp menu; alpha inputs wholesale (FnG+positioning,
+CryptoPanic behind an owner key, aggTrades CVD); Opus reflection / Sonnet tactical; Grafana
+rebuilt as ONE dashboard (dashboard-only alerting — no push channel, owner accepts the
+unattended implication); cleanup at full depth (sweep + seam rewiring + adversarial audit);
+ALL of it plus a few-hour clean soak BEFORE the GCP cutover. Plan file
+`~/.claude/plans/let-s-make-the-bot-app-synthetic-quail.md` (round-7/8 sections).
+**Resequenced (owner, 2026-07-19): GCP deploy + terraform are the ABSOLUTE LAST task** —
+X2–X9 and R1–R3 land on the LOCAL stack first; host-sleep duty cycle stays in force until
+the terminal lift.
+
+**Landed 2026-07-18/19 (all gates green, 2440/2440 + livegate 41/41):** W1 Grafana
+single-dashboard rebuild (6 rows / 95 panels, cross-lane Overview aggregates, RO Postgres
+datasources `grafana_ro` on BOTH DBs — enforcement live-verified), W2 behavior-preserving
+sweep (2 orphans removed, README/docs refreshed, 2 stale docs archived), W3 seam rewiring
+(exec-quality fan-out via EXEC_QUALITY_SINK, price-history store → honest basket alpha +
+btcBeta, app.module 6-module decomposition with the eslint app-zone pattern widened —
+allow-rules untouched), W4 adversarial audit via 8 opus finders + 2-lens refutation:
+**20 confirmed findings, ALL fixed with regression tests** — headline criticals: (1) v2
+mapping omitted `AgentDirectives.direction` → every perp short's deterministic protection
+was INVERTED; (2) reconciliation trade axis dead on the ccxt path (venue order id vs cb
+coid) → missed-fill backfill and the FILL_FOR_UNKNOWN_ORDER halt could never fire live.
+Full table: `reports/audit-2026-07-cleanup.md`.
+
+**Accepted risk:** single shared ws connection per lane (connection-wide close on a stalled
+core channel; recovery now ~24s via 4-lane paced scheduler). Sharding deferred to the perp
+menu widening. **Plausible/unfixed:** fill-poller mid-poll ack race (reconciliation is now
+the backstop); negative-fee (rebate) ingestion — revisit at the live flip with the BNB note.
+
+**WATCH (round-8, resolve at next observations):**
+
+- WATCH-R8-1: post-redeploy boot clean on the round-8 build; the four next-deploy metrics
+  (budget remaining, active menu, menu churn, funding ingested) populate their panels.
+- WATCH-R8-2: ws forced-reconnect frequency + recovery duration under the lane scheduler
+  (expect burst recovery ≤ ~1/4 of pre-fix; no 1008 storms at 4 msg/s).
+- WATCH-R8-3: perp funding payload line sane after the accrual dedupe (no monotonic
+  inflation vs `funding_payments` rows).
+- WATCH-R8-4: any schema-validation rejection now logs its zod issues + payload — diagnose
+  the first occurrence (one undiagnosed perp instance 2026-07-18 19:30Z pre-fix).
+- WATCH-R8-5: promotion evidence shows FUNDING_DATA_MISSING blocking on perp only until
+  funding rows exist in-window — never on spot.
+- WATCH-R8-6: **W5 soak finding (2026-07-19 ~11:00-12:00Z, defect-class, fix SHIPPED +
+  DEPLOYED both lanes):** after the ~10h host sleep, the spot watchdog's `exchange.close()`
+  remedy left the shared ccxt ws instance in a terminal `ExchangeClosedByUser` state —
+  every re-watch threw for 50+ min (zero candles/consults) until a container restart. ccxt
+  4.5.58 `close()` is NOT always recoverable by re-watch (falsifies the adapter's header
+  assumption). Fix: exchange-recreation seam (factory injection, single-flight swap on
+  closedByUser, herd still lane-paced; 3 regression specs, suite 2443/2443). Perp was
+  unaffected (its close recovered). AAVE leftover closed pre-sleep (+$91 cash); spot epoch
+  still waits on LINK only. **ESCALATION (2026-07-19 ~13:51Z): seam v1 recovered the wedge
+  live (recreations fired + streams resumed) but under a venue penalty phase the
+  watchdog-close→closedByUser→recreate cycle churned 36 recreations in ~35 min; wedged old
+  instances retain live ws timers (close() rejects), so they never GC — spot OOM-crashed
+  (JS heap) and Docker auto-restarted it (RestartCount=1, final safety rung worked). Seam
+  v2 SHIPPED + DEPLOYED both lanes (escalating recreation cooldown 60s→10min ceiling with
+  15-min-healthy reset, hard-dispose of stale ccxt clients/timers/sockets even on close()
+  rejection, 10-per-rolling-hour cap failing LOUD level-50 to the healthcheck-restart rung,
+  watchdog close cooldown confirmed already global; 7 recreation specs, market-data
+  120/120, suite 2447/2447). W5 clean clock restarts at the v2 deploy; the next venue
+  penalty phase or host sleep/wake is the live probe.**
+- WATCH-R8-7: **W5 soak finding #2 (2026-07-19, root-caused ~17:00Z; fix SHIPPED + DEPLOYED
+  ~17:10Z, LIVE-VERIFIED ~17:24Z — kill switch RUNNING sustained, reconcile passes CLEAN,
+  consult outcomes + journal rows flowing again; suite 2452/2452):** the
+  spot lane journaled ZERO decides all day — root cause: the W4 reconciliation fix's tier-2
+  classification (durable-yes/memory-no ⇒ FILL_FOR_UNKNOWN_ORDER) lacked a terminal-state
+  discriminator, so 8 HISTORICAL venue trades (TP fills executed server-side during the
+  host sleep; orders terminal in the durable store, correctly absent from the rehydrated
+  book) re-triggered `RECONCILE_MISMATCH` + kill-switch HALT on EVERY 30s pass
+  (reconciliations table result=HALT), and the halt silently suppressed every decide.
+  THREE stacked observability defects hid it: engage() logs nothing, strategy-host halt
+  suppression logs nothing, /health/ready HARDCODES killSwitchState 'RUNNING'. Fix narrows
+  classification (already-ingested fills skip; terminal-order unrecorded fills
+  backfill-ingest; only NON-terminal lost state still HALTs — rule-6 fail-closed policy
+  unchanged) + all three observability gaps. The wedge/venue-pressure saga (R8-6) was
+  concurrent but separate; the candle/consumer pipeline was healthy throughout. Incidental
+  latent hazard flagged during the (disproven) pipeline investigation, NOT fixed:
+  `marketRaw()` multiplexes all supervised loops via `Promise.all(loops).then(finish,
+  finish)` (ccxt-stream.adapter.ts ~:449) — one escaped throw from any single loop marks
+  the ENTIRE merged iterator done while sibling loops keep pushing into an undrained
+  buffer, silently. Harden when next in that file (loop-domain follow-up).
+
 ## Last pass
 
 **Pass 34, 2026-07-18** (scheduled, ~08:07–08:40Z, **MAINTENANCE — P0b entry fill-quality

@@ -336,6 +336,59 @@ describe('BatchingAgentClient', () => {
         }),
     ).toThrow(/exceeds the strategy-host backstop/);
   });
+
+  // U1 (Design § Universe: active-menu gate) — see batching-agent-client.ts's own ActiveMenuGate
+  // comment: absent by default (pre-U1 behavior, byte-identical), consumable by I1 once wired.
+  it('U1: with no activeMenuGate configured, every symbol batches exactly as before this step', async () => {
+    const proposeBatch = vi.fn().mockResolvedValue({
+      proposals: new Map([
+        ['BTC/USDT', { signals: [] }],
+        ['ETH/USDT', { signals: [] }],
+      ]),
+    });
+    const inner: BatchCapableAgentClient = { proposeBatch };
+    const client = new BatchingAgentClient(inner, makeBudget(), {
+      windowMs: 3000,
+      maxBatchSize: 5,
+      agentTimeoutMs: 30000,
+    });
+
+    const proposals = [
+      client.propose(buildInput('BTC/USDT', 'agentic-1')),
+      client.propose(buildInput('ETH/USDT', 'agentic-2')),
+    ];
+    await vi.advanceTimersByTimeAsync(3000);
+    await Promise.all(proposals);
+
+    expect(proposeBatch).toHaveBeenCalledTimes(1);
+    expect(proposeBatch.mock.calls[0]![0]).toHaveLength(2);
+  });
+
+  it('U1: a non-active-menu symbol resolves an inert hold WITHOUT joining the batch or reaching the inner client', async () => {
+    const proposeBatch = vi
+      .fn()
+      .mockResolvedValue({ proposals: new Map([['BTC/USDT', { signals: [] }]]) });
+    const inner: BatchCapableAgentClient = { proposeBatch };
+    const client = new BatchingAgentClient(inner, makeBudget(), {
+      windowMs: 3000,
+      maxBatchSize: 5,
+      agentTimeoutMs: 30000,
+      activeMenuGate: { isActive: (symbol) => symbol === 'BTC/USDT' },
+    });
+
+    const activeProposal = client.propose(buildInput('BTC/USDT', 'agentic-1'));
+    const inertProposal = client.propose(buildInput('ETH/USDT', 'agentic-2'));
+
+    // The gated-out symbol resolves immediately — no timer advance needed.
+    await expect(inertProposal).resolves.toEqual({ signals: [] });
+
+    await vi.advanceTimersByTimeAsync(3000);
+    await activeProposal;
+
+    expect(proposeBatch).toHaveBeenCalledTimes(1);
+    // Only the active symbol ever reached the inner client.
+    expect(proposeBatch.mock.calls[0]![0]).toHaveLength(1);
+  });
 });
 
 describe('AnthropicAgentClient.proposeBatch', () => {
@@ -475,10 +528,13 @@ describe('AnthropicAgentClient.proposeBatch', () => {
 
     for (const symbol of ['BTC/USDT', 'ETH/USDT', 'SOL/USDT']) {
       const p = result.proposals.get(symbol);
-      // Both pcts default 0 in buildCfg ⇒ info treatment (bundle present: control arm never
-      // assigned) and thinking off — the stamps must still be concrete booleans, never undefined.
+      // infoArm: derivativesAbPct defaults 0 in buildCfg ⇒ info treatment (bundle present: control
+      // arm never assigned). thinkingArm: S3 retired the thinking A/B (Design § Deleted/replaced
+      // scaffolding — "thinking A/B arm retired") — every decide/batch call now carries adaptive
+      // thinking unconditionally, so this is always true regardless of cfg. Both stamps must still be
+      // concrete booleans, never undefined.
       expect(p?.infoArm, `${symbol} infoArm`).toBe(true);
-      expect(p?.thinkingArm, `${symbol} thinkingArm`).toBe(false);
+      expect(p?.thinkingArm, `${symbol} thinkingArm`).toBe(true);
     }
   });
 
@@ -826,5 +882,281 @@ describe('AnthropicAgentClient.proposeBatch', () => {
     };
     expect(sentBody.tools[0]).toEqual(PORTFOLIO_TOOL);
     expect(JSON.stringify(sentBody.tools[0])).not.toContain('direction');
+  });
+});
+
+// A2 (rich decision contract, Design § New tool contract): proposeBatch's v2 (tradeContract) path —
+// buildTradePortfolioTool/buildTradePortfolioShortsTool selection, tradePortfolioSchema/
+// tradeElementSchema/tradeShortsElementSchema parsing, mapping through buildProposalFromTradeDecision
+// (reused byte-identically from A1's single-symbol mapping), and the portfolio-level nextConsultBars
+// stamp. Soft-hold semantics (missing symbol, malformed element) mirror the legacy describe block
+// above exactly — only the wire shape and per-symbol mapping differ.
+describe('AnthropicAgentClient.proposeBatch — v2 trade contract (A2)', () => {
+  function apiResponse(body: unknown, opts: { ok?: boolean; status?: number } = {}): Response {
+    return {
+      ok: opts.ok ?? true,
+      status: opts.status ?? 200,
+      headers: { get: () => null },
+      json: () => Promise.resolve(body),
+    } as unknown as Response;
+  }
+
+  function tradePortfolioBody(
+    decisions: unknown[],
+    nextConsultBars: number,
+    stopReason = 'tool_use',
+  ): unknown {
+    return {
+      stop_reason: stopReason,
+      content: [
+        { type: 'tool_use', name: 'submit_portfolio', input: { decisions, nextConsultBars } },
+      ],
+    };
+  }
+
+  function tradeCfg(over: Partial<AnthropicAgentClientConfig> = {}): AnthropicAgentClientConfig {
+    return {
+      apiKey: 'sk-ant-super-secret-test-key',
+      model: 'claude-test-model',
+      timeoutMs: 5000,
+      maxTokens: 256,
+      signalTtlMs: 30000,
+      baseUrl: 'https://mock.anthropic.test',
+      tradeContract: true,
+      ...over,
+    };
+  }
+
+  const LONG_CONTEXT: AgentContext = {
+    indicators: null,
+    position: {
+      side: 'LONG',
+      qty: '1',
+      avgEntry: '100',
+      realizedPnl: '0',
+      unrealizedPnlPct: null,
+      openOrders: 0,
+    },
+    recentDecisions: [],
+  };
+
+  // Mirrors buildInput above, only widened with a caller-supplied context (needed for 'adjust', which
+  // only emits a signal while positioned) — buildInput itself stays untouched (every existing legacy
+  // test keeps its FLAT_CONTEXT default).
+  function buildInputWithContext(
+    symbolStr: string,
+    strategyIdStr: string,
+    context: AgentContext,
+  ): AgentDecisionInput {
+    const symbol = symbolId(symbolStr);
+    const tickerEvt = ticker(symbolStr, '100', 1n);
+    const snapshot: AgentMarketSnapshot = {
+      eventTime: epochMs(T),
+      candles: new Map(),
+      tickers: new Map([[symbol, tickerEvt]]),
+      books: new Map(),
+      execReports: [],
+      portfolio: { strategyId: strategyId(strategyIdStr), positions: new Map(), openOrders: [] },
+    };
+    return {
+      strategyId: strategyId(strategyIdStr),
+      trigger: { kind: 'ticker', event: tickerEvt },
+      snapshot,
+      context,
+    };
+  }
+
+  function openLongElement(
+    symbol: string,
+    overrides: Record<string, unknown> = {},
+  ): Record<string, unknown> {
+    return {
+      symbol,
+      action: 'open_long',
+      sizeFraction: 0.01,
+      entry: { style: 'maker', offsetBps: 0 },
+      entryValidityBars: 4,
+      stopLossPct: 0.02,
+      takeProfitPct: 0.03,
+      maxHoldBars: 96,
+      ...overrides,
+    };
+  }
+
+  it('(a) one batched call fans out mixed v2 actions (open_long + adjust-with-partialClose + hold) to the right symbols with correct signals', async () => {
+    const fetchFn = vi.fn();
+    const client = new AnthropicAgentClient(tradeCfg(), fetchFn);
+    fetchFn.mockResolvedValue(
+      apiResponse(
+        tradePortfolioBody(
+          [
+            openLongElement('BTC/USDT'),
+            { symbol: 'ETH/USDT', action: 'adjust', partialCloseFraction: 0.5 },
+            { symbol: 'SOL/USDT', action: 'hold' },
+          ],
+          8,
+        ),
+      ),
+    );
+
+    const result = await client.proposeBatch([
+      buildInput('BTC/USDT', 'agentic-1'),
+      buildInputWithContext('ETH/USDT', 'agentic-2', LONG_CONTEXT),
+      buildInput('SOL/USDT', 'agentic-3'),
+    ]);
+
+    const btc = result.proposals.get('BTC/USDT');
+    expect(btc?.signals).toHaveLength(1);
+    expect(btc?.signals[0]).toMatchObject({ kind: 'ENTER_LONG', symbol: 'BTC/USDT' });
+
+    const eth = result.proposals.get('ETH/USDT');
+    expect(eth?.signals).toHaveLength(1);
+    expect(eth?.signals[0]).toMatchObject({ kind: 'EXIT_LONG', reduceFraction: '0.5' });
+
+    const sol = result.proposals.get('SOL/USDT');
+    expect(sol?.signals).toEqual([]);
+
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('(b) a symbol missing from decisions[] entirely soft-holds just that symbol while others process', async () => {
+    const fetchFn = vi.fn();
+    const warn = vi.fn();
+    const client = new AnthropicAgentClient(tradeCfg(), fetchFn, { warn });
+    fetchFn.mockResolvedValue(apiResponse(tradePortfolioBody([openLongElement('BTC/USDT')], 8)));
+
+    const result = await client.proposeBatch([
+      buildInput('BTC/USDT', 'agentic-1'),
+      buildInput('ETH/USDT', 'agentic-2'),
+    ]);
+
+    expect(result.proposals.get('BTC/USDT')?.signals).toHaveLength(1);
+    expect(result.proposals.get('ETH/USDT')?.signals).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('ETH/USDT'));
+  });
+
+  it('(c) the single portfolio-level nextConsultBars is stamped on EVERY proposal — resolved, malformed-element, and missing-symbol alike', async () => {
+    const fetchFn = vi.fn();
+    const client = new AnthropicAgentClient(tradeCfg(), fetchFn);
+    fetchFn.mockResolvedValue(
+      apiResponse(
+        tradePortfolioBody(
+          [
+            openLongElement('BTC/USDT'),
+            // Not a valid action — malformed element for ETH/USDT only.
+            { symbol: 'ETH/USDT', action: 'moon' },
+            // SOL/USDT deliberately absent from decisions[] — the missing-symbol hold path.
+          ],
+          12,
+        ),
+      ),
+    );
+
+    const result = await client.proposeBatch([
+      buildInput('BTC/USDT', 'agentic-1'),
+      buildInput('ETH/USDT', 'agentic-2'),
+      buildInput('SOL/USDT', 'agentic-3'),
+    ]);
+
+    for (const symbol of ['BTC/USDT', 'ETH/USDT', 'SOL/USDT']) {
+      expect(result.proposals.get(symbol)?.nextConsultBars, symbol).toBe(12);
+    }
+  });
+
+  it('(d) one HTTP request answers every resolvable symbol in a v2 batch — never one fetch per symbol (budget reserved once per batch upstream)', async () => {
+    const fetchFn = vi.fn();
+    const client = new AnthropicAgentClient(tradeCfg(), fetchFn);
+    fetchFn.mockResolvedValue(
+      apiResponse(
+        tradePortfolioBody(
+          [
+            { symbol: 'BTC/USDT', action: 'hold' },
+            { symbol: 'ETH/USDT', action: 'hold' },
+            { symbol: 'SOL/USDT', action: 'hold' },
+          ],
+          16,
+        ),
+      ),
+    );
+
+    await client.proposeBatch([
+      buildInput('BTC/USDT', 'agentic-1'),
+      buildInput('ETH/USDT', 'agentic-2'),
+      buildInput('SOL/USDT', 'agentic-3'),
+    ]);
+
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('(e) a malformed element (missing a required open_long directive) degrades ONLY that symbol to an empty proposal + warn, other symbols unaffected', async () => {
+    const fetchFn = vi.fn();
+    const warn = vi.fn();
+    const client = new AnthropicAgentClient(tradeCfg(), fetchFn, { warn });
+    fetchFn.mockResolvedValue(
+      apiResponse(
+        tradePortfolioBody(
+          [
+            openLongElement('BTC/USDT'),
+            // Missing entry/entryValidityBars/stopLossPct/takeProfitPct/maxHoldBars — required on
+            // 'open_long' by requireTradeDirectives; malformed for ETH/USDT only.
+            { symbol: 'ETH/USDT', action: 'open_long', sizeFraction: 0.01 },
+          ],
+          8,
+        ),
+      ),
+    );
+
+    const result = await client.proposeBatch([
+      buildInput('BTC/USDT', 'agentic-1'),
+      buildInput('ETH/USDT', 'agentic-2'),
+    ]);
+
+    expect(result.proposals.get('BTC/USDT')?.signals).toHaveLength(1);
+    expect(result.proposals.get('ETH/USDT')?.signals).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('ETH/USDT'));
+  });
+
+  it('(f) the shorts portfolio tool accepts an open_short element and maps it to ENTER_SHORT', async () => {
+    const fetchFn = vi.fn();
+    const client = new AnthropicAgentClient(
+      tradeCfg({ shortsEnabled: true, perpCapableVenue: true, maxPositionFraction: '0.5' }),
+      fetchFn,
+    );
+    fetchFn.mockResolvedValue(
+      apiResponse(
+        tradePortfolioBody(
+          [openLongElement('BTC/USDT', { action: 'open_short', sizeFraction: 0.3 })],
+          8,
+        ),
+      ),
+    );
+
+    const result = await client.proposeBatch([buildInput('BTC/USDT', 'agentic-1')]);
+
+    const sentBody = JSON.parse((fetchFn.mock.calls[0]![1] as RequestInit).body as string) as {
+      tools: {
+        input_schema: {
+          properties: { decisions: { items: { properties: { action: { enum: string[] } } } } };
+        };
+      }[];
+    };
+    expect(
+      sentBody.tools[0]!.input_schema.properties.decisions.items.properties.action.enum,
+    ).toContain('open_short');
+    expect(result.proposals.get('BTC/USDT')?.signals[0]).toMatchObject({ kind: 'ENTER_SHORT' });
+  });
+
+  it('(f) the spot portfolio schema rejects an open_short element — degrades that symbol to a hold', async () => {
+    const fetchFn = vi.fn();
+    const warn = vi.fn();
+    const client = new AnthropicAgentClient(tradeCfg(), fetchFn, { warn });
+    fetchFn.mockResolvedValue(
+      apiResponse(tradePortfolioBody([openLongElement('BTC/USDT', { action: 'open_short' })], 8)),
+    );
+
+    const result = await client.proposeBatch([buildInput('BTC/USDT', 'agentic-1')]);
+
+    expect(result.proposals.get('BTC/USDT')?.signals).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('BTC/USDT'));
   });
 });

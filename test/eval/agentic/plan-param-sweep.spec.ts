@@ -5,11 +5,25 @@
 // only — no intrabar stop/TP resolution — so results seed executor defaults, never certify them.
 // CI-safe on the checked-in fixtures; feed real rows via:
 //   SELECT input_payload FROM agent_decisions WHERE input_payload IS NOT NULL ORDER BY id;
+//
+// LEGACY CONTRACT PIN (S2/B1 v2 retype): this sweep's public grid/SweepResult stays on the retired
+// v1 AgentPlan shape (no sizeFraction/entryStyle) — it measures the retired submit_plan contract,
+// same as the sibling PLAN_TOOL-pinned specs. `plan-executor.ts`'s evaluatePlan was retyped to
+// AgentDirectives (v2) in B1; toAgentDirectives() below adapts at the call boundary only. The two
+// v2-only fields it fills (sizeFraction, entryStyle) are inert placeholders — evaluatePlan's
+// stop/take-profit/max-hold/entry-validity arithmetic reads only stopLossPct/takeProfitPct/
+// maxHoldBars/entryValidityBars, unchanged by the v2 retype, so the toy metric's behavior is
+// unaffected by the adapter.
 import { describe, it, expect } from 'vitest';
 import Decimal from 'decimal.js';
 import { evaluatePlan } from '../../../src/features/trading/agentic/plan-executor';
-import type { AgentPlan } from '../../../src/ports/agentic-strategy';
+import type { AgentDirectives, AgentPlan } from '../../../src/ports/agentic-strategy';
 import { RECORDED_PAYLOAD_ROWS, type RecordedMarketPayload } from './recorded-payload-fixtures';
+
+// Inert placeholders — see header note: evaluatePlan never reads these v2-only fields.
+function toAgentDirectives(plan: AgentPlan): AgentDirectives {
+  return { ...plan, sizeFraction: '1', entryStyle: 'taker' };
+}
 
 const ROUND_TRIP_FEE_FRACTION = new Decimal('0.002'); // 10bps maker + 10bps taker
 
@@ -37,7 +51,7 @@ function runPlanOverPath(plan: AgentPlan, closes: readonly string[]): Decimal | 
       entryPrice = close; // conservative: filled at the close that crossed, not the better target
     }
     const verdict = evaluatePlan({
-      state: { plan, entryPrice, planStartedBar: 0, barsElapsed },
+      state: { plan: toAgentDirectives(plan), entryPrice, planStartedBar: 0, barsElapsed },
       closePrice: close,
       positionSide: entryPrice === null ? 'FLAT' : 'LONG',
       hasRestingEntry: entryPrice === null,

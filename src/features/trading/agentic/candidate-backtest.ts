@@ -1,13 +1,23 @@
 import Decimal from 'decimal.js';
-import type { AgentDecisionRow, AgentPlan, AgentUsage } from '../../../ports/agentic-strategy';
+import type {
+  AgentDecisionRow,
+  AgentDirectives,
+  AgentUsage,
+} from '../../../ports/agentic-strategy';
 import { buildPlaybookBlock, buildSystemPrompt } from './agent-prompt';
 import { evaluatePlan } from './plan-executor';
-import { DEFAULT_FLOOR_PROFILE, replayPlanRow, type PlanReplayResult } from './entry-rate-floor';
+import {
+  DEFAULT_FLOOR_PROFILE,
+  replayPlanRow,
+  type PlanReplayCallConfig,
+  type PlanReplayResult,
+} from './entry-rate-floor';
 
 // Mint-time candidate-vs-champion OFFLINE EXPECTANCY BACKTEST — the learning accelerant this module
 // exists for: instead of waiting weeks for a live A/B trip count, replay BOTH the draft candidate and
-// the current champion playbook against the same recorded rows and simulate what each 'long' plan
-// would have done, giving reflection.service.ts a verdict prior in hours. One stage further along the
+// the current champion playbook against the same recorded rows and simulate what each entry (v2:
+// 'open_long'/'open_short' — P3 migrated this module off the legacy submit_plan 'long' shape) would
+// have done, giving reflection.service.ts a verdict prior in hours. One stage further along the
 // entry-rate floor's own pipeline (entry-rate-floor.ts): the floor asks "does this playbook ever
 // enter", this module asks "when it enters, is it actually profitable relative to the champion".
 //
@@ -20,7 +30,7 @@ import { DEFAULT_FLOOR_PROFILE, replayPlanRow, type PlanReplayResult } from './e
 // not the strategy's true intra-bar candle series — a plan's stop/take-profit may have touched and
 // reverted between two consecutive recorded closes without ever showing up here. Rows with too few
 // forward points for their own plan's maxHoldBars are marked unsimulatable and excluded (see
-// simulateLongRoundTrip) rather than extrapolated. Treat every bps figure this module returns as a
+// simulateRoundTrip) rather than extrapolated. Treat every bps figure this module returns as a
 // coarse, decide-cadence-resolution estimate — directionally useful for a candidate-vs-champion
 // COMPARISON (both arms suffer the same approximation), never a precise expectancy.
 
@@ -36,24 +46,18 @@ const ROUND_TRIP_FEE_FRACTION = new Decimal('0.0020');
 // simply ran out of recorded data.
 const MIN_FORWARD_COVERAGE = 0.25;
 
-export interface CandidateBacktestConfig {
-  readonly apiKey: string;
-  // The DECIDE model — see entry-rate-floor.ts's EntryRateFloorConfig.model comment.
-  readonly model: string;
-  readonly baseUrl?: string;
-  readonly timeoutMs: number;
+export interface CandidateBacktestConfig extends PlanReplayCallConfig {
   readonly candidatePlaybook: string;
   readonly championPlaybook: string;
-  readonly minEdgeMultiple: string;
-  readonly minRr: string;
 }
 
 export interface CandidateBacktestArmResult {
   readonly consults: number;
   readonly entries: number;
   readonly simulatedRoundTrips: number;
-  // 'long' entries excluded from the expectancy math — no plan on the response, or too few forward
-  // closes for the row's own plan.maxHoldBars (see MIN_FORWARD_COVERAGE) — counted, never guessed at.
+  // 'open_long'/'open_short' entries excluded from the expectancy math — no plan on the response, or
+  // too few forward closes for the row's own plan.maxHoldBars (see MIN_FORWARD_COVERAGE) — counted,
+  // never guessed at.
   readonly unsimulatableEntries: number;
   // 0 when simulatedRoundTrips is 0 (never NaN — a callers' margin comparison must stay a plain
   // number even on an empty sample; the min-trips gate upstream is what actually protects against
@@ -113,10 +117,16 @@ function buildForwardCloseIndex(
 // and falls back to the LAST available close as an approximate exit (the sparse path ran out before
 // evaluatePlan ever fired an exit of its own) — never fabricates data beyond what was recorded.
 // Returns null (unsimulatable) below MIN_FORWARD_COVERAGE.
-export function simulateLongRoundTrip(
+//
+// P3: widened from LONG-only to LONG/SHORT (v2 'open_short' is now a real entry this module replays)
+// — `positionSide` selects evaluatePlan's mirrored stop/TP arm, and the net-bps formula below mirrors
+// counterfactual-scoring.ts's own computeToyEquity SHORT precedent: a LONG profits on exit/entry, a
+// SHORT profits on the INVERTED entry/exit ratio (the exact mirror of a LONG's own multiplier).
+export function simulateRoundTrip(
   entryClose: string,
-  plan: AgentPlan,
+  plan: AgentDirectives,
   forwardCloses: readonly string[],
+  positionSide: 'LONG' | 'SHORT',
 ): { readonly netBps: number } | null {
   const minPoints = Math.ceil(plan.maxHoldBars * MIN_FORWARD_COVERAGE);
   if (forwardCloses.length < minPoints) return null;
@@ -128,7 +138,7 @@ export function simulateLongRoundTrip(
     const action = evaluatePlan({
       state: { plan, entryPrice: entryClose, planStartedBar: 0, barsElapsed },
       closePrice,
-      positionSide: 'LONG',
+      positionSide,
       hasRestingEntry: false,
     });
     if (action.type === 'exit') {
@@ -137,10 +147,11 @@ export function simulateLongRoundTrip(
     }
   }
 
-  const netFraction = new Decimal(exitClose)
-    .div(entryClose)
-    .minus(1)
-    .minus(ROUND_TRIP_FEE_FRACTION);
+  const grossFraction =
+    positionSide === 'LONG'
+      ? new Decimal(exitClose).div(entryClose).minus(1)
+      : new Decimal(entryClose).div(exitClose).minus(1);
+  const netFraction = grossFraction.minus(ROUND_TRIP_FEE_FRACTION);
   return { netBps: netFraction.mul(10_000).toNumber() };
 }
 
@@ -173,13 +184,19 @@ function accumulateArm(
   if (result.usage) acc.usages.push(result.usage);
   if (!result.ok) return;
   acc.consults += 1;
-  if (result.action !== 'long') return;
+  if (result.action !== 'open_long' && result.action !== 'open_short') return;
   acc.entries += 1;
   if (!result.plan) {
     acc.unsimulatableEntries += 1;
     return;
   }
-  const sim = simulateLongRoundTrip(row.close!, result.plan, forwardCloses.get(row.id) ?? []);
+  const positionSide = result.action === 'open_short' ? 'SHORT' : 'LONG';
+  const sim = simulateRoundTrip(
+    row.close!,
+    result.plan,
+    forwardCloses.get(row.id) ?? [],
+    positionSide,
+  );
   if (sim === null) {
     acc.unsimulatableEntries += 1;
     return;
@@ -219,10 +236,11 @@ export async function runCandidateBacktest(
     return { skipped: 'no rows to replay' };
   }
 
+  // P3: v2 rich-decision-contract system prompt (tradeContract), not the legacy plan-mode prompt —
+  // see entry-rate-floor.ts's own measureEntryRate comment on why minEdgeMultiple/minRr are gone.
   const systemPrompt = buildSystemPrompt(DEFAULT_FLOOR_PROFILE, {
-    planMode: true,
-    minEdgeMultiple: cfg.minEdgeMultiple,
-    minRr: cfg.minRr,
+    tradeContract: true,
+    shortsEnabled: cfg.shortsEnabled,
   });
   const candidateBlock = buildPlaybookBlock(cfg.candidatePlaybook);
   const championBlock = buildPlaybookBlock(cfg.championPlaybook);

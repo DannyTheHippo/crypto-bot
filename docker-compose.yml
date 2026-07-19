@@ -46,8 +46,16 @@ services:
       POSTGRES_USER: cryptobot
       POSTGRES_PASSWORD: cryptobot
       POSTGRES_DB: cryptobot
+      # W1 (Grafana rebuild): read by grafana_ro.sql's `\getenv` on initdb-time first-boot only (an
+      # empty EMPTY volume) — see that file's own header comment for the separate manual-apply path
+      # an already-provisioned volume needs. Secret; sourced from .env, never .env.app.
+      GRAFANA_RO_PASSWORD: ${GRAFANA_RO_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      # Mounted read-only; the postgres entrypoint runs every *.sql here via `psql -f` ONCE, only
+      # against a fresh (empty) data volume — see grafana_ro.sql's own header for the standalone
+      # apply command an already-initialized volume needs instead.
+      - ./observability/grafana/grafana_ro.sql:/docker-entrypoint-initdb.d/grafana_ro.sql:ro
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U cryptobot']
       interval: 10s
@@ -85,6 +93,11 @@ services:
       GF_AUTH_ANONYMOUS_ENABLED: 'true'
       GF_AUTH_ANONYMOUS_ORG_ROLE: 'Viewer'
       GF_AUTH_ANONYMOUS_ORG_NAME: 'Main Org.'
+      # W1 (Grafana rebuild): read by provisioning/datasources/postgres.yml's `$__env{}` password
+      # interpolation for BOTH RO datasources (spot + perp) — this is the GRAFANA container's own
+      # env (distinct from the postgres/postgres-perp services' identically-named var above, which
+      # they read for the DB-side role-creation script).
+      GRAFANA_RO_PASSWORD: ${GRAFANA_RO_PASSWORD}
     volumes:
       - grafana_data:/var/lib/grafana
       - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
@@ -112,8 +125,12 @@ services:
       POSTGRES_USER: cryptobot
       POSTGRES_PASSWORD: cryptobot
       POSTGRES_DB: cryptobot
+      # W1 (Grafana rebuild): same grafana_ro.sql initdb-time role bootstrap as the spot `postgres`
+      # service above — two structurally separate DBs, identical role/grants in each.
+      GRAFANA_RO_PASSWORD: ${GRAFANA_RO_PASSWORD}
     volumes:
       - postgres_perp_data:/var/lib/postgresql/data
+      - ./observability/grafana/grafana_ro.sql:/docker-entrypoint-initdb.d/grafana_ro.sql:ro
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U cryptobot']
       interval: 10s

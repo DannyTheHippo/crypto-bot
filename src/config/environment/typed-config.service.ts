@@ -48,6 +48,10 @@ export class TypedConfigService {
     return this.config.get('derivativesFeed', { infer: true });
   }
 
+  get fundingIngest(): AppConfig['fundingIngest'] {
+    return this.config.get('fundingIngest', { infer: true });
+  }
+
   get sentimentFeed(): AppConfig['sentimentFeed'] {
     return this.config.get('sentimentFeed', { infer: true });
   }

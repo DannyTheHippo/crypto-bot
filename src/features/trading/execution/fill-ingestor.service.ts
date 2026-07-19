@@ -1,14 +1,20 @@
-import { Inject, Injectable, Optional } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import {
   InjectMetric,
   makeCounterProvider,
   makeHistogramProvider,
 } from '@willsoto/nestjs-prometheus';
 import { Counter, Histogram } from 'prom-client';
-import { EXECUTION_STORE, type ExecutionStorePort } from '../../../ports/execution';
+import {
+  EXECUTION_STORE,
+  EXEC_QUALITY_SINK,
+  type ExecutionStorePort,
+  type ExecQualitySinkPort,
+} from '../../../ports/execution';
 import { KILL_SWITCH, type KillSwitchPort } from '../../../ports/risk';
 import { reduce, TERMINAL_ORDER_STATES, type OrderRecord } from '../../../domain/oms/reducer';
 import { decodeClientOrderId } from '../../../domain/types/ids';
+import type { OrderIntent } from '../../../domain/types/order-intent';
 import type { FillRecord } from '../../../domain/types/exec-report';
 import { OrderBookService } from './order-book.service';
 import { PortfolioStateService } from './portfolio-state.service';
@@ -85,6 +91,8 @@ export interface IngestResult {
 // caller's dedupeKey (reportId for stream fills, a reconcile key for backfills).
 @Injectable()
 export class FillIngestorService {
+  private readonly log = new Logger(FillIngestorService.name);
+
   constructor(
     @Inject(EXECUTION_STORE) private readonly store: ExecutionStorePort,
     @Inject(KILL_SWITCH) private readonly killSwitch: KillSwitchPort,
@@ -110,6 +118,12 @@ export class FillIngestorService {
     @Optional()
     @InjectMetric('trade_pnl_usdt')
     private readonly tradePnl?: Histogram<string>,
+    // W3 Part 1: @Optional so direct-construction unit tests (which omit it, same convention as the
+    // metrics above) still compile — EXECUTION_MODULE itself always resolves this to at least the
+    // no-op sink (see execution.module.ts's own EXEC_QUALITY_SINK provider).
+    @Optional()
+    @Inject(EXEC_QUALITY_SINK)
+    private readonly execQualitySink?: ExecQualitySinkPort,
   ) {}
 
   async ingest(
@@ -163,6 +177,10 @@ export class FillIngestorService {
       );
       if (next.state === 'FILLED') {
         this.fullyFilledCounter?.inc({ type: intent.type, tif: intent.timeInForce });
+        // W3 Part 1: exec-quality fan-out — an ENTRY attempt (reduceOnly === false) reaching FILLED
+        // is the 'filled' half of ExecQualityOutcome. Exit/reduce fills are not entry attempts and
+        // are intentionally excluded (exec-quality.service.ts models entry-attempt quality only).
+        if (!intent.reduceOnly) this.recordExecQualityFill(intent, fill);
       }
       // §8 profitability. Fees are counted per fill; round-trip metrics fire only when the fill
       // closed the position to flat. .toNumber() is the sanctioned display export boundary.
@@ -185,5 +203,29 @@ export class FillIngestorService {
     }
     await this.sampler.sample(); // equity sampled on every fill (§8)
     return { applied: true, record: next };
+  }
+
+  // W3 Part 1 (measurement path, fails OPEN — never blocks/alters the fill fold above): limitPrice
+  // for a taker (MARKET) fill is the reference price it crossed (intent.refPrice), matching
+  // exec-quality.service.ts's own DTO comment on what a taker attempt's limitPrice means; a maker
+  // fill carries its own resting intent.limitPrice. style comes from the venue's own fill.liquidity,
+  // not derived from intent.type — the exchange decides maker/taker, not the order shape.
+  private recordExecQualityFill(intent: OrderIntent, fill: FillRecord): void {
+    if (this.execQualitySink === undefined) return;
+    try {
+      this.execQualitySink.recordEntryAttempt({
+        symbol: intent.symbol,
+        side: intent.side === 'BUY' ? 'long' : 'short',
+        style: fill.liquidity,
+        limitPrice: (intent.limitPrice ?? intent.refPrice).toFixed(),
+        outcome: 'filled',
+        fillPrice: fill.price.toFixed(),
+        terminalAt: fill.venueTimestamp,
+      });
+    } catch (err) {
+      this.log.warn(
+        `exec-quality fan-out failed (filled), omitting: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 }

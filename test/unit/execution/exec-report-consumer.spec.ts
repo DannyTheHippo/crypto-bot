@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { ExecReportConsumerService } from '../../../src/features/trading/execution/exec-report-consumer.service';
 import { OrderBookService } from '../../../src/features/trading/execution/order-book.service';
 import { PortfolioStateService } from '../../../src/features/trading/execution/portfolio-state.service';
@@ -11,7 +11,7 @@ import { initialOrder } from '../../../src/domain/oms/reducer';
 import { makeIntent, fixedClock, fixedFeed, killSwitchStub, V, SYM, T } from './helpers';
 import { price, qty } from '../../../src/domain/types/money';
 import { epochMs, type ClientOrderId } from '../../../src/domain/types/ids';
-import type { ExecRunContext } from '../../../src/ports/execution';
+import type { ExecRunContext, ExecQualitySinkPort } from '../../../src/ports/execution';
 import type {
   FillReport,
   AckReport,
@@ -22,7 +22,7 @@ import type {
 
 const CTX: ExecRunContext = { mode: 'paper', runId: 'run', bootId: 'boot' };
 
-function build(ctx: ExecRunContext = CTX) {
+function build(ctx: ExecRunContext = CTX, execQualitySink?: ExecQualitySinkPort) {
   const outbox = new InMemoryExecOutbox();
   const store = new InMemoryExecutionStore();
   const orders = new OrderBookService();
@@ -32,7 +32,15 @@ function build(ctx: ExecRunContext = CTX) {
   );
   const sampler = new EquitySamplerService(portfolio, fixedFeed('100'), fixedClock(), store);
   const ingestor = new FillIngestorService(store, killSwitchStub().ks, orders, portfolio, sampler);
-  const consumer = new ExecReportConsumerService(outbox, store, ctx, orders, portfolio, ingestor);
+  const consumer = new ExecReportConsumerService(
+    outbox,
+    store,
+    ctx,
+    orders,
+    portfolio,
+    ingestor,
+    execQualitySink,
+  );
   return { outbox, store, orders, portfolio, consumer };
 }
 
@@ -261,5 +269,102 @@ describe('ExecReportConsumerService', () => {
     expect(ctx.store.fills.size).toBe(1); // fill journaled
     expect(ctx.orders.get(coid)?.state).toBe('FILLED'); // reducer folded
     expect(ctx.portfolio.snapshot().positions.size).toBe(0); // no intent → no position fold
+  });
+
+  // W3 Part 1: exec-quality fan-out (the never-filled half — CANCEL_ACK/EXPIRE).
+  describe('exec-quality fan-out', () => {
+    it("feeds a never-filled maker ENTRY cancel as outcome 'cancelled'", async () => {
+      const recordEntryAttempt = vi.fn();
+      const ctx = build(CTX, { recordEntryAttempt });
+      const { coid } = seedAcked(ctx); // BUY, LIMIT, reduceOnly false, limitPrice 100
+      ctx.orders.apply(coid, { type: 'CANCEL_REQUESTED' });
+      await ctx.outbox.append({ reportId: 'c1', report: cancelAck(coid, 'c1') });
+      await ctx.consumer.pump();
+      expect(recordEntryAttempt).toHaveBeenCalledWith({
+        symbol: SYM,
+        side: 'long',
+        style: 'maker',
+        limitPrice: '100',
+        outcome: 'cancelled',
+        terminalAt: T,
+      });
+    });
+
+    it("feeds a never-filled maker ENTRY expiry as outcome 'expired'", async () => {
+      const recordEntryAttempt = vi.fn();
+      const ctx = build(CTX, { recordEntryAttempt });
+      const { coid } = seedAcked(ctx);
+      await ctx.outbox.append({ reportId: 'e1', report: expire(coid, 'e1') });
+      await ctx.consumer.pump();
+      expect(recordEntryAttempt).toHaveBeenCalledWith({
+        symbol: SYM,
+        side: 'long',
+        style: 'maker',
+        limitPrice: '100',
+        outcome: 'expired',
+        terminalAt: T,
+      });
+    });
+
+    it('never feeds a reduce-only (exit) cancel', async () => {
+      const recordEntryAttempt = vi.fn();
+      const ctx = build(CTX, { recordEntryAttempt });
+      const { coid } = seedAcked(ctx, makeIntent({ reduceOnly: true }));
+      ctx.orders.apply(coid, { type: 'CANCEL_REQUESTED' });
+      await ctx.outbox.append({ reportId: 'c1', report: cancelAck(coid, 'c1') });
+      await ctx.consumer.pump();
+      expect(recordEntryAttempt).not.toHaveBeenCalled();
+    });
+
+    it('never feeds a cancel of an order that was already partially filled (cumQty > 0)', async () => {
+      const recordEntryAttempt = vi.fn();
+      const ctx = build(CTX, { recordEntryAttempt });
+      const { coid } = seedAcked(ctx, makeIntent({ qty: qty('2') }));
+      await ctx.outbox.append({ reportId: 'f1', report: fill(coid, 'f1', '1') });
+      await ctx.consumer.pump();
+      recordEntryAttempt.mockClear(); // drop the FILLED-side call (fill-ingestor.spec.ts covers it)
+      ctx.orders.apply(coid, { type: 'CANCEL_REQUESTED' });
+      await ctx.outbox.append({ reportId: 'c1', report: cancelAck(coid, 'c1') });
+      await ctx.consumer.pump();
+      expect(recordEntryAttempt).not.toHaveBeenCalled();
+    });
+
+    it('does not double-record on a redelivered CANCEL_ACK (journal dedupe)', async () => {
+      const recordEntryAttempt = vi.fn();
+      const ctx = build(CTX, { recordEntryAttempt });
+      const { coid } = seedAcked(ctx);
+      ctx.orders.apply(coid, { type: 'CANCEL_REQUESTED' });
+      await ctx.store.appendOrderEvent({
+        clientOrderId: coid,
+        dedupeKey: 'c9',
+        event: { type: 'CANCEL_ACK' },
+        derivedState: 'CANCELED',
+        cumQty: '0',
+      });
+      await ctx.outbox.append({ reportId: 'c9', report: cancelAck(coid, 'c9') });
+      await ctx.consumer.pump();
+      expect(recordEntryAttempt).not.toHaveBeenCalled(); // fold skipped — journal already had it
+    });
+
+    it('tolerates an absent sink (no throw) and a throwing sink (fails open, never blocks the fold)', async () => {
+      const ctxAbsent = build();
+      const { coid: c1 } = seedAcked(ctxAbsent);
+      ctxAbsent.orders.apply(c1, { type: 'CANCEL_REQUESTED' });
+      await ctxAbsent.outbox.append({ reportId: 'c1', report: cancelAck(c1, 'c1') });
+      await expect(ctxAbsent.consumer.pump()).resolves.toBe(1);
+      expect(ctxAbsent.orders.get(c1)?.state).toBe('CANCELED');
+
+      const throwingSink: ExecQualitySinkPort = {
+        recordEntryAttempt: () => {
+          throw new Error('boom');
+        },
+      };
+      const ctxThrow = build(CTX, throwingSink);
+      const { coid: c2 } = seedAcked(ctxThrow);
+      ctxThrow.orders.apply(c2, { type: 'CANCEL_REQUESTED' });
+      await ctxThrow.outbox.append({ reportId: 'c2', report: cancelAck(c2, 'c2') });
+      await expect(ctxThrow.consumer.pump()).resolves.toBe(1);
+      expect(ctxThrow.orders.get(c2)?.state).toBe('CANCELED'); // the fold itself is unaffected
+    });
   });
 });

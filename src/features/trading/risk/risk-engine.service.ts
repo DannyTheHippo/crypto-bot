@@ -106,6 +106,22 @@ export class RiskEngineService implements RiskEnginePort {
       gross = gross.add(notional.abs());
       net = net.add(notional);
     }
+    // Reserved exposure: resting-or-in-flight ENTRY orders (reduceOnly=false) commit capital before
+    // they fill, but positions-only accounting above is blind to them — a resting entry on one
+    // symbol was invisible to another symbol's gross/net headroom, so sequential entries could each
+    // individually clear E2/E3 while the aggregate (filled + pending) breached the cap (CONFIRMED
+    // risk-cap bypass; mirrors E1's own inFlightIntents fold below, which already guards the
+    // per-symbol case). Reduce-only orders only ever shrink exposure, so they reserve nothing. Valued
+    // at each order's own limit price; falls back to its own refPrice for the (never-hit for a
+    // non-reduce-only entry) undefined case. FAILS CLOSED: a partially-filled order's already-filled
+    // leg is counted here AND in snapshot.positions above — deliberate over-reservation, never
+    // under-reservation (risk gates fail closed).
+    for (const f of snapshot.inFlightIntents) {
+      if (f.reduceOnly) continue;
+      const notional = f.qty.mul(f.limitPrice ?? f.refPrice);
+      gross = gross.add(notional.abs());
+      net = net.add(f.side === 'BUY' ? notional : notional.neg());
+    }
 
     // The flatten path draws from the reserved flatten bucket (isFlatten=true); the strategy path
     // (incl. a strategy's own reduce-only EXIT_LONG) draws from the normal buckets.

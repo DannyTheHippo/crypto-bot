@@ -18,14 +18,15 @@ import { DEFAULT_FILTERS } from '../../../domain/risk/default-filters';
 import { price, qty } from '../../../domain/types/money';
 import { STRATEGY_REGISTRY, type StrategyRegistryPort } from '../../../ports/strategy';
 import { StubAgentClient } from './agent-client.adapter';
-import { AnthropicAgentClient } from './anthropic-agent-client';
-import { BatchingAgentClient } from './batching-agent-client';
+import { AnthropicAgentClient, type AnthropicAgentClientConfig } from './anthropic-agent-client';
+import { BatchingAgentClient, type ActiveMenuGate } from './batching-agent-client';
 import { BudgetedAgentClient, DailyLlmBudget, type ModelTokenRates } from './agent-budget';
 import {
   createReflectionService,
   type ReflectionMetricsRecorder,
   type ReflectionPlaybookStore,
 } from './reflection.service';
+import { ExecQualityService } from './exec-quality.service';
 
 // Matches AGENTIC_MODEL's schema default and the AGENTIC_TOKEN_PRICE_* defaults (Sonnet-5 at 3/15)
 // — see environment.config.ts's AGENTIC_MODEL comment for the cost-honesty rationale.
@@ -96,6 +97,21 @@ export const PLAYBOOK_PROVIDER_OVERRIDE = Symbol('PLAYBOOK_PROVIDER_OVERRIDE');
 // duplicated here; absent falls through to AnthropicAgentClient's own illustrative DEFAULT_TRADING_PROFILE.
 export const AGENT_TRADING_PROFILE_OVERRIDE = Symbol('AGENT_TRADING_PROFILE_OVERRIDE');
 
+// I1b (Design § Enriched model inputs): same seam pattern as the two overrides above, for the
+// composition root's real payload-extras source (portfolio/budget/calendar snapshot) to reach
+// AnthropicAgentClientConfig.payloadExtrasProvider without this module importing PORTFOLIO_VIEW/
+// AGENT_LLM_BUDGET's snapshot-callers directly. Absent (module-isolation contexts, or no provider
+// bound) leaves payloadExtrasProvider undefined — byte-identical to pre-I1b (no portfolio/budget/
+// calendar keys ever rendered).
+export const PAYLOAD_EXTRAS_PROVIDER_OVERRIDE = Symbol('PAYLOAD_EXTRAS_PROVIDER_OVERRIDE');
+
+// I1 (Design § Universe: scanner-gated active menu): same seam pattern as the two overrides above,
+// for the composition root's real UniverseScannerService to reach the batching client's
+// ActiveMenuGate (batching-agent-client.ts) without this module importing the scanner directly.
+// Absent (module-isolation contexts, or no scanner bound) leaves BatchingAgentClient's gate
+// undefined — byte-identical to pre-U1 (every symbol proposes).
+export const ACTIVE_MENU_GATE_OVERRIDE = Symbol('ACTIVE_MENU_GATE_OVERRIDE');
+
 // REFLECTION_SERVICE: the G4a trade-triggered reflection loop (see reflection.service.ts's own
 // header comment). Exported so the composition root can inject it and wire
 // AgenticStrategyDeps.onClosedTrade to it (strategy.ts cannot import this module — the boundary
@@ -142,8 +158,10 @@ export function agenticEnv(config?: TypedConfigService): Record<string, string |
     // shortsEnabled+planMode construction on a spot-only deployment. Mirrors position-sizer.service.ts's
     // own local PERP_VENUE_ID convention (binanceusdm is the only perp venue this pass wires).
     AGENTIC_PERP_VENUE: String(config.venues.some((v) => v.id === 'binanceusdm')),
-    AGENTIC_MIN_EDGE_MULTIPLE: agentic.minEdgeMultiple,
-    AGENTIC_MIN_RR: agentic.minRr,
+    // D1 retired AGENTIC_MIN_EDGE_MULTIPLE/AGENTIC_MIN_RR off AppConfig.agentic (the fee-floor-only
+    // gate replaces both — Design § Deleted/replaced scaffolding); AnthropicAgentClientConfig's
+    // minEdgeMultiple/minRr fields stay only for the legacy (non-tradeContract) plan-mode path and
+    // fall back to their own '1.5' defaults when this env key is absent, same as before.
     AGENTIC_PLAN_EXIT_TTL_BARS: String(agentic.planExitTtlBars),
     AGENTIC_QUIET_PAYLOAD_SAMPLE_BARS: String(agentic.quietPayloadSampleBars),
     AGENTIC_TOKEN_PRICE_CACHE_READ_PER_MTOK: agentic.tokenPriceCacheReadPerMtok,
@@ -162,7 +180,9 @@ export function agenticEnv(config?: TypedConfigService): Record<string, string |
     // d2: off by default ⇒ byte-identical d1 prompt/payload/tag (see AnthropicAgentClientConfig's
     // derivativesV2Enabled comment).
     AGENTIC_DERIVATIVES_V2_ENABLED: String(agentic.derivativesV2Enabled),
-    AGENTIC_THINKING_AB_PCT: String(agentic.thinkingAbPct),
+    // D1 retired AGENTIC_THINKING_AB_PCT (thinking A/B #42) — every decide now carries adaptive
+    // thinking unconditionally (see AnthropicAgentClientConfig's own S3 comment on the field's
+    // removal); nothing downstream reads this key anymore.
     AGENTIC_CROSS_SYMBOL_ENABLED: String(agentic.crossSymbolEnabled),
     AGENTIC_CROSS_SYMBOL_LOOKBACK_BARS: String(agentic.crossSymbolLookbackBars),
     // Book-structure block: off by default ⇒ byte-identical. No A/B interaction.
@@ -185,6 +205,10 @@ export function agenticEnv(config?: TypedConfigService): Record<string, string |
     AGENTIC_POSITIONING_ENABLED: String(config.positioningFeed.enabled),
     // #43: off by default ⇒ byte-identical legacy prompt. Same convention/A/B arm as above.
     AGENTIC_LIQUIDATIONS_ENABLED: String(config.liquidationFeed.enabled),
+    // I1: the v2 tool contract's lane-cap (spot 0.15 / perp 0.50), threaded into both the trade-tool
+    // description and the client's zod schema (S3) — see selectAgentClient's tradeContract wiring
+    // below, which is unconditional (Design: no staged flag for the v2 contract).
+    AGENTIC_MAX_POSITION_FRACTION: agentic.maxPositionFraction,
   };
 }
 
@@ -221,42 +245,121 @@ export function createAgentLlmBudget(
   });
 }
 
-// Starter playbook (version 1): brief, conservative heuristics layered on top of the fixed
-// system-prompt rules — trend/momentum confluence entries, exit on trend break, and the mistakes a
-// first iteration is most prone to. Passes validatePlaybook (see playbook-validator.spec.ts and the
-// assertion in agent-client-selection.spec.ts). Serves as the default PLAYBOOK_PROVIDER binding
-// until a persisted store adapter (a later task) replaces it.
+// Expert seed playbooks (P2, Design § Learning & measurement stack: "Expert seed playbooks
+// (replaces generic seeds) — spot: momentum continuation and breakout-retest at swing horizon,
+// session/time-of-day effects, BTC-beta regime rules, sizing discipline (concentrate in 2-4 best
+// ideas on a $1k book); perp: two-sided, funding-flip signals, liquidation-cascade mean reversion,
+// basis/OI divergence. Validator-compliant."). Both pass validatePlaybook (playbook-validator.spec.ts,
+// agentic-strategy.spec.ts) with their lane's capability flags — SEED_PLAYBOOK carries no
+// shorts/leverage phrases so it survives STRICT (spot) validation with opts={}; SEED_PLAYBOOK_PERP
+// requires {shortsAllowed: true, leverageAllowed: true}. Selected by shortsEnabled — the SAME signal
+// P1 uses for the denylist capability flags (see selectAgentClient's seedPlaybookProvider call below
+// and app.module.ts's PLAYBOOK_PROVIDER_OVERRIDE/ValidatingPlaybookProvider fallback, which apply the
+// identical derivation so the composition root, the strategy module, and the validator fallback can
+// never disagree on which seed a lane gets).
 export const SEED_PLAYBOOK: { readonly version: number; readonly content: string } = {
-  version: 1,
+  version: 2,
   content: [
     '## regime notes',
-    'Favor acting when price is trending with confluence across timeframes: the base-interval EMA',
-    'fast is above EMA slow and RSI14 is above 50, ideally agreeing with the 1h/4h EMA trend when',
-    'available. Treat choppy, range-bound conditions (EMA fast and slow crossing repeatedly, RSI',
-    'oscillating near 50) as low-edge and prefer holding.',
+    'Swing horizon: hold hours to days on 15m bars, not scalps. Momentum continuation and',
+    'breakout-retest are the two highest-edge patterns — enter strength once a consolidation range',
+    'breaks with confirmation and (ideally) a retest that holds, not into fresh chop. Session/',
+    'time-of-day matters: the US session drives the cleanest directional follow-through; Asia hours',
+    'tend to mean-revert inside a range; weekend liquidity is thin — size down or skip new entries',
+    'regardless of how clean the setup looks. BTC-beta regime: alts are BTC-direction bets first —',
+    'cut alt exposure when BTC is trending down even if an individual alt chart looks fine;',
+    'concentrate into alts when BTC is trending up AND the alt shows genuine relative strength via',
+    'the cross-symbol rank, not merely "also up."',
     '',
     '## entry rules',
-    'Only enter long when trend and momentum agree: EMA fast above EMA slow, RSI14 above 50 but',
-    'below 70 (avoid chasing an already-extended move), and the expected move clearly exceeds the',
-    'stated round-trip trading cost. Wait for a fresh confirming close rather than reacting to a',
-    'single wick.',
+    'Enter long only after a real breakout-retest: a level breaks with confirming momentum, price',
+    'retests it (or a nearby EMA) without giving back the move, and closes back in the break',
+    'direction — that confirmation matters far more than reacting to the first breakout print. Favor',
+    'initiating new positions during active US-session hours; treat quiet overnight Asia-session',
+    'entries with extra suspicion unless the setup is a clean session-driven mean reversion, not a',
+    'breakout. Concentrate conviction on a $1k book: hold 2-4 best ideas at 8-15% sizeFraction each',
+    'rather than spreading thin across the scanner menu — a sizeFraction below 0.05 is not worth the',
+    'fee drag, skip the trade instead of taking a token position. Do not open a fresh alt long while',
+    'BTC itself is trending down; wait for BTC to stabilize or size materially smaller.',
     '',
     '## exit rules',
-    'Exit to flat when the trend that justified the entry breaks: EMA fast crosses back below EMA',
-    'slow, RSI14 drops below 45, or unrealized PnL gives back a meaningful share of its peak gain.',
-    'When unsure whether the break is real or noise, prefer flat over holding a position whose thesis',
-    'no longer holds.',
+    'Stops sit beyond the structure that invalidated the thesis (below the breakout level or swing',
+    'low), never at a round number. Once a position works, raise the stop as new structure forms',
+    '(adjust) rather than leaving the initial stop static — let a genuine trend run. Cut fast when',
+    'the thesis breaks: the level that justified entry is reclaimed against you, or BTC flips against',
+    'the alt direction — exit on the confirming close rather than waiting for a deeper give-back.',
+    'maxHoldBars is a real deadline: if a position has not developed by the stated horizon, close it',
+    'and free the capital rather than letting a stale swing trade drift.',
     '',
     '## mistakes to avoid',
-    'Do not overtrade small, noisy fluctuations — each round trip costs real fees. Do not chase price',
-    'after a move already past typical overbought RSI levels. Do not act on a thin, low-confidence',
-    'edge that fees would erase. Do not treat one outcome as proof of a regime change; wait for',
-    'consistent confirmation.',
+    'Do not chase the first breakout bar without a retest — the retest-confirmation pattern has a',
+    'meaningfully better hit rate at swing horizon. Do not spread thin across many weak setups on a',
+    '$1k book — concentrated conviction in the best 2-4 ideas beats a dozen half-sized entries that',
+    'each pay full round-trip fees. Do not ignore BTC when sizing an alt — a position fighting BTC',
+    'direction is lower-probability even on a clean individual chart. Do not schedule the next',
+    'consult too tight when positioned with a wide stop (wastes budget against a roughly $1/day',
+    'target) or too loose near invalidation (misses the exit) — set nextConsultBars deliberately',
+    'rather than defaulting to the shortest interval every time.',
   ].join('\n'),
 };
 
-function seedPlaybookProvider(): PlaybookProvider {
-  return { current: () => Promise.resolve(SEED_PLAYBOOK) };
+// Perp lane counterpart to SEED_PLAYBOOK above — two-sided (shorts as readily as longs),
+// funding-flip and liquidation-cascade patterns, and leverage discipline for the 2x cap. Requires
+// {shortsAllowed: true, leverageAllowed: true} to pass validatePlaybook; never served to a spot lane.
+export const SEED_PLAYBOOK_PERP: { readonly version: number; readonly content: string } = {
+  version: 2,
+  content: [
+    '## regime notes',
+    'BTC-only, swing horizon, hours-to-days holds on 15m bars, genuinely two-sided: short a',
+    'breakdown exactly as readily as you long a breakout — there is no long-only bias on this lane.',
+    'Funding-flip signals: rich positive funding paired with stalling upside price means longs are',
+    'crowded and paying up for it — favors a short bias, especially once price stops making new',
+    'highs. Deeply negative funding while price holds support is capitulation exhaustion — favors a',
+    'long bias once selling pressure fades. Liquidation-cascade mean reversion: a violent wick',
+    'through a level, especially one lining up with a visible liquidation cluster, usually reflects',
+    'forced flow exhausting itself rather than a genuine new trend — fade the wick with a tight stop',
+    'past its extreme rather than chasing the cascade direction. Basis/open-interest divergence:',
+    'rising open interest with falling price means fresh short positions are building — real',
+    'momentum, respect it. Falling open interest with falling price means existing longs are closing',
+    'out, not fresh shorts piling in — a move nearing exhaustion, not the start of a fresh leg down.',
+    '',
+    '## entry rules',
+    'Enter short into a genuine breakdown the same way a long enters a breakout: structure breaks,',
+    'momentum confirms, and ideally a retest of the broken level fails to reclaim it. Use funding as',
+    'a timing signal, not a standalone trigger — a crowded, expensive funding rate confirms a short',
+    'thesis that already has price/structure support; do not short purely because funding is rich',
+    'while price still makes higher highs. Fade liquidation-cascade wicks with a tight stop just past',
+    'the extreme, sized smaller than a trend-following entry since this is mean reversion against',
+    'recent momentum. The 2x leverage cap exists so conviction can be expressed, not so every entry',
+    'defaults to it — reserve the full multiple for the highest-conviction setups (structure plus',
+    'funding plus open interest all agreeing); a merely-decent setup earns a smaller multiple.',
+    '',
+    '## exit rules',
+    'Stops sit beyond the structure that invalidated the thesis, and liquidation distance must stay',
+    'more than 3x the stop distance at all times — if a stop that wide puts liquidation',
+    'uncomfortably close, reduce size or the leverage multiple rather than tightening the stop into',
+    'noise. Funding accrues every 8 hours while positioned — it is real carry cost (or income), not',
+    'a rounding error; a position paying away funding for days needs a correspondingly better price',
+    'thesis to justify holding through it. Raise (long) or lower (short) the stop as new structure',
+    'forms in your favor; let a genuine trend run rather than capping it early. Cut a',
+    'liquidation-cascade fade fast if the wick extreme is reclaimed against you — that setup is',
+    'invalidated the moment the exhaustion read is wrong, there is no "give it more room" on this',
+    'trade type.',
+    '',
+    '## mistakes to avoid',
+    'Do not treat the 2x leverage cap as a default multiple — undersized conviction on weak setups,',
+    'oversized on the rare structure-plus-funding-plus-OI alignment wastes the tool either way. Do',
+    'not ignore funding cost on a position held for days — a thesis that only works while funding',
+    'stays cheap is fragile. Do not chase a liquidation-cascade wick in its own direction; the edge',
+    'is fading the exhaustion, not riding the panic. Do not let liquidation distance shrink below 3x',
+    'the stop distance to squeeze out extra size — a stopped-out loss is recoverable, a liquidation',
+    'is not.',
+  ].join('\n'),
+};
+
+function seedPlaybookProvider(perpLane = false): PlaybookProvider {
+  const seed = perpLane ? SEED_PLAYBOOK_PERP : SEED_PLAYBOOK;
+  return { current: () => Promise.resolve(seed) };
 }
 
 // Matches AGENTIC_PORTFOLIO_WINDOW_MS's schema default and BatchingAgentClient's own
@@ -275,8 +378,22 @@ const DEFAULT_PORTFOLIO_SYMBOL_COUNT = 5;
 export function selectAgentClient(
   env: Record<string, string | undefined>,
   budget: DailyLlmBudget = createAgentLlmBudget(env),
-  playbookProvider: PlaybookProvider = seedPlaybookProvider(),
+  // P2: lane-aware default — the SAME AGENTIC_SHORTS_ENABLED signal P1 uses for the denylist
+  // capability flags below selects SEED_PLAYBOOK_PERP for a shorts-enabled (perp) boot. Only
+  // matters when the caller supplies no explicit playbookProvider (the composition root always
+  // does, via PLAYBOOK_PROVIDER_OVERRIDE — see app.module.ts's identically-derived seed pick).
+  playbookProvider: PlaybookProvider = seedPlaybookProvider(
+    env['AGENTIC_SHORTS_ENABLED'] === 'true',
+  ),
   profile?: AgentTradingProfile,
+  // I1 (Design § Universe): the scanner's active-menu gate, threaded ONLY into the batching path
+  // below (ActiveMenuGate is meaningless to the single-symbol BudgetedAgentClient chain). Absent ⇒
+  // BatchingAgentClient gets no gate — byte-identical to pre-U1 (every symbol proposes).
+  activeMenuGate?: ActiveMenuGate,
+  // I1b (Design § Enriched model inputs): threaded straight through to
+  // AnthropicAgentClientConfig.payloadExtrasProvider — see that field's own comment. Absent ⇒ the
+  // client never renders portfolio/budget/calendar, byte-identical to pre-I1b.
+  payloadExtrasProvider?: AnthropicAgentClientConfig['payloadExtrasProvider'],
 ): AgentClientPort {
   const apiKey = env['ANTHROPIC_API_KEY'];
   if (!apiKey || env['NODE_ENV'] === 'test' || env['CI']) {
@@ -307,7 +424,16 @@ export function selectAgentClient(
       derivativesV2Enabled: env['AGENTIC_DERIVATIVES_V2_ENABLED'] === 'true',
       // Derivatives-block A/B: 0 by default ⇒ byte-identical (no control arm ever fires).
       derivativesAbPct: intEnv(env['AGENTIC_DERIVATIVES_AB_PCT'], 0),
-      thinkingAbPct: intEnv(env['AGENTIC_THINKING_AB_PCT'], 0),
+      // S3: thinkingAbPct dropped — AnthropicAgentClientConfig no longer has the field (thinking A/B
+      // #42 retired, every decide now carries thinking:{type:'adaptive'} unconditionally). The
+      // AGENTIC_THINKING_AB_PCT env knob itself is retired in D1; this wiring site just stops reading
+      // it now that the client-side field it fed is gone.
+      // I1 (rich decision contract, Design § New tool contract): v2 is unconditional — no staged
+      // flag, every deployment gets the trade-contract tools/schema/system-prompt from here on.
+      // maxPositionFraction is the lane's sizeFraction upper bound (spot 0.15 / perp 0.50 by config),
+      // injected into both the tool description and the zod schema at construction (S3).
+      tradeContract: true,
+      maxPositionFraction: env['AGENTIC_MAX_POSITION_FRACTION'],
       // C4: off by default ⇒ byte-identical legacy prompt (no sentiment sentence).
       sentimentFeedEnabled: env['SENTIMENT_FEED_ENABLED'] === 'true',
       // Cross-symbol relative-strength block: off by default ⇒ byte-identical. Gated together with
@@ -323,6 +449,8 @@ export function selectAgentClient(
       bookStructureFeedEnabled: env['AGENTIC_BOOK_STRUCTURE_ENABLED'] === 'true',
       // Track-record block: off by default ⇒ byte-identical. No info-context A/B interaction.
       trackRecordFeedEnabled: env['AGENTIC_TRACK_RECORD_ENABLED'] === 'true',
+      // I1b: absent ⇒ byte-identical (see the field's own comment).
+      payloadExtrasProvider,
     },
     fetch,
     new Logger('AnthropicAgentClient'),
@@ -356,6 +484,7 @@ export function selectAgentClient(
         maxBatchSize: intEnv(env['AGENTIC_PORTFOLIO_SYMBOL_COUNT'], DEFAULT_PORTFOLIO_SYMBOL_COUNT),
         agentTimeoutMs: intEnv(env['AGENTIC_TIMEOUT_MS'], DEFAULT_TIMEOUT_MS),
         model,
+        activeMenuGate,
       },
       new Logger('BatchingAgentClient'),
     );
@@ -399,9 +528,17 @@ function constraintsFromDefaultFilters(
     },
     {
       provide: PLAYBOOK_PROVIDER,
-      useFactory: (override?: PlaybookProvider): PlaybookProvider =>
-        override ?? seedPlaybookProvider(),
-      inject: [{ token: PLAYBOOK_PROVIDER_OVERRIDE, optional: true }],
+      // P2: same lane-aware fallback as selectAgentClient's default param above — only reachable
+      // in an isolated AgenticStrategyModule test context (the real app.module.ts boot always binds
+      // PLAYBOOK_PROVIDER_OVERRIDE, itself seeded off the identical shortsEnabled derivation).
+      useFactory: (
+        override: PlaybookProvider | undefined,
+        config?: TypedConfigService,
+      ): PlaybookProvider => override ?? seedPlaybookProvider(config?.agentic.shortsEnabled),
+      inject: [
+        { token: PLAYBOOK_PROVIDER_OVERRIDE, optional: true },
+        { token: TypedConfigService, optional: true },
+      ],
     },
     {
       provide: AGENT_CLIENT,
@@ -410,12 +547,24 @@ function constraintsFromDefaultFilters(
         playbookProvider: PlaybookProvider,
         config: TypedConfigService | undefined,
         profile: AgentTradingProfile | undefined,
-      ) => selectAgentClient(agenticEnv(config), budget, playbookProvider, profile),
+        activeMenuGate: ActiveMenuGate | undefined,
+        payloadExtrasProvider: AnthropicAgentClientConfig['payloadExtrasProvider'] | undefined,
+      ) =>
+        selectAgentClient(
+          agenticEnv(config),
+          budget,
+          playbookProvider,
+          profile,
+          activeMenuGate,
+          payloadExtrasProvider,
+        ),
       inject: [
         AGENT_LLM_BUDGET,
         PLAYBOOK_PROVIDER,
         { token: TypedConfigService, optional: true },
         { token: AGENT_TRADING_PROFILE_OVERRIDE, optional: true },
+        { token: ACTIVE_MENU_GATE_OVERRIDE, optional: true },
+        { token: PAYLOAD_EXTRAS_PROVIDER_OVERRIDE, optional: true },
       ],
     },
     {
@@ -437,6 +586,7 @@ function constraintsFromDefaultFilters(
         registry: StrategyRegistryPort | undefined,
         usageSink: LlmUsageSink | undefined,
         evidence: RoundTripEvidencePort | undefined,
+        execQuality: ExecQualityService | undefined,
       ) =>
         createReflectionService(agenticEnv(config), {
           budget,
@@ -447,6 +597,10 @@ function constraintsFromDefaultFilters(
           registry,
           usageSink,
           evidence,
+          // P5 seam close: ExecQualityService is optional (absent in an isolated
+          // AgenticStrategyModule-only test context) — a pull, not a snapshot, per this field's own
+          // comment (ReflectionServiceDeps.execQuality).
+          execQuality: execQuality ? () => execQuality.digest() : undefined,
           logger: new Logger('ReflectionService'),
         }),
       inject: [
@@ -459,6 +613,7 @@ function constraintsFromDefaultFilters(
         { token: STRATEGY_REGISTRY, optional: true },
         { token: LLM_USAGE_SINK, optional: true },
         { token: REFLECTION_EVIDENCE, optional: true },
+        { token: ExecQualityService, optional: true },
       ],
     },
   ],

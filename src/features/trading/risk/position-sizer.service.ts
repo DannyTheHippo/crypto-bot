@@ -29,6 +29,14 @@ function isPerpSignal(signal: Signal): boolean {
   return signal.venue === PERP_VENUE_ID || splitSymbol(signal.symbol).settle !== undefined;
 }
 
+// S2/C1: true when `side` opens/adds to a position on the SAME side as the attributed posQty sign
+// (positive = long, negative = short — mirrors the FLATTEN orientation above). Zero (flat) is never
+// "same side" — that's a fresh entry, not a scale-in, so the headroom clamp must not apply.
+function isSameSideEntry(side: 'BUY' | 'SELL', posQty: Decimal): boolean {
+  if (posQty.isZero()) return false;
+  return side === 'BUY' ? posQty.gt(0) : posQty.lt(0);
+}
+
 // Pure, exhaustive kind → {side, reduceOnly} mapping. The switch covers every Signal kind and returns
 // in each arm, so adding a kind without a case is a COMPILE error (the function then "lacks an ending
 // return") — exhaustiveness without an unreachable default branch (which a 100%-coverage zone forbids).
@@ -159,15 +167,28 @@ export class PositionSizerService implements PositionSizerPort {
       timeInForce = reduceOnly ? (isRestingExit ? 'GTC' : 'IOC') : 'GTC';
     }
 
-    // Sizing: reduce-only legs (exit-long, cover-short, flatten) reduce the attributed position;
-    // entries (long or short) scale by conviction — compounding equity-fraction sizing when enabled,
+    // Sizing: reduce-only legs (exit-long, cover-short, flatten) reduce the attributed position —
+    // S2/C1's reduceFraction scopes a partial close (posQty.abs() × reduceFraction ?? '1', full size
+    // when absent, byte-identical); entries (long or short) scale by conviction — compounding
+    // equity-fraction sizing when enabled, the model's own sizeFraction directive when present (C1),
     // else the legacy fixed baseNotional.
     const rawQty: Decimal = reduceOnly
-      ? posQty.abs()
-      : this.entryNotional(signal, snapshot, side).div(limitPrice!);
-    // A reduce-only with nothing attributed is a strategy no-op, not a dust order — report it
-    // distinctly so trade analysis can separate "flat, nothing to exit" from a genuine sub-min size.
-    if (rawQty.lte(0)) return { ok: false, reason: 'NO_POSITION' };
+      ? posQty.abs().mul(new Decimal(signal.reduceFraction ?? '1'))
+      : this.entryNotional(signal, snapshot, side, posQty).div(limitPrice!);
+    // A reduce-only with nothing attributed (or a fully-zeroed reduceFraction) is a strategy no-op,
+    // not a dust order — report it distinctly so trade analysis can separate "flat, nothing to
+    // exit" from a genuine sub-min size. A non-sizeFraction entry that collapses to zero/negative
+    // (legacy zero-strength, or the perp liq-safety gate collapsing to 0 — see applyPerpCaps) keeps
+    // that same NO_POSITION shortcut, byte-identical to pre-C1 behavior. A sizeFraction-directed
+    // entry (C1) is different: the model asked for a specific, nonzero size — a same-side scale-in
+    // clamped to zero/negative by exhausted headroom IS a sizable request the venue floor rejects,
+    // so it routes to BELOW_MINIMUM (the ordinary gate below) instead of this no-op shortcut.
+    if (rawQty.lte(0)) {
+      return {
+        ok: false,
+        reason: !reduceOnly && signal.sizeFraction !== undefined ? 'BELOW_MINIMUM' : 'NO_POSITION',
+      };
+    }
 
     // Round the raw (possibly high-precision, e.g. baseNotional/price) quantity to the step FIRST;
     // wrapping it in qty() before rounding would throw on the 18-place precision limit.
@@ -252,45 +273,141 @@ export class PositionSizerService implements PositionSizerPort {
     return wouldCross ? 'LIMIT' : 'LIMIT_MAKER';
   }
 
-  // Entry (non-reduce-only) notional, quote-denominated. P5 compounding path: equity × fraction ×
-  // strength, when a positive fraction is configured AND equity is finite-positive (an unfunded or
-  // corrupt equity read falls back to the legacy path rather than sizing off a nonsensical base).
-  // Falls back to the legacy fixed baseNotional × strength otherwise — byte-identical to the
-  // pre-P5 behavior for every deployment that leaves SIZER_EQUITY_FRACTION at its disabled default.
+  // Entry (non-reduce-only) notional, quote-denominated. Sizing equity is cappedEquity(actualEquity)
+  // throughout (C1, SIZER_EQUITY_CAP — see cappedEquity's own comment). Three paths, in priority
+  // order: (1) C1 — signal.sizeFraction present ⇒ the model's own directive, strength/equityFraction
+  // ignored entirely (see sizeFractionNotional); (2) P5 compounding — cappedEquity × fraction ×
+  // strength, when a positive fraction is configured AND cappedEquity is finite-positive (an
+  // unfunded/corrupt equity read falls back to the legacy path rather than sizing off a nonsensical
+  // base); (3) legacy fixed baseNotional × strength — byte-identical to pre-P5 behavior for every
+  // deployment that leaves SIZER_EQUITY_FRACTION at its disabled default (modulo the equity cap).
   //
-  // A single extra clamp applies to spot BUY entries only: capped at 95% of the symbol's free quote
-  // balance, so a compounding size can never request more quote cash than is actually free (the
-  // RiskEngine's maxOrderNotional/exposure limits are a separate, independent ceiling — this clamp
-  // is the sizer's own affordability check). SELL entries (opening a spot short — never happens —
-  // or a perp short) spend no quote cash up front, so the clamp does not apply. Absent balance
-  // data ⇒ no cap here — the engine/venue still vetoes an unaffordable order downstream. Perp
-  // (margined) venues skip this spot-specific cash clamp entirely and go through applyPerpCaps
-  // instead (margin×leverageCap + liq-buffer, applied to BOTH sides — a perp short still locks
-  // margin, unlike a spot sell).
+  // A single extra clamp applies to spot BUY entries only, on EITHER of paths (1)/(2): capped at 95%
+  // of the symbol's free quote balance, so a sized entry can never request more quote cash than is
+  // actually free (the RiskEngine's maxOrderNotional/exposure limits are a separate, independent
+  // ceiling — this clamp is the sizer's own affordability check). SELL entries (opening a spot short
+  // — never happens — or a perp short) spend no quote cash up front, so the clamp does not apply.
+  // Absent balance data ⇒ no cap here — the engine/venue still vetoes an unaffordable order
+  // downstream. Perp (margined) venues skip this spot-specific cash clamp entirely and go through
+  // applyPerpCaps instead (margin×leverageCap + liq-buffer, applied to BOTH sides — a perp short
+  // still locks margin, unlike a spot sell).
   private entryNotional(
     signal: Signal,
     snapshot: PortfolioSnapshot,
     side: 'BUY' | 'SELL',
+    posQty: Decimal,
   ): Decimal {
     const isPerp = isPerpSignal(signal);
-    const fraction = new Decimal(this.deps.equityFraction ?? '0');
-    const legacyNotional = new Decimal(this.deps.baseNotional).mul(signal.strength);
+    const cappedEquity = this.cappedEquity(snapshot.equity);
 
     let base: Decimal;
-    if (fraction.lte(0) || !snapshot.equity.isFinite() || snapshot.equity.lte(0)) {
-      base = legacyNotional;
+    if (signal.sizeFraction !== undefined) {
+      base = this.sizeFractionNotional(signal, snapshot, side, cappedEquity, posQty);
     } else {
-      const target = snapshot.equity.mul(fraction).mul(signal.strength);
-      if (side === 'BUY' && !isPerp) {
-        const quoteAsset = splitSymbol(signal.symbol).quote;
-        const freeQuote = snapshot.balances.get(quoteAsset)?.free;
-        base = freeQuote === undefined ? target : Decimal.min(target, freeQuote.mul('0.95'));
+      const fraction = new Decimal(this.deps.equityFraction ?? '0');
+      const legacyNotional = new Decimal(this.deps.baseNotional).mul(signal.strength);
+      if (fraction.lte(0) || !cappedEquity.isFinite() || cappedEquity.lte(0)) {
+        base = legacyNotional;
       } else {
-        base = target;
+        const target = cappedEquity.mul(fraction).mul(signal.strength);
+        base = this.applyAffordabilityClamp(target, signal, side, snapshot);
       }
     }
 
     return isPerp ? this.applyPerpCaps(base, signal, snapshot) : base;
+  }
+
+  // SIZER_EQUITY_CAP (C1, Design § Live-scale economics): sizing equity across every notional path
+  // is min(actualEquity, cap) when a finite-positive cap is configured — a demo account earns its
+  // promotion verdict at exactly live-book proportions. Absent/non-finite/non-positive cap ⇒ actual
+  // equity passes through unchanged (byte-identical to pre-cap behavior).
+  private cappedEquity(actualEquity: Decimal): Decimal {
+    const cap = this.deps.equityCap;
+    if (cap === undefined) return actualEquity;
+    const capDecimal = new Decimal(cap);
+    if (!capDecimal.isFinite() || capDecimal.lte(0)) return actualEquity;
+    return Decimal.min(actualEquity, capDecimal);
+  }
+
+  // C1: the agentic lane's own sizing directive. notional = cappedEquity × min(sizeFraction,
+  // maxAgentPositionFraction ?? '0.15') — strength and SIZER_EQUITY_FRACTION are deliberately
+  // ignored on this path (sizeFraction IS the conviction channel, Design § Sizing flow). A same-side
+  // position already open (scale-in) OR a same-side entry order still resting/in-flight and unfilled
+  // additionally clamps to the remaining fraction headroom (maxFraction×cappedEquity − |posNotional|
+  // − reservedEntryNotional): posNotional is valued at signal.refPrice — the current decision-time
+  // reference, not the position's historical avgEntry — while reservedEntryNotional is valued at
+  // each resting/in-flight order's own limit price (see reservedEntryNotional below). So repeated
+  // scale-ins can never compound past the per-lane cap in aggregate. Gating on posQty alone (the
+  // pre-fix behaviour) missed a
+  // same-symbol scale-in placed while the prior entry order is still entirely unfilled — posQty is
+  // 0 until a fill lands, so the clamp was skipped and the cap bypassable by stacking unfilled
+  // entries (CONFIRMED risk-cap bypass); reservedEntryNotional closes that gap by also gating on the
+  // resting/in-flight order registry. A headroom ≤ 0 (already at/over cap) or negative clamp flows
+  // through as a non-positive target, which size()'s BELOW_MINIMUM gate rejects downstream — never
+  // silently floors to a dust order.
+  private sizeFractionNotional(
+    signal: Signal,
+    snapshot: PortfolioSnapshot,
+    side: 'BUY' | 'SELL',
+    cappedEquity: Decimal,
+    posQty: Decimal,
+  ): Decimal {
+    const maxFraction = new Decimal(this.deps.maxAgentPositionFraction ?? '0.15');
+    const sizeFraction = Decimal.min(new Decimal(signal.sizeFraction!), maxFraction);
+    let target = cappedEquity.mul(sizeFraction);
+
+    const reserved = this.reservedEntryNotional(signal, snapshot, side);
+    if (isSameSideEntry(side, posQty) || reserved.gt(0)) {
+      const posNotional = posQty.abs().mul(signal.refPrice);
+      const headroom = cappedEquity.mul(maxFraction).sub(posNotional).sub(reserved);
+      target = Decimal.min(target, headroom);
+    }
+
+    return this.applyAffordabilityClamp(target, signal, side, snapshot);
+  }
+
+  // Same-lane (strategyId + venue + symbol) resting-or-in-flight ENTRY order notional matching
+  // `side` — snapshot.inFlightIntents is the runtime's single non-terminal order registry (an order
+  // joins it before placeOrder and leaves only on a terminal fill/reject/cancel, so it covers both
+  // truly in-flight and already-acked/resting orders, execution-gate.service.ts's addInFlight/
+  // clearInFlight). Reduce-only orders only ever shrink exposure, so they reserve nothing. Valued at
+  // each order's own limit price (its actual reserved notional); falls back to the order's own
+  // refPrice for the (never-hit for a non-reduce-only entry) undefined case. FAILS CLOSED: a
+  // partially-filled order's already-filled leg is counted here AND in the filled-position notional
+  // above — deliberate over-reservation, never under-reservation.
+  private reservedEntryNotional(
+    signal: Signal,
+    snapshot: PortfolioSnapshot,
+    side: 'BUY' | 'SELL',
+  ): Decimal {
+    let reserved = new Decimal(0);
+    for (const f of snapshot.inFlightIntents) {
+      if (
+        f.reduceOnly ||
+        f.side !== side ||
+        f.strategyId !== signal.strategyId ||
+        f.venue !== signal.venue ||
+        f.symbol !== signal.symbol
+      ) {
+        continue;
+      }
+      reserved = reserved.add(f.qty.mul(f.limitPrice ?? f.refPrice));
+    }
+    return reserved;
+  }
+
+  // Spot BUY affordability clamp, shared by the equity-fraction and sizeFraction entry paths — see
+  // entryNotional's header comment for the full spot/perp/SELL split.
+  private applyAffordabilityClamp(
+    target: Decimal,
+    signal: Signal,
+    side: 'BUY' | 'SELL',
+    snapshot: PortfolioSnapshot,
+  ): Decimal {
+    if (side !== 'BUY' || isPerpSignal(signal)) return target;
+    const quoteAsset = splitSymbol(signal.symbol).quote;
+    const freeQuote = snapshot.balances.get(quoteAsset)?.free;
+    return freeQuote === undefined ? target : Decimal.min(target, freeQuote.mul('0.95'));
   }
 
   // Perp entry-sizing caps (B2): notional = min(currentBehavior, margin×leverageCap,

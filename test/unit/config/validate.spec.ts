@@ -189,6 +189,10 @@ describe('validate()', () => {
         maxTokensPerDay: 2_000_000,
         dailyCostStopUsd: 3,
         entryTtlBars: 2,
+        maxPositionFraction: '0.15',
+        fallbackConsultBars: 16,
+        wakeMovePct: '0.015',
+        activeMenuSize: 12,
         maxEntriesPerDay: 12,
         drainCooldownBaseMs: 30_000,
         drainCooldownMaxMs: 900_000,
@@ -202,7 +206,6 @@ describe('validate()', () => {
         playbookPin: undefined,
         playbookAbPct: 0,
         derivativesAbPct: 0,
-        thinkingAbPct: 0,
         derivativesV2Enabled: false,
         bookStructureFeedEnabled: false,
         trackRecordEnabled: false,
@@ -211,11 +214,7 @@ describe('validate()', () => {
         portfolioConsultEnabled: false,
         portfolioWindowMs: 3000,
         shortsEnabled: false,
-        expectancyLadderEnabled: false,
         planMode: false,
-        minEdgeMultiple: '1.5',
-        minRr: '1.5',
-        planMaxQuietBars: 16,
         planExitTtlBars: 2,
         quietPayloadSampleBars: 0,
         venueTpEnabled: false,
@@ -229,12 +228,6 @@ describe('validate()', () => {
         tokenPrices: undefined,
         promotionEvidenceEpoch: undefined,
         promotionDustNotional: '5',
-        prescreenEnabled: true,
-        prescreenVolShortBars: 10,
-        prescreenVolLongBars: 50,
-        prescreenVolRatio: 1.3,
-        prescreenBreakoutLookbackBars: 20,
-        prescreenBreakoutPct: 0.005,
       });
     });
 
@@ -255,12 +248,11 @@ describe('validate()', () => {
         AGENTIC_REFLECTION_EVERY_N_TRADES: '5',
         AGENTIC_REFLECTION_COOLDOWN_MS: '3600000',
         AGENTIC_REFLECTION_TIMEOUT_MS: '90000',
-        AGENTIC_PRESCREEN_ENABLED: 'false',
-        AGENTIC_PRESCREEN_VOL_SHORT_BARS: '15',
-        AGENTIC_PRESCREEN_VOL_LONG_BARS: '60',
-        AGENTIC_PRESCREEN_VOL_RATIO: '1.5',
-        AGENTIC_PRESCREEN_BREAKOUT_LOOKBACK_BARS: '30',
-        AGENTIC_PRESCREEN_BREAKOUT_PCT: '0.01',
+        AGENTIC_MAX_POSITION_FRACTION: '0.25',
+        AGENTIC_FALLBACK_CONSULT_BARS: '8',
+        AGENTIC_WAKE_MOVE_PCT: '0.03',
+        AGENTIC_ACTIVE_MENU_SIZE: '5',
+        TRADING_SYMBOLS: 'BTC/USDT,ETH/USDT,SOL/USDT,XRP/USDT,LINK/USDT',
       });
       expect(cfg.agentic.model).toBe('claude-haiku-4-5');
       expect(cfg.agentic.timeoutMs).toBe(5000);
@@ -276,12 +268,135 @@ describe('validate()', () => {
       expect(cfg.agentic.reflectionEveryNTrades).toBe(5);
       expect(cfg.agentic.reflectionCooldownMs).toBe(3600000);
       expect(cfg.agentic.reflectionTimeoutMs).toBe(90000);
-      expect(cfg.agentic.prescreenEnabled).toBe(false);
-      expect(cfg.agentic.prescreenVolShortBars).toBe(15);
-      expect(cfg.agentic.prescreenVolLongBars).toBe(60);
-      expect(cfg.agentic.prescreenVolRatio).toBe(1.5);
-      expect(cfg.agentic.prescreenBreakoutLookbackBars).toBe(30);
-      expect(cfg.agentic.prescreenBreakoutPct).toBe(0.01);
+      expect(cfg.agentic.maxPositionFraction).toBe('0.25');
+      expect(cfg.agentic.fallbackConsultBars).toBe(8);
+      expect(cfg.agentic.wakeMovePct).toBe('0.03');
+      expect(cfg.agentic.activeMenuSize).toBe(5);
+    });
+
+    describe('v2 contract knobs (D1)', () => {
+      it('AGENTIC_MAX_POSITION_FRACTION defaults to 0.15 and rejects an out-of-range fraction', () => {
+        expect(validate({ PORT: '3100' }).agentic.maxPositionFraction).toBe('0.15');
+        expect(
+          validate({ PORT: '3100', AGENTIC_MAX_POSITION_FRACTION: '0.50' }).agentic
+            .maxPositionFraction,
+        ).toBe('0.50');
+        expect(() => validate({ PORT: '3100', AGENTIC_MAX_POSITION_FRACTION: '1.5' })).toThrow(
+          /AGENTIC_MAX_POSITION_FRACTION/,
+        );
+      });
+
+      it('AGENTIC_FALLBACK_CONSULT_BARS defaults to 16 and rejects below 1', () => {
+        expect(validate({ PORT: '3100' }).agentic.fallbackConsultBars).toBe(16);
+        expect(
+          validate({ PORT: '3100', AGENTIC_FALLBACK_CONSULT_BARS: '4' }).agentic
+            .fallbackConsultBars,
+        ).toBe(4);
+        expect(() => validate({ PORT: '3100', AGENTIC_FALLBACK_CONSULT_BARS: '0' })).toThrow(
+          /AGENTIC_FALLBACK_CONSULT_BARS/,
+        );
+      });
+
+      it('AGENTIC_WAKE_MOVE_PCT defaults to 0.015 and rejects an out-of-range fraction', () => {
+        expect(validate({ PORT: '3100' }).agentic.wakeMovePct).toBe('0.015');
+        expect(validate({ PORT: '3100', AGENTIC_WAKE_MOVE_PCT: '0.03' }).agentic.wakeMovePct).toBe(
+          '0.03',
+        );
+        expect(() => validate({ PORT: '3100', AGENTIC_WAKE_MOVE_PCT: '2' })).toThrow(
+          /AGENTIC_WAKE_MOVE_PCT/,
+        );
+      });
+
+      it('SIZER_EQUITY_CAP is absent (uncapped) by default and lands as an exact decimal string when set', () => {
+        expect(validate({ PORT: '3100' }).risk.equityCap).toBeUndefined();
+        expect(validate({ PORT: '3100', SIZER_EQUITY_CAP: '1000' }).risk.equityCap).toBe('1000');
+        expect(() => validate({ PORT: '3100', SIZER_EQUITY_CAP: '-5' })).toThrow(
+          /SIZER_EQUITY_CAP/,
+        );
+      });
+
+      it('AGENTIC_ACTIVE_MENU_SIZE defaults to 12 and rejects a menu wider than an EXPLICIT basket', () => {
+        expect(validate({ PORT: '3100' }).agentic.activeMenuSize).toBe(12);
+        expect(
+          validate({
+            PORT: '3100',
+            AGENTIC_ACTIVE_MENU_SIZE: '2',
+            TRADING_SYMBOLS: 'BTC/USDT,ETH/USDT,SOL/USDT',
+          }).agentic.activeMenuSize,
+        ).toBe(2);
+        // The check binds only to an EXPLICIT TRADING_SYMBOLS CSV — the legacy single-symbol
+        // fallback (TRADING_SYMBOLS unset) predates U1's menu concept and must stay byte-identical
+        // for every unconfigured deployment, so the default menu size of 12 is a no-op here.
+        expect(
+          validate({ PORT: '3100', AGENTIC_ACTIVE_MENU_SIZE: '12' }).agentic.activeMenuSize,
+        ).toBe(12);
+        expect(() =>
+          validate({
+            PORT: '3100',
+            AGENTIC_ACTIVE_MENU_SIZE: '4',
+            TRADING_SYMBOLS: 'BTC/USDT,ETH/USDT,SOL/USDT',
+          }),
+        ).toThrow(/AGENTIC_ACTIVE_MENU_SIZE/);
+        // Boundary: menu size exactly equal to the basket size passes.
+        expect(
+          validate({
+            PORT: '3100',
+            AGENTIC_ACTIVE_MENU_SIZE: '3',
+            TRADING_SYMBOLS: 'BTC/USDT,ETH/USDT,SOL/USDT',
+          }).agentic.activeMenuSize,
+        ).toBe(3);
+      });
+    });
+
+    describe('PROTECT_STOP_LOSS_PCT vs the v2 stop-loss upper bound (D1 backstop-vs-model-stop)', () => {
+      it('default PROTECT_STOP_LOSS_PCT (0, disabled) never trips the refusal', () => {
+        expect(validate({ PORT: '3100' }).risk.protectStopLossPct).toBe('0');
+      });
+
+      it('throws when PROTECT_STOP_LOSS_PCT is at or below the 0.05 SL bound', () => {
+        expect(() => validate({ PORT: '3100', PROTECT_STOP_LOSS_PCT: '0.05' })).toThrow(
+          /PROTECT_STOP_LOSS_PCT/,
+        );
+        expect(() => validate({ PORT: '3100', PROTECT_STOP_LOSS_PCT: '0.02' })).toThrow(
+          /PROTECT_STOP_LOSS_PCT/,
+        );
+      });
+
+      it('passes when PROTECT_STOP_LOSS_PCT clears the 0.05 SL bound', () => {
+        const cfg = validate({ PORT: '3100', PROTECT_STOP_LOSS_PCT: '0.06' });
+        expect(cfg.risk.protectStopLossPct).toBe('0.06');
+      });
+    });
+
+    describe('AGENTIC_SHORTS_ENABLED requires a binanceusdm venue (D1)', () => {
+      const SPOT_VENUE = JSON.stringify([{ id: 'binance', environment: 'paper' }]);
+      const PERP_VENUE = JSON.stringify([{ id: 'binanceusdm', environment: 'paper' }]);
+
+      it('throws when shorts are enabled with no configured venue', () => {
+        expect(() => validate({ PORT: '3100', AGENTIC_SHORTS_ENABLED: 'true' })).toThrow(
+          /AGENTIC_SHORTS_ENABLED/,
+        );
+      });
+
+      it('throws when shorts are enabled on a spot-only venue', () => {
+        expect(() =>
+          validate({ PORT: '3100', AGENTIC_SHORTS_ENABLED: 'true', VENUES: SPOT_VENUE }),
+        ).toThrow(/AGENTIC_SHORTS_ENABLED/);
+      });
+
+      it('passes when shorts are enabled with a binanceusdm venue configured', () => {
+        const cfg = validate({
+          PORT: '3100',
+          AGENTIC_SHORTS_ENABLED: 'true',
+          VENUES: PERP_VENUE,
+        });
+        expect(cfg.agentic.shortsEnabled).toBe(true);
+      });
+
+      it('passes when shorts are disabled regardless of venues', () => {
+        const cfg = validate({ PORT: '3100', VENUES: SPOT_VENUE });
+        expect(cfg.agentic.shortsEnabled).toBe(false);
+      });
     });
 
     it('AGENTIC_REFLECTION_EVERY_N_TRADES=0 is valid (means off)', () => {
@@ -294,8 +409,13 @@ describe('validate()', () => {
       expect(cfg.agentic.reflectionModel).toBeUndefined();
     });
 
-    it('AGENTIC_REFLECTION_MODEL present → carried into cfg.agentic', () => {
-      const cfg = validate({ PORT: '3100', AGENTIC_REFLECTION_MODEL: 'claude-opus-4-8' });
+    it('AGENTIC_REFLECTION_MODEL present → carried into cfg.agentic (priced, so the gate-honesty refusal below does not trip)', () => {
+      const cfg = validate({
+        PORT: '3100',
+        AGENTIC_REFLECTION_MODEL: 'claude-opus-4-8',
+        AGENTIC_TOKEN_PRICES_JSON:
+          '{"claude-opus-4-8":{"inputPerMtok":"5","outputPerMtok":"25","cacheReadPerMtok":"0.5","cacheWritePerMtok":"10"}}',
+      });
       expect(cfg.agentic.reflectionModel).toBe('claude-opus-4-8');
     });
 
@@ -325,22 +445,6 @@ describe('validate()', () => {
       );
     });
 
-    it('AGENTIC_THINKING_AB_PCT absent → 0 (thinking arm disabled, #42)', () => {
-      const cfg = validate({ PORT: '3100' });
-      expect(cfg.agentic.thinkingAbPct).toBe(0);
-    });
-
-    it('AGENTIC_THINKING_AB_PCT present → parsed within 0-50', () => {
-      const cfg = validate({ PORT: '3100', AGENTIC_THINKING_AB_PCT: '25' });
-      expect(cfg.agentic.thinkingAbPct).toBe(25);
-    });
-
-    it('throws on AGENTIC_THINKING_AB_PCT above 50 (mirrors the peer A/B caps)', () => {
-      expect(() => validate({ PORT: '3100', AGENTIC_THINKING_AB_PCT: '51' })).toThrow(
-        /AGENTIC_THINKING_AB_PCT/,
-      );
-    });
-
     it('AGENTIC_DERIVATIVES_AB_PCT absent → 0 (control arm disabled)', () => {
       const cfg = validate({ PORT: '3100' });
       expect(cfg.agentic.derivativesAbPct).toBe(0);
@@ -355,6 +459,17 @@ describe('validate()', () => {
       expect(() => validate({ PORT: '3100', AGENTIC_DERIVATIVES_AB_PCT: '51' })).toThrow(
         /AGENTIC_DERIVATIVES_AB_PCT/,
       );
+    });
+
+    it('AGENTIC_CROSS_SYMBOL_ENABLED="false" resolves to false (strict enum parse, not z.coerce.boolean — Boolean("false") === true was the bug)', () => {
+      expect(validate({ PORT: '3100' }).agentic.crossSymbolEnabled).toBe(false);
+      expect(
+        validate({ PORT: '3100', AGENTIC_CROSS_SYMBOL_ENABLED: 'false' }).agentic
+          .crossSymbolEnabled,
+      ).toBe(false);
+      expect(
+        validate({ PORT: '3100', AGENTIC_CROSS_SYMBOL_ENABLED: 'true' }).agentic.crossSymbolEnabled,
+      ).toBe(true);
     });
 
     it('throws on non-numeric AGENTIC_TIMEOUT_MS', () => {
@@ -466,12 +581,6 @@ describe('validate()', () => {
       ).toThrow(/AGENTIC_AUTO_PROMOTE_MIN_ATTRIBUTED_TRADES/);
     });
 
-    it('AGENTIC_MIN_RR defaults to 1.5 and stays an exact decimal string', () => {
-      expect(validate({ PORT: '3100' }).agentic.minRr).toBe('1.5');
-      expect(validate({ PORT: '3100', AGENTIC_MIN_RR: '2' }).agentic.minRr).toBe('2');
-      expect(() => validate({ PORT: '3100', AGENTIC_MIN_RR: 'lots' })).toThrow(/AGENTIC_MIN_RR/);
-    });
-
     it('AGENTIC_PLAN_EXIT_TTL_BARS defaults to 2 and rejects a 1-bar TTL (races its own age)', () => {
       expect(validate({ PORT: '3100' }).agentic.planExitTtlBars).toBe(2);
       expect(
@@ -528,6 +637,76 @@ describe('validate()', () => {
       ).toThrow(/AGENTIC_TOKEN_PRICES_JSON failed validation/);
     });
 
+    describe('AGENTIC_REFLECTION_MODEL pricing gate-honesty refusal (review finding, major)', () => {
+      const OPUS_PRICED =
+        '{"claude-opus-4-8":{"inputPerMtok":"5","outputPerMtok":"25","cacheReadPerMtok":"0.5","cacheWritePerMtok":"10"}}';
+
+      it('throws when a differing reflection model has no AGENTIC_TOKEN_PRICES_JSON at all', () => {
+        expect(() =>
+          validate({ PORT: '3100', AGENTIC_REFLECTION_MODEL: 'claude-opus-4-8' }),
+        ).toThrow(/AGENTIC_REFLECTION_MODEL.*AGENTIC_MODEL.*AGENTIC_TOKEN_PRICES_JSON/s);
+      });
+
+      it('throws when AGENTIC_TOKEN_PRICES_JSON is configured but omits the reflection model', () => {
+        expect(() =>
+          validate({
+            PORT: '3100',
+            AGENTIC_REFLECTION_MODEL: 'claude-opus-4-8',
+            AGENTIC_TOKEN_PRICES_JSON:
+              '{"claude-sonnet-5":{"inputPerMtok":"3","outputPerMtok":"15","cacheReadPerMtok":"0.3","cacheWritePerMtok":"6"}}',
+          }),
+        ).toThrow(/AGENTIC_TOKEN_PRICES_JSON/);
+      });
+
+      it('passes when the reflection model has its own AGENTIC_TOKEN_PRICES_JSON entry', () => {
+        expect(() =>
+          validate({
+            PORT: '3100',
+            AGENTIC_REFLECTION_MODEL: 'claude-opus-4-8',
+            AGENTIC_TOKEN_PRICES_JSON: OPUS_PRICED,
+          }),
+        ).not.toThrow();
+      });
+
+      it('never trips when AGENTIC_REFLECTION_MODEL is absent, regardless of AGENTIC_TOKEN_PRICES_JSON', () => {
+        expect(() => validate({ PORT: '3100' })).not.toThrow();
+      });
+
+      it('never trips when AGENTIC_REFLECTION_MODEL equals AGENTIC_MODEL (same price either way)', () => {
+        expect(() =>
+          validate({
+            PORT: '3100',
+            AGENTIC_MODEL: 'claude-sonnet-5',
+            AGENTIC_REFLECTION_MODEL: 'claude-sonnet-5',
+          }),
+        ).not.toThrow();
+      });
+
+      it('malformed AGENTIC_TOKEN_PRICES_JSON still fails via its own throw, not this refusal', () => {
+        expect(() =>
+          validate({
+            PORT: '3100',
+            AGENTIC_REFLECTION_MODEL: 'claude-opus-4-8',
+            AGENTIC_TOKEN_PRICES_JSON: '{nope',
+          }),
+        ).toThrow(/AGENTIC_TOKEN_PRICES_JSON is not valid JSON/);
+      });
+
+      // Shipped-lane regression: both .env.app and .env.app-perp pin AGENTIC_REFLECTION_MODEL=
+      // claude-opus-4-8 with a price map covering both models — must never trip this refusal.
+      it('shipped lane shape (opus reflection + both-model price map) never trips', () => {
+        expect(() =>
+          validate({
+            PORT: '3100',
+            AGENTIC_MODEL: 'claude-sonnet-5',
+            AGENTIC_REFLECTION_MODEL: 'claude-opus-4-8',
+            AGENTIC_TOKEN_PRICES_JSON:
+              '{"claude-sonnet-5":{"inputPerMtok":"3","outputPerMtok":"15","cacheReadPerMtok":"0.3","cacheWritePerMtok":"6"},"claude-opus-4-8":{"inputPerMtok":"5","outputPerMtok":"25","cacheReadPerMtok":"0.5","cacheWritePerMtok":"10"}}',
+          }),
+        ).not.toThrow();
+      });
+    });
+
     it('PROMOTION_EVIDENCE_EPOCH accepts ISO-8601, treats empty as unset, rejects garbage', () => {
       expect(validate({ PORT: '3100' }).agentic.promotionEvidenceEpoch).toBeUndefined();
       expect(
@@ -540,58 +719,19 @@ describe('validate()', () => {
       expect(() => validate({ PORT: '3100', PROMOTION_EVIDENCE_EPOCH: 'yesterday-ish' })).toThrow(
         /PROMOTION_EVIDENCE_EPOCH/,
       );
-    });
-
-    describe('prescreen warmup cross-field validation', () => {
-      // Regression: AGENTIC_WARMUP_BARS shorter than either prescreen window means
-      // evaluatePrescreen's hasEnoughData is false on every bar post-warmup too — the gate
-      // permanently fails open (insufficient_data every bar) and the cost floor silently no-ops.
-      it('throws naming all three knobs when warmup is below volLongBars', () => {
-        expect(() =>
-          validate({
-            PORT: '3100',
-            AGENTIC_WARMUP_BARS: '40',
-            AGENTIC_PRESCREEN_VOL_LONG_BARS: '50',
-            AGENTIC_PRESCREEN_BREAKOUT_LOOKBACK_BARS: '20',
-          }),
-        ).toThrow(
-          /AGENTIC_WARMUP_BARS \(40\).*AGENTIC_PRESCREEN_VOL_LONG_BARS \(50\).*AGENTIC_PRESCREEN_BREAKOUT_LOOKBACK_BARS \(20\)/s,
-        );
-      });
-
-      it('throws naming all three knobs when warmup is below breakoutLookbackBars', () => {
-        expect(() =>
-          validate({
-            PORT: '3100',
-            AGENTIC_WARMUP_BARS: '15',
-            AGENTIC_PRESCREEN_VOL_LONG_BARS: '10',
-            AGENTIC_PRESCREEN_BREAKOUT_LOOKBACK_BARS: '20',
-          }),
-        ).toThrow(
-          /AGENTIC_WARMUP_BARS \(15\).*AGENTIC_PRESCREEN_VOL_LONG_BARS \(10\).*AGENTIC_PRESCREEN_BREAKOUT_LOOKBACK_BARS \(20\)/s,
-        );
-      });
-
-      it('passes at the boundary — warmup exactly equal to volLongBars and breakoutLookbackBars', () => {
-        const cfg = validate({
-          PORT: '3100',
-          AGENTIC_WARMUP_BARS: '50',
-          AGENTIC_PRESCREEN_VOL_LONG_BARS: '50',
-          AGENTIC_PRESCREEN_BREAKOUT_LOOKBACK_BARS: '50',
-        });
-        expect(cfg.agentic.warmupBars).toBe(50);
-      });
-
-      it('skips the check entirely when the prescreen gate is disabled', () => {
-        const cfg = validate({
-          PORT: '3100',
-          AGENTIC_PRESCREEN_ENABLED: 'false',
-          AGENTIC_WARMUP_BARS: '5',
-          AGENTIC_PRESCREEN_VOL_LONG_BARS: '50',
-          AGENTIC_PRESCREEN_BREAKOUT_LOOKBACK_BARS: '20',
-        });
-        expect(cfg.agentic.warmupBars).toBe(5);
-      });
+      // W4 audit: the currently-shipped lane epochs (full UTC instants) still pass.
+      expect(
+        validate({ PORT: '3100', PROMOTION_EVIDENCE_EPOCH: '2026-07-18T15:36:14Z' }).agentic
+          .promotionEvidenceEpoch,
+      ).toBe('2026-07-18T15:36:14Z');
+      // W4 audit: a date-only string used to parse as silent midnight UTC — now refused.
+      expect(() => validate({ PORT: '3100', PROMOTION_EVIDENCE_EPOCH: '2026-07-18' })).toThrow(
+        /PROMOTION_EVIDENCE_EPOCH/,
+      );
+      // W4 audit: a non-Z (local/offset) instant is refused — the epoch must be unambiguous UTC.
+      expect(() =>
+        validate({ PORT: '3100', PROMOTION_EVIDENCE_EPOCH: '2026-07-18T15:36:14+02:00' }),
+      ).toThrow(/PROMOTION_EVIDENCE_EPOCH/);
     });
 
     // Push 3 P7f fix 4: a resting venue TP already locks the full base balance — a spot deployment
@@ -648,14 +788,23 @@ describe('validate()', () => {
         expect(cfg.agentic.venueStopEnabled).toBe(false);
       });
 
-      it('passes with both enabled and no VENUES configured (paper default, empty array)', () => {
+      it('throws with both enabled and no VENUES configured (empty VENUES resolves to the real spot venue at boot — treated as spot, not unconfigured)', () => {
+        expect(() =>
+          validate({
+            PORT: '3100',
+            AGENTIC_VENUE_TP: 'true',
+            AGENTIC_VENUE_STOP: 'true',
+          }),
+        ).toThrow(/AGENTIC_VENUE_TP and AGENTIC_VENUE_STOP/);
+      });
+
+      it('passes on the spot lane shape: VENUE_TP alone (empty VENUES), VENUE_STOP off', () => {
         const cfg = validate({
           PORT: '3100',
           AGENTIC_VENUE_TP: 'true',
-          AGENTIC_VENUE_STOP: 'true',
         });
         expect(cfg.agentic.venueTpEnabled).toBe(true);
-        expect(cfg.agentic.venueStopEnabled).toBe(true);
+        expect(cfg.agentic.venueStopEnabled).toBe(false);
       });
     });
   });
@@ -720,12 +869,14 @@ describe('validate()', () => {
       const defaults = validate({ PORT: '3100' }).risk;
       expect(defaults.protectStopLossPct).toBe('0');
       expect(defaults.protectTrailingPct).toBe('0');
+      // D1: PROTECT_STOP_LOSS_PCT must clear the v2 SL bound (0.05) — 0.06 is the plan's deploy
+      // target (Design § Live-scale economics), unlike the pre-D1 0.02 this test used to set.
       const set = validate({
         PORT: '3100',
-        PROTECT_STOP_LOSS_PCT: '0.02',
+        PROTECT_STOP_LOSS_PCT: '0.06',
         PROTECT_TRAILING_PCT: '0.015',
       }).risk;
-      expect(set.protectStopLossPct).toBe('0.02');
+      expect(set.protectStopLossPct).toBe('0.06');
       expect(set.protectTrailingPct).toBe('0.015');
     });
 
@@ -736,6 +887,39 @@ describe('validate()', () => {
       expect(() => validate({ PORT: '3100', PROTECT_TRAILING_PCT: '-0.1' })).toThrow(
         /PROTECT_TRAILING_PCT/,
       );
+    });
+
+    // EXIT_CROSS_BUFFER_BPS is schema-capped at 99 against the hardcoded RISK_MAX_BAND_BPS default
+    // (100), but RISK_MAX_BAND_BPS is itself a configurable knob — a lowered band must refuse at
+    // construction rather than silently self-veto every reduce-only exit at runtime.
+    describe('EXIT_CROSS_BUFFER_BPS vs RISK_MAX_BAND_BPS cross-field refusal', () => {
+      it('throws when RISK_MAX_BAND_BPS is lowered below EXIT_CROSS_BUFFER_BPS', () => {
+        expect(() =>
+          validate({ PORT: '3100', RISK_MAX_BAND_BPS: '20', EXIT_CROSS_BUFFER_BPS: '25' }),
+        ).toThrow(/EXIT_CROSS_BUFFER_BPS/);
+      });
+
+      it('throws at the boundary (buffer equal to band)', () => {
+        expect(() =>
+          validate({ PORT: '3100', RISK_MAX_BAND_BPS: '25', EXIT_CROSS_BUFFER_BPS: '25' }),
+        ).toThrow(/EXIT_CROSS_BUFFER_BPS/);
+      });
+
+      it('passes when the buffer stays strictly below the band', () => {
+        const cfg = validate({
+          PORT: '3100',
+          RISK_MAX_BAND_BPS: '26',
+          EXIT_CROSS_BUFFER_BPS: '25',
+        });
+        expect(cfg.risk.maxBandBps).toBe(26);
+        expect(cfg.risk.exitCrossBufferBps).toBe(25);
+      });
+
+      it('passes with unconfigured defaults (buffer 25 < band 100)', () => {
+        const cfg = validate({ PORT: '3100' });
+        expect(cfg.risk.exitCrossBufferBps).toBe(25);
+        expect(cfg.risk.maxBandBps).toBe(100);
+      });
     });
   });
 
@@ -780,6 +964,9 @@ describe('validate()', () => {
         PORT: '3100',
         TRADING_SYMBOL: 'SOL/USDT',
         TRADING_SYMBOLS: ' BTC/USDT , ETH/USDT ',
+        // D1: AGENTIC_ACTIVE_MENU_SIZE defaults to 12, which exceeds this 2-symbol basket — override
+        // to stay under the menu-size-vs-basket superRefine (unrelated to what this test asserts).
+        AGENTIC_ACTIVE_MENU_SIZE: '2',
       }).strategy;
       expect(strategy.symbols).toEqual(['BTC/USDT', 'ETH/USDT']);
     });

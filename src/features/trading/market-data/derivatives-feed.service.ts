@@ -115,6 +115,8 @@ export class DerivativesFeedService implements DerivativesFeedPort, OnModuleInit
   private timer: ReturnType<typeof setInterval> | null = null;
   private lastSuccessAt: EpochMs | null = null;
   private errorCount = 0;
+  // Perp symbols the venue permanently lacks (process-lifetime exclusion — see pollOne).
+  private readonly venueUnlisted = new Set<string>();
   // d2 accumulation buffers — populated on EVERY successful poll regardless of
   // AGENTIC_DERIVATIVES_V2_ENABLED (see V2_LOOKBACK_MS's comment and this file's class header).
   private readonly oiHistory = new Map<SymbolId, TrendSample[]>();
@@ -173,6 +175,11 @@ export class DerivativesFeedService implements DerivativesFeedPort, OnModuleInit
 
   private async pollOne(symbol: SymbolId): Promise<void> {
     const perpSymbol = perpSymbolFor(symbol);
+    // Permanent venue-listing gap (e.g. PEPE/SHIB trade only as 1000x-prefixed perp variants):
+    // retrying every poll cycle is pure log spam, so the symbol is excluded once and for the
+    // process lifetime. Measurement feed fails OPEN per symbol (L1 soak finding, 2026-07-18 —
+    // same class as the liquidation-feed prune).
+    if (this.venueUnlisted.has(perpSymbol)) return;
     try {
       // d2: the spot ticker rides the SAME Promise.all as funding/OI — a spot-fetch failure fails
       // the whole poll (existing catch below), rather than a silently-partial v2-less snapshot.
@@ -189,10 +196,16 @@ export class DerivativesFeedService implements DerivativesFeedPort, OnModuleInit
         this.lastSuccessAt = snapshot.asOf;
       }
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes(`does not have market symbol ${perpSymbol}`)) {
+        this.venueUnlisted.add(perpSymbol);
+        this.options.logger?.warn(
+          `derivatives-feed: excluding ${perpSymbol} — venue has no such perp market (spot-only or 1000x-prefixed listing)`,
+        );
+        return;
+      }
       this.errorCount += 1;
-      this.options.logger?.warn(
-        `derivatives-feed poll failed for ${perpSymbol}: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      this.options.logger?.warn(`derivatives-feed poll failed for ${perpSymbol}: ${msg}`);
     }
   }
 

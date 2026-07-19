@@ -1,5 +1,11 @@
 # Agentic lane — profitability analysis (2026-07-04)
 
+> **ARCHIVED (2026-07-18):** point-in-time incident analysis. The root-cause signal-TTL bug it
+> documents was fixed the same week (referenced as historical precedent in
+> `docs/planning/daily-profitability-loop.md` § Decide); the "spot cannot hold a short" scope-out in
+> §6 of the companion design spec was later reversed by the v2 perp-shorts program. Retained as
+> historical record only.
+
 Data-grounded review of the live demo (boot `6f50ba98`, `mode=testnet`, `BTC/USDT` 5m) combining
 prometheus, docker logs, and code. Objective: **net return, cost-aware** — maximize net paper
 return while accounting for LLM inference cost. Scope: everything (structural + in-envelope).

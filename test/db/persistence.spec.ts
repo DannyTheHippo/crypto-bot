@@ -13,7 +13,8 @@
  *   DB_SUITE_ALLOW_RESET=1 DATABASE_URL=postgres://cryptobot:cryptobot@127.0.0.1:5432/cryptobot_test pnpm test:db
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { Logger } from '@nestjs/common';
 import { Pool } from 'pg';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
@@ -34,6 +35,7 @@ import { PlaybookStoreAdapter } from '../../src/database/repositories/playbook-s
 import { LlmUsageRepository } from '../../src/database/repositories/llm-usage.repository';
 import { LlmUsageSinkAdapter } from '../../src/database/repositories/llm-usage-sink.adapter';
 import { PromotionStatsRepository } from '../../src/database/repositories/promotion-stats.repository';
+import type { AgentDecisionEntry } from '../../src/ports/agentic-strategy';
 import Decimal from 'decimal.js';
 import { price, qty } from '../../src/domain/types/money';
 import { venueId, symbolId, clientOrderId, strategyId, epochMs } from '../../src/domain/types/ids';
@@ -945,6 +947,89 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
     expect(tied.map((r) => r.promptHash)).toEqual(['hash-dt-3a', 'hash-dt-3b']);
   });
 
+  // ── (j) A3: journal-side v2 widening (action union + plan_json AgentDirectives shape) ────────
+  it('(j) A3: an open_short row round-trips a full AgentDirectives plan_json (incl. thesis) field-for-field', async () => {
+    const repo = new AgentDecisionRepository(db);
+    const directives = {
+      sizeFraction: '0.12',
+      stopLossPct: '0.02',
+      takeProfitPct: '0.05',
+      partialCloseFraction: '0.5',
+      entryOffsetBps: -25,
+      entryValidityBars: 4,
+      maxHoldBars: 288,
+      entryStyle: 'taker' as const,
+      direction: 'short' as const,
+      thesis: 'BTC funding flip + basis compression; targeting mean reversion on the 4h.',
+    };
+    await repo.insert({
+      strategyId: 'agentic-a3-1',
+      symbol: 'BTC/USDT',
+      venue: 'binanceusdm',
+      triggerKind: 'candle',
+      basedOnSeq: 1n,
+      eventTime: 1_800_050_000_000,
+      model: 'claude-sonnet-5',
+      action: 'open_short',
+      confidence: null,
+      rationale: 'funding rich, basis compressing',
+      refPrice: '65000.5',
+      close: '65000.5',
+      inputTokens: 400,
+      outputTokens: 80,
+      latencyMs: 900,
+      playbookVersion: 3,
+      promptHash: 'a3-open-short-1',
+      inputPayload: '{"candles":[]}',
+      planJson: directives,
+    });
+
+    const adapter = new AgentDecisionJournalAdapter(db);
+    const rows = await adapter.recent(500);
+    const row = rows.find((r) => r.promptHash === 'a3-open-short-1');
+    expect(row).toBeDefined();
+    expect(row!.action).toBe('open_short');
+    expect(row!.plan).toEqual(directives);
+  });
+
+  it('(j) A3: AgentDecisionJournalAdapter.record fails OPEN on an out-of-union action — dropped and logged, never thrown', async () => {
+    const adapter = new AgentDecisionJournalAdapter(db);
+    const errorSpy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    const badPromptHash = 'a3-guard-out-of-union';
+    expect(() =>
+      adapter.record({
+        strategyId: strategyId('agentic-a3-guard'),
+        symbol: symbolId('BTC/USDT'),
+        venue: venueId('binance'),
+        triggerKind: 'candle',
+        basedOnSeq: 1n,
+        eventTime: epochMs(1_800_060_000_000),
+        model: 'claude-sonnet-5',
+        // Simulates the anthropic-agent-client.ts breadcrumb's concern: a real runtime value the TS
+        // union does not declare, smuggled past a narrower cast upstream (e.g. legacy 'short').
+        action: 'short' as unknown as AgentDecisionEntry['action'],
+        confidence: null,
+        rationale: 'r',
+        refPrice: null,
+        close: null,
+        inputTokens: null,
+        outputTokens: null,
+        latencyMs: null,
+        playbookVersion: null,
+        promptHash: badPromptHash,
+        inputPayload: null,
+      }),
+    ).not.toThrow();
+
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('agentic-a3-guard'));
+    const { rows } = await pool.query(
+      `SELECT 1 FROM public.agent_decisions WHERE prompt_hash = $1`,
+      [badPromptHash],
+    );
+    expect(rows).toHaveLength(0);
+    errorSpy.mockRestore();
+  });
+
   it('(j) countVersionEntryStats counts lifetime real-LLM decides/entries for ONE version (abstention-lapse evidence base)', async () => {
     const repo = new AgentDecisionRepository(db);
     const base = {
@@ -1013,6 +1098,105 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
 
     const adapter = new AgentDecisionJournalAdapter(db);
     expect(await adapter.versionEntryStats(92)).toEqual({ decides: 1, entries: 0 });
+  });
+
+  it('(j) P4: countVersionEntryStats counts v2 open_long/open_short as entries (false-abstention-lapse guard)', async () => {
+    const repo = new AgentDecisionRepository(db);
+    const base = {
+      strategyId: 'agentic-ves-v2',
+      symbol: 'BTC/USDT',
+      venue: 'binanceusdm',
+      triggerKind: 'candle' as const,
+      basedOnSeq: 1n,
+      confidence: null,
+      rationale: 'r',
+      refPrice: null,
+      close: null,
+      inputTokens: null,
+      outputTokens: null,
+      latencyMs: null,
+      inputPayload: null,
+      playbookVersion: 94,
+      model: 'claude-sonnet-5',
+    };
+    await repo.insert({ ...base, action: 'open_long', eventTime: 20, promptHash: 'v2-a' });
+    await repo.insert({ ...base, action: 'open_short', eventTime: 21, promptHash: 'v2-b' });
+    await repo.insert({ ...base, action: 'close', eventTime: 22, promptHash: 'v2-c' });
+    await repo.insert({ ...base, action: 'adjust', eventTime: 23, promptHash: 'v2-d' });
+    await repo.insert({ ...base, action: 'hold', eventTime: 24, promptHash: 'v2-e' });
+
+    expect(await repo.countVersionEntryStats(94)).toEqual({ decides: 5, entries: 2 });
+  });
+
+  it('(j) P4: latestThesis returns the newest non-null plan_json.thesis for a strategyId, skipping null-thesis rows', async () => {
+    const repo = new AgentDecisionRepository(db);
+    const base = {
+      symbol: 'BTC/USDT',
+      venue: 'binanceusdm',
+      triggerKind: 'candle' as const,
+      basedOnSeq: 1n,
+      model: 'claude-sonnet-5',
+      confidence: null,
+      rationale: 'r',
+      refPrice: null,
+      close: null,
+      inputTokens: null,
+      outputTokens: null,
+      latencyMs: null,
+      playbookVersion: 5,
+      inputPayload: null,
+    };
+    const directives = (thesis: string) => ({
+      sizeFraction: '0.1',
+      stopLossPct: '0.02',
+      takeProfitPct: '0.05',
+      entryOffsetBps: 0,
+      entryValidityBars: 4,
+      maxHoldBars: 288,
+      entryStyle: 'taker' as const,
+      thesis,
+    });
+    // No thesis at all before any row — null.
+    expect(await repo.latestThesis('agentic-thesis-1')).toBeNull();
+
+    await repo.insert({
+      ...base,
+      strategyId: 'agentic-thesis-1',
+      action: 'open_long',
+      eventTime: 1,
+      promptHash: 'thesis-a',
+      planJson: directives('first thesis'),
+    });
+    // A later row with NO thesis (plain hold, no plan) must not blank out the latest reading.
+    await repo.insert({
+      ...base,
+      strategyId: 'agentic-thesis-1',
+      action: 'hold',
+      eventTime: 2,
+      promptHash: 'thesis-b',
+      planJson: null,
+    });
+    await repo.insert({
+      ...base,
+      strategyId: 'agentic-thesis-1',
+      action: 'adjust',
+      eventTime: 3,
+      promptHash: 'thesis-c',
+      planJson: directives('second, newer thesis'),
+    });
+    // A different strategy's thesis must never leak into this strategy's reading.
+    await repo.insert({
+      ...base,
+      strategyId: 'agentic-thesis-2',
+      action: 'open_long',
+      eventTime: 4,
+      promptHash: 'thesis-other',
+      planJson: directives('unrelated strategy thesis'),
+    });
+
+    expect(await repo.latestThesis('agentic-thesis-1')).toBe('second, newer thesis');
+    expect(await repo.latestThesis('agentic-thesis-2')).toBe('unrelated strategy thesis');
+    expect(await repo.latestThesis('agentic-thesis-nonexistent')).toBeNull();
   });
 
   it('(j) recent(limit, strategyId) scopes the window to one instance (P7)', async () => {

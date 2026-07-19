@@ -39,12 +39,6 @@ import {
 } from '../../../ports/agentic-strategy';
 import { MAX_REASON_LEN, type LoggerLike } from './anthropic-agent-client';
 import { buildMarketPayload } from './agent-prompt';
-import {
-  evaluatePrescreen,
-  type PrescreenOutcome,
-  type PrescreenReason,
-  type PrescreenThresholds,
-} from './prescreen';
 import type { RoundTripEvidencePort } from '../../../ports/promotion';
 import type { DerivativesFeedPort } from '../../../ports/derivatives-feed';
 import type { SentimentFeedPort } from '../../../ports/sentiment-feed';
@@ -53,6 +47,14 @@ import type { PositioningFeedPort } from '../../../ports/positioning-feed';
 import type { LiquidationFeedPort } from '../../../ports/liquidation-feed';
 import { evaluatePlan, type PlanExecutorAction, type PlanExecutorState } from './plan-executor';
 import { CrossSymbolContextService } from './cross-symbol-context';
+import {
+  computeHoldReturnFraction,
+  computeEqualWeightBasketReturnFraction,
+  computeAlphaBps,
+  BTC_BENCHMARK_SYMBOL,
+  type BenchmarkCandle,
+} from './benchmark-alpha';
+import type { PriceHistoryStore } from './price-history-store';
 import { positionKey } from '../../../domain/risk/evaluate';
 import type { PlanStop, PlanStopRegistryPort } from '../../../ports/risk';
 import type { ExecutionStorePort } from '../../../ports/execution';
@@ -75,10 +77,6 @@ export interface AgenticStrategyParams {
   // actually calls; this is the strategy's account of it for the journal row. Optional (falls back
   // to DEFAULT_MODEL_ID) so existing callers that predate this field still compile.
   readonly model?: string;
-  // Cost-floor pre-screen gate (see prescreen.ts): consulted before every LLM call unless disabled.
-  // Optional/absent ⇒ disabled, so existing callers that predate this field stay byte-identical.
-  readonly prescreenEnabled?: boolean;
-  readonly prescreenThresholds?: PrescreenThresholds;
   // W2.1 stale-entry sweep: a resting non-reduce-only order older than this many observed decide
   // cycles gets a CANCEL_OPEN (risk-reducing; routed by SignalSink to an order-cancel, never to the
   // gateway). Optional/absent/0 ⇒ disabled, so existing callers stay byte-identical.
@@ -86,8 +84,16 @@ export interface AgenticStrategyParams {
   // W3.1 plan-based trading: the client returns managed trade plans (AgentProposal.plan) and this
   // strategy runs plan-executor.ts between LLM consults. Absent/false ⇒ legacy bar-by-bar behavior.
   readonly planMode?: boolean;
-  // Safety re-consult cadence (bars) while a plan is active without executor action. Default 16.
-  readonly planMaxQuietBars?: number;
+  // B2 (Design § Deleted scaffolding): retired planMaxQuietBars' fixed modulo cadence — the portfolio
+  // schedule (nextConsultBars) now drives quiet-bar consult timing; wakeMovePct/fallbackConsultBars
+  // below are the two remaining bar-level knobs (see evaluateConsultSchedule).
+  // Wake-on-move threshold: a bar-close move of this fraction (or more) from the price at the last
+  // consult forces an immediate consult regardless of the active schedule. Default 0.015 (1.5%).
+  readonly wakeMovePct?: number;
+  // Safety-net consult cadence (bars) used ONLY while no portfolio schedule is active (never
+  // consulted yet, or the last schedule has been exhausted with nothing fresh set) — see
+  // evaluateConsultSchedule's 'forced_fallback' branch. Default 16.
+  readonly fallbackConsultBars?: number;
   // TTL (bars) on executor-emitted signals (plan exits, plan cancels, stale-entry sweeps). A
   // one-bar TTL races its own age — executor signals carry eventTime = the evaluated bar's close,
   // so any ≥2s of processing jitter expires a protective exit at the gateway (observed live
@@ -99,15 +105,10 @@ export interface AgenticStrategyParams {
   // bar (see recordQuietJournalEntry). Prescreen-skip quiet holds are never sampled — only
   // plan-managed bars. Default/0 ⇒ disabled, so existing callers stay byte-identical.
   readonly quietPayloadSampleBars?: number;
-  // W4.2 expectancy-laddered strength modulation: scales ENTER_LONG strength by this strategy's
-  // rolling realized net expectancy — reduction-only (see the class-level EXPECTANCY_LADDER_* consts
-  // for the ladder). Optional/absent ⇒ disabled, so existing callers stay byte-identical. Also inert
-  // without AgenticStrategyDeps.evidence — a true flag with no evidence port is a no-op, not an error.
-  readonly expectancyLadderEnabled?: boolean;
   // Push 3 P6 Unit 4 (#17 residual): when enabled AND deps.evidence is wired, decide() surfaces
   // {tripCount, winRate, meanNetBpsPerTrip, trailingWindowTrips} over the SAME trailing window/floor
-  // the expectancy ladder already uses (EXPECTANCY_LADDER_WINDOW_TRIPS/MIN_TRIPS below) onto the
-  // outgoing AgentContext.trackRecord — a decide-side read of realized performance, never a second
+  // the (B3-renamed) TRACK_RECORD_WINDOW_TRIPS/MIN_TRIPS consts below define onto the outgoing
+  // AgentContext.trackRecord — a decide-side read of realized performance, never a
   // risk-modulating mechanism. Absent/false ⇒ never computed, never attached — byte-identical.
   readonly trackRecordEnabled?: boolean;
   // Cross-symbol relative-strength context (2026-07-12): when enabled AND deps.crossSymbolContext is
@@ -235,6 +236,74 @@ export type VenueStopEvent =
   | 'reconcile_error'
   | 'triggered';
 
+// B2 (Design § Deleted scaffolding): supersedes prescreen.ts's PrescreenOutcome/PrescreenReason —
+// see evaluateConsultSchedule below for what drives each value. 'consulted' is the organic
+// on-schedule case (barsSinceConsult reached the portfolio's own nextConsultBars); the four
+// 'forced_*' values are the schedule-independent overrides; 'skipped_scheduled' is the quiet bar.
+export type ConsultGateOutcome =
+  | 'consulted'
+  | 'skipped_scheduled'
+  | 'forced_fill'
+  | 'forced_move'
+  | 'forced_fallback'
+  | 'forced_rearm';
+
+interface ConsultScheduleState {
+  readonly barsSinceConsult: number;
+  readonly scheduledConsultBars: number | null;
+  readonly lastConsultPrice: number | null;
+}
+
+interface ConsultScheduleArgs {
+  readonly state: ConsultScheduleState;
+  readonly isExecTrigger: boolean;
+  readonly hasOpenPositionWithoutDirectives: boolean;
+  // Last closed candle's close, indicator-float (never a money path — see prescreen.ts's own
+  // retired header comment for the same discipline this function inherits). null when this bar
+  // carries no basis candle yet (e.g. an early 'exec'/'ticker' trigger).
+  readonly lastClose: number | null;
+  readonly wakeMovePct: number;
+  readonly fallbackConsultBars: number;
+}
+
+// B2 (Design § Deleted scaffolding): prescreen.ts's deterministic quiet-market heuristic (vol
+// expansion / breakout proximity) is retired outright — the portfolio schedule (nextConsultBars),
+// wake-on-move, fill triggers, and the fallback cadence are now the ONLY consult-timing mechanism.
+// Pure, dependency-free (no nest/ccxt/Date.now/process.env — same discipline prescreen.ts held).
+// Priority order below is deliberate: an executed fill and a restart re-arm are unconditional
+// (the host already bypassed cadence for the fill; a re-arm can never trust a stale schedule), the
+// organic on-schedule case is checked before wake-on-move so a bar that was already due reports
+// 'consulted' rather than 'forced_move', and the fallback branch is mutually exclusive with the
+// on-schedule branch by construction (fallback only ever applies while scheduledConsultBars is
+// null — a schedule and its own absence can never both be true).
+export function evaluateConsultSchedule(args: ConsultScheduleArgs): ConsultGateOutcome {
+  const {
+    state,
+    isExecTrigger,
+    hasOpenPositionWithoutDirectives,
+    lastClose,
+    wakeMovePct,
+    fallbackConsultBars,
+  } = args;
+  if (isExecTrigger) return 'forced_fill';
+  if (hasOpenPositionWithoutDirectives) return 'forced_rearm';
+  if (state.scheduledConsultBars !== null && state.barsSinceConsult >= state.scheduledConsultBars) {
+    return 'consulted';
+  }
+  if (
+    state.lastConsultPrice !== null &&
+    lastClose !== null &&
+    Number.isFinite(lastClose) &&
+    Math.abs(lastClose - state.lastConsultPrice) / state.lastConsultPrice >= wakeMovePct
+  ) {
+    return 'forced_move';
+  }
+  if (state.scheduledConsultBars === null && state.barsSinceConsult >= fallbackConsultBars) {
+    return 'forced_fallback';
+  }
+  return 'skipped_scheduled';
+}
+
 interface ActivePlanState {
   plan: NonNullable<AgentProposal['plan']>;
   entryPrice: string | null;
@@ -246,6 +315,13 @@ interface ActivePlanState {
   // Same in-flight suppression window, for the venue stop (AGENTIC_VENUE_STOP) — spot: ack observed
   // in openOrders; perp: ack observed as a matching row off fetchOpenAlgoOrders. null once observed.
   venueStopPlacedAtBar: number | null;
+  // Scale-in fill detection (review finding, minor): the position qty captured at the moment a
+  // same-side scale-in replaced the plan while ALREADY positioned — null outside a pending scale-in
+  // window. runActivePlan compares the CURRENT position qty against this baseline each managed bar;
+  // once they diverge, the add's resting order has filled and entryPrice re-anchors to the new
+  // (VWAP-blended) avgEntry — see runActivePlan's capture-site comment for why entryPrice cannot
+  // just be nulled at replace time the way a fresh FLAT->open entry is.
+  pendingScaleInQty: string | null;
 }
 
 export interface AgenticStrategyDeps {
@@ -254,16 +330,22 @@ export interface AgenticStrategyDeps {
   // closed-trade count. A later reflection task subscribes; the strategy itself takes no action
   // beyond counting and calling it.
   readonly onClosedTrade?: (count: number) => void;
-  // Fires once per decide() call when the prescreen gate is enabled, with its outcome — mirrors the
-  // onClosedTrade seam. Optional/no-op-defaulted so existing tests/callers stay valid. `reason` is
-  // the finer PrescreenReason behind the outcome (absent for 'failopen_error': evaluatePrescreen
-  // itself threw, so no reason was ever computed).
-  readonly onPrescreen?: (outcome: PrescreenOutcome, reason?: PrescreenReason) => void;
-  // W4.2 expectancy-laddered strength modulation's data source: realized (venue-fill-derived) closed
-  // round trips, the same evidence feed the reflection lane reads (ports/promotion.ts). Optional —
-  // absent means the ladder is inert even when expectancyLadderEnabled is true (see that param's own
-  // comment); no in-strategy fallback is computed, since the strategy has no other access to
-  // realized fills.
+  // B2: fires once per decide() call with the consult-schedule gate's outcome — mirrors the
+  // onClosedTrade seam. Optional/no-op-defaulted so existing tests/callers stay valid. Supersedes
+  // the retired onPrescreen seam (prescreen.ts, deleted) — see ConsultGateOutcome/
+  // evaluateConsultSchedule for the six possible values.
+  readonly onConsultGate?: (outcome: ConsultGateOutcome) => void;
+  // P3: sibling of onClosedTrade — ReflectionService.checkWeeklyReflectionTrigger has no timer of its
+  // own (see that method's header comment: "wiring a periodic caller belongs in agentic.strategy.ts's
+  // decide() loop"). Fires once per decide() call, same cadence as onConsultGate below; the callee
+  // self-gates on UTC-week-bucket equality so this is a cheap no-op on every bar except the one that
+  // actually crosses into a new week with no trade-count trigger having already fired it.
+  readonly checkWeeklyReflection?: () => void;
+  // computeTrackRecordContext's data source: realized (venue-fill-derived) closed round trips, the
+  // same evidence feed the reflection lane reads (ports/promotion.ts). Optional — absent means
+  // trackRecordEnabled is inert even when true (no in-strategy fallback is computed, since the
+  // strategy has no other access to realized fills). B3: previously also fed the now-deleted
+  // expectancy ladder — trackRecord is this dep's only remaining consumer.
   readonly evidence?: RoundTripEvidencePort;
   // C1: read-only derivatives-market context (funding rate, open interest, mark/index basis),
   // consulted once per decide() and threaded onto the outgoing snapshot's `derivatives` field (see
@@ -335,9 +417,28 @@ export interface AgenticStrategyDeps {
   readonly onAlgoStopGone?: (
     symbol: SymbolId,
   ) => Promise<'triggered' | 'canceled' | 'none' | 'unknown'>;
+  // I1b (Design § Universe: scanner-gated active menu — the reported per-symbol ingestion gap):
+  // fires once per decide() call that lands on an actual candle-close trigger, with this instance's
+  // OWN closed-candle window — mirrors onVenueTp/onVenueStop's fire-and-forget seam convention.
+  // Wired in app.module.ts to universe-scanner.service.ts's recordCandles (storage-only, no-ops
+  // below its own warmup floor, never triggers a recompute itself — see that method's own comment).
+  // Absent ⇒ byte-identical to pre-I1b (the scanner never sees this instance's candles; every
+  // symbol stays unranked until a later wiring, same as before).
+  readonly onCandleMetrics?: (symbol: SymbolId, candles: readonly CandleEvent[]) => void;
+  // W3 Part 2 (Design § Learning & measurement stack): a SINGLE shared PriceHistoryStore instance
+  // across every agentic-N strategy (same "one instance, many readers" convention as
+  // crossSymbolContext above) — the multi-symbol candle source netVsEqualWeightBasketBps needs (see
+  // BTC_BENCHMARK_SYMBOL's own comment on the gap this closes, and price-history-store.ts's header on
+  // how it's fed). Consulted ONLY inside computeBenchmarkAlpha; absent ⇒
+  // netVsEqualWeightBasketBps stays omitted, the same fail-open convention netVsBtcHoldBps already
+  // uses when its own coverage guard fails.
+  readonly priceHistory?: PriceHistoryStore;
 }
 
-const MAX_DECISION_HISTORY = 10;
+// B3 (Design § Enriched model inputs): decision ring widened 10 -> 30 — more self-consistency
+// context per consult now that consults are portfolio-scheduled (far less frequent than the old
+// per-bar cadence), so the ring covers a comparable wall-clock span at the new consult rate.
+const MAX_DECISION_HISTORY = 30;
 const INDICATOR_WARMUP_CLOSES = 21;
 const MAX_JOURNAL_RATIONALE_LEN = 2000;
 const NOOP_LOGGER: LoggerLike = { warn: () => undefined };
@@ -356,25 +457,35 @@ const HTF_TARGET_MS: Record<'h1' | 'h4', number> = { h1: 3_600_000, h4: 14_400_0
 // composition root's construction, wired for real by a later module-wiring task).
 const DEFAULT_MODEL_ID = 'unknown';
 
-// W4.2 expectancy-laddered strength modulation. Mean netPnl (USD, Decimal-computed off the evidence
-// port's decimal strings) over the last EXPECTANCY_LADDER_WINDOW_TRIPS CLOSED round trips for THIS
-// strategyId; fewer than EXPECTANCY_LADDER_MIN_TRIPS ⇒ insufficient data ⇒ full strength.
+// B3 (Design § Deleted scaffolding): W4.2's expectancy ladder is deleted outright (no strength
+// rescaling anywhere in this strategy any more — sizing authority moved entirely to the model's own
+// sizeFraction, C1). These three consts are RENAMED (not deleted) because computeTrackRecordContext
+// below still feeds from the exact same trailing-window/floor definition — only the
+// strength-modulating consumer (applyExpectancyLadder/computeExpectancyMultiplier) is gone.
+// Mean netPnl (USD, Decimal-computed off the evidence port's decimal strings) over the last
+// TRACK_RECORD_WINDOW_TRIPS CLOSED round trips for THIS strategyId; fewer than
+// TRACK_RECORD_MIN_TRIPS ⇒ insufficient data ⇒ context omitted (see computeTrackRecordContext).
 // RoundTripEvidencePort.recentRoundTrips is lane-wide, not strategyId-scoped (ports/promotion.ts) —
 // FETCH_LIMIT over-fetches so filtering down to this.id still has a chance of finding a full window
 // in a multi-symbol deployment; the extra rows are discarded below.
-const EXPECTANCY_LADDER_WINDOW_TRIPS = 15;
-const EXPECTANCY_LADDER_FETCH_LIMIT = 60;
-const EXPECTANCY_LADDER_MIN_TRIPS = 8;
-// Ladder: mean >= 0 (flat or profitable) -> full strength; mean >= this floor (losing, but only
-// slightly) -> 0.7x; else (clearly negative) -> 0.4x. Reduction-only by construction — no branch
-// ever exceeds 1.0, so this can only shrink downstream sized notional, never grow it.
-const EXPECTANCY_LADDER_SLIGHT_NEGATIVE_FLOOR_USD = '-0.10';
-const EXPECTANCY_LADDER_MULTIPLIER_FULL = 1;
-const EXPECTANCY_LADDER_MULTIPLIER_SLIGHT_NEGATIVE = 0.7;
-const EXPECTANCY_LADDER_MULTIPLIER_NEGATIVE = 0.4;
-// Mirrors AnthropicAgentClient's own MIN_STRENGTH floor (anthropic-agent-client.ts) — the ladder must
-// never scale a signal's strength below the floor the client itself already enforces on confidence.
-const MIN_SIGNAL_STRENGTH = 0.1;
+const TRACK_RECORD_WINDOW_TRIPS = 15;
+const TRACK_RECORD_FETCH_LIMIT = 60;
+const TRACK_RECORD_MIN_TRIPS = 8;
+
+// P4b (Design § Enriched model inputs — Track record + benchmark alpha). Candle history is siloed
+// per-instance (cross-symbol-context.ts's header comment), so netVsBtcHoldBps is wired ONLY for the
+// instance whose own symbol IS BTC_BENCHMARK_SYMBOL (benchmark-alpha.ts) — its siloed candle buffer
+// genuinely holds real BTC closes, so this is real existing data, not an invented feed. Every other
+// instance, and any window a BTC instance's buffer doesn't genuinely cover, resolves through the
+// coverage guard to "omitted" (see computeBtcHoldAlpha). netVsEqualWeightBasketBps (W3 Part 2) draws
+// instead on the shared PriceHistoryStore — see computeBasketHoldAlpha and
+// AgentPortfolioBlock.correlation.btcBeta's OWN wiring (agent-portfolio-block.ts), which closes the
+// identical gap that field's own header used to document.
+// "Near" tolerance for the coverage guard: a benchmark candle within two bars of a window endpoint
+// counts as covering it (a missed/delayed bar or a trip timestamp that lands a few seconds off a
+// candle boundary must not flip real coverage into a false omission), but a buffer genuinely short
+// of the window must still omit rather than silently compare a truncated span.
+const BENCHMARK_COVERAGE_TOLERANCE_BARS = 2;
 
 // Concrete agentic strategy: a thin in-process host-side shell that delegates each decision to the
 // out-of-process agent client. It enriches the host's snapshot with computed indicators (own
@@ -396,23 +507,40 @@ export class AgenticStrategy implements AsyncStrategy {
   private readonly baseIntervalMs: number;
   private readonly journal?: AgentDecisionJournalPort;
   private readonly onClosedTrade?: (count: number) => void;
-  private readonly onPrescreen?: (outcome: PrescreenOutcome, reason?: PrescreenReason) => void;
+  private readonly onConsultGate?: (outcome: ConsultGateOutcome) => void;
+  // P3 — see AgenticStrategyDeps.checkWeeklyReflection's own comment.
+  private readonly checkWeeklyReflection?: () => void;
   private readonly logger: LoggerLike;
-  private readonly prescreenEnabled: boolean;
-  private readonly prescreenThresholds?: PrescreenThresholds;
   private readonly entryTtlBars: number;
   private readonly planMode: boolean;
-  private readonly planMaxQuietBars: number;
+  private readonly wakeMovePct: number;
+  private readonly fallbackConsultBars: number;
+  // B2 consult-schedule state — tracked host-side regardless of planMode/activePlan (unlike
+  // ActivePlanState, which only exists while a directive is armed): barsSinceConsult counts bars
+  // since the last real consult (any trigger), reset to 0 the moment one happens; scheduledConsultBars
+  // mirrors the most recent portfolio-level nextConsultBars (null ⇒ no schedule, the fallback cadence
+  // governs); lastConsultPrice anchors the wake-on-move comparison. In-memory by design, same
+  // convention as activePlan — a restart loses the schedule too, which is fine: a restart with an
+  // open position ALWAYS forces an immediate re-arm consult (see evaluateConsultSchedule), which
+  // re-establishes a fresh schedule on its very first real decision.
+  private barsSinceConsult = 0;
+  private scheduledConsultBars: number | null = null;
+  private lastConsultPrice: number | null = null;
   private readonly planExitTtlBars: number;
   private readonly quietPayloadSampleBars: number;
   // W3.1 active managed plan — in-memory by design: a restart loses it, the position_open prescreen
-  // then forces a consult, and the model re-arms by attaching a plan to its 'hold' (it sees
-  // managedPlan: false in the position summary; the client accepts a re-arm plan while LONG —
-  // see anthropic-agent-client.ts). Before that path existed the "model issues a fresh plan"
+  // then forces a consult, and the model re-arms by attaching a plan to its 'hold' (it sees no
+  // `directives` key in the position summary, B3's replacement for managedPlan: false; the client
+  // accepts a re-arm plan while LONG — see anthropic-agent-client.ts). Before that path existed
+  // the "model issues a fresh plan"
   // self-heal was aspirational: the model had no signal the plan was gone and the client dropped
   // any plan outside long-from-flat, so restarts silently degraded positions to per-bar consults.
   private activePlan: ActivePlanState | null = null;
-  private readonly expectancyLadderEnabled: boolean;
+  // B3: the model's own persisted thesis (AgentDirectives.thesis) for the CURRENT activePlan's
+  // lifetime — in-memory by design, same convention as activePlan itself (a restart loses both
+  // together). Set whenever a directive-bearing decision supplies one; cleared through the SAME
+  // clearPlan() choke point that drops activePlan. See buildContext's currentThesis rendering.
+  private lastThesis: string | undefined;
   private readonly trackRecordEnabled: boolean;
   private readonly crossSymbolEnabled: boolean;
   private readonly crossSymbolLookbackBars: number;
@@ -423,6 +551,8 @@ export class AgenticStrategy implements AsyncStrategy {
   private readonly positioningFeed?: PositioningFeedPort;
   private readonly liquidationFeed?: LiquidationFeedPort;
   private readonly crossSymbolContext?: CrossSymbolContextService;
+  // W3 Part 2 — see AgenticStrategyDeps.priceHistory's own comment.
+  private readonly priceHistory?: PriceHistoryStore;
   private readonly venueTpEnabled: boolean;
   private readonly venueTpReplaceDriftBps: number;
   private readonly venueTpTickSize?: string;
@@ -445,6 +575,8 @@ export class AgenticStrategy implements AsyncStrategy {
   private readonly onAlgoStopGone?: (
     symbol: SymbolId,
   ) => Promise<'triggered' | 'canceled' | 'none' | 'unknown'>;
+  // I1b — see AgenticStrategyDeps.onCandleMetrics' own comment.
+  private readonly onCandleMetrics?: (symbol: SymbolId, candles: readonly CandleEvent[]) => void;
   // Warn-once bookkeeping for an unknown-role resting order on the exit side (see roleForOrder /
   // restingOrderForRole) — pruned to the currently-open set each cycle, same convention as
   // entryFirstSeen/entryCancelRequestedAt below.
@@ -489,16 +621,15 @@ export class AgenticStrategy implements AsyncStrategy {
     this.baseIntervalMs = INTERVAL_MS[params.interval];
     this.journal = deps.journal;
     this.onClosedTrade = deps.onClosedTrade;
-    this.onPrescreen = deps.onPrescreen;
+    this.onConsultGate = deps.onConsultGate;
+    this.checkWeeklyReflection = deps.checkWeeklyReflection;
     this.logger = deps.logger ?? NOOP_LOGGER;
-    this.prescreenEnabled = params.prescreenEnabled ?? false;
-    this.prescreenThresholds = params.prescreenThresholds;
     this.entryTtlBars = params.entryTtlBars ?? 0;
     this.planMode = params.planMode ?? false;
-    this.planMaxQuietBars = params.planMaxQuietBars ?? 16;
+    this.wakeMovePct = params.wakeMovePct ?? 0.015;
+    this.fallbackConsultBars = Math.max(1, params.fallbackConsultBars ?? 16);
     this.planExitTtlBars = Math.max(2, params.planExitTtlBars ?? 2);
     this.quietPayloadSampleBars = Math.max(0, params.quietPayloadSampleBars ?? 0);
-    this.expectancyLadderEnabled = params.expectancyLadderEnabled ?? false;
     this.trackRecordEnabled = params.trackRecordEnabled ?? false;
     this.crossSymbolEnabled = params.crossSymbolEnabled ?? false;
     this.crossSymbolLookbackBars = Math.max(1, params.crossSymbolLookbackBars ?? 20);
@@ -509,6 +640,7 @@ export class AgenticStrategy implements AsyncStrategy {
     this.positioningFeed = deps.positioningFeed;
     this.liquidationFeed = deps.liquidationFeed;
     this.crossSymbolContext = deps.crossSymbolContext;
+    this.priceHistory = deps.priceHistory;
     this.venueTpEnabled = params.venueTpEnabled ?? false;
     this.venueTpReplaceDriftBps = Math.max(0, params.venueTpReplaceDriftBps ?? 10);
     this.venueTpTickSize = params.venueTpTickSize;
@@ -525,6 +657,7 @@ export class AgenticStrategy implements AsyncStrategy {
     this.onVenueStop = deps.onVenueStop;
     this.algoOrders = deps.algoOrders;
     this.onAlgoStopGone = deps.onAlgoStopGone;
+    this.onCandleMetrics = deps.onCandleMetrics;
     this.subscriptions = {
       venue: params.venue,
       symbols: [params.symbol],
@@ -544,12 +677,16 @@ export class AgenticStrategy implements AsyncStrategy {
   // `this.activePlan = null` site in this file routes through here instead of assigning directly.
   private clearPlan(): void {
     this.activePlan = null;
+    // B3: the persisted thesis belongs to the plan's own lifetime — a cleared plan means a fresh
+    // consult starts the next position cold, same as a restart.
+    this.lastThesis = undefined;
     this.planStopRegistry?.clear(positionKey(this.id, this.venue, this.symbol));
   }
 
-  // Populates the plan-stop registry the moment a plan's entry fills (entryPrice transitions
-  // null → non-null in runActivePlan — see that call site's own comment, which covers BOTH a fresh
-  // entry fill and the restart re-arm case identically). Mirrors plan-executor.ts's own stop-price
+  // Populates the plan-stop registry whenever entryPrice (re)captures in runActivePlan — see that
+  // call site's own comment, which covers a fresh entry fill, the restart re-arm, AND a same-side
+  // scale-in's delayed fill (entryPrice re-anchoring off its pendingScaleInQty baseline) identically.
+  // Mirrors plan-executor.ts's own stop-price
   // formula exactly (entry × (1∓stopLossPct), no additional rounding) so the watcher's crossing
   // check can never disagree with the executor's own bar-close check. venueStopResting is always
   // false here — no venue-side stop order exists yet at entry-fill time; manageVenueStop (Push 3
@@ -593,26 +730,65 @@ export class AgenticStrategy implements AsyncStrategy {
     const heldDuringPrev = this.lastPositionSide ?? 'FLAT';
     this.trackClosedTrade(context.position.side);
 
-    // W3.1: an active plan is managed deterministically — the LLM is consulted only on the safety
-    // cadence (planMaxQuietBars) or once the plan clears. Returns null to fall through to a consult.
+    // B2: the single per-bar consult-schedule decision (Design § Deleted scaffolding) — computed
+    // ONCE, before either branch below, so both the plan-managed quiet-bar path and the no-plan path
+    // consult on exactly the SAME gate (see evaluateConsultSchedule's own header comment for the
+    // priority order). barsSinceConsult increments every decide() call and resets to 0 the moment a
+    // real consult happens (below); it is a strategy-level clock, distinct from ActivePlanState.
+    // barsElapsed (the plan's OWN hold-duration clock, untouched here — B1/B3 territory).
+    this.barsSinceConsult += 1;
+    const gateCandles = input.snapshot.candles.get(this.symbol) ?? [];
+    const gateLastCandle = gateCandles.length > 0 ? gateCandles[gateCandles.length - 1] : undefined;
+    // I1b (Design § Universe): fire-and-forget, cheap (storage-only on the scanner side) — only on
+    // an actual candle-close trigger, not every ticker/book/exec decide() call, so a busy tick stream
+    // never re-derives the same ATR/volume metrics redundantly.
+    if (input.trigger.kind === 'candle') this.onCandleMetrics?.(this.symbol, gateCandles);
+    const gate = evaluateConsultSchedule({
+      state: {
+        barsSinceConsult: this.barsSinceConsult,
+        scheduledConsultBars: this.scheduledConsultBars,
+        lastConsultPrice: this.lastConsultPrice,
+      },
+      isExecTrigger: input.trigger.kind === 'exec',
+      // Restart re-arm (Design bullet d): an open position this strategy is NOT currently managing
+      // via activePlan — either a fresh restart (in-memory plan lost) or planMode is off entirely (no
+      // directive concept at all, so any open position is "without directives" every bar — mirrors
+      // prescreen.ts's own positionOpen⇒consult behavior for a non-plan-mode deployment).
+      hasOpenPositionWithoutDirectives:
+        (context.position.side === 'LONG' || context.position.side === 'SHORT') &&
+        this.activePlan === null,
+      lastClose: gateLastCandle ? toIndicatorNumber(gateLastCandle.close) : null,
+      wakeMovePct: this.wakeMovePct,
+      fallbackConsultBars: this.fallbackConsultBars,
+    });
+    this.onConsultGate?.(gate);
+    // P3: weekly time-based reflection trigger — same per-decide() cadence as onConsultGate above.
+    this.checkWeeklyReflection?.();
+    const consultNow = gate !== 'skipped_scheduled';
+
+    // W3.1: an active plan is managed deterministically between consults — its OWN terminal verdicts
+    // (stop/TP/max_hold exit, position_closed, cancel_entry/plan_expired) always run first and fully
+    // own the bar when they fire, regardless of the gate above (a breach must never wait out a due
+    // consult). Only the plan's 'hold' tail defers to the gate: null ⇒ fall through to a real consult
+    // this bar (skipping venue-TP/stop reconciliation, same as the pre-B2 cadence-triggered
+    // fallthrough); non-null ⇒ this bar stays quiet and fully managed (venue reconciliation runs).
     if (this.planMode && this.activePlan) {
-      const planSignals = await this.runActivePlan(input, context, heldDuringPrev);
+      const planSignals = await this.runActivePlan(input, context, heldDuringPrev, consultNow);
       if (planSignals !== null) return [...staleCancels, ...planSignals];
     }
 
-    const prescreenReason = this.evaluatePrescreenGate(input, context);
-    if (prescreenReason !== null) {
+    if (!consultNow) {
       return [
         ...staleCancels,
-        ...this.recordQuietHold(input, context, heldDuringPrev, prescreenReason),
+        ...this.recordQuietHold(input, context, heldDuringPrev, this.consultScheduleRationale()),
       ];
     }
 
     // Push 3 P6 Unit 4: fetched HERE (not inside buildContext, which is synchronous) and only right
-    // before the one call site that actually renders it to the model — the plan-managed/prescreen-
-    // quiet paths above never reach this line, so a bar the LLM isn't even consulted on never spends
+    // before the one call site that actually renders it to the model — the plan-managed/quiet-bar
+    // paths above never reach this line, so a bar the LLM isn't even consulted on never spends
     // an extra evidence-port round trip on track-record context it would never send.
-    const trackRecordCtx = await this.computeTrackRecordContext();
+    const trackRecordCtx = await this.computeTrackRecordContext(gateCandles);
     let proposal: AgentProposal;
     try {
       proposal = await this.client.propose({
@@ -624,10 +800,21 @@ export class AgenticStrategy implements AsyncStrategy {
       throw err;
     }
 
-    const signals = await this.applyExpectancyLadder(proposal.signals);
+    // B3 (Design § Deleted scaffolding): the expectancy ladder is deleted — sizing/strength
+    // authority lives entirely with the model's own sizeFraction (C1) now, so signals pass through
+    // unmodified (no strength rescaling anywhere in this strategy).
+    const signals = proposal.signals;
     const candles = input.snapshot.candles.get(this.symbol) ?? [];
     const lastCandle = candles.length > 0 ? candles[candles.length - 1] : undefined;
     const lastClose = lastCandle ? toIndicatorNumber(lastCandle.close) : NaN;
+
+    // B2: this bar just consulted (any trigger reaches here — the gate above already returned early
+    // otherwise) — reset the schedule clock, adopt the portfolio's freshly-returned nextConsultBars
+    // (absent ⇒ no schedule; the fallback cadence governs until one is set again), and anchor the
+    // wake-on-move baseline to THIS consult's own close.
+    this.barsSinceConsult = 0;
+    this.scheduledConsultBars = proposal.nextConsultBars ?? null;
+    if (Number.isFinite(lastClose)) this.lastConsultPrice = lastClose;
 
     // decision is the client's own account when present; the stub client (and any client that
     // omits it) leaves this to a signal-inferred fallback so the decision trail stays populated.
@@ -649,22 +836,56 @@ export class AgenticStrategy implements AsyncStrategy {
 
     this.recordJournalEntry(input, decision, proposal);
 
-    // W3.1 plan bookkeeping: a returned plan REPLACES any active one (fresh clock); an explicit
-    // 'flat' clears it (the exit signal above closes the position the plan was managing). A plan
-    // returned on 'hold' while LONG is the restart re-arm (entryPrice: null here — the first
-    // managed bar anchors it to the position's real avgEntry, see runActivePlan).
+    // B3 (Design § Model-owned exits, § New tool contract action mapping) plan bookkeeping, branched
+    // on the proposal's own action + whether directives were returned at all:
+    //  - action 'adjust' while an activePlan is already active: MERGE the revised directive set IN
+    //    PLACE — entryPrice/barsElapsed/venue in-flight markers are ActivePlanState fields, untouched
+    //    by reassigning only `.plan`. direction is PINNED from the prior plan (never re-derived from
+    //    the new directive set — AgentDirectives.direction's own header comment: "ignored on a
+    //    same-side re-arm, where the position's own side wins"), and setPlanStop re-runs only when
+    //    stopLossPct actually changed (the registry price must track the current directive without
+    //    spamming redundant writes on an unrelated adjust, e.g. a takeProfitPct-only revision).
+    //  - directives present otherwise (a fresh open_long/open_short from FLAT, a same-side scale-in
+    //    while already positioned, the legacy 'long' tool, or the restart re-arm — hold+directives
+    //    while already positioned with no in-memory plan): REPLACES the plan wholesale with a fresh
+    //    clock (barsElapsed: 0). entryPrice: a fresh FLAT->open or a restart re-arm has no pending
+    //    fill to protect, so it starts null and captures on the next managed bar as before. A
+    //    same-side scale-in (prior !== null, already LONG/SHORT) is different: the add's own fill can
+    //    lag bars behind this decision (a resting maker order), so nulling entryPrice here would let
+    //    runActivePlan capture the PRE-scale-in avgEntry on the very next bar and freeze there
+    //    forever once the add later fills (review finding, minor). Instead the prior entryPrice
+    //    carries forward (protection stays anchored to the still-accurate old entry) and
+    //    pendingScaleInQty records the pre-fill qty baseline — runActivePlan re-anchors to the
+    //    post-fill avgEntry once the qty actually moves off that baseline.
+    //  - directives absent AND action is 'close' (v2) or 'flat' (legacy): the exit signal above
+    //    already closes the position the plan was managing — clearPlan() drops the directive state.
+    //  - 'hold'/any other inert case with no directives: activePlan (and lastThesis) untouched.
+    // Client-mapping defensiveness (A1 lands separately): branches key off decision.action + whether
+    // proposal.plan is present, never off action alone — a client that hasn't finished the v2
+    // action mapping yet (still emitting the pre-B3 "plan present ⇒ always replace" shape) degrades
+    // to the same wholesale-replace branch this file always took, never a compile or runtime error.
     const orphanEntryCancels: Signal[] = [];
     if (this.planMode) {
       const prior = this.activePlan;
       if (proposal.plan) {
-        this.activePlan = {
-          plan: proposal.plan,
-          entryPrice: null,
-          barsElapsed: 0,
-          venueTpPlacedAtBar: null,
-          venueStopPlacedAtBar: null,
-        };
-      } else if (decision.action === 'flat') {
+        if (decision.action === 'adjust' && this.activePlan) {
+          const merged = { ...proposal.plan, direction: this.activePlan.plan.direction };
+          const stopChanged = this.activePlan.plan.stopLossPct !== merged.stopLossPct;
+          this.activePlan = { ...this.activePlan, plan: merged };
+          if (stopChanged) this.setPlanStop(this.activePlan, merged.direction === 'short');
+        } else {
+          const isScaleIn = prior !== null && context.position.side !== 'FLAT';
+          this.activePlan = {
+            plan: proposal.plan,
+            entryPrice: isScaleIn ? prior.entryPrice : null,
+            barsElapsed: 0,
+            venueTpPlacedAtBar: null,
+            venueStopPlacedAtBar: null,
+            pendingScaleInQty: isScaleIn ? context.position.qty : null,
+          };
+        }
+        if (proposal.plan.thesis !== undefined) this.lastThesis = proposal.plan.thesis;
+      } else if (decision.action === 'flat' || decision.action === 'close') {
         this.clearPlan();
       }
       // Review finding (shorts round 2): the stale-entry sweep derives its side from the CURRENT
@@ -700,11 +921,15 @@ export class AgenticStrategy implements AsyncStrategy {
   }
 
   // W3.1 per-bar management of the active plan. Non-null return = this bar is fully handled without
-  // an LLM call; null = fall through to the normal consult path (safety re-consult cadence).
+  // an LLM call; null = fall through to the normal consult path. B2: consultNow is the SAME
+  // consult-schedule gate decide() already computed for this bar (evaluateConsultSchedule) — this
+  // method's own terminal verdicts (exit/position_closed/cancel_entry/plan_expired) always run
+  // first regardless of it; only the 'hold' tail below defers to it.
   private async runActivePlan(
     input: AgentDecisionInput,
     context: AgentContext,
     heldDuringPrev: 'LONG' | 'SHORT' | 'FLAT',
+    consultNow: boolean,
   ): Promise<Signal[] | null> {
     const active = this.activePlan!;
     active.barsElapsed += 1;
@@ -722,11 +947,20 @@ export class AgenticStrategy implements AsyncStrategy {
     // in-memory, the model re-attaches one via 'hold'+plan while already LONG/SHORT (entryPrice:
     // null — see the decide() bookkeeping above), and the re-armed plan reaches this exact branch on
     // its first managed bar, same as a fresh entry fill — there is no separate restore path.
+    // Same site re-anchors a same-side SCALE-IN too (review finding, minor): decide() carries the
+    // PRIOR entryPrice forward instead of nulling it (pendingScaleInQty non-null there), so the plan
+    // stays protected off the old anchor while the add's maker order is still resting. Once the
+    // position's qty actually diverges from that pre-fill baseline — the add has filled — this
+    // re-captures entryPrice from the SAME authoritative source (context.position.avgEntry, already
+    // VWAP-blended by the fill path) rather than freezing on the stale pre-scale-in value forever.
+    const scaleInFilled =
+      active.pendingScaleInQty !== null && context.position.qty !== active.pendingScaleInQty;
     if (
       (context.position.side === 'LONG' || context.position.side === 'SHORT') &&
-      active.entryPrice === null
+      (active.entryPrice === null || scaleInFilled)
     ) {
       active.entryPrice = context.position.avgEntry;
+      active.pendingScaleInQty = null;
       this.setPlanStop(active, isShort);
     }
 
@@ -958,8 +1192,10 @@ export class AgenticStrategy implements AsyncStrategy {
       return [];
     }
 
-    // hold: consult only on the safety cadence, else this bar is a deterministic no-call hold.
-    if (active.barsElapsed % this.planMaxQuietBars === 0) return null;
+    // hold: B2's consult-schedule gate (decide()'s own evaluateConsultSchedule call) decides whether
+    // this bar stays quiet — a due schedule/wake-move/fallback/fill falls through to a real consult,
+    // else this bar is a deterministic no-call hold.
+    if (consultNow) return null;
     this.annotatePreviousOutcome(lastClose, context.position, lastCandle, heldDuringPrev);
     // W6: sample the SAME market payload a real consult would journal on every Nth managed bar, so
     // the offline replay harness accrues rows while plan mode manages the position (which otherwise
@@ -971,7 +1207,7 @@ export class AgenticStrategy implements AsyncStrategy {
         : null;
     this.recordQuietJournalEntry(
       input,
-      'plan active — deterministic hold',
+      `plan active — deterministic hold (${this.consultScheduleRationale()})`,
       'plan-executor',
       sampledPayload,
     );
@@ -1828,99 +2064,33 @@ export class AgenticStrategy implements AsyncStrategy {
     ];
   }
 
-  // Cost-floor gate (see prescreen.ts). Disabled ⇒ null unconditionally: no counter, no evaluation,
-  // unchanged behavior. Enabled ⇒ evaluated over the same candle window buildContext already read for
-  // this call, reusing its dust-aware LONG/FLAT classification (context.position.side) rather than
-  // re-deriving position-open from the raw portfolio. Returns the quiet reason string when the LLM
-  // call should be skipped, else null (either "consult" or the gate itself failed open on an error).
-  private evaluatePrescreenGate(input: AgentDecisionInput, context: AgentContext): string | null {
-    if (!this.prescreenEnabled || !this.prescreenThresholds) return null;
-
-    const candles = input.snapshot.candles.get(this.symbol) ?? [];
-    try {
-      const result = evaluatePrescreen({
-        closes: candles.map((c) => toIndicatorNumber(c.close)),
-        highs: candles.map((c) => toIndicatorNumber(c.high)),
-        lows: candles.map((c) => toIndicatorNumber(c.low)),
-        // Push II Phase 8: position-open is direction-agnostic — a shorts-disabled deployment's side
-        // can never actually be 'SHORT', so this stays byte-identical there.
-        positionOpen: context.position.side === 'LONG' || context.position.side === 'SHORT',
-        thresholds: this.prescreenThresholds,
-      });
-      if (result.consult) {
-        this.onPrescreen?.('called', result.reason);
-        return null;
-      }
-      this.onPrescreen?.('skipped_quiet', result.reason);
-      return result.reason;
-    } catch (err) {
-      this.logger.warn(
-        `prescreen evaluation failed, failing open to the LLM: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      this.onPrescreen?.('failopen_error');
-      return null;
-    }
-  }
-
-  // W4.2 expectancy-laddered strength modulation. Disabled, no evidence port wired, or no ENTER_LONG
-  // signal present ⇒ returns signals unchanged with no DB round trip. Other signal kinds (EXIT_LONG,
-  // CANCEL_OPEN, etc.) are never touched — only ENTER_LONG strength is reduction-scaled.
-  private async applyExpectancyLadder(signals: readonly Signal[]): Promise<Signal[]> {
-    if (!this.expectancyLadderEnabled || !this.evidence) return [...signals];
-    if (!signals.some((s) => s.kind === 'ENTER_LONG')) return [...signals];
-
-    const multiplier = await this.computeExpectancyMultiplier();
-    if (multiplier === EXPECTANCY_LADDER_MULTIPLIER_FULL) return [...signals];
-
-    return signals.map((s) =>
-      s.kind === 'ENTER_LONG'
-        ? { ...s, strength: Math.max(MIN_SIGNAL_STRENGTH, s.strength * multiplier) }
-        : s,
-    );
-  }
-
-  // Fetches the evidence port's lane-wide recent round trips, filters to this strategy's own closed
-  // trips, and maps the trailing window's mean net PnL onto the ladder. Any failure (including too
-  // little data) fails open to full strength — the ladder is risk-reducing, so its own errors must
-  // never risk-increase by mistake in the other direction.
-  private async computeExpectancyMultiplier(): Promise<number> {
-    if (!this.evidence) return EXPECTANCY_LADDER_MULTIPLIER_FULL;
-    try {
-      const trips = await this.evidence.recentRoundTrips(EXPECTANCY_LADDER_FETCH_LIMIT);
-      const mine = trips
-        .filter((t) => t.strategyId === this.id)
-        .slice(-EXPECTANCY_LADDER_WINDOW_TRIPS);
-      if (mine.length < EXPECTANCY_LADDER_MIN_TRIPS) return EXPECTANCY_LADDER_MULTIPLIER_FULL;
-
-      const sum = mine.reduce((acc, t) => acc.plus(t.netPnl), new Decimal(0));
-      const mean = sum.div(mine.length);
-      if (mean.gte(0)) return EXPECTANCY_LADDER_MULTIPLIER_FULL;
-      if (mean.gte(EXPECTANCY_LADDER_SLIGHT_NEGATIVE_FLOOR_USD)) {
-        return EXPECTANCY_LADDER_MULTIPLIER_SLIGHT_NEGATIVE;
-      }
-      return EXPECTANCY_LADDER_MULTIPLIER_NEGATIVE;
-    } catch (err) {
-      this.logger.warn(
-        `expectancy-ladder evaluation failed, defaulting to full strength: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      return EXPECTANCY_LADDER_MULTIPLIER_FULL;
-    }
+  // B2 (Design § Deleted scaffolding): renders the SAME "bars until next consult" fact the gate
+  // itself just computed, for a quiet-hold journal row — mirrors prescreen's own quiet-hold rationale
+  // convention (a short, machine-parseable prefix) but names the schedule instead of a heuristic
+  // reason, since the schedule IS the reason a v2-gated bar stays quiet.
+  private consultScheduleRationale(): string {
+    const target = this.scheduledConsultBars ?? this.fallbackConsultBars;
+    const remaining = Math.max(target - this.barsSinceConsult, 0);
+    return `scheduled: next consult in ${remaining} bars`;
   }
 
   // Push 3 P6 Unit 4 (#17 residual): surfaces {tripCount, winRate, meanNetBpsPerTrip,
-  // trailingWindowTrips} over the SAME trailing window/floor the expectancy ladder computes from
-  // (EXPECTANCY_LADDER_WINDOW_TRIPS/MIN_TRIPS above) — decide-side read-only context, never a second
-  // risk-modulating mechanism. Disabled, no evidence port wired, insufficient trips, or any failure
-  // all resolve to {} (the omit-entirely convention buildCrossSymbolContext already uses) — never a
-  // populated key with garbage data.
-  private async computeTrackRecordContext(): Promise<{ trackRecord?: AgentTrackRecord }> {
+  // trailingWindowTrips} over the trailing window/floor TRACK_RECORD_WINDOW_TRIPS/MIN_TRIPS define
+  // above (B3: renamed from the now-deleted expectancy ladder's own consts, same definition) —
+  // decide-side read-only context, never a risk-modulating mechanism. Disabled, no evidence port
+  // wired, insufficient trips, or any failure all resolve to {} (the omit-entirely convention
+  // buildCrossSymbolContext already uses) — never a populated key with garbage data.
+  //
+  // `candles` (P4b): this instance's OWN siloed buffer, passed in by decide() — the only benchmark
+  // source computeBenchmarkAlpha below can honestly draw on (see BTC_BENCHMARK_SYMBOL's own comment).
+  private async computeTrackRecordContext(
+    candles: readonly CandleEvent[],
+  ): Promise<{ trackRecord?: AgentTrackRecord }> {
     if (!this.trackRecordEnabled || !this.evidence) return {};
     try {
-      const trips = await this.evidence.recentRoundTrips(EXPECTANCY_LADDER_FETCH_LIMIT);
-      const mine = trips
-        .filter((t) => t.strategyId === this.id)
-        .slice(-EXPECTANCY_LADDER_WINDOW_TRIPS);
-      if (mine.length < EXPECTANCY_LADDER_MIN_TRIPS) return {};
+      const trips = await this.evidence.recentRoundTrips(TRACK_RECORD_FETCH_LIMIT);
+      const mine = trips.filter((t) => t.strategyId === this.id).slice(-TRACK_RECORD_WINDOW_TRIPS);
+      if (mine.length < TRACK_RECORD_MIN_TRIPS) return {};
 
       let wins = 0;
       let bpsSum = new Decimal(0);
@@ -1935,12 +2105,26 @@ export class AgenticStrategy implements AsyncStrategy {
           }
         }
       }
+      // P4b: the SAME evidence window the trips above cover — first trip's entry to last trip's
+      // exit (NOT "to now": the trips only sum realized outcomes through the last close, and
+      // comparing against a longer benchmark span than the trades actually ran over would overstate
+      // or understate alpha against a period the lane wasn't even measured over).
+      const windowStartMs = mine[0]!.openedAt;
+      const windowEndMs = mine[mine.length - 1]!.closedAt;
+      const benchmarkAlpha = this.computeBenchmarkAlpha(
+        candles,
+        windowStartMs,
+        windowEndMs,
+        bpsSum.toNumber(),
+      );
+
       return {
         trackRecord: {
           tripCount: mine.length,
           winRate: wins / mine.length,
           meanNetBpsPerTrip: bpsCount > 0 ? bpsSum.div(bpsCount).toNumber() : 0,
-          trailingWindowTrips: EXPECTANCY_LADDER_WINDOW_TRIPS,
+          trailingWindowTrips: TRACK_RECORD_WINDOW_TRIPS,
+          ...benchmarkAlpha,
         },
       };
     } catch (err) {
@@ -1951,14 +2135,101 @@ export class AgenticStrategy implements AsyncStrategy {
     }
   }
 
-  // Deterministic HOLD path taken when the prescreen gate skips the LLM call entirely: no client
-  // call, no token/decide counters (MetricsWrappingAgentClient never runs), an honest journal row
-  // naming the prescreen reason under a distinct 'prescreen' model tag, and the same empty-signal
-  // result shape decide() returns for any other HOLD. Unlike a real decision, this skip is NOT pushed
-  // into the history ring: the ring is rendered to the LLM as its own prior decisions (agent-prompt.ts),
-  // and a prescreen skip was never seen or reasoned about by the model — presenting it as such would
-  // fabricate a decision the agent never made. annotatePreviousOutcome still runs unconditionally so
-  // the last REAL decision's outcome (price move, PnL delta) keeps accruing through the quiet period.
+  // P4b/W3 Part 2 (Design § Enriched model inputs — Track record + benchmark alpha): orchestrates
+  // BOTH benchmark-alpha fields, each independently omitted on its own coverage/source failure —
+  // never a partial-window figure smuggled onto either.
+  private computeBenchmarkAlpha(
+    candles: readonly CandleEvent[],
+    windowStartMs: number,
+    windowEndMs: number,
+    laneCumulativeNetBps: number,
+  ): { netVsBtcHoldBps?: number; netVsEqualWeightBasketBps?: number } {
+    return {
+      ...this.computeBtcHoldAlpha(candles, windowStartMs, windowEndMs, laneCumulativeNetBps),
+      ...this.computeBasketHoldAlpha(windowStartMs, windowEndMs, laneCumulativeNetBps),
+    };
+  }
+
+  // netVsBtcHoldBps only, and only when THIS instance's own symbol IS the benchmark symbol (its
+  // siloed candle buffer genuinely holds real BTC closes — see BTC_BENCHMARK_SYMBOL's module
+  // comment). Coverage guard (fail-open measurement, never a partial-window figure): the candle
+  // nearest the window start must be within BENCHMARK_COVERAGE_TOLERANCE_BARS bars of windowStartMs,
+  // and the candle nearest the window end within the same tolerance of windowEndMs — otherwise
+  // omitted.
+  private computeBtcHoldAlpha(
+    candles: readonly CandleEvent[],
+    windowStartMs: number,
+    windowEndMs: number,
+    laneCumulativeNetBps: number,
+  ): { netVsBtcHoldBps?: number } {
+    if (String(this.symbol) !== BTC_BENCHMARK_SYMBOL) return {};
+    const scoped = candles.filter(
+      (c) => c.eventTime >= windowStartMs && c.eventTime <= windowEndMs,
+    );
+    if (!this.coversWindow(scoped, windowStartMs, windowEndMs)) return {};
+    const benchmarkReturn = computeHoldReturnFraction(
+      scoped.map((c) => ({ eventTime: c.eventTime, close: c.close.toFixed() })),
+    );
+    if (benchmarkReturn === null) return {};
+    return { netVsBtcHoldBps: computeAlphaBps(laneCumulativeNetBps, benchmarkReturn) };
+  }
+
+  // W3 Part 2: netVsEqualWeightBasketBps off the shared PriceHistoryStore (AgenticStrategyDeps
+  // .priceHistory) — the multi-symbol source BTC_BENCHMARK_SYMBOL's own comment documented as
+  // missing. EACH symbol's series is independently window-scoped and coverage-guarded with the SAME
+  // tolerance rule computeBtcHoldAlpha uses; a symbol whose series does not genuinely cover the
+  // window is EXCLUDED from the basket (computeEqualWeightBasketReturnFraction's own contract: a
+  // missing return is dropped, never zeroed), so a partial basket can still produce an honest figure
+  // as long as at least one symbol covers the window. Absent dep, or zero covered symbols ⇒ omitted.
+  private computeBasketHoldAlpha(
+    windowStartMs: number,
+    windowEndMs: number,
+    laneCumulativeNetBps: number,
+  ): { netVsEqualWeightBasketBps?: number } {
+    if (this.priceHistory === undefined) return {};
+    const perSymbolCandles = new Map<string, readonly BenchmarkCandle[]>();
+    for (const symbol of this.priceHistory.symbols()) {
+      const series = this.priceHistory.seriesFor(symbol);
+      const scoped = series.filter(
+        (c) => c.eventTime >= windowStartMs && c.eventTime <= windowEndMs,
+      );
+      if (!this.coversWindow(scoped, windowStartMs, windowEndMs)) continue;
+      perSymbolCandles.set(symbol, scoped);
+    }
+    const basketReturn = computeEqualWeightBasketReturnFraction(perSymbolCandles);
+    if (basketReturn === null) return {};
+    return { netVsEqualWeightBasketBps: computeAlphaBps(laneCumulativeNetBps, basketReturn) };
+  }
+
+  // Shared coverage guard: fewer than 2 scoped candles, or the nearest candle to either window
+  // endpoint further than BENCHMARK_COVERAGE_TOLERANCE_BARS bars away, means the series does not
+  // genuinely cover [windowStartMs, windowEndMs] — false ⇒ the caller must omit rather than compare a
+  // truncated span (see this module's own header comment on that hazard).
+  private coversWindow(
+    scoped: readonly { eventTime: number }[],
+    windowStartMs: number,
+    windowEndMs: number,
+  ): boolean {
+    if (scoped.length < 2) return false;
+    const toleranceMs = BENCHMARK_COVERAGE_TOLERANCE_BARS * this.baseIntervalMs;
+    const first = scoped[0]!;
+    const last = scoped[scoped.length - 1]!;
+    return (
+      first.eventTime - windowStartMs <= toleranceMs && windowEndMs - last.eventTime <= toleranceMs
+    );
+  }
+
+  // Deterministic HOLD path taken when the B2 consult-schedule gate skips the LLM call entirely: no
+  // client call, no token/decide counters (MetricsWrappingAgentClient never runs), an honest journal
+  // row naming the schedule reason under the SAME distinct 'prescreen' model tag the retired gate
+  // used (kept verbatim — counterfactual-scoring.ts's exposure walk filters on `model === 'prescreen'`
+  // to skip these rows; renaming it is that consumer's own call, not this step's), and the same
+  // empty-signal result shape decide() returns for any other HOLD. Unlike a real decision, this skip
+  // is NOT pushed into the history ring: the ring is rendered to the LLM as its own prior decisions
+  // (agent-prompt.ts), and a quiet skip was never seen or reasoned about by the model — presenting it
+  // as such would fabricate a decision the agent never made. annotatePreviousOutcome still runs
+  // unconditionally so the last REAL decision's outcome (price move, PnL delta) keeps accruing
+  // through the quiet period.
   private recordQuietHold(
     input: AgentDecisionInput,
     context: AgentContext,
@@ -1968,7 +2239,7 @@ export class AgenticStrategy implements AsyncStrategy {
     const candles = input.snapshot.candles.get(this.symbol) ?? [];
     const lastCandle = candles.length > 0 ? candles[candles.length - 1] : undefined;
     const lastClose = lastCandle ? toIndicatorNumber(lastCandle.close) : NaN;
-    const rationale = `prescreen: ${reason} — LLM not consulted`;
+    const rationale = `${reason} — LLM not consulted`;
 
     this.annotatePreviousOutcome(lastClose, context.position, lastCandle, heldDuringPrev);
 
@@ -2096,10 +2367,26 @@ export class AgenticStrategy implements AsyncStrategy {
                   ? (lastClose / toIndicatorNumber(held.avgEntry) - 1) * 100
                   : (1 - lastClose / toIndicatorNumber(held.avgEntry)) * 100,
             openOrders,
-            // Plan-mode only (absent otherwise — legacy payloads stay byte-identical): lets the
-            // model see whether plan-executor is managing this position. false ⇒ the plan was lost
-            // (restart) and the model may re-arm via hold+plan (see AgentPositionSummary).
-            ...(this.planMode ? { managedPlan: this.activePlan !== null } : {}),
+            // B3: replaces managedPlan — plan-mode only (absent otherwise — legacy payloads stay
+            // byte-identical), and only while an activePlan actually exists. Its ABSENCE while
+            // positioned is the model's cue that the plan was lost (restart) and it may re-arm via
+            // hold+directives (see AgentPositionSummary.directives's own comment).
+            ...(this.planMode && this.activePlan
+              ? {
+                  directives: {
+                    entryStyle: this.activePlan.plan.entryStyle,
+                    stopLossPct: this.activePlan.plan.stopLossPct,
+                    takeProfitPct: this.activePlan.plan.takeProfitPct,
+                    maxHoldBars: this.activePlan.plan.maxHoldBars,
+                  },
+                  barsHeld: this.activePlan.barsElapsed,
+                  barsUntilForcedExit: Math.max(
+                    0,
+                    this.activePlan.plan.maxHoldBars - this.activePlan.barsElapsed,
+                  ),
+                  ...(this.lastThesis !== undefined ? { currentThesis: this.lastThesis } : {}),
+                }
+              : {}),
           }
         : {
             side: 'FLAT',
@@ -2302,6 +2589,10 @@ export class AgenticStrategy implements AsyncStrategy {
         // Batch-attribution join key (Push II Phase 5 follow-on) — see AgentProposal.consultId.
         // Null on every non-batched decision.
         consultId: proposal?.consultId ?? null,
+        // I1b (Design § New tool contract): the portfolio-level schedule value this decision's
+        // proposal carried — see AgentDecisionEntry.nextConsultBars' own comment (rides in plan_json,
+        // no new column). Null on every non-batched or pre-v2 decision.
+        nextConsultBars: proposal?.nextConsultBars ?? null,
         // Factorial-cell truth (migration 0012): treatment polarity — info_arm true = info bundle
         // PRESENT, thinking_arm true = adaptive thinking ON. Null when no LLM call was attempted
         // (quiet/prescreen rows never carry a proposal).

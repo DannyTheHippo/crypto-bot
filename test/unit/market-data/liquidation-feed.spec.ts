@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   LiquidationFeedService,
   type LiquidationWatchSource,
@@ -8,6 +8,7 @@ import type { ClockPort } from '../../../src/ports/clock';
 import { symbolId, epochMs } from '../../../src/domain/types/ids';
 
 const SYM = symbolId('BTC/USDT');
+const PEPE = symbolId('PEPE/USDT');
 
 function mutableClock(start = 1_000_000): { clock: ClockPort; set: (t: number) => void } {
   let t = start;
@@ -160,6 +161,72 @@ describe('LiquidationFeedService', () => {
     set(61 * 60_000); // 61 minutes later — past the 60-minute window
     expect(svc.latest(SYM)!.count).toBe(0);
     expect(svc.latest(SYM)!.liqNotionalUsd).toBe(0);
+    svc.stop();
+  });
+
+  it('prunes a perp symbol the venue does not list, retrying immediately with the trimmed set and without counting a reconnect', async () => {
+    const { clock } = mutableClock();
+    const warn = vi.fn();
+    const source = queuedSource([
+      new Error('binanceusdm does not have market symbol PEPE/USDT:USDT'),
+      [],
+    ]);
+    const svc = new LiquidationFeedService(source, {
+      symbols: [SYM, PEPE],
+      clock,
+      logger: { warn },
+    });
+
+    svc.start();
+    await flushMicrotasks();
+
+    expect(source.calledSymbols[0]).toEqual(['BTC/USDT:USDT', 'PEPE/USDT:USDT']);
+    expect(source.calledSymbols[1]).toEqual(['BTC/USDT:USDT']); // retried without the excluded symbol
+    expect(svc.reconnectCount()).toBe(0);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('excluding PEPE/USDT:USDT'));
+    svc.stop();
+  });
+
+  it('an unrelated stream error still increments reconnectCount and logs the reconnect warning (not treated as a symbol exclusion)', async () => {
+    const { clock } = mutableClock();
+    const warn = vi.fn();
+    const source = queuedSource([
+      new Error('ws disconnected'),
+      [{ symbol: 'BTC/USDT:USDT', side: 'sell', quoteValue: 100 }],
+    ]);
+    const svc = new LiquidationFeedService(source, {
+      symbols: [SYM],
+      clock,
+      backoffMs: 1,
+      logger: { warn },
+    });
+
+    svc.start();
+    await flushMicrotasks();
+
+    expect(svc.reconnectCount()).toBe(1);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('liquidation-feed stream error, reconnecting: ws disconnected'),
+    );
+    svc.stop();
+  });
+
+  it('pruning the last remaining perp symbol exits the loop, flips streamHealthy() false, and logs a final warn', async () => {
+    const { clock } = mutableClock();
+    const warn = vi.fn();
+    const source = queuedSource([
+      new Error('binanceusdm does not have market symbol BTC/USDT:USDT'),
+    ]);
+    const svc = new LiquidationFeedService(source, { symbols: [SYM], clock, logger: { warn } });
+
+    svc.start();
+    await flushMicrotasks();
+
+    expect(source.calledSymbols).toHaveLength(1); // no symbols left to retry with -> loop exits
+    expect(svc.streamHealthy()).toBe(false);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('no venue-supported perp symbols remain'),
+    );
     svc.stop();
   });
 });

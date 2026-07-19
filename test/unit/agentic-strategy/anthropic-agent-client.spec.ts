@@ -2,6 +2,11 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import Decimal from 'decimal.js';
 import {
   AnthropicAgentClient,
+  tradeDecisionSchema,
+  tradeShortsDecisionSchema,
+  tradeElementSchema,
+  tradeShortsElementSchema,
+  tradePortfolioSchema,
   type AnthropicAgentClientConfig,
   type LoggerLike,
 } from '../../../src/features/trading/agentic/anthropic-agent-client';
@@ -10,6 +15,7 @@ import {
   SHORTS_DECISION_TOOL,
   PLAN_TOOL,
   PLAN_SHORTS_TOOL,
+  DECISION_V2_BOUNDS,
 } from '../../../src/features/trading/agentic/agent-prompt';
 import {
   AgentProposeError,
@@ -640,11 +646,11 @@ describe('AnthropicAgentClient', () => {
 
       const proposal = await client.propose(input);
 
-      // Default buildCfg() runs no info-context/thinking A/B: no feed enabled means the control arm
-      // never fires (infoArm = !infoContextControlArm = true), and thinkingAbPct is unset (thinkingArm
-      // = false) — see anthropic-agent-client.ts's prepareDecideContext.
+      // Default buildCfg() runs no info-context A/B: no feed enabled means the control arm never
+      // fires (infoArm = !infoContextControlArm = true). thinkingArm is now unconditionally true
+      // (S3: thinking A/B #42 retired — see anthropic-agent-client.ts's prepareDecideContext).
       expect(proposal.infoArm).toBe(true);
-      expect(proposal.thinkingArm).toBe(false);
+      expect(proposal.thinkingArm).toBe(true);
     });
 
     it.each([
@@ -1001,10 +1007,12 @@ describe('AnthropicAgentClient', () => {
       expect(body['tools']).toEqual([DECISION_TOOL]);
       expect(body['tool_choice']).toEqual({ type: 'tool', name: 'submit_decision' });
       expect(body).not.toHaveProperty('temperature');
-      expect(body['thinking']).toEqual({ type: 'disabled' });
+      // S3: thinking A/B (#42) retired — every decide call now carries adaptive thinking
+      // unconditionally (Design § Deleted/replaced scaffolding).
+      expect(body['thinking']).toEqual({ type: 'adaptive' });
     });
 
-    it('sends thinking:disabled alongside the forced tool_choice on every decide call', async () => {
+    it('sends thinking:adaptive alongside the forced tool_choice on every decide call (A/B retired, S3)', async () => {
       const fetchFn = vi.fn();
       const client = new AnthropicAgentClient(buildCfg(), fetchFn);
       fetchFn.mockResolvedValue(
@@ -1015,12 +1023,13 @@ describe('AnthropicAgentClient', () => {
         context: FLAT_CONTEXT,
       });
 
-      await client.propose(input);
+      const proposal = await client.propose(input);
 
       const [, init] = fetchFn.mock.calls[0] as [string, RequestInit];
       const body = JSON.parse(init.body as string) as Record<string, unknown>;
-      expect(body['thinking']).toEqual({ type: 'disabled' });
+      expect(body['thinking']).toEqual({ type: 'adaptive' });
       expect(body['tool_choice']).toEqual({ type: 'tool', name: 'submit_decision' });
+      expect(proposal.thinkingArm).toBe(true);
     });
   });
 
@@ -1230,7 +1239,12 @@ describe('AnthropicAgentClient', () => {
 
       expect(proposal.signals).toHaveLength(1);
       expect(proposal.signals[0]!.kind).toBe('ENTER_LONG');
+      // sizeFraction/entryStyle: A1's AgentPlan→AgentDirectives migration (see
+      // anthropic-agent-client.ts's acceptedPlan comment) — legacy plan-mode has no equity-fraction
+      // concept ('0' inert sentinel) and always rests a passive entryOffsetBps limit order ('maker').
       expect(proposal.plan).toEqual({
+        sizeFraction: '0',
+        entryStyle: 'maker',
         entryOffsetBps: 0,
         stopLossPct: '0.002',
         takeProfitPct: '0.003',
@@ -1344,7 +1358,11 @@ describe('AnthropicAgentClient', () => {
 
       expect(proposal.signals).toEqual([]);
       expect(proposal.decision?.action).toBe('hold');
+      // sizeFraction/entryStyle: A1's AgentPlan→AgentDirectives migration — see the earlier
+      // boundary-plan test's own comment.
       expect(proposal.plan).toEqual({
+        sizeFraction: '0',
+        entryStyle: 'maker',
         entryOffsetBps: 0,
         stopLossPct: '0.003',
         takeProfitPct: '0.0045',
@@ -1520,7 +1538,11 @@ describe('AnthropicAgentClient', () => {
       expect(proposal.signals[0]!.kind).toBe('ENTER_SHORT');
       // entryOffsetBps 10 (positive) rests a SHORT entry ABOVE close: 100 × (1 + 10/10000) = 100.1.
       expect(moneyToString(proposal.signals[0]!.limitPriceHint!)).toBe('100.1');
+      // sizeFraction/entryStyle: A1's AgentPlan→AgentDirectives migration — see the earlier
+      // boundary-plan test's own comment.
       expect(proposal.plan).toEqual({
+        sizeFraction: '0',
+        entryStyle: 'maker',
         entryOffsetBps: 10,
         stopLossPct: '0.02',
         takeProfitPct: '0.04',
@@ -1828,8 +1850,13 @@ describe('AnthropicAgentClient', () => {
     });
   });
 
-  describe('playbook knobs (tighten-only parametric channel)', () => {
-    // A valid 4-section playbook carrying the given knobs line under "## entry rules".
+  // P1 (Design § Deleted/replaced scaffolding): the playbook-knobs channel (confidence-floor
+  // downgrade, min-RR/minEdgeMultiple widening) was deleted end-to-end — parsePlaybookKnobs/
+  // extractPlaybookKnobs no longer exist, so a "knobs:" line is ordinary playbook prose with zero
+  // runtime effect. The prior "tighten-only parametric channel" describe block asserted the deleted
+  // gates (minConfidence downgrade, knob-widened RR floor); replaced by the accepted-and-ignored
+  // contract below — the same legacy content that used to gate now passes straight through.
+  describe('legacy "knobs:" line — accepted and ignored (P1)', () => {
     function playbookWithKnobs(knobsLine: string): string {
       return [
         '## regime notes',
@@ -1850,13 +1877,13 @@ describe('AnthropicAgentClient', () => {
     const tickerInput = (context: AgentContext) =>
       buildInput({ tickers: new Map([[SYM, ticker('100', 1n)]]), context });
 
-    it('downgrades a NEW long entry below minConfidence to a journal-visible hold', async () => {
+    it('a stored playbook with a legacy knobs line is composed (not rejected at boot)', async () => {
       const fetchFn = vi.fn();
       const client = new AnthropicAgentClient(
         buildCfg(),
         fetchFn,
         undefined,
-        providerWith('knobs: minConfidence=0.7'),
+        providerWith('knobs: minConfidence=0.7 minRr=3'),
       );
       fetchFn.mockResolvedValue(
         apiResponse(toolUseBody({ action: 'long', confidence: 0.6, rationale: 'r' })),
@@ -1864,48 +1891,14 @@ describe('AnthropicAgentClient', () => {
 
       const proposal = await client.propose(tickerInput(FLAT_CONTEXT));
 
-      expect(proposal.signals).toEqual([]);
-      expect(proposal.decision?.action).toBe('long');
-      expect(proposal.decision?.rationale).toContain('[knob gate: confidence below playbook floor');
-    });
-
-    it('passes a NEW long entry at/above minConfidence through unchanged', async () => {
-      const fetchFn = vi.fn();
-      const client = new AnthropicAgentClient(
-        buildCfg(),
-        fetchFn,
-        undefined,
-        providerWith('knobs: minConfidence=0.7'),
-      );
-      fetchFn.mockResolvedValue(
-        apiResponse(toolUseBody({ action: 'long', confidence: 0.7, rationale: 'r' })),
-      );
-
-      const proposal = await client.propose(tickerInput(FLAT_CONTEXT));
-
+      // Below the old 0.7 minConfidence knob — the channel is gone, so the entry goes through
+      // instead of being downgraded to a journal-visible hold.
       expect(proposal.signals).toHaveLength(1);
       expect(proposal.signals[0]!.kind).toBe('ENTER_LONG');
+      expect(proposal.playbookVersion).toBe(9);
     });
 
-    it('NEVER gates an exit on minConfidence (a knob must not trap a position)', async () => {
-      const fetchFn = vi.fn();
-      const client = new AnthropicAgentClient(
-        buildCfg(),
-        fetchFn,
-        undefined,
-        providerWith('knobs: minConfidence=0.9'),
-      );
-      fetchFn.mockResolvedValue(
-        apiResponse(toolUseBody({ action: 'flat', confidence: 0.1, rationale: 'r' })),
-      );
-
-      const proposal = await client.propose(tickerInput(LONG_CONTEXT));
-
-      expect(proposal.signals).toHaveLength(1);
-      expect(proposal.signals[0]!.kind).toBe('EXIT_LONG');
-    });
-
-    it('raises the plan RR floor for a FRESH entry (knob minRr rejects a plan the config floor allows)', async () => {
+    it('a legacy minRr knob no longer widens the plan RR floor for a fresh entry', async () => {
       const fetchFn = vi.fn();
       const client = new AnthropicAgentClient(
         buildCfg({ planMode: true, minRr: '1.5' }),
@@ -1913,7 +1906,8 @@ describe('AnthropicAgentClient', () => {
         undefined,
         providerWith('knobs: minRr=3'),
       );
-      // RR = 0.02/0.01 = 2 — clears the config floor 1.5, fails the knob floor 3.
+      // RR = 0.02/0.01 = 2 — clears the config floor 1.5; the old knob floor 3 would have rejected
+      // it, but the knob channel is deleted, so only the plain configured floor binds.
       fetchFn.mockResolvedValue(
         apiResponse(
           toolUseBody(
@@ -1943,51 +1937,7 @@ describe('AnthropicAgentClient', () => {
         }),
       );
 
-      expect(proposal.signals).toEqual([]);
-      expect(proposal.plan).toBeUndefined();
-      expect(proposal.decision?.rationale).toContain('[plan rejected: RR below floor]');
-    });
-
-    it('does NOT apply knob floors to a re-arm (an open position must always be re-manageable)', async () => {
-      const fetchFn = vi.fn();
-      const client = new AnthropicAgentClient(
-        buildCfg({ planMode: true, minRr: '1.5' }),
-        fetchFn,
-        undefined,
-        providerWith('knobs: minRr=3 minConfidence=0.9'),
-      );
-      // Same RR-2 plan, but arriving as a re-arm (hold while LONG): config floors bind, knob
-      // floors and minConfidence deliberately do not — the plan re-attaches.
-      fetchFn.mockResolvedValue(
-        apiResponse(
-          toolUseBody(
-            {
-              action: 'hold',
-              confidence: 0.3,
-              rationale: 'r',
-              plan: {
-                entryOffsetBps: 10,
-                stopLossPct: 0.01,
-                takeProfitPct: 0.02,
-                entryValidityBars: 2,
-                maxHoldBars: 10,
-              },
-            },
-            'tool_use',
-            'submit_plan',
-          ),
-        ),
-      );
-
-      const proposal = await client.propose(
-        buildInput({
-          tickers: new Map([[SYM, ticker('100', 1n)]]),
-          candles: new Map([[SYM, [candle('100', 1n)]]]),
-          context: LONG_CONTEXT,
-        }),
-      );
-
-      expect(proposal.signals).toEqual([]);
+      expect(proposal.signals).toHaveLength(1);
       expect(proposal.plan).toBeDefined();
     });
   });
@@ -2811,62 +2761,486 @@ describe('AnthropicAgentClient', () => {
     });
   });
 
-  describe('thinking A/B (#42, mechanism only)', () => {
+  // S3 (rich decision contract): the #42 thinking A/B is RETIRED — every decide/batch call now
+  // carries thinking:{type:'adaptive'} unconditionally (Design § Deleted/replaced scaffolding:
+  // "thinking A/B arm retired"). No config knob revives the old disabled/coin-flip behavior.
+  describe('thinking (always adaptive, S3 — #42 A/B retired)', () => {
     function holdBody(): unknown {
       return toolUseBody({ action: 'hold', confidence: 0.5, rationale: 'r' });
     }
 
-    it('pct=0 (default): thinking stays explicitly disabled — byte-identical request to pre-#42', async () => {
+    it('sends thinking:adaptive unconditionally on decide, with no A/B knob left to flip it off', async () => {
       const fetchFn = vi.fn().mockResolvedValue(apiResponse(holdBody()));
       const client = new AnthropicAgentClient(buildCfg(), fetchFn);
-      await client.propose(
+      const proposal = await client.propose(
         buildInput({ tickers: new Map([[SYM, ticker('100', 1n)]]), context: FLAT_CONTEXT }),
       );
       const sent = JSON.parse((fetchFn.mock.calls[0]![1] as RequestInit).body as string) as {
         thinking: unknown;
       };
-      expect(sent.thinking).toEqual({ type: 'disabled' });
+      expect(sent.thinking).toEqual({ type: 'adaptive' });
+      expect(proposal.thinkingArm).toBe(true);
     });
 
-    it('treatment arm sends thinking adaptive and flips promptHash via the +th1 tag; the off-bucket minute keeps disabled and the untagged hash', async () => {
-      vi.useFakeTimers();
-      try {
-        // abArm(0, 'th-v1', 50) === true ⇒ treatment arm (minute derived by scanning ab-assignment's
-        // PRF for the desired outcome — see ab-assignment.spec.ts for the same golden value).
-        vi.setSystemTime(new Date(0));
-        const armFetch = vi.fn().mockResolvedValue(apiResponse(holdBody()));
-        const armClient = new AnthropicAgentClient(buildCfg({ thinkingAbPct: 50 }), armFetch);
-        const armProposal = await armClient.propose(
-          buildInput({ tickers: new Map([[SYM, ticker('100', 1n)]]), context: FLAT_CONTEXT }),
-        );
-        const armSent = JSON.parse((armFetch.mock.calls[0]![1] as RequestInit).body as string) as {
-          thinking: unknown;
-        };
-        expect(armSent.thinking).toEqual({ type: 'adaptive' });
+    it('sends thinking:adaptive unconditionally on a batched proposeBatch call too (shared prepareDecideContext)', async () => {
+      const fetchFn = vi.fn().mockResolvedValue(
+        apiResponse(
+          toolUseBody(
+            {
+              decisions: [{ symbol: String(SYM), action: 'hold', confidence: 0.5, rationale: 'r' }],
+            },
+            'tool_use',
+            'submit_portfolio',
+          ),
+        ),
+      );
+      const client = new AnthropicAgentClient(buildCfg(), fetchFn);
+      const { proposals } = await client.proposeBatch([
+        buildInput({ tickers: new Map([[SYM, ticker('100', 1n)]]), context: FLAT_CONTEXT }),
+      ]);
+      const sent = JSON.parse((fetchFn.mock.calls[0]![1] as RequestInit).body as string) as {
+        thinking: unknown;
+      };
+      expect(sent.thinking).toEqual({ type: 'adaptive' });
+      expect(proposals.get(String(SYM))?.thinkingArm).toBe(true);
+    });
+  });
 
-        // abArm(27, 'th-v1', 50) === false ⇒ off bucket, same config.
-        vi.setSystemTime(new Date(27 * 60_000));
-        const offFetch = vi.fn().mockResolvedValue(apiResponse(holdBody()));
-        const offClient = new AnthropicAgentClient(buildCfg({ thinkingAbPct: 50 }), offFetch);
-        const offProposal = await offClient.propose(
-          buildInput({ tickers: new Map([[SYM, ticker('100', 1n)]]), context: FLAT_CONTEXT }),
-        );
-        const offSent = JSON.parse((offFetch.mock.calls[0]![1] as RequestInit).body as string) as {
-          thinking: unknown;
-        };
-        expect(offSent.thinking).toEqual({ type: 'disabled' });
+  // S3 (rich decision contract, Design § New tool contract): the v2 submit_trade/submit_portfolio
+  // zod schemas, tested directly against DECISION_V2_BOUNDS's edges — NOT via client.propose(), since
+  // wiring these into the response-parsing path (buildProposalFromDecision) is A1's own step (see
+  // this file's module header comment). `direction` is deliberately absent from every fixture below:
+  // it is not a wire field on the v2 tool (agent-prompt.ts's tradeFieldSchemas) — the client infers it
+  // from which action fired (A1), so the schema itself never validates it.
+  describe('v2 trade-contract zod schemas (S3)', () => {
+    const SPOT_MAX = 0.15;
+    const PERP_MAX = 0.5;
 
-        // The +th1 tag makes the arm recoverable from promptHash — the two arms must never share
-        // a hash for an otherwise-identical decision.
-        expect(armProposal.promptHash).toBeDefined();
-        expect(armProposal.promptHash).not.toBe(offProposal.promptHash);
-        // Push 3 P8a-prep: thinkingArm passes ctx.thinkingArm through unchanged (already
-        // treatment-truth polarity — no negation, unlike infoArm).
-        expect(armProposal.thinkingArm).toBe(true);
-        expect(offProposal.thinkingArm).toBe(false);
-      } finally {
-        vi.useRealTimers();
-      }
+    function openLong(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+      return {
+        action: 'open_long',
+        sizeFraction: 0.01,
+        entry: { style: 'maker', offsetBps: 0 },
+        entryValidityBars: 4,
+        stopLossPct: 0.01,
+        takeProfitPct: 0.02,
+        maxHoldBars: 96,
+        ...overrides,
+      };
+    }
+
+    describe('bound edges (spot schema)', () => {
+      const schema = tradeDecisionSchema(SPOT_MAX);
+
+      it('accepts sizeFraction at the shared floor (0.005) and the spot lane max (0.15)', () => {
+        expect(schema.safeParse(openLong({ sizeFraction: 0.005 })).success).toBe(true);
+        expect(schema.safeParse(openLong({ sizeFraction: 0.15 })).success).toBe(true);
+      });
+
+      it('accepts stopLossPct at 0.002/0.05 and takeProfitPct at 0.001/0.20', () => {
+        expect(schema.safeParse(openLong({ stopLossPct: 0.002 })).success).toBe(true);
+        expect(schema.safeParse(openLong({ stopLossPct: 0.05 })).success).toBe(true);
+        expect(schema.safeParse(openLong({ takeProfitPct: 0.001 })).success).toBe(true);
+        expect(schema.safeParse(openLong({ takeProfitPct: 0.2 })).success).toBe(true);
+      });
+
+      it('accepts maxHoldBars at 288', () => {
+        expect(schema.safeParse(openLong({ maxHoldBars: 288 })).success).toBe(true);
+      });
+
+      it('accepts thesis at exactly 300 chars, rejects 301', () => {
+        expect(schema.safeParse(openLong({ thesis: 'a'.repeat(300) })).success).toBe(true);
+        expect(schema.safeParse(openLong({ thesis: 'a'.repeat(301) })).success).toBe(false);
+      });
+    });
+
+    it('accepts sizeFraction at the perp lane max (0.50) on the shorts schema', () => {
+      const schema = tradeShortsDecisionSchema(PERP_MAX);
+      expect(schema.safeParse(openLong({ sizeFraction: 0.5 })).success).toBe(true);
+    });
+
+    describe('nextConsultBars (portfolio-level, batch schema)', () => {
+      it('accepts the 1/64 edges, rejects 0 and 65', () => {
+        expect(tradePortfolioSchema.safeParse({ decisions: [], nextConsultBars: 1 }).success).toBe(
+          true,
+        );
+        expect(tradePortfolioSchema.safeParse({ decisions: [], nextConsultBars: 64 }).success).toBe(
+          true,
+        );
+        expect(tradePortfolioSchema.safeParse({ decisions: [], nextConsultBars: 0 }).success).toBe(
+          false,
+        );
+        expect(tradePortfolioSchema.safeParse({ decisions: [], nextConsultBars: 65 }).success).toBe(
+          false,
+        );
+      });
+
+      it('is a single portfolio-level value that rides alongside decisions[], never one per element', () => {
+        const parsed = tradePortfolioSchema.safeParse({
+          decisions: [{ symbol: 'BTC/USDT', action: 'hold' }],
+          nextConsultBars: 8,
+        });
+        expect(parsed.success).toBe(true);
+        if (parsed.success) {
+          expect(parsed.data.nextConsultBars).toBe(8);
+          expect(parsed.data.decisions).toHaveLength(1);
+        }
+      });
+    });
+
+    describe('out-of-bounds rejected', () => {
+      it('rejects sizeFraction above the spot lane max (0.2 > 0.15)', () => {
+        const schema = tradeDecisionSchema(SPOT_MAX);
+        expect(schema.safeParse(openLong({ sizeFraction: 0.2 })).success).toBe(false);
+      });
+
+      it('accepts sizeFraction 0.5 on the perp schema (its own 0.50 lane max)', () => {
+        const schema = tradeShortsDecisionSchema(PERP_MAX);
+        expect(schema.safeParse(openLong({ sizeFraction: 0.5 })).success).toBe(true);
+      });
+
+      it('rejects sizeFraction below the shared 0.005 floor regardless of lane', () => {
+        const schema = tradeDecisionSchema(SPOT_MAX);
+        expect(schema.safeParse(openLong({ sizeFraction: 0.004 })).success).toBe(false);
+      });
+    });
+
+    describe("'open_short' gated to the shorts schema", () => {
+      it('spot schema rejects it (not in the enum)', () => {
+        const schema = tradeDecisionSchema(SPOT_MAX);
+        expect(schema.safeParse(openLong({ action: 'open_short' })).success).toBe(false);
+      });
+
+      it('shorts schema accepts it', () => {
+        const schema = tradeShortsDecisionSchema(PERP_MAX);
+        expect(schema.safeParse(openLong({ action: 'open_short' })).success).toBe(true);
+      });
+    });
+
+    describe('superRefine: directives required on open_long/open_short', () => {
+      const schema = tradeDecisionSchema(SPOT_MAX);
+
+      it("rejects a bare 'open_long' missing the directive set", () => {
+        expect(schema.safeParse({ action: 'open_long' }).success).toBe(false);
+      });
+
+      it("'hold'/'close' never require the directive set", () => {
+        expect(schema.safeParse({ action: 'hold' }).success).toBe(true);
+        expect(schema.safeParse({ action: 'close' }).success).toBe(true);
+      });
+
+      it("'adjust' does not require the full open directive set (a bare stop revision is valid)", () => {
+        expect(schema.safeParse({ action: 'adjust', stopLossPct: 0.03 }).success).toBe(true);
+      });
+    });
+
+    describe('superRefine: partialCloseFraction only meaningful on adjust', () => {
+      const schema = tradeDecisionSchema(SPOT_MAX);
+
+      it("rejects partialCloseFraction on 'hold'", () => {
+        expect(schema.safeParse({ action: 'hold', partialCloseFraction: 0.5 }).success).toBe(false);
+      });
+
+      it("accepts partialCloseFraction on 'adjust'", () => {
+        expect(schema.safeParse({ action: 'adjust', partialCloseFraction: 0.5 }).success).toBe(
+          true,
+        );
+      });
+    });
+
+    describe('per-element batch schemas (tradeElementSchema/tradeShortsElementSchema)', () => {
+      it('requires symbol and applies the SAME directive gate as the single-symbol schema', () => {
+        const schema = tradeElementSchema(SPOT_MAX);
+        expect(schema.safeParse({ ...openLong(), symbol: 'BTC/USDT' }).success).toBe(true);
+        expect(schema.safeParse(openLong()).success).toBe(false); // missing symbol
+      });
+
+      it('shorts element schema accepts open_short; spot element schema rejects it', () => {
+        const spot = tradeElementSchema(SPOT_MAX);
+        const perp = tradeShortsElementSchema(PERP_MAX);
+        const shortDecision = {
+          ...openLong({ action: 'open_short', sizeFraction: 0.3 }),
+          symbol: 'BTC/USDT',
+        };
+        expect(spot.safeParse(shortDecision).success).toBe(false);
+        expect(perp.safeParse(shortDecision).success).toBe(true);
+      });
+    });
+
+    // Sanity: DECISION_V2_BOUNDS (agent-prompt.ts) stays the single source these tests bind to.
+    it('DECISION_V2_BOUNDS matches the literal edges exercised above', () => {
+      expect(DECISION_V2_BOUNDS.sizeFraction.min).toBe(0.005);
+      expect(DECISION_V2_BOUNDS.stopLossPct).toEqual({ min: 0.002, max: 0.05 });
+      expect(DECISION_V2_BOUNDS.takeProfitPct).toEqual({ min: 0.001, max: 0.2 });
+      expect(DECISION_V2_BOUNDS.maxHoldBars).toEqual({ min: 1, max: 288 });
+      expect(DECISION_V2_BOUNDS.nextConsultBars).toEqual({ min: 1, max: 64 });
+      expect(DECISION_V2_BOUNDS.thesisMaxLen).toBe(300);
+    });
+  });
+
+  // S3: prepareDecideContext's tradeContract tool/template selection — request-shape only (both
+  // fixtures below use stop_reason 'refusal' so the response never reaches schema parsing; A1's own
+  // response-mapping coverage lives in the 'v2 trade-contract mapping (A1)' describe block below),
+  // same convention as the 'request shape' describe block above.
+  describe('tradeContract tool/template selection (S3)', () => {
+    it('sends the v2 submit_trade tool (spot) when tradeContract is on, with the lane cap baked into its description', async () => {
+      const fetchFn = vi
+        .fn()
+        .mockResolvedValue(
+          apiResponse(toolUseBody({ action: 'hold', confidence: 0.5, rationale: 'r' }, 'refusal')),
+        );
+      const client = new AnthropicAgentClient(
+        buildCfg({ tradeContract: true, maxPositionFraction: '0.15' }),
+        fetchFn,
+      );
+      await client.propose(
+        buildInput({ tickers: new Map([[SYM, ticker('100', 1n)]]), context: FLAT_CONTEXT }),
+      );
+      const [, init] = fetchFn.mock.calls[0] as [string, RequestInit];
+      const body = JSON.parse(init.body as string) as { tools: { name: string }[] };
+      expect(body.tools).toHaveLength(1);
+      expect(body.tools[0]!.name).toBe('submit_trade');
+      expect(JSON.stringify(body.tools[0])).toContain('0.15');
+    });
+
+    it('sends the v2 submit_trade shorts tool when tradeContract + shortsEnabled + perpCapableVenue', async () => {
+      const fetchFn = vi
+        .fn()
+        .mockResolvedValue(
+          apiResponse(toolUseBody({ action: 'hold', confidence: 0.5, rationale: 'r' }, 'refusal')),
+        );
+      const client = new AnthropicAgentClient(
+        buildCfg({
+          tradeContract: true,
+          shortsEnabled: true,
+          perpCapableVenue: true,
+          maxPositionFraction: '0.5',
+        }),
+        fetchFn,
+      );
+      await client.propose(
+        buildInput({ tickers: new Map([[SYM, ticker('100', 1n)]]), context: FLAT_CONTEXT }),
+      );
+      const [, init] = fetchFn.mock.calls[0] as [string, RequestInit];
+      const body = JSON.parse(init.body as string) as {
+        tools: { name: string; input_schema: { properties: { action: { enum: string[] } } } }[];
+      };
+      expect(body.tools[0]!.name).toBe('submit_trade');
+      expect(body.tools[0]!.input_schema.properties.action.enum).toContain('open_short');
+    });
+  });
+
+  // A1 (rich decision contract, Design § New tool contract, action-mapping paragraph): propose()'s
+  // v2 response mapping — tradeDecisionSchema/tradeShortsDecisionSchema parsing +
+  // buildProposalFromTradeDecision. DEFAULT_TRADING_PROFILE (makerBps '10' + takerBps '10') is the
+  // profile every fixture below sizes its fee-floor math against: round-trip fee fraction = 0.002.
+  describe('v2 trade-contract mapping (A1)', () => {
+    function tradeOpenLong(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+      return {
+        action: 'open_long',
+        sizeFraction: 0.006,
+        entry: { style: 'maker', offsetBps: 0 },
+        entryValidityBars: 4,
+        stopLossPct: 0.008,
+        takeProfitPct: 0.004,
+        maxHoldBars: 96,
+        ...overrides,
+      };
+    }
+
+    it('(a) sizeFraction 0.006 with no confidence field produces ENTER_LONG (no floor)', async () => {
+      const fetchFn = vi
+        .fn()
+        .mockResolvedValue(apiResponse(toolUseBody(tradeOpenLong(), 'tool_use', 'submit_trade')));
+      const client = new AnthropicAgentClient(buildCfg({ tradeContract: true }), fetchFn);
+      const { signals, decision } = await client.propose(
+        buildInput({ tickers: new Map([[SYM, ticker('100', 1n)]]), context: FLAT_CONTEXT }),
+      );
+
+      expect(signals).toHaveLength(1);
+      const s = signals[0]!;
+      expect(s.kind).toBe('ENTER_LONG');
+      expect(s.strength).toBe(1);
+      expect(s.sizeFraction).toBe('0.006');
+      expect(decision?.confidence).toBeNull();
+    });
+
+    it('(a2) open_long/open_short pin plan.direction — a perp short is protected on the SHORT side (W4 audit, critical)', async () => {
+      const longFetch = vi
+        .fn()
+        .mockResolvedValue(apiResponse(toolUseBody(tradeOpenLong(), 'tool_use', 'submit_trade')));
+      const longClient = new AnthropicAgentClient(buildCfg({ tradeContract: true }), longFetch);
+      const longProposal = await longClient.propose(
+        buildInput({ tickers: new Map([[SYM, ticker('100', 1n)]]), context: FLAT_CONTEXT }),
+      );
+      expect(longProposal.plan?.direction).toBe('long');
+
+      const shortFetch = vi
+        .fn()
+        .mockResolvedValue(
+          apiResponse(
+            toolUseBody(tradeOpenLong({ action: 'open_short' }), 'tool_use', 'submit_trade'),
+          ),
+        );
+      const shortClient = new AnthropicAgentClient(
+        buildCfg({
+          tradeContract: true,
+          shortsEnabled: true,
+          perpCapableVenue: true,
+          maxPositionFraction: '0.5',
+        }),
+        shortFetch,
+      );
+      const shortProposal = await shortClient.propose(
+        buildInput({ tickers: new Map([[SYM, ticker('100', 1n)]]), context: FLAT_CONTEXT }),
+      );
+      expect(shortProposal.signals[0]!.kind).toBe('ENTER_SHORT');
+      expect(shortProposal.plan?.direction).toBe('short');
+    });
+
+    it('(b) takeProfitPct 0.004 / stopLossPct 0.008 (RR 0.5) is ACCEPTED — no min-RR floor on v2', async () => {
+      const fetchFn = vi
+        .fn()
+        .mockResolvedValue(
+          apiResponse(
+            toolUseBody(
+              tradeOpenLong({ takeProfitPct: 0.004, stopLossPct: 0.008 }),
+              'tool_use',
+              'submit_trade',
+            ),
+          ),
+        );
+      const client = new AnthropicAgentClient(buildCfg({ tradeContract: true }), fetchFn);
+      const { signals } = await client.propose(
+        buildInput({ tickers: new Map([[SYM, ticker('100', 1n)]]), context: FLAT_CONTEXT }),
+      );
+
+      expect(signals).toHaveLength(1);
+      expect(signals[0]!.kind).toBe('ENTER_LONG');
+    });
+
+    it('(c) takeProfitPct below the round-trip fee floor (0.001 < 0.002) downgrades to a journal-visible hold', async () => {
+      const fetchFn = vi
+        .fn()
+        .mockResolvedValue(
+          apiResponse(
+            toolUseBody(tradeOpenLong({ takeProfitPct: 0.001 }), 'tool_use', 'submit_trade'),
+          ),
+        );
+      const client = new AnthropicAgentClient(buildCfg({ tradeContract: true }), fetchFn);
+      const { signals, decision } = await client.propose(
+        buildInput({ tickers: new Map([[SYM, ticker('100', 1n)]]), context: FLAT_CONTEXT }),
+      );
+
+      expect(signals).toEqual([]);
+      expect(decision?.rationale).toContain('[rejected: tp below fee floor]');
+    });
+
+    it("(d) 'adjust' + partialCloseFraction 0.5 emits ONE reduce-only EXIT carrying reduceFraction '0.5'", async () => {
+      const fetchFn = vi
+        .fn()
+        .mockResolvedValue(
+          apiResponse(
+            toolUseBody(
+              { action: 'adjust', partialCloseFraction: 0.5 },
+              'tool_use',
+              'submit_trade',
+            ),
+          ),
+        );
+      const client = new AnthropicAgentClient(buildCfg({ tradeContract: true }), fetchFn);
+      const { signals } = await client.propose(
+        buildInput({ tickers: new Map([[SYM, ticker('100', 1n)]]), context: LONG_CONTEXT }),
+      );
+
+      expect(signals).toHaveLength(1);
+      const s = signals[0]!;
+      expect(s.kind).toBe('EXIT_LONG');
+      expect(s.reduceFraction).toBe('0.5');
+      expect(s.cancelBeforeSubmit).toEqual({ side: 'SELL' });
+    });
+
+    it('(e) same-side open_long while already LONG emits an ENTER_LONG scale-in with fresh directives', async () => {
+      const fetchFn = vi
+        .fn()
+        .mockResolvedValue(apiResponse(toolUseBody(tradeOpenLong(), 'tool_use', 'submit_trade')));
+      const client = new AnthropicAgentClient(buildCfg({ tradeContract: true }), fetchFn);
+      const { signals } = await client.propose(
+        buildInput({ tickers: new Map([[SYM, ticker('100', 1n)]]), context: LONG_CONTEXT }),
+      );
+
+      expect(signals).toHaveLength(1);
+      expect(signals[0]!.kind).toBe('ENTER_LONG');
+    });
+
+    it('(e) opposite-side open_long while SHORT emits NO signal (never an accidental flip)', async () => {
+      const fetchFn = vi
+        .fn()
+        .mockResolvedValue(apiResponse(toolUseBody(tradeOpenLong(), 'tool_use', 'submit_trade')));
+      const client = new AnthropicAgentClient(buildCfg({ tradeContract: true }), fetchFn);
+      const { signals } = await client.propose(
+        buildInput({ tickers: new Map([[SYM, ticker('100', 1n)]]), context: SHORT_CONTEXT }),
+      );
+
+      expect(signals).toEqual([]);
+    });
+
+    it('(f) a taker entry prices limitPriceHint on the crossing side of refPrice (exact string)', async () => {
+      const fetchFn = vi
+        .fn()
+        .mockResolvedValue(
+          apiResponse(
+            toolUseBody(
+              tradeOpenLong({ entry: { style: 'taker', offsetBps: 0 } }),
+              'tool_use',
+              'submit_trade',
+            ),
+          ),
+        );
+      const client = new AnthropicAgentClient(buildCfg({ tradeContract: true }), fetchFn);
+      const { signals } = await client.propose(
+        buildInput({ tickers: new Map([[SYM, ticker('50000', 1n)]]), context: FLAT_CONTEXT }),
+      );
+
+      expect(signals).toHaveLength(1);
+      // BUY crosses ABOVE refPrice (25bps buffer — TAKER_CROSS_BUFFER_BPS): 50000 * 1.0025.
+      expect(moneyToString(signals[0]!.limitPriceHint!)).toBe('50125');
+    });
+
+    it('(g) maker offsetBps -150/+150 price exact edges off the last closed candle close', async () => {
+      const candles = new Map([[SYM, [candle('50000', 1n)]]]);
+
+      const fetchFnPlus = vi
+        .fn()
+        .mockResolvedValue(
+          apiResponse(
+            toolUseBody(
+              tradeOpenLong({ entry: { style: 'maker', offsetBps: 150 } }),
+              'tool_use',
+              'submit_trade',
+            ),
+          ),
+        );
+      const clientPlus = new AnthropicAgentClient(buildCfg({ tradeContract: true }), fetchFnPlus);
+      const plus = await clientPlus.propose(buildInput({ candles, context: FLAT_CONTEXT }));
+      // Long, +150bps: 50000 * (1 - 0.015) = 49250.
+      expect(moneyToString(plus.signals[0]!.limitPriceHint!)).toBe('49250');
+
+      const fetchFnMinus = vi
+        .fn()
+        .mockResolvedValue(
+          apiResponse(
+            toolUseBody(
+              tradeOpenLong({ entry: { style: 'maker', offsetBps: -150 } }),
+              'tool_use',
+              'submit_trade',
+            ),
+          ),
+        );
+      const clientMinus = new AnthropicAgentClient(buildCfg({ tradeContract: true }), fetchFnMinus);
+      const minus = await clientMinus.propose(buildInput({ candles, context: FLAT_CONTEXT }));
+      // Long, -150bps: 50000 * (1 + 0.015) = 50750.
+      expect(moneyToString(minus.signals[0]!.limitPriceHint!)).toBe('50750');
     });
   });
 });

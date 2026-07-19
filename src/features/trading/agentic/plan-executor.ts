@@ -1,20 +1,27 @@
-// ── Plan executor (W3.1) ─────────────────────────────────────────────────────
+// ── Plan executor (W3.1; S2/B1 retype to AgentDirectives) ───────────────────
 //
-// Pure, dependency-free (no nest/ccxt/Date.now/process.env): manages a plan-mode trade PLAN
-// deterministically between LLM consults, so the strategy stops asking the model every bar once it
-// holds an active plan. All price comparisons are Decimal-on-strings — plan prices/pcts are money
-// paths (CLAUDE.md rule 1), never plain-number math.
+// Pure, dependency-free (no nest/ccxt/Date.now/process.env): enforces the model's CURRENT directive
+// set deterministically between LLM consults, so the strategy stops asking the model every bar once
+// it holds an active plan. All price comparisons are Decimal-on-strings — directive prices/pcts are
+// money paths (CLAUDE.md rule 1), never plain-number math.
 //
 // `barsElapsed` is a SINGLE clock counted from plan creation (planStartedBar), used for BOTH the
 // resting-entry validity window and the filled-position max-hold window — the spec brief states both
 // thresholds against the same counter, not two independently-reset clocks. The strategy owns
 // incrementing it every decide() cycle a plan stays active; this module only ever reads it.
+//
+// B1: `state.plan` is MUTABLE across evaluations — an `adjust` directive (Design § New tool contract)
+// replaces it in place with the model's revised stop/TP/maxHold, and every stop/TP/max_hold check
+// below always reads the CURRENT directive set, never the one in force when the position was opened.
+// The single barsElapsed clock is never reset by an `adjust` (it enforces elapsed real time, not the
+// model's latest intent); it restarts only on a new entry/scale-in, which is the strategy's decision
+// (agentic.strategy.ts), not this module's.
 
 import Decimal from 'decimal.js';
-import type { AgentPlan } from '../../../ports/agentic-strategy';
+import type { AgentDirectives } from '../../../ports/agentic-strategy';
 
 export interface PlanExecutorState {
-  readonly plan: AgentPlan;
+  readonly plan: AgentDirectives;
   // Average fill price once the entry has filled (position flipped LONG); null while the entry is
   // still resting/unfilled — see agentic.strategy.ts's plan-lifecycle comment for who sets this.
   readonly entryPrice: string | null;

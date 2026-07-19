@@ -102,6 +102,16 @@ function perpDepsFor(config: TypedConfigService | undefined): SizerDeps['perp'] 
     liqBufferPct: config.perp.liqBufferPct,
   };
 }
+// S2/C1/D1/I1: AGENTIC_MAX_POSITION_FRACTION lives on config.agentic (the tool-contract cap, spot
+// 0.15 / perp 0.50 per lane); SIZER_EQUITY_CAP lives on config.risk (the $1k-book sizing cap).
+// Absent TypedConfigService (module-isolation boots) leaves both undefined, falling through to
+// PositionSizerService's own '0.15'/pass-through fallbacks — byte-identical to pre-D1 behavior.
+function maxAgentPositionFractionFor(config: TypedConfigService | undefined): string | undefined {
+  return config?.agentic.maxPositionFraction;
+}
+function equityCapFor(config: TypedConfigService | undefined): string | undefined {
+  return config?.risk.equityCap;
+}
 // Overlays the RISK_* env knobs onto DEFAULT_LIMITS (single source of truth for both RISK_LIMITS —
 // consumed by RiskEngineService/ModeControl's LIMITS_COMPLETE gate — and RISK_ENGINE_DEPS). Absent
 // TypedConfigService (module-isolation boots) falls straight through to DEFAULT_LIMITS, unchanged
@@ -161,6 +171,8 @@ const CONFIG_OPTIONAL = { token: TypedConfigService, optional: true } as const;
         entryOrderType: entryOrderTypeFor(config),
         stopLimitBufferBps: stopLimitBufferBpsFor(config),
         perp: perpDepsFor(config),
+        maxAgentPositionFraction: maxAgentPositionFractionFor(config),
+        equityCap: equityCapFor(config),
       }),
       inject: [CONFIG_OPTIONAL],
     },

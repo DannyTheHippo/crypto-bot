@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import Decimal from 'decimal.js';
-import type { ClientOrderId } from '../../../domain/types/ids';
+import type { ClientOrderId, VenueId } from '../../../domain/types/ids';
 import type { OrderIntent } from '../../../domain/types/order-intent';
 import type { ApprovalProof } from '../../../domain/types/risk-decision';
 import type { FillRecord } from '../../../domain/types/exec-report';
@@ -13,12 +13,15 @@ import type {
   RecoveredOpenOrder,
 } from '../../../ports/execution';
 import type { OrderRecord, OrderState } from '../../../domain/oms/reducer';
+import type { SymbolId } from '../../../domain/types/ids';
 
 interface StoredOrder {
   state: OrderState;
+  qty: string;
   cumQty: string;
   venueOrderId?: string;
   intentId?: string;
+  venue?: string;
 }
 
 // In-process EXECUTION_STORE default (DB-less paper, and the test substrate). Mirrors the
@@ -45,8 +48,10 @@ export class InMemoryExecutionStore implements ExecutionStorePort {
   saveNewOrder(record: OrderRecord, intent: OrderIntent): Promise<void> {
     this.orders.set(record.clientOrderId, {
       state: record.state,
+      qty: record.qty.toFixed(),
       cumQty: record.cumQty.toFixed(),
       intentId: intent.intentId,
+      venue: intent.venue,
     });
     return Promise.resolve();
   }
@@ -59,8 +64,11 @@ export class InMemoryExecutionStore implements ExecutionStorePort {
     const prev = this.orders.get(ev.clientOrderId);
     this.orders.set(ev.clientOrderId, {
       state: ev.derivedState,
+      qty: prev?.qty ?? '0', // never re-carried on an event (only saveNewOrder sets it); '0' only if saveNewOrder was skipped
       cumQty: ev.cumQty,
       venueOrderId: ev.venueOrderId ?? prev?.venueOrderId,
+      intentId: prev?.intentId,
+      venue: prev?.venue,
     });
     return Promise.resolve({ applied: true });
   }
@@ -118,6 +126,36 @@ export class InMemoryExecutionStore implements ExecutionStorePort {
   // lookup, no extra bookkeeping.
   loadIntentByClientOrderId(clientOrderId: ClientOrderId): Promise<OrderIntent | null> {
     return Promise.resolve(this.intents.get(clientOrderId)?.intent ?? null);
+  }
+
+  // §6.4 cluster-A durable second-tier lookup — mirrors the DB's (venue, venue_order_id) scan over
+  // this store's own `orders` map, which (unlike the runtime OrderBookService) is never pruned, so
+  // it stands in for "the durable order store" in tests that simulate an in-memory-lost order.
+  // Reconstructs a full OrderRecord (stepSize/attempt/cancelWanted synthesized, same convention as
+  // DrizzleExecutionStore's rowToOrderRecord) so the caller can both classify by `state` and, if
+  // terminal, fold a genuinely-missed fill directly onto it.
+  loadOrderByVenueOrderId(venue: VenueId, venueOrderId: string): Promise<OrderRecord | null> {
+    for (const [coid, o] of this.orders) {
+      if (o.venue === venue && o.venueOrderId === venueOrderId) {
+        const record: OrderRecord = {
+          clientOrderId: coid as ClientOrderId,
+          state: o.state,
+          qty: new Decimal(o.qty),
+          cumQty: new Decimal(o.cumQty),
+          stepSize: '0.00000001',
+          venueOrderId: o.venueOrderId,
+          attempt: 0,
+          cancelWanted: false,
+        };
+        return Promise.resolve(record);
+      }
+    }
+    return Promise.resolve(null);
+  }
+
+  // §6.4 spot-lane false-HALT fix: the trade axis's first filter, checked before any classification.
+  hasFill(venue: VenueId, symbol: SymbolId, venueTradeId: string): Promise<boolean> {
+    return Promise.resolve(this.fills.has(`${venue}|${symbol}|${venueTradeId}`));
   }
 
   // ── Inspection (tests) ───────────────────────────────────────────────────────

@@ -15,9 +15,12 @@ import {
   fixedClock,
   killSwitchStub,
   SYM,
+  T,
 } from './helpers';
 import { price, qty } from '../../../src/domain/types/money';
 import { intentId } from '../../../src/domain/types/ids';
+import type { ExecQualitySinkPort } from '../../../src/ports/execution';
+import { ExecQualityService } from '../../../src/features/trading/agentic/exec-quality.service';
 
 // A second intentId so the closing SELL leg of a round trip gets its own clientOrderId/order.
 const SELL_IID = intentId('0190abcd-1234-7abc-89ab-0123456789ac');
@@ -30,6 +33,7 @@ function build(
   feesPaidCounter?: Counter<string>,
   roundTripsCounter?: Counter<string>,
   tradePnl?: Histogram<string>,
+  execQualitySink?: ExecQualitySinkPort,
 ) {
   const store = new InMemoryExecutionStore();
   const orders = new OrderBookService();
@@ -52,6 +56,7 @@ function build(
     feesPaidCounter,
     roundTripsCounter,
     tradePnl,
+    execQualitySink,
   );
   return { store, orders, portfolio, ingestor, engages };
 }
@@ -349,5 +354,174 @@ describe('FillIngestorService', () => {
     );
     expect(r.applied).toBe(true);
     expect(ctx.portfolio.snapshot().positions.size).toBe(0); // round trip closed to flat
+  });
+
+  // W3 Part 1: exec-quality fan-out.
+  describe('exec-quality fan-out', () => {
+    it('feeds a full ENTRY fill to the exec-quality sink (maker/taker style from fill.liquidity)', async () => {
+      const recordEntryAttempt = vi.fn();
+      const sink: ExecQualitySinkPort = { recordEntryAttempt };
+      const ctx = build(
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        sink,
+      );
+      const { coid, acked } = seed(ctx); // qty 1, BUY, LIMIT, limitPrice 100, reduceOnly false
+      await ctx.ingestor.ingest(
+        acked,
+        makeFill({
+          clientOrderId: coid,
+          qty: qty('1'),
+          price: price('101'),
+          liquidity: 'maker',
+          venueTradeId: 'eq1',
+        }),
+        'rep1',
+      );
+      expect(recordEntryAttempt).toHaveBeenCalledTimes(1);
+      expect(recordEntryAttempt).toHaveBeenCalledWith({
+        symbol: SYM,
+        side: 'long',
+        style: 'maker',
+        limitPrice: '100',
+        outcome: 'filled',
+        fillPrice: '101',
+        terminalAt: T,
+      });
+    });
+
+    it('never feeds a partial fill (only the FILLED terminal fold does)', async () => {
+      const recordEntryAttempt = vi.fn();
+      const sink: ExecQualitySinkPort = { recordEntryAttempt };
+      const ctx = build(
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        sink,
+      );
+      const { coid, acked } = seed(ctx, makeIntent({ qty: qty('2') }));
+      await ctx.ingestor.ingest(
+        acked,
+        makeFill({ clientOrderId: coid, qty: qty('1'), venueTradeId: 'partial' }),
+        'rep1',
+      );
+      expect(recordEntryAttempt).not.toHaveBeenCalled();
+    });
+
+    it('never feeds a reduce-only (exit) fill — exec-quality models entry attempts only', async () => {
+      const recordEntryAttempt = vi.fn();
+      const sink: ExecQualitySinkPort = { recordEntryAttempt };
+      const ctx = build(
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        sink,
+      );
+      const { coid, acked } = seed(ctx, makeIntent({ reduceOnly: true }));
+      await ctx.ingestor.ingest(
+        acked,
+        makeFill({ clientOrderId: coid, qty: qty('1'), venueTradeId: 'exit' }),
+        'rep1',
+      );
+      expect(recordEntryAttempt).not.toHaveBeenCalled();
+    });
+
+    it('tolerates an absent sink (no throw) and a throwing sink (fails open, never blocks the fill)', async () => {
+      const ctxAbsent = build();
+      const { coid: c1, acked: a1 } = seed(ctxAbsent);
+      const r1 = await ctxAbsent.ingestor.ingest(
+        a1,
+        makeFill({ clientOrderId: c1, qty: qty('1'), venueTradeId: 'noop' }),
+        'rep1',
+      );
+      expect(r1.applied).toBe(true);
+
+      const throwingSink: ExecQualitySinkPort = {
+        recordEntryAttempt: () => {
+          throw new Error('boom');
+        },
+      };
+      const ctxThrow = build(
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        throwingSink,
+      );
+      const { coid: c2, acked: a2 } = seed(ctxThrow, makeIntent({ intentId: SELL_IID }));
+      const r2 = await ctxThrow.ingestor.ingest(
+        a2,
+        makeFill({ clientOrderId: c2, qty: qty('1'), venueTradeId: 'throws' }),
+        'rep1',
+      );
+      expect(r2.applied).toBe(true); // the fold itself is unaffected by a sink failure
+    });
+
+    it('end-to-end: feeding real FILLED entry attempts through a real ExecQualityService flips digest() from undefined to defined', async () => {
+      // Same adapter shape app.module.ts's EXEC_QUALITY_SINK_OVERRIDE factory wires — this proves the
+      // whole W3 Part 1 chain (ingest → sink.recordEntryAttempt → ExecQualityService.digest), not just
+      // that the sink was called.
+      // nowFn pinned to T (the fixture fills' venueTimestamp/terminalAt): the service's default
+      // Date.now() would otherwise prune every attempt as older than WINDOW_MAX_AGE_MS (7 days) on
+      // the very next recordEntryAttempt call, since T is a fixed 2023 fixture timestamp.
+      const execQuality = new ExecQualityService({ priceLookup: () => undefined, nowFn: () => T });
+      const sink: ExecQualitySinkPort = {
+        recordEntryAttempt: (attempt) => execQuality.recordEntryAttempt(attempt),
+      };
+      const ctx = build(
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        sink,
+      );
+      expect(execQuality.digest()).toBeUndefined();
+
+      // MIN_ATTEMPTS_FOR_DIGEST is 5 (exec-quality.service.ts) — 5 distinct full ENTRY fills.
+      const entryIds = [
+        '0190abcd-1234-7abc-89ab-0123456789ad',
+        '0190abcd-1234-7abc-89ab-0123456789ae',
+        '0190abcd-1234-7abc-89ab-0123456789af',
+        '0190abcd-1234-7abc-89ab-0123456789b0',
+        '0190abcd-1234-7abc-89ab-0123456789b1',
+      ];
+      for (const [i, id] of entryIds.entries()) {
+        const { coid, acked } = seed(ctx, makeIntent({ intentId: intentId(id) }));
+        await ctx.ingestor.ingest(
+          acked,
+          makeFill({
+            clientOrderId: coid,
+            qty: qty('1'),
+            liquidity: 'maker',
+            venueTradeId: `eqe2e-${i}`,
+          }),
+          `rep-${i}`,
+        );
+      }
+      expect(execQuality.digest()).toBeDefined();
+      // fillRate is scoped to MAKER attempts (exec-quality.service.ts) — all 5 fixtures above are
+      // maker fills, so 5/5 filled = 100%.
+      expect(execQuality.digest()).toContain('fillRate=100.0%');
+      expect(execQuality.digest()).toContain('n=5');
+    });
   });
 });

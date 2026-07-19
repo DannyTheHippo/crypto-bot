@@ -17,10 +17,12 @@ const FAKE_EVIDENCE = {
   realizedPnl: '120.5',
   fees: '5.25',
   llmCostUsd: '3.10',
+  fundingNet: '0',
   netPnl: '112.15',
   windowDays: 16.5,
   firstClosedAt: 1,
   lastClosedAt: 2,
+  fundingDataMissing: false,
   reasons: [] as string[],
 };
 

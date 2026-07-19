@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { ChecksumError, NetworkError } from 'ccxt';
+import { ChecksumError, NetworkError, type Ticker } from 'ccxt';
 import {
   CcxtExchangeStreamAdapter,
   type WatchSource,
@@ -18,6 +18,8 @@ const clock: ClockPort = { now: () => epochMs(0) };
 function fakeBook() {
   return { timestamp: 1, bids: [[100, 1]], asks: [[101, 1]] };
 }
+
+const unused = (): Promise<never> => Promise.reject(new Error('unused'));
 
 afterEach(() => {
   vi.useRealTimers();
@@ -79,40 +81,44 @@ describe('CcxtExchangeStreamAdapter supervised book loop', () => {
     await iterator.return?.();
   });
 
-  it('paces (re)subscriptions through the gate — no synchronized burst at boot or after a shared failure (2026-07-17 code-1008 livelock)', async () => {
-    // 4 channels on one symbol: every first watch throws a transient NetworkError (the shape of a
-    // venue 1008 close), every second watch parks. Pre-fix, the four initial watches fired in one
-    // tick and the four retries fired in one tick 1s later — the lockstep burst Binance answers
-    // with another 1008, forever. The gate must space BOTH batches ≥ SUBSCRIBE_MIN_SPACING_MS.
+  // Bounded-concurrency lanes (2026-07-18 fix for the 2026-07-17 recovery-storm defect): the
+  // pre-fix gate was a single global FIFO (SUBSCRIBE_MIN_SPACING_MS=350ms) that serialized every
+  // (re)subscribe — M simultaneous drops recovered in M×350ms, and a connection-wide drop across
+  // the 24-symbol universe (~96 subscriptions) pushed the queue tail past the RiskEngine's 5s
+  // freshness gate, blacking out new entries universe-wide. The fix fans concurrent acquirers out
+  // across SUBSCRIBE_LANE_COUNT (4) independently-paced lanes (SUBSCRIBE_LANE_SPACING_MS=1000ms
+  // each), still safely under the venue's 5msg/s 1008 cliff (aggregate 4/s). Every (symbol,channel)
+  // loop's FIRST watch passes through the identical subscribeSlot() gate as a post-error resubscribe
+  // (same code, same lanes), so M concurrent initial subscribes exercise exactly the mechanism a
+  // synchronized connection-wide drop would.
+  it('recovers M ≥ N simultaneous subscribe requests in ceil(M/N) rounds of the lane pace, not M rounds', async () => {
     vi.useFakeTimers();
-    const calls: { ch: string; at: number }[] = [];
-    const failOnceThenPark = (ch: string) => {
-      let n = 0;
-      return () => {
-        calls.push({ ch, at: Date.now() });
-        n += 1;
-        if (n === 1)
-          return Promise.reject(
-            new NetworkError('connection closed by remote server, closing code 1008'),
-          );
-        return new Promise<never>(() => {});
-      };
-    };
+    // vi.useFakeTimers() freezes the fake clock at the current REAL wall time, not epoch 0 — anchor
+    // every assertion to that baseline rather than assuming Date.now() starts at 0.
+    const t0 = Date.now();
+    const LANE_COUNT = 4; // mirrors SUBSCRIBE_LANE_COUNT
+    const PACE_MS = 1000; // mirrors SUBSCRIBE_LANE_SPACING_MS
+    const M = 8; // 2×LANE_COUNT: pre-fix this was 8 distinct 350ms-spaced rounds
+    const symbols = Array.from({ length: M }, (_, i) => symbolId(`SYM${i}/USDT`));
+    const callTimes = new Map<string, number>();
     const watchSource: WatchSource = {
-      watchTicker: failOnceThenPark('ticker'),
-      watchTrades: failOnceThenPark('trade'),
-      watchOHLCV: failOnceThenPark('candle'),
-      watchOrderBook: failOnceThenPark('book'),
+      watchTicker: (_exchange, symbol) => {
+        if (!callTimes.has(symbol)) {
+          callTimes.set(symbol, Date.now());
+          return Promise.resolve({} as Ticker);
+        }
+        return new Promise<never>(() => {}); // park after the recorded first subscribe
+      },
+      watchTrades: unused,
+      watchOHLCV: unused,
+      watchOrderBook: unused,
     };
     const stateTracker: ChannelStateTracker = {
       setHealth: vi.fn(),
       recordEvent: vi.fn(),
       checkStaleness: vi.fn(),
     };
-    const exchange = {
-      id: 'binance',
-      has: { watchTicker: true, watchTrades: true, watchOHLCV: true, watchOrderBook: true },
-    } as never;
+    const exchange = { id: 'binance', has: { watchTicker: true } } as never;
     const timerClock: ClockPort = { now: () => epochMs(Date.now()) };
     const adapter = new CcxtExchangeStreamAdapter(
       timerClock,
@@ -120,32 +126,71 @@ describe('CcxtExchangeStreamAdapter supervised book loop', () => {
       exchange,
       V,
       stateTracker,
+      undefined,
+      () => 0, // zero jitter: deterministic round boundaries for this assertion
     );
-    const spec: SubscriptionSpec = {
-      venue: V,
-      symbols: [SYM],
-      channels: { ticker: true, trades: true, book: true, candles: ['15m'] },
-    };
+    const spec: SubscriptionSpec = { venue: V, symbols, channels: { ticker: true } };
     const iterator = adapter.marketRaw(spec)[Symbol.asyncIterator]();
 
-    await vi.advanceTimersByTimeAsync(15_000);
+    await vi.advanceTimersByTimeAsync(PACE_MS * Math.ceil(M / LANE_COUNT) + 500);
     await iterator.return?.();
 
-    expect(calls).toHaveLength(8);
-    const spacingOk = (batch: number[]): void => {
-      const sorted = [...batch].sort((a, b) => a - b);
-      for (let i = 1; i < sorted.length; i++) {
-        expect(sorted[i]! - sorted[i - 1]!).toBeGreaterThanOrEqual(349);
-      }
+    expect(callTimes.size).toBe(M);
+    const rounds = new Map<number, number>();
+    for (const t of callTimes.values()) rounds.set(t, (rounds.get(t) ?? 0) + 1);
+
+    // The fix's claim: ceil(M/N) rounds, not M — pre-fix this would be 8 distinct timestamps 350ms
+    // apart; post-fix it is 2 rounds, LANE_COUNT wide, PACE_MS apart.
+    expect(rounds.size).toBe(Math.ceil(M / LANE_COUNT));
+    const sortedTimes = [...rounds.keys()].sort((a, b) => a - b);
+    for (const t of sortedTimes) expect(rounds.get(t)).toBe(LANE_COUNT);
+    expect(sortedTimes[0]).toBe(t0);
+    expect(sortedTimes[1]! - sortedTimes[0]!).toBe(PACE_MS);
+  });
+
+  it('never starts two (re)subscribes on the same lane inside SUBSCRIBE_LANE_SPACING_MS, even with jitter added on top', async () => {
+    vi.useFakeTimers();
+    const LANE_COUNT = 4;
+    const PACE_MS = 1000;
+    const M = LANE_COUNT + 1; // forces exactly one lane to be reused, isolating the floor
+    const symbols = Array.from({ length: M }, (_, i) => symbolId(`SYM${i}/USDT`));
+    const callTimes: number[] = [];
+    const watchSource: WatchSource = {
+      watchTicker: () => {
+        callTimes.push(Date.now());
+        return new Promise<never>(() => {});
+      },
+      watchTrades: unused,
+      watchOHLCV: unused,
+      watchOrderBook: unused,
     };
-    const firsts = new Map<string, number>();
-    const seconds: number[] = [];
-    for (const c of calls) {
-      if (firsts.has(c.ch)) seconds.push(c.at);
-      else firsts.set(c.ch, c.at);
-    }
-    spacingOk([...firsts.values()]);
-    spacingOk(seconds);
+    const stateTracker: ChannelStateTracker = {
+      setHealth: vi.fn(),
+      recordEvent: vi.fn(),
+      checkStaleness: vi.fn(),
+    };
+    const exchange = { id: 'binance', has: { watchTicker: true } } as never;
+    const timerClock: ClockPort = { now: () => epochMs(Date.now()) };
+    const adapter = new CcxtExchangeStreamAdapter(
+      timerClock,
+      watchSource,
+      exchange,
+      V,
+      stateTracker,
+      undefined,
+      () => 50, // fixed nonzero jitter — the floor must hold on top of it, never under it
+    );
+    const spec: SubscriptionSpec = { venue: V, symbols, channels: { ticker: true } };
+    const iterator = adapter.marketRaw(spec)[Symbol.asyncIterator]();
+
+    await vi.advanceTimersByTimeAsync(3_000);
+    await iterator.return?.();
+
+    const sorted = [...callTimes].sort((a, b) => a - b);
+    expect(sorted).toHaveLength(M);
+    // The first LANE_COUNT starts share round 1; the (LANE_COUNT+1)-th reuses a lane and must wait
+    // at least the full pace beyond that lane's round-1 claim, jitter or not.
+    expect(sorted[LANE_COUNT]! - sorted[0]!).toBeGreaterThanOrEqual(PACE_MS);
   });
 
   it('logs a loop error once per channel per interval — a persistent failure is visible, a tight loop does not flood', async () => {

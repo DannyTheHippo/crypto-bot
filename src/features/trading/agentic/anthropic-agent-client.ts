@@ -7,9 +7,12 @@ import type { EpochMs, SymbolId, VenueId } from '../../../domain/types/ids';
 import type { Signal } from '../../../domain/types/signal';
 import {
   AgentProposeError,
+  type AgentBudgetBlock,
+  type AgentCalendarEvent,
   type AgentClientPort,
   type AgentDecisionInput,
-  type AgentPlan,
+  type AgentDirectives,
+  type AgentPortfolioBlock,
   type AgentProposal,
   type AgentTradingProfile,
   type AgentUsage,
@@ -19,6 +22,7 @@ import {
   BOOK_STRUCTURE_TEMPLATE_VERSION,
   CROSS_SYMBOL_TEMPLATE_VERSION,
   DECISION_TOOL,
+  DECISION_V2_BOUNDS,
   DERIVATIVES_TEMPLATE_VERSION,
   DERIVATIVES_V2_TEMPLATE_VERSION,
   LIQUIDATION_TEMPLATE_VERSION,
@@ -39,12 +43,20 @@ import {
   PLAN_TEMPLATE_VERSION,
   PLAN_SHORTS_TEMPLATE_VERSION,
   PROMPT_TEMPLATE_VERSION,
+  TRADE_TEMPLATE_VERSION,
+  TRADE_SHORTS_TEMPLATE_VERSION,
+  TRADE_PORTFOLIO_TEMPLATE_VERSION,
+  TRADE_PORTFOLIO_SHORTS_TEMPLATE_VERSION,
   buildMarketPayload,
   buildPlaybookBlock,
   buildSystemPrompt,
+  buildTradeTool,
+  buildTradeShortsTool,
+  buildTradePortfolioTool,
+  buildTradePortfolioShortsTool,
   computePromptHash,
 } from './agent-prompt';
-import { extractPlaybookKnobs, validatePlaybook, type PlaybookKnobs } from './playbook-validator';
+import { validatePlaybook } from './playbook-validator';
 import { abArm } from './ab-assignment';
 
 const decisionSchema = z.object({
@@ -165,6 +177,180 @@ const portfolioDecisionsSchema = z.object({ decisions: z.array(z.unknown()) });
 // still be attributed to (and thus warned/held against) the right requested symbol.
 const elementSymbolSchema = z.object({ symbol: z.string().min(1) });
 
+// S3 (rich decision contract, Design § New tool contract): v2 submit_trade/submit_portfolio zod
+// schemas, mirroring DECISION_V2_BOUNDS (agent-prompt.ts — single source for the numeric ranges; see
+// that const's own comment on why the strict-tool-use JSON schema can't carry them itself). ADDITIVE
+// alongside the legacy decisionSchema/planSchema family above — A1 owns wiring these into
+// buildProposalFromDecision/propose/proposeBatch and deleting the legacy schemas/clamps they replace
+// (WORK item 5: no deletion here). Every wire field arrives as a plain JSON number (the tool's
+// input_schema types them 'number'/'integer', same as planFieldSchema above) — conversion to the
+// money-safe Decimal-on-string AgentDirectives shape happens at A1's mapping boundary, not here.
+// sizeFractionMax is injected as a plain number (the lane cap, AGENTIC_MAX_POSITION_FRACTION — 0.15
+// spot / 0.50 perp) rather than hardcoded — the SAME per-call parameterization agent-prompt.ts's
+// buildTradeTool family uses for the tool description (one cap, never two hand-maintained copies).
+function tradeDirectiveFieldShape(sizeFractionMax: number) {
+  return {
+    sizeFraction: z
+      .number()
+      .min(DECISION_V2_BOUNDS.sizeFraction.min)
+      .max(sizeFractionMax)
+      .optional(),
+    entry: z
+      .object({
+        style: z.enum(['maker', 'taker']),
+        offsetBps: z
+          .number()
+          .int()
+          .min(DECISION_V2_BOUNDS.entryOffsetBps.min)
+          .max(DECISION_V2_BOUNDS.entryOffsetBps.max),
+      })
+      .optional(),
+    entryValidityBars: z
+      .number()
+      .int()
+      .min(DECISION_V2_BOUNDS.entryValidityBars.min)
+      .max(DECISION_V2_BOUNDS.entryValidityBars.max)
+      .optional(),
+    stopLossPct: z
+      .number()
+      .min(DECISION_V2_BOUNDS.stopLossPct.min)
+      .max(DECISION_V2_BOUNDS.stopLossPct.max)
+      .optional(),
+    takeProfitPct: z
+      .number()
+      .min(DECISION_V2_BOUNDS.takeProfitPct.min)
+      .max(DECISION_V2_BOUNDS.takeProfitPct.max)
+      .optional(),
+    maxHoldBars: z
+      .number()
+      .int()
+      .min(DECISION_V2_BOUNDS.maxHoldBars.min)
+      .max(DECISION_V2_BOUNDS.maxHoldBars.max)
+      .optional(),
+    // 'adjust' only — see requireTradeDirectives' own gate below.
+    partialCloseFraction: z
+      .number()
+      .min(DECISION_V2_BOUNDS.partialCloseFraction.min)
+      .max(DECISION_V2_BOUNDS.partialCloseFraction.max)
+      .optional(),
+    thesis: z.string().max(DECISION_V2_BOUNDS.thesisMaxLen).optional(),
+  };
+}
+
+// Shared open/adjust gate, reused by every action-enum variant below (single-symbol spot/shorts,
+// per-element spot/shorts) so it can never drift between them: the full directive set (sizeFraction/
+// entry/entryValidityBars/stopLossPct/takeProfitPct/maxHoldBars) is REQUIRED on 'open_long'/
+// 'open_short' — including a scale-in, per AgentDirectives' own comment — and
+// partialCloseFraction is meaningless outside 'adjust' (Design table: "'adjust' only, optional").
+function requireTradeDirectives(
+  v: {
+    readonly action: string;
+    readonly sizeFraction?: number;
+    readonly entry?: unknown;
+    readonly entryValidityBars?: number;
+    readonly stopLossPct?: number;
+    readonly takeProfitPct?: number;
+    readonly maxHoldBars?: number;
+    readonly partialCloseFraction?: number;
+  },
+  ctx: z.RefinementCtx,
+): void {
+  if (v.action === 'open_long' || v.action === 'open_short') {
+    const requiredFields = [
+      'sizeFraction',
+      'entry',
+      'entryValidityBars',
+      'stopLossPct',
+      'takeProfitPct',
+      'maxHoldBars',
+    ] as const;
+    for (const field of requiredFields) {
+      if (v[field] === undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `${field} is required when action is '${v.action}'`,
+          path: [field],
+        });
+      }
+    }
+  }
+  if (v.partialCloseFraction !== undefined && v.action !== 'adjust') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "partialCloseFraction is only meaningful with action 'adjust'",
+      path: ['partialCloseFraction'],
+    });
+  }
+}
+
+// S3: single-symbol spot v2 schema — action enum mirrors buildTradeTool's (excludes 'open_short';
+// spot cannot short).
+export function tradeDecisionSchema(sizeFractionMax: number) {
+  return z
+    .object({
+      action: z.enum(['open_long', 'close', 'adjust', 'hold']),
+      ...tradeDirectiveFieldShape(sizeFractionMax),
+    })
+    .superRefine(requireTradeDirectives);
+}
+
+// S3: perp sibling — action enum mirrors buildTradeShortsTool's widened enum. Selected in place of
+// tradeDecisionSchema only when cfg.shortsEnabled is also true (same relationship shortsDecisionSchema
+// has to decisionSchema above).
+export function tradeShortsDecisionSchema(sizeFractionMax: number) {
+  return z
+    .object({
+      action: z.enum(['open_long', 'open_short', 'close', 'adjust', 'hold']),
+      ...tradeDirectiveFieldShape(sizeFractionMax),
+    })
+    .superRefine(requireTradeDirectives);
+}
+
+// A1: the v2 decision shape buildProposalFromTradeDecision maps — inferred off
+// tradeShortsDecisionSchema (the widened action enum) rather than tradeDecisionSchema, so ONE type
+// covers whatever either single-symbol schema parsed (tradeDecisionSchema's inferred action union is
+// a strict subset of this one — assignable without a cast at every propose() call site below).
+type TradeDecisionV2 = z.infer<ReturnType<typeof tradeShortsDecisionSchema>>;
+
+// S3: portfolio-batch per-element schemas — the SAME action/directive validation as the single-symbol
+// schemas above with a `symbol` field added, mirroring decisionElementSchema/planElementSchema's own
+// relationship to decisionSchema/planSchema. nextConsultBars is deliberately ABSENT from the element
+// shape (portfolio-level only — see tradePortfolioSchema below); a stray one on an element is simply
+// ignored (non-strict object), never rejected.
+export function tradeElementSchema(sizeFractionMax: number) {
+  return z
+    .object({
+      symbol: z.string().min(1),
+      action: z.enum(['open_long', 'close', 'adjust', 'hold']),
+      ...tradeDirectiveFieldShape(sizeFractionMax),
+    })
+    .superRefine(requireTradeDirectives);
+}
+
+export function tradeShortsElementSchema(sizeFractionMax: number) {
+  return z
+    .object({
+      symbol: z.string().min(1),
+      action: z.enum(['open_long', 'open_short', 'close', 'adjust', 'hold']),
+      ...tradeDirectiveFieldShape(sizeFractionMax),
+    })
+    .superRefine(requireTradeDirectives);
+}
+
+// S3: whole-call shape for the v2 submit_portfolio payload — lenient per element (z.unknown()), same
+// discipline as portfolioDecisionsSchema above (a malformed INDIVIDUAL element must degrade only that
+// symbol, validated separately via tradeElementSchema/tradeShortsElementSchema), but ALSO carries the
+// portfolio-level nextConsultBars the legacy submit_portfolio never had (Design table:
+// "portfolio-level, one per batch response" — per-symbol scheduling would desync the basket).
+export const tradePortfolioSchema = z.object({
+  decisions: z.array(z.unknown()),
+  nextConsultBars: z
+    .number()
+    .int()
+    .min(DECISION_V2_BOUNDS.nextConsultBars.min)
+    .max(DECISION_V2_BOUNDS.nextConsultBars.max),
+});
+
 // Only the envelope fields this client reads — not a full Messages-API response model.
 const anthropicResponseSchema = z.object({
   stop_reason: z.string().optional(),
@@ -229,9 +415,10 @@ export interface AnthropicAgentClientConfig {
   // derivativesControlArm). Absent/0, or derivativesFeedEnabled false, ⇒ byte-identical to no A/B
   // (nothing to withhold when the feed is already off).
   readonly derivativesAbPct?: number;
-  // Thinking-on-decide A/B (backlog #42, mechanism only): percent (0-50) of decides/batches whose
-  // request carries thinking:{type:'adaptive'}; 0/absent disables (byte-identical requests).
-  readonly thinkingAbPct?: number;
+  // S3: thinking-on-decide A/B (backlog #42) RETIRED — every decide/batch call now carries
+  // thinking:{type:'adaptive'} unconditionally (Design § Deleted/replaced scaffolding). The knob and
+  // its abArm('th-v1', ...) bucketing are deleted outright rather than defaulted-off, since the
+  // field would otherwise silently do nothing for any caller still passing it.
   // C4: documents the optional sentiment block in the system prompt (agent-prompt.ts's
   // buildSystemPrompt sentimentFeedEnabled option). Absent/false ⇒ byte-identical legacy prompt.
   readonly sentimentFeedEnabled?: boolean;
@@ -275,6 +462,40 @@ export interface AnthropicAgentClientConfig {
   // venue throws rather than silently no-opping. Irrelevant to the legacy (non-plan) shorts path,
   // which this pass leaves exactly as B3 shipped it.
   readonly perpCapableVenue?: boolean;
+  // S3 (rich decision contract, Design § New tool contract): selects the v2 submit_trade tool/schema
+  // family (buildTradeTool/buildTradeShortsTool, t1/t1s template tags, buildTradeContractSystemPrompt)
+  // in place of the legacy/plan-mode path — checked BEFORE planMode below (mirrors
+  // buildSystemPrompt's own tradeContract-first precedence), so a deployment can never have both
+  // active at once. shortsEnabled doubles as the perp-lane selector here too, same convention as the
+  // v2 system prompt. Absent/false ⇒ byte-identical legacy/plan-mode behavior — this flag and its
+  // module wiring (env knob, tool selection into propose()'s response mapping) land in later steps
+  // (I1); S3 only wires tool/template SELECTION, not response parsing (A1 owns that).
+  readonly tradeContract?: boolean;
+  // S3: the lane's sizeFraction upper bound (AGENTIC_MAX_POSITION_FRACTION — money-adjacent string,
+  // same convention as SIZER_EQUITY_CAP), injected into BOTH the v2 tool description (buildTradeTool
+  // family, string form) and the zod schema's numeric .max() (tradeDecisionSchema family, number
+  // form) at construction — never hardcoded in either place. Absent ⇒ DEFAULT_MAX_POSITION_FRACTION
+  // (only reached by a tradeContract deployment that hasn't wired the real per-lane knob yet).
+  readonly maxPositionFraction?: string;
+  // I1b (Design § Enriched model inputs): the composition root's batch-wide extras source
+  // (agent-portfolio-block.ts's buildAgentPortfolioBlock, agent-budget.ts's DailyLlmBudget.
+  // budgetBlock, macro-calendar.ts's loadMacroCalendar/filterUpcoming) — invoked at most ONCE per
+  // propose() call and ONCE per proposeBatch() call (never per symbol inside a batch: portfolio/
+  // budget/calendar are batch-wide state, not per-symbol — see BuildMarketPayloadExtras' own
+  // comment), then merged into every buildMarketPayload call the same decide/batch round makes.
+  // Absent ⇒ no provider invoked, no portfolio/budget/calendar keys ever added — byte-identical to
+  // pre-I1b (S1's own omit-when-absent tests already pin this).
+  readonly payloadExtrasProvider?: () =>
+    | {
+        readonly portfolio?: AgentPortfolioBlock;
+        readonly budget?: AgentBudgetBlock;
+        readonly calendar?: readonly AgentCalendarEvent[];
+      }
+    | Promise<{
+        readonly portfolio?: AgentPortfolioBlock;
+        readonly budget?: AgentBudgetBlock;
+        readonly calendar?: readonly AgentCalendarEvent[];
+      }>;
 }
 
 // Placeholder profile used only when no real AgentTradingProfile has been wired yet — keeps the
@@ -306,8 +527,26 @@ interface AnthropicTextBlock {
   readonly text: string;
   readonly cache_control?: typeof EPHEMERAL_1H;
 }
+// LEGACY-ONLY (confidence→strength clamp): still bound by every non-tradeContract propose()/
+// proposeBatch() call through buildProposalFromDecision below — proposeBatch's legacy path is not
+// migrated until A2, so these stay live rather than deleted. buildProposalFromTradeDecision (A1's v2
+// mapping) never references either constant: v2 entries carry a fixed `strength: 1` (telemetry only —
+// see Design § New tool contract's action-mapping paragraph), conviction rides entirely on
+// Signal.sizeFraction instead.
 const MIN_STRENGTH = 0.1;
 const MAX_STRENGTH = 1;
+
+// S3: fallback when cfg.maxPositionFraction is absent — mirrors AGENTIC_MAX_POSITION_FRACTION's spot
+// default (a later module-wiring step threads the real per-lane value, 0.15 spot / 0.50 perp, from
+// config). Only reached by a tradeContract deployment that hasn't wired the knob yet.
+const DEFAULT_MAX_POSITION_FRACTION = '0.15';
+
+// A1: taker-entry crossing buffer for the v2 client's OWN reference-price hint (mirrors
+// position-sizer.service.ts's EXIT_CROSS_BUFFER_BPS default of 25bps — same magnitude, an
+// independent constant: this file only computes a REFERENCE limitPriceHint on the marketable side of
+// refPrice so PositionSizerService.entryType's own crossing check degrades LIMIT_MAKER→LIMIT
+// naturally; the sizer's own knobs, not this one, govern the actual execution price/tick-rounding).
+const TAKER_CROSS_BUFFER_BPS = 25;
 
 // HTTP statuses that mean the request/credential itself is bad — retrying changes nothing.
 const FATAL_STATUSES = new Set([400, 401, 403, 404, 422]);
@@ -362,6 +601,23 @@ export interface AgentProposeBatchResult {
   // every OTHER symbol's proposal omits `usage` entirely, mirroring recordUsage's own semantics).
   readonly usage?: AgentUsage;
 }
+
+// Schema-rejection diagnostics: without the zod issue list and a payload echo, a live rejection
+// of the model's tool output is undiagnosable from logs (soak 2026-07-18: perp's first v2 consult
+// failed validation with no recorded cause). Trade parameters are not secrets — safe to echo.
+const describeSchemaFailure = (error: z.ZodError, input: unknown): string => {
+  const issues = error.issues
+    .slice(0, 6)
+    .map((i) => `${i.path.map(String).join('.') || '(root)'}: ${i.message}`)
+    .join('; ');
+  let payload: string;
+  try {
+    payload = (JSON.stringify(input) ?? String(input)).slice(0, 600);
+  } catch {
+    payload = '[unserializable]';
+  }
+  return `${issues} — payload: ${payload}`;
+};
 
 // Concrete AGENT_CLIENT adapter: calls the real Anthropic Messages API and maps its tool-use
 // decision to a proposed AgentProposal. Stateless across decisions — the strategy owns the
@@ -455,6 +711,10 @@ export class AnthropicAgentClient implements AgentClientPort {
           ...(input.context ? { context: { ...input.context, crossSymbol: undefined } } : {}),
         }
       : input;
+    // I1b: batch-wide extras (portfolio/budget/calendar) — ONE call for this single-symbol decide,
+    // same provider seam proposeBatch uses once per batch. Absent provider ⇒ undefined ⇒ every
+    // spread below is a no-op (byte-identical).
+    const payloadExtras = await this.cfg.payloadExtrasProvider?.();
     // inputPayload is the market JSON ALONE — buildMarketPayload's signature carries no
     // playbookContent parameter, so it structurally cannot echo playbook text (see its own comment).
     // W2.4 cache experiment: the playbook block (the only sizeable stable prefix) rides in its own
@@ -465,6 +725,17 @@ export class AnthropicAgentClient implements AgentClientPort {
       constraints,
       derivativesV2Enabled: ctx.derivativesV2Enabled,
       bookStructureEnabled: this.cfg.bookStructureFeedEnabled ?? false,
+      ...payloadExtras,
+      // I1b: B3 (agentic.strategy.ts) already attaches these onto AgentPositionSummary
+      // (input.context.position) — reflected here into buildMarketPayload's own top-level
+      // currentThesis/directives/barsHeld/barsUntilForcedExit extras (the channel S1's system-prompt
+      // sentences and payload snapshot tests describe), so the position summary's own values and the
+      // rendered payload can never drift onto two different fields. undefined when unpositioned or no
+      // directive set is active ⇒ every one of these keys is omitted, same as before I1b.
+      currentThesis: input.context?.position.currentThesis,
+      directives: input.context?.position.directives,
+      barsHeld: input.context?.position.barsHeld,
+      barsUntilForcedExit: input.context?.position.barsUntilForcedExit,
     });
     const userContent: string | AnthropicTextBlock[] = ctx.playbookContent
       ? [
@@ -552,6 +823,60 @@ export class AnthropicAgentClient implements AgentClientPort {
         thinkingArm: ctx.thinkingArm,
       };
     }
+    // A1 (rich decision contract, Design § New tool contract): tradeContract is a SEPARATE early
+    // branch, not a third arm folded into the legacy ternary below — the v2 zod schemas
+    // (tradeDecisionSchema/tradeShortsDecisionSchema) are parameterized by the numeric lane cap
+    // (unlike the legacy schemas, which are plain module-level consts), and buildProposalFromDecision
+    // below is keyed to the legacy action vocabulary ('long'/'short'/'flat'/'hold') — folding a
+    // fourth, structurally different decision shape into it would force every legacy arm to guard
+    // against v2 fields it never has. buildProposalFromTradeDecision is the v2 sibling instead;
+    // legacy propose() control flow below this branch is untouched.
+    if (this.cfg.tradeContract) {
+      // sizeFractionMax is a zod numeric bound (a fraction, not a money computation) — same
+      // convention as tradeDecisionSchema's own numeric parameter (S3); ctx.maxPositionFraction is
+      // the SAME string buildTradeTool already baked into the tool description above, not a second
+      // hand-computed value.
+      // eslint-disable-next-line no-restricted-syntax -- Number() is the correct non-money coercion here.
+      const maxPositionFractionNum = Number(ctx.maxPositionFraction);
+      const tradeSchema = this.cfg.shortsEnabled
+        ? tradeShortsDecisionSchema(maxPositionFractionNum)
+        : tradeDecisionSchema(maxPositionFractionNum);
+      const parsedTrade = tradeSchema.safeParse(toolBlock.input);
+      if (!parsedTrade.success) {
+        this.logger.warn(
+          `anthropic api: ${toolName} payload failed schema validation — ${describeSchemaFailure(parsedTrade.error, toolBlock.input)}`,
+        );
+        return {
+          signals: [],
+          usage,
+          latencyMs,
+          playbookVersion: ctx.playbookVersion,
+          promptHash,
+          inputPayload,
+          infoArm: !ctx.infoContextControlArm,
+          thinkingArm: ctx.thinkingArm,
+        };
+      }
+      return this.buildProposalFromTradeDecision({
+        input,
+        symbol,
+        venue,
+        refPrice,
+        basedOnSeq,
+        eventTime,
+        lastCandle,
+        decision: parsedTrade.data,
+        baseProfile: ctx.baseProfile,
+        usage,
+        latencyMs,
+        playbookVersion: ctx.playbookVersion,
+        promptHash,
+        inputPayload,
+        infoArm: !ctx.infoContextControlArm,
+        thinkingArm: ctx.thinkingArm,
+      });
+    }
+
     const parsedDecision = this.cfg.planMode
       ? this.cfg.shortsEnabled
         ? planShortsSchema.safeParse(toolBlock.input)
@@ -560,7 +885,9 @@ export class AnthropicAgentClient implements AgentClientPort {
         ? shortsDecisionSchema.safeParse(toolBlock.input)
         : decisionSchema.safeParse(toolBlock.input);
     if (!parsedDecision.success) {
-      this.logger.warn(`anthropic api: ${toolName} payload failed schema validation`);
+      this.logger.warn(
+        `anthropic api: ${toolName} payload failed schema validation — ${describeSchemaFailure(parsedDecision.error, toolBlock.input)}`,
+      );
       return {
         signals: [],
         usage,
@@ -588,7 +915,6 @@ export class AnthropicAgentClient implements AgentClientPort {
       lastCandle,
       decision: parsedDecision.data,
       rawPlan,
-      knobs: ctx.knobs,
       baseProfile: ctx.baseProfile,
       usage,
       latencyMs,
@@ -623,6 +949,10 @@ export class AnthropicAgentClient implements AgentClientPort {
     }
 
     const ctx = await this.prepareDecideContext();
+    // I1b: ONE provider call for the WHOLE batch (Design § Enriched model inputs: "rendered once per
+    // batch") — portfolio/budget/calendar are batch-wide book state, never per-symbol; calling this
+    // per resolved element would render N identical copies of the same snapshot and waste tokens.
+    const payloadExtras = await this.cfg.payloadExtrasProvider?.();
 
     interface ResolvedInput {
       readonly symbolKey: string;
@@ -677,6 +1007,14 @@ export class AnthropicAgentClient implements AgentClientPort {
         constraints,
         derivativesV2Enabled: ctx.derivativesV2Enabled,
         bookStructureEnabled: this.cfg.bookStructureFeedEnabled ?? false,
+        // I1b: the ONE batch-wide payloadExtras computed above, stamped on every element the same
+        // way consultId/nextConsultBars already are — plus THIS element's own position-summary
+        // thesis/directives (per-symbol, unlike portfolio/budget/calendar).
+        ...payloadExtras,
+        currentThesis: input.context?.position.currentThesis,
+        directives: input.context?.position.directives,
+        barsHeld: input.context?.position.barsHeld,
+        barsUntilForcedExit: input.context?.position.barsUntilForcedExit,
       });
       resolved.push({
         symbolKey,
@@ -704,10 +1042,22 @@ export class AnthropicAgentClient implements AgentClientPort {
     // #41: a shorts-capable batch rides PORTFOLIO_SHORTS_TOOL (plan.direction required per
     // element) under the pf2 tag — the strict pf1 tool cannot express a short entry, which is what
     // used to force the shorts+consult boot refusal. Shorts-off batches stay byte-identical pf1.
-    const portfolioTool =
-      this.cfg.planMode && this.cfg.shortsEnabled ? PORTFOLIO_SHORTS_TOOL : PORTFOLIO_TOOL;
-    const portfolioTag =
-      this.cfg.planMode && this.cfg.shortsEnabled
+    // A2: tradeContract is checked FIRST (mirrors prepareDecideContext's activeTool precedence —
+    // tradeContract and planMode are mutually exclusive by construction), selecting the v2
+    // submit_portfolio tool/tpf1/tpf2 tag with the SAME lane cap (ctx.maxPositionFraction) the
+    // single-symbol path already bakes into buildTradeTool/buildTradeShortsTool.
+    const portfolioTool = this.cfg.tradeContract
+      ? this.cfg.shortsEnabled
+        ? buildTradePortfolioShortsTool(ctx.maxPositionFraction)
+        : buildTradePortfolioTool(ctx.maxPositionFraction)
+      : this.cfg.planMode && this.cfg.shortsEnabled
+        ? PORTFOLIO_SHORTS_TOOL
+        : PORTFOLIO_TOOL;
+    const portfolioTag = this.cfg.tradeContract
+      ? this.cfg.shortsEnabled
+        ? TRADE_PORTFOLIO_SHORTS_TEMPLATE_VERSION
+        : TRADE_PORTFOLIO_TEMPLATE_VERSION
+      : this.cfg.planMode && this.cfg.shortsEnabled
         ? PORTFOLIO_SHORTS_TEMPLATE_VERSION
         : PORTFOLIO_TEMPLATE_VERSION;
 
@@ -804,13 +1154,17 @@ export class AnthropicAgentClient implements AgentClientPort {
       return { proposals, usage };
     }
 
+    // A2: repoints the hardcoded PORTFOLIO_TOOL.name lookup to the SELECTED portfolio tool's name —
+    // legacy/plan-mode's own tools are also literally named 'submit_portfolio' so this is
+    // byte-identical there; only a tradeContract batch (still 'submit_portfolio' today, but no
+    // longer coupled to the legacy const) actually depends on this repoint.
     const toolBlock = envelope.data.content?.find(
-      (b) => b.type === 'tool_use' && b.name === PORTFOLIO_TOOL.name,
+      (b) => b.type === 'tool_use' && b.name === portfolioTool.name,
     );
     if (!toolBlock) {
       // Soft-hold, same rationale as the malformed-envelope path above (enable-gate must-fix).
       this.logger.warn(
-        `anthropic api: no ${PORTFOLIO_TOOL.name} tool_use block in response (portfolio batch) — holding all`,
+        `anthropic api: no ${portfolioTool.name} tool_use block in response (portfolio batch) — holding all`,
       );
       return this.softHoldBatch(
         resolved,
@@ -823,11 +1177,119 @@ export class AnthropicAgentClient implements AgentClientPort {
         ctx.thinkingArm,
       );
     }
+
+    // A2 (rich decision contract, Design § New tool contract): tradeContract batches parse via
+    // tradePortfolioSchema (per-element tradeElementSchema/tradeShortsElementSchema) and map through
+    // buildProposalFromTradeDecision — a SEPARATE branch from the legacy fan-out below, mirroring
+    // propose()'s own tradeContract-first branch (buildProposalFromTradeDecision is keyed to the v2
+    // action vocabulary, structurally incompatible with the legacy decision shape). Soft-hold
+    // semantics (malformed top-level payload, missing symbol, malformed element) stay byte-identical
+    // to the legacy path — only the parsed shape and per-symbol mapping differ.
+    if (this.cfg.tradeContract) {
+      const tradePortfolioParsed = tradePortfolioSchema.safeParse(toolBlock.input);
+      if (!tradePortfolioParsed.success) {
+        // Soft-hold, same rationale as the malformed-envelope path above (enable-gate must-fix).
+        this.logger.warn(
+          `anthropic api: ${portfolioTool.name} payload failed schema validation (portfolio batch) — holding all — ${describeSchemaFailure(tradePortfolioParsed.error, toolBlock.input)}`,
+        );
+        return this.softHoldBatch(
+          resolved,
+          usage,
+          latencyMs,
+          ctx.playbookVersion,
+          promptHash,
+          consultId,
+          !ctx.infoContextControlArm,
+          ctx.thinkingArm,
+        );
+      }
+      const { nextConsultBars } = tradePortfolioParsed.data;
+      const bySymbolTrade = new Map<string, unknown>();
+      for (const raw of tradePortfolioParsed.data.decisions) {
+        const symbolField = elementSymbolSchema.safeParse(raw);
+        if (symbolField.success) bySymbolTrade.set(symbolField.data.symbol, raw);
+      }
+      // sizeFractionMax is a zod numeric bound (a fraction, not a money computation) — same
+      // convention as propose()'s own tradeContract branch (S3/A1).
+      // eslint-disable-next-line no-restricted-syntax -- Number() is the correct non-money coercion here.
+      const maxPositionFractionNum = Number(ctx.maxPositionFraction);
+      const tradeElemSchema = this.cfg.shortsEnabled
+        ? tradeShortsElementSchema(maxPositionFractionNum)
+        : tradeElementSchema(maxPositionFractionNum);
+
+      resolved.forEach((r, i) => {
+        const usageForThis = i === 0 ? usage : undefined;
+        const raw = bySymbolTrade.get(r.symbolKey);
+        if (raw === undefined) {
+          this.logger.warn(
+            `anthropic api: symbol ${r.symbolKey} missing from ${portfolioTool.name} decisions — holding`,
+          );
+          proposals.set(r.symbolKey, {
+            signals: [],
+            ...(usageForThis ? { usage: usageForThis } : {}),
+            latencyMs,
+            playbookVersion: ctx.playbookVersion,
+            promptHash,
+            inputPayload: r.inputPayload,
+            consultId,
+            nextConsultBars,
+            infoArm: !ctx.infoContextControlArm,
+            thinkingArm: ctx.thinkingArm,
+          });
+          return;
+        }
+        const parsedElement = tradeElemSchema.safeParse(raw);
+        if (!parsedElement.success) {
+          this.logger.warn(
+            `anthropic api: ${portfolioTool.name} element for symbol ${r.symbolKey} failed schema validation — holding`,
+          );
+          proposals.set(r.symbolKey, {
+            signals: [],
+            ...(usageForThis ? { usage: usageForThis } : {}),
+            latencyMs,
+            playbookVersion: ctx.playbookVersion,
+            promptHash,
+            inputPayload: r.inputPayload,
+            consultId,
+            nextConsultBars,
+            infoArm: !ctx.infoContextControlArm,
+            thinkingArm: ctx.thinkingArm,
+          });
+          return;
+        }
+        const proposal = this.buildProposalFromTradeDecision({
+          input: r.input,
+          symbol: r.symbolId,
+          venue: r.venue,
+          refPrice: r.refPrice,
+          basedOnSeq: r.basedOnSeq,
+          eventTime: r.eventTime,
+          lastCandle: r.lastCandle,
+          decision: parsedElement.data,
+          baseProfile: ctx.baseProfile,
+          usage: usageForThis,
+          latencyMs,
+          playbookVersion: ctx.playbookVersion,
+          promptHash,
+          inputPayload: r.inputPayload,
+          consultId,
+          infoArm: !ctx.infoContextControlArm,
+          thinkingArm: ctx.thinkingArm,
+        });
+        // A2: stamped on EVERY returned proposal (Design table: "portfolio-level, one per batch
+        // response") — including a fee-floor-rejected element, whose own mapping already returns
+        // without a nextConsultBars of its own.
+        proposals.set(r.symbolKey, { ...proposal, nextConsultBars });
+      });
+
+      return { proposals, usage };
+    }
+
     const portfolioParsed = portfolioDecisionsSchema.safeParse(toolBlock.input);
     if (!portfolioParsed.success) {
       // Soft-hold, same rationale as the malformed-envelope path above (enable-gate must-fix).
       this.logger.warn(
-        `anthropic api: ${PORTFOLIO_TOOL.name} payload failed schema validation (portfolio batch) — holding all`,
+        `anthropic api: ${portfolioTool.name} payload failed schema validation (portfolio batch) — holding all — ${describeSchemaFailure(portfolioParsed.error, toolBlock.input)}`,
       );
       return this.softHoldBatch(
         resolved,
@@ -910,7 +1372,6 @@ export class AnthropicAgentClient implements AgentClientPort {
           lastCandle: r.lastCandle,
           decision: { action, confidence, rationale },
           rawPlan,
-          knobs: ctx.knobs,
           baseProfile: ctx.baseProfile,
           usage: usageForThis,
           latencyMs,
@@ -960,33 +1421,33 @@ export class AnthropicAgentClient implements AgentClientPort {
     return { proposals, usage };
   }
 
-  // Shared decide-time context: playbook/knobs resolution, the information-context A/B control-arm
+  // Shared decide-time context: playbook resolution, the information-context A/B control-arm
   // bucket, the resulting system prompt/tool/template tags. IDENTICAL computation for propose() (one
   // symbol) and proposeBatch() (called ONCE per batch — the A/B arm and playbook read are hoisted to
   // the whole batch rather than re-resolved per symbol, per the batching design).
   private async prepareDecideContext(): Promise<{
     readonly playbookContent: string | undefined;
     readonly playbookVersion: number | undefined;
-    readonly knobs: PlaybookKnobs | undefined;
     readonly baseProfile: AgentTradingProfile;
     readonly systemPrompt: string;
     readonly activeTool:
       | typeof DECISION_TOOL
       | typeof SHORTS_DECISION_TOOL
       | typeof PLAN_TOOL
-      | typeof PLAN_SHORTS_TOOL;
+      | typeof PLAN_SHORTS_TOOL
+      | ReturnType<typeof buildTradeTool>
+      | ReturnType<typeof buildTradeShortsTool>;
     readonly baseTemplateVersion: string;
     readonly feedTags: readonly string[];
     readonly infoContextControlArm: boolean;
     readonly thinkingArm: boolean;
     readonly derivativesV2Enabled: boolean;
+    // A1: the lane cap string, re-exposed so propose()'s v2 branch can derive the SAME value's
+    // numeric form for tradeDecisionSchema/tradeShortsDecisionSchema's zod bound — one source
+    // (cfg.maxPositionFraction via this local), never a second hand-computed fallback.
+    readonly maxPositionFraction: string;
   }> {
     const { content: playbookContent, version: playbookVersion } = await this.resolvePlaybook();
-    // Playbook knobs (tighten-only parametric channel — see playbook-validator.ts). Extracted from
-    // the ALREADY-VALIDATED playbook content, so an out-of-bounds line can never reach here.
-    const knobs: PlaybookKnobs | undefined = playbookContent
-      ? extractPlaybookKnobs(playbookContent)
-      : undefined;
     const baseProfile = this.cfg.profile ?? DEFAULT_TRADING_PROFILE;
 
     // Information-context A/B (2026-07-12; widened 2026-07-13 to also cover tradeFlow/positioning):
@@ -1037,26 +1498,31 @@ export class AnthropicAgentClient implements AgentClientPort {
         `agentic info-context ab: control arm (derivatives+crossSymbol+tradeFlow+positioning+liquidation withheld) — pct=${infoContextAbPct}`,
       );
     }
-    // Thinking-on-decide A/B (backlog #42, mechanism only — pct defaults 0): the treatment arm's
-    // request carries thinking:{type:'adaptive'} instead of attemptOnce's hard 'disabled'. Bucketed
-    // by abArm (ab-assignment.ts) with its own salt ('th-v1'), an independent keyed PRF from the
-    // info-context arm above — so all A/Bs vary independently rather than sharing one minute counter
-    // under different offsets. The prompt text does not change — the arm is recoverable from
-    // promptHash via the '+th1' tag appended as the LAST feed-tag slot below.
-    const thinkingAbPct = this.cfg.thinkingAbPct ?? 0;
-    const thinkingArm =
-      thinkingAbPct > 0 && abArm(Math.floor(Date.now() / 60_000), 'th-v1', thinkingAbPct);
+    // S3: thinking A/B (#42) retired — every decide/batch call now carries thinking:{type:'adaptive'}
+    // unconditionally (Design § Deleted/replaced scaffolding: "Thinking enabled always on decide
+    // (adaptive) ... thinking A/B arm retired"). thinkingArm stays a real field (no longer a coin
+    // flip) purely so AgentProposal.thinkingArm/journal stamping and the '+th1' promptHash tag below
+    // stay byte-identical in shape to pre-S3 — every caller of ctx.thinkingArm downstream is
+    // unaffected by this simplification.
+    const thinkingArm = true;
+    // S3: the lane cap injected into the v2 tool description at construction (buildTradeTool/
+    // buildTradeShortsTool below take the string form for their description text; A1's mapping step
+    // parses the SAME cfg.maxPositionFraction into the numeric zod bound when it wires
+    // tradeDecisionSchema/tradeShortsDecisionSchema into the response-parsing path).
+    const maxPositionFraction = this.cfg.maxPositionFraction ?? DEFAULT_MAX_POSITION_FRACTION;
     // v5: constraints no longer render into the system prompt (they ride the payload below), so the
     // cached tools+system prefix is byte-identical across all symbols this shared client serves —
     // and, for the batch path, across every symbol in the SAME batch too.
     const systemPrompt = buildSystemPrompt(baseProfile, {
-      ...(this.cfg.planMode
-        ? {
-            planMode: true,
-            minEdgeMultiple: this.cfg.minEdgeMultiple ?? '1.5',
-            minRr: this.cfg.minRr ?? '1.5',
-          }
-        : {}),
+      ...(this.cfg.tradeContract
+        ? { tradeContract: true }
+        : this.cfg.planMode
+          ? {
+              planMode: true,
+              minEdgeMultiple: this.cfg.minEdgeMultiple ?? '1.5',
+              minRr: this.cfg.minRr ?? '1.5',
+            }
+          : {}),
       derivativesFeedEnabled: effectiveDerivativesEnabled,
       derivativesV2Enabled: effectiveDerivativesV2Enabled,
       sentimentFeedEnabled: this.cfg.sentimentFeedEnabled ?? false,
@@ -1068,26 +1534,38 @@ export class AnthropicAgentClient implements AgentClientPort {
       bookStructureFeedEnabled: this.cfg.bookStructureFeedEnabled ?? false,
       trackRecordFeedEnabled: this.cfg.trackRecordFeedEnabled ?? false,
     });
-    // B3: shortsEnabled selects SHORTS_DECISION_TOOL in place of DECISION_TOOL on the legacy path.
-    // Push II Phase 8: shortsEnabled + planMode selects PLAN_SHORTS_TOOL in place of PLAN_TOOL
-    // instead (construction already refused this combination on a non-perp venue — see the
-    // constructor guard). This is the tool actually SENT to the API for the single-symbol path
-    // (proposeBatch always sends PORTFOLIO_TOOL instead — see its own body).
-    const activeTool = this.cfg.planMode
+    // S3: tradeContract selects the v2 submit_trade tool, checked BEFORE planMode (mirrors
+    // buildSystemPrompt's own tradeContract-first precedence — the two modes are mutually exclusive
+    // by construction, never stacked). B3: shortsEnabled selects SHORTS_DECISION_TOOL in place of
+    // DECISION_TOOL on the legacy path. Push II Phase 8: shortsEnabled + planMode selects
+    // PLAN_SHORTS_TOOL in place of PLAN_TOOL instead (construction already refused this combination
+    // on a non-perp venue — see the constructor guard). This is the tool actually SENT to the API for
+    // the single-symbol path (proposeBatch always sends PORTFOLIO_TOOL instead — see its own body;
+    // A2 owns wiring its v2/tpf1/tpf2 sibling).
+    const activeTool = this.cfg.tradeContract
       ? this.cfg.shortsEnabled
-        ? PLAN_SHORTS_TOOL
-        : PLAN_TOOL
-      : this.cfg.shortsEnabled
-        ? SHORTS_DECISION_TOOL
-        : DECISION_TOOL;
+        ? buildTradeShortsTool(maxPositionFraction)
+        : buildTradeTool(maxPositionFraction)
+      : this.cfg.planMode
+        ? this.cfg.shortsEnabled
+          ? PLAN_SHORTS_TOOL
+          : PLAN_TOOL
+        : this.cfg.shortsEnabled
+          ? SHORTS_DECISION_TOOL
+          : DECISION_TOOL;
     // p3→p4: the plan-mode template tag bumps ONLY when shortsEnabled is also on (a distinct
     // constant, not a mutation of PLAN_TEMPLATE_VERSION — see agent-prompt.ts's own comment) so a
-    // shortsEnabled=false deployment's plan-mode hash stays byte-identically 'p3'.
-    const baseTemplateVersion = this.cfg.planMode
+    // shortsEnabled=false deployment's plan-mode hash stays byte-identically 'p3'. Same convention for
+    // t1→t1s on the tradeContract path.
+    const baseTemplateVersion = this.cfg.tradeContract
       ? this.cfg.shortsEnabled
-        ? PLAN_SHORTS_TEMPLATE_VERSION
-        : PLAN_TEMPLATE_VERSION
-      : PROMPT_TEMPLATE_VERSION;
+        ? TRADE_SHORTS_TEMPLATE_VERSION
+        : TRADE_TEMPLATE_VERSION
+      : this.cfg.planMode
+        ? this.cfg.shortsEnabled
+          ? PLAN_SHORTS_TEMPLATE_VERSION
+          : PLAN_TEMPLATE_VERSION
+        : PROMPT_TEMPLATE_VERSION;
     // Flag-ON appends the corresponding system-prompt sentence, so it is a distinct template for
     // attribution purposes (mirrors plan mode's own tag); flag-OFF hashes are byte-identical. All
     // flags stack in a fixed order (`+d1+s1+x1+xs1+tf1+pos1`, `+pf1` appended by proposeBatch's own
@@ -1121,7 +1599,6 @@ export class AnthropicAgentClient implements AgentClientPort {
     return {
       playbookContent,
       playbookVersion,
-      knobs,
       baseProfile,
       systemPrompt,
       activeTool,
@@ -1130,6 +1607,7 @@ export class AnthropicAgentClient implements AgentClientPort {
       infoContextControlArm,
       thinkingArm,
       derivativesV2Enabled: effectiveDerivativesV2Enabled,
+      maxPositionFraction,
     };
   }
 
@@ -1150,7 +1628,6 @@ export class AnthropicAgentClient implements AgentClientPort {
       readonly rationale: string;
     };
     readonly rawPlan: z.infer<typeof planFieldSchema>;
-    readonly knobs: PlaybookKnobs | undefined;
     readonly baseProfile: AgentTradingProfile;
     readonly usage: AgentUsage | undefined;
     readonly latencyMs: number;
@@ -1174,7 +1651,6 @@ export class AnthropicAgentClient implements AgentClientPort {
       eventTime,
       lastCandle,
       rawPlan,
-      knobs,
       baseProfile,
       usage,
       latencyMs,
@@ -1223,56 +1699,13 @@ export class AnthropicAgentClient implements AgentClientPort {
     const rearmsOpenPosition =
       (side === 'LONG' || side === 'SHORT') && (action === 'hold' || action === 'long');
 
-    // Playbook-knob confidence floor (tighten-only channel): a NEW entry whose stated confidence
-    // sits below the playbook's minConfidence knob is downgraded to a journal-visible hold — the
-    // same rejection shape as the plan gate below. Scope is deliberately NEW ENTRIES ONLY: exits
-    // are never blocked (never trap a position behind a knob) and re-arms are never blocked (a
-    // knob must not strand an open position bare — the Pass-20 restart class).
-    const entersNewPosition = side === 'FLAT' && (action === 'long' || action === 'short');
-    if (knobs?.minConfidence !== undefined && entersNewPosition) {
-      const confidenceFloor = new Decimal(knobs.minConfidence);
-      if (new Decimal(String(confidence)).lt(confidenceFloor)) {
-        this.logger.warn(
-          `knob gate: entry confidence ${confidence} below playbook minConfidence ${knobs.minConfidence} — downgrading to hold`,
-        );
-        return {
-          signals: [],
-          decision: {
-            action: action as 'long' | 'flat' | 'hold',
-            confidence,
-            rationale: `[knob gate: confidence below playbook floor ${knobs.minConfidence}] ${rationale}`,
-          },
-          usage,
-          latencyMs,
-          playbookVersion,
-          promptHash,
-          inputPayload,
-          ...(consultId ? { consultId } : {}),
-          infoArm,
-          thinkingArm,
-        };
-      }
-    }
-
     if (this.cfg.planMode && rawPlan && (opensNewPosition || rearmsOpenPosition)) {
       const feeFraction = new Decimal(baseProfile.makerBps).plus(baseProfile.takerBps).div(10_000);
-      // Knob floors raise (never lower) the configured floors, and bind on FRESH entries only —
-      // a re-arm keeps the config floors so re-attaching management to an existing position never
-      // gets harder mid-flight (see the confidence-gate comment above for the rationale).
-      const configMinEdgeMultiple = new Decimal(this.cfg.minEdgeMultiple ?? '1.5');
-      const configMinRr = new Decimal(this.cfg.minRr ?? '1.5');
-      const knobMinEdgeMultiple =
-        opensNewPosition && knobs?.minEdgeMultiple !== undefined
-          ? new Decimal(knobs.minEdgeMultiple)
-          : undefined;
-      const knobMinRr =
-        opensNewPosition && knobs?.minRr !== undefined ? new Decimal(knobs.minRr) : undefined;
-      const effectiveMinEdgeMultiple =
-        knobMinEdgeMultiple !== undefined && knobMinEdgeMultiple.gt(configMinEdgeMultiple)
-          ? knobMinEdgeMultiple
-          : configMinEdgeMultiple;
-      const edgeFloor = effectiveMinEdgeMultiple.mul(feeFraction);
-      const minRr = knobMinRr !== undefined && knobMinRr.gt(configMinRr) ? knobMinRr : configMinRr;
+      // P1: the playbook-knob widening of these floors (max(configured, knob)) was deleted along
+      // with the rest of the knob channel — these are the plain configured floors now, on both a
+      // fresh entry and a re-arm (byte-identical to a knob-absent decide pre-P1).
+      const edgeFloor = new Decimal(this.cfg.minEdgeMultiple ?? '1.5').mul(feeFraction);
+      const minRr = new Decimal(this.cfg.minRr ?? '1.5');
       const stopLossPct = new Decimal(String(rawPlan.stopLossPct));
       const takeProfitPct = new Decimal(String(rawPlan.takeProfitPct));
       let rejectionWarn: string | undefined;
@@ -1313,7 +1746,16 @@ export class AnthropicAgentClient implements AgentClientPort {
     }
 
     let signals: Signal[];
-    let acceptedPlan: AgentPlan | undefined;
+    // A1 (S2-widening migration, per ports/agentic-strategy.ts's AgentProposal.plan comment: "A1:
+    // anthropic-agent-client.ts's acceptedPlan"): retyped AgentPlan → AgentDirectives so this legacy
+    // plan-mode construction satisfies the same AgentProposal.plan field the v2 path now carries.
+    // entryStyle is a substantively correct 'maker' (legacy plan-mode ALWAYS rests a passive
+    // entryOffsetBps-priced limit order — see the limitPriceHint computation just below — never a
+    // crossing/taker price). sizeFraction has no legacy equivalent (legacy sizing runs entirely
+    // through Signal.strength × baseNotional/equityFraction, never through a plan-carried fraction) —
+    // '0' is an inert sentinel; plan-executor.ts (B1) and agentic.strategy.ts (B3) enforcement never
+    // read AgentDirectives.sizeFraction (a sizing-only field), only the v2 client path does.
+    let acceptedPlan: AgentDirectives | undefined;
     if (action === 'long' && side === 'FLAT') {
       // Push II Phase 8: in plan mode, action 'long' means "open a new plan-managed position" —
       // rawPlan.direction (schema-required whenever shortsEnabled) picks the actual side; absent
@@ -1338,6 +1780,8 @@ export class AnthropicAgentClient implements AgentClientPort {
           .toDecimalPlaces(8);
         limitPriceHint = price(offsetHint.toFixed());
         acceptedPlan = {
+          sizeFraction: '0',
+          entryStyle: 'maker',
           entryOffsetBps: rawPlan.entryOffsetBps,
           stopLossPct: String(rawPlan.stopLossPct),
           takeProfitPct: String(rawPlan.takeProfitPct),
@@ -1422,6 +1866,8 @@ export class AnthropicAgentClient implements AgentClientPort {
       // flip direction mid-position (see AgentPlan.direction's own comment).
       if (this.cfg.planMode && rawPlan && rearmsOpenPosition) {
         acceptedPlan = {
+          sizeFraction: '0',
+          entryStyle: 'maker',
           entryOffsetBps: rawPlan.entryOffsetBps,
           stopLossPct: String(rawPlan.stopLossPct),
           takeProfitPct: String(rawPlan.takeProfitPct),
@@ -1459,6 +1905,249 @@ export class AnthropicAgentClient implements AgentClientPort {
     };
   }
 
+  // A1 (rich decision contract, Design § New tool contract, action-mapping paragraph): the v2
+  // sibling of buildProposalFromDecision above — maps a tradeDecisionSchema/tradeShortsDecisionSchema
+  // parse into signals + AgentDirectives. Deliberately a SEPARATE method (see propose()'s own
+  // tradeContract branch comment) rather than a fourth arm folded into the legacy mapping: the v2
+  // action vocabulary ('open_long'/'open_short'/'close'/'adjust'/'hold') and directive shape share no
+  // structure with the legacy plan/confidence fields, so a shared function would force every legacy
+  // arm to guard against fields it never has. None of the deleted v2-path gates (MIN_STRENGTH/
+  // MAX_STRENGTH confidence clamp, playbook confidence-floor downgrade, min-RR floor, stop-vs-fee
+  // check, minEdgeMultiple scaling) are referenced here at all — the ONLY economic gate surviving on
+  // this path is the takeProfitPct-vs-round-trip-fee floor below (Design § Deleted/replaced
+  // scaffolding: "One gate survives").
+  private buildProposalFromTradeDecision(params: {
+    readonly input: AgentDecisionInput;
+    readonly symbol: SymbolId;
+    readonly venue: VenueId;
+    readonly refPrice: Price;
+    readonly basedOnSeq: bigint;
+    readonly eventTime: EpochMs;
+    readonly lastCandle: CandleEvent | undefined;
+    readonly decision: TradeDecisionV2;
+    readonly baseProfile: AgentTradingProfile;
+    readonly usage: AgentUsage | undefined;
+    readonly latencyMs: number;
+    readonly playbookVersion: number | undefined;
+    readonly promptHash: string;
+    readonly inputPayload: string;
+    readonly consultId?: string;
+    readonly infoArm: boolean;
+    readonly thinkingArm: boolean;
+  }): AgentProposal {
+    const {
+      input,
+      symbol,
+      venue,
+      refPrice,
+      basedOnSeq,
+      eventTime,
+      lastCandle,
+      decision,
+      baseProfile,
+      usage,
+      latencyMs,
+      playbookVersion,
+      promptHash,
+      inputPayload,
+      consultId,
+      infoArm,
+      thinkingArm,
+    } = params;
+    const { action, thesis } = decision;
+    const side = input.context?.position.side ?? 'FLAT';
+
+    const common = {
+      strategyId: input.strategyId,
+      venue,
+      symbol,
+      refPrice,
+      basedOnSeq,
+      eventTime,
+      ttlMs: this.cfg.signalTtlMs,
+      dedupeKey: `${input.strategyId}:${symbol}:agentic:${action}:${eventTime}`,
+      // Same MAX_REASON_LEN truncation legacy Signal.reason uses — the ring-truncation convention
+      // (see that const's own comment) applies identically to a v2 thesis.
+      reason: (thesis ?? '').slice(0, MAX_REASON_LEN),
+    };
+
+    // Full directive set present ⇒ a viable AgentDirectives can be constructed; absent on 'hold' and
+    // on an 'adjust' that supplies only partialCloseFraction (schema permits a bare partial-close
+    // revision — see requireTradeDirectives' own comment). Required by schema (superRefine) on
+    // 'open_long'/'open_short', so always present in the fresh-open/scale-in branch below.
+    const directives: AgentDirectives | undefined =
+      decision.sizeFraction !== undefined &&
+      decision.entry !== undefined &&
+      decision.entryValidityBars !== undefined &&
+      decision.stopLossPct !== undefined &&
+      decision.takeProfitPct !== undefined &&
+      decision.maxHoldBars !== undefined
+        ? {
+            sizeFraction: String(decision.sizeFraction),
+            stopLossPct: String(decision.stopLossPct),
+            takeProfitPct: String(decision.takeProfitPct),
+            entryOffsetBps: decision.entry.offsetBps,
+            entryValidityBars: decision.entryValidityBars,
+            maxHoldBars: decision.maxHoldBars,
+            entryStyle: decision.entry.style,
+            // W4 audit (2026-07-18, CRITICAL): direction must ride the directives — absent means
+            // 'long' per the ports contract, which inverted every deterministic protection on a
+            // perp short (stop seeded on the profit side, EXIT_LONG for a short). Opens pin it;
+            // an 'adjust' inherits the prior plan's direction in the strategy's merge.
+            ...(action === 'open_long' || action === 'open_short'
+              ? { direction: action === 'open_short' ? ('short' as const) : ('long' as const) }
+              : {}),
+            ...(decision.partialCloseFraction !== undefined
+              ? { partialCloseFraction: String(decision.partialCloseFraction) }
+              : {}),
+            ...(thesis !== undefined ? { thesis } : {}),
+          }
+        : undefined;
+
+    // The one surviving economic gate (Design § Deleted/replaced scaffolding): a takeProfitPct that
+    // cannot clear the round-trip fee fraction guarantees a loss even on a winning-direction trade.
+    // Binds whenever a directive set carrying takeProfitPct is about to be adopted — a fresh open, a
+    // scale-in, AND an 'adjust' that revises takeProfitPct — never on a bare partial-close (no
+    // directives ⇒ nothing to floor-check) or on a no-op hold.
+    if (directives !== undefined) {
+      const feeFraction = new Decimal(baseProfile.makerBps).plus(baseProfile.takerBps).div(10_000);
+      if (new Decimal(directives.takeProfitPct).lt(feeFraction)) {
+        this.logger.warn(
+          `trade rejected: takeProfitPct ${directives.takeProfitPct} below round-trip fee ${feeFraction.toFixed()}`,
+        );
+        return {
+          signals: [],
+          decision: {
+            action,
+            confidence: null,
+            rationale: `[rejected: tp below fee floor]${thesis ? ` ${thesis}` : ''}`,
+          },
+          usage,
+          latencyMs,
+          playbookVersion,
+          promptHash,
+          inputPayload,
+          ...(consultId ? { consultId } : {}),
+          infoArm,
+          thinkingArm,
+        };
+      }
+    }
+
+    let signals: Signal[] = [];
+    let plan: AgentDirectives | undefined;
+
+    // Fresh entry (FLAT) or a same-side scale-in (already positioned) — both emit an ENTER signal
+    // with fresh directives; the strategy owns restarting the maxHold clock on a scale-in (Design
+    // table: "Scale-in ... clock restarts").
+    const isFreshOrScaleIn =
+      (action === 'open_long' && (side === 'FLAT' || side === 'LONG')) ||
+      (action === 'open_short' && (side === 'FLAT' || side === 'SHORT'));
+    // Opposite-side open_* while positioned: never an accidental flip — journal-visible hold, no
+    // signal, no plan (Design table: "no accidental flips").
+    const isOppositeOpen =
+      (action === 'open_long' && side === 'SHORT') || (action === 'open_short' && side === 'LONG');
+
+    if (isFreshOrScaleIn) {
+      plan = directives;
+      const isLong = action === 'open_long';
+      signals = [
+        {
+          ...common,
+          kind: isLong ? 'ENTER_LONG' : 'ENTER_SHORT',
+          strength: 1,
+          ...(decision.sizeFraction !== undefined
+            ? { sizeFraction: String(decision.sizeFraction) }
+            : {}),
+          ...(decision.entry
+            ? {
+                limitPriceHint: this.tradeEntryLimitHint(
+                  decision.entry,
+                  isLong,
+                  lastCandle,
+                  refPrice,
+                ),
+              }
+            : {}),
+        },
+      ];
+    } else if (isOppositeOpen) {
+      // no-op — signals/plan stay at their defaults ([]/undefined).
+    } else if (action === 'close') {
+      if (side === 'LONG') {
+        signals = [{ ...common, kind: 'EXIT_LONG', strength: 1 }];
+      } else if (side === 'SHORT') {
+        signals = [{ ...common, kind: 'EXIT_SHORT', strength: 1 }];
+      }
+      // side === 'FLAT': nothing to close — journal-visible hold, defaults stand.
+    } else if (action === 'adjust' && side !== 'FLAT') {
+      // Directives (if the model supplied the full set) ride forward for the strategy to apply in
+      // place (Design table: "the proposal always carries the updated directives (plan field) for
+      // the strategy to apply in place").
+      plan = directives;
+      if (decision.partialCloseFraction !== undefined) {
+        // Reduce-only partial close: mirrors the full-EXIT cancel-first discipline (Defect B #49) —
+        // a resting venue TP/stop on the exit side would otherwise lock the base this reduce-only
+        // order needs. cancelOrdersForSide (signal-sink.service.ts) is idempotent when nothing
+        // rests, so this is safe to set unconditionally rather than requiring the client to know
+        // whether an order is actually resting.
+        const cancelSide = side === 'LONG' ? 'SELL' : 'BUY';
+        signals = [
+          {
+            ...common,
+            kind: side === 'LONG' ? 'EXIT_LONG' : 'EXIT_SHORT',
+            strength: 1,
+            reduceFraction: String(decision.partialCloseFraction),
+            cancelBeforeSubmit: { side: cancelSide },
+          },
+        ];
+      }
+      // No partialCloseFraction: a directives-only revision — no signal, plan carries the update.
+    }
+    // 'hold', 'adjust' while FLAT, 'close' while FLAT: signals/plan stay at their defaults.
+
+    return {
+      signals,
+      decision: { action, confidence: null, rationale: thesis ?? '' },
+      ...(plan ? { plan } : {}),
+      usage,
+      latencyMs,
+      playbookVersion,
+      promptHash,
+      inputPayload,
+      ...(consultId ? { consultId } : {}),
+      infoArm,
+      thinkingArm,
+    };
+  }
+
+  // A1: entry pricing hint for a v2 open_long/open_short — 'maker' reuses the legacy plan-mode
+  // formula (offset from the last CLOSED candle's close; falls back to refPrice when no candle is
+  // available) over the wider [-150, 150]bps v2 range; 'taker' prices on the CROSSING side of
+  // refPrice (BUY above, SELL below) so PositionSizerService.entryType's own marketable-side check
+  // degrades a configured LIMIT_MAKER to plain LIMIT naturally (see TAKER_CROSS_BUFFER_BPS's own
+  // comment) — the sizer never has to special-case entryStyle itself.
+  private tradeEntryLimitHint(
+    entry: { readonly style: 'maker' | 'taker'; readonly offsetBps: number },
+    isLong: boolean,
+    lastCandle: CandleEvent | undefined,
+    refPrice: Price,
+  ): Price {
+    if (entry.style === 'maker') {
+      const basePrice = lastCandle ? lastCandle.close : refPrice;
+      const offsetFraction = new Decimal(entry.offsetBps).div(10_000);
+      const raw = new Decimal(basePrice.toFixed())
+        .mul(isLong ? new Decimal(1).minus(offsetFraction) : new Decimal(1).plus(offsetFraction))
+        .toDecimalPlaces(8);
+      return price(raw.toFixed());
+    }
+    const buffer = new Decimal(TAKER_CROSS_BUFFER_BPS).div(10_000);
+    const raw = new Decimal(refPrice.toFixed())
+      .mul(isLong ? buffer.plus(1) : new Decimal(1).minus(buffer))
+      .toDecimalPlaces(8);
+    return price(raw.toFixed());
+  }
+
   // Best-bid entry hint: a resting bid within 25bps below refPrice is a cheaper (maker) entry than
   // crossing at refPrice, close enough that waiting for it is unlikely to miss the move. A bid AT or
   // ABOVE refPrice, one further than 25bps below it, or no book at all all resolve to undefined —
@@ -1484,7 +2173,14 @@ export class AnthropicAgentClient implements AgentClientPort {
       return { content: undefined, version: undefined };
     }
     const stored = await this.playbookProvider.current();
-    const validation = validatePlaybook(stored.content);
+    // P1: capability-aware denylist. This config never carries a separate perp/leverage marker —
+    // cfg.shortsEnabled ALREADY doubles as the perp-lane selector by the same convention the v2
+    // system prompt and maxPositionFraction lane cap use (see shortsEnabled's own comment above);
+    // a spot deployment (shortsEnabled false) keeps both pattern families enforced.
+    const validation = validatePlaybook(stored.content, {
+      shortsAllowed: this.cfg.shortsEnabled ?? false,
+      leverageAllowed: this.cfg.shortsEnabled ?? false,
+    });
     if (!validation.ok) {
       if (this.lastInvalidPlaybookContent !== stored.content) {
         this.logger.warn(
@@ -1497,12 +2193,13 @@ export class AnthropicAgentClient implements AgentClientPort {
     return { content: stored.content, version: stored.version };
   }
 
-  // On a FATAL classification, log once (status code only — never the key, never the response
-  // body) and latch this instance to degraded. RETRYABLE failures never latch.
+  // On a FATAL classification, log once and latch this instance to degraded. The message now
+  // carries the API error body (attemptOnce embeds it — the body states the invalid_request
+  // cause and never credentials); the key itself never appears in any error path.
   private handleFailure(err: AgentProposeError): void {
     if (err.kind === 'FATAL') {
       this.logger.warn(
-        `anthropic api: fatal error (status ${err.status ?? 'n/a'}) — latching agent client to degraded, no further calls will be made`,
+        `anthropic api: fatal error (status ${err.status ?? 'n/a'}) — latching agent client to degraded, no further calls will be made — ${err.message}`,
       );
       this.degraded = true;
     }
@@ -1523,7 +2220,13 @@ export class AnthropicAgentClient implements AgentClientPort {
       | typeof PLAN_TOOL
       | typeof PLAN_SHORTS_TOOL
       | typeof PORTFOLIO_TOOL
-      | typeof PORTFOLIO_SHORTS_TOOL,
+      | typeof PORTFOLIO_SHORTS_TOOL
+      // S3: prepareDecideContext's activeTool can now also be a v2 submit_trade tool.
+      | ReturnType<typeof buildTradeTool>
+      | ReturnType<typeof buildTradeShortsTool>
+      // A2: proposeBatch's portfolioTool can now also be a v2 submit_portfolio tool.
+      | ReturnType<typeof buildTradePortfolioTool>
+      | ReturnType<typeof buildTradePortfolioShortsTool>,
     timeoutMs: number,
     // #42: the caller's precomputed thinking arm — threaded explicitly (never re-derived here) so
     // a retry resends the IDENTICAL request, the same invariant the prompt strings follow.
@@ -1579,7 +2282,13 @@ export class AnthropicAgentClient implements AgentClientPort {
       | typeof PLAN_TOOL
       | typeof PLAN_SHORTS_TOOL
       | typeof PORTFOLIO_TOOL
-      | typeof PORTFOLIO_SHORTS_TOOL,
+      | typeof PORTFOLIO_SHORTS_TOOL
+      // S3: prepareDecideContext's activeTool can now also be a v2 submit_trade tool.
+      | ReturnType<typeof buildTradeTool>
+      | ReturnType<typeof buildTradeShortsTool>
+      // A2: proposeBatch's portfolioTool can now also be a v2 submit_portfolio tool.
+      | ReturnType<typeof buildTradePortfolioTool>
+      | ReturnType<typeof buildTradePortfolioShortsTool>,
     signal: AbortSignal,
     thinking: { type: 'adaptive' } | { type: 'disabled' } = { type: 'disabled' },
   ): Promise<Response> {
@@ -1624,8 +2333,17 @@ export class AnthropicAgentClient implements AgentClientPort {
 
     if (!res.ok) {
       const retryAfterMs = parseRetryAfterMs(res.headers?.get?.('retry-after'));
+      // The API's error body carries the precise invalid_request cause and never credentials —
+      // without it a latching 400 is undiagnosable from logs (live incident 2026-07-19 17:15Z:
+      // spot latched degraded on a bare "http 400" with no recorded cause).
+      let detail = '';
+      try {
+        detail = (await res.text()).slice(0, 500);
+      } catch {
+        detail = '[unreadable body]';
+      }
       throw new AgentProposeError(
-        `anthropic api http ${res.status}`,
+        `anthropic api http ${res.status}${detail ? ` — ${detail}` : ''}`,
         classifyHttpStatus(res.status),
         res.status,
         retryAfterMs,

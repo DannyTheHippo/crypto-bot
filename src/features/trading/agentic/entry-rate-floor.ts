@@ -1,7 +1,18 @@
 import { z } from 'zod';
+import Decimal from 'decimal.js';
 import { price, qty } from '../../../domain/types/money';
-import type { AgentTradingProfile, AgentUsage } from '../../../ports/agentic-strategy';
-import { PLAN_TOOL, buildPlaybookBlock, buildSystemPrompt } from './agent-prompt';
+import type {
+  AgentDirectives,
+  AgentTradingProfile,
+  AgentUsage,
+} from '../../../ports/agentic-strategy';
+import {
+  buildPlaybookBlock,
+  buildSystemPrompt,
+  buildTradeTool,
+  buildTradeShortsTool,
+} from './agent-prompt';
+import { tradeDecisionSchema, tradeShortsDecisionSchema } from './anthropic-agent-client';
 
 // Backlog #39 mint-time entry-rate floor: a reflection candidate minted from all-loss evidence can
 // rationally raise the entry bar so far that it structurally never fires (observed live: v2 entered
@@ -9,9 +20,10 @@ import { PLAN_TOOL, buildPlaybookBlock, buildSystemPrompt } from './agent-prompt
 // promotion verdict needs, so it squats in the A/B slot until the unresolved-candidate lapse. This
 // module answers one narrow, offline question — "would the DECIDE model, under this DRAFT playbook,
 // have entered any of these real recorded FLAT-position market states" — by replaying the exact
-// recorded payload strings through ONE live call per row, in plan mode (submit_plan), the same
-// request shape the live decide path sends. It is UNABLE to mint or promote anything itself: the
-// caller (reflection.service.ts) is the only place a veto or a pass is acted on.
+// recorded payload strings through ONE live call per row, under the v2 rich decision contract (P3:
+// migrated off the legacy submit_plan shape — see replayPlanRow below), the same request shape the
+// live decide path sends. It is UNABLE to mint or promote anything itself: the caller
+// (reflection.service.ts) is the only place a veto or a pass is acted on.
 
 // Illustrative default profile for the replay's system prompt — the floor asks a structural
 // question ("does this playbook's entry bar ever fire"), not "what is the strategy's live fee tier
@@ -66,31 +78,21 @@ const floorResponseSchema = z.object({
     .optional(),
 });
 
-// The action, plus the plan (when present) — a full planSchema parse (anthropic-agent-client.ts's
-// own bounds-enforcing schema) isn't reused here: this is an OFFLINE replay probe, never the live
-// gate, so a plan whose fields sit outside PLAN_BOUNDS is still observed rather than schema-failed
-// (the live gate re-enforces those bounds on every real decide regardless of what this replay saw).
-// plan is optional because a 'long' response can theoretically omit it (the raw Anthropic API call
-// this file makes bypasses AnthropicAgentClient's own schema, which is what normally requires it).
-const replayPlanSchema = z.object({
-  action: z.enum(['long', 'flat', 'hold']),
-  plan: z
-    .object({
-      entryOffsetBps: z.number().int(),
-      stopLossPct: z.number(),
-      takeProfitPct: z.number(),
-      entryValidityBars: z.number().int(),
-      maxHoldBars: z.number().int(),
-    })
-    .optional(),
-});
-
 export interface PlanReplayCallConfig {
   readonly apiKey: string;
   // The DECIDE model, not the reflection model — see EntryRateFloorConfig.model's own comment.
   readonly model: string;
   readonly baseUrl?: string;
   readonly timeoutMs: number;
+  // P3 migration: the v2 lane cap (AGENTIC_MAX_POSITION_FRACTION), carried in BOTH forms this replay
+  // needs — string for the tool description (buildTradeTool/buildTradeShortsTool), number for the
+  // zod schema's upper bound (tradeDecisionSchema/tradeShortsDecisionSchema) — mirrors
+  // anthropic-agent-client.ts's own maxPositionFraction/maxPositionFractionNum split.
+  readonly sizeFractionMax: string;
+  // Perp lane only — selects the shorts-capable v2 tool/schema, mirroring the live client's own
+  // shortsEnabled selector (shorts ⟺ perp in this codebase, per agent-prompt.ts's own comment).
+  // Absent/false ⇒ spot-only (open_short unavailable), matching every spot deployment's replay shape.
+  readonly shortsEnabled?: boolean;
 }
 
 // Bounded result of ONE replay call — never throws (every failure mode collapses to `ok: false`).
@@ -100,23 +102,21 @@ export interface PlanReplayCallConfig {
 // was unusable.
 export interface PlanReplayResult {
   readonly ok: boolean;
-  readonly action?: 'long' | 'flat' | 'hold';
-  readonly plan?: {
-    readonly entryOffsetBps: number;
-    readonly stopLossPct: string;
-    readonly takeProfitPct: string;
-    readonly entryValidityBars: number;
-    readonly maxHoldBars: number;
-  };
+  readonly action?: 'open_long' | 'open_short' | 'close' | 'adjust' | 'hold';
+  // Present only when action is 'open_long'/'open_short' — the only actions the v2 schema's own
+  // requireTradeDirectives superRefine guarantees carry the full directive set (see
+  // anthropic-agent-client.ts). AgentDirectives, not the legacy AgentPlan shape — P3 supersedes this
+  // file's own pre-migration `plan` shape.
+  readonly plan?: AgentDirectives;
   readonly usage?: AgentUsage;
 }
 
 // The shared call-builder both measureEntryRate (this file) and candidate-backtest.ts's mint-time
-// expectancy backtest replay through: ONE plan-mode (submit_plan) Anthropic call for a single
+// expectancy backtest replay through: ONE v2 (submit_trade) Anthropic call for a single
 // (systemPrompt, playbookBlock, rowPayload) triple, forced tool_choice, thinking off, playbook block
-// cached — the exact request shape the live decide path sends under plan mode. Extracted so the two
-// callers can never let their request-building drift apart (backlog #39's companion feature reuses
-// this verbatim rather than duplicating the fetch/timeout/parse plumbing).
+// cached — the exact request shape the live decide path sends under the rich decision contract.
+// Extracted so the two callers can never let their request-building drift apart (backlog #39's
+// companion feature reuses this verbatim rather than duplicating the fetch/timeout/parse plumbing).
 export async function replayPlanRow(
   cfg: PlanReplayCallConfig,
   systemPrompt: string,
@@ -124,6 +124,17 @@ export async function replayPlanRow(
   rowPayload: string,
   fetchFn: typeof fetch,
 ): Promise<PlanReplayResult> {
+  const tool = cfg.shortsEnabled
+    ? buildTradeShortsTool(cfg.sizeFractionMax)
+    : buildTradeTool(cfg.sizeFractionMax);
+  // sizeFractionMax is money-adjacent (AgentDirectives.sizeFraction's own comment) — Decimal→toNumber,
+  // never Number()/parseFloat(), mirrors agent-prompt.ts's own DECISION_V2_BOUNDS.stopLossPct.max
+  // conversion (this is a schema BOUND, not a stored money value, so a plain number result is fine).
+  const sizeFractionMaxNum = new Decimal(cfg.sizeFractionMax).toNumber();
+  const schema = cfg.shortsEnabled
+    ? tradeShortsDecisionSchema(sizeFractionMaxNum)
+    : tradeDecisionSchema(sizeFractionMaxNum);
+
   // W2.4-style cache split: the playbook block (the stable prefix shared by every row in this batch)
   // rides its own cache_control block; the volatile per-row market payload follows uncached — same
   // two-block layout as anthropic-agent-client.ts's own userContent.
@@ -146,8 +157,8 @@ export async function replayPlanRow(
         max_tokens: 512,
         system: [{ type: 'text', text: systemPrompt, cache_control: EPHEMERAL_1H }],
         messages: [{ role: 'user', content: userContent }],
-        tools: [PLAN_TOOL],
-        tool_choice: { type: 'tool', name: PLAN_TOOL.name },
+        tools: [tool],
+        tool_choice: { type: 'tool', name: tool.name },
         // Structured tool-use replay, not open-ended reasoning — disabled exactly like the live
         // decide call (anthropic-agent-client.ts's attemptOnce).
         thinking: { type: 'disabled' },
@@ -167,28 +178,40 @@ export async function replayPlanRow(
         }
       : undefined;
     const toolBlock = envelope.data.content?.find(
-      (b) => b.type === 'tool_use' && b.name === PLAN_TOOL.name,
+      (b) => b.type === 'tool_use' && b.name === tool.name,
     );
     if (!toolBlock) return { ok: false, usage };
-    const parsed = replayPlanSchema.safeParse(toolBlock.input);
+    const parsed = schema.safeParse(toolBlock.input);
     if (!parsed.success) return { ok: false, usage };
+    // `schema` is a UNION of two zod schema types (spot/shorts action enums differ) — TS's control-
+    // flow narrowing across that union misbehaves on chained `===` checks against parsed.data.action
+    // directly (observed: a comparison against 'open_short' resolves to "no overlap" even though the
+    // shorts variant's action enum includes it). Widening to the explicit literal union once, up
+    // front, sidesteps the narrowing bug entirely.
+    const action = parsed.data.action as 'open_long' | 'open_short' | 'close' | 'adjust' | 'hold';
+    const isOpen = action === 'open_long' || action === 'open_short';
     return {
       ok: true,
-      action: parsed.data.action,
+      action,
       usage,
-      // Pct fields converted to strings at the boundary — same money-safe Decimal-on-strings
-      // convention AnthropicAgentClient's own mapping applies to AgentPlan (see its acceptedPlan
-      // construction); entryOffsetBps/entryValidityBars/maxHoldBars stay plain numbers (bar counts /
-      // bps offsets, never a money value themselves).
-      ...(parsed.data.plan
+      // requireTradeDirectives (anthropic-agent-client.ts) guarantees sizeFraction/entry/
+      // entryValidityBars/stopLossPct/takeProfitPct/maxHoldBars are all present whenever action is
+      // 'open_long'/'open_short' — the `!` assertions below rely on that schema-enforced invariant,
+      // not an unchecked guess. Pct/fraction fields converted to strings at the boundary — same
+      // money-safe Decimal-on-strings convention AnthropicAgentClient's own mapping applies.
+      ...(isOpen
         ? {
             plan: {
-              entryOffsetBps: parsed.data.plan.entryOffsetBps,
-              stopLossPct: String(parsed.data.plan.stopLossPct),
-              takeProfitPct: String(parsed.data.plan.takeProfitPct),
-              entryValidityBars: parsed.data.plan.entryValidityBars,
-              maxHoldBars: parsed.data.plan.maxHoldBars,
-            },
+              sizeFraction: String(parsed.data.sizeFraction!),
+              stopLossPct: String(parsed.data.stopLossPct!),
+              takeProfitPct: String(parsed.data.takeProfitPct!),
+              entryOffsetBps: parsed.data.entry!.offsetBps,
+              entryValidityBars: parsed.data.entryValidityBars!,
+              maxHoldBars: parsed.data.maxHoldBars!,
+              entryStyle: parsed.data.entry!.style,
+              ...(action === 'open_short' ? { direction: 'short' as const } : {}),
+              ...(parsed.data.thesis !== undefined ? { thesis: parsed.data.thesis } : {}),
+            } satisfies AgentDirectives,
           }
         : {}),
     };
@@ -202,12 +225,6 @@ export async function replayPlanRow(
 
 export interface EntryRateFloorConfig extends PlanReplayCallConfig {
   readonly playbookContent: string;
-  // Always true today (the floor only ever replays the plan-mode request shape) — kept as an
-  // explicit literal rather than a bare boolean so a future legacy-path replay would have to be a
-  // deliberate, reviewed type change, not a silent behavior flip.
-  readonly planMode: true;
-  readonly minEdgeMultiple: string;
-  readonly minRr: string;
 }
 
 export type EntryRateMeasurement =
@@ -228,10 +245,12 @@ export async function measureEntryRate(
     return { skipped: 'no rows to replay' };
   }
 
+  // P3: v2 rich-decision-contract system prompt (tradeContract), not the legacy plan-mode prompt —
+  // the v2 prompt carries no minEdgeMultiple/minRr sentence (those knobs are retired, D1), so neither
+  // is threaded here.
   const systemPrompt = buildSystemPrompt(DEFAULT_FLOOR_PROFILE, {
-    planMode: true,
-    minEdgeMultiple: cfg.minEdgeMultiple,
-    minRr: cfg.minRr,
+    tradeContract: true,
+    shortsEnabled: cfg.shortsEnabled,
   });
   const playbookBlock = buildPlaybookBlock(cfg.playbookContent);
 
@@ -244,7 +263,7 @@ export async function measureEntryRate(
     if (result.usage) usages.push(result.usage);
     if (!result.ok) continue;
     consults += 1;
-    if (result.action === 'long') entries += 1;
+    if (result.action === 'open_long' || result.action === 'open_short') entries += 1;
   }
 
   return { consults, entries, usages };

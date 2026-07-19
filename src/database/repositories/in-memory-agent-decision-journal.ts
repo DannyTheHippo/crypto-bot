@@ -52,13 +52,19 @@ export class InMemoryAgentDecisionJournal implements AgentDecisionJournalPort {
   versionEntryStats(version: number): Promise<{ decides: number; entries: number }> {
     // "Lifetime" here is bounded by the MAX_ROWS ring — honest only within the buffer, which is
     // acceptable for the DB-less paper/test substrate this journal serves (see the port comment).
+    // P4: entry set widened to every v2/legacy OPEN action, mirroring
+    // AgentDecisionRepository.countVersionEntryStats' own SQL widening — this is the DB-less path
+    // that serves test/CI/no-DB paper runs, so an unwidened entries check here false-abstention-
+    // lapses every v2 candidate on exactly the paths this journal backs.
     let decides = 0;
     let entries = 0;
     for (const r of this.rows) {
       if (r.playbookVersion !== version) continue;
       if (!r.model.startsWith('claude')) continue;
       decides += 1;
-      if (r.action === 'long') entries += 1;
+      if (r.action === 'long' || r.action === 'open_long' || r.action === 'open_short') {
+        entries += 1;
+      }
     }
     return Promise.resolve({ decides, entries });
   }

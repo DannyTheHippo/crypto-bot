@@ -14,6 +14,15 @@ required), **testnet** (real `CcxtExchangeAdapter` against a Binance sandbox —
 Trading or Binance Spot Testnet), and **live** (real funds, behind a four-gate interlock that cannot
 be satisfied in any CI environment).
 
+**Economics.** Sizing is capped at `equity = min(actualEquity, SIZER_EQUITY_CAP)` on every sizing
+path — production capital max ~$1k (`SIZER_EQUITY_CAP=1000` in `.env.app`); the demo stack runs the
+same $1k effective book plus book-scale breakers, so demo evidence transfers directly to the live
+capital target. Spot trades a 24-symbol basket (`TRADING_SYMBOLS` in `.env.app`), with a deterministic
+scanner (`UniverseScannerService`, no LLM call) selecting the top-N active menu daily by volume × ATR%
+ranking. A separate perp lane (`.env.app-perp`, `docker compose --profile perp`) trades USDⓈ-M
+perpetual shorts at up to 2x isolated-margin leverage (`PERP_LEVERAGE_CAP=2`), with funding payments
+ingested and accounted into net-of-cost PnL.
+
 ---
 
 ## Features / safety highlights
@@ -135,24 +144,27 @@ see the "Running against a sandbox" section of [docs/runbook.md](docs/runbook.md
 `.env.app-perp` (perp profile). Docker compose loads `env_file: [lane file, .env]`; host `pnpm start`
 loads `.env` then `.env.app` via `AppConfigModule`.
 
-| Variable                              | File        | Meaning                                                                        |
-| ------------------------------------- | ----------- | ------------------------------------------------------------------------------ |
-| `TRADING_MODE`                        | `.env.app`  | `paper` \| `testnet` \| `live`                                                 |
-| `SANDBOX_ENV`                         | `.env.app`  | `demo` \| `testnet` — picks the Binance sandbox when `TRADING_MODE=testnet`    |
-| `FEED_ENV`                            | `.env.app`  | Market-data feed environment (`live` = public Binance streams, no credentials) |
-| `BINANCE_DEMO_API_KEY` / `_SECRET`    | `.env`      | Binance Demo Trading credentials (used when `SANDBOX_ENV=demo`)                |
-| `BINANCE_TESTNET_API_KEY` / `_SECRET` | `.env`      | Binance Spot Testnet credentials (used when `SANDBOX_ENV=testnet`)             |
-| `BINANCE_LIVE_API_KEY` / `_SECRET`    | `.env`      | Live credentials — read only when `TRADING_MODE=live`                          |
-| `ARMING_SECRET`                       | `.env`      | HMAC key for the live arming handshake                                         |
-| `TRADING_SYMBOLS`                     | `.env.app`  | Symbols the agentic lane trades (must each have a filter entry in risk module) |
-| `STRATEGY_INTERVAL`                   | `.env.app`  | Candle interval: `1m` \| `5m` \| `15m` \| `1h` \| `4h` \| `1d`                 |
-| `ACTIVE_STRATEGY`                     | `.env.app`  | Strategy lane — closed enum, `agentic` is the only registered lane             |
-| `BASE_NOTIONAL`                       | `.env.app`  | Quote (USDT) per order                                                         |
-| `STARTING_CASH`                       | `.env.app`  | In-memory quote balance the bot tracks (set near the account's USDT balance)   |
-| `DATABASE_URL`                        | `.env.app`  | Postgres connection string — optional; paper/demo run fine without it          |
-| `GRAFANA_ADMIN_PASSWORD`              | `.env`      | Grafana admin password (docker-compose)                                        |
-| `PORT`                                | `.env.app`  | HTTP server port                                                               |
-| `LOG_LEVEL`                           | `.env.app`  | `fatal` \| `error` \| `warn` \| `info` \| `debug` \| `trace`                   |
+| Variable                              | File                         | Meaning                                                                           |
+| ------------------------------------- | ---------------------------- | --------------------------------------------------------------------------------- |
+| `TRADING_MODE`                        | `.env.app`                   | `paper` \| `testnet` \| `live`                                                    |
+| `SANDBOX_ENV`                         | `.env.app`                   | `demo` \| `testnet` — picks the Binance sandbox when `TRADING_MODE=testnet`       |
+| `FEED_ENV`                            | `.env.app`                   | Market-data feed environment (`live` = public Binance streams, no credentials)    |
+| `BINANCE_DEMO_API_KEY` / `_SECRET`    | `.env`                       | Binance Demo Trading credentials (used when `SANDBOX_ENV=demo`)                   |
+| `BINANCE_TESTNET_API_KEY` / `_SECRET` | `.env`                       | Binance Spot Testnet credentials (used when `SANDBOX_ENV=testnet`)                |
+| `BINANCE_LIVE_API_KEY` / `_SECRET`    | `.env`                       | Live credentials — read only when `TRADING_MODE=live`                             |
+| `ARMING_SECRET`                       | `.env`                       | HMAC key for the live arming handshake                                            |
+| `TRADING_SYMBOLS`                     | `.env.app`                   | Symbols the agentic lane trades (must each have a filter entry in risk module)    |
+| `STRATEGY_INTERVAL`                   | `.env.app`                   | Candle interval: `1m` \| `5m` \| `15m` \| `1h` \| `4h` \| `1d`                    |
+| `ACTIVE_STRATEGY`                     | `.env.app`                   | Strategy lane — closed enum, `agentic` is the only registered lane                |
+| `BASE_NOTIONAL`                       | `.env.app`                   | Quote (USDT) per order                                                            |
+| `STARTING_CASH`                       | `.env.app`                   | In-memory quote balance the bot tracks (set near the account's USDT balance)      |
+| `SIZER_EQUITY_CAP`                    | `.env.app`                   | Hard cap on sizing equity — `min(actualEquity, cap)`; production capital max ~$1k |
+| `AGENTIC_SHORTS_ENABLED`              | `.env.app-perp`              | Enables plan-mode shorts — requires a perp-capable venue (spot boot throws)       |
+| `PERP_LEVERAGE_CAP`                   | `.env.app` / `.env.app-perp` | Isolated-margin leverage cap (spot lane `1`, perp lane `2`)                       |
+| `DATABASE_URL`                        | `.env.app`                   | Postgres connection string — optional; paper/demo run fine without it             |
+| `GRAFANA_ADMIN_PASSWORD`              | `.env`                       | Grafana admin password (docker-compose)                                           |
+| `PORT`                                | `.env.app`                   | HTTP server port                                                                  |
+| `LOG_LEVEL`                           | `.env.app`                   | `fatal` \| `error` \| `warn` \| `info` \| `debug` \| `trace`                      |
 
 Full knob list with comments: [`.env.app`](.env.app). Perp lane: [`.env.app-perp`](.env.app-perp).
 
@@ -170,9 +182,12 @@ pnpm test:db           # DB integration tests — requires Postgres at DATABASE_
 pnpm test:testnet      # order-lifecycle scenarios against the configured Binance sandbox —
                        # requires BINANCE_DEMO_* or BINANCE_TESTNET_* credentials; all-skipped
                        # green without them; intended for nightly runs
+pnpm backtest          # test/backtest research harness (edge program) — OFF the production test
+                       # gate; does not certify the agentic lane for live (CLAUDE.md rule 4)
+pnpm checks            # format:check + lint:md + lint + typecheck + test, in that order
 ```
 
-Run `pnpm build && pnpm lint && pnpm typecheck && pnpm test` before any pull request.
+Run `pnpm build && pnpm lint && pnpm typecheck && pnpm test` (or `pnpm checks`) before any pull request.
 
 ---
 
@@ -256,11 +271,14 @@ src/
   features/
     trading/
       agentic/                the LLM strategy lane — StrategyHost, agent client, prompt, plan
-                               executor, promotion evaluator, reflection, playbook validator
+                               executor, promotion evaluator, reflection, playbook validator,
+                               universe scanner (scanner-gated active menu), benchmark-alpha,
+                               exec-quality, macro calendar, portfolio-block, agent budget
       market-data/            ccxt stream adapter, normalization, feed health, derivatives/sentiment feeds
       risk/                   RiskEngine, sizer, kill-switch, signal gateway
       execution/               ExecutionService, OMS, fill ingestor, reconciliation, boot recovery
-      exchange/                CcxtExchangeAdapter, live/paper/paper-perp adapters, error classifier
+      exchange/                CcxtExchangeAdapter, live/paper/paper-perp adapters, error classifier,
+                               funding-payments ingest (perp lane)
       mode-control/            ModeControl, arming interlock, key probe, promotion readiness
     common/observability/     Prometheus metrics, health endpoints, logger config
   shared/                     correlation middleware, exception filters, venue-safety guards

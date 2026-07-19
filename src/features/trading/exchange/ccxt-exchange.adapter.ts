@@ -10,6 +10,7 @@ import {
   type AlgoOrderState,
   type AlgoOrderHistoryView,
   type VenuePosition,
+  type VenueFundingPayment,
 } from '../../../ports/exchange';
 import {
   clientOrderId,
@@ -28,6 +29,7 @@ import {
   normalizeBalances,
   normalizeAlgoOrder,
   normalizeAlgoHistory,
+  normalizeFundingPayment,
 } from './ccxt-normalize';
 
 // Shared with pinPerpVenueDefaults below: the only swap-capable venue this pass wires.
@@ -166,7 +168,7 @@ export class CcxtExchangeAdapter implements ExchangePort {
       const orders = await this.client.fetchOpenOrders(symbol);
       return orders.map((o) => {
         // Each open-order row carries its own symbol; ExchangeOrderState.symbol is required.
-        const orderSymbol = o.symbol !== undefined ? symbolId(o.symbol) : (symbol ?? symbolId(''));
+        const orderSymbol = o.symbol !== undefined ? symbolId(o.symbol) : symbol ?? symbolId('');
         const coid = clientOrderId(o.clientOrderId ?? '');
         return normalizeOrderState(o, coid, orderSymbol);
       });
@@ -236,7 +238,7 @@ export class CcxtExchangeAdapter implements ExchangePort {
       // alike); the documented production shape is { total, orders }. The {orders}-only destructure
       // threw TypeError on every live demo call — FLAG 1's root cause.
       const raw = await this.client.fapiPrivateGetOpenAlgoOrders();
-      const rows = Array.isArray(raw) ? raw : (raw?.orders ?? []);
+      const rows = Array.isArray(raw) ? raw : raw?.orders ?? [];
       // Raw rows carry the VENUE market id ("BTCUSDT"), never the unified symbol (same probe) —
       // match either form, and stamp the unified symbol on the row handed to normalizeAlgoOrder so
       // AlgoOrderState.symbol keeps its unified-SymbolId contract.
@@ -300,7 +302,7 @@ export class CcxtExchangeAdapter implements ExchangePort {
         startTime: sinceMs,
         limit: 100,
       });
-      const rows = Array.isArray(raw) ? raw : (raw?.orders ?? []);
+      const rows = Array.isArray(raw) ? raw : raw?.orders ?? [];
       // Match by clientAlgoId ONLY (never orderId, never a decoded venue id) — clientAlgoId is the
       // same clientOrderId string the intent minted at placement, the one stable key this rail and
       // our OMS both index on.
@@ -363,6 +365,25 @@ export class CcxtExchangeAdapter implements ExchangePort {
           entryPrice: p.info?.entryPrice,
         };
       });
+    } catch (e) {
+      throw toAdapterError(e);
+    }
+  }
+
+  // P5b (funding-ingest.service.ts): perp funding-payment settlement history. Unlike
+  // fetchPositions above (a fail-closed safety backstop), this backs a measurement/promotion gate
+  // — fails OPEN: a non-perp venue or a client double that omits fetchFundingHistory answers []
+  // rather than throwing, so the ingest poller degrades to "no data this poll" instead of taking
+  // down the caller.
+  async fetchFundingPayments(
+    symbol: SymbolId,
+    sinceMs: EpochMs,
+  ): Promise<readonly VenueFundingPayment[]> {
+    if (String(this.venue) !== PERP_VENUE_ID) return [];
+    if (this.client.fetchFundingHistory === undefined) return [];
+    try {
+      const raw = await this.client.fetchFundingHistory(String(symbol), sinceMs, undefined, {});
+      return raw.map((e) => normalizeFundingPayment(e, this.venue, symbol));
     } catch (e) {
       throw toAdapterError(e);
     }

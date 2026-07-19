@@ -1,6 +1,8 @@
 import * as crypto from 'crypto';
 import { z } from 'zod';
+import Decimal from 'decimal.js';
 import type { AppConfig, TradingMode, VenueConfig } from '../../ports/app-config';
+import { AGENTIC_MAX_STOP_LOSS_PCT } from '../../domain/risk/agentic-bounds';
 
 export type { AppConfig, TradingMode } from '../../ports/app-config';
 
@@ -187,6 +189,19 @@ const envSchema = z
     // W2.1 stale-entry sweep: a resting entry older than this many observed decide cycles gets a
     // CANCEL_OPEN (risk-reducing; SignalSink routes it to an order-cancel). 0 disables.
     AGENTIC_ENTRY_TTL_BARS: z.coerce.number().int().min(0).default(2),
+    // v2 decision contract (D1/B2): upper bound on sizeFraction, injected into both the trade-tool
+    // description and the client's zod schema (S3) — the per-lane conviction-channel cap (spot 0.15
+    // across the ~24-symbol basket; perp 0.50 single-symbol, set via .env.app-perp override).
+    AGENTIC_MAX_POSITION_FRACTION: fractionString.default('0.15'),
+    // v2 consult scheduler (B2, replaces the deleted prescreen gate): a portfolio schedule normally
+    // drives consult cadence (the model's own nextConsultBars), but this is the FLOOR — a re-consult
+    // fires at least this often even if the model requested a longer gap or the schedule stalls, so a
+    // stuck/quiet basket never goes fully dark.
+    AGENTIC_FALLBACK_CONSULT_BARS: z.coerce.number().int().min(1).default(16),
+    // v2 consult scheduler (B2): wake-on-move — a bar close whose |close − lastConsultPrice| /
+    // lastConsultPrice clears this fraction forces an immediate re-consult regardless of schedule,
+    // closing the reaction gap on a fast move mid-quiet-period.
+    AGENTIC_WAKE_MOVE_PCT: fractionString.default('0.015'),
     // W3.1 plan-based trading: the LLM emits a full trade plan (entry offset, stop, take-profit,
     // validity) via submit_plan and plan-executor.ts manages it deterministically between consults.
     // Off by default — enabling is gated on offline A/B evidence + owner approval (approved plan).
@@ -203,15 +218,6 @@ const envSchema = z
       .enum(['true', 'false'])
       .default('false')
       .transform((v) => v === 'true'),
-    // Fee-aware plan viability floor: a plan is rejected when takeProfitPct < multiple × the
-    // round-trip fee fraction (maker+taker bps / 10000). Decimal string — money-adjacent math.
-    AGENTIC_MIN_EDGE_MULTIPLE: decimalString.default('1.5'),
-    // R:R structure floor: a plan is rejected when takeProfitPct / stopLossPct < this ratio.
-    // minEdgeMultiple floors only the WIN side; without this, a stop may sit below the round-trip
-    // fee itself (measured live: avg win +$0.06 vs avg loss -$0.21 — payoff 0.29:1).
-    AGENTIC_MIN_RR: decimalString.default('1.5'),
-    // Safety re-consult cadence while a plan is active without executor action.
-    AGENTIC_PLAN_MAX_QUIET_BARS: z.coerce.number().int().min(1).default(16),
     // TTL in bars for plan-executor-emitted EXIT signals. Executor exits carry eventTime = the
     // evaluated bar's close, so ttl = one bar loses the race against its own age on any ≥2s jitter
     // (observed live 2026-07-07: a max_hold exit EXPIRED at age 902.2s vs ttl 900s). Min 2.
@@ -283,22 +289,19 @@ const envSchema = z
       .enum(['true', 'false'])
       .default('false')
       .transform((v) => v === 'true'),
-    // Thinking-on-decide A/B (backlog #42, mechanism only — ENABLING is queued behind the
-    // info-context A/B verdict, one measured channel at a time): percent (0-50) of decides/batches
-    // deterministically routed to a treatment arm whose request carries thinking:{type:'adaptive'}
-    // instead of the hard 'disabled' (Phase-6 study: +12bps forward proxy, 4x propose, ~1.9x cost
-    // per decide — cost flows into the AGENTIC_DAILY_COST_STOP_USD breaker as usual). The arm is
-    // recoverable from promptHash via the '+th1' template tag (feed-tag precedent — the prompt
-    // text itself does not change). 0 (default) disables — byte-identical requests to today.
-    // Capped at 50, mirroring the two A/B knobs above.
-    AGENTIC_THINKING_AB_PCT: z.coerce.number().int().min(0).max(50).default(0),
     // Cross-symbol relative-strength context (2026-07-12): when true, each agentic instance records
     // its symbol's trailing return into a shared basket and the model sees where its symbol ranks
     // (see cross-symbol-context.ts). The strongest signal found in the 2026-07-12 multi-strategy
     // search — for a spot long-only lane it means concentrating longs in relatively strong symbols
     // and avoiding laggards. Gated together with the derivatives block under the information-context
-    // A/B (AGENTIC_DERIVATIVES_AB_PCT). Default false ⇒ byte-identical to pre-feature.
-    AGENTIC_CROSS_SYMBOL_ENABLED: z.coerce.boolean().default(false),
+    // A/B (AGENTIC_DERIVATIVES_AB_PCT). Default false ⇒ byte-identical to pre-feature. 'true'/
+    // 'false' (not z.coerce.boolean() — that idiom is Boolean(input): the string 'false' coerces to
+    // true, silently ENABLING the flag on the documented off-value; fixed 2026-07-18, was the only
+    // z.coerce.boolean() flag in this schema), same rationale as AGENTIC_PORTFOLIO_CONSULT below.
+    AGENTIC_CROSS_SYMBOL_ENABLED: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
     // Trailing-return lookback (bars) for the cross-symbol ranking. Default 20 (the winning
     // cross-sectional lookback from the search). Bounded to keep it inside typical warmup windows.
     AGENTIC_CROSS_SYMBOL_LOOKBACK_BARS: z.coerce.number().int().min(2).max(200).default(20),
@@ -312,11 +315,12 @@ const envSchema = z
       .default('false')
       .transform((v) => v === 'true'),
     // Track-record block (Push 3 P6 Unit 4, #17 residual): surfaces this strategy's own realized
-    // tripCount/winRate/meanNetBpsPerTrip/trailingWindowTrips over the SAME trailing window the
-    // expectancy ladder already computes from (EXPECTANCY_LADDER_* consts, agentic.strategy.ts) — a
-    // decide-side read, inert without a RoundTripEvidencePort wired. Does NOT ride the
-    // information-context A/B. 'true'/'false' (not z.coerce.boolean(), same rationale as above).
-    // Default 'false' ⇒ byte-identical to pre-feature.
+    // tripCount/winRate/meanNetBpsPerTrip/trailingWindowTrips over the SAME trailing window/floor the
+    // renamed TRACK_RECORD_* consts define (agentic.strategy.ts — B3 deleted the expectancy ladder
+    // outright; these consts were renamed, not removed, and now feed this block only) — a decide-side
+    // read, inert without a RoundTripEvidencePort wired. Does NOT ride the information-context A/B.
+    // 'true'/'false' (not z.coerce.boolean(), same rationale as above). Default 'false' ⇒
+    // byte-identical to pre-feature.
     AGENTIC_TRACK_RECORD_ENABLED: z
       .enum(['true', 'false'])
       .default('false')
@@ -324,7 +328,7 @@ const envSchema = z
     // Portfolio-consult batching (Push II Phase 5, DESIGN Task 2): coalesces the up-to-5 concurrent
     // single-symbol propose() calls landing within one window into ONE Anthropic call via
     // BatchingAgentClient/submit_portfolio, instead of 5 separate submit_decision calls. 'true'/
-    // 'false' (not z.coerce.boolean(), same rationale as AGENTIC_PRESCREEN_ENABLED above). Default
+    // 'false' (not z.coerce.boolean(), same rationale as AGENTIC_PLAN_MODE above). Default
     // 'false': an unconfigured deployment sees zero behavior change — BatchingAgentClient is not
     // even constructed (see agentic-strategy.module.ts's selectAgentClient).
     AGENTIC_PORTFOLIO_CONSULT: z
@@ -381,35 +385,28 @@ const envSchema = z
     // Owner-declared evidence epoch (ISO-8601 instant, e.g. 2026-07-08T12:00:00Z): the promotion
     // gate evaluates fills/tokens/window from this instant instead of all-time, so post-fix
     // evidence judges the post-fix configuration (owner decision 2026-07-08). Absent/'' ⇒ all-time.
+    // W4 audit (2026-07-18): strict full ISO-8601 UTC instant with a time component and trailing Z.
+    // A bare Date.parse accepted a date-only string ('2026-07-18'), silently resolving to midnight
+    // UTC — an evidence window hours off the owner's intended flat instant. The gate must refuse an
+    // ambiguous epoch at construction (gate-honesty refusal, fails CLOSED), never guess a time.
     PROMOTION_EVIDENCE_EPOCH: z
       .string()
-      .refine((v) => !Number.isNaN(Date.parse(v)), 'must be an ISO-8601 timestamp')
+      .refine(
+        (v) =>
+          /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/.test(v) &&
+          !Number.isNaN(Date.parse(v)),
+        'must be a full ISO-8601 UTC instant with a time component and trailing Z (e.g. 2026-07-18T15:36:14Z)',
+      )
       .optional(),
     // Residual-position notional (quote ccy) below which PromotionReadinessService's round-trip walk
     // considers a cycle CLOSED — historical pre-IOC cycles carry dust remainders that would otherwise
     // never close. Default '5' mirrors BTC/USDT's exchange minNotional.
     PROMOTION_DUST_NOTIONAL: decimalString.default('5'),
-    // Cost-floor pre-screen gate: a cheap indicator check consulted before each LLM call so a quiet
-    // market never burns a token spend on a call the agent was always going to pass on. 'true'/'false'
-    // (not z.coerce.boolean(): Boolean('false') === true would invert an explicit disable).
-    AGENTIC_PRESCREEN_ENABLED: z
-      .enum(['true', 'false'])
-      .default('true')
-      .transform((v) => v === 'true'),
-    AGENTIC_PRESCREEN_VOL_SHORT_BARS: z.coerce.number().int().positive().default(10),
-    AGENTIC_PRESCREEN_VOL_LONG_BARS: z.coerce.number().int().positive().default(50),
-    AGENTIC_PRESCREEN_VOL_RATIO: z.coerce.number().positive().default(1.3),
-    AGENTIC_PRESCREEN_BREAKOUT_LOOKBACK_BARS: z.coerce.number().int().positive().default(20),
-    AGENTIC_PRESCREEN_BREAKOUT_PCT: z.coerce.number().positive().default(0.005),
-    // W4.2 expectancy-laddered strength modulation: scales ENTER_LONG signal strength by this
-    // strategy's rolling realized net expectancy — reduction-only (never raises strength above what
-    // the LLM proposed). 'true'/'false' (not z.coerce.boolean(), same rationale as
-    // AGENTIC_PRESCREEN_ENABLED above). Default 'false': an unconfigured deployment sees zero
-    // behavior change.
-    AGENTIC_EXPECTANCY_LADDER: z
-      .enum(['true', 'false'])
-      .default('false')
-      .transform((v) => v === 'true'),
+    // Universe: top-N ranking size the deterministic UniverseScannerService (U1) selects daily from
+    // the full TRADING_SYMBOLS basket as the "active menu" batched into consults; idle (non-menu)
+    // instances still stream candles/warm up but never consult. Bounded ≤ basket size below (a menu
+    // wider than the basket is nonsensical config, refused at construction).
+    AGENTIC_ACTIVE_MENU_SIZE: z.coerce.number().int().min(1).default(12),
     // Marketable-exit crossing buffer (bps) for reduce-only intents (PositionSizerService): how far
     // the IOC limit crosses the spread so a partial fill doesn't leave sub-minNotional dust resting
     // away from market. Capped at 99 (< DEFAULT_LIMITS.maxBandBps=100 in risk.module) so a crossed
@@ -429,6 +426,12 @@ const envSchema = z
     // the legacy baseNotional × strength sizing unchanged, so an unconfigured deployment sees zero
     // behavior change.
     SIZER_EQUITY_FRACTION: fractionString.default('0'),
+    // $1k-book economics (Design § Live-scale economics): sizing equity = min(actualEquity, this
+    // cap) on every sizer path, so every position/PnL figure/promotion verdict is earned at exactly
+    // live proportions even while the demo account itself carries a larger balance. Absent (default)
+    // means UNCAPPED — an unconfigured deployment sees zero behavior change (existing equity-fraction/
+    // baseNotional sizing runs off the real account equity, same as pre-knob).
+    SIZER_EQUITY_CAP: decimalString.optional(),
     // ProtectiveExitService (bot-side stop-loss/trailing-stop backstop): fraction below avgEntry
     // (stop) or below the ratcheted high-water mark (trailing) that force-exits a long via the normal
     // Strategy→Risk→Execution path (an EXIT_LONG Signal, never a direct execution call). '0' (default)
@@ -476,7 +479,7 @@ const envSchema = z
     STOP_LIMIT_BUFFER_BPS: z.coerce.number().int().positive().max(200).default(50),
     RISK_STALE_MAX_AGE_MS: z.coerce.number().int().positive().default(5000),
     // Perp/swap paper adapter knobs (B1: PaperPerpAdapter, not yet wired into app.module.ts).
-    // 'true'/'false' (not z.coerce.boolean(), same rationale as AGENTIC_PRESCREEN_ENABLED above).
+    // 'true'/'false' (not z.coerce.boolean(), same rationale as AGENTIC_PLAN_MODE above).
     // Default 'false': an unconfigured deployment sees zero behavior change.
     PERP_VENUE_ENABLED: z
       .enum(['true', 'false'])
@@ -484,7 +487,10 @@ const envSchema = z
       .transform((v) => v === 'true'),
     PERP_LEVERAGE_CAP: positiveDecimalString.default('1'),
     // Conservative fallback maintenance-margin-rate (see PaperPerpAdapter's why-comment on the
-    // TODO fetchLeverageTiers wiring): ≈0.005 for the 1-2× BTC/ETH bracket at time of writing.
+    // TODO fetchLeverageTiers wiring): ≈0.005 for the 1-2× BTC/ETH bracket at time of writing — ONE
+    // flat figure applied to every configured symbol, which increasingly understates real per-symbol
+    // MMR as the perp basket widens past BTC/ETH toward ~16 symbols (fail-SAFE direction regardless:
+    // an early paper liquidation, never a missed one — see the adapter's own comment).
     PERP_MMR_FALLBACK: decimalString.default('0.005'),
     // B2: required liquidation-price buffer (fraction of price) a perp entry's liq price must
     // clear at PERP_LEVERAGE_CAP/PERP_MMR_FALLBACK — domain/risk/perp-sizing.ts's
@@ -517,12 +523,21 @@ const envSchema = z
     ACTIVE_STRATEGY: z.enum(['agentic']).default('agentic'),
     // C1: read-only public derivatives-data feed (funding rate, open interest, mark/index basis),
     // surfaced to the agentic prompt when fresh. Off by default — zero behavior change unconfigured.
-    // 'true'/'false' (not z.coerce.boolean()), same rationale as AGENTIC_PRESCREEN_ENABLED above.
+    // 'true'/'false' (not z.coerce.boolean()), same rationale as AGENTIC_PLAN_MODE above.
     DERIVATIVES_FEED_ENABLED: z
       .enum(['true', 'false'])
       .default('false')
       .transform((v) => v === 'true'),
     DERIVATIVES_FEED_POLL_MS: z.coerce.number().int().positive().default(60_000),
+    // P5b: perp funding-payment settlement ingestion (funding-ingest.service.ts). Off by default —
+    // zero behavior change unconfigured. Same 'true'/'false' convention as DERIVATIVES_FEED_ENABLED.
+    FUNDING_INGEST_ENABLED: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
+    // Hourly default — funding settles at most 3x/day on Binance USDM; hourly polling is comfortably
+    // inside that cadence while staying resilient to a single missed poll.
+    FUNDING_INGEST_POLL_MS: z.coerce.number().int().positive().default(3_600_000),
     // C4: read-only free news/sentiment feed (headlines only), surfaced to the agentic prompt when
     // fresh. Off by default — zero behavior change unconfigured. SENTIMENT_FEED_API_KEY deliberately
     // excluded from this schema (secret; stays out of AppConfig per the ANTHROPIC_API_KEY precedent
@@ -562,27 +577,108 @@ const envSchema = z
       .transform((v) => v === 'true'),
   })
   .superRefine((data, ctx) => {
-    // The prescreen gate (prescreen.ts) needs AGENTIC_WARMUP_BARS bars of history before its
-    // vol/breakout windows are full — if warmup is shorter than either window, hasEnoughData is
-    // false on every single bar post-warmup too, so evaluatePrescreen permanently returns
-    // insufficient_data (fail-open: every bar consults the LLM) and the cost-floor gate silently
-    // no-ops while AGENTIC_PRESCREEN_ENABLED still reads true. Only checked when the gate is
-    // actually enabled — a disabled gate never reads these windows.
-    if (!data.AGENTIC_PRESCREEN_ENABLED) return;
+    // Backstop-vs-model-stop (Design § Conflict resolutions): ProtectiveExitService's bot-side
+    // stop-loss backstop must sit STRICTLY ABOVE the v2 decision contract's stop-loss upper bound
+    // (domain/risk/agentic-bounds.ts) — otherwise the backstop could fire BEFORE the model's own
+    // worst-case stop, silently overriding the model's exit ownership with a tighter bot-side exit
+    // the model never agreed to. Fail CLOSED (config refusal at construction, never a runtime
+    // place-then-reject): a misconfigured deployment must never boot into that gap. Skipped only
+    // when PROTECT_STOP_LOSS_PCT is the explicit '0' disabled-sentinel (the backstop is off — see
+    // its own schema comment) — an unconfigured deployment (default '0') stays byte-identical.
+    if (data.PROTECT_STOP_LOSS_PCT !== '0') {
+      const protectPct = new Decimal(data.PROTECT_STOP_LOSS_PCT);
+      const slBound = new Decimal(AGENTIC_MAX_STOP_LOSS_PCT);
+      if (protectPct.lte(slBound)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['PROTECT_STOP_LOSS_PCT'],
+          message:
+            `PROTECT_STOP_LOSS_PCT (${data.PROTECT_STOP_LOSS_PCT}) must be strictly greater than ` +
+            `the v2 decision contract's stop-loss upper bound (${AGENTIC_MAX_STOP_LOSS_PCT}) — ` +
+            `otherwise the bot-side backstop could fire before the model's own worst-case stop, ` +
+            `overriding the model's exit ownership.`,
+        });
+      }
+    }
+    // Universe (U1): a menu wider than the configured basket is nonsensical config (the scanner
+    // would rank a top-N that exceeds the pool it ranks from) — refused at construction rather than
+    // silently clamped, so a config typo surfaces immediately instead of at first scanner run. Bound
+    // to the EXPLICIT TRADING_SYMBOLS CSV only: the legacy single-TRADING_SYMBOL fallback (unset
+    // TRADING_SYMBOLS) predates U1's menu concept entirely — the default AGENTIC_ACTIVE_MENU_SIZE=12
+    // (sized for the ~24-symbol basket, set via .env.app in I2) must stay an unconfigured-deployment
+    // no-op on that legacy single-instance path, matching every other feature-inert-until-configured
+    // knob in this file.
     if (
-      data.AGENTIC_WARMUP_BARS < data.AGENTIC_PRESCREEN_VOL_LONG_BARS ||
-      data.AGENTIC_WARMUP_BARS < data.AGENTIC_PRESCREEN_BREAKOUT_LOOKBACK_BARS
+      data.TRADING_SYMBOLS !== undefined &&
+      data.AGENTIC_ACTIVE_MENU_SIZE > data.TRADING_SYMBOLS.length
     ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ['AGENTIC_WARMUP_BARS'],
+        path: ['AGENTIC_ACTIVE_MENU_SIZE'],
         message:
-          `AGENTIC_WARMUP_BARS (${data.AGENTIC_WARMUP_BARS}) must be >= ` +
-          `AGENTIC_PRESCREEN_VOL_LONG_BARS (${data.AGENTIC_PRESCREEN_VOL_LONG_BARS}) and >= ` +
-          `AGENTIC_PRESCREEN_BREAKOUT_LOOKBACK_BARS (${data.AGENTIC_PRESCREEN_BREAKOUT_LOOKBACK_BARS}) ` +
-          `— otherwise the prescreen gate never sees enough history and permanently fail-opens ` +
-          `(insufficient_data every bar), silently no-opping the cost floor.`,
+          `AGENTIC_ACTIVE_MENU_SIZE (${data.AGENTIC_ACTIVE_MENU_SIZE}) must be <= the number of ` +
+          `configured TRADING_SYMBOLS (${data.TRADING_SYMBOLS.length}) — the active menu cannot be ` +
+          `wider than the basket it is ranked from.`,
       });
+    }
+    // EXIT_CROSS_BUFFER_BPS is schema-capped at 99 (< the hardcoded RISK_MAX_BAND_BPS DEFAULT of
+    // 100) so a crossed reduce-only exit price never trips domain/risk/evaluate.ts's price-band
+    // veto — but RISK_MAX_BAND_BPS is itself a freely-settable operator knob, so that static cap
+    // alone does not bind the CONFIGURED band. Fail CLOSED (permission/safety gate, config refusal
+    // at construction, never a runtime place-then-reject): an operator who tightens
+    // RISK_MAX_BAND_BPS at or below EXIT_CROSS_BUFFER_BPS must never boot into a state where every
+    // reduce-only IOC exit (including a bot-side stop firing) self-vetoes on PRICE_BAND.
+    if (data.EXIT_CROSS_BUFFER_BPS >= data.RISK_MAX_BAND_BPS) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['EXIT_CROSS_BUFFER_BPS'],
+        message:
+          `EXIT_CROSS_BUFFER_BPS (${data.EXIT_CROSS_BUFFER_BPS}) must stay strictly below ` +
+          `RISK_MAX_BAND_BPS (${data.RISK_MAX_BAND_BPS}) — otherwise a crossed reduce-only exit ` +
+          `price always exceeds the configured price band and evaluate.ts vetoes every exit with ` +
+          `PRICE_BAND, stranding a position that needs to be reduced.`,
+      });
+    }
+    // Reflection-model pricing gate-honesty refusal (review finding, major). ratesFor()
+    // (mode-control/promotion-readiness.service.ts) prices EVERY model at the flat
+    // AGENTIC_TOKEN_PRICE_* knobs whenever AGENTIC_TOKEN_PRICES_JSON is ABSENT — the per-model map's
+    // own "unknown model -> most-expensive rate" fail-closed fallback (AGENTIC_TOKEN_PRICES_JSON's
+    // own schema comment above) only fires once a map IS configured; an absent map is a DIFFERENT,
+    // fail-OPEN branch that prices under a pinned pricier reflection model at the cheaper decide
+    // rate. Refuse at construction (permission/safety gate, fails CLOSED) rather than let a
+    // misconfigured deployment boot on understated LLM-cost evidence inside the earned-live
+    // promotion gate. Malformed AGENTIC_TOKEN_PRICES_JSON is left to parseTokenPrices' own throw at
+    // config-build time (below) — that JSON.parse attempt here only decides whether to skip this
+    // check, never reports its own issue, so the two failures are never double-reported.
+    if (
+      data.AGENTIC_REFLECTION_MODEL !== undefined &&
+      data.AGENTIC_REFLECTION_MODEL !== data.AGENTIC_MODEL
+    ) {
+      let hasEntry = false;
+      if (data.AGENTIC_TOKEN_PRICES_JSON !== undefined) {
+        try {
+          const parsedMap: unknown = JSON.parse(data.AGENTIC_TOKEN_PRICES_JSON);
+          hasEntry =
+            typeof parsedMap === 'object' &&
+            parsedMap !== null &&
+            Object.prototype.hasOwnProperty.call(parsedMap, data.AGENTIC_REFLECTION_MODEL);
+        } catch {
+          hasEntry = true; // malformed JSON fails boot separately via parseTokenPrices below
+        }
+      }
+      if (!hasEntry) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['AGENTIC_TOKEN_PRICES_JSON'],
+          message:
+            `AGENTIC_REFLECTION_MODEL (${data.AGENTIC_REFLECTION_MODEL}) differs from AGENTIC_MODEL ` +
+            `(${data.AGENTIC_MODEL}) but has no entry in AGENTIC_TOKEN_PRICES_JSON — with the map ` +
+            `unset (or missing this model), PromotionReadinessService prices EVERY model at the ` +
+            `flat AGENTIC_TOKEN_PRICE_* knobs, under-counting a pricier reflection model's real ` +
+            `spend inside the earned-live promotion gate. Add a per-model entry for ` +
+            `${data.AGENTIC_REFLECTION_MODEL} to AGENTIC_TOKEN_PRICES_JSON.`,
+        });
+      }
     }
   });
 
@@ -650,6 +746,10 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     AGENTIC_MAX_TOKENS_PER_DAY: agenticMaxTokensPerDay,
     AGENTIC_DAILY_COST_STOP_USD: agenticDailyCostStopUsd,
     AGENTIC_ENTRY_TTL_BARS: agenticEntryTtlBars,
+    AGENTIC_MAX_POSITION_FRACTION: agenticMaxPositionFraction,
+    AGENTIC_FALLBACK_CONSULT_BARS: agenticFallbackConsultBars,
+    AGENTIC_WAKE_MOVE_PCT: agenticWakeMovePct,
+    AGENTIC_ACTIVE_MENU_SIZE: agenticActiveMenuSize,
     AGENTIC_MAX_ENTRIES_PER_DAY: agenticMaxEntriesPerDay,
     AGENTIC_DRAIN_COOLDOWN_BASE_MS: agenticDrainCooldownBaseMs,
     AGENTIC_DRAIN_COOLDOWN_MAX_MS: agenticDrainCooldownMaxMs,
@@ -659,7 +759,6 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     AGENTIC_PLAYBOOK_AB_PCT: agenticPlaybookAbPct,
     AGENTIC_DERIVATIVES_AB_PCT: agenticDerivativesAbPct,
     AGENTIC_DERIVATIVES_V2_ENABLED: agenticDerivativesV2Enabled,
-    AGENTIC_THINKING_AB_PCT: agenticThinkingAbPct,
     AGENTIC_CROSS_SYMBOL_ENABLED: agenticCrossSymbolEnabled,
     AGENTIC_CROSS_SYMBOL_LOOKBACK_BARS: agenticCrossSymbolLookbackBars,
     AGENTIC_BOOK_STRUCTURE_ENABLED: agenticBookStructureEnabled,
@@ -678,18 +777,8 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     AGENTIC_TOKEN_PRICES_JSON: agenticTokenPricesJson,
     PROMOTION_EVIDENCE_EPOCH: promotionEvidenceEpoch,
     PROMOTION_DUST_NOTIONAL: promotionDustNotional,
-    AGENTIC_PRESCREEN_ENABLED: agenticPrescreenEnabled,
-    AGENTIC_PRESCREEN_VOL_SHORT_BARS: agenticPrescreenVolShortBars,
-    AGENTIC_PRESCREEN_VOL_LONG_BARS: agenticPrescreenVolLongBars,
-    AGENTIC_PRESCREEN_VOL_RATIO: agenticPrescreenVolRatio,
-    AGENTIC_PRESCREEN_BREAKOUT_LOOKBACK_BARS: agenticPrescreenBreakoutLookbackBars,
-    AGENTIC_PRESCREEN_BREAKOUT_PCT: agenticPrescreenBreakoutPct,
-    AGENTIC_EXPECTANCY_LADDER: agenticExpectancyLadder,
     AGENTIC_PLAN_MODE: agenticPlanMode,
     AGENTIC_SHORTS_ENABLED: agenticShortsEnabled,
-    AGENTIC_MIN_EDGE_MULTIPLE: agenticMinEdgeMultiple,
-    AGENTIC_MIN_RR: agenticMinRr,
-    AGENTIC_PLAN_MAX_QUIET_BARS: agenticPlanMaxQuietBars,
     AGENTIC_PLAN_EXIT_TTL_BARS: agenticPlanExitTtlBars,
     AGENTIC_QUIET_PAYLOAD_SAMPLE_BARS: agenticQuietPayloadSampleBars,
     AGENTIC_VENUE_TP: agenticVenueTp,
@@ -700,6 +789,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     ENTRY_ORDER_TYPE: entryOrderType,
     BASE_NOTIONAL: baseNotional,
     SIZER_EQUITY_FRACTION: sizerEquityFraction,
+    SIZER_EQUITY_CAP: sizerEquityCap,
     PROTECT_STOP_LOSS_PCT: protectStopLossPct,
     PROTECT_TRAILING_PCT: protectTrailingPct,
     PLAN_STOP_WATCH_ENABLED: planStopWatchEnabled,
@@ -725,6 +815,8 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     ACTIVE_STRATEGY: activeStrategy,
     DERIVATIVES_FEED_ENABLED: derivativesFeedEnabled,
     DERIVATIVES_FEED_POLL_MS: derivativesFeedPollMs,
+    FUNDING_INGEST_ENABLED: fundingIngestEnabled,
+    FUNDING_INGEST_POLL_MS: fundingIngestPollMs,
     SENTIMENT_FEED_ENABLED: sentimentFeedEnabled,
     SENTIMENT_FEED_POLL_MS: sentimentFeedPollMs,
     AGENTIC_TRADEFLOW_ENABLED: agenticTradeFlowEnabled,
@@ -744,15 +836,31 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
   // single-balance conflict (both legs are reduce-only against the same position, never a balance
   // lock), so a deployment where every configured venue is swap-capable (binanceusdm — the only
   // perp venue this pass wires, mirrors position-sizer.service.ts's own local PERP_VENUE_ID
-  // convention) may run both. Config refusal AT CONSTRUCTION (never a runtime place-then-reject):
-  // an unconfigured VENUES (paper/test default, empty array) never trips this — only an EXPLICITLY
-  // configured spot venue does.
-  if (agenticVenueTp && agenticVenueStop && venues.some((v) => v.id !== 'binanceusdm')) {
+  // convention) may run both. Config refusal AT CONSTRUCTION (never a runtime place-then-reject).
+  // FAIL CLOSED on an empty/unset VENUES: an unconfigured VENUES is NOT a safe default here — it
+  // resolves to the real 'binance' spot venue (app.module.ts's `venues[0]?.id ?? 'binance'`), and
+  // TRADING_MODE (not the VENUES array) decides paper-vs-real, so an empty array is exactly the
+  // shipped spot-lane shape and must be treated as spot, not as "no venue configured yet".
+  const allVenuesPerp = venues.length > 0 && venues.every((v) => v.id === 'binanceusdm');
+  if (agenticVenueTp && agenticVenueStop && !allVenuesPerp) {
     throw new Error(
-      'AGENTIC_VENUE_TP and AGENTIC_VENUE_STOP cannot both be enabled while any configured venue ' +
-        'is spot: a resting take-profit SELL locks the full base balance, leaving nothing to back ' +
-        'a second full-size protective stop SELL (spot has no OCO here — backlog #44). Perp-only ' +
-        'deployments (every configured venue swap-capable) may run both.',
+      'AGENTIC_VENUE_TP and AGENTIC_VENUE_STOP cannot both be enabled unless every configured ' +
+        'venue is binanceusdm (perp): a resting take-profit SELL locks the full base balance, ' +
+        'leaving nothing to back a second full-size protective stop SELL on spot (no OCO here — ' +
+        'backlog #44). An empty/unset VENUES resolves to the real spot venue at boot and is ' +
+        'treated as spot for this guard, not as an unconfigured no-op.',
+    );
+  }
+
+  // Rich decision contract (D1, Design § Conflict resolutions): AGENTIC_SHORTS_ENABLED opens the
+  // 'open_short' tool action, which is meaningless (and would journal an unfillable short) on a
+  // deployment with no perp-capable venue configured. Config refusal AT CONSTRUCTION, mirroring the
+  // venue-tp/stop refusal above — never a runtime place-then-reject. An unconfigured VENUES (paper/
+  // test default, empty array) never trips this unless shorts are also explicitly enabled.
+  if (agenticShortsEnabled && !venues.some((v) => v.id === 'binanceusdm')) {
+    throw new Error(
+      'AGENTIC_SHORTS_ENABLED requires a binanceusdm venue in VENUES — shorts have no perp venue ' +
+        'to route through on a spot-only (or unconfigured) deployment.',
     );
   }
 
@@ -786,6 +894,10 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       maxTokensPerDay: agenticMaxTokensPerDay,
       dailyCostStopUsd: agenticDailyCostStopUsd,
       entryTtlBars: agenticEntryTtlBars,
+      maxPositionFraction: agenticMaxPositionFraction,
+      fallbackConsultBars: agenticFallbackConsultBars,
+      wakeMovePct: agenticWakeMovePct,
+      activeMenuSize: agenticActiveMenuSize,
       maxEntriesPerDay: agenticMaxEntriesPerDay,
       drainCooldownBaseMs: agenticDrainCooldownBaseMs,
       drainCooldownMaxMs: agenticDrainCooldownMaxMs,
@@ -800,7 +912,6 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       playbookAbPct: agenticPlaybookAbPct,
       derivativesAbPct: agenticDerivativesAbPct,
       derivativesV2Enabled: agenticDerivativesV2Enabled,
-      thinkingAbPct: agenticThinkingAbPct,
       crossSymbolEnabled: agenticCrossSymbolEnabled,
       crossSymbolLookbackBars: agenticCrossSymbolLookbackBars,
       bookStructureFeedEnabled: agenticBookStructureEnabled,
@@ -814,22 +925,12 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       tokenPrices: parseTokenPrices(agenticTokenPricesJson),
       promotionEvidenceEpoch,
       promotionDustNotional,
-      prescreenEnabled: agenticPrescreenEnabled,
-      prescreenVolShortBars: agenticPrescreenVolShortBars,
-      prescreenVolLongBars: agenticPrescreenVolLongBars,
-      prescreenVolRatio: agenticPrescreenVolRatio,
-      prescreenBreakoutLookbackBars: agenticPrescreenBreakoutLookbackBars,
-      prescreenBreakoutPct: agenticPrescreenBreakoutPct,
-      expectancyLadderEnabled: agenticExpectancyLadder,
       venueTpEnabled: agenticVenueTp,
       venueTpReplaceDriftBps: agenticVenueTpReplaceDriftBps,
       venueStopEnabled: agenticVenueStop,
       venueStopReplaceDriftBps: agenticVenueStopReplaceDriftBps,
       planMode: agenticPlanMode,
       shortsEnabled: agenticShortsEnabled,
-      minEdgeMultiple: agenticMinEdgeMultiple,
-      planMaxQuietBars: agenticPlanMaxQuietBars,
-      minRr: agenticMinRr,
       planExitTtlBars: agenticPlanExitTtlBars,
       quietPayloadSampleBars: agenticQuietPayloadSampleBars,
     },
@@ -838,6 +939,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       entryOrderType,
       baseNotional,
       equityFraction: sizerEquityFraction,
+      equityCap: sizerEquityCap,
       protectStopLossPct,
       protectTrailingPct,
       planStopWatchEnabled,
@@ -870,6 +972,10 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     derivativesFeed: {
       enabled: derivativesFeedEnabled,
       pollIntervalMs: derivativesFeedPollMs,
+    },
+    fundingIngest: {
+      enabled: fundingIngestEnabled,
+      pollIntervalMs: fundingIngestPollMs,
     },
     sentimentFeed: {
       enabled: sentimentFeedEnabled,

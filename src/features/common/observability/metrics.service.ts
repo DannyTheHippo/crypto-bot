@@ -150,13 +150,17 @@ export const AGENT_CLIENT_INFO_GAUGE = makeGaugeProvider({
   help: 'Bound agentic client kind (1 on the active kind; stub = INERT, anthropic = LIVE)',
   labelNames: ['kind'] as const,
 });
-export const AGENTIC_PRESCREEN_COUNTER = makeCounterProvider({
-  name: 'agentic_prescreen_total',
+// P6 (Design § Learning & measurement stack): renamed from AGENTIC_PRESCREEN_COUNTER —
+// evaluateConsultSchedule (agentic.strategy.ts, B2) replaced the prescreen gate outright, so the
+// metric now carries B2's ConsultGateOutcome six-member set directly; the old `reason` label had
+// no ConsultGateOutcome equivalent (the outcome itself already encodes what drove it) and is
+// dropped rather than stubbed.
+export const AGENTIC_CONSULT_GATE_COUNTER = makeCounterProvider({
+  name: 'agentic_consult_gate_total',
   help:
-    'Prescreen gate outcomes ahead of agentic LLM calls (called / skipped_quiet / failopen_error), ' +
-    'labeled by the PrescreenReason that drove it (position_open / vol_expansion / ' +
-    'breakout_proximity / insufficient_data / quiet / n/a for failopen_error)',
-  labelNames: ['outcome', 'reason'] as const,
+    'Consult-gate outcomes ahead of agentic LLM calls (consulted / skipped_scheduled / ' +
+    'forced_fill / forced_move / forced_fallback / forced_rearm)',
+  labelNames: ['outcome'] as const,
 });
 // W2: every silent exit in the reflection loop (onClosedTrade/runReflection/maybeAutoPromote) now
 // increments this with a closed-set outcome label — the loop's only prior mint was invisible from
@@ -226,7 +230,31 @@ export const MARKET_CHANNEL_STALENESS_GAUGE = makeGaugeProvider({
 });
 export const MARKET_STREAM_FORCED_RECONNECTS_COUNTER = makeCounterProvider({
   name: 'market_stream_forced_reconnects_total',
-  help: 'Watchdog-forced websocket reconnects after a core channel (ticker/candle) stalled silently',
+  help: 'Watchdog-forced websocket reconnects after a channel (ticker/trade/book/candle) stalled silently',
+});
+
+// W1 (Grafana rebuild): funding-ingest / universe-scanner / agent-budget metrics recorded via
+// AgentMetricsRecorder from FundingIngestService/UniverseScannerService/TradingRuntimeService — same
+// cross-boundary duplicated-provider convention as AGENTIC_VENUE_TP_COUNTER/AGENTIC_VENUE_STOP_COUNTER
+// above (those callers live in features/trading/agentic too but are recorded through the same seam).
+export const FUNDING_PAYMENTS_INGESTED_COUNTER = makeCounterProvider({
+  name: 'funding_payments_ingested_total',
+  help: 'Perp funding-payment settlement rows ingested from the venue (FundingIngestService), by venue/symbol',
+  labelNames: ['venue', 'symbol'] as const,
+});
+export const AGENTIC_ACTIVE_MENU_GAUGE = makeGaugeProvider({
+  name: 'agentic_active_menu',
+  help: 'Universe scanner active-menu membership (1 on a symbol currently in the consulted menu; absent otherwise)',
+  labelNames: ['symbol'] as const,
+});
+export const AGENTIC_MENU_CHURN_COUNTER = makeCounterProvider({
+  name: 'agentic_menu_churn_total',
+  help: 'Universe scanner active-menu churn — symbols entering/leaving the menu per recompute, by direction',
+  labelNames: ['direction'] as const,
+});
+export const AGENTIC_BUDGET_REMAINING_GAUGE = makeGaugeProvider({
+  name: 'agentic_budget_remaining_usd',
+  help: 'Remaining daily LLM spend budget (USD) before the cost breaker trips — DailyLlmBudget.budgetBlock(), ONE shared lane-wide cap (not per-strategy: AGENT_LLM_BUDGET is a single instance shared across all strategy instances in this process)',
 });
 
 // §strategy lifecycle — sampled in the 5s loop below (same pull pattern as kill_switch_state):

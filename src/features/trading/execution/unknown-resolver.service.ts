@@ -140,9 +140,13 @@ export class UnknownResolverService {
     }
 
     // Backfill realized fills first (they may already drive the order terminal); cumQty is rebuilt
-    // from the fill table, so this MUST precede any ack/terminal fold.
+    // from the fill table, so this MUST precede any ack/terminal fold. venue.venueOrderId is passed
+    // through explicitly (MATCHING, mirrors demo-fill-poller.service.ts): ccxt's unified myTrades
+    // carries `order` = the VENUE numeric order id as VenueFill.clientOrderId (Binance has no
+    // clientOrderId on myTrades), so a trade for THIS order is found by that id, not by p.coid — the
+    // p.coid comparison only ever matches an adapter (paper) that echoes our own clientOrderId.
     if (new Decimal(venue.cumQty).gt(0)) {
-      await this.backfillFills(p);
+      await this.backfillFills(p, venue.venueOrderId);
     }
     if (venue.venueOrderId.length > 0) this.orders.setVenueOrderId(p.coid, venue.venueOrderId);
 
@@ -337,7 +341,7 @@ export class UnknownResolverService {
   // Sweep realized trades since the intent was created (a wide overlap is free under I3 dedupe) and
   // ingest each through the shared FillIngestor; duplicates apply nothing. The in-flight intent is
   // retained for every non-terminal tracked order, so its createdAt is the checkpoint floor.
-  private async backfillFills(p: Pending): Promise<void> {
+  private async backfillFills(p: Pending, venueOrderId: string): Promise<void> {
     const since = this.portfolio.inFlightIntent(p.coid)!.createdAt;
     let trades: readonly VenueFill[];
     try {
@@ -347,18 +351,27 @@ export class UnknownResolverService {
     }
     let rec = this.orders.get(p.coid)!;
     for (const t of trades) {
-      if (t.clientOrderId !== p.coid) continue; // a trade for a sibling order on the same symbol
-      const res = await this.ingestor.ingest(rec, this.toFillRecord(t), `query:${t.venueTradeId}`);
+      // A trade is ours iff it echoes our own coid (paper) OR carries THIS order's venue order id
+      // (ccxt myTrades — see resolveOne's own comment on the call site above); neither ⇒ a sibling
+      // order's trade on the same symbol, skipped.
+      const isOurs =
+        t.clientOrderId === p.coid || (venueOrderId.length > 0 && t.clientOrderId === venueOrderId);
+      if (!isOurs) continue;
+      const res = await this.ingestor.ingest(
+        rec,
+        this.toFillRecord(t, p.coid),
+        `query:${t.venueTradeId}`,
+      );
       rec = res.record;
     }
   }
 
-  private toFillRecord(t: VenueFill): FillRecord {
+  private toFillRecord(t: VenueFill, coid: ClientOrderId): FillRecord {
     return {
       venue: t.venue,
       symbol: t.symbol,
       venueTradeId: t.venueTradeId,
-      clientOrderId: t.clientOrderId,
+      clientOrderId: coid,
       price: price(t.price),
       qty: qty(t.qty),
       fee: t.fee ? { ccy: t.fee.ccy, amount: feeAmount(t.fee.amount) } : null,

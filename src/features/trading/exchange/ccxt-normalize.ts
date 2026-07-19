@@ -11,8 +11,15 @@ import type {
   AlgoOrderState,
   ExchangeOrderState,
   VenueFill,
+  VenueFundingPayment,
 } from '../../../ports/exchange';
-import type { CcxtBalances, CcxtOrder, CcxtTrade, RawAlgoOrder } from './ccxt-order-client';
+import type {
+  CcxtBalances,
+  CcxtFundingHistoryEntry,
+  CcxtOrder,
+  CcxtTrade,
+  RawAlgoOrder,
+} from './ccxt-order-client';
 
 // ── String discipline ─────────────────────────────────────────────────────────
 // Money values in ccxt with number:String arrive as strings; we accept a number
@@ -77,7 +84,7 @@ export function normalizeTrade(
   // t.order carries the venue's own order id but VenueFill requires the client order id.
   // The caller passes fallbackCoid (the coid we queried with) when t.order is absent.
   const coid: ClientOrderId =
-    t.order !== undefined ? clientOrderId(t.order) : (fallbackCoid ?? clientOrderId(''));
+    t.order !== undefined ? clientOrderId(t.order) : fallbackCoid ?? clientOrderId('');
 
   // takerOrMaker can be absent; default to 'taker' as the conservative assumption for fees.
   const liquidity: 'maker' | 'taker' = t.takerOrMaker === 'maker' ? 'maker' : 'taker';
@@ -95,6 +102,36 @@ export function normalizeTrade(
     fee,
     liquidity,
     venueTimestamp,
+  };
+}
+
+// ── Funding-payment normalization ─────────────────────────────────────────────
+
+// P5b: ccxt's unified FundingHistory row has no fundingRate/markPrice/qty (see
+// CcxtFundingHistoryEntry's own header comment) — amount is the ONLY money field, via the same
+// toStr string-discipline as every other money path in this file. Timestamp is settlement-grade
+// like normalizeTrade's own; a missing/non-integer one is a data-integrity problem, not a soft
+// default.
+export function normalizeFundingPayment(
+  e: CcxtFundingHistoryEntry,
+  venue: VenueId,
+  symbol: SymbolId,
+): VenueFundingPayment {
+  if (
+    e.timestamp === undefined ||
+    !Number.isFinite(e.timestamp) ||
+    !Number.isInteger(e.timestamp)
+  ) {
+    throw new Error(
+      `normalizeFundingPayment: funding entry is missing a valid integer timestamp (got ${e.timestamp})`,
+    );
+  }
+  return {
+    venue,
+    symbol,
+    venuePaymentId: String(e.id),
+    amountQuote: toStr(e.amount, '0'),
+    fundingTime: epochMs(e.timestamp),
   };
 }
 

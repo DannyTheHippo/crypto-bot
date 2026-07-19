@@ -143,4 +143,17 @@ describe('InMemoryAgentDecisionJournal', () => {
     expect(await journal.versionEntryStats(1)).toEqual({ decides: 1, entries: 1 });
     expect(await journal.versionEntryStats(3)).toEqual({ decides: 0, entries: 0 });
   });
+
+  it('versionEntryStats (P4): counts v2 open_long/open_short as entries, never close/adjust/hold', async () => {
+    const journal = new InMemoryAgentDecisionJournal();
+    journal.record(entry(1, { model: 'claude-sonnet-5', action: 'open_long', playbookVersion: 5 }));
+    journal.record(
+      entry(2, { model: 'claude-sonnet-5', action: 'open_short', playbookVersion: 5 }),
+    );
+    journal.record(entry(3, { model: 'claude-sonnet-5', action: 'close', playbookVersion: 5 }));
+    journal.record(entry(4, { model: 'claude-sonnet-5', action: 'adjust', playbookVersion: 5 }));
+    journal.record(entry(5, { model: 'claude-sonnet-5', action: 'hold', playbookVersion: 5 }));
+
+    expect(await journal.versionEntryStats(5)).toEqual({ decides: 5, entries: 2 });
+  });
 });

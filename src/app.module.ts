@@ -10,7 +10,8 @@ import {
   type OnModuleDestroy,
   type OnModuleInit,
 } from '@nestjs/common';
-import { randomBytes, createHash } from 'node:crypto';
+import { createHash } from 'node:crypto';
+import path from 'node:path';
 import { APP_FILTER } from '@nestjs/core';
 import type { Exchange } from 'ccxt';
 import {
@@ -25,7 +26,6 @@ import { ObservabilityModule } from './features/common/observability/observabili
 import { PersistenceModule } from './database/database.module';
 import { GlobalExceptionFilter } from './shared/filters/global-exception.filter';
 import { CorrelationMiddleware } from './shared/correlation/correlation.middleware';
-import { DbHealthIndicator } from './database/db-health.indicator';
 import { DrizzleExecutionStore } from './database/repositories/drizzle-execution-store';
 import { DrizzleExecOutbox } from './database/repositories/drizzle-exec-outbox';
 import { PgAdvisoryInstanceLock } from './database/repositories/pg-advisory-instance-lock';
@@ -36,10 +36,18 @@ import { DATABASE_POOL, DRIZZLE_DB } from './database/database.tokens';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import type { Pool } from 'pg';
 import type * as schema from './database/schemas/trading';
-import { DB_HEALTH } from './ports/db-health';
 import { RiskModule } from './features/trading/risk/risk.module';
-import { KillSwitchService } from './features/trading/risk/kill-switch.service';
 import { ExecutionModule } from './features/trading/execution/execution.module';
+// W3 Part 4: composition-root bridge/global modules, decomposed out of this file — pure code motion,
+// byte-identical provider/export shape (see each module's own header comment). The boundaries 'app'
+// zone pattern (eslint.config.mjs) was widened to cover src/features/trading/composition/** so these
+// files keep the SAME cross-feature import rights this file's own composition-root code always had.
+import { DbHealthBridgeModule } from './features/trading/composition/db-health-bridge.module';
+import { PortfolioViewBridgeModule } from './features/trading/composition/portfolio-view-bridge.module';
+import { StrategyRegistryBridgeModule } from './features/trading/composition/strategy-registry-bridge.module';
+import { SigningKeyModule } from './features/trading/composition/signing-key.module';
+import { KillSwitchModule } from './features/trading/composition/kill-switch.module';
+import { LimitsCompleteModule } from './features/trading/composition/limits-complete.module';
 import {
   SignalSinkService,
   SIGNAL_REJECTIONS_COUNTER,
@@ -53,7 +61,6 @@ import { PlanStopRegistryService } from './features/trading/risk/plan-stop-regis
 import { UnknownResolverService } from './features/trading/execution/unknown-resolver.service';
 import { ReconciliationService } from './features/trading/execution/reconciliation.service';
 import { EquitySamplerService } from './features/trading/execution/equity-sampler.service';
-import { PortfolioStateService } from './features/trading/execution/portfolio-state.service';
 import { BootRecoveryService } from './features/trading/execution/boot-recovery.service';
 import {
   PaperExchangeAdapter,
@@ -113,12 +120,17 @@ import {
   AGENT_LLM_BUDGET,
   PLAYBOOK_PROVIDER_OVERRIDE,
   AGENT_TRADING_PROFILE_OVERRIDE,
+  ACTIVE_MENU_GATE_OVERRIDE,
+  PAYLOAD_EXTRAS_PROVIDER_OVERRIDE,
   REFLECTION_SERVICE,
   REFLECTION_METRICS_RECORDER_OVERRIDE,
   SEED_PLAYBOOK,
+  SEED_PLAYBOOK_PERP,
   agenticEnv,
 } from './features/trading/agentic/agentic-strategy.module';
 import type { DailyLlmBudget } from './features/trading/agentic/agent-budget';
+import { buildAgentPortfolioBlock } from './features/trading/agentic/agent-portfolio-block';
+import { loadMacroCalendar, filterUpcoming } from './features/trading/agentic/macro-calendar';
 import {
   createPromotionEvaluator,
   PromotionEvaluator,
@@ -131,6 +143,9 @@ import {
   type AgenticStrategyDeps,
 } from './features/trading/agentic/agentic.strategy';
 import { CrossSymbolContextService } from './features/trading/agentic/cross-symbol-context';
+import { UniverseScannerService } from './features/trading/agentic/universe-scanner.service';
+import { ExecQualityService } from './features/trading/agentic/exec-quality.service';
+import { PriceHistoryStore } from './features/trading/agentic/price-history-store';
 import { assertAgenticLaneNotLive } from './features/trading/agentic/agentic-live-interlock';
 import { validatePlaybook } from './features/trading/agentic/playbook-validator';
 import {
@@ -144,6 +159,7 @@ import {
   type AgentDecisionJournalPort,
   type AgentProposal,
   type AgentTradingProfile,
+  type AgentCalendarEvent,
   type LlmUsageSink,
   type PlaybookProvider,
   type SymbolConstraints,
@@ -166,6 +182,9 @@ import {
   type PromotionReadiness,
   type RoundTripEvidencePort,
 } from './ports/promotion';
+import { FundingPaymentsRepository } from './database/repositories/funding-payments.repository';
+import { FUNDING_PAYMENTS, type FundingPaymentsPort } from './ports/funding-payments';
+import { FundingIngestService } from './features/trading/exchange/funding-ingest.service';
 import { RoundTripEvidenceReader } from './features/trading/agentic/round-trip-evidence.reader';
 import {
   PlaybookStoreAdapter,
@@ -181,7 +200,6 @@ import { assertSwapPrivateUrlSafe } from './shared/venue-safety/swap-url-guard';
 import { ModeControlModule } from './features/trading/mode-control/mode-control.module';
 import {
   LIVE_ADAPTER_CAP,
-  LIMITS_COMPLETE,
   KEY_PROBE,
   MODE_AUDIT_OVERRIDE,
   ARM_PRECONDITIONS,
@@ -193,7 +211,6 @@ import {
 import { CrashRecoveryService } from './features/trading/execution/crash-recovery.service';
 import { CLOCK, SystemClock, type ClockPort } from './ports/clock';
 import {
-  RISK_SIGNING_KEY,
   KILL_SWITCH,
   RISK_LIMITS,
   RISK_JOURNAL_OVERRIDE,
@@ -204,7 +221,7 @@ import {
   type ProtectiveExitConfig,
   type PlanStopRegistryPort,
 } from './ports/risk';
-import { validateLimits, type PartialRiskLimits } from './domain/risk/limits';
+import type { PartialRiskLimits } from './domain/risk/limits';
 import { EXCHANGE_PORT, type ExchangePort } from './ports/exchange';
 import {
   EXEC_OUTBOX,
@@ -214,12 +231,14 @@ import {
   EXECUTION_STORE,
   EXECUTION_STORE_OVERRIDE,
   INSTANCE_LOCK_OVERRIDE,
+  EXEC_QUALITY_SINK_OVERRIDE,
   type ExecOutboxPort,
   type ExecReportNotify,
   type PortfolioViewPort,
   type ExecutionStorePort,
   type InstanceLockPort,
   type ExecRunContext,
+  type ExecQualitySinkPort,
 } from './ports/execution';
 import {
   MARKET_STREAM,
@@ -252,41 +271,9 @@ import {
 } from './ports/strategy';
 import { venueId, symbolId, strategyId, type SymbolId } from './domain/types/ids';
 
-// Lifts only DB_HEALTH from PersistenceModule into the global DI scope so ObservabilityModule's
-// HealthController resolves it via @Optional() @Inject(DB_HEALTH) without importing persistence.
-@Global()
-@Module({
-  imports: [PersistenceModule],
-  providers: [{ provide: DB_HEALTH, useExisting: DbHealthIndicator }],
-  exports: [DB_HEALTH],
-})
-class DbHealthBridgeModule {}
-
-// Lifts PORTFOLIO_VIEW (ExecutionModule's canonical snapshot) into the global scope so
-// ObservabilityModule's MetricsService can @Optional() @Inject(PORTFOLIO_VIEW) and emit the §8
-// trading gauges (equity/PnL/position) WITHOUT a modules→modules import (observability must not
-// import execution — the boundary wall). Same bridge pattern as DbHealthBridgeModule.
-@Global()
-@Module({
-  imports: [ExecutionModule],
-  providers: [{ provide: PORTFOLIO_VIEW, useExisting: PortfolioStateService }],
-  exports: [PORTFOLIO_VIEW],
-})
-class PortfolioViewBridgeModule {}
-
-// Lifts STRATEGY_REGISTRY into the global DI scope so ObservabilityModule's MetricsService (per-strategy
-// strategy_lifecycle sampling) and HealthController (ready() strategies detail) resolve it via
-// @Optional() @Inject(STRATEGY_REGISTRY) without an observability→app-root import (the boundary wall
-// runs the other way — modules must not import the composition root). Unlike DbHealthBridgeModule/
-// PortfolioViewBridgeModule, StrategyRegistry has no owning sub-module to re-export from: it is the
-// composition root's own service, so this bridge provides (not just re-exports) it — AppModule imports
-// this module instead of declaring StrategyRegistry as a local provider, keeping exactly one instance.
-@Global()
-@Module({
-  providers: [StrategyRegistry, { provide: STRATEGY_REGISTRY, useExisting: StrategyRegistry }],
-  exports: [StrategyRegistry, STRATEGY_REGISTRY],
-})
-class StrategyRegistryBridgeModule {}
+// W3 Part 4: DbHealthBridgeModule, PortfolioViewBridgeModule, StrategyRegistryBridgeModule moved to
+// features/trading/composition/{db-health-bridge,portfolio-view-bridge,strategy-registry-bridge}
+// .module.ts — pure code motion (imported below), byte-identical provider/export shape.
 
 // §7: persistence runtime overrides. When DATABASE_URL is configured AND not under test/ci, the
 // execution/mode-control ports are backed by the Drizzle repositories — durable order/fill journal,
@@ -363,6 +350,17 @@ function dbRunContext(config: TypedConfigService): ExecRunContext {
         isTestEnv() || db === null ? undefined : new SignalJournalAdapter(db, dbRunContext(config)),
       inject: [DRIZZLE_DB, TypedConfigService],
     },
+    {
+      // P5b: DB-backed FUNDING_PAYMENTS writer/cursor. No in-memory fallback (durability is
+      // load-bearing — promotion math must survive a redeploy), mirroring PROMOTION_STATS's own
+      // fail-closed-to-undefined posture: undefined under test/ci/no-DB, and FundingIngestService's
+      // composition-root gate (MarketFeedModule below) simply never starts the poller when this is
+      // undefined.
+      provide: FUNDING_PAYMENTS,
+      useFactory: (db: NodePgDatabase<typeof schema> | null): FundingPaymentsPort | undefined =>
+        isTestEnv() || db === null ? undefined : new FundingPaymentsRepository(db),
+      inject: [DRIZZLE_DB],
+    },
   ],
   exports: [
     EXEC_OUTBOX_OVERRIDE,
@@ -371,47 +369,14 @@ function dbRunContext(config: TypedConfigService): ExecRunContext {
     MODE_AUDIT_OVERRIDE,
     RISK_JOURNAL_OVERRIDE,
     SIGNAL_JOURNAL,
+    FUNDING_PAYMENTS,
   ],
 })
 class DrizzlePersistenceGlobalModule {}
 
-// §4.2: ONE process-lifetime signing key, generated at the composition root and shared by exactly
-// the RiskEngine (mint) and Execution (verify). Global so both modules resolve the same instance;
-// never persisted, never in env.
-@Global()
-@Module({
-  providers: [{ provide: RISK_SIGNING_KEY, useFactory: () => randomBytes(32) }],
-  exports: [RISK_SIGNING_KEY],
-})
-class SigningKeyModule {}
-
-// §5: ONE global kill switch. Risk engages it (monitors/reconcile/anomalies) and reads it in the
-// pre-trade gate; Execution engages it too (fill-payload conflict, unknown-state timeout,
-// reconciliation HALT). A single shared instance is load-bearing — two would let Execution halt a
-// switch Risk never reads. RiskModule and ExecutionModule both consume this global, neither owns it.
-@Global()
-@Module({
-  providers: [KillSwitchService, { provide: KILL_SWITCH, useExisting: KillSwitchService }],
-  exports: [KillSwitchService, KILL_SWITCH],
-})
-class KillSwitchModule {}
-
-// §10(d): ModeControl's gate-(d) input, derived ONCE at boot from the SAME RISK_LIMITS the engine
-// enforces (RiskModule exports it). Global so ModeControl resolves it without a modules→modules
-// import. Replaces the prior hardcoded `true` — the prerequisite for enabling a real key probe.
-@Global()
-@Module({
-  imports: [RiskModule],
-  providers: [
-    {
-      provide: LIMITS_COMPLETE,
-      useFactory: (limits: PartialRiskLimits) => validateLimits(limits) !== null,
-      inject: [RISK_LIMITS],
-    },
-  ],
-  exports: [LIMITS_COMPLETE],
-})
-class LimitsCompleteModule {}
+// W3 Part 4: SigningKeyModule, KillSwitchModule, LimitsCompleteModule moved to
+// features/trading/composition/{signing-key,kill-switch,limits-complete}.module.ts — pure code
+// motion (imported below), byte-identical provider/export shape.
 
 // §10c: gate-(c) KEY_PROBE, bound globally by the composition root (ModeControl consumes it). Paper
 // uses a forced-invalid probe (paper never trades live, so keysValid stays false ⇒ live unreachable).
@@ -441,8 +406,8 @@ const INVALID_KEY_PROBE: KeyProbePort = {
         // Live keys from AppConfig (stripped under test/ci); sandbox keys + environment (testnet|demo)
         // from SANDBOX_ENV via resolveSandbox — keeping demo/testnet keys non-interchangeable.
         const sandbox = resolveSandbox(config);
-        const apiKey = isLive ? (config.liveSecrets.liveApiKey ?? '') : sandbox.apiKey;
-        const secret = isLive ? (config.liveSecrets.liveApiSecret ?? '') : sandbox.secret;
+        const apiKey = isLive ? config.liveSecrets.liveApiKey ?? '' : sandbox.apiKey;
+        const secret = isLive ? config.liveSecrets.liveApiSecret ?? '' : sandbox.secret;
         const client = buildOrderClient(
           primaryVenue(config),
           isLive ? 'live' : sandbox.environment,
@@ -830,9 +795,16 @@ function hasIngest(port: ExchangePort): port is ExchangePort & PaperFeedSink {
   return typeof (port as unknown as { ingestBook?: unknown }).ingestBook === 'function';
 }
 const MD_EXCHANGE = Symbol('MD_EXCHANGE');
+// P5b: composition-root-only token (mirrors MD_EXCHANGE's own local-symbol convention) — no port
+// abstraction needed, the only consumer is AgenticCompositionBridgeModule's extras factory reading
+// FundingIngestService.cumulativeAccrualQuote() directly.
+const FUNDING_INGEST = Symbol('FUNDING_INGEST');
 @Global()
 @Module({
-  imports: [PaperExchangeModule],
+  // ObservabilityModule (W1: AgentMetricsRecorder) — needed by the FUNDING_INGEST factory below to
+  // record funding_payments_ingested_total; same cross-module DI need AgenticCompositionBridgeModule
+  // already documents at its own ObservabilityModule import (see that module's header comment).
+  imports: [PaperExchangeModule, ObservabilityModule],
   providers: [
     { provide: CLOCK, useClass: SystemClock },
     { provide: WATCH_SOURCE, useClass: RealWatchSource },
@@ -843,6 +815,11 @@ const MD_EXCHANGE = Symbol('MD_EXCHANGE');
       inject: [TypedConfigService],
     },
     {
+      // rawExchange is bound to the MD_EXCHANGE instance as constructed at boot and never swapped:
+      // fetchOHLCV is REST (no WS client, no closedByUser exposure — see ccxt-stream.adapter.ts's
+      // Exchange.close() only tears down this.clients, which REST calls never touch), and backfill
+      // runs once at warmup, not continuously, so staying on the original instance is a deliberate,
+      // harmless scope limit — NOT wired through CcxtExchangeStreamAdapter's exchangeFactory below.
       provide: REAL_FEED_HEALTH,
       useFactory: (
         clock: ClockPort,
@@ -876,6 +853,12 @@ const MD_EXCHANGE = Symbol('MD_EXCHANGE');
               venueId(feedVenueConfig(config).id),
               feedHealth as unknown as ChannelStateTracker,
               new Logger('MarketStreamWatchdog'),
+              undefined, // subscribeJitterFn: keep the production default (see the adapter's ctor)
+              // Recreation seam for the pinned-ccxt-4.5.58 closedByUser wedge (ccxt-stream.adapter.ts
+              // header comment, 2026-07-19). Wraps the SAME construction buildCcxtExchange already
+              // does at boot — the composition root is the only place that knows how, so recreation
+              // reuses it verbatim rather than duplicating venue/mode setup inside the adapter.
+              () => buildCcxtExchange(feedVenueConfig(config)),
             )
           : NOOP_STREAM,
       inject: [CLOCK, WATCH_SOURCE, REAL_FEED_HEALTH, TypedConfigService, MD_EXCHANGE],
@@ -1009,6 +992,47 @@ const MD_EXCHANGE = Symbol('MD_EXCHANGE');
       },
       inject: [TypedConfigService, CLOCK],
     },
+    {
+      // P5b: perp funding-payment settlement ingestion. Gated by BOTH the feature flag AND the
+      // venue actually implementing fetchFundingPayments (perp-capable adapter only) AND
+      // FUNDING_PAYMENTS being DB-bound — any one absent ⇒ FUNDING_INGEST stays undefined and
+      // AgenticCompositionBridgeModule's extras factory renders no accrual line (fail-open, same
+      // posture as every other NOOP_* feed above, but undefined rather than a NOOP object since
+      // there is no synchronous latest()-style read this port needs to answer when off).
+      provide: FUNDING_INGEST,
+      useFactory: (
+        config: TypedConfigService,
+        clock: ClockPort,
+        exchangePort: ExchangePort,
+        fundingPayments: FundingPaymentsPort | undefined,
+        recorder: AgentMetricsRecorder,
+      ): FundingIngestService | undefined => {
+        const { enabled, pollIntervalMs } = config.fundingIngest;
+        if (
+          isTestEnv() ||
+          !enabled ||
+          exchangePort.fetchFundingPayments === undefined ||
+          fundingPayments === undefined
+        ) {
+          return undefined;
+        }
+        const service = new FundingIngestService(exchangePort, fundingPayments, {
+          symbols: config.strategy.symbols.map((s) => symbolId(s)),
+          mode: config.mode.configMode,
+          pollIntervalMs,
+          clock,
+          logger: new Logger('FundingIngestService'),
+          // W1 (Grafana rebuild): see ACTIVE_MENU_GATE_OVERRIDE's own comment on the same pattern.
+          metrics: {
+            recordIngested: (venue, symbol, count) =>
+              recorder.recordFundingIngested(venue, symbol, count),
+          },
+        });
+        service.start();
+        return service;
+      },
+      inject: [TypedConfigService, CLOCK, EXCHANGE_PORT, FUNDING_PAYMENTS, AgentMetricsRecorder],
+    },
   ],
   exports: [
     MARKET_STREAM,
@@ -1021,6 +1045,7 @@ const MD_EXCHANGE = Symbol('MD_EXCHANGE');
     TRADE_FLOW_FEED,
     POSITIONING_FEED,
     LIQUIDATION_FEED,
+    FUNDING_INGEST,
   ],
 })
 class MarketFeedModule {}
@@ -1073,6 +1098,12 @@ export class PlaybookAbRoutingProvider implements PlaybookStorePort {
   constructor(
     private readonly inner: PlaybookStorePort,
     private readonly pct: number,
+    // P1: capability-aware denylist (playbook-validator.ts) — defaults {} (both false, byte-identical
+    // spot-strict pre-P1 behavior) so every existing construction site/spec stays unaffected. The
+    // composition root below passes the lane's real capabilities so a perp candidate carrying
+    // legitimate shorts/leverage prose isn't rejected here before it ever reaches
+    // ValidatingPlaybookProvider/AnthropicAgentClient's own (identically-flagged) re-validation.
+    private readonly capabilities: { shortsAllowed?: boolean; leverageAllowed?: boolean } = {},
   ) {}
 
   async current(): Promise<{
@@ -1093,7 +1124,7 @@ export class PlaybookAbRoutingProvider implements PlaybookStorePort {
     // surfaced (and journaled) as the served version — ValidatingPlaybookProvider still re-validates
     // ACTIVE and candidate content identically regardless; this pre-check just keeps a rejected
     // candidate from being the thing that lands in agent_decisions.playbook_version.
-    const validation = validatePlaybook(candidate.content);
+    const validation = validatePlaybook(candidate.content, this.capabilities);
     if (!validation.ok) return active;
 
     // `source` intentionally omitted (not undefined) — this resolution outcome is neither
@@ -1154,6 +1185,8 @@ export class ValidatingPlaybookProvider implements PlaybookStorePort {
   constructor(
     private readonly inner: PlaybookStorePort,
     private readonly recorder: AgentMetricsRecorder,
+    // P1: see PlaybookAbRoutingProvider's identical param — same default, same rationale.
+    private readonly capabilities: { shortsAllowed?: boolean; leverageAllowed?: boolean } = {},
   ) {}
 
   async current(): Promise<{
@@ -1179,13 +1212,17 @@ export class ValidatingPlaybookProvider implements PlaybookStorePort {
     read: Promise<{ version: number; content: string; source?: 'pin' | 'promotion' | 'seed' }>,
   ): Promise<{ version: number; content: string; source?: 'pin' | 'promotion' | 'seed' }> {
     const stored = await read;
-    const validation = validatePlaybook(stored.content);
+    const validation = validatePlaybook(stored.content, this.capabilities);
     if (!validation.ok) {
       this.recorder.recordValidatorRejection(
         validation.bannedTokenHit ?? false,
         validation.bannedToken,
       );
-      return { ...SEED_PLAYBOOK, source: 'seed' };
+      // P2: the shorts-capable (perp) lane falls back to its own expert seed, not the spot one —
+      // SEED_PLAYBOOK is spot-strict (no shorts/leverage prose) and would otherwise hand a perp
+      // boot a playbook that can never propose a short.
+      const seed = this.capabilities.shortsAllowed ? SEED_PLAYBOOK_PERP : SEED_PLAYBOOK;
+      return { ...seed, source: 'seed' };
     }
     return stored;
   }
@@ -1339,7 +1376,17 @@ export class MetricsWrappingAgentClient implements AgentClientPort {
 // every importer (same precedent as LimitsCompleteModule's own `imports: [RiskModule]` above).
 @Global()
 @Module({
-  imports: [PersistenceModule, ObservabilityModule, RiskModule],
+  // AgenticStrategyModule imported for AGENT_LLM_BUDGET, ExecutionModule for CLOCK —
+  // PAYLOAD_EXTRAS_PROVIDER_OVERRIDE's factory below injects both directly (I1b) but this module
+  // never imported either exporter (PORTFOLIO_VIEW already reaches here via the global
+  // PortfolioViewBridgeModule above, which is why only these two were missing).
+  imports: [
+    PersistenceModule,
+    ObservabilityModule,
+    RiskModule,
+    AgenticStrategyModule,
+    ExecutionModule,
+  ],
   providers: [
     {
       provide: AGENT_DECISION_JOURNAL,
@@ -1376,14 +1423,31 @@ export class MetricsWrappingAgentClient implements AgentClientPort {
         recorder: AgentMetricsRecorder,
       ): PlaybookStorePort => {
         const pin = config.agentic.playbookPin;
+        // P1: same lane-capability derivation as AnthropicAgentClient.resolvePlaybook (this config
+        // has no separate perp marker; shortsEnabled doubles as the perp-lane selector by the
+        // documented convention — see that field's own comment in anthropic-agent-client.ts). Kept
+        // in lockstep here so this composition-root gate can never diverge from the client's own
+        // (identically-flagged) re-validation and reject a legitimate perp candidate first.
+        const capabilities = {
+          shortsAllowed: config.agentic.shortsEnabled,
+          leverageAllowed: config.agentic.shortsEnabled,
+        };
+        // P2: the perp lane boots its store on its own expert seed (SEED_PLAYBOOK is spot-strict —
+        // see that const's own comment) — same capabilities.shortsAllowed derivation as the
+        // ValidatingPlaybookProvider rejection fallback below, so the two seams never disagree.
+        const seed = capabilities.shortsAllowed ? SEED_PLAYBOOK_PERP : SEED_PLAYBOOK;
         const store =
           isTestEnv() || db === null
-            ? new InMemoryPlaybookStore(SEED_PLAYBOOK, pin)
-            : new PlaybookStoreAdapter(db, SEED_PLAYBOOK, pin);
+            ? new InMemoryPlaybookStore(seed, pin)
+            : new PlaybookStoreAdapter(db, seed, pin);
         // W4.1: A/B router sits INSIDE the validating wrap, so candidate content faces the exact
         // same read-side validation as ACTIVE. pct=0 (default) short-circuits to the plain store.
-        const routed = new PlaybookAbRoutingProvider(store, config.agentic.playbookAbPct);
-        return new ValidatingPlaybookProvider(routed, recorder);
+        const routed = new PlaybookAbRoutingProvider(
+          store,
+          config.agentic.playbookAbPct,
+          capabilities,
+        );
+        return new ValidatingPlaybookProvider(routed, recorder, capabilities);
       },
       inject: [DRIZZLE_DB, TypedConfigService, AgentMetricsRecorder],
     },
@@ -1403,6 +1467,136 @@ export class MetricsWrappingAgentClient implements AgentClientPort {
           config.risk.protectTrailingPct,
         ),
       inject: [RISK_LIMITS, TypedConfigService],
+    },
+    {
+      // I1 (Design § Universe): ONE shared UniverseScannerService, bound here (not a field
+      // initializer on TradingRuntimeService — see that class's own comment) so both the batching
+      // client's ActiveMenuGate (agentic-strategy.module.ts's AGENT_CLIENT factory, via this SAME
+      // token) and TradingRuntimeService's own recompute-cadence/pin-provider wiring share the exact
+      // same instance — never two independently-drifting scanners. isPinned reads the live
+      // PORTFOLIO_VIEW snapshot: a symbol with an open position is always active, never orphaned
+      // from consults (Design § Universe).
+      provide: ACTIVE_MENU_GATE_OVERRIDE,
+      useFactory: (
+        config: TypedConfigService,
+        portfolio: PortfolioViewPort,
+        recorder: AgentMetricsRecorder,
+      ): UniverseScannerService =>
+        new UniverseScannerService({
+          basket: config.strategy.symbols,
+          menuSize: config.agentic.activeMenuSize,
+          isPinned: (symbol) => {
+            const snap = portfolio.snapshot();
+            for (const p of snap.positions.values()) {
+              if (String(p.symbol) === symbol && !p.signedQty.isZero()) return true;
+            }
+            return snap.openOrders.some((o) => String(o.symbol) === symbol);
+          },
+          logger: { log: (msg) => Logger.log(msg, 'UniverseScanner') },
+          // W1 (Grafana rebuild): adapts the recorder's methods to UniverseScannerMetricsLike —
+          // this module never imports features/common/observability's boundaries wall the other
+          // way, so the adaptation lives here at the composition root.
+          metrics: {
+            setActiveMenu: (symbols) => recorder.setActiveMenu(symbols),
+            recordMenuChurn: (menuIn, menuOut) => recorder.recordMenuChurn(menuIn, menuOut),
+          },
+        }),
+      inject: [TypedConfigService, PORTFOLIO_VIEW, AgentMetricsRecorder],
+    },
+    {
+      // P5 (Design § Learning & measurement stack): ONE shared ExecQualityService instance, exported
+      // so a later step can also thread it into ReflectionService's deps (agentic-strategy.module.ts,
+      // out of this step's file scope — see this class's own header comment on the P5 wiring gap).
+      // W3 Part 1 wired the production entry-attempt feed (fill-ingestor.service.ts's
+      // recordExecQualityFill + exec-report-consumer.service.ts's recordExecQualityUnfilled, bridged
+      // in via EXEC_QUALITY_SINK_OVERRIDE below) — digest() now populates once ≥5 attempts land. The
+      // no-op priceLookup remains: PriceHistoryStore (W3 Part 2, below) is an AT-OR-AFTER-a-timestamp
+      // series lookup, not the AT-OR-AFTER-a-timestamp POINT query ExecQualityPriceLookup's contract
+      // needs (missedMoveBps/adverseDriftBps resolve a single forward price, not a scoped window) —
+      // wiring one off the other is a real follow-up, not this step's scope (fillRate/n still
+      // populate off attempts alone regardless).
+      provide: ExecQualityService,
+      useFactory: (): ExecQualityService =>
+        new ExecQualityService({ priceLookup: () => undefined }),
+    },
+    {
+      // W3 Part 2 (Design § Learning & measurement stack): ONE shared PriceHistoryStore instance,
+      // same "@Global()-provided singleton" convention as ExecQualityService above. Written by
+      // AppModule's onCandleMetrics closure (AgenticStrategyDeps.priceHistory — every agentic-N
+      // instance's own candle window), read back by PAYLOAD_EXTRAS_PROVIDER_OVERRIDE below
+      // (correlation.btcBeta) and by AgenticStrategyDeps.priceHistory itself
+      // (netVsEqualWeightBasketBps) — see price-history-store.ts's own header for the fed-from-
+      // existing-candle-path rationale.
+      provide: PriceHistoryStore,
+      useFactory: (): PriceHistoryStore => new PriceHistoryStore(),
+    },
+    {
+      // W3 Part 1: composition-root bridge for the exec-quality fan-out (ports/execution.ts's
+      // EXEC_QUALITY_SINK_OVERRIDE — mirrors EXEC_OUTBOX_OVERRIDE's Global-module override pattern
+      // above). ExecutionModule cannot import ExecQualityService directly (boundaries forbid
+      // execution → agentic), so this @Global() module — which already owns the ExecQualityService
+      // instance — supplies the adapter ExecutionModule's own EXEC_QUALITY_SINK provider optionally
+      // injects (execution.module.ts falls back to a no-op sink when this override is absent).
+      provide: EXEC_QUALITY_SINK_OVERRIDE,
+      useFactory: (execQuality: ExecQualityService): ExecQualitySinkPort => ({
+        recordEntryAttempt: (attempt) => execQuality.recordEntryAttempt(attempt),
+      }),
+      inject: [ExecQualityService],
+    },
+    {
+      // I1b (Design § Enriched model inputs): the composition-root closure AnthropicAgentClientConfig.
+      // payloadExtrasProvider calls at most once per decide()/batch — same SOURCES logPortfolio()
+      // already exercises (buildAgentPortfolioBlock off the SAME PORTFOLIO_VIEW snapshot + equityCap
+      // the sizer caps sizing equity with, DailyLlmBudget.budgetBlock(), filterUpcoming off a
+      // SEPARATE loadMacroCalendar read — TradingRuntimeService loads its own copy for the boot log;
+      // both are tolerant/boot-cost-only reads of the same static repo file, never re-read per call).
+      provide: PAYLOAD_EXTRAS_PROVIDER_OVERRIDE,
+      useFactory: (
+        portfolio: PortfolioViewPort,
+        config: TypedConfigService,
+        budget: DailyLlmBudget,
+        clock: ClockPort,
+        execQuality: ExecQualityService,
+        priceHistory: PriceHistoryStore,
+        fundingIngest?: FundingIngestService,
+      ) => {
+        const macroCalendar = loadMacroCalendar(
+          path.join(process.cwd(), 'data', 'macro-calendar.json'),
+          {
+            warn: (m) => Logger.warn(m, 'MacroCalendar'),
+          },
+        );
+        return () => ({
+          // W3 Part 2: correlation.btcBeta populates off the SAME shared PriceHistoryStore
+          // netVsEqualWeightBasketBps reads — see buildAgentPortfolioBlock's own comment.
+          portfolio: buildAgentPortfolioBlock(
+            portfolio.snapshot(),
+            config.risk.equityCap,
+            priceHistory,
+          ),
+          budget: budget.budgetBlock(),
+          calendar: filterUpcoming(macroCalendar, clock.now()),
+          // P5: undefined (omitted by buildMarketPayload's own extras.execQuality convention) until
+          // ExecQualityService has enough recorded attempts — see this token's own provider comment.
+          execQuality: execQuality.digest(),
+          // P5b: undefined (FUNDING_INGEST unbound — off-flag, spot venue, or no DB) until the
+          // poller has completed at least one poll for the configured symbol. See
+          // FundingIngestService.cumulative's own header comment on the "since process start, not
+          // since position open" scope note.
+          fundingAccrualQuote: fundingIngest?.cumulativeAccrualQuote(
+            symbolId(config.strategy.symbol),
+          ),
+        });
+      },
+      inject: [
+        PORTFOLIO_VIEW,
+        TypedConfigService,
+        AGENT_LLM_BUDGET,
+        CLOCK,
+        ExecQualityService,
+        PriceHistoryStore,
+        { token: FUNDING_INGEST, optional: true },
+      ],
     },
     // G4a: lets ReflectionService (features/trading/agentic, which cannot import
     // features/common/observability — the boundary wall) record validator-rejection tripwires
@@ -1448,7 +1642,12 @@ export class MetricsWrappingAgentClient implements AgentClientPort {
     AGENT_DECISION_JOURNAL,
     PLAYBOOK_PROVIDER_OVERRIDE,
     AGENT_TRADING_PROFILE_OVERRIDE,
+    ACTIVE_MENU_GATE_OVERRIDE,
+    PAYLOAD_EXTRAS_PROVIDER_OVERRIDE,
     REFLECTION_METRICS_RECORDER_OVERRIDE,
+    ExecQualityService,
+    EXEC_QUALITY_SINK_OVERRIDE,
+    PriceHistoryStore,
     LLM_USAGE_SINK,
     PROMOTION_STATS,
     REFLECTION_EVIDENCE,
@@ -1567,6 +1766,16 @@ export class AppModule
   // One shared cross-symbol relative-strength context for the whole agentic lane (2026-07-12). Each
   // agentic-N instance records its symbol's trailing return into it and reads the basket ranking.
   private readonly crossSymbolContext = new CrossSymbolContextService();
+  // I1: no longer constructed here — ACTIVE_MENU_GATE_OVERRIDE (AgenticCompositionBridgeModule) binds
+  // ONE UniverseScannerService instance, injected below, so this class and the batching client's
+  // ActiveMenuGate (agentic-strategy.module.ts's AGENT_CLIENT factory) share the exact same scanner.
+  // Recompute cadence (daily + once after warmup) and the pin provider are wired at the end of the
+  // constructor / in startTrading below. I1b closed the reported per-symbol ingestion gap: each
+  // agentic-N instance's decide() calls AgenticStrategyDeps.onCandleMetrics on its own candle-close
+  // trigger (wired below to universeScanner.recordCandles) — a symbol still scores unranked
+  // (Infinity) and isActive() defaults to "everything active" only until its own warmup completes
+  // (see UniverseScannerService's own comment).
+  private readonly macroCalendar: readonly AgentCalendarEvent[];
 
   constructor(
     @Inject(CLOCK) private readonly clock: ClockPort,
@@ -1591,7 +1800,15 @@ export class AppModule
     private readonly algoStopRecovery: AlgoStopRecoveryService,
     @Inject(AGENT_CLIENT) rawAgentClient: AgentClientPort,
     private readonly agentMetrics: AgentMetricsRecorder,
-    @Inject(AGENT_LLM_BUDGET) agentBudget: DailyLlmBudget,
+    @Inject(AGENT_LLM_BUDGET) private readonly agentBudget: DailyLlmBudget,
+    // I1: the SAME scanner instance ACTIVE_MENU_GATE_OVERRIDE binds (see that token's own comment) —
+    // shared with agentic-strategy.module.ts's AGENT_CLIENT factory via the identical DI token.
+    @Inject(ACTIVE_MENU_GATE_OVERRIDE) private readonly universeScanner: UniverseScannerService,
+    // W3 Part 2: ONE shared PriceHistoryStore instance (AgenticCompositionBridgeModule's own
+    // provider, same @Global()-exported convention as ExecQualityService) — this factory's
+    // onCandleMetrics closure below feeds it off the SAME candle window universeScanner already
+    // reads; PAYLOAD_EXTRAS_PROVIDER_OVERRIDE's factory reads it back for correlation.btcBeta.
+    private readonly priceHistory: PriceHistoryStore,
     @Inject(AGENT_DECISION_JOURNAL) private readonly agentJournal: AgentDecisionJournalPort,
     @Inject(PLAYBOOK_PROVIDER) private readonly playbookProvider: PlaybookProvider,
     // C1: always bound (MarketFeedModule's DERIVATIVES_FEED factory returns NOOP_DERIVATIVES_FEED
@@ -1635,10 +1852,19 @@ export class AppModule
     this.agentClient = new MetricsWrappingAgentClient(
       rawAgentClient,
       this.agentMetrics,
-      agentBudget,
+      this.agentBudget,
       this.config.agentic.model,
     );
     this.agentClientKind = rawAgentClient.constructor.name;
+    // I1 (Design § Enriched model inputs): repo-maintained macro calendar, loaded once at boot for
+    // THIS class's own boot log line (logPortfolio below) — the live payload's calendar block reads
+    // its own separately-loaded copy via PAYLOAD_EXTRAS_PROVIDER_OVERRIDE (I1b, AgenticCompositionBridgeModule),
+    // not this field; both are tolerant loaders of the same static file (loadMacroCalendar fails OPEN
+    // — a missing/malformed file never blocks boot, it just yields an empty calendar).
+    this.macroCalendar = loadMacroCalendar(
+      path.join(process.cwd(), 'data', 'macro-calendar.json'),
+      { warn: (m) => this.log.warn(m) },
+    );
     this.promotionEvaluator = createPromotionEvaluator(agenticEnv(this.config), {
       stats: promotionStats,
       journal: this.agentJournal,
@@ -1838,7 +2064,26 @@ export class AppModule
           // AGENTIC_AUTO_PROMOTE_MIN_ATTRIBUTED_TRADES > 0 and the DB-backed deps are bound.
           this.promotionEvaluator.onClosedTrade(id, count);
         },
-        onPrescreen: (outcome, reason) => this.agentMetrics.recordPrescreen(outcome, reason),
+        // P3: sibling of onClosedTrade above, wired the same per-instance way — fires this
+        // registration's OWN strategy id into the weekly time-based trigger every decide() call (see
+        // AgenticStrategyDeps.checkWeeklyReflection's own comment for why the caller lives here).
+        checkWeeklyReflection: () => this.reflectionService.checkWeeklyReflectionTrigger(id),
+        // P6: onConsultGate wired to the renamed recorder — evaluateConsultSchedule's
+        // ConsultGateOutcome now matches AgentMetricsRecorder.recordConsultGate's param exactly
+        // (see agent-metrics-recorder.service.ts). Was left unwired by I1 pending this rename.
+        onConsultGate: (outcome) => this.agentMetrics.recordConsultGate(outcome),
+        // I1b (Design § Universe): the SAME shared UniverseScannerService instance
+        // ACTIVE_MENU_GATE_OVERRIDE binds — each agentic-N instance records its own symbol's closed-
+        // candle window on its own decide cadence (see universe-scanner.service.ts's own header
+        // comment: "wired by I1", closed by I1b). Storage-only (recordCandles no-ops below warmup and
+        // never triggers a recompute itself) — see AgenticStrategyDeps.onCandleMetrics.
+        // W3 Part 2: the SAME closure also feeds the shared PriceHistoryStore (this.priceHistory) off
+        // the identical candle window — see price-history-store.ts's header on why this reuses the
+        // existing candle path instead of a new market-data subscription.
+        onCandleMetrics: (symbol, candles) => {
+          this.universeScanner.recordCandles(String(symbol), candles);
+          this.priceHistory.recordWindow(symbol, candles);
+        },
         onVenueTp: (event) => this.agentMetrics.recordVenueTp(event),
         onVenueStop: (event) => this.agentMetrics.recordVenueStop(event),
         // Backlog #55: without this the strategy falls back to its NOOP_LOGGER and every warn it
@@ -1855,6 +2100,9 @@ export class AppModule
         // (this closure runs once per registration but `deps` is captured by the factory), so each
         // instance records its own symbol's trailing return and reads the whole basket's ranking.
         crossSymbolContext: this.crossSymbolContext,
+        // W3 Part 2: ONE shared PriceHistoryStore instance — see AgenticStrategyDeps.priceHistory's
+        // own comment.
+        priceHistory: this.priceHistory,
         // Push 3 P2: the SAME instance ProtectiveExitService reads each 1s tick (PLAN_STOP_REGISTRY,
         // provided once above) — this strategy instance populates it on plan entry-fill/clear.
         planStopRegistry: this.planStopRegistry,
@@ -1873,19 +2121,9 @@ export class AppModule
       };
       return new AgenticStrategy(id, p as AgenticStrategyParams, this.agentClient, deps);
     });
-    // W5: make an "enabled but silently no-op" expectancy ladder visible at boot. The ladder is
-    // reduction-only and inert unless BOTH the flag is on AND a realized-evidence port is wired
-    // (agentic.strategy.ts's applyExpectancyLadder no-ops without deps.evidence) — a config that
-    // flips the flag on a no-DB boot would otherwise look active while doing nothing.
-    if (this.config.agentic.expectancyLadderEnabled) {
-      if (this.roundTripEvidence !== undefined) {
-        this.log.log('expectancy ladder ACTIVE (flag on, realized-evidence port wired)');
-      } else {
-        this.log.warn(
-          'expectancy ladder flag is ON but no realized-evidence port is wired — ladder is INERT (no-DB/test boot)',
-        );
-      }
-    }
+    // I1 (Design § Deleted/replaced scaffolding): the expectancy ladder + its boot-visibility log
+    // are retired outright (D1 dropped AGENTIC_EXPECTANCY_LADDER off the config; B3 deleted
+    // applyExpectancyLadder/computeExpectancyMultiplier — sizing authority is now sizeFraction only).
     // SAFETY INTERLOCK (hard, fail-loud at boot). A live-configured agentic boot is refused unless
     // the earned-live promotion gate passes: an explicit permitted PromotionReadiness verdict
     // computed fresh from durable demo evidence (>=30 round trips, positive net-of-cost PnL, >=14d
@@ -1927,6 +2165,12 @@ export class AppModule
 
     await this.host.start();
     this.log.log('strategy host started — consuming market data');
+    // I1 (Design § Universe): "once at boot" recompute, run right after the host starts consuming —
+    // the basket's own candle warmup then proceeds on its normal cadence (recordCandles/recordMetrics
+    // ingestion into the scanner is a follow-up gap — see this.universeScanner's own field comment —
+    // so this first recompute currently ranks off whatever metrics have been recorded so far, which
+    // may be none; isActive() safely defaults to "everything active" until real data lands).
+    this.universeScanner.maybeRecompute(this.clock.now());
 
     if (mode !== 'paper') {
       this.fillPoller.init();
@@ -1939,6 +2183,10 @@ export class AppModule
     this.driverTimers.push(
       setInterval(() => {
         this.logPortfolio();
+        // Daily-at-00:00-UTC cadence (Design § Universe): maybeRecompute is a no-op idempotent
+        // UTC-day-key check, so piggybacking it on this existing 15s tick costs nothing extra and
+        // needs no new timer.
+        this.universeScanner.maybeRecompute(this.clock.now());
       }, 15_000),
     );
   }
@@ -1970,6 +2218,24 @@ export class AppModule
       `portfolio: equity=${snap.equity.toFixed()} cash=${snap.balances.get('USDT')?.free.toFixed() ?? '?'} ` +
         `positions=[${positions.join(',')}] openOrders=${snap.openOrders.length} inFlight=${snap.inFlightIntents.length}`,
     );
+    // I1 (Design § Enriched model inputs): boot-log echo of the SAME sources
+    // PAYLOAD_EXTRAS_PROVIDER_OVERRIDE's own closure computes on every decide()/batch (I1b wired that
+    // seam into anthropic-agent-client.ts's propose()/proposeBatch() call sites) — this log line is
+    // now a redundant-but-harmless periodic sanity echo, not the only consumer. cappedEquity mirrors
+    // risk.module.ts's equityCapFor(config) so this log and the sizer's own cap can never silently
+    // disagree.
+    const portfolioBlock = buildAgentPortfolioBlock(snap, this.config.risk.equityCap);
+    const budgetBlock = this.agentBudget.budgetBlock();
+    // W1 (Grafana rebuild): remainingUsdToday is a decimal string (money-adjacent, never a money
+    // arithmetic path) — Decimal round-trip, never Number(), mirrors promotion-metrics.service.ts's
+    // own evidence.netPnl conversion.
+    this.agentMetrics.setBudgetRemainingUsd(new Decimal(budgetBlock.remainingUsdToday).toNumber());
+    const upcoming = filterUpcoming(this.macroCalendar, this.clock.now());
+    this.log.log(
+      `agent context: cappedEquity=${portfolioBlock.cappedEquity} ` +
+        `grossExposure=${portfolioBlock.grossExposure} remainingCallsToday=${budgetBlock.remainingCallsToday} ` +
+        `remainingUsdToday=${budgetBlock.remainingUsdToday} upcomingCalendarEvents=${upcoming.length}`,
+    );
   }
 
   private agenticParams(symbol: string): AgenticStrategyParams {
@@ -1985,20 +2251,17 @@ export class AppModule
       warmupBars: agentic.warmupBars,
       model: agentic.model,
       entryTtlBars: agentic.entryTtlBars,
-      prescreenEnabled: agentic.prescreenEnabled,
-      prescreenThresholds: {
-        volShortBars: agentic.prescreenVolShortBars,
-        volLongBars: agentic.prescreenVolLongBars,
-        volRatio: agentic.prescreenVolRatio,
-        breakoutLookbackBars: agentic.prescreenBreakoutLookbackBars,
-        breakoutPct: agentic.prescreenBreakoutPct,
-      },
-      expectancyLadderEnabled: agentic.expectancyLadderEnabled,
+      // I1 (Design § Deleted/replaced scaffolding): prescreen/expectancy-ladder/planMaxQuietBars are
+      // retired (D1 dropped the config knobs; B2/B3 replaced the gate with evaluateConsultSchedule) —
+      // wakeMovePct/fallbackConsultBars below are the two surviving bar-level knobs.
+      // Money-lint rule is deliberately blanket (hard rule 1) — route the decimal-string→number
+      // conversion through Decimal even though wakeMovePct is a reference-grade threshold, not money.
+      wakeMovePct: new Decimal(agentic.wakeMovePct).toNumber(),
+      fallbackConsultBars: agentic.fallbackConsultBars,
       // Push 3 P6 Unit 4 (#17 residual): off by default ⇒ byte-identical (see agentic.strategy.ts's
       // computeTrackRecordContext).
       trackRecordEnabled: agentic.trackRecordEnabled,
       planMode: agentic.planMode,
-      planMaxQuietBars: agentic.planMaxQuietBars,
       planExitTtlBars: agentic.planExitTtlBars,
       quietPayloadSampleBars: agentic.quietPayloadSampleBars,
       crossSymbolEnabled: agentic.crossSymbolEnabled,

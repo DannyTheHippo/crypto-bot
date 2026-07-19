@@ -5,6 +5,8 @@ import {
   compare,
   summarizeCalibration,
   summarizeRegimeSplit,
+  scoreNotTakenOptions,
+  summarizeRecentDecisionOutcomes,
   type ScoringRow,
   type Scorecard,
 } from '../../../src/features/trading/agentic/counterfactual-scoring';
@@ -523,5 +525,177 @@ describe('summarizeRegimeSplit (W14)', () => {
       row(1, { action: 'flat', close: '110' }),
     ];
     expect(summarizeRegimeSplit(rows)).toEqual({ quiet: [], active: [] });
+  });
+
+  it('(P4) accepts v2 actions as Map keys without narrowing to the pre-P4 long/flat/hold set', () => {
+    // Regression pin for the CALIBRATED_ACTIONS widening (:487/:618/:621 typecheck errors this
+    // widening resolved) — open_long/open_short/close/adjust rows must bucket exactly like
+    // long/flat/hold did, not be silently dropped by a narrower Map key type.
+    const rows: ScoringRow[] = [];
+    for (let i = 0; i < 12; i++) rows.push(row(i, { action: 'error', close: '100' }));
+    rows.push(row(12, { action: 'open_long', close: '100' }));
+    rows.push(row(13, { action: 'open_short', close: '101' }));
+    rows.push(row(14, { action: 'close', close: '99' }));
+    rows.push(row(15, { action: 'adjust', close: '100' }));
+    rows.push(row(16, { action: 'hold', close: '100' })); // gives row 15 a defined t+1 forward return
+    const digest = summarizeRegimeSplit(rows);
+    const actions = [...digest.quiet, ...digest.active].map((s) => s.action);
+    expect(actions).toEqual(expect.arrayContaining(['open_long', 'open_short', 'close', 'adjust']));
+  });
+});
+
+describe('scoreNotTakenOptions — regret digest (P4)', () => {
+  it('a declined entry (hold while FLAT) that then ran produces a negative-regret line with exact numbers', () => {
+    const rows: ScoringRow[] = [
+      row(0, { action: 'hold', close: '100' }), // declined a LONG entry
+      row(1, { action: 'hold', close: '110' }), // no i+1 for row1, irrelevant here
+    ];
+    const digest = scoreNotTakenOptions(rows);
+    // fwd = (110-100)/100 = 0.1; regret = directionalEdge(FLAT, fwd)*10000 = -0.1*10000 = -1000.
+    expect(digest.lines).toEqual([
+      { eventTime: rows[0]!.eventTime, kind: 'declined_entry', regretBps: -1000 },
+    ]);
+    expect(digest.declinedEntry).toEqual({ count: 1, meanRegretBps: -1000 });
+    expect(digest.delayedExit).toEqual({ count: 0, meanRegretBps: null });
+  });
+
+  it('a declined entry that then FELL produces a positive-regret line (staying flat was right)', () => {
+    const rows: ScoringRow[] = [
+      row(0, { action: 'hold', close: '100' }),
+      row(1, { action: 'hold', close: '90' }),
+    ];
+    const digest = scoreNotTakenOptions(rows);
+    // fwd = (90-100)/100 = -0.1; regret = -(-0.1)*10000 = 1000.
+    expect(digest.declinedEntry).toEqual({ count: 1, meanRegretBps: 1000 });
+  });
+
+  it('an adjust that delayed an exit and lost money on the delay produces a negative-regret line', () => {
+    const rows: ScoringRow[] = [
+      row(0, { action: 'long', close: '100' }), // FLAT -> LONG
+      row(1, { action: 'adjust', close: '200' }), // resulting LONG (unchanged) — the delay
+      row(2, { action: 'hold', close: '100' }), // price nearly halved after the delay
+    ];
+    const digest = scoreNotTakenOptions(rows);
+    // fwd = (100-200)/200 = -0.5; regret = directionalEdge(LONG, fwd)*10000 = -0.5*10000 = -5000.
+    expect(digest.lines).toEqual([
+      { eventTime: rows[1]!.eventTime, kind: 'delayed_exit', regretBps: -5000 },
+    ]);
+    expect(digest.delayedExit).toEqual({ count: 1, meanRegretBps: -5000 });
+    expect(digest.declinedEntry).toEqual({ count: 0, meanRegretBps: null });
+  });
+
+  it('a hold that MAINTAINS an existing position (not a declined entry) never produces a regret line', () => {
+    const rows: ScoringRow[] = [
+      row(0, { action: 'long', close: '100' }), // FLAT -> LONG
+      row(1, { action: 'hold', close: '110' }), // maintains LONG — not "declined", already positioned
+      row(2, { action: 'hold', close: '120' }),
+    ];
+    const digest = scoreNotTakenOptions(rows);
+    expect(digest.lines).toEqual([]);
+  });
+
+  it('excludes rows with no defined t+1 forward return (last row in the group)', () => {
+    const rows: ScoringRow[] = [row(0, { action: 'hold', close: '100' })];
+    expect(scoreNotTakenOptions(rows).lines).toEqual([]);
+  });
+});
+
+describe('mixed-era scoring (P4: legacy long/flat rows interleaved with v2 open_*/close rows)', () => {
+  it('a legacy "long" row followed by a v2 "close" then a v2 "open_short" row reads correctly', () => {
+    const rows: ScoringRow[] = [
+      row(0, { action: 'long', close: '100' }), // legacy: FLAT -> LONG
+      row(1, { action: 'close', close: '110' }), // v2: LONG -> FLAT
+      row(2, { action: 'open_short', close: '90' }), // v2: FLAT -> SHORT
+      row(3, { action: 'hold', close: '80' }), // maintains SHORT
+    ];
+    const [scorecard] = scoreRows(rows);
+    const h1 = horizonStats(scorecard!, 1);
+    // i0 LONG: (110-100)/100=+0.1 -> hit. i1 FLAT: (90-110)/110=-0.18 -> hit (<=0).
+    // i2 SHORT: (80-90)/90=-0.11 -> hit (<0). i3 has no i+1.
+    expect(h1.sampleCount).toBe(3);
+    expect(h1.hitCount).toBe(3);
+    expect(h1.hitRate).toBe(1);
+  });
+
+  it("toy equity nets a SHORT round trip (open_short/close), mirroring the LONG fixture's exact fee-isolation numbers", () => {
+    // Entry (open_short) fills at 2001, exit (close) fills at 1999 — mirrors the LONG test's
+    // 1999/2001 fixture exactly (2001*9995 == 1999*10005 == 19999995), isolating the fee drag: gross
+    // multiplier is exactly 1, so finalEquity is exactly (1 - 10bps)^2 = 0.999^2 = 0.998001.
+    const rows: ScoringRow[] = [
+      row(0, { action: 'open_short' }),
+      row(1, { action: 'hold', refPrice: '2001' }),
+      row(2, { action: 'close' }),
+      row(3, { action: 'hold', refPrice: '1999' }),
+    ];
+    const [scorecard] = scoreRows(rows);
+    expect(scorecard!.toyEquity.roundTrips).toBe(1);
+    expect(scorecard!.toyEquity.openAtEnd).toBe(false);
+    expect(scorecard!.toyEquity.finalEquity).toBe(0.998001);
+  });
+
+  it('leaves an unclosed SHORT position out of finalEquity entirely (openAtEnd, unrealized)', () => {
+    const rows: ScoringRow[] = [
+      row(0, { action: 'open_short' }),
+      row(1, { action: 'hold', refPrice: '1999' }),
+    ];
+    const [scorecard] = scoreRows(rows);
+    expect(scorecard!.toyEquity.finalEquity).toBe(1);
+    expect(scorecard!.toyEquity.roundTrips).toBe(0);
+    expect(scorecard!.toyEquity.openAtEnd).toBe(true);
+  });
+
+  it('an opposite-side v2 open while positioned never flips the toy-equity position (journal-visible hold)', () => {
+    const rows: ScoringRow[] = [
+      row(0, { action: 'open_long' }),
+      row(1, { action: 'hold', refPrice: '2000' }), // fills the long entry
+      row(2, { action: 'open_short', refPrice: '2100' }), // opposite-side: no-op, stays LONG
+      row(3, { action: 'close' }),
+      row(4, { action: 'hold', refPrice: '2100' }),
+    ];
+    const [scorecard] = scoreRows(rows);
+    // Still a single LONG round trip: entry 2000, exit 2100 (a rise, not a fall) — proves the
+    // open_short at i2 never flipped the position to SHORT (a SHORT round trip would have LOST on a
+    // rise, not gained).
+    expect(scorecard!.toyEquity.roundTrips).toBe(1);
+    expect(scorecard!.toyEquity.finalEquity).toBeGreaterThan(1);
+  });
+
+  it('an "adjust" row never opens/closes/fills in the toy-equity walk (position unchanged by design)', () => {
+    const rows: ScoringRow[] = [
+      row(0, { action: 'long' }),
+      row(1, { action: 'hold', refPrice: '1999' }),
+      row(2, { action: 'adjust', refPrice: '5000' }), // must never be read as a fill trigger
+      row(3, { action: 'flat' }),
+      row(4, { action: 'hold', refPrice: '2001' }),
+    ];
+    const [scorecard] = scoreRows(rows);
+    expect(scorecard!.toyEquity.roundTrips).toBe(1);
+    expect(scorecard!.toyEquity.finalEquity).toBe(0.998001);
+  });
+});
+
+// P4b: summarizeRecentDecisionOutcomes used to fold every resulting-SHORT row into the `stayedFlat`
+// catch-all (same as genuine FLAT rows) — see the function's own docstring for the defect class this
+// mirrors (#37/5da2630). `heldShort` now buckets them separately, exactly like `heldLong` does for
+// resulting LONG.
+describe('summarizeRecentDecisionOutcomes — SHORT bucket (P4b)', () => {
+  it('buckets resulting-SHORT rows into heldShort, not the stayedFlat catch-all', () => {
+    const rows: ScoringRow[] = [
+      row(0, { action: 'open_short', close: '100' }), // FLAT -> SHORT
+      row(1, { action: 'hold', close: '90' }), // maintains SHORT
+      row(2, { action: 'hold', close: '80' }), // maintains SHORT; no i+1 forward return
+    ];
+
+    const digest = summarizeRecentDecisionOutcomes(rows);
+
+    expect(digest.heldShort.count).toBe(2);
+    expect(digest.stayedFlat.count).toBe(0);
+    expect(digest.heldLong.count).toBe(0);
+    expect(digest.entries.count).toBe(0);
+    expect(digest.exits.count).toBe(0);
+
+    const fwd0 = (90 - 100) / 100;
+    const fwd1 = (80 - 90) / 90;
+    expect(digest.heldShort.meanForwardReturnPct).toBe(((fwd0 + fwd1) / 2) * 100);
   });
 });

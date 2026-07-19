@@ -61,6 +61,11 @@ const readinessConfigProvider: Provider = {
       agentic.promotionEvidenceEpoch === undefined
         ? undefined
         : Date.parse(agentic.promotionEvidenceEpoch);
+    // P5b: funding_events/funding_payments only accrue on the perp venue (binanceusdm) — the
+    // fail-open missing-data flag is scoped to perp + plan-mode shorts, the concrete condition this
+    // pass targets (see PromotionReadinessConfig.fundingDataExpected's own comment).
+    const fundingDataExpected =
+      (config.venues[0]?.id ?? 'binance') === 'binanceusdm' && agentic.shortsEnabled;
     return {
       tokenPriceInputPerMtok: agentic.tokenPriceInputPerMtok,
       tokenPriceOutputPerMtok: agentic.tokenPriceOutputPerMtok,
@@ -69,6 +74,7 @@ const readinessConfigProvider: Provider = {
       tokenPrices: agentic.tokenPrices,
       evidenceEpochMs,
       dustNotional: agentic.promotionDustNotional,
+      fundingDataExpected,
     };
   },
   inject: [TypedConfigService],

@@ -139,6 +139,20 @@ export interface VenuePosition {
   readonly entryPrice?: string;
 }
 
+// P5b: one venue-reported perp funding-payment settlement (ccxt fetchFundingHistory row, unified
+// FundingHistory shape — id/symbol/timestamp/amount only; no fundingRate/markPrice/qty on the
+// unified type, unlike the paper-sim funding_events journal). Sign convention (ccxt income
+// endpoint, pinned both directions in funding-ingest.repository.spec.ts): amountQuote POSITIVE =
+// received (a short collecting funding), NEGATIVE = paid (a long paying funding) — the same
+// direction promotion nets it (ADD, never subtract).
+export interface VenueFundingPayment {
+  readonly venue: VenueId;
+  readonly symbol: SymbolId;
+  readonly venuePaymentId: string;
+  readonly amountQuote: string;
+  readonly fundingTime: EpochMs;
+}
+
 export interface ExchangePort {
   readonly venue: VenueId;
   readonly capabilities: VenueCapabilities;
@@ -173,6 +187,13 @@ export interface ExchangePort {
   // Defect A: venue position read (the position-recon fail-closed backstop a later dispatch wires
   // up). Optional — spot/paper adapters have no perp position concept and omit it.
   fetchPositions?(symbols?: readonly SymbolId[]): Promise<readonly VenuePosition[]>;
+  // P5b (funding-ingest.service.ts): perp funding-payment settlement history, sinceMs-scoped like
+  // fetchMyTrades. Optional — only the swap-capable adapter implements it; spot/paper adapters omit
+  // it and the ingest poller no-ops (measurement gate, fails OPEN — see funding-ingest.service.ts).
+  fetchFundingPayments?(
+    symbol: SymbolId,
+    sinceMs: EpochMs,
+  ): Promise<readonly VenueFundingPayment[]>;
 }
 
 // Re-exported so adapters and the OMS share the reducer's state vocabulary at the seam.

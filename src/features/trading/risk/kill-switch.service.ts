@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import {
   reduceKillSwitch,
   INITIAL_KILL_SWITCH,
@@ -16,6 +16,7 @@ import type { KillSwitchPort } from '../../../ports/risk';
 export class KillSwitchService implements KillSwitchPort {
   private ks: KillSwitch = INITIAL_KILL_SWITCH;
   private lastReason = '';
+  private readonly log = new Logger(KillSwitchService.name);
 
   state(): KillSwitchState {
     return this.ks.state;
@@ -25,8 +26,15 @@ export class KillSwitchService implements KillSwitchPort {
     return this.lastReason;
   }
 
+  // 2026-07-19: a day of spot-lane FILL_FOR_UNKNOWN_ORDER halts went unnoticed with zero log
+  // signal at the source — engage() logs level-50 (error) unconditionally, every call, so a HALT
+  // is never silent at the one place it always passes through, regardless of which caller (monitor,
+  // reconciliation, OMS anomaly, admin) engaged it.
   engage(reason: string, flatten: boolean): void {
     this.lastReason = reason;
+    this.log.error(
+      `kill switch engaged: ${reason} (flatten=${flatten}, prior state=${this.ks.state})`,
+    );
     this.dispatch({ type: 'ENGAGE', flatten });
   }
 

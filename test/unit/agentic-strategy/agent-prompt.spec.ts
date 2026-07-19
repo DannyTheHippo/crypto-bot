@@ -1,14 +1,23 @@
 import { describe, it, expect } from 'vitest';
 import {
   DECISION_TOOL,
+  DECISION_V2_BOUNDS,
   PLAN_BOUNDS,
   PLAN_TOOL,
   PLAYBOOK_BLOCK_START,
   PLAYBOOK_BLOCK_END,
   PROMPT_TEMPLATE_VERSION,
   SHORTS_DECISION_TOOL,
+  TRADE_TEMPLATE_VERSION,
+  TRADE_SHORTS_TEMPLATE_VERSION,
+  TRADE_PORTFOLIO_TEMPLATE_VERSION,
+  TRADE_PORTFOLIO_SHORTS_TEMPLATE_VERSION,
   buildMarketPayload,
   buildSystemPrompt,
+  buildTradeTool,
+  buildTradeShortsTool,
+  buildTradePortfolioTool,
+  buildTradePortfolioShortsTool,
   buildUserMessage,
   computePromptHash,
 } from '../../../src/features/trading/agentic/agent-prompt';
@@ -626,6 +635,73 @@ describe('buildSystemPrompt', () => {
   });
 });
 
+describe('buildSystemPrompt tradeContract option (S1, rich decision contract)', () => {
+  it('tradeContract omitted/false ⇒ BYTE-IDENTICAL to the pre-S1 legacy prompt (no mandate/swing/submit_trade wording)', () => {
+    const withOmitted = buildSystemPrompt(fixtureProfile());
+    const withExplicitFalse = buildSystemPrompt(fixtureProfile(), { tradeContract: false });
+
+    expect(withExplicitFalse).toBe(withOmitted);
+    expect(withOmitted).not.toContain('submit_trade');
+    expect(withOmitted).not.toContain('net-of-cost');
+    expect(withOmitted).toContain('Respond ONLY by calling the submit_decision tool.');
+  });
+
+  it('tradeContract: true swaps in the v2 trader-with-judgment prompt: mandate, swing horizon, sizing/exit/scheduling authority, correlation budgeting, and the submit_trade closing rule', () => {
+    const prompt = buildSystemPrompt(fixtureProfile(), { tradeContract: true });
+
+    expect(prompt.toLowerCase()).toContain('net-of-cost');
+    expect(prompt.toLowerCase()).toContain('swing');
+    expect(prompt).toContain('sizeFraction is your conviction channel');
+    expect(prompt.toLowerCase()).toContain('own your exits');
+    expect(prompt).toContain('nextConsultBars is itself an economic decision');
+    expect(prompt.toLowerCase()).toContain('correlation budgeting');
+    expect(prompt).toContain('Respond ONLY by calling the submit_trade tool.');
+    // Never the legacy closing instruction or the legacy LONG/FLAT-only framing.
+    expect(prompt).not.toContain('Respond ONLY by calling the submit_decision tool.');
+  });
+
+  it('tradeContract: true without shortsEnabled documents the SPOT lane only (no shorts/leverage/funding sentences)', () => {
+    const prompt = buildSystemPrompt(fixtureProfile(), { tradeContract: true });
+
+    expect(prompt).toContain('trading a single SPOT symbol');
+    expect(prompt.toLowerCase()).not.toContain('liquidation distance');
+    expect(prompt.toLowerCase()).not.toContain('funding is part of your pnl');
+  });
+
+  it('tradeContract: true + shortsEnabled: true documents the PERP lane: shorts, 2x leverage cap, margin/liquidation, funding-as-carry', () => {
+    const prompt = buildSystemPrompt(fixtureProfile(), {
+      tradeContract: true,
+      shortsEnabled: true,
+    });
+
+    expect(prompt.toLowerCase()).toContain('perpetual futures');
+    expect(prompt).toContain('leverage is capped at 2x');
+    expect(prompt.toLowerCase()).toContain('liquidation distance');
+    expect(prompt.toLowerCase()).toContain('funding is part of your pnl');
+    expect(prompt).not.toContain('trading a single SPOT symbol');
+  });
+
+  it('tradeContract: true still documents the feed blocks (derivatives/sentiment/etc.) when their flags are on, same as the legacy prompt', () => {
+    const prompt = buildSystemPrompt(fixtureProfile(), {
+      tradeContract: true,
+      derivativesFeedEnabled: true,
+      trackRecordFeedEnabled: true,
+    });
+
+    expect(prompt.toLowerCase()).toContain('funding');
+    expect(prompt).toContain('trackRecord block');
+  });
+
+  it('tradeContract: true still frames the playbook as advisory DATA and recentDecisions as historical data, same framing as the legacy prompt', () => {
+    const prompt = buildSystemPrompt(fixtureProfile(), { tradeContract: true });
+
+    expect(prompt.toLowerCase()).toContain('playbook');
+    expect(prompt.toLowerCase()).toContain('never');
+    expect(prompt).toContain('recentDecisions');
+    expect(prompt.toLowerCase()).toContain('historical data');
+  });
+});
+
 describe('buildUserMessage', () => {
   it('produces a JSON-parseable string when no playbook is supplied', () => {
     const raw = buildUserMessage(buildInput());
@@ -724,7 +800,9 @@ describe('buildUserMessage', () => {
     expect(payload.position).toEqual(context.position);
   });
 
-  it('serializes position.managedPlan into the payload JSON the model reads (re-arm signal)', () => {
+  // B3: managedPlan (a boolean) is replaced by AgentPositionSummary.directives (an object, absent
+  // when unmanaged) — the re-arm signal is now conveyed by the KEY'S ABSENCE, not an explicit false.
+  it('omits position.directives from the payload JSON when the plan is lost (re-arm signal via absence)', () => {
     const context: AgentContext = {
       indicators: null,
       position: {
@@ -734,16 +812,14 @@ describe('buildUserMessage', () => {
         realizedPnl: '5',
         unrealizedPnlPct: 10,
         openOrders: 0,
-        managedPlan: false,
       },
       recentDecisions: [],
     };
     const raw = buildUserMessage(buildInput({ context }));
-    const payload = JSON.parse(raw) as { position: { managedPlan?: boolean } };
+    const payload = JSON.parse(raw) as { position: { directives?: unknown } };
 
-    // The exact byte sequence matters — this is the model's only signal its plan was lost.
-    expect(raw).toContain('"managedPlan":false');
-    expect(payload.position.managedPlan).toBe(false);
+    expect(raw).not.toContain('"directives"');
+    expect(payload.position.directives).toBeUndefined();
   });
 
   it('defaults indicators/htf/position to null and recentDecisions to [] with no context', () => {
@@ -1571,6 +1647,15 @@ describe('strict tool schemas stay within the API-accepted JSON-schema subset', 
     ['DECISION_TOOL', DECISION_TOOL],
     ['PLAN_TOOL', PLAN_TOOL],
     ['SHORTS_DECISION_TOOL', SHORTS_DECISION_TOOL],
+    // S1 (rich decision contract): the v2 trade tools ride the SAME strict-API-accepted allowlist —
+    // walked recursively (properties + items, including the nested `entry` object and, for the
+    // portfolio variants, the `decisions[].*` element schema) so no numeric min/max keyword can ever
+    // sneak into a wire schema and 400 the client's first live call (see this describe's own header
+    // comment for the documented incident).
+    ['TRADE_TOOL', buildTradeTool('0.15')],
+    ['TRADE_SHORTS_TOOL', buildTradeShortsTool('0.5')],
+    ['TRADE_PORTFOLIO_TOOL', buildTradePortfolioTool('0.15')],
+    ['TRADE_PORTFOLIO_SHORTS_TOOL', buildTradePortfolioShortsTool('0.5')],
   ])('%s uses only schema keywords the strict API accepts', (_label, tool) => {
     expect(tool.strict).toBe(true);
     assertSchemaNode(tool.input_schema, 'input_schema');
@@ -1584,6 +1669,152 @@ describe('strict tool schemas stay within the API-accepted JSON-schema subset', 
         `[${bounds.min}, ${bounds.max}]`,
       );
     }
+  });
+});
+
+describe('v2 trade tools (S1, DECISION_V2_BOUNDS)', () => {
+  it('TRADE_TOOL is submit_trade, strict, and excludes open_short from the action enum (spot lane)', () => {
+    const tool = buildTradeTool('0.15');
+    expect(tool.name).toBe('submit_trade');
+    expect(tool.strict).toBe(true);
+    expect(tool.input_schema.additionalProperties).toBe(false);
+    expect(tool.input_schema.properties.action.enum).toEqual([
+      'open_long',
+      'close',
+      'adjust',
+      'hold',
+    ]);
+    expect(tool.input_schema.properties.action.enum).not.toContain('open_short');
+  });
+
+  it('TRADE_SHORTS_TOOL is the same submit_trade name but widens the action enum with open_short (perp lane)', () => {
+    const tool = buildTradeShortsTool('0.5');
+    expect(tool.name).toBe('submit_trade');
+    expect(tool.input_schema.properties.action.enum).toEqual([
+      'open_long',
+      'open_short',
+      'close',
+      'adjust',
+      'hold',
+    ]);
+    // TRADE_TOOL itself stays untouched (mirrors "SHORTS_DECISION_TOOL (B3)" own precedent above).
+    expect(buildTradeTool('0.15').input_schema.properties.action.enum).not.toContain('open_short');
+  });
+
+  it('injects the lane sizeFraction max into the description rather than a hardcoded JSON-schema bound', () => {
+    const spot = buildTradeTool('0.15');
+    const perp = buildTradeShortsTool('0.5');
+    expect(spot.input_schema.properties.sizeFraction.description).toContain(
+      `[${DECISION_V2_BOUNDS.sizeFraction.min}, 0.15]`,
+    );
+    expect(perp.input_schema.properties.sizeFraction.description).toContain(
+      `[${DECISION_V2_BOUNDS.sizeFraction.min}, 0.5]`,
+    );
+    // No numeric min/max schema keyword anywhere on sizeFraction — same allowlist walk as above, but
+    // asserted directly here to make the "description-only, never JSON-schema" contract explicit.
+    expect(spot.input_schema.properties.sizeFraction).not.toHaveProperty('minimum');
+    expect(spot.input_schema.properties.sizeFraction).not.toHaveProperty('maximum');
+  });
+
+  it('recursive walk: no v2 tool schema node anywhere carries a minimum/maximum/minLength/maxLength keyword', () => {
+    const FORBIDDEN_KEYS = [
+      'minimum',
+      'maximum',
+      'minLength',
+      'maxLength',
+      'exclusiveMinimum',
+      'exclusiveMaximum',
+    ];
+    function walk(node: Record<string, unknown>): void {
+      for (const key of FORBIDDEN_KEYS) {
+        expect(node).not.toHaveProperty(key);
+      }
+      if (node['properties'] !== undefined) {
+        for (const child of Object.values(node['properties'] as Record<string, unknown>)) {
+          walk(child as Record<string, unknown>);
+        }
+      }
+      if (node['items'] !== undefined) {
+        walk(node['items'] as Record<string, unknown>);
+      }
+    }
+    for (const tool of [
+      buildTradeTool('0.15'),
+      buildTradeShortsTool('0.5'),
+      buildTradePortfolioTool('0.15'),
+      buildTradePortfolioShortsTool('0.5'),
+    ]) {
+      walk(tool.input_schema);
+    }
+  });
+
+  it('every DECISION_V2_BOUNDS range with a fixed max is stated in the matching field description', () => {
+    const tool = buildTradeTool('0.15');
+    const props = tool.input_schema.properties;
+    expect(props.entryValidityBars.description).toContain(
+      `[${DECISION_V2_BOUNDS.entryValidityBars.min}, ${DECISION_V2_BOUNDS.entryValidityBars.max}]`,
+    );
+    expect(props.stopLossPct.description).toContain(
+      `[${DECISION_V2_BOUNDS.stopLossPct.min}, ${DECISION_V2_BOUNDS.stopLossPct.max}]`,
+    );
+    expect(props.takeProfitPct.description).toContain(
+      `[${DECISION_V2_BOUNDS.takeProfitPct.min}, ${DECISION_V2_BOUNDS.takeProfitPct.max}]`,
+    );
+    expect(props.maxHoldBars.description).toContain(
+      `[${DECISION_V2_BOUNDS.maxHoldBars.min}, ${DECISION_V2_BOUNDS.maxHoldBars.max}]`,
+    );
+    expect(props.partialCloseFraction.description).toContain(
+      `[${DECISION_V2_BOUNDS.partialCloseFraction.min}, ${DECISION_V2_BOUNDS.partialCloseFraction.max}]`,
+    );
+    expect(props.entry.properties.offsetBps.description).toContain(
+      `[${DECISION_V2_BOUNDS.entryOffsetBps.min}, ${DECISION_V2_BOUNDS.entryOffsetBps.max}]`,
+    );
+    expect(props.thesis.description).toContain(String(DECISION_V2_BOUNDS.thesisMaxLen));
+  });
+
+  it('entry.style is maker|taker and entry.offsetBps is documented as maker-only', () => {
+    const entry = buildTradeTool('0.15').input_schema.properties.entry;
+    expect(entry.properties.style.enum).toEqual(['maker', 'taker']);
+    expect(entry.properties.offsetBps.description.toLowerCase()).toContain("style is 'taker'");
+  });
+
+  describe('portfolio batch tools: exactly ONE portfolio-level nextConsultBars', () => {
+    it('TRADE_PORTFOLIO_TOOL carries nextConsultBars at the top level, not inside each decision element', () => {
+      const tool = buildTradePortfolioTool('0.15');
+      const topProps = tool.input_schema.properties;
+      expect(topProps).toHaveProperty('nextConsultBars');
+      expect(topProps.nextConsultBars.type).toBe('integer');
+      expect(tool.input_schema.required).toContain('nextConsultBars');
+      const elementProps = topProps.decisions.items.properties;
+      expect(elementProps).not.toHaveProperty('nextConsultBars');
+      // Exactly one nextConsultBars PROPERTY DEFINITION anywhere in the schema — not one-per-symbol.
+      // Matches the key-as-a-schema-node form ("nextConsultBars":{...}) rather than a naive substring
+      // count, which would also match its own entry in the top-level `required` array.
+      const occurrences = (JSON.stringify(tool.input_schema).match(/"nextConsultBars":\{/g) ?? [])
+        .length;
+      expect(occurrences).toBe(1);
+    });
+
+    it('TRADE_PORTFOLIO_SHORTS_TOOL: same single top-level nextConsultBars, with open_short in the per-element action enum', () => {
+      const tool = buildTradePortfolioShortsTool('0.5');
+      expect(tool.input_schema.properties).toHaveProperty('nextConsultBars');
+      expect(tool.input_schema.properties.decisions.items.properties).not.toHaveProperty(
+        'nextConsultBars',
+      );
+      expect(tool.input_schema.properties.decisions.items.properties.action.enum).toContain(
+        'open_short',
+      );
+      const occurrences = (JSON.stringify(tool.input_schema).match(/"nextConsultBars":\{/g) ?? [])
+        .length;
+      expect(occurrences).toBe(1);
+    });
+
+    it('spot batch excludes open_short from the per-element action enum', () => {
+      const tool = buildTradePortfolioTool('0.15');
+      expect(tool.input_schema.properties.decisions.items.properties.action.enum).not.toContain(
+        'open_short',
+      );
+    });
   });
 });
 
@@ -1625,6 +1856,22 @@ describe('computePromptHash', () => {
   ])('changes when %s changes', (_label, override) => {
     expect(computePromptHash({ ...base, ...override })).not.toBe(computePromptHash(base));
   });
+
+  // S1 (rich decision contract): t1/t1s/tpf1/tpf2 are a NEW tag family (see agent-prompt.ts's own
+  // header comment) — every pairing here must hash distinctly, both against each other and against
+  // every legacy tag, so a v2-tagged decision row can never be confused with a legacy one even when
+  // quoting the same playbook/tool-schema/model.
+  it('t1/t1s/tpf1/tpf2 all hash distinctly from each other and from the legacy PROMPT_TEMPLATE_VERSION tag', () => {
+    const tags = [
+      PROMPT_TEMPLATE_VERSION,
+      TRADE_TEMPLATE_VERSION,
+      TRADE_SHORTS_TEMPLATE_VERSION,
+      TRADE_PORTFOLIO_TEMPLATE_VERSION,
+      TRADE_PORTFOLIO_SHORTS_TEMPLATE_VERSION,
+    ];
+    const hashes = tags.map((templateVersion) => computePromptHash({ ...base, templateVersion }));
+    expect(new Set(hashes).size).toBe(hashes.length);
+  });
 });
 
 describe('buildMarketPayload (W1.3 input-snapshot persistence)', () => {
@@ -1665,5 +1912,124 @@ describe('buildMarketPayload (W1.3 input-snapshot persistence)', () => {
     // Absent extras ⇒ no constraints key at all — pre-v5 recorded rows replay byte-identically.
     const without = JSON.parse(buildMarketPayload(input)) as Record<string, unknown>;
     expect('constraints' in without).toBe(false);
+  });
+});
+
+// S1 (rich decision contract, Design § Enriched model inputs): the new v2 payload blocks — each
+// renders when the caller supplies the corresponding extras field and is omitted entirely (no key)
+// when absent, same omit-entirely convention as every existing block above (constraints, orderBook,
+// derivatives, ...).
+describe('buildMarketPayload v2 blocks (S1: portfolio/budget/thesis/directives/d1/calendar/execQuality)', () => {
+  const portfolio = {
+    cappedEquity: '1000',
+    freeQuote: '400',
+    grossExposure: '600',
+    positions: [{ symbol: 'BTC/USDT', side: 'LONG' as const, qty: '0.01', notional: '600' }],
+    correlation: { btcBeta: 0.85, summary: 'basket is 85% BTC-beta' },
+  };
+  const budget = {
+    remainingCallsToday: 40,
+    remainingTokensToday: 120_000,
+    remainingUsdToday: '1.20',
+    approxCostPerConsultUsd: '0.03',
+  };
+  const directives = {
+    entryStyle: 'maker' as const,
+    stopLossPct: '0.02',
+    takeProfitPct: '0.05',
+    maxHoldBars: 96,
+    thesis: 'BTC breaking out of a range on rising volume.',
+  };
+  const calendar = [{ name: 'FOMC', atMs: T + 3_600_000, importance: 'high' as const }];
+
+  it('renders portfolio/budget/currentThesis/directives/barsHeld/barsUntilForcedExit/d1/calendar/execQuality when supplied', () => {
+    const input = buildInput();
+    const payload = JSON.parse(
+      buildMarketPayload(input, {
+        portfolio,
+        budget,
+        currentThesis: 'BTC breaking out of a range on rising volume.',
+        directives,
+        barsHeld: 5,
+        barsUntilForcedExit: 91,
+        d1: { emaFast: 101, emaSlow: 99, rsi14: 58 },
+        calendar,
+        execQuality: 'maker fill rate 0.72, missed-entry cost 4bps, post-fill drift +2bps',
+      }),
+    ) as Record<string, unknown>;
+
+    expect(payload['portfolio']).toEqual(portfolio);
+    expect(payload['budget']).toEqual(budget);
+    expect(payload['currentThesis']).toBe('BTC breaking out of a range on rising volume.');
+    expect(payload['directives']).toEqual(directives);
+    expect(payload['barsHeld']).toBe(5);
+    expect(payload['barsUntilForcedExit']).toBe(91);
+    expect(payload['htf']).toEqual({
+      h1: null,
+      h4: null,
+      d1: { emaFast: 101, emaSlow: 99, rsi14: 58 },
+    });
+    expect(payload['calendar']).toEqual(calendar);
+    expect(payload['execQuality']).toBe(
+      'maker fill rate 0.72, missed-entry cost 4bps, post-fill drift +2bps',
+    );
+  });
+
+  it('omits every v2 block key entirely (no empty scaffolding) when none are supplied — pre-S1 payloads stay byte-identical', () => {
+    const input = buildInput();
+    const withV2Extras = buildMarketPayload(input);
+    const withoutAnyExtras = buildMarketPayload(input, {});
+    expect(withV2Extras).toBe(withoutAnyExtras);
+
+    const payload = JSON.parse(withV2Extras) as Record<string, unknown>;
+    expect(payload).not.toHaveProperty('portfolio');
+    expect(payload).not.toHaveProperty('budget');
+    expect(payload).not.toHaveProperty('currentThesis');
+    expect(payload).not.toHaveProperty('directives');
+    expect(payload).not.toHaveProperty('barsHeld');
+    expect(payload).not.toHaveProperty('barsUntilForcedExit');
+    expect(payload).not.toHaveProperty('calendar');
+    expect(payload).not.toHaveProperty('execQuality');
+    expect(payload['htf']).toBeNull();
+  });
+
+  it('d1 merges into the existing htf passthrough (h1/h4 from context.htf) without disturbing it when absent', () => {
+    const context: AgentContext = {
+      indicators: null,
+      position: {
+        side: 'FLAT',
+        qty: '0',
+        avgEntry: null,
+        realizedPnl: '0',
+        unrealizedPnlPct: null,
+        openOrders: 0,
+      },
+      recentDecisions: [],
+      htf: { h1: { emaFast: 101, emaSlow: 99, rsi14: 60 }, h4: null },
+    };
+    const withoutD1 = JSON.parse(buildMarketPayload(buildInput({ context }))) as { htf: unknown };
+    expect(withoutD1.htf).toEqual(context.htf); // byte-identical passthrough, no d1 key added
+
+    const withD1 = JSON.parse(
+      buildMarketPayload(buildInput({ context }), { d1: { emaFast: 10, emaSlow: 9, rsi14: 50 } }),
+    ) as { htf: { h1: unknown; h4: unknown; d1: unknown } };
+    expect(withD1.htf).toEqual({ ...context.htf, d1: { emaFast: 10, emaSlow: 9, rsi14: 50 } });
+  });
+
+  it('d1: null renders explicitly as null (insufficient daily history) rather than omitting the key', () => {
+    const payload = JSON.parse(buildMarketPayload(buildInput(), { d1: null })) as {
+      htf: { d1: unknown };
+    };
+    expect(payload.htf).toHaveProperty('d1', null);
+  });
+
+  it('currentThesis/barsHeld/barsUntilForcedExit are each rendered independently (one supplied without the others)', () => {
+    const payload = JSON.parse(
+      buildMarketPayload(buildInput(), { currentThesis: 'lone thesis' }),
+    ) as Record<string, unknown>;
+    expect(payload['currentThesis']).toBe('lone thesis');
+    expect(payload).not.toHaveProperty('barsHeld');
+    expect(payload).not.toHaveProperty('barsUntilForcedExit');
+    expect(payload).not.toHaveProperty('directives');
   });
 });

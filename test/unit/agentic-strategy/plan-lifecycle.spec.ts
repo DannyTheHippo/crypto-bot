@@ -7,12 +7,19 @@ import {
 import type {
   AgentClientPort,
   AgentDecisionInput,
+  AgentDirectives,
   AgentMarketSnapshot,
+  AgentPositionSummary,
+  // AgentPlan: still the ONLY type AgentDecisionEntry.plan carries (ports/agentic-strategy.ts;
+  // A3's own widening step, not B3's) — the journal-record fixtures below type against IT, not
+  // AgentDirectives, even though the runtime value AgenticStrategy now passes is AgentDirectives-
+  // shaped (see recordJournalEntry's `plan: proposal?.plan ?? null`).
   AgentPlan,
   AgentProposal,
 } from '../../../src/ports/agentic-strategy';
 import type { Signal } from '../../../src/domain/types/signal';
 import type { CandleEvent } from '../../../src/domain/types/market-events';
+import type { ExecReport } from '../../../src/domain/types/exec-report';
 import type {
   OpenOrderSummary,
   Position,
@@ -89,12 +96,37 @@ function longPosition(avgEntry: string): Position {
   };
 }
 
+// B2 (Design § Deleted scaffolding, already landed): evaluateConsultSchedule does NOT force a
+// consult on a brand-new instance's very first candle bar the way the retired prescreen gate did —
+// with no schedule/lastConsultPrice ever set, an ordinary candle trigger just waits for the fallback
+// cadence (16 bars). consult-schedule.spec.ts's own fixtures seed bar 0 with an 'exec' trigger
+// (forced_fill, schedule-independent) for exactly this reason — mirrored here by defaulting bar 0 to
+// 'exec' so every "the LLM was consulted this bar" test in this file keeps its pre-B2 seeding
+// behavior without touching each call site individually.
+function execEvent(index: number): ExecReport {
+  return {
+    kind: 'ACK',
+    reportId: `r${index}`,
+    clientOrderId: clientOrderId('cbp0000000000000007000800000000000000'),
+    venue: V,
+    symbol: SYM,
+    eventTime: epochMs(BASE_TIME + index * STEP_MS),
+    ingestTime: epochMs(BASE_TIME + index * STEP_MS + 1),
+    venueOrderId: `vo${index}`,
+  };
+}
+
 function buildInput(
   index: number,
-  opts: { close?: string; position?: Position; openOrders?: OpenOrderSummary[] } = {},
+  opts: {
+    close?: string;
+    position?: Position;
+    openOrders?: OpenOrderSummary[];
+    trigger?: 'candle' | 'exec';
+  } = {},
 ): AgentDecisionInput {
   const candles = Array.from({ length: index + 1 }, (_, i) =>
-    candle(i, i === index ? (opts.close ?? '100') : '100'),
+    candle(i, i === index ? opts.close ?? '100' : '100'),
   );
   const positions = new Map<string, Position>();
   if (opts.position) positions.set(`${SID}|${V}|${SYM}`, opts.position);
@@ -106,21 +138,35 @@ function buildInput(
     execReports: [],
     portfolio: { strategyId: SID, positions, openOrders: opts.openOrders ?? [] },
   };
-  return { strategyId: SID, trigger: { kind: 'candle', event: candle(index) }, snapshot };
+  const triggerKind = opts.trigger ?? (index === 0 ? 'exec' : 'candle');
+  const trigger: AgentDecisionInput['trigger'] =
+    triggerKind === 'exec'
+      ? { kind: 'exec', event: execEvent(index) }
+      : { kind: 'candle', event: candle(index) };
+  return { strategyId: SID, trigger, snapshot };
 }
 
-const PLAN: AgentPlan = {
+// B3: AgentDirectives (v2) replaces AgentPlan — sizeFraction/entryStyle are new required fields;
+// everything else is a direct carry-over of the legacy PLAN fixture's own values.
+const PLAN: AgentDirectives = {
+  sizeFraction: '0.05',
   entryOffsetBps: 10,
   stopLossPct: '0.02',
   takeProfitPct: '0.03',
   entryValidityBars: 2,
   maxHoldBars: 8,
+  entryStyle: 'maker',
 };
 
-// Returns an ENTER_LONG + plan on every call; counts calls so the tests can assert exactly when the
-// LLM was (not) consulted while a plan is active.
+// Returns an ENTER_LONG + directives on every call; counts calls so the tests can assert exactly
+// when the LLM was (not) consulted while a plan is active. B3: the portfolio-scheduled consult
+// cadence (evaluateConsultSchedule, B2) now comes from the CLIENT's own nextConsultBars, not a
+// strategy param — nextConsultBars defaults to 4 here, matching the old planMaxQuietBars=4 default
+// every test in this file was written against (B2's report flagged implicit-default drift, so this
+// is pinned explicitly rather than left to evaluateConsultSchedule's own fallback default of 16).
 class PlanningClient implements AgentClientPort {
   calls = 0;
+  constructor(private readonly nextConsultBars = 4) {}
   propose(input: AgentDecisionInput): Promise<AgentProposal> {
     this.calls += 1;
     const signal: Signal = {
@@ -140,6 +186,7 @@ class PlanningClient implements AgentClientPort {
       signals: [signal],
       decision: { action: 'long', confidence: 0.8, rationale: 'r' },
       plan: PLAN,
+      nextConsultBars: this.nextConsultBars,
     });
   }
 }
@@ -152,7 +199,12 @@ function makeParams(planMode = true): AgenticStrategyParams {
     warmupBars: 5,
     model: 'test-model',
     planMode,
-    planMaxQuietBars: 4,
+    // B2's own knobs, pinned explicitly (report-flagged implicit-default drift): the schedule
+    // (PlanningClient's nextConsultBars) is what these tests exercise, never wake-on-move or the
+    // fallback cadence — pinned generously out of reach so a deliberate TP/SL-crossing close price
+    // (e.g. a >1.5% move) can never ALSO force an unplanned extra consult via 'forced_move'.
+    wakeMovePct: 1,
+    fallbackConsultBars: 1000,
   };
 }
 
@@ -233,7 +285,6 @@ describe('AgenticStrategy plan lifecycle (W3.1)', () => {
         warmupBars: 5,
         model: 'test-model',
         planMode: true,
-        planMaxQuietBars: 4,
         planExitTtlBars: 1,
       },
       client,
@@ -246,7 +297,8 @@ describe('AgenticStrategy plan lifecycle (W3.1)', () => {
   });
 
   it('samples the market payload every Nth managed bar (W6) — others stay null', async () => {
-    const client = new PlanningClient();
+    // nextConsultBars: 8 > the bars we drive, so no consult interrupts the quiet holds.
+    const client = new PlanningClient(8);
     const entries: Array<{ has: boolean }> = [];
     const strategy = new AgenticStrategy(
       SID,
@@ -257,7 +309,6 @@ describe('AgenticStrategy plan lifecycle (W3.1)', () => {
         warmupBars: 5,
         model: 'test-model',
         planMode: true,
-        planMaxQuietBars: 8, // > the bars we drive, so no consult interrupts the quiet holds
         quietPayloadSampleBars: 2,
       },
       client,
@@ -326,38 +377,409 @@ describe('AgenticStrategy plan lifecycle (W3.1)', () => {
     expect(client.calls).toBe(2);
   });
 
-  it('flag off keeps consulting the LLM every bar (legacy behavior)', async () => {
+  // B2 (already landed): the consult-schedule gate is UNIVERSAL — it governs quiet bars regardless
+  // of planMode, so "flag off" no longer means "consult every bar" the way the retired prescreen
+  // gate's own planMode-conditional bypass did. What planMode=false actually changes is that there
+  // is no plan-executor to intercept a bar first — every 'exec' trigger (schedule-independent,
+  // forced_fill) still reaches the LLM every time, which is what this test now pins.
+  it('flag off: every exec-triggered bar still reaches the LLM (no plan-executor to intercept)', async () => {
     const client = new PlanningClient();
     const strategy = makeStrategy(client, false);
-    await strategy.decide(buildInput(0));
-    await strategy.decide(buildInput(1));
-    await strategy.decide(buildInput(2));
+    await strategy.decide(buildInput(0, { trigger: 'exec' }));
+    await strategy.decide(buildInput(1, { trigger: 'exec' }));
+    await strategy.decide(buildInput(2, { trigger: 'exec' }));
     expect(client.calls).toBe(3);
   });
 });
 
+// B3 (Design § Model-owned exits, § New tool contract action mapping): the v2 directive lifecycle —
+// adjust-in-place, scale-in, thesis persistence, and the deletion of the expectancy ladder's strength
+// rescaling. The legacy suites above already pin the "client mapping unfinished" defensive fallback
+// (plan present + non-adjust/close action ⇒ wholesale replace); these pin the NEW branches directly.
+describe('AgenticStrategy v2 directive lifecycle (B3)', () => {
+  it('adjust merges the revised directive set in place — barsElapsed is never reset, and the moved stop takes effect immediately', async () => {
+    class AdjustingClient implements AgentClientPort {
+      calls = 0;
+      propose(): Promise<AgentProposal> {
+        this.calls += 1;
+        if (this.calls === 1) {
+          return Promise.resolve({
+            signals: [],
+            decision: { action: 'open_long', confidence: 0.8, rationale: 'r' },
+            plan: PLAN, // stopLossPct '0.02' -> stop 98; maxHoldBars 8
+            nextConsultBars: 2,
+          });
+        }
+        // Bar 2's consult: widen the stop to 0.05 (stop 95) — the old 98 level must stop firing, and
+        // maxHoldBars (untouched by this adjust) must keep counting from barsElapsed, not restart.
+        return Promise.resolve({
+          signals: [],
+          decision: { action: 'adjust', confidence: 0.8, rationale: 'widen stop' },
+          plan: { ...PLAN, stopLossPct: '0.05' },
+          nextConsultBars: 100, // don't interrupt the remaining quiet bars below
+        });
+      }
+    }
+    const client = new AdjustingClient();
+    const strategy = makeStrategy(client);
+    await strategy.decide(buildInput(0)); // open_long -> plan stored, barsElapsed 0
+    const held = longPosition('100');
+    await strategy.decide(buildInput(1, { position: held })); // entry captured, barsElapsed 1
+    // Bar 2: schedule (2) reached -> real consult -> adjust merges stop 0.05 in place.
+    await strategy.decide(buildInput(2, { position: held }));
+    expect(client.calls).toBe(2);
+
+    // Bar 3: close 97 is BELOW the OLD stop (98) but ABOVE the NEW one (95) — holds only if the
+    // merge actually took effect (a no-op/ignored adjust would still be sitting on stop 98 and exit).
+    const bar3 = await strategy.decide(buildInput(3, { close: '97', position: held }));
+    expect(bar3).toEqual([]);
+
+    // Bars 4-7: flat holds. maxHoldBars=8 was NOT touched by the adjust — bar 8 must be exactly
+    // where max_hold fires (barsElapsed counted 1,2,3,4,5,6,7,8 continuously through the adjust at
+    // bar 2; a clock reset there would instead fire at bar 2+8=10, or not yet at bar 8).
+    for (let i = 4; i <= 7; i++) {
+      const out = await strategy.decide(buildInput(i, { position: held }));
+      expect(out).toEqual([]);
+    }
+    const maxHoldExit = await strategy.decide(buildInput(8, { position: held }));
+    expect(client.calls).toBe(2); // still no extra LLM consult — deterministically enforced
+    expect(maxHoldExit).toHaveLength(1);
+    expect(maxHoldExit[0]!.reason).toBe('plan exit: max_hold');
+  });
+
+  it('a same-side open_long while positioned (scale-in) replaces the plan with a fresh clock', async () => {
+    class ScaleInClient implements AgentClientPort {
+      calls = 0;
+      propose(): Promise<AgentProposal> {
+        this.calls += 1;
+        if (this.calls === 1) {
+          return Promise.resolve({
+            signals: [],
+            decision: { action: 'open_long', confidence: 0.8, rationale: 'r' },
+            plan: { ...PLAN, maxHoldBars: 20 }, // long-lived so it never fires before the scale-in
+            nextConsultBars: 3,
+          });
+        }
+        // Bar 3: scale-in — same-side open_long with a SHORT maxHoldBars; the fresh clock must be
+        // what governs, not the outgoing plan's already-elapsed bars.
+        return Promise.resolve({
+          signals: [],
+          decision: { action: 'open_long', confidence: 0.8, rationale: 'scale in' },
+          plan: { ...PLAN, maxHoldBars: 2, sizeFraction: '0.03' },
+          nextConsultBars: 100,
+        });
+      }
+    }
+    const client = new ScaleInClient();
+    const strategy = makeStrategy(client);
+    await strategy.decide(buildInput(0)); // open_long -> plan stored (maxHoldBars 20), barsElapsed 0
+    const held = longPosition('100');
+    await strategy.decide(buildInput(1, { position: held })); // entry captured, barsElapsed 1
+    await strategy.decide(buildInput(2, { position: held })); // barsElapsed 2, still quiet
+    // Bar 3: schedule (3) reached -> consult -> scale-in replaces the plan (fresh clock, maxHoldBars 2).
+    await strategy.decide(buildInput(3, { position: held }));
+    expect(client.calls).toBe(2);
+    // Bar 4: fresh clock's barsElapsed=1 (NOT the outgoing plan's 4) -> well short of maxHoldBars 2.
+    const bar4 = await strategy.decide(buildInput(4, { position: held }));
+    expect(bar4).toEqual([]);
+    // Bar 5: fresh clock's barsElapsed=2 -> hits the NEW plan's maxHoldBars (2) exactly. A carried-over
+    // clock would either have already exited at bar 3 (old 3 >= new maxHoldBars 2) or exit late.
+    const bar5 = await strategy.decide(buildInput(5, { position: held }));
+    expect(client.calls).toBe(2);
+    expect(bar5).toHaveLength(1);
+    expect(bar5[0]!.reason).toBe('plan exit: max_hold');
+  });
+
+  it('a delayed scale-in fill re-anchors entryPrice (and stop) to the POST-fill avg entry, not the frozen pre-scale-in one (review finding, minor)', async () => {
+    class ScaleInFillClient implements AgentClientPort {
+      calls = 0;
+      propose(): Promise<AgentProposal> {
+        this.calls += 1;
+        if (this.calls === 1) {
+          return Promise.resolve({
+            signals: [],
+            decision: { action: 'open_long', confidence: 0.8, rationale: 'r' },
+            plan: { ...PLAN, maxHoldBars: 20, stopLossPct: '0.02' },
+            nextConsultBars: 3,
+          });
+        }
+        // Bar 3: scale-in with a WIDER stopLossPct (0.05) — the add rests as an unfilled maker
+        // order for two more bars before it fills.
+        return Promise.resolve({
+          signals: [],
+          decision: { action: 'open_long', confidence: 0.8, rationale: 'scale in' },
+          plan: { ...PLAN, maxHoldBars: 20, stopLossPct: '0.05', sizeFraction: '0.08' },
+          nextConsultBars: 100,
+        });
+      }
+    }
+    const client = new ScaleInFillClient();
+    const strategy = makeStrategy(client);
+    await strategy.decide(buildInput(0)); // open_long -> plan stored, barsElapsed 0
+    const preScaleIn = longPosition('100'); // qty 0.001
+    await strategy.decide(buildInput(1, { position: preScaleIn })); // entry captured at 100
+    await strategy.decide(buildInput(2, { position: preScaleIn })); // still quiet
+    // Bar 3: schedule (3) reached -> consult -> scale-in decided while the add is STILL a resting
+    // (unfilled) maker order — the position is byte-identical to preScaleIn at this exact bar.
+    await strategy.decide(buildInput(3, { position: preScaleIn }));
+    expect(client.calls).toBe(2);
+    // Bar 4: the add STILL hasn't filled (qty unchanged from the scale-in's own baseline) — entry
+    // stays anchored at the OLD 100, protecting off the new stopLossPct (0.05 -> stop 95). Close 100
+    // holds either way, so this bar only proves no premature/erroring re-anchor.
+    const bar4 = await strategy.decide(buildInput(4, { position: preScaleIn }));
+    expect(bar4).toEqual([]);
+    // Bar 5: the add FILLS — position now shows the blended post-fill avgEntry 110 at a larger qty.
+    // Correct re-anchor: entry 110 x (1-0.05) = stop 104.5 -> close 102 breaches it (EXIT).
+    // The pre-fix bug froze entryPrice at 100 on bar 4's premature capture -> stop 95 -> close 102
+    // would NOT breach it (a false hold), which is exactly the stale-anchor defect this test pins.
+    const postFill: Position = {
+      strategyId: SID,
+      venue: V,
+      symbol: SYM,
+      signedQty: new Decimal('0.0025'),
+      avgEntry: price('110'),
+      realizedPnl: new Decimal(0),
+    };
+    const bar5 = await strategy.decide(buildInput(5, { close: '102', position: postFill }));
+    expect(client.calls).toBe(2); // still no extra LLM consult
+    expect(bar5).toHaveLength(1);
+    expect(bar5[0]!.kind).toBe('EXIT_LONG');
+    expect(bar5[0]!.reason).toBe('plan exit: stop');
+  });
+
+  it('thesis persists onto the position summary as currentThesis and rides the journal row via plan_json', async () => {
+    const journalEntries: Array<{ plan?: AgentDirectives | null }> = [];
+    const seenTheses: Array<string | undefined> = [];
+    const THESIS = 'BTC breaking out of a range on rising volume.';
+    class ThesisClient implements AgentClientPort {
+      calls = 0;
+      propose(input: AgentDecisionInput): Promise<AgentProposal> {
+        this.calls += 1;
+        seenTheses.push(input.context?.position.currentThesis);
+        if (this.calls === 1) {
+          return Promise.resolve({
+            signals: [],
+            decision: { action: 'open_long', confidence: 0.8, rationale: 'r' },
+            plan: { ...PLAN, thesis: THESIS },
+            nextConsultBars: 1,
+          });
+        }
+        return Promise.resolve({
+          signals: [],
+          decision: { action: 'hold', confidence: 0.5, rationale: 'r' },
+          nextConsultBars: 100,
+        });
+      }
+    }
+    const client = new ThesisClient();
+    const strategy = new AgenticStrategy(SID, makeParams(), client, {
+      journal: {
+        // AgentDecisionEntry.plan is still typed AgentPlan|null (A3's own widening step, not B3's) —
+        // the runtime value AgenticStrategy actually passes is already AgentDirectives-shaped.
+        record: (e) => journalEntries.push({ plan: e.plan as AgentDirectives | null }),
+        recent: () => Promise.resolve([]),
+      },
+    });
+    await strategy.decide(buildInput(0)); // bar 0: FLAT — no position, no currentThesis to render
+    expect(seenTheses[0]).toBeUndefined();
+    expect(journalEntries).toHaveLength(1);
+    expect(journalEntries[0]!.plan?.thesis).toBe(THESIS);
+
+    const held = longPosition('100');
+    // Bar 1: entry captured; schedule (1) reached -> real consult THIS bar, which renders the
+    // persisted thesis back as currentThesis (fed back verbatim, per AgentDirectives.thesis's own
+    // comment) — buildContext runs before runActivePlan increments barsElapsed, but lastThesis is a
+    // strategy-level field independent of that clock, so it renders regardless.
+    await strategy.decide(buildInput(1, { position: held }));
+    expect(client.calls).toBe(2);
+    expect(seenTheses[1]).toBe(THESIS);
+  });
+
+  it('a moved takeProfitPct on adjust drift_cancels the stale resting venue-TP order on the next managed bar', async () => {
+    class AdjustTpClient implements AgentClientPort {
+      calls = 0;
+      propose(): Promise<AgentProposal> {
+        this.calls += 1;
+        if (this.calls === 1) {
+          return Promise.resolve({
+            signals: [],
+            decision: { action: 'open_long', confidence: 0.8, rationale: 'r' },
+            plan: PLAN, // takeProfitPct '0.03' -> TP 103
+            nextConsultBars: 2,
+          });
+        }
+        return Promise.resolve({
+          signals: [],
+          decision: { action: 'adjust', confidence: 0.8, rationale: 'widen TP' },
+          plan: { ...PLAN, takeProfitPct: '0.05' }, // TP moves to 105
+          nextConsultBars: 100,
+        });
+      }
+    }
+    const client = new AdjustTpClient();
+    const events: VenueTpEvent[] = [];
+    const strategy = new AgenticStrategy(SID, { ...makeParams(), venueTpEnabled: true }, client, {
+      onVenueTp: (e) => events.push(e),
+      intentStore: vtpOnlyIntentStore(),
+    });
+    await strategy.decide(buildInput(0)); // open_long -> plan stored (TP 103)
+    const held = longPosition('100');
+    const placed = await strategy.decide(buildInput(1, { position: held })); // entry captured, TP placed
+    expect(placed).toHaveLength(1);
+    expect(placed[0]!.limitPriceHint!.toFixed()).toBe('103');
+    events.length = 0;
+
+    const restingSell103: OpenOrderSummary = {
+      clientOrderId: clientOrderId('cbp0000000000000007000800000000000006'),
+      symbol: SYM,
+      side: 'SELL',
+      qty: qty('0.001'),
+      limitPrice: price('103'),
+    };
+    // Bar 2: the adjust consult itself — verdict is 'hold' before the fallthrough, so manageVenueTp
+    // never runs this bar; the stale 103 order is untouched here (see the drift_cancel bar below).
+    const adjustBar = await strategy.decide(
+      buildInput(2, { position: held, openOrders: [restingSell103] }),
+    );
+    expect(client.calls).toBe(2);
+    expect(adjustBar).toEqual([]);
+
+    // Bar 3: managed quiet bar — manageVenueTp compares the resting 103 SELL against the ADJUSTED
+    // plan's new TP (105) and cancels it for next-bar re-placement.
+    const driftBar = await strategy.decide(
+      buildInput(3, { position: held, openOrders: [restingSell103] }),
+    );
+    expect(driftBar).toHaveLength(1);
+    expect(driftBar[0]!.kind).toBe('CANCEL_OPEN');
+    expect(events).toEqual(['drift_cancel']);
+  });
+
+  it('adjust with partialCloseFraction shrinks the position; the stale full-size venue TP qty_cancels then re-places', async () => {
+    class PartialCloseClient implements AgentClientPort {
+      calls = 0;
+      propose(): Promise<AgentProposal> {
+        this.calls += 1;
+        if (this.calls === 1) {
+          return Promise.resolve({
+            signals: [],
+            decision: { action: 'open_long', confidence: 0.8, rationale: 'r' },
+            plan: PLAN,
+            nextConsultBars: 2,
+          });
+        }
+        // The CLIENT (A1) is what actually emits the reduce-only EXIT off partialCloseFraction; this
+        // test only pins the venue-TP reconciliation's reaction to the resulting smaller position, so
+        // `signals` stays empty here — the partial fill is simulated directly on the fixture below.
+        return Promise.resolve({
+          signals: [],
+          decision: { action: 'adjust', confidence: 0.8, rationale: 'partial close' },
+          plan: { ...PLAN, partialCloseFraction: '0.5' },
+          nextConsultBars: 100,
+        });
+      }
+    }
+    const client = new PartialCloseClient();
+    const events: VenueTpEvent[] = [];
+    const strategy = new AgenticStrategy(SID, { ...makeParams(), venueTpEnabled: true }, client, {
+      onVenueTp: (e) => events.push(e),
+      intentStore: vtpOnlyIntentStore(),
+    });
+    await strategy.decide(buildInput(0));
+    const fullPosition = longPosition('100'); // qty 0.001
+    const placed = await strategy.decide(buildInput(1, { position: fullPosition }));
+    expect(placed[0]!.limitPriceHint!.toFixed()).toBe('103');
+    events.length = 0;
+
+    const restingSellFull: OpenOrderSummary = {
+      clientOrderId: clientOrderId('cbp0000000000000007000800000000000007'),
+      symbol: SYM,
+      side: 'SELL',
+      qty: qty('0.001'),
+      limitPrice: price('103'),
+    };
+    // Bar 2: the adjust consult (position still full-size — the partial fill lands between bars,
+    // same as any venue fill).
+    await strategy.decide(buildInput(2, { position: fullPosition, openOrders: [restingSellFull] }));
+    expect(client.calls).toBe(2);
+
+    const halfPosition: Position = {
+      strategyId: SID,
+      venue: V,
+      symbol: SYM,
+      signedQty: new Decimal('0.0005'),
+      avgEntry: price('100'),
+      realizedPnl: new Decimal(0),
+    };
+    // Bar 3: the partial close filled — position now HALF size. The resting full-size 103 SELL no
+    // longer matches (it would lock base the reduced position doesn't have) -> qty_cancel.
+    const qtyCancelBar = await strategy.decide(
+      buildInput(3, { position: halfPosition, openOrders: [restingSellFull] }),
+    );
+    expect(qtyCancelBar).toHaveLength(1);
+    expect(qtyCancelBar[0]!.kind).toBe('CANCEL_OPEN');
+    expect(events).toEqual(['qty_cancel']);
+
+    // Bar 4: nothing rests -> re-placed, sized off the (now half-size) position.
+    const replaced = await strategy.decide(buildInput(4, { position: halfPosition }));
+    expect(replaced).toHaveLength(1);
+    expect(replaced[0]!.kind).toBe('EXIT_LONG');
+    expect(replaced[0]!.exitStyle).toBe('RESTING');
+  });
+
+  it("never rescales signal.strength (expectancy ladder deleted — sizing authority is the model's own sizeFraction)", async () => {
+    class StrengthClient implements AgentClientPort {
+      propose(input: AgentDecisionInput): Promise<AgentProposal> {
+        const signal: Signal = {
+          strategyId: SID,
+          venue: V,
+          symbol: SYM,
+          kind: 'ENTER_LONG',
+          strength: 0.37,
+          refPrice: price('100'),
+          basedOnSeq: 1n,
+          eventTime: input.snapshot.eventTime,
+          ttlMs: 120_000,
+          dedupeKey: 'k1',
+          reason: 'r',
+        };
+        return Promise.resolve({
+          signals: [signal],
+          decision: { action: 'open_long', confidence: 0.8, rationale: 'r' },
+        });
+      }
+    }
+    const strategy = new AgenticStrategy(SID, makeParams(false), new StrengthClient());
+    const out = await strategy.decide(buildInput(0));
+    expect(out).toHaveLength(1);
+    expect(out[0]!.strength).toBe(0.37);
+  });
+});
+
 // The active plan is in-memory and lost on restart, leaving an open position consulted every bar.
-// The model sees that state as position.managedPlan === false and re-attaches management by
-// returning a plan with its 'hold' (the client's re-arm acceptance path) — these tests pin the
-// strategy half: the context flag rendering and the arm-without-signal lifecycle.
+// B3: the model sees that state as an ABSENT position.directives key (replaces managedPlan===false)
+// and re-attaches management by returning directives with its 'hold' (the client's re-arm
+// acceptance path) — these tests pin the strategy half: the directives-key rendering and the
+// arm-without-signal lifecycle.
 describe('AgenticStrategy plan re-arm on an open position (restart self-heal)', () => {
-  // hold+plan on the first consult (the re-arm), plain hold afterwards; captures every context the
-  // LLM was actually shown so the managedPlan flag can be asserted per consult.
+  // hold+directives on the first consult (the re-arm), plain hold afterwards; captures every
+  // context the LLM was actually shown so directives' presence/absence can be asserted per consult.
+  // nextConsultBars: 4 on the re-arm response sustains the safety cadence for the second test below
+  // (mirrors PlanningClient's own default/rationale).
   class RearmingClient implements AgentClientPort {
     calls = 0;
-    readonly seenManagedPlan: Array<boolean | undefined> = [];
+    readonly seenDirectives: Array<AgentPositionSummary['directives']> = [];
     propose(input: AgentDecisionInput): Promise<AgentProposal> {
       this.calls += 1;
-      this.seenManagedPlan.push(input.context?.position.managedPlan);
+      this.seenDirectives.push(input.context?.position.directives);
       return Promise.resolve({
         signals: [],
         decision: { action: 'hold', confidence: 0.5, rationale: 'r' },
-        ...(this.calls === 1 ? { plan: PLAN } : {}),
+        ...(this.calls === 1 ? { plan: PLAN, nextConsultBars: 4 } : {}),
       });
     }
   }
 
-  it('re-arms from a bare LONG (managedPlan false → hold+plan → deterministic bars → TP exit off avgEntry)', async () => {
+  it('re-arms from a bare LONG (no directives → hold+directives → deterministic bars → TP exit off avgEntry)', async () => {
     const client = new RearmingClient();
     const strategy = makeStrategy(client);
     const held = longPosition('100');
@@ -365,7 +787,7 @@ describe('AgenticStrategy plan re-arm on an open position (restart self-heal)', 
     // Post-restart shape: LONG position, no active plan → forced consult, flagged unmanaged.
     const first = await strategy.decide(buildInput(0, { position: held }));
     expect(client.calls).toBe(1);
-    expect(client.seenManagedPlan[0]).toBe(false);
+    expect(client.seenDirectives[0]).toBeUndefined();
     expect(first).toEqual([]); // re-arm carries no signal — no double entry, no exit
 
     // Next quiet bar: plan-executor manages, LLM not consulted, entry anchored to avgEntry.
@@ -386,9 +808,9 @@ describe('AgenticStrategy plan re-arm on an open position (restart self-heal)', 
     expect(third[0]!.reason).toBe('plan exit: take_profit');
   });
 
-  it('reports managedPlan true on the safety-cadence consult of a re-armed plan', async () => {
+  it('reports directives present on the safety-cadence consult of a re-armed plan', async () => {
     const client = new RearmingClient();
-    const strategy = makeStrategy(client); // planMaxQuietBars = 4
+    const strategy = makeStrategy(client); // schedule = 4 (RearmingClient's own nextConsultBars)
     const held = longPosition('100');
     await strategy.decide(buildInput(0, { position: held })); // consult 1: bare → re-arm
     await strategy.decide(buildInput(1, { position: held })); // bars 1-3 managed
@@ -396,21 +818,21 @@ describe('AgenticStrategy plan re-arm on an open position (restart self-heal)', 
     await strategy.decide(buildInput(3, { position: held }));
     await strategy.decide(buildInput(4, { position: held })); // barsElapsed=4 → safety consult
     expect(client.calls).toBe(2);
-    expect(client.seenManagedPlan).toEqual([false, true]);
+    expect(client.seenDirectives.map((d) => d !== undefined)).toEqual([false, true]);
   });
 
-  it('renders no managedPlan field outside plan mode (legacy payloads stay byte-identical)', async () => {
+  it('renders no directives key outside plan mode (legacy payloads stay byte-identical)', async () => {
     const client = new RearmingClient();
     const strategy = makeStrategy(client, false);
     await strategy.decide(buildInput(0, { position: longPosition('100') }));
-    expect(client.seenManagedPlan).toEqual([undefined]);
+    expect(client.seenDirectives).toEqual([undefined]);
   });
 
-  it('renders no managedPlan field while FLAT (plan mode on)', async () => {
+  it('renders no directives key while FLAT (plan mode on)', async () => {
     const client = new RearmingClient();
     const strategy = makeStrategy(client);
     await strategy.decide(buildInput(0));
-    expect(client.seenManagedPlan).toEqual([undefined]);
+    expect(client.seenDirectives).toEqual([undefined]);
   });
 });
 
@@ -585,8 +1007,9 @@ function roledIntentStore(
 
 // AGENTIC_VENUE_TP: venue-resting take-profit lifecycle for plan-mode longs (see agentic.strategy.ts's
 // manageVenueTp/runActivePlan). PLAN here: avgEntry 100, takeProfitPct 0.03 ⇒ TP price 103 exactly;
-// stopLossPct 0.02 ⇒ stop price 98 exactly. planMaxQuietBars is set well above every bar driven in
-// these tests so the safety-consult cadence never interrupts venue-TP management.
+// stopLossPct 0.02 ⇒ stop price 98 exactly. PlanningClient's default nextConsultBars=4 stays well
+// above every bar driven in these tests, so the safety-consult cadence never interrupts venue-TP
+// management.
 describe('AgenticStrategy venue-resting take-profit lifecycle (AGENTIC_VENUE_TP)', () => {
   function venueTpParams(overrides: Partial<AgenticStrategyParams> = {}): AgenticStrategyParams {
     return {
@@ -596,8 +1019,11 @@ describe('AgenticStrategy venue-resting take-profit lifecycle (AGENTIC_VENUE_TP)
       warmupBars: 5,
       model: 'test-model',
       planMode: true,
-      planMaxQuietBars: 20,
       venueTpEnabled: true,
+      // Pinned per makeParams' own rationale — wake-on-move must never fire off a deliberate
+      // TP/SL-crossing close price in these tests.
+      wakeMovePct: 1,
+      fallbackConsultBars: 1000,
       ...overrides,
     };
   }
@@ -699,7 +1125,11 @@ describe('AgenticStrategy venue-resting take-profit lifecycle (AGENTIC_VENUE_TP)
   });
 
   it('clears the plan with no signal when the resting TP fills between bars (position_closed)', async () => {
-    const client = new PlanningClient();
+    // B2: a cleared plan while FLAT does NOT force an immediate re-consult the way an open position
+    // without directives does (evaluateConsultSchedule's hasOpenPositionWithoutDirectives only fires
+    // while LONG/SHORT) — nextConsultBars=3 makes the ordinary schedule land exactly on bar 3, so
+    // "the plan was actually cleared, not silently stuck" is still provable via a real consult there.
+    const client = new PlanningClient(3);
     const events: VenueTpEvent[] = [];
     const strategy = new AgenticStrategy(SID, venueTpParams(), client, {
       onVenueTp: (e) => events.push(e),
@@ -715,14 +1145,15 @@ describe('AgenticStrategy venue-resting take-profit lifecycle (AGENTIC_VENUE_TP)
     expect(events).toEqual(['filled_flat']);
     expect(client.calls).toBe(1);
 
-    // Bar 3: activePlan is now null — the next bar forces a fresh LLM consult (proves the plan was
+    // Bar 3: schedule (3) reached — the next bar forces a fresh LLM consult (proves the plan was
     // actually cleared, not just silently skipped this one bar).
     await strategy.decide(buildInput(3));
     expect(client.calls).toBe(2);
   });
 
   it('flag off: never emits a RESTING exit or a SELL-scoped CANCEL_OPEN (byte-identical to pre-feature)', async () => {
-    const client = new PlanningClient();
+    // See the schedule-reaches-bar-3 rationale above.
+    const client = new PlanningClient(3);
     const events: VenueTpEvent[] = [];
     const strategy = new AgenticStrategy(SID, venueTpParams({ venueTpEnabled: false }), client, {
       onVenueTp: (e) => events.push(e),
@@ -742,7 +1173,7 @@ describe('AgenticStrategy venue-resting take-profit lifecycle (AGENTIC_VENUE_TP)
     const cleared = await strategy.decide(buildInput(2));
     expect(cleared).toEqual([]);
 
-    // Bar 3: plan is gone — forces a fresh consult, same as the legacy plan_expired path.
+    // Bar 3: schedule (3) reached — forces a fresh consult, proving the plan is genuinely gone.
     await strategy.decide(buildInput(3));
     expect(client.calls).toBe(2);
 
@@ -1023,8 +1454,11 @@ describe('AgenticStrategy venue-resting take-profit lifecycle — SHORT (Push II
       warmupBars: 5,
       model: 'test-model',
       planMode: true,
-      planMaxQuietBars: 20,
       venueTpEnabled: true,
+      // Pinned per makeParams' own rationale — wake-on-move must never fire off a deliberate
+      // TP/SL-crossing close price in these tests.
+      wakeMovePct: 1,
+      fallbackConsultBars: 1000,
       ...overrides,
     };
   }
@@ -1050,18 +1484,22 @@ describe('AgenticStrategy venue-resting take-profit lifecycle — SHORT (Push II
     };
   }
 
-  const SHORT_PLAN: AgentPlan = {
+  const SHORT_PLAN: AgentDirectives = {
+    sizeFraction: '0.05',
     entryOffsetBps: 10,
     stopLossPct: '0.02',
     takeProfitPct: '0.03',
     entryValidityBars: 2,
     maxHoldBars: 8,
+    entryStyle: 'maker',
     direction: 'short',
   };
 
-  // Returns an ENTER_SHORT + a direction:'short' plan on every call.
+  // Returns an ENTER_SHORT + a direction:'short' plan on every call. nextConsultBars defaults to 4
+  // (mirrors PlanningClient's own default/rationale above).
   class PlanningShortClient implements AgentClientPort {
     calls = 0;
+    constructor(private readonly nextConsultBars = 4) {}
     propose(input: AgentDecisionInput): Promise<AgentProposal> {
       this.calls += 1;
       const signal: Signal = {
@@ -1081,6 +1519,7 @@ describe('AgenticStrategy venue-resting take-profit lifecycle — SHORT (Push II
         signals: [signal],
         decision: { action: 'long', confidence: 0.8, rationale: 'r' },
         plan: SHORT_PLAN,
+        nextConsultBars: this.nextConsultBars,
       });
     }
   }
@@ -1170,8 +1609,8 @@ describe('AgenticStrategy venue-resting take-profit lifecycle — SHORT (Push II
   it("cancels the outgoing SHORT plan's resting SELL entry when the model clears the plan (sweep side re-derivation orphan, review finding)", async () => {
     // The stale-entry sweep derives its side from the CURRENT plan direction, so an entry left
     // resting by a cleared/flipped SHORT plan would become unsweepable and could later fill into
-    // an unmanaged SHORT. Reachable only when planMaxQuietBars < entryValidityBars (a cadence
-    // consult lands inside the entry-validity window) — pinned here at quiet=1 vs validity=2.
+    // an unmanaged SHORT. Reachable only when the schedule < entryValidityBars (a cadence consult
+    // lands inside the entry-validity window) — pinned here via nextConsultBars=1 vs validity=2.
     class ClearingShortClient implements AgentClientPort {
       calls = 0;
       propose(): Promise<AgentProposal> {
@@ -1181,6 +1620,7 @@ describe('AgenticStrategy venue-resting take-profit lifecycle — SHORT (Push II
             signals: [],
             decision: { action: 'long', confidence: 0.8, rationale: 'r' },
             plan: SHORT_PLAN,
+            nextConsultBars: 1,
           });
         }
         return Promise.resolve({
@@ -1190,7 +1630,7 @@ describe('AgenticStrategy venue-resting take-profit lifecycle — SHORT (Push II
       }
     }
     const client = new ClearingShortClient();
-    const strategy = new AgenticStrategy(SID, venueTpParams({ planMaxQuietBars: 1 }), client);
+    const strategy = new AgenticStrategy(SID, venueTpParams(), client);
     await strategy.decide(buildInput(0)); // consult 1 → SHORT plan stored
 
     const sellEntry: OpenOrderSummary = {
@@ -1279,6 +1719,7 @@ describe('AgenticStrategy plan-stop registry bookkeeping (Push 3 P2)', () => {
             signals: [],
             decision: { action: 'long', confidence: 0.8, rationale: 'r' },
             plan: PLAN,
+            nextConsultBars: 1,
           });
         }
         return Promise.resolve({
@@ -1289,9 +1730,9 @@ describe('AgenticStrategy plan-stop registry bookkeeping (Push 3 P2)', () => {
     }
     const client = new FlatAfterPlanClient();
     const registry = planStopRegistry();
-    // planMaxQuietBars=1 forces a re-consult on the very next managed bar (after entryPrice is
+    // nextConsultBars: 1 forces a re-consult on the very next managed bar (after entryPrice is
     // captured), reaching decide()'s own 'flat' bookkeeping site rather than runActivePlan's.
-    const strategy = new AgenticStrategy(SID, { ...makeParams(), planMaxQuietBars: 1 }, client, {
+    const strategy = new AgenticStrategy(SID, makeParams(), client, {
       planStopRegistry: registry,
     });
     await strategy.decide(buildInput(0)); // plan stored
@@ -1312,7 +1753,6 @@ describe('AgenticStrategy plan-stop registry bookkeeping (Push 3 P2)', () => {
         warmupBars: 5,
         model: 'test-model',
         planMode: true,
-        planMaxQuietBars: 20,
         venueTpEnabled: true,
       },
       client,

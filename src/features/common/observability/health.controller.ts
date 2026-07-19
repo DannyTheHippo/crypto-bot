@@ -4,6 +4,8 @@ import { ApiResponse } from '@nestjs/swagger';
 import { TypedConfigService } from '../../../config/environment/typed-config.service';
 import { EventLoopHealthIndicator } from './event-loop-health.indicator';
 import { DB_HEALTH, type DbHealthPort } from '../../../ports/db-health';
+import { KILL_SWITCH, type KillSwitchPort } from '../../../ports/risk';
+import type { KillSwitchState } from '../../../domain/risk/kill-switch';
 import {
   STRATEGY_REGISTRY,
   type StrategyRegistryPort,
@@ -31,6 +33,14 @@ export class HealthController {
     @Optional()
     @Inject(STRATEGY_REGISTRY)
     private readonly registry: StrategyRegistryPort | null,
+    // 2026-07-19: killSwitchState was hardcoded 'RUNNING' — a day of spot-lane HALTs never surfaced
+    // on /health/ready. @Optional mirrors DB_HEALTH/STRATEGY_REGISTRY above: KillSwitchModule is
+    // @Global() and always bound in the real app, but narrower test module trees that don't import
+    // it degrade to null — reported as 'RUNNING' (a benign default; the field was hardcoded to
+    // exactly that before this fix, so no test regresses).
+    @Optional()
+    @Inject(KILL_SWITCH)
+    private readonly killSwitch: KillSwitchPort | null,
   ) {}
 
   @Get('live')
@@ -48,12 +58,12 @@ export class HealthController {
     const configDetail: {
       status: 'up';
       effectiveMode: string;
-      killSwitchState: 'RUNNING';
+      killSwitchState: KillSwitchState;
       strategies?: Record<string, StrategyDetail>;
     } = {
       status: 'up',
       effectiveMode: mode.configMode,
-      killSwitchState: 'RUNNING',
+      killSwitchState: this.killSwitch?.state() ?? 'RUNNING',
     };
     if (this.registry) {
       configDetail.strategies = this.buildStrategiesDetail(this.registry);

@@ -52,6 +52,20 @@ export interface AppConfig {
     dailyCostStopUsd: number;
     // W2.1 stale-entry sweep TTL in observed decide cycles; 0 disables.
     entryTtlBars: number;
+    // v2 decision contract (D1): upper bound on sizeFraction (the model's conviction channel),
+    // injected into both the trade-tool description and the client's zod schema (S3). Per-lane cap —
+    // spot default 0.15 across the wide basket; perp overrides to 0.50 (single-symbol book).
+    maxPositionFraction: string;
+    // v2 consult scheduler (B2): floor cadence — a re-consult fires at least this often even if the
+    // model's own nextConsultBars requested a longer gap, so a stuck/quiet basket never goes dark.
+    fallbackConsultBars: number;
+    // v2 consult scheduler (B2): wake-on-move fraction — a bar-close move against the last consult
+    // price beyond this forces an immediate re-consult regardless of schedule.
+    wakeMovePct: string;
+    // Universe (U1): top-N ranking size the deterministic scanner selects daily as the active menu
+    // batched into consults; bounded <= the configured symbol count (environment.config.ts's
+    // superRefine refuses a wider menu than the basket it ranks from).
+    activeMenuSize: number;
     maxEntriesPerDay: number;
     drainCooldownBaseMs: number;
     drainCooldownMaxMs: number;
@@ -86,11 +100,6 @@ export interface AppConfig {
     // identical d1 behavior. ENABLING MID-FACTORIAL IS FORBIDDEN (see environment.config.ts's
     // AGENTIC_DERIVATIVES_V2_ENABLED comment) — d1/d2 rows are not cross-comparable.
     derivativesV2Enabled: boolean;
-    // Thinking-on-decide A/B (backlog #42, mechanism only): percent (0-50) of decides/batches whose
-    // request carries thinking:{type:'adaptive'} instead of the hard 'disabled'; arm recoverable
-    // from promptHash via the '+th1' tag. 0 disables (default) — enabling is queued behind the
-    // info-context A/B verdict (one measured channel at a time).
-    thinkingAbPct: number;
     // Cross-symbol relative-strength context (2026-07-12): when true, the model sees where its symbol
     // ranks by trailing return within the basket (cross-symbol-context.ts). Gated together with the
     // derivatives block under the information-context A/B (derivativesAbPct).
@@ -116,30 +125,9 @@ export interface AppConfig {
     tokenPriceOutputPerMtok: string;
     // Residual-position notional (quote ccy) below which a round-trip cycle counts as CLOSED.
     promotionDustNotional: string;
-    // Cost-floor pre-screen gate: consulted before each LLM call so a quiet market never burns a
-    // token spend on a call the agent was always going to pass on.
-    prescreenEnabled: boolean;
-    prescreenVolShortBars: number;
-    prescreenVolLongBars: number;
-    prescreenVolRatio: number;
-    prescreenBreakoutLookbackBars: number;
-    prescreenBreakoutPct: number;
-    // W4.2 expectancy-laddered strength modulation: reduction-only ENTER_LONG strength scaling keyed
-    // to this strategy's rolling realized net expectancy. Default false — inert regardless of the
-    // knob unless AgenticStrategyDeps also carries a RoundTripEvidencePort (see agentic.strategy.ts).
-    expectancyLadderEnabled: boolean;
     // W3.1 plan-based trading: LLM emits a full trade plan; plan-executor.ts manages it
     // deterministically between consults. Off by default; enabling gated on offline A/B + owner.
     planMode: boolean;
-    // Fee-aware plan viability floor (decimal string): reject plans whose takeProfitPct is below
-    // multiple × round-trip fee fraction.
-    minEdgeMultiple: string;
-    // Safety re-consult cadence (bars) while a plan is active without executor action.
-    planMaxQuietBars: number;
-    // R:R structure floor (decimal string): reject plans whose takeProfitPct/stopLossPct ratio is
-    // below this. Complements minEdgeMultiple, which floors only the win side — without a ratio
-    // bound a plan may carry a stop smaller than the round-trip fee itself.
-    minRr: string;
     // TTL (in bars) for plan-executor-emitted exit signals. Executor exits carry eventTime = the
     // evaluated bar's close, so a one-bar TTL races its own age by construction (observed live:
     // a max_hold exit expired at age 902.2s vs ttl 900s). Two bars gives jitter headroom; Risk's
@@ -213,6 +201,10 @@ export interface AppConfig {
     // Compounding position sizing (P5): fraction of equity sized per entry (0..1). '0' disables —
     // PositionSizerService falls back to the legacy baseNotional × strength path.
     equityFraction: string;
+    // $1k-book economics (D1, Design § Live-scale economics): sizing equity = min(actualEquity,
+    // this cap) on every sizer path. Absent (default) means UNCAPPED — an unconfigured deployment
+    // sizes off the real account equity, byte-identical to pre-knob.
+    equityCap?: string;
     // ProtectiveExitService (bot-side stop-loss/trailing-stop backstop): fraction below avgEntry
     // (stop) / the ratcheted high-water mark (trailing) that force-exits a long. '0' disables each
     // independently.
@@ -262,6 +254,14 @@ export interface AppConfig {
   // feature-flagged OFF by default. Off ⇒ zero behavior change (no poll starts, the agentic prompt's
   // derivatives block never renders).
   derivativesFeed: {
+    enabled: boolean;
+    pollIntervalMs: number;
+  };
+  // P5b: perp funding-payment settlement ingestion (funding-ingest.service.ts) — feature-flagged OFF
+  // by default. Off ⇒ zero behavior change (no poll starts, funding_payments never gains a writer,
+  // promotion's fundingNet stays 0). Only ever effective on the perp venue (binanceusdm) — spot/paper
+  // adapters have no ExchangePort.fetchFundingPayments and the composition root no-ops.
+  fundingIngest: {
     enabled: boolean;
     pollIntervalMs: number;
   };

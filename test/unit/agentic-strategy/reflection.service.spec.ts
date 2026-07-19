@@ -216,17 +216,30 @@ function flatConsultRow(i: number): AgentDecisionRow {
   });
 }
 
-// A submit_plan tool-use response, mirroring the live decide path's plan-mode envelope in miniature
-// (no thinking block: the floor's replay disables thinking, same as decide's own attemptOnce).
-function floorPlanBody(action: 'long' | 'flat' | 'hold'): unknown {
+// A submit_trade (v2 rich decision contract) tool-use response, mirroring the live decide path's
+// envelope in miniature (no thinking block: the floor's replay disables thinking, same as decide's
+// own attemptOnce). P3: migrated off the legacy submit_plan/'long' shape — an 'open_long'/'open_short'
+// action carries the full directive set the v2 schema's requireTradeDirectives superRefine requires,
+// or the replay's safeParse fails and the row silently doesn't count as an entry.
+const FLOOR_DIRECTIVES = {
+  sizeFraction: 0.1,
+  entry: { style: 'maker' as const, offsetBps: 10 },
+  entryValidityBars: 2,
+  stopLossPct: 0.02,
+  takeProfitPct: 0.04,
+  maxHoldBars: 3,
+};
+
+function floorPlanBody(action: 'open_long' | 'open_short' | 'hold'): unknown {
+  const isOpen = action === 'open_long' || action === 'open_short';
   return {
     stop_reason: 'tool_use',
     content: [
       {
         type: 'tool_use',
         id: 'toolu_floor',
-        name: 'submit_plan',
-        input: { action, confidence: 0.4, rationale: 'floor replay fixture' },
+        name: 'submit_trade',
+        input: { action, ...(isOpen ? FLOOR_DIRECTIVES : {}) },
       },
     ],
     usage: { input_tokens: 5, output_tokens: 5 },
@@ -234,14 +247,14 @@ function floorPlanBody(action: 'long' | 'flat' | 'hold'): unknown {
 }
 
 // Dispatches a shared fetch mock between the reflection draft calls (tool submit_playbook_revision)
-// and the floor's replay calls (tool submit_plan) by inspecting the request body's tool name —
+// and the floor's replay calls (tool submit_trade) by inspecting the request body's tool name —
 // exactly the distinguishing signal a fake fetch has, per this suite's own design brief. Typed via a
 // narrow structural param (rather than ReturnType<typeof vi.fn>) so the implementation's real
 // `typeof fetch` signature — a Promise-returning function — is what TS/eslint actually check against.
 function mockDualFetch(
   fetchFn: { mockImplementation(impl: typeof fetch): unknown },
   reflectionBodies: readonly unknown[],
-  floorAction: 'long' | 'flat' | 'hold',
+  floorAction: 'open_long' | 'open_short' | 'hold',
 ): void {
   let reflectionCallIndex = 0;
   const impl: typeof fetch = (_url, init) => {
@@ -293,7 +306,7 @@ function buildHarness(
     playbookStore: storeApi.store,
     journal: fakeJournal(opts.rows ?? []),
     recorder: recorderApi.recorder,
-    usageSink: (opts.withUsageSink ?? true) ? usageSinkApi.sink : undefined,
+    usageSink: opts.withUsageSink ?? true ? usageSinkApi.sink : undefined,
     killSwitch: killSwitchWithState(opts.killSwitchState ?? 'RUNNING'),
     registry: registryWithLifecycle(opts.lifecycle ?? 'ACTIVE'),
     fetchFn,
@@ -310,7 +323,14 @@ describe('reconstructClosedTrades', () => {
       row({ action: 'flat', refPrice: '110', eventTime: epochMs(T + 1000) }),
     ];
     expect(reconstructClosedTrades(rows, 10)).toEqual([
-      { entryTime: T, exitTime: T + 1000, entryPrice: 100, exitPrice: 110, pnlPct: 10 },
+      {
+        entryTime: T,
+        exitTime: T + 1000,
+        entryPrice: 100,
+        exitPrice: 110,
+        pnlPct: 10,
+        side: 'LONG',
+      },
     ]);
   });
 
@@ -321,7 +341,66 @@ describe('reconstructClosedTrades', () => {
       row({ action: 'flat', refPrice: '110', eventTime: epochMs(T + 1000) }),
     ];
     expect(reconstructClosedTrades(rows, 10)).toEqual([
-      { entryTime: T, exitTime: T + 1000, entryPrice: 100, exitPrice: 110, pnlPct: 10 },
+      {
+        entryTime: T,
+        exitTime: T + 1000,
+        entryPrice: 100,
+        exitPrice: 110,
+        pnlPct: 10,
+        side: 'LONG',
+      },
+    ]);
+  });
+
+  it('P3: pairs an open_short entry with close into a SHORT round trip, PnL sign mirrored (profit on a decline)', () => {
+    const rows = [
+      row({ action: 'open_short', refPrice: '100', eventTime: epochMs(T) }),
+      row({ action: 'close', refPrice: '90', eventTime: epochMs(T + 1000) }),
+    ];
+    expect(reconstructClosedTrades(rows, 10)).toEqual([
+      {
+        entryTime: T,
+        exitTime: T + 1000,
+        entryPrice: 100,
+        exitPrice: 90,
+        pnlPct: 10,
+        side: 'SHORT',
+      },
+    ]);
+  });
+
+  it('P3: open_long + close pairs into a LONG round trip (v2 literals, legacy pnlPct formula)', () => {
+    const rows = [
+      row({ action: 'open_long', refPrice: '100', eventTime: epochMs(T) }),
+      row({ action: 'close', refPrice: '110', eventTime: epochMs(T + 1000) }),
+    ];
+    expect(reconstructClosedTrades(rows, 10)).toEqual([
+      {
+        entryTime: T,
+        exitTime: T + 1000,
+        entryPrice: 100,
+        exitPrice: 110,
+        pnlPct: 10,
+        side: 'LONG',
+      },
+    ]);
+  });
+
+  it("P3: 'adjust' rows annotate the open position in place — never open or close a trade", () => {
+    const rows = [
+      row({ action: 'open_long', refPrice: '100', eventTime: epochMs(T) }),
+      row({ action: 'adjust', refPrice: '103', eventTime: epochMs(T + 500) }),
+      row({ action: 'close', refPrice: '110', eventTime: epochMs(T + 1000) }),
+    ];
+    expect(reconstructClosedTrades(rows, 10)).toEqual([
+      {
+        entryTime: T,
+        exitTime: T + 1000,
+        entryPrice: 100,
+        exitPrice: 110,
+        pnlPct: 10,
+        side: 'LONG',
+      },
     ]);
   });
 
@@ -802,7 +881,7 @@ describe('ReflectionService', () => {
 
       const body = requestBodyOf(h.fetchFn);
       expect(body.system).toContain(
-        'if long-entries show no positive edge at any confidence, the entry rules',
+        'if entries show no positive edge at any confidence, the entry rules',
       );
       const userContent = body.messages[0]!.content;
       const payload = JSON.parse(userContent.slice(userContent.indexOf('{"closedTrades"'))) as {
@@ -1973,7 +2052,7 @@ describe('backlog #39: mint-time entry-rate floor', () => {
     mockDualFetch(
       h.fetchFn,
       [revisionToolBody({ playbook: validPlaybookContent('enters'), changelog: 'loosen bar' })],
-      'long',
+      'open_long',
     );
     const service = new ReflectionService(floorCfg(), h.deps);
 
@@ -2106,13 +2185,16 @@ describe('backlog #39: mint-time entry-rate floor', () => {
 
 // ── Mint-time candidate-vs-champion offline expectancy backtest ────────────────────────────────
 
-interface BacktestPlanInput {
-  readonly entryOffsetBps: number;
+interface BacktestDirectivesInput {
+  readonly sizeFraction: number;
+  readonly entry: { readonly style: 'maker' | 'taker'; readonly offsetBps: number };
+  readonly entryValidityBars: number;
   readonly stopLossPct: number;
   readonly takeProfitPct: number;
-  readonly entryValidityBars: number;
   readonly maxHoldBars: number;
 }
+
+type BacktestAction = 'open_long' | 'open_short' | 'hold';
 
 // A real (model starts 'claude') row carrying a marker + close — regardless-of-action rows (unlike
 // flatConsultRow above, the backtest wants the full decision mix, not just FLAT consults).
@@ -2126,20 +2208,18 @@ function backtestRow(id: string, close: string): AgentDecisionRow {
   });
 }
 
-function backtestPlanBody(action: 'long' | 'flat' | 'hold', plan?: BacktestPlanInput): unknown {
+// P3: v2 submit_trade tool-use response — directives ride at the TOP LEVEL of `input` (not nested
+// under a `plan` key, unlike the legacy submit_plan shape this replaces).
+function backtestPlanBody(action: BacktestAction, directives?: BacktestDirectivesInput): unknown {
+  const isOpen = action === 'open_long' || action === 'open_short';
   return {
     stop_reason: 'tool_use',
     content: [
       {
         type: 'tool_use',
         id: 'toolu_backtest',
-        name: 'submit_plan',
-        input: {
-          action,
-          confidence: 0.4,
-          rationale: 'backtest replay fixture',
-          ...(plan ? { plan } : {}),
-        },
+        name: 'submit_trade',
+        input: { action, ...(isOpen ? directives : {}) },
       },
     ],
     usage: { input_tokens: 5, output_tokens: 5 },
@@ -2148,9 +2228,9 @@ function backtestPlanBody(action: 'long' | 'flat' | 'hold', plan?: BacktestPlanI
 
 // Dispatches a shared fetch mock across THREE call kinds: the reflection draft
 // (submit_playbook_revision, sequential like mockDualFetch), and the backtest's per-row replay
-// (submit_plan) — routed by (a) which playbook block rode in the request (candidate draft vs
+// (submit_trade) — routed by (a) which playbook block rode in the request (candidate draft vs
 // champion `current.content`, distinguished via a tag substring unique to each) and (b) which row's
-// `marker` is embedded in the row payload text. `rowResponses` maps rowId -> per-arm action/plan;
+// `marker` is embedded in the row payload text. `rowResponses` maps rowId -> per-arm action/directives;
 // any row absent from the map gets a 'hold' response on both arms.
 function mockBacktestFetch(
   fetchFn: { mockImplementation(impl: typeof fetch): unknown },
@@ -2160,8 +2240,8 @@ function mockBacktestFetch(
   rowResponses: Record<
     string,
     {
-      candidate: { action: 'long' | 'flat' | 'hold'; plan?: BacktestPlanInput };
-      champion: { action: 'long' | 'flat' | 'hold'; plan?: BacktestPlanInput };
+      candidate: { action: BacktestAction; directives?: BacktestDirectivesInput };
+      champion: { action: BacktestAction; directives?: BacktestDirectivesInput };
     }
   >,
 ): void {
@@ -2186,7 +2266,7 @@ function mockBacktestFetch(
     const resp = rowId ? rowResponses[rowId] : undefined;
     if (!resp) return Promise.resolve(apiResponse(backtestPlanBody('hold')));
     const arm = isCandidate ? resp.candidate : isChampion ? resp.champion : undefined;
-    return Promise.resolve(apiResponse(backtestPlanBody(arm?.action ?? 'hold', arm?.plan)));
+    return Promise.resolve(apiResponse(backtestPlanBody(arm?.action ?? 'hold', arm?.directives)));
   };
   fetchFn.mockImplementation(impl);
 }
@@ -2198,20 +2278,22 @@ describe('mint-time candidate-vs-champion offline expectancy backtest', () => {
     backtestRow('row-2', '90'),
   ];
 
-  // Candidate plan: never hits TP by bar1 (tp far away) and stops out on bar2 at 90 → big loss.
-  const LOSING_PLAN: BacktestPlanInput = {
-    entryOffsetBps: 10,
+  // Candidate directives: never hits TP by bar1 (tp far away) and stops out on bar2 at 90 → big loss.
+  const LOSING_PLAN: BacktestDirectivesInput = {
+    sizeFraction: 0.1,
+    entry: { style: 'maker', offsetBps: 10 },
+    entryValidityBars: 2,
     stopLossPct: 0.02,
     takeProfitPct: 0.1,
-    entryValidityBars: 2,
     maxHoldBars: 4,
   };
-  // Champion plan: TP hits immediately on bar1 (close=104) → clean win.
-  const WINNING_PLAN: BacktestPlanInput = {
-    entryOffsetBps: 10,
+  // Champion directives: TP hits immediately on bar1 (close=104) → clean win.
+  const WINNING_PLAN: BacktestDirectivesInput = {
+    sizeFraction: 0.1,
+    entry: { style: 'maker', offsetBps: 10 },
+    entryValidityBars: 2,
     stopLossPct: 0.02,
     takeProfitPct: 0.04,
-    entryValidityBars: 2,
     maxHoldBars: 4,
   };
 
@@ -2248,8 +2330,8 @@ describe('mint-time candidate-vs-champion offline expectancy backtest', () => {
       'seed-champion-tag',
       {
         'row-0': {
-          candidate: { action: 'long', plan: LOSING_PLAN },
-          champion: { action: 'long', plan: WINNING_PLAN },
+          candidate: { action: 'open_long', directives: LOSING_PLAN },
+          champion: { action: 'open_long', directives: WINNING_PLAN },
         },
       },
     );
@@ -2298,8 +2380,8 @@ describe('mint-time candidate-vs-champion offline expectancy backtest', () => {
       'seed-champion-tag',
       {
         'row-0': {
-          candidate: { action: 'long', plan: WINNING_PLAN },
-          champion: { action: 'long', plan: LOSING_PLAN },
+          candidate: { action: 'open_long', directives: WINNING_PLAN },
+          champion: { action: 'open_long', directives: LOSING_PLAN },
         },
       },
     );
@@ -2451,8 +2533,8 @@ describe('mint-time candidate-vs-champion offline expectancy backtest', () => {
       'seed-champion-tag',
       {
         'row-0': {
-          candidate: { action: 'long', plan: LOSING_PLAN },
-          champion: { action: 'long', plan: WINNING_PLAN },
+          candidate: { action: 'open_long', directives: LOSING_PLAN },
+          champion: { action: 'open_long', directives: WINNING_PLAN },
         },
       },
     );
@@ -2462,14 +2544,14 @@ describe('mint-time candidate-vs-champion offline expectancy backtest', () => {
     await flush();
     expect(h.recorderApi.outcomes).toEqual(['attempt_started', 'expectancy_reject']);
 
-    // Replay calls force submit_plan and carry exactly one arm's playbook block: the champion arm
+    // Replay calls force submit_trade and carry exactly one arm's playbook block: the champion arm
     // ran once (3 rows) across BOTH gate evaluations, while the candidate arm ran twice (3 + 3).
     const replayBodies = h.fetchFn.mock.calls
       .map((c) => {
         const body = (c[1] as { body?: unknown } | undefined)?.body;
         return typeof body === 'string' ? body : '';
       })
-      .filter((b) => b.includes('submit_plan'));
+      .filter((b) => b.includes('submit_trade'));
     const championReplays = replayBodies.filter((b) => b.includes('seed-champion-tag'));
     const candidateReplays = replayBodies.filter((b) => b.includes('draft-candidate-tag'));
     expect(championReplays).toHaveLength(BT_ROWS.length);
@@ -2482,6 +2564,131 @@ describe('mint-time candidate-vs-champion offline expectancy backtest', () => {
   // first and runReflection's own outer catch absorbs it ('run failed'), a pre-existing conversion
   // order outside this change's scope. The wrap's raw hazard (runCandidateBacktest throwing on a
   // malformed forward close) is pinned where it IS reachable: candidate-backtest.spec.ts.
+});
+
+// ── P3: weekly reflection trigger + regretDigest + shorts-aware mint gate ────────────────────────
+
+describe('P3: checkWeeklyReflectionTrigger', () => {
+  it('a quiet week (no trade trigger) fires exactly one scheduled reflection', async () => {
+    const h = buildHarness();
+    h.fetchFn.mockResolvedValue(
+      apiResponse(revisionToolBody({ playbook: validPlaybookContent('weekly'), changelog: 'q' })),
+    );
+    const service = new ReflectionService(baseCfg({ everyNTrades: 100 }), h.deps); // trade trigger never fires
+
+    service.checkWeeklyReflectionTrigger(SID);
+    await flush();
+    expect(h.storeApi.appended).toHaveLength(1);
+
+    // Same UTC-week bucket — a second check in the same week must NOT fire again.
+    service.checkWeeklyReflectionTrigger(SID);
+    await flush();
+    expect(h.storeApi.appended).toHaveLength(1);
+
+    // A week later, the bucket advances — fires again.
+    h.clock.now += 7 * 24 * 60 * 60 * 1000;
+    service.checkWeeklyReflectionTrigger(SID);
+    await flush();
+    expect(h.storeApi.appended).toHaveLength(2);
+  });
+
+  it('a busy week (trade trigger already fired) fires none extra', async () => {
+    const h = buildHarness();
+    h.fetchFn.mockResolvedValue(
+      apiResponse(revisionToolBody({ playbook: validPlaybookContent('busy'), changelog: 'q' })),
+    );
+    const service = new ReflectionService(baseCfg({ everyNTrades: 1 }), h.deps);
+
+    service.onClosedTrade(SID, 1); // trade-count trigger fires first
+    await flush();
+    expect(h.storeApi.appended).toHaveLength(1);
+
+    // Same UTC-week bucket as the trade-triggered attempt — the weekly check must no-op.
+    service.checkWeeklyReflectionTrigger(SID);
+    await flush();
+    expect(h.storeApi.appended).toHaveLength(1);
+  });
+
+  it('never checks any precondition when inert (everyNTrades 0 or no apiKey)', async () => {
+    const h = buildHarness();
+    const stateSpy = vi.spyOn(h.deps.killSwitch!, 'state');
+    const service = new ReflectionService(baseCfg({ everyNTrades: 0 }), h.deps);
+
+    service.checkWeeklyReflectionTrigger(SID);
+    await flush();
+
+    expect(h.fetchFn).not.toHaveBeenCalled();
+    expect(stateSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('P3: regretDigest in the reflection payload', () => {
+  it('includes the not-taken-option regret digest (P4 scoreNotTakenOptions) in the request body', async () => {
+    const rows: AgentDecisionRow[] = [
+      row({ action: 'hold', close: '100', eventTime: epochMs(T) }), // declined entry
+      row({ action: 'hold', close: '110', eventTime: epochMs(T + 1000) }), // t+1 for the row above
+    ];
+    const h = buildHarness({ rows });
+    h.fetchFn.mockResolvedValue(
+      apiResponse(revisionToolBody({ playbook: validPlaybookContent('v2'), changelog: 'tweak' })),
+    );
+    const service = new ReflectionService(baseCfg({ everyNTrades: 1 }), h.deps);
+
+    service.onClosedTrade(SID, 1);
+    await flush();
+
+    const body = requestBodyOf(h.fetchFn);
+    expect(body.system).toContain('regretDigest scores the OPTION NOT TAKEN');
+    const userContent = body.messages[0]!.content;
+    const payload = JSON.parse(userContent.slice(userContent.indexOf('{"closedTrades"'))) as {
+      regretDigest?: { declinedEntry: { count: number; meanRegretBps: number | null } };
+    };
+    expect(payload.regretDigest).toBeDefined();
+    // A hold that stayed FLAT while price ran +10% reads as a declined entry with negative regret
+    // (directionalEdge(FLAT, fwd) = -fwd) — see counterfactual-scoring.ts's scoreNotTakenOptions.
+    expect(payload.regretDigest!.declinedEntry.count).toBe(1);
+    expect(payload.regretDigest!.declinedEntry.meanRegretBps).toBeLessThan(0);
+  });
+});
+
+describe('P3: shorts-aware mint gate (validatePlaybook shortsAllowed/leverageAllowed threading)', () => {
+  const SHORTS_PLAYBOOK = validPlaybookContent('shorts-ok').replace(
+    'entry shorts-ok',
+    'entry shorts-ok — go short into exhaustion at resistance',
+  );
+
+  it('rejects shorts prose on the spot lane (shortsEnabled false, the default)', async () => {
+    const h = buildHarness();
+    h.fetchFn.mockResolvedValue(
+      apiResponse(revisionToolBody({ playbook: SHORTS_PLAYBOOK, changelog: 'shorts idea' })),
+    );
+    const service = new ReflectionService(baseCfg({ everyNTrades: 1 }), h.deps);
+
+    service.onClosedTrade(SID, 1);
+    await flush();
+
+    expect(h.storeApi.appended).toHaveLength(0);
+    expect(h.recorderApi.outcomes).toContain('validator_reject');
+  });
+
+  it('passes shorts prose on the perp lane (shortsEnabled true)', async () => {
+    const h = buildHarness();
+    h.fetchFn.mockResolvedValue(
+      apiResponse(revisionToolBody({ playbook: SHORTS_PLAYBOOK, changelog: 'shorts idea' })),
+    );
+    const service = new ReflectionService(
+      baseCfg({ everyNTrades: 1, shortsEnabled: true }),
+      h.deps,
+    );
+
+    service.onClosedTrade(SID, 1);
+    await flush();
+
+    expect(h.storeApi.appended).toEqual([
+      { content: SHORTS_PLAYBOOK, source: 'reflection', parentVersion: 1 },
+    ]);
+    expect(h.recorderApi.outcomes).toEqual(['attempt_started', 'minted']);
+  });
 });
 
 // ── Backlog #32 (reflection SSE streaming) + #50 (run_failed outcome + rollback) ─────────────────

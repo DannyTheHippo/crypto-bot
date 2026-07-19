@@ -40,17 +40,33 @@ export class PromotionReadinessService implements PromotionReadinessPort {
     // Evidence epoch (W4+W13, owner 2026-07-08): both stats reads and the window anchor gate on the
     // owner-declared instant so a post-fix configuration is judged on post-fix evidence, not the
     // sunk experimentation hole. Absent ⇒ all-time (both branches exercised under the 100% glob).
-    // STRADDLE BOUND (reviewer 2026-07-08): fills are filtered by venue_timestamp >= epoch BEFORE the
-    // walk, so a round trip that OPENED before the epoch and closed after loses its opening fill and
-    // the boundary cycle's PnL/count can be mis-walked. This is bounded and NOT a false-permit path —
-    // every surviving cycle has closedAt >= epoch, so neither the ≥30-round-trip floor nor the 14-day
-    // window can be inflated, and the four live gates + bootId arming ceremony still bind behind the
-    // verdict. Owner mitigation: declare the epoch at a FLAT-position instant (both strategies were
-    // dust-flat at the 2026-07-08 deploy), which removes any straddle entirely.
+    // STRADDLE BOUND (reviewer 2026-07-08, comment corrected 2026-07-18): fills are filtered by
+    // venue_timestamp >= epoch BEFORE the walk (fillsForMode, below) — this is a data-layer filter,
+    // so the service has NO signal here to detect or repair a straddle (it cannot see position state
+    // as of the epoch instant). A round trip that OPENED before the epoch and closed after loses its
+    // opening fill; the dominant effect (round-trip-evidence.reader.ts documents the same shape) is a
+    // never-closing PHANTOM cycle whose signedQty never returns to dust, which SUPPRESSES round-trip
+    // count going forward for that (strategyId, symbol) — the fail-CLOSED/under-count direction, not
+    // a false-permit one: neither the ≥30-round-trip floor nor the 14-day window can be inflated by a
+    // dropped opening fill, and the four live gates + bootId arming ceremony still bind behind the
+    // verdict regardless. This safety argument depends on a PRECONDITION this service cannot verify
+    // by itself: the epoch must be declared at a FLAT-position instant for every strategy in scope
+    // (true for the 2026-07-08 deploy, both strategies were dust-flat) — an epoch declared mid-
+    // position is the only way a straddle can occur at all, and is an operational discipline, not a
+    // code-enforced invariant. A safe in-service repair (excluding a straddling cycle from evidence
+    // in either direction) was assessed and declined: fillsForMode already discarded the opening fill
+    // at the data layer before this function runs, so there is nothing left here to detect a straddle
+    // from — doing that correctly needs a port/query change (fetch pre-epoch position state or widen
+    // the fill window), which is a scope expansion beyond this fix, not a cheap in-service filter.
     const epochMs = this.cfg.evidenceEpochMs;
-    const [fills, tokenTotals] = await Promise.all([
+    // P5b: funding rides the SAME mode + evidence-epoch window as fillsForMode above — a stats port
+    // that never implemented fundingNetForMode (older fake/impl) degrades to "no funding data"
+    // rather than throwing (measurement gate fails OPEN).
+    const [fills, tokenTotals, funding] = await Promise.all([
       this.stats.fillsForMode(DEMO_MODE, epochMs),
       this.stats.llmTokenTotals(epochMs),
+      this.stats.fundingNetForMode?.(DEMO_MODE, epochMs) ??
+        Promise.resolve({ netQuote: '0', hasRows: false }),
     ]);
 
     const dustNotional = new Decimal(this.cfg.dustNotional);
@@ -60,7 +76,16 @@ export class PromotionReadinessService implements PromotionReadinessPort {
     const realizedPnl = cycles.reduce((sum, c) => sum.plus(c.realizedPnl), new Decimal(0));
     const fees = sumFeesQuote(fills);
     const llmCostUsd = this.llmCostUsd(tokenTotals);
-    const netPnl = realizedPnl.minus(fees).minus(llmCostUsd);
+    // fundingNet is already signed (POSITIVE received / NEGATIVE paid — VenueFundingPayment's own
+    // sign-convention comment) so it ADDS, unlike fees/llmCostUsd which subtract.
+    const fundingNet = new Decimal(funding.netQuote);
+    const netPnl = realizedPnl.minus(fees).minus(llmCostUsd).plus(fundingNet);
+    // Blocking: funding was EXPECTED (perp + shorts, composition root) and zero rows exist
+    // in-window (stalled/disabled ingest poller — FundingIngestService.pollOne swallows errors and
+    // continues). netPnl above forces fundingNet=0 in this case, which can only ever OVERSTATE
+    // net-of-cost PnL (funding is a cost the lane may be paying). This is a permission/safety gate
+    // (narrows who may attempt live arming), so it fails CLOSED via reasons below, not open.
+    const fundingDataMissing = (this.cfg.fundingDataExpected ?? false) && !funding.hasRows;
 
     const firstClosedAt = cycles.length > 0 ? Math.min(...cycles.map((c) => c.closedAt)) : null;
     const lastClosedAt = cycles.length > 0 ? Math.max(...cycles.map((c) => c.closedAt)) : null;
@@ -82,16 +107,19 @@ export class PromotionReadinessService implements PromotionReadinessPort {
     if (cycles.length < MIN_ROUND_TRIPS) reasons.push('INSUFFICIENT_ROUND_TRIPS');
     if (netPnl.lte(0)) reasons.push('NON_POSITIVE_NET_PNL');
     if (windowDays < MIN_WINDOW_DAYS) reasons.push('INSUFFICIENT_WINDOW');
+    if (fundingDataMissing) reasons.push('FUNDING_DATA_MISSING');
 
     const evidence = {
       roundTrips: cycles.length,
       realizedPnl: realizedPnl.toFixed(),
       fees: fees.toFixed(),
       llmCostUsd: llmCostUsd.toFixed(),
+      fundingNet: fundingNet.toFixed(),
       netPnl: netPnl.toFixed(),
       windowDays,
       firstClosedAt,
       lastClosedAt,
+      fundingDataMissing,
       reasons,
     };
 
@@ -167,10 +195,12 @@ function zeroEvidence() {
     realizedPnl: '0',
     fees: '0',
     llmCostUsd: '0',
+    fundingNet: '0',
     netPnl: '0',
     windowDays: 0,
     firstClosedAt: null,
     lastClosedAt: null,
+    fundingDataMissing: false,
   };
 }
 

@@ -49,4 +49,17 @@ export interface Signal {
   readonly ttlMs: number;
   readonly dedupeKey: string;
   readonly reason: string;
+  // S2 (rich decision contract, Design § Sizing flow): agentic-lane sizing directive — the model's
+  // conviction channel (AgentDirectives.sizeFraction, ports/agentic-strategy.ts), consumed only by
+  // position-sizer.service.ts (C1) to compute notional as cappedEquity × min(sizeFraction,
+  // maxAgentPositionFraction) instead of the legacy baseNotional×strength path. Exact decimal string
+  // (money-adjacent — money hard rule 1). Absent ⇒ legacy sizing, byte-identical. Execution/
+  // RiskApprovedIntent are untouched — this rides only as far as the sizer, which strips it before
+  // Risk ever sees an approved intent.
+  readonly sizeFraction?: string;
+  // S2: agentic-lane reduce-only directive (AgentDirectives.partialCloseFraction) — consumed only by
+  // position-sizer.service.ts (C1) to compute a partial-exit rawQty as posQty.abs() ×
+  // (reduceFraction ?? '1'), step-rounded down. Exact decimal string. Absent ⇒ legacy full-size exit
+  // behavior, byte-identical.
+  readonly reduceFraction?: string;
 }

@@ -141,11 +141,12 @@ function seedOpenOrder(
   ctx: Ctx,
   coid = makeIntent().clientOrderId,
   over: Partial<ReturnType<typeof makeIntent>> = {},
+  venueOrderId = 'v1',
 ) {
   const intent = makeIntent({ clientOrderId: coid, ...over });
   ctx.orders.create(initialOrder(coid, intent.qty, '0.001'));
   ctx.orders.apply(coid, { type: 'SUBMIT_SENT' });
-  ctx.orders.apply(coid, { type: 'ACK', venueOrderId: 'v1' });
+  ctx.orders.apply(coid, { type: 'ACK', venueOrderId });
   ctx.portfolio.addInFlight(intent);
   ctx.portfolio.openOrder(intent.strategyId, {
     clientOrderId: coid,
@@ -502,6 +503,138 @@ describe('ReconciliationService (§6.4)', () => {
     expect(ctx.engages.some((e) => e.reason.includes('FILL_FOR_UNKNOWN_ORDER'))).toBe(true);
   });
 
+  // Cluster-A: on the real venue, VenueFill.clientOrderId carries the numeric venue order id
+  // (ccxt myTrades has no clientOrderId field) — normalizeTrade sets it from `t.order`. These three
+  // cases exercise the venue-id-first resolution + durable second-tier discrimination that replaces
+  // the old cb-prefix-only classification.
+  it('resolves a venue-shaped trade (numeric order id, no coid) to OUR order via the venueOrderId index and backfills it — the ccxt myTrades path (cluster-A)', async () => {
+    const coid = makeIntent().clientOrderId;
+    // balanceAxis:false isolates this to the trade axis — applying the fill moves local cash away
+    // from the default venue-balance stub, an unrelated axis this test does not exercise (same
+    // isolation the position-axis tests below use for the identical reason).
+    const ctx = build(
+      {
+        openOrders: [venueOrder(coid, 'open')],
+        trades: [trade('48212893', 'venue-shaped-1')], // numeric venue order id, not our coid
+      },
+      undefined,
+      undefined,
+      undefined,
+      { balanceAxis: false },
+    );
+    seedOpenOrder(ctx, coid, {}, '48212893'); // ACKED with this order's real venue order id
+    const r = await ctx.recon.reconcile();
+    expect(ctx.store.fills.size).toBe(1); // backfilled_fill — the trade resolved via venueOrderId
+    expect(r.halted).toBe(false);
+  });
+
+  it('a venue-shaped trade (numeric order id, no coid) resolving to a NON-terminal durable-only order HALTs as FILL_FOR_UNKNOWN_ORDER — in-memory-lost live state is ours, never foreign (cluster-A)', async () => {
+    const ctx = build(
+      { trades: [trade('77777777', 'venue-shaped-2')] },
+      undefined,
+      undefined,
+      undefined,
+      {
+        sweepSymbols: [SYM],
+      },
+    );
+    // Durable-only: I1's write-ahead persisted this order (saveNewOrder + the ACK's
+    // appendOrderEvent) but it was never (re)loaded into the runtime OrderBookService — simulates a
+    // crash / second instance / a recovery gap, exactly the corruption FILL_FOR_UNKNOWN_ORDER exists
+    // to catch. State is ACKED — NON-terminal — which is the load-bearing bit: 2026-07-19's tier-2
+    // refinement only ingests when the durable order is terminal; a still-live order missing from
+    // memory must still HALT unconditionally, unchanged.
+    const lost = OTHER_COID;
+    await ctx.store.saveNewOrder(
+      initialOrder(lost, qty('1'), '0.001'),
+      makeIntent({ clientOrderId: lost }),
+    );
+    await ctx.store.appendOrderEvent({
+      clientOrderId: lost,
+      dedupeKey: 'ack',
+      event: { type: 'ACK', venueOrderId: '77777777' },
+      derivedState: 'ACKED',
+      cumQty: '0',
+      venueOrderId: '77777777',
+    });
+    const r = await ctx.recon.reconcile();
+    expect(r.halted).toBe(true);
+    expect(ctx.engages.some((e) => e.reason.includes('FILL_FOR_UNKNOWN_ORDER'))).toBe(true);
+  });
+
+  // 2026-07-19 spot-lane false-HALT incident: a historical TERMINAL order (a TP fill that executed
+  // server-side while the host slept) is absent from the rehydrated in-memory book by design (boot
+  // recovery only reloads non-terminal orders) — every 30s pass kept re-discovering the same old
+  // trade via the checkpoint/overlap window and HALTing on it forever. These two cases are the fix.
+  it('an already-recorded fill for a historical TERMINAL durable-only order is a silent no-op — the first filter stops the recurring false-HALT', async () => {
+    const ctx = build(
+      { trades: [trade('55555555', 'historical-1')] },
+      undefined,
+      undefined,
+      undefined,
+      { sweepSymbols: [SYM] },
+    );
+    const lost = OTHER_COID;
+    await ctx.store.saveNewOrder(
+      initialOrder(lost, qty('1'), '0.001'),
+      makeIntent({ clientOrderId: lost }),
+    );
+    await ctx.store.appendOrderEvent({
+      clientOrderId: lost,
+      dedupeKey: 'ack',
+      event: { type: 'ACK', venueOrderId: '55555555' },
+      derivedState: 'FILLED', // durably TERMINAL — boot recovery never rehydrates it
+      cumQty: '1',
+      venueOrderId: '55555555',
+    });
+    // Pre-record the SAME venueTradeId — simulates the fill having already been ingested (a prior
+    // boot, or earlier this same boot).
+    await ctx.store.saveFill(
+      {
+        venue: V,
+        symbol: SYM,
+        venueTradeId: 'historical-1',
+        clientOrderId: lost,
+        price: price('100'),
+        qty: qty('1'),
+        fee: null,
+        liquidity: 'taker',
+        venueTimestamp: epochMs(T),
+        source: 'rest_reconcile',
+      },
+      'some-intent-id',
+    );
+    const r = await ctx.recon.reconcile();
+    expect(r.halted).toBe(false);
+    expect(ctx.store.fills.size).toBe(1); // unchanged — no double-ingest
+  });
+
+  it('an UNRECORDED fill for a historical TERMINAL durable-only order backfills as backfilled_fill — no halt (the missed-fill recovery actually working)', async () => {
+    const ctx = build(
+      { trades: [{ ...trade('66666666', 'unrecorded-1'), qty: '0.00000001' }] }, // dust-sized: stays within the FILLED order's qty+stepSize tolerance
+      undefined,
+      undefined,
+      undefined,
+      { sweepSymbols: [SYM] },
+    );
+    const lost = OTHER_COID;
+    await ctx.store.saveNewOrder(
+      initialOrder(lost, qty('1'), '0.001'),
+      makeIntent({ clientOrderId: lost }),
+    );
+    await ctx.store.appendOrderEvent({
+      clientOrderId: lost,
+      dedupeKey: 'ack',
+      event: { type: 'ACK', venueOrderId: '66666666' },
+      derivedState: 'FILLED',
+      cumQty: '1',
+      venueOrderId: '66666666',
+    });
+    const r = await ctx.recon.reconcile();
+    expect(r.halted).toBe(false);
+    expect(ctx.store.fills.size).toBe(1); // backfilled — never seen before, correctly ingested
+  });
+
   it('balance drift beyond ε HALTs, no auto-flatten', async () => {
     const ctx = build({ balances: () => new Map([['USDT', { free: '90000', locked: '0' }]]) }); // 10000 < 100000 by 10000 ≫ ε
     const r = await ctx.recon.reconcile();
@@ -639,15 +772,23 @@ describe('ReconciliationService (§6.4)', () => {
     expect(ctx.orders.get(coid)?.state).toBe('ACKED'); // fold skipped — journal said duplicate
   });
 
-  it('ignores a foreign trade and backfills a fee-bearing fill for a known order', async () => {
+  it('a trade resolving to neither an in-memory nor a durable order is genuinely foreign — ignored, never a halt (cluster-A) — only the known order backfills its fee-bearing fill', async () => {
     const coid = makeIntent().clientOrderId;
     const feeTrade: VenueFill = { ...trade(coid, 'fee-1'), fee: { ccy: 'USDT', amount: '0.1' } };
     const foreign: VenueFill = { ...trade('someoneElseTrade', 'foreign-1') };
-    const ctx = build({ openOrders: [venueOrder(coid, 'open')], trades: [foreign, feeTrade] });
+    // balanceAxis:false isolates this to the trade axis (see the venueOrderId-backfill test above).
+    const ctx = build(
+      { openOrders: [venueOrder(coid, 'open')], trades: [foreign, feeTrade] },
+      undefined,
+      undefined,
+      undefined,
+      { balanceAxis: false },
+    );
     seedOpenOrder(ctx, coid);
-    await ctx.recon.reconcile();
+    const r = await ctx.recon.reconcile();
     expect(ctx.store.fills.size).toBe(1); // only ours ingested; the foreign trade is ignored
     expect([...ctx.store.fills.values()][0]!.fee?.amount.toFixed()).toBe('0.1');
+    expect(r.halted).toBe(false); // no in-memory or durable match ⇒ genuinely foreign, never a halt
   });
 
   describe('position axis (Defect A fail-closed backstop)', () => {

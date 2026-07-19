@@ -3,12 +3,14 @@ import {
   normalizeOrderState,
   normalizeTrade,
   normalizeBalances,
+  normalizeFundingPayment,
 } from '../../../src/features/trading/exchange/ccxt-normalize';
 import { clientOrderId, venueId, symbolId, epochMs } from '../../../src/domain/types/ids';
 import type {
   CcxtOrder,
   CcxtTrade,
   CcxtBalances,
+  CcxtFundingHistoryEntry,
 } from '../../../src/features/trading/exchange/ccxt-order-client';
 
 const SYM = symbolId('BTC/USDT');
@@ -158,6 +160,65 @@ describe('normalizeTrade', () => {
   it('stringifies numeric fee cost', () => {
     const fill = normalizeTrade({ ...baseTrade, fee: { cost: 2.5, currency: 'BNB' } }, VEN, SYM);
     expect(fill.fee).toEqual({ ccy: 'BNB', amount: '2.5' });
+  });
+});
+
+// ── normalizeFundingPayment ───────────────────────────────────────────────────
+// Sign convention (ccxt unified income-endpoint semantics, pinned both directions):
+// amountQuote POSITIVE = received (a short collecting funding), NEGATIVE = paid (a long paying
+// funding) — see VenueFundingPayment's own header comment, ports/exchange.ts.
+
+describe('normalizeFundingPayment', () => {
+  const baseEntry: CcxtFundingHistoryEntry = {
+    id: 'fund-1',
+    symbol: 'BTC/USDT:USDT',
+    timestamp: 1_700_000_000_000,
+    amount: '1.23456789012345678',
+  };
+
+  it('maps a RECEIVED (positive) settlement with an exact decimal string', () => {
+    const payment = normalizeFundingPayment(baseEntry, VEN, SYM);
+    expect(payment.venue).toBe(VEN);
+    expect(payment.symbol).toBe(SYM);
+    expect(payment.venuePaymentId).toBe('fund-1');
+    expect(payment.amountQuote).toBe('1.23456789012345678');
+    expect(payment.fundingTime).toBe(epochMs(1_700_000_000_000));
+  });
+
+  it('maps a PAID (negative) settlement with an exact decimal string', () => {
+    const payment = normalizeFundingPayment(
+      { ...baseEntry, amount: '-0.98765432109876543' },
+      VEN,
+      SYM,
+    );
+    expect(payment.amountQuote).toBe('-0.98765432109876543');
+  });
+
+  it('stringifies a numeric amount (never Number()-rounds)', () => {
+    const payment = normalizeFundingPayment({ ...baseEntry, amount: -2.5 }, VEN, SYM);
+    expect(payment.amountQuote).toBe('-2.5');
+  });
+
+  it('defaults amount to "0" when absent', () => {
+    const payment = normalizeFundingPayment({ ...baseEntry, amount: undefined }, VEN, SYM);
+    expect(payment.amountQuote).toBe('0');
+  });
+
+  it('stringifies a numeric id', () => {
+    const payment = normalizeFundingPayment({ ...baseEntry, id: 42 }, VEN, SYM);
+    expect(payment.venuePaymentId).toBe('42');
+  });
+
+  it('throws when timestamp is undefined', () => {
+    expect(() => normalizeFundingPayment({ ...baseEntry, timestamp: undefined }, VEN, SYM)).toThrow(
+      'missing a valid integer timestamp',
+    );
+  });
+
+  it('throws when timestamp is a float', () => {
+    expect(() => normalizeFundingPayment({ ...baseEntry, timestamp: 1.5 }, VEN, SYM)).toThrow(
+      'missing a valid integer timestamp',
+    );
   });
 });
 

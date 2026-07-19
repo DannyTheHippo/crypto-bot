@@ -99,19 +99,50 @@ function forwardReturn(rows: readonly ScoringRow[], i: number, horizon: number):
 // The position a decision RESULTS IN — the exposure actually carried into the forward window, which
 // is what a forward return measures against. Scoring keys off this, not the raw action (F2): a
 // 'hold' while already LONG is judged as the LONG exposure it maintains, not as flat.
-type Exposure = 'LONG' | 'FLAT';
+//
+// P4 (v2 action widening): SHORT is a genuine third state, distinct from FLAT, because 'open_short'
+// is its own action literal at the port level (unlike the LEGACY shorts-capable tool, which journals
+// every open as action='long' and carries the actual side on a separate `direction` field this
+// Pick'd ScoringRow never sees — see ports/agentic-strategy.ts's own comment on why
+// AgentDecisionMeta.action "stays 'long' | 'flat' | 'hold'"). A legacy row therefore only ever
+// contributes LONG/FLAT here (its true side, if short, is invisible to this toy scorer — an
+// accepted pre-existing simplification, not a P4 regression).
+type Exposure = 'LONG' | 'SHORT' | 'FLAT';
 
-// Walks the same long/flat state machine as computeToyEquity below and tags each row with the
-// exposure held AFTER its action is applied, returned parallel to the input (same length, same
-// order). A 'long' while FLAT opens (→LONG); a 'flat' while LONG closes (→FLAT); 'hold'/'error' and
-// no-op repeats ('long' while already LONG, 'flat' while already FLAT) leave the position unchanged.
-// Runs within a single group's own chronological subsequence, exactly as its callers do.
+// Walks the SAME position state machine as computeToyEquity below (kept in lockstep — both read the
+// same era-aware action vocabulary) and tags each row with the exposure held AFTER its action is
+// applied, returned parallel to the input (same length, same order). Era is per-row, by action
+// value alone, so a mixed legacy/v2 journal (a promotion boundary, a cutover) reads correctly with
+// no config: legacy 'long' while FLAT opens LONG, legacy 'flat' closes an open LONG/SHORT to FLAT
+// (kept symmetric for defensiveness, though a legacy row can only ever have opened LONG here — see
+// the type comment above); v2 'open_long'/'open_short' while FLAT open LONG/SHORT, v2 'close' closes
+// either side to FLAT, v2 'adjust' leaves the position unchanged by design (Design § New tool
+// contract: "the clock enforces the model's intent, not a risk gate" — it never re-sides a
+// position). A same-side 'open_*' while ALREADY in that side (scale-in) and an opposite-side
+// 'open_*' while positioned (no accidental flip, journal-visible hold per the client's own
+// same-side/opposite-side rule) both leave the position unchanged, exactly like the client itself.
+// 'hold'/'error' are always no-ops. Runs within a single group's own chronological subsequence,
+// exactly as its callers do.
 function annotateResultingExposure(rows: readonly ScoringRow[]): readonly Exposure[] {
   const exposures: Exposure[] = [];
   let position: Exposure = 'FLAT';
   for (const row of rows) {
-    if (row.action === 'long' && position === 'FLAT') position = 'LONG';
-    else if (row.action === 'flat' && position === 'LONG') position = 'FLAT';
+    switch (row.action) {
+      case 'long':
+      case 'open_long':
+        if (position === 'FLAT') position = 'LONG';
+        break;
+      case 'open_short':
+        if (position === 'FLAT') position = 'SHORT';
+        break;
+      case 'flat':
+      case 'close':
+        if (position !== 'FLAT') position = 'FLAT';
+        break;
+      // 'adjust': position unchanged by design. 'hold'/'error': no-op.
+      default:
+        break;
+    }
     exposures.push(position);
   }
   return exposures;
@@ -122,19 +153,26 @@ function annotateResultingExposure(rows: readonly ScoringRow[]): readonly Exposu
 // maintains a position is judged on the exposure it carries, not miscounted as flat:
 //   - resulting LONG is a hit iff the forward return is STRICTLY positive (fwd > 0): being long
 //     paid off. A flat forward return (fwd === 0) is a miss (no edge captured).
+//   - resulting SHORT (P4) is a hit iff the forward return is STRICTLY negative (fwd < 0): being
+//     short paid off — the exact mirror of the LONG branch, split at the same zero boundary.
 //   - resulting FLAT is a hit iff the forward return is non-positive (fwd <= 0): staying out of a
 //     market that fell — or went nowhere — avoided a loss. A strictly positive forward return means
 //     flat missed a gain, scored as a miss.
-// The two branches are an exact complement split at zero (no overlap, no gap).
+// The three branches are an exact complement split at zero for LONG/FLAT (no overlap, no gap); SHORT
+// overlaps FLAT's boundary at fwd === 0 (both miss) by construction — a zero move never "pays off"
+// either side of a real position.
 function isHit(exposure: Exposure, fwd: number): boolean {
-  return exposure === 'LONG' ? fwd > 0 : fwd <= 0;
+  if (exposure === 'LONG') return fwd > 0;
+  if (exposure === 'SHORT') return fwd < 0;
+  return fwd <= 0;
 }
 
 // Directional edge for calibration: the same "did this exposure pay off" intuition as isHit above,
 // expressed as a continuous signed quantity instead of a boolean — resulting LONG uses the raw
-// forward return (positive = paid off); resulting FLAT uses the NEGATED forward return (a decline
-// avoided also reads positive here). Used only for calibration's continuous mean, never for a
-// hit/miss threshold, so the zero-boundary asymmetry in isHit above does not apply here.
+// forward return (positive = paid off); resulting SHORT (P4) and resulting FLAT both use the
+// NEGATED forward return (a short profits from a decline, a decline avoided while flat also reads
+// positive here — same formula, different reason). Used only for calibration's continuous mean,
+// never for a hit/miss threshold, so the zero-boundary asymmetry in isHit above does not apply here.
 function directionalEdge(exposure: Exposure, fwd: number): number {
   return exposure === 'LONG' ? fwd : -fwd;
 }
@@ -203,51 +241,69 @@ const TOY_TAKER_FEE_BPS = new Decimal('10');
 const TOY_ADVERSE_HAIRCUT_BPS = new Decimal('5');
 const BPS_DIVISOR = new Decimal('10000');
 
-// Toy net-of-fee equity, long/flat only (mirrors AnthropicAgentClient's own signal-mapping state
-// machine: 'hold'/'error' never change position; a repeated 'long' while already LONG, or 'flat'
-// while already FLAT, is a no-op). Fills happen at the NEXT row's refPrice — a next-bar proxy,
-// since these rows record no true "open" and a decision made ON row i's close cannot realistically
-// execute at that same close (zero-latency, look-ahead). A decision with no next row (the group's
-// last row) never fills — it is simply dropped, never opened. Every fill is haircut against the
-// position (buys pay more, sells receive less) and the taker fee is charged on BOTH legs, applied
-// together as a single multiplier at the point a round trip closes. A position still open (LONG) at
-// the end of the group's rows is NEVER marked to market here — it contributes nothing to
-// finalEquity, realized or unrealized; only completed round trips count (see openAtEnd).
+// Toy net-of-fee equity across BOTH sides (P4 widened this from long/flat-only — the legacy
+// 'long'/'flat' branches below are UNCHANGED byte-for-byte from the pre-P4 version, so a legacy-only
+// journal produces the identical finalEquity/roundTrips/openAtEnd it always did). Mirrors
+// AnthropicAgentClient's own signal-mapping state machine: 'hold'/'error'/'adjust' never change
+// position; a same-side open while already in that side, or a close/'flat' while already FLAT, is a
+// no-op; an opposite-side v2 'open_*' while positioned is ALSO a no-op (no accidental flip, same
+// journal-visible-hold rule as annotateResultingExposure above — this toy walk never re-sides a
+// position on its own). Fills happen at the NEXT row's refPrice — a next-bar proxy, since these rows
+// record no true "open" and a decision made ON row i's close cannot realistically execute at that
+// same close (zero-latency, look-ahead). A decision with no next row (the group's last row) never
+// fills — it is simply dropped, never opened. Every fill is haircut against the position (a LONG
+// buy/SHORT sell-to-open pays the adverse side, the closing leg receives the adverse side) and the
+// taker fee is charged on BOTH legs, applied together as a single multiplier at the point a round
+// trip closes. A position still open (LONG or SHORT) at the end of the group's rows is NEVER marked
+// to market here — it contributes nothing to finalEquity, realized or unrealized; only completed
+// round trips count (see openAtEnd).
 function computeToyEquity(rows: readonly ScoringRow[]): ToyEquityResult {
   let equity = new Decimal(1);
-  let position: 'FLAT' | 'LONG' = 'FLAT';
+  let position: 'FLAT' | 'LONG' | 'SHORT' = 'FLAT';
   let entryEffectivePrice: Decimal | null = null;
   let roundTrips = 0;
 
+  const haircutUp = (price: Decimal): Decimal =>
+    price.times(new Decimal(1).plus(TOY_ADVERSE_HAIRCUT_BPS.div(BPS_DIVISOR)));
+  const haircutDown = (price: Decimal): Decimal =>
+    price.times(new Decimal(1).minus(TOY_ADVERSE_HAIRCUT_BPS.div(BPS_DIVISOR)));
+
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i]!;
-    if (row.action === 'hold' || row.action === 'error') continue;
+    if (row.action === 'hold' || row.action === 'error' || row.action === 'adjust') continue;
     const nextRow = rows[i + 1];
     if (!nextRow || nextRow.refPrice === null) continue;
     const rawFill = new Decimal(nextRow.refPrice);
 
-    if (row.action === 'long' && position === 'FLAT') {
-      entryEffectivePrice = rawFill.times(
-        new Decimal(1).plus(TOY_ADVERSE_HAIRCUT_BPS.div(BPS_DIVISOR)),
-      );
+    if ((row.action === 'long' || row.action === 'open_long') && position === 'FLAT') {
+      // Opening a LONG pays the adverse (higher) side of the haircut, same as pre-P4.
+      entryEffectivePrice = haircutUp(rawFill);
       position = 'LONG';
-    } else if (row.action === 'flat' && position === 'LONG') {
-      const exitEffectivePrice = rawFill.times(
-        new Decimal(1).minus(TOY_ADVERSE_HAIRCUT_BPS.div(BPS_DIVISOR)),
-      );
+    } else if (row.action === 'open_short' && position === 'FLAT') {
+      // Opening a SHORT (sell-to-open) receives the adverse (lower) side — mirror of a LONG entry.
+      entryEffectivePrice = haircutDown(rawFill);
+      position = 'SHORT';
+    } else if ((row.action === 'flat' || row.action === 'close') && position !== 'FLAT') {
+      const closingLong = position === 'LONG';
+      // Closing a LONG (sell-to-close) receives the adverse side; closing a SHORT (buy-to-close)
+      // pays it — the exact mirror of each side's own entry haircut above.
+      const exitEffectivePrice = closingLong ? haircutDown(rawFill) : haircutUp(rawFill);
       const feeFactor = new Decimal(1).minus(TOY_TAKER_FEE_BPS.div(BPS_DIVISOR));
-      equity = equity
-        .times(exitEffectivePrice.div(entryEffectivePrice!))
-        .times(feeFactor)
-        .times(feeFactor);
+      // LONG profits when exit > entry (exit/entry); SHORT profits when exit < entry (entry/exit) —
+      // the ratio is inverted so a favorable move always multiplies equity UP regardless of side.
+      const grossMultiplier = closingLong
+        ? exitEffectivePrice.div(entryEffectivePrice!)
+        : entryEffectivePrice!.div(exitEffectivePrice);
+      equity = equity.times(grossMultiplier).times(feeFactor).times(feeFactor);
       position = 'FLAT';
       entryEffectivePrice = null;
       roundTrips++;
     }
-    // 'long' while already LONG, or 'flat' while already FLAT: no-op, same as the real client.
+    // Same-side open while already in that side, opposite-side open while positioned, 'flat'/'close'
+    // while already FLAT: no-op, same as the real client.
   }
 
-  return { finalEquity: equity.toNumber(), roundTrips, openAtEnd: position === 'LONG' };
+  return { finalEquity: equity.toNumber(), roundTrips, openAtEnd: position !== 'FLAT' };
 }
 
 function groupKey(row: ScoringRow): string {
@@ -392,6 +448,10 @@ export interface DecisionOutcomeDigest {
   readonly entries: DecisionOutcomeBucket; // opened a long (FLAT→LONG)
   readonly exits: DecisionOutcomeBucket; // closed a long (LONG→FLAT)
   readonly heldLong: DecisionOutcomeBucket; // maintained a long (hold, or long while already LONG)
+  // P4b (#37/5da2630 defect class — mislabeled exposure): maintained a short (open_short, adjust, or
+  // hold while already SHORT) — the exact SHORT mirror of heldLong, split out of the stayedFlat
+  // catch-all it used to fall into (see this function's docstring).
+  readonly heldShort: DecisionOutcomeBucket;
   readonly stayedFlat: DecisionOutcomeBucket; // maintained flat (hold, or flat while already FLAT)
   readonly confidence: {
     readonly lowLong: DecisionOutcomeBucket; // 'long' decisions with confidence < 0.5
@@ -433,6 +493,12 @@ function finalizeBucket(bucket: MutableBucket): DecisionOutcomeBucket {
  * evaluatePrescreenGate in agentic.strategy.ts), so counting them would flood stayedFlat with
  * hand-picked quiet periods rather than genuine model HOLDs.
  *
+ * P4b: this function's bucket set predates the v2 SHORT exposure (see annotateResultingExposure's
+ * own comment) — a resulting SHORT row used to fall into `stayedFlat` below (the `else` catch-all),
+ * same as FLAT, mislabeling every held/entered-short outcome as a flat one. `heldShort` now mirrors
+ * `heldLong` exactly (hold, adjust, or open_short/short while already SHORT); `stayedFlat` stays the
+ * catch-all for genuine FLAT rows only.
+ *
  * TOY RESEARCH METRIC — see this module's header comment and the F1 digest header above.
  */
 export function summarizeRecentDecisionOutcomes(
@@ -442,6 +508,7 @@ export function summarizeRecentDecisionOutcomes(
   const entries: MutableBucket = { count: 0, sum: 0 };
   const exits: MutableBucket = { count: 0, sum: 0 };
   const heldLong: MutableBucket = { count: 0, sum: 0 };
+  const heldShort: MutableBucket = { count: 0, sum: 0 };
   const stayedFlat: MutableBucket = { count: 0, sum: 0 };
   const lowLong: MutableBucket = { count: 0, sum: 0 };
   const highLong: MutableBucket = { count: 0, sum: 0 };
@@ -457,6 +524,7 @@ export function summarizeRecentDecisionOutcomes(
     if (row.action === 'long' && prev === 'FLAT') addToBucket(entries, fwd);
     else if (row.action === 'flat' && prev === 'LONG') addToBucket(exits, fwd);
     else if (resulting === 'LONG') addToBucket(heldLong, fwd);
+    else if (resulting === 'SHORT') addToBucket(heldShort, fwd);
     else addToBucket(stayedFlat, fwd);
 
     if (row.action === 'long' && row.confidence !== null) {
@@ -468,6 +536,7 @@ export function summarizeRecentDecisionOutcomes(
     entries: finalizeBucket(entries),
     exits: finalizeBucket(exits),
     heldLong: finalizeBucket(heldLong),
+    heldShort: finalizeBucket(heldShort),
     stayedFlat: finalizeBucket(stayedFlat),
     confidence: { lowLong: finalizeBucket(lowLong), highLong: finalizeBucket(highLong) },
   };
@@ -484,7 +553,19 @@ export function summarizeRecentDecisionOutcomes(
 const CALIBRATION_MIN_SAMPLE = 3;
 const CONFIDENCE_BUCKET_WIDTH = 0.2;
 const CONFIDENCE_BUCKET_COUNT = 5; // 0.0-0.2, 0.2-0.4, 0.4-0.6, 0.6-0.8, 0.8-1.0
-const CALIBRATED_ACTIONS = ['long', 'flat', 'hold'] as const;
+// P4: widened to every non-'error' action literal ScoringRow.action can carry (the port's action
+// union minus 'error', which summarizeCalibration/summarizeRegimeSplit both filter out before ever
+// keying a bucket by row.action) — 'error' is deliberately excluded, not just unused, so the
+// Map<CalibratedAction, …> lookups below type-check against exactly what reaches them post-filter.
+const CALIBRATED_ACTIONS = [
+  'open_long',
+  'open_short',
+  'close',
+  'adjust',
+  'hold',
+  'long',
+  'flat',
+] as const;
 type CalibratedAction = (typeof CALIBRATED_ACTIONS)[number];
 
 export interface CalibrationCell {
@@ -632,6 +713,96 @@ export function summarizeRegimeSplit(rows: readonly ScoringRow[]): RegimeSplitDi
     });
 
   return { quiet: finalize(quietSums), active: finalize(activeSums) };
+}
+
+// ── Not-taken-option regret digest (P4, Design § Learning & measurement stack) ──────────────────
+//
+// Expanded counterfactual learning: scores the option the model DIDN'T take, mechanically, from
+// forward candles — multiplying the learning signal per real bar at zero LLM cost. Two shapes:
+//   - "declined entry": a 'hold' that resulted in FLAT (the model chose to stay out — not a hold
+//     that merely maintains an existing position, which is already covered by summarizeRecentDecision
+//     Outcomes' heldLong bucket). The only counterfactual this Pick'd ScoringRow shape can score
+//     without a `direction`/payload field is "what if this had opened a LONG instead" — the SAME
+//     assumption computeCalibration/directionalEdge's FLAT branch already makes throughout this file
+//     (a decline is scored against the LONG side it declined). A short entry the model declined is
+//     invisible here for the same reason legacy short positions are invisible to annotateResultingExposure.
+//   - "delayed exit": an 'adjust' that resulted in a still-open LONG/SHORT (v2's 'adjust' only ever
+//     fires while positioned in the real client — see B1/agentic.strategy.ts — so this is the normal
+//     case, not a corrupt-data guard). The counterfactual is "what if this had closed instead" — the
+//     delay's cost/earn IS exactly the forward move the still-open position rode.
+// Both reduce to directionalEdge(exposure, fwd): declined entry uses the FLAT branch (a run-up after
+// declining reads as a NEGATIVE regret — the flat choice left money on the table, mirroring
+// directionalEdge(FLAT, fwd) = -fwd exactly); delayed exit uses the row's own resulting LONG/SHORT
+// branch (a loss after the delay reads negative — the delay cost money; a gain reads positive — the
+// delay paid). Horizon: CALIBRATION_HORIZON (t+1) only, NOT the full FORWARD_RETURN_HORIZONS set —
+// this file's own established precedent for per-decision (as opposed to per-Scorecard aggregate)
+// digests, see CALIBRATION_HORIZON's and the F1 digest's own "most immediate, least confounded"
+// comments above; a compact per-decision digest, not a 3x-horizon line explosion.
+//
+// Positional forward returns: rows MUST share one instrument (same #37/5da2630 caller contract as
+// summarizeRecentDecisionOutcomes/summarizeCalibration above).
+//
+// Exported as a pure function only — wiring this into the reflection prompt digest is a separate
+// step (P3); this module just makes it importable and independently tested.
+//
+// TOY RESEARCH METRIC — see this module's header comment.
+
+export interface RegretLine {
+  readonly eventTime: number;
+  readonly kind: 'declined_entry' | 'delayed_exit';
+  // Signed, bps. Negative = the recorded choice (staying flat / delaying the exit) cost the model
+  // money relative to the not-taken option; positive = the choice was directionally right anyway.
+  readonly regretBps: number;
+}
+
+export interface RegretBucket {
+  readonly count: number;
+  readonly meanRegretBps: number | null; // null when count === 0
+}
+
+export interface RegretDigest {
+  readonly lines: readonly RegretLine[];
+  readonly declinedEntry: RegretBucket;
+  readonly delayedExit: RegretBucket;
+}
+
+export function scoreNotTakenOptions(rows: readonly ScoringRow[]): RegretDigest {
+  const exposures = annotateResultingExposure(rows);
+  const lines: RegretLine[] = [];
+  const declined: MutableBucket = { count: 0, sum: 0 };
+  const delayed: MutableBucket = { count: 0, sum: 0 };
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i]!;
+    const resulting = exposures[i]!;
+    const isDeclinedEntry = row.action === 'hold' && resulting === 'FLAT';
+    const isDelayedExit = row.action === 'adjust' && resulting !== 'FLAT';
+    if (!isDeclinedEntry && !isDelayedExit) continue;
+
+    const fwd = forwardReturn(rows, i, CALIBRATION_HORIZON);
+    if (fwd === null) continue;
+
+    const regretBps = directionalEdge(isDeclinedEntry ? 'FLAT' : resulting, fwd) * 10000;
+    lines.push({
+      eventTime: row.eventTime,
+      kind: isDeclinedEntry ? 'declined_entry' : 'delayed_exit',
+      regretBps,
+    });
+    addToBucket(isDeclinedEntry ? declined : delayed, regretBps);
+  }
+
+  return {
+    lines,
+    declinedEntry: finalizeRegretBucket(declined),
+    delayedExit: finalizeRegretBucket(delayed),
+  };
+}
+
+function finalizeRegretBucket(bucket: MutableBucket): RegretBucket {
+  return {
+    count: bucket.count,
+    meanRegretBps: bucket.count === 0 ? null : bucket.sum / bucket.count,
+  };
 }
 
 export interface CompareOptions {

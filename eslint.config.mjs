@@ -63,8 +63,16 @@ export default tseslint.config(
       'import/resolver': { node: { extensions: ['.ts', '.js'] } },
       'boundaries/elements': [
         {
+          // W3 Part 4 (app.module.ts decomposition): src/features/trading/composition/** holds
+          // composition-root bridge/global modules extracted out of app.module.ts (pure code
+          // motion) — they need the SAME cross-feature import rights app.module.ts itself has, so
+          // this zone's pattern was widened to also match them. The 'app' zone's ALLOW rule below is
+          // unchanged (still allow: [domain, ports, config, shared, database, features, app]) — this
+          // widens WHICH FILES count as the composition root, never what a composition-root file may
+          // import. Listed first so it wins over the 'features' zone's own (narrower) match on the
+          // same path — eslint-plugin-boundaries resolves overlapping element patterns by array order.
           type: 'app',
-          pattern: ['src/app.module.ts', 'src/main.ts'],
+          pattern: ['src/app.module.ts', 'src/main.ts', 'src/features/trading/composition/**'],
           mode: 'full',
         },
         {

@@ -44,8 +44,19 @@ import {
   evaluatePlan,
   type PlanExecutorState,
 } from '../../../src/features/trading/agentic/plan-executor';
-import type { AgentPlan } from '../../../src/ports/agentic-strategy';
+import type { AgentDirectives, AgentPlan } from '../../../src/ports/agentic-strategy';
 import type { BarStrategy, BarContext, BacktestAction } from '../strategy';
+
+// P3 (S2/B1 retype fallout, fixture/type-level only): plan-executor.ts's PlanExecutorState.plan is
+// now AgentDirectives, not the legacy AgentPlan this harness's own MappedDecision still carries (this
+// class models submit_plan/legacy plan-mode fills only — sizeFraction/entryStyle are never read
+// anywhere in its own fill/exit logic below). A placeholder sizeFraction/entryStyle satisfies
+// evaluatePlan's type without this harness acquiring any v2 sizing/pricing-style behavior it doesn't
+// otherwise model; migrating agentic-replay.ts's own decision mapping to emit AgentDirectives
+// natively is a separate, larger step (out of this file's scope — see MappedDecision's own comment).
+function toDirectives(plan: AgentPlan): AgentDirectives {
+  return { ...plan, sizeFraction: '0', entryStyle: 'maker' };
+}
 
 // A decision already mapped through the live client's fee/RR/knob floors (agentic-replay.ts's
 // callModel) — `plan` present iff action === 'long' AND the plan cleared every floor; a
@@ -155,7 +166,7 @@ export class LiveAgenticStrategy implements BarStrategy {
       .mul(new Decimal(1).minus(new Decimal(resolved.plan.entryOffsetBps).div(10_000)))
       .toDecimalPlaces(8);
     this.plan = {
-      plan: resolved.plan,
+      plan: toDirectives(resolved.plan),
       entryPrice: null,
       planStartedBar: ctx.barIndex,
       barsElapsed: 0,

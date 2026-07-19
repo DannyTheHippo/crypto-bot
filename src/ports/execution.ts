@@ -1,4 +1,4 @@
-import type { ClientOrderId, StrategyId, EpochMs } from '../domain/types/ids';
+import type { ClientOrderId, StrategyId, SymbolId, VenueId, EpochMs } from '../domain/types/ids';
 import type { TradingMode } from '../domain/types/mode';
 import type { OrderIntent } from '../domain/types/order-intent';
 import type { ApprovalProof, RiskApprovedIntent } from '../domain/types/risk-decision';
@@ -178,6 +178,23 @@ export interface ExecutionStorePort {
   // every call site treats that identically to a lookup miss — resolves 'unknown' and leaves the
   // order alone (warn-once, never a blind cancel/reconcile). Read-only; never on the order-submit path.
   loadIntentByClientOrderId?(clientOrderId: ClientOrderId): Promise<OrderIntent | null>;
+  // §6.4 trade-axis venue-id resolution (cluster-A): on the real venue, VenueFill.clientOrderId
+  // carries the numeric venue order id (ccxt myTrades has no clientOrderId field), so a trade the
+  // in-memory OrderBookService cannot resolve via its own venueOrderId index is NOT automatically
+  // foreign — it may be OUR OWN order whose in-memory projection was lost (crash, a second
+  // instance, a recovery gap, or simply a TERMINAL order boot-recovery never rehydrates) while I1's
+  // write-ahead still holds it durably. Returns a full (synthesized) OrderRecord — not just an id —
+  // so the caller can both read `state` (terminal vs non-terminal drives the classification) and, if
+  // terminal, fold a genuinely-missed fill directly onto it. Required (not @Optional) because a
+  // silent degrade to "not found" on a store that has not wired it would quietly resurrect the
+  // foreign/ours ambiguity this method exists to close.
+  loadOrderByVenueOrderId(venue: VenueId, venueOrderId: string): Promise<OrderRecord | null>;
+  // §6.4 spot-lane false-HALT fix (2026-07-19): a fill already recorded in the durable fills table
+  // (e.g. a historical trade the checkpoint/overlap window keeps re-surfacing forever once the
+  // symbol goes quiet — 2026-07-19 incident) is a pure no-op no matter how it classifies; checked
+  // BEFORE any tier-1/tier-2 classification so a long-terminal order absent from the rehydrated
+  // in-memory book stops re-triggering FILL_FOR_UNKNOWN_ORDER on every pass.
+  hasFill(venue: VenueId, symbol: SymbolId, venueTradeId: string): Promise<boolean>;
 }
 
 // A non-terminal order restored at boot: the OMS record for the order-book projection plus the
@@ -245,5 +262,40 @@ export interface InstanceLockPort {
 export const EXEC_OUTBOX_OVERRIDE = Symbol('EXEC_OUTBOX_OVERRIDE');
 export const EXECUTION_STORE_OVERRIDE = Symbol('EXECUTION_STORE_OVERRIDE');
 export const INSTANCE_LOCK_OVERRIDE = Symbol('INSTANCE_LOCK_OVERRIDE');
+
+// ── EXEC_QUALITY_SINK (W3 Part 1: read-side exec-quality fan-out) ─────────────
+
+// A rendering-agnostic mirror of agentic/exec-quality.service.ts's ExecQualityEntryAttempt (that
+// type cannot be imported here — boundaries forbid ports → features). Fields/semantics are kept in
+// lock-step by hand: exec-quality.service.ts's own header documents the money-path note (limitPrice/
+// fillPrice are decimal STRINGS, never re-minted as Price/Qty) and the maker/taker + outcome
+// conventions this DTO carries verbatim.
+export type ExecQualitySide = 'long' | 'short';
+export type ExecQualityOutcome = 'filled' | 'expired' | 'cancelled';
+
+export interface ExecQualityAttempt {
+  readonly symbol: SymbolId;
+  readonly side: ExecQualitySide;
+  readonly style: 'maker' | 'taker';
+  readonly limitPrice: string;
+  readonly outcome: ExecQualityOutcome;
+  readonly fillPrice?: string;
+  readonly terminalAt: EpochMs;
+}
+
+// Measurement-only observer the OMS terminal-state fold calls once per terminal ENTRY attempt
+// (reduceOnly === false). Fails OPEN by contract: every call site catches and logs a sink error,
+// never rethrows — this is a read-side digest feed, not a step in the money path, and must never
+// block or alter the fold it observes (CLAUDE.md hard rule 5 territory stays untouched).
+export interface ExecQualitySinkPort {
+  recordEntryAttempt(attempt: ExecQualityAttempt): void;
+}
+
+// The concrete sink (ExecQualityService) lives in features/trading/agentic, a different boundaries
+// zone execution may not import directly — same cross-zone problem EXEC_OUTBOX_OVERRIDE et al. solve.
+// EXECUTION_MODULE's own EXEC_QUALITY_SINK provider falls back to a no-op when this override is
+// absent (module-isolation tests, or a boot where AgenticCompositionBridgeModule never wires it).
+export const EXEC_QUALITY_SINK = Symbol('EXEC_QUALITY_SINK');
+export const EXEC_QUALITY_SINK_OVERRIDE = Symbol('EXEC_QUALITY_SINK_OVERRIDE');
 
 export type { OrderRecord, OrderState };

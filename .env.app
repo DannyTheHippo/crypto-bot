@@ -52,7 +52,17 @@ TRADING_SYMBOL=BTC/USDT # DEPRECATED single-symbol fallback (used only when TRAD
 # reflection's budget calls; the $/day breaker stays the true governor). Symbol widening to
 # SOL/XRP/LINK: owner decision 2026-07-10 (reports/loop/state.md § Strategic frame); projected
 # ~$2.2-2.5/day at current skip rates; fallback = drop LINK on sustained >$3/day. Widened 5→8 (ZEC/AAVE/NEAR) 2026-07-17 per the fired pre-auth (universe-study-2026-07-13, probe-verified on the live demo venue); projected ~$3.5-4/day under the $5 breaker.
-TRADING_SYMBOLS=BTC/USDT,ETH/USDT,SOL/USDT,XRP/USDT,LINK/USDT,ZEC/USDT,AAVE/USDT,NEAR/USDT
+# I2 (2026-07-18): 8→24 expansion per the v2 program (Design § Universe). All 16 new pairs
+# (BNB DOGE ADA AVAX DOT LTC SUI PEPE WIF TRX SHIB UNI APT ARB OP FIL) live-probe-verified
+# 2026-07-18 against api.binance.com exchangeInfo (status TRADING; DEFAULT_FILTERS rows in
+# domain/risk/default-filters.ts corrected to the live tick/step/minNotional values in the same
+# change — 8 of 16 groundwork estimates were wrong, see that file's header). APPEND-ONLY order
+# preserved (agentic-1..8 keep their instance ids; new instances agentic-9..24).
+TRADING_SYMBOLS=BTC/USDT,ETH/USDT,SOL/USDT,XRP/USDT,LINK/USDT,ZEC/USDT,AAVE/USDT,NEAR/USDT,BNB/USDT,DOGE/USDT,ADA/USDT,AVAX/USDT,DOT/USDT,LTC/USDT,SUI/USDT,PEPE/USDT,WIF/USDT,TRX/USDT,SHIB/USDT,UNI/USDT,APT/USDT,ARB/USDT,OP/USDT,FIL/USDT
+# Universe (U1/I2): top-N active-menu size the deterministic scanner selects daily from the
+# 24-symbol basket above (volume × ATR% ranking, rank-18 hysteresis, positioned symbols pinned).
+# Idle instances stream candles but cost no LLM calls and hold no positions.
+AGENTIC_ACTIVE_MENU_SIZE=12
 STRATEGY_INTERVAL=15m # candle interval the agent decides on (schema default 5m; compose pins 15m: 8 symbols × 96/day = 768 opportunities under AGENTIC_MAX_CALLS_PER_DAY=1100; prescreen keeps true calls far lower)
 # Anthropic Messages API key for the agent client (secret — never commit a real key). Setting it
 # activates the LIVE agentic lane (it starts proposing decisions on each closed candle); leaving it
@@ -73,14 +83,23 @@ AGENTIC_TIMEOUT_MS=30000 # per-call DECIDE request timeout (Sonnet, fast — fai
 # stranding the learning loop at the v1 seed. Reflection is off the trading hot path (detached), so
 # 240s is free headroom against Opus worst-case rather than a tight estimate.
 AGENTIC_REFLECTION_TIMEOUT_MS=240000
-AGENTIC_MAX_TOKENS=1024 # max output tokens per LLM call
+AGENTIC_MAX_TOKENS=4096 # max output tokens per LLM call (1024→4096, v2 decision contract 2026-07-18: richer per-consult output — directives, thesis, portfolio scheduling — needs headroom)
 AGENTIC_MIN_DECISION_INTERVAL_MS=0 # floor between agent decisions; 0 = every closed candle
 AGENTIC_WARMUP_BARS=340 # closed candles retained; ≥336 keeps h4 (and h1) HTF indicators non-null at 15m — below that the prompt's 1h/4h confluence data is silently null (prompt still slices 50)
 AGENTIC_MAX_CALLS_PER_DAY=1100 # DailyLlmBudget cap on LLM calls per UTC day (500→700 at the 5-symbol widening; 700→1100 at the 8-symbol expansion 2026-07-17: 768 bar-opportunities/day must not brush the cap under prescreen fail-open; the $/day breaker stays the true governor)
 AGENTIC_MAX_TOKENS_PER_DAY=2000000 # DailyLlmBudget cap on input+output tokens per UTC day
-AGENTIC_DAILY_COST_STOP_USD=5 # USD cost circuit breaker per UTC day (tokens × per-model AGENTIC_TOKEN_PRICE* rates, cache included post-W13); raised 3→5 with Opus reflection + true cache pricing (owner 2026-07-08); expected true spend ~$1.5-2.5/day; 0 disables
-AGENTIC_MAX_ENTRIES_PER_DAY=12 # cap on ENTER_LONG decisions per UTC day
+AGENTIC_DAILY_COST_STOP_USD=1.50 # USD cost circuit breaker per UTC day (tokens × per-model AGENTIC_TOKEN_PRICE* rates, cache included post-W13); 5→1.50 (v2 decision contract 2026-07-18, Design § Live-scale economics): book-scale ($1k effective book) cost breaker — LLM spend is part of the loss the model is mandated to minimize; 0 disables
+AGENTIC_MAX_ENTRIES_PER_DAY=40 # runaway sanity cap on ENTER decisions per UTC day (12→40, v2 decision contract 2026-07-18: entry cadence is model-owned via sizing/scale-in/scheduling now, this is a safety ceiling, not a target)
 AGENTIC_ENTRY_TTL_BARS=2 # stale-entry sweep: resting entries older than N observed decide cycles get a CANCEL_OPEN (risk-reducing); 0 disables
+# v2 decision contract (D1/B2, Design § Sizing flow / § New tool contract): per-lane conviction-channel
+# cap on sizeFraction, injected into both the trade-tool description and the client's zod schema.
+AGENTIC_MAX_POSITION_FRACTION=0.15
+# v2 consult scheduler (B2, replaces the deleted prescreen gate): floor re-consult cadence even if
+# the model's own nextConsultBars requested a longer gap or the schedule stalls.
+AGENTIC_FALLBACK_CONSULT_BARS=16
+# v2 consult scheduler (B2): wake-on-move — a bar close whose move vs lastConsultPrice clears this
+# fraction forces an immediate re-consult regardless of schedule.
+AGENTIC_WAKE_MOVE_PCT=0.015
 AGENTIC_PLAN_EXIT_TTL_BARS=2 # TTL (bars) on plan-executor exit signals; 1-bar TTL races its own age (a max_hold exit expired live 2026-07-07 at 902.2s vs 900s)
 AGENTIC_DRAIN_COOLDOWN_BASE_MS=30000 # first AUTO-drain cooldown backoff
 AGENTIC_DRAIN_COOLDOWN_MAX_MS=900000 # ceiling on AUTO-drain cooldown backoff
@@ -99,22 +118,16 @@ AGENTIC_MINT_BACKTEST_MARGIN_BPS=10 # noise HANDICAP, not a hurdle: the candidat
 AGENTIC_MINT_BACKTEST_MIN_TRIPS=3 # minimum simulated round trips BOTH arms need before the backtest verdict is trusted; below this the backtest fails open (mint proceeds unbacktested)
 AGENTIC_PLAN_MODE=true # W3.1 plan-based trading (submit_plan + deterministic executor); ENABLED by owner 2026-07-07 (offline-A/B pre-check waived by owner; the recorded-input harness remains the post-hoc validator)
 # AGENTIC_SHORTS_ENABLED: 'false' # Push II Phase 8 (plan-mode shorts) — schema default is already 'false'; commented out deliberately (deploy decision is a separate step, per owner). Requires a perp-capable venue (VENUES pointed at binanceusdm/demo, see above) — flipping this on a spot-only deployment throws at boot (AnthropicAgentClient's constructor guard).
-AGENTIC_MIN_EDGE_MULTIPLE=1.5 # plan viability floor: reject plans with takeProfitPct < multiple x round-trip fee fraction
-AGENTIC_MIN_RR=1.5 # R:R structure floor: reject plans with takeProfitPct/stopLossPct < ratio (the old gate floored only the win side — measured payoff 0.29:1, breakeven win rate ~78%)
-AGENTIC_PLAN_MAX_QUIET_BARS=16 # safety re-consult cadence while a plan is active without executor action
+# AGENTIC_MIN_EDGE_MULTIPLE / AGENTIC_MIN_RR retired 2026-07-18 (v2 cutover): only the fee floor (TP >= round-trip fees) survives.
+# AGENTIC_PLAN_MAX_QUIET_BARS retired 2026-07-18 (v2 cutover): superseded by consult schedule + fallback + wake-on-move.
 AGENTIC_QUIET_PAYLOAD_SAMPLE_BARS=4 # snapshot the decide payload every Nth plan-managed bar so the offline replay harness accrues rows (plan mode otherwise journals inputPayload null); 0 disables
 AGENTIC_VENUE_TP=true # venue-resting take-profit for plan-mode longs (ENABLED 2026-07-13, Push II Phase 2): TP rests at the venue as post-band maker LIMIT GTC — intra-bar touches fill at the exact TP price instead of bar-close detection + IOC taker crossing (bounds study measured +23bps/trade at wide-TP cells). Executor bar-close stop stays the only stop; schema default false
 AGENTIC_VENUE_TP_REPLACE_DRIFT_BPS=10 # re-place threshold: a resting TP SELL priced >N bps from the plan's current TP price is cancelled for next-bar re-placement
 # AGENTIC_VENUE_STOP: 'true' # Push 3 P7d: venue-resting protective stop lifecycle (spot STOP_LOSS_LIMIT), same rationale as AGENTIC_VENUE_TP above but for the stop leg — commented out, NOT enabled here; schema default false
 # AGENTIC_VENUE_STOP_REPLACE_DRIFT_BPS: 10 # re-place threshold, mirrors AGENTIC_VENUE_TP_REPLACE_DRIFT_BPS above
 AGENTIC_PLAYBOOK_AB_PCT=40 # W4.1 champion/candidate A/B LIVE (owner 2026-07-08): % of decides routed to the newest INACTIVE reflection candidate for per-version attribution. 50→25 (loop-domain, 2026-07-13 Pass 21): the 50% premise is falsified — v2 entered on 0 of 17 FLAT-state consults since mint (v1: 16/57; P≈0.4% under v1's rate), so serving share cannot create candidate evidence for an abstaining candidate; it only halves the champion entry stream that feeds the symmetric floor, reflection cadence, and the info-context A/B; 0 disables. 25→40 (owner session 2026-07-17): the abstention premise resolved — v2 IS entering (3/10 attributed, net-positive vs the champion), so serving share now buys candidate evidence directly; 40 accelerates the 10-trip verdict while the champion keeps the majority stream
-AGENTIC_EXPECTANCY_LADDER=true # W4.2 reduction-only ENTER_LONG strength ladder ENABLED (owner 2026-07-08): trailing 15-trip mean net ≤ -$0.10 cuts entry strength to 0.4x, self-releases on recovery; per-strategy trip counts clear the 8-trip data floor
-AGENTIC_PRESCREEN_ENABLED=true # deterministic gate: LLM consulted only on open position / vol expansion / breakout proximity; fail-open
-AGENTIC_PRESCREEN_VOL_SHORT_BARS=10 # schema default: short-window bar count for the volatility-expansion check
-AGENTIC_PRESCREEN_VOL_LONG_BARS=50 # schema default: long-window bar count for the volatility-expansion check
-AGENTIC_PRESCREEN_VOL_RATIO=1.3 # schema default: short/long vol ratio that trips the expansion gate
-AGENTIC_PRESCREEN_BREAKOUT_LOOKBACK_BARS=20 # schema default: lookback window for the breakout-proximity check
-AGENTIC_PRESCREEN_BREAKOUT_PCT=0.0025 # distance-to-breakout threshold (fraction); tightened from the 0.005 schema default 2026-07-07 — breakout_proximity drove 73% of LLM calls at a 27% skip rate (target 50–70%)
+# AGENTIC_EXPECTANCY_LADDER retired 2026-07-18 (v2 cutover): ladder deleted; TRACK_RECORD_* internals remain (no env knob).
+# AGENTIC_PRESCREEN_* retired 2026-07-18 (v2 cutover): replaced by consult schedule + AGENTIC_FALLBACK_CONSULT_BARS + AGENTIC_WAKE_MOVE_PCT.
 # Optional playbook_version id to pin; leave unset for latest ACTIVE. (No inline comment after an
 # empty assignment — compose env_file would deliver the comment text as the value.)
 AGENTIC_PLAYBOOK_PIN=
@@ -139,13 +152,20 @@ AGENTIC_TOKEN_PRICES_JSON={"claude-sonnet-5":{"inputPerMtok":"3","outputPerMtok"
 # this session): the wipe left exit-only straddle fills that froze the walk on up to 3 of 5
 # symbols (backlog #35/#36) — 08:30:00Z sits inside the verified flat window (lane flat
 # 07:45:08Z onward, 0 open orders), erasing every stray. Forfeits 7 RT / -$4.34 over 1.4d.
-PROMOTION_EVIDENCE_EPOCH=2026-07-12T08:30:00Z
+# Stamped 2026-07-19 at a log-verified FLAT instant (dust-only book, 0 open orders) per the epoch-straddle bound; travels to the GCP lift with NO re-reset.
+# step, per Design § Conflict resolutions (both lanes reset together at a verified flat moment).
+PROMOTION_EVIDENCE_EPOCH=2026-07-19T18:57:09Z
 PROMOTION_DUST_NOTIONAL=5 # residual-position notional (quote ccy) below which a round-trip cycle counts as CLOSED
 SIGNAL_TTL_MS=120000 # signal validity window
 BASE_NOTIONAL=100 # quote (USDT) per order; keep below the account balance, above minNotional
 SIZER_EQUITY_FRACTION=0.04 # 4% of equity per entry (compounding sizing; overrides BASE_NOTIONAL on entries when > 0; schema default 0 disables). 0.02→0.05 applied 2026-07-13 (owner-approved Profitability Push II Phase 1; re-derivation in reports/loop/state.md § Sizing re-derivation 2026-07-13): worst case 5 × ~$250 ≈ $1,248 ≈ 25% of $5k equity; binding cap is RISK_MAX_POSITION_PER_SYMBOL base qty on XRP at 4.3×; expectancy ladder (below) is the reduction-only auto-brake. 0.05→0.04 at the 8-symbol expansion (pre-auth fired 2026-07-17): 8 × 0.04 ⇒ worst case ~0.32 gross vs 0.40 at 0.05 — breadth widened, gross exposure held near the Push II band.
-PROTECT_STOP_LOSS_PCT=0.02 # bot-side backstop: force-exits a long via the normal risk path if price falls 2% below entry; schema default 0 disables
-PROTECT_TRAILING_PCT=0.015 # bot-side backstop: force-exits a long via the normal risk path if price falls 1.5% below its peak since entry; schema default 0 disables
+# $1k effective book (v2 decision contract, Design § Live-scale economics, 2026-07-18): sizing
+# equity = min(actualEquity, SIZER_EQUITY_CAP) on every sizing path — production capital max ~$1k,
+# so demo earns its promotion evidence at exactly live proportions regardless of the $5k demo
+# account balance above.
+SIZER_EQUITY_CAP=1000
+PROTECT_STOP_LOSS_PCT=0.06 # bot-side backstop: force-exits a long via the normal risk path if price falls 6% below entry (0.02→0.06, v2 decision contract 2026-07-18, Design § Conflict resolutions: must sit strictly above the model's own stop-loss upper bound 0.05, or the backstop could fire before the model's own worst-case stop); schema default 0 disables
+PROTECT_TRAILING_PCT=0 # bot-side trailing backstop DISABLED (0.015→0, v2 decision contract 2026-07-18, Design § Conflict resolutions: the model owns trailing via revisable stop directives now); schema default 0 disables
 PLAN_STOP_WATCH_ENABLED=false # plan-aware 1s stop watcher (Push 3 P2, built 2026-07-13): fires the ACTIVE PLAN's own stop intra-bar via the protective-exit clock instead of waiting for 15m bar close. OFF per the pre-registered stop-slippage study verdict (NOT JUSTIFIED at N=3, mean leak +3.2bps — reports/loop/stop-slippage-2026-07-13.md); loop pre-auth: re-run study at N>=10 stop exits, enable iff criterion met
 PLAN_STOP_FORCE_BPS=30 # watcher deep-breach failsafe (bps beyond the plan stop) — force-fires even while a venue-native stop rests unfilled; inert while the watcher flag is off
 EXIT_CROSS_BUFFER_BPS=25 # reduce-only IOC exit crossing buffer (bps); must stay below RISK_MAX_BAND_BPS
@@ -158,6 +178,12 @@ STARTING_CASH=5000 # in-memory quote balance the bot tracks (set near the demo a
 # timestamp is the attribution epoch recorded in reports/loop/state.md.
 DERIVATIVES_FEED_ENABLED=true
 DERIVATIVES_FEED_POLL_MS=60000 # REST poll interval (ms); schema default 60000
+
+# P5b: perp funding-payment settlement ingestion (funding-ingest.service.ts), hourly REST poll
+# against binanceusdm fetchFundingHistory, persisted to funding_payments — feeds promotion's
+# fundingNet (realized - fees - llmCost + fundingNet) and the agent payload's accrual line.
+FUNDING_INGEST_ENABLED=true
+FUNDING_INGEST_POLL_MS=3600000 # hourly; funding settles at most 3x/day on Binance USDM
 # Derivatives-block A/B (owner-authorized measurement start 2026-07-12): the block has been ON
 # lane-globally since the 2026-07-10 enable above with no control arm, so its effect has never
 # been measurable. 30% of decides route to a CONTROL arm that withholds the block entirely
@@ -171,11 +197,7 @@ DERIVATIVES_FEED_POLL_MS=60000 # REST poll interval (ms); schema default 60000
 # info_arm/thinking_arm (migration 0012, Push 3 P8a-prep), so test/backtest/ab-cells reads
 # cells directly. Adoption/harm/cost rules pre-registered; verdict is loop-domain.
 AGENTIC_DERIVATIVES_AB_PCT=50
-# Thinking-on-decide arm (Push 3 P8a, the second factorial axis): 50% of decides run
-# claude-sonnet-5 with adaptive thinking (Phase-6 study: +12bps forward proxy vs champion's
-# −57.5bps, 1.9× cost). Cost governor: two daily-spend breaches of $4.50 ⇒ drop to 30 (the
-# $5/day hard breaker AGENTIC_DAILY_COST_STOP_USD is unchanged underneath). 0 disables.
-AGENTIC_THINKING_AB_PCT=50
+# AGENTIC_THINKING_AB_PCT retired 2026-07-18 (v2 cutover): thinking always on (adaptive) for decide.
 # Cross-symbol relative-strength context (2026-07-12): each instance sees where its symbol
 # ranks by trailing 20-bar return within the 5-symbol basket — the strongest systematic signal
 # in the 2026-07-12 multi-strategy search (cross-sectional momentum). Rides the SAME control
@@ -198,6 +220,9 @@ AGENTIC_PORTFOLIO_WINDOW_MS=3000
 # C4: read-only free news/sentiment feed (headlines only, no numeric scores) polled from
 # CryptoPanic, surfaced to the agentic prompt when fresh. Off by default; requires
 # SENTIMENT_FEED_API_KEY — a missing key keeps the feed inert even when enabled.
+# I2 (2026-07-18): stays OFF — no live CryptoPanic auth_token is held (SENTIMENT_FEED_API_KEY in
+# .env.example is an unfilled placeholder, not a real credential); a new external-service signup
+# is out of scope for this pass. Follow-up flagged for F2/state.md.
 SENTIMENT_FEED_ENABLED=false
 SENTIMENT_FEED_POLL_MS=300000 # REST poll interval (ms); schema default 300000
 # CryptoPanic auth_token (secret — never commit a real key; free tier).
@@ -220,11 +245,26 @@ AGENTIC_TRADEFLOW_POLL_MS=60000 # REST poll interval (ms); schema default 60000
 AGENTIC_POSITIONING_ENABLED=true
 AGENTIC_POSITIONING_POLL_MS=300000 # REST poll interval (ms); schema default 300000
 
+# #43 (Push 3 P6 Unit 2): public liquidation-order flow (rolling notional + long/short side-skew)
+# via ccxt PRO's watchLiquidationsForSymbols WS stream on binanceusdm — WS-sourced regardless of
+# this lane's own trading venue (spot), same rationale as the derivatives/positioning REST feeds
+# above. ENABLED 2026-07-18 (v2 decision contract, Design § Enriched model inputs: "Feeds on —
+# liquidations + bookStructure + trackRecord").
+AGENTIC_LIQUIDATIONS_ENABLED=true
+# Book-structure block (Push 3 P6 Unit 3): microprice offset, depth-weighted imbalance, ±25bps
+# depth notional — computed from the already-streaming order book, no new feed/cost. ENABLED
+# 2026-07-18 (v2 decision contract, Design § Enriched model inputs).
+AGENTIC_BOOK_STRUCTURE_ENABLED=true
+# Track-record block (Push 3 P6 Unit 4): this strategy's own realized tripCount/winRate/
+# meanNetBpsPerTrip/trailingWindowTrips, now also net-vs-BTC-hold and net-vs-basket alpha (P4).
+# ENABLED 2026-07-18 (v2 decision contract, Design § Enriched model inputs).
+AGENTIC_TRACK_RECORD_ENABLED=true
+
 # ── Risk limits (optional; defaults = the values RiskModule shipped with — override deliberately) ──
-RISK_MAX_ORDER_NOTIONAL=100000 # quote-notional cap per order
+RISK_MAX_ORDER_NOTIONAL=500 # quote-notional cap per order (100000→500, v2 decision contract 2026-07-18, Design § Live-scale economics: book-scale envelope for the ~$1k effective book)
 RISK_MAX_POSITION_PER_SYMBOL=1000 # base-qty cap per symbol position
-RISK_MAX_GROSS_EXPOSURE=1000000 # portfolio gross exposure cap (quote)
-RISK_MAX_NET_EXPOSURE=1000000 # portfolio net exposure cap (quote)
+RISK_MAX_GROSS_EXPOSURE=1200 # portfolio gross exposure cap (quote) (1000000→1200, v2 decision contract 2026-07-18, Design § Live-scale economics: book-scale envelope)
+RISK_MAX_NET_EXPOSURE=1200 # portfolio net exposure cap (quote) (1000000→1200, v2 decision contract 2026-07-18, Design § Live-scale economics: book-scale envelope)
 RISK_MAX_DAILY_LOSS=5000 # daily loss kill threshold (quote)
 RISK_MAX_DRAWDOWN_PCT=0.2 # peak-to-trough drawdown kill threshold (fraction)
 RISK_MAX_BAND_BPS=100 # max limit-price deviation from ref price (bps)

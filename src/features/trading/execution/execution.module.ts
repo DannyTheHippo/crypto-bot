@@ -18,6 +18,8 @@ import {
   EXEC_OUTBOX_OVERRIDE,
   EXECUTION_STORE_OVERRIDE,
   INSTANCE_LOCK_OVERRIDE,
+  EXEC_QUALITY_SINK,
+  EXEC_QUALITY_SINK_OVERRIDE,
   type ExecOutboxPort,
   type ExecutionStorePort,
   type InstanceLockPort,
@@ -27,6 +29,7 @@ import {
   type EquityLimits,
   type ReconConfig,
   type EquityObserver,
+  type ExecQualitySinkPort,
 } from '../../../ports/execution';
 import { InMemoryExecOutbox } from './in-memory-outbox';
 import { InMemoryExecutionStore } from './in-memory-store';
@@ -79,6 +82,9 @@ const noopFeedHealth: FeedHealthPort = {
 };
 const REAL_FEED_HEALTH_OPTIONAL = { token: REAL_FEED_HEALTH, optional: true } as const;
 const CONFIG_OPTIONAL = { token: TypedConfigService, optional: true } as const;
+// W3 Part 1: default exec-quality sink — a silent no-op until AgenticCompositionBridgeModule's
+// @Global() EXEC_QUALITY_SINK_OVERRIDE is wired (see ports/execution.ts's own token comment).
+const noopExecQualitySink: ExecQualitySinkPort = { recordEntryAttempt: () => {} };
 
 // EXEC_RUN_CONTEXT.mode must track the boot config authority (paper/testnet/live) — it stamps the
 // run and must agree with the mode the sizer brands intents with. TypedConfigService is @Optional so
@@ -175,6 +181,12 @@ const providers: Provider[] = [
     useFactory: (override?: InstanceLockPort): InstanceLockPort =>
       override ?? new InMemoryInstanceLock(),
     inject: [{ token: INSTANCE_LOCK_OVERRIDE, optional: true }],
+  },
+  {
+    provide: EXEC_QUALITY_SINK,
+    useFactory: (override?: ExecQualitySinkPort): ExecQualitySinkPort =>
+      override ?? noopExecQualitySink,
+    inject: [{ token: EXEC_QUALITY_SINK_OVERRIDE, optional: true }],
   },
   NonceLedgerService,
   FeeLedgerService,

@@ -36,6 +36,13 @@ export interface PromotionReadinessConfig {
   // only from this instant forward — so a post-fix configuration is judged on post-fix evidence, not
   // the sunk experimentation hole. Absent ⇒ all-time (byte-identical legacy behavior).
   readonly evidenceEpochMs?: number;
+  // P5b: true when the deployment is perp-capable AND plan-mode shorts are enabled (composition
+  // root: config.venues[0].id === 'binanceusdm' && config.agentic.shortsEnabled) — funding accrues
+  // on any perp position, but this flag is scoped to the concrete condition this pass targets
+  // (perp + shorts). Gates ONLY the fundingDataMissing evidence flag below; never enters `reasons`
+  // (measurement gate fails OPEN — see PromotionReadinessService.evaluate's own comment). Default
+  // false ⇒ byte-identical (no flag ever raised on a spot-only deployment).
+  readonly fundingDataExpected?: boolean;
 }
 
 // ── PromotionStatsPort ───────────────────────────────────────────────────────
@@ -95,6 +102,17 @@ export interface PromotionStatsPort {
   // Optional so existing fakes/implementations remain valid; the reflection trigger seed treats an
   // absent method the same as "never reflected".
   latestReflectionAt?(): Promise<number | null>;
+  // P5b: Σ funding_payments.amount_quote for mode (sinceMs-scoped like fillsForMode; absent ⇒
+  // all-time) — POSITIVE = received, NEGATIVE = paid (see VenueFundingPayment's sign-convention
+  // comment, ports/exchange.ts), ADDED directly into the promotion net. hasRows distinguishes
+  // "zero net because payments cancelled out" from "zero net because nothing was ever ingested" —
+  // PromotionReadinessService uses it for the fail-open missing-data flag. Optional so existing
+  // fakes/implementations remain valid; absent ⇒ treated as no funding data (netQuote '0',
+  // hasRows false).
+  fundingNetForMode?(
+    mode: TradingMode,
+    sinceMs?: number,
+  ): Promise<{ readonly netQuote: string; readonly hasRows: boolean }>;
 }
 
 // ── Realized round-trip evidence (reflection lane) ──────────────────────────
@@ -150,10 +168,18 @@ export interface PromotionReadinessEvidence {
   readonly realizedPnl: string;
   readonly fees: string;
   readonly llmCostUsd: string;
+  // P5b: Σ funding_payments.amount_quote over the same mode/window as the fills walk — '0' when no
+  // stats-port funding method is bound, no rows are in-window, or funding data was never expected.
+  // ALREADY folded into netPnl below (netPnl = realizedPnl − fees − llmCostUsd + fundingNet).
+  readonly fundingNet: string;
   readonly netPnl: string;
   readonly windowDays: number;
   readonly firstClosedAt: number | null;
   readonly lastClosedAt: number | null;
+  // P5b: true when funding data was EXPECTED (config.fundingDataExpected) but zero funding rows
+  // exist in-window — a visible measurement-gap signal, deliberately OUTSIDE `reasons` so it never
+  // blocks promotion (fail-open; see PromotionReadinessConfig.fundingDataExpected's own comment).
+  readonly fundingDataMissing: boolean;
   readonly reasons: string[];
 }
 

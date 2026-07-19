@@ -4,7 +4,7 @@ import { and, count, desc, eq, gte, isNotNull, like, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../database.tokens';
 import * as schema from '../schemas/trading';
 import { requireDb } from './persistence-guard';
-import type { AgentPlan } from '../../ports/agentic-strategy';
+import type { AgentPlan, AgentDirectives } from '../../ports/agentic-strategy';
 
 export interface AgentDecisionInsert {
   strategyId: string;
@@ -14,7 +14,10 @@ export interface AgentDecisionInsert {
   basedOnSeq: bigint;
   eventTime: number;
   model: string;
-  action: 'long' | 'flat' | 'hold' | 'error';
+  // A3: widened alongside AgentDecisionEntry.action (ports/agentic-strategy.ts) — this is the row
+  // shape AgentDecisionJournalAdapter.record() builds AFTER its own fail-loud guard has already
+  // dropped anything outside this union, so the type here stays the full accepted set.
+  action: 'open_long' | 'open_short' | 'close' | 'adjust' | 'hold' | 'long' | 'flat' | 'error';
   confidence: number | null;
   rationale: string;
   refPrice: string | null;
@@ -30,8 +33,12 @@ export interface AgentDecisionInsert {
   promptHash: string;
   inputPayload: string | null;
   // Optional so pre-this-column callers and test fixtures stay valid (same absent-vs-null
-  // convention as the cache-token fields above); absent and null both insert as NULL.
-  planJson?: AgentPlan | null;
+  // convention as the cache-token fields above); absent and null both insert as NULL. A3: widened to
+  // ALSO accept AgentDirectives (the v2 shape, mirrored locally in trading.schema.ts's plan_json
+  // $type) — AgentPlan (legacy) stays accepted unchanged for every pre-v2 caller/fixture. I1b: the
+  // intersection additionally accepts nextConsultBars (AgentDecisionEntry's own sibling field, merged
+  // in by the adapter's record()) — mirrors trading.schema.ts's plan_json $type widening.
+  planJson?: ((AgentPlan | AgentDirectives) & { nextConsultBars?: number }) | null;
   // See AgentDecisionEntry.consultId — the batch join key; absent and null both insert as NULL.
   consultId?: string | null;
   // See AgentDecisionEntry.infoArm/thinkingArm — A/B treatment truth; absent and null both insert
@@ -99,13 +106,18 @@ export class AgentDecisionRepository {
 
   // Lifetime decide/entry counts for one playbook version (the abstention lapse's evidence base —
   // see AgentDecisionJournalPort.versionEntryStats): real-LLM rows only, ReflectionService's
-  // model.startsWith('claude') filter in SQL form.
+  // model.startsWith('claude') filter in SQL form. P4: entry set widened to every v2/legacy OPEN
+  // action ('long' the legacy tool, 'open_long'/'open_short' the v2 tools) — 'close'/'adjust'/'flat'/
+  // 'hold' are never entries. Missing this widening false-abstention-lapses every v2 candidate (the
+  // plan's highest-priority silent break — see this codebase's design doc).
   async countVersionEntryStats(version: number): Promise<{ decides: number; entries: number }> {
     const db = requireDb(this.db);
     const [row] = await db
       .select({
         decides: count(),
-        entries: count(sql`case when ${schema.agentDecisions.action} = 'long' then 1 end`),
+        entries: count(
+          sql`case when ${schema.agentDecisions.action} in ('long', 'open_long', 'open_short') then 1 end`,
+        ),
       })
       .from(schema.agentDecisions)
       .where(
@@ -115,5 +127,22 @@ export class AgentDecisionRepository {
         ),
       );
     return { decides: row?.decides ?? 0, entries: row?.entries ?? 0 };
+  }
+
+  // Latest non-null plan_json.thesis for a strategyId (boot rehydration — a later consumer restores
+  // activePlan's currentThesis from the newest journaled row that actually carried one, so a redeploy
+  // doesn't start the model with a blank thesis it already committed to). jsonb ->> extracts the text
+  // field directly in SQL so a thesis-less row (legacy AgentPlan shape, or a v2 row whose model
+  // omitted thesis) is filtered by the WHERE, never read back and checked in JS.
+  async latestThesis(strategyId: string): Promise<string | null> {
+    const db = requireDb(this.db);
+    const thesisNotNull = sql`${schema.agentDecisions.planJson} ->> 'thesis' is not null`;
+    const [row] = await db
+      .select({ thesis: sql<string>`${schema.agentDecisions.planJson} ->> 'thesis'` })
+      .from(schema.agentDecisions)
+      .where(and(eq(schema.agentDecisions.strategyId, strategyId), thesisNotNull))
+      .orderBy(desc(schema.agentDecisions.eventTime), desc(schema.agentDecisions.id))
+      .limit(1);
+    return row?.thesis ?? null;
   }
 }

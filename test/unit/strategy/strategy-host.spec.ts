@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { Logger } from '@nestjs/common';
 import Decimal from 'decimal.js';
 import {
   StrategyHost,
@@ -650,6 +651,47 @@ describe('StrategyHost (agentic-only)', () => {
     // The halted candle still folded into history even though it never triggered a decide.
     const hist = strat.inputs[0]?.snapshot.candles.get(S);
     expect(hist?.map((c) => c.eventTime)).toEqual([epochMs(1), epochMs(2)]);
+  });
+
+  // 2026-07-19: the suppression above was completely silent — a day of HALTED decides went
+  // unnoticed. Warned ONCE per engagement, not once per suppressed market event (which would spam
+  // one line per tick), and re-warns on the NEXT engagement once RUNNING clears the flag.
+  it('tradingHalted() suppression logs exactly ONE warn per engagement, not once per suppressed event, and re-warns on the next engagement', async () => {
+    const id = strategyId('halted-log');
+    const strat = new ProgrammableStrategy(id, { interval: '1m', bars: 2 }, () =>
+      Promise.resolve([]),
+    );
+    const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    let halted = true;
+    const { host, stream } = makeHost({
+      strategy: strat,
+      sink: { recordSignal: () => undefined },
+      hostOpts: { tradingHalted: () => halted },
+    });
+
+    await host.start();
+    stream.push(candle(1)); // three suppressed events while halted — must warn only once
+    await tick();
+    stream.push(candle(2));
+    await tick();
+    stream.push(candle(3));
+    await tick();
+    expect(strat.calls).toBe(0);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+
+    halted = false; // kill-switch lifted — no new warn while RUNNING
+    stream.push(candle(4));
+    await tick();
+    expect(strat.calls).toBe(1);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+
+    halted = true; // re-engaged — the NEXT suppression warns again
+    stream.push(candle(5));
+    await tick();
+    stream.close();
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+
+    warnSpy.mockRestore();
   });
 
   it('constraintsFor populates onInit ctx.symbolConstraints for each resolved subscribed symbol', async () => {

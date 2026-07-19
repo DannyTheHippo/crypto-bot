@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { eq, asc, desc, and, gte, type SQL } from 'drizzle-orm';
+import { eq, asc, desc, and, gte, sum, type SQL } from 'drizzle-orm';
 import type { TradingMode } from '../../domain/types/mode';
 import type {
   PromotionStatsPort,
@@ -144,6 +144,27 @@ export class PromotionStatsRepository implements PromotionStatsPort {
     }
 
     return { perModel: [...byModel.values()] };
+  }
+
+  // P5b: Σ funding_payments.amount_quote for mode (sinceMs-scoped like fillsForMode above).
+  // hasRows distinguishes "ingested rows that happen to net to zero" from "nothing ingested" —
+  // PromotionReadinessService's fail-open missing-data flag depends on that distinction, not the
+  // netQuote value alone (SUM() over zero matching rows is SQL NULL, not '0').
+  async fundingNetForMode(
+    mode: TradingMode,
+    sinceMs?: number,
+  ): Promise<{ readonly netQuote: string; readonly hasRows: boolean }> {
+    const modePredicate = eq(schema.fundingPayments.mode, mode);
+    const where: SQL | undefined =
+      sinceMs === undefined
+        ? modePredicate
+        : and(modePredicate, gte(schema.fundingPayments.fundingTime, sinceMs));
+    const rows = await requireDb(this.db)
+      .select({ net: sum(schema.fundingPayments.amountQuote) })
+      .from(schema.fundingPayments)
+      .where(where);
+    const net = rows[0]?.net;
+    return { netQuote: net ?? '0', hasRows: net !== null && net !== undefined };
   }
 
   // Newest reflection-path usage row = the last reflection attempt that actually reached the API

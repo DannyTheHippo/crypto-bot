@@ -1,4 +1,3 @@
-import Decimal from 'decimal.js';
 import { PLAYBOOK_BLOCK_START, PLAYBOOK_BLOCK_END } from './agent-prompt';
 
 // Structural gate for a stored playbook before it's ever composed into a prompt: this is the real
@@ -23,6 +22,14 @@ const CODE_FENCE = '```';
 // splitting across lines) and exists only to flag obviously-suspicious playbook content for the
 // tripwire metric.
 //
+// Lane-capability-aware (P1, Design § Deleted/replaced scaffolding: "denylist capability-aware
+// (shortsAllowed + leverageAllowed on perp; both pattern families stay enforced on spot)"): the
+// `capability` tag on a pattern below is skipped when the caller's matching validatePlaybook() opt
+// is true — perp legitimately trades short and leveraged, so those two pattern FAMILIES are the
+// lane's own risk surface, not a universal injection tripwire. Every untagged pattern (injection,
+// credential/exfil, live-trading, all-in, max-out) has no lane exemption and always enforces,
+// regardless of opts.
+//
 // Matching is by WORD-BOUNDARY / CONCEPT-PHRASE regex, not raw substring (`lower.includes`).
 // Rationale (2026-07-10, Pass 13): the prior substring form hard-rejected benign trading prose —
 // "marginal" tripped `margin`, "leverage the trend" tripped `leverage`, "let the EMA act as support"
@@ -36,7 +43,11 @@ const CODE_FENCE = '```';
 // matcher is shared by the write side (reflection mint) and the read side (compose-into-prompt via
 // AnthropicAgentClient + ValidatingPlaybookProvider), so the two can never diverge; every
 // injection/exfil pattern hard-blocks on both.
-const BANNED_PATTERNS: readonly { readonly label: string; readonly re: RegExp }[] = [
+const BANNED_PATTERNS: readonly {
+  readonly label: string;
+  readonly re: RegExp;
+  readonly capability?: 'shorts' | 'leverage';
+}[] = [
   // ── Prompt-injection / instruction-override ─────────────────────────────────────────────────────
   {
     label: 'ignore previous',
@@ -84,16 +95,23 @@ const BANNED_PATTERNS: readonly { readonly label: string; readonly re: RegExp }[
     // Verb collocates ("apply/increase/add/use/… leverage") and "leverage of N" reject the directive;
     // the bare verb sense ("leverage the trend/momentum") is intentionally NOT matched.
     re: /\b(?:(?:use|using|apply|applying|add|adding|increase|increasing|reduce|reducing|more|higher|maximum|max|with)\s+(?:the\s+|your\s+)?leverage|leveraged\b|\d+\s*x\s+leverage|leverage\s+(?:up\b|of\b|the\s+(?:position|account|trade)|your\s+(?:position|account)|trading))/i,
+    capability: 'leverage',
   },
   {
     label: 'margin',
     re: /\b(?:on\s+margin|use\s+margin|using\s+margin|margin\s+(?:trading|account|call|loan|position)|borrow(?:ed|ing)?\s+to\s+(?:buy|trade))/i,
+    capability: 'leverage',
   },
-  { label: 'sell short', re: /\bsell\s+short\b/i },
-  { label: 'short position', re: /\bshort\s+(?:position|selling)\b|\bshort\s+the\s+market\b/i },
+  { label: 'sell short', re: /\bsell\s+short\b/i, capability: 'shorts' },
+  {
+    label: 'short position',
+    re: /\bshort\s+(?:position|selling)\b|\bshort\s+the\s+market\b/i,
+    capability: 'shorts',
+  },
   {
     label: 'go short',
     re: /\bgo(?:ing)?\s+short\b|\bshort\s+(?:it|here|this)\b|\bshort\s+the\s+(?:top|high|rally)\b/i,
+    capability: 'shorts',
   },
   { label: 'live trading', re: /\blive[\s-]?trading\b|\blive\s+(?:money|capital|funds?)\b/i },
   { label: 'all-in', re: /\b(?:go\s+)?all[\s-]?in\b/i },
@@ -103,84 +121,23 @@ const BANNED_PATTERNS: readonly { readonly label: string; readonly re: RegExp }[
   },
 ] as const;
 
-// ── Playbook knobs — the bounded numeric-knob learning channel (2026-07-12) ─────────────────────
-// A playbook MAY carry exactly one machine-readable line of the form
-//   knobs: minConfidence=0.65 minRr=2 minEdgeMultiple=2
-// (any subset of the three keys, whitespace-separated key=value pairs). The knobs are the learning
-// loop's first PARAMETRIC degrees of freedom: reflection can set them, they ride the playbook
-// version (so the existing A/B attribution measures their effect for free), and the decide client
-// enforces them deterministically. Semantics are TIGHTEN-ONLY by construction — the client applies
-// each knob as max(configured floor, knob), and minConfidence only gates NEW entries — so a knob
-// can make the lane more selective but can never loosen a configured safety floor, widen sizing,
-// or touch an exit/re-arm path. Bounds are validated here on BOTH the mint (write) and the
-// compose-into-prompt (read) side via validatePlaybook, so an out-of-bounds knob line is a loud
-// validator_reject at mint (retry-with-feedback fires), never a silent no-op at decide time.
-export interface PlaybookKnobs {
-  // Minimum stated confidence for a NEW entry (decimal string, 0..0.9). Entries below it are
-  // downgraded to hold by the client. Exits and plan re-arms are NEVER gated by this.
-  readonly minConfidence?: string;
-  // Raises the plan-gate takeProfit/stopLoss payoff-ratio floor: effective = max(AGENTIC_MIN_RR,
-  // this). New-entry plans only (1..10).
-  readonly minRr?: string;
-  // Raises the plan-gate fee-multiple edge floor: effective = max(AGENTIC_MIN_EDGE_MULTIPLE,
-  // this). New-entry plans only (1..10).
-  readonly minEdgeMultiple?: string;
-}
+// ── Legacy "knobs:" line — accepted and ignored (P1) ─────────────────────────────────────────────
+// A pre-P1 playbook may carry a machine-readable `knobs: minConfidence=0.65 minRr=2 …` line (the
+// bounded numeric-knob learning channel, 2026-07-12 — superseded by the v2 rich decision contract,
+// which carries sizing/exit authority in the model's own directives instead of a parametric floor
+// overlay). The channel is deleted end-to-end: no parsing, no bounds, no client enforcement. A
+// stored ACTIVE playbook that still has the line from before the cutover must not be rejected at
+// boot (that would silently fall back to SEED_PLAYBOOK) — REQUIRED_HEADING_RE only inspects lines
+// starting with "#", so a "knobs:" line is ordinary section-body prose to every check below and
+// passes through untouched.
 
-const KNOBS_LINE_RE = /^\s*knobs\s*:/i;
-const KNOB_PAIR_RE = /^(minConfidence|minRr|minEdgeMultiple)=(\d+(?:\.\d+)?)$/;
-const KNOB_BOUNDS: Readonly<Record<keyof PlaybookKnobs, { min: string; max: string }>> = {
-  minConfidence: { min: '0', max: '0.9' },
-  minRr: { min: '1', max: '10' },
-  minEdgeMultiple: { min: '1', max: '10' },
-};
-
-export type PlaybookKnobsParseResult =
-  | { readonly ok: true; readonly knobs?: PlaybookKnobs }
-  | { readonly ok: false; readonly reason: string };
-
-export function parsePlaybookKnobs(content: string): PlaybookKnobsParseResult {
-  const knobLines = content.split('\n').filter((line) => KNOBS_LINE_RE.test(line));
-  if (knobLines.length === 0) return { ok: true };
-  if (knobLines.length > 1) {
-    return { ok: false, reason: `at most one "knobs:" line is allowed (got ${knobLines.length})` };
-  }
-  const body = knobLines[0]!.slice(knobLines[0]!.indexOf(':') + 1).trim();
-  if (body.length === 0) {
-    return { ok: false, reason: 'empty "knobs:" line (omit the line or give key=value pairs)' };
-  }
-  const knobs: Record<string, string> = {};
-  for (const token of body.split(/\s+/)) {
-    const match = KNOB_PAIR_RE.exec(token);
-    if (!match) {
-      return {
-        ok: false,
-        reason: `unrecognized knobs token "${token}" (allowed: minConfidence=<0..0.9> minRr=<1..10> minEdgeMultiple=<1..10>)`,
-      };
-    }
-    const key = match[1] as keyof PlaybookKnobs;
-    const value = match[2] as string;
-    if (knobs[key] !== undefined) {
-      return { ok: false, reason: `duplicate knobs key "${key}"` };
-    }
-    const bounds = KNOB_BOUNDS[key];
-    const parsed = new Decimal(value);
-    if (parsed.lt(bounds.min) || parsed.gt(bounds.max)) {
-      return {
-        ok: false,
-        reason: `knobs key "${key}"=${value} outside bounds [${bounds.min}, ${bounds.max}]`,
-      };
-    }
-    knobs[key] = value;
-  }
-  return { ok: true, knobs: knobs };
-}
-
-// Convenience for the read side AFTER validatePlaybook has passed: returns the parsed knobs or
-// undefined. Never throws; an invalid line (impossible post-validation) reads as no-knobs.
-export function extractPlaybookKnobs(content: string): PlaybookKnobs | undefined {
-  const parsed = parsePlaybookKnobs(content);
-  return parsed.ok ? parsed.knobs : undefined;
+export interface PlaybookValidationOpts {
+  // Perp lane only (AGENTIC_SHORTS_ENABLED): skips the shorts-phrase pattern family below. Spot
+  // must never see this true — a spot playbook proposing shorts can't be executed and the model
+  // would learn a dead directive.
+  readonly shortsAllowed?: boolean;
+  // Perp lane only (PERP_LEVERAGE_CAP > 1): skips the leverage/margin pattern family below.
+  readonly leverageAllowed?: boolean;
 }
 
 export type PlaybookValidationResult =
@@ -194,7 +151,10 @@ export type PlaybookValidationResult =
       readonly bannedToken?: string;
     };
 
-export function validatePlaybook(content: string): PlaybookValidationResult {
+export function validatePlaybook(
+  content: string,
+  opts: PlaybookValidationOpts = {},
+): PlaybookValidationResult {
   if (content.length > MAX_PLAYBOOK_CHARS) {
     return {
       ok: false,
@@ -233,7 +193,9 @@ export function validatePlaybook(content: string): PlaybookValidationResult {
     };
   }
 
-  for (const { label, re } of BANNED_PATTERNS) {
+  for (const { label, re, capability } of BANNED_PATTERNS) {
+    if (capability === 'shorts' && opts.shortsAllowed) continue;
+    if (capability === 'leverage' && opts.leverageAllowed) continue;
     if (re.test(content)) {
       return {
         ok: false,
@@ -242,13 +204,6 @@ export function validatePlaybook(content: string): PlaybookValidationResult {
         bannedToken: label,
       };
     }
-  }
-
-  // Knobs line (optional): structurally validated on both read and write so an out-of-bounds or
-  // malformed knob is a loud mint-time rejection (retry-with-feedback), never a silent runtime skip.
-  const knobsResult = parsePlaybookKnobs(content);
-  if (!knobsResult.ok) {
-    return { ok: false, reason: `invalid knobs line: ${knobsResult.reason}` };
   }
 
   return { ok: true };

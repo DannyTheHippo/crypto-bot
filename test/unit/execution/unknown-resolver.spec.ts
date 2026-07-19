@@ -196,6 +196,23 @@ describe('UnknownResolverService — SUBMIT_UNKNOWN resolution', () => {
     expect(ctx.resolver.trackedCount()).toBe(0);
   });
 
+  // Cluster-A: on the real venue, VenueFill.clientOrderId carries the numeric venue order id (ccxt
+  // myTrades has no clientOrderId field), so a filled SUBMIT_UNKNOWN must rebuild cumQty by matching
+  // on the venue order id this same fetchOrder call returned — never on p.coid alone.
+  it('venue closed + venue-shaped trade (numeric order id, no coid) → backfill rebuilds cumQty and drives FILLED, no freeze — the ccxt myTrades path (cluster-A)', async () => {
+    const coid = makeIntent().clientOrderId;
+    const ctx = build({
+      fetch: () =>
+        venueState({ status: 'closed', cumQty: '1', qty: '1', venueOrderId: '48212893' }),
+      trades: [fill('48212893', '1', 'td-venue-shaped')], // numeric venue order id, not our coid
+    });
+    seedUnknown(ctx, 'submit');
+    await settle(ctx);
+    expect(ctx.orders.get(coid)?.state).toBe('FILLED');
+    expect(ctx.resolver.trackedCount()).toBe(0);
+    expect(ctx.resolver.isFrozen(SYM)).toBe(false); // rebuilt from the fill, never a false freeze
+  });
+
   it('venue canceled → VENUE_CANCELED → CANCELED', async () => {
     const ctx = build({ fetch: () => venueState({ status: 'canceled' }) });
     const coid = seedUnknown(ctx, 'submit');

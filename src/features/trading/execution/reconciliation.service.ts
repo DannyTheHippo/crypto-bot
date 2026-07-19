@@ -1,4 +1,4 @@
-import { Inject, Injectable, Optional } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { InjectMetric, makeCounterProvider, makeGaugeProvider } from '@willsoto/nestjs-prometheus';
 import { Counter, Gauge } from 'prom-client';
 import Decimal from 'decimal.js';
@@ -17,7 +17,13 @@ import {
   type ExecutionStorePort,
   type ReconConfig,
 } from '../../../ports/execution';
-import { reduce, TransitionError, type OrderEvent } from '../../../domain/oms/reducer';
+import {
+  reduce,
+  TransitionError,
+  TERMINAL_ORDER_STATES,
+  type OrderEvent,
+  type OrderRecord,
+} from '../../../domain/oms/reducer';
 import { isOurClientOrderId } from '../../../domain/types/ids';
 import { price, qty, feeAmount } from '../../../domain/types/money';
 import {
@@ -108,6 +114,7 @@ export class ReconciliationService {
   private readonly checkpoints = new Map<string, EpochMs>();
   private readonly driftHistory = new Map<string, Decimal[]>();
   private readonly positionDivergenceStreak = new Map<string, number>();
+  private readonly log = new Logger('Reconciliation');
 
   constructor(
     @Inject(CLOCK) private readonly clock: ClockPort,
@@ -281,6 +288,15 @@ export class ReconciliationService {
 
   // Axis 2 — trades since the per-(venue,symbol) checkpoint minus an overlap window.
   private async reconcileTrades(acc: PassAccumulator): Promise<void> {
+    // MATCHING (mirrors demo-fill-poller.service.ts): ccxt's unified myTrades carries `order` = the
+    // VENUE numeric order id as VenueFill.clientOrderId (Binance has no clientOrderId on myTrades),
+    // so a trade is resolved to a local order via the venueOrderId recorded on ACK first — the
+    // cb-prefix coid lookup below only ever matches an adapter (paper) that echoes our own
+    // clientOrderId directly. Built once per pass, not per trade (this.orders.all() is a full scan).
+    const byVenueId = new Map<string, OrderRecord>();
+    for (const rec of this.orders.all()) {
+      if (rec.venueOrderId !== undefined) byVenueId.set(rec.venueOrderId, rec);
+    }
     for (const symbol of this.sweepSymbols()) {
       const key = `${this.exchange.venue}|${symbol}`;
       const checkpoint = this.checkpoints.get(key) ?? (0 as EpochMs);
@@ -293,24 +309,79 @@ export class ReconciliationService {
         continue;
       }
       for (const t of trades) {
-        await this.reconcileTrade(t, acc);
+        await this.reconcileTrade(t, byVenueId, acc);
         if (t.venueTimestamp > (this.checkpoints.get(key) ?? 0))
           this.checkpoints.set(key, t.venueTimestamp);
       }
     }
   }
 
-  private async reconcileTrade(t: VenueFill, acc: PassAccumulator): Promise<void> {
-    if (!isOurClientOrderId(t.clientOrderId)) return; // foreign trade on the key — ignore
-    const rec = this.orders.get(t.clientOrderId);
-    if (rec === undefined) {
-      bump(acc, 'fill_for_unknown_order');
-      acc.halts.push('FILL_FOR_UNKNOWN_ORDER'); // our prefix, no local order ⇒ corruption (§6.4)
+  private async reconcileTrade(
+    t: VenueFill,
+    byVenueId: ReadonlyMap<string, OrderRecord>,
+    acc: PassAccumulator,
+  ): Promise<void> {
+    // FIRST FILTER (2026-07-19 spot-lane false-HALT): an already-recorded fill is a pure no-op no
+    // matter how it would classify below. Checked BEFORE any classification — without this, a
+    // long-terminal order the checkpoint/overlap window keeps re-surfacing (the symbol went quiet,
+    // so the checkpoint never advances past it) re-triggers tier-2's durable lookup, and re-halts,
+    // on EVERY pass forever. This alone stops the recurrence; tier-2's terminal/non-terminal split
+    // below is what makes the (rarer) genuinely-new backfill and the genuinely-lost-state HALT land
+    // correctly once this filter has ruled out "already seen it."
+    if (await this.store.hasFill(t.venue, t.symbol, t.venueTradeId)) return;
+
+    const viaVenueId = byVenueId.get(t.clientOrderId);
+    if (viaVenueId !== undefined) {
+      await this.applyTrade(t, viaVenueId, acc);
       return;
     }
+    if (isOurClientOrderId(t.clientOrderId)) {
+      // Our own coid literally appears on the trade (the paper adapter's shape, or a genuine venue
+      // echo). I1's write-ahead makes "our prefix, no local row" impossible except corruption —
+      // unconditional HALT, exactly the pre-cluster-A axis-2 semantics. Never routed through the
+      // durable venue-order-id lookup below: that question (does SOME order of ours own this venue
+      // order id?) does not apply here — the trade already names OUR clientOrderId, not a venue id.
+      const rec = this.orders.get(t.clientOrderId);
+      if (rec === undefined) {
+        bump(acc, 'fill_for_unknown_order');
+        acc.halts.push('FILL_FOR_UNKNOWN_ORDER'); // our prefix, no local order ⇒ corruption (§6.4)
+        return;
+      }
+      await this.applyTrade(t, rec, acc);
+      return;
+    }
+    // Not our coid and unresolved via the venueOrderId index: on the real venue this is the ccxt
+    // myTrades shape (a bare numeric venue order id), which could be one of OUR orders or a
+    // stranger's manual trade on the account — ambiguous from the trade alone. Second tier before
+    // concluding "foreign": I1's write-ahead persists the order durably before any network call, so
+    // a venue order id this process's own store still holds is OURS, not a stranger's — but WHICH
+    // classification depends on whether that durable order is terminal:
+    //   • non-terminal (should still be live but the in-memory projection was lost — crash, a second
+    //     instance, a recovery gap) ⇒ corruption, HALT — unchanged, fail closed (rule 6).
+    //   • terminal (FILLED/CANCELED/EXPIRED — boot recovery deliberately never rehydrates these, per
+    //     loadOpenOrders' WHERE terminal_at IS NULL) AND the filter above already ruled out
+    //     already-recorded ⇒ this IS the missed-fill recovery this axis exists for, just discovered
+    //     via the durable tier instead of the in-memory index — ingest it.
+    const durable = await this.store.loadOrderByVenueOrderId(this.exchange.venue, t.clientOrderId);
+    if (durable !== null) {
+      if (TERMINAL_ORDER_STATES.has(durable.state)) {
+        await this.applyTrade(t, durable, acc);
+        return;
+      }
+      bump(acc, 'fill_for_unknown_order');
+      acc.halts.push('FILL_FOR_UNKNOWN_ORDER'); // non-terminal + lost in memory ⇒ corruption (§6.4)
+      return;
+    }
+    // Neither in-memory nor durable resolves it: genuinely foreign (manual account activity) — WARN-free ignore.
+    this.log.debug(
+      `ignoring foreign trade ${t.venueTradeId} on ${t.symbol} (venue order id ${t.clientOrderId})`,
+    );
+  }
+
+  private async applyTrade(t: VenueFill, rec: OrderRecord, acc: PassAccumulator): Promise<void> {
     const { applied } = await this.ingestor.ingest(
       rec,
-      this.toFillRecord(t),
+      this.toFillRecord(t, rec.clientOrderId),
       `reconcile:${t.venueTradeId}`,
     );
     if (applied) bump(acc, 'backfilled_fill'); // a fill we had missed via the stream — backfilled + WARN
@@ -423,12 +494,12 @@ export class ReconciliationService {
     this.portfolio.closeOrder(coid);
   }
 
-  private toFillRecord(t: VenueFill): FillRecord {
+  private toFillRecord(t: VenueFill, coid: ClientOrderId): FillRecord {
     return {
       venue: t.venue,
       symbol: t.symbol,
       venueTradeId: t.venueTradeId,
-      clientOrderId: t.clientOrderId,
+      clientOrderId: coid,
       price: price(t.price),
       qty: qty(t.qty),
       fee: t.fee ? { ccy: t.fee.ccy, amount: feeAmount(t.fee.amount) } : null,

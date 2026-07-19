@@ -8,6 +8,7 @@ import { AppConfigModule } from '../../../src/config/config.module';
 import { HealthController } from '../../../src/features/common/observability/health.controller';
 import { MetricsService } from '../../../src/features/common/observability/metrics.service';
 import { ObservabilityModule } from '../../../src/features/common/observability/observability.module';
+import { KillSwitchService } from '../../../src/features/trading/risk/kill-switch.service';
 import { STRATEGY_REGISTRY, type StrategyRegistryPort } from '../../../src/ports/strategy';
 import { strategyId } from '../../../src/domain/types/ids';
 
@@ -82,6 +83,48 @@ describe('Health endpoints (unit — no HTTP)', () => {
   it('HealthCheckService is wired', () => {
     const hcs = moduleRef.get(HealthCheckService);
     expect(hcs).toBeDefined();
+  });
+});
+
+// 2026-07-19: killSwitchState was hardcoded 'RUNNING' — a day of spot-lane HALTs never surfaced on
+// /health/ready. AppModule already imports the @Global() KillSwitchModule, so the REAL
+// KillSwitchService instance is resolvable and drivable through its own state machine.
+describe('Health endpoints — real KillSwitchService engaged (HALTED)', () => {
+  let moduleRef: TestingModule;
+  let healthController: HealthController;
+
+  beforeAll(async () => {
+    process.env['NODE_ENV'] = 'test';
+    process.env['PORT'] = '3100';
+
+    register.clear();
+
+    moduleRef = await Test.createTestingModule({
+      imports: [AppModule],
+    }).compile();
+
+    await moduleRef.init();
+
+    healthController = moduleRef.get(HealthController);
+  });
+
+  afterAll(async () => {
+    await moduleRef.close();
+    register.clear();
+  });
+
+  it('ready() killSwitchState reflects the REAL engaged state, not a hardcoded RUNNING', async () => {
+    const killSwitch = moduleRef.get(KillSwitchService);
+    killSwitch.engage('test-halt', true);
+    killSwitch.confirmCancels();
+    killSwitch.allFlat();
+    expect(killSwitch.state()).toBe('HALTED');
+
+    const result = await healthController.ready();
+    const configDetail = (result.info as Record<string, unknown> | undefined)?.['config'] as
+      | Record<string, unknown>
+      | undefined;
+    expect(configDetail?.['killSwitchState']).toBe('HALTED');
   });
 });
 

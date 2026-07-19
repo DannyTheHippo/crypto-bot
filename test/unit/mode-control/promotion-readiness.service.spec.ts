@@ -376,6 +376,81 @@ describe('PromotionReadinessService', () => {
     });
   });
 
+  describe('funding inclusion (P5b)', () => {
+    // 30 profitable trips, no LLM cost: realized 30, net 30 before funding — isolates the funding
+    // delta cleanly against the base case already proven above ('permitted only when...').
+    function profitableFills(): PromotionFillRow[] {
+      const fills: PromotionFillRow[] = [];
+      for (let i = 0; i < 30; i++) {
+        const closedAt = 1_000_000 + i * ((15 * DAY) / 29);
+        fills.push(
+          fill({ executedAt: closedAt - 1, side: 'BUY', qty: '0.001', price: '50000' }),
+          fill({ executedAt: closedAt, side: 'SELL', qty: '0.001', price: '51000' }),
+        );
+      }
+      return fills;
+    }
+
+    function statsWithFunding(netQuote: string, hasRows: boolean) {
+      const base = statsOf(profitableFills());
+      const port: PromotionStatsPort = {
+        ...base.port,
+        fundingNetForMode: () => Promise.resolve({ netQuote, hasRows }),
+      };
+      return port;
+    }
+
+    it('a RECEIVED (positive) funding net ADDS to netPnl exactly', async () => {
+      const svc = new PromotionReadinessService(statsWithFunding('4.5', true), CFG);
+      const v = await svc.evaluate();
+      expect(v.evidence.fundingNet).toBe('4.5');
+      expect(v.evidence.netPnl).toBe('34.5'); // 30 + 4.5
+      expect(v.evidence.fundingDataMissing).toBe(false);
+    });
+
+    it('a PAID (negative) funding net SUBTRACTS from netPnl exactly (opposite sign, same magnitude)', async () => {
+      const svc = new PromotionReadinessService(statsWithFunding('-4.5', true), CFG);
+      const v = await svc.evaluate();
+      expect(v.evidence.fundingNet).toBe('-4.5');
+      expect(v.evidence.netPnl).toBe('25.5'); // 30 + (-4.5)
+    });
+
+    it('fundingDataExpected + zero rows raises fundingDataMissing AND blocks via FUNDING_DATA_MISSING (fail-closed)', async () => {
+      const cfg: PromotionReadinessConfig = { ...CFG, fundingDataExpected: true };
+      const svc = new PromotionReadinessService(statsWithFunding('0', false), cfg);
+      const v = await svc.evaluate();
+      expect(v.evidence.fundingDataMissing).toBe(true);
+      expect(v.evidence.reasons).toEqual(['FUNDING_DATA_MISSING']);
+      expect(v.permitted).toBe(false);
+    });
+
+    it('fundingDataExpected false never raises the flag even with zero rows', async () => {
+      const svc = new PromotionReadinessService(statsWithFunding('0', false), CFG);
+      const v = await svc.evaluate();
+      expect(v.evidence.fundingDataMissing).toBe(false);
+      expect(v.evidence.reasons).not.toContain('FUNDING_DATA_MISSING');
+      expect(v.permitted).toBe(true);
+    });
+
+    it('rows present (hasRows true) never raises the flag even when netQuote is zero', async () => {
+      const cfg: PromotionReadinessConfig = { ...CFG, fundingDataExpected: true };
+      const svc = new PromotionReadinessService(statsWithFunding('0', true), cfg);
+      const v = await svc.evaluate();
+      expect(v.evidence.fundingDataMissing).toBe(false);
+      expect(v.evidence.reasons).not.toContain('FUNDING_DATA_MISSING');
+      expect(v.permitted).toBe(true);
+    });
+
+    it('a stats port that never implemented fundingNetForMode degrades to zero funding, no throw', async () => {
+      // The shared statsOf() fake (used by every other test in this file) has no fundingNetForMode —
+      // confirms the optional-method contract never breaks an older/simpler implementation.
+      const v = await service(profitableFills()).evaluate();
+      expect(v.evidence.fundingNet).toBe('0');
+      expect(v.evidence.fundingDataMissing).toBe(false);
+      expect(v.evidence.netPnl).toBe('30');
+    });
+  });
+
   describe('evidence epoch (W4+W13)', () => {
     it('threads evidenceEpochMs into BOTH stats reads', async () => {
       const cfg: PromotionReadinessConfig = { ...CFG, evidenceEpochMs: 5_000 };

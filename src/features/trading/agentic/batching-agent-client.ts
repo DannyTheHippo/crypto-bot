@@ -27,6 +27,15 @@ export interface BatchCapableAgentClient {
   ): Promise<AgentProposeBatchResult>;
 }
 
+// U1 (Design § Universe: active-menu gate). Structural, not an import of UniverseScannerService
+// itself — keeps this file decoupled from the scanner's own shape; UniverseScannerService satisfies
+// this interface as-is. OPTIONAL on BatchingAgentClientConfig: absent (the I1-unwired default)
+// leaves propose() byte-identical to pre-U1 behavior (see the propose() guard below and its own
+// spec assertion) — I1 wires a real gate once the scanner is composed in app.module.ts.
+export interface ActiveMenuGate {
+  isActive(symbol: string): boolean;
+}
+
 export interface BatchingAgentClientConfig {
   // Coalescing window (ms): the first propose() call to arrive after an empty queue opens the
   // window; every propose() call arriving before it closes joins the SAME batch. Default 3000
@@ -45,6 +54,9 @@ export interface BatchingAgentClientConfig {
   // Threaded into DailyLlmBudget.recordUsage so per-model cache/token rates price the batched call
   // correctly (mirrors BudgetedAgentClient's own `model` ctor param).
   readonly model?: string;
+  // U1: optional active-menu gate (see ActiveMenuGate above). Absent = every symbol proposes exactly
+  // as before this step landed.
+  readonly activeMenuGate?: ActiveMenuGate;
 }
 
 interface PendingEntry {
@@ -79,6 +91,7 @@ export class BatchingAgentClient implements AgentClientPort {
   private readonly maxBatchSize: number;
   private readonly agentTimeoutMs: number;
   private readonly model?: string;
+  private readonly activeMenuGate?: ActiveMenuGate;
   private readonly logger: LoggerLike;
   private pending: PendingEntry[] = [];
   private flushTimer: ReturnType<typeof setTimeout> | undefined;
@@ -94,6 +107,7 @@ export class BatchingAgentClient implements AgentClientPort {
     this.maxBatchSize = cfg.maxBatchSize ?? DEFAULT_MAX_BATCH_SIZE;
     this.agentTimeoutMs = cfg.agentTimeoutMs;
     this.model = cfg.model;
+    this.activeMenuGate = cfg.activeMenuGate;
     this.logger = logger;
     // Enable-gate review should-fix: worst-case first-arrival wall time (window + HTTP attempt,
     // floor included) must fit inside the host's decide backstop (agentTimeoutMs + 2s) — otherwise
@@ -112,8 +126,14 @@ export class BatchingAgentClient implements AgentClientPort {
   }
 
   propose(input: AgentDecisionInput): Promise<AgentProposal> {
+    const symbol = String(input.trigger.event.symbol);
+    // U1: a non-active-menu symbol is an inert hold — it never joins the batch, never spends budget,
+    // never reaches the LLM. Gate absent (undefined) ⇒ this branch never taken, byte-identical to
+    // pre-U1 behavior.
+    if (this.activeMenuGate !== undefined && !this.activeMenuGate.isActive(symbol)) {
+      return Promise.resolve({ signals: [] });
+    }
     return new Promise<AgentProposal>((resolve, reject) => {
-      const symbol = String(input.trigger.event.symbol);
       this.pending.push({ symbol, input, resolve, reject });
       // First arrival opens the window.
       if (this.pending.length === 1) {

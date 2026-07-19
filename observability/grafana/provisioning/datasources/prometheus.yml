@@ -1,7 +1,13 @@
 apiVersion: 1
 
 datasources:
+  # Pinned uid (not auto-generated): dashboard JSON references this datasource by {type, uid}
+  # object, which only resolves reliably inside a Mixed-datasource panel if the uid is stable —
+  # name-based refs inside Mixed panels resolve unreliably (2026-07-19 Overview-row "No data" fix).
+  # A pinned uid also survives the eventual GCP lift unchanged: a fresh Grafana volume provisioned
+  # from this same file mints the identical uid, so the dashboard JSON needs no edits post-migration.
   - name: Prometheus
+    uid: prometheus-spot
     type: prometheus
     access: proxy
     url: http://prometheus:9090

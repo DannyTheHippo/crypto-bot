@@ -1,5 +1,11 @@
 # Agentic lane — improvement backlog
 
+> **ARCHIVED (2026-07-18):** point-in-time findings from an early review; the `APPLIED` items shipped
+> long ago and the module path below (`src/modules/agentic-strategy/`) predates the P3c
+> `src/features/` restructure. Superseded by the v2 rich-decision-contract program
+> (`docs/planning/daily-profitability-loop.md` + `reports/loop/state.md` carry current backlog).
+> Retained as historical record only.
+
 Ranked findings from the profitability/observability review of the agentic LLM lane
 (`src/modules/agentic-strategy/`). The lane is the sole strategy lane and permanently
 EXPERIMENT-ONLY (paper/testnet; `assertAgenticLaneNotLive` refuses any live boot — CLAUDE.md rule 4).

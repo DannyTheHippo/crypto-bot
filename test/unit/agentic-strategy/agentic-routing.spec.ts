@@ -304,7 +304,12 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
 function makeAgenticHost(client: AgentClientPort, sink: SignalSinkPort, opts?: AgenticHostOptions) {
   const strategy = new AgenticStrategy(
     SID,
-    { symbol: SYM, venue: V, interval: '1m', warmupBars: 2 },
+    // I1b (Design § Deleted scaffolding — B2 consult scheduler): a fresh, FLAT, non-exec-triggered
+    // strategy now waits for evaluateConsultSchedule's fallback cadence before its very FIRST
+    // consult (fallbackConsultBars, default 16) — every fixture in this file predates B2 and expects
+    // its own single-or-few decide() calls to reach the client, so fallbackConsultBars=1 keeps every
+    // bar due on schedule without touching production scheduler semantics.
+    { symbol: SYM, venue: V, interval: '1m', warmupBars: 2, fallbackConsultBars: 1 },
     client,
   );
   const registry = new StrategyRegistry();
@@ -342,7 +347,12 @@ describe('agentic strategy routing (cannot bypass Risk)', () => {
     const { sink, submitted, journalCalls } = realChokepoint();
     const strategy = new AgenticStrategy(
       SID,
-      { symbol: SYM, venue: V, interval: '1m', warmupBars: 2 },
+      // I1b (Design § Deleted scaffolding — B2 consult scheduler): a fresh, FLAT, non-exec-triggered
+      // strategy now waits for evaluateConsultSchedule's fallback cadence before its very FIRST
+      // consult (fallbackConsultBars, default 16) — every fixture in this file predates B2 and expects
+      // its own single-or-few decide() calls to reach the client, so fallbackConsultBars=1 keeps every
+      // bar due on schedule without touching production scheduler semantics.
+      { symbol: SYM, venue: V, interval: '1m', warmupBars: 2, fallbackConsultBars: 1 },
       new ProgrammableAgentClient(() => Promise.resolve([agentSignal()])),
     );
 
@@ -486,10 +496,12 @@ describe('live interlock (earned-live gate: a live-configured agentic boot needs
       realizedPnl: '120',
       fees: '4',
       llmCostUsd: '20',
+      fundingNet: '0',
       netPnl: '96',
       windowDays: 21,
       firstClosedAt: 1,
       lastClosedAt: 2,
+      fundingDataMissing: false,
       reasons: [],
     },
   };

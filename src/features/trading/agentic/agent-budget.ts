@@ -1,5 +1,6 @@
 import Decimal from 'decimal.js';
 import type {
+  AgentBudgetBlock,
   AgentClientPort,
   AgentDecisionInput,
   AgentProposal,
@@ -167,6 +168,34 @@ export class DailyLlmBudget {
       output: Math.max(...pools.map((p) => p.output)),
       cacheRead: Math.max(...pools.map((p) => p.cacheRead)),
       cacheWrite: Math.max(...pools.map((p) => p.cacheWrite)),
+    };
+  }
+
+  // I1 (Design § Enriched model inputs): the payload's budget line — remaining calls/tokens/USD
+  // against today's caps, plus an approximate cost per future consult. approxCostPerConsultUsd is
+  // today's own OBSERVED average (costUsd / calls so far) — the only cost basis this class can
+  // ground without guessing a token count for a call that hasn't happened yet; '0' before the first
+  // call of the day. Exact decimal strings (money-adjacent path) via Decimal, never native float.
+  budgetBlock(): AgentBudgetBlock {
+    this.rollIfNeeded();
+    const remainingCallsToday = Math.max(0, this.caps.maxCallsPerDay - this.calls);
+    const remainingTokensToday = Math.max(
+      0,
+      this.caps.maxTokensPerDay - (this.inputTokens + this.outputTokens),
+    );
+    const costCap = this.caps.maxCostUsdPerDay ?? 0;
+    const remainingUsdToday =
+      costCap > 0
+        ? Decimal.max(0, new Decimal(costCap).minus(this.costUsd)).toFixed()
+        : new Decimal(0).toFixed();
+    const approxCostPerConsultUsd = (
+      this.calls > 0 ? new Decimal(this.costUsd).div(this.calls) : new Decimal(0)
+    ).toFixed();
+    return {
+      remainingCallsToday,
+      remainingTokensToday,
+      remainingUsdToday,
+      approxCostPerConsultUsd,
     };
   }
 

@@ -104,13 +104,31 @@ export interface AgentPositionSummary {
   readonly realizedPnl: string;
   readonly unrealizedPnlPct: number | null; // indicator-grade float, not money
   readonly openOrders: number;
-  // W3.1 plan-mode only, LONG only (absent otherwise so legacy/flat payloads stay byte-identical):
-  // whether plan-executor currently manages this position. The active plan is in-memory and does
-  // not survive a restart, so `false` tells the model its position is UNMANAGED and it may re-arm
-  // by attaching a plan to a 'hold' (see planModeSentences / the client's re-arm acceptance path) —
-  // without this field the model cannot distinguish "managed, safety-cadence consult" from
-  // "plan lost, I am being billed every bar", and the documented restart self-heal never happens.
-  readonly managedPlan?: boolean;
+  // B3 (rich decision contract, Design § Model-owned exits): replaces managedPlan — mirrors
+  // agent-prompt.ts's TradeContractDirectives shape (minus thesis, rendered separately below) so the
+  // wiring step (I1) is a straight passthrough into BuildMarketPayloadExtras. Plan-mode only, and
+  // only while actually positioned (absent otherwise — legacy/flat payloads stay byte-identical).
+  // The active plan is in-memory and does not survive a restart: an ABSENT `directives` while
+  // positioned is the model's cue that its position is UNMANAGED (the plan was lost) and it may
+  // re-arm by attaching directives to a 'hold' (the client's re-arm acceptance path) — this replaces
+  // managedPlan's old explicit `false` with the same "nothing enforced" signal conveyed by omission,
+  // matching every other v2 block's omit-entirely convention.
+  readonly directives?: {
+    readonly entryStyle: 'maker' | 'taker';
+    readonly stopLossPct: string;
+    readonly takeProfitPct: string;
+    readonly maxHoldBars: number;
+  };
+  // Bars elapsed under the CURRENT directive set (plan-executor.ts's single barsElapsed clock,
+  // never reset by 'adjust' — see ActivePlanState) and bars remaining before maxHoldBars forces an
+  // exit (maxHoldBars - barsHeld, floored at 0). Present exactly when `directives` is.
+  readonly barsHeld?: number;
+  readonly barsUntilForcedExit?: number;
+  // The model's own persisted thesis (AgentDirectives.thesis) from its last directive-bearing
+  // decision on this position, fed back verbatim so it can revise or confirm its own prior
+  // reasoning rather than starting cold each consult. Present exactly when `directives` is AND a
+  // thesis has been supplied on some prior directive for the CURRENT plan's lifetime.
+  readonly currentThesis?: string;
 }
 
 // Host-computed technical indicators over the closed-candle history — the agent gets these
@@ -128,7 +146,12 @@ export interface AgentIndicators {
 
 export interface AgentDecisionRecord {
   readonly eventTime: EpochMs;
-  readonly action: 'long' | 'flat' | 'hold';
+  // B2: widened to the SAME v2 action vocabulary as AgentDecisionMeta.action (see that field's own
+  // comment) — this ring is populated directly from decision.action (agentic.strategy.ts's decide()),
+  // so it must accept whatever that field accepts. Purely a type-surface widen: this ring's own
+  // rendering (agent-prompt.ts's recentDecisions block) is unchanged by B2 — giving v2 actions their
+  // own rendering treatment is directive-lifecycle territory (B3).
+  readonly action: 'open_long' | 'open_short' | 'close' | 'adjust' | 'hold' | 'long' | 'flat';
   readonly close: number;
   readonly reason: string;
   // Forward-looking outcome of THIS decision, filled in later (once price has moved / the position
@@ -170,15 +193,75 @@ export interface AgentCrossSymbol {
 }
 
 // Push 3 P6 Unit 4 (#17 residual): the strategy's own realized decide-side track record over a
-// trailing window of CLOSED round trips — the same window/floor the expectancy ladder (W4.2,
-// agentic.strategy.ts's EXPECTANCY_LADDER_* consts) already computes from, surfaced as read-only
-// context rather than a second risk-modulating mechanism. Present only when
-// AGENTIC_TRACK_RECORD_ENABLED is on, a RoundTripEvidencePort is wired, and enough trips exist.
+// trailing window of CLOSED round trips — the same window/floor the renamed TRACK_RECORD_* consts
+// define (agentic.strategy.ts — B3 deleted the expectancy ladder outright; these consts were renamed,
+// not removed), surfaced as read-only context rather than a second risk-modulating mechanism. Present
+// only when AGENTIC_TRACK_RECORD_ENABLED is on, a RoundTripEvidencePort is wired, and enough trips
+// exist.
 export interface AgentTrackRecord {
   readonly tripCount: number;
   readonly winRate: number; // 0..1, fraction of tripCount with netPnl > 0
   readonly meanNetBpsPerTrip: number; // mean of netPnl / (entryVwap * boughtQty) * 10_000
   readonly trailingWindowTrips: number; // the configured window size, not necessarily === tripCount
+  // P4 (Design § Learning & measurement stack): the lane's cumulative net-of-cost bps over the SAME
+  // trailing window (the SUM of trip bps, not meanNetBpsPerTrip's per-trip average — a per-trip mean
+  // isn't comparable to a single buy-and-hold return spanning the whole window) MINUS a simple
+  // buy-and-hold return of BTC / an equal-weight basket over that window, in bps — alpha, not just
+  // return. Pure math lives in benchmark-alpha.ts (computeHoldReturnFraction/
+  // computeEqualWeightBasketReturnFraction/computeAlphaBps), independently tested there. Optional and
+  // independently absent: each field is populated ONLY when the caller had a window-aligned benchmark
+  // candle series — a single agentic instance's own streamed candle buffer is siloed to its own
+  // symbol (see cross-symbol-context.ts's header comment), so basket alpha needs cross-symbol candle
+  // access no instance has today, and BTC alpha is only directly available to a BTC-symbol instance's
+  // own buffer. P4b (agentic.strategy.ts's computeTrackRecordContext/computeBenchmarkAlpha) wires
+  // netVsBtcHoldBps from exactly that BTC-symbol-instance buffer, coverage-guarded against the trip
+  // window's endpoints; netVsEqualWeightBasketBps still has no genuine source (same gap
+  // AgentPortfolioBlock.correlation's btcBeta carries) and stays unpopulated until a real
+  // multi-symbol history store exists — inventing one was out of this change's scope. Never populate
+  // either field with a partial/mismatched-window figure — omitted beats wrong, same fail-open
+  // convention this whole interface already uses.
+  readonly netVsBtcHoldBps?: number;
+  readonly netVsEqualWeightBasketBps?: number;
+}
+
+// S2 (rich decision contract, Design § Enriched model inputs): the portfolio/budget/calendar block
+// shapes — RELOCATED here from agent-prompt.ts (S1 defined them locally under these SAME field names,
+// with an explicit comment that their "eventual home is src/ports/agentic-strategy.ts, owned by a
+// LATER step (S2)"; agent-prompt.ts now imports them from here instead of defining them, so the two
+// modules can never drift). One position entry per open book position (batch-wide, not per-symbol).
+export interface AgentPortfolioPosition {
+  readonly symbol: string;
+  readonly side: 'LONG' | 'SHORT';
+  readonly qty: string;
+  readonly notional: string;
+}
+
+// Portfolio-level book state, rendered once per batch payload (absent on a single-symbol consult).
+export interface AgentPortfolioBlock {
+  readonly cappedEquity: string;
+  readonly freeQuote: string;
+  readonly grossExposure: string;
+  readonly positions: readonly AgentPortfolioPosition[];
+  // Absent when too little basket-wide return history exists to compute a beta yet.
+  readonly correlation?: {
+    readonly btcBeta: number;
+    readonly summary: string;
+  };
+}
+
+// Remaining daily LLM budget + approx cost per consult (agent-budget.ts snapshot).
+export interface AgentBudgetBlock {
+  readonly remainingCallsToday: number;
+  readonly remainingTokensToday: number;
+  readonly remainingUsdToday: string;
+  readonly approxCostPerConsultUsd: string;
+}
+
+// One scheduled macro event (data/macro-calendar.json), next-72h window only.
+export interface AgentCalendarEvent {
+  readonly name: string;
+  readonly atMs: number;
+  readonly importance: 'high' | 'medium';
 }
 
 export interface AgentContext {
@@ -198,6 +281,19 @@ export interface AgentContext {
   // Push 3 P6 Unit 4: present only when AGENTIC_TRACK_RECORD_ENABLED is on AND enough trips exist —
   // see AgentTrackRecord's own comment. Absent ⇒ byte-identical to pre-feature output.
   readonly trackRecord?: AgentTrackRecord;
+  // S2 (Design § Enriched model inputs): rendered once per batch payload by agent-prompt.ts's
+  // buildMarketPayload (BuildMarketPayloadExtras.portfolio) — wiring the actual provider into this
+  // field is I1's job; the shape lands here now so S1's renderer and every later step converge on
+  // ONE type. Absent ⇒ no `portfolio` key in the rendered payload (byte-identical to pre-S1/S2).
+  readonly portfolio?: AgentPortfolioBlock;
+  // See AgentPortfolioBlock's own comment — same absent-omits-key convention, wired by I1.
+  readonly budget?: AgentBudgetBlock;
+  // Next-72h scheduled macro events (data/macro-calendar.json, seeded at I2). Absent ⇒ no `calendar`
+  // key.
+  readonly calendar?: readonly AgentCalendarEvent[];
+  // Rolling-window execution-quality digest string (maker fill rate, missed-entry cost, post-fill
+  // drift — exec-quality.service.ts, P5). Absent ⇒ no `execQuality` key.
+  readonly execQuality?: string;
 }
 
 // What woke the agent, plus the snapshot it reasons over.
@@ -238,14 +334,18 @@ export const AGENT_CLIENT = Symbol('AGENT_CLIENT');
 // tool-use payload, verbatim. Always populated by the real client on a successful call; absent from
 // the stub and from a degraded/short-circuited call (there was no call to account for).
 export interface AgentDecisionMeta {
-  // B3: stays 'long' | 'flat' | 'hold' — widening this ripples into agentic.strategy.ts's
-  // decision-history ring, the persisted agent_decisions journal, and the counterfactual-scoring.ts
-  // calibration module (which would then need to decide how to treat 'short' rows — a semantic call
-  // belonging to the carry sub-plan that actually wires shortsEnabled live, not to this flag-gated,
-  // presently-unconsumed capability). AnthropicAgentClient casts its raw 'short' action down to this
-  // narrow type at the single construction site (see its own comment) rather than widening the port.
-  readonly action: 'long' | 'flat' | 'hold';
-  readonly confidence: number;
+  // S2 (rich decision contract, Design § New tool contract): widened to the v2 action vocabulary —
+  // 'open_long'/'open_short'/'close'/'adjust'/'hold' — ADDITIVE to the legacy 'long'/'flat' literals,
+  // never a replacement of them: historical journal rows and every fixture/replay path pinned to the
+  // legacy tool (test/eval/agentic/*, entry-rate-floor.ts, candidate-backtest.ts until they migrate in
+  // their own steps) still type-check unchanged. A caller reasoning over a specific decision still
+  // narrows with `===`/a switch; nothing here forces a downstream exhaustive-switch rewrite by itself.
+  readonly action: 'open_long' | 'open_short' | 'close' | 'adjust' | 'hold' | 'long' | 'flat';
+  // S2: v2 conviction rides entirely in AgentDirectives.sizeFraction — there is no separate
+  // confidence field on the v2 tool response (see agent-prompt.ts's sizeFraction description). null
+  // is what a v2-served decision now carries here; number is the legacy 0..1 confidence value every
+  // pre-v2 caller/fixture still supplies.
+  readonly confidence: number | null;
   readonly rationale: string;
 }
 
@@ -261,11 +361,49 @@ export interface AgentUsage {
   readonly cacheReadInputTokens?: number;
 }
 
+// S2 (rich decision contract, Design § New tool contract): the v2 tool response's parsed directive
+// set — supersedes AgentPlan (below) as what AgentProposal.plan actually carries once S3/A1 wire the
+// v2 client path; AgentPlan itself is KEPT (not deleted) because it is still the live wire type for
+// every legacy (non-v2) submit_plan/submit_portfolio caller and fixture (test/eval/agentic/*,
+// entry-rate-floor.ts, candidate-backtest.ts) until their own migration steps land. Pct fields stay
+// STRINGS (money-safe Decimal→string path, same discipline as AgentPlan); entryOffsetBps/
+// entryValidityBars/maxHoldBars stay plain numbers (bar counts / bps offsets, never money);
+// sizeFraction is also a STRING (money-adjacent — it multiplies capped equity into a notional
+// downstream, see position-sizer.service.ts's C1 step) despite being conceptually closer to a plain
+// fraction than a price.
+export interface AgentDirectives {
+  // Conviction channel replacing AgentDecisionMeta.confidence on the v2 path — required on
+  // 'open_long'/'open_short' (including a scale-in), meaningless otherwise. See DECISION_V2_BOUNDS
+  // (agent-prompt.ts) for the enforced [0.005, lane-max] range.
+  readonly sizeFraction: string;
+  readonly stopLossPct: string;
+  readonly takeProfitPct: string;
+  // 'adjust'-only, optional: fraction of the current position to close now. Absent on every
+  // 'open_*'/'hold' directive set.
+  readonly partialCloseFraction?: string;
+  readonly entryOffsetBps: number;
+  readonly entryValidityBars: number;
+  readonly maxHoldBars: number;
+  // 'maker' rests a passive limit order entryOffsetBps from the last close; 'taker' crosses the
+  // spread immediately (the sizer degrades LIMIT_MAKER→LIMIT naturally — see position-sizer.service.
+  // ts). Required (unlike AgentPlan, which had no pricing-style concept at all).
+  readonly entryStyle: 'maker' | 'taker';
+  // Mirrors AgentPlan.direction's semantics exactly (absent ⇒ 'long'; ignored on a same-side re-arm,
+  // where the position's own side wins) — see that field's own comment for the full rationale.
+  readonly direction?: 'long' | 'short';
+  // The model's current reasoning for this position/decision, ≤300 chars (DECISION_V2_BOUNDS.
+  // thesisMaxLen) — optional on 'open_*'/'adjust'; persisted and fed back at the next consult as
+  // AgentContext... currentThesis (see agent-prompt.ts's BuildMarketPayloadExtras.currentThesis).
+  readonly thesis?: string;
+}
+
 // W3.1 plan-based trading: the executor-managed trade plan a 'long' decision carried, parsed off
 // submit_plan's tool-use payload. Pct fields are STRINGS (not the raw schema numbers) so every
 // downstream consumer — plan-executor.ts's Decimal compares, the strategy's in-memory plan state —
 // stays on the money-safe Decimal→string path; only entryOffsetBps/entryValidityBars/maxHoldBars
 // stay plain numbers (bar counts / bps offsets, never a money value themselves).
+// LEGACY (pre-S2): kept exported, unmodified, for every caller/fixture still on the legacy
+// submit_plan/submit_portfolio wire shape — see AgentDirectives above for the v2 replacement.
 export interface AgentPlan {
   readonly entryOffsetBps: number;
   readonly stopLossPct: string;
@@ -285,10 +423,25 @@ export interface AgentPlan {
 export interface AgentProposal {
   readonly signals: Signal[];
   readonly decision?: AgentDecisionMeta;
-  // Present only when planMode is on AND the decision was a viable 'long' plan (absent on 'flat'/
-  // 'hold', and absent when the plan was rejected by the fee-aware edge floor — see
-  // anthropic-agent-client.ts's plan-rejection path, which returns signals: [] with no plan).
-  readonly plan?: AgentPlan;
+  // S2: retyped to AgentDirectives (the v2 directive set) — the property NAME stays `plan` (the
+  // journal column stays plan_json; see AgentDecisionEntry.plan and A3's schema-widening step), only
+  // the SHAPE changes. Every legacy (pre-v2) construction site that still builds an AgentPlan-shaped
+  // value here is expected to fail typecheck until it migrates to AgentDirectives in its own step
+  // (A1: anthropic-agent-client.ts's acceptedPlan; B3: agentic.strategy.ts's ActivePlan bookkeeping)
+  // — a plain retype was chosen over a `AgentDirectives | AgentPlan` union because every intended v2
+  // reader (plan-executor.ts's B1 step, the payload renderers) needs ONE shape to reason over, and a
+  // union would let a stale AgentPlan value silently keep flowing through the v2 path instead of
+  // surfacing as the compile error that routes each caller to its owning migration step.
+  // Present only when the decision carried a viable open/adjust directive set (absent on 'hold'/
+  // 'close', and absent when directives were rejected by the fee-aware edge floor — see
+  // anthropic-agent-client.ts's rejection path, which returns signals: [] with no plan).
+  readonly plan?: AgentDirectives;
+  // S2 (Design § New tool contract): portfolio-level — ONE value applies to every proposal born from
+  // the SAME batched submit_portfolio call (per-symbol scheduling would desync the basket and
+  // collapse batching — see the Design table's own note), stamped identically on every element the
+  // way consultId already is (see that field's own comment). Absent on the single-symbol propose()
+  // path (no portfolio schedule to stamp) and on any pre-v2 batch response.
+  readonly nextConsultBars?: number;
   readonly usage?: AgentUsage;
   // Wall-clock duration of the HTTP call, client-measured; absent when no call was made.
   readonly latencyMs?: number;
@@ -378,7 +531,20 @@ export interface AgentDecisionEntry {
   readonly basedOnSeq: bigint;
   readonly eventTime: EpochMs;
   readonly model: string;
-  readonly action: 'long' | 'flat' | 'hold' | 'error';
+  // A3: widened to the SAME v2 ∪ legacy vocabulary as AgentDecisionMeta.action (see that field's own
+  // comment) — ADDITIVE, 'error' kept alongside (this journal-only literal has no AgentDecisionMeta
+  // counterpart: it marks a decide()-path exception, stamped by recordErrorJournalEntry, never a
+  // value the client itself returns). Historical rows keep their legacy 'long'/'flat' literals
+  // forever; nothing here forces re-labeling them.
+  readonly action:
+    | 'open_long'
+    | 'open_short'
+    | 'close'
+    | 'adjust'
+    | 'hold'
+    | 'long'
+    | 'flat'
+    | 'error';
   readonly confidence: number | null;
   readonly rationale: string;
   readonly refPrice: string | null;
@@ -404,6 +570,12 @@ export interface AgentDecisionEntry {
   // on every non-batched decision. Optional so pre-this-column writers and fixtures compile; absent
   // and null both map to a NULL column.
   readonly consultId?: string | null;
+  // S2: see AgentProposal.nextConsultBars — the portfolio-level consult-schedule value this
+  // decision's proposal carried, forwarded verbatim; null/absent on every non-batched or pre-v2
+  // decision. Optional so pre-this-column writers and fixtures compile; absent and null both map to
+  // a NULL column. No new DB column: rides in plan_json alongside the rest of the directive set
+  // (A3 threads the actual persistence — see trading.schema.ts's plan_json $type widening).
+  readonly nextConsultBars?: number | null;
   // See AgentProposal.infoArm/thinkingArm — the A/B treatment truth this decision's proposal
   // carried, forwarded verbatim (no further polarity conversion here). Optional so pre-this-column
   // writers and fixtures compile; absent and null both map to a NULL column (rows written outside

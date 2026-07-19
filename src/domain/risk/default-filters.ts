@@ -25,4 +25,33 @@ export const DEFAULT_FILTERS: ReadonlyMap<string, SymbolFilters> = new Map<strin
   // PRICE_FILTER/LOT_SIZE/MIN_NOTIONAL figures, fetched 2026-07-13.
   ['BTC/USDT:USDT', { tickSize: '0.10', stepSize: '0.001', minQty: '0.001', minNotional: '50' }],
   ['ETH/USDT:USDT', { tickSize: '0.01', stepSize: '0.001', minQty: '0.001', minNotional: '20' }],
+  // U1 (Design § Universe: 8 -> ~24 basket) venue-filters GROUNDWORK for the planned expansion
+  // (BNB DOGE ADA AVAX DOT LTC SUI PEPE WIF TRX SHIB UNI APT ARB OP FIL). Chosen: mechanical table
+  // extension with these rows as the DEFAULT_FILTERS fallback (smaller correct change than adding a
+  // new exchangeInfo-at-boot fetch path — ExchangePort has no loadMarkets/fetchMarkets method today,
+  // so option (b) would mean a new port method + adapter implementations + boot plumbing across
+  // ccxt/paper/live adapters, well past this step's groundwork scope).
+  //
+  // Live-probe-verified 2026-07-18 against api.binance.com/api/v3/exchangeInfo (all 16 symbols
+  // status TRADING). Eight of the original groundwork estimates were wrong and corrected to the
+  // live PRICE_FILTER/LOT_SIZE/NOTIONAL values (AVAX tick/step were swapped, PEPE tick was 10x
+  // off, TRX/APT ticks and WIF/OP steps differed, DOGE/PEPE/WIF/SHIB minNotional is 1 not 5) —
+  // exactly the failure class the ZEC/AAVE/NEAR probe-verification precedent exists to catch.
+  // minQty mirrors stepSize per this table's convention.
+  ['BNB/USDT', { tickSize: '0.01', stepSize: '0.001', minQty: '0.001', minNotional: '5' }],
+  ['DOGE/USDT', { tickSize: '0.00001', stepSize: '1', minQty: '1', minNotional: '1' }],
+  ['ADA/USDT', { tickSize: '0.0001', stepSize: '0.1', minQty: '0.1', minNotional: '5' }],
+  ['AVAX/USDT', { tickSize: '0.001', stepSize: '0.01', minQty: '0.01', minNotional: '5' }],
+  ['DOT/USDT', { tickSize: '0.001', stepSize: '0.01', minQty: '0.01', minNotional: '5' }],
+  ['LTC/USDT', { tickSize: '0.01', stepSize: '0.001', minQty: '0.001', minNotional: '5' }],
+  ['SUI/USDT', { tickSize: '0.0001', stepSize: '0.1', minQty: '0.1', minNotional: '5' }],
+  ['PEPE/USDT', { tickSize: '0.00000001', stepSize: '1', minQty: '1', minNotional: '1' }],
+  ['WIF/USDT', { tickSize: '0.0001', stepSize: '0.01', minQty: '0.01', minNotional: '1' }],
+  ['TRX/USDT', { tickSize: '0.0001', stepSize: '0.1', minQty: '0.1', minNotional: '5' }],
+  ['SHIB/USDT', { tickSize: '0.00000001', stepSize: '1', minQty: '1', minNotional: '1' }],
+  ['UNI/USDT', { tickSize: '0.001', stepSize: '0.01', minQty: '0.01', minNotional: '5' }],
+  ['APT/USDT', { tickSize: '0.001', stepSize: '0.01', minQty: '0.01', minNotional: '5' }],
+  ['ARB/USDT', { tickSize: '0.0001', stepSize: '0.1', minQty: '0.1', minNotional: '5' }],
+  ['OP/USDT', { tickSize: '0.0001', stepSize: '0.01', minQty: '0.01', minNotional: '5' }],
+  ['FIL/USDT', { tickSize: '0.001', stepSize: '0.01', minQty: '0.01', minNotional: '5' }],
 ]);

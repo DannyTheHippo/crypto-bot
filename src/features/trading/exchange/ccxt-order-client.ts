@@ -29,6 +29,15 @@ export interface CcxtTrade {
 
 export type CcxtBalances = Record<string, unknown>;
 
+// P5b: ccxt's unified FundingHistory row (fetchFundingHistory) — id/symbol/timestamp/amount only
+// (ccxt/js/src/base/types.d.ts); no fundingRate/markPrice/position qty on the unified type.
+export interface CcxtFundingHistoryEntry {
+  id?: string | number;
+  symbol?: string;
+  timestamp?: number;
+  amount?: string | number;
+}
+
 // Defect A (position-recon backstop): ccxt's unified fetchPositions row. `contracts` is the unified
 // FLOAT field — never read (float ban); `info.positionAmt`/`info.entryPrice` are the raw venue
 // strings the adapter surfaces instead. `info.symbol` is the raw market id ("BTCUSDT"), the same
@@ -133,6 +142,15 @@ export interface CcxtOrderClient {
     symbols: string[] | undefined,
     params: Record<string, unknown>,
   ): Promise<CcxtPosition[]>;
+
+  // P5b (funding-ingest.service.ts): ccxt's unified fetchFundingHistory — perp-only, same optional/
+  // venue-gated posture as fetchPositions above.
+  fetchFundingHistory?(
+    symbol: string,
+    since: number | undefined,
+    limit: number | undefined,
+    params: Record<string, unknown>,
+  ): Promise<CcxtFundingHistoryEntry[]>;
 }
 
 // Delegates each method to the live ccxt Exchange using the same as unknown as {...}
@@ -331,5 +349,23 @@ export class RealCcxtOrderClient implements CcxtOrderClient {
         ): Promise<CcxtPosition[]>;
       }
     ).fetchPositions(symbols, params);
+  }
+
+  fetchFundingHistory(
+    symbol: string,
+    since: number | undefined,
+    limit: number | undefined,
+    params: Record<string, unknown>,
+  ): Promise<CcxtFundingHistoryEntry[]> {
+    return (
+      this.exchange as unknown as {
+        fetchFundingHistory(
+          symbol: string,
+          since: number | undefined,
+          limit: number | undefined,
+          params: Record<string, unknown>,
+        ): Promise<CcxtFundingHistoryEntry[]>;
+      }
+    ).fetchFundingHistory(symbol, since, limit, params);
   }
 }

@@ -337,7 +337,13 @@ export const agentDecisions = pgTable(
     basedOnSeq: bigint('based_on_seq', { mode: 'bigint' }).notNull(),
     eventTime: bigint('event_time', { mode: 'number' }).notNull(),
     model: text('model').notNull(),
-    action: text('action').notNull().$type<'long' | 'flat' | 'hold' | 'error'>(),
+    // A3: widened alongside AgentDecisionEntry.action (ports/agentic-strategy.ts) — TS-level only,
+    // no DB CHECK, no migration (column was already unconstrained text).
+    action: text('action')
+      .notNull()
+      .$type<
+        'open_long' | 'open_short' | 'close' | 'adjust' | 'hold' | 'long' | 'flat' | 'error'
+      >(),
     confidence: doublePrecision('confidence'),
     rationale: text('rationale').notNull(),
     refPrice: numericMoney('ref_price'),
@@ -355,15 +361,32 @@ export const agentDecisions = pgTable(
     // Rendered market-context JSON the model saw (playbook/system excluded — see agent-prompt.ts's
     // buildMarketPayload) for offline prompt-variant replay; null on error/quiet-hold rows.
     inputPayload: text('input_payload'),
-    // Accepted plan-mode trade plan (mirrors ports/agentic-strategy.ts's AgentPlan shape), verbatim,
-    // for offline replay through the settlement backtest harness; null whenever the decision carried
-    // no accepted plan (flat/hold-without-plan/error).
+    // Accepted trade plan, verbatim, for offline replay through the settlement backtest harness;
+    // null whenever the decision carried no accepted plan (flat/hold-without-plan/error). A3: widened
+    // from the legacy AgentPlan shape (entryOffsetBps/stopLossPct/takeProfitPct/entryValidityBars/
+    // maxHoldBars/direction?) to a LOCAL mirror of ports/agentic-strategy.ts's AgentDirectives — this
+    // file deliberately never imports ports types (schema stays a pure DB-shape description), so
+    // sizeFraction/entryStyle/partialCloseFraction?/thesis? must be kept in sync by hand with that
+    // interface; a legacy AgentPlan-shaped row (missing sizeFraction/entryStyle) still satisfies this
+    // TS-level-only $type because every added field is either optional or a superset addition — no
+    // migration, the column was already unconstrained jsonb.
+    // I1b: nextConsultBars added — sync note: this local mirror must be kept in sync BY HAND with
+    // ports/agentic-strategy.ts's AgentDirectives (the plan-shape fields above) PLUS
+    // AgentDecisionEntry.nextConsultBars (a sibling field on the journal entry, not on AgentDirectives
+    // itself — merged in here by agent-decision-journal.adapter.ts's record(), see that call site's
+    // own comment for why it only merges when a plan object is actually present).
     planJson: jsonb('plan_json').$type<{
-      readonly entryOffsetBps: number;
+      readonly sizeFraction?: string;
       readonly stopLossPct: string;
       readonly takeProfitPct: string;
+      readonly partialCloseFraction?: string;
+      readonly entryOffsetBps: number;
       readonly entryValidityBars: number;
       readonly maxHoldBars: number;
+      readonly entryStyle?: 'maker' | 'taker';
+      readonly direction?: 'long' | 'short';
+      readonly thesis?: string;
+      readonly nextConsultBars?: number;
     }>(),
     // Batch-attribution join key (Push II Phase 5 follow-on): BatchingAgentClient coalesces up to
     // 5 per-symbol propose() calls into ONE AnthropicAgentClient.proposeBatch call, and every
@@ -458,6 +481,42 @@ export const fundingEvents = pgTable('funding_events', {
   mode: text('mode').notNull().$type<'paper' | 'testnet' | 'live'>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
+
+// ── funding_payments ─────────────────────────────────────────────────────────
+// P5b: venue-reported perp funding-payment settlements (funding-ingest.service.ts, ccxt
+// fetchFundingHistory), DISTINCT from funding_events above (funding_events is the paper-sim
+// journal written by PaperPerpAdapter.applyFunding and carries fundingRate/markPrice/signedQty —
+// none of which are available on ccxt's unified FundingHistory row; see VenueFundingPayment's own
+// header comment in ports/exchange.ts). No tradingStamp (runId/bootId): the ingest poller reads
+// venue history independent of any local run/boot, mode alone is what promotion nets on.
+// UNIQUE(venue, symbol, venue_payment_id) mirrors fills' own dedupe key — ON CONFLICT DO NOTHING
+// makes re-ingestion idempotent. Sign convention: amount_quote POSITIVE = received (a short
+// collecting funding), NEGATIVE = paid (a long paying funding) — ccxt's unified income-endpoint
+// convention, ADDED directly into promotion's net (never subtracted).
+// Same REVOKE + immutable-trigger treatment as funding_events/audit_log/order_events (migration
+// 0013 mirrors 0001/0008) — a funding settlement is a durable venue-truth record, never corrected
+// in place.
+
+export const fundingPayments = pgTable(
+  'funding_payments',
+  {
+    id: bigint('id', { mode: 'number' }).generatedAlwaysAsIdentity().primaryKey(),
+    venue: text('venue').notNull(),
+    symbol: text('symbol').notNull(),
+    venuePaymentId: text('venue_payment_id').notNull(),
+    amountQuote: numericMoney('amount_quote').notNull(),
+    fundingTime: bigint('funding_time', { mode: 'number' }).notNull(),
+    mode: text('mode').notNull().$type<'paper' | 'testnet' | 'live'>(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    uniqueIndex('funding_payments_venue_symbol_payment_uidx').on(
+      t.venue,
+      t.symbol,
+      t.venuePaymentId,
+    ),
+  ],
+);
 
 // ── experiments ───────────────────────────────────────────────────────────────
 // Append-only registry of every backtest/study trial ever run (research-side writer:

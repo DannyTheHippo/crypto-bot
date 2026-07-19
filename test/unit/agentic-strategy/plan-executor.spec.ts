@@ -4,14 +4,16 @@ import {
   type PlanExecutorInput,
   type PlanExecutorState,
 } from '../../../src/features/trading/agentic/plan-executor';
-import type { AgentPlan } from '../../../src/ports/agentic-strategy';
+import type { AgentDirectives } from '../../../src/ports/agentic-strategy';
 
-const PLAN: AgentPlan = {
+const PLAN: AgentDirectives = {
+  sizeFraction: '0.05',
   entryOffsetBps: 10,
   stopLossPct: '0.02',
   takeProfitPct: '0.04',
   entryValidityBars: 4,
   maxHoldBars: 20,
+  entryStyle: 'maker',
 };
 
 function state(over: Partial<PlanExecutorState> = {}): PlanExecutorState {
@@ -149,7 +151,7 @@ describe('evaluatePlan — LONG position (entry filled)', () => {
 
   it('computes the stop/take-profit boundary with exact Decimal precision off a non-round entry price', () => {
     // entry 63965.66, stopLossPct 0.02 ⇒ stop price exactly 62686.3468 (63965.66 × 0.98).
-    const plan: AgentPlan = { ...PLAN, stopLossPct: '0.02', takeProfitPct: '0.05' };
+    const plan: AgentDirectives = { ...PLAN, stopLossPct: '0.02', takeProfitPct: '0.05' };
     const belowStop = evaluatePlan(
       input({
         state: state({ plan, entryPrice: '63965.66', barsElapsed: 1 }),
@@ -285,7 +287,7 @@ describe('evaluatePlan — SHORT position (entry filled)', () => {
 
   it('computes the stop/take-profit boundary with exact Decimal precision off a non-round entry price', () => {
     // entry 63965.66, stopLossPct 0.02 ⇒ stop price exactly 65245 (approx: 63965.66 × 1.02 = 65244.9732).
-    const plan: AgentPlan = { ...PLAN, stopLossPct: '0.02', takeProfitPct: '0.05' };
+    const plan: AgentDirectives = { ...PLAN, stopLossPct: '0.02', takeProfitPct: '0.05' };
     const belowStop = evaluatePlan(
       input({
         state: state({ plan, entryPrice: '63965.66', barsElapsed: 1 }),
@@ -455,5 +457,73 @@ describe('evaluatePlan — FLAT position with a previously-captured entryPrice (
       }),
     );
     expect(result).toEqual({ type: 'plan_expired' });
+  });
+});
+
+// B1: directives are mutable between evaluations (an `adjust` replaces state.plan in place) — every
+// check must read the CURRENT directive set, never the one in force when the position was opened.
+describe('evaluatePlan — mutable directives (adjust semantics)', () => {
+  it('LONG: adjust-widened stop does not fire at the old stop level', () => {
+    // entry 100, ORIGINAL stopLossPct 0.02 ⇒ old stop level 98. adjust widens stopLossPct to 0.03 ⇒
+    // new stop level 97. closePrice 97.99 crosses the OLD level but sits above the new (current) one.
+    const plan = { ...PLAN, stopLossPct: '0.03' };
+    const result = evaluatePlan(
+      input({
+        state: state({ plan, entryPrice: '100', barsElapsed: 1 }),
+        closePrice: '97.99',
+        positionSide: 'LONG',
+      }),
+    );
+    expect(result).toEqual({ type: 'hold' });
+  });
+
+  it('SHORT: adjust-widened stop does not fire at the old stop level (mirrored)', () => {
+    // entry 100, ORIGINAL stopLossPct 0.02 ⇒ old stop level 102. adjust widens stopLossPct to 0.03 ⇒
+    // new stop level 103. closePrice 102.01 crosses the OLD level but sits below the new (current) one.
+    const plan = { ...PLAN, stopLossPct: '0.03' };
+    const result = evaluatePlan(
+      input({
+        state: state({ plan, entryPrice: '100', barsElapsed: 1 }),
+        closePrice: '102.01',
+        positionSide: 'SHORT',
+      }),
+    );
+    expect(result).toEqual({ type: 'hold' });
+  });
+
+  it('adjust-extended maxHold defers the exit until the NEW boundary', () => {
+    // adjust extends maxHoldBars from 96 (a prior directive value, not PLAN's default 20) to 192.
+    const plan = { ...PLAN, maxHoldBars: 192 };
+    const stillOpen = evaluatePlan(
+      input({
+        state: state({ plan, entryPrice: '100', barsElapsed: 96 }),
+        closePrice: '101',
+        positionSide: 'LONG',
+      }),
+    );
+    expect(stillOpen).toEqual({ type: 'hold' });
+
+    const atNewBoundary = evaluatePlan(
+      input({
+        state: state({ plan, entryPrice: '100', barsElapsed: 192 }),
+        closePrice: '101',
+        positionSide: 'LONG',
+      }),
+    );
+    expect(atNewBoundary).toEqual({ type: 'exit', reason: 'max_hold' });
+  });
+
+  it('adjust-tightened take-profit fires on the next close that crosses the NEW (lower) level', () => {
+    // entry 100, ORIGINAL takeProfitPct 0.04 ⇒ old TP level 104 (would not fire at 101.5). adjust
+    // tightens takeProfitPct to 0.01 ⇒ new TP level 101, which 101.5 crosses.
+    const plan = { ...PLAN, takeProfitPct: '0.01' };
+    const result = evaluatePlan(
+      input({
+        state: state({ plan, entryPrice: '100', barsElapsed: 1 }),
+        closePrice: '101.5',
+        positionSide: 'LONG',
+      }),
+    );
+    expect(result).toEqual({ type: 'exit', reason: 'take_profit' });
   });
 });

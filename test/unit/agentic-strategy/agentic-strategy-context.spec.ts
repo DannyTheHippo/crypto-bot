@@ -5,6 +5,7 @@ import {
   type AgenticStrategyParams,
   type AgenticStrategyDeps,
 } from '../../../src/features/trading/agentic/agentic.strategy';
+import { PriceHistoryStore } from '../../../src/features/trading/agentic/price-history-store';
 import {
   AgentProposeError,
   type AgentClientPort,
@@ -18,6 +19,7 @@ import {
 import type { Signal } from '../../../src/domain/types/signal';
 import type { CandleEvent, CandleInterval } from '../../../src/domain/types/market-events';
 import type { Position, StrategyPortfolioView } from '../../../src/domain/types/portfolio';
+import type { RoundTripEvidence, RoundTripEvidencePort } from '../../../src/ports/promotion';
 import { price, qty } from '../../../src/domain/types/money';
 import {
   strategyId,
@@ -169,6 +171,49 @@ class RecordingJournal implements AgentDecisionJournalPort {
   }
 }
 
+// P4b: a fixed set of closed round trips for computeTrackRecordContext's evidence port dep — the
+// reflection/promotion lane's own real reader (round-trip-evidence.reader.ts) replays fills through
+// a DB round trip; this fake just returns the fixture verbatim, mirroring RecordingJournal's
+// "capture, don't replay" convention above.
+class FixedEvidencePort implements RoundTripEvidencePort {
+  constructor(private readonly trips: readonly RoundTripEvidence[]) {}
+  recentRoundTrips(limit: number): Promise<readonly RoundTripEvidence[]> {
+    return Promise.resolve(this.trips.slice(-limit));
+  }
+  reflectionSeed(): Promise<{
+    closedTradesTotal: number;
+    closedSinceLastReflection: number;
+    lastReflectionAt: number | null;
+  }> {
+    return Promise.resolve({
+      closedTradesTotal: 0,
+      closedSinceLastReflection: 0,
+      lastReflectionAt: null,
+    });
+  }
+}
+
+// Eight CLOSED round trips (TRACK_RECORD_MIN_TRIPS) spanning [T, T + 450_000] — the first trip opens
+// at the window start, the last closes at the window end. Only the LAST trip carries a non-zero
+// netPnl (100 bps on a $100 notional): cumulative net-of-cost bps over the window is exactly 100,
+// matching this file's fixture BTC-hold candles (see the trackRecord describe block below).
+function fixedRoundTrips(): RoundTripEvidence[] {
+  return Array.from({ length: 8 }, (_, i) => ({
+    strategyId: 'agentic-1',
+    symbol: 'BTC/USDT',
+    openedAt: T + i * 60_000,
+    closedAt: T + i * 60_000 + 30_000,
+    holdingMs: 30_000,
+    entryVwap: '100',
+    exitVwap: i === 7 ? '101' : '100',
+    boughtQty: '1',
+    realizedPnl: i === 7 ? '1' : '0',
+    feesQuote: '0',
+    netPnl: i === 7 ? '1' : '0',
+    meanSlippageBps: null,
+  }));
+}
+
 function enterLongSignal(): Signal {
   return {
     strategyId: SID,
@@ -191,7 +236,11 @@ function exitLongSignal(): Signal {
 
 function makeStrategy(
   client: AgentClientPort,
-  opts: { interval?: CandleInterval; deps?: AgenticStrategyDeps } = {},
+  opts: {
+    interval?: CandleInterval;
+    deps?: AgenticStrategyDeps;
+    trackRecordEnabled?: boolean;
+  } = {},
 ): AgenticStrategy {
   const params: AgenticStrategyParams = {
     symbol: SYM,
@@ -199,6 +248,15 @@ function makeStrategy(
     interval: opts.interval ?? '1m',
     warmupBars: 2,
     model: 'test-model',
+    // I1b (Design § Deleted scaffolding — B2 consult scheduler): a fresh, FLAT, non-exec-triggered
+    // strategy now waits for evaluateConsultSchedule's fallback cadence before its very FIRST
+    // consult (fallbackConsultBars, default 16) — every fixture in this file predates B2 and expects
+    // each decide() call to reach the client (CapturingAgentClient's script is indexed by call
+    // count), so fallbackConsultBars=1 keeps every bar due on schedule (forced_fallback, since none
+    // of these fixtures ever set a real nextConsultBars) without touching production scheduler
+    // semantics.
+    fallbackConsultBars: 1,
+    trackRecordEnabled: opts.trackRecordEnabled,
   };
   return new AgenticStrategy(SID, params, client, opts.deps);
 }
@@ -310,21 +368,16 @@ describe('AgenticStrategy context building', () => {
     expect(client.inputs[0]!.context!.position.side).toBe('LONG');
   });
 
-  it('keeps a newest-last ring of at most 10 past decisions, dropping the oldest once it overflows', async () => {
-    // 11 scripted decisions (calls 0..10) feed the ring the 12th decide's context is captured from.
-    const actionsForCalls = [
-      'long',
-      'flat',
-      'hold',
-      'long',
-      'flat',
-      'hold',
-      'long',
-      'flat',
-      'hold',
-      'long',
-      'flat',
-    ] as const;
+  it('keeps a newest-last ring of at most 30 past decisions, dropping the oldest once it overflows', async () => {
+    // B3 (Design § Enriched model inputs) widened the ring 10 -> 30 — mirrors agentic.strategy.ts's
+    // (private, unexported) MAX_DECISION_HISTORY. RING_SIZE + 1 scripted decisions feed the ring the
+    // (RING_SIZE + 2)th decide's context is captured from, so the very first one is provably evicted.
+    const RING_SIZE = 30;
+    const cycle = ['long', 'flat', 'hold'] as const;
+    const actionsForCalls = Array.from(
+      { length: RING_SIZE + 1 },
+      (_, i) => cycle[i % cycle.length]!,
+    );
     const client = new CapturingAgentClient((call) => {
       if (call >= actionsForCalls.length) return [];
       const action = actionsForCalls[call];
@@ -334,13 +387,14 @@ describe('AgenticStrategy context building', () => {
     });
     const strategy = makeStrategy(client);
 
-    for (let i = 0; i < 12; i++) {
+    const totalCalls = RING_SIZE + 2;
+    for (let i = 0; i < totalCalls; i++) {
       await strategy.decide(buildInput({ eventTime: T + i * 60_000 }));
     }
 
-    const recentDecisions = client.inputs[11]!.context!.recentDecisions;
+    const recentDecisions = client.inputs[totalCalls - 1]!.context!.recentDecisions;
     const expectedActions = actionsForCalls.slice(1); // decision #1 (call 0) was shifted out
-    expect(recentDecisions).toHaveLength(10);
+    expect(recentDecisions).toHaveLength(RING_SIZE);
     expect(recentDecisions.map((d) => d.action)).toEqual(expectedActions);
   });
 
@@ -388,6 +442,85 @@ describe('AgenticStrategy context building', () => {
     expect(journal.entries[0]!.action).toBe('long');
     expect(journal.entries[0]!.confidence).toBe(0);
     expect(journal.entries[0]!.rationale).toBe('');
+  });
+});
+
+// P4b (Design § Enriched model inputs — Track record + benchmark alpha): computeTrackRecordContext
+// wires netVsBtcHoldBps from THIS instance's own siloed candle buffer, only when this.symbol IS the
+// benchmark symbol (agentic.strategy.ts's BTC_BENCHMARK_SYMBOL comment) and only when that buffer
+// genuinely covers the trips' evidence window (first trip's openedAt to last trip's closedAt).
+describe('AgenticStrategy track-record benchmark alpha (P4b)', () => {
+  it('carries exactly -100 netVsBtcHoldBps when BTC held +2% and the lane netted +1% over the same window', async () => {
+    const client = new CapturingAgentClient();
+    const evidence = new FixedEvidencePort(fixedRoundTrips());
+    const strategy = makeStrategy(client, { trackRecordEnabled: true, deps: { evidence } });
+    const btcCandles = [
+      candleWithInterval('100', 0, '1m', 450_000), // eventTime = T (window start)
+      candleWithInterval('102', 1, '1m', 450_000), // eventTime = T + 450_000 (window end): +2% hold
+    ];
+
+    await strategy.decide(buildInput({ candles: btcCandles }));
+
+    const trackRecord = client.inputs[0]!.context!.trackRecord!;
+    expect(trackRecord.tripCount).toBe(8);
+    // lane cumulative net bps (100, i.e. +1%) minus BTC-hold return in bps (0.02 * 10_000 = 200).
+    expect(trackRecord.netVsBtcHoldBps).toBe(-100);
+  });
+
+  it('omits both benchmark-alpha fields when the candle buffer does not cover the trips window', async () => {
+    const client = new CapturingAgentClient();
+    const evidence = new FixedEvidencePort(fixedRoundTrips());
+    const strategy = makeStrategy(client, { trackRecordEnabled: true, deps: { evidence } });
+
+    // No candles supplied at all — the coverage guard must omit rather than compare a truncated span.
+    await strategy.decide(buildInput());
+
+    const trackRecord = client.inputs[0]!.context!.trackRecord!;
+    expect(trackRecord.tripCount).toBe(8);
+    expect(trackRecord.netVsBtcHoldBps).toBeUndefined();
+    expect(trackRecord.netVsEqualWeightBasketBps).toBeUndefined();
+  });
+
+  // W3 Part 2: netVsEqualWeightBasketBps off the shared PriceHistoryStore — independent of
+  // netVsBtcHoldBps (this instance's own siloed candle buffer stays empty in this fixture, so
+  // netVsBtcHoldBps is omitted while the basket field still populates).
+  it('carries exact netVsEqualWeightBasketBps off the shared PriceHistoryStore', async () => {
+    const client = new CapturingAgentClient();
+    const evidence = new FixedEvidencePort(fixedRoundTrips());
+    const priceHistory = new PriceHistoryStore();
+    priceHistory.recordWindow(SYM, [
+      candleWithInterval('100', 0, '1m', 450_000), // eventTime = T (window start)
+      candleWithInterval('105', 1, '1m', 450_000), // eventTime = T + 450_000 (window end): +5% hold
+    ]);
+    const strategy = makeStrategy(client, {
+      trackRecordEnabled: true,
+      deps: { evidence, priceHistory },
+    });
+
+    await strategy.decide(buildInput()); // no candles on the instance's OWN snapshot buffer
+
+    const trackRecord = client.inputs[0]!.context!.trackRecord!;
+    expect(trackRecord.tripCount).toBe(8);
+    expect(trackRecord.netVsBtcHoldBps).toBeUndefined(); // this instance's own buffer is empty
+    // lane cumulative net bps (100) minus the basket's hold return in bps (0.05 * 10_000 = 500).
+    expect(trackRecord.netVsEqualWeightBasketBps).toBe(-400);
+  });
+
+  it('omits netVsEqualWeightBasketBps when no symbol in the store covers the trips window', async () => {
+    const client = new CapturingAgentClient();
+    const evidence = new FixedEvidencePort(fixedRoundTrips());
+    const priceHistory = new PriceHistoryStore();
+    // Only one candle recorded — computeHoldReturnFraction needs at least 2.
+    priceHistory.recordWindow(SYM, [candleWithInterval('100', 0, '1m', 450_000)]);
+    const strategy = makeStrategy(client, {
+      trackRecordEnabled: true,
+      deps: { evidence, priceHistory },
+    });
+
+    await strategy.decide(buildInput());
+
+    const trackRecord = client.inputs[0]!.context!.trackRecord!;
+    expect(trackRecord.netVsEqualWeightBasketBps).toBeUndefined();
   });
 });
 

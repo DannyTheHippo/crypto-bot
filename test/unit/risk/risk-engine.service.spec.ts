@@ -236,6 +236,114 @@ describe('RiskEngineService', () => {
     expect(d).toMatchObject({ verdict: 'REJECTED', reasons: ['RATE_LIMIT'] });
   });
 
+  // ── CONFIRMED risk-cap bypass fix: E2/E3 (gross/net exposure) must reserve resting/in-flight
+  // ENTRY order notional across ALL symbols, not just snapshot.positions — pre-fix a resting order
+  // on one symbol was invisible to another symbol's gross/net headroom (evidence: risk-engine.
+  // service.ts:104). SYM2 stands in for "a different symbol" so the reservation is provably
+  // cross-symbol, not merely same-symbol (E1 already handled the same-symbol/same-lane case). ──
+  describe('reserved exposure: resting/in-flight orders close the E2/E3 gross/net bypass', () => {
+    const SYM2 = symbolId('ETH/USDT');
+
+    it('(c) positions $1000 + resting entries $300 (a different symbol) vs gross cap $1200 ⇒ a new $100 entry REJECTED', () => {
+      const positions = new Map<string, Position>([
+        [
+          `${SID}:${V}:${SYM}`,
+          {
+            strategyId: SID,
+            venue: V,
+            symbol: SYM,
+            signedQty: new Decimal('10'), // × avgEntry 100 = $1000 filled position notional
+            avgEntry: price('100'),
+            realizedPnl: new Decimal(0),
+          },
+        ],
+      ]);
+      const resting = intent({
+        clientOrderId: encodeClientOrderId(
+          intentId('01900000-0000-7000-8000-000000000001'),
+          'paper',
+        ),
+        symbol: SYM2,
+        side: 'BUY',
+        qty: qty('3'),
+        limitPrice: price('100'), // $300 reserved notional, on a DIFFERENT symbol than the new intent
+        reduceOnly: false,
+      });
+      const { engine } = makeEngine({
+        deps: { limits: { ...LIMITS, maxGrossExposure: '1200', maxNetExposure: '1000000' } },
+      });
+      // Pre-fix: currentGross counted only the $1000 position ⇒ headroom 1200−1000=200 ⇒ the $100
+      // entry (intent()'s default qty 1 @ limitPrice 100) would have APPROVED. Post-fix: currentGross
+      // also reserves the $300 resting entry ⇒ headroom 1200−1300=−100 ⇒ REJECTED outright.
+      const d = engine.evaluate(intent(), snapshot({ positions, inFlightIntents: [resting] }));
+      expect(d).toMatchObject({ verdict: 'REJECTED', reasons: ['EXPOSURE_LIMIT'] });
+    });
+
+    it('a reduce-only resting order reserves nothing for gross/net — the same $1000 position + $300 reduce-only resting order still APPROVES under the $1200 gross cap', () => {
+      const positions = new Map<string, Position>([
+        [
+          `${SID}:${V}:${SYM}`,
+          {
+            strategyId: SID,
+            venue: V,
+            symbol: SYM,
+            signedQty: new Decimal('10'),
+            avgEntry: price('100'),
+            realizedPnl: new Decimal(0),
+          },
+        ],
+      ]);
+      const restingReduceOnly = intent({
+        clientOrderId: encodeClientOrderId(
+          intentId('01900000-0000-7000-8000-000000000002'),
+          'paper',
+        ),
+        symbol: SYM2,
+        side: 'SELL',
+        qty: qty('3'),
+        limitPrice: price('100'),
+        reduceOnly: true,
+      });
+      const { engine } = makeEngine({
+        deps: { limits: { ...LIMITS, maxGrossExposure: '1200', maxNetExposure: '1000000' } },
+      });
+      // currentGross = $1000 (position only; the reduce-only resting order reserves nothing) ⇒
+      // headroom 1200−1000=200 ⇒ the $100 entry passes.
+      const d = engine.evaluate(
+        intent(),
+        snapshot({ positions, inFlightIntents: [restingReduceOnly] }),
+      );
+      expect(d.verdict).toBe('APPROVED');
+    });
+
+    it('net-cap sign case for a short: reserved SELL entries drive currentNet negative, correctly binding a new short against −maxNetExposure', () => {
+      // No filled positions — purely resting/in-flight SELL entries reserve the short exposure.
+      const restingShort = intent({
+        clientOrderId: encodeClientOrderId(
+          intentId('01900000-0000-7000-8000-000000000003'),
+          'paper',
+        ),
+        symbol: SYM2,
+        side: 'SELL',
+        qty: qty('11'),
+        limitPrice: price('100'), // $1100 reserved short notional ⇒ currentNet = −1100
+        reduceOnly: false,
+      });
+      const { engine } = makeEngine({
+        deps: { limits: { ...LIMITS, maxGrossExposure: '10000', maxNetExposure: '1000' } },
+      });
+      // Pre-fix: currentNet ignored resting orders ⇒ stayed 0 ⇒ signedNet(SELL)=0 ⇒ netHeadroom
+      // 1000−0=1000 ⇒ APPROVED. Post-fix: currentNet=−1100 ⇒ signedNet(SELL)=−(−1100)=1100 ⇒
+      // netHeadroom 1000−1100=−100 ≤ 0 ⇒ REJECTED — the −maxNetExposure bound on the short side is
+      // enforced against the reserved short notional, not just filled positions.
+      const d = engine.evaluate(
+        intent({ side: 'SELL' }),
+        snapshot({ inFlightIntents: [restingShort] }),
+      );
+      expect(d).toMatchObject({ verdict: 'REJECTED', reasons: ['EXPOSURE_LIMIT'] });
+    });
+  });
+
   // The flatten path is the kill switch's only way out: it MUST clear evaluate end-to-end while
   // FLATTENING and mint a proof the execution gate then verifies. If any gate silently vetoed a
   // flatten, the bot would deadlock halted-but-unable-to-flatten — this is that guard.

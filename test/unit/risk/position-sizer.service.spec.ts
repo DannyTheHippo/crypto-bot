@@ -5,9 +5,17 @@ import type { SizerDeps } from '../../../src/ports/risk';
 import type { SymbolFilters } from '../../../src/domain/risk/evaluate';
 import type { ClockPort } from '../../../src/ports/clock';
 import type { Signal } from '../../../src/domain/types/signal';
+import type { OrderIntent } from '../../../src/domain/types/order-intent';
 import type { PortfolioSnapshot, Position } from '../../../src/domain/types/portfolio';
-import { price } from '../../../src/domain/types/money';
-import { strategyId, venueId, symbolId, epochMs } from '../../../src/domain/types/ids';
+import { price, qty } from '../../../src/domain/types/money';
+import {
+  strategyId,
+  venueId,
+  symbolId,
+  epochMs,
+  clientOrderId,
+  intentId,
+} from '../../../src/domain/types/ids';
 
 const V = venueId('binance');
 const SYM = symbolId('BTC/USDT');
@@ -47,15 +55,48 @@ function signal(o: Partial<Signal> = {}): Signal {
   };
 }
 
+// A resting-or-in-flight ENTRY order the sizer's headroom clamp must reserve against (see
+// reservedEntryNotional). One counter drives distinct clientOrderIds across calls in one test.
+let restingSeq = 0;
+function restingIntent(o: Partial<OrderIntent> = {}): OrderIntent {
+  restingSeq += 1;
+  return {
+    intentId: intentId(
+      `01900000-0000-7000-8000-00000000${restingSeq.toString(16).padStart(4, '0')}`,
+    ),
+    clientOrderId: clientOrderId(`resting-${restingSeq}`),
+    strategyId: SID,
+    venue: V,
+    symbol: SYM,
+    side: 'BUY',
+    type: 'LIMIT',
+    qty: qty('1'),
+    limitPrice: price('100'),
+    timeInForce: 'GTC',
+    reduceOnly: false,
+    mode: 'paper',
+    refPrice: price('100'),
+    refSeq: 1n,
+    createdAt: clock.now(),
+    expiresAt: epochMs(clock.now() + 5000),
+    source: { dedupeKey: 'resting', eventTime: epochMs(1000), basedOnSeq: 1n, strength: 1 },
+    ...o,
+  };
+}
+
 function snapshot(
   positions = new Map<string, Position>(),
-  over: { equity?: Decimal; balances?: Map<string, { free: Decimal; locked: Decimal }> } = {},
+  over: {
+    equity?: Decimal;
+    balances?: Map<string, { free: Decimal; locked: Decimal }>;
+    inFlightIntents?: readonly OrderIntent[];
+  } = {},
 ): PortfolioSnapshot {
   return {
     positions,
     balances: over.balances ?? new Map(),
     openOrders: [],
-    inFlightIntents: [],
+    inFlightIntents: over.inFlightIntents ?? [],
     equity: over.equity ?? new Decimal(0),
     unrealized: new Decimal(0),
     startingCash: new Decimal(0),
@@ -924,6 +965,247 @@ describe('PositionSizerService', () => {
       ).size(signal(), snapshot());
       expect(r.ok).toBe(true);
       if (r.ok) expect(r.intent.qty.toFixed()).toBe('10'); // 1000 × 1 / 100, exactly as the spot fixture above
+    });
+  });
+
+  // ── C1 (rich decision contract, Design § Sizing flow): SIZER_EQUITY_CAP, sizeFraction,
+  // reduceFraction, and same-side scale-in headroom ──
+  describe('C1: sizeFraction / equityCap / reduceFraction / scale-in headroom', () => {
+    it('(a) sizeFraction sizes off cappedEquity, ignoring the (unset) equityFraction/strength path', () => {
+      const r = new PositionSizerService(clock, deps({ equityCap: '1000' })).size(
+        signal({ sizeFraction: '0.10' }),
+        snapshot(new Map(), { equity: new Decimal('5000') }),
+      );
+      expect(r.ok).toBe(true);
+      // cappedEquity = min(5000, 1000) = 1000; notional = 1000 × 0.10 = 100; qty = 100 / 100 = 1.
+      if (r.ok) expect(r.intent.qty.toFixed()).toBe('1');
+    });
+
+    it('(b) clamps sizeFraction at maxAgentPositionFraction when the model requests more', () => {
+      const r = new PositionSizerService(clock, deps({ maxAgentPositionFraction: '0.15' })).size(
+        signal({ sizeFraction: '0.30' }),
+        snapshot(new Map(), { equity: new Decimal('1000') }),
+      );
+      expect(r.ok).toBe(true);
+      // min(0.30, 0.15) = 0.15; notional = 1000 × 0.15 = 150; qty = 150 / 100 = 1.5.
+      if (r.ok) expect(r.intent.qty.toFixed()).toBe('1.5');
+    });
+
+    it('(c) perp: sizeFraction computes notional first, then applyPerpCaps (leverageCap 2) still binds after', () => {
+      const V_PERP = venueId('binanceusdm');
+      const SYM_PERP = symbolId('BTC/USDT:USDT');
+      const perpFilters = new Map([
+        [String(SYM), FILTERS],
+        [String(SYM_PERP), FILTERS],
+      ]);
+      const r = new PositionSizerService(
+        clock,
+        deps({
+          filters: perpFilters,
+          maxAgentPositionFraction: '0.50',
+          perp: { leverageCap: '2', mmrFallback: '0.005', liqBufferPct: '0.2' },
+        }),
+      ).size(
+        signal({ venue: V_PERP, symbol: SYM_PERP, sizeFraction: '0.40' }),
+        snapshot(new Map(), {
+          equity: new Decimal('1000'),
+          balances: new Map([['USDT', { free: new Decimal('1000'), locked: new Decimal(0) }]]),
+        }),
+      );
+      expect(r.ok).toBe(true);
+      // sizeFraction notional = 1000 × min(0.40, 0.50) = 400; applyPerpCaps still runs after: margin
+      // cap = 1000(free) × 2(leverageCap) = 2000 (doesn't bind), liq cap Infinity (1/2 − 0.005 = 0.495
+      // ≥ 0.2 buffer) ⇒ 400 passes through unclamped ⇒ qty = 400 / 100 = 4.
+      if (r.ok) expect(r.intent.qty.toFixed()).toBe('4');
+    });
+
+    it('(d) same-side scale-in clamps sizeFraction notional to the remaining fraction headroom', () => {
+      const positions = new Map<string, Position>([
+        [
+          `${SID}:${V}:${SYM}`,
+          {
+            strategyId: SID,
+            venue: V,
+            symbol: SYM,
+            signedQty: new Decimal('1.2'), // × refPrice 100 = 120 posNotional
+            avgEntry: price('90'),
+            realizedPnl: new Decimal(0),
+          },
+        ],
+      ]);
+      const r = new PositionSizerService(clock, deps({ maxAgentPositionFraction: '0.15' })).size(
+        signal({ sizeFraction: '0.10', refPrice: price('100') }),
+        snapshot(positions, { equity: new Decimal('1000') }),
+      );
+      expect(r.ok).toBe(true);
+      // posNotional = 1.2 × refPrice(100) = 120; headroom = 1000 × 0.15 − 120 = 30; sizeFraction
+      // target = 1000 × 0.10 = 100, clamped down to headroom 30 ⇒ qty = 30 / 100 = 0.3.
+      if (r.ok) expect(r.intent.qty.toFixed()).toBe('0.3');
+    });
+
+    it('(d2) headroom exhausted (posNotional at/over the fraction cap) rejects BELOW_MINIMUM, not NO_POSITION', () => {
+      const positions = new Map<string, Position>([
+        [
+          `${SID}:${V}:${SYM}`,
+          {
+            strategyId: SID,
+            venue: V,
+            symbol: SYM,
+            signedQty: new Decimal('2'), // × refPrice 100 = 200 posNotional ≥ cap (150)
+            avgEntry: price('90'),
+            realizedPnl: new Decimal(0),
+          },
+        ],
+      ]);
+      const r = new PositionSizerService(clock, deps({ maxAgentPositionFraction: '0.15' })).size(
+        signal({ sizeFraction: '0.10', refPrice: price('100') }),
+        snapshot(positions, { equity: new Decimal('1000') }),
+      );
+      // headroom = 1000 × 0.15 − 200 = −50 ⇒ target clamps negative ⇒ BELOW_MINIMUM (a sizable
+      // request the venue floor rejects), never the reduce-only NO_POSITION no-op shape.
+      expect(r).toEqual({ ok: false, reason: 'BELOW_MINIMUM' });
+    });
+
+    // ── CONFIRMED risk-cap bypass fix: a same-symbol scale-in placed while the prior entry is
+    // still resting/unfilled must also clamp to the fraction headroom (pre-fix, posQty=0 while the
+    // prior order rests ⇒ isSameSideEntry was false ⇒ no clamp ⇒ the fraction cap was bypassable). ──
+    it('(d3) resting unfilled same-side entry reserves notional: a second entry clamps to the remaining headroom', () => {
+      // No filled position at all (posQty=0) — only a resting BUY entry, qty 1 @ limitPrice 100 ⇒
+      // $100 reserved. cappedEquity=1000, maxFraction=0.15 ⇒ fraction cap = $150 ⇒ headroom = $50.
+      const resting = restingIntent({ side: 'BUY', qty: qty('1'), limitPrice: price('100') });
+      const r = new PositionSizerService(clock, deps({ maxAgentPositionFraction: '0.15' })).size(
+        signal({ sizeFraction: '0.10', refPrice: price('100') }),
+        snapshot(new Map(), { equity: new Decimal('1000'), inFlightIntents: [resting] }),
+      );
+      expect(r.ok).toBe(true);
+      // Uncapped target = 1000 × 0.10 = 100; reserved = 100; headroom = 150 − 0 (posNotional) − 100
+      // = 50, tighter than the uncapped target ⇒ clamped to 50 ⇒ qty = 50 / 100 = 0.5. Pre-fix this
+      // sized the full 100 (qty 1) because posQty=0 skipped the clamp entirely.
+      if (r.ok) expect(r.intent.qty.toFixed()).toBe('0.5');
+    });
+
+    it('(d4) a reduce-only resting order reserves nothing — the same-side clamp does not apply', () => {
+      const resting = restingIntent({
+        side: 'BUY',
+        reduceOnly: true,
+        qty: qty('1'),
+        limitPrice: price('100'),
+      });
+      const r = new PositionSizerService(clock, deps({ maxAgentPositionFraction: '0.15' })).size(
+        signal({ sizeFraction: '0.10', refPrice: price('100') }),
+        snapshot(new Map(), { equity: new Decimal('1000'), inFlightIntents: [resting] }),
+      );
+      expect(r.ok).toBe(true);
+      // No filled position, no reserved notional (reduce-only excluded) ⇒ no clamp ⇒ full uncapped
+      // target = 1000 × 0.10 = 100 ⇒ qty = 100 / 100 = 1.
+      if (r.ok) expect(r.intent.qty.toFixed()).toBe('1');
+    });
+
+    it('(e) absent sizeFraction runs the legacy equity-fraction path on cappedEquity, not actual equity', () => {
+      const r = new PositionSizerService(
+        clock,
+        deps({ equityFraction: '0.02', equityCap: '1000' }),
+      ).size(signal({ strength: 1 }), snapshot(new Map(), { equity: new Decimal('5000') }));
+      expect(r.ok).toBe(true);
+      // cappedEquity = min(5000, 1000) = 1000; notional = 1000 × 0.02 × 1 = 20; qty = 20 / 100 = 0.2.
+      if (r.ok) expect(r.intent.qty.toFixed()).toBe('0.2');
+    });
+
+    it('(f) absent sizeFraction/reduceFraction and no equityCap: legacy behavior byte-identical (regression)', () => {
+      const r = new PositionSizerService(clock, deps()).size(signal(), snapshot());
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.intent.qty.toFixed()).toBe('10'); // unchanged: 1000 (baseNotional) × 1 / 100
+    });
+
+    it('(g) reduceFraction partial-closes: rawQty = |posQty| × reduceFraction, step-rounded down', () => {
+      const positions = new Map<string, Position>([
+        [
+          `${SID}:${V}:${SYM}`,
+          {
+            strategyId: SID,
+            venue: V,
+            symbol: SYM,
+            signedQty: new Decimal('0.004'),
+            avgEntry: price('3000'),
+            realizedPnl: new Decimal(0),
+          },
+        ],
+      ]);
+      const r = new PositionSizerService(clock, deps()).size(
+        signal({ kind: 'EXIT_LONG', refPrice: price('3000'), reduceFraction: '0.5' }),
+        snapshot(positions),
+      );
+      expect(r.ok).toBe(true);
+      // 0.004 × 0.5 = 0.002, already a multiple of the 0.001 step; notional 0.002 × ~2992.5 ≫ minNotional 5.
+      if (r.ok) expect(r.intent.qty.toFixed()).toBe('0.002');
+    });
+
+    it('absent reduceFraction sizes the full |posQty| — legacy byte-identical', () => {
+      const r = new PositionSizerService(clock, deps()).size(
+        signal({ kind: 'EXIT_LONG' }),
+        snapshot(longPosition()),
+      );
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.intent.qty.toFixed()).toBe('5'); // |signedQty|, unaffected by reduceFraction
+    });
+
+    describe('(h) reduceFraction dust partial: spot minNotional rejects, perp reduce-only exemption accepts', () => {
+      it('spot: BELOW_MINIMUM', () => {
+        const posSpot = new Map<string, Position>([
+          [
+            `${SID}:${V}:${SYM}`,
+            {
+              strategyId: SID,
+              venue: V,
+              symbol: SYM,
+              signedQty: new Decimal('0.05'),
+              avgEntry: price('100'),
+              realizedPnl: new Decimal(0),
+            },
+          ],
+        ]);
+        const r = new PositionSizerService(clock, deps()).size(
+          signal({ kind: 'EXIT_LONG', refPrice: price('100'), reduceFraction: '0.1' }),
+          snapshot(posSpot),
+        );
+        // 0.05 × 0.1 = 0.005 qty (passes minQty 0.001) but 0.005 × ~99.75 ≈ 0.499 < minNotional 5.
+        expect(r).toEqual({ ok: false, reason: 'BELOW_MINIMUM' });
+      });
+
+      it('perp: reduce-only minNotional exemption accepts the same dust partial', () => {
+        const V_PERP = venueId('binanceusdm');
+        const SYM_PERP = symbolId('BTC/USDT:USDT');
+        const posPerp = new Map<string, Position>([
+          [
+            `${SID}:${V_PERP}:${SYM_PERP}`,
+            {
+              strategyId: SID,
+              venue: V_PERP,
+              symbol: SYM_PERP,
+              signedQty: new Decimal('0.05'),
+              avgEntry: price('100'),
+              realizedPnl: new Decimal(0),
+            },
+          ],
+        ]);
+        const perpFilters = new Map([
+          [String(SYM), FILTERS],
+          [String(SYM_PERP), FILTERS],
+        ]);
+        const r = new PositionSizerService(clock, deps({ filters: perpFilters })).size(
+          signal({
+            venue: V_PERP,
+            symbol: SYM_PERP,
+            kind: 'EXIT_LONG',
+            refPrice: price('100'),
+            reduceFraction: '0.1',
+          }),
+          snapshot(posPerp),
+        );
+        expect(r.ok).toBe(true);
+        // 0.05 × 0.1 = 0.005 ≥ minQty 0.001; minNotional exempt (reduce-only + perp) ⇒ accepted.
+        if (r.ok) expect(r.intent.qty.toFixed()).toBe('0.005');
+      });
     });
   });
 });

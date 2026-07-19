@@ -159,21 +159,39 @@ export class LiquidationFeedService implements LiquidationFeedPort, OnModuleInit
   }
 
   private async runLoop(): Promise<void> {
-    const perpSymbols = this.options.symbols.map((s) => perpSymbolFor(s));
-    while (this.running) {
+    // Not every spot listing has a same-named perp market (e.g. PEPE/SHIB trade as 1000x-prefixed
+    // variants on binanceusdm). One missing symbol fails the whole multi-symbol watch call, so a
+    // venue rejection prunes that symbol and retries immediately — a measurement feed fails OPEN
+    // per symbol, never spinning the reconnect loop for a permanent listing gap (L1 soak finding,
+    // 2026-07-18).
+    let perpSymbols = this.options.symbols.map((s) => perpSymbolFor(s));
+    while (this.running && perpSymbols.length > 0) {
       try {
         const events = await this.source.watchLiquidationsForSymbols(perpSymbols);
         this.healthy = true;
         for (const ev of events) this.record(ev);
       } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const missing = perpSymbols.find((p) => msg.includes(`does not have market symbol ${p}`));
+        if (missing) {
+          perpSymbols = perpSymbols.filter((p) => p !== missing);
+          this.options.logger?.warn(
+            `liquidation-feed: excluding ${missing} — venue has no such perp market (spot-only or 1000x-prefixed listing); ${perpSymbols.length} symbols remain`,
+          );
+          continue;
+        }
         this.healthy = false;
         this.reconnects += 1;
-        this.options.logger?.warn(
-          `liquidation-feed stream error, reconnecting: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        this.options.logger?.warn(`liquidation-feed stream error, reconnecting: ${msg}`);
         if (!this.running) break;
         await this.backoff();
       }
+    }
+    if (this.running && perpSymbols.length === 0) {
+      this.healthy = false;
+      this.options.logger?.warn(
+        'liquidation-feed: no venue-supported perp symbols remain — feed inactive for this deployment',
+      );
     }
   }
 

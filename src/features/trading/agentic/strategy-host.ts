@@ -123,6 +123,11 @@ export class StrategyHost implements StrategyHostPort {
   // B5: entry-kind signals (ENTER_LONG/ENTER_SHORT) allowed per strategy per UTC day.
   private readonly maxEntriesPerDay: number;
   private readonly log = new Logger(StrategyHost.name);
+  // 2026-07-19: the kill-switch suppression below was completely silent — a day of HALTED decides
+  // went unnoticed. Warned ONCE per engagement (not per suppressed event, which would spam one line
+  // per market tick) — reset to false the moment tradingHalted() reports RUNNING again so the NEXT
+  // engagement re-warns.
+  private haltWarned = false;
 
   constructor(
     @Inject(MARKET_STREAM) private readonly marketStream: MarketStreamPort,
@@ -380,7 +385,16 @@ export class StrategyHost implements StrategyHostPort {
 
     // Kill-switch: state stays warm, but no LLM spend while trading is halted — regardless of
     // lifecycle. Checked after folding so a resumed strategy still sees continuous history.
-    if (this.tradingHalted()) return;
+    if (this.tradingHalted()) {
+      if (!this.haltWarned) {
+        this.haltWarned = true;
+        this.log.warn(
+          'trading halted (kill switch engaged) — suppressing all decides until RUNNING',
+        );
+      }
+      return;
+    }
+    this.haltWarned = false; // RUNNING again — the next engagement re-warns
 
     // No decisions during WARMUP (state still building) or while a call is already in flight.
     if (lifecycle === 'WARMUP' || runtime.busy) return;

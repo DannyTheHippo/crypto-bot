@@ -13,10 +13,21 @@ export type AgentDecideOutcome =
 
 export type AgentTokenKind = 'input' | 'output' | 'cache_read' | 'cache_creation';
 
-export type AgentPrescreenOutcome = 'called' | 'skipped_quiet' | 'failopen_error';
+// P6 (Design § Learning & measurement stack): mirrors agentic.strategy.ts's ConsultGateOutcome
+// (B2) — duplicated rather than imported, same boundaries-wall convention as AgentVenueTpEvent/
+// AgentVenueStopEvent below. Supersedes the retired AgentPrescreenOutcome/AgentPrescreenReason
+// pair: evaluateConsultSchedule folded "why" into the outcome itself, so there is no separate
+// reason label to carry forward.
+export type ConsultGateOutcome =
+  | 'consulted'
+  | 'skipped_scheduled'
+  | 'forced_fill'
+  | 'forced_move'
+  | 'forced_fallback'
+  | 'forced_rearm';
 
 // Mirrors agentic.strategy.ts's VenueTpEvent — duplicated rather than imported (the boundaries wall
-// forbids this feature importing trading/agentic, same convention as AgentPrescreenReason below).
+// forbids this feature importing trading/agentic, same convention as ConsultGateOutcome above).
 export type AgentVenueTpEvent =
   | 'placed'
   | 'skipped_existing'
@@ -45,18 +56,6 @@ export type AgentVenueStopEvent =
   | 'reconcile_error'
   | 'triggered';
 
-// Mirrors prescreen.ts's PrescreenReason — duplicated rather than imported because the
-// eslint-plugin-boundaries wall forbids this feature (common/observability) importing from
-// trading/agentic; same convention as AgentPrescreenOutcome above. 'n/a' is this module's own
-// sentinel for the failopen_error path, where evaluatePrescreen threw before computing any reason.
-export type AgentPrescreenReason =
-  | 'position_open'
-  | 'vol_expansion'
-  | 'breakout_proximity'
-  | 'insufficient_data'
-  | 'quiet'
-  | 'n/a';
-
 // Typed recorder over the agentic-lane providers registered in metrics.service.ts. Exported from
 // ObservabilityModule so the composition root can hand it (or closures over it) to the agentic lane —
 // this module never imports features/trading/agentic itself (the boundaries wall runs the other way).
@@ -74,14 +73,21 @@ export class AgentMetricsRecorder {
     @InjectMetric('playbook_validator_rejections_total')
     private readonly validatorRejectionsCounter: Counter<string>,
     @InjectMetric('agent_client_info') private readonly clientInfoGauge: Gauge<string>,
-    @InjectMetric('agentic_prescreen_total')
-    private readonly prescreenCounter: Counter<string>,
+    @InjectMetric('agentic_consult_gate_total')
+    private readonly consultGateCounter: Counter<string>,
     @InjectMetric('agentic_reflection_outcomes_total')
     private readonly reflectionOutcomesCounter: Counter<string>,
     @InjectMetric('agentic_venue_tp_total')
     private readonly venueTpCounter: Counter<string>,
     @InjectMetric('agentic_venue_stop_total')
     private readonly venueStopCounter: Counter<string>,
+    @InjectMetric('funding_payments_ingested_total')
+    private readonly fundingIngestedCounter: Counter<string>,
+    @InjectMetric('agentic_active_menu') private readonly activeMenuGauge: Gauge<string>,
+    @InjectMetric('agentic_menu_churn_total')
+    private readonly menuChurnCounter: Counter<string>,
+    @InjectMetric('agentic_budget_remaining_usd')
+    private readonly budgetRemainingGauge: Gauge<string>,
   ) {}
 
   // `model` on both methods (#28): optional with an 'unknown' fallback so the label is always
@@ -166,9 +172,12 @@ export class AgentMetricsRecorder {
     }
   }
 
-  recordPrescreen(outcome: AgentPrescreenOutcome, reason?: AgentPrescreenReason): void {
+  // P6: renamed from recordPrescreen — see ConsultGateOutcome above for the six-member set B2's
+  // evaluateConsultSchedule emits. Single `outcome` label (no `reason`): unlike prescreen's
+  // outcome/reason pair, the consult-gate outcome already names what drove it.
+  recordConsultGate(outcome: ConsultGateOutcome): void {
     try {
-      this.prescreenCounter.inc({ outcome, reason: reason ?? 'n/a' });
+      this.consultGateCounter.inc({ outcome });
     } catch {
       /* metrics must never throw into a trading path */
     }
@@ -176,7 +185,7 @@ export class AgentMetricsRecorder {
 
   // W2: bound closed set of outcome labels emitted by ReflectionService's own ReflectionMetricsRecorder
   // interface — duplicated rather than imported (boundaries wall, same reasoning as
-  // AgentPrescreenReason above).
+  // ConsultGateOutcome above).
   recordReflectionOutcome(outcome: string): void {
     try {
       this.reflectionOutcomesCounter.inc({ outcome });
@@ -199,6 +208,53 @@ export class AgentMetricsRecorder {
   recordVenueStop(event: AgentVenueStopEvent): void {
     try {
       this.venueStopCounter.inc({ event });
+    } catch {
+      /* metrics must never throw into a trading path */
+    }
+  }
+
+  // W1 (Grafana rebuild): FundingIngestService.pollOne() calls this after a successful non-empty
+  // write, one call per (venue, symbol) poll — mirrors fills_total's plain counter shape, no
+  // agentic_ prefix (funding ingestion is a venue-truth feed, not an agentic-lane decision metric).
+  recordFundingIngested(venue: string, symbol: string, count: number): void {
+    try {
+      this.fundingIngestedCounter.inc({ venue, symbol }, count);
+    } catch {
+      /* metrics must never throw into a trading path */
+    }
+  }
+
+  // W1: UniverseScannerService.recompute() calls this with the fresh active-menu set each recompute.
+  // reset()-then-set mirrors MetricsService's own labeled-gauge convention (e.g. positionQtyGauge) —
+  // a symbol that drops out of the menu goes absent rather than lingering at a stale 1.
+  setActiveMenu(symbols: readonly string[]): void {
+    try {
+      this.activeMenuGauge.reset();
+      for (const symbol of symbols) {
+        this.activeMenuGauge.labels({ symbol }).set(1);
+      }
+    } catch {
+      /* metrics must never throw into a trading path */
+    }
+  }
+
+  // W1: sibling call alongside setActiveMenu — UniverseScannerService.recompute() already computes
+  // menuIn/menuOut counts for its own structured log line; this mirrors that count into Prometheus.
+  recordMenuChurn(menuIn: number, menuOut: number): void {
+    try {
+      if (menuIn > 0) this.menuChurnCounter.inc({ direction: 'in' }, menuIn);
+      if (menuOut > 0) this.menuChurnCounter.inc({ direction: 'out' }, menuOut);
+    } catch {
+      /* metrics must never throw into a trading path */
+    }
+  }
+
+  // W1: TradingRuntimeService.logPortfolio() (app.module.ts) calls this each 15s tick with
+  // DailyLlmBudget.budgetBlock().remainingUsdToday — see the gauge's own help string for why this is
+  // ONE lane-wide series, never per-strategy.
+  setBudgetRemainingUsd(remainingUsd: number): void {
+    try {
+      this.budgetRemainingGauge.set(remainingUsd);
     } catch {
       /* metrics must never throw into a trading path */
     }

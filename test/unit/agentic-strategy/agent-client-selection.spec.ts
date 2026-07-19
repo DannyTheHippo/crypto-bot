@@ -5,6 +5,7 @@ import {
   createAgentLlmBudget,
   agenticEnv,
   SEED_PLAYBOOK,
+  SEED_PLAYBOOK_PERP,
 } from '../../../src/features/trading/agentic/agentic-strategy.module';
 import { StubAgentClient } from '../../../src/features/trading/agentic/agent-client.adapter';
 import { AnthropicAgentClient } from '../../../src/features/trading/agentic/anthropic-agent-client';
@@ -176,10 +177,63 @@ describe('createAgentLlmBudget', () => {
   });
 });
 
-describe('SEED_PLAYBOOK', () => {
-  it('passes validatePlaybook (version 1)', () => {
-    expect(SEED_PLAYBOOK.version).toBe(1);
+describe('SEED_PLAYBOOK (spot, P2 expert seed)', () => {
+  it('passes validatePlaybook strictly (no capability flags — spot must never need shorts/leverage)', () => {
+    expect(SEED_PLAYBOOK.version).toBe(2);
     expect(validatePlaybook(SEED_PLAYBOOK.content)).toEqual({ ok: true });
+  });
+
+  it('stays under the 4000-char cap with room to spare', () => {
+    expect(SEED_PLAYBOOK.content.length).toBeLessThanOrEqual(4000);
+    expect(SEED_PLAYBOOK.content.length).toMatchSnapshot('SEED_PLAYBOOK char count');
+  });
+
+  it('content is pinned (regression on the shipped expert-seed prose)', () => {
+    expect(SEED_PLAYBOOK.content).toMatchSnapshot();
+  });
+});
+
+describe('SEED_PLAYBOOK_PERP (P2 expert seed)', () => {
+  it('is rejected under strict (spot) validation — it must never leak to the spot lane', () => {
+    expect(validatePlaybook(SEED_PLAYBOOK_PERP.content).ok).toBe(false);
+  });
+
+  it('passes validatePlaybook only with the perp lane capability flags', () => {
+    expect(SEED_PLAYBOOK_PERP.version).toBe(2);
+    expect(
+      validatePlaybook(SEED_PLAYBOOK_PERP.content, { shortsAllowed: true, leverageAllowed: true }),
+    ).toEqual({ ok: true });
+  });
+
+  it('stays under the 4000-char cap with room to spare', () => {
+    expect(SEED_PLAYBOOK_PERP.content.length).toBeLessThanOrEqual(4000);
+    expect(SEED_PLAYBOOK_PERP.content.length).toMatchSnapshot('SEED_PLAYBOOK_PERP char count');
+  });
+
+  it('content is pinned (regression on the shipped expert-seed prose)', () => {
+    expect(SEED_PLAYBOOK_PERP.content).toMatchSnapshot();
+  });
+});
+
+describe('seed selection by lane (P2 — same AGENTIC_SHORTS_ENABLED signal P1 uses)', () => {
+  it('selectAgentClient defaults to SEED_PLAYBOOK on a spot (shorts-disabled) boot', async () => {
+    const client = selectAgentClient({ ANTHROPIC_API_KEY: 'k' }) as BudgetedAgentClient;
+    const anthropic = client.inner as unknown as {
+      playbookProvider: { current(): Promise<{ content: string }> };
+    };
+    await expect(anthropic.playbookProvider.current()).resolves.toEqual(SEED_PLAYBOOK);
+  });
+
+  it('selectAgentClient defaults to SEED_PLAYBOOK_PERP on a shorts-enabled (perp) boot', async () => {
+    const client = selectAgentClient({
+      ANTHROPIC_API_KEY: 'k',
+      AGENTIC_SHORTS_ENABLED: 'true',
+      AGENTIC_PERP_VENUE: 'true',
+    }) as BudgetedAgentClient;
+    const anthropic = client.inner as unknown as {
+      playbookProvider: { current(): Promise<{ content: string }> };
+    };
+    await expect(anthropic.playbookProvider.current()).resolves.toEqual(SEED_PLAYBOOK_PERP);
   });
 });
 
@@ -202,19 +256,23 @@ describe('agenticEnv', () => {
       playbookAbPct: 0,
       derivativesAbPct: 30,
       derivativesV2Enabled: false,
-      thinkingAbPct: 15,
       crossSymbolEnabled: false,
       crossSymbolLookbackBars: 20,
       bookStructureFeedEnabled: false,
       trackRecordEnabled: false,
       portfolioConsultEnabled: true,
       portfolioWindowMs: 4000,
-      expectancyLadderEnabled: false,
       planMode: false,
       shortsEnabled: false,
-      minEdgeMultiple: '1.5',
-      planMaxQuietBars: 16,
       dailyCostStopUsd: 6,
+      // D1 (Todo Steps): retired AGENTIC_PRESCREEN_*/AGENTIC_EXPECTANCY_LADDER/AGENTIC_MIN_RR/
+      // AGENTIC_MIN_EDGE_MULTIPLE/AGENTIC_PLAN_MAX_QUIET_BARS/AGENTIC_THINKING_AB_PCT off
+      // AppConfig.agentic — the fixture below carries only the surviving + I1-added fields, so it
+      // stays an exact structural match of the real (validated) config shape.
+      maxPositionFraction: '0.15',
+      fallbackConsultBars: 16,
+      wakeMovePct: '0.015',
+      activeMenuSize: 12,
       maxEntriesPerDay: 3,
       drainCooldownBaseMs: 1000,
       drainCooldownMaxMs: 2000,
@@ -225,7 +283,6 @@ describe('agenticEnv', () => {
       mintBacktestMinTrips: 3,
       autoPromoteMinTrades: 9,
       autoPromoteMinAttributedTrades: 10,
-      minRr: '1.5',
       planExitTtlBars: 2,
       quietPayloadSampleBars: 4,
       venueTpEnabled: false,
@@ -237,12 +294,6 @@ describe('agenticEnv', () => {
       tokenPriceCacheReadPerMtok: '0.3',
       tokenPriceCacheWritePerMtok: '6',
       promotionDustNotional: '5',
-      prescreenEnabled: true,
-      prescreenVolShortBars: 10,
-      prescreenVolLongBars: 50,
-      prescreenVolRatio: 1.3,
-      prescreenBreakoutLookbackBars: 20,
-      prescreenBreakoutPct: 0.005,
     };
     // C1: agenticEnv also reads config.derivativesFeed (a sibling AppConfig top-level key, not part
     // of the `agentic` block) — present here so the fixture matches the real TypedConfigService shape.
@@ -290,7 +341,6 @@ describe('agenticEnv', () => {
       AGENTIC_AUTO_PROMOTE_MIN_TRADES: '9',
       DERIVATIVES_FEED_ENABLED: 'true',
       AGENTIC_DERIVATIVES_AB_PCT: '30',
-      AGENTIC_THINKING_AB_PCT: '15',
       AGENTIC_TRADEFLOW_ENABLED: 'true',
       AGENTIC_POSITIONING_ENABLED: 'true',
       AGENTIC_PORTFOLIO_CONSULT: 'true',
@@ -298,6 +348,16 @@ describe('agenticEnv', () => {
       AGENTIC_PORTFOLIO_SYMBOL_COUNT: '3',
       AGENTIC_SHORTS_ENABLED: 'false',
       AGENTIC_PERP_VENUE: 'true',
+      // I1: the v2 lane cap, sourced off AppConfig.agentic.maxPositionFraction (D1) — see
+      // selectAgentClient's unconditional tradeContract wiring.
+      AGENTIC_MAX_POSITION_FRACTION: '0.15',
     });
+  });
+
+  it('selectAgentClient always wires tradeContract (v2 is unconditional — no staged flag)', () => {
+    const client = selectAgentClient({ ANTHROPIC_API_KEY: 'k' }) as BudgetedAgentClient;
+    // AnthropicAgentClientConfig is private with no accessor — this asserts the observable contract
+    // (construction succeeds with the real adapter wired), mirroring the env-override test above.
+    expect(client.inner).toBeInstanceOf(AnthropicAgentClient);
   });
 });

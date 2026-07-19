@@ -9,12 +9,13 @@ import {
 import type {
   AgentClientPort,
   AgentDecisionInput,
+  AgentDirectives,
   AgentMarketSnapshot,
-  AgentPlan,
   AgentProposal,
 } from '../../../src/ports/agentic-strategy';
 import type { Signal } from '../../../src/domain/types/signal';
 import type { CandleEvent } from '../../../src/domain/types/market-events';
+import type { ExecReport } from '../../../src/domain/types/exec-report';
 import type { OpenOrderSummary, Position } from '../../../src/domain/types/portfolio';
 import { price, qty } from '../../../src/domain/types/money';
 import Decimal from 'decimal.js';
@@ -107,6 +108,24 @@ function longPositionSubStep(symbol = SYM, venue = V): Position {
   };
 }
 
+// B2 (Design § Deleted scaffolding, already landed): evaluateConsultSchedule does NOT force a
+// consult on a brand-new instance's very first candle bar the way the retired prescreen gate did —
+// mirrors plan-lifecycle.spec.ts's own buildInput fix: bar 0 defaults to an 'exec' trigger
+// (forced_fill, schedule-independent) so every "the LLM was consulted this bar" assertion in this
+// file keeps its pre-B2 seeding behavior without touching each call site.
+function execEvent(index: number, symbol = SYM, venue = V): ExecReport {
+  return {
+    kind: 'ACK',
+    reportId: `r${index}`,
+    clientOrderId: clientOrderId('cbp0000000000000007000800000000000000'),
+    venue,
+    symbol,
+    eventTime: epochMs(BASE_TIME + index * STEP_MS),
+    ingestTime: epochMs(BASE_TIME + index * STEP_MS + 1),
+    venueOrderId: `vo${index}`,
+  };
+}
+
 function buildInput(
   index: number,
   opts: {
@@ -115,12 +134,13 @@ function buildInput(
     openOrders?: OpenOrderSummary[];
     symbol?: ReturnType<typeof symbolId>;
     venue?: ReturnType<typeof venueId>;
+    trigger?: 'candle' | 'exec';
   } = {},
 ): AgentDecisionInput {
   const symbol = opts.symbol ?? SYM;
   const venue = opts.venue ?? V;
   const candles = Array.from({ length: index + 1 }, (_, i) =>
-    candle(i, symbol, venue, i === index ? (opts.close ?? '100') : '100'),
+    candle(i, symbol, venue, i === index ? opts.close ?? '100' : '100'),
   );
   const positions = new Map<string, Position>();
   if (opts.position) positions.set(`${SID}|${venue}|${symbol}`, opts.position);
@@ -132,24 +152,32 @@ function buildInput(
     execReports: [],
     portfolio: { strategyId: SID, positions, openOrders: opts.openOrders ?? [] },
   };
-  return {
-    strategyId: SID,
-    trigger: { kind: 'candle', event: candle(index, symbol, venue) },
-    snapshot,
-  };
+  const triggerKind = opts.trigger ?? (index === 0 ? 'exec' : 'candle');
+  const trigger: AgentDecisionInput['trigger'] =
+    triggerKind === 'exec'
+      ? { kind: 'exec', event: execEvent(index, symbol, venue) }
+      : { kind: 'candle', event: candle(index, symbol, venue) };
+  return { strategyId: SID, trigger, snapshot };
 }
 
 // stopLossPct '0.02' ⇒ LONG stop = entry × 0.98; takeProfitPct '0.03' ⇒ TP = entry × 1.03.
-const PLAN: AgentPlan = {
+// B3: AgentDirectives (v2) replaces AgentPlan — sizeFraction/entryStyle are new required fields.
+const PLAN: AgentDirectives = {
+  sizeFraction: '0.05',
   entryOffsetBps: 10,
   stopLossPct: '0.02',
   takeProfitPct: '0.03',
   entryValidityBars: 2,
   maxHoldBars: 8,
+  entryStyle: 'maker',
 };
 
+// nextConsultBars defaults to 4, matching plan-lifecycle.spec.ts's own default/rationale — the
+// portfolio-scheduled consult cadence (evaluateConsultSchedule, B2) now comes from the CLIENT, not
+// a strategy param.
 class PlanningClient implements AgentClientPort {
   calls = 0;
+  constructor(private readonly nextConsultBars = 4) {}
   propose(input: AgentDecisionInput): Promise<AgentProposal> {
     this.calls += 1;
     const signal: Signal = {
@@ -169,6 +197,7 @@ class PlanningClient implements AgentClientPort {
       signals: [signal],
       decision: { action: 'long', confidence: 0.8, rationale: 'r' },
       plan: PLAN,
+      nextConsultBars: this.nextConsultBars,
     });
   }
 }
@@ -258,8 +287,13 @@ function makeParams(overrides: Partial<AgenticStrategyParams> = {}): AgenticStra
     warmupBars: 5,
     model: 'test-model',
     planMode: true,
-    planMaxQuietBars: 20,
     venueStopEnabled: true,
+    // B2's own knobs, pinned explicitly (mirrors plan-lifecycle.spec.ts's own rationale): the
+    // schedule (PlanningClient's nextConsultBars) is what these tests exercise, never wake-on-move
+    // or the fallback cadence — pinned generously out of reach so a deliberate TP/SL-crossing close
+    // price can never ALSO force an unplanned extra consult via 'forced_move'.
+    wakeMovePct: 1,
+    fallbackConsultBars: 1000,
     ...overrides,
   };
 }
@@ -485,7 +519,9 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
   });
 
   it('cancel-first on a max_hold exit clears the resting stop even when AGENTIC_VENUE_TP is off (venueStopEnabled alone gates the cancel-first block, Defect B #49)', async () => {
-    const client = new PlanningClient();
+    // nextConsultBars: 100 — the default schedule (4) would otherwise force a real re-consult well
+    // before bar 8, replacing the plan with a fresh clock and starving the max_hold exit under test.
+    const client = new PlanningClient(100);
     const strategy = new AgenticStrategy(SID, makeParams(), client);
     await strategy.decide(buildInput(0));
     // maxHoldBars=8: drive bars 1..8 without triggering stop/TP so max_hold fires on bar 8.
@@ -620,7 +656,6 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
       warmupBars: 5,
       model: 'test-model',
       planMode: true,
-      planMaxQuietBars: 20,
       venueStopEnabled: true,
       ...overrides,
     };
@@ -818,7 +853,8 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
     const cancelled: string[] = [];
     const registry = planStopRegistry();
     let fetchCalls = 0;
-    const client = new PlanningClient();
+    // nextConsultBars: 100 — see the SPOT max_hold test's own rationale above.
+    const client = new PlanningClient(100);
     const strategy = new AgenticStrategy(SID, perpParams(), client, {
       intentStore: roledIntentStore(new Map([[resting.clientAlgoId!, 'vsl']])),
       algoOrders: {
@@ -857,7 +893,7 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
     // what setPlanStop itself wrote (venueStopResting: false, no algoId) — exactly the "the stop may
     // genuinely be resting at the venue but this strategy's own bookkeeping never confirmed it"
     // case cancelPerpAlgoStopIfResting's fallback exists for.
-    const shortPlan: AgentPlan = { ...PLAN, maxHoldBars: 1 };
+    const shortPlan: AgentDirectives = { ...PLAN, maxHoldBars: 1 };
     class ShortPlanClient implements AgentClientPort {
       calls = 0;
       propose(input: AgentDecisionInput): Promise<AgentProposal> {
@@ -922,7 +958,7 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
   // lookup so this method can never throw; the timed-out (max_hold) exit must still return exactly
   // one EXIT signal after the (failed, swallowed) cancel attempt.
   it('fix 5: a max_hold exit still emits exactly one EXIT signal when the fallback fetchOpenAlgoOrders lookup rejects', async () => {
-    const shortPlan: AgentPlan = { ...PLAN, maxHoldBars: 1 };
+    const shortPlan: AgentDirectives = { ...PLAN, maxHoldBars: 1 };
     class ShortPlanClient implements AgentClientPort {
       calls = 0;
       propose(input: AgentDecisionInput): Promise<AgentProposal> {
@@ -1142,7 +1178,6 @@ describe('AgenticStrategy — orphaned perp algo stop reconcile on boot/no-activ
       warmupBars: 5,
       model: 'test-model',
       planMode: true,
-      planMaxQuietBars: 20,
       venueStopEnabled: true,
       ...overrides,
     };

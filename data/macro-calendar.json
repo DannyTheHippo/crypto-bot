@@ -1,0 +1,59 @@
+[
+  {
+    "name": "FOMC Meeting Decision (Jul 28-29 meeting)",
+    "atMs": 1785348000000,
+    "importance": "high",
+    "note": "Per Fed's published 2026 FOMC meeting schedule; decision announced ~2pm ET day 2 (18:00 UTC, EDT). Not independently re-verified against a live source this pass — confirm before treating as authoritative."
+  },
+  {
+    "name": "US Nonfarm Payrolls (July 2026)",
+    "atMs": 1786105800000,
+    "importance": "high"
+  },
+  {
+    "name": "US CPI (July 2026)",
+    "atMs": 1786624200000,
+    "importance": "high",
+    "note": "Estimated release date/time — BLS's exact 2026 CPI release calendar was not independently verified against a live source this pass; typically released 2nd-3rd week of the following month at 08:30 ET. Confirm against the official BLS schedule."
+  },
+  {
+    "name": "US Nonfarm Payrolls (August 2026)",
+    "atMs": 1788525000000,
+    "importance": "high"
+  },
+  {
+    "name": "US CPI (August 2026)",
+    "atMs": 1789043400000,
+    "importance": "high",
+    "note": "Estimated release date/time — BLS's exact 2026 CPI release calendar was not independently verified against a live source this pass; typically released 2nd-3rd week of the following month at 08:30 ET. Confirm against the official BLS schedule."
+  },
+  {
+    "name": "FOMC Meeting Decision (Sep 15-16 meeting)",
+    "atMs": 1789581600000,
+    "importance": "high",
+    "note": "Per Fed's published 2026 FOMC meeting schedule; decision announced ~2pm ET day 2 (18:00 UTC, EDT). Not independently re-verified against a live source this pass — confirm before treating as authoritative."
+  },
+  {
+    "name": "US Nonfarm Payrolls (September 2026)",
+    "atMs": 1790944200000,
+    "importance": "high"
+  },
+  {
+    "name": "US CPI (September 2026)",
+    "atMs": 1791894600000,
+    "importance": "high",
+    "note": "Estimated release date/time — BLS's exact 2026 CPI release calendar was not independently verified against a live source this pass; typically released 2nd-3rd week of the following month at 08:30 ET. Confirm against the official BLS schedule."
+  },
+  {
+    "name": "FOMC Meeting Decision (Oct 27-28 meeting)",
+    "atMs": 1793210400000,
+    "importance": "high",
+    "note": "Per Fed's published 2026 FOMC meeting schedule; decision announced ~2pm ET day 2 (18:00 UTC, EDT). Not independently re-verified against a live source this pass — confirm before treating as authoritative."
+  },
+  {
+    "name": "FOMC Meeting Decision (Dec 8-9 meeting)",
+    "atMs": 1796842800000,
+    "importance": "high",
+    "note": "Per Fed's published 2026 FOMC meeting schedule; decision announced ~2pm ET day 2 (19:00 UTC, EST). Beyond the ~3-month seed window but included per plan (Design § Enriched model inputs). Not independently re-verified against a live source this pass — confirm before treating as authoritative."
+  }
+]

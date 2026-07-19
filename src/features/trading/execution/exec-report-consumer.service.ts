@@ -1,12 +1,14 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import {
   EXEC_OUTBOX,
   EXECUTION_STORE,
   EXEC_RUN_CONTEXT,
+  EXEC_QUALITY_SINK,
   type ExecOutboxPort,
   type ExecutionStorePort,
   type ExecRunContext,
   type OutboxEntry,
+  type ExecQualitySinkPort,
 } from '../../../ports/execution';
 import {
   reduce,
@@ -14,7 +16,8 @@ import {
   type OrderRecord,
   type OrderEvent,
 } from '../../../domain/oms/reducer';
-import type { ClientOrderId } from '../../../domain/types/ids';
+import type { ClientOrderId, EpochMs } from '../../../domain/types/ids';
+import type { OrderIntent } from '../../../domain/types/order-intent';
 import type { FillReport, FillRecord } from '../../../domain/types/exec-report';
 import { OrderBookService } from './order-book.service';
 import { PortfolioStateService } from './portfolio-state.service';
@@ -31,6 +34,7 @@ const TERMINAL = TERMINAL_ORDER_STATES;
 export class ExecReportConsumerService {
   private static readonly CONSUMER_ID = 'oms';
   private cursor = 0;
+  private readonly log = new Logger(ExecReportConsumerService.name);
 
   constructor(
     @Inject(EXEC_OUTBOX) private readonly outbox: ExecOutboxPort,
@@ -39,6 +43,12 @@ export class ExecReportConsumerService {
     private readonly orders: OrderBookService,
     private readonly portfolio: PortfolioStateService,
     private readonly ingestor: FillIngestorService,
+    // W3 Part 1: @Optional so direct-construction unit tests (which omit it) still compile —
+    // EXECUTION_MODULE itself always resolves this to at least the no-op sink (see
+    // execution.module.ts's own EXEC_QUALITY_SINK provider).
+    @Optional()
+    @Inject(EXEC_QUALITY_SINK)
+    private readonly execQualitySink?: ExecQualitySinkPort,
   ) {}
 
   // Drain all available reports. Returns the number applied. Idempotent across calls.
@@ -64,12 +74,22 @@ export class ExecReportConsumerService {
       case 'FILL':
         await this.applyFill(rec, report);
         return;
-      case 'CANCEL_ACK':
-        await this.foldEvent(coid, rec, report.reportId, { type: 'CANCEL_ACK' });
+      case 'CANCEL_ACK': {
+        // Captured BEFORE foldEvent: a terminal fold's retire() clears the in-flight intent this
+        // exec-quality read needs (W3 Part 1) — reading it after would silently drop every cancel.
+        const intent = this.portfolio.inFlightIntent(coid);
+        const applied = await this.foldEvent(coid, rec, report.reportId, { type: 'CANCEL_ACK' });
+        if (applied) this.recordExecQualityUnfilled(intent, rec, 'cancelled', report.eventTime);
         return;
-      case 'EXPIRE':
-        await this.foldEvent(coid, rec, report.reportId, { type: 'VENUE_EXPIRED' });
+      }
+      case 'EXPIRE': {
+        const intent = this.portfolio.inFlightIntent(coid);
+        const applied = await this.foldEvent(coid, rec, report.reportId, {
+          type: 'VENUE_EXPIRED',
+        });
+        if (applied) this.recordExecQualityUnfilled(intent, rec, 'expired', report.eventTime);
         return;
+      }
       case 'REJECT':
         // Defect A commit-1: RejectReport carries the venue's own reason/code (exec-report.ts) —
         // thread it through so this path is no less informative than execution-gate's own REJECT
@@ -114,13 +134,16 @@ export class ExecReportConsumerService {
     await this.ingestor.ingest(rec, fill, report.reportId);
   }
 
+  // Returns whether the fold actually applied (false on a redelivered/already-journaled report) —
+  // callers that layer a read-side effect (W3 Part 1's exec-quality fan-out) on top of a terminal
+  // fold gate on this so a redelivery never double-records.
   private async foldEvent(
     coid: ClientOrderId,
     rec: OrderRecord,
     dedupeKey: string,
     event: OrderEvent,
     reason?: string,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const next = reduce(rec, event);
     const { applied } = await this.store.appendOrderEvent({
       clientOrderId: coid,
@@ -130,13 +153,52 @@ export class ExecReportConsumerService {
       cumQty: next.cumQty.toFixed(),
       ...(reason !== undefined ? { reason } : {}),
     });
-    if (!applied) return; // redelivered report — journal already has it, do not re-fold
+    if (!applied) return false; // redelivered report — journal already has it, do not re-fold
     this.orders.commit(next);
     if (TERMINAL.has(next.state)) this.retire(coid);
+    return true;
   }
 
   private retire(coid: ClientOrderId): void {
     this.portfolio.clearInFlight(coid);
     this.portfolio.closeOrder(coid);
+  }
+
+  // W3 Part 1 (measurement path, fails OPEN): the 'expired'/'cancelled' half of ExecQualityOutcome.
+  // Only a NEVER-FILLED entry attempt qualifies (rec.cumQty, read BEFORE this event folds, must be
+  // zero) — a partial fill then cancel already fed its own 'filled' signal via FillIngestor's
+  // recordExecQualityFill, and ExecQualityEntryAttempt has no partial-fill shape to layer a second
+  // one onto. style is hardcoded 'maker': a taker (MARKET) order fills-or-rejects immediately and
+  // never reaches this path unfilled (exec-quality.service.ts's own DTO comment), so only
+  // LIMIT/LIMIT_MAKER intents are eligible.
+  private recordExecQualityUnfilled(
+    intent: OrderIntent | undefined,
+    rec: OrderRecord,
+    outcome: 'cancelled' | 'expired',
+    terminalAt: EpochMs,
+  ): void {
+    if (this.execQualitySink === undefined || intent === undefined) return;
+    if (
+      intent.reduceOnly ||
+      !rec.cumQty.isZero() ||
+      (intent.type !== 'LIMIT' && intent.type !== 'LIMIT_MAKER') ||
+      intent.limitPrice === undefined
+    ) {
+      return;
+    }
+    try {
+      this.execQualitySink.recordEntryAttempt({
+        symbol: intent.symbol,
+        side: intent.side === 'BUY' ? 'long' : 'short',
+        style: 'maker',
+        limitPrice: intent.limitPrice.toFixed(),
+        outcome,
+        terminalAt,
+      });
+    } catch (err) {
+      this.log.warn(
+        `exec-quality fan-out failed (${outcome}), omitting: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 }

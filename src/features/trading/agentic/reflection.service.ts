@@ -16,9 +16,11 @@ import {
   summarizeRecentDecisionOutcomes,
   summarizeCalibration,
   summarizeRegimeSplit,
+  scoreNotTakenOptions,
   type DecisionOutcomeDigest,
   type CalibrationDigest,
   type RegimeSplitDigest,
+  type RegretDigest,
 } from './counterfactual-scoring';
 import { validatePlaybook, type PlaybookValidationResult } from './playbook-validator';
 import type { DailyLlmBudget } from './agent-budget';
@@ -35,6 +37,15 @@ import { runCandidateBacktest } from './candidate-backtest';
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 // Default unresolved-candidate lapse window (see ReflectionServiceConfig.candidateLapseMs).
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+
+// P3: fixed epoch-aligned 7-day BUCKET index (Math.floor(ms / SEVEN_DAYS_MS)) — reuses the same
+// 7-day span SEVEN_DAYS_MS already drives as a rolling-window cooldown default, just read as a fixed
+// bucket boundary instead. Not calendar Mon-Sun (epoch zero was a Thursday), but numerically a week —
+// see checkWeeklyReflectionTrigger's own comment for why bucket-equality against lastAttemptAt is
+// exactly the "hasn't fired that week" test the weekly trigger needs.
+function utcWeekKey(ms: number): number {
+  return Math.floor(ms / SEVEN_DAYS_MS);
+}
 
 const JOURNAL_LOOKBACK = 200;
 const MAX_CLOSED_TRADES = 10;
@@ -209,6 +220,17 @@ export interface ReflectionServiceConfig {
   // the sample is too thin to judge and the backtest fails open (mint proceeds unbacktested). Absent
   // ⇒ DEFAULT_MINT_BACKTEST_MIN_TRIPS (3).
   readonly mintBacktestMinTrips?: number;
+  // P3: perp lane selector (shorts ⟺ perp in this codebase, per agent-prompt.ts's own comment) —
+  // threaded into (a) the mint-floor/mint-backtest replay's v2 tool+schema choice (entry-rate-floor.
+  // ts/candidate-backtest.ts, so a perp lane's candidate is measured against its own shorts-capable
+  // action space) and (b) the reflection system prompt + validatePlaybook's shortsAllowed/
+  // leverageAllowed gate (so a perp candidate may propose shorts/leverage prose, spot never can).
+  // Absent ⇒ false (spot).
+  readonly shortsEnabled?: boolean;
+  // P3: the lane's sizeFraction upper bound (AGENTIC_MAX_POSITION_FRACTION — 0.15 spot / 0.50 perp),
+  // threaded into the mint-floor/mint-backtest replay's v2 tool description + zod schema bound
+  // (mirrors anthropic-agent-client.ts's own maxPositionFraction). Absent ⇒ '0.15' (spot default).
+  readonly maxPositionFraction?: string;
 }
 
 export interface ReflectionServiceDeps {
@@ -232,6 +254,14 @@ export interface ReflectionServiceDeps {
   readonly fetchFn?: typeof fetch;
   readonly nowFn?: () => number;
   readonly logger?: LoggerLike;
+  // P5 (Design § Learning & measurement stack): a pull, not a snapshot — ExecQualityService's window
+  // changes over time, so this reads live at each reflection run rather than being frozen at
+  // construction. Absent ⇒ no execQuality section in the reflection payload, same "absent ⇒ omit"
+  // convention as every other optional dep here; the composition-root wiring of a real
+  // ExecQualityService instance into this field is a separate step (agentic-strategy.module.ts's
+  // REFLECTION_SERVICE factory — outside this step's file scope; see exec-quality.service.ts's own
+  // header on why no production instance is fed real data yet either).
+  readonly execQuality?: () => string | undefined;
 }
 
 // One completed LONG→FLAT round trip reconstructed from the decision journal. Entry/exit prices are
@@ -244,6 +274,11 @@ interface ClosedTradeSummary {
   readonly entryPrice: number;
   readonly exitPrice: number;
   readonly pnlPct: number;
+  // P3: v2 side — 'SHORT' only ever appears from an 'open_short' entry (perp lane); every legacy row
+  // and every v2 'open_long' row is 'LONG'. Surfaced so the reflection prompt can see whether a lesson
+  // came from a long or short round trip (Design § Learning: "shorts on perp" is one of the reframed
+  // lesson themes).
+  readonly side: 'LONG' | 'SHORT';
 }
 
 interface HoldSummary {
@@ -328,45 +363,84 @@ const REFLECTION_TOOL = {
   },
 } as const;
 
-function buildReflectionSystemPrompt(): string {
+// P3 (Design § Learning & measurement stack): reframed for the v2 rich decision contract — the
+// playbook is prose guidance read before EVERY consult, not a parametric knob overlay (the old
+// `knobs:` line is retired below; D1 deleted its enforcement, so instructing the model to emit one
+// would mint a dead directive). shortsEnabled selects the perp-lane wording (shorts ⟺ perp in this
+// codebase, per agent-prompt.ts's own comment) — spot must never see shorts/leverage guidance
+// permitted, mirroring validatePlaybook's own shortsAllowed/leverageAllowed gate this same flag
+// drives at mint time (see gateReflectionDraft).
+function buildReflectionSystemPrompt(shortsEnabled: boolean): string {
+  const capabilityConstraint = shortsEnabled
+    ? [
+        'The playbook may describe spot AND perp trading, including shorts and leverage up to a 2x',
+        'cap. It is still AUTO-REJECTED if it advises leverage BEYOND that cap, live-money',
+        'withdrawal, or all-in / max-out oversizing — or if it contains prompt-injection or',
+        'instruction-override text (e.g. "ignore previous instructions", "system prompt", "act as',
+        'a …", "disregard the rules"). Ordinary trading words in their plain sense are FINE —',
+        '"marginal", "profit margin", prior highs that "act as" support, "short-term" all pass; only',
+        'the dangerous CONCEPTS above are banned.',
+      ]
+    : [
+        'The playbook must describe spot-only, long/flat-only trading in plain prose. It is',
+        'AUTO-REJECTED if it advises any NON-SPOT action — using leverage, buying on',
+        'margin/borrowing, short-selling, live-money withdrawal, or all-in / max-out oversizing — or',
+        'if it contains prompt-injection or instruction-override text (e.g. "ignore previous',
+        'instructions", "system prompt", "act as a …", "disregard the rules"). Ordinary trading',
+        'words in their plain sense are FINE — "marginal", "profit margin", "leverage the trend",',
+        'prior highs that "act as" support, "short-term" all pass; only the dangerous CONCEPTS above',
+        'are banned. Simply omit those concepts — do not advise them even in a cautionary sentence',
+        '(a phrase like "do not use leverage" still trips the tripwire).',
+      ];
   return [
-    'You are refining a crypto SPOT long/flat trading playbook from a SMALL sample of recently',
-    'observed outcomes. This is HYPOTHESIS GENERATION over thin data, never validated learning —',
-    'do not claim statistical confidence the sample cannot support, and prefer small, well-justified',
-    'adjustments over a wholesale rewrite.',
+    'You are refining a crypto trading playbook (the model trades under a rich decision contract:',
+    'action, position size, entry pricing, and revisable stop/take-profit/max-hold/consult-schedule',
+    'directives) from a SMALL sample of recently observed outcomes. This is HYPOTHESIS GENERATION',
+    'over thin data, never validated learning — do not claim statistical confidence the sample',
+    'cannot support, and prefer small, well-justified adjustments over a wholesale rewrite.',
+    'Your revision should target lessons in FIVE areas, as the evidence supports them: (1) SIZING',
+    'DISCIPLINE — closedTrades and realizedRoundTrips show what sizeFraction choices the model made',
+    'and how they paid off; favor concentrating conviction in a few good setups over spreading it',
+    'thin. (2) EXIT MANAGEMENT — where stops/take-profits were placed relative to entry, and whether',
+    "adjust revisions (widening/tightening mid-trade) helped or hurt; regretDigest's delayedExit",
+    'lines show the cost of holding too long via adjust rather than closing. (3) CONSULT SCHEDULING',
+    "ECONOMICS — nextConsultBars trades off LLM cost against reaction speed; regretDigest's",
+    'declinedEntry lines show moves missed while flat, which argue for shorter schedules or',
+    'wake-on-move sensitivity in the regime notes; a quiet, going-nowhere market argues the other',
+    'way. (4) THESIS QUALITY — closedTrades pairs each round trip with its side and PnL; favor',
+    'entry/exit rules that would have produced clear, falsifiable theses over vague ones. (5) SHORTS',
+    shortsEnabled
+      ? '— this is a PERP lane: closedTrades carries a side (LONG/SHORT) field; look for whether'
+      : '— this is a SPOT lane (long/flat only; skip this theme unless advising when to stay flat',
+    shortsEnabled
+      ? 'short round trips are systematically mis-sized or mis-timed relative to longs.'
+      : 'through a decline is itself the right call).',
     'The DECISION OUTCOMES digest buckets recent decisions by what they did (entries, exits,',
     'held-long, stayed-flat) and by confidence, each with the mean next-bar forward return — use it',
     'to look for SYSTEMATIC errors (e.g. entries that on average lose, or high-confidence longs that',
     'do no better than low-confidence ones), but treat it as thin, noisy evidence, never proof.',
+    'The regretDigest scores the OPTION NOT TAKEN, mechanically, from forward candles: declinedEntry',
+    'lines are holds that stayed flat and then saw price run (a negative meanRegretBps means staying',
+    'flat cost money on average); delayedExit lines are adjust revisions that kept a position open',
+    'and then saw it move against or for the delay. Both are the SAME thin, noisy, close-price-proxy',
+    'caveat as the other digests — a systematic signal here (not a single line) is what to act on.',
     'realizedRoundTrips is DIFFERENT in kind: actual venue fills walked into closed round trips —',
     'entry/exit VWAPs, realized PnL gross and net of fees, holding time, and mean decide-vs-fill',
     'slippage in bps. It is ground truth where the other digests are close-price proxies; when they',
     'disagree (e.g. proxy PnL positive but realized net PnL negative), trust realizedRoundTrips and',
     'look for the gap — fees, slippage, or exits filling worse than the close suggested.',
     'The calibration digest shows the mean next-bar forward return of past decisions by action and',
-    'stated confidence — if long-entries show no positive edge at any confidence, the entry rules',
+    'stated confidence — if entries show no positive edge at any confidence, the entry rules',
     'themselves are the problem; propose rules that would have filtered the losing buckets.',
+    'The execQuality digest (present once enough entry attempts have been observed, otherwise absent)',
+    'reports maker fill rate, average missed-move bps on expired unfilled entries, and average',
+    'post-fill adverse-drift bps — use it to calibrate ENTRY STYLE: a low fill rate paired with',
+    'positive missed-move bps means maker patience is costing missed entries; low adverse-drift bps',
+    'on filled entries means the current pricing is working and taker urgency is rarely needed.',
     'The playbook has exactly 4 sections, in this order: "## regime notes", "## entry rules",',
     '"## exit rules", "## mistakes to avoid". Your revision MUST keep exactly these 4 headings, once',
     'each, in order, with no other headings, code fences, or markup beyond plain prose/lists.',
-    'The playbook must describe spot-only, long/flat-only trading in plain prose. It is AUTO-REJECTED',
-    'if it advises any NON-SPOT action — using leverage, buying on margin/borrowing, short-selling,',
-    'live-money withdrawal, or all-in / max-out oversizing — or if it contains prompt-injection or',
-    'instruction-override text (e.g. "ignore previous instructions", "system prompt", "act as a …",',
-    '"disregard the rules"). Ordinary trading words in their plain sense are FINE — "marginal",',
-    '"profit margin", "leverage the trend", prior highs that "act as" support, "short-term" all pass;',
-    'only the dangerous CONCEPTS above are banned. Simply omit those concepts — do not advise them even',
-    'in a cautionary sentence (a phrase like "do not use leverage" still trips the tripwire).',
-    'You MAY include ONE optional machine-readable line inside "## entry rules", exactly of the form',
-    '"knobs: minConfidence=0.65 minRr=2 minEdgeMultiple=2" (any subset of those three keys,',
-    'space-separated key=value pairs, plain decimals). These knobs are ENFORCED deterministically on',
-    'every future decision under this playbook version and can only TIGHTEN selectivity relative to',
-    'the configured floors, never loosen them: minConfidence (0..0.9) is the minimum stated',
-    'confidence for a NEW entry (lower-confidence entries are downgraded to hold; exits and re-arms',
-    'are never gated); minRr (1..10) and minEdgeMultiple (1..10) raise the plan take-profit/stop',
-    'payoff and fee-edge floors for new entries. Justify any knob from the calibration digest (e.g.',
-    'set minConfidence just above the confidence buckets whose entries lose on average). No other',
-    'knob keys exist; an out-of-bounds or malformed knobs line is auto-rejected.',
+    ...capabilityConstraint,
     'Decides may also carry a crossSymbol block (this symbol vs the rest of the basket by trailing',
     'return: rank, strongest, weakest). Relative strength is the strongest systematic signal found in',
     "this program's own testing — a good playbook favors entering relatively STRONG symbols and holds",
@@ -490,33 +564,50 @@ function indicatorFloat(decimalString: string): number {
   return new Decimal(decimalString).toNumber();
 }
 
-// Pairs LONG→FLAT round trips off the journal's own `action` field (rows arrive oldest→newest, per
-// AgentDecisionJournalPort's ordering contract) into closed-trade summaries, keeping only the most
-// recent `maxTrades`. A 'long' row while a trade is already open is a hold-the-position
-// re-affirmation (the client only ever maps a fresh ENTER_LONG signal on FLAT→LONG), not a second
-// entry, so it's ignored; 'hold'/'error' rows never affect the open/closed state.
+// Pairs an open→close round trip off the journal's own `action` field (rows arrive oldest→newest,
+// per AgentDecisionJournalPort's ordering contract) into closed-trade summaries, keeping only the
+// most recent `maxTrades`. P3 (v2 action widening): legacy 'long'/'flat' keep their original
+// long-only meaning; 'open_long'/'open_short' open (side recorded); 'close' closes either side;
+// 'adjust' is a no-op annotation on the CURRENT position (Design § New tool contract: "the clock
+// enforces the model's intent, not a risk gate" — it never re-sides a position), so it neither opens
+// nor closes here, exactly like annotateResultingExposure's own 'adjust' branch
+// (counterfactual-scoring.ts). A same-side open while a trade is already open (scale-in, or the
+// legacy hold-the-position re-affirmation) is ignored — 'hold'/'error' rows never affect the
+// open/closed state either.
 export function reconstructClosedTrades(
   rows: readonly AgentDecisionRow[],
   maxTrades: number,
 ): ClosedTradeSummary[] {
   const trades: ClosedTradeSummary[] = [];
-  let open: { time: number; price: number } | null = null;
+  let open: { time: number; price: number; side: 'LONG' | 'SHORT' } | null = null;
   for (const row of rows) {
     const priceStr = row.refPrice ?? row.close;
     if (!priceStr) continue;
-    if (row.action === 'long' && open === null) {
-      open = { time: row.eventTime, price: indicatorFloat(priceStr) };
-    } else if (row.action === 'flat' && open !== null) {
+    if ((row.action === 'long' || row.action === 'open_long') && open === null) {
+      open = { time: row.eventTime, price: indicatorFloat(priceStr), side: 'LONG' };
+    } else if (row.action === 'open_short' && open === null) {
+      open = { time: row.eventTime, price: indicatorFloat(priceStr), side: 'SHORT' };
+    } else if ((row.action === 'flat' || row.action === 'close') && open !== null) {
       const exitPrice = indicatorFloat(priceStr);
+      // SHORT profits on a DECLINE — the pnlPct formula mirrors counterfactual-scoring.ts's own
+      // computeToyEquity SHORT branch (entry/exit inverted relative to the LONG formula), never the
+      // LONG (exit-entry)/entry formula, which would sign-flip a profitable short into a loss.
+      const pnlPct =
+        open.side === 'LONG'
+          ? ((exitPrice - open.price) / open.price) * 100
+          : ((open.price - exitPrice) / open.price) * 100;
       trades.push({
         entryTime: open.time,
         exitTime: row.eventTime,
         entryPrice: open.price,
         exitPrice,
-        pnlPct: ((exitPrice - open.price) / open.price) * 100,
+        pnlPct,
+        side: open.side,
       });
       open = null;
     }
+    // 'adjust': position unchanged by design — falls through as a no-op, same as every other
+    // unmatched action (a same-side open while already open, or hold/error).
   }
   return trades.slice(-maxTrades);
 }
@@ -542,9 +633,15 @@ function buildReflectionUserMessage(input: {
   readonly decisionOutcomes: DecisionOutcomeDigest;
   readonly calibration: CalibrationDigest;
   readonly regimeSplit: RegimeSplitDigest;
+  // P3/P4: not-taken-option regret digest (counterfactual-scoring.ts's scoreNotTakenOptions) —
+  // additive alongside the existing digests, see buildReflectionSystemPrompt's own description.
+  readonly regretDigest: RegretDigest;
   readonly costContext: CostContext;
   readonly realizedRoundTrips: readonly RoundTripEvidence[];
   readonly currentPlaybook: string;
+  // P5: rendered string from ExecQualityService.digest() — undefined ⇒ key omitted entirely below,
+  // same convention as agent-prompt.ts's own BuildMarketPayloadExtras.execQuality.
+  readonly execQuality?: string;
 }): string {
   const payload = {
     closedTrades: input.closedTrades,
@@ -552,8 +649,10 @@ function buildReflectionUserMessage(input: {
     decisionOutcomes: input.decisionOutcomes,
     calibration: input.calibration,
     regimeSplit: input.regimeSplit,
+    regretDigest: input.regretDigest,
     costContext: input.costContext,
     realizedRoundTrips: input.realizedRoundTrips,
+    ...(input.execQuality !== undefined ? { execQuality: input.execQuality } : {}),
   };
   const playbookBlock = [
     PLAYBOOK_BLOCK_START,
@@ -590,6 +689,9 @@ export class ReflectionService {
   private readonly mintBacktestRows: number;
   private readonly mintBacktestMarginBps: number;
   private readonly mintBacktestMinTrips: number;
+  // P3: perp-lane selector + sizeFraction cap — see ReflectionServiceConfig's own comments.
+  private readonly shortsEnabled: boolean;
+  private readonly maxPositionFraction: string;
   // Per-reflection-run champion replay cache (cleared at each run's gate entry): the champion arm
   // is invariant within a run, so the retry's backtest reuses these instead of re-replaying — see
   // runMintBacktest. rows are cached WITH the replays so both gate evaluations judge the retry
@@ -641,6 +743,8 @@ export class ReflectionService {
       0,
       cfg.mintBacktestMinTrips ?? DEFAULT_MINT_BACKTEST_MIN_TRIPS,
     );
+    this.shortsEnabled = cfg.shortsEnabled ?? false;
+    this.maxPositionFraction = cfg.maxPositionFraction ?? '0.15';
   }
 
   // Synchronous and cheap by construction — NEVER awaited by the strategy that calls it (a slow or
@@ -712,6 +816,47 @@ export class ReflectionService {
     } catch (err) {
       this.warn(
         `reflection: onClosedTrade failed unexpectedly: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  // P3 (Design § Learning & measurement stack): weekly time-based reflection trigger — alongside the
+  // per-N-trades trigger above, a quiet week (few/no closed trades) still produces lessons (patience,
+  // missed opportunities, consult economics). PIGGYBACKS the SAME runReflection machinery (budget
+  // reservation, killswitch/lifecycle checks, unresolved-candidate guard, rollback) as the trade-count
+  // trigger — this method only decides WHETHER to fire, never re-implements a precondition
+  // runReflection already re-checks at execution time. Fires at most once per UTC-week bucket
+  // (utcWeekKey below): lastAttemptAt is lane-global and updated by ANY genuine attempt (trade- or
+  // time-triggered — see runReflection's own trigger-consume), so a week where the trade-count
+  // trigger already fired reads the SAME bucket here and this trigger silently no-ops — "at most one
+  // scheduled firing per week when the trade trigger hasn't fired that week" falls out of that shared
+  // state with no extra bookkeeping.
+  //
+  // NOT YET CALLED anywhere: this service has no timer/per-bar hook of its own (onClosedTrade is the
+  // only existing entry point, and a quiet week by definition never calls it) — wiring a periodic
+  // caller belongs in agentic.strategy.ts's decide() loop (owned by a different step, outside this
+  // one's file scope). Safe to call on every bar once wired — cheap (a bucket-equality check) until
+  // it actually fires.
+  checkWeeklyReflectionTrigger(strategyId: StrategyId): void {
+    try {
+      if (this.inert) return;
+      const now = (this.deps.nowFn ?? Date.now)();
+      if (utcWeekKey(now) === utcWeekKey(this.lastAttemptAt)) return;
+      if (this.inFlight) return;
+      this.inFlight = true;
+      const key = String(strategyId);
+      void this.runReflection(strategyId, now, this.tradesSinceLastAttempt.get(key) ?? 0)
+        .catch((err) => {
+          this.warn(
+            `reflection: weekly-trigger run failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        })
+        .finally(() => {
+          this.inFlight = false;
+        });
+    } catch (err) {
+      this.warn(
+        `reflection: checkWeeklyReflectionTrigger failed unexpectedly: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }
@@ -919,12 +1064,14 @@ export class ReflectionService {
         decisionOutcomes: summarizeRecentDecisionOutcomes(rows),
         calibration: summarizeCalibration(rows),
         regimeSplit: summarizeRegimeSplit(rows),
+        regretDigest: scoreNotTakenOptions(rows),
         costContext: {
           roundTripFeeBps: REFLECTION_ROUND_TRIP_FEE_BPS,
           note: 'net-of-cost PnL = realized − fees − LLM cost; wins must clear ~20bps round-trip fees',
         },
         realizedRoundTrips,
         currentPlaybook: current.content,
+        execQuality: this.deps.execQuality?.(),
       });
 
       const recordUsage = (usage: AgentUsage | undefined): void => {
@@ -1089,7 +1236,13 @@ export class ReflectionService {
     current: { readonly version: number; readonly content: string },
     recordUsage: (usage: AgentUsage | undefined) => void,
   ): Promise<ReflectionDraftGate> {
-    const validation = validatePlaybook(revision.playbook);
+    // P3: thread the SAME perp-lane capability flags the live read-side gate uses (P1's
+    // validatePlaybook signature) — a spot lane (shortsEnabled false) never permits shorts/leverage
+    // prose to mint, mirroring buildReflectionSystemPrompt's own capabilityConstraint branch above.
+    const validation = validatePlaybook(revision.playbook, {
+      shortsAllowed: this.shortsEnabled,
+      leverageAllowed: this.shortsEnabled,
+    });
     if (!validation.ok) {
       return {
         kind: 'reject',
@@ -1192,9 +1345,9 @@ export class ReflectionService {
         baseUrl: this.cfg.baseUrl,
         timeoutMs: this.cfg.timeoutMs,
         playbookContent: playbook,
-        planMode: true,
-        minEdgeMultiple: this.minEdgeMultiple,
-        minRr: this.minRr,
+        // P3: v2 lane cap + perp-shorts selector — see ReflectionServiceConfig's own comments.
+        sizeFractionMax: this.maxPositionFraction,
+        shortsEnabled: this.shortsEnabled,
       },
       rows,
       this.deps.fetchFn ?? fetch,
@@ -1310,8 +1463,9 @@ export class ReflectionService {
           timeoutMs: this.cfg.timeoutMs,
           candidatePlaybook: playbook,
           championPlaybook: current.content,
-          minEdgeMultiple: this.minEdgeMultiple,
-          minRr: this.minRr,
+          // P3: v2 lane cap + perp-shorts selector — see ReflectionServiceConfig's own comments.
+          sizeFractionMax: this.maxPositionFraction,
+          shortsEnabled: this.shortsEnabled,
         },
         rows,
         this.deps.fetchFn ?? fetch,
@@ -1412,7 +1566,7 @@ export class ReflectionService {
           body: JSON.stringify({
             model: this.cfg.model,
             max_tokens: REFLECTION_MAX_TOKENS,
-            system: buildReflectionSystemPrompt(),
+            system: buildReflectionSystemPrompt(this.shortsEnabled),
             messages,
             tools: [REFLECTION_TOOL],
             tool_choice: { type: 'tool', name: 'submit_playbook_revision' },
@@ -1446,7 +1600,7 @@ export class ReflectionService {
     // (aborted stream, malformed transfer, invalid JSON) classifies as transport_error — before
     // #32 a res.json() throw escaped this method entirely (the #50 gap caught it one level up).
     const contentType =
-      typeof res.headers?.get === 'function' ? (res.headers.get('content-type') ?? '') : '';
+      typeof res.headers?.get === 'function' ? res.headers.get('content-type') ?? '' : '';
     let body: unknown;
     try {
       body =
@@ -1589,10 +1743,10 @@ export class ReflectionService {
             type,
             id: asString(cb.id),
             name: asString(cb.name),
-            thinking: type === 'thinking' ? (asString(cb.thinking) ?? '') : undefined,
+            thinking: type === 'thinking' ? asString(cb.thinking) ?? '' : undefined,
             signature: asString(cb.signature),
-            data: type === 'redacted_thinking' ? (asString(cb.data) ?? '') : undefined,
-            text: type === 'text' ? (asString(cb.text) ?? '') : undefined,
+            data: type === 'redacted_thinking' ? asString(cb.data) ?? '' : undefined,
+            text: type === 'text' ? asString(cb.text) ?? '' : undefined,
             inputJson: type === 'tool_use' ? '' : undefined,
           });
           break;
@@ -1795,6 +1949,11 @@ export function createReflectionService(
         env['AGENTIC_MINT_BACKTEST_MIN_TRIPS'],
         DEFAULT_MINT_BACKTEST_MIN_TRIPS,
       ),
+      // P3: perp-lane selector + v2 lane cap, read off the SAME raw env keys the live client resolves
+      // (agentic-strategy.module.ts) — not threaded through agenticEnv's ConfigService overlay, same
+      // convention as decideModel/minEdgeMultiple/minRr above.
+      shortsEnabled: env['AGENTIC_SHORTS_ENABLED'] === 'true',
+      maxPositionFraction: env['AGENTIC_MAX_POSITION_FRACTION'],
       apiKey,
     },
     deps,

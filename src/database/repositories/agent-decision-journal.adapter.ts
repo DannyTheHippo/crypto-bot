@@ -18,6 +18,23 @@ import { AgentDecisionRepository, type AgentDecisionInsert } from './agent-decis
 // recent() ordering: oldest→newest (ascending event_time), matching AgentContext.recentDecisions'
 // documented "newest-last" convention (see ports/agentic-strategy.ts) — a caller folding persisted
 // rows into that in-memory trail sees the same chronological order from either source.
+// A3: the full set of `action` literals the DB column (and AgentDecisionInsert.action) accepts —
+// mirrors AgentDecisionEntry.action verbatim. TypeScript's static type already constrains every
+// well-typed caller, but this is a RUNTIME persistence-boundary guard for the case that matters more:
+// a caller that narrows/casts `action` to a type the compiler accepts while the real runtime value is
+// something else (see anthropic-agent-client.ts's `action as 'long' | 'flat' | 'hold'` breadcrumb —
+// the legacy shorts capability's real value can be 'short', a literal outside this set entirely).
+const KNOWN_JOURNAL_ACTIONS = new Set<AgentDecisionEntry['action']>([
+  'open_long',
+  'open_short',
+  'close',
+  'adjust',
+  'hold',
+  'long',
+  'flat',
+  'error',
+]);
+
 export class AgentDecisionJournalAdapter implements AgentDecisionJournalPort {
   private readonly repo: AgentDecisionRepository;
   private readonly log = new Logger('AgentDecisionJournal');
@@ -26,7 +43,18 @@ export class AgentDecisionJournalAdapter implements AgentDecisionJournalPort {
     this.repo = new AgentDecisionRepository(db);
   }
 
+  // Fail-loud, fails OPEN: agent_decisions is an analysis artifact, never a safety interlock
+  // (CLAUDE.md rule 6 scope — the append-only hardening binds audit_log/order_events only), so a
+  // write carrying an action outside KNOWN_JOURNAL_ACTIONS is logged (offending value + strategyId)
+  // and the ROW IS DROPPED here — it must never throw into the caller's decide() path.
   record(entry: AgentDecisionEntry): void {
+    if (!KNOWN_JOURNAL_ACTIONS.has(entry.action)) {
+      this.log.error(
+        `agent_decisions insert dropped: action "${String(entry.action)}" is outside the known ` +
+          `journal action set (strategyId=${entry.strategyId})`,
+      );
+      return;
+    }
     const row: AgentDecisionInsert = {
       strategyId: entry.strategyId,
       symbol: entry.symbol,
@@ -48,7 +76,16 @@ export class AgentDecisionJournalAdapter implements AgentDecisionJournalPort {
       playbookVersion: entry.playbookVersion,
       promptHash: entry.promptHash,
       inputPayload: entry.inputPayload,
-      planJson: entry.plan ?? null,
+      // I1b: nextConsultBars rides in plan_json alongside the rest of the directive set (no new
+      // column — see AgentDecisionEntry.nextConsultBars' own comment) — merged in ONLY when a plan
+      // object is actually present; a hold-without-directives row that still carried a portfolio
+      // schedule value has nowhere in this shape to carry it (accepted: the runtime schedule itself
+      // — agentic.strategy.ts's scheduledConsultBars — is driven straight off AgentProposal, never
+      // off this journal read; this column is an analysis artifact only).
+      planJson:
+        entry.plan && entry.nextConsultBars != null
+          ? { ...entry.plan, nextConsultBars: entry.nextConsultBars }
+          : entry.plan ?? null,
       consultId: entry.consultId ?? null,
       infoArm: entry.infoArm ?? null,
       thinkingArm: entry.thinkingArm ?? null,

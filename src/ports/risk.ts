@@ -114,6 +114,17 @@ export interface SizerDeps {
     // Funding-aware sizing hook — see perp-sizing.ts's applyFundingScaling. No consumer yet.
     readonly expectedFundingBpsPerHold?: string;
   };
+  // S2/C1 (rich decision contract, Design § Sizing flow): the agentic lane's own sizing directive
+  // (Signal.sizeFraction) is capped at this per-lane fraction of cappedEquity, and it also bounds
+  // same-side scale-in headroom. Optional so existing test fixtures and module-isolation boots that
+  // never set it keep booting; PositionSizerService falls back to '0.15'.
+  readonly maxAgentPositionFraction?: string;
+  // S2/C1: SIZER_EQUITY_CAP — every notional-computing path in PositionSizerService sizes off
+  // min(actualEquity, equityCap) instead of raw equity when this is a finite-positive money string,
+  // so a demo account earns its promotion verdict at exactly live-book proportions (Design § Live-
+  // scale economics). Optional; absent or non-finite/non-positive ⇒ actual equity passes through
+  // unchanged (byte-identical to pre-cap behavior).
+  readonly equityCap?: string;
 }
 
 // Injected RiskEngine dependencies. The signing key is process-lifetime random

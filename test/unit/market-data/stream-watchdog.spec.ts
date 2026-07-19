@@ -13,7 +13,8 @@ const SYM = symbolId('BTC/USDT');
 
 // Regression for the 2026-07-16 silent candle stall: ccxt's watch* future never settles when the
 // venue drops a subscription server-side, so the supervised loop parks forever with no error. The
-// watchdog must detect core-channel silence and force exchange.close() so the loops resubscribe.
+// watchdog must detect silence on ANY watched channel (ticker, trade, book, candle:*) and force
+// exchange.close() so the loops resubscribe.
 
 const unused = (): Promise<never> => Promise.reject(new Error('unused'));
 
@@ -127,7 +128,11 @@ describe('CcxtExchangeStreamAdapter stall watchdog', () => {
     await iterator.return?.();
   });
 
-  it('does not reconnect for a stalled non-core channel (book)', async () => {
+  // Regression for the 2026-07-17 review: book/trade were excluded from the watchdog's stall check
+  // (only ticker/candle:* counted), yet the RiskEngine gates entries on 'book' channel health
+  // specifically (risk-engine.service.ts) — a silently dead book (or trade) subscription had no
+  // client-side recovery at all. Every channel this adapter watches must now trip the watchdog.
+  it('forces exchange.close() when a book channel goes silent past the stall threshold', async () => {
     vi.useFakeTimers();
     let now = 0;
     const clock: ClockPort = { now: () => epochMs(now) };
@@ -140,7 +145,7 @@ describe('CcxtExchangeStreamAdapter stall watchdog', () => {
       watchOrderBook: async () => {
         bookCalls++;
         if (bookCalls === 1) return { timestamp: 1, bids: [[100, 1]], asks: [[101, 1]] } as never;
-        return new Promise<never>(() => {});
+        return new Promise<never>(() => {}); // the incident shape: pending forever, no error
       },
     };
 
@@ -154,10 +159,47 @@ describe('CcxtExchangeStreamAdapter stall watchdog', () => {
     await iterator.next();
 
     now = 400_000;
-    await vi.advanceTimersByTimeAsync(61_000);
+    await vi.advanceTimersByTimeAsync(31_000);
 
-    expect(closeSpy).not.toHaveBeenCalled();
-    expect(recordForcedReconnect).not.toHaveBeenCalled();
+    expect(closeSpy).toHaveBeenCalledTimes(1);
+    expect(recordForcedReconnect).toHaveBeenCalledTimes(1);
+
+    await iterator.return?.();
+  });
+
+  it('forces exchange.close() when a trade channel goes silent past the stall threshold', async () => {
+    vi.useFakeTimers();
+    let now = 0;
+    const clock: ClockPort = { now: () => epochMs(now) };
+
+    let tradeCalls = 0;
+    const watchSource: WatchSource = {
+      watchTicker: unused,
+      watchOHLCV: unused,
+      watchOrderBook: unused,
+      watchTrades: async () => {
+        tradeCalls++;
+        // A non-empty first result so iterator.next() below actually resolves (an empty array
+        // pushes no event and would hang the test, not exercise the watchdog).
+        if (tradeCalls === 1) return [{ timestamp: 1, price: 100, amount: 1 }] as never;
+        return new Promise<never>(() => {}); // the incident shape: pending forever, no error
+      },
+    };
+
+    const closeSpy = vi.fn(() => Promise.resolve());
+    const exchange = { id: 'binance', has: { watchTrades: true }, close: closeSpy } as never;
+    const { tracker, recordForcedReconnect } = makeTracker();
+    const adapter = new CcxtExchangeStreamAdapter(clock, watchSource, exchange, V, tracker);
+
+    const spec: SubscriptionSpec = { venue: V, symbols: [SYM], channels: { trades: true } };
+    const iterator = adapter.marketRaw(spec)[Symbol.asyncIterator]();
+    await iterator.next();
+
+    now = 400_000;
+    await vi.advanceTimersByTimeAsync(31_000);
+
+    expect(closeSpy).toHaveBeenCalledTimes(1);
+    expect(recordForcedReconnect).toHaveBeenCalledTimes(1);
 
     await iterator.return?.();
   });

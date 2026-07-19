@@ -2,10 +2,10 @@ import { describe, it, expect } from 'vitest';
 import Decimal from 'decimal.js';
 import {
   runCandidateBacktest,
-  simulateLongRoundTrip,
+  simulateRoundTrip,
   type CandidateBacktestConfig,
 } from '../../../src/features/trading/agentic/candidate-backtest';
-import type { AgentDecisionRow, AgentPlan } from '../../../src/ports/agentic-strategy';
+import type { AgentDecisionRow, AgentDirectives } from '../../../src/ports/agentic-strategy';
 import { strategyId, symbolId, venueId, epochMs } from '../../../src/domain/types/ids';
 
 const T = 1_700_000_000_000;
@@ -38,23 +38,25 @@ function row(overrides: Partial<AgentDecisionRow> = {}): AgentDecisionRow {
   };
 }
 
-const PLAN: AgentPlan = {
-  entryOffsetBps: 10,
+const DIRECTIVES: AgentDirectives = {
+  sizeFraction: '0.10',
   stopLossPct: '0.02',
   takeProfitPct: '0.04',
+  entryOffsetBps: 10,
   entryValidityBars: 2,
   maxHoldBars: 3,
+  entryStyle: 'maker',
 };
 
-describe('simulateLongRoundTrip', () => {
+describe('simulateRoundTrip', () => {
   it('returns null (unsimulatable) below MIN_FORWARD_COVERAGE (25% of maxHoldBars, rounded up)', () => {
     // maxHoldBars=3 → ceil(3*0.25)=1 forward point required; 0 supplied.
-    expect(simulateLongRoundTrip('100', PLAN, [])).toBeNull();
+    expect(simulateRoundTrip('100', DIRECTIVES, [], 'LONG')).toBeNull();
   });
 
-  it('exits at take-profit on the first bar that clears entry*(1+takeProfitPct) and nets exact bps', () => {
+  it('exits at take-profit on the first bar that clears entry*(1+takeProfitPct) and nets exact bps (LONG)', () => {
     // entry 100, takeProfitPct 0.04 → TP price 104 exactly.
-    const result = simulateLongRoundTrip('100', PLAN, ['104', '101.92']);
+    const result = simulateRoundTrip('100', DIRECTIVES, ['104', '101.92'], 'LONG');
     expect(result).not.toBeNull();
     // netFraction = 104/100 − 1 − 0.0020 = 0.04 − 0.002 = 0.038 → 380 bps exactly. These bps figures
     // are plain indicator-grade numbers derived from exact Decimal arithmetic (never a money-string
@@ -66,9 +68,9 @@ describe('simulateLongRoundTrip', () => {
     expect(result!.netBps).toBe(380);
   });
 
-  it('exits at stop on the first bar at/below entry*(1−stopLossPct) and nets exact bps', () => {
+  it('exits at stop on the first bar at/below entry*(1−stopLossPct) and nets exact bps (LONG)', () => {
     // entry 104, stopLossPct 0.02 → stop price 104*0.98 = 101.92 exactly.
-    const result = simulateLongRoundTrip('104', PLAN, ['101.92']);
+    const result = simulateRoundTrip('104', DIRECTIVES, ['101.92'], 'LONG');
     expect(result).not.toBeNull();
     // netFraction = 101.92/104 − 1 − 0.0020 = −0.02 − 0.002 = −0.022 → −220 bps exactly.
     expect(result!.netBps).toBe(-220);
@@ -76,7 +78,7 @@ describe('simulateLongRoundTrip', () => {
 
   it('falls back to the LAST available forward close when data runs out before any executor exit fires', () => {
     // maxHoldBars=3, coverage floor=1; supply exactly 2 forward closes, neither breaches stop/TP.
-    const result = simulateLongRoundTrip('100', PLAN, ['100.5', '101']);
+    const result = simulateRoundTrip('100', DIRECTIVES, ['100.5', '101'], 'LONG');
     expect(result).not.toBeNull();
     // netFraction = 101/100 − 1 − 0.0020 = 0.01 − 0.002 = 0.008 → 80 bps exactly.
     const expected = new Decimal('101').div('100').minus(1).minus('0.0020').mul(10_000).toNumber();
@@ -86,7 +88,7 @@ describe('simulateLongRoundTrip', () => {
 
   it('exits on max_hold exactly when forward data covers the full maxHoldBars window', () => {
     const flatCloses = ['100.5', '100.5', '100.5']; // maxHoldBars=3, never breaches stop/TP
-    const result = simulateLongRoundTrip('100', PLAN, flatCloses);
+    const result = simulateRoundTrip('100', DIRECTIVES, flatCloses, 'LONG');
     expect(result).not.toBeNull();
     // netFraction = 100.5/100 − 1 − 0.0020 = 0.005 − 0.002 = 0.003 → 30 bps exactly.
     const expected = new Decimal('100.5')
@@ -98,31 +100,51 @@ describe('simulateLongRoundTrip', () => {
     expect(expected).toBe(30);
     expect(result!.netBps).toBe(expected);
   });
+
+  it('P3: SHORT mirrors LONG — exits at take-profit BELOW entry and nets a POSITIVE bps on a decline', () => {
+    // entry 100, takeProfitPct 0.04 → SHORT TP price 96 exactly (mirrors the LONG TP-above formula).
+    const result = simulateRoundTrip('100', DIRECTIVES, ['96', '98'], 'SHORT');
+    expect(result).not.toBeNull();
+    // netFraction = 100/96 − 1 − 0.0020 (entry/exit inverted vs LONG's exit/entry).
+    const expected = new Decimal('100').div('96').minus(1).minus('0.0020').mul(10_000).toNumber();
+    expect(result!.netBps).toBe(expected);
+    expect(result!.netBps).toBeGreaterThan(0); // a short profits when price fell
+  });
+
+  it('P3: SHORT exits at stop ABOVE entry and nets a NEGATIVE bps on a rally', () => {
+    // entry 100, stopLossPct 0.02 → SHORT stop price 102 exactly.
+    const result = simulateRoundTrip('100', DIRECTIVES, ['102'], 'SHORT');
+    expect(result).not.toBeNull();
+    const expected = new Decimal('100').div('102').minus(1).minus('0.0020').mul(10_000).toNumber();
+    expect(result!.netBps).toBe(expected);
+    expect(result!.netBps).toBeLessThan(0);
+  });
 });
 
 // ── runCandidateBacktest fixtures ──────────────────────────────────────────
 
-interface PlanInput {
-  readonly entryOffsetBps: number;
+interface DirectivesInput {
+  readonly sizeFraction: number;
+  readonly entry: { readonly style: 'maker' | 'taker'; readonly offsetBps: number };
+  readonly entryValidityBars: number;
   readonly stopLossPct: number;
   readonly takeProfitPct: number;
-  readonly entryValidityBars: number;
   readonly maxHoldBars: number;
 }
 
-function planToolBody(action: 'long' | 'flat' | 'hold', plan?: PlanInput): unknown {
+type RowAction = 'open_long' | 'open_short' | 'close' | 'adjust' | 'hold';
+
+function tradeToolBody(action: RowAction, directives?: DirectivesInput): unknown {
   return {
     stop_reason: 'tool_use',
     content: [
       {
         type: 'tool_use',
         id: 'toolu_bt',
-        name: 'submit_plan',
+        name: 'submit_trade',
         input: {
           action,
-          confidence: 0.5,
-          rationale: 'backtest fixture',
-          ...(plan ? { plan } : {}),
+          ...(directives ?? {}),
         },
       },
     ],
@@ -135,8 +157,8 @@ function apiResponse(body: unknown): Response {
 }
 
 interface RowArmResponse {
-  readonly action: 'long' | 'flat' | 'hold';
-  readonly plan?: PlanInput;
+  readonly action: RowAction;
+  readonly directives?: DirectivesInput;
 }
 
 // Dispatches by (a) which playbook block rode in the request (candidate vs champion — detected via a
@@ -158,7 +180,7 @@ function buildFetch(
     const rowIdMatch = /"marker":"([^"]+)"/.exec(rowText);
     const rowId = rowIdMatch![1]!;
     const resp = responses[rowId]![arm];
-    return Promise.resolve(apiResponse(planToolBody(resp.action, resp.plan)));
+    return Promise.resolve(apiResponse(tradeToolBody(resp.action, resp.directives)));
   };
   return impl;
 }
@@ -168,19 +190,19 @@ function cfg(over: Partial<CandidateBacktestConfig> = {}): CandidateBacktestConf
     apiKey: 'sk-test',
     model: 'claude-sonnet-5',
     timeoutMs: 5000,
+    sizeFractionMax: '0.15',
     candidatePlaybook: 'CANDIDATE_PB_MARKER content',
     championPlaybook: 'CHAMPION_PB_MARKER content',
-    minEdgeMultiple: '1.5',
-    minRr: '1.5',
     ...over,
   };
 }
 
-const PLAN_INPUT: PlanInput = {
-  entryOffsetBps: 10,
+const OPEN_LONG_INPUT: DirectivesInput = {
+  sizeFraction: 0.1,
+  entry: { style: 'maker', offsetBps: 10 },
+  entryValidityBars: 2,
   stopLossPct: 0.02,
   takeProfitPct: 0.04,
-  entryValidityBars: 2,
   maxHoldBars: 3,
 };
 
@@ -191,8 +213,8 @@ describe('runCandidateBacktest', () => {
   });
 
   it('computes exact per-arm consults/entries/simulated round trips/net bps and counts divergent decisions', async () => {
-    // row-0 close=100: candidate enters (plan tp=104), champion holds — divergent.
-    // row-1 close=104: champion enters (plan tp/sl off entry=104), candidate holds — divergent.
+    // row-0 close=100: candidate opens long (plan tp=104), champion holds — divergent.
+    // row-1 close=104: champion opens long (plan tp/sl off entry=104), candidate holds — divergent.
     // row-2 close=101.92: both hold — not divergent.
     const rows = [
       row({ id: 'row-0', close: '100' }),
@@ -200,8 +222,14 @@ describe('runCandidateBacktest', () => {
       row({ id: 'row-2', close: '101.92' }),
     ];
     const fetchFn = buildFetch({
-      'row-0': { candidate: { action: 'long', plan: PLAN_INPUT }, champion: { action: 'hold' } },
-      'row-1': { candidate: { action: 'hold' }, champion: { action: 'long', plan: PLAN_INPUT } },
+      'row-0': {
+        candidate: { action: 'open_long', directives: OPEN_LONG_INPUT },
+        champion: { action: 'hold' },
+      },
+      'row-1': {
+        candidate: { action: 'hold' },
+        champion: { action: 'open_long', directives: OPEN_LONG_INPUT },
+      },
       'row-2': { candidate: { action: 'hold' }, champion: { action: 'hold' } },
     });
 
@@ -213,7 +241,7 @@ describe('runCandidateBacktest', () => {
     expect(result.candidate.simulatedRoundTrips).toBe(1);
     expect(result.candidate.unsimulatableEntries).toBe(0);
     // row-0 entry=100, forward=[104, 101.92] → TP hit bar1 at 104 → +380bps (exact — see
-    // simulateLongRoundTrip's own tests above for why toBe, not toBeCloseTo, is correct here).
+    // simulateRoundTrip's own tests above for why toBe, not toBeCloseTo, is correct here).
     expect(result.candidate.meanNetBps).toBe(380);
     expect(result.candidate.totalNetBps).toBe(380);
 
@@ -228,28 +256,33 @@ describe('runCandidateBacktest', () => {
     expect(result.divergentDecisions).toBe(2);
   });
 
-  it('counts a long-without-plan response as an entry but excludes it from expectancy (unsimulatableEntries)', async () => {
-    const rows = [row({ id: 'row-0', close: '100' }), row({ id: 'row-1', close: '101' })];
+  it('P3: an open_short entry is counted, simulated on the SHORT arm, and nets a positive bps on a decline', async () => {
+    const rows = [row({ id: 'row-0', close: '100' }), row({ id: 'row-1', close: '96' })];
     const fetchFn = buildFetch({
-      'row-0': { candidate: { action: 'long' }, champion: { action: 'hold' } }, // no plan
+      'row-0': {
+        candidate: { action: 'open_short', directives: OPEN_LONG_INPUT },
+        champion: { action: 'hold' },
+      },
       'row-1': { candidate: { action: 'hold' }, champion: { action: 'hold' } },
     });
 
-    const result = await runCandidateBacktest(cfg(), rows, fetchFn);
+    const result = await runCandidateBacktest(cfg({ shortsEnabled: true }), rows, fetchFn);
     if ('skipped' in result) throw new Error('expected a measurement, got skipped');
 
     expect(result.candidate.entries).toBe(1);
-    expect(result.candidate.simulatedRoundTrips).toBe(0);
-    expect(result.candidate.unsimulatableEntries).toBe(1);
-    expect(result.candidate.meanNetBps).toBe(0);
+    expect(result.candidate.simulatedRoundTrips).toBe(1);
+    expect(result.candidate.meanNetBps).toBeGreaterThan(0);
   });
 
-  it('excludes a long+plan entry on the LAST row of its symbol group (zero forward closes) as unsimulatable', async () => {
+  it('excludes an open_long+directives entry on the LAST row of its symbol group (zero forward closes) as unsimulatable', async () => {
     const rows = [row({ id: 'row-0', close: '100' }), row({ id: 'row-1', close: '101' })];
     const fetchFn = buildFetch({
       'row-0': { candidate: { action: 'hold' }, champion: { action: 'hold' } },
       // row-1 is the LAST row of the (only) symbol group — no forward closes exist for it.
-      'row-1': { candidate: { action: 'long', plan: PLAN_INPUT }, champion: { action: 'hold' } },
+      'row-1': {
+        candidate: { action: 'open_long', directives: OPEN_LONG_INPUT },
+        champion: { action: 'hold' },
+      },
     });
 
     const result = await runCandidateBacktest(cfg(), rows, fetchFn);
@@ -271,7 +304,10 @@ describe('runCandidateBacktest', () => {
       row({ id: 'eth-1', symbol: symbolId('ETH/USDT'), close: '1' }),
     ];
     const fetchFn = buildFetch({
-      'btc-0': { candidate: { action: 'long', plan: PLAN_INPUT }, champion: { action: 'hold' } },
+      'btc-0': {
+        candidate: { action: 'open_long', directives: OPEN_LONG_INPUT },
+        champion: { action: 'hold' },
+      },
       'eth-0': { candidate: { action: 'hold' }, champion: { action: 'hold' } },
       'btc-1': { candidate: { action: 'hold' }, champion: { action: 'hold' } },
       'eth-1': { candidate: { action: 'hold' }, champion: { action: 'hold' } },
@@ -296,7 +332,10 @@ describe('runCandidateBacktest', () => {
     // evidence machinery first, so a journal-level malformed close can never reach the wrap).
     const rows = [row({ id: 'row-0', close: '100' }), row({ id: 'row-1', close: 'not-a-close' })];
     const fetchFn = buildFetch({
-      'row-0': { candidate: { action: 'long', plan: PLAN_INPUT }, champion: { action: 'hold' } },
+      'row-0': {
+        candidate: { action: 'open_long', directives: OPEN_LONG_INPUT },
+        champion: { action: 'hold' },
+      },
       'row-1': { candidate: { action: 'hold' }, champion: { action: 'hold' } },
     });
 
@@ -308,7 +347,7 @@ describe('runCandidateBacktest', () => {
     const responses = {
       'row-0': {
         candidate: { action: 'hold' as const },
-        champion: { action: 'long' as const, plan: PLAN_INPUT },
+        champion: { action: 'open_long' as const, directives: OPEN_LONG_INPUT },
       },
       'row-1': { candidate: { action: 'hold' as const }, champion: { action: 'hold' as const } },
     };

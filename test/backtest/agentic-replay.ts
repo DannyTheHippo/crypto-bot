@@ -91,7 +91,6 @@ import {
   PLAN_TOOL,
   PLAN_BOUNDS,
 } from '../../src/features/trading/agentic/agent-prompt';
-import { extractPlaybookKnobs } from '../../src/features/trading/agentic/playbook-validator';
 import {
   LiveAgenticStrategy,
   type LiveAgenticBudget,
@@ -396,13 +395,14 @@ interface RawDecision {
   };
 }
 
-// Mirrors anthropic-agent-client.ts's plan-rejection path (fee-aware edge floor, W3 payoff-floor/RR,
-// playbook-knob confidence floor) restricted to the ONLY case this module ever calls the model for —
-// opening a fresh long from FLAT (see live-agentic-strategy.ts's header: re-arm is out of scope, so
-// `entersNewPosition` is always true here, unlike the production client's wider surface).
+// Mirrors anthropic-agent-client.ts's plan-rejection path (fee-aware edge floor, W3 payoff-floor/RR)
+// restricted to the ONLY case this module ever calls the model for — opening a fresh long from FLAT
+// (see live-agentic-strategy.ts's header: re-arm is out of scope, so `entersNewPosition` is always
+// true here, unlike the production client's wider surface). P1: the playbook-knob confidence-floor/
+// floor-widening channel this used to mirror was deleted end-to-end (playbook-validator.ts) — these
+// are now the plain configured floors, byte-identical to a knob-absent decide pre-P1.
 function applyFloors(
   raw: RawDecision,
-  playbookContent: string | undefined,
   minEdgeMultiple: Decimal,
   minRr: Decimal,
   feeFraction: Decimal,
@@ -410,34 +410,14 @@ function applyFloors(
   if (raw.action !== 'long' || !raw.plan) {
     return { action: raw.action, confidence: raw.confidence, rationale: raw.rationale };
   }
-  const knobs = playbookContent ? extractPlaybookKnobs(playbookContent) : undefined;
-  if (
-    knobs?.minConfidence !== undefined &&
-    new Decimal(String(raw.confidence)).lt(new Decimal(knobs.minConfidence))
-  ) {
-    return {
-      action: 'hold',
-      confidence: raw.confidence,
-      rationale: `[knob gate: confidence below playbook floor ${knobs.minConfidence}] ${raw.rationale}`,
-    };
-  }
-
-  const knobMinEdgeMultiple =
-    knobs?.minEdgeMultiple !== undefined ? new Decimal(knobs.minEdgeMultiple) : undefined;
-  const knobMinRr = knobs?.minRr !== undefined ? new Decimal(knobs.minRr) : undefined;
-  const effectiveMinEdgeMultiple =
-    knobMinEdgeMultiple !== undefined && knobMinEdgeMultiple.gt(minEdgeMultiple)
-      ? knobMinEdgeMultiple
-      : minEdgeMultiple;
-  const effectiveMinRr = knobMinRr !== undefined && knobMinRr.gt(minRr) ? knobMinRr : minRr;
-  const edgeFloor = effectiveMinEdgeMultiple.mul(feeFraction);
+  const edgeFloor = minEdgeMultiple.mul(feeFraction);
   const stopLossPct = new Decimal(String(raw.plan.stopLossPct));
   const takeProfitPct = new Decimal(String(raw.plan.takeProfitPct));
 
   let rejectionTag: string | undefined;
   if (takeProfitPct.lt(edgeFloor)) rejectionTag = 'edge below floor';
   else if (stopLossPct.lt(feeFraction)) rejectionTag = 'stop below fee floor';
-  else if (takeProfitPct.div(stopLossPct).lt(effectiveMinRr)) rejectionTag = 'RR below floor';
+  else if (takeProfitPct.div(stopLossPct).lt(minRr)) rejectionTag = 'RR below floor';
   if (rejectionTag) {
     return {
       action: 'hold',
@@ -523,13 +503,7 @@ async function callModel(params: {
   const parsed = rawPlanSchema.safeParse(toolBlock?.input);
   if (!parsed.success) return { decision: errorDecision, costUsd };
 
-  const mapped = applyFloors(
-    parsed.data,
-    params.playbookContent,
-    params.minEdgeMultiple,
-    params.minRr,
-    params.feeFraction,
-  );
+  const mapped = applyFloors(parsed.data, params.minEdgeMultiple, params.minRr, params.feeFraction);
   return { decision: mapped, costUsd };
 }
 

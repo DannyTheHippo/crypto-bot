@@ -302,33 +302,42 @@ export class DrizzleExecutionStore implements ExecutionStorePort {
     return { latest, sodEquity, positions: domainPositions };
   }
 
+  // orders table has no step_size / attempt / cancelWanted columns — these are runtime-only fields
+  // for the OMS reducer, synthesized here with safe defaults. Shared by loadOpenOrders (recovery,
+  // §4.2) and loadOrderByVenueOrderId (§6.4 cluster-A durable second tier) — one reconstruction, two
+  // callers. Never trust a persisted state string blindly (I7): a row whose `state` is outside the
+  // OrderState allow-list is corruption — throw loudly rather than synthesize a malformed
+  // OrderRecord that downstream recovery/reconciliation would treat as truth.
+  private rowToOrderRecord(r: {
+    clientOrderId: string;
+    state: string;
+    qty: string;
+    cumQty: string;
+    venueOrderId: string | null;
+  }): OrderRecord {
+    if (!isOrderState(r.state)) {
+      throw new Error(
+        `recovery: unrecognized persisted order state '${r.state}' for clientOrderId ${r.clientOrderId}`,
+      );
+    }
+    return {
+      clientOrderId: r.clientOrderId as ClientOrderId,
+      state: r.state,
+      qty: new Decimal(r.qty),
+      cumQty: new Decimal(r.cumQty),
+      stepSize: '0.00000001',
+      venueOrderId: r.venueOrderId ?? undefined,
+      attempt: 0,
+      cancelWanted: false,
+    };
+  }
+
   async loadOpenOrders(mode: TradingMode): Promise<RecoveredOpenOrder[]> {
     const rows = await this.orders.findOpenByMode(mode);
-    // orders table has no step_size / attempt / cancelWanted columns — these are runtime-only
-    // fields for the OMS reducer. Recovery routes through reconciliation (§4.2), not reducer
-    // replay, so we synthesize safe defaults here.
     const out: RecoveredOpenOrder[] = [];
     for (const r of rows) {
-      // Never trust a persisted state string blindly (I7). A row whose `state` is outside the
-      // OrderState allow-list is corruption — fail the boot loudly rather than synthesize a
-      // malformed OrderRecord that downstream recovery/reconciliation would treat as truth.
-      if (!isOrderState(r.state)) {
-        throw new Error(
-          `recovery: unrecognized persisted order state '${r.state}' for clientOrderId ${r.clientOrderId}`,
-        );
-      }
-      const record: OrderRecord = {
-        clientOrderId: r.clientOrderId as ClientOrderId,
-        state: r.state,
-        qty: new Decimal(r.qty),
-        cumQty: new Decimal(r.cumQty),
-        stepSize: '0.00000001',
-        venueOrderId: r.venueOrderId ?? undefined,
-        attempt: 0,
-        cancelWanted: false,
-      };
       out.push({
-        record,
+        record: this.rowToOrderRecord(r),
         strategyId: r.strategyId as StrategyId,
         summary: {
           clientOrderId: r.clientOrderId as ClientOrderId,
@@ -355,6 +364,18 @@ export class DrizzleExecutionStore implements ExecutionStorePort {
   async loadIntentByClientOrderId(clientOrderId: ClientOrderId): Promise<OrderIntent | null> {
     if (!isOurClientOrderId(clientOrderId)) return null;
     return this.loadIntentForRecovery(decodeClientOrderId(clientOrderId).intentId);
+  }
+
+  // §6.4 cluster-A durable second-tier lookup (see the port's own header comment): the trade axis's
+  // last resort before classifying a venue-order-id-unresolved trade as genuinely foreign.
+  async loadOrderByVenueOrderId(venue: VenueId, venueOrderId: string): Promise<OrderRecord | null> {
+    const row = await this.orders.findByVenueOrderId(venue, venueOrderId);
+    return row === null ? null : this.rowToOrderRecord(row);
+  }
+
+  // §6.4 spot-lane false-HALT fix: the trade axis's first filter, checked before any classification.
+  async hasFill(venue: VenueId, symbol: SymbolId, venueTradeId: string): Promise<boolean> {
+    return (await this.fills.fetchByTradeId(venue, symbol, venueTradeId)) !== null;
   }
 
   // Rehydrate the persisted write-ahead intent (tx1) for a recovered order so the runtime gets

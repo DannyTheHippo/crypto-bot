@@ -30,15 +30,56 @@ const STALE_THRESHOLD_MS = 30_000;
 // the same process kept flowing — no error, no log, no recovery. The only client-side lever that
 // forces a resubscribe is closing the connection: close() rejects every pending watch future, and
 // the supervised loops then re-watch (fresh subscription) through their normal error path.
+// PINNED ccxt 4.5.58 caveat (observed live 2026-07-19, spot lane, after a ~10h host sleep): close()
+// does not always leave a resubscribable instance. Under some conditions — here, close() racing
+// venue-side dead sockets after a long OS sleep — the instance enters a TERMINAL closed-by-user
+// state: every subsequent watch* call on it throws ExchangeClosedByUser forever, no matter how many
+// times the loop re-watches. The 2026-07-16 assumption above ("re-watch through the normal error
+// path" recovers it) is FALSIFIED for this state; a plain re-watch can never clear it. Recovery
+// requires discarding the wedged instance and swapping in a freshly constructed one — see
+// exchangeFactory / recreateExchange() below, wired from handleLoopError's ExchangeClosedByUser
+// branch, not from the watchdog (the watchdog still only ever closes; see watchdogTick's comment).
+// v2 (live escalation, 2026-07-19 same-day): the v1 recreation seam above shipped with NO gate of
+// its own. Deployed into a venue penalty phase (persistent stalls/1008s), the watchdog kept firing
+// close() on ITS OWN 120s cooldown, each close() minted a fresh round of ExchangeClosedByUser on
+// every active watch call, and each of those triggered an (ungated) recreation — 36 recreations in
+// ~35 minutes — until the spot lane hit "FATAL ERROR: Reached heap limit … JavaScript heap out of
+// memory" at ~13:51Z and Docker restarted it. Two independent defects, both fixed below:
+//   (1) no backoff on the RECREATION decision itself — every wedge, however frequent, recreated
+//       immediately. Fixed by RecreationPolicy: an escalating cooldown (armed after every
+//       successful recreation, doubling while wedges keep recurring, capped, reset after a
+//       sustained healthy period) plus a hard cap on recreations per rolling window — see
+//       DEFAULT_RECREATION_POLICY and doRecreateExchange().
+//   (2) the stale instance was only ever best-effort close()'d, never hard-disposed. A wedged
+//       instance's close() can itself reject or hang while its ws clients still hold a live socket
+//       plus pingInterval/connectionTimer Node timers — those timers keep the client (and
+//       everything it closes over) reachable from Node's timer list regardless of whether anything
+//       else still references the stale exchange. 36 undisposed instances accumulating over 35
+//       minutes is precisely the leak that exhausted the heap. Fixed by hardDisposeExchange()
+//       below, which reaches past the public API into ccxt 4.5.58's internals (js/src/base/
+//       Exchange.js `clients` map; js/src/base/ws/Client.js `clearConnectionTimeout`/
+//       `clearPingInterval`; js/src/base/ws/WsClient.js `connection` — the underlying Node `ws`
+//       socket) to force-clear the timers and terminate() the socket. Re-verify this reach-through
+//       if the pinned ccxt version is ever bumped.
 // Blast radius: exchange.close() is CONNECTION-WIDE (ccxt has no per-channel close) — one stalled
-// core channel forces every channel, healthy ones included, through the reject/re-watch cycle,
+// channel forces every channel, healthy ones included, through the reject/re-watch cycle,
 // repeating each cooldown until recovery; a persistent unrecoverable stall therefore degrades
 // healthy channels too (the MarketStreamReconnectStorm alert is the human pull for that case).
-// Thresholds: core channels (ticker, candle:*) push every ~1-2s on the liquid symbols this bot
-// trades, so 180s of silence is ~90× the expected cadence — decisive for a dead subscription while
-// cheap when wrong (a forced reconnect is a seconds-long data blip, bounded by the cooldown).
+// Coverage: every channel this adapter watches (ticker, trade, book, candle:*) is included — book
+// was excluded until the 2026-07-17 review found the RiskEngine gates entries on 'book' channel
+// health specifically (risk-engine.service.ts) with no other client-side recovery for a silently
+// dead book subscription. Thresholds: all four channel types push every ~1-2s or faster on the
+// liquid symbols this bot trades (book/trade updates are typically sub-second), so 180s of silence
+// is ~90× the expected cadence — decisive for a dead subscription while cheap when wrong (a forced
+// reconnect is a seconds-long data blip, bounded by the cooldown).
 const WATCHDOG_CHECK_MS = 30_000;
 const WATCHDOG_STALL_THRESHOLD_MS = 180_000;
+// Re-examined for the v2 escalation (see the header comment): CONFIRMED already global, not
+// per-channel-group. watchdogTick() reads/writes ONE `lastForcedReconnectAt` field on the adapter
+// and calls exchange.close() at most once per tick, after building a single `stalled` list across
+// every (symbol,channel) key in `lastYieldAt` — there is no per-group cooldown state to fragment.
+// The v2 recreation cooldown below is therefore the sole knob that needed to change; this constant
+// and watchdogTick() are UNCHANGED (never weaken existing pacing/watchdog thresholds).
 const WATCHDOG_RECONNECT_COOLDOWN_MS = 120_000;
 
 // (Re)subscribe pacing: Binance closes a WS connection receiving >5 inbound messages/second with
@@ -48,15 +89,77 @@ const WATCHDOG_RECONNECT_COOLDOWN_MS = 120_000;
 // 1008-closed, and repeats forever (observed live 2026-07-17: at 8 symbols × 4 channels every
 // candle re-watch 1008-looped indefinitely while a lone subscription recovered in ~2s — the 5→8
 // universe expansion crossed the cliff; boot-time initial subscription bursts the same way).
-// Serializing subscription entries at this spacing caps the global rate at ~3/s < 5/s so recovery
-// converges deterministically (~11s for 32 channels) instead of by lottery. Only a loop's first
+// A single global FIFO queue at 350ms (~2.86msg/s, 43% under the 5/s cliff) fixed the livelock but
+// serializes recovery through one gate: M simultaneous drops took M×350ms, so a connection-wide
+// drop across the 24-symbol universe (~96 subscriptions at ~4 channels/symbol) pushed the queue
+// tail past the RiskEngine's staleMaxAgeMs=5000ms freshness window — a universe-wide STALE_DATA
+// entry blackout that gets linearly worse as the universe grows (2026-07-17 CONFIRMED cluster-D-ws
+// finding #1). Bounded-concurrency lanes trade queue depth for a still-conservative higher
+// aggregate cap: SUBSCRIBE_LANE_COUNT independent paced lanes, each internally spaced
+// SUBSCRIBE_LANE_SPACING_MS apart (least-loaded-lane assignment — ties break to the lowest index,
+// so up to SUBSCRIBE_LANE_COUNT simultaneous acquirers fan out to distinct lanes before any lane
+// repeats), cap the aggregate rate at SUBSCRIBE_LANE_COUNT / SUBSCRIBE_LANE_SPACING_MS = 4/s — 20%
+// under the 5/s cliff (down from the single-queue design's 43% margin; a deliberate, bounded trade
+// of some safety margin for materially faster recovery). M simultaneous drops now converge in
+// ceil(M/SUBSCRIBE_LANE_COUNT) rounds of SUBSCRIBE_LANE_SPACING_MS instead of M rounds of 350ms —
+// e.g. a full 96-subscription connection-wide storm drops from ~33.6s to ~24s. Only a loop's first
 // watch and the first watch after an error pass the gate — steady-state yields are unpaced.
-const SUBSCRIBE_MIN_SPACING_MS = 350;
+const SUBSCRIBE_LANE_COUNT = 4;
+const SUBSCRIBE_LANE_SPACING_MS = 1000;
+// Small randomized top-up added to an already-paced wait (a lane reused inside its own cadence) —
+// never to an immediately-free lane, which is a one-off event, not a recurring cadence. The lane
+// math above already guarantees the aggregate rate never exceeds
+// SUBSCRIBE_LANE_COUNT/SUBSCRIBE_LANE_SPACING_MS, but under real timer slop (setTimeout is a floor,
+// not a guarantee) a perfectly exact cadence repeating forever is the same lockstep shape f9b7d56
+// fought, just at a lower amplitude — jitter decorrelates it. Only ever ADDS delay on top of the
+// computed wait, so the per-lane floor (SUBSCRIBE_LANE_SPACING_MS) is never violated downward.
+// Injectable (subscribeJitterFn) so tests can zero it for deterministic timing assertions.
+const SUBSCRIBE_JITTER_MAX_MS = 100;
 // A supervised loop's error path was fully silent (health-tracker-only) — the 1008 livelock above
 // and the 2026-07-16 candle stall were both invisible until probed from outside the process. One
 // line per channel per interval keeps a persistent failure observable without a tight error loop
 // flooding the log.
 const LOOP_ERROR_LOG_INTERVAL_MS = 60_000;
+
+/**
+ * Governs how often the wedged-instance recreation seam (see the pinned-ccxt-4.5.58 header
+ * comment) may fire. Injectable (last constructor param) so tests can shrink it to exercise
+ * escalation/cap-exhaustion in milliseconds of simulated time instead of the ~65 real-world minutes
+ * DEFAULT_RECREATION_POLICY implies; production always uses the default.
+ */
+export interface RecreationPolicy {
+  /** Cooldown armed after the first recreation of a fresh incident. */
+  cooldownInitialMs: number;
+  /** Ceiling the escalating cooldown never exceeds. */
+  cooldownMaxMs: number;
+  /** Escalation factor applied each time a wedge recurs inside the "recent" window below. */
+  cooldownMultiplier: number;
+  /** A gap at least this long since the last recreation counts as "recovered" — the next wedge
+   *  resets to cooldownInitialMs instead of escalating further. Kept STRICTLY ABOVE cooldownMaxMs
+   *  so that merely waiting out the worst-case escalated cooldown never itself looks like recovery
+   *  (that equality would oscillate: escalate to the ceiling, wait exactly that long, reset,
+   *  re-escalate, forever). */
+  healthyResetMs: number;
+  /** Hard cap on successful recreations inside the rolling capWindowMs. Past it, recreation stops
+   *  entirely (plain backoff, level-50 log) regardless of cooldown state — the container
+   *  healthcheck/restart-policy is the final rung, never a silent leak. */
+  capPerWindow: number;
+  capWindowMs: number;
+}
+
+// 2026-07-19 live incident (see header comment): 36 recreations in ~35 minutes with no gate at all.
+// This schedule's steady-state ceiling (60s → 600s doubling) already self-limits to ~6-8
+// recreations/hour once ramped, well under the cap — the cap is a backstop for cases the cooldown
+// alone doesn't cover (e.g. repeated fresh incidents each just past healthyResetMs apart), not the
+// primary defense; the escalating cooldown is.
+const DEFAULT_RECREATION_POLICY: RecreationPolicy = {
+  cooldownInitialMs: 60_000, // 60s
+  cooldownMaxMs: 600_000, // 10 min
+  cooldownMultiplier: 2,
+  healthyResetMs: 900_000, // 15 min — strictly > cooldownMaxMs, see the field comment above
+  capPerWindow: 10,
+  capWindowMs: 3_600_000, // 1h rolling window
+};
 
 export interface ChannelStateTracker {
   setHealth(venue: VenueId, symbol: SymbolId, channel: string, health: ChannelHealth): void;
@@ -215,6 +318,14 @@ function isChecksumError(err: unknown): boolean {
   return err.constructor?.name === 'ChecksumError';
 }
 
+// See the pinned-ccxt-4.5.58 header comment above: a wedged instance throws this on EVERY watch*
+// call, forever — matched by constructor name (the real ccxt error) or message substring (fakes in
+// tests, and belt-and-suspenders against a future ccxt release renaming/wrapping the class).
+function isClosedByUser(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return err.constructor?.name === 'ExchangeClosedByUser' || err.message.includes('closedByUser');
+}
+
 // ── CcxtExchangeStreamAdapter ────────────────────────────────────────────────
 
 @Injectable()
@@ -226,17 +337,51 @@ export class CcxtExchangeStreamAdapter implements ExchangeStreamPort {
   private readonly lastYieldAt = new Map<string, EpochMs>();
   private watchdog: ReturnType<typeof setInterval> | null = null;
   private lastForcedReconnectAt = 0;
-  private subscribeNextSlotAt = 0;
+  // One next-available-slot clock per lane (see SUBSCRIBE_LANE_COUNT). Index i's slot advances only
+  // when lane i is claimed, so least-loaded-lane selection in subscribeSlot() naturally round-robins.
+  private readonly laneNextSlotAt: number[] = new Array<number>(SUBSCRIBE_LANE_COUNT).fill(0);
   private readonly lastErrorLogAt = new Map<string, number>();
+  // Single-flight guard for exchange recreation (see recreateExchange()): every supervised loop
+  // shares one exchange instance, so N loops hitting ExchangeClosedByUser in the same beat must
+  // trigger exactly one swap, not N races. null when no recreation is in flight. The cooldown/cap
+  // gate (v2) lives INSIDE doRecreateExchange (not in handleLoopError, before calling in) precisely
+  // so that concurrent joiners of an in-flight recreation never re-evaluate — and potentially
+  // mis-gate against — a cooldown the first caller just armed synchronously.
+  private recreatePromise: Promise<boolean> | null = null;
+  // v2 recreation cooldown/cap state — see RecreationPolicy and doRecreateExchange().
+  private recreateCooldownMs: number;
+  private nextRecreateAllowedAt = 0;
+  private lastRecreateAt = 0;
+  // Successful-recreation timestamps within the rolling capWindowMs; pruned lazily on each check.
+  private readonly recreateHistory: number[] = [];
+  private capExhaustedLoggedAt = -Infinity;
 
   constructor(
     @Inject(CLOCK) private readonly clock: ClockPort,
     @Inject(WATCH_SOURCE) private readonly watchSource: WatchSource,
-    private readonly exchange: Exchange,
+    // Mutable (not readonly): recreateExchange() swaps this in place after a closedByUser wedge.
+    // Every supervised loop reads `this.exchange` at call time (never captures a local), so a swap
+    // is picked up by the very next watch* call on every loop, not just the one that detected it.
+    private exchange: Exchange,
     private readonly venueId: VenueId,
     private readonly stateTracker: ChannelStateTracker,
     private readonly logger?: StreamAdapterLogger,
-  ) {}
+    // Defaults to real jitter in production; tests inject a zero (or fixed) function for
+    // deterministic timing assertions. See SUBSCRIBE_JITTER_MAX_MS for why this exists.
+    private readonly subscribeJitterFn: () => number = () =>
+      Math.random() * SUBSCRIBE_JITTER_MAX_MS,
+    // Recreation seam for the pinned-ccxt-4.5.58 closedByUser wedge (see header comment). Optional
+    // and appended last so every existing call site (production and tests) keeps compiling
+    // unchanged; omitting it just means closedByUser errors fall through to the ordinary
+    // transient/GAP + backoff path (unrecoverable, same as before this fix — never a hard failure).
+    private readonly exchangeFactory?: () => Exchange,
+    // v2: tunable recreation cooldown/cap (see RecreationPolicy). Optional, appended last;
+    // production always takes the default, tests shrink it for fast, deterministic escalation/cap
+    // coverage. Also appended last for the same call-site-compatibility reason as exchangeFactory.
+    private readonly recreationPolicy: RecreationPolicy = DEFAULT_RECREATION_POLICY,
+  ) {
+    this.recreateCooldownMs = recreationPolicy.cooldownInitialMs;
+  }
 
   stop(): void {
     this.running = false;
@@ -440,6 +585,13 @@ export class CcxtExchangeStreamAdapter implements ExchangeStreamPort {
   // Single error policy for every supervised loop (one place, one set of branches):
   //   - book + ChecksumError → GAP, no backoff (ccxt dropped the book; resubscribe at once —
   //     though the resubscribe still passes the subscribe gate like every other re-entry)
+  //   - ExchangeClosedByUser (wedged instance, factory wired) → GAP, attempt recreation (no extra
+  //     backoff on a SUCCESSFUL swap — subscribeSlot's lane pacing already gates the resubscribe
+  //     herd). recreateExchange() returns false — and this branch backs off like any other failure
+  //     — for THREE reasons, not just "the factory threw": a cooldown still active (v2: breaks the
+  //     watchdog→close→closedByUser→recreate storm under venue penalty), the rolling-window cap
+  //     exhausted (v2: loud level-50 stop, container healthcheck is the final rung), or the factory
+  //     itself failing. All three are fail-open — never a hard failure, the wedge just persists.
   //   - transient (network/rate/maintenance) → DEGRADED, backoff before retry
   //   - anything else → GAP, backoff (never tight-loop on an unknown error)
   // Every branch logs (rate-limited per channel) BEFORE classifying — see
@@ -459,6 +611,12 @@ export class CcxtExchangeStreamAdapter implements ExchangeStreamPort {
       this.stateTracker.setHealth(this.venueId, symbol, channel, 'GAP');
       return;
     }
+    if (isClosedByUser(err) && this.exchangeFactory) {
+      this.stateTracker.setHealth(this.venueId, symbol, channel, 'GAP');
+      const recreated = await this.recreateExchange(this.exchangeFactory);
+      if (!recreated) await this.backoff();
+      return;
+    }
     this.stateTracker.setHealth(
       this.venueId,
       symbol,
@@ -468,17 +626,171 @@ export class CcxtExchangeStreamAdapter implements ExchangeStreamPort {
     await this.backoff();
   }
 
-  // See SUBSCRIBE_MIN_SPACING_MS. Time-based token bucket: the next slot is claimed synchronously
-  // before any await, so concurrent acquirers serialize deterministically; the wait itself runs on
-  // wall timers. Fails delayed-never-dropped: the gate only ever awaits a timer, never rejects — a
+  // Single-flight swap of the wedged exchange instance for a fresh one. Every concurrent caller
+  // (one per loop hitting ExchangeClosedByUser in the same beat) awaits the SAME in-flight promise
+  // — exactly one factory() call and one close() of the stale instance, regardless of how many
+  // loops failed simultaneously. Returns true iff the swap happened; false means the factory itself
+  // failed (fail-open: this method never throws — a broken factory must not crash the market-data
+  // stream it is meant to recover, the wedge just persists and the caller backs off instead).
+  private recreateExchange(factory: () => Exchange): Promise<boolean> {
+    if (!this.recreatePromise) {
+      this.recreatePromise = this.doRecreateExchange(factory).finally(() => {
+        this.recreatePromise = null;
+      });
+    }
+    return this.recreatePromise;
+  }
+
+  // The v2 cooldown/cap gate lives HERE (inside the single-flight body), not in handleLoopError
+  // before calling recreateExchange(). Both checks below run synchronously, before the first
+  // await, so every concurrent caller that joins this SAME in-flight promise (see
+  // recreateExchange()) is bound by the one decision made for the whole batch — a caller that
+  // arrives one microtask later must never re-evaluate (and potentially mis-gate against) a
+  // cooldown this call is in the middle of arming.
+  private async doRecreateExchange(factory: () => Exchange): Promise<boolean> {
+    const now = this.clock.now();
+    if (this.isRecreateCapExhausted(now)) {
+      this.logCapExhausted(now);
+      return false;
+    }
+    if (now < this.nextRecreateAllowedAt) {
+      // Cooldown active: a wedge recurring inside the window is the SAME incident continuing (e.g.
+      // a venue penalty phase), not a fresh trigger — plain backoff, no recreation attempt. This is
+      // what breaks the watchdog→close()→closedByUser→recreate storm (see the v2 header comment).
+      // The per-channel rate-limited warn in handleLoopError already covers "log once per interval"
+      // visibility for this path; no separate log needed here.
+      return false;
+    }
+
+    const stale = this.exchange;
+    let fresh: Exchange;
+    try {
+      fresh = factory();
+    } catch (err) {
+      this.logger?.warn(
+        `market-stream exchange recreate failed (fail-open, still wedged): ${String(err)}`,
+      );
+      return false;
+    }
+    this.exchange = fresh;
+    this.stateTracker.recordForcedReconnect?.();
+
+    // Escalating cooldown: iff the previous recreation was recent (a RECURRING wedge), double the
+    // cooldown up to the ceiling; otherwise this is a fresh, independent incident and starts back
+    // at the base cooldown. See RecreationPolicy.healthyResetMs for why it is strictly above
+    // cooldownMaxMs (avoids an oscillation right at the ceiling).
+    if (
+      this.lastRecreateAt > 0 &&
+      now - this.lastRecreateAt < this.recreationPolicy.healthyResetMs
+    ) {
+      this.recreateCooldownMs = Math.min(
+        this.recreateCooldownMs * this.recreationPolicy.cooldownMultiplier,
+        this.recreationPolicy.cooldownMaxMs,
+      );
+    } else {
+      this.recreateCooldownMs = this.recreationPolicy.cooldownInitialMs;
+    }
+    this.lastRecreateAt = now;
+    this.nextRecreateAllowedAt = now + this.recreateCooldownMs;
+    this.recreateHistory.push(now);
+
+    this.logger?.warn(
+      'market-stream exchange recreated after closedByUser wedge (ccxt 4.5.58 pinned close() ' +
+        `terminal-state defect — see ccxt-stream.adapter.ts header comment, 2026-07-19); next ` +
+        `recreation gated for ${this.recreateCooldownMs}ms`,
+    );
+
+    // Best-effort: the stale instance is already dead (that is why we are here); its close() may
+    // itself throw or hang — either way, swallow it and move on to the hard-dispose below, which is
+    // what actually matters (v2: 2026-07-19 venue-penalty incident — close() alone was not enough).
+    try {
+      await (stale as unknown as { close(): Promise<void> }).close();
+    } catch {
+      // already dead; nothing to do
+    }
+    // Runs regardless of whether close() above succeeded, rejected, or hung — a wedged instance's
+    // leak (see the v2 header comment) is in its ws clients' timers/socket, not in the close()
+    // handshake, so disposal cannot be conditioned on close() having "worked".
+    this.hardDisposeExchange(stale);
+    return true;
+  }
+
+  // PINNED ccxt 4.5.58 internals — reaches past the public API on purpose (js/src/base/Exchange.js
+  // `clients` map keyed by ws url; js/src/base/ws/Client.js `clearConnectionTimeout()` /
+  // `clearPingInterval()`; js/src/base/ws/WsClient.js `connection`, the underlying Node `ws`
+  // socket). A wedged instance's close() can reject or hang while its clients still hold a live
+  // socket plus pingInterval/connectionTimer Node timers — those timers keep the client (and
+  // everything it closes over) reachable from Node's timer list regardless of whether anything else
+  // still references the stale exchange. 36 undisposed instances over ~35 minutes during the
+  // 2026-07-19 venue-penalty incident is exactly this leak, and it OOM-crashed the spot lane.
+  // Fails OPEN per client: one client that throws mid-teardown must never block tearing down the
+  // rest. Re-verify this reach-through if the pinned ccxt version is ever bumped.
+  private hardDisposeExchange(stale: Exchange): void {
+    const clients = (stale as unknown as { clients?: Record<string, unknown> }).clients ?? {};
+    for (const client of Object.values(clients)) {
+      try {
+        const c = client as {
+          clearConnectionTimeout?: () => void;
+          clearPingInterval?: () => void;
+          connection?: { terminate?: () => void };
+        };
+        c.clearConnectionTimeout?.();
+        c.clearPingInterval?.();
+        c.connection?.terminate?.();
+      } catch (err) {
+        this.logger?.warn(
+          `market-stream hard-dispose: one client failed to tear down (fail-open): ${String(err)}`,
+        );
+      }
+    }
+    (stale as unknown as { clients: Record<string, unknown> }).clients = {};
+  }
+
+  // Prunes the rolling window in place, then answers whether the cap is (still) exhausted. Fails
+  // OPEN in direction of the RECREATION decision (returning true — "exhausted" — is the CONSERVATIVE
+  // answer here: it stops recreating, which is safe; the market-data stream itself is never blocked
+  // by this check, only the recreation attempt is).
+  private isRecreateCapExhausted(now: number): boolean {
+    const cutoff = now - this.recreationPolicy.capWindowMs;
+    while (this.recreateHistory.length > 0 && this.recreateHistory[0]! < cutoff) {
+      this.recreateHistory.shift();
+    }
+    return this.recreateHistory.length >= this.recreationPolicy.capPerWindow;
+  }
+
+  // Level-50 (StreamAdapterLogger.error — see the pino level table): loud and rate-limited (reuses
+  // LOOP_ERROR_LOG_INTERVAL_MS so a stuck-wedged loop retrying every beat doesn't flood the log).
+  // Never silent — per the v2 requirement, recreation-cap exhaustion must fail loudly, not leak
+  // quietly; the container healthcheck/restart-policy is the intended next rung.
+  private logCapExhausted(now: number): void {
+    if (now - this.capExhaustedLoggedAt < LOOP_ERROR_LOG_INTERVAL_MS) return;
+    this.capExhaustedLoggedAt = now;
+    this.logger?.error(
+      'market-stream recreation cap exhausted — venue likely penalty-boxing; awaiting healthcheck restart',
+    );
+  }
+
+  // See SUBSCRIBE_LANE_COUNT / SUBSCRIBE_LANE_SPACING_MS. Bounded-concurrency token bucket: the
+  // least-loaded lane's slot is claimed synchronously before any await, so concurrent acquirers
+  // fan out deterministically (ties break to the lowest lane index); the wait itself runs on wall
+  // timers. Fails delayed-never-dropped: the gate only ever awaits a timer, never rejects — a
   // subscription is postponed, at most, never abandoned. The production CLOCK is wall-aligned
   // (SystemClock), so clock.now() and setTimeout share a time base; specs that freeze the clock at
-  // 0 still see real gate waits of (N−1)×spacing per extra acquirer.
+  // 0 still see real gate waits.
   private async subscribeSlot(): Promise<void> {
     const now = this.clock.now();
-    const at = Math.max(now, this.subscribeNextSlotAt);
-    this.subscribeNextSlotAt = at + SUBSCRIBE_MIN_SPACING_MS;
-    const wait = at - now;
+    let lane = 0;
+    for (let i = 1; i < this.laneNextSlotAt.length; i++) {
+      if (this.laneNextSlotAt[i]! < this.laneNextSlotAt[lane]!) lane = i;
+    }
+    const at = Math.max(now, this.laneNextSlotAt[lane]!);
+    this.laneNextSlotAt[lane] = at + SUBSCRIBE_LANE_SPACING_MS;
+    // Jitter only tops up an ALREADY-paced wait (a lane reused inside its own cadence) — an
+    // immediately-free lane (wait 0, e.g. every loop's very first subscribe, or the first
+    // SUBSCRIBE_LANE_COUNT acquirers after a shared drop) is a one-off event, not the recurring
+    // metronome jitter exists to decorrelate, so it stays instant.
+    const baseWait = at - now;
+    const wait = baseWait > 0 ? baseWait + this.subscribeJitterFn() : 0;
     if (wait > 0) await new Promise<void>((res) => setTimeout(res, wait));
   }
 
@@ -510,7 +822,11 @@ export class CcxtExchangeStreamAdapter implements ExchangeStreamPort {
   // Fails OPEN: the watchdog is a recovery-only device — a broken watchdog must never block or
   // degrade the data path it guards, so every failure inside it is swallowed (logged at warn). Its
   // only action is exchange.close(), which the supervised loops already recover from (pending watch
-  // futures reject → handleLoopError → backoff → re-watch = fresh subscription).
+  // futures reject → handleLoopError → backoff → re-watch = fresh subscription in the common case,
+  // or → recreateExchange() in the pinned-ccxt-4.5.58 closedByUser-wedge case — see the header
+  // comment). Deliberately NOT taught to recreate directly: handleLoopError's ExchangeClosedByUser
+  // branch already reacts within one watchdog-forced close(), so a second recreation path here
+  // would just be redundant surface area for the same recovery.
   private watchdogTick(): void {
     try {
       if (!this.running) return;
@@ -518,15 +834,13 @@ export class CcxtExchangeStreamAdapter implements ExchangeStreamPort {
       if (now - this.lastForcedReconnectAt < WATCHDOG_RECONNECT_COOLDOWN_MS) return;
       const stalled: string[] = [];
       for (const [key, at] of this.lastYieldAt) {
-        const channel = key.slice(key.indexOf('|') + 1);
-        const core = channel === 'ticker' || channel.startsWith('candle:');
-        if (core && now - at > WATCHDOG_STALL_THRESHOLD_MS) stalled.push(key);
+        if (now - at > WATCHDOG_STALL_THRESHOLD_MS) stalled.push(key);
       }
       if (stalled.length === 0) return;
       this.lastForcedReconnectAt = now;
       this.stateTracker.recordForcedReconnect?.();
       this.logger?.error(
-        `market-stream watchdog: core channel(s) silent >${WATCHDOG_STALL_THRESHOLD_MS}ms, forcing ` +
+        `market-stream watchdog: channel(s) silent >${WATCHDOG_STALL_THRESHOLD_MS}ms, forcing ` +
           `reconnect via exchange.close(): ${stalled.join(', ')}`,
       );
       void Promise.resolve((this.exchange as unknown as { close(): Promise<void> }).close()).catch(

@@ -1,7 +1,12 @@
 apiVersion: 1
 
 datasources:
+  # Pinned uid (not auto-generated) — see prometheus.yml's sibling comment: dashboard JSON needs a
+  # stable {type, uid} object to resolve correctly inside Mixed-datasource panels, and the pinned
+  # value survives the eventual GCP lift unchanged (a fresh volume provisioned from this file mints
+  # the same uid).
   - name: Prometheus (perp)
+    uid: prometheus-perp
     type: prometheus
     access: proxy
     url: http://prometheus-perp:9090

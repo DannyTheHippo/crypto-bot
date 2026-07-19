@@ -117,4 +117,15 @@ export class OrderRepository {
       .from(schema.orders)
       .where(and(eq(schema.orders.mode, mode), isNull(schema.orders.terminalAt)));
   }
+
+  // §6.4 cluster-A: the durable second-tier lookup reconciliation's trade axis falls back to when
+  // a venue order id resolves to nothing in the in-memory OrderBookService — venue-scoped since
+  // venue_order_id is only unique per venue.
+  async findByVenueOrderId(venue: string, venueOrderId: string) {
+    const rows = await requireDb(this.db)
+      .select()
+      .from(schema.orders)
+      .where(and(eq(schema.orders.venue, venue), eq(schema.orders.venueOrderId, venueOrderId)));
+    return rows[0] ?? null;
+  }
 }

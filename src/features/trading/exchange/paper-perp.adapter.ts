@@ -611,9 +611,18 @@ export class PaperPerpAdapter implements ExchangePort {
   // for the 1-2× BTC/ETH leverage bracket per Binance's published tiered leverage-bracket table —
   // real MMR is tier-dependent (scales with position notional) and the venue is the source of
   // truth. TODO(fetchLeverageTiers): replace this constant with a per-symbol/per-notional lookup
-  // once the adapter has a wired venue client to call fetchLeverageTiers against; using a single
-  // conservative low-leverage-tier MMR in the meantime is the fail-SAFE direction (it triggers
-  // liquidation EARLIER, before a real higher-tier MMR would).
+  // once the adapter has a wired venue client to call fetchLeverageTiers against — assessed W3 Part 3
+  // and still NOT a contained change: this adapter has no venue client today (a pure in-process
+  // simulator), so wiring one is a new network dependency + boot-time fetch/cache/fallback design,
+  // not a local edit. The gap widens as the perp basket grows from BTC/ETH to ~16 symbols (W3's own
+  // task brief) — most of those symbols sit on DIFFERENT (often less conservative) leverage brackets
+  // than the 1-2× BTC/ETH one this constant assumes, so the flat fallback increasingly UNDERSTATES
+  // real MMR for the newer, smaller-cap symbols specifically (a real per-symbol lookup would very
+  // likely raise their liquidation buffer, not lower it). Using a single conservative low-leverage-
+  // tier MMR in the meantime stays the fail-SAFE direction (it triggers liquidation EARLIER, before a
+  // real higher-tier MMR would) — the risk is an early paper liquidation never a missed one, so
+  // PERP_LIQ_BUFFER_PCT's own conservative default (0.20) is this gap's real backstop until
+  // fetchLeverageTiers lands.
   private liqPrice(pos: Position): Decimal {
     const invLev = new Decimal(1).div(this.leverage);
     return pos.signedQty.gt(0)

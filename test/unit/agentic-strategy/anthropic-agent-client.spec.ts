@@ -635,6 +635,29 @@ describe('AnthropicAgentClient', () => {
       expect(warn).toHaveBeenCalled();
     });
 
+    it('XA4: a max_tokens truncation with no tool block soft-holds AND warns with the truncation diagnostic (not a plain "no tool_use block")', async () => {
+      const fetchFn = vi.fn();
+      const warn = vi.fn();
+      const logger: LoggerLike = { warn };
+      const client = new AnthropicAgentClient(buildCfg(), fetchFn, logger);
+      fetchFn.mockResolvedValue(
+        apiResponse({
+          stop_reason: 'max_tokens',
+          content: [{ type: 'text' }],
+          usage: { input_tokens: 5000, output_tokens: 1024 },
+        }),
+      );
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+      });
+
+      await expect(client.propose(input)).resolves.toMatchObject({ signals: [] });
+      const msg = warn.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(msg).toMatch(/truncated at max_tokens/);
+      expect(msg).toContain('1024');
+    });
+
     it('stamps infoArm/thinkingArm on a soft-hold (refusal) proposal — a call WAS attempted, so the arm truth is real even though the response was unusable', async () => {
       const fetchFn = vi.fn();
       const client = new AnthropicAgentClient(buildCfg(), fetchFn);

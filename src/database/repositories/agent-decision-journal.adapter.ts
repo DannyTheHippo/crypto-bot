@@ -35,6 +35,31 @@ const KNOWN_JOURNAL_ACTIONS = new Set<AgentDecisionEntry['action']>([
   'error',
 ]);
 
+// XA4 (A0, 2026-07-20): assemble plan_json from the directive set and/or the portfolio-level
+// nextConsultBars. A plan present ⇒ directives (+ schedule merged in when set); no plan but a
+// schedule present ⇒ a bare `{nextConsultBars}` object so a hold's model-chosen cadence is still
+// auditable; neither ⇒ null. Split out as a pure function so its behavior is unit-testable directly.
+export function buildPlanJson(
+  plan: AgentDecisionEntry['plan'] | null,
+  nextConsultBars: number | null,
+): AgentDecisionInsert['planJson'] {
+  if (plan) {
+    return nextConsultBars != null ? { ...plan, nextConsultBars } : plan;
+  }
+  return nextConsultBars != null ? { nextConsultBars } : null;
+}
+
+// XA4 read-side coercion: a directive plan_json passes through verbatim (the I1b behavior — the
+// merged nextConsultBars stays inside `plan` for existing readers); the NEW schedule-only shape
+// (`{ nextConsultBars }`, no directive fields) reads back as null so no consumer mistakes a bare
+// portfolio schedule for a real directive plan. Identified by the plan's required stopLossPct.
+export function readPlanJson(
+  planJson: AgentDecisionInsert['planJson'],
+): AgentDecisionEntry['plan'] | null {
+  if (planJson == null || !('stopLossPct' in planJson)) return null;
+  return planJson;
+}
+
 export class AgentDecisionJournalAdapter implements AgentDecisionJournalPort {
   private readonly repo: AgentDecisionRepository;
   private readonly log = new Logger('AgentDecisionJournal');
@@ -76,16 +101,15 @@ export class AgentDecisionJournalAdapter implements AgentDecisionJournalPort {
       playbookVersion: entry.playbookVersion,
       promptHash: entry.promptHash,
       inputPayload: entry.inputPayload,
-      // I1b: nextConsultBars rides in plan_json alongside the rest of the directive set (no new
-      // column — see AgentDecisionEntry.nextConsultBars' own comment) — merged in ONLY when a plan
-      // object is actually present; a hold-without-directives row that still carried a portfolio
-      // schedule value has nowhere in this shape to carry it (accepted: the runtime schedule itself
-      // — agentic.strategy.ts's scheduledConsultBars — is driven straight off AgentProposal, never
-      // off this journal read; this column is an analysis artifact only).
-      planJson:
-        entry.plan && entry.nextConsultBars != null
-          ? { ...entry.plan, nextConsultBars: entry.nextConsultBars }
-          : entry.plan ?? null,
+      // I1b + XA4 (A0, 2026-07-20): plan_json carries the directive set AND the portfolio-level
+      // nextConsultBars. Before XA4 the schedule was merged in ONLY when a `plan` object was also
+      // present — but v2 holds (the overwhelming majority of decisions) carry a schedule and NO
+      // plan, so every hold dropped its model-chosen nextConsultBars and A0 found plan_json empty on
+      // every v2 row, making the scheduler's own choices unauditable. Now a hold that carried a
+      // schedule persists `{nextConsultBars}` on its own; a plan row merges the schedule into the
+      // directives; a bare hold with neither stays null. (The runtime schedule is still driven off
+      // AgentProposal directly — this column is an analysis artifact, but now a complete one.)
+      planJson: buildPlanJson(entry.plan ?? null, entry.nextConsultBars ?? null),
       consultId: entry.consultId ?? null,
       infoArm: entry.infoArm ?? null,
       thinkingArm: entry.thinkingArm ?? null,
@@ -134,7 +158,7 @@ function toRow(
     playbookVersion: r.playbookVersion,
     promptHash: r.promptHash,
     inputPayload: r.inputPayload,
-    plan: r.planJson,
+    plan: readPlanJson(r.planJson),
     consultId: r.consultId,
     infoArm: r.infoArm,
     thinkingArm: r.thinkingArm,

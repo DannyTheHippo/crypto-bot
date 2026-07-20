@@ -375,19 +375,24 @@ export const agentDecisions = pgTable(
     // AgentDecisionEntry.nextConsultBars (a sibling field on the journal entry, not on AgentDirectives
     // itself — merged in here by agent-decision-journal.adapter.ts's record(), see that call site's
     // own comment for why it only merges when a plan object is actually present).
-    planJson: jsonb('plan_json').$type<{
-      readonly sizeFraction?: string;
-      readonly stopLossPct: string;
-      readonly takeProfitPct: string;
-      readonly partialCloseFraction?: string;
-      readonly entryOffsetBps: number;
-      readonly entryValidityBars: number;
-      readonly maxHoldBars: number;
-      readonly entryStyle?: 'maker' | 'taker';
-      readonly direction?: 'long' | 'short';
-      readonly thesis?: string;
-      readonly nextConsultBars?: number;
-    }>(),
+    planJson: jsonb('plan_json').$type<
+      | {
+          readonly sizeFraction?: string;
+          readonly stopLossPct: string;
+          readonly takeProfitPct: string;
+          readonly partialCloseFraction?: string;
+          readonly entryOffsetBps: number;
+          readonly entryValidityBars: number;
+          readonly maxHoldBars: number;
+          readonly entryStyle?: 'maker' | 'taker';
+          readonly direction?: 'long' | 'short';
+          readonly thesis?: string;
+          readonly nextConsultBars?: number;
+        }
+      // XA4 (A0, 2026-07-20): a hold that carried only a portfolio schedule — no directive set — now
+      // persists `{ nextConsultBars }` alone (before XA4 these rows dropped their schedule entirely).
+      | { readonly nextConsultBars: number }
+    >(),
     // Batch-attribution join key (Push II Phase 5 follow-on): BatchingAgentClient coalesces up to
     // 5 per-symbol propose() calls into ONE AnthropicAgentClient.proposeBatch call, and every
     // resulting proposal (including degraded-to-hold elements) carries the SAME consultId, so

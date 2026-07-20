@@ -811,7 +811,22 @@ export class AnthropicAgentClient implements AgentClientPort {
       (b) => b.type === 'tool_use' && b.name === toolName,
     );
     if (!toolBlock) {
-      this.logger.warn(`anthropic api: no ${toolName} tool_use block in response`);
+      // XA4 (A0, 2026-07-20): a `max_tokens` stop with no tool block is a TRUNCATED decision, not a
+      // clean hold — the model ran out of output budget (thinking + tool JSON) before emitting the
+      // call. A0 found spot rows with output_tokens pinned at exactly 1024 resolving to empty-
+      // rationale holds, indistinguishable from a real hold. Name it loudly so it is diagnosable and
+      // so raising AGENTIC_MAX_TOKENS is an evidence-backed decision. Still soft-holds (signals: []):
+      // a truncation must never throw into decide(), only surface.
+      if (envelope.data.stop_reason === 'max_tokens') {
+        this.logger.warn(
+          `anthropic api: response truncated at max_tokens before a ${toolName} tool_use block ` +
+            `(output_tokens=${usage?.outputTokens ?? 'unknown'}) — degraded to hold; raise AGENTIC_MAX_TOKENS if frequent`,
+        );
+      } else {
+        this.logger.warn(
+          `anthropic api: no ${toolName} tool_use block in response (stop_reason=${envelope.data.stop_reason ?? 'unknown'})`,
+        );
+      }
       return {
         signals: [],
         usage,

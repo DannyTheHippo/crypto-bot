@@ -37,8 +37,13 @@ export interface AgentDecisionInsert {
   // ALSO accept AgentDirectives (the v2 shape, mirrored locally in trading.schema.ts's plan_json
   // $type) — AgentPlan (legacy) stays accepted unchanged for every pre-v2 caller/fixture. I1b: the
   // intersection additionally accepts nextConsultBars (AgentDecisionEntry's own sibling field, merged
-  // in by the adapter's record()) — mirrors trading.schema.ts's plan_json $type widening.
-  planJson?: ((AgentPlan | AgentDirectives) & { nextConsultBars?: number }) | null;
+  // in by the adapter's record()) — mirrors trading.schema.ts's plan_json $type widening. XA4: the
+  // schedule-only object `{ nextConsultBars }` (a hold that carried a portfolio schedule but no
+  // directive set) is a distinct third arm — before XA4 those rows dropped their schedule entirely.
+  planJson?:
+    | ((AgentPlan | AgentDirectives) & { nextConsultBars?: number })
+    | { nextConsultBars: number }
+    | null;
   // See AgentDecisionEntry.consultId — the batch join key; absent and null both insert as NULL.
   consultId?: string | null;
   // See AgentDecisionEntry.infoArm/thinkingArm — A/B treatment truth; absent and null both insert

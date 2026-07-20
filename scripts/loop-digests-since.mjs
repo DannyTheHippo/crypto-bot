@@ -42,7 +42,7 @@ function main() {
   if (!sinceIso || Number.isNaN(Date.parse(sinceIso))) {
     process.stderr.write(
       'usage: node scripts/loop-digests-since.mjs <ISO-8601-timestamp>\n' +
-        "  e.g. node scripts/loop-digests-since.mjs 2026-07-20T00:00:00Z\n",
+        '  e.g. node scripts/loop-digests-since.mjs 2026-07-20T00:00:00Z\n',
     );
     process.exit(1);
   }

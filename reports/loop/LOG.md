@@ -3809,3 +3809,95 @@ WATCH item 2's first real venue TP-or-stop fill journaling** (`venue_tp_filled` 
 07-17 13:25Z; 3/5 closed trips, 4th open); (5) spend: full-UTC-day read vs the $4.50 bar;
 (6) P8a harm-stop peek once ≥8 arm-stamped trips/cell; (7) carry re-test due ~2026-07-24;
 (8) stop-slippage re-run when `plan exit: stop` N≥10 (7 now).
+
+## 2026-07-20 — Pass 35 (scheduled, ~15:24–16:05Z): MAINTENANCE — first playbook-v3 pass: Y3 collector daemonized, WATCH-Y4 first-fire criteria met; format-gate repaired (uncommitted — concurrent owner session); WATCH-X9 checkpoint #1 (0 entries yet, cost/cadence inside breakers); shared-org rate-limit RECURRENCE flagged
+
+**Window read (v3 §1):** `date -u` 15:23:59Z; rehydrated from `loop:digests 2026-07-18T08:40Z` +
+state.md. Digest history contained ONLY the 26-heartbeat Y3 acceptance smoke (10:53Z, 2s cadence,
+sandboxed ⇒ empty lanes) — the standing collector was not running, exactly as the Y4 record
+anticipated ("NOT auto-started — the first pass should start/daemonize it"). Fired ~15:24Z, ahead
+of the ~16:07Z first-slot expectation in the Y4 record — treated as the first post-enable pass.
+Host awake on AC. Tree DIRTY at pass start (6 files, all cosmetic `??`-parens — see format-gate
+below); none staged by this pass.
+
+**Sweep (`loop:sweep` 15:25:28Z): 0 alarms.** Both lanes healthy on fresh 15:17Z boots (the X9
+gate redeploys); deltas correctly boot-reset + short-interval-suppressed. Warn tails all known
+classes: perp HYPE/KAITO trade-flow poll residual (9×, X2 stage-1 known gap), ws-seam
+recreations/watchdog at warn level (R8-6 seam v2 absorbing venue noise), spot
+`derivatives-feed funding-history poll failed` 2× (count-watch next pass). Incident gate CLEAN →
+MAINTENANCE.
+
+**Collector daemonized (the designed first-pass work):** `nohup corepack pnpm loop:collect`
+(pid 83510, 1h interval, log `reports/loop/digests/collector.log` — gitignored via `*.log`).
+Sentinel self-verified; first heartbeat 15:27:26Z carries REAL lane data (bootIds match the
+sweep, reconcile deltas advancing) — positive control PASSED, unlike the sandboxed smoke.
+**WATCH-Y4 first-fire criteria ALL MET this pass:** rehydrated from `loop:digests` (not a raw
+log window), `loop:sweep` was the evidence sweep, incident-first gate honored, honest LOG entry
+at bounded cost. Remaining WATCH-Y2/Y3 half (collector survives a host sleep with an annotated
+gap line) stays OPEN — the next sleep/wake is the probe. nohup does not survive host REBOOT
+(only sleep) — a reboot needs a re-daemonize; on GCP this becomes a compose service.
+
+**Format-gate repair (shipped to working tree, NOT committed — see concurrency):**
+`format:check` was RED on 38 files at pass start: (a) ~34 machine-written Y2/Y3 runtime
+artifacts under `reports/loop/digests/` (sweep JSONs, watermark, md digests) — the dir was born
+today and no ignore file knew it; (b) installed AND lockfile-pinned prettier 3.8.4 wants
+`(a ?? b)` parens the committed loop scripts/dashboard predate (the pass-start dirty tree was
+the same class — a partial `--write`). Fix: `reports/loop/digests` excluded in the three ignore
+files (`.prettierignore`, `.gitignore`, `.markdownlint-cli2.jsonc` — runtime artifacts must
+never redden a gate);
+`pnpm format` tree-wide. **format:check GREEN, lint:md GREEN after.** Note: the X9 record's
+"format:check green at f4be8fe" did not reproduce against the same tree — gate claims from
+compacted sessions get spot-checked (agent-claim-verification).
+
+**WATCH-X9 checkpoint #1 (DB truth; epochs spot 09:36Z / perp 10:42Z → 15:30Z):**
+
+1. Batched consults: spot 11 in 5.9h (~45/day pace), perp 6 in 4.8h (~30/day pace) — above the
+   8-20 design band, but on a redeploy-churned day (≥3 boots re-consulting); re-read on a quiet
+   day before tuning (WATCH-XA1 wants 3 awake days). **Entries: 0 both lanes** — promotion
+   window day-0; the A0 R1-pull-forward tripwire (entries ~0 for 5+ days post-XA1) dates to
+   ~07-25.
+2. Cost (DB-token estimate at sonnet pricing; in-process meter is boot-scoped): spot ≈$0.10,
+   perp ≈$0.11 cumulative since the epochs (~$0.4–0.5/day pace) — well inside $1.50/lane.
+3. plan_json present on consult holds (30 spot rows) — XA4 live-verified; 527 gate-journal
+   holds correctly bare.
+4. Reconciliations post-epoch: spot 707/707 CLEAN, perp 575/575 CLEAN, latest 15:30Z.
+5. `llm_usage` 0 rows since epoch = no reflection attempts (the weekly fire already consumed
+   this UTC week — R8-8 shape HOLDING; positive control: 250 historical rows, latest 09:16Z).
+6. `funding_payments`: 1 pre-epoch row (07-18) proves the pipe; WATCH-X2 funding acceptance
+   stays position-conditioned (no boundary-held position yet — no entries).
+
+**Shared-org rate-limit RECURRENCE (§3 N-recurrences rule) — FLAGGED:** RETRYABLE
+error-decision bursts beyond the X9-recorded 11:00Z incident: perp 12:30:27Z ×4 (one batch) +
+14:15:39Z ×1; spot 15:15:30Z ×8 (one batch, during the X9 gate fleet). Each burst sits inside a
+heavy-orchestration window of the owner session sharing the org budget. App self-heals
+(RETRYABLE → next bar), no capital impact while entries are 0, but once trading starts a 429'd
+consult is a missed trading decision. Root cause known (X9 record); the structural fix —
+**a separate Anthropic key/org for the trading app** — is owner-side (secrets = §4 MUST-NOT).
+Interim posture: scheduled passes stay fleet-free during trading hours (this pass ran solo).
+
+**Concurrent-session handling (process finding):** an interactive owner session was actively
+editing the repo DURING this pass (state.md archive-compaction committed `e1d59f8` 15:35Z
+mid-pass; episodic-memory src/test WIP uncommitted, writes observed to ~15:33Z). Pass adapted:
+evidence-gathering + collector work only; LOG/state writes deferred until the hot files were
+quiet 3+ min; **NO COMMIT** — full gates on a tree carrying another session's WIP would be
+unattributable (build/lint/typecheck/test NOT RUN; format:check + lint:md green are the only
+gate claims, both attributable to files this pass touched). Uncommitted set left for the next
+clean-tree pass (or the owner session) to commit: `.gitignore`, `.prettierignore`,
+`.markdownlint-cli2.jsonc`, prettier-formatted `scripts/loop-collect.mjs`,
+`scripts/loop-digests-since.mjs`, `scripts/loop-sweep.mjs`, `scripts/replay-agentic.mjs`,
+`observability/grafana/dashboards/crypto-bot.json`, and this LOG/state entry pair. The 6
+pass-start parens files overlap the owner WIP set and are theirs to fold. **Playbook v3.1
+candidate:** a scheduled pass should detect an active interactive session at start (recent
+mtime probe on tracked files or a lock convention) and degrade to report-only automatically —
+this pass improvised that rule.
+
+**Diff summary:** working-tree only, no commit, no deploy, no config/env change, no money-path
+change. Collector process started (operational, non-git).
+
+**Next-pass candidates:** (1) commit the format/hygiene set + this entry if the tree is clean;
+(2) collector hourly ticks present since 15:27Z (a 16:27Z+ line per hour) — then WATCH-Y2/Y3
+host-sleep half on the next sleep; (3) WATCH-XA6 24h checkpoint (due ~09:30Z 07-21: zero 1008
+mass-closes, reconnect ≤ R8-2, RSS trend flat); (4) X2 stage-2 pre-auth soak read (earliest
+~10:42Z 07-21; ceilings via sweep); (5) consult-cadence re-read on a quiet day vs the 8-20
+band; (6) spot funding-history warn count trend; (7) episodic-memory WIP: if committed by the
+owner session, the next money-path review + deploy follows the standing discipline.

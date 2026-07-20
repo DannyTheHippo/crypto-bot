@@ -25,3 +25,7 @@ test/backtest/data/funding-*.json
 test/backtest/data/fng.json
 # Local pg_dump snapshots (scripts/db-backup.sh) — operational artifacts, never committed.
 backups/
+# Y3 collector / Y2 sweep runtime output (scripts/loop-collect.mjs is the single writer; the
+# durable git record is reports/loop/LOG.md + state.md). Machine-written evidence artifacts,
+# never committed — tracking them would force per-tick commits or a permanently dirty tree.
+reports/loop/digests/

@@ -70,8 +70,22 @@ function safeName(symbol) {
 // Refuses stale/missing dist rather than silently loading an out-of-date SEED_PLAYBOOK copy — mirrors
 // backtest-agentic.mjs's loadSeedPlaybookContent freshness check exactly.
 function loadSeedPlaybookContent() {
-  const distPath = join(REPO_ROOT, 'dist', 'features', 'trading', 'agentic', 'agentic-strategy.module.js');
-  const srcPath = join(REPO_ROOT, 'src', 'features', 'trading', 'agentic', 'agentic-strategy.module.ts');
+  const distPath = join(
+    REPO_ROOT,
+    'dist',
+    'features',
+    'trading',
+    'agentic',
+    'agentic-strategy.module.js',
+  );
+  const srcPath = join(
+    REPO_ROOT,
+    'src',
+    'features',
+    'trading',
+    'agentic',
+    'agentic-strategy.module.ts',
+  );
   if (!existsSync(distPath)) {
     console.error(
       `replay:agentic: ${distPath} not found — run pnpm build first, or pass --playbook-file explicitly.`,
@@ -117,7 +131,9 @@ async function main() {
   }
   const timeframe = args.timeframe ?? '15m';
   if (!(timeframe in INTERVAL_MS)) {
-    usageError(`--timeframe must be one of ${Object.keys(INTERVAL_MS).join('/')}, got ${timeframe}`);
+    usageError(
+      `--timeframe must be one of ${Object.keys(INTERVAL_MS).join('/')}, got ${timeframe}`,
+    );
     return;
   }
   // Model default order: --model, then AGENTIC_MODEL (the field the live decide path pins), then the
@@ -138,10 +154,16 @@ async function main() {
     fromMs = EARLIEST_ALLOWED_MS;
   }
   const intervalMs = INTERVAL_MS[timeframe];
-  const toArg = args.to ?? (args.days ? new Date(fromMs + Number(args.days) * 86_400_000).toISOString() : new Date().toISOString());
+  const toArg =
+    args.to ??
+    (args.days
+      ? new Date(fromMs + Number(args.days) * 86_400_000).toISOString()
+      : new Date().toISOString());
   const toMs = Date.parse(toArg);
   if (Number.isNaN(toMs) || toMs <= fromMs) {
-    usageError(`--to (${toArg}) must be a date after the effective --from (${new Date(fromMs).toISOString()})`);
+    usageError(
+      `--to (${toArg}) must be a date after the effective --from (${new Date(fromMs).toISOString()})`,
+    );
     return;
   }
 
@@ -166,7 +188,9 @@ async function main() {
     );
   } else {
     if (!process.env.ANTHROPIC_API_KEY) {
-      usageError('ANTHROPIC_API_KEY is required for a real run — refusing (use --dry-run for the no-network path).');
+      usageError(
+        'ANTHROPIC_API_KEY is required for a real run — refusing (use --dry-run for the no-network path).',
+      );
       return;
     }
     const ohlcvFile = join(DATA_DIR, `ohlcv-${safeName(symbol)}-${timeframe}.json`);
@@ -187,7 +211,9 @@ async function main() {
       try {
         playbookContent = readFileSync(args['playbook-file'], 'utf8');
       } catch (err) {
-        usageError(`could not read --playbook-file ${args['playbook-file']}: ${err instanceof Error ? err.message : String(err)}`);
+        usageError(
+          `could not read --playbook-file ${args['playbook-file']}: ${err instanceof Error ? err.message : String(err)}`,
+        );
         return;
       }
     } else {
@@ -224,6 +250,8 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error(`replay:agentic: unexpected error: ${err instanceof Error ? err.message : String(err)}`);
+  console.error(
+    `replay:agentic: unexpected error: ${err instanceof Error ? err.message : String(err)}`,
+  );
   process.exitCode = 1;
 });

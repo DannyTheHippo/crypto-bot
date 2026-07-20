@@ -31,5 +31,8 @@
     "candidates",
     // Harness agent worktrees — full repo copies; linting them double-reports everything.
     ".claude",
+    // Y3 collector digest renders — machine-written per-tick md (scripts/loop-collect.mjs),
+    // not maintained prose; a runtime artifact must never be able to redden the lint gate.
+    "reports/loop/digests",
   ],
 }

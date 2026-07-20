@@ -409,8 +409,7 @@ function main() {
 
 // CLI entry-point guard: run the sweep ONLY when executed directly. An `import` (loop-collect.mjs
 // reuses runSweep) must NOT fire a full blocking sweep as an import side effect.
-const invokedDirectly =
-  process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+const invokedDirectly = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (invokedDirectly) {
   try {
     main();

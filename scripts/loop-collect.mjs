@@ -107,7 +107,9 @@ function verifyWritePath(dateStr, seq) {
   appendMd(dateStr, sentinel);
   let readBack;
   try {
-    const lines = readFileSync(path, 'utf8').split('\n').filter((l) => l.trim().length > 0);
+    const lines = readFileSync(path, 'utf8')
+      .split('\n')
+      .filter((l) => l.trim().length > 0);
     readBack = JSON.parse(lines[lines.length - 1]);
   } catch (err) {
     process.stderr.write(`loop-collect: FATAL sentinel read-back failed: ${String(err)}\n`);
@@ -173,7 +175,17 @@ function runTick(plannedAtMs) {
   const cadence = classifyCadence({ prevActualAtMs, plannedAtMs, actualAtMs, intervalMs });
   if (cadence.gapDetected) {
     seq += 1;
-    emit(dateStr, buildGapLine({ seq, plannedAtMs, actualAtMs, gapMs: cadence.gapMs, missedTicks: cadence.missedTicks, intervalMs }));
+    emit(
+      dateStr,
+      buildGapLine({
+        seq,
+        plannedAtMs,
+        actualAtMs,
+        gapMs: cadence.gapMs,
+        missedTicks: cadence.missedTicks,
+        intervalMs,
+      }),
+    );
   }
 
   // The heartbeat line — emitted whether the sweep found alarms, found nothing, or threw.

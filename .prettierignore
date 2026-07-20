@@ -24,3 +24,9 @@ test/backtest/data/funding-*.json
 # (AGENTIC_EVAL_SCORECARD_FILE output). Artifacts, not authored code; also excluded from
 # markdownlint (.markdownlint-cli2.jsonc).
 candidates
+
+# Y3 collector / Y2 sweep runtime output (single-line JSONL, timestamped sweep JSONs, rendered
+# md digests) — machine-written by scripts/loop-collect.mjs & loop-sweep.mjs, rewritten at
+# runtime; formatting them churns the collector's own files. Gitignored; also excluded from
+# markdownlint (.markdownlint-cli2.jsonc).
+reports/loop/digests

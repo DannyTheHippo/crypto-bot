@@ -500,7 +500,10 @@ funding_payments row inside one poll interval; the 3× spot batch-element schema
 soft-holds (submit_portfolio element failed — NEAR/USDT 12:20Z) stay rare (<5% of batch
 elements; a growing rate = consult spend without decisions, defect-class). **WATCH-Y2/Y3**: the
 first scheduled pass rehydrates from loop:digests and runs loop:sweep as its evidence sweep
-(Y4 wires this); collector survives the next host sleep with an annotated gap.
+(Y4 wires this); collector survives the next host sleep with an annotated gap. **(Pass 35,
+2026-07-20: first half RESOLVED POSITIVE — rehydration + sweep ran per v3, collector daemonized
+via nohup pid 83510, first live-lane heartbeat 15:27:26Z verified. Host-sleep half stays OPEN;
+note nohup survives sleep but not reboot — re-daemonize after any restart.)**
 
 ## X9 — round-7 extension gate + records (2026-07-20 ~15:30Z)
 
@@ -584,6 +587,40 @@ windows or hand-run sweeps = playbook-adoption defect, fix the doc not the pass.
 collector (`pnpm loop:collect`) is NOT auto-started — the first pass will find a digest gap
 since ~13:30Z and should start/daemonize it per the SKILL.md fallback note (deliberate: how to
 daemonize on the sleeping MacBook is an operator choice; on GCP it becomes a compose service).
+**(Pass 35, 2026-07-20 ~15:24–16:05Z — fired ahead of the 18:07-local slot — ALL first-fire
+criteria MET: digest rehydration, loop:sweep evidence, incident gate honored (clean →
+MAINTENANCE), honest LOG entry; collector daemonized as anticipated. One adoption gap
+surfaced for v3.1: no concurrent-session guard — an interactive owner session was editing the
+repo mid-pass, and the pass improvised a report-only/no-commit posture + a 3-min quiescence
+wait before touching LOG/state; codify. Full entry: LOG.md Pass 35.)**
+
+## R2 + R3 — program close at the pre-GCP stop line (2026-07-20 ~16:30Z) — decision record
+
+R3 gate GREEN at bb21208: build+lint+typecheck+format:check, 152 files / 2619 tests, livegate
+41/41; both lanes redeployed healthy.
+
+- **R2 — episodic memory (bb21208).** Regime tags (trend / vol bucket / funding sign / UTC
+  session) stamped into `plan_json.regimeTags` on EVERY journal write from this deploy — the
+  tagged corpus builds now, on both lanes, replay rows included. Retrieval (mem1 block, ≤5
+  tag-matched setups with read-time forward outcomes, synthetic-labeled) is gated by
+  `AGENTIC_EPISODIC_MEMORY_ENABLED`, default OFF (byte-identical absent). **PRE-AUTH
+  (UNFIRED): the loop may enable retrieval once ≥200 tagged rows exist per lane** (two-step:
+  the knob goes into the lane files + zod schema at enable time — it currently reads the
+  factory env map only, the selectAgentClient convention; noted debt). Forward outcomes are
+  read-time joins — nothing is ever written back onto journal rows (rule 6).
+- **Replay usage note (R1, standing):** replay runs are owner/loop-triggered with a REQUIRED
+  per-run USD cap; tokens are provably excluded from epoch cost and all evidence walks. The
+  shared-org rate-limit hazard (X9 record) applies doubly to replay — schedule runs OFF
+  trading-critical hours until the app has its own key/org.
+- **Program state at close:** every pre-cutover step of the plan is DONE — v2 contract, W/A0
+  rounds, XA1-XA7, X2 stage-1 (+ stage-2 pre-auth UNFIRED), X3-X9, Y1-Y4, R1-R3, lane metric
+  parity. **X1-FINAL (GCP terraform + lift) NOT STARTED — the owner-directed stop line.**
+  Owner actions open: CryptoPanic key (then SENTIMENT_FEED_ENABLED flip); commit of the
+  pre-existing dirty-tree set (strategy-registry, ccxt-exchange.adapter, ccxt-normalize,
+  3 specs — predates this program); GCP go-signal when ready.
+- The campaign measurement now runs itself: fresh epochs on the final build, the daily loop
+  live on v3 (Pass 35 verified), the collector daemonized, and the WATCH set (XA1 / X2 / XA6 /
+  XA7 / X7-X8 / X9 / Y2-Y3 / Y4) armed with dated checkpoints.
 
 ## Backlog (ranked; re-rank each pass)
 
@@ -614,6 +651,16 @@ wait on venue-TP capture data; **#18/#46/#47/#48** wait on their stated data/seq
 
 ## Flagged for human review (open)
 
+- **SHARED-ORG RATE-LIMIT — RECURRING; owner action requested (Pass 35, 2026-07-20; first
+  recorded X9 same day).** The trading app and interactive/orchestration sessions share ONE
+  Anthropic org budget; heavy fleet windows 429 the app's consults. Recurrences beyond the
+  recorded 11:00Z incident: perp 12:30:27Z ×4 + 14:15:39Z ×1, spot 15:15:30Z ×8 — every burst
+  inside an owner-session orchestration window (RETRYABLE error decisions in agent_decisions;
+  app self-heals next bar). Harmless at 0 entries; once trading resumes each burst is a missed
+  decision on live bars. Structural fix is owner-side: **a dedicated Anthropic key/org for the
+  trading app** (secrets = §4 MUST-NOT for the loop). Interim: scheduled passes run fleet-free
+  during trading hours (Pass 35 did); heavy orchestration ideally avoids active-menu bar
+  boundaries. Also still open at the owner: the CryptoPanic key (X4 sentiment enable).
 - **OPEN DEFECT — PERP ALGO-STOP FILL INVISIBLE TO THE OMS ⇒ PHANTOM POSITION (Pass 30,
   2026-07-17; ACTIVE divergence since 2026-07-16 17:16Z; owner-gated money-path fix).** The #54
   stop architecture worked venue-side: the resting STOP_MARKET (trigger 64,348.6) FIRED ~17:16Z

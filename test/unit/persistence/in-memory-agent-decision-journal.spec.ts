@@ -197,9 +197,7 @@ describe('InMemoryAgentDecisionJournal', () => {
         (r) => r.eventTime,
       ),
     ).toEqual([2, 1]);
-    expect((await journal.recentSimilarSetups(UP_HIGH_EU, 5)).map((r) => r.eventTime)).toEqual([
-      1,
-    ]);
+    expect((await journal.recentSimilarSetups(UP_HIGH_EU, 5)).map((r) => r.eventTime)).toEqual([1]);
   });
 
   it('retrieval INCLUDES replay-<runId> synthetic rows and labels them synthetic', async () => {

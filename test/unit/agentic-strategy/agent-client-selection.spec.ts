@@ -199,7 +199,10 @@ describe('SEED_PLAYBOOK_PERP (P2 expert seed)', () => {
   });
 
   it('passes validatePlaybook only with the perp lane capability flags', () => {
-    expect(SEED_PLAYBOOK_PERP.version).toBe(4);
+    // X2 (perp basket widening, 2026-07-20): version 5 — menu-breadth passage added; bumped ONLY
+    // this lane's own const (separate DB from spot — postgres-perp vs postgres, docker-compose.yml
+    // — so this cannot collide with SEED_PLAYBOOK's own version 4).
+    expect(SEED_PLAYBOOK_PERP.version).toBe(5);
     expect(
       validatePlaybook(SEED_PLAYBOOK_PERP.content, { shortsAllowed: true, leverageAllowed: true }),
     ).toEqual({ ok: true });

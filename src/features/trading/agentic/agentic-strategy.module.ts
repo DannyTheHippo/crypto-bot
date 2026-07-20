@@ -326,28 +326,37 @@ export const SEED_PLAYBOOK: { readonly version: number; readonly content: string
 // Perp lane counterpart to SEED_PLAYBOOK above — two-sided (shorts as readily as longs),
 // funding-flip and liquidation-cascade patterns, and leverage discipline for the 2x cap. Requires
 // {shortsAllowed: true, leverageAllowed: true} to pass validatePlaybook; never served to a spot lane.
+// X2 (perp basket widening, 2026-07-20): version 5 — adds the menu-breadth passage to ## entry
+// rules (below) so a multi-symbol scanner menu (8-symbol basket, active menu 4) does not read as a
+// diversification quota — mirrors the spot seed's own "concentrate conviction" guidance (see
+// SEED_PLAYBOOK above), which this lane never had. Bumped ONLY this lane's own version const (never
+// SEED_PLAYBOOK's) — the two seeds resolve against SEPARATE per-lane playbook-store rows (app.module.
+// ts's ensureSeed keyed off each seed's own `.version`; see PlaybookStoreAdapter.ensureSeed), so a
+// spot-lane version bump is neither required nor correct here (mirrors XA3's per-lane bump, which
+// bumped both ONLY because that revision touched both seeds' content — this revision touches only
+// this one). Trimmed ~180 chars of existing prose to make room under the 4000-char validator cap.
 export const SEED_PLAYBOOK_PERP: { readonly version: number; readonly content: string } = {
-  version: 4,
+  version: 5,
   content: [
     '## regime notes',
     'BTC-only, swing horizon, hours-to-days holds on 15m bars, genuinely two-sided: short a',
-    'breakdown exactly as readily as you long a breakout — there is no long-only bias on this lane.',
-    'If you call the trend down and stay flat, your rationale must say why no short. Worked',
-    'example: support breaks on rising open interest with fading positive funding — open_short',
+    'breakdown as readily as you long a breakout — there is no long-only bias on this lane.',
+    'If you call the trend down and stay flat, your rationale must say why no short. Example:',
+    'support breaks on rising open interest with fading positive funding — open_short',
     'sizeFraction 0.20-0.35, stop just above the broken level, take profit at the next liquidity',
-    'shelf (2.5-4%). A perp round trip costs ~6-10bps — fees almost never justify skipping. One',
+    'shelf (2.5-4%). A perp round trip costs ~6-10bps — fees rarely justify skipping. One',
     'soft input HALVES sizeFraction rather than forcing a hold; the evidence gate needs ~2 closed',
     'round trips/day — a flat week is a failure mode, not discipline.',
-    'Funding-flip signals: rich positive funding paired with stalling upside price means longs are',
-    'crowded and paying up for it — favors a short bias, especially once price stops making new',
-    'highs. Deeply negative funding while price holds support is capitulation exhaustion — favors a',
-    'long bias once selling pressure fades. Liquidation-cascade mean reversion: a violent wick',
-    'through a level, especially one lining up with a visible liquidation cluster, usually reflects',
-    'forced flow exhausting itself rather than a genuine new trend — fade the wick with a tight stop',
-    'past its extreme rather than chasing the cascade direction. Basis/open-interest divergence:',
-    'rising open interest with falling price means fresh short positions are building — real',
-    'momentum, respect it. Falling open interest with falling price means existing longs are closing',
-    'out, not fresh shorts piling in — a move nearing exhaustion, not the start of a fresh leg down.',
+    'Funding-flip signals: rich positive funding paired with stalling upside price favors a short',
+    'bias once price stalls. Deeply negative funding while price holds support is capitulation',
+    'exhaustion — favors a long bias once selling pressure fades. Liquidation-cascade mean',
+    'reversion: a violent wick through a level, especially one lining up with a visible',
+    'liquidation cluster, usually reflects forced flow exhausting itself rather than a genuine new',
+    'trend — fade the wick with a tight stop past its extreme rather than chasing the cascade',
+    'direction. Basis/open-interest divergence: rising open interest with falling price means',
+    'fresh short positions are building — real momentum, respect it. Falling open interest with',
+    'falling price means existing longs are closing out, not fresh shorts piling in — a move',
+    'nearing exhaustion, not the start of a fresh leg down.',
     '',
     '## entry rules',
     'Enter short into a genuine breakdown the same way a long enters a breakout: structure breaks,',
@@ -359,27 +368,28 @@ export const SEED_PLAYBOOK_PERP: { readonly version: number; readonly content: s
     'recent momentum. The 2x leverage cap exists so conviction can be expressed, not so every entry',
     'defaults to it — reserve the full multiple for the highest-conviction setups (structure plus',
     'funding plus open interest all agreeing); a merely-decent setup earns a smaller multiple.',
+    'Menu breadth is opportunity set, not a diversification quota: concentrate in the 1-2 best',
+    'setups at real size. Perp majors move together, so several small positions across them is',
+    'often one levered bet, not diversification.',
     '',
     '## exit rules',
     'Stops sit beyond the structure that invalidated the thesis, and liquidation distance must stay',
-    'more than 3x the stop distance at all times — if a stop that wide puts liquidation',
-    'uncomfortably close, reduce size or the leverage multiple rather than tightening the stop into',
-    'noise. Funding accrues every 8 hours while positioned — it is real carry cost (or income), not',
-    'a rounding error; a position paying away funding for days needs a correspondingly better price',
-    'thesis to justify holding through it. Raise (long) or lower (short) the stop as new structure',
-    'forms in your favor; let a genuine trend run rather than capping it early. Cut a',
-    'liquidation-cascade fade fast if the wick extreme is reclaimed against you — that setup is',
-    'invalidated the moment the exhaustion read is wrong, there is no "give it more room" on this',
-    'trade type.',
+    'more than 3x the stop distance — if a stop that wide puts liquidation uncomfortably close,',
+    'reduce size or the leverage multiple rather than tightening the stop into noise. Funding',
+    'accrues every 8 hours while positioned — it is real carry cost (or income), not a rounding',
+    'error; a position paying away funding for days needs a stronger thesis to justify holding',
+    'through it. Raise (long) or lower (short) the stop as new structure forms in your favor; let a',
+    'genuine trend run rather than capping it early. Cut a liquidation-cascade fade fast if the',
+    'wick extreme is reclaimed against you — that setup is invalidated the moment the exhaustion',
+    'read is wrong — no "give it more room" on this trade type.',
     '',
     '## mistakes to avoid',
-    'Do not treat the 2x leverage cap as a default multiple — undersized conviction on weak setups,',
-    'oversized on the rare structure-plus-funding-plus-OI alignment wastes the tool either way. Do',
-    'not ignore funding cost on a position held for days — a thesis that only works while funding',
-    'stays cheap is fragile. Do not chase a liquidation-cascade wick in its own direction; the edge',
-    'is fading the exhaustion, not riding the panic. Do not let liquidation distance shrink below 3x',
-    'the stop distance to squeeze out extra size — a stopped-out loss is recoverable, a liquidation',
-    'is not.',
+    'Do not treat the 2x leverage cap as a default — under- or over-sizing conviction relative to',
+    'setup quality both waste it. Do not ignore funding cost on a position held for days — a thesis',
+    'that only works while funding stays cheap is fragile. Do not chase a liquidation-cascade wick',
+    'in its own direction; the edge is fading the exhaustion, not riding the panic. Do not let',
+    'liquidation distance shrink below 3x the stop distance to squeeze out extra size — a',
+    'stopped-out loss is recoverable, a liquidation is not.',
   ].join('\n'),
 };
 
@@ -448,6 +458,11 @@ export function selectAgentClient(
       derivativesFeedEnabled: env['DERIVATIVES_FEED_ENABLED'] === 'true',
       // d2: off by default ⇒ byte-identical d1 prompt/payload/tag.
       derivativesV2Enabled: env['AGENTIC_DERIVATIVES_V2_ENABLED'] === 'true',
+      // ADD-A (X2, perp basket widening): wired from the SAME DERIVATIVES_FEED_ENABLED env var as
+      // derivativesFeedEnabled above (no new env knob — task ask was "gated behind the existing
+      // derivatives feed flag") — a distinct opts field only so the fundingHistory attribution
+      // surface (sentence/tag) is independently gated, per this file's one-flag-per-block precedent.
+      fundingHistoryFeedEnabled: env['DERIVATIVES_FEED_ENABLED'] === 'true',
       // Derivatives-block A/B: 0 by default ⇒ byte-identical (no control arm ever fires).
       derivativesAbPct: intEnv(env['AGENTIC_DERIVATIVES_AB_PCT'], 0),
       // S3: thinkingAbPct dropped — AnthropicAgentClientConfig no longer has the field (thinking A/B

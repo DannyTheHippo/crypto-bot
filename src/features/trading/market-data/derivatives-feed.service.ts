@@ -16,6 +16,9 @@ const STALE_POLL_MULTIPLE = 2;
 // d2 (AGENTIC_DERIVATIVES_V2_ENABLED): trailing lookback window for the OI-change and funding-trend
 // ring buffers — a constant, not an env knob (Unit 1 spec: default 1h, no per-deployment tuning).
 const V2_LOOKBACK_MS = 60 * 60 * 1000;
+// ADD-A (X2, perp basket widening): "last 3 settlements" per the payload spec — Binance USDM
+// settles 3x/day, so this is roughly the trailing 24h.
+const RECENT_FUNDING_HISTORY_LIMIT = 3;
 
 /** Minimal ccxt REST surface this service needs — injected so tests supply a fixture double
  * instead of a live exchange (mirrors OhlcvSource in feed-health.service.ts). */
@@ -36,6 +39,13 @@ export interface DerivativesRestSource {
   // trade-flow-feed.service.ts's own spot-client precedent) — returns the venue's own last trade
   // price. Optional: absent sources (pre-v2 fixtures/doubles) simply produce spotPerpBasisBps: null.
   fetchTicker?(symbol: string): Promise<{ last?: string | number }>;
+  // ADD-A (X2, perp basket widening): unified ccxt fetchFundingRateHistory — settled funding rates,
+  // newest-last, distinct from fetchFundingRate's current/predicted value above. Optional: absent
+  // sources (pre-ADD-A fixtures/doubles) simply produce recentFundingRates: null on the snapshot.
+  fetchFundingRateHistory?(
+    symbol: string,
+    limit?: number,
+  ): Promise<readonly { fundingRate?: string | number }[]>;
 }
 
 // d2 ring-buffer sample: one (timestamp, value) pair, oldest-first within the retained window.
@@ -183,14 +193,19 @@ export class DerivativesFeedService implements DerivativesFeedPort, OnModuleInit
     try {
       // d2: the spot ticker rides the SAME Promise.all as funding/OI — a spot-fetch failure fails
       // the whole poll (existing catch below), rather than a silently-partial v2-less snapshot.
-      const [funding, oi, ticker] = await Promise.all([
+      // ADD-A: recentFundingRates does NOT ride this array — fetchRecentFundingRates swallows its
+      // own errors (never rejects), so a history-fetch failure degrades only the new fundingHistory
+      // block rather than wiping the whole snapshot (fail-open measurement, unlike the co-required
+      // funding/OI/ticker triple above).
+      const [funding, oi, ticker, recentFundingRates] = await Promise.all([
         this.source.fetchFundingRate(perpSymbol),
         this.source.fetchOpenInterest(perpSymbol),
         this.source.fetchTicker
           ? this.source.fetchTicker(String(symbol))
           : Promise.resolve(undefined),
+        this.fetchRecentFundingRates(perpSymbol),
       ]);
-      const snapshot = this.toSnapshot(symbol, funding, oi, ticker);
+      const snapshot = this.toSnapshot(symbol, funding, oi, ticker, recentFundingRates);
       if (snapshot) {
         this.snapshots.set(symbol, snapshot);
         this.lastSuccessAt = snapshot.asOf;
@@ -206,6 +221,30 @@ export class DerivativesFeedService implements DerivativesFeedPort, OnModuleInit
       }
       this.errorCount += 1;
       this.options.logger?.warn(`derivatives-feed poll failed for ${perpSymbol}: ${msg}`);
+    }
+  }
+
+  // ADD-A (X2, perp basket widening): last up-to-3 SETTLED funding rates via the optional
+  // fetchFundingRateHistory read. Never throws/rejects — a failure (venue error, or the source
+  // lacking the method) resolves null so the caller's Promise.all can include it safely without
+  // risking the co-required funding/OI/ticker snapshot on a history-only fetch problem.
+  private async fetchRecentFundingRates(perpSymbol: string): Promise<readonly number[] | null> {
+    if (!this.source.fetchFundingRateHistory) return null;
+    try {
+      const history = await this.source.fetchFundingRateHistory(
+        perpSymbol,
+        RECENT_FUNDING_HISTORY_LIMIT,
+      );
+      const rates = history
+        .map((h) => asFiniteNumber(h.fundingRate))
+        .filter((n): n is number => n !== null);
+      return rates.length > 0 ? rates : null;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.options.logger?.warn(
+        `derivatives-feed funding-history poll failed for ${perpSymbol}: ${msg}`,
+      );
+      return null;
     }
   }
 
@@ -232,6 +271,7 @@ export class DerivativesFeedService implements DerivativesFeedPort, OnModuleInit
     funding: Awaited<ReturnType<DerivativesRestSource['fetchFundingRate']>>,
     oi: Awaited<ReturnType<DerivativesRestSource['fetchOpenInterest']>>,
     ticker: Awaited<ReturnType<NonNullable<DerivativesRestSource['fetchTicker']>>> | undefined,
+    recentFundingRates: readonly number[] | null,
   ): DerivativesSnapshot | null {
     const fundingRate = asFiniteNumber(funding.fundingRate);
     // fundingRate is the one field this block cannot render without — no partial/garbage snapshot.
@@ -270,6 +310,7 @@ export class DerivativesFeedService implements DerivativesFeedPort, OnModuleInit
       oiChangePct,
       fundingTrendDelta: fundingTrend?.delta ?? null,
       fundingTrendDirection: fundingTrend?.direction ?? null,
+      recentFundingRates,
     };
   }
 }

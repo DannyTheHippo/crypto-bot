@@ -25,6 +25,7 @@ import {
   DECISION_V2_BOUNDS,
   DERIVATIVES_TEMPLATE_VERSION,
   DERIVATIVES_V2_TEMPLATE_VERSION,
+  FUNDING_HISTORY_TEMPLATE_VERSION,
   LIQUIDATION_TEMPLATE_VERSION,
   TRACK_RECORD_TEMPLATE_VERSION,
   PORTFOLIO_TEMPLATE_VERSION,
@@ -409,6 +410,14 @@ export interface AnthropicAgentClientConfig {
   // IS FORBIDDEN — never flip this while an A/B or offline sweep is comparing d1-tagged rows; see the
   // same constant's comment for why the two template versions are not cross-comparable.
   readonly derivativesV2Enabled?: boolean;
+  // ADD-A (X2, perp basket widening): documents + renders the fundingHistory block (own tag, own
+  // flag — same one-flag-per-block precedent as sentimentFeedEnabled/tradeFlowFeedEnabled below,
+  // not a reuse of derivativesFeedEnabled: reusing it would retroactively change every existing
+  // derivativesFeedEnabled=true fixture's byte-identical prompt/hash). Wired from the SAME
+  // DERIVATIVES_FEED_ENABLED env var at the composition root (no new env knob) — see
+  // agentic-strategy.module.ts. Inert without a fresh recentFundingRates snapshot regardless (see
+  // buildFundingHistoryBlock). Absent/false ⇒ byte-identical legacy prompt.
+  readonly fundingHistoryFeedEnabled?: boolean;
   // Derivatives-block A/B (measurement start 2026-07-12): percent (0-50) of decides deterministically
   // routed to a CONTROL arm that withholds the derivatives block entirely — system sentence,
   // promptHash's `+d1` tag, and the payload's derivatives key all withheld TOGETHER (see propose()'s
@@ -1479,6 +1488,7 @@ export class AnthropicAgentClient implements AgentClientPort {
     const infoContextAbPct = this.cfg.derivativesAbPct ?? 0;
     const anyInfoFeed =
       (this.cfg.derivativesFeedEnabled ?? false) ||
+      (this.cfg.fundingHistoryFeedEnabled ?? false) ||
       (this.cfg.crossSymbolFeedEnabled ?? false) ||
       (this.cfg.tradeFlowFeedEnabled ?? false) ||
       (this.cfg.positioningFeedEnabled ?? false) ||
@@ -1496,6 +1506,11 @@ export class AnthropicAgentClient implements AgentClientPort {
     // gated INSIDE effectiveDerivativesEnabled so a control-arm decide can never tag d2.
     const effectiveDerivativesV2Enabled =
       effectiveDerivativesEnabled && (this.cfg.derivativesV2Enabled ?? false);
+    // ADD-A: withheld under the SAME info-context control arm as derivatives above (it is
+    // conceptually part of that same external-data bundle) — a separate flag/tag, but not a
+    // separate AB surface.
+    const effectiveFundingHistoryEnabled =
+      (this.cfg.fundingHistoryFeedEnabled ?? false) && !infoContextControlArm;
     const effectiveCrossSymbolEnabled =
       (this.cfg.crossSymbolFeedEnabled ?? false) && !infoContextControlArm;
     const effectiveTradeFlowEnabled =
@@ -1540,6 +1555,7 @@ export class AnthropicAgentClient implements AgentClientPort {
           : {}),
       derivativesFeedEnabled: effectiveDerivativesEnabled,
       derivativesV2Enabled: effectiveDerivativesV2Enabled,
+      fundingHistoryFeedEnabled: effectiveFundingHistoryEnabled,
       sentimentFeedEnabled: this.cfg.sentimentFeedEnabled ?? false,
       shortsEnabled: this.cfg.shortsEnabled ?? false,
       crossSymbolFeedEnabled: effectiveCrossSymbolEnabled,
@@ -1596,6 +1612,11 @@ export class AnthropicAgentClient implements AgentClientPort {
               : DERIVATIVES_TEMPLATE_VERSION,
           ]
         : []),
+      // ADD-A: own flag (fundingHistoryFeedEnabled), own AB-withholding via effectiveFundingHistoryEnabled
+      // above — the underlying data rides the same DerivativesFeedService poll as d1/d2, but the
+      // ATTRIBUTION surface (sentence/tag/flag) is independent so existing derivativesFeedEnabled=true
+      // fixtures stay byte-identical.
+      ...(effectiveFundingHistoryEnabled ? [FUNDING_HISTORY_TEMPLATE_VERSION] : []),
       ...(this.cfg.sentimentFeedEnabled ? [SENTIMENT_TEMPLATE_VERSION] : []),
       // x1 marks the LEGACY (non-plan) shorts prompt shape only — the plan-shorts combination is
       // already fully identified by the p4 base tag, so stacking x1 onto p4 would contradict the

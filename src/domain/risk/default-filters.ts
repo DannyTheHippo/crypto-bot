@@ -23,8 +23,19 @@ export const DEFAULT_FILTERS: ReadonlyMap<string, SymbolFilters> = new Map<strin
   // (never touched unless TRADING_SYMBOLS names one of these futures market ids), so the existing
   // spot deployment stays byte-identical. Values are the live fapi.binance.com/fapi/v1/exchangeInfo
   // PRICE_FILTER/LOT_SIZE/MIN_NOTIONAL figures, fetched 2026-07-13.
-  ['BTC/USDT:USDT', { tickSize: '0.10', stepSize: '0.001', minQty: '0.001', minNotional: '50' }],
+  // X2 stage-1 perp basket (2026-07-20): values probe-verified against the DEMO venue
+  // (demo-fapi.binance.com/fapi/v1/exchangeInfo — the venue this lane actually trades; the #54
+  // pattern), all 8 status TRADING. BTC step/minQty corrected 0.001→0.0001 (the 2026-07-13 row
+  // carried the PROD figure; demo is finer — and on a $1k book a 0.001 BTC step is a ~$110
+  // quantum, so the finer demo step materially improves fraction sizing).
+  ['BTC/USDT:USDT', { tickSize: '0.10', stepSize: '0.0001', minQty: '0.0001', minNotional: '50' }],
   ['ETH/USDT:USDT', { tickSize: '0.01', stepSize: '0.001', minQty: '0.001', minNotional: '20' }],
+  ['SOL/USDT:USDT', { tickSize: '0.01', stepSize: '0.01', minQty: '0.01', minNotional: '5' }],
+  ['ZEC/USDT:USDT', { tickSize: '0.01', stepSize: '0.001', minQty: '0.001', minNotional: '5' }],
+  ['AAVE/USDT:USDT', { tickSize: '0.01', stepSize: '0.1', minQty: '0.1', minNotional: '5' }],
+  ['NEAR/USDT:USDT', { tickSize: '0.001', stepSize: '1', minQty: '1', minNotional: '5' }],
+  ['HYPE/USDT:USDT', { tickSize: '0.001', stepSize: '0.01', minQty: '0.01', minNotional: '5' }],
+  ['KAITO/USDT:USDT', { tickSize: '0.0001', stepSize: '0.1', minQty: '0.1', minNotional: '5' }],
   // U1 (Design § Universe: 8 -> ~24 basket) venue-filters GROUNDWORK for the planned expansion
   // (BNB DOGE ADA AVAX DOT LTC SUI PEPE WIF TRX SHIB UNI APT ARB OP FIL). Chosen: mechanical table
   // extension with these rows as the DEFAULT_FILTERS fallback (smaller correct change than adding a

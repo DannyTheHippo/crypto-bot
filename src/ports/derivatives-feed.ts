@@ -31,6 +31,13 @@ export interface DerivativesSnapshot {
   // Same ring-buffer approach as oiChangePct, applied to fundingRate: raw fraction delta and its sign.
   readonly fundingTrendDelta: number | null;
   readonly fundingTrendDirection: 'up' | 'down' | 'flat' | null;
+  // ADD-A (X2, perp basket widening): last up-to-3 SETTLED funding rates (raw fraction, oldest-
+  // first), fetched via DerivativesRestSource.fetchFundingRateHistory — distinct from
+  // fundingTrendDelta/Direction above, which is a poll-cadence ring buffer (V2_LOOKBACK_MS=1h) that
+  // cannot span 8h-apart settlements. Optional: absent on pre-ADD-A fixtures/doubles; null when the
+  // source has no fetchFundingRateHistory method, the history fetch failed, or it returned zero rows
+  // — same fail-open-measurement contract as the other optional feed fields on this snapshot.
+  readonly recentFundingRates?: readonly number[] | null;
 }
 
 export interface DerivativesFeedPort {

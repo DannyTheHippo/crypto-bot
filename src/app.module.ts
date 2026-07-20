@@ -709,6 +709,11 @@ function buildDerivativesRestSource(): DerivativesRestSource {
     fetchFundingRate: (symbol) => perp.fetchFundingRate(symbol),
     fetchOpenInterest: (symbol) => perp.fetchOpenInterest(symbol),
     fetchTicker: (symbol) => spot.fetchTicker(symbol),
+    // ADD-A (X2, perp basket widening): settled funding-rate history — unified ccxt method, REST
+    // only (same class as fetchFundingRate/fetchOpenInterest above), `since` omitted so the venue
+    // returns its own most-recent rows.
+    fetchFundingRateHistory: (symbol, limit) =>
+      perp.fetchFundingRateHistory(symbol, undefined, limit),
   };
 }
 // Public-only REST client for the SPOT market's raw (unparsed) klines endpoint — the CVD feed calls

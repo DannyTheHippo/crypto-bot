@@ -62,6 +62,13 @@ export const DERIVATIVES_TEMPLATE_VERSION = 'd1';
 // never comparable across the same nominal "derivatives enabled" cell. Wait for any in-flight
 // cross-template comparison to conclude before enabling.
 export const DERIVATIVES_V2_TEMPLATE_VERSION = 'd2';
+// ADD-A (X2, perp basket widening, 2026-07-20) funding-rate HISTORY attribution tag: a NEW block
+// (fundingHistory — last up-to-3 settled rates + the current/predicted rate), distinct from the
+// derivatives block above, so it gets its own tag rather than bumping d1/d2 (which would perturb
+// those blocks' own byte-identity tests). Reuses derivativesFeedEnabled (no new flag) — same gate as
+// d1/d2 — since the underlying data rides the same DerivativesFeedService poll. Composed as a `+fh1`
+// suffix, stacking after d1/d2.
+export const FUNDING_HISTORY_TEMPLATE_VERSION = 'fh1';
 // C4 sentiment-feed attribution tag: flag-ON appends a constant system-prompt sentence (the
 // sentiment block guidance), same convention as DERIVATIVES_TEMPLATE_VERSION above. Composed as a
 // `+s1` suffix at the computePromptHash call site (anthropic-agent-client.ts), stacking after `+d1`
@@ -873,6 +880,12 @@ export interface BuildSystemPromptOptions {
   // derivatives sentence for the v2 wording documenting the three extra fields (spot-perp basis,
   // OI percent change, funding trend). Absent/false ⇒ byte-identical d1 wording.
   readonly derivativesV2Enabled?: boolean;
+  // ADD-A (X2, perp basket widening): when true, documents the optional fundingHistory block (last
+  // up-to-3 settled funding rates + predicted) in the system prompt. A DEDICATED flag, not a reuse of
+  // derivativesFeedEnabled — reusing it would retroactively change every existing
+  // derivativesFeedEnabled=true fixture's byte-identical prompt (same one-flag-per-block precedent as
+  // sentimentFeedEnabled below). Absent/false ⇒ byte-identical to pre-ADD-A output.
+  readonly fundingHistoryFeedEnabled?: boolean;
   // C4: when true, documents the optional sentiment block (recent headlines) in the system prompt.
   // Absent/false ⇒ byte-identical to pre-C4 output — gated separately from the block's own per-call
   // presence, same convention as derivativesFeedEnabled above.
@@ -930,6 +943,7 @@ export function buildSystemPrompt(
   const planMode = opts.planMode ?? false;
   const derivativesFeedEnabled = opts.derivativesFeedEnabled ?? false;
   const derivativesV2Enabled = opts.derivativesV2Enabled ?? false;
+  const fundingHistoryFeedEnabled = opts.fundingHistoryFeedEnabled ?? false;
   const sentimentFeedEnabled = opts.sentimentFeedEnabled ?? false;
   const shortsEnabled = opts.shortsEnabled ?? false;
   const crossSymbolFeedEnabled = opts.crossSymbolFeedEnabled ?? false;
@@ -973,6 +987,14 @@ export function buildSystemPrompt(
           derivativesV2Enabled
             ? 'The user message may include a derivatives block with the perpetual-futures funding rate (fraction and annualized %), open interest, the mark/index basis in basis points, the true spot-vs-perp basis in basis points, the open-interest percent change over the trailing lookback window, and the funding-rate trend (delta and direction) — for context on futures-market positioning around this symbol; it is omitted when no fresh derivatives snapshot is available.'
             : 'The user message may include a derivatives block with the perpetual-futures funding rate (fraction and annualized %), open interest, and the mark/index basis in basis points, for context on futures-market positioning around this symbol — it is omitted when no fresh derivatives snapshot is available.',
+        ]
+      : []),
+    // ADD-A: own flag (fundingHistoryFeedEnabled) — the underlying data rides the same
+    // DerivativesFeedService poll as the derivatives block above, but the attribution surface is
+    // independent so existing derivativesFeedEnabled=true fixtures stay byte-identical.
+    ...(fundingHistoryFeedEnabled
+      ? [
+          'The user message may include a fundingHistory block with recent (the last up to 3 settled funding rates, oldest-first, as fractions) and predicted (the current/latest polled funding rate for the upcoming settlement) — usable while FLAT, unlike the position-conditioned funding accrual; it is omitted when funding-rate history is unavailable.',
         ]
       : []),
     ...(sentimentFeedEnabled
@@ -1036,6 +1058,7 @@ function buildTradeContractSystemPrompt(
   const shortsEnabled = opts.shortsEnabled ?? false;
   const derivativesFeedEnabled = opts.derivativesFeedEnabled ?? false;
   const derivativesV2Enabled = opts.derivativesV2Enabled ?? false;
+  const fundingHistoryFeedEnabled = opts.fundingHistoryFeedEnabled ?? false;
   const sentimentFeedEnabled = opts.sentimentFeedEnabled ?? false;
   const crossSymbolFeedEnabled = opts.crossSymbolFeedEnabled ?? false;
   const tradeFlowFeedEnabled = opts.tradeFlowFeedEnabled ?? false;
@@ -1061,7 +1084,11 @@ function buildTradeContractSystemPrompt(
     'A take-profit must clear the round-trip fee fraction stated above — in practice a typical swing target (1-8%) clears it many times over, so fee arithmetic justifies skipping only sub-0.6% targets, never a normal swing entry.',
     ...(shortsEnabled
       ? [
-          "'open_short' opens or scales into a short position (profits when price falls); 'close' exits any open position, long or short — there is no separate cover action. Manage liquidation risk actively: the position summary shows margin usage and liquidation distance, and leverage is capped at 2x — never size or hold into a position where an ordinary adverse move threatens liquidation, not merely your own stop.",
+          // X2 honesty fix (2026-07-20): the summary does NOT yet carry margin/liq-distance fields
+          // (no such data reaches AgentPositionSummary — a follow-up build before stage-2 widening),
+          // so the prompt must teach the model to REASON about liquidation from what it does have
+          // (2x cap arithmetic) rather than promise fields that never render.
+          "'open_short' opens or scales into a short position (profits when price falls); 'close' exits any open position, long or short — there is no separate cover action. Manage liquidation risk actively from first principles: leverage is capped at 2x, so liquidation sits roughly 50% adverse (minus maintenance margin) from entry on an isolated position — but stacked positions share the margin pool, so treat correlated multi-position exposure as one levered bet. Never size or hold into a position where an ordinary adverse move threatens liquidation, not merely your own stop.",
           'Funding is part of your PnL while positioned on a perpetual, not a side note: it is carry INCOME while you are being paid to hold your side, and a carry COST while you are paying it. Weigh persistent funding against your position as a headwind, and persistent funding in your favor as a tailwind that can justify holding longer.',
           'Short accountability: when you hold through a downtrend you yourself assess as confirmed, your rationale must state why you are not short — a two-sided lane that only ever considers longs is wasting its structural advantage.',
         ]
@@ -1082,6 +1109,14 @@ function buildTradeContractSystemPrompt(
           derivativesV2Enabled
             ? 'The user message may include a derivatives block with the perpetual-futures funding rate (fraction and annualized %), open interest, the mark/index basis in basis points, the true spot-vs-perp basis in basis points, the open-interest percent change over the trailing lookback window, and the funding-rate trend (delta and direction) — for context on futures-market positioning around this symbol; it is omitted when no fresh derivatives snapshot is available.'
             : 'The user message may include a derivatives block with the perpetual-futures funding rate (fraction and annualized %), open interest, and the mark/index basis in basis points, for context on futures-market positioning around this symbol — it is omitted when no fresh derivatives snapshot is available.',
+        ]
+      : []),
+    // ADD-A: own flag (fundingHistoryFeedEnabled) — the underlying data rides the same
+    // DerivativesFeedService poll as the derivatives block above, but the attribution surface is
+    // independent so existing derivativesFeedEnabled=true fixtures stay byte-identical.
+    ...(fundingHistoryFeedEnabled
+      ? [
+          'The user message may include a fundingHistory block with recent (the last up to 3 settled funding rates, oldest-first, as fractions) and predicted (the current/latest polled funding rate for the upcoming settlement) — usable while FLAT, unlike the position-conditioned funding accrual; it is omitted when funding-rate history is unavailable.',
         ]
       : []),
     ...(sentimentFeedEnabled
@@ -1325,6 +1360,22 @@ function buildDerivativesBlock(
   };
 }
 
+// ADD-A (X2, perp basket widening): funding-rate HISTORY context — a REST-polled sibling to
+// buildDerivativesBlock above, gated the same way (return null ⇒ no empty scaffolding sent) and USABLE
+// WHILE FLAT (not position-conditioned, unlike fundingAccrualQuote below which only means something
+// once positioned). recent is the last up-to-3 SETTLED rates (oldest-first, raw fraction); predicted
+// is the current/latest polled rate (same value buildDerivativesBlock renders as fundingRate) —
+// reused rather than fetched twice. Absent whenever recentFundingRates itself is null (history fetch
+// unsupported/failed/empty) OR no fresh derivatives snapshot rode in at all.
+function buildFundingHistoryBlock(input: AgentDecisionInput): {
+  readonly recent: readonly number[];
+  readonly predicted: number;
+} | null {
+  const derivatives = input.snapshot.derivatives;
+  if (!derivatives?.recentFundingRates || derivatives.recentFundingRates.length === 0) return null;
+  return { recent: derivatives.recentFundingRates, predicted: derivatives.fundingRate };
+}
+
 // Trade-flow/CVD context (taker aggressor imbalance) — a REST-polled sibling to the derivatives block
 // above, gated the same way (return null ⇒ no empty scaffolding sent). Rendered only when the host
 // attached a fresh TradeFlowSnapshot to the snapshot (TradeFlowFeedPort.latest; absent whenever
@@ -1538,6 +1589,7 @@ export function buildMarketPayload(
   const recentDecisions = input.context?.recentDecisions ?? [];
   const orderBook = buildOrderBookBlock(input, symbol);
   const derivatives = buildDerivativesBlock(input, { v2Enabled: extras.derivativesV2Enabled });
+  const fundingHistory = buildFundingHistoryBlock(input);
   const sentiment = buildSentimentBlock(input);
   const tradeFlow = buildTradeFlowBlock(input);
   const positioning = buildPositioningBlock(input);
@@ -1577,6 +1629,9 @@ export function buildMarketPayload(
     // Same omit-entirely convention as orderBook above — absent whenever no fresh derivatives
     // snapshot rode in on the host's snapshot (flag off, feed unwired, or stale poll).
     ...(derivatives ? { derivatives } : {}),
+    // ADD-A: same omit-entirely convention as derivatives above — absent whenever recentFundingRates
+    // itself is null (history unsupported/failed/empty) or no fresh derivatives snapshot rode in.
+    ...(fundingHistory ? { fundingHistory } : {}),
     // Same omit-entirely convention as derivatives above — absent whenever no fresh sentiment
     // snapshot rode in on the host's snapshot (flag off, feed unwired, key absent, or stale poll).
     ...(sentiment ? { sentiment } : {}),

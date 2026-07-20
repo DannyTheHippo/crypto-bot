@@ -337,4 +337,91 @@ describe('DerivativesFeedService', () => {
       expect(svc.latest(SYM)!.fundingTrendDirection).toBe('down');
     });
   });
+
+  // ADD-A (X2, perp basket widening): last up-to-3 settled funding rates via the optional
+  // fetchFundingRateHistory read — separate from the d2 ring-buffer tests above (poll-cadence
+  // samples, not settlement-aligned history).
+  describe('recentFundingRates (ADD-A funding-rate history)', () => {
+    it('is null when the source has no fetchFundingRateHistory at all (pre-ADD-A fixture/double)', async () => {
+      const { clock } = mutableClock();
+      const svc = new DerivativesFeedService(fixtureSource(), {
+        symbols: [SYM],
+        pollIntervalMs: 60_000,
+        clock,
+      });
+
+      await svc.pollAll();
+
+      expect(svc.latest(SYM)!.recentFundingRates).toBeNull();
+    });
+
+    it('populates recentFundingRates from fetchFundingRateHistory, capped at the last 3 rows', async () => {
+      const { clock } = mutableClock();
+      const source: DerivativesRestSource = {
+        fetchFundingRate: () =>
+          Promise.resolve({ fundingRate: 0.0001, markPrice: 100, indexPrice: 100 }),
+        fetchOpenInterest: () => Promise.resolve({ openInterestAmount: 1 }),
+        fetchFundingRateHistory: (_symbol, limit) =>
+          Promise.resolve(
+            [{ fundingRate: 0.0002 }, { fundingRate: 0.00015 }, { fundingRate: 0.0001 }].slice(
+              0,
+              limit,
+            ),
+          ),
+      };
+      const svc = new DerivativesFeedService(source, {
+        symbols: [SYM],
+        pollIntervalMs: 60_000,
+        clock,
+      });
+
+      await svc.pollAll();
+
+      expect(svc.latest(SYM)!.recentFundingRates).toEqual([0.0002, 0.00015, 0.0001]);
+    });
+
+    it('a fetchFundingRateHistory failure degrades only recentFundingRates (never wipes the whole snapshot)', async () => {
+      const { clock } = mutableClock();
+      const warnings: string[] = [];
+      const source: DerivativesRestSource = {
+        fetchFundingRate: () =>
+          Promise.resolve({ fundingRate: 0.0001, markPrice: 100, indexPrice: 100 }),
+        fetchOpenInterest: () => Promise.resolve({ openInterestAmount: 1 }),
+        fetchFundingRateHistory: () => Promise.reject(new Error('history endpoint down')),
+      };
+      const svc = new DerivativesFeedService(source, {
+        symbols: [SYM],
+        pollIntervalMs: 60_000,
+        clock,
+        logger: { warn: (m) => warnings.push(m) },
+      });
+
+      await svc.pollAll();
+
+      expect(svc.latest(SYM)).not.toBeNull();
+      expect(svc.latest(SYM)!.fundingRate).toBe(0.0001);
+      expect(svc.latest(SYM)!.recentFundingRates).toBeNull();
+      expect(svc.pollErrorCount()).toBe(0); // history failures are not counted as poll errors
+      expect(warnings).toHaveLength(1);
+    });
+
+    it('is null when fetchFundingRateHistory resolves an empty array', async () => {
+      const { clock } = mutableClock();
+      const source: DerivativesRestSource = {
+        fetchFundingRate: () =>
+          Promise.resolve({ fundingRate: 0.0001, markPrice: 100, indexPrice: 100 }),
+        fetchOpenInterest: () => Promise.resolve({ openInterestAmount: 1 }),
+        fetchFundingRateHistory: () => Promise.resolve([]),
+      };
+      const svc = new DerivativesFeedService(source, {
+        symbols: [SYM],
+        pollIntervalMs: 60_000,
+        clock,
+      });
+
+      await svc.pollAll();
+
+      expect(svc.latest(SYM)!.recentFundingRates).toBeNull();
+    });
+  });
 });

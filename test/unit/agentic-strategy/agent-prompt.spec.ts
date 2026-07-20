@@ -370,6 +370,32 @@ describe('buildSystemPrompt', () => {
     });
   });
 
+  // ADD-A (X2, perp basket widening): a DEDICATED flag, never a reuse of derivativesFeedEnabled —
+  // proves derivativesFeedEnabled=true alone stays byte-identical to pre-ADD-A output.
+  describe('fundingHistory sentence (ADD-A, dedicated fundingHistoryFeedEnabled gate)', () => {
+    it('derivativesFeedEnabled: true ALONE (fundingHistoryFeedEnabled omitted/false) never mentions fundingHistory — proves the flags are independent, not reused', () => {
+      const prompt = buildSystemPrompt(fixtureProfile(), { derivativesFeedEnabled: true });
+
+      expect(prompt).not.toContain('fundingHistory');
+    });
+
+    it('fundingHistoryFeedEnabled: false is explicitly byte-identical to opts omitted entirely', () => {
+      const withOmitted = buildSystemPrompt(fixtureProfile());
+      const withExplicitFalse = buildSystemPrompt(fixtureProfile(), {
+        fundingHistoryFeedEnabled: false,
+      });
+
+      expect(withExplicitFalse).toBe(withOmitted);
+    });
+
+    it('documents the fundingHistory block only when fundingHistoryFeedEnabled is true', () => {
+      const prompt = buildSystemPrompt(fixtureProfile(), { fundingHistoryFeedEnabled: true });
+
+      expect(prompt).toContain('fundingHistory');
+      expect(prompt.toLowerCase()).toContain('settled funding rate');
+    });
+  });
+
   describe('d2 derivatives-v2 sentence (Push 3 P6 Unit 1, AGENTIC_DERIVATIVES_V2_ENABLED gate)', () => {
     it('derivativesV2Enabled true ALONE (derivativesFeedEnabled omitted/false) is inert — byte-identical to the flag-off prompt', () => {
       const withoutV2 = buildSystemPrompt(fixtureProfile());
@@ -676,7 +702,11 @@ describe('buildSystemPrompt tradeContract option (S1, rich decision contract)', 
 
     expect(prompt.toLowerCase()).toContain('perpetual futures');
     expect(prompt).toContain('leverage is capped at 2x');
-    expect(prompt.toLowerCase()).toContain('liquidation distance');
+    // X2 honesty fix (2026-07-20): the summary carries no margin/liq-distance fields yet, so
+    // the prompt teaches first-principles liquidation reasoning off the 2x cap instead of
+    // promising fields that never render (follow-up build lands before stage-2 widening).
+    expect(prompt.toLowerCase()).toContain('manage liquidation risk actively from first principles');
+    expect(prompt.toLowerCase()).not.toContain('the position summary shows margin usage');
     expect(prompt.toLowerCase()).toContain('funding is part of your pnl');
     expect(prompt).not.toContain('trading a single SPOT symbol');
   });
@@ -1253,6 +1283,51 @@ describe('buildUserMessage', () => {
 
       expect(withoutDerivativesFlag).toBe(explicitlyNoDerivatives);
       expect(withoutDerivativesFlag).not.toContain('derivatives');
+    });
+  });
+
+  // ADD-A (X2, perp basket widening): funding-rate HISTORY block — usable while FLAT, distinct from
+  // the derivatives block above (own key, own gate).
+  describe('fundingHistory block rendering (ADD-A)', () => {
+    it('renders recent (last settled rates, oldest-first) and predicted (current fundingRate) when recentFundingRates is present', () => {
+      const derivatives = derivativesSnapshot({
+        fundingRate: 0.0001,
+        recentFundingRates: [0.0002, 0.00015, 0.0001],
+      });
+      const payload = JSON.parse(buildMarketPayload(buildInput({ derivatives }))) as {
+        fundingHistory: { recent: number[]; predicted: number };
+      };
+
+      expect(payload.fundingHistory).toEqual({
+        recent: [0.0002, 0.00015, 0.0001],
+        predicted: 0.0001,
+      });
+    });
+
+    it('omits the fundingHistory key entirely when recentFundingRates is absent — a derivatives snapshot alone does not imply history', () => {
+      const derivatives = derivativesSnapshot();
+      const raw = buildMarketPayload(buildInput({ derivatives }));
+      const payload = JSON.parse(raw) as Record<string, unknown>;
+
+      expect(payload).not.toHaveProperty('fundingHistory');
+      expect(raw).not.toContain('fundingHistory');
+    });
+
+    it('omits the fundingHistory key entirely when recentFundingRates is an empty array', () => {
+      const derivatives = derivativesSnapshot({ recentFundingRates: [] });
+      const payload = JSON.parse(buildMarketPayload(buildInput({ derivatives }))) as Record<
+        string,
+        unknown
+      >;
+
+      expect(payload).not.toHaveProperty('fundingHistory');
+    });
+
+    it('omits the fundingHistory key entirely when no derivatives snapshot is available at all', () => {
+      const raw = buildMarketPayload(buildInput());
+      const payload = JSON.parse(raw) as Record<string, unknown>;
+
+      expect(payload).not.toHaveProperty('fundingHistory');
     });
   });
 

@@ -5,11 +5,31 @@ describe('DEFAULT_FILTERS', () => {
   it('carries the demo universe (24 spot /USDT symbols) with exact filter strings', () => {
     // 24 spot rows (8→24 expansion, U1: BNB DOGE ADA AVAX DOT LTC SUI PEPE WIF TRX SHIB UNI APT ARB
     // OP FIL added to the original 8 — live-probe-verified 2026-07-18 against
-    // api.binance.com/api/v3/exchangeInfo) + 2 futures-demo perp rows (BTC/ETH :USDT — Push II
-    // Phase 8; REVERIFY note in default-filters.ts applies to the perp figures).
-    expect(DEFAULT_FILTERS.size).toBe(26);
-    expect(DEFAULT_FILTERS.has('BTC/USDT:USDT')).toBe(true);
-    expect(DEFAULT_FILTERS.has('ETH/USDT:USDT')).toBe(true);
+    // api.binance.com/api/v3/exchangeInfo) + 8 futures-demo perp rows (X2 stage-1 basket — all 8
+    // probe-verified 2026-07-20 against demo-fapi.binance.com exchangeInfo; provenance note in
+    // default-filters.ts).
+    expect(DEFAULT_FILTERS.size).toBe(32);
+    for (const perp of [
+      'BTC/USDT:USDT',
+      'ETH/USDT:USDT',
+      'SOL/USDT:USDT',
+      'ZEC/USDT:USDT',
+      'AAVE/USDT:USDT',
+      'NEAR/USDT:USDT',
+      'HYPE/USDT:USDT',
+      'KAITO/USDT:USDT',
+    ]) {
+      expect(DEFAULT_FILTERS.has(perp)).toBe(true);
+    }
+    // X2 (2026-07-20): the demo venue's BTC perp step is 0.0001 — finer than the 2026-07-13
+    // prod-fetched 0.001; on a $1k book the 0.001 step is a ~$110 sizing quantum, so the
+    // demo-probed value is both the true venue figure and materially better for fraction sizing.
+    expect(DEFAULT_FILTERS.get('BTC/USDT:USDT')).toEqual({
+      tickSize: '0.10',
+      stepSize: '0.0001',
+      minQty: '0.0001',
+      minNotional: '50',
+    });
     expect(DEFAULT_FILTERS.get('BTC/USDT')).toEqual({
       tickSize: '0.01',
       stepSize: '0.00001',

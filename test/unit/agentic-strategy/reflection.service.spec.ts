@@ -899,6 +899,64 @@ describe('ReflectionService', () => {
       });
     });
 
+    it('folds the postMortems digest (X7) into the reflection request body', async () => {
+      const rows: AgentDecisionRow[] = [
+        row({ action: 'long', close: '100', eventTime: epochMs(T) }),
+        row({ action: 'flat', close: '110', eventTime: epochMs(T + 1000) }),
+      ];
+      const h = buildHarness({ rows });
+      h.fetchFn.mockResolvedValue(
+        apiResponse(revisionToolBody({ playbook: validPlaybookContent('v2'), changelog: 'tweak' })),
+      );
+      const service = new ReflectionService(baseCfg({ everyNTrades: 1 }), h.deps);
+
+      service.onClosedTrade(SID, 1);
+      await flush();
+
+      const body = requestBodyOf(h.fetchFn);
+      const userContent = body.messages[0]!.content;
+      const payload = JSON.parse(userContent.slice(userContent.indexOf('{"closedTrades"'))) as {
+        postMortems?: {
+          thesisPostMortems: unknown[];
+          holdPostMortem: { gradedHolds: number; missedEntryRate: number | null };
+          hourBuckets: unknown[];
+          dayTypeBuckets: unknown[];
+        };
+      };
+      // Only 2 rows -> no thesis-bearing round trip and no declined-entry hold with a full 24-bar
+      // forward window, so the digest is present but structurally empty/null — this pins that the
+      // key reaches the payload at all, not that this thin fixture grades anything.
+      expect(payload.postMortems).toEqual({
+        thesisPostMortems: [],
+        holdPostMortem: {
+          gradedHolds: 0,
+          missedEntries: 0,
+          correctHolds: 0,
+          missedEntryRate: null,
+          correctHoldRate: null,
+        },
+        hourBuckets: [],
+        dayTypeBuckets: [],
+      });
+    });
+
+    it('teaches the model to read postMortems.holdPostMortem.missedEntryRate as the anti-ratchet counterweight evidence', async () => {
+      const h = buildHarness();
+      h.fetchFn.mockResolvedValue(
+        apiResponse(revisionToolBody({ playbook: validPlaybookContent('v2'), changelog: 'tweak' })),
+      );
+      const service = new ReflectionService(baseCfg({ everyNTrades: 1 }), h.deps);
+
+      service.onClosedTrade(SID, 1);
+      await flush();
+
+      const body = requestBodyOf(h.fetchFn);
+      expect(body.system).toContain(
+        "postMortems.holdPostMortem's missedEntryRate is the fraction of declined-entry",
+      );
+      expect(body.system).toContain('anti-ratchet counterweight evidence');
+    });
+
     it('records token usage on the budget when the API call succeeds', async () => {
       const h = buildHarness();
       h.fetchFn.mockResolvedValue(

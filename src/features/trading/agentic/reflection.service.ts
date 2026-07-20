@@ -22,6 +22,7 @@ import {
   type RegimeSplitDigest,
   type RegretDigest,
 } from './counterfactual-scoring';
+import { summarizeDecisionPostMortems, type DecisionPostMortemDigest } from './decision-postmortem';
 import { validatePlaybook, type PlaybookValidationResult } from './playbook-validator';
 import { AttemptScopedBudget, type DailyLlmBudget } from './agent-budget';
 
@@ -450,6 +451,16 @@ function buildReflectionSystemPrompt(shortsEnabled: boolean): string {
     'flat cost money on average); delayedExit lines are adjust revisions that kept a position open',
     'and then saw it move against or for the delay. Both are the SAME thin, noisy, close-price-proxy',
     'caveat as the other digests — a systematic signal here (not a single line) is what to act on.',
+    'The postMortems digest (X7) is the SAME anti-ratchet counterweight evidence in mechanically',
+    "graded form: postMortems.holdPostMortem's missedEntryRate is the fraction of declined-entry",
+    'holds that were followed by a favorable move of more than 1% within a representative hold',
+    'horizon — with ~zero round trips recorded so far, this SKIPPED-ENTRY population is the dominant',
+    "PnL event in the journal, so weigh it AT LEAST as heavily as thesisPostMortems' realized-trade",
+    'lines. postMortems.hourBuckets/dayTypeBuckets break missedEntryRate down by UTC time-of-day and',
+    'weekday/weekend so a systematic quiet-hours-cost-money pattern is visible; postMortems.advisory,',
+    'when present, is a mechanically-triggered signal (entry rate under one per day while holds were',
+    'missing moves) that a rank-filter relaxation is warranted — treat it as a strong prompt to act,',
+    'but the decision and its written justification are still yours to make in the changelog.',
     'realizedRoundTrips is DIFFERENT in kind: actual venue fills walked into closed round trips —',
     'entry/exit VWAPs, realized PnL gross and net of fees, holding time, and mean decide-vs-fill',
     'slippage in bps. It is ground truth where the other digests are close-price proxies; when they',
@@ -674,6 +685,9 @@ function buildReflectionUserMessage(input: {
   // P3/P4: not-taken-option regret digest (counterfactual-scoring.ts's scoreNotTakenOptions) —
   // additive alongside the existing digests, see buildReflectionSystemPrompt's own description.
   readonly regretDigest: RegretDigest;
+  // X7: thesis + declined-entry-hold post-mortems (decision-postmortem.ts) — the hold post-mortems
+  // carry the anti-ratchet counterweight (missed-entry rate), see buildReflectionSystemPrompt.
+  readonly postMortems: DecisionPostMortemDigest;
   readonly costContext: CostContext;
   readonly realizedRoundTrips: readonly RoundTripEvidence[];
   readonly currentPlaybook: string;
@@ -688,6 +702,7 @@ function buildReflectionUserMessage(input: {
     calibration: input.calibration,
     regimeSplit: input.regimeSplit,
     regretDigest: input.regretDigest,
+    postMortems: input.postMortems,
     costContext: input.costContext,
     realizedRoundTrips: input.realizedRoundTrips,
     ...(input.execQuality !== undefined ? { execQuality: input.execQuality } : {}),
@@ -1148,6 +1163,7 @@ export class ReflectionService {
         calibration: summarizeCalibration(rows),
         regimeSplit: summarizeRegimeSplit(rows),
         regretDigest: scoreNotTakenOptions(rows),
+        postMortems: summarizeDecisionPostMortems(rows, { shortsEnabled: this.shortsEnabled }),
         costContext: {
           roundTripFeeBps: REFLECTION_ROUND_TRIP_FEE_BPS,
           note: 'net-of-cost PnL = realized − fees − LLM cost; wins must clear ~20bps round-trip fees',

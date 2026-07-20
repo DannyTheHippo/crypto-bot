@@ -749,6 +749,73 @@ tiering — a careful change to the ccxt ws layer that OOM-crashed twice; must n
 context pressure) and XA7 (evidence-epoch re-stamp, specced to land AFTER XA6 so the promotion
 clock starts on the final build). Then the X-series (X6/X7/X8 → X2 → X3/X4/X5 → X9), R1-R3, and
 X1-FINAL (GCP) per the plan file. Owner action still open: CryptoPanic key (X4).
+[SUPERSEDED same-day by the record below — XA6/XA7-spot/X6/X7/X8 shipped 2026-07-20 ~09:00-09:40Z.]
+
+## XA6 + X6/X7/X8 + XA7-spot (2026-07-20 ~09:00-09:40Z) — decision record
+
+All gated (build+lint+typecheck+full suite+livegate green at every commit), deployed, live-verified.
+
+- **XA6 — spot stream-load reduction (c0a03bc, b41a00a, 12ec4d6).** Three cuts, all fail-OPEN to
+  full subscription: (1) ws `trades` augmented only when the paper sim exists — on demo lanes the
+  channel fed nothing (StrategyHost drops TRADE events; trade-flow/liquidation feeds poll their
+  own sources): ~24 subscriptions gone. (2) Per-symbol channel tiering: `book`+`trades` loops PARK
+  for lite (non-menu, unpinned) symbols — no watch call, deregistered from the watchdog stall map
+  and feed-health ages (a parked channel must never force a connection-wide close() or read as a
+  stale feed) — and resume ≤30s after promotion through the paced gate; on demotion, a paced
+  fail-open venue-side unWatch drops the subscription (verified in pinned ccxt 4.5.58).
+  `candles`+`ticker` stay for all 24 (VERIFY-BEFORE-BUILD: the scanner ranks off streamed candles,
+  not ticker/REST — A0's REST-fallback suggestion was written against a wrong assumption; nothing
+  to build). (3) The decisive cut: `options.watchOrderBookRate=1000` on the market-data exchange —
+  the active menu's high-volume diff-depth streams at ccxt's 100ms default were the dominant load;
+  book consumers here are a top-of-book mid + 5s/30s staleness health, so 1s depth is ample.
+  **Acceptance: CPU 118% → 24-28% steady (target <60%, 3 samples 09:30Z); perp ~1%; 10-12 books
+  parked per ranking; 0 unwatch failures; 0 watchdog force-closes; rankings populate.** RSS
+  1.34GiB stable vs the <1GiB target — NEAR-MISS accepted: level not growth (the R8-6 precursor
+  is growth), watched below. 24h criteria (zero 1008 mass-closes, reconnect ≤ R8-2 baseline) fold
+  into WATCH-XA6.
+- **X6 — reflection verification+hardening (c1f2c16).** Verified pre-existing: Opus tier knob,
+  decideModel pin on floor replay/candidate backtest (A0's "Opus pricing" concern was already
+  fixed), outcome counter `agentic_reflection_outcomes_total`. Added: the tier-assertion spec
+  (draft bills reflection model, floor replays bill decide model — pinned off request bodies);
+  ANTI-RATCHET objective in the reflection prompt (missed winners weigh equal to realized losses;
+  ≤1 gate tightened per revision, named in changelog; leaders-only rules must justify ~2
+  trips/day; flat week = failing week); 07-16→17 execution-bug window excluded from journal rows
+  AND realized round trips (`outsideExecutionBugWindows` — carried from XA5's tagging
+  requirement). Budget framing verified at XA2's capped shape (≤15 calls / ≤$0.75/attempt/lane,
+  one fire/UTC-week ⇒ worst-case ~$1.50/week both lanes, inside breakers).
+- **X7 — thesis + hold post-mortems (21ba218).** decision-postmortem.ts (pure,
+  counterfactual-scoring pattern): thesis grades vs realized outcome with LIVE exit semantics
+  (stop at bar close per plan-executor; TP as close-crossing proxy — journal rows carry no
+  intrabar H/L, documented under-count); hold post-mortems replay 24 forward bars per flat-book
+  hold, missed-entry = >1% max favorable excursion. POPULATION SPLIT enforced: only hold
+  DECISIONS graded — unfilled/rejected maker ORDERS never regret (P0b N=25: 5/6 were dodged
+  losers). UTC-hour + weekday/weekend expectancy buckets; fail-open advisory relaxation line at
+  entry rate <1/day (routed through reflection as a recorded revision, never a silent change).
+- **X8 — per-version net-PnL reflection table (62a0657).** version-pnl-digest.ts reuses
+  promotion-evaluator's `attributeVersion` join verbatim; unattributed bucket for
+  pre-stamp/legacy/missing-join trips (fails toward unknown, never misattribution); window
+  semantics per the thrice-burned recent(N) class — trips ride the epoch-bounded
+  REFLECTION_EVIDENCE read, decisions ride recentVersioned's cap-not-recency convention.
+  Reflection prompt told to weigh the table when revising.
+- **XA7-spot — evidence-epoch re-stamp (one-time).** `PROMOTION_EVIDENCE_EPOCH`
+  2026-07-19T18:57:09Z → **2026-07-20T09:36:00Z** at final pre-campaign spot config (XA bundle +
+  X6/X7/X8 all deployed on the same boot). Flatness at stamp: 0 open orders, DUST-FLAT — 7
+  sub-minNotional residuals (largest ~$0.25), the same standard the original W5 stamp used.
+  Honest note: the first flatness query filtered `mode='demo'` (wrong string; lane mode is
+  `testnet`) and returned a false-clean empty — the Y1 §C.9 negative-read-void class, caught by
+  re-reading without the filter. Prior epoch carried only idle-consult burn and 0 trips — reset
+  is costless now, expensive once trading resumes. NOT a repeatable ratchet-escape; perp's single
+  stamp lands immediately after X2 deploys.
+
+**WATCH-XA6** (24h from 09:30Z): zero 1008 mass-close events; forced-reconnect rate ≤ R8-2
+baseline; spot RSS TREND flat (level 1.34GiB accepted; >20% growth between sweeps without a
+deploy = R8-6 precursor, investigate before anything else); no STALE_DATA veto storm on
+active-menu symbols (1000ms depth vs the 5s veto leaves 5x margin — a storm = revert
+watchOrderBookRate to 100 and record). **WATCH-XA7-spot**: the promotion scoreboard walks only
+post-09:36Z evidence; any pre-stamp trip/spend appearing in the walk is a defect.
+**WATCH-X7/X8**: the first reflection attempt on this build renders postMortems + versionPnl
+blocks in its payload (verify at the next weekly fire or trade-pair trigger); versionPnl shows
+all-unattributed until post-stamp trips close (expected, not a defect).
 
 ## Last pass
 

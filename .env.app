@@ -154,7 +154,7 @@ AGENTIC_TOKEN_PRICES_JSON={"claude-sonnet-5":{"inputPerMtok":"3","outputPerMtok"
 # 07:45:08Z onward, 0 open orders), erasing every stray. Forfeits 7 RT / -$4.34 over 1.4d.
 # Stamped 2026-07-19 at a log-verified FLAT instant (dust-only book, 0 open orders) per the epoch-straddle bound; travels to the GCP lift with NO re-reset.
 # step, per Design § Conflict resolutions (both lanes reset together at a verified flat moment).
-PROMOTION_EVIDENCE_EPOCH=2026-07-19T18:57:09Z
+PROMOTION_EVIDENCE_EPOCH=2026-07-20T09:36:00Z # XA7 spot re-stamp 2026-07-20: one-time, at final pre-campaign config (XA bundle + X6/X7/X8 deployed), log-verified flat (0 positions, 0 open orders at 09:34:05Z); prior epoch 2026-07-19T18:57:09Z carried only idle-consult burn, 0 trips — cumulative netPnl ratchet reset is costless now, expensive once trading resumes. NOT a repeatable ratchet-escape.
 PROMOTION_DUST_NOTIONAL=5 # residual-position notional (quote ccy) below which a round-trip cycle counts as CLOSED
 SIGNAL_TTL_MS=120000 # signal validity window
 BASE_NOTIONAL=100 # quote (USDT) per order; keep below the account balance, above minNotional

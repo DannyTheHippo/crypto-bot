@@ -1786,6 +1786,150 @@ describe('ReflectionService realized evidence + trigger seeding', () => {
   });
 });
 
+describe('X8: per-version net-PnL digest in the reflection payload', () => {
+  // fakeJournal (top-level) has no recentVersioned — this local fixture adds it so the version join
+  // (promotion-evaluator.ts's own attributeVersion, imported by version-pnl-digest.ts) has decisions
+  // to read. Mirrors fakeEvidence's own "extend the default fake with one more field" shape.
+  function fakeJournalWithVersions(
+    versionedRows: readonly AgentDecisionRow[],
+  ): AgentDecisionJournalPort {
+    return { ...fakeJournal([]), recentVersioned: () => Promise.resolve(versionedRows) };
+  }
+
+  it('attributes fixture trips under two playbook versions into the exact expected table (pinned)', async () => {
+    const h = buildHarness();
+    const decisions = [
+      row({ id: 'd1', playbookVersion: 1, eventTime: epochMs(T - 10_000) }),
+      row({ id: 'd2', playbookVersion: 2, eventTime: epochMs(T + 50_000) }),
+    ];
+    const trips = [
+      evidenceRow({ openedAt: T, closedAt: T + 100, netPnl: '5' }), // before the v2 decision → v1
+      evidenceRow({ openedAt: T + 1_000, closedAt: T + 2_000, netPnl: '-2' }), // still before → v1
+      evidenceRow({ openedAt: T + 60_000, closedAt: T + 61_000, netPnl: '10.5' }), // after → v2
+    ];
+    const ev = fakeEvidence({ trips });
+    h.fetchFn.mockResolvedValue(
+      apiResponse(revisionToolBody({ playbook: validPlaybookContent('v2'), changelog: 'c' })),
+    );
+    const service = new ReflectionService(baseCfg({ everyNTrades: 1 }), {
+      ...h.deps,
+      journal: fakeJournalWithVersions(decisions),
+      evidence: ev.port,
+    });
+    service.onClosedTrade(SID, 1);
+    await flush();
+
+    const payload = JSON.parse(
+      requestBodyOf(h.fetchFn).messages[0]!.content.split('\n\n').at(-1)!,
+    ) as { versionPnl: unknown };
+    expect(payload.versionPnl).toEqual({
+      rows: [
+        { version: 1, trips: 2, netPnlFeesOnly: '3' },
+        { version: 2, trips: 1, netPnlFeesOnly: '10.5' },
+      ],
+      unattributed: { trips: 0, netPnlFeesOnly: '0' },
+    });
+  });
+
+  it('pre-stamp/legacy trips (journal predates version stamping) land entirely in unattributed', async () => {
+    const h = buildHarness();
+    const trips = [
+      evidenceRow({ openedAt: T, closedAt: T + 100, netPnl: '4' }),
+      evidenceRow({ openedAt: T + 1_000, closedAt: T + 2_000, netPnl: '-1' }),
+    ];
+    const ev = fakeEvidence({ trips });
+    h.fetchFn.mockResolvedValue(
+      apiResponse(revisionToolBody({ playbook: validPlaybookContent('v2'), changelog: 'c' })),
+    );
+    const service = new ReflectionService(baseCfg({ everyNTrades: 1 }), {
+      ...h.deps,
+      journal: fakeJournalWithVersions([]), // no versioned rows at all — every trip predates stamping
+      evidence: ev.port,
+    });
+    service.onClosedTrade(SID, 1);
+    await flush();
+
+    const payload = JSON.parse(
+      requestBodyOf(h.fetchFn).messages[0]!.content.split('\n\n').at(-1)!,
+    ) as { versionPnl: unknown };
+    expect(payload.versionPnl).toEqual({
+      rows: [],
+      unattributed: { trips: 2, netPnlFeesOnly: '3' },
+    });
+  });
+
+  it('a trip whose version join is missing (no versioned decision reaches its symbol/entry) lands in unattributed — fail-to-unknown, never misattributed', async () => {
+    const h = buildHarness();
+    const decisions = [
+      // Only BTC/USDT is stamped; the ETH/USDT trip below has no covering decision at all.
+      row({
+        id: 'd1',
+        playbookVersion: 1,
+        symbol: symbolId('BTC/USDT'),
+        eventTime: epochMs(T - 10_000),
+      }),
+    ];
+    const attributed = evidenceRow({
+      symbol: 'BTC/USDT',
+      openedAt: T,
+      closedAt: T + 100,
+      netPnl: '6',
+    });
+    const orphan = evidenceRow({
+      symbol: 'ETH/USDT',
+      openedAt: T,
+      closedAt: T + 100,
+      netPnl: '-3',
+    });
+    const ev = fakeEvidence({ trips: [attributed, orphan] });
+    h.fetchFn.mockResolvedValue(
+      apiResponse(revisionToolBody({ playbook: validPlaybookContent('v2'), changelog: 'c' })),
+    );
+    const service = new ReflectionService(baseCfg({ everyNTrades: 1 }), {
+      ...h.deps,
+      journal: fakeJournalWithVersions(decisions),
+      evidence: ev.port,
+    });
+    service.onClosedTrade(SID, 1);
+    await flush();
+
+    const payload = JSON.parse(
+      requestBodyOf(h.fetchFn).messages[0]!.content.split('\n\n').at(-1)!,
+    ) as { versionPnl: unknown };
+    expect(payload.versionPnl).toEqual({
+      rows: [{ version: 1, trips: 1, netPnlFeesOnly: '6' }],
+      unattributed: { trips: 1, netPnlFeesOnly: '-3' },
+    });
+  });
+
+  it('carries the versionPnl table in the request body and the system prompt teaches the model to weigh it', async () => {
+    const h = buildHarness();
+    const ev = fakeEvidence({ trips: [] });
+    h.fetchFn.mockResolvedValue(
+      apiResponse(revisionToolBody({ playbook: validPlaybookContent('v2'), changelog: 'c' })),
+    );
+    const service = new ReflectionService(baseCfg({ everyNTrades: 1 }), {
+      ...h.deps,
+      journal: fakeJournalWithVersions([]),
+      evidence: ev.port,
+    });
+    service.onClosedTrade(SID, 1);
+    await flush();
+
+    const body = requestBodyOf(h.fetchFn);
+    expect(body.system).toContain(
+      'The versionPnl digest (X8) judges past REVISIONS by realized results',
+    );
+    const payload = JSON.parse(body.messages[0]!.content.split('\n\n').at(-1)!) as {
+      versionPnl: unknown;
+    };
+    expect(payload.versionPnl).toEqual({
+      rows: [],
+      unattributed: { trips: 0, netPnlFeesOnly: '0' },
+    });
+  });
+});
+
 describe('unrouted active() read + unresolved-candidate guard (2026-07-12)', () => {
   const okRevision = () =>
     apiResponse(

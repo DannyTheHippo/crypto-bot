@@ -295,7 +295,9 @@ function errMsg(err: unknown): string {
 // Local copy of version-attribution-metrics.service.ts's attributeVersion (structural duplication
 // across the observability boundary, same precedent this file's store type follows), returning a
 // number|null rather than a 'unknown' string since this consumer compares versions numerically.
-function attributeVersion(
+// Exported (X8) so version-pnl-digest.ts — same directory, no boundary to cross — imports this
+// exact join rather than a fourth duplicate copy.
+export function attributeVersion(
   rows: readonly AgentDecisionRow[],
   strategyId: string,
   symbol: string,

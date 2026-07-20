@@ -23,6 +23,7 @@ import {
   type RegretDigest,
 } from './counterfactual-scoring';
 import { summarizeDecisionPostMortems, type DecisionPostMortemDigest } from './decision-postmortem';
+import { computeVersionPnlDigest, type VersionPnlDigest } from './version-pnl-digest';
 import { validatePlaybook, type PlaybookValidationResult } from './playbook-validator';
 import { AttemptScopedBudget, type DailyLlmBudget } from './agent-budget';
 
@@ -61,6 +62,15 @@ function utcWeekKey(ms: number): number {
 
 const JOURNAL_LOOKBACK = 200;
 const MAX_CLOSED_TRADES = 10;
+// X8: per-version net-PnL digest read caps — NOT recency windows (mirrors promotion-evaluator.ts's
+// own VERSIONED_LOOKBACK_CAP: a runaway guard, over-cap drops oldest-first, same 'unknown'/
+// 'unattributed' fail direction, never a shrinking wall-clock window — see backlog #39 / Bug C
+// cfb2ed3 / Bug E 309bbfc). The round-trip side needs no separate cap: RoundTripEvidenceReader
+// already epoch-bounds recentRoundTrips via its own evidenceEpochMs ctor arg, so passing this cap
+// there just means "return everything within the epoch" (real deployments are orders of magnitude
+// below it) rather than the pre-X8 MAX_CLOSED_TRADES=10 truncation.
+const VERSION_PNL_ROUND_TRIP_CAP = 20_000;
+const VERSION_PNL_DECISIONS_CAP = 20_000;
 // Round-trip fee assumption for the reflection prompt's costContext (W14) — matches
 // agent-prompt.ts's own decide-side roundTripBps (DEFAULT_TRADING_PROFILE's 10bps maker + 10bps
 // taker = 20bps). Hardcoded here, not config-plumbed this pass.
@@ -461,6 +471,13 @@ function buildReflectionSystemPrompt(shortsEnabled: boolean): string {
     'when present, is a mechanically-triggered signal (entry rate under one per day while holds were',
     'missing moves) that a rank-filter relaxation is warranted — treat it as a strong prompt to act,',
     'but the decision and its written justification are still yours to make in the changelog.',
+    'The versionPnl digest (X8) judges past REVISIONS by realized results: net PnL and closed-trip',
+    'count per playbook version, attributed by the same entry-time join the promotion evaluator uses',
+    '(netPnlFeesOnly excludes LLM spend — lane-shared, not attributable per version). Weigh it when',
+    'deciding what to keep or change: a version whose net PnL trailed materially argues against',
+    "repeating that revision's specific changes; a version with few trips is too thin to judge either",
+    'way; the unattributed bucket (pre-stamp trips, or a trip whose version join failed) carries no',
+    'signal and must not be read as evidence for or against any version.',
     'realizedRoundTrips is DIFFERENT in kind: actual venue fills walked into closed round trips —',
     'entry/exit VWAPs, realized PnL gross and net of fees, holding time, and mean decide-vs-fill',
     'slippage in bps. It is ground truth where the other digests are close-price proxies; when they',
@@ -688,6 +705,9 @@ function buildReflectionUserMessage(input: {
   // X7: thesis + declined-entry-hold post-mortems (decision-postmortem.ts) — the hold post-mortems
   // carry the anti-ratchet counterweight (missed-entry rate), see buildReflectionSystemPrompt.
   readonly postMortems: DecisionPostMortemDigest;
+  // X8: realized net PnL (fees-only, see VersionPnlRow) per playbook version, attributed by the same
+  // entry-time join the promotion evaluator uses — see version-pnl-digest.ts's header.
+  readonly versionPnl: VersionPnlDigest;
   readonly costContext: CostContext;
   readonly realizedRoundTrips: readonly RoundTripEvidence[];
   readonly currentPlaybook: string;
@@ -703,6 +723,7 @@ function buildReflectionUserMessage(input: {
     regimeSplit: input.regimeSplit,
     regretDigest: input.regretDigest,
     postMortems: input.postMortems,
+    versionPnl: input.versionPnl,
     costContext: input.costContext,
     realizedRoundTrips: input.realizedRoundTrips,
     ...(input.execQuality !== undefined ? { execQuality: input.execQuality } : {}),
@@ -1140,16 +1161,32 @@ export class ReflectionService {
       // aborts the attempt. The DB closed-trip total also floors the auto-promotion count, which
       // otherwise resets with the strategy's in-memory counter on every redeploy.
       let realizedRoundTrips: readonly RoundTripEvidence[] = [];
+      let versionPnl: VersionPnlDigest = {
+        rows: [],
+        unattributed: { trips: 0, netPnlFeesOnly: '0' },
+      };
       let dbClosedTradesTotal = 0;
       if (this.deps.evidence !== undefined) {
         try {
-          const [trips, seed] = await Promise.all([
-            this.deps.evidence.recentRoundTrips(MAX_CLOSED_TRADES),
+          // X8: fetched at VERSION_PNL_ROUND_TRIP_CAP (not MAX_CLOSED_TRADES) — one read serves
+          // both the small realizedRoundTrips prompt slice AND the full epoch-bounded set the
+          // per-version digest needs, so a shared recent(N) window is never used for attribution.
+          const [allTrips, seed] = await Promise.all([
+            this.deps.evidence.recentRoundTrips(VERSION_PNL_ROUND_TRIP_CAP),
             this.deps.evidence.reflectionSeed(),
           ]);
           // X6: same execution-bug-window exclusion as the journal rows above.
-          realizedRoundTrips = trips.filter((t) => outsideExecutionBugWindows(t.closedAt));
+          const inWindowTrips = allTrips.filter((t) => outsideExecutionBugWindows(t.closedAt));
+          realizedRoundTrips = inWindowTrips.slice(-MAX_CLOSED_TRADES);
           dbClosedTradesTotal = seed.closedTradesTotal;
+          // X8: version-attributed net PnL — journal.recentVersioned is CAP-bounded (never a
+          // recency window that shrinks as journal volume grows, see VERSION_PNL_DECISIONS_CAP's
+          // comment); absent (pre-recentVersioned journal) ⇒ every trip falls to `unattributed`,
+          // the documented fail-to-unknown direction.
+          const decisions = journal.recentVersioned
+            ? await journal.recentVersioned(VERSION_PNL_DECISIONS_CAP)
+            : [];
+          versionPnl = computeVersionPnlDigest(inWindowTrips, decisions);
         } catch (err) {
           this.warn(
             `reflection: realized round-trip evidence unavailable (proceeding on journal proxies): ${err instanceof Error ? err.message : String(err)}`,
@@ -1164,6 +1201,7 @@ export class ReflectionService {
         regimeSplit: summarizeRegimeSplit(rows),
         regretDigest: scoreNotTakenOptions(rows),
         postMortems: summarizeDecisionPostMortems(rows, { shortsEnabled: this.shortsEnabled }),
+        versionPnl,
         costContext: {
           roundTripFeeBps: REFLECTION_ROUND_TRIP_FEE_BPS,
           note: 'net-of-cost PnL = realized − fees − LLM cost; wins must clear ~20bps round-trip fees',

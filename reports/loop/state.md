@@ -817,6 +817,58 @@ post-09:36Z evidence; any pre-stamp trip/spend appearing in the walk is a defect
 blocks in its payload (verify at the next weekly fire or trade-pair trigger); versionPnl shows
 all-unattributed until post-stamp trips close (expected, not a defect).
 
+## X2 stage-1 + XA7-perp + Y2/Y3 loop tooling (2026-07-20 ~10:30-13:30Z) — decision record
+
+All gated (full suite 2534→2553 + livegate green per commit), deployed, live-verified.
+
+- **X2 stage 1 (30817a7)** — perp universe 1→8: BTC ETH SOL ZEC AAVE NEAR HYPE KAITO (universe
+  study: mean|daily ret| × log(30d mean quote volume) on production fapi, $0.50 floor;
+  crypto-native only — equity-tokenized perps like KORU/MSTR scored high but trading-hour gaps
+  fight bar scheduling/staleness; stage-2 reserve TRUMP UNI BCH). Every symbol + filter
+  keyed-probe-verified on demo-fapi (#54 pattern); BTC perp step corrected 0.001→0.0001 (demo is
+  finer; 0.001 was a ~$110 sizing quantum on the $1k book). Menu-4, fraction 0.35, cost stop
+  1.50, portfolio consults ON at the XA1 15s window. Seed v5 (menu-breadth: concentrate, don't
+  spray) active — perp DB version ceiling checked (4) before deploy, the XA3 collision class.
+  NEW fh1 funding-rate-history payload block (usable while flat). Prompt HONESTY fix: the perp
+  prompt promised margin/liq-distance fields the payload never carried — now teaches
+  first-principles 2x-cap liquidation reasoning; the real fields are a follow-up before stage 2.
+  **Live acceptance: batched consult c819a810 covered exactly the menu-4; all 8 symbols journal
+  every bar; perp CPU ~1.8% / RSS 385MiB (ceilings crushed); 4 books tier-parked.**
+  **PRE-AUTH (UNFIRED): stage-2 flip (16 symbols / menu-6) may be applied after one clean 24h
+  soak inside ceilings (CPU <250% combined, RSS <2GiB/lane, zero 1008 mass-closes, recreations
+  under half the rolling cap).** Sharding re-acceptance memo: post-XA6 stage-1 is ~21 subs (vs
+  the ~64 the deferral memo feared) — full-drop recovery ceil(21/4)×1s ≈ 6s; sharding stays
+  deferred. Known stage-1 residuals: trade-flow REST poll fails for HYPE/KAITO (no spot klines —
+  fail-open, 2 of 8 symbols without tf block); funding acceptance is position-conditioned
+  within the first post-deploy week (WATCH below).
+- **XA7-perp (9f1c8c6)** — epoch 2026-07-18T15:36:14Z → **2026-07-20T10:42:00Z** immediately
+  after the X2 stage-1 deploy. Venue-flat KEYED-PROBE-verified (fetchOpenOrders empty,
+  fetchPositions empty); the 07-17 OMS row cbt019f6e8... (BTC SELL LIMIT state=NEW) is
+  venue-ABSENT (OrderNotFound) — **named debt: the XA5(b) terminal-NEW class confirmed live; the
+  app-side sweep/heal did NOT clear it in 3 days.** Both lanes now stamped once each; XA7 CLOSED.
+- **Y2 (0dad180) + Y3 (2e0c191)** — pnpm loop:sweep / loop:collect / loop:digests. Live
+  acceptance: three sweeps — real per-lane deltas on matching bootIds, boot-change resets clean,
+  cost breakers read per-lane ($1.50/$1.50 post-X2). The tool caught its own precision defect on
+  run 2: zero_decides fired on a 3-minute gap → fixed with a 30-min liveness elapsed floor
+  (short_interval annotation below it; unknown elapsed still alarms). Collector smoke: sentinel
+  self-verify, 26 heartbeats at 2s cadence, clean SIGTERM. Note: sandboxed smoke runs overwrote
+  the shared watermark with probe-failed lanes — harmless (watermark is a cache, not truth) but
+  explains one no-baseline sweep at 13:23Z.
+- **Feeds verify-before-build (read-only, pre-X3/X4/X5):** X3 narrows to Fear&Greed (new) +
+  futures taker-volume folded into the EXISTING positioning poller (pos1→pos2; long/short ratio
+  already live); X4 core CLOSE-OBE (CryptoPanic adapter exists, fail-open, key-redacted) with
+  three real residuals (currency filter hardcoded BTC,ETH vs 24-basket; no keyless boot log; no
+  dedupe-by-id); X5 narrows to divergence flag + per-bar CVD series on tf1→tf2. No feed block
+  acts as a veto on the active prompt path (XA3 semantics hold).
+
+**WATCH-X2** (stage-1, from 10:42Z): ≥1 closed perp trip/day once entries begin; funding
+acceptance = within the first week a position held across a 00/08/16Z boundary lands a
+funding_payments row inside one poll interval; the 3× spot batch-element schema-validation
+soft-holds (submit_portfolio element failed — NEAR/USDT 12:20Z) stay rare (<5% of batch
+elements; a growing rate = consult spend without decisions, defect-class). **WATCH-Y2/Y3**: the
+first scheduled pass rehydrates from loop:digests and runs loop:sweep as its evidence sweep
+(Y4 wires this); collector survives the next host sleep with an annotated gap.
+
 ## Last pass
 
 **Pass 34, 2026-07-18** (scheduled, ~08:07–08:40Z, **MAINTENANCE — P0b entry fill-quality

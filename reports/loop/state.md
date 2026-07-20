@@ -869,6 +869,65 @@ elements; a growing rate = consult spend without decisions, defect-class). **WAT
 first scheduled pass rehydrates from loop:digests and runs loop:sweep as its evidence sweep
 (Y4 wires this); collector survives the next host sleep with an annotated gap.
 
+## X9 — round-7 extension gate + records (2026-07-20 ~15:30Z)
+
+Gate GREEN at f4be8fe: build+lint+typecheck+format:check, 151 files / 2594 tests, livegate
+41/41; both lanes redeployed healthy, 0 error-level lines post-boot.
+
+- **X3/X5 feeds + X4 residuals (face895; enable f4be8fe two-step).** Scoped by the
+  verify-before-build gap analysis (recorded above). Fear&Greed feed live both lanes (fg1
+  block; keyless; container→alternative.me verified, index 29 "Fear" at deploy); futures taker
+  buy/sell volume folded into the EXISTING positioning poller (`fapiDataGetTakerlongshortRatio`
+  verified in pinned ccxt; pos1→pos2); trade-flow divergence flag + per-bar CVD deltas
+  (tf1→tf2); sentiment residuals (basket-derived currencies incl. perp form, keyless boot log
+  line, dedupe-by-id) — the sentiment feed itself stays OFF pending the owner's CryptoPanic key
+  AND a SENTIMENT_FEED_ENABLED flip (both required).
+- **R1 replay harness (ddd03a1).** `pnpm replay:agentic` — v2 contract over historical candles,
+  candidate-backtest fill model reused verbatim, decide-model pinned (R8-8 class), per-run USD
+  cap aborts via pre-call reservation. Exclusions spec-proven: promotion stats / round trips /
+  version digest / exec-quality BY CONSTRUCTION (no fills, playbookVersion:null); llmTokenTotals
+  + lane-wide journal reads BY FILTER (notLike 'replay-%'). Reflection synthetic source opt-in
+  (default OFF) and always labeled. Dry-run smoke: 8 decisions at a $0.50 cap, clean abort.
+  Replay runs remain owner/loop-triggered (~$30-80 at real scale).
+- **Lane metric parity (owner directive 2026-07-20) — premise CORRECTED.** Audit verdict:
+  emission was ALREADY fully mirrored (all families registered unconditionally in
+  ObservabilityModule; perp emitted agentic_version_* all along — 15k samples/30d). The named
+  gap was the DASHBOARD: version panels bound to prometheus-spot only. Fixed: perp twins (ids
+  119/120) + a venue protective-order lifecycle pair BOTH lanes (121/122 — emitted by both,
+  panelized by neither); owner committed the dashboard (5ef8c52). Genuinely one-lane by design:
+  funding_payments_ingested_total (perp venue guard, correct). Transients (perp flat ⇒ no
+  position gauges) self-heal.
+- **Shared-org rate-limit hazard (operational, recorded for GCP-era too):** the 11:00Z hour
+  produced 21 RETRYABLE error decisions (16 spot / 5 perp) — heavy orchestration sessions and
+  the trading app share ONE Anthropic org budget; my session's agent fleet exhausted it and the
+  app's consults 429'd for the hour, recovering on reset. Mitigation options (not applied):
+  separate key/org for the app, or orchestration restraint during trading hours. R1 replay runs
+  inherit this hazard — their budget caps bound spend, not org-limit pressure.
+- **Backlog hygiene (A0 items):** #47/#48 CLOSED-OBE by the v2 contract; #53 folded into X6's
+  outcome counter (shipped); #18 folded into X7's expectancy buckets (shipped); #45 (venue-stop
+  drift re-verify) re-checked against v2 exit directives — covered by the venue-stop-lifecycle
+  suite + the new venue TP/stop panels; the 07-17 stale-NEW OMS row remains the open
+  terminal-NEW debt item (named at the XA7-perp record).
+- **Confounded attribution note (deliberate):** the first campaign's results cannot be
+  attributed to any single change — the XA bundle, seed v4/v5, epoch re-stamps, X2 widening,
+  and the feed additions all landed within days. This is accepted by design: there was nothing
+  to attribute before (0 trips); attribution discipline starts NOW via X8's per-version table
+  and the fresh epochs.
+
+**WATCH-X9** (the A0-mandated observables, first checkpoint at the next pass, then daily):
+(1) batched consults/day per lane vs the 8-20 band + entries/day vs the ~2.14 trips/day
+promotion pace, with the derived earliest-promotion date (alarm when it slips >2 days/pass);
+(2) per-trip net-of-cost vs the ~$0.70-1.00 bar once trips exist; (3) cost/day decomposed
+(batches × size × per-consult cost), overshoot ≤10%; (4) XA5 regression guards (exit-reject
+streaks ≥3, fill→terminal latency > reconcile interval); (5) P0b maker re-run re-arms at N≥15
+v2-era maker entries (20% would-cross tripwire); (6) funding drag on perp shorts post-X2;
+(7) CPU/RSS vs the XA6/X2 ceilings (spot ~25%/1.34GiB, perp ~2%/385MiB baselines);
+(8) reflection exactly-one-fire/UTC-week at the capped shape, now rendering postMortems +
+versionPnl + (when enabled) synthetic blocks; (9) replay-attempt cost at the decide tier with
+epoch-cost exclusion holding (llmTokenTotals unchanged by any replay run); (10) fg1 block
+renders in the first post-enable consult payload (fail-open: absence after 24h = feed defect,
+not market signal).
+
 ## Last pass
 
 **Pass 34, 2026-07-18** (scheduled, ~08:07–08:40Z, **MAINTENANCE — P0b entry fill-quality

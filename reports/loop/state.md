@@ -642,8 +642,17 @@ the Desktop restart (returns empty; per-line stamps correct — tail + pino-time
 adopted; hard Y2 requirement + a "never trust a negative read" Y1 exhibit); the original
 W6 digest collector was a dud (1 line in 8h) — the replacement's hourly digests at
 `reports/loop/digests/w6-digests.txt` are the record (both collector failures are Y1 data
-points). **Clock restarted ~03:14Z at the R8-8 fix deploy — cycle 2 running, review
-~12:15Z.**
+points). **Clock restarted ~03:14Z at the R8-8 fix deploy.** **W6 CLOSED ~06:45Z by owner
+directive** after ~3.5h of cycle 2, fully clean: reconciliations 414+415 CLEAN zero HALT,
+reflection bounded to EXACTLY ONE weekly attempt (attempt_started=1/abstain_reject=1 —
+R8-8 fix live-verified), kill switch RUNNING, only known watchdog forced-reconnect noise
+(R8-2 class, recovering). Owner-screenshot review surfaced two Grafana defects, both fixed:
+the Overview kill-switch tile always showed DEGRADED (`X{labels} or vector(0)` returns
+BOTH series — the labelless 0 never matches; now `sum(X) or vector(0)`), and Age of Last
+Decision read `event_time` (bar time, one bar stale) — now `created_at`. Routed to A0:
+spot burns ~118% CPU / 1.5GiB RSS while trading-idle (24-symbol ws churn + watchdog
+reconnect cycles), and the lane is ECONOMICALLY idle — one batched consult in 11h, zero
+entries, window 0 days, promotion NOT READY on both lanes — the central A0 question.
 
 ## Daily-loop mechanism enhancement — Y series (owner, 2026-07-19) — decision record
 

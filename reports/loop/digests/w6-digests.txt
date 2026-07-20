@@ -553,3 +553,4 @@ agentic_promotion_llm_cost_usd{instance="app-perp:3100", job="crypto-bot"} => 0.
 equity_usdt{instance="app-perp:3100", job="crypto-bot"} => 4998.76430984 @[1784527315.955]
 drawdown_ratio{instance="app-perp:3100", job="crypto-bot"} => 0.000247138032 @[1784527316.083]
 
+W6 CLOSED by owner directive 2026-07-20T06:42:03Z — cycle 2 ran ~3.5h clean on the R8-8-fixed build (reflection bounded to exactly one weekly attempt, reconcile CLEAN, kill switch RUNNING); collector stopped early.

@@ -1,8 +1,9 @@
 import { Injectable } from '@nestjs/common';
-import type {
-  AgentDecisionJournalPort,
-  AgentDecisionEntry,
-  AgentDecisionRow,
+import {
+  REPLAY_STRATEGY_ID_PREFIX,
+  type AgentDecisionJournalPort,
+  type AgentDecisionEntry,
+  type AgentDecisionRow,
 } from '../../ports/agentic-strategy';
 import type { EpochMs } from '../../domain/types/ids';
 
@@ -34,8 +35,20 @@ export class InMemoryAgentDecisionJournal implements AgentDecisionJournalPort {
   recent(limit: number, strategyId?: string): Promise<readonly AgentDecisionRow[]> {
     // rows are stored oldest→newest already (append-only push); apply the optional per-strategy
     // scope (P7 — see the port's own comment), then take the tail `limit` entries.
+    // R1 parity with AgentDecisionRepository.selectRecent: the LANE-WIDE branch excludes synthetic
+    // replay-<runId> rows (the mint-floor corpus must never draw on replay simulations); the scoped
+    // branch excludes them by construction (a real strategyId never carries the prefix).
     const scoped =
-      strategyId === undefined ? this.rows : this.rows.filter((r) => r.strategyId === strategyId);
+      strategyId === undefined
+        ? this.rows.filter((r) => !r.strategyId.startsWith(REPLAY_STRATEGY_ID_PREFIX))
+        : this.rows.filter((r) => r.strategyId === strategyId);
+    return Promise.resolve(scoped.slice(Math.max(0, scoped.length - limit)));
+  }
+
+  // R1 synthetic-experience read — the complement of recent()'s lane-wide filter (see the port's
+  // recentSynthetic comment). Matches AgentDecisionRepository.selectRecentSynthetic.
+  recentSynthetic(limit: number): Promise<readonly AgentDecisionRow[]> {
+    const scoped = this.rows.filter((r) => r.strategyId.startsWith(REPLAY_STRATEGY_ID_PREFIX));
     return Promise.resolve(scoped.slice(Math.max(0, scoped.length - limit)));
   }
 

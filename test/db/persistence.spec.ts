@@ -1555,6 +1555,41 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
     expect(sumOut(totals) - sumOut(before)).toBe(35);
   });
 
+  // R1 exclusion (SQL-level): a synthetic replay-<runId> decide row must never reach llmTokenTotals
+  // (epoch cost) or the lane-wide recent() (mint-floor corpus), and must reach recentSynthetic only.
+  it('(k) R1: replay-<runId> agent_decisions rows are excluded from llmTokenTotals + lane-wide recent(), surfaced only by recentSynthetic', async () => {
+    const promo = new PromotionStatsRepository(db);
+    const repo = new AgentDecisionRepository(db);
+    const adapter = new AgentDecisionJournalAdapter(db);
+
+    const beforeTotals = await promo.llmTokenTotals();
+    const sumIn = (t: typeof beforeTotals) => t.perModel.reduce((s, m) => s + m.inputTokens, 0);
+
+    // One real lane row and one synthetic replay row, both with big token counts so a leak is loud.
+    await pool.query(
+      `INSERT INTO public.agent_decisions
+        (strategy_id, symbol, venue, trigger_kind, based_on_seq, event_time, model, action, rationale,
+         input_tokens, output_tokens, prompt_hash)
+       VALUES
+        ('agentic-r1','BTC/USDT','binance','candle',0,900001,'claude-x','hold','real',1000,100,'hash-r1-real'),
+        ('replay-run9','BTC/USDT','binance','candle',0,900002,'claude-x','open_long','syn',7000,700,'hash-r1-syn')`,
+    );
+
+    // llmTokenTotals delta counts ONLY the real row (1000), never the replay row (7000).
+    const afterTotals = await promo.llmTokenTotals();
+    expect(sumIn(afterTotals) - sumIn(beforeTotals)).toBe(1000);
+
+    // Lane-wide recent() (mint-floor corpus) never returns the replay row.
+    const laneWide = await repo.selectRecent(500);
+    expect(laneWide.some((r) => r.promptHash === 'hash-r1-real')).toBe(true);
+    expect(laneWide.some((r) => r.promptHash === 'hash-r1-syn')).toBe(false);
+
+    // recentSynthetic returns the replay row and only replay rows.
+    const synthetic = await adapter.recentSynthetic(500);
+    expect(synthetic.some((r) => r.promptHash === 'hash-r1-syn')).toBe(true);
+    expect(synthetic.every((r) => r.strategyId.startsWith('replay-'))).toBe(true);
+  });
+
   it('(k) fillsForMode carries the intent refPrice (null on an unresolved join) for slippage evidence', async () => {
     const repo = new PromotionStatsRepository(db);
     await seedIntentWithSide('int-k-ref', 'cb-k-ref', 'BUY', 'testnet');

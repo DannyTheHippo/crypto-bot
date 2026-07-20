@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { eq, asc, desc, and, gte, sum, type SQL } from 'drizzle-orm';
+import { eq, asc, desc, and, gte, notLike, sum, type SQL } from 'drizzle-orm';
 import type { TradingMode } from '../../domain/types/mode';
 import type {
   PromotionStatsPort,
@@ -11,6 +11,10 @@ import type {
 import { DRIZZLE_DB } from '../database.tokens';
 import * as schema from '../schemas/trading';
 import { requireDb } from './persistence-guard';
+import { REPLAY_STRATEGY_ID_PREFIX } from '../../ports/agentic-strategy';
+
+// SQL LIKE pattern for R1 synthetic (replay-<runId>) strategyIds — excluded from epoch cost below.
+const REPLAY_STRATEGY_LIKE = `${REPLAY_STRATEGY_ID_PREFIX}%`;
 
 // PROMOTION_STATS binding (mode-control ↔ persistence boundary crossing — see src/ports/promotion.ts's
 // own header comment). fills carries neither strategyId nor side (see trading.schema.ts), so both are
@@ -69,8 +73,13 @@ export class PromotionStatsRepository implements PromotionStatsPort {
   async llmTokenTotals(sinceMs?: number): Promise<LlmTokenTotals> {
     const db = requireDb(this.db);
     const since = sinceMs === undefined ? undefined : new Date(sinceMs);
+    // R1 cost exclusion (BY FILTER): synthetic replay-<runId> decide rows must NEVER enter the lane's
+    // epoch token cost — one unfiltered replay run exceeds a lane's 14-day breaker budget and poisons
+    // netPnl. The reflection llm_usage side needs no such filter: the R1 engine writes no llm_usage
+    // rows at all (replay decides ride agent_decisions only), so that half is excluded by construction.
+    const notReplay = notLike(schema.agentDecisions.strategyId, REPLAY_STRATEGY_LIKE);
     const decideWhere =
-      since === undefined ? undefined : gte(schema.agentDecisions.createdAt, since);
+      since === undefined ? notReplay : and(notReplay, gte(schema.agentDecisions.createdAt, since));
     const reflectionWhere =
       since === undefined
         ? eq(schema.llmUsage.kind, 'reflection')

@@ -3207,3 +3207,75 @@ describe('backlog #32/#50: SSE streaming + run_failed rollback', () => {
     expect(sent.stream).toBe(true);
   });
 });
+
+// R1 historical-replay harness: reflection consumes synthetic (replay-<runId>) experience ONLY under
+// the explicit opt-in, and only ever as a clearly-labeled, separate digest source.
+describe('ReflectionService R1 synthetic-experience opt-in', () => {
+  const syntheticRow = row({
+    id: 'replay-r1',
+    strategyId: strategyId('replay-run1'),
+    model: 'claude-sonnet-5',
+    action: 'open_long',
+    playbookVersion: null,
+  });
+
+  it('default (opt-in absent) never reads recentSynthetic and omits the synthetic digest — byte-identical prompt', async () => {
+    const h = buildHarness();
+    const recentSynthetic = vi.fn(() => Promise.resolve([syntheticRow]));
+    h.fetchFn.mockResolvedValue(
+      apiResponse(revisionToolBody({ playbook: validPlaybookContent('v2'), changelog: 'c' })),
+    );
+    // Journal exposes recentSynthetic, but the opt-in is OFF ⇒ it must never be called.
+    const service = new ReflectionService(baseCfg({ everyNTrades: 1 }), {
+      ...h.deps,
+      journal: { ...h.deps.journal!, recentSynthetic },
+    });
+    service.onClosedTrade(SID, 1);
+    await flush();
+
+    expect(recentSynthetic).not.toHaveBeenCalled();
+    const payload = JSON.parse(
+      requestBodyOf(h.fetchFn).messages[0]!.content.split('\n\n').at(-1)!,
+    ) as Record<string, unknown>;
+    expect(payload).not.toHaveProperty('syntheticExperience');
+  });
+
+  it('opt-in ON folds a CLEARLY-LABELED synthetic digest, kept apart from the live-evidence digests', async () => {
+    const h = buildHarness();
+    h.fetchFn.mockResolvedValue(
+      apiResponse(revisionToolBody({ playbook: validPlaybookContent('v2'), changelog: 'c' })),
+    );
+    const service = new ReflectionService(baseCfg({ everyNTrades: 1 }), {
+      ...h.deps,
+      journal: { ...h.deps.journal!, recentSynthetic: () => Promise.resolve([syntheticRow]) },
+      syntheticExperience: true,
+    });
+    service.onClosedTrade(SID, 1);
+    await flush();
+
+    const payload = JSON.parse(
+      requestBodyOf(h.fetchFn).messages[0]!.content.split('\n\n').at(-1)!,
+    ) as { syntheticExperience?: { source?: string; rows?: number } };
+    expect(payload.syntheticExperience?.source).toBe('REPLAY_SIMULATION_NOT_LIVE_EVIDENCE');
+    expect(payload.syntheticExperience?.rows).toBe(1);
+  });
+
+  it('opt-in ON with no synthetic rows omits the digest (nothing to label)', async () => {
+    const h = buildHarness();
+    h.fetchFn.mockResolvedValue(
+      apiResponse(revisionToolBody({ playbook: validPlaybookContent('v2'), changelog: 'c' })),
+    );
+    const service = new ReflectionService(baseCfg({ everyNTrades: 1 }), {
+      ...h.deps,
+      journal: { ...h.deps.journal!, recentSynthetic: () => Promise.resolve([]) },
+      syntheticExperience: true,
+    });
+    service.onClosedTrade(SID, 1);
+    await flush();
+
+    const payload = JSON.parse(
+      requestBodyOf(h.fetchFn).messages[0]!.content.split('\n\n').at(-1)!,
+    ) as Record<string, unknown>;
+    expect(payload).not.toHaveProperty('syntheticExperience');
+  });
+});

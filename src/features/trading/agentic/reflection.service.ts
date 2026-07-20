@@ -299,6 +299,12 @@ export interface ReflectionServiceDeps {
   // REFLECTION_SERVICE factory — outside this step's file scope; see exec-quality.service.ts's own
   // header on why no production instance is fed real data yet either).
   readonly execQuality?: () => string | undefined;
+  // R1: opt-in to fold SYNTHETIC replay experience (journal.recentSynthetic — `replay-<runId>` rows
+  // from `pnpm replay:agentic`) into the reflection prompt. Default OFF/absent ⇒ the prompt is
+  // byte-identical to a no-synthetic run (no read, no rendered line); ON ⇒ a clearly-LABELED
+  // synthetic digest is appended, never blended into the live-evidence digests. Never a gate — pure
+  // additional hypothesis-generation context, and it can only ever feed a candidate a human promotes.
+  readonly syntheticExperience?: boolean;
 }
 
 // One completed LONG→FLAT round trip reconstructed from the decision journal. Entry/exit prices are
@@ -693,6 +699,33 @@ export function summarizeHolds(rows: readonly AgentDecisionRow[]): HoldSummary {
   };
 }
 
+// R1 synthetic-experience digest — a CLEARLY-LABELED summary of replay-simulated decisions, kept
+// structurally apart from every live-evidence digest. The `source`/`note` fields are the label the
+// model reads so it can never mistake synthetic hypotheses for realized venue truth; decisionOutcomes
+// reuses the SAME summarizer the live digest uses (counterfactual-scoring.ts) so the shape is familiar
+// but the provenance is explicit.
+interface SyntheticExperienceDigest {
+  readonly source: 'REPLAY_SIMULATION_NOT_LIVE_EVIDENCE';
+  readonly note: string;
+  readonly rows: number;
+  readonly decisionOutcomes: DecisionOutcomeDigest;
+}
+
+const SYNTHETIC_EXPERIENCE_NOTE =
+  'Synthetic experience from historical replay (pnpm replay:agentic) — hypothesis-generation only, ' +
+  'NOT realized fills, NOT promotion evidence, NOT cost-accounted. Never weigh it as live outcome.';
+
+function buildSyntheticExperienceDigest(
+  rows: readonly AgentDecisionRow[],
+): SyntheticExperienceDigest {
+  return {
+    source: 'REPLAY_SIMULATION_NOT_LIVE_EVIDENCE',
+    note: SYNTHETIC_EXPERIENCE_NOTE,
+    rows: rows.length,
+    decisionOutcomes: summarizeRecentDecisionOutcomes(rows),
+  };
+}
+
 function buildReflectionUserMessage(input: {
   readonly closedTrades: readonly ClosedTradeSummary[];
   readonly holdSummary: HoldSummary;
@@ -714,6 +747,10 @@ function buildReflectionUserMessage(input: {
   // P5: rendered string from ExecQualityService.digest() — undefined ⇒ key omitted entirely below,
   // same convention as agent-prompt.ts's own BuildMarketPayloadExtras.execQuality.
   readonly execQuality?: string;
+  // R1: opt-in SYNTHETIC replay-experience digest (ReflectionServiceDeps.syntheticExperience). Absent
+  // ⇒ key omitted entirely (byte-identical to a no-synthetic run); present ⇒ rendered under its OWN
+  // clearly-labeled key, never merged into the live-evidence digests above.
+  readonly syntheticExperience?: SyntheticExperienceDigest;
 }): string {
   const payload = {
     closedTrades: input.closedTrades,
@@ -727,6 +764,9 @@ function buildReflectionUserMessage(input: {
     costContext: input.costContext,
     realizedRoundTrips: input.realizedRoundTrips,
     ...(input.execQuality !== undefined ? { execQuality: input.execQuality } : {}),
+    ...(input.syntheticExperience !== undefined
+      ? { syntheticExperience: input.syntheticExperience }
+      : {}),
   };
   const playbookBlock = [
     PLAYBOOK_BLOCK_START,
@@ -1193,6 +1233,22 @@ export class ReflectionService {
           );
         }
       }
+      // R1: opt-in synthetic replay experience — a separate, clearly-labeled digest source, read
+      // ONLY when explicitly enabled (default OFF ⇒ no read, prompt byte-identical). journal
+      // .recentSynthetic surfaces the `replay-<runId>` rows every other read excludes.
+      let syntheticExperience: SyntheticExperienceDigest | undefined;
+      if (this.deps.syntheticExperience === true && journal.recentSynthetic) {
+        try {
+          const syntheticRows = await journal.recentSynthetic(JOURNAL_LOOKBACK);
+          if (syntheticRows.length > 0) {
+            syntheticExperience = buildSyntheticExperienceDigest(syntheticRows);
+          }
+        } catch (err) {
+          this.warn(
+            `reflection: synthetic experience unavailable (proceeding without it): ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
       const userMessage = buildReflectionUserMessage({
         closedTrades: reconstructClosedTrades(rows, MAX_CLOSED_TRADES),
         holdSummary: summarizeHolds(rows),
@@ -1209,6 +1265,7 @@ export class ReflectionService {
         realizedRoundTrips,
         currentPlaybook: current.content,
         execQuality: this.deps.execQuality?.(),
+        syntheticExperience,
       });
 
       const recordUsage = (usage: AgentUsage | undefined): void => {

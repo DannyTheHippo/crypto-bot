@@ -1,10 +1,14 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { and, count, desc, eq, gte, isNotNull, like, sql } from 'drizzle-orm';
+import { and, count, desc, eq, gte, isNotNull, like, notLike, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../database.tokens';
 import * as schema from '../schemas/trading';
 import { requireDb } from './persistence-guard';
+import { REPLAY_STRATEGY_ID_PREFIX } from '../../ports/agentic-strategy';
 import type { AgentPlan, AgentDirectives } from '../../ports/agentic-strategy';
+
+// SQL LIKE pattern for R1 synthetic (replay-<runId>) strategyIds — `%` matches the runId suffix.
+const REPLAY_STRATEGY_LIKE = `${REPLAY_STRATEGY_ID_PREFIX}%`;
 
 export interface AgentDecisionInsert {
   strategyId: string;
@@ -71,6 +75,10 @@ export class AgentDecisionRepository {
   // ties resolve the same way InMemoryAgentDecisionJournal's plain append-order does, rather than
   // however Postgres happens to return same-eventTime rows.
   // strategyId (P7) scopes the window to one instance's rows — see the port's own comment.
+  // R1: the LANE-WIDE branch (strategyId undefined — the mint-floor corpus read) EXCLUDES synthetic
+  // replay-<runId> rows so a replay run never pads the entry-rate floor's corpus; the scoped branch
+  // needs no such filter — a real strategyId never carries REPLAY_STRATEGY_ID_PREFIX (excluded by
+  // construction). recentSynthetic below is the only read that surfaces the excluded rows.
   async selectRecent(limit: number, strategyId?: string): Promise<AgentDecisionDbRow[]> {
     const db = requireDb(this.db);
     const rows =
@@ -78,6 +86,7 @@ export class AgentDecisionRepository {
         ? await db
             .select()
             .from(schema.agentDecisions)
+            .where(notLike(schema.agentDecisions.strategyId, REPLAY_STRATEGY_LIKE))
             .orderBy(desc(schema.agentDecisions.eventTime), desc(schema.agentDecisions.id))
             .limit(limit)
         : await db
@@ -86,6 +95,19 @@ export class AgentDecisionRepository {
             .where(eq(schema.agentDecisions.strategyId, strategyId))
             .orderBy(desc(schema.agentDecisions.eventTime), desc(schema.agentDecisions.id))
             .limit(limit);
+    return rows.reverse();
+  }
+
+  // R1 synthetic-experience read (AgentDecisionJournalPort.recentSynthetic): the newest `limit`
+  // replay-<runId> rows, oldest→newest like selectRecent. The exact complement of selectRecent's
+  // lane-wide filter — this is where reflection's opt-in synthetic digest draws its rows.
+  async selectRecentSynthetic(limit: number): Promise<AgentDecisionDbRow[]> {
+    const rows = await requireDb(this.db)
+      .select()
+      .from(schema.agentDecisions)
+      .where(like(schema.agentDecisions.strategyId, REPLAY_STRATEGY_LIKE))
+      .orderBy(desc(schema.agentDecisions.eventTime), desc(schema.agentDecisions.id))
+      .limit(limit);
     return rows.reverse();
   }
 

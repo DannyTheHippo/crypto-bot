@@ -129,6 +129,12 @@ export class AgentDecisionJournalAdapter implements AgentDecisionJournalPort {
     return rows.map((r) => toRow(r));
   }
 
+  // R1 synthetic-experience read — see AgentDecisionJournalPort.recentSynthetic.
+  async recentSynthetic(limit: number): Promise<readonly AgentDecisionRow[]> {
+    const rows = await this.repo.selectRecentSynthetic(limit);
+    return rows.map((r) => toRow(r));
+  }
+
   versionEntryStats(version: number): Promise<{ decides: number; entries: number }> {
     return this.repo.countVersionEntryStats(version);
   }

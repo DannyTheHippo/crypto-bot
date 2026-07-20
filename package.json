@@ -43,6 +43,7 @@
     "eval:degradation": "vitest run test/eval/agentic/payload-degradation-live.spec.ts",
     "backtest": "vitest run test/backtest",
     "backtest:agentic": "node scripts/backtest-agentic.mjs",
+    "replay:agentic": "node scripts/replay-agentic.mjs",
     "openapi:write": "OPENAPI_WRITE=1 vitest run test/unit/config/openapi-snapshot.spec.ts",
     "--- HOOKS ---": "--------------------------------",
     "prepare": "husky"

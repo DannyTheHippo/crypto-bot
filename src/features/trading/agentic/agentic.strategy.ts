@@ -39,6 +39,7 @@ import {
 } from '../../../ports/agentic-strategy';
 import { MAX_REASON_LEN, type LoggerLike } from './anthropic-agent-client';
 import { buildMarketPayload } from './agent-prompt';
+import { deriveRegimeTags } from './episodic-memory';
 import type { RoundTripEvidencePort } from '../../../ports/promotion';
 import type { DerivativesFeedPort } from '../../../ports/derivatives-feed';
 import type { SentimentFeedPort } from '../../../ports/sentiment-feed';
@@ -2665,6 +2666,20 @@ export class AgenticStrategy implements AsyncStrategy {
   // proposal is absent only for the prescreen quiet-HOLD path (recordQuietHold) — no client call was
   // ever made, so there is no usage/latency/playbook telemetry to map through; those fields fall back
   // to the same null/'' the client-omits-decision stub path already uses.
+  // R2 (episodic memory): the compact regime fingerprint this decision was made in, stamped on EVERY
+  // journaled row (decide/quiet/error) so a later consult can retrieve its own past setups by tag
+  // equality. Pure derivation from features the payload already carries (indicators + funding sign +
+  // eventTime) — the SAME fields the client derives its retrieval query from, so a stored tag and a
+  // query tag can never drift. null (⇒ untagged, a fail-open retrieval miss) while indicators are
+  // under warmup.
+  private regimeTagsFor(input: AgentDecisionInput): ReturnType<typeof deriveRegimeTags> {
+    return deriveRegimeTags({
+      indicators: input.context?.indicators ?? null,
+      fundingRate: input.snapshot.derivatives?.fundingRate ?? null,
+      eventTime: input.snapshot.eventTime,
+    });
+  }
+
   private recordJournalEntry(
     input: AgentDecisionInput,
     decision: AgentDecisionMeta,
@@ -2713,6 +2728,8 @@ export class AgenticStrategy implements AsyncStrategy {
         // (quiet/prescreen rows never carry a proposal).
         infoArm: proposal?.infoArm ?? null,
         thinkingArm: proposal?.thinkingArm ?? null,
+        // R2: regime fingerprint for episodic-memory retrieval — see regimeTagsFor.
+        regimeTags: this.regimeTagsFor(input),
       });
     } catch {
       // A journal failure must never affect trading — it's an analysis artifact, not a safety
@@ -2749,6 +2766,9 @@ export class AgenticStrategy implements AsyncStrategy {
         playbookVersion: null,
         promptHash: '',
         inputPayload: null,
+        // R2: tag error rows too — the regime is still knowable from the input, so a later consult can
+        // learn "in this regime a decide errored" alongside its real decisions.
+        regimeTags: this.regimeTagsFor(input),
       });
     } catch {
       // See recordJournalEntry — a journal failure must never affect trading.
@@ -2789,6 +2809,9 @@ export class AgenticStrategy implements AsyncStrategy {
         playbookVersion: null,
         promptHash: '',
         inputPayload,
+        // R2: quiet/prescreen holds are tagged too — a regime in which the lane repeatedly held is
+        // itself case-based context worth surfacing.
+        regimeTags: this.regimeTagsFor(input),
       });
     } catch {
       // See recordJournalEntry — a journal failure must never affect trading.

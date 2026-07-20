@@ -27,6 +27,7 @@ import {
   type ReflectionPlaybookStore,
 } from './reflection.service';
 import { ExecQualityService } from './exec-quality.service';
+import { MAX_SIMILAR_SETUPS } from './episodic-memory';
 
 // Matches AGENTIC_MODEL's schema default and the AGENTIC_TOKEN_PRICE_* defaults (Sonnet-5 at 3/15)
 // — see environment.config.ts's AGENTIC_MODEL comment for the cost-honesty rationale.
@@ -430,11 +431,19 @@ export function selectAgentClient(
   // AnthropicAgentClientConfig.payloadExtrasProvider — see that field's own comment. Absent ⇒ the
   // client never renders portfolio/budget/calendar, byte-identical to pre-I1b.
   payloadExtrasProvider?: AnthropicAgentClientConfig['payloadExtrasProvider'],
+  // R2 (episodic memory): the per-symbol journal-retrieval seam — threaded straight through to
+  // AnthropicAgentClientConfig.similarSetupsProvider, but only when AGENTIC_EPISODIC_MEMORY_ENABLED is
+  // on (below), so a flag-off deployment renders neither the prompt sentence nor the payload block
+  // (byte-identical to pre-R2). Absent ⇒ retrieval unwired regardless.
+  similarSetupsProvider?: AnthropicAgentClientConfig['similarSetupsProvider'],
 ): AgentClientPort {
   const apiKey = env['ANTHROPIC_API_KEY'];
   if (!apiKey || env['NODE_ENV'] === 'test' || env['CI']) {
     return new StubAgentClient();
   }
+  // R2: off by default ⇒ byte-identical (no similarSetups sentence/block/tag). The provider is gated
+  // by the SAME flag so the block can never render without its describing system-prompt sentence.
+  const episodicMemoryEnabled = env['AGENTIC_EPISODIC_MEMORY_ENABLED'] === 'true';
   const client = new AnthropicAgentClient(
     {
       apiKey,
@@ -494,6 +503,10 @@ export function selectAgentClient(
       trackRecordFeedEnabled: env['AGENTIC_TRACK_RECORD_ENABLED'] === 'true',
       // I1b: absent ⇒ byte-identical (see the field's own comment).
       payloadExtrasProvider,
+      // R2: gated by the flag so the payload block and its describing system-prompt sentence stay in
+      // lockstep — absent when off ⇒ byte-identical.
+      episodicMemoryEnabled,
+      similarSetupsProvider: episodicMemoryEnabled ? similarSetupsProvider : undefined,
     },
     fetch,
     new Logger('AnthropicAgentClient'),
@@ -592,6 +605,7 @@ function constraintsFromDefaultFilters(
         profile: AgentTradingProfile | undefined,
         activeMenuGate: ActiveMenuGate | undefined,
         payloadExtrasProvider: AnthropicAgentClientConfig['payloadExtrasProvider'] | undefined,
+        journal: AgentDecisionJournalPort | undefined,
       ) =>
         selectAgentClient(
           agenticEnv(config),
@@ -600,6 +614,12 @@ function constraintsFromDefaultFilters(
           profile,
           activeMenuGate,
           payloadExtrasProvider,
+          // R2: the per-symbol retrieval closure — one indexed journal read per decide/element, never
+          // an API call. Absent journal or a journal without recentSimilarSetups ⇒ no provider ⇒ the
+          // block is omitted (fail-open). selectAgentClient additionally gates it by the flag.
+          journal?.recentSimilarSetups
+            ? (tags) => journal.recentSimilarSetups!(tags, MAX_SIMILAR_SETUPS)
+            : undefined,
         ),
       inject: [
         AGENT_LLM_BUDGET,
@@ -608,6 +628,7 @@ function constraintsFromDefaultFilters(
         { token: AGENT_TRADING_PROFILE_OVERRIDE, optional: true },
         { token: ACTIVE_MENU_GATE_OVERRIDE, optional: true },
         { token: PAYLOAD_EXTRAS_PROVIDER_OVERRIDE, optional: true },
+        { token: AGENT_DECISION_JOURNAL, optional: true },
       ],
     },
     {

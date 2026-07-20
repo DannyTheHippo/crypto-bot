@@ -4,8 +4,11 @@ import {
   type AgentDecisionJournalPort,
   type AgentDecisionEntry,
   type AgentDecisionRow,
+  type RegimeTags,
+  type SimilarSetupRow,
 } from '../../ports/agentic-strategy';
 import type { EpochMs } from '../../domain/types/ids';
+import { forwardMovePct } from './agent-decision.repository';
 
 // In-process AGENT_DECISION_JOURNAL default (DB-less paper/test substrate) — a working ring
 // buffer rather than a no-op, unlike SIGNAL_JOURNAL's undefined-under-no-DB binding (see
@@ -52,6 +55,48 @@ export class InMemoryAgentDecisionJournal implements AgentDecisionJournalPort {
     return Promise.resolve(scoped.slice(Math.max(0, scoped.length - limit)));
   }
 
+  // R2 episodic-memory retrieval — mirrors AgentDecisionRepository.selectSimilarSetups on the DB-less
+  // substrate: rows whose regimeTags equal `tags` (trend/vol/session always, funding only when the
+  // query carries it), newest-first, capped at `limit`, DELIBERATELY INCLUSIVE of replay-<runId>
+  // synthetic rows (labeled synthetic in the row), each paired with the forward price move to that
+  // strategy's next decision close.
+  recentSimilarSetups(tags: RegimeTags, limit: number): Promise<readonly SimilarSetupRow[]> {
+    const result: SimilarSetupRow[] = [];
+    for (let i = this.rows.length - 1; i >= 0 && result.length < limit; i -= 1) {
+      const r = this.rows[i]!;
+      if (!regimeMatches(r.regimeTags, tags)) continue;
+      result.push({
+        eventTime: r.eventTime,
+        synthetic: r.strategyId.startsWith(REPLAY_STRATEGY_ID_PREFIX),
+        action: r.action,
+        close: r.close,
+        priceMovePct: forwardMovePct(r.close, this.nextCloseFor(r)),
+      });
+    }
+    return Promise.resolve(result);
+  }
+
+  // The close of the SINGLE next decision (by event_time, id tiebreak) for the SAME strategy — the
+  // in-memory analogue of selectSimilarSetups' correlated forward-close subquery.
+  private nextCloseFor(row: AgentDecisionRow): string | null {
+    // id is a numeric string (the insertion-ordered PK) — compared as BigInt, never Number() (the
+    // money-path lint bans Number() lane-wide), so the (event_time, id) tiebreak matches the DB path.
+    const rowId = BigInt(row.id);
+    let best: AgentDecisionRow | undefined;
+    for (const c of this.rows) {
+      if (c.strategyId !== row.strategyId) continue;
+      const after =
+        c.eventTime > row.eventTime || (c.eventTime === row.eventTime && BigInt(c.id) > rowId);
+      if (!after) continue;
+      const better =
+        best === undefined ||
+        c.eventTime < best.eventTime ||
+        (c.eventTime === best.eventTime && BigInt(c.id) < BigInt(best.id));
+      if (better) best = c;
+    }
+    return best?.close ?? null;
+  }
+
   recentVersioned(limit: number, sinceMs?: number): Promise<readonly AgentDecisionRow[]> {
     // Same tail-of-oldest→newest shape as recent(), over versioned rows only — see the port's
     // recentVersioned comment. "Since" honesty is bounded by the MAX_ROWS ring, like
@@ -81,4 +126,19 @@ export class InMemoryAgentDecisionJournal implements AgentDecisionJournalPort {
     }
     return Promise.resolve({ decides, entries });
   }
+}
+
+// Tag-equality match for episodic retrieval: trend/vol/session must all match; funding is matched only
+// when the QUERY carries it (a spot-lane query with no funding tag must not require the stored row to
+// lack one, but a perp query WITH a funding tag pins it) — mirrors selectSimilarSetups' SQL WHERE.
+function regimeMatches(stored: RegimeTags | null | undefined, query: RegimeTags): boolean {
+  if (!stored) return false;
+  if (
+    stored.trend !== query.trend ||
+    stored.vol !== query.vol ||
+    stored.session !== query.session
+  ) {
+    return false;
+  }
+  return query.funding === undefined || stored.funding === query.funding;
 }

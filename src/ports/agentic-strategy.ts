@@ -530,6 +530,23 @@ export interface AgentTradingProfile {
 // row (see AgentDecisionRecord.outcome for the in-memory equivalent).
 export const AGENT_DECISION_JOURNAL = Symbol('AGENT_DECISION_JOURNAL');
 
+// R2 (episodic memory): the compact regime fingerprint derived at decide() time from features the
+// market payload ALREADY carries — trend from the EMA fast/slow spread, a volatility bucket from
+// ATR/price, the funding sign when a derivatives snapshot rode in, and the UTC session bucket from
+// eventTime. Derivation is a pure spec-pinned function (features/trading/agentic/episodic-memory.ts's
+// deriveRegimeTags), called on BOTH the write side (agentic.strategy.ts stamps it on every journaled
+// row) and the read side (anthropic-agent-client.ts derives the same tags to retrieve matching past
+// setups), so a stored tag and a query tag can never drift. Persisted INSIDE plan_json's jsonb (no new
+// column — plan_json is unconstrained jsonb, see trading.schema.ts) so a LATER consult in the same
+// regime can retrieve its own history by tag equality. funding is optional: absent whenever no
+// derivatives snapshot was present (spot lane, or a stale/disabled feed) — matched only when present.
+export interface RegimeTags {
+  readonly trend: 'up' | 'down' | 'flat';
+  readonly vol: 'low' | 'mid' | 'high';
+  readonly funding?: 'positive' | 'negative' | 'flat';
+  readonly session: 'asia' | 'eu' | 'us';
+}
+
 export interface AgentDecisionEntry {
   readonly strategyId: StrategyId;
   readonly symbol: SymbolId;
@@ -589,11 +606,33 @@ export interface AgentDecisionEntry {
   // a client call — prescreen quiet-holds, plan-executor bookkeeping — never set these).
   readonly infoArm?: boolean | null;
   readonly thinkingArm?: boolean | null;
+  // R2 (episodic memory): the regime fingerprint this decision was made in — see RegimeTags. Optional
+  // so every pre-R2 writer/fixture compiles; absent and null both persist no tags (the row is simply
+  // never retrievable as a "similar past setup", a fail-open miss, never a wrong match). Rides inside
+  // plan_json's jsonb alongside the directive set / schedule (agent-decision-journal.adapter.ts's
+  // buildPlanJson), so no new DB column — same no-migration convention as nextConsultBars.
+  readonly regimeTags?: RegimeTags | null;
 }
 
 export interface AgentDecisionRow extends AgentDecisionEntry {
   readonly id: string;
   readonly createdAt: EpochMs;
+}
+
+// R2 (episodic memory): one retrieved past setup for the consult's "similar past setups" block — a
+// journal row whose regimeTags matched the CURRENT regime, paired with the price move that FOLLOWED
+// it (the row's own close → that strategy's next decision close). The forward outcome is joined at
+// READ time, never stored on the row (CLAUDE.md: a decision's forward return is never written back
+// onto its own row — see AGENT_DECISION_JOURNAL's own comment). synthetic marks a replay-<runId> row
+// (case-based practice, labeled as such in the rendered line, never blended into live evidence).
+export interface SimilarSetupRow {
+  readonly eventTime: EpochMs;
+  readonly synthetic: boolean;
+  readonly action: AgentDecisionRow['action'];
+  readonly close: string | null;
+  // priceMovePct is indicator-grade float, null when no later decision exists yet for that strategy or
+  // either close was non-finite/<= 0 (same null-not-NaN honesty as AgentDecisionRecord.outcome).
+  readonly priceMovePct: number | null;
 }
 
 // R1 historical-replay harness: every synthetic (replay-simulated) decision is journaled with a
@@ -643,6 +682,16 @@ export interface AgentDecisionJournalPort {
   // .syntheticExperience, default OFF); rendered lines are labeled synthetic, never blended with live
   // evidence. Optional so pre-this-method fakes compile; absent ⇒ the synthetic digest is omitted.
   recentSynthetic?(limit: number): Promise<readonly AgentDecisionRow[]>;
+  // R2 episodic-memory retrieval: the newest `limit` rows whose persisted regimeTags equal `tags`
+  // (trend/vol/session always matched; funding matched only when the query carries it), oldest→newest
+  // like recent() is not required — this read returns NEWEST-first (recency-weighted retrieval), each
+  // row paired with the forward price move that followed it (joined at read time — the outcome is
+  // never stored on the row). LANE-WIDE and DELIBERATELY INCLUSIVE of replay-<runId> synthetic rows
+  // (case-based practice is exactly what retrieval should surface — labeled synthetic in the render),
+  // unlike every other lane-wide read which excludes them. Optional so pre-this-method fakes compile;
+  // absent ⇒ the similarSetups block is omitted entirely (fail-open measurement — a missing retrieval
+  // never blocks or alters a decision).
+  recentSimilarSetups?(tags: RegimeTags, limit: number): Promise<readonly SimilarSetupRow[]>;
 }
 
 // ── LLM usage sink ────────────────────────────────────────────────────────────

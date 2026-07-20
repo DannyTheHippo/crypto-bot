@@ -4,6 +4,8 @@ import type {
   AgentDecisionJournalPort,
   AgentDecisionEntry,
   AgentDecisionRow,
+  RegimeTags,
+  SimilarSetupRow,
 } from '../../ports/agentic-strategy';
 import type { StrategyId, VenueId, SymbolId, EpochMs } from '../../domain/types/ids';
 import type * as schema from '../schemas/trading';
@@ -39,14 +41,23 @@ const KNOWN_JOURNAL_ACTIONS = new Set<AgentDecisionEntry['action']>([
 // nextConsultBars. A plan present ⇒ directives (+ schedule merged in when set); no plan but a
 // schedule present ⇒ a bare `{nextConsultBars}` object so a hold's model-chosen cadence is still
 // auditable; neither ⇒ null. Split out as a pure function so its behavior is unit-testable directly.
+// R2: regimeTags (a compact regime fingerprint stamped on every row for tag-equality retrieval — see
+// AgentDecisionJournalPort.recentSimilarSetups) merges in alongside the directive set / schedule. A
+// tagged hold that carried neither directives nor a schedule persists `{ regimeTags }` on its own, so
+// the retrieval corpus is not limited to rows that opened a position — the pre-R2 arms (directives,
+// `{ nextConsultBars }`, null) are otherwise unchanged.
 export function buildPlanJson(
   plan: AgentDecisionEntry['plan'] | null,
   nextConsultBars: number | null,
+  regimeTags: RegimeTags | null = null,
 ): AgentDecisionInsert['planJson'] {
+  const schedule = nextConsultBars != null ? { nextConsultBars } : {};
+  const tags = regimeTags != null ? { regimeTags } : {};
   if (plan) {
-    return nextConsultBars != null ? { ...plan, nextConsultBars } : plan;
+    return { ...plan, ...schedule, ...tags };
   }
-  return nextConsultBars != null ? { nextConsultBars } : null;
+  const rest = { ...schedule, ...tags };
+  return Object.keys(rest).length > 0 ? rest : null;
 }
 
 // XA4 read-side coercion: a directive plan_json passes through verbatim (the I1b behavior — the
@@ -57,7 +68,13 @@ export function readPlanJson(
   planJson: AgentDecisionInsert['planJson'],
 ): AgentDecisionEntry['plan'] | null {
   if (planJson == null || !('stopLossPct' in planJson)) return null;
-  return planJson;
+  // R2: regimeTags is retrieval metadata, not part of the directive set — strip it so directive
+  // readers (plan-executor bookkeeping, boot rehydration) never see a stray key on the returned
+  // AgentPlan/AgentDirectives. Absent regimeTags ⇒ the row passes through byte-identically (pre-R2).
+  if (!('regimeTags' in planJson)) return planJson;
+  const directives = { ...planJson };
+  delete (directives as { regimeTags?: unknown }).regimeTags;
+  return directives;
 }
 
 export class AgentDecisionJournalAdapter implements AgentDecisionJournalPort {
@@ -109,7 +126,13 @@ export class AgentDecisionJournalAdapter implements AgentDecisionJournalPort {
       // schedule persists `{nextConsultBars}` on its own; a plan row merges the schedule into the
       // directives; a bare hold with neither stays null. (The runtime schedule is still driven off
       // AgentProposal directly — this column is an analysis artifact, but now a complete one.)
-      planJson: buildPlanJson(entry.plan ?? null, entry.nextConsultBars ?? null),
+      // R2: the regime fingerprint rides inside plan_json alongside the directives/schedule — no new
+      // column (same no-migration convention as nextConsultBars). Null ⇒ untagged (fail-open miss).
+      planJson: buildPlanJson(
+        entry.plan ?? null,
+        entry.nextConsultBars ?? null,
+        entry.regimeTags ?? null,
+      ),
       consultId: entry.consultId ?? null,
       infoArm: entry.infoArm ?? null,
       thinkingArm: entry.thinkingArm ?? null,
@@ -133,6 +156,13 @@ export class AgentDecisionJournalAdapter implements AgentDecisionJournalPort {
   async recentSynthetic(limit: number): Promise<readonly AgentDecisionRow[]> {
     const rows = await this.repo.selectRecentSynthetic(limit);
     return rows.map((r) => toRow(r));
+  }
+
+  // R2 episodic-memory retrieval — see AgentDecisionJournalPort.recentSimilarSetups. Straight
+  // passthrough: the repository query already shapes the SimilarSetupRow (tag match + forward-move
+  // join + synthetic labeling), so no per-row mapping is needed here.
+  recentSimilarSetups(tags: RegimeTags, limit: number): Promise<readonly SimilarSetupRow[]> {
+    return this.repo.selectSimilarSetups(tags, limit);
   }
 
   versionEntryStats(version: number): Promise<{ decides: number; entries: number }> {

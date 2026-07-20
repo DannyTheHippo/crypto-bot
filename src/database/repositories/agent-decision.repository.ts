@@ -1,11 +1,18 @@
 import { Inject, Injectable } from '@nestjs/common';
+import Decimal from 'decimal.js';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { and, count, desc, eq, gte, isNotNull, like, notLike, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../database.tokens';
 import * as schema from '../schemas/trading';
 import { requireDb } from './persistence-guard';
 import { REPLAY_STRATEGY_ID_PREFIX } from '../../ports/agentic-strategy';
-import type { AgentPlan, AgentDirectives } from '../../ports/agentic-strategy';
+import type {
+  AgentPlan,
+  AgentDirectives,
+  RegimeTags,
+  SimilarSetupRow,
+} from '../../ports/agentic-strategy';
+import type { EpochMs } from '../../domain/types/ids';
 
 // SQL LIKE pattern for R1 synthetic (replay-<runId>) strategyIds — `%` matches the runId suffix.
 const REPLAY_STRATEGY_LIKE = `${REPLAY_STRATEGY_ID_PREFIX}%`;
@@ -44,9 +51,12 @@ export interface AgentDecisionInsert {
   // in by the adapter's record()) — mirrors trading.schema.ts's plan_json $type widening. XA4: the
   // schedule-only object `{ nextConsultBars }` (a hold that carried a portfolio schedule but no
   // directive set) is a distinct third arm — before XA4 those rows dropped their schedule entirely.
+  // R2: regimeTags rides on every arm (a compact fingerprint stamped on every row for tag-equality
+  // retrieval — see selectSimilarSetups); the schedule-only arm additionally accepts a bare
+  // `{ regimeTags }` (a tagged hold that carried neither directives nor a schedule).
   planJson?:
-    | ((AgentPlan | AgentDirectives) & { nextConsultBars?: number })
-    | { nextConsultBars: number }
+    | ((AgentPlan | AgentDirectives) & { nextConsultBars?: number; regimeTags?: RegimeTags })
+    | { nextConsultBars?: number; regimeTags?: RegimeTags }
     | null;
   // See AgentDecisionEntry.consultId — the batch join key; absent and null both insert as NULL.
   consultId?: string | null;
@@ -172,4 +182,67 @@ export class AgentDecisionRepository {
       .limit(1);
     return row?.thesis ?? null;
   }
+
+  // R2 episodic-memory retrieval (AgentDecisionJournalPort.recentSimilarSetups): the newest `limit`
+  // rows whose persisted plan_json.regimeTags equal `tags` — trend/vol/session matched always, funding
+  // matched only when the query carries it (a spot-lane query with no funding tag must not require the
+  // stored row to lack one, but a perp query WITH a funding tag pins it). LANE-WIDE and DELIBERATELY
+  // INCLUSIVE of replay-<runId> synthetic rows (the ONE lane-wide read that does not exclude them — see
+  // the port comment). Each matched row is paired with the price move that FOLLOWED it: a correlated
+  // subquery fetches that strategy's NEXT decision close (the true next decision, not the next
+  // tag-matching one), joined at read time because the forward outcome is never stored on the row
+  // (CLAUDE.md — see AGENT_DECISION_JOURNAL's comment). Newest-first (recency-weighted retrieval).
+  async selectSimilarSetups(tags: RegimeTags, limit: number): Promise<SimilarSetupRow[]> {
+    const db = requireDb(this.db);
+    const d = schema.agentDecisions;
+    const tagAt = (key: string) => sql`${d.planJson} -> 'regimeTags' ->> ${key}`;
+    const conds = [
+      sql`${tagAt('trend')} = ${tags.trend}`,
+      sql`${tagAt('vol')} = ${tags.vol}`,
+      sql`${tagAt('session')} = ${tags.session}`,
+      ...(tags.funding !== undefined ? [sql`${tagAt('funding')} = ${tags.funding}`] : []),
+    ];
+    // Correlated forward-close lookup: the SINGLE next decision (by event_time, id tiebreak) for the
+    // SAME strategy, regardless of its tags — the actual "what happened next", not the next similar
+    // setup. Runs at most `limit` times (once per output row, after LIMIT), each hit served by the
+    // agent_decisions_strategy_event_idx index.
+    const nextClose = sql<string | null>`(
+      select d2.close from agent_decisions d2
+      where d2.strategy_id = ${d.strategyId}
+        and (d2.event_time, d2.id) > (${d.eventTime}, ${d.id})
+      order by d2.event_time asc, d2.id asc
+      limit 1
+    )`;
+    const rows = await db
+      .select({
+        strategyId: d.strategyId,
+        action: d.action,
+        close: d.close,
+        eventTime: d.eventTime,
+        nextClose,
+      })
+      .from(d)
+      .where(and(...conds))
+      .orderBy(desc(d.eventTime), desc(d.id))
+      .limit(limit);
+    return rows.map((r) => ({
+      eventTime: r.eventTime as EpochMs,
+      synthetic: r.strategyId.startsWith(REPLAY_STRATEGY_ID_PREFIX),
+      action: r.action,
+      close: r.close,
+      priceMovePct: forwardMovePct(r.close, r.nextClose),
+    }));
+  }
+}
+
+// Forward price move (%) from a row's own close to its strategy's next decision close — indicator-
+// grade context, computed on Decimal (never a native-float money coercion) and dropped to a plain
+// number only at the very end. null when either close is absent/non-finite or the base close is <= 0
+// (same null-not-NaN honesty as AgentDecisionRecord.outcome.priceMovePct).
+export function forwardMovePct(close: string | null, nextClose: string | null): number | null {
+  if (close === null || nextClose === null) return null;
+  const base = new Decimal(close);
+  const next = new Decimal(nextClose);
+  if (!base.isFinite() || !next.isFinite() || base.lte(0)) return null;
+  return next.minus(base).div(base).times(100).toNumber();
 }

@@ -17,7 +17,10 @@ import {
   type AgentTradingProfile,
   type AgentUsage,
   type PlaybookProvider,
+  type RegimeTags,
+  type SimilarSetupRow,
 } from '../../../ports/agentic-strategy';
+import { deriveRegimeTags, renderSimilarSetups } from './episodic-memory';
 import {
   BOOK_STRUCTURE_TEMPLATE_VERSION,
   CROSS_SYMBOL_TEMPLATE_VERSION,
@@ -39,6 +42,7 @@ import {
   SHORTS_TEMPLATE_VERSION,
   TRADEFLOW_TEMPLATE_VERSION,
   THINKING_TEMPLATE_VERSION,
+  MEMORY_TEMPLATE_VERSION,
   PLAN_BOUNDS,
   PLAN_TOOL,
   PLAN_SHORTS_TOOL,
@@ -511,6 +515,21 @@ export interface AnthropicAgentClientConfig {
         readonly budget?: AgentBudgetBlock;
         readonly calendar?: readonly AgentCalendarEvent[];
       }>;
+  // R2 (episodic memory): when true, documents the similarSetups block in the system prompt and adds
+  // the '+mem1' promptHash tag. Absent/false ⇒ byte-identical prompt/hash — same convention as the
+  // feed-enabled flags. Gated separately from similarSetupsProvider's own per-call presence (the
+  // prompt sentence must stay byte-identical whether or not a given call retrieved any rows).
+  readonly episodicMemoryEnabled?: boolean;
+  // R2: the composition root's per-symbol journal-retrieval seam (agent-decision-journal.adapter.ts's
+  // recentSimilarSetups) — given the CURRENT regime tags, returns up to N past setups (tag-matched,
+  // newest-first, forward-move-joined, replay rows included and labeled synthetic). Invoked once per
+  // decide()/per resolved batch element (retrieval is per-symbol, unlike the batch-wide
+  // payloadExtrasProvider above — regime is per-symbol) and merged into that call's buildMarketPayload
+  // similarSetups extra. One indexed journal read, NEVER an LLM/API call. Absent ⇒ the block is
+  // omitted entirely (fail-open measurement — a missing retrieval never blocks or alters a decision).
+  readonly similarSetupsProvider?: (
+    tags: RegimeTags,
+  ) => Promise<readonly SimilarSetupRow[]> | readonly SimilarSetupRow[];
 }
 
 // Placeholder profile used only when no real AgentTradingProfile has been wired yet — keeps the
@@ -730,6 +749,9 @@ export class AnthropicAgentClient implements AgentClientPort {
     // same provider seam proposeBatch uses once per batch. Absent provider ⇒ undefined ⇒ every
     // spread below is a no-op (byte-identical).
     const payloadExtras = await this.cfg.payloadExtrasProvider?.();
+    // R2: per-symbol episodic-memory retrieval (one indexed journal read, never an API call) — the
+    // rendered block, or undefined when unwired/untaggable/no match (then the key is omitted).
+    const similarSetups = await this.resolveSimilarSetups(input);
     // inputPayload is the market JSON ALONE — buildMarketPayload's signature carries no
     // playbookContent parameter, so it structurally cannot echo playbook text (see its own comment).
     // W2.4 cache experiment: the playbook block (the only sizeable stable prefix) rides in its own
@@ -741,6 +763,7 @@ export class AnthropicAgentClient implements AgentClientPort {
       derivativesV2Enabled: ctx.derivativesV2Enabled,
       bookStructureEnabled: this.cfg.bookStructureFeedEnabled ?? false,
       ...payloadExtras,
+      similarSetups,
       // I1b: B3 (agentic.strategy.ts) already attaches these onto AgentPositionSummary
       // (input.context.position) — reflected here into buildMarketPayload's own top-level
       // currentThesis/directives/barsHeld/barsUntilForcedExit extras (the channel S1's system-prompt
@@ -1033,6 +1056,9 @@ export class AnthropicAgentClient implements AgentClientPort {
             ...(input.context ? { context: { ...input.context, crossSymbol: undefined } } : {}),
           }
         : input;
+      // R2: retrieval is PER-SYMBOL (regime is per-symbol, unlike the batch-wide payloadExtras above)
+      // — one indexed journal read per element, never an API call.
+      const similarSetups = await this.resolveSimilarSetups(input);
       const inputPayload = buildMarketPayload(payloadInput, {
         constraints,
         derivativesV2Enabled: ctx.derivativesV2Enabled,
@@ -1041,6 +1067,7 @@ export class AnthropicAgentClient implements AgentClientPort {
         // way consultId/nextConsultBars already are — plus THIS element's own position-summary
         // thesis/directives (per-symbol, unlike portfolio/budget/calendar).
         ...payloadExtras,
+        similarSetups,
         currentThesis: input.context?.position.currentThesis,
         directives: input.context?.position.directives,
         barsHeld: input.context?.position.barsHeld,
@@ -1571,6 +1598,7 @@ export class AnthropicAgentClient implements AgentClientPort {
       liquidationsFeedEnabled: effectiveLiquidationsEnabled,
       bookStructureFeedEnabled: this.cfg.bookStructureFeedEnabled ?? false,
       trackRecordFeedEnabled: this.cfg.trackRecordFeedEnabled ?? false,
+      episodicMemoryEnabled: this.cfg.episodicMemoryEnabled ?? false,
     });
     // S3: tradeContract selects the v2 submit_trade tool, checked BEFORE planMode (mirrors
     // buildSystemPrompt's own tradeContract-first precedence — the two modes are mutually exclusive
@@ -1636,6 +1664,9 @@ export class AnthropicAgentClient implements AgentClientPort {
       ...(effectiveLiquidationsEnabled ? [LIQUIDATION_TEMPLATE_VERSION] : []),
       ...(this.cfg.bookStructureFeedEnabled ? [BOOK_STRUCTURE_TEMPLATE_VERSION] : []),
       ...(this.cfg.trackRecordFeedEnabled ? [TRACK_RECORD_TEMPLATE_VERSION] : []),
+      // R2: a pure journal read (no external feed), so — like bs1/tr1 — it does NOT ride the
+      // information-context A/B control arm; tagged only by the episodicMemoryEnabled flag.
+      ...(this.cfg.episodicMemoryEnabled ? [MEMORY_TEMPLATE_VERSION] : []),
       // #42: last slot by design — a REQUEST-param arm, not a prompt-content tag; see above.
       ...(thinkingArm ? [THINKING_TEMPLATE_VERSION] : []),
     ];
@@ -1653,6 +1684,26 @@ export class AnthropicAgentClient implements AgentClientPort {
       derivativesV2Enabled: effectiveDerivativesV2Enabled,
       maxPositionFraction,
     };
+  }
+
+  // R2 episodic-memory retrieval for ONE symbol's payload: derive the current regime tags (pure) from
+  // the decision input, query the journal seam for matching past setups, and render the token-bounded
+  // block. Returns undefined (⇒ the similarSetups key is omitted) when retrieval is unwired, the regime
+  // is untaggable (indicators under warmup), or nothing matched — a fail-open measurement that never
+  // blocks or alters a decision, and never issues an LLM/API call. Regime is derived from the ORIGINAL
+  // input (not the info-arm-stripped payload copy) so a setup's fingerprint reflects the true market
+  // regime independent of the information-context A/B experiment, and matches the WRITE-side tag
+  // agentic.strategy.ts stamps from the same input fields.
+  private async resolveSimilarSetups(input: AgentDecisionInput): Promise<string | undefined> {
+    if (!this.cfg.similarSetupsProvider) return undefined;
+    const tags = deriveRegimeTags({
+      indicators: input.context?.indicators ?? null,
+      fundingRate: input.snapshot.derivatives?.fundingRate ?? null,
+      eventTime: input.snapshot.eventTime,
+    });
+    if (tags === null) return undefined;
+    const rows = await this.cfg.similarSetupsProvider(tags);
+    return renderSimilarSetups(rows, tags) ?? undefined;
   }
 
   // The per-symbol proposal-mapping tail SHARED by propose() (one symbol) and proposeBatch() (once

@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { InMemoryAgentDecisionJournal } from '../../../src/database/repositories/in-memory-agent-decision-journal';
-import type { AgentDecisionEntry, AgentPlan } from '../../../src/ports/agentic-strategy';
+import type {
+  AgentDecisionEntry,
+  AgentPlan,
+  RegimeTags,
+} from '../../../src/ports/agentic-strategy';
+import { REPLAY_STRATEGY_ID_PREFIX } from '../../../src/ports/agentic-strategy';
 import { strategyId, symbolId, venueId, epochMs } from '../../../src/domain/types/ids';
 
 const PLAN: AgentPlan = {
@@ -155,5 +160,66 @@ describe('InMemoryAgentDecisionJournal', () => {
     journal.record(entry(5, { model: 'claude-sonnet-5', action: 'hold', playbookVersion: 5 }));
 
     expect(await journal.versionEntryStats(5)).toEqual({ decides: 5, entries: 2 });
+  });
+
+  // R2 episodic-memory retrieval.
+  const UP_HIGH_EU: RegimeTags = { trend: 'up', vol: 'high', funding: 'positive', session: 'eu' };
+  const DOWN_LOW_US: RegimeTags = { trend: 'down', vol: 'low', funding: 'negative', session: 'us' };
+
+  it('recentSimilarSetups returns only matching-tag rows, newest-first, with forward-move outcomes', async () => {
+    const journal = new InMemoryAgentDecisionJournal();
+    // Two matching rows (t=1 close 100, t=3 close 110) and one non-matching (t=2, different regime).
+    journal.record(entry(1, { action: 'open_long', close: '100', regimeTags: UP_HIGH_EU }));
+    journal.record(entry(2, { action: 'hold', close: '105', regimeTags: DOWN_LOW_US }));
+    journal.record(entry(3, { action: 'open_long', close: '110', regimeTags: UP_HIGH_EU }));
+    // A later row (t=4, close 121) supplies the forward close for the t=3 setup.
+    journal.record(entry(4, { action: 'close', close: '121', regimeTags: DOWN_LOW_US }));
+
+    const rows = await journal.recentSimilarSetups(UP_HIGH_EU, 5);
+    // Newest-first: t=3 then t=1; the DOWN_LOW_US rows are excluded.
+    expect(rows.map((r) => r.eventTime)).toEqual([3, 1]);
+    // t=3 (close 110) → next decision close 121 ⇒ +10%. t=1 (close 100) → next close 105 ⇒ +5%.
+    // Exact (Decimal math, chosen so the % is integral) — toBeCloseTo is banned for assertions here.
+    expect(rows[0]!.priceMovePct).toBe(10);
+    expect(rows[1]!.priceMovePct).toBe(5);
+  });
+
+  it('funding is matched only when the query carries it; trend/vol/session always pin', async () => {
+    const journal = new InMemoryAgentDecisionJournal();
+    journal.record(entry(1, { close: '100', regimeTags: UP_HIGH_EU }));
+    journal.record(
+      entry(2, { close: '100', regimeTags: { trend: 'up', vol: 'high', session: 'eu' } }),
+    );
+    // A funding-less query matches BOTH (funding unconstrained); a positive-funding query pins to the
+    // row that carried it.
+    expect(
+      (await journal.recentSimilarSetups({ trend: 'up', vol: 'high', session: 'eu' }, 5)).map(
+        (r) => r.eventTime,
+      ),
+    ).toEqual([2, 1]);
+    expect((await journal.recentSimilarSetups(UP_HIGH_EU, 5)).map((r) => r.eventTime)).toEqual([
+      1,
+    ]);
+  });
+
+  it('retrieval INCLUDES replay-<runId> synthetic rows and labels them synthetic', async () => {
+    const journal = new InMemoryAgentDecisionJournal();
+    journal.record(
+      entry(1, {
+        strategyId: strategyId(`${REPLAY_STRATEGY_ID_PREFIX}run7`),
+        close: '100',
+        regimeTags: UP_HIGH_EU,
+      }),
+    );
+    journal.record(entry(2, { close: '100', regimeTags: UP_HIGH_EU }));
+
+    const rows = await journal.recentSimilarSetups(UP_HIGH_EU, 5);
+    expect(rows.map((r) => r.synthetic)).toEqual([false, true]); // newest-first: t=2 live, t=1 synthetic
+  });
+
+  it('a row with no regimeTags is never retrieved (fail-open miss, never a wrong match)', async () => {
+    const journal = new InMemoryAgentDecisionJournal();
+    journal.record(entry(1, { close: '100' })); // untagged
+    expect(await journal.recentSimilarSetups(UP_HIGH_EU, 5)).toEqual([]);
   });
 });

@@ -3,7 +3,7 @@ import {
   buildPlanJson,
   readPlanJson,
 } from '../../../src/database/repositories/agent-decision-journal.adapter';
-import type { AgentDirectives } from '../../../src/ports/agentic-strategy';
+import type { AgentDirectives, RegimeTags } from '../../../src/ports/agentic-strategy';
 
 // XA4 (A0 activation bundle): before this fix, plan_json was written ONLY when a plan object was
 // present — so v2 holds (the overwhelming majority of decisions) dropped their model-chosen
@@ -57,5 +57,38 @@ describe('readPlanJson (XA4 read-side coercion)', () => {
 
   it('null stays null', () => {
     expect(readPlanJson(null)).toBeNull();
+  });
+});
+
+// R2: regimeTags rides inside plan_json on every arm; readPlanJson strips it so directive readers
+// never see the retrieval metadata.
+const TAGS: RegimeTags = { trend: 'up', vol: 'high', funding: 'positive', session: 'eu' };
+
+describe('buildPlanJson / readPlanJson (R2 regime tagging)', () => {
+  it('a tagged hold with neither directives nor a schedule persists { regimeTags } alone', () => {
+    expect(buildPlanJson(null, null, TAGS)).toEqual({ regimeTags: TAGS });
+  });
+
+  it('a tagged hold that carried a schedule persists both', () => {
+    expect(buildPlanJson(null, 8, TAGS)).toEqual({ nextConsultBars: 8, regimeTags: TAGS });
+  });
+
+  it('a directive plan merges regimeTags alongside the directive set (and schedule when present)', () => {
+    expect(buildPlanJson(DIRECTIVES, 12, TAGS)).toEqual({
+      ...DIRECTIVES,
+      nextConsultBars: 12,
+      regimeTags: TAGS,
+    });
+  });
+
+  it('readPlanJson STRIPS regimeTags from a directive plan (directive readers never see it)', () => {
+    const stored = buildPlanJson(DIRECTIVES, 12, TAGS);
+    expect(readPlanJson(stored)).toEqual({ ...DIRECTIVES, nextConsultBars: 12 });
+    expect(readPlanJson(stored)).not.toHaveProperty('regimeTags');
+  });
+
+  it('a { regimeTags }-only row reads back as null (never mistaken for a directive plan)', () => {
+    expect(readPlanJson({ regimeTags: TAGS })).toBeNull();
+    expect(readPlanJson({ nextConsultBars: 8, regimeTags: TAGS })).toBeNull();
   });
 });

@@ -375,6 +375,11 @@ export const agentDecisions = pgTable(
     // AgentDecisionEntry.nextConsultBars (a sibling field on the journal entry, not on AgentDirectives
     // itself — merged in here by agent-decision-journal.adapter.ts's record(), see that call site's
     // own comment for why it only merges when a plan object is actually present).
+    // R2 regimeTags: a compact regime fingerprint (trend/vol/funding?/session) rides on EVERY arm —
+    // stamped on every journaled row so a later consult can retrieve its own past setups by jsonb tag
+    // equality (agent-decision.repository.ts's selectSimilarSetups). Kept in sync BY HAND with
+    // ports/agentic-strategy.ts's RegimeTags (this file deliberately never imports ports types). No
+    // migration — plan_json was already unconstrained jsonb, same convention as nextConsultBars above.
     planJson: jsonb('plan_json').$type<
       | {
           readonly sizeFraction?: string;
@@ -388,10 +393,25 @@ export const agentDecisions = pgTable(
           readonly direction?: 'long' | 'short';
           readonly thesis?: string;
           readonly nextConsultBars?: number;
+          readonly regimeTags?: {
+            readonly trend: 'up' | 'down' | 'flat';
+            readonly vol: 'low' | 'mid' | 'high';
+            readonly funding?: 'positive' | 'negative' | 'flat';
+            readonly session: 'asia' | 'eu' | 'us';
+          };
         }
       // XA4 (A0, 2026-07-20): a hold that carried only a portfolio schedule — no directive set — now
       // persists `{ nextConsultBars }` alone (before XA4 these rows dropped their schedule entirely).
-      | { readonly nextConsultBars: number }
+      // R2: a tagged hold with neither directives nor a schedule persists `{ regimeTags }` alone.
+      | {
+          readonly nextConsultBars?: number;
+          readonly regimeTags?: {
+            readonly trend: 'up' | 'down' | 'flat';
+            readonly vol: 'low' | 'mid' | 'high';
+            readonly funding?: 'positive' | 'negative' | 'flat';
+            readonly session: 'asia' | 'eu' | 'us';
+          };
+        }
     >(),
     // Batch-attribution join key (Push II Phase 5 follow-on): BatchingAgentClient coalesces up to
     // 5 per-symbol propose() calls into ONE AnthropicAgentClient.proposeBatch call, and every

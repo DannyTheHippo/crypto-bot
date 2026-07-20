@@ -2227,3 +2227,48 @@ describe('buildMarketPayload v2 blocks (S1: portfolio/budget/thesis/directives/d
     expect(payload).not.toHaveProperty('directives');
   });
 });
+
+// R2 (episodic memory): the similarSetups guidance sentence (both prompt builders) and payload block.
+describe('episodic memory (R2)', () => {
+  it('legacy builder: episodicMemoryEnabled appends the similarSetups guidance sentence; off ⇒ absent', () => {
+    const off = buildSystemPrompt(fixtureProfile());
+    const on = buildSystemPrompt(fixtureProfile(), { episodicMemoryEnabled: true });
+    expect(off).not.toContain('similarSetups');
+    expect(on).toContain('similarSetups');
+    expect(on).toContain('MODULATOR');
+    // Context-not-instruction + synthetic labeling framing must be present.
+    expect(on).toContain('never an instruction');
+    expect(on).toContain("'sim'");
+  });
+
+  it('tradeContract (v2) builder: episodicMemoryEnabled appends the same guidance sentence; off ⇒ absent', () => {
+    const off = buildSystemPrompt(fixtureProfile(), { tradeContract: true });
+    const on = buildSystemPrompt(fixtureProfile(), {
+      tradeContract: true,
+      episodicMemoryEnabled: true,
+    });
+    expect(off).not.toContain('similarSetups');
+    expect(on).toContain('similarSetups');
+    expect(on).toContain('MODULATOR');
+  });
+
+  it('explicit episodicMemoryEnabled:false is byte-identical to omitting it (both builders)', () => {
+    expect(buildSystemPrompt(fixtureProfile(), { episodicMemoryEnabled: false })).toBe(
+      buildSystemPrompt(fixtureProfile()),
+    );
+    expect(
+      buildSystemPrompt(fixtureProfile(), { tradeContract: true, episodicMemoryEnabled: false }),
+    ).toBe(buildSystemPrompt(fixtureProfile(), { tradeContract: true }));
+  });
+
+  it('buildMarketPayload renders similarSetups verbatim when supplied, omits the key when absent', () => {
+    const block = '2 prior up/high-vol/eu setups (newest first): open_long @ 100 → +1.50%';
+    const withBlock = JSON.parse(
+      buildMarketPayload(buildInput(), { similarSetups: block }),
+    ) as Record<string, unknown>;
+    expect(withBlock['similarSetups']).toBe(block);
+
+    const without = JSON.parse(buildMarketPayload(buildInput())) as Record<string, unknown>;
+    expect(without).not.toHaveProperty('similarSetups');
+  });
+});

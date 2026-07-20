@@ -705,6 +705,51 @@ owner-owned). First-campaign attribution is confounded by design (bundle + revis
 re-stamps + X2 land within days) — accepted, recorded, do not read the first delta as
 pure playbook alpha.
 
+## XA activation bundle (A0 → 2026-07-20) — decision record
+
+The A0 verdict was "starved, not broken." The XA bundle makes the bot trade-capable BEFORE the
+X-series enriches it. Shipped, gated (build+lint+typecheck+test+livegate all green), and
+deployed to both local lanes, one commit each:
+
+- **XA1** (menu-scoped consult gate + coalescing fix + cadence floor): verification found THREE
+  defects behind the 2026-07-20 01:00Z fallback wave — (1) off-menu idle symbols recorded
+  forced_* outcomes and had their consult clock + wake baseline reset by the batching client's
+  inert menu-hold (fixed: strategy-side menu gate, fail-open, fill/rearm bypass); (2) the menu-12
+  wave FRAGMENTED into six API calls because the early-flush threshold was the full symbol count
+  (24, unreachable) — now min(symbols, menu), window 3s→15s; (3) knobs: fallback 16→8, wake
+  0.015→0.008, nextConsultBars cap 64→32. WATCH-XA1: ≥8 batched consults/day for 3 awake days at
+  ≤$1.50.
+- **XA2** (attempt-level budget reservation + reflection carve-out): tryReserveAttempt($0.75)
+  pre-flight → journaled `budget_deferred`, trigger preserved (permission gate fails CLOSED on
+  attempt START; mid-attempt fail-OPEN); AttemptScopedBudget hard session caps (≤15 calls /
+  ≤$0.75) bound the W6 runaway shape; shared daily meter stays the truth.
+- **XA3** (entry-mandate revision): **CRITICAL find — the P2 expert seeds NEVER went live.** Both
+  seed const versions said 2, but a pre-existing v2 REFLECTION row shadowed them via ensureSeed,
+  so both lanes ran an old reflection lineage the ENTIRE v2 era. Bumped to v4 (above every DB
+  row); v4 active live-verified both lanes. Mandate edits: info blocks are size MODULATORS not
+  veto gates, RSI 55-75 continuation entries valid, fee floor quantified (skip only sub-60bps),
+  weekend/Asia reduce-size, evidence-pace expectation explicit, perp short accountability. Spot
+  `AGENTIC_DERIVATIVES_AB_PCT` 50→0 (change-discipline: the control arm stripped half the consults
+  of the info bundle that drove the 8.4% vs 1.9% propose split).
+- **XA4** (durable decision capture): plan_json was written ONLY on directive rows, so every v2
+  hold dropped its model-chosen nextConsultBars → A0's "empty plan_json" finding. buildPlanJson
+  now persists `{nextConsultBars}` on bare holds; readPlanJson coerces the schedule-only shape to
+  plan=null on read (directive rows verbatim, I1b intact). max_tokens truncation now named with
+  output_tokens instead of a generic no-tool-block warn. VERIFIED not a gap: consult usage is on
+  agent_decisions and the in-process $/day breaker meters both decide + reflection — A0's
+  "llm_usage only reflection rows" was a query mis-read on my part, not a code defect.
+- **XA5** (repeated-noop breaker): a positioned symbol emitting the same action with no
+  position-state change ×6 is suppressed at the gate until the position changes (the Bug-B
+  flat-loop signature — ~55 consults/15h); fill/re-arm override. cancel-before-close verified
+  already present. CARRIED (honest deferral): the terminal-NEW order sweep and the two
+  exec-latency alarms from the XA5 spec are OMS/adapter work folded into Y2's sweep tool.
+
+**Remaining activation steps (NOT done — deliberately not rushed):** XA6 (spot stream-load
+tiering — a careful change to the ccxt ws layer that OOM-crashed twice; must not be rushed under
+context pressure) and XA7 (evidence-epoch re-stamp, specced to land AFTER XA6 so the promotion
+clock starts on the final build). Then the X-series (X6/X7/X8 → X2 → X3/X4/X5 → X9), R1-R3, and
+X1-FINAL (GCP) per the plan file. Owner action still open: CryptoPanic key (X4).
+
 ## Last pass
 
 **Pass 34, 2026-07-18** (scheduled, ~08:07–08:40Z, **MAINTENANCE — P0b entry fill-quality

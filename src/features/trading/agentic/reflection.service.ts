@@ -706,6 +706,15 @@ export class ReflectionService {
   // throttles) is lane-global — two instances never reflect concurrently or double-mint.
   private readonly tradesSinceLastAttempt = new Map<string, number>();
   private lastAttemptAt = 0;
+  // Weekly-trigger fire stamp, consumed ON FIRE (not on genuine attempt): lastAttemptAt alone
+  // cannot bound the weekly path because non-consuming attempt exits (abstain_reject rollback,
+  // budget_exhausted, precondition aborts) restore/never-set it — with the weekly check running
+  // every bar, that re-armed the bucket each tick and looped runReflection hot (W6 soak finding
+  // 2026-07-20: 91 Opus calls / $2.3 in 46 min against candidate v3's abstention lapse, then a
+  // dry warn-pair loop every ~2s). One fire per UTC-week bucket per boot regardless of outcome;
+  // a blocked weekly attempt retries NEXT week — the trade-count trigger keeps its own
+  // retry-on-next-close semantics untouched.
+  private lastWeeklyFireAt = 0;
   private inFlight = false;
   // The trigger counters are in-memory and used to reset on every redeploy — with frequent deploys
   // the every-N-trades trigger never accumulated and reflection NEVER fired (observed live: 21
@@ -825,25 +834,25 @@ export class ReflectionService {
   // missed opportunities, consult economics). PIGGYBACKS the SAME runReflection machinery (budget
   // reservation, killswitch/lifecycle checks, unresolved-candidate guard, rollback) as the trade-count
   // trigger — this method only decides WHETHER to fire, never re-implements a precondition
-  // runReflection already re-checks at execution time. Fires at most once per UTC-week bucket
-  // (utcWeekKey below): lastAttemptAt is lane-global and updated by ANY genuine attempt (trade- or
-  // time-triggered — see runReflection's own trigger-consume), so a week where the trade-count
-  // trigger already fired reads the SAME bucket here and this trigger silently no-ops — "at most one
-  // scheduled firing per week when the trade trigger hasn't fired that week" falls out of that shared
-  // state with no extra bookkeeping.
+  // runReflection already re-checks at execution time. Fires at most once per UTC-week bucket via
+  // TWO stamps: lastAttemptAt (a trade-triggered genuine attempt this week already reflected —
+  // no-op) AND lastWeeklyFireAt, consumed here ON FIRE. The second stamp is load-bearing:
+  // runReflection's non-consuming exits (abstain_reject rollback, budget_exhausted, precondition
+  // aborts) leave lastAttemptAt un-advanced BY DESIGN for the trade path, and with this method
+  // wired per-bar that re-armed the weekly bucket every tick and looped runReflection hot
+  // (W6 soak finding 2026-07-20). A weekly attempt that exits blocked retries next week, period.
   //
-  // NOT YET CALLED anywhere: this service has no timer/per-bar hook of its own (onClosedTrade is the
-  // only existing entry point, and a quiet week by definition never calls it) — wiring a periodic
-  // caller belongs in agentic.strategy.ts's decide() loop (owned by a different step, outside this
-  // one's file scope). Safe to call on every bar once wired — cheap (a bucket-equality check) until
-  // it actually fires.
+  // Called per-bar from agentic.strategy.ts's decide loop (wired at I1b) — cheap (two
+  // bucket-equality checks) until it actually fires.
   checkWeeklyReflectionTrigger(strategyId: StrategyId): void {
     try {
       if (this.inert) return;
       const now = (this.deps.nowFn ?? Date.now)();
       if (utcWeekKey(now) === utcWeekKey(this.lastAttemptAt)) return;
+      if (utcWeekKey(now) === utcWeekKey(this.lastWeeklyFireAt)) return;
       if (this.inFlight) return;
       this.inFlight = true;
+      this.lastWeeklyFireAt = now;
       const key = String(strategyId);
       void this.runReflection(strategyId, now, this.tradesSinceLastAttempt.get(key) ?? 0)
         .catch((err) => {
@@ -1600,7 +1609,7 @@ export class ReflectionService {
     // (aborted stream, malformed transfer, invalid JSON) classifies as transport_error — before
     // #32 a res.json() throw escaped this method entirely (the #50 gap caught it one level up).
     const contentType =
-      typeof res.headers?.get === 'function' ? res.headers.get('content-type') ?? '' : '';
+      typeof res.headers?.get === 'function' ? (res.headers.get('content-type') ?? '') : '';
     let body: unknown;
     try {
       body =
@@ -1743,10 +1752,10 @@ export class ReflectionService {
             type,
             id: asString(cb.id),
             name: asString(cb.name),
-            thinking: type === 'thinking' ? asString(cb.thinking) ?? '' : undefined,
+            thinking: type === 'thinking' ? (asString(cb.thinking) ?? '') : undefined,
             signature: asString(cb.signature),
-            data: type === 'redacted_thinking' ? asString(cb.data) ?? '' : undefined,
-            text: type === 'text' ? asString(cb.text) ?? '' : undefined,
+            data: type === 'redacted_thinking' ? (asString(cb.data) ?? '') : undefined,
+            text: type === 'text' ? (asString(cb.text) ?? '') : undefined,
             inputJson: type === 'tool_use' ? '' : undefined,
           });
           break;

@@ -306,7 +306,7 @@ function buildHarness(
     playbookStore: storeApi.store,
     journal: fakeJournal(opts.rows ?? []),
     recorder: recorderApi.recorder,
-    usageSink: opts.withUsageSink ?? true ? usageSinkApi.sink : undefined,
+    usageSink: (opts.withUsageSink ?? true) ? usageSinkApi.sink : undefined,
     killSwitch: killSwitchWithState(opts.killSwitchState ?? 'RUNNING'),
     registry: registryWithLifecycle(opts.lifecycle ?? 'ACTIVE'),
     fetchFn,
@@ -2619,6 +2619,32 @@ describe('P3: checkWeeklyReflectionTrigger', () => {
 
     expect(h.fetchFn).not.toHaveBeenCalled();
     expect(stateSpy).not.toHaveBeenCalled();
+  });
+
+  it('W6 regression (2026-07-20): a blocked weekly fire is consumed — no per-bar re-fire loop', async () => {
+    // runReflection's non-consuming exits (here: budget_exhausted) leave lastAttemptAt
+    // un-advanced by design for the trade path; the weekly path must still burn its
+    // week-bucket ON FIRE or every subsequent per-bar check re-enters runReflection
+    // (live: 91 Opus calls / $2.3 in 46 min against an abstention-lapsed candidate).
+    const h = buildHarness({ budgetCaps: { maxCallsPerDay: 0, maxTokensPerDay: 1_000_000 } });
+    const service = new ReflectionService(baseCfg({ everyNTrades: 100 }), h.deps);
+
+    service.checkWeeklyReflectionTrigger(SID);
+    await flush();
+    expect(h.recorderApi.outcomes).toEqual(['budget_exhausted']);
+
+    for (let bar = 0; bar < 50; bar += 1) {
+      h.clock.now += 60_000;
+      service.checkWeeklyReflectionTrigger(SID);
+    }
+    await flush();
+    expect(h.recorderApi.outcomes).toEqual(['budget_exhausted']);
+
+    // Next UTC week: eligible again — blocked weekly attempts retry next week, not next bar.
+    h.clock.now += 7 * 24 * 60 * 60 * 1000;
+    service.checkWeeklyReflectionTrigger(SID);
+    await flush();
+    expect(h.recorderApi.outcomes).toEqual(['budget_exhausted', 'budget_exhausted']);
   });
 });
 

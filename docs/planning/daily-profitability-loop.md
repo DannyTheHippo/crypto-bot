@@ -1,5 +1,14 @@
 # Daily profitability loop — playbook (v3)
 
+> **v2 FREEZE IN EFFECT (owner, 2026-07-20 — read before selecting any pass type).** The v3
+> consolidation program (one process, one unified book; state.md § Strategic frame, 2026-07-20
+> decision record) is executing in the owner's interactive session. Until the v3 local demo
+> cutover is recorded in state.md: passes run §1–§3 (rehydrate, sweep, incident gate) unchanged,
+> but §4 is restricted to **critical fixes only**, committed to the `v2-maintenance` branch
+> (NOT main — main is v3) and rebuilt from that branch. No new capability, no experiments, no
+> backlog work, no X-series steps (X2 stage-2 is cancelled on v2). A clean sweep = pass ends
+> after recording the digest.
+
 Audience: a Claude session executing one pass. Cadence: 2-4 passes/day (owner 2026-07-10 — the
 loop runs on subscription, not a per-day API budget). Trigger (owner-run):
 `/loop 1d Read docs/planning/daily-profitability-loop.md and execute one pass`, or a scheduled

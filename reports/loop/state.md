@@ -67,6 +67,21 @@ never changes for strategy evolution.
   floors, factorial floor, shorts soak, watcher study) — no loosening; v2's runway is protected
   via config instead (lapse 168→336h, playbook A/B 25→40). (5) The 5→8 universe pre-auth is
   FIRED this session (see § Pre-authorizations).
+- **OWNER DECISIONS 2026-07-20 (interactive session; plan `how-can-we-save-snuggly-grove`) — the
+  v3 consolidation program.** (1) The two lane processes MERGE into one process trading ONE
+  unified book (one portfolio/risk/kill-switch/equity, one promotion verdict, one playbook
+  lineage, one batched cross-venue consult) — greenfield deploy, fresh DB, evidence clock
+  restarts; only the ACTIVE playbook text carries over (folded into v3 seeds). (2) **v2 is FROZEN
+  at tag `v2-final` (commit `2e49dfa`, full gate green: 2619 tests)**; branch `v2-maintenance`
+  carries critical fixes only — rebuild the running image from that branch, never from main.
+  main is v3 from the next commit onward. (3) **X2 stage-2 is CANCELLED on v2** — the 16-perp
+  universe becomes v3's launch basket. (4) Scheduled passes are v2-maintenance-only until the v3
+  local demo cutover (playbook banner); the v3 program executes in the owner's interactive
+  session, not the loop. (5) Fixed capital split across the two wallets (default 500/500 of
+  `SIZER_EQUITY_CAP`); one arming ceremony flips both venues (either venue's key validation
+  failing refuses arming — fail CLOSED). (6) Deploy target after local soak: GCP e2-medium
+  (X1-FINAL executes on v3; owner commits first, unchanged). Full decision ledger + design:
+  the plan file and `plans/2026-07-v3-consolidation-spec.md` (spec lands next).
 - **Stage ladder + exit criteria (condensed from the active spec):**
   1. **Cost floor** — CLOSED 2026-07-08: true spend ~$0.77/day under the $5 breaker, skip rate
      70–83% (original criterion: ≤$1/day ×3 days + ≥2 RT/day + no EXPIRED regressions).

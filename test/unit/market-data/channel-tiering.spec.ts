@@ -207,6 +207,124 @@ describe('CcxtExchangeStreamAdapter channel tiering (XA6)', () => {
     await iterator.return?.();
   });
 
+  it('demotion fires exactly one paced venue-side unWatchOrderBook for the demoted symbol', async () => {
+    vi.useFakeTimers();
+    let full = true;
+    const watchOrderBook = vi.fn(
+      (): Promise<OrderBook> =>
+        new Promise<OrderBook>((res) => setTimeout(() => res(fakeBook()), 500)),
+    );
+    const watchSource: WatchSource = {
+      watchTicker: unused,
+      watchTrades: unused,
+      watchOHLCV: unused,
+      watchOrderBook,
+    };
+    const st = tracker();
+    const unWatchOrderBook = vi.fn(() => Promise.resolve());
+    const exchange = { id: 'binance', has: { watchOrderBook: true }, unWatchOrderBook } as never;
+    const timerClock: ClockPort = { now: () => epochMs(Date.now()) };
+    const adapter = new CcxtExchangeStreamAdapter(timerClock, watchSource, exchange, V, st);
+    adapter.setChannelTierResolver({ fullChannels: () => full }, 1_000);
+
+    const spec: SubscriptionSpec = { venue: V, symbols: [SYM], channels: { book: true } };
+    const iterator = adapter.marketRaw(spec)[Symbol.asyncIterator]();
+    void iterator.next();
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(watchOrderBook.mock.calls.length).toBeGreaterThanOrEqual(1);
+    // Never unsubscribed while the symbol was full tier.
+    expect(unWatchOrderBook).not.toHaveBeenCalled();
+
+    full = false; // demoted out of the menu
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    // Exactly one demotion-time unsubscribe, routed (fire-and-forget) through the paced gate.
+    expect(unWatchOrderBook).toHaveBeenCalledTimes(1);
+    expect(unWatchOrderBook).toHaveBeenCalledWith(SYM);
+    expect(st.clearChannel).toHaveBeenCalledWith(V, SYM, 'book');
+
+    // Parked cleanly: no re-subscribe, and the unsubscribe does not repeat while parked.
+    const callsAtPark = watchOrderBook.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(watchOrderBook.mock.calls.length).toBe(callsAtPark);
+    expect(unWatchOrderBook).toHaveBeenCalledTimes(1);
+    await iterator.return?.();
+  });
+
+  it('a throwing unWatchOrderBook is swallowed: the loop still parks and warns', async () => {
+    vi.useFakeTimers();
+    let full = true;
+    const watchOrderBook = vi.fn(
+      (): Promise<OrderBook> =>
+        new Promise<OrderBook>((res) => setTimeout(() => res(fakeBook()), 500)),
+    );
+    const watchSource: WatchSource = {
+      watchTicker: unused,
+      watchTrades: unused,
+      watchOHLCV: unused,
+      watchOrderBook,
+    };
+    const st = tracker();
+    const warn = vi.fn();
+    const unWatchOrderBook = vi.fn(() => Promise.reject(new Error('unwatch boom')));
+    const exchange = { id: 'binance', has: { watchOrderBook: true }, unWatchOrderBook } as never;
+    const timerClock: ClockPort = { now: () => epochMs(Date.now()) };
+    const adapter = new CcxtExchangeStreamAdapter(timerClock, watchSource, exchange, V, st, {
+      warn,
+      error: vi.fn(),
+    });
+    adapter.setChannelTierResolver({ fullChannels: () => full }, 1_000);
+
+    const spec: SubscriptionSpec = { venue: V, symbols: [SYM], channels: { book: true } };
+    const iterator = adapter.marketRaw(spec)[Symbol.asyncIterator]();
+    void iterator.next();
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    full = false; // demoted; the venue-side unsubscribe will throw
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(unWatchOrderBook).toHaveBeenCalledTimes(1);
+    // Fail-open: parked despite the throw, one warn naming the failed unwatch, nothing crashes.
+    expect(st.clearChannel).toHaveBeenCalledWith(V, SYM, 'book');
+    const unwatchWarns = warn.mock.calls.filter(([m]) => String(m).includes('unwatch'));
+    expect(unwatchWarns.length).toBeGreaterThanOrEqual(1);
+
+    const callsAtPark = watchOrderBook.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(watchOrderBook.mock.calls.length).toBe(callsAtPark);
+    await iterator.return?.();
+  });
+
+  it('initial lite park (never subscribed) does not call unWatchOrderBook', async () => {
+    vi.useFakeTimers();
+    const watchOrderBook = vi.fn(parkForever);
+    const watchSource: WatchSource = {
+      watchTicker: unused,
+      watchTrades: unused,
+      watchOHLCV: unused,
+      watchOrderBook,
+    };
+    const st = tracker();
+    const unWatchOrderBook = vi.fn(() => Promise.resolve());
+    const exchange = { id: 'binance', has: { watchOrderBook: true }, unWatchOrderBook } as never;
+    const timerClock: ClockPort = { now: () => epochMs(Date.now()) };
+    const adapter = new CcxtExchangeStreamAdapter(timerClock, watchSource, exchange, V, st);
+    adapter.setChannelTierResolver({ fullChannels: () => false }, 1_000);
+
+    const spec: SubscriptionSpec = { venue: V, symbols: [SYM], channels: { book: true } };
+    const iterator = adapter.marketRaw(spec)[Symbol.asyncIterator]();
+    void iterator.next();
+
+    // A symbol lite from boot was never subscribed, so there is nothing to unsubscribe: the
+    // park transition is null→true (not false→true) and must not touch unWatchOrderBook.
+    await vi.advanceTimersByTimeAsync(120_000);
+
+    expect(watchOrderBook).not.toHaveBeenCalled();
+    expect(unWatchOrderBook).not.toHaveBeenCalled();
+    await iterator.return?.();
+  });
+
   it('a throwing resolver fails OPEN to full tier and warns once per interval', async () => {
     vi.useFakeTimers();
     const watchOrderBook = vi.fn((): Promise<OrderBook> => {

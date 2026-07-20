@@ -471,6 +471,37 @@ export class CcxtExchangeStreamAdapter implements ExchangeStreamPort {
     return new Promise<void>((res) => setTimeout(res, this.tierPollMs));
   }
 
+  // Demotion-time venue-side unsubscribe: merely parking the loop stops CONSUMING, but ccxt keeps
+  // parsing every inbound message for the still-live venue subscription until the next connection
+  // cycle (Binance recycles ws at ~24h) — the CPU the tier exists to reclaim. ccxt 4.5.58 binance
+  // declares unWatchOrderBook/unWatchTrades (verified in the installed package); the UNSUBSCRIBE
+  // frame is outbound control traffic, so it passes the SAME paced subscribe gate as a subscribe —
+  // a demotion wave must never trip the 5 msg/s 1008 cliff. Fail-OPEN: absent capability, a throw,
+  // or a never-subscribed instance (post-recreation) all reduce to plain parking — the subscription
+  // then lapses at the natural connection cycle instead, exactly the pre-unwatch behavior.
+  private async unwatchChannel(symbol: SymbolId, channel: string): Promise<void> {
+    try {
+      const ex = this.exchange as unknown as {
+        unWatchOrderBook?: (s: string) => Promise<unknown>;
+        unWatchTrades?: (s: string) => Promise<unknown>;
+      };
+      if (channel === 'book' && typeof ex.unWatchOrderBook === 'function') {
+        await this.subscribeSlot();
+        if (!this.running) return;
+        await ex.unWatchOrderBook(symbol);
+      } else if (channel === 'trade' && typeof ex.unWatchTrades === 'function') {
+        await this.subscribeSlot();
+        if (!this.running) return;
+        await ex.unWatchTrades(symbol);
+      }
+    } catch (err) {
+      this.logger?.warn(
+        `market-stream tier: unwatch ${symbol}|${channel} failed (fail-open, parked anyway; ` +
+          `subscription lapses at the next connection cycle): ${String(err)}`,
+      );
+    }
+  }
+
   /**
    * Returns an AsyncIterable of raw venue events for the subscription spec.
    * Each channel (ticker, trades, candles, book) per symbol runs in a supervised
@@ -590,7 +621,12 @@ export class CcxtExchangeStreamAdapter implements ExchangeStreamPort {
       try {
         if (!this.isFullTier(symbol)) {
           if (parked !== true) {
-            if (parked === false) this.parkChannel(symbol, channel);
+            if (parked === false) {
+              this.parkChannel(symbol, channel);
+              // Fire-and-forget: the venue-side unsubscribe is paced and fail-open (see the
+              // helper); parking must not wait on it.
+              void this.unwatchChannel(symbol, channel);
+            }
             parked = true;
           }
           needsSlot = true;
@@ -668,7 +704,12 @@ export class CcxtExchangeStreamAdapter implements ExchangeStreamPort {
       try {
         if (!this.isFullTier(symbol)) {
           if (parked !== true) {
-            if (parked === false) this.parkChannel(symbol, channel);
+            if (parked === false) {
+              this.parkChannel(symbol, channel);
+              // Fire-and-forget: the venue-side unsubscribe is paced and fail-open (see the
+              // helper); parking must not wait on it.
+              void this.unwatchChannel(symbol, channel);
+            }
             parked = true;
           }
           needsSlot = true;

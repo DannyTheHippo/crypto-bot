@@ -924,7 +924,7 @@
             "type": "prometheus",
             "uid": "prometheus-spot"
           },
-          "expr": "kill_switch_state{state=\"RUNNING\"} or vector(0)",
+          "expr": "sum(kill_switch_state{state=\"RUNNING\"}) or vector(0)",
           "legendFormat": "Spot",
           "refId": "A",
           "instant": true
@@ -934,7 +934,7 @@
             "type": "prometheus",
             "uid": "prometheus-perp"
           },
-          "expr": "kill_switch_state{state=\"RUNNING\"} or vector(0)",
+          "expr": "sum(kill_switch_state{state=\"RUNNING\"}) or vector(0)",
           "legendFormat": "Perp",
           "refId": "B",
           "instant": true
@@ -1242,7 +1242,7 @@
             "type": "postgres",
             "uid": "postgres-ro-spot"
           },
-          "rawSql": "SELECT max(event_time) AS \"Spot\" FROM agent_decisions",
+          "rawSql": "SELECT max(created_at) AS \"Spot\" FROM agent_decisions",
           "format": "table",
           "refId": "A",
           "editorMode": "code"
@@ -1252,7 +1252,7 @@
             "type": "postgres",
             "uid": "postgres-ro-perp"
           },
-          "rawSql": "SELECT max(event_time) AS \"Perp\" FROM agent_decisions",
+          "rawSql": "SELECT max(created_at) AS \"Perp\" FROM agent_decisions",
           "format": "table",
           "refId": "B",
           "editorMode": "code"

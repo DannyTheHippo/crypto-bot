@@ -29,6 +29,12 @@ export interface AppConfig {
     url: string | undefined;
   };
   venues: readonly VenueConfig[];
+  // v3 §3.1/§6.1: fixed wallet split of the one book (VENUE_CAPITAL_SPLIT), keyed by venue id,
+  // decimal-string shares. Cross-field-validated at construction (key-set exactly equals `venues`'
+  // ids once venues is non-empty; every share positive; Σ shares ≤ risk.equityCap unless the cap is
+  // disabled) — see environment.config.ts's validate(). Workstream #5's VenueRegistryModule builds
+  // its VENUE_REGISTRY map's capitalShare field off this record.
+  venueCapitalSplit: Readonly<Record<string, string>>;
   // Agentic lane knobs, read off ConfigService at the composition root (agenticEnv overlay in
   // agentic-strategy.module.ts).
   agentic: {
@@ -52,10 +58,17 @@ export interface AppConfig {
     dailyCostStopUsd: number;
     // W2.1 stale-entry sweep TTL in observed decide cycles; 0 disables.
     entryTtlBars: number;
-    // v2 decision contract (D1): upper bound on sizeFraction (the model's conviction channel),
-    // injected into both the trade-tool description and the client's zod schema (S3). Per-lane cap —
-    // spot default 0.15 across the wide basket; perp overrides to 0.50 (single-symbol book).
+    // v3-transitional(#8,#10): AGENTIC_MAX_POSITION_FRACTION is renamed to
+    // maxPositionFractionSpot/maxPositionFractionPerp below (§3.3). risk.module.ts and
+    // agentic-strategy.module.ts/reflection.service.ts still read this single field as their
+    // lane-wide sizeFraction cap; environment.config.ts derives it from maxPositionFractionSpot
+    // until those workstreams consume the per-venue-class fields directly.
     maxPositionFraction: string;
+    // v3 §3.1/§3.3: upper bound on sizeFraction (the model's conviction channel), injected into both
+    // the trade-tool description and the client's zod schema (S3) — per-venue-class cap, now
+    // enforced per-symbol via the payload's capabilities.maxSizeFraction (§4.2) rather than per-lane.
+    maxPositionFractionSpot: string;
+    maxPositionFractionPerp: string;
     // v2 consult scheduler (B2): floor cadence — a re-consult fires at least this often even if the
     // model's own nextConsultBars requested a longer gap, so a stuck/quiet basket never goes dark.
     fallbackConsultBars: number;
@@ -82,17 +95,20 @@ export interface AppConfig {
     mintBacktestMarginBps: number;
     // Minimum simulated round trips BOTH arms need before the backtest verdict is trusted.
     mintBacktestMinTrips: number;
-    // Cumulative closed-trade floor before a reflection candidate auto-promotes (G4b); 0 disables.
+    // v3-transitional(#10): AGENTIC_AUTO_PROMOTE_MIN_TRADES is deleted (§3.4) — the legacy
+    // count-only auto-promotion path is permanently superseded by autoPromoteMinAttributedTrades
+    // below. reflection.service.ts/agentic-strategy.module.ts still read this field;
+    // environment.config.ts hardcodes 0 (disabled).
     autoPromoteMinTrades: number;
     // Absent means unpinned.
     playbookPin?: number;
     // W4.1 champion/candidate A/B: percent (0-50) of decides deterministically routed to a newer
     // INACTIVE reflection-minted candidate instead of ACTIVE. 0 disables (default).
     playbookAbPct: number;
-    // Derivatives-block A/B (measurement start 2026-07-12): percent (0-50) of decides deterministically
-    // routed to a CONTROL arm that withholds the derivatives prompt block/sentence/hash-tag entirely,
-    // so the flag's effect becomes measurable via promptHash grouping. 0 disables (default; also a
-    // no-op whenever derivativesFeedEnabled is off — nothing to withhold).
+    // v3-transitional(#10): AGENTIC_DERIVATIVES_AB_PCT is deleted (§3.4, XA3 decision record — the
+    // information-context control arm is retired at 0 for good: treatment drove 8.4% vs 1.9%
+    // proposes). anthropic-agent-client.ts/agentic-strategy.module.ts still read this field;
+    // environment.config.ts hardcodes 0.
     derivativesAbPct: number;
     // d2 (Push 3 P6 Unit 1): switches the derivatives block/sentence/promptHash tag from d1 to d2,
     // surfacing three fields the feed already accumulates (spot-perp basis, OI percent change,
@@ -181,11 +197,10 @@ export interface AppConfig {
     // Owner-declared evidence epoch (ISO-8601): the promotion gate evaluates fills/tokens/window
     // from this instant instead of all-time. Absent ⇒ all-time (byte-identical legacy behavior).
     promotionEvidenceEpoch?: string;
-    // Push II Phase 8: plan-mode shorts (AGENTIC_SHORTS_ENABLED). Distinct from the pre-existing
-    // legacy shorts capability (B3's shortsEnabled on the bar-by-bar submit_decision path, which this
-    // flag does NOT gate) — this one only ever combines with planMode, and only on a perp-capable
-    // venue (agentic-strategy.module.ts's selectAgentClient derives that from config.venues and
-    // refuses construction otherwise — spot cannot short). Default false ⇒ byte-identical.
+    // v3-transitional(#5,#10): AGENTIC_SHORTS_ENABLED is deleted (§3.4) — shorts is now a per-symbol
+    // capability derived from venue presence (§4.2's capabilities.shorts), not a boot flag.
+    // app.module.ts and agentic-strategy.module.ts still read this field as their perp-lane
+    // selector; environment.config.ts derives it as `venues.some(v => v.id === 'binanceusdm')`.
     shortsEnabled: boolean;
   };
   // Risk-lane knobs read via ConfigService (mirrors the agentic block above).
@@ -202,8 +217,10 @@ export interface AppConfig {
     // PositionSizerService falls back to the legacy baseNotional × strength path.
     equityFraction: string;
     // $1k-book economics (D1, Design § Live-scale economics): sizing equity = min(actualEquity,
-    // this cap) on every sizer path. Absent (default) means UNCAPPED — an unconfigured deployment
-    // sizes off the real account equity, byte-identical to pre-knob.
+    // this cap) on every sizer path. v3 §3.2: DEFAULTED to '1000' (was optional/uncapped) — the
+    // validated schema always supplies a value now; explicit '0' still disables the cap
+    // (position-sizer.service.ts's cappedEquity treats a non-positive cap as pass-through). Stays
+    // optional in this port type only for module-isolation callers that hand-build a partial config.
     equityCap?: string;
     // ProtectiveExitService (bot-side stop-loss/trailing-stop backstop): fraction below avgEntry
     // (stop) / the ratcheted high-water mark (trailing) that force-exits a long. '0' disables each
@@ -239,11 +256,9 @@ export interface AppConfig {
     staleMaxAgeMs: number;
   };
   // Perp/swap paper adapter knobs (B1) + entry-sizing knob (B2, position-sizer's perp branch).
-  // PaperPerpAdapter is not wired into app.module.ts this pass — enabled stays false so an
-  // unconfigured deployment sees zero behavior change; these are scaffolding for the future
-  // composition-root wiring.
+  // PERP_VENUE_ENABLED (the old `enabled` field) is DELETED (§3.4) — venue presence in VENUES is
+  // the signal now, and the field had no consumer outside environment.config.ts itself.
   perp: {
-    enabled: boolean;
     leverageCap: string;
     mmrFallback: string;
     // B2: required liquidation-price buffer (fraction) a perp entry must clear — see

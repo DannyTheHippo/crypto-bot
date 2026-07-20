@@ -1,5 +1,36 @@
 import { describe, expect, it } from 'vitest';
-import { validate } from '../../../src/config/environment/environment.config';
+import { validate as rawValidate } from '../../../src/config/environment/environment.config';
+import type { AppConfig } from '../../../src/ports/app-config';
+
+// Most assertions in this file exercise pure field-parsing/defaulting mechanics and don't care
+// whether the boot path is test/ci or production — default NODE_ENV to 'test' so callers don't
+// need to restate the v3-required DATABASE_URL/VENUES/TRADING_SYMBOLS knobs (environment.config.ts's
+// test/ci carve-out, spec §3.2/§3.4). Tests that specifically exercise PRODUCTION-path behavior
+// (mode resolution, the new DATABASE_URL/VENUES/PLAN_MODE refusals) override NODE_ENV: undefined
+// explicitly, which restores the "no NODE_ENV at all" semantics validate() itself treats as
+// non-test/ci (object spread with an explicit `undefined` value still overrides the default).
+function validate(env: Record<string, string | undefined>): AppConfig {
+  return rawValidate({ NODE_ENV: 'test', ...env });
+}
+
+// v3 §3.2/§3.4/§3.5: a minimal PRODUCTION-shaped env — DATABASE_URL + a covering VENUES/
+// VENUE_CAPITAL_SPLIT/TRADING_SYMBOLS quadruple (spot-only by default) — for the handful of tests
+// that must exercise the non-test/ci path. VENUE_CAPITAL_SPLIT's key-set must exactly match VENUES
+// (§3.5) and AGENTIC_ACTIVE_MENU_SIZE must not exceed the basket, so both are pinned here too;
+// callers overriding VENUES to add binanceusdm must override VENUE_CAPITAL_SPLIT to match.
+function prodEnv(
+  overrides: Record<string, string | undefined> = {},
+): Record<string, string | undefined> {
+  return {
+    NODE_ENV: undefined,
+    DATABASE_URL: 'postgres://user:pass@localhost:5432/db',
+    VENUES: JSON.stringify([{ id: 'binance', environment: 'demo' }]),
+    VENUE_CAPITAL_SPLIT: JSON.stringify({ binance: '1000' }),
+    TRADING_SYMBOLS: 'BTC/USDT',
+    AGENTIC_ACTIVE_MENU_SIZE: '1',
+    ...overrides,
+  };
+}
 
 describe('validate()', () => {
   it('defaults to paper when TRADING_MODE is absent', () => {
@@ -8,13 +39,13 @@ describe('validate()', () => {
   });
 
   it('resolves to live when TRADING_MODE=live in a non-test env', () => {
-    const cfg = validate({ TRADING_MODE: 'live', PORT: '3100' });
+    const cfg = validate(prodEnv({ TRADING_MODE: 'live', PORT: '3100' }));
     expect(cfg.mode.configMode).toBe('live');
     expect(cfg.mode.requestedMode).toBe('live');
   });
 
   it('resolves garbage TRADING_MODE to paper with downgrade reason', () => {
-    const cfg = validate({ TRADING_MODE: 'garbage', PORT: '3100' });
+    const cfg = validate(prodEnv({ TRADING_MODE: 'garbage', PORT: '3100' }));
     expect(cfg.mode.configMode).toBe('paper');
     expect(cfg.mode.downgrades.length).toBeGreaterThan(0);
     expect(cfg.mode.downgrades[0]).toMatch(/garbage/);
@@ -121,21 +152,202 @@ describe('validate()', () => {
     expect(cfg1.app.bootId).not.toBe(cfg2.app.bootId);
   });
 
-  it('DATABASE_URL present → cfg.db.url is set to that value', () => {
-    const url = 'postgres://user:pass@localhost:5432/mydb';
-    const cfg = validate({ PORT: '3100', DATABASE_URL: url });
-    expect(cfg.db.url).toBe(url);
+  describe('DATABASE_URL required outside test/ci (v3 §3.2/§3.5)', () => {
+    it('present → cfg.db.url is set to that value (test/ci — always optional there)', () => {
+      const url = 'postgres://user:pass@localhost:5432/mydb';
+      const cfg = validate({ PORT: '3100', DATABASE_URL: url });
+      expect(cfg.db.url).toBe(url);
+    });
+
+    it('absent under test/ci (default) → cfg.db.url is undefined, never throws', () => {
+      const cfg = validate({ PORT: '3100' });
+      expect(cfg.db.url).toBeUndefined();
+    });
+
+    it('configHash is identical whether or not DATABASE_URL is present', () => {
+      const withDb = validate({ PORT: '3100', DATABASE_URL: 'postgres://localhost/db' });
+      const withoutDb = validate({ PORT: '3100' });
+      expect(withDb.configHash).toBe(withoutDb.configHash);
+    });
+
+    it('throws outside test/ci when DATABASE_URL is absent', () => {
+      expect(() => validate(prodEnv({ PORT: '3100', DATABASE_URL: undefined }))).toThrow(
+        /DATABASE_URL/,
+      );
+    });
+
+    it('passes outside test/ci when DATABASE_URL is present', () => {
+      const cfg = validate(prodEnv({ PORT: '3100' }));
+      expect(cfg.db.url).toBe('postgres://user:pass@localhost:5432/db');
+    });
   });
 
-  it('DATABASE_URL absent → cfg.db.url is undefined', () => {
-    const cfg = validate({ PORT: '3100' });
-    expect(cfg.db.url).toBeUndefined();
+  describe('VENUES required + exact symbol-coverage outside test/ci (v3 §3.2/§3.5)', () => {
+    it('test/ci default never requires VENUES', () => {
+      expect(validate({ PORT: '3100' }).venues).toEqual([]);
+    });
+
+    it('throws when VENUES is empty outside test/ci', () => {
+      expect(() => validate(prodEnv({ PORT: '3100', VENUES: undefined }))).toThrow(/VENUES/);
+    });
+
+    it('throws when a perp symbol is configured but VENUES lacks binanceusdm', () => {
+      expect(() =>
+        validate(prodEnv({ PORT: '3100', TRADING_SYMBOLS: 'BTC/USDT,ETH/USDT:USDT' })),
+      ).toThrow(/VENUES/);
+    });
+
+    it('throws when VENUES configures binanceusdm but no perp symbol is in TRADING_SYMBOLS', () => {
+      expect(() =>
+        validate(
+          prodEnv({
+            PORT: '3100',
+            VENUES: JSON.stringify([
+              { id: 'binance', environment: 'demo' },
+              { id: 'binanceusdm', environment: 'demo' },
+            ]),
+            TRADING_SYMBOLS: 'BTC/USDT',
+          }),
+        ),
+      ).toThrow(/VENUES/);
+    });
+
+    it('passes when VENUES exactly covers the venues implied by TRADING_SYMBOLS (mixed spot+perp)', () => {
+      const cfg = validate(
+        prodEnv({
+          PORT: '3100',
+          VENUES: JSON.stringify([
+            { id: 'binance', environment: 'demo' },
+            { id: 'binanceusdm', environment: 'demo' },
+          ]),
+          VENUE_CAPITAL_SPLIT: JSON.stringify({ binance: '500', binanceusdm: '500' }),
+          TRADING_SYMBOLS: 'BTC/USDT,ETH/USDT:USDT',
+        }),
+      );
+      expect(cfg.venues.map((v) => v.id).sort()).toEqual(['binance', 'binanceusdm']);
+    });
+
+    it('passes on a spot-only boot (default prodEnv shape)', () => {
+      const cfg = validate(prodEnv({ PORT: '3100' }));
+      expect(cfg.venues.map((v) => v.id)).toEqual(['binance']);
+    });
   });
 
-  it('configHash is identical whether or not DATABASE_URL is present', () => {
-    const withDb = validate({ PORT: '3100', DATABASE_URL: 'postgres://localhost/db' });
-    const withoutDb = validate({ PORT: '3100' });
-    expect(withDb.configHash).toBe(withoutDb.configHash);
+  describe('VENUE_CAPITAL_SPLIT key-set/positivity/Σ≤cap (v3 §3.1/§3.5)', () => {
+    it('defaults to the both-venues 500/500 split', () => {
+      expect(validate({ PORT: '3100' }).venueCapitalSplit).toEqual({
+        binance: '500',
+        binanceusdm: '500',
+      });
+    });
+
+    it('throws malformed JSON loudly', () => {
+      expect(() => validate({ PORT: '3100', VENUE_CAPITAL_SPLIT: '{nope' })).toThrow(
+        /VENUE_CAPITAL_SPLIT is not valid JSON/,
+      );
+    });
+
+    it('throws when a share is zero (positivity)', () => {
+      expect(() =>
+        validate({
+          PORT: '3100',
+          VENUE_CAPITAL_SPLIT: '{"binance":"0","binanceusdm":"500"}',
+        }),
+      ).toThrow(/VENUE_CAPITAL_SPLIT/);
+    });
+
+    it('throws when a share is negative (positivity)', () => {
+      expect(() =>
+        validate({
+          PORT: '3100',
+          VENUE_CAPITAL_SPLIT: '{"binance":"-100","binanceusdm":"500"}',
+        }),
+      ).toThrow(/VENUE_CAPITAL_SPLIT/);
+    });
+
+    it('key-set check no-ops while VENUES is unconfigured (test/ci default)', () => {
+      expect(() =>
+        validate({ PORT: '3100', VENUE_CAPITAL_SPLIT: '{"someOtherVenue":"1000"}' }),
+      ).not.toThrow();
+    });
+
+    it('throws when the key set does not exactly match a configured VENUES', () => {
+      expect(() =>
+        validate(
+          prodEnv({
+            PORT: '3100',
+            VENUE_CAPITAL_SPLIT: '{"binance":"500","binanceusdm":"500"}',
+          }),
+        ),
+      ).toThrow(/VENUE_CAPITAL_SPLIT/);
+    });
+
+    it('passes when the key set exactly matches a configured single-venue VENUES', () => {
+      const cfg = validate(prodEnv({ PORT: '3100', VENUE_CAPITAL_SPLIT: '{"binance":"1000"}' }));
+      expect(cfg.venueCapitalSplit).toEqual({ binance: '1000' });
+    });
+
+    it('throws when the split sum exceeds SIZER_EQUITY_CAP', () => {
+      expect(() =>
+        validate({
+          PORT: '3100',
+          VENUE_CAPITAL_SPLIT: '{"binance":"600","binanceusdm":"600"}',
+          SIZER_EQUITY_CAP: '1000',
+        }),
+      ).toThrow(/VENUE_CAPITAL_SPLIT/);
+    });
+
+    it('passes at exact equality (sum === cap)', () => {
+      expect(() =>
+        validate({
+          PORT: '3100',
+          VENUE_CAPITAL_SPLIT: '{"binance":"500","binanceusdm":"500"}',
+          SIZER_EQUITY_CAP: '1000',
+        }),
+      ).not.toThrow();
+    });
+
+    it('sum-vs-cap check is skipped when SIZER_EQUITY_CAP is the disabled sentinel 0', () => {
+      expect(() =>
+        validate({
+          PORT: '3100',
+          VENUE_CAPITAL_SPLIT: '{"binance":"600","binanceusdm":"600"}',
+          SIZER_EQUITY_CAP: '0',
+        }),
+      ).not.toThrow();
+    });
+  });
+
+  describe('AGENTIC_PLAN_MODE=false refused when any perp symbol is configured (v3 §3.5)', () => {
+    it('throws when plan mode is off and a perp symbol is configured', () => {
+      expect(() =>
+        validate({
+          PORT: '3100',
+          AGENTIC_PLAN_MODE: 'false',
+          TRADING_SYMBOLS: 'BTC/USDT,ETH/USDT:USDT',
+          AGENTIC_ACTIVE_MENU_SIZE: '2',
+        }),
+      ).toThrow(/AGENTIC_PLAN_MODE/);
+    });
+
+    it('passes when plan mode is off and every configured symbol is spot', () => {
+      const cfg = validate({
+        PORT: '3100',
+        AGENTIC_PLAN_MODE: 'false',
+        TRADING_SYMBOLS: 'BTC/USDT,ETH/USDT',
+        AGENTIC_ACTIVE_MENU_SIZE: '2',
+      });
+      expect(cfg.agentic.planMode).toBe(false);
+    });
+
+    it('passes when plan mode is on (the v3 default) regardless of symbols', () => {
+      const cfg = validate({
+        PORT: '3100',
+        TRADING_SYMBOLS: 'BTC/USDT,ETH/USDT:USDT',
+        AGENTIC_ACTIVE_MENU_SIZE: '2',
+      });
+      expect(cfg.agentic.planMode).toBe(true);
+    });
   });
 
   describe('empty-string env values mean UNSET (dotenv/compose convention)', () => {
@@ -166,8 +378,10 @@ describe('validate()', () => {
   });
 
   it('N3 — CI="false" (string) forces paper because Boolean("false") is truthy', () => {
-    // Boolean(env['CI']) where env['CI'] === 'false' → Boolean('false') === true → test-env override
-    const cfg = validate({ PORT: '3100', CI: 'false', TRADING_MODE: 'live' });
+    // Boolean(env['CI']) where env['CI'] === 'false' → Boolean('false') === true → test-env override.
+    // NODE_ENV explicitly unset here so this isolates the CI-truthy-string path from the wrapper's
+    // own NODE_ENV='test' default (which would force paper regardless and make the test vacuous).
+    const cfg = validate({ PORT: '3100', NODE_ENV: undefined, CI: 'false', TRADING_MODE: 'live' });
     expect(cfg.mode.configMode).toBe('paper');
     expect(cfg.mode.downgrades.length).toBeGreaterThan(0);
   });
@@ -182,17 +396,21 @@ describe('validate()', () => {
         reflectionModel: undefined,
         timeoutMs: 30000,
         reflectionTimeoutMs: 240000,
-        maxTokens: 1024,
+        maxTokens: 4096,
         minDecisionIntervalMs: 0,
         warmupBars: 50,
-        maxCallsPerDay: 500,
-        maxTokensPerDay: 2_000_000,
+        maxCallsPerDay: 2000,
+        maxTokensPerDay: 4_000_000,
         dailyCostStopUsd: 3,
         entryTtlBars: 2,
+        // v3-transitional(#8,#10): derives from maxPositionFractionSpot until those workstreams
+        // consume the per-venue-class fields directly.
         maxPositionFraction: '0.15',
-        fallbackConsultBars: 16,
-        wakeMovePct: '0.015',
-        activeMenuSize: 12,
+        maxPositionFractionSpot: '0.15',
+        maxPositionFractionPerp: '0.35',
+        fallbackConsultBars: 8,
+        wakeMovePct: '0.008',
+        activeMenuSize: 8,
         maxEntriesPerDay: 12,
         drainCooldownBaseMs: 30_000,
         drainCooldownMaxMs: 900_000,
@@ -201,10 +419,12 @@ describe('validate()', () => {
         mintBacktestRows: 0,
         mintBacktestMarginBps: 10,
         mintBacktestMinTrips: 3,
+        // v3-transitional(#10): AGENTIC_AUTO_PROMOTE_MIN_TRADES deleted — permanently 0.
         autoPromoteMinTrades: 0,
         autoPromoteMinAttributedTrades: 0,
         playbookPin: undefined,
         playbookAbPct: 0,
+        // v3-transitional(#10): AGENTIC_DERIVATIVES_AB_PCT deleted (XA3) — permanently 0.
         derivativesAbPct: 0,
         derivativesV2Enabled: false,
         bookStructureFeedEnabled: false,
@@ -213,13 +433,18 @@ describe('validate()', () => {
         crossSymbolLookbackBars: 20,
         portfolioConsultEnabled: false,
         portfolioWindowMs: 3000,
+        // v3-transitional(#5,#10): derives from venue presence — no perp venue configured by
+        // default (VENUES defaults to []), so false.
         shortsEnabled: false,
-        planMode: false,
+        // v3 default flips false→true (the only deployed shape).
+        planMode: true,
         planExitTtlBars: 2,
         quietPayloadSampleBars: 0,
-        venueTpEnabled: false,
+        // v3 defaults flip false→true (the only deployed shape; the mutual-exclusion refusal that
+        // used to gate this combination is retired — §3.5).
+        venueTpEnabled: true,
         venueTpReplaceDriftBps: 10,
-        venueStopEnabled: false,
+        venueStopEnabled: true,
         venueStopReplaceDriftBps: 10,
         tokenPriceInputPerMtok: '3',
         tokenPriceOutputPerMtok: '15',
@@ -248,7 +473,7 @@ describe('validate()', () => {
         AGENTIC_REFLECTION_EVERY_N_TRADES: '5',
         AGENTIC_REFLECTION_COOLDOWN_MS: '3600000',
         AGENTIC_REFLECTION_TIMEOUT_MS: '90000',
-        AGENTIC_MAX_POSITION_FRACTION: '0.25',
+        AGENTIC_MAX_POSITION_FRACTION_SPOT: '0.25',
         AGENTIC_FALLBACK_CONSULT_BARS: '8',
         AGENTIC_WAKE_MOVE_PCT: '0.03',
         AGENTIC_ACTIVE_MENU_SIZE: '5',
@@ -268,26 +493,28 @@ describe('validate()', () => {
       expect(cfg.agentic.reflectionEveryNTrades).toBe(5);
       expect(cfg.agentic.reflectionCooldownMs).toBe(3600000);
       expect(cfg.agentic.reflectionTimeoutMs).toBe(90000);
-      expect(cfg.agentic.maxPositionFraction).toBe('0.25');
+      expect(cfg.agentic.maxPositionFractionSpot).toBe('0.25');
       expect(cfg.agentic.fallbackConsultBars).toBe(8);
       expect(cfg.agentic.wakeMovePct).toBe('0.03');
       expect(cfg.agentic.activeMenuSize).toBe(5);
     });
 
-    describe('v2 contract knobs (D1)', () => {
-      it('AGENTIC_MAX_POSITION_FRACTION defaults to 0.15 and rejects an out-of-range fraction', () => {
-        expect(validate({ PORT: '3100' }).agentic.maxPositionFraction).toBe('0.15');
+    describe('v3 contract knobs (§3.1/§3.2/§3.3)', () => {
+      it('AGENTIC_MAX_POSITION_FRACTION_SPOT/_PERP default per §3.1 and reject an out-of-range fraction', () => {
+        const defaults = validate({ PORT: '3100' }).agentic;
+        expect(defaults.maxPositionFractionSpot).toBe('0.15');
+        expect(defaults.maxPositionFractionPerp).toBe('0.35');
         expect(
-          validate({ PORT: '3100', AGENTIC_MAX_POSITION_FRACTION: '0.50' }).agentic
-            .maxPositionFraction,
+          validate({ PORT: '3100', AGENTIC_MAX_POSITION_FRACTION_SPOT: '0.50' }).agentic
+            .maxPositionFractionSpot,
         ).toBe('0.50');
-        expect(() => validate({ PORT: '3100', AGENTIC_MAX_POSITION_FRACTION: '1.5' })).toThrow(
-          /AGENTIC_MAX_POSITION_FRACTION/,
+        expect(() => validate({ PORT: '3100', AGENTIC_MAX_POSITION_FRACTION_PERP: '1.5' })).toThrow(
+          /AGENTIC_MAX_POSITION_FRACTION_PERP/,
         );
       });
 
-      it('AGENTIC_FALLBACK_CONSULT_BARS defaults to 16 and rejects below 1', () => {
-        expect(validate({ PORT: '3100' }).agentic.fallbackConsultBars).toBe(16);
+      it('AGENTIC_FALLBACK_CONSULT_BARS defaults to 8 (v3) and rejects below 1', () => {
+        expect(validate({ PORT: '3100' }).agentic.fallbackConsultBars).toBe(8);
         expect(
           validate({ PORT: '3100', AGENTIC_FALLBACK_CONSULT_BARS: '4' }).agentic
             .fallbackConsultBars,
@@ -297,8 +524,8 @@ describe('validate()', () => {
         );
       });
 
-      it('AGENTIC_WAKE_MOVE_PCT defaults to 0.015 and rejects an out-of-range fraction', () => {
-        expect(validate({ PORT: '3100' }).agentic.wakeMovePct).toBe('0.015');
+      it('AGENTIC_WAKE_MOVE_PCT defaults to 0.008 (v3) and rejects an out-of-range fraction', () => {
+        expect(validate({ PORT: '3100' }).agentic.wakeMovePct).toBe('0.008');
         expect(validate({ PORT: '3100', AGENTIC_WAKE_MOVE_PCT: '0.03' }).agentic.wakeMovePct).toBe(
           '0.03',
         );
@@ -307,16 +534,25 @@ describe('validate()', () => {
         );
       });
 
-      it('SIZER_EQUITY_CAP is absent (uncapped) by default and lands as an exact decimal string when set', () => {
-        expect(validate({ PORT: '3100' }).risk.equityCap).toBeUndefined();
-        expect(validate({ PORT: '3100', SIZER_EQUITY_CAP: '1000' }).risk.equityCap).toBe('1000');
+      it('SIZER_EQUITY_CAP defaults to 1000 (v3 — was optional/uncapped) and lands as an exact decimal string when set', () => {
+        expect(validate({ PORT: '3100' }).risk.equityCap).toBe('1000');
+        // Lowering the cap below the default VENUE_CAPITAL_SPLIT sum (1000) also needs a matching
+        // split override, or the unrelated §3.5 sum-vs-cap refusal fires first — see the dedicated
+        // VENUE_CAPITAL_SPLIT describe block above for that refusal's own coverage.
+        expect(
+          validate({
+            PORT: '3100',
+            SIZER_EQUITY_CAP: '500',
+            VENUE_CAPITAL_SPLIT: '{"binance":"250","binanceusdm":"250"}',
+          }).risk.equityCap,
+        ).toBe('500');
         expect(() => validate({ PORT: '3100', SIZER_EQUITY_CAP: '-5' })).toThrow(
           /SIZER_EQUITY_CAP/,
         );
       });
 
-      it('AGENTIC_ACTIVE_MENU_SIZE defaults to 12 and rejects a menu wider than an EXPLICIT basket', () => {
-        expect(validate({ PORT: '3100' }).agentic.activeMenuSize).toBe(12);
+      it('AGENTIC_ACTIVE_MENU_SIZE defaults to 8 (v3) and rejects a menu wider than the basket', () => {
+        expect(validate({ PORT: '3100' }).agentic.activeMenuSize).toBe(8);
         expect(
           validate({
             PORT: '3100',
@@ -324,12 +560,16 @@ describe('validate()', () => {
             TRADING_SYMBOLS: 'BTC/USDT,ETH/USDT,SOL/USDT',
           }).agentic.activeMenuSize,
         ).toBe(2);
-        // The check binds only to an EXPLICIT TRADING_SYMBOLS CSV — the legacy single-symbol
-        // fallback (TRADING_SYMBOLS unset) predates U1's menu concept and must stay byte-identical
-        // for every unconfigured deployment, so the default menu size of 12 is a no-op here.
+        // test/ci default fallback basket is ['BTC/USDT'] (length 1) — the schema default of 8
+        // exceeds that, so an explicit override is required to exercise the default cleanly.
         expect(
-          validate({ PORT: '3100', AGENTIC_ACTIVE_MENU_SIZE: '12' }).agentic.activeMenuSize,
-        ).toBe(12);
+          validate({
+            PORT: '3100',
+            AGENTIC_ACTIVE_MENU_SIZE: '8',
+            TRADING_SYMBOLS:
+              'BTC/USDT,ETH/USDT,SOL/USDT,XRP/USDT,LINK/USDT,ZEC/USDT,AAVE/USDT,NEAR/USDT',
+          }).agentic.activeMenuSize,
+        ).toBe(8);
         expect(() =>
           validate({
             PORT: '3100',
@@ -368,33 +608,41 @@ describe('validate()', () => {
       });
     });
 
-    describe('AGENTIC_SHORTS_ENABLED requires a binanceusdm venue (D1)', () => {
+    describe('shortsEnabled derives from venue presence (v3 §3.4 — AGENTIC_SHORTS_ENABLED deleted)', () => {
       const SPOT_VENUE = JSON.stringify([{ id: 'binance', environment: 'paper' }]);
       const PERP_VENUE = JSON.stringify([{ id: 'binanceusdm', environment: 'paper' }]);
+      // A single-venue VENUES needs a matching single-key VENUE_CAPITAL_SPLIT (§3.5's key-set
+      // check) — the schema's own both-venues default would otherwise mismatch.
+      const SPOT_SPLIT = JSON.stringify({ binance: '1000' });
+      const PERP_SPLIT = JSON.stringify({ binanceusdm: '1000' });
 
-      it('throws when shorts are enabled with no configured venue', () => {
-        expect(() => validate({ PORT: '3100', AGENTIC_SHORTS_ENABLED: 'true' })).toThrow(
-          /AGENTIC_SHORTS_ENABLED/,
-        );
+      it('false when no venue is configured (test/ci default)', () => {
+        expect(validate({ PORT: '3100' }).agentic.shortsEnabled).toBe(false);
       });
 
-      it('throws when shorts are enabled on a spot-only venue', () => {
-        expect(() =>
-          validate({ PORT: '3100', AGENTIC_SHORTS_ENABLED: 'true', VENUES: SPOT_VENUE }),
-        ).toThrow(/AGENTIC_SHORTS_ENABLED/);
+      it('false on a spot-only VENUES', () => {
+        expect(
+          validate({ PORT: '3100', VENUES: SPOT_VENUE, VENUE_CAPITAL_SPLIT: SPOT_SPLIT }).agentic
+            .shortsEnabled,
+        ).toBe(false);
       });
 
-      it('passes when shorts are enabled with a binanceusdm venue configured', () => {
+      it('true when a binanceusdm venue is configured', () => {
+        expect(
+          validate({ PORT: '3100', VENUES: PERP_VENUE, VENUE_CAPITAL_SPLIT: PERP_SPLIT }).agentic
+            .shortsEnabled,
+        ).toBe(true);
+      });
+
+      it('the deleted AGENTIC_SHORTS_ENABLED env var is silently ignored (unknown key)', () => {
+        // zod object schemas strip unknown keys by default — this must never resurrect the old
+        // boot-flag semantics.
         const cfg = validate({
           PORT: '3100',
           AGENTIC_SHORTS_ENABLED: 'true',
-          VENUES: PERP_VENUE,
+          VENUES: SPOT_VENUE,
+          VENUE_CAPITAL_SPLIT: SPOT_SPLIT,
         });
-        expect(cfg.agentic.shortsEnabled).toBe(true);
-      });
-
-      it('passes when shorts are disabled regardless of venues', () => {
-        const cfg = validate({ PORT: '3100', VENUES: SPOT_VENUE });
         expect(cfg.agentic.shortsEnabled).toBe(false);
       });
     });
@@ -445,20 +693,12 @@ describe('validate()', () => {
       );
     });
 
-    it('AGENTIC_DERIVATIVES_AB_PCT absent → 0 (control arm disabled)', () => {
-      const cfg = validate({ PORT: '3100' });
-      expect(cfg.agentic.derivativesAbPct).toBe(0);
-    });
-
-    it('AGENTIC_DERIVATIVES_AB_PCT present → parsed within 0-50', () => {
-      const cfg = validate({ PORT: '3100', AGENTIC_DERIVATIVES_AB_PCT: '30' });
-      expect(cfg.agentic.derivativesAbPct).toBe(30);
-    });
-
-    it('throws on AGENTIC_DERIVATIVES_AB_PCT above 50', () => {
-      expect(() => validate({ PORT: '3100', AGENTIC_DERIVATIVES_AB_PCT: '51' })).toThrow(
-        /AGENTIC_DERIVATIVES_AB_PCT/,
-      );
+    it('agentic.derivativesAbPct is permanently 0 — AGENTIC_DERIVATIVES_AB_PCT is deleted (v3 §3.4, XA3)', () => {
+      expect(validate({ PORT: '3100' }).agentic.derivativesAbPct).toBe(0);
+      // The deleted env var is silently ignored (unknown key), never resurrecting the old A/B.
+      expect(
+        validate({ PORT: '3100', AGENTIC_DERIVATIVES_AB_PCT: '30' }).agentic.derivativesAbPct,
+      ).toBe(0);
     });
 
     it('AGENTIC_CROSS_SYMBOL_ENABLED="false" resolves to false (strict enum parse, not z.coerce.boolean — Boolean("false") === true was the bug)', () => {
@@ -510,12 +750,13 @@ describe('validate()', () => {
       expect(withKey.configHash).toBe(withoutKey.configHash);
     });
 
-    it('AGENTIC_AUTO_PROMOTE_MIN_TRADES defaults to 0 (auto-promotion disabled) and coerces', () => {
+    it('agentic.autoPromoteMinTrades is permanently 0 — AGENTIC_AUTO_PROMOTE_MIN_TRADES is deleted (v3 §3.4)', () => {
       expect(validate({ PORT: '3100' }).agentic.autoPromoteMinTrades).toBe(0);
+      // The deleted env var is silently ignored (unknown key), never resurrecting the legacy path.
       expect(
         validate({ PORT: '3100', AGENTIC_AUTO_PROMOTE_MIN_TRADES: '30' }).agentic
           .autoPromoteMinTrades,
-      ).toBe(30);
+      ).toBe(0);
     });
 
     it('AGENTIC_MINT_BACKTEST_* default to (0, 10, 3) — off unless a deployment opts in — and coerce', () => {
@@ -561,12 +802,6 @@ describe('validate()', () => {
     it('throws on a non-decimal PROMOTION_DUST_NOTIONAL', () => {
       expect(() => validate({ PORT: '3100', PROMOTION_DUST_NOTIONAL: '-5' })).toThrow(
         /PROMOTION_DUST_NOTIONAL/,
-      );
-    });
-
-    it('throws on negative AGENTIC_AUTO_PROMOTE_MIN_TRADES', () => {
-      expect(() => validate({ PORT: '3100', AGENTIC_AUTO_PROMOTE_MIN_TRADES: '-1' })).toThrow(
-        /AGENTIC_AUTO_PROMOTE_MIN_TRADES/,
       );
     });
 
@@ -692,8 +927,8 @@ describe('validate()', () => {
         ).toThrow(/AGENTIC_TOKEN_PRICES_JSON is not valid JSON/);
       });
 
-      // Shipped-lane regression: both .env.app and .env.app-perp pin AGENTIC_REFLECTION_MODEL=
-      // claude-opus-4-8 with a price map covering both models — must never trip this refusal.
+      // Shipped-lane regression: the deployed .env.app pins AGENTIC_REFLECTION_MODEL=claude-opus-4-8
+      // with a price map covering both models — must never trip this refusal.
       it('shipped lane shape (opus reflection + both-model price map) never trips', () => {
         expect(() =>
           validate({
@@ -734,75 +969,34 @@ describe('validate()', () => {
       ).toThrow(/PROMOTION_EVIDENCE_EPOCH/);
     });
 
-    // Push 3 P7f fix 4: a resting venue TP already locks the full base balance — a spot deployment
-    // has no balance left to back a second full-size protective stop, so both-on + any spot venue
-    // must refuse loudly at construction rather than place-then-reject at runtime.
-    describe('AGENTIC_VENUE_TP + AGENTIC_VENUE_STOP spot cross-field refusal', () => {
-      const SPOT_VENUE = JSON.stringify([{ id: 'binance', environment: 'paper' }]);
-      const PERP_VENUE = JSON.stringify([{ id: 'binanceusdm', environment: 'paper' }]);
-      const MIXED_VENUES = JSON.stringify([
-        { id: 'binanceusdm', environment: 'paper' },
-        { id: 'binance', environment: 'paper' },
-      ]);
-
-      it('throws when both are enabled and the only configured venue is spot', () => {
-        expect(() =>
-          validate({
-            PORT: '3100',
-            AGENTIC_VENUE_TP: 'true',
-            AGENTIC_VENUE_STOP: 'true',
-            VENUES: SPOT_VENUE,
-          }),
-        ).toThrow(/AGENTIC_VENUE_TP and AGENTIC_VENUE_STOP/);
-      });
-
-      it('throws when both are enabled and ANY configured venue is spot (mixed deployment)', () => {
-        expect(() =>
-          validate({
-            PORT: '3100',
-            AGENTIC_VENUE_TP: 'true',
-            AGENTIC_VENUE_STOP: 'true',
-            VENUES: MIXED_VENUES,
-          }),
-        ).toThrow(/AGENTIC_VENUE_TP and AGENTIC_VENUE_STOP/);
-      });
-
-      it('passes when both are enabled and every configured venue is perp', () => {
+    // v3 §3.5: the v2 "both TP+STOP only if all venues perp" refusal is RETIRED — mixed-venue boots
+    // are the v3 norm and the mutual-exclusion rule is structurally unenforceable on them (a
+    // per-symbol rule lives in the strategy lane, workstream #10, not here). Both default to true.
+    describe('AGENTIC_VENUE_TP + AGENTIC_VENUE_STOP (v3: mutual-exclusion refusal retired)', () => {
+      it('both default true and never throw on a spot-only VENUES', () => {
         const cfg = validate({
           PORT: '3100',
-          AGENTIC_VENUE_TP: 'true',
-          AGENTIC_VENUE_STOP: 'true',
-          VENUES: PERP_VENUE,
+          VENUES: JSON.stringify([{ id: 'binance', environment: 'paper' }]),
+          VENUE_CAPITAL_SPLIT: JSON.stringify({ binance: '1000' }),
         });
         expect(cfg.agentic.venueTpEnabled).toBe(true);
         expect(cfg.agentic.venueStopEnabled).toBe(true);
       });
 
-      it('passes on a spot venue when only AGENTIC_VENUE_TP is enabled (single-leg)', () => {
+      it('both stay true and never throw on a mixed spot+perp VENUES', () => {
         const cfg = validate({
           PORT: '3100',
-          AGENTIC_VENUE_TP: 'true',
-          VENUES: SPOT_VENUE,
+          VENUES: JSON.stringify([
+            { id: 'binanceusdm', environment: 'paper' },
+            { id: 'binance', environment: 'paper' },
+          ]),
         });
         expect(cfg.agentic.venueTpEnabled).toBe(true);
-        expect(cfg.agentic.venueStopEnabled).toBe(false);
+        expect(cfg.agentic.venueStopEnabled).toBe(true);
       });
 
-      it('throws with both enabled and no VENUES configured (empty VENUES resolves to the real spot venue at boot — treated as spot, not unconfigured)', () => {
-        expect(() =>
-          validate({
-            PORT: '3100',
-            AGENTIC_VENUE_TP: 'true',
-            AGENTIC_VENUE_STOP: 'true',
-          }),
-        ).toThrow(/AGENTIC_VENUE_TP and AGENTIC_VENUE_STOP/);
-      });
-
-      it('passes on the spot lane shape: VENUE_TP alone (empty VENUES), VENUE_STOP off', () => {
-        const cfg = validate({
-          PORT: '3100',
-          AGENTIC_VENUE_TP: 'true',
-        });
+      it('can still be individually disabled', () => {
+        const cfg = validate({ PORT: '3100', AGENTIC_VENUE_STOP: 'false' });
         expect(cfg.agentic.venueTpEnabled).toBe(true);
         expect(cfg.agentic.venueStopEnabled).toBe(false);
       });
@@ -820,13 +1014,13 @@ describe('validate()', () => {
       expect(() => validate({ PORT: '3100', BASE_NOTIONAL: '-5' })).toThrow(/BASE_NOTIONAL/);
     });
 
-    it('RISK_* limit knobs default to the shipped DEFAULT_LIMITS values (exact strings)', () => {
+    it('RISK_* limit knobs default to the v3 book-scale values (exact strings)', () => {
       const risk = validate({ PORT: '3100' }).risk;
-      expect(risk.maxOrderNotional).toBe('100000');
-      expect(risk.maxPositionPerSymbol).toBe('1000');
-      expect(risk.maxGrossExposure).toBe('1000000');
-      expect(risk.maxNetExposure).toBe('1000000');
-      expect(risk.maxDailyLoss).toBe('5000');
+      expect(risk.maxOrderNotional).toBe('400');
+      expect(risk.maxPositionPerSymbol).toBe('350');
+      expect(risk.maxGrossExposure).toBe('1200');
+      expect(risk.maxNetExposure).toBe('1200');
+      expect(risk.maxDailyLoss).toBe('50');
       expect(risk.maxDrawdownPct).toBe('0.2');
       expect(risk.maxBandBps).toBe(100);
       expect(risk.maxPassiveExitBandBps).toBe(1200);
@@ -924,8 +1118,8 @@ describe('validate()', () => {
   });
 
   describe('perp config', () => {
-    it('PERP_LEVERAGE_CAP defaults to 1 and overrides as an exact decimal string', () => {
-      expect(validate({ PORT: '3100' }).perp.leverageCap).toBe('1');
+    it('PERP_LEVERAGE_CAP defaults to 2 (v3) and overrides as an exact decimal string', () => {
+      expect(validate({ PORT: '3100' }).perp.leverageCap).toBe('2');
       expect(validate({ PORT: '3100', PERP_LEVERAGE_CAP: '5' }).perp.leverageCap).toBe('5');
     });
 
@@ -949,23 +1143,30 @@ describe('validate()', () => {
         /PERP_LIQ_BUFFER_PCT/,
       );
     });
+
+    it('has no `enabled` field — PERP_VENUE_ENABLED is deleted (v3 §3.4)', () => {
+      const perp = validate({ PORT: '3100' }).perp as unknown as Record<string, unknown>;
+      expect(perp).not.toHaveProperty('enabled');
+    });
   });
 
   describe('strategy config', () => {
-    it('TRADING_SYMBOLS absent → symbols falls back to [TRADING_SYMBOL]', () => {
+    it("TRADING_SYMBOLS absent under test/ci (default) falls back to ['BTC/USDT']", () => {
       expect(validate({ PORT: '3100' }).strategy.symbols).toEqual(['BTC/USDT']);
-      expect(validate({ PORT: '3100', TRADING_SYMBOL: 'ETH/USDT' }).strategy.symbols).toEqual([
-        'ETH/USDT',
-      ]);
     });
 
-    it('TRADING_SYMBOLS CSV parses, trims, and wins over TRADING_SYMBOL', () => {
+    it('throws outside test/ci when TRADING_SYMBOLS is absent (the legacy TRADING_SYMBOL fallback is deleted)', () => {
+      expect(() => validate(prodEnv({ PORT: '3100', TRADING_SYMBOLS: undefined }))).toThrow(
+        /TRADING_SYMBOLS/,
+      );
+    });
+
+    it('TRADING_SYMBOLS CSV parses and trims', () => {
       const strategy = validate({
         PORT: '3100',
-        TRADING_SYMBOL: 'SOL/USDT',
         TRADING_SYMBOLS: ' BTC/USDT , ETH/USDT ',
-        // D1: AGENTIC_ACTIVE_MENU_SIZE defaults to 12, which exceeds this 2-symbol basket — override
-        // to stay under the menu-size-vs-basket superRefine (unrelated to what this test asserts).
+        // v3 default menu size (8) exceeds this 2-symbol basket — override to stay under the
+        // menu-size-vs-basket superRefine (unrelated to what this test asserts).
         AGENTIC_ACTIVE_MENU_SIZE: '2',
       }).strategy;
       expect(strategy.symbols).toEqual(['BTC/USDT', 'ETH/USDT']);
@@ -978,20 +1179,31 @@ describe('validate()', () => {
       expect(() => validate({ PORT: '3100', TRADING_SYMBOLS: ' , ' })).toThrow(/TRADING_SYMBOLS/);
     });
 
-    it('defaults: BTC/USDT on 5m, agentic lane', () => {
+    it('defaults: symbol/symbols/interval/active under the test/ci fallback basket', () => {
       const strategy = validate({ PORT: '3100' }).strategy;
+      // v3-transitional(#5): symbol derives to the first configured symbol (app.module.ts's sole
+      // consumer); TRADING_SYMBOL (the old single-knob source) is deleted.
       expect(strategy.symbol).toBe('BTC/USDT');
+      expect(strategy.symbols).toEqual(['BTC/USDT']);
       expect(strategy.interval).toBe('5m');
       expect(strategy.active).toBe('agentic');
     });
 
-    it('reads TRADING_SYMBOL and STRATEGY_INTERVAL overrides', () => {
+    it('strategy.symbol derives to the first entry of a multi-symbol TRADING_SYMBOLS', () => {
       const strategy = validate({
         PORT: '3100',
-        TRADING_SYMBOL: 'ETH/USDT',
-        STRATEGY_INTERVAL: '1m',
+        TRADING_SYMBOLS: 'ETH/USDT,BTC/USDT',
+        AGENTIC_ACTIVE_MENU_SIZE: '2',
       }).strategy;
       expect(strategy.symbol).toBe('ETH/USDT');
+      expect(strategy.symbols).toEqual(['ETH/USDT', 'BTC/USDT']);
+    });
+
+    it('reads STRATEGY_INTERVAL overrides', () => {
+      const strategy = validate({
+        PORT: '3100',
+        STRATEGY_INTERVAL: '1m',
+      }).strategy;
       expect(strategy.interval).toBe('1m');
     });
 

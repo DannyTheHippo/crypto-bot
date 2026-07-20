@@ -19,6 +19,20 @@ const LIVE_ENV_BASE = {
   LIVE_BASE_URL_OVERRIDE: 'https://example.com',
 };
 
+// v3-transitional (#7 spillover, minimal fix): DATABASE_URL/VENUES/VENUE_CAPITAL_SPLIT/
+// TRADING_SYMBOLS are now required outside test/ci (spec §3.2/§3.4/§3.5) — this extra env is
+// spread ONLY into the one "outside test/ci" test below (never into LIVE_ENV_BASE directly: the
+// other tests in this describe block resolve TRADING_SYMBOLS via the test/ci fallback path, which
+// stays schema-undefined through superRefine and so never trips the menu-vs-basket check — see
+// environment.config.ts's own comment on that check).
+const PROD_PATH_EXTRA_ENV = {
+  DATABASE_URL: 'postgres://user:pass@localhost:5432/db',
+  VENUES: '[{"id":"binance","environment":"demo"}]',
+  VENUE_CAPITAL_SPLIT: '{"binance":"1000"}',
+  TRADING_SYMBOLS: 'BTC/USDT',
+  AGENTIC_ACTIVE_MENU_SIZE: '1',
+};
+
 describe('Config hard override: live credentials stripped in test/ci environments', () => {
   it('NODE_ENV=test + TRADING_MODE=live => configMode paper, downgrade recorded', () => {
     const env = { ...LIVE_ENV_BASE, NODE_ENV: 'test' };
@@ -85,7 +99,7 @@ describe('Config hard override: live credentials stripped in test/ci environment
 
   it('outside test/ci: live secrets ARE read into AppConfig (the only path that reaches them)', () => {
     // No NODE_ENV/CI in the passed env ⇒ not test/ci ⇒ the read path is active and configMode=live.
-    const cfg = validate({ ...LIVE_ENV_BASE });
+    const cfg = validate({ ...LIVE_ENV_BASE, ...PROD_PATH_EXTRA_ENV });
     expect(cfg.mode.configMode).toBe('live');
     expect(cfg.liveApiKey).toBe('test-key-should-be-stripped');
     expect(cfg.liveApiSecret).toBe('test-secret-should-be-stripped');

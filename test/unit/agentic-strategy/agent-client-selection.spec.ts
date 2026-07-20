@@ -273,6 +273,11 @@ describe('agenticEnv', () => {
       // AppConfig.agentic — the fixture below carries only the surviving + I1-added fields, so it
       // stays an exact structural match of the real (validated) config shape.
       maxPositionFraction: '0.15',
+      // v3-transitional(#7 spillover, minimal fix): AppConfig.agentic gained these two per-venue-class
+      // fields (§3.3's AGENTIC_MAX_POSITION_FRACTION_SPOT/_PERP rename) — added here only to keep this
+      // fixture an exact structural match of the real config shape; workstream #10 owns this file.
+      maxPositionFractionSpot: '0.15',
+      maxPositionFractionPerp: '0.35',
       fallbackConsultBars: 16,
       wakeMovePct: '0.015',
       activeMenuSize: 12,

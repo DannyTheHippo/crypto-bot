@@ -28,6 +28,11 @@ export class TypedConfigService {
     return this.config.get('venues', { infer: true });
   }
 
+  // v3 §3.1: fixed wallet split of the one book (VENUE_CAPITAL_SPLIT), keyed by venue id.
+  get venueCapitalSplit(): AppConfig['venueCapitalSplit'] {
+    return this.config.get('venueCapitalSplit', { infer: true });
+  }
+
   get agentic(): AppConfig['agentic'] {
     return this.config.get('agentic', { infer: true });
   }

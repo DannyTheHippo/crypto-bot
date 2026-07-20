@@ -3,6 +3,8 @@ import { z } from 'zod';
 import Decimal from 'decimal.js';
 import type { AppConfig, TradingMode, VenueConfig } from '../../ports/app-config';
 import { AGENTIC_MAX_STOP_LOSS_PCT } from '../../domain/risk/agentic-bounds';
+import { splitSymbol } from '../../domain/types/symbol';
+import { symbolId } from '../../domain/types/ids';
 
 export type { AppConfig, TradingMode } from '../../ports/app-config';
 
@@ -39,6 +41,20 @@ const positiveDecimalString = decimalString.refine(
 function isTestOrCiEnv(env: Record<string, string | undefined>): boolean {
   const nodeEnv = env['NODE_ENV'] ?? '';
   return nodeEnv === 'test' || nodeEnv === 'ci' || Boolean(env['CI']);
+}
+
+// v3 §1.2: the two fixed venue ids this program ever wires. Single source for the config layer's
+// own venue-resolution needs (VENUES-coverage + VENUE_CAPITAL_SPLIT refusals below).
+const SPOT_VENUE_ID = 'binance';
+const PERP_VENUE_ID = 'binanceusdm';
+
+// v3-transitional(#5): mirrors spec §1.2's venueForSymbol pure helper (settle-suffix check).
+// Workstream #5 mints the authoritative src/domain/types/venue-map.ts copy this converges on; this
+// local copy exists so the config layer's own cross-field refusals (VENUES coverage,
+// VENUE_CAPITAL_SPLIT key-set, AGENTIC_PLAN_MODE-vs-perp) can resolve a symbol's venue without
+// reaching into composition-layer code (config stays upstream of every feature, eslint-boundaries).
+function venueIdForSymbol(symbol: string): string {
+  return splitSymbol(symbolId(symbol)).settle !== undefined ? PERP_VENUE_ID : SPOT_VENUE_ID;
 }
 
 function deepFreeze<T>(obj: T): T {
@@ -143,6 +159,30 @@ function parseVenues(env: Record<string, string | undefined>): readonly VenueCon
   }
 }
 
+// v3 §3.1: fixed wallet split of the one book, JSON {"binance":"500","binanceusdm":"500"}. Parsed
+// fail-LOUD (mirrors AGENTIC_TOKEN_PRICES_JSON's parseTokenPrices below), unlike parseVenues'
+// silent-drop — a malformed split corrupts the sizer's venue-headroom clamp (§6.1), never a
+// silently-empty map. Positivity is enforced per-share here; the key-set-vs-VENUES and
+// sum-vs-SIZER_EQUITY_CAP checks are cross-field and run later in validate().
+const venueCapitalSplitSchema = z.record(z.string().min(1), positiveDecimalString);
+
+function parseVenueCapitalSplit(raw: string): Readonly<Record<string, string>> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(
+      `VENUE_CAPITAL_SPLIT is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  const result = venueCapitalSplitSchema.safeParse(parsed);
+  if (!result.success) {
+    const issues = result.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ');
+    throw new Error(`VENUE_CAPITAL_SPLIT failed validation: ${issues}`);
+  }
+  return result.data;
+}
+
 const envSchema = z
   .object({
     PORT: z.coerce.number().int().min(1).max(65535).default(3100),
@@ -152,6 +192,10 @@ const envSchema = z
     CI: z.string().optional(),
     DATABASE_URL: z.string().min(1).optional(),
     VENUES: z.string().optional(),
+    // v3 §3.1: fixed wallet split of the one book across VENUES. Default matches the deployed v3
+    // shape (both venues demo, 500/500 of the $1k SIZER_EQUITY_CAP). Cross-field checks (key-set vs
+    // VENUES, Σ vs SIZER_EQUITY_CAP) run in validate() below, once venues/equityCap are resolved.
+    VENUE_CAPITAL_SPLIT: z.string().default('{"binance":"500","binanceusdm":"500"}'),
     // §3.5 sandbox flavor for testnet mode: 'testnet' (setSandboxMode) or 'demo' (enableDemoTrading).
     // Inert unless TRADING_MODE=testnet. Default 'demo' (live-mirroring dress rehearsal; the keys this
     // deployment ships are BINANCE_DEMO_*). Set SANDBOX_ENV=testnet for the testnet.binance.vision sandbox.
@@ -177,11 +221,16 @@ const envSchema = z
     // total duration) plus a 3× hard cap on the whole call; a healthy long generation keeps
     // emitting deltas and never trips it, removing the wall-clock guess about Opus's worst case.
     AGENTIC_REFLECTION_TIMEOUT_MS: z.coerce.number().int().positive().default(240000),
-    AGENTIC_MAX_TOKENS: z.coerce.number().int().positive().default(1024),
+    // v3 §3.2 default: 1024→4096 — the rich decision contract's richer per-consult output (directives,
+    // thesis, portfolio scheduling) needs the headroom the deployed shape already carried.
+    AGENTIC_MAX_TOKENS: z.coerce.number().int().positive().default(4096),
     AGENTIC_MIN_DECISION_INTERVAL_MS: z.coerce.number().int().min(0).default(0),
     AGENTIC_WARMUP_BARS: z.coerce.number().int().positive().default(50),
-    AGENTIC_MAX_CALLS_PER_DAY: z.coerce.number().int().positive().default(500),
-    AGENTIC_MAX_TOKENS_PER_DAY: z.coerce.number().int().positive().default(2_000_000),
+    // v3 §3.3: the two lane-split caps (500/1100-ish per lane) merge into one book-wide cap —
+    // 500→2000 (was two ~1000-ish lane caps summed).
+    AGENTIC_MAX_CALLS_PER_DAY: z.coerce.number().int().positive().default(2000),
+    // v3 §3.3: two lane-split token caps merge into one — 2,000,000→4,000,000.
+    AGENTIC_MAX_TOKENS_PER_DAY: z.coerce.number().int().positive().default(4_000_000),
     // Daily USD cost circuit breaker for the LLM budget (agent-budget.ts's DailyLlmBudget), priced
     // off AGENTIC_TOKEN_PRICE_*PER_MTOK below at the same rate the promotion-readiness cost math
     // uses. 0 disables it. Not .int(): a dollar cap is legitimately fractional.
@@ -189,34 +238,33 @@ const envSchema = z
     // W2.1 stale-entry sweep: a resting entry older than this many observed decide cycles gets a
     // CANCEL_OPEN (risk-reducing; SignalSink routes it to an order-cancel). 0 disables.
     AGENTIC_ENTRY_TTL_BARS: z.coerce.number().int().min(0).default(2),
-    // v2 decision contract (D1/B2): upper bound on sizeFraction, injected into both the trade-tool
-    // description and the client's zod schema (S3) — the per-lane conviction-channel cap (spot 0.15
-    // across the ~24-symbol basket; perp 0.50 single-symbol, set via .env.app-perp override).
-    AGENTIC_MAX_POSITION_FRACTION: fractionString.default('0.15'),
+    // v3 §3.1/§3.3: the two lane-split AGENTIC_MAX_POSITION_FRACTION knobs (spot 0.15 / perp 0.35 /
+    // 0.50 depending on deployment) collapse into one process's two per-venue-class caps — upper
+    // bound on sizeFraction, injected into both the trade-tool description and the client's zod
+    // schema (S3), now per-symbol via the payload's capabilities.maxSizeFraction (§4.2).
+    AGENTIC_MAX_POSITION_FRACTION_SPOT: fractionString.default('0.15'),
+    AGENTIC_MAX_POSITION_FRACTION_PERP: fractionString.default('0.35'),
     // v2 consult scheduler (B2, replaces the deleted prescreen gate): a portfolio schedule normally
     // drives consult cadence (the model's own nextConsultBars), but this is the FLOOR — a re-consult
     // fires at least this often even if the model requested a longer gap or the schedule stalls, so a
-    // stuck/quiet basket never goes fully dark.
-    AGENTIC_FALLBACK_CONSULT_BARS: z.coerce.number().int().min(1).default(16),
+    // stuck/quiet basket never goes fully dark. Default 16→8 (XA1 2026-07-20, v3 §3.2 default): 16
+    // (4h) starved evidence pace at the deployed cadence — 8 (2h) is the v3 floor.
+    AGENTIC_FALLBACK_CONSULT_BARS: z.coerce.number().int().min(1).default(8),
     // v2 consult scheduler (B2): wake-on-move — a bar close whose |close − lastConsultPrice| /
     // lastConsultPrice clears this fraction forces an immediate re-consult regardless of schedule,
-    // closing the reaction gap on a fast move mid-quiet-period.
-    AGENTIC_WAKE_MOVE_PCT: fractionString.default('0.015'),
+    // closing the reaction gap on a fast move mid-quiet-period. Default 0.015→0.008 (XA1 2026-07-20,
+    // v3 §3.2 default): 1.5% never fired in the dominant sub-0.5% chop regime.
+    AGENTIC_WAKE_MOVE_PCT: fractionString.default('0.008'),
     // W3.1 plan-based trading: the LLM emits a full trade plan (entry offset, stop, take-profit,
     // validity) via submit_plan and plan-executor.ts manages it deterministically between consults.
-    // Off by default — enabling is gated on offline A/B evidence + owner approval (approved plan).
+    // v3 §3.2 default: false→true — the only deployed shape; the rich decision contract, shorts, and
+    // venue rails all require it (see the AGENTIC_PLAN_MODE-vs-perp-symbol refusal in validate()
+    // below, §3.5). AGENTIC_SHORTS_ENABLED is DELETED (§3.4): shorts are now a per-symbol capability
+    // derived from venue presence (agentic.shortsEnabled below is a transitional derived field, not
+    // an env knob).
     AGENTIC_PLAN_MODE: z
       .enum(['true', 'false'])
-      .default('false')
-      .transform((v) => v === 'true'),
-    // Push II Phase 8: plan-mode shorts. Distinct from the legacy B3 shortsEnabled capability (the
-    // bar-by-bar submit_decision path, unaffected by this knob) — this one only ever combines with
-    // AGENTIC_PLAN_MODE, and only on a perp-capable venue (agentic-strategy.module.ts's
-    // selectAgentClient refuses construction otherwise — spot cannot short). Off by default ⇒
-    // byte-identical (no direction field, no PLAN_SHORTS_TOOL, PLAN_TEMPLATE_VERSION stays 'p3').
-    AGENTIC_SHORTS_ENABLED: z
-      .enum(['true', 'false'])
-      .default('false')
+      .default('true')
       .transform((v) => v === 'true'),
     // TTL in bars for plan-executor-emitted EXIT signals. Executor exits carry eventTime = the
     // evaluated bar's close, so ttl = one bar loses the race against its own age on any ≥2s jitter
@@ -228,11 +276,14 @@ const envSchema = z
     AGENTIC_QUIET_PAYLOAD_SAMPLE_BARS: z.coerce.number().int().min(0).default(0),
     // Venue-resting take-profit lifecycle for plan-mode longs: rests the plan's TP at the venue
     // (reduce-only EXIT_LONG, exitStyle RESTING) instead of waiting for plan-executor's own
-    // close-price crossing to fire an IOC exit. Off by default — behavior stays byte-identical to
-    // pre-feature until enabled (agentic.strategy.ts's manageVenueTp).
+    // close-price crossing to fire an IOC exit. v3 §3.2 default: false→true (the only deployed
+    // shape). The v2 "both TP+STOP only if all venues perp" refusal is RETIRED (§3.5) — mixed-venue
+    // boots are the v3 norm and the mutual-exclusion rule is structurally unenforceable on them; a
+    // per-symbol rule (perp rests both legs, spot rests TP-only) replaces it in the strategy lane
+    // (workstream #10), not here.
     AGENTIC_VENUE_TP: z
       .enum(['true', 'false'])
-      .default('false')
+      .default('true')
       .transform((v) => v === 'true'),
     // Re-place threshold (bps): a resting TP SELL priced more than this many bps away from the
     // plan's current TP price gets cancelled this bar for next-bar re-placement.
@@ -240,11 +291,11 @@ const envSchema = z
     // Push 3 P7d: venue-resting protective stop lifecycle for plan-mode positions — rests the plan's
     // stop at the venue (SPOT: STOP_LOSS_LIMIT on the regular open-orders rail; PERP: STOP_MARKET on
     // the swap algo/conditional rail) instead of relying solely on the executor's own bar-close
-    // stop-price crossing. Off by default — behavior stays byte-identical to pre-feature until
-    // enabled (agentic.strategy.ts's manageVenueStop).
+    // stop-price crossing. v3 §3.2 default: false→true (the only deployed shape) — see AGENTIC_VENUE_TP
+    // above for the retired mutual-exclusion refusal.
     AGENTIC_VENUE_STOP: z
       .enum(['true', 'false'])
-      .default('false')
+      .default('true')
       .transform((v) => v === 'true'),
     // Re-place threshold (bps), mirrors AGENTIC_VENUE_TP_REPLACE_DRIFT_BPS above.
     AGENTIC_VENUE_STOP_REPLACE_DRIFT_BPS: z.coerce.number().int().positive().default(10),
@@ -268,14 +319,10 @@ const envSchema = z
     // promotion. 0 (default) disables routing — every decide sees ACTIVE, byte-identical to pre-W4.1.
     // Capped at 50 so a candidate can never outweigh the active version's own evidence share.
     AGENTIC_PLAYBOOK_AB_PCT: z.coerce.number().int().min(0).max(50).default(0),
-    // Derivatives-block A/B (measurement start 2026-07-12, owner-authorized — see the DERIVATIVES
-    // prompt block, on lane-globally since 2026-07-10 with no control arm): percent (0-50) of decides
-    // deterministically routed to a CONTROL arm that withholds the derivatives block entirely (system
-    // sentence, promptHash's `+d1` tag, and the payload's derivatives key all withheld together — see
-    // the client's derivativesControlArm comment). 0 (default) disables — byte-identical to today.
-    // Capped at 50, mirroring AGENTIC_PLAYBOOK_AB_PCT above (a control arm can never outweigh the
-    // treatment arm's own evidence share).
-    AGENTIC_DERIVATIVES_AB_PCT: z.coerce.number().int().min(0).max(50).default(0),
+    // AGENTIC_DERIVATIVES_AB_PCT DELETED (§3.4, XA3 2026-07-20 decision record): the information-
+    // context control arm is retired at 0 — treatment drove 8.4% vs 1.9% proposes, so every consult
+    // gets the full info bundle now. agentic.derivativesAbPct below is a transitional derived field
+    // (hardcoded 0), not an env knob.
     // d2 (Push 3 P6 Unit 1): switches the derivatives block/sentence/promptHash tag from d1 to d2,
     // adding three fields the feed ALREADY accumulates whenever it polls (true spot-vs-perp basis,
     // OI percent change over a 1h lookback, funding-rate trend) — see derivatives-feed.service.ts's
@@ -339,11 +386,10 @@ const envSchema = z
     // before it closes (or before all configured symbols have checked in, whichever first) joins
     // the same batch. Inert unless AGENTIC_PORTFOLIO_CONSULT is on.
     AGENTIC_PORTFOLIO_WINDOW_MS: z.coerce.number().int().positive().default(3000),
-    // Cumulative closed-trade floor before a reflection candidate auto-promotes to ACTIVE (G4b); 0
-    // (default) disables auto-promotion — see reflection.service.ts's autoPromoteMinTrades comment.
-    // LEGACY count-only path: superseded by AGENTIC_AUTO_PROMOTE_MIN_ATTRIBUTED_TRADES below (the
-    // count-only gate promotes on LANE-WIDE trade count with zero candidate-attributed evidence).
-    AGENTIC_AUTO_PROMOTE_MIN_TRADES: z.coerce.number().int().min(0).default(0),
+    // AGENTIC_AUTO_PROMOTE_MIN_TRADES DELETED (§3.4): the legacy count-only auto-promotion path
+    // (promoted on LANE-WIDE trade count with zero candidate-attributed evidence) is superseded by
+    // AGENTIC_AUTO_PROMOTE_MIN_ATTRIBUTED_TRADES below. agentic.autoPromoteMinTrades is a
+    // transitional derived field (hardcoded 0 — permanently disabled), not an env knob.
     // Mint-time candidate-vs-champion offline expectancy backtest (reflection.service.ts's
     // runMintBacktest): rows of the newest recorded decisions (regardless of action) replayed against
     // BOTH the draft candidate and the current champion playbook, simulating each 'long' plan's
@@ -405,8 +451,11 @@ const envSchema = z
     // Universe: top-N ranking size the deterministic UniverseScannerService (U1) selects daily from
     // the full TRADING_SYMBOLS basket as the "active menu" batched into consults; idle (non-menu)
     // instances still stream candles/warm up but never consult. Bounded ≤ basket size below (a menu
-    // wider than the basket is nonsensical config, refused at construction).
-    AGENTIC_ACTIVE_MENU_SIZE: z.coerce.number().int().min(1).default(12),
+    // wider than the basket is nonsensical config, refused at construction). v3 §3.2/§3.3 default:
+    // 12→8 — the two lane-split menu sizes (12 spot / 4 perp) collapse into one combined-basket menu
+    // (§5.2's starvation-check arithmetic: 8 clears the ≥2.14 closed-trips/day promotion pace with
+    // headroom while staying inside the unified $3/day cost breaker).
+    AGENTIC_ACTIVE_MENU_SIZE: z.coerce.number().int().min(1).default(8),
     // Marketable-exit crossing buffer (bps) for reduce-only intents (PositionSizerService): how far
     // the IOC limit crosses the spread so a partial fill doesn't leave sub-minNotional dust resting
     // away from market. Capped at 99 (< DEFAULT_LIMITS.maxBandBps=100 in risk.module) so a crossed
@@ -428,10 +477,11 @@ const envSchema = z
     SIZER_EQUITY_FRACTION: fractionString.default('0'),
     // $1k-book economics (Design § Live-scale economics): sizing equity = min(actualEquity, this
     // cap) on every sizer path, so every position/PnL figure/promotion verdict is earned at exactly
-    // live proportions even while the demo account itself carries a larger balance. Absent (default)
-    // means UNCAPPED — an unconfigured deployment sees zero behavior change (existing equity-fraction/
-    // baseNotional sizing runs off the real account equity, same as pre-knob).
-    SIZER_EQUITY_CAP: decimalString.optional(),
+    // live proportions even while the demo account itself carries a larger balance. v3 §3.2 default:
+    // now DEFAULTED (was optional/uncapped) — the $1k effective book is the program constraint, not
+    // an opt-in; explicit '0' still disables the cap (position-sizer.service.ts's cappedEquity()
+    // already treats a non-positive cap as pass-through, so '0' stays a legitimate escape hatch).
+    SIZER_EQUITY_CAP: decimalString.default('1000'),
     // ProtectiveExitService (bot-side stop-loss/trailing-stop backstop): fraction below avgEntry
     // (stop) or below the ratcheted high-water mark (trailing) that force-exits a long via the normal
     // Strategy→Risk→Execution path (an EXIT_LONG Signal, never a direct execution call). '0' (default)
@@ -454,13 +504,15 @@ const envSchema = z
     // PLAN_STOP_WATCH_ENABLED is false.
     PLAN_STOP_FORCE_BPS: z.coerce.number().int().min(0).default(30),
     // RiskLimitsConfig overlay knobs (domain/risk/limits.ts) — RiskModule merges these onto
-    // DEFAULT_LIMITS. Defaults equal the CURRENT hardcoded values, so an unconfigured deployment sees
-    // zero behavior change. maxDriftBps has no knob in this pass; it stays hardcoded in DEFAULT_LIMITS.
-    RISK_MAX_ORDER_NOTIONAL: decimalString.default('100000'),
-    RISK_MAX_POSITION_PER_SYMBOL: decimalString.default('1000'),
-    RISK_MAX_GROSS_EXPOSURE: decimalString.default('1000000'),
-    RISK_MAX_NET_EXPOSURE: decimalString.default('1000000'),
-    RISK_MAX_DAILY_LOSS: decimalString.default('5000'),
+    // DEFAULT_LIMITS. v3 §3.2 defaults: re-defaulted to the $1k-book scale (the deployed v2-contract
+    // values were pre-$1k-book drift) — an unconfigured deployment now inherits the book-scale
+    // envelope directly instead of the legacy pre-D1 figures. maxDriftBps has no knob in this pass;
+    // it stays hardcoded in DEFAULT_LIMITS.
+    RISK_MAX_ORDER_NOTIONAL: decimalString.default('400'),
+    RISK_MAX_POSITION_PER_SYMBOL: decimalString.default('350'),
+    RISK_MAX_GROSS_EXPOSURE: decimalString.default('1200'),
+    RISK_MAX_NET_EXPOSURE: decimalString.default('1200'),
+    RISK_MAX_DAILY_LOSS: decimalString.default('50'),
     RISK_MAX_DRAWDOWN_PCT: decimalString.default('0.2'),
     RISK_MAX_BAND_BPS: z.coerce.number().int().positive().default(100),
     // P2 passive-exit override (domain/risk/limits.ts): a reduce-only intent priced on the passive
@@ -478,14 +530,12 @@ const envSchema = z
     // at 200 (2%) — a wider buffer would leave the leg unmarketable-adjacent on a fast move.
     STOP_LIMIT_BUFFER_BPS: z.coerce.number().int().positive().max(200).default(50),
     RISK_STALE_MAX_AGE_MS: z.coerce.number().int().positive().default(5000),
-    // Perp/swap paper adapter knobs (B1: PaperPerpAdapter, not yet wired into app.module.ts).
-    // 'true'/'false' (not z.coerce.boolean(), same rationale as AGENTIC_PLAN_MODE above).
-    // Default 'false': an unconfigured deployment sees zero behavior change.
-    PERP_VENUE_ENABLED: z
-      .enum(['true', 'false'])
-      .default('false')
-      .transform((v) => v === 'true'),
-    PERP_LEVERAGE_CAP: positiveDecimalString.default('1'),
+    // PERP_VENUE_ENABLED DELETED (§3.4): venue presence in VENUES is the signal now — a perp-capable
+    // deployment is defined by VENUES containing binanceusdm, never a separate boot flag.
+    // v3 §3.2 default: 1→2 (owner round 6, "perp gets leverage to a 2x cap") — the deployed perp
+    // value; existing margin-notional and liq-safe caps with the 20% liquidation buffer stay
+    // authoritative on top.
+    PERP_LEVERAGE_CAP: positiveDecimalString.default('2'),
     // Conservative fallback maintenance-margin-rate (see PaperPerpAdapter's why-comment on the
     // TODO fetchLeverageTiers wiring): ≈0.005 for the 1-2× BTC/ETH bracket at time of writing — ONE
     // flat figure applied to every configured symbol, which increasingly understates real per-symbol
@@ -499,10 +549,11 @@ const envSchema = z
     // nothing observable yet.
     PERP_LIQ_BUFFER_PCT: fractionString.default('0.20'),
     // Strategy-lane knobs. ACTIVE_STRATEGY is a closed enum: 'agentic' is the only registered lane
-    // (the deterministic pure lane was retired 2026-07-03).
-    TRADING_SYMBOL: z.string().min(1).default('BTC/USDT'),
-    // Multi-symbol (P7): CSV of symbols, one agentic strategy instance per entry. Absent ⇒ falls
-    // back to [TRADING_SYMBOL] (which is thereby deprecated but still honored). Every entry must
+    // (the deterministic pure lane was retired 2026-07-03). TRADING_SYMBOL (the legacy single-symbol
+    // fallback) is DELETED (§3.4) — TRADING_SYMBOLS is now required OUTSIDE TEST/CI (validate()
+    // below throws there when absent; test/ci falls back to ['BTC/USDT'], matching every other
+    // test/ci-exempt knob in this file so the hermetic suite's many real-module boots stay green).
+    // Multi-symbol (P7): CSV of symbols, one agentic strategy instance per entry. Every entry must
     // have a DEFAULT_FILTERS row — asserted loud at startTrading before any enable.
     TRADING_SYMBOLS: z
       .string()
@@ -622,12 +673,11 @@ const envSchema = z
     }
     // Universe (U1): a menu wider than the configured basket is nonsensical config (the scanner
     // would rank a top-N that exceeds the pool it ranks from) — refused at construction rather than
-    // silently clamped, so a config typo surfaces immediately instead of at first scanner run. Bound
-    // to the EXPLICIT TRADING_SYMBOLS CSV only: the legacy single-TRADING_SYMBOL fallback (unset
-    // TRADING_SYMBOLS) predates U1's menu concept entirely — the default AGENTIC_ACTIVE_MENU_SIZE=12
-    // (sized for the ~24-symbol basket, set via .env.app in I2) must stay an unconfigured-deployment
-    // no-op on that legacy single-instance path, matching every other feature-inert-until-configured
-    // knob in this file.
+    // silently clamped, so a config typo surfaces immediately instead of at first scanner run.
+    // TRADING_SYMBOLS is optional at the SCHEMA level only so validate() below can resolve its
+    // test/ci fallback (§3.4 — the legacy single-TRADING_SYMBOL fallback is deleted; a real,
+    // non-test/ci boot without TRADING_SYMBOLS throws there, never reaching this default-menu-size
+    // no-op).
     if (
       data.TRADING_SYMBOLS !== undefined &&
       data.AGENTIC_ACTIVE_MENU_SIZE > data.TRADING_SYMBOLS.length
@@ -754,6 +804,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     PORT: port,
     LOG_LEVEL: logLevel,
     DATABASE_URL: dbUrl,
+    VENUE_CAPITAL_SPLIT: venueCapitalSplitRaw,
     SANDBOX_ENV: sandboxEnv,
     AGENTIC_MODEL: agenticModel,
     AGENTIC_REFLECTION_MODEL: agenticReflectionModel,
@@ -766,7 +817,8 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     AGENTIC_MAX_TOKENS_PER_DAY: agenticMaxTokensPerDay,
     AGENTIC_DAILY_COST_STOP_USD: agenticDailyCostStopUsd,
     AGENTIC_ENTRY_TTL_BARS: agenticEntryTtlBars,
-    AGENTIC_MAX_POSITION_FRACTION: agenticMaxPositionFraction,
+    AGENTIC_MAX_POSITION_FRACTION_SPOT: agenticMaxPositionFractionSpot,
+    AGENTIC_MAX_POSITION_FRACTION_PERP: agenticMaxPositionFractionPerp,
     AGENTIC_FALLBACK_CONSULT_BARS: agenticFallbackConsultBars,
     AGENTIC_WAKE_MOVE_PCT: agenticWakeMovePct,
     AGENTIC_ACTIVE_MENU_SIZE: agenticActiveMenuSize,
@@ -777,7 +829,6 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     AGENTIC_REFLECTION_COOLDOWN_MS: agenticReflectionCooldownMs,
     AGENTIC_PLAYBOOK_PIN: agenticPlaybookPin,
     AGENTIC_PLAYBOOK_AB_PCT: agenticPlaybookAbPct,
-    AGENTIC_DERIVATIVES_AB_PCT: agenticDerivativesAbPct,
     AGENTIC_DERIVATIVES_V2_ENABLED: agenticDerivativesV2Enabled,
     AGENTIC_CROSS_SYMBOL_ENABLED: agenticCrossSymbolEnabled,
     AGENTIC_CROSS_SYMBOL_LOOKBACK_BARS: agenticCrossSymbolLookbackBars,
@@ -788,7 +839,6 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     AGENTIC_MINT_BACKTEST_ROWS: agenticMintBacktestRows,
     AGENTIC_MINT_BACKTEST_MARGIN_BPS: agenticMintBacktestMarginBps,
     AGENTIC_MINT_BACKTEST_MIN_TRIPS: agenticMintBacktestMinTrips,
-    AGENTIC_AUTO_PROMOTE_MIN_TRADES: agenticAutoPromoteMinTrades,
     AGENTIC_AUTO_PROMOTE_MIN_ATTRIBUTED_TRADES: agenticAutoPromoteMinAttributedTrades,
     AGENTIC_TOKEN_PRICE_INPUT_PER_MTOK: agenticTokenPriceInputPerMtok,
     AGENTIC_TOKEN_PRICE_OUTPUT_PER_MTOK: agenticTokenPriceOutputPerMtok,
@@ -798,7 +848,6 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     PROMOTION_EVIDENCE_EPOCH: promotionEvidenceEpoch,
     PROMOTION_DUST_NOTIONAL: promotionDustNotional,
     AGENTIC_PLAN_MODE: agenticPlanMode,
-    AGENTIC_SHORTS_ENABLED: agenticShortsEnabled,
     AGENTIC_PLAN_EXIT_TTL_BARS: agenticPlanExitTtlBars,
     AGENTIC_QUIET_PAYLOAD_SAMPLE_BARS: agenticQuietPayloadSampleBars,
     AGENTIC_VENUE_TP: agenticVenueTp,
@@ -825,12 +874,10 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     RISK_MAX_STOP_TRIGGER_BAND_BPS: riskMaxStopTriggerBandBps,
     STOP_LIMIT_BUFFER_BPS: stopLimitBufferBps,
     RISK_STALE_MAX_AGE_MS: riskStaleMaxAgeMs,
-    PERP_VENUE_ENABLED: perpVenueEnabled,
     PERP_LEVERAGE_CAP: perpLeverageCap,
     PERP_MMR_FALLBACK: perpMmrFallback,
     PERP_LIQ_BUFFER_PCT: perpLiqBufferPct,
-    TRADING_SYMBOL: tradingSymbol,
-    TRADING_SYMBOLS: tradingSymbols,
+    TRADING_SYMBOLS: tradingSymbolsRaw,
     STRATEGY_INTERVAL: strategyInterval,
     ACTIVE_STRATEGY: activeStrategy,
     DERIVATIVES_FEED_ENABLED: derivativesFeedEnabled,
@@ -852,39 +899,98 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
   const bootId = crypto.randomUUID();
   const venues = parseVenues(env);
 
-  // Push 3 P7f fix 4: AGENTIC_VENUE_TP and AGENTIC_VENUE_STOP resting SIMULTANEOUSLY is only safe
-  // on a perp-only deployment. A resting TP SELL already locks the FULL base balance (spot has no
-  // margin to partially commit against); a second full-size protective STOP SELL would then have no
-  // balance left to back it the moment the TP is armed — spot needs an atomic OCO pair to run both
-  // legs at once, which this codebase does not wire (backlog #44). Perp margin has no such
-  // single-balance conflict (both legs are reduce-only against the same position, never a balance
-  // lock), so a deployment where every configured venue is swap-capable (binanceusdm — the only
-  // perp venue this pass wires, mirrors position-sizer.service.ts's own local PERP_VENUE_ID
-  // convention) may run both. Config refusal AT CONSTRUCTION (never a runtime place-then-reject).
-  // FAIL CLOSED on an empty/unset VENUES: an unconfigured VENUES is NOT a safe default here — it
-  // resolves to the real 'binance' spot venue (app.module.ts's `venues[0]?.id ?? 'binance'`), and
-  // TRADING_MODE (not the VENUES array) decides paper-vs-real, so an empty array is exactly the
-  // shipped spot-lane shape and must be treated as spot, not as "no venue configured yet".
-  const allVenuesPerp = venues.length > 0 && venues.every((v) => v.id === 'binanceusdm');
-  if (agenticVenueTp && agenticVenueStop && !allVenuesPerp) {
+  // v3 §3.4: TRADING_SYMBOLS is required outside test/ci (the legacy TRADING_SYMBOL fallback is
+  // deleted); test/ci falls back to ['BTC/USDT'] — matching the OLD default's observable shape —
+  // so the many real-module boots in the hermetic suite (hermetic-env.spec.ts, app-module.boot.spec.ts,
+  // openapi-snapshot.spec.ts, health/metrics specs) stay green without each restating a basket. Fail
+  // CLOSED outside test/ci (config refusal at construction).
+  const tradingSymbols = tradingSymbolsRaw ?? (isTestOrCi ? ['BTC/USDT'] : undefined);
+  if (tradingSymbols === undefined) {
     throw new Error(
-      'AGENTIC_VENUE_TP and AGENTIC_VENUE_STOP cannot both be enabled unless every configured ' +
-        'venue is binanceusdm (perp): a resting take-profit SELL locks the full base balance, ' +
-        'leaving nothing to back a second full-size protective stop SELL on spot (no OCO here — ' +
-        'backlog #44). An empty/unset VENUES resolves to the real spot venue at boot and is ' +
-        'treated as spot for this guard, not as an unconfigured no-op.',
+      'TRADING_SYMBOLS is required outside test/ci — the legacy TRADING_SYMBOL fallback was ' +
+        'deleted in v3.',
     );
   }
 
-  // Rich decision contract (D1, Design § Conflict resolutions): AGENTIC_SHORTS_ENABLED opens the
-  // 'open_short' tool action, which is meaningless (and would journal an unfillable short) on a
-  // deployment with no perp-capable venue configured. Config refusal AT CONSTRUCTION, mirroring the
-  // venue-tp/stop refusal above — never a runtime place-then-reject. An unconfigured VENUES (paper/
-  // test default, empty array) never trips this unless shorts are also explicitly enabled.
-  if (agenticShortsEnabled && !venues.some((v) => v.id === 'binanceusdm')) {
+  // v3 §3.2/§3.5: DATABASE_URL is required outside test/ci — the one-book evidence chain (promotion
+  // verdict, reconciliation, audit_log) needs a durable database on every real boot. test/ci keeps
+  // the in-memory backings (PersistenceOverridesModule's test/ci-only fallbacks), so this stays a
+  // no-op for the hermetic suite. Fail CLOSED (config refusal at construction).
+  if (!isTestOrCi && (dbUrl === undefined || dbUrl.length === 0)) {
     throw new Error(
-      'AGENTIC_SHORTS_ENABLED requires a binanceusdm venue in VENUES — shorts have no perp venue ' +
-        'to route through on a spot-only (or unconfigured) deployment.',
+      'DATABASE_URL is required outside test/ci — the one-book evidence chain (promotion verdict, ' +
+        'reconciliation, audit_log) has no durable store without it.',
+    );
+  }
+
+  // v3 §3.2/§3.5: VENUES must be non-empty outside test/ci, and its id set must EXACTLY cover the
+  // venues implied by TRADING_SYMBOLS via venueIdForSymbol (a :SETTLE-suffixed symbol with no
+  // binanceusdm entry, or a binanceusdm entry with no perp symbol behind it, ⇒ refusal either way).
+  // Fail CLOSED — a real boot must never route an order through an undeclared venue, and an idle
+  // configured venue is equally a config error (nothing to trade there). test/ci is exempt (VENUES
+  // defaults to empty, matching every other feature-inert-until-configured knob in this file).
+  if (!isTestOrCi) {
+    if (venues.length === 0) {
+      throw new Error(
+        'VENUES must be non-empty outside test/ci — a real boot must declare at least one venue.',
+      );
+    }
+    const configuredVenueIds = new Set(venues.map((v) => v.id));
+    const impliedVenueIds = new Set(tradingSymbols.map(venueIdForSymbol));
+    const missingFromVenues = [...impliedVenueIds].filter((id) => !configuredVenueIds.has(id));
+    const unusedInVenues = [...configuredVenueIds].filter((id) => !impliedVenueIds.has(id));
+    if (missingFromVenues.length > 0 || unusedInVenues.length > 0) {
+      throw new Error(
+        `VENUES (${[...configuredVenueIds].join(',')}) must exactly cover the venues implied by ` +
+          `TRADING_SYMBOLS (${[...impliedVenueIds].join(',')}) — ` +
+          `${missingFromVenues.length > 0 ? `missing venue(s): ${missingFromVenues.join(',')}. ` : ''}` +
+          `${unusedInVenues.length > 0 ? `configured but unused venue(s): ${unusedInVenues.join(',')}.` : ''}`,
+      );
+    }
+  }
+
+  // v3 §3.1/§3.5: VENUE_CAPITAL_SPLIT — fixed wallet split of the one book. Every share is already
+  // positivity-checked by the schema (positiveDecimalString); the two cross-field checks below run
+  // here, once VENUES/SIZER_EQUITY_CAP are resolved. Fail CLOSED — both are permission/safety gates
+  // on the sizer's venue-headroom clamp (§6.1), never a runtime place-then-reject.
+  const venueCapitalSplit = parseVenueCapitalSplit(venueCapitalSplitRaw);
+  // Key-set-vs-VENUES match only binds once VENUES is actually configured — an empty/test VENUES has
+  // no ids to match against, so this narrows to a no-op for the unconfigured/test-default case,
+  // consistent with every other feature-inert-until-configured knob in this file (VENUES itself is
+  // required outside test/ci above, so a real boot always exercises this check).
+  if (venues.length > 0) {
+    const splitKeys = new Set(Object.keys(venueCapitalSplit));
+    const venueIds = new Set(venues.map((v) => v.id));
+    const missingFromSplit = [...venueIds].filter((id) => !splitKeys.has(id));
+    const unusedInSplit = [...splitKeys].filter((id) => !venueIds.has(id));
+    if (missingFromSplit.length > 0 || unusedInSplit.length > 0) {
+      throw new Error(
+        `VENUE_CAPITAL_SPLIT keys (${[...splitKeys].join(',')}) must exactly equal the configured ` +
+          `VENUES ids (${[...venueIds].join(',')}).`,
+      );
+    }
+  }
+  const venueCapitalSplitSum = Object.values(venueCapitalSplit).reduce(
+    (acc, v) => acc.plus(new Decimal(v)),
+    new Decimal(0),
+  );
+  const equityCapDecimal = new Decimal(sizerEquityCap);
+  // '0' is the documented disabled-cap sentinel (SIZER_EQUITY_CAP's own schema comment) — the split
+  // sum then has no book-size ceiling to respect, mirroring position-sizer.service.ts's cappedEquity.
+  if (equityCapDecimal.gt(0) && venueCapitalSplitSum.gt(equityCapDecimal)) {
+    throw new Error(
+      `VENUE_CAPITAL_SPLIT shares sum to ${venueCapitalSplitSum.toString()}, which exceeds ` +
+        `SIZER_EQUITY_CAP (${sizerEquityCap}).`,
+    );
+  }
+
+  // v3 §3.5: AGENTIC_PLAN_MODE=false is refused when any perp symbol is configured — shorts and the
+  // venue-resting TP/stop rails all require plan mode (carried from the v2 perp constraint, now
+  // cross-field since VENUES/TRADING_SYMBOLS may mix spot and perp in one boot). Fail CLOSED.
+  if (!agenticPlanMode && tradingSymbols.some((s) => venueIdForSymbol(s) === PERP_VENUE_ID)) {
+    throw new Error(
+      'AGENTIC_PLAN_MODE=false is refused when any perp symbol is configured in TRADING_SYMBOLS — ' +
+        'shorts and the venue-resting TP/stop rails require plan mode.',
     );
   }
 
@@ -906,6 +1012,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     observability: { logLevel },
     db: { url: dbUrl },
     venues,
+    venueCapitalSplit,
     agentic: {
       model: agenticModel,
       reflectionModel: agenticReflectionModel,
@@ -918,7 +1025,14 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       maxTokensPerDay: agenticMaxTokensPerDay,
       dailyCostStopUsd: agenticDailyCostStopUsd,
       entryTtlBars: agenticEntryTtlBars,
-      maxPositionFraction: agenticMaxPositionFraction,
+      // v3-transitional(#8,#10): AGENTIC_MAX_POSITION_FRACTION is renamed to the SPOT/PERP split
+      // above (§3.3); risk.module.ts's maxAgentPositionFractionFor and agentic-strategy.module.ts /
+      // reflection.service.ts still read this single field as their lane-wide sizeFraction cap.
+      // Derives to the SPOT value (the pre-v3 default lane) until those workstreams consume
+      // maxPositionFractionSpot/maxPositionFractionPerp per-symbol directly.
+      maxPositionFraction: agenticMaxPositionFractionSpot,
+      maxPositionFractionSpot: agenticMaxPositionFractionSpot,
+      maxPositionFractionPerp: agenticMaxPositionFractionPerp,
       fallbackConsultBars: agenticFallbackConsultBars,
       wakeMovePct: agenticWakeMovePct,
       activeMenuSize: agenticActiveMenuSize,
@@ -930,11 +1044,18 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       mintBacktestRows: agenticMintBacktestRows,
       mintBacktestMarginBps: agenticMintBacktestMarginBps,
       mintBacktestMinTrips: agenticMintBacktestMinTrips,
-      autoPromoteMinTrades: agenticAutoPromoteMinTrades,
+      // v3-transitional(#10): AGENTIC_AUTO_PROMOTE_MIN_TRADES is deleted (§3.4) — the legacy
+      // count-only path is permanently superseded by autoPromoteMinAttributedTrades below.
+      // reflection.service.ts / agentic-strategy.module.ts still read this field; hardcoded 0
+      // (disabled) reproduces the deleted knob's only sane deployed value.
+      autoPromoteMinTrades: 0,
       autoPromoteMinAttributedTrades: agenticAutoPromoteMinAttributedTrades,
       playbookPin: agenticPlaybookPin,
       playbookAbPct: agenticPlaybookAbPct,
-      derivativesAbPct: agenticDerivativesAbPct,
+      // v3-transitional(#10): AGENTIC_DERIVATIVES_AB_PCT is deleted (§3.4, XA3 decision record) — the
+      // information-context control arm is retired at 0 for good. anthropic-agent-client.ts /
+      // agentic-strategy.module.ts still read this field; hardcoded 0 reproduces the retirement.
+      derivativesAbPct: 0,
       derivativesV2Enabled: agenticDerivativesV2Enabled,
       crossSymbolEnabled: agenticCrossSymbolEnabled,
       crossSymbolLookbackBars: agenticCrossSymbolLookbackBars,
@@ -954,7 +1075,13 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       venueStopEnabled: agenticVenueStop,
       venueStopReplaceDriftBps: agenticVenueStopReplaceDriftBps,
       planMode: agenticPlanMode,
-      shortsEnabled: agenticShortsEnabled,
+      // v3-transitional(#5,#10): AGENTIC_SHORTS_ENABLED is deleted (§3.4) — shorts is now a
+      // per-symbol capability derived from venue presence, not a boot flag. app.module.ts:1539-1540
+      // and agentic-strategy.module.ts still read config.agentic.shortsEnabled as their perp-lane
+      // selector; this derives the same boolean their old env-flag produced (true iff any configured
+      // venue is the perp venue) until those workstreams consume VENUE_REGISTRY/venueForSymbol
+      // directly.
+      shortsEnabled: venues.some((v) => v.id === PERP_VENUE_ID),
       planExitTtlBars: agenticPlanExitTtlBars,
       quietPayloadSampleBars: agenticQuietPayloadSampleBars,
     },
@@ -981,15 +1108,19 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       staleMaxAgeMs: riskStaleMaxAgeMs,
     },
     perp: {
-      enabled: perpVenueEnabled,
+      // PERP_VENUE_ENABLED deleted (§3.4): no `enabled` field — venue presence in VENUES is the
+      // signal now, and this field had no consumer outside environment.config.ts itself.
       leverageCap: perpLeverageCap,
       mmrFallback: perpMmrFallback,
       liqBufferPct: perpLiqBufferPct,
     },
     strategy: {
-      symbol: tradingSymbol,
-      // TRADING_SYMBOLS wins; the legacy single TRADING_SYMBOL is the one-element fallback.
-      symbols: tradingSymbols ?? [tradingSymbol],
+      // v3-transitional(#5): TRADING_SYMBOL (the legacy single-symbol fallback) is deleted (§3.4—
+      // TRADING_SYMBOLS is now required). app.module.ts:1694's symbolId(config.strategy.symbol) is
+      // this field's only consumer; derives to the first configured symbol until #5's
+      // TradingRuntimeService iterates config.strategy.symbols directly instead.
+      symbol: tradingSymbols[0]!,
+      symbols: tradingSymbols,
       interval: strategyInterval,
       active: activeStrategy,
     },

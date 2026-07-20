@@ -126,7 +126,7 @@ function buildInput(
   } = {},
 ): AgentDecisionInput {
   const candles = Array.from({ length: index + 1 }, (_, i) =>
-    candle(i, i === index ? opts.close ?? '100' : '100'),
+    candle(i, i === index ? (opts.close ?? '100') : '100'),
   );
   const positions = new Map<string, Position>();
   if (opts.position) positions.set(`${SID}|${V}|${SYM}`, opts.position);

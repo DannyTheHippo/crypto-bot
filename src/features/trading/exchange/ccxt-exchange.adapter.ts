@@ -168,7 +168,7 @@ export class CcxtExchangeAdapter implements ExchangePort {
       const orders = await this.client.fetchOpenOrders(symbol);
       return orders.map((o) => {
         // Each open-order row carries its own symbol; ExchangeOrderState.symbol is required.
-        const orderSymbol = o.symbol !== undefined ? symbolId(o.symbol) : symbol ?? symbolId('');
+        const orderSymbol = o.symbol !== undefined ? symbolId(o.symbol) : (symbol ?? symbolId(''));
         const coid = clientOrderId(o.clientOrderId ?? '');
         return normalizeOrderState(o, coid, orderSymbol);
       });
@@ -238,7 +238,7 @@ export class CcxtExchangeAdapter implements ExchangePort {
       // alike); the documented production shape is { total, orders }. The {orders}-only destructure
       // threw TypeError on every live demo call — FLAG 1's root cause.
       const raw = await this.client.fapiPrivateGetOpenAlgoOrders();
-      const rows = Array.isArray(raw) ? raw : raw?.orders ?? [];
+      const rows = Array.isArray(raw) ? raw : (raw?.orders ?? []);
       // Raw rows carry the VENUE market id ("BTCUSDT"), never the unified symbol (same probe) —
       // match either form, and stamp the unified symbol on the row handed to normalizeAlgoOrder so
       // AlgoOrderState.symbol keeps its unified-SymbolId contract.
@@ -302,7 +302,7 @@ export class CcxtExchangeAdapter implements ExchangePort {
         startTime: sinceMs,
         limit: 100,
       });
-      const rows = Array.isArray(raw) ? raw : raw?.orders ?? [];
+      const rows = Array.isArray(raw) ? raw : (raw?.orders ?? []);
       // Match by clientAlgoId ONLY (never orderId, never a decoded venue id) — clientAlgoId is the
       // same clientOrderId string the intent minted at placement, the one stable key this rail and
       // our OMS both index on.

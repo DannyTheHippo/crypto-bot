@@ -179,7 +179,7 @@ describe('createAgentLlmBudget', () => {
 
 describe('SEED_PLAYBOOK (spot, P2 expert seed)', () => {
   it('passes validatePlaybook strictly (no capability flags — spot must never need shorts/leverage)', () => {
-    expect(SEED_PLAYBOOK.version).toBe(2);
+    expect(SEED_PLAYBOOK.version).toBe(4);
     expect(validatePlaybook(SEED_PLAYBOOK.content)).toEqual({ ok: true });
   });
 
@@ -199,7 +199,7 @@ describe('SEED_PLAYBOOK_PERP (P2 expert seed)', () => {
   });
 
   it('passes validatePlaybook only with the perp lane capability flags', () => {
-    expect(SEED_PLAYBOOK_PERP.version).toBe(2);
+    expect(SEED_PLAYBOOK_PERP.version).toBe(4);
     expect(
       validatePlaybook(SEED_PLAYBOOK_PERP.content, { shortsAllowed: true, leverageAllowed: true }),
     ).toEqual({ ok: true });

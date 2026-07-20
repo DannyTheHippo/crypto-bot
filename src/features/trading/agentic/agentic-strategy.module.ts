@@ -261,30 +261,43 @@ export function createAgentLlmBudget(
 // and app.module.ts's PLAYBOOK_PROVIDER_OVERRIDE/ValidatingPlaybookProvider fallback, which apply the
 // identical derivation so the composition root, the strategy module, and the validator fallback can
 // never disagree on which seed a lane gets).
+// XA3 (A0 activation bundle, 2026-07-20): version 4 — above every existing DB row (v1 seed,
+// v2/v3 reflection mints on both lanes), so the revised mandate actually goes ACTIVE at next boot.
+// Found during XA3: the P2 expert seeds NEVER went live — both const versions said 2, ensureSeed()
+// found the pre-existing v2 REFLECTION row and served it, so the lanes ran an old reflection
+// lineage through the whole v2 era. The mandate revisions below implement A0's entry-activation
+// findings (0 entries in 19 v2 consults): disagreement modulates size instead of vetoing,
+// continuation entries are valid at RSI 55-75, the fee floor is quantified, weekend/Asia gates
+// reduce size instead of skipping, and the evidence-pace expectation is explicit.
 export const SEED_PLAYBOOK: { readonly version: number; readonly content: string } = {
-  version: 2,
+  version: 4,
   content: [
     '## regime notes',
     'Swing horizon: hold hours to days on 15m bars, not scalps. Momentum continuation and',
     'breakout-retest are the two highest-edge patterns — enter strength once a consolidation range',
     'breaks with confirmation and (ideally) a retest that holds, not into fresh chop. Session/',
     'time-of-day matters: the US session drives the cleanest directional follow-through; Asia hours',
-    'tend to mean-revert inside a range; weekend liquidity is thin — size down or skip new entries',
-    'regardless of how clean the setup looks. BTC-beta regime: alts are BTC-direction bets first —',
-    'cut alt exposure when BTC is trending down even if an individual alt chart looks fine;',
-    'concentrate into alts when BTC is trending up AND the alt shows genuine relative strength via',
-    'the cross-symbol rank, not merely "also up."',
+    'tend to mean-revert inside a range; weekend and Asia liquidity is thinner — reduce sizeFraction',
+    'on those entries rather than skipping a clean setup outright. BTC-beta regime: alts are',
+    'BTC-direction bets first — cut alt exposure when BTC is trending down even if an individual alt',
+    'chart looks fine; concentrate into alts when BTC is trending up AND the alt shows genuine',
+    'relative strength via the cross-symbol rank, not merely "also up."',
     '',
     '## entry rules',
-    'Enter long only after a real breakout-retest: a level breaks with confirming momentum, price',
-    'retests it (or a nearby EMA) without giving back the move, and closes back in the break',
-    'direction — that confirmation matters far more than reacting to the first breakout print. Favor',
-    'initiating new positions during active US-session hours; treat quiet overnight Asia-session',
-    'entries with extra suspicion unless the setup is a clean session-driven mean reversion, not a',
-    'breakout. Concentrate conviction on a $1k book: hold 2-4 best ideas at 8-15% sizeFraction each',
-    'rather than spreading thin across the scanner menu — a sizeFraction below 0.05 is not worth the',
-    'fee drag, skip the trade instead of taking a token position. Do not open a fresh alt long while',
-    'BTC itself is trending down; wait for BTC to stabilize or size materially smaller.',
+    'Two valid entry patterns, not one: (1) breakout-retest — a level breaks with confirming',
+    'momentum, price retests it (or a nearby EMA) without giving back the move, and closes back in',
+    'the break direction; (2) trend continuation — an established uptrend pulls back to support or a',
+    'rising EMA and holds it. Continuation entries are valid at RSI 55-75; a trend does not need an',
+    'oversold reset first, and "it already moved" is not by itself a reason to skip. Disagreement',
+    'discipline: when ONE input disagrees (a lagging cross-symbol rank, soft order flow, a mixed',
+    'higher timeframe) while structure supports the trade, HALVE sizeFraction instead of holding —',
+    'reserve outright holds for genuinely conflicting structure, and let multiple independent',
+    'bearish signals (not one) veto. Fee arithmetic, quantified: a round trip costs ~20bps; your',
+    'typical TP targets (1-8%) clear that 5-40x — fees justify skipping only targets under ~60bps,',
+    'never a normal swing entry. Concentrate conviction on a $1k book: hold 2-4 best ideas at 8-15%',
+    'sizeFraction each rather than spreading thin across the scanner menu; a sizeFraction below 0.05',
+    'is not worth the drag — take the half-size entry over the token one. Do not open a fresh alt',
+    'long while BTC itself is trending down; wait for BTC to stabilize or size materially smaller.',
     '',
     '## exit rules',
     'Stops sit beyond the structure that invalidated the thesis (below the breakout level or swing',
@@ -297,13 +310,16 @@ export const SEED_PLAYBOOK: { readonly version: number; readonly content: string
     '',
     '## mistakes to avoid',
     'Do not chase the first breakout bar without a retest — the retest-confirmation pattern has a',
-    'meaningfully better hit rate at swing horizon. Do not spread thin across many weak setups on a',
-    '$1k book — concentrated conviction in the best 2-4 ideas beats a dozen half-sized entries that',
-    'each pay full round-trip fees. Do not ignore BTC when sizing an alt — a position fighting BTC',
-    'direction is lower-probability even on a clean individual chart. Do not schedule the next',
-    'consult too tight when positioned with a wide stop (wastes budget against a roughly $1/day',
-    'target) or too loose near invalidation (misses the exit) — set nextConsultBars deliberately',
-    'rather than defaulting to the shortest interval every time.',
+    'meaningfully better hit rate at swing horizon. Do not stack veto conditions: requiring every',
+    'input to agree before entering means never entering — the evidence gate this lane must pass',
+    'needs roughly 2 closed round trips per day, and a flat week is a failure mode, not discipline.',
+    'Do not spread thin across many weak setups on a $1k book — concentrated conviction in the best',
+    '2-4 ideas beats a dozen half-sized entries that each pay full round-trip fees. Do not ignore',
+    'BTC when sizing an alt — a position fighting BTC direction is lower-probability even on a clean',
+    'individual chart. Do not schedule the next consult too tight when positioned with a wide stop',
+    '(wastes budget against a roughly $1/day target) or too loose near invalidation (misses the',
+    'exit) — set nextConsultBars deliberately rather than defaulting to the shortest interval every',
+    'time.',
   ].join('\n'),
 };
 
@@ -311,11 +327,17 @@ export const SEED_PLAYBOOK: { readonly version: number; readonly content: string
 // funding-flip and liquidation-cascade patterns, and leverage discipline for the 2x cap. Requires
 // {shortsAllowed: true, leverageAllowed: true} to pass validatePlaybook; never served to a spot lane.
 export const SEED_PLAYBOOK_PERP: { readonly version: number; readonly content: string } = {
-  version: 2,
+  version: 4,
   content: [
     '## regime notes',
     'BTC-only, swing horizon, hours-to-days holds on 15m bars, genuinely two-sided: short a',
     'breakdown exactly as readily as you long a breakout — there is no long-only bias on this lane.',
+    'If you call the trend down and stay flat, your rationale must say why no short. Worked',
+    'example: support breaks on rising open interest with fading positive funding — open_short',
+    'sizeFraction 0.20-0.35, stop just above the broken level, take profit at the next liquidity',
+    'shelf (2.5-4%). A perp round trip costs ~6-10bps — fees almost never justify skipping. One',
+    'soft input HALVES sizeFraction rather than forcing a hold; the evidence gate needs ~2 closed',
+    'round trips/day — a flat week is a failure mode, not discipline.',
     'Funding-flip signals: rich positive funding paired with stalling upside price means longs are',
     'crowded and paying up for it — favors a short bias, especially once price stops making new',
     'highs. Deeply negative funding while price holds support is capitulation exhaustion — favors a',

@@ -885,8 +885,8 @@ Gate GREEN at f4be8fe: build+lint+typecheck+format:check, 151 files / 2594 tests
 - **R1 replay harness (ddd03a1).** `pnpm replay:agentic` — v2 contract over historical candles,
   candidate-backtest fill model reused verbatim, decide-model pinned (R8-8 class), per-run USD
   cap aborts via pre-call reservation. Exclusions spec-proven: promotion stats / round trips /
-  version digest / exec-quality BY CONSTRUCTION (no fills, playbookVersion:null); llmTokenTotals
-  + lane-wide journal reads BY FILTER (notLike 'replay-%'). Reflection synthetic source opt-in
+  version digest / exec-quality BY CONSTRUCTION (no fills, playbookVersion:null); the
+  llmTokenTotals and lane-wide journal reads BY FILTER (notLike 'replay-%'). Reflection synthetic source opt-in
   (default OFF) and always labeled. Dry-run smoke: 8 decisions at a $0.50 cap, clean abort.
   Replay runs remain owner/loop-triggered (~$30-80 at real scale).
 - **Lane metric parity (owner directive 2026-07-20) — premise CORRECTED.** Audit verdict:

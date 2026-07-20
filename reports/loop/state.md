@@ -613,6 +613,58 @@ the backstop); negative-fee (rebate) ingestion — revisit at the live flip with
   finish)` (ccxt-stream.adapter.ts ~:449) — one escaped throw from any single loop marks
   the ENTIRE merged iterator done while sibling loops keep pushing into an undrained
   buffer, silently. Harden when next in that file (loop-domain follow-up).
+- WATCH-R8-8: **W6 cycle-1 soak finding (2026-07-20 ~03:00Z, defect-class, fix SHIPPED +
+  DEPLOYED both lanes ~03:14Z):** the P3 weekly reflection trigger looped hot — its
+  week-bucket check compared only `lastAttemptAt`, which non-consuming attempt exits
+  (abstain_reject additive rollback, budget_exhausted, precondition aborts)
+  restore/never-set; wired per-bar at I1b, every tick re-fired runReflection: **91 live
+  Opus calls / ~$2.30 in 46 min** (01:15–02:01Z) against candidate v3's (business-correct)
+  abstention lapse — 4 mint attempts, each burning ~20+ calls via the mint-floor replay AT
+  the Opus reflection tier — then a dry warn-pair loop every ~2s after the daily cost stop
+  capped spend at $2.48 (overshoot past the $1.50 breaker: mid-attempt replay calls fail
+  OPEN by design, so an attempt started under budget finishes over it). Fix: the weekly
+  path consumes its own week-bucket stamp ON FIRE (`lastWeeklyFireAt`) — at most one fire
+  per UTC week regardless of outcome; trade-trigger retry-on-next-close semantics
+  untouched; regression spec, suite 2453/2453. Watch next: the fresh boots may fire exactly
+  ONE bounded weekly attempt (in-memory daily budget resets on restart — pre-existing),
+  then weekly silence. A0 follow-ups: mint-floor replay pricing at the reflection tier
+  (~$0.55/attempt), and `AGENTIC_REFLECTION_MODEL` is ALREADY honored live — X6 narrows to
+  verification + budget framing.
+
+**W6 cycle-1 verdict (2026-07-19 19:00Z → 2026-07-20 03:00Z):** clean EXCEPT R8-8.
+Reconciliations 959/961 CLEAN, zero HALT (the R8-7 class dead over 8 continuous hours);
+kill switch RUNNING throughout; both lanes journaled every 15m bar; spot: one batched
+consult (01:00Z, 6 symbols, ~44k tokens) + 24 forced_fallback / 2 forced_move gate
+outcomes; perp quiet ($0.18 epoch cost); equities/drawdown flat; ws seam absorbed venue
+noise at warn level. Non-app events: owner Docker quit 21:01→21:08Z (clean reboots — an
+unplanned restart probe, passed); daemon-side `docker logs --since` silently broken after
+the Desktop restart (returns empty; per-line stamps correct — tail + pino-time filtering
+adopted; hard Y2 requirement + a "never trust a negative read" Y1 exhibit); the original
+W6 digest collector was a dud (1 line in 8h) — the replacement's hourly digests at
+`reports/loop/digests/w6-digests.txt` are the record (both collector failures are Y1 data
+points). **Clock restarted ~03:14Z at the R8-8 fix deploy — cycle 2 running, review
+~12:15Z.**
+
+## Daily-loop mechanism enhancement — Y series (owner, 2026-07-19) — decision record
+
+**Owner directive:** add a pre-cutover task group that significantly enhances the daily-loop
+mechanism itself, based on learnings from the long-horizon watching (W5/W6 soaks + the full
+pass history). Program (plan file round-9 section is authoritative for specs): **Y1** learnings
+harvest → `reports/loop/loop-mechanism-learnings-2026-07.md`; **Y2** deterministic health-sweep
+tool (`pnpm loop:sweep` — watermark liveness deltas, named defect-class alarms, one transport
+wrapper that the GCP lift re-points); **Y3** standing digest collector (the W6 hourly-digest
+pattern promoted into the repo; passes rehydrate from digest history, not a raw 24h log
+window); **Y4** playbook v3 (stale v2-era references fixed, INCIDENT-FIRST gate on any sweep
+alarm, `date -u` forensics discipline, 2026-07-17 delegation reflected) + state.md/LOG.md
+archive hygiene + scheduled-task re-enable under change-discipline.
+
+**Grounding evidence:** WATCH-R8-7 suppressed every spot decide for ~a day behind green
+surface signals — a pass reading a 24h log window with no liveness deltas could not see it;
+WATCH-R8-6's wedge→OOM chain was caught live only by continuous session watching; the
+playbook still cites retired artifacts (`agentic_prescreen_total`, expectancy-ladder
+MAY-knobs, a $5/day breaker). Sequencing: disjoint from app code, interleaves with the
+X series, MUST complete before X1-FINAL. Tasks #50–#53 mirror Y1–Y4; #47 (GCP lift) is
+blocked on Y4.
 
 ## Last pass
 

@@ -638,6 +638,11 @@ export class AgenticStrategy implements AsyncStrategy {
 
   // Ring buffer of past decisions, newest-last, capped — self-consistency context handed to the
   // agent each call. The client itself stays stateless; this trail lives host-side in the strategy.
+  // Bound proof: MAX_DECISION_HISTORY caps this via the shift() right after every push (below), and
+  // its ONLY consumer — `recentDecisions: [...this.history]` — is spread in full and rendered
+  // unconditionally by agent-prompt.ts's renderDecisionLines (iterates recentDecisions.length, no
+  // independent slice(-N)). No reader ever needs more than the cap already retains, so 30 stays the
+  // proven bound; this array can never grow past it.
   private readonly history: AgentDecisionRecord[] = [];
   // Combined (realized + unrealized) PnL at the time the most recently pushed, not-yet-annotated
   // history record was made — diffed against the next call's combined PnL to fill that record's

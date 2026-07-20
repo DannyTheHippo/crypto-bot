@@ -664,6 +664,43 @@ describe('ReconciliationService (§6.4)', () => {
     expect(ctx.engages.at(-1)!.reason).toContain('BALANCE_LEAK:USDT');
   });
 
+  it('drift history trims to driftPasses entries across many passes, and strictly-growing detection still fires past the trim boundary', async () => {
+    const driftPasses = 3;
+    let n = 0;
+    const ctx = build(
+      {
+        balances: () => {
+          n += 1;
+          // Strictly increasing every pass, same shape as the 3-pass case above, run well past
+          // driftPasses so the front-trim (reconciliation.service.ts's driftHistory push site) fires
+          // repeatedly — proves the per-asset array never grows past driftPasses AND the
+          // strictly-growing window detection is unaffected by the trim.
+          return new Map([
+            [
+              'USDT',
+              { free: new Decimal(100000).add(new Decimal(0.001).mul(n)).toFixed(), locked: '0' },
+            ],
+          ]);
+        },
+      },
+      undefined,
+      undefined,
+      undefined,
+      { driftPasses },
+    );
+    const passes = driftPasses + 5;
+    for (let i = 0; i < passes; i++) {
+      await ctx.recon.reconcile();
+    }
+    const driftHistory = (ctx.recon as unknown as { driftHistory: Map<string, Decimal[]> })
+      .driftHistory;
+    expect(driftHistory.get('USDT')).toHaveLength(driftPasses); // never grows past driftPasses
+    // One more strictly-increasing pass past the trim boundary still HALTs on the leak.
+    const r = await ctx.recon.reconcile();
+    expect(r.halted).toBe(true);
+    expect(ctx.engages.at(-1)!.reason).toContain('BALANCE_LEAK:USDT');
+  });
+
   it('a local-open order the venue still reports open is an inconsistency WARN (no terminal adopt)', async () => {
     const coid = makeIntent().clientOrderId;
     const ctx = build({ openOrders: [], fetchOrder: () => venueOrder(coid, 'open') }); // absent from list yet "open"

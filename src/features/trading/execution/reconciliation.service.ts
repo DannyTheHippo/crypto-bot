@@ -453,6 +453,10 @@ export class ReconciliationService {
       const drift = venueTotal.sub(localTotal).abs();
       const history = this.driftHistory.get(asset) ?? [];
       history.push(drift);
+      // driftStrictlyGrowing only ever reads the last cfg.driftPasses entries — trim the front so
+      // this per-asset array does not grow one Decimal per pass forever.
+      if (history.length > this.cfg.driftPasses)
+        history.splice(0, history.length - this.cfg.driftPasses);
       this.driftHistory.set(asset, history);
 
       if (!within) {

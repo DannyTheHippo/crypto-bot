@@ -4,6 +4,10 @@ Append-only, newest last. One dated entry per pass (including empty passes), per
 `docs/planning/daily-profitability-loop.md` §6: data window, headline metrics, decision +
 rationale, diff summary, gate results, soak verdict, flagged items, next candidates.
 
+Rotation rule: entries older than 30 days rotate to `reports/loop/archive/` (e.g.
+`LOG-pre-YYYY-MM-DD.md`). As of 2026-07-20 the earliest entry is 2026-07-06 (within the window),
+so nothing has been rotated yet.
+
 ---
 
 ## 2026-07-06 — Pass 0 (pipeline deploy, not a scheduled loop pass)

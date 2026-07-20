@@ -369,6 +369,19 @@ describe('CcxtExchangeStreamAdapter channel tiering (XA6)', () => {
   });
 });
 
+describe('buildCcxtExchange watchOrderBookRate (XA6)', () => {
+  it('the market-data exchange pins depth updates to 1000ms (options.watchOrderBookRate)', async () => {
+    const { buildCcxtExchange } =
+      await import('../../../src/features/trading/market-data/ccxt-stream.adapter');
+    const ex = buildCcxtExchange({
+      id: 'binance',
+      environment: 'paper',
+      baseUrlOverride: undefined,
+    } as never);
+    expect((ex.options as Record<string, unknown>)['watchOrderBookRate']).toBe(1000);
+  });
+});
+
 describe('FeedHealthService.clearChannel (XA6)', () => {
   it('removes the channel from ages and reverts health to the GAP default', () => {
     const clock: ClockPort = { now: () => epochMs(1_000) };

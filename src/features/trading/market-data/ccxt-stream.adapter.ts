@@ -263,6 +263,15 @@ export function buildCcxtExchange(venueConfig: VenueConfig): Exchange {
   const opts: Record<string, unknown> = {
     number: String,
     enableRateLimit: true,
+    // XA6: depth updates at 1000ms instead of ccxt's 100ms default (pinned ccxt 4.5.58 binance pro
+    // reads options.watchOrderBookRate into the <symbol>@depth@<rate>ms stream name — js/src/pro/
+    // binance.js:145/702/766). This is the MARKET-DATA instance only (public, keyless): its book
+    // consumers are the risk mark (tee reads bids[0]/asks[0] into a mid) and 'book' channel health
+    // (5s staleness veto, 30s DEGRADED threshold) — top-of-book at 1s is ample for both, and the
+    // diff-depth firehose at 100ms across the active menu's high-volume symbols was the dominant
+    // spot CPU load after tiering parked the low-volume tail. Order placement never reads this
+    // instance (the trading adapter constructs its own).
+    options: { watchOrderBookRate: 1000 },
   };
 
   if (venueConfig.baseUrlOverride) {

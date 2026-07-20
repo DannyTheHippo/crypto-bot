@@ -1328,6 +1328,38 @@ describe('createReflectionService', () => {
     expect(body.model).toBe(expected);
   });
 
+  // X6 (carried from XA5): journal rows inside the 2026-07-16→17 execution-bug window (venue-
+  // rejected exits — the outcomes measure the execution defect, not the strategy) never reach any
+  // reflection digest. Asserted off the request body: the in-window round trip's prices must be
+  // absent while a control round trip outside the window renders normally.
+  it('excludes rows inside the 2026-07-16→17 execution-bug window from reflection evidence', async () => {
+    const inWindow = Date.UTC(2026, 6, 16, 12);
+    const outWindow = Date.UTC(2026, 6, 19, 12);
+    const mk = (action: AgentDecisionRow['action'], close: string, at: number, id: string) =>
+      row({ action, close, eventTime: epochMs(at), createdAt: epochMs(at), id });
+    const h = buildHarness({
+      rows: [
+        mk('long', '111.11', inWindow, 'w1'),
+        mk('flat', '122.22', inWindow + 60_000, 'w2'),
+        mk('long', '333.33', outWindow, 'c1'),
+        mk('flat', '344.44', outWindow + 60_000, 'c2'),
+      ],
+    });
+    h.fetchFn.mockResolvedValue(
+      apiResponse(revisionToolBody({ playbook: validPlaybookContent('v2'), changelog: 'c' })),
+    );
+    const service = new ReflectionService(baseCfg({ everyNTrades: 1 }), h.deps);
+
+    service.onClosedTrade(SID, 1);
+    await flush();
+
+    expect(h.fetchFn).toHaveBeenCalledTimes(1);
+    const rawBody = (h.fetchFn.mock.calls[0]![1] as { body: string }).body;
+    expect(rawBody).toContain('333.33'); // control round trip renders
+    expect(rawBody).not.toContain('111.11'); // execution-bug round trip excluded
+    expect(rawBody).not.toContain('122.22');
+  });
+
   // The reflection call's abort deadline reads its OWN knob, not the decide timeout — see
   // AGENTIC_REFLECTION_TIMEOUT_MS's schema comment. Asserted off the AbortSignal because the timer is
   // the only place the choice becomes observable (the stalled-body pattern from the detachment suite).
@@ -2042,6 +2074,37 @@ describe('backlog #39: mint-time entry-rate floor', () => {
       'attempt_started',
       'refusal',
     ]);
+  });
+
+  // X6 (A0 re-scope, tier assertion): the reflection DRAFT bills at the REFLECTION model while
+  // every floor replay bills at the DECIDE model — a tier mismatch here simulates the Sonnet decide
+  // path at Opus pricing (R8-8 demonstrated that cost blast radius at 1/50th of a replay run's
+  // scale). Asserted off the actual request bodies, the only place the split becomes observable.
+  it('reflection draft carries the reflection model while floor replays carry the decide model', async () => {
+    const h = buildHarness({
+      budgetCaps: { maxCallsPerDay: 20, maxTokensPerDay: 1_000_000 },
+      rows: [flatConsultRow(0), flatConsultRow(1)],
+    });
+    mockDualFetch(
+      h.fetchFn,
+      [revisionToolBody({ playbook: validPlaybookContent('enters'), changelog: 'loosen bar' })],
+      'open_long',
+    );
+    const service = new ReflectionService(
+      floorCfg({ model: 'claude-opus-4-8', decideModel: 'claude-sonnet-5' }),
+      h.deps,
+    );
+
+    service.onClosedTrade(SID, 1);
+    await flush();
+
+    expect(h.fetchFn).toHaveBeenCalledTimes(1 + FLOOR_ROWS);
+    const modelOf = (i: number): string =>
+      (requestBodyOf(h.fetchFn, i) as unknown as { model: string }).model;
+    expect(modelOf(0)).toBe('claude-opus-4-8');
+    for (let i = 1; i <= FLOOR_ROWS; i++) {
+      expect(modelOf(i)).toBe('claude-sonnet-5');
+    }
   });
 
   it('mints when the replayed floor produces at least one entry', async () => {

@@ -77,6 +77,21 @@ const DEFAULT_REFLECTION_TIMEOUT_MS = 240000;
 // so an unconfigured fallback can never bill a pricier model at cheaper rates inside the
 // earned-live cost math.
 const DEFAULT_MODEL = 'claude-sonnet-5';
+
+// X6 (carried from XA5's tagging requirement): windows whose trades/decisions measure a known
+// EXECUTION defect, not the strategy — reflection must never learn "entries lose" from data where
+// exits were venue-rejected for ~33h (the 2026-07-16→17 LINK GTC-TP balance lock + Bug B phantom
+// fallout). Bounds are full UTC days on purpose: the affected lane was defect-contaminated for most
+// of both days, and over-excluding a few clean hours of pre-v2-cutover data costs nothing (the v2
+// evidence epoch starts 2026-07-18+). Extend this list only for confirmed execution-bug windows —
+// it is an evidence filter, never a performance filter.
+const EXECUTION_BUG_WINDOWS: readonly { startMs: number; endMs: number }[] = [
+  { startMs: Date.UTC(2026, 6, 16), endMs: Date.UTC(2026, 6, 18) },
+];
+
+export function outsideExecutionBugWindows(atMs: number): boolean {
+  return !EXECUTION_BUG_WINDOWS.some((w) => atMs >= w.startMs && atMs < w.endMs);
+}
 // Playbooks cap at 4000 chars (playbook-validator.ts); adaptive thinking (see the fetch body below)
 // shares this same output budget with the tool-use response, so 4096 risked truncating the revision
 // mid-thought — 8192 leaves headroom for both.
@@ -448,6 +463,18 @@ function buildReflectionSystemPrompt(shortsEnabled: boolean): string {
     'post-fill adverse-drift bps — use it to calibrate ENTRY STYLE: a low fill rate paired with',
     'positive missed-move bps means maker patience is costing missed entries; low adverse-drift bps',
     'on filled entries means the current pricing is working and taker urgency is rarely needed.',
+    'ANTI-RATCHET OBJECTIVE (X6, the gravest observed failure mode): because this loop only ever',
+    'SEES realized losses, past revisions ratcheted filters tighter until entries stopped entirely —',
+    'and a flat week is a FAILING week, not discipline: the promotion gate needs roughly two closed',
+    'round trips per day. A hold that preceded a favorable move of more than 1% within the would-be',
+    'max-hold horizon is an ERROR of equal weight to a losing entry (regretDigest declinedEntry',
+    'lines and the DECISION OUTCOMES stayed-flat bucket carry exactly this evidence — weigh them',
+    'symmetrically against losing entries, never as an afterthought). Per revision: tighten AT MOST',
+    'ONE entry gate, name it in the changelog, and never tighten in response to realized losses',
+    'alone without stating what the missed-winner side of the evidence showed. Any rule that',
+    'restricts entries to a leaders-only / top-rank subset must state in the changelog why the',
+    'expected entry rate under it still clears about two round trips per day; if it cannot, loosen',
+    'instead.',
     'The playbook has exactly 4 sections, in this order: "## regime notes", "## entry rules",',
     '"## exit rules", "## mistakes to avoid". Your revision MUST keep exactly these 4 headings, once',
     'each, in order, with no other headings, code fences, or markup beyond plain prose/lists.',
@@ -1088,7 +1115,11 @@ export class ReflectionService {
       // (`current` — the unrouted ACTIVE playbook — was read above, before the guard.)
       // Scoped to the triggering instance (P7): each instance trades one symbol, and the toy digests
       // below walk a single-instrument position sequence — mixed-strategy rows would corrupt them.
-      const rows = await journal.recent(JOURNAL_LOOKBACK, String(strategyId));
+      // X6 (carried from XA5): rows inside a known execution-bug window measure the execution
+      // defect, not the strategy — excluded before any digest sees them.
+      const rows = (await journal.recent(JOURNAL_LOOKBACK, String(strategyId))).filter((r) =>
+        outsideExecutionBugWindows(r.eventTime),
+      );
       // Realized venue truth (fills-walked round trips, net-of-fee, with slippage) alongside the
       // journal's t+1 proxies. Additive evidence: a DB failure degrades to proxies-only, never
       // aborts the attempt. The DB closed-trip total also floors the auto-promotion count, which
@@ -1101,7 +1132,8 @@ export class ReflectionService {
             this.deps.evidence.recentRoundTrips(MAX_CLOSED_TRADES),
             this.deps.evidence.reflectionSeed(),
           ]);
-          realizedRoundTrips = trips;
+          // X6: same execution-bug-window exclusion as the journal rows above.
+          realizedRoundTrips = trips.filter((t) => outsideExecutionBugWindows(t.closedAt));
           dbClosedTradesTotal = seed.closedTradesTotal;
         } catch (err) {
           this.warn(

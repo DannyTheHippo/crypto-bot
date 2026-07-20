@@ -477,6 +477,8 @@ export function selectAgentClient(
       maxPositionFraction: env['AGENTIC_MAX_POSITION_FRACTION'],
       // C4: off by default ⇒ byte-identical legacy prompt (no sentiment sentence).
       sentimentFeedEnabled: env['SENTIMENT_FEED_ENABLED'] === 'true',
+      // X3a: off by default ⇒ byte-identical legacy prompt (no fearGreed sentence).
+      fearGreedFeedEnabled: env['FEAR_GREED_FEED_ENABLED'] === 'true',
       // Cross-symbol relative-strength block: off by default ⇒ byte-identical. Gated together with
       // the derivatives block under the info-context A/B (derivativesAbPct) inside the client.
       crossSymbolFeedEnabled: env['AGENTIC_CROSS_SYMBOL_ENABLED'] === 'true',

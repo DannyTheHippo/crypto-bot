@@ -56,6 +56,10 @@ export class TypedConfigService {
     return this.config.get('sentimentFeed', { infer: true });
   }
 
+  get fearGreedFeed(): AppConfig['fearGreedFeed'] {
+    return this.config.get('fearGreedFeed', { infer: true });
+  }
+
   get tradeFlowFeed(): AppConfig['tradeFlowFeed'] {
     return this.config.get('tradeFlowFeed', { infer: true });
   }

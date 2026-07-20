@@ -12,6 +12,7 @@ import type { SubscriptionSpec } from '../domain/types/subscription';
 import type { Price, Qty } from '../domain/types/money';
 import type { DerivativesSnapshot } from './derivatives-feed';
 import type { SentimentSnapshot } from './sentiment-feed';
+import type { FearGreedSnapshot } from './fear-greed-feed';
 import type { TradeFlowSnapshot } from './trade-flow-feed';
 import type { PositioningSnapshot } from './positioning-feed';
 import type { LiquidationSnapshot } from './liquidation-feed';
@@ -73,6 +74,12 @@ export interface AgentMarketSnapshot {
   // caller/fixture that predates this field stays byte-identical; threaded in by
   // AgenticStrategy.decide() (agentic.strategy.ts), never by the host's own buildSnapshot.
   readonly sentiment?: SentimentSnapshot;
+  // X3a: latest polled Crypto Fear & Greed Index reading — absent unless FEAR_GREED_FEED_ENABLED is
+  // on AND a fresh poll landed (see FearGreedFeedPort.latest). Optional so every existing caller/
+  // fixture that predates this field stays byte-identical; threaded in by AgenticStrategy.decide(),
+  // never by the host's own buildSnapshot. Lane-wide (no symbol argument), same convention as
+  // sentiment above.
+  readonly fearGreed?: FearGreedSnapshot;
   // Trade-flow/CVD context (taker aggressor imbalance) — absent unless AGENTIC_TRADEFLOW_ENABLED is
   // on AND a fresh poll landed (see TradeFlowFeedPort.latest). Optional so every existing caller/
   // fixture that predates this field stays byte-identical; threaded in by AgenticStrategy.decide(),
@@ -589,6 +596,16 @@ export interface AgentDecisionRow extends AgentDecisionEntry {
   readonly createdAt: EpochMs;
 }
 
+// R1 historical-replay harness: every synthetic (replay-simulated) decision is journaled with a
+// strategyId carrying THIS prefix (`replay-<runId>`), so a synthetic row is distinguishable from a
+// real lane row inside the SHARED agent_decisions journal by string prefix alone. The prefix is the
+// exclusion key three ways: (1) the lane-wide recent() read (mint-floor corpus) and llmTokenTotals
+// (epoch cost) filter it OUT so synthetic runs never poison the entry-rate floor or a lane's 14-day
+// breaker budget; (2) the per-strategy recent(realStrategyId) reads exclude it by construction (a
+// real strategyId never carries this prefix); (3) recentSynthetic() filters it IN, the ONLY read that
+// surfaces synthetic experience — and only when reflection has opted in (default OFF).
+export const REPLAY_STRATEGY_ID_PREFIX = 'replay-';
+
 export interface AgentDecisionJournalPort {
   record(entry: AgentDecisionEntry): void;
   // Ordering: oldest→newest, matching AgentContext.recentDecisions' "newest-last" convention above
@@ -619,6 +636,13 @@ export interface AgentDecisionJournalPort {
   // trips unknown", never mis-attribute. Optional so pre-this-method fakes compile; absent ⇒
   // callers fall back to recent() (the historical window).
   recentVersioned?(limit: number, sinceMs?: number): Promise<readonly AgentDecisionRow[]>;
+  // R1 synthetic-experience read: the newest `limit` rows whose strategyId carries
+  // REPLAY_STRATEGY_ID_PREFIX (replay-simulated decisions), oldest→newest like recent(). This is the
+  // ONE read that surfaces synthetic rows — every other read excludes them (see the prefix's own
+  // comment). Reflection consumes it only under an explicit opt-in (ReflectionServiceDeps
+  // .syntheticExperience, default OFF); rendered lines are labeled synthetic, never blended with live
+  // evidence. Optional so pre-this-method fakes compile; absent ⇒ the synthetic digest is omitted.
+  recentSynthetic?(limit: number): Promise<readonly AgentDecisionRow[]>;
 }
 
 // ── LLM usage sink ────────────────────────────────────────────────────────────

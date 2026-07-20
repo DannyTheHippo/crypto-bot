@@ -21,6 +21,13 @@ export interface PositioningSnapshot {
   readonly longShortRatio: number;
   readonly longAccountPct: number; // 0..100
   readonly shortAccountPct: number; // 0..100
+  // X3b (pos2): futures taker buy/sell volume — a SECOND Binance endpoint
+  // (fapiDataGetTakerlongshortRatio) polled on the SAME poller as the account ratio above, distinct
+  // from it (this is TRADE volume flow, not open-position accounts). null when the taker-ratio row
+  // itself was unparseable — never discards the still-valid longShortRatio fields above for that.
+  readonly takerBuySellRatio: number | null;
+  readonly takerBuyVol: number | null;
+  readonly takerSellVol: number | null;
 }
 
 export interface PositioningFeedPort {

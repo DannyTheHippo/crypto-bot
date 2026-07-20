@@ -29,6 +29,7 @@ import type {
 } from '../../../src/ports/agentic-strategy';
 import type { DerivativesSnapshot } from '../../../src/ports/derivatives-feed';
 import type { SentimentSnapshot } from '../../../src/ports/sentiment-feed';
+import type { FearGreedSnapshot } from '../../../src/ports/fear-greed-feed';
 import type { TradeFlowSnapshot } from '../../../src/ports/trade-flow-feed';
 import type { PositioningSnapshot } from '../../../src/ports/positioning-feed';
 import type { LiquidationSnapshot } from '../../../src/ports/liquidation-feed';
@@ -177,6 +178,8 @@ function tradeFlowSnapshot(over: Partial<TradeFlowSnapshot> = {}): TradeFlowSnap
     barImbalance: 0.4,
     cvd: 123.5,
     lookbackBars: 20,
+    cvdDeltas: [15, -5, 20],
+    divergence: null,
     ...over,
   };
 }
@@ -187,6 +190,19 @@ function positioningSnapshot(over: Partial<PositioningSnapshot> = {}): Positioni
     longShortRatio: 0.8376,
     longAccountPct: 45.58,
     shortAccountPct: 54.42,
+    takerBuySellRatio: 1.12,
+    takerBuyVol: 530.2,
+    takerSellVol: 473.4,
+    ...over,
+  };
+}
+
+function fearGreedSnapshot(over: Partial<FearGreedSnapshot> = {}): FearGreedSnapshot {
+  return {
+    asOf: epochMs(T),
+    value: 65,
+    classification: 'Greed',
+    trend: 'rising',
     ...over,
   };
 }
@@ -211,6 +227,7 @@ function buildInput(
     execReports?: ExecReport[];
     derivatives?: DerivativesSnapshot;
     sentiment?: SentimentSnapshot;
+    fearGreed?: FearGreedSnapshot;
     tradeFlow?: TradeFlowSnapshot;
     positioning?: PositioningSnapshot;
     liquidation?: LiquidationSnapshot;
@@ -225,6 +242,7 @@ function buildInput(
     portfolio: { strategyId: SID, positions: new Map(), openOrders: [] },
     ...(opts.derivatives ? { derivatives: opts.derivatives } : {}),
     ...(opts.sentiment ? { sentiment: opts.sentiment } : {}),
+    ...(opts.fearGreed ? { fearGreed: opts.fearGreed } : {}),
     ...(opts.tradeFlow ? { tradeFlow: opts.tradeFlow } : {}),
     ...(opts.positioning ? { positioning: opts.positioning } : {}),
     ...(opts.liquidation ? { liquidation: opts.liquidation } : {}),
@@ -463,6 +481,30 @@ describe('buildSystemPrompt', () => {
 
       expect(prompt.toLowerCase()).toContain('funding');
       expect(prompt.toLowerCase()).toContain('sentiment');
+    });
+  });
+
+  describe('fearGreed block sentence (X3a, FEAR_GREED_FEED_ENABLED gate)', () => {
+    it('FEAR_GREED_FEED_ENABLED off (opts omitted) ⇒ the prompt is BYTE-IDENTICAL to pre-X3a output (no mention of fearGreed)', () => {
+      const prompt = buildSystemPrompt(fixtureProfile());
+
+      expect(prompt).not.toContain('fearGreed');
+    });
+
+    it('fearGreedFeedEnabled: false is explicitly byte-identical to opts omitted entirely', () => {
+      const withOmitted = buildSystemPrompt(fixtureProfile());
+      const withExplicitFalse = buildSystemPrompt(fixtureProfile(), {
+        fearGreedFeedEnabled: false,
+      });
+
+      expect(withExplicitFalse).toBe(withOmitted);
+    });
+
+    it('documents the fearGreed block only when fearGreedFeedEnabled is true, and frames it as a modulator, never a veto', () => {
+      const prompt = buildSystemPrompt(fixtureProfile(), { fearGreedFeedEnabled: true });
+
+      expect(prompt).toContain('fearGreed block');
+      expect(prompt.toLowerCase()).toContain('modulator');
     });
   });
 
@@ -705,7 +747,9 @@ describe('buildSystemPrompt tradeContract option (S1, rich decision contract)', 
     // X2 honesty fix (2026-07-20): the summary carries no margin/liq-distance fields yet, so
     // the prompt teaches first-principles liquidation reasoning off the 2x cap instead of
     // promising fields that never render (follow-up build lands before stage-2 widening).
-    expect(prompt.toLowerCase()).toContain('manage liquidation risk actively from first principles');
+    expect(prompt.toLowerCase()).toContain(
+      'manage liquidation risk actively from first principles',
+    );
     expect(prompt.toLowerCase()).not.toContain('the position summary shows margin usage');
     expect(prompt.toLowerCase()).toContain('funding is part of your pnl');
     expect(prompt).not.toContain('trading a single SPOT symbol');
@@ -1412,10 +1456,22 @@ describe('buildUserMessage', () => {
     it('renders barImbalance, cvd, and lookbackBars when a fresh snapshot is attached', () => {
       const tradeFlow = tradeFlowSnapshot({ barImbalance: -0.25, cvd: -42.5, lookbackBars: 20 });
       const payload = JSON.parse(buildUserMessage(buildInput({ tradeFlow }))) as {
-        tradeFlow: { barImbalance: number; cvd: number; lookbackBars: number };
+        tradeFlow: {
+          barImbalance: number;
+          cvd: number;
+          lookbackBars: number;
+          cvdDeltas: number[];
+          divergence: string | null;
+        };
       };
 
-      expect(payload.tradeFlow).toEqual({ barImbalance: -0.25, cvd: -42.5, lookbackBars: 20 });
+      expect(payload.tradeFlow).toEqual({
+        barImbalance: -0.25,
+        cvd: -42.5,
+        lookbackBars: 20,
+        cvdDeltas: tradeFlow.cvdDeltas,
+        divergence: tradeFlow.divergence,
+      });
     });
 
     it('omits the tradeFlow key entirely (no empty scaffolding) when no snapshot is available — the flag-off / stale / absent-poll case', () => {
@@ -1424,6 +1480,19 @@ describe('buildUserMessage', () => {
 
       expect(payload).not.toHaveProperty('tradeFlow');
       expect(raw).not.toContain('barImbalance');
+    });
+
+    it('renders cvdDeltas + divergence (X5)', () => {
+      const tradeFlow = tradeFlowSnapshot({
+        cvdDeltas: [5, -10, 15],
+        divergence: 'bullish_divergence',
+      });
+      const payload = JSON.parse(buildUserMessage(buildInput({ tradeFlow }))) as {
+        tradeFlow: { cvdDeltas: number[]; divergence: string | null };
+      };
+
+      expect(payload.tradeFlow.cvdDeltas).toEqual([5, -10, 15]);
+      expect(payload.tradeFlow.divergence).toBe('bullish_divergence');
     });
   });
 
@@ -1437,14 +1506,37 @@ describe('buildUserMessage', () => {
         shortAccountPct: 45,
       });
       const payload = JSON.parse(buildUserMessage(buildInput({ positioning }))) as {
-        positioning: { longShortRatio: number; longAccountPct: number; shortAccountPct: number };
+        positioning: {
+          longShortRatio: number;
+          longAccountPct: number;
+          shortAccountPct: number;
+          takerBuySellRatio: number | null;
+          takerBuyVol: number | null;
+          takerSellVol: number | null;
+        };
       };
 
       expect(payload.positioning).toEqual({
         longShortRatio: 1.2,
         longAccountPct: 55,
         shortAccountPct: 45,
+        takerBuySellRatio: positioning.takerBuySellRatio,
+        takerBuyVol: positioning.takerBuyVol,
+        takerSellVol: positioning.takerSellVol,
       });
+    });
+
+    it('renders taker buy/sell volume fields, including null when the taker endpoint degraded (X3b)', () => {
+      const positioning = positioningSnapshot({
+        takerBuySellRatio: null,
+        takerBuyVol: null,
+        takerSellVol: null,
+      });
+      const payload = JSON.parse(buildUserMessage(buildInput({ positioning }))) as {
+        positioning: { takerBuySellRatio: number | null };
+      };
+
+      expect(payload.positioning.takerBuySellRatio).toBeNull();
     });
 
     it('omits the positioning key entirely (no empty scaffolding) when no snapshot is available — the flag-off / stale / absent-poll case', () => {
@@ -1560,6 +1652,33 @@ describe('buildUserMessage', () => {
       const payload = JSON.parse(raw) as Record<string, unknown>;
 
       expect(payload).not.toHaveProperty('sentiment');
+    });
+  });
+
+  describe('fearGreed block rendering (X3a)', () => {
+    it('renders value/classification/trend when a fresh snapshot is attached', () => {
+      const fearGreed = fearGreedSnapshot({
+        value: 18,
+        classification: 'Extreme Fear',
+        trend: 'falling',
+      });
+      const payload = JSON.parse(buildUserMessage(buildInput({ fearGreed }))) as {
+        fearGreed: { value: number; classification: string; trend: string | null };
+      };
+
+      expect(payload.fearGreed).toEqual({
+        value: 18,
+        classification: 'Extreme Fear',
+        trend: 'falling',
+      });
+    });
+
+    it('omits the fearGreed key entirely (no empty scaffolding) when no snapshot is available', () => {
+      const raw = buildUserMessage(buildInput());
+      const payload = JSON.parse(raw) as Record<string, unknown>;
+
+      expect(payload).not.toHaveProperty('fearGreed');
+      expect(raw).not.toContain('classification');
     });
 
     it('a stale/absent sentiment snapshot never throws — buildUserMessage still returns valid JSON', () => {

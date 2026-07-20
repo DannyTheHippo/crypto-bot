@@ -34,6 +34,7 @@ import {
   PORTFOLIO_SHORTS_TOOL,
   POSITIONING_TEMPLATE_VERSION,
   SENTIMENT_TEMPLATE_VERSION,
+  FEAR_GREED_TEMPLATE_VERSION,
   SHORTS_DECISION_TOOL,
   SHORTS_TEMPLATE_VERSION,
   TRADEFLOW_TEMPLATE_VERSION,
@@ -431,6 +432,11 @@ export interface AnthropicAgentClientConfig {
   // C4: documents the optional sentiment block in the system prompt (agent-prompt.ts's
   // buildSystemPrompt sentimentFeedEnabled option). Absent/false ⇒ byte-identical legacy prompt.
   readonly sentimentFeedEnabled?: boolean;
+  // X3a: documents the optional fearGreed block in the system prompt (agent-prompt.ts's
+  // buildSystemPrompt fearGreedFeedEnabled option). Absent/false ⇒ byte-identical legacy prompt. Not
+  // part of the information-context A/B control arm — same convention as sentimentFeedEnabled above
+  // (lane-wide, no per-symbol data cost to withhold).
+  readonly fearGreedFeedEnabled?: boolean;
   // 2026-07-12: documents + renders the cross-symbol relative-strength block. Gated together with the
   // derivatives block under the information-context A/B control arm (see propose()). Absent/false ⇒
   // byte-identical legacy prompt/payload.
@@ -1557,6 +1563,7 @@ export class AnthropicAgentClient implements AgentClientPort {
       derivativesV2Enabled: effectiveDerivativesV2Enabled,
       fundingHistoryFeedEnabled: effectiveFundingHistoryEnabled,
       sentimentFeedEnabled: this.cfg.sentimentFeedEnabled ?? false,
+      fearGreedFeedEnabled: this.cfg.fearGreedFeedEnabled ?? false,
       shortsEnabled: this.cfg.shortsEnabled ?? false,
       crossSymbolFeedEnabled: effectiveCrossSymbolEnabled,
       tradeFlowFeedEnabled: effectiveTradeFlowEnabled,
@@ -1618,6 +1625,7 @@ export class AnthropicAgentClient implements AgentClientPort {
       // fixtures stay byte-identical.
       ...(effectiveFundingHistoryEnabled ? [FUNDING_HISTORY_TEMPLATE_VERSION] : []),
       ...(this.cfg.sentimentFeedEnabled ? [SENTIMENT_TEMPLATE_VERSION] : []),
+      ...(this.cfg.fearGreedFeedEnabled ? [FEAR_GREED_TEMPLATE_VERSION] : []),
       // x1 marks the LEGACY (non-plan) shorts prompt shape only — the plan-shorts combination is
       // already fully identified by the p4 base tag, so stacking x1 onto p4 would contradict the
       // documented design (review nice-to-have: code now matches SHORTS_TEMPLATE_VERSION's comment).

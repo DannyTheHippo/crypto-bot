@@ -26,6 +26,7 @@ import {
 import type { DerivativesSnapshot } from '../../../src/ports/derivatives-feed';
 import type { TradeFlowSnapshot } from '../../../src/ports/trade-flow-feed';
 import type { PositioningSnapshot } from '../../../src/ports/positioning-feed';
+import type { FearGreedSnapshot } from '../../../src/ports/fear-greed-feed';
 import type { LiquidationSnapshot } from '../../../src/ports/liquidation-feed';
 import type { CandleEvent, TickerEvent } from '../../../src/domain/types/market-events';
 import { price, qty, moneyToString } from '../../../src/domain/types/money';
@@ -125,6 +126,7 @@ function buildInput(
     tradeFlow?: TradeFlowSnapshot;
     positioning?: PositioningSnapshot;
     liquidation?: LiquidationSnapshot;
+    fearGreed?: FearGreedSnapshot;
   } = {},
 ): AgentDecisionInput {
   const et = opts.eventTime ?? T;
@@ -139,6 +141,7 @@ function buildInput(
     ...(opts.tradeFlow ? { tradeFlow: opts.tradeFlow } : {}),
     ...(opts.positioning ? { positioning: opts.positioning } : {}),
     ...(opts.liquidation ? { liquidation: opts.liquidation } : {}),
+    ...(opts.fearGreed ? { fearGreed: opts.fearGreed } : {}),
   };
   return {
     strategyId: SID,
@@ -166,11 +169,30 @@ function derivativesSnapshot(): DerivativesSnapshot {
 }
 
 function tradeFlowSnapshot(): TradeFlowSnapshot {
-  return { asOf: epochMs(T), barImbalance: 0.3, cvd: 55.5, lookbackBars: 20 };
+  return {
+    asOf: epochMs(T),
+    barImbalance: 0.3,
+    cvd: 55.5,
+    lookbackBars: 20,
+    cvdDeltas: [10, 20],
+    divergence: null,
+  };
 }
 
 function positioningSnapshot(): PositioningSnapshot {
-  return { asOf: epochMs(T), longShortRatio: 0.9, longAccountPct: 47.4, shortAccountPct: 52.6 };
+  return {
+    asOf: epochMs(T),
+    longShortRatio: 0.9,
+    longAccountPct: 47.4,
+    shortAccountPct: 52.6,
+    takerBuySellRatio: 1.05,
+    takerBuyVol: 210.5,
+    takerSellVol: 200.4,
+  };
+}
+
+function fearGreedSnapshot(): FearGreedSnapshot {
+  return { asOf: epochMs(T), value: 72, classification: 'Greed', trend: 'rising' };
 }
 
 function liquidationSnapshot(): LiquidationSnapshot {
@@ -2473,6 +2495,54 @@ describe('AnthropicAgentClient', () => {
     });
   });
 
+  describe('fearGreed block (X3a)', () => {
+    function holdResponse(): unknown {
+      return toolUseBody({ action: 'hold', confidence: 0.5, rationale: 'r' });
+    }
+
+    it('flag on: fearGreed guidance sentence, distinct promptHash, and payload key all present; not part of the info-context A/B bundle', async () => {
+      const fetchFn = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const fetchFnOff = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const client = new AnthropicAgentClient(buildCfg({ fearGreedFeedEnabled: true }), fetchFn);
+      const offClient = new AnthropicAgentClient(buildCfg({}), fetchFnOff);
+      const fearGreed = fearGreedSnapshot();
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+        fearGreed,
+      });
+
+      const proposal = await client.propose(input);
+      const offProposal = await offClient.propose(input);
+
+      expect(proposal.promptHash).not.toBe(offProposal.promptHash);
+      const [, init] = fetchFn.mock.calls[0] as [string, RequestInit];
+      const body = JSON.parse(init.body as string) as { system: { text: string }[] };
+      expect(body.system[0]!.text).toContain('fearGreed block');
+      expect(JSON.parse(proposal.inputPayload!)).toHaveProperty('fearGreed', {
+        value: fearGreed.value,
+        classification: fearGreed.classification,
+        trend: fearGreed.trend,
+      });
+    });
+
+    it('flag off (opts omitted) never documents the fearGreed block in the system prompt, even when a fresh snapshot rides on the payload (the composition root only ever attaches one when the flag is on — see agentic.strategy.ts withFearGreed)', async () => {
+      const fetchFn = vi.fn().mockResolvedValue(apiResponse(holdResponse()));
+      const client = new AnthropicAgentClient(buildCfg({}), fetchFn);
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+        fearGreed: fearGreedSnapshot(),
+      });
+
+      await client.propose(input);
+
+      const [, init] = fetchFn.mock.calls[0] as [string, RequestInit];
+      const body = JSON.parse(init.body as string) as { system: { text: string }[] };
+      expect(body.system[0]!.text).not.toContain('fearGreed block');
+    });
+  });
+
   describe('tradeFlow + positioning blocks (2026-07-13)', () => {
     function holdResponse(): unknown {
       return toolUseBody({ action: 'hold', confidence: 0.5, rationale: 'r' });
@@ -2501,6 +2571,8 @@ describe('AnthropicAgentClient', () => {
         barImbalance: tradeFlow.barImbalance,
         cvd: tradeFlow.cvd,
         lookbackBars: tradeFlow.lookbackBars,
+        cvdDeltas: tradeFlow.cvdDeltas,
+        divergence: tradeFlow.divergence,
       });
     });
 
@@ -2527,6 +2599,9 @@ describe('AnthropicAgentClient', () => {
         longShortRatio: positioning.longShortRatio,
         longAccountPct: positioning.longAccountPct,
         shortAccountPct: positioning.shortAccountPct,
+        takerBuySellRatio: positioning.takerBuySellRatio,
+        takerBuyVol: positioning.takerBuyVol,
+        takerSellVol: positioning.takerSellVol,
       });
     });
 

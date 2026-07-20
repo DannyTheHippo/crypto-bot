@@ -42,6 +42,7 @@ import { buildMarketPayload } from './agent-prompt';
 import type { RoundTripEvidencePort } from '../../../ports/promotion';
 import type { DerivativesFeedPort } from '../../../ports/derivatives-feed';
 import type { SentimentFeedPort } from '../../../ports/sentiment-feed';
+import type { FearGreedFeedPort } from '../../../ports/fear-greed-feed';
 import type { TradeFlowFeedPort } from '../../../ports/trade-flow-feed';
 import type { PositioningFeedPort } from '../../../ports/positioning-feed';
 import type { LiquidationFeedPort } from '../../../ports/liquidation-feed';
@@ -384,6 +385,11 @@ export interface AgenticStrategyDeps {
   // means the prompt's sentiment block never renders (byte-identical to pre-C4 output), same
   // convention as `derivativesFeed` above.
   readonly sentimentFeed?: SentimentFeedPort;
+  // X3a: Crypto Fear & Greed Index reading, consulted once per decide() and threaded onto the
+  // outgoing snapshot's `fearGreed` field. Optional — absent means the prompt's fearGreed block
+  // never renders, same convention as `derivativesFeed` above. Lane-wide (no symbol argument), same
+  // as `sentimentFeed`.
+  readonly fearGreedFeed?: FearGreedFeedPort;
   // Trade-flow/CVD context (taker aggressor imbalance), consulted once per decide() and threaded
   // onto the outgoing snapshot's `tradeFlow` field. Optional — absent means the prompt's tradeFlow
   // block never renders, same convention as `derivativesFeed` above.
@@ -580,6 +586,7 @@ export class AgenticStrategy implements AsyncStrategy {
   private readonly evidence?: RoundTripEvidencePort;
   private readonly derivativesFeed?: DerivativesFeedPort;
   private readonly sentimentFeed?: SentimentFeedPort;
+  private readonly fearGreedFeed?: FearGreedFeedPort;
   private readonly tradeFlowFeed?: TradeFlowFeedPort;
   private readonly positioningFeed?: PositioningFeedPort;
   private readonly liquidationFeed?: LiquidationFeedPort;
@@ -681,6 +688,7 @@ export class AgenticStrategy implements AsyncStrategy {
     this.evidence = deps.evidence;
     this.derivativesFeed = deps.derivativesFeed;
     this.sentimentFeed = deps.sentimentFeed;
+    this.fearGreedFeed = deps.fearGreedFeed;
     this.tradeFlowFeed = deps.tradeFlowFeed;
     this.positioningFeed = deps.positioningFeed;
     this.liquidationFeed = deps.liquidationFeed;
@@ -756,7 +764,9 @@ export class AgenticStrategy implements AsyncStrategy {
     // same enriched snapshot. No-op (same object) when a feed isn't wired or has no fresh poll, so
     // that deployment stays byte-identical.
     const input = this.withLiquidation(
-      this.withPositioning(this.withTradeFlow(this.withSentiment(this.withDerivatives(rawInput)))),
+      this.withPositioning(
+        this.withTradeFlow(this.withFearGreed(this.withSentiment(this.withDerivatives(rawInput)))),
+      ),
     );
     // Deterministic and prescreen-independent: resting GTC entries otherwise rest forever (nothing
     // enforces expiresAt on ACKED orders — boot 10c8af0c recovered 55 of them). Computed first so
@@ -2369,6 +2379,14 @@ export class AgenticStrategy implements AsyncStrategy {
     const sentiment = this.sentimentFeed?.latest() ?? undefined;
     if (!sentiment) return input;
     return { ...input, snapshot: { ...input.snapshot, sentiment } };
+  }
+
+  // X3a: same merge-if-fresh convention as withSentiment above. No symbol argument (lane-wide, see
+  // FearGreedFeedPort's own header comment).
+  private withFearGreed(input: AgentDecisionInput): AgentDecisionInput {
+    const fearGreed = this.fearGreedFeed?.latest() ?? undefined;
+    if (!fearGreed) return input;
+    return { ...input, snapshot: { ...input.snapshot, fearGreed } };
   }
 
   // Trade-flow/CVD: same merge-if-fresh convention as withDerivatives above.

@@ -273,6 +273,13 @@ export interface AppConfig {
     enabled: boolean;
     pollIntervalMs: number;
   };
+  // X3a: read-only Crypto Fear & Greed Index (alternative.me) — feature-flagged OFF by default, same
+  // zero-behavior-change convention as sentimentFeed above. No API key (a public endpoint), lane-wide
+  // (not per-symbol) — see fear-greed-feed.ts's own header comment.
+  fearGreedFeed: {
+    enabled: boolean;
+    pollIntervalMs: number;
+  };
   // Trade-flow/CVD context (taker aggressor imbalance) — feature-flagged OFF by default, same
   // zero-behavior-change convention as derivativesFeed above. Rides the SAME information-context A/B
   // control arm as derivativesFeed/crossSymbol (agentic.derivativesAbPct).

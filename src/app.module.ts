@@ -88,6 +88,10 @@ import {
   type SentimentHttpSource,
 } from './features/trading/market-data/sentiment-feed.service';
 import {
+  FearGreedFeedService,
+  type FearGreedHttpSource,
+} from './features/trading/market-data/fear-greed-feed.service';
+import {
   TradeFlowFeedService,
   type TradeFlowRestSource,
 } from './features/trading/market-data/trade-flow-feed.service';
@@ -192,6 +196,7 @@ import {
 } from './database/repositories/playbook-store.adapter';
 import { InMemoryPlaybookStore } from './database/repositories/in-memory-playbook-store';
 import { price, qty } from './domain/types/money';
+import { splitSymbol } from './domain/types/symbol';
 import type { SymbolFilters } from './domain/risk/evaluate';
 import { DEFAULT_FILTERS } from './domain/risk/default-filters';
 import type { CandleInterval } from './domain/types/market-events';
@@ -251,6 +256,7 @@ import {
 } from './ports/market-data';
 import { DERIVATIVES_FEED, type DerivativesFeedPort } from './ports/derivatives-feed';
 import { SENTIMENT_FEED, type SentimentFeedPort } from './ports/sentiment-feed';
+import { FEAR_GREED_FEED, type FearGreedFeedPort } from './ports/fear-greed-feed';
 import { TRADE_FLOW_FEED, type TradeFlowFeedPort } from './ports/trade-flow-feed';
 import { POSITIONING_FEED, type PositioningFeedPort } from './ports/positioning-feed';
 import { LIQUIDATION_FEED, type LiquidationFeedPort } from './ports/liquidation-feed';
@@ -655,6 +661,13 @@ const NOOP_SENTIMENT_FEED: SentimentFeedPort = {
   lastSuccessfulPollAt: () => null,
   pollErrorCount: () => 0,
 };
+// X3a: bound whenever FEAR_GREED_FEED_ENABLED is off (default) or under test/ci — no poll ever
+// starts, latest() always answers null, so the agentic prompt's fearGreed block never renders.
+const NOOP_FEAR_GREED_FEED: FearGreedFeedPort = {
+  latest: () => null,
+  lastSuccessfulPollAt: () => null,
+  pollErrorCount: () => 0,
+};
 // Bound whenever AGENTIC_TRADEFLOW_ENABLED is off (default) or under test/ci — no poll ever starts,
 // latest() always answers null, so the agentic prompt's tradeFlow block never renders.
 const NOOP_TRADE_FLOW_FEED: TradeFlowFeedPort = {
@@ -677,17 +690,47 @@ const NOOP_LIQUIDATION_FEED: LiquidationFeedPort = {
   streamHealthy: () => false,
   reconnectCount: () => 0,
 };
+// X4 residual: derives the CryptoPanic `currencies` filter from the deployment's OWN traded basket
+// instead of a hardcoded 'BTC,ETH' — 'BTC/USDT' and the perp form 'BTC/USDT:USDT' both reduce to
+// base 'BTC' (splitSymbol strips the ':SETTLE' suffix), deduped and comma-joined so a multi-symbol
+// basket never sends duplicate currency codes. Never throws on an unparseable entry (splitSymbol's
+// own format guard) — a symbol that fails to split is simply skipped rather than aborting the whole
+// filter, since this is a best-effort news-relevance filter, not a money path.
+function basketCurrenciesFor(symbols: readonly string[]): string {
+  const bases = new Set<string>();
+  for (const s of symbols) {
+    try {
+      bases.add(splitSymbol(symbolId(s)).base);
+    } catch {
+      // Unparseable symbol string — skip it for this filter rather than aborting the whole basket.
+    }
+  }
+  return Array.from(bases).join(',');
+}
 // Free-tier CryptoPanic REST client (public headlines endpoint; no ccxt involved — this is a news
 // feed, not an exchange). apiKey is read directly off process.env (never through TypedConfigService/
 // AppConfig — see environment.config.ts's SENTIMENT_FEED_API_KEY comment), so it is never logged or
-// folded into configHash. Fixed currencies filter (BTC,ETH) matches this deployment's trading symbols.
-function buildSentimentHttpSource(apiKey: string): SentimentHttpSource {
+// folded into configHash.
+function buildSentimentHttpSource(apiKey: string, symbols: readonly string[]): SentimentHttpSource {
+  const currencies = basketCurrenciesFor(symbols);
   return {
     fetchPosts: async () => {
       const res = await fetch(
-        `https://cryptopanic.com/api/v1/posts/?auth_token=${apiKey}&currencies=BTC,ETH`,
+        `https://cryptopanic.com/api/v1/posts/?auth_token=${apiKey}&currencies=${currencies}`,
       );
       if (!res.ok) throw new Error(`cryptopanic fetch failed: ${res.status}`);
+      return await res.json();
+    },
+  };
+}
+// X3a: public-only REST client for the Crypto Fear & Greed Index (alternative.me) — no API key, no
+// ccxt involved (mirrors buildSentimentHttpSource's own no-ccxt convention above). limit=8 requests
+// the index's own trailing ~8 days of history for the trend computation (fear-greed-feed.service.ts).
+function buildFearGreedHttpSource(): FearGreedHttpSource {
+  return {
+    fetchIndex: async () => {
+      const res = await fetch('https://api.alternative.me/fng/?limit=8');
+      if (!res.ok) throw new Error(`alternative.me fetch failed: ${res.status}`);
       return await res.json();
     },
   };
@@ -753,6 +796,22 @@ function buildPositioningRestSource(): PositioningRestSource {
           readonly longAccount?: string | number;
           readonly shortAccount?: string | number;
           readonly longShortRatio?: string | number;
+          readonly timestamp?: number;
+        }>
+      >,
+    // X3b: `fapiDataGetTakerlongshortRatio` — verified present in node_modules/ccxt/js/src/
+    // binance.js's fapiData.get map ('takerlongshortRatio': 1) alongside globalLongShortAccountRatio
+    // above; same no-unified-wrapper rationale as that method's own header comment.
+    fetchRawTakerLongShortRatio: (symbol, period, limit) =>
+      (
+        exchange as unknown as {
+          fapiDataGetTakerlongshortRatio: (params: Record<string, unknown>) => Promise<unknown[]>;
+        }
+      ).fapiDataGetTakerlongshortRatio({ symbol, period, limit }) as Promise<
+        Array<{
+          readonly buySellRatio?: string | number;
+          readonly buyVol?: string | number;
+          readonly sellVol?: string | number;
           readonly timestamp?: number;
         }>
       >,
@@ -934,12 +993,45 @@ const FUNDING_INGEST = Symbol('FUNDING_INGEST');
         // Same test/ci short-circuit as DERIVATIVES_FEED above, plus the feature flag and the API
         // key itself — CryptoPanic's free tier requires auth_token, so a keyless deployment must
         // stay inert rather than poll an endpoint it can never authenticate against.
-        if (isTestEnv() || !enabled || !apiKey) return NOOP_SENTIMENT_FEED;
-        const source = buildSentimentHttpSource(apiKey);
+        if (isTestEnv()) return NOOP_SENTIMENT_FEED;
+        // X4 residual: one boot-visibility line when the feed stays inert — names WHICH precondition
+        // is missing (never the key value itself, which this branch never even reads a real value
+        // for) so a silent "sentiment never appears in the prompt" is diagnosable from boot logs alone.
+        if (!enabled) {
+          new Logger('SentimentFeedService').log(
+            'sentiment feed disabled (SENTIMENT_FEED_ENABLED=false) — boot proceeding without it',
+          );
+          return NOOP_SENTIMENT_FEED;
+        }
+        if (!apiKey) {
+          new Logger('SentimentFeedService').log(
+            'sentiment feed enabled but SENTIMENT_FEED_API_KEY is unset — feed stays inert',
+          );
+          return NOOP_SENTIMENT_FEED;
+        }
+        const source = buildSentimentHttpSource(apiKey, config.strategy.symbols);
         const service = new SentimentFeedService(source, {
           pollIntervalMs,
           clock,
           logger: new Logger('SentimentFeedService'),
+        });
+        service.start();
+        return service;
+      },
+      inject: [TypedConfigService, CLOCK],
+    },
+    {
+      provide: FEAR_GREED_FEED,
+      useFactory: (config: TypedConfigService, clock: ClockPort): FearGreedFeedPort => {
+        const { enabled, pollIntervalMs } = config.fearGreedFeed;
+        // Same test/ci short-circuit as SENTIMENT_FEED above, plus the feature flag itself — no API
+        // key gate here (a public endpoint, unlike CryptoPanic).
+        if (isTestEnv() || !enabled) return NOOP_FEAR_GREED_FEED;
+        const source = buildFearGreedHttpSource();
+        const service = new FearGreedFeedService(source, {
+          pollIntervalMs,
+          clock,
+          logger: new Logger('FearGreedFeedService'),
         });
         service.start();
         return service;
@@ -1052,6 +1144,7 @@ const FUNDING_INGEST = Symbol('FUNDING_INGEST');
     EXCHANGE_STREAM,
     DERIVATIVES_FEED,
     SENTIMENT_FEED,
+    FEAR_GREED_FEED,
     TRADE_FLOW_FEED,
     POSITIONING_FEED,
     LIQUIDATION_FEED,
@@ -1827,6 +1920,9 @@ export class AppModule
     // C4: always bound (MarketFeedModule's SENTIMENT_FEED factory returns NOOP_SENTIMENT_FEED when
     // SENTIMENT_FEED_ENABLED/key is off/absent/test-ci) — never @Optional, mirrors derivativesFeed.
     @Inject(SENTIMENT_FEED) private readonly sentimentFeed: SentimentFeedPort,
+    // X3a: always bound (MarketFeedModule's FEAR_GREED_FEED factory returns NOOP_FEAR_GREED_FEED
+    // when FEAR_GREED_FEED_ENABLED is off/test-ci) — never @Optional, mirrors sentimentFeed.
+    @Inject(FEAR_GREED_FEED) private readonly fearGreedFeed: FearGreedFeedPort,
     // Always bound (MarketFeedModule's TRADE_FLOW_FEED factory returns NOOP_TRADE_FLOW_FEED when
     // AGENTIC_TRADEFLOW_ENABLED is off/test-ci) — never @Optional, mirrors derivativesFeed.
     @Inject(TRADE_FLOW_FEED) private readonly tradeFlowFeed: TradeFlowFeedPort,
@@ -2113,6 +2209,7 @@ export class AppModule
         evidence: this.roundTripEvidence,
         derivativesFeed: this.derivativesFeed,
         sentimentFeed: this.sentimentFeed,
+        fearGreedFeed: this.fearGreedFeed,
         tradeFlowFeed: this.tradeFlowFeed,
         positioningFeed: this.positioningFeed,
         liquidationFeed: this.liquidationFeed,

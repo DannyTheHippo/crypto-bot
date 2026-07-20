@@ -22,6 +22,17 @@ export interface TradeFlowSnapshot {
   // here (not an all-time running total) so the value stays comparable across symbols/timeframes.
   readonly cvd: number;
   readonly lookbackBars: number;
+  // X5 (tf2): per-bar CVD deltas (taker buy − taker sell, base-asset units) for the last
+  // min(lookbackBars, 8) CLOSED bars, oldest-first — a compact series alongside the single rolling
+  // `cvd` total above, for spotting a bar-by-bar shift the cumulative number alone hides. Always
+  // present (possibly empty) whenever the snapshot itself renders — never independently gated.
+  readonly cvdDeltas: readonly number[];
+  // Price direction over the SAME trailing window as cvdDeltas vs that window's own CVD direction:
+  // 'bullish_divergence' = price fell while CVD rose (selling pressure without matching sell flow —
+  // a MODULATOR on conviction, never a standalone entry trigger); 'bearish_divergence' = the mirror
+  // (price rose while CVD fell). null when the window is too short (<2 bars) or the two directions
+  // do not diverge.
+  readonly divergence: 'bullish_divergence' | 'bearish_divergence' | null;
 }
 
 export interface TradeFlowFeedPort {

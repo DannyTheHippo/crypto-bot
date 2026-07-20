@@ -29,6 +29,23 @@ export interface PositioningRestSource {
       readonly timestamp?: number;
     }>
   >;
+  // X3b: raw (unparsed) `fapiDataGetTakerlongshortRatio` implicit method (verified present in
+  // node_modules/ccxt/js/src/binance.js's fapiData.get map, 2026-07-20) — futures taker buy/sell
+  // volume, a SECOND endpoint on the SAME poller as fetchRawLongShortRatio above (no second poll
+  // loop). ccxt has no unified wrapper for this endpoint, so — same rationale as
+  // fetchRawLongShortRatio's own header comment — the raw implicit method is the only route to it.
+  fetchRawTakerLongShortRatio(
+    symbol: string,
+    period: string,
+    limit: number,
+  ): Promise<
+    Array<{
+      readonly buySellRatio?: string | number;
+      readonly buyVol?: string | number;
+      readonly sellVol?: string | number;
+      readonly timestamp?: number;
+    }>
+  >;
 }
 
 // BASE/QUOTE (spot) -> BASEQUOTE (the venue's own USDT-margined perp market id, e.g. 'BTCUSDT') —
@@ -123,8 +140,14 @@ export class PositioningFeedService implements PositioningFeedPort, OnModuleInit
   private async pollOne(symbol: SymbolId): Promise<void> {
     const marketId = futuresMarketIdFor(symbol);
     try {
-      const rows = await this.source.fetchRawLongShortRatio(marketId, this.options.ratioPeriod, 1);
-      const snapshot = this.toSnapshot(rows);
+      // X3b: ONE poller, two endpoints (same Promise.all convention as DerivativesFeedService's
+      // funding/OI/ticker triple) — a taker-ratio fetch failure fails the whole poll below, same as
+      // fetchRawLongShortRatio always has, rather than caching a partial snapshot.
+      const [rows, takerRows] = await Promise.all([
+        this.source.fetchRawLongShortRatio(marketId, this.options.ratioPeriod, 1),
+        this.source.fetchRawTakerLongShortRatio(marketId, this.options.ratioPeriod, 1),
+      ]);
+      const snapshot = this.toSnapshot(rows, takerRows);
       if (snapshot) {
         this.snapshots.set(symbol, snapshot);
         this.lastSuccessAt = snapshot.asOf;
@@ -139,6 +162,7 @@ export class PositioningFeedService implements PositioningFeedPort, OnModuleInit
 
   private toSnapshot(
     rows: Awaited<ReturnType<PositioningRestSource['fetchRawLongShortRatio']>>,
+    takerRows: Awaited<ReturnType<PositioningRestSource['fetchRawTakerLongShortRatio']>>,
   ): PositioningSnapshot | null {
     if (!Array.isArray(rows) || rows.length === 0) return null;
     const latestRow = rows[rows.length - 1];
@@ -149,11 +173,21 @@ export class PositioningFeedService implements PositioningFeedPort, OnModuleInit
     const longAccount = asFiniteNumber(latestRow?.longAccount) ?? 0;
     const shortAccount = asFiniteNumber(latestRow?.shortAccount) ?? 0;
 
+    // X3b: taker buy/sell volume is a SEPARATE endpoint — its own absence/parse-failure degrades only
+    // the taker fields to null rather than discarding the whole (still-valid) account-ratio snapshot.
+    const latestTakerRow = Array.isArray(takerRows) ? takerRows[takerRows.length - 1] : undefined;
+    const takerBuySellRatio = asFiniteNumber(latestTakerRow?.buySellRatio);
+    const takerBuyVol = asFiniteNumber(latestTakerRow?.buyVol);
+    const takerSellVol = asFiniteNumber(latestTakerRow?.sellVol);
+
     return {
       asOf: epochMs(this.options.clock.now()),
       longShortRatio,
       longAccountPct: longAccount * 100,
       shortAccountPct: shortAccount * 100,
+      takerBuySellRatio,
+      takerBuyVol,
+      takerSellVol,
     };
   }
 }

@@ -20,13 +20,25 @@ function fixtureSource(
     longShortRatio?: string | number;
     timestamp?: number;
   }>,
-): PositioningRestSource & { calledArgs: unknown[][] } {
+  takerRows: Array<{
+    buySellRatio?: string | number;
+    buyVol?: string | number;
+    sellVol?: string | number;
+    timestamp?: number;
+  }> = [],
+): PositioningRestSource & { calledArgs: unknown[][]; takerCalledArgs: unknown[][] } {
   const calledArgs: unknown[][] = [];
+  const takerCalledArgs: unknown[][] = [];
   return {
     calledArgs,
+    takerCalledArgs,
     fetchRawLongShortRatio: (symbol, period, limit) => {
       calledArgs.push([symbol, period, limit]);
       return Promise.resolve(rows);
+    },
+    fetchRawTakerLongShortRatio: (symbol, period, limit) => {
+      takerCalledArgs.push([symbol, period, limit]);
+      return Promise.resolve(takerRows);
     },
   };
 }
@@ -95,6 +107,7 @@ describe('PositioningFeedService', () => {
     const warnings: string[] = [];
     const source: PositioningRestSource = {
       fetchRawLongShortRatio: () => Promise.reject(new Error('ratio fetch failed')),
+      fetchRawTakerLongShortRatio: () => Promise.resolve([]),
     };
     const svc = new PositioningFeedService(source, {
       symbols: [SYM],
@@ -121,6 +134,7 @@ describe('PositioningFeedService', () => {
           : Promise.resolve([
               { longAccount: '0.6', shortAccount: '0.4', longShortRatio: '1.5', timestamp: 1 },
             ]),
+      fetchRawTakerLongShortRatio: () => Promise.resolve([]),
     };
     const svc = new PositioningFeedService(source, {
       symbols: [SYM],
@@ -166,5 +180,76 @@ describe('PositioningFeedService', () => {
     await svc.pollAll();
 
     expect(svc.latest(SYM)).toBeNull();
+  });
+
+  // X3b (pos2): futures taker buy/sell volume — a second endpoint on the SAME poller.
+  describe('taker buy/sell volume (X3b)', () => {
+    it('parses the taker-ratio endpoint alongside the account-ratio endpoint, using its own LAST row, on the SAME poll call', async () => {
+      const { clock } = mutableClock();
+      const source = fixtureSource(
+        [{ longAccount: '0.5', shortAccount: '0.5', longShortRatio: '1.0', timestamp: 1 }],
+        [
+          { buySellRatio: '1.1', buyVol: '100', sellVol: '90.9', timestamp: 1 },
+          { buySellRatio: '0.95', buyVol: '95', sellVol: '100', timestamp: 2 },
+        ],
+      );
+      const svc = new PositioningFeedService(source, {
+        symbols: [SYM],
+        ratioPeriod: '15m',
+        pollIntervalMs: 300_000,
+        clock,
+      });
+
+      await svc.pollAll();
+      const snap = svc.latest(SYM);
+
+      expect(snap).not.toBeNull();
+      expect(snap!.takerBuySellRatio).toBe(0.95);
+      expect(snap!.takerBuyVol).toBe(95);
+      expect(snap!.takerSellVol).toBe(100);
+      expect(source.takerCalledArgs).toEqual([['BTCUSDT', '15m', 1]]);
+    });
+
+    it('a taker-ratio row that fails to parse degrades only the taker fields to null — the still-valid account-ratio snapshot is NOT discarded', async () => {
+      const { clock } = mutableClock();
+      const source = fixtureSource(
+        [{ longAccount: '0.5', shortAccount: '0.5', longShortRatio: '1.0', timestamp: 1 }],
+        [{ timestamp: 1 }], // missing buySellRatio/buyVol/sellVol
+      );
+      const svc = new PositioningFeedService(source, {
+        symbols: [SYM],
+        ratioPeriod: '15m',
+        pollIntervalMs: 300_000,
+        clock,
+      });
+
+      await svc.pollAll();
+      const snap = svc.latest(SYM);
+
+      expect(snap).not.toBeNull();
+      expect(snap!.longShortRatio).toBe(1.0);
+      expect(snap!.takerBuySellRatio).toBeNull();
+      expect(snap!.takerBuyVol).toBeNull();
+      expect(snap!.takerSellVol).toBeNull();
+    });
+
+    it('an empty taker-ratio response also degrades only the taker fields to null', async () => {
+      const { clock } = mutableClock();
+      const source = fixtureSource([
+        { longAccount: '0.5', shortAccount: '0.5', longShortRatio: '1.0', timestamp: 1 },
+      ]);
+      const svc = new PositioningFeedService(source, {
+        symbols: [SYM],
+        ratioPeriod: '15m',
+        pollIntervalMs: 300_000,
+        clock,
+      });
+
+      await svc.pollAll();
+      const snap = svc.latest(SYM);
+
+      expect(snap).not.toBeNull();
+      expect(snap!.takerBuySellRatio).toBeNull();
+    });
   });
 });

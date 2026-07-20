@@ -8,6 +8,10 @@ import type { TradeFlowFeedPort, TradeFlowSnapshot } from '../../../ports/trade-
 // latest() treats a snapshot older than this multiple of the poll interval as stale (absent to the
 // caller) — mirrors DerivativesFeedService's STALE_POLL_MULTIPLE.
 const STALE_POLL_MULTIPLE = 2;
+// X5 (tf2): trailing window (in closed bars) for the per-bar cvdDeltas series + divergence flag —
+// capped independently of lookbackBars (which can run to 20+) so the series/divergence read stays a
+// short, recent-only window regardless of how deep the rolling CVD total's own lookback is.
+const DIVERGENCE_WINDOW_BARS = 8;
 
 /** Minimal ccxt REST surface this service needs — injected so tests supply a fixture double instead
  * of a live exchange (mirrors DerivativesRestSource in derivatives-feed.service.ts). Unlike that
@@ -149,6 +153,9 @@ export class TradeFlowFeedService implements TradeFlowFeedPort, OnModuleInit, On
     let cvd = 0;
     let barImbalance = 0;
     let countedBars = 0;
+    // X5 (tf2): a SEPARATE pass over the same closedRows below builds this — kept independent of the
+    // cvd/barImbalance accumulation above so a row missing `close` (required for divergence's price
+    // direction, not for cvd/barImbalance) can never change those two EXISTING fields' values.
     for (const row of closedRows) {
       if (!Array.isArray(row)) continue;
       const totalVol = asFiniteNumber(row[5]);
@@ -161,11 +168,48 @@ export class TradeFlowFeedService implements TradeFlowFeedPort, OnModuleInit, On
     }
     if (countedBars === 0) return null;
 
+    const { cvdDeltas, divergence } = this.divergenceFrom(closedRows);
+
     return {
       asOf: epochMs(this.options.clock.now()),
       barImbalance,
       cvd,
       lookbackBars: countedBars,
+      cvdDeltas,
+      divergence,
     };
+  }
+
+  // X5 (tf2): per-bar (close, delta) pairs over the SAME closedRows toSnapshot already has, trimmed
+  // to the trailing DIVERGENCE_WINDOW_BARS — a bar contributes only if BOTH close and volume/taker-
+  // buy fields parse (a stricter requirement than the cvd/barImbalance loop above, which needs only
+  // the volume fields); price direction compares the window's first vs last close, CVD direction sums
+  // the window's deltas.
+  private divergenceFrom(closedRows: readonly unknown[][]): {
+    readonly cvdDeltas: readonly number[];
+    readonly divergence: TradeFlowSnapshot['divergence'];
+  } {
+    const perBar: { readonly close: number; readonly delta: number }[] = [];
+    for (const row of closedRows) {
+      if (!Array.isArray(row)) continue;
+      const close = asFiniteNumber(row[4]);
+      const totalVol = asFiniteNumber(row[5]);
+      const takerBuyVol = asFiniteNumber(row[9]);
+      if (close === null || totalVol === null || takerBuyVol === null) continue;
+      perBar.push({ close, delta: takerBuyVol - (totalVol - takerBuyVol) });
+    }
+    const window = perBar.slice(-DIVERGENCE_WINDOW_BARS);
+    const cvdDeltas = window.map((b) => b.delta);
+    if (window.length < 2) return { cvdDeltas, divergence: null };
+
+    const priceDelta = window[window.length - 1]!.close - window[0]!.close;
+    const cvdDelta = cvdDeltas.reduce((sum, d) => sum + d, 0);
+    const divergence =
+      priceDelta < 0 && cvdDelta > 0
+        ? 'bullish_divergence'
+        : priceDelta > 0 && cvdDelta < 0
+          ? 'bearish_divergence'
+          : null;
+    return { cvdDeltas, divergence };
   }
 }

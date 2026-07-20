@@ -137,6 +137,82 @@ describe('SentimentFeedService', () => {
     ]);
   });
 
+  // X4 residual: dedupe-by-id across polls.
+  describe('dedupe-by-id (X4 residual)', () => {
+    it('drops a post whose id was already rendered on a PRIOR poll, even though this poll re-serves it', async () => {
+      const { clock } = mutableClock();
+      const post = (id: number, title: string) => ({
+        id,
+        title,
+        published_at: '2026-07-10T00:00:00Z',
+        source: { domain: 'x.com' },
+      });
+      let results = [post(1, 'first headline')];
+      const svc = new SentimentFeedService(
+        { fetchPosts: () => Promise.resolve({ results }) },
+        { pollIntervalMs: 60_000, clock },
+      );
+
+      await svc.poll();
+      expect(svc.latest()!.items).toEqual([
+        { title: 'first headline', source: 'x.com', publishedAt: '2026-07-10T00:00:00Z' },
+      ]);
+
+      // Next poll re-serves the SAME post (id 1, CryptoPanic's own trailing-window behavior) plus one
+      // genuinely new one (id 2) — only the new one should render.
+      results = [post(1, 'first headline'), post(2, 'second headline')];
+      await svc.poll();
+      expect(svc.latest()!.items).toEqual([
+        { title: 'second headline', source: 'x.com', publishedAt: '2026-07-10T00:00:00Z' },
+      ]);
+    });
+
+    it('a post with no id field is never deduped — rendered every time it appears (fail open)', async () => {
+      const { clock } = mutableClock();
+      const results = [
+        {
+          title: 'no-id headline',
+          published_at: '2026-07-10T00:00:00Z',
+          source: { domain: 'x.com' },
+        },
+      ];
+      const svc = new SentimentFeedService(
+        { fetchPosts: () => Promise.resolve({ results }) },
+        { pollIntervalMs: 60_000, clock },
+      );
+
+      await svc.poll();
+      await svc.poll();
+
+      expect(svc.latest()!.items).toEqual([
+        { title: 'no-id headline', source: 'x.com', publishedAt: '2026-07-10T00:00:00Z' },
+      ]);
+    });
+
+    it('within a SINGLE poll, two entries sharing the same id are deduped too (only the first is kept)', async () => {
+      const { clock } = mutableClock();
+      const results = [
+        { id: 7, title: 'A', published_at: '2026-07-10T00:00:00Z', source: { domain: 'x.com' } },
+        {
+          id: 7,
+          title: 'B (dup id)',
+          published_at: '2026-07-10T00:00:00Z',
+          source: { domain: 'x.com' },
+        },
+      ];
+      const svc = new SentimentFeedService(
+        { fetchPosts: () => Promise.resolve({ results }) },
+        { pollIntervalMs: 60_000, clock },
+      );
+
+      await svc.poll();
+
+      expect(svc.latest()!.items).toEqual([
+        { title: 'A', source: 'x.com', publishedAt: '2026-07-10T00:00:00Z' },
+      ]);
+    });
+  });
+
   it('answers null before any successful poll has landed', () => {
     const { clock } = mutableClock();
     const svc = new SentimentFeedService(fixtureSource(), { pollIntervalMs: 60_000, clock });

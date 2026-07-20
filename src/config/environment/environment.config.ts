@@ -547,6 +547,16 @@ const envSchema = z
       .default('false')
       .transform((v) => v === 'true'),
     SENTIMENT_FEED_POLL_MS: z.coerce.number().int().positive().default(300_000),
+    // X3a: read-only Crypto Fear & Greed Index (alternative.me), surfaced to the agentic prompt when
+    // fresh. Off by default — zero behavior change unconfigured. Lane-wide (not per-symbol), same
+    // convention as SENTIMENT_FEED_ENABLED above; no API key required (a public endpoint).
+    FEAR_GREED_FEED_ENABLED: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
+    // 6h default — the index updates roughly once a day upstream; polling far more often than that
+    // is wasted (see fear-greed-feed.ts's own header comment).
+    FEAR_GREED_POLL_MS: z.coerce.number().int().positive().default(21_600_000),
     // Trade-flow/CVD context (taker aggressor imbalance), surfaced to the agentic prompt when fresh.
     // Off by default — zero behavior change unconfigured. Rides the SAME information-context A/B
     // control arm as DERIVATIVES_FEED_ENABLED/AGENTIC_CROSS_SYMBOL_ENABLED above.
@@ -819,6 +829,8 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     FUNDING_INGEST_POLL_MS: fundingIngestPollMs,
     SENTIMENT_FEED_ENABLED: sentimentFeedEnabled,
     SENTIMENT_FEED_POLL_MS: sentimentFeedPollMs,
+    FEAR_GREED_FEED_ENABLED: fearGreedFeedEnabled,
+    FEAR_GREED_POLL_MS: fearGreedPollMs,
     AGENTIC_TRADEFLOW_ENABLED: agenticTradeFlowEnabled,
     AGENTIC_TRADEFLOW_POLL_MS: agenticTradeFlowPollMs,
     AGENTIC_POSITIONING_ENABLED: agenticPositioningEnabled,
@@ -980,6 +992,10 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     sentimentFeed: {
       enabled: sentimentFeedEnabled,
       pollIntervalMs: sentimentFeedPollMs,
+    },
+    fearGreedFeed: {
+      enabled: fearGreedFeedEnabled,
+      pollIntervalMs: fearGreedPollMs,
     },
     tradeFlowFeed: {
       enabled: agenticTradeFlowEnabled,

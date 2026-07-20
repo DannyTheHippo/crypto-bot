@@ -35,12 +35,24 @@ function asNonEmptyString(v: unknown): string | null {
 // prevents delimiter breakout).
 const MAX_TITLE_CHARS = 200;
 const MAX_META_CHARS = 64;
+// X4 residual: bound on the cross-poll dedupe set (seenIds below) — CryptoPanic re-serves its own
+// trailing window of recent posts on every poll, so without a bound the set would grow unboundedly
+// over a long-running process; a few hundred ids comfortably covers many days at MAX_ITEMS/poll.
+const MAX_SEEN_IDS = 500;
 
-function parsePosts(raw: unknown): SentimentSnapshot['items'] {
+// X4 residual: dedupes by the venue's own post id ACROSS POLLS (seenIds is the caller's persistent
+// set, mutated in place — see SentimentFeedService.seenIds) so the SAME headline does not re-enter
+// the model's context every cycle just because CryptoPanic re-served it. A post with no parseable id
+// cannot be deduped and is rendered every time it appears — fail OPEN (never drops a headline because
+// dedupe itself is unavailable for that entry).
+function parsePosts(raw: unknown, seenIds: Set<string>): SentimentSnapshot['items'] {
   if (!isPlainObject(raw) || !Array.isArray(raw['results'])) return [];
   const items: { title: string; source: string; publishedAt: string }[] = [];
   for (const entry of raw['results']) {
     if (!isPlainObject(entry)) continue;
+    const idRaw = entry['id'];
+    const id = typeof idRaw === 'string' || typeof idRaw === 'number' ? String(idRaw) : null;
+    if (id !== null && seenIds.has(id)) continue;
     const title = asNonEmptyString(entry['title']);
     const publishedAt = asNonEmptyString(entry['published_at']);
     if (title === null || publishedAt === null) continue;
@@ -51,6 +63,13 @@ function parsePosts(raw: unknown): SentimentSnapshot['items'] {
       source: source.slice(0, MAX_META_CHARS),
       publishedAt: publishedAt.slice(0, MAX_META_CHARS),
     });
+    if (id !== null) {
+      if (seenIds.size >= MAX_SEEN_IDS) {
+        const oldest = seenIds.values().next().value;
+        if (oldest !== undefined) seenIds.delete(oldest);
+      }
+      seenIds.add(id);
+    }
     if (items.length >= MAX_ITEMS) break;
   }
   return items;
@@ -75,6 +94,9 @@ export class SentimentFeedService implements SentimentFeedPort, OnModuleInit, On
   private timer: ReturnType<typeof setInterval> | null = null;
   private lastSuccessAt: EpochMs | null = null;
   private errorCount = 0;
+  // X4 residual: cross-poll dedupe-by-id set — persists for the process lifetime (see parsePosts's
+  // own header comment and MAX_SEEN_IDS's bound above).
+  private readonly seenIds = new Set<string>();
 
   constructor(
     private readonly source: SentimentHttpSource,
@@ -124,7 +146,7 @@ export class SentimentFeedService implements SentimentFeedPort, OnModuleInit, On
   async poll(): Promise<void> {
     try {
       const raw = await this.source.fetchPosts();
-      const items = parsePosts(raw);
+      const items = parsePosts(raw, this.seenIds);
       const asOf = epochMs(this.options.clock.now());
       this.snapshot = { asOf, items };
       this.lastSuccessAt = asOf;

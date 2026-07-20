@@ -1,267 +1,239 @@
-# Daily profitability loop — playbook
+# Daily profitability loop — playbook (v3)
 
-Audience: a Claude session executing a pass. Cadence: **2-4 passes/day** (owner decision
-2026-07-10 — the loop runs on subscription, not a per-day API budget). Trigger (owner-run):
+Audience: a Claude session executing one pass. Cadence: 2-4 passes/day (owner 2026-07-10 — the
+loop runs on subscription, not a per-day API budget). Trigger (owner-run):
 `/loop 1d Read docs/planning/daily-profitability-loop.md and execute one pass`, or a scheduled
-routine at fixed times through the day. This document is the task spec for each pass; execute it
-top to bottom. Every pass runs §1 (rehydrate) and §2 (evidence sweep, including §2.6's harness
-probe) unchanged, then §3 selects exactly ONE pass type for that pass. It is an operational
-playbook, not application code.
+routine. This document is the task spec for each pass; execute it top to bottom.
 
-## 0. Mission and objective function
+Mission: maximize net-of-cost PnL (`realizedPnl − fees − llmCostUsd`) toward the promotion gate.
+Every pass runs §1 (rehydrate) and §2 (evidence sweep) unchanged; §3 is a hard gate — any named
+sweep alarm forces defect investigation FIRST; only when the sweep is clean does §4 select ONE
+pass type. This is an operational playbook, not application code. Rewritten 2026-07-20 (Y4) — the
+prior v2 rotted against the stack (retired `agentic_prescreen_total`, expectancy-ladder MAY-knobs,
+a $5/day breaker); a playbook is code that rots — re-verify every operational claim against current
+code before citing it, and repair drift in the finding pass.
 
-Maximize **net-of-cost PnL** — `realizedPnl − fees − llmCostUsd` — toward the earned-live
-promotion gate (`PromotionReadinessService`; criteria encoded in code and
-`reports/nightly/PROMOTION.md`). Every improvement is judged by its expected effect on
-net-of-cost PnL or on the trustworthiness of its measurement — nothing else counts as
-"high-value". This objective ranks work identically across all three §3 pass types — a CANDIDATE
-draft, a PROMOTION verdict, and a MAINTENANCE fix are judged by the same
-net-of-cost-PnL-or-measurement-trust yardstick, never by pass-type quota. The **current strategic
-frame** (active spec, stage, exit criteria, target capital) is NOT written here — it lives in
-`reports/loop/state.md` § Strategic frame, so this playbook stays a timeless procedure while
-strategy evolves. Each pass checks the current stage's exit criterion there and advances the
-stage when met (record the advance in the report).
+## 1. Rehydrate — from digest history, never a raw log window
 
-## 1. Rehydrate (read, never re-derive)
+Start every pass from the collector's durable history, NOT a 24h `docker logs` window (the
+raw-window model is exactly what made R8-7's day-long spot-decide suppression invisible; Y1 §D).
+
+Run all stack commands sandbox-disabled (`dangerouslyDisableSandbox: true`); never `cd` into the
+repo (the fnm hook breaks) — use `git -C <repo>` / `corepack pnpm --dir <repo>` / PATH-prefixed
+node. Host `psql` and host `curl` are auto-denied; do not attempt them.
 
 Read in this order:
 
 1. This playbook.
-2. `reports/loop/state.md` — the loop's ONLY mutable memory: § Strategic frame (active spec
-   pointer, stage + exit criteria, settled owner decisions), current backlog, last-pass pointer,
-   open flagged items. Follow its spec pointer only when stage-level detail is needed.
-3. `git log --oneline -20` — what shipped since the last pass (passes commit to `main`).
-4. Project memory index (auto-loaded) — env quirks, validation recipes.
+2. `date -u` — anchor wall-clock BEFORE any log forensics. Unanchored timestamp comparison
+   fabricated a 40-minute phantom-bug chase (Y1 §C.10). Verify the clock before the code.
+3. `corepack pnpm --dir <repo> loop:digests <last-pass-ISO>` — every collector digest line since
+   the last pass (both the hot dir and `digests/archive/`). This is the rehydration base: per-cycle
+   counter deltas, fired alarms, host duty-cycle gaps, bootId provenance.
+4. `reports/loop/state.md` — the loop's only mutable memory: open WATCH lines, backlog, last-pass
+   pointer, settled owner decisions (NOT re-openable by a pass — a pass that disputes one writes the
+   argument into the report, never acts).
+5. `git -C <repo> log --oneline -20` — what shipped since the last pass.
+6. Project memory index (auto-loaded) — env quirks, validation recipes.
 
-Settled owner decisions (the list lives in state.md § Strategic frame) are **not** re-openable by
-a pass. A pass that believes one should change writes the argument into the report's "Flagged for
-human review" section instead of acting.
+If the digest history has a host-sleep gap (annotated gap line), that window is dark — the stack
+runs on a sleeping MacBook; check `pmset -g log`/`uptime` before suspecting a bug (Y1 §D host-state).
 
-## 2. Evidence sweep (read-only)
+## 2. Evidence sweep — `pnpm loop:sweep` IS the sweep
 
-Run all stack commands with the sandbox disabled (`dangerouslyDisableSandbox: true`) — the sandbox
-blocks docker/promtool. Host `psql` and host `curl` are **auto-denied**; do not attempt them.
+Run `corepack pnpm --dir <repo> loop:sweep` (sandbox-disabled). It is the whole sweep — the
+hand-run docker/promtool command list from v2 is RETIRED. The sweep is deterministic and
+metrics/DB-first: host duty-cycle state, then per-lane provenance (container health + RestartCount +
+StartedAt + bootId + git tip) BEFORE any counter, then bootId-pinned liveness deltas
+(`agentic_consult_gate_total` by outcome, `agent_decisions` count + latest `created_at`, fills,
+reconciliations tail, kill-switch state, ws forced-reconnects, RSS, LLM cost-vs-breaker proximity).
 
-1. **Stack health:** `docker ps --format '{{.Names}}\t{{.Status}}'` — all four containers up,
-   app healthy.
-2. **Logs (24h):** `docker logs crypto-bot-app-1 --since 24h` — scan for: error/warn lines,
-   kill-switch or HALT events, protective-exit fires (`STOP_LOSS`/`TRAILING_STOP`), reflection runs
-   and playbook promotions, risk/sizing rejections, reconciliation `result="error"`. Note: this
-   shell's `grep` is flaky with alternation — prefer single-token `grep -on` per keyword, and never
-   trust a negative grep.
-3. **Metrics (promtool):**
-   `docker compose exec prometheus promtool query instant http://localhost:9090 '<q>'` for: (use
-   `docker compose exec`, not `docker exec` — `Bash(docker exec:*)` is a hard global permission deny
-   in this environment, rejected outright rather than sandbox-blocked; `docker compose exec` is a
-   different command string and isn't caught by that pattern)
-   - `agentic_promotion_round_trips`, `agentic_promotion_net_pnl_usd`,
-     `agentic_promotion_llm_cost_usd`, `agentic_promotion_window_days`, `agentic_promotion_ready`
-     — the gate scoreboard (DB-backed, survives restarts; sampled every 5 min — a fresh boot reads
-     0 until first sample).
-   - `sum by (kind) (agent_tokens_total)` → derive TRUE $/day. Since W4+W13 (2026-07-08) the gate
-     and the $/day breaker price per-model AND include cache tokens: cache reads at ~0.1× input,
-     1h-TTL writes at ~2× input. `kind` now splits input/output/`cache_read`/`cache_creation` — a
-     $/day read that ignores the cache kinds undercounts (~1.5× in creation-heavy windows). The DB
-     gauge `agentic_promotion_llm_cost_usd` is now the honest per-model+cache figure.
-   - `sum by (outcome) (agent_decide_total)`, `signals_rejected_total` (any `EXPIRED` is a
-     regression), `fills_total`, `round_trips_total`, `equity_usdt`, `drawdown_ratio`,
-     `realized_pnl_usdt`, `agentic_playbook_info`, and `agentic_prescreen_total`.
-   - **Learning-loop health (W2/W5/W14, 2026-07-08):** `sum by (outcome) (agentic_reflection_outcomes_total)`
-     — every reflection exit is labeled (`minted`/`validator_reject`/`no_change`/`auto_promoted`/…).
-     A sustained `validator_reject` means the loop can't iterate (the `AgenticReflectionRejects`
-     alert fires ≥2/6h); `minted` advancing then `agentic_playbook_info{version}` climbing past 1 is
-     the loop working. `agentic_version_net_pnl_usd{version}` / `agentic_version_round_trips{version}`
-     are the per-version A/B attribution the promotion evaluator promotes on.
-4. **DB per-row truth:** the promotion gauges are the DB-backed read. When a per-row query is
-   essential to a decision (e.g. attributing PnL to a playbook version), write the exact SQL into
-   the report for the owner to run via a `!` prompt (templates in `reports/nightly/PROMOTION.md`
-   § Evidence) and proceed without it — never block the pass on psql.
-5. **Grafana** renders the same Prometheus data — promtool is the canonical read. The dashboard
-   JSON (`observability/grafana/dashboards/crypto-bot.json`) is in-repo and editable when a pass
-   ships a metrics change.
-6. **Harness-health probe ($0, EVERY pass — including ship-nothing):** `pnpm eval:agentic` green.
-   This is the offline replay harness Stage-2 candidate scoring depends on; it is NOT in the gated
-   `test` suite and `ci.yml` does not run it, so it can (and did, ~1 day until Pass 10's `1f90ff6`)
-   break silently. Without `EVAL_LIVE`/`DATABASE_URL` it makes no network or DB call and the two
-   live specs self-skip (offline subset: 4 files / 15 tests). A RED harness is itself a flagged
-   finding — measurement, not the running app — and outranks other candidates in §3 when it fires.
+The digest's alarms and annotations ARE the pass's evidence base. Rules that bind every sweep:
 
-## 3. Decide (select one pass type)
+- `docker logs --since` is FORBIDDEN — it returns silently empty across rotated segments and after
+  Docker Desktop restarts, voiding negative reads (Y1 §C.9). The sweep reads durable counters and
+  DB rows that survive restarts and are immune to NOOP_LOGGER.
+- Never trust a negative read. An empty probe result is VOID unless paired with a positive control
+  known to return data (Y1 §C.9). `probe_failed` annotations are measurement failures, not "quiet
+  health" — a failed probe fails OPEN (partial digest, failure named), never masquerades as clean.
+- State-only greens are never accepted. A healthy `/health` endpoint proves nothing — read the
+  kill-switch METRIC and the reconciliation result distribution, demand positive watermark deltas.
+- Deltas only across a matching bootId (§C.6). A boot change resets counters — the sweep suppresses
+  delta-starvation alarms on a fresh boot and on sub-30-min windows (short-interval floor).
 
-Priority order across a day's passes (owner decision 2026-07-10): **correctness bugs on the
-trading path > promotion-ready evidence > candidate work > maintenance**. A pass selects exactly
-ONE pass type — the highest-priority type below that is currently eligible.
+Harness-health: a pass that ships an agentic-lane change runs
+`corepack pnpm --dir <repo> eval:agentic` as a candidate/regression gate ($0 offline replay; not in
+the gated `test` suite, so it rots silently — a RED harness is itself a flagged finding).
 
-**Correctness bugs on the trading path surfaced by today's evidence always outrank everything**
-(precedents: the 2026-07-04 signal-TTL bug, the 2026-07-05 dust trap). A pass that finds one
-fixes it under the MAINTENANCE pass type regardless of which type would otherwise be eligible.
+## 3. Incident-first gate — any alarm forces defect investigation FIRST
 
-**Bug-routing discipline (owner decision 2026-07-16): bugs are NEVER backlog material.** The
-backlog (and any similar queue) holds only improvements that move net-of-cost PnL or measurement
-trust — a defect found by a pass is fixed IN that pass. The only sanctioned deferral is a fix that
-exceeds §4's autonomy boundaries (MUST-NOT rails): that goes to the report's "Flagged for human
-review" with evidence and the exact proposed diff, and is picked up at the first authorized
-opportunity — it is an OPEN DEFECT awaiting authorization, never a backlog seed. Practical bar:
-"can't soak right now" delays a deploy, not a fix-and-validate; "needs design" on a confirmed
-defect means the pass does the design.
+If `loop:sweep` fires ANY named alarm, this pass IS a defect investigation. Improvement work (§4
+CANDIDATE/PROMOTION/MAINTENANCE-backlog) waits until the alarm is root-caused and cleared. The named
+alarms:
 
-### Pass types
+- `zero_decides` — decides/journal frozen on a healthy boot (the 8.2h candle-stall class).
+- `kill_switch_engaged` — kill-switch metric not RUNNING.
+- `reconcile_halt` — latest reconciliation `result=HALT` (never auto-flatten; §7).
+- `cost_breaker_proximity` — LLM $/day nearing the per-lane breaker.
+- `journal_silence` — agent_decisions not advancing on a live boot.
+- `restart_storm` — RestartCount climbing fast (the R8-6 wedge-to-OOM class; a single restart is an
+  ordinary redeploy, not an alarm).
+- `probe_failed` — a stack read errored (measurement gap; investigate before trusting the sweep).
 
-**(a) CANDIDATE pass** — eligible only when no unresolved candidate sits in A/B. Check: the
-newest `agent_playbook_versions` row with `source IN ('reflection', 'loop-candidate')` and
-`version > active`, via the §2.4 SQL-to-owner path (write the query into the report, proceed
-without blocking). When that answer isn't available in-session, use
-`agentic_reflection_outcomes_total{outcome="minted"}` (§2.3) having advanced without a matching
-`auto_promoted` as a proxy for "still pending" and skip this pass type until resolved.
+Before touching anything, run the §C defect-class triage — these are the shapes green surfaces hide.
+Each is a named check with its catching probe:
 
-- Draft 1-3 playbook variants IN-SESSION (subscription cost, not a $ line item) grounded in §2's
-  calibration/attribution/regime evidence — each draft's rationale must cite a specific metric,
-  log line, or DB row, never a hunch.
-- Score each variant offline: `AGENTIC_CANDIDATE_PLAYBOOK_FILE=<file>` with the recorded-payload
-  live-compare eval (`test/eval/agentic/recorded-payload-live-compare.spec.ts`). Budget ≤$20/gate,
-  ~2 API calls per replayed row — cap the row count to stay under budget.
-- **Log every scored variant** — winner AND losers — to the experiments registry
-  (`test/backtest/experiment-log.ts` + CLI `--metrics`). This is the honest-N discipline: a
-  candidate pass that records only the winner is not reproducible evidence.
-- Inject ONLY the best-scoring variant, and ONLY if it beat the champion on the scorecard:
-  `pnpm playbook:candidate <file> --metrics <scorecard.json>`. The live 25% A/B
-  (`AGENTIC_PLAYBOOK_AB_PCT`) and attributed auto-promotion take over from there — a candidate
-  pass never manually promotes.
+1. Zero-delta-while-green — green health, healthy containers, kill_switch RUNNING, yet zero
+   decide/journal/counter deltas. Probe: positive watermark deltas from multiple independent
+   counters; read the kill-switch metric + reconcile distribution, never `/health`.
+2. Row-count-window shrink — a stats consumer's verdict flips as row volume grows (abstain
+   false-positive, unreachable promotion floor). Probe: check window semantics first; shared
+   `recent(N)` walks are forbidden; reads epoch-bounded.
+3. Silent-catch/park — pending-forever promise, in-memory enum nothing exports, swallowed hot-path
+   throw; emits no error line. Probe: hunt state-set-but-never-emitted seams; every gate logs AND
+   meters its failure path before enable.
+4. Structurally invisible divergence axis — a state/venue axis with no reconciler (Bug B's phantom
+   perp position). Probe: on any new rail/venue/axis, name its reconciliation consumer or declare it
+   unmonitorable.
+5. Venue/ccxt shape divergence — code built on a declared shape the live venue returns differently
+   (four incidents). Probe: keyed live shape probe before any code depends on a new endpoint (#54).
+6. Boot-scoped counters masquerading as cumulative — a counter "drops" across the window. Probe: pin
+   every counter read to a bootId; `increase()` only within one boot's span (loop:sweep enforces).
+7. Three-ledger divergence — gate metrics, the consult journal, and actual API spend disagree.
+   Probe: reconcile all three before tuning any cadence knob; divergence is defect-until-disproven.
+8. Attempt-level fail-open budget gate — post-breach blackout, `with_tokens=0` after a shared pool
+   zeroes. Probe: check gates for pre-attempt reservation vs start-only; alarm on pool-zeroed states.
+9. Negative-read voids — an empty grep/log/promtool result. Probe: every empty read is void unless
+   paired with a positive control + a bootId-matched tail (`docker logs --since` never qualifies).
+10. Unanchored log-time forensics — a defect narrative from timestamp comparison with no wall-clock
+    anchor. Probe: `date -u` before any timestamp comparison (the §1 pre-step).
+11. Fail-open polarity / config coercion — nothing at runtime until the bad branch is exercised
+    (three defects survived every green pass). Probe: adversarial polarity audit — state the failure
+    direction, test the bad branch.
+12. Non-consuming-trigger hot loop — attempt-started counters racing ahead of fire stamps; burn
+    spikes in minutes (R8-8: 91 Opus calls / $2.30 in 46 min). Probe: compare attempt-started vs
+    consumed-stamp counters per window; burst-rate alarms on spend.
 
-**(b) PROMOTION pass** — eligible when a live candidate has accumulated enough attributed round
-trips for a verdict.
+An N-recurrences rule binds: a metric-visible anomaly seen across ≥2 sweeps is root-caused, never
+normalized as background noise (the ~10-min STALE_DATA blackouts, the unflagged uptime churn).
 
-- Verify the promotion evaluator's verdict against `agentic_version_net_pnl_usd{version}` /
-  `agentic_version_round_trips{version}` (§2 item 3) — the evaluator's decision must match what
-  the gauges show, not just what it logged.
-- Manual `pnpm playbook:promote` ONLY when auto-promotion is legitimately stuck (enough trips and
-  a clear net-pnl edge, but no promotion fired within a reasonable window) — record why
-  auto-promotion didn't fire.
-- Rollback: `AGENTIC_PLAYBOOK_PIN` (verified name —
-  `src/config/environment/environment.config.ts`).
+## 4. Pass types and autonomy
 
-**(c) MAINTENANCE pass** — the default when neither (a) nor (b) is eligible, or when a
-correctness bug needs fixing.
+When the sweep is clean, select exactly ONE pass type — highest-priority eligible. Priority:
+correctness bugs on the trading path > promotion-ready evidence > candidate work > maintenance.
 
-- Correctness bugs on the trading path (still outrank everything else within this pass type too).
-- The current stage's items not yet done (per state.md § Strategic frame).
-- The rolling backlog in `reports/loop/state.md`. **Before implementing a backlog item,
-  re-verify it is still real against current code** — backlog items inherited from dated
-  analyses go stale (2026-07-06 Pass 2 precedent: two Stage-2 seeds from the 07-04 analysis were
-  already fixed in the codebase; the pass's value was pruning them with evidence, not shipping).
-- Carry-study refresh: re-run the carry grid when the funding regime shifts materially, or on a
-  ~14-day cadence otherwise — append trials to the experiments registry.
-- New ideas from today's evidence (add to the backlog even when not chosen).
+Autonomy (owner 2026-07-17): ALL demo money-path work — risk, execution, OMS, exchange adapters,
+defect fixes AND new capability — is loop-domain. Measurement, config, and deploy decisions are
+loop-domain too: decide, apply, record — do not flag. The live-money flip (four gates + bootId
+arming ceremony) is the ONLY human gate. Evidence gates stay in full force.
 
-If nothing clears the bar in the eligible pass type, ship nothing — record why. Because 2-4
-passes/day make per-pass emptiness normal, the escalation threshold is **per UTC day**: two
-consecutive UTC days where every pass that day shipped nothing → recommend a cadence or scope
-change in the report instead of forcing a change.
+Loop-domain work carries: mandatory adversarial reviewer dispatch before commit (multi-lens for
+OMS-semantics); full gates + `test:livegate` + `test:paper` green; deploy soak per §5; a dated
+decision record + a WATCH line in state.md (change-discipline shape — every WATCH carries an
+explicit expected-positive signature, a named defect outcome, and a resolution deadline/owner-pass);
+behavior-changing capability additionally ships two-step (code flag-off, then a separate enable
+commit with its own review). Never two money-path items in one pass. Bugs are NEVER backlog material
+— a defect found by a pass is fixed IN that pass; the only sanctioned deferral is a fix that exceeds
+the MUST-NOT rails below, which goes to "Flagged for human review" with evidence + exact diff.
 
-## 4. Autonomy boundaries (task-spec authorization for these runs)
+Pass types:
 
-**MAY** — implement, validate, commit to `main`, rebuild + redeploy the demo compose stack:
+- CANDIDATE — eligible only when no unresolved candidate sits in A/B. Draft 1-3 playbook variants
+  in-session grounded in sweep evidence (each rationale cites a specific metric/row, never a hunch);
+  score each offline (`AGENTIC_CANDIDATE_PLAYBOOK_FILE=<file>` against
+  `recorded-payload-live-compare.spec.ts`, ≤$20/gate); log EVERY scored variant (winner and losers)
+  to the experiments registry; inject only the best if it beat the champion
+  (`playbook:candidate <file> --metrics <scorecard.json>`). The live A/B + attributed
+  auto-promotion take over — a candidate pass never manually promotes.
+- PROMOTION — eligible when a live candidate has enough attributed round trips. Verify the
+  evaluator's verdict against `agentic_version_net_pnl_usd{version}` /
+  `agentic_version_round_trips{version}`. Manual `playbook:promote` ONLY when auto-promotion is
+  legitimately stuck (record why). Rollback via `AGENTIC_PLAYBOOK_PIN`.
+- MAINTENANCE — default. Trading-path correctness bugs (outrank everything); the current stage's
+  open items; the backlog (re-verify each against current code before implementing — inherited items
+  go stale); new ideas from today's evidence (add to backlog even when not chosen).
 
-- Agentic-lane code: `src/features/trading/agentic/`.
-- Config: `.env.app` / `.env.app-perp` (deploy knobs), `.env.example` (secrets template — keep in sync — standing rule), zod schema knobs in
-  `src/config/environment/environment.config.ts` for agentic/observability settings. This now
-  includes (owner decision 2026-07-08, learning-system mandate): the reflection model / cadence /
-  `AGENTIC_TOKEN_PRICES_JSON` per-model rate map (within the `AGENTIC_DAILY_COST_STOP_USD` breaker,
-  currently $5/day) and the `AGENTIC_AUTO_PROMOTE_MIN_ATTRIBUTED_TRADES` / `AGENTIC_PLAYBOOK_AB_PCT`
-  / `AGENTIC_EXPECTANCY_LADDER` learning knobs. `PROMOTION_EVIDENCE_EPOCH` is OWNER-declared — a
-  pass proposes a new epoch in the report, never sets it unilaterally.
-- Observability: `observability/` dashboards, metrics services, panels.
-- Docs and reports: `docs/`, `reports/loop/`.
-- **Offline eval harnesses** (`test/eval/agentic/`, `pnpm eval:*`): run them to validate a playbook
-  candidate or a prompt/executor change at $0 against recorded `input_payload` rows BEFORE any live
-  flip (this is the sanctioned place to evaluate a decide-model change or thinking-on-decides —
-  neither is a blind config flip). This includes the candidate-file eval run
-  (`AGENTIC_CANDIDATE_PLAYBOOK_FILE=<file>` against `recorded-payload-live-compare.spec.ts`) that
-  §3(a) scores a CANDIDATE pass draft on.
-- **Candidate-lane injection and the experiments registry (2026-07-10 learning-system extension):**
-  `scripts/playbook-candidate.mjs` (`pnpm playbook:candidate <file> --metrics <scorecard.json>`) —
-  agentic-lane only; the playbook validator and the existing read-side A/B/promotion gates bind on
-  whatever it injects exactly as they do on a reflection-minted version. Writes to the experiments
-  registry (`test/backtest/experiment-log.ts` + its CLI `--metrics` flag) are append-only and
-  non-money — they record scored variants, they never touch a trading table.
-- **Scoped money-path exceptions (owner decision 2026-07-07; SUPERSEDED 2026-07-17 by the full
-  money-path delegation below — kept for provenance, the review/gates discipline it introduced
-  now applies to ALL money-path work):**
-  - `src/features/trading/execution/signal-sink.service.ts` — CANCEL_OPEN routing only
-    (cancelling a strategy's own resting orders; never order placement).
-  - `src/features/trading/execution/portfolio-state.service.ts` — FillApplication metrics
-    emission only (e.g. dust-tolerant round-trip metrics); never position/cash mutation
-    semantics.
-  - `src/features/trading/risk/position-sizer.service.ts` — price-hint/TIF plumbing only; never
-    sizing or veto semantics.
-  - Drizzle migrations that ADD nullable analytics columns to non-money tables (e.g.
-    `agent_decisions`); never money tables, never append-only triggers.
-- **Money-path delegation (owner decision 2026-07-17 — the ONLY owner gate in the program is the
-  live-money flip):** demo-lane work on risk, execution, OMS, and exchange adapters — defect
-  fixes AND new capability alike — is loop-domain, under ALL of: mandatory adversarial reviewer
-  dispatch before commit (multi-lens for OMS-semantics changes); full gates + `test:livegate` +
-  `test:paper` green; deploy soak per §5; a decision record + WATCH line in state.md;
-  behavior-changing capability additionally ships two-step (code flag-off, separate enable commit
-  with its own review — `rules` change-discipline). "Never two money-path items in one pass"
-  still binds. This supersedes the former per-item owner flags (the 2026-07-05 marketable-exits
-  template) and the 2026-07-10 perp-venue owner-scope note. The MUST-NOT list below is what
-  remains — the invariants protecting the live flip and audit trust, not work gates.
+Pre-authorizations fire ONLY on their stated conditions and are then CONSUMED — no scope drift. The
+live example: the X2 stage-2 flip (16 symbols / menu-6) may be applied after one clean 24h soak
+inside ceilings (CPU <250% combined, RSS <2GiB/lane, zero 1008 mass-closes, recreations under half
+the rolling cap) — UNFIRED as of 2026-07-20.
 
-**MUST NOT touch** (report-only, with evidence + exact proposed diff in "Flagged for human
-review"):
+If nothing clears the bar, ship nothing — record why. Two consecutive UTC days of all-empty passes
+→ recommend a cadence/scope change in the report instead of forcing one.
 
-- The four live gates, mode resolution, arming interlock, `test:livegate` (sacred — never skip,
-  weaken, or delete). The live-money flip itself — four gates + bootId arming ceremony — is the
-  single human checkpoint (owner decisions 2026-07-10/12/17).
-- Append-only tables/triggers (`audit_log`, `order_events`), money-table schema and their
-  migrations.
-- Secrets, `.env` (the example file is fine), pino redact lists.
-
-Hard rules 1–7 in the project `CLAUDE.md` bind in full. **Never push to any remote.** Commits to
-local `main` are authorized for gates-green changes within the MAY list; one commit per shipped
-improvement, conventional message. **Dirty-tree rule:** if the working tree has pre-existing
-uncommitted changes at pass start, note them in the report and stage ONLY the files this pass
-authored (`git add <paths>`, never `git add -A`/`-u`) — a pass never commits work it didn't write.
+MUST NOT touch (report-only, with evidence + exact proposed diff): the four live gates, mode
+resolution, arming interlock, `test:livegate` (sacred); append-only tables/triggers (`audit_log`,
+`order_events`) and money-table schema/migrations; secrets, `.env` (the example file is fine), pino
+redact lists. `PROMOTION_EVIDENCE_EPOCH` is loop-domain (declare only at a verified flat instant),
+but never mid-window. Hard rules 1-7 in the project `CLAUDE.md` bind in full. Never push to any
+remote; commit gates-green work to local `main`, one commit per improvement, conventional message.
+Dirty tree at pass start: note it, stage ONLY files this pass authored (`git add <paths>`, never
+`-A`/`-u`).
 
 ## 5. Validate, then deploy
 
-1. **Gates (all green before commit):** `pnpm build`, `pnpm lint`, `pnpm typecheck`, `pnpm test` —
-   run with `pnpm -C <repo-root>` (never `cd`; the fnm hook breaks), sandbox-disabled, `pipefail`
-   on chains. `test:db` needs `DB_SUITE_ALLOW_RESET=1` and
-   `DATABASE_URL=postgres://cryptobot:cryptobot@127.0.0.1:5432/cryptobot_test`. A pass that ships
-   an agentic-lane change also runs `pnpm eval:agentic` (the $0 offline replay harness) as a
-   candidate/regression gate. (The unconditional every-pass harness-health probe lives in §2.6 so
-   it fires on ship-nothing passes too; markdown gating for the report files is in §6.)
-2. **Cap:** 3 consecutive validation failures → revert the working tree, record the failure in the
-   report, end the pass.
-3. **Deploy:** `docker compose build app && docker compose up -d app`.
-4. **Soak (15–30 min):** health 200 (`docker ps` healthy), decides flowing
-   (`agent_decide_total` advancing), `signals_rejected_total{reason="EXPIRED"}` empty, token cost
-   rate sane for the change, no new error/warn in `docker logs --since 15m`, protective exits still
-   present in config. Regression → `docker compose up -d app` on the previous image (or revert the
-   commit and rebuild), record the rollback.
+1. Gates (all green before commit): `pnpm build`, `pnpm lint`, `pnpm typecheck`, `pnpm test` — via
+   `corepack pnpm --dir <repo>`, sandbox-disabled, `pipefail` on chains. An agentic-lane change also
+   runs `pnpm eval:agentic`. `test:db` needs `DB_SUITE_ALLOW_RESET=1` +
+   `DATABASE_URL=postgres://cryptobot:cryptobot@127.0.0.1:5432/cryptobot_test`. Report files gate on
+   `pnpm lint:md` (markdownlint owns `.md`; the `reports/loop/` backlog table is MD060-aligned —
+   `--fix` does not repair it).
+2. Cap: 3 consecutive validation failures → revert the working tree, record it, end the pass.
+3. Deploy: `docker compose build app && docker compose up -d app` (perp needs
+   `--profile perp build app-perp`).
+4. Soak (15-30 min): run `loop:sweep` post-deploy and confirm the change's expected observable
+   named in its WATCH line — health 200, decides flowing, no `EXPIRED` signals, cost rate sane, no
+   new alarm, protective exits present. Regression → redeploy the previous image (or revert), record
+   the rollback. A green suite is not a soak — the W4 reconciliation fix minted R8-7 while
+   2452/2452 tests passed.
 
 ## 6. Report and state (every pass, even empty ones)
 
-1. **Append** a dated entry to `reports/loop/LOG.md`: data window read, headline metrics
-   (gate scoreboard + $/day), pass type (§3), decision + rationale, diff summary (files + commit
-   hash), gate results, soak verdict, flagged-for-human items, next-pass candidates. **CANDIDATE
-   passes also record the experiments-registry row id of every scored variant** (winner and
-   losers) — the honest-N discipline needs the ids traceable from LOG.md, not just the registry.
-2. **Update** `reports/loop/state.md`: current stage, backlog with statuses, last-pass pointer,
-   open flagged items awaiting the owner.
-3. Both files are the loop's cross-session memory — keep them current enough that the next pass
+1. Append a dated entry to `reports/loop/LOG.md`: data window, headline metrics (gate scoreboard +
+   $/day), pass type, decision + rationale, diff (files + commit hash), gate results, soak verdict,
+   flagged items, next-pass candidates. CANDIDATE passes record the experiments-registry row id of
+   EVERY scored variant (honest-N).
+2. Update `reports/loop/state.md`: current stage, backlog with statuses, last-pass pointer, open
+   WATCH lines, flagged items awaiting the owner. Keep both files current enough that the next pass
    needs nothing else.
-4. **Gate the report edits (every pass):** `pnpm lint:md` green after writing LOG.md/state.md.
-   Since owner commit `1ae2100` markdownlint owns `.md` (prettier's `format:check` now excludes
-   `*.md`); the `reports/loop/` backlog table is MD060 "aligned" — editing a cell must keep the
-   row's closing pipe column-aligned, and `--fix` does not repair MD060.
+3. `pnpm lint:md` green after writing LOG.md/state.md.
 
 ## 7. Stop conditions (report-only, change nothing)
 
-- Kill switch tripped, reconciliation HALT, or any reconciliation mismatch in the logs.
-- Unexplained drawdown (equity move the logs/fills don't account for).
-- The gate scoreboard contradicts the DB/logs (measurement can't be trusted — fixing measurement
-  becomes the only eligible improvement).
+- Kill switch tripped, reconciliation HALT, or any reconciliation mismatch (never auto-flatten).
+- Unexplained drawdown (equity move the fills don't account for).
+- The gate scoreboard contradicts the DB/logs — measurement can't be trusted; fixing measurement
+  becomes the only eligible improvement.
 - Context usage >70% mid-pass → dispatch `context-transfer` for HANDOFF.md, finish the report with
   what is known, end the pass.
+
+## Current program context (2026-07-20)
+
+Volatile — re-verify against current code before citing (Y4 verify-before-cite). Corrected metric
+names: the consult counter is `agentic_consult_gate_total` (v2's `agentic_prescreen_total` is
+retired); expectancy-ladder MAY-knobs are retired.
+
+- Live build: v2 contract + the XA activation bundle (XA1-XA6) + X6/X7/X8 + X2 stage-1, both lanes.
+- Evidence epochs (`PROMOTION_EVIDENCE_EPOCH`): spot `2026-07-20T09:36:00Z`, perp
+  `2026-07-20T10:42:00Z`. The scoreboard walks only post-stamp evidence; a pre-stamp trip/spend in
+  the walk is a defect.
+- Cost breakers: `$1.50/day` spot, `$1.50/day` perp (post-X2). Breaker exhaustion mid-day →
+  economize via prompt/cadence, never raise the breaker.
+- X2 stage-1: perp universe 8 symbols (BTC ETH SOL ZEC AAVE NEAR HYPE KAITO), menu-4, fraction
+  0.35. Stage-2 pre-auth (16/menu-6) UNFIRED — see §4 conditions.
+- Promotion gate: ≥30 closed demo round trips AND positive net-of-cost PnL over ≥14 days
+  (`PromotionReadinessService`).
+
+WATCH lines a pass must check (full text in state.md):
+
+- WATCH-XA1 — ≥8 batched consults/day for 3 awake days at ≤$1.50.
+- WATCH-X2 — ≥1 closed perp trip/day once entries begin; a funding row lands within one poll
+  interval of a held-across-boundary position; batch soft-hold rate stays <5% of elements.
+- WATCH-XA6 — zero 1008 mass-closes; forced-reconnect rate ≤ R8-2 baseline; spot RSS trend flat
+  (level 1.34GiB accepted; >20% growth between sweeps without a deploy = R8-6 precursor); no
+  STALE_DATA veto storm on active-menu symbols.
+- WATCH-XA7 (spot) — the scoreboard walks only post-09:36Z evidence.
+- WATCH-X7/X8 — the first reflection on this build renders postMortems + versionPnl blocks;
+  versionPnl shows all-unattributed until post-stamp trips close (expected, not a defect).
+- WATCH-Y2/Y3 — the first scheduled pass rehydrates from `loop:digests` and runs `loop:sweep`;
+  the collector survives the next host sleep with an annotated gap.

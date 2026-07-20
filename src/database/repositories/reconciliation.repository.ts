@@ -5,6 +5,10 @@ import * as schema from '../schemas/trading';
 import { requireDb } from './persistence-guard';
 
 export interface ReconciliationInsert {
+  // v3 (consolidation spec §2): venue-scoped operational fact — ReconciliationService iterates
+  // VENUE_REGISTRY and writes one row per venue pass, so venue is required (no lane-wide aggregate
+  // row exists).
+  venue: string;
   durationMs: number;
   openOrdersChecked: number;
   tradesChecked: number;

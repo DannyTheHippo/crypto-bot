@@ -20,22 +20,26 @@ import { AgentDecisionRepository, type AgentDecisionInsert } from './agent-decis
 // recent() ordering: oldest→newest (ascending event_time), matching AgentContext.recentDecisions'
 // documented "newest-last" convention (see ports/agentic-strategy.ts) — a caller folding persisted
 // rows into that in-memory trail sees the same chronological order from either source.
-// A3: the full set of `action` literals the DB column (and AgentDecisionInsert.action) accepts —
-// mirrors AgentDecisionEntry.action verbatim. TypeScript's static type already constrains every
-// well-typed caller, but this is a RUNTIME persistence-boundary guard for the case that matters more:
-// a caller that narrows/casts `action` to a type the compiler accepts while the real runtime value is
-// something else (see anthropic-agent-client.ts's `action as 'long' | 'flat' | 'hold'` breadcrumb —
-// the legacy shorts capability's real value can be 'short', a literal outside this set entirely).
-const KNOWN_JOURNAL_ACTIONS = new Set<AgentDecisionEntry['action']>([
+// v3 (consolidation spec §2/§9): the DB column (and AgentDecisionInsert.action) narrows to the
+// rich-tool-contract-only vocabulary — the legacy 'long'/'flat' literals (the retired
+// DECISION_TOOL/SHORTS_DECISION_TOOL contract) are no longer accepted. AgentDecisionEntry.action
+// (ports/agentic-strategy.ts, owned by the agentic workstream) still declares the wider legacy union
+// until that contract is fully deleted there, so this is a RUNTIME persistence-boundary guard AND a
+// narrowing type predicate: any action outside this set — including a well-typed legacy literal, or
+// a caller that narrowed/cast `action` to a type the compiler accepts while the real runtime value is
+// something else — is logged and the row dropped, never persisted.
+const KNOWN_JOURNAL_ACTIONS: ReadonlySet<string> = new Set([
   'open_long',
   'open_short',
   'close',
   'adjust',
   'hold',
-  'long',
-  'flat',
   'error',
 ]);
+
+function isJournalAction(action: string): action is AgentDecisionInsert['action'] {
+  return KNOWN_JOURNAL_ACTIONS.has(action);
+}
 
 // XA4 (A0, 2026-07-20): assemble plan_json from the directive set and/or the portfolio-level
 // nextConsultBars. A plan present ⇒ directives (+ schedule merged in when set); no plan but a
@@ -90,7 +94,7 @@ export class AgentDecisionJournalAdapter implements AgentDecisionJournalPort {
   // write carrying an action outside KNOWN_JOURNAL_ACTIONS is logged (offending value + strategyId)
   // and the ROW IS DROPPED here — it must never throw into the caller's decide() path.
   record(entry: AgentDecisionEntry): void {
-    if (!KNOWN_JOURNAL_ACTIONS.has(entry.action)) {
+    if (!isJournalAction(entry.action)) {
       this.log.error(
         `agent_decisions insert dropped: action "${String(entry.action)}" is outside the known ` +
           `journal action set (strategyId=${entry.strategyId})`,
@@ -133,9 +137,13 @@ export class AgentDecisionJournalAdapter implements AgentDecisionJournalPort {
         entry.nextConsultBars ?? null,
         entry.regimeTags ?? null,
       ),
+      // v3-transitional(#10): info_arm/thinking_arm columns are dropped (spec §2/§9 — the
+      // derivatives-control A/B factorial was retired; the playbook champion/candidate A/B is NOT
+      // retired and is attributed via consultId + playbookVersion, not an arm flag). entry.infoArm/
+      // entry.thinkingArm (still declared on AgentDecisionEntry, ports/agentic-strategy.ts, owned by
+      // workstream #10) are read by the client for prompt-template selection but are simply never
+      // forwarded to persistence now.
       consultId: entry.consultId ?? null,
-      infoArm: entry.infoArm ?? null,
-      thinkingArm: entry.thinkingArm ?? null,
     };
     void this.repo.insert(row).catch((err: unknown) => {
       this.log.error(`agent_decisions insert failed: ${String(err)}`);
@@ -196,8 +204,11 @@ function toRow(
     inputPayload: r.inputPayload,
     plan: readPlanJson(r.planJson),
     consultId: r.consultId,
-    infoArm: r.infoArm,
-    thinkingArm: r.thinkingArm,
+    // v3-transitional(#10): info_arm/thinking_arm columns are dropped from the DB row (see the
+    // record() comment above) but AgentDecisionRow still declares these fields (ports/agentic-
+    // strategy.ts, owned by workstream #10) — always-undefined until #10 removes them from the port.
+    infoArm: undefined,
+    thinkingArm: undefined,
     id: String(r.id),
     createdAt: r.createdAt.getTime() as EpochMs,
   };

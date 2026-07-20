@@ -1,3 +1,39 @@
+CREATE TABLE "agent_decisions" (
+	"id" bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY (sequence name "agent_decisions_id_seq" INCREMENT BY 1 MINVALUE 1 MAXVALUE 9223372036854775807 START WITH 1 CACHE 1),
+	"strategy_id" text NOT NULL,
+	"symbol" text NOT NULL,
+	"venue" text NOT NULL,
+	"trigger_kind" text NOT NULL,
+	"based_on_seq" bigint NOT NULL,
+	"event_time" bigint NOT NULL,
+	"model" text NOT NULL,
+	"action" text NOT NULL,
+	"confidence" double precision,
+	"rationale" text NOT NULL,
+	"ref_price" numeric(38, 18),
+	"close" numeric(38, 18),
+	"input_tokens" integer,
+	"output_tokens" integer,
+	"cache_read_input_tokens" integer,
+	"cache_creation_input_tokens" integer,
+	"latency_ms" integer,
+	"playbook_version" integer,
+	"prompt_hash" text NOT NULL,
+	"input_payload" text,
+	"plan_json" jsonb,
+	"consult_id" text,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "agent_playbook_versions" (
+	"id" bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY (sequence name "agent_playbook_versions_id_seq" INCREMENT BY 1 MINVALUE 1 MAXVALUE 9223372036854775807 START WITH 1 CACHE 1),
+	"version" integer NOT NULL,
+	"content" text NOT NULL,
+	"source" text NOT NULL,
+	"parent_version" integer,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
 CREATE TABLE "audit_log" (
 	"seq" bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY (sequence name "audit_log_seq_seq" INCREMENT BY 1 MINVALUE 1 MAXVALUE 9223372036854775807 START WITH 1 CACHE 1),
 	"ts" timestamp with time zone DEFAULT now() NOT NULL,
@@ -52,6 +88,17 @@ CREATE TABLE "exec_outbox" (
 	CONSTRAINT "exec_outbox_report_id_unique" UNIQUE("report_id")
 );
 --> statement-breakpoint
+CREATE TABLE "experiments" (
+	"id" bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY (sequence name "experiments_id_seq" INCREMENT BY 1 MINVALUE 1 MAXVALUE 9223372036854775807 START WITH 1 CACHE 1),
+	"family" text NOT NULL,
+	"params_hash" text NOT NULL,
+	"dataset_hash" text NOT NULL,
+	"source" text NOT NULL,
+	"label" text,
+	"metrics" jsonb,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
 CREATE TABLE "fee_ledger" (
 	"id" bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY (sequence name "fee_ledger_id_seq" INCREMENT BY 1 MINVALUE 1 MAXVALUE 9223372036854775807 START WITH 1 CACHE 1),
 	"venue" text NOT NULL,
@@ -83,6 +130,44 @@ CREATE TABLE "fills" (
 	"run_id" text NOT NULL,
 	"boot_id" text NOT NULL,
 	"ingested_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "funding_events" (
+	"id" bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY (sequence name "funding_events_id_seq" INCREMENT BY 1 MINVALUE 1 MAXVALUE 9223372036854775807 START WITH 1 CACHE 1),
+	"strategy_id" text NOT NULL,
+	"venue" text NOT NULL,
+	"symbol" text NOT NULL,
+	"funding_rate" numeric(38, 18) NOT NULL,
+	"mark_price" numeric(38, 18) NOT NULL,
+	"signed_qty" numeric(38, 18) NOT NULL,
+	"payment_quote" numeric(38, 18) NOT NULL,
+	"funding_time" timestamp with time zone NOT NULL,
+	"mode" text NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "funding_payments" (
+	"id" bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY (sequence name "funding_payments_id_seq" INCREMENT BY 1 MINVALUE 1 MAXVALUE 9223372036854775807 START WITH 1 CACHE 1),
+	"venue" text NOT NULL,
+	"symbol" text NOT NULL,
+	"venue_payment_id" text NOT NULL,
+	"amount_quote" numeric(38, 18) NOT NULL,
+	"funding_time" bigint NOT NULL,
+	"mode" text NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "llm_usage" (
+	"id" bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY (sequence name "llm_usage_id_seq" INCREMENT BY 1 MINVALUE 1 MAXVALUE 9223372036854775807 START WITH 1 CACHE 1),
+	"kind" text NOT NULL,
+	"model" text NOT NULL,
+	"mode" text NOT NULL,
+	"strategy_id" text,
+	"input_tokens" integer NOT NULL,
+	"output_tokens" integer NOT NULL,
+	"cache_read_input_tokens" integer,
+	"cache_creation_input_tokens" integer,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
 CREATE TABLE "mode_transitions" (
@@ -118,6 +203,7 @@ CREATE TABLE "order_intents" (
 	"type" text NOT NULL,
 	"qty" numeric(38, 18) NOT NULL,
 	"limit_price" numeric(38, 18),
+	"trigger_price" numeric(38, 18),
 	"time_in_force" text NOT NULL,
 	"reduce_only" boolean NOT NULL,
 	"ref_price" numeric(38, 18) NOT NULL,
@@ -191,6 +277,7 @@ CREATE TABLE "positions" (
 --> statement-breakpoint
 CREATE TABLE "reconciliations" (
 	"id" bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY (sequence name "reconciliations_id_seq" INCREMENT BY 1 MINVALUE 1 MAXVALUE 9223372036854775807 START WITH 1 CACHE 1),
+	"venue" text NOT NULL,
 	"ts" timestamp with time zone DEFAULT now() NOT NULL,
 	"duration_ms" integer NOT NULL,
 	"open_orders_checked" integer NOT NULL,
@@ -243,8 +330,11 @@ ALTER TABLE "fee_ledger" ADD CONSTRAINT "fee_ledger_fill_id_fills_fill_id_fk" FO
 ALTER TABLE "fills" ADD CONSTRAINT "fills_intent_id_order_intents_intent_id_fk" FOREIGN KEY ("intent_id") REFERENCES "public"."order_intents"("intent_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "order_events" ADD CONSTRAINT "order_events_order_id_orders_intent_id_fk" FOREIGN KEY ("order_id") REFERENCES "public"."orders"("intent_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "orders" ADD CONSTRAINT "orders_intent_id_order_intents_intent_id_fk" FOREIGN KEY ("intent_id") REFERENCES "public"."order_intents"("intent_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "risk_decisions" ADD CONSTRAINT "risk_decisions_intent_id_order_intents_intent_id_fk" FOREIGN KEY ("intent_id") REFERENCES "public"."order_intents"("intent_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "signals" ADD CONSTRAINT "signals_intent_id_order_intents_intent_id_fk" FOREIGN KEY ("intent_id") REFERENCES "public"."order_intents"("intent_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+CREATE INDEX "agent_decisions_strategy_event_idx" ON "agent_decisions" USING btree ("strategy_id","event_time");--> statement-breakpoint
+CREATE UNIQUE INDEX "agent_playbook_versions_version_uidx" ON "agent_playbook_versions" USING btree ("version");--> statement-breakpoint
+CREATE UNIQUE INDEX "agent_playbook_versions_promotion_per_day_uidx" ON "agent_playbook_versions" USING btree ((("created_at" at time zone 'utc')::date)) WHERE "agent_playbook_versions"."source" = 'promotion';--> statement-breakpoint
 CREATE UNIQUE INDEX "equity_curve_run_ts_uidx" ON "equity_curve" USING btree ("run_id","ts");--> statement-breakpoint
+CREATE INDEX "experiments_family_params_dataset_idx" ON "experiments" USING btree ("family","params_hash","dataset_hash");--> statement-breakpoint
 CREATE UNIQUE INDEX "fills_venue_symbol_trade_uidx" ON "fills" USING btree ("venue","symbol","venue_trade_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "funding_payments_venue_symbol_payment_uidx" ON "funding_payments" USING btree ("venue","symbol","venue_payment_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "order_events_order_dedupe_uidx" ON "order_events" USING btree ("order_id","dedupe_key");

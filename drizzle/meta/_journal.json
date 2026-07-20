@@ -5,99 +5,15 @@
     {
       "idx": 0,
       "version": "7",
-      "when": 1781282295777,
-      "tag": "0000_initial",
+      "when": 1784569961439,
+      "tag": "0000_v3_initial",
       "breakpoints": true
     },
     {
       "idx": 1,
       "version": "7",
-      "when": 1781282295778,
-      "tag": "0001_append_only_hardening",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "7",
-      "when": 1781282295779,
-      "tag": "0002_relax_decision_trail_fks",
-      "breakpoints": true
-    },
-    {
-      "idx": 3,
-      "version": "7",
-      "when": 1781282295780,
-      "tag": "0003_agentic_journal",
-      "breakpoints": true
-    },
-    {
-      "idx": 4,
-      "version": "7",
-      "when": 1781282295781,
-      "tag": "0004_llm_usage",
-      "breakpoints": true
-    },
-    {
-      "idx": 5,
-      "version": "7",
-      "when": 1781282295782,
-      "tag": "0005_agent_decision_input_payload",
-      "breakpoints": true
-    },
-    {
-      "idx": 6,
-      "version": "7",
-      "when": 1781282295783,
-      "tag": "0006_llm_cache_tokens",
-      "breakpoints": true
-    },
-    {
-      "idx": 7,
-      "version": "7",
-      "when": 1781282295784,
-      "tag": "0007_stamp_terminal_at",
-      "breakpoints": true
-    },
-    {
-      "idx": 8,
-      "version": "7",
-      "when": 1781282295785,
-      "tag": "0008_funding_events",
-      "breakpoints": true
-    },
-    {
-      "idx": 9,
-      "version": "7",
-      "when": 1781282295786,
-      "tag": "0009_experiments",
-      "breakpoints": true
-    },
-    {
-      "idx": 10,
-      "version": "7",
-      "when": 1781282295787,
-      "tag": "0010_agent_decision_plan",
-      "breakpoints": true
-    },
-    {
-      "idx": 11,
-      "version": "7",
-      "when": 1781282295788,
-      "tag": "0011_agent_decision_consult_id",
-      "breakpoints": true
-    },
-    {
-      "idx": 12,
-      "version": "7",
-      "when": 1781282295789,
-      "tag": "0012_agent_decision_ab_arms",
-      "breakpoints": true
-    },
-    {
-      "idx": 13,
-      "version": "7",
-      "when": 1784386109256,
-      "tag": "0013_funding_payments",
+      "when": 1784569967893,
+      "tag": "0001_v3_append_only_hardening",
       "breakpoints": true
     }
   ]

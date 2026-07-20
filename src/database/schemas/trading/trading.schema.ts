@@ -15,7 +15,9 @@ import { sql } from 'drizzle-orm';
 import { numericMoney } from './custom-types';
 
 // ── Shared stamp columns ─────────────────────────────────────────────────────
-// Every trading row carries mode + run_id + boot_id for segregation and replay.
+// Every trading row carries mode + run_id + boot_id for segregation and replay. mode is deploy-
+// environment segregation (paper/testnet/live), never lane discrimination — v3 has no lanes
+// (consolidation spec §2).
 const tradingStamp = {
   mode: text('mode').notNull().$type<'paper' | 'testnet' | 'live'>(),
   runId: text('run_id').notNull(),
@@ -31,15 +33,20 @@ export const orderIntents = pgTable('order_intents', {
   venue: text('venue').notNull(),
   symbol: text('symbol').notNull(),
   side: text('side').notNull().$type<'BUY' | 'SELL'>(),
-  // Push 3 P7b: widened to the full OrderIntent['type'] union (STOP_LOSS_LIMIT/STOP_MARKET venue
-  // trigger orders) — TS-level only, matching the repo's $type<>() convention (no DB CHECK; the
-  // underlying column is plain unconstrained text, verified against drizzle/0000_initial.sql before
-  // this widening).
+  // Widened to the full OrderIntent['type'] union (STOP_LOSS_LIMIT/STOP_MARKET venue trigger
+  // orders) — TS-level only ($type<>()), matching the repo's convention; the underlying column is
+  // plain unconstrained text, no DB CHECK.
   type: text('type')
     .notNull()
     .$type<'LIMIT' | 'MARKET' | 'LIMIT_MAKER' | 'STOP_LOSS_LIMIT' | 'STOP_MARKET'>(),
   qty: numericMoney('qty').notNull(),
   limitPrice: numericMoney('limit_price'),
+  // v3 (consolidation spec §2): promoted to a real column — v2 lacked it despite
+  // OrderIntent.triggerPrice existing on the domain type since Push 3 P7b; a trigger order's
+  // trigger price previously round-tripped through recovery as always-undefined
+  // (algo-stop-recovery.service.ts's own header comment). Nullable: only STOP_LOSS_LIMIT/
+  // STOP_MARKET intents carry one.
+  triggerPrice: numericMoney('trigger_price'),
   timeInForce: text('time_in_force').notNull().$type<'GTC' | 'IOC' | 'FOK'>(),
   reduceOnly: boolean('reduce_only').notNull(),
   refPrice: numericMoney('ref_price').notNull(),
@@ -75,7 +82,6 @@ export const orders = pgTable('orders', {
   venue: text('venue').notNull(),
   symbol: text('symbol').notNull(),
   side: text('side').notNull().$type<'BUY' | 'SELL'>(),
-  // Push 3 P7b: widened alongside order_intents.type above — same rationale.
   type: text('type')
     .notNull()
     .$type<'LIMIT' | 'MARKET' | 'LIMIT_MAKER' | 'STOP_LOSS_LIMIT' | 'STOP_MARKET'>(),
@@ -99,7 +105,7 @@ export const orders = pgTable('orders', {
 // ── order_events ──────────────────────────────────────────────────────────────
 // Append-only journal; state re-derivable from this table.
 // PK: id (IDENTITY). UNIQUE(order_id, dedupe_key) for idempotent re-apply.
-// Trigger enforces immutability (no UPDATE/DELETE).
+// Trigger enforces immutability (no UPDATE/DELETE) — see 0001_v3_append_only_hardening.sql.
 
 export const orderEvents = pgTable(
   'order_events',
@@ -248,6 +254,8 @@ export const outboxConsumerAcks = pgTable(
 );
 
 // ── equity_curve ──────────────────────────────────────────────────────────────
+// Book-scoped measurement table — one curve for the whole book, no venue column (v3 consolidation
+// spec §2 venue policy: measurement tables carry no venue and no measurement query may filter on it).
 
 export const equityCurve = pgTable(
   'equity_curve',
@@ -277,9 +285,13 @@ export const configSnapshots = pgTable('config_snapshots', {
 });
 
 // ── reconciliations ───────────────────────────────────────────────────────────
+// venue-scoped operational fact (v3 consolidation spec §2): ReconciliationService iterates
+// VENUE_REGISTRY and runs one pass per venue per tick, so one row per venue pass — venue is NOT
+// NULL (no lane-wide aggregate row exists).
 
 export const reconciliations = pgTable('reconciliations', {
   id: bigint('id', { mode: 'number' }).generatedAlwaysAsIdentity().primaryKey(),
+  venue: text('venue').notNull(),
   ts: timestamp('ts', { withTimezone: true }).defaultNow().notNull(),
   durationMs: integer('duration_ms').notNull(),
   openOrdersChecked: integer('open_orders_checked').notNull(),
@@ -308,7 +320,7 @@ export const modeTransitions = pgTable('mode_transitions', {
 // payload is TEXT storing the canonical sorted-key JSON so the chain is re-derivable
 // from stored bytes without re-serialization (JSONB does not preserve key order).
 // Appends serialized via pg_advisory_xact_lock.
-// REVOKE UPDATE, DELETE from app role + BEFORE UPDATE OR DELETE trigger (see migration).
+// REVOKE UPDATE, DELETE from app role + BEFORE UPDATE OR DELETE trigger (see 0001_v3_append_only_hardening.sql).
 
 export const auditLog = pgTable('audit_log', {
   seq: bigint('seq', { mode: 'number' }).generatedAlwaysAsIdentity().primaryKey(),
@@ -323,8 +335,16 @@ export const auditLog = pgTable('audit_log', {
 // ── agent_decisions ───────────────────────────────────────────────────────────
 // Journals every agentic-lane decision (mapped to a Signal or not) for offline analysis — mirrors
 // signals'/risk_decisions' shape. PLAIN insert-only table: the append-only REVOKE/trigger hardening
-// in 0001_append_only_hardening.sql is scoped to audit_log/order_events only (CLAUDE.md rule 6).
-// action is TS-level only ($type<>()), no DB CHECK — matches signals.kind / risk_decisions.verdict.
+// in 0001_v3_append_only_hardening.sql is scoped to audit_log/order_events/funding_events/
+// funding_payments/experiments only (CLAUDE.md rule 6). action is TS-level only ($type<>()), no DB
+// CHECK — matches signals.kind / risk_decisions.verdict.
+// v3 (consolidation spec §2/§9): action narrows to the rich-tool-contract-only vocabulary — the
+// legacy 'long'|'flat' literals (the retired DECISION_TOOL/SHORTS_DECISION_TOOL contract) are
+// dropped; a fresh v3 DB never carries a legacy row, so no back-compat literal is needed. venue is
+// kept for operational queries only — measurement (promotion/reflection/attribution) never filters
+// on it (see PromotionStatsRepository). info_arm/thinking_arm (the retired derivatives-control A/B
+// factorial) are dropped outright — the playbook champion/candidate A/B is NOT retired and needs no
+// column here (it is attributed via consult_id + playbook_version, not an arm flag).
 
 export const agentDecisions = pgTable(
   'agent_decisions',
@@ -337,22 +357,18 @@ export const agentDecisions = pgTable(
     basedOnSeq: bigint('based_on_seq', { mode: 'bigint' }).notNull(),
     eventTime: bigint('event_time', { mode: 'number' }).notNull(),
     model: text('model').notNull(),
-    // A3: widened alongside AgentDecisionEntry.action (ports/agentic-strategy.ts) — TS-level only,
-    // no DB CHECK, no migration (column was already unconstrained text).
     action: text('action')
       .notNull()
-      .$type<
-        'open_long' | 'open_short' | 'close' | 'adjust' | 'hold' | 'long' | 'flat' | 'error'
-      >(),
+      .$type<'open_long' | 'open_short' | 'close' | 'adjust' | 'hold' | 'error'>(),
     confidence: doublePrecision('confidence'),
     rationale: text('rationale').notNull(),
     refPrice: numericMoney('ref_price'),
     close: numericMoney('close'),
     inputTokens: integer('input_tokens'),
     outputTokens: integer('output_tokens'),
-    // Cache-token analytics (W4+W13 true-spend accounting) — mirrors AgentDecisionEntry's
-    // absent-vs-null-vs-confirmed-zero semantics (ports/agentic-strategy.ts); null on pre-W4 rows
-    // and on error/quiet-hold rows that never called the client.
+    // Cache-token analytics (true-spend accounting) — mirrors AgentDecisionEntry's absent-vs-null-
+    // vs-confirmed-zero semantics (ports/agentic-strategy.ts); null on rows that never called the
+    // client (error/quiet-hold).
     cacheReadInputTokens: integer('cache_read_input_tokens'),
     cacheCreationInputTokens: integer('cache_creation_input_tokens'),
     latencyMs: integer('latency_ms'),
@@ -362,24 +378,17 @@ export const agentDecisions = pgTable(
     // buildMarketPayload) for offline prompt-variant replay; null on error/quiet-hold rows.
     inputPayload: text('input_payload'),
     // Accepted trade plan, verbatim, for offline replay through the settlement backtest harness;
-    // null whenever the decision carried no accepted plan (flat/hold-without-plan/error). A3: widened
-    // from the legacy AgentPlan shape (entryOffsetBps/stopLossPct/takeProfitPct/entryValidityBars/
-    // maxHoldBars/direction?) to a LOCAL mirror of ports/agentic-strategy.ts's AgentDirectives — this
-    // file deliberately never imports ports types (schema stays a pure DB-shape description), so
-    // sizeFraction/entryStyle/partialCloseFraction?/thesis? must be kept in sync by hand with that
-    // interface; a legacy AgentPlan-shaped row (missing sizeFraction/entryStyle) still satisfies this
-    // TS-level-only $type because every added field is either optional or a superset addition — no
-    // migration, the column was already unconstrained jsonb.
-    // I1b: nextConsultBars added — sync note: this local mirror must be kept in sync BY HAND with
-    // ports/agentic-strategy.ts's AgentDirectives (the plan-shape fields above) PLUS
-    // AgentDecisionEntry.nextConsultBars (a sibling field on the journal entry, not on AgentDirectives
-    // itself — merged in here by agent-decision-journal.adapter.ts's record(), see that call site's
-    // own comment for why it only merges when a plan object is actually present).
-    // R2 regimeTags: a compact regime fingerprint (trend/vol/funding?/session) rides on EVERY arm —
+    // null whenever the decision carried no accepted plan (hold-without-plan/error). A LOCAL mirror
+    // of ports/agentic-strategy.ts's AgentDirectives — this file deliberately never imports ports
+    // types (schema stays a pure DB-shape description), so sizeFraction/entryStyle/
+    // partialCloseFraction?/thesis? must be kept in sync by hand with that interface.
+    // nextConsultBars: portfolio-level consult-schedule value, merged in by
+    // agent-decision-journal.adapter.ts's record() when no directive plan rode alongside it — see
+    // that call site's own comment for the merge rule.
+    // regimeTags: a compact regime fingerprint (trend/vol/funding?/session) rides on EVERY arm —
     // stamped on every journaled row so a later consult can retrieve its own past setups by jsonb tag
     // equality (agent-decision.repository.ts's selectSimilarSetups). Kept in sync BY HAND with
-    // ports/agentic-strategy.ts's RegimeTags (this file deliberately never imports ports types). No
-    // migration — plan_json was already unconstrained jsonb, same convention as nextConsultBars above.
+    // ports/agentic-strategy.ts's RegimeTags (this file deliberately never imports ports types).
     planJson: jsonb('plan_json').$type<
       | {
           readonly sizeFraction?: string;
@@ -400,9 +409,9 @@ export const agentDecisions = pgTable(
             readonly session: 'asia' | 'eu' | 'us';
           };
         }
-      // XA4 (A0, 2026-07-20): a hold that carried only a portfolio schedule — no directive set — now
-      // persists `{ nextConsultBars }` alone (before XA4 these rows dropped their schedule entirely).
-      // R2: a tagged hold with neither directives nor a schedule persists `{ regimeTags }` alone.
+      // A hold that carried only a portfolio schedule — no directive set — persists
+      // `{ nextConsultBars }` alone; a tagged hold with neither directives nor a schedule persists
+      // `{ regimeTags }` alone.
       | {
           readonly nextConsultBars?: number;
           readonly regimeTags?: {
@@ -413,19 +422,12 @@ export const agentDecisions = pgTable(
           };
         }
     >(),
-    // Batch-attribution join key (Push II Phase 5 follow-on): BatchingAgentClient coalesces up to
-    // 5 per-symbol propose() calls into ONE AnthropicAgentClient.proposeBatch call, and every
-    // resulting proposal (including degraded-to-hold elements) carries the SAME consultId, so
-    // offline cost/attribution analytics can join the N rows born from one batched call back
-    // together. Null on every non-batched (single-symbol propose()) row.
+    // Batch-attribution join key: BatchingAgentClient coalesces up to 5 per-symbol propose() calls
+    // into ONE AnthropicAgentClient.proposeBatch call, and every resulting proposal (including
+    // degraded-to-hold elements) carries the SAME consultId, so offline cost/attribution analytics
+    // can join the N rows born from one batched call back together. Null on every non-batched
+    // (single-symbol propose()) row.
     consultId: text('consult_id'),
-    // Push 3 P8a-prep: explicit A/B arm truth, stamped by AnthropicAgentClient at journal-write
-    // time (TREATMENT truth per axis — true = treatment). Replaces the prompt_hash reverse-
-    // engineering the cell script previously relied on. Null on pre-migration rows and on rows
-    // written outside the client (prescreen, plan-executor) — see trading.schema.ts's own history
-    // for the consultId precedent (0011) this mirrors additively.
-    infoArm: boolean('info_arm'),
-    thinkingArm: boolean('thinking_arm'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => [index('agent_decisions_strategy_event_idx').on(t.strategyId, t.eventTime)],
@@ -437,6 +439,8 @@ export const agentDecisions = pgTable(
 // 'promotion' row POINTS AT the version it promotes via parentVersion rather than duplicating its
 // content. At most one 'promotion' row may land per UTC calendar day (one promotion/day cadence),
 // enforced by a partial unique index on created_at's UTC date, scoped to source = 'promotion'.
+// v3 (consolidation spec §2): ONE lineage — no lane column, single version sequence (SEED_PLAYBOOK_V3
+// folds the seed plus both v2 lanes' final ACTIVE playbook text — see agentic-strategy module).
 
 export const agentPlaybookVersions = pgTable(
   'agent_playbook_versions',
@@ -444,8 +448,8 @@ export const agentPlaybookVersions = pgTable(
     id: bigint('id', { mode: 'number' }).generatedAlwaysAsIdentity().primaryKey(),
     version: integer('version').notNull(),
     content: text('content').notNull(),
-    // 'loop-candidate' (N2 sibling workstream): a daily-loop-proposed draft awaiting promotion,
-    // distinct from 'reflection' (ad hoc reflection-triggered draft).
+    // 'loop-candidate': a daily-loop-proposed draft awaiting promotion, distinct from 'reflection'
+    // (ad hoc reflection-triggered draft).
     source: text('source')
       .notNull()
       .$type<'seed' | 'reflection' | 'promotion' | 'loop-candidate'>(),
@@ -455,7 +459,10 @@ export const agentPlaybookVersions = pgTable(
   (t) => [
     uniqueIndex('agent_playbook_versions_version_uidx').on(t.version),
     uniqueIndex('agent_playbook_versions_promotion_per_day_uidx')
-      .on(sql`(${t.createdAt} at time zone 'utc')::date`)
+      // Extra parens are load-bearing: Postgres index syntax requires each non-column expression
+      // fully parenthesized — `(expr)::date` needs one MORE wrap or CREATE INDEX fails at `::`
+      // (42601; v2's 0003 carried the double-wrap, drizzle-kit renders this template verbatim).
+      .on(sql`((${t.createdAt} at time zone 'utc')::date)`)
       .where(sql`${t.source} = 'promotion'`),
   ],
 );
@@ -463,12 +470,14 @@ export const agentPlaybookVersions = pgTable(
 // ── llm_usage ─────────────────────────────────────────────────────────────────
 // Reflection-path LLM token usage, kept separate from agent_decisions.input_tokens/output_tokens
 // (the decide-path's own per-call columns) so cost analysis can UNION the two without double
-// counting: decide-path tokens live on agent_decisions; this table's CURRENT writers are the
-// reflection loop only (ReflectionService, via LlmUsageSink — ports/agentic-strategy.ts). kind stays
-// a 2-value union ('decide' | 'reflection') for future use rather than a fixed literal, matching the
-// repo's TS-level-only enum convention (agent_decisions.action, agent_playbook_versions.source) —
-// no DB CHECK constraint. strategy_id is nullable: reflection runs are per-strategy, but a future
-// 'decide' writer might not always resolve one at call time.
+// counting: decide-path tokens live on agent_decisions; this table's writers are the reflection loop
+// only (ReflectionService, via LlmUsageSink — ports/agentic-strategy.ts). kind is a 2-value union
+// ('decide' | 'reflection') for future use, matching the repo's TS-level-only enum convention
+// (agent_decisions.action, agent_playbook_versions.source) — no DB CHECK constraint. strategy_id is
+// nullable: reflection runs are per-strategy, but a future 'decide' writer might not always resolve
+// one at call time. v3: one unified budget across the whole book (AGENTIC_DAILY_COST_STOP_USD) reads
+// this table with no venue predicate — book-scoped measurement.
+
 export const llmUsage = pgTable('llm_usage', {
   id: bigint('id', { mode: 'number' }).generatedAlwaysAsIdentity().primaryKey(),
   kind: text('kind').notNull().$type<'decide' | 'reflection'>(),
@@ -477,21 +486,21 @@ export const llmUsage = pgTable('llm_usage', {
   strategyId: text('strategy_id'),
   inputTokens: integer('input_tokens').notNull(),
   outputTokens: integer('output_tokens').notNull(),
-  // Cache-token analytics (W4+W13 true-spend accounting) — same absent-vs-zero semantics as
-  // LlmUsageEntry's cache fields (ports/agentic-strategy.ts); null on pre-W4 rows.
+  // Cache-token analytics (true-spend accounting) — same absent-vs-zero semantics as
+  // LlmUsageEntry's cache fields (ports/agentic-strategy.ts).
   cacheReadInputTokens: integer('cache_read_input_tokens'),
   cacheCreationInputTokens: integer('cache_creation_input_tokens'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
 // ── funding_events ────────────────────────────────────────────────────────────
-// Append-only journal of perp funding-payment settlements (PaperPerpAdapter.applyFunding, B1):
-// one row per (position, funding timestamp) accrual. payment_quote = −signed_qty × mark_price ×
+// Append-only journal of perp funding-payment settlements (PaperPerpAdapter.applyFunding): one row
+// per (position, funding timestamp) accrual. payment_quote = −signed_qty × mark_price ×
 // funding_rate (Binance convention: a long with positive funding_rate PAYS — payment_quote
 // negative — a short RECEIVES). Same REVOKE + immutable-trigger treatment as audit_log/order_events
-// (migration 0008 mirrors 0001) — CLAUDE.md rule 6 scopes append-only hardening to rows that are a
-// durable settlement/audit trail, which a funding payment is, unlike agent_decisions' plain-insert
-// analytics table above.
+// (0001_v3_append_only_hardening.sql) — CLAUDE.md rule 6 scopes append-only hardening to rows that
+// are a durable settlement/audit trail, which a funding payment is, unlike agent_decisions' plain-
+// insert analytics table above.
 
 export const fundingEvents = pgTable('funding_events', {
   id: bigint('id', { mode: 'number' }).generatedAlwaysAsIdentity().primaryKey(),
@@ -508,7 +517,7 @@ export const fundingEvents = pgTable('funding_events', {
 });
 
 // ── funding_payments ─────────────────────────────────────────────────────────
-// P5b: venue-reported perp funding-payment settlements (funding-ingest.service.ts, ccxt
+// Venue-reported perp funding-payment settlements (funding-ingest.service.ts, ccxt
 // fetchFundingHistory), DISTINCT from funding_events above (funding_events is the paper-sim
 // journal written by PaperPerpAdapter.applyFunding and carries fundingRate/markPrice/signedQty —
 // none of which are available on ccxt's unified FundingHistory row; see VenueFundingPayment's own
@@ -518,9 +527,10 @@ export const fundingEvents = pgTable('funding_events', {
 // makes re-ingestion idempotent. Sign convention: amount_quote POSITIVE = received (a short
 // collecting funding), NEGATIVE = paid (a long paying funding) — ccxt's unified income-endpoint
 // convention, ADDED directly into promotion's net (never subtracted).
-// Same REVOKE + immutable-trigger treatment as funding_events/audit_log/order_events (migration
-// 0013 mirrors 0001/0008) — a funding settlement is a durable venue-truth record, never corrected
-// in place.
+// Same REVOKE + immutable-trigger treatment as funding_events/audit_log/order_events
+// (0001_v3_append_only_hardening.sql) — a funding settlement is a durable venue-truth record, never
+// corrected in place. Measurement reads (PromotionStatsRepository.fundingNetForMode) filter on mode
+// only — never venue (book-scoped net).
 
 export const fundingPayments = pgTable(
   'funding_payments',
@@ -548,9 +558,9 @@ export const fundingPayments = pgTable(
 // test/backtest/experiment-log.ts), so the deflated-Sharpe multiple-testing count (N) is honest
 // across sessions rather than reset per-process. source is TS-level only ($type<>()), matching the
 // repo's convention (signals.kind / agent_playbook_versions.source) — no DB CHECK constraint.
-// Same REVOKE + immutable-trigger treatment as audit_log/order_events/funding_events (migration
-// 0009 mirrors 0001/0008): a trial row is a durable research-audit trail, never corrected in place —
-// a re-run logs a NEW row instead.
+// Same REVOKE + immutable-trigger treatment as audit_log/order_events/funding_events
+// (0001_v3_append_only_hardening.sql): a trial row is a durable research-audit trail, never
+// corrected in place — a re-run logs a NEW row instead.
 
 export const experiments = pgTable(
   'experiments',

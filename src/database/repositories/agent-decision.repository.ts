@@ -25,10 +25,12 @@ export interface AgentDecisionInsert {
   basedOnSeq: bigint;
   eventTime: number;
   model: string;
-  // A3: widened alongside AgentDecisionEntry.action (ports/agentic-strategy.ts) — this is the row
-  // shape AgentDecisionJournalAdapter.record() builds AFTER its own fail-loud guard has already
-  // dropped anything outside this union, so the type here stays the full accepted set.
-  action: 'open_long' | 'open_short' | 'close' | 'adjust' | 'hold' | 'long' | 'flat' | 'error';
+  // v3 (consolidation spec §2/§9): narrowed to the rich-tool-contract-only vocabulary — the legacy
+  // 'long'/'flat' literals (the retired DECISION_TOOL/SHORTS_DECISION_TOOL contract) are no longer
+  // accepted; AgentDecisionJournalAdapter's record() guard narrows AgentDecisionEntry['action'] (the
+  // wider ports-level union, still carrying the legacy literals for pre-v3 callers) down to this set
+  // before ever building this row, and drops anything outside it.
+  action: 'open_long' | 'open_short' | 'close' | 'adjust' | 'hold' | 'error';
   confidence: number | null;
   rationale: string;
   refPrice: string | null;
@@ -60,10 +62,6 @@ export interface AgentDecisionInsert {
     | null;
   // See AgentDecisionEntry.consultId — the batch join key; absent and null both insert as NULL.
   consultId?: string | null;
-  // See AgentDecisionEntry.infoArm/thinkingArm — A/B treatment truth; absent and null both insert
-  // as NULL.
-  infoArm?: boolean | null;
-  thinkingArm?: boolean | null;
 }
 
 export type AgentDecisionDbRow = typeof schema.agentDecisions.$inferSelect;
@@ -143,17 +141,16 @@ export class AgentDecisionRepository {
 
   // Lifetime decide/entry counts for one playbook version (the abstention lapse's evidence base —
   // see AgentDecisionJournalPort.versionEntryStats): real-LLM rows only, ReflectionService's
-  // model.startsWith('claude') filter in SQL form. P4: entry set widened to every v2/legacy OPEN
-  // action ('long' the legacy tool, 'open_long'/'open_short' the v2 tools) — 'close'/'adjust'/'flat'/
-  // 'hold' are never entries. Missing this widening false-abstention-lapses every v2 candidate (the
-  // plan's highest-priority silent break — see this codebase's design doc).
+  // model.startsWith('claude') filter in SQL form. Entry set is every OPEN action
+  // ('open_long'/'open_short') — 'close'/'adjust'/'hold' are never entries. v3: the legacy 'long'
+  // literal is dropped from the filter — a fresh v3 DB never carries a legacy-contract row.
   async countVersionEntryStats(version: number): Promise<{ decides: number; entries: number }> {
     const db = requireDb(this.db);
     const [row] = await db
       .select({
         decides: count(),
         entries: count(
-          sql`case when ${schema.agentDecisions.action} in ('long', 'open_long', 'open_short') then 1 end`,
+          sql`case when ${schema.agentDecisions.action} in ('open_long', 'open_short') then 1 end`,
         ),
       })
       .from(schema.agentDecisions)

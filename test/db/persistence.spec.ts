@@ -25,8 +25,9 @@ import { JournalRepository } from '../../src/database/repositories/journal.repos
 import { OutboxRepository } from '../../src/database/repositories/outbox.repository';
 import { FillRepository } from '../../src/database/repositories/fill.repository';
 import { DrizzleExecutionStore } from '../../src/database/repositories/drizzle-execution-store';
-import type { PersistedOrderEvent } from '../../src/ports/execution';
+import type { PersistedOrderEvent, ReconciliationRow } from '../../src/ports/execution';
 import { OrderRepository } from '../../src/database/repositories/order.repository';
+import { IntentRepository } from '../../src/database/repositories/intent.repository';
 import { RiskDecisionRepository } from '../../src/database/repositories/risk-decision.repository';
 import { SignalRepository } from '../../src/database/repositories/signal.repository';
 import { AgentDecisionRepository } from '../../src/database/repositories/agent-decision.repository';
@@ -154,8 +155,11 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
       'config_snapshots',
       'equity_curve',
       'exec_outbox',
+      'experiments',
       'fee_ledger',
       'fills',
+      'funding_events',
+      'funding_payments',
       'llm_usage',
       'mode_transitions',
       'order_events',
@@ -328,6 +332,47 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
 
   it('(c) TRUNCATE on order_events raises exception', async () => {
     await expect(pool.query(`TRUNCATE public.order_events`)).rejects.toThrow(
+      /append-only|prohibited/i,
+    );
+  });
+
+  // ── (c2) v3: 0001_v3_append_only_hardening.sql also covers funding_events/funding_payments/
+  // experiments (folded into ONE hardening migration alongside audit_log/order_events — see that
+  // migration's header comment) ──────────────────────────────────────────────────────────────────
+  it('(c2) UPDATE/DELETE/TRUNCATE on funding_events raise exceptions', async () => {
+    await pool.query(
+      `INSERT INTO public.funding_events
+        (strategy_id, venue, symbol, funding_rate, mark_price, signed_qty, payment_quote,
+         funding_time, mode)
+       VALUES ('s', 'binanceusdm', 'BTC/USDT:USDT', '0.0001', '50000', '1', '-5',
+         now(), 'paper')`,
+    );
+    await expect(
+      pool.query(`UPDATE public.funding_events SET mode = 'live' WHERE strategy_id = 's'`),
+    ).rejects.toThrow(/append-only|prohibited/i);
+    await expect(
+      pool.query(`DELETE FROM public.funding_events WHERE strategy_id = 's'`),
+    ).rejects.toThrow(/append-only|prohibited/i);
+    await expect(pool.query(`TRUNCATE public.funding_events`)).rejects.toThrow(
+      /append-only|prohibited/i,
+    );
+  });
+
+  it('(c2) UPDATE/DELETE/TRUNCATE on funding_payments raise exceptions', async () => {
+    await pool.query(
+      `INSERT INTO public.funding_payments
+        (venue, symbol, venue_payment_id, amount_quote, funding_time, mode)
+       VALUES ('binanceusdm', 'BTC/USDT:USDT', 'fp-immutable-1', '3.5', 1700000000000, 'paper')`,
+    );
+    await expect(
+      pool.query(
+        `UPDATE public.funding_payments SET mode = 'live' WHERE venue_payment_id = 'fp-immutable-1'`,
+      ),
+    ).rejects.toThrow(/append-only|prohibited/i);
+    await expect(
+      pool.query(`DELETE FROM public.funding_payments WHERE venue_payment_id = 'fp-immutable-1'`),
+    ).rejects.toThrow(/append-only|prohibited/i);
+    await expect(pool.query(`TRUNCATE public.funding_payments`)).rejects.toThrow(
       /append-only|prohibited/i,
     );
   });
@@ -847,6 +892,60 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
     expect(rows[0]?.intent_id).toBe('dt-intent-2');
   });
 
+  // ── (i2) v3: reconciliations.venue — venue-scoped operational fact, one row per venue pass ──
+  it('(i2) saveReconciliation stamps venue as a first-class column (not folded into discrepancies)', async () => {
+    const store = new DrizzleExecutionStore(db, {
+      mode: 'testnet',
+      runId: 'run-recon-v3',
+      bootId: 'boot-recon-v3',
+    });
+    const spotRow: ReconciliationRow = {
+      ts: epochMs(1_800_080_000_000),
+      venue: 'binance',
+      mismatches: 0,
+      halted: false,
+      detail: 'clean',
+    };
+    const perpRow: ReconciliationRow = {
+      ts: epochMs(1_800_080_100_000),
+      venue: 'binanceusdm',
+      mismatches: 2,
+      halted: false,
+      detail: 'balance drift',
+    };
+    await store.saveReconciliation(spotRow);
+    await store.saveReconciliation(perpRow);
+
+    const { rows } = await pool.query<{
+      venue: string;
+      result: string;
+      discrepancies: { mismatches: number; detail: string; venue?: string };
+      run_id: string;
+    }>(
+      `SELECT venue, result, discrepancies, run_id FROM public.reconciliations
+       WHERE run_id = 'run-recon-v3' ORDER BY venue`,
+    );
+    expect(rows).toHaveLength(2);
+    expect(rows[0]!.venue).toBe('binance');
+    expect(rows[0]!.result).toBe('CLEAN');
+    // venue now rides on its own column — no longer duplicated inside discrepancies.
+    expect(rows[0]!.discrepancies).toEqual({ mismatches: 0, detail: 'clean' });
+    expect(rows[1]!.venue).toBe('binanceusdm');
+    expect(rows[1]!.result).toBe('MISMATCH');
+    expect(rows[1]!.discrepancies).toEqual({ mismatches: 2, detail: 'balance drift' });
+  });
+
+  it('(i2) reconciliations.venue is NOT NULL', async () => {
+    await expect(
+      pool.query(
+        `INSERT INTO public.reconciliations
+          (ts, duration_ms, open_orders_checked, trades_checked, balances_checked, discrepancies,
+           result, mode, run_id, boot_id)
+         VALUES (now(), 0, 0, 0, 0, '{}', 'CLEAN', 'paper', 'run-recon-null', 'boot-recon-null')`,
+      ),
+    ).rejects.toThrow(/null value|not-null/i);
+  });
+
   // ── (g) Constraint smoke tests ────────────────────────────────────────────
   it('(g) duplicate client_order_id on order_intents is rejected', async () => {
     const row = `INSERT INTO public.order_intents
@@ -869,6 +968,49 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
             '50000.000000000000000000',0,0,9999999,'dk-d2',0,0,'0.5','paper','r1','b1')`,
       ),
     ).rejects.toThrow(/unique|duplicate/i);
+  });
+
+  it('(g) v3: order_intents.trigger_price round-trips an exact decimal string, and is null when absent', async () => {
+    const repo = new IntentRepository(db);
+    const base = {
+      strategyId: 's',
+      venue: 'binanceusdm',
+      symbol: 'BTC/USDT:USDT',
+      side: 'SELL' as const,
+      type: 'STOP_MARKET' as const,
+      qty: '1.000000000000000000',
+      timeInForce: 'GTC' as const,
+      reduceOnly: true,
+      refPrice: '50000.000000000000000000',
+      refSeq: 0n,
+      createdAt: 0,
+      expiresAt: 9_999_999,
+      sourceDedupeKey: 'dk-trig',
+      sourceEventTime: 0,
+      sourceBasedOnSeq: 0n,
+      sourceStrength: '0.5',
+      mode: 'paper' as const,
+      runId: 'run-trig',
+      bootId: 'boot-trig',
+    };
+    await repo.insert({
+      ...base,
+      intentId: 'intent-trig-1',
+      clientOrderId: 'cbp-trig-000000000000000000001',
+      triggerPrice: '48500.123456789012345678',
+    });
+    await repo.insert({
+      ...base,
+      intentId: 'intent-trig-2',
+      clientOrderId: 'cbp-trig-000000000000000000002',
+      side: 'BUY',
+      type: 'LIMIT',
+    });
+
+    const withTrigger = await repo.findById('intent-trig-1');
+    const withoutTrigger = await repo.findById('intent-trig-2');
+    expect(withTrigger!.triggerPrice).toBe(pad18('48500.123456789012345678'));
+    expect(withoutTrigger!.triggerPrice).toBeNull();
   });
 
   it('(g) duplicate (order_id, dedupe_key) on order_events is rejected', async () => {
@@ -901,7 +1043,7 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
       triggerKind: 'candle' as const,
       basedOnSeq: 42n,
       model: 'claude-opus-4-8',
-      action: 'long' as const,
+      action: 'open_long' as const,
       confidence: 0.82,
       rationale: 'trend + momentum confluence',
       refPrice: '50000.123456789012345678',
@@ -1030,6 +1172,51 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
     errorSpy.mockRestore();
   });
 
+  it('(j) v3: AgentDecisionJournalAdapter.record drops the legacy "long"/"flat" literals — a fresh v3 DB never carries a legacy-contract row', async () => {
+    const adapter = new AgentDecisionJournalAdapter(db);
+    const errorSpy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    const base = {
+      strategyId: strategyId('agentic-v3-legacy-guard'),
+      symbol: symbolId('BTC/USDT'),
+      venue: venueId('binance'),
+      triggerKind: 'candle' as const,
+      basedOnSeq: 1n,
+      model: 'claude-sonnet-5',
+      confidence: null,
+      rationale: 'r',
+      refPrice: null,
+      close: null,
+      inputTokens: null,
+      outputTokens: null,
+      latencyMs: null,
+      playbookVersion: null,
+      inputPayload: null,
+    };
+    // AgentDecisionEntry.action (ports/agentic-strategy.ts) still statically declares 'long'/'flat'
+    // (the pre-v3 agentic workstream hasn't deleted the legacy contract from the port type yet), but
+    // the v3 schema's action column no longer accepts them — the journal guard must drop both.
+    adapter.record({
+      ...base,
+      eventTime: epochMs(1_800_070_000_000),
+      action: 'long',
+      promptHash: 'v3-legacy-long',
+    });
+    adapter.record({
+      ...base,
+      eventTime: epochMs(1_800_070_100_000),
+      action: 'flat',
+      promptHash: 'v3-legacy-flat',
+    });
+
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('agentic-v3-legacy-guard'));
+    const { rows } = await pool.query(
+      `SELECT prompt_hash FROM public.agent_decisions WHERE prompt_hash IN ($1, $2)`,
+      ['v3-legacy-long', 'v3-legacy-flat'],
+    );
+    expect(rows).toHaveLength(0);
+    errorSpy.mockRestore();
+  });
+
   it('(j) countVersionEntryStats counts lifetime real-LLM decides/entries for ONE version (abstention-lapse evidence base)', async () => {
     const repo = new AgentDecisionRepository(db);
     const base = {
@@ -1053,7 +1240,7 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
     await repo.insert({
       ...base,
       model: 'claude-sonnet-5',
-      action: 'long',
+      action: 'open_long',
       playbookVersion: 91,
       eventTime: 10,
       promptHash: 'ves-a',
@@ -1069,7 +1256,7 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
     await repo.insert({
       ...base,
       model: 'replay-sim',
-      action: 'long',
+      action: 'open_long',
       playbookVersion: 91,
       eventTime: 12,
       promptHash: 'ves-c',
@@ -1086,7 +1273,7 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
     await repo.insert({
       ...base,
       model: 'claude-sonnet-5',
-      action: 'long',
+      action: 'open_long',
       playbookVersion: null,
       eventTime: 14,
       promptHash: 'ves-e',
@@ -1250,29 +1437,30 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
       latencyMs: null,
       inputPayload: null,
     };
-    // eventTimes above every other row this suite inserts, so the cap assertions below are
-    // deterministic against the shared table.
+    // eventTimes above every other row this suite inserts (the A3 fixtures reach
+    // 1_800_050_000_000 — stay above that), so the cap assertions below are deterministic
+    // against the shared table.
     await repo.insert({
       ...base,
-      eventTime: 1_800_000_000_100,
+      eventTime: 1_800_100_000_100,
       playbookVersion: 7,
       promptHash: 'rv-a',
     });
     await repo.insert({
       ...base,
-      eventTime: 1_800_000_000_200,
+      eventTime: 1_800_100_000_200,
       playbookVersion: null,
       promptHash: 'rv-b',
     });
     await repo.insert({
       ...base,
-      eventTime: 1_800_000_000_300,
+      eventTime: 1_800_100_000_300,
       playbookVersion: 8,
       promptHash: 'rv-c',
     });
     await repo.insert({
       ...base,
-      eventTime: 1_800_000_000_400,
+      eventTime: 1_800_100_000_400,
       playbookVersion: 9,
       promptHash: 'rv-d',
     });
@@ -1280,13 +1468,13 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
     // insertion order, matching selectRecent (attributeVersion's backwards scan depends on it).
     await repo.insert({
       ...base,
-      eventTime: 1_800_000_000_500,
+      eventTime: 1_800_100_000_500,
       playbookVersion: 10,
       promptHash: 'rv-e',
     });
     await repo.insert({
       ...base,
-      eventTime: 1_800_000_000_500,
+      eventTime: 1_800_100_000_500,
       playbookVersion: 11,
       promptHash: 'rv-f',
     });
@@ -1302,7 +1490,7 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
     const capped = await adapter.recentVersioned(2);
     expect(capped.map((r) => r.promptHash)).toEqual(['rv-e', 'rv-f']);
     // sinceMs bounds at-or-after the instant.
-    const since = await adapter.recentVersioned(500, 1_800_000_000_300);
+    const since = await adapter.recentVersioned(500, 1_800_100_000_300);
     expect(since.map((r) => r.promptHash)).toEqual(['rv-c', 'rv-d', 'rv-e', 'rv-f']);
   });
 

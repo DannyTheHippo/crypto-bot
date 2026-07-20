@@ -17,6 +17,9 @@ export interface IntentInsert {
   type: 'LIMIT' | 'MARKET' | 'LIMIT_MAKER' | 'STOP_LOSS_LIMIT' | 'STOP_MARKET';
   qty: string;
   limitPrice?: string;
+  // v3 (consolidation spec §2): trigger_price promoted to a real column — only STOP_LOSS_LIMIT/
+  // STOP_MARKET intents carry one (see trading.schema.ts's own header comment on the column).
+  triggerPrice?: string;
   timeInForce: 'GTC' | 'IOC' | 'FOK';
   reduceOnly: boolean;
   refPrice: string;

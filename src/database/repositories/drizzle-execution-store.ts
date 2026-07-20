@@ -102,6 +102,8 @@ export class DrizzleExecutionStore implements ExecutionStorePort {
       type: persistedOrderType(intent.type),
       qty: intent.qty.toFixed(),
       limitPrice: intent.limitPrice?.toFixed(),
+      // v3 (consolidation spec §2): trigger_price promoted to a real column.
+      triggerPrice: intent.triggerPrice?.toFixed(),
       timeInForce: intent.timeInForce,
       reduceOnly: intent.reduceOnly,
       refPrice: intent.refPrice.toFixed(),
@@ -257,11 +259,14 @@ export class DrizzleExecutionStore implements ExecutionStorePort {
 
   async saveReconciliation(row: ReconciliationRow): Promise<void> {
     await this.reconciliations.insert({
+      // v3 (consolidation spec §2): venue is now a first-class column (was folded into the
+      // discrepancies jsonb blob only) — kept out of discrepancies now that it has its own column.
+      venue: row.venue,
       durationMs: 0,
       openOrdersChecked: 0,
       tradesChecked: 0,
       balancesChecked: 0,
-      discrepancies: { mismatches: row.mismatches, detail: row.detail, venue: row.venue },
+      discrepancies: { mismatches: row.mismatches, detail: row.detail },
       result: row.halted ? 'HALT' : row.mismatches > 0 ? 'MISMATCH' : 'CLEAN',
       mode: this.ctx.mode,
       runId: this.ctx.runId,
@@ -395,6 +400,9 @@ export class DrizzleExecutionStore implements ExecutionStorePort {
       type: r.type,
       qty: qty(r.qty),
       limitPrice: r.limitPrice === null ? undefined : price(r.limitPrice),
+      // v3 (consolidation spec §2): trigger_price now round-trips through recovery — previously
+      // always undefined here (algo-stop-recovery.service.ts's own header comment records the v2 gap).
+      triggerPrice: r.triggerPrice === null ? undefined : price(r.triggerPrice),
       timeInForce: r.timeInForce,
       reduceOnly: r.reduceOnly,
       mode: r.mode,

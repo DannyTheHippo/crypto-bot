@@ -282,6 +282,8 @@ describe('DrizzleExecutionStore trigger-order persistence pass-through (Push 3 P
       proof,
     );
     expect(captured()?.['type']).toBe('STOP_MARKET');
+    // v3 (consolidation spec §2): trigger_price is now a real column — saveIntent forwards it.
+    expect(captured()?.['triggerPrice']).toBe('95');
   });
 
   it('saveIntent persists a STOP_LOSS_LIMIT trigger intent (spot) without throwing', async () => {
@@ -295,6 +297,7 @@ describe('DrizzleExecutionStore trigger-order persistence pass-through (Push 3 P
       proof,
     );
     expect(captured()?.['type']).toBe('STOP_LOSS_LIMIT');
+    expect(captured()?.['triggerPrice']).toBe('95');
   });
 
   it('saveNewOrder persists a STOP_LOSS_LIMIT trigger order without throwing', async () => {
@@ -322,5 +325,6 @@ describe('DrizzleExecutionStore trigger-order persistence pass-through (Push 3 P
     const { store, captured } = storeWithCapturedIntent();
     await store.saveIntent(makeIntent({ type: 'LIMIT', limitPrice: price('100') }), proof);
     expect(captured()?.['type']).toBe('LIMIT');
+    expect(captured()?.['triggerPrice']).toBeUndefined();
   });
 });

@@ -23,7 +23,18 @@ import {
   type RegretDigest,
 } from './counterfactual-scoring';
 import { validatePlaybook, type PlaybookValidationResult } from './playbook-validator';
-import type { DailyLlmBudget } from './agent-budget';
+import { AttemptScopedBudget, type DailyLlmBudget } from './agent-budget';
+
+// XA2 (A0 activation bundle): hard per-attempt session caps + the pre-flight reserve estimate.
+// The W6 soak caught reflection sessions running 78-133 API calls / $2.25-2.93 (mint-floor replay
+// over every recorded payload row, at the Opus tier) where the 2026-07-11 session did the same job
+// in 2 calls / ~$0.10 — these caps bound the runaway shape; sub-paths degrade fail-open (partial
+// replay evidence, skipped backtest) when a cap trips. The reserve estimate doubles as the
+// carve-out: an attempt only starts when the daily pool has this much headroom LEFT, so a session
+// can never zero the consult budget (spot stop $1.50 keeps >= $0.75 for consults).
+const REFLECTION_ATTEMPT_MAX_CALLS = 15;
+const REFLECTION_ATTEMPT_MAX_USD = 0.75;
+const REFLECTION_ATTEMPT_RESERVE_USD = 0.75;
 import type { LoggerLike } from './anthropic-agent-client';
 import { measureEntryRate, type PlanReplayResult } from './entry-rate-floor';
 import { runCandidateBacktest } from './candidate-backtest';
@@ -716,6 +727,16 @@ export class ReflectionService {
   // retry-on-next-close semantics untouched.
   private lastWeeklyFireAt = 0;
   private inFlight = false;
+  // XA2: the current attempt's session-scoped spend gate — assigned fresh at every attempt start
+  // (after the pre-flight reserve passes), so a stale wrapper never carries caps across attempts.
+  // Attempts are serialized by inFlight; spendGate() below falls back to the shared daily budget
+  // for any spend outside an attempt (none today — defense against a future call-site landing
+  // outside runReflection).
+  private attemptBudget: AttemptScopedBudget | null = null;
+
+  private spendGate(): Pick<DailyLlmBudget, 'tryReserveCall' | 'recordUsage'> {
+    return this.attemptBudget ?? this.deps.budget;
+  }
   // The trigger counters are in-memory and used to reset on every redeploy — with frequent deploys
   // the every-N-trades trigger never accumulated and reflection NEVER fired (observed live: 21
   // closed round trips, zero reflections). The one-time per-strategy seed below restores them from
@@ -1007,7 +1028,28 @@ export class ReflectionService {
       }
     }
 
-    if (!this.deps.budget.tryReserveCall()) {
+    // XA2 (A0 activation bundle): attempt-level pre-flight — a multi-call attempt (mint + its
+    // mint-floor replay + candidate backtest) that cannot plausibly finish inside today's pool must
+    // not START and strand the consult budget (permission gate, fails CLOSED; the W6 runaway spent
+    // $2.48 against the $1.50 stop and blacked out consults). Deferred ⇒ trigger preserved — the
+    // weekly path retries next week (its own fire stamp), the trade path on the next close.
+    if (!this.deps.budget.tryReserveAttempt(REFLECTION_ATTEMPT_RESERVE_USD)) {
+      this.warn(
+        `reflection: insufficient daily budget headroom for a full attempt (~$${REFLECTION_ATTEMPT_RESERVE_USD}) — deferring, trigger preserved`,
+      );
+      this.deps.recorder?.recordReflectionOutcome?.('budget_deferred');
+      return;
+    }
+    // XA2: every spend inside THIS attempt routes through an attempt-scoped wrapper enforcing the
+    // hard session caps (bounds the observed 78-133-call runaway shape to <=15 calls / <=$0.75);
+    // when a cap trips the sub-paths' existing fail-open degrades take over (partial-evidence
+    // mint-floor, skipped backtest) — the shared daily meter underneath stays the source of truth.
+    this.attemptBudget = new AttemptScopedBudget(
+      this.deps.budget,
+      REFLECTION_ATTEMPT_MAX_CALLS,
+      REFLECTION_ATTEMPT_MAX_USD,
+    );
+    if (!this.attemptBudget.tryReserveCall()) {
       this.warn('reflection: daily LLM budget exhausted — aborting attempt');
       this.deps.recorder?.recordReflectionOutcome?.('budget_exhausted');
       return;
@@ -1085,7 +1127,7 @@ export class ReflectionService {
 
       const recordUsage = (usage: AgentUsage | undefined): void => {
         if (!usage) return;
-        this.deps.budget.recordUsage(usage);
+        this.spendGate().recordUsage(usage);
         this.deps.recorder?.recordTokens?.(
           usage.inputTokens,
           usage.outputTokens,
@@ -1134,7 +1176,7 @@ export class ReflectionService {
         // degrades to the pre-retry behavior instead of burning a doomed call. Backlog #39 reuses this
         // SAME bounded machinery for a floor rejection — only the tool_result feedback text differs
         // (gate.feedback is either validatePlaybook's own reason or the floor's abstention text).
-        if (first.toolBlock!.id !== undefined && this.deps.budget.tryReserveCall()) {
+        if (first.toolBlock!.id !== undefined && this.spendGate().tryReserveCall()) {
           const retryMessages: readonly ReflectionMessage[] = [
             { role: 'user', content: userMessage },
             {
@@ -1339,7 +1381,7 @@ export class ReflectionService {
     // whole floor aborts (fail-open) rather than judging a candidate on a partial, budget-truncated
     // sample.
     for (let i = 0; i < rows.length; i++) {
-      if (!this.deps.budget.tryReserveCall()) {
+      if (!this.spendGate().tryReserveCall()) {
         this.warn('entry-floor skipped: budget exhausted mid-replay — mint proceeds (fail-open)');
         return null;
       }
@@ -1449,7 +1491,7 @@ export class ReflectionService {
     // own loop above.
     const callsNeeded = rows.length * (cache ? 1 : 2);
     for (let i = 0; i < callsNeeded; i++) {
-      if (!this.deps.budget.tryReserveCall()) {
+      if (!this.spendGate().tryReserveCall()) {
         this.warn(
           'mint-backtest skipped: budget exhausted mid-reservation — mint proceeds (fail-open)',
         );

@@ -104,14 +104,35 @@ export class DailyLlmBudget {
     return true;
   }
 
+  // XA2 (A0 activation bundle): pre-flight headroom check for a MULTI-CALL attempt (weekly
+  // reflection, playbook mint + its mint-floor replay, candidate backtest, future replay runs).
+  // Returns true only when today's pool could absorb an attempt of ~estimatedUsd on TOP of what is
+  // already spent — it reserves NOTHING (per-call reservation still happens inside the attempt via
+  // tryReserveCall). Fails CLOSED as a permission gate on the attempt START: an attempt that cannot
+  // plausibly finish inside the pool must not start and strand the consult budget (the 2026-07-20
+  // Opus reflection runaway spent $2.48 against a $1.50 stop and blacked out consults for hours).
+  // Mid-attempt calls keep their existing fail-OPEN posture — this gate never interrupts a running
+  // attempt.
+  tryReserveAttempt(estimatedUsd: number): boolean {
+    this.rollIfNeeded();
+    if (this.calls >= this.caps.maxCallsPerDay) return false;
+    if (this.inputTokens + this.outputTokens >= this.caps.maxTokensPerDay) return false;
+    const costCap = this.caps.maxCostUsdPerDay ?? 0;
+    if (costCap > 0 && new Decimal(this.costUsd).plus(estimatedUsd).gt(costCap)) return false;
+    return true;
+  }
+
   // model: the id the call was actually priced against (e.g. the decide model vs a pricier
   // reflection model) — see resolveRates for the default/per-model/fail-closed resolution order.
   // Cache tokens (W4+W13) are NOT folded into inputTokens/outputTokens: those two counters back
   // maxTokensPerDay, which predates cache accounting and must keep counting the same tokens it
   // always has — only costUsd (a separate cap) grows with cache-token spend.
-  recordUsage(usage?: AgentUsage, model?: string): void {
+  // XA2: returns the priced cost of THIS call (0 when no usage) so attempt-scoped wrappers can
+  // meter their own session spend without re-implementing rate resolution; existing void-callers
+  // are unaffected.
+  recordUsage(usage?: AgentUsage, model?: string): number {
     this.rollIfNeeded();
-    if (!usage) return;
+    if (!usage) return 0;
     this.inputTokens += usage.inputTokens;
     this.outputTokens += usage.outputTokens;
     const rates = this.resolveRates(model);
@@ -126,6 +147,7 @@ export class DailyLlmBudget {
       .plus(new Decimal(usage.cacheReadInputTokens ?? 0).div(MTOK).mul(rates.cacheRead))
       .plus(new Decimal(usage.cacheCreationInputTokens ?? 0).div(MTOK).mul(rates.cacheWrite));
     this.costUsd = new Decimal(this.costUsd).plus(callCost).toNumber();
+    return callCost.toNumber();
   }
 
   private resolveRates(model: string | undefined): {
@@ -217,6 +239,42 @@ export class DailyLlmBudget {
       maxCostUsdPerDay: costCap,
       exhausted,
     };
+  }
+}
+
+// XA2 (A0 activation bundle): attempt-scoped spend gate for multi-call attempts. Wraps the SHARED
+// DailyLlmBudget (the daily meter stays the single source of truth for total spend) and ADDS two
+// session-local hard caps — max calls and max USD per attempt — bounding the runaway shape the W6
+// soak caught live (78-133 Opus calls / $2.25-2.93 per reflection session where 2 calls / ~$0.10
+// did the same job on 2026-07-11). When a session cap trips, tryReserveCall returns false and the
+// attempt's own existing degrade paths take over (mint-floor replay proceeds on partial evidence —
+// fail-open mid-attempt); the daily pool is never stranded. One instance per attempt, never reused.
+export class AttemptScopedBudget {
+  private calls = 0;
+  private costUsd = new Decimal(0);
+
+  constructor(
+    private readonly inner: DailyLlmBudget,
+    private readonly maxCallsPerAttempt: number,
+    private readonly maxCostUsdPerAttempt: number,
+  ) {}
+
+  tryReserveCall(): boolean {
+    if (this.calls >= this.maxCallsPerAttempt) return false;
+    if (this.costUsd.gte(this.maxCostUsdPerAttempt)) return false;
+    if (!this.inner.tryReserveCall()) return false;
+    this.calls += 1;
+    return true;
+  }
+
+  recordUsage(usage?: AgentUsage, model?: string): number {
+    const callCost = this.inner.recordUsage(usage, model);
+    this.costUsd = this.costUsd.plus(callCost);
+    return callCost;
+  }
+
+  snapshot(): { calls: number; costUsd: number } {
+    return { calls: this.calls, costUsd: this.costUsd.toNumber() };
   }
 }
 

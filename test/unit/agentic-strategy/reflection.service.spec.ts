@@ -824,7 +824,7 @@ describe('ReflectionService', () => {
       const service2 = new ReflectionService(baseCfg({ everyNTrades: 1 }), broke.deps);
       service2.onClosedTrade(SID, 1);
       await flush();
-      expect(broke.recorderApi.outcomes).toEqual(['budget_exhausted']);
+      expect(broke.recorderApi.outcomes).toEqual(['budget_deferred']);
     });
 
     it('includes a decisionOutcomes forward-outcome digest in the reflection request body (F1)', async () => {
@@ -2622,7 +2622,7 @@ describe('P3: checkWeeklyReflectionTrigger', () => {
   });
 
   it('W6 regression (2026-07-20): a blocked weekly fire is consumed — no per-bar re-fire loop', async () => {
-    // runReflection's non-consuming exits (here: budget_exhausted) leave lastAttemptAt
+    // runReflection's non-consuming exits (here: budget_deferred, XA2's pre-flight) leave lastAttemptAt
     // un-advanced by design for the trade path; the weekly path must still burn its
     // week-bucket ON FIRE or every subsequent per-bar check re-enters runReflection
     // (live: 91 Opus calls / $2.3 in 46 min against an abstention-lapsed candidate).
@@ -2631,20 +2631,20 @@ describe('P3: checkWeeklyReflectionTrigger', () => {
 
     service.checkWeeklyReflectionTrigger(SID);
     await flush();
-    expect(h.recorderApi.outcomes).toEqual(['budget_exhausted']);
+    expect(h.recorderApi.outcomes).toEqual(['budget_deferred']);
 
     for (let bar = 0; bar < 50; bar += 1) {
       h.clock.now += 60_000;
       service.checkWeeklyReflectionTrigger(SID);
     }
     await flush();
-    expect(h.recorderApi.outcomes).toEqual(['budget_exhausted']);
+    expect(h.recorderApi.outcomes).toEqual(['budget_deferred']);
 
     // Next UTC week: eligible again — blocked weekly attempts retry next week, not next bar.
     h.clock.now += 7 * 24 * 60 * 60 * 1000;
     service.checkWeeklyReflectionTrigger(SID);
     await flush();
-    expect(h.recorderApi.outcomes).toEqual(['budget_exhausted', 'budget_exhausted']);
+    expect(h.recorderApi.outcomes).toEqual(['budget_deferred', 'budget_deferred']);
   });
 });
 

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   DailyLlmBudget,
   BudgetedAgentClient,
+  AttemptScopedBudget,
 } from '../../../src/features/trading/agentic/agent-budget';
 import type {
   AgentClientPort,
@@ -354,5 +355,56 @@ describe('BudgetedAgentClient', () => {
     const proposal = await client.propose(decisionInput()); // second call now blocked by the cap
     expect(proposal).toEqual({ signals: [] });
     expect(inner.calls).toBe(1);
+  });
+});
+
+// XA2 (A0 activation bundle): attempt-level pre-flight + session-scoped caps.
+describe('XA2: tryReserveAttempt + AttemptScopedBudget', () => {
+  const CAPS = {
+    maxCallsPerDay: 100,
+    maxTokensPerDay: 1_000_000,
+    maxCostUsdPerDay: 1.5,
+    priceInputPerMtok: 1_000_000, // $1 per token — makes cost arithmetic trivial in fixtures
+  };
+
+  it('tryReserveAttempt defers when spent + estimate exceeds the daily cost stop, reserves nothing', () => {
+    const budget = new DailyLlmBudget(CAPS, () => T);
+    // Spend $1.00 of the $1.50 pool.
+    expect(budget.tryReserveCall()).toBe(true);
+    budget.recordUsage({ inputTokens: 1, outputTokens: 0 });
+    expect(budget.snapshot().costUsd).toBe(1);
+
+    expect(budget.tryReserveAttempt(0.75)).toBe(false); // 1.00 + 0.75 > 1.50 — defer
+    expect(budget.tryReserveAttempt(0.5)).toBe(true); // exactly at the cap — allowed
+    expect(budget.snapshot().calls).toBe(1); // pre-flight reserved nothing
+  });
+
+  it('tryReserveAttempt honors call and token caps too', () => {
+    const calls = new DailyLlmBudget({ maxCallsPerDay: 0, maxTokensPerDay: 10 }, () => T);
+    expect(calls.tryReserveAttempt(0.1)).toBe(false);
+    const tokens = new DailyLlmBudget({ maxCallsPerDay: 5, maxTokensPerDay: 1 }, () => T);
+    expect(tokens.tryReserveCall()).toBe(true);
+    tokens.recordUsage({ inputTokens: 2, outputTokens: 0 });
+    expect(tokens.tryReserveAttempt(0.1)).toBe(false);
+  });
+
+  it('AttemptScopedBudget caps calls per attempt while the shared pool stays the meter', () => {
+    const budget = new DailyLlmBudget({ maxCallsPerDay: 100, maxTokensPerDay: 1_000_000 }, () => T);
+    const attempt = new AttemptScopedBudget(budget, 3, 10);
+    expect(attempt.tryReserveCall()).toBe(true);
+    expect(attempt.tryReserveCall()).toBe(true);
+    expect(attempt.tryReserveCall()).toBe(true);
+    expect(attempt.tryReserveCall()).toBe(false); // session call cap — daily pool untouched by the refusal
+    expect(budget.snapshot().calls).toBe(3);
+    expect(budget.tryReserveCall()).toBe(true); // the shared pool itself still has room
+  });
+
+  it('AttemptScopedBudget caps session cost and forwards usage to the shared meter', () => {
+    const budget = new DailyLlmBudget(CAPS, () => T);
+    const attempt = new AttemptScopedBudget(budget, 100, 0.75);
+    expect(attempt.tryReserveCall()).toBe(true);
+    expect(attempt.recordUsage({ inputTokens: 1, outputTokens: 0 })).toBe(1); // $1 > 0.75 session cap
+    expect(attempt.tryReserveCall()).toBe(false); // session cost cap tripped
+    expect(budget.snapshot().costUsd).toBe(1); // shared meter recorded the true spend
   });
 });

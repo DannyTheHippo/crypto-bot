@@ -224,6 +224,7 @@ AGENTIC_PORTFOLIO_WINDOW_MS=15000 # XA1 2026-07-20: 3s fragmented the menu wave 
 # .env.example is an unfilled placeholder, not a real credential); a new external-service signup
 # is out of scope for this pass. Follow-up flagged for F2/state.md.
 SENTIMENT_FEED_ENABLED=false
+FEAR_GREED_FEED_ENABLED=true # X3 2026-07-20: lane-wide alternative.me index, keyless, fail-open (6h poll default); modulator-not-veto per XA3
 SENTIMENT_FEED_POLL_MS=300000 # REST poll interval (ms); schema default 300000
 # CryptoPanic auth_token (secret — never commit a real key; free tier).
 

@@ -38,8 +38,8 @@ describe('scoreRows — grouping', () => {
     // Interleaved: A0, B0, A1, B1 — each group's own forward return must use its own neighbor
     // (A0 -> A1), never the other group's row (A0 -> B0).
     const rows: ScoringRow[] = [
-      row(0, { action: 'long', close: '100', promptHash: 'h1' }),
-      row(1, { action: 'long', close: '200', promptHash: 'h2' }),
+      row(0, { action: 'open_long', close: '100', promptHash: 'h1' }),
+      row(1, { action: 'open_long', close: '200', promptHash: 'h2' }),
       row(2, { action: 'hold', close: '110', promptHash: 'h1' }),
       row(3, { action: 'hold', close: '190', promptHash: 'h2' }),
     ];
@@ -76,8 +76,8 @@ describe('scoreRows — grouping', () => {
     // scored the BTC→LINK close transition as a −99.99% forward return. Per-symbol grouping must
     // keep each instrument on its own price path.
     const rows: ScoringRow[] = [
-      row(0, { action: 'long', close: '64000', symbol: 'BTC/USDT' }),
-      row(1, { action: 'long', close: '8', symbol: 'LINK/USDT' }),
+      row(0, { action: 'open_long', close: '64000', symbol: 'BTC/USDT' }),
+      row(1, { action: 'open_long', close: '8', symbol: 'LINK/USDT' }),
       row(2, { action: 'hold', close: '64640', symbol: 'BTC/USDT' }),
       row(3, { action: 'hold', close: '8.08', symbol: 'LINK/USDT' }),
     ];
@@ -100,11 +100,11 @@ describe('combineScorecards', () => {
   it("aggregates one variant's per-symbol cards: counts sum, hit rate recomputes, toy equity multiplies", () => {
     const rows: ScoringRow[] = [
       // BTC sleeve: long@100, next refPrice 110 fills the entry; flat@110 exits at 105 — one trip.
-      row(0, { action: 'long', close: '100', refPrice: '100', symbol: 'BTC/USDT' }),
-      row(2, { action: 'flat', close: '110', refPrice: '110', symbol: 'BTC/USDT' }),
+      row(0, { action: 'open_long', close: '100', refPrice: '100', symbol: 'BTC/USDT' }),
+      row(2, { action: 'close', close: '110', refPrice: '110', symbol: 'BTC/USDT' }),
       row(4, { action: 'hold', close: '105', refPrice: '105', symbol: 'BTC/USDT' }),
       // LINK sleeve: long@8 fills at 8.08; never exits — open at end, zero trips.
-      row(1, { action: 'long', close: '8', refPrice: '8', symbol: 'LINK/USDT' }),
+      row(1, { action: 'open_long', close: '8', refPrice: '8', symbol: 'LINK/USDT' }),
       row(3, { action: 'hold', close: '8.08', refPrice: '8.08', symbol: 'LINK/USDT' }),
     ];
     const cards = scoreRows(rows);
@@ -143,9 +143,9 @@ describe('combineScorecards', () => {
 describe('forward returns / hit rate', () => {
   it('computes sampleCount/hitCount/hitRate per horizon, excluding rows without a future close', () => {
     const rows: ScoringRow[] = [
-      row(0, { action: 'long', close: '100' }),
+      row(0, { action: 'open_long', close: '100' }),
       row(1, { action: 'hold', close: '110' }),
-      row(2, { action: 'flat', close: '105' }),
+      row(2, { action: 'close', close: '105' }),
       row(3, { action: 'hold', close: '120' }),
       row(4, { action: 'hold', close: '90' }),
     ];
@@ -188,7 +188,7 @@ describe('forward returns / hit rate', () => {
 
   it('scores a zero forward return as a miss for "long" and a hit for "hold"', () => {
     const longRows: ScoringRow[] = [
-      row(0, { action: 'long', close: '100' }),
+      row(0, { action: 'open_long', close: '100' }),
       row(1, { action: 'hold', close: '100' }),
     ];
     const [longScorecard] = scoreRows(longRows);
@@ -206,7 +206,7 @@ describe('forward returns / hit rate', () => {
     // Under the retired action-based convention i1 (a hold) was scored as flat and this rise made
     // it a MISS; exposure-based scoring correctly credits the LONG position the hold maintained.
     const rows: ScoringRow[] = [
-      row(0, { action: 'long', close: '100' }), // FLAT→LONG
+      row(0, { action: 'open_long', close: '100' }), // FLAT→LONG
       row(1, { action: 'hold', close: '110' }), // maintains LONG; (120-110)/110>0 → hit
       row(2, { action: 'hold', close: '120' }), // maintains LONG; no i+1 in a 3-row group
     ];
@@ -231,7 +231,7 @@ describe('forward returns / hit rate', () => {
 
   it('excludes "error" rows as decisions but still uses their close as a forward-return target', () => {
     const rows: ScoringRow[] = [
-      row(0, { action: 'long', close: '100' }),
+      row(0, { action: 'open_long', close: '100' }),
       row(1, { action: 'error', close: '150' }),
     ];
     const [scorecard] = scoreRows(rows);
@@ -246,8 +246,8 @@ describe('forward returns / hit rate', () => {
 describe('confidence calibration', () => {
   it('buckets "long" rows into deciles by confidence, meaning mean forward return at t+1, excluding "error" and null-confidence rows', () => {
     const rows: ScoringRow[] = [
-      row(0, { action: 'long', confidence: 0.05, close: '100' }),
-      row(1, { action: 'long', confidence: 0.95, close: '102' }),
+      row(0, { action: 'open_long', confidence: 0.05, close: '100' }),
+      row(1, { action: 'open_long', confidence: 0.95, close: '102' }),
       row(2, { action: 'hold', confidence: null, close: '95' }),
     ];
     const [scorecard] = scoreRows(rows);
@@ -287,7 +287,7 @@ describe('confidence calibration', () => {
 
   it('uses the LONG directional edge (+fwd) for a hold that maintains a long position', () => {
     const rows: ScoringRow[] = [
-      row(0, { action: 'long', confidence: 0.9, close: '100' }), // FLAT→LONG
+      row(0, { action: 'open_long', confidence: 0.9, close: '100' }), // FLAT→LONG
       row(1, { action: 'hold', confidence: 0.7, close: '110' }), // maintains LONG; bucket 7
       row(2, { action: 'hold', close: '105' }),
     ];
@@ -301,7 +301,7 @@ describe('confidence calibration', () => {
 
   it('excludes a calibration-eligible row from every bucket when it has no forward return at t+1', () => {
     // Only row in its group -> no i+1 -> forwardReturn is null despite valid action/confidence.
-    const rows: ScoringRow[] = [row(0, { action: 'long', confidence: 0.5, close: '100' })];
+    const rows: ScoringRow[] = [row(0, { action: 'open_long', confidence: 0.5, close: '100' })];
     const [scorecard] = scoreRows(rows);
     for (const bucket of scorecard!.calibration) {
       expect(bucket.sampleCount).toBe(0);
@@ -310,8 +310,8 @@ describe('confidence calibration', () => {
 
   it('clamps out-of-contract confidence values into [0, 1] before bucketing', () => {
     const rows: ScoringRow[] = [
-      row(0, { action: 'long', confidence: -0.5, close: '100' }),
-      row(1, { action: 'long', confidence: 1.5, close: '101' }),
+      row(0, { action: 'open_long', confidence: -0.5, close: '100' }),
+      row(1, { action: 'open_long', confidence: 1.5, close: '101' }),
       row(2, { action: 'hold', close: '102' }),
     ];
     const [scorecard] = scoreRows(rows);
@@ -322,7 +322,7 @@ describe('confidence calibration', () => {
 
   it('maps confidence exactly 1 into the top decile bucket (9), not an 11th bucket', () => {
     const rows: ScoringRow[] = [
-      row(0, { action: 'long', confidence: 1, close: '100' }),
+      row(0, { action: 'open_long', confidence: 1, close: '100' }),
       row(1, { action: 'hold', close: '105' }),
     ];
     const [scorecard] = scoreRows(rows);
@@ -337,9 +337,9 @@ describe('toy equity', () => {
     // (1999*2001 == 2001*1999), isolating the fee drag: gross multiplier is exactly 1, so
     // finalEquity is exactly (1 - 10bps)^2 = 0.999^2 = 0.998001.
     const rows: ScoringRow[] = [
-      row(0, { action: 'long' }),
+      row(0, { action: 'open_long' }),
       row(1, { action: 'hold', refPrice: '1999' }),
-      row(2, { action: 'flat' }),
+      row(2, { action: 'close' }),
       row(3, { action: 'hold', refPrice: '2001' }),
     ];
     const [scorecard] = scoreRows(rows);
@@ -350,9 +350,9 @@ describe('toy equity', () => {
 
   it('treats an "error" row identically to "hold" in the position state machine (can still supply a fill)', () => {
     const rows: ScoringRow[] = [
-      row(0, { action: 'long' }),
+      row(0, { action: 'open_long' }),
       row(1, { action: 'error', refPrice: '1999' }),
-      row(2, { action: 'flat' }),
+      row(2, { action: 'close' }),
       row(3, { action: 'hold', refPrice: '2001' }),
     ];
     const [scorecard] = scoreRows(rows);
@@ -361,7 +361,7 @@ describe('toy equity', () => {
 
   it('leaves an unclosed LONG position out of finalEquity entirely (openAtEnd, unrealized)', () => {
     const rows: ScoringRow[] = [
-      row(0, { action: 'long' }),
+      row(0, { action: 'open_long' }),
       row(1, { action: 'hold', refPrice: '1999' }),
     ];
     const [scorecard] = scoreRows(rows);
@@ -371,7 +371,7 @@ describe('toy equity', () => {
   });
 
   it('drops a "long" decision with no next row to fill it (last row in the group)', () => {
-    const rows: ScoringRow[] = [row(0, { action: 'hold' }), row(1, { action: 'long' })];
+    const rows: ScoringRow[] = [row(0, { action: 'hold' }), row(1, { action: 'open_long' })];
     const [scorecard] = scoreRows(rows);
     expect(scorecard!.toyEquity.finalEquity).toBe(1);
     expect(scorecard!.toyEquity.roundTrips).toBe(0);
@@ -380,7 +380,7 @@ describe('toy equity', () => {
 
   it('drops a decision whose next row has no refPrice recorded', () => {
     const rows: ScoringRow[] = [
-      row(0, { action: 'long' }),
+      row(0, { action: 'open_long' }),
       row(1, { action: 'hold', refPrice: null, close: '1999' }),
     ];
     const [scorecard] = scoreRows(rows);
@@ -391,10 +391,10 @@ describe('toy equity', () => {
   it('treats a repeated "long" while already LONG, and "flat" while already FLAT, as no-ops', () => {
     const rows: ScoringRow[] = [
       // FLAT while already FLAT: a fill IS available (row1's refPrice) but must still be a no-op.
-      row(0, { action: 'flat' }),
-      row(1, { action: 'long', refPrice: '2000' }),
+      row(0, { action: 'close' }),
+      row(1, { action: 'open_long', refPrice: '2000' }),
       row(2, { action: 'hold', refPrice: '1999' }), // fills row1's entry
-      row(3, { action: 'long' }), // LONG while already LONG: no-op, entry price unchanged
+      row(3, { action: 'open_long' }), // LONG while already LONG: no-op, entry price unchanged
       row(4, { action: 'hold' }),
     ];
     const [scorecard] = scoreRows(rows);
@@ -407,7 +407,7 @@ describe('toy equity', () => {
 describe('compare()', () => {
   function buildScorecard(secondClose: string, promptHash: string): Scorecard {
     const rows: ScoringRow[] = [
-      row(0, { action: 'long', close: '100', promptHash }),
+      row(0, { action: 'open_long', close: '100', promptHash }),
       row(1, { action: 'hold', close: secondClose, promptHash }),
     ];
     return scoreRows(rows)[0]!;
@@ -440,7 +440,7 @@ describe('compare()', () => {
     expect(h4Delta.candidateHitRate).toBeNull();
     expect(h4Delta.delta).toBeNull();
 
-    // Neither fixture closes a round trip (no 'flat' row) -> both stay at the initial equity of 1.
+    // Neither fixture closes a round trip (no 'close' row) -> both stay at the initial equity of 1.
     expect(result.finalEquityDelta).toBe(0);
   });
 });
@@ -448,10 +448,10 @@ describe('compare()', () => {
 describe('summarizeCalibration (W14)', () => {
   it('buckets rows by action x stated-confidence bucket and reports mean t+1 forward return in bps for buckets with n>=3', () => {
     const rows: ScoringRow[] = [
-      row(0, { action: 'long', confidence: 0.65, close: '100' }),
-      row(1, { action: 'long', confidence: 0.65, close: '102' }),
-      row(2, { action: 'long', confidence: 0.65, close: '101' }),
-      row(3, { action: 'long', confidence: 0.65, close: '103' }), // last row: no t+1, not counted
+      row(0, { action: 'open_long', confidence: 0.65, close: '100' }),
+      row(1, { action: 'open_long', confidence: 0.65, close: '102' }),
+      row(2, { action: 'open_long', confidence: 0.65, close: '101' }),
+      row(3, { action: 'open_long', confidence: 0.65, close: '103' }), // last row: no t+1, not counted
     ];
     const digest = summarizeCalibration(rows);
     // Same summation order as the source (i=0,1,2 in sequence) so the float division matches exactly.
@@ -459,7 +459,7 @@ describe('summarizeCalibration (W14)', () => {
       (((102 - 100) / 100) * 10000 + ((101 - 102) / 102) * 10000 + ((103 - 101) / 101) * 10000) / 3;
     expect(digest).toEqual([
       {
-        action: 'long',
+        action: 'open_long',
         confidenceLowerBound: 3 * 0.2, // 0.6000000000000001 — same idx*width float as the source
         confidenceUpperBound: 0.8,
         count: 3,
@@ -471,9 +471,9 @@ describe('summarizeCalibration (W14)', () => {
   it('omits buckets with fewer than 3 samples', () => {
     // Only 2 rows have a defined t+1 forward return (row2 is last, no next close).
     const rows: ScoringRow[] = [
-      row(0, { action: 'long', confidence: 0.5, close: '100' }),
-      row(1, { action: 'long', confidence: 0.5, close: '110' }),
-      row(2, { action: 'long', confidence: 0.5, close: '90' }),
+      row(0, { action: 'open_long', confidence: 0.5, close: '100' }),
+      row(1, { action: 'open_long', confidence: 0.5, close: '110' }),
+      row(2, { action: 'open_long', confidence: 0.5, close: '90' }),
     ];
     expect(summarizeCalibration(rows)).toEqual([]);
   });
@@ -481,7 +481,7 @@ describe('summarizeCalibration (W14)', () => {
   it('excludes "error" rows and null-confidence rows from bucketing', () => {
     const rows: ScoringRow[] = [
       row(0, { action: 'error', confidence: 0.5, close: '100' }),
-      row(1, { action: 'long', confidence: null, close: '110' }),
+      row(1, { action: 'open_long', confidence: null, close: '110' }),
       row(2, { action: 'hold', confidence: 0.5, close: '90' }),
     ];
     expect(summarizeCalibration(rows)).toEqual([]);
@@ -498,31 +498,31 @@ describe('summarizeRegimeSplit (W14)', () => {
     // stdevs, so the median is exactly 0 — any nonzero row is unambiguously above it.
     const rows: ScoringRow[] = [];
     for (let i = 0; i < 50; i++) {
-      rows.push(row(i, { action: i === 9 ? 'long' : 'error', close: '100' }));
+      rows.push(row(i, { action: i === 9 ? 'open_long' : 'error', close: '100' }));
     }
     for (let i = 50; i < 80; i++) {
       const k = i - 50;
       rows.push(
-        row(i, { action: i === 65 ? 'flat' : 'error', close: k % 2 === 0 ? '100' : '300' }),
+        row(i, { action: i === 65 ? 'close' : 'error', close: k % 2 === 0 ? '100' : '300' }),
       );
     }
 
     const digest = summarizeRegimeSplit(rows);
 
     // i=9: window [0..9] is all 100 -> stdev 0 -> quiet. fwd = (close10-close9)/close9 = 0.
-    expect(digest.quiet).toEqual([{ action: 'long', count: 1, meanForwardReturnBps: 0 }]);
+    expect(digest.quiet).toEqual([{ action: 'open_long', count: 1, meanForwardReturnBps: 0 }]);
     // i=65 (k=15, odd -> 300; i=66, k=16, even -> 100): window [56..65] is fully inside the
     // alternating zone -> stdev > 0 -> active. fwd = (100-300)/300.
     expect(digest.active).toEqual([
-      { action: 'flat', count: 1, meanForwardReturnBps: ((100 - 300) / 300) * 10000 },
+      { action: 'close', count: 1, meanForwardReturnBps: ((100 - 300) / 300) * 10000 },
     ]);
   });
 
   it('returns empty quiet/active arrays when no row has a full trailing-window stdev', () => {
     // Fewer than 10 rows -> trailingStdev is null for every index.
     const rows: ScoringRow[] = [
-      row(0, { action: 'long', close: '100' }),
-      row(1, { action: 'flat', close: '110' }),
+      row(0, { action: 'open_long', close: '100' }),
+      row(1, { action: 'close', close: '110' }),
     ];
     expect(summarizeRegimeSplit(rows)).toEqual({ quiet: [], active: [] });
   });
@@ -571,7 +571,7 @@ describe('scoreNotTakenOptions — regret digest (P4)', () => {
 
   it('an adjust that delayed an exit and lost money on the delay produces a negative-regret line', () => {
     const rows: ScoringRow[] = [
-      row(0, { action: 'long', close: '100' }), // FLAT -> LONG
+      row(0, { action: 'open_long', close: '100' }), // FLAT -> LONG
       row(1, { action: 'adjust', close: '200' }), // resulting LONG (unchanged) — the delay
       row(2, { action: 'hold', close: '100' }), // price nearly halved after the delay
     ];
@@ -586,7 +586,7 @@ describe('scoreNotTakenOptions — regret digest (P4)', () => {
 
   it('a hold that MAINTAINS an existing position (not a declined entry) never produces a regret line', () => {
     const rows: ScoringRow[] = [
-      row(0, { action: 'long', close: '100' }), // FLAT -> LONG
+      row(0, { action: 'open_long', close: '100' }), // FLAT -> LONG
       row(1, { action: 'hold', close: '110' }), // maintains LONG — not "declined", already positioned
       row(2, { action: 'hold', close: '120' }),
     ];
@@ -600,12 +600,12 @@ describe('scoreNotTakenOptions — regret digest (P4)', () => {
   });
 });
 
-describe('mixed-era scoring (P4: legacy long/flat rows interleaved with v2 open_*/close rows)', () => {
-  it('a legacy "long" row followed by a v2 "close" then a v2 "open_short" row reads correctly', () => {
+describe('mixed-action scoring (v3 §2/§9: open_long/close/open_short interleaved within one journal)', () => {
+  it('an "open_long" row followed by a "close" then an "open_short" row reads correctly', () => {
     const rows: ScoringRow[] = [
-      row(0, { action: 'long', close: '100' }), // legacy: FLAT -> LONG
-      row(1, { action: 'close', close: '110' }), // v2: LONG -> FLAT
-      row(2, { action: 'open_short', close: '90' }), // v2: FLAT -> SHORT
+      row(0, { action: 'open_long', close: '100' }), // FLAT -> LONG
+      row(1, { action: 'close', close: '110' }), // LONG -> FLAT
+      row(2, { action: 'open_short', close: '90' }), // FLAT -> SHORT
       row(3, { action: 'hold', close: '80' }), // maintains SHORT
     ];
     const [scorecard] = scoreRows(rows);
@@ -662,10 +662,10 @@ describe('mixed-era scoring (P4: legacy long/flat rows interleaved with v2 open_
 
   it('an "adjust" row never opens/closes/fills in the toy-equity walk (position unchanged by design)', () => {
     const rows: ScoringRow[] = [
-      row(0, { action: 'long' }),
+      row(0, { action: 'open_long' }),
       row(1, { action: 'hold', refPrice: '1999' }),
       row(2, { action: 'adjust', refPrice: '5000' }), // must never be read as a fill trigger
-      row(3, { action: 'flat' }),
+      row(3, { action: 'close' }),
       row(4, { action: 'hold', refPrice: '2001' }),
     ];
     const [scorecard] = scoreRows(rows);

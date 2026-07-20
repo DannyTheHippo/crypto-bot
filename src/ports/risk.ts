@@ -6,6 +6,7 @@ import type { KillSwitchState } from '../domain/risk/kill-switch';
 import type { SymbolFilters } from '../domain/risk/evaluate';
 import type { PartialRiskLimits } from '../domain/risk/limits';
 import type { TradingMode } from '../domain/types/mode';
+import type { VenueId } from '../domain/types/ids';
 
 export const RISK_SIGNING_KEY = Symbol('RISK_SIGNING_KEY');
 export const RISK_LIMITS = Symbol('RISK_LIMITS');
@@ -114,17 +115,26 @@ export interface SizerDeps {
     // Funding-aware sizing hook — see perp-sizing.ts's applyFundingScaling. No consumer yet.
     readonly expectedFundingBpsPerHold?: string;
   };
-  // S2/C1 (rich decision contract, Design § Sizing flow): the agentic lane's own sizing directive
-  // (Signal.sizeFraction) is capped at this per-lane fraction of cappedEquity, and it also bounds
-  // same-side scale-in headroom. Optional so existing test fixtures and module-isolation boots that
-  // never set it keep booting; PositionSizerService falls back to '0.15'.
-  readonly maxAgentPositionFraction?: string;
+  // v3 §6/§6.1: the agentic lane's own sizing directive (Signal.sizeFraction) is capped at this
+  // PER-VENUE fraction of cappedEquity (spot vs perp — AGENTIC_MAX_POSITION_FRACTION_SPOT/PERP),
+  // and it also bounds same-side scale-in headroom. Replaces the single lane-wide
+  // `maxAgentPositionFraction` (v2/transitional) — a venue's own class (spot/perp) picks its
+  // fraction, keyed by VenueId (domain/types/venue-map.ts's SPOT_VENUE_ID/PERP_VENUE_ID). Optional
+  // so existing test fixtures and module-isolation boots that never set it keep booting;
+  // PositionSizerService falls back to '0.15' for any venue with no entry.
+  readonly maxAgentPositionFractionByVenue?: ReadonlyMap<VenueId, string>;
   // S2/C1: SIZER_EQUITY_CAP — every notional-computing path in PositionSizerService sizes off
   // min(actualEquity, equityCap) instead of raw equity when this is a finite-positive money string,
   // so a demo account earns its promotion verdict at exactly live-book proportions (Design § Live-
   // scale economics). Optional; absent or non-finite/non-positive ⇒ actual equity passes through
   // unchanged (byte-identical to pre-cap behavior).
   readonly equityCap?: string;
+  // v3 §6.1/§6.2: fixed wallet split of the one book (AppConfig.venueCapitalSplit), decimal-string
+  // shares keyed by VenueId — the sizer's NEW venueHeadroom(v) clamp reads this alongside each
+  // venue's open + reserved notional (see position-sizer.service.ts's applyVenueHeadroomClamp).
+  // Optional: absent (module-isolation boots, or before the composition root wires it off
+  // AppConfig — the #5 integration item) ⇒ the clamp no-ops, byte-identical to pre-split sizing.
+  readonly venueCapitalShare?: ReadonlyMap<VenueId, string>;
 }
 
 // Injected RiskEngine dependencies. The signing key is process-lifetime random

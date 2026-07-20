@@ -63,9 +63,11 @@ const readinessConfigProvider: Provider = {
         : Date.parse(agentic.promotionEvidenceEpoch);
     // P5b: funding_events/funding_payments only accrue on the perp venue (binanceusdm) — the
     // fail-open missing-data flag is scoped to perp + plan-mode shorts, the concrete condition this
-    // pass targets (see PromotionReadinessConfig.fundingDataExpected's own comment).
+    // pass targets (see PromotionReadinessConfig.fundingDataExpected's own comment). v3 §9: venues
+    // may now carry BOTH spot and perp in one boot, so membership is checked with `.some()` — the
+    // v2 `venues[0]` idiom silently missed perp whenever it wasn't the first configured venue.
     const fundingDataExpected =
-      (config.venues[0]?.id ?? 'binance') === 'binanceusdm' && agentic.shortsEnabled;
+      config.venues.some((v) => v.id === 'binanceusdm') && agentic.shortsEnabled;
     return {
       tokenPriceInputPerMtok: agentic.tokenPriceInputPerMtok,
       tokenPriceOutputPerMtok: agentic.tokenPriceOutputPerMtok,

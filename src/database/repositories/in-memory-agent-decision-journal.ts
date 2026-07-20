@@ -120,7 +120,7 @@ export class InMemoryAgentDecisionJournal implements AgentDecisionJournalPort {
       if (r.playbookVersion !== version) continue;
       if (!r.model.startsWith('claude')) continue;
       decides += 1;
-      if (r.action === 'long' || r.action === 'open_long' || r.action === 'open_short') {
+      if (r.action === 'open_long' || r.action === 'open_short') {
         entries += 1;
       }
     }

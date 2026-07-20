@@ -17,6 +17,7 @@ import {
   AGENTIC_ACTIVE_MENU_GAUGE,
   AGENTIC_MENU_CHURN_COUNTER,
   AGENTIC_BUDGET_REMAINING_GAUGE,
+  AGENTIC_CAPABILITY_VIOLATIONS_COUNTER,
 } from '../../../src/features/common/observability/metrics.service';
 import { AgentMetricsRecorder } from '../../../src/features/common/observability/agent-metrics-recorder.service';
 
@@ -42,6 +43,7 @@ describe('AgentMetricsRecorder', () => {
         AGENTIC_ACTIVE_MENU_GAUGE,
         AGENTIC_MENU_CHURN_COUNTER,
         AGENTIC_BUDGET_REMAINING_GAUGE,
+        AGENTIC_CAPABILITY_VIOLATIONS_COUNTER,
         AgentMetricsRecorder,
       ],
     }).compile();
@@ -53,7 +55,7 @@ describe('AgentMetricsRecorder', () => {
     register.clear();
   });
 
-  it('registers all fourteen agentic-lane metrics', async () => {
+  it('registers all fifteen agentic-lane metrics', async () => {
     const names = (await register.getMetricsAsJSON()).map((m) => m.name);
     for (const name of [
       'agent_decide_total',
@@ -70,6 +72,7 @@ describe('AgentMetricsRecorder', () => {
       'agentic_active_menu',
       'agentic_menu_churn_total',
       'agentic_budget_remaining_usd',
+      'agentic_capability_violations_total',
     ]) {
       expect(names, name).toContain(name);
     }
@@ -190,22 +193,29 @@ describe('AgentMetricsRecorder', () => {
     expect(metric).toContain('outcome="validator_reject"} 1');
   });
 
-  it('recordVenueTp increments agentic_venue_tp_total{event}', async () => {
+  it('recordVenueTp increments agentic_venue_tp_total{venue,event}, defaulting venue to "unknown"', async () => {
     recorder.recordVenueTp('placed');
-    recorder.recordVenueTp('drift_cancel');
-    recorder.recordVenueTp('drift_cancel');
+    recorder.recordVenueTp('drift_cancel', 'binanceusdm');
+    recorder.recordVenueTp('drift_cancel', 'binanceusdm');
     const metric = await register.getSingleMetricAsString('agentic_venue_tp_total');
-    expect(metric).toContain('event="placed"} 1');
-    expect(metric).toContain('event="drift_cancel"} 2');
+    expect(metric).toContain('venue="unknown",event="placed"} 1');
+    expect(metric).toContain('venue="binanceusdm",event="drift_cancel"} 2');
   });
 
-  it('recordVenueStop increments agentic_venue_stop_total{event}', async () => {
+  it('recordVenueStop increments agentic_venue_stop_total{venue,event}, defaulting venue to "unknown"', async () => {
     recorder.recordVenueStop('placed');
-    recorder.recordVenueStop('force_fired');
-    recorder.recordVenueStop('force_fired');
+    recorder.recordVenueStop('force_fired', 'binance');
+    recorder.recordVenueStop('force_fired', 'binance');
     const metric = await register.getSingleMetricAsString('agentic_venue_stop_total');
-    expect(metric).toContain('event="placed"} 1');
-    expect(metric).toContain('event="force_fired"} 2');
+    expect(metric).toContain('venue="unknown",event="placed"} 1');
+    expect(metric).toContain('venue="binance",event="force_fired"} 2');
+  });
+
+  it('recordCapabilityViolation increments agentic_capability_violations_total{kind}', async () => {
+    recorder.recordCapabilityViolation('open_short_on_spot');
+    recorder.recordCapabilityViolation('open_short_on_spot');
+    const metric = await register.getSingleMetricAsString('agentic_capability_violations_total');
+    expect(metric).toContain('kind="open_short_on_spot"} 2');
   });
 
   it('recordFundingIngested increments funding_payments_ingested_total{venue,symbol} by count', async () => {
@@ -280,6 +290,7 @@ describe('AgentMetricsRecorder — never throws into a trading path', () => {
       throwing as unknown as Gauge<string>,
       throwing as unknown as Counter<string>,
       throwing as unknown as Gauge<string>,
+      throwing as unknown as Counter<string>,
     );
     expect(() => recorder.recordDecide('proposed')).not.toThrow();
     expect(() => recorder.recordTokens(1, 1)).not.toThrow();
@@ -295,5 +306,6 @@ describe('AgentMetricsRecorder — never throws into a trading path', () => {
     expect(() => recorder.setActiveMenu(['BTC/USDT'])).not.toThrow();
     expect(() => recorder.recordMenuChurn(1, 1)).not.toThrow();
     expect(() => recorder.setBudgetRemainingUsd(1)).not.toThrow();
+    expect(() => recorder.recordCapabilityViolation('open_short_on_spot')).not.toThrow();
   });
 });

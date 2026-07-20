@@ -1,7 +1,12 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { CLOCK, type ClockPort } from '../../../ports/clock';
-import { EXCHANGE_PORT, type ExchangePort, type VenueFill } from '../../../ports/exchange';
-import type { SymbolId, EpochMs, ClientOrderId } from '../../../domain/types/ids';
+import {
+  EXCHANGE_PORT,
+  VENUE_EXCHANGE_PORTS,
+  type ExchangePort,
+  type VenueFill,
+} from '../../../ports/exchange';
+import type { SymbolId, EpochMs, ClientOrderId, VenueId } from '../../../domain/types/ids';
 import { price, qty, feeAmount } from '../../../domain/types/money';
 import type { OrderRecord } from '../../../domain/oms/reducer';
 import type { FillRecord } from '../../../domain/types/exec-report';
@@ -26,9 +31,17 @@ import { AlgoStopRecoveryService } from './algo-stop-recovery.service';
 // testnet runtime drives this fill-only path. The boot checkpoint bounds the sweep to post-boot
 // trades so historical demo fills are not re-ingested; a fill with no matching local order is counted
 // and skipped, never a halt.
+//
+// v3 §1.5: poll(venue, symbols) — one call per venue, each tracking its OWN sweep watermark off the
+// shared boot anchor (a spot-heavy poll advancing the watermark must never starve the perp venue's
+// own since-window, and vice versa). The exchange port for `venue` is resolved from
+// VENUE_EXCHANGE_PORTS when present; the single EXCHANGE_PORT injection is the fallback (matched by
+// .venue) so pre-existing single-venue construction (this file's own spec, module-isolation boots)
+// is unaffected when the venue map is absent.
 @Injectable()
 export class DemoFillPollerService {
-  private since: EpochMs = 0 as EpochMs;
+  private bootAnchor: EpochMs = 0 as EpochMs;
+  private readonly sinceByVenue = new Map<VenueId, EpochMs>();
   private readonly log = new Logger('DemoFillPoller');
 
   constructor(
@@ -37,14 +50,29 @@ export class DemoFillPollerService {
     private readonly orders: OrderBookService,
     private readonly ingestor: FillIngestorService,
     private readonly recovery: AlgoStopRecoveryService,
+    @Optional()
+    @Inject(VENUE_EXCHANGE_PORTS)
+    private readonly venuePorts?: ReadonlyMap<VenueId, ExchangePort>,
   ) {}
 
   // Anchor the sweep window at boot so the first poll never re-ingests historical demo trades.
   init(): void {
-    this.since = this.clock.now();
+    this.bootAnchor = this.clock.now();
+    this.sinceByVenue.clear();
   }
 
-  async poll(symbols: readonly SymbolId[]): Promise<{ ingested: number; skippedUnknown: number }> {
+  async poll(
+    venue: VenueId,
+    symbols: readonly SymbolId[],
+  ): Promise<{ ingested: number; skippedUnknown: number }> {
+    const exchange =
+      this.venuePorts?.get(venue) ?? (venue === this.exchange.venue ? this.exchange : undefined);
+    if (exchange === undefined) {
+      this.log.error(`no exchange port available for venue "${venue}" — skipping this poll`);
+      return { ingested: 0, skippedUnknown: 0 };
+    }
+    const since = this.sinceByVenue.get(venue) ?? this.bootAnchor;
+
     const byVenueId = new Map<string, OrderRecord>();
     for (const rec of this.orders.all()) {
       if (rec.venueOrderId !== undefined) byVenueId.set(rec.venueOrderId, rec);
@@ -58,7 +86,7 @@ export class DemoFillPollerService {
     // ≤ maxTs was already in this fetch; the boundary trade re-fetches inclusively and the ingestor
     // dedupes it on venueTradeId. Includes skipped (foreign/pre-boot) trades — all have ts ≤ now,
     // while our not-yet-placed fills carry future ts, so the watermark can never outrun an own fill.
-    let maxTs = this.since;
+    let maxTs = since;
     // Defect A commit-1: a fill matching no local order, on a symbol carrying an algo-rail anchor,
     // is the phantom-position signature (a venue-fired stop's spawned market order is
     // venue-generated and unmappable by clientOrderId — see this class's own MATCHING comment).
@@ -80,7 +108,7 @@ export class DemoFillPollerService {
     }
     const algoSuspects = new Set<SymbolId>();
     for (const symbol of symbols) {
-      const fills = await this.exchange.fetchMyTrades(symbol, this.since);
+      const fills = await exchange.fetchMyTrades(symbol, since);
       for (const f of fills) {
         if (f.venueTimestamp > maxTs) maxTs = f.venueTimestamp;
         const matched = byVenueId.get(f.clientOrderId); // f.clientOrderId holds the venue order id (ccxt trade.order)
@@ -102,7 +130,7 @@ export class DemoFillPollerService {
         if (applied) ingested += 1;
       }
     }
-    this.since = maxTs;
+    this.sinceByVenue.set(venue, maxTs);
     // Recovered against the intent's OWN createdAt lookback, never this poller's `since` watermark
     // (just advanced above) — the watermark can already sit past the trigger trade, exactly the
     // live phantom's geometry. Fail OPEN: a throw here is retried next poll, never breaks this one.

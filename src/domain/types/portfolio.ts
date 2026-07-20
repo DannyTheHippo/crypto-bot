@@ -47,6 +47,14 @@ export interface PortfolioSnapshot {
   readonly sodEquityUtc: Decimal;
   readonly reconcileStatus: 'CLEAN' | 'PENDING' | 'MISMATCH';
   readonly snapshotSeq: bigint;
+  // v3 §6.4: per-venue wallet view (free/locked per asset), keyed by VenueId — the split-sizing
+  // clamp chain's venueFree(v) read and buildAgentPortfolioBlock's perVenue lines consume this.
+  // `balances`/`equity`/`peakEquity` above stay the combined book (one equity, sum over venues) —
+  // this is additive, never a replacement. Optional: absent until the composition root wires a
+  // venue-keyed balance source (PortfolioStateService/exchange adapters) — every existing snapshot
+  // literal across the tree keeps compiling unchanged, and consumers that read it treat a missing
+  // venue/asset entry exactly like today's "balance data absent ⇒ no additional clamp" convention.
+  readonly venueBalances?: ReadonlyMap<VenueId, ReadonlyMap<string, AssetBalance>>;
 }
 
 // ── StrategyPortfolioView — own data only, no balances/equity ─────────────────

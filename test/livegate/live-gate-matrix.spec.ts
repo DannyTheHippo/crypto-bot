@@ -24,7 +24,7 @@ import type {
   KeyProbeResult,
   ArmPreconditionResult,
 } from '../../src/ports/mode-control';
-import { epochMs } from '../../src/domain/types/ids';
+import { epochMs, venueId } from '../../src/domain/types/ids';
 
 const T = 1_700_000_000_000;
 const SECRET = 'arming-secret';
@@ -34,7 +34,8 @@ const validProbe: KeyProbeResult = {
   keysValid: true,
   withdrawalsEnabled: false,
   spotEnabled: true,
-  marginOrFutures: false,
+  futuresEnabled: true,
+  marginEnabled: false,
   keyFingerprint: 'fp',
   urlCrossCheckOk: true,
 };
@@ -42,7 +43,8 @@ const invalidProbe: KeyProbeResult = {
   keysValid: false,
   withdrawalsEnabled: true,
   spotEnabled: false,
-  marginOrFutures: false,
+  futuresEnabled: false,
+  marginEnabled: false,
   keyFingerprint: 'none',
   urlCrossCheckOk: false,
 };
@@ -56,8 +58,18 @@ function build(over: Partial<ModeControlConfig> = {}) {
       events.push(e);
     },
   };
+  // v3 §7.1: probeAll() replaces the single-venue probe() — setProbe broadcasts one KeyProbeResult
+  // to BOTH venues (the row above's carried rows exercise `keys` as one axis, not per-venue).
   let probe: KeyProbeResult = invalidProbe;
-  const keyProbe = { probe: () => Promise.resolve(probe) };
+  const keyProbe = {
+    probeAll: () =>
+      Promise.resolve(
+        new Map([
+          [venueId('binance'), probe],
+          [venueId('binanceusdm'), probe],
+        ]),
+      ),
+  };
   const killSwitch = new KillSwitchService();
   let precond: ArmPreconditionResult = { ok: true };
   const preconditions = { check: () => precond };

@@ -6,6 +6,7 @@ import { CLOCK, type ClockPort } from '../../../ports/clock';
 import { KILL_SWITCH, type KillSwitchPort } from '../../../ports/risk';
 import {
   EXCHANGE_PORT,
+  VENUE_EXCHANGE_PORTS,
   type ExchangePort,
   type ExchangeOrderState,
   type VenueFill,
@@ -24,7 +25,8 @@ import {
   type OrderEvent,
   type OrderRecord,
 } from '../../../domain/oms/reducer';
-import { isOurClientOrderId } from '../../../domain/types/ids';
+import { isOurClientOrderId, type VenueId } from '../../../domain/types/ids';
+import { venueForSymbol } from '../../../domain/types/venue-map';
 import { price, qty, feeAmount } from '../../../domain/types/money';
 import {
   classifyVenueOpenOrder,
@@ -36,6 +38,7 @@ import type { FillRecord } from '../../../domain/types/exec-report';
 import { OrderBookService } from './order-book.service';
 import { PortfolioStateService } from './portfolio-state.service';
 import { FillIngestorService } from './fill-ingestor.service';
+import { VENUE_REGISTRY, type VenueRuntimeDescriptor } from '../../../ports/venue-registry';
 
 // Backlog #24: every mismatch carries a class so the counter (and its alert) can separate the
 // shared-wallet foreign-order steady state and other benign classes from actionable ones. Halting
@@ -118,6 +121,10 @@ export class ReconciliationService {
 
   constructor(
     @Inject(CLOCK) private readonly clock: ClockPort,
+    // Legacy single-venue path — kept exactly as-is for module-isolation boot specs and the existing
+    // reconciliation.spec.ts fixture, which construct this service directly with one exchange/cfg
+    // pair. Production (v3) wiring instead supplies venuePorts/venueRegistry below; when BOTH are
+    // present reconcile() iterates VENUE_REGISTRY (§1.5) and this single exchange/cfg pair is unused.
     @Inject(EXCHANGE_PORT) private readonly exchange: ExchangePort,
     @Inject(EXECUTION_STORE) private readonly store: ExecutionStorePort,
     @Inject(KILL_SWITCH) private readonly killSwitch: KillSwitchPort,
@@ -134,9 +141,61 @@ export class ReconciliationService {
     @Optional()
     @InjectMetric('reconciliation_last_success_timestamp_seconds')
     private readonly lastSuccessGauge?: Gauge<string>,
+    // v3 §1.5: one venue-keyed exchange port per registry venue. @Optional so every pre-existing
+    // construction site (single-venue boot specs, reconciliation.spec.ts) compiles and behaves
+    // unchanged — reconcile() falls back to the single this.exchange/this.cfg pair whenever either
+    // of these is absent or the registry is empty.
+    @Optional()
+    @Inject(VENUE_EXCHANGE_PORTS)
+    private readonly venuePorts?: ReadonlyMap<VenueId, ExchangePort>,
+    @Optional()
+    @Inject(VENUE_REGISTRY)
+    private readonly venueRegistry?: ReadonlyMap<VenueId, VenueRuntimeDescriptor>,
   ) {}
 
+  // v3 §1.5: one pass per venue per tick, one reconciliations row per venue pass. Mismatches sum
+  // across venues; halted is true if ANY venue's pass halted (the kill switch is one book-level
+  // instance — engaging it for one venue's mismatch already stops the whole book, §1.3). A per-venue
+  // axis throw is isolated to that venue's pass (caught inside reconcileOnce) so one venue's outage
+  // never prevents the other venue's pass — or its own reconciliations row — from completing.
   async reconcile(): Promise<{ mismatches: number; halted: boolean }> {
+    if (this.venuePorts && this.venueRegistry && this.venueRegistry.size > 0) {
+      let mismatches = 0;
+      let halted = false;
+      for (const descriptor of this.venueRegistry.values()) {
+        const port = this.venuePorts.get(descriptor.venue);
+        if (!port) {
+          this.log.error(`no exchange port registered for venue "${descriptor.venue}" — skipping`);
+          continue;
+        }
+        const result = await this.reconcileOnce(port, this.venueReconConfig(descriptor));
+        mismatches += result.mismatches;
+        halted = halted || result.halted;
+      }
+      return { mismatches, halted };
+    }
+    return this.reconcileOnce(this.exchange, this.cfg);
+  }
+
+  // §1.5: per-venue tunables derived from the registry descriptor, sharing the base config's
+  // epsAbs/epsRel/overlapMs/driftPasses. balanceAxis is off when the venue's environment is 'demo'
+  // (a shared multi-asset demo account the bot does not own end-to-end — same rationale as v2's
+  // testnet+demo carve-out, now keyed off the venue's OWN environment instead of the whole boot's
+  // sandbox flavor); positionAxis mirrors perpCapable exactly (Defect A's axis is perp-only by
+  // construction); sweepSymbols is the venue's own symbol subset.
+  private venueReconConfig(descriptor: VenueRuntimeDescriptor): ReconConfig {
+    return {
+      ...this.cfg,
+      balanceAxis: descriptor.config.environment !== 'demo',
+      positionAxis: descriptor.perpCapable,
+      sweepSymbols: descriptor.symbols,
+    };
+  }
+
+  private async reconcileOnce(
+    exchange: ExchangePort,
+    cfg: ReconConfig,
+  ): Promise<{ mismatches: number; halted: boolean }> {
     const acc: PassAccumulator = { mismatches: new Map(), halts: [] };
 
     // An axis throw past its own per-item guards must still land in the reconciliations row and the
@@ -144,12 +203,12 @@ export class ReconciliationService {
     // reconciler (exactly the failure mode that hid the symbol-less fetchOpenOrders throw for weeks).
     let passError: unknown;
     try {
-      await this.reconcileOpenOrders(acc);
-      await this.reconcileTrades(acc);
-      if ((this.cfg.positionAxis ?? true) && this.exchange.fetchPositions !== undefined) {
-        await this.reconcilePositions(acc);
+      await this.reconcileOpenOrders(exchange, cfg, acc);
+      await this.reconcileTrades(exchange, cfg, acc);
+      if ((cfg.positionAxis ?? true) && exchange.fetchPositions !== undefined) {
+        await this.reconcilePositions(exchange, cfg, acc);
       }
-      if (this.cfg.balanceAxis) await this.reconcileBalances(acc);
+      if (cfg.balanceAxis) await this.reconcileBalances(exchange, cfg, acc);
     } catch (err) {
       passError = err;
     }
@@ -160,7 +219,7 @@ export class ReconciliationService {
     const mismatchTotal = totalMismatches(acc);
     await this.store.saveReconciliation({
       ts: this.clock.now(),
-      venue: this.exchange.venue,
+      venue: exchange.venue,
       mismatches: mismatchTotal,
       halted,
       detail:
@@ -206,12 +265,16 @@ export class ReconciliationService {
   // fetchOpenAlgoOrders scan, plus HaltCoordinatorService's registry sweep — Push 3 P7f fix 7),
   // never this service's — the algo rail's boot truth lives there, not in this axis or in
   // boot-recovery's regular-rail restore.
-  private async reconcileOpenOrders(acc: PassAccumulator): Promise<void> {
+  private async reconcileOpenOrders(
+    exchange: ExchangePort,
+    cfg: ReconConfig,
+    acc: PassAccumulator,
+  ): Promise<void> {
     const venueOpen: ExchangeOrderState[] = [];
     const failedSymbols = new Set<SymbolId>();
-    for (const symbol of this.sweepSymbols()) {
+    for (const symbol of this.sweepSymbols(exchange, cfg)) {
       try {
-        venueOpen.push(...(await this.exchange.fetchOpenOrders(symbol)));
+        venueOpen.push(...(await exchange.fetchOpenOrders(symbol)));
       } catch {
         bump(acc, 'sweep_failure'); // could not sweep this symbol's open orders — surfaced, re-checked next pass
         failedSymbols.add(symbol);
@@ -238,23 +301,24 @@ export class ReconciliationService {
     for (const lo of localOpen) {
       if (venueCoids.has(lo.clientOrderId)) continue;
       if (failedSymbols.has(lo.symbol)) continue;
-      await this.adoptTerminal(lo.clientOrderId, lo.symbol, acc);
+      await this.adoptTerminal(exchange, lo.clientOrderId, lo.symbol, acc);
     }
   }
 
   private async adoptTerminal(
+    exchange: ExchangePort,
     coid: ClientOrderId,
     symbol: SymbolId,
     acc: PassAccumulator,
   ): Promise<void> {
-    let venue: ExchangeOrderState;
+    let venueOrder: ExchangeOrderState;
     try {
-      venue = await this.exchange.fetchOrder(coid, symbol);
+      venueOrder = await exchange.fetchOrder(coid, symbol);
     } catch {
       bump(acc, 'adopt_query_failure'); // an order we hold open but cannot query — surfaced, re-checked next pass
       return;
     }
-    const event = this.terminalEventFor(venue.status);
+    const event = this.terminalEventFor(venueOrder.status);
     if (event === undefined) {
       bump(acc, 'adopt_non_adoptable'); // 'open'/'closed' here is inconsistent with absence from open orders — WARN
       return;
@@ -287,7 +351,11 @@ export class ReconciliationService {
   }
 
   // Axis 2 — trades since the per-(venue,symbol) checkpoint minus an overlap window.
-  private async reconcileTrades(acc: PassAccumulator): Promise<void> {
+  private async reconcileTrades(
+    exchange: ExchangePort,
+    cfg: ReconConfig,
+    acc: PassAccumulator,
+  ): Promise<void> {
     // MATCHING (mirrors demo-fill-poller.service.ts): ccxt's unified myTrades carries `order` = the
     // VENUE numeric order id as VenueFill.clientOrderId (Binance has no clientOrderId on myTrades),
     // so a trade is resolved to a local order via the venueOrderId recorded on ACK first — the
@@ -297,19 +365,19 @@ export class ReconciliationService {
     for (const rec of this.orders.all()) {
       if (rec.venueOrderId !== undefined) byVenueId.set(rec.venueOrderId, rec);
     }
-    for (const symbol of this.sweepSymbols()) {
-      const key = `${this.exchange.venue}|${symbol}`;
+    for (const symbol of this.sweepSymbols(exchange, cfg)) {
+      const key = `${exchange.venue}|${symbol}`;
       const checkpoint = this.checkpoints.get(key) ?? (0 as EpochMs);
-      const since = Math.max(0, checkpoint - this.cfg.overlapMs) as EpochMs;
+      const since = Math.max(0, checkpoint - cfg.overlapMs) as EpochMs;
       let trades: readonly VenueFill[];
       try {
-        trades = await this.exchange.fetchMyTrades(symbol, since);
+        trades = await exchange.fetchMyTrades(symbol, since);
       } catch {
         bump(acc, 'sweep_failure'); // could not sweep this symbol's trades — surfaced
         continue;
       }
       for (const t of trades) {
-        await this.reconcileTrade(t, byVenueId, acc);
+        await this.reconcileTrade(exchange, t, byVenueId, acc);
         if (t.venueTimestamp > (this.checkpoints.get(key) ?? 0))
           this.checkpoints.set(key, t.venueTimestamp);
       }
@@ -317,6 +385,7 @@ export class ReconciliationService {
   }
 
   private async reconcileTrade(
+    exchange: ExchangePort,
     t: VenueFill,
     byVenueId: ReadonlyMap<string, OrderRecord>,
     acc: PassAccumulator,
@@ -362,7 +431,7 @@ export class ReconciliationService {
     //     loadOpenOrders' WHERE terminal_at IS NULL) AND the filter above already ruled out
     //     already-recorded ⇒ this IS the missed-fill recovery this axis exists for, just discovered
     //     via the durable tier instead of the in-memory index — ingest it.
-    const durable = await this.store.loadOrderByVenueOrderId(this.exchange.venue, t.clientOrderId);
+    const durable = await this.store.loadOrderByVenueOrderId(exchange.venue, t.clientOrderId);
     if (durable !== null) {
       if (TERMINAL_ORDER_STATES.has(durable.state)) {
         await this.applyTrade(t, durable, acc);
@@ -399,11 +468,15 @@ export class ReconciliationService {
   // halting and the SECOND consecutive one HALTs through the same kill-switch path as every other
   // axis — never an order, never a flatten (CLAUDE.md rule 6). A divergence that outlives a full
   // reconcile period is precisely the unrecovered case the axis exists for.
-  private async reconcilePositions(acc: PassAccumulator): Promise<void> {
-    const symbols = this.sweepSymbols();
+  private async reconcilePositions(
+    exchange: ExchangePort,
+    cfg: ReconConfig,
+    acc: PassAccumulator,
+  ): Promise<void> {
+    const symbols = this.sweepSymbols(exchange, cfg);
     let venuePositions: readonly VenuePosition[];
     try {
-      venuePositions = await this.exchange.fetchPositions!(symbols);
+      venuePositions = await exchange.fetchPositions!(symbols);
     } catch {
       bump(acc, 'sweep_failure'); // could not read venue positions — surfaced, re-checked next pass (fail OPEN)
       return;
@@ -413,7 +486,7 @@ export class ReconciliationService {
 
     const localBySymbol = new Map<string, Decimal>();
     for (const p of this.portfolio.snapshot().positions.values()) {
-      if (p.venue !== this.exchange.venue) continue;
+      if (p.venue !== exchange.venue) continue;
       const prior = localBySymbol.get(p.symbol) ?? new Decimal(0);
       localBySymbol.set(p.symbol, prior.add(p.signedQty));
     }
@@ -421,25 +494,33 @@ export class ReconciliationService {
     for (const symbol of symbols) {
       const venueQty = venueBySymbol.get(symbol) ?? new Decimal(0);
       const localQty = localBySymbol.get(symbol) ?? new Decimal(0);
-      const within = balanceWithinEpsilon(localQty, venueQty, this.cfg.epsAbs, this.cfg.epsRel);
+      const within = balanceWithinEpsilon(localQty, venueQty, cfg.epsAbs, cfg.epsRel);
+      // v3: keyed by venue+symbol (not symbol alone) — two venues can share a base asset's ticker
+      // shape but never the same streak bucket, so a spot-side divergence can never mask or amplify
+      // a perp-side one sharing the same symbol string.
+      const streakKey = `${exchange.venue}|${symbol}`;
       if (!within) {
         bump(acc, 'position_drift'); // counted every divergent pass — visibility precedes the halt
-        const streak = (this.positionDivergenceStreak.get(symbol) ?? 0) + 1;
-        this.positionDivergenceStreak.set(symbol, streak);
+        const streak = (this.positionDivergenceStreak.get(streakKey) ?? 0) + 1;
+        this.positionDivergenceStreak.set(streakKey, streak);
         if (streak >= 2) {
           acc.halts.push(`POSITION_DRIFT:${symbol}`); // second consecutive divergent pass ⇒ HALT, no auto-flatten
         }
       } else {
-        this.positionDivergenceStreak.delete(symbol);
+        this.positionDivergenceStreak.delete(streakKey);
       }
     }
   }
 
   // Axis 4 — balances per asset within ε; within-ε drift recorded, monotone growth escalates.
-  private async reconcileBalances(acc: PassAccumulator): Promise<void> {
+  private async reconcileBalances(
+    exchange: ExchangePort,
+    cfg: ReconConfig,
+    acc: PassAccumulator,
+  ): Promise<void> {
     let venueBalances: ReadonlyMap<string, { free: string; locked: string }>;
     try {
-      venueBalances = await this.exchange.fetchBalances();
+      venueBalances = await exchange.fetchBalances();
     } catch {
       bump(acc, 'sweep_failure');
       return;
@@ -449,20 +530,23 @@ export class ReconciliationService {
       const localTotal = bal.free.add(bal.locked);
       const v = venueBalances.get(asset);
       const venueTotal = v ? new Decimal(v.free).add(new Decimal(v.locked)) : new Decimal(0);
-      const within = balanceWithinEpsilon(localTotal, venueTotal, this.cfg.epsAbs, this.cfg.epsRel);
+      const within = balanceWithinEpsilon(localTotal, venueTotal, cfg.epsAbs, cfg.epsRel);
       const drift = venueTotal.sub(localTotal).abs();
-      const history = this.driftHistory.get(asset) ?? [];
+      // v3: keyed by venue+asset — the spot USDT wallet and the perp USDT margin balance are
+      // DIFFERENT balances that happen to share an asset ticker; a shared per-asset-only key would
+      // let one venue's growing leak reset or double-count against the other's history.
+      const historyKey = `${exchange.venue}|${asset}`;
+      const history = this.driftHistory.get(historyKey) ?? [];
       history.push(drift);
       // driftStrictlyGrowing only ever reads the last cfg.driftPasses entries — trim the front so
       // this per-asset array does not grow one Decimal per pass forever.
-      if (history.length > this.cfg.driftPasses)
-        history.splice(0, history.length - this.cfg.driftPasses);
-      this.driftHistory.set(asset, history);
+      if (history.length > cfg.driftPasses) history.splice(0, history.length - cfg.driftPasses);
+      this.driftHistory.set(historyKey, history);
 
       if (!within) {
         bump(acc, 'balance_drift');
         acc.halts.push(`BALANCE_DRIFT:${asset}`); // beyond ε ⇒ HALT, no auto-flatten
-      } else if (driftStrictlyGrowing(history, this.cfg.driftPasses)) {
+      } else if (driftStrictlyGrowing(history, cfg.driftPasses)) {
         bump(acc, 'balance_leak');
         acc.halts.push(`BALANCE_LEAK:${asset}`); // within ε but a systematic, growing leak ⇒ HALT
       }
@@ -471,12 +555,17 @@ export class ReconciliationService {
 
   // The configured trading universe unioned with symbols carrying live local state — so the sweeps
   // observe venue truth even before the bot holds anything, and keep observing residue after a
-  // config change drops a symbol.
-  private sweepSymbols(): SymbolId[] {
+  // config change drops a symbol. v3: local open orders/positions are filtered to THIS venue only —
+  // the book-level portfolio holds both venues' state, and sweeping a spot symbol against the perp
+  // exchange port (or vice versa) would mis-query venue truth entirely.
+  private sweepSymbols(exchange: ExchangePort, cfg: ReconConfig): SymbolId[] {
     const snap = this.portfolio.snapshot();
-    const set = new Set<SymbolId>(this.cfg.sweepSymbols as SymbolId[]);
-    for (const o of snap.openOrders) set.add(o.symbol);
-    for (const p of snap.positions.values()) set.add(p.symbol);
+    const set = new Set<SymbolId>(cfg.sweepSymbols as SymbolId[]);
+    // OpenOrderSummary carries no venue field — venue is a pure function of symbol (venueForSymbol),
+    // so deriving it here needs no widening of that DTO (owned by workstream #8).
+    for (const o of snap.openOrders)
+      if (venueForSymbol(o.symbol) === exchange.venue) set.add(o.symbol);
+    for (const p of snap.positions.values()) if (p.venue === exchange.venue) set.add(p.symbol);
     return [...set];
   }
 

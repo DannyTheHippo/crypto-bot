@@ -1,6 +1,17 @@
 import type { CandleEvent } from '../../../domain/types/market-events';
 import { toIndicatorNumber } from '../../../domain/types/money';
 import { atrFromNumbers } from '../../../domain/indicators/indicators';
+import { symbolId } from '../../../domain/types/ids';
+import { venueForSymbol, SPOT_VENUE_ID, PERP_VENUE_ID } from '../../../domain/types/venue-map';
+
+// Basket entries are plain strings (ccxt symbol shape) here, not the branded SymbolId the domain
+// layer mints — venueForSymbol only needs the pure BASE/QUOTE[:SETTLE] shape splitSymbol parses, so
+// a bare cast (never validated elsewhere in this basket-ranking-only module) is the smaller-blast-
+// radius reuse of the single-source venueForSymbol/venue-map.ts rather than re-deriving the
+// settle-suffix check locally.
+function venueOf(symbol: string) {
+  return venueForSymbol(symbolId(symbol));
+}
 
 // U1 (Design § Universe: wide static basket, scanner-gated active menu). Deterministic, no-LLM
 // ranking of the configured basket into an "active menu" the batched consult path serves — idle
@@ -21,11 +32,17 @@ const QUOTE_VOLUME_WINDOW_BARS = 96;
 // Matches the ATR period agentic.strategy.ts's own buildContext uses (atr14) — same warmup shape,
 // so a symbol that has warmed up enough to decide has also warmed up enough to be scanned.
 const ATR_PERIOD = 14;
-// Hysteresis band (Design § Universe): an incumbent active symbol stays active until its combined
-// rank falls below 18, even though only the top `menuSize` (12 by default) are freshly promoted.
-// Deliberately NOT a config knob (AGENTIC_ACTIVE_MENU_SIZE already tunes the menu itself) — this is
-// pure anti-churn plumbing, not a risk/economics lever, so it stays a fixed constant.
-const DEFAULT_HYSTERESIS_RANK = 18;
+// Hysteresis band (v3 spec §5.3): an incumbent active symbol stays active until its combined rank
+// falls below 12, even though only the top `menuSize` (8 by default, v3 AGENTIC_ACTIVE_MENU_SIZE)
+// are freshly promoted — 1.5x the menu, preserving v2's own 12->18 ratio. Deliberately NOT a config
+// knob (AGENTIC_ACTIVE_MENU_SIZE already tunes the menu itself) — this is pure anti-churn plumbing,
+// not a risk/economics lever, so it stays a fixed constant.
+const DEFAULT_HYSTERESIS_RANK = 12;
+
+// v3 spec §5.3: venue floor — the combined verdict needs evidence from BOTH venues, so a one-venue
+// hot streak must never zero the other's trip accrual. Fixed at 2 (not a knob), same fixed-constant
+// discipline as the hysteresis band above.
+const VENUE_FLOOR = 2;
 
 export interface ScanMetrics {
   readonly quoteVolume24h: number;
@@ -253,6 +270,31 @@ export class UniverseScannerService {
     // Pins can name a symbol the ranking loop above never iterated only if it were outside `basket`,
     // which cannot happen (isPinned is only meaningful for basket members in this design) — no
     // further pass needed.
+
+    // v3 spec §5.3 venue floor: after ranking+hysteresis+pinning, if fewer than VENUE_FLOOR of
+    // either venue's symbols made the active set, promote that venue's best-ranked non-active
+    // members (in combined-rank order) until the floor is met or the venue's own basket is
+    // exhausted. Fail direction: the floor only ever ADDS symbols (fail OPEN toward coverage) — it
+    // never evicts a symbol another rule already selected, so it can only grow candidateActive
+    // beyond menuSize, same overflow class as the pin path above. Only meaningful for a genuinely
+    // mixed-venue basket (production's 24-spot + 16-perp combined basket, always both) — a
+    // single-venue basket (every fixture/toy basket in this spec file that predates v3) has no
+    // "other venue" whose accrual needs protecting, so the floor is inert there by construction
+    // rather than forcing a spot-only menuSize:1 basket up to 2 active symbols.
+    const basketVenues = new Set(this.basket.map((s) => venueOf(s)));
+    if (basketVenues.size > 1) {
+      for (const venue of [SPOT_VENUE_ID, PERP_VENUE_ID] as const) {
+        const activeOfVenue = [...candidateActive].filter((s) => venueOf(s) === venue);
+        if (activeOfVenue.length >= VENUE_FLOOR) continue;
+        for (const r of scored) {
+          if (candidateActive.has(r.symbol) || venueOf(r.symbol) !== venue) continue;
+          candidateActive.add(r.symbol);
+          if ([...candidateActive].filter((s) => venueOf(s) === venue).length >= VENUE_FLOOR) {
+            break;
+          }
+        }
+      }
+    }
 
     const menuIn = [...candidateActive].filter((s) => !previousActive.has(s));
     const menuOut = [...previousActive].filter((s) => !candidateActive.has(s));

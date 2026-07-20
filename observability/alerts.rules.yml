@@ -35,6 +35,19 @@ groups:
         annotations:
           summary: 'Event-loop utilization sustained above 90% ({{ $value }})'
 
+      # v3 §8 memory guardrail: the single unified process (both venues, one composition graph)
+      # replaces the v2 spot/perp process pair — process_resident_memory_bytes is prom-client's
+      # default metric (always emitted, no app-side wiring needed). 1.2 GiB is the compose mem_limit
+      # (1536m) minus headroom before an OOM kill; threshold tightens to measured peaks at the
+      # validation gate per the spec's own footprint-acceptance note.
+      - alert: AppMemoryHigh
+        expr: process_resident_memory_bytes > 1.2e9
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: 'crypto-bot RSS sustained above 1.2 GiB for 10m ({{ $value | humanize1024 }}B) — approaching the 1536m compose mem_limit'
+          runbook: 'docs/runbook.md'
+
   - name: crypto-bot-mode
     rules:
       # Paper-honesty visibility: surfaces whenever the process is resolving to a non-paper effective

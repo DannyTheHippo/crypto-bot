@@ -638,14 +638,12 @@ function indicatorFloat(decimalString: string): number {
 
 // Pairs an open→close round trip off the journal's own `action` field (rows arrive oldest→newest,
 // per AgentDecisionJournalPort's ordering contract) into closed-trade summaries, keeping only the
-// most recent `maxTrades`. P3 (v2 action widening): legacy 'long'/'flat' keep their original
-// long-only meaning; 'open_long'/'open_short' open (side recorded); 'close' closes either side;
-// 'adjust' is a no-op annotation on the CURRENT position (Design § New tool contract: "the clock
-// enforces the model's intent, not a risk gate" — it never re-sides a position), so it neither opens
-// nor closes here, exactly like annotateResultingExposure's own 'adjust' branch
-// (counterfactual-scoring.ts). A same-side open while a trade is already open (scale-in, or the
-// legacy hold-the-position re-affirmation) is ignored — 'hold'/'error' rows never affect the
-// open/closed state either.
+// most recent `maxTrades`. v3 §2/§9 vocabulary: 'open_long'/'open_short' open (side recorded);
+// 'close' closes either side; 'adjust' is a no-op annotation on the CURRENT position (Design § New
+// tool contract: "the clock enforces the model's intent, not a risk gate" — it never re-sides a
+// position), so it neither opens nor closes here, exactly like annotateResultingExposure's own
+// 'adjust' branch (counterfactual-scoring.ts). A same-side open while a trade is already open
+// (scale-in) is ignored — 'hold'/'error' rows never affect the open/closed state either.
 export function reconstructClosedTrades(
   rows: readonly AgentDecisionRow[],
   maxTrades: number,
@@ -655,11 +653,11 @@ export function reconstructClosedTrades(
   for (const row of rows) {
     const priceStr = row.refPrice ?? row.close;
     if (!priceStr) continue;
-    if ((row.action === 'long' || row.action === 'open_long') && open === null) {
+    if (row.action === 'open_long' && open === null) {
       open = { time: row.eventTime, price: indicatorFloat(priceStr), side: 'LONG' };
     } else if (row.action === 'open_short' && open === null) {
       open = { time: row.eventTime, price: indicatorFloat(priceStr), side: 'SHORT' };
-    } else if ((row.action === 'flat' || row.action === 'close') && open !== null) {
+    } else if (row.action === 'close' && open !== null) {
       const exitPrice = indicatorFloat(priceStr);
       // SHORT profits on a DECLINE — the pnlPct formula mirrors counterfactual-scoring.ts's own
       // computeToyEquity SHORT branch (entry/exit inverted relative to the LONG formula), never the

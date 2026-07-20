@@ -2,6 +2,13 @@ import type { VenueId, SymbolId, ClientOrderId, EpochMs } from '../domain/types/
 import type { OrderState } from '../domain/oms/reducer';
 
 export const EXCHANGE_PORT = Symbol('EXCHANGE_PORT');
+// v3 §1.3: one concrete ExchangePort per VENUE_REGISTRY venue. EXCHANGE_PORT re-binds to a routing
+// facade over this map (composition/exchange-adapters.module.ts); features that need PER-VENUE
+// dispatch without going through the facade (ReconciliationService, DemoFillPollerService) inject
+// this map directly instead. Token lives here (ports zone) rather than the composition module file
+// so a features-zone consumer can inject it without a boundaries violation (features→app is
+// disallowed; features→ports is fine).
+export const VENUE_EXCHANGE_PORTS = Symbol('VENUE_EXCHANGE_PORTS');
 
 // §3.1 ExchangePort — the venue seam. Money crosses as canonical decimal STRINGS here
 // (never native float, never Decimal — the adapter owns conversion to/from venue wire

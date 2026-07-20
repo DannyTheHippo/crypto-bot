@@ -20,7 +20,7 @@ function decisionRow(version: number, at: number, symbol = SYM): AgentDecisionRo
     basedOnSeq: 0n,
     eventTime: epochMs(at),
     model: 'm',
-    action: 'long',
+    action: 'open_long',
     confidence: 0.6,
     rationale: 'r',
     refPrice: null,

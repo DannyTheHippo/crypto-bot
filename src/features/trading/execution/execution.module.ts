@@ -2,6 +2,7 @@ import { Module, type Provider } from '@nestjs/common';
 import { CLOCK, SystemClock } from '../../../ports/clock';
 import { FEED_HEALTH, REAL_FEED_HEALTH, type FeedHealthPort } from '../../../ports/market-data';
 import { TypedConfigService } from '../../../config/environment/typed-config.service';
+import { SPOT_VENUE, PERP_VENUE } from '../../../domain/types/venue-map';
 import {
   EXECUTION_GATE,
   PORTFOLIO_VIEW,
@@ -99,11 +100,18 @@ function runContextFrom(config: TypedConfigService | undefined): ExecRunContext 
 // PROMOTION_DUST_NOTIONAL (the promotion verdict's own dust knob) so live round-trip metrics close
 // on the same residual-notional rule the earned-live gate already tolerates; @Optional config in
 // module-isolation tests leaves it undefined, which the service treats as disabled (0).
+// v3 §1.3/§6.4 integration item (#5→#8): venueCapitalShare mirrors AppConfig.venueCapitalSplit so
+// PortfolioStateService's internal paper-ledger venueBalances split matches the fixed wallet split
+// the composition root seeds each paper adapter with (exchange-adapters.module.ts). Absent when
+// config is undefined (module-isolation fixtures) — PortfolioConfig's own field comment documents
+// the byte-identical no-split fallback.
 function portfolioConfigFrom(config: TypedConfigService | undefined): PortfolioConfig {
   return {
     quoteAsset: 'USDT',
     startingCash: process.env['STARTING_CASH'] ?? '100000',
     dustNotional: config?.agentic.promotionDustNotional,
+    venueCapitalShare:
+      config === undefined ? undefined : new Map(Object.entries(config.venueCapitalSplit)),
   };
 }
 const DEFAULT_FILTERS: ExecFilters = new Map();
@@ -129,14 +137,19 @@ const DEFAULT_RECON_CONFIG: ReconConfig = {
 // CcxtExchangeAdapter defines fetchPositions on every venue (vacuously [] off-perp) while the local
 // positions map holds spot positions too — running the axis on spot would compare real local
 // positions against an always-empty venue read and spuriously HALT.
-const PERP_VENUE_ID = 'binanceusdm'; // local convention, mirrors app.module/position-sizer (not exported there)
+// v3 §1.2: retires this file's own local PERP_VENUE_ID copy (one of the three named-in-spec sites,
+// alongside app.module.ts's primaryVenue()/feedVenueConfig() and position-sizer.service.ts's own
+// copy — workstream #8's) in favor of the single canonical domain/types/venue-map.ts source. This
+// legacy single-venue RECON_CONFIG path is exercised only when ReconciliationService's venuePorts/
+// venueRegistry are absent (module-isolation fixtures) — the real v3 per-venue balanceAxis/
+// positionAxis/sweepSymbols come from VENUE_REGISTRY via ReconciliationService.venueReconConfig.
 function reconConfigFrom(config: TypedConfigService | undefined): ReconConfig {
   if (config === undefined) return DEFAULT_RECON_CONFIG;
   const demoAccount = config.mode.configMode === 'testnet' && config.mode.sandboxEnv === 'demo';
   return {
     ...DEFAULT_RECON_CONFIG,
     balanceAxis: !demoAccount,
-    positionAxis: (config.venues[0]?.id ?? 'binance') === PERP_VENUE_ID,
+    positionAxis: (config.venues[0]?.id ?? SPOT_VENUE) === PERP_VENUE,
     sweepSymbols: config.strategy.symbols,
   };
 }

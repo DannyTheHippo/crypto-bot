@@ -12,6 +12,8 @@ import type { TradingMode } from '../../../domain/types/mode';
 // (engage + pre-trade read) and Execution (engage on conflict/unknown/reconcile). The composition
 // root binds it globally; RiskEngine/SignalGateway resolve it by class from that single instance.
 import { FEED_HEALTH, REAL_FEED_HEALTH, type FeedHealthPort } from '../../../ports/market-data';
+import { venueId, type VenueId } from '../../../domain/types/ids';
+import { SPOT_VENUE_ID, PERP_VENUE_ID } from '../../../domain/types/venue-map';
 import {
   RISK_SIGNING_KEY,
   RISK_ENGINE_DEPS,
@@ -102,15 +104,32 @@ function perpDepsFor(config: TypedConfigService | undefined): SizerDeps['perp'] 
     liqBufferPct: config.perp.liqBufferPct,
   };
 }
-// S2/C1/D1/I1: AGENTIC_MAX_POSITION_FRACTION lives on config.agentic (the tool-contract cap, spot
-// 0.15 / perp 0.50 per lane); SIZER_EQUITY_CAP lives on config.risk (the $1k-book sizing cap).
-// Absent TypedConfigService (module-isolation boots) leaves both undefined, falling through to
-// PositionSizerService's own '0.15'/pass-through fallbacks — byte-identical to pre-D1 behavior.
-function maxAgentPositionFractionFor(config: TypedConfigService | undefined): string | undefined {
-  return config?.agentic.maxPositionFraction;
+// v3 §6.1/§6.2/§10 (workstream #8 consumes the per-venue-class fields directly, retiring the
+// transitional single-fraction read): spot symbols use AGENTIC_MAX_POSITION_FRACTION_SPOT, perp
+// symbols use …_PERP, keyed by VenueId via the canonical venue-map (domain/types/venue-map.ts) —
+// SPOT_VENUE_ID/PERP_VENUE_ID are the only two venues this pass wires. Absent TypedConfigService
+// (module-isolation boots) ⇒ undefined, falling through to PositionSizerService's own '0.15'
+// fallback — byte-identical to pre-v3 behavior.
+function maxAgentPositionFractionByVenueFor(
+  config: TypedConfigService | undefined,
+): ReadonlyMap<VenueId, string> | undefined {
+  if (!config) return undefined;
+  return new Map([
+    [SPOT_VENUE_ID, config.agentic.maxPositionFractionSpot],
+    [PERP_VENUE_ID, config.agentic.maxPositionFractionPerp],
+  ]);
 }
 function equityCapFor(config: TypedConfigService | undefined): string | undefined {
   return config?.risk.equityCap;
+}
+// v3 §6.1: AppConfig.venueCapitalSplit (VENUE_CAPITAL_SPLIT, plain string keys) converted to a
+// VenueId-keyed map for the sizer's applyVenueHeadroomClamp. Absent TypedConfigService
+// (module-isolation boots) ⇒ undefined, so the clamp no-ops — byte-identical to pre-split sizing.
+function venueCapitalShareFor(
+  config: TypedConfigService | undefined,
+): ReadonlyMap<VenueId, string> | undefined {
+  if (!config) return undefined;
+  return new Map(Object.entries(config.venueCapitalSplit).map(([v, share]) => [venueId(v), share]));
 }
 // Overlays the RISK_* env knobs onto DEFAULT_LIMITS (single source of truth for both RISK_LIMITS —
 // consumed by RiskEngineService/ModeControl's LIMITS_COMPLETE gate — and RISK_ENGINE_DEPS). Absent
@@ -171,8 +190,9 @@ const CONFIG_OPTIONAL = { token: TypedConfigService, optional: true } as const;
         entryOrderType: entryOrderTypeFor(config),
         stopLimitBufferBps: stopLimitBufferBpsFor(config),
         perp: perpDepsFor(config),
-        maxAgentPositionFraction: maxAgentPositionFractionFor(config),
+        maxAgentPositionFractionByVenue: maxAgentPositionFractionByVenueFor(config),
         equityCap: equityCapFor(config),
+        venueCapitalShare: venueCapitalShareFor(config),
       }),
       inject: [CONFIG_OPTIONAL],
     },

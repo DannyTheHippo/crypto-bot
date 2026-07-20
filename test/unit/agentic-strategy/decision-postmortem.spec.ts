@@ -39,10 +39,10 @@ describe('summarizeDecisionPostMortems — thesis post-mortems', () => {
     ]);
   });
 
-  it('skips a thesis-less legacy round trip cleanly — no throw, no fabricated grade', () => {
+  it('skips a thesis-less round trip cleanly — no throw, no fabricated grade', () => {
     const rows: PostMortemRow[] = [
-      row(0, { action: 'long', refPrice: '100', close: '100' }), // legacy row, no plan at all
-      row(1, { action: 'flat', refPrice: '110', close: '110' }),
+      row(0, { action: 'open_long', refPrice: '100', close: '100' }), // no plan at all
+      row(1, { action: 'close', refPrice: '110', close: '110' }),
     ];
     expect(() => summarizeDecisionPostMortems(rows)).not.toThrow();
     expect(summarizeDecisionPostMortems(rows).thesisPostMortems).toEqual([]);

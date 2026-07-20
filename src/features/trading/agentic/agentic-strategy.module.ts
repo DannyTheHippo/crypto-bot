@@ -250,18 +250,15 @@ export function createAgentLlmBudget(
   });
 }
 
-// Expert seed playbooks (P2, Design § Learning & measurement stack: "Expert seed playbooks
-// (replaces generic seeds) — spot: momentum continuation and breakout-retest at swing horizon,
-// session/time-of-day effects, BTC-beta regime rules, sizing discipline (concentrate in 2-4 best
-// ideas on a $1k book); perp: two-sided, funding-flip signals, liquidation-cascade mean reversion,
-// basis/OI divergence. Validator-compliant."). Both pass validatePlaybook (playbook-validator.spec.ts,
-// agentic-strategy.spec.ts) with their lane's capability flags — SEED_PLAYBOOK carries no
-// shorts/leverage phrases so it survives STRICT (spot) validation with opts={}; SEED_PLAYBOOK_PERP
-// requires {shortsAllowed: true, leverageAllowed: true}. Selected by shortsEnabled — the SAME signal
-// P1 uses for the denylist capability flags (see selectAgentClient's seedPlaybookProvider call below
-// and app.module.ts's PLAYBOOK_PROVIDER_OVERRIDE/ValidatingPlaybookProvider fallback, which apply the
-// identical derivation so the composition root, the strategy module, and the validator fallback can
-// never disagree on which seed a lane gets).
+// v2-era expert seed playbooks (P2, Design § Learning & measurement stack), RETAINED (not deleted)
+// only because app.module.ts (workstream #5, out of this pass's scope) still imports both by name
+// for its own PLAYBOOK_PROVIDER_OVERRIDE/ValidatingPlaybookProvider construction, which has not yet
+// migrated off the two-lane shortsEnabled selection. v3 §9/§10 work item 3 folds their prose into
+// ONE lineage below (SEED_PLAYBOOK_V3) — every NEW consumer in this module (seedPlaybookProvider,
+// selectAgentClient's default, the PLAYBOOK_PROVIDER factory) reads SEED_PLAYBOOK_V3 unconditionally;
+// these two consts are dead code from this module's own perspective and should be deleted once #5's
+// app.module.ts final-assembly pass switches its own seed pick to SEED_PLAYBOOK_V3 (integration item —
+// see this dispatch's final report).
 // XA3 (A0 activation bundle, 2026-07-20): version 4 — above every existing DB row (v1 seed,
 // v2/v3 reflection mints on both lanes), so the revised mandate actually goes ACTIVE at next boot.
 // Found during XA3: the P2 expert seeds NEVER went live — both const versions said 2, ensureSeed()
@@ -394,9 +391,76 @@ export const SEED_PLAYBOOK_PERP: { readonly version: number; readonly content: s
   ].join('\n'),
 };
 
-function seedPlaybookProvider(perpLane = false): PlaybookProvider {
-  const seed = perpLane ? SEED_PLAYBOOK_PERP : SEED_PLAYBOOK;
-  return { current: () => Promise.resolve(seed) };
+// v3 spec §9/§10 work item 3: one lineage for the combined book (both venues, one scanner basket,
+// one playbook_versions sequence — schema §2 dropped the per-lane column). Folds SEED_PLAYBOOK's
+// expert spot prose (momentum continuation/breakout-retest, session effects, BTC-beta) and
+// SEED_PLAYBOOK_PERP's expert perp prose (two-sided, funding-flip, liquidation-cascade mean
+// reversion, basis/OI divergence) into ONE two-sided seed — validated with capabilities always
+// {shortsAllowed: true, leverageAllowed: true} (every v3 boot is perp-capable; §1.3's
+// AgenticBridgeModule fixes the SAME two flags for the SAME reason). version starts at 1: the v3
+// schema's agent_playbook_versions table is greenfield (no v2 rows to stay above).
+// INTEGRATION ITEM (flagged, not resolved here): this folds the SEED CONSTS only, not either lane's
+// live ACTIVE reflection-minted text — reading the v2 DBs' current ACTIVE row is a cutover-time step
+// (the task brief explicitly defers it: "the cutover task owns the DB read"), so a future commit may
+// still need to re-fold real ACTIVE prose in before the v3 demo cutover flips PROMOTION_EVIDENCE_EPOCH.
+export const SEED_PLAYBOOK_V3: { readonly version: number; readonly content: string } = {
+  version: 1,
+  content: [
+    '## regime notes',
+    'One book, two venues (spot + perp), one scanner menu. Swing horizon: hold hours to days on 15m',
+    'bars, not scalps. Momentum continuation and breakout-retest are the two highest-edge patterns on',
+    'either venue. US session drives the cleanest follow-through; Asia mean-reverts;',
+    'weekend/Asia liquidity is thinner — reduce sizeFraction, do not skip a clean setup. BTC-beta:',
+    'alts are BTC-direction bets first — cut alt exposure when BTC trends down even on a fine-looking',
+    'alt chart; concentrate into alts when BTC trends up AND the alt shows relative strength via the',
+    'cross-symbol rank. Perp is two-sided: short a breakdown as readily as you long a',
+    'breakout; if you call a perp trend down and stay flat, your rationale must say why no short.',
+    'Funding-flip: rich positive funding with stalling upside favors a short once price stalls; deep',
+    'negative funding while price holds support is capitulation exhaustion, favoring a long once',
+    'selling fades. Liquidation-cascade mean reversion: a violent wick through a level lining up with',
+    'a visible liquidation cluster usually reflects forced flow exhausting, not a new trend; fade it',
+    'with a tight stop past the extreme rather than chase the cascade. Basis/OI divergence: rising OI',
+    'with falling price means fresh shorts building (respect it); falling OI with falling price means',
+    'longs closing out, not fresh shorts (exhaustion).',
+    '',
+    '## entry rules',
+    'Two valid long-side patterns: (1) breakout-retest — a level breaks with confirming momentum,',
+    'retests without giving back the move, closes back in the break direction; (2) trend continuation',
+    '— an uptrend pulls back to support or a rising EMA and holds (valid at RSI 55-75, no oversold',
+    'reset required). Enter a perp short the mirror way: structure breaks down, momentum confirms,',
+    'ideally a failed retest. Use funding as a timing signal, never a standalone trigger. Fade',
+    'liquidation-cascade wicks with a tight stop past the extreme, sized smaller than a trend-follow',
+    'entry. The perp 2x leverage cap exists so conviction can be expressed, not so every entry',
+    'defaults to it — reserve the full multiple for structure plus funding plus OI all agreeing.',
+    'Disagreement discipline: when ONE input disagrees (a lagging cross-symbol rank, soft order flow,',
+    'a mixed HTF) while structure supports the trade, HALVE sizeFraction rather than hold — reserve',
+    'outright holds for genuinely conflicting structure; let several independent bearish signals, not',
+    'one, veto. Fee arithmetic: spot ~20bps round trip, perp ~6-10bps; typical TP targets (1-8%) clear',
+    'either many times over. Concentrate conviction — a handful of best ideas beats spreading thin.',
+    '',
+    '## exit rules',
+    'Stops sit beyond the structure that invalidated the thesis, never a round number. On a perp',
+    'position, liquidation distance must stay more than 3x the stop distance — reduce size or',
+    'leverage rather than tighten the stop into noise. Perp funding accrues every 8 hours while',
+    'positioned — real carry cost or income; weigh it as a headwind, or in your favor a tailwind that',
+    'can justify holding longer. Once a position works, raise (long) or lower (short) the stop as new',
+    'structure forms rather than leaving it static. Cut fast when the thesis breaks or BTC flips',
+    'against an alt direction; cut a liquidation-cascade fade fast if the wick extreme reclaims',
+    'against you. maxHoldBars is a real deadline — close a stale position rather than let it drift.',
+    '',
+    '## mistakes to avoid',
+    'Do not stack veto conditions: requiring every input to agree means never entering — the',
+    'combined book needs roughly two closed round trips per day, and a flat week is a failure mode,',
+    'not discipline. Do not spread thin across weak setups when concentrated conviction beats a dozen',
+    'half-sized entries paying full fees. Do not ignore BTC when sizing an alt, long or short. Do not',
+    'treat the perp 2x cap as a default, and do not ignore funding cost on a position held for days.',
+    'Do not chase a liquidation-cascade wick in its own direction. Do not let liquidation distance',
+    'shrink below 3x the stop distance.',
+  ].join('\n'),
+};
+
+function seedPlaybookProvider(): PlaybookProvider {
+  return { current: () => Promise.resolve(SEED_PLAYBOOK_V3) };
 }
 
 // Matches AGENTIC_PORTFOLIO_WINDOW_MS's schema default and BatchingAgentClient's own
@@ -415,13 +479,10 @@ const DEFAULT_PORTFOLIO_SYMBOL_COUNT = 5;
 export function selectAgentClient(
   env: Record<string, string | undefined>,
   budget: DailyLlmBudget = createAgentLlmBudget(env),
-  // P2: lane-aware default — the SAME AGENTIC_SHORTS_ENABLED signal P1 uses for the denylist
-  // capability flags below selects SEED_PLAYBOOK_PERP for a shorts-enabled (perp) boot. Only
+  // v3 §9/§10: ONE lineage now (SEED_PLAYBOOK_V3, two-sided) — no lane-aware selection left. Only
   // matters when the caller supplies no explicit playbookProvider (the composition root always
-  // does, via PLAYBOOK_PROVIDER_OVERRIDE — see app.module.ts's identically-derived seed pick).
-  playbookProvider: PlaybookProvider = seedPlaybookProvider(
-    env['AGENTIC_SHORTS_ENABLED'] === 'true',
-  ),
+  // does, via PLAYBOOK_PROVIDER_OVERRIDE).
+  playbookProvider: PlaybookProvider = seedPlaybookProvider(),
   profile?: AgentTradingProfile,
   // I1 (Design § Universe): the scanner's active-menu gate, threaded ONLY into the batching path
   // below (ActiveMenuGate is meaningless to the single-symbol BudgetedAgentClient chain). Absent ⇒
@@ -584,17 +645,12 @@ function constraintsFromDefaultFilters(
     },
     {
       provide: PLAYBOOK_PROVIDER,
-      // P2: same lane-aware fallback as selectAgentClient's default param above — only reachable
-      // in an isolated AgenticStrategyModule test context (the real app.module.ts boot always binds
-      // PLAYBOOK_PROVIDER_OVERRIDE, itself seeded off the identical shortsEnabled derivation).
-      useFactory: (
-        override: PlaybookProvider | undefined,
-        config?: TypedConfigService,
-      ): PlaybookProvider => override ?? seedPlaybookProvider(config?.agentic.shortsEnabled),
-      inject: [
-        { token: PLAYBOOK_PROVIDER_OVERRIDE, optional: true },
-        { token: TypedConfigService, optional: true },
-      ],
+      // v3 §9/§10: same ONE-lineage fallback as selectAgentClient's default param above — only
+      // reachable in an isolated AgenticStrategyModule test context (the real app.module.ts boot
+      // always binds PLAYBOOK_PROVIDER_OVERRIDE).
+      useFactory: (override: PlaybookProvider | undefined): PlaybookProvider =>
+        override ?? seedPlaybookProvider(),
+      inject: [{ token: PLAYBOOK_PROVIDER_OVERRIDE, optional: true }],
     },
     {
       provide: AGENT_CLIENT,

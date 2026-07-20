@@ -10,7 +10,7 @@ import {
   scoreRows,
   type ScoringRow,
 } from '../../../src/features/trading/agentic/counterfactual-scoring';
-import { evalCandle, evalInput, EVAL_PROFILE } from './fixtures';
+import { evalCandle, evalInput, EVAL_PROFILE, toScoringAction } from './fixtures';
 
 const API_KEY = process.env['ANTHROPIC_API_KEY'];
 const LIVE_ENABLED = process.env['EVAL_LIVE'] === '1';
@@ -38,7 +38,7 @@ describe.skipIf(SKIP)('agentic eval — live (guarded, real Anthropic API call)'
     expect(proposal.decision?.action).toMatch(/^(long|flat|hold)$/);
     const row: ScoringRow = {
       eventTime: input.snapshot.eventTime,
-      action: proposal.decision?.action ?? 'error',
+      action: toScoringAction(proposal.decision?.action),
       confidence: proposal.decision?.confidence ?? null,
       refPrice: candle.close.toFixed(),
       close: candle.close.toFixed(),

@@ -34,6 +34,7 @@ import {
   type AgentPositionSummary,
   type AgentDecisionRecord,
   type AgentDecisionJournalPort,
+  type AgentDecisionEntry,
   type AgentProposal,
   type StrategyInitContext,
 } from '../../../ports/agentic-strategy';
@@ -2685,6 +2686,21 @@ export class AgenticStrategy implements AsyncStrategy {
     });
   }
 
+  // v3 (consolidation spec §2/§9): AgentDecisionEntry.action narrowed to the rich-tool-contract-only
+  // vocabulary (the fresh v3 agent_decisions DB column carries no legacy literal — trading.schema.ts),
+  // but AgentDecisionMeta.action (out of this pass's scope) still widens to the legacy 'long'/'flat'
+  // pair for the StubAgentClient fallback path (inferStubDecision above) — the ONE live source of a
+  // legacy-shaped decision left in this lane. Map at the journal-write boundary rather than deleting
+  // the stub path: 'long' -> 'open_long' (opens/holds a long, same as the legacy tool's semantics),
+  // 'flat' -> 'close' (closes any open position) — the same mapping counterfactual-scoring.ts's own
+  // header comment documents for reading legacy rows, applied here on the WRITE side so a v3 journal
+  // row can never carry the legacy literal in the first place.
+  private toJournalAction(action: AgentDecisionMeta['action']): AgentDecisionEntry['action'] {
+    if (action === 'long') return 'open_long';
+    if (action === 'flat') return 'close';
+    return action;
+  }
+
   private recordJournalEntry(
     input: AgentDecisionInput,
     decision: AgentDecisionMeta,
@@ -2703,7 +2719,7 @@ export class AgenticStrategy implements AsyncStrategy {
         basedOnSeq,
         eventTime: input.snapshot.eventTime,
         model: this.model,
-        action: decision.action,
+        action: this.toJournalAction(decision.action),
         confidence: decision.confidence,
         rationale: decision.rationale.slice(0, MAX_JOURNAL_RATIONALE_LEN),
         refPrice: refPrice ? refPrice.toFixed() : null,
@@ -2728,11 +2744,10 @@ export class AgenticStrategy implements AsyncStrategy {
         // proposal carried — see AgentDecisionEntry.nextConsultBars' own comment (rides in plan_json,
         // no new column). Null on every non-batched or pre-v2 decision.
         nextConsultBars: proposal?.nextConsultBars ?? null,
-        // Factorial-cell truth (migration 0012): treatment polarity — info_arm true = info bundle
-        // PRESENT, thinking_arm true = adaptive thinking ON. Null when no LLM call was attempted
-        // (quiet/prescreen rows never carry a proposal).
-        infoArm: proposal?.infoArm ?? null,
-        thinkingArm: proposal?.thinkingArm ?? null,
+        // v3 (consolidation spec §2/§9): info_arm/thinking_arm dropped — see AgentDecisionEntry's own
+        // comment (ports/agentic-strategy.ts). proposal.infoArm/thinkingArm (the client's own A/B
+        // treatment-truth telemetry) still exist and are unaffected; they are simply no longer
+        // forwarded to the journal, since the v3 agent_decisions table has no columns for them.
         // R2: regime fingerprint for episodic-memory retrieval — see regimeTagsFor.
         regimeTags: this.regimeTagsFor(input),
       });

@@ -127,8 +127,8 @@ describe('UniverseScannerService', () => {
     expect([...setActiveMenu.mock.calls[0]![0]].sort()).toEqual(['A/USDT', 'B/USDT']);
     expect(recordMenuChurn).toHaveBeenCalledWith(2, 0);
 
-    // Day 2: C swaps ahead of B -> B rotates out (below hysteresisRank default 18? no — basket is
-    // only 3 symbols, so B falls to rank 3, still within the default hysteresis(18) band and stays
+    // Day 2: C swaps ahead of B -> B rotates out (below hysteresisRank default 12? no — basket is
+    // only 3 symbols, so B falls to rank 3, still within the default hysteresis(12) band and stays
     // active via hysteresis; C is freshly promoted). menuIn=[C], menuOut=[] (B retained, not out).
     scanner.recordMetrics('B/USDT', rankedMetrics(3));
     scanner.recordMetrics('C/USDT', rankedMetrics(2));
@@ -144,7 +144,9 @@ describe('UniverseScannerService', () => {
 
   it('hysteresis: a rank-13 incumbent stays active (within the rank-18 band); a rank-19 incumbent rotates out', () => {
     const basket = Array.from({ length: 20 }, (_, i) => `S${String(i + 1).padStart(2, '0')}/USDT`);
-    const scanner = new UniverseScannerService({ basket, menuSize: 12 });
+    // Explicit hysteresisRank: 18 decouples this scenario (testing the general hysteresis mechanic)
+    // from the v3 default value — see the dedicated "hysteresis default is 12" test below.
+    const scanner = new UniverseScannerService({ basket, menuSize: 12, hysteresisRank: 18 });
 
     // Day 1 (boot): symbol Si ranks exactly i on both axes -> active menu = S01..S12.
     basket.forEach((symbol, i) => scanner.recordMetrics(symbol, rankedMetrics(i + 1)));
@@ -180,6 +182,76 @@ describe('UniverseScannerService', () => {
     // The fresh top-12 promotions (S13 at rank 12, S19 at rank 6) are active.
     expect(scanner.isActive('S13/USDT')).toBe(true);
     expect(scanner.isActive('S19/USDT')).toBe(true);
+  });
+
+  it('v3 §5.3: the hysteresis default is 12 (not v2 18) — a rank-12 incumbent stays active, a rank-13 incumbent rotates out', () => {
+    const basket = Array.from({ length: 20 }, (_, i) => `S${String(i + 1).padStart(2, '0')}/USDT`);
+    const scanner = new UniverseScannerService({ basket, menuSize: 8 });
+
+    // Boot: S01..S08 active.
+    basket.forEach((symbol, i) => scanner.recordMetrics(symbol, rankedMetrics(i + 1)));
+    scanner.recompute(T);
+    expect([...scanner.activeMenu()].sort()).toEqual(basket.slice(0, 8).sort());
+
+    // Day 2: S08 (incumbent, was rank 8) and S12 swap into rank 12; S02 (incumbent) and S13 swap
+    // into rank 13.
+    const rankOf = new Map<string, number>(basket.map((s, i) => [s, i + 1]));
+    rankOf.set('S08/USDT', 12);
+    rankOf.set('S12/USDT', 8);
+    rankOf.set('S02/USDT', 13);
+    rankOf.set('S13/USDT', 2);
+    for (const [symbol, rank] of rankOf) {
+      scanner.recordMetrics(symbol, rankedMetrics(rank));
+    }
+    scanner.recompute(T + DAY_MS);
+
+    expect(scanner.isActive('S08/USDT')).toBe(true); // rank 12 <= default hysteresis 12: retained
+    expect(scanner.isActive('S02/USDT')).toBe(false); // rank 13 > default hysteresis 12: rotates out
+  });
+
+  it("v3 §5.3 venue floor: promotes the perp venue's best-ranked non-active symbol when fewer than 2 perp symbols made the active set (fail OPEN toward coverage)", () => {
+    // 6 spot + 3 perp; menuSize=4 ranks every spot symbol ahead of every perp symbol, so the fresh
+    // top-4 (and the whole active set, before the floor) would otherwise hold zero perp symbols.
+    const spot = [
+      'SPOT1/USDT',
+      'SPOT2/USDT',
+      'SPOT3/USDT',
+      'SPOT4/USDT',
+      'SPOT5/USDT',
+      'SPOT6/USDT',
+    ];
+    const perp = ['PERP1/USDT:USDT', 'PERP2/USDT:USDT', 'PERP3/USDT:USDT'];
+    const basket = [...spot, ...perp];
+    const scanner = new UniverseScannerService({ basket, menuSize: 4, hysteresisRank: 0 });
+
+    spot.forEach((s, i) => scanner.recordMetrics(s, rankedMetrics(i + 1)));
+    perp.forEach((s, i) => scanner.recordMetrics(s, rankedMetrics(spot.length + i + 1)));
+    scanner.recompute(T);
+
+    // The fresh top-4 is all-spot; the venue floor promotes the two best-ranked perp symbols
+    // (PERP1, PERP2) on top of it — menu transiently exceeds menuSize by 2, same overflow class as
+    // pin/hysteresis, never evicting a spot symbol the ranking already selected.
+    expect([...scanner.activeMenu()].sort()).toEqual(
+      [
+        'SPOT1/USDT',
+        'SPOT2/USDT',
+        'SPOT3/USDT',
+        'SPOT4/USDT',
+        'PERP1/USDT:USDT',
+        'PERP2/USDT:USDT',
+      ].sort(),
+    );
+    expect(scanner.isActive('PERP3/USDT:USDT')).toBe(false);
+  });
+
+  it('v3 §5.3 venue floor: a no-op when the basket has fewer than 2 perp symbols total (floor is unattainable, never throws)', () => {
+    const basket = ['SPOT1/USDT', 'SPOT2/USDT', 'SPOT3/USDT', 'PERP1/USDT:USDT'];
+    const scanner = new UniverseScannerService({ basket, menuSize: 1 });
+    basket.forEach((s, i) => scanner.recordMetrics(s, rankedMetrics(i + 1)));
+    expect(() => scanner.recompute(T)).not.toThrow();
+    // Only one perp symbol exists in the whole basket — the floor cannot reach 2, so it promotes
+    // that lone perp symbol (the only available candidate) and stops there.
+    expect(scanner.isActive('PERP1/USDT:USDT')).toBe(true);
   });
 
   it('positioned/resting-order pinning: a symbol at the worst rank stays active when isPinned returns true, overriding both the menu size and the hysteresis band', () => {

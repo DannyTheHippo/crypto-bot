@@ -21,6 +21,7 @@ import {
 } from '../../../src/features/trading/agentic/agent-prompt';
 import { epochMs } from '../../../src/domain/types/ids';
 import type { ScoringRow } from '../../../src/features/trading/agentic/counterfactual-scoring';
+import { toScoringAction } from './fixtures';
 
 // Mirrors buildMarketPayload's return shape field-for-field (see that function's own comment for
 // the authoritative source) — kept here only because the real type isn't exported; re-check both
@@ -253,7 +254,7 @@ export function scoringRowFromPayload(
   const close = lastCandle ? lastCandle[4] : null;
   return {
     eventTime: epochMs(payload.eventTime),
-    action: decision.action,
+    action: toScoringAction(decision.action),
     confidence: decision.confidence,
     refPrice: close,
     close,

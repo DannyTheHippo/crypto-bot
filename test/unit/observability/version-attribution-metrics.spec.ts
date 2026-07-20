@@ -33,7 +33,7 @@ function decision(over: Partial<AgentDecisionRow>): AgentDecisionRow {
     basedOnSeq: 1n,
     eventTime: T as EpochMs,
     model: 'test',
-    action: 'long',
+    action: 'open_long',
     confidence: 0.8,
     rationale: '',
     refPrice: null,

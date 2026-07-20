@@ -389,16 +389,23 @@ class DrizzlePersistenceGlobalModule {}
 // testnet/live build the real KeyProbeService over a credentialed ccxt client; requireRestrictions is
 // true for live (an unprobeable restriction set ⇒ refuse). Under test/ci configMode is forced paper,
 // so no real client/probe is constructed in CI. keyFingerprint is a hex digest — never the raw key.
+const INVALID_KEY_PROBE_RESULT = {
+  keysValid: false,
+  withdrawalsEnabled: true,
+  spotEnabled: false,
+  futuresEnabled: false,
+  marginEnabled: false,
+  keyFingerprint: 'none',
+  urlCrossCheckOk: false,
+};
 const INVALID_KEY_PROBE: KeyProbePort = {
-  probe: () =>
-    Promise.resolve({
-      keysValid: false,
-      withdrawalsEnabled: true,
-      spotEnabled: false,
-      marginOrFutures: false,
-      keyFingerprint: 'none',
-      urlCrossCheckOk: false,
-    }),
+  probeAll: () =>
+    Promise.resolve(
+      new Map([
+        [venueId('binance'), INVALID_KEY_PROBE_RESULT],
+        [venueId('binanceusdm'), INVALID_KEY_PROBE_RESULT],
+      ]),
+    ),
 };
 @Global()
 @Module({
@@ -2333,7 +2340,13 @@ export class AppModule
 
   private async runFillPoll(): Promise<void> {
     try {
-      const { ingested, skippedUnknown } = await this.fillPoller.poll(this.tradingSymbols);
+      // Pre-assembly interim: this class still runs the v2 single-venue flow (venues[0]); the
+      // TradingRuntimeService replacing this body iterates VENUE_REGISTRY per venue (spec §1.5).
+      const pollVenue = venueId(this.config.venues[0]?.id ?? 'binance');
+      const { ingested, skippedUnknown } = await this.fillPoller.poll(
+        pollVenue,
+        this.tradingSymbols,
+      );
       if (ingested > 0 || skippedUnknown > 0)
         this.log.log(`fill poll: ingested=${ingested} skippedUnknown=${skippedUnknown}`);
     } catch (err) {

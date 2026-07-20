@@ -43,6 +43,14 @@ export interface PortfolioConfig {
   // open — CLAUDE.md §6). Absent or '0' disables dust-close reporting: only an exact-zero fold
   // counts (pre-W2.2 behavior).
   readonly dustNotional?: string;
+  // v3 §1.3/§6.4: per-venue starting-cash seed (decimal-string, quote-asset terms) for the paper
+  // ledger's internal per-venue cash split (PortfolioStateService.venueBalances) — mirrors
+  // AppConfig.venueCapitalSplit, keyed by venue id string (paper "mirrors the split by
+  // construction"). Optional: absent (module-isolation fixtures, or before the composition root
+  // wires it off AppConfig — the #5 integration item) ⇒ PortfolioStateService reports no
+  // venueBalances at all, and every existing consumer of the combined balances/equity fields is
+  // unaffected (byte-identical to pre-split behavior).
+  readonly venueCapitalShare?: ReadonlyMap<string, string>;
 }
 
 // ── EXECUTION_GATE ──────────────────────────────────────────────────────────────

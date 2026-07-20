@@ -344,6 +344,56 @@ describe('RiskEngineService', () => {
     });
   });
 
+  // v3 §1.5/§10: gross/net exposure and drawdown are BOOK-scoped (one snapshot, one equity) — the
+  // fold in run() above iterates snapshot.positions/inFlightIntents with no venue filter at all, so
+  // a two-venue book's exposure sums across both venues automatically. This proves it explicitly
+  // (rather than merely by absence of a venue predicate): a spot position + a perp position together
+  // must bind a single combined gross/net cap, and neither venue alone would trip it.
+  describe('v3 §6.4/§10: combined-book (cross-venue) gross/net exposure', () => {
+    const V_PERP = venueId('binanceusdm');
+    const SYM_PERP = symbolId('BTC/USDT:USDT');
+
+    it('a spot position + a perp position on the SAME strategy sum into ONE gross/net exposure', () => {
+      const positions = new Map<string, Position>([
+        [
+          `${SID}:${V}:${SYM}`,
+          {
+            strategyId: SID,
+            venue: V,
+            symbol: SYM,
+            signedQty: new Decimal('6'), // × avgEntry 100 = $600 spot notional
+            avgEntry: price('100'),
+            realizedPnl: new Decimal(0),
+          },
+        ],
+        [
+          `${SID}:${V_PERP}:${SYM_PERP}`,
+          {
+            strategyId: SID,
+            venue: V_PERP,
+            symbol: SYM_PERP,
+            signedQty: new Decimal('6'), // × avgEntry 100 = $600 perp notional
+            avgEntry: price('100'),
+            realizedPnl: new Decimal(0),
+          },
+        ],
+      ]);
+      const { engine } = makeEngine({
+        deps: {
+          limits: { ...LIMITS, maxGrossExposure: '1200', maxNetExposure: '1000000' },
+          filters: new Map([
+            [String(SYM), FILTERS],
+            [String(SYM_PERP), FILTERS],
+          ]),
+        },
+      });
+      // Neither position alone ($600) would trip a $1200 gross cap; SUMMED ($1200) leaves exactly 0
+      // headroom for a new $100 spot entry ⇒ REJECTED — proof the two venues share one exposure pool.
+      const d = engine.evaluate(intent(), snapshot({ positions }));
+      expect(d).toMatchObject({ verdict: 'REJECTED', reasons: ['EXPOSURE_LIMIT'] });
+    });
+  });
+
   // The flatten path is the kill switch's only way out: it MUST clear evaluate end-to-end while
   // FLATTENING and mint a proof the execution gate then verifies. If any gate silently vetoed a
   // flatten, the bot would deadlock halted-but-unable-to-flatten — this is that guard.
@@ -377,6 +427,63 @@ describe('RiskEngineService', () => {
       // The gate would verify exactly this proof before placing the order.
       expect(verifyApproval(d.approved, Buffer.alloc(32, 1), epochMs(T), false)).toBe('OK');
     }
+  });
+
+  // v3 §1.5/§7.2: "Arming flips both venues together — there is no per-venue armed state" and the
+  // kill switch is ONE book-global instance (KillSwitchService, unchanged). This proves the FLATTEN
+  // carve-out (G0) is venue-blind: a flatten intent for EITHER venue clears while FLATTENING off the
+  // SAME kill-switch state, with no venue-keyed gate anywhere in between.
+  it('the FLATTENING carve-out reaches a flatten intent for EITHER venue off the SAME kill switch', () => {
+    const V_PERP = venueId('binanceusdm');
+    const SYM_PERP = symbolId('BTC/USDT:USDT');
+    const positions = new Map<string, Position>([
+      [
+        `${SID}:${V}:${SYM}`,
+        {
+          strategyId: SID,
+          venue: V,
+          symbol: SYM,
+          signedQty: new Decimal('2'),
+          avgEntry: price('100'),
+          realizedPnl: new Decimal(0),
+        },
+      ],
+      [
+        `${SID}:${V_PERP}:${SYM_PERP}`,
+        {
+          strategyId: SID,
+          venue: V_PERP,
+          symbol: SYM_PERP,
+          signedQty: new Decimal('2'),
+          avgEntry: price('100'),
+          realizedPnl: new Decimal(0),
+        },
+      ],
+    ]);
+    const { engine, kill } = makeEngine({
+      deps: {
+        filters: new Map([
+          [String(SYM), FILTERS],
+          [String(SYM_PERP), FILTERS],
+        ]),
+      },
+    });
+    kill.engage('drawdown', true); // RUNNING → HALTING
+    kill.confirmCancels(); // HALTING → FLATTENING — ONE state, shared by both venues
+    expect(kill.state()).toBe('FLATTENING');
+
+    const dSpot = engine.evaluateFlatten(
+      intent({ reduceOnly: true, side: 'SELL', qty: qty('2') }),
+      snapshot({ positions }),
+    );
+    const dPerp = engine.evaluateFlatten(
+      intent({ venue: V_PERP, symbol: SYM_PERP, reduceOnly: true, side: 'SELL', qty: qty('2') }),
+      snapshot({ positions }),
+    );
+    // Neither venue's flatten is vetoed by G0 — the SAME FLATTENING state clears both, proving the
+    // carve-out never checks (or needs) a venue-scoped kill-switch flag.
+    expect(['APPROVED', 'RESIZED']).toContain(dSpot.verdict);
+    expect(['APPROVED', 'RESIZED']).toContain(dPerp.verdict);
   });
 
   it('evaluateFlatten draws from the RESERVED flatten bucket, not the drained normal one', () => {

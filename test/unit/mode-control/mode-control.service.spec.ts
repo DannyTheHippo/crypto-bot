@@ -10,17 +10,22 @@ import type {
   KeyProbeResult,
   ArmPreconditionResult,
 } from '../../../src/ports/mode-control';
-import { epochMs } from '../../../src/domain/types/ids';
+import { epochMs, venueId, type VenueId } from '../../../src/domain/types/ids';
 
 const T = 1_700_000_000_000;
 const SECRET = 'arming-secret';
 const BOOT = 'boot-1';
+const SPOT = venueId('binance');
+const PERP = venueId('binanceusdm');
 
+// v3 §7.1: one shape satisfies BOTH venues' surface checks (spotEnabled AND futuresEnabled true) —
+// mirrors the real account-wide apiRestrictions response, where both flags arrive on one probe.
 const validProbe: KeyProbeResult = {
   keysValid: true,
   withdrawalsEnabled: false,
   spotEnabled: true,
-  marginOrFutures: false,
+  futuresEnabled: true,
+  marginEnabled: false,
   keyFingerprint: 'fp',
   urlCrossCheckOk: true,
 };
@@ -28,7 +33,8 @@ const invalidProbe: KeyProbeResult = {
   keysValid: false,
   withdrawalsEnabled: true,
   spotEnabled: false,
-  marginOrFutures: false,
+  futuresEnabled: false,
+  marginEnabled: false,
   keyFingerprint: 'none',
   urlCrossCheckOk: false,
 };
@@ -42,8 +48,14 @@ function build(over: Partial<ModeControlConfig> = {}) {
       events.push(e);
     },
   };
-  let probe: KeyProbeResult = invalidProbe;
-  const keyProbe = { probe: () => Promise.resolve(probe) };
+  // Per-venue probe state, defaulting both venues invalid — setProbe broadcasts one result to BOTH
+  // venues (the convenience most tests want); setVenueProbe targets one venue independently (the new
+  // §7.3 rows: one venue valid, the other invalid).
+  let probes = new Map<VenueId, KeyProbeResult>([
+    [SPOT, invalidProbe],
+    [PERP, invalidProbe],
+  ]);
+  const keyProbe = { probeAll: () => Promise.resolve(new Map(probes)) };
   const killSwitch = new KillSwitchService(); // real instance: starts RUNNING
   let precond: ArmPreconditionResult = { ok: true };
   const preconditions = { check: () => precond };
@@ -64,7 +76,14 @@ function build(over: Partial<ModeControlConfig> = {}) {
       t = n;
     },
     setProbe: (p: KeyProbeResult) => {
-      probe = p;
+      probes = new Map([
+        [SPOT, p],
+        [PERP, p],
+      ]);
+    },
+    setVenueProbe: (venue: VenueId, p: KeyProbeResult) => {
+      probes = new Map(probes);
+      probes.set(venue, p);
     },
     setPrecond: (p: ArmPreconditionResult) => {
       precond = p;
@@ -92,7 +111,7 @@ describe('ModeControlService', () => {
     expect(ctx.svc.resolveMode().effective).toBe('paper');
   });
 
-  it('a full arm + valid keys + live request + complete limits resolves to live', async () => {
+  it('a full arm + valid keys (both venues) + live request + complete limits resolves to live', async () => {
     const ctx = build({ requested: 'live' });
     ctx.setProbe(validProbe);
     await ctx.svc.refreshKeyProbe();
@@ -108,6 +127,9 @@ describe('ModeControlService', () => {
     expect(ctx.events.some((e) => e.type === 'arm_requested')).toBe(true);
   });
 
+  // The ArmingState transition and the derived EFFECTIVE mode are independent axes (the sacred 2⁴
+  // matrix relies on this): CONFIRM succeeds here with NO probe ever run — resolveMode().effective
+  // is what stays paper on bad/missing keys, not the arm itself.
   it('CONFIRM with a valid HMAC arms and audits arm_confirmed', () => {
     const ctx = build({ requested: 'live' });
     arm(ctx);
@@ -228,18 +250,31 @@ describe('ModeControlService', () => {
     expect(() => paper.svc.assertCanTrade('paper')).not.toThrow();
   });
 
-  it('refreshKeyProbe caches a valid verdict and audits key_check (booleans only)', async () => {
+  it('refreshKeyProbe caches a valid verdict and audits one key_check row PER venue (booleans only)', async () => {
     const ctx = build({ requested: 'live' });
     ctx.setProbe(validProbe);
     await ctx.svc.refreshKeyProbe();
-    const ev = ctx.events.at(-1);
-    expect(ev).toEqual({
-      type: 'key_check',
-      withdrawalsEnabled: false,
-      spotEnabled: true,
-      marginOrFutures: false,
-      urlCrossCheckOk: true,
-    });
+    const checks = ctx.events.filter((e) => e.type === 'key_check');
+    expect(checks).toEqual([
+      {
+        type: 'key_check',
+        venue: SPOT,
+        withdrawalsEnabled: false,
+        spotEnabled: true,
+        futuresEnabled: true,
+        marginEnabled: false,
+        urlCrossCheckOk: true,
+      },
+      {
+        type: 'key_check',
+        venue: PERP,
+        withdrawalsEnabled: false,
+        spotEnabled: true,
+        futuresEnabled: true,
+        marginEnabled: false,
+        urlCrossCheckOk: true,
+      },
+    ]);
   });
 
   // §10c / auditor S5: ModeControl recomputes keysValid from the restriction snapshot and does NOT
@@ -250,7 +285,8 @@ describe('ModeControlService', () => {
       { ...validProbe, keysValid: true, withdrawalsEnabled: true },
     ],
     ['spot trading disabled', { ...validProbe, spotEnabled: false }],
-    ['margin/futures enabled', { ...validProbe, marginOrFutures: true }],
+    ['futures trading disabled', { ...validProbe, futuresEnabled: false }],
+    ['margin (cross-margin borrow) enabled', { ...validProbe, marginEnabled: true }],
     ['venue URL cross-check fails', { ...validProbe, urlCrossCheckOk: false }],
   ])('recompute blocks live when %s (probe verdict ignored)', async (_label, probe) => {
     const ctx = build({ requested: 'live' });
@@ -258,6 +294,50 @@ describe('ModeControlService', () => {
     await ctx.svc.refreshKeyProbe();
     arm(ctx); // fully armed + live authority + complete limits — only the recomputed keysValid can block
     expect(ctx.svc.resolveMode().effective).toBe('paper');
+  });
+
+  // §7.3 new rows (1)/(2): one venue valid, the other invalid ⇒ live is refused either way — the
+  // aggregate is an AND over both venues, so a single bad venue vetoes the whole book.
+  it('spot-valid + perp-invalid refuses live (perp veto)', async () => {
+    const ctx = build({ requested: 'live' });
+    ctx.setVenueProbe(SPOT, validProbe);
+    ctx.setVenueProbe(PERP, invalidProbe);
+    await ctx.svc.refreshKeyProbe();
+    arm(ctx);
+    expect(ctx.svc.resolveMode().effective).toBe('paper');
+  });
+
+  it('perp-valid + spot-invalid refuses live (spot veto)', async () => {
+    const ctx = build({ requested: 'live' });
+    ctx.setVenueProbe(SPOT, invalidProbe);
+    ctx.setVenueProbe(PERP, validProbe);
+    await ctx.svc.refreshKeyProbe();
+    arm(ctx);
+    expect(ctx.svc.resolveMode().effective).toBe('paper');
+  });
+
+  // §7.3 new row (3): a probe response missing a venue entry entirely (the KeyProbePort contract
+  // this models: an unreachable venue's surface never makes it into the returned map) must fail
+  // CLOSED for that venue, not vacuously pass — keysValid()'s own explicit spot/perp presence check.
+  it('a probeAll() response missing the perp venue entry (unreachable) fails closed', async () => {
+    const clock = { now: () => epochMs(T) };
+    const audit = { record: () => undefined };
+    const keyProbe = { probeAll: () => Promise.resolve(new Map([[SPOT, validProbe]])) }; // no PERP
+    const killSwitch = new KillSwitchService();
+    const preconditions = { check: () => ({ ok: true }) };
+    const cfg: ModeControlConfig = {
+      requested: 'live',
+      bootId: BOOT,
+      armingSecret: SECRET,
+      limitsComplete: true,
+    };
+    const svc = new ModeControlService(clock, keyProbe, killSwitch, audit, preconditions, cfg);
+    await svc.refreshKeyProbe();
+    const req = svc.armLive({ step: 'REQUEST', bootId: BOOT });
+    if (!req.ok || req.challengeId === undefined) throw new Error('request failed');
+    const hmacHex = computeArmingHmac(req.challengeId, BOOT, SECRET);
+    svc.armLive({ step: 'CONFIRM', challengeId: req.challengeId, hmacHex, bootId: BOOT });
+    expect(svc.resolveMode().effective).toBe('paper');
   });
 
   it('a failing probe while ARMED disarms and engages the kill switch', async () => {

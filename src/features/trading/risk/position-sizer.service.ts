@@ -18,13 +18,13 @@ import type { OrderIntent } from '../../../domain/types/order-intent';
 import type { PortfolioSnapshot } from '../../../domain/types/portfolio';
 import { splitSymbol } from '../../../domain/types/symbol';
 import { roundToStep, roundToTick, type Price, type Qty } from '../../../domain/types/money';
-import { intentId, encodeClientOrderId, epochMs, venueId } from '../../../domain/types/ids';
+import { intentId, encodeClientOrderId, epochMs, type VenueId } from '../../../domain/types/ids';
+import { PERP_VENUE_ID } from '../../../domain/types/venue-map';
 import { uuidv7 } from './uuidv7';
 
-// binanceusdm (USD-M swap): the only venue this pass wires perp detection against. A symbol's own
-// :SETTLE suffix (splitSymbol) is the second, venue-independent signal — either one is sufficient.
-const PERP_VENUE_ID = venueId('binanceusdm');
-
+// v3 §1.2: PERP_VENUE_ID is the single canonical source (domain/types/venue-map.ts) — this retires
+// the local copy the pre-v3 pass kept here. A symbol's own :SETTLE suffix (splitSymbol) is the
+// second, venue-independent signal — either one is sufficient.
 function isPerpSignal(signal: Signal): boolean {
   return signal.venue === PERP_VENUE_ID || splitSymbol(signal.symbol).settle !== undefined;
 }
@@ -172,6 +172,12 @@ export class PositionSizerService implements PositionSizerPort {
     // when absent, byte-identical); entries (long or short) scale by conviction — compounding
     // equity-fraction sizing when enabled, the model's own sizeFraction directive when present (C1),
     // else the legacy fixed baseNotional.
+    //
+    // v3 §6.3: this branch is also the capital-split's reduce-only exemption boundary — the
+    // reduceOnly leg NEVER calls entryNotional (where the venueHeadroom/venueFree clamps live), so
+    // reducing exposure structurally cannot be blocked by the split. Declared fail direction: fails
+    // OPEN with respect to the split (an exit always sizes off the attributed position only); every
+    // venue-rounding/band gate downstream (F1, evaluate.ts) still applies unchanged.
     const rawQty: Decimal = reduceOnly
       ? posQty.abs().mul(new Decimal(signal.reduceFraction ?? '1'))
       : this.entryNotional(signal, snapshot, side, posQty).div(limitPrice!);
@@ -283,14 +289,22 @@ export class PositionSizerService implements PositionSizerPort {
   // deployment that leaves SIZER_EQUITY_FRACTION at its disabled default (modulo the equity cap).
   //
   // A single extra clamp applies to spot BUY entries only, on EITHER of paths (1)/(2): capped at 95%
-  // of the symbol's free quote balance, so a sized entry can never request more quote cash than is
-  // actually free (the RiskEngine's maxOrderNotional/exposure limits are a separate, independent
-  // ceiling — this clamp is the sizer's own affordability check). SELL entries (opening a spot short
-  // — never happens — or a perp short) spend no quote cash up front, so the clamp does not apply.
-  // Absent balance data ⇒ no cap here — the engine/venue still vetoes an unaffordable order
-  // downstream. Perp (margined) venues skip this spot-specific cash clamp entirely and go through
-  // applyPerpCaps instead (margin×leverageCap + liq-buffer, applied to BOTH sides — a perp short
-  // still locks margin, unlike a spot sell).
+  // of the venue's free quote balance, so a sized entry can never request more quote cash than is
+  // actually free in THAT wallet (the RiskEngine's maxOrderNotional/exposure limits are a separate,
+  // independent ceiling — this clamp is the sizer's own affordability check). SELL entries (opening
+  // a spot short — never happens — or a perp short) spend no quote cash up front, so the clamp does
+  // not apply. Absent balance data ⇒ no cap here — the engine/venue still vetoes an unaffordable
+  // order downstream. Perp (margined) venues skip this spot-specific cash clamp entirely and go
+  // through applyPerpCaps instead (margin×leverageCap + liq-buffer, applied to BOTH sides — a perp
+  // short still locks margin, unlike a spot sell).
+  //
+  // v3 §6.2 NEW: every path below (sizeFraction, equity-fraction compounding, and the legacy fixed
+  // baseNotional alike) additionally clamps to applyVenueHeadroomClamp — the fixed capital-split
+  // share for signal.venue minus that venue's already-open + already-reserved notional. min() over
+  // upper bounds is order-independent, so inserting it here (once, for every path) is equivalent to
+  // inserting it at any other point in the chain the spec's pseudocode shows it. Absent
+  // deps.venueCapitalShare (not yet wired — the #5 integration item) ⇒ no-op, byte-identical to
+  // pre-split sizing.
   private entryNotional(
     signal: Signal,
     snapshot: PortfolioSnapshot,
@@ -306,14 +320,14 @@ export class PositionSizerService implements PositionSizerPort {
     } else {
       const fraction = new Decimal(this.deps.equityFraction ?? '0');
       const legacyNotional = new Decimal(this.deps.baseNotional).mul(signal.strength);
-      if (fraction.lte(0) || !cappedEquity.isFinite() || cappedEquity.lte(0)) {
-        base = legacyNotional;
-      } else {
-        const target = cappedEquity.mul(fraction).mul(signal.strength);
-        base = this.applyAffordabilityClamp(target, signal, side, snapshot);
-      }
+      base =
+        fraction.lte(0) || !cappedEquity.isFinite() || cappedEquity.lte(0)
+          ? legacyNotional
+          : cappedEquity.mul(fraction).mul(signal.strength);
     }
 
+    base = this.applyVenueHeadroomClamp(base, signal, snapshot);
+    base = this.applyAffordabilityClamp(base, signal, side, snapshot);
     return isPerp ? this.applyPerpCaps(base, signal, snapshot) : base;
   }
 
@@ -330,11 +344,13 @@ export class PositionSizerService implements PositionSizerPort {
   }
 
   // C1: the agentic lane's own sizing directive. notional = cappedEquity × min(sizeFraction,
-  // maxAgentPositionFraction ?? '0.15') — strength and SIZER_EQUITY_FRACTION are deliberately
-  // ignored on this path (sizeFraction IS the conviction channel, Design § Sizing flow). A same-side
-  // position already open (scale-in) OR a same-side entry order still resting/in-flight and unfilled
-  // additionally clamps to the remaining fraction headroom (maxFraction×cappedEquity − |posNotional|
-  // − reservedEntryNotional): posNotional is valued at signal.refPrice — the current decision-time
+  // maxFraction(v)) — strength and SIZER_EQUITY_FRACTION are deliberately ignored on this path
+  // (sizeFraction IS the conviction channel, Design § Sizing flow). v3 §6.1: maxFraction(v) is now
+  // PER-VENUE (spot vs perp — deps.maxAgentPositionFractionByVenue, falls back to '0.15' for a venue
+  // with no entry), replacing the pre-v3 single lane-wide fraction. A same-side position already
+  // open (scale-in) OR a same-side entry order still resting/in-flight and unfilled additionally
+  // clamps to the remaining fraction headroom (maxFraction(v)×cappedEquity − |posNotional| −
+  // reservedEntryNotional): posNotional is valued at signal.refPrice — the current decision-time
   // reference, not the position's historical avgEntry — while reservedEntryNotional is valued at
   // each resting/in-flight order's own limit price (see reservedEntryNotional below). So repeated
   // scale-ins can never compound past the per-lane cap in aggregate. Gating on posQty alone (the
@@ -344,7 +360,9 @@ export class PositionSizerService implements PositionSizerPort {
   // entries (CONFIRMED risk-cap bypass); reservedEntryNotional closes that gap by also gating on the
   // resting/in-flight order registry. A headroom ≤ 0 (already at/over cap) or negative clamp flows
   // through as a non-positive target, which size()'s BELOW_MINIMUM gate rejects downstream — never
-  // silently floors to a dust order.
+  // silently floors to a dust order. The venueHeadroom/affordability clamps are applied once,
+  // centrally, by the caller (entryNotional) — not here — since min() over upper bounds is
+  // order-independent.
   private sizeFractionNotional(
     signal: Signal,
     snapshot: PortfolioSnapshot,
@@ -352,7 +370,7 @@ export class PositionSizerService implements PositionSizerPort {
     cappedEquity: Decimal,
     posQty: Decimal,
   ): Decimal {
-    const maxFraction = new Decimal(this.deps.maxAgentPositionFraction ?? '0.15');
+    const maxFraction = this.maxFractionFor(signal.venue);
     const sizeFraction = Decimal.min(new Decimal(signal.sizeFraction!), maxFraction);
     let target = cappedEquity.mul(sizeFraction);
 
@@ -363,7 +381,16 @@ export class PositionSizerService implements PositionSizerPort {
       target = Decimal.min(target, headroom);
     }
 
-    return this.applyAffordabilityClamp(target, signal, side, snapshot);
+    return target;
+  }
+
+  // v3 §6.1: maxFraction(v) — spot symbols use AGENTIC_MAX_POSITION_FRACTION_SPOT, perp symbols use
+  // …_PERP (deps.maxAgentPositionFractionByVenue, keyed by VenueId). A venue with no entry (module-
+  // isolation fixtures, or before the composition root wires AppConfig's split) falls back to '0.15'
+  // — the same default the pre-v3 single-fraction field used.
+  private maxFractionFor(venue: VenueId): Decimal {
+    const configured = this.deps.maxAgentPositionFractionByVenue?.get(venue);
+    return new Decimal(configured ?? '0.15');
   }
 
   // Same-lane (strategyId + venue + symbol) resting-or-in-flight ENTRY order notional matching
@@ -396,8 +423,69 @@ export class PositionSizerService implements PositionSizerPort {
     return reserved;
   }
 
+  // v3 §6.1/§6.2 NEW: the split clamp. target = min(target, venueCap(v) − venueOpenNotional(v) −
+  // venueReservedNotional(v)) — unlike reservedEntryNotional above (same strategyId+symbol+side),
+  // this reservation is VENUE-WIDE: every non-reduce-only in-flight intent on venue v, any symbol,
+  // any side, any strategy (a demo wallet's headroom is shared across everything trading on it).
+  // Absent deps.venueCapitalShare or no entry for signal.venue ⇒ no clamp (not yet wired — the #5
+  // integration item; byte-identical to pre-split sizing).
+  private applyVenueHeadroomClamp(
+    target: Decimal,
+    signal: Signal,
+    snapshot: PortfolioSnapshot,
+  ): Decimal {
+    const cap = this.deps.venueCapitalShare?.get(signal.venue);
+    if (cap === undefined) return target;
+    const headroom = new Decimal(cap)
+      .sub(this.venueOpenNotional(snapshot, signal.venue))
+      .sub(this.venueReservedNotional(snapshot, signal.venue));
+    return Decimal.min(target, headroom);
+  }
+
+  // venueOpenNotional(v) = Σ over ALL positions on venue v (any strategy/symbol) of
+  // |signedQty| × avgEntry. Uses each position's own avgEntry (not a live ref price the sizer has
+  // no general source for across symbols) — the same proxy risk-engine.service.ts's own gross/net
+  // exposure calc already uses for the identical "notional across arbitrary symbols" problem.
+  private venueOpenNotional(snapshot: PortfolioSnapshot, venue: VenueId): Decimal {
+    let sum = new Decimal(0);
+    for (const p of snapshot.positions.values()) {
+      if (p.venue !== venue) continue;
+      sum = sum.add(p.signedQty.abs().mul(p.avgEntry));
+    }
+    return sum;
+  }
+
+  // venueReservedNotional(v) = Σ over in-flight ENTRY (¬reduceOnly) intents on venue v, valued at
+  // each order's own limit price (falls back to its refPrice for the undefined case, never hit for
+  // a non-reduce-only entry). FAILS CLOSED, mirroring reservedEntryNotional above: a partially
+  // filled order's already-filled leg is counted here AND in venueOpenNotional — deliberate
+  // over-reservation, never under-reservation (an over-reserved headroom under-sizes, never
+  // over-sizes, the next order on this venue).
+  private venueReservedNotional(snapshot: PortfolioSnapshot, venue: VenueId): Decimal {
+    let sum = new Decimal(0);
+    for (const f of snapshot.inFlightIntents) {
+      if (f.venue !== venue || f.reduceOnly) continue;
+      sum = sum.add(f.qty.mul(f.limitPrice ?? f.refPrice));
+    }
+    return sum;
+  }
+
+  // v3 §6.1: venueFree(v, asset) reads the venue-specific wallet (PortfolioSnapshot.venueBalances,
+  // §6.4) — falls back to undefined (never the combined snapshot.balances) so callers can apply
+  // their OWN fallback to the pre-split combined read; keeps this helper a pure venue-scoped lookup.
+  private venueFree(
+    snapshot: PortfolioSnapshot,
+    venue: VenueId,
+    asset: string,
+  ): Decimal | undefined {
+    return snapshot.venueBalances?.get(venue)?.get(asset)?.free;
+  }
+
   // Spot BUY affordability clamp, shared by the equity-fraction and sizeFraction entry paths — see
-  // entryNotional's header comment for the full spot/perp/SELL split.
+  // entryNotional's header comment for the full spot/perp/SELL split. v3 §6.2: prefers the
+  // venue-specific free quote (snapshot.venueBalances) when populated; falls back to the combined
+  // snapshot.balances read (pre-split behavior) so a snapshot that hasn't wired venueBalances yet
+  // clamps exactly as before.
   private applyAffordabilityClamp(
     target: Decimal,
     signal: Signal,
@@ -406,20 +494,24 @@ export class PositionSizerService implements PositionSizerPort {
   ): Decimal {
     if (side !== 'BUY' || isPerpSignal(signal)) return target;
     const quoteAsset = splitSymbol(signal.symbol).quote;
-    const freeQuote = snapshot.balances.get(quoteAsset)?.free;
+    const freeQuote =
+      this.venueFree(snapshot, signal.venue, quoteAsset) ?? snapshot.balances.get(quoteAsset)?.free;
     return freeQuote === undefined ? target : Decimal.min(target, freeQuote.mul('0.95'));
   }
 
   // Perp entry-sizing caps (B2): notional = min(currentBehavior, margin×leverageCap,
   // liqSafeNotional), then the optional funding-scaling hook. deps.perp absent (module-isolation
   // fixtures that never configure it) ⇒ no additional cap, matching every other optional-deps
-  // fallback in this service.
+  // fallback in this service. v3 §6.2: freeMargin prefers the venue-specific balance, same
+  // combined-read fallback as applyAffordabilityClamp above.
   private applyPerpCaps(base: Decimal, signal: Signal, snapshot: PortfolioSnapshot): Decimal {
     const perp = this.deps.perp;
     if (!perp) return base;
 
     const marginAsset = splitSymbol(signal.symbol).settle ?? splitSymbol(signal.symbol).quote;
-    const freeMargin = snapshot.balances.get(marginAsset)?.free;
+    const freeMargin =
+      this.venueFree(snapshot, signal.venue, marginAsset) ??
+      snapshot.balances.get(marginAsset)?.free;
     const leverageCap = new Decimal(perp.leverageCap);
 
     let notional = base;

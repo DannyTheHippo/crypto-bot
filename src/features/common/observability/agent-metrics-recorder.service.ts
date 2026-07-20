@@ -88,6 +88,8 @@ export class AgentMetricsRecorder {
     private readonly menuChurnCounter: Counter<string>,
     @InjectMetric('agentic_budget_remaining_usd')
     private readonly budgetRemainingGauge: Gauge<string>,
+    @InjectMetric('agentic_capability_violations_total')
+    private readonly capabilityViolationsCounter: Counter<string>,
   ) {}
 
   // `model` on both methods (#28): optional with an 'unknown' fallback so the label is always
@@ -194,20 +196,22 @@ export class AgentMetricsRecorder {
     }
   }
 
-  // AGENTIC_VENUE_TP: bound closed set of lifecycle events — see AgentVenueTpEvent above.
-  recordVenueTp(event: AgentVenueTpEvent): void {
+  // AGENTIC_VENUE_TP: bound closed set of lifecycle events — see AgentVenueTpEvent above. `venue`
+  // is optional (defaults to 'unknown') so the pre-v3 call site (app.module.ts, one process = one
+  // venue) keeps compiling unchanged until the composition workstream's per-venue wiring lands.
+  recordVenueTp(event: AgentVenueTpEvent, venue?: string): void {
     try {
-      this.venueTpCounter.inc({ event });
+      this.venueTpCounter.inc({ venue: venue ?? 'unknown', event });
     } catch {
       /* metrics must never throw into a trading path */
     }
   }
 
   // Push 3 P7d (AGENTIC_VENUE_STOP): bound closed set of lifecycle events — see AgentVenueStopEvent
-  // above.
-  recordVenueStop(event: AgentVenueStopEvent): void {
+  // above. `venue` optional for the same reason as recordVenueTp above.
+  recordVenueStop(event: AgentVenueStopEvent, venue?: string): void {
     try {
-      this.venueStopCounter.inc({ event });
+      this.venueStopCounter.inc({ venue: venue ?? 'unknown', event });
     } catch {
       /* metrics must never throw into a trading path */
     }
@@ -255,6 +259,16 @@ export class AgentMetricsRecorder {
   setBudgetRemainingUsd(remainingUsd: number): void {
     try {
       this.budgetRemainingGauge.set(remainingUsd);
+    } catch {
+      /* metrics must never throw into a trading path */
+    }
+  }
+
+  // v3 §4.3: the client zod layer calls this when a decision is degraded to `hold` for violating
+  // its symbol's capabilities (e.g. `open_short` on a spot symbol — `kind` = 'open_short_on_spot').
+  recordCapabilityViolation(kind: string): void {
+    try {
+      this.capabilityViolationsCounter.inc({ kind });
     } catch {
       /* metrics must never throw into a trading path */
     }

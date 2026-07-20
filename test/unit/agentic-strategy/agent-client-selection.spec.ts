@@ -6,6 +6,7 @@ import {
   agenticEnv,
   SEED_PLAYBOOK,
   SEED_PLAYBOOK_PERP,
+  SEED_PLAYBOOK_V3,
 } from '../../../src/features/trading/agentic/agentic-strategy.module';
 import { StubAgentClient } from '../../../src/features/trading/agentic/agent-client.adapter';
 import { AnthropicAgentClient } from '../../../src/features/trading/agentic/anthropic-agent-client';
@@ -218,16 +219,34 @@ describe('SEED_PLAYBOOK_PERP (P2 expert seed)', () => {
   });
 });
 
-describe('seed selection by lane (P2 — same AGENTIC_SHORTS_ENABLED signal P1 uses)', () => {
-  it('selectAgentClient defaults to SEED_PLAYBOOK on a spot (shorts-disabled) boot', async () => {
+describe('SEED_PLAYBOOK_V3 (v3 §9/§10 work item 3 — one lineage, both venues folded)', () => {
+  it('passes validatePlaybook with the fixed v3 capabilities {shortsAllowed: true, leverageAllowed: true} (§1.3)', () => {
+    expect(SEED_PLAYBOOK_V3.version).toBe(1);
+    expect(
+      validatePlaybook(SEED_PLAYBOOK_V3.content, { shortsAllowed: true, leverageAllowed: true }),
+    ).toEqual({ ok: true });
+  });
+
+  it('stays under the 4000-char cap with room to spare', () => {
+    expect(SEED_PLAYBOOK_V3.content.length).toBeLessThanOrEqual(4000);
+    expect(SEED_PLAYBOOK_V3.content.length).toMatchSnapshot('SEED_PLAYBOOK_V3 char count');
+  });
+
+  it('content is pinned (regression on the shipped v3 expert-seed prose)', () => {
+    expect(SEED_PLAYBOOK_V3.content).toMatchSnapshot();
+  });
+});
+
+describe('seed selection (v3 §9/§10 — ONE lineage regardless of AGENTIC_SHORTS_ENABLED)', () => {
+  it('selectAgentClient defaults to SEED_PLAYBOOK_V3 with AGENTIC_SHORTS_ENABLED unset', async () => {
     const client = selectAgentClient({ ANTHROPIC_API_KEY: 'k' }) as BudgetedAgentClient;
     const anthropic = client.inner as unknown as {
       playbookProvider: { current(): Promise<{ content: string }> };
     };
-    await expect(anthropic.playbookProvider.current()).resolves.toEqual(SEED_PLAYBOOK);
+    await expect(anthropic.playbookProvider.current()).resolves.toEqual(SEED_PLAYBOOK_V3);
   });
 
-  it('selectAgentClient defaults to SEED_PLAYBOOK_PERP on a shorts-enabled (perp) boot', async () => {
+  it('selectAgentClient still defaults to SEED_PLAYBOOK_V3 with AGENTIC_SHORTS_ENABLED=true (no lane split left)', async () => {
     const client = selectAgentClient({
       ANTHROPIC_API_KEY: 'k',
       AGENTIC_SHORTS_ENABLED: 'true',
@@ -236,7 +255,7 @@ describe('seed selection by lane (P2 — same AGENTIC_SHORTS_ENABLED signal P1 u
     const anthropic = client.inner as unknown as {
       playbookProvider: { current(): Promise<{ content: string }> };
     };
-    await expect(anthropic.playbookProvider.current()).resolves.toEqual(SEED_PLAYBOOK_PERP);
+    await expect(anthropic.playbookProvider.current()).resolves.toEqual(SEED_PLAYBOOK_V3);
   });
 });
 

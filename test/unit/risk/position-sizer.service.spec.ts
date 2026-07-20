@@ -90,6 +90,8 @@ function snapshot(
     equity?: Decimal;
     balances?: Map<string, { free: Decimal; locked: Decimal }>;
     inFlightIntents?: readonly OrderIntent[];
+    // v3 §6.4: per-venue wallet view — optional, absent in every pre-split fixture (byte-identical).
+    venueBalances?: PortfolioSnapshot['venueBalances'];
   } = {},
 ): PortfolioSnapshot {
   return {
@@ -104,6 +106,7 @@ function snapshot(
     sodEquityUtc: new Decimal(0),
     reconcileStatus: 'CLEAN',
     snapshotSeq: 1n,
+    venueBalances: over.venueBalances,
   };
 }
 
@@ -981,8 +984,11 @@ describe('PositionSizerService', () => {
       if (r.ok) expect(r.intent.qty.toFixed()).toBe('1');
     });
 
-    it('(b) clamps sizeFraction at maxAgentPositionFraction when the model requests more', () => {
-      const r = new PositionSizerService(clock, deps({ maxAgentPositionFraction: '0.15' })).size(
+    it('(b) clamps sizeFraction at maxAgentPositionFractionByVenue when the model requests more', () => {
+      const r = new PositionSizerService(
+        clock,
+        deps({ maxAgentPositionFractionByVenue: new Map([[V, '0.15']]) }),
+      ).size(
         signal({ sizeFraction: '0.30' }),
         snapshot(new Map(), { equity: new Decimal('1000') }),
       );
@@ -1002,7 +1008,7 @@ describe('PositionSizerService', () => {
         clock,
         deps({
           filters: perpFilters,
-          maxAgentPositionFraction: '0.50',
+          maxAgentPositionFractionByVenue: new Map([[V_PERP, '0.50']]),
           perp: { leverageCap: '2', mmrFallback: '0.005', liqBufferPct: '0.2' },
         }),
       ).size(
@@ -1033,7 +1039,10 @@ describe('PositionSizerService', () => {
           },
         ],
       ]);
-      const r = new PositionSizerService(clock, deps({ maxAgentPositionFraction: '0.15' })).size(
+      const r = new PositionSizerService(
+        clock,
+        deps({ maxAgentPositionFractionByVenue: new Map([[V, '0.15']]) }),
+      ).size(
         signal({ sizeFraction: '0.10', refPrice: price('100') }),
         snapshot(positions, { equity: new Decimal('1000') }),
       );
@@ -1057,7 +1066,10 @@ describe('PositionSizerService', () => {
           },
         ],
       ]);
-      const r = new PositionSizerService(clock, deps({ maxAgentPositionFraction: '0.15' })).size(
+      const r = new PositionSizerService(
+        clock,
+        deps({ maxAgentPositionFractionByVenue: new Map([[V, '0.15']]) }),
+      ).size(
         signal({ sizeFraction: '0.10', refPrice: price('100') }),
         snapshot(positions, { equity: new Decimal('1000') }),
       );
@@ -1073,7 +1085,10 @@ describe('PositionSizerService', () => {
       // No filled position at all (posQty=0) — only a resting BUY entry, qty 1 @ limitPrice 100 ⇒
       // $100 reserved. cappedEquity=1000, maxFraction=0.15 ⇒ fraction cap = $150 ⇒ headroom = $50.
       const resting = restingIntent({ side: 'BUY', qty: qty('1'), limitPrice: price('100') });
-      const r = new PositionSizerService(clock, deps({ maxAgentPositionFraction: '0.15' })).size(
+      const r = new PositionSizerService(
+        clock,
+        deps({ maxAgentPositionFractionByVenue: new Map([[V, '0.15']]) }),
+      ).size(
         signal({ sizeFraction: '0.10', refPrice: price('100') }),
         snapshot(new Map(), { equity: new Decimal('1000'), inFlightIntents: [resting] }),
       );
@@ -1091,7 +1106,10 @@ describe('PositionSizerService', () => {
         qty: qty('1'),
         limitPrice: price('100'),
       });
-      const r = new PositionSizerService(clock, deps({ maxAgentPositionFraction: '0.15' })).size(
+      const r = new PositionSizerService(
+        clock,
+        deps({ maxAgentPositionFractionByVenue: new Map([[V, '0.15']]) }),
+      ).size(
         signal({ sizeFraction: '0.10', refPrice: price('100') }),
         snapshot(new Map(), { equity: new Decimal('1000'), inFlightIntents: [resting] }),
       );
@@ -1206,6 +1224,118 @@ describe('PositionSizerService', () => {
         // 0.05 × 0.1 = 0.005 ≥ minQty 0.001; minNotional exempt (reduce-only + perp) ⇒ accepted.
         if (r.ok) expect(r.intent.qty.toFixed()).toBe('0.005');
       });
+    });
+  });
+
+  // ── v3 §6.1/§6.2/§6.3: capital-split sizing (venueHeadroom clamp, per-venue wallet
+  // affordability, reduce-only exemption) ──
+  describe('v3 §6: capital-split sizing', () => {
+    const SYM2 = symbolId('ETH/USDT'); // a second symbol on the SAME venue V, used to prove the
+    // venueHeadroom clamp aggregates across ALL symbols on a venue, not just the signal's own.
+
+    it('venueHeadroom exactly 0 (a same-venue, different-symbol position exhausts the share) ⇒ BELOW_MINIMUM', () => {
+      const positions = new Map<string, Position>([
+        [
+          `${SID}:${V}:${SYM2}`,
+          {
+            strategyId: SID,
+            venue: V,
+            symbol: SYM2,
+            signedQty: new Decimal('2'),
+            avgEntry: price('60'), // 2 × 60 = 120 venueOpenNotional
+            realizedPnl: new Decimal(0),
+          },
+        ],
+      ]);
+      const r = new PositionSizerService(
+        clock,
+        deps({ venueCapitalShare: new Map([[V, '120']]) }),
+      ).size(
+        signal({ sizeFraction: '0.10', refPrice: price('100') }),
+        snapshot(positions, { equity: new Decimal('1000') }),
+      );
+      // No position/reservation on SYM itself ⇒ the pre-existing same-symbol headroom clamp never
+      // engages; sizeFraction target = 1000 × 0.10 = 100. venueHeadroom = 120 (cap) − 120
+      // (SYM2's own notional, same venue) − 0 (reserved) = 0 ⇒ clamps the target to 0.
+      expect(r).toEqual({ ok: false, reason: 'BELOW_MINIMUM' });
+    });
+
+    it('venueHeadroom negative after a venue-wide (different-symbol) reservation ⇒ BELOW_MINIMUM', () => {
+      const positions = new Map<string, Position>([
+        [
+          `${SID}:${V}:${SYM2}`,
+          {
+            strategyId: SID,
+            venue: V,
+            symbol: SYM2,
+            signedQty: new Decimal('1'),
+            avgEntry: price('60'), // 60 venueOpenNotional
+            realizedPnl: new Decimal(0),
+          },
+        ],
+      ]);
+      // A resting entry on a THIRD symbol, same venue — venueReservedNotional is venue-wide, not
+      // scoped to strategyId/symbol/side the way reservedEntryNotional (same-symbol) is.
+      const SYM3 = symbolId('XRP/USDT');
+      const resting = restingIntent({
+        symbol: SYM3,
+        side: 'SELL',
+        qty: qty('1'),
+        limitPrice: price('50'),
+      });
+      const r = new PositionSizerService(
+        clock,
+        deps({ venueCapitalShare: new Map([[V, '100']]) }),
+      ).size(
+        signal({ sizeFraction: '0.10', refPrice: price('100') }),
+        snapshot(positions, { equity: new Decimal('1000'), inFlightIntents: [resting] }),
+      );
+      // venueHeadroom = 100 (cap) − 60 (SYM2 open) − 50 (SYM3 reserved) = −10 ⇒ negative target.
+      expect(r).toEqual({ ok: false, reason: 'BELOW_MINIMUM' });
+    });
+
+    it('wallet-underfunded: venueFree (not the combined snapshot.balances) binds the spot BUY affordability clamp', () => {
+      const r = new PositionSizerService(clock, deps()).size(
+        signal(), // legacy baseNotional path: 1000 × strength(1) = 1000 target
+        snapshot(new Map(), {
+          equity: new Decimal('1000'),
+          // Combined balance is plentiful — if the sizer fell back to it instead of venueBalances,
+          // this order would size fine. venueBalances for V is nearly empty (the demo wallet
+          // actually holding this venue's split), proving the venue-scoped read is what binds.
+          balances: new Map([['USDT', { free: new Decimal('10000'), locked: new Decimal(0) }]]),
+          venueBalances: new Map([
+            [V, new Map([['USDT', { free: new Decimal('1'), locked: new Decimal(0) }]])],
+          ]),
+        }),
+      );
+      // target = min(1000, 1 × 0.95) = 0.95 ⇒ qty = 0.0095, stepped down to 0.009 ⇒ notional 0.9 <
+      // minNotional 5 ⇒ rejected as a genuinely underfunded order, not silently floored.
+      expect(r).toEqual({ ok: false, reason: 'BELOW_MINIMUM' });
+    });
+
+    it('reduce-only is exempt from the split: sizes fully even when the venue is far over its cap', () => {
+      const positions = new Map<string, Position>([
+        [
+          `${SID}:${V}:${SYM}`,
+          {
+            strategyId: SID,
+            venue: V,
+            symbol: SYM,
+            signedQty: new Decimal('5'),
+            avgEntry: price('100'),
+            realizedPnl: new Decimal(0),
+          },
+        ],
+      ]);
+      const r = new PositionSizerService(
+        clock,
+        // Cap far below the already-open notional (500) — an entry here would clamp to a deeply
+        // negative headroom, but this signal is a reduce-only EXIT, which never calls
+        // entryNotional (§6.3's structural exemption).
+        deps({ venueCapitalShare: new Map([[V, '10']]) }),
+      ).size(signal({ kind: 'EXIT_LONG' }), snapshot(positions));
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.intent.qty.toFixed()).toBe('5'); // full |posQty|, unaffected by the split
     });
   });
 });

@@ -31,7 +31,13 @@ import {
   type ModeResolution,
 } from '../../../domain/mode/resolution';
 import type { TradingMode } from '../../../domain/types/mode';
+import { venueId, type VenueId } from '../../../domain/types/ids';
 import { verifyArmingHmac } from './hmac';
+
+// v3 §7.1: local venue-id copies (same idiom as key-probe.service.ts and position-sizer.service.ts —
+// a shared venue-map module is deletion-list follow-up work, not this workstream's).
+const SPOT_VENUE_ID = venueId('binance');
+const PERP_VENUE_ID = venueId('binanceusdm');
 
 // Maps the domain's five ArmFailure values onto the port's four ArmFailureReason values.
 // BOOTID_MISMATCH → HMAC_MISMATCH: both indicate a proof that cannot be accepted; leaking
@@ -48,7 +54,8 @@ const FAILURE_MAP: Record<ArmFailure, ArmFailureReason> = {
 @Injectable()
 export class ModeControlService implements ModeControlPort {
   private arming: ArmingState = INITIAL_ARMING;
-  private lastProbe: KeyProbeResult | undefined;
+  // v3 §7.2: gate (c) is now per-venue, both — the whole probeAll() snapshot, not a single result.
+  private lastProbe: ReadonlyMap<VenueId, KeyProbeResult> | undefined;
   // Built once: the empty-string fallback only matters under test/ci (armingSecret undefined),
   // where the CONFIRM precondition refuses before the secret is ever used to verify a proof.
   private readonly armingDeps: ArmingDeps;
@@ -84,11 +91,33 @@ export class ModeControlService implements ModeControlPort {
       requested: this.cfg.requested,
       envFlagLive: this.cfg.requested === 'live',
       armed: this.arming.kind === 'ARMED',
-      keysValid: this.lastProbe?.keysValid ?? false,
+      keysValid: this.keysValid(),
       limitsComplete: this.cfg.limitsComplete,
-      testnetKeysValid: this.lastProbe?.keysValid ?? false,
+      testnetKeysValid: this.keysValid(),
     };
     return resolveMode(vector);
+  }
+
+  // v3 §7.1/§7.2: the authoritative AND-aggregate over BOTH venues, recomputed here from the raw
+  // per-venue flags — NEVER from either probe entry's own keysValid (auditor S5, carried into v3).
+  // A missing venue entry (probe never run, or a probe implementation that dropped a venue) fails
+  // CLOSED rather than vacuously passing over an empty/partial map.
+  private keysValid(): boolean {
+    const probe = this.lastProbe;
+    if (probe === undefined) return false;
+    const spot = probe.get(SPOT_VENUE_ID);
+    const perp = probe.get(PERP_VENUE_ID);
+    if (spot === undefined || perp === undefined) return false;
+    return (
+      this.venueKeysValid(spot, spot.spotEnabled) && this.venueKeysValid(perp, perp.futuresEnabled)
+    );
+  }
+
+  // §7.1: withdrawals-disabled and margin-forbidden bind on every surface; surfaceEnabled carries
+  // the venue-specific requirement (spotEnabled for spot, futuresEnabled for perp) — the perp
+  // futures-requirement never weakens the spot margin prohibition or vice versa.
+  private venueKeysValid(r: KeyProbeResult, surfaceEnabled: boolean): boolean {
+    return !r.withdrawalsEnabled && surfaceEnabled && !r.marginEnabled && r.urlCrossCheckOk;
   }
 
   // §10b captured-token defence: the challenge and the verified HMAC bind to the process's OWN
@@ -115,7 +144,14 @@ export class ModeControlService implements ModeControlPort {
     // resolveMode(), so a fresh REQUEST→CONFIRM flow always sees a current state.
     const nowMs = this.clock.now();
 
-    // Preconditions checked before advancing the state machine.
+    // Preconditions checked before advancing the state machine. Gate (c) key validation stays OFF
+    // this list deliberately (carried v2 design, re-verified for v3): the ArmingState transition
+    // (REQUEST→CONFIRM→ARMED) and the derived EFFECTIVE mode are independent axes — the sacred 2⁴
+    // matrix (test/livegate/live-gate-matrix.spec.ts) exercises `armed` and `keys` independently and
+    // asserts `resolveMode().effective` for every combination, so CONFIRM itself must keep succeeding
+    // on bad keys; resolveMode()'s keysValid() AND-gate (both venues) is what actually keeps effective
+    // at 'paper'. The ArmingController still awaits refreshKeyProbe() immediately before CONFIRM
+    // (§7.2 "at CONFIRM, fresh probe") so any resolveMode() call right after arming sees current data.
     if (
       !this.preconditions.check().ok ||
       this.killSwitch.state() !== 'RUNNING' ||
@@ -161,23 +197,24 @@ export class ModeControlService implements ModeControlPort {
     }
   }
 
+  // v3 §7.2: probes BOTH venues, audits each venue's raw restriction snapshot as its own row, then
+  // recomputes the AND-aggregate (never trusting either entry's own keysValid — §10c / auditor S5).
+  // ANY venue going invalid while ARMED disarms — "either-fails" (carried, now per-venue).
   async refreshKeyProbe(): Promise<void> {
-    const r = await this.keyProbe.probe();
-    // §10c / auditor S5: do NOT trust the probe's own keysValid — recompute the authoritative
-    // verdict here from the restriction snapshot. Withdrawals-enabled is refused outright (never
-    // warned); spot must be on; margin/futures absent; the venue URL must cross-check. A buggy or
-    // compromised probe reporting keysValid:true while withdrawals are enabled cannot grant live.
-    const keysValid =
-      !r.withdrawalsEnabled && r.spotEnabled && !r.marginOrFutures && r.urlCrossCheckOk;
-    this.lastProbe = { ...r, keysValid };
-    this.audit.record({
-      type: 'key_check',
-      withdrawalsEnabled: r.withdrawalsEnabled,
-      spotEnabled: r.spotEnabled,
-      marginOrFutures: r.marginOrFutures,
-      urlCrossCheckOk: r.urlCrossCheckOk,
-    });
-    if (!keysValid && this.arming.kind === 'ARMED') {
+    const probeMap = await this.keyProbe.probeAll();
+    this.lastProbe = probeMap;
+    for (const [venue, r] of probeMap) {
+      this.audit.record({
+        type: 'key_check',
+        venue,
+        withdrawalsEnabled: r.withdrawalsEnabled,
+        spotEnabled: r.spotEnabled,
+        futuresEnabled: r.futuresEnabled,
+        marginEnabled: r.marginEnabled,
+        urlCrossCheckOk: r.urlCrossCheckOk,
+      });
+    }
+    if (!this.keysValid() && this.arming.kind === 'ARMED') {
       this.disarm('KEY_PROBE_FAILURE');
       this.killSwitch.engage('KEY_PROBE_FAILURE', false);
     }

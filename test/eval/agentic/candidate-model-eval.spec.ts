@@ -51,7 +51,7 @@ import {
   summarizeRecentDecisionOutcomes,
   type ScoringRow,
 } from '../../../src/features/trading/agentic/counterfactual-scoring';
-import { EVAL_PROFILE } from './fixtures';
+import { EVAL_PROFILE, toScoringAction } from './fixtures';
 import {
   composeRecordedUserMessage,
   scoringRowFromPayload,
@@ -473,7 +473,7 @@ describe.skipIf(SKIP)(
         const championScoringRows: ScoringRow[] = replayRows;
         const championSchemaValidRate =
           replayRows.filter((r) => r.action !== 'error').length / replayRows.length;
-        const championProposeCount = replayRows.filter((r) => r.action === 'long').length;
+        const championProposeCount = replayRows.filter((r) => r.action === 'open_long').length;
         const championForwardReturnProxyBps = forwardProxyBps(championScoringRows);
         const championCostPerDecideUsd = meanCostUsd(
           replayRows.map((r) => ({
@@ -540,16 +540,19 @@ describe.skipIf(SKIP)(
             }
 
             // Agreement/propose-ratio are scored only against rows with a real recorded ground
-            // truth — a recorded 'error' row has no action to agree or disagree with.
+            // truth — a recorded 'error' row has no action to agree or disagree with. Journal rows
+            // are v3-normalized while replay results still speak the legacy contract — map the
+            // result through the same boundary normalizer before comparing.
+            const resultAction = toScoringAction(result.action);
             if (row.action !== 'error') {
               comparableCount++;
-              if (result.action === row.action) overallAgree++;
-              if (row.action === 'long') {
+              if (resultAction === row.action) overallAgree++;
+              if (row.action === 'open_long') {
                 proposeTotal++;
-                if (result.action === row.action) proposeAgree++;
+                if (resultAction === row.action) proposeAgree++;
               } else {
                 holdTotal++;
-                if (result.action === row.action) holdAgree++;
+                if (resultAction === row.action) holdAgree++;
               }
             }
           }

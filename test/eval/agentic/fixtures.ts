@@ -17,6 +17,16 @@ export const SID = strategyId('agentic-eval');
 export const V = venueId('binance');
 export const SYM = symbolId('BTC/USDT');
 
+// Recorded v2 sessions (and the still-live legacy client paths pre-#10a) emit 'long'/'flat';
+// ScoringRow.action is the narrowed v3 union. Map at the harness boundary — same semantics as the
+// strategy's toJournalAction ('long' entered, 'flat' closed).
+export function toScoringAction(action: string | undefined): ScoringRow['action'] {
+  if (action === undefined) return 'error';
+  if (action === 'long') return 'open_long';
+  if (action === 'flat') return 'close';
+  return action as ScoringRow['action'];
+}
+
 export const EVAL_PROFILE: AgentTradingProfile = {
   makerBps: '10',
   takerBps: '10',
@@ -156,7 +166,7 @@ export async function replay(
     const proposal = await client.propose(input);
     rows.push({
       eventTime: input.snapshot.eventTime,
-      action: proposal.decision?.action ?? 'error',
+      action: toScoringAction(proposal.decision?.action),
       confidence: proposal.decision?.confidence ?? null,
       refPrice: candle.close.toFixed(),
       close: candle.close.toFixed(),

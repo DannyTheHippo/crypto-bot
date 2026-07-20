@@ -555,20 +555,12 @@ export interface AgentDecisionEntry {
   readonly basedOnSeq: bigint;
   readonly eventTime: EpochMs;
   readonly model: string;
-  // A3: widened to the SAME v2 ∪ legacy vocabulary as AgentDecisionMeta.action (see that field's own
-  // comment) — ADDITIVE, 'error' kept alongside (this journal-only literal has no AgentDecisionMeta
-  // counterpart: it marks a decide()-path exception, stamped by recordErrorJournalEntry, never a
-  // value the client itself returns). Historical rows keep their legacy 'long'/'flat' literals
-  // forever; nothing here forces re-labeling them.
-  readonly action:
-    | 'open_long'
-    | 'open_short'
-    | 'close'
-    | 'adjust'
-    | 'hold'
-    | 'long'
-    | 'flat'
-    | 'error';
+  // v3 (consolidation spec §2/§9): narrowed to the rich-tool-contract-only vocabulary, matching the
+  // fresh v3 `agent_decisions.action` DB column exactly (trading.schema.ts) — a greenfield DB never
+  // carries a legacy 'long'/'flat' row, so no back-compat literal is needed here. 'error' has no
+  // AgentDecisionMeta counterpart: it marks a decide()-path exception, stamped by
+  // recordErrorJournalEntry, never a value the client itself returns.
+  readonly action: 'open_long' | 'open_short' | 'close' | 'adjust' | 'hold' | 'error';
   readonly confidence: number | null;
   readonly rationale: string;
   readonly refPrice: string | null;
@@ -600,12 +592,12 @@ export interface AgentDecisionEntry {
   // a NULL column. No new DB column: rides in plan_json alongside the rest of the directive set
   // (A3 threads the actual persistence — see trading.schema.ts's plan_json $type widening).
   readonly nextConsultBars?: number | null;
-  // See AgentProposal.infoArm/thinkingArm — the A/B treatment truth this decision's proposal
-  // carried, forwarded verbatim (no further polarity conversion here). Optional so pre-this-column
-  // writers and fixtures compile; absent and null both map to a NULL column (rows written outside
-  // a client call — prescreen quiet-holds, plan-executor bookkeeping — never set these).
-  readonly infoArm?: boolean | null;
-  readonly thinkingArm?: boolean | null;
+  // v3 (consolidation spec §2/§9): info_arm/thinking_arm are DELETED (the retired derivatives-control
+  // A/B factorial — the playbook champion/candidate A/B is NOT retired and is attributed via
+  // consultId + playbookVersion, never an arm flag). AgentProposal.infoArm/thinkingArm (the client's
+  // own A/B treatment-truth telemetry) are unaffected — only this journal-row mirror is removed, since
+  // the v3 agent_decisions table carries no info_arm/thinking_arm columns to persist them into
+  // (trading.schema.ts).
   // R2 (episodic memory): the regime fingerprint this decision was made in — see RegimeTags. Optional
   // so every pre-R2 writer/fixture compiles; absent and null both persist no tags (the row is simply
   // never retrievable as a "similar past setup", a fail-open miss, never a wrong match). Rides inside
@@ -660,7 +652,8 @@ export interface AgentDecisionJournalPort {
   // candidate's early entries scrolling past it misclassified a TRADING candidate as abstaining
   // (v2, 2026-07-17: its 4 longs sat just beyond the 400-row horizon after the 5→8 expansion).
   // decides counts real-LLM rows only (model 'claude…', mirroring ReflectionService's filter),
-  // entries the 'long' subset, both over the version's WHOLE journal. Optional so pre-this-method
+  // entries the 'open_long'/'open_short' subset (v3 §2/§9 vocabulary), both over the version's WHOLE
+  // journal. Optional so pre-this-method
   // fakes compile; absent ⇒ callers must NOT abstention-lapse (fail toward preserving the
   // candidate — orphaning is destructive, squatting is bounded by the age lapse).
   versionEntryStats?(version: number): Promise<{ decides: number; entries: number }>;

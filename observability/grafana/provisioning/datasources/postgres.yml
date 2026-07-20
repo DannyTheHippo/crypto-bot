@@ -8,35 +8,15 @@ datasources:
   # truncates at the first non-word character (their own example: `${PASSWORD}` resolves to just
   # "Pa" of "Pa$sw0rd"); `$__env{}` is the documented-correct form for postgres/mysql datasources.
   # Pinned uid (not auto-generated): the dashboard JSON references this datasource by {type, uid}
-  # object — required for reliable resolution inside Mixed-datasource panels (2026-07-19 Overview-
-  # row "No data" fix) — and a pinned value survives the eventual GCP lift unchanged (a fresh
-  # Grafana volume provisioned from this same file mints the identical uid).
+  # object, and a pinned value survives the eventual GCP lift unchanged (a fresh Grafana volume
+  # provisioned from this same file mints the identical uid, so the dashboard JSON needs no edits
+  # post-migration). v3: the second (perp) RO datasource this file used to carry is deleted — one
+  # process, one DB, one datasource (spec §9).
   - name: Postgres (RO)
     uid: postgres-ro-spot
     type: postgres
     access: proxy
     url: postgres:5432
-    database: cryptobot
-    user: grafana_ro
-    secureJsonData:
-      password: $__env{GRAFANA_RO_PASSWORD}
-    jsonData:
-      sslmode: disable
-      postgresVersion: 1600
-      timescaledb: false
-    isDefault: false
-    editable: false
-  # Perp lane's own DB (postgres-perp service) — separate DB, same grafana_ro role/grants (applied
-  # by the SAME observability/grafana/grafana_ro.sql, run against both DBs — see that file's own
-  # header for the dual-DB apply commands). Structural isolation mirrors the two Prometheus
-  # datasources above (Prometheus / Prometheus (perp)) — never a shared datasource across lanes.
-  # Pinned uid — see the Postgres (RO) entry's comment above (same rationale: Mixed-panel
-  # resolution + GCP-lift stability).
-  - name: Postgres Perp (RO)
-    uid: postgres-ro-perp
-    type: postgres
-    access: proxy
-    url: postgres-perp:5432
     database: cryptobot
     user: grafana_ro
     secureJsonData:

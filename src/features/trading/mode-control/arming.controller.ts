@@ -37,7 +37,12 @@ export class ArmingController {
   @UseGuards(ArmingTransportGuard)
   @ApiResponse(armConfirmApiExamples.success)
   @ApiResponse(armConfirmApiExamples.refused)
-  confirm(@Body() b: ArmConfirmRequestDto): ArmResult {
+  async confirm(@Body() b: ArmConfirmRequestDto): Promise<ArmResult> {
+    // v3 §7.2 gate (c): "at CONFIRM (fresh probe)" — re-probe both venues immediately before
+    // resolving CONFIRM so a caller's next resolveMode() read reflects current key state, not a
+    // stale periodic-refresh (60s) snapshot. Optional-chained: refreshKeyProbe is absent only on
+    // non-real ModeControlPort fakes, which never route through this controller.
+    await this.service.refreshKeyProbe?.();
     return this.service.armLive({
       step: 'CONFIRM',
       challengeId: b.challengeId,

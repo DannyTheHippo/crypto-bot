@@ -7,6 +7,7 @@ import {
 } from '@willsoto/nestjs-prometheus';
 import { Gauge, Counter } from 'prom-client';
 import { performance } from 'perf_hooks';
+import Decimal from 'decimal.js';
 import { TypedConfigService } from '../../../config/environment/typed-config.service';
 import {
   MARKET_STREAM_TELEMETRY,
@@ -21,6 +22,7 @@ import {
 } from '../../../ports/strategy';
 import { DERIVATIVES_FEED, type DerivativesFeedPort } from '../../../ports/derivatives-feed';
 import { SENTIMENT_FEED, type SentimentFeedPort } from '../../../ports/sentiment-feed';
+import { venueForSymbol } from '../../../domain/types/venue-map';
 import { EventLoopHealthIndicator } from './event-loop-health.indicator';
 
 export const EVENT_LOOP_DELAY_GAUGE = makeGaugeProvider({
@@ -88,26 +90,46 @@ export const STARTING_CASH_GAUGE = makeGaugeProvider({
 });
 export const REALIZED_PNL_GAUGE = makeGaugeProvider({
   name: 'realized_pnl_usdt',
-  help: 'Realized PnL per strategy/symbol, USDT',
-  labelNames: ['strategy', 'symbol'],
+  help: 'Realized PnL per venue/strategy/symbol, USDT',
+  labelNames: ['venue', 'strategy', 'symbol'],
 });
 export const POSITION_QTY_GAUGE = makeGaugeProvider({
   name: 'position_qty',
-  help: 'Signed position quantity per strategy/symbol',
-  labelNames: ['strategy', 'symbol'],
+  help: 'Signed position quantity per venue/strategy/symbol',
+  labelNames: ['venue', 'strategy', 'symbol'],
 });
 export const POSITION_NOTIONAL_GAUGE = makeGaugeProvider({
   name: 'position_notional_usdt',
-  help: 'abs(position) × avgEntry per strategy/symbol, USDT',
-  labelNames: ['strategy', 'symbol'],
+  help: 'abs(position) × avgEntry per venue/strategy/symbol, USDT',
+  labelNames: ['venue', 'strategy', 'symbol'],
 });
+// v3 §8: venue-scoped facts — open_orders/in_flight_intents count per venue rather than one
+// process-wide total (the v2 shape, when each venue ran its own process).
 export const OPEN_ORDERS_GAUGE = makeGaugeProvider({
   name: 'open_orders',
-  help: 'Open (resting) order count',
+  help: 'Open (resting) order count, by venue',
+  labelNames: ['venue'],
 });
 export const IN_FLIGHT_GAUGE = makeGaugeProvider({
   name: 'in_flight_intents',
-  help: 'In-flight (reserved) intent count',
+  help: 'In-flight (reserved) intent count, by venue',
+  labelNames: ['venue'],
+});
+
+// v3 §8/§6.4: per-venue capital-split observables — the wallet's free quote/margin balance and the
+// sizer's remaining split headroom. `venue_capital_headroom_usdt` replicates the exact §6.1 formula
+// (venueCap(v) − venueOpenNotional(v) − venueReservedNotional(v)) for display; like
+// position_notional_usdt above, open notional uses avgEntry rather than a live ref price (no
+// FeedHealthPort injection in this service) — a display-grade approximation, never a sizing input.
+export const VENUE_FREE_CASH_GAUGE = makeGaugeProvider({
+  name: 'venue_free_cash_usdt',
+  help: "Free quote/margin balance in each venue wallet (the split's observable), USDT",
+  labelNames: ['venue'],
+});
+export const VENUE_CAPITAL_HEADROOM_GAUGE = makeGaugeProvider({
+  name: 'venue_capital_headroom_usdt',
+  help: 'Per-venue capital-split headroom: venueCap − open notional − reserved notional (spec §6.1), USDT',
+  labelNames: ['venue'],
 });
 
 // Agentic-lane metrics (G3b). Recorded via AgentMetricsRecorder, NOT sampled by this service's loop —
@@ -175,8 +197,8 @@ export const AGENTIC_REFLECTION_OUTCOMES_COUNTER = makeCounterProvider({
 // placed / skipped_existing / cancel_for_exit / drift_cancel / filled_flat).
 export const AGENTIC_VENUE_TP_COUNTER = makeCounterProvider({
   name: 'agentic_venue_tp_total',
-  help: 'Venue-resting take-profit lifecycle events (bound closed set — see VenueTpEvent)',
-  labelNames: ['event'] as const,
+  help: 'Venue-resting take-profit lifecycle events (bound closed set — see VenueTpEvent), by venue',
+  labelNames: ['venue', 'event'] as const,
 });
 // Push 3 P7d (AGENTIC_VENUE_STOP): venue-resting protective stop lifecycle events for plan-mode
 // positions, emitted by agentic.strategy.ts's manageVenueStop/runActivePlan (see VenueStopEvent
@@ -189,8 +211,8 @@ export const AGENTIC_VENUE_TP_COUNTER = makeCounterProvider({
 // agentic_venue_tp_total already provides for the TP side.
 export const AGENTIC_VENUE_STOP_COUNTER = makeCounterProvider({
   name: 'agentic_venue_stop_total',
-  help: 'Venue-resting protective stop lifecycle events (bound closed set — see VenueStopEvent)',
-  labelNames: ['event'] as const,
+  help: 'Venue-resting protective stop lifecycle events (bound closed set — see VenueStopEvent), by venue',
+  labelNames: ['venue', 'event'] as const,
 });
 
 // C1: derivatives-feed health, sampled in the 5s loop below (same pull pattern as kill_switch_state
@@ -225,12 +247,19 @@ export const SENTIMENT_FEED_POLL_ERRORS_COUNTER = makeCounterProvider({
 // Bounded cardinality: symbols × 4 channel kinds (ticker/trade/book/candle:<tf>) ≈ 20 series.
 export const MARKET_CHANNEL_STALENESS_GAUGE = makeGaugeProvider({
   name: 'market_channel_staleness_seconds',
-  help: 'Seconds since each market-data websocket channel last delivered an event',
-  labelNames: ['symbol', 'channel'] as const,
+  help: 'Seconds since each market-data websocket channel last delivered an event, by venue',
+  labelNames: ['venue', 'symbol', 'channel'] as const,
 });
+// v3 §8: +venue. MarketStreamTelemetryPort.forcedReconnectCount() is still a single process-wide
+// aggregate today (the per-venue split is workstream #5's MarketStreamsModule merge, spec §1.3:
+// "forced-reconnect counts summed per venue") — see the sampling loop below for how the aggregate is
+// labeled until that facade lands.
 export const MARKET_STREAM_FORCED_RECONNECTS_COUNTER = makeCounterProvider({
   name: 'market_stream_forced_reconnects_total',
-  help: 'Watchdog-forced websocket reconnects after a channel (ticker/trade/book/candle) stalled silently',
+  help:
+    'Watchdog-forced websocket reconnects after a channel (ticker/trade/book/candle) stalled ' +
+    'silently, by venue',
+  labelNames: ['venue'] as const,
 });
 
 // W1 (Grafana rebuild): funding-ingest / universe-scanner / agent-budget metrics recorded via
@@ -255,6 +284,16 @@ export const AGENTIC_MENU_CHURN_COUNTER = makeCounterProvider({
 export const AGENTIC_BUDGET_REMAINING_GAUGE = makeGaugeProvider({
   name: 'agentic_budget_remaining_usd',
   help: 'Remaining daily LLM spend budget (USD) before the cost breaker trips — DailyLlmBudget.budgetBlock(), ONE shared lane-wide cap (not per-strategy: AGENT_LLM_BUDGET is a single instance shared across all strategy instances in this process)',
+});
+
+// v3 §4.3: the client zod layer degrades an `open_short` on a spot symbol (capabilities.shorts is
+// false) to `hold`, journaled with rationale `capability_violation:open_short_on_spot` — this
+// counter is that degrade's Prometheus mirror. `kind` is the bound violation-kind set the tool
+// contract defines; workstream #10 (agentic) is the caller, through this recorder interface only.
+export const AGENTIC_CAPABILITY_VIOLATIONS_COUNTER = makeCounterProvider({
+  name: 'agentic_capability_violations_total',
+  help: 'Per-symbol capability violations degraded to hold by the client zod layer (spec §4.3), by kind',
+  labelNames: ['kind'] as const,
 });
 
 // §strategy lifecycle — sampled in the 5s loop below (same pull pattern as kill_switch_state):
@@ -314,6 +353,9 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
     private readonly marketChannelStalenessGauge: Gauge<string>,
     @InjectMetric('market_stream_forced_reconnects_total')
     private readonly marketStreamReconnectsCounter: Counter<string>,
+    @InjectMetric('venue_free_cash_usdt') private readonly venueFreeCashGauge: Gauge<string>,
+    @InjectMetric('venue_capital_headroom_usdt')
+    private readonly venueCapitalHeadroomGauge: Gauge<string>,
     private readonly configService: TypedConfigService,
     private readonly eventLoopIndicator: EventLoopHealthIndicator,
     // @Optional so observability can boot standalone (no kill switch) — the gauge is simply not set.
@@ -385,19 +427,89 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
             ? snap.peakEquity.minus(snap.equity).div(snap.peakEquity).toNumber()
             : 0,
         );
-        this.openOrdersGauge.set(snap.openOrders.length);
-        this.inFlightGauge.set(snap.inFlightIntents.length);
+        // v3 §8: open_orders/in_flight_intents are venue-labeled — explicit-zero every configured
+        // venue (same convention as strategy_lifecycle's ALL_LIFECYCLE_STATES) so a venue with
+        // nothing open reads 0, not absent, then count. OpenOrderSummary carries no venue field yet
+        // (pending workstream #8), so its venue is derived via the canonical venueForSymbol mapping;
+        // OrderIntent already carries `.venue` directly.
+        const configuredVenues = this.configService.venues.map((v) => v.id);
+        const openOrdersByVenue = new Map<string, number>(configuredVenues.map((v) => [v, 0]));
+        for (const order of snap.openOrders) {
+          const venue = venueForSymbol(order.symbol);
+          openOrdersByVenue.set(venue, (openOrdersByVenue.get(venue) ?? 0) + 1);
+        }
+        this.openOrdersGauge.reset();
+        for (const [venue, count] of openOrdersByVenue) {
+          this.openOrdersGauge.labels({ venue }).set(count);
+        }
+        const inFlightByVenue = new Map<string, number>(configuredVenues.map((v) => [v, 0]));
+        for (const intent of snap.inFlightIntents) {
+          inFlightByVenue.set(intent.venue, (inFlightByVenue.get(intent.venue) ?? 0) + 1);
+        }
+        this.inFlightGauge.reset();
+        for (const [venue, count] of inFlightByVenue) {
+          this.inFlightGauge.labels({ venue }).set(count);
+        }
         // Reset labeled series each tick so a position that closed since last sample drops to absent.
         this.realizedPnlGauge.reset();
         this.positionQtyGauge.reset();
         this.positionNotionalGauge.reset();
         for (const pos of snap.positions.values()) {
-          const labels = { strategy: pos.strategyId, symbol: pos.symbol };
+          const labels = { venue: pos.venue, strategy: pos.strategyId, symbol: pos.symbol };
           this.realizedPnlGauge.labels(labels).set(pos.realizedPnl.toNumber());
           this.positionQtyGauge.labels(labels).set(pos.signedQty.toNumber());
           this.positionNotionalGauge
             .labels(labels)
             .set(pos.signedQty.abs().mul(pos.avgEntry).toNumber());
+        }
+
+        // v3 §8/§6.4: venue_free_cash_usdt — sourced from PortfolioSnapshot.venueBalances
+        // (workstream #8, PortfolioStateService). Optional on the type until the composition root
+        // wires a venue-keyed balance source, so the gauge simply stays unset (no series) rather
+        // than fabricating a value when absent.
+        this.venueFreeCashGauge.reset();
+        if (snap.venueBalances) {
+          for (const [venue, assets] of snap.venueBalances) {
+            const free = assets.get('USDT')?.free;
+            if (free) {
+              this.venueFreeCashGauge.labels({ venue }).set(free.toNumber());
+            }
+          }
+        }
+
+        // v3 §6.1: venue_capital_headroom_usdt = venueCap(v) − venueOpenNotional(v) −
+        // venueReservedNotional(v), computed directly off already-available snapshot data + the
+        // landed VENUE_CAPITAL_SPLIT config (no dependency on workstream #8's venueBalances field —
+        // unlike free-cash above, every input this formula needs already exists on PortfolioSnapshot).
+        const venueCapitalSplit = this.configService.venueCapitalSplit;
+        this.venueCapitalHeadroomGauge.reset();
+        if (Object.keys(venueCapitalSplit).length > 0) {
+          const openNotionalByVenue = new Map<string, Decimal>();
+          for (const pos of snap.positions.values()) {
+            const notional = pos.signedQty.abs().mul(pos.avgEntry);
+            openNotionalByVenue.set(
+              pos.venue,
+              (openNotionalByVenue.get(pos.venue) ?? new Decimal(0)).plus(notional),
+            );
+          }
+          const reservedNotionalByVenue = new Map<string, Decimal>();
+          for (const intent of snap.inFlightIntents) {
+            if (intent.reduceOnly) continue; // §6.3: reduce-only is exempt from every split clamp
+            const price = intent.limitPrice ?? intent.refPrice;
+            const notional = intent.qty.mul(price);
+            reservedNotionalByVenue.set(
+              intent.venue,
+              (reservedNotionalByVenue.get(intent.venue) ?? new Decimal(0)).plus(notional),
+            );
+          }
+          for (const [venue, capStr] of Object.entries(venueCapitalSplit)) {
+            const cap = new Decimal(capStr);
+            const open = openNotionalByVenue.get(venue) ?? new Decimal(0);
+            const reserved = reservedNotionalByVenue.get(venue) ?? new Decimal(0);
+            this.venueCapitalHeadroomGauge
+              .labels({ venue })
+              .set(cap.minus(open).minus(reserved).toNumber());
+          }
         }
       }
 
@@ -442,12 +554,22 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
         this.marketChannelStalenessGauge.reset();
         for (const age of this.marketStreamTelemetry.channelAges()) {
           this.marketChannelStalenessGauge
-            .labels({ symbol: age.symbol, channel: age.channel })
+            .labels({ venue: age.venue, symbol: age.symbol, channel: age.channel })
             .set(age.ageSeconds);
         }
         const totalReconnects = this.marketStreamTelemetry.forcedReconnectCount();
         if (totalReconnects > prevForcedReconnects) {
-          this.marketStreamReconnectsCounter.inc(totalReconnects - prevForcedReconnects);
+          // Pending integration (see the provider's own comment above): forcedReconnectCount() is
+          // still one process-wide aggregate. Attribute it to the sole configured venue when there
+          // is exactly one (today's actual single-venue-per-process reality); once a second venue is
+          // configured this labels 'aggregate' rather than silently mis-attributing the count to one
+          // venue — workstream #5's per-venue MarketStreamsModule facade replaces this call entirely.
+          const venues = this.configService.venues.map((v) => v.id);
+          const label = venues.length === 1 ? (venues[0] ?? 'aggregate') : 'aggregate';
+          this.marketStreamReconnectsCounter.inc(
+            { venue: label },
+            totalReconnects - prevForcedReconnects,
+          );
         }
         prevForcedReconnects = totalReconnects;
       }

@@ -1,6 +1,7 @@
 import type { TradingMode } from '../domain/types/mode';
 import type { ModeResolution, EffectiveMode, DowngradeReason } from '../domain/mode/resolution';
 import type { DisarmTrigger } from '../domain/mode/arming';
+import type { VenueId } from '../domain/types/ids';
 // Re-export so callers who import from the port don't need to know the domain path.
 export type { ModeResolution, EffectiveMode, DowngradeReason, DisarmTrigger };
 
@@ -79,21 +80,37 @@ export interface ModeControlPort {
   // Throws ModeViolationError when a live-stamped intent reaches a process never authorised for
   // live (boot config ≠ live). intentId, when supplied, is recorded on the refusal audit row (§595).
   assertCanTrade(intentMode: TradingMode, intentId?: string): void;
+  // v3 §7.2 gate (c): re-probes both venues' keys and updates the aggregate keysValid resolveMode()
+  // reads. Optional so pre-existing ModeControlPort fakes (execution/paper-loop test doubles that
+  // never touch arming) stay structurally valid without implementing it. The real implementation
+  // (ModeControlService) always provides it; ArmingController awaits it immediately before CONFIRM
+  // so gate (c) is evaluated against a FRESH probe, not the last periodic-refresh snapshot.
+  refreshKeyProbe?(): Promise<void>;
 }
 
 // ── KeyProbePort ──────────────────────────────────────────────────────────────
 
+// v3 §7.1 key policy change: the one account trades BOTH spot and USDT-M futures, so a single probe
+// no longer serves — enableMargin and enableFutures are surfaced as their OWN flags (previously
+// collapsed into one marginOrFutures bit) so the per-venue recompute can apply spot's and perp's
+// DIFFERENT surface requirements while still forbidding cross-margin borrow on both. keysValid here
+// is the PROBE's own (advisory, per-venue) verdict — ModeControlService.refreshKeyProbe never trusts
+// it and recomputes independently from the raw flags (§10c / auditor S5, carried into v3).
 export interface KeyProbeResult {
   readonly keysValid: boolean;
-  readonly withdrawalsEnabled: boolean; // must be false for live trading
-  readonly spotEnabled: boolean;
-  readonly marginOrFutures: boolean;
+  readonly withdrawalsEnabled: boolean; // must be false for live trading, both surfaces
+  readonly spotEnabled: boolean; // enableSpotAndMarginTrading — required true for the SPOT surface
+  readonly futuresEnabled: boolean; // enableFutures — required true for the PERP surface
+  readonly marginEnabled: boolean; // enableMargin (cross-margin borrow) — forbidden on BOTH surfaces
   readonly keyFingerprint: string; // hex digest only — never raw key material in logs
   readonly urlCrossCheckOk: boolean; // venue URL matches the configured endpoint
 }
 
+// probeAll() replaces v2's single-venue probe(): one account, two surfaces, both gate CONFIRM
+// together (§7.2 row 3) — the aggregate keysValid = ∀ venue: recomputedValid(venue), computed
+// caller-side (ModeControlService), never trusted from this port's own per-entry keysValid.
 export interface KeyProbePort {
-  probe(): Promise<KeyProbeResult>;
+  probeAll(): Promise<ReadonlyMap<VenueId, KeyProbeResult>>;
 }
 
 // ── ModeAuditPort ─────────────────────────────────────────────────────────────
@@ -116,9 +133,11 @@ export type ModeAuditEvent =
   | { type: 'live_order_refused'; intentId: string; code: ModeViolationCode }
   | {
       type: 'key_check';
+      venue: VenueId; // §7.2: key validation is per-venue, both — one row per probed venue
       withdrawalsEnabled: boolean;
       spotEnabled: boolean;
-      marginOrFutures: boolean;
+      futuresEnabled: boolean;
+      marginEnabled: boolean;
       urlCrossCheckOk: boolean;
     };
 

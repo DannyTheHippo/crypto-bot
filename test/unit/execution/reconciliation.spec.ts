@@ -16,7 +16,14 @@ import type {
   VenuePosition,
 } from '../../../src/ports/exchange';
 import type { ReconConfig } from '../../../src/ports/execution';
-import { encodeClientOrderId, intentId, epochMs } from '../../../src/domain/types/ids';
+import type { VenueRuntimeDescriptor } from '../../../src/ports/venue-registry';
+import {
+  encodeClientOrderId,
+  intentId,
+  epochMs,
+  venueId,
+  type VenueId,
+} from '../../../src/domain/types/ids';
 import { price, qty } from '../../../src/domain/types/money';
 import { makeIntent, makeFill, fixedFeed, killSwitchStub, SYM, V, T } from './helpers';
 
@@ -694,7 +701,9 @@ describe('ReconciliationService (§6.4)', () => {
     }
     const driftHistory = (ctx.recon as unknown as { driftHistory: Map<string, Decimal[]> })
       .driftHistory;
-    expect(driftHistory.get('USDT')).toHaveLength(driftPasses); // never grows past driftPasses
+    // v3: keyed by `${venue}|${asset}` (not asset alone) so a spot wallet's and a perp wallet's same-
+    // ticker balance can never share a drift-history bucket (reconciliation.service.ts).
+    expect(driftHistory.get(`${V}|USDT`)).toHaveLength(driftPasses); // never grows past driftPasses
     // One more strictly-increasing pass past the trim boundary still HALTs on the leak.
     const r = await ctx.recon.reconcile();
     expect(r.halted).toBe(true);
@@ -941,5 +950,121 @@ describe('ReconciliationService (§6.4)', () => {
       const r = await ctx.recon.reconcile();
       expect(r).toEqual({ mismatches: 0, halted: false });
     });
+  });
+});
+
+// v3 §1.5: one pass per venue per tick, one reconciliations row per venue pass. This block
+// constructs the service with venuePorts/venueRegistry supplied (the composition-root wiring) and
+// asserts iteration behavior; every case above this block exercises the legacy single-venue
+// constructor path unchanged (byte-identical — venuePorts/venueRegistry are @Optional).
+describe('ReconciliationService — v3 multi-venue iteration (§1.5)', () => {
+  const SPOT = venueId('binance');
+  const PERP = venueId('binanceusdm');
+
+  function fakePort(venue: VenueId, script: { balancesThrow?: boolean } = {}): ExchangePort {
+    return {
+      venue,
+      capabilities: {
+        clientOrderId: true,
+        fetchOrderByClientId: true,
+        wsUserStream: true,
+        stp: false,
+        sandbox: true,
+      },
+      placeOrder: () => Promise.reject(new Error('unused')),
+      cancelOrder: () => Promise.reject(new Error('unused')),
+      fetchOrder: () => Promise.reject(new Error('unused')),
+      fetchOpenOrders: () => Promise.resolve([]),
+      fetchBalances: () =>
+        script.balancesThrow
+          ? Promise.reject(new Error('balances down'))
+          : Promise.resolve(new Map([['USDT', { free: '100000', locked: '0' }]])),
+      fetchMyTrades: () => Promise.resolve([]),
+      validateCredentials: () => Promise.reject(new Error('unused')),
+    };
+  }
+
+  function descriptor(venue: VenueId, perpCapable: boolean): VenueRuntimeDescriptor {
+    return {
+      venue,
+      config: { id: venue, environment: 'demo' },
+      symbols: [],
+      capitalShare: '500',
+      perpCapable,
+    };
+  }
+
+  function buildMultiVenue(
+    ports: ReadonlyMap<VenueId, ExchangePort>,
+    registry: ReadonlyMap<VenueId, VenueRuntimeDescriptor>,
+  ) {
+    const clock = { now: () => epochMs(T) };
+    const store = new InMemoryExecutionStore();
+    const orders = new OrderBookService();
+    const portfolio = new PortfolioStateService(
+      { quoteAsset: 'USDT', startingCash: '100000' },
+      new FeeLedgerService(),
+    );
+    const sampler = new EquitySamplerService(portfolio, fixedFeed('100'), clock, store);
+    const { ks } = killSwitchStub();
+    const ingestor = new FillIngestorService(store, ks, orders, portfolio, sampler);
+    const recon = new ReconciliationService(
+      clock,
+      ports.values().next().value!, // legacy single-venue slot — unused whenever venuePorts is present
+      store,
+      ks,
+      { ...CFG },
+      orders,
+      portfolio,
+      ingestor,
+      undefined,
+      undefined,
+      undefined,
+      ports,
+      registry,
+    );
+    return { store, recon };
+  }
+
+  it('runs one pass per venue and writes one reconciliations row per venue', async () => {
+    const ports = new Map([
+      [SPOT, fakePort(SPOT)],
+      [PERP, fakePort(PERP)],
+    ]);
+    const registry = new Map([
+      [SPOT, descriptor(SPOT, false)],
+      [PERP, descriptor(PERP, true)],
+    ]);
+    const { store, recon } = buildMultiVenue(ports, registry);
+
+    const result = await recon.reconcile();
+
+    expect(result).toEqual({ mismatches: 0, halted: false });
+    expect(store.reconciliations).toHaveLength(2);
+    expect(store.reconciliations.map((r) => r.venue).sort()).toEqual([PERP, SPOT].sort());
+  });
+
+  it("one venue's balances-fetch failure is isolated to that venue's row — the other venue's pass still completes clean", async () => {
+    const ports = new Map([
+      [SPOT, fakePort(SPOT, { balancesThrow: true })],
+      [PERP, fakePort(PERP)],
+    ]);
+    const registry = new Map([
+      // balanceAxis derives from descriptor.config.environment !== 'demo' — 'testnet' here so the
+      // axis actually runs and the spot venue's fetchBalances throw is exercised.
+      [SPOT, { ...descriptor(SPOT, false), config: { id: SPOT, environment: 'testnet' } }],
+      [PERP, descriptor(PERP, true)],
+    ]);
+    const { store, recon } = buildMultiVenue(ports, registry);
+
+    const result = await recon.reconcile();
+
+    expect(result.halted).toBe(false); // sweep_failure never halts
+    expect(result.mismatches).toBe(1); // the spot venue's one failed balances sweep, summed book-wide
+    const spotRow = store.reconciliations.find((r) => r.venue === SPOT)!;
+    const perpRow = store.reconciliations.find((r) => r.venue === PERP)!;
+    expect(spotRow.mismatches).toBe(1); // the failed sweep is visible on the spot venue's OWN row
+    expect(perpRow.mismatches).toBe(0); // the other venue's pass is unaffected
+    expect(perpRow.detail).toBe('clean');
   });
 });

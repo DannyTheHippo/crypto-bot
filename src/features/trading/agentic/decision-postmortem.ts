@@ -126,23 +126,21 @@ function fmtSignedPct(pct: number): string {
 type Exposure = 'LONG' | 'SHORT' | 'FLAT';
 
 // The exposure held AFTER each row's action is applied, parallel to the input (same length/order) —
-// a local copy of counterfactual-scoring.ts's annotateResultingExposure (not exported there). Same
-// era-aware vocabulary: legacy 'long'/'flat', v2 'open_long'/'open_short'/'close', and 'adjust'/
-// 'hold'/'error' as no-ops. Single-instrument caller contract (reflection passes P7 strategy-scoped
-// rows), same as every counterfactual-scoring digest.
+// a local copy of counterfactual-scoring.ts's annotateResultingExposure (not exported there). v3
+// §2/§9 vocabulary: 'open_long'/'open_short'/'close', and 'adjust'/'hold'/'error' as no-ops.
+// Single-instrument caller contract (reflection passes P7 strategy-scoped rows), same as every
+// counterfactual-scoring digest.
 function annotateResultingExposure(rows: readonly PostMortemRow[]): Exposure[] {
   const exposures: Exposure[] = [];
   let position: Exposure = 'FLAT';
   for (const row of rows) {
     switch (row.action) {
-      case 'long':
       case 'open_long':
         if (position === 'FLAT') position = 'LONG';
         break;
       case 'open_short':
         if (position === 'FLAT') position = 'SHORT';
         break;
-      case 'flat':
       case 'close':
         if (position !== 'FLAT') position = 'FLAT';
         break;
@@ -156,9 +154,9 @@ function annotateResultingExposure(rows: readonly PostMortemRow[]): Exposure[] {
 
 // One closed round trip reconstructed off the journal's own action field (rows oldest→newest), with
 // the entry row's index/price/side/plan retained so a thesis post-mortem can replay the hold. Mirrors
-// reconstructClosedTrades' pairing rules (legacy long/flat long-only; v2 open_*/close; adjust/hold/
-// error never open or close; a same-side open while already open is ignored) but keeps the indices
-// and the entry plan the service's own summary drops.
+// reconstructClosedTrades' pairing rules (open_*/close; adjust/hold/error never open or close; a
+// same-side open while already open is ignored) but keeps the indices and the entry plan the
+// service's own summary drops.
 interface ReconstructedTrade {
   readonly entryIndex: number;
   readonly exitIndex: number;
@@ -180,11 +178,11 @@ function reconstructTrades(rows: readonly PostMortemRow[]): ReconstructedTrade[]
     const row = rows[i]!;
     const priceStr = row.refPrice ?? row.close;
     if (!priceStr) continue;
-    if ((row.action === 'long' || row.action === 'open_long') && open === null) {
+    if (row.action === 'open_long' && open === null) {
       open = { index: i, price: toIndicatorFloat(priceStr), side: 'LONG', plan: row.plan ?? null };
     } else if (row.action === 'open_short' && open === null) {
       open = { index: i, price: toIndicatorFloat(priceStr), side: 'SHORT', plan: row.plan ?? null };
-    } else if ((row.action === 'flat' || row.action === 'close') && open !== null) {
+    } else if (row.action === 'close' && open !== null) {
       trades.push({
         entryIndex: open.index,
         exitIndex: i,
@@ -339,7 +337,7 @@ function buildAdvisory(
   if (aggregate.gradedHolds === 0 || aggregate.missedEntryRate === null) return undefined;
   let entries = 0;
   for (const row of rows) {
-    if (row.action === 'long' || row.action === 'open_long' || row.action === 'open_short') {
+    if (row.action === 'open_long' || row.action === 'open_short') {
       entries += 1;
     }
   }

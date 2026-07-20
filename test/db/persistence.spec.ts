@@ -1192,19 +1192,19 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
       playbookVersion: null,
       inputPayload: null,
     };
-    // AgentDecisionEntry.action (ports/agentic-strategy.ts) still statically declares 'long'/'flat'
-    // (the pre-v3 agentic workstream hasn't deleted the legacy contract from the port type yet), but
-    // the v3 schema's action column no longer accepts them — the journal guard must drop both.
+    // The port union no longer admits legacy 'long'/'flat' statically (v3 narrowing landed), but a
+    // stale caller or replayed v2 recording could still hand them in at runtime — the journal guard
+    // must drop both. The unsafe casts below are the point of the test: out-of-union input.
     adapter.record({
       ...base,
       eventTime: epochMs(1_800_070_000_000),
-      action: 'long',
+      action: 'long' as unknown as AgentDecisionEntry['action'],
       promptHash: 'v3-legacy-long',
     });
     adapter.record({
       ...base,
       eventTime: epochMs(1_800_070_100_000),
-      action: 'flat',
+      action: 'flat' as unknown as AgentDecisionEntry['action'],
       promptHash: 'v3-legacy-flat',
     });
 

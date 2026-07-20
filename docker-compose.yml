@@ -14,7 +14,17 @@ services:
     env_file:
       - .env.app
       - .env
-
+    # v3 §8 memory guardrail: NODE_OPTIONS is a Node runtime tuning flag, not an AppConfig zod-parsed
+    # knob (unlike .env.app's contents), so it lives here rather than round-tripping through the
+    # committed knob file. Caps the heap so an OOM shows up as a bounded, alertable RSS climb
+    # (AppMemoryHigh, observability/alerts.rules.yml) rather than an unbounded host-level kill.
+    environment:
+      NODE_OPTIONS: --max-old-space-size=1024
+    # v3 §8/§9: single unified process (both venues, one composition graph) replaces the v2
+    # spot/perp process pair — footprint acceptance is stack ≤ ~2.5 GiB, app ≤ ~1.2 GiB (e2-medium
+    # verdict); mem_limit here is the hard ceiling backing that budget, tightened at the validation
+    # gate to measured peaks.
+    mem_limit: 1536m
     depends_on:
       postgres:
         condition: service_healthy
@@ -42,6 +52,7 @@ services:
     restart: unless-stopped
     ports:
       - '5432:5432'
+    mem_limit: 512m
     environment:
       POSTGRES_USER: cryptobot
       POSTGRES_PASSWORD: cryptobot
@@ -67,6 +78,7 @@ services:
     restart: unless-stopped
     ports:
       - '9090:9090'
+    mem_limit: 512m
     volumes:
       - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       # Without this mount the config's rule_files glob silently matches nothing and every alert
@@ -84,6 +96,7 @@ services:
     restart: unless-stopped
     ports:
       - '3101:3101'
+    mem_limit: 256m
     environment:
       GF_SERVER_HTTP_PORT: '3101'
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-grafana}
@@ -94,9 +107,9 @@ services:
       GF_AUTH_ANONYMOUS_ORG_ROLE: 'Viewer'
       GF_AUTH_ANONYMOUS_ORG_NAME: 'Main Org.'
       # W1 (Grafana rebuild): read by provisioning/datasources/postgres.yml's `$__env{}` password
-      # interpolation for BOTH RO datasources (spot + perp) — this is the GRAFANA container's own
-      # env (distinct from the postgres/postgres-perp services' identically-named var above, which
-      # they read for the DB-side role-creation script).
+      # interpolation for the RO datasource — this is the GRAFANA container's own env (distinct
+      # from the postgres service's identically-named var above, which it reads for the DB-side
+      # role-creation script).
       GRAFANA_RO_PASSWORD: ${GRAFANA_RO_PASSWORD}
     volumes:
       - grafana_data:/var/lib/grafana
@@ -105,89 +118,7 @@ services:
     depends_on:
       - prometheus
 
-  # ── Perp lane (Push 3 P3) ──
-  # The app is single-venue-per-process (reads venues[0]) — a perp deployment is a SECOND app
-  # container on the SAME image with its own env, own Postgres, and own Prometheus. Measurement
-  # isolation is STRUCTURAL, not a convenience: the promotion/reflection/attribution queries have
-  # no venue filter, so a shared DB would poison the spot lane's evidence with perp fills and
-  # vice versa; shared Prometheus would collide on metric names/job labels between the two lanes.
-  # Behind the `perp` Compose profile — a plain `docker compose up -d` creates NONE of this.
-  #   Enable:   docker compose --profile perp up -d
-  #   Rollback: docker compose --profile perp down          (named volumes RETAINED)
-  #             docker compose --profile perp down -v        (also drops perp DB/TSDB history)
-  postgres-perp:
-    profiles: ['perp']
-    image: postgres:16
-    restart: unless-stopped
-    ports:
-      - '5433:5432'
-    environment:
-      POSTGRES_USER: cryptobot
-      POSTGRES_PASSWORD: cryptobot
-      POSTGRES_DB: cryptobot
-      # W1 (Grafana rebuild): same grafana_ro.sql initdb-time role bootstrap as the spot `postgres`
-      # service above — two structurally separate DBs, identical role/grants in each.
-      GRAFANA_RO_PASSWORD: ${GRAFANA_RO_PASSWORD}
-    volumes:
-      - postgres_perp_data:/var/lib/postgresql/data
-      - ./observability/grafana/grafana_ro.sql:/docker-entrypoint-initdb.d/grafana_ro.sql:ro
-    healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U cryptobot']
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  app-perp:
-    profiles: ['perp']
-    build:
-      context: .
-      dockerfile: Dockerfile
-    restart: unless-stopped
-    ports:
-      - '3102:3100'
-    # Deploy knobs: .env.app-perp (committed). Secrets: .env (gitignored). Later file wins on conflict.
-    env_file:
-      - .env.app-perp
-      - .env
-
-    depends_on:
-      postgres-perp:
-        condition: service_healthy
-      prometheus-perp:
-        condition: service_started
-    healthcheck:
-      test:
-        - CMD
-        - node
-        - -e
-        - |
-          const http = require('http');
-          const req = http.get('http://localhost:3100/health/live', (res) => {
-            process.exit(res.statusCode === 200 ? 0 : 1);
-          });
-          req.on('error', () => process.exit(1));
-          req.end();
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
-
-  prometheus-perp:
-    profiles: ['perp']
-    image: prom/prometheus:v3.4.1
-    restart: unless-stopped
-    ports:
-      - '9091:9090'
-    volumes:
-      - ./observability/prometheus-perp.yml:/etc/prometheus/prometheus.yml:ro
-      - ./observability/alerts.rules.yml:/etc/prometheus/alerts.rules.yml:ro
-      - prometheus_perp_data:/prometheus
-    command:
-      - --config.file=/etc/prometheus/prometheus.yml
-
 volumes:
   postgres_data:
   grafana_data:
   prometheus_data:
-  postgres_perp_data:
-  prometheus_perp_data:

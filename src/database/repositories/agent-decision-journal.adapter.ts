@@ -204,11 +204,6 @@ function toRow(
     inputPayload: r.inputPayload,
     plan: readPlanJson(r.planJson),
     consultId: r.consultId,
-    // v3-transitional(#10): info_arm/thinking_arm columns are dropped from the DB row (see the
-    // record() comment above) but AgentDecisionRow still declares these fields (ports/agentic-
-    // strategy.ts, owned by workstream #10) — always-undefined until #10 removes them from the port.
-    infoArm: undefined,
-    thinkingArm: undefined,
     id: String(r.id),
     createdAt: r.createdAt.getTime() as EpochMs,
   };

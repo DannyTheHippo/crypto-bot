@@ -106,7 +106,7 @@ function fakeJournal(rows: readonly AgentDecisionRow[] = []): AgentDecisionJourn
         if (r.playbookVersion !== version) continue;
         if (!r.model.startsWith('claude')) continue;
         decides += 1;
-        if (r.action === 'long') entries += 1;
+        if (r.action === 'open_long' || r.action === 'open_short') entries += 1;
       }
       return Promise.resolve({ decides, entries });
     },
@@ -319,8 +319,8 @@ function buildHarness(
 describe('reconstructClosedTrades', () => {
   it('pairs a LONG entry with the next FLAT exit into a closed-trade summary', () => {
     const rows = [
-      row({ action: 'long', refPrice: '100', eventTime: epochMs(T) }),
-      row({ action: 'flat', refPrice: '110', eventTime: epochMs(T + 1000) }),
+      row({ action: 'open_long', refPrice: '100', eventTime: epochMs(T) }),
+      row({ action: 'close', refPrice: '110', eventTime: epochMs(T + 1000) }),
     ];
     expect(reconstructClosedTrades(rows, 10)).toEqual([
       {
@@ -336,9 +336,9 @@ describe('reconstructClosedTrades', () => {
 
   it('ignores a repeated long row while a trade is already open (hold re-affirmation, not a new entry)', () => {
     const rows = [
-      row({ action: 'long', refPrice: '100', eventTime: epochMs(T) }),
-      row({ action: 'long', refPrice: '105', eventTime: epochMs(T + 500) }),
-      row({ action: 'flat', refPrice: '110', eventTime: epochMs(T + 1000) }),
+      row({ action: 'open_long', refPrice: '100', eventTime: epochMs(T) }),
+      row({ action: 'open_long', refPrice: '105', eventTime: epochMs(T + 500) }),
+      row({ action: 'close', refPrice: '110', eventTime: epochMs(T + 1000) }),
     ];
     expect(reconstructClosedTrades(rows, 10)).toEqual([
       {
@@ -407,9 +407,9 @@ describe('reconstructClosedTrades', () => {
   it('keeps only the most recent maxTrades', () => {
     const rows: AgentDecisionRow[] = [];
     for (let i = 0; i < 5; i++) {
-      rows.push(row({ action: 'long', refPrice: '100', eventTime: epochMs(T + i * 10_000) }));
+      rows.push(row({ action: 'open_long', refPrice: '100', eventTime: epochMs(T + i * 10_000) }));
       rows.push(
-        row({ action: 'flat', refPrice: '110', eventTime: epochMs(T + i * 10_000 + 5000) }),
+        row({ action: 'close', refPrice: '110', eventTime: epochMs(T + i * 10_000 + 5000) }),
       );
     }
     expect(reconstructClosedTrades(rows, 2)).toHaveLength(2);
@@ -418,7 +418,7 @@ describe('reconstructClosedTrades', () => {
 
 describe('summarizeHolds', () => {
   it('returns a zeroed summary when there are no hold rows', () => {
-    expect(summarizeHolds([row({ action: 'long' })])).toEqual({
+    expect(summarizeHolds([row({ action: 'open_long' })])).toEqual({
       count: 0,
       spanMs: 0,
       meanConfidence: null,
@@ -428,7 +428,7 @@ describe('summarizeHolds', () => {
   it('computes count/span/meanConfidence over hold rows only', () => {
     const rows = [
       row({ action: 'hold', confidence: 0.2, eventTime: epochMs(T) }),
-      row({ action: 'long', confidence: 0.9, eventTime: epochMs(T + 100) }),
+      row({ action: 'open_long', confidence: 0.9, eventTime: epochMs(T + 100) }),
       row({ action: 'hold', confidence: 0.6, eventTime: epochMs(T + 200) }),
     ];
     expect(summarizeHolds(rows)).toEqual({ count: 2, spanMs: 200, meanConfidence: 0.4 });
@@ -829,8 +829,8 @@ describe('ReflectionService', () => {
 
     it('includes a decisionOutcomes forward-outcome digest in the reflection request body (F1)', async () => {
       const rows: AgentDecisionRow[] = [
-        row({ action: 'long', close: '100', eventTime: epochMs(T) }), // FLAT→LONG entry
-        row({ action: 'flat', close: '110', eventTime: epochMs(T + 1000) }), // closes; no t+1 fwd
+        row({ action: 'open_long', close: '100', eventTime: epochMs(T) }), // FLAT→LONG entry
+        row({ action: 'close', close: '110', eventTime: epochMs(T + 1000) }), // closes; no t+1 fwd
       ];
       const h = buildHarness({ rows });
       h.fetchFn.mockResolvedValue(
@@ -867,8 +867,8 @@ describe('ReflectionService', () => {
 
     it('folds calibration/regimeSplit/costContext into the payload and teaches the model to read calibration (W14)', async () => {
       const rows: AgentDecisionRow[] = [
-        row({ action: 'long', close: '100', eventTime: epochMs(T) }),
-        row({ action: 'flat', close: '110', eventTime: epochMs(T + 1000) }),
+        row({ action: 'open_long', close: '100', eventTime: epochMs(T) }),
+        row({ action: 'close', close: '110', eventTime: epochMs(T + 1000) }),
       ];
       const h = buildHarness({ rows });
       h.fetchFn.mockResolvedValue(
@@ -901,8 +901,8 @@ describe('ReflectionService', () => {
 
     it('folds the postMortems digest (X7) into the reflection request body', async () => {
       const rows: AgentDecisionRow[] = [
-        row({ action: 'long', close: '100', eventTime: epochMs(T) }),
-        row({ action: 'flat', close: '110', eventTime: epochMs(T + 1000) }),
+        row({ action: 'open_long', close: '100', eventTime: epochMs(T) }),
+        row({ action: 'close', close: '110', eventTime: epochMs(T + 1000) }),
       ];
       const h = buildHarness({ rows });
       h.fetchFn.mockResolvedValue(
@@ -1397,10 +1397,10 @@ describe('createReflectionService', () => {
       row({ action, close, eventTime: epochMs(at), createdAt: epochMs(at), id });
     const h = buildHarness({
       rows: [
-        mk('long', '111.11', inWindow, 'w1'),
-        mk('flat', '122.22', inWindow + 60_000, 'w2'),
-        mk('long', '333.33', outWindow, 'c1'),
-        mk('flat', '344.44', outWindow + 60_000, 'c2'),
+        mk('open_long', '111.11', inWindow, 'w1'),
+        mk('close', '122.22', inWindow + 60_000, 'w2'),
+        mk('open_long', '333.33', outWindow, 'c1'),
+        mk('close', '344.44', outWindow + 60_000, 'c2'),
       ],
     });
     h.fetchFn.mockResolvedValue(
@@ -2052,7 +2052,7 @@ describe('unrouted active() read + unresolved-candidate guard (2026-07-12)', () 
         id: 'v2-entry',
         model: 'claude-sonnet-5',
         playbookVersion: 2,
-        action: 'long',
+        action: 'open_long',
         eventTime: epochMs(T + 14),
       }),
     ];
@@ -2084,7 +2084,7 @@ describe('unrouted active() read + unresolved-candidate guard (2026-07-12)', () 
         id: 'v2-old-entry',
         model: 'claude-sonnet-5',
         playbookVersion: 2,
-        action: 'long',
+        action: 'open_long',
         eventTime: epochMs(T - 10_000),
       }),
       ...Array.from({ length: 405 }, (_, i) =>

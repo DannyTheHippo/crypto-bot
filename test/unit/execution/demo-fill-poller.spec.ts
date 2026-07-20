@@ -70,6 +70,7 @@ function build(
   const sinceCalls: number[] = [];
   const clock = { now: () => epochMs(T) };
   const exchange = {
+    venue: V,
     fetchMyTrades: (...args: unknown[]) => {
       sinceCalls.push(args[1] as number); // capture the `since` passed each poll
       return Promise.resolve(trades);
@@ -118,7 +119,7 @@ describe('DemoFillPollerService', () => {
       [localOrder()],
     );
     poller.init();
-    const r = await poller.poll([SYM]);
+    const r = await poller.poll(V, [SYM]);
     expect(r).toEqual({ ingested: 1, skippedUnknown: 0 });
     expect(ingested[0]?.clientOrderId).toBe(OUR); // ingested under the LOCAL coid, not the venue id
     expect(ingested[0]?.price.toFixed()).toBe('100');
@@ -131,7 +132,7 @@ describe('DemoFillPollerService', () => {
       [fill({ clientOrderId: clientOrderId(VENUE_ID), venueTradeId: 't2', fee: null })],
       [localOrder()],
     );
-    const r = await poller.poll([SYM]);
+    const r = await poller.poll(V, [SYM]);
     expect(r.ingested).toBe(1);
     expect(ingested[0]?.fee).toBeNull();
   });
@@ -141,7 +142,7 @@ describe('DemoFillPollerService', () => {
       [fill({ clientOrderId: clientOrderId('other-venue-id'), venueTradeId: 't3' })],
       [localOrder()],
     );
-    const r = await poller.poll([SYM]);
+    const r = await poller.poll(V, [SYM]);
     expect(r).toEqual({ ingested: 0, skippedUnknown: 1 });
     expect(ingested).toHaveLength(0);
   });
@@ -152,7 +153,7 @@ describe('DemoFillPollerService', () => {
       [localOrder({ venueOrderId: undefined }), localOrder()], // first has no venueOrderId (skipped in index)
       false, // ingest reports duplicate
     );
-    const r = await poller.poll([SYM]);
+    const r = await poller.poll(V, [SYM]);
     expect(r).toEqual({ ingested: 0, skippedUnknown: 0 }); // matched but applied=false ⇒ not counted
   });
 
@@ -168,8 +169,8 @@ describe('DemoFillPollerService', () => {
       [localOrder()],
     );
     poller.init(); // anchors since = now = T
-    await poller.poll([SYM]);
-    await poller.poll([SYM]);
+    await poller.poll(V, [SYM]);
+    await poller.poll(V, [SYM]);
     expect(sinceCalls[0]).toBe(T); // first poll swept from boot
     expect(sinceCalls[1]).toBe(T + 50); // second poll swept from the newest trade seen, not boot
   });
@@ -191,16 +192,16 @@ describe('DemoFillPollerService', () => {
       [localOrder()],
     );
     poller.init();
-    await poller.poll([SYM]);
-    await poller.poll([SYM]);
+    await poller.poll(V, [SYM]);
+    await poller.poll(V, [SYM]);
     expect(sinceCalls[1]).toBe(T + 90);
   });
 
   it('leaves the watermark unchanged when a poll returns no trades', async () => {
     const { poller, sinceCalls } = build([], [localOrder()]);
     poller.init();
-    await poller.poll([SYM]);
-    await poller.poll([SYM]);
+    await poller.poll(V, [SYM]);
+    await poller.poll(V, [SYM]);
     expect(sinceCalls).toEqual([T, T]); // no trades ⇒ since stays anchored at boot
   });
 
@@ -218,7 +219,7 @@ describe('DemoFillPollerService', () => {
       [localOrder()],
     );
     poller.init();
-    const r = await poller.poll([SYM]);
+    const r = await poller.poll(V, [SYM]);
     expect(r.ingested).toBe(3);
     // Each fold starts from the record the PREVIOUS fill produced — monotone, never the snapshot.
     expect(foldedFrom.map((rec) => rec.cumQty.toFixed())).toEqual(['0', '1.99', '3.98']);
@@ -236,7 +237,7 @@ describe('DemoFillPollerService', () => {
         true,
         recovery,
       );
-      const r = await poller.poll([SYM]);
+      const r = await poller.poll(V, [SYM]);
       expect(r).toEqual({ ingested: 0, skippedUnknown: 1 }); // skippedUnknown behavior unchanged
       expect(ingested).toHaveLength(0);
       expect(recoverSymbol).toHaveBeenCalledTimes(1);
@@ -252,7 +253,7 @@ describe('DemoFillPollerService', () => {
         true,
         recovery,
       );
-      const r = await poller.poll([SYM]);
+      const r = await poller.poll(V, [SYM]);
       expect(r).toEqual({ ingested: 0, skippedUnknown: 1 });
       expect(ingested).toHaveLength(0);
       expect(recoverSymbol).not.toHaveBeenCalled();
@@ -274,11 +275,11 @@ describe('DemoFillPollerService', () => {
         recovery,
       );
       poller.init(); // anchors since = now = T
-      const r = await poller.poll([SYM]);
+      const r = await poller.poll(V, [SYM]);
       expect(r).toEqual({ ingested: 0, skippedUnknown: 1 });
       expect(ingested).toHaveLength(0);
       expect(recoverSymbol).toHaveBeenCalledTimes(1);
-      await poller.poll([SYM]);
+      await poller.poll(V, [SYM]);
       expect(sinceCalls[1]).toBe(T + 30); // watermark advanced despite the recovery throw
     });
 
@@ -292,13 +293,80 @@ describe('DemoFillPollerService', () => {
         true,
         recovery,
       );
-      const r = await poller.poll([SYM]);
+      const r = await poller.poll(V, [SYM]);
       expect(r).toEqual({ ingested: 0, skippedUnknown: 1 }); // poll completes despite the throw
       expect(ingested).toHaveLength(0);
       expect(hasAlgoAnchor).toHaveBeenCalledTimes(1);
       // Not-anchored this pass (fail OPEN = skip, matching the file's per-symbol tolerance
       // elsewhere) ⇒ never added to algoSuspects ⇒ recoverSymbol never reached.
       expect(recoverSymbol).not.toHaveBeenCalled();
+    });
+  });
+
+  // v3 §1.5: poll(venue, symbols) resolves the exchange port for THAT venue from VENUE_EXCHANGE_PORTS
+  // and tracks its own sweep watermark, independent of any other venue's.
+  describe('v3 multi-venue routing', () => {
+    const PERP = venueId('binanceusdm');
+
+    function buildMultiVenue() {
+      const clock = { now: () => epochMs(T) };
+      const spotSince: number[] = [];
+      const perpSince: number[] = [];
+      const spotPort = {
+        venue: V,
+        fetchMyTrades: (...args: unknown[]) => {
+          spotSince.push(args[1] as number);
+          return Promise.resolve([]);
+        },
+      } as unknown as ExchangePort;
+      const perpPort = {
+        venue: PERP,
+        fetchMyTrades: (...args: unknown[]) => {
+          perpSince.push(args[1] as number);
+          return Promise.resolve([]);
+        },
+      } as unknown as ExchangePort;
+      const orders = { all: () => [], get: () => undefined } as unknown as OrderBookService;
+      const ingestor = {} as unknown as FillIngestorService;
+      const recovery = stubRecovery();
+      const poller = new DemoFillPollerService(
+        clock,
+        spotPort, // legacy single-venue slot — unused whenever VENUE_EXCHANGE_PORTS resolves the venue
+        orders,
+        ingestor,
+        recovery,
+        new Map([
+          [V, spotPort],
+          [PERP, perpPort],
+        ]),
+      );
+      return { poller, spotSince, perpSince };
+    }
+
+    it('polls each venue against its OWN exchange port', async () => {
+      const { poller, spotSince, perpSince } = buildMultiVenue();
+      poller.init();
+      await poller.poll(V, [SYM]);
+      await poller.poll(PERP, [symbolId('BTC/USDT:USDT')]);
+      expect(spotSince).toHaveLength(1);
+      expect(perpSince).toHaveLength(1);
+    });
+
+    it('tracks independent watermarks per venue — one venue advancing never affects the other', async () => {
+      const { poller, spotSince, perpSince } = buildMultiVenue();
+      poller.init();
+      await poller.poll(V, [SYM]); // since = T (boot anchor)
+      await poller.poll(V, [SYM]); // since still T (no trades to advance it in this fixture)
+      await poller.poll(PERP, [symbolId('BTC/USDT:USDT')]); // first perp poll — its own boot anchor
+      expect(spotSince).toEqual([T, T]);
+      expect(perpSince).toEqual([T]);
+    });
+
+    it('an unregistered venue is skipped (logged, never throws)', async () => {
+      const { poller } = buildMultiVenue();
+      poller.init();
+      const r = await poller.poll(venueId('unknown-venue'), [SYM]);
+      expect(r).toEqual({ ingested: 0, skippedUnknown: 0 });
     });
   });
 });

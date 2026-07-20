@@ -5,7 +5,7 @@ import { FeeLedgerService } from '../../../src/features/trading/execution/fee-le
 import { positionKey } from '../../../src/domain/risk/evaluate';
 import { makeIntent, makeFill, SID, V, SYM } from './helpers';
 import { price, qty, feeAmount, setupDecimal } from '../../../src/domain/types/money';
-import { strategyId } from '../../../src/domain/types/ids';
+import { strategyId, venueId, symbolId } from '../../../src/domain/types/ids';
 
 // Production runs under the global Decimal config (precision 40, ROUND_HALF_EVEN); main.ts calls
 // setupDecimal() at bootstrap. The PRECISION_OVERFLOW regression below only reproduces under that
@@ -17,6 +17,17 @@ function make(dustNotional?: string) {
   const fees = new FeeLedgerService();
   const ps = new PortfolioStateService(
     { quoteAsset: 'USDT', startingCash: '100000', dustNotional },
+    fees,
+  );
+  return { ps, fees };
+}
+
+// v3 §6.4: seeds the per-venue cash split (PortfolioConfig.venueCapitalShare) — a separate helper
+// from make() above so every existing pre-split call site stays byte-identical.
+function makeWithVenues(venueCapitalShare: ReadonlyMap<string, string>) {
+  const fees = new FeeLedgerService();
+  const ps = new PortfolioStateService(
+    { quoteAsset: 'USDT', startingCash: '100000', venueCapitalShare },
     fees,
   );
   return { ps, fees };
@@ -341,6 +352,85 @@ describe('PortfolioStateService', () => {
       expect(add.roundTripRealizedPnl).toBeNull();
       const p = ps.snapshot().positions.get(positionKey(SID, V, SYM));
       expect(p?.signedQty.toFixed()).toBe('0.02'); // position retained and growing
+    });
+  });
+
+  // v3 §6.4: venueBalances — the per-venue wallet split PositionSizerService's venueFree(v) reads.
+  describe('v3 §6.4: venueBalances (per-venue cash split)', () => {
+    const V_PERP = venueId('binanceusdm');
+    const SYM_PERP = symbolId('ETH/USDT:USDT');
+
+    it('absent venueCapitalShare ⇒ venueBalances reports nothing (byte-identical to pre-split behavior)', () => {
+      const { ps } = make();
+      const s = ps.snapshot();
+      expect(s.venueBalances?.size).toBe(0);
+      // The combined fields are completely unaffected either way.
+      expect(s.balances.get('USDT')?.free.toFixed()).toBe('100000');
+    });
+
+    it('seeds each venue bucket from venueCapitalShare and surfaces it as quote-asset free cash', () => {
+      const { ps } = makeWithVenues(
+        new Map([
+          [String(V), '500'],
+          [String(V_PERP), '500'],
+        ]),
+      );
+      const s = ps.snapshot();
+      expect(s.venueBalances?.get(V)?.get('USDT')?.free.toFixed()).toBe('500');
+      expect(s.venueBalances?.get(V_PERP)?.get('USDT')?.free.toFixed()).toBe('500');
+      // The combined book cash stays independent — startingCash ('100000'), not the venue seeds.
+      expect(s.balances.get('USDT')?.free.toFixed()).toBe('100000');
+    });
+
+    it('a fill on one venue only debits/credits THAT venue bucket — the other venue is untouched', () => {
+      const { ps } = makeWithVenues(
+        new Map([
+          [String(V), '500'],
+          [String(V_PERP), '500'],
+        ]),
+      );
+      ps.applyFill(
+        makeIntent({ venue: V, side: 'BUY' }),
+        makeFill({ venue: V, qty: qty('1'), price: price('100') }),
+      );
+      const s = ps.snapshot();
+      // V spent $100 quote cash on the BUY; V_PERP's seed is untouched.
+      expect(s.venueBalances?.get(V)?.get('USDT')?.free.toFixed()).toBe('400');
+      expect(s.venueBalances?.get(V_PERP)?.get('USDT')?.free.toFixed()).toBe('500');
+    });
+
+    it('positions attribute base-asset holdings into their OWN venue bucket, not the other venue', () => {
+      const { ps } = makeWithVenues(
+        new Map([
+          [String(V), '500'],
+          [String(V_PERP), '500'],
+        ]),
+      );
+      ps.applyFill(
+        makeIntent({ venue: V, symbol: SYM, side: 'BUY' }),
+        makeFill({ venue: V, symbol: SYM, qty: qty('1'), price: price('100') }),
+      );
+      ps.applyFill(
+        makeIntent({ venue: V_PERP, symbol: SYM_PERP, side: 'BUY' }),
+        makeFill({ venue: V_PERP, symbol: SYM_PERP, qty: qty('2'), price: price('50') }),
+      );
+      const s = ps.snapshot();
+      expect(s.venueBalances?.get(V)?.get('BTC')?.free.toFixed()).toBe('1');
+      expect(s.venueBalances?.get(V)?.get('ETH')).toBeUndefined(); // ETH position lives on V_PERP
+      expect(s.venueBalances?.get(V_PERP)?.get('ETH')?.free.toFixed()).toBe('2');
+      expect(s.venueBalances?.get(V_PERP)?.get('BTC')).toBeUndefined();
+    });
+
+    it('a fill on a venue absent from venueCapitalShare still balances (lazily opened at 0)', () => {
+      const { ps } = makeWithVenues(new Map([[String(V), '500']])); // V_PERP never seeded
+      ps.applyFill(
+        makeIntent({ venue: V_PERP, symbol: SYM_PERP, side: 'BUY' }),
+        makeFill({ venue: V_PERP, symbol: SYM_PERP, qty: qty('1'), price: price('50') }),
+      );
+      const s = ps.snapshot();
+      // Opened at 0, then debited $50 ⇒ −50 (an unlisted venue is never silently dropped).
+      expect(s.venueBalances?.get(V_PERP)?.get('USDT')?.free.toFixed()).toBe('-50');
+      expect(s.venueBalances?.get(V)?.get('USDT')?.free.toFixed()).toBe('500'); // unaffected
     });
   });
 });

@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { createArmPreconditions, type UnresolvedOrdersReader } from '../../../src/app.module';
+import {
+  createArmPreconditions,
+  type UnresolvedOrdersReader,
+} from '../../../src/features/trading/composition/arm-preconditions.module';
 import type { KillSwitchPort } from '../../../src/ports/risk';
 import type { KillSwitchState } from '../../../src/domain/risk/kill-switch';
 

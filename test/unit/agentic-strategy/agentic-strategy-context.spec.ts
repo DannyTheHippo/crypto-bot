@@ -439,7 +439,11 @@ describe('AgenticStrategy context building', () => {
     await strategy.decide(buildInput());
 
     expect(journal.entries).toHaveLength(1);
-    expect(journal.entries[0]!.action).toBe('long');
+    // v3 (consolidation spec §2/§9): the journal-write boundary maps inferStubDecision's legacy
+    // 'long' onto the narrowed AgentDecisionEntry.action vocabulary ('open_long') — see
+    // AgenticStrategy.toJournalAction's own comment; the fresh v3 agent_decisions column never
+    // carries the legacy literal.
+    expect(journal.entries[0]!.action).toBe('open_long');
     expect(journal.entries[0]!.confidence).toBe(0);
     expect(journal.entries[0]!.rationale).toBe('');
   });

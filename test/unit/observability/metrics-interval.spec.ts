@@ -1,6 +1,7 @@
 import { Global, Module } from '@nestjs/common';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { register } from 'prom-client';
+import Decimal from 'decimal.js';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { AppModule } from '../../../src/app.module';
 import { AppConfigModule } from '../../../src/config/config.module';
@@ -8,7 +9,16 @@ import { EventLoopHealthIndicator } from '../../../src/features/common/observabi
 import { MetricsService } from '../../../src/features/common/observability/metrics.service';
 import { ObservabilityModule } from '../../../src/features/common/observability/observability.module';
 import { STRATEGY_REGISTRY, type StrategyRegistryPort } from '../../../src/ports/strategy';
-import { strategyId } from '../../../src/domain/types/ids';
+import { PORTFOLIO_VIEW, type PortfolioViewPort } from '../../../src/ports/execution';
+import {
+  strategyId,
+  venueId,
+  symbolId,
+  clientOrderId,
+  intentId,
+  epochMs,
+} from '../../../src/domain/types/ids';
+import { price, qty } from '../../../src/domain/types/money';
 
 describe('EventLoopHealthIndicator.getMonitor() and MetricsService interval', () => {
   let moduleRef: TestingModule;
@@ -137,5 +147,138 @@ describe('MetricsService strategy_lifecycle sampling — STRATEGY_REGISTRY prese
     expect(metric).toContain('strategy="agentic-1",state="HALTED"} 0');
     expect(metric).toContain('strategy="agentic-2",state="DRAINING"} 1');
     expect(metric).toContain('strategy="agentic-2",state="ACTIVE"} 0');
+  });
+});
+
+// v3 §8/§6.1: a standalone PORTFOLIO_VIEW binding (same convention as FakeStrategyRegistryBridgeModule
+// above) carrying one spot position/order and one perp in-flight intent, so the venue-labeled gauges
+// (position_*, open_orders, in_flight_intents, venue_capital_headroom_usdt) can be exercised without
+// depending on AppModule's real composition root.
+const BTC_SPOT = symbolId('BTC/USDT');
+const ETH_PERP = symbolId('ETH/USDT:USDT');
+const FAKE_PORTFOLIO: PortfolioViewPort = {
+  snapshot: () => ({
+    positions: new Map([
+      [
+        'binance:BTC/USDT',
+        {
+          strategyId: strategyId('agentic'),
+          venue: venueId('binance'),
+          symbol: BTC_SPOT,
+          signedQty: new Decimal('2'),
+          avgEntry: price('100'),
+          realizedPnl: new Decimal('3'),
+        },
+      ],
+      [
+        'binanceusdm:ETH/USDT:USDT',
+        {
+          strategyId: strategyId('agentic'),
+          venue: venueId('binanceusdm'),
+          symbol: ETH_PERP,
+          signedQty: new Decimal('-1'),
+          avgEntry: price('50'),
+          realizedPnl: new Decimal('-1'),
+        },
+      ],
+    ]),
+    balances: new Map(),
+    openOrders: [
+      {
+        clientOrderId: clientOrderId('cbp0000000000000000000000000000000'),
+        symbol: BTC_SPOT,
+        side: 'BUY',
+        qty: qty('1'),
+      },
+    ],
+    inFlightIntents: [
+      {
+        intentId: intentId('0190abcd-1234-7abc-89ab-0123456789ab'),
+        clientOrderId: clientOrderId('cbp0000000000000000000000000000001'),
+        strategyId: strategyId('agentic'),
+        venue: venueId('binanceusdm'),
+        symbol: ETH_PERP,
+        side: 'BUY',
+        type: 'LIMIT' as const,
+        qty: qty('1'),
+        limitPrice: price('60'),
+        timeInForce: 'GTC' as const,
+        reduceOnly: false,
+        mode: 'paper' as const,
+        refPrice: price('60'),
+        refSeq: 1n,
+        createdAt: epochMs(0),
+        expiresAt: epochMs(1_700_000_010_000),
+        source: { dedupeKey: 'k', eventTime: epochMs(0), basedOnSeq: 1n, strength: 1 },
+      },
+    ],
+    equity: new Decimal(0),
+    unrealized: new Decimal(0),
+    startingCash: new Decimal(0),
+    peakEquity: new Decimal(0),
+    sodEquityUtc: new Decimal(0),
+    reconcileStatus: 'CLEAN',
+    snapshotSeq: 0n,
+  }),
+  forStrategy: () => ({
+    strategyId: strategyId('agentic'),
+    positions: new Map(),
+    openOrders: [],
+  }),
+};
+@Global()
+@Module({
+  providers: [{ provide: PORTFOLIO_VIEW, useValue: FAKE_PORTFOLIO }],
+  exports: [PORTFOLIO_VIEW],
+})
+class FakePortfolioViewBridgeModule {}
+
+describe('MetricsService venue-labeled sampling (v3 §8/§6.1) — PORTFOLIO_VIEW present', () => {
+  let moduleRef: TestingModule;
+
+  beforeAll(async () => {
+    process.env['NODE_ENV'] = 'test';
+    process.env['PORT'] = '3100';
+    register.clear();
+    vi.useFakeTimers();
+
+    moduleRef = await Test.createTestingModule({
+      imports: [AppConfigModule, FakePortfolioViewBridgeModule, ObservabilityModule],
+    }).compile();
+    await moduleRef.init();
+  });
+
+  afterAll(async () => {
+    vi.useRealTimers();
+    await moduleRef.close();
+    register.clear();
+  });
+
+  it('labels realized_pnl_usdt/position_qty/position_notional_usdt with venue', async () => {
+    vi.advanceTimersByTime(5000);
+    const notional = await register.getSingleMetricAsString('position_notional_usdt');
+    expect(notional).toContain('venue="binance",strategy="agentic",symbol="BTC/USDT"} 200');
+    expect(notional).toContain('venue="binanceusdm",strategy="agentic",symbol="ETH/USDT:USDT"} 50');
+  });
+
+  it('counts open_orders/in_flight_intents per venue (openOrders via venueForSymbol, intents via .venue)', async () => {
+    const openOrders = await register.getSingleMetricAsString('open_orders');
+    expect(openOrders).toContain('venue="binance"} 1');
+    const inFlight = await register.getSingleMetricAsString('in_flight_intents');
+    expect(inFlight).toContain('venue="binanceusdm"} 1');
+  });
+
+  it('computes venue_capital_headroom_usdt = venueCap − open notional − reserved notional (spec §6.1)', async () => {
+    const headroom = await register.getSingleMetricAsString('venue_capital_headroom_usdt');
+    // default VENUE_CAPITAL_SPLIT is {"binance":"500","binanceusdm":"500"}; binance open=200,
+    // reserved=0 ⇒ 300; binanceusdm open=50, reserved=1×60=60 ⇒ 390.
+    expect(headroom).toContain('venue="binance"} 300');
+    expect(headroom).toContain('venue="binanceusdm"} 390');
+  });
+
+  it('venue_free_cash_usdt stays registered but carries no series — PortfolioSnapshot.venueBalances is a pending-integration field (workstream #8) this fake snapshot does not carry', async () => {
+    expect(register.getSingleMetric('venue_free_cash_usdt'), 'registered').toBeDefined();
+    const metric = await register.getSingleMetricAsString('venue_free_cash_usdt');
+    expect(metric).not.toContain('venue=');
   });
 });

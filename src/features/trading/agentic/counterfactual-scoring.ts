@@ -100,42 +100,33 @@ function forwardReturn(rows: readonly ScoringRow[], i: number, horizon: number):
 // is what a forward return measures against. Scoring keys off this, not the raw action (F2): a
 // 'hold' while already LONG is judged as the LONG exposure it maintains, not as flat.
 //
-// P4 (v2 action widening): SHORT is a genuine third state, distinct from FLAT, because 'open_short'
-// is its own action literal at the port level (unlike the LEGACY shorts-capable tool, which journals
-// every open as action='long' and carries the actual side on a separate `direction` field this
-// Pick'd ScoringRow never sees — see ports/agentic-strategy.ts's own comment on why
-// AgentDecisionMeta.action "stays 'long' | 'flat' | 'hold'"). A legacy row therefore only ever
-// contributes LONG/FLAT here (its true side, if short, is invisible to this toy scorer — an
-// accepted pre-existing simplification, not a P4 regression).
+// SHORT is a genuine third state, distinct from FLAT: 'open_short' is its own action literal at the
+// port level (v3 §2/§9: ScoringRow.action, Pick'd off AgentDecisionRow, carries ONLY the rich-tool-
+// contract vocabulary now — the legacy 'long'/'flat' literals a pre-v3 journal could carry are
+// unreachable, the fresh v3 agent_decisions column never persists them).
 type Exposure = 'LONG' | 'SHORT' | 'FLAT';
 
 // Walks the SAME position state machine as computeToyEquity below (kept in lockstep — both read the
-// same era-aware action vocabulary) and tags each row with the exposure held AFTER its action is
-// applied, returned parallel to the input (same length, same order). Era is per-row, by action
-// value alone, so a mixed legacy/v2 journal (a promotion boundary, a cutover) reads correctly with
-// no config: legacy 'long' while FLAT opens LONG, legacy 'flat' closes an open LONG/SHORT to FLAT
-// (kept symmetric for defensiveness, though a legacy row can only ever have opened LONG here — see
-// the type comment above); v2 'open_long'/'open_short' while FLAT open LONG/SHORT, v2 'close' closes
-// either side to FLAT, v2 'adjust' leaves the position unchanged by design (Design § New tool
-// contract: "the clock enforces the model's intent, not a risk gate" — it never re-sides a
-// position). A same-side 'open_*' while ALREADY in that side (scale-in) and an opposite-side
-// 'open_*' while positioned (no accidental flip, journal-visible hold per the client's own
-// same-side/opposite-side rule) both leave the position unchanged, exactly like the client itself.
-// 'hold'/'error' are always no-ops. Runs within a single group's own chronological subsequence,
-// exactly as its callers do.
+// same action vocabulary) and tags each row with the exposure held AFTER its action is applied,
+// returned parallel to the input (same length, same order). v2/v3 'open_long'/'open_short' while
+// FLAT open LONG/SHORT, 'close' closes either side to FLAT, 'adjust' leaves the position unchanged
+// by design (Design § New tool contract: "the clock enforces the model's intent, not a risk gate" —
+// it never re-sides a position). A same-side 'open_*' while ALREADY in that side (scale-in) and an
+// opposite-side 'open_*' while positioned (no accidental flip, journal-visible hold per the client's
+// own same-side/opposite-side rule) both leave the position unchanged, exactly like the client
+// itself. 'hold'/'error' are always no-ops. Runs within a single group's own chronological
+// subsequence, exactly as its callers do.
 function annotateResultingExposure(rows: readonly ScoringRow[]): readonly Exposure[] {
   const exposures: Exposure[] = [];
   let position: Exposure = 'FLAT';
   for (const row of rows) {
     switch (row.action) {
-      case 'long':
       case 'open_long':
         if (position === 'FLAT') position = 'LONG';
         break;
       case 'open_short':
         if (position === 'FLAT') position = 'SHORT';
         break;
-      case 'flat':
       case 'close':
         if (position !== 'FLAT') position = 'FLAT';
         break;
@@ -241,12 +232,10 @@ const TOY_TAKER_FEE_BPS = new Decimal('10');
 const TOY_ADVERSE_HAIRCUT_BPS = new Decimal('5');
 const BPS_DIVISOR = new Decimal('10000');
 
-// Toy net-of-fee equity across BOTH sides (P4 widened this from long/flat-only — the legacy
-// 'long'/'flat' branches below are UNCHANGED byte-for-byte from the pre-P4 version, so a legacy-only
-// journal produces the identical finalEquity/roundTrips/openAtEnd it always did). Mirrors
+// Toy net-of-fee equity across BOTH sides. Mirrors
 // AnthropicAgentClient's own signal-mapping state machine: 'hold'/'error'/'adjust' never change
-// position; a same-side open while already in that side, or a close/'flat' while already FLAT, is a
-// no-op; an opposite-side v2 'open_*' while positioned is ALSO a no-op (no accidental flip, same
+// position; a same-side open while already in that side, or a 'close' while already FLAT, is a
+// no-op; an opposite-side 'open_*' while positioned is ALSO a no-op (no accidental flip, same
 // journal-visible-hold rule as annotateResultingExposure above — this toy walk never re-sides a
 // position on its own). Fills happen at the NEXT row's refPrice — a next-bar proxy, since these rows
 // record no true "open" and a decision made ON row i's close cannot realistically execute at that
@@ -275,15 +264,15 @@ function computeToyEquity(rows: readonly ScoringRow[]): ToyEquityResult {
     if (!nextRow || nextRow.refPrice === null) continue;
     const rawFill = new Decimal(nextRow.refPrice);
 
-    if ((row.action === 'long' || row.action === 'open_long') && position === 'FLAT') {
-      // Opening a LONG pays the adverse (higher) side of the haircut, same as pre-P4.
+    if (row.action === 'open_long' && position === 'FLAT') {
+      // Opening a LONG pays the adverse (higher) side of the haircut.
       entryEffectivePrice = haircutUp(rawFill);
       position = 'LONG';
     } else if (row.action === 'open_short' && position === 'FLAT') {
       // Opening a SHORT (sell-to-open) receives the adverse (lower) side — mirror of a LONG entry.
       entryEffectivePrice = haircutDown(rawFill);
       position = 'SHORT';
-    } else if ((row.action === 'flat' || row.action === 'close') && position !== 'FLAT') {
+    } else if (row.action === 'close' && position !== 'FLAT') {
       const closingLong = position === 'LONG';
       // Closing a LONG (sell-to-close) receives the adverse side; closing a SHORT (buy-to-close)
       // pays it — the exact mirror of each side's own entry haircut above.
@@ -299,7 +288,7 @@ function computeToyEquity(rows: readonly ScoringRow[]): ToyEquityResult {
       entryEffectivePrice = null;
       roundTrips++;
     }
-    // Same-side open while already in that side, opposite-side open while positioned, 'flat'/'close'
+    // Same-side open while already in that side, opposite-side open while positioned, 'close'
     // while already FLAT: no-op, same as the real client.
   }
 
@@ -521,13 +510,13 @@ export function summarizeRecentDecisionOutcomes(
     const resulting = exposures[i]!;
     const prev: Exposure = i === 0 ? 'FLAT' : exposures[i - 1]!;
 
-    if (row.action === 'long' && prev === 'FLAT') addToBucket(entries, fwd);
-    else if (row.action === 'flat' && prev === 'LONG') addToBucket(exits, fwd);
+    if (row.action === 'open_long' && prev === 'FLAT') addToBucket(entries, fwd);
+    else if (row.action === 'close' && prev === 'LONG') addToBucket(exits, fwd);
     else if (resulting === 'LONG') addToBucket(heldLong, fwd);
     else if (resulting === 'SHORT') addToBucket(heldShort, fwd);
     else addToBucket(stayedFlat, fwd);
 
-    if (row.action === 'long' && row.confidence !== null) {
+    if (row.action === 'open_long' && row.confidence !== null) {
       addToBucket(row.confidence < 0.5 ? lowLong : highLong, fwd);
     }
   }
@@ -553,19 +542,12 @@ export function summarizeRecentDecisionOutcomes(
 const CALIBRATION_MIN_SAMPLE = 3;
 const CONFIDENCE_BUCKET_WIDTH = 0.2;
 const CONFIDENCE_BUCKET_COUNT = 5; // 0.0-0.2, 0.2-0.4, 0.4-0.6, 0.6-0.8, 0.8-1.0
-// P4: widened to every non-'error' action literal ScoringRow.action can carry (the port's action
-// union minus 'error', which summarizeCalibration/summarizeRegimeSplit both filter out before ever
-// keying a bucket by row.action) — 'error' is deliberately excluded, not just unused, so the
+// v3 §2/§9: every non-'error' action literal ScoringRow.action can carry (the port's now-narrowed
+// action union minus 'error', which summarizeCalibration/summarizeRegimeSplit both filter out before
+// ever keying a bucket by row.action) — 'error' is deliberately excluded, not just unused, so the
 // Map<CalibratedAction, …> lookups below type-check against exactly what reaches them post-filter.
-const CALIBRATED_ACTIONS = [
-  'open_long',
-  'open_short',
-  'close',
-  'adjust',
-  'hold',
-  'long',
-  'flat',
-] as const;
+// The legacy 'long'/'flat' literals are gone (unreachable — see ScoringRow's own comment).
+const CALIBRATED_ACTIONS = ['open_long', 'open_short', 'close', 'adjust', 'hold'] as const;
 type CalibratedAction = (typeof CALIBRATED_ACTIONS)[number];
 
 export interface CalibrationCell {

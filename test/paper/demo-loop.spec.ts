@@ -230,7 +230,7 @@ describe('demo/testnet loop: Signal → testnet order → fill poll → portfoli
 
     // The venue filled the resting order; the poller discovers it via fetchMyTrades and ingests it.
     ctx.poller.init();
-    const result = await ctx.poller.poll([SYM]);
+    const result = await ctx.poller.poll(V, [SYM]);
     expect(result.ingested).toBe(1);
 
     const snap = ctx.portfolio.snapshot();

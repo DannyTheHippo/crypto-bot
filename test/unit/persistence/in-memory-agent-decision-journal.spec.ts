@@ -89,10 +89,12 @@ describe('InMemoryAgentDecisionJournal', () => {
 
   it('preserves every field on the entry, mapping id/createdAt in addition', async () => {
     const journal = new InMemoryAgentDecisionJournal();
-    journal.record(entry(1, { action: 'long', confidence: 0.9, rationale: 'trend confirmed' }));
+    journal.record(
+      entry(1, { action: 'open_long', confidence: 0.9, rationale: 'trend confirmed' }),
+    );
 
     const [row] = await journal.recent(1);
-    expect(row!.action).toBe('long');
+    expect(row!.action).toBe('open_long');
     expect(row!.confidence).toBe(0.9);
     expect(row!.rationale).toBe('trend confirmed');
     expect(row!.strategyId).toBe('s1');
@@ -138,11 +140,11 @@ describe('InMemoryAgentDecisionJournal', () => {
 
   it('versionEntryStats counts lifetime real-LLM decides/entries for one version (abstention-lapse evidence base)', async () => {
     const journal = new InMemoryAgentDecisionJournal();
-    journal.record(entry(1, { model: 'claude-sonnet-5', action: 'long', playbookVersion: 2 }));
+    journal.record(entry(1, { model: 'claude-sonnet-5', action: 'open_long', playbookVersion: 2 }));
     journal.record(entry(2, { model: 'claude-sonnet-5', action: 'hold', playbookVersion: 2 }));
     // Non-LLM replay/synthetic rows are excluded from the decide count entirely.
-    journal.record(entry(3, { model: 'replay-sim', action: 'long', playbookVersion: 2 }));
-    journal.record(entry(4, { model: 'claude-sonnet-5', action: 'long', playbookVersion: 1 }));
+    journal.record(entry(3, { model: 'replay-sim', action: 'open_long', playbookVersion: 2 }));
+    journal.record(entry(4, { model: 'claude-sonnet-5', action: 'open_long', playbookVersion: 1 }));
 
     expect(await journal.versionEntryStats(2)).toEqual({ decides: 2, entries: 1 });
     expect(await journal.versionEntryStats(1)).toEqual({ decides: 1, entries: 1 });

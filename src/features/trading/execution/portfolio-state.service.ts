@@ -14,7 +14,8 @@ import type {
   OpenOrderSummary,
   AssetBalance,
 } from '../../../domain/types/portfolio';
-import type { StrategyId, ClientOrderId } from '../../../domain/types/ids';
+import type { StrategyId, ClientOrderId, VenueId } from '../../../domain/types/ids';
+import { venueId } from '../../../domain/types/ids';
 import {
   PORTFOLIO_CONFIG,
   type PortfolioConfig,
@@ -60,6 +61,12 @@ export class PortfolioStateService implements PortfolioViewPort {
   // persists for the row's lifetime. The whole record clears on exact-zero delete (the fold restarts
   // realizedPnl at 0). In-memory only, matching the metrics' per-boot scope.
   private readonly dustReport = new Map<string, { reported: boolean; baseline: Decimal }>();
+  // v3 §6.4: per-venue quote-cash split, seeded from PortfolioConfig.venueCapitalShare (paper
+  // "mirrors the split by construction", §1.3) and folded per-fill by intent.venue alongside the
+  // combined `cash` below (never a replacement — `cash`/`equity`/`peak` stay the one-book truth).
+  // Empty when the config field is absent, so venueBalances() reports nothing until the
+  // composition root wires it (byte-identical to pre-split behavior for every existing caller).
+  private readonly cashByVenue = new Map<VenueId, Decimal>();
   private cash: Decimal;
   private equityValue: Decimal;
   // Unrealized PnL of the current book, refreshed by recordEquity (the sampler owns the marks). Held
@@ -81,6 +88,11 @@ export class PortfolioStateService implements PortfolioViewPort {
     this.peak = this.cash;
     this.sodUtc = this.cash;
     this.dustNotional = new Decimal(cfg.dustNotional ?? '0');
+    if (cfg.venueCapitalShare) {
+      for (const [v, share] of cfg.venueCapitalShare) {
+        this.cashByVenue.set(venueId(v), new Decimal(share));
+      }
+    }
   }
 
   // Fold one realized fill into positions + quote cash + fee ledger (§6.6). Returns a summary the
@@ -114,6 +126,15 @@ export class PortfolioStateService implements PortfolioViewPort {
       });
     }
     this.cash = this.cash.add(result.cashDelta);
+    // Venue-scoped mirror of the combined fold above — only maintained once at least one venue
+    // bucket has been seeded (cfg.venueCapitalShare); an unlisted venue is lazily opened at 0
+    // rather than silently dropping the delta, so a fill on a venue the config forgot still
+    // balances. Untouched (stays empty) when the config never wired venueCapitalShare at all —
+    // venueBalances() then reports nothing, byte-identical to pre-split behavior.
+    if (this.cashByVenue.size > 0) {
+      const prior = this.cashByVenue.get(intent.venue) ?? new Decimal(0);
+      this.cashByVenue.set(intent.venue, prior.add(result.cashDelta));
+    }
     if (result.feeLedger) this.fees.add(result.feeLedger.asset, result.feeLedger.amount);
     this.seq += 1n;
 
@@ -204,6 +225,10 @@ export class PortfolioStateService implements PortfolioViewPort {
   }
 
   // Restore in-memory state from a persisted snapshot. seq is run-local and not persisted.
+  // cashByVenue is NOT restored here (the recovery snapshot carries no per-venue cash split, §2/#6
+  // scope) — a reboot re-seeds it from PortfolioConfig.venueCapitalShare, same as a fresh boot,
+  // rather than replaying fills applied before the restart. Combined cash/equity/positions above
+  // (the book-level truth) restore exactly as before; only the per-venue split resets.
   restoreFromSnapshot(snap: {
     cash: Decimal;
     equity: Decimal;
@@ -234,6 +259,7 @@ export class PortfolioStateService implements PortfolioViewPort {
       sodEquityUtc: this.sodUtc,
       reconcileStatus: 'CLEAN',
       snapshotSeq: this.seq,
+      venueBalances: this.deriveVenueBalances(),
     };
   }
 
@@ -259,5 +285,26 @@ export class PortfolioStateService implements PortfolioViewPort {
       balances.set(base, { free: prev.add(p.signedQty), locked: new Decimal(0) });
     }
     return balances;
+  }
+
+  // v3 §6.4: per-venue mirror of deriveBalances above — quote cash from cashByVenue (seeded from
+  // PortfolioConfig.venueCapitalShare) plus that venue's own base holdings (Position.venue already
+  // carries the split, no venueForSymbol lookup needed). Empty when cashByVenue was never seeded
+  // (config not yet wired) — callers (the sizer's venueFree read) treat that identically to
+  // "balance data absent ⇒ no additional clamp", the same fallback deriveBalances' callers use.
+  private deriveVenueBalances(): ReadonlyMap<VenueId, ReadonlyMap<string, AssetBalance>> {
+    const perVenue = new Map<VenueId, Map<string, AssetBalance>>();
+    if (this.cashByVenue.size === 0) return perVenue;
+    for (const [v, cash] of this.cashByVenue) {
+      perVenue.set(v, new Map([[this.quoteAsset, { free: cash, locked: new Decimal(0) }]]));
+    }
+    for (const p of this.positions.values()) {
+      const bucket = perVenue.get(p.venue);
+      if (!bucket) continue; // venue not in the split config — no bucket to attribute the holding into
+      const { base } = splitSymbol(p.symbol);
+      const prev = bucket.get(base)?.free ?? new Decimal(0);
+      bucket.set(base, { free: prev.add(p.signedQty), locked: new Decimal(0) });
+    }
+    return perVenue;
   }
 }

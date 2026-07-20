@@ -34,6 +34,12 @@ export interface FeedHealthPort {
     interval: CandleInterval,
     n: number,
   ): Promise<readonly CandleEvent[]>;
+  // v3 spec §1.3: the composition root's per-venue routing facade (VenueRoutingFeedHealth,
+  // market-streams.module.ts) answers a symbol-less aggregate query — the worst channel health
+  // across every channel it tracks on either venue. Optional (additive) so every existing
+  // implementer (FeedHealthService, the risk/execution isolation noops, test fakes) keeps compiling
+  // unchanged; only the routing facade implements it.
+  worstHealth?(): ChannelHealth;
 }
 
 // Market-stream telemetry for the metrics pull loop — a SEPARATE token/port rather than an
@@ -54,4 +60,10 @@ export interface MarketChannelAge {
 export interface MarketStreamTelemetryPort {
   channelAges(): readonly MarketChannelAge[];
   forcedReconnectCount(): number;
+  // v3 §8: per-venue breakdown feeding the venue-labeled market_stream_forced_reconnects_total
+  // counter (metrics.service.ts). Optional (additive) so every existing implementer keeps compiling
+  // unchanged; VenueRoutingFeedHealth (market-streams.module.ts) is the only real implementer today
+  // — metrics.service.ts's own aggregate call site is a separate integration left for the consumer
+  // to pick up (out of this module's file scope).
+  forcedReconnectCountByVenue?(): ReadonlyMap<VenueId, number>;
 }

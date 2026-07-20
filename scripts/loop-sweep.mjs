@@ -21,7 +21,7 @@
 
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join, resolve, sep, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import {
   dockerPs,
@@ -356,7 +356,13 @@ function renderMarkdown({ sweptIso, host, git, lanes, result }) {
   return L.join('\n');
 }
 
-async function main() {
+// One read-only pass: gather probes, run the pure core, persist the sweep JSON + advance the
+// watermark, and return the digest object + rendered markdown. In-process callers (loop-collect.mjs)
+// reuse this so a collector tick and a `pnpm loop:sweep` invocation share one code path — the watermark
+// advances identically whether the interval driver is a human CLI run or the standing collector. A
+// probe failure is data on the returned digest; only a tool-level crash throws (the CLI wrapper and
+// the collector each decide how to surface that).
+export function runSweep() {
   const sweptAtMs = Date.now();
   const sweptIso = new Date(sweptAtMs).toISOString();
   const host = hostState().value;
@@ -385,25 +391,32 @@ async function main() {
     });
   }
 
-  const digest = {
-    sweptIso,
-    sweptAtMs,
-    git,
-    host,
-    lanes,
-    result,
-  };
+  const digest = { sweptIso, sweptAtMs, git, host, lanes, result };
 
   const safeIso = sweptIso.replace(/[:.]/g, '-');
   const digestPath = writeUnderDigests(`sweep-${safeIso}.json`, JSON.stringify(digest, null, 2));
   writeUnderDigests('.watermark.json', JSON.stringify(buildWatermark(sweptAtMs, lanes), null, 2));
 
-  process.stdout.write(renderMarkdown({ sweptIso, host, git, lanes, result }) + '\n');
+  const markdown = renderMarkdown({ sweptIso, host, git, lanes, result });
+  return { digest, markdown, digestPath };
+}
+
+function main() {
+  const { markdown, digestPath } = runSweep();
+  process.stdout.write(markdown + '\n');
   process.stderr.write(`loop-sweep: digest written to ${digestPath}\n`);
 }
 
-main().catch((err) => {
-  // Only a crash of the tool ITSELF reaches here — every probe failure is captured as data upstream.
-  process.stderr.write(`loop-sweep: FATAL ${err instanceof Error ? err.stack : String(err)}\n`);
-  process.exitCode = 1;
-});
+// CLI entry-point guard: run the sweep ONLY when executed directly. An `import` (loop-collect.mjs
+// reuses runSweep) must NOT fire a full blocking sweep as an import side effect.
+const invokedDirectly =
+  process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (invokedDirectly) {
+  try {
+    main();
+  } catch (err) {
+    // Only a crash of the tool ITSELF reaches here — every probe failure is captured as data upstream.
+    process.stderr.write(`loop-sweep: FATAL ${err instanceof Error ? err.stack : String(err)}\n`);
+    process.exitCode = 1;
+  }
+}

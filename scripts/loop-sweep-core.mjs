@@ -25,6 +25,14 @@ export const HOST_SLEEP_GAP_FACTOR = 2;
 // daily USD stop so a runaway is flagged BEFORE the pool zeroes and starves the lane.
 export const COST_PROXIMITY_RATIO = 0.8;
 
+// Delta-starvation alarms (zero_decides, journal_silence) fire only when the inter-sweep window is
+// long enough that silence is actually abnormal: two sweeps minutes apart legitimately share the
+// same counters (observed 2026-07-20 — back-to-back acceptance runs tripped zero_decides on a
+// 3-minute gap). 30 min = two 15m bars, the smallest window in which a healthy lane MUST have
+// journaled something. An UNKNOWN elapsed (malformed watermark) does not suppress — conservative
+// toward detection, matching the alarms' veto-only fail direction.
+export const LIVENESS_MIN_ELAPSED_MS = 30 * 60 * 1000;
+
 // Per-lane daily USD cost breaker — verified 2026-07-20 against AGENTIC_DAILY_COST_STOP_USD in
 // .env.app (1.50, spot) and .env.app-perp (0.75, perp). Re-verify against those keys before trusting
 // this constant (§D verify-before-cite: the stale "$5/day breaker" is the cautionary precedent).
@@ -70,7 +78,7 @@ function diffCounters(prevCounters, curCounters) {
   return out;
 }
 
-function computeLane(lane, prev, cur) {
+function computeLane(lane, prev, cur, elapsedMs = null) {
   const alarms = [];
   const annotations = [];
   const probes = (cur && cur.probes) || {};
@@ -153,8 +161,11 @@ function computeLane(lane, prev, cur) {
   }
 
   // Delta-based alarms — only meaningful with a matching boot AND a proven-healthy container (the
-  // positive control: §C.1 zero-delta-while-green demands independent liveness deltas, not a green enum).
-  if (deltas !== null && cur && cur.containerHealthy === true) {
+  // positive control: §C.1 zero-delta-while-green demands independent liveness deltas, not a green
+  // enum) AND an inter-sweep window long enough for silence to be abnormal (LIVENESS_MIN_ELAPSED_MS;
+  // unknown elapsed does not suppress — see the constant's comment).
+  const intervalTooShort = Number.isFinite(elapsedMs) && elapsedMs < LIVENESS_MIN_ELAPSED_MS;
+  if (deltas !== null && cur && cur.containerHealthy === true && !intervalTooShort) {
     if (deltas.decides === 0 && (deltas.consultGate === 0 || deltas.consultGate === null)) {
       alarms.push({
         kind: 'zero_decides',
@@ -171,6 +182,12 @@ function computeLane(lane, prev, cur) {
           'reconciliations journal produced no new rows since watermark while container healthy',
       });
     }
+  } else if (deltas !== null && cur && cur.containerHealthy === true && intervalTooShort) {
+    annotations.push({
+      kind: 'short_interval',
+      lane,
+      detail: `sweep gap ${Math.round(elapsedMs / 1000)}s < ${LIVENESS_MIN_ELAPSED_MS / 60000}min liveness floor — delta-starvation alarms suppressed this sweep`,
+    });
   }
 
   // Negative-read void (§C.9): a durable counter reads exactly 0 while a SIBLING counter returned data
@@ -214,10 +231,14 @@ export function computeSweep({ prev, cur }) {
     annotations.push({ kind: 'no_watermark', detail: 'first sweep — deltas unavailable' });
   }
 
+  const elapsedMs =
+    prev && Number.isFinite(prev.sweptAtMs) && cur && Number.isFinite(cur.sweptAtMs)
+      ? cur.sweptAtMs - prev.sweptAtMs
+      : null;
   const lanes = (cur && cur.lanes) || {};
   for (const [lane, laneCur] of Object.entries(lanes)) {
     const lanePrev = (prev && prev.lanes && prev.lanes[lane]) || null;
-    const laneResult = computeLane(lane, lanePrev, laneCur);
+    const laneResult = computeLane(lane, lanePrev, laneCur, elapsedMs);
     deltas[lane] = laneResult.deltas;
     alarms.push(...laneResult.alarms);
     annotations.push(...laneResult.annotations);

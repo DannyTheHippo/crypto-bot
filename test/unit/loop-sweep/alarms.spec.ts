@@ -30,9 +30,10 @@ interface SweepResult {
 interface Core {
   computeSweep: (input: { prev: unknown; cur: unknown }) => SweepResult;
   EXPECTED_SWEEP_INTERVAL_MS: number;
+  LIVENESS_MIN_ELAPSED_MS: number;
 }
 const core = coreModule as unknown as Core;
-const { computeSweep, EXPECTED_SWEEP_INTERVAL_MS } = core;
+const { computeSweep, EXPECTED_SWEEP_INTERVAL_MS, LIVENESS_MIN_ELAPSED_MS } = core;
 
 const WM_TIME = 10_000_000_000;
 
@@ -120,6 +121,24 @@ describe('loop-sweep-core alarms', () => {
     const { alarms } = computeSweep({ prev: baseWatermark(), cur: curWith(lane) });
     expect(kinds(alarms)).toContain('zero_decides');
     expect(kinds(alarms)).not.toContain('journal_silence');
+  });
+
+  it('delta-starvation alarms are suppressed (annotated) under the liveness elapsed floor — back-to-back sweeps are not the R8-7 signature', () => {
+    const lane = baseLane(); // every counter frozen: both starvation alarms would fire on a full window
+    const cur = { sweptAtMs: WM_TIME + LIVENESS_MIN_ELAPSED_MS - 1, lanes: { spot: lane } };
+    const { alarms, annotations } = computeSweep({ prev: baseWatermark(), cur });
+    expect(kinds(alarms)).not.toContain('zero_decides');
+    expect(kinds(alarms)).not.toContain('journal_silence');
+    expect(kinds(annotations)).toContain('short_interval');
+  });
+
+  it('an UNKNOWN elapsed (watermark without sweptAtMs) does not suppress starvation alarms — conservative toward detection', () => {
+    const lane = baseLane();
+    const wm = baseWatermark() as Record<string, unknown>;
+    delete wm['sweptAtMs'];
+    const cur = { sweptAtMs: WM_TIME + EXPECTED_SWEEP_INTERVAL_MS, lanes: { spot: lane } };
+    const { alarms } = computeSweep({ prev: wm, cur });
+    expect(kinds(alarms)).toContain('zero_decides');
   });
 
   it('does not fire zero_decides while the container is unhealthy (no green positive control)', () => {

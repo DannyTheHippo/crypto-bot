@@ -19,6 +19,8 @@
     "--- MODE CONTROL OPS ---": "--------------------------------",
     "arm": "node scripts/arm-ceremony.mjs",
     "loop:sweep": "node scripts/loop-sweep.mjs",
+    "loop:collect": "node scripts/loop-collect.mjs",
+    "loop:digests": "node scripts/loop-digests-since.mjs",
     "--- CHECKS ---": "--------------------------------",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit -p tsconfig.eslint.json",

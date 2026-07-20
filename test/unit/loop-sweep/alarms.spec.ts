@@ -182,9 +182,9 @@ describe('loop-sweep-core alarms', () => {
     expect(kinds(alarms)).toContain('cost_breaker_proximity');
   });
 
-  it('cost_breaker_proximity uses the tighter $0.75 perp breaker on the perp lane', () => {
+  it('cost_breaker_proximity reads the perp breaker independently ($1.50 post-X2)', () => {
     const lane = baseLane();
-    lane.probes.cost.value.spendUsd = 0.6; // 80% of $0.75, below the $1.50 spot threshold
+    lane.probes.cost.value.spendUsd = 1.2; // 80% of the perp $1.50 (raised by X2 stage-1)
     const cur = { sweptAtMs: WM_TIME + EXPECTED_SWEEP_INTERVAL_MS, lanes: { perp: lane } };
     const watermarkLanes = baseWatermark().lanes as Record<string, unknown>;
     const prev = { sweptAtMs: WM_TIME, lanes: { perp: watermarkLanes.spot } };

@@ -34,9 +34,11 @@ export const COST_PROXIMITY_RATIO = 0.8;
 export const LIVENESS_MIN_ELAPSED_MS = 30 * 60 * 1000;
 
 // Per-lane daily USD cost breaker — verified 2026-07-20 against AGENTIC_DAILY_COST_STOP_USD in
-// .env.app (1.50, spot) and .env.app-perp (0.75, perp). Re-verify against those keys before trusting
+// .env.app (1.50, spot) and .env.app-perp (1.50, perp — raised 0.75->1.50 by X2 stage-1 the same
+// day this tool first verified it; caught by the Y4 doc rewrite's three-ledger check). Re-verify
+// against those keys before trusting
 // this constant (§D verify-before-cite: the stale "$5/day breaker" is the cautionary precedent).
-export const COST_BREAKER_USD = { spot: 1.5, perp: 0.75 };
+export const COST_BREAKER_USD = { spot: 1.5, perp: 1.5 };
 
 // More than one restart between the watermark and now is a storm (§B R8-6 wedge-to-OOM: 36 recreations
 // in ~35 min). A single restart is an ordinary redeploy, not an alarm.

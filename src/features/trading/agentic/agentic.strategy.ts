@@ -264,6 +264,10 @@ interface ConsultScheduleArgs {
   readonly lastClose: number | null;
   readonly wakeMovePct: number;
   readonly fallbackConsultBars: number;
+  // XA5 (A0 activation bundle): repeated-noop breaker engaged (see AgenticStrategy.noopSuppressed).
+  // Optional: absent ⇒ false (never suppress — fail OPEN toward consulting). Bypassed by
+  // forced_fill/forced_rearm above (a fill or lost directives always re-consult and clear it).
+  readonly noopSuppressed?: boolean;
   // XA1 (A0 activation bundle): active-menu membership. false ⇒ this symbol never schedules,
   // wakes, or falls back into a consult — off-menu idle symbols previously recorded forced_*
   // gate outcomes every fallback cycle and then had their consult clock AND wake-on-move
@@ -301,6 +305,11 @@ export function evaluateConsultSchedule(args: ConsultScheduleArgs): ConsultGateO
   // climbing while off-menu, so the moment the scanner promotes the symbol back onto the menu it
   // immediately trips the fallback branch below — a fresh consult on menu entry falls out for free.
   if (args.menuActive === false) return 'skipped_scheduled';
+  // XA5: repeated-noop breaker engaged (a positioned symbol looped the same ineffective action) —
+  // stay quiet until the position state changes. Same priority as the menu gate: below the
+  // unconditional fill/re-arm overrides above (a fill or lost directives must always re-consult and
+  // will clear the breaker), above the schedule so the stuck loop cannot keep re-firing.
+  if (args.noopSuppressed === true) return 'skipped_scheduled';
   if (state.scheduledConsultBars !== null && state.barsSinceConsult >= state.scheduledConsultBars) {
     return 'consulted';
   }
@@ -459,6 +468,11 @@ export interface AgenticStrategyDeps {
 const MAX_DECISION_HISTORY = 30;
 const INDICATOR_WARMUP_CLOSES = 21;
 const MAX_JOURNAL_RATIONALE_LEN = 2000;
+// XA5 (A0 activation bundle): consecutive identical positioned-noop consults before the repeated-
+// noop circuit breaker suppresses a symbol. 6 matches A0's spec (the Bug-B flat-loop burned ~55
+// consults over 15h re-issuing an unexecuted close — 6 catches it in ~1.5h at the tightened
+// 8-bar/2h fallback cadence while never tripping on a legitimately active symbol).
+const NOOP_BREAKER_THRESHOLD = 6;
 const NOOP_LOGGER: LoggerLike = { warn: () => undefined };
 
 const INTERVAL_MS: Record<CandleInterval, number> = {
@@ -624,6 +638,17 @@ export class AgenticStrategy implements AsyncStrategy {
   // Push II Phase 8: widened to include 'SHORT' — a shorts-disabled deployment's position can never
   // actually be SHORT (buildContext/position-sizer never assign it), so this stays byte-identical.
   private lastPositionSide: 'LONG' | 'SHORT' | 'FLAT' | null = null;
+  // XA5 (A0 activation bundle): repeated-noop circuit breaker state. Tracks consecutive consults
+  // that emitted the SAME action while POSITIONED with NO change to position qty/side — the Bug-B
+  // signature (a stuck 'close'/'flat' re-issued every bar because the exit could not execute burned
+  // ~55 consults over 15h). A flat symbol holding is NOT a noop for this purpose (that is normal
+  // quiet the scheduler already governs, and XA3 wants those consulting) — only a positioned symbol
+  // repeating an ineffective action counts. On breach the symbol is suppressed until its position
+  // state changes; cleared by any position delta, a fill, or a non-repeat action.
+  private noopStreak = 0;
+  private noopLastAction: string | null = null;
+  private noopLastPosKey: string | null = null;
+  private noopSuppressed = false;
   private closedTrades = 0;
 
   constructor(
@@ -781,6 +806,7 @@ export class AgenticStrategy implements AsyncStrategy {
       wakeMovePct: this.wakeMovePct,
       fallbackConsultBars: this.fallbackConsultBars,
       menuActive: this.menuGate?.isActive(String(this.symbol)) ?? true,
+      noopSuppressed: this.noopSuppressed,
     });
     this.onConsultGate?.(gate);
     // P3: weekly time-based reflection trigger — same per-decide() cadence as onConsultGate above.
@@ -840,6 +866,14 @@ export class AgenticStrategy implements AsyncStrategy {
     // decision is the client's own account when present; the stub client (and any client that
     // omits it) leaves this to a signal-inferred fallback so the decision trail stays populated.
     const decision = proposal.decision ?? this.inferStubDecision(signals);
+
+    // XA5: repeated-noop breaker bookkeeping (runs on the consult that just happened). Only a
+    // POSITIONED symbol repeating the SAME action with NO position-state change counts — a flat
+    // hold is normal quiet, not a stuck loop. posKey folds side + signed qty so any fill or resize
+    // resets the streak. On the Nth identical positioned noop the symbol is suppressed until its
+    // position changes (see the gate above); the suppression is loud (alarm) because a stuck loop is
+    // a defect, never expected steady state.
+    this.updateNoopBreaker(context.position, decision.action);
 
     this.annotatePreviousOutcome(lastClose, context.position, lastCandle, heldDuringPrev);
 
@@ -1967,6 +2001,48 @@ export class AgenticStrategy implements AsyncStrategy {
       if (found === 'unknown') this.warnUnknownRoleOnce(o, input);
     }
     return undefined;
+  }
+
+  // XA5 (A0 activation bundle): repeated-noop circuit breaker bookkeeping. `position` is THIS
+  // consult's position view; `action` the model's action. A noop = a positioned symbol emitting the
+  // SAME action as last consult with NO change to position side/qty. emittedSignal is deliberately
+  // NOT part of the condition: the Bug-B loop DID emit a close signal every bar — it just never
+  // executed, so the position never changed; keying on "signal emitted" would have missed exactly
+  // the case this guards. Suppressing a stably-held position's redundant holds is also a budget win
+  // (plan-executor still enforces stops/TP deterministically between consults). On the
+  // NOOP_BREAKER_THRESHOLD-th consecutive identical positioned noop the symbol is suppressed until
+  // its position changes (see evaluateConsultSchedule's noopSuppressed branch). Fail-safe: a flat
+  // book or any position delta (posKey folds side + signed qty) resets it; a fill/re-arm overrides.
+  private updateNoopBreaker(
+    position: { side: 'LONG' | 'SHORT' | 'FLAT'; qty: string },
+    action: string,
+  ): void {
+    const positioned = position.side === 'LONG' || position.side === 'SHORT';
+    const posKey = `${position.side}:${position.qty}`;
+    if (!positioned || posKey !== this.noopLastPosKey) {
+      if (this.noopSuppressed) {
+        this.logger.warn(`XA5 repeated-noop breaker CLEARED for ${this.symbol} (position changed)`);
+      }
+      this.noopStreak = positioned ? 1 : 0;
+      this.noopLastAction = action;
+      this.noopLastPosKey = posKey;
+      this.noopSuppressed = false;
+      return;
+    }
+    if (action === this.noopLastAction) {
+      this.noopStreak += 1;
+    } else {
+      this.noopStreak = 1;
+      this.noopLastAction = action;
+    }
+    if (this.noopStreak >= NOOP_BREAKER_THRESHOLD && !this.noopSuppressed) {
+      this.noopSuppressed = true;
+      this.logger.warn(
+        `XA5 repeated-noop breaker ENGAGED for ${this.symbol}: action "${action}" repeated ` +
+          `${this.noopStreak}x while positioned (${posKey}) with no state change — suppressing ` +
+          `consults until the position changes (a fill/re-arm always overrides)`,
+      );
+    }
   }
 
   private warnUnknownRoleOnce(order: OpenOrderSummary, input: AgentDecisionInput): void {

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import Decimal from 'decimal.js';
 import {
   AgenticStrategy,
+  evaluateConsultSchedule,
   type AgenticStrategyParams,
   type AgenticStrategyDeps,
   type ConsultGateOutcome,
@@ -300,5 +301,51 @@ describe('AgenticStrategy consult schedule (B2)', () => {
     await strategyRearm.decide(buildInput(0, { openPosition: true }));
     expect(clientRearm.calls).toHaveLength(1);
     expect(gatesRearm.at(-1)).toBe('forced_rearm');
+  });
+});
+
+// XA1/XA5: pure evaluateConsultSchedule gate priority — the menu gate and repeated-noop breaker
+// both quiet a symbol, but the unconditional fill/re-arm overrides must still win above them.
+describe('evaluateConsultSchedule gate priority (XA1 menu + XA5 noop)', () => {
+  const base = {
+    state: { barsSinceConsult: 100, scheduledConsultBars: 1, lastConsultPrice: 100 },
+    isExecTrigger: false,
+    hasOpenPositionWithoutDirectives: false,
+    lastClose: 100,
+    wakeMovePct: 0.008,
+    fallbackConsultBars: 8,
+  };
+
+  it('menuActive:false quiets an otherwise-due symbol', () => {
+    expect(evaluateConsultSchedule({ ...base, menuActive: false })).toBe('skipped_scheduled');
+  });
+
+  it('noopSuppressed quiets an otherwise-due symbol', () => {
+    expect(evaluateConsultSchedule({ ...base, noopSuppressed: true })).toBe('skipped_scheduled');
+  });
+
+  it('a fill overrides BOTH the menu gate and the noop breaker (forced_fill)', () => {
+    expect(
+      evaluateConsultSchedule({
+        ...base,
+        isExecTrigger: true,
+        menuActive: false,
+        noopSuppressed: true,
+      }),
+    ).toBe('forced_fill');
+  });
+
+  it('a positioned symbol without directives re-arms regardless of the noop breaker (forced_rearm)', () => {
+    expect(
+      evaluateConsultSchedule({
+        ...base,
+        hasOpenPositionWithoutDirectives: true,
+        noopSuppressed: true,
+      }),
+    ).toBe('forced_rearm');
+  });
+
+  it('absent flags default to consulting (fail OPEN)', () => {
+    expect(evaluateConsultSchedule(base)).toBe('consulted');
   });
 });

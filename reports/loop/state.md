@@ -675,6 +675,36 @@ MAY-knobs, a $5/day breaker). Sequencing: disjoint from app code, interleaves wi
 X series, MUST complete before X1-FINAL. Tasks #50–#53 mirror Y1–Y4; #47 (GCP lift) is
 blocked on Y4.
 
+## A0 deep resource analysis (2026-07-20) — decision record
+
+**COMPLETE ~08:30Z** (6 analysts + xhigh synthesis, ~1.5M tokens; report
+`reports/loop/a0-analysis-2026-07-20.md`, evidence `reports/loop/a0-evidence-2026-07-20/`;
+amended specs live in the plan file). Headline verdict: **the bot is starved, not broken.**
+Binding constraints, in order: (1) consult cadence ~1-3 wakes/day vs the 10-20 design
+intent — at historical entry fractions (3.8-9%) the 30-trip gate needs 24-56 consults/day;
+(2) an entry mandate that structurally never fires (AND-veto filter stack, fee anchoring,
+one-way reflection selectivity ratchet, functionally long-only perp — 0 entries in 19 v2
+consults); (3) uncapped Opus reflection sessions ($2.25-2.93 each, 78-133 calls) blowing
+1.8-3.9 daily budgets and blacking out consults; (4) plan_json EMPTY on every v2 row
+(nextConsultBars/thesis unauditable — X6-X8 would have been built on nothing); (5) the
+promotion gate is a cumulative ratchet (no trailing window) so idle burn permanently
+raises the bar — re-stamp is costless only while trips=0.
+
+**Adopted (loop-domain):** NEW pre-X2 activation bundle **XA1-XA7** (tasks #54-#60):
+scheduler verify+tune → budget reservation + reflection carve-out → entry-mandate revision
+(modulate-don't-veto, perp shorts, A/B→0 with its own decision record at execution) →
+durable decision capture → exit invariants + repeated-noop breaker → spot channel tiering
+→ one-time per-lane epoch re-stamp at final pre-campaign config. **X order resequenced:**
+X6/X7/X8 (instrumentation, re-scoped: X6 build→verify+harden, X8 narrowed to the digest
+table with epoch-bounded reads) → X2 (staged 8/menu-4→16/menu-6, sharding, funding
+acceptance position-conditioned) → X3/X4/X5 (verify-before-build vs live tf1/pos1 blocks)
+→ X9 (WATCH set per the report). Breakers stay FIXED at $1.50/$0.75 (raise considered and
+rejected). **Owner flags:** CryptoPanic key wanted NOW (only external dependency);
+optional R1 pull-forward if entries stay ~0 for 5+ days post-XA1 (R sequencing stays
+owner-owned). First-campaign attribution is confounded by design (bundle + revision +
+re-stamps + X2 land within days) — accepted, recorded, do not read the first delta as
+pure playbook alpha.
+
 ## Last pass
 
 **Pass 34, 2026-07-18** (scheduled, ~08:07–08:40Z, **MAINTENANCE — P0b entry fill-quality

@@ -1,0 +1,1 @@
+agentic_consult_gate_total{instance="app-perp:3100", job="crypto-bot", outcome="skipped_scheduled"} => 14 @[1784529829.079]

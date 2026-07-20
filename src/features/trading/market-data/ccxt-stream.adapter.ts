@@ -168,13 +168,47 @@ export interface ChannelStateTracker {
   // Optional so existing fakes keep compiling; the real FeedHealthService implements it and the
   // metrics pull loop exports it (market_stream_forced_reconnects_total).
   recordForcedReconnect?(): void;
+  // XA6: removes a channel's health/age entry entirely — a tier-parked channel (see
+  // ChannelTierResolver) must vanish from channelAges()/staleness gauges rather than sit forever as
+  // an aging DEGRADED entry that reads like a defect. Optional for the same fake-compat reason.
+  clearChannel?(venue: VenueId, symbol: SymbolId, channel: string): void;
 }
 
 /** Minimal logger surface so the adapter stays constructible without Nest (tests, factories). */
 export interface StreamAdapterLogger {
   warn(message: string): void;
   error(message: string): void;
+  // Optional routine-info level (Nest's Logger has it; test fakes may omit it). XA6 tier
+  // transitions log here — they are expected daily events, not warnings.
+  log?(message: string): void;
 }
+
+// ── XA6: per-symbol channel tiering ──────────────────────────────────────────
+// The spot lane idled at ~118% CPU / 1.5GiB on ~96 subscriptions (24 symbols × 4 channels), with
+// churn events brushing the RiskEngine's 5s staleness veto exactly when re-consults fire (A0,
+// 2026-07-20). Only active-menu + positioned symbols can ever be consulted or enter (the batching
+// client's ActiveMenuGate and the scanner's position pin guarantee both), so only they need the
+// heavy channels: `book` (risk mark + the RiskEngine's 'book'-health entry gate) and `trades`
+// (paper-sim fills). Every symbol keeps `candles` (strategy warmup + the scanner's OWN ranking
+// metrics — deriveScanMetrics reads the streamed 15m window, so rankings populate without any REST
+// path) and `ticker` (ref price). The resolver is late-bound (setChannelTierResolver) because the
+// scanner lives in the agentic composition layer, which this adapter must not import.
+//
+// Lifecycle: a gated loop checks the resolver each iteration. While LITE it PARKS — no watch call,
+// its watchdog key and health entry are removed (a parked channel must never trip the connection-
+// wide forced-reconnect close() or read as a stale-feed defect) — and re-checks every tierPollMs.
+// On promotion it re-seeds and re-subscribes through the normal paced gate. On demotion it parks at
+// the next yield; the venue-side subscription (ccxt has no per-channel close) lingers only until
+// the next connection cycle. Failure direction: this is an EFFICIENCY gate — it fails OPEN to full
+// tier (resolver absent, throwing, or scanner not yet ranked ⇒ subscribe everything); a broken
+// tier decision must never starve the data path.
+export interface ChannelTierResolver {
+  /** true ⇒ the symbol gets the full channel set; false ⇒ candles+ticker only. */
+  fullChannels(symbol: SymbolId): boolean;
+}
+
+/** How often a parked loop re-checks the tier resolver for promotion. */
+const TIER_PARK_POLL_MS = 30_000;
 
 /**
  * Injectable abstraction over ccxt's watch* calls.
@@ -355,6 +389,10 @@ export class CcxtExchangeStreamAdapter implements ExchangeStreamPort {
   // Successful-recreation timestamps within the rolling capWindowMs; pruned lazily on each check.
   private readonly recreateHistory: number[] = [];
   private capExhaustedLoggedAt = -Infinity;
+  // XA6 tier state — see ChannelTierResolver above. null resolver = everything full tier.
+  private tierResolver: ChannelTierResolver | null = null;
+  private tierPollMs: number = TIER_PARK_POLL_MS;
+  private tierResolverWarnedAt = -Infinity;
 
   constructor(
     @Inject(CLOCK) private readonly clock: ClockPort,
@@ -389,6 +427,48 @@ export class CcxtExchangeStreamAdapter implements ExchangeStreamPort {
       clearInterval(this.watchdog);
       this.watchdog = null;
     }
+  }
+
+  // XA6: late-binding seam — the composition root wires the scanner-backed resolver here after DI
+  // resolves both sides (the adapter is constructed in the market-data layer, the scanner in the
+  // agentic layer; neither may import the other). pollMs is injectable for tests only.
+  setChannelTierResolver(resolver: ChannelTierResolver, pollMs: number = TIER_PARK_POLL_MS): void {
+    this.tierResolver = resolver;
+    this.tierPollMs = pollMs;
+  }
+
+  // Fails OPEN to full tier (see the ChannelTierResolver header comment): a throwing resolver is
+  // rate-limit-logged and treated as "subscribe everything" — never as a reason to park.
+  private isFullTier(symbol: SymbolId): boolean {
+    if (!this.tierResolver) return true;
+    try {
+      return this.tierResolver.fullChannels(symbol);
+    } catch (err) {
+      const now = this.clock.now();
+      if (now - this.tierResolverWarnedAt >= LOOP_ERROR_LOG_INTERVAL_MS) {
+        this.tierResolverWarnedAt = now;
+        this.logger?.warn(
+          `market-stream tier resolver threw (fail-open, all symbols full tier): ${String(err)}`,
+        );
+      }
+      return true;
+    }
+  }
+
+  // Deregisters a parked channel from BOTH observers: the watchdog's lastYieldAt map (a parked
+  // channel silent >180s must never force a connection-wide close()) and the health tracker's
+  // age/staleness view (a deliberately-off channel is not a stale feed).
+  private parkChannel(symbol: SymbolId, channel: string): void {
+    this.lastYieldAt.delete(`${symbol}|${channel}`);
+    this.stateTracker.clearChannel?.(this.venueId, symbol, channel);
+    this.logger?.log?.(
+      `market-stream tier: ${symbol}|${channel} parked (lite tier — non-menu symbol; ` +
+        `resumes on promotion within ${this.tierPollMs}ms)`,
+    );
+  }
+
+  private parkWait(): Promise<void> {
+    return new Promise<void>((res) => setTimeout(res, this.tierPollMs));
   }
 
   /**
@@ -501,10 +581,29 @@ export class CcxtExchangeStreamAdapter implements ExchangeStreamPort {
 
   private async runTradesLoop(push: (ev: RawVenueEvent) => void, symbol: SymbolId): Promise<void> {
     const channel = 'trade';
-    this.seedChannel(symbol, channel);
+    // XA6 tier-gated channel: seeding moves INSIDE the loop (on resume) so a lite symbol never
+    // registers with the watchdog/health tracker at all. parked === null means "no state yet"
+    // (first iteration decides without logging a transition that never happened).
+    let parked: boolean | null = null;
     let needsSlot = true;
     while (this.running) {
       try {
+        if (!this.isFullTier(symbol)) {
+          if (parked !== true) {
+            if (parked === false) this.parkChannel(symbol, channel);
+            parked = true;
+          }
+          needsSlot = true;
+          await this.parkWait();
+          continue;
+        }
+        if (parked !== false) {
+          this.seedChannel(symbol, channel);
+          if (parked === true) {
+            this.logger?.log?.(`market-stream tier: ${symbol}|${channel} resumed (full tier)`);
+          }
+          parked = false;
+        }
         if (needsSlot) {
           await this.subscribeSlot();
           if (!this.running) break;
@@ -559,10 +658,30 @@ export class CcxtExchangeStreamAdapter implements ExchangeStreamPort {
 
   private async runBookLoop(push: (ev: RawVenueEvent) => void, symbol: SymbolId): Promise<void> {
     const channel = 'book';
-    this.seedChannel(symbol, channel);
+    // XA6 tier-gated channel — same park/resume shape as runTradesLoop (see its comment). Parking
+    // book leaves the RiskEngine's 'book'-health gate reading GAP for the symbol, which is correct:
+    // a lite (non-menu, unpositioned) symbol cannot be consulted, so it must not pass entry gates
+    // either; promotion re-subscribes and the first snapshot restores LIVE.
+    let parked: boolean | null = null;
     let needsSlot = true;
     while (this.running) {
       try {
+        if (!this.isFullTier(symbol)) {
+          if (parked !== true) {
+            if (parked === false) this.parkChannel(symbol, channel);
+            parked = true;
+          }
+          needsSlot = true;
+          await this.parkWait();
+          continue;
+        }
+        if (parked !== false) {
+          this.seedChannel(symbol, channel);
+          if (parked === true) {
+            this.logger?.log?.(`market-stream tier: ${symbol}|${channel} resumed (full tier)`);
+          }
+          parked = false;
+        }
         if (needsSlot) {
           await this.subscribeSlot();
           if (!this.running) break;

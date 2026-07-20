@@ -885,10 +885,15 @@ const FUNDING_INGEST = Symbol('FUNDING_INGEST');
         // Paper sim needs book/trade ingestion to fill; the live/demo venue fills its own orders, so
         // paperFeed is present only when EXCHANGE_PORT is the PaperExchangeAdapter (structural check).
         const paperFeed = hasIngest(exchangePort) ? exchangePort : undefined;
+        // XA6: ws `trades` feeds ONLY the paper fill sim — StrategyHost drops TRADE events
+        // (strategy-host.ts routeEvent) and the trade-flow/liquidation feeds poll their own REST/
+        // watch sources — so on demo/live lanes the channel was pure subscription load (~24 chatty
+        // streams on the 24-symbol basket). Augment it only when the sim exists to consume it; the
+        // spread keeps a spec's own `trades: true` intact rather than overriding it with false.
         return new TeeingMarketStream(
           inner,
           feedHealth as unknown as RefPriceSink,
-          { ticker: true, book: true, trades: true },
+          { ticker: true, book: true, ...(paperFeed !== undefined ? { trades: true } : {}) },
           paperFeed,
         );
       },
@@ -1831,6 +1836,11 @@ export class AppModule
     // Backlog #51: the adapter behind EXCHANGE_PORT, for the perp deploy pin in startTrading —
     // only perp-capable adapters implement pinPerpVenueDefaults, everything else no-ops via `?.`.
     @Inject(EXCHANGE_PORT) private readonly exchangePort: ExchangePort,
+    // XA6: the raw stream adapter, for the channel-tier resolver wiring in startTrading — the
+    // adapter (market-data layer) and the scanner (agentic layer) must not import each other, so
+    // this composition-root class is where the two meet (instanceof-guarded: test/ci NOOP_STREAM
+    // and the paper path have no tiering).
+    @Inject(EXCHANGE_STREAM) private readonly rawExchangeStream: ExchangeStreamPort,
     // W5 attributed auto-promotion: the evaluator promotes a reflection candidate to ACTIVE on its
     // own A/B-attributed evidence beating the champion (see promotion-evaluator.ts). Built here from
     // the same store the reflection loop writes and the DB-backed stats/journal, and wired as a
@@ -2176,6 +2186,17 @@ export class AppModule
     // so this first recompute currently ranks off whatever metrics have been recorded so far, which
     // may be none; isActive() safely defaults to "everything active" until real data lands).
     this.universeScanner.maybeRecompute(this.clock.now());
+
+    // XA6: per-symbol channel tiering — heavy channels (book, trades) only for active-menu +
+    // positioned symbols (isActive() covers both: recompute() pins positioned/resting symbols into
+    // the active set, and before the first ranking it fail-opens to "everything active", so boot
+    // always subscribes full and demotions only begin once a real ranking exists). String() matches
+    // the scanner's plain-string basket keys (same convention as the ActiveMenuGate wiring).
+    if (this.rawExchangeStream instanceof CcxtExchangeStreamAdapter) {
+      this.rawExchangeStream.setChannelTierResolver({
+        fullChannels: (symbol) => this.universeScanner.isActive(String(symbol)),
+      });
+    }
 
     if (mode !== 'paper') {
       this.fillPoller.init();

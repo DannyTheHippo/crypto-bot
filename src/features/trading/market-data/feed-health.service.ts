@@ -86,6 +86,14 @@ export class FeedHealthService implements FeedHealthPort, MarketStreamTelemetryP
     this.forcedReconnects += 1;
   }
 
+  // XA6: a tier-parked channel (ccxt-stream.adapter.ts ChannelTierResolver) deregisters entirely —
+  // channelAges()/staleness gauges must not carry a deliberately-off channel as an ever-aging
+  // DEGRADED entry. health() then answers 'GAP' for it (the unknown-channel default), which is the
+  // correct fail-safe read for the RiskEngine's 'book'-health entry gate.
+  clearChannel(venue: VenueId, symbol: SymbolId, channel: string): void {
+    this.channelStates.delete(this.channelKey(venue, symbol, channel));
+  }
+
   forcedReconnectCount(): number {
     return this.forcedReconnects;
   }

@@ -96,10 +96,10 @@ AGENTIC_ENTRY_TTL_BARS=2 # stale-entry sweep: resting entries older than N obser
 AGENTIC_MAX_POSITION_FRACTION=0.15
 # v2 consult scheduler (B2, replaces the deleted prescreen gate): floor re-consult cadence even if
 # the model's own nextConsultBars requested a longer gap or the schedule stalls.
-AGENTIC_FALLBACK_CONSULT_BARS=16
+AGENTIC_FALLBACK_CONSULT_BARS=8 # XA1 2026-07-20: 16 (4h) starved evidence pace — 2h floor
 # v2 consult scheduler (B2): wake-on-move — a bar close whose move vs lastConsultPrice clears this
 # fraction forces an immediate re-consult regardless of schedule.
-AGENTIC_WAKE_MOVE_PCT=0.015
+AGENTIC_WAKE_MOVE_PCT=0.008 # XA1 2026-07-20: 1.5% never fires in the dominant sub-0.5% chop regime
 AGENTIC_PLAN_EXIT_TTL_BARS=2 # TTL (bars) on plan-executor exit signals; 1-bar TTL races its own age (a max_hold exit expired live 2026-07-07 at 902.2s vs 900s)
 AGENTIC_DRAIN_COOLDOWN_BASE_MS=30000 # first AUTO-drain cooldown backoff
 AGENTIC_DRAIN_COOLDOWN_MAX_MS=900000 # ceiling on AUTO-drain cooldown backoff
@@ -196,7 +196,7 @@ FUNDING_INGEST_POLL_MS=3600000 # hourly; funding settles at most 3x/day on Binan
 # minute counter, one cell provably empty at 30/30) and each decide row stamps its explicit
 # info_arm/thinking_arm (migration 0012, Push 3 P8a-prep), so test/backtest/ab-cells reads
 # cells directly. Adoption/harm/cost rules pre-registered; verdict is loop-domain.
-AGENTIC_DERIVATIVES_AB_PCT=50
+AGENTIC_DERIVATIVES_AB_PCT=0 # XA3 2026-07-20: control arm retired — treatment drove 8.4% vs 1.9% proposes; every consult gets the full info bundle (change-discipline record in state.md)
 # AGENTIC_THINKING_AB_PCT retired 2026-07-18 (v2 cutover): thinking always on (adaptive) for decide.
 # Cross-symbol relative-strength context (2026-07-12): each instance sees where its symbol
 # ranks by trailing 20-bar return within the 5-symbol basket — the strongest systematic signal
@@ -215,7 +215,7 @@ AGENTIC_CROSS_SYMBOL_LOOKBACK_BARS=20
 # element, pf2 tag) — PLAN MODE required; boot still refuses legacy non-plan shorts with
 # consult. Rollback = flip to 'false' (byte-identical legacy chain by construction).
 AGENTIC_PORTFOLIO_CONSULT=true
-AGENTIC_PORTFOLIO_WINDOW_MS=3000
+AGENTIC_PORTFOLIO_WINDOW_MS=15000 # XA1 2026-07-20: 3s fragmented the menu wave into 6 API calls (arrivals spread ~26s); 15s + menu-sized early-flush coalesces
 
 # C4: read-only free news/sentiment feed (headlines only, no numeric scores) polled from
 # CryptoPanic, surfaced to the agentic prompt when fresh. Off by default; requires

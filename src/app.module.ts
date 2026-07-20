@@ -944,8 +944,12 @@ const FUNDING_INGEST = Symbol('FUNDING_INGEST');
         clock: ClockPort,
         feedHealth: FeedHealthPort,
         exchangePort: ExchangePort,
+        config: TypedConfigService,
       ): MarketStreamPort => {
-        const inner = new MarketDataService(exchangeStream, clock);
+        const inner = new MarketDataService(exchangeStream, clock, {
+          bandBps: config.marketData.bookBandBps,
+          maxLevels: config.marketData.bookMaxLevels,
+        });
         // Paper sim needs book/trade ingestion to fill; the live/demo venue fills its own orders, so
         // paperFeed is present only when EXCHANGE_PORT is the PaperExchangeAdapter (structural check).
         const paperFeed = hasIngest(exchangePort) ? exchangePort : undefined;
@@ -961,7 +965,7 @@ const FUNDING_INGEST = Symbol('FUNDING_INGEST');
           paperFeed,
         );
       },
-      inject: [EXCHANGE_STREAM, CLOCK, REAL_FEED_HEALTH, EXCHANGE_PORT],
+      inject: [EXCHANGE_STREAM, CLOCK, REAL_FEED_HEALTH, EXCHANGE_PORT, TypedConfigService],
     },
     { provide: FEED_HEALTH, useExisting: REAL_FEED_HEALTH },
     {

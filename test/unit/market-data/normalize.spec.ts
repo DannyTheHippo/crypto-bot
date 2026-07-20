@@ -236,3 +236,108 @@ describe('normalize order book', () => {
     expect(ev.eventTimeSynthetic).toBe(true);
   });
 });
+
+describe('normalize order book: memory bound (band filter + hard cap)', () => {
+  it('band filter keeps only levels within bandBps of mid, dropping the rest', () => {
+    // mid = (100 + 100.1) / 2 = 100.05; 50bps band ⇒ [99.5498, 100.5503] roughly.
+    const ev = normalizeRawEvent(
+      raw('book', 'NORM-BAND1', {
+        timestamp: 1,
+        bids: [
+          [100, 1], // within band
+          [95, 1], // ~5% away — outside
+        ],
+        asks: [
+          [100.1, 1], // within band
+          [110, 1], // ~10% away — outside
+        ],
+      }),
+      ingest,
+      undefined,
+      { bandBps: 50, maxLevels: 1000 },
+    ) as OrderBookSnapshotEvent;
+    expect(ev.bids.map((l) => l.price.toFixed())).toEqual(['100']);
+    expect(ev.asks.map((l) => l.price.toFixed())).toEqual(['100.1']);
+  });
+
+  it('hard cap bounds both sides at maxLevels, keeping the nearest-mid levels (ccxt best-first ordering)', () => {
+    const ev = normalizeRawEvent(
+      raw('book', 'NORM-CAP1', {
+        timestamp: 1,
+        // Best-first: bids descending from best, asks ascending from best (ccxt convention) —
+        // nearest-mid survivors are simply the first maxLevels of each array.
+        bids: [
+          [100, 1],
+          [99, 1],
+          [98, 1],
+          [97, 1],
+          [96, 1],
+        ],
+        asks: [
+          [101, 1],
+          [102, 1],
+          [103, 1],
+          [104, 1],
+          [105, 1],
+        ],
+      }),
+      ingest,
+      undefined,
+      { bandBps: 0, maxLevels: 3 }, // band disabled so only the cap is exercised
+    ) as OrderBookSnapshotEvent;
+    expect(ev.bids.map((l) => l.price.toFixed())).toEqual(['100', '99', '98']);
+    expect(ev.asks.map((l) => l.price.toFixed())).toEqual(['101', '102', '103']);
+  });
+
+  it('falls back to cap-only (never drops the event) when one side is empty — mid is unavailable', () => {
+    const ev = normalizeRawEvent(
+      raw('book', 'NORM-FAILOPEN1', {
+        timestamp: 1,
+        bids: [
+          [100, 1],
+          [99, 1],
+        ],
+        asks: [], // empty side ⇒ mid cannot be computed ⇒ band filter skipped, fail open
+      }),
+      ingest,
+      undefined,
+      { bandBps: 50, maxLevels: 1000 },
+    ) as OrderBookSnapshotEvent;
+    expect(ev.kind).toBe('ORDER_BOOK_SNAPSHOT'); // event is never dropped
+    expect(ev.bids).toHaveLength(2); // band filter skipped ⇒ both bids survive (cap far above 2)
+    expect(ev.asks).toHaveLength(0);
+  });
+
+  it('falls back to cap-only (never drops the event) when the best level is unparseable — mid is unavailable', () => {
+    const ev = normalizeRawEvent(
+      raw('book', 'NORM-FAILOPEN2', {
+        timestamp: 1,
+        bids: [['not-a-number', '1']],
+        asks: [[100, 1]],
+      }),
+      ingest,
+      undefined,
+      { bandBps: 50, maxLevels: 1000 },
+    ) as OrderBookSnapshotEvent;
+    expect(ev.kind).toBe('ORDER_BOOK_SNAPSHOT'); // event is never dropped
+    expect(ev.bids).toHaveLength(0); // malformed level dropped downstream by toLevels, not by the filter
+    expect(ev.asks.map((l) => l.price.toFixed())).toEqual(['100']);
+  });
+
+  it('bandBps: 0 disables the band filter entirely — behaves as cap-only', () => {
+    const ev = normalizeRawEvent(
+      raw('book', 'NORM-BANDOFF1', {
+        timestamp: 1,
+        bids: [
+          [100, 1],
+          [50, 1], // 50% away from mid — would be filtered if the band were active
+        ],
+        asks: [[101, 1]],
+      }),
+      ingest,
+      undefined,
+      { bandBps: 0, maxLevels: 1000 },
+    ) as OrderBookSnapshotEvent;
+    expect(ev.bids.map((l) => l.price.toFixed())).toEqual(['100', '50']);
+  });
+});

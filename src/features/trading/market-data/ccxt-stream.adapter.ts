@@ -271,7 +271,21 @@ export function buildCcxtExchange(venueConfig: VenueConfig): Exchange {
     // diff-depth firehose at 100ms across the active menu's high-volume symbols was the dominant
     // spot CPU load after tiering parked the low-volume tail. Order placement never reads this
     // instance (the trading adapter constructs its own).
-    options: { watchOrderBookRate: 1000 },
+    //
+    // OHLCVLimit / tradesLimit: pinned ccxt 4.5.58's per-exchange in-memory caches for watchOHLCV/
+    // watchTrades default to 1000 entries EACH, per symbol+timeframe/per symbol respectively —
+    // verified against the installed package: js/src/pro/binance.js:148 (`'tradesLimit': 1000` in
+    // binance's own `describe().options`), :150 (`'OHLCVLimit': 1000`), consumed at :1451
+    // (`this.safeInteger(this.options, 'tradesLimit', 1000)` inside handleTrades) and :1692
+    // (`this.safeInteger(this.options, 'OHLCVLimit', 1000)` inside handleOHLCV) — an `options` key
+    // set here overrides the exchange's own describe() default via ccxt's deep-extend constructor
+    // merge. Lowered to 400 candles (ample for every interval this bot warms up/trades on) and 100
+    // trades (this instance's trade channel feeds only the paper-fill simulator, which never needs
+    // more than a handful of recent prints) — same per-symbol-per-channel unbounded-cache memory
+    // concern as the order-book bound above (normalize.ts's MARKET_BOOK_MAX_LEVELS), just on ccxt's
+    // own internal cache instead of this codebase's normalized event. Re-verify these key spellings/
+    // defaults if the pinned ccxt version is ever bumped.
+    options: { watchOrderBookRate: 1000, OHLCVLimit: 400, tradesLimit: 100 },
   };
 
   if (venueConfig.baseUrlOverride) {

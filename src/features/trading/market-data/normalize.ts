@@ -219,10 +219,92 @@ function toLevels(raw: unknown): OrderLevel[] {
   return out;
 }
 
-function normalizeBook(raw: RawVenueEvent, ingestTime: EpochMs): OrderBookSnapshotEvent {
+// ── Book memory bound (band filter + hard cap) ──────────────────────────────
+// ccxt pro book caches accumulate every level the venue streams (diff-depth updates), unbounded by
+// this codebase — a deep/illiquid book or a long-running process can carry thousands of levels per
+// side through normalizeBook on every snapshot. Two independent bounds, applied to the RAW float
+// arrays BEFORE any Decimal is constructed (Decimal construction + GC churn is the dominant cost, not
+// the array walk): a percent-of-mid band filter (irrelevant far-touch levels never even reach
+// toLevels) and a hard per-side cap (belt-and-suspenders against a band-filter miss or a disabled
+// band). This is a MEASUREMENT-PATH filter, never a money-path one — the surviving levels still go
+// through the exact levelDecimal/.info-string path unchanged.
+
+// Reads a raw ccxt level's price as a Decimal without ever calling parseFloat/Number() (project-wide
+// money-path ban, eslint.config.mjs) — ccxt pro book caches store this as a native float already, but
+// Decimal accepts both number and string natively. Returns undefined for anything unparseable
+// (malformed entry, non-finite price) — the caller treats that as "mid unavailable", never a throw.
+function rawLevelPrice(entry: unknown): Decimal | undefined {
+  if (!Array.isArray(entry)) return undefined;
+  // Array.isArray narrows unknown to any[]; re-widen so the element read stays type-checked.
+  const p: unknown = (entry as unknown[])[0];
+  if (typeof p !== 'number' && typeof p !== 'string') return undefined;
+  try {
+    const d = new Decimal(p);
+    return d.isFinite() ? d : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// Mid from the best RAW (unfiltered) bid/ask — computed once per book, before either side is
+// filtered, so bandFilterLevels below judges every level against the SAME reference point. Returns
+// undefined (mid unavailable) whenever either side is empty or its best level is unparseable — the
+// caller's fail-open contract (see filterAndCapLevels) then skips the band filter entirely.
+function rawBookMid(rawBids: unknown, rawAsks: unknown): Decimal | undefined {
+  if (!Array.isArray(rawBids) || !Array.isArray(rawAsks)) return undefined;
+  const bestBid = rawLevelPrice(rawBids[0]);
+  const bestAsk = rawLevelPrice(rawAsks[0]);
+  if (bestBid === undefined || bestAsk === undefined) return undefined;
+  return bestBid.plus(bestAsk).dividedBy(2);
+}
+
+// Keeps only raw levels within bandBps of mid, then hard-caps at maxLevels. ccxt book arrays are
+// best-first on both sides (bids sorted highest-price-first — nearest mid from below; asks sorted
+// lowest-price-first — nearest mid from above; this codebase already relies on that convention
+// elsewhere, e.g. ccxt-stream.adapter.ts's risk-mark comment reading bids[0]/asks[0] as the touch), so
+// a plain slice(0, maxLevels) after the band filter keeps the nearest-mid survivors on both sides —
+// no re-sort needed.
+//
+// Failure direction: this is a measurement-path filter, not a validity gate — it fails OPEN. Any of
+// {bandBps <= 0 (config disables it), mid undefined (either side empty or its best level unparseable)}
+// skips the band filter and falls through to the cap-only path; maxLevels <= 0 (config disables the
+// cap) likewise leaves the array untouched. The event (and every level toLevels can still parse) is
+// NEVER dropped by this function — at worst it does no filtering at all.
+function filterAndCapLevels(
+  rawLevels: unknown,
+  mid: Decimal | undefined,
+  bandBps: number,
+  maxLevels: number,
+): unknown {
+  if (!Array.isArray(rawLevels)) return rawLevels; // let toLevels' own non-array guard handle it
+  let entries: unknown[] = rawLevels;
+  if (bandBps > 0 && mid !== undefined) {
+    const bandFraction = new Decimal(bandBps).dividedBy(10_000);
+    const lo = mid.times(new Decimal(1).minus(bandFraction));
+    const hi = mid.times(new Decimal(1).plus(bandFraction));
+    entries = entries.filter((entry) => {
+      const p = rawLevelPrice(entry);
+      // Fail open per-entry too: an unparseable level is left IN (toLevels' own try/catch drops it
+      // later if it truly cannot become a Decimal) rather than silently excluded by the band filter.
+      return p === undefined || (p.gte(lo) && p.lte(hi));
+    });
+  }
+  if (maxLevels > 0) entries = entries.slice(0, maxLevels);
+  return entries;
+}
+
+function normalizeBook(
+  raw: RawVenueEvent,
+  ingestTime: EpochMs,
+  bandBps = 0,
+  maxLevels = 0,
+): OrderBookSnapshotEvent {
   const r = fields(raw.raw);
   const channel = 'book';
   const { eventTime, synthetic } = eventTimeOf(r['timestamp'], ingestTime);
+  const rawBids = r['bids'];
+  const rawAsks = r['asks'];
+  const mid = rawBookMid(rawBids, rawAsks);
   return {
     kind: 'ORDER_BOOK_SNAPSHOT',
     venue: raw.venue,
@@ -232,8 +314,8 @@ function normalizeBook(raw: RawVenueEvent, ingestTime: EpochMs): OrderBookSnapsh
     eventTime,
     ingestTime,
     eventTimeSynthetic: synthetic || undefined,
-    bids: toLevels(r['bids']),
-    asks: toLevels(r['asks']),
+    bids: toLevels(filterAndCapLevels(rawBids, mid, bandBps, maxLevels)),
+    asks: toLevels(filterAndCapLevels(rawAsks, mid, bandBps, maxLevels)),
   };
 }
 
@@ -241,10 +323,22 @@ function normalizeBook(raw: RawVenueEvent, ingestTime: EpochMs): OrderBookSnapsh
 
 export { TIMEFRAME_MAP, nextSeq };
 
+/** Book memory bound, threaded from AppConfig.marketData (see environment.config.ts's
+ *  MARKET_BOOK_BAND_BPS/MARKET_BOOK_MAX_LEVELS) down to normalizeBook. Absent ⇒ both bounds disabled
+ *  (0), matching normalizeBook's own defaults — a caller that omits this stays byte-identical to
+ *  pre-feature behavior (every existing call site that does not thread it, e.g. warmup backfill's
+ *  candle-only normalizeRawEvent calls, is unaffected: this option is a no-op for every event kind but
+ *  'book'). */
+export interface BookLimits {
+  readonly bandBps: number;
+  readonly maxLevels: number;
+}
+
 export function normalizeRawEvent(
   raw: RawVenueEvent,
   ingestTime: EpochMs,
   interval?: CandleInterval,
+  bookLimits?: BookLimits,
 ): MarketEvent {
   switch (raw.type) {
     case 'ticker':
@@ -254,6 +348,6 @@ export function normalizeRawEvent(
     case 'candle':
       return normalizeCandle(raw, ingestTime, interval ?? '1m');
     case 'book':
-      return normalizeBook(raw, ingestTime);
+      return normalizeBook(raw, ingestTime, bookLimits?.bandBps, bookLimits?.maxLevels);
   }
 }

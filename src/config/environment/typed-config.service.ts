@@ -72,6 +72,10 @@ export class TypedConfigService {
     return this.config.get('liquidationFeed', { infer: true });
   }
 
+  get marketData(): AppConfig['marketData'] {
+    return this.config.get('marketData', { infer: true });
+  }
+
   get observability(): AppConfig['observability'] {
     return this.config.get('observability', { infer: true });
   }

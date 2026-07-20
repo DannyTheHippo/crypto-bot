@@ -302,6 +302,15 @@ export interface AppConfig {
   liquidationFeed: {
     enabled: boolean;
   };
+  // Order-book memory bound (normalize.ts's normalizeBook, threaded via MarketDataService): a
+  // percent-of-mid band filter plus a hard per-side level cap, applied to the raw ccxt float arrays
+  // BEFORE any Decimal is constructed. 0 disables either bound independently — an unconfigured
+  // deployment (both non-zero defaults below) already gets the bound, unlike the feature-flag
+  // convention elsewhere in this file, because this is a resource fix, not an opt-in behavior change.
+  marketData: {
+    bookBandBps: number;
+    bookMaxLevels: number;
+  };
   // Strategy-lane knobs (symbol/interval/active lane selection) read via ConfigService.
   strategy: {
     // Deprecated single-symbol knob; still honored as the fallback when TRADING_SYMBOLS is unset.

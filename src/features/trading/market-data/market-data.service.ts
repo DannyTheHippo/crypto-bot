@@ -6,7 +6,7 @@ import { EXCHANGE_STREAM } from '../../../ports/exchange-stream';
 import type { ClockPort } from '../../../ports/clock';
 import { CLOCK } from '../../../ports/clock';
 import type { EpochMs } from '../../../domain/types/ids';
-import { normalizeRawEvent } from './normalize';
+import { normalizeRawEvent, type BookLimits } from './normalize';
 import type { CandleInterval } from '../../../domain/types/market-events';
 
 @Injectable()
@@ -14,6 +14,10 @@ export class MarketDataService implements MarketStreamPort {
   constructor(
     @Inject(EXCHANGE_STREAM) private readonly exchangeStream: ExchangeStreamPort,
     @Inject(CLOCK) private readonly clock: ClockPort,
+    // MARKET_BOOK_BAND_BPS/MARKET_BOOK_MAX_LEVELS (environment.config.ts's marketData group).
+    // Optional, appended last so every existing call site (tests included) keeps compiling
+    // unchanged — absent means both bounds disabled, same as normalizeBook's own defaults.
+    private readonly bookLimits?: BookLimits,
   ) {}
 
   async *subscribe(spec: SubscriptionSpec): AsyncIterable<MarketEvent> {
@@ -29,7 +33,7 @@ export class MarketDataService implements MarketStreamPort {
       }
 
       try {
-        const event = normalizeRawEvent(rawEvent, ingestTime, candleInterval);
+        const event = normalizeRawEvent(rawEvent, ingestTime, candleInterval, this.bookLimits);
         yield event;
       } catch {
         // Normalization failure on a single event should not kill the stream

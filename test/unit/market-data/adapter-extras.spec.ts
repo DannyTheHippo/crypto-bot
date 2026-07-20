@@ -94,6 +94,17 @@ describe('buildCcxtExchange', () => {
     });
     expect(ex.id).toBe('binance');
   });
+
+  // Verified against the pinned ccxt 4.5.58 package: js/src/pro/binance.js:148/150 default
+  // tradesLimit/OHLCVLimit to 1000 each; this constructor overrides both to bound the per-symbol
+  // watchTrades/watchOHLCV caches (see buildCcxtExchange's own comment).
+  it('caps the ccxt pro watchTrades/watchOHLCV in-memory caches (tradesLimit/OHLCVLimit)', () => {
+    const ex = buildCcxtExchange({ id: 'binance', environment: 'live' });
+    const options = (ex as unknown as { options: Record<string, unknown> }).options;
+    expect(options['OHLCVLimit']).toBe(400);
+    expect(options['tradesLimit']).toBe(100);
+    expect(options['watchOrderBookRate']).toBe(1000);
+  });
 });
 
 describe('supervised channel loops deliver normalized raw events', () => {

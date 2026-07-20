@@ -21,6 +21,8 @@ import {
   buildUserMessage,
   computePromptHash,
 } from '../../../src/features/trading/agentic/agent-prompt';
+import { normalizeRawEvent } from '../../../src/features/trading/market-data/normalize';
+import type { RawVenueEvent } from '../../../src/ports/exchange-stream';
 import type {
   AgentDecisionInput,
   AgentContext,
@@ -1193,6 +1195,71 @@ describe('buildUserMessage', () => {
       ) as Record<string, unknown>;
 
       expect(payload).not.toHaveProperty('bookStructure');
+    });
+  });
+
+  // Order-book memory bound (normalize.ts's normalizeBook): band-filters + hard-caps raw ccxt book
+  // levels BEFORE Decimal construction. This fixture proves that truncation is inert for the agent
+  // prompt — buildOrderBookBlock only ever reads the top 5 levels and buildBookStructureBlock only
+  // ever reads the top 10 (weighted imbalance) plus a 25bps depth-notional walk that stops at the
+  // first out-of-band level (both far inside a 50bps band 12 levels deep) — so band-filtering/
+  // capping levels neither builder ever reaches must never change the rendered payload.
+  describe('order-book memory bound: prompt-render fidelity across truncation', () => {
+    const MID = 100;
+    // All within the 50bps band (inclusive) and 12 deep — past both builders' own depth ceilings
+    // (top-5 / top-10), so the shared near-mid prefix is identical whether or not the tail below is
+    // truncated.
+    const WITHIN_BAND_BPS = [1, 5, 10, 12, 15, 18, 20, 22, 25, 30, 35, 45];
+    // Beyond the 50bps band — present only in the untruncated raw book; the band filter removes
+    // these, and the corresponding maxLevels cap (see the test below) is set high enough that the
+    // band filter alone drives every level dropped in this fixture.
+    const BEYOND_BAND_BPS = [60, 80, 120, 160, 200, 250, 300];
+
+    function rawLevel(bps: number, side: 'bid' | 'ask'): [number, number] {
+      const levelPrice = side === 'bid' ? MID * (1 - bps / 10_000) : MID * (1 + bps / 10_000);
+      return [levelPrice, 1];
+    }
+
+    function rawBookEvent(offsets: number[]): RawVenueEvent {
+      return {
+        type: 'book',
+        venue: V,
+        symbol: SYM,
+        timestamp: epochMs(T),
+        raw: {
+          timestamp: T,
+          bids: offsets.map((bps) => rawLevel(bps, 'bid')),
+          asks: offsets.map((bps) => rawLevel(bps, 'ask')),
+        },
+      };
+    }
+
+    it('renders a byte-identical orderBook + bookStructure block whether the raw book is band-filtered/capped or left untruncated', () => {
+      const fullOffsets = [...WITHIN_BAND_BPS, ...BEYOND_BAND_BPS];
+
+      const truncated = normalizeRawEvent(rawBookEvent(fullOffsets), epochMs(T), undefined, {
+        bandBps: 50,
+        maxLevels: 1000,
+      }) as OrderBookSnapshotEvent;
+      const untruncated = normalizeRawEvent(
+        rawBookEvent(fullOffsets),
+        epochMs(T),
+      ) as OrderBookSnapshotEvent;
+
+      // Sanity: the fixture actually exercises truncation — otherwise the fidelity check below is
+      // vacuous (comparing two identical inputs would trivially pass).
+      expect(truncated.bids).toHaveLength(WITHIN_BAND_BPS.length);
+      expect(untruncated.bids).toHaveLength(fullOffsets.length);
+      expect(truncated.bids.length).toBeLessThan(untruncated.bids.length);
+
+      const truncatedPayload = buildMarketPayload(buildInput({ book: truncated }), {
+        bookStructureEnabled: true,
+      });
+      const untruncatedPayload = buildMarketPayload(buildInput({ book: untruncated }), {
+        bookStructureEnabled: true,
+      });
+
+      expect(truncatedPayload).toBe(untruncatedPayload);
     });
   });
 

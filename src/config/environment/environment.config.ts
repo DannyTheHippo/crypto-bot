@@ -585,6 +585,16 @@ const envSchema = z
       .enum(['true', 'false'])
       .default('false')
       .transform((v) => v === 'true'),
+    // Order-book memory bound (normalize.ts's normalizeBook): a percent-of-mid band filter applied
+    // to the raw ccxt float arrays before any Decimal is constructed. 0 disables the band filter
+    // entirely (cap-only). Default 50 (0.5%) — comfortably wider than the book-structure block's own
+    // 25bps depth-notional window (agent-prompt.ts's BOOK_STRUCTURE_BAND_BPS) so nothing that block
+    // reads is ever truncated by this filter.
+    MARKET_BOOK_BAND_BPS: z.coerce.number().int().min(0).default(50),
+    // Hard per-side cap on book levels, applied after the band filter. 0 disables the cap. Default
+    // 1000 — belt-and-suspenders against a disabled/miss band filter on a deep book; far above the
+    // top-10 levels any prompt block ever reads (agent-prompt.ts's BOOK_STRUCTURE_DEPTH_LEVELS).
+    MARKET_BOOK_MAX_LEVELS: z.coerce.number().int().min(0).default(1000),
   })
   .superRefine((data, ctx) => {
     // Backstop-vs-model-stop (Design § Conflict resolutions): ProtectiveExitService's bot-side
@@ -836,6 +846,8 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     AGENTIC_POSITIONING_ENABLED: agenticPositioningEnabled,
     AGENTIC_POSITIONING_POLL_MS: agenticPositioningPollMs,
     AGENTIC_LIQUIDATIONS_ENABLED: agenticLiquidationsEnabled,
+    MARKET_BOOK_BAND_BPS: marketBookBandBps,
+    MARKET_BOOK_MAX_LEVELS: marketBookMaxLevels,
   } = parsed.data;
   const bootId = crypto.randomUUID();
   const venues = parseVenues(env);
@@ -1007,6 +1019,10 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     },
     liquidationFeed: {
       enabled: agenticLiquidationsEnabled,
+    },
+    marketData: {
+      bookBandBps: marketBookBandBps,
+      bookMaxLevels: marketBookMaxLevels,
     },
     ...liveFields,
   };

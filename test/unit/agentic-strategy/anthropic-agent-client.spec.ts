@@ -2860,17 +2860,17 @@ describe('AnthropicAgentClient', () => {
     });
 
     describe('nextConsultBars (portfolio-level, batch schema)', () => {
-      it('accepts the 1/64 edges, rejects 0 and 65', () => {
+      it('accepts the 1/32 edges, rejects 0 and 33 (XA1: max 64→32)', () => {
         expect(tradePortfolioSchema.safeParse({ decisions: [], nextConsultBars: 1 }).success).toBe(
           true,
         );
-        expect(tradePortfolioSchema.safeParse({ decisions: [], nextConsultBars: 64 }).success).toBe(
+        expect(tradePortfolioSchema.safeParse({ decisions: [], nextConsultBars: 32 }).success).toBe(
           true,
         );
         expect(tradePortfolioSchema.safeParse({ decisions: [], nextConsultBars: 0 }).success).toBe(
           false,
         );
-        expect(tradePortfolioSchema.safeParse({ decisions: [], nextConsultBars: 65 }).success).toBe(
+        expect(tradePortfolioSchema.safeParse({ decisions: [], nextConsultBars: 33 }).success).toBe(
           false,
         );
       });
@@ -2973,7 +2973,7 @@ describe('AnthropicAgentClient', () => {
       expect(DECISION_V2_BOUNDS.stopLossPct).toEqual({ min: 0.002, max: 0.05 });
       expect(DECISION_V2_BOUNDS.takeProfitPct).toEqual({ min: 0.001, max: 0.2 });
       expect(DECISION_V2_BOUNDS.maxHoldBars).toEqual({ min: 1, max: 288 });
-      expect(DECISION_V2_BOUNDS.nextConsultBars).toEqual({ min: 1, max: 64 });
+      expect(DECISION_V2_BOUNDS.nextConsultBars).toEqual({ min: 1, max: 32 });
       expect(DECISION_V2_BOUNDS.thesisMaxLen).toBe(300);
     });
   });

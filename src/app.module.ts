@@ -406,8 +406,8 @@ const INVALID_KEY_PROBE: KeyProbePort = {
         // Live keys from AppConfig (stripped under test/ci); sandbox keys + environment (testnet|demo)
         // from SANDBOX_ENV via resolveSandbox — keeping demo/testnet keys non-interchangeable.
         const sandbox = resolveSandbox(config);
-        const apiKey = isLive ? config.liveSecrets.liveApiKey ?? '' : sandbox.apiKey;
-        const secret = isLive ? config.liveSecrets.liveApiSecret ?? '' : sandbox.secret;
+        const apiKey = isLive ? (config.liveSecrets.liveApiKey ?? '') : sandbox.apiKey;
+        const secret = isLive ? (config.liveSecrets.liveApiSecret ?? '') : sandbox.secret;
         const client = buildOrderClient(
           primaryVenue(config),
           isLive ? 'live' : sandbox.environment,
@@ -2072,6 +2072,11 @@ export class AppModule
         // ConsultGateOutcome now matches AgentMetricsRecorder.recordConsultGate's param exactly
         // (see agent-metrics-recorder.service.ts). Was left unwired by I1 pending this rename.
         onConsultGate: (outcome) => this.agentMetrics.recordConsultGate(outcome),
+        // XA1 (A0 activation bundle): the SAME scanner instance the batching client's menu gate
+        // reads — the strategy-side gate keeps off-menu idle symbols from recording forced_*
+        // outcomes and from having their consult clock/wake baseline reset by the batching
+        // client's inert menu-hold (scanner warmup default = everything active, fail OPEN).
+        menuGate: this.universeScanner,
         // I1b (Design § Universe): the SAME shared UniverseScannerService instance
         // ACTIVE_MENU_GATE_OVERRIDE binds — each agentic-N instance records its own symbol's closed-
         // candle window on its own decide cadence (see universe-scanner.service.ts's own header

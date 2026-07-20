@@ -191,12 +191,16 @@ export function agenticEnv(config?: TypedConfigService): Record<string, string |
     AGENTIC_TRACK_RECORD_ENABLED: String(agentic.trackRecordEnabled),
     // Portfolio-consult batching: sourced off the validated config fields (never raw process.env),
     // same convention as the A/B pct above. AGENTIC_PORTFOLIO_SYMBOL_COUNT is NOT a schema field —
-    // it is derived here from the SAME config.strategy.symbols array TRADING_SYMBOLS resolves to
-    // (app.module.ts registers one agentic-N instance per entry), so BatchingAgentClient's
-    // early-flush threshold can never drift from the actual configured symbol count.
+    // it is derived here as the early-flush threshold for BatchingAgentClient. XA1 (A0 activation
+    // bundle): capped at the ACTIVE MENU size, not the full symbol count — only menu symbols ever
+    // join a batch (off-menu symbols skip at the strategy gate), so a threshold of symbols.length
+    // (24) could never trigger early-flush on a menu-12 wave and every wave waited out (and then
+    // fragmented past) the window: the 2026-07-20 01:00Z fallback wave split into SIX API calls.
     AGENTIC_PORTFOLIO_CONSULT: String(agentic.portfolioConsultEnabled),
     AGENTIC_PORTFOLIO_WINDOW_MS: String(agentic.portfolioWindowMs),
-    AGENTIC_PORTFOLIO_SYMBOL_COUNT: String(config.strategy.symbols.length),
+    AGENTIC_PORTFOLIO_SYMBOL_COUNT: String(
+      Math.min(config.strategy.symbols.length, agentic.activeMenuSize),
+    ),
     // Trade-flow/CVD + positioning blocks: off by default ⇒ byte-identical legacy prompt. Both ride
     // the SAME information-context A/B control arm as derivatives/crossSymbol above (see
     // anthropic-agent-client.ts's infoContextControlArm). Same convention as DERIVATIVES_FEED_ENABLED

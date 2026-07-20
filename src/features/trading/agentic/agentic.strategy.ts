@@ -264,6 +264,16 @@ interface ConsultScheduleArgs {
   readonly lastClose: number | null;
   readonly wakeMovePct: number;
   readonly fallbackConsultBars: number;
+  // XA1 (A0 activation bundle): active-menu membership. false ⇒ this symbol never schedules,
+  // wakes, or falls back into a consult — off-menu idle symbols previously recorded forced_*
+  // gate outcomes every fallback cycle and then had their consult clock AND wake-on-move
+  // baseline reset by the batching client's inert menu-hold, corrupting scheduler state while
+  // never actually consulting (2026-07-20: 24 forced_fallback outcomes → 6 fragmented API
+  // calls). forced_fill and forced_rearm bypass this on purpose (an executed fill or an
+  // unmanaged open position must always consult — the scanner pins positioned symbols active,
+  // this is defense in depth). Optional: absent ⇒ true (fail OPEN toward consulting — a broken
+  // menu read must never silence the basket).
+  readonly menuActive?: boolean;
 }
 
 // B2 (Design § Deleted scaffolding): prescreen.ts's deterministic quiet-market heuristic (vol
@@ -287,6 +297,10 @@ export function evaluateConsultSchedule(args: ConsultScheduleArgs): ConsultGateO
   } = args;
   if (isExecTrigger) return 'forced_fill';
   if (hasOpenPositionWithoutDirectives) return 'forced_rearm';
+  // XA1: off-menu symbols stay quiet (see ConsultScheduleArgs.menuActive). barsSinceConsult keeps
+  // climbing while off-menu, so the moment the scanner promotes the symbol back onto the menu it
+  // immediately trips the fallback branch below — a fresh consult on menu entry falls out for free.
+  if (args.menuActive === false) return 'skipped_scheduled';
   if (state.scheduledConsultBars !== null && state.barsSinceConsult >= state.scheduledConsultBars) {
     return 'consulted';
   }
@@ -335,6 +349,10 @@ export interface AgenticStrategyDeps {
   // the retired onPrescreen seam (prescreen.ts, deleted) — see ConsultGateOutcome/
   // evaluateConsultSchedule for the six possible values.
   readonly onConsultGate?: (outcome: ConsultGateOutcome) => void;
+  // XA1: active-menu membership read for the consult gate (see ConsultScheduleArgs.menuActive).
+  // Structurally satisfied by UniverseScannerService; absent ⇒ every symbol treated as active
+  // (fail OPEN toward consulting — same failure direction as the scanner's own warmup default).
+  readonly menuGate?: { isActive(symbol: string): boolean };
   // P3: sibling of onClosedTrade — ReflectionService.checkWeeklyReflectionTrigger has no timer of its
   // own (see that method's header comment: "wiring a periodic caller belongs in agentic.strategy.ts's
   // decide() loop"). Fires once per decide() call, same cadence as onConsultGate below; the callee
@@ -508,6 +526,7 @@ export class AgenticStrategy implements AsyncStrategy {
   private readonly journal?: AgentDecisionJournalPort;
   private readonly onClosedTrade?: (count: number) => void;
   private readonly onConsultGate?: (outcome: ConsultGateOutcome) => void;
+  private readonly menuGate?: { isActive(symbol: string): boolean };
   // P3 — see AgenticStrategyDeps.checkWeeklyReflection's own comment.
   private readonly checkWeeklyReflection?: () => void;
   private readonly logger: LoggerLike;
@@ -622,6 +641,7 @@ export class AgenticStrategy implements AsyncStrategy {
     this.journal = deps.journal;
     this.onClosedTrade = deps.onClosedTrade;
     this.onConsultGate = deps.onConsultGate;
+    this.menuGate = deps.menuGate;
     this.checkWeeklyReflection = deps.checkWeeklyReflection;
     this.logger = deps.logger ?? NOOP_LOGGER;
     this.entryTtlBars = params.entryTtlBars ?? 0;
@@ -760,6 +780,7 @@ export class AgenticStrategy implements AsyncStrategy {
       lastClose: gateLastCandle ? toIndicatorNumber(gateLastCandle.close) : null,
       wakeMovePct: this.wakeMovePct,
       fallbackConsultBars: this.fallbackConsultBars,
+      menuActive: this.menuGate?.isActive(String(this.symbol)) ?? true,
     });
     this.onConsultGate?.(gate);
     // P3: weekly time-based reflection trigger — same per-decide() cadence as onConsultGate above.

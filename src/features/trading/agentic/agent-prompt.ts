@@ -569,7 +569,9 @@ export const DECISION_V2_BOUNDS = {
   maxHoldBars: { min: 1, max: 288 },
   partialCloseFraction: { min: 0.05, max: 0.95 },
   thesisMaxLen: 300,
-  nextConsultBars: { min: 1, max: 64 },
+  // XA1 (A0, 2026-07-20): max 64→32 — a 64-bar (16h on 15m bars) self-schedule starves the
+  // promotion-evidence pace (~2 closed trips/day needed); the fallback floor is the other half.
+  nextConsultBars: { min: 1, max: 32 },
 } as const;
 
 // Action-enum descriptions shared by the single-symbol and per-element portfolio trade tools below
@@ -1543,7 +1545,7 @@ export function buildMarketPayload(
   const htf =
     extras.d1 !== undefined
       ? { ...(input.context?.htf ?? { h1: null, h4: null }), d1: extras.d1 }
-      : input.context?.htf ?? null;
+      : (input.context?.htf ?? null);
 
   const payload = {
     symbol,

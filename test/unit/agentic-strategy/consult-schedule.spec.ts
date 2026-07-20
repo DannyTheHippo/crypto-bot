@@ -130,6 +130,7 @@ class ScheduledClient implements AgentClientPort {
 function makeStrategy(
   client: AgentClientPort,
   onConsultGate: (outcome: ConsultGateOutcome) => void,
+  extraDeps: Partial<AgenticStrategyDeps> = {},
 ) {
   const params: AgenticStrategyParams = {
     symbol: SYM,
@@ -138,7 +139,7 @@ function makeStrategy(
     warmupBars: 5,
     model: 'test-model',
   };
-  const deps: AgenticStrategyDeps = { onConsultGate };
+  const deps: AgenticStrategyDeps = { onConsultGate, ...extraDeps };
   return new AgenticStrategy(SID, params, client, deps);
 }
 
@@ -243,5 +244,61 @@ describe('AgenticStrategy consult schedule (B2)', () => {
     await strategy.decide(buildInput(31));
     expect(client.calls).toHaveLength(2);
     expect(gates.at(-1)).toBe('forced_fallback');
+  });
+
+  // XA1 (A0 activation bundle): off-menu idle symbols stay quiet at the GATE — previously they
+  // recorded forced_* outcomes every fallback cycle and had their consult clock + wake baseline
+  // reset by the batching client's inert menu-hold without ever consulting.
+  it('(f) XA1: an off-menu flat symbol never consults and records only skipped_scheduled', async () => {
+    const gates: ConsultGateOutcome[] = [];
+    const client = new ScheduledClient(undefined);
+    const strategy = makeStrategy(client, (o) => gates.push(o), {
+      menuGate: { isActive: () => false },
+    });
+
+    for (let bar = 0; bar < 20; bar += 1) {
+      await strategy.decide(buildInput(bar)); // well past the 16-bar fallback
+    }
+    expect(client.calls).toHaveLength(0);
+    expect(new Set(gates)).toEqual(new Set(['skipped_scheduled']));
+  });
+
+  it('(g) XA1: menu re-entry fires the fallback consult immediately (clock kept climbing off-menu)', async () => {
+    const gates: ConsultGateOutcome[] = [];
+    let active = false;
+    const client = new ScheduledClient(undefined);
+    const strategy = makeStrategy(client, (o) => gates.push(o), {
+      menuGate: { isActive: () => active },
+    });
+
+    for (let bar = 0; bar < 20; bar += 1) {
+      await strategy.decide(buildInput(bar));
+    }
+    expect(client.calls).toHaveLength(0);
+
+    active = true; // scanner promotes the symbol onto the menu
+    await strategy.decide(buildInput(20));
+    expect(client.calls).toHaveLength(1);
+    expect(gates.at(-1)).toBe('forced_fallback');
+  });
+
+  it('(h) XA1: forced_fill and forced_rearm bypass the menu gate (defense in depth)', async () => {
+    const gatesFill: ConsultGateOutcome[] = [];
+    const clientFill = new ScheduledClient(undefined);
+    const strategyFill = makeStrategy(clientFill, (o) => gatesFill.push(o), {
+      menuGate: { isActive: () => false },
+    });
+    await strategyFill.decide(buildInput(0, { trigger: 'exec' }));
+    expect(clientFill.calls).toHaveLength(1);
+    expect(gatesFill.at(-1)).toBe('forced_fill');
+
+    const gatesRearm: ConsultGateOutcome[] = [];
+    const clientRearm = new ScheduledClient(undefined);
+    const strategyRearm = makeStrategy(clientRearm, (o) => gatesRearm.push(o), {
+      menuGate: { isActive: () => false },
+    });
+    await strategyRearm.decide(buildInput(0, { openPosition: true }));
+    expect(clientRearm.calls).toHaveLength(1);
+    expect(gatesRearm.at(-1)).toBe('forced_rearm');
   });
 });

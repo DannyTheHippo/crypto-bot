@@ -134,7 +134,7 @@ describe('loop-sweep-core alarms', () => {
 
   it('an UNKNOWN elapsed (watermark without sweptAtMs) does not suppress starvation alarms — conservative toward detection', () => {
     const lane = baseLane();
-    const wm = baseWatermark() as Record<string, unknown>;
+    const wm = baseWatermark();
     delete wm['sweptAtMs'];
     const cur = { sweptAtMs: WM_TIME + EXPECTED_SWEEP_INTERVAL_MS, lanes: { spot: lane } };
     const { alarms } = computeSweep({ prev: wm, cur });

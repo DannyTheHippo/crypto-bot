@@ -18,6 +18,7 @@
     "playbook:candidate": "node scripts/playbook-candidate.mjs",
     "--- MODE CONTROL OPS ---": "--------------------------------",
     "arm": "node scripts/arm-ceremony.mjs",
+    "loop:sweep": "node scripts/loop-sweep.mjs",
     "--- CHECKS ---": "--------------------------------",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit -p tsconfig.eslint.json",

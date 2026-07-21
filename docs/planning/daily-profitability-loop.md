@@ -37,7 +37,9 @@ channel}`, `venue_free_cash_usdt{venue}`, `venue_capital_headroom_usdt{venue}`);
 gauges are label-less (`equity_usdt`, `kill_switch_state`, `agentic_budget_remaining_usd`,
 `agentic_active_menu`, ...) because there is only one book now. One promotion verdict, one
 playbook lineage (seed v1 — `SEED_PLAYBOOK_V3`, `agentic-strategy.module.ts:426`), one champion/
-candidate A/B, one unified `AGENTIC_DAILY_COST_STOP_USD=$3/day` breaker.
+candidate A/B, one unified `AGENTIC_DAILY_COST_STOP_USD=$3/day` breaker. NOTE: the spec file
+`plans/2026-07-v3-consolidation-spec.md` is git-history-only (2026-07-21 owner md prune) — read
+any "spec §N" citation in this playbook via `git show`.
 
 ## 1. Rehydrate — from digest history, never a raw log window
 

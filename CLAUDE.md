@@ -16,16 +16,16 @@ Deploy knobs live in committed lane files; secrets live in gitignored `.env` onl
 
 | File | Role |
 | ------ | ------ |
-| `.env.app` | Spot lane deploy knobs (+ comments) |
-| `.env.app-perp` | Perp lane knobs (`docker compose --profile perp`) |
+| `.env.app` | App deploy knobs, one process/both venues (+ comments) |
 | `.env` / `.env.example` | Secrets only (API keys, arming tokens, Grafana password) |
 | `docker-compose.yml` | `env_file` wiring + infra env only — no app knob `environment:` blocks |
 
-**Compose:** `env_file: [.env.app \| .env.app-perp, .env]` — later file wins (secrets override).
+**Compose:** `env_file: [.env.app, .env]` — later file wins (secrets override). One `app` service,
+no profiles (the perp lane files/profile were deleted at the 2026-07-21 v3 cutover, spec §9).
 
 **Host `pnpm start`:** `AppConfigModule` loads `envFilePath: ['.env', '.env.app']` — first path wins (same effective precedence). Test/CI: `ignoreEnvFile: true` (unchanged).
 
-**Standing sync rule:** deploy knob changes go to `.env.app` (+ `.env.app-perp` when perp differs), zod schema in `environment.config.ts`, and docs — not inline compose `environment:`. Secrets template stays in `.env.example` only.
+**Standing sync rule:** deploy knob changes go to `.env.app`, zod schema in `environment.config.ts`, and docs — not inline compose `environment:`. Secrets template stays in `.env.example` only.
 
 **env_file quirk:** `VAR=` means UNSET; never put an inline comment after an empty assignment (compose delivers the comment as the value).
 
@@ -56,7 +56,8 @@ Deploy knobs live in committed lane files; secrets live in gitignored `.env` onl
    does not replace it. Rules 1, 2, 3, 5, 6 bind on the lane exactly as elsewhere — it only
    proposes a Signal, Risk still sizes/vetoes it, and the four live gates still bind. The
    deterministic pure lane (ema-cross/donchian) and its replay-determinism gate were RETIRED by
-   owner decision 2026-07-03 (docs/archive/nightly-improvement.md records the historical program);
+   owner decision 2026-07-03 (docs/archive/nightly-improvement.md, now git-history-only — pruned
+   2026-07-21 — records the historical program);
    the test/backtest research harness was REBUILT 2026-07-10 by owner decision (edge program —
    reports/loop/state.md § Flagged) and stays OFF the production test gate (`pnpm backtest`).
 5. OMS: never blind-resubmit — unknown outcome ⇒ query by clientOrderId first
@@ -65,5 +66,5 @@ Deploy knobs live in committed lane files; secrets live in gitignored `.env` onl
    OUTCOME_AMBIGUOUS, never retried blind.
 6. audit_log and order_events are append-only — never UPDATE/DELETE, never relax
    their triggers. Reconciliation mismatch HALTs and never auto-flattens.
-7. No secrets in code/logs/fixtures/committed env files (`.env.app`, `.env.app-perp`); pino redact list mandatory for new loggers;
+7. No secrets in code/logs/fixtures/committed env files (`.env.app`); pino redact list mandatory for new loggers;
    key fingerprints only.

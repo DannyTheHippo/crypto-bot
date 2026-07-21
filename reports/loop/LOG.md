@@ -3993,3 +3993,31 @@ confirm the first post-restart scheduled tick (~21:16Z) and the host-sleep annot
 of WATCH-Y2/Y3 on the next sleep; (4) UNI derivatives-feed poll failures: N-recurrences rule
 arms if seen again next sweep; (5) lift-readiness record drafting once the 48h bar is met
 clean (soak exit artifact, per the handoff record).
+
+## 2026-07-21 — Owner-directed md prune (post-Pass-36, ~20:45-21:00Z): 19 markdown files removed; CLAUDE.md v2 drift corrected
+
+Owner instruction (verbatim intent): aggressively remove all md files not absolutely necessary
+for the future. Executed as `git rm` (git history is the archive — code-hygiene rule, no
+soft-delete dirs). Removed: `docs/archive/*` (4), the W4 audit report, and 14 `reports/loop/`
+study/analysis memos whose binding verdicts are condensed in state.md § Standing verdicts and
+the decision records (full list + future-pass consequences: state.md § Archived records prune
+note). Safety checks before removal: zero functional md reads in src/test/scripts (the only
+path-coupled spec, `carry-study.spec.ts`, WRITES its report — regenerates on the ~07-24
+re-test); all other code references are provenance comments. Kept (13): CLAUDE.md, README,
+playbook, runbook, the two active specs, LOG/state/archive (memory architecture), Kimi-K3 memo
+(active blocked work), three current `src/` boundary READMEs. Also fixed in the same commit:
+project CLAUDE.md still documented the deleted perp lane (`.env.app-perp` row,
+`--profile perp`, compose `[.env.app | .env.app-perp, .env]`, rule-7 file list) — v2 drift in
+an auto-loaded instruction file, corrected to the v3 one-service reality (factual alignment
+only, no policy change); the rule-4 `nightly-improvement.md` citation now says git-history-only.
+
+**Second wave (owner: "what is not 100% necessary gets removed"):** 20 more tracked files
+pruned — the A0 evidence bundle (`a0-evidence-2026-07-20/`, 15 CSV/txt), the state archive
+(`archive/state-2026-07.md` — git history is now the only copy; state.md pointers updated),
+`digests/w6-digests.txt`, the Kimi-K3 memo, and BOTH specs
+(`docs/specs/2026-07-06-profitability-design.md`, `plans/2026-07-v3-consolidation-spec.md`) —
+the playbook now notes at §0 that "spec §N" citations resolve via `git show`. Untracked
+`digests/` runtime files (jsonl/watermark/log) left in place: live collector working set, not
+repo content. Surviving md set (9): CLAUDE.md, README, playbook, runbook, LOG.md, state.md,
+three `src/` boundary READMEs.
+Gates green before commit (build/lint/typecheck/test + lint:md + format:check).

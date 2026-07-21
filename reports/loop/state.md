@@ -11,7 +11,8 @@ Compacted again 2026-07-20 (Y4 state hygiene): resolved/superseded pre-2026-07-2
 records — the Push II program, Push 3 completion records, the v2 cutover / Round-8 / Y-series
 records, the Last-pass narrative, the backlog closed ledger, and the resolved provenance index —
 were MOVED VERBATIM to `reports/loop/archive/state-2026-07.md` (append-only; provenance list at
-the foot of this file). Nothing load-bearing pruned: all open WATCHes, pre-authorizations,
+the foot of this file; the archive file itself is GIT-HISTORY-ONLY since the 2026-07-21 owner
+prune — read it via `git show`). Nothing load-bearing pruned: all open WATCHes, pre-authorizations,
 flagged defects, and standing verdicts remain here.
 
 ## Strategic frame
@@ -20,7 +21,8 @@ The mutable strategy the playbook deliberately does not embed. Passes update sta
 when the owner approves a new spec, replace the pointer (and archive the old spec) — the playbook
 never changes for strategy evolution.
 
-- **Active spec:** `docs/specs/2026-07-06-profitability-design.md` (owner-approved 2026-07-06).
+- **Active spec:** `docs/specs/2026-07-06-profitability-design.md` (owner-approved 2026-07-06;
+  git-history-only since the 2026-07-21 prune).
 - **Goal:** real live profitability at **$1k–$5k capital** (owner, 2026-07-06). Objective
   function: net-of-cost PnL = `realizedPnl − fees − llmCostUsd`.
 - **Active frame (owner decisions 2026-07-10):** the LLM agentic lane is the program centerpiece —
@@ -1020,9 +1022,9 @@ wait on venue-TP capture data; **#18/#46/#47/#48** wait on their stated data/seq
 
 ## Archived records (moved verbatim to archive/state-2026-07.md, 2026-07-20)
 
-Full text preserved append-only in `reports/loop/archive/state-2026-07.md`; git history is the
-second copy. Each block below is UNCHANGED in the archive — moved because it is resolved or
-superseded, not because it was pruned:
+Full text preserved in git history (`reports/loop/archive/state-2026-07.md` was itself pruned
+from the tree 2026-07-21 — git history is now the only copy). Each block below is UNCHANGED in
+the archived file — moved because it is resolved or superseded, not because it was pruned:
 
 - Push II program (owner session 2026-07-13) — 7/8 phases shipped; superseded by the v2 contract.
 - Push 3 completion records (2026-07-14) — P7c/P7d/P7e/P7f/P8a/P8d; superseded by v2 + the
@@ -1034,3 +1036,34 @@ superseded, not because it was pruned:
 - Last pass narrative (Passes 23-34) — per-pass detail also in `reports/loop/LOG.md`.
 - Backlog closed ledger (retired IDs #1-#57) and the Resolved provenance index — detail in
   `reports/loop/LOG.md` by date.
+
+**Owner-directed md prune (2026-07-21, post-Pass-36): the following files are GIT-HISTORY-ONLY
+now** — 19 markdown files removed from the working tree (evidence/study reports whose binding
+verdicts are condensed above, plus `docs/archive/*` and the superseded W4 audit):
+`docs/archive/{agentic-improvement-backlog,design-plan,nightly-improvement,
+profitability-analysis-2026-07-04}.md`, `reports/audit-2026-07-cleanup.md`, and
+`reports/loop/{a0-analysis-2026-07-20,autonomy-profitability-research-2026-07-12,
+bounds-calibration-2026-07-13,candidates/2026-07-10/candidate-a,candidates/2026-07-10/
+candidate-b,carry-study-2026-07-10,edge-diagnostic-2026-07-10,entry-fill-quality-2026-07-13,
+entry-fill-quality-2026-07-18,loop-mechanism-learnings-2026-07,multi-strategy-search-2026-07-12,
+nonprice-sweep-2026-07-12,stop-slippage-2026-07-13,universe-study-2026-07-13}.md`. Consequences
+a future pass must know: (1) § Standing verdicts stays the binding record — the cited report
+paths resolve via `git show`, not the tree; a missing-file read there is NOT a negative-read
+incident. (2) "Y1 §C/§D" citations (playbook, sweep-tool headers, specs) refer to
+`loop-mechanism-learnings-2026-07.md` in git history; the operational content lives in playbook
+§2-§3. (3) The carry re-test (~07-24) REGENERATES its report from `test/backtest/carry/`
+(the spec writes `carry-study-2026-07-10.md` fresh when data is present). (4) Code comments
+citing pruned reports are provenance pointers into git history — do not "fix" them file-by-file.
+**Second wave (same session; owner: "what is not 100% necessary gets removed"):** also pruned
+`reports/loop/a0-evidence-2026-07-20/` (15 CSV/txt evidence files),
+`reports/loop/archive/state-2026-07.md` (git history is now the ONLY copy of the archived
+records), `reports/loop/digests/w6-digests.txt`, `reports/loop/kimi-k3-research-2026-07-21.md`
+(the Kimi follow-up re-derives from git history + LOG.md when the owner key lands),
+`docs/specs/2026-07-06-profitability-design.md`, and `plans/2026-07-v3-consolidation-spec.md` —
+playbook "spec §N" citations resolve via `git show` (noted in playbook §0). The untracked
+runtime files under `reports/loop/digests/` (jsonl history, watermark, collector.log) are not
+repo content and stay — the collector regenerates them, and the loop's §1 rehydration reads
+them. Surviving md set (9): CLAUDE.md (v2 lane-file drift corrected same commit:
+`.env.app-perp`/`--profile perp` references removed to match the v3 tree), README, the
+playbook, the runbook, LOG.md, this file, and the three `src/` boundary READMEs (current,
+v3-aligned).

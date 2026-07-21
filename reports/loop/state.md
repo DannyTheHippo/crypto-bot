@@ -131,6 +131,24 @@ never changes for strategy evolution.
   defect outcome = waves persist past the first hour ⇒ the candle threshold was not the (only)
   initiator — reopen with a raw demo-ws probe before touching anything else. Owner-session soak
   wakeups own the check; resolution before the lift-readiness call.
+- **Soak defect #2 FOUND+FIXED (2026-07-21, soak check #2 — WATCH-V3-2's defect outcome fired
+  exactly as written: waves persisted, perp-only, so the reopened investigation ran the raw-probe
+  chain).** Post-fix-#1 the storm went perp-only (~30 errors/min waves; spot fully clean —
+  defect #1's fix verified). Watchdog stall lists fingered BTC/ETH perp BOOKS — books yielded
+  exactly ONCE (the REST snapshot) then never a ws frame, from the very first minute of a fresh
+  boot. Probe chain (#54): fresh default-option ccxt client on the same host = ~6 book events/s
+  (venue+ccxt innocent); unwatch-14-keep-2 repro = remaining books unaffected (tier demotion
+  innocent — parks also postdated the death); A/B on `options.watchOrderBookRate` = **rate 1000 ⇒
+  1 yield/30s, rate 500 ⇒ 50 yields/30s**. Root cause: XA6's `watchOrderBookRate: 1000` was a
+  v2 SPOT-lane option; v3's unified `buildCcxtExchange` applied it to both venues, but Binance
+  futures stream servers serve only `@depth@100/250/500ms` — an unknown suffix is accepted at
+  subscribe and never sent a frame (pinned ccxt builds the stream name verbatim, no validation).
+  Fix `0493344`: per-venue rate — spot keeps 1000ms, `binanceusdm` pins 500ms (slowest valid
+  futures speed, XA6 load intent preserved); spec pins the futures instance must never inherit
+  spot's 1000. Redeployed 13:03:46Z; verified live: ALL 16 perp books sub-second fresh, zero loop
+  errors. **WATCH-V3-2 (amended):** expected-positive = loop-error rate ~0 on BOTH venues over
+  the next hour+, forced-reconnect counters flat, journal every bar; the original defect-outcome
+  clause stands for any residual waves.
   1. **Cost floor** — CLOSED 2026-07-08: true spend ~$0.77/day under the $5 breaker, skip rate
      70–83% (original criterion: ≤$1/day ×3 days + ≥2 RT/day + no EXPIRED regressions).
   2. **Learning-loop edge** — ACTIVE. Exit: ≥2 playbook promotions with version-attributed PnL

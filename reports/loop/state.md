@@ -182,6 +182,18 @@ never changes for strategy evolution.
   (WATCH-V3-1 fine). 200 skips = 5 bars × 40 symbols, exactly on schedule; the first post-fix
   fallback consult wave is due at the 17:15Z bar close — next check verifies it bills, stays
   under the 90s ceiling, and any entries flow through Risk with reconcile staying clean.
+- **Soak check #6 (2026-07-21 ~17:40Z): CONSULT PATH VERIFIED END-TO-END — the defect-#3 fix
+  holds.** The 17:15Z wave fired (8 forced_fallback) and the model's own schedule took over
+  (7 organic `consulted` outcomes): 15 decides, ZERO error_retryable, every attempt ≤30s under
+  the 90s ceiling, all holds (flat book in chop — plausible). Billing verified across all three
+  ledgers ONCE the v3 design was read correctly: decide tokens persist on `agent_decisions`
+  token columns (5 batch-usage rows), `llm_usage` is reflection-only BY DESIGN, and
+  `PromotionStatsRepository.tokenTotals` folds BOTH into per-model cost — Prometheus tokens,
+  the in-memory budget ($2.72 remaining, ~$0.17 spent — inside the §5.2 projection), and the
+  durable ledgers agree. Standing greens: zero alarms, zero loop errors (WATCH-V3-2), journal
+  40/bar, reconcile clean-only both venues, kill switch RUNNING, RSS ~677 MiB flat (WATCH-V3-1),
+  capability violations 0. Soak settles into the hourly checklist rhythm; 48h clock from
+  15:28:36Z.
   app changes):** memo at `reports/loop/kimi-k3-research-2026-07-21.md`. Headline: K3 (released
   07-16) prices identically to sonnet-5 ($3/$15/$0.30 cache-hit); the Anthropic-compatible
   `/anthropic` endpoint exists for K3 (kimi-k2 precedent holds); in-app integration is

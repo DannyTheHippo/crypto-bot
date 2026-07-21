@@ -97,8 +97,8 @@ export const RECON_MISMATCH_COUNTER = makeCounterProvider({
 // fault). Both @Optional so directly-constructed unit tests need not supply them.
 export const RECON_RUNS_COUNTER = makeCounterProvider({
   name: 'reconciliation_runs_total',
-  help: 'Reconciliation passes by result (§8)',
-  labelNames: ['result'] as const,
+  help: 'Reconciliation passes by venue and result (v3 spec §8 — one series per per-venue pass)',
+  labelNames: ['venue', 'result'] as const,
 });
 
 export const RECON_LAST_SUCCESS_GAUGE = makeGaugeProvider({
@@ -238,7 +238,7 @@ export class ReconciliationService {
           : mismatchTotal > 0
             ? 'mismatch'
             : 'clean';
-    this.runsCounter?.inc({ result });
+    this.runsCounter?.inc({ venue: exchange.venue, result });
     if (result === 'clean') this.lastSuccessGauge?.set(this.clock.now() / 1000);
     // Rethrow the ORIGINAL axis throw unchanged (whatever its type) so the driver's logged catch
     // surfaces the true cause.

@@ -1,7 +1,7 @@
 # Prometheus alerting rules (Phase 10). Every rule below references a metric the app ACTUALLY emits
 # (/metrics via @willsoto/nestjs-prometheus): event_loop_delay_p99_seconds, event_loop_utilization,
 # mode_info{requested,effective}, boot_info{boot_id}, kill_switch_state{state} (MetricsService, 5s),
-# reconciliation_mismatch_total + reconciliation_runs_total{result} (ReconciliationService), and
+# reconciliation_mismatch_total + reconciliation_runs_total{venue,result} (ReconciliationService), and
 # agent_decide_total{outcome} (AgentMetricsRecorder). All rules are ACTIVE — none stubbed.
 # Trading gauges (equity_usdt, day_pnl_usdt, drawdown_ratio, realized_pnl_usdt, position_*, fills_total,
 # orders_total{outcome}, orders_rejected_total{code}) are also emitted and surfaced on the Grafana

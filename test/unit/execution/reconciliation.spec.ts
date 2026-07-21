@@ -222,7 +222,7 @@ describe('ReconciliationService (§6.4)', () => {
     ]);
   });
 
-  it('records reconciliation_runs_total{result} and stamps last-success only on a clean pass', async () => {
+  it('records reconciliation_runs_total{venue,result} and stamps last-success only on a clean pass', async () => {
     const runs = { inc: vi.fn() } as unknown as Counter<string>;
     const lastSuccess = { set: vi.fn() } as unknown as Gauge<string>;
     const incCalls = (runs.inc as ReturnType<typeof vi.fn>).mock.calls;
@@ -231,7 +231,7 @@ describe('ReconciliationService (§6.4)', () => {
     // clean pass → result 'clean', gauge set to clock-now/1000
     const clean = build({}, undefined, runs, lastSuccess);
     await clean.recon.reconcile();
-    expect(incCalls.at(-1)).toEqual([{ result: 'clean' }]);
+    expect(incCalls.at(-1)).toEqual([{ venue: V, result: 'clean' }]);
     expect(setCalls.at(-1)).toEqual([T / 1000]);
 
     // mismatch pass (foreign open order) → result 'mismatch', no new gauge set
@@ -244,7 +244,7 @@ describe('ReconciliationService (§6.4)', () => {
       { sweepSymbols: [SYM] },
     );
     await mismatch.recon.reconcile();
-    expect(incCalls.at(-1)).toEqual([{ result: 'mismatch' }]);
+    expect(incCalls.at(-1)).toEqual([{ venue: V, result: 'mismatch' }]);
     expect(setCalls.length).toBe(setCountAfterClean); // gauge unchanged on a non-clean pass
 
     // halt pass (our-prefix unknown open) → result 'halt'
@@ -256,7 +256,7 @@ describe('ReconciliationService (§6.4)', () => {
       { sweepSymbols: [SYM] },
     );
     await halt.recon.reconcile();
-    expect(incCalls.at(-1)).toEqual([{ result: 'halt' }]);
+    expect(incCalls.at(-1)).toEqual([{ venue: V, result: 'halt' }]);
   });
 
   it('a clean pass: no mismatches, not halted, one reconciliations row', async () => {
@@ -375,7 +375,9 @@ describe('ReconciliationService (§6.4)', () => {
       throw new Error('db down');
     };
     await expect(ctx.recon.reconcile()).rejects.toThrow('db down');
-    expect((runs.inc as ReturnType<typeof vi.fn>).mock.calls.at(-1)).toEqual([{ result: 'error' }]);
+    expect((runs.inc as ReturnType<typeof vi.fn>).mock.calls.at(-1)).toEqual([
+      { venue: V, result: 'error' },
+    ]);
     expect(ctx.store.reconciliations).toHaveLength(1);
     expect(ctx.store.reconciliations[0]!.detail).toBe('PASS_ERROR:Error:db down');
     expect(ctx.store.reconciliations[0]!.halted).toBe(false);
@@ -440,7 +442,7 @@ describe('ReconciliationService (§6.4)', () => {
       expect(ctx.portfolio.snapshot().openOrders).toHaveLength(0); // retired, not stuck
       expect(r.halted).toBe(false);
       expect((runs.inc as ReturnType<typeof vi.fn>).mock.calls.at(-1)).toEqual([
-        { result: 'mismatch' }, // an adopted terminal, never a PASS_ERROR abort
+        { venue: V, result: 'mismatch' }, // an adopted terminal, never a PASS_ERROR abort
       ]);
     },
   );
@@ -463,7 +465,7 @@ describe('ReconciliationService (§6.4)', () => {
     expect(ctx.orders.get(frozen)?.state).toBe('RECONCILE_REQUIRED'); // untouched
     expect(ctx.orders.get(adoptable)?.state).toBe('CANCELED'); // the pass kept going
     expect((runs.inc as ReturnType<typeof vi.fn>).mock.calls.at(-1)).toEqual([
-      { result: 'mismatch' }, // 2026-07-07: this was result=error and 100% reconcile downtime
+      { venue: V, result: 'mismatch' }, // 2026-07-07: this was result=error and 100% reconcile downtime
     ]);
     expect(r.halted).toBe(false);
   });
@@ -482,7 +484,9 @@ describe('ReconciliationService (§6.4)', () => {
       throw new Error('store down');
     };
     await expect(ctx.recon.reconcile()).rejects.toThrow('store down');
-    expect((runs.inc as ReturnType<typeof vi.fn>).mock.calls.at(-1)).toEqual([{ result: 'error' }]);
+    expect((runs.inc as ReturnType<typeof vi.fn>).mock.calls.at(-1)).toEqual([
+      { venue: V, result: 'error' },
+    ]);
   });
 
   it('backfills a missed fill for a known order via the FillIngestor (WARN)', async () => {

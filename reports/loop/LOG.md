@@ -3901,3 +3901,95 @@ mass-closes, reconnect ≤ R8-2, RSS trend flat); (4) X2 stage-2 pre-auth soak r
 ~10:42Z 07-21; ceilings via sweep); (5) consult-cadence re-read on a quiet day vs the 8-20
 band; (6) spot funding-history warn count trend; (7) episodic-memory WIP: if committed by the
 owner session, the next money-path review + deploy follows the standing discipline.
+
+## 2026-07-21 — Pass 36 (scheduled, ~20:10–20:45Z): MAINTENANCE — first v4 one-book pass; soak check #9 all green; stale v2-era collector found and restarted on v3 code; state.md two-line corruption repaired; WATCH-V3-3 (schema-degrade rate) minted
+
+**Window read (v4 §1):** `date -u` 20:10:05Z — the pass fired ~20s after the owner's handoff
+commit (`c18b3e6`, 20:09:45Z), so the marginal evidence window since soak check #8 is ~nil; the
+value of this pass is the independent v4-procedure read of the same boot. Rehydrated from
+`loop:digests 2026-07-20T16:05:00Z` (28 lines) + state.md. Tree CLEAN at pass start. Host awake
+on AC (uptime 9d22h, no sleep gap in the digest history).
+
+**Rehydration finding — the collector survived the cutover as a STALE v2 process:** hourly
+digest lines never gapped, but from seq 22 (11:27Z, first post-cutover tick) every line is
+two-lane-shaped with a single `lanes.spot` entry and `deltas:null` — 9 consecutive cycles,
+including across the stable `1b8ef6c9` boot. The nohup process (pid 83510, started 07-20
+15:27Z) kept executing pre-cutover code against the v3 stack; its per-cycle `alarms:[]` was a
+§C.9 negative-read void (a prober that cannot read the counters cannot raise alarms), NOT eight
+hours of verified quiet. The owner's in-session soak checks #1–#8 were the real coverage for
+that window, so nothing was actually dark — but the between-pass continuous-watch layer the Y4
+cadence decision leans on was silently absent since cutover.
+
+**Evidence sweep (`loop:sweep` 20:13:05Z, alarm list re-verified against
+`loop-sweep-core.mjs`):** 0 alarms. Boot `1b8ef6c9` (StartedAt 15:28:36Z, RestartCount 0,
+healthy). Kill switch RUNNING (metric, not /health). Reconcile clean-only both venues
+(binance 1067 / binanceusdm 1062 rows since boot, latest CLEAN both). Consult-gate cumulative:
+skipped_scheduled 738, consulted 9 (+1 organic since check #8), forced_fallback 8,
+forced_move 5 — zero error_retryable (defect-#3 fix continues holding). Spend $0.467 of the $3
+breaker (~$0.10/h — §5.2-consistent). RSS 723.5 MiB — above the ~677–698 MiB band of
+checks #3–#8 but far under the 900 MiB defect line (WATCH-V3-1 open, slope watch). Annotations, each
+with its positive control: `probe_failed[wsRecreations]` = no series because the counter has
+never incremented this boot (sibling queries on the same Prometheus returned data; zero forced
+reconnects IS WATCH-V3-2's expected-positive — 4.75h clean now); `short_interval` (1614s gap vs
+the owner's last sweep); `negative_read_void[fills]` = fills genuinely 0 (all-holds journal
+corroborates). Warn tail (covers all consults since 17:15Z): 4 lines — one whole-payload `{}`
+schema degrade at 17:15:53Z (guardrail held all 8, correct fail direction), element degrades
+KAITO 17:30Z + AAVE 18:00Z, one transient UNI/USDT:USDT derivatives-feed fetch failure
+(fail-open poller, production fapi, single occurrence — noise unless recurring).
+
+**Incident gate:** no named alarm ⇒ pass-type selection open; MAINTENANCE selected
+(measurement-trust + docs repair; no money-path item touched, honoring the soak posture:
+stability evidence before capability work).
+
+**Pass work:**
+
+1. **Collector restart on v3 code (measurement trust).** SIGTERM to pid 83510 (clean exit),
+   re-daemonized `nohup corepack pnpm loop:collect` (pid 26760, 1h interval, log
+   `reports/loop/digests/collector.log`). Sentinel self-verified; first digest line 20:16:09Z is
+   v3-single-app-shaped (`app` key) with REAL deltas on the matching boot (decides +40 = the
+   20:15Z bar wave, reconcile +6/+6 per venue) — positive control PASSED. Standing note
+   unchanged: nohup survives sleep, not reboot; re-daemonize after any host restart. Process
+   lesson folded into the record: a cutover that replaces the stack must restart long-lived
+   observers built against the old shape (GCP-era answer: the collector becomes a compose
+   service and this class disappears).
+2. **state.md corruption repaired (docs defect, found+fixed in-pass).** Two separate insertions
+   had each eaten the first line of the bullet BELOW their insertion point — `61f277a` (cutover
+   record) consumed the `- **Stage ladder + exit criteria …**` header, leaving the 1/2/3 ladder
+   orphaned under the preceding bullet; `3e6900d` (defect-#3 record) consumed the
+   `- **Kimi-K3 research phase DONE …` opener, leaving that bullet headless. Both restored
+   verbatim from git parents. Same failure shape twice = an edit-hygiene watch item for future
+   state.md insertions: verify the line BELOW the insertion survives.
+3. **WATCH-V3-3 minted (schema-degrade rate)** per the playbook's post-cutover instruction to
+   add v4-era WATCH lines from sweep evidence: ~10 of ≲176 batch elements degraded to hold
+   since consults began (≈6%, boundary of the <5% WATCH-X2-era guidance, small N). Degrades are
+   WARN-log-only — the client substitutes an empty-signals hold with no metric or rationale
+   marker (`anthropic-agent-client.ts` element parse path), adjacent to the flagged defect-#3
+   transport-reason ledger gap. Full line (expected-positive / defect outcome / owner) in
+   state.md § Strategic frame.
+
+**Soak verdict (check #9):** all green — zero alarms, zero loop errors, reconcile clean-only,
+kill switch RUNNING, burn inside projection, RSS inside bounds. 48h clock from 15:28:36Z has
+~43h remaining; zero round trips still reads as model-holding-in-chop per the handoff record
+(rationales journaled; Risk has vetoed nothing). The ~24h entries/day evidence bar for the
+sanctioned CANDIDATE lever is NOT yet reached (~4.75h of post-fix evidence) — no candidate work
+this pass.
+
+**Gates:** docs + operational process only (LOG.md, state.md; collector restart is non-git) —
+build/lint/typecheck/test + lint:md all run and green before commit (results in the commit).
+No deploy (no app change), so no §5 soak step; the standing 48h soak continues unchanged.
+
+**Diff summary:** `reports/loop/LOG.md`, `reports/loop/state.md` (this entry pair + the two
+restored lines + WATCH-V3-3), committed with this entry. No config/env change, no money-path
+change, no deploy. Collector process restarted (operational, non-git).
+
+**Flagged items:** unchanged (shared-org rate-limit — owner-side key/org split; CryptoPanic
+key; defect-#3 transport-reason log line, post-soak). Nothing new exceeds the §4 rails.
+
+**Next-pass candidates:** (1) WATCH-V3-1/V3-2/V3-3 checkpoint on a ≥1h window with the
+restarted collector's digests as the between-pass record; (2) once ~24h of evidence exists
+(~15:30Z 07-22): entries/day read — if ~0, the sanctioned CANDIDATE pass (less entry-averse
+playbook variant, offline-scored per §4); (3) hourly digest lines v3-shaped since 20:16Z —
+confirm the first post-restart scheduled tick (~21:16Z) and the host-sleep annotated-gap half
+of WATCH-Y2/Y3 on the next sleep; (4) UNI derivatives-feed poll failures: N-recurrences rule
+arms if seen again next sweep; (5) lift-readiness record drafting once the 48h bar is met
+clean (soak exit artifact, per the handoff record).

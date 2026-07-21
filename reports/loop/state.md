@@ -207,6 +207,29 @@ never changes for strategy evolution.
   block; Risk has vetoed nothing because nothing was proposed). If entries/day stays ~0 once
   ~24h of evidence exists, the sanctioned lever is a CANDIDATE pass drafting a less entry-averse
   playbook variant (offline-scored first, §4) — never mid-window knob-tuning.
+- **Soak check #9 = loop Pass 36 (2026-07-21 ~20:10-20:45Z, first scheduled v4 pass; full entry
+  LOG.md).** Sweep 0 alarms; kill switch RUNNING; reconcile clean-only both venues (1067/1062,
+  latest CLEAN); zero stream loop errors over the full 4.75h boot window (WATCH-V3-2 holding);
+  spend $0.47 of $3 (~$0.10/h, §5.2-consistent); consulted 9 (+1 organic since check #8), zero
+  error_retryable. RSS 723.5 MiB — above the ~677-698 band of checks #3-#8 but far under the
+  900 MiB defect line; WATCH-V3-1 slope watch continues. Pass work (measurement/docs only, no
+  money path): (1) the Y3 collector was found STALE — the pre-cutover v2-era process (pid 83510,
+  daemonized 07-20 15:27Z) survived the cutover and produced `deltas:null` two-lane digests for
+  9 straight cycles; its `alarms:[]` was a §C.9 negative-read void, not quiet health. Restarted
+  on v3 code (pid 26760, sentinel verified, first digest v3-single-app-shaped with real deltas on
+  matching bootId). Re-daemonize after any host reboot stays a standing note. (2) state.md
+  corruption repaired: the `61f277a` and `3e6900d` insertions each ate the first line of the
+  bullet below them (§ Stage ladder header; the Kimi-K3 opener) — both lines restored from git.
+  **WATCH-V3-3 (schema-degrade rate, minted per the playbook's post-cutover instruction):**
+  since consults began 17:15Z, ~10 of ≲176 batch elements degraded to hold (one whole-payload
+  `{}` at 17:15:53Z held all 8 — the guardrail's correct fail direction — plus KAITO 17:30Z,
+  AAVE 18:00Z) ≈ 6%, boundary of the <5% WATCH-X2-era guidance at small N. Element degrades are
+  WARN-log-only (journaled as bare holds, no metric/rationale marker — adjacent to the flagged
+  defect-#3 transport-reason gap). Expected-positive: rate <5% and zero further whole-payload
+  events over the next 24h; defect outcome: ≥2 more whole-payload events or a sustained >5%
+  element rate ⇒ a root-cause pass on the tool-contract prompt/schema (and meter the degrade
+  path). Resolution owner: a loop pass before the lift-readiness record.
+- **Kimi-K3 research phase DONE (2026-07-21, task #15 offline portion; run during the soak, no
   app changes):** memo at `reports/loop/kimi-k3-research-2026-07-21.md`. Headline: K3 (released
   07-16) prices identically to sonnet-5 ($3/$15/$0.30 cache-hit); the Anthropic-compatible
   `/anthropic` endpoint exists for K3 (kimi-k2 precedent holds); in-app integration is
@@ -215,6 +238,7 @@ never changes for strategy evolution.
   key** (`KIMI_API_KEY` in `.env`) plus a small eval-lane harness diff (per-model base-URL
   routing). Go bar unchanged: clear offline win ⇒ staged live A/B, two-step enable; loop stays on
   Claude.
+- **Stage ladder + exit criteria (condensed from the active spec):**
   1. **Cost floor** — CLOSED 2026-07-08: true spend ~$0.77/day under the $5 breaker, skip rate
      70–83% (original criterion: ≤$1/day ×3 days + ≥2 RT/day + no EXPIRED regressions).
   2. **Learning-loop edge** — ACTIVE. Exit: ≥2 playbook promotions with version-attributed PnL

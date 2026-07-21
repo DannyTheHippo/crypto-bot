@@ -267,10 +267,9 @@ export async function runAgenticReplayR1(
   });
   const budget = new AttemptScopedBudget(dailyBudget, maxCalls, maxUsdNum);
 
-  const systemPrompt = buildSystemPrompt(REPLAY_PROFILE, {
-    tradeContract: true,
-    shortsEnabled: opts.shortsEnabled,
-  });
+  // v3 consolidation spec §4.4: buildSystemPrompt always builds the rich-decision-contract prompt —
+  // shorts documented unconditionally, no more tradeContract/shortsEnabled options.
+  const systemPrompt = buildSystemPrompt(REPLAY_PROFILE);
   const playbookBlock = buildPlaybookBlock(opts.playbookContent);
   const constraints = REPLAY_PROFILE.constraints;
 

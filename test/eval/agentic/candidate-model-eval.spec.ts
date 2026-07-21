@@ -43,7 +43,6 @@ import {
   PLAN_BOUNDS,
   PLAN_TOOL,
   PLAN_TEMPLATE_VERSION,
-  buildSystemPrompt,
   computePromptHash,
 } from '../../../src/features/trading/agentic/agent-prompt';
 import { SEED_PLAYBOOK } from '../../../src/features/trading/agentic/agentic-strategy.module';
@@ -51,7 +50,7 @@ import {
   summarizeRecentDecisionOutcomes,
   type ScoringRow,
 } from '../../../src/features/trading/agentic/counterfactual-scoring';
-import { EVAL_PROFILE, toScoringAction } from './fixtures';
+import { EVAL_PROFILE, toScoringAction, buildLegacyPlanSystemPrompt } from './fixtures';
 import {
   composeRecordedUserMessage,
   scoringRowFromPayload,
@@ -495,11 +494,7 @@ describe.skipIf(SKIP)(
         assertNoNaN('champion forwardReturnProxyBps', championForwardReturnProxyBps);
         assertNoNaN('champion costPerDecideUsd', championCostPerDecideUsd);
 
-        const systemPrompt = buildSystemPrompt(EVAL_PROFILE, {
-          planMode: true,
-          minEdgeMultiple: MIN_EDGE_MULTIPLE,
-          minRr: MIN_RR,
-        });
+        const systemPrompt = buildLegacyPlanSystemPrompt(EVAL_PROFILE, MIN_EDGE_MULTIPLE, MIN_RR);
 
         const candidateScorecards: unknown[] = [];
         for (const model of CANDIDATE_MODELS) {

@@ -42,11 +42,10 @@ import {
   PLAN_BOUNDS,
   PLAN_TOOL,
   PLAN_TEMPLATE_VERSION,
-  buildSystemPrompt,
   computePromptHash,
 } from '../../../src/features/trading/agentic/agent-prompt';
 import { SEED_PLAYBOOK } from '../../../src/features/trading/agentic/agentic-strategy.module';
-import { EVAL_PROFILE } from './fixtures';
+import { EVAL_PROFILE, buildLegacyPlanSystemPrompt } from './fixtures';
 import {
   composeRecordedUserMessage,
   type RecordedMarketPayload,
@@ -348,12 +347,7 @@ describe.skipIf(SKIP)(
           // block — documenting it in the system prompt (not stripping it; only orderBook/ticker are
           // stripped, see stripOrderBookAndTicker) is what makes arm (a) a faithful "live decide"
           // ground truth. sentiment/shorts stay off, matching docker-compose.yml's current flags.
-          const systemPrompt = buildSystemPrompt(EVAL_PROFILE, {
-            planMode: true,
-            minEdgeMultiple: '1.5',
-            minRr: '1.5',
-            derivativesFeedEnabled: true,
-          });
+          const systemPrompt = buildLegacyPlanSystemPrompt(EVAL_PROFILE, '1.5', '1.5', true);
           const promptHash = computePromptHash({
             templateVersion: `${PLAN_TEMPLATE_VERSION}+${DERIVATIVES_TEMPLATE_VERSION}`,
             playbookContent: champion.content,

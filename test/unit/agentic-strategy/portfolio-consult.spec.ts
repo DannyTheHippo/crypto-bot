@@ -8,10 +8,6 @@ import {
   type AnthropicAgentClientConfig,
 } from '../../../src/features/trading/agentic/anthropic-agent-client';
 import { DailyLlmBudget } from '../../../src/features/trading/agentic/agent-budget';
-import {
-  PORTFOLIO_TOOL,
-  PORTFOLIO_SHORTS_TOOL,
-} from '../../../src/features/trading/agentic/agent-prompt';
 import type {
   AgentDecisionInput,
   AgentMarketSnapshot,
@@ -401,10 +397,19 @@ describe('AnthropicAgentClient.proposeBatch', () => {
     } as unknown as Response;
   }
 
-  function portfolioBody(decisions: unknown[], stopReason = 'tool_use'): unknown {
+  // v3 consolidation spec §4.3: the unified submit_portfolio payload always carries the
+  // portfolio-level nextConsultBars (tradePortfolioSchema requires it) — defaulted here so every
+  // existing call site in this describe block stays a minimal `portfolioBody(decisions)` call.
+  function portfolioBody(
+    decisions: unknown[],
+    stopReason = 'tool_use',
+    nextConsultBars = 8,
+  ): unknown {
     return {
       stop_reason: stopReason,
-      content: [{ type: 'tool_use', name: 'submit_portfolio', input: { decisions } }],
+      content: [
+        { type: 'tool_use', name: 'submit_portfolio', input: { decisions, nextConsultBars } },
+      ],
     };
   }
 
@@ -426,8 +431,17 @@ describe('AnthropicAgentClient.proposeBatch', () => {
     fetchFn.mockResolvedValue(
       apiResponse(
         portfolioBody([
-          { symbol: 'BTC/USDT', action: 'long', confidence: 0.8, rationale: 'r1' },
-          { symbol: 'ETH/USDT', action: 'hold', confidence: 0.2, rationale: 'r2' },
+          {
+            symbol: 'BTC/USDT',
+            action: 'open_long',
+            sizeFraction: 0.05,
+            entry: { style: 'maker', offsetBps: 0 },
+            entryValidityBars: 4,
+            stopLossPct: 0.01,
+            takeProfitPct: 0.02,
+            maxHoldBars: 96,
+          },
+          { symbol: 'ETH/USDT', action: 'hold' },
         ]),
       ),
     );
@@ -545,9 +559,18 @@ describe('AnthropicAgentClient.proposeBatch', () => {
     fetchFn.mockResolvedValue(
       apiResponse(
         portfolioBody([
-          { symbol: 'BTC/USDT', action: 'long', confidence: 0.8, rationale: 'r' },
-          // 'moon' is not a valid action — fails decisionElementSchema for this one element only.
-          { symbol: 'ETH/USDT', action: 'moon', confidence: 0.5, rationale: 'r' },
+          {
+            symbol: 'BTC/USDT',
+            action: 'open_long',
+            sizeFraction: 0.05,
+            entry: { style: 'maker', offsetBps: 0 },
+            entryValidityBars: 4,
+            stopLossPct: 0.01,
+            takeProfitPct: 0.02,
+            maxHoldBars: 96,
+          },
+          // 'moon' is not a valid action — fails tradeElementSchema for this one element only.
+          { symbol: 'ETH/USDT', action: 'moon' },
         ]),
       ),
     );
@@ -568,7 +591,18 @@ describe('AnthropicAgentClient.proposeBatch', () => {
     const client = new AnthropicAgentClient(buildCfg(), fetchFn, { warn });
     fetchFn.mockResolvedValue(
       apiResponse(
-        portfolioBody([{ symbol: 'BTC/USDT', action: 'long', confidence: 0.8, rationale: 'r' }]),
+        portfolioBody([
+          {
+            symbol: 'BTC/USDT',
+            action: 'open_long',
+            sizeFraction: 0.05,
+            entry: { style: 'maker', offsetBps: 0 },
+            entryValidityBars: 4,
+            stopLossPct: 0.01,
+            takeProfitPct: 0.02,
+            maxHoldBars: 96,
+          },
+        ]),
       ),
     );
 
@@ -784,105 +818,10 @@ describe('AnthropicAgentClient.proposeBatch', () => {
     }
   });
 
-  function shortsCfg(): AnthropicAgentClientConfig {
-    return buildCfg({ planMode: true, shortsEnabled: true, perpCapableVenue: true });
-  }
-
-  function shortsPlan(
-    over: Partial<Record<string, number | string>> = {},
-  ): Record<string, unknown> {
-    return {
-      direction: 'short',
-      entryOffsetBps: 0,
-      stopLossPct: 0.003,
-      takeProfitPct: 0.0045,
-      entryValidityBars: 4,
-      maxHoldBars: 8,
-      ...over,
-    };
-  }
-
-  it('#41 shorts batch sends PORTFOLIO_SHORTS_TOOL and a direction:short plan element maps to ENTER_SHORT', async () => {
-    const fetchFn = vi.fn();
-    const client = new AnthropicAgentClient(shortsCfg(), fetchFn);
-    fetchFn.mockResolvedValue(
-      apiResponse(
-        portfolioBody([
-          {
-            symbol: 'BTC/USDT',
-            action: 'long',
-            confidence: 0.8,
-            rationale: 'r',
-            plan: shortsPlan(),
-          },
-        ]),
-      ),
-    );
-
-    const result = await client.proposeBatch([buildInput('BTC/USDT', 'agentic-1')]);
-
-    const sentBody = JSON.parse((fetchFn.mock.calls[0]![1] as RequestInit).body as string) as {
-      tools: unknown[];
-    };
-    expect(sentBody.tools[0]).toEqual(PORTFOLIO_SHORTS_TOOL);
-    const proposal = result.proposals.get('BTC/USDT');
-    expect(proposal?.signals[0]).toMatchObject({ kind: 'ENTER_SHORT', symbol: 'BTC/USDT' });
-    // plan attachment (incl. direction) requires a lastCandle to price the resting entry and is
-    // pinned by the single-symbol shorts specs — this fixture has no candles by design.
-  });
-
-  it('#41 a plan element missing direction under shorts degrades ONLY that symbol to a hold — the sibling with direction still enters', async () => {
-    const fetchFn = vi.fn();
-    const warn = vi.fn();
-    const client = new AnthropicAgentClient(shortsCfg(), fetchFn, { warn });
-    fetchFn.mockResolvedValue(
-      apiResponse(
-        portfolioBody([
-          {
-            symbol: 'BTC/USDT',
-            action: 'long',
-            confidence: 0.8,
-            rationale: 'r',
-            // deliberately no direction — planShortsElementSchema requires it under shorts
-            plan: shortsPlan({ direction: undefined as unknown as string }),
-          },
-          {
-            symbol: 'ETH/USDT',
-            action: 'long',
-            confidence: 0.8,
-            rationale: 'r',
-            plan: shortsPlan({ direction: 'long' }),
-          },
-        ]),
-      ),
-    );
-
-    const result = await client.proposeBatch([
-      buildInput('BTC/USDT', 'agentic-1'),
-      buildInput('ETH/USDT', 'agentic-2'),
-    ]);
-
-    expect(result.proposals.get('BTC/USDT')?.signals).toEqual([]);
-    expect(result.proposals.get('ETH/USDT')?.signals[0]).toMatchObject({ kind: 'ENTER_LONG' });
-  });
-
-  it('#41 shorts OFF keeps the batch request on PORTFOLIO_TOOL byte-identically — no direction field reaches the wire schema', async () => {
-    const fetchFn = vi.fn();
-    const client = new AnthropicAgentClient(buildCfg({ planMode: true }), fetchFn);
-    fetchFn.mockResolvedValue(
-      apiResponse(
-        portfolioBody([{ symbol: 'BTC/USDT', action: 'hold', confidence: 0.5, rationale: 'r' }]),
-      ),
-    );
-
-    await client.proposeBatch([buildInput('BTC/USDT', 'agentic-1')]);
-
-    const sentBody = JSON.parse((fetchFn.mock.calls[0]![1] as RequestInit).body as string) as {
-      tools: unknown[];
-    };
-    expect(sentBody.tools[0]).toEqual(PORTFOLIO_TOOL);
-    expect(JSON.stringify(sentBody.tools[0])).not.toContain('direction');
-  });
+  // v3 consolidation spec §9: the legacy plan-mode-shorts batch path (shortsCfg, PORTFOLIO_TOOL/
+  // PORTFOLIO_SHORTS_TOOL lane selection, plan.direction wire shape) is DELETED — the unified
+  // submit_portfolio tool always expresses open_short per element (§4.3); per-symbol eligibility is
+  // covered by the mandatory capability-violation-degrade coverage in anthropic-agent-client.spec.ts.
 });
 
 // A2 (rich decision contract, Design § New tool contract): proposeBatch's v2 (tradeContract) path —
@@ -922,7 +861,6 @@ describe('AnthropicAgentClient.proposeBatch — v2 trade contract (A2)', () => {
       maxTokens: 256,
       signalTtlMs: 30000,
       baseUrl: 'https://mock.anthropic.test',
-      tradeContract: true,
       ...over,
     };
   }
@@ -1116,22 +1054,22 @@ describe('AnthropicAgentClient.proposeBatch — v2 trade contract (A2)', () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('ETH/USDT'));
   });
 
-  it('(f) the shorts portfolio tool accepts an open_short element and maps it to ENTER_SHORT', async () => {
+  it('(f) a perp symbol (capabilities.shorts) accepts an open_short element and maps it to ENTER_SHORT', async () => {
     const fetchFn = vi.fn();
     const client = new AnthropicAgentClient(
-      tradeCfg({ shortsEnabled: true, perpCapableVenue: true, maxPositionFraction: '0.5' }),
+      tradeCfg({ maxPositionFractionPerp: '0.5', perpLeverageCap: '2' }),
       fetchFn,
     );
     fetchFn.mockResolvedValue(
       apiResponse(
         tradePortfolioBody(
-          [openLongElement('BTC/USDT', { action: 'open_short', sizeFraction: 0.3 })],
+          [openLongElement('SOL/USDT:USDT', { action: 'open_short', sizeFraction: 0.3 })],
           8,
         ),
       ),
     );
 
-    const result = await client.proposeBatch([buildInput('BTC/USDT', 'agentic-1')]);
+    const result = await client.proposeBatch([buildInput('SOL/USDT:USDT', 'agentic-1')]);
 
     const sentBody = JSON.parse((fetchFn.mock.calls[0]![1] as RequestInit).body as string) as {
       tools: {
@@ -1143,10 +1081,15 @@ describe('AnthropicAgentClient.proposeBatch — v2 trade contract (A2)', () => {
     expect(
       sentBody.tools[0]!.input_schema.properties.decisions.items.properties.action.enum,
     ).toContain('open_short');
-    expect(result.proposals.get('BTC/USDT')?.signals[0]).toMatchObject({ kind: 'ENTER_SHORT' });
+    expect(result.proposals.get('SOL/USDT:USDT')?.signals[0]).toMatchObject({
+      kind: 'ENTER_SHORT',
+    });
   });
 
-  it('(f) the spot portfolio schema rejects an open_short element — degrades that symbol to a hold', async () => {
+  // v3 consolidation spec §4.3: capability-violation degrade (mandatory coverage) — a spot symbol's
+  // own capabilities.shorts is false, so an open_short element degrades to a hold, journaled as
+  // action 'error' with rationale 'capability_violation:open_short_on_spot', never a silent pass.
+  it('(f) a spot symbol (capabilities.shorts=false) degrades an open_short element to a hold, journaled as a named capability violation', async () => {
     const fetchFn = vi.fn();
     const warn = vi.fn();
     const client = new AnthropicAgentClient(tradeCfg(), fetchFn, { warn });
@@ -1156,7 +1099,13 @@ describe('AnthropicAgentClient.proposeBatch — v2 trade contract (A2)', () => {
 
     const result = await client.proposeBatch([buildInput('BTC/USDT', 'agentic-1')]);
 
-    expect(result.proposals.get('BTC/USDT')?.signals).toEqual([]);
+    const proposal = result.proposals.get('BTC/USDT');
+    expect(proposal?.signals).toEqual([]);
+    expect(proposal?.decision).toEqual({
+      action: 'error',
+      confidence: null,
+      rationale: 'capability_violation:open_short_on_spot',
+    });
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('BTC/USDT'));
   });
 });

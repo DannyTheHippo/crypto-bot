@@ -157,8 +157,18 @@ export interface AgentDecisionRecord {
   // comment) — this ring is populated directly from decision.action (agentic.strategy.ts's decide()),
   // so it must accept whatever that field accepts. Purely a type-surface widen: this ring's own
   // rendering (agent-prompt.ts's recentDecisions block) is unchanged by B2 — giving v2 actions their
-  // own rendering treatment is directive-lifecycle territory (B3).
-  readonly action: 'open_long' | 'open_short' | 'close' | 'adjust' | 'hold' | 'long' | 'flat';
+  // own rendering treatment is directive-lifecycle territory (B3). v3: 'error' ADDITIVE too, mirroring
+  // AgentDecisionMeta.action's own v3 widen (a capability-violation degrade's decision.action flows
+  // straight into this ring exactly like every other decision).
+  readonly action:
+    | 'open_long'
+    | 'open_short'
+    | 'close'
+    | 'adjust'
+    | 'hold'
+    | 'long'
+    | 'flat'
+    | 'error';
   readonly close: number;
   readonly reason: string;
   // Forward-looking outcome of THIS decision, filled in later (once price has moved / the position
@@ -347,7 +357,20 @@ export interface AgentDecisionMeta {
   // legacy tool (test/eval/agentic/*, entry-rate-floor.ts, candidate-backtest.ts until they migrate in
   // their own steps) still type-check unchanged. A caller reasoning over a specific decision still
   // narrows with `===`/a switch; nothing here forces a downstream exhaustive-switch rewrite by itself.
-  readonly action: 'open_long' | 'open_short' | 'close' | 'adjust' | 'hold' | 'long' | 'flat';
+  // v3 (consolidation spec §4.3): 'error' ADDITIVE too — the ONE value the client itself constructs
+  // (never the strategy's own recordErrorJournalEntry) to signal a named capability-violation degrade
+  // (e.g. an 'open_short' on a capabilities.shorts=false symbol): signals stays [] (a hold), and this
+  // action flows straight through toJournalAction (agentic.strategy.ts) into the journal's action
+  // column unchanged, so the violation is never silently absorbed into an ordinary 'hold' row.
+  readonly action:
+    | 'open_long'
+    | 'open_short'
+    | 'close'
+    | 'adjust'
+    | 'hold'
+    | 'long'
+    | 'flat'
+    | 'error';
   // S2: v2 conviction rides entirely in AgentDirectives.sizeFraction — there is no separate
   // confidence field on the v2 tool response (see agent-prompt.ts's sizeFraction description). null
   // is what a v2-served decision now carries here; number is the legacy 0..1 confidence value every

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import Decimal from 'decimal.js';
 import { price, qty } from '../../../domain/types/money';
+import { SPOT_VENUE_ID, PERP_VENUE_ID } from '../../../domain/types/venue-map';
 import type {
   AgentDirectives,
   AgentTradingProfile,
@@ -10,9 +11,9 @@ import {
   buildPlaybookBlock,
   buildSystemPrompt,
   buildTradeTool,
-  buildTradeShortsTool,
+  type SymbolCapabilities,
 } from './agent-prompt';
-import { tradeDecisionSchema, tradeShortsDecisionSchema } from './anthropic-agent-client';
+import { tradeDecisionSchema } from './anthropic-agent-client';
 
 // Backlog #39 mint-time entry-rate floor: a reflection candidate minted from all-loss evidence can
 // rationally raise the entry bar so far that it structurally never fires (observed live: v2 entered
@@ -84,14 +85,13 @@ export interface PlanReplayCallConfig {
   readonly model: string;
   readonly baseUrl?: string;
   readonly timeoutMs: number;
-  // P3 migration: the v2 lane cap (AGENTIC_MAX_POSITION_FRACTION), carried in BOTH forms this replay
-  // needs — string for the tool description (buildTradeTool/buildTradeShortsTool), number for the
-  // zod schema's upper bound (tradeDecisionSchema/tradeShortsDecisionSchema) — mirrors
-  // anthropic-agent-client.ts's own maxPositionFraction/maxPositionFractionNum split.
+  // v3: the replay's own capabilities.maxSizeFraction (string form for the tool description, number
+  // form for tradeDecisionSchema's zod bound — see replayPlanRow's own Decimal→toNumber comment).
   readonly sizeFractionMax: string;
-  // Perp lane only — selects the shorts-capable v2 tool/schema, mirroring the live client's own
-  // shortsEnabled selector (shorts ⟺ perp in this codebase, per agent-prompt.ts's own comment).
-  // Absent/false ⇒ spot-only (open_short unavailable), matching every spot deployment's replay shape.
+  // Perp lane only — selects a shorts-capable capabilities object, mirroring the live client's own
+  // per-symbol capabilities.shorts fact (shorts ⟺ perp in this codebase, per agent-prompt.ts's own
+  // comment). Absent/false ⇒ spot-only (open_short unavailable), matching every spot deployment's
+  // replay shape.
   readonly shortsEnabled?: boolean;
 }
 
@@ -124,16 +124,22 @@ export async function replayPlanRow(
   rowPayload: string,
   fetchFn: typeof fetch,
 ): Promise<PlanReplayResult> {
-  const tool = cfg.shortsEnabled
-    ? buildTradeShortsTool(cfg.sizeFractionMax)
-    : buildTradeTool(cfg.sizeFractionMax);
+  // v3: this replay's own capabilities object — venue/leverage are illustrative (this harness asks a
+  // structural question, not a live-venue one; see DEFAULT_FLOOR_PROFILE's own comment), shorts/
+  // maxSizeFraction are the two facts that actually vary the tool/schema shape.
+  const caps: SymbolCapabilities = {
+    venue: cfg.shortsEnabled ? PERP_VENUE_ID : SPOT_VENUE_ID,
+    shorts: cfg.shortsEnabled ?? false,
+    leverage: '2',
+    maxSizeFraction: cfg.sizeFractionMax,
+    venueFreeCash: '0',
+  };
+  const tool = buildTradeTool(caps);
   // sizeFractionMax is money-adjacent (AgentDirectives.sizeFraction's own comment) — Decimal→toNumber,
   // never Number()/parseFloat(), mirrors agent-prompt.ts's own DECISION_V2_BOUNDS.stopLossPct.max
   // conversion (this is a schema BOUND, not a stored money value, so a plain number result is fine).
   const sizeFractionMaxNum = new Decimal(cfg.sizeFractionMax).toNumber();
-  const schema = cfg.shortsEnabled
-    ? tradeShortsDecisionSchema(sizeFractionMaxNum)
-    : tradeDecisionSchema(sizeFractionMaxNum);
+  const schema = tradeDecisionSchema(sizeFractionMaxNum);
 
   // W2.4-style cache split: the playbook block (the stable prefix shared by every row in this batch)
   // rides its own cache_control block; the volatile per-row market payload follows uncached — same
@@ -183,12 +189,7 @@ export async function replayPlanRow(
     if (!toolBlock) return { ok: false, usage };
     const parsed = schema.safeParse(toolBlock.input);
     if (!parsed.success) return { ok: false, usage };
-    // `schema` is a UNION of two zod schema types (spot/shorts action enums differ) — TS's control-
-    // flow narrowing across that union misbehaves on chained `===` checks against parsed.data.action
-    // directly (observed: a comparison against 'open_short' resolves to "no overlap" even though the
-    // shorts variant's action enum includes it). Widening to the explicit literal union once, up
-    // front, sidesteps the narrowing bug entirely.
-    const action = parsed.data.action as 'open_long' | 'open_short' | 'close' | 'adjust' | 'hold';
+    const action = parsed.data.action;
     const isOpen = action === 'open_long' || action === 'open_short';
     return {
       ok: true,
@@ -245,13 +246,10 @@ export async function measureEntryRate(
     return { skipped: 'no rows to replay' };
   }
 
-  // P3: v2 rich-decision-contract system prompt (tradeContract), not the legacy plan-mode prompt —
-  // the v2 prompt carries no minEdgeMultiple/minRr sentence (those knobs are retired, D1), so neither
-  // is threaded here.
-  const systemPrompt = buildSystemPrompt(DEFAULT_FLOOR_PROFILE, {
-    tradeContract: true,
-    shortsEnabled: cfg.shortsEnabled,
-  });
+  // v3 consolidation spec §4.4: buildSystemPrompt always builds the rich-decision-contract prompt
+  // now (no more tradeContract/shortsEnabled options — shorts is documented unconditionally, and the
+  // legacy plan-mode minEdgeMultiple/minRr sentence is gone with the legacy prompt it belonged to).
+  const systemPrompt = buildSystemPrompt(DEFAULT_FLOOR_PROFILE);
   const playbookBlock = buildPlaybookBlock(cfg.playbookContent);
 
   let consults = 0;

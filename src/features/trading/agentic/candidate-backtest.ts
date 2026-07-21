@@ -236,12 +236,10 @@ export async function runCandidateBacktest(
     return { skipped: 'no rows to replay' };
   }
 
-  // P3: v2 rich-decision-contract system prompt (tradeContract), not the legacy plan-mode prompt —
-  // see entry-rate-floor.ts's own measureEntryRate comment on why minEdgeMultiple/minRr are gone.
-  const systemPrompt = buildSystemPrompt(DEFAULT_FLOOR_PROFILE, {
-    tradeContract: true,
-    shortsEnabled: cfg.shortsEnabled,
-  });
+  // v3 consolidation spec §4.4: buildSystemPrompt always builds the rich-decision-contract prompt now
+  // (no more tradeContract/shortsEnabled options — see entry-rate-floor.ts's own measureEntryRate
+  // comment on why minEdgeMultiple/minRr are gone too).
+  const systemPrompt = buildSystemPrompt(DEFAULT_FLOOR_PROFILE);
   const candidateBlock = buildPlaybookBlock(cfg.candidatePlaybook);
   const championBlock = buildPlaybookBlock(cfg.championPlaybook);
   const forwardCloses = buildForwardCloseIndex(rows);

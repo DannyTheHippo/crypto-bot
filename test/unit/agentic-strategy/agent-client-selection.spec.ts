@@ -122,7 +122,11 @@ describe('selectAgentClient', () => {
     expect(client).toBeInstanceOf(BatchingAgentClient);
   });
 
-  it('legacy (non-plan) shorts with portfolio consult refuses at boot — the batched tool cannot express a short without plan.direction (reviewer S1)', () => {
+  // v3 consolidation spec §9: the shortsEnabled/planMode/perpCapableVenue construction guards (and
+  // the shorts+portfolio-consult plan-mode refusal) are DELETED — shorts is a per-symbol capability
+  // (venueForSymbol-derived) now, never a boot-time flag combination to refuse. Both boot shapes
+  // below construct cleanly under v3.
+  it('AGENTIC_SHORTS_ENABLED with portfolio consult and no plan mode no longer refuses at boot (shorts is per-symbol now)', () => {
     const budget = createAgentLlmBudget({});
     expect(() =>
       selectAgentClient(
@@ -133,10 +137,10 @@ describe('selectAgentClient', () => {
         },
         budget,
       ),
-    ).toThrow(/requires AGENTIC_PLAN_MODE/);
+    ).not.toThrow();
   });
 
-  it('shorts without a perp-capable venue still refuses construction under portfolio consult (the constructor guard binds before batching wraps)', () => {
+  it('AGENTIC_SHORTS_ENABLED without a perp-capable venue no longer refuses construction (no perpCapableVenue guard any more)', () => {
     const budget = createAgentLlmBudget({});
     expect(() =>
       selectAgentClient(
@@ -148,7 +152,7 @@ describe('selectAgentClient', () => {
         },
         budget,
       ),
-    ).toThrow(/perp/i);
+    ).not.toThrow();
   });
 });
 

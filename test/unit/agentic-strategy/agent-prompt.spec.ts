@@ -7,19 +7,14 @@ import {
   PLAYBOOK_BLOCK_START,
   PLAYBOOK_BLOCK_END,
   PROMPT_TEMPLATE_VERSION,
-  SHORTS_DECISION_TOOL,
   TRADE_TEMPLATE_VERSION,
-  TRADE_SHORTS_TEMPLATE_VERSION,
-  TRADE_PORTFOLIO_TEMPLATE_VERSION,
-  TRADE_PORTFOLIO_SHORTS_TEMPLATE_VERSION,
   buildMarketPayload,
   buildSystemPrompt,
   buildTradeTool,
-  buildTradeShortsTool,
   buildTradePortfolioTool,
-  buildTradePortfolioShortsTool,
   buildUserMessage,
   computePromptHash,
+  type SymbolCapabilities,
 } from '../../../src/features/trading/agentic/agent-prompt';
 import { normalizeRawEvent } from '../../../src/features/trading/market-data/normalize';
 import type { RawVenueEvent } from '../../../src/ports/exchange-stream';
@@ -258,20 +253,21 @@ function buildInput(
 }
 
 describe('buildSystemPrompt', () => {
-  it('constrains the agent to LONG/FLAT-only, cost-aware, Risk-veto-aware, hold-when-uncertain, tool-only responses', () => {
+  // v3 consolidation spec §4.4: the legacy LONG/FLAT-only, submit_decision-closing prompt is DELETED
+  // — every boot now serves the rich decision contract (see the 'buildSystemPrompt (v3 rich decision
+  // contract, unconditional)' describe block below for coverage of the current output).
+  it('is cost-aware, Risk-veto-aware, hold-when-uncertain, and closes on the submit_trade tool', () => {
     const prompt = buildSystemPrompt(fixtureProfile());
 
-    expect(prompt).toContain('LONG');
-    expect(prompt).toContain('FLAT');
     expect(prompt.toLowerCase()).toContain('cost');
     expect(prompt.toLowerCase()).toContain('fees');
     expect(prompt.toLowerCase()).toContain('risk');
     expect(prompt.toLowerCase()).toContain('veto');
     expect(prompt.toLowerCase()).toContain('hold');
-    expect(prompt).toContain('submit_decision');
+    expect(prompt).toContain('Respond ONLY by calling the submit_trade tool.');
   });
 
-  it('renders the real fees and sizing rule from the given profile, and points at the payload constraints field', () => {
+  it('renders the real fees from the given profile, and points at the payload constraints field', () => {
     const profile = fixtureProfile({
       makerBps: '8',
       takerBps: '12',
@@ -284,8 +280,6 @@ describe('buildSystemPrompt', () => {
     expect(prompt).toContain('8');
     expect(prompt).toContain('12');
     expect(prompt).toContain('20'); // round-trip = maker + taker
-    expect(prompt).toContain('75');
-    expect(prompt).toContain('300');
     expect(prompt).toContain('constraints field of the user message payload');
   });
 
@@ -364,11 +358,12 @@ describe('buildSystemPrompt', () => {
   });
 
   describe('derivatives block sentence (C1, DERIVATIVES_FEED_ENABLED gate)', () => {
-    it('DERIVATIVES_FEED_ENABLED off (opts omitted) ⇒ the prompt is BYTE-IDENTICAL to pre-C1 output (no mention of funding/derivatives)', () => {
+    it('DERIVATIVES_FEED_ENABLED off (opts omitted) ⇒ no derivatives-block sentence', () => {
+      // v3: the always-on perp guidance (funding-as-carry, liquidation risk) is unconditional now —
+      // only the derivatives BLOCK sentence itself is gated by this flag.
       const prompt = buildSystemPrompt(fixtureProfile());
 
-      expect(prompt).not.toContain('derivatives');
-      expect(prompt.toLowerCase()).not.toContain('funding');
+      expect(prompt).not.toContain('derivatives block');
       expect(prompt.toLowerCase()).not.toContain('open interest');
     });
 
@@ -562,10 +557,12 @@ describe('buildSystemPrompt', () => {
   });
 
   describe('liquidation block sentence (Push 3 P6 Unit 2, AGENTIC_LIQUIDATIONS_ENABLED gate)', () => {
-    it('liquidationsFeedEnabled off (opts omitted) ⇒ the prompt is BYTE-IDENTICAL to pre-feature output (no mention of liquidation)', () => {
+    it('liquidationsFeedEnabled off (opts omitted) ⇒ no liquidation-BLOCK sentence', () => {
+      // v3: the always-on perp guidance mentions liquidation RISK MANAGEMENT unconditionally — only
+      // the liquidation-block sentence itself is gated by this flag.
       const prompt = buildSystemPrompt(fixtureProfile());
 
-      expect(prompt.toLowerCase()).not.toContain('liquidation');
+      expect(prompt.toLowerCase()).not.toContain('liquidation block');
     });
 
     it('liquidationsFeedEnabled: false is explicitly byte-identical to opts omitted entirely', () => {
@@ -634,90 +631,14 @@ describe('buildSystemPrompt', () => {
       expect(prompt).toContain('meanNetBpsPerTrip');
     });
   });
-
-  describe('shorts capability (B3, shortsEnabled gate)', () => {
-    it('shortsEnabled off (opts omitted) ⇒ the prompt is BYTE-IDENTICAL to pre-B3 output', () => {
-      const prompt = buildSystemPrompt(fixtureProfile());
-
-      expect(prompt).toContain(
-        'You may only go LONG or stay FLAT — never short, never use leverage or margin.',
-      );
-      expect(prompt.toLowerCase()).not.toContain('short position');
-    });
-
-    it('shortsEnabled: false is explicitly byte-identical to opts omitted entirely', () => {
-      const withOmitted = buildSystemPrompt(fixtureProfile());
-      const withExplicitFalse = buildSystemPrompt(fixtureProfile(), { shortsEnabled: false });
-
-      expect(withExplicitFalse).toBe(withOmitted);
-    });
-
-    it('swaps the LONG/FLAT-only constraint sentence and adds one short-semantics sentence when shortsEnabled is true', () => {
-      const prompt = buildSystemPrompt(fixtureProfile(), { shortsEnabled: true });
-
-      expect(prompt).not.toContain('never short, never use leverage or margin');
-      expect(prompt).toContain('You may go LONG, SHORT, or stay FLAT');
-      expect(prompt.toLowerCase()).toContain('short position');
-      expect(prompt).toContain("close ANY open position, long or short, via the 'flat' action");
-    });
-  });
-
-  describe('plan mode (W3 payoff-floor sentence)', () => {
-    it('states the stop-floor/RR constraint up front, with the configured minRr, when planMode is on', () => {
-      const prompt = buildSystemPrompt(fixtureProfile(), {
-        planMode: true,
-        minEdgeMultiple: '1.5',
-        minRr: '2',
-      });
-
-      expect(prompt).toContain(
-        'Plans are auto-rejected unless stopLossPct is at least the round-trip fee fraction and takeProfitPct is at least AGENTIC_MIN_RR (2) times stopLossPct — propose plans with genuine asymmetry, not thin targets with loose stops.',
-      );
-    });
-
-    it('defaults minRr to 1.5 in the sentence when opts.minRr is omitted', () => {
-      const prompt = buildSystemPrompt(fixtureProfile(), {
-        planMode: true,
-        minEdgeMultiple: '1.5',
-      });
-
-      expect(prompt).toContain('AGENTIC_MIN_RR (1.5)');
-    });
-
-    it('omits the payoff-floor sentence entirely outside plan mode', () => {
-      const prompt = buildSystemPrompt(fixtureProfile());
-
-      expect(prompt).not.toContain('AGENTIC_MIN_RR');
-    });
-
-    it('explains the managedPlan re-arm path (hold+plan on an unmanaged position) when planMode is on, never otherwise', () => {
-      const planPrompt = buildSystemPrompt(fixtureProfile(), {
-        planMode: true,
-        minEdgeMultiple: '1.5',
-        minRr: '1.5',
-      });
-      const legacyPrompt = buildSystemPrompt(fixtureProfile());
-
-      expect(planPrompt).toContain('managedPlan: false');
-      expect(planPrompt).toContain("including a plan object with your 'hold'");
-      expect(legacyPrompt).not.toContain('managedPlan');
-    });
-  });
 });
 
-describe('buildSystemPrompt tradeContract option (S1, rich decision contract)', () => {
-  it('tradeContract omitted/false ⇒ BYTE-IDENTICAL to the pre-S1 legacy prompt (no mandate/swing/submit_trade wording)', () => {
-    const withOmitted = buildSystemPrompt(fixtureProfile());
-    const withExplicitFalse = buildSystemPrompt(fixtureProfile(), { tradeContract: false });
-
-    expect(withExplicitFalse).toBe(withOmitted);
-    expect(withOmitted).not.toContain('submit_trade');
-    expect(withOmitted).not.toContain('net-of-cost');
-    expect(withOmitted).toContain('Respond ONLY by calling the submit_decision tool.');
-  });
-
-  it('tradeContract: true swaps in the v2 trader-with-judgment prompt: mandate, swing horizon, sizing/exit/scheduling authority, correlation budgeting, and the submit_trade closing rule', () => {
-    const prompt = buildSystemPrompt(fixtureProfile(), { tradeContract: true });
+// v3 consolidation spec §9: buildSystemPrompt now ALWAYS builds the rich decision contract prompt —
+// the legacy submit_decision prompt, its shortsEnabled/planMode gates, and the tradeContract option
+// itself are all deleted (no more lane-split prompt variants).
+describe('buildSystemPrompt (v3 rich decision contract, unconditional)', () => {
+  it('always renders the trader-with-judgment mandate/swing/sizing/exit/scheduling/correlation prose and the submit_trade closing rule', () => {
+    const prompt = buildSystemPrompt(fixtureProfile());
 
     expect(prompt.toLowerCase()).toContain('net-of-cost');
     expect(prompt.toLowerCase()).toContain('swing');
@@ -726,40 +647,21 @@ describe('buildSystemPrompt tradeContract option (S1, rich decision contract)', 
     expect(prompt).toContain('nextConsultBars is itself an economic decision');
     expect(prompt.toLowerCase()).toContain('correlation budgeting');
     expect(prompt).toContain('Respond ONLY by calling the submit_trade tool.');
-    // Never the legacy closing instruction or the legacy LONG/FLAT-only framing.
-    expect(prompt).not.toContain('Respond ONLY by calling the submit_decision tool.');
   });
 
-  it('tradeContract: true without shortsEnabled documents the SPOT lane only (no shorts/leverage/funding sentences)', () => {
-    const prompt = buildSystemPrompt(fixtureProfile(), { tradeContract: true });
+  it('always documents shorts/leverage as a per-symbol capability (never a spot-only or perp-only persona swap)', () => {
+    const prompt = buildSystemPrompt(fixtureProfile());
 
-    expect(prompt).toContain('trading a single SPOT symbol');
-    expect(prompt.toLowerCase()).not.toContain('liquidation distance');
-    expect(prompt.toLowerCase()).not.toContain('funding is part of your pnl');
-  });
-
-  it('tradeContract: true + shortsEnabled: true documents the PERP lane: shorts, 2x leverage cap, margin/liquidation, funding-as-carry', () => {
-    const prompt = buildSystemPrompt(fixtureProfile(), {
-      tradeContract: true,
-      shortsEnabled: true,
-    });
-
-    expect(prompt.toLowerCase()).toContain('perpetual futures');
-    expect(prompt).toContain('leverage is capped at 2x');
-    // X2 honesty fix (2026-07-20): the summary carries no margin/liq-distance fields yet, so
-    // the prompt teaches first-principles liquidation reasoning off the 2x cap instead of
-    // promising fields that never render (follow-up build lands before stage-2 widening).
+    expect(prompt.toLowerCase()).toContain('capabilities.shorts');
+    expect(prompt.toLowerCase()).toContain('leverage');
+    expect(prompt.toLowerCase()).toContain('funding is part of your pnl');
     expect(prompt.toLowerCase()).toContain(
       'manage liquidation risk actively from first principles',
     );
-    expect(prompt.toLowerCase()).not.toContain('the position summary shows margin usage');
-    expect(prompt.toLowerCase()).toContain('funding is part of your pnl');
-    expect(prompt).not.toContain('trading a single SPOT symbol');
   });
 
-  it('tradeContract: true still documents the feed blocks (derivatives/sentiment/etc.) when their flags are on, same as the legacy prompt', () => {
+  it('still documents the feed blocks (derivatives/trackRecord/etc.) when their flags are on', () => {
     const prompt = buildSystemPrompt(fixtureProfile(), {
-      tradeContract: true,
       derivativesFeedEnabled: true,
       trackRecordFeedEnabled: true,
     });
@@ -768,8 +670,8 @@ describe('buildSystemPrompt tradeContract option (S1, rich decision contract)', 
     expect(prompt).toContain('trackRecord block');
   });
 
-  it('tradeContract: true still frames the playbook as advisory DATA and recentDecisions as historical data, same framing as the legacy prompt', () => {
-    const prompt = buildSystemPrompt(fixtureProfile(), { tradeContract: true });
+  it('still frames the playbook as advisory DATA and recentDecisions as historical data', () => {
+    const prompt = buildSystemPrompt(fixtureProfile());
 
     expect(prompt.toLowerCase()).toContain('playbook');
     expect(prompt.toLowerCase()).toContain('never');
@@ -1844,31 +1746,30 @@ describe('DECISION_TOOL', () => {
   });
 });
 
-describe('SHORTS_DECISION_TOOL (B3)', () => {
-  it('is the same submit_decision tool name — strict, disallows additional properties, requires action/confidence/rationale', () => {
-    expect(SHORTS_DECISION_TOOL.name).toBe('submit_decision');
-    expect(SHORTS_DECISION_TOOL.strict).toBe(true);
-    expect(SHORTS_DECISION_TOOL.input_schema.additionalProperties).toBe(false);
-    expect(SHORTS_DECISION_TOOL.input_schema.required).toEqual([
-      'action',
-      'confidence',
-      'rationale',
-    ]);
-  });
+// v3 consolidation spec §9: SHORTS_DECISION_TOOL is DELETED outright (no eval fixture imports it) —
+// the unified submit_trade/submit_portfolio contract below replaces the whole lane-split family.
 
-  it('constrains action to exactly long, short, flat, hold', () => {
-    expect(SHORTS_DECISION_TOOL.input_schema.properties.action.enum).toEqual([
-      'long',
-      'short',
-      'flat',
-      'hold',
-    ]);
-  });
-
-  it('DECISION_TOOL itself stays untouched (still only long/flat/hold)', () => {
-    expect(DECISION_TOOL.input_schema.properties.action.enum).toEqual(['long', 'flat', 'hold']);
-  });
-});
+// v3 consolidation spec §4.1/§4.2: per-symbol capability fixtures shared by the tool-shape tests
+// below — spot never shorts, perp always does; leverage/venueFreeCash are illustrative here (the
+// tool description only reads maxSizeFraction/shorts/leverage, never venueFreeCash).
+function spotCaps(maxSizeFraction: string): SymbolCapabilities {
+  return {
+    venue: venueId('binance'),
+    shorts: false,
+    leverage: '1',
+    maxSizeFraction,
+    venueFreeCash: '100',
+  };
+}
+function perpCaps(maxSizeFraction: string): SymbolCapabilities {
+  return {
+    venue: venueId('binanceusdm'),
+    shorts: true,
+    leverage: '2',
+    maxSizeFraction,
+    venueFreeCash: '100',
+  };
+}
 
 describe('strict tool schemas stay within the API-accepted JSON-schema subset', () => {
   // Anthropic strict tool use rejects constraint keywords with HTTP 400 at request time ("For
@@ -1907,16 +1808,18 @@ describe('strict tool schemas stay within the API-accepted JSON-schema subset', 
   it.each([
     ['DECISION_TOOL', DECISION_TOOL],
     ['PLAN_TOOL', PLAN_TOOL],
-    ['SHORTS_DECISION_TOOL', SHORTS_DECISION_TOOL],
-    // S1 (rich decision contract): the v2 trade tools ride the SAME strict-API-accepted allowlist —
-    // walked recursively (properties + items, including the nested `entry` object and, for the
-    // portfolio variants, the `decisions[].*` element schema) so no numeric min/max keyword can ever
+    // v3 consolidation spec §4.3: the v2 trade tools ride the SAME strict-API-accepted allowlist —
+    // walked recursively (properties + items, including the nested `entry` object and the
+    // `decisions[].*` element schema for the portfolio tool) so no numeric min/max keyword can ever
     // sneak into a wire schema and 400 the client's first live call (see this describe's own header
-    // comment for the documented incident).
-    ['TRADE_TOOL', buildTradeTool('0.15')],
-    ['TRADE_SHORTS_TOOL', buildTradeShortsTool('0.5')],
-    ['TRADE_PORTFOLIO_TOOL', buildTradePortfolioTool('0.15')],
-    ['TRADE_PORTFOLIO_SHORTS_TOOL', buildTradePortfolioShortsTool('0.5')],
+    // comment for the documented incident). ONE schema shape now (action enum always includes
+    // open_short) — spot/perp caps only vary the DESCRIPTION text, never the schema keywords.
+    ['TRADE_TOOL_SPOT', buildTradeTool(spotCaps('0.15'))],
+    ['TRADE_TOOL_PERP', buildTradeTool(perpCaps('0.35'))],
+    [
+      'TRADE_PORTFOLIO_TOOL',
+      buildTradePortfolioTool(new Map([[symbolId('BTC/USDT'), spotCaps('0.15')]])),
+    ],
   ])('%s uses only schema keywords the strict API accepts', (_label, tool) => {
     expect(tool.strict).toBe(true);
     assertSchemaNode(tool.input_schema, 'input_schema');
@@ -1933,43 +1836,44 @@ describe('strict tool schemas stay within the API-accepted JSON-schema subset', 
   });
 });
 
-describe('v2 trade tools (S1, DECISION_V2_BOUNDS)', () => {
-  it('TRADE_TOOL is submit_trade, strict, and excludes open_short from the action enum (spot lane)', () => {
-    const tool = buildTradeTool('0.15');
-    expect(tool.name).toBe('submit_trade');
-    expect(tool.strict).toBe(true);
-    expect(tool.input_schema.additionalProperties).toBe(false);
-    expect(tool.input_schema.properties.action.enum).toEqual([
-      'open_long',
-      'close',
-      'adjust',
-      'hold',
-    ]);
-    expect(tool.input_schema.properties.action.enum).not.toContain('open_short');
-  });
-
-  it('TRADE_SHORTS_TOOL is the same submit_trade name but widens the action enum with open_short (perp lane)', () => {
-    const tool = buildTradeShortsTool('0.5');
-    expect(tool.name).toBe('submit_trade');
-    expect(tool.input_schema.properties.action.enum).toEqual([
+// v3 consolidation spec §4.3: ONE schema — the action enum always includes 'open_short'; per-symbol
+// shorts eligibility is a payload/zod-layer concern (see anthropic-agent-client.spec.ts's capability-
+// violation-degrade coverage), never a schema-shape concern any more.
+describe('v2 trade tools (v3 unified contract, DECISION_V2_BOUNDS)', () => {
+  it('buildTradeTool is submit_trade, strict, and ALWAYS includes open_short in the action enum', () => {
+    const spot = buildTradeTool(spotCaps('0.15'));
+    const perp = buildTradeTool(perpCaps('0.35'));
+    expect(spot.name).toBe('submit_trade');
+    expect(spot.strict).toBe(true);
+    expect(spot.input_schema.additionalProperties).toBe(false);
+    expect(spot.input_schema.properties.action.enum).toEqual([
       'open_long',
       'open_short',
       'close',
       'adjust',
       'hold',
     ]);
-    // TRADE_TOOL itself stays untouched (mirrors "SHORTS_DECISION_TOOL (B3)" own precedent above).
-    expect(buildTradeTool('0.15').input_schema.properties.action.enum).not.toContain('open_short');
+    expect(perp.input_schema.properties.action.enum).toEqual(
+      spot.input_schema.properties.action.enum,
+    );
   });
 
-  it('injects the lane sizeFraction max into the description rather than a hardcoded JSON-schema bound', () => {
-    const spot = buildTradeTool('0.15');
-    const perp = buildTradeShortsTool('0.5');
+  it('mentions shorts/leverage in the description only when capabilities.shorts is true', () => {
+    const spot = buildTradeTool(spotCaps('0.15'));
+    const perp = buildTradeTool(perpCaps('0.35'));
+    expect(spot.description.toLowerCase()).not.toContain('shorts are enabled');
+    expect(perp.description.toLowerCase()).toContain('shorts are enabled');
+    expect(perp.description).toContain('2x');
+  });
+
+  it('injects this symbol capabilities.maxSizeFraction into the sizeFraction description rather than a hardcoded JSON-schema bound', () => {
+    const spot = buildTradeTool(spotCaps('0.15'));
+    const perp = buildTradeTool(perpCaps('0.35'));
     expect(spot.input_schema.properties.sizeFraction.description).toContain(
       `[${DECISION_V2_BOUNDS.sizeFraction.min}, 0.15]`,
     );
     expect(perp.input_schema.properties.sizeFraction.description).toContain(
-      `[${DECISION_V2_BOUNDS.sizeFraction.min}, 0.5]`,
+      `[${DECISION_V2_BOUNDS.sizeFraction.min}, 0.35]`,
     );
     // No numeric min/max schema keyword anywhere on sizeFraction — same allowlist walk as above, but
     // asserted directly here to make the "description-only, never JSON-schema" contract explicit.
@@ -2000,17 +1904,16 @@ describe('v2 trade tools (S1, DECISION_V2_BOUNDS)', () => {
       }
     }
     for (const tool of [
-      buildTradeTool('0.15'),
-      buildTradeShortsTool('0.5'),
-      buildTradePortfolioTool('0.15'),
-      buildTradePortfolioShortsTool('0.5'),
+      buildTradeTool(spotCaps('0.15')),
+      buildTradeTool(perpCaps('0.35')),
+      buildTradePortfolioTool(new Map([[symbolId('BTC/USDT'), spotCaps('0.15')]])),
     ]) {
       walk(tool.input_schema);
     }
   });
 
   it('every DECISION_V2_BOUNDS range with a fixed max is stated in the matching field description', () => {
-    const tool = buildTradeTool('0.15');
+    const tool = buildTradeTool(spotCaps('0.15'));
     const props = tool.input_schema.properties;
     expect(props.entryValidityBars.description).toContain(
       `[${DECISION_V2_BOUNDS.entryValidityBars.min}, ${DECISION_V2_BOUNDS.entryValidityBars.max}]`,
@@ -2034,14 +1937,14 @@ describe('v2 trade tools (S1, DECISION_V2_BOUNDS)', () => {
   });
 
   it('entry.style is maker|taker and entry.offsetBps is documented as maker-only', () => {
-    const entry = buildTradeTool('0.15').input_schema.properties.entry;
+    const entry = buildTradeTool(spotCaps('0.15')).input_schema.properties.entry;
     expect(entry.properties.style.enum).toEqual(['maker', 'taker']);
     expect(entry.properties.offsetBps.description.toLowerCase()).toContain("style is 'taker'");
   });
 
-  describe('portfolio batch tools: exactly ONE portfolio-level nextConsultBars', () => {
-    it('TRADE_PORTFOLIO_TOOL carries nextConsultBars at the top level, not inside each decision element', () => {
-      const tool = buildTradePortfolioTool('0.15');
+  describe('portfolio batch tool: exactly ONE portfolio-level nextConsultBars', () => {
+    it('carries nextConsultBars at the top level, not inside each decision element', () => {
+      const tool = buildTradePortfolioTool(new Map([[symbolId('BTC/USDT'), spotCaps('0.15')]]));
       const topProps = tool.input_schema.properties;
       expect(topProps).toHaveProperty('nextConsultBars');
       expect(topProps.nextConsultBars.type).toBe('integer');
@@ -2056,25 +1959,32 @@ describe('v2 trade tools (S1, DECISION_V2_BOUNDS)', () => {
       expect(occurrences).toBe(1);
     });
 
-    it('TRADE_PORTFOLIO_SHORTS_TOOL: same single top-level nextConsultBars, with open_short in the per-element action enum', () => {
-      const tool = buildTradePortfolioShortsTool('0.5');
-      expect(tool.input_schema.properties).toHaveProperty('nextConsultBars');
-      expect(tool.input_schema.properties.decisions.items.properties).not.toHaveProperty(
-        'nextConsultBars',
+    it('per-element action enum always includes open_short regardless of the batch composition', () => {
+      const allSpot = buildTradePortfolioTool(new Map([[symbolId('BTC/USDT'), spotCaps('0.15')]]));
+      const mixed = buildTradePortfolioTool(
+        new Map([
+          [symbolId('BTC/USDT'), spotCaps('0.15')],
+          [symbolId('SOL/USDT:USDT'), perpCaps('0.35')],
+        ]),
       );
-      expect(tool.input_schema.properties.decisions.items.properties.action.enum).toContain(
+      expect(allSpot.input_schema.properties.decisions.items.properties.action.enum).toContain(
         'open_short',
       );
-      const occurrences = (JSON.stringify(tool.input_schema).match(/"nextConsultBars":\{/g) ?? [])
-        .length;
-      expect(occurrences).toBe(1);
+      expect(mixed.input_schema.properties.decisions.items.properties.action.enum).toEqual(
+        allSpot.input_schema.properties.decisions.items.properties.action.enum,
+      );
     });
 
-    it('spot batch excludes open_short from the per-element action enum', () => {
-      const tool = buildTradePortfolioTool('0.15');
-      expect(tool.input_schema.properties.decisions.items.properties.action.enum).not.toContain(
-        'open_short',
+    it('mentions shorts only when at least one resolved symbol in the batch has capabilities.shorts', () => {
+      const allSpot = buildTradePortfolioTool(new Map([[symbolId('BTC/USDT'), spotCaps('0.15')]]));
+      const mixed = buildTradePortfolioTool(
+        new Map([
+          [symbolId('BTC/USDT'), spotCaps('0.15')],
+          [symbolId('SOL/USDT:USDT'), perpCaps('0.35')],
+        ]),
       );
+      expect(allSpot.description.toLowerCase()).not.toContain('open_short');
+      expect(mixed.description.toLowerCase()).toContain('open_short');
     });
   });
 });
@@ -2118,18 +2028,13 @@ describe('computePromptHash', () => {
     expect(computePromptHash({ ...base, ...override })).not.toBe(computePromptHash(base));
   });
 
-  // S1 (rich decision contract): t1/t1s/tpf1/tpf2 are a NEW tag family (see agent-prompt.ts's own
-  // header comment) — every pairing here must hash distinctly, both against each other and against
-  // every legacy tag, so a v2-tagged decision row can never be confused with a legacy one even when
-  // quoting the same playbook/tool-schema/model.
-  it('t1/t1s/tpf1/tpf2 all hash distinctly from each other and from the legacy PROMPT_TEMPLATE_VERSION tag', () => {
-    const tags = [
-      PROMPT_TEMPLATE_VERSION,
-      TRADE_TEMPLATE_VERSION,
-      TRADE_SHORTS_TEMPLATE_VERSION,
-      TRADE_PORTFOLIO_TEMPLATE_VERSION,
-      TRADE_PORTFOLIO_SHORTS_TEMPLATE_VERSION,
-    ];
+  // v3 consolidation spec §4.4: the four lane-split tags (t1/t1s/tpf1/tpf2) collapse into ONE
+  // TRADE_TEMPLATE_VERSION ('v3') — toolSchemaJson (not a template tag) is what now distinguishes a
+  // single-symbol decide from a batched one, or a spot batch from a mixed one (see agent-prompt.ts's
+  // own comment). This test only pins that the v3 tag still hashes distinctly from the legacy
+  // PROMPT_TEMPLATE_VERSION tag.
+  it('TRADE_TEMPLATE_VERSION hashes distinctly from the legacy PROMPT_TEMPLATE_VERSION tag', () => {
+    const tags = [PROMPT_TEMPLATE_VERSION, TRADE_TEMPLATE_VERSION];
     const hashes = tags.map((templateVersion) => computePromptHash({ ...base, templateVersion }));
     expect(new Set(hashes).size).toBe(hashes.length);
   });
@@ -2295,9 +2200,9 @@ describe('buildMarketPayload v2 blocks (S1: portfolio/budget/thesis/directives/d
   });
 });
 
-// R2 (episodic memory): the similarSetups guidance sentence (both prompt builders) and payload block.
+// R2 (episodic memory): the similarSetups guidance sentence (the ONE v3 prompt builder) and payload block.
 describe('episodic memory (R2)', () => {
-  it('legacy builder: episodicMemoryEnabled appends the similarSetups guidance sentence; off ⇒ absent', () => {
+  it('episodicMemoryEnabled appends the similarSetups guidance sentence; off ⇒ absent', () => {
     const off = buildSystemPrompt(fixtureProfile());
     const on = buildSystemPrompt(fixtureProfile(), { episodicMemoryEnabled: true });
     expect(off).not.toContain('similarSetups');
@@ -2308,24 +2213,10 @@ describe('episodic memory (R2)', () => {
     expect(on).toContain("'sim'");
   });
 
-  it('tradeContract (v2) builder: episodicMemoryEnabled appends the same guidance sentence; off ⇒ absent', () => {
-    const off = buildSystemPrompt(fixtureProfile(), { tradeContract: true });
-    const on = buildSystemPrompt(fixtureProfile(), {
-      tradeContract: true,
-      episodicMemoryEnabled: true,
-    });
-    expect(off).not.toContain('similarSetups');
-    expect(on).toContain('similarSetups');
-    expect(on).toContain('MODULATOR');
-  });
-
-  it('explicit episodicMemoryEnabled:false is byte-identical to omitting it (both builders)', () => {
+  it('explicit episodicMemoryEnabled:false is byte-identical to omitting it', () => {
     expect(buildSystemPrompt(fixtureProfile(), { episodicMemoryEnabled: false })).toBe(
       buildSystemPrompt(fixtureProfile()),
     );
-    expect(
-      buildSystemPrompt(fixtureProfile(), { tradeContract: true, episodicMemoryEnabled: false }),
-    ).toBe(buildSystemPrompt(fixtureProfile(), { tradeContract: true }));
   });
 
   it('buildMarketPayload renders similarSetups verbatim when supplied, omits the key when absent', () => {

@@ -514,16 +514,6 @@ export function selectAgentClient(
       signalTtlMs: intEnv(env['SIGNAL_TTL_MS'], DEFAULT_SIGNAL_TTL_MS),
       profile,
       constraintsFor: constraintsFromDefaultFilters,
-      // W3.1 plan mode: submit_plan tool + deterministic plan executor (strategy side). Flag off ⇒
-      // byte-identical legacy submit_decision behavior.
-      planMode: env['AGENTIC_PLAN_MODE'] === 'true',
-      // Push II Phase 8: plan-mode shorts. perpCapableVenue is what actually gates construction (see
-      // the client's constructor guard) — AGENTIC_SHORTS_ENABLED alone on a spot-only deployment
-      // throws rather than silently no-opping (spot cannot short).
-      shortsEnabled: env['AGENTIC_SHORTS_ENABLED'] === 'true',
-      perpCapableVenue: env['AGENTIC_PERP_VENUE'] === 'true',
-      minEdgeMultiple: env['AGENTIC_MIN_EDGE_MULTIPLE'],
-      minRr: env['AGENTIC_MIN_RR'],
       // C1: off by default ⇒ byte-identical legacy prompt (no derivatives sentence).
       derivativesFeedEnabled: env['DERIVATIVES_FEED_ENABLED'] === 'true',
       // d2: off by default ⇒ byte-identical d1 prompt/payload/tag.
@@ -533,18 +523,14 @@ export function selectAgentClient(
       // derivatives feed flag") — a distinct opts field only so the fundingHistory attribution
       // surface (sentence/tag) is independently gated, per this file's one-flag-per-block precedent.
       fundingHistoryFeedEnabled: env['DERIVATIVES_FEED_ENABLED'] === 'true',
-      // Derivatives-block A/B: 0 by default ⇒ byte-identical (no control arm ever fires).
-      derivativesAbPct: intEnv(env['AGENTIC_DERIVATIVES_AB_PCT'], 0),
-      // S3: thinkingAbPct dropped — AnthropicAgentClientConfig no longer has the field (thinking A/B
-      // #42 retired, every decide now carries thinking:{type:'adaptive'} unconditionally). The
-      // AGENTIC_THINKING_AB_PCT env knob itself is retired in D1; this wiring site just stops reading
-      // it now that the client-side field it fed is gone.
-      // I1 (rich decision contract, Design § New tool contract): v2 is unconditional — no staged
-      // flag, every deployment gets the trade-contract tools/schema/system-prompt from here on.
-      // maxPositionFraction is the lane's sizeFraction upper bound (spot 0.15 / perp 0.50 by config),
-      // injected into both the tool description and the zod schema at construction (S3).
-      tradeContract: true,
-      maxPositionFraction: env['AGENTIC_MAX_POSITION_FRACTION'],
+      // v3 consolidation spec §9: the information-context control arm (derivativesAbPct) and thinking
+      // A/B (#42) are both retired outright — no cfg fields left to wire them into.
+      // v3 consolidation spec §4: shorts/leverage/sizeFraction-cap are per-symbol capabilities now
+      // (venueForSymbol + these two caps), never a deployment-wide lane flag — see
+      // AnthropicAgentClientConfig's own comment.
+      maxPositionFractionSpot: env['AGENTIC_MAX_POSITION_FRACTION_SPOT'],
+      maxPositionFractionPerp: env['AGENTIC_MAX_POSITION_FRACTION_PERP'],
+      perpLeverageCap: env['PERP_LEVERAGE_CAP'],
       // C4: off by default ⇒ byte-identical legacy prompt (no sentiment sentence).
       sentimentFeedEnabled: env['SENTIMENT_FEED_ENABLED'] === 'true',
       // X3a: off by default ⇒ byte-identical legacy prompt (no fearGreed sentence).
@@ -575,21 +561,9 @@ export function selectAgentClient(
   );
   const model = env['AGENTIC_MODEL'] ?? DEFAULT_MODEL;
   if (env['AGENTIC_PORTFOLIO_CONSULT'] === 'true') {
-    // shorts+consult is a supported combination since backlog #41 — IN PLAN MODE: the batch path
-    // selects PORTFOLIO_SHORTS_TOOL (plan.direction required per element, pf2 tag) inside
-    // proposeBatch, and the constructor guard has already required a perp-capable venue. The
-    // LEGACY (non-plan) shorts path has no batched short expression (PORTFOLIO_TOOL's action enum
-    // has no 'short'), so that combination would silently run long-only — refuse it loudly at
-    // boot, exactly the silent-degrade class the original #41-predecessor guard existed to stop
-    // (reviewer S1).
-    if (env['AGENTIC_SHORTS_ENABLED'] === 'true' && env['AGENTIC_PLAN_MODE'] !== 'true') {
-      throw new Error(
-        'AGENTIC_PORTFOLIO_CONSULT with AGENTIC_SHORTS_ENABLED requires AGENTIC_PLAN_MODE: the ' +
-          'batched portfolio tool expresses shorts only via plan.direction — without plan mode ' +
-          'every batched decide would silently run long-only. Enable AGENTIC_PLAN_MODE or ' +
-          'disable one of the two flags.',
-      );
-    }
+    // v3 consolidation spec §9: the shorts+consult plan-mode guard is DELETED — the unified
+    // submit_portfolio tool always expresses 'open_short' per element (§4.3), so there is no more
+    // silent-long-only combination to refuse at boot.
     // Batching wraps AnthropicAgentClient DIRECTLY (not BudgetedAgentClient — see
     // batching-agent-client.ts's own header comment on why): it holds the SAME budget instance and
     // performs its own single tryReserveCall/recordUsage per BATCH rather than per symbol.

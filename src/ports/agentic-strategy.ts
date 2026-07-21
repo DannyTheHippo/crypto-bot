@@ -253,6 +253,18 @@ export interface AgentPortfolioPosition {
   readonly notional: string;
 }
 
+// v3 spec §6.4: one entry per venue in the fixed capital split — mirrors
+// position-sizer.service.ts's applyVenueHeadroomClamp/venueOpenNotional/venueReservedNotional
+// arithmetic (that file's helpers are private; agent-portfolio-block.ts reimplements them locally
+// rather than exporting solely for this payload-rendering consumer). Display-grade decimal strings
+// only, same convention as SymbolCapabilities.venueFreeCash above — never a zod-enforced bound.
+export interface AgentPortfolioVenue {
+  readonly venue: string;
+  readonly freeCash: string;
+  readonly capitalShare: string;
+  readonly headroom: string;
+}
+
 // Portfolio-level book state, rendered once per batch payload (absent on a single-symbol consult).
 export interface AgentPortfolioBlock {
   readonly cappedEquity: string;
@@ -264,6 +276,9 @@ export interface AgentPortfolioBlock {
     readonly btcBeta: number;
     readonly summary: string;
   };
+  // v3 spec §6.4: absent when the caller supplied no venueCapitalShare or the snapshot carries no
+  // venueBalances yet — fail-open, same "omitted beats wrong" convention correlation above uses.
+  readonly perVenue?: readonly AgentPortfolioVenue[];
 }
 
 // Remaining daily LLM budget + approx cost per consult (agent-budget.ts snapshot).

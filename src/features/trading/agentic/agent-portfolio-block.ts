@@ -1,7 +1,11 @@
 import Decimal from 'decimal.js';
-import { symbolId } from '../../../domain/types/ids';
+import { symbolId, venueId, type VenueId } from '../../../domain/types/ids';
 import type { PortfolioSnapshot } from '../../../domain/types/portfolio';
-import type { AgentPortfolioBlock, AgentPortfolioPosition } from '../../../ports/agentic-strategy';
+import type {
+  AgentPortfolioBlock,
+  AgentPortfolioPosition,
+  AgentPortfolioVenue,
+} from '../../../ports/agentic-strategy';
 import {
   computeBasketBtcBeta,
   BTC_BENCHMARK_SYMBOL,
@@ -22,6 +26,10 @@ export function buildAgentPortfolioBlock(
   snapshot: PortfolioSnapshot,
   equityCap: string | undefined,
   priceHistory?: PriceHistoryStore,
+  // v3 §6.4: keyed by venue id string (AppConfig.venueCapitalSplit's own shape — a plain zod-parsed
+  // record, never a VenueId-keyed Map) — one entry per configured venue. Absent ⇒ perVenue omitted
+  // (see buildPerVenue's own comment).
+  venueCapitalShare?: Readonly<Record<string, string>>,
 ): AgentPortfolioBlock {
   const cappedEquity =
     equityCap !== undefined
@@ -49,6 +57,7 @@ export function buildAgentPortfolioBlock(
     grossExposure: grossExposure.toFixed(),
     positions,
     ...buildCorrelation(priceHistory),
+    ...buildPerVenue(snapshot, venueCapitalShare),
   };
 }
 
@@ -78,4 +87,63 @@ function buildCorrelation(
       summary: `basket beta to BTC ${btcBeta.toFixed(2)} (${band} correlation) — alt positions move roughly ${btcBeta.toFixed(2)}x BTC's own return`,
     },
   };
+}
+
+// v3 §6.4: one perVenue entry per venue named in venueCapitalShare (AppConfig.venueCapitalSplit).
+// Fail-open, same convention as buildCorrelation above: absent venueCapitalShare OR absent
+// snapshot.venueBalances (the composition root hasn't wired a venue-keyed balance source yet)
+// omits the WHOLE array rather than rendering a misleadingly-zeroed freeCash. headroom/openNotional/
+// reservedNotional mirror position-sizer.service.ts's applyVenueHeadroomClamp/venueOpenNotional/
+// venueReservedNotional arithmetic exactly (those are private methods — this is a from-scratch
+// reimplementation for this payload-rendering consumer, not a refactor of the sizer's own code path;
+// position-sizer.service.ts stays the authoritative twin for the actual sizing clamp). USDT is this
+// deployment's one quote/settle currency on both venues (mirrors freeQuote's own hardcoded 'USDT'
+// lookup above), so one balance-map key serves spot's quote asset and perp's settle asset alike.
+function buildPerVenue(
+  snapshot: PortfolioSnapshot,
+  venueCapitalShare: Readonly<Record<string, string>> | undefined,
+): Pick<AgentPortfolioBlock, 'perVenue'> {
+  if (venueCapitalShare === undefined || snapshot.venueBalances === undefined) return {};
+  const venueKeys = Object.keys(venueCapitalShare);
+  if (venueKeys.length === 0) return {};
+
+  const perVenue: AgentPortfolioVenue[] = venueKeys.map((key) => {
+    const venue = venueId(key);
+    const capitalShare = venueCapitalShare[key]!;
+    const freeCash = snapshot.venueBalances?.get(venue)?.get('USDT')?.free ?? new Decimal(0);
+    const headroom = new Decimal(capitalShare)
+      .sub(venueOpenNotional(snapshot, venue))
+      .sub(venueReservedNotional(snapshot, venue));
+    return {
+      venue: key,
+      freeCash: freeCash.toFixed(),
+      capitalShare,
+      headroom: headroom.toFixed(),
+    };
+  });
+  return { perVenue };
+}
+
+// venueOpenNotional(v) = Σ over ALL positions on venue v (any strategy/symbol) of |signedQty| ×
+// avgEntry — see position-sizer.service.ts's own identically-named private method for the
+// authoritative twin (same proxy risk-engine.service.ts's gross/net exposure calc already uses).
+function venueOpenNotional(snapshot: PortfolioSnapshot, venue: VenueId): Decimal {
+  let sum = new Decimal(0);
+  for (const p of snapshot.positions.values()) {
+    if (p.venue !== venue) continue;
+    sum = sum.add(p.signedQty.abs().mul(p.avgEntry));
+  }
+  return sum;
+}
+
+// venueReservedNotional(v) = Σ over in-flight ENTRY (¬reduceOnly) intents on venue v, valued at each
+// order's own limit price (falls back to refPrice) — see position-sizer.service.ts's own
+// identically-named private method for the authoritative twin.
+function venueReservedNotional(snapshot: PortfolioSnapshot, venue: VenueId): Decimal {
+  let sum = new Decimal(0);
+  for (const f of snapshot.inFlightIntents) {
+    if (f.venue !== venue || f.reduceOnly) continue;
+    sum = sum.add(f.qty.mul(f.limitPrice ?? f.refPrice));
+  }
+  return sum;
 }

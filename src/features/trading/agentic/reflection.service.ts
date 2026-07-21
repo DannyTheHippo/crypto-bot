@@ -198,6 +198,13 @@ export interface ReflectionMetricsRecorder {
   // the loop's live evidence otherwise leaves "why did it never mint again" unanswerable from outside
   // a debugger (see this file's own header comment on W2's confirmed root cause).
   recordReflectionOutcome?(outcome: string): void;
+  // v3 spec §4.3/§9/§10 work item 1: NOT a reflection-path metric — reused here so the AGENT_CLIENT
+  // factory (agentic-strategy.module.ts) can wire AnthropicAgentClientConfig.recordCapabilityViolation
+  // off this SAME REFLECTION_METRICS_RECORDER_OVERRIDE injection (already useExisting: AgentMetricsRecorder
+  // at the composition root) instead of app.module.ts having to bind a second override token for one
+  // more AgentMetricsRecorder method — mirrors recordTokens' own precedent above (a decide-path fact
+  // riding the reflection-named seam). Optional, same isolation-from-test-recorders convention.
+  recordCapabilityViolation?(kind: string): void;
 }
 
 export interface ReflectionServiceConfig {

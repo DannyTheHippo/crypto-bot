@@ -124,7 +124,10 @@ export const REFLECTION_SERVICE = Symbol('REFLECTION_SERVICE');
 // validator-rejection tripwire without this module importing features/common/observability (boundary wall).
 // Consumed via reflection.service.ts's own LOCAL structural type (ReflectionMetricsRecorder);
 // absent (module-isolation contexts) leaves the tripwire unrecorded — telemetry-only, never a
-// safety gate.
+// safety gate. v3 spec §4.3/§9/§10 work item 1: the AGENT_CLIENT factory below ALSO injects this
+// SAME override to wire AnthropicAgentClientConfig.recordCapabilityViolation — one override token,
+// two consumers, rather than app.module.ts binding a second useExisting for one more
+// AgentMetricsRecorder method.
 export const REFLECTION_METRICS_RECORDER_OVERRIDE = Symbol('REFLECTION_METRICS_RECORDER_OVERRIDE');
 
 // Builds the env-shaped record selectAgentClient/createAgentLlmBudget read. Sources the validated
@@ -136,6 +139,13 @@ export const REFLECTION_METRICS_RECORDER_OVERRIDE = Symbol('REFLECTION_METRICS_R
 export function agenticEnv(config?: TypedConfigService): Record<string, string | undefined> {
   if (!config) return process.env;
   const agentic = config.agentic;
+  // v3 spec §9/§10 work item 3: venue-derived directly off config.venues — the single source of
+  // truth for "is this boot's venue short-capable" (never agentic.shortsEnabled, a v3-transitional
+  // AppConfig field that derives this SAME boolean only so this module and reflection.service.ts
+  // didn't have to be touched at the same time §7 config landed — see environment.config.ts's own
+  // comment on that field). Mirrors position-sizer.service.ts's own local PERP_VENUE_ID convention
+  // (binanceusdm is the only perp venue this pass wires).
+  const perpVenueConfigured = config.venues.some((v) => v.id === 'binanceusdm');
   return {
     ...process.env,
     AGENTIC_MODEL: agentic.model,
@@ -153,12 +163,8 @@ export function agenticEnv(config?: TypedConfigService): Record<string, string |
     AGENTIC_AUTO_PROMOTE_MIN_TRADES: String(agentic.autoPromoteMinTrades),
     AGENTIC_AUTO_PROMOTE_MIN_ATTRIBUTED_TRADES: String(agentic.autoPromoteMinAttributedTrades),
     AGENTIC_PLAN_MODE: String(agentic.planMode),
-    AGENTIC_SHORTS_ENABLED: String(agentic.shortsEnabled),
-    // Push II Phase 8: perp-capability is derived from config.venues (never a separate env knob —
-    // one source of truth for "is this boot's venue short-capable") so selectAgentClient can refuse
-    // shortsEnabled+planMode construction on a spot-only deployment. Mirrors position-sizer.service.ts's
-    // own local PERP_VENUE_ID convention (binanceusdm is the only perp venue this pass wires).
-    AGENTIC_PERP_VENUE: String(config.venues.some((v) => v.id === 'binanceusdm')),
+    AGENTIC_SHORTS_ENABLED: String(perpVenueConfigured),
+    AGENTIC_PERP_VENUE: String(perpVenueConfigured),
     // D1 retired AGENTIC_MIN_EDGE_MULTIPLE/AGENTIC_MIN_RR off AppConfig.agentic (the fee-floor-only
     // gate replaces both — Design § Deleted/replaced scaffolding); AnthropicAgentClientConfig's
     // minEdgeMultiple/minRr fields stay only for the legacy (non-tradeContract) plan-mode path and
@@ -174,10 +180,11 @@ export function agenticEnv(config?: TypedConfigService): Record<string, string |
     // C1: documents the optional derivatives block in the system prompt — off by default, so an
     // unconfigured deployment's prompt stays byte-identical.
     DERIVATIVES_FEED_ENABLED: String(config.derivativesFeed.enabled),
-    // Derivatives-block A/B: sourced off the validated config field (never raw process.env) so the
-    // schema's 0-50 bound can never be bypassed here — same convention as PROMOTION_EVIDENCE_EPOCH
-    // above.
-    AGENTIC_DERIVATIVES_AB_PCT: String(agentic.derivativesAbPct),
+    // AGENTIC_DERIVATIVES_AB_PCT read-site deleted (v3 spec §9/§10 work item 3): the env var itself
+    // is gone from the schema (environment.config.ts's own DELETED comment) and no consumer in this
+    // module or anthropic-agent-client.ts reads the key anymore (XA3 retired the control arm at 0
+    // permanently) — agentic.derivativesAbPct stays a config-only hardcoded-0 field until the
+    // orchestrator's follow-up commit removes it from AppConfig entirely.
     // d2: off by default ⇒ byte-identical d1 prompt/payload/tag (see AnthropicAgentClientConfig's
     // derivativesV2Enabled comment).
     AGENTIC_DERIVATIVES_V2_ENABLED: String(agentic.derivativesV2Enabled),
@@ -214,6 +221,18 @@ export function agenticEnv(config?: TypedConfigService): Record<string, string |
     // description and the client's zod schema (S3) — see selectAgentClient's tradeContract wiring
     // below, which is unconditional (Design: no staged flag for the v2 contract).
     AGENTIC_MAX_POSITION_FRACTION: agentic.maxPositionFraction,
+    // v3 spec §9/§10 work item 3 (casing fix): selectAgentClient reads
+    // AGENTIC_MAX_POSITION_FRACTION_SPOT/_PERP/PERP_LEVERAGE_CAP off `env` (below), but this function
+    // never overrode them with the validated config values — they fell through the `...process.env`
+    // spread above instead, unlike every other AGENTIC_* key in this map (this function's own header
+    // comment: sourcing off TypedConfigService "so the real wiring path and environment.config.ts can
+    // never drift"). config.agentic.maxPositionFractionSpot/maxPositionFractionPerp and
+    // config.perp.leverageCap are the real (defaulted, cross-field-validated) AppConfig fields —
+    // sourcing off raw process.env here would silently diverge from them on any deployment that
+    // doesn't ALSO set the raw env var identically.
+    AGENTIC_MAX_POSITION_FRACTION_SPOT: agentic.maxPositionFractionSpot,
+    AGENTIC_MAX_POSITION_FRACTION_PERP: agentic.maxPositionFractionPerp,
+    PERP_LEVERAGE_CAP: config.perp.leverageCap,
   };
 }
 
@@ -497,6 +516,10 @@ export function selectAgentClient(
   // on (below), so a flag-off deployment renders neither the prompt sentence nor the payload block
   // (byte-identical to pre-R2). Absent ⇒ retrieval unwired regardless.
   similarSetupsProvider?: AnthropicAgentClientConfig['similarSetupsProvider'],
+  // v3 spec §4.3/§9/§10 work item 1: threaded straight through to
+  // AnthropicAgentClientConfig.recordCapabilityViolation — see that field's own comment. Absent ⇒
+  // the capability-violation degrade still happens (hold + journaled 'error'), just unrecorded.
+  recordCapabilityViolation?: AnthropicAgentClientConfig['recordCapabilityViolation'],
 ): AgentClientPort {
   const apiKey = env['ANTHROPIC_API_KEY'];
   if (!apiKey || env['NODE_ENV'] === 'test' || env['CI']) {
@@ -554,6 +577,8 @@ export function selectAgentClient(
       // lockstep — absent when off ⇒ byte-identical.
       episodicMemoryEnabled,
       similarSetupsProvider: episodicMemoryEnabled ? similarSetupsProvider : undefined,
+      // v3 spec §4.3/§9/§10 work item 1: absent ⇒ metric unrecorded (see the param's own comment).
+      recordCapabilityViolation,
     },
     fetch,
     new Logger('AnthropicAgentClient'),
@@ -636,6 +661,11 @@ function constraintsFromDefaultFilters(
         activeMenuGate: ActiveMenuGate | undefined,
         payloadExtrasProvider: AnthropicAgentClientConfig['payloadExtrasProvider'] | undefined,
         journal: AgentDecisionJournalPort | undefined,
+        // v3 spec §4.3/§9/§10 work item 1: reuses the SAME override REFLECTION_SERVICE's own factory
+        // injects below (useExisting: AgentMetricsRecorder at the composition root) — see
+        // ReflectionMetricsRecorder's own comment on why the capability-violation method rides this
+        // reflection-named seam instead of a second override token.
+        metricsRecorder: ReflectionMetricsRecorder | undefined,
       ) =>
         selectAgentClient(
           agenticEnv(config),
@@ -650,6 +680,9 @@ function constraintsFromDefaultFilters(
           journal?.recentSimilarSetups
             ? (tags) => journal.recentSimilarSetups!(tags, MAX_SIMILAR_SETUPS)
             : undefined,
+          metricsRecorder?.recordCapabilityViolation
+            ? (kind) => metricsRecorder.recordCapabilityViolation!(kind)
+            : undefined,
         ),
       inject: [
         AGENT_LLM_BUDGET,
@@ -659,6 +692,7 @@ function constraintsFromDefaultFilters(
         { token: ACTIVE_MENU_GATE_OVERRIDE, optional: true },
         { token: PAYLOAD_EXTRAS_PROVIDER_OVERRIDE, optional: true },
         { token: AGENT_DECISION_JOURNAL, optional: true },
+        { token: REFLECTION_METRICS_RECORDER_OVERRIDE, optional: true },
       ],
     },
     {

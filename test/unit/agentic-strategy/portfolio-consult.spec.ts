@@ -1108,4 +1108,56 @@ describe('AnthropicAgentClient.proposeBatch — v2 trade contract (A2)', () => {
     });
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('BTC/USDT'));
   });
+
+  // v3 spec §1/§9/§10 work item 4 (scheduler verification): one batched consult can span symbols of
+  // BOTH venues — proposeBatch never partitions by venue, so a spot and a perp symbol resolve their
+  // OWN independent capsBySymbol entry (venue/shorts/leverage/maxSizeFraction) within the SAME single
+  // HTTP request, and each maps to the correct signal.
+  it('(g) one batched call spans BOTH venues — a spot and a perp symbol resolve independent per-symbol capabilities (capsBySymbol) within the SAME HTTP request', async () => {
+    const fetchFn = vi.fn();
+    const client = new AnthropicAgentClient(
+      tradeCfg({
+        maxPositionFractionSpot: '0.15',
+        maxPositionFractionPerp: '0.5',
+        perpLeverageCap: '2',
+      }),
+      fetchFn,
+    );
+    fetchFn.mockResolvedValue(
+      apiResponse(
+        tradePortfolioBody(
+          [
+            openLongElement('BTC/USDT'),
+            openLongElement('SOL/USDT:USDT', { action: 'open_short', sizeFraction: 0.3 }),
+          ],
+          8,
+        ),
+      ),
+    );
+
+    const result = await client.proposeBatch([
+      buildInput('BTC/USDT', 'agentic-1'),
+      buildInput('SOL/USDT:USDT', 'agentic-2'),
+    ]);
+
+    // ONE HTTP request answers both venues — the scheduler-level invariant: no per-venue split.
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+
+    const sentBody = JSON.parse((fetchFn.mock.calls[0]![1] as RequestInit).body as string) as {
+      messages: { content: { text?: string }[] }[];
+    };
+    const blocks = sentBody.messages[0]!.content.map((b) => b.text ?? '');
+    const btcBlock = blocks.find((t) => t.includes('BTC/USDT'))!;
+    const solBlock = blocks.find((t) => t.includes('SOL/USDT:USDT'))!;
+    expect(btcBlock).toContain('"venue":"binance"');
+    expect(btcBlock).toContain('"shorts":false');
+    expect(solBlock).toContain('"venue":"binanceusdm"');
+    expect(solBlock).toContain('"shorts":true');
+    expect(solBlock).toContain('"leverage":"2"');
+
+    expect(result.proposals.get('BTC/USDT')?.signals[0]).toMatchObject({ kind: 'ENTER_LONG' });
+    expect(result.proposals.get('SOL/USDT:USDT')?.signals[0]).toMatchObject({
+      kind: 'ENTER_SHORT',
+    });
+  });
 });

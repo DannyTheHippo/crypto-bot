@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import type { TypedConfigService } from '../../../src/config/environment/typed-config.service';
 import {
   selectAgentClient,
@@ -14,8 +14,16 @@ import { BatchingAgentClient } from '../../../src/features/trading/agentic/batch
 import { BudgetedAgentClient } from '../../../src/features/trading/agentic/agent-budget';
 import { validatePlaybook } from '../../../src/features/trading/agentic/playbook-validator';
 import type { AppConfig } from '../../../src/ports/app-config';
+import type { AgentDecisionInput, AgentMarketSnapshot } from '../../../src/ports/agentic-strategy';
+import type { TickerEvent } from '../../../src/domain/types/market-events';
+import { strategyId, symbolId, venueId, epochMs } from '../../../src/domain/types/ids';
+import { price } from '../../../src/domain/types/money';
 
 describe('selectAgentClient', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it('returns the inert StubAgentClient when no ANTHROPIC_API_KEY is configured', () => {
     expect(selectAgentClient({})).toBeInstanceOf(StubAgentClient);
   });
@@ -153,6 +161,96 @@ describe('selectAgentClient', () => {
         budget,
       ),
     ).not.toThrow();
+  });
+
+  // v3 spec §4.3/§9/§10 work item 1 (wiring smoke): recordCapabilityViolation is a new trailing
+  // param on selectAgentClient (the AGENT_CLIENT factory's own composition function) — proves it
+  // actually reaches the constructed AnthropicAgentClient's config, not merely that construction
+  // doesn't throw (AnthropicAgentClientConfig has no accessor — see the tests above's own comment —
+  // so driving a real capability violation through propose() is the only observable proof). The
+  // violation-detection logic itself is anthropic-agent-client.spec.ts's own exhaustive coverage;
+  // this test only proves the PASS-THROUGH from selectAgentClient's new param.
+  it('threads recordCapabilityViolation through to the constructed AnthropicAgentClient — a spot capability violation reaches the composition-root callback', async () => {
+    const recordCapabilityViolation = vi.fn();
+    const fetchStub = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      json: () =>
+        Promise.resolve({
+          stop_reason: 'tool_use',
+          content: [
+            {
+              type: 'tool_use',
+              name: 'submit_trade',
+              input: {
+                action: 'open_short',
+                sizeFraction: 0.05,
+                entry: { style: 'maker', offsetBps: 0 },
+                entryValidityBars: 4,
+                stopLossPct: 0.02,
+                takeProfitPct: 0.03,
+                maxHoldBars: 96,
+              },
+            },
+          ],
+        }),
+    });
+    vi.stubGlobal('fetch', fetchStub);
+
+    const client = selectAgentClient(
+      { ANTHROPIC_API_KEY: 'k' },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      recordCapabilityViolation,
+    ) as BudgetedAgentClient;
+
+    const symbol = symbolId('BTC/USDT');
+    const tickerEvt: TickerEvent = {
+      kind: 'TICKER',
+      venue: venueId('binance'),
+      symbol,
+      channel: 'ticker',
+      seq: 1n,
+      eventTime: epochMs(1_700_000_000_000),
+      ingestTime: epochMs(1_700_000_000_001),
+      bid: price('100'),
+      ask: price('100'),
+      last: price('100'),
+    };
+    const snapshot: AgentMarketSnapshot = {
+      eventTime: epochMs(1_700_000_000_000),
+      candles: new Map(),
+      tickers: new Map([[symbol, tickerEvt]]),
+      books: new Map(),
+      execReports: [],
+      portfolio: { strategyId: strategyId('agentic-1'), positions: new Map(), openOrders: [] },
+    };
+    const input: AgentDecisionInput = {
+      strategyId: strategyId('agentic-1'),
+      trigger: { kind: 'ticker', event: tickerEvt },
+      snapshot,
+      context: {
+        indicators: null,
+        position: {
+          side: 'FLAT',
+          qty: '0',
+          avgEntry: null,
+          realizedPnl: '0',
+          unrealizedPnlPct: null,
+          openOrders: 0,
+        },
+        recentDecisions: [],
+      },
+    };
+
+    await client.propose(input);
+
+    expect(recordCapabilityViolation).toHaveBeenCalledWith('open_short_on_spot');
   });
 });
 
@@ -344,9 +442,16 @@ describe('agenticEnv', () => {
       active: 'agentic',
     };
     // Push II Phase 8: agenticEnv reads config.venues (a sibling AppConfig top-level key) to derive
-    // AGENTIC_PERP_VENUE — present here so the fixture matches the real TypedConfigService shape
-    // (mirrors derivativesFeed/tradeFlowFeed/strategy above).
+    // AGENTIC_PERP_VENUE/AGENTIC_SHORTS_ENABLED (v3 spec §9/§10 work item 3: both venue-derived off
+    // this SAME array now, never off agentic.shortsEnabled) — present here so the fixture matches
+    // the real TypedConfigService shape (mirrors derivativesFeed/tradeFlowFeed/strategy above). This
+    // fixture's venues DOES include the perp venue, so both keys assert 'true' below.
     const venues: AppConfig['venues'] = [{ id: 'binanceusdm', environment: 'demo' }];
+    // v3 spec §9/§10 work item 3 (casing fix): agenticEnv now also reads config.perp.leverageCap (a
+    // sibling AppConfig top-level key, not part of the `agentic` block) — present here so the
+    // fixture matches the real TypedConfigService shape, same sibling-key convention as
+    // derivativesFeed/tradeFlowFeed/strategy/venues above.
+    const perp: AppConfig['perp'] = { leverageCap: '3', mmrFallback: '0.005', liqBufferPct: '0.2' };
     const config = {
       agentic,
       derivativesFeed,
@@ -355,6 +460,7 @@ describe('agenticEnv', () => {
       liquidationFeed,
       strategy,
       venues,
+      perp,
     } as unknown as TypedConfigService;
 
     expect(agenticEnv(config)).toMatchObject({
@@ -371,18 +477,33 @@ describe('agenticEnv', () => {
       AGENTIC_REFLECTION_COOLDOWN_MS: '86400000',
       AGENTIC_AUTO_PROMOTE_MIN_TRADES: '9',
       DERIVATIVES_FEED_ENABLED: 'true',
-      AGENTIC_DERIVATIVES_AB_PCT: '30',
       AGENTIC_TRADEFLOW_ENABLED: 'true',
       AGENTIC_POSITIONING_ENABLED: 'true',
       AGENTIC_PORTFOLIO_CONSULT: 'true',
       AGENTIC_PORTFOLIO_WINDOW_MS: '4000',
       AGENTIC_PORTFOLIO_SYMBOL_COUNT: '3',
-      AGENTIC_SHORTS_ENABLED: 'false',
+      // v3 spec §9/§10 work item 3: venue-derived (config.venues includes binanceusdm above), no
+      // longer a passthrough of agentic.shortsEnabled — this fixture's shortsEnabled: false (above)
+      // would have asserted 'false' under the old (now-deleted) read-site.
+      AGENTIC_SHORTS_ENABLED: 'true',
       AGENTIC_PERP_VENUE: 'true',
       // I1: the v2 lane cap, sourced off AppConfig.agentic.maxPositionFraction (D1) — see
       // selectAgentClient's unconditional tradeContract wiring.
       AGENTIC_MAX_POSITION_FRACTION: '0.15',
+      // v3 spec §9/§10 work item 3 (casing fix): now overridden off the validated config fields
+      // rather than falling through to raw process.env.
+      AGENTIC_MAX_POSITION_FRACTION_SPOT: '0.15',
+      AGENTIC_MAX_POSITION_FRACTION_PERP: '0.35',
+      PERP_LEVERAGE_CAP: '3',
     });
+    // AGENTIC_DERIVATIVES_AB_PCT read-site deleted (v3 spec §9/§10 work item 3) — no longer
+    // overridden off agentic.derivativesAbPct; asserting its ABSENCE from the override set (rather
+    // than a fall-through process.env value, which is test-environment-dependent) proves the
+    // read-site is gone without asserting on process.env's own contents.
+    const result = agenticEnv(config);
+    if (process.env['AGENTIC_DERIVATIVES_AB_PCT'] === undefined) {
+      expect(result['AGENTIC_DERIVATIVES_AB_PCT']).toBeUndefined();
+    }
   });
 
   it('selectAgentClient always wires tradeContract (v2 is unconditional — no staged flag)', () => {

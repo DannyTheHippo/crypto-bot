@@ -3,14 +3,24 @@ import Decimal from 'decimal.js';
 import { buildAgentPortfolioBlock } from '../../../src/features/trading/agentic/agent-portfolio-block';
 import { PriceHistoryStore } from '../../../src/features/trading/agentic/price-history-store';
 import type { CandleEvent } from '../../../src/domain/types/market-events';
-import type { PortfolioSnapshot } from '../../../src/domain/types/portfolio';
+import type { PortfolioSnapshot, Position } from '../../../src/domain/types/portfolio';
+import type { OrderIntent } from '../../../src/domain/types/order-intent';
 import { price, qty } from '../../../src/domain/types/money';
-import { venueId, symbolId, epochMs } from '../../../src/domain/types/ids';
+import {
+  venueId,
+  symbolId,
+  strategyId,
+  epochMs,
+  clientOrderId,
+  intentId,
+} from '../../../src/domain/types/ids';
 
 const T = 1_700_000_000_000;
 const V = venueId('binance');
+const PERP_V = venueId('binanceusdm');
 const BTC = symbolId('BTC/USDT');
 const ALT = symbolId('ALT/USDT');
+const SID = strategyId('agentic-1');
 
 function candle(closeStr: string, index: number, symbol = BTC): CandleEvent {
   const t = T + index * 60_000;
@@ -109,5 +119,119 @@ describe('buildAgentPortfolioBlock — correlation (W3 Part 2)', () => {
     expect(block.grossExposure).toBe('0');
     expect(block.positions).toEqual([]);
     expect(block.correlation!.btcBeta).toBe(1);
+  });
+});
+
+// One counter drives distinct clientOrderIds across in-flight-intent fixtures in this describe block.
+let reservedSeq = 0;
+function reservedIntent(o: Partial<OrderIntent> = {}): OrderIntent {
+  reservedSeq += 1;
+  return {
+    intentId: intentId(
+      `01900000-0000-7000-8000-00000000${reservedSeq.toString(16).padStart(4, '0')}`,
+    ),
+    clientOrderId: clientOrderId(`reserved-${reservedSeq}`),
+    strategyId: SID,
+    venue: V,
+    symbol: BTC,
+    side: 'BUY',
+    type: 'LIMIT',
+    qty: qty('1'),
+    limitPrice: price('100'),
+    timeInForce: 'GTC',
+    reduceOnly: false,
+    mode: 'paper',
+    refPrice: price('100'),
+    refSeq: 1n,
+    createdAt: epochMs(T),
+    expiresAt: epochMs(T + 5000),
+    source: { dedupeKey: 'reserved', eventTime: epochMs(T), basedOnSeq: 1n, strength: 1 },
+    ...o,
+  };
+}
+
+function position(o: Partial<Position> = {}): Position {
+  return {
+    strategyId: SID,
+    venue: V,
+    symbol: BTC,
+    signedQty: new Decimal('1'),
+    avgEntry: price('100'),
+    realizedPnl: new Decimal('0'),
+    ...o,
+  };
+}
+
+describe('buildAgentPortfolioBlock — perVenue (v3 §6.4)', () => {
+  it('omits perVenue entirely when no venueCapitalShare is supplied (fail open, byte-identical to pre-v3)', () => {
+    const block = buildAgentPortfolioBlock(emptySnapshot(), undefined);
+    expect(block.perVenue).toBeUndefined();
+  });
+
+  it('omits perVenue entirely when venueCapitalShare is supplied but the snapshot carries no venueBalances yet (fail open — never a misleadingly-zeroed freeCash)', () => {
+    const block = buildAgentPortfolioBlock(emptySnapshot(), undefined, undefined, {
+      binance: '500',
+      binanceusdm: '500',
+    });
+    expect(block.perVenue).toBeUndefined();
+  });
+
+  it('renders one entry per configured venue with freeCash/capitalShare/headroom, once both venueCapitalShare and snapshot.venueBalances are present', () => {
+    const snapshot: PortfolioSnapshot = {
+      ...emptySnapshot(),
+      venueBalances: new Map([
+        [V, new Map([['USDT', { free: new Decimal('212.41'), locked: new Decimal('0') }]])],
+        [PERP_V, new Map([['USDT', { free: new Decimal('480'), locked: new Decimal('0') }]])],
+      ]),
+    };
+
+    const block = buildAgentPortfolioBlock(snapshot, undefined, undefined, {
+      binance: '500',
+      binanceusdm: '500',
+    });
+
+    expect(block.perVenue).toEqual([
+      { venue: 'binance', freeCash: '212.41', capitalShare: '500', headroom: '500' },
+      { venue: 'binanceusdm', freeCash: '480', capitalShare: '500', headroom: '500' },
+    ]);
+  });
+
+  it('headroom subtracts venue-wide open-position notional and reduce-only-exempt in-flight reservations (mirrors position-sizer.service.ts venueOpenNotional/venueReservedNotional)', () => {
+    const snapshot: PortfolioSnapshot = {
+      ...emptySnapshot(),
+      positions: new Map([
+        ['BTC/USDT', position({ signedQty: new Decimal('1'), avgEntry: price('100') })],
+      ]),
+      inFlightIntents: [reservedIntent({ qty: qty('0.5'), limitPrice: price('100') })],
+      venueBalances: new Map([
+        [V, new Map([['USDT', { free: new Decimal('300'), locked: new Decimal('0') }]])],
+      ]),
+    };
+
+    const block = buildAgentPortfolioBlock(snapshot, undefined, undefined, { binance: '500' });
+
+    // headroom = 500 (cap) − 100 (|1| × 100 open notional) − 50 (0.5 × 100 reserved) = 350.
+    expect(block.perVenue).toEqual([
+      { venue: 'binance', freeCash: '300', capitalShare: '500', headroom: '350' },
+    ]);
+  });
+
+  it('headroom can render negative (over-reserved) — spec §6.4 split-boundary coverage, never clamped to 0', () => {
+    const snapshot: PortfolioSnapshot = {
+      ...emptySnapshot(),
+      positions: new Map([
+        ['BTC/USDT', position({ signedQty: new Decimal('5'), avgEntry: price('100') })],
+      ]),
+      venueBalances: new Map([
+        [V, new Map([['USDT', { free: new Decimal('0'), locked: new Decimal('0') }]])],
+      ]),
+    };
+
+    const block = buildAgentPortfolioBlock(snapshot, undefined, undefined, { binance: '100' });
+
+    // headroom = 100 (cap) − 500 (|5| × 100 open notional) = −400.
+    expect(block.perVenue).toEqual([
+      { venue: 'binance', freeCash: '0', capitalShare: '100', headroom: '-400' },
+    ]);
   });
 });

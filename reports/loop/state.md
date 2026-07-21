@@ -158,7 +158,23 @@ never changes for strategy evolution.
   bar close; wake-on-move (0.8%) has not tripped in the prevailing chop. Next check verifies the
   first cross-venue consult fired and spent within budget. 48h soak clock runs from the last
   defect-fix redeploy (13:03:46Z).
-- **Kimi-K3 research phase DONE (2026-07-21, task #15 offline portion; run during the soak, no
+- **Soak defect #3 FOUND+FIXED (2026-07-21, check #4 — first-consult verification).** The 15:00Z
+  fallback consult wave FIRED (gate mechanics correct: forced_fallback outcomes, menu-8 batch),
+  but 15 of the first 16 decide attempts journaled `error`/RETRYABLE with NO llm_usage rows and
+  bare-classification rationale (no HTTP status ⇒ the transport catch: wall-clock abort). The
+  decide-latency histogram pinned it: batched attempts measure 20-35s (avg 24.1s) against
+  `AGENTIC_TIMEOUT_MS=30000` — a v2-era calibration for SINGLE-symbol decides that both v2 lanes
+  carried; v3's menu-8 batched `submit_portfolio` call is ~2x v2-perp's menu-4 batch and sits at
+  the cliff, so the abort killed ~94% of attempts. The one surviving call proved the path
+  end-to-end (billed with cache reads, produced menu holds + one KAITO element schema-degrade —
+  the tool-contract guardrail working, zero capability violations). Fix: `AGENTIC_TIMEOUT_MS`
+  30000→90000 in `.env.app` (~3x the measured shape, ≤10% of a 15m bar — fail-fast intent
+  survives at batched scale); app recreated 17:28Z (bootId `1b8ef6c9`), knob verified in-container.
+  Bar counters reset ⇒ next fallback wave ~19:30Z; the following check verifies a fully-billed
+  cross-venue consult. FLAGGED (post-soak, report-only): transport-level decide errors drop the
+  underlying message from every ledger (journal writes the bare kind by privacy design, metrics
+  keep only the outcome, nothing logs) — a one-line redacted-reason log in the metrics wrapper
+  would have cut this diagnosis from five probes to one.
   app changes):** memo at `reports/loop/kimi-k3-research-2026-07-21.md`. Headline: K3 (released
   07-16) prices identically to sonnet-5 ($3/$15/$0.30 cache-hit); the Anthropic-compatible
   `/anthropic` endpoint exists for K3 (kimi-k2 precedent holds); in-app integration is

@@ -81,7 +81,11 @@ AGENTIC_MODEL=claude-sonnet-5 # Anthropic model id (schema default; matches the 
 # Reflection on the Opus tier (owner decision 2026-07-08: strengthen Tier-2 learning). Per-model
 # pricing below keeps the gate honest.
 AGENTIC_REFLECTION_MODEL=claude-opus-4-8
-AGENTIC_TIMEOUT_MS=30000 # per-call DECIDE request timeout (Sonnet, fast — fail fast)
+AGENTIC_TIMEOUT_MS=90000 # per-call DECIDE request timeout. v3 soak defect #3 (2026-07-21): 30s was
+# calibrated for v2's single-symbol decide; the v3 menu-8 batched submit_portfolio call measures
+# 20-35s (avg 24.1s, decide-latency histogram) and the 30s abort killed 15 of the first 16 consult
+# attempts as transport-RETRYABLE. 90s = ~3x the measured shape, still <=10% of a 15m bar so a
+# wedged call cannot eat the retry window — the fail-fast intent survives at batched scale.
 # Reflection-path timeout, separate from the decide timeout above — Opus + adaptive thinking over
 # the large calibration/attribution prompt cannot answer in 30s. Reflection is off the trading hot
 # path (detached), so 240s is free headroom against Opus worst-case rather than a tight estimate.

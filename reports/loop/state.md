@@ -158,6 +158,15 @@ never changes for strategy evolution.
   bar close; wake-on-move (0.8%) has not tripped in the prevailing chop. Next check verifies the
   first cross-venue consult fired and spent within budget. 48h soak clock runs from the last
   defect-fix redeploy (13:03:46Z).
+- **Kimi-K3 research phase DONE (2026-07-21, task #15 offline portion; run during the soak, no
+  app changes):** memo at `reports/loop/kimi-k3-research-2026-07-21.md`. Headline: K3 (released
+  07-16) prices identically to sonnet-5 ($3/$15/$0.30 cache-hit); the Anthropic-compatible
+  `/anthropic` endpoint exists for K3 (kimi-k2 precedent holds); in-app integration is
+  config-only (the raw-fetch client already carries a `baseUrl` seam). Offline replay
+  (`pnpm eval:candidates`) is specified in the memo and **BLOCKED on an owner-provided Kimi API
+  key** (`KIMI_API_KEY` in `.env`) plus a small eval-lane harness diff (per-model base-URL
+  routing). Go bar unchanged: clear offline win ⇒ staged live A/B, two-step enable; loop stays on
+  Claude.
   1. **Cost floor** — CLOSED 2026-07-08: true spend ~$0.77/day under the $5 breaker, skip rate
      70–83% (original criterion: ≤$1/day ×3 days + ≥2 RT/day + no EXPIRED regressions).
   2. **Learning-loop edge** — ACTIVE. Exit: ≥2 playbook promotions with version-attributed PnL

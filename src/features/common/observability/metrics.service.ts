@@ -374,8 +374,9 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
     // MarketFeedModule is @Global so this always resolves to the real SENTIMENT_FEED provider
     // (NOOP_SENTIMENT_FEED when the flag/key is off/absent — see app.module.ts).
     @Optional() @Inject(SENTIMENT_FEED) private readonly sentimentFeed?: SentimentFeedPort,
-    // @Optional for the same standalone-boot reason; in the running app MarketFeedModule is @Global
-    // so this resolves to the live FeedHealthService (or its inert stub under test/ci).
+    // @Optional for the same standalone-boot reason; in the running app MarketStreamsModule is
+    // @Global so this resolves to the live VenueRoutingFeedHealth facade (or its inert stub under
+    // test/ci).
     @Optional()
     @Inject(MARKET_STREAM_TELEMETRY)
     private readonly marketStreamTelemetry?: MarketStreamTelemetryPort,
@@ -396,8 +397,10 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
     let prevDerivativesPollErrors = 0;
     // C4: same delta-against-previous-sample technique as prevDerivativesPollErrors above.
     let prevSentimentPollErrors = 0;
-    // Same delta technique for the watchdog's cumulative forced-reconnect count.
-    let prevForcedReconnects = 0;
+    // Same delta technique for the watchdog's cumulative forced-reconnect count, tracked per-venue
+    // (one previous-count entry per venue label) — see the sampling loop below for the real-label
+    // switch (v3 §8).
+    const prevForcedReconnectsByVenue = new Map<string, number>();
 
     this.sampleInterval = setInterval(() => {
       const monitor = this.eventLoopIndicator.getMonitor();
@@ -557,21 +560,23 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
             .labels({ venue: age.venue, symbol: age.symbol, channel: age.channel })
             .set(age.ageSeconds);
         }
-        const totalReconnects = this.marketStreamTelemetry.forcedReconnectCount();
-        if (totalReconnects > prevForcedReconnects) {
-          // Pending integration (see the provider's own comment above): forcedReconnectCount() is
-          // still one process-wide aggregate. Attribute it to the sole configured venue when there
-          // is exactly one (today's actual single-venue-per-process reality); once a second venue is
-          // configured this labels 'aggregate' rather than silently mis-attributing the count to one
-          // venue — workstream #5's per-venue MarketStreamsModule facade replaces this call entirely.
-          const venues = this.configService.venues.map((v) => v.id);
-          const label = venues.length === 1 ? (venues[0] ?? 'aggregate') : 'aggregate';
-          this.marketStreamReconnectsCounter.inc(
-            { venue: label },
-            totalReconnects - prevForcedReconnects,
-          );
+        // v3 §8: real per-venue labels via forcedReconnectCountByVenue when the bound telemetry
+        // exposes it (MarketStreamsModule's VenueRoutingFeedHealth does — see that class's own
+        // method). Falls back to one 'aggregate' series for any telemetry shape that predates the
+        // per-venue split (module-isolation fixtures, the ExecutionModule-standalone noopFeedHealth
+        // path) — same 'aggregate' label the pre-v3 single-process counter used.
+        const telemetry = this.marketStreamTelemetry;
+        const perVenue = telemetry.forcedReconnectCountByVenue?.();
+        const entries: ReadonlyArray<readonly [string, number]> = perVenue
+          ? [...perVenue.entries()]
+          : [['aggregate', telemetry.forcedReconnectCount()]];
+        for (const [venue, total] of entries) {
+          const prev = prevForcedReconnectsByVenue.get(venue) ?? 0;
+          if (total > prev) {
+            this.marketStreamReconnectsCounter.inc({ venue }, total - prev);
+          }
+          prevForcedReconnectsByVenue.set(venue, total);
         }
-        prevForcedReconnects = totalReconnects;
       }
     }, 5000);
   }

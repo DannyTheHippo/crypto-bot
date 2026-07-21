@@ -1,6 +1,7 @@
 import { Global, Module } from '@nestjs/common';
 import Decimal from 'decimal.js';
 import { TypedConfigService } from '../../../config/environment/typed-config.service';
+import { ExecutionModule } from '../execution/execution.module';
 import type { VenueConfig, VenueEnvironment } from '../../../ports/app-config';
 import { CLOCK, type ClockPort } from '../../../ports/clock';
 import { LIVE_ADAPTER_CAP } from '../../../ports/mode-control';
@@ -362,6 +363,11 @@ const DEFAULT_PAPER_CONFIG: PaperConfig = {
 
 @Global()
 @Module({
+  // v3-final(#5b): ExecutionModule for EXEC_OUTBOX/EXEC_REPORT_NOTIFY (VENUE_EXCHANGE_PORTS' own
+  // factory injects both) — ExecutionModule is not @Global, so every consumer of its exports must
+  // import it directly (same requirement PaperExchangeModule's own retired `imports: [ExecutionModule]`
+  // satisfied for the pre-v3 single-venue EXCHANGE_PORT factory).
+  imports: [ExecutionModule],
   providers: [
     { provide: PAPER_CONFIG, useValue: DEFAULT_PAPER_CONFIG },
     {

@@ -1,0 +1,625 @@
+import { Global, Logger, Module } from '@nestjs/common';
+import path from 'node:path';
+import Decimal from 'decimal.js';
+import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { TypedConfigService } from '../../../config/environment/typed-config.service';
+import { DRIZZLE_DB } from '../../../database/database.tokens';
+import type * as schema from '../../../database/schemas/trading';
+import { PersistenceModule } from '../../../database/database.module';
+import { AgentDecisionJournalAdapter } from '../../../database/repositories/agent-decision-journal.adapter';
+import { InMemoryAgentDecisionJournal } from '../../../database/repositories/in-memory-agent-decision-journal';
+import { LlmUsageSinkAdapter } from '../../../database/repositories/llm-usage-sink.adapter';
+import { InMemoryLlmUsageSink } from '../../../database/repositories/in-memory-llm-usage-sink';
+import { PromotionStatsRepository } from '../../../database/repositories/promotion-stats.repository';
+import {
+  PlaybookStoreAdapter,
+  type PlaybookVersionEntry,
+} from '../../../database/repositories/playbook-store.adapter';
+import { InMemoryPlaybookStore } from '../../../database/repositories/in-memory-playbook-store';
+import { ObservabilityModule } from '../../common/observability/observability.module';
+import { AgentMetricsRecorder } from '../../common/observability/agent-metrics-recorder.service';
+import { RiskModule } from '../risk/risk.module';
+import { ExecutionModule } from '../execution/execution.module';
+import {
+  AgenticStrategyModule,
+  AGENT_LLM_BUDGET,
+  PLAYBOOK_PROVIDER_OVERRIDE,
+  AGENT_TRADING_PROFILE_OVERRIDE,
+  ACTIVE_MENU_GATE_OVERRIDE,
+  PAYLOAD_EXTRAS_PROVIDER_OVERRIDE,
+  REFLECTION_METRICS_RECORDER_OVERRIDE,
+  SEED_PLAYBOOK_V3,
+} from '../agentic/agentic-strategy.module';
+import type { DailyLlmBudget } from '../agentic/agent-budget';
+import { buildAgentPortfolioBlock } from '../agentic/agent-portfolio-block';
+import { loadMacroCalendar, filterUpcoming } from '../agentic/macro-calendar';
+import { ExecQualityService } from '../agentic/exec-quality.service';
+import { PriceHistoryStore } from '../agentic/price-history-store';
+import { validatePlaybook } from '../agentic/playbook-validator';
+import { UniverseScannerService } from '../agentic/universe-scanner.service';
+import { RoundTripEvidenceReader } from '../agentic/round-trip-evidence.reader';
+import { FUNDING_INGEST } from './context-feeds.module';
+import type { FundingIngestService } from '../exchange/funding-ingest.service';
+import {
+  AGENT_DECISION_JOURNAL,
+  LLM_USAGE_SINK,
+  type AgentDecisionJournalPort,
+  type AgentTradingProfile,
+  type LlmUsageSink,
+  type PlaybookProvider,
+  type SymbolConstraints,
+} from '../../../ports/agentic-strategy';
+import {
+  PROMOTION_STATS,
+  REFLECTION_EVIDENCE,
+  type PromotionStatsPort,
+  type RoundTripEvidencePort,
+} from '../../../ports/promotion';
+import {
+  PORTFOLIO_VIEW,
+  EXEC_QUALITY_SINK_OVERRIDE,
+  type PortfolioViewPort,
+  type ExecQualitySinkPort,
+} from '../../../ports/execution';
+import { RISK_LIMITS } from '../../../ports/risk';
+import { CLOCK, type ClockPort } from '../../../ports/clock';
+import type { PartialRiskLimits } from '../../../domain/risk/limits';
+import type { SymbolFilters } from '../../../domain/risk/evaluate';
+import { DEFAULT_FILTERS } from '../../../domain/risk/default-filters';
+import { price, qty } from '../../../domain/types/money';
+import type { PortfolioSnapshot } from '../../../domain/types/portfolio';
+import { symbolId, type VenueId } from '../../../domain/types/ids';
+
+// v3 spec §1.3: AgenticBridgeModule replaces AgenticCompositionBridgeModule (pure code motion out of
+// app.module.ts) — same twelve tokens, with two v3 deltas: PLAYBOOK_PROVIDER_OVERRIDE's validator
+// capabilities are fixed open (perp symbols exist in every v3 boot — see its own factory comment) and
+// PAYLOAD_EXTRAS_PROVIDER_OVERRIDE gains per-venue free cash (§6.4/#10bc handoff, see that token's own
+// comment below).
+
+// Composition-root shape for the write side of the playbook store (append/listVersions) — neither
+// PlaybookStoreAdapter nor InMemoryPlaybookStore share a formal port for it yet (reflection/promotion
+// needs one); both classes already satisfy this shape structurally, so this is just the type
+// PLAYBOOK_PROVIDER_OVERRIDE's binding below is typed against, without a premature port addition to
+// ports/agentic-strategy.ts.
+interface PlaybookStorePort extends PlaybookProvider {
+  append(
+    content: string,
+    source: 'reflection' | 'promotion',
+    parentVersion: number,
+  ): Promise<{ version: number }>;
+  listVersions(limit: number): Promise<readonly PlaybookVersionEntry[]>;
+}
+
+// W4.1 live champion/candidate A/B: when a newer INACTIVE reflection-minted candidate exists, route a
+// deterministic percentage of current() calls to its content instead of the resolved ACTIVE version,
+// so per-version PnL attribution (agent_decisions.playbookVersion / agentic_version_net_pnl_usd{version})
+// accrues candidate evidence BEFORE promotion. Playbook content is inert advisory prose — no state
+// crosses versions — and whatever this returns still passes through ValidatingPlaybookProvider (the
+// outer wrap below) exactly as ACTIVE does, so routing is safe by construction.
+//
+// Determinism: PlaybookProvider.current() (ports/agentic-strategy.ts) takes no per-call argument — no
+// strategyId/basedOnSeq reaches this layer, and threading either through AGENT_CLIENT/agent-prompt just
+// to key routing would be new plumbing this task deliberately avoids. Routing is therefore keyed off
+// wall-clock: a UTC-minute bucket (`floor(Date.now() / 60_000) % 100`) compared against `pct`. Every
+// current() call within the same UTC minute makes the same routing decision (no flip-flopping between
+// two consecutive decides moments apart), while the bucket cycles through all 100 values over ~100
+// minutes, approximating the requested percentage over any window longer than that. Not cached across
+// calls (unlike PlaybookStoreAdapter/InMemoryPlaybookStore's own resolved-active cache) — each call
+// re-derives its bucket off the live clock and re-reads listVersions, so a freshly minted candidate or
+// a promotion is picked up on the very next call, never stale.
+//
+// Exported (like the sibling ValidatingPlaybookProvider) so its own unit spec can import and
+// exercise it directly against a fake PlaybookStorePort — same precedent as MetricsWrappingAgentClient
+// (trading-runtime.module.ts), which agent-decide-outcome.spec.ts imports from that module the same way.
+//
+// N2: 'loop-candidate' rows (scripts/playbook-candidate.mjs — the loop-side injection path) route
+// exactly like 'reflection' rows here — same INACTIVE-until-promoted shape, same "newest wins above
+// active" precedence, same local structural gate below. promotion/seed never route (they ARE, or
+// resolve to, the active version already).
+const CANDIDATE_SOURCES = new Set<PlaybookVersionEntry['source']>(['reflection', 'loop-candidate']);
+
+export class PlaybookAbRoutingProvider implements PlaybookStorePort {
+  private static readonly BUCKET_MS = 60_000;
+
+  constructor(
+    private readonly inner: PlaybookStorePort,
+    private readonly pct: number,
+    // P1: capability-aware denylist (playbook-validator.ts) — defaults {} (both false, byte-identical
+    // spot-strict pre-P1 behavior) so every existing construction site/spec stays unaffected. The
+    // composition root below passes the lane's real capabilities so a perp candidate carrying
+    // legitimate shorts/leverage prose isn't rejected here before it ever reaches
+    // ValidatingPlaybookProvider/AnthropicAgentClient's own (identically-flagged) re-validation.
+    private readonly capabilities: { shortsAllowed?: boolean; leverageAllowed?: boolean } = {},
+  ) {}
+
+  async current(): Promise<{
+    version: number;
+    content: string;
+    source?: 'pin' | 'promotion' | 'seed';
+  }> {
+    const active = await this.inner.current();
+    if (this.pct <= 0) return active; // default/disabled — skip the listVersions round trip entirely
+
+    const bucket = Math.floor(Date.now() / PlaybookAbRoutingProvider.BUCKET_MS) % 100;
+    if (bucket >= this.pct) return active;
+
+    const candidate = await this.latestCandidate(active.version);
+    if (!candidate) return active;
+
+    // Local structural gate: an invalid candidate falls back to ACTIVE rather than ever being
+    // surfaced (and journaled) as the served version — ValidatingPlaybookProvider still re-validates
+    // ACTIVE and candidate content identically regardless; this pre-check just keeps a rejected
+    // candidate from being the thing that lands in agent_decisions.playbook_version.
+    const validation = validatePlaybook(candidate.content, this.capabilities);
+    if (!validation.ok) return active;
+
+    // `source` intentionally omitted (not undefined) — this resolution outcome is neither
+    // pin/promotion/seed; PlaybookProvider.current()'s own doc calls that "omitted by providers that
+    // don't track it".
+    return { version: candidate.version, content: candidate.content };
+  }
+
+  // The unrouted read (PlaybookProvider.active): the inner store has no routing layer, so its own
+  // current() IS the pin/promotion/seed resolution.
+  active(): Promise<{
+    version: number;
+    content: string;
+    source?: 'pin' | 'promotion' | 'seed';
+  }> {
+    return this.inner.current();
+  }
+
+  // Newest INACTIVE row (source in CANDIDATE_SOURCES) with version > the resolved active version —
+  // mirrors PlaybookStoreAdapter.resolve()'s own "newest wins" convention for other sources. A cap of
+  // 50 rows matches InMemoryPlaybookStore.MAX_VERSIONS, so both backings are scanned in full.
+  private async latestCandidate(activeVersion: number): Promise<PlaybookVersionEntry | undefined> {
+    const versions = await this.inner.listVersions(50);
+    let latest: PlaybookVersionEntry | undefined;
+    for (const row of versions) {
+      if (
+        CANDIDATE_SOURCES.has(row.source) &&
+        row.version > activeVersion &&
+        (latest === undefined || row.version > latest.version)
+      ) {
+        latest = row;
+      }
+    }
+    return latest;
+  }
+
+  append(
+    content: string,
+    source: 'reflection' | 'promotion',
+    parentVersion: number,
+  ): Promise<{ version: number }> {
+    return this.inner.append(content, source, parentVersion);
+  }
+
+  listVersions(limit: number): Promise<readonly PlaybookVersionEntry[]> {
+    return this.inner.listVersions(limit);
+  }
+}
+
+// Composition-root tripwire wrapping the resolved playbook store's READ side only: the playbook is
+// untrusted, previously-model-authored content (see playbook-validator.ts's header comment).
+// AnthropicAgentClient re-validates on every call regardless (defense in depth); this wrapper
+// additionally surfaces a rejection to Prometheus (recordValidatorRejection) and guarantees the LLM
+// always receives SOME playbook (SEED_PLAYBOOK_V3) rather than the client's own tripwire, which
+// silently composes no playbook at all. append/listVersions pass through unvalidated — validation
+// only gates what reaches the LLM prompt, never the store's write side (reflection/promotion write
+// raw content).
+export class ValidatingPlaybookProvider implements PlaybookStorePort {
+  constructor(
+    private readonly inner: PlaybookStorePort,
+    private readonly recorder: AgentMetricsRecorder,
+    // P1: see PlaybookAbRoutingProvider's identical param — same default, same rationale.
+    private readonly capabilities: { shortsAllowed?: boolean; leverageAllowed?: boolean } = {},
+  ) {}
+
+  async current(): Promise<{
+    version: number;
+    content: string;
+    source?: 'pin' | 'promotion' | 'seed';
+  }> {
+    return this.validated(this.inner.current());
+  }
+
+  // Forwards the unrouted active read through the SAME validation as current() — the boot info
+  // stamp must never surface unvalidated content either. Falls back to inner.current() when the
+  // inner chain has no routing layer (active absent ⇒ current already is the active read).
+  async active(): Promise<{
+    version: number;
+    content: string;
+    source?: 'pin' | 'promotion' | 'seed';
+  }> {
+    return this.validated(this.inner.active?.() ?? this.inner.current());
+  }
+
+  private async validated(
+    read: Promise<{ version: number; content: string; source?: 'pin' | 'promotion' | 'seed' }>,
+  ): Promise<{ version: number; content: string; source?: 'pin' | 'promotion' | 'seed' }> {
+    const stored = await read;
+    const validation = validatePlaybook(stored.content, this.capabilities);
+    if (!validation.ok) {
+      this.recorder.recordValidatorRejection(
+        validation.bannedTokenHit ?? false,
+        validation.bannedToken,
+      );
+      // v3: one lineage — the unified seed folds both venue-classes' prose (spec §1.3); the
+      // per-lane seed selection is retired with the lane model itself.
+      return { ...SEED_PLAYBOOK_V3, source: 'seed' };
+    }
+    return stored;
+  }
+
+  append(
+    content: string,
+    source: 'reflection' | 'promotion',
+    parentVersion: number,
+  ): Promise<{ version: number }> {
+    return this.inner.append(content, source, parentVersion);
+  }
+
+  listVersions(limit: number): Promise<readonly PlaybookVersionEntry[]> {
+    return this.inner.listVersions(limit);
+  }
+}
+
+// SymbolFilters (venue rounding rules Risk/Execution enforce, see domain/risk/default-filters.ts) →
+// SymbolConstraints (the agentic port's own name for the identical shape). Exported for
+// trading-runtime.module.ts's STRATEGY_HOST factory (constraintsFor), which needs the SAME lookup the
+// trading profile below reads — never a second, independently-drifting copy.
+export function symbolConstraintsFor(symbol: string): SymbolConstraints | undefined {
+  const filters: SymbolFilters | undefined = DEFAULT_FILTERS.get(symbol);
+  if (!filters) return undefined;
+  return {
+    tickSize: price(filters.tickSize),
+    lotStep: qty(filters.stepSize),
+    minNotional: price(filters.minNotional),
+  };
+}
+
+// The agentic lane's own commercial profile (folded into its system prompt — see
+// AnthropicAgentClientConfig.profile), built from the SAME sources Risk/paper fees use rather than a
+// second, independently-tunable copy: maxOrderNotional is read live off RISK_LIMITS (RiskModule's
+// config-overlaid DEFAULT_LIMITS, exported for exactly this single-source-of-truth read — see
+// LimitsCompleteModule); baseNotional is the SAME validated AppConfig.risk.baseNotional risk.module.ts's
+// sizer reads (passed in by the factory below, so prompt and sizer can never drift); maker/takerBps
+// mirror the paper fee schedule (§1.5) — the actual fee schedule the paper adapter charges, not a
+// hardcoded guess. equityFraction is the SAME validated AppConfig.risk.equityFraction risk.module.ts's
+// sizer reads (P5 compounding sizing) — set on the profile only when > 0 so the prompt sentence and
+// the sizer's active path can never disagree.
+function agentTradingProfileFor(
+  symbol: string,
+  limits: PartialRiskLimits,
+  baseNotional: string,
+  equityFraction: string,
+  protectStopLossPct: string,
+  protectTrailingPct: string,
+): AgentTradingProfile {
+  return {
+    makerBps: '10',
+    takerBps: '10',
+    baseNotional,
+    maxOrderNotional: limits.maxOrderNotional ?? '100000',
+    constraints: symbolConstraintsFor(symbol) ?? {
+      tickSize: price('0.01'),
+      lotStep: qty('0.0001'),
+      minNotional: price('10'),
+    },
+    // Only set when compounding sizing is actually active — an always-present '0' would flip the
+    // prompt's sizing sentence for every unconfigured deployment (the disabled-path prompt must stay
+    // byte-identical to pre-P5).
+    ...(new Decimal(equityFraction).gt(0) ? { equityFraction } : {}),
+    // §S3: same latitude as equityFraction above — only set when the corresponding knob is active, so
+    // the disabled-path prompt stays byte-identical to pre-S3.
+    ...(new Decimal(protectStopLossPct).gt(0) ? { protectStopLossPct } : {}),
+    ...(new Decimal(protectTrailingPct).gt(0) ? { protectTrailingPct } : {}),
+  };
+}
+
+// v3 spec §6.4/#10bc handoff: one entry per venue carrying a live balance snapshot — the client's
+// capabilitiesFor (anthropic-agent-client.ts) reads this map per symbol via venueForSymbol to
+// populate SymbolCapabilities.venueFreeCash. Kept as a flat map (never re-derived from
+// buildAgentPortfolioBlock's own perVenue array) because perVenue is gated on venueCapitalShare being
+// configured (§6.4's "omitted beats wrong" convention) while the client's per-symbol free-cash read
+// must stay populated whenever the balance snapshot itself exists, split or not.
+export function buildVenueFreeCash(
+  venueBalances: PortfolioSnapshot['venueBalances'],
+): ReadonlyMap<VenueId, string> | undefined {
+  if (venueBalances === undefined) return undefined;
+  const result = new Map<VenueId, string>();
+  for (const [venue, balances] of venueBalances) {
+    result.set(venue, (balances.get('USDT')?.free ?? new Decimal(0)).toFixed());
+  }
+  return result;
+}
+
+function isTestEnv(): boolean {
+  return (
+    process.env['NODE_ENV'] === 'test' ||
+    process.env['NODE_ENV'] === 'ci' ||
+    Boolean(process.env['CI'])
+  );
+}
+
+// v3 spec §1.3: AgenticCompositionBridgeModule's twelve tokens, moved verbatim except the two deltas
+// documented above PAYLOAD_EXTRAS_PROVIDER_OVERRIDE/PLAYBOOK_PROVIDER_OVERRIDE below. RiskModule is
+// needed for RISK_LIMITS (the trading profile), ExecutionModule for CLOCK — PAYLOAD_EXTRAS_PROVIDER_
+// OVERRIDE's factory injects both directly (I1b) but this module never imported either exporter
+// (PORTFOLIO_VIEW already reaches here via the global PortfolioViewBridgeModule, which is why only
+// these two were missing).
+@Global()
+@Module({
+  imports: [
+    PersistenceModule,
+    ObservabilityModule,
+    RiskModule,
+    AgenticStrategyModule,
+    ExecutionModule,
+  ],
+  providers: [
+    {
+      provide: AGENT_DECISION_JOURNAL,
+      useFactory: (db: NodePgDatabase<typeof schema> | null): AgentDecisionJournalPort =>
+        isTestEnv() || db === null
+          ? new InMemoryAgentDecisionJournal()
+          : new AgentDecisionJournalAdapter(db),
+      inject: [DRIZZLE_DB],
+    },
+    {
+      // DB-backed LLM_USAGE_SINK: persists reflection-path token usage to llm_usage for offline cost
+      // analysis (P2a) — ReflectionService injects this @Optional, so undefined (paper/no-DB/test)
+      // simply skips recording. In-memory (array-backed, not a bare no-op — see its own comment)
+      // under test/ci or no-DB, mirroring AGENT_DECISION_JOURNAL's own fallback convention above.
+      provide: LLM_USAGE_SINK,
+      useFactory: (
+        db: NodePgDatabase<typeof schema> | null,
+        config: TypedConfigService,
+      ): LlmUsageSink =>
+        isTestEnv() || db === null
+          ? new InMemoryLlmUsageSink()
+          : new LlmUsageSinkAdapter(db, config.mode.configMode),
+      inject: [DRIZZLE_DB, TypedConfigService],
+    },
+    {
+      // Bound under its own token (not directly to PLAYBOOK_PROVIDER, which AgenticStrategyModule owns)
+      // so the write side (append/listVersions) stays reachable for reflection/promotion (G4a/G4b)
+      // alongside the validated read side AgenticStrategyModule's PLAYBOOK_PROVIDER factory consumes
+      // via PLAYBOOK_PROVIDER_OVERRIDE (see that token's own comment).
+      provide: PLAYBOOK_PROVIDER_OVERRIDE,
+      useFactory: (
+        db: NodePgDatabase<typeof schema> | null,
+        config: TypedConfigService,
+        recorder: AgentMetricsRecorder,
+      ): PlaybookStorePort => {
+        const pin = config.agentic.playbookPin;
+        // v3 (spec §1.3): perp symbols exist in every v3 boot, so validator capabilities are fixed
+        // open — per-symbol shorts/leverage gating moved to the client's capability zod layer; the
+        // lane-selector convention (shortsEnabled doubling as perp marker) is retired.
+        const capabilities = {
+          shortsAllowed: true,
+          leverageAllowed: true,
+        };
+        const seed = SEED_PLAYBOOK_V3;
+        const store =
+          isTestEnv() || db === null
+            ? new InMemoryPlaybookStore(seed, pin)
+            : new PlaybookStoreAdapter(db, seed, pin);
+        // W4.1: A/B router sits INSIDE the validating wrap, so candidate content faces the exact
+        // same read-side validation as ACTIVE. pct=0 (default) short-circuits to the plain store.
+        const routed = new PlaybookAbRoutingProvider(
+          store,
+          config.agentic.playbookAbPct,
+          capabilities,
+        );
+        return new ValidatingPlaybookProvider(routed, recorder, capabilities);
+      },
+      inject: [DRIZZLE_DB, TypedConfigService, AgentMetricsRecorder],
+    },
+    {
+      // The shared client's STATIC profile: fees/sizing/backstop are symbol-independent; the
+      // constraints here are only the fallback — the client resolves per-symbol constraints per
+      // decide (constraintsFor, agentic-strategy.module.ts), so the first configured symbol is
+      // just the fallback anchor.
+      provide: AGENT_TRADING_PROFILE_OVERRIDE,
+      useFactory: (limits: PartialRiskLimits, config: TypedConfigService): AgentTradingProfile =>
+        agentTradingProfileFor(
+          config.strategy.symbols[0]!,
+          limits,
+          config.risk.baseNotional,
+          config.risk.equityFraction,
+          config.risk.protectStopLossPct,
+          config.risk.protectTrailingPct,
+        ),
+      inject: [RISK_LIMITS, TypedConfigService],
+    },
+    {
+      // I1 (Design § Universe): ONE shared UniverseScannerService, bound here (not a field
+      // initializer on TradingRuntimeService) so both the batching client's ActiveMenuGate
+      // (agentic-strategy.module.ts's AGENT_CLIENT factory, via this SAME token) and
+      // TradingRuntimeService's own recompute-cadence/pin-provider wiring share the exact same
+      // instance — never two independently-drifting scanners. isPinned reads the live PORTFOLIO_VIEW
+      // snapshot: a symbol with an open position is always active, never orphaned from consults.
+      provide: ACTIVE_MENU_GATE_OVERRIDE,
+      useFactory: (
+        config: TypedConfigService,
+        portfolio: PortfolioViewPort,
+        recorder: AgentMetricsRecorder,
+      ): UniverseScannerService =>
+        new UniverseScannerService({
+          basket: config.strategy.symbols,
+          menuSize: config.agentic.activeMenuSize,
+          isPinned: (symbol) => {
+            const snap = portfolio.snapshot();
+            for (const p of snap.positions.values()) {
+              if (String(p.symbol) === symbol && !p.signedQty.isZero()) return true;
+            }
+            return snap.openOrders.some((o) => String(o.symbol) === symbol);
+          },
+          logger: { log: (msg) => Logger.log(msg, 'UniverseScanner') },
+          // W1 (Grafana rebuild): adapts the recorder's methods to UniverseScannerMetricsLike —
+          // this module never imports features/common/observability's boundaries wall the other
+          // way, so the adaptation lives here at the composition root.
+          metrics: {
+            setActiveMenu: (symbols) => recorder.setActiveMenu(symbols),
+            recordMenuChurn: (menuIn, menuOut) => recorder.recordMenuChurn(menuIn, menuOut),
+          },
+        }),
+      inject: [TypedConfigService, PORTFOLIO_VIEW, AgentMetricsRecorder],
+    },
+    {
+      // P5 (Design § Learning & measurement stack): ONE shared ExecQualityService instance, exported
+      // so a later step can also thread it into ReflectionService's deps. W3 Part 1 wired the
+      // production entry-attempt feed (fill-ingestor.service.ts's recordExecQualityFill +
+      // exec-report-consumer.service.ts's recordExecQualityUnfilled, bridged in via
+      // EXEC_QUALITY_SINK_OVERRIDE below) — digest() now populates once ≥5 attempts land. The no-op
+      // priceLookup remains: PriceHistoryStore (below) is an AT-OR-AFTER-a-timestamp series lookup,
+      // not the point query ExecQualityPriceLookup's contract needs.
+      provide: ExecQualityService,
+      useFactory: (): ExecQualityService =>
+        new ExecQualityService({ priceLookup: () => undefined }),
+    },
+    {
+      // W3 Part 2 (Design § Learning & measurement stack): ONE shared PriceHistoryStore instance,
+      // same "@Global()-provided singleton" convention as ExecQualityService above. Written by
+      // TradingRuntimeService's onCandleMetrics closure (AgenticStrategyDeps.priceHistory — every
+      // agentic-N instance's own candle window), read back by PAYLOAD_EXTRAS_PROVIDER_OVERRIDE below
+      // (correlation.btcBeta) and by AgenticStrategyDeps.priceHistory itself
+      // (netVsEqualWeightBasketBps).
+      provide: PriceHistoryStore,
+      useFactory: (): PriceHistoryStore => new PriceHistoryStore(),
+    },
+    {
+      // W3 Part 1: composition-root bridge for the exec-quality fan-out (ports/execution.ts's
+      // EXEC_QUALITY_SINK_OVERRIDE — mirrors EXEC_OUTBOX_OVERRIDE's Global-module override pattern).
+      // ExecutionModule cannot import ExecQualityService directly (boundaries forbid execution →
+      // agentic), so this @Global() module — which already owns the ExecQualityService instance —
+      // supplies the adapter ExecutionModule's own EXEC_QUALITY_SINK provider optionally injects.
+      provide: EXEC_QUALITY_SINK_OVERRIDE,
+      useFactory: (execQuality: ExecQualityService): ExecQualitySinkPort => ({
+        recordEntryAttempt: (attempt) => execQuality.recordEntryAttempt(attempt),
+      }),
+      inject: [ExecQualityService],
+    },
+    {
+      // I1b (Design § Enriched model inputs): the composition-root closure AnthropicAgentClientConfig.
+      // payloadExtrasProvider calls at most once per decide()/batch (buildAgentPortfolioBlock off the
+      // SAME PORTFOLIO_VIEW snapshot + equityCap the sizer caps sizing equity with,
+      // DailyLlmBudget.budgetBlock(), filterUpcoming off a SEPARATE loadMacroCalendar read —
+      // TradingRuntimeService loads its own copy for the boot log; both are tolerant/boot-cost-only
+      // reads of the same static repo file, never re-read per call).
+      //
+      // v3 §6.4/#10bc: buildAgentPortfolioBlock now also takes config.venueCapitalSplit (renders the
+      // perVenue freeCash/headroom array), and the extras object gains a top-level venueFreeCash map
+      // (buildVenueFreeCash, above) — the client's capabilitiesFor (anthropic-agent-client.ts) reads
+      // THIS map per symbol to populate SymbolCapabilities.venueFreeCash, never the perVenue array
+      // (which is gated on the split being configured). Everything else verbatim.
+      provide: PAYLOAD_EXTRAS_PROVIDER_OVERRIDE,
+      useFactory: (
+        portfolio: PortfolioViewPort,
+        config: TypedConfigService,
+        budget: DailyLlmBudget,
+        clock: ClockPort,
+        execQuality: ExecQualityService,
+        priceHistory: PriceHistoryStore,
+        fundingIngest?: FundingIngestService,
+      ) => {
+        const macroCalendar = loadMacroCalendar(
+          path.join(process.cwd(), 'data', 'macro-calendar.json'),
+          {
+            warn: (m) => Logger.warn(m, 'MacroCalendar'),
+          },
+        );
+        return () => {
+          const snapshot = portfolio.snapshot();
+          return {
+            // W3 Part 2: correlation.btcBeta populates off the SAME shared PriceHistoryStore
+            // netVsEqualWeightBasketBps reads — see buildAgentPortfolioBlock's own comment.
+            portfolio: buildAgentPortfolioBlock(
+              snapshot,
+              config.risk.equityCap,
+              priceHistory,
+              config.venueCapitalSplit,
+            ),
+            budget: budget.budgetBlock(),
+            calendar: filterUpcoming(macroCalendar, clock.now()),
+            // P5: undefined (omitted by buildMarketPayload's own extras.execQuality convention) until
+            // ExecQualityService has enough recorded attempts — see this token's own provider comment.
+            execQuality: execQuality.digest(),
+            // P5b: undefined (FUNDING_INGEST unbound — off-flag, spot venue, or no DB) until the
+            // poller has completed at least one poll for the configured symbol.
+            fundingAccrualQuote: fundingIngest?.cumulativeAccrualQuote(
+              symbolId(config.strategy.symbol),
+            ),
+            // v3 §6.4/#10bc: per-venue free cash the client keys per symbol via venueForSymbol.
+            venueFreeCash: buildVenueFreeCash(snapshot.venueBalances),
+          };
+        };
+      },
+      inject: [
+        PORTFOLIO_VIEW,
+        TypedConfigService,
+        AGENT_LLM_BUDGET,
+        CLOCK,
+        ExecQualityService,
+        PriceHistoryStore,
+        { token: FUNDING_INGEST, optional: true },
+      ],
+    },
+    // G4a: lets ReflectionService (features/trading/agentic, which cannot import
+    // features/common/observability — the boundary wall) record validator-rejection tripwires
+    // through its own LOCAL structural type rather than the concrete class. Same useExisting pattern
+    // the DB_HEALTH/PORTFOLIO_VIEW bridges use.
+    { provide: REFLECTION_METRICS_RECORDER_OVERRIDE, useExisting: AgentMetricsRecorder },
+    {
+      // PROMOTION_STATS (earned-live evidence source): DB-backed only — there is deliberately NO
+      // in-memory fallback, because PromotionReadinessService treats an absent stats source as the
+      // fail-closed NO_STATS_SOURCE verdict (a bot without durable fills has no promotion evidence
+      // by definition). undefined under test/ci/no-DB, mirroring the *_OVERRIDE convention.
+      provide: PROMOTION_STATS,
+      useFactory: (db: NodePgDatabase<typeof schema> | null): PromotionStatsPort | undefined =>
+        isTestEnv() || db === null ? undefined : new PromotionStatsRepository(db),
+      inject: [DRIZZLE_DB],
+    },
+    {
+      // Realized round-trip evidence + durable trigger seed for ReflectionService — a pure reader
+      // over the same PROMOTION_STATS binding (one fills-walk closure rule for the promotion
+      // verdict AND the learning loop). DB-only like PROMOTION_STATS itself: undefined under
+      // test/ci/no-DB, where reflection degrades to journal proxies and in-memory triggers.
+      provide: REFLECTION_EVIDENCE,
+      useFactory: (
+        stats: PromotionStatsPort | undefined,
+        config: TypedConfigService,
+      ): RoundTripEvidencePort | undefined =>
+        stats === undefined
+          ? undefined
+          : new RoundTripEvidenceReader(
+              stats,
+              config.agentic.promotionDustNotional,
+              // Same PROMOTION_EVIDENCE_EPOCH parse as mode-control's readinessConfigProvider — the
+              // reflection evidence walk must share the gate's fill window or straddle strays
+              // freeze it (see RoundTripEvidenceReader's ctor comment).
+              config.agentic.promotionEvidenceEpoch === undefined
+                ? undefined
+                : Date.parse(config.agentic.promotionEvidenceEpoch),
+            ),
+      inject: [PROMOTION_STATS, TypedConfigService],
+    },
+  ],
+  exports: [
+    AGENT_DECISION_JOURNAL,
+    PLAYBOOK_PROVIDER_OVERRIDE,
+    AGENT_TRADING_PROFILE_OVERRIDE,
+    ACTIVE_MENU_GATE_OVERRIDE,
+    PAYLOAD_EXTRAS_PROVIDER_OVERRIDE,
+    REFLECTION_METRICS_RECORDER_OVERRIDE,
+    ExecQualityService,
+    EXEC_QUALITY_SINK_OVERRIDE,
+    PriceHistoryStore,
+    LLM_USAGE_SINK,
+    PROMOTION_STATS,
+    REFLECTION_EVIDENCE,
+  ],
+})
+export class AgenticBridgeModule {}

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { MetricsWrappingAgentClient } from '../../../src/app.module';
+import { MetricsWrappingAgentClient } from '../../../src/features/trading/composition/trading-runtime.module';
 import { DailyLlmBudget } from '../../../src/features/trading/agentic/agent-budget';
 import type { AgentMetricsRecorder } from '../../../src/features/common/observability/agent-metrics-recorder.service';
 import type { AgentDecideOutcome } from '../../../src/features/common/observability/agent-metrics-recorder.service';

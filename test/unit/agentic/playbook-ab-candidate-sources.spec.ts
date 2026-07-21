@@ -1,9 +1,9 @@
-// N2.3: PlaybookAbRoutingProvider's CANDIDATE_SOURCES set (app.module.ts) — 'loop-candidate' rows
-// (scripts/playbook-candidate.mjs, the loop-side injection path) route exactly like 'reflection'
-// rows. Complements playbook-ab-routing.spec.ts (pct/bucket/validation-gate mechanics, unchanged by
-// this task) with source-selection coverage specifically.
+// N2.3: PlaybookAbRoutingProvider's CANDIDATE_SOURCES set (composition/agentic-bridge.module.ts) —
+// 'loop-candidate' rows (scripts/playbook-candidate.mjs, the loop-side injection path) route exactly
+// like 'reflection' rows. Complements playbook-ab-routing.spec.ts (pct/bucket/validation-gate
+// mechanics, unchanged by this task) with source-selection coverage specifically.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { PlaybookAbRoutingProvider } from '../../../src/app.module';
+import { PlaybookAbRoutingProvider } from '../../../src/features/trading/composition/agentic-bridge.module';
 
 const VALID_CANDIDATE = [
   '## regime notes',

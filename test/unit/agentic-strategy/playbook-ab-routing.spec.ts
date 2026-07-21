@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { PlaybookAbRoutingProvider, ValidatingPlaybookProvider } from '../../../src/app.module';
+import {
+  PlaybookAbRoutingProvider,
+  ValidatingPlaybookProvider,
+} from '../../../src/features/trading/composition/agentic-bridge.module';
 import type { AgentMetricsRecorder } from '../../../src/features/common/observability/agent-metrics-recorder.service';
 
 const VALID_CANDIDATE = [

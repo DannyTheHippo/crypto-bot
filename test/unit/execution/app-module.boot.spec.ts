@@ -11,13 +11,53 @@ import {
   ModeViolationError,
   type ModeControlPort,
 } from '../../../src/ports/mode-control';
-import { EXCHANGE_PORT } from '../../../src/ports/exchange';
+import {
+  EXCHANGE_PORT,
+  VENUE_EXCHANGE_PORTS,
+  type ExchangePort,
+} from '../../../src/ports/exchange';
+import { VENUE_REGISTRY, type VenueRuntimeDescriptor } from '../../../src/ports/venue-registry';
+import { VenueRoutingExchangeAdapter } from '../../../src/features/trading/composition/exchange-adapters.module';
 import { PaperExchangeAdapter } from '../../../src/features/trading/exchange/paper-exchange.adapter';
+import { PaperPerpAdapter } from '../../../src/features/trading/exchange/paper-perp.adapter';
 import { LiveExchangeAdapter } from '../../../src/features/trading/exchange/live-exchange.adapter';
+import { venueId, symbolId, type VenueId } from '../../../src/domain/types/ids';
 import { HaltCoordinatorService } from '../../../src/features/trading/execution/halt-coordinator.service';
 import { ReconciliationService } from '../../../src/features/trading/execution/reconciliation.service';
 import { UnknownResolverService } from '../../../src/features/trading/execution/unknown-resolver.service';
 import { CrashRecoveryService } from '../../../src/features/trading/execution/crash-recovery.service';
+
+// v3 §3.2: VENUES defaults to empty under test/ci (config.module.ts's AppConfigModule sets
+// `skipProcessEnv: true` + `ignoreEnvFile: isTestOrCi` — a deliberate hermetic-test boundary; no
+// process.env mutation in a spec ever reaches environment.config.ts's validate()). A real deploy
+// always configures both venues (VENUES non-empty is enforced outside test/ci), so this boot spec
+// overrides ONLY the derived VENUE_REGISTRY token — a pure data provider with no further deps — to
+// the deployed two-venue shape, while every other provider in the graph (ExchangeAdaptersModule,
+// MarketStreamsModule, ContextFeedsModule, TradingRuntimeModule, …) resolves for real off of it. This
+// is the minimal override that lets the REAL AppModule construct both venues' exchange ports without
+// touching environment.config.ts (frozen, owned by workstream #7 — see the v3 spec's integration order).
+const TWO_VENUE_REGISTRY: ReadonlyMap<VenueId, VenueRuntimeDescriptor> = new Map([
+  [
+    venueId('binance'),
+    {
+      venue: venueId('binance'),
+      config: { id: 'binance', environment: 'demo' },
+      symbols: [symbolId('BTC/USDT')],
+      capitalShare: '500',
+      perpCapable: false,
+    },
+  ],
+  [
+    venueId('binanceusdm'),
+    {
+      venue: venueId('binanceusdm'),
+      config: { id: 'binanceusdm', environment: 'demo' },
+      symbols: [],
+      capitalShare: '500',
+      perpCapable: true,
+    },
+  ],
+]);
 
 // Boots the REAL AppModule (not a mirror) as a full HTTP application: nest build only typechecks —
 // DI resolution errors (token collisions, unresolvable providers, the SigningKeyModule/
@@ -32,7 +72,10 @@ import { CrashRecoveryService } from '../../../src/features/trading/execution/cr
 // periodic drivers are skipped; app.close() clears any timers regardless.
 describe('AppModule composition', () => {
   it('boots the full trading graph DB-less (paper) and serves health + metrics', async () => {
-    const ref = await Test.createTestingModule({ imports: [AppModule] }).compile();
+    const ref = await Test.createTestingModule({ imports: [AppModule] })
+      .overrideProvider(VENUE_REGISTRY)
+      .useValue(TWO_VENUE_REGISTRY)
+      .compile();
     const app: INestApplication = ref.createNestApplication();
     await app.init();
 
@@ -54,12 +97,29 @@ describe('AppModule composition', () => {
       expect(app.get(HaltCoordinatorService, { strict: false })).toBeDefined();
 
       // §10 / live-gate matrix on the REAL container (CI-cannot-reach-live): under NODE_ENV=test the
-      // config is forced paper, so the EXCHANGE_PORT factory selects the paper adapter and the
-      // LiveExchangeAdapter is never constructed (absent from the graph, not merely disabled). A
-      // live-stamped order is refused outright.
-      const exchange = app.get<PaperExchangeAdapter>(EXCHANGE_PORT, { strict: false });
-      expect(exchange).toBeInstanceOf(PaperExchangeAdapter);
+      // config is forced paper, so every venue's EXCHANGE_PORT factory selects a paper adapter and no
+      // LiveExchangeAdapter is ever constructed (absent from the graph, not merely disabled). v3:
+      // EXCHANGE_PORT itself is now the VenueRoutingExchangeAdapter facade (exchange-adapters.module.ts)
+      // — the per-venue paper adapters live behind VENUE_EXCHANGE_PORTS, asserted below.
+      const exchange = app.get<ExchangePort>(EXCHANGE_PORT, { strict: false });
+      expect(exchange).toBeInstanceOf(VenueRoutingExchangeAdapter);
       expect(exchange).not.toBeInstanceOf(LiveExchangeAdapter);
+
+      // v3 §1.3: paper boot must construct BOTH venues behind the EXCHANGE_PORT routing facade —
+      // spot (binance) gets the PaperExchangeAdapter, perp (binanceusdm) gets the PaperPerpAdapter
+      // (signed position ledger + isolated margin), and neither is ever a LiveExchangeAdapter on a
+      // paper/test boot (the four-gate arming ceremony never fires here).
+      const venuePorts = app.get<ReadonlyMap<VenueId, ExchangePort>>(VENUE_EXCHANGE_PORTS, {
+        strict: false,
+      });
+      expect(venuePorts.size).toBe(2);
+      const spotPort = venuePorts.get(venueId('binance'));
+      const perpPort = venuePorts.get(venueId('binanceusdm'));
+      expect(spotPort).toBeInstanceOf(PaperExchangeAdapter);
+      expect(perpPort).toBeInstanceOf(PaperPerpAdapter);
+      expect(spotPort).not.toBeInstanceOf(LiveExchangeAdapter);
+      expect(perpPort).not.toBeInstanceOf(LiveExchangeAdapter);
+
       const mode = app.get<ModeControlPort>(MODE_CONTROL, { strict: false });
       expect(mode.resolveMode().effective).toBe('paper');
       expect(() => mode.assertCanTrade('live')).toThrow(ModeViolationError);

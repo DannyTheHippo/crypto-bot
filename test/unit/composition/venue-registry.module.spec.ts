@@ -50,9 +50,20 @@ describe('buildVenueRegistry', () => {
     expect(registry.get('binance' as never)?.capitalShare).toBe('0');
   });
 
-  it('produces an empty registry when no venues are configured', () => {
-    const config = fakeConfig({ venues: [], symbols: [], venueCapitalSplit: {} });
+  // v3 §3.2: VENUES defaults to empty under test/ci (a real boot always configures it —
+  // environment.config.ts refuses an empty VENUES outside test/ci). VenueRoutingExchangeAdapter
+  // (exchange-adapters.module.ts) fails CLOSED on an empty port map by design, so buildVenueRegistry
+  // falls back to a single spot venue owning every configured symbol under this NODE_ENV=test run —
+  // never reachable on a real deploy — so every hermetic spec that boots the real AppModule still
+  // gets a working (if minimal) venue graph. See resolveVenueConfigs' own comment.
+  it('falls back to a single spot venue under test/ci when no venues are configured (never empty)', () => {
+    const config = fakeConfig({ venues: [], symbols: ['BTC/USDT'], venueCapitalSplit: {} });
 
-    expect(buildVenueRegistry(config).size).toBe(0);
+    const registry = buildVenueRegistry(config);
+
+    expect(registry.size).toBe(1);
+    const spot = registry.get('binance' as never);
+    expect(spot?.symbols).toEqual(['BTC/USDT']);
+    expect(spot?.perpCapable).toBe(false);
   });
 });

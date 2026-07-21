@@ -2,15 +2,23 @@
 // Y2 deterministic health-sweep RUNNER — one read-only pass producing a UTC-stamped digest.
 // `node scripts/loop-sweep.mjs` (or `pnpm loop:sweep`).
 //
+// v3 single stack (2026-07-20 consolidation): exactly 4 containers (docker-compose.yml) —
+// crypto-bot-{app,postgres,prometheus,grafana}-1, no `-perp` siblings, no compose profile. ONE
+// process now runs both venues (spot binance + perp binanceusdm) against the ONE db and the ONE
+// Prometheus, with venue-labeled metrics distinguishing the two where it matters (market_channel_
+// staleness_seconds{venue}, reconciliation_runs_total{venue}, venue_free_cash_usdt{venue}, ...). The
+// v2 per-lane split (separate container/db/Prometheus per lane) is gone — see loop-sweep-core.mjs's
+// header for which checks stayed per-venue (reconciliations) vs collapsed to account-level.
+//
 // What it does, in order (loop-mechanism-learnings-2026-07.md §D):
 //   1. Opens with host duty-cycle state (pmset/boottime/uptime) — the sleep/wake edge is the
 //      highest-risk window, quantified before any counter is interpreted.
-//   2. Per lane, provenance FIRST: container health + RestartCount + StartedAt (docker inspect),
-//      bootId (boot_info metric), working-tree git tip — recorded before a single counter is read.
+//   2. Provenance FIRST: container health + RestartCount + StartedAt (docker inspect), bootId
+//      (boot_info metric), working-tree git tip — recorded before a single counter is read.
 //   3. Liveness probes: agentic_consult_gate_total by outcome, agent_decisions count + latest
-//      created_at, fills, reconciliations tail, kill-switch state, ws forced-reconnects, RSS, and the
-//      LLM cost-vs-breaker proximity. Every stack read goes through loop-transport.mjs (one GCP-lift
-//      seam) and returns {ok,value}|{ok,error} — a failed probe is reported, never thrown.
+//      created_at, fills, per-venue reconciliations tail, kill-switch state, ws forced-reconnects,
+//      RSS, and the LLM cost-vs-breaker proximity. Every stack read goes through loop-transport.mjs
+//      (one GCP-lift seam) and returns {ok,value}|{ok,error} — a failed probe is reported, never thrown.
 //   4. Hands {prev watermark, cur probes} to the PURE core (loop-sweep-core.mjs), which derives the
 //      bootId-pinned deltas, the fired alarms, and the annotations — deltas only when bootId matches.
 //   5. Writes the digest JSON + updates the watermark UNDER reports/loop/digests/ ONLY (single writer
@@ -34,8 +42,8 @@ import {
 import {
   computeSweep,
   extractCounters,
-  costBreakerLimitFor,
-  COST_BREAKER_USD,
+  VENUES,
+  AGENTIC_DAILY_COST_BREAKER_USD,
 } from './loop-sweep-core.mjs';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -45,12 +53,9 @@ const WATERMARK_PATH = join(DIGESTS_DIR, '.watermark.json');
 const ERROR_LOG_TAIL = 3000;
 const PINO_WARN_LEVEL = 40; // pino level>=40 = warn/error/fatal (§ error-scan)
 
-// The lanes this sweep knows how to read, with their compose container names (docker compose default
-// `<project>-<service>-N`). The perp lane is included only when its app container is actually up.
-const LANES = {
-  spot: { app: 'crypto-bot-app-1', label: 'spot' },
-  perp: { app: 'crypto-bot-app-perp-1', label: 'perp' },
-};
+// The single app container this sweep reads (docker compose default `<project>-<service>-N`,
+// project = crypto-bot). No lane variants — the v3 stack has exactly one app service.
+const APP_CONTAINER = 'crypto-bot-app-1';
 
 // ── the ONLY writer: refuses any path escaping reports/loop/digests/ ─────────────────────────────
 function writeUnderDigests(relName, content) {
@@ -111,16 +116,15 @@ function parsePsqlRow(res) {
   return { ok: true, value: line.split('|') };
 }
 
-// ── per-lane provenance + liveness probes ────────────────────────────────────────────────────────
-function gatherLane(laneKey) {
-  const lane = LANES[laneKey];
+// ── provenance + liveness probes for the one app process ─────────────────────────────────────────
+function gather() {
   const probes = {};
 
   // Provenance FIRST (§D): container health, RestartCount, StartedAt.
   let containerHealthy = false;
   let restartCount = null;
   let startedAt = null;
-  const inspect = dockerInspect(lane.app);
+  const inspect = dockerInspect(APP_CONTAINER);
   if (inspect.ok) {
     try {
       const info = JSON.parse(inspect.value)[0];
@@ -139,16 +143,16 @@ function gatherLane(laneKey) {
   // bootId — from the boot_info metric label (metrics-first, §D: survives a NOOP_LOGGER the logs
   // do not). One series carries boot_id.
   let bootId = null;
-  const bootInfo = parsePromSeries(promQuery('boot_info', laneKey));
+  const bootInfo = parsePromSeries(promQuery('boot_info'));
   if (bootInfo.ok && bootInfo.value.length > 0) {
     bootId = bootInfo.value[0].labels.boot_id || null;
   }
 
-  // agent_decisions liveness (count + latest created_at as epoch ms).
+  // agent_decisions liveness (count + latest created_at as epoch ms) — account-level: the one
+  // decision loop drives both venues (agent_decide_total carried "one lane", v3 spec §8).
   probes.decides = (() => {
     const row = parsePsqlRow(
       psql(
-        laneKey,
         'select count(*), coalesce((extract(epoch from max(created_at))*1000)::bigint,0) from agent_decisions',
         { cwd: REPO_ROOT },
       ),
@@ -163,10 +167,9 @@ function gatherLane(laneKey) {
     };
   })();
 
-  // consult-gate total + by-outcome breakdown (Prometheus, log-independent backstop).
-  const gateSeries = parsePromSeries(
-    promQuery('sum by (outcome) (agentic_consult_gate_total)', laneKey),
-  );
+  // consult-gate total + by-outcome breakdown (Prometheus, log-independent backstop). Account-level
+  // (agentic_consult_gate_total carries no venue label — v3 spec §8).
+  const gateSeries = parsePromSeries(promQuery('sum by (outcome) (agentic_consult_gate_total)'));
   let consultByOutcome = null;
   probes.consultGate = (() => {
     if (!gateSeries.ok) return gateSeries;
@@ -180,7 +183,7 @@ function gatherLane(laneKey) {
   })();
 
   probes.fills = (() => {
-    const row = parsePsqlRow(psql(laneKey, 'select count(*) from fills', { cwd: REPO_ROOT }));
+    const row = parsePsqlRow(psql('select count(*) from fills', { cwd: REPO_ROOT }));
     if (!row.ok) return row;
     const count = Number(row.value[0]);
     return Number.isFinite(count)
@@ -188,26 +191,33 @@ function gatherLane(laneKey) {
       : { ok: false, error: `unparseable fills count: ${row.value[0]}` };
   })();
 
-  // reconciliations: row count + latest verdict (CLEAN/MISMATCH/HALT) for the reconcile-halt +
-  // journal-silence checks.
-  probes.reconcile = (() => {
+  // reconciliations: per-venue row count + latest verdict (CLEAN/MISMATCH/HALT) for the reconcile-halt
+  // + journal-silence checks. The reconciliations table is venue-scoped (venue NOT NULL, one row per
+  // venue-pass per tick — trading.schema.ts) even on the single stack, so this stays split by venue
+  // via the same DB rather than collapsing to a global "latest row" (which would let one venue's
+  // fresh CLEAN pass mask the other venue's HALT).
+  probes.reconcile = {};
+  for (const venue of VENUES) {
     const row = parsePsqlRow(
       psql(
-        laneKey,
-        "select count(*), coalesce((select result from reconciliations order by id desc limit 1),'NONE') from reconciliations",
+        `select count(*), coalesce((select result from reconciliations where venue = '${venue}' order by id desc limit 1),'NONE') from reconciliations where venue = '${venue}'`,
         { cwd: REPO_ROOT },
       ),
     );
-    if (!row.ok) return row;
-    const count = Number(row.value[0]);
-    if (!Number.isFinite(count))
-      return { ok: false, error: `unparseable reconcile count: ${row.value[0]}` };
-    return { ok: true, value: { count, latestResult: row.value[1] } };
-  })();
+    probes.reconcile[venue] = !row.ok
+      ? row
+      : (() => {
+          const count = Number(row.value[0]);
+          return Number.isFinite(count)
+            ? { ok: true, value: { count, latestResult: row.value[1] } }
+            : { ok: false, error: `unparseable reconcile count (${venue}): ${row.value[0]}` };
+        })();
+  }
 
-  // kill-switch STATE (metric, never /health — §C.1: /health/ready hardcoded RUNNING once).
+  // kill-switch STATE (metric, never /health — §C.1: /health/ready hardcoded RUNNING once). One
+  // switch for the whole book (v3 spec §8: kill_switch_state carried, no venue label).
   probes.killSwitch = (() => {
-    const s = parsePromSeries(promQuery('kill_switch_state == 1', laneKey));
+    const s = parsePromSeries(promQuery('kill_switch_state == 1'));
     if (!s.ok) return s;
     const active = s.value.find((x) => x.value === 1);
     return active
@@ -215,31 +225,35 @@ function gatherLane(laneKey) {
       : { ok: false, error: 'no kill_switch_state series == 1 (state indeterminate)' };
   })();
 
-  // ws forced reconnects (recreation proxy) + RSS trend, both via Prometheus.
+  // ws forced reconnects (recreation proxy) + RSS trend, both via Prometheus. wsRecreations sums
+  // across venues — market_stream_forced_reconnects_total now carries a `venue` label (v3 §8) but no
+  // alarm here is keyed to a specific venue, so the account-level total preserves the prior
+  // "total recreations since watermark" semantics without adding per-venue alarm surface for a
+  // counter that has none. rss is genuinely single-process now (one process serves both venues).
   probes.wsRecreations = (() => {
-    const v = promScalar(promQuery('sum(market_stream_forced_reconnects_total)', laneKey));
+    const v = promScalar(promQuery('sum(market_stream_forced_reconnects_total)'));
     return v.ok ? { ok: true, value: { count: v.value } } : v;
   })();
   probes.rss = (() => {
-    const v = promScalar(promQuery('process_resident_memory_bytes', laneKey));
+    const v = promScalar(promQuery('process_resident_memory_bytes'));
     return v.ok ? { ok: true, value: { bytes: v.value } } : v;
   })();
 
   // Cost vs breaker: primary signal is the app's own agentic_budget_remaining_usd gauge (spend =
   // cap − remaining), which needs NO offline pricing — the three-ledger discipline (§C.7) prefers the
-  // app's priced ledger over re-deriving tokens×rates here. The DB-token cross-check ships verified:false
+  // app's priced ledger over re-deriving tokens×rates here. ONE unified budget (v3 §8) — the v2
+  // per-lane $1.50+$1.50 breakers are retired. The DB-token cross-check ships verified:false
   // (token→USD needs the env-configured AGENTIC_TOKEN_PRICE_* rates + the live model mix, neither
   // knowable from this pass), so it annotates rather than drives the alarm.
-  const limit = costBreakerLimitFor(laneKey);
   probes.cost = (() => {
-    const remaining = promScalar(promQuery('agentic_budget_remaining_usd', laneKey));
+    const remaining = promScalar(promQuery('agentic_budget_remaining_usd'));
     if (!remaining.ok) return remaining;
-    const spendUsd = Math.max(0, limit - remaining.value);
+    const spendUsd = Math.max(0, AGENTIC_DAILY_COST_BREAKER_USD - remaining.value);
     return { ok: true, value: { spendUsd, remainingUsd: remaining.value, verified: true } };
   })();
 
   // Error/warn scan: tail (never --since), pino level>=40, top-5 distinct msg prefixes.
-  const errorScan = scanErrors(lane.app);
+  const errorScan = scanErrors(APP_CONTAINER);
 
   return {
     bootId,
@@ -289,20 +303,17 @@ function loadWatermark() {
   }
 }
 
-// The next watermark: bootId + RestartCount + scalar counters per lane, plus the sweep timestamp.
-function buildWatermark(sweptAtMs, lanes) {
-  const out = { sweptAtMs, lanes: {} };
-  for (const [laneKey, laneCur] of Object.entries(lanes)) {
-    out.lanes[laneKey] = {
-      bootId: laneCur.bootId,
-      restartCount: laneCur.restartCount,
-      counters: extractCounters(laneCur),
-    };
-  }
-  return out;
+// The next watermark: bootId + RestartCount + scalar counters for the app, plus the sweep timestamp.
+function buildWatermark(sweptAtMs, app) {
+  return {
+    sweptAtMs,
+    app: app
+      ? { bootId: app.bootId, restartCount: app.restartCount, counters: extractCounters(app) }
+      : null,
+  };
 }
 
-function renderMarkdown({ sweptIso, host, git, lanes, result }) {
+function renderMarkdown({ sweptIso, host, git, app, result }) {
   const L = [];
   L.push(`# Loop health sweep — ${sweptIso}`);
   L.push('');
@@ -318,33 +329,37 @@ function renderMarkdown({ sweptIso, host, git, lanes, result }) {
   const alarms = result.alarms;
   L.push(`## Alarms (${alarms.length})`);
   if (alarms.length === 0) L.push('- none');
-  for (const a of alarms) L.push(`- **${a.kind}** [${a.lane}] — ${a.detail}`);
+  for (const a of alarms) {
+    const scope = a.venue ? ` [${a.venue}]` : '';
+    L.push(`- **${a.kind}**${scope} — ${a.detail}`);
+  }
   L.push('');
 
   L.push(`## Annotations (${result.annotations.length})`);
   if (result.annotations.length === 0) L.push('- none');
   for (const n of result.annotations) {
-    const scope = n.lane ? `[${n.lane}${n.probe ? '.' + n.probe : ''}] ` : '';
+    const scope = n.venue
+      ? `[${n.venue}${n.probe ? '.' + n.probe : ''}] `
+      : n.probe
+        ? `[${n.probe}] `
+        : '';
     L.push(`- _${n.kind}_ ${scope}— ${n.detail}`);
   }
   L.push('');
 
-  for (const [laneKey, laneCur] of Object.entries(lanes)) {
-    L.push(`## Lane: ${laneKey}`);
-    L.push(`- container healthy: ${laneCur.containerHealthy}`);
-    L.push(`- bootId: ${laneCur.bootId ?? 'UNRESOLVED'}`);
+  if (app) {
+    L.push('## App');
+    L.push(`- container healthy: ${app.containerHealthy}`);
+    L.push(`- bootId: ${app.bootId ?? 'UNRESOLVED'}`);
+    L.push(`- RestartCount: ${app.restartCount ?? 'n/a'} · StartedAt: ${app.startedAt ?? 'n/a'}`);
+    L.push(`- cost breaker: $${AGENTIC_DAILY_COST_BREAKER_USD}/day`);
     L.push(
-      `- RestartCount: ${laneCur.restartCount ?? 'n/a'} · StartedAt: ${laneCur.startedAt ?? 'n/a'}`,
+      `- deltas vs watermark: ${result.deltas ? JSON.stringify(result.deltas) : 'reset (boot changed or first sweep)'}`,
     );
-    L.push(`- cost breaker: $${COST_BREAKER_USD[laneKey] ?? 'n/a'}/day`);
-    const d = result.deltas[laneKey];
-    L.push(
-      `- deltas vs watermark: ${d ? JSON.stringify(d) : 'reset (boot changed or first sweep)'}`,
-    );
-    if (laneCur.consultByOutcome) {
-      L.push(`- consult-gate by outcome: ${JSON.stringify(laneCur.consultByOutcome)}`);
+    if (app.consultByOutcome) {
+      L.push(`- consult-gate by outcome: ${JSON.stringify(app.consultByOutcome)}`);
     }
-    const es = laneCur.errorScan;
+    const es = app.errorScan;
     if (es.ok) {
       L.push(`- warn+ lines (tail ${es.value.scanned}): ${es.value.matched}`);
       for (const t of es.value.top) L.push(`  - ${t.count}× ${t.prefix}`);
@@ -368,36 +383,32 @@ export function runSweep() {
   const host = hostState().value;
   const git = gitTip();
 
-  // Which lanes are actually deployed — perp is behind a compose profile and often absent.
+  // The single app container may still be absent (stack down, or gathered mid-restart).
   const ps = dockerPs();
   const running = ps.ok ? ps.value : '';
-  const lanes = {};
-  for (const [laneKey, lane] of Object.entries(LANES)) {
-    if (running.includes(lane.app)) {
-      lanes[laneKey] = gatherLane(laneKey);
-    }
-  }
+  const appRunning = running.includes(APP_CONTAINER);
+  const app = appRunning ? gather() : null;
 
   const prev = loadWatermark();
-  const cur = { sweptAtMs, lanes };
+  const cur = { sweptAtMs, app };
   const result = computeSweep({ prev, cur });
 
-  if (Object.keys(lanes).length === 0) {
+  if (!app) {
     result.annotations.push({
-      kind: 'no_lanes',
+      kind: 'no_app',
       detail: ps.ok
-        ? 'no known lane containers running (crypto-bot-app-1 / crypto-bot-app-perp-1 absent)'
+        ? `app container not running (${APP_CONTAINER} absent)`
         : `docker ps failed: ${ps.error}`,
     });
   }
 
-  const digest = { sweptIso, sweptAtMs, git, host, lanes, result };
+  const digest = { sweptIso, sweptAtMs, git, host, app, result };
 
   const safeIso = sweptIso.replace(/[:.]/g, '-');
   const digestPath = writeUnderDigests(`sweep-${safeIso}.json`, JSON.stringify(digest, null, 2));
-  writeUnderDigests('.watermark.json', JSON.stringify(buildWatermark(sweptAtMs, lanes), null, 2));
+  writeUnderDigests('.watermark.json', JSON.stringify(buildWatermark(sweptAtMs, app), null, 2));
 
-  const markdown = renderMarkdown({ sweptIso, host, git, lanes, result });
+  const markdown = renderMarkdown({ sweptIso, host, git, app, result });
   return { digest, markdown, digestPath };
 }
 

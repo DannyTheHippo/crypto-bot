@@ -36,6 +36,18 @@ export const DEFAULT_FILTERS: ReadonlyMap<string, SymbolFilters> = new Map<strin
   ['NEAR/USDT:USDT', { tickSize: '0.001', stepSize: '1', minQty: '1', minNotional: '5' }],
   ['HYPE/USDT:USDT', { tickSize: '0.001', stepSize: '0.01', minQty: '0.01', minNotional: '5' }],
   ['KAITO/USDT:USDT', { tickSize: '0.0001', stepSize: '0.1', minQty: '0.1', minNotional: '5' }],
+  // v3 §5.4 stage-2 perp basket (ranks 9-16): values probe-verified against
+  // demo-fapi.binance.com/fapi/v1/exchangeInfo 2026-07-21 (same #54 pattern as stage-1 above),
+  // all 8 status TRADING, minNotional 5 across the set. minQty mirrors stepSize per the venue's
+  // LOT_SIZE (demo fapi reports minQty === stepSize for every one of these — same as stage-1).
+  ['TRUMP/USDT:USDT', { tickSize: '0.001', stepSize: '0.01', minQty: '0.01', minNotional: '5' }],
+  ['UNI/USDT:USDT', { tickSize: '0.001', stepSize: '1', minQty: '1', minNotional: '5' }],
+  ['BCH/USDT:USDT', { tickSize: '0.01', stepSize: '0.001', minQty: '0.001', minNotional: '5' }],
+  ['XRP/USDT:USDT', { tickSize: '0.0001', stepSize: '0.1', minQty: '0.1', minNotional: '5' }],
+  ['LINK/USDT:USDT', { tickSize: '0.001', stepSize: '0.01', minQty: '0.01', minNotional: '5' }],
+  ['AVAX/USDT:USDT', { tickSize: '0.001', stepSize: '1', minQty: '1', minNotional: '5' }],
+  ['SUI/USDT:USDT', { tickSize: '0.0001', stepSize: '0.1', minQty: '0.1', minNotional: '5' }],
+  ['LTC/USDT:USDT', { tickSize: '0.01', stepSize: '0.001', minQty: '0.001', minNotional: '5' }],
   // U1 (Design § Universe: 8 -> ~24 basket) venue-filters GROUNDWORK for the planned expansion
   // (BNB DOGE ADA AVAX DOT LTC SUI PEPE WIF TRX SHIB UNI APT ARB OP FIL). Chosen: mechanical table
   // extension with these rows as the DEFAULT_FILTERS fallback (smaller correct change than adding a

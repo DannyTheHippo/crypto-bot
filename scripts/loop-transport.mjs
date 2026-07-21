@@ -12,11 +12,12 @@
 
 import { spawnSync } from 'node:child_process';
 
-// Container names follow docker compose's `<project>-<service>-N` default (project = crypto-bot):
-// spot app/postgres/prometheus = crypto-bot-{app,postgres,prometheus}-1; perp lane appends `-perp`.
-// psql goes through `docker compose exec` by SERVICE name; promtool through `docker exec` by CONTAINER.
-const PG_SERVICE = { spot: 'postgres', perp: 'postgres-perp' };
-const PROM_CONTAINER = { spot: 'crypto-bot-prometheus-1', perp: 'crypto-bot-prometheus-perp-1' };
+// v3 single stack (docker-compose.yml): exactly 4 containers — crypto-bot-{app,postgres,prometheus,
+// grafana}-1, no `-perp` siblings, no compose profile. One process serves both venues (spot binance +
+// perp binanceusdm) against the ONE db (cryptobot) and the ONE Prometheus. psql goes through
+// `docker compose exec` by SERVICE name; promtool through `docker exec` by CONTAINER.
+const PG_SERVICE = 'postgres';
+const PROM_CONTAINER = 'crypto-bot-prometheus-1';
 
 // One wrapped spawn: capture stdout+stderr, coerce every failure mode (non-zero exit, spawn error,
 // timeout) into { ok:false, error } so no caller ever sees a throw.
@@ -59,22 +60,33 @@ export function dockerLogsTail(container, n) {
   return run('docker', ['logs', '--tail', String(n), container]);
 }
 
-// db selects the lane (spot|perp) -> service name; same user/db (cryptobot/cryptobot) on both lanes.
+// One db (cryptobot/cryptobot), reached via docker compose exec by SERVICE name.
 // -A (unaligned) -t (tuples-only) -c (command) yields raw newline-delimited rows the runner parses.
-export function psql(db, sql, opts = {}) {
-  const service = PG_SERVICE[db] ?? PG_SERVICE.spot;
-  const args = ['compose'];
-  if (db === 'perp') args.push('--profile', 'perp');
-  args.push('exec', '-T', service, 'psql', '-U', 'cryptobot', '-d', 'cryptobot', '-Atc', sql);
+export function psql(sql, opts = {}) {
+  const args = [
+    'compose',
+    'exec',
+    '-T',
+    PG_SERVICE,
+    'psql',
+    '-U',
+    'cryptobot',
+    '-d',
+    'cryptobot',
+    '-Atc',
+    sql,
+  ];
   return run('docker', args, { cwd: opts.cwd });
 }
 
-// promtool runs INSIDE the lane's prometheus container against its own localhost:9090.
-export function promQuery(expr, lane = 'spot') {
-  const container = PROM_CONTAINER[lane] ?? PROM_CONTAINER.spot;
+// promtool runs INSIDE the one prometheus container against its own localhost:9090. Venue-scoped
+// series (market_channel_staleness_seconds, reconciliation_runs_total, venue_free_cash_usdt, ...)
+// carry a `venue` label on the SAME series set — callers select venue via the PromQL expr, not by
+// picking a different container.
+export function promQuery(expr) {
   return run('docker', [
     'exec',
-    container,
+    PROM_CONTAINER,
     'promtool',
     'query',
     'instant',

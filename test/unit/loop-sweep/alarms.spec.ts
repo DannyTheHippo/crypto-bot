@@ -10,20 +10,26 @@ import * as coreModule from '../../../scripts/loop-sweep-core.mjs';
 // §C defect-class checks (loop-mechanism-learnings-2026-07.md) the core encodes — each alarm fires on
 // its own signature and stays silent otherwise, probe failures degrade to named notes (never a crash,
 // never a false pass), and a boot change resets deltas instead of fabricating negatives.
+//
+// v3 single stack (2026-07-20 consolidation): ONE app process serves both venues (binance spot +
+// binanceusdm perp) — the v2 per-lane fixtures (separate `spot`/`perp` lane objects) collapse to one
+// `app` object. `reconciliations` stays the one per-venue exception (venue-scoped table), so
+// reconcile-derived alarms (reconcile_halt, journal_silence, its negative_read_void) carry a `venue`
+// field and the fixtures below key `probes.reconcile` by venue id.
 
 interface Alarm {
   kind: string;
-  lane: string;
+  venue?: string;
   detail: string;
 }
 interface Annotation {
   kind: string;
-  lane?: string;
+  venue?: string;
   probe?: string;
   detail: string;
 }
 interface SweepResult {
-  deltas: Record<string, Record<string, number | null> | null>;
+  deltas: Record<string, unknown> | null;
   alarms: Alarm[];
   annotations: Annotation[];
 }
@@ -31,11 +37,25 @@ interface Core {
   computeSweep: (input: { prev: unknown; cur: unknown }) => SweepResult;
   EXPECTED_SWEEP_INTERVAL_MS: number;
   LIVENESS_MIN_ELAPSED_MS: number;
+  VENUES: [string, string];
+  AGENTIC_DAILY_COST_BREAKER_USD: number;
 }
 const core = coreModule as unknown as Core;
-const { computeSweep, EXPECTED_SWEEP_INTERVAL_MS, LIVENESS_MIN_ELAPSED_MS } = core;
+const {
+  computeSweep,
+  EXPECTED_SWEEP_INTERVAL_MS,
+  LIVENESS_MIN_ELAPSED_MS,
+  VENUES,
+  AGENTIC_DAILY_COST_BREAKER_USD,
+} = core;
+const [SPOT, PERP] = VENUES;
 
 const WM_TIME = 10_000_000_000;
+
+interface ReconcileProbe {
+  ok: boolean;
+  value: { count: number; latestResult: string };
+}
 
 // Fixed-shape probe bag (not Record<string,...>) so noUncheckedIndexedAccess doesn't force every
 // mutation site below through an `undefined` check — each field is a known, always-present key.
@@ -43,17 +63,26 @@ interface Probes {
   decides: { ok: boolean; value: { count: number; latestCreatedAtMs: number } };
   consultGate: { ok: boolean; value: { total: number } };
   fills: { ok: boolean; value: { count: number } };
-  reconcile: { ok: boolean; value: { count: number; latestResult: string } };
+  reconcile: Record<string, ReconcileProbe>;
   killSwitch: { ok: boolean; value: { state: string } };
   cost: { ok: boolean; value: { spendUsd: number } };
   wsRecreations: { ok: boolean; value: { count: number } };
   rss: { ok: boolean; value: { bytes: number } };
 }
-interface Lane {
+interface App {
   bootId: string;
   containerHealthy: boolean;
   restartCount: number;
   probes: Probes;
+}
+
+function baseReconcileByVenue(
+  count: number,
+  latestResult = 'CLEAN',
+): Record<string, ReconcileProbe> {
+  const out: Record<string, ReconcileProbe> = {};
+  for (const venue of VENUES) out[venue] = { ok: true, value: { count, latestResult } };
+  return out;
 }
 
 function baseProbes(): Probes {
@@ -61,7 +90,7 @@ function baseProbes(): Probes {
     decides: { ok: true, value: { count: 100, latestCreatedAtMs: WM_TIME } },
     consultGate: { ok: true, value: { total: 50 } },
     fills: { ok: true, value: { count: 10 } },
-    reconcile: { ok: true, value: { count: 200, latestResult: 'CLEAN' } },
+    reconcile: baseReconcileByVenue(200),
     killSwitch: { ok: true, value: { state: 'RUNNING' } },
     cost: { ok: true, value: { spendUsd: 0.1 } },
     wsRecreations: { ok: true, value: { count: 2 } },
@@ -69,35 +98,35 @@ function baseProbes(): Probes {
   };
 }
 
-function baseLane(): Lane {
+function baseApp(): App {
   return { bootId: 'boot-A', containerHealthy: true, restartCount: 3, probes: baseProbes() };
 }
 
 // Watermark counters that MATCH baseProbes exactly — a test perturbs only the counter it exercises so
 // deltas are zero everywhere else (isolating the one alarm under test).
 function baseWatermark(): Record<string, unknown> {
+  const reconcileByVenue: Record<string, number> = {};
+  for (const venue of VENUES) reconcileByVenue[venue] = 200;
   return {
     sweptAtMs: WM_TIME,
-    lanes: {
-      spot: {
-        bootId: 'boot-A',
-        restartCount: 3,
-        counters: {
-          decides: 100,
-          consultGate: 50,
-          fills: 10,
-          reconcile: 200,
-          wsRecreations: 2,
-          rssBytes: 1000,
-        },
+    app: {
+      bootId: 'boot-A',
+      restartCount: 3,
+      counters: {
+        decides: 100,
+        consultGate: 50,
+        fills: 10,
+        reconcileByVenue,
+        wsRecreations: 2,
+        rssBytes: 1000,
       },
     },
   };
 }
 
-// A `cur` one design-interval after the watermark (well under the 2x host-sleep gap), single spot lane.
-function curWith(lane: Lane): Record<string, unknown> {
-  return { sweptAtMs: WM_TIME + EXPECTED_SWEEP_INTERVAL_MS, lanes: { spot: lane } };
+// A `cur` one design-interval after the watermark (well under the 2x host-sleep gap).
+function curWith(app: App): Record<string, unknown> {
+  return { sweptAtMs: WM_TIME + EXPECTED_SWEEP_INTERVAL_MS, app };
 }
 
 function kinds(items: { kind: string }[]): string[] {
@@ -105,27 +134,27 @@ function kinds(items: { kind: string }[]): string[] {
 }
 
 describe('loop-sweep-core alarms', () => {
-  it('is silent when the lane is healthy and every counter advanced', () => {
-    const lane = baseLane();
-    lane.probes.decides.value.count = 130;
-    lane.probes.consultGate.value.total = 70;
-    lane.probes.reconcile.value.count = 220;
-    const { alarms } = computeSweep({ prev: baseWatermark(), cur: curWith(lane) });
+  it('is silent when the app is healthy and every counter advanced (both venues)', () => {
+    const app = baseApp();
+    app.probes.decides.value.count = 130;
+    app.probes.consultGate.value.total = 70;
+    app.probes.reconcile = baseReconcileByVenue(220);
+    const { alarms } = computeSweep({ prev: baseWatermark(), cur: curWith(app) });
     expect(alarms).toEqual([]);
   });
 
-  it('zero_decides fires when containers healthy but liveness counters are unchanged since watermark', () => {
-    const lane = baseLane();
-    // decides + consult-gate frozen; reconcile advances so journal_silence stays silent.
-    lane.probes.reconcile.value.count = 220;
-    const { alarms } = computeSweep({ prev: baseWatermark(), cur: curWith(lane) });
+  it('zero_decides fires when the container is healthy but liveness counters are unchanged since watermark', () => {
+    const app = baseApp();
+    // decides + consult-gate frozen; reconcile advances on both venues so journal_silence stays silent.
+    app.probes.reconcile = baseReconcileByVenue(220);
+    const { alarms } = computeSweep({ prev: baseWatermark(), cur: curWith(app) });
     expect(kinds(alarms)).toContain('zero_decides');
     expect(kinds(alarms)).not.toContain('journal_silence');
   });
 
   it('delta-starvation alarms are suppressed (annotated) under the liveness elapsed floor — back-to-back sweeps are not the R8-7 signature', () => {
-    const lane = baseLane(); // every counter frozen: both starvation alarms would fire on a full window
-    const cur = { sweptAtMs: WM_TIME + LIVENESS_MIN_ELAPSED_MS - 1, lanes: { spot: lane } };
+    const app = baseApp(); // every counter frozen: both starvation alarms would fire on a full window
+    const cur = { sweptAtMs: WM_TIME + LIVENESS_MIN_ELAPSED_MS - 1, app };
     const { alarms, annotations } = computeSweep({ prev: baseWatermark(), cur });
     expect(kinds(alarms)).not.toContain('zero_decides');
     expect(kinds(alarms)).not.toContain('journal_silence');
@@ -133,90 +162,103 @@ describe('loop-sweep-core alarms', () => {
   });
 
   it('an UNKNOWN elapsed (watermark without sweptAtMs) does not suppress starvation alarms — conservative toward detection', () => {
-    const lane = baseLane();
+    const app = baseApp();
     const wm = baseWatermark();
     delete wm['sweptAtMs'];
-    const cur = { sweptAtMs: WM_TIME + EXPECTED_SWEEP_INTERVAL_MS, lanes: { spot: lane } };
+    const cur = { sweptAtMs: WM_TIME + EXPECTED_SWEEP_INTERVAL_MS, app };
     const { alarms } = computeSweep({ prev: wm, cur });
     expect(kinds(alarms)).toContain('zero_decides');
   });
 
   it('does not fire zero_decides while the container is unhealthy (no green positive control)', () => {
-    const lane = baseLane();
-    lane.containerHealthy = false;
-    lane.probes.reconcile.value.count = 220;
-    const { alarms } = computeSweep({ prev: baseWatermark(), cur: curWith(lane) });
+    const app = baseApp();
+    app.containerHealthy = false;
+    app.probes.reconcile = baseReconcileByVenue(220);
+    const { alarms } = computeSweep({ prev: baseWatermark(), cur: curWith(app) });
     expect(kinds(alarms)).not.toContain('zero_decides');
   });
 
-  it('journal_silence fires when the reconciliations journal produced no new rows while healthy', () => {
-    const lane = baseLane();
-    // reconcile frozen; decides advances so zero_decides stays silent.
-    lane.probes.decides.value.count = 140;
-    lane.probes.consultGate.value.total = 80;
-    const { alarms } = computeSweep({ prev: baseWatermark(), cur: curWith(lane) });
-    expect(kinds(alarms)).toContain('journal_silence');
+  it("journal_silence fires per venue when that venue's reconciliations journal produced no new rows while healthy", () => {
+    const app = baseApp();
+    // reconcile frozen on both venues; decides advances so zero_decides stays silent.
+    app.probes.decides.value.count = 140;
+    app.probes.consultGate.value.total = 80;
+    const { alarms } = computeSweep({ prev: baseWatermark(), cur: curWith(app) });
     expect(kinds(alarms)).not.toContain('zero_decides');
+    const silences = alarms.filter((a) => a.kind === 'journal_silence');
+    expect(silences.map((a) => a.venue).sort()).toEqual([...VENUES].sort());
   });
 
-  it('kill_switch_engaged fires on any non-RUNNING state', () => {
-    const lane = baseLane();
-    lane.probes.killSwitch.value.state = 'HALTED_DEGRADED';
-    const { alarms } = computeSweep({ prev: baseWatermark(), cur: curWith(lane) });
+  it('journal_silence fires ONLY for the venue that went silent — the sibling venue advancing does not mask it', () => {
+    const app = baseApp();
+    app.probes.decides.value.count = 140;
+    app.probes.consultGate.value.total = 80;
+    app.probes.reconcile[PERP] = { ok: true, value: { count: 260, latestResult: 'CLEAN' } }; // perp advances
+    // spot (VENUES[0]) stays frozen at 200 (== watermark) -> journal_silence[spot] only.
+    const { alarms } = computeSweep({ prev: baseWatermark(), cur: curWith(app) });
+    const silences = alarms.filter((a) => a.kind === 'journal_silence');
+    expect(silences.map((a) => a.venue)).toEqual([SPOT]);
+  });
+
+  it('kill_switch_engaged fires on any non-RUNNING state (account-level, no venue)', () => {
+    const app = baseApp();
+    app.probes.killSwitch.value.state = 'HALTED_DEGRADED';
+    const { alarms } = computeSweep({ prev: baseWatermark(), cur: curWith(app) });
     const ks = alarms.find((a) => a.kind === 'kill_switch_engaged');
     expect(ks).toBeDefined();
     expect(ks?.detail).toContain('HALTED_DEGRADED');
+    expect(ks?.venue).toBeUndefined();
   });
 
-  it('reconcile_halt fires when the latest reconciliation verdict is HALT', () => {
-    const lane = baseLane();
-    lane.probes.reconcile.value.latestResult = 'HALT';
-    const { alarms } = computeSweep({ prev: baseWatermark(), cur: curWith(lane) });
-    expect(kinds(alarms)).toContain('reconcile_halt');
+  it('reconcile_halt fires when the latest reconciliation verdict is HALT for a venue', () => {
+    const app = baseApp();
+    app.probes.reconcile[PERP] = { ok: true, value: { count: 200, latestResult: 'HALT' } };
+    const { alarms } = computeSweep({ prev: baseWatermark(), cur: curWith(app) });
+    const halt = alarms.find((a) => a.kind === 'reconcile_halt');
+    expect(halt).toBeDefined();
+    expect(halt?.venue).toBe(PERP);
   });
 
-  it('cost_breaker_proximity fires at >=80% of the $1.50 spot breaker', () => {
-    const lane = baseLane();
-    lane.probes.cost.value.spendUsd = 1.2; // 80% of $1.50
-    const { alarms } = computeSweep({ prev: baseWatermark(), cur: curWith(lane) });
+  it("reconcile_halt on one venue is not masked by the sibling venue's CLEAN latest row", () => {
+    const app = baseApp();
+    app.probes.reconcile[SPOT] = { ok: true, value: { count: 200, latestResult: 'HALT' } };
+    app.probes.reconcile[PERP] = { ok: true, value: { count: 205, latestResult: 'CLEAN' } };
+    const { alarms } = computeSweep({ prev: baseWatermark(), cur: curWith(app) });
+    const halts = alarms.filter((a) => a.kind === 'reconcile_halt');
+    expect(halts).toHaveLength(1);
+    expect(halts[0]?.venue).toBe(SPOT);
+  });
+
+  it(`cost_breaker_proximity fires at >=80% of the $${AGENTIC_DAILY_COST_BREAKER_USD} unified daily breaker`, () => {
+    const app = baseApp();
+    app.probes.cost.value.spendUsd = 0.8 * AGENTIC_DAILY_COST_BREAKER_USD;
+    const { alarms } = computeSweep({ prev: baseWatermark(), cur: curWith(app) });
     expect(kinds(alarms)).toContain('cost_breaker_proximity');
   });
 
-  it('cost_breaker_proximity reads the perp breaker independently ($1.50 post-X2)', () => {
-    const lane = baseLane();
-    lane.probes.cost.value.spendUsd = 1.2; // 80% of the perp $1.50 (raised by X2 stage-1)
-    const cur = { sweptAtMs: WM_TIME + EXPECTED_SWEEP_INTERVAL_MS, lanes: { perp: lane } };
-    const watermarkLanes = baseWatermark().lanes as Record<string, unknown>;
-    const prev = { sweptAtMs: WM_TIME, lanes: { perp: watermarkLanes.spot } };
-    const { alarms } = computeSweep({ prev, cur });
-    const cb = alarms.find((a) => a.kind === 'cost_breaker_proximity');
-    expect(cb).toBeDefined();
-    expect(cb?.lane).toBe('perp');
-  });
-
   it('restart_storm fires when RestartCount climbed more than once since the watermark', () => {
-    const lane = baseLane();
-    lane.restartCount = 5; // watermark was 3 => +2 restarts
-    const { alarms } = computeSweep({ prev: baseWatermark(), cur: curWith(lane) });
+    const app = baseApp();
+    app.restartCount = 5; // watermark was 3 => +2 restarts
+    const { alarms } = computeSweep({ prev: baseWatermark(), cur: curWith(app) });
     expect(kinds(alarms)).toContain('restart_storm');
   });
 
   it('does not fire restart_storm on a single ordinary redeploy', () => {
-    const lane = baseLane();
-    lane.restartCount = 4; // +1
-    const { alarms } = computeSweep({ prev: baseWatermark(), cur: curWith(lane) });
+    const app = baseApp();
+    app.restartCount = 4; // +1
+    const { alarms } = computeSweep({ prev: baseWatermark(), cur: curWith(app) });
     expect(kinds(alarms)).not.toContain('restart_storm');
   });
 
   it('a failed probe becomes a named probe_failed note — never a pass, never a throw', () => {
-    const lane = baseLane();
-    (lane as { probes: unknown }).probes = {
-      ...lane.probes,
+    const app = baseApp();
+    (app as { probes: unknown }).probes = {
+      ...app.probes,
       decides: { ok: false, error: 'psql exited 2: connection refused' },
     };
     let result!: SweepResult;
     expect(() => {
-      result = computeSweep({ prev: baseWatermark(), cur: curWith(lane) });
+      result = computeSweep({ prev: baseWatermark(), cur: curWith(app) });
     }).not.toThrow();
     const failed = result.annotations.find(
       (n) => n.kind === 'probe_failed' && n.probe === 'decides',
@@ -224,17 +266,28 @@ describe('loop-sweep-core alarms', () => {
     expect(failed).toBeDefined();
     // The frozen-counter alarm must NOT fire off an unreadable probe (delta is null, not zero).
     expect(kinds(result.alarms)).not.toContain('zero_decides');
-    expect(result.deltas.spot?.decides).toBeNull();
+    const deltas = result.deltas as { decides: number | null } | null;
+    expect(deltas?.decides).toBeNull();
+  });
+
+  it('a failed reconcile probe for one venue becomes a venue-tagged probe_failed note', () => {
+    const app = baseApp();
+    app.probes.reconcile[PERP] = { ok: false, error: 'psql exited 2: connection refused' } as never;
+    const result = computeSweep({ prev: baseWatermark(), cur: curWith(app) });
+    const failed = result.annotations.find(
+      (n) => n.kind === 'probe_failed' && n.probe === 'reconcile' && n.venue === PERP,
+    );
+    expect(failed).toBeDefined();
   });
 
   it('a sweep gap beyond 2x the expected interval is a host-sleep ANNOTATION, not an alarm', () => {
-    const lane = baseLane();
-    lane.probes.reconcile.value.count = 220;
-    lane.probes.decides.value.count = 140;
-    lane.probes.consultGate.value.total = 80;
+    const app = baseApp();
+    app.probes.reconcile = baseReconcileByVenue(220);
+    app.probes.decides.value.count = 140;
+    app.probes.consultGate.value.total = 80;
     const cur = {
       sweptAtMs: WM_TIME + 3 * EXPECTED_SWEEP_INTERVAL_MS, // > 2x gap
-      lanes: { spot: lane },
+      app,
     };
     const { alarms, annotations } = computeSweep({ prev: baseWatermark(), cur });
     expect(kinds(annotations)).toContain('host_sleep_suspected');
@@ -242,37 +295,47 @@ describe('loop-sweep-core alarms', () => {
   });
 
   it('bootId mismatch resets deltas verbatim and never yields a negative delta', () => {
-    const lane = baseLane();
-    lane.bootId = 'boot-B'; // watermark was boot-A
+    const app = baseApp();
+    app.bootId = 'boot-B'; // watermark was boot-A
     // Counters LOWER than the watermark — a cross-boot subtraction would go negative.
-    lane.probes.decides.value.count = 5;
-    lane.probes.consultGate.value.total = 1;
-    lane.probes.reconcile.value.count = 3;
+    app.probes.decides.value.count = 5;
+    app.probes.consultGate.value.total = 1;
+    app.probes.reconcile = baseReconcileByVenue(3);
     const { deltas, annotations, alarms } = computeSweep({
       prev: baseWatermark(),
-      cur: curWith(lane),
+      cur: curWith(app),
     });
     const reset = annotations.find((n) => n.kind === 'boot_changed');
     expect(reset?.detail).toBe('boot changed — deltas reset');
-    expect(deltas.spot).toBeNull();
+    expect(deltas).toBeNull();
     // No delta-derived alarm may fire off a reset boot.
     expect(kinds(alarms)).not.toContain('zero_decides');
     expect(kinds(alarms)).not.toContain('journal_silence');
   });
 
   it('negative_read_void notes a zero durable counter while a sibling counter proves the stack answers', () => {
-    const lane = baseLane();
-    lane.probes.decides.value.count = 0; // empty read
-    lane.probes.fills.value.count = 10; // positive control: the DB IS returning data
-    const { annotations } = computeSweep({ prev: baseWatermark(), cur: curWith(lane) });
+    const app = baseApp();
+    app.probes.decides.value.count = 0; // empty read
+    app.probes.fills.value.count = 10; // positive control: the DB IS returning data
+    const { annotations } = computeSweep({ prev: baseWatermark(), cur: curWith(app) });
     const void_ = annotations.find((n) => n.kind === 'negative_read_void' && n.probe === 'decides');
     expect(void_).toBeDefined();
   });
 
+  it('negative_read_void notes a zero reconcile count for ONE venue, tagged with that venue', () => {
+    const app = baseApp();
+    app.probes.reconcile[PERP] = { ok: true, value: { count: 0, latestResult: 'NONE' } };
+    const { annotations } = computeSweep({ prev: baseWatermark(), cur: curWith(app) });
+    const void_ = annotations.find(
+      (n) => n.kind === 'negative_read_void' && n.probe === 'reconcile' && n.venue === PERP,
+    );
+    expect(void_).toBeDefined();
+  });
+
   it('the first sweep (no watermark) reports no deltas and does not crash', () => {
-    const lane = baseLane();
-    const result = computeSweep({ prev: null, cur: curWith(lane) });
+    const app = baseApp();
+    const result = computeSweep({ prev: null, cur: curWith(app) });
     expect(kinds(result.annotations)).toContain('no_watermark');
-    expect(result.deltas.spot).toBeNull();
+    expect(result.deltas).toBeNull();
   });
 });

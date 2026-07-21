@@ -5,10 +5,10 @@ describe('DEFAULT_FILTERS', () => {
   it('carries the demo universe (24 spot /USDT symbols) with exact filter strings', () => {
     // 24 spot rows (8→24 expansion, U1: BNB DOGE ADA AVAX DOT LTC SUI PEPE WIF TRX SHIB UNI APT ARB
     // OP FIL added to the original 8 — live-probe-verified 2026-07-18 against
-    // api.binance.com/api/v3/exchangeInfo) + 8 futures-demo perp rows (X2 stage-1 basket — all 8
-    // probe-verified 2026-07-20 against demo-fapi.binance.com exchangeInfo; provenance note in
-    // default-filters.ts).
-    expect(DEFAULT_FILTERS.size).toBe(32);
+    // api.binance.com/api/v3/exchangeInfo) + 16 futures-demo perp rows (X2 stage-1 basket
+    // probe-verified 2026-07-20 + v3 §5.4 stage-2 ranks 9-16 probe-verified 2026-07-21, both
+    // against demo-fapi.binance.com exchangeInfo; provenance notes in default-filters.ts).
+    expect(DEFAULT_FILTERS.size).toBe(40);
     for (const perp of [
       'BTC/USDT:USDT',
       'ETH/USDT:USDT',
@@ -18,6 +18,14 @@ describe('DEFAULT_FILTERS', () => {
       'NEAR/USDT:USDT',
       'HYPE/USDT:USDT',
       'KAITO/USDT:USDT',
+      'TRUMP/USDT:USDT',
+      'UNI/USDT:USDT',
+      'BCH/USDT:USDT',
+      'XRP/USDT:USDT',
+      'LINK/USDT:USDT',
+      'AVAX/USDT:USDT',
+      'SUI/USDT:USDT',
+      'LTC/USDT:USDT',
     ]) {
       expect(DEFAULT_FILTERS.has(perp)).toBe(true);
     }

@@ -53,26 +53,25 @@ export function classifyCadence({ prevActualAtMs, plannedAtMs, actualAtMs, inter
   return { gapDetected, gapMs, missedTicks, driftMs };
 }
 
-// Compact per-lane + alarm summary pulled from a runSweep() digest — the durable rehydration payload,
-// small enough to carry on every heartbeat line.
+// Compact app + alarm summary pulled from a runSweep() digest — the durable rehydration payload,
+// small enough to carry on every heartbeat line. v3 single stack: one app, not a lane map — alarms
+// carry an optional `venue` (reconcile-derived checks) instead of the retired `lane`.
 export function summarizeSweep(digest) {
   const result = (digest && digest.result) || {};
   const alarms = Array.isArray(result.alarms)
-    ? result.alarms.map((a) => ({ kind: a.kind, lane: a.lane ?? null }))
+    ? result.alarms.map((a) => ({ kind: a.kind, venue: a.venue ?? null }))
     : [];
   const annotationCount = Array.isArray(result.annotations) ? result.annotations.length : 0;
-  const lanes = {};
-  const laneMap = (digest && digest.lanes) || {};
-  const deltaMap = result.deltas || {};
-  for (const [laneKey, lane] of Object.entries(laneMap)) {
-    lanes[laneKey] = {
-      bootId: lane.bootId ?? null,
-      containerHealthy: lane.containerHealthy === true,
-      restartCount: Number.isFinite(lane.restartCount) ? lane.restartCount : null,
-      deltas: deltaMap[laneKey] ?? null,
-    };
-  }
-  return { git: (digest && digest.git) ?? null, alarms, annotationCount, lanes };
+  const appCur = (digest && digest.app) || null;
+  const app = appCur
+    ? {
+        bootId: appCur.bootId ?? null,
+        containerHealthy: appCur.containerHealthy === true,
+        restartCount: Number.isFinite(appCur.restartCount) ? appCur.restartCount : null,
+        deltas: result.deltas ?? null,
+      }
+    : null;
+  return { git: (digest && digest.git) ?? null, alarms, annotationCount, app };
 }
 
 // The heartbeat line — emitted EVERY interval, whether the sweep found alarms, found nothing, or threw
@@ -93,7 +92,7 @@ export function buildDigestLine({ seq, plannedAtMs, actualAtMs, sweep, sweepErro
     line.alarms = [];
     line.alarmCount = 0;
     line.annotationCount = 0;
-    line.lanes = {};
+    line.app = null;
   } else {
     const s = summarizeSweep(sweep && sweep.digest ? sweep.digest : sweep);
     line.sweepError = null;
@@ -101,7 +100,7 @@ export function buildDigestLine({ seq, plannedAtMs, actualAtMs, sweep, sweepErro
     line.alarms = s.alarms;
     line.alarmCount = s.alarms.length;
     line.annotationCount = s.annotationCount;
-    line.lanes = s.lanes;
+    line.app = s.app;
   }
   return line;
 }
@@ -203,18 +202,12 @@ export function renderMdSection(line) {
         line.alarms.length > 0 ? line.alarms.map((a) => a.kind).join(', ') : 'none';
       L.push(`- alarms: ${line.alarmCount} (${alarmKinds})`);
       L.push(`- annotations: ${line.annotationCount}`);
-      const laneKeys = Object.keys(line.lanes);
-      const laneSummary =
-        laneKeys.length > 0
-          ? laneKeys
-              .map((k) => {
-                const l = line.lanes[k];
-                const boot = l.bootId ? l.bootId.slice(0, 8) : 'UNRESOLVED';
-                return `${k} boot ${boot} (${l.containerHealthy ? 'healthy' : 'unhealthy'})`;
-              })
-              .join('; ')
-          : 'no lanes running';
-      L.push(`- lanes: ${laneSummary}`);
+      if (line.app) {
+        const boot = line.app.bootId ? line.app.bootId.slice(0, 8) : 'UNRESOLVED';
+        L.push(`- app: boot ${boot} (${line.app.containerHealthy ? 'healthy' : 'unhealthy'})`);
+      } else {
+        L.push('- app: not running');
+      }
     }
   }
   return L.join('\n') + '\n';

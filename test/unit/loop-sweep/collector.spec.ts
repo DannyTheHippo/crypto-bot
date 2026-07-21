@@ -22,11 +22,11 @@ interface Line {
   plannedAt?: string;
   actualAt: string;
   driftMs?: number;
-  alarms?: { kind: string; lane: string | null }[];
+  alarms?: { kind: string; venue: string | null }[];
   alarmCount?: number;
   annotationCount?: number;
   sweepError?: string | null;
-  lanes?: Record<string, { bootId: string | null; containerHealthy: boolean }>;
+  app?: { bootId: string | null; containerHealthy: boolean } | null;
   gapMs?: number;
   missedTicks?: number;
   detail?: string;
@@ -46,9 +46,9 @@ interface Core {
   }) => Cadence;
   summarizeSweep: (digest: unknown) => {
     git: string | null;
-    alarms: { kind: string; lane: string | null }[];
+    alarms: { kind: string; venue: string | null }[];
     annotationCount: number;
-    lanes: Record<string, unknown>;
+    app: unknown;
   };
   buildDigestLine: (input: {
     seq: number;
@@ -154,16 +154,15 @@ describe('classifyCadence — heartbeat/gap/seq cadence', () => {
 });
 
 describe('line builders — the durable line shapes', () => {
+  // v3 single stack: one `app`, not a lane map; reconcile-derived alarms carry `venue`.
   const sweep = {
     digest: {
       git: 'abc1234',
-      lanes: {
-        spot: { bootId: 'boot-A-uuid-long', containerHealthy: true, restartCount: 2 },
-      },
+      app: { bootId: 'boot-A-uuid-long', containerHealthy: true, restartCount: 2 },
       result: {
-        alarms: [{ kind: 'zero_decides', lane: 'spot' }],
-        annotations: [{ kind: 'no_watermark' }, { kind: 'probe_failed', lane: 'spot' }],
-        deltas: { spot: { decides: 0 } },
+        alarms: [{ kind: 'zero_decides' }],
+        annotations: [{ kind: 'no_watermark' }, { kind: 'probe_failed', probe: 'decides' }],
+        deltas: { decides: 0 },
       },
     },
   };
@@ -180,9 +179,9 @@ describe('line builders — the durable line shapes', () => {
     expect(line.seq).toBe(5);
     expect(line.driftMs).toBe(120);
     expect(line.alarmCount).toBe(1);
-    expect(line.alarms?.[0]).toEqual({ kind: 'zero_decides', lane: 'spot' });
+    expect(line.alarms?.[0]).toEqual({ kind: 'zero_decides', venue: null });
     expect(line.annotationCount).toBe(2);
-    expect(line.lanes?.spot?.bootId).toBe('boot-A-uuid-long');
+    expect(line.app?.bootId).toBe('boot-A-uuid-long');
     expect(line.sweepError).toBeNull();
   });
 
@@ -197,7 +196,7 @@ describe('line builders — the durable line shapes', () => {
     expect(line.type).toBe('digest');
     expect(line.sweepError).toBe('boom');
     expect(line.alarmCount).toBe(0);
-    expect(line.lanes).toEqual({});
+    expect(line.app).toBeNull();
   });
 
   it('the gap line records the missed window without fabricating rows', () => {
@@ -303,7 +302,7 @@ describe('renderMdSection — markdownlint-clean companion sections', () => {
       plannedAtMs: T0,
       actualAtMs: T0 + 5,
       sweep: {
-        digest: { git: 'g', lanes: {}, result: { alarms: [], annotations: [], deltas: {} } },
+        digest: { git: 'g', app: null, result: { alarms: [], annotations: [], deltas: null } },
       },
       sweepError: null,
     });

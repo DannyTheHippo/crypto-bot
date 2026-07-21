@@ -175,6 +175,13 @@ never changes for strategy evolution.
   underlying message from every ledger (journal writes the bare kind by privacy design, metrics
   keep only the outcome, nothing logs) — a one-line redacted-reason log in the metrics wrapper
   would have cut this diagnosis from five probes to one.
+- **Soak progress (2026-07-21 ~16:31Z, check #5, mid-window):** all green on the 90s-timeout boot
+  (`1b8ef6c9`, recreated 15:28:36Z — the defect-#3 record's "17:28Z" was a local-time slip; the
+  soak clock runs from 15:28:36Z): zero alarms, zero loop errors (WATCH-V3-2 holding), journal
+  40/bar every bar, reconcile clean-only both venues, kill switch RUNNING, RSS ~679 MiB flat
+  (WATCH-V3-1 fine). 200 skips = 5 bars × 40 symbols, exactly on schedule; the first post-fix
+  fallback consult wave is due at the 17:15Z bar close — next check verifies it bills, stays
+  under the 90s ceiling, and any entries flow through Risk with reconcile staying clean.
   app changes):** memo at `reports/loop/kimi-k3-research-2026-07-21.md`. Headline: K3 (released
   07-16) prices identically to sonnet-5 ($3/$15/$0.30 cache-hit); the Anthropic-compatible
   `/anthropic` endpoint exists for K3 (kimi-k2 precedent holds); in-app integration is

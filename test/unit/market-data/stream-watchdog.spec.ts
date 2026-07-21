@@ -65,9 +65,17 @@ describe('CcxtExchangeStreamAdapter stall watchdog', () => {
     if (first.done) throw new Error('expected a candle event');
     expect(first.value.type).toBe('candle');
 
-    // Silence: the channel last yielded at t=0; jump past the 180s stall threshold and let the
-    // 30s watchdog interval fire.
-    now = 200_000;
+    // Thin-venue storm regression (2026-07-21 v3 soak): demo klines are trade-driven on thin
+    // symbols, so candle silence past the generic 180s threshold is NORMAL there and must NOT
+    // trigger a connection-wide close.
+    now = 400_000;
+    await vi.advanceTimersByTimeAsync(31_000);
+    expect(closeSpy).not.toHaveBeenCalled();
+    expect(recordForcedReconnect).not.toHaveBeenCalled();
+
+    // Silence past the candle-specific 20-min threshold IS a dead subscription (the 2026-07-16
+    // 8.2h stall class) — the watchdog must close.
+    now = 1_300_000;
     await vi.advanceTimersByTimeAsync(31_000);
 
     expect(closeSpy).toHaveBeenCalledTimes(1);
@@ -78,7 +86,7 @@ describe('CcxtExchangeStreamAdapter stall watchdog', () => {
     expect(closeSpy).toHaveBeenCalledTimes(1);
 
     // Past the cooldown and still silent: the watchdog retries the reconnect.
-    now = 400_000;
+    now = 2_600_000;
     await vi.advanceTimersByTimeAsync(31_000);
     expect(closeSpy).toHaveBeenCalledTimes(2);
 
@@ -231,13 +239,14 @@ describe('CcxtExchangeStreamAdapter stall watchdog', () => {
     const iterator = adapter.marketRaw(spec)[Symbol.asyncIterator]();
     const pendingNext = iterator.next();
 
-    now = 200_000;
+    // Candle channels carry the 20-min threshold (thin-venue storm fix, 2026-07-21).
+    now = 1_300_000;
     await vi.advanceTimersByTimeAsync(31_000);
     expect(closeSpy).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('close() failed'));
 
     // The rejection was contained: a later tick past the cooldown retries.
-    now = 400_000;
+    now = 2_600_000;
     await vi.advanceTimersByTimeAsync(31_000);
     expect(closeSpy).toHaveBeenCalledTimes(2);
 

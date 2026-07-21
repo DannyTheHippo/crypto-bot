@@ -74,6 +74,20 @@ const STALE_THRESHOLD_MS = 30_000;
 // reconnect is a seconds-long data blip, bounded by the cooldown).
 const WATCHDOG_CHECK_MS = 30_000;
 const WATCHDOG_STALL_THRESHOLD_MS = 180_000;
+// v3 soak finding (2026-07-21, first hours of the one-book demo boot): the demo venue's kline
+// streams are TRADE-DRIVEN on thin symbols — APT/WIF/DOT/NEAR/OP spot candles sat 150-307s silent
+// while their tickers stayed fresh and liquid symbols' candles ticked normally (the #54 lesson:
+// probe the venue actually traded, not the documented prod shape). Under the single 180s threshold
+// every such quiet spell read as a dead subscription and forced a CONNECTION-WIDE close(), whose
+// resubscribe herd then tripped the demo ws inbound rate limit (1008) — a self-sustaining ~3.5-min
+// storm cycle (269 loop errors/20 min observed live) that v2 never hit only because its perp lane
+// carried 8 liquid symbols, not v3's 16-with-thin-tail. Candle channels therefore get a
+// cadence-matched threshold: a full 15m bar of silence plus 5 min margin — a genuinely dead candle
+// subscription (the 2026-07-16 8.2h stall class) is still caught in 20 min, while a thin symbol's
+// quiet bar can never initiate the storm. This corrects a false premise for ONE channel type;
+// book/ticker/trades keep the original 180s (their sub-second cadence assumption held on the live
+// venue), so real stall detection is not weakened.
+const WATCHDOG_CANDLE_STALL_THRESHOLD_MS = 1_200_000;
 // Re-examined for the v2 escalation (see the header comment): CONFIRMED already global, not
 // per-channel-group. watchdogTick() reads/writes ONE `lastForcedReconnectAt` field on the adapter
 // and calls exchange.close() at most once per tick, after building a single `stalled` list across
@@ -1017,14 +1031,20 @@ export class CcxtExchangeStreamAdapter implements ExchangeStreamPort {
       if (now - this.lastForcedReconnectAt < WATCHDOG_RECONNECT_COOLDOWN_MS) return;
       const stalled: string[] = [];
       for (const [key, at] of this.lastYieldAt) {
-        if (now - at > WATCHDOG_STALL_THRESHOLD_MS) stalled.push(key);
+        // Key shape is `${symbol}|${channel}` (noteYield); symbols never contain '|', so the
+        // '|candle' probe can only match the channel part.
+        const threshold = key.includes('|candle')
+          ? WATCHDOG_CANDLE_STALL_THRESHOLD_MS
+          : WATCHDOG_STALL_THRESHOLD_MS;
+        if (now - at > threshold) stalled.push(key);
       }
       if (stalled.length === 0) return;
       this.lastForcedReconnectAt = now;
       this.stateTracker.recordForcedReconnect?.();
       this.logger?.error(
-        `market-stream watchdog: channel(s) silent >${WATCHDOG_STALL_THRESHOLD_MS}ms, forcing ` +
-          `reconnect via exchange.close(): ${stalled.join(', ')}`,
+        `market-stream watchdog: channel(s) past stall threshold (${WATCHDOG_STALL_THRESHOLD_MS}ms; ` +
+          `candle ${WATCHDOG_CANDLE_STALL_THRESHOLD_MS}ms), forcing reconnect via ` +
+          `exchange.close(): ${stalled.join(', ')}`,
       );
       void Promise.resolve((this.exchange as unknown as { close(): Promise<void> }).close()).catch(
         (err: unknown) => {

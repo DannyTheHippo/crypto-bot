@@ -616,6 +616,428 @@
       }
     },
     {
+      "id": 9,
+      "type": "stat",
+      "title": "Promotion Net PnL",
+      "description": "agentic_promotion_net_pnl_usd — realized PnL minus fees minus LLM spend over the earned-live promotion evidence window (PromotionReadinessService, sampled 5m). ONE lineage, ONE book (v3: no per-lane split).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-spot"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-spot"
+          },
+          "expr": "agentic_promotion_net_pnl_usd",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": ["lastNotNull"]
+        },
+        "textMode": "value"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 9,
+        "w": 6,
+        "h": 4
+      }
+    },
+    {
+      "id": 10,
+      "type": "stat",
+      "title": "Promotion Round Trips",
+      "description": "agentic_promotion_round_trips — closed demo round trips toward the >=30 promotion threshold.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-spot"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-spot"
+          },
+          "expr": "agentic_promotion_round_trips",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 30
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": ["lastNotNull"]
+        },
+        "textMode": "value"
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 9,
+        "w": 6,
+        "h": 4
+      }
+    },
+    {
+      "id": 11,
+      "type": "stat",
+      "title": "Promotion Window Days",
+      "description": "agentic_promotion_window_days — span between the first and last closed demo round trip; must reach >=14.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-spot"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-spot"
+          },
+          "expr": "agentic_promotion_window_days",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "d",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 14
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": ["lastNotNull"]
+        },
+        "textMode": "value"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 9,
+        "w": 6,
+        "h": 4
+      }
+    },
+    {
+      "id": 12,
+      "type": "stat",
+      "title": "Promotion Ready",
+      "description": "agentic_promotion_ready — the earned-live verdict (>=30 closed demo round trips AND positive net-of-cost PnL over >=14 days). A permitted verdict still faces the unchanged four live gates and bootId-bound arming ceremony.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-spot"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-spot"
+          },
+          "expr": "agentic_promotion_ready",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "NOT READY",
+                  "color": "red",
+                  "index": 0
+                },
+                "1": {
+                  "text": "READY",
+                  "color": "green",
+                  "index": 1
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": ["lastNotNull"]
+        },
+        "textMode": "value",
+        "colorMode": "background"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 9,
+        "w": 6,
+        "h": 4
+      }
+    },
+    {
+      "id": 24,
+      "type": "stat",
+      "title": "Active Menu Size",
+      "description": "count(agentic_active_menu == 1) — combined 40-symbol basket (24 spot + 16 perp), menu size 8 (v3 §5.2).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-spot"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-spot"
+          },
+          "expr": "count(agentic_active_menu == 1)",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": ["lastNotNull"]
+        },
+        "textMode": "value"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 13,
+        "w": 6,
+        "h": 4
+      }
+    },
+    {
+      "id": 35,
+      "type": "stat",
+      "title": "Consults Today",
+      "description": "sum(increase(agentic_consult_gate_total{outcome=~\"consulted|forced_fill|forced_move|forced_fallback|forced_rearm\"}[24h])) — actual LLM consults today (not all gate evaluations).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-spot"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-spot"
+          },
+          "expr": "sum(increase(agentic_consult_gate_total{outcome=~\"consulted|forced_fill|forced_move|forced_fallback|forced_rearm\"}[24h]))",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": ["lastNotNull"]
+        },
+        "textMode": "value"
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 13,
+        "w": 6,
+        "h": 4
+      }
+    },
+    {
+      "id": 13,
+      "type": "stat",
+      "title": "Open Orders (by venue)",
+      "description": "open_orders{venue} — v3 §8: venue-scoped fact, one series per venue (binance/binanceusdm) rather than the v2 per-process total.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-spot"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-spot"
+          },
+          "expr": "open_orders",
+          "legendFormat": "{{ venue }}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": ["lastNotNull"]
+        },
+        "textMode": "value_and_name"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 13,
+        "w": 6,
+        "h": 4
+      }
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Unrealized PnL",
+      "description": "unrealized_pnl_usdt — Σ signedQty×(mark − avgEntry) on open positions, embedded in equity above.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-spot"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-spot"
+          },
+          "expr": "unrealized_pnl_usdt",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": ["lastNotNull"]
+        },
+        "textMode": "value"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 13,
+        "w": 6,
+        "h": 4
+      }
+    },
+    {
       "id": 200,
       "type": "row",
       "title": "Trading",
@@ -624,7 +1046,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 9
+        "y": 17
       },
       "panels": [
         {
@@ -672,62 +1094,8 @@
           },
           "gridPos": {
             "x": 0,
-            "y": 10,
-            "w": 6,
-            "h": 4
-          }
-        },
-        {
-          "id": 6,
-          "type": "stat",
-          "title": "Unrealized PnL",
-          "description": "unrealized_pnl_usdt — Σ signedQty×(mark − avgEntry) on open positions, embedded in equity above.",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus-spot"
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "prometheus-spot"
-              },
-              "expr": "unrealized_pnl_usdt",
-              "refId": "A"
-            }
-          ],
-          "fieldConfig": {
-            "defaults": {
-              "unit": "currencyUSD",
-              "color": {
-                "mode": "thresholds"
-              },
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "red",
-                    "value": null
-                  },
-                  {
-                    "color": "green",
-                    "value": 0
-                  }
-                ]
-              }
-            },
-            "overrides": []
-          },
-          "options": {
-            "reduceOptions": {
-              "calcs": ["lastNotNull"]
-            },
-            "textMode": "value"
-          },
-          "gridPos": {
-            "x": 6,
-            "y": 10,
-            "w": 6,
+            "y": 18,
+            "w": 8,
             "h": 4
           }
         },
@@ -775,9 +1143,9 @@
             "textMode": "value"
           },
           "gridPos": {
-            "x": 12,
-            "y": 10,
-            "w": 6,
+            "x": 8,
+            "y": 18,
+            "w": 8,
             "h": 4
           }
         },
@@ -825,58 +1193,8 @@
             "textMode": "value"
           },
           "gridPos": {
-            "x": 18,
-            "y": 10,
-            "w": 6,
-            "h": 4
-          }
-        },
-        {
-          "id": 13,
-          "type": "stat",
-          "title": "Open Orders (by venue)",
-          "description": "open_orders{venue} — v3 §8: venue-scoped fact, one series per venue (binance/binanceusdm) rather than the v2 per-process total.",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus-spot"
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "prometheus-spot"
-              },
-              "expr": "open_orders",
-              "legendFormat": "{{ venue }}",
-              "refId": "A"
-            }
-          ],
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "thresholds"
-              },
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": null
-                  }
-                ]
-              }
-            },
-            "overrides": []
-          },
-          "options": {
-            "reduceOptions": {
-              "calcs": ["lastNotNull"]
-            },
-            "textMode": "value_and_name"
-          },
-          "gridPos": {
-            "x": 0,
-            "y": 14,
+            "x": 16,
+            "y": 18,
             "w": 8,
             "h": 4
           }
@@ -925,9 +1243,9 @@
             "textMode": "value_and_name"
           },
           "gridPos": {
-            "x": 8,
-            "y": 14,
-            "w": 8,
+            "x": 0,
+            "y": 22,
+            "w": 12,
             "h": 4
           }
         },
@@ -976,10 +1294,78 @@
             "textMode": "value_and_name"
           },
           "gridPos": {
-            "x": 16,
-            "y": 14,
-            "w": 8,
+            "x": 12,
+            "y": 22,
+            "w": 12,
             "h": 4
+          }
+        },
+        {
+          "id": 50,
+          "type": "table",
+          "title": "Open Positions (DB truth)",
+          "description": "positions rows with signed_qty <> 0 (Postgres RO) — the durable ledger the reconciler defends, one row per (mode, strategy, venue, symbol). float8 casts are DISPLAY-ONLY (reference-grade); the NUMERIC(38,18) column stays exact. Empty table = flat book.",
+          "datasource": {
+            "type": "postgres",
+            "uid": "postgres-ro-spot"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "postgres",
+                "uid": "postgres-ro-spot"
+              },
+              "rawSql": "SELECT venue, symbol, strategy_id AS strategy, signed_qty::float8 AS qty, avg_entry::float8 AS \"avg entry\", realized_pnl::float8 AS \"realized pnl\", updated_at AS updated FROM positions WHERE signed_qty <> 0 ORDER BY venue, symbol",
+              "format": "table",
+              "refId": "A",
+              "editorMode": "code"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "align": "auto",
+                "filterable": false
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "realized pnl"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "currencyUSD"
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "avg entry"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "currencyUSD"
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "showHeader": true,
+            "footer": {
+              "show": false
+            }
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 26,
+            "w": 24,
+            "h": 6
           }
         },
         {
@@ -1021,7 +1407,7 @@
           },
           "gridPos": {
             "x": 0,
-            "y": 18,
+            "y": 32,
             "w": 12,
             "h": 7
           }
@@ -1066,7 +1452,7 @@
           },
           "gridPos": {
             "x": 12,
-            "y": 18,
+            "y": 32,
             "w": 12,
             "h": 7
           }
@@ -1111,7 +1497,7 @@
           },
           "gridPos": {
             "x": 0,
-            "y": 25,
+            "y": 39,
             "w": 12,
             "h": 7
           }
@@ -1154,7 +1540,7 @@
           },
           "gridPos": {
             "x": 12,
-            "y": 25,
+            "y": 39,
             "w": 12,
             "h": 7
           }
@@ -1197,7 +1583,7 @@
           },
           "gridPos": {
             "x": 0,
-            "y": 32,
+            "y": 46,
             "w": 24,
             "h": 6
           }
@@ -1213,7 +1599,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 38
+        "y": 52
       },
       "panels": [
         {
@@ -1261,8 +1647,8 @@
           },
           "gridPos": {
             "x": 0,
-            "y": 39,
-            "w": 6,
+            "y": 53,
+            "w": 12,
             "h": 4
           }
         },
@@ -1310,107 +1696,9 @@
             "textMode": "value_and_name"
           },
           "gridPos": {
-            "x": 6,
-            "y": 39,
-            "w": 6,
-            "h": 4
-          }
-        },
-        {
-          "id": 24,
-          "type": "stat",
-          "title": "Active Menu Size",
-          "description": "count(agentic_active_menu == 1) — combined 40-symbol basket (24 spot + 16 perp), menu size 8 (v3 §5.2).",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus-spot"
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "prometheus-spot"
-              },
-              "expr": "count(agentic_active_menu == 1)",
-              "refId": "A"
-            }
-          ],
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "thresholds"
-              },
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": null
-                  }
-                ]
-              }
-            },
-            "overrides": []
-          },
-          "options": {
-            "reduceOptions": {
-              "calcs": ["lastNotNull"]
-            },
-            "textMode": "value"
-          },
-          "gridPos": {
             "x": 12,
-            "y": 39,
-            "w": 6,
-            "h": 4
-          }
-        },
-        {
-          "id": 35,
-          "type": "stat",
-          "title": "Consults Today",
-          "description": "sum(increase(agentic_consult_gate_total{outcome=~\"consulted|forced_fill|forced_move|forced_fallback|forced_rearm\"}[24h])) — actual LLM consults today (not all gate evaluations).",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus-spot"
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "prometheus-spot"
-              },
-              "expr": "sum(increase(agentic_consult_gate_total{outcome=~\"consulted|forced_fill|forced_move|forced_fallback|forced_rearm\"}[24h]))",
-              "refId": "A"
-            }
-          ],
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "thresholds"
-              },
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": null
-                  }
-                ]
-              }
-            },
-            "overrides": []
-          },
-          "options": {
-            "reduceOptions": {
-              "calcs": ["lastNotNull"]
-            },
-            "textMode": "value"
-          },
-          "gridPos": {
-            "x": 18,
-            "y": 39,
-            "w": 6,
+            "y": 53,
+            "w": 12,
             "h": 4
           }
         },
@@ -1455,7 +1743,7 @@
           },
           "gridPos": {
             "x": 0,
-            "y": 43,
+            "y": 57,
             "w": 12,
             "h": 7
           }
@@ -1501,7 +1789,7 @@
           },
           "gridPos": {
             "x": 12,
-            "y": 43,
+            "y": 57,
             "w": 12,
             "h": 7
           }
@@ -1544,7 +1832,7 @@
           },
           "gridPos": {
             "x": 0,
-            "y": 50,
+            "y": 64,
             "w": 12,
             "h": 7
           }
@@ -1587,7 +1875,7 @@
           },
           "gridPos": {
             "x": 12,
-            "y": 50,
+            "y": 64,
             "w": 12,
             "h": 7
           }
@@ -1633,7 +1921,7 @@
           },
           "gridPos": {
             "x": 0,
-            "y": 57,
+            "y": 71,
             "w": 12,
             "h": 7
           }
@@ -1679,7 +1967,7 @@
           },
           "gridPos": {
             "x": 12,
-            "y": 57,
+            "y": 71,
             "w": 12,
             "h": 7
           }
@@ -1723,7 +2011,7 @@
           },
           "gridPos": {
             "x": 0,
-            "y": 64,
+            "y": 78,
             "w": 12,
             "h": 7
           }
@@ -1767,7 +2055,7 @@
           },
           "gridPos": {
             "x": 12,
-            "y": 64,
+            "y": 78,
             "w": 12,
             "h": 7
           }
@@ -1810,229 +2098,9 @@
           },
           "gridPos": {
             "x": 0,
-            "y": 71,
+            "y": 85,
             "w": 24,
             "h": 5
-          }
-        },
-        {
-          "id": 9,
-          "type": "stat",
-          "title": "Promotion Net PnL",
-          "description": "agentic_promotion_net_pnl_usd — realized PnL minus fees minus LLM spend over the earned-live promotion evidence window (PromotionReadinessService, sampled 5m). ONE lineage, ONE book (v3: no per-lane split).",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus-spot"
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "prometheus-spot"
-              },
-              "expr": "agentic_promotion_net_pnl_usd",
-              "refId": "A"
-            }
-          ],
-          "fieldConfig": {
-            "defaults": {
-              "unit": "currencyUSD",
-              "color": {
-                "mode": "thresholds"
-              },
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "red",
-                    "value": null
-                  },
-                  {
-                    "color": "green",
-                    "value": 0
-                  }
-                ]
-              }
-            },
-            "overrides": []
-          },
-          "options": {
-            "reduceOptions": {
-              "calcs": ["lastNotNull"]
-            },
-            "textMode": "value"
-          },
-          "gridPos": {
-            "x": 0,
-            "y": 76,
-            "w": 6,
-            "h": 4
-          }
-        },
-        {
-          "id": 10,
-          "type": "stat",
-          "title": "Promotion Round Trips",
-          "description": "agentic_promotion_round_trips — closed demo round trips toward the >=30 promotion threshold.",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus-spot"
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "prometheus-spot"
-              },
-              "expr": "agentic_promotion_round_trips",
-              "refId": "A"
-            }
-          ],
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "thresholds"
-              },
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "red",
-                    "value": null
-                  },
-                  {
-                    "color": "green",
-                    "value": 30
-                  }
-                ]
-              }
-            },
-            "overrides": []
-          },
-          "options": {
-            "reduceOptions": {
-              "calcs": ["lastNotNull"]
-            },
-            "textMode": "value"
-          },
-          "gridPos": {
-            "x": 6,
-            "y": 76,
-            "w": 6,
-            "h": 4
-          }
-        },
-        {
-          "id": 11,
-          "type": "stat",
-          "title": "Promotion Window Days",
-          "description": "agentic_promotion_window_days — span between the first and last closed demo round trip; must reach >=14.",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus-spot"
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "prometheus-spot"
-              },
-              "expr": "agentic_promotion_window_days",
-              "refId": "A"
-            }
-          ],
-          "fieldConfig": {
-            "defaults": {
-              "unit": "d",
-              "color": {
-                "mode": "thresholds"
-              },
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "red",
-                    "value": null
-                  },
-                  {
-                    "color": "green",
-                    "value": 14
-                  }
-                ]
-              }
-            },
-            "overrides": []
-          },
-          "options": {
-            "reduceOptions": {
-              "calcs": ["lastNotNull"]
-            },
-            "textMode": "value"
-          },
-          "gridPos": {
-            "x": 12,
-            "y": 76,
-            "w": 6,
-            "h": 4
-          }
-        },
-        {
-          "id": 12,
-          "type": "stat",
-          "title": "Promotion Ready",
-          "description": "agentic_promotion_ready — the earned-live verdict (>=30 closed demo round trips AND positive net-of-cost PnL over >=14 days). A permitted verdict still faces the unchanged four live gates and bootId-bound arming ceremony.",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus-spot"
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "prometheus-spot"
-              },
-              "expr": "agentic_promotion_ready",
-              "refId": "A"
-            }
-          ],
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "fixed",
-                "fixedColor": "text"
-              },
-              "mappings": [
-                {
-                  "type": "value",
-                  "options": {
-                    "0": {
-                      "text": "NOT READY",
-                      "color": "red",
-                      "index": 0
-                    },
-                    "1": {
-                      "text": "READY",
-                      "color": "green",
-                      "index": 1
-                    }
-                  }
-                }
-              ]
-            },
-            "overrides": []
-          },
-          "options": {
-            "reduceOptions": {
-              "calcs": ["lastNotNull"]
-            },
-            "textMode": "value",
-            "colorMode": "background"
-          },
-          "gridPos": {
-            "x": 18,
-            "y": 76,
-            "w": 6,
-            "h": 4
           }
         }
       ]
@@ -2046,7 +2114,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 80
+        "y": 90
       },
       "panels": [
         {
@@ -2090,7 +2158,7 @@
           },
           "gridPos": {
             "x": 0,
-            "y": 81,
+            "y": 91,
             "w": 12,
             "h": 7
           }
@@ -2137,7 +2205,7 @@
           },
           "gridPos": {
             "x": 12,
-            "y": 81,
+            "y": 91,
             "w": 12,
             "h": 7
           }
@@ -2184,7 +2252,7 @@
           },
           "gridPos": {
             "x": 0,
-            "y": 88,
+            "y": 98,
             "w": 24,
             "h": 7
           }
@@ -2242,7 +2310,7 @@
           },
           "gridPos": {
             "x": 0,
-            "y": 95,
+            "y": 105,
             "w": 12,
             "h": 4
           }
@@ -2292,7 +2360,7 @@
           },
           "gridPos": {
             "x": 12,
-            "y": 95,
+            "y": 105,
             "w": 12,
             "h": 4
           }
@@ -2308,7 +2376,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 99
+        "y": 109
       },
       "panels": [
         {
@@ -2370,7 +2438,7 @@
           },
           "gridPos": {
             "x": 0,
-            "y": 100,
+            "y": 110,
             "w": 12,
             "h": 7
           }
@@ -2414,7 +2482,7 @@
           },
           "gridPos": {
             "x": 12,
-            "y": 100,
+            "y": 110,
             "w": 12,
             "h": 7
           }
@@ -2458,7 +2526,7 @@
           },
           "gridPos": {
             "x": 0,
-            "y": 107,
+            "y": 117,
             "w": 12,
             "h": 7
           }
@@ -2501,7 +2569,7 @@
           },
           "gridPos": {
             "x": 12,
-            "y": 107,
+            "y": 117,
             "w": 12,
             "h": 7
           }
@@ -2546,7 +2614,7 @@
           },
           "gridPos": {
             "x": 0,
-            "y": 114,
+            "y": 124,
             "w": 12,
             "h": 7
           }
@@ -2591,7 +2659,7 @@
           },
           "gridPos": {
             "x": 12,
-            "y": 114,
+            "y": 124,
             "w": 12,
             "h": 7
           }
@@ -2636,9 +2704,9 @@
           },
           "gridPos": {
             "x": 0,
-            "y": 121,
+            "y": 131,
             "w": 12,
-            "h": 7
+            "h": 8
           }
         },
         {
@@ -2685,8 +2753,8 @@
             "textMode": "name"
           },
           "gridPos": {
-            "x": 0,
-            "y": 128,
+            "x": 12,
+            "y": 131,
             "w": 12,
             "h": 4
           }
@@ -2736,7 +2804,7 @@
           },
           "gridPos": {
             "x": 12,
-            "y": 128,
+            "y": 135,
             "w": 12,
             "h": 4
           }

@@ -1052,10 +1052,6 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       autoPromoteMinAttributedTrades: agenticAutoPromoteMinAttributedTrades,
       playbookPin: agenticPlaybookPin,
       playbookAbPct: agenticPlaybookAbPct,
-      // v3-transitional(#10): AGENTIC_DERIVATIVES_AB_PCT is deleted (§3.4, XA3 decision record) — the
-      // information-context control arm is retired at 0 for good. anthropic-agent-client.ts /
-      // agentic-strategy.module.ts still read this field; hardcoded 0 reproduces the retirement.
-      derivativesAbPct: 0,
       derivativesV2Enabled: agenticDerivativesV2Enabled,
       crossSymbolEnabled: agenticCrossSymbolEnabled,
       crossSymbolLookbackBars: agenticCrossSymbolLookbackBars,
@@ -1075,13 +1071,6 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       venueStopEnabled: agenticVenueStop,
       venueStopReplaceDriftBps: agenticVenueStopReplaceDriftBps,
       planMode: agenticPlanMode,
-      // v3-transitional(#5,#10): AGENTIC_SHORTS_ENABLED is deleted (§3.4) — shorts is now a
-      // per-symbol capability derived from venue presence, not a boot flag. app.module.ts:1539-1540
-      // and agentic-strategy.module.ts still read config.agentic.shortsEnabled as their perp-lane
-      // selector; this derives the same boolean their old env-flag produced (true iff any configured
-      // venue is the perp venue) until those workstreams consume VENUE_REGISTRY/venueForSymbol
-      // directly.
-      shortsEnabled: venues.some((v) => v.id === PERP_VENUE_ID),
       planExitTtlBars: agenticPlanExitTtlBars,
       quietPayloadSampleBars: agenticQuietPayloadSampleBars,
     },

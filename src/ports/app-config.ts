@@ -105,11 +105,6 @@ export interface AppConfig {
     // W4.1 champion/candidate A/B: percent (0-50) of decides deterministically routed to a newer
     // INACTIVE reflection-minted candidate instead of ACTIVE. 0 disables (default).
     playbookAbPct: number;
-    // v3-transitional(#10): AGENTIC_DERIVATIVES_AB_PCT is deleted (§3.4, XA3 decision record — the
-    // information-context control arm is retired at 0 for good: treatment drove 8.4% vs 1.9%
-    // proposes). anthropic-agent-client.ts/agentic-strategy.module.ts still read this field;
-    // environment.config.ts hardcodes 0.
-    derivativesAbPct: number;
     // d2 (Push 3 P6 Unit 1): switches the derivatives block/sentence/promptHash tag from d1 to d2,
     // surfacing three fields the feed already accumulates (spot-perp basis, OI percent change,
     // funding trend). Inert unless derivativesFeed.enabled is also true. Default false ⇒ byte-
@@ -197,11 +192,6 @@ export interface AppConfig {
     // Owner-declared evidence epoch (ISO-8601): the promotion gate evaluates fills/tokens/window
     // from this instant instead of all-time. Absent ⇒ all-time (byte-identical legacy behavior).
     promotionEvidenceEpoch?: string;
-    // v3-transitional(#5,#10): AGENTIC_SHORTS_ENABLED is deleted (§3.4) — shorts is now a per-symbol
-    // capability derived from venue presence (§4.2's capabilities.shorts), not a boot flag.
-    // app.module.ts and agentic-strategy.module.ts still read this field as their perp-lane
-    // selector; environment.config.ts derives it as `venues.some(v => v.id === 'binanceusdm')`.
-    shortsEnabled: boolean;
   };
   // Risk-lane knobs read via ConfigService (mirrors the agentic block above).
   risk: {

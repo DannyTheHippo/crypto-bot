@@ -128,8 +128,7 @@ import {
   PAYLOAD_EXTRAS_PROVIDER_OVERRIDE,
   REFLECTION_SERVICE,
   REFLECTION_METRICS_RECORDER_OVERRIDE,
-  SEED_PLAYBOOK,
-  SEED_PLAYBOOK_PERP,
+  SEED_PLAYBOOK_V3,
   agenticEnv,
 } from './features/trading/agentic/agentic-strategy.module';
 import type { DailyLlmBudget } from './features/trading/agentic/agent-budget';
@@ -1332,11 +1331,9 @@ export class ValidatingPlaybookProvider implements PlaybookStorePort {
         validation.bannedTokenHit ?? false,
         validation.bannedToken,
       );
-      // P2: the shorts-capable (perp) lane falls back to its own expert seed, not the spot one —
-      // SEED_PLAYBOOK is spot-strict (no shorts/leverage prose) and would otherwise hand a perp
-      // boot a playbook that can never propose a short.
-      const seed = this.capabilities.shortsAllowed ? SEED_PLAYBOOK_PERP : SEED_PLAYBOOK;
-      return { ...seed, source: 'seed' };
+      // v3: one lineage — the unified seed folds both venue-classes' prose (spec §1.3); the
+      // per-lane seed selection is retired with the lane model itself.
+      return { ...SEED_PLAYBOOK_V3, source: 'seed' };
     }
     return stored;
   }
@@ -1537,19 +1534,14 @@ export class MetricsWrappingAgentClient implements AgentClientPort {
         recorder: AgentMetricsRecorder,
       ): PlaybookStorePort => {
         const pin = config.agentic.playbookPin;
-        // P1: same lane-capability derivation as AnthropicAgentClient.resolvePlaybook (this config
-        // has no separate perp marker; shortsEnabled doubles as the perp-lane selector by the
-        // documented convention — see that field's own comment in anthropic-agent-client.ts). Kept
-        // in lockstep here so this composition-root gate can never diverge from the client's own
-        // (identically-flagged) re-validation and reject a legitimate perp candidate first.
+        // v3 (spec §1.3): perp symbols exist in every v3 boot, so validator capabilities are fixed
+        // open — per-symbol shorts/leverage gating moved to the client's capability zod layer; the
+        // lane-selector convention (shortsEnabled doubling as perp marker) is retired.
         const capabilities = {
-          shortsAllowed: config.agentic.shortsEnabled,
-          leverageAllowed: config.agentic.shortsEnabled,
+          shortsAllowed: true,
+          leverageAllowed: true,
         };
-        // P2: the perp lane boots its store on its own expert seed (SEED_PLAYBOOK is spot-strict —
-        // see that const's own comment) — same capabilities.shortsAllowed derivation as the
-        // ValidatingPlaybookProvider rejection fallback below, so the two seams never disagree.
-        const seed = capabilities.shortsAllowed ? SEED_PLAYBOOK_PERP : SEED_PLAYBOOK;
+        const seed = SEED_PLAYBOOK_V3;
         const store =
           isTestEnv() || db === null
             ? new InMemoryPlaybookStore(seed, pin)

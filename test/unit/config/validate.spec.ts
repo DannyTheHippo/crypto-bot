@@ -424,8 +424,6 @@ describe('validate()', () => {
         autoPromoteMinAttributedTrades: 0,
         playbookPin: undefined,
         playbookAbPct: 0,
-        // v3-transitional(#10): AGENTIC_DERIVATIVES_AB_PCT deleted (XA3) — permanently 0.
-        derivativesAbPct: 0,
         derivativesV2Enabled: false,
         bookStructureFeedEnabled: false,
         trackRecordEnabled: false,
@@ -433,9 +431,6 @@ describe('validate()', () => {
         crossSymbolLookbackBars: 20,
         portfolioConsultEnabled: false,
         portfolioWindowMs: 3000,
-        // v3-transitional(#5,#10): derives from venue presence — no perp venue configured by
-        // default (VENUES defaults to []), so false.
-        shortsEnabled: false,
         // v3 default flips false→true (the only deployed shape).
         planMode: true,
         planExitTtlBars: 2,
@@ -608,42 +603,21 @@ describe('validate()', () => {
       });
     });
 
-    describe('shortsEnabled derives from venue presence (v3 §3.4 — AGENTIC_SHORTS_ENABLED deleted)', () => {
+    describe('deleted lane-selector knobs (v3 §3.4)', () => {
       const SPOT_VENUE = JSON.stringify([{ id: 'binance', environment: 'paper' }]);
-      const PERP_VENUE = JSON.stringify([{ id: 'binanceusdm', environment: 'paper' }]);
-      // A single-venue VENUES needs a matching single-key VENUE_CAPITAL_SPLIT (§3.5's key-set
-      // check) — the schema's own both-venues default would otherwise mismatch.
       const SPOT_SPLIT = JSON.stringify({ binance: '1000' });
-      const PERP_SPLIT = JSON.stringify({ binanceusdm: '1000' });
 
-      it('false when no venue is configured (test/ci default)', () => {
-        expect(validate({ PORT: '3100' }).agentic.shortsEnabled).toBe(false);
-      });
-
-      it('false on a spot-only VENUES', () => {
-        expect(
-          validate({ PORT: '3100', VENUES: SPOT_VENUE, VENUE_CAPITAL_SPLIT: SPOT_SPLIT }).agentic
-            .shortsEnabled,
-        ).toBe(false);
-      });
-
-      it('true when a binanceusdm venue is configured', () => {
-        expect(
-          validate({ PORT: '3100', VENUES: PERP_VENUE, VENUE_CAPITAL_SPLIT: PERP_SPLIT }).agentic
-            .shortsEnabled,
-        ).toBe(true);
-      });
-
-      it('the deleted AGENTIC_SHORTS_ENABLED env var is silently ignored (unknown key)', () => {
-        // zod object schemas strip unknown keys by default — this must never resurrect the old
-        // boot-flag semantics.
+      it('the deleted AGENTIC_SHORTS_ENABLED env var is silently ignored (unknown key, config parses)', () => {
+        // zod object schemas strip unknown keys by default — the boot-flag semantics (and the
+        // transitional derived field) are fully retired; shorts is a per-symbol capability now.
         const cfg = validate({
           PORT: '3100',
           AGENTIC_SHORTS_ENABLED: 'true',
           VENUES: SPOT_VENUE,
           VENUE_CAPITAL_SPLIT: SPOT_SPLIT,
         });
-        expect(cfg.agentic.shortsEnabled).toBe(false);
+        expect('shortsEnabled' in cfg.agentic).toBe(false);
+        expect('derivativesAbPct' in cfg.agentic).toBe(false);
       });
     });
 
@@ -693,12 +667,9 @@ describe('validate()', () => {
       );
     });
 
-    it('agentic.derivativesAbPct is permanently 0 — AGENTIC_DERIVATIVES_AB_PCT is deleted (v3 §3.4, XA3)', () => {
-      expect(validate({ PORT: '3100' }).agentic.derivativesAbPct).toBe(0);
-      // The deleted env var is silently ignored (unknown key), never resurrecting the old A/B.
-      expect(
-        validate({ PORT: '3100', AGENTIC_DERIVATIVES_AB_PCT: '30' }).agentic.derivativesAbPct,
-      ).toBe(0);
+    it('AGENTIC_DERIVATIVES_AB_PCT is deleted (v3 §3.4, XA3) — the env var is silently ignored and the field is gone', () => {
+      const cfg = validate({ PORT: '3100', AGENTIC_DERIVATIVES_AB_PCT: '30' });
+      expect('derivativesAbPct' in cfg.agentic).toBe(false);
     });
 
     it('AGENTIC_CROSS_SYMBOL_ENABLED="false" resolves to false (strict enum parse, not z.coerce.boolean — Boolean("false") === true was the bug)', () => {

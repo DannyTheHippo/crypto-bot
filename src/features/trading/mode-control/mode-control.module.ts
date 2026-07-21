@@ -66,8 +66,9 @@ const readinessConfigProvider: Provider = {
     // pass targets (see PromotionReadinessConfig.fundingDataExpected's own comment). v3 §9: venues
     // may now carry BOTH spot and perp in one boot, so membership is checked with `.some()` — the
     // v2 `venues[0]` idiom silently missed perp whenever it wasn't the first configured venue.
-    const fundingDataExpected =
-      config.venues.some((v) => v.id === 'binanceusdm') && agentic.shortsEnabled;
+    // (agentic.shortsEnabled was derived as exactly this venue-presence check — the conjunction
+    // was redundant; the transitional field is deleted with the v3 config cleanup.)
+    const fundingDataExpected = config.venues.some((v) => v.id === 'binanceusdm');
     return {
       tokenPriceInputPerMtok: agentic.tokenPriceInputPerMtok,
       tokenPriceOutputPerMtok: agentic.tokenPriceOutputPerMtok,

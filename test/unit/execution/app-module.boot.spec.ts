@@ -96,9 +96,10 @@ describe('AppModule composition', () => {
       // is empty regardless).
       expect(metrics.text).toContain('# TYPE strategy_lifecycle gauge');
       // G3c: AppModule.onModuleInit resolves the playbook and records it at boot, unconditionally
-      // (not gated behind the test/ci skip that guards the periodic trading drivers) — SEED_PLAYBOOK
-      // is version 2 (S1 v2 swing-horizon rewrite bumped the seed content's own version number).
-      expect(metrics.text).toContain('agentic_playbook_info{version="4"} 1');
+      // (not gated behind the test/ci skip that guards the periodic trading drivers) —
+      // SEED_PLAYBOOK_V3 starts the unified single lineage fresh at version 1 (greenfield DB,
+      // spec §1.3/§9: the per-lane seed versions retired with the lane model).
+      expect(metrics.text).toContain('agentic_playbook_info{version="1"} 1');
       // E: onModuleInit records the bound client kind at boot. Under test/ci no ANTHROPIC_API_KEY is
       // read, so the inert StubAgentClient binds and the gauge carries kind="stub".
       expect(metrics.text).toContain('agent_client_info{kind="stub"} 1');

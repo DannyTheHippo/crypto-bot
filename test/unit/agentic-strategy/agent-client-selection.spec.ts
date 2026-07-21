@@ -378,7 +378,6 @@ describe('agenticEnv', () => {
       maxTokensPerDay: 999999,
       entryTtlBars: 2,
       playbookAbPct: 0,
-      derivativesAbPct: 30,
       derivativesV2Enabled: false,
       crossSymbolEnabled: false,
       crossSymbolLookbackBars: 20,
@@ -387,7 +386,6 @@ describe('agenticEnv', () => {
       portfolioConsultEnabled: true,
       portfolioWindowMs: 4000,
       planMode: false,
-      shortsEnabled: false,
       dailyCostStopUsd: 6,
       // D1 (Todo Steps): retired AGENTIC_PRESCREEN_*/AGENTIC_EXPECTANCY_LADDER/AGENTIC_MIN_RR/
       // AGENTIC_MIN_EDGE_MULTIPLE/AGENTIC_PLAN_MAX_QUIET_BARS/AGENTIC_THINKING_AB_PCT off

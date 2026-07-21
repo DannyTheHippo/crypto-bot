@@ -82,6 +82,20 @@ never changes for strategy evolution.
   failing refuses arming — fail CLOSED). (6) Deploy target after local soak: GCP e2-medium
   (X1-FINAL executes on v3; owner commits first, unchanged). Full decision ledger + design:
   the plan file and `plans/2026-07-v3-consolidation-spec.md` (spec lands next).
+- **v3 BUILD COMPLETE + VALIDATION GATE (2026-07-21, owner session).** All seven workstreams
+  landed on main (config `4178b6a`, schema `64e588a`, checkpoint `d351cbc`, streams `08f23c2`,
+  tool contract `cef43ee`, wiring `36071e5`, assembly `20762a9`, gate fixes `a7be88b`):
+  app.module.ts 2,427→72 lines, one process/one book/4-container compose. Full gate green at
+  every step (final: 2672 unit+livegate, 64/64 test:db on live Postgres, lint/typecheck/format
+  clean). **Footprint verdict: e2-medium PASS** — host paper boot, full 40-symbol dual-venue
+  graph, live feeds, 15 min: RSS plateau ~673 MiB (flat), health 200 throughout,
+  `--max-old-space-size=1024` held; projected 4-container stack ~1.7 GiB on a 4 GiB VM.
+  `AppMemoryHigh` stays at 1.2 GiB for the demo soak; tighten toward plateau+30% (~0.9 GiB)
+  after soak data. Stage-2 perp filters probe-verified (demo-fapi, 2026-07-21). Remaining
+  before cutover (owner, 2026-07-21): Grafana overview row + principled dashboard-regression
+  pass, aggressive stale-file cleanup (loop-core exempt), daily-loop playbook v4 rewrite for
+  one-book ops. WATCH-V3-1: spot heap slope on the demo soak (paper plateau 673 MiB is the
+  reference; a demo-mode sustained climb past ~900 MiB before the soak ends is a defect signal).
 - **Stage ladder + exit criteria (condensed from the active spec):**
   1. **Cost floor** — CLOSED 2026-07-08: true spend ~$0.77/day under the $5 breaker, skip rate
      70–83% (original criterion: ≤$1/day ×3 days + ≥2 RT/day + no EXPIRED regressions).
@@ -257,7 +271,13 @@ fix: OMS algo-rail containment, 7 sub-fixes), `a6f0573` (P8a factorial ENABLE, s
   double-lock — the P7f boot refusal enforces this); backlog #44 (spot OCO) is the only path to
   spot venue-side stop+TP, and it stays a seed.
 
-- **PERP SHORTS LADDER pre-auths (loop-domain; the ONLY human touch remains the live-money flip):**
+- **PERP SHORTS LADDER pre-auths — SUPERSEDED BY v3 (2026-07-21, loop-domain annotation; text below
+  kept verbatim as record):** the L0→L1 trigger's mechanism (`AGENTIC_SHORTS_ENABLED` on app-perp)
+  was deleted at the v3 consolidation — shorts are now a per-symbol capability derived from venue
+  (spec §3.4: `capabilities.shorts=true` on every perp symbol by construction, spot degrades
+  `open_short` to hold + `capability_violation`). The ladder's INTENT (shorts earn exposure
+  gradually) is carried by the unified book's sizing clamps + the capability wiring, not by a
+  toggle; there is no knob left to flip and no `app-perp` target to flip it on. Do not fire.
   - **L0→L1 (shorts on the PERP lane):** after an L0 soak — ≥3 days clean AND ≥5 closed perp trips
     AND zero reconciliation mismatches AND the algo-rail stop lifecycle verified live (WATCH 1-3
     above green) — the loop may set `AGENTIC_SHORTS_ENABLED='true'` on app-perp (plan-mode shorts,

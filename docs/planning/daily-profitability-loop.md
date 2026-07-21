@@ -1,31 +1,52 @@
-# Daily profitability loop — playbook (v3)
+# Daily profitability loop — playbook (v4)
 
-> **v2 FREEZE IN EFFECT (owner, 2026-07-20 — read before selecting any pass type).** The v3
-> consolidation program (one process, one unified book; state.md § Strategic frame, 2026-07-20
-> decision record) is executing in the owner's interactive session. Until the v3 local demo
-> cutover is recorded in state.md: passes run §1–§3 (rehydrate, sweep, incident gate) unchanged,
-> but §4 is restricted to **critical fixes only**, committed to the `v2-maintenance` branch
-> (NOT main — main is v3) and rebuilt from that branch. No new capability, no experiments, no
-> backlog work, no X-series steps (X2 stage-2 is cancelled on v2). A clean sweep = pass ends
-> after recording the digest.
+> **v2 freeze: this playbook is maintenance-only until the v3 local demo cutover record appears in
+> state.md § Strategic frame; from that record onward this v4 procedure is fully active — no
+> further human gate.** As of this writing (state.md's 2026-07-21 "v3 BUILD COMPLETE + VALIDATION
+> GATE" record) the v3 build is done and gated but cutover has NOT yet been recorded — the owner
+> session still owes the Grafana overview row, the dashboard-regression pass, and the stale-file
+> cleanup before flipping the cutover switch. A pass that finds no cutover record in state.md runs
+> §1-§3 (rehydrate, sweep, incident gate) unchanged but treats §4 as MAINTENANCE-only (critical
+> fixes on the current build); once the cutover record lands, §4's full pass-type menu is live with
+> no further owner gate.
 
 Audience: a Claude session executing one pass. Cadence: 2-4 passes/day (owner 2026-07-10 — the
 loop runs on subscription, not a per-day API budget). Trigger (owner-run):
 `/loop 1d Read docs/planning/daily-profitability-loop.md and execute one pass`, or a scheduled
 routine. This document is the task spec for each pass; execute it top to bottom.
 
-Mission: maximize net-of-cost PnL (`realizedPnl − fees − llmCostUsd`) toward the promotion gate.
-Every pass runs §1 (rehydrate) and §2 (evidence sweep) unchanged; §3 is a hard gate — any named
-sweep alarm forces defect investigation FIRST; only when the sweep is clean does §4 select ONE
-pass type. This is an operational playbook, not application code. Rewritten 2026-07-20 (Y4) — the
-prior v2 rotted against the stack (retired `agentic_prescreen_total`, expectancy-ladder MAY-knobs,
-a $5/day breaker); a playbook is code that rots — re-verify every operational claim against current
-code before citing it, and repair drift in the finding pass.
+Mission: maximize net-of-cost PnL (`realizedPnl − fees − llmCostUsd`) toward the promotion gate,
+now walked over the ONE unified book. Every pass runs §1 (rehydrate) and §2 (evidence sweep)
+unchanged; §3 is a hard gate — any named sweep alarm forces defect investigation FIRST; only when
+the sweep is clean does §4 select ONE pass type. This is an operational playbook, not application
+code. Rewritten 2026-07-21 (v4, the v3 one-book consolidation) — the prior v3 text described a
+two-container, two-database, two-Prometheus, per-lane-breaker stack that the v3 program replaced
+with a single process/single book; a playbook is code that rots — re-verify every operational
+claim against current code before citing it, and repair drift in the finding pass.
+
+## 0. The v3 stack, in one paragraph
+
+Exactly 4 containers (`docker-compose.yml`): `crypto-bot-app-1`, `crypto-bot-postgres-1`,
+`crypto-bot-prometheus-1`, `crypto-bot-grafana-1`. No `-perp` siblings, no compose profile — the
+`app-perp`/`postgres-perp`/`prometheus-perp` services and the `perp` profile mechanism were
+deleted at the v3 cutover (`plans/2026-07-v3-consolidation-spec.md` §9). ONE process runs BOTH
+venues (spot `binance`, perp `binanceusdm`) against ONE Postgres (`cryptobot`) and ONE Prometheus
+(`:9090`). Metrics policy (spec §8): `venue`-labeled where the fact is venue-scoped
+(`reconciliation_runs_total{venue,result}`, `market_channel_staleness_seconds{venue,symbol,
+channel}`, `venue_free_cash_usdt{venue}`, `venue_capital_headroom_usdt{venue}`); account/book
+gauges are label-less (`equity_usdt`, `kill_switch_state`, `agentic_budget_remaining_usd`,
+`agentic_active_menu`, ...) because there is only one book now. One promotion verdict, one
+playbook lineage (seed v1 — `SEED_PLAYBOOK_V3`, `agentic-strategy.module.ts:426`), one champion/
+candidate A/B, one unified `AGENTIC_DAILY_COST_STOP_USD=$3/day` breaker.
 
 ## 1. Rehydrate — from digest history, never a raw log window
 
 Start every pass from the collector's durable history, NOT a 24h `docker logs` window (the
 raw-window model is exactly what made R8-7's day-long spot-decide suppression invisible; Y1 §D).
+`loop:digests`/`loop:sweep`/`loop:collect` are single-app shaped (Y2/Y3 rebuilt for v3): one app
+container to inspect, per-venue reconcile alarms so one venue's HALT is never masked by the
+other's clean rows, the unified $3/day budget gauge, and a genuinely single-process RSS reading
+(one process now serves both venues, so RSS is no longer split per lane).
 
 Run all stack commands sandbox-disabled (`dangerouslyDisableSandbox: true`); never `cd` into the
 repo (the fnm hook breaks) — use `git -C <repo>` / `corepack pnpm --dir <repo>` / PATH-prefixed
@@ -51,11 +72,13 @@ runs on a sleeping MacBook; check `pmset -g log`/`uptime` before suspecting a bu
 ## 2. Evidence sweep — `pnpm loop:sweep` IS the sweep
 
 Run `corepack pnpm --dir <repo> loop:sweep` (sandbox-disabled). It is the whole sweep — the
-hand-run docker/promtool command list from v2 is RETIRED. The sweep is deterministic and
-metrics/DB-first: host duty-cycle state, then per-lane provenance (container health + RestartCount +
-StartedAt + bootId + git tip) BEFORE any counter, then bootId-pinned liveness deltas
+hand-run docker/promtool command list from the pre-Y2 era was RETIRED, and the tool was itself
+rebuilt single-app-shaped for v3 (`scripts/loop-sweep.mjs` header). It is deterministic and
+metrics/DB-first: host duty-cycle state, then the one app container's provenance (health +
+RestartCount + StartedAt + bootId + git tip) BEFORE any counter, then bootId-pinned liveness deltas
 (`agentic_consult_gate_total` by outcome, `agent_decisions` count + latest `created_at`, fills,
-reconciliations tail, kill-switch state, ws forced-reconnects, RSS, LLM cost-vs-breaker proximity).
+per-venue reconciliations tail, kill-switch state, ws forced-reconnects, single-process RSS, LLM
+cost-vs-breaker proximity against the ONE $3/day breaker).
 
 The digest's alarms and annotations ARE the pass's evidence base. Rules that bind every sweep:
 
@@ -77,22 +100,33 @@ the gated `test` suite, so it rots silently — a RED harness is itself a flagge
 ## 3. Incident-first gate — any alarm forces defect investigation FIRST
 
 If `loop:sweep` fires ANY named alarm, this pass IS a defect investigation. Improvement work (§4
-CANDIDATE/PROMOTION/MAINTENANCE-backlog) waits until the alarm is root-caused and cleared. The named
-alarms:
+CANDIDATE/PROMOTION/MAINTENANCE-backlog) waits until the alarm is root-caused and cleared. The
+sweep's alarm kinds, read from `scripts/loop-sweep-core.mjs`'s `computeSweep`/`computeApp` (the
+authoritative list — re-verify against that file before citing, per this playbook's own standing
+rule):
 
-- `zero_decides` — decides/journal frozen on a healthy boot (the 8.2h candle-stall class).
+- `zero_decides` — decides/consult-gate liveness counters unchanged since watermark on a healthy
+  boot (the 8.2h candle-stall class).
 - `kill_switch_engaged` — kill-switch metric not RUNNING.
-- `reconcile_halt` — latest reconciliation `result=HALT` (never auto-flatten; §7).
-- `cost_breaker_proximity` — LLM $/day nearing the per-lane breaker.
-- `journal_silence` — agent_decisions not advancing on a live boot.
+- `reconcile_halt` (per venue) — latest reconciliation `result=HALT` for that venue (never
+  auto-flatten; spec §7). A HALT on one venue is never masked by the other venue's clean rows —
+  the check is per-venue by construction, not a global "latest row" read.
+- `cost_breaker_proximity` — spend ≥80% of the ONE unified `$3/day` breaker
+  (`AGENTIC_DAILY_COST_BREAKER_USD`, `.env.app`'s `AGENTIC_DAILY_COST_STOP_USD`).
+- `journal_silence` (per venue) — that venue's reconciliations journal produced no new rows since
+  watermark while the container is healthy.
 - `restart_storm` — RestartCount climbing fast (the R8-6 wedge-to-OOM class; a single restart is an
   ordinary redeploy, not an alarm).
-- `probe_failed` — a stack read errored (measurement gap; investigate before trusting the sweep).
+
+`probe_failed` is technically an ANNOTATION kind in the core (not pushed to the `alarms` array —
+verify at `loop-sweep-core.mjs:117-133` before treating it otherwise), but it still forces the same
+investigation posture: a stack read errored, so nothing downstream of it can be trusted this sweep
+(§C.9 negative-read-void discipline).
 
 Before touching anything, run the §C defect-class triage — these are the shapes green surfaces hide.
 Each is a named check with its catching probe:
 
-1. Zero-delta-while-green — green health, healthy containers, kill_switch RUNNING, yet zero
+1. Zero-delta-while-green — green health, healthy container, kill_switch RUNNING, yet zero
    decide/journal/counter deltas. Probe: positive watermark deltas from multiple independent
    counters; read the kill-switch metric + reconcile distribution, never `/health`.
 2. Row-count-window shrink — a stats consumer's verdict flips as row volume grows (abstain
@@ -102,23 +136,25 @@ Each is a named check with its catching probe:
    throw; emits no error line. Probe: hunt state-set-but-never-emitted seams; every gate logs AND
    meters its failure path before enable.
 4. Structurally invisible divergence axis — a state/venue axis with no reconciler (Bug B's phantom
-   perp position). Probe: on any new rail/venue/axis, name its reconciliation consumer or declare it
-   unmonitorable.
+   perp position, pre-v3). Probe: on any new rail/venue/axis, name its reconciliation consumer or
+   declare it unmonitorable.
 5. Venue/ccxt shape divergence — code built on a declared shape the live venue returns differently
-   (four incidents). Probe: keyed live shape probe before any code depends on a new endpoint (#54).
+   (four incidents pre-v3). Probe: keyed live shape probe before any code depends on a new endpoint
+   (#54 pattern).
 6. Boot-scoped counters masquerading as cumulative — a counter "drops" across the window. Probe: pin
    every counter read to a bootId; `increase()` only within one boot's span (loop:sweep enforces).
 7. Three-ledger divergence — gate metrics, the consult journal, and actual API spend disagree.
    Probe: reconcile all three before tuning any cadence knob; divergence is defect-until-disproven.
-8. Attempt-level fail-open budget gate — post-breach blackout, `with_tokens=0` after a shared pool
-   zeroes. Probe: check gates for pre-attempt reservation vs start-only; alarm on pool-zeroed states.
+8. Attempt-level fail-open budget gate — post-breach blackout, `with_tokens=0` after the shared
+   pool zeroes. Probe: check gates for pre-attempt reservation vs start-only; alarm on pool-zeroed
+   states.
 9. Negative-read voids — an empty grep/log/promtool result. Probe: every empty read is void unless
    paired with a positive control + a bootId-matched tail (`docker logs --since` never qualifies).
 10. Unanchored log-time forensics — a defect narrative from timestamp comparison with no wall-clock
     anchor. Probe: `date -u` before any timestamp comparison (the §1 pre-step).
 11. Fail-open polarity / config coercion — nothing at runtime until the bad branch is exercised
-    (three defects survived every green pass). Probe: adversarial polarity audit — state the failure
-    direction, test the bad branch.
+    (three defects survived every green pass pre-v3). Probe: adversarial polarity audit — state the
+    failure direction, test the bad branch.
 12. Non-consuming-trigger hot loop — attempt-started counters racing ahead of fire stamps; burn
     spikes in minutes (R8-8: 91 Opus calls / $2.30 in 46 min). Probe: compare attempt-started vs
     consumed-stamp counters per window; burst-rate alarms on spend.
@@ -141,43 +177,78 @@ OMS-semantics); full gates + `test:livegate` + `test:paper` green; deploy soak p
 decision record + a WATCH line in state.md (change-discipline shape — every WATCH carries an
 explicit expected-positive signature, a named defect outcome, and a resolution deadline/owner-pass);
 behavior-changing capability additionally ships two-step (code flag-off, then a separate enable
-commit with its own review). Never two money-path items in one pass. Bugs are NEVER backlog material
-— a defect found by a pass is fixed IN that pass; the only sanctioned deferral is a fix that exceeds
-the MUST-NOT rails below, which goes to "Flagged for human review" with evidence + exact diff.
+commit with its own review). Never two money-path items in one pass. Bugs are NEVER backlog
+material — a defect found by a pass is fixed IN that pass; the only sanctioned deferral is a fix
+that exceeds the MUST-NOT rails below, which goes to "Flagged for human review" with evidence +
+exact diff.
 
-Pass types:
+Pass types, reframed for the unified book:
 
 - CANDIDATE — eligible only when no unresolved candidate sits in A/B. Draft 1-3 playbook variants
-  in-session grounded in sweep evidence (each rationale cites a specific metric/row, never a hunch);
-  score each offline (`AGENTIC_CANDIDATE_PLAYBOOK_FILE=<file>` against
+  in-session grounded in sweep evidence (each rationale cites a specific metric/row, never a
+  hunch); score each offline (`AGENTIC_CANDIDATE_PLAYBOOK_FILE=<file>` against
   `recorded-payload-live-compare.spec.ts`, ≤$20/gate); log EVERY scored variant (winner and losers)
   to the experiments registry; inject only the best if it beat the champion
-  (`playbook:candidate <file> --metrics <scorecard.json>`). The live A/B + attributed
-  auto-promotion take over — a candidate pass never manually promotes.
+  (`playbook:candidate <file> --metrics <scorecard.json>`). One playbook lineage now (seed v1) — no
+  per-venue lineage split. The live A/B + attributed auto-promotion take over — a candidate pass
+  never manually promotes.
 - PROMOTION — eligible when a live candidate has enough attributed round trips. Verify the
   evaluator's verdict against `agentic_version_net_pnl_usd{version}` /
-  `agentic_version_round_trips{version}`. Manual `playbook:promote` ONLY when auto-promotion is
-  legitimately stuck (record why). Rollback via `AGENTIC_PLAYBOOK_PIN`.
+  `agentic_version_round_trips{version}`, walked over the ONE book (no lane split to reconcile).
+  Manual `playbook:promote` ONLY when auto-promotion is legitimately stuck (record why). Rollback
+  via `AGENTIC_PLAYBOOK_PIN`.
 - MAINTENANCE — default. Trading-path correctness bugs (outrank everything); the current stage's
   open items; the backlog (re-verify each against current code before implementing — inherited items
   go stale); new ideas from today's evidence (add to backlog even when not chosen).
 
-Pre-authorizations fire ONLY on their stated conditions and are then CONSUMED — no scope drift. The
-live example: the X2 stage-2 flip (16 symbols / menu-6) may be applied after one clean 24h soak
-inside ceilings (CPU <250% combined, RSS <2GiB/lane, zero 1008 mass-closes, recreations under half
-the rolling cap) — UNFIRED as of 2026-07-20.
+Scanner/menu shape (spec §5): one `UniverseScannerService` ranks the combined 40-symbol basket (24
+spot + 16 perp) — score = 24h-quote-volume rank × ATR% rank, cross-venue-comparable by
+construction. `AGENTIC_ACTIVE_MENU_SIZE=8` (menu-8 cross-venue scanner), sized against the combined
+promotion pacing derived in spec §5.2: ≥30 closed round trips over ≥14 trade-anchored days ⇒
+≥2.14 closed trips/day; at menu-8 and the planning-band 12-24 wakes/day, expected entries/day run
+4.8-9.6 (≥2.2× the pace floor) against the unified $3/day breaker (menu-8 × 16 wakes ≈ $2.40/day).
+A pass reviewing menu/cadence math re-derives it from spec §5.2 rather than trusting this summary
+verbatim — the arithmetic depends on live entry-fraction and per-wake cost measurements that drift.
+Venue-floor-2 watch (spec §5.3): after ranking, if fewer than 2 of either venue's symbols land in
+the fresh top-8, that venue's best-ranked remaining members are promoted until it holds 2 (menu may
+transiently exceed 8 by ≤2) — a pass must confirm neither venue is starved of menu slots across a
+sustained ranking run; the floor only ever ADDS symbols (fails OPEN toward coverage), so its absence
+from a digest is not itself alarming, but a sustained one-venue rank sweep with zero floor
+promotions on the OTHER venue when that venue's raw ranks are genuinely outside top-8 is the
+signature to watch for.
+
+Capability-violation counter watch: `agentic_capability_violations_total{kind}` — an `open_short`
+proposed against a spot symbol (`capabilities.shorts=false`) degrades to `hold`, journals
+`action=error`/`capability_violation:open_short_on_spot`, and increments this counter (spec §4.3,
+named-degrade discipline, never silent). A non-zero count is not itself a HALT-class alarm but is a
+finding: it means either a prompt/mandate defect (the model attempting shorts on a non-perp symbol)
+or a capability-map bug — re-verify `capabilities.shorts` wiring for the symbol before dismissing it
+as model noise.
+
+Playbook lineage / A/B: one lineage now (seed v1, `SEED_PLAYBOOK_V3`) — the champion/candidate A/B
+mechanism itself is UNCHANGED from the pre-v3 shape (`AGENTIC_PLAYBOOK_AB_PCT`, attributed
+auto-promotion, symmetric 10-trip floors); what changed is there is no longer a second, separate
+per-venue lineage to reconcile.
+
+Pre-authorizations fire ONLY on their stated conditions and are then CONSUMED — no scope drift.
+Re-verify every inherited pre-auth against the current (v3) code and config before firing it — the
+v3 rebuild deleted some of the config surface pre-auths were written against (e.g.
+`AGENTIC_SHORTS_ENABLED` no longer exists; shorts are a per-symbol capability derived from venue,
+spec §3.4); a pre-auth whose trigger references a deleted knob needs re-expression against the
+current mechanism before it can fire, not a literal application of stale text.
 
 If nothing clears the bar, ship nothing — record why. Two consecutive UTC days of all-empty passes
 → recommend a cadence/scope change in the report instead of forcing one.
 
 MUST NOT touch (report-only, with evidence + exact proposed diff): the four live gates, mode
 resolution, arming interlock, `test:livegate` (sacred); append-only tables/triggers (`audit_log`,
-`order_events`) and money-table schema/migrations; secrets, `.env` (the example file is fine), pino
-redact lists. `PROMOTION_EVIDENCE_EPOCH` is loop-domain (declare only at a verified flat instant),
-but never mid-window. Hard rules 1-7 in the project `CLAUDE.md` bind in full. Never push to any
-remote; commit gates-green work to local `main`, one commit per improvement, conventional message.
-Dirty tree at pass start: note it, stage ONLY files this pass authored (`git add <paths>`, never
-`-A`/`-u`).
+`order_events`, `funding_events`, `funding_payments`, `experiments`) and money-table schema/
+migrations; secrets, `.env` (the example file is fine), pino redact lists. `PROMOTION_EVIDENCE_EPOCH`
+is loop-domain (declare only at a verified flat instant, over the ONE book — no per-venue epoch
+split anymore), but never mid-window. Hard rules 1-7 in the project `CLAUDE.md` bind in full. Never
+push to any remote; commit gates-green work to local `main`, one commit per improvement,
+conventional message. Dirty tree at pass start: note it, stage ONLY files this pass authored
+(`git add <paths>`, never `-A`/`-u`).
 
 ## 5. Validate, then deploy
 
@@ -188,20 +259,23 @@ Dirty tree at pass start: note it, stage ONLY files this pass authored (`git add
    `pnpm lint:md` (markdownlint owns `.md`; the `reports/loop/` backlog table is MD060-aligned —
    `--fix` does not repair it).
 2. Cap: 3 consecutive validation failures → revert the working tree, record it, end the pass.
-3. Deploy: `docker compose build app && docker compose up -d app` (perp needs
-   `--profile perp build app-perp`).
+3. Deploy: `docker compose build app && docker compose up -d app` — one build, one service; there
+   is no `--profile perp` variant anymore (the perp compose profile and its three services were
+   deleted at the v3 cutover, spec §9).
 4. Soak (15-30 min): run `loop:sweep` post-deploy and confirm the change's expected observable
-   named in its WATCH line — health 200, decides flowing, no `EXPIRED` signals, cost rate sane, no
-   new alarm, protective exits present. Regression → redeploy the previous image (or revert), record
-   the rollback. A green suite is not a soak — the W4 reconciliation fix minted R8-7 while
-   2452/2452 tests passed.
+   named in its WATCH line — health 200, decides flowing on both venues, no `EXPIRED` signals, cost
+   rate sane against the ONE $3/day breaker, no new alarm, protective exits present. Regression →
+   redeploy the previous image (or revert), record the rollback. A green suite is not a soak — the
+   W4 reconciliation fix minted R8-7 while 2452/2452 tests passed.
 
 ## 6. Report and state (every pass, even empty ones)
 
 1. Append a dated entry to `reports/loop/LOG.md`: data window, headline metrics (gate scoreboard +
-   $/day), pass type, decision + rationale, diff (files + commit hash), gate results, soak verdict,
-   flagged items, next-pass candidates. CANDIDATE passes record the experiments-registry row id of
-   EVERY scored variant (honest-N).
+   $/day against the ONE breaker) + WATCH-V3-1 status (spot heap slope: paper plateau ~673MiB
+   reference, a demo-mode sustained climb past ~900MiB before soak end is a defect signal), pass
+   type, decision + rationale, diff (files + commit hash), gate results, soak verdict, flagged
+   items, next-pass candidates. CANDIDATE passes record the experiments-registry row id of EVERY
+   scored variant (honest-N).
 2. Update `reports/loop/state.md`: current stage, backlog with statuses, last-pass pointer, open
    WATCH lines, flagged items awaiting the owner. Keep both files current enough that the next pass
    needs nothing else.
@@ -209,40 +283,51 @@ Dirty tree at pass start: note it, stage ONLY files this pass authored (`git add
 
 ## 7. Stop conditions (report-only, change nothing)
 
-- Kill switch tripped, reconciliation HALT, or any reconciliation mismatch (never auto-flatten).
-- Unexplained drawdown (equity move the fills don't account for).
+- Kill switch tripped, reconciliation HALT on either venue, or any reconciliation mismatch (never
+  auto-flatten).
+- Unexplained drawdown (equity move the fills don't account for) — one book, one equity curve now.
 - The gate scoreboard contradicts the DB/logs — measurement can't be trusted; fixing measurement
   becomes the only eligible improvement.
 - Context usage >70% mid-pass → dispatch `context-transfer` for HANDOFF.md, finish the report with
   what is known, end the pass.
 
-## Current program context (2026-07-20)
+## Current program context (2026-07-21)
 
-Volatile — re-verify against current code before citing (Y4 verify-before-cite). Corrected metric
-names: the consult counter is `agentic_consult_gate_total` (v2's `agentic_prescreen_total` is
-retired); expectancy-ladder MAY-knobs are retired.
+Volatile — re-verify against current code before citing (verify-before-cite is this playbook's own
+standing rule).
 
-- Live build: v2 contract + the XA activation bundle (XA1-XA6) + X6/X7/X8 + X2 stage-1, both lanes.
-- Evidence epochs (`PROMOTION_EVIDENCE_EPOCH`): spot `2026-07-20T09:36:00Z`, perp
-  `2026-07-20T10:42:00Z`. The scoreboard walks only post-stamp evidence; a pre-stamp trip/spend in
-  the walk is a defect.
-- Cost breakers: `$1.50/day` spot, `$1.50/day` perp (post-X2). Breaker exhaustion mid-day →
-  economize via prompt/cadence, never raise the breaker.
-- X2 stage-1: perp universe 8 symbols (BTC ETH SOL ZEC AAVE NEAR HYPE KAITO), menu-4, fraction
-  0.35. Stage-2 pre-auth (16/menu-6) UNFIRED — see §4 conditions.
-- Promotion gate: ≥30 closed demo round trips AND positive net-of-cost PnL over ≥14 days
-  (`PromotionReadinessService`).
+- **Program status:** v3 one-book consolidation program (`plans/2026-07-v3-consolidation-spec.md`,
+  owner plan `how-can-we-save-snuggly-grove`) BUILD COMPLETE and gated on `main` — commits `4178b6a`
+  (config), `64e588a` (schema), `d351cbc` (checkpoint), `08f23c2` (streams), `cef43ee` (tool
+  contract), `36071e5` (wiring), `20762a9` (assembly), `a7be88b` (gate fixes); `app.module.ts`
+  2,427→72 lines, one process/one book/4-container compose (state.md 2026-07-21 record). Footprint
+  verdict: e2-medium PASS — full 40-symbol dual-venue graph, live feeds, 15-min host paper boot: RSS
+  plateau ~673MiB flat, health 200 throughout, `--max-old-space-size=1024` held.
+- **Cutover status: NOT YET RECORDED.** Remaining before the cutover record lands (owner,
+  2026-07-21): Grafana overview row + dashboard-regression pass, aggressive stale-file cleanup
+  (loop-core exempt). Until the cutover record appears in state.md § Strategic frame, treat every
+  §4 pass as MAINTENANCE-only per the freeze banner at the top of this document.
+- **Evidence epoch:** `PROMOTION_EVIDENCE_EPOCH` is ONE knob now (no per-venue split); `.env.app`'s
+  current value is explicitly marked "RE-STAMP AT CUTOVER — do not treat this value as final" — a
+  pass must NOT walk the promotion scoreboard against it until the cutover re-stamp lands.
+  Declaring the re-stamp itself is loop-domain (declare only at a verified flat instant, one stamp
+  for the whole book).
+- **Cost breaker:** ONE unified `AGENTIC_DAILY_COST_STOP_USD=$3/day`
+  (`AGENTIC_DAILY_COST_BREAKER_USD` in `loop-sweep-core.mjs`, verified against `.env.app:96`) — the
+  prior per-lane `$1.50 spot + $1.50 perp` split is retired. Breaker exhaustion mid-day → economize
+  via prompt/cadence, never raise the breaker.
+- **Universe:** 40 symbols (24 spot + 16 perp), one `VENUES` list
+  (`binance`+`binanceusdm`, `.env.app:37`), menu-8 cross-venue scanner (§4 above).
+- **Promotion gate:** ≥30 closed demo round trips AND positive net-of-cost PnL over ≥14 days,
+  walked over the ONE book (`PromotionReadinessService`).
 
-WATCH lines a pass must check (full text in state.md):
+WATCH lines a pass must check (full text in state.md; the pre-v3 lane-scoped WATCH-XA1/X2/XA6/XA7/
+X7-X8/Y2-Y3/X9 lines describe the BUILD that led here and are historical record, not standing
+checks against the current build):
 
-- WATCH-XA1 — ≥8 batched consults/day for 3 awake days at ≤$1.50.
-- WATCH-X2 — ≥1 closed perp trip/day once entries begin; a funding row lands within one poll
-  interval of a held-across-boundary position; batch soft-hold rate stays <5% of elements.
-- WATCH-XA6 — zero 1008 mass-closes; forced-reconnect rate ≤ R8-2 baseline; spot RSS trend flat
-  (level 1.34GiB accepted; >20% growth between sweeps without a deploy = R8-6 precursor); no
-  STALE_DATA veto storm on active-menu symbols.
-- WATCH-XA7 (spot) — the scoreboard walks only post-09:36Z evidence.
-- WATCH-X7/X8 — the first reflection on this build renders postMortems + versionPnl blocks;
-  versionPnl shows all-unattributed until post-stamp trips close (expected, not a defect).
-- WATCH-Y2/Y3 — the first scheduled pass rehydrates from `loop:digests` and runs `loop:sweep`;
-  the collector survives the next host sleep with an annotated gap.
+- WATCH-V3-1 — spot heap slope on the demo soak: paper plateau ~673MiB is the reference; a
+  demo-mode sustained climb past ~900MiB before the soak ends is a defect signal.
+- Post-cutover, expect a fresh set of v4-era WATCH lines (evidence-epoch re-stamp confirmation,
+  first cross-venue menu-8 consult, capability-violation counter baseline) — a pass finding none yet
+  recorded should add them from its own sweep evidence rather than treating their absence as a gap
+  in this playbook.

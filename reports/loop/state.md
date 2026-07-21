@@ -113,6 +113,24 @@ never changes for strategy evolution.
   RUNNING, zero positions/open orders) and verified inside the final boot's container env
   (bootId `948a2122`). Capital split observable live: `venue_free_cash_usdt` 500/500. Soak now
   running per WATCH-V3-1 + the v4 §5 soak checklist; lift-readiness call follows the soak.
+- **Soak defect #1 FOUND+FIXED (2026-07-21, first soak check — the incident-first gate working as
+  designed).** First sweep raised 0 alarms but 411 warn lines: ~3.5-min waves of market-stream
+  loop errors on BOTH venues (closedByUser + server 1008, 269 errors/20 min), recreation seam
+  escalated to its 600s gate on perp. Root cause (probed live, #54 pattern): the demo venue's
+  kline streams are TRADE-DRIVEN on thin symbols — APT/WIF/DOT/NEAR/OP candles sat 150-307s
+  silent while tickers stayed fresh — so the watchdog's single 180s threshold read normal
+  thin-symbol quiet as a dead subscription, forced a CONNECTION-WIDE close(), and the resubscribe
+  herd tripped the demo ws rate limit (1008): self-sustaining storm. v2 never hit it (8 liquid
+  perps; v3 runs 16 with a thin tail). NOT a total outage: journal stayed complete (40 symbols
+  every bar, both venues; 4 stragglers ≤2 min), reconcile stayed clean, RSS 627 MiB. Fix
+  `624f30c`: per-channel-type stall threshold — candle:* stalls at 20 min (one full 15m bar +
+  margin; the 2026-07-16 8.2h class still caught), book/ticker/trades keep 180s; regression spec
+  pins candle-silent-3min-no-close. Redeployed 11:28:29Z (bootId `46c90e17`), epoch unchanged
+  (flat book, maintenance redeploy). **WATCH-V3-2:** expected-positive = loop-error rate ~0 and
+  `market_stream_forced_reconnects_total` flat over ≥1h with journal every bar on both venues;
+  defect outcome = waves persist past the first hour ⇒ the candle threshold was not the (only)
+  initiator — reopen with a raw demo-ws probe before touching anything else. Owner-session soak
+  wakeups own the check; resolution before the lift-readiness call.
   1. **Cost floor** — CLOSED 2026-07-08: true spend ~$0.77/day under the $5 breaker, skip rate
      70–83% (original criterion: ≤$1/day ×3 days + ≥2 RT/day + no EXPIRED regressions).
   2. **Learning-loop edge** — ACTIVE. Exit: ≥2 playbook promotions with version-attributed PnL

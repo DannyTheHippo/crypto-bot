@@ -194,6 +194,19 @@ never changes for strategy evolution.
   40/bar, reconcile clean-only both venues, kill switch RUNNING, RSS ~677 MiB flat (WATCH-V3-1),
   capability violations 0. Soak settles into the hourly checklist rhythm; 48h clock from
   15:28:36Z.
+- **Soak handed to the daily loop (owner, 2026-07-21 ~20:15Z).** After checks #7-#8 extended the
+  clean streak (zero alarms/loop errors, journal 40/bar, reconcile clean 551/550, RSS ~680 MiB
+  flat, burn ~$0.10/h, 22 decides zero-retryable with organic cadence — consulted 8,
+  forced_move 5), the owner judged the stack healthy, stopped the in-session soak wakeups, and
+  re-enabled the `daily-profitability-loop` scheduled task (3×/day) with its prompt rewritten
+  for v4 one-book ops (perp-profile/postgres-perp remnants and consumed pre-auths removed). The
+  loop's §1-§3 now own soak monitoring; the 48h bar (from 15:28:36Z) and the lift-readiness
+  record remain the loop's exit artifact. **Zero round trips so far is model-holding-in-chop**
+  (journaled rationales: rangebound/mixed momentum, price under falling EMAs, weak cross-ranks,
+  no-spot-short downtrends — regime-appropriate holds, not a defect and not a risk-envelope
+  block; Risk has vetoed nothing because nothing was proposed). If entries/day stays ~0 once
+  ~24h of evidence exists, the sanctioned lever is a CANDIDATE pass drafting a less entry-averse
+  playbook variant (offline-scored first, §4) — never mid-window knob-tuning.
   app changes):** memo at `reports/loop/kimi-k3-research-2026-07-21.md`. Headline: K3 (released
   07-16) prices identically to sonnet-5 ($3/$15/$0.30 cache-hit); the Anthropic-compatible
   `/anthropic` endpoint exists for K3 (kimi-k2 precedent holds); in-app integration is

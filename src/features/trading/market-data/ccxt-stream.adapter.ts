@@ -274,17 +274,27 @@ export function buildCcxtExchange(venueConfig: VenueConfig): Exchange {
     throw new Error(`ccxt.pro has no exchange named "${venueConfig.id}"`);
   }
 
+  // XA6: depth updates slowed from ccxt's 100ms default (pinned ccxt 4.5.58 binance pro reads
+  // options.watchOrderBookRate VERBATIM into the <symbol>@depth@<rate>ms stream name with no
+  // validation — js/src/pro/binance.js:145/702/716). This is the MARKET-DATA instance only
+  // (public, keyless): its book consumers are the risk mark (tee reads bids[0]/asks[0] into a
+  // mid) and 'book' channel health (5s staleness veto) — top-of-book at these rates is ample, and
+  // the 100ms diff firehose across the active menu was the dominant spot CPU load pre-XA6.
+  //
+  // PER-VENUE rate (v3 soak defect #2, 2026-07-21): Binance FUTURES stream servers serve only
+  // @depth@100ms/250ms/500ms — an unknown suffix like @depth@1000ms is ACCEPTED at subscribe and
+  // then never sent a single frame. Probe-verified against the demo venue (#54 pattern, A/B on
+  // demo binanceusdm BTC book: rate 1000 ⇒ 1 yield/30s — the REST snapshot only; rate 500 ⇒
+  // 50 yields/30s). v2 never hit this because the XA6 option shipped on the spot lane only; v3's
+  // unified builder applied it to both venues, silently starving every perp book and feeding the
+  // watchdog storm. Spot keeps 1000ms (valid there, empirically flowing); futures gets 500ms —
+  // the slowest speed the futures ws actually serves, preserving XA6's load intent (5x calmer
+  // than the 100ms default). Re-verify both against the venue if the pinned ccxt is bumped.
+  const watchOrderBookRate = venueConfig.id === 'binanceusdm' ? 500 : 1000;
+
   const opts: Record<string, unknown> = {
     number: String,
     enableRateLimit: true,
-    // XA6: depth updates at 1000ms instead of ccxt's 100ms default (pinned ccxt 4.5.58 binance pro
-    // reads options.watchOrderBookRate into the <symbol>@depth@<rate>ms stream name — js/src/pro/
-    // binance.js:145/702/766). This is the MARKET-DATA instance only (public, keyless): its book
-    // consumers are the risk mark (tee reads bids[0]/asks[0] into a mid) and 'book' channel health
-    // (5s staleness veto, 30s DEGRADED threshold) — top-of-book at 1s is ample for both, and the
-    // diff-depth firehose at 100ms across the active menu's high-volume symbols was the dominant
-    // spot CPU load after tiering parked the low-volume tail. Order placement never reads this
-    // instance (the trading adapter constructs its own).
     //
     // OHLCVLimit / tradesLimit: pinned ccxt 4.5.58's per-exchange in-memory caches for watchOHLCV/
     // watchTrades default to 1000 entries EACH, per symbol+timeframe/per symbol respectively —
@@ -299,7 +309,7 @@ export function buildCcxtExchange(venueConfig: VenueConfig): Exchange {
     // concern as the order-book bound above (normalize.ts's MARKET_BOOK_MAX_LEVELS), just on ccxt's
     // own internal cache instead of this codebase's normalized event. Re-verify these key spellings/
     // defaults if the pinned ccxt version is ever bumped.
-    options: { watchOrderBookRate: 1000, OHLCVLimit: 400, tradesLimit: 100 },
+    options: { watchOrderBookRate, OHLCVLimit: 400, tradesLimit: 100 },
   };
 
   if (venueConfig.baseUrlOverride) {

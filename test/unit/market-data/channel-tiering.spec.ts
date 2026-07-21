@@ -369,8 +369,8 @@ describe('CcxtExchangeStreamAdapter channel tiering (XA6)', () => {
   });
 });
 
-describe('buildCcxtExchange watchOrderBookRate (XA6)', () => {
-  it('the market-data exchange pins depth updates to 1000ms (options.watchOrderBookRate)', async () => {
+describe('buildCcxtExchange watchOrderBookRate (XA6 + v3 soak defect #2)', () => {
+  it('the spot market-data exchange pins depth updates to 1000ms (options.watchOrderBookRate)', async () => {
     const { buildCcxtExchange } =
       await import('../../../src/features/trading/market-data/ccxt-stream.adapter');
     const ex = buildCcxtExchange({
@@ -379,6 +379,21 @@ describe('buildCcxtExchange watchOrderBookRate (XA6)', () => {
       baseUrlOverride: undefined,
     } as never);
     expect((ex.options as Record<string, unknown>)['watchOrderBookRate']).toBe(1000);
+  });
+
+  // v3 soak defect #2 (2026-07-21): the futures stream servers serve only @depth@100/250/500ms —
+  // @depth@1000ms is accepted at subscribe and never sent a frame (probe-verified on the demo
+  // venue: rate 1000 = 1 yield/30s, snapshot only; rate 500 = 50 yields/30s). The futures
+  // instance must therefore pin 500, never inherit spot's 1000.
+  it('the futures market-data exchange pins depth updates to 500ms (a rate the futures ws serves)', async () => {
+    const { buildCcxtExchange } =
+      await import('../../../src/features/trading/market-data/ccxt-stream.adapter');
+    const ex = buildCcxtExchange({
+      id: 'binanceusdm',
+      environment: 'paper',
+      baseUrlOverride: undefined,
+    } as never);
+    expect((ex.options as Record<string, unknown>)['watchOrderBookRate']).toBe(500);
   });
 });
 

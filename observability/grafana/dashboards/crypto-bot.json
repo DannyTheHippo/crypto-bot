@@ -1593,7 +1593,7 @@
     {
       "id": 300,
       "type": "row",
-      "title": "Model & Learning",
+      "title": "Learning",
       "collapsed": true,
       "gridPos": {
         "h": 1,

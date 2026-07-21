@@ -149,6 +149,15 @@ never changes for strategy evolution.
   errors. **WATCH-V3-2 (amended):** expected-positive = loop-error rate ~0 on BOTH venues over
   the next hour+, forced-reconnect counters flat, journal every bar; the original defect-outcome
   clause stands for any residual waves.
+- **Soak progress (2026-07-21 ~14:10Z, check #3): WATCH-V3-2 expected-positive CONFIRMED** — 75
+  min on the depth-rate build with ZERO loop errors on both venues, zero recreations (no
+  wsRecreations series at all), zero sweep alarms, journal 40/bar every bar, reconcile clean-only
+  (126/125), every book channel sub-second, RSS 698 MiB (WATCH-V3-1 well inside bounds). Zero
+  consults so far is BY DESIGN, not a defect: `AGENTIC_FALLBACK_CONSULT_BARS=8` (2h) with
+  in-memory bar counters reset by the 13:03Z redeploy ⇒ first fallback consult due at the 15:00Z
+  bar close; wake-on-move (0.8%) has not tripped in the prevailing chop. Next check verifies the
+  first cross-venue consult fired and spent within budget. 48h soak clock runs from the last
+  defect-fix redeploy (13:03:46Z).
   1. **Cost floor** — CLOSED 2026-07-08: true spend ~$0.77/day under the $5 breaker, skip rate
      70–83% (original criterion: ≤$1/day ×3 days + ≥2 RT/day + no EXPIRED regressions).
   2. **Learning-loop edge** — ACTIVE. Exit: ≥2 playbook promotions with version-attributed PnL

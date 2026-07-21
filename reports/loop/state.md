@@ -96,7 +96,23 @@ never changes for strategy evolution.
   pass, aggressive stale-file cleanup (loop-core exempt), daily-loop playbook v4 rewrite for
   one-book ops. WATCH-V3-1: spot heap slope on the demo soak (paper plateau 673 MiB is the
   reference; a demo-mode sustained climb past ~900 MiB before the soak ends is a defect signal).
-- **Stage ladder + exit criteria (condensed from the active spec):**
+- **v3 LOCAL DEMO CUTOVER — LIVE (2026-07-21, owner session; this is the cutover record the
+  playbook v4 freeze banner keys on — from this record onward the v4 pass-type menu is fully
+  active).** Pre-cutover gates all landed: Grafana Overview strip + regression pass (`8014a1d`),
+  `reconciliation_runs_total` venue label (`9367285`, spec-§8 gap surfaced by the dashboard
+  expr-vs-emitter cross-check), stale-file sweep, playbook v4 (`16188a7`). v2 stack stopped
+  2026-07-21T11:15:05Z — both lanes flat (perp zero positions/orders; spot dust-only ledger
+  residuals, no venue axis), final reconciles CLEAN on both lanes. v3 booted greenfield from the
+  same compose project on NEW volumes (`postgres_data_v3`/`prometheus_data_v3` — v2's
+  `crypto-bot_postgres_data`/`_prometheus_data` left intact on disk; pruning is an owner call
+  after the GCP lift). 4 containers up, app healthy; effective mode=testnet, downgrades=[];
+  playbook seeded once (version 1, single row); 23 tables migrated on the empty DB; funding-ingest
+  first-poll race self-healed (WARN + retry, correct fail direction).
+  **`PROMOTION_EVIDENCE_EPOCH=2026-07-21T11:21:00Z`** stamped at the log-verified flat instant
+  (fresh DB, `reconciliation_runs_total{venue,result}` all-clean on BOTH venues, kill switch
+  RUNNING, zero positions/open orders) and verified inside the final boot's container env
+  (bootId `948a2122`). Capital split observable live: `venue_free_cash_usdt` 500/500. Soak now
+  running per WATCH-V3-1 + the v4 §5 soak checklist; lift-readiness call follows the soak.
   1. **Cost floor** — CLOSED 2026-07-08: true spend ~$0.77/day under the $5 breaker, skip rate
      70–83% (original criterion: ≤$1/day ×3 days + ≥2 RT/day + no EXPIRED regressions).
   2. **Learning-loop edge** — ACTIVE. Exit: ≥2 playbook promotions with version-attributed PnL

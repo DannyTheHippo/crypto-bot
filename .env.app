@@ -165,13 +165,13 @@ AGENTIC_TOKEN_PRICE_CACHE_WRITE_PER_MTOK=6 # sonnet-5 1h-TTL cache writes (~2x i
 # Per-model override map so the Opus reflection path bills at Opus rates (fail-closed: unknown
 # models in cost rows price at the most expensive configured rates).
 AGENTIC_TOKEN_PRICES_JSON={"claude-sonnet-5":{"inputPerMtok":"3","outputPerMtok":"15","cacheReadPerMtok":"0.3","cacheWritePerMtok":"6"},"claude-opus-4-8":{"inputPerMtok":"5","outputPerMtok":"25","cacheReadPerMtok":"0.5","cacheWritePerMtok":"10"}}
-# v3 §3.2/§3.3: ONE evidence epoch now (the two lane-split epochs collapse — spot 2026-07-20T09:36:00Z,
-# perp 2026-07-20T10:42:00Z). Left as the CURRENT spot value here; the v3 cutover step (a separate,
-# later change-discipline decision record, NOT this workstream) re-stamps this to the single
-# venue-flat instant verified immediately after the v3 composition graph goes live — carrying an
-# unreconciled dual-lane epoch forward would let the promotion gate evaluate the perp lane's
-# pre-cutover history under the wrong (spot) epoch.
-PROMOTION_EVIDENCE_EPOCH=2026-07-20T09:36:00Z # v3 cutover: RE-STAMP AT CUTOVER — see comment above; do not treat this value as final
+# v3 §3.2/§3.3: ONE evidence epoch (the two v2 lane-split epochs — spot 2026-07-20T09:36:00Z, perp
+# 2026-07-20T10:42:00Z — collapsed at the v3 cutover). Stamped 2026-07-21T11:21:00Z at the
+# log-verified flat instant: fresh greenfield DB, both venues reconciling CLEAN
+# (reconciliation_runs_total{venue,result} all clean), zero positions/open orders, kill switch
+# RUNNING (state.md cutover record 2026-07-21). The promotion scoreboard walks only post-stamp
+# evidence over the ONE unified book.
+PROMOTION_EVIDENCE_EPOCH=2026-07-21T11:21:00Z # v3 cutover epoch — stamped at the verified-flat instant, see comment above
 PROMOTION_DUST_NOTIONAL=5 # residual-position notional (quote ccy) below which a round-trip cycle counts as CLOSED
 SIGNAL_TTL_MS=120000 # signal validity window
 BASE_NOTIONAL=100 # quote (USDT) per order; keep below the account balance, above minNotional

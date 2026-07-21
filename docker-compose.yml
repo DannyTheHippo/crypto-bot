@@ -62,7 +62,11 @@ services:
       # an already-provisioned volume needs. Secret; sourced from .env, never .env.app.
       GRAFANA_RO_PASSWORD: ${GRAFANA_RO_PASSWORD}
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      # v3 cutover (2026-07-21): NEW volume name — the v2 stack owns crypto-bot_postgres_data and
+      # the greenfield decision (owner, decision ledger #7) starts v3 on an EMPTY database (fresh
+      # Drizzle schema, playbook seeded from code). The v2 volume is left on disk untouched;
+      # pruning it is an owner call after the GCP lift retires the local stack.
+      - postgres_data_v3:/var/lib/postgresql/data
       # Mounted read-only; the postgres entrypoint runs every *.sql here via `psql -f` ONCE, only
       # against a fresh (empty) data volume — see grafana_ro.sql's own header for the standalone
       # apply command an already-initialized volume needs instead.
@@ -87,7 +91,9 @@ services:
       # Backlog #22: named TSDB volume. The image's anonymous VOLUME /prometheus survived plain
       # recreates but not `down -v`/--renew-anon-volumes; history was migrated from the anonymous
       # volume at the 2026-07-13 switchover (docker run cp between volumes, see LOG.md).
-      - prometheus_data:/prometheus
+      # v3 cutover (2026-07-21): NEW volume name, same greenfield rationale as postgres_data_v3 —
+      # v2's TSDB history stays in crypto-bot_prometheus_data for owner-driven pruning later.
+      - prometheus_data_v3:/prometheus
     command:
       - --config.file=/etc/prometheus/prometheus.yml
 
@@ -119,6 +125,6 @@ services:
       - prometheus
 
 volumes:
-  postgres_data:
+  postgres_data_v3:
   grafana_data:
-  prometheus_data:
+  prometheus_data_v3:

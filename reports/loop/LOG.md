@@ -4326,3 +4326,50 @@ Gate green after the sweep: build + lint + typecheck + `pnpm test` (2725+ tests)
 lint:md, both eval specs skip clean. Per the 2026-07-22 gate-override grant, commit + deploy +
 scratch-DB teardown are loop-domain (I commit and deploy); the live-money flip is the only
 remaining human gate.
+
+## 2026-07-22 — `pnl-v1` bake-off criteria, PRE-REGISTERED BEFORE ANY PAID CALL
+
+Owner task: run a kimi-k3 vs sonnet-5 backtest (longs AND shorts, real PnL) and deploy the
+more-likely-profitable model to the demo soak. These criteria are recorded BEFORE spending, so the
+verdict cannot be selected after seeing results (rules/change-discipline.md).
+
+**Scope — identical on both legs or the run is VOID:** symbols `BTC/USDT:USDT` + `ETH/USDT:USDT`
+(perps — spot has `capabilities.shorts=false`, so only perps exercise the short path), 4h bars,
+window start ≥ 2026-02-01 (`EARLIEST_ALLOWED_MS`, the training-cutoff floor) through the cached
+2026-07-12 tail, same playbook version, same `equityBase` (1000, the deployed `SIZER_EQUITY_CAP`),
+same `settlementFeeBps`, `maxTokens` 4096, thinking disabled, same segment count. Hard budget cap
+per leg; an abort is clean and partial.
+
+**Criteria:**
+
+1. **PRIMARY — net-of-cost PnL.** `pnl.netOfLlmSpendQuote` = realized − fees − funding − LLM spend.
+   The winner must be strictly greater than the other leg AND strictly positive. If BOTH legs are
+   ≤ 0, the verdict is **NO DEPLOY** and the incumbent (claude-sonnet-5) stays — "less negative" is
+   not profitable.
+2. **WALK-FORWARD CONSISTENCY.** The winner's per-segment net must be positive in ≥ half its
+   segments. A leader failing this does not win; the other leg wins only if it passes 1 AND 2,
+   otherwise NO DEPLOY. This is what stops one lucky segment carrying the verdict.
+3. **MINIMUM EVIDENCE.** ≥ 20 closed round trips on the winning leg, else NO DEPLOY (an n=3 win is
+   noise). Both legs' trip counts are reported either way.
+4. **DIRECTION DISCLOSURE (reported, not gating).** Long/short trip counts and per-direction net are
+   reported. If ≥ 90% of the winner's net comes from ONE direction with < 3 trips in the other, the
+   result is labelled single-direction and explicitly NOT generalised.
+5. **COST.** No separate bar — cost is netted directly into criterion 1 (superseding the ≤50% cost
+   bar, already relaxed to parity on 2026-07-22 as structurally unpassable for same-price-tier
+   challengers).
+6. **ABORT / TIE.** A budget-aborted or partial run is NEVER scored as complete — discard and re-run
+   or abandon (precedent: run 2 died at 5/200 rows and was superseded, not scored). A tie (both
+   positive, |Δnet| < 1% of the larger) leaves the incumbent in place: switching without an evidence
+   advantage is unjustified.
+
+**Confounds recorded up front, not discovered afterwards:**
+
+- The training-cutoff floor is dated for sonnet-5. A routed third-party model may have a different
+  cutoff this floor cannot detect — an inherent confound of ANY cross-model head-to-head here.
+- The 93.3% fair-proxy agreement was measured on the RETIRED plan-mode contract. It justifies the
+  OHLCV-only payload SHAPE only; it is not a re-measured v3 figure.
+- Synthetic single-position book, no market impact, one stochastic sample per model, one regime.
+  This is a PROXY for the live demo soak, never a substitute, and CANNOT authorise a live flip.
+- Scorecards from this contract are NOT comparable to pre-v3 plan-mode scorecards.
+- Perp legs are net of funding as of this session's funding-accounting fix; spot legs are not
+  (spot has no funding). Omitting it previously biased against whichever model shorts more.

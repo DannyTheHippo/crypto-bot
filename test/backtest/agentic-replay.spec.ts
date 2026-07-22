@@ -293,6 +293,10 @@ describe('agentic-replay (offline, v3 contract)', () => {
         // sizeFraction 0.2 clears the PERP cap (0.35) but exceeds the SPOT cap (0.15) — a perp long is
         // unaffected by shorts capability, so this isolates the sizeFraction change from any floor.
         symbol: PERP,
+        // Isolates this fixture from perp funding (see funding accrual tests below) — this test is
+        // about sizeFraction sizing, not carry, so an empty funding schedule keeps its pinned PnL
+        // exactly comparable to the SPOT `low` run above (same fixture, funding-free either way).
+        fundingRows: [],
         bars,
         equityBase: '9990', // 9990 x 0.2 = entryNotional 1998 -> qty 1998/99.9 = 20 (exactly double)
         fetchFn: scriptedFetch([{ action: 'open_long', ...VIABLE, sizeFraction: 0.2 }]),
@@ -320,6 +324,9 @@ describe('agentic-replay (offline, v3 contract)', () => {
       const result = await runAgenticReplay({
         ...BASE_OPTS,
         symbol: PERP,
+        // These fixed-fee-mechanics tests isolate fill/PnL correctness from funding (its own dedicated
+        // tests below) — an empty schedule keeps their pinned PnL exact and disk-fixture-independent.
+        fundingRows: [],
         bars,
         // Fix 1: entryNotional = equityBase x sizeFraction (0.1) = 1001; 1001/100.1 = exactly 10 units.
         equityBase: '10010',
@@ -360,6 +367,7 @@ describe('agentic-replay (offline, v3 contract)', () => {
       const result = await runAgenticReplay({
         ...BASE_OPTS,
         symbol: PERP,
+        fundingRows: [], // isolates fill/PnL mechanics from funding — see the dedicated tests below
         bars,
         equityBase: '10010', // entryNotional = 10010 x 0.1 = 1001
         fetchFn: scriptedFetch([{ action: 'open_short', ...VIABLE }]),
@@ -385,6 +393,7 @@ describe('agentic-replay (offline, v3 contract)', () => {
       const result = await runAgenticReplay({
         ...BASE_OPTS,
         symbol: PERP,
+        fundingRows: [], // isolates fill/PnL mechanics from funding — see the dedicated tests below
         bars,
         equityBase: '10010', // entryNotional = 10010 x 0.1 = 1001
         fetchFn: scriptedFetch([{ action: 'open_short', ...VIABLE }]),
@@ -414,6 +423,183 @@ describe('agentic-replay (offline, v3 contract)', () => {
       expect(result.decisionsAccepted).toBe(0);
       expect(result.totals.roundTrips).toBe(0);
       expect(result.openPositionAtEnd).toBe(false);
+    });
+  });
+
+  describe('funding accrual (perp carry, 2026-07-22 funding-accounting fix)', () => {
+    // A single funding row timestamped inside the HOLD BAR (strictly after the entry-fill bar's own
+    // close and at/before the hold bar's close) — see agentic-replay.ts's accrual loop: a row
+    // coincident with the EXIT bar's own close would settle against an already-flat position (the exit
+    // fill runs first, same bar, mirroring harness.ts/carry-sim.ts's own "flat as of the settling
+    // timestamp accrues nothing" convention), so this fixture inserts one extra in-bounds HOLD bar
+    // between fill and exit specifically so the funding timestamp lands while the position is
+    // genuinely still open.
+    const fundingTs = (base: number): number => base + 2 * HOUR + 1;
+
+    it('a LONG held across a positive-rate funding timestamp PAYS — strictly less PnL than the same trip with funding zeroed', async () => {
+      const bars: Bar[] = [
+        bar(T0, 100, 100, 99, 100), // decision bar: entry rests at 100*(1-10/10000)=99.9
+        bar(T0 + HOUR, 100, 100, 99.8, 100), // low 99.8 <= 99.9 -> fills at 99.9
+        bar(T0 + 2 * HOUR, 100, 100.5, 99.5, 100), // HOLD — funding settles here (fundingTs(T0))
+        bar(T0 + 3 * HOUR, 100, 104, 100, 103), // close 103 >= TP(99.9*1.03=102.897) -> exit @ TP price
+      ];
+      const paid = await runAgenticReplay({
+        ...BASE_OPTS,
+        symbol: PERP,
+        bars,
+        equityBase: '9990', // 9990 x 0.1 (VIABLE) = entryNotional 999 -> qty 999/99.9 = 10
+        fetchFn: scriptedFetch([{ action: 'open_long', ...VIABLE }]),
+        fundingRows: [{ timestamp: fundingTs(T0), fundingRate: '0.001' }],
+      });
+      const zeroed = await runAgenticReplay({
+        ...BASE_OPTS,
+        symbol: PERP,
+        bars,
+        equityBase: '9990',
+        fetchFn: scriptedFetch([{ action: 'open_long', ...VIABLE }]),
+        fundingRows: [],
+      });
+
+      // Same fill/TP economics as the very first LONG round-trip test above -> same gross/fees,
+      // funding is NEVER mixed into either.
+      expect(paid.pnl.realizedQuote).toBe('29.97');
+      expect(paid.pnl.feesQuote).toBe('2.02797');
+      // payment = -signedQty(10) x markPrice(100, the HOLD bar's own close) x rate(0.001) = -1 (PAYS).
+      expect(paid.pnl.fundingQuote).toBe('-1');
+      expect(paid.pnl.fundingLong).toEqual({ events: 1, netQuote: '-1' });
+      expect(paid.pnl.fundingShort).toEqual({ events: 0, netQuote: '0' });
+      expect(paid.pnl.netQuote).toBe('26.94203'); // 29.97 - 2.02797 - 1
+      expect(zeroed.pnl.fundingQuote).toBe('0');
+      expect(zeroed.pnl.netQuote).toBe('27.94203'); // pre-funding-fix pin, unchanged
+      expect(new Decimal(paid.pnl.netQuote).lt(new Decimal(zeroed.pnl.netQuote))).toBe(true);
+    });
+
+    it('a SHORT held across the same positive-rate funding timestamp RECEIVES — strictly more PnL than the same trip with funding zeroed', async () => {
+      const bars: Bar[] = [
+        bar(T0, 100, 100.2, 99.5, 100), // decision bar: entry rests ABOVE at 100*(1+10/10000)=100.1
+        bar(T0 + HOUR, 100, 100.5, 99.8, 100), // high 100.5 >= 100.1 -> fills at 100.1
+        bar(T0 + 2 * HOUR, 100, 100.5, 99.5, 100), // HOLD — funding settles here (fundingTs(T0))
+        bar(T0 + 3 * HOUR, 100, 100, 96.5, 97), // close 97 <= TP(100.1*0.97=97.097) -> exit @ TP price
+      ];
+      const received = await runAgenticReplay({
+        ...BASE_OPTS,
+        symbol: PERP,
+        bars,
+        equityBase: '10010', // 10010 x 0.1 = entryNotional 1001 -> qty 1001/100.1 = 10
+        fetchFn: scriptedFetch([{ action: 'open_short', ...VIABLE }]),
+        fundingRows: [{ timestamp: fundingTs(T0), fundingRate: '0.001' }],
+      });
+      const zeroed = await runAgenticReplay({
+        ...BASE_OPTS,
+        symbol: PERP,
+        bars,
+        equityBase: '10010',
+        fetchFn: scriptedFetch([{ action: 'open_short', ...VIABLE }]),
+        fundingRows: [],
+      });
+
+      expect(received.pnl.realizedQuote).toBe('30.03');
+      expect(received.pnl.feesQuote).toBe('1.97197');
+      // payment = -signedQty(-10) x markPrice(100) x rate(0.001) = +1 (RECEIVES) — the mirror of the
+      // LONG case above.
+      expect(received.pnl.fundingQuote).toBe('1');
+      expect(received.pnl.fundingShort).toEqual({ events: 1, netQuote: '1' });
+      expect(received.pnl.fundingLong).toEqual({ events: 0, netQuote: '0' });
+      expect(received.pnl.netQuote).toBe('29.05803'); // 30.03 - 1.97197 + 1
+      expect(zeroed.pnl.fundingQuote).toBe('0');
+      expect(zeroed.pnl.netQuote).toBe('28.05803'); // pre-funding-fix pin, unchanged
+      expect(new Decimal(received.pnl.netQuote).gt(new Decimal(zeroed.pnl.netQuote))).toBe(true);
+    });
+
+    it('a negative rate flips both directions: the LONG now RECEIVES', async () => {
+      const bars: Bar[] = [
+        bar(T0, 100, 100, 99, 100),
+        bar(T0 + HOUR, 100, 100, 99.8, 100),
+        bar(T0 + 2 * HOUR, 100, 100.5, 99.5, 100),
+        bar(T0 + 3 * HOUR, 100, 104, 100, 103),
+      ];
+      const result = await runAgenticReplay({
+        ...BASE_OPTS,
+        symbol: PERP,
+        bars,
+        equityBase: '9990',
+        fetchFn: scriptedFetch([{ action: 'open_long', ...VIABLE }]),
+        fundingRows: [{ timestamp: fundingTs(T0), fundingRate: '-0.001' }],
+      });
+
+      // payment = -signedQty(10) x markPrice(100) x rate(-0.001) = +1 — the SIGN flip of the
+      // positive-rate LONG test above (-1 there, +1 here); a test passing under both signs would be
+      // worthless, which is exactly why this pin exists.
+      expect(result.pnl.fundingQuote).toBe('1');
+      expect(result.pnl.fundingLong).toEqual({ events: 1, netQuote: '1' });
+      expect(result.pnl.netQuote).toBe('28.94203'); // 29.97 - 2.02797 + 1
+    });
+
+    it('a negative rate flips both directions: the SHORT now PAYS', async () => {
+      const bars: Bar[] = [
+        bar(T0, 100, 100.2, 99.5, 100),
+        bar(T0 + HOUR, 100, 100.5, 99.8, 100),
+        bar(T0 + 2 * HOUR, 100, 100.5, 99.5, 100),
+        bar(T0 + 3 * HOUR, 100, 100, 96.5, 97),
+      ];
+      const result = await runAgenticReplay({
+        ...BASE_OPTS,
+        symbol: PERP,
+        bars,
+        equityBase: '10010',
+        fetchFn: scriptedFetch([{ action: 'open_short', ...VIABLE }]),
+        fundingRows: [{ timestamp: fundingTs(T0), fundingRate: '-0.001' }],
+      });
+
+      // payment = -signedQty(-10) x markPrice(100) x rate(-0.001) = -1 — the SIGN flip of the
+      // positive-rate SHORT test above (+1 there, -1 here).
+      expect(result.pnl.fundingQuote).toBe('-1');
+      expect(result.pnl.fundingShort).toEqual({ events: 1, netQuote: '-1' });
+      expect(result.pnl.netQuote).toBe('27.05803'); // 30.03 - 1.97197 - 1
+    });
+
+    it('a SPOT symbol accrues exactly zero funding regardless of any injected schedule — byte-identical to the pre-funding-fix PnL', async () => {
+      const bars: Bar[] = [
+        bar(T0, 100, 100, 99, 100),
+        bar(T0 + HOUR, 100, 100, 99.8, 100),
+        bar(T0 + 2 * HOUR, 100, 104, 100, 103),
+      ];
+      const result = await runAgenticReplay({
+        ...BASE_OPTS,
+        symbol: SPOT,
+        bars,
+        equityBase: '9990',
+        fetchFn: scriptedFetch([{ action: 'open_long', ...VIABLE }]),
+      });
+
+      expect(result.pnl.fundingQuote).toBe('0');
+      expect(result.pnl.fundingLong).toEqual({ events: 0, netQuote: '0' });
+      expect(result.pnl.fundingShort).toEqual({ events: 0, netQuote: '0' });
+      // Byte-identical to the very first LONG round-trip test's pin above (same fixture) — a spot run
+      // is untouched by this fix.
+      expect(result.pnl.realizedQuote).toBe('29.97');
+      expect(result.pnl.feesQuote).toBe('2.02797');
+      expect(result.pnl.netQuote).toBe('27.94203');
+    });
+
+    it('refuses a perp run when the on-disk funding cache is missing — naming the file and the fetch command, never silently zero', async () => {
+      const bars: Bar[] = [bar(T0, 100, 100, 99, 100)];
+      await expect(
+        runAgenticReplay({
+          ...BASE_OPTS,
+          symbol: 'ZZZ/USDT:USDT', // no test/backtest/data/funding-ZZZUSDTUSDT.json cache exists
+          bars,
+          fetchFn: scriptedFetch([]),
+        }),
+      ).rejects.toThrow(/funding-ZZZUSDTUSDT\.json/);
+      await expect(
+        runAgenticReplay({
+          ...BASE_OPTS,
+          symbol: 'ZZZ/USDT:USDT',
+          bars,
+          fetchFn: scriptedFetch([]),
+        }),
+      ).rejects.toThrow(/fetch-data\.mjs ZZZ\/USDT:USDT/);
     });
   });
 

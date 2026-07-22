@@ -101,7 +101,29 @@
 // of the next bar (no further bar is processed, no further $ can be spent) — `aborted: true` and a
 // partial scorecard are always returned, never thrown; callers must not treat a partial run's
 // sign-consistency as if the window had been fully walked.
+//
+// FUNDING (perp carry, 2026-07-22 funding-accounting fix): a PERP run is now genuinely NET OF FUNDING —
+// scorecard.pnl.netQuote/netOfLlmSpendQuote include it, and scorecard.pnl.fundingQuote/fundingLong/
+// fundingShort break it out as its own line item (never mixed into feesQuote). A SPOT run carries NO
+// funding by construction (funding stays exactly '0', byte-identical to this module's pre-fix
+// behaviour) — spot symbols simply have none to accrue. Accrual timestamps are read STRICTLY from the
+// cached funding series itself (test/backtest/data/funding-<symbol>.json, the same file
+// test/backtest/fetch-data.mjs's --funding flag writes) — never an invented per-bar schedule — and
+// applied against whatever position survived this bar's own fill handling, at this bar's own close, via
+// test/backtest/funding.ts's fundingPayment (that module owns the sign convention: a positive rate
+// charges a long, credits a short). A PERP symbol with NO cached funding file REFUSES the run outright
+// (see loadFundingRowsFromDisk) rather than silently trading it at zero funding — a silent zero here is
+// exactly the systematic long/short bias this fix exists to remove from the upcoming model bake-off.
+// MODEL PAYLOAD: production only ever sends a fundingRate to the model inside the derivatives block
+// (agent-prompt.ts's buildDerivativesBlock), which renders NOTHING unless a live DerivativesSnapshot
+// rode in on input.snapshot.derivatives — and this harness's decision `input` below NEVER sets that
+// field (see the FAIR-PROXY EVIDENCE BASIS note above: orderBook/ticker/derivatives are deliberately
+// never attached). The model-facing payload is therefore UNCHANGED by this fix — that omission already
+// matches what a real decide would send under the same (no derivatives feed attached) condition, so
+// wiring a funding number into it here would show the model something a live decide would not.
 import Decimal from 'decimal.js';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { z } from 'zod';
 import {
   setupDecimal,
@@ -117,6 +139,7 @@ import {
   type ClosedRoundTrip,
 } from '../../src/domain/risk/round-trips';
 import { takerFeeQuote } from './fill-models';
+import { fundingPayment } from './funding';
 import { aggregateCandles } from '../../src/domain/indicators/candle-aggregate';
 import {
   emaFromNumbers,
@@ -212,6 +235,13 @@ const FLAT_POSITION_SUMMARY: AgentPositionSummary = {
 
 // ── Options / result shapes ───────────────────────────────────────────────────
 
+// One cached funding settlement — the SAME shape test/backtest/fetch-data.mjs's
+// fetchFundingHistoryPaged writes (fundingRate persisted as a decimal STRING, never a bare float).
+export interface FundingRow {
+  readonly timestamp: number;
+  readonly fundingRate: string;
+}
+
 export interface AgenticReplayOpts {
   readonly symbol: string; // e.g. 'BTC/USDT' (spot) or 'BTC/USDT:USDT' (perp ⇒ shorts enabled)
   // Cosmetic (CandleEvent envelope field only) — the symbol's OWN venue (venueForSymbol) is what
@@ -270,6 +300,14 @@ export interface AgenticReplayOpts {
   readonly fetchFn?: typeof fetch;
   // Injectable env for route key lookup (route.apiKeyEnv indirection). Defaults to process.env.
   readonly env?: Record<string, string | undefined>;
+  // PERP-ONLY. Injectable override for offline specs (same rationale as fetchFn/env above) — bypasses
+  // the on-disk funding cache entirely, letting a test pin an exact, controlled funding schedule
+  // instead of depending on whatever the live-fetched cache file currently contains. Omitted ⇒ loaded
+  // from test/backtest/data/funding-<symbol, '/' and ':' stripped>.json, REFUSING loudly if that file
+  // is absent (see loadFundingRowsFromDisk) — a missing cache is never silently treated as zero
+  // funding (see the file header's FUNDING note). Always ignored for a spot symbol — fundingRows is
+  // unconditionally [] there regardless of this option.
+  readonly fundingRows?: readonly FundingRow[];
 }
 
 export interface AgenticReplaySegmentStats {
@@ -291,12 +329,25 @@ export interface AgenticReplayDirectionStats {
   readonly netPnlQuote: string; // realized − fees, summed over this direction's closed trips
 }
 
+// Per-direction funding cash-flow breakdown — mirrors AgenticReplayDirectionStats' shape (a nested
+// per-direction object alongside long/short) but without roundTrips/winRate fields, which don't mean
+// anything for a pure carry cash flow rather than a round-trip's win/loss.
+export interface AgenticReplayFundingStats {
+  readonly events: number; // funding settlements accrued while a position of this direction was open
+  readonly netQuote: string; // net PnL contribution — negative = net paid, positive = net received
+}
+
 export interface AgenticReplayPnl {
   // Summed over CLOSED round trips only — an open position at the end contributes nothing (see
   // openPositionAtEnd, which flags exactly that case).
   readonly realizedQuote: string; // GROSS of fees (walkRoundTrips' own convention)
   readonly feesQuote: string;
-  readonly netQuote: string; // realized − fees
+  // Perp-carry funding, accrued against the OPEN position at every cached funding timestamp inside the
+  // hold (see the file header's FUNDING note) — its OWN line item, never mixed into feesQuote. SIGN is
+  // the position holder's PnL contribution: negative = net PAID, positive = net RECEIVED (mirrors
+  // test/backtest/funding.ts's fundingPayment convention exactly). Always '0' for a spot symbol.
+  readonly fundingQuote: string;
+  readonly netQuote: string; // realized − fees + fundingQuote — genuinely net of funding
   readonly llmSpendUsd: string;
   // netQuote − llmSpendUsd. The two are added across units: PnL is in the pair's QUOTE asset, spend
   // is USD. For the USDT-quoted book this program trades those are ~1:1; on a non-USD-quote pair
@@ -304,6 +355,9 @@ export interface AgenticReplayPnl {
   readonly netOfLlmSpendQuote: string;
   readonly long: AgenticReplayDirectionStats;
   readonly short: AgenticReplayDirectionStats;
+  // fundingQuote split by the direction of the position it accrued against. Always {0, '0'} for spot.
+  readonly fundingLong: AgenticReplayFundingStats;
+  readonly fundingShort: AgenticReplayFundingStats;
 }
 
 // Why every model call ended. NOT a diagnostic afterthought: a hold that came from a floor rejection,
@@ -373,6 +427,32 @@ export const FAIR_PROXY_NOTE =
   '(candidates/degradation-2026-07-12.json) was taken on the LEGACY plan-mode contract and justifies ' +
   'the OHLCV-only payload shape only; it is not a re-measured v3 agreement figure. NOT comparable to ' +
   'pre-v3 plan-mode scorecards.';
+
+// ── Funding (perp carry) ───────────────────────────────────────────────────────
+// See the file header's FUNDING note for the accrual rule and sign convention. Loading is symbol-keyed
+// against the SAME on-disk cache test/backtest/fetch-data.mjs's --funding flag writes (its safeName
+// strips '/' and ':', e.g. 'BTC/USDT:USDT' -> 'BTCUSDTUSDT') — never a second, independently-maintained
+// path, mirroring test/backtest/carry/carry-grid.ts's own carryDataPath convention.
+const FUNDING_DATA_DIR = join(__dirname, 'data');
+
+function fundingFilePathFor(symbol: string): string {
+  return join(FUNDING_DATA_DIR, `funding-${symbol.replace(/[/:]/g, '')}.json`);
+}
+
+// FAILS LOUDLY (never returns []) when the cache is absent — see the file header's FUNDING note: a
+// silent zero here is exactly the long/short bias this fix exists to remove from the bake-off it feeds.
+// Trusts the cached shape (the same contract fetch-data.mjs's fetchFundingHistoryPaged writes) rather
+// than re-validating field-by-field, matching carry-grid.ts's loadCarryFunding precedent.
+function loadFundingRowsFromDisk(symbol: string): FundingRow[] {
+  const path = fundingFilePathFor(symbol);
+  if (!existsSync(path)) {
+    throw new Error(
+      `runAgenticReplay: perp symbol "${symbol}" has no cached funding history at ${path} — ` +
+        `fetch it first: node test/backtest/fetch-data.mjs ${symbol} <timeframe> <bars> --funding`,
+    );
+  }
+  return JSON.parse(readFileSync(path, 'utf8')) as FundingRow[];
+}
 
 // ── Candle / indicator construction (mirrors agentic.strategy.ts's buildContext) ─────────────────
 
@@ -844,6 +924,18 @@ export async function runAgenticReplay(opts: AgenticReplayOpts): Promise<Agentic
   const venue = opts.venue !== undefined ? venueId(opts.venue) : derivedVenue;
   const sId = strategyId('backtest-agentic');
   const intervalMs = INTERVAL_MS[opts.interval];
+  // FUNDING (see file header's FUNDING note): a spot symbol carries no funding by definition —
+  // fundingRows stays [] and every accrual branch below is a zero-iteration no-op, so a spot run stays
+  // byte-identical to pre-fix behaviour. A perp symbol REFUSES loudly (loadFundingRowsFromDisk throws)
+  // when neither an injected override nor an on-disk cache exists, rather than silently trading at zero
+  // funding. Sorted defensively by timestamp — the accrual cursor below assumes ascending order, and
+  // the cached file is written that way, but an injected test fixture should not have to promise it.
+  const isPerp = derivedVenue === PERP_VENUE_ID;
+  const fundingRows: readonly FundingRow[] = isPerp
+    ? [...(opts.fundingRows ?? loadFundingRowsFromDisk(opts.symbol))].sort(
+        (a, b) => a.timestamp - b.timestamp,
+      )
+    : [];
   const fetchFn = opts.fetchFn ?? fetch;
   const env = opts.env ?? process.env;
   const maxUsd = new Decimal(opts.maxUsd);
@@ -919,6 +1011,21 @@ export async function runAgenticReplay(opts: AgenticReplayOpts): Promise<Agentic
   let currentEntryBarIndex: number | null = null;
   let currentTripDirection: PositionDirection = 'LONG';
   const exitReasonCounts = { stop: 0, take_profit: 0, max_hold: 0 };
+  // FUNDING accrual state (see file header's FUNDING note). fundingCursor is fast-forwarded past every
+  // row at-or-before firstBarTs — a pure perf skip of history that predates the walk (nothing is ever
+  // open before bar 0, so those rows could never have accrued regardless).
+  let fundingCursor = 0;
+  while (
+    fundingCursor < fundingRows.length &&
+    fundingRows[fundingCursor]!.timestamp <= firstBarTs
+  ) {
+    fundingCursor++;
+  }
+  let fundingQuoteTotal = new Decimal(0);
+  let fundingLongQuoteTotal = new Decimal(0);
+  let fundingShortQuoteTotal = new Decimal(0);
+  let fundingLongEvents = 0;
+  let fundingShortEvents = 0;
   const decisionOutcomeCounts: Record<AgenticReplayDecisionOutcome, number> = {
     accepted: 0,
     hold: 0,
@@ -1127,6 +1234,37 @@ export async function runAgenticReplay(opts: AgenticReplayOpts): Promise<Agentic
       }
     }
 
+    // FUNDING (see file header's FUNDING note): accrue every cached row at-or-before THIS bar's own
+    // close, against whatever position survived the fill handling above — mirrors harness.ts's own
+    // "funding settles after any fill this bar" convention. Timestamps come STRICTLY from fundingRows
+    // itself (never an invented per-bar schedule), so a bar interval coarser than the funding grid
+    // (e.g. 4h bars over Binance's 8h grid) correctly accrues more than one event on a straddling bar,
+    // and fundingRows is always [] for a spot symbol, making this a zero-iteration no-op there.
+    const barCloseTs = bar[0]! + intervalMs;
+    while (
+      fundingCursor < fundingRows.length &&
+      fundingRows[fundingCursor]!.timestamp <= barCloseTs
+    ) {
+      const row = fundingRows[fundingCursor]!;
+      fundingCursor++;
+      if (pos.signedQty.isZero()) continue; // flat at accrual time -> nothing settles
+      // fundingPayment's sign IS the PnL contribution (test/backtest/funding.ts): negative when the
+      // position holder PAYS (a long under a positive rate), positive when they RECEIVE (a short under
+      // a positive rate, or either side under a negative one) — folded into pos.realizedPnl exactly
+      // like harness.ts does, so the equity curve/drawdown reflect it too.
+      const rate = new Decimal(row.fundingRate);
+      const payment = fundingPayment(pos.signedQty, candle.close, rate);
+      fundingQuoteTotal = fundingQuoteTotal.plus(payment);
+      if (pos.signedQty.gt(0)) {
+        fundingLongQuoteTotal = fundingLongQuoteTotal.plus(payment);
+        fundingLongEvents += 1;
+      } else {
+        fundingShortQuoteTotal = fundingShortQuoteTotal.plus(payment);
+        fundingShortEvents += 1;
+      }
+      pos = { ...pos, realizedPnl: pos.realizedPnl.plus(payment) };
+    }
+
     // signedQty is SIGNED, so this expression is already correct for a short: a negative qty times a
     // negative (close − avgEntry) move is a positive unrealized PnL. No direction branch needed.
     const unreal = pos.signedQty.mul(candle.close.minus(pos.avgEntry));
@@ -1177,7 +1315,10 @@ export async function runAgenticReplay(opts: AgenticReplayOpts): Promise<Agentic
 
   const realizedQuote = cycles.reduce((a, c) => a.plus(c.realizedPnl), new Decimal(0));
   const feesQuote = cycles.reduce((a, c) => a.plus(c.feesQuote), new Decimal(0));
-  const netQuote = realizedQuote.minus(feesQuote);
+  // Funding is its OWN line item (CLAUDE.md rule 1 — never silently mixed into feesQuote) but IS folded
+  // into netQuote/netOfLlmSpendQuote here: those are the two figures this fix must make genuinely net
+  // of funding (see the file header's FUNDING note). fundingQuoteTotal is always '0' for a spot symbol.
+  const netQuote = realizedQuote.minus(feesQuote).plus(fundingQuoteTotal);
 
   return {
     symbol: opts.symbol,
@@ -1200,11 +1341,14 @@ export async function runAgenticReplay(opts: AgenticReplayOpts): Promise<Agentic
     pnl: {
       realizedQuote: realizedQuote.toFixed(),
       feesQuote: feesQuote.toFixed(),
+      fundingQuote: fundingQuoteTotal.toFixed(),
       netQuote: netQuote.toFixed(),
       llmSpendUsd: spendUsd.toFixed(),
       netOfLlmSpendQuote: netQuote.minus(spendUsd).toFixed(),
       long: computeDirectionStats(cycles, directionPerTrip, 'LONG'),
       short: computeDirectionStats(cycles, directionPerTrip, 'SHORT'),
+      fundingLong: { events: fundingLongEvents, netQuote: fundingLongQuoteTotal.toFixed() },
+      fundingShort: { events: fundingShortEvents, netQuote: fundingShortQuoteTotal.toFixed() },
     },
     segments,
     totals,

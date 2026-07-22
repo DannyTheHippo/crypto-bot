@@ -15,10 +15,24 @@ import { CrashRecoveryService } from './crash-recovery.service';
 // first. Any non-clean pass (a still-unresolved cause, a state change away from HALTED/
 // HALTED_DEGRADED, or the flag being off) resets the counter to 0.
 const REQUIRED_CLEAN_PASSES = 2;
-// Reconciliation runs on its own 30s scheduled cadence (trading-runtime.module.ts), independent of
-// kill-switch state — this window tolerates one missed/slow cycle before "clean" is treated as
-// stale (fail CLOSED: a scheduler outage reads as NOT clean, never a permanently-stale true).
-const RECONCILE_FRESHNESS_MS = 60_000;
+// Staleness bound on the last clean reconcile stamp. Fail CLOSED: a scheduler outage reads as NOT
+// clean, never a permanently-stale true.
+//
+// SIZED OFF MEASURED PRODUCTION BEHAVIOUR, not the nominal cadence (2026-07-22 soak). The driver's
+// interval is 30s, but a pass over the 40-symbol/2-venue basket takes ~60s with the venues serialized,
+// so the re-entrancy guard skips every other tick: measured 57-58 completed passes per venue per hour
+// against 62 skipped (119 ≈ the 120 ticks/hour), i.e. an EFFECTIVE cadence of ~62s, not 30s.
+//
+// This compounds with reconcile()'s asymmetric stamping, which credits a CLEAN verdict to the instant
+// the pass STARTED (the earliest moment its observations can describe — see that method's comment). A
+// pass starting at T and completing at T+60s therefore lands a stamp that is ALREADY ~60s old. The
+// original 60_000 — chosen as "2× a 30s cadence" — would thus read stale almost immediately after
+// every pass, leaving auto-resume fail-closed-INERT: safe, but never actually firing.
+//
+// 180s ≈ 3× the measured effective cadence: still a real staleness bound (a genuine reconcile outage
+// ages out well inside it), but wide enough that normal timing does not permanently veto a resume.
+// Re-derive this if the basket size, venue count, or pass duration changes materially.
+const RECONCILE_FRESHNESS_MS = 180_000;
 
 // The four halt causes this service knows how to positively confirm cleared, each keyed off the
 // exact reason-string prefix KillSwitchService.reason() carries for that cause

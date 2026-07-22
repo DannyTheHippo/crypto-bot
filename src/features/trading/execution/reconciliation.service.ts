@@ -201,6 +201,15 @@ export class ReconciliationService {
       // Visible, never silent: a chronically slow reconciler must show up as skipped passes rather than
       // as a mysteriously idle cadence (the same "a silent skip once hid a per-pass throw for weeks"
       // lesson the driver's own catch comment records).
+      //
+      // A MODERATE SKIP RATE IS EXPECTED AND HEALTHY — do not read it as a fault. Measured in the
+      // 2026-07-22 soak: 62 skips/hour against 57-58 completed passes per venue (119 ≈ the 120 ticks
+      // an hour of 30s ticks produces). Because a pass takes ~60s, the 30s interval means a fresh pass
+      // starts almost immediately after the previous one ends — the skipped ticks act as the retry that
+      // keeps passes running BACK-TO-BACK, which is the best available cadence. Widening the interval
+      // to "stop the skips" would make it strictly worse (a 60s tick landing mid-pass would skip to
+      // 120s). What IS alarming: a sustained 100% skip rate, or completed-pass count trending toward
+      // zero — that means a pass is wedged, not merely slow.
       this.log.warn(
         'reconcile pass still in flight — skipping this tick (coalesced onto the running pass)',
       );

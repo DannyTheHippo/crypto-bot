@@ -20,12 +20,12 @@ topology was deleted at cutover — do not bring it back.
 Exactly four containers (`docker-compose.yml`): `app`, `postgres`, `prometheus`, `grafana`. No
 compose profiles.
 
-| Service      | Host port | Notes                                      |
-| ------------ | --------- | ------------------------------------------ |
+| Service      | Host port | Notes                                       |
+| ------------ | --------- | ------------------------------------------- |
 | `app`        | 3100      | `/health/live`, `/health/ready`, `/metrics` |
-| `postgres`   | 5432      | DB `cryptobot`; volume `postgres_data_v3`  |
-| `prometheus` | 9090      | TSDB volume `prometheus_data_v3`           |
-| `grafana`    | 3101      | dashboards + alerts UI                     |
+| `postgres`   | 5432      | DB `cryptobot`; volume `postgres_data_v3`   |
+| `prometheus` | 9090      | TSDB volume `prometheus_data_v3`            |
+| `grafana`    | 3101      | dashboards + alerts UI                      |
 
 - Compose `env_file: [.env.app, .env]` — later file wins (secrets override knobs). The only inline
   `environment:` on `app` is `NODE_OPTIONS=--max-old-space-size=1024` (heap cap, not a zod knob).

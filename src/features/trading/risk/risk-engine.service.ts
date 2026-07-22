@@ -88,29 +88,33 @@ export class RiskEngineService implements RiskEnginePort {
 
     // Build the freshness-stamped mark from the feed-health port.
     //
-    // HEALTH IS THE BEST OF THE TWO CHANNELS THAT CAN PRODUCE THE MARK (fix 2026-07-22). getRefPrice
-    // is fed by BOTH the ticker and the order-book channels — teeing-market-stream.ts's observe()
-    // calls setRef() from a TICKER event and from an ORDER_BOOK_SNAPSHOT alike. This probe previously
-    // named 'book' alone, but `book` is only subscribed for the ACTIVE MENU (8 of 40 symbols, and the
-    // menu rotates), so for every off-menu symbol health() answered its unknown-channel default 'GAP'
-    // (feed-health.service.ts) and evaluate.ts's `feedHealth === 'LIVE'` test vetoed the intent
-    // STALE_DATA. Effect observed live: 32 of 40 symbols could NEVER trade, silently, and a menu
-    // rotation between a decide and its risk evaluation vetoed proposals on symbols that had just
-    // left the menu — 6 of 6 proposals rejected 2026-07-22 17:45Z, zero orders ever created.
+    // Health is the best of the two channels that CAN produce the mark: getRefPrice is fed by BOTH
+    // the ticker and the order-book channels (teeing-market-stream.ts's observe() calls setRef() from
+    // a TICKER event and from an ORDER_BOOK_SNAPSHOT alike). Probing 'book' alone vetoed every symbol
+    // outside the active menu — book is subscribed per-menu, and health() answers its unknown-channel
+    // default 'GAP' otherwise — which also vetoed reduce-only EXITS and protective stops, so a
+    // position could become unexitable through the strategy path once its book parked.
     //
-    // This does NOT weaken the gate. The mark's own freshness is still bounded by
-    // `ageMs <= limits.staleMaxAgeMs` in evaluate.ts, so a genuinely quiet feed still vetoes; all this
-    // changes is WHICH channel's liveness is consulted, so it matches where the price actually came
-    // from. When neither is live, the ticker's status is reported — it is the universe-wide channel,
-    // so it is the more meaningful diagnostic than a 'GAP' for a book that was never subscribed.
+    // This DELIBERATELY REPEALS XA6's "a lite (non-menu, unpositioned) symbol must not pass entry
+    // gates either" invariant, which the book probe implemented. That invariant is now carried where
+    // it belongs — the off-menu proposal block in batching-agent-client.ts — rather than by vetoing on
+    // a channel that did not produce the price. Dated record: reports/loop/LOG.md, 2026-07-22.
+    //
+    // NOT a weakening of the staleness gate: evaluate.ts bounds the ref price's own age on BOTH sides,
+    // so a quiet feed and a future-stamped one still veto. Caveat this does not solve: getRefPrice
+    // returns no provenance, so this cannot probe the channel that actually wrote the price — a
+    // DEGRADED book is tolerated while the ticker is LIVE. That is sound only because a DEGRADED
+    // channel's own last write is older than STALE_THRESHOLD_MS, so the age bound vetoes it anyway.
     const ref = this.feed.getRefPrice(intent.symbol);
-    const bookHealth = this.feed.health(intent.venue, intent.symbol, 'book');
-    const tickerHealth = this.feed.health(intent.venue, intent.symbol, 'ticker');
     const mark: MarkInfo | undefined = ref
       ? {
           mid: ref.mid,
           ageMs: now - ref.at,
-          feedHealth: bookHealth === 'LIVE' || tickerHealth === 'LIVE' ? 'LIVE' : tickerHealth,
+          feedHealth:
+            this.feed.health(intent.venue, intent.symbol, 'book') === 'LIVE' ||
+            this.feed.health(intent.venue, intent.symbol, 'ticker') === 'LIVE'
+              ? 'LIVE'
+              : this.feed.health(intent.venue, intent.symbol, 'ticker'),
           lastTrade: ref.mid, // flatten's stale carve-out (P1) falls back to last trade with band ×2
         }
       : undefined;

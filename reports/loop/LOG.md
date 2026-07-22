@@ -4423,3 +4423,56 @@ Fixed: `BACKTEST_AGENTIC_TIMEOUT_MS`, default 4 h, with the $ cap as the real li
 checkpointing of partial scorecards remains an open follow-up. Separately, the kimi route carried a
 stale `callDelayMs: 5000` tier-1 workaround; the account is tier 2 (RPM 500) and these harnesses call
 sequentially, so the delay was ~40 min of pure dead time — now 0.
+
+## 2026-07-22 — ZERO TRADES root cause: risk vetoed on a channel that never produced the mark
+
+The soak's first checkpoint surfaced it: `orders` was EMPTY across the entire DB history despite 5099
+journalled decisions. Chain of evidence — `signals` 6, `risk_decisions` 6, all `REJECTED
+["STALE_DATA"]` within one second at 17:45:28Z; `fills` 0. Measured channel coverage: ticker 40
+symbols, candle:15m 40, **book 8** — and the book set is byte-identical to `agentic_active_menu`.
+
+`RiskEngineService` built its mark with `health(venue, symbol, 'book')`, and `evaluate.ts` vetoes
+STALE_DATA unless that reads `'LIVE'`. `book` is subscribed per-menu, so every off-menu symbol got
+feed-health's unknown-channel default `'GAP'` and was vetoed. But the mark's PRICE comes from BOTH
+channels (`teeing-market-stream.ts`'s `observe()` calls `setRef()` from a TICKER event and from an
+ORDER_BOOK_SNAPSHOT alike) — so risk was gating on the liveness of a channel that had not produced the
+price it was about to trade on. Health now takes the best of the two channels.
+
+**XA6 INVARIANT REPEALED, deliberately and recorded here** (rules/change-discipline.md). Three comments
+described the book probe as an intentional entry gate — "a lite (non-menu, unpositioned) symbol cannot
+be consulted, so it must not pass entry gates either" (`ccxt-stream.adapter.ts:205`, `:744-747`,
+`feed-health.service.ts:89-92`). That invariant is repealed and now carried where it belongs: the
+off-menu proposal block in `batching-agent-client.ts`. Decisive reason, surfaced by adversarial review
+rather than by the original diagnosis: the book probe also vetoed **reduce-only exits and protective
+stops**, so once a symbol's book parked, an open position could become unexitable through the strategy
+path — protected only by the kill-switch flatten carve-out. A gate that can strand a position is the
+wrong place for a "don't enter off-menu" rule.
+
+**A REAL HOLE IN THE FIRST FIX, found by review and corrected before it could bite (MF1).** The
+freshness test was one-sided: `ageMs = now - ref.at` with only an upper bound, so a FUTURE-stamped
+frame yields a NEGATIVE age that passes trivially. Worse, `updateRefPrice` accepts any `at >=
+existing.at`, so a single bogus stamp PINS the ref price — every correct frame after it is discarded
+as older — leaving orders priced off a frozen mid for as long as the stamp leads the clock. Reachable
+via a venue emitting microsecond or skewed timestamps (passed through on a bare `typeof === 'number'`
+check and stored verbatim). Pre-existing, but the health fix widened its blast radius from 8 symbols to
+40, and the fix's own safety argument rested on that broken bound. Now two-sided in `evaluate.ts`, plus
+a skew clamp in `updateRefPrice` so the poison cannot be stored at all.
+
+Also corrected: two comment claims that were simply false (`feedHealth` is never reported anywhere —
+it has exactly one consumer, the `=== 'LIVE'` test; and the code ORs two channels rather than checking
+provenance), and two of the three original "regression" tests passed with the fix REVERTED. The
+load-bearing case was untested — Binance USD-M's `@ticker` carries no bid/ask, so for perps the BOOK
+can be the sole mid producer, and a "simplify to ticker only" edit would have passed every test while
+silently breaking perps. Now pinned, along with a future-stamp regression.
+
+**STILL OPEN — the diagnosis may be incomplete.** `batching-agent-client.ts` already blocks off-menu
+proposals, so "32 symbols could never trade" may be unreachable in the deployed wiring. The alternative
+trigger is the menu-rotation race: after a rotation an incoming symbol is consultable while its book
+takes up to `TIER_PARK_POLL_MS` (30s) plus lane-paced resubscribe to read LIVE, opening a ~30-60s veto
+window — which fits "6 of 6 in the same second" better than the permanent-veto story. Confirm which
+before treating this as closed; if it is the race, the health probe treats a symptom.
+
+**Separately unfixed:** channel staleness ran 20-200s against the 5000ms bound through the whole
+observation window (13 of 88 channels over threshold at one sample, worst 200s, dominated by
+`candle:15m` on low-liquidity symbols). Even on-menu symbols will still be vetoed intermittently until
+that is addressed.

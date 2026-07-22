@@ -202,6 +202,36 @@ describe('RiskEngineService', () => {
     expect(d).toMatchObject({ verdict: 'REJECTED', reasons: ['STALE_DATA'] });
   });
 
+  // The book leg is load-bearing and was previously unpinned: Binance USD-M's @ticker carries no
+  // bid/ask, and normalizeTicker drops a payload without them (the throw is swallowed in
+  // market-data.service.ts), so for perps the BOOK can be the sole producer of the ref price. Without
+  // this test, "simplify to ticker only" would pass every other case here and silently break perps.
+  it('APPROVES when the ticker is GAP but the book feeding the same ref price is LIVE (perp shape)', () => {
+    const feedPort: FeedHealthPort = {
+      getRefPrice: () => ({ mid: price('100'), at: epochMs(T) }),
+      health: (_v, _s, channel) => (channel === 'ticker' ? 'GAP' : 'LIVE'),
+      fetchCandles: () => Promise.resolve([]),
+    };
+    const { engine } = makeEngine({ feedPort });
+    expect(engine.evaluate(intent(), snapshot()).verdict).toBe('APPROVED');
+  });
+
+  // Security review MF1: ageMs = now - ref.at, so a FUTURE stamp yields a NEGATIVE age that an
+  // upper-bound-only test accepts. It is doubly dangerous because updateRefPrice only accepts
+  // `at >= existing.at`, so one such frame PINS the mark and every correct frame after it is dropped.
+  it('REJECTS STALE_DATA on a FUTURE-stamped ref price (negative age is a broken clock, not freshness)', () => {
+    const feedPort: FeedHealthPort = {
+      getRefPrice: () => ({ mid: price('100'), at: epochMs(T + 3_600_000) }), // an hour ahead
+      health: () => 'LIVE',
+      fetchCandles: () => Promise.resolve([]),
+    };
+    const { engine } = makeEngine({ feedPort });
+    expect(engine.evaluate(intent(), snapshot())).toMatchObject({
+      verdict: 'REJECTED',
+      reasons: ['STALE_DATA'],
+    });
+  });
+
   it('still REJECTS STALE_DATA on an aged ref price even with both channels LIVE (freshness bound intact)', () => {
     const feedPort: FeedHealthPort = {
       // 5001ms old against staleMaxAgeMs 5000 — one ms past the bound.

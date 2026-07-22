@@ -19,6 +19,12 @@ import type { ExchangeStreamPort } from '../../../ports/exchange-stream';
 import { EXCHANGE_STREAM } from '../../../ports/exchange-stream';
 import type { VenueConfig } from '../../../ports/app-config';
 
+// How far ahead of our own clock a venue's event timestamp may sit before updateRefPrice refuses it.
+// Generous enough to absorb ordinary NTP skew and venue clock drift (a legitimately-stamped frame is
+// never rejected in practice), tight enough that a microsecond-scale or grossly skewed stamp cannot
+// pin the ref price — see updateRefPrice's own comment for why pinning is the dangerous part.
+const REF_PRICE_SKEW_TOLERANCE_MS = 5_000;
+
 interface ChannelState {
   health: ChannelHealth;
   lastEventAt: EpochMs;
@@ -109,7 +115,16 @@ export class FeedHealthService implements FeedHealthPort, MarketStreamTelemetryP
     }));
   }
 
+  // Refuses a far-FUTURE stamp at the source (fix 2026-07-22, security review MF1). The monotonic
+  // `at >= existing.at` rule below is what makes a bogus stamp so damaging: one frame timestamped an
+  // hour ahead (a venue emitting microseconds, or clock skew — both pass the adapter's bare
+  // `typeof === 'number'` check and are stored verbatim by normalize.ts) would PIN the ref price,
+  // because every subsequent correct frame is then discarded as older. RiskEngine would keep pricing
+  // orders off that frozen mid for as long as the stamp leads the clock. The RiskEngine now also
+  // rejects a negative age (evaluate.ts's two-sided bound) — this is the second half of that fix,
+  // stopping the poison from being stored at all rather than only from being traded on.
   updateRefPrice(symbol: SymbolId, mid: Price, at: EpochMs): void {
+    if (at > this.clock.now() + REF_PRICE_SKEW_TOLERANCE_MS) return; // fail closed: drop, never pin
     const existing = this.refPrices.get(symbol);
     if (!existing || at >= existing.at) {
       this.refPrices.set(symbol, { mid, at });

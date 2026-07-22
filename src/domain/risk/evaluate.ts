@@ -105,8 +105,21 @@ export function evaluate(input: RiskEvalInput): RiskEvaluation {
   if (limits === null) return reject(intent, 'LIMITS_INCOMPLETE');
 
   // P1 — market-data staleness; flatten carve-out may use last-trade with band ×2
+  //
+  // The bound is TWO-SIDED (fix 2026-07-22, security review MF1). `ageMs` is `now - ref.at`, so a
+  // FUTURE-stamped ref price yields a NEGATIVE age that trivially satisfies an upper-bound-only test.
+  // That is reachable: a venue emitting microsecond or skewed timestamps is passed through on a bare
+  // `typeof === 'number'` check (ccxt-stream.adapter.ts) and stored verbatim (normalize.ts). Worse,
+  // FeedHealthService.updateRefPrice only accepts `at >= existing.at`, so ONE future-stamped frame
+  // both passes this gate and FREEZES the mark — every correct frame after it is discarded as older —
+  // leaving orders priced off a stale mid for as long as the bogus stamp leads the clock, bounded only
+  // by the drift collar below. A negative age is never a fresh price; it is a broken clock, so it
+  // fails CLOSED here (and updateRefPrice additionally refuses far-future stamps at the source).
   const fresh =
-    mark !== undefined && mark.ageMs <= limits.staleMaxAgeMs && mark.feedHealth === 'LIVE';
+    mark !== undefined &&
+    mark.ageMs >= 0 &&
+    mark.ageMs <= limits.staleMaxAgeMs &&
+    mark.feedHealth === 'LIVE';
   let refMid: Decimal;
   let bandMultiplier = 1;
   if (fresh) {

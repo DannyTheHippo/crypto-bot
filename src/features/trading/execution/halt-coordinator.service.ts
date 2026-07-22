@@ -21,6 +21,7 @@ import {
   type ExecFilters,
 } from '../../../ports/execution';
 import { EXCHANGE_PORT, type ExchangePort } from '../../../ports/exchange';
+import { OPS_EVENTS, type OpsEventPort } from '../../../ports/observability';
 import { price, type Price } from '../../../domain/types/money';
 import type { Signal } from '../../../domain/types/signal';
 import type { Position } from '../../../domain/types/portfolio';
@@ -76,6 +77,12 @@ export class HaltCoordinatorService {
     @Optional()
     @Inject(EXCHANGE_PORT)
     private readonly exchange?: Pick<ExchangePort, 'cancelAlgoOrder'>,
+    // Backlog #52: diagnostic side-channel, never a control-flow input — @Optional so every
+    // pre-existing direct-construction unit test keeps constructing without it (OpsEventsModule
+    // binds the real one at the composition root).
+    @Optional()
+    @Inject(OPS_EVENTS)
+    private readonly opsEvents?: OpsEventPort,
   ) {}
 
   async tick(now: EpochMs): Promise<void> {
@@ -87,7 +94,7 @@ export class HaltCoordinatorService {
         await this.driveFlattening(now);
         return;
       default:
-        this.resetEpisode(); // RUNNING / HALTED / HALTED_DEGRADED — nothing to drive
+        this.resetEpisode(now); // RUNNING / HALTED / HALTED_DEGRADED — nothing to drive
     }
   }
 
@@ -97,15 +104,16 @@ export class HaltCoordinatorService {
     if (!this.cancelAllIssued) {
       this.cancelAllIssued = true;
       this.haltingSince = now;
+      this.opsEvents?.emit({ event: 'halt.engage', reason: this.killSwitch.reason() });
       await this.cancelRestingAlgoStops(); // best-effort, WITH the regular-rail flatten below
       await this.gate.flattenAll('HALT'); // cancel every known open order
     }
     if (this.portfolio.snapshot().openOrders.length === 0) {
       this.killSwitch.confirmCancels(); // → HALTED or FLATTENING (per the flatten-requested flag)
-      this.resetEpisode();
+      this.resetEpisode(now);
     } else if (this.haltingSince !== undefined && now - this.haltingSince >= CANCEL_TIMEOUT_MS) {
       this.killSwitch.cancelTimeout(); // → HALTED_DEGRADED + page
-      this.resetEpisode();
+      this.resetEpisode(now);
     }
   }
 
@@ -197,7 +205,18 @@ export class HaltCoordinatorService {
     return pos.signedQty.abs().lt(new Decimal(minQty));
   }
 
-  private resetEpisode(): void {
+  private resetEpisode(now: EpochMs): void {
+    // Backlog #52: only a genuine episode end is ops-event-worthy — this is also called every tick
+    // while RUNNING/HALTED (default branch of tick() above), where haltingSince is already undefined.
+    // The drain ends into HALTED/FLATTENING/HALTED_DEGRADED (never RUNNING), so the event carries the
+    // resulting `to` state; state() is a pure non-throwing getter, safe inside the emit argument.
+    if (this.haltingSince !== undefined) {
+      this.opsEvents?.emit({
+        event: 'halt.cancels_drained',
+        durationMs: now - this.haltingSince,
+        to: this.killSwitch.state(),
+      });
+    }
     this.cancelAllIssued = false;
     this.haltingSince = undefined;
   }

@@ -1936,6 +1936,60 @@ describe('v2 trade tools (v3 unified contract, DECISION_V2_BOUNDS)', () => {
     expect(props.thesis.description).toContain(String(DECISION_V2_BOUNDS.thesisMaxLen));
   });
 
+  // 2026-07-22 schema-hardening (background: 67/100 LLM-consulted holds since the v3 cutover were
+  // masked schema-rejection degrades — four of the six open_* directive fields never stated
+  // "required" in ANY model-facing text). Pins the model-facing contract that fixes this.
+  describe('schema-hardening: required-on-open is stated for every open_* directive field', () => {
+    const REQUIRED_ON_OPEN_TEXT = "Required on 'open_long'/'open_short', including a scale-in";
+
+    it("sizeFraction/entryValidityBars/stopLossPct/takeProfitPct/maxHoldBars descriptions all state 'required on open'", () => {
+      const props = buildTradeTool(spotCaps('0.15')).input_schema.properties;
+      for (const field of [
+        'sizeFraction',
+        'entryValidityBars',
+        'stopLossPct',
+        'takeProfitPct',
+        'maxHoldBars',
+      ] as const) {
+        expect(props[field].description, `${field} description`).toContain(REQUIRED_ON_OPEN_TEXT);
+      }
+      // entry carries its own REQUIRED wording (a distinct object-level field, not scalar) —
+      // asserted with its existing phrasing rather than the scalar-field marker text above.
+      expect(props.entry.description).toContain('REQUIRED when opening a new position');
+    });
+
+    it('TRADE_ACTION_DESCRIPTION enumerates all six open_* directive fields as a REQUIRED set', () => {
+      const description = buildTradeTool(spotCaps('0.15')).input_schema.properties.action
+        .description;
+      for (const field of [
+        'sizeFraction',
+        'entry',
+        'entryValidityBars',
+        'stopLossPct',
+        'takeProfitPct',
+        'maxHoldBars',
+      ]) {
+        expect(description, `action description mentions ${field}`).toContain(field);
+      }
+      expect(description).toContain('REQUIRES all six directive fields');
+    });
+
+    it('submit_portfolio tool description states decisions must be an actual JSON array, never a string-encoded one', () => {
+      const tool = buildTradePortfolioTool(new Map([[symbolId('BTC/USDT'), spotCaps('0.15')]]));
+      expect(tool.description).toContain(
+        '`decisions` MUST be an actual JSON array of decision objects — never a string-encoded array',
+      );
+    });
+
+    it('thesis description states the character cap is STRICT and exceeding it rejects the whole decision', () => {
+      const description = buildTradeTool(spotCaps('0.15')).input_schema.properties.thesis
+        .description;
+      expect(description).toContain('STRICTLY');
+      expect(description).toContain('rejects the WHOLE decision');
+      expect(description).toContain('degrades to a hold');
+    });
+  });
+
   it('entry.style is maker|taker and entry.offsetBps is documented as maker-only', () => {
     const entry = buildTradeTool(spotCaps('0.15')).input_schema.properties.entry;
     expect(entry.properties.style.enum).toEqual(['maker', 'taker']);

@@ -57,6 +57,7 @@ import { assertAgenticLaneNotLive } from '../agentic/agentic-live-interlock';
 import { symbolConstraintsFor } from './agentic-bridge.module';
 import { MergedExchangeStream } from './market-streams.module';
 import { AgentMetricsRecorder } from '../../common/observability/agent-metrics-recorder.service';
+import { OpsEventLogger } from '../../common/observability/ops-event-logger';
 import { DEFAULT_FILTERS } from '../../../domain/risk/default-filters';
 import { venueForSymbol } from '../../../domain/types/venue-map';
 import { symbolId, strategyId, type SymbolId } from '../../../domain/types/ids';
@@ -251,6 +252,10 @@ export class TradingRuntimeService
     private readonly algoStopRecovery: AlgoStopRecoveryService,
     @Inject(AGENT_CLIENT) rawAgentClient: AgentClientPort,
     private readonly agentMetrics: AgentMetricsRecorder,
+    // Backlog #52 (W12 operational event logging): required, not @Optional — TradingRuntimeService is
+    // only ever constructed via full app DI (ObservabilityModule is one of this module's own imports
+    // above), never direct-constructed in a unit test (mirrors agentMetrics just above).
+    private readonly opsEvents: OpsEventLogger,
     @Inject(AGENT_LLM_BUDGET) private readonly agentBudget: DailyLlmBudget,
     // I1: the SAME scanner instance ACTIVE_MENU_GATE_OVERRIDE binds (see that token's own comment) —
     // shared with agentic-strategy.module.ts's AGENT_CLIENT factory via the identical DI token.
@@ -620,8 +625,9 @@ export class TradingRuntimeService
     // runbook documents append-only symbol management). Each instance gets its own params (symbol,
     // venue, entry caps run per-strategy in the host) while AGENT_LLM_BUDGET stays ONE shared
     // lane-wide spend cap across all instances.
+    const strategyIds = symbols.map((_, i) => `agentic-${i + 1}`);
     symbols.forEach((symbol, i) => {
-      this.registry.enable(strategyId(`agentic-${i + 1}`), active, this.agenticParams(symbol));
+      this.registry.enable(strategyId(strategyIds[i]!), active, this.agenticParams(symbol));
     });
     const first = this.agenticParams(symbols[0]!);
     this.log.warn(
@@ -632,6 +638,12 @@ export class TradingRuntimeService
 
     await this.host.start();
     this.log.log('strategy host started — consuming market data');
+    this.opsEvents.emit({
+      event: 'boot.ready',
+      bootId: this.config.app.bootId,
+      mode,
+      strategies: strategyIds,
+    });
     // I1 (Design § Universe): "once at boot" recompute, run right after the host starts consuming —
     // the basket's own candle warmup then proceeds on its normal cadence (isActive() safely defaults
     // to "everything active" until real data lands).

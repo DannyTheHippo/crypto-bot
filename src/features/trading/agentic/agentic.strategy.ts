@@ -527,6 +527,26 @@ const TRACK_RECORD_MIN_TRIPS = 8;
 // of the window must still omit rather than silently compare a truncated span.
 const BENCHMARK_COVERAGE_TOLERANCE_BARS = 2;
 
+// Transport-reason gap fix (soak-flagged): mirrors anthropic-agent-client.ts's
+// schemaRejectedRationale truncate pattern — a short single-line budget for the AgentProposeError
+// detail persisted alongside kind/status (see recordErrorJournalEntry's own comment for why this
+// message specifically is safe to persist).
+const ERROR_JOURNAL_RATIONALE_DETAIL_MAX_LEN = 160;
+function buildErrorJournalRationale(
+  err: unknown,
+  kind: string,
+  status: number | undefined,
+): string {
+  const prefix = status !== undefined ? `${kind} (status ${status})` : kind;
+  if (!(err instanceof AgentProposeError)) return prefix;
+  const singleLine = err.message.replace(/\s*\n\s*/g, ' ').trim();
+  const detail =
+    singleLine.length > ERROR_JOURNAL_RATIONALE_DETAIL_MAX_LEN
+      ? `${singleLine.slice(0, ERROR_JOURNAL_RATIONALE_DETAIL_MAX_LEN)}…`
+      : singleLine;
+  return `${prefix}: ${detail}`;
+}
+
 // Concrete agentic strategy: a thin in-process host-side shell that delegates each decision to the
 // out-of-process agent client. It enriches the host's snapshot with computed indicators (own
 // timeframe + aggregated HTF), the strategy's own position, and a rolling trail of its own past
@@ -2775,9 +2795,17 @@ export class AgenticStrategy implements AsyncStrategy {
         model: this.model,
         action: 'error',
         confidence: null,
-        // Never the underlying message: it may echo transport detail beyond kind/status. Never the
-        // key, never the response body.
-        rationale: status !== undefined ? `${kind} (status ${status})` : kind,
+        // Reverses the earlier privacy-conservative kind/status-only rationale (soak-flagged gap):
+        // AgentProposeError.message is CLIENT-CONSTRUCTED (anthropic-agent-client.ts builds it from
+        // its own fetch/HTTP-layer diagnostics). It is key-free — the api-key is a request HEADER,
+        // never in the request body or in a transport-error string. The HTTP-status path DOES embed up
+        // to ~500 chars of the Anthropic *error response body*, but that body is provider-side error
+        // text (asserted credential-free at the construction site), never the prompt/request body — so
+        // persisting a truncated slice here is safe and is the honest "why did this decide error"
+        // trail instead of a bare kind. A bare Error (non-AgentProposeError rejection, e.g. a
+        // strategy-internal throw) carries NO such guarantee — its .message may echo arbitrary
+        // internal state — so that path stays kind-only, unchanged.
+        rationale: buildErrorJournalRationale(err, kind, status),
         refPrice: refPrice ? refPrice.toFixed() : null,
         close: lastCandle ? lastCandle.close.toFixed() : null,
         inputTokens: null,

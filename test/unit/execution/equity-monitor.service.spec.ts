@@ -15,10 +15,13 @@ function build(startState: KillSwitchState = 'RUNNING') {
     new FeeLedgerService(),
   );
   let state: KillSwitchState = startState;
+  let lastReason = '';
   const engages: Array<{ reason: string; flatten: boolean }> = [];
   const killSwitch: KillSwitchPort = {
     state: () => state,
+    reason: () => lastReason,
     engage: (reason, flatten) => {
+      lastReason = reason;
       engages.push({ reason, flatten });
       state = 'HALTING';
     },

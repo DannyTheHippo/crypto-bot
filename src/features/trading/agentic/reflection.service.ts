@@ -205,6 +205,14 @@ export interface ReflectionMetricsRecorder {
   // more AgentMetricsRecorder method — mirrors recordTokens' own precedent above (a decide-path fact
   // riding the reflection-named seam). Optional, same isolation-from-test-recorders convention.
   recordCapabilityViolation?(kind: string): void;
+  // 2026-07-22 schema-hardening: same reused-seam convention as recordCapabilityViolation above — the
+  // AGENT_CLIENT factory wires AnthropicAgentClientConfig.recordSchemaFailure off this SAME override
+  // rather than a third override token. Optional, same isolation-from-test-recorders convention.
+  recordSchemaFailure?(kind: string): void;
+  // Backlog #53: evaluateTrigger's four exits (below_threshold/cooldown/inflight/fired) were
+  // previously silent outside the in-flight warn log — this closed set answers "why didn't it fire"
+  // from Grafana instead of a debugger, same reused-optional-method convention as the fields above.
+  recordReflectionTrigger?(outcome: string): void;
 }
 
 export interface ReflectionServiceConfig {
@@ -465,10 +473,16 @@ function buildReflectionSystemPrompt(shortsEnabled: boolean): string {
     shortsEnabled
       ? 'short round trips are systematically mis-sized or mis-timed relative to longs.'
       : 'through a decline is itself the right call).',
-    'The DECISION OUTCOMES digest buckets recent decisions by what they did (entries, exits,',
-    'held-long, stayed-flat) and by confidence, each with the mean next-bar forward return — use it',
-    'to look for SYSTEMATIC errors (e.g. entries that on average lose, or high-confidence longs that',
-    'do no better than low-confidence ones), but treat it as thin, noisy evidence, never proof.',
+    'The DECISION OUTCOMES digest buckets recent decisions by what they did (entries, short-entries,',
+    'exits, short-exits, held-long, held-short, stayed-flat) and by confidence, each with the mean',
+    'next-bar forward return — use it to look for SYSTEMATIC errors (e.g. entries that on average',
+    'lose, or high-confidence longs that do no better than low-confidence ones), but treat it as',
+    'thin, noisy evidence, never proof. Every bucket reports the RAW forward return, never sign-',
+    'corrected for direction: a SHORT profits from a DECLINE, so for short-entries and held-short a',
+    'NEGATIVE meanForwardReturnPct means those decisions PROFITED, not lost. short-exits reads the',
+    'OPPOSITE way — the position is already closed when the forward return accrues, so a NEGATIVE',
+    'value means price kept falling and the cover forfeited further profit (a premature exit), while',
+    'a positive value means the cover was well-timed.',
     'The regretDigest scores the OPTION NOT TAKEN, mechanically, from forward candles: declinedEntry',
     'lines are holds that stayed flat and then saw price run (a negative meanRegretBps means staying',
     'flat cost money on average); delayedExit lines are adjust revisions that kept a position open',
@@ -935,14 +949,22 @@ export class ReflectionService {
   private evaluateTrigger(strategyId: StrategyId, key: string, count: number): void {
     try {
       const now = (this.deps.nowFn ?? Date.now)();
-      if ((this.tradesSinceLastAttempt.get(key) ?? 0) < this.cfg.everyNTrades) return;
-      if (now - this.lastAttemptAt < this.cooldownMs) return;
+      if ((this.tradesSinceLastAttempt.get(key) ?? 0) < this.cfg.everyNTrades) {
+        this.deps.recorder?.recordReflectionTrigger?.('below_threshold');
+        return;
+      }
+      if (now - this.lastAttemptAt < this.cooldownMs) {
+        this.deps.recorder?.recordReflectionTrigger?.('cooldown');
+        return;
+      }
       if (this.inFlight) {
         this.warn(
           'reflection: an attempt is already in flight — skipping this trigger (not queued)',
         );
+        this.deps.recorder?.recordReflectionTrigger?.('inflight');
         return;
       }
+      this.deps.recorder?.recordReflectionTrigger?.('fired');
       this.inFlight = true;
       void this.runReflection(strategyId, now, count)
         .catch((err) => {

@@ -18,6 +18,8 @@ import {
   AGENTIC_MENU_CHURN_COUNTER,
   AGENTIC_BUDGET_REMAINING_GAUGE,
   AGENTIC_CAPABILITY_VIOLATIONS_COUNTER,
+  AGENTIC_SCHEMA_REJECTIONS_COUNTER,
+  AGENTIC_REFLECTION_TRIGGER_COUNTER,
 } from '../../../src/features/common/observability/metrics.service';
 import { AgentMetricsRecorder } from '../../../src/features/common/observability/agent-metrics-recorder.service';
 
@@ -44,6 +46,8 @@ describe('AgentMetricsRecorder', () => {
         AGENTIC_MENU_CHURN_COUNTER,
         AGENTIC_BUDGET_REMAINING_GAUGE,
         AGENTIC_CAPABILITY_VIOLATIONS_COUNTER,
+        AGENTIC_SCHEMA_REJECTIONS_COUNTER,
+        AGENTIC_REFLECTION_TRIGGER_COUNTER,
         AgentMetricsRecorder,
       ],
     }).compile();
@@ -55,7 +59,7 @@ describe('AgentMetricsRecorder', () => {
     register.clear();
   });
 
-  it('registers all fifteen agentic-lane metrics', async () => {
+  it('registers all seventeen agentic-lane metrics', async () => {
     const names = (await register.getMetricsAsJSON()).map((m) => m.name);
     for (const name of [
       'agent_decide_total',
@@ -73,6 +77,8 @@ describe('AgentMetricsRecorder', () => {
       'agentic_menu_churn_total',
       'agentic_budget_remaining_usd',
       'agentic_capability_violations_total',
+      'agentic_schema_rejections_total',
+      'agentic_reflection_trigger_total',
     ]) {
       expect(names, name).toContain(name);
     }
@@ -218,6 +224,24 @@ describe('AgentMetricsRecorder', () => {
     expect(metric).toContain('kind="open_short_on_spot"} 2');
   });
 
+  it('recordSchemaFailure increments agentic_schema_rejections_total{kind}', async () => {
+    recorder.recordSchemaFailure('single');
+    recorder.recordSchemaFailure('element');
+    recorder.recordSchemaFailure('element');
+    const metric = await register.getSingleMetricAsString('agentic_schema_rejections_total');
+    expect(metric).toContain('kind="single"} 1');
+    expect(metric).toContain('kind="element"} 2');
+  });
+
+  it('recordReflectionTrigger increments agentic_reflection_trigger_total{outcome}', async () => {
+    recorder.recordReflectionTrigger('fired');
+    recorder.recordReflectionTrigger('cooldown');
+    recorder.recordReflectionTrigger('cooldown');
+    const metric = await register.getSingleMetricAsString('agentic_reflection_trigger_total');
+    expect(metric).toContain('outcome="fired"} 1');
+    expect(metric).toContain('outcome="cooldown"} 2');
+  });
+
   it('recordFundingIngested increments funding_payments_ingested_total{venue,symbol} by count', async () => {
     recorder.recordFundingIngested('binanceusdm', 'BTC/USDT:USDT', 3);
     recorder.recordFundingIngested('binanceusdm', 'ETH/USDT:USDT', 1);
@@ -291,6 +315,8 @@ describe('AgentMetricsRecorder — never throws into a trading path', () => {
       throwing as unknown as Counter<string>,
       throwing as unknown as Gauge<string>,
       throwing as unknown as Counter<string>,
+      throwing as unknown as Counter<string>,
+      throwing as unknown as Counter<string>,
     );
     expect(() => recorder.recordDecide('proposed')).not.toThrow();
     expect(() => recorder.recordTokens(1, 1)).not.toThrow();
@@ -307,5 +333,7 @@ describe('AgentMetricsRecorder — never throws into a trading path', () => {
     expect(() => recorder.recordMenuChurn(1, 1)).not.toThrow();
     expect(() => recorder.setBudgetRemainingUsd(1)).not.toThrow();
     expect(() => recorder.recordCapabilityViolation('open_short_on_spot')).not.toThrow();
+    expect(() => recorder.recordSchemaFailure('single')).not.toThrow();
+    expect(() => recorder.recordReflectionTrigger('fired')).not.toThrow();
   });
 });

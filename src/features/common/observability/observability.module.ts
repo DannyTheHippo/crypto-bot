@@ -48,6 +48,8 @@ import {
   AGENTIC_MENU_CHURN_COUNTER,
   AGENTIC_BUDGET_REMAINING_GAUGE,
   AGENTIC_CAPABILITY_VIOLATIONS_COUNTER,
+  AGENTIC_SCHEMA_REJECTIONS_COUNTER,
+  AGENTIC_REFLECTION_TRIGGER_COUNTER,
 } from './metrics.service';
 import { AgentMetricsRecorder } from './agent-metrics-recorder.service';
 import {
@@ -64,6 +66,7 @@ import {
   VERSION_ROUND_TRIPS_GAUGE,
 } from './version-attribution-metrics.service';
 import { buildPinoHttpOptions } from './logger.config';
+import { OpsEventLogger } from './ops-event-logger';
 
 @Module({
   imports: [
@@ -132,6 +135,8 @@ import { buildPinoHttpOptions } from './logger.config';
     AGENTIC_MENU_CHURN_COUNTER,
     AGENTIC_BUDGET_REMAINING_GAUGE,
     AGENTIC_CAPABILITY_VIOLATIONS_COUNTER,
+    AGENTIC_SCHEMA_REJECTIONS_COUNTER,
+    AGENTIC_REFLECTION_TRIGGER_COUNTER,
     AgentMetricsRecorder,
     PROMOTION_ROUND_TRIPS_GAUGE,
     PROMOTION_NET_PNL_GAUGE,
@@ -142,7 +147,8 @@ import { buildPinoHttpOptions } from './logger.config';
     VERSION_NET_PNL_GAUGE,
     VERSION_ROUND_TRIPS_GAUGE,
     VersionAttributionMetricsService,
+    OpsEventLogger,
   ],
-  exports: [EventLoopHealthIndicator, MetricsService, AgentMetricsRecorder],
+  exports: [EventLoopHealthIndicator, MetricsService, AgentMetricsRecorder, OpsEventLogger],
 })
 export class ObservabilityModule {}

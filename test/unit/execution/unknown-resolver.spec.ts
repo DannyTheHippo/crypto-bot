@@ -62,9 +62,14 @@ function build(
   const ingestor = new FillIngestorService(store, killSwitchStub().ks, orders, portfolio, sampler);
 
   const kills: Array<{ reason: string; flatten: boolean }> = [];
+  let lastReason = '';
   const killSwitch: KillSwitchPort = {
     state: () => 'RUNNING',
-    engage: (reason, flatten) => kills.push({ reason, flatten }),
+    reason: () => lastReason,
+    engage: (reason, flatten) => {
+      lastReason = reason;
+      kills.push({ reason, flatten });
+    },
     confirmCancels: () => undefined,
     cancelTimeout: () => undefined,
     allFlat: () => undefined,

@@ -14,6 +14,7 @@ import type { ExchangePort } from '../../../src/ports/exchange';
 import type { RiskApprovedIntent } from '../../../src/domain/types/risk-decision';
 import type { SymbolFilters } from '../../../src/domain/risk/evaluate';
 import type { FeedHealthPort } from '../../../src/ports/market-data';
+import type { OpsEvent, OpsEventPort } from '../../../src/ports/observability';
 import { price, qty } from '../../../src/domain/types/money';
 import { epochMs, symbolId, strategyId, venueId } from '../../../src/domain/types/ids';
 import { positionKey } from '../../../src/domain/risk/evaluate';
@@ -123,6 +124,8 @@ function build(
     },
   };
 
+  const opsEvents: OpsEvent[] = [];
+  const opsEventLogger: OpsEventPort = { emit: (e) => opsEvents.push(e) };
   const coord = new HaltCoordinatorService(
     clock,
     killSwitch,
@@ -134,8 +137,9 @@ function build(
     FILTERS,
     opts.planStops,
     opts.exchange,
+    opsEventLogger,
   );
-  return { clock, setNow, killSwitch, portfolio, coord, submits, flattenAllReasons };
+  return { clock, setNow, killSwitch, portfolio, coord, submits, flattenAllReasons, opsEvents };
 }
 
 type Ctx = ReturnType<typeof build>;
@@ -165,6 +169,18 @@ describe('HaltCoordinatorService — HALTING', () => {
     await ctx.coord.tick(epochMs(T));
     expect(ctx.flattenAllReasons).toEqual(['HALT']);
     expect(ctx.killSwitch.state()).toBe('HALTED'); // no open orders ⇒ cancels confirmed, no flatten
+  });
+
+  // Backlog #52: the same tick both engages (cancelAllIssued flips true) and clears (no open orders
+  // ⇒ resetEpisode fires within the same tick) — durationMs is 0 since haltingSince == now here.
+  it('emits ops-events halt.engage then halt.cancels_drained (to HALTED) across a single-tick HALTING episode', async () => {
+    const ctx = build();
+    ctx.killSwitch.engage('anomaly', false);
+    await ctx.coord.tick(epochMs(T));
+    expect(ctx.opsEvents).toEqual([
+      { event: 'halt.engage', reason: 'anomaly' },
+      { event: 'halt.cancels_drained', durationMs: 0, to: 'HALTED' },
+    ]);
   });
 
   it('a mismatch HALT (flatten:false) reaches HALTED WITHOUT flattening an open position', async () => {

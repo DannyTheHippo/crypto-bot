@@ -296,6 +296,27 @@ export const AGENTIC_CAPABILITY_VIOLATIONS_COUNTER = makeCounterProvider({
   labelNames: ['kind'] as const,
 });
 
+// 2026-07-22 schema-hardening: the client zod layer degrades a schema-rejected propose/proposeBatch
+// tool payload to `hold` with an explicit `schema_rejected:` rationale (anthropic-agent-client.ts's
+// four schema-fail branches) — this counter is that degrade's Prometheus mirror, same convention as
+// AGENTIC_CAPABILITY_VIOLATIONS_COUNTER above. `kind` distinguishes the four failure modes: 'single'
+// (submit_trade payload), 'batch' (whole submit_portfolio payload), 'element' (one decisions[] entry),
+// 'missing_symbol' (a requested symbol absent from decisions[]).
+export const AGENTIC_SCHEMA_REJECTIONS_COUNTER = makeCounterProvider({
+  name: 'agentic_schema_rejections_total',
+  help: 'Per-call tool-payload schema rejections degraded to hold by the client zod layer, by kind',
+  labelNames: ['kind'] as const,
+});
+
+// Backlog #53: fail-open measurement of ReflectionService.evaluateTrigger's silent pre-fire exits
+// (below_threshold/cooldown/inflight/fired) — pre-registered as pure observability, no control-flow
+// change, so a metrics-layer failure must never affect whether reflection fires.
+export const AGENTIC_REFLECTION_TRIGGER_COUNTER = makeCounterProvider({
+  name: 'agentic_reflection_trigger_total',
+  help: 'ReflectionService.evaluateTrigger exits, by outcome (below_threshold/cooldown/inflight/fired)',
+  labelNames: ['outcome'] as const,
+});
+
 // §strategy lifecycle — sampled in the 5s loop below (same pull pattern as kill_switch_state):
 // each strategy carries exactly one state at 1, all others in the union explicit 0 (not just absent),
 // so a terminal DRAINING/HALTED strategy is directly alertable rather than a "no data" gap.

@@ -90,6 +90,10 @@ export class AgentMetricsRecorder {
     private readonly budgetRemainingGauge: Gauge<string>,
     @InjectMetric('agentic_capability_violations_total')
     private readonly capabilityViolationsCounter: Counter<string>,
+    @InjectMetric('agentic_schema_rejections_total')
+    private readonly schemaRejectionsCounter: Counter<string>,
+    @InjectMetric('agentic_reflection_trigger_total')
+    private readonly reflectionTriggerCounter: Counter<string>,
   ) {}
 
   // `model` on both methods (#28): optional with an 'unknown' fallback so the label is always
@@ -269,6 +273,28 @@ export class AgentMetricsRecorder {
   recordCapabilityViolation(kind: string): void {
     try {
       this.capabilityViolationsCounter.inc({ kind });
+    } catch {
+      /* metrics must never throw into a trading path */
+    }
+  }
+
+  // 2026-07-22 schema-hardening: the client zod layer calls this at each of its four schema-fail
+  // branches (single/batch/element/missing_symbol) — see AGENTIC_SCHEMA_REJECTIONS_COUNTER's own
+  // comment for what each kind means.
+  recordSchemaFailure(kind: string): void {
+    try {
+      this.schemaRejectionsCounter.inc({ kind });
+    } catch {
+      /* metrics must never throw into a trading path */
+    }
+  }
+
+  // Backlog #53: ReflectionService.evaluateTrigger calls this at each of its four exits
+  // (below_threshold/cooldown/inflight/fired) — see AGENTIC_REFLECTION_TRIGGER_COUNTER's own
+  // comment. `outcome` is the same bound set the ReflectionMetricsRecorder interface pins.
+  recordReflectionTrigger(outcome: string): void {
+    try {
+      this.reflectionTriggerCounter.inc({ outcome });
     } catch {
       /* metrics must never throw into a trading path */
     }

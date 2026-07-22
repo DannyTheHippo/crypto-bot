@@ -15,6 +15,7 @@ import { PortfolioViewBridgeModule } from './features/trading/composition/portfo
 import { StrategyRegistryBridgeModule } from './features/trading/composition/strategy-registry-bridge.module';
 import { SigningKeyModule } from './features/trading/composition/signing-key.module';
 import { KillSwitchModule } from './features/trading/composition/kill-switch.module';
+import { OpsEventsModule } from './features/trading/composition/ops-events.module';
 import { LimitsCompleteModule } from './features/trading/composition/limits-complete.module';
 import { VenueRegistryModule } from './features/trading/composition/venue-registry.module';
 import { KeyProbeModule } from './features/trading/composition/key-probe.module';
@@ -47,6 +48,7 @@ import { TradingRuntimeModule } from './features/trading/composition/trading-run
     StrategyRegistryBridgeModule,
     SigningKeyModule,
     KillSwitchModule,
+    OpsEventsModule,
     LimitsCompleteModule,
     VenueRegistryModule,
     KeyProbeModule,

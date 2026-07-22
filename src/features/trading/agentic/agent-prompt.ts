@@ -276,8 +276,12 @@ export interface SymbolCapabilities {
 // capabilities.shorts fact and is enforced by the client's zod layer (an open_short on a
 // capabilities.shorts=false symbol degrades to hold + is journaled as a capability violation, never a
 // silent pass-through — see anthropic-agent-client.ts).
+// 2026-07-22 schema-hardening: the trailing required-field-set sentence below is the ONE model-facing
+// enumeration of what 'open_*' demands. Source of truth is requireTradeDirectives
+// (anthropic-agent-client.ts:135-153) — the two must stay in sync; a field added/removed there without
+// a matching edit here silently re-opens the same masked-degrade failure mode this pass fixed.
 const TRADE_ACTION_DESCRIPTION =
-  "'open_long' opens a new long, or SCALES INTO an existing long-side position (fresh directives, max-hold clock restarts); 'open_short' opens a new short, or scales into an existing short — VALID ONLY for a symbol whose capabilities.shorts is true (an open_short on a symbol with shorts:false is rejected and journaled as a capability violation, never executed); an 'open_*' on the OPPOSITE side of an existing position is a no-op hold, never an accidental flip — close first. 'close' fully exits the open position, long or short; 'adjust' revises the CURRENT position's directives in place (entry/side are ignored; optionally pair with partialCloseFraction for a partial close) — never opens a new position; 'hold' leaves the position and its directives unchanged.";
+  "'open_long' opens a new long, or SCALES INTO an existing long-side position (fresh directives, max-hold clock restarts); 'open_short' opens a new short, or scales into an existing short — VALID ONLY for a symbol whose capabilities.shorts is true (an open_short on a symbol with shorts:false is rejected and journaled as a capability violation, never executed); an 'open_*' on the OPPOSITE side of an existing position is a no-op hold, never an accidental flip — close first. 'close' fully exits the open position, long or short; 'adjust' revises the CURRENT position's directives in place (entry/side are ignored; optionally pair with partialCloseFraction for a partial close) — never opens a new position; 'hold' leaves the position and its directives unchanged. Opening a position ('open_long'/'open_short', including a scale-in) REQUIRES all six directive fields together: sizeFraction, entry, entryValidityBars, stopLossPct, takeProfitPct, and maxHoldBars — omitting any one of them rejects the whole decision.";
 
 // Shared field set for the v2 trade tools (everything but `action`/`symbol`, which differ per
 // tool) — consumed identically by the single-symbol and per-element portfolio schemas below, so the
@@ -315,19 +319,19 @@ function tradeFieldSchemas(sizeFractionBoundText: string) {
     },
     entryValidityBars: {
       type: 'integer',
-      description: `Bars the resting entry stays live before being cancelled if unfilled; integer in [${DECISION_V2_BOUNDS.entryValidityBars.min}, ${DECISION_V2_BOUNDS.entryValidityBars.max}].`,
+      description: `Bars the resting entry stays live before being cancelled if unfilled; integer in [${DECISION_V2_BOUNDS.entryValidityBars.min}, ${DECISION_V2_BOUNDS.entryValidityBars.max}]. Required on 'open_long'/'open_short', including a scale-in; ignored otherwise.`,
     },
     stopLossPct: {
       type: 'number',
-      description: `Stop-loss as a fraction from entry price, in [${DECISION_V2_BOUNDS.stopLossPct.min}, ${DECISION_V2_BOUNDS.stopLossPct.max}] (capped below the 0.06 disaster-backstop level) — enforced deterministically between consults; revisable via 'adjust'.`,
+      description: `Stop-loss as a fraction from entry price, in [${DECISION_V2_BOUNDS.stopLossPct.min}, ${DECISION_V2_BOUNDS.stopLossPct.max}] (capped below the 0.06 disaster-backstop level) — enforced deterministically between consults; revisable via 'adjust'. Required on 'open_long'/'open_short', including a scale-in; ignored otherwise.`,
     },
     takeProfitPct: {
       type: 'number',
-      description: `Take-profit as a fraction from entry price, in [${DECISION_V2_BOUNDS.takeProfitPct.min}, ${DECISION_V2_BOUNDS.takeProfitPct.max}] — must clear the round-trip fee fraction stated in the system prompt; size it with that floor in mind.`,
+      description: `Take-profit as a fraction from entry price, in [${DECISION_V2_BOUNDS.takeProfitPct.min}, ${DECISION_V2_BOUNDS.takeProfitPct.max}] — must clear the round-trip fee fraction stated in the system prompt; size it with that floor in mind. Required on 'open_long'/'open_short', including a scale-in; ignored otherwise.`,
     },
     maxHoldBars: {
       type: 'integer',
-      description: `Maximum bars to hold the position before a forced exit, in [${DECISION_V2_BOUNDS.maxHoldBars.min}, ${DECISION_V2_BOUNDS.maxHoldBars.max}] (swing horizon, up to ~3 days at 15-minute bars). This clock is NEVER reset by 'adjust' — only a fresh same-side 'open_*' (a scale-in) restarts it.`,
+      description: `Maximum bars to hold the position before a forced exit, in [${DECISION_V2_BOUNDS.maxHoldBars.min}, ${DECISION_V2_BOUNDS.maxHoldBars.max}] (swing horizon, up to ~3 days at 15-minute bars). This clock is NEVER reset by 'adjust' — only a fresh same-side 'open_*' (a scale-in) restarts it. Required on 'open_long'/'open_short', including a scale-in; ignored otherwise.`,
     },
     partialCloseFraction: {
       type: 'number',
@@ -335,7 +339,7 @@ function tradeFieldSchemas(sizeFractionBoundText: string) {
     },
     thesis: {
       type: 'string',
-      description: `Your current reasoning for this position/decision — at most ${DECISION_V2_BOUNDS.thesisMaxLen} characters; optional on 'open_*'/'adjust'. Persisted and fed back to you at your next consult as currentThesis.`,
+      description: `Your current reasoning for this position/decision — STRICTLY at most ${DECISION_V2_BOUNDS.thesisMaxLen} characters; exceeding this cap rejects the WHOLE decision, which then degrades to a hold, so stay under the limit. Optional on 'open_*'/'adjust'. Persisted and fed back to you at your next consult as currentThesis.`,
     },
   } as const;
 }
@@ -392,7 +396,7 @@ export function buildTradePortfolioTool(capsBySymbol: ReadonlyMap<SymbolId, Symb
   return {
     name: 'submit_portfolio',
     description:
-      'Submit your trading decisions for ALL symbols presented in this consult in ONE call, under the rich decision contract — one account, two wallets, a fixed capital split; each symbol\'s own capabilities block (venue, shorts, leverage, maxSizeFraction, venueFreeCash) states what is available for THAT symbol. The `decisions` array must contain exactly one entry per symbol shown in the user message, matched back by its `symbol` field (copy it verbatim) — including an entry whose action is "hold" for any symbol you are not acting on.' +
+      'Submit your trading decisions for ALL symbols presented in this consult in ONE call, under the rich decision contract — one account, two wallets, a fixed capital split; each symbol\'s own capabilities block (venue, shorts, leverage, maxSizeFraction, venueFreeCash) states what is available for THAT symbol. The `decisions` array must contain exactly one entry per symbol shown in the user message, matched back by its `symbol` field (copy it verbatim) — including an entry whose action is "hold" for any symbol you are not acting on. `decisions` MUST be an actual JSON array of decision objects — never a string-encoded array; a decision serialized as a quoted JSON string inside the array is silently dropped.' +
       (anyShorts
         ? " 'open_short' is valid only for a symbol whose own capabilities.shorts is true."
         : '') +

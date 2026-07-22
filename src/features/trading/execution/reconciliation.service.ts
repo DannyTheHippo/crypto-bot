@@ -39,6 +39,7 @@ import { OrderBookService } from './order-book.service';
 import { PortfolioStateService } from './portfolio-state.service';
 import { FillIngestorService } from './fill-ingestor.service';
 import { VENUE_REGISTRY, type VenueRuntimeDescriptor } from '../../../ports/venue-registry';
+import { OPS_EVENTS, type OpsEventPort } from '../../../ports/observability';
 
 // Backlog #24: every mismatch carries a class so the counter (and its alert) can separate the
 // shared-wallet foreign-order steady state and other benign classes from actionable ones. Halting
@@ -151,6 +152,12 @@ export class ReconciliationService {
     @Optional()
     @Inject(VENUE_REGISTRY)
     private readonly venueRegistry?: ReadonlyMap<VenueId, VenueRuntimeDescriptor>,
+    // Backlog #52: diagnostic side-channel, never a control-flow input — @Optional so every
+    // pre-existing direct-construction unit test keeps constructing without it (OpsEventsModule
+    // binds the real one at the composition root).
+    @Optional()
+    @Inject(OPS_EVENTS)
+    private readonly opsEvents?: OpsEventPort,
   ) {}
 
   // v3 §1.5: one pass per venue per tick, one reconciliations row per venue pass. Mismatches sum
@@ -240,6 +247,12 @@ export class ReconciliationService {
             : 'clean';
     this.runsCounter?.inc({ venue: exchange.venue, result });
     if (result === 'clean') this.lastSuccessGauge?.set(this.clock.now() / 1000);
+    this.opsEvents?.emit({
+      event: 'reconcile.pass',
+      result,
+      mismatchClasses: [...acc.mismatches.keys()],
+      venue: exchange.venue,
+    });
     // Rethrow the ORIGINAL axis throw unchanged (whatever its type) so the driver's logged catch
     // surfaces the true cause.
     // eslint-disable-next-line @typescript-eslint/only-throw-error -- original throw, type unknown

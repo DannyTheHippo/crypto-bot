@@ -679,23 +679,73 @@ describe('mixed-action scoring (v3 §2/§9: open_long/close/open_short interleav
 // mirrors (#37/5da2630). `heldShort` now buckets them separately, exactly like `heldLong` does for
 // resulting LONG.
 describe('summarizeRecentDecisionOutcomes — SHORT bucket (P4b)', () => {
-  it('buckets resulting-SHORT rows into heldShort, not the stayedFlat catch-all', () => {
+  it('buckets a FLAT->open_short entry into shortEntries and a maintained SHORT into heldShort (not stayedFlat)', () => {
     const rows: ScoringRow[] = [
-      row(0, { action: 'open_short', close: '100' }), // FLAT -> SHORT
-      row(1, { action: 'hold', close: '90' }), // maintains SHORT
+      row(0, { action: 'open_short', close: '100' }), // FLAT -> SHORT (shortEntries, not heldShort)
+      row(1, { action: 'hold', close: '90' }), // maintains SHORT (heldShort)
       row(2, { action: 'hold', close: '80' }), // maintains SHORT; no i+1 forward return
     ];
 
     const digest = summarizeRecentDecisionOutcomes(rows);
 
-    expect(digest.heldShort.count).toBe(2);
+    // Updated 2026-07-22 for the shortEntries/shortExits split: row(0) used to land in heldShort
+    // (count 2 total) — it now buckets into shortEntries instead, leaving heldShort with row(1) only.
+    expect(digest.shortEntries.count).toBe(1);
+    expect(digest.heldShort.count).toBe(1);
     expect(digest.stayedFlat.count).toBe(0);
     expect(digest.heldLong.count).toBe(0);
     expect(digest.entries.count).toBe(0);
     expect(digest.exits.count).toBe(0);
+    expect(digest.shortExits.count).toBe(0);
 
     const fwd0 = (90 - 100) / 100;
     const fwd1 = (80 - 90) / 90;
-    expect(digest.heldShort.meanForwardReturnPct).toBe(((fwd0 + fwd1) / 2) * 100);
+    expect(digest.shortEntries.meanForwardReturnPct).toBe(fwd0 * 100);
+    expect(digest.heldShort.meanForwardReturnPct).toBe(fwd1 * 100);
+  });
+});
+
+describe('summarizeRecentDecisionOutcomes — short entry/exit buckets', () => {
+  it('a FLAT->open_short row buckets into shortEntries (not heldShort), raw sign', () => {
+    const rows: ScoringRow[] = [
+      row(0, { action: 'open_short', close: '100' }), // FLAT -> SHORT
+      row(1, { action: 'hold', close: '95' }), // gives row(0) a t+1 forward return
+    ];
+
+    const digest = summarizeRecentDecisionOutcomes(rows);
+
+    expect(digest.shortEntries.count).toBe(1);
+    expect(digest.heldShort.count).toBe(0);
+    const fwd0 = (95 - 100) / 100;
+    expect(digest.shortEntries.meanForwardReturnPct).toBe(fwd0 * 100);
+  });
+
+  it('a close-while-SHORT row buckets into shortExits (not stayedFlat)', () => {
+    const rows: ScoringRow[] = [
+      row(0, { action: 'open_short', close: '100' }), // FLAT -> SHORT
+      row(1, { action: 'close', close: '90' }), // SHORT -> FLAT
+      row(2, { action: 'hold', close: '95' }), // gives row(1) a t+1 forward return
+    ];
+
+    const digest = summarizeRecentDecisionOutcomes(rows);
+
+    expect(digest.shortExits.count).toBe(1);
+    expect(digest.stayedFlat.count).toBe(0);
+    const fwd1 = (95 - 90) / 90;
+    expect(digest.shortExits.meanForwardReturnPct).toBe(fwd1 * 100);
+  });
+
+  it('open_short-while-already-SHORT and hold-while-SHORT both still bucket into heldShort', () => {
+    const rows: ScoringRow[] = [
+      row(0, { action: 'open_short', close: '100' }), // FLAT -> SHORT (shortEntries)
+      row(1, { action: 'open_short', close: '95' }), // already SHORT: scale-in no-op, resulting SHORT
+      row(2, { action: 'hold', close: '90' }), // maintains SHORT
+      row(3, { action: 'hold', close: '85' }), // gives row(2) a t+1 forward return
+    ];
+
+    const digest = summarizeRecentDecisionOutcomes(rows);
+
+    expect(digest.shortEntries.count).toBe(1);
+    expect(digest.heldShort.count).toBe(2);
   });
 });

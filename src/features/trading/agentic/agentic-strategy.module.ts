@@ -520,6 +520,10 @@ export function selectAgentClient(
   // AnthropicAgentClientConfig.recordCapabilityViolation — see that field's own comment. Absent ⇒
   // the capability-violation degrade still happens (hold + journaled 'error'), just unrecorded.
   recordCapabilityViolation?: AnthropicAgentClientConfig['recordCapabilityViolation'],
+  // 2026-07-22 schema-hardening: threaded straight through to
+  // AnthropicAgentClientConfig.recordSchemaFailure — see that field's own comment. Absent ⇒ the
+  // schema-rejection degrade still happens (hold + schema_rejected: rationale), just unrecorded.
+  recordSchemaFailure?: AnthropicAgentClientConfig['recordSchemaFailure'],
 ): AgentClientPort {
   const apiKey = env['ANTHROPIC_API_KEY'];
   if (!apiKey || env['NODE_ENV'] === 'test' || env['CI']) {
@@ -579,6 +583,8 @@ export function selectAgentClient(
       similarSetupsProvider: episodicMemoryEnabled ? similarSetupsProvider : undefined,
       // v3 spec §4.3/§9/§10 work item 1: absent ⇒ metric unrecorded (see the param's own comment).
       recordCapabilityViolation,
+      // 2026-07-22 schema-hardening: absent ⇒ metric unrecorded (see the param's own comment).
+      recordSchemaFailure,
     },
     fetch,
     new Logger('AnthropicAgentClient'),
@@ -682,6 +688,9 @@ function constraintsFromDefaultFilters(
             : undefined,
           metricsRecorder?.recordCapabilityViolation
             ? (kind) => metricsRecorder.recordCapabilityViolation!(kind)
+            : undefined,
+          metricsRecorder?.recordSchemaFailure
+            ? (kind) => metricsRecorder.recordSchemaFailure!(kind)
             : undefined,
         ),
       inject: [

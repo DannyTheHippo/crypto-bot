@@ -749,11 +749,17 @@ describe('AnthropicAgentClient', () => {
       },
       { label: 'a missing rationale', toolInput: { action: 'long', confidence: 0.5 } },
     ])(
-      'resolves to { signals: [] } and warns for $label failing schema validation',
+      // 2026-07-22 schema-hardening: a schema-rejected single-symbol payload now degrades to an
+      // EXPLICIT hold decision (rationale 'schema_rejected: <first issue>'), never a decision-less
+      // proposal — see anthropic-agent-client.ts's single-symbol schema-fail branch and the
+      // background this fixes (agentic.strategy.ts's inferStubDecision fallback previously masked
+      // this as an ordinary, confidence=0/empty-rationale hold, indistinguishable from a real one).
+      'resolves to { signals: [] }, warns, stamps an explicit schema_rejected: hold decision, and fires recordSchemaFailure(single) for $label failing schema validation',
       async ({ toolInput }) => {
         const fetchFn = vi.fn();
         const warn = vi.fn();
-        const client = new AnthropicAgentClient(buildCfg(), fetchFn, {
+        const recordSchemaFailure = vi.fn();
+        const client = new AnthropicAgentClient(buildCfg({ recordSchemaFailure }), fetchFn, {
           warn,
         });
         fetchFn.mockResolvedValue(apiResponse(toolUseBody(toolInput)));
@@ -762,8 +768,13 @@ describe('AnthropicAgentClient', () => {
           context: FLAT_CONTEXT,
         });
 
-        await expect(client.propose(input)).resolves.toMatchObject({ signals: [] });
+        const proposal = await client.propose(input);
+
+        expect(proposal.signals).toEqual([]);
+        expect(proposal.decision).toMatchObject({ action: 'hold', confidence: 0 });
+        expect(proposal.decision?.rationale).toMatch(/^schema_rejected: /);
         expect(warn).toHaveBeenCalled();
+        expect(recordSchemaFailure).toHaveBeenCalledWith('single');
       },
     );
 

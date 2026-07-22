@@ -76,6 +76,7 @@ function row(overrides: Partial<AgentDecisionRow> = {}): AgentDecisionRow {
 function killSwitchWithState(state: KillSwitchState): KillSwitchPort {
   return {
     state: () => state,
+    reason: () => '',
     engage: () => undefined,
     confirmCancels: () => undefined,
     cancelTimeout: () => undefined,
@@ -142,21 +143,25 @@ function fakeRecorder(): {
   rejections: boolean[];
   tokens: Array<[number, number, number | undefined, number | undefined, string | undefined]>;
   outcomes: string[];
+  triggers: string[];
 } {
   const rejections: boolean[] = [];
   const tokens: Array<
     [number, number, number | undefined, number | undefined, string | undefined]
   > = [];
   const outcomes: string[] = [];
+  const triggers: string[] = [];
   return {
     recorder: {
       recordValidatorRejection: (b) => void rejections.push(b),
       recordTokens: (i, o, cr, cc, m) => void tokens.push([i, o, cr, cc, m]),
       recordReflectionOutcome: (outcome) => void outcomes.push(outcome),
+      recordReflectionTrigger: (outcome) => void triggers.push(outcome),
     },
     rejections,
     tokens,
     outcomes,
+    triggers,
   };
 }
 
@@ -627,21 +632,31 @@ describe('ReflectionService', () => {
       service.onClosedTrade(SID, 2);
       await flush();
       expect(h.fetchFn).not.toHaveBeenCalled(); // below N
+      expect(h.recorderApi.triggers).toEqual(['below_threshold', 'below_threshold']);
 
       service.onClosedTrade(SID, 3);
       await flush();
       expect(h.fetchFn).toHaveBeenCalledTimes(1); // N reached, lastAttemptAt=0 floor trivially satisfied
+      expect(h.recorderApi.triggers.at(-1)).toBe('fired');
 
       service.onClosedTrade(SID, 4);
       service.onClosedTrade(SID, 5);
       service.onClosedTrade(SID, 6);
       await flush();
       expect(h.fetchFn).toHaveBeenCalledTimes(1); // N reached again, but floor not yet elapsed
+      // counter reset on fire (trade 3): trades 4,5 stay below N again, trade 6 reaches N but the
+      // floor blocks it.
+      expect(h.recorderApi.triggers.slice(-3)).toEqual([
+        'below_threshold',
+        'below_threshold',
+        'cooldown',
+      ]);
 
       h.clock.now += SEVEN_DAYS_MS;
       service.onClosedTrade(SID, 7);
       await flush();
       expect(h.fetchFn).toHaveBeenCalledTimes(2); // floor elapsed — fires again
+      expect(h.recorderApi.triggers.at(-1)).toBe('fired');
     });
 
     it('re-fires after a tuned cooldownMs shorter than the 7-day default (F7)', async () => {
@@ -657,16 +672,19 @@ describe('ReflectionService', () => {
       service.onClosedTrade(SID, 1);
       await flush();
       expect(h.fetchFn).toHaveBeenCalledTimes(1); // first attempt (cooldown trivially satisfied at boot)
+      expect(h.recorderApi.triggers.at(-1)).toBe('fired');
 
       h.clock.now += 30_000; // below the 60s cooldown
       service.onClosedTrade(SID, 2);
       await flush();
       expect(h.fetchFn).toHaveBeenCalledTimes(1); // cooldown not yet elapsed
+      expect(h.recorderApi.triggers.at(-1)).toBe('cooldown');
 
       h.clock.now += 30_001; // total 60_001ms — past the tuned cooldown, far below 7 days
       service.onClosedTrade(SID, 3);
       await flush();
       expect(h.fetchFn).toHaveBeenCalledTimes(2); // tuned cooldown elapsed — fires again
+      expect(h.recorderApi.triggers.at(-1)).toBe('fired');
     });
 
     it('does not reset the counter on a blocked (precondition-failed) attempt — the very next closed trade retries', async () => {
@@ -692,6 +710,7 @@ describe('ReflectionService', () => {
       service.onClosedTrade(SID, 1); // launches; fetch pending forever
       await flush();
       expect(h.fetchFn).toHaveBeenCalledTimes(1);
+      expect(h.recorderApi.triggers.at(-1)).toBe('fired');
 
       h.clock.now += SEVEN_DAYS_MS + 60_000; // past the floor too, so ONLY in-flight blocks this
       service.onClosedTrade(SID, 2);
@@ -699,6 +718,7 @@ describe('ReflectionService', () => {
 
       expect(h.fetchFn).toHaveBeenCalledTimes(1); // still just 1 — never queued
       expect(h.logger.messages.some((m) => m.includes('already in flight'))).toBe(true);
+      expect(h.recorderApi.triggers.at(-1)).toBe('inflight');
     });
   });
 

@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import {
   reduceKillSwitch,
   INITIAL_KILL_SWITCH,
@@ -7,6 +7,7 @@ import {
   type KillSwitchEvent,
 } from '../../../domain/risk/kill-switch';
 import type { KillSwitchPort } from '../../../ports/risk';
+import { OPS_EVENTS, type OpsEventPort } from '../../../ports/observability';
 
 // Stateful wrapper over the pure kill-switch reducer. Engage comes from monitors,
 // reconciliation, OMS anomalies, rate runaway, or the admin API. Cancel/flatten
@@ -17,6 +18,15 @@ export class KillSwitchService implements KillSwitchPort {
   private ks: KillSwitch = INITIAL_KILL_SWITCH;
   private lastReason = '';
   private readonly log = new Logger(KillSwitchService.name);
+
+  // Backlog #52: diagnostic side-channel, never a control-flow input — @Optional so every
+  // pre-existing direct-construction unit test (`new KillSwitchService()`) keeps constructing
+  // without it (OpsEventsModule binds the real one at the composition root).
+  constructor(
+    @Optional()
+    @Inject(OPS_EVENTS)
+    private readonly opsEvents?: OpsEventPort,
+  ) {}
 
   state(): KillSwitchState {
     return this.ks.state;
@@ -53,6 +63,17 @@ export class KillSwitchService implements KillSwitchPort {
   }
 
   dispatch(event: KillSwitchEvent): void {
+    const prior = this.ks.state;
     this.ks = reduceKillSwitch(this.ks, event);
+    // Backlog #52: the reducer returns the SAME state unchanged for an event it ignores in the
+    // current state (e.g. RESUME while RUNNING) — only a genuine transition is ops-event-worthy.
+    if (this.ks.state !== prior) {
+      this.opsEvents?.emit({
+        event: 'killswitch.transition',
+        from: prior,
+        to: this.ks.state,
+        reason: this.lastReason,
+      });
+    }
   }
 }

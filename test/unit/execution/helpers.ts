@@ -86,9 +86,12 @@ export function killSwitchStub(): {
   engages: Array<{ reason: string; flatten: boolean }>;
 } {
   const engages: Array<{ reason: string; flatten: boolean }> = [];
+  let lastReason = '';
   const ks: KillSwitchPort = {
     state: (): KillSwitchState => 'RUNNING',
+    reason: () => lastReason,
     engage: (reason, flatten) => {
+      lastReason = reason;
       engages.push({ reason, flatten });
     },
     confirmCancels: () => undefined,

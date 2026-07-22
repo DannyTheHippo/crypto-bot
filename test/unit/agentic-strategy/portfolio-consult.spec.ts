@@ -957,10 +957,11 @@ describe('AnthropicAgentClient.proposeBatch — v2 trade contract (A2)', () => {
     expect(fetchFn).toHaveBeenCalledTimes(1);
   });
 
-  it('(b) a symbol missing from decisions[] entirely soft-holds just that symbol while others process', async () => {
+  it('(b) a symbol missing from decisions[] entirely soft-holds just that symbol while others process, with an explicit schema_rejected: hold decision and recordSchemaFailure(missing_symbol)', async () => {
     const fetchFn = vi.fn();
     const warn = vi.fn();
-    const client = new AnthropicAgentClient(tradeCfg(), fetchFn, { warn });
+    const recordSchemaFailure = vi.fn();
+    const client = new AnthropicAgentClient(tradeCfg({ recordSchemaFailure }), fetchFn, { warn });
     fetchFn.mockResolvedValue(apiResponse(tradePortfolioBody([openLongElement('BTC/USDT')], 8)));
 
     const result = await client.proposeBatch([
@@ -969,8 +970,51 @@ describe('AnthropicAgentClient.proposeBatch — v2 trade contract (A2)', () => {
     ]);
 
     expect(result.proposals.get('BTC/USDT')?.signals).toHaveLength(1);
-    expect(result.proposals.get('ETH/USDT')?.signals).toEqual([]);
+    const eth = result.proposals.get('ETH/USDT');
+    expect(eth?.signals).toEqual([]);
+    expect(eth?.decision).toMatchObject({ action: 'hold', confidence: 0 });
+    expect(eth?.decision?.rationale).toMatch(/^schema_rejected: /);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('ETH/USDT'));
+    expect(recordSchemaFailure).toHaveBeenCalledWith('missing_symbol');
+  });
+
+  // 2026-07-22 schema-hardening: the observed live failure — a fully-formed decisions array
+  // serialized as a quoted JSON string instead of an actual array — rejects tradePortfolioSchema at
+  // the TOP level (z.array(z.unknown()) never accepts a string), soft-holding the whole batch.
+  it('a whole-batch schema rejection (decisions serialized as a string, not an array) soft-holds every symbol with an explicit schema_rejected: hold decision and fires recordSchemaFailure(batch)', async () => {
+    const fetchFn = vi.fn();
+    const warn = vi.fn();
+    const recordSchemaFailure = vi.fn();
+    const client = new AnthropicAgentClient(tradeCfg({ recordSchemaFailure }), fetchFn, { warn });
+    fetchFn.mockResolvedValue(
+      apiResponse({
+        stop_reason: 'tool_use',
+        content: [
+          {
+            type: 'tool_use',
+            name: 'submit_portfolio',
+            input: {
+              decisions: JSON.stringify([openLongElement('BTC/USDT')]),
+              nextConsultBars: 8,
+            },
+          },
+        ],
+      }),
+    );
+
+    const result = await client.proposeBatch([
+      buildInput('BTC/USDT', 'agentic-1'),
+      buildInput('ETH/USDT', 'agentic-2'),
+    ]);
+
+    for (const symbol of ['BTC/USDT', 'ETH/USDT']) {
+      const proposal = result.proposals.get(symbol);
+      expect(proposal?.signals, symbol).toEqual([]);
+      expect(proposal?.decision, symbol).toMatchObject({ action: 'hold', confidence: 0 });
+      expect(proposal?.decision?.rationale, symbol).toMatch(/^schema_rejected: /);
+    }
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('holding all'));
+    expect(recordSchemaFailure).toHaveBeenCalledWith('batch');
   });
 
   it('(c) the single portfolio-level nextConsultBars is stamped on EVERY proposal — resolved, malformed-element, and missing-symbol alike', async () => {
@@ -1026,10 +1070,11 @@ describe('AnthropicAgentClient.proposeBatch — v2 trade contract (A2)', () => {
     expect(fetchFn).toHaveBeenCalledTimes(1);
   });
 
-  it('(e) a malformed element (missing a required open_long directive) degrades ONLY that symbol to an empty proposal + warn, other symbols unaffected', async () => {
+  it('(e) a malformed element (missing a required open_long directive) degrades ONLY that symbol to an explicit schema_rejected: hold + warn, fires recordSchemaFailure(element), other symbols unaffected', async () => {
     const fetchFn = vi.fn();
     const warn = vi.fn();
-    const client = new AnthropicAgentClient(tradeCfg(), fetchFn, { warn });
+    const recordSchemaFailure = vi.fn();
+    const client = new AnthropicAgentClient(tradeCfg({ recordSchemaFailure }), fetchFn, { warn });
     fetchFn.mockResolvedValue(
       apiResponse(
         tradePortfolioBody(
@@ -1050,8 +1095,12 @@ describe('AnthropicAgentClient.proposeBatch — v2 trade contract (A2)', () => {
     ]);
 
     expect(result.proposals.get('BTC/USDT')?.signals).toHaveLength(1);
-    expect(result.proposals.get('ETH/USDT')?.signals).toEqual([]);
+    const eth = result.proposals.get('ETH/USDT');
+    expect(eth?.signals).toEqual([]);
+    expect(eth?.decision).toMatchObject({ action: 'hold', confidence: 0 });
+    expect(eth?.decision?.rationale).toMatch(/^schema_rejected: /);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('ETH/USDT'));
+    expect(recordSchemaFailure).toHaveBeenCalledWith('element');
   });
 
   it('(f) a perp symbol (capabilities.shorts) accepts an open_short element and maps it to ENTER_SHORT', async () => {

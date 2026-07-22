@@ -150,6 +150,9 @@ export interface RiskEngineDeps {
 
 export interface KillSwitchPort {
   state(): KillSwitchState;
+  // Backlog #52: the last engage() reason — HaltCoordinatorService reads it to stamp the ops-event
+  // halt.engage's own `reason` field (mirrors state() above: a pure current-status getter).
+  reason(): string;
   engage(reason: string, flatten: boolean): void;
   // The three lifecycle progressions Execution's halt coordinator may drive. RAW dispatch is
   // deliberately NOT exposed: ENGAGE is reachable via engage(), and RESUME (disengage) is

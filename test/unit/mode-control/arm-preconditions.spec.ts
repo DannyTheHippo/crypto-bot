@@ -9,6 +9,7 @@ import type { KillSwitchState } from '../../../src/domain/risk/kill-switch';
 function fakeKillSwitch(state: KillSwitchState | (() => KillSwitchState)): KillSwitchPort {
   return {
     state: () => (typeof state === 'function' ? state() : state),
+    reason: () => '',
     engage: () => undefined,
     confirmCancels: () => undefined,
     cancelTimeout: () => undefined,

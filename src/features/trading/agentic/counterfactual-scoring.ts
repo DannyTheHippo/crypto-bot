@@ -435,7 +435,9 @@ export interface DecisionOutcomeBucket {
 
 export interface DecisionOutcomeDigest {
   readonly entries: DecisionOutcomeBucket; // opened a long (FLAT→LONG)
+  readonly shortEntries: DecisionOutcomeBucket; // opened a short (FLAT→SHORT)
   readonly exits: DecisionOutcomeBucket; // closed a long (LONG→FLAT)
+  readonly shortExits: DecisionOutcomeBucket; // closed a short (SHORT→FLAT)
   readonly heldLong: DecisionOutcomeBucket; // maintained a long (hold, or long while already LONG)
   // P4b (#37/5da2630 defect class — mislabeled exposure): maintained a short (open_short, adjust, or
   // hold while already SHORT) — the exact SHORT mirror of heldLong, split out of the stayedFlat
@@ -486,7 +488,11 @@ function finalizeBucket(bucket: MutableBucket): DecisionOutcomeBucket {
  * own comment) — a resulting SHORT row used to fall into `stayedFlat` below (the `else` catch-all),
  * same as FLAT, mislabeling every held/entered-short outcome as a flat one. `heldShort` now mirrors
  * `heldLong` exactly (hold, adjust, or open_short/short while already SHORT); `stayedFlat` stays the
- * catch-all for genuine FLAT rows only.
+ * catch-all for genuine FLAT rows only. Additive follow-up (same mislabel class): FLAT→open_short
+ * rows used to fall into `heldShort` (they resulted in SHORT, but never entered one from FLAT) and
+ * close-from-SHORT rows used to fall into `stayedFlat` (they resulted in FLAT, but arrived there by
+ * closing a short, not by staying out). `shortEntries`/`shortExits` now give both their own buckets,
+ * mirroring `entries`/`exits` exactly.
  *
  * TOY RESEARCH METRIC — see this module's header comment and the F1 digest header above.
  */
@@ -495,7 +501,9 @@ export function summarizeRecentDecisionOutcomes(
 ): DecisionOutcomeDigest {
   const exposures = annotateResultingExposure(rows);
   const entries: MutableBucket = { count: 0, sum: 0 };
+  const shortEntries: MutableBucket = { count: 0, sum: 0 };
   const exits: MutableBucket = { count: 0, sum: 0 };
+  const shortExits: MutableBucket = { count: 0, sum: 0 };
   const heldLong: MutableBucket = { count: 0, sum: 0 };
   const heldShort: MutableBucket = { count: 0, sum: 0 };
   const stayedFlat: MutableBucket = { count: 0, sum: 0 };
@@ -510,8 +518,12 @@ export function summarizeRecentDecisionOutcomes(
     const resulting = exposures[i]!;
     const prev: Exposure = i === 0 ? 'FLAT' : exposures[i - 1]!;
 
+    // RAW forward return in every bucket below (sign correction stays consumer-side, matching
+    // directionalEdge's own convention above — never negate inside the digest).
     if (row.action === 'open_long' && prev === 'FLAT') addToBucket(entries, fwd);
+    else if (row.action === 'open_short' && prev === 'FLAT') addToBucket(shortEntries, fwd);
     else if (row.action === 'close' && prev === 'LONG') addToBucket(exits, fwd);
+    else if (row.action === 'close' && prev === 'SHORT') addToBucket(shortExits, fwd);
     else if (resulting === 'LONG') addToBucket(heldLong, fwd);
     else if (resulting === 'SHORT') addToBucket(heldShort, fwd);
     else addToBucket(stayedFlat, fwd);
@@ -523,7 +535,9 @@ export function summarizeRecentDecisionOutcomes(
 
   return {
     entries: finalizeBucket(entries),
+    shortEntries: finalizeBucket(shortEntries),
     exits: finalizeBucket(exits),
+    shortExits: finalizeBucket(shortExits),
     heldLong: finalizeBucket(heldLong),
     heldShort: finalizeBucket(heldShort),
     stayedFlat: finalizeBucket(stayedFlat),

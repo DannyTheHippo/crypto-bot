@@ -12,6 +12,7 @@ import {
   type AgentCalendarEvent,
   type AgentClientPort,
   type AgentDecisionInput,
+  type AgentDecisionMeta,
   type AgentDirectives,
   type AgentPortfolioBlock,
   type AgentProposal,
@@ -326,6 +327,14 @@ export interface AnthropicAgentClientConfig {
   // Absent ⇒ the metric is simply not recorded (the degrade itself — hold + 'error' journal action —
   // still happens regardless; the counter is observability, never a gate).
   readonly recordCapabilityViolation?: (kind: string) => void;
+  // 2026-07-22 schema-hardening: fired once per schema-rejection degrade — the four modes a propose/
+  // proposeBatch call can post-200 reject a tool payload on (single-symbol parse failure, whole-batch
+  // parse failure, a symbol missing from the batch's decisions array, and a per-element parse
+  // failure). Same config-level callback seam as recordCapabilityViolation above (never a direct
+  // import of the concrete recorder). Absent ⇒ the degrade itself (hold, self-describing
+  // schema_rejected: rationale, see the four call sites below) still happens regardless — the counter
+  // is observability, never a gate.
+  readonly recordSchemaFailure?: (kind: 'single' | 'batch' | 'element' | 'missing_symbol') => void;
   // I1b (Design § Enriched model inputs): the composition root's batch-wide extras source
   // (agent-portfolio-block.ts's buildAgentPortfolioBlock, agent-budget.ts's DailyLlmBudget.
   // budgetBlock, macro-calendar.ts's loadMacroCalendar/filterUpcoming, and v3's per-venue free-cash
@@ -483,6 +492,24 @@ const describeSchemaFailure = (error: z.ZodError, input: unknown): string => {
     payload = '[unserializable]';
   }
   return `${issues} — payload: ${payload}`;
+};
+
+// 2026-07-22 schema-hardening: the self-describing rationale stamped on a schema-rejection degrade
+// (see the four schema-fail branches below, and requireTradeDirectives'/tradeDecisionSchema's own
+// comments on the failure mode this makes queryable: `WHERE rationale LIKE 'schema_rejected%'`).
+// Carries only the FIRST issue (describeSchemaFailure above is the full warn-log diagnostic — this is
+// the short, journal-persisted account), truncated to stay a short single-line rationale.
+const SCHEMA_REJECTED_RATIONALE_MAX_LEN = 160;
+const schemaRejectedRationale = (summary: string): string => {
+  const prefix = 'schema_rejected: ';
+  const budget = SCHEMA_REJECTED_RATIONALE_MAX_LEN - prefix.length;
+  return `${prefix}${summary.length > budget ? `${summary.slice(0, budget)}…` : summary}`;
+};
+const firstIssueSummary = (error: z.ZodError): string => {
+  const first = error.issues[0];
+  return first
+    ? `${first.path.map(String).join('.') || '(root)'}: ${first.message}`
+    : 'unknown schema issue';
 };
 
 // Concrete AGENT_CLIENT adapter: calls the real Anthropic Messages API and maps its tool-use
@@ -712,11 +739,17 @@ export class AnthropicAgentClient implements AgentClientPort {
     const tradeSchema = tradeDecisionSchema(maxSizeFractionNum);
     const parsedTrade = tradeSchema.safeParse(toolBlock.input);
     if (!parsedTrade.success) {
+      this.cfg.recordSchemaFailure?.('single');
       this.logger.warn(
         `anthropic api: ${toolName} payload failed schema validation — ${describeSchemaFailure(parsedTrade.error, toolBlock.input)}`,
       );
       return {
         signals: [],
+        decision: {
+          action: 'hold',
+          confidence: 0,
+          rationale: schemaRejectedRationale(firstIssueSummary(parsedTrade.error)),
+        },
         usage,
         latencyMs,
         playbookVersion: ctx.playbookVersion,
@@ -1010,7 +1043,10 @@ export class AnthropicAgentClient implements AgentClientPort {
 
     const tradePortfolioParsed = tradePortfolioSchema.safeParse(toolBlock.input);
     if (!tradePortfolioParsed.success) {
-      // Soft-hold, same rationale as the malformed-envelope path above (enable-gate must-fix).
+      // Soft-hold like the malformed-envelope path above, but a SCHEMA failure (not a missing tool
+      // block): meter it and stamp an explicit schema_rejected hold decision so the degrade is
+      // queryable in the journal — the malformed-envelope path above does neither.
+      this.cfg.recordSchemaFailure?.('batch');
       this.logger.warn(
         `anthropic api: ${portfolioTool.name} payload failed schema validation (portfolio batch) — holding all — ${describeSchemaFailure(tradePortfolioParsed.error, toolBlock.input)}`,
       );
@@ -1023,6 +1059,11 @@ export class AnthropicAgentClient implements AgentClientPort {
         consultId,
         ctx.infoArm,
         ctx.thinkingArm,
+        {
+          action: 'hold',
+          confidence: 0,
+          rationale: schemaRejectedRationale(firstIssueSummary(tradePortfolioParsed.error)),
+        },
       );
     }
     const { nextConsultBars } = tradePortfolioParsed.data;
@@ -1036,11 +1077,19 @@ export class AnthropicAgentClient implements AgentClientPort {
       const usageForThis = i === 0 ? usage : undefined;
       const raw = bySymbolTrade.get(r.symbolKey);
       if (raw === undefined) {
+        this.cfg.recordSchemaFailure?.('missing_symbol');
         this.logger.warn(
           `anthropic api: symbol ${r.symbolKey} missing from ${portfolioTool.name} decisions — holding`,
         );
         proposals.set(r.symbolKey, {
           signals: [],
+          decision: {
+            action: 'hold',
+            confidence: 0,
+            rationale: schemaRejectedRationale(
+              `symbol ${r.symbolKey} missing from ${portfolioTool.name} decisions`,
+            ),
+          },
           ...(usageForThis ? { usage: usageForThis } : {}),
           latencyMs,
           playbookVersion: ctx.playbookVersion,
@@ -1059,11 +1108,17 @@ export class AnthropicAgentClient implements AgentClientPort {
       const maxSizeFractionNum = Number(r.caps.maxSizeFraction);
       const parsedElement = tradeElementSchema(maxSizeFractionNum).safeParse(raw);
       if (!parsedElement.success) {
+        this.cfg.recordSchemaFailure?.('element');
         this.logger.warn(
-          `anthropic api: ${portfolioTool.name} element for symbol ${r.symbolKey} failed schema validation — holding`,
+          `anthropic api: ${portfolioTool.name} element for symbol ${r.symbolKey} failed schema validation — holding — ${describeSchemaFailure(parsedElement.error, raw)}`,
         );
         proposals.set(r.symbolKey, {
           signals: [],
+          decision: {
+            action: 'hold',
+            confidence: 0,
+            rationale: schemaRejectedRationale(firstIssueSummary(parsedElement.error)),
+          },
           ...(usageForThis ? { usage: usageForThis } : {}),
           latencyMs,
           playbookVersion: ctx.playbookVersion,
@@ -1146,11 +1201,17 @@ export class AnthropicAgentClient implements AgentClientPort {
     consultId: string,
     infoArm: boolean,
     thinkingArm: boolean,
+    // 2026-07-22 schema-hardening: stamped on EVERY resolved symbol when the whole-batch schema
+    // rejection routes every symbol through this ONE soft-hold as a unit (the malformed-envelope/
+    // missing-tool-block callers above pass nothing here — those failure modes have no schema issue
+    // to account for).
+    decision?: AgentDecisionMeta,
   ): AgentProposeBatchResult {
     const proposals = new Map<string, AgentProposal>();
     resolved.forEach((r, i) => {
       proposals.set(r.symbolKey, {
         signals: [],
+        ...(decision ? { decision } : {}),
         ...(i === 0 && usage ? { usage } : {}),
         latencyMs,
         playbookVersion,
@@ -1555,6 +1616,11 @@ export class AnthropicAgentClient implements AgentClientPort {
         `anthropic api: fatal error (status ${err.status ?? 'n/a'}) — latching agent client to degraded, no further calls will be made — ${err.message}`,
       );
       this.degraded = true;
+    } else {
+      // Transport-reason gap fix (soak-flagged): a RETRYABLE failure previously logged nothing at
+      // all — err.message is this client's own sanitized diagnostic (never credentials/body), so
+      // surfacing it here closes the "nothing logs" half without loosening the FATAL path above.
+      this.logger.warn(`anthropic api: retryable error — ${err.message}`);
     }
   }
 

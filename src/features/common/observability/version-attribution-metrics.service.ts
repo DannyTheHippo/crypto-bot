@@ -100,9 +100,13 @@ export class VersionAttributionMetricsService implements OnModuleInit, OnModuleD
       const tripsByVersion = new Map<string, number>();
       for (const cycle of cycles) {
         const version = attributeVersion(decisions, cycle.strategyId, cycle.symbol, cycle.openedAt);
+        // Gauge labels are strings; attributeVersion itself returns number|undefined (see its own
+        // comment) so callers needing the numeric version — LiveVersionRewardSource below — never
+        // round-trip through a string. This is the only place 'unknown' is minted.
+        const label = version === undefined ? 'unknown' : String(version);
         const net = cycle.realizedPnl.minus(cycle.feesQuote);
-        netByVersion.set(version, (netByVersion.get(version) ?? new Decimal(0)).plus(net));
-        tripsByVersion.set(version, (tripsByVersion.get(version) ?? 0) + 1);
+        netByVersion.set(label, (netByVersion.get(label) ?? new Decimal(0)).plus(net));
+        tripsByVersion.set(label, (tripsByVersion.get(label) ?? 0) + 1);
       }
 
       // reset() drops labels from versions that no longer attribute anything (e.g. after a DB
@@ -129,13 +133,15 @@ export class VersionAttributionMetricsService implements OnModuleInit, OnModuleD
 }
 
 // rows arrive oldest→newest (the journal port's documented ordering); the newest at-or-before
-// match wins, so iterate backwards and take the first hit carrying a version.
-function attributeVersion(
+// match wins, so iterate backwards and take the first hit carrying a version. Exported (numeric,
+// not the gauge's string label) so LiveVersionRewardSource below shares this exact attribution
+// rule rather than re-deriving its own.
+export function attributeVersion(
   rows: readonly AgentDecisionRow[],
   strategyId: string,
   symbol: string,
   entryAt: number,
-): string {
+): number | undefined {
   for (let i = rows.length - 1; i >= 0; i -= 1) {
     const row = rows[i]!;
     if (
@@ -144,8 +150,72 @@ function attributeVersion(
       row.eventTime <= entryAt &&
       row.playbookVersion !== null
     ) {
-      return String(row.playbookVersion);
+      return row.playbookVersion;
     }
   }
-  return 'unknown';
+  return undefined;
+}
+
+// ── #46 (Thompson multi-candidate A/B routing): per-version reward read ────────────────────────
+
+// Same shape LiveVersionRewardSource.rewardsByVersion() returns per candidate version — netPnlUsd
+// stays a decimal string (exact) until PlaybookAbRoutingProvider's Gaussian draw needs a float; see
+// that class's own decision-record comment for why the draw, not this read, is where exactness ends.
+export interface VersionRewardSample {
+  readonly netPnlUsd: string;
+  readonly trips: number;
+}
+
+export interface VersionRewardSource {
+  rewardsByVersion(): Promise<ReadonlyMap<number, VersionRewardSample>>;
+}
+
+// On-demand (uncached, unlike the gauge sampler above — no setInterval, no test/CI no-op gate)
+// read for the Thompson router: reuses the SAME walkRoundTrips + attributeVersion attribution
+// VersionAttributionMetricsService.tick() uses for agentic_version_net_pnl_usd/
+// agentic_version_round_trips, so there is exactly one net-PnL-per-version computation in the
+// codebase — the router never re-walks fills itself (see agentic-bridge.module.ts's own comment
+// on why that constraint holds).
+export class LiveVersionRewardSource implements VersionRewardSource {
+  constructor(
+    private readonly stats: PromotionStatsPort,
+    private readonly journal: AgentDecisionJournalPort,
+    private readonly dustNotional: string,
+    private readonly epochMs?: number,
+  ) {}
+
+  async rewardsByVersion(): Promise<ReadonlyMap<number, VersionRewardSample>> {
+    const decisionsRead =
+      this.journal.recentVersioned !== undefined
+        ? this.journal.recentVersioned(
+            VERSIONED_LOOKBACK_CAP,
+            this.epochMs === undefined ? undefined : this.epochMs - EPOCH_DECIDE_MARGIN_MS,
+          )
+        : this.journal.recent(DECISION_LOOKBACK_ROWS);
+    const [fills, decisions] = await Promise.all([
+      this.stats.fillsForMode(DEMO_MODE, this.epochMs),
+      decisionsRead,
+    ]);
+    const dust = new Decimal(this.dustNotional);
+    const { cycles } = walkRoundTrips(fills, dust);
+
+    const netByVersion = new Map<number, Decimal>();
+    const tripsByVersion = new Map<number, number>();
+    for (const cycle of cycles) {
+      const version = attributeVersion(decisions, cycle.strategyId, cycle.symbol, cycle.openedAt);
+      if (version === undefined) continue; // unattributed — no candidate can claim this reward
+      const net = cycle.realizedPnl.minus(cycle.feesQuote);
+      netByVersion.set(version, (netByVersion.get(version) ?? new Decimal(0)).plus(net));
+      tripsByVersion.set(version, (tripsByVersion.get(version) ?? 0) + 1);
+    }
+
+    const result = new Map<number, VersionRewardSample>();
+    for (const [version, trips] of tripsByVersion) {
+      result.set(version, {
+        netPnlUsd: (netByVersion.get(version) ?? new Decimal(0)).toFixed(),
+        trips,
+      });
+    }
+    return result;
+  }
 }

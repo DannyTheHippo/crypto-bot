@@ -754,7 +754,7 @@ describe('AgenticStrategy decision journal', () => {
     expect(signals[0]!.kind).toBe('ENTER_LONG');
   });
 
-  it('records an error journal entry with a kind/status-only rationale and nulled telemetry, then rethrows the original error', async () => {
+  it('records an error journal entry with kind/status and the sanitized AgentProposeError detail, then rethrows the original error', async () => {
     const journal = new RecordingJournal();
     const err = new AgentProposeError('anthropic api http 401', 'FATAL', 401);
     const client = new ThrowingAgentClient(err);
@@ -766,7 +766,7 @@ describe('AgenticStrategy decision journal', () => {
     const entry = journal.entries[0]!;
     expect(entry.action).toBe('error');
     expect(entry.confidence).toBeNull();
-    expect(entry.rationale).toBe('FATAL (status 401)');
+    expect(entry.rationale).toBe('FATAL (status 401): anthropic api http 401');
     expect(entry.playbookVersion).toBeNull();
     expect(entry.promptHash).toBe('');
     expect(entry.inputTokens).toBeNull();
@@ -783,5 +783,19 @@ describe('AgenticStrategy decision journal', () => {
 
     expect(journal.entries[0]!.rationale).toBe('RETRYABLE');
     expect(journal.entries[0]!.rationale).not.toContain('sensitive detail');
+  });
+
+  it('journals the sanitized transport reason for a status-less RETRYABLE AgentProposeError', async () => {
+    const journal = new RecordingJournal();
+    const err = new AgentProposeError('anthropic api transport error: socket hang up', 'RETRYABLE');
+    const client = new ThrowingAgentClient(err);
+    const strategy = makeStrategy(client, { deps: { journal } });
+
+    await expect(strategy.decide(buildInput())).rejects.toBe(err);
+
+    expect(journal.entries[0]!.rationale).toBe(
+      'RETRYABLE: anthropic api transport error: socket hang up',
+    );
+    expect(journal.entries[0]!.rationale).toContain('socket hang up');
   });
 });

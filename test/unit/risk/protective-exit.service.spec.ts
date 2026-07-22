@@ -95,6 +95,7 @@ function planStopRegistry(
 function killSwitch(state: KillSwitchPort['state'] extends () => infer R ? R : never = 'RUNNING') {
   return {
     state: () => state,
+    reason: () => '',
     engage: vi.fn(),
     confirmCancels: vi.fn(),
     cancelTimeout: vi.fn(),

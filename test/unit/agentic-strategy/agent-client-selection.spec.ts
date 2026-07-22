@@ -252,6 +252,89 @@ describe('selectAgentClient', () => {
 
     expect(recordCapabilityViolation).toHaveBeenCalledWith('open_short_on_spot');
   });
+
+  // 2026-07-22 schema-hardening (wiring smoke): recordSchemaFailure is a new trailing param on
+  // selectAgentClient, appended after recordCapabilityViolation — same pass-through-proof rationale
+  // as that test above (no config accessor exists, so driving a real schema rejection through
+  // propose() is the only observable proof). The rejection-detection logic itself is
+  // anthropic-agent-client.spec.ts's own exhaustive coverage; this test only proves the PASS-THROUGH.
+  it('threads recordSchemaFailure through to the constructed AnthropicAgentClient — a malformed open_long payload reaches the composition-root callback', async () => {
+    const recordSchemaFailure = vi.fn();
+    const fetchStub = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      json: () =>
+        Promise.resolve({
+          stop_reason: 'tool_use',
+          content: [
+            {
+              type: 'tool_use',
+              name: 'submit_trade',
+              // Missing every required open_long directive field (entry/entryValidityBars/
+              // stopLossPct/takeProfitPct/maxHoldBars) — requireTradeDirectives rejects this.
+              input: { action: 'open_long' },
+            },
+          ],
+        }),
+    });
+    vi.stubGlobal('fetch', fetchStub);
+
+    const client = selectAgentClient(
+      { ANTHROPIC_API_KEY: 'k' },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      recordSchemaFailure,
+    ) as BudgetedAgentClient;
+
+    const symbol = symbolId('BTC/USDT');
+    const tickerEvt: TickerEvent = {
+      kind: 'TICKER',
+      venue: venueId('binance'),
+      symbol,
+      channel: 'ticker',
+      seq: 1n,
+      eventTime: epochMs(1_700_000_000_000),
+      ingestTime: epochMs(1_700_000_000_001),
+      bid: price('100'),
+      ask: price('100'),
+      last: price('100'),
+    };
+    const snapshot: AgentMarketSnapshot = {
+      eventTime: epochMs(1_700_000_000_000),
+      candles: new Map(),
+      tickers: new Map([[symbol, tickerEvt]]),
+      books: new Map(),
+      execReports: [],
+      portfolio: { strategyId: strategyId('agentic-1'), positions: new Map(), openOrders: [] },
+    };
+    const input: AgentDecisionInput = {
+      strategyId: strategyId('agentic-1'),
+      trigger: { kind: 'ticker', event: tickerEvt },
+      snapshot,
+      context: {
+        indicators: null,
+        position: {
+          side: 'FLAT',
+          qty: '0',
+          avgEntry: null,
+          realizedPnl: '0',
+          unrealizedPnlPct: null,
+          openOrders: 0,
+        },
+        recentDecisions: [],
+      },
+    };
+
+    await client.propose(input);
+
+    expect(recordSchemaFailure).toHaveBeenCalledWith('single');
+  });
 });
 
 describe('createAgentLlmBudget', () => {

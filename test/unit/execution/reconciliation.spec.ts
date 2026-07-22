@@ -17,6 +17,7 @@ import type {
 } from '../../../src/ports/exchange';
 import type { ReconConfig } from '../../../src/ports/execution';
 import type { VenueRuntimeDescriptor } from '../../../src/ports/venue-registry';
+import type { OpsEvent, OpsEventPort } from '../../../src/ports/observability';
 import {
   encodeClientOrderId,
   intentId,
@@ -69,6 +70,8 @@ function build(
   const sampler = new EquitySamplerService(portfolio, fixedFeed('100'), clock, store);
   const { ks, engages } = killSwitchStub();
   const ingestor = new FillIngestorService(store, ks, orders, portfolio, sampler);
+  const opsEvents: OpsEvent[] = [];
+  const opsEventLogger: OpsEventPort = { emit: (e) => opsEvents.push(e) };
 
   const exchange: ExchangePort = {
     venue: V,
@@ -129,6 +132,9 @@ function build(
     mismatchCounter,
     runsCounter,
     lastSuccessGauge,
+    undefined, // venuePorts — single-venue legacy path (see this file's own CFG-driven fixtures)
+    undefined, // venueRegistry
+    opsEventLogger,
   );
   return {
     store,
@@ -136,6 +142,7 @@ function build(
     portfolio,
     recon,
     engages,
+    opsEvents,
     setNow: (t: number) => {
       nowMs = t;
     },
@@ -266,6 +273,17 @@ describe('ReconciliationService (§6.4)', () => {
     expect(ctx.store.reconciliations).toHaveLength(1);
     expect(ctx.store.reconciliations[0]!.detail).toBe('clean');
     expect(ctx.engages).toHaveLength(0);
+  });
+
+  // Backlog #52: reconcile.pass is a diagnostic mirror of the same result the runsCounter increments —
+  // asserted once here (clean) rather than per-branch, since every branch already exercises `result`
+  // via runsCounter/detail assertions above.
+  it('emits an ops-event reconcile.pass{result,mismatchClasses,venue} on every pass', async () => {
+    const ctx = build();
+    await ctx.recon.reconcile();
+    expect(ctx.opsEvents).toEqual([
+      { event: 'reconcile.pass', result: 'clean', mismatchClasses: [], venue: V },
+    ]);
   });
 
   it('a foreign venue open order is a WARN mismatch, not a halt', async () => {

@@ -38,6 +38,10 @@ import { PriceHistoryStore } from '../agentic/price-history-store';
 import { validatePlaybook } from '../agentic/playbook-validator';
 import { UniverseScannerService } from '../agentic/universe-scanner.service';
 import { RoundTripEvidenceReader } from '../agentic/round-trip-evidence.reader';
+import {
+  LiveVersionRewardSource,
+  type VersionRewardSource,
+} from '../../common/observability/version-attribution-metrics.service';
 import { FUNDING_INGEST } from './context-feeds.module';
 import type { FundingIngestService } from '../exchange/funding-ingest.service';
 import {
@@ -118,8 +122,42 @@ interface PlaybookStorePort extends PlaybookProvider {
 // resolve to, the active version already).
 const CANDIDATE_SOURCES = new Set<PlaybookVersionEntry['source']>(['reflection', 'loop-candidate']);
 
+// #46 (Thompson multi-candidate A/B routing) — decision record, pre-registered per
+// change-discipline: this changes a LIVE routing path but is behavior-preserving at current data.
+//
+// Scheme: one Gaussian-Thompson draw per current() routing decision, over every INACTIVE candidate
+// version (not just the newest). Reward = attributed net PnL per closed trip under that version
+// (realized − fees), read via VersionRewardSource.rewardsByVersion() — the SAME walkRoundTrips +
+// attributeVersion computation VersionAttributionMetricsService's agentic_version_net_pnl_usd /
+// agentic_version_round_trips gauges already use (version-attribution-metrics.service.ts). This
+// router never re-walks fills itself — it adds NO new net-PnL-per-version computation beyond the
+// gauge's (the promotion-evaluator keeps its own explicitly-labelled duplicate for a different
+// purpose). Posterior: mean = netPnlUsd/trips (sample mean); variance =
+// THOMPSON_PRIOR_VARIANCE_USD2/trips. A TRUE sample variance would need each individual trip's PnL,
+// which rewardsByVersion() does not expose (only the sum + count) — computing it here would mean
+// re-walking fills a second time, exactly what this router must not do. A fixed prior variance
+// scaled by 1/n is the honest posterior given that data shape: it still shrinks (more confident) as
+// trips accumulate, it just can't reflect the actual spread of individual trip outcomes.
+//
+// K = THOMPSON_MIN_TRIPS: the minimum closed-trip count before a candidate's mean is trusted at
+// all — small enough to activate within a fresh candidate's first few round trips, large enough
+// that one lucky/unlucky trip can't seed the posterior. Named const, not inlined.
+//
+// Cold-start / behavior-preserving fallback (THE safety property): Thompson activates ONLY when
+// >= THOMPSON_MIN_CANDIDATES inactive candidate versions each clear K trips. Below that —
+// including today's DB state (1 candidate version, 0 closed trips) — selectCandidate() falls back
+// to the pre-#46 newest-wins rule unchanged, so current() stays byte-identical to pre-#46 behavior.
+// See playbook-ab-routing.spec.ts's Thompson-fallback cases for the proof.
+//
+// LIVE-ENABLE TRIGGER: this scheme only ever affects routing once >= 2 candidates coexist with
+// >= K attributed-reward trips each — until then it is a no-op. No further action is required to
+// "turn it on"; it activates itself the moment that evidence exists, same as the newest-wins rule
+// it replaces.
 export class PlaybookAbRoutingProvider implements PlaybookStorePort {
   private static readonly BUCKET_MS = 60_000;
+  private static readonly THOMPSON_MIN_CANDIDATES = 2;
+  private static readonly THOMPSON_MIN_TRIPS = 3;
+  private static readonly THOMPSON_PRIOR_VARIANCE_USD2 = 100; // ($10)^2 — deliberately wide prior
 
   constructor(
     private readonly inner: PlaybookStorePort,
@@ -130,6 +168,15 @@ export class PlaybookAbRoutingProvider implements PlaybookStorePort {
     // legitimate shorts/leverage prose isn't rejected here before it ever reaches
     // ValidatingPlaybookProvider/AnthropicAgentClient's own (identically-flagged) re-validation.
     private readonly capabilities: { shortsAllowed?: boolean; leverageAllowed?: boolean } = {},
+    // #46: optional reward read for Thompson sampling — see the class-level decision-record comment
+    // above. Undefined preserves the pre-#46 newest-wins path byte-for-byte, so every existing
+    // construction site/spec that doesn't pass one (including the composition root under
+    // test/ci/no-DB, where PROMOTION_STATS itself is undefined) stays unaffected.
+    private readonly rewardSource?: VersionRewardSource,
+    // Injectable so unit tests are deterministic (the Box-Muller draws below consume this) — never
+    // Math.random() at module scope, only as this constructor's default parameter value, evaluated
+    // once per real (non-test) construction (composition root below never overrides it).
+    private readonly rng: () => number = Math.random,
   ) {}
 
   async current(): Promise<{
@@ -143,7 +190,7 @@ export class PlaybookAbRoutingProvider implements PlaybookStorePort {
     const bucket = Math.floor(Date.now() / PlaybookAbRoutingProvider.BUCKET_MS) % 100;
     if (bucket >= this.pct) return active;
 
-    const candidate = await this.latestCandidate(active.version);
+    const candidate = await this.selectCandidate(active.version);
     if (!candidate) return active;
 
     // Local structural gate: an invalid candidate falls back to ACTIVE rather than ever being
@@ -169,22 +216,58 @@ export class PlaybookAbRoutingProvider implements PlaybookStorePort {
     return this.inner.current();
   }
 
-  // Newest INACTIVE row (source in CANDIDATE_SOURCES) with version > the resolved active version —
-  // mirrors PlaybookStoreAdapter.resolve()'s own "newest wins" convention for other sources. A cap of
-  // 50 rows matches InMemoryPlaybookStore.MAX_VERSIONS, so both backings are scanned in full.
-  private async latestCandidate(activeVersion: number): Promise<PlaybookVersionEntry | undefined> {
+  // #46: all INACTIVE rows (source in CANDIDATE_SOURCES) with version > the resolved active
+  // version — the candidate pool Thompson sampling (or its newest-wins fallback) chooses from. A
+  // cap of 50 rows matches InMemoryPlaybookStore.MAX_VERSIONS, so both backings are scanned in full.
+  private async selectCandidate(activeVersion: number): Promise<PlaybookVersionEntry | undefined> {
     const versions = await this.inner.listVersions(50);
-    let latest: PlaybookVersionEntry | undefined;
-    for (const row of versions) {
-      if (
-        CANDIDATE_SOURCES.has(row.source) &&
-        row.version > activeVersion &&
-        (latest === undefined || row.version > latest.version)
-      ) {
-        latest = row;
-      }
+    const candidates = versions.filter(
+      (row) => CANDIDATE_SOURCES.has(row.source) && row.version > activeVersion,
+    );
+    if (candidates.length === 0) return undefined;
+
+    // Cold-start fallback (see class-level decision-record comment): no reward source bound, or
+    // fewer than two candidates exist at all — newest-wins, byte-identical to pre-#46.
+    if (
+      this.rewardSource === undefined ||
+      candidates.length < PlaybookAbRoutingProvider.THOMPSON_MIN_CANDIDATES
+    ) {
+      return newestOf(candidates);
     }
-    return latest;
+
+    // Fail OPEN: this reward read is a DB-backed measurement (journal + fills + round-trip walk) that
+    // selects a playbook version, never a safety veto — a transient failure must degrade to the
+    // newest-wins fallback the class doc promises, NEVER throw out of current() (which would degrade
+    // the whole consult to an error journal row). Trip counts ARE the reward data, so the read
+    // necessarily precedes the K-eligibility gate whenever >=2 candidates exist; fail-open wrapping,
+    // not read-avoidance, is what keeps the promise.
+    try {
+      const rewards = await this.rewardSource.rewardsByVersion();
+      const eligible = candidates.filter(
+        (row) =>
+          (rewards.get(row.version)?.trips ?? 0) >= PlaybookAbRoutingProvider.THOMPSON_MIN_TRIPS,
+      );
+      // Fewer than two candidates have cleared K trips — Thompson stays a no-op; fall back.
+      if (eligible.length < PlaybookAbRoutingProvider.THOMPSON_MIN_CANDIDATES) {
+        return newestOf(candidates);
+      }
+
+      let best: PlaybookVersionEntry | undefined;
+      let bestDraw = -Infinity;
+      for (const row of eligible) {
+        const sample = rewards.get(row.version)!; // eligible ⇒ present, filtered above
+        const mean = new Decimal(sample.netPnlUsd).div(sample.trips).toNumber();
+        const variance = PlaybookAbRoutingProvider.THOMPSON_PRIOR_VARIANCE_USD2 / sample.trips;
+        const draw = sampleGaussian(this.rng, mean, variance);
+        if (draw > bestDraw) {
+          bestDraw = draw;
+          best = row;
+        }
+      }
+      return best;
+    } catch {
+      return newestOf(candidates);
+    }
   }
 
   append(
@@ -198,6 +281,25 @@ export class PlaybookAbRoutingProvider implements PlaybookStorePort {
   listVersions(limit: number): Promise<readonly PlaybookVersionEntry[]> {
     return this.inner.listVersions(limit);
   }
+}
+
+// Pre-#46 "newest wins" rule, factored out so both the Thompson path's cold-start fallback and the
+// no-reward-source path call the exact same tie-break (never two independently-drifting copies).
+function newestOf(rows: readonly PlaybookVersionEntry[]): PlaybookVersionEntry | undefined {
+  let latest: PlaybookVersionEntry | undefined;
+  for (const row of rows) {
+    if (latest === undefined || row.version > latest.version) latest = row;
+  }
+  return latest;
+}
+
+// Box-Muller transform off the injected uniform rng — see PlaybookAbRoutingProvider's own rng
+// param comment for why this never calls Math.random() directly.
+function sampleGaussian(rng: () => number, mean: number, variance: number): number {
+  const u1 = Math.max(rng(), Number.EPSILON); // avoid log(0)
+  const u2 = rng();
+  const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+  return mean + z * Math.sqrt(variance);
 }
 
 // Composition-root tripwire wrapping the resolved playbook store's READ side only: the playbook is
@@ -392,6 +494,8 @@ function isTestEnv(): boolean {
         db: NodePgDatabase<typeof schema> | null,
         config: TypedConfigService,
         recorder: AgentMetricsRecorder,
+        stats: PromotionStatsPort | undefined,
+        journal: AgentDecisionJournalPort,
       ): PlaybookStorePort => {
         const pin = config.agentic.playbookPin;
         // v3 (spec §1.3): perp symbols exist in every v3 boot, so validator capabilities are fixed
@@ -406,16 +510,36 @@ function isTestEnv(): boolean {
           isTestEnv() || db === null
             ? new InMemoryPlaybookStore(seed, pin)
             : new PlaybookStoreAdapter(db, seed, pin);
-        // W4.1: A/B router sits INSIDE the validating wrap, so candidate content faces the exact
+        // #46: same undefined-under-test/ci/no-DB gate as PROMOTION_STATS itself (stats undefined
+        // ⇒ no reward source bound ⇒ PlaybookAbRoutingProvider's cold-start fallback, never Thompson).
+        const rewardSource: VersionRewardSource | undefined =
+          stats === undefined
+            ? undefined
+            : new LiveVersionRewardSource(
+                stats,
+                journal,
+                config.agentic.promotionDustNotional,
+                config.agentic.promotionEvidenceEpoch === undefined
+                  ? undefined
+                  : Date.parse(config.agentic.promotionEvidenceEpoch),
+              );
+        // W4.1/#46: A/B router sits INSIDE the validating wrap, so candidate content faces the exact
         // same read-side validation as ACTIVE. pct=0 (default) short-circuits to the plain store.
         const routed = new PlaybookAbRoutingProvider(
           store,
           config.agentic.playbookAbPct,
           capabilities,
+          rewardSource,
         );
         return new ValidatingPlaybookProvider(routed, recorder, capabilities);
       },
-      inject: [DRIZZLE_DB, TypedConfigService, AgentMetricsRecorder],
+      inject: [
+        DRIZZLE_DB,
+        TypedConfigService,
+        AgentMetricsRecorder,
+        PROMOTION_STATS,
+        AGENT_DECISION_JOURNAL,
+      ],
     },
     {
       // The shared client's STATIC profile: fees/sizing/backstop are symbol-independent; the

@@ -4,6 +4,7 @@ import {
   PromotionEvaluator,
   createPromotionEvaluator,
   probabilityOfSuperiority,
+  pairedComparison,
   type EvaluatorPlaybookStore,
   type PromotionEvaluatorDeps,
 } from '../../../src/features/trading/agentic/promotion-evaluator';
@@ -16,16 +17,25 @@ import type { KillSwitchPort } from '../../../src/ports/risk';
 import { strategyId, epochMs } from '../../../src/domain/types/ids';
 
 const SID = 'agentic-1';
-const SYM = 'BTC/USDT';
+// backlog #48: two shared symbols so the happy-path fixtures clear MIN_SHARED_SYMBOLS (2) while
+// exercising the paired (per-symbol) comparison rather than a single-symbol pool.
+const SYM_A = 'BTC/USDT';
+const SYM_B = 'ETH/USDT';
+const SYM = SYM_A; // legacy single-symbol alias for tests that only care about journal plumbing.
 
 // A closed round trip = a BUY then a SELL of equal qty at the given prices; realized = (sell−buy)×qty.
 // qty 1 (notional ~100 ≫ the 5 dust threshold) so a single fill never dust-closes on its own — the
 // cycle closes only when the buy+sell net to flat, i.e. one cycle per pair.
-function tripFills(buyPrice: string, sellPrice: string, at: number): PromotionFillRow[] {
+function tripFills(
+  symbol: string,
+  buyPrice: string,
+  sellPrice: string,
+  at: number,
+): PromotionFillRow[] {
   return [
     {
       strategyId: SID,
-      symbol: SYM,
+      symbol,
       side: 'BUY',
       qty: '1',
       price: buyPrice,
@@ -35,7 +45,7 @@ function tripFills(buyPrice: string, sellPrice: string, at: number): PromotionFi
     },
     {
       strategyId: SID,
-      symbol: SYM,
+      symbol,
       side: 'SELL',
       qty: '1',
       price: sellPrice,
@@ -48,12 +58,12 @@ function tripFills(buyPrice: string, sellPrice: string, at: number): PromotionFi
 
 // A journal row placing (strategyId, symbol) under `version` at eventTime `at` — attribution keys the
 // cycle whose entry is at-or-after this row to `version`.
-function decisionRow(version: number, at: number): AgentDecisionRow {
+function decisionRow(symbol: string, version: number, at: number): AgentDecisionRow {
   return {
-    id: `d-${version}-${at}`,
+    id: `d-${version}-${symbol}-${at}`,
     createdAt: epochMs(at),
     strategyId: strategyId(SID),
-    symbol: SYM as unknown as AgentDecisionRow['symbol'],
+    symbol: symbol as unknown as AgentDecisionRow['symbol'],
     venue: 'binance' as unknown as AgentDecisionRow['venue'],
     triggerKind: 'candle',
     basedOnSeq: 0n,
@@ -123,23 +133,36 @@ function harness(opts: {
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
-describe('PromotionEvaluator (W5 attributed auto-promotion)', () => {
-  // Champion v1 with 10 losing trips (symmetric floor needs champion n ≥ floor too), candidate v2
-  // with `candidateTrips` winning trips — candidate wins every pairwise comparison (PoS = 1.0).
-  function championAndCandidate(candidateTrips: number) {
-    const decisions = [decisionRow(1, 1_000), decisionRow(2, 100_000)];
+describe('PromotionEvaluator (W5 attributed auto-promotion, paired per backlog #48)', () => {
+  // Champion v1 with `championTrips` losing trips per symbol on SYM_A + SYM_B (symmetric floor
+  // needs champion n ≥ floor too), candidate v2 with `candidateTrips` winning trips split evenly
+  // across the SAME two symbols — candidate wins every pairwise comparison on each shared symbol
+  // (PoS = 1.0). Both symbols always clear MIN_PAIRED_TRIPS (3) at the trip counts these tests use.
+  function championAndCandidate(candidateTrips: number, championTripsPerSymbol = 5) {
+    const decisions = [
+      decisionRow(SYM_A, 1, 1_000),
+      decisionRow(SYM_B, 1, 1_000),
+      decisionRow(SYM_A, 2, 100_000),
+      decisionRow(SYM_B, 2, 100_000),
+    ];
     const fills: PromotionFillRow[] = [];
-    // champion v1: 10 trips opened just after the v1 decision, each losing (buy 100 sell 99).
-    for (let i = 0; i < 10; i++) fills.push(...tripFills('100', '99', 2_000 + i * 10));
-    // candidate v2: `candidateTrips` trips opened after the v2 decision, each winning (buy 100 sell 110).
-    for (let i = 0; i < candidateTrips; i++)
-      fills.push(...tripFills('100', '110', 200_000 + i * 10));
+    for (const sym of [SYM_A, SYM_B]) {
+      for (let i = 0; i < championTripsPerSymbol; i++) {
+        fills.push(...tripFills(sym, '100', '99', 2_000 + i * 10));
+      }
+    }
+    const perSymbol = [Math.ceil(candidateTrips / 2), Math.floor(candidateTrips / 2)];
+    [SYM_A, SYM_B].forEach((sym, idx) => {
+      for (let i = 0; i < perSymbol[idx]!; i++) {
+        fills.push(...tripFills(sym, '100', '110', 200_000 + i * 10));
+      }
+    });
     return { decisions, fills };
   }
 
   const CFG = { minAttributedTrades: 10, minPos: 0.7, dustNotional: '5' };
 
-  it('promotes the candidate when it clears the floors AND beats the champion (mean + PoS)', async () => {
+  it('promotes the candidate when it clears the paired floors AND beats the champion (mean + PoS) on the shared basket', async () => {
     const { decisions, fills } = championAndCandidate(10);
     const h = harness({ fills, decisions, championVersion: 1 });
     const evalr = new PromotionEvaluator(CFG, h.deps);
@@ -151,8 +174,8 @@ describe('PromotionEvaluator (W5 attributed auto-promotion)', () => {
     expect(h.outcomes).toEqual(['auto_promoted']);
   });
 
-  it('does NOT promote below the attributed-trip floor', async () => {
-    const { decisions, fills } = championAndCandidate(9); // 9 < floor 10
+  it('does NOT promote below the paired attributed-trip floor even with a qualifying shared basket', async () => {
+    const { decisions, fills } = championAndCandidate(9); // 9 < floor 10, split 5+4 across SYM_A/SYM_B
     const h = harness({ fills, decisions, championVersion: 1 });
     const evalr = new PromotionEvaluator(CFG, h.deps);
     evalr.onClosedTrade(strategyId(SID), 19);
@@ -161,12 +184,20 @@ describe('PromotionEvaluator (W5 attributed auto-promotion)', () => {
     expect(h.outcomes).toEqual([]);
   });
 
-  it('does NOT promote a candidate whose mean does not beat the champion', async () => {
-    // champion v1 WINS (buy 100 sell 110), candidate v2 loses (buy 100 sell 99).
-    const decisions = [decisionRow(1, 1_000), decisionRow(2, 100_000)];
+  it('does NOT promote a candidate whose paired mean does not beat the champion on the shared basket', async () => {
+    // champion v1 WINS on both shared symbols (buy 100 sell 110), candidate v2 loses on both
+    // (buy 100 sell 99).
+    const decisions = [
+      decisionRow(SYM_A, 1, 1_000),
+      decisionRow(SYM_B, 1, 1_000),
+      decisionRow(SYM_A, 2, 100_000),
+      decisionRow(SYM_B, 2, 100_000),
+    ];
     const fills: PromotionFillRow[] = [];
-    for (let i = 0; i < 10; i++) fills.push(...tripFills('100', '110', 2_000 + i * 10));
-    for (let i = 0; i < 10; i++) fills.push(...tripFills('100', '99', 200_000 + i * 10));
+    for (const sym of [SYM_A, SYM_B]) {
+      for (let i = 0; i < 5; i++) fills.push(...tripFills(sym, '100', '110', 2_000 + i * 10));
+      for (let i = 0; i < 5; i++) fills.push(...tripFills(sym, '100', '99', 200_000 + i * 10));
+    }
     const h = harness({ fills, decisions, championVersion: 1 });
     const evalr = new PromotionEvaluator(CFG, h.deps);
     evalr.onClosedTrade(strategyId(SID), 20);
@@ -174,29 +205,89 @@ describe('PromotionEvaluator (W5 attributed auto-promotion)', () => {
     expect(h.appended).toHaveLength(0);
   });
 
-  it('symmetric floor: does NOT promote while the champion has fewer in-window trips than the floor', async () => {
-    // Champion v1 has only 3 trips (< 10); candidate v2 has 10 clean wins. The pre-2026-07-12
-    // evaluator promoted here (champion floor was trips > 0) — the symmetric floor holds instead.
-    const decisions = [decisionRow(1, 1_000), decisionRow(2, 100_000)];
+  it('symmetric floor: does NOT promote while both versions share ≥2 symbols but the paired trip total stays below the floor', async () => {
+    // Champion and candidate share SYM_A + SYM_B (each leg clears the per-symbol MIN_PAIRED_TRIPS
+    // floor of 3) but only 3 trips/symbol ⇒ 6 paired trips total, below the 10 floor — the
+    // pre-#48 evaluator's symmetric floor concept, now measured over the paired pool instead of
+    // the whole-basket pool.
+    const decisions = [
+      decisionRow(SYM_A, 1, 1_000),
+      decisionRow(SYM_B, 1, 1_000),
+      decisionRow(SYM_A, 2, 100_000),
+      decisionRow(SYM_B, 2, 100_000),
+    ];
     const fills: PromotionFillRow[] = [];
-    for (let i = 0; i < 3; i++) fills.push(...tripFills('100', '99', 2_000 + i * 10));
-    for (let i = 0; i < 10; i++) fills.push(...tripFills('100', '110', 200_000 + i * 10));
+    for (const sym of [SYM_A, SYM_B]) {
+      for (let i = 0; i < 3; i++) fills.push(...tripFills(sym, '100', '99', 2_000 + i * 10));
+      for (let i = 0; i < 3; i++) fills.push(...tripFills(sym, '100', '110', 200_000 + i * 10));
+    }
     const h = harness({ fills, decisions, championVersion: 1 });
     const evalr = new PromotionEvaluator(CFG, h.deps);
-    evalr.onClosedTrade(strategyId(SID), 13);
+    evalr.onClosedTrade(strategyId(SID), 12);
     await flush();
     expect(h.appended).toHaveLength(0);
     expect(h.outcomes).toEqual([]);
   });
 
-  it('PoS floor: does NOT promote a mean carried by one outlier trip that loses most pairwise comparisons', async () => {
-    // Candidate: 9 trips at −2 and one at +100 ⇒ mean +8.2 beats champion mean −1, but PoS is
-    // 10/100 = 0.10 — the bare mean comparison would have promoted this; the rank floor holds.
-    const decisions = [decisionRow(1, 1_000), decisionRow(2, 100_000)];
+  it('backlog #48 confound: a candidate that only looks better because it traded a wholly different (easier) basket does NOT promote', async () => {
+    // Champion trades ONLY SYM_A (10 losing trips); candidate trades ONLY SYM_B (10 winning
+    // trips) — zero shared symbols. The pre-#48 pooled comparison would have promoted this
+    // (candidate mean/PoS both look perfect); the paired comparison correctly refuses because
+    // there is no overlapping basket to attribute the "edge" to.
+    const decisions = [decisionRow(SYM_A, 1, 1_000), decisionRow(SYM_B, 2, 100_000)];
     const fills: PromotionFillRow[] = [];
-    for (let i = 0; i < 10; i++) fills.push(...tripFills('100', '99', 2_000 + i * 10));
-    for (let i = 0; i < 9; i++) fills.push(...tripFills('100', '98', 200_000 + i * 10));
-    fills.push(...tripFills('100', '200', 201_000));
+    for (let i = 0; i < 10; i++) fills.push(...tripFills(SYM_A, '100', '99', 2_000 + i * 10));
+    for (let i = 0; i < 10; i++) fills.push(...tripFills(SYM_B, '100', '110', 200_000 + i * 10));
+    const h = harness({ fills, decisions, championVersion: 1 });
+    const evalr = new PromotionEvaluator(CFG, h.deps);
+    evalr.onClosedTrade(strategyId(SID), 20);
+    await flush();
+    expect(h.appended).toHaveLength(0);
+    expect(h.outcomes).toEqual([]);
+  });
+
+  it('below-MIN_SHARED_SYMBOLS fails closed: exactly one shared symbol is not enough even though it favors the candidate', async () => {
+    // Champion trades SYM_A (losing) + a unique SYM_C (losing); candidate trades SYM_A (winning)
+    // + a unique SYM_D (winning). SYM_A alone is shared (1 < MIN_SHARED_SYMBOLS 2) — fails closed,
+    // never falls back to a single-symbol comparison.
+    const SYM_C = 'SOL/USDT';
+    const SYM_D = 'XRP/USDT';
+    const decisions = [
+      decisionRow(SYM_A, 1, 1_000),
+      decisionRow(SYM_C, 1, 1_000),
+      decisionRow(SYM_A, 2, 100_000),
+      decisionRow(SYM_D, 2, 100_000),
+    ];
+    const fills: PromotionFillRow[] = [];
+    for (let i = 0; i < 10; i++) fills.push(...tripFills(SYM_A, '100', '99', 2_000 + i * 10));
+    for (let i = 0; i < 10; i++) fills.push(...tripFills(SYM_C, '100', '99', 2_500 + i * 10));
+    for (let i = 0; i < 10; i++) fills.push(...tripFills(SYM_A, '100', '110', 200_000 + i * 10));
+    for (let i = 0; i < 10; i++) fills.push(...tripFills(SYM_D, '100', '110', 200_500 + i * 10));
+    const h = harness({ fills, decisions, championVersion: 1 });
+    const evalr = new PromotionEvaluator(CFG, h.deps);
+    evalr.onClosedTrade(strategyId(SID), 40);
+    await flush();
+    expect(h.appended).toHaveLength(0);
+  });
+
+  it('PoS floor: does NOT promote a paired mean carried by one outlier trip that loses most pairwise comparisons on its own symbol', async () => {
+    // SYM_A: champion 5 losing trips (net −1 each); candidate 4 trips at net −2 + 1 outlier at
+    // net +100. SYM_B: champion 5 losing trips (net −1 each); candidate 5 trips at net −2.
+    // Paired PoS = 5 wins / 50 pairs = 0.10 (the outlier only ever beats SYM_A's champion trips);
+    // paired mean = 8.2 for the candidate vs −1.0 for champion — mean would promote, PoS holds it.
+    const decisions = [
+      decisionRow(SYM_A, 1, 1_000),
+      decisionRow(SYM_B, 1, 1_000),
+      decisionRow(SYM_A, 2, 100_000),
+      decisionRow(SYM_B, 2, 100_000),
+    ];
+    const fills: PromotionFillRow[] = [];
+    for (const sym of [SYM_A, SYM_B]) {
+      for (let i = 0; i < 5; i++) fills.push(...tripFills(sym, '100', '99', 2_000 + i * 10));
+    }
+    for (let i = 0; i < 4; i++) fills.push(...tripFills(SYM_A, '100', '98', 200_000 + i * 10));
+    fills.push(...tripFills(SYM_A, '100', '200', 200_100));
+    for (let i = 0; i < 5; i++) fills.push(...tripFills(SYM_B, '100', '98', 200_200 + i * 10));
     const h = harness({ fills, decisions, championVersion: 1 });
     const evalr = new PromotionEvaluator(CFG, h.deps);
     evalr.onClosedTrade(strategyId(SID), 20);
@@ -255,9 +346,9 @@ describe('PromotionEvaluator (W5 attributed auto-promotion)', () => {
 
   it('holds off when the champion has no attributed evidence in the window', async () => {
     // Only a v2 candidate attributes; champion v1 has no in-window trips → no comparison basis.
-    const decisions = [decisionRow(2, 100_000)];
+    const decisions = [decisionRow(SYM, 2, 100_000)];
     const fills: PromotionFillRow[] = [];
-    for (let i = 0; i < 10; i++) fills.push(...tripFills('100', '110', 200_000 + i * 10));
+    for (let i = 0; i < 10; i++) fills.push(...tripFills(SYM, '100', '110', 200_000 + i * 10));
     const h = harness({ fills, decisions, championVersion: 1 });
     const evalr = new PromotionEvaluator(CFG, h.deps);
     evalr.onClosedTrade(strategyId(SID), 10);
@@ -320,6 +411,57 @@ describe('PromotionEvaluator (W5 attributed auto-promotion)', () => {
     expect(probabilityOfSuperiority(dec(['1', '2']), dec(['1', '0'])).toFixed(4)).toBe('0.8750');
     expect(probabilityOfSuperiority(dec(['5']), dec(['5'])).toFixed(1)).toBe('0.5');
     expect(probabilityOfSuperiority(dec(['-1']), dec(['1'])).toFixed(1)).toBe('0.0');
+  });
+
+  describe('pairedComparison (backlog #48)', () => {
+    const dec = (vals: string[]) => vals.map((v) => new Decimal(v));
+
+    it('returns null (fail closed) below MIN_SHARED_SYMBOLS even with ample per-symbol trips', () => {
+      const candidate = { bySymbol: new Map([[SYM_A, dec(['1', '1', '1'])]]) };
+      const champion = { bySymbol: new Map([[SYM_A, dec(['-1', '-1', '-1'])]]) };
+      expect(pairedComparison(candidate, champion)).toBeNull();
+    });
+
+    it('excludes a shared symbol below MIN_PAIRED_TRIPS from the shared-symbol count', () => {
+      const candidate = {
+        bySymbol: new Map([
+          [SYM_A, dec(['1', '1'])], // 2 < MIN_PAIRED_TRIPS (3) — excluded
+          [SYM_B, dec(['1', '1', '1'])],
+        ]),
+      };
+      const champion = {
+        bySymbol: new Map([
+          [SYM_A, dec(['-1', '-1', '-1'])],
+          [SYM_B, dec(['-1', '-1', '-1'])],
+        ]),
+      };
+      // Only SYM_B clears the per-symbol floor ⇒ 1 shared symbol < MIN_SHARED_SYMBOLS (2).
+      expect(pairedComparison(candidate, champion)).toBeNull();
+    });
+
+    it('aggregates wins/pairs across qualifying shared symbols only', () => {
+      const candidate = {
+        bySymbol: new Map([
+          [SYM_A, dec(['1', '1', '1'])],
+          [SYM_B, dec(['1', '1', '1'])],
+          ['UNSHARED/USDT', dec(['999', '999', '999'])], // not in champion — never counted
+        ]),
+      };
+      const champion = {
+        bySymbol: new Map([
+          [SYM_A, dec(['-1', '-1', '-1'])],
+          [SYM_B, dec(['-1', '-1', '-1'])],
+        ]),
+      };
+      const verdict = pairedComparison(candidate, champion);
+      expect(verdict).not.toBeNull();
+      expect([...verdict!.sharedSymbols].sort()).toEqual([SYM_A, SYM_B].sort());
+      expect(verdict!.candidateTrips).toBe(6);
+      expect(verdict!.championTrips).toBe(6);
+      expect(verdict!.pos.toFixed(1)).toBe('1.0'); // candidate wins every same-symbol pair
+      expect(verdict!.candidateMean.toFixed(1)).toBe('1.0');
+      expect(verdict!.championMean.toFixed(1)).toBe('-1.0');
+    });
   });
 
   it('createPromotionEvaluator parses AGENTIC_PROMOTE_MIN_POS and clamps it to [0.5, 1]', async () => {

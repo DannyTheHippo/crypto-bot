@@ -26,6 +26,25 @@ const DECISION_LOOKBACK_ROWS = 2000;
 const VERSIONED_LOOKBACK_CAP = 20_000;
 const EPOCH_DECIDE_MARGIN_MS = 24 * 60 * 60 * 1000;
 
+// backlog #48 (promotion-attribution soundness). The active symbol menu rotates (daily
+// universe-scanner.service.ts churn; a weekly rotation would drift it more), so within one evidence
+// epoch the champion and a candidate can accrue trips on DIFFERENT symbol baskets. Pooling
+// candidate-vs-champion nets across the whole traded basket then confounds "better playbook" with
+// "easier/harder basket" — a promotion could fire on basket luck. The fix restricts the comparison
+// to the symbols BOTH versions actually traded (see pairedComparison below); these two floors gate
+// that restricted comparison and FAIL CLOSED (never promote, never fall back to the confounded
+// pooled comparison) when the shared basket is too thin to trust.
+//
+// MIN_SHARED_SYMBOLS: one shared symbol already removes the cross-symbol basket confound for that
+// symbol, but a lone symbol's own regime could itself look like an edge; requiring >=2 means the
+// candidate's edge must generalize across at least two baskets before it can promote.
+const MIN_SHARED_SYMBOLS = 2;
+// MIN_PAIRED_TRIPS: minimum attributed trips EACH version must carry on a given symbol before that
+// symbol counts as shared evidence — a symbol with e.g. 1 champion trip vs 1 candidate trip is too
+// noisy to trust as a paired basis and would let a single lucky/unlucky fill decide that symbol's
+// contribution to the verdict.
+const MIN_PAIRED_TRIPS = 3;
+
 const NOOP_LOGGER: LoggerLike = { warn: () => undefined };
 
 // Attributed auto-promotion (W5, owner decision 2026-07-08). The A/B router (PlaybookAbRoutingProvider,
@@ -105,13 +124,33 @@ export interface PromotionEvaluatorDeps {
 }
 
 interface VersionStats {
-  // Per-trip net (realized − fees) values — kept individually (not just a sum) so the verdict can
-  // compute the pairwise probability-of-superiority alongside the mean.
-  nets: Decimal[];
+  // Per-trip net (realized − fees) values, kept PER SYMBOL (not pooled) — the paired comparison
+  // below (backlog #48) needs each version's own per-symbol trip lists to intersect against the
+  // other version's, rather than one flat cross-symbol pool.
+  readonly bySymbol: Map<string, Decimal[]>;
 }
 
 function meanOf(nets: readonly Decimal[]): Decimal {
   return nets.reduce((acc, n) => acc.plus(n), new Decimal(0)).div(nets.length);
+}
+
+// Pairwise wins (Mann–Whitney numerator/denominator): count of (a, b) pairs where a beats b, ties
+// counted half, alongside the pair count — split out so pairedComparison can sum wins/pairs ACROSS
+// symbols (one Mann–Whitney statistic over the shared basket) rather than averaging per-symbol
+// probabilities, which would let a low-volume shared symbol dominate the aggregate.
+function pairwiseWins(
+  a: readonly Decimal[],
+  b: readonly Decimal[],
+): { wins: Decimal; pairs: number } {
+  let wins = new Decimal(0);
+  for (const x of a) {
+    for (const y of b) {
+      const cmp = x.cmp(y);
+      if (cmp > 0) wins = wins.plus(1);
+      else if (cmp === 0) wins = wins.plus('0.5');
+    }
+  }
+  return { wins, pairs: a.length * b.length };
 }
 
 // Mann–Whitney probability of superiority: P(candidate trip net > champion trip net), ties at 0.5.
@@ -121,15 +160,56 @@ export function probabilityOfSuperiority(
   candidate: readonly Decimal[],
   champion: readonly Decimal[],
 ): Decimal {
-  let wins = new Decimal(0);
-  for (const c of candidate) {
-    for (const ch of champion) {
-      const cmp = c.cmp(ch);
-      if (cmp > 0) wins = wins.plus(1);
-      else if (cmp === 0) wins = wins.plus('0.5');
-    }
+  const { wins, pairs } = pairwiseWins(candidate, champion);
+  return wins.div(pairs);
+}
+
+export interface PairedVerdict {
+  readonly sharedSymbols: readonly string[];
+  readonly candidateTrips: number;
+  readonly championTrips: number;
+  readonly candidateMean: Decimal;
+  readonly championMean: Decimal;
+  readonly pos: Decimal;
+}
+
+// backlog #48: restricts candidate-vs-champion comparison to symbols BOTH versions traded (with
+// >= MIN_PAIRED_TRIPS each), instead of pooling every symbol either version happened to trade. PoS
+// is the pairwise-win sum over ONLY same-symbol pairs (never candidate-symbol-A vs champion-
+// symbol-B) divided by the same-symbol pair count — a version that only "wins" by drawing an easier
+// basket can no longer move this number, since it is never compared against the other version's
+// trips on a symbol it didn't itself trade. The mean is the trip-weighted mean over the identical
+// shared-symbol trip pool. Returns null when the shared basket doesn't clear MIN_SHARED_SYMBOLS —
+// the caller MUST fail closed in that case, never fall back to a pooled (confounded) computation.
+export function pairedComparison(
+  candidate: VersionStats,
+  champion: VersionStats,
+): PairedVerdict | null {
+  const sharedSymbols: string[] = [];
+  const candidateNets: Decimal[] = [];
+  const championNets: Decimal[] = [];
+  let winsSum = new Decimal(0);
+  let pairsSum = 0;
+  for (const [symbol, cNets] of candidate.bySymbol) {
+    const chNets = champion.bySymbol.get(symbol);
+    if (chNets === undefined) continue;
+    if (cNets.length < MIN_PAIRED_TRIPS || chNets.length < MIN_PAIRED_TRIPS) continue;
+    sharedSymbols.push(symbol);
+    candidateNets.push(...cNets);
+    championNets.push(...chNets);
+    const { wins, pairs } = pairwiseWins(cNets, chNets);
+    winsSum = winsSum.plus(wins);
+    pairsSum += pairs;
   }
-  return wins.div(candidate.length * champion.length);
+  if (sharedSymbols.length < MIN_SHARED_SYMBOLS) return null;
+  return {
+    sharedSymbols,
+    candidateTrips: candidateNets.length,
+    championTrips: championNets.length,
+    candidateMean: meanOf(candidateNets),
+    championMean: meanOf(championNets),
+    pos: winsSum.div(pairsSum),
+  };
 }
 
 export class PromotionEvaluator {
@@ -217,58 +297,72 @@ export class PromotionEvaluator {
     const dust = new Decimal(this.cfg.dustNotional);
     const { cycles } = walkRoundTrips(fills, dust);
 
-    // Per-version attributed per-trip nets. net = realized − fees (LLM cost excluded, see header).
+    // Per-version, per-symbol attributed per-trip nets. net = realized − fees (LLM cost excluded,
+    // see header). Kept per symbol (not pooled) so pairedComparison can intersect symbol baskets —
+    // see the backlog #48 comment on pairedComparison for why pooling here would reintroduce the
+    // confound.
     const byVersion = new Map<number, VersionStats>();
     for (const cycle of cycles) {
       const version = attributeVersion(decisions, cycle.strategyId, cycle.symbol, cycle.openedAt);
       if (version === null) continue; // 'unknown' — unattributable, never counts toward promotion
       const net = cycle.realizedPnl.minus(cycle.feesQuote);
-      const prev = byVersion.get(version) ?? { nets: [] };
-      prev.nets.push(net);
+      const prev = byVersion.get(version) ?? { bySymbol: new Map<string, Decimal[]>() };
+      const symNets = prev.bySymbol.get(cycle.symbol);
+      if (symNets === undefined) prev.bySymbol.set(cycle.symbol, [net]);
+      else symNets.push(net);
       byVersion.set(version, prev);
     }
 
     const championStats = byVersion.get(champion);
-    // Symmetric evidence floor (2026-07-12): the champion needs the SAME attributed-trip floor the
-    // candidate does — previously a single champion trip seated the baseline, so the comparison was
-    // one noisy mean against one data point. Fail-safe toward NOT promoting.
-    if (championStats === undefined || championStats.nets.length < this.cfg.minAttributedTrades) {
-      const trips = championStats?.nets.length ?? 0;
-      if (trips > 0) {
+    if (championStats === undefined) {
+      return; // champion has no attributed evidence at all in the window — nothing to compare
+    }
+
+    // Candidate = a version strictly NEWER than the champion (a reflection mint bumps the version).
+    // Pick the highest such candidate whose paired comparison against the champion clears BOTH the
+    // shared-basket floors (pairedComparison) AND the symmetric attributed-trip floor — now measured
+    // over the shared-symbol trip pool (a strict subset of each version's total trips), which is at
+    // least as strict as the pre-#48 pooled-trip floor it replaces (backlog #48: harder-or-equal,
+    // never easier, to promote).
+    let best: { version: number; verdict: PairedVerdict } | null = null;
+    for (const [version, s] of byVersion) {
+      if (version <= champion) continue;
+      const verdict = pairedComparison(s, championStats);
+      if (verdict === null) continue; // shared basket below MIN_SHARED_SYMBOLS — fail closed
+      if (verdict.candidateTrips < this.cfg.minAttributedTrades) continue;
+      if (verdict.championTrips < this.cfg.minAttributedTrades) continue;
+      if (best === null || version > best.version) {
+        best = { version, verdict };
+      }
+    }
+    if (best === null) {
+      // Restore the pre-#48 "why held" diagnostic (logs are the primary debug surface on this
+      // headless/sleeping-host stack): distinguish "no newer candidate version at all" from
+      // "candidate(s) exist but the shared basket / paired-trip floor is too thin to compare yet".
+      const newerVersions = [...byVersion.keys()].filter((v) => v > champion);
+      if (newerVersions.length > 0) {
         this.warn(
-          `promotion-eval: champion v${champion} has ${trips} attributed trips < symmetric floor ${this.cfg.minAttributedTrades} — holding`,
+          `promotion-eval: ${newerVersions.length} newer candidate version(s) [${newerVersions.join(', ')}] but none cleared the shared-basket (>=${MIN_SHARED_SYMBOLS} symbols, >=${MIN_PAIRED_TRIPS} paired trips each) + ${this.cfg.minAttributedTrades}-trip floor vs champion v${champion} — holding`,
         );
       }
       return;
     }
-    const championMean = meanOf(championStats.nets);
 
-    // Candidate = a version strictly NEWER than the champion (a reflection mint bumps the version).
-    // Pick the highest such candidate that clears the attributed-trip floor.
-    let best: { version: number; nets: readonly Decimal[]; mean: Decimal } | null = null;
-    for (const [version, s] of byVersion) {
-      if (version <= champion) continue;
-      if (s.nets.length < this.cfg.minAttributedTrades) continue;
-      if (best === null || version > best.version) {
-        best = { version, nets: s.nets, mean: meanOf(s.nets) };
-      }
-    }
-    if (best === null) return; // no eligible candidate yet
-
-    // Two-part verdict: the candidate's mean must beat the champion's AND the pairwise probability
-    // of superiority must clear the configured floor — a heavy-tailed lucky trip can move a mean a
-    // long way, but it cannot move rank statistics past ~0.70 on its own.
-    const pos = probabilityOfSuperiority(best.nets, championStats.nets);
-    if (best.mean.lte(championMean) || pos.lt(this.cfg.minPos)) {
+    const { verdict } = best;
+    // Two-part verdict, now over the PAIRED shared-basket pool: the candidate's mean must beat the
+    // champion's AND the pairwise probability of superiority must clear the configured floor — a
+    // heavy-tailed lucky trip can move a mean a long way, but it cannot move rank statistics past
+    // ~0.70 on its own.
+    if (verdict.candidateMean.lte(verdict.championMean) || verdict.pos.lt(this.cfg.minPos)) {
       this.warn(
-        `promotion-eval: candidate v${best.version} (mean net ${best.mean.toFixed(4)}, PoS ${pos.toFixed(3)} over ${best.nets.length}x${championStats.nets.length} pairs) does not clear champion v${champion} (mean ${championMean.toFixed(4)}, PoS floor ${this.cfg.minPos}) — holding`,
+        `promotion-eval: candidate v${best.version} (paired mean net ${verdict.candidateMean.toFixed(4)}, PoS ${verdict.pos.toFixed(3)} over ${verdict.candidateTrips}x${verdict.championTrips} paired trips across ${verdict.sharedSymbols.length} shared symbols [${verdict.sharedSymbols.join(', ')}]) does not clear champion v${champion} (paired mean ${verdict.championMean.toFixed(4)}, PoS floor ${this.cfg.minPos}) — holding`,
       );
       return;
     }
 
     try {
       const promoted = await playbookStore.append(
-        `auto-promoted v${best.version} on attributed evidence: mean net/trip ${best.mean.toFixed(4)} > champion v${champion} ${championMean.toFixed(4)}, PoS ${pos.toFixed(3)} >= ${this.cfg.minPos} (n=${best.nets.length} vs ${championStats.nets.length})`,
+        `auto-promoted v${best.version} on attributed evidence (paired over ${verdict.sharedSymbols.length} shared symbols): mean net/trip ${verdict.candidateMean.toFixed(4)} > champion v${champion} ${verdict.championMean.toFixed(4)}, PoS ${verdict.pos.toFixed(3)} >= ${this.cfg.minPos} (n=${verdict.candidateTrips} vs ${verdict.championTrips})`,
         'promotion',
         best.version,
       );

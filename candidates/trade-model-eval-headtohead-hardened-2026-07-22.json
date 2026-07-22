@@ -1,0 +1,132 @@
+{
+  "criteriaVersion": "hh-v1",
+  "corpusFingerprint": "bc9390e404261298c57642be95a2c688432a6d04794e036bfae1fe1c5e31a8d7",
+  "contractFingerprint": "994f81306ab7a638042f675da579d5f86d06d5bdf6cd41207594cc19559bbfcd",
+  "templateVersion": "v3",
+  "corpusSource": "JSONL file test/eval/agentic/data/corpus-v2-clone.jsonl (1363 raw rows before filtering)",
+  "window": {
+    "rowSince": 1783714500000,
+    "rowUntil": 1783876500000,
+    "firstEventTime": 1783716300000,
+    "lastEventTime": 1783876500000,
+    "rowsLoaded": 204,
+    "rowsReplayed": 200
+  },
+  "capabilities": {
+    "venue": "binanceusdm",
+    "shorts": true,
+    "leverage": "2",
+    "maxSizeFraction": "0.35",
+    "venueFreeCash": "500"
+  },
+  "thinking": "disabled",
+  "maxTokens": 4096,
+  "tokenPrices": {
+    "claude-sonnet-5": {
+      "inputPerMtok": 3,
+      "outputPerMtok": 15
+    },
+    "kimi-k3": {
+      "inputPerMtok": 3,
+      "outputPerMtok": 15
+    }
+  },
+  "championReference": {
+    "actionHistogram": {
+      "close": 16,
+      "hold": 159,
+      "open_long": 25
+    },
+    "proposeCount": 25,
+    "forwardReturnProxyBps": -0.06563067423353719,
+    "costPerDecideUsd": 0.009950053571428571,
+    "droppedScoringRows": 0
+  },
+  "candidates": [
+    {
+      "model": "claude-sonnet-5",
+      "rowsReplayed": 200,
+      "schemaValidRate": 0.805,
+      "tradeSanityRate": 1,
+      "proposeCount": 14,
+      "proposeRate": 0.07,
+      "directionalForwardProxyBps": -4.67514936924966,
+      "costPerDecideUsd": 0.02721012,
+      "corpusFingerprint": "bc9390e404261298c57642be95a2c688432a6d04794e036bfae1fe1c5e31a8d7",
+      "contractFingerprint": "994f81306ab7a638042f675da579d5f86d06d5bdf6cd41207594cc19559bbfcd",
+      "actionHistogram": {
+        "hold": 104,
+        "error": 39,
+        "close": 4,
+        "adjust": 39,
+        "open_short": 1,
+        "open_long": 13
+      },
+      "agreementWithChampion": 0.5,
+      "invalidCount": 39,
+      "firstErrorDetail": "schema-invalid tool response: sizeFraction: sizeFraction is required when action is 'open_long'",
+      "droppedScoringRows": 0,
+      "promptHash": "3acd741008e224c1db71d5624f1e9d027b40f0085d447227d90bef539ece7216"
+    },
+    {
+      "model": "kimi-k3",
+      "rowsReplayed": 200,
+      "schemaValidRate": 0.71,
+      "tradeSanityRate": 1,
+      "proposeCount": 76,
+      "proposeRate": 0.38,
+      "directionalForwardProxyBps": 5.421455044255619,
+      "costPerDecideUsd": 0.012446235,
+      "corpusFingerprint": "bc9390e404261298c57642be95a2c688432a6d04794e036bfae1fe1c5e31a8d7",
+      "contractFingerprint": "994f81306ab7a638042f675da579d5f86d06d5bdf6cd41207594cc19559bbfcd",
+      "actionHistogram": {
+        "close": 9,
+        "adjust": 20,
+        "error": 58,
+        "open_long": 64,
+        "hold": 37,
+        "open_short": 12
+      },
+      "agreementWithChampion": 0.31,
+      "invalidCount": 58,
+      "firstErrorDetail": "schema-invalid tool response: thesis: Too big: expected string to have <=300 characters",
+      "droppedScoringRows": 0,
+      "promptHash": "200789d9765f4953fe80bcb60e9e3cdf78ae3bd3dcf97a5254395f8ce1e1b7d8"
+    }
+  ],
+  "verdicts": [
+    {
+      "criteriaVersion": "hh-v1",
+      "baselineModel": "claude-sonnet-5",
+      "candidateModel": "kimi-k3",
+      "criteria": [
+        {
+          "criterion": "schema-valid rate >= baseline",
+          "pass": false,
+          "detail": "candidate 0.710 >= baseline 0.805"
+        },
+        {
+          "criterion": "trade sanity rate >= baseline",
+          "pass": true,
+          "detail": "candidate 1 >= baseline 1"
+        },
+        {
+          "criterion": "directional forward proxy bps >= baseline - 2",
+          "pass": true,
+          "detail": "candidate 5.421455044255619 bps >= baseline -4.67514936924966 bps - 2"
+        },
+        {
+          "criterion": "propose-rate ratio in [0.5, 1.5]",
+          "pass": false,
+          "detail": "ratio 5.428571428571428 in [0.5, 1.5]"
+        },
+        {
+          "criterion": "cost/decide <= baseline",
+          "pass": true,
+          "detail": "candidate $0.012446235 <= baseline $0.02721012"
+        }
+      ],
+      "pass": false
+    }
+  ]
+}

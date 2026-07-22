@@ -10,7 +10,7 @@
 // single-variant compare):
 //   - EVAL_CANDIDATES=1 — this suite's own opt-in. Absent ⇒ skip, so `pnpm eval:agentic` (which sets
 //     no env) never reaches this file even when ANTHROPIC_API_KEY/DATABASE_URL happen to be set.
-//   - ANTHROPIC_API_KEY — the network gate every live eval file uses.
+//   - ANTHROPIC_API_KEY (or AGENTIC_EVAL_API_KEY) — the network gate every live eval file uses.
 //   - DATABASE_URL + the same read-only DB_SUITE_ALLOW_RESET/_test-suffix gate recorded-rows.spec.ts
 //     uses (mirrored locally below, not imported — each spec's gate stays self-contained and
 //     independently auditable).
@@ -29,6 +29,21 @@
 //   ROW_QUERY_LIMIT=1000                     (optional — rows FETCHED before the >=200 filter/slice)
 //   AGENTIC_TOKEN_PRICES_JSON='{"claude-haiku-4-5-20251001":{"inputPerMtok":"1","outputPerMtok":"5"}}'
 //                                             (optional — same shape as the app config knob)
+//   AGENTIC_EVAL_BASE_URL=https://api.moonshot.ai/anthropic
+//                                             (optional — Anthropic-COMPATIBLE host to replay
+//                                              against; the code owns the /v1/messages suffix;
+//                                              default https://api.anthropic.com)
+//   AGENTIC_EVAL_API_KEY=sk-...               (optional — key for that host, falls back to
+//                                              ANTHROPIC_API_KEY; either satisfies the gate)
+//   AGENTIC_EVAL_CALL_DELAY_MS=20000          (optional — inter-call sleep for low-RPM key tiers)
+//   AGENTIC_EVAL_TIMEOUT_MS=1800000           (optional — it() timeout override, default 600000)
+//   ROW_SINCE=1783714500000 ROW_UNTIL=1783876500000
+//                                             (optional — inclusive epoch-ms event_time window;
+//                                              aim at a propose-dense corpus stretch — an
+//                                              all-hold champion window nulls propose-ratio and
+//                                              the forward-proxy comparison)
+//   AGENTIC_EVAL_ROW_LOG_FILE=rows.jsonl      (optional — per-row JSONL audit trail: champion vs
+//                                              candidate action, validity, usage)
 //   pnpm exec vitest run test/eval/agentic/candidate-model-eval.spec.ts
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
@@ -37,7 +52,7 @@ import { Pool } from 'pg';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import * as schema from '../../../src/database/schemas/trading';
 import { AgentDecisionJournalAdapter } from '../../../src/database/repositories/agent-decision-journal.adapter';
-import { writeFileSync } from 'node:fs';
+import { appendFileSync, writeFileSync } from 'node:fs';
 import type { AgentDecisionRow } from '../../../src/ports/agentic-strategy';
 import {
   PLAN_BOUNDS,
@@ -57,16 +72,46 @@ import {
   type PromptIdentity,
   type RecordedDecisionOutcome,
 } from './recorded-payload-fixtures';
+import {
+  fetchWithRateLimitRetry,
+  parseTokenPriceOverrides,
+  meanCostUsd,
+} from './trade-eval-fixtures';
 
 const API_KEY = process.env['ANTHROPIC_API_KEY'];
+// Prerequisite-B routing (kimi-k3 memo): AGENTIC_EVAL_BASE_URL/_API_KEY point the replay at an
+// Anthropic-COMPATIBLE endpoint (e.g. Moonshot's /anthropic surface) without touching the
+// production client. Defaults keep Anthropic runs byte-identical; the gate accepts either key, so
+// a routed run needs no ANTHROPIC_API_KEY exported — and therefore cannot silently bill Anthropic.
+const EVAL_API_KEY = process.env['AGENTIC_EVAL_API_KEY'] ?? API_KEY;
+const DEFAULT_BASE_URL = 'https://api.anthropic.com';
+const EVAL_BASE_URL = (process.env['AGENTIC_EVAL_BASE_URL'] ?? DEFAULT_BASE_URL).replace(
+  /\/+$/,
+  '',
+);
 const CANDIDATES_ENABLED = process.env['EVAL_CANDIDATES'] === '1';
 const DB_URL = process.env['DATABASE_URL'];
 const MIN_LOADED_ROWS = 200;
 const ROW_QUERY_LIMIT = Number(process.env['ROW_QUERY_LIMIT'] ?? '1000');
 const ROW_LIMIT = Number(process.env['ROW_LIMIT'] ?? '50');
+// Optional inclusive event-time window (epoch ms) targeting a specific corpus stretch — an
+// all-hold champion window nulls propose-ratio and the forward-proxy comparison, reducing the
+// flip verdict to hold-mimicry + cost (owner critique 2026-07-22). MIN_LOADED_ROWS applies to
+// the windowed count.
+const ROW_SINCE = Number(process.env['ROW_SINCE'] ?? '0');
+const ROW_UNTIL = Number(process.env['ROW_UNTIL'] ?? String(Number.MAX_SAFE_INTEGER));
 // Thinking-on study variant (Push II Phase 6): >0 enables extended thinking with this budget on
 // every candidate call — see callAnthropicPlanLive's comment for the tool_choice consequence.
+// -1 omits the thinking field entirely (endpoint default) — always-on-thinking compat endpoints
+// may reject an explicit {type:'disabled'}.
 const THINKING_BUDGET = Number(process.env['AGENTIC_EVAL_THINKING_BUDGET'] ?? '0');
+// Inter-call sleep for low-RPM key tiers (e.g. a fresh Moonshot account at ~3 RPM): spacing calls
+// out beats burning the bounded 429 retries. 0 (default) preserves the un-throttled behavior.
+const CALL_DELAY_MS = Number(process.env['AGENTIC_EVAL_CALL_DELAY_MS'] ?? '0');
+// Opt-in per-row JSONL (one line per replayed row × model): champion vs candidate action,
+// validity, plan sanity, usage — the disagreement-quality audit trail the aggregate scorecard
+// cannot reconstruct after the fact.
+const ROW_LOG_FILE = process.env['AGENTIC_EVAL_ROW_LOG_FILE'];
 
 // Same edge-multiple/R:R floors AGENTIC_MIN_EDGE_MULTIPLE/AGENTIC_MIN_RR default to
 // (environment.config.ts) — quoted into the system prompt below AND used by isPlanSane's local
@@ -93,7 +138,7 @@ function dbNameEndsWithTest(url: string): boolean {
 const resetAllowed =
   process.env['DB_SUITE_ALLOW_RESET'] === '1' || (!!DB_URL && dbNameEndsWithTest(DB_URL));
 
-const SKIP = !CANDIDATES_ENABLED || !API_KEY || !DB_URL || !resetAllowed;
+const SKIP = !CANDIDATES_ENABLED || !EVAL_API_KEY || !DB_URL || !resetAllowed;
 
 // Mirrors anthropic-agent-client.ts's planSchema exactly (decisionSchema + optional plan, required
 // when action==='long') — not imported because it is module-private there. The PLAN_BOUNDS min/max
@@ -174,18 +219,24 @@ interface LiveCallResult {
 // this re-implements attemptOnce() rather than going through AnthropicAgentClient.propose(): a
 // persisted input_payload row has no surviving AgentDecisionInput to hand it). Unlike that sibling,
 // this also surfaces usage (needed for metric #6) and validates/scores the plan (metric #4). No
-// retry/backoff: a single failed call degrades that one row to an 'error' action.
+// retry/backoff: a single failed call degrades that one row to an 'error' action. The imported
+// fetchWithRateLimitRetry (trade-eval-fixtures.ts) adds the 429/529 bounded retry on top: rate-limit
+// noise on a low-RPM key tier would otherwise degrade rows to 'error' and poison schemaValidRate —
+// the very metric the flip verdict hinges on. Every other failure still degrades the row as before.
 async function callAnthropicPlanLive(
   systemPrompt: string,
   userMessage: string,
   model: string,
 ): Promise<LiveCallResult> {
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
+  const res = await fetchWithRateLimitRetry(`${EVAL_BASE_URL}/v1/messages`, {
     method: 'POST',
     headers: {
-      'x-api-key': API_KEY!,
+      'x-api-key': EVAL_API_KEY!,
       'anthropic-version': '2023-06-01',
       'content-type': 'application/json',
+      // The compat surface's wire auth header is not uniformly documented (Bearer vs x-api-key);
+      // sending both on an overridden base is harmless and removes a whole failure branch.
+      ...(EVAL_BASE_URL !== DEFAULT_BASE_URL ? { authorization: `Bearer ${EVAL_API_KEY!}` } : {}),
     },
     body: JSON.stringify({
       model,
@@ -195,7 +246,10 @@ async function callAnthropicPlanLive(
       // keeps the forced tool_choice (adaptive thinking is compatible with it; the reflection
       // path runs exactly that combination live), so the comparison has no auto-tool confound.
       // Thinking tokens bill as output and count toward max_tokens, hence the raised ceiling.
-      max_tokens: THINKING_BUDGET > 0 ? 1024 + THINKING_BUDGET : 1024,
+      // Sentinel -1 (thinking field omitted) leaves headroom for an always-on-thinking endpoint
+      // to spend thinking from the same max_tokens budget before the tool call (~$0.14/call
+      // ceiling at $15/Mtok output; actual usage is what the cost metric reports).
+      max_tokens: THINKING_BUDGET > 0 ? 1024 + THINKING_BUDGET : THINKING_BUDGET < 0 ? 9216 : 1024,
       system: systemPrompt,
       messages: [{ role: 'user', content: userMessage }],
       tools: [PLAN_TOOL],
@@ -207,7 +261,9 @@ async function callAnthropicPlanLive(
               effort: THINKING_BUDGET <= 1024 ? 'low' : THINKING_BUDGET <= 4096 ? 'medium' : 'high',
             },
           }
-        : { thinking: { type: 'disabled' } }),
+        : THINKING_BUDGET < 0
+          ? {} // -1: omit the field — see the THINKING_BUDGET const's comment
+          : { thinking: { type: 'disabled' } }),
     }),
   });
   if (!res.ok)
@@ -243,103 +299,6 @@ function promptIdentityFor(model: string): PromptIdentity {
     playbookVersion: SEED_PLAYBOOK.version,
     model,
   };
-}
-
-interface ModelRate {
-  readonly input: number;
-  readonly output: number;
-}
-
-// Current published Anthropic per-1M-token USD rates (see https://www.anthropic.com/pricing —
-// verify before trusting cost output, these drift). Hardcoded here rather than reusing
-// environment.config.ts's AGENTIC_TOKEN_PRICES_JSON parser: that parser (and its tokenPriceEntrySchema)
-// is module-private, and importing the module itself would pull in full AppConfig env validation this
-// eval has no business depending on. AGENTIC_TOKEN_PRICES_JSON (parsed locally below, same shape) still
-// overrides these for a fresher rate.
-const DEFAULT_TOKEN_PRICES_PER_MTOK: Readonly<Record<string, ModelRate>> = {
-  'claude-sonnet-5': { input: 3, output: 15 },
-  'claude-haiku-4-5-20251001': { input: 1, output: 5 },
-  // Corrected 2026-07-12: list price is $5/$25 per MTok (was mistyped $15/$75 — every prior
-  // scorecard's Opus cost projection was 3x overstated).
-  'claude-opus-4-8': { input: 5, output: 25 },
-};
-// Sonnet-tier fallback for a model id absent from both the override map and the defaults above —
-// this is a toy cost estimate (never a promotion input), so failing closed to a mid-tier guess rather
-// than throwing keeps the eval running; the printed scorecard names the model, so a wrong guess is
-// visible, not silent.
-const FALLBACK_RATE: ModelRate = { input: 3, output: 15 };
-
-const decimalStringLocal = z
-  .string()
-  .regex(/^\d+(\.\d+)?$/, 'must be a non-negative decimal string');
-const tokenPriceOverrideSchema = z
-  .record(
-    z.string().min(1),
-    z.object({ inputPerMtok: decimalStringLocal, outputPerMtok: decimalStringLocal }).passthrough(),
-  )
-  .optional();
-
-// Parses AGENTIC_TOKEN_PRICES_JSON if set (same env var / shape as the production knob — a real
-// deployment's value works here unmodified; extra fields like cacheReadPerMtok are ignored). Called
-// from inside it() only: a malformed value must fail the running test, not throw during collection
-// (which would break the SKIP-gated describe.skipIf for every environment, including offline CI).
-function parseTokenPriceOverrides(
-  raw: string | undefined,
-): Readonly<Record<string, ModelRate>> | undefined {
-  if (!raw) return undefined;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (err) {
-    throw new Error(
-      `AGENTIC_TOKEN_PRICES_JSON is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
-  const result = tokenPriceOverrideSchema.safeParse(parsed);
-  if (!result.success) {
-    const issues = result.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ');
-    throw new Error(`AGENTIC_TOKEN_PRICES_JSON failed validation: ${issues}`);
-  }
-  if (!result.data) return undefined;
-  const out: Record<string, ModelRate> = {};
-  for (const [model, rates] of Object.entries(result.data)) {
-    out[model] = { input: Number(rates.inputPerMtok), output: Number(rates.outputPerMtok) };
-  }
-  return out;
-}
-
-function resolveRate(
-  model: string,
-  overrides: Readonly<Record<string, ModelRate>> | undefined,
-): ModelRate {
-  return overrides?.[model] ?? DEFAULT_TOKEN_PRICES_PER_MTOK[model] ?? FALLBACK_RATE;
-}
-
-const MTOK = 1_000_000;
-
-function callCostUsd(usage: LiveCallUsage, rate: ModelRate): Decimal {
-  return new Decimal(usage.inputTokens)
-    .div(MTOK)
-    .mul(rate.input)
-    .plus(new Decimal(usage.outputTokens).div(MTOK).mul(rate.output));
-}
-
-// Mean USD cost per decide over every entry that actually carries usage (schema-invalid/errored
-// calls with no envelope usage are excluded from the average, never treated as $0) — null (never
-// NaN) when none do.
-function meanCostUsd(
-  entries: readonly { readonly usage: LiveCallUsage | null; readonly model: string }[],
-  overrides: Readonly<Record<string, ModelRate>> | undefined,
-): number | null {
-  const withUsage = entries.filter(
-    (e): e is { usage: LiveCallUsage; model: string } => e.usage !== null,
-  );
-  if (withUsage.length === 0) return null;
-  const total = withUsage.reduce(
-    (sum, e) => sum.plus(callCostUsd(e.usage, resolveRate(e.model, overrides))),
-    new Decimal(0),
-  );
-  return total.div(withUsage.length).toNumber();
 }
 
 // null-safe: DecisionOutcomeDigest.entries.meanForwardReturnPct is already a PERCENT (0.1 → 10, see
@@ -432,217 +391,253 @@ function evaluateFlipVerdict(
           : candidate.forwardReturnProxyBps >= champion.forwardReturnProxyBps - 2,
     },
     {
-      label: `cost/decide ($${candidate.costPerDecideUsd ?? 'n/a'}) <= 50% of champion ($${champion.costPerDecideUsd ?? 'n/a'})`,
+      // Parity, not ≤50% (owner grant 2026-07-22, changed pre-registered BEFORE run 2): the
+      // half-price bar was designed for cheap-model swaps (haiku-class) and is structurally
+      // unpassable for a same-price-tier challenger — it reduced the whole verdict to a cost
+      // test. A same-tier flip is justified by decision quality at non-regressive cost.
+      label: `cost/decide ($${candidate.costPerDecideUsd ?? 'n/a'}) <= champion ($${champion.costPerDecideUsd ?? 'n/a'})`,
       pass:
         candidate.costPerDecideUsd === null || champion.costPerDecideUsd === null
           ? null
-          : candidate.costPerDecideUsd <= champion.costPerDecideUsd * 0.5,
+          : candidate.costPerDecideUsd <= champion.costPerDecideUsd,
     },
   ];
   return { pass: criteria.every((c) => c.pass === true), criteria };
 }
 
 describe.skipIf(SKIP)(
-  'agentic eval — candidate model swap (optional, requires EVAL_CANDIDATES=1 + ANTHROPIC_API_KEY + DATABASE_URL + db-test gate)',
+  'agentic eval — candidate model swap (optional, requires EVAL_CANDIDATES=1 + an API key + DATABASE_URL + db-test gate)',
   () => {
-    it('replays >= 200 recorded rows through each candidate model in plan mode and prints a scorecard', async () => {
-      const pool = new Pool({ connectionString: DB_URL! });
-      try {
-        const db = drizzle(pool, { schema });
-        const journal = new AgentDecisionJournalAdapter(db);
-        const loadedRows: AgentDecisionRow[] = (await journal.recent(ROW_QUERY_LIMIT)).filter(
-          (r) => r.inputPayload !== null,
-        );
-        expect(
-          loadedRows.length,
-          `candidate-model-eval requires >= ${MIN_LOADED_ROWS} agent_decisions rows with ` +
-            `input_payload IS NOT NULL (found ${loadedRows.length}); raise ROW_QUERY_LIMIT or let ` +
-            'more decisions accumulate before running this eval',
-        ).toBeGreaterThanOrEqual(MIN_LOADED_ROWS);
+    it(
+      'replays >= 200 recorded rows through each candidate model in plan mode and prints a scorecard',
+      async () => {
+        const pool = new Pool({ connectionString: DB_URL! });
+        try {
+          const db = drizzle(pool, { schema });
+          const journal = new AgentDecisionJournalAdapter(db);
+          // The v2-era replay corpus journals the LEGACY action vocabulary ('long'/'flat') while
+          // AgentDecisionRow's v3 type — and every champion-side counter below — speaks
+          // 'open_long'/'close' (the port's comment assumes a greenfield v3 DB). Normalize at
+          // load, or a propose-dense window under-counts every champion long: propose count, the
+          // agreement split, and the forward-proxy entries bucket all key on 'open_long'.
+          const normalizeJournalAction = (a: string): AgentDecisionRow['action'] =>
+            (a === 'long' ? 'open_long' : a === 'flat' ? 'close' : a) as AgentDecisionRow['action'];
+          const loadedRows: AgentDecisionRow[] = (await journal.recent(ROW_QUERY_LIMIT))
+            .filter((r) => r.inputPayload !== null)
+            .filter((r) => r.eventTime >= ROW_SINCE && r.eventTime <= ROW_UNTIL)
+            .map((r) => ({ ...r, action: normalizeJournalAction(r.action) }));
+          expect(
+            loadedRows.length,
+            `candidate-model-eval requires >= ${MIN_LOADED_ROWS} agent_decisions rows with ` +
+              `input_payload IS NOT NULL (found ${loadedRows.length}); raise ROW_QUERY_LIMIT or let ` +
+              'more decisions accumulate before running this eval',
+          ).toBeGreaterThanOrEqual(MIN_LOADED_ROWS);
 
-        // The replayed subset is capped by ROW_LIMIT to bound spend (each row costs one real API
-        // call PER candidate model); the >=200 assert above is on rows LOADED, not replayed.
-        const replayRows: AgentDecisionRow[] = loadedRows.slice(-ROW_LIMIT);
-        const tokenPriceOverrides = parseTokenPriceOverrides(
-          process.env['AGENTIC_TOKEN_PRICES_JSON'],
-        );
+          // The replayed subset is capped by ROW_LIMIT to bound spend (each row costs one real API
+          // call PER candidate model); the >=200 assert above is on rows LOADED, not replayed.
+          const replayRows: AgentDecisionRow[] = loadedRows.slice(-ROW_LIMIT);
+          const tokenPriceOverrides = parseTokenPriceOverrides(
+            process.env['AGENTIC_TOKEN_PRICES_JSON'],
+          );
 
-        // Champion never calls the network — its scorecard comes straight from what the rows
-        // already recorded.
-        const championScoringRows: ScoringRow[] = replayRows;
-        const championSchemaValidRate =
-          replayRows.filter((r) => r.action !== 'error').length / replayRows.length;
-        const championProposeCount = replayRows.filter((r) => r.action === 'open_long').length;
-        const championForwardReturnProxyBps = forwardProxyBps(championScoringRows);
-        const championCostPerDecideUsd = meanCostUsd(
-          replayRows.map((r) => ({
-            usage:
-              r.inputTokens !== null && r.outputTokens !== null
-                ? { inputTokens: r.inputTokens, outputTokens: r.outputTokens }
-                : null,
-            model: r.model,
-          })),
-          tokenPriceOverrides,
-        );
-        // No plan data is persisted on agent_decisions rows at all (AgentDecisionEntry has no plan
-        // field) — champion's plan-sanity is vacuously perfect (never proposes an unsound plan
-        // because it never proposes a plan), so "plan sanity >= champion" reduces to "candidate
-        // reaches 1.0", the most a plan-emitting model can score.
-        const championPlanSanityRate = 1;
+          // Champion never calls the network — its scorecard comes straight from what the rows
+          // already recorded.
+          const championScoringRows: ScoringRow[] = replayRows;
+          const championSchemaValidRate =
+            replayRows.filter((r) => r.action !== 'error').length / replayRows.length;
+          const championProposeCount = replayRows.filter((r) => r.action === 'open_long').length;
+          const championForwardReturnProxyBps = forwardProxyBps(championScoringRows);
+          const championCostPerDecideUsd = meanCostUsd(
+            replayRows.map((r) => ({
+              usage:
+                r.inputTokens !== null && r.outputTokens !== null
+                  ? { inputTokens: r.inputTokens, outputTokens: r.outputTokens }
+                  : null,
+              model: r.model,
+            })),
+            tokenPriceOverrides,
+          );
+          // No plan data is persisted on agent_decisions rows at all (AgentDecisionEntry has no plan
+          // field) — champion's plan-sanity is vacuously perfect (never proposes an unsound plan
+          // because it never proposes a plan), so "plan sanity >= champion" reduces to "candidate
+          // reaches 1.0", the most a plan-emitting model can score.
+          const championPlanSanityRate = 1;
 
-        assertNoNaN('champion schemaValidRate', championSchemaValidRate);
-        assertNoNaN('champion forwardReturnProxyBps', championForwardReturnProxyBps);
-        assertNoNaN('champion costPerDecideUsd', championCostPerDecideUsd);
+          assertNoNaN('champion schemaValidRate', championSchemaValidRate);
+          assertNoNaN('champion forwardReturnProxyBps', championForwardReturnProxyBps);
+          assertNoNaN('champion costPerDecideUsd', championCostPerDecideUsd);
 
-        const systemPrompt = buildLegacyPlanSystemPrompt(EVAL_PROFILE, MIN_EDGE_MULTIPLE, MIN_RR);
+          const systemPrompt = buildLegacyPlanSystemPrompt(EVAL_PROFILE, MIN_EDGE_MULTIPLE, MIN_RR);
 
-        const candidateScorecards: unknown[] = [];
-        for (const model of CANDIDATE_MODELS) {
-          const identity = promptIdentityFor(model);
-          const candidateScoringRows: ScoringRow[] = [];
-          const candidateUsageRows: { usage: LiveCallUsage | null; model: string }[] = [];
-          let schemaValidCount = 0;
-          let overallAgree = 0;
-          let comparableCount = 0;
-          let holdAgree = 0;
-          let holdTotal = 0;
-          let proposeAgree = 0;
-          let proposeTotal = 0;
-          let candidateProposeCount = 0;
-          let planSaneCount = 0;
-          let planLongCount = 0;
+          const candidateScorecards: unknown[] = [];
+          for (const model of CANDIDATE_MODELS) {
+            const identity = promptIdentityFor(model);
+            const candidateScoringRows: ScoringRow[] = [];
+            const candidateUsageRows: { usage: LiveCallUsage | null; model: string }[] = [];
+            let schemaValidCount = 0;
+            let overallAgree = 0;
+            let comparableCount = 0;
+            let holdAgree = 0;
+            let holdTotal = 0;
+            let proposeAgree = 0;
+            let proposeTotal = 0;
+            let candidateProposeCount = 0;
+            let planSaneCount = 0;
+            let planLongCount = 0;
 
-          for (const row of replayRows) {
-            const userMessage = composeRecordedUserMessage(
-              row.inputPayload!,
-              SEED_PLAYBOOK.content,
-            );
-            const result = await callAnthropicPlanLive(systemPrompt, userMessage, model);
+            for (const row of replayRows) {
+              const userMessage = composeRecordedUserMessage(
+                row.inputPayload!,
+                SEED_PLAYBOOK.content,
+              );
+              const result = await callAnthropicPlanLive(systemPrompt, userMessage, model);
+              if (CALL_DELAY_MS > 0) {
+                await new Promise((resolve) => setTimeout(resolve, CALL_DELAY_MS));
+              }
 
-            if (result.valid) schemaValidCount++;
-            candidateUsageRows.push({ usage: result.usage, model });
-            const outcome: RecordedDecisionOutcome = {
-              action: result.action,
-              confidence: result.confidence,
-            };
-            const scoringRow = scoringRowFromPayload(row.inputPayload!, outcome, identity);
-            if (scoringRow !== null) candidateScoringRows.push(scoringRow);
+              if (result.valid) schemaValidCount++;
+              candidateUsageRows.push({ usage: result.usage, model });
+              const outcome: RecordedDecisionOutcome = {
+                action: result.action,
+                confidence: result.confidence,
+              };
+              const scoringRow = scoringRowFromPayload(row.inputPayload!, outcome, identity);
+              if (scoringRow !== null) candidateScoringRows.push(scoringRow);
 
-            if (result.action === 'long') {
-              candidateProposeCount++;
-              planLongCount++;
-              if (result.planSane) planSaneCount++;
-            }
+              if (result.action === 'long') {
+                candidateProposeCount++;
+                planLongCount++;
+                if (result.planSane) planSaneCount++;
+              }
 
-            // Agreement/propose-ratio are scored only against rows with a real recorded ground
-            // truth — a recorded 'error' row has no action to agree or disagree with. Journal rows
-            // are v3-normalized while replay results still speak the legacy contract — map the
-            // result through the same boundary normalizer before comparing.
-            const resultAction = toScoringAction(result.action);
-            if (row.action !== 'error') {
-              comparableCount++;
-              if (resultAction === row.action) overallAgree++;
-              if (row.action === 'open_long') {
-                proposeTotal++;
-                if (resultAction === row.action) proposeAgree++;
-              } else {
-                holdTotal++;
-                if (resultAction === row.action) holdAgree++;
+              // Agreement/propose-ratio are scored only against rows with a real recorded ground
+              // truth — a recorded 'error' row has no action to agree or disagree with. Journal rows
+              // are v3-normalized while replay results still speak the legacy contract — map the
+              // result through the same boundary normalizer before comparing.
+              const resultAction = toScoringAction(result.action);
+              if (row.action !== 'error') {
+                comparableCount++;
+                if (resultAction === row.action) overallAgree++;
+                if (row.action === 'open_long') {
+                  proposeTotal++;
+                  if (resultAction === row.action) proposeAgree++;
+                } else {
+                  holdTotal++;
+                  if (resultAction === row.action) holdAgree++;
+                }
+              }
+
+              if (ROW_LOG_FILE) {
+                appendFileSync(
+                  ROW_LOG_FILE,
+                  JSON.stringify({
+                    model,
+                    rowId: row.id,
+                    symbol: row.symbol,
+                    eventTime: row.eventTime,
+                    championAction: row.action,
+                    candidateAction: result.action,
+                    valid: result.valid,
+                    planSane: result.planSane,
+                    usage: result.usage,
+                  }) + '\n',
+                );
               }
             }
-          }
 
-          const schemaValidRate = schemaValidCount / replayRows.length;
-          const actionAgreementOverall =
-            comparableCount > 0 ? overallAgree / comparableCount : null;
-          const holdAgreementRate = holdTotal > 0 ? holdAgree / holdTotal : null;
-          const proposeAgreementRate = proposeTotal > 0 ? proposeAgree / proposeTotal : null;
-          const proposeRateRatio =
-            championProposeCount > 0 ? candidateProposeCount / championProposeCount : null;
-          const planSanityRate = planLongCount > 0 ? planSaneCount / planLongCount : null;
-          const forwardReturnProxyBps = forwardProxyBps(candidateScoringRows);
-          const costPerDecideUsd = meanCostUsd(candidateUsageRows, tokenPriceOverrides);
+            const schemaValidRate = schemaValidCount / replayRows.length;
+            const actionAgreementOverall =
+              comparableCount > 0 ? overallAgree / comparableCount : null;
+            const holdAgreementRate = holdTotal > 0 ? holdAgree / holdTotal : null;
+            const proposeAgreementRate = proposeTotal > 0 ? proposeAgree / proposeTotal : null;
+            const proposeRateRatio =
+              championProposeCount > 0 ? candidateProposeCount / championProposeCount : null;
+            const planSanityRate = planLongCount > 0 ? planSaneCount / planLongCount : null;
+            const forwardReturnProxyBps = forwardProxyBps(candidateScoringRows);
+            const costPerDecideUsd = meanCostUsd(candidateUsageRows, tokenPriceOverrides);
 
-          assertNoNaN(`${model} schemaValidRate`, schemaValidRate);
-          assertNoNaN(`${model} actionAgreementOverall`, actionAgreementOverall);
-          assertNoNaN(`${model} holdAgreementRate`, holdAgreementRate);
-          assertNoNaN(`${model} proposeAgreementRate`, proposeAgreementRate);
-          assertNoNaN(`${model} proposeRateRatio`, proposeRateRatio);
-          assertNoNaN(`${model} planSanityRate`, planSanityRate);
-          assertNoNaN(`${model} forwardReturnProxyBps`, forwardReturnProxyBps);
-          assertNoNaN(`${model} costPerDecideUsd`, costPerDecideUsd);
+            assertNoNaN(`${model} schemaValidRate`, schemaValidRate);
+            assertNoNaN(`${model} actionAgreementOverall`, actionAgreementOverall);
+            assertNoNaN(`${model} holdAgreementRate`, holdAgreementRate);
+            assertNoNaN(`${model} proposeAgreementRate`, proposeAgreementRate);
+            assertNoNaN(`${model} proposeRateRatio`, proposeRateRatio);
+            assertNoNaN(`${model} planSanityRate`, planSanityRate);
+            assertNoNaN(`${model} forwardReturnProxyBps`, forwardReturnProxyBps);
+            assertNoNaN(`${model} costPerDecideUsd`, costPerDecideUsd);
 
-          const flipVerdict = evaluateFlipVerdict(
-            {
+            const flipVerdict = evaluateFlipVerdict(
+              {
+                schemaValidRate,
+                holdAgreementRate,
+                proposeRateRatio,
+                planSanityRate,
+                forwardReturnProxyBps,
+                costPerDecideUsd,
+              },
+              {
+                schemaValidRate: championSchemaValidRate,
+                planSanityRate: championPlanSanityRate,
+                forwardReturnProxyBps: championForwardReturnProxyBps,
+                costPerDecideUsd: championCostPerDecideUsd,
+              },
+            );
+
+            // Informational only — see evaluateFlipVerdict's own comment. Never asserted.
+            console.log(
+              `FLIP VERDICT [${model}]: ${flipVerdict.pass ? 'PROMOTE' : 'HOLD'} — ` +
+                flipVerdict.criteria
+                  .map((c) => `${c.pass === null ? '?' : c.pass ? 'OK' : 'X'} ${c.label}`)
+                  .join('; '),
+            );
+
+            candidateScorecards.push({
+              model,
+              rowsReplayed: replayRows.length,
               schemaValidRate,
-              holdAgreementRate,
+              actionAgreement: {
+                overall: actionAgreementOverall,
+                holdAgreement: holdAgreementRate,
+                proposeAgreement: proposeAgreementRate,
+              },
               proposeRateRatio,
               planSanityRate,
               forwardReturnProxyBps,
               costPerDecideUsd,
-            },
+              flipVerdict,
+            });
+          }
+
+          expect(candidateScorecards).toHaveLength(CANDIDATE_MODELS.length);
+
+          // The scorecard IS this script's deliverable — paste into an experiments-registry row.
+          // Console alone is NOT durable (vitest can intercept/suppress it — 2026-07-10 incident);
+          // AGENTIC_EVAL_SCORECARD_FILE additionally persists it verbatim.
+          const scorecard = JSON.stringify(
             {
-              schemaValidRate: championSchemaValidRate,
-              planSanityRate: championPlanSanityRate,
-              forwardReturnProxyBps: championForwardReturnProxyBps,
-              costPerDecideUsd: championCostPerDecideUsd,
+              rowsLoaded: loadedRows.length,
+              rowsReplayed: replayRows.length,
+              champion: {
+                schemaValidRate: championSchemaValidRate,
+                proposeCount: championProposeCount,
+                planSanityRate: championPlanSanityRate,
+                forwardReturnProxyBps: championForwardReturnProxyBps,
+                costPerDecideUsd: championCostPerDecideUsd,
+              },
+              candidates: candidateScorecards,
             },
+            null,
+            2,
           );
-
-          // Informational only — see evaluateFlipVerdict's own comment. Never asserted.
-          console.log(
-            `FLIP VERDICT [${model}]: ${flipVerdict.pass ? 'PROMOTE' : 'HOLD'} — ` +
-              flipVerdict.criteria
-                .map((c) => `${c.pass === null ? '?' : c.pass ? 'OK' : 'X'} ${c.label}`)
-                .join('; '),
-          );
-
-          candidateScorecards.push({
-            model,
-            rowsReplayed: replayRows.length,
-            schemaValidRate,
-            actionAgreement: {
-              overall: actionAgreementOverall,
-              holdAgreement: holdAgreementRate,
-              proposeAgreement: proposeAgreementRate,
-            },
-            proposeRateRatio,
-            planSanityRate,
-            forwardReturnProxyBps,
-            costPerDecideUsd,
-            flipVerdict,
-          });
+          console.log(scorecard);
+          const scorecardFile = process.env['AGENTIC_EVAL_SCORECARD_FILE'];
+          if (scorecardFile) {
+            writeFileSync(scorecardFile, scorecard);
+          }
+        } finally {
+          await pool.end();
         }
-
-        expect(candidateScorecards).toHaveLength(CANDIDATE_MODELS.length);
-
-        // The scorecard IS this script's deliverable — paste into an experiments-registry row.
-        // Console alone is NOT durable (vitest can intercept/suppress it — 2026-07-10 incident);
-        // AGENTIC_EVAL_SCORECARD_FILE additionally persists it verbatim.
-        const scorecard = JSON.stringify(
-          {
-            rowsLoaded: loadedRows.length,
-            rowsReplayed: replayRows.length,
-            champion: {
-              schemaValidRate: championSchemaValidRate,
-              proposeCount: championProposeCount,
-              planSanityRate: championPlanSanityRate,
-              forwardReturnProxyBps: championForwardReturnProxyBps,
-              costPerDecideUsd: championCostPerDecideUsd,
-            },
-            candidates: candidateScorecards,
-          },
-          null,
-          2,
-        );
-        console.log(scorecard);
-        const scorecardFile = process.env['AGENTIC_EVAL_SCORECARD_FILE'];
-        if (scorecardFile) {
-          writeFileSync(scorecardFile, scorecard);
-        }
-      } finally {
-        await pool.end();
-      }
-    }, 600_000);
+      },
+      Number(process.env['AGENTIC_EVAL_TIMEOUT_MS'] ?? '600000'),
+    );
   },
 );

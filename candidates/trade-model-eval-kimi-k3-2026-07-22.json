@@ -1,0 +1,103 @@
+{
+  "criteriaVersion": "hh-v1",
+  "corpusFingerprint": "bc9390e404261298c57642be95a2c688432a6d04794e036bfae1fe1c5e31a8d7",
+  "contractFingerprint": "48a5cd816dc455f1860603c03110c1fc4da01d990808697025b697cba5168480",
+  "templateVersion": "v3",
+  "corpusSource": "JSONL file test/eval/agentic/data/corpus-v2-clone.jsonl (1363 raw rows before filtering)",
+  "window": {
+    "rowSince": 1783714500000,
+    "rowUntil": 1783876500000,
+    "firstEventTime": 1783716300000,
+    "lastEventTime": 1783876500000,
+    "rowsLoaded": 204,
+    "rowsReplayed": 200
+  },
+  "capabilities": {
+    "venue": "binanceusdm",
+    "shorts": true,
+    "leverage": "2",
+    "maxSizeFraction": "0.35",
+    "venueFreeCash": "500"
+  },
+  "thinking": "disabled",
+  "maxTokens": 4096,
+  "tokenPrices": {
+    "kimi-k3": {
+      "inputPerMtok": 3,
+      "outputPerMtok": 15
+    }
+  },
+  "championReference": {
+    "actionHistogram": {
+      "close": 16,
+      "hold": 159,
+      "open_long": 25
+    },
+    "proposeCount": 25,
+    "forwardReturnProxyBps": -0.06563067423353719,
+    "costPerDecideUsd": 0.009950053571428571,
+    "droppedScoringRows": 0
+  },
+  "candidates": [
+    {
+      "model": "kimi-k3",
+      "rowsReplayed": 200,
+      "schemaValidRate": 0.62,
+      "tradeSanityRate": 1,
+      "proposeCount": 57,
+      "proposeRate": 0.285,
+      "directionalForwardProxyBps": 0.6447168933582939,
+      "costPerDecideUsd": 0.0128946,
+      "corpusFingerprint": "bc9390e404261298c57642be95a2c688432a6d04794e036bfae1fe1c5e31a8d7",
+      "contractFingerprint": "48a5cd816dc455f1860603c03110c1fc4da01d990808697025b697cba5168480",
+      "actionHistogram": {
+        "adjust": 31,
+        "error": 76,
+        "open_long": 51,
+        "hold": 29,
+        "close": 7,
+        "open_short": 6
+      },
+      "agreementWithChampion": 0.24,
+      "invalidCount": 76,
+      "firstErrorDetail": "schema-invalid tool response: : Invalid input: expected object, received undefined",
+      "droppedScoringRows": 0,
+      "promptHash": "55da3aa30d188f919036f13137258004ada10f3778cae93cc94b863f09134cc1"
+    }
+  ],
+  "verdicts": [
+    {
+      "criteriaVersion": "hh-v1",
+      "baselineModel": "claude-sonnet-5",
+      "candidateModel": "kimi-k3",
+      "criteria": [
+        {
+          "criterion": "schema-valid rate >= baseline",
+          "pass": false,
+          "detail": "candidate 0.620 >= baseline 0.690"
+        },
+        {
+          "criterion": "trade sanity rate >= baseline",
+          "pass": null,
+          "detail": "candidate 1 >= baseline n/a"
+        },
+        {
+          "criterion": "directional forward proxy bps >= baseline - 2",
+          "pass": null,
+          "detail": "candidate 0.6447168933582939 bps >= baseline n/a bps - 2"
+        },
+        {
+          "criterion": "propose-rate ratio in [0.5, 1.5]",
+          "pass": null,
+          "detail": "ratio n/a in [0.5, 1.5]"
+        },
+        {
+          "criterion": "cost/decide <= baseline",
+          "pass": true,
+          "detail": "candidate $0.0128946 <= baseline $0.026821845"
+        }
+      ],
+      "pass": false
+    }
+  ]
+}

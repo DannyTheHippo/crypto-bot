@@ -1,0 +1,68 @@
+{
+  "criteriaVersion": "hh-v1",
+  "corpusFingerprint": "99a3c1a345c8af016b5592ba63fd3f79140b60df1f1b1143aa418ef863a3d793",
+  "contractFingerprint": "994f81306ab7a638042f675da579d5f86d06d5bdf6cd41207594cc19559bbfcd",
+  "templateVersion": "v3",
+  "corpusSource": "JSONL file test/eval/agentic/data/corpus-v2-clone.jsonl (1363 raw rows before filtering)",
+  "window": {
+    "rowSince": 1783714500000,
+    "rowUntil": 1783876500000,
+    "firstEventTime": 1783862100000,
+    "lastEventTime": 1783876500000,
+    "rowsLoaded": 204,
+    "rowsReplayed": 40
+  },
+  "capabilities": {
+    "venue": "binanceusdm",
+    "shorts": true,
+    "leverage": "2",
+    "maxSizeFraction": "0.35",
+    "venueFreeCash": "500"
+  },
+  "thinking": "disabled",
+  "maxTokens": 4096,
+  "tokenPrices": {
+    "claude-sonnet-5": {
+      "inputPerMtok": 3,
+      "outputPerMtok": 15
+    }
+  },
+  "championReference": {
+    "actionHistogram": {
+      "hold": 32,
+      "close": 3,
+      "open_long": 5
+    },
+    "proposeCount": 5,
+    "forwardReturnProxyBps": 22.57164115701062,
+    "costPerDecideUsd": 0.010639727272727273,
+    "droppedScoringRows": 0
+  },
+  "candidates": [
+    {
+      "model": "claude-sonnet-5",
+      "rowsReplayed": 40,
+      "schemaValidRate": 0.775,
+      "tradeSanityRate": 1,
+      "proposeCount": 4,
+      "proposeRate": 0.1,
+      "directionalForwardProxyBps": 18.7419649050677,
+      "costPerDecideUsd": 0.02761275,
+      "corpusFingerprint": "99a3c1a345c8af016b5592ba63fd3f79140b60df1f1b1143aa418ef863a3d793",
+      "contractFingerprint": "994f81306ab7a638042f675da579d5f86d06d5bdf6cd41207594cc19559bbfcd",
+      "actionHistogram": {
+        "adjust": 15,
+        "hold": 10,
+        "open_long": 4,
+        "close": 2,
+        "error": 9
+      },
+      "agreementWithChampion": 0.325,
+      "invalidCount": 9,
+      "firstErrorDetail": "schema-invalid tool response: sizeFraction: sizeFraction is required when action is 'open_long'",
+      "droppedScoringRows": 0,
+      "promptHash": "3acd741008e224c1db71d5624f1e9d027b40f0085d447227d90bef539ece7216"
+    }
+  ],
+  "verdicts": []
+}

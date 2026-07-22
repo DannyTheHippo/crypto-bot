@@ -203,12 +203,18 @@ never changes for strategy evolution.
   re-enabled the `daily-profitability-loop` scheduled task (3×/day) with its prompt rewritten
   for v4 one-book ops (perp-profile/postgres-perp remnants and consumed pre-auths removed). The
   loop's §1-§3 now own soak monitoring; the 48h bar (from 15:28:36Z) and the lift-readiness
-  record remain the loop's exit artifact. **Zero round trips so far is model-holding-in-chop**
-  (journaled rationales: rangebound/mixed momentum, price under falling EMAs, weak cross-ranks,
-  no-spot-short downtrends — regime-appropriate holds, not a defect and not a risk-envelope
-  block; Risk has vetoed nothing because nothing was proposed). If entries/day stays ~0 once
-  ~24h of evidence exists, the sanctioned lever is a CANDIDATE pass drafting a less entry-averse
-  playbook variant (offline-scored first, §4) — never mid-window knob-tuning.
+  record remain the loop's exit artifact. **Zero round trips is PARTLY masked contract failure,
+  NOT purely model-holding-in-chop — CORRECTED 2026-07-22** (see § trade-model head-to-head +
+  WATCH-V3-3): the investigation found that of the 100 LLM-consulted holds since cutover, only
+  33 are genuine regime-appropriate holds (confidence NULL, real thesis); **67 are masked
+  schema-rejection degrades** (confidence 0, empty rationale — the `inferStubDecision`
+  fingerprint) where the model attempted to act and the tool response failed
+  `tradeDecisionSchema`. At least one was a fully-formed BTC open_long the model serialized as a
+  quoted JSON string. So the earlier "regime-appropriate holds, not a defect" read was 2/3
+  wrong — it WAS a defect (contract non-compliance, now fixed) on top of genuine caution. Risk
+  vetoed nothing because Risk never saw the degraded proposes (they died at the client parse
+  boundary). Entry-averseness cannot be judged until the contract fix is deployed and the masked
+  degrades resurface as real proposes; the CANDIDATE-playbook lever is deferred behind that.
 - **Soak check #9 = loop Pass 36 (2026-07-21 ~20:10-20:45Z, first scheduled v4 pass; full entry
   LOG.md).** Sweep 0 alarms; kill switch RUNNING; reconcile clean-only both venues (1067/1062,
   latest CLEAN); zero stream loop errors over the full 4.75h boot window (WATCH-V3-2 holding);
@@ -222,24 +228,105 @@ never changes for strategy evolution.
   matching bootId). Re-daemonize after any host reboot stays a standing note. (2) state.md
   corruption repaired: the `61f277a` and `3e6900d` insertions each ate the first line of the
   bullet below them (§ Stage ladder header; the Kimi-K3 opener) — both lines restored from git.
-  **WATCH-V3-3 (schema-degrade rate, minted per the playbook's post-cutover instruction):**
-  since consults began 17:15Z, ~10 of ≲176 batch elements degraded to hold (one whole-payload
-  `{}` at 17:15:53Z held all 8 — the guardrail's correct fail direction — plus KAITO 17:30Z,
-  AAVE 18:00Z) ≈ 6%, boundary of the <5% WATCH-X2-era guidance at small N. Element degrades are
-  WARN-log-only (journaled as bare holds, no metric/rationale marker — adjacent to the flagged
-  defect-#3 transport-reason gap). Expected-positive: rate <5% and zero further whole-payload
-  events over the next 24h; defect outcome: ≥2 more whole-payload events or a sustained >5%
-  element rate ⇒ a root-cause pass on the tool-contract prompt/schema (and meter the degrade
-  path). Resolution owner: a loop pass before the lift-readiness record.
-- **Kimi-K3 research phase DONE (2026-07-21, task #15 offline portion; run during the soak, no
-  app changes):** memo at `reports/loop/kimi-k3-research-2026-07-21.md`. Headline: K3 (released
-  07-16) prices identically to sonnet-5 ($3/$15/$0.30 cache-hit); the Anthropic-compatible
-  `/anthropic` endpoint exists for K3 (kimi-k2 precedent holds); in-app integration is
-  config-only (the raw-fetch client already carries a `baseUrl` seam). Offline replay
-  (`pnpm eval:candidates`) is specified in the memo and **BLOCKED on an owner-provided Kimi API
-  key** (`KIMI_API_KEY` in `.env`) plus a small eval-lane harness diff (per-model base-URL
-  routing). Go bar unchanged: clear offline win ⇒ staged live A/B, two-step enable; loop stays on
-  Claude.
+  **WATCH-V3-3 (schema-degrade rate) — DEFECT OUTCOME FIRED + RESOLVED 2026-07-22.** The trigger
+  was "≥2 more whole-payload events or a sustained >5% element rate ⇒ a root-cause pass on the
+  tool-contract prompt/schema (and meter the degrade path)." Both conditions hit: the offline
+  head-to-head measured a sustained ~31–38% propose-attempt schema-failure rate (both models),
+  and the live sweep found 5 whole-payload + 41 element + 11 missing-symbol degrades since
+  cutover. Root cause (both the root-cause pass AND the metering, as the trigger prescribed):
+  the JSON tool schema advertised only `action` as required while zod's `requireTradeDirectives`
+  demanded six open_* fields, four never stated required in model-facing text; thesis >300 chars
+  rejected; `decisions` string-encoding accepted-then-dropped. FIX SHIPPED (gate green, 2712
+  tests): prompt/tool hardening + the degrade path is now METERED
+  (`agentic_schema_rejections_total{kind}` counter + `schema_rejected:` journal rationale — the
+  "no metric/rationale marker" gap this WATCH named is closed). Historical prior: this was the
+  same defect class as WATCH-X2-era degrade guidance. Deploy of the fix + a hardened-contract
+  re-baseline is the remaining loop step (owner commits first).
+- **Kimi-K3 experiment COMPLETE — offline replay verdict HOLD (2026-07-21/22, task #15 run
+  phase):** kimi-k3 replayed over the newest 100 recorded consult payloads (1,363 payload rows
+  loaded; v2 corpus served from a read-only clone of the retired `crypto-bot_postgres_data`
+  volume; window 2026-07-20T21:45Z → 2026-07-21T10:45Z) via Moonshot's Anthropic-compat
+  endpoint (`https://api.moonshot.ai/anthropic` — thinking-disabled accepted, forced
+  tool_choice honored on first try). Verdict vs the sonnet-5 champion: schema-valid 0.85 <
+  1.00, hold-agreement 0.17 << 0.85 (champion held all 100; K3 proposed longs on ~83% — far
+  more aggressive), plan-sanity 1.0 (its one pass), cost/decide $0.0157 vs $0.0232 (−32%,
+  fails the ≤50% bar). **Go bar NOT met ⇒ no live A/B; decide+reflection stay on
+  claude-sonnet-5; loop stays on Claude.** Registry: v3 `experiments` row 1
+  (`decide-model-eval`, source study — v2-era rows 1–130 archived in the v2 volume/backups);
+  scorecard `candidates/kimi-k3-model-eval-2026-07-21.json`; narrative LOG.md 2026-07-22.
+  Secret name is `MOONSHOT_API_KEY` in `.env` (the pruned memo's `KIMI_API_KEY` was stale);
+  the harness now carries standing eval-lane routing knobs (`AGENTIC_EVAL_BASE_URL`/
+  `_API_KEY`, 429 retry, thinking sentinel) for any future compat-endpoint eval. Research
+  memo is git-history-only (`git show d533667:reports/loop/kimi-k3-research-2026-07-21.md`).
+- **Trade-model head-to-head (v3 rich contract, shorts-capable) — COMPLETE; verdict NO FLIP;
+  contract-compliance defect FOUND + FIXED (2026-07-22):** owner directive
+  "make the backtest harness first-class and shorts-capable, then run sonnet-5 and kimi-k3".
+  The legacy-contract run 2 (propose-dense window) died at 5/200 rows when its background
+  process was lost at a session compaction (~$0.08 spent; partial row log
+  `candidates/kimi-k3-rows-2026-07-22.jsonl`; no scorecard, no registry row) — NOT relaunched
+  (loop-domain call): superseded by the head-to-head, which replays the IDENTICAL window under
+  the v3 `submit_trade` contract instead of the deleted legacy plan contract. New harness
+  `pnpm eval:trade-models` (`test/eval/agentic/trade-model-eval.spec.ts` +
+  `trade-eval-fixtures.ts`): re-asks recorded market contexts under the CURRENT production
+  prompt/tool (sound because `input_payload` is pure market JSON — no contract text); synthetic
+  `capabilities` block (shorts:true, byte-matching the deployed $1k perp book) injected into
+  v2-era payloads so `open_short` is reachable; `shortEntries`/`shortExits` buckets added to
+  `counterfactual-scoring.ts` (production src, additive + relabel, unit-tested); per-model
+  routing `AGENTIC_EVAL_MODEL_ROUTES_JSON` (key names only, never key values); corpus now
+  file-served (`test/eval/agentic/data/corpus-v2-clone.jsonl`, gitignored, reproducible via
+  `scripts/dump-eval-corpus.mjs` — the 5434 scratch DB is dispensable, teardown unblocked).
+  **hh-v1 criteria, pre-registered BEFORE any paid call** — kimi-k3 vs a sonnet-5-replay
+  baseline over the same fingerprinted 200-row slice (window 1783714500000–1783876500000;
+  champion mix 25 long / 16 flat / 163 hold): (1) schema-valid ≥ baseline; (2) trade-sanity ≥
+  baseline (fee-floor TP + taker-offset-0, the only prompt/tool-stated rules zod can't encode);
+  (3) directional forward proxy (long entries raw + short entries negated, per-symbol grouped)
+  ≥ baseline − 2bps; (4) propose-rate ratio ∈ [0.5, 1.5]; (5) cost/decide ≤ baseline (parity).
+  Persisted champion actions are an informational REFERENCE only — cross-contract agreement is
+  not a fair bar. CAVEAT: spot-recorded history re-asked as shorts-capable perp — these numbers
+  are never a native perp eval. Re-test trigger: when the live v3 corpus holds ≥200 payload
+  rows with ≥20 `open_*` proposes in a contiguous window, re-run natively (v3 corpus at
+  2026-07-22: 3,280 rows, 83 payloads, ZERO proposes — cannot power this eval yet). Registry:
+  new family `trade-model-eval`, source study, via `scripts/log-eval-experiment.mjs`
+  (`REGISTRY_DATABASE_URL`, fail-closed gate; rows 2–5).
+  **RESULT — OPERATIVE (hardened contract, both legs 200 rows in ONE invocation, max_tokens
+  4096, thinking disabled; registry rows 6 sonnet-5 / 7 kimi-k3; scorecard
+  `candidates/trade-model-eval-headtohead-hardened-2026-07-22.json`):** hh-v1 verdict **NO
+  FLIP** — but now a REAL comparison (all five criteria evaluated, zero nulls, because both
+  models actually propose on the fixed contract). kimi-k3 vs sonnet-5 baseline: (1) schema-valid
+  0.71 < 0.805 FAIL; (2) trade-sanity 1.0 = 1.0 PASS; (3) directional proxy **+5.42bps vs
+  −4.68bps** ≥ baseline−2 PASS (kimi's picks were directionally positive, sonnet's slightly
+  adverse); (4) propose-rate ratio 5.43 ∉ [0.5,1.5] FAIL; (5) cost/decide $0.0124 ≤ $0.0272
+  PASS (−54%). Two fails ⇒ NO FLIP; loop stays on Claude (owner directive; unchanged). PROFILE:
+  kimi-k3 is more willing to trade (76 proposes: 64 long + **12 short**, rate 0.38 vs sonnet's
+  14: 13 long + 1 short, rate 0.07), directionally better on its picks, and half the cost — but
+  less schema-reliable (58 errors vs 39; kimi's dominant error is thesis >300 chars, sonnet's is
+  missing sizeFraction). CAVEAT on criterion 4: it compares to the sonnet baseline, which is
+  itself unusually passive (0.07 vs the champion's 0.125), so any active model blows past 1.5×;
+  the ratio bar is degenerate against a passive baseline (doesn't change the verdict — schema-valid
+  also fails). SUPERSEDES the pre-fix run (registry rows 2 sonnet / 3 kimi, scorecards
+  `-sonnet5-`/`-kimi-k3-2026-07-22.json`): those legs ran the PRE-hardening contract where the
+  sonnet baseline completed ZERO valid proposes (criteria 2/3/4 null) — not a real head-to-head,
+  retained only as evidence of the contract-compliance defect. The max_tokens-1024 leg (row 4,
+  `-maxtok1024`) is a further output-budget finding. The owner's "bad test" critique is fully
+  resolved: the harness produces longs AND shorts and measures decision quality on a contract
+  both models can comply with.
+  **DOMINANT FINDING — v3 contract non-compliance (both models) FOUND + FIXED:** both models fail
+  `tradeDecisionSchema` on a large fraction of propose attempts under thinking-disabled/forced-tool
+  (sonnet 0.69, kimi 0.62). Root cause: the JSON tool schema advertises only `action` required
+  while zod's `requireTradeDirectives` demands six fields on open_*, four of which were never
+  stated as required in ANY model-facing text; thesis >300 chars also silently rejected.
+  Production SILENTLY degrades every schema-rejected propose to a plain `hold` row
+  (`inferStubDecision`) with no marker, no metric — so **67 of the 100 live LLM-consulted holds
+  since the 07-21 cutover are MASKED contract failures, not caution** (33 genuine holds; the
+  "zero proposes" soak reading was 2/3 wrong — see § soak correction). FIX SHIPPED (12 files,
+  gate green 2712 tests): model-facing hardening (required-set enumeration in
+  TRADE_ACTION_DESCRIPTION, strict thesis-cap wording, decisions-must-be-array-not-string) +
+  unmask (`schema_rejected:` journal rationale so degrades are queryable, `recordSchemaFailure`
+  seam + `agentic_schema_rejections_total{kind}` Prometheus counter). Post-fix evidence (identical
+  newest-40 rows, registry row 5): sonnet-5 schema-valid **0.675 → 0.775** and completed proposes
+  **0 → 4**. Re-test trigger: re-run the head-to-head on the HARDENED contract once deployed (a
+  cleaner comparison — the current legs ran the pre-fix contract, so the baseline's proposal
+  collapse confounds criteria 2/3/4).
 - **Stage ladder + exit criteria (condensed from the active spec):**
   1. **Cost floor** — CLOSED 2026-07-08: true spend ~$0.77/day under the $5 breaker, skip rate
      70–83% (original criterion: ≤$1/day ×3 days + ≥2 RT/day + no EXPIRED regressions).
@@ -808,25 +895,24 @@ item against current code before implementing it** (Pass 2 precedent — inherit
 **Improvements ONLY — never bugs** (owner decision 2026-07-16, playbook §3 bug-routing
 discipline): a defect is fixed in the pass that finds it, or — when it exceeds the §4 rails —
 lives in § Flagged as an open defect until authorized. Open items first; the closed ledger keeps
-one line per retired ID. After the 2026-07-13
-owner-directed build-out (9 rows shipped — LOG.md entry of that date) every remaining open row is
-condition- or data-gated: **#42-ENABLE** fires when the info-context A/B resolves; **#44/#45**
-wait on venue-TP capture data; **#18/#46/#47/#48** wait on their stated data/sequencing gates;
-**#43/#49/#52/#53** need a justification/design a pass should only pick up with new evidence.
+one line per retired ID. The 2026-07-22 owner-directed sweep ("fix ALL that does not require me")
+shipped **#46** (Thompson A/B routing, build-only), **#52** (ops-event logging), **#53**
+(reflection-trigger counter) and closed **#43** as ALREADY-DONE (liquidation feed is live) — all
+retired to the closed ledger. Every REMAINING open row is genuinely gated on live soak data or an
+open design, NOT on owner action: **#18/#45/#47** DATA-GATED (0 closed trips / thin baseline
+post-cutover), **#44** PROBE-GATED (demo orderList/oco capability probe), **#48** DESIGN-GATED
+(rotation-vs-promotion-walk attribution; its 5→8 sequencing gate is OBE), **#42-ENABLE** fires
+when the info-context A/B resolves.
 
 ### Open
 
 | # | Item | Stage | Effort | Status / next check |
 | --- | --- | --- | --- | --- |
-| 18 | Per-hour/session expectancy gating (last residual of the W4.4 seeds — fee-tier/BNB dropped: demo fees flat 10bps, § Standing verdicts; trade-flow widening shipped Phase 3) | 2+ | M | seed — needs design + data (2026-07-13 build-out skip: 10 post-epoch trips ⇒ per-hour buckets are statistically empty) |
-| 43 | Liquidation-order flow feed — market-wide is WS-only `!forceOrder@arr` (REST forceOrders is private per-account); needs WS plumbing justification | 2+ | L | seed (Push II Phase 3) |
-| 44 | Spot OCO exits (fuse executor stop + venue TP into one venue-side pair) — needs demo `orderList/oco` support proof; ccxt 4.5.58 has no unified spot OCO | 2 | M | seed (Push II Phase 2); do not touch before the venue-TP watch resolves with capture data |
-| 45 | Trailing-stop plan field — wait for venue-TP capture data (Phase-2 WATCH counters) before designing | 2 | M | seed (Push II) |
-| 46 | Thompson multi-candidate A/B routing (replaces the newest-candidate-only slot) | 2+ | M | seed (Push II); blocked while the v2→v3 candidate cycle is mid-flight |
-| 47 | Adaptive consult cadence (vary the 15m consult rhythm by regime) | 2 | M | seed (Push II); needs the Phase-5 consult baseline first |
-| 48 | Weekly vol-ranked symbol rotation (universe-study follow-on) | 2 | M | seed (Push II Phase 7); sequenced behind the 5→8 expansion; needs a rotation-vs-promotion-walk attribution design |
-| 52 | W12 operational event logging (structured ops events; 2026-07-08 follow-up, deferred since) | 1–2 | M | seed — needs design |
-| 53 | Reflection-trigger observability — `evaluateTrigger` returns silently when trips-since-attempt < N or on cooldown, so a close that evaluated-but-did-not-fire leaves no metric/log (Pass 24 needed manual boot-timeline forensics to diagnose the 3-day dormancy) | 2 | S | seed — a `agentic_reflection_trigger_total{outcome=below_threshold\|cooldown\|inflight\|fired}` counter; touches the reflection hot path, do NOT enable mid-factorial without a confirmed defect |
+| 18 | Per-hour/session expectancy gating (last residual of the W4.4 seeds — fee-tier/BNB dropped: demo fees flat 10bps, § Standing verdicts; trade-flow widening shipped Phase 3) | 2+ | M | DATA-GATED (2026-07-22 sweep): 0 closed trips post-cutover (worse than the 07-13 "10 trips" skip) — per-hour buckets statistically empty |
+| 44 | Spot OCO exits (fuse executor stop + venue TP into one venue-side pair) — needs demo `orderList/oco` support proof; ccxt 4.5.58 has no unified spot OCO | 2 | M | PROBE-GATED (2026-07-22 sweep): needs a keyed demo-venue orderList/oco capability probe + the still-unmet venue-TP capture data (fills=0 post-cutover) |
+| 45 | Trailing-stop plan field — wait for venue-TP capture data (Phase-2 WATCH counters) before designing | 2 | M | DATA-GATED (2026-07-22 sweep): venue-TP/stop capture data still unmet (fills=0 post-cutover) |
+| 47 | Adaptive consult cadence (vary the 15m consult rhythm by regime) | 2 | M | DATA-GATED (2026-07-22 sweep): Phase-5 consult baseline still ~1 day old / trade-gated |
+| 48 | Weekly vol-ranked symbol rotation (universe-study follow-on) | 2 | M | DESIGN-GATED (2026-07-22 sweep): the 5→8 sequencing gate is OBE (universe now 40 symbols + vol×ATR scanner + menu-8); residual = the open rotation-vs-promotion-walk attribution design |
 
 ## Flagged for human review (open)
 
@@ -1017,6 +1103,33 @@ wait on venue-TP capture data; **#18/#46/#47/#48** wait on their stated data/seq
   blocks). Opus-4.8 decisively rejected (07-13). **Thinking-on: NO FLIP** by pre-registered
   criteria but strongest lever surfaced → absorbed into the P8a factorial (#42 CLOSED-OBE). E2
   re-run recipe (env hygiene — the SAFE recipe): LOG.md 2026-07-10 ~22:00Z incident-pass entry.
+- **Kimi-K3 offline replay: HOLD decisively (2026-07-21/22, n=100 newest payload rows; v3
+  registry row 1; scorecard `candidates/kimi-k3-model-eval-2026-07-21.json`).** Schema-valid
+  0.85 < 1.00, hold-agreement 0.17 (champion held 100/100, K3 proposed ~83%), cost −32% where
+  the bar demands −50%; plan-sanity 1.0 was its only pass. No live A/B, no scheduled re-test —
+  revisit only on a material payload/regime change or a K3 serving-stack revision, via the
+  standing eval-lane routing knobs (`AGENTIC_EVAL_BASE_URL`/`_API_KEY`, LOG.md 2026-07-22).
+- **Trade-model head-to-head (v3 rich contract, HARDENED): NO FLIP, loop stays on Claude
+  (2026-07-22, n=200/leg, max_tokens 4096, thinking disabled; registry rows 6 sonnet-5 / 7
+  kimi-k3; scorecard `candidates/trade-model-eval-headtohead-hardened-2026-07-22.json`).** A
+  REAL comparison (all five criteria evaluated): kimi-k3 fails criterion 1 (schema-valid 0.71 <
+  0.805) and criterion 4 (propose-ratio 5.43 ∉ [0.5,1.5]); passes 2 (sanity 1.0=1.0), 3
+  (directional proxy +5.42 vs −4.68bps), 5 (cost −54%). kimi's profile: more willing to trade
+  (76 proposes incl. 12 shorts, rate 0.38 vs sonnet 0.07), directionally better on its picks,
+  half the cost, but less schema-reliable (58 vs 39 errors — kimi's mode is thesis >300 chars).
+  Criterion-4 caveat: the sonnet baseline is itself unusually passive (0.07 vs champion 0.125),
+  so the ratio bar is degenerate against it (verdict unaffected — schema-valid also fails). The
+  PRE-FIX legs (rows 2/3) are superseded — they ran the broken contract where sonnet completed 0
+  valid proposes (criteria 2/3/4 null); retained only as contract-defect evidence. Re-test
+  trigger: native v3 corpus once it holds ≥200 payloads with ≥20 `open_*` proposes.
+- **v3 submit_trade contract non-compliance is a real defect, now FIXED (2026-07-22).** Both
+  sonnet-5 and kimi-k3 fail `tradeDecisionSchema` on a large fraction of propose attempts under
+  thinking-disabled/forced-tool; production silently degraded every rejection to a masked hold
+  (67 of 100 live consulted holds since the 07-21 cutover). Root cause = model-facing required-set
+  gap + thesis-cap + array-not-string; fix = prompt hardening + metered degrade path
+  (`agentic_schema_rejections_total`, `schema_rejected:` rationale). Post-fix on the hardened
+  head-to-head: sonnet schema-valid 0.69→0.805 and 0→14 completed proposes; kimi 0.62→0.71.
+  Closes WATCH-V3-3. Deploy pending (owner commits).
 - **Directional seed-rule edge clears fees nowhere ≤1d** (edge diagnostic 2026-07-10, 52
   selection-corrected buckets; `reports/loop/edge-diagnostic-2026-07-10.md`).
 

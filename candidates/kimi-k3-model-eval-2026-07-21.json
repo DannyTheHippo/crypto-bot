@@ -1,0 +1,56 @@
+{
+  "rowsLoaded": 1363,
+  "rowsReplayed": 100,
+  "champion": {
+    "schemaValidRate": 1,
+    "proposeCount": 0,
+    "planSanityRate": 1,
+    "forwardReturnProxyBps": null,
+    "costPerDecideUsd": 0.02316032608695652
+  },
+  "candidates": [
+    {
+      "model": "kimi-k3",
+      "rowsReplayed": 100,
+      "schemaValidRate": 0.85,
+      "actionAgreement": {
+        "overall": 0.17,
+        "holdAgreement": 0.17,
+        "proposeAgreement": null
+      },
+      "proposeRateRatio": null,
+      "planSanityRate": 1,
+      "forwardReturnProxyBps": 30.40767058188669,
+      "costPerDecideUsd": 0.01567602,
+      "flipVerdict": {
+        "pass": false,
+        "criteria": [
+          {
+            "label": "schema-valid (0.850) >= champion (1.000)",
+            "pass": false
+          },
+          {
+            "label": "hold-agreement (0.17) >= 0.85",
+            "pass": false
+          },
+          {
+            "label": "propose ratio (n/a) in [0.5, 1.5]",
+            "pass": null
+          },
+          {
+            "label": "plan sanity (1) >= champion (1.000)",
+            "pass": true
+          },
+          {
+            "label": "forward proxy (30.40767058188669 bps) >= champion - 2bps (n/a)",
+            "pass": null
+          },
+          {
+            "label": "cost/decide ($0.01567602) <= 50% of champion ($0.02316032608695652)",
+            "pass": false
+          }
+        ]
+      }
+    }
+  ]
+}

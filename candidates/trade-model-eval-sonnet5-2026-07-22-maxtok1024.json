@@ -1,0 +1,67 @@
+{
+  "criteriaVersion": "hh-v1",
+  "corpusFingerprint": "bc9390e404261298c57642be95a2c688432a6d04794e036bfae1fe1c5e31a8d7",
+  "contractFingerprint": "deff2bbcdcc3af2e9a092ed1e75e5bfe676579ed9b7e20e2828e3b93d23b3b10",
+  "templateVersion": "v3",
+  "corpusSource": "JSONL file test/eval/agentic/data/corpus-v2-clone.jsonl (1363 rows)",
+  "window": {
+    "rowSince": 1783714500000,
+    "rowUntil": 1783876500000,
+    "firstEventTime": 1783716300000,
+    "lastEventTime": 1783876500000,
+    "rowsLoaded": 204,
+    "rowsReplayed": 200
+  },
+  "capabilities": {
+    "venue": "binanceusdm",
+    "shorts": true,
+    "leverage": "2",
+    "maxSizeFraction": "0.35",
+    "venueFreeCash": "500"
+  },
+  "thinking": "disabled",
+  "maxTokens": 1024,
+  "tokenPrices": {
+    "claude-sonnet-5": {
+      "inputPerMtok": 3,
+      "outputPerMtok": 15
+    }
+  },
+  "championReference": {
+    "actionHistogram": {
+      "close": 16,
+      "hold": 159,
+      "open_long": 25
+    },
+    "proposeCount": 25,
+    "forwardReturnProxyBps": -0.06563067423353719,
+    "costPerDecideUsd": 0.009950053571428571,
+    "droppedScoringRows": 0
+  },
+  "candidates": [
+    {
+      "model": "claude-sonnet-5",
+      "rowsReplayed": 200,
+      "schemaValidRate": 0.68,
+      "tradeSanityRate": null,
+      "proposeCount": 0,
+      "proposeRate": 0,
+      "directionalForwardProxyBps": null,
+      "costPerDecideUsd": 0.02674437,
+      "corpusFingerprint": "bc9390e404261298c57642be95a2c688432a6d04794e036bfae1fe1c5e31a8d7",
+      "contractFingerprint": "deff2bbcdcc3af2e9a092ed1e75e5bfe676579ed9b7e20e2828e3b93d23b3b10",
+      "actionHistogram": {
+        "hold": 90,
+        "error": 64,
+        "close": 4,
+        "adjust": 42
+      },
+      "agreementWithChampion": 0.44,
+      "invalidCount": 64,
+      "firstErrorDetail": "schema-invalid tool response: sizeFraction: sizeFraction is required when action is 'open_long'; entryValidityBars: entryValidityBars is required when action is 'open_long'",
+      "droppedScoringRows": 0,
+      "promptHash": "6199926a3796c95208efcbc2f9078c452a5bbf590bb30f8cf64bfcf250e74677"
+    }
+  ],
+  "verdicts": []
+}

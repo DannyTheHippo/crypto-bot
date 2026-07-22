@@ -4021,3 +4021,304 @@ the playbook now notes at §0 that "spec §N" citations resolve via `git show`. 
 repo content. Surviving md set (9): CLAUDE.md, README, playbook, runbook, LOG.md, state.md,
 three `src/` boundary READMEs.
 Gates green before commit (build/lint/typecheck/test + lint:md + format:check).
+
+## 2026-07-22 — Kimi-K3 offline replay (task #15 run phase, owner-commissioned): HOLD decisively; sonnet-5 stays champion
+
+Owner-approved plan executed end-to-end (research memo 2026-07-21, now git-history-only:
+`git show d533667:reports/loop/kimi-k3-research-2026-07-21.md`; key landed as
+`MOONSHOT_API_KEY` in `.env` — the memo's `KIMI_API_KEY` name was stale, `.env.example:9` had
+it right all along).
+
+**Harness diff (Prerequisite B, eval-lane only — `candidate-model-eval.spec.ts`):**
+`AGENTIC_EVAL_BASE_URL` (default api.anthropic.com; code owns the `/v1/messages` suffix) +
+`AGENTIC_EVAL_API_KEY` (fallback `ANTHROPIC_API_KEY`; gate accepts either, so a routed run
+exports no Anthropic key and cannot silently bill it), both wire auth headers on an overridden
+base (compat-endpoint header docs are ambiguous), 429/529-only bounded retry (max 3, honors
+Retry-After capped 60s — a fresh Moonshot key tier is ~3 RPM and rate-limit noise would poison
+schema-valid, the very go/no-go metric), `AGENTIC_EVAL_CALL_DELAY_MS`, `AGENTIC_EVAL_TIMEOUT_MS`,
+thinking sentinel `-1` (omit the field). Defaults byte-identical for Anthropic runs; production
+client untouched (its `baseUrl` seam stays unwired absent a go verdict).
+
+**Corpus provenance:** the v3 cutover left the live DB payload-empty, so the run served a
+READ-ONLY clone of the retired v2 volume (`crypto-bot_postgres_data` mounted `:ro` → copy →
+scratch postgres:16 on 5434; original untouched). 8,705 rows total, 1,363 with `input_payload`;
+gotcha: the newest-1000 default window held only 79 payload rows (batched-consult era writes
+many per-symbol rows per one payload row) ⇒ `ROW_QUERY_LIMIT=10000` required. Replay window =
+newest 100 payload rows, 2026-07-20T21:45Z → 2026-07-21T10:45Z.
+
+**Smoke (ROW_LIMIT=1, ~$0.02):** first-try pass against `https://api.moonshot.ai/anthropic` —
+`thinking: {type:'disabled'}` accepted (no sentinel needed), forced single-tool `tool_choice`
+honored, schema-valid 1.0, ~15s/call ⇒ full run launched with `AGENTIC_EVAL_CALL_DELAY_MS=5000`
+(~3 calls/min, under the Tier-0 ceiling) + `AGENTIC_EVAL_TIMEOUT_MS=3600000`.
+
+**Full run (ROW_LIMIT=100, 34 min, ~$1.57 candidate spend, ≤$20 gate):** FLIP VERDICT HOLD —
+schema-valid 0.85 < champion 1.00 (15/100 rows returned no valid forced-tool block; residual
+429/5xx after bounded retries not separable from refusals post-hoc — moot given the next
+number); hold-agreement 0.17 << 0.85 (champion held 100/100, K3 proposed longs on ~83% — a
+drastically more aggressive posture; its +30.4bps forward proxy on those proposals is
+informational only, champion side null); plan-sanity 1.0 (pass — emitted plans respected
+edge/stop/R:R floors); cost/decide $0.0157 vs champion $0.0232 (−32%, bar demands ≤50%).
+Scorecard: `candidates/kimi-k3-model-eval-2026-07-21.json` (FLIP VERDICT console line eaten by
+vitest interception — the known 2026-07-10 gotcha; the file is the deliverable, as designed).
+
+**Registry write:** v3 `experiments` row 1 — family `decide-model-eval` (honest-N continues;
+v2-era rows 1–130 live in the v2 volume/backups — numbering discontinuity is expected), source
+`study`, hashes per `experiment-log.ts` mechanics (params: model/baseUrl/rowLimit/
+thinkingVariant/templateVersion p3; dataset: provenance v2-volume-clone + window). Append-only,
+non-money, §4 MAY.
+
+**Consequence:** go bar (clear offline win) NOT met ⇒ NO live A/B, no `AGENTIC_MODEL` change,
+no production wiring; decide+reflection stay on claude-sonnet-5; the daily loop stays on Claude
+per the owner directive. No scheduled re-test — revisit only on material payload/regime change
+or a K3 serving-stack revision (§ Standing verdicts).
+
+**Deviations:** (1) planned run-memo file + research-memo update dropped — the concurrent
+2026-07-21 ~21:00Z owner md-prune deleted the memo and set the record-in-state.md/LOG.md
+convention this entry follows; (2) scratch-container teardown (`docker rm kimi-eval-pg` +
+`docker volume rm kimi_eval_pg_data`) was permission-denied in-session — left running on 5434,
+flagged to the owner for one-command removal; (3) the eval-lane commit was likewise declined
+in-session — owner commits manually (gates were green at decline time).
+
+**Diff summary:** `test/eval/agentic/candidate-model-eval.spec.ts` (routing/retry knobs),
+`candidates/kimi-k3-model-eval-2026-07-21.json` (new), `reports/loop/state.md` (Kimi bullet
+rewritten DONE+HOLD, standing verdict added), this entry. No config/env change, no money-path
+change, no deploy. Gates green before commit (build/lint/typecheck/test + lint:md).
+
+## 2026-07-22 — Trade-model head-to-head harness (v3 rich contract, shorts-capable): built + hh-v1 pre-registered; legacy run 2 aborted
+
+Owner directive: "make the backtest harness first-class and shorts-capable, then run sonnet-5
+and kimi-k3" — scope confirmed interactively as a rich-contract replay eval (not an
+LLM-in-loop simulator; that stays a future note against `test/backtest/harness.ts`'s
+domain-PnL machinery).
+
+**Run 2 abort (recorded honestly, decided loop-domain):** the legacy-contract kimi run over
+the propose-dense window (launched earlier today, pre-registered in the 2026-07-22 entry
+above-adjacent plan: window knobs, vocab normalization, cost bar ≤50%→parity per the owner's
+gate-authority grant) died at 5/200 rows — its background shell did not survive a session
+compaction. ~$0.08 spent; partial row log `candidates/kimi-k3-rows-2026-07-22.jsonl` (4 valid and
+1 error; the champion `close`-vs-candidate `hold` rows prove the legacy-vocab normalization
+worked). No scorecard, no registry row (n=5). NOT relaunched: the head-to-head below replays
+the IDENTICAL 200-row window, and a relaunch would serialize with the kimi leg on the shared
+~3 RPM Moonshot tier for no additional decision value. The pre-registered run-2 criteria
+changes (window targeting, normalization, cost parity) carry forward into hh-v1 unchanged.
+
+**Harness build (all gates green — build/lint/typecheck/2679 tests, both eval specs skip
+cleanly in a bare shell, legacy spec byte-untouched):**
+
+- `src/features/trading/agentic/counterfactual-scoring.ts`: additive `shortEntries` (FLAT→
+  open_short) + `shortExits` (close-from-SHORT) buckets; deliberate relabel out of
+  `heldShort`/`stayedFlat` — same mislabel class the P4b fix addressed; raw forward return
+  stored, sign correction stays consumer-side. Unit-pinned (3 new cases, 45/45 green).
+  Production consumer (reflection digest) tolerates additive keys per the heldShort precedent.
+- `test/eval/agentic/trade-eval-fixtures.ts` (new): `SYNTHETIC_PERP_CAPS` (binanceusdm,
+  shorts:true, leverage 2, maxSizeFraction 0.35, venueFreeCash 500 — byte-matches client
+  defaults and the deployed $1k book), `withSyntheticCapabilities` (JSON surgery; v3-native
+  payloads pass verbatim), `resolveModelRoute` (`AGENTIC_EVAL_MODEL_ROUTES_JSON`, env-var-NAME
+  key indirection, global-knob fallbacks), `isTradeSane` (fee-floor TP + taker-offset-0 only —
+  the v3 prompt states no edge/R:R floor and penalizing an unstated rule would be unfair
+  pre-registration), `directionalForwardProxyBps` (per-symbol grouped; short means negated),
+  `corpusFingerprint` + `evaluateHeadToHeadVerdict` (hh-v1; fingerprint mismatch fails
+  CLOSED), `loadCorpusRows` (JSONL file or gated Postgres; legacy-vocab normalize; window).
+- `test/eval/agentic/trade-model-eval.spec.ts` (new, `pnpm eval:trade-models`, gate
+  `EVAL_TRADE_MODELS=1` + explicit `AGENTIC_EVAL_CANDIDATE_MODELS` + per-model key + corpus):
+  per-model v3 replay — ONE `buildSystemPrompt(EVAL_PROFILE)` + ONE
+  `buildTradeTool(SYNTHETIC_PERP_CAPS)` byte-identical across models (the head-to-head
+  invariant), request mirrors the production client minus cache_control, responses validated
+  by the production `tradeDecisionSchema`. Champion reference derived from persisted rows
+  (informational — cross-contract agreement is NOT a criterion). Verdict computation wrapped
+  so a comparison refusal still writes the paid scorecard first, then rethrows (paid data is
+  never destroyed by a verdict error). Scorecard contract hard-validated downstream.
+- `scripts/dump-eval-corpus.mjs` (new): read-only JSONL corpus dump; executed —
+  `test/eval/agentic/data/corpus-v2-clone.jsonl`, 1,363 rows (gitignored, reproducible),
+  which makes the 5434 scratch DB dispensable: teardown unblocked for the owner.
+- `scripts/log-eval-experiment.mjs` (new): scorecard → `experiments` rows, family
+  `trade-model-eval`; `REGISTRY_DATABASE_URL` only; gate fails CLOSED (the write is the
+  purpose — the inverse of `logTrials`' fail-open, stated in both headers).
+
+**hh-v1 pre-registration (BEFORE any paid call, per change-discipline):** kimi-k3 vs a
+claude-sonnet-5 REPLAY baseline (not the persisted champion) over the same fingerprinted
+200-row slice — window 1783714500000–1783876500000 (2026-07-10 20:15Z → 07-12 17:15Z; slice
+bounds 1783716300000→1783876500000; champion mix 25 long / 16 flat / 163 hold; 204 in-bounds,
+slice(-200)). Criteria: (1) schema-valid ≥ baseline; (2) trade-sanity ≥ baseline; (3)
+directional forward proxy ≥ baseline − 2bps; (4) propose-rate ratio ∈ [0.5, 1.5]; (5)
+cost/decide ≤ baseline. Null on either side sinks a criterion (never a silent pass); overall
+pass = all five strictly true. CAVEAT (binding on every future read of these numbers):
+spot-recorded history re-asked as shorts-capable perp — not a native perp eval. Re-test
+trigger: live v3 corpus ≥200 payload rows with ≥20 open_* proposes in a contiguous window ⇒
+re-run natively (v3 corpus today: 3,280 rows, 83 payloads, zero proposes). Spend plan ~$10
+(two 200-row legs), ≤$20 gate; kimi leg waits for nothing (run 2 dead) but runs after the
+sonnet baseline exists.
+
+**Amendment (same day, pre-registered BEFORE the operative legs ran):** the first sonnet leg
+(max_tokens 1024, the legacy harness default) came back degenerate in a diagnosable way —
+schema-valid 0.68, zero VALID proposes, 64/200 rows failing `requireTradeDirectives`
+(`open_long` missing sizeFraction/entryValidityBars: the forced-tool response ran out of
+output budget mid-emission; production ships `AGENTIC_MAX_TOKENS=4096`). Condition change:
+new `AGENTIC_EVAL_MAX_TOKENS` knob; BOTH operative legs run at production-parity 4096
+(thinking stays disabled for cross-vendor comparability). hh-v1 criteria unchanged; the
+contract fingerprint separates the conditions, so the 1024 scorecard can never silently
+cross-compare. The 1024 artifacts are KEPT as a finding
+(`candidates/trade-model-eval-sonnet5-2026-07-22-maxtok1024.json` + row log): sonnet-5 under
+a 1024-token forced-tool budget emits 32% incomplete proposes — an output-budget floor for
+the v3 contract, worth knowing independently of the model swap. One free lesson en route: the
+first 4096-relaunch attempt ran sandboxed, TLS failed instantly, and the per-row containment
+(review must-fix 2) degraded all 200 rows to `error` with zero spend — the garbage artifacts
+were deleted; the containment design paid for itself before the first real dollar.
+
+## 2026-07-22 — Trade-model head-to-head RESULT (NO FLIP) + v3 contract-compliance defect FOUND & FIXED
+
+**Head-to-head verdict — NO FLIP (registry rows 2 sonnet-5 / 3 kimi-k3, both n=200,
+production-parity max_tokens 4096, thinking disabled, same corpus fingerprint + contract
+fingerprint so the legs are validly comparable):**
+
+| metric | sonnet-5 (baseline) | kimi-k3 | hh-v1 criterion |
+| --- | --- | --- | --- |
+| schema-valid | 0.69 | 0.62 | (1) FAIL |
+| trade-sanity | n/a (0 valid proposes) | 1.0 | (2) null |
+| directional proxy bps | n/a | +0.64 | (3) null |
+| propose-rate | 0 (valid) | 0.285 | (4) null |
+| cost/decide | $0.0268 | $0.0129 | (5) PASS |
+
+Overall `pass:false`. Loop stays on Claude (owner directive, unchanged). Three criteria are
+null because the sonnet baseline itself completed ZERO valid proposes under the (pre-fix)
+contract — its 5 open_long attempts all schema-failed — so there was no baseline proposal
+quality to compare kimi against. This confound is the head-to-head's own re-test trigger:
+re-run on the HARDENED contract once deployed.
+
+**The owner's "bad test" critique is resolved.** The harness now produces the behavior the
+old all-hold window couldn't: kimi-k3 emitted 57 proposes — 51 open_long + **6 open_short**,
+the synthetic-capabilities shorts path exercised end-to-end — all trade-sane, +0.64bps proxy,
+at half the cost, but with more raw errors (76 vs 62). A "more willing to act, cheaper, less
+schema-reliable" profile — decision quality, not just "is it cheaper."
+
+**DOMINANT FINDING — v3 contract non-compliance (both models), root-caused and fixed.** The
+low schema-valid rates aren't model timidity, they're contract friction. Both models fail
+`tradeDecisionSchema` on a large fraction of propose attempts under thinking-disabled /
+forced-tool. Investigation (read-only, live evidence):
+
+- **Silent degrade path** (`anthropic-agent-client.ts`): a schema-failed tool response returns
+  a decision-less soft-hold with `signals:[]`; `agentic.strategy.ts` then fills it via
+  `inferStubDecision` → a plain `hold` row (confidence 0, empty rationale). No retry, no
+  corrective re-prompt, no `error` marker, no metric — indistinguishable in the `action` column
+  from a genuine hold. Batch path (the live lane is 100% `submit_portfolio`) has three such
+  tiers; the element tier didn't even log the failure detail.
+- **Live evidence**: of the 100 LLM-consulted holds since the 07-21 cutover, **67 are masked
+  contract failures** (the confidence-0/empty-rationale fingerprint) and only 33 are genuine
+  holds. Logs show 5 whole-payload + 41 element + 11 missing-symbol schema degrades. One
+  whole-payload sample was a fully-formed BTC open_long with full directives that the model
+  serialized as a quoted JSON string (`decisions:"[{...}]"`) — silently dropped. The live
+  lane's "zero proposes" was NOT purely regime-appropriate caution (state.md soak narrative
+  corrected).
+- **Root cause**: the JSON tool schema advertises only `action` as required, but zod's
+  `requireTradeDirectives` demands six fields on open_* — four of which (`entryValidityBars`,
+  `stopLossPct`, `takeProfitPct`, `maxHoldBars`) were never stated as required in ANY
+  model-facing text; `thesis` >300 chars also silently rejected. `maxLength`/`required`-array
+  encodings are barred (strict tool-use 400s; two unit specs pin the no-bounds convention), so
+  the fix is description-text + observability.
+
+**FIX SHIPPED (12 files, gate green — 2712 tests, +7):**
+
+- Model-facing hardening (`agent-prompt.ts`): `TRADE_ACTION_DESCRIPTION` now enumerates the full
+  six-field open_* required set; the four unmarked directive descriptions gained the
+  required-on-open clause; strict thesis-cap wording; `submit_portfolio` states `decisions` must
+  be a real array, never a string-encoded one.
+- Unmask (`anthropic-agent-client.ts` + observability): every schema-fail branch now returns an
+  explicit `decision:{action:'hold',confidence:0,rationale:'schema_rejected: <issue>'}` — the
+  degrade is behaviour-identical for risk/execution (still holds) but now queryable
+  (`WHERE rationale LIKE 'schema_rejected%'`); new `recordSchemaFailure` seam wired to a
+  `agentic_schema_rejections_total{kind}` Prometheus counter; the element branch now logs its
+  failure detail. This closes WATCH-V3-3's "meter the degrade path" clause.
+- **Post-fix evidence** (registry row 5, identical newest-40 rows, hardened contract): sonnet-5
+  schema-valid **0.675 → 0.775**, completed proposes **0 → 4**, all trade-sane. The hardening
+  measurably works; residual missing-`sizeFraction` cases remain (now visible via the counter).
+
+**Verification of all session-surfaced items** (owner directive "investigate, verify and fix
+ALL"): the harness build (review + fix pass, cleared), the dedupe/polish chip, the reflection
+short-exit prose correction, and this contract fix all sit under one green gate (build / lint /
+typecheck / 2712 tests / format:check / lint:md). Registry rows 2–5 recorded. Remaining is
+deploy of the contract fix + a hardened-contract re-baseline — the standard money-path-adjacent
+step behind the owner commit.
+
+**Spend**: two 200-row legs (~$5.4 sonnet + ~$2.6 kimi) + $0.10 smoke + ~$1.1 post-fix-40 ≈
+$9.2 for the operative program (the $0.08 aborted run-2 and the $0 sandboxed-TLS misfire aside),
+inside the ≤$20 eval gate.
+
+**Deviations**: (1) first sonnet leg ran the legacy 1024 max_tokens default and came back
+degenerate — re-baselined at 4096 (pre-registered, contract fingerprint separates); the 1024
+run is kept as registry row 4 (an output-budget finding). (2) scratch corpus DB teardown +
+commit remain owner actions (in-session denials stand).
+
+## 2026-07-22 — Hardened-contract head-to-head (REAL verdict) + owner-directed backlog sweep
+
+**Head-to-head RE-RUN on the HARDENED contract (owner: "all attempts with sonnet-5 failed;
+baseline is degenerate. does not seem like a realistic head-to-head" — correct).** The pre-fix
+legs were not a real comparison: the sonnet baseline completed ZERO valid proposes under the
+broken contract, nulling three of five criteria. Re-ran both models in ONE invocation on the
+hardened contract (the fix is in the working tree; the eval imports the prompt/tool from source,
+so no commit needed), 200 rows each, 4096 tokens, thinking disabled, same corpus + contract
+fingerprint (validly comparable). Registry rows 6 (sonnet-5) / 7 (kimi-k3); scorecard
+`candidates/trade-model-eval-headtohead-hardened-2026-07-22.json`.
+
+**Verdict — NO FLIP, now on a real (all-criteria-evaluated) comparison:**
+
+| criterion | sonnet-5 baseline | kimi-k3 | pass |
+| --- | --- | --- | --- |
+| 1 schema-valid ≥ baseline | 0.805 | 0.71 | FAIL |
+| 2 trade-sanity ≥ baseline | 1.0 | 1.0 | pass |
+| 3 directional proxy ≥ base−2bps | −4.68 bps | +5.42 bps | pass |
+| 4 propose-ratio ∈ [0.5,1.5] | rate 0.07 | rate 0.38 (5.43×) | FAIL |
+| 5 cost/decide ≤ baseline | $0.0272 | $0.0124 | pass |
+
+Two fails ⇒ NO FLIP; loop stays on Claude (owner directive, unchanged). But the contract fix
+turned a degenerate test into a meaningful one: sonnet went 0→14 completed proposes, both models
+now propose (sonnet 14 = 13 long + 1 short; kimi 76 = 64 long + 12 short — shorts exercised on
+both). The genuine signal: on the trades each model chose, **kimi's entries were directionally
+positive (+5.42bps) while sonnet's were slightly adverse (−4.68bps)**, at equal trade-sanity and
+half the cost — kimi is more willing to trade, directionally better on its picks, cheaper, but
+less schema-reliable (58 vs 39 errors; kimi over-runs the 300-char thesis, sonnet omits
+sizeFraction). Methodological caveat recorded: criterion 4 compares to the sonnet baseline, which
+is itself unusually passive (0.07 vs champion 0.125), so any active model fails the ratio bar —
+degenerate against a passive baseline, though the verdict is unaffected (schema-valid also fails).
+Pre-fix legs (rows 2/3) superseded, kept as contract-defect evidence. Owner's "bad test" critique
+fully resolved.
+
+**Owner-directed backlog sweep ("fix ALL that does not require me … risk/OMS and similar is IN
+scope").** Investigated the full Flagged + Backlog set against current code:
+
+- **Flagged risk/OMS defects: all already RESOLVED** (perp phantom-position 2026-07-17, venue-stop
+  #54 2026-07-16, signal-sink #49 atomicity 2026-07-17 — shipped, reviewed, live-verified). The
+  only open Flagged items require the owner (dedicated Anthropic org key + CryptoPanic key =
+  secrets; host-sleep availability = always-on host; LINK wallet scar = venue-side sell) — matches
+  the owner's exclusion.
+- **SHIPPED (4 items, all gates green, both reviews APPROVE 0-must-fix):**
+  (a) **#53** reflection-trigger observability — `agentic_reflection_trigger_total{outcome}` on
+  evaluateTrigger's four silent exits (fail-open, no control-flow change).
+  (b) **transport-reason gap** — the sanitized `AgentProposeError` message now persists in the
+  error-journal rationale (privacy contract preserved: a non-AgentProposeError keeps the bare
+  kind); RETRYABLE now warn-logs.
+  (c) **#46** Thompson multi-candidate A/B routing — replaces newest-wins with a Gaussian-Thompson
+  sampler over per-version attributed reward; HARD fallback to newest-wins until ≥2 candidates each
+  clear K=3 trips, so BYTE-IDENTICAL at today's 1 candidate / 0 trips (test-proven). Reward reads
+  fail OPEN to newest-wins (review should-fix). Build + offline test only; live-enable trigger = ≥2
+  candidates with attributed reward.
+  (d) **#52** W12 operational event logging — structured pino ops events
+  (`reconcile.pass`, `killswitch.transition`, `halt.engage`, `halt.cancels_drained`, `boot.ready`)
+  via a fail-open `OpsEventLogger`; port in `src/ports/observability.ts` (boundaries); the
+  mode/arm/disarm lifecycle stays on the existing `ModeAuditEvent`→audit_log. `KillSwitchPort`
+  widened with `reason()`. Review should-fix applied: `halt.clear`→`halt.cancels_drained` + carries
+  the resulting `to` state (the drain ends into HALTED/FLATTENING/HALTED_DEGRADED, never RUNNING).
+- **#43** liquidation-order flow feed — CLOSED as ALREADY-DONE (feed built + `AGENTIC_LIQUIDATIONS_ENABLED=true`
+  live, consumed via prompt tag `lq1`; seed was stale).
+- **#48** — the 5→8 expansion is OBE (universe is now 40 symbols with a vol×ATR scanner + menu-8);
+  residual = an open weekly-rotation-vs-promotion-walk attribution DESIGN, left as design-gated.
+- **DATA-GATED (not me, not owner — the post-cutover DB has 0 closed trips):** #18 per-hour
+  expectancy, #45 trailing-stop field, #47 adaptive cadence (Phase-5 baseline ~1 day old). **#44**
+  spot OCO is PROBE-GATED (demo-venue orderList/oco capability probe + the same missing data).
+  Building any of these against absent data would be building blind — reported with unblock
+  triggers rather than force-built.
+- **Reviews:** two focused adversarial passes (agentic-lane, execution/risk) both APPROVE with no
+  must-fix; all should-fixes (fail-open reward read, `halt.cancels_drained` rename, two
+  falsifiable-comment corrections) applied and tested.
+
+Gate green after the sweep: build + lint + typecheck + `pnpm test` (2725+ tests) + format:check +
+lint:md, both eval specs skip clean. Owner still commits; scratch DB teardown still owner.

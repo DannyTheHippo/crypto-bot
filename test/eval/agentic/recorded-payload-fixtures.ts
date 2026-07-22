@@ -222,7 +222,15 @@ export function composeRecordedUserMessage(
 }
 
 export interface RecordedDecisionOutcome {
-  readonly action: 'long' | 'flat' | 'hold' | 'error';
+  readonly action:
+    | 'long'
+    | 'flat'
+    | 'hold'
+    | 'error'
+    | 'open_long'
+    | 'open_short'
+    | 'close'
+    | 'adjust';
   readonly confidence: number | null;
 }
 

@@ -29,3 +29,9 @@ backups/
 # durable git record is reports/loop/LOG.md + state.md). Machine-written evidence artifacts,
 # never committed — tracking them would force per-tick commits or a permanently dirty tree.
 reports/loop/digests/
+# Offline eval corpus dumps (reproducible via scripts/dump-eval-corpus.mjs against the recorded
+# agent_decisions source — see that script's provenance note).
+test/eval/agentic/data/*.jsonl
+# Per-row eval audit trails (transient/bulky; the scorecard *.json beside them IS the tracked
+# deliverable, matching the e2/degradation scorecard precedent).
+candidates/*.jsonl

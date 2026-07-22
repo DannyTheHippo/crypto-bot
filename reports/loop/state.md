@@ -106,8 +106,8 @@ never changes for strategy evolution.
   2026-07-21T11:15:05Z — both lanes flat (perp zero positions/orders; spot dust-only ledger
   residuals, no venue axis), final reconciles CLEAN on both lanes. v3 booted greenfield from the
   same compose project on NEW volumes (`postgres_data_v3`/`prometheus_data_v3` — v2's
-  `crypto-bot_postgres_data`/`_prometheus_data` left intact on disk; pruning is an owner call
-  after the GCP lift). 4 containers up, app healthy; effective mode=testnet, downgrades=[];
+  `crypto-bot_postgres_data`/`_prometheus_data` left intact on disk; pruning those v2 volumes is
+  loop-domain, deferred until after the GCP lift). 4 containers up, app healthy; effective mode=testnet, downgrades=[];
   playbook seeded once (version 1, single row); 23 tables migrated on the empty DB; funding-ingest
   first-poll race self-healed (WARN + retry, correct fail direction).
   **`PROMOTION_EVIDENCE_EPOCH=2026-07-21T11:21:00Z`** stamped at the log-verified flat instant
@@ -241,7 +241,8 @@ never changes for strategy evolution.
   (`agentic_schema_rejections_total{kind}` counter + `schema_rejected:` journal rationale — the
   "no metric/rationale marker" gap this WATCH named is closed). Historical prior: this was the
   same defect class as WATCH-X2-era degrade guidance. Deploy of the fix + a hardened-contract
-  re-baseline is the remaining loop step (owner commits first).
+  re-baseline is the remaining loop step (I commit + deploy — loop-domain per the 2026-07-22
+  gate-override grant; the live-money flip is the only human gate).
 - **Kimi-K3 experiment COMPLETE — offline replay verdict HOLD (2026-07-21/22, task #15 run
   phase):** kimi-k3 replayed over the newest 100 recorded consult payloads (1,363 payload rows
   loaded; v2 corpus served from a read-only clone of the retired `crypto-bot_postgres_data`
@@ -881,9 +882,12 @@ R3 gate GREEN at bb21208: build+lint+typecheck+format:check, 152 files / 2619 te
 - **Program state at close:** every pre-cutover step of the plan is DONE — v2 contract, W/A0
   rounds, XA1-XA7, X2 stage-1 (+ stage-2 pre-auth UNFIRED), X3-X9, Y1-Y4, R1-R3, lane metric
   parity. **X1-FINAL (GCP terraform + lift) NOT STARTED — the owner-directed stop line.**
-  Owner actions open: CryptoPanic key (then SENTIMENT_FEED_ENABLED flip); commit of the
-  pre-existing dirty-tree set (strategy-registry, ccxt-exchange.adapter, ccxt-normalize,
-  3 specs — predates this program); GCP go-signal when ready.
+  Genuine owner-only items open (capability limits, not policy gates): CryptoPanic key (then
+  SENTIMENT_FEED_ENABLED flip); GCP go-signal when ready — GCP is DEFERRED ENTIRELY to an
+  owner-initiated session (2026-07-22 owner pick), the loop does not prep or initiate it.
+  The pre-existing dirty-tree set (strategy-registry, ccxt-exchange.adapter, ccxt-normalize,
+  3 specs — predates this program) is loop-domain to commit (2026-07-22 gate-override grant;
+  husky pnpm shim resolved 2026-07-16) — no longer an owner action.
 - The campaign measurement now runs itself: fresh epochs on the final build, the daily loop
   live on v3 (Pass 35 verified), the collector daemonized, and the WATCH set (XA1 / X2 / XA6 /
   XA7 / X7-X8 / X9 / Y2-Y3 / Y4) armed with dated checkpoints.
@@ -1078,6 +1082,24 @@ when the info-context A/B resolves.
 
 ### Standing verdicts (binding evidence — passes must NOT re-derive these)
 
+- **Gate-override audit + classification (2026-07-22; owner gate-override grant, verbatim: "You
+  are welcome to change any owner gate/decision (not live flip; that's only me)"; change-discipline
+  binds every change — pre-register, record what/why, never rewrite history).** A four-pass
+  read-only audit (code gates, live-flip boundary, memory gates, policy gates) enumerated every
+  owner/operator/hard gate in the program; the owner then overrode ALL of them except one.
+  **KEPT — the ONLY human gate, unchanged:** the 16 live-flip code gates + the bootId arming
+  ceremony + PromotionReadinessService (≥30 closed demo round trips AND positive net-of-cost PnL
+  over ≥14d); plus the §4 MUST-NOT structural invariants (risk/execution/OMS semantics, append-only
+  tables, secrets/redaction) — rails on what a change may DO, not gates on who approves it.
+  **OVERRIDDEN — now loop-domain:** the three operator-recovery gates (kill-switch HALT resume,
+  daily-loss halt resume, operator-drained-strategy recovery → precondition-gated AUTO-resume);
+  commit + deploy (husky pnpm shim resolved 2026-07-16 — the loop commits AND deploys its own work);
+  and bug/tech-debt fixes (fixed + shipped immediately on discovery, the backlog holds ONLY
+  profitability improvements). **Genuine capability limits that still need the owner (a lack of
+  credentials/hardware, NOT a policy gate):** a dedicated Anthropic org key, the CryptoPanic key,
+  an always-on host, GCP credentials, and live trading capital — and GCP itself is DEFERRED ENTIRELY
+  to a future owner-initiated session (the loop does not prep or initiate it). This extends the
+  Strategic-frame owner decisions above (2026-07-10/12/17/22) — grant 7 is the widest.
 - **Price-TA edge search is settled EMPTY** (2026-07-12 ultracode session: 4,562 backtests, 8
   families, long+short, 15m–1d, fees 0→20bps — ZERO honest survivors at any fee level incl.
   0bps; `reports/loop/multi-strategy-search-2026-07-12.md`). The LLM lane cannot profit by
@@ -1129,7 +1151,8 @@ when the info-context A/B resolves.
   gap + thesis-cap + array-not-string; fix = prompt hardening + metered degrade path
   (`agentic_schema_rejections_total`, `schema_rejected:` rationale). Post-fix on the hardened
   head-to-head: sonnet schema-valid 0.69→0.805 and 0→14 completed proposes; kimi 0.62→0.71.
-  Closes WATCH-V3-3. Deploy pending (owner commits).
+  Closes WATCH-V3-3. Deploy pending — loop-domain (I commit + deploy per the 2026-07-22
+  gate-override grant).
 - **Directional seed-rule edge clears fees nowhere ≤1d** (edge diagnostic 2026-07-10, 52
   selection-corrected buckets; `reports/loop/edge-diagnostic-2026-07-10.md`).
 

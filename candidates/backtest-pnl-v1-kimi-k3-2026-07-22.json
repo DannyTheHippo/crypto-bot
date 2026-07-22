@@ -1,0 +1,106 @@
+{
+  "symbol": "BTC/USDT:USDT",
+  "interval": "4h",
+  "model": "kimi-k3",
+  "shortsEnabled": true,
+  "fromTs": 1769904000000,
+  "toTs": 1783814400000,
+  "barsSupplied": 967,
+  "barsUsed": 967,
+  "decisionsRequested": 83,
+  "decisionsAccepted": 67,
+  "decisionOutcomeCounts": {
+    "accepted": 67,
+    "hold": 1,
+    "close": 0,
+    "adjust": 0,
+    "floor_rejected": 0,
+    "capability_rejected": 0,
+    "schema_rejected": 15,
+    "truncated": 0,
+    "call_failed": 0
+  },
+  "spendUsd": "1.919037",
+  "maxUsd": "8.000000",
+  "aborted": false,
+  "abortReason": null,
+  "openPositionAtEnd": true,
+  "exitReasonCounts": {
+    "stop": 41,
+    "take_profit": 14,
+    "max_hold": 7
+  },
+  "pnl": {
+    "realizedQuote": "-78.744884993955",
+    "feesQuote": "13.246358428486055",
+    "fundingQuote": "0.32381157014145",
+    "netQuote": "-91.667431852299605",
+    "llmSpendUsd": "1.919037",
+    "netOfLlmSpendQuote": "-93.586468852299605",
+    "long": {
+      "roundTrips": 33,
+      "winRate": 0.24242424242424243,
+      "netPnlQuote": "-52.32818155684955"
+    },
+    "short": {
+      "roundTrips": 29,
+      "winRate": 0.3448275862068966,
+      "netPnlQuote": "-39.663061865591505"
+    },
+    "fundingLong": {
+      "events": 219,
+      "netQuote": "0.0196197978116"
+    },
+    "fundingShort": {
+      "events": 181,
+      "netQuote": "0.30419177232985"
+    }
+  },
+  "segments": [
+    {
+      "fromBarIndex": 0,
+      "toBarIndex": 322,
+      "roundTrips": 33,
+      "netBpsPerRoundTrip": "-213.38",
+      "winRate": 0.21212121212121213,
+      "meanHoldBars": 7.666666666666667,
+      "maxDrawdownPct": "1.75",
+      "sign": "negative"
+    },
+    {
+      "fromBarIndex": 322,
+      "toBarIndex": 644,
+      "roundTrips": 15,
+      "netBpsPerRoundTrip": "-45.05",
+      "winRate": 0.4,
+      "meanHoldBars": 19.733333333333334,
+      "maxDrawdownPct": "0.30",
+      "sign": "negative"
+    },
+    {
+      "fromBarIndex": 644,
+      "toBarIndex": 967,
+      "roundTrips": 14,
+      "netBpsPerRoundTrip": "-30.57",
+      "winRate": 0.35714285714285715,
+      "meanHoldBars": 15.5,
+      "maxDrawdownPct": "0.26",
+      "sign": "negative"
+    }
+  ],
+  "totals": {
+    "fromBarIndex": 0,
+    "toBarIndex": 967,
+    "roundTrips": 62,
+    "netBpsPerRoundTrip": "-131.37",
+    "winRate": 0.2903225806451613,
+    "meanHoldBars": 12.35483870967742,
+    "maxDrawdownPct": "2.02",
+    "sign": "negative"
+  },
+  "sizingModel": {
+    "kind": "sizeFraction-of-equityBase",
+    "equityBaseQuote": "1000"
+  },
+  "fairProxyNote": "OHLCV-only fair-proxy backtest on the v3 submit_trade contract (orderBook/ticker/derivatives never attached to the payload) — the 93.3% live action agreement measured 2026-07-12 (candidates/degradation-2026-07-12.json) was taken on the LEGACY plan-mode contract and justifies the OHLCV-only payload shape only; it is not a re-measured v3 agreement figure. NOT comparable to pre-v3 plan-mode scorecards."
+}

@@ -4373,3 +4373,53 @@ per leg; an abort is clean and partial.
 - Scorecards from this contract are NOT comparable to pre-v3 plan-mode scorecards.
 - Perp legs are net of funding as of this session's funding-accounting fix; spot legs are not
   (spot has no funding). Omitting it previously biased against whichever model shorts more.
+
+### RESULT — `pnl-v1` verdict: **NO DEPLOY**, claude-sonnet-5 stays (owner-reviewed and accepted)
+
+Both legs ran the full window (967/967 bars, `BTC/USDT:USDT` 4h, 2026-02-01→2026-07-12), neither
+aborted, both far under the $8 cap. Scorecards:
+`candidates/backtest-pnl-v1-{sonnet5,kimi-k3}-2026-07-22.json`.
+
+| Metric | claude-sonnet-5 | kimi-k3 |
+| ------------------------- | --------------- | --------------- |
+| net of fees+funding+spend | **−30.28** | **−93.59** |
+| realized / fees / funding | −20.06 / −7.98 / +0.21 | −78.74 / −13.25 / +0.32 |
+| LLM spend (USD) | 2.45 | 1.92 |
+| closed round trips | 36 | 62 |
+| long (trips / net / win) | 26 / −29.38 / 0.35 | 33 / −52.33 / 0.24 |
+| short (trips / net / win) | 10 / **+1.34** / 0.40 | 29 / −39.66 / 0.34 |
+| segment signs (3) | neg, pos, pos | neg, neg, neg |
+| net bps per round trip | −70.5 | −131.4 |
+| consults → accepted | 280 → 37 (13%) | 83 → 67 (81%) |
+| schema-rejected | 64 (23%) | 15 (18%) |
+| exits stop / TP / max-hold | 22 / 11 / 3 | 41 / 14 / 7 |
+
+**Criterion 1 decides it:** the winner must be strictly greater AND strictly positive. Sonnet is
+greater but BOTH legs are negative, and the pre-registration states that "less negative" is not
+profitable ⇒ **NO DEPLOY**. This is a NULL RESULT, not a sonnet win — the incumbent stays by default,
+not by merit. Criterion 3 passes on both legs (36 and 62 trips, over the ≥20 floor), so this is not a
+small-sample artifact. Criterion 2 would have passed sonnet (2/3 positive segments) and failed kimi
+(0/3). Criterion 6 clean: no abort, no tie.
+
+**Findings:** neither model cleared costs (20bps round-trip fees vs −70/−131 bps per trip; fees alone
+are ~40% of sonnet's realized loss). The two are behaviourally opposite — sonnet holds (13% of
+consults become trades), kimi almost always trades (81%), and kimi's higher activity compounded
+losses rather than finding edge. Both are stopped out 2-3× more often than they take profit. Sonnet's
+ONLY positive component was shorts (+1.34) — the capability this work added, and invisible before
+this session's short-settlement and funding fixes.
+
+**The fidelity fixes made these numbers worse, which is the point:** pre-fix, take-profits filled at
+the bar close (past the TP, free edge) and every entry booked a flat $1000 regardless of the model's
+`sizeFraction` conviction. An honest harness reports less flattering results.
+
+**Caveats:** one symbol, one 5.4-month regime, one stochastic sample per model. A PROXY for the live
+soak; it cannot authorise a live flip.
+
+**Process failure worth recording:** the first attempt at both legs died at vitest's hard-coded
+600 000 ms test timeout, spending ~$1.50 for ZERO output — the scorecard is only written after the
+run completes, so a process kill loses the partial the engine would otherwise have returned. The
+dry-run and the $0.50 smoke (315 s) both passed and never exercised the duration a 967-bar run needs.
+Fixed: `BACKTEST_AGENTIC_TIMEOUT_MS`, default 4 h, with the $ cap as the real limiter. Incremental
+checkpointing of partial scorecards remains an open follow-up. Separately, the kimi route carried a
+stale `callDelayMs: 5000` tier-1 workaround; the account is tier 2 (RPM 500) and these harnesses call
+sequentially, so the delay was ~40 min of pure dead time — now 0.

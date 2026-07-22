@@ -4498,3 +4498,31 @@ veto, and the earlier wording overstated both the diagnosis and the fix's reach.
 
 The durable fix remains open: keep book subscriptions in lockstep with menu membership — subscribe
 BEFORE promoting a symbol into the consultable set, and do not park until it has left it.
+
+### DECISION — the "durable" rotation-race fix is NOT being made, and why
+
+The obvious follow-up to the rotation race was to remove the window: wake a symbol's book loop the
+moment it joins the menu instead of waiting for the next `TIER_PARK_POLL_MS` (30s) poll. Investigated
+and DECLINED. Recorded per rules/change-discipline.md so the omission is a decision, not a gap.
+
+Two facts closed it:
+
+1. **Exits were never at risk.** `isPinned` (agentic-bridge.module.ts:577-583) returns true for any
+   symbol holding a non-zero position OR a resting order, and `recompute()` pins those into the active
+   set "ALWAYS active, independent of rank" (universe-scanner.service.ts:264). A positioned symbol
+   therefore keeps full tier and keeps its book, so a rotation can never strand a position. The window
+   only ever affected ENTRIES on symbols newly joining the menu.
+2. **That window is already covered.** The shipped health fix consults the ticker, which is subscribed
+   universe-wide and stays fresh (measured: ticker n=40 max 5.33s, book n=8 max 2.27s, 1 of 48
+   mark-feeding channels over the 5s bound). The mark survives the park, so a newly-menued symbol can
+   trade immediately rather than after the poll.
+
+So an immediate-wake change would buy no functional improvement, while touching the subscription pacing
+subsystem that has a documented livelock history — Binance closes a connection at >5 inbound msg/s with
+code 1008, and the 2026-07-17 incident 1008-looped indefinitely at 8 symbols x 4 channels until the
+lane design landed (ccxt-stream.adapter.ts:99-122). Waking a herd of symbols on every rotation is
+exactly the burst shape that pacing exists to prevent. Poor trade: real regression risk in a
+livelock-prone path, zero functional gain.
+
+Revisit ONLY if one of these changes: the mark stops being ticker-fed, positioned symbols stop being
+pinned, or book coverage starts mattering to something other than the (now-fixed) health probe.

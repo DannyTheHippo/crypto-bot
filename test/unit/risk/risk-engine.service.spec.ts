@@ -116,6 +116,9 @@ function makeEngine(
     deps?: Partial<RiskEngineDeps>;
     refPresent?: boolean;
     riskRejects?: Counter<string>;
+    // Per-channel feed health, for the menu-rotation regression below. Default keeps every channel
+    // 'LIVE' so existing cases are unchanged.
+    feedPort?: FeedHealthPort;
   } = {},
 ) {
   const journal: RiskJournalPort & { records: RiskDecision[] } = {
@@ -128,7 +131,7 @@ function makeEngine(
   const engine = new RiskEngineService(
     clock,
     deps(over.deps),
-    feed(over.refPresent ?? true),
+    over.feedPort ?? feed(over.refPresent ?? true),
     kill,
     new RateBucketsService(clock),
     new CrossingRegistryService(),
@@ -169,6 +172,46 @@ describe('RiskEngineService', () => {
     const d = engine.evaluate(intent(), snapshot());
     expect(d).toMatchObject({ verdict: 'REJECTED', reasons: ['STALE_DATA'] });
     expect(journal.records).toHaveLength(1);
+  });
+
+  // Regression, confirmed live 2026-07-22: the mark's ref price is fed by BOTH the ticker and the
+  // order-book channels (teeing-market-stream.ts's observe()), but this engine probed 'book' ALONE.
+  // `book` is subscribed only for the active menu (8 of 40 symbols, and the menu rotates), so every
+  // off-menu symbol answered the unknown-channel default 'GAP' and was vetoed STALE_DATA forever —
+  // 32 of 40 symbols could never trade and the orders table was empty across the whole DB history.
+  it('APPROVES when the book channel is absent (GAP) but the ticker feeding the same ref price is LIVE', () => {
+    const feedPort: FeedHealthPort = {
+      getRefPrice: () => ({ mid: price('100'), at: epochMs(T) }),
+      // Exactly the off-menu shape: no book subscription, healthy universe-wide ticker.
+      health: (_v, _s, channel) => (channel === 'book' ? 'GAP' : 'LIVE'),
+      fetchCandles: () => Promise.resolve([]),
+    };
+    const { engine } = makeEngine({ feedPort });
+    const d = engine.evaluate(intent(), snapshot());
+    expect(d.verdict).toBe('APPROVED'); // pre-fix this was REJECTED ['STALE_DATA']
+  });
+
+  it('still REJECTS STALE_DATA when BOTH the book and ticker channels are down (gate not weakened)', () => {
+    const feedPort: FeedHealthPort = {
+      getRefPrice: () => ({ mid: price('100'), at: epochMs(T) }),
+      health: () => 'GAP',
+      fetchCandles: () => Promise.resolve([]),
+    };
+    const { engine } = makeEngine({ feedPort });
+    const d = engine.evaluate(intent(), snapshot());
+    expect(d).toMatchObject({ verdict: 'REJECTED', reasons: ['STALE_DATA'] });
+  });
+
+  it('still REJECTS STALE_DATA on an aged ref price even with both channels LIVE (freshness bound intact)', () => {
+    const feedPort: FeedHealthPort = {
+      // 5001ms old against staleMaxAgeMs 5000 — one ms past the bound.
+      getRefPrice: () => ({ mid: price('100'), at: epochMs(T - 5001) }),
+      health: () => 'LIVE',
+      fetchCandles: () => Promise.resolve([]),
+    };
+    const { engine } = makeEngine({ feedPort });
+    const d = engine.evaluate(intent(), snapshot());
+    expect(d).toMatchObject({ verdict: 'REJECTED', reasons: ['STALE_DATA'] });
   });
 
   it('counts risk_rejections_total{code} by reason on a veto (§8 rejection taxonomy, risk stage)', () => {

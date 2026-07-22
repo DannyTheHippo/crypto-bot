@@ -87,12 +87,30 @@ export class RiskEngineService implements RiskEnginePort {
     }
 
     // Build the freshness-stamped mark from the feed-health port.
+    //
+    // HEALTH IS THE BEST OF THE TWO CHANNELS THAT CAN PRODUCE THE MARK (fix 2026-07-22). getRefPrice
+    // is fed by BOTH the ticker and the order-book channels — teeing-market-stream.ts's observe()
+    // calls setRef() from a TICKER event and from an ORDER_BOOK_SNAPSHOT alike. This probe previously
+    // named 'book' alone, but `book` is only subscribed for the ACTIVE MENU (8 of 40 symbols, and the
+    // menu rotates), so for every off-menu symbol health() answered its unknown-channel default 'GAP'
+    // (feed-health.service.ts) and evaluate.ts's `feedHealth === 'LIVE'` test vetoed the intent
+    // STALE_DATA. Effect observed live: 32 of 40 symbols could NEVER trade, silently, and a menu
+    // rotation between a decide and its risk evaluation vetoed proposals on symbols that had just
+    // left the menu — 6 of 6 proposals rejected 2026-07-22 17:45Z, zero orders ever created.
+    //
+    // This does NOT weaken the gate. The mark's own freshness is still bounded by
+    // `ageMs <= limits.staleMaxAgeMs` in evaluate.ts, so a genuinely quiet feed still vetoes; all this
+    // changes is WHICH channel's liveness is consulted, so it matches where the price actually came
+    // from. When neither is live, the ticker's status is reported — it is the universe-wide channel,
+    // so it is the more meaningful diagnostic than a 'GAP' for a book that was never subscribed.
     const ref = this.feed.getRefPrice(intent.symbol);
+    const bookHealth = this.feed.health(intent.venue, intent.symbol, 'book');
+    const tickerHealth = this.feed.health(intent.venue, intent.symbol, 'ticker');
     const mark: MarkInfo | undefined = ref
       ? {
           mid: ref.mid,
           ageMs: now - ref.at,
-          feedHealth: this.feed.health(intent.venue, intent.symbol, 'book'),
+          feedHealth: bookHealth === 'LIVE' || tickerHealth === 'LIVE' ? 'LIVE' : tickerHealth,
           lastTrade: ref.mid, // flatten's stale carve-out (P1) falls back to last trade with band ×2
         }
       : undefined;

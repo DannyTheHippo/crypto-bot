@@ -4476,3 +4476,25 @@ before treating this as closed; if it is the race, the health probe treats a sym
 observation window (13 of 88 channels over threshold at one sample, worst 200s, dominated by
 `candle:15m` on low-liquidity symbols). Even on-menu symbols will still be vetoed intermittently until
 that is addressed.
+
+### CORRECTION (same day) — the "32 symbols could never trade" claim above is WRONG
+
+Verified after the fact, as the adversarial review's SF4 asked: `agentic-strategy.module.ts:681` DOES
+pass `activeMenuGate` into `selectAgentClient`, so `batching-agent-client.ts`'s off-menu block is wired
+in the deployed configuration. Off-menu symbols therefore never PROPOSE, and the "32 of 40 symbols were
+permanently un-tradeable" story asserted in commit 05d4ae7 and in the entry above is **unreachable**.
+
+What actually happened is the MENU-ROTATION / BOOK-PARK RACE: all six symbols were on the menu when the
+model decided, and their `book` had parked (or had not finished its lane-paced resubscribe) by the time
+RiskEngine evaluated — which is why six rejections landed in the SAME SECOND rather than trickling in
+per-symbol. `TIER_PARK_POLL_MS` is 30s and resubscribe is lane-paced, so each rotation opens a ~30-60s
+window in which a symbol is consultable but book-GAP.
+
+The shipped fix remains correct, for the reason it should have been argued in the first place: probing
+`book` was wrong regardless of the race, because the mark's price is produced by the ticker as well,
+and the universe-wide ticker keeps the mark alive across exactly that window — which makes the race
+harmless rather than merely rarer. But it is a MITIGATION of a race, not the removal of a permanent
+veto, and the earlier wording overstated both the diagnosis and the fix's reach.
+
+The durable fix remains open: keep book subscriptions in lockstep with menu membership — subscribe
+BEFORE promoting a symbol into the consultable set, and do not park until it has left it.

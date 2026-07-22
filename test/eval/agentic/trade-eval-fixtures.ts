@@ -3,7 +3,6 @@
 // recorded-payload-fixtures.ts: Vitest's default include glob never picks it up directly).
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { z } from 'zod';
 import Decimal from 'decimal.js';
 import { Pool } from 'pg';
 import { drizzle } from 'drizzle-orm/node-postgres';
@@ -52,99 +51,21 @@ export function withSyntheticCapabilities(payloadJson: string, caps: SymbolCapab
   });
 }
 
-// ── Model routing (kimi-k3 prerequisite-B pattern, generalized to N models) ─────────────────────
-
-export interface ModelRoute {
-  readonly baseUrl: string;
-  readonly apiKey: string | undefined;
-  readonly callDelayMs: number;
-  // Callers send both x-api-key and Bearer auth when not default — the compat surface's wire auth
-  // header is not uniformly documented (Bearer vs x-api-key); sending both on an overridden base is
-  // harmless and removes a whole failure branch (mirrors candidate-model-eval.spec.ts's
-  // callAnthropicPlanLive header-building comment).
-  readonly isDefaultBase: boolean;
-}
-
-const DEFAULT_ANTHROPIC_BASE_URL = 'https://api.anthropic.com';
-
-// .strict(): an unrecognized field here is a typo about to leak the wrong key (e.g. `apiKeyEnv`
-// misspelled falls through to the ANTHROPIC_API_KEY fallback below and ships the Anthropic org key
-// to the routed third-party host), never a benign extra — the token-price schema's .passthrough()
-// precedent does not transfer to a route object.
-const modelRouteSchema = z.record(
-  z.string().min(1),
-  z
-    .object({
-      baseUrl: z.string().min(1).optional(),
-      // env-var-NAME indirection, not a key value — the actual API key comes from
-      // process.env[apiKeyEnv] at resolve time, so a key never appears inside the JSON itself.
-      apiKeyEnv: z.string().min(1).optional(),
-      callDelayMs: z.number().nonnegative().optional(),
-    })
-    .strict(),
-);
-
-// Parses AGENTIC_EVAL_MODEL_ROUTES_JSON (shape: { [model]: { baseUrl?, apiKeyEnv?, callDelayMs? } })
-// and resolves one model's effective route. Malformed JSON/shape THROWS — same throw-inside-the-test
-// convention as candidate-model-eval.spec.ts's parseTokenPriceOverrides (a malformed value must fail
-// the running test, never silently fall back).
-export function resolveModelRoute(model: string): ModelRoute {
-  const raw = process.env['AGENTIC_EVAL_MODEL_ROUTES_JSON'];
-  let routes: z.infer<typeof modelRouteSchema> = {};
-  if (raw) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch (err) {
-      throw new Error(
-        `AGENTIC_EVAL_MODEL_ROUTES_JSON is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-    const result = modelRouteSchema.safeParse(parsed);
-    if (!result.success) {
-      const issues = result.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ');
-      throw new Error(`AGENTIC_EVAL_MODEL_ROUTES_JSON failed validation: ${issues}`);
-    }
-    routes = result.data;
-  }
-  const route = routes[model];
-
-  const globalCallDelayMs = process.env['AGENTIC_EVAL_CALL_DELAY_MS'];
-  const baseUrl = (
-    route?.baseUrl ??
-    process.env['AGENTIC_EVAL_BASE_URL'] ??
-    DEFAULT_ANTHROPIC_BASE_URL
-  ).replace(/\/+$/, '');
-  // A per-model route that names its own baseUrl (a third-party host) must also name its own
-  // apiKeyEnv explicitly — it never falls back to AGENTIC_EVAL_API_KEY/ANTHROPIC_API_KEY, which
-  // would transmit the Anthropic org key to that third-party host. The global AGENTIC_EVAL_BASE_URL
-  // legacy mode (no per-model baseUrl) keeps the old fallback chain.
-  const apiKey = route?.baseUrl
-    ? route.apiKeyEnv
-      ? process.env[route.apiKeyEnv]
-      : undefined
-    : route?.apiKeyEnv
-      ? process.env[route.apiKeyEnv]
-      : (process.env['AGENTIC_EVAL_API_KEY'] ?? process.env['ANTHROPIC_API_KEY']);
-  let callDelayMs: number;
-  if (route?.callDelayMs !== undefined) {
-    callDelayMs = route.callDelayMs;
-  } else if (globalCallDelayMs !== undefined) {
-    const parsedDelay = Number(globalCallDelayMs);
-    // Malformed env fails the run, never silently falls back — a dropped delay hammers a
-    // rate-limited paid endpoint (same throw-inside-the-run convention as the JSON parses above).
-    if (!Number.isFinite(parsedDelay) || parsedDelay < 0) {
-      throw new Error(
-        `AGENTIC_EVAL_CALL_DELAY_MS must be a finite number >= 0, got "${globalCallDelayMs}"`,
-      );
-    }
-    callDelayMs = parsedDelay;
-  } else {
-    callDelayMs = 0;
-  }
-
-  return { baseUrl, apiKey, callDelayMs, isDefaultBase: baseUrl === DEFAULT_ANTHROPIC_BASE_URL };
-}
+// ── Model routing + token pricing (extracted 2026-07-22 to test/shared/model-routing.ts) ────────
+//
+// The route/pricing helpers this file used to own now live in ONE lane-neutral module, because
+// test/backtest/agentic-replay.ts needs the same key-resolution and per-model pricing rules and a
+// second copy is how an Anthropic org key ends up posted to a third-party host. Re-exported here so
+// every existing `from './trade-eval-fixtures'` import in the eval lane is unchanged.
+export {
+  resolveModelRoute,
+  parseTokenPriceOverrides,
+  resolveRate,
+  callCostUsd,
+  meanCostUsd,
+  type ModelRoute,
+  type ModelRate,
+} from '../../shared/model-routing';
 
 // ── Trade sanity (schema-valid submit_trade responses only) ─────────────────────────────────────
 
@@ -512,98 +433,6 @@ export async function fetchWithRateLimitRetry(url: string, init: RequestInit): P
   }
 }
 
-export interface ModelRate {
-  readonly input: number;
-  readonly output: number;
-}
-
-// Current published Anthropic per-1M-token USD rates (see https://www.anthropic.com/pricing —
-// verify before trusting cost output, these drift).
-const DEFAULT_TOKEN_PRICES_PER_MTOK: Readonly<Record<string, ModelRate>> = {
-  'claude-sonnet-5': { input: 3, output: 15 },
-  'claude-haiku-4-5-20251001': { input: 1, output: 5 },
-  'claude-opus-4-8': { input: 5, output: 25 },
-};
-// Sonnet-tier fallback for a model id absent from both the override map and the defaults above —
-// this is a toy cost estimate (never a promotion input), so failing OPEN to a mid-tier guess rather
-// than throwing keeps the eval running; the printed scorecard names the model, so a wrong guess is
-// visible, not silent.
-const FALLBACK_RATE: ModelRate = { input: 3, output: 15 };
-
-const decimalStringLocal = z
-  .string()
-  .regex(/^\d+(\.\d+)?$/, 'must be a non-negative decimal string');
-const tokenPriceOverrideSchema = z
-  .record(
-    z.string().min(1),
-    z.object({ inputPerMtok: decimalStringLocal, outputPerMtok: decimalStringLocal }).passthrough(),
-  )
-  .optional();
-
-// Parses AGENTIC_TOKEN_PRICES_JSON if set (same env var/shape as the production knob). Called from
-// inside it() only: a malformed value must fail the running test, not throw during collection.
-export function parseTokenPriceOverrides(
-  raw: string | undefined,
-): Readonly<Record<string, ModelRate>> | undefined {
-  if (!raw) return undefined;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (err) {
-    throw new Error(
-      `AGENTIC_TOKEN_PRICES_JSON is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
-  const result = tokenPriceOverrideSchema.safeParse(parsed);
-  if (!result.success) {
-    const issues = result.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ');
-    throw new Error(`AGENTIC_TOKEN_PRICES_JSON failed validation: ${issues}`);
-  }
-  if (!result.data) return undefined;
-  const out: Record<string, ModelRate> = {};
-  for (const [model, rates] of Object.entries(result.data)) {
-    out[model] = { input: Number(rates.inputPerMtok), output: Number(rates.outputPerMtok) };
-  }
-  return out;
-}
-
-export function resolveRate(
-  model: string,
-  overrides: Readonly<Record<string, ModelRate>> | undefined,
-): ModelRate {
-  return overrides?.[model] ?? DEFAULT_TOKEN_PRICES_PER_MTOK[model] ?? FALLBACK_RATE;
-}
-
-const MTOK = 1_000_000;
-
-export function callCostUsd(
-  usage: { readonly inputTokens: number; readonly outputTokens: number },
-  rate: ModelRate,
-): Decimal {
-  return new Decimal(usage.inputTokens)
-    .div(MTOK)
-    .mul(rate.input)
-    .plus(new Decimal(usage.outputTokens).div(MTOK).mul(rate.output));
-}
-
-// Mean USD cost per decide over every entry that actually carries usage (schema-invalid/errored
-// calls with no envelope usage are excluded from the average, never treated as $0) — null (never
-// NaN) when none do.
-export function meanCostUsd(
-  entries: readonly {
-    readonly usage: { readonly inputTokens: number; readonly outputTokens: number } | null;
-    readonly model: string;
-  }[],
-  overrides: Readonly<Record<string, ModelRate>> | undefined,
-): number | null {
-  const withUsage = entries.filter(
-    (e): e is { usage: { inputTokens: number; outputTokens: number }; model: string } =>
-      e.usage !== null,
-  );
-  if (withUsage.length === 0) return null;
-  const total = withUsage.reduce(
-    (sum, e) => sum.plus(callCostUsd(e.usage, resolveRate(e.model, overrides))),
-    new Decimal(0),
-  );
-  return total.div(withUsage.length).toNumber();
-}
+// (ModelRate / DEFAULT_TOKEN_PRICES_PER_MTOK / parseTokenPriceOverrides / resolveRate /
+// callCostUsd / meanCostUsd moved to test/shared/model-routing.ts — re-exported at the top of this
+// file, see that block's comment.)

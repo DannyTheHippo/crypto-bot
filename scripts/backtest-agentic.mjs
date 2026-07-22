@@ -15,8 +15,19 @@
 // <symbol>-<timeframe> is missing, it prints the exact `node test/backtest/fetch-data.mjs ...`
 // command to run and exits 1. Run that command once, then re-invoke this script.
 //
-// ANTHROPIC_API_KEY is read from env only (never accepted as a flag, never logged — this script only
-// ever checks it is PRESENT before spawning vitest, which inherits it via the normal environment).
+// PER-MODEL ROUTING (--model / --model-routes / --token-prices): the routes/prices JSON blobs use the
+// same shapes the eval lane's AGENTIC_EVAL_MODEL_ROUTES_JSON / AGENTIC_TOKEN_PRICES_JSON carry, and
+// are threaded through as BACKTEST_AGENTIC_* env vars like every other option. Known-good kimi route:
+//   --model kimi-k3 \
+//   --model-routes '{"kimi-k3":{"baseUrl":"https://api.moonshot.ai/anthropic","apiKeyEnv":"MOONSHOT_API_KEY","callDelayMs":5000}}' \
+//   --token-prices '{"kimi-k3":{"inputPerMtok":"3","outputPerMtok":"15"}}'
+//
+// KEYS are read from env ONLY (never accepted as a flag, never printed — the config summary below
+// names the VARIABLE, and whether it is set, never a value). A model whose route names its own
+// baseUrl must name its own apiKeyEnv: that key, not ANTHROPIC_API_KEY, is what the run needs, so the
+// Anthropic org key is never sent to a third-party host. With the required key missing this script
+// prints the resolved config and REFUSES to spend (exit 1) rather than spawning vitest — the dry-run
+// path an operator uses to check what a run would do before paying for it.
 import { existsSync, readFileSync, writeFileSync, statSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -40,9 +51,28 @@ function usageError(message) {
   console.error(`backtest:agentic: ${message}`);
   console.error(
     'usage: node scripts/backtest-agentic.mjs --symbol <SYM> --max-usd <usd> [--timeframe 4h] ' +
-      '[--from 2026-02-01] [--to <iso>] [--playbook-file <path>] [--model claude-sonnet-5] --out <scorecard.json>',
+      '[--from 2026-02-01] [--to <iso>] [--playbook-file <path>] [--model claude-sonnet-5] ' +
+      "[--model-routes '<json>'] [--token-prices '<json>'] --out <scorecard.json>",
   );
   process.exitCode = 1;
+}
+
+// Which env var must hold THIS model's key. A per-model route naming its own baseUrl must name its
+// own apiKeyEnv (test/shared/model-routing.ts's fail-closed rule) — returning null there would let
+// the run fall through to the Anthropic org key, so an incomplete route is reported as the missing
+// apiKeyEnv it is. Malformed JSON is left to the engine's own zod parse to reject with detail.
+function requiredKeyEnvFor(model, routesJson) {
+  if (!routesJson) return 'ANTHROPIC_API_KEY';
+  let routes;
+  try {
+    routes = JSON.parse(routesJson);
+  } catch {
+    return 'ANTHROPIC_API_KEY';
+  }
+  const route = routes?.[model];
+  if (route?.apiKeyEnv) return route.apiKeyEnv;
+  if (route?.baseUrl) return '<missing apiKeyEnv in --model-routes for this model>';
+  return 'ANTHROPIC_API_KEY';
 }
 
 function parseArgs(argv) {
@@ -103,11 +133,6 @@ function loadSeedPlaybookContent() {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
 
-  if (!process.env.ANTHROPIC_API_KEY) {
-    usageError('ANTHROPIC_API_KEY is required in the environment — refusing to run without one.');
-    return;
-  }
-
   const symbol = args.symbol;
   if (!symbol) {
     usageError('missing --symbol');
@@ -131,6 +156,11 @@ async function main() {
     return;
   }
   const model = args.model ?? 'claude-sonnet-5';
+  // Flag wins over an already-exported env var, so a one-off routed run needs no shell export.
+  const modelRoutesJson =
+    args['model-routes'] ?? process.env.BACKTEST_AGENTIC_MODEL_ROUTES_JSON ?? '';
+  const tokenPricesJson =
+    args['token-prices'] ?? process.env.BACKTEST_AGENTIC_TOKEN_PRICES_JSON ?? '';
 
   const fromArg = args.from ?? '2026-02-01';
   let fromMs = Date.parse(fromArg);
@@ -154,6 +184,29 @@ async function main() {
     usageError(
       `--to (${toArg}) must be after the effective --from (${new Date(fromMs).toISOString()})`,
     );
+    return;
+  }
+
+  // Resolved-config summary FIRST, before any file/playbook resolution, so the keyless dry-run below
+  // always shows exactly what a paid run would do. Never prints a key value — only the env VARIABLE
+  // the key must come from, and whether it is currently set.
+  const keyEnvName = requiredKeyEnvFor(model, modelRoutesJson);
+  const keyPresent = !!process.env[keyEnvName];
+  console.log(
+    `backtest:agentic: symbol=${symbol} timeframe=${timeframe} from=${new Date(fromMs).toISOString()} ` +
+      `to=${new Date(toMs).toISOString()} maxUsd=${maxUsd} model=${model} out=${outFile}`,
+  );
+  console.log(
+    `backtest:agentic: keyEnv=${keyEnvName} keyPresent=${keyPresent} ` +
+      `modelRoutes=${modelRoutesJson ? 'set' : 'default (api.anthropic.com)'} ` +
+      `tokenPrices=${tokenPricesJson ? 'set' : 'default table'}`,
+  );
+  if (!keyPresent) {
+    console.error(
+      `backtest:agentic: ${keyEnvName} is not set — printed the resolved config above and refusing ` +
+        'to spend. Export that variable and re-run.',
+    );
+    process.exitCode = 1;
     return;
   }
 
@@ -201,11 +254,11 @@ async function main() {
     BACKTEST_AGENTIC_OHLCV_FILE: ohlcvFile,
     BACKTEST_AGENTIC_PLAYBOOK_FILE: playbookFile,
     BACKTEST_AGENTIC_OUT: outFile,
+    // Empty string ⇒ the engine treats it as absent (default route / default rate table); set only
+    // when non-empty so an exported-but-blank var never looks like an explicit override.
+    ...(modelRoutesJson ? { BACKTEST_AGENTIC_MODEL_ROUTES_JSON: modelRoutesJson } : {}),
+    ...(tokenPricesJson ? { BACKTEST_AGENTIC_TOKEN_PRICES_JSON: tokenPricesJson } : {}),
   };
-
-  console.log(
-    `backtest:agentic: symbol=${symbol} timeframe=${timeframe} from=${new Date(fromMs).toISOString()} to=${new Date(toMs).toISOString()} maxUsd=${maxUsd} model=${model} out=${outFile}`,
-  );
 
   // Invoke the local vitest CLI directly via the current Node binary rather than `pnpm exec vitest`:
   // under corepack (this repo's package manager), a bare `pnpm` is not on PATH for a spawned child,

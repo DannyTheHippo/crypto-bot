@@ -10,8 +10,15 @@
 //
 // GATED on BACKTEST_AGENTIC_RUN=1 (set only by the .mjs wrapper): `pnpm backtest` (vitest run
 // test/backtest) would otherwise sweep this file up like any other *.spec.ts and attempt a REAL,
-// billed Anthropic call with no operator present to have chosen a $ budget — the same reasoning
+// billed model call with no operator present to have chosen a $ budget — the same reasoning
 // test/eval/agentic/*-live.spec.ts gates on EVAL_LIVE=1.
+//
+// KEY RESOLUTION: ANTHROPIC_API_KEY is the DEFAULT-route key and is deliberately NOT required here —
+// a model routed to a third-party Anthropic-compat host names its own apiKeyEnv in
+// BACKTEST_AGENTIC_MODEL_ROUTES_JSON and must never receive the Anthropic org key (see
+// test/shared/model-routing.ts). runAgenticReplay refuses with a message naming the env var that is
+// missing, so a routed run needs no ANTHROPIC_API_KEY exported and therefore cannot silently bill
+// Anthropic.
 import { writeFileSync, readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import { runAgenticReplay, EARLIEST_ALLOWED_MS, type AgenticReplayOpts } from './agentic-replay';
@@ -19,14 +26,11 @@ import type { Bar } from './harness';
 import type { CandleInterval } from '../../src/domain/types/market-events';
 
 const RUN = process.env['BACKTEST_AGENTIC_RUN'] === '1';
-const API_KEY = process.env['ANTHROPIC_API_KEY'];
 
 describe.skipIf(!RUN)(
   'agentic-replay runner (invoked only by scripts/backtest-agentic.mjs)',
   () => {
     it('runs the LLM-in-the-loop walk-forward backtest and writes the scorecard', async () => {
-      if (!API_KEY) throw new Error('ANTHROPIC_API_KEY is required — refusing to run without one');
-
       const symbol = process.env['BACKTEST_AGENTIC_SYMBOL'];
       const timeframe = process.env['BACKTEST_AGENTIC_TIMEFRAME'] as CandleInterval | undefined;
       const ohlcvFile = process.env['BACKTEST_AGENTIC_OHLCV_FILE'];
@@ -61,14 +65,21 @@ describe.skipIf(!RUN)(
 
       const playbookContent = readFileSync(playbookFile, 'utf8');
 
+      const modelRoutesJson = process.env['BACKTEST_AGENTIC_MODEL_ROUTES_JSON'];
+      const tokenPricesJson = process.env['BACKTEST_AGENTIC_TOKEN_PRICES_JSON'];
+
       const opts: AgenticReplayOpts = {
         symbol,
         interval: timeframe,
         bars,
         playbookContent,
         model,
-        apiKey: API_KEY,
+        // '' when unset — runAgenticReplay's own key check then produces the operator-facing message
+        // naming which variable to export (this spec never inspects or logs a key value).
+        apiKey: process.env['ANTHROPIC_API_KEY'] ?? '',
         maxUsd,
+        ...(modelRoutesJson !== undefined ? { modelRoutesJson } : {}),
+        ...(tokenPricesJson !== undefined ? { tokenPricesJson } : {}),
       };
       const result = await runAgenticReplay(opts);
 
@@ -77,6 +88,12 @@ describe.skipIf(!RUN)(
       console.log(scorecard);
       console.log(
         `agentic-replay: barsUsed=${result.barsUsed}/${result.barsSupplied} decisions=${result.decisionsRequested} accepted=${result.decisionsAccepted} spend=$${result.spendUsd}/${result.maxUsd} aborted=${result.aborted} roundTrips=${result.totals.roundTrips} netBpsPerRT=${result.totals.netBpsPerRoundTrip ?? 'n/a'}`,
+      );
+      console.log(
+        `agentic-replay: shorts=${result.shortsEnabled} long=${result.pnl.long.roundTrips}rt/${result.pnl.long.netPnlQuote} short=${result.pnl.short.roundTrips}rt/${result.pnl.short.netPnlQuote} net=${result.pnl.netQuote} netOfLlmSpend=${result.pnl.netOfLlmSpendQuote}`,
+      );
+      console.log(
+        `agentic-replay: outcomes=${JSON.stringify(result.decisionOutcomeCounts)} exits=${JSON.stringify(result.exitReasonCounts)}`,
       );
     }, 600_000); // few hundred sequential calls at a few seconds each comfortably fits inside 10 minutes. // Generous fixed ceiling — the $ budget (maxUsd), not wall-clock, is the run's real limiter; a
   },

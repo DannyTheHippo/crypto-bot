@@ -14,6 +14,7 @@ function fakeKillSwitch(state: KillSwitchState | (() => KillSwitchState)): KillS
     confirmCancels: () => undefined,
     cancelTimeout: () => undefined,
     allFlat: () => undefined,
+    resume: () => undefined,
   };
 }
 

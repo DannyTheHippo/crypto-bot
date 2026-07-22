@@ -28,13 +28,24 @@ export type OpsEvent =
     }
   | { readonly event: 'halt.engage'; readonly reason: string }
   // Emitted when the HALTING cancel-drain window ends — which transitions into HALTED, FLATTENING, or
-  // HALTED_DEGRADED, NOT back to RUNNING (a genuine resume→RUNNING is operator-initiated and not
-  // driven here). Named for what it is (cancels drained) and carries the resulting `to` state so an
+  // HALTED_DEGRADED, NOT back to RUNNING (a resume→RUNNING is never driven from HERE — see
+  // 'recovery.auto_resume' below for the sole place a resume is driven; there is no other resume
+  // path). Named for what it is (cancels drained) and carries the resulting `to` state so an
   // operator never misreads it as "recovered"; `durationMs` is the drain duration, not halt duration.
   | {
       readonly event: 'halt.cancels_drained';
       readonly durationMs: number;
       readonly to: KillSwitchState;
+    }
+  // Owner-authorized 2026-07-22: RecoveryCoordinatorService dispatched KillSwitchPort.resume() —
+  // `from` is the pre-resume state (HALTED/HALTED_DEGRADED); `reason` is the classified cause that
+  // was confirmed cleared (see RecoveryCoordinatorService's own Cause labels), never the raw
+  // KillSwitchService.reason() string. A resume must never be silent — this event is one of three
+  // mandatory observability channels for it (alongside recovery_auto_resume_total and a warn log).
+  | {
+      readonly event: 'recovery.auto_resume';
+      readonly from: KillSwitchState;
+      readonly reason: string;
     }
   | {
       readonly event: 'boot.ready';

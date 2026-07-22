@@ -31,6 +31,10 @@ const FILTERS: ExecFilters = new Map<string, SymbolFilters>([
 
 const flush = () => new Promise((r) => setImmediate(r));
 
+// Mirrors the module-private cap in execution-gate.service.ts (not exported — the cap is an
+// internal journal-hygiene detail, asserted here as a contract).
+const REJECT_MESSAGE_MAX_LEN = 160;
+
 function approve(over = {}, key: Buffer = KEY, approvedAtMs = T): RiskApprovedIntent {
   return mintApproval(makeIntent(over), key, {
     nonce: 'nonce-' + JSON.stringify(over),
@@ -237,6 +241,24 @@ describe('ExecutionGateService.submit', () => {
       message: 'ReduceOnly Order is rejected',
     });
     expect(rejectEvent?.reason).toBe('-2022:ReduceOnly Order is rejected');
+  });
+
+  // A venue reject body is not length-bounded (Binance returns whole filter dumps), and
+  // order_events is append-only — the journaled message is capped so one pathological response
+  // cannot bloat the log. The cap is a prefix, so the operator still reads the leading reason.
+  it('caps an over-long TERMINAL_REJECT message on both the journaled event and the reason', async () => {
+    const longMessage = `Filter failure: ${'PRICE_FILTER '.repeat(20)}`;
+    const { port } = fakeExchange(() =>
+      Promise.reject(new AdapterError('TERMINAL_REJECT', '-1013', longMessage)),
+    );
+    const { gate, store } = build(port);
+    await gate.submit(approve());
+
+    const rejectEvent = store.events.find((e) => e.event.type === 'REJECT');
+    const capped = longMessage.slice(0, REJECT_MESSAGE_MAX_LEN);
+    expect(rejectEvent?.event).toEqual({ type: 'REJECT', code: '-1013', message: capped });
+    expect(rejectEvent?.reason).toBe(`-1013:${capped}`);
+    expect(capped.length).toBeLessThan(longMessage.length); // the fixture really did exceed the cap
   });
 
   it('routes an ambiguous adapter error to SUBMIT_UNKNOWN (exposure reserved)', async () => {

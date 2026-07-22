@@ -5,7 +5,10 @@ import type { StrategyRegistryPort, StrategyState, DrainPolicy } from '../../../
 
 // Why a strategy is DRAINING. Provenance lives here (registry), not in host runtime state, so an
 // AUTO (3-strike failure) drain and its recovery probe can never override an OPERATOR (explicit
-// disable()) drain — only a transition to ACTIVE clears it.
+// disable()) drain — only a transition to ACTIVE clears it. Owner-authorized recovery program
+// (2026-07-22, RECOVERY_AUTO_RESUME_ENABLED): StrategyHost's runDecide may now drive that ACTIVE
+// transition off a healthy decide for BOTH reasons (previously AUTO only) — this registry's own
+// clearing mechanism (setLifecycle(id, 'ACTIVE') always wipes drainReason) is unchanged either way.
 export type DrainReason = 'AUTO' | 'OPERATOR';
 
 interface RegistryEntry {

@@ -97,6 +97,7 @@ export function killSwitchStub(): {
     confirmCancels: () => undefined,
     cancelTimeout: () => undefined,
     allFlat: () => undefined,
+    resume: () => undefined,
   };
   return { ks, engages };
 }

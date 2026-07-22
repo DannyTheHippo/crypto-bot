@@ -3,7 +3,12 @@ import { SignalSinkService } from '../../../src/features/trading/execution/signa
 import { mintApproval } from '../../../src/domain/risk/proof';
 import type { GatewayOutcome, SignalGatewayPort } from '../../../src/ports/risk';
 import type { SignalJournalPort } from '../../../src/ports/strategy';
-import type { ExecutionGatePort, PortfolioViewPort, SubmitAck } from '../../../src/ports/execution';
+import type {
+  ExecutionGatePort,
+  ExecutionStorePort,
+  PortfolioViewPort,
+  SubmitAck,
+} from '../../../src/ports/execution';
 import type { RiskApprovedIntent } from '../../../src/domain/types/risk-decision';
 import type { PortfolioSnapshot, OpenOrderSummary } from '../../../src/domain/types/portfolio';
 import { makeIntent, SID } from './helpers';
@@ -23,6 +28,7 @@ function makeSink(
   journal?: SignalJournalPort,
   rejects?: { inc: (labels: Record<string, string>) => void },
   openOrders?: readonly OpenOrderSummary[],
+  store?: Pick<ExecutionStorePort, 'loadIntentByClientOrderId'>,
 ) {
   const submitted: RiskApprovedIntent[] = [];
   const cancelled: Array<{ clientOrderId: string; reason: string }> = [];
@@ -55,7 +61,7 @@ function makeSink(
     flattenAll: () => Promise.resolve(),
   };
   return {
-    sink: new SignalSinkService(gateway, portfolio, gate, journal, rejects as never),
+    sink: new SignalSinkService(gateway, portfolio, gate, journal, rejects as never, store),
     submitted,
     cancelled,
     forStrategyCalls,
@@ -275,6 +281,145 @@ describe('SignalSinkService', () => {
         [openOrder(undefined, '0', 'BUY'), openOrder(undefined, '1', 'SELL')],
       );
       await sink.recordSignal(cancelSignal());
+      expect(cancelled).toHaveLength(2);
+    });
+  });
+
+  describe('cancelRole (Push 3 P7c): role-scoped narrowing of a cancelSide match', () => {
+    const vtp = openOrder(undefined, '2', 'SELL');
+    const vsl = openOrder(undefined, '3', 'SELL');
+    const roleSignal = (cancelRole: 'vtp' | 'vsl') => ({
+      ...cancelSignal(),
+      cancelSide: 'SELL' as const,
+      cancelRole,
+    });
+
+    // Store double answering the SAME OrderIntent the real store round-trips: the role is read off
+    // intent.source.dedupeKey (the string the placing strategy stamped), never off the order itself.
+    const roleStore = (
+      dedupeKeyByCoid: Record<string, string>,
+    ): Pick<ExecutionStorePort, 'loadIntentByClientOrderId'> => ({
+      loadIntentByClientOrderId: (coid) => {
+        const dedupeKey = dedupeKeyByCoid[coid];
+        return Promise.resolve(
+          dedupeKey === undefined
+            ? null
+            : makeIntent({
+                source: { dedupeKey, eventTime: epochMs(0), basedOnSeq: 9n, strength: 1 },
+              }),
+        );
+      },
+    });
+
+    const bothRoles = () =>
+      roleStore({
+        [vtp.clientOrderId]: 'venue_tp_place:BTC/USDT',
+        [vsl.clientOrderId]: 'venue_stop_place:BTC/USDT',
+      });
+
+    it("'vtp' cancels only the resting venue-TP, leaving the venue stop resting", async () => {
+      const { sink, cancelled } = makeSink(
+        { status: 'GATEWAY_REJECTED', reason: 'DUPLICATE' },
+        undefined,
+        undefined,
+        [vtp, vsl],
+        bothRoles(),
+      );
+      await sink.recordSignal(roleSignal('vtp'));
+      expect(cancelled).toEqual([
+        { clientOrderId: vtp.clientOrderId, reason: 'CANCEL_OPEN_SIGNAL' },
+      ]);
+    });
+
+    it("'vsl' cancels only the resting venue stop, leaving the TP resting", async () => {
+      const { sink, cancelled } = makeSink(
+        { status: 'GATEWAY_REJECTED', reason: 'DUPLICATE' },
+        undefined,
+        undefined,
+        [vtp, vsl],
+        bothRoles(),
+      );
+      await sink.recordSignal(roleSignal('vsl'));
+      expect(cancelled).toEqual([
+        { clientOrderId: vsl.clientOrderId, reason: 'CANCEL_OPEN_SIGNAL' },
+      ]);
+    });
+
+    it('journals the role-filtered count, not the side-matching count', async () => {
+      const record = vi.fn();
+      const { sink } = makeSink(
+        { status: 'GATEWAY_REJECTED', reason: 'DUPLICATE' },
+        { record },
+        undefined,
+        [vtp, vsl],
+        bothRoles(),
+      );
+      await sink.recordSignal(roleSignal('vtp'));
+      expect(record).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: 'CANCEL_OPEN' }),
+        'CANCEL_OPEN:1',
+      );
+    });
+
+    it('with no store wired, a role-scoped signal is a safe no-op — never a side-wide cancel it did not ask for', async () => {
+      // Both shapes of "no lookup available": the @Optional injection absent entirely, and a store
+      // that does not implement the (optional) method. Each must resolve 'unknown', which matches no
+      // requested role — the failure direction is toward cancelling NOTHING, never toward cancelling
+      // orders the signal deliberately narrowed away from.
+      const noStore = makeSink(
+        { status: 'GATEWAY_REJECTED', reason: 'DUPLICATE' },
+        undefined,
+        undefined,
+        [vtp, vsl],
+      );
+      await noStore.sink.recordSignal(roleSignal('vtp'));
+      expect(noStore.cancelled).toHaveLength(0);
+
+      const methodless = makeSink(
+        { status: 'GATEWAY_REJECTED', reason: 'DUPLICATE' },
+        undefined,
+        undefined,
+        [vtp, vsl],
+        {},
+      );
+      await methodless.sink.recordSignal(roleSignal('vtp'));
+      expect(methodless.cancelled).toHaveLength(0);
+    });
+
+    it('an order whose intent the store cannot resolve stays resting under a role filter', async () => {
+      // A foreign or already-pruned order: no intent row ⇒ no dedupeKey lineage ⇒ 'unknown'.
+      const { sink, cancelled } = makeSink(
+        { status: 'GATEWAY_REJECTED', reason: 'DUPLICATE' },
+        undefined,
+        undefined,
+        [vtp, vsl],
+        roleStore({}),
+      );
+      await sink.recordSignal(roleSignal('vtp'));
+      expect(cancelled).toHaveLength(0);
+    });
+
+    it('a store failure fails open to unknown — nothing cancels and the signal still completes', async () => {
+      const { sink, cancelled } = makeSink(
+        { status: 'GATEWAY_REJECTED', reason: 'DUPLICATE' },
+        undefined,
+        undefined,
+        [vtp, vsl],
+        { loadIntentByClientOrderId: () => Promise.reject(new Error('order_intents unavailable')) },
+      );
+      await expect(sink.recordSignal(roleSignal('vtp'))).resolves.toBeUndefined();
+      expect(cancelled).toHaveLength(0);
+    });
+
+    it('absent cancelRole cancels every side-matching order even with a store wired (regression pin)', async () => {
+      const { sink, cancelled } = makeSink(
+        { status: 'GATEWAY_REJECTED', reason: 'DUPLICATE' },
+        undefined,
+        undefined,
+        [vtp, vsl],
+        bothRoles(),
+      );
+      await sink.recordSignal({ ...cancelSignal(), cancelSide: 'SELL' });
       expect(cancelled).toHaveLength(2);
     });
   });
@@ -553,6 +698,51 @@ describe('SignalSinkService', () => {
       releaseX();
       await pX;
       expect(submitted).toEqual([symY, symX]);
+    });
+
+    it('a rejected signal never wedges the chain — the one queued behind it still processes', async () => {
+      // The tail promise stored in the map is the CAUGHT one; only the caller's own handle rejects.
+      // Without that, one failed submit would strand every later signal for the same key forever.
+      const symX = symbolId('BTC/USDT');
+      const submitted: string[] = [];
+      const gateway: SignalGatewayPort = {
+        accept: () => ({
+          status: 'DECIDED',
+          decision: { verdict: 'APPROVED', approved: approved() },
+        }),
+      };
+      const portfolio: PortfolioViewPort = {
+        snapshot: () => ({}) as PortfolioSnapshot,
+        forStrategy: () => ({ strategyId: SID, positions: new Map(), openOrders: [] }),
+      };
+      let attempts = 0;
+      const gate: ExecutionGatePort = {
+        submit: (a) => {
+          attempts += 1;
+          if (attempts === 1) return Promise.reject(new Error('venue submit blew up'));
+          submitted.push(a.intent.clientOrderId);
+          return Promise.resolve({
+            clientOrderId: a.intent.clientOrderId,
+            outcome: 'SUBMITTED',
+          } as SubmitAck);
+        },
+        cancel: () => Promise.resolve(),
+        cancelAllFor: () => Promise.resolve(),
+        flattenAll: () => Promise.resolve(),
+      };
+      const sink = new SignalSinkService(gateway, portfolio, gate);
+
+      // Both enqueued before either settles, so the second genuinely chains onto the failing tail.
+      const p1 = sink.recordSignal({ ...signal(), symbol: symX, dedupeKey: 'first' });
+      const p2 = sink.recordSignal({ ...signal(), symbol: symX, dedupeKey: 'second' });
+
+      await expect(p1).rejects.toThrow('venue submit blew up');
+      await expect(p2).resolves.toBeUndefined();
+      expect(submitted).toEqual([approved().intent.clientOrderId]);
+
+      // And the key is releasable afterwards: a later signal for it still reaches the gate.
+      await sink.recordSignal({ ...signal(), symbol: symX, dedupeKey: 'third' });
+      expect(submitted).toHaveLength(2);
     });
   });
 });

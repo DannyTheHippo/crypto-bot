@@ -100,6 +100,7 @@ function killSwitch(state: KillSwitchPort['state'] extends () => infer R ? R : n
     confirmCancels: vi.fn(),
     cancelTimeout: vi.fn(),
     allFlat: vi.fn(),
+    resume: vi.fn(),
   } satisfies KillSwitchPort;
 }
 

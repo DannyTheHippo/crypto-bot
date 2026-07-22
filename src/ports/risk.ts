@@ -155,11 +155,19 @@ export interface KillSwitchPort {
   reason(): string;
   engage(reason: string, flatten: boolean): void;
   // The three lifecycle progressions Execution's halt coordinator may drive. RAW dispatch is
-  // deliberately NOT exposed: ENGAGE is reachable via engage(), and RESUME (disengage) is
-  // manual-operator-only (typed confirmation), never on the execution surface (§5).
+  // deliberately NOT exposed beyond engage/resume: ENGAGE is reachable via engage(), RESUME via
+  // resume() below — nothing else on this port reaches the reducer's other event shapes.
   confirmCancels(): void; // HALTING: all open orders cancelled ⇒ HALTED or FLATTENING
   cancelTimeout(): void; // HALTING: cancels unconfirmed in 10s ⇒ HALTED_DEGRADED
   allFlat(): void; // FLATTENING: every |position| < exchange min ⇒ HALTED
+  // Owner-authorized 2026-07-22 (decision record: RecoveryCoordinatorService's own header comment):
+  // disengage a HALTED/HALTED_DEGRADED switch back to RUNNING. Precondition-FREE by design, exactly
+  // like engage() is ENGAGE-free of precondition checks — RecoveryCoordinatorService (its own
+  // per-cause + universal preconditions + 2-pass debounce) is the SOLE caller; there is no other
+  // resume path (a pre-feature "manual resume" was an operator restarting the process, never a
+  // dispatch of this method). A no-op from RUNNING/HALTING/FLATTENING (the reducer only accepts
+  // RESUME from HALTED/HALTED_DEGRADED, mirroring every other event's state-scoped handling).
+  resume(): void;
 }
 
 // PositionSizer turns a Signal (conviction) into a concrete OrderIntent, or rejects

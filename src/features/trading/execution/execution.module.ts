@@ -21,6 +21,7 @@ import {
   INSTANCE_LOCK_OVERRIDE,
   EXEC_QUALITY_SINK,
   EXEC_QUALITY_SINK_OVERRIDE,
+  RECOVERY_CONFIG,
   type ExecOutboxPort,
   type ExecutionStorePort,
   type InstanceLockPort,
@@ -31,6 +32,7 @@ import {
   type ReconConfig,
   type EquityObserver,
   type ExecQualitySinkPort,
+  type RecoveryConfig,
 } from '../../../ports/execution';
 import { InMemoryExecOutbox } from './in-memory-outbox';
 import { InMemoryExecutionStore } from './in-memory-store';
@@ -71,6 +73,10 @@ import { CrashRecoveryService } from './crash-recovery.service';
 import { BootRecoveryService } from './boot-recovery.service';
 import { DemoFillPollerService } from './demo-fill-poller.service';
 import { AlgoStopRecoveryService } from './algo-stop-recovery.service';
+import {
+  RecoveryCoordinatorService,
+  RECOVERY_AUTO_RESUME_COUNTER,
+} from './recovery-coordinator.service';
 
 // ExecutionModule owns the OMS edge: the outbox/store, the canonical portfolio, the gate and the
 // report consumer. EXCHANGE_PORT is NOT bound here — binding it to a concrete adapter (paper or
@@ -154,6 +160,14 @@ function reconConfigFrom(config: TypedConfigService | undefined): ReconConfig {
   };
 }
 
+// Recovery program (owner-authorized 2026-07-22): RECOVERY_AUTO_RESUME_ENABLED, schema default true.
+// Module-isolation fixtures with no config also default true, matching the schema — the flag is a
+// deploy-time on/off switch, never the safety mechanism (RecoveryCoordinatorService's own fail-closed
+// preconditions + 2-pass debounce are that).
+function recoveryConfigFrom(config: TypedConfigService | undefined): RecoveryConfig {
+  return { autoResumeEnabled: config?.recovery.autoResumeEnabled ?? true };
+}
+
 const providers: Provider[] = [
   { provide: CLOCK, useClass: SystemClock },
   {
@@ -176,6 +190,11 @@ const providers: Provider[] = [
   {
     provide: RECON_CONFIG,
     useFactory: (config?: TypedConfigService): ReconConfig => reconConfigFrom(config),
+    inject: [CONFIG_OPTIONAL],
+  },
+  {
+    provide: RECOVERY_CONFIG,
+    useFactory: (config?: TypedConfigService): RecoveryConfig => recoveryConfigFrom(config),
     inject: [CONFIG_OPTIONAL],
   },
   {
@@ -231,6 +250,8 @@ const providers: Provider[] = [
   BootRecoveryService,
   DemoFillPollerService,
   AlgoStopRecoveryService,
+  RecoveryCoordinatorService,
+  RECOVERY_AUTO_RESUME_COUNTER,
   {
     // In-process delivery hook (an optimisation over the consumer's own cursor/ack loop): a
     // report source can call this to drain promptly. Awaiting it synchronously is how reorder
@@ -281,6 +302,9 @@ const providers: Provider[] = [
     // onAlgoStopGone dep (bar-level recovery) and calls it directly at boot (sweep — see
     // app.module.ts's startTrading).
     AlgoStopRecoveryService,
+    // Owner-authorized recovery program (2026-07-22): the composition root ticks this on the same
+    // 1s cadence as HaltCoordinatorService/UnknownResolverService (trading-runtime.module.ts).
+    RecoveryCoordinatorService,
   ],
 })
 export class ExecutionModule {}

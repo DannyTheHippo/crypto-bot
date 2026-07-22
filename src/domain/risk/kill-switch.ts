@@ -8,7 +8,12 @@ export type KillSwitchEvent =
   | { type: 'CANCELS_CONFIRMED' } // HALTING: all open orders cancelled
   | { type: 'CANCEL_TIMEOUT' } // HALTING: cancels not confirmed in 10s
   | { type: 'ALL_FLAT' } // FLATTENING: every |position| < exchange min
-  | { type: 'RESUME' }; // manual disengage (preconditions checked externally)
+  // Disengage: preconditions are checked externally by the caller, never by this reducer.
+  // Owner-authorized 2026-07-22: RecoveryCoordinatorService (KillSwitchPort.resume()) is the sole
+  // programmatic dispatcher of this event — there was no prior in-process resume path at all (the
+  // historical "manual resume" was an operator restarting the process, which re-seeds
+  // INITIAL_KILL_SWITCH rather than dispatching this event).
+  | { type: 'RESUME' };
 
 export interface KillSwitch {
   readonly state: KillSwitchState;

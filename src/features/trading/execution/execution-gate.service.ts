@@ -346,6 +346,7 @@ export class ExecutionGateService implements ExecutionGatePort {
       // into persistEvent's `reason`, so order_events carries WHY the venue refused without an
       // operator cross-referencing a log line. err is guaranteed an AdapterError here — cls is only
       // ever 'TERMINAL_REJECT' when `err instanceof AdapterError` (see the ternary above).
+      /* v8 ignore next -- the String(err) arm is unreachable: cls can only be 'TERMINAL_REJECT' when err is an AdapterError; the ternary exists solely to narrow `unknown` for the type-checker */
       const rawMessage = err instanceof AdapterError ? err.message : String(err);
       const message =
         rawMessage.length > REJECT_MESSAGE_MAX_LEN

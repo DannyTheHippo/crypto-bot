@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import type { ExecutionContext } from '@nestjs/common';
 import {
   ArmingTransportGuard,
@@ -72,5 +72,34 @@ describe('ArmingTransportGuard', () => {
     expect(
       guard.canActivate(fakeContext({ [ARMING_TOKEN_HEADER]: ['shared-secret', 'other'] })),
     ).toBe(true);
+  });
+
+  // TypedConfigService is a TYPE dependency here — the instance arrives through Nest DI and the class
+  // binding itself is only ever read by the emitted design:paramtypes metadata, which falls back to
+  // Object when the binding is unavailable at module-evaluation time (a partially-initialized cycle).
+  // Loading the guard with that binding absent must therefore change nothing about its verdicts: any
+  // future `instanceof TypedConfigService` / static call added to canActivate would break here first,
+  // and it would break the live-arming path in production the same way.
+  it('verdicts are unchanged when the TypedConfigService binding is unavailable at module load', async () => {
+    vi.resetModules();
+    // Key present, value undefined — the shape a not-yet-initialized module namespace presents.
+    vi.doMock('../../../src/config/environment/typed-config.service', () => ({
+      TypedConfigService: undefined,
+    }));
+    const fresh = await import('../../../src/features/trading/mode-control/arming-transport.guard');
+    vi.doUnmock('../../../src/config/environment/typed-config.service');
+
+    delete process.env[ENV_KEY];
+    expect(new fresh.ArmingTransportGuard(fakeConfig('live')).canActivate(fakeContext({}))).toBe(
+      false,
+    ); // still fail-closed in live
+    expect(new fresh.ArmingTransportGuard(fakeConfig('paper')).canActivate(fakeContext({}))).toBe(
+      true,
+    ); // still a no-op in paper
+
+    process.env[ENV_KEY] = 'shared-secret';
+    const guard = new fresh.ArmingTransportGuard(fakeConfig('live'));
+    expect(guard.canActivate(fakeContext({ [ARMING_TOKEN_HEADER]: 'shared-secret' }))).toBe(true);
+    expect(guard.canActivate(fakeContext({ [ARMING_TOKEN_HEADER]: 'wrong' }))).toBe(false);
   });
 });

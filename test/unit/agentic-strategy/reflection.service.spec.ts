@@ -81,6 +81,7 @@ function killSwitchWithState(state: KillSwitchState): KillSwitchPort {
     confirmCancels: () => undefined,
     cancelTimeout: () => undefined,
     allFlat: () => undefined,
+    resume: () => undefined,
   };
 }
 

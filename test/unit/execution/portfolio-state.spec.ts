@@ -432,5 +432,37 @@ describe('PortfolioStateService', () => {
       expect(s.venueBalances?.get(V_PERP)?.get('USDT')?.free.toFixed()).toBe('-50');
       expect(s.venueBalances?.get(V)?.get('USDT')?.free.toFixed()).toBe('500'); // unaffected
     });
+
+    it('a RESTORED position on a venue absent from venueCapitalShare lands in no bucket at all', () => {
+      // restoreFromSnapshot deliberately does NOT restore cashByVenue (its own comment): a reboot
+      // re-seeds the split from PortfolioConfig, so a snapshot position on a venue the config no
+      // longer lists has no bucket to attribute into. The holding must be DROPPED from the split
+      // rather than invented onto some other venue — the sizer's venueFree(v) read would otherwise
+      // clamp against a phantom holding on a venue that never held it.
+      const { ps } = makeWithVenues(new Map([[String(V), '500']])); // V_PERP never seeded
+      ps.restoreFromSnapshot({
+        cash: new Decimal('100000'),
+        equity: new Decimal('100000'),
+        peak: new Decimal('100000'),
+        sodEquity: new Decimal('100000'),
+        positions: [
+          {
+            strategyId: SID,
+            venue: V_PERP,
+            symbol: SYM_PERP,
+            signedQty: new Decimal('2'),
+            avgEntry: price('50'),
+            realizedPnl: new Decimal('0'),
+          },
+        ],
+      });
+      const s = ps.snapshot();
+      expect(s.venueBalances?.size).toBe(1); // only the configured venue has a bucket
+      expect(s.venueBalances?.get(V_PERP)).toBeUndefined(); // none invented for the unlisted venue
+      expect(s.venueBalances?.get(V)?.get('ETH')).toBeUndefined(); // and never misattributed to V
+      expect(s.venueBalances?.get(V)?.get('USDT')?.free.toFixed()).toBe('500'); // seed untouched
+      // The one-book truth still sees the restored holding — only the per-venue split drops it.
+      expect(s.balances.get('ETH')?.free.toFixed()).toBe('2');
+    });
   });
 });

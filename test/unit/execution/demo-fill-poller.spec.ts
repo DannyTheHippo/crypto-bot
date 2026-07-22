@@ -283,6 +283,31 @@ describe('DemoFillPollerService', () => {
       expect(sinceCalls[1]).toBe(T + 30); // watermark advanced despite the recovery throw
     });
 
+    // A rejected ccxt/pg promise is not always an Error (drivers reject with plain strings and
+    // objects) — the fail-OPEN catch must survive that shape too, not just Error.
+    it('recoverSymbol rejecting with a non-Error value is still tolerated', async () => {
+      const recoverSymbol = vi.fn().mockRejectedValue('venue down');
+      const recovery = stubRecovery({ hasAlgoAnchor: () => true, recoverSymbol });
+      const { poller, sinceCalls } = build(
+        [
+          fill({
+            clientOrderId: clientOrderId('other-venue-id'),
+            venueTradeId: 't12',
+            venueTimestamp: epochMs(T + 40),
+          }),
+        ],
+        [localOrder()],
+        true,
+        recovery,
+      );
+      poller.init();
+      const r = await poller.poll(V, [SYM]);
+      expect(r).toEqual({ ingested: 0, skippedUnknown: 1 });
+      expect(recoverSymbol).toHaveBeenCalledTimes(1);
+      await poller.poll(V, [SYM]);
+      expect(sinceCalls[1]).toBe(T + 40); // watermark advanced despite the non-Error rejection
+    });
+
     it('hasAlgoAnchor throwing does not abort the poll (fail OPEN: treated as not-anchored this pass, retried next poll)', async () => {
       const recoverSymbol = vi.fn().mockResolvedValue('none');
       const hasAlgoAnchor = vi.fn().mockRejectedValue(new Error('store down'));
@@ -300,6 +325,22 @@ describe('DemoFillPollerService', () => {
       // Not-anchored this pass (fail OPEN = skip, matching the file's per-symbol tolerance
       // elsewhere) ⇒ never added to algoSuspects ⇒ recoverSymbol never reached.
       expect(recoverSymbol).not.toHaveBeenCalled();
+    });
+
+    it('hasAlgoAnchor rejecting with a non-Error value is still tolerated', async () => {
+      const recoverSymbol = vi.fn().mockResolvedValue('none');
+      const hasAlgoAnchor = vi.fn().mockRejectedValue('store down');
+      const recovery = stubRecovery({ hasAlgoAnchor, recoverSymbol });
+      const { poller, ingested } = build(
+        [fill({ clientOrderId: clientOrderId('other-venue-id'), venueTradeId: 't13' })],
+        [localOrder()],
+        true,
+        recovery,
+      );
+      const r = await poller.poll(V, [SYM]);
+      expect(r).toEqual({ ingested: 0, skippedUnknown: 1 });
+      expect(ingested).toHaveLength(0);
+      expect(recoverSymbol).not.toHaveBeenCalled(); // not-anchored this pass, same as the Error case
     });
   });
 

@@ -44,10 +44,21 @@ interface ExchangeScript {
   openAlgo?: AlgoOrderState[];
   algoStatus?: AlgoOrderHistoryView | undefined;
   algoStatusThrow?: boolean;
+  // Rejection value for the algo-history rail when algoStatusThrow is set; defaults to an Error.
+  // A non-Error value (a bare string, as a transport layer can reject with) exercises the
+  // String(err) side of the log-message formatting on both catch paths.
+  algoStatusThrowAs?: unknown;
   trades?: VenueFill[];
+  // Fired INSIDE the corresponding venue call — i.e. after the anchor scan has already chosen its
+  // candidates and before the fold runs. That await seam is the only place a concurrent path (the
+  // regular fill pipeline, a HALT sweep) can mutate the local book mid-recovery, so it is where the
+  // race the defensive re-checks exist for has to be injected.
+  onAlgoStatus?: () => void;
+  onTrades?: () => void;
 }
 
 function build(script: ExchangeScript = {}) {
+  const calls = { openAlgo: 0, algoStatus: 0, trades: 0 };
   const clock = { now: () => epochMs(T) };
   const store = new InMemoryExecutionStore();
   const orders = new OrderBookService();
@@ -73,17 +84,29 @@ function build(script: ExchangeScript = {}) {
     fetchOrder: () => Promise.reject(new Error('unused')),
     fetchOpenOrders: () => Promise.resolve([]),
     fetchBalances: () => Promise.resolve(new Map()),
-    fetchMyTrades: () => Promise.resolve(script.trades ?? []),
+    fetchMyTrades: () => {
+      calls.trades += 1;
+      script.onTrades?.();
+      return Promise.resolve(script.trades ?? []);
+    },
     validateCredentials: () => Promise.reject(new Error('unused')),
-    fetchOpenAlgoOrders: () => Promise.resolve(script.openAlgo ?? []),
-    fetchAlgoOrderStatus: () =>
-      script.algoStatusThrow
-        ? Promise.reject(new Error('algo history down'))
-        : Promise.resolve(script.algoStatus),
+    fetchOpenAlgoOrders: () => {
+      calls.openAlgo += 1;
+      return Promise.resolve(script.openAlgo ?? []);
+    },
+    fetchAlgoOrderStatus: () => {
+      calls.algoStatus += 1;
+      script.onAlgoStatus?.();
+      if (!script.algoStatusThrow) return Promise.resolve(script.algoStatus);
+      // A NON-Error rejection value is exactly what one test below scripts (a transport layer can
+      // reject with a bare string); forcing an Error here would delete that case.
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+      return Promise.reject(script.algoStatusThrowAs ?? new Error('algo history down'));
+    },
   };
 
   const svc = new AlgoStopRecoveryService(clock, exchange, store, orders, portfolio, ingestor);
-  return { store, orders, portfolio, svc };
+  return { store, orders, portfolio, svc, calls };
 }
 
 type Ctx = ReturnType<typeof build>;
@@ -162,6 +185,37 @@ const RESTING_ROW: AlgoOrderState = {
   triggerPrice: '48000',
   status: 'NEW',
   reduceOnly: true,
+};
+
+// The two recurring venue answers, factored out for the tests below that vary only the surrounding
+// local state (the earlier tests keep their own inline literals — each pins a distinct venue shape).
+const CANCELED_VIEW: AlgoOrderHistoryView = {
+  algoId: '999',
+  clientAlgoId: STOP_COID,
+  status: 'CANCELED',
+  qty: '0.001',
+  triggerPrice: '48000',
+};
+
+const TRIGGERED_VIEW: AlgoOrderHistoryView = {
+  algoId: '999',
+  clientAlgoId: STOP_COID,
+  status: 'TRIGGERED',
+  spawnedOrderId: 'spawn-1',
+  qty: '0.001',
+  triggerPrice: '48000',
+};
+
+const SPAWNED_TRADE: VenueFill = {
+  venue: V_PERP,
+  symbol: SYM_PERP,
+  venueTradeId: 't1',
+  clientOrderId: clientOrderId('spawn-1'),
+  price: '117000',
+  qty: '0.001',
+  fee: null,
+  liquidity: 'taker',
+  venueTimestamp: epochMs(T),
 };
 
 describe('AlgoStopRecoveryService.recoverSymbol', () => {
@@ -358,6 +412,137 @@ describe('AlgoStopRecoveryService.recoverSymbol', () => {
     const ctx = build();
     const result = await ctx.svc.recoverSymbol(SYM_PERP);
     expect(result).toBe('none');
+  });
+
+  it('a TERMINAL order record is skipped by the anchor scan — the venue is never asked', async () => {
+    const ctx = build({ openAlgo: [], algoStatus: CANCELED_VIEW });
+    seedAlgoIntent(ctx);
+    const acked = ctx.orders.get(STOP_COID);
+    if (acked === undefined) throw new Error('seed failed');
+    // A prior pass already retired it. The RECORD is the anchor, so a terminal one contributes
+    // nothing no matter what the in-flight map still holds — otherwise every retired stop would be
+    // re-queried on the algo rail forever.
+    ctx.orders.commit({ ...acked, state: 'CANCELED' });
+
+    const result = await ctx.svc.recoverSymbol(SYM_PERP);
+
+    expect(result).toBe('none');
+    expect(ctx.calls.openAlgo).toBe(0);
+    expect(ctx.calls.algoStatus).toBe(0);
+    expect(ctx.store.events).toHaveLength(0);
+  });
+
+  it('EXPIRED: folds VENUE_EXPIRED under algo-hist:EXPIRED:999, zero ingests', async () => {
+    const ctx = build({ openAlgo: [], algoStatus: { ...CANCELED_VIEW, status: 'EXPIRED' } });
+    seedAlgoIntent(ctx);
+
+    const result = await ctx.svc.recoverSymbol(SYM_PERP);
+
+    expect(result).toBe('canceled'); // same aggregate class as CANCELED — the stop is gone either way
+    expect(ctx.orders.get(STOP_COID)?.state).toBe('EXPIRED');
+    expect(ctx.store.fills.size).toBe(0);
+    expect(ctx.portfolio.snapshot().inFlightIntents).toHaveLength(0);
+    const ev = ctx.store.events.find((e) => e.dedupeKey === 'algo-hist:EXPIRED:999');
+    expect(ev?.event).toEqual({ type: 'VENUE_EXPIRED' });
+  });
+
+  it('journal rejects the terminal fold as a duplicate: no local commit, in-flight untouched', async () => {
+    const ctx = build({ openAlgo: [], algoStatus: CANCELED_VIEW });
+    seedAlgoIntent(ctx);
+    // Journal-before-commit (I1): another pass already appended this exact (clientOrderId,
+    // dedupeKey) row and died before committing locally. The journal is the idempotency authority,
+    // so this pass must not re-fold in memory off a row it did not write.
+    await ctx.store.appendOrderEvent({
+      clientOrderId: STOP_COID,
+      dedupeKey: 'algo-hist:CANCELED:999',
+      event: { type: 'VENUE_CANCELED' },
+      derivedState: 'CANCELED',
+      cumQty: '0',
+    });
+
+    const result = await ctx.svc.recoverSymbol(SYM_PERP);
+
+    expect(result).toBe('canceled');
+    expect(ctx.orders.get(STOP_COID)?.state).toBe('ACKED'); // never committed
+    expect(ctx.store.events).toHaveLength(1); // only the pre-existing row
+    expect(ctx.portfolio.snapshot().inFlightIntents).toHaveLength(1); // never retired
+  });
+
+  it('local order row gone by the time the terminal fold runs: no journal write, no commit', async () => {
+    const script: ExchangeScript = { openAlgo: [], algoStatus: CANCELED_VIEW };
+    const ctx = build(script);
+    seedAlgoIntent(ctx);
+    // OrderBookService is a runtime CACHE of the durable event log (its own header says so) and the
+    // anchor scan is separated from the fold by two awaited venue calls, so the row can be gone by
+    // the time the fold looks for it. There is no public evict API, so the disappearance is
+    // injected at exactly that seam.
+    const realGet = ctx.orders.get.bind(ctx.orders);
+    script.onAlgoStatus = () => {
+      ctx.orders.get = () => undefined;
+    };
+
+    const result = await ctx.svc.recoverSymbol(SYM_PERP);
+    ctx.orders.get = realGet;
+
+    expect(result).toBe('canceled'); // the venue truth is still a positive terminal identification
+    expect(ctx.store.events).toHaveLength(0); // nothing journaled without a record to reduce
+    expect(ctx.orders.get(STOP_COID)?.state).toBe('ACKED');
+    expect(ctx.portfolio.snapshot().inFlightIntents).toHaveLength(1); // never retired
+  });
+
+  it('order turned terminal mid-recovery (a concurrent fold won the race): unknown, no fill folded', async () => {
+    const script: ExchangeScript = {
+      openAlgo: [],
+      algoStatus: TRIGGERED_VIEW,
+      trades: [SPAWNED_TRADE],
+    };
+    const ctx = build(script);
+    seedAlgoIntent(ctx);
+    script.onTrades = () => {
+      const rec = ctx.orders.get(STOP_COID);
+      if (rec === undefined) throw new Error('seed failed');
+      // The regular fill pipeline folded the same venue fill first and retired the order while this
+      // pass was still fetching trades.
+      ctx.orders.commit({ ...rec, state: 'FILLED', cumQty: rec.qty });
+    };
+
+    const result = await ctx.svc.recoverSymbol(SYM_PERP);
+
+    // Fail OPEN: no second fold onto an already-retired order, and no mutation at all — the drift
+    // axis stays the fail-closed backstop.
+    expect(result).toBe('unknown');
+    expect(ctx.store.fills.size).toBe(0);
+    expect(ctx.store.events).toHaveLength(0);
+    expect(ctx.orders.get(STOP_COID)?.cumQty.toFixed()).toBe('0.001'); // only the racing fold's work
+  });
+
+  it('carries the venue trade fee onto the folded fill record (exact strings)', async () => {
+    const trade: VenueFill = { ...SPAWNED_TRADE, fee: { ccy: 'USDT', amount: '0.0468724' } };
+    const ctx = build({ openAlgo: [], algoStatus: TRIGGERED_VIEW, trades: [trade] });
+    seedAlgoIntent(ctx);
+
+    const result = await ctx.svc.recoverSymbol(SYM_PERP);
+
+    expect(result).toBe('triggered');
+    const fill = ctx.store.fills.get(`${V_PERP}|${SYM_PERP}|t1`);
+    expect(fill?.fee?.ccy).toBe('USDT');
+    expect(fill?.fee?.amount.toFixed()).toBe('0.0468724'); // exact string, never toBeCloseTo
+  });
+
+  it('a NON-Error rejection from the algo-history rail is treated as unknown just the same', async () => {
+    const ctx = build({
+      openAlgo: [],
+      algoStatusThrow: true,
+      algoStatusThrowAs: 'algo history 503', // a transport layer can reject with a bare string
+    });
+    seedAlgoIntent(ctx);
+
+    const result = await ctx.svc.recoverSymbol(SYM_PERP);
+
+    expect(result).toBe('unknown');
+    expect(ctx.orders.get(STOP_COID)?.state).toBe('ACKED');
+    expect(ctx.store.events).toHaveLength(0);
+    expect(ctx.portfolio.snapshot().inFlightIntents).toHaveLength(1);
   });
 });
 
@@ -681,6 +866,92 @@ describe('AlgoStopRecoveryService.recoverSymbol — post-boot geometry (store-re
     expect(ctx.orders.get(STOP_COID)?.state).toBe('ACKED'); // nothing actually folded — cumQty never advanced
     expect(ctx.orders.get(STOP_COID)?.cumQty.toFixed()).toBe('0');
     expect(ctx.portfolio.snapshot().inFlightIntents).toHaveLength(0); // not stranded
+  });
+
+  it('order row vanishes between the pre-check and the per-candidate fold: skipped, reservation unwound', async () => {
+    const ctx = build({ openAlgo: [], algoStatus: TRIGGERED_VIEW, trades: [SPAWNED_TRADE] });
+    await seedPostBootAlgoIntent(ctx); // no in-flight anchor, so the unwind below is observable
+    const realGet = ctx.orders.get.bind(ctx.orders);
+    let lookups = 0;
+    ctx.orders.get = (coid) => {
+      // Lookup 1 is the pre-loop rec0 check, lookup 2 the per-candidate one — a concurrent path
+      // dropped the row from the runtime cache in between. Later lookups see it again: the book is
+      // a projection of the durable log, not the log itself.
+      lookups += 1;
+      return lookups === 2 ? undefined : realGet(coid);
+    };
+
+    const result = await ctx.svc.recoverSymbol(SYM_PERP);
+    ctx.orders.get = realGet;
+
+    expect(result).toBe('triggered'); // the venue answer is still a positive identification
+    expect(ctx.store.fills.size).toBe(0); // ingest is a no-op with no live record to fold onto
+    expect(ctx.orders.get(STOP_COID)?.state).toBe('ACKED');
+    expect(ctx.portfolio.snapshot().inFlightIntents).toHaveLength(0); // not stranded
+  });
+});
+
+describe('AlgoStopRecoveryService.sweep', () => {
+  const SYM_ETH = symbolId('ETH/USDT:USDT');
+  const ETH_COID = clientOrderId('cbp' + 'e'.repeat(32));
+
+  // A second anchor on a different symbol, same post-restart geometry (record present, intent only
+  // in the write-ahead store), so one sweep exercises both symbols' passes.
+  async function seedEthAnchor(ctx: Ctx): Promise<void> {
+    await seedPostBootAlgoIntent(ctx, { clientOrderId: ETH_COID, symbol: SYM_ETH });
+  }
+
+  it('recovers every swept symbol that carries an anchor', async () => {
+    const ctx = build({ openAlgo: [], algoStatus: CANCELED_VIEW });
+    seedAlgoIntent(ctx);
+    await seedEthAnchor(ctx);
+
+    await ctx.svc.sweep([SYM_PERP, SYM_ETH]);
+
+    expect(ctx.orders.get(STOP_COID)?.state).toBe('CANCELED');
+    expect(ctx.orders.get(ETH_COID)?.state).toBe('CANCELED');
+    expect(ctx.store.events).toHaveLength(2); // one venue-cancel fold per symbol
+    expect(ctx.portfolio.snapshot().inFlightIntents).toHaveLength(0);
+  });
+
+  it('a symbol whose anchor scan throws never aborts the symbols after it', async () => {
+    const ctx = build({ openAlgo: [], algoStatus: CANCELED_VIEW });
+    seedAlgoIntent(ctx); // BTC: in-flight anchor, resolved without any store read
+    await seedEthAnchor(ctx); // ETH: store-only anchor, so the scan does read the store
+    const realLoad = ctx.store.loadIntentByClientOrderId.bind(ctx.store);
+    let loads = 0;
+    ctx.store.loadIntentByClientOrderId = (coid) => {
+      // A transient store failure during the FIRST symbol's scan (the scan walks every record, so
+      // it reads the store even for a symbol whose own anchor is in-flight); the connection
+      // recovers immediately after.
+      loads += 1;
+      return loads === 1 ? Promise.reject(new Error('order_intents unavailable')) : realLoad(coid);
+    };
+
+    await expect(ctx.svc.sweep([SYM_PERP, SYM_ETH])).resolves.toBeUndefined();
+
+    expect(ctx.orders.get(STOP_COID)?.state).toBe('ACKED'); // its own pass threw before any fold
+    expect(ctx.orders.get(ETH_COID)?.state).toBe('CANCELED'); // the next symbol still recovered
+  });
+
+  it('a non-Error throw from one symbol is tolerated identically', async () => {
+    const ctx = build({ openAlgo: [], algoStatus: CANCELED_VIEW });
+    seedAlgoIntent(ctx);
+    await seedEthAnchor(ctx);
+    const realLoad = ctx.store.loadIntentByClientOrderId.bind(ctx.store);
+    let loads = 0;
+    ctx.store.loadIntentByClientOrderId = (coid) => {
+      loads += 1;
+      if (loads > 1) return realLoad(coid);
+      // The non-Error rejection value IS the case under test (the String(err) log path).
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+      return Promise.reject('order_intents unavailable');
+    };
+
+    await expect(ctx.svc.sweep([SYM_PERP, SYM_ETH])).resolves.toBeUndefined();
+
+    expect(ctx.orders.get(STOP_COID)?.state).toBe('ACKED');
+    expect(ctx.orders.get(ETH_COID)?.state).toBe('CANCELED');
   });
 });
 

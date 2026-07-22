@@ -306,6 +306,41 @@ describe('ExecReportConsumerService', () => {
       });
     });
 
+    // LIMIT_MAKER (post-only) is the other eligible maker shape — a never-filled post-only entry is
+    // exactly the attempt exec-quality exists to measure.
+    it("feeds a never-filled LIMIT_MAKER ENTRY cancel as outcome 'cancelled'", async () => {
+      const recordEntryAttempt = vi.fn();
+      const ctx = build(CTX, { recordEntryAttempt });
+      const { coid } = seedAcked(ctx, makeIntent({ type: 'LIMIT_MAKER' }));
+      ctx.orders.apply(coid, { type: 'CANCEL_REQUESTED' });
+      await ctx.outbox.append({ reportId: 'c2', report: cancelAck(coid, 'c2') });
+      await ctx.consumer.pump();
+      expect(recordEntryAttempt).toHaveBeenCalledWith({
+        symbol: SYM,
+        side: 'long',
+        style: 'maker',
+        limitPrice: '100',
+        outcome: 'cancelled',
+        terminalAt: T,
+      });
+    });
+
+    it("maps a SELL entry expiry to side 'short'", async () => {
+      const recordEntryAttempt = vi.fn();
+      const ctx = build(CTX, { recordEntryAttempt });
+      const { coid } = seedAcked(ctx, makeIntent({ side: 'SELL' }));
+      await ctx.outbox.append({ reportId: 'e2', report: expire(coid, 'e2') });
+      await ctx.consumer.pump();
+      expect(recordEntryAttempt).toHaveBeenCalledWith({
+        symbol: SYM,
+        side: 'short',
+        style: 'maker',
+        limitPrice: '100',
+        outcome: 'expired',
+        terminalAt: T,
+      });
+    });
+
     it('never feeds a reduce-only (exit) cancel', async () => {
       const recordEntryAttempt = vi.fn();
       const ctx = build(CTX, { recordEntryAttempt });
@@ -344,6 +379,40 @@ describe('ExecReportConsumerService', () => {
       await ctx.outbox.append({ reportId: 'c9', report: cancelAck(coid, 'c9') });
       await ctx.consumer.pump();
       expect(recordEntryAttempt).not.toHaveBeenCalled(); // fold skipped — journal already had it
+    });
+
+    it('does not double-record on a redelivered EXPIRE (journal dedupe)', async () => {
+      const recordEntryAttempt = vi.fn();
+      const ctx = build(CTX, { recordEntryAttempt });
+      const { coid } = seedAcked(ctx);
+      await ctx.store.appendOrderEvent({
+        clientOrderId: coid,
+        dedupeKey: 'e9',
+        event: { type: 'VENUE_EXPIRED' },
+        derivedState: 'EXPIRED',
+        cumQty: '0',
+      });
+      await ctx.outbox.append({ reportId: 'e9', report: expire(coid, 'e9') });
+      await ctx.consumer.pump();
+      expect(recordEntryAttempt).not.toHaveBeenCalled();
+      expect(ctx.orders.get(coid)?.state).toBe('ACKED'); // in-memory fold skipped too
+    });
+
+    // The catch normalises whatever was thrown before logging; a non-Error throw must not turn a
+    // measurement-only failure into a thrown consumer path.
+    it('fails open on a sink that throws a non-Error value', async () => {
+      const notAnError: unknown = 'sink offline';
+      const throwingSink: ExecQualitySinkPort = {
+        recordEntryAttempt: () => {
+          throw notAnError;
+        },
+      };
+      const ctx = build(CTX, throwingSink);
+      const { coid } = seedAcked(ctx);
+      ctx.orders.apply(coid, { type: 'CANCEL_REQUESTED' });
+      await ctx.outbox.append({ reportId: 'c3', report: cancelAck(coid, 'c3') });
+      await expect(ctx.consumer.pump()).resolves.toBe(1);
+      expect(ctx.orders.get(coid)?.state).toBe('CANCELED'); // the fold itself is unaffected
     });
 
     it('tolerates an absent sink (no throw) and a throwing sink (fails open, never blocks the fold)', async () => {

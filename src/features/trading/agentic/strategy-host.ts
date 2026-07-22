@@ -81,6 +81,12 @@ interface StrategyRuntime {
   entryCount: number;
   // Dedupes the cap-reached warn to once per day-key rather than once per dropped entry.
   entryCapWarned: boolean;
+  // Security-review S2 (pacing parity): true once THIS OPERATOR-drain episode's cooldown has been
+  // armed (cooldownUntilMs set) under operatorDrainAutoResumeEnabled — mirrors AUTO's own
+  // arm-once-then-single-probe pattern instead of firing on the very next successful decide. Reset
+  // false the moment lifecycle leaves DRAINING/OPERATOR-under-the-flag, so a LATER, fresh
+  // registry.disable() call re-arms its own cooldown rather than reusing a stale one.
+  operatorCooldownArmed: boolean;
 }
 
 // Constructor options for the agentic-only host. All optional — defaults preserve prior behavior.
@@ -94,6 +100,12 @@ export interface AgenticHostOptions {
   readonly tradingHalted?: () => boolean; // kill-switch: true suppresses ALL decides; default () => false
   readonly constraintsFor?: (symbol: SymbolId) => SymbolConstraints | undefined; // per-symbol exchange limits for onInit
   readonly maxEntriesPerDay?: number; // B5: entry-kind signals allowed per strategy per UTC day; default 12
+  // Owner-authorized recovery program (2026-07-22, RECOVERY_AUTO_RESUME_ENABLED): when true, a
+  // healthy decide() during an OPERATOR-provenance drain (registry.disable()) restores ACTIVE the
+  // same as an AUTO drain's recovery probe does — see runDecide's own comment. Default false
+  // (byte-identical to pre-feature: an OPERATOR drain never auto-recovers) so every pre-existing
+  // direct construction of this class keeps its prior behavior unless the composition root opts in.
+  readonly operatorDrainAutoResumeEnabled?: boolean;
 }
 
 @Injectable()
@@ -122,6 +134,8 @@ export class StrategyHost implements StrategyHostPort {
   private readonly constraintsFor?: (symbol: SymbolId) => SymbolConstraints | undefined;
   // B5: entry-kind signals (ENTER_LONG/ENTER_SHORT) allowed per strategy per UTC day.
   private readonly maxEntriesPerDay: number;
+  // Owner-authorized recovery program (2026-07-22): see AgenticHostOptions's own field comment.
+  private readonly operatorDrainAutoResumeEnabled: boolean;
   private readonly log = new Logger(StrategyHost.name);
   // 2026-07-19: the kill-switch suppression below was completely silent — a day of HALTED decides
   // went unnoticed. Warned ONCE per engagement (not per suppressed event, which would spam one line
@@ -145,6 +159,7 @@ export class StrategyHost implements StrategyHostPort {
     this.tradingHalted = opts?.tradingHalted ?? ((): boolean => false);
     this.constraintsFor = opts?.constraintsFor;
     this.maxEntriesPerDay = opts?.maxEntriesPerDay ?? DEFAULT_MAX_ENTRIES_PER_DAY;
+    this.operatorDrainAutoResumeEnabled = opts?.operatorDrainAutoResumeEnabled ?? false;
   }
 
   async start(): Promise<void> {
@@ -212,6 +227,7 @@ export class StrategyHost implements StrategyHostPort {
       entryDayKey: utcDayKey(this.nowFn()),
       entryCount: 0,
       entryCapWarned: false,
+      operatorCooldownArmed: false,
     };
     this.runtimes.set(id, runtime);
 
@@ -401,10 +417,30 @@ export class StrategyHost implements StrategyHostPort {
 
     // AUTO-DRAINING (3-strike auto-drain, not an operator disable()): decides are suppressed until
     // the cooldown elapses, then exactly one probe decide is let through (busy=true, set synchronously
-    // in runDecide, blocks any further trigger until it settles). OPERATOR drains are untouched here —
-    // they keep deciding at cadence per the existing risk-reducing filter, and never auto-recover.
-    if (lifecycle === 'DRAINING' && this.registry.getDrainReason(id) === 'AUTO') {
+    // in runDecide, blocks any further trigger until it settles).
+    //
+    // Security-review S2 (pacing parity, 2026-07-22): when operatorDrainAutoResumeEnabled is set, an
+    // OPERATOR drain gets the SAME arm-once-then-single-probe pacing — a deliberately-disabled
+    // misbehaving-but-not-throwing strategy must not be resurrected within one decide cycle, exactly
+    // the risk an un-paced "clear on the very next successful decide" would create. The cooldown is
+    // armed (once, mirroring AUTO's own initial arm) the first tick this OPERATOR-under-the-flag
+    // episode is observed; a failed probe doubles it via onDecideFailure's own shared branch below,
+    // same as AUTO. When the flag is off (default) or the drain is OPERATOR without it, this whole
+    // block is a no-op — decides fire at cadence exactly as before (byte-identical pre-feature).
+    const drainReason = this.registry.getDrainReason(id);
+    const pacedDraining =
+      lifecycle === 'DRAINING' &&
+      (drainReason === 'AUTO' ||
+        (drainReason === 'OPERATOR' && this.operatorDrainAutoResumeEnabled));
+    if (pacedDraining) {
+      if (drainReason === 'OPERATOR' && !runtime.operatorCooldownArmed) {
+        runtime.operatorCooldownArmed = true;
+        runtime.drainFailures = 0;
+        runtime.cooldownUntilMs = this.nowFn() + this.drainCooldownBaseMs;
+      }
       if (this.nowFn() < runtime.cooldownUntilMs) return;
+    } else {
+      runtime.operatorCooldownArmed = false; // not OPERATOR-draining-under-the-flag — a later fresh episode re-arms
     }
 
     // Candle triggers respect the cadence gate; exec triggers bypass it (rare, high-value fill
@@ -504,12 +540,31 @@ export class StrategyHost implements StrategyHostPort {
           // decide — proving the lane healthy does not retroactively trust its output.
           this.emitSignals(id, runtime, lifecycle, signals);
         }
-        // Any successful decide while AUTO-DRAINING proves the lane healthy: restore ACTIVE. OPERATOR
-        // drains never auto-recover — they end only via an explicit operator action, so a decide
-        // succeeding mid-OPERATOR-drain must not flip lifecycle.
-        if (lifecycle === 'DRAINING' && this.registry.getDrainReason(id) === 'AUTO') {
+        // Any successful decide while AUTO-DRAINING proves the lane healthy: restore ACTIVE.
+        // OPERATOR drains historically never auto-recovered — they ended only via an explicit
+        // operator action. Owner-authorized recovery program (2026-07-22, RECOVERY_AUTO_RESUME_
+        // ENABLED): when operatorDrainAutoResumeEnabled is set, a healthy decide clears an OPERATOR
+        // drain the SAME way. Security-review S2 (pacing parity): the decide that lands here for an
+        // OPERATOR+flag drain is always the paced single probe (processItem's own pacedDraining gate
+        // above) — never the very next cadence decide — so this never resurrects a
+        // deliberately-disabled strategy within one cycle. The drain provenance is logged BEFORE
+        // setLifecycle('ACTIVE') wipes drainReason, so the audit trail records which kind of drain
+        // was auto-cleared (never silent). Default false (flag off, or a direct-constructed test that
+        // never set the option) reproduces the pre-feature behavior exactly.
+        const drainReason = this.registry.getDrainReason(id);
+        if (
+          lifecycle === 'DRAINING' &&
+          (drainReason === 'AUTO' ||
+            (drainReason === 'OPERATOR' && this.operatorDrainAutoResumeEnabled))
+        ) {
+          if (drainReason === 'OPERATOR') {
+            this.log.warn(
+              `strategy ${id}: OPERATOR drain auto-cleared by a healthy decide (RECOVERY_AUTO_RESUME_ENABLED)`,
+            );
+          }
           runtime.drainFailures = 0;
           runtime.cooldownUntilMs = 0;
+          runtime.operatorCooldownArmed = false;
           this.registry.setLifecycle(id, 'ACTIVE');
         }
       })
@@ -522,15 +577,22 @@ export class StrategyHost implements StrategyHostPort {
   }
 
   // A timed-out or rejected decide(): count it. Three shapes:
-  //  - a failed AUTO-drain recovery probe: stay DRAINING, double the cooldown (capped);
+  //  - a failed paced-recovery probe (AUTO, or OPERATOR under operatorDrainAutoResumeEnabled —
+  //    security-review S2 pacing parity): stay DRAINING, double the cooldown (capped);
   //  - the strike that crosses MAX_CONSECUTIVE_TIMEOUTS from ACTIVE: auto-DRAIN, arm the first cooldown;
-  //  - anything else (below the cap, or already OPERATOR-DRAINING): just count it, no transition.
+  //  - anything else (below the cap, or already OPERATOR-DRAINING without the flag): just count it,
+  //    no transition.
   private onDecideFailure(id: StrategyId, runtime: StrategyRuntime): void {
     runtime.consecutiveTimeouts += 1;
     runtime.busy = false;
     const lifecycle = this.registry.getLifecycle(id);
+    const drainReason = this.registry.getDrainReason(id);
+    const pacedDraining =
+      lifecycle === 'DRAINING' &&
+      (drainReason === 'AUTO' ||
+        (drainReason === 'OPERATOR' && this.operatorDrainAutoResumeEnabled));
 
-    if (lifecycle === 'DRAINING' && this.registry.getDrainReason(id) === 'AUTO') {
+    if (pacedDraining) {
       runtime.drainFailures += 1;
       const backoff = this.drainCooldownBaseMs * 2 ** runtime.drainFailures;
       runtime.cooldownUntilMs = this.nowFn() + Math.min(backoff, this.drainCooldownMaxMs);

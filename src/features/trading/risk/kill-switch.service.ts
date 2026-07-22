@@ -12,7 +12,9 @@ import { OPS_EVENTS, type OpsEventPort } from '../../../ports/observability';
 // Stateful wrapper over the pure kill-switch reducer. Engage comes from monitors,
 // reconciliation, OMS anomalies, rate runaway, or the admin API. Cancel/flatten
 // progression (CANCELS_CONFIRMED / ALL_FLAT / timeout) is driven by Execution (Phase 5/6)
-// via dispatch(); disengage (RESUME) is manual and precondition-gated by the caller.
+// via dispatch(); disengage (resume()) is precondition-gated by its sole caller,
+// RecoveryCoordinatorService (owner-authorized auto-resume, 2026-07-22) — there is no other
+// in-process resume path; the pre-feature "manual resume" was an operator restarting the process.
 @Injectable()
 export class KillSwitchService implements KillSwitchPort {
   private ks: KillSwitch = INITIAL_KILL_SWITCH;
@@ -48,8 +50,7 @@ export class KillSwitchService implements KillSwitchPort {
     this.dispatch({ type: 'ENGAGE', flatten });
   }
 
-  // Lifecycle progressions Execution drives (HALTING→…→HALTED). RESUME is intentionally NOT here —
-  // disengage is operator-only via a separate admin path (§5).
+  // Lifecycle progressions Execution drives (HALTING→…→HALTED).
   confirmCancels(): void {
     this.dispatch({ type: 'CANCELS_CONFIRMED' });
   }
@@ -60,6 +61,15 @@ export class KillSwitchService implements KillSwitchPort {
 
   allFlat(): void {
     this.dispatch({ type: 'ALL_FLAT' });
+  }
+
+  // Owner-authorized 2026-07-22: disengage HALTED/HALTED_DEGRADED → RUNNING. This method itself is
+  // precondition-free (mirrors engage()) — RecoveryCoordinatorService is the SOLE caller and is
+  // solely responsible for confirming it is safe to call this (see ports/risk.ts's
+  // KillSwitchPort.resume() and RecoveryCoordinatorService's own header comment). No other resume
+  // path exists in-process today.
+  resume(): void {
+    this.dispatch({ type: 'RESUME' });
   }
 
   dispatch(event: KillSwitchEvent): void {

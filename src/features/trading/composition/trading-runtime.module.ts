@@ -18,6 +18,7 @@ import { ModeControlModule } from '../mode-control/mode-control.module';
 import { ModeControlService } from '../mode-control/mode-control.service';
 import { SignalSinkService, SIGNAL_REJECTIONS_COUNTER } from '../execution/signal-sink.service';
 import { HaltCoordinatorService } from '../execution/halt-coordinator.service';
+import { RecoveryCoordinatorService } from '../execution/recovery-coordinator.service';
 import { ProtectiveExitService, PROTECTIVE_EXITS_COUNTER } from '../risk/protective-exit.service';
 import { PlanStopRegistryService } from '../risk/plan-stop-registry.service';
 import { UnknownResolverService } from '../execution/unknown-resolver.service';
@@ -232,6 +233,9 @@ export class TradingRuntimeService
   constructor(
     @Inject(CLOCK) private readonly clock: ClockPort,
     private readonly coordinator: HaltCoordinatorService,
+    // Owner-authorized recovery program (2026-07-22): ticked on the SAME 1s cadence as `coordinator`/
+    // `resolver` below — see onApplicationBootstrap's own driver-timer block.
+    private readonly recoveryCoordinator: RecoveryCoordinatorService,
     private readonly protectiveExit: ProtectiveExitService,
     // Push 3 P2: the SAME instance ProtectiveExitService resolved via PLAN_STOP_REGISTRY (both bind
     // to the one provider below) — threaded into the agentic strategy factory's deps below.
@@ -408,6 +412,11 @@ export class TradingRuntimeService
         const now = this.clock.now();
         void Promise.resolve(this.coordinator.tick(now)).catch(() => undefined);
         void Promise.resolve(this.resolver.tick(now)).catch(() => undefined);
+        // Recovery must never be silent, but a recovery-evaluation FAULT must also never mask the
+        // halt/resolver ticks above — same fire-and-forget-with-swallowed-rejection convention (the
+        // services themselves own their own halt/engage faults; a tick failure here just means one
+        // fewer evaluation pass, and the next 1s tick tries again).
+        void Promise.resolve(this.recoveryCoordinator.tick(now)).catch(() => undefined);
       }, 1_000),
       setInterval(() => {
         void Promise.resolve(this.sampler.sample()).catch(() => undefined);
@@ -856,6 +865,10 @@ export class TradingRuntimeService
           drainCooldownBaseMs: agentic.drainCooldownBaseMs,
           drainCooldownMaxMs: agentic.drainCooldownMaxMs,
           maxEntriesPerDay: agentic.maxEntriesPerDay,
+          // Owner-authorized recovery program (2026-07-22, RECOVERY_AUTO_RESUME_ENABLED): a healthy
+          // decide clears an OPERATOR drain the same as an AUTO one, keeping the audit trail (see
+          // StrategyHost's own runDecide comment).
+          operatorDrainAutoResumeEnabled: config.recovery.autoResumeEnabled,
         });
       },
       inject: [

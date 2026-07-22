@@ -395,6 +395,83 @@ describe('FillIngestorService', () => {
       });
     });
 
+    it("maps a SELL entry fill to side 'short'", async () => {
+      const recordEntryAttempt = vi.fn();
+      const sink: ExecQualitySinkPort = { recordEntryAttempt };
+      const ctx = build(
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        sink,
+      );
+      const { coid, acked } = seed(ctx, makeIntent({ side: 'SELL' })); // short ENTRY, not an exit
+      await ctx.ingestor.ingest(
+        acked,
+        makeFill({
+          clientOrderId: coid,
+          qty: qty('1'),
+          price: price('99'),
+          liquidity: 'taker',
+          venueTradeId: 'eq-sell',
+        }),
+        'rep1',
+      );
+      expect(recordEntryAttempt).toHaveBeenCalledWith({
+        symbol: SYM,
+        side: 'short',
+        style: 'taker',
+        limitPrice: '100',
+        outcome: 'filled',
+        fillPrice: '99',
+        terminalAt: T,
+      });
+    });
+
+    // A MARKET intent carries no limitPrice — the attempt's limitPrice is the reference price the
+    // taker crossed, so the exec-quality window still has a comparable entry level.
+    it('reports refPrice as the limitPrice for a taker entry that has none', async () => {
+      const recordEntryAttempt = vi.fn();
+      const sink: ExecQualitySinkPort = { recordEntryAttempt };
+      const ctx = build(
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        sink,
+      );
+      const { coid, acked } = seed(
+        ctx,
+        makeIntent({ type: 'MARKET', limitPrice: undefined, refPrice: price('102') }),
+      );
+      await ctx.ingestor.ingest(
+        acked,
+        makeFill({
+          clientOrderId: coid,
+          qty: qty('1'),
+          price: price('103'),
+          liquidity: 'taker',
+          venueTradeId: 'eq-mkt',
+        }),
+        'rep1',
+      );
+      expect(recordEntryAttempt).toHaveBeenCalledWith({
+        symbol: SYM,
+        side: 'long',
+        style: 'taker',
+        limitPrice: '102', // intent.refPrice, since intent.limitPrice is absent
+        outcome: 'filled',
+        fillPrice: '103',
+        terminalAt: T,
+      });
+    });
+
     it('never feeds a partial fill (only the FILLED terminal fold does)', async () => {
       const recordEntryAttempt = vi.fn();
       const sink: ExecQualitySinkPort = { recordEntryAttempt };
@@ -471,6 +548,36 @@ describe('FillIngestorService', () => {
         'rep1',
       );
       expect(r2.applied).toBe(true); // the fold itself is unaffected by a sink failure
+    });
+
+    // The catch normalises whatever was thrown before logging; a non-Error throw must not turn a
+    // measurement-only failure into a thrown fill path.
+    it('fails open on a sink that throws a non-Error value', async () => {
+      const notAnError: unknown = 'sink offline';
+      const throwingSink: ExecQualitySinkPort = {
+        recordEntryAttempt: () => {
+          throw notAnError;
+        },
+      };
+      const ctx = build(
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        throwingSink,
+      );
+      const { coid, acked } = seed(ctx);
+      const r = await ctx.ingestor.ingest(
+        acked,
+        makeFill({ clientOrderId: coid, qty: qty('1'), venueTradeId: 'throws-str' }),
+        'rep1',
+      );
+      expect(r.applied).toBe(true);
+      expect(r.record.state).toBe('FILLED');
+      expect(ctx.store.fills.size).toBe(1);
     });
 
     it('end-to-end: feeding real FILLED entry attempts through a real ExecQualityService flips digest() from undefined to defined', async () => {

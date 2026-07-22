@@ -1119,6 +1119,118 @@ describe('PositionSizerService', () => {
       if (r.ok) expect(r.intent.qty.toFixed()).toBe('1');
     });
 
+    // isSameSideEntry's SELL arm: a scale-in is same-side when posQty is NEGATIVE (the (d) case
+    // above covers the BUY/long mirror). Perp venue — the only place a short position is opened.
+    it('(d5) same-side SHORT scale-in clamps to the remaining fraction headroom (negative posQty)', () => {
+      const V_PERP = venueId('binanceusdm');
+      const SYM_PERP = symbolId('BTC/USDT:USDT');
+      const perpFilters = new Map([
+        [String(SYM), FILTERS],
+        [String(SYM_PERP), FILTERS],
+      ]);
+      const positions = new Map<string, Position>([
+        [
+          `${SID}:${V_PERP}:${SYM_PERP}`,
+          {
+            strategyId: SID,
+            venue: V_PERP,
+            symbol: SYM_PERP,
+            signedQty: new Decimal('-1'), // short 1 × refPrice 100 = 100 posNotional
+            avgEntry: price('90'),
+            realizedPnl: new Decimal(0),
+          },
+        ],
+      ]);
+      const r = new PositionSizerService(
+        clock,
+        deps({
+          filters: perpFilters,
+          maxAgentPositionFractionByVenue: new Map([[V_PERP, '0.15']]),
+        }),
+      ).size(
+        signal({
+          venue: V_PERP,
+          symbol: SYM_PERP,
+          kind: 'ENTER_SHORT',
+          sizeFraction: '0.10',
+          refPrice: price('100'),
+        }),
+        snapshot(positions, { equity: new Decimal('1000') }),
+      );
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(r.intent.side).toBe('SELL');
+        // headroom = 1000 × 0.15 − 100 = 50, tighter than target 1000 × 0.10 = 100 ⇒ qty = 0.5.
+        // Unclamped (the pre-fix long-only reading of "same side") this would have sized qty 1.
+        expect(r.intent.qty.toFixed()).toBe('0.5');
+      }
+    });
+
+    it('(d6) an opposite-side entry against a short is a flip, not a scale-in — no headroom clamp', () => {
+      const V_PERP = venueId('binanceusdm');
+      const SYM_PERP = symbolId('BTC/USDT:USDT');
+      const perpFilters = new Map([
+        [String(SYM), FILTERS],
+        [String(SYM_PERP), FILTERS],
+      ]);
+      const positions = new Map<string, Position>([
+        [
+          `${SID}:${V_PERP}:${SYM_PERP}`,
+          {
+            strategyId: SID,
+            venue: V_PERP,
+            symbol: SYM_PERP,
+            signedQty: new Decimal('-1'),
+            avgEntry: price('90'),
+            realizedPnl: new Decimal(0),
+          },
+        ],
+      ]);
+      const r = new PositionSizerService(
+        clock,
+        deps({
+          filters: perpFilters,
+          maxAgentPositionFractionByVenue: new Map([[V_PERP, '0.15']]),
+        }),
+      ).size(
+        signal({
+          venue: V_PERP,
+          symbol: SYM_PERP,
+          kind: 'ENTER_LONG',
+          sizeFraction: '0.10',
+          refPrice: price('100'),
+        }),
+        snapshot(positions, { equity: new Decimal('1000') }),
+      );
+      expect(r.ok).toBe(true);
+      // The existing short does not consume LONG-side headroom ⇒ full target 1000 × 0.10 = 100 ⇒
+      // qty 1 (the (d5) clamp above would have cut this to 0.5 if orientation were ignored).
+      if (r.ok) expect(r.intent.qty.toFixed()).toBe('1');
+    });
+
+    it('(d7) a resting entry with NO limit price reserves at its own refPrice (fail-closed valuation)', () => {
+      // A MARKET entry carries no limit leg, so its reserved notional can only be valued off the
+      // order's own refPrice — valuing it at zero would leave the fraction cap bypassable exactly
+      // the way the (d3) resting-order gap did.
+      const resting = restingIntent({
+        type: 'MARKET',
+        side: 'BUY',
+        qty: qty('1'),
+        limitPrice: undefined,
+        refPrice: price('100'), // ⇒ 100 reserved
+      });
+      const r = new PositionSizerService(
+        clock,
+        deps({ maxAgentPositionFractionByVenue: new Map([[V, '0.15']]) }),
+      ).size(
+        signal({ sizeFraction: '0.10', refPrice: price('100') }),
+        snapshot(new Map(), { equity: new Decimal('1000'), inFlightIntents: [resting] }),
+      );
+      expect(r.ok).toBe(true);
+      // headroom = 150 − 0 (posNotional) − 100 (refPrice-valued reservation) = 50 ⇒ qty = 0.5.
+      if (r.ok) expect(r.intent.qty.toFixed()).toBe('0.5');
+    });
+
     it('(e) absent sizeFraction runs the legacy equity-fraction path on cappedEquity, not actual equity', () => {
       const r = new PositionSizerService(
         clock,
@@ -1127,6 +1239,28 @@ describe('PositionSizerService', () => {
       expect(r.ok).toBe(true);
       // cappedEquity = min(5000, 1000) = 1000; notional = 1000 × 0.02 × 1 = 20; qty = 20 / 100 = 0.2.
       if (r.ok) expect(r.intent.qty.toFixed()).toBe('0.2');
+    });
+
+    it('(e2) a non-positive equityCap is treated as unset — actual equity sizes the entry', () => {
+      const r = new PositionSizerService(
+        clock,
+        deps({ equityFraction: '0.02', equityCap: '0' }),
+      ).size(signal({ strength: 1 }), snapshot(new Map(), { equity: new Decimal('10000') }));
+      expect(r.ok).toBe(true);
+      // Taken literally a '0' cap would collapse cappedEquity — and every equity-derived notional
+      // with it — to zero, silently disabling the lane. Guarded ⇒ 10000 × 0.02 = 200 ⇒ qty = 2.
+      if (r.ok) expect(r.intent.qty.toFixed()).toBe('2');
+    });
+
+    it('(e3) a non-finite equityCap is treated as unset — a NaN cap never poisons sizing', () => {
+      const r = new PositionSizerService(
+        clock,
+        deps({ equityFraction: '0.02', equityCap: 'NaN' }),
+      ).size(signal({ strength: 1 }), snapshot(new Map(), { equity: new Decimal('10000') }));
+      expect(r.ok).toBe(true);
+      // Decimal.min(equity, NaN) is NaN, so an unguarded corrupt cap would propagate NaN through
+      // every notional and quantity downstream. Guarded ⇒ the ordinary 200 notional ⇒ qty = 2.
+      if (r.ok) expect(r.intent.qty.toFixed()).toBe('2');
     });
 
     it('(f) absent sizeFraction/reduceFraction and no equityCap: legacy behavior byte-identical (regression)', () => {
@@ -1292,6 +1426,94 @@ describe('PositionSizerService', () => {
       );
       // venueHeadroom = 100 (cap) − 60 (SYM2 open) − 50 (SYM3 reserved) = −10 ⇒ negative target.
       expect(r).toEqual({ ok: false, reason: 'BELOW_MINIMUM' });
+    });
+
+    // The split is per-venue: the two folds it subtracts (open positions, reserved entries) must
+    // both ignore everything sitting on the OTHER venue's wallet, or one venue's book would eat the
+    // other's share.
+    const V_PERP = venueId('binanceusdm');
+    const SYM_PERP = symbolId('BTC/USDT:USDT');
+
+    it('venueOpenNotional ignores positions on another venue (that book has its own share)', () => {
+      const positions = new Map<string, Position>([
+        [
+          `${SID}:${V_PERP}:${SYM_PERP}`,
+          {
+            strategyId: SID,
+            venue: V_PERP,
+            symbol: SYM_PERP,
+            signedQty: new Decimal('5'),
+            avgEntry: price('100'), // $500 open — on the PERP venue, not V
+            realizedPnl: new Decimal(0),
+          },
+        ],
+      ]);
+      const r = new PositionSizerService(
+        clock,
+        deps({ venueCapitalShare: new Map([[V, '120']]) }),
+      ).size(
+        signal({ sizeFraction: '0.10', refPrice: price('100') }),
+        snapshot(positions, { equity: new Decimal('1000') }),
+      );
+      expect(r.ok).toBe(true);
+      // Venue-blind, the perp $500 would leave headroom 120 − 500 < 0 ⇒ BELOW_MINIMUM. Venue-scoped
+      // ⇒ headroom = 120, target = 1000 × 0.10 = 100 (the binding bound) ⇒ qty = 1.
+      if (r.ok) expect(r.intent.qty.toFixed()).toBe('1');
+    });
+
+    it('venueReservedNotional ignores other-venue and reduce-only in-flight orders', () => {
+      const otherVenue = restingIntent({
+        venue: V_PERP,
+        symbol: SYM_PERP,
+        side: 'BUY',
+        qty: qty('5'),
+        limitPrice: price('100'), // $500 reserved on the PERP venue
+      });
+      const reduceOnly = restingIntent({
+        side: 'SELL',
+        reduceOnly: true,
+        qty: qty('5'),
+        limitPrice: price('100'), // $500 on V, but an exit — it only ever shrinks exposure
+      });
+      const r = new PositionSizerService(
+        clock,
+        deps({ venueCapitalShare: new Map([[V, '120']]) }),
+      ).size(
+        signal({ sizeFraction: '0.10', refPrice: price('100') }),
+        snapshot(new Map(), {
+          equity: new Decimal('1000'),
+          inFlightIntents: [otherVenue, reduceOnly],
+        }),
+      );
+      expect(r.ok).toBe(true);
+      // Counting EITHER order would drive headroom 120 − 500 negative ⇒ BELOW_MINIMUM; skipping
+      // both leaves the full $120 share ⇒ target 100 ⇒ qty = 1.
+      if (r.ok) expect(r.intent.qty.toFixed()).toBe('1');
+    });
+
+    it('a venue-wide reservation with NO limit price is valued at its own refPrice', () => {
+      // Same fail-closed valuation as the same-symbol reservation (d7): a MARKET entry has no limit
+      // leg, and valuing it at zero would hand the venue back headroom it has already committed.
+      const SYM3 = symbolId('XRP/USDT');
+      const resting = restingIntent({
+        symbol: SYM3,
+        side: 'SELL',
+        type: 'MARKET',
+        qty: qty('1'),
+        limitPrice: undefined,
+        refPrice: price('70'), // ⇒ $70 reserved venue-wide
+      });
+      const r = new PositionSizerService(
+        clock,
+        deps({ venueCapitalShare: new Map([[V, '120']]) }),
+      ).size(
+        signal({ sizeFraction: '0.10', refPrice: price('100') }),
+        snapshot(new Map(), { equity: new Decimal('1000'), inFlightIntents: [resting] }),
+      );
+      expect(r.ok).toBe(true);
+      // headroom = 120 − 0 (open) − 70 (refPrice-valued reservation) = 50, tighter than the 100
+      // target ⇒ qty = 0.5.
+      if (r.ok) expect(r.intent.qty.toFixed()).toBe('0.5');
     });
 
     it('wallet-underfunded: venueFree (not the combined snapshot.balances) binds the spot BUY affordability clamp', () => {

@@ -245,6 +245,15 @@ export interface AppConfig {
     stopLimitBufferBps: number;
     staleMaxAgeMs: number;
   };
+  // Owner-authorized 2026-07-22 recovery program: whether RecoveryCoordinatorService (kill-switch
+  // HALT/HALTED_DEGRADED), EquityMonitorService (daily-loss/drawdown), and the agentic strategy host
+  // (a healthy decide clearing an OPERATOR drain) may auto-resume/auto-clear once their own
+  // per-cause + universal fail-closed preconditions confirm cleared, without a human gate. Default
+  // true (RECOVERY_AUTO_RESUME_ENABLED) — disabling it reproduces exactly today's manual-only
+  // behavior. Does NOT touch the four live gates / arming / promotion-readiness / resolveMode().
+  recovery: {
+    autoResumeEnabled: boolean;
+  };
   // Perp/swap paper adapter knobs (B1) + entry-sizing knob (B2, position-sizer's perp branch).
   // PERP_VENUE_ENABLED (the old `enabled` field) is DELETED (§3.4) — venue presence in VENUES is
   // the signal now, and the field had no consumer outside environment.config.ts itself.

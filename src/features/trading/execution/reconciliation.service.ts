@@ -119,6 +119,27 @@ export class ReconciliationService {
   private readonly driftHistory = new Map<string, Decimal[]>();
   private readonly positionDivergenceStreak = new Map<string, number>();
   private readonly log = new Logger('Reconciliation');
+  // RecoveryCoordinatorService's own universal precondition read (owner-authorized auto-resume,
+  // 2026-07-22): the wall-clock of the last pass that closed with zero mismatches and no halt,
+  // across every venue this call covered. Stamped ONLY inside reconcile() below — never by a second,
+  // independently-triggered pass — because reconcile()/reconcileOnce() mutate this.checkpoints/
+  // driftHistory/positionDivergenceStreak without a re-entrancy lock; a second concurrent caller
+  // could interleave with the scheduled 30s pass (trading-runtime.module.ts) and corrupt that state.
+  // RecoveryCoordinatorService reads this via cleanWithin() instead of calling reconcile() itself.
+  private lastCleanAt: EpochMs | undefined;
+  // Security-review fix (2026-07-22, M1-residual): the wall-clock of the last pass that did NOT close
+  // clean — a mismatch/halt pass OR a pass that threw before completing. Stamped in the SAME one place
+  // (reconcile() below) and symmetric to lastCleanAt. cleanWithin/cleanAfter only bound the AGE and
+  // post-halt-freshness of the last CLEAN stamp; neither notices a fresh DIRTY pass landing after that
+  // stamp when the halt's reason string is byte-identical (reconcileOnce re-engages the same
+  // `RECONCILE_MISMATCH:<halts>` string every dirty pass, so RecoveryCoordinatorService's
+  // reason-change-keyed haltedSinceAt never re-arms). cleanIsLatest() below closes that hole: a clean
+  // stamp only counts if NO non-clean pass has run since. An errored pass counts as non-clean
+  // (fail-closed: "could not confirm" is never "confirmed clean").
+  private lastMismatchAt: EpochMs | undefined;
+  // The currently-running pass, or undefined when idle — see reconcile()'s own re-entrancy comment.
+  // Concurrent callers coalesce onto this instead of starting an interleaved second pass.
+  private inFlight: Promise<{ mismatches: number; halted: boolean }> | undefined;
 
   constructor(
     @Inject(CLOCK) private readonly clock: ClockPort,
@@ -165,7 +186,64 @@ export class ReconciliationService {
   // instance — engaging it for one venue's mismatch already stops the whole book, §1.3). A per-venue
   // axis throw is isolated to that venue's pass (caught inside reconcileOnce) so one venue's outage
   // never prevents the other venue's pass — or its own reconciliations row — from completing.
+  // RE-ENTRANCY GUARD (security review, 2026-07-22): the scheduled driver is an UNGUARDED
+  // setInterval(30_000) fire-and-forget (trading-runtime.module.ts), while ONE pass issues ~80 strictly
+  // sequential REST calls (40 symbols × fetchOpenOrders/fetchMyTrades, venues serialized in
+  // reconcileEveryVenue, plus per-order adoptTerminal fetchOrder). A pass exceeding the 30s interval —
+  // hence a SECOND concurrent caller — is routine at the committed basket size, not exotic. That is
+  // exactly the hazard lastCleanAt's own field comment names (checkpoints/driftHistory/
+  // positionDivergenceStreak are mutated without a lock and would interleave), and it also let a slow
+  // CLEAN pass land its stamp AFTER a newer pass had already found a divergence. Concurrent callers now
+  // coalesce onto the in-flight pass instead of starting a second one.
   async reconcile(): Promise<{ mismatches: number; halted: boolean }> {
+    const inFlight = this.inFlight;
+    if (inFlight !== undefined) {
+      // Visible, never silent: a chronically slow reconciler must show up as skipped passes rather than
+      // as a mysteriously idle cadence (the same "a silent skip once hid a per-pass throw for weeks"
+      // lesson the driver's own catch comment records).
+      this.log.warn(
+        'reconcile pass still in flight — skipping this tick (coalesced onto the running pass)',
+      );
+      this.runsCounter?.inc({ venue: 'all', result: 'skipped' });
+      return inFlight;
+    }
+    const run = this.runOnePass();
+    this.inFlight = run;
+    try {
+      return await run;
+    } finally {
+      this.inFlight = undefined;
+    }
+  }
+
+  private async runOnePass(): Promise<{ mismatches: number; halted: boolean }> {
+    // ASYMMETRIC STAMPING, deliberately fail-closed (security review, 2026-07-22). A CLEAN verdict is
+    // credited to the instant the pass STARTED — the earliest moment its observations could describe —
+    // never to completion. A multi-second pass that read venue truth at t0 and returns clean at t0+45s
+    // would otherwise stamp a "clean" newer than a divergence detected at t0+25s by another pass,
+    // satisfying cleanWithin/cleanAfter/cleanIsLatest and resuming into the un-cleared divergence.
+    // A NON-clean verdict is stamped at completion (and, for a halt, at DETECTION inside reconcileOnce),
+    // i.e. always the LATEST possible instant — so the clean-vs-dirty comparison can never favour clean.
+    const startedAt = this.clock.now();
+    let result: { mismatches: number; halted: boolean };
+    try {
+      result = await this.reconcileEveryVenue();
+    } catch (err) {
+      // A pass that threw before completing is NOT a clean confirmation — mark the latest outcome
+      // non-clean so cleanIsLatest() blocks auto-resume until a fresh clean pass genuinely runs (a
+      // persisting error also independently ages out cleanWithin). Fail CLOSED.
+      this.lastMismatchAt = this.clock.now();
+      throw err;
+    }
+    if (result.mismatches === 0 && !result.halted) {
+      this.lastCleanAt = startedAt;
+    } else {
+      this.lastMismatchAt = this.clock.now();
+    }
+    return result;
+  }
+
+  private async reconcileEveryVenue(): Promise<{ mismatches: number; halted: boolean }> {
     if (this.venuePorts && this.venueRegistry && this.venueRegistry.size > 0) {
       let mismatches = 0;
       let halted = false;
@@ -182,6 +260,42 @@ export class ReconciliationService {
       return { mismatches, halted };
     }
     return this.reconcileOnce(this.exchange, this.cfg);
+  }
+
+  // Read-only, no network: RecoveryCoordinatorService's own "reconcile clean" universal precondition,
+  // WITHOUT triggering a second concurrent reconcile() call (see lastCleanAt's own comment on why
+  // that would be unsafe). Fail-closed by construction: `maxAgeMs` bounds how stale "clean" may be —
+  // a scheduler outage (no reconcile() call inside the window) reads as NOT clean, never a
+  // permanently-stale true.
+  cleanWithin(maxAgeMs: number, now: EpochMs): boolean {
+    return this.lastCleanAt !== undefined && now - this.lastCleanAt <= maxAgeMs;
+  }
+
+  // Security-review fix (2026-07-22, M1): cleanWithin ALONE is a staleness bound, not a "cleared
+  // SINCE this problem started" bound — a reconcile pass that ran clean 45s BEFORE a halt engaged
+  // still reads as "fresh" for up to RECONCILE_FRESHNESS_MS after the halt, letting
+  // RecoveryCoordinatorService resume a RECONCILE_MISMATCH halt in ~2 ticks without a SINGLE fresh
+  // post-halt reconcile pass ever having re-examined the diverged state. `haltedAt` is the caller's
+  // own record of when the CURRENTLY-active problem was flagged (RecoveryCoordinatorService tracks
+  // this off killSwitch.reason() changes, never here — this service has no halt-timing knowledge of
+  // its own). Fail closed via strict `>`: a clean pass at the EXACT halt instant does not count (it
+  // cannot have observed the problem that caused the halt).
+  cleanAfter(haltedAt: EpochMs): boolean {
+    return this.lastCleanAt !== undefined && this.lastCleanAt > haltedAt;
+  }
+
+  // Security-review fix (2026-07-22, M1-residual): the LATEST reconcile pass closed clean — no
+  // mismatch/halt/errored pass has run since the last clean stamp. cleanWithin (staleness) and
+  // cleanAfter (post-halt freshness) both check only whether SOME clean stamp exists in their window;
+  // neither notices a fresh DIRTY pass landing after a clean stamp when the re-halt reason string is
+  // byte-identical (reconcileOnce re-engages `RECONCILE_MISMATCH:<halts>` verbatim every dirty pass,
+  // so RecoveryCoordinatorService's reason-change-keyed haltedSinceAt never re-arms). Requiring
+  // lastCleanAt > lastMismatchAt closes that hole regardless of the reason string. Fail CLOSED: never
+  // stamped clean ⇒ false; a dirty/errored pass at the SAME instant as the clean stamp (strict >) ⇒
+  // false.
+  cleanIsLatest(): boolean {
+    if (this.lastCleanAt === undefined) return false;
+    return this.lastMismatchAt === undefined || this.lastCleanAt > this.lastMismatchAt;
   }
 
   // §1.5: per-venue tunables derived from the registry descriptor, sharing the base config's
@@ -221,7 +335,16 @@ export class ReconciliationService {
     }
 
     const halted = acc.halts.length > 0;
-    if (halted) this.killSwitch.engage(`RECONCILE_MISMATCH:${acc.halts.join(',')}`, false); // never auto-flatten
+    if (halted) {
+      // Stamped at DETECTION, atomically with the engage — NOT at the end of the pass (security review,
+      // 2026-07-22). A multi-venue pass halts on venue A and then keeps sweeping venue B's 16 symbols
+      // for seconds afterward; stamping only in runOnePass would leave cleanIsLatest() reading true for
+      // that whole window, long enough for RecoveryCoordinatorService's 2-tick debounce to fit inside it
+      // and auto-resume on a divergence THIS pass had already found. Fail CLOSED: the divergence counts
+      // from the instant it is known.
+      this.lastMismatchAt = this.clock.now();
+      this.killSwitch.engage(`RECONCILE_MISMATCH:${acc.halts.join(',')}`, false); // never auto-flatten
+    }
 
     const mismatchTotal = totalMismatches(acc);
     await this.store.saveReconciliation({

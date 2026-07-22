@@ -455,6 +455,49 @@ describe('HaltCoordinatorService — HALTING algo-rail stop cancel (fix 7a)', ()
     expect(cancelCalls).toHaveLength(0);
   });
 
+  it('skips a registry entry whose position is absent from the snapshot (stale/foreign key)', async () => {
+    // The cancel needs a SYMBOL, and the only trustworthy source is the snapshot's own position map
+    // (the registry key's symbol segment can itself contain colons, so it is never parsed). An entry
+    // whose position already closed — or that belongs to another lane's snapshot — therefore has
+    // nothing to cancel against and is skipped, WITHOUT stopping the drain of the live entries after it.
+    const cancelCalls: string[] = [];
+    const staleKey = positionKey(strategyId('s1'), venueId('binance'), symbolId('ETH/USDT'));
+    const planStops = fakePlanStops(
+      new Map([
+        [
+          staleKey,
+          {
+            side: 'LONG',
+            stopPrice: '95',
+            venueStopResting: true,
+            algoId: 'algo-stale',
+          } satisfies PlanStop,
+        ],
+        [
+          KEY,
+          {
+            side: 'LONG',
+            stopPrice: '95',
+            venueStopResting: true,
+            algoId: 'algo-live',
+          } satisfies PlanStop,
+        ],
+      ]),
+    );
+    const exchange: Pick<ExchangePort, 'cancelAlgoOrder'> = {
+      cancelAlgoOrder: (algoId) => {
+        cancelCalls.push(algoId);
+        return Promise.resolve();
+      },
+    };
+    const ctx = build({ planStops, exchange });
+    seedPosition(ctx, '2'); // only KEY has a live position; staleKey's ETH position is long gone
+    ctx.killSwitch.engage('anomaly', false);
+    await ctx.coord.tick(epochMs(T));
+    expect(cancelCalls).toEqual(['algo-live']);
+    expect(ctx.flattenAllReasons).toEqual(['HALT']); // regular-rail flatten still ran
+  });
+
   it('no-ops (byte-identical) when neither planStops nor exchange is wired', async () => {
     const ctx = build(); // no planStops/exchange — pre-fix construction shape
     ctx.killSwitch.engage('anomaly', false);

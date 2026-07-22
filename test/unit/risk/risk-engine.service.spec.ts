@@ -316,6 +316,47 @@ describe('RiskEngineService', () => {
       expect(d.verdict).toBe('APPROVED');
     });
 
+    it('a resting entry with NO limit price reserves at its own refPrice, not zero', () => {
+      // A MARKET entry carries no limit leg, so refPrice is the only available valuation — treating
+      // it as zero notional would reopen the same E2/E3 bypass the reservation fold above closes.
+      const positions = new Map<string, Position>([
+        [
+          `${SID}:${V}:${SYM}`,
+          {
+            strategyId: SID,
+            venue: V,
+            symbol: SYM,
+            signedQty: new Decimal('10'), // × avgEntry 100 = $1000 filled position notional
+            avgEntry: price('100'),
+            realizedPnl: new Decimal(0),
+          },
+        ],
+      ]);
+      const restingMarket = intent({
+        clientOrderId: encodeClientOrderId(
+          intentId('01900000-0000-7000-8000-000000000004'),
+          'paper',
+        ),
+        symbol: SYM2,
+        side: 'BUY',
+        type: 'MARKET',
+        qty: qty('3'),
+        limitPrice: undefined,
+        refPrice: price('100'), // $300 reserved, valued off refPrice
+        reduceOnly: false,
+      });
+      const { engine } = makeEngine({
+        deps: { limits: { ...LIMITS, maxGrossExposure: '1200', maxNetExposure: '1000000' } },
+      });
+      // Valued at zero, currentGross would be $1000 ⇒ headroom 200 ⇒ the $100 entry APPROVES.
+      // Valued at refPrice, currentGross is $1300 ⇒ over the $1200 cap ⇒ REJECTED.
+      const d = engine.evaluate(
+        intent(),
+        snapshot({ positions, inFlightIntents: [restingMarket] }),
+      );
+      expect(d).toMatchObject({ verdict: 'REJECTED', reasons: ['EXPOSURE_LIMIT'] });
+    });
+
     it('net-cap sign case for a short: reserved SELL entries drive currentNet negative, correctly binding a new short against −maxNetExposure', () => {
       // No filled positions — purely resting/in-flight SELL entries reserve the short exposure.
       const restingShort = intent({

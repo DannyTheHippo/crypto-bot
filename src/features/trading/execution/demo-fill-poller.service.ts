@@ -121,6 +121,7 @@ export class DemoFillPollerService {
         // the moment an earlier fill in this same loop advances the order (2026-07-11: three
         // partials of one order in one poll each folded from cumQty 0, journaling non-monotone
         // FILL events and regressing the book — the venue-FILLED order stranded non-terminal).
+        /* v8 ignore next -- the `?? matched` arm is unreachable: OrderBookService keys every record by its own clientOrderId and exposes no delete, so a record returned by all() is always resolvable by get() */
         const rec = this.orders.get(matched.clientOrderId) ?? matched;
         const { applied } = await this.ingestor.ingest(
           rec,

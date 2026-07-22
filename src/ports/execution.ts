@@ -253,6 +253,18 @@ export interface ReconConfig {
   readonly positionAxis?: boolean;
 }
 
+// Recovery program (owner-authorized 2026-07-22, RecoveryCoordinatorService): gates whether a
+// cleared-cause HALTED/HALTED_DEGRADED kill switch may auto-resume without a human. Composition root
+// binds this from AppConfig.recovery.autoResumeEnabled (RECOVERY_AUTO_RESUME_ENABLED, schema default
+// true); module-isolation fixtures with no config fall back to true too, matching the schema default
+// — the flag is a deploy-time on/off switch, never the safety mechanism itself.
+// RecoveryCoordinatorService's own per-cause + universal fail-closed preconditions and 2-pass
+// debounce (see its header comment) are what actually make a resume safe.
+export const RECOVERY_CONFIG = Symbol('RECOVERY_CONFIG');
+export interface RecoveryConfig {
+  readonly autoResumeEnabled: boolean;
+}
+
 // §1/§6 single-writer interlock: a per-(venue, apiKey) lock acquired at startup so a second bot
 // instance cannot trade the same key. The live impl is a Postgres pg_advisory_lock (held for the
 // process lifetime); the in-memory default guards only within one process. acquire throws if the

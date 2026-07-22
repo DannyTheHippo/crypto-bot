@@ -625,6 +625,96 @@ describe('StrategyHost (agentic-only)', () => {
     expect(recorded.map((s) => s.kind)).toEqual(['FLATTEN']); // risk-reducing filter still applies
   });
 
+  it('owner-authorized recovery program: with operatorDrainAutoResumeEnabled, an OPERATOR drain is PACED (cooldown + single probe, mirroring AUTO) — not cleared on the very next decide', async () => {
+    const id = strategyId('operator-drain-autoresume');
+    let clock = 0;
+    const nowFn = () => clock;
+    const recorded: Signal[] = [];
+    const sink: SignalSinkPort = { recordSignal: (s) => void recorded.push(s) };
+    const strat = new ProgrammableStrategy(id, { interval: '1m', bars: 2 }, () =>
+      Promise.resolve([sig(id, 'ENTER_LONG', 100), sig(id, 'FLATTEN', 100)]),
+    );
+    const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    try {
+      const { host, registry, stream } = makeHost({
+        strategy: strat,
+        sink,
+        hostOpts: { operatorDrainAutoResumeEnabled: true, nowFn, drainCooldownBaseMs: 1000 },
+      });
+
+      await host.start();
+      registry.disable(id); // operator-initiated drain
+      expect(registry.getLifecycle(id)).toBe('DRAINING');
+      expect(registry.getDrainReason(id)).toBe('OPERATOR');
+
+      // Security-review S2 (pacing parity): within the cooldown, no decide fires at all — a
+      // deliberately-disabled strategy is not resurrected within one decide cycle.
+      stream.push(candle(1));
+      await tick();
+      expect(strat.calls).toBe(0);
+      expect(registry.getLifecycle(id)).toBe('DRAINING');
+      expect(registry.getDrainReason(id)).toBe('OPERATOR');
+
+      // Cooldown elapsed: exactly one probe decide fires and succeeds → restores ACTIVE.
+      clock = 1000;
+      stream.push(candle(2));
+      await tick();
+      stream.close();
+
+      expect(strat.calls).toBe(1);
+      expect(registry.getLifecycle(id)).toBe('ACTIVE');
+      expect(registry.getDrainReason(id)).toBeUndefined();
+      expect(recorded.map((s) => s.kind)).toEqual(['FLATTEN']); // risk-reducing filter still applied to the probe
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('OPERATOR drain auto-cleared'));
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('owner-authorized recovery program: a FAILED OPERATOR-drain probe doubles the cooldown, capped at drainCooldownMaxMs — mirrors AUTO backoff exactly', async () => {
+    const id = strategyId('operator-drain-backoff');
+    let clock = 0;
+    const nowFn = () => clock;
+    const strat = new ProgrammableStrategy(id, { interval: '1m', bars: 2 }, () =>
+      Promise.reject(new Error('agent down')),
+    );
+    const { host, registry, stream } = makeHost({
+      strategy: strat,
+      sink: { recordSignal: () => undefined },
+      hostOpts: {
+        operatorDrainAutoResumeEnabled: true,
+        nowFn,
+        drainCooldownBaseMs: 1000,
+        drainCooldownMaxMs: 3000,
+      },
+    });
+
+    await host.start();
+    registry.disable(id); // operator-initiated drain, cooldownUntilMs armed to 0+1000=1000 on this tick
+    stream.push(candle(1));
+    await tick();
+    expect(strat.calls).toBe(0); // still inside the cooldown
+
+    clock = 1000; // cooldown elapsed: probe #1 fires and fails
+    stream.push(candle(2));
+    await tick();
+    expect(strat.calls).toBe(1);
+    expect(registry.getLifecycle(id)).toBe('DRAINING'); // stays draining, provenance untouched
+    expect(registry.getDrainReason(id)).toBe('OPERATOR');
+
+    // Probe #1 failure doubles: cooldownUntilMs = 1000 + min(1000·2¹, 3000) = 3000
+    clock = 2999;
+    stream.push(candle(3));
+    await tick();
+    expect(strat.calls).toBe(1); // still inside the doubled cooldown
+
+    clock = 3000;
+    stream.push(candle(4));
+    await tick();
+    stream.close();
+    expect(strat.calls).toBe(2); // probe #2 fires
+  });
+
   it('tradingHalted() suppresses ALL decides regardless of lifecycle, while state still folds', async () => {
     const id = strategyId('halted');
     const strat = new ProgrammableStrategy(id, { interval: '1m', bars: 2 }, () =>

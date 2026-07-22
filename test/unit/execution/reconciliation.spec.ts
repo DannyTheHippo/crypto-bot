@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { Logger } from '@nestjs/common';
 import Decimal from 'decimal.js';
 import type { Counter, Gauge } from 'prom-client';
 import { ReconciliationService } from '../../../src/features/trading/execution/reconciliation.service';
@@ -41,6 +42,10 @@ const OTHER_COID = encodeClientOrderId(intentId('0190ffff-1234-7abc-89ab-0123456
 interface ExchangeScript {
   openOrders?: ExchangeOrderState[];
   openOrdersThrow?: boolean;
+  // Test-only latch: when set, fetchOpenOrders awaits it before resolving, so a pass can be held
+  // mid-flight to exercise ReconciliationService's re-entrancy guard (the unguarded 30s driver
+  // interval can otherwise start a second interleaved pass — security review 2026-07-22).
+  openOrdersGate?: Promise<void>;
   fetchOrder?: () => ExchangeOrderState;
   trades?: VenueFill[];
   tradesThrow?: boolean;
@@ -93,10 +98,11 @@ function build(
           })
         )(),
       ),
-    fetchOpenOrders: () =>
-      script.openOrdersThrow
-        ? Promise.reject(new Error('open orders down'))
-        : Promise.resolve(script.openOrders ?? []),
+    fetchOpenOrders: async () => {
+      if (script.openOrdersThrow) throw new Error('open orders down');
+      if (script.openOrdersGate !== undefined) await script.openOrdersGate;
+      return script.openOrders ?? [];
+    },
     fetchBalances: () =>
       script.balancesThrow
         ? Promise.reject(new Error('balances down'))
@@ -1087,6 +1093,399 @@ describe('ReconciliationService — v3 multi-venue iteration (§1.5)', () => {
     const perpRow = store.reconciliations.find((r) => r.venue === PERP)!;
     expect(spotRow.mismatches).toBe(1); // the failed sweep is visible on the spot venue's OWN row
     expect(perpRow.mismatches).toBe(0); // the other venue's pass is unaffected
+    expect(perpRow.detail).toBe('clean');
+  });
+
+  it('a registry venue with no exchange port is logged and skipped — the ported venues still reconcile', async () => {
+    // Misconfiguration guard: the registry and the port map are wired independently at the
+    // composition root, so a venue can appear in one and not the other. Reconciliation is a
+    // measurement pass, so this fails OPEN on the missing venue (skip + error log) rather than
+    // throwing and aborting every OTHER venue's pass — silently reconciling nothing would be worse.
+    const ports = new Map([[SPOT, fakePort(SPOT)]]); // PERP registered but never wired a port
+    const registry = new Map([
+      [SPOT, descriptor(SPOT, false)],
+      [PERP, descriptor(PERP, true)],
+    ]);
+    const { store, recon } = buildMultiVenue(ports, registry);
+    const logged: string[] = [];
+    const errorSpy = vi
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation((msg: unknown) => void logged.push(String(msg)));
+
+    try {
+      const result = await recon.reconcile();
+
+      expect(result).toEqual({ mismatches: 0, halted: false }); // the skip is not a mismatch
+      expect(store.reconciliations).toHaveLength(1); // only the ported venue wrote a row
+      expect(store.reconciliations[0]!.venue).toBe(SPOT);
+      expect(logged).toEqual([`no exchange port registered for venue "${PERP}" — skipping`]);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+});
+
+// RecoveryCoordinatorService's own universal precondition read (owner-authorized auto-resume,
+// 2026-07-22). Direct coverage of cleanWithin/cleanAfter, independent of the coordinator's own tests
+// (which fake this port) — both methods read a private field reconcile() alone writes, so they need
+// their own real-ReconciliationService exercise to be covered at all.
+describe('ReconciliationService — cleanWithin/cleanAfter/cleanIsLatest (RecoveryCoordinatorService precondition)', () => {
+  it('both report false before any reconcile() pass has ever run', () => {
+    const ctx = build();
+    expect(ctx.recon.cleanWithin(1_000_000, epochMs(T))).toBe(false);
+    expect(ctx.recon.cleanAfter(epochMs(T - 1))).toBe(false);
+  });
+
+  it('cleanWithin: exactly at the freshness boundary is fresh, one ms past is stale', async () => {
+    const ctx = build();
+    await ctx.recon.reconcile(); // clean pass — stamps lastCleanAt = T
+    expect(ctx.recon.cleanWithin(1000, epochMs(T + 1000))).toBe(true); // boundary: <=
+    expect(ctx.recon.cleanWithin(1000, epochMs(T + 1001))).toBe(false); // one ms stale
+  });
+
+  it('cleanAfter: true only once the clean pass is strictly after the given instant, false at equality', async () => {
+    const ctx = build();
+    await ctx.recon.reconcile(); // clean pass — stamps lastCleanAt = T
+    expect(ctx.recon.cleanAfter(epochMs(T - 1))).toBe(true); // clean pass came after
+    expect(ctx.recon.cleanAfter(epochMs(T))).toBe(false); // equal — not STRICTLY after (fail closed)
+    expect(ctx.recon.cleanAfter(epochMs(T + 1))).toBe(false); // clean pass predates this instant
+  });
+
+  it('a mismatch/halt pass never stamps lastCleanAt — both stay false afterward', async () => {
+    const ctx = build(
+      { openOrders: [venueOrder(OTHER_COID, 'open')] },
+      undefined,
+      undefined,
+      undefined,
+      { sweepSymbols: [SYM] },
+    );
+    const r = await ctx.recon.reconcile();
+    expect(r.halted).toBe(true);
+    expect(ctx.recon.cleanWithin(1_000_000, epochMs(T))).toBe(false);
+    expect(ctx.recon.cleanAfter(epochMs(T - 1_000_000))).toBe(false);
+  });
+
+  it('an errored/outage pass (reconcile() rejects) never stamps lastCleanAt — fail closed', async () => {
+    const ctx = build();
+    ctx.store.saveReconciliation = () => {
+      throw new Error('db down mid-pass');
+    };
+    await expect(ctx.recon.reconcile()).rejects.toThrow('db down mid-pass');
+    expect(ctx.recon.cleanWithin(1_000_000, epochMs(T))).toBe(false);
+    expect(ctx.recon.cleanAfter(epochMs(T - 1_000_000))).toBe(false);
+  });
+
+  it('a later clean pass after a halt-then-clear correctly reports cleanAfter the halt instant', async () => {
+    const ctx = build();
+    await ctx.recon.reconcile(); // clean at T
+    ctx.setNow(T + 500); // a halt happens here (simulated by the caller, not this service)
+    ctx.setNow(T + 1000); // reconcile runs again, still clean, AFTER the simulated halt instant
+    await ctx.recon.reconcile();
+    expect(ctx.recon.cleanAfter(epochMs(T + 500))).toBe(true); // T+1000 clean pass is after T+500
+    expect(ctx.recon.cleanAfter(epochMs(T + 1000))).toBe(false); // not strictly after itself
+  });
+
+  // cleanIsLatest — the M1-residual no-re-dirty bound. cleanWithin/cleanAfter check only that SOME
+  // clean stamp exists in their window; cleanIsLatest additionally requires no dirty/errored pass to
+  // have run since. This is what closes the same-reason-string re-halt hole (a re-drift that
+  // re-engages a byte-identical RECONCILE_MISMATCH reason, invisible to the coordinator's
+  // reason-change-keyed haltedSinceAt).
+  it('cleanIsLatest: false before any pass has ever run', () => {
+    const ctx = build();
+    expect(ctx.recon.cleanIsLatest()).toBe(false);
+  });
+
+  it('cleanIsLatest: tracks the LATEST outcome — clean⇒true, a later dirty pass⇒false, a later clean pass⇒true', async () => {
+    const script: ExchangeScript = { openOrders: [] };
+    const ctx = build(script, undefined, undefined, undefined, { sweepSymbols: [SYM] });
+
+    await ctx.recon.reconcile(); // clean at T
+    expect(ctx.recon.cleanIsLatest()).toBe(true);
+
+    script.openOrders = [venueOrder(OTHER_COID, 'open')]; // an unknown venue order on the swept symbol
+    ctx.setNow(T + 30_000);
+    const dirty = await ctx.recon.reconcile();
+    expect(dirty.halted).toBe(true);
+    // The pre-re-dirty clean stamp (T) is still fresh AND still after any earlier halt instant, so
+    // cleanWithin/cleanAfter alone would both still read true — cleanIsLatest is the one that closes.
+    expect(ctx.recon.cleanWithin(1_000_000, epochMs(T + 30_000))).toBe(true);
+    expect(ctx.recon.cleanAfter(epochMs(T - 1))).toBe(true);
+    expect(ctx.recon.cleanIsLatest()).toBe(false); // latest pass is dirty
+
+    script.openOrders = []; // drift clears
+    ctx.setNow(T + 60_000);
+    await ctx.recon.reconcile(); // clean again — now the LATEST pass
+    expect(ctx.recon.cleanIsLatest()).toBe(true);
+  });
+
+  it('cleanIsLatest: a dirty pass at the SAME instant as the clean stamp is not latest-clean (strict >)', async () => {
+    const script: ExchangeScript = { openOrders: [] };
+    const ctx = build(script, undefined, undefined, undefined, { sweepSymbols: [SYM] });
+    await ctx.recon.reconcile(); // clean, stamps lastCleanAt = T
+    script.openOrders = [venueOrder(OTHER_COID, 'open')];
+    const dirty = await ctx.recon.reconcile(); // dirty at the SAME now (T) — stamps lastMismatchAt = T
+    expect(dirty.halted).toBe(true);
+    expect(ctx.recon.cleanIsLatest()).toBe(false); // T > T is false — fail closed at equality
+  });
+
+  it('cleanIsLatest: an errored/outage pass counts as non-clean, flipping a prior clean false (fail closed)', async () => {
+    const ctx = build();
+    await ctx.recon.reconcile(); // clean at T
+    expect(ctx.recon.cleanIsLatest()).toBe(true);
+    ctx.store.saveReconciliation = () => {
+      throw new Error('db down mid-pass');
+    };
+    ctx.setNow(T + 1000);
+    await expect(ctx.recon.reconcile()).rejects.toThrow('db down mid-pass');
+    expect(ctx.recon.cleanIsLatest()).toBe(false); // the throw stamped lastMismatchAt > lastCleanAt
+  });
+
+  // Security review 2026-07-22: the scheduled driver is an UNGUARDED setInterval(30s) while one pass
+  // issues ~80 sequential REST calls over the 40-symbol two-venue basket, so passes routinely overlap.
+  it('re-entrancy guard: a second reconcile() while one is in flight coalesces onto it instead of interleaving a second pass', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const seen: Array<Record<string, string>> = [];
+    const runsCounter = {
+      inc: (labels: Record<string, string>) => void seen.push(labels),
+    } as unknown as Counter<string>;
+    const script: ExchangeScript = { openOrders: [], openOrdersGate: gate };
+    const ctx = build(script, undefined, runsCounter);
+
+    const first = ctx.recon.reconcile();
+    const second = ctx.recon.reconcile(); // lands while `first` is still stalled on the gate
+    release();
+    const [a, b] = await Promise.all([first, second]);
+
+    expect(a).toEqual(b); // the coalesced caller observes the in-flight pass's own result
+    expect(seen).toContainEqual({ venue: 'all', result: 'skipped' }); // never a silent skip
+  });
+
+  it('a slow CLEAN pass credits lastCleanAt to when it STARTED, not to completion — so a halt raised mid-pass is NOT cleared by it', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const script: ExchangeScript = { openOrders: [], openOrdersGate: gate };
+    const ctx = build(script);
+
+    const slow = ctx.recon.reconcile(); // starts at T — its observations can only describe T
+    ctx.setNow(T + 45_000); // 45s of wall clock elapses while the pass is stalled mid-sweep
+    release();
+    await slow;
+
+    // A halt raised at T+33s (AFTER this pass began looking) must NOT read as cleared by it: the pass
+    // never observed anything later than its own start. Stamping at completion would have said T+45s
+    // and wrongly satisfied cleanAfter — the exact stale-clean resume the review found.
+    expect(ctx.recon.cleanAfter(epochMs(T + 33_000))).toBe(false);
+    expect(ctx.recon.cleanAfter(epochMs(T - 1))).toBe(true); // it does clear a halt that predates it
+  });
+});
+
+// Money-critical 100% gate close-out: the last two reconciliation.service.ts branches reachable off
+// the single-venue `build()` fixture — axis 2's venueOrderId index build (byVenueId) and the
+// ingestor's own already-applied report.
+describe('ReconciliationService — trailing coverage close-out (§1.5)', () => {
+  it('an order not yet ACKed (no venueOrderId) is excluded from the venue-order-id trade index — a fill landing on it while still SUBMITTING (WS beat REST) still resolves via its own clientOrderId, never a phantom venue-id key', async () => {
+    const coid = makeIntent().clientOrderId;
+    // balanceAxis:false isolates this to the trade axis — the fill below moves local cash/BTC
+    // position away from the default venue-balance stub, an unrelated axis this test does not
+    // exercise (same isolation the cluster-A venueOrderId-backfill test above uses).
+    const ctx = build(
+      {
+        openOrders: [venueOrder(coid, 'open')],
+        trades: [trade(coid, 'ws-beat-rest-1')],
+      },
+      undefined,
+      undefined,
+      undefined,
+      { balanceAxis: false },
+    );
+    // Deliberately stop short of seedOpenOrder's ACK step: this.orders.all() (axis 2's byVenueId
+    // index build) sees an OrderRecord with venueOrderId === undefined — the guarded arm must skip
+    // it, never index it under a bogus key.
+    const intent = makeIntent({ clientOrderId: coid });
+    ctx.orders.create(initialOrder(coid, intent.qty, '0.001'));
+    ctx.orders.apply(coid, { type: 'SUBMIT_SENT' }); // SUBMITTING — no venueOrderId yet
+    ctx.portfolio.addInFlight(intent);
+    ctx.portfolio.openOrder(intent.strategyId, {
+      clientOrderId: coid,
+      symbol: SYM,
+      side: 'BUY',
+      qty: intent.qty,
+      limitPrice: price('100'),
+    });
+    const r = await ctx.recon.reconcile();
+    // Resolved via the isOurClientOrderId tier (this.orders.get(coid) is defined even without a
+    // venueOrderId) — byVenueId correctly never indexed this order, so there was nothing to match
+    // through the wrong tier.
+    expect(ctx.orders.get(coid)?.state).toBe('FILLED');
+    expect(ctx.store.fills.size).toBe(1);
+    expect(r.halted).toBe(false);
+  });
+
+  it("a fill whose store.saveFill reports not-inserted (a concurrent writer already recorded it between reconcile's own hasFill check and its own saveFill call) is a silent no-op — no backfilled_fill double count", async () => {
+    const coid = makeIntent().clientOrderId;
+    const ctx = build({
+      openOrders: [venueOrder(coid, 'open')],
+      trades: [trade(coid, 'race-1')],
+    });
+    seedOpenOrder(ctx, coid);
+    // Simulates the WS ingest path winning the race after reconcile's own hasFill() pre-check
+    // (line 536) already returned false — FillIngestorService.ingest's own idempotency guard
+    // (`!inserted`), not this axis, is what must win; reconcile must not count it as a fresh backfill.
+    ctx.store.saveFill = () => Promise.resolve({ inserted: false, conflict: false });
+    const r = await ctx.recon.reconcile();
+    expect(r.mismatches).toBe(0); // no backfilled_fill bump — ingest reported already-applied
+    expect(r.halted).toBe(false);
+    expect(ctx.store.fills.size).toBe(0); // the override intercepted the write; nothing landed here
+  });
+});
+
+// Money-critical 100% gate close-out, multi-venue axis: the remaining reconciliation.service.ts
+// branches are all "this venue's local view must never leak in the OTHER venue's local view" —
+// unreachable off the single-venue build() fixture (venuePorts/venueRegistry both undefined there),
+// so these mirror the "v3 multi-venue iteration" describe above's construction pattern.
+describe('ReconciliationService — venue-axis symbol/position filtering (§1.5 multi-venue close-out)', () => {
+  const SPOT = venueId('binance');
+  const PERP = venueId('binanceusdm');
+
+  function fakePort(venue: VenueId, over: Partial<ExchangePort> = {}): ExchangePort {
+    return {
+      venue,
+      capabilities: {
+        clientOrderId: true,
+        fetchOrderByClientId: true,
+        wsUserStream: true,
+        stp: false,
+        sandbox: true,
+      },
+      placeOrder: () => Promise.reject(new Error('unused')),
+      cancelOrder: () => Promise.reject(new Error('unused')),
+      fetchOrder: () => Promise.reject(new Error('unused')),
+      fetchOpenOrders: () => Promise.resolve([]),
+      fetchBalances: () => Promise.resolve(new Map([['USDT', { free: '100000', locked: '0' }]])),
+      fetchMyTrades: () => Promise.resolve([]),
+      validateCredentials: () => Promise.reject(new Error('unused')),
+      ...over,
+    };
+  }
+
+  function descriptor(venue: VenueId, perpCapable: boolean): VenueRuntimeDescriptor {
+    return {
+      venue,
+      config: { id: venue, environment: 'demo' }, // demo ⇒ balanceAxis off, isolates these cases
+      symbols: [], // empty: a symbol can only reach a venue's sweep here via local-state bleed
+      capitalShare: '500',
+      perpCapable,
+    };
+  }
+
+  function buildMultiVenue(
+    ports: ReadonlyMap<VenueId, ExchangePort>,
+    registry: ReadonlyMap<VenueId, VenueRuntimeDescriptor>,
+  ) {
+    const clock = { now: () => epochMs(T) };
+    const store = new InMemoryExecutionStore();
+    const orders = new OrderBookService();
+    const portfolio = new PortfolioStateService(
+      { quoteAsset: 'USDT', startingCash: '100000' },
+      new FeeLedgerService(),
+    );
+    const sampler = new EquitySamplerService(portfolio, fixedFeed('100'), clock, store);
+    const { ks } = killSwitchStub();
+    const ingestor = new FillIngestorService(store, ks, orders, portfolio, sampler);
+    const recon = new ReconciliationService(
+      clock,
+      ports.values().next().value!,
+      store,
+      ks,
+      { ...CFG },
+      orders,
+      portfolio,
+      ingestor,
+      undefined,
+      undefined,
+      undefined,
+      ports,
+      registry,
+    );
+    return { store, orders, portfolio, recon };
+  }
+
+  it("sweepSymbols excludes a SPOT-only open order's symbol from the PERP venue's own sweep (venueForSymbol(o.symbol) === exchange.venue, false arm)", async () => {
+    const perpFetchOpenOrders = vi.fn().mockResolvedValue([]);
+    const ports = new Map([
+      [SPOT, fakePort(SPOT)],
+      [PERP, fakePort(PERP, { fetchOpenOrders: perpFetchOpenOrders })],
+    ]);
+    const registry = new Map([
+      [SPOT, descriptor(SPOT, false)],
+      [PERP, descriptor(PERP, true)],
+    ]);
+    const { orders, portfolio, recon } = buildMultiVenue(ports, registry);
+    // A local open order on SYM (venueForSymbol(SYM) === SPOT) — no PERP-side state at all.
+    const coid = makeIntent().clientOrderId;
+    orders.create(initialOrder(coid, makeIntent().qty, '0.001'));
+    orders.apply(coid, { type: 'SUBMIT_SENT' });
+    orders.apply(coid, { type: 'ACK', venueOrderId: 'v1' });
+    portfolio.openOrder(makeIntent().strategyId, {
+      clientOrderId: coid,
+      symbol: SYM,
+      side: 'BUY',
+      qty: makeIntent().qty,
+      limitPrice: price('100'),
+    });
+
+    await recon.reconcile();
+
+    // PERP's own sweepSymbols() must stay empty (cfg.sweepSymbols is [] and the SPOT order's
+    // symbol must not bleed in) — fetchOpenOrders is never even called for PERP.
+    expect(perpFetchOpenOrders).not.toHaveBeenCalled();
+  });
+
+  it("sweepSymbols excludes a SPOT-only position's symbol from the PERP venue's own sweep (p.venue === exchange.venue, false arm)", async () => {
+    const perpFetchOpenOrders = vi.fn().mockResolvedValue([]);
+    const ports = new Map([
+      [SPOT, fakePort(SPOT)],
+      [PERP, fakePort(PERP, { fetchOpenOrders: perpFetchOpenOrders })],
+    ]);
+    const registry = new Map([
+      [SPOT, descriptor(SPOT, false)],
+      [PERP, descriptor(PERP, true)],
+    ]);
+    const { portfolio, recon } = buildMultiVenue(ports, registry);
+    // A local SPOT-venue position on SYM — no PERP-side state at all.
+    const intent = makeIntent({ venue: SPOT, qty: qty('0.001') });
+    portfolio.applyFill(intent, makeFill({ qty: intent.qty, price: intent.refPrice }));
+
+    await recon.reconcile();
+
+    expect(perpFetchOpenOrders).not.toHaveBeenCalled();
+  });
+
+  it("position axis: a local position on a DIFFERENT venue never pollutes this venue's own local aggregation (venue filter + the ?? Decimal(0) fallback for a swept symbol with no local position at all)", async () => {
+    const perpFetchPositions = vi.fn().mockResolvedValue([]); // the PERP venue itself reports flat
+    const ports = new Map([
+      [SPOT, fakePort(SPOT)],
+      [PERP, fakePort(PERP, { fetchPositions: perpFetchPositions })],
+    ]);
+    const registry = new Map([
+      [SPOT, descriptor(SPOT, false)],
+      [PERP, { ...descriptor(PERP, true), symbols: [SYM] }], // PERP explicitly sweeps SYM
+    ]);
+    const { portfolio, store, recon } = buildMultiVenue(ports, registry);
+    // A local SPOT-venue position on SYM. If the venue filter or the local-fallback were wrong,
+    // this would wrongly count as the PERP venue's own local qty on SYM and diverge against the
+    // PERP venue's own flat (0) reading — position_drift, then a HALT on the second pass. Correctly
+    // filtered, PERP's local qty for SYM is 0 == its own venue's 0 ⇒ clean, both passes.
+    const intent = makeIntent({ venue: SPOT, qty: qty('0.001') });
+    portfolio.applyFill(intent, makeFill({ qty: intent.qty, price: intent.refPrice }));
+
+    const first = await recon.reconcile();
+    const second = await recon.reconcile(); // past the debounce too, in case the filter were wrong
+    expect(first.halted).toBe(false);
+    expect(second.halted).toBe(false);
+    const perpRow = store.reconciliations.filter((r) => r.venue === PERP).at(-1)!;
+    expect(perpRow.mismatches).toBe(0);
     expect(perpRow.detail).toBe('clean');
   });
 });

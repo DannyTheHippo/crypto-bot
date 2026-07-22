@@ -530,6 +530,16 @@ const envSchema = z
     // at 200 (2%) — a wider buffer would leave the leg unmarketable-adjacent on a fast move.
     STOP_LIMIT_BUFFER_BPS: z.coerce.number().int().positive().max(200).default(50),
     RISK_STALE_MAX_AGE_MS: z.coerce.number().int().positive().default(5000),
+    // Owner-authorized 2026-07-22 recovery program: whether a HALTED/HALTED_DEGRADED kill switch
+    // (RecoveryCoordinatorService), a daily-loss/drawdown halt (EquityMonitorService's own
+    // cause-clearing), or an OPERATOR-provenance strategy drain (a healthy decide, strategy-host.ts)
+    // may auto-resume/auto-clear once their own fail-closed preconditions confirm cleared, without a
+    // human gate. Default true — the safety mechanism is the per-cause + universal preconditions and
+    // debounce, NOT this flag; setting it 'false' reproduces exactly today's manual-only behavior.
+    RECOVERY_AUTO_RESUME_ENABLED: z
+      .enum(['true', 'false'])
+      .default('true')
+      .transform((v) => v === 'true'),
     // PERP_VENUE_ENABLED DELETED (§3.4): venue presence in VENUES is the signal now — a perp-capable
     // deployment is defined by VENUES containing binanceusdm, never a separate boot flag.
     // v3 §3.2 default: 1→2 (owner round 6, "perp gets leverage to a 2x cap") — the deployed perp
@@ -874,6 +884,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     RISK_MAX_STOP_TRIGGER_BAND_BPS: riskMaxStopTriggerBandBps,
     STOP_LIMIT_BUFFER_BPS: stopLimitBufferBps,
     RISK_STALE_MAX_AGE_MS: riskStaleMaxAgeMs,
+    RECOVERY_AUTO_RESUME_ENABLED: recoveryAutoResumeEnabled,
     PERP_LEVERAGE_CAP: perpLeverageCap,
     PERP_MMR_FALLBACK: perpMmrFallback,
     PERP_LIQ_BUFFER_PCT: perpLiqBufferPct,
@@ -1095,6 +1106,9 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       maxStopTriggerBandBps: riskMaxStopTriggerBandBps,
       stopLimitBufferBps,
       staleMaxAgeMs: riskStaleMaxAgeMs,
+    },
+    recovery: {
+      autoResumeEnabled: recoveryAutoResumeEnabled,
     },
     perp: {
       // PERP_VENUE_ENABLED deleted (§3.4): no `enabled` field — venue presence in VENUES is the

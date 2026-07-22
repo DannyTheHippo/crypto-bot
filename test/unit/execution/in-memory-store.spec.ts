@@ -4,7 +4,7 @@ import { InMemoryExecutionStore } from '../../../src/features/trading/execution/
 import { initialOrder } from '../../../src/domain/oms/reducer';
 import { makeIntent, makeFill, SID, V, SYM } from './helpers';
 import type { ApprovalProof } from '../../../src/domain/types/risk-decision';
-import { epochMs } from '../../../src/domain/types/ids';
+import { clientOrderId, epochMs, venueId } from '../../../src/domain/types/ids';
 import { price, qty } from '../../../src/domain/types/money';
 import type { Position } from '../../../src/domain/types/portfolio';
 
@@ -152,6 +152,111 @@ describe('InMemoryExecutionStore', () => {
       message: 'ReduceOnly Order is rejected',
     });
     expect(store.events[0]!.reason).toBe('-2022:ReduceOnly Order is rejected');
+  });
+
+  it('appendOrderEvent for an order whose saveNewOrder never landed carries qty 0, not undefined', async () => {
+    // Write-ahead ordering means the orders row normally exists first; a crash between the two
+    // writes leaves this shape, and the row must still be readable (qty falls back to '0').
+    const store = new InMemoryExecutionStore();
+    const intent = makeIntent();
+    await store.appendOrderEvent({
+      clientOrderId: intent.clientOrderId,
+      dedupeKey: 'ack',
+      event: { type: 'ACK', venueOrderId: 'v9' },
+      derivedState: 'ACKED',
+      cumQty: '0',
+      venueOrderId: 'v9',
+    });
+    expect(store.orders.get(intent.clientOrderId)?.qty).toBe('0');
+    expect(store.stateOf(intent.clientOrderId)).toBe('ACKED');
+  });
+
+  it('loadFilledQty sums only the fills carrying that clientOrderId', async () => {
+    const store = new InMemoryExecutionStore();
+    const mine = makeFill().clientOrderId;
+    const foreign = clientOrderId('cbp' + '7'.repeat(32));
+    await store.saveFill(makeFill({ venueTradeId: 't1', qty: qty('1.5') }), 'i1');
+    await store.saveFill(makeFill({ venueTradeId: 't2', qty: qty('2.25') }), 'i1');
+    // A second order's fill shares the table — it must never leak into the first order's total.
+    await store.saveFill(
+      makeFill({ venueTradeId: 't3', clientOrderId: foreign, qty: qty('9') }),
+      'i2',
+    );
+
+    expect(await store.loadFilledQty(mine)).toBe('3.75'); // exact string, never toBeCloseTo
+    expect(await store.loadFilledQty(foreign)).toBe('9');
+    // An order with no fills at all still answers a well-formed zero (the resubmit-eligibility
+    // check reads this before any fill can exist).
+    expect(await store.loadFilledQty(clientOrderId('cbp' + '8'.repeat(32)))).toBe('0');
+  });
+
+  it('loadOrderByVenueOrderId reconstructs the durable record, skipping rows that do not match', async () => {
+    const store = new InMemoryExecutionStore();
+    // Seeded FIRST so the scan has to walk past a same-venue row with a different venueOrderId.
+    const otherIntent = makeIntent({ clientOrderId: clientOrderId('cbp' + '1'.repeat(32)) });
+    await store.saveNewOrder(
+      initialOrder(otherIntent.clientOrderId, new Decimal('1'), '0.001'),
+      otherIntent,
+    );
+    await store.appendOrderEvent({
+      clientOrderId: otherIntent.clientOrderId,
+      dedupeKey: 'ack',
+      event: { type: 'ACK', venueOrderId: 'v1' },
+      derivedState: 'ACKED',
+      cumQty: '0',
+      venueOrderId: 'v1',
+    });
+
+    const intent = makeIntent();
+    await store.saveNewOrder(initialOrder(intent.clientOrderId, new Decimal('1'), '0.001'), intent);
+    await store.appendOrderEvent({
+      clientOrderId: intent.clientOrderId,
+      dedupeKey: 'ack',
+      event: { type: 'ACK', venueOrderId: 'v9' },
+      derivedState: 'ACKED',
+      cumQty: '0',
+      venueOrderId: 'v9',
+    });
+    await store.appendOrderEvent({
+      clientOrderId: intent.clientOrderId,
+      dedupeKey: 'fill',
+      event: { type: 'FILL', cumQty: new Decimal('0.4') },
+      derivedState: 'PARTIALLY_FILLED',
+      cumQty: '0.4',
+    });
+
+    const found = await store.loadOrderByVenueOrderId(V, 'v9');
+    expect(found?.clientOrderId).toBe(intent.clientOrderId);
+    expect(found?.state).toBe('PARTIALLY_FILLED');
+    expect(found?.qty.toFixed()).toBe('1'); // exact strings — the caller folds a missed fill onto this
+    expect(found?.cumQty.toFixed()).toBe('0.4');
+    expect(found?.venueOrderId).toBe('v9');
+    // Synthesized fields, same convention as DrizzleExecutionStore's rowToOrderRecord.
+    expect(found?.stepSize).toBe('0.00000001');
+    expect(found?.attempt).toBe(0);
+    expect(found?.cancelWanted).toBe(false);
+
+    // The key is (venue, venueOrderId): the same id on another venue is a different order.
+    expect(await store.loadOrderByVenueOrderId(venueId('binanceusdm'), 'v9')).toBeNull();
+    expect(await store.loadOrderByVenueOrderId(V, 'nope')).toBeNull();
+  });
+
+  it('hasFill answers on the full (venue, symbol, tradeId) idempotency key', async () => {
+    const store = new InMemoryExecutionStore();
+    await store.saveFill(makeFill({ venueTradeId: 't1' }), 'i1');
+    expect(await store.hasFill(V, SYM, 't1')).toBe(true);
+    expect(await store.hasFill(V, SYM, 't2')).toBe(false);
+    expect(await store.hasFill(venueId('binanceusdm'), SYM, 't1')).toBe(false);
+  });
+
+  it('loadIntentByClientOrderId round-trips the saved intent and answers null for an unknown order', async () => {
+    const store = new InMemoryExecutionStore();
+    const intent = makeIntent();
+    await store.saveIntent(intent, proof);
+    const loaded = await store.loadIntentByClientOrderId(intent.clientOrderId);
+    expect(loaded?.intentId).toBe(intent.intentId);
+    expect(loaded?.source.dedupeKey).toBe('k'); // the field resting-order-role classification reads
+    expect(await store.loadIntentByClientOrderId(clientOrderId('cbp' + '2'.repeat(32)))).toBeNull();
   });
 
   it('saveReconciliation accumulates rows', async () => {

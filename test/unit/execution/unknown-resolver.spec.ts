@@ -73,6 +73,7 @@ function build(
     confirmCancels: () => undefined,
     cancelTimeout: () => undefined,
     allFlat: () => undefined,
+    resume: () => undefined,
   };
 
   const cancels: string[] = [];
@@ -508,6 +509,73 @@ describe('UnknownResolverService — algo-rail SUBMIT_UNKNOWN resolution (fix 2)
     expect(ctx.orders.get(coid)?.state).toBe('ACKED');
     expect(ctx.orders.get(coid)?.venueOrderId).toBe('venue-algo-1');
     expect(ctx.resolver.trackedCount()).toBe(0);
+  });
+
+  it('FOUND with an EMPTY algoId still acks — the id is only stamped when the venue supplied one', async () => {
+    // The clientAlgoId match is the positive proof; the venue's own algoId is a bonus field some
+    // listings omit. An empty one must never be written over the record's venueOrderId (a blank id
+    // would poison every later cancel-by-id), but it must not suppress the ACK either.
+    const intent = algoIntent();
+    const coid = intent.clientOrderId;
+    const ctx = build({
+      fetchOpenAlgoOrders: () =>
+        Promise.resolve([
+          {
+            algoId: '',
+            clientAlgoId: String(coid),
+            symbol: SYM,
+            side: 'SELL',
+            type: 'STOP_MARKET',
+            qty: '1',
+            triggerPrice: '90',
+            status: 'NEW',
+            reduceOnly: true,
+          },
+        ]),
+    });
+    seedUnknown(ctx, 'submit', intent);
+    await settle(ctx);
+    expect(ctx.orders.get(coid)?.state).toBe('ACKED'); // query-confirmed resting ⇒ acked
+    expect(ctx.orders.get(coid)?.venueOrderId).toBe(''); // nothing stamped, nothing clobbered
+    expect(ctx.resolver.trackedCount()).toBe(0);
+  });
+
+  it('a stale submit-kind entry whose order moved on to CANCEL_UNKNOWN acks nothing, just retires', async () => {
+    // sync() keeps the ORIGINAL pending entry (kind stays 'submit') when an order leaves
+    // SUBMIT_UNKNOWN and re-enters an unknown state between ticks — an out-of-band stream ack
+    // followed by an ambiguous cancel. Re-folding an ACK there is an illegal transition (the reducer
+    // throws TransitionError on ACK from CANCEL_UNKNOWN), so the poll must re-read the CURRENT state
+    // and only ack an order still genuinely SUBMIT_UNKNOWN.
+    const intent = algoIntent();
+    const coid = intent.clientOrderId;
+    const ctx = build({
+      fetchOpenAlgoOrders: () =>
+        Promise.resolve([
+          {
+            algoId: 'venue-algo-1',
+            clientAlgoId: String(coid),
+            symbol: SYM,
+            side: 'SELL',
+            type: 'STOP_MARKET',
+            qty: '1',
+            triggerPrice: '90',
+            status: 'NEW',
+            reduceOnly: true,
+          },
+        ]),
+    });
+    seedUnknown(ctx, 'submit', intent);
+    await register(ctx); // tracked as kind 'submit' while SUBMIT_UNKNOWN
+
+    // Between ticks: the stream's ack lands, the strategy cancels, the cancel goes ambiguous.
+    ctx.orders.apply(coid, { type: 'ACK', venueOrderId: 'stream-algo-1' });
+    ctx.orders.apply(coid, { type: 'CANCEL_REQUESTED' });
+    ctx.orders.apply(coid, { type: 'CANCEL_REJECT_UNKNOWN' });
+
+    await expect(polls(ctx, 1)).resolves.toBeUndefined(); // no TransitionError escapes the poll
+    expect(ctx.orders.get(coid)?.state).toBe('CANCEL_UNKNOWN'); // never re-acked backwards
+    expect(ctx.orders.get(coid)?.venueOrderId).toBe('stream-algo-1'); // the stream's id stands
+    expect(ctx.resolver.trackedCount()).toBe(0); // the stale submit-kind entry retires
   });
 
   it('NOT FOUND proves nothing — stays pending indefinitely, never freezes to RECONCILE_REQUIRED', async () => {

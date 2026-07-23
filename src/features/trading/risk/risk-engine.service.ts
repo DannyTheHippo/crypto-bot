@@ -1,4 +1,4 @@
-import { Injectable, Inject, Optional } from '@nestjs/common';
+import { Injectable, Inject, Optional, Logger } from '@nestjs/common';
 import { InjectMetric, makeCounterProvider } from '@willsoto/nestjs-prometheus';
 import { Counter } from 'prom-client';
 import Decimal from 'decimal.js';
@@ -33,6 +33,8 @@ export const RISK_REJECTIONS_COUNTER = makeCounterProvider({
 
 @Injectable()
 export class RiskEngineService implements RiskEnginePort {
+  private readonly log = new Logger('RiskEngine');
+
   constructor(
     @Inject(CLOCK) private readonly clock: ClockPort,
     @Inject(RISK_ENGINE_DEPS) private readonly deps: RiskEngineDeps,
@@ -172,6 +174,22 @@ export class RiskEngineService implements RiskEnginePort {
     const result = evaluate(input);
     const decision = this.finalize(result, now);
     this.record(decision); // journaled fire-and-forget (see record()); durability is order_events, not this
+    // Diagnostic (2026-07-23): STALE_DATA collapses four distinct failures — no ref price at all, a
+    // future/negative-age stamp, a genuinely aged mark, or a non-LIVE feed. The risk_decisions row
+    // records only the taxonomy reason, so a veto was previously un-diagnosable without a redeploy
+    // (this cost a mis-aimed fix earlier this session). Name the sub-cause here; Logger.warn is
+    // non-throwing and off the money result.
+    if (decision.verdict === 'REJECTED' && decision.reasons.includes('STALE_DATA')) {
+      const cause =
+        mark === undefined
+          ? 'no-ref-price'
+          : mark.ageMs < 0
+            ? `future-stamp(age=${mark.ageMs}ms)`
+            : mark.feedHealth !== 'LIVE'
+              ? `feed=${mark.feedHealth}`
+              : `aged(age=${mark.ageMs}ms)`;
+      this.log.warn(`STALE_DATA veto ${String(intent.symbol)}@${String(intent.venue)}: ${cause}`);
+    }
     return decision;
   }
 

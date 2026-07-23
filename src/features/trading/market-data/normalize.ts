@@ -1,5 +1,5 @@
 import Decimal from 'decimal.js';
-import { price, qty } from '../../../domain/types/money';
+import { price, qty, type Price } from '../../../domain/types/money';
 import { epochMs } from '../../../domain/types/ids';
 import type {
   MarketEvent,
@@ -38,6 +38,20 @@ function numStr(v: unknown, fallback = '0'): string {
   return fallback;
 }
 
+// A raw quote field parsed to a POSITIVE Price, or `fallback` when it is absent, zero, or otherwise
+// invalid. Lets a ticker that omits top-of-book still yield a usable bid/ask (= last) instead of
+// throwing on price('0') and dropping the whole event — see normalizeTicker's own comment for why
+// that drop silently blocked trading on every such symbol.
+function positivePriceOr(rawVal: unknown, fallback: Price): Price {
+  const s = numStr(rawVal, '');
+  if (s === '') return fallback;
+  try {
+    return price(s);
+  } catch {
+    return fallback;
+  }
+}
+
 function numOrUndef(v: unknown): number | undefined {
   return typeof v === 'number' ? v : undefined;
 }
@@ -66,10 +80,20 @@ function levelDecimal(value: unknown, infoStr?: unknown): Decimal {
 
 // ── Ticker normalization ─────────────────────────────────────────────────────
 
+// A venue ticker may carry NO top-of-book: Binance USD-M's @ticker 24h stream has last/close but no
+// best bid/ask (only @bookTicker does). Before bid/ask fell back to `last`, price(numStr(undefined))
+// => price('0') THREW, dropping the whole event, so such a symbol got no ref price at all and
+// RiskEngine vetoed every intent on it STALE_DATA (mark === undefined). Confirmed root cause of the
+// 2026-07-23 zero-trades finding: off-menu perps have no book channel either, so the ticker's `last`
+// is their only ref-price source. bid/ask therefore fall back to `last`, yielding a usable mid
+// (= last trade price) for the risk mark — the sole consumer of ticker bid/ask is
+// teeing-market-stream's setRef, which wants exactly that mid. `last` itself has no fallback: a ticker
+// with no last/close at all is genuinely priceless and still (correctly) throws + drops.
 function normalizeTicker(raw: RawVenueEvent, ingestTime: EpochMs): TickerEvent {
   const r = fields(raw.raw);
   const channel = 'ticker';
   const { eventTime, synthetic } = eventTimeOf(r['timestamp'], ingestTime);
+  const last = price(numStr(r['last'] ?? r['close']));
   return {
     kind: 'TICKER',
     venue: raw.venue,
@@ -79,9 +103,9 @@ function normalizeTicker(raw: RawVenueEvent, ingestTime: EpochMs): TickerEvent {
     eventTime,
     ingestTime,
     eventTimeSynthetic: synthetic || undefined,
-    bid: price(numStr(r['bid'] ?? r['bestBid'])),
-    ask: price(numStr(r['ask'] ?? r['bestAsk'])),
-    last: price(numStr(r['last'] ?? r['close'])),
+    bid: positivePriceOr(r['bid'] ?? r['bestBid'], last),
+    ask: positivePriceOr(r['ask'] ?? r['bestAsk'], last),
+    last,
   };
 }
 

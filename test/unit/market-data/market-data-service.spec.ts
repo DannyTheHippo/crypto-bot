@@ -75,13 +75,15 @@ describe('MarketDataService.subscribe', () => {
         timestamp: epochMs(1),
         raw: { timestamp: 1, bid: '100', ask: '101', last: '100.5' },
       },
-      // Missing bid → numStr defaults '0' → price('0') throws NON_POSITIVE → skipped.
+      // Genuinely priceless — no last/close and no bid/ask → price('0') throws NON_POSITIVE → skipped.
+      // (A ticker missing ONLY bid/ask is no longer unnormalizable: bid/ask fall back to `last` so the
+      // symbol still gets a ref price — see normalizeTicker's own comment / the 2026-07-23 fix.)
       {
         type: 'ticker',
         venue: V,
         symbol: S,
         timestamp: epochMs(2),
-        raw: { timestamp: 2, ask: '101', last: '100.5' },
+        raw: { timestamp: 2 },
       },
       {
         type: 'trade',

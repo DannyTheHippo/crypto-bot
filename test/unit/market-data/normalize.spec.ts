@@ -83,6 +83,37 @@ describe('normalize ticker fallbacks', () => {
     expect(ev.ask.toFixed()).toBe('11');
     expect(ev.last.toFixed()).toBe('10.5');
   });
+
+  // Root cause of the 2026-07-23 zero-trades finding: a ticker with NO top-of-book (Binance USD-M's
+  // @ticker) previously threw on price('0') and was dropped, leaving the symbol with no ref price and
+  // a permanent STALE_DATA veto. bid/ask now fall back to `last` so the event survives with a usable
+  // mid. A test that passes with the fix reverted would be worthless — this one throws pre-fix.
+  it('falls bid/ask back to last when the venue ticker carries no top-of-book (perp @ticker)', () => {
+    const ev = normalizeRawEvent(
+      raw('ticker', 'NORM-NOBOOK', { timestamp: 5, last: '42.5' }, 5),
+      ingest,
+    ) as TickerEvent;
+    expect(ev.kind).toBe('TICKER');
+    expect(ev.last.toFixed()).toBe('42.5');
+    expect(ev.bid.toFixed()).toBe('42.5'); // = last, so setRef's mid is the last trade price
+    expect(ev.ask.toFixed()).toBe('42.5');
+  });
+
+  it('falls a zero/invalid bid back to last but keeps a valid ask (mixed top-of-book)', () => {
+    const ev = normalizeRawEvent(
+      raw('ticker', 'NORM-MIXED', { timestamp: 6, bid: '0', ask: '11', last: '10.5' }, 6),
+      ingest,
+    ) as TickerEvent;
+    expect(ev.bid.toFixed()).toBe('10.5'); // '0' is invalid ⇒ fall back to last, never a 0 price
+    expect(ev.ask.toFixed()).toBe('11'); // valid ask is preserved
+    expect(ev.last.toFixed()).toBe('10.5');
+  });
+
+  it('still throws (event dropped) when the ticker has NO price of any kind — genuinely priceless', () => {
+    expect(() =>
+      normalizeRawEvent(raw('ticker', 'NORM-EMPTY', { timestamp: 7 }, 7), ingest),
+    ).toThrow();
+  });
 });
 
 describe('normalize trade', () => {

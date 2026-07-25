@@ -79,6 +79,7 @@ function buildLoop() {
   const mid = { value: '100' };
   const feed: FeedHealthPort = {
     getRefPrice: () => ({ mid: price(mid.value), at: epochMs(T) }),
+    updateRefPrice: () => undefined,
     health: () => 'LIVE',
     fetchCandles: () => Promise.resolve([]),
   };

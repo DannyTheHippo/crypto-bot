@@ -63,6 +63,7 @@ const lvl = (p: string, q: string): OrderLevel => ({ price: price(p), qty: qty(q
 function feed(mid = '100'): FeedHealthPort {
   return {
     getRefPrice: () => ({ mid: price(mid), at: epochMs(T) }),
+    updateRefPrice: () => undefined,
     health: () => 'LIVE',
     fetchCandles: () => Promise.resolve([]),
   };

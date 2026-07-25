@@ -3,6 +3,7 @@ import { z } from 'zod';
 import Decimal from 'decimal.js';
 import type { AppConfig, TradingMode, VenueConfig } from '../../ports/app-config';
 import { AGENTIC_MAX_STOP_LOSS_PCT } from '../../domain/risk/agentic-bounds';
+import { EDGE_POLICY_TRIAL_FAMILY_IDS } from '../../ports/agentic-strategy';
 import { splitSymbol } from '../../domain/types/symbol';
 import { symbolId } from '../../domain/types/ids';
 
@@ -372,6 +373,20 @@ const envSchema = z
       .enum(['true', 'false'])
       .default('false')
       .transform((v) => v === 'true'),
+    // Phase 4 (Profitability Edge Program): tournament-derived systematic edge policy — off by default.
+    // 'true'/'false' (not z.coerce.boolean(), same rationale as AGENTIC_TRACK_RECORD_ENABLED above).
+    // Default 'false' ⇒ DisabledEdgePolicy bound, byte-identical runtime.
+    AGENTIC_EDGE_POLICY_ENABLED: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
+    // Selected trial family. Empty/unset ⇒ 'none'. No winner calculator registered ⇒ fail-closed
+    // inactive at runtime even when enabled (see disabled-edge-policy.ts).
+    AGENTIC_EDGE_POLICY_FAMILY: z
+      .string()
+      .default('none')
+      .transform((v) => (v === '' ? 'none' : v))
+      .pipe(z.enum([...EDGE_POLICY_TRIAL_FAMILY_IDS, 'none'])),
     // Portfolio-consult batching (Push II Phase 5, DESIGN Task 2): coalesces the up-to-5 concurrent
     // single-symbol propose() calls landing within one window into ONE Anthropic call via
     // BatchingAgentClient/submit_portfolio, instead of 5 separate submit_decision calls. 'true'/
@@ -482,6 +497,10 @@ const envSchema = z
     // an opt-in; explicit '0' still disables the cap (position-sizer.service.ts's cappedEquity()
     // already treats a non-positive cap as pass-through, so '0' stays a legitimate escape hatch).
     SIZER_EQUITY_CAP: decimalString.default('1000'),
+    // Profitability Edge Program: aggregate planned-stop entry risk cap — max same-side cost
+    // notional = cappedEquity × fraction / Signal.stopLossPct (held |qty|×avgEntry + reserved +
+    // proposed). '0' (default) disables — byte-identical when Signal.stopLossPct is also absent.
+    SIZER_MAX_PLANNED_STOP_RISK_FRACTION: fractionString.default('0'),
     // ProtectiveExitService (bot-side stop-loss/trailing-stop backstop): fraction below avgEntry
     // (stop) or below the ratcheted high-water mark (trailing) that force-exits a long via the normal
     // Strategy→Risk→Execution path (an EXIT_LONG Signal, never a direct execution call). '0' (default)
@@ -844,6 +863,8 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     AGENTIC_CROSS_SYMBOL_LOOKBACK_BARS: agenticCrossSymbolLookbackBars,
     AGENTIC_BOOK_STRUCTURE_ENABLED: agenticBookStructureEnabled,
     AGENTIC_TRACK_RECORD_ENABLED: agenticTrackRecordEnabled,
+    AGENTIC_EDGE_POLICY_ENABLED: agenticEdgePolicyEnabled,
+    AGENTIC_EDGE_POLICY_FAMILY: agenticEdgePolicyFamily,
     AGENTIC_PORTFOLIO_CONSULT: agenticPortfolioConsult,
     AGENTIC_PORTFOLIO_WINDOW_MS: agenticPortfolioWindowMs,
     AGENTIC_MINT_BACKTEST_ROWS: agenticMintBacktestRows,
@@ -869,6 +890,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     BASE_NOTIONAL: baseNotional,
     SIZER_EQUITY_FRACTION: sizerEquityFraction,
     SIZER_EQUITY_CAP: sizerEquityCap,
+    SIZER_MAX_PLANNED_STOP_RISK_FRACTION: sizerMaxPlannedStopRiskFraction,
     PROTECT_STOP_LOSS_PCT: protectStopLossPct,
     PROTECT_TRAILING_PCT: protectTrailingPct,
     PLAN_STOP_WATCH_ENABLED: planStopWatchEnabled,
@@ -1068,6 +1090,8 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       crossSymbolLookbackBars: agenticCrossSymbolLookbackBars,
       bookStructureFeedEnabled: agenticBookStructureEnabled,
       trackRecordEnabled: agenticTrackRecordEnabled,
+      edgePolicyEnabled: agenticEdgePolicyEnabled,
+      edgePolicyFamily: agenticEdgePolicyFamily,
       portfolioConsultEnabled: agenticPortfolioConsult,
       portfolioWindowMs: agenticPortfolioWindowMs,
       tokenPriceInputPerMtok: agenticTokenPriceInputPerMtok,
@@ -1091,6 +1115,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       baseNotional,
       equityFraction: sizerEquityFraction,
       equityCap: sizerEquityCap,
+      maxPlannedStopRiskFraction: sizerMaxPlannedStopRiskFraction,
       protectStopLossPct,
       protectTrailingPct,
       planStopWatchEnabled,

@@ -6,7 +6,7 @@
 // deterministic and that promptHash varies with template components (playbook/model) but NOT with
 // per-call market payload (candle count) — the exact invariant groupKey()/scoreRows() rely on to
 // group many rows sharing one prompt config into a single Scorecard.
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   DECISION_TOOL,
   PROMPT_TEMPLATE_VERSION,
@@ -16,7 +16,7 @@ import {
 } from '../../../src/features/trading/agentic/agent-prompt';
 import { SEED_PLAYBOOK } from '../../../src/features/trading/agentic/agentic-strategy.module';
 import { compare, scoreRows } from '../../../src/features/trading/agentic/counterfactual-scoring';
-import { evalCandle, evalInput, EVAL_PROFILE } from './fixtures';
+import { EVAL_PROFILE, evalCandle, evalInput } from './fixtures';
 import {
   RECORDED_PAYLOAD_ROWS,
   composeRecordedUserMessage,
@@ -29,8 +29,8 @@ const MODEL = 'claude-eval-fixture-model';
 // Same structurally-valid-but-textually-different tweak candidate-vs-champion.spec.ts uses — one
 // playbook content variant, one template.
 const CANDIDATE_PLAYBOOK_CONTENT = SEED_PLAYBOOK.content.replace(
-  'Do not overtrade small, noisy fluctuations — each round trip costs real fees.',
-  'Prefer high-conviction setups only — each round trip costs real fees.',
+  'Fee arithmetic, quantified: a round trip costs ~20bps; your',
+  'Fee arithmetic, quantified: a round trip costs ~25bps; your',
 );
 
 function hashFor(playbookContent: string, model: string = MODEL): string {

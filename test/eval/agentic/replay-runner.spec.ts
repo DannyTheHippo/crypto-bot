@@ -3,28 +3,41 @@
 // AnthropicAgentClient) with a scripted, no-network fetchFn, then scores the resulting rows.
 // This suite never touches the network and never requires an API key — CI-exempt only because
 // ci.yml simply doesn't invoke it, not because it needs guarding.
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
+import { venueForSymbol } from '../../../src/domain/types/venue-map';
 import {
-  DECISION_TOOL,
-  PROMPT_TEMPLATE_VERSION,
+  THINKING_TEMPLATE_VERSION,
+  TRADE_TEMPLATE_VERSION,
   buildSystemPrompt,
+  buildTradeTool,
   computePromptHash,
 } from '../../../src/features/trading/agentic/agent-prompt';
 import { SEED_PLAYBOOK } from '../../../src/features/trading/agentic/agentic-strategy.module';
 import { scoreRows } from '../../../src/features/trading/agentic/counterfactual-scoring';
-import { EVAL_PROFILE, replay, type ScriptedDecision } from './fixtures';
+import { EVAL_PROFILE, SYM, replay, type ScriptedDecision } from './fixtures';
 
 const MODEL = 'claude-eval-fixture-model';
 const CLOSES = ['100', '102', '108', '104', '96', '99', '101'];
 const SCRIPT: readonly ScriptedDecision[] = [
-  { action: 'long', confidence: 0.7 },
+  { action: 'open_long', confidence: 0.7 },
   { action: 'hold', confidence: 0.6 },
   { action: 'hold', confidence: 0.6 },
-  { action: 'flat', confidence: 0.8 },
+  { action: 'close', confidence: 0.8 },
   { action: 'hold', confidence: 0.4 },
-  { action: 'long', confidence: 0.5 },
+  { action: 'open_long', confidence: 0.5 },
   { action: 'hold', confidence: 0.5 },
 ];
+
+/** Caps matching AnthropicAgentClient.capabilitiesFor defaults for the eval fixture symbol. */
+function evalFixtureCaps() {
+  return {
+    venue: venueForSymbol(SYM),
+    shorts: false,
+    leverage: '1',
+    maxSizeFraction: '0.15',
+    venueFreeCash: '0',
+  };
+}
 
 describe('agentic eval — replay runner (offline, fixture fetchFn)', () => {
   it('drives buildSystemPrompt/buildUserMessage + AnthropicAgentClient through a full candle window and produces one scorecard', async () => {
@@ -48,12 +61,11 @@ describe('agentic eval — replay runner (offline, fixture fetchFn)', () => {
       ]);
     }
 
-    // The promptHash the client returned must match an independent computePromptHash call over
-    // the same components — proof the real hashing path (not a fixture-side stand-in) ran.
+    // Client always stamps thinkingArm=true ⇒ TRADE_TEMPLATE_VERSION+th1 (prepareDecideContext).
     const expectedPromptHash = computePromptHash({
-      templateVersion: PROMPT_TEMPLATE_VERSION,
+      templateVersion: `${TRADE_TEMPLATE_VERSION}+${THINKING_TEMPLATE_VERSION}`,
       playbookContent: SEED_PLAYBOOK.content,
-      toolSchemaJson: JSON.stringify(DECISION_TOOL),
+      toolSchemaJson: JSON.stringify(buildTradeTool(evalFixtureCaps())),
       modelId: MODEL,
     });
     expect(rows[0]!.promptHash).toBe(expectedPromptHash);

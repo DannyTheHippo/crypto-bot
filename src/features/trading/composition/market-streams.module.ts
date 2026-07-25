@@ -2,7 +2,18 @@ import { Global, Logger, Module } from '@nestjs/common';
 import type { Exchange } from 'ccxt';
 import Decimal from 'decimal.js';
 import { TypedConfigService } from '../../../config/environment/typed-config.service';
+import type { EpochMs, SymbolId, VenueId } from '../../../domain/types/ids';
+import type {
+  CandleEvent,
+  CandleInterval,
+  ChannelHealth,
+  OrderLevel,
+} from '../../../domain/types/market-events';
+import type { Price } from '../../../domain/types/money';
+import { venueForSymbol } from '../../../domain/types/venue-map';
+import type { VenueConfig, VenueEnvironment } from '../../../ports/app-config';
 import { CLOCK, SystemClock, type ClockPort } from '../../../ports/clock';
+import { VENUE_EXCHANGE_PORTS, type ExchangePort } from '../../../ports/exchange';
 import {
   EXCHANGE_STREAM,
   type ExchangeStreamPort,
@@ -21,36 +32,21 @@ import {
   type SubscriptionSpec,
 } from '../../../ports/market-data';
 import { VENUE_REGISTRY, type VenueRuntimeDescriptor } from '../../../ports/venue-registry';
-import { VENUE_EXCHANGE_PORTS, type ExchangePort } from '../../../ports/exchange';
-import type { VenueConfig, VenueEnvironment } from '../../../ports/app-config';
-import type { VenueId, SymbolId, EpochMs } from '../../../domain/types/ids';
-import { venueForSymbol } from '../../../domain/types/venue-map';
-import type {
-  ChannelHealth,
-  CandleEvent,
-  CandleInterval,
-  OrderLevel,
-} from '../../../domain/types/market-events';
-import type { Price } from '../../../domain/types/money';
 import {
   CcxtExchangeStreamAdapter,
   RealWatchSource,
   WATCH_SOURCE,
   buildCcxtExchange,
-  type WatchSource,
   type ChannelTierResolver,
   type StreamAdapterLogger,
+  type WatchSource,
 } from '../market-data/ccxt-stream.adapter';
 import {
   FeedHealthServiceWithBackfill,
   type OhlcvSource,
 } from '../market-data/feed-health.service';
 import { MarketDataService } from '../market-data/market-data.service';
-import {
-  TeeingMarketStream,
-  type PaperFeedSink,
-  type RefPriceSink,
-} from '../market-data/teeing-market-stream';
+import { TeeingMarketStream, type PaperFeedSink } from '../market-data/teeing-market-stream';
 
 // v3 spec §1.3: MarketStreamsModule is MarketFeedModule's stream half, moved out of app.module.ts
 // and made venue-plural. CLOCK/WATCH_SOURCE are unchanged (lane-wide singletons); everything else
@@ -181,6 +177,15 @@ export class VenueRoutingFeedHealth implements VenueFeedHealth {
     return this.forSymbol(symbol)?.getRefPrice(symbol);
   }
 
+  // Write half of the risk mark — MUST forward to the same per-venue instance getRefPrice reads.
+  // Omitted on the original v3 facade: TeeingMarketStream called updateRefPrice on this object, the
+  // call threw TypeError, setRef's empty catch swallowed it, every Risk mark stayed undefined, and
+  // every intent was vetoed STALE_DATA (2026-07-23 zero-fills). Unroutable symbols no-op (match
+  // getRefPrice → undefined); the method itself is required on every venue instance — never `?.()`.
+  updateRefPrice(symbol: SymbolId, mid: Price, at: EpochMs): void {
+    this.forSymbol(symbol)?.updateRefPrice(symbol, mid, at);
+  }
+
   fetchCandles(
     venue: VenueId,
     symbol: SymbolId,
@@ -193,10 +198,10 @@ export class VenueRoutingFeedHealth implements VenueFeedHealth {
       : Promise.resolve([]);
   }
 
-  // Not part of FeedHealthPort — kept for parity with the per-venue ChannelStateTracker surface
-  // (no production call site reaches the AGGREGATE facade for this today: each venue's own
-  // CcxtExchangeStreamAdapter is wired directly against its OWN FeedHealthServiceWithBackfill
-  // instance, never through this facade — see buildExchangeStream below).
+  // Channel-state write used by adapters via their OWN per-venue FeedHealthServiceWithBackfill
+  // (buildExchangeStream wires each adapter directly). Also reachable on this aggregate for parity
+  // with ChannelStateTracker. Separately, TeeingMarketStream's ref-price writes DO go through this
+  // aggregate (updateRefPrice above) — that is a production write path, not adapter-only.
   recordEvent(venue: VenueId, symbol: SymbolId, channel: string): void {
     void venue;
     (
@@ -458,7 +463,7 @@ export function buildMarketStream(
   const paperFeed = anyPaper ? new VenueRoutingPaperFeedSink(ports) : undefined;
   return new TeeingMarketStream(
     inner,
-    feedHealth as unknown as RefPriceSink,
+    feedHealth,
     { ticker: true, book: true, ...(paperFeed !== undefined ? { trades: true } : {}) },
     paperFeed,
   );

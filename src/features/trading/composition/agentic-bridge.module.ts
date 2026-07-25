@@ -38,6 +38,10 @@ import { PriceHistoryStore } from '../agentic/price-history-store';
 import { validatePlaybook } from '../agentic/playbook-validator';
 import { UniverseScannerService } from '../agentic/universe-scanner.service';
 import { RoundTripEvidenceReader } from '../agentic/round-trip-evidence.reader';
+import { EDGE_POLICY_OVERRIDE } from '../agentic/disabled-edge-policy';
+import { EdgeCohortPinState } from '../agentic/edge-cohort-pin-state';
+import { ResidualVolbetaEdgePolicy } from '../agentic/residual-volbeta-edge-policy';
+import { FEED_HEALTH, type FeedHealthPort } from '../../../ports/market-data';
 import {
   LiveVersionRewardSource,
   type VersionRewardSource,
@@ -49,6 +53,7 @@ import {
   LLM_USAGE_SINK,
   type AgentDecisionJournalPort,
   type AgentTradingProfile,
+  type EdgePolicyPort,
   type LlmUsageSink,
   type PlaybookProvider,
   type SymbolConstraints,
@@ -565,16 +570,58 @@ function isTestEnv(): boolean {
       // TradingRuntimeService's own recompute-cadence/pin-provider wiring share the exact same
       // instance — never two independently-drifting scanners. isPinned reads the live PORTFOLIO_VIEW
       // snapshot: a symbol with an open position is always active, never orphaned from consults.
+      provide: EdgeCohortPinState,
+      useFactory: (): EdgeCohortPinState => new EdgeCohortPinState(),
+    },
+    {
+      // Owner-directed demo: residual20-volbeta despite tournament DD/concentration gate fail.
+      // Absent/other families ⇒ undefined ⇒ createEdgePolicyPort stays fail-closed DisabledEdgePolicy.
+      provide: EDGE_POLICY_OVERRIDE,
+      useFactory: (
+        config: TypedConfigService,
+        feed: FeedHealthPort | undefined,
+        clock: ClockPort,
+        pinState: EdgeCohortPinState,
+      ): EdgePolicyPort | undefined => {
+        if (config.agentic.edgePolicyFamily !== 'residual20-volbeta') return undefined;
+        if (!feed) {
+          Logger.warn(
+            'EDGE_POLICY_OVERRIDE: FEED_HEALTH absent — residual20-volbeta unbound',
+            'AgenticBridge',
+          );
+          return undefined;
+        }
+        return new ResidualVolbetaEdgePolicy({
+          feedHealth: feed,
+          symbols: config.strategy.symbols,
+          now: () => clock.now(),
+          pinState,
+          logger: {
+            warn: (m) => Logger.warn(m, 'ResidualVolbetaEdgePolicy'),
+            log: (m) => Logger.log(m, 'ResidualVolbetaEdgePolicy'),
+          },
+        });
+      },
+      inject: [
+        TypedConfigService,
+        { token: FEED_HEALTH, optional: true },
+        CLOCK,
+        EdgeCohortPinState,
+      ],
+    },
+    {
       provide: ACTIVE_MENU_GATE_OVERRIDE,
       useFactory: (
         config: TypedConfigService,
         portfolio: PortfolioViewPort,
         recorder: AgentMetricsRecorder,
+        edgePins: EdgeCohortPinState,
       ): UniverseScannerService =>
         new UniverseScannerService({
           basket: config.strategy.symbols,
           menuSize: config.agentic.activeMenuSize,
           isPinned: (symbol) => {
+            if (edgePins.has(symbol)) return true;
             const snap = portfolio.snapshot();
             for (const p of snap.positions.values()) {
               if (String(p.symbol) === symbol && !p.signedQty.isZero()) return true;
@@ -590,7 +637,7 @@ function isTestEnv(): boolean {
             recordMenuChurn: (menuIn, menuOut) => recorder.recordMenuChurn(menuIn, menuOut),
           },
         }),
-      inject: [TypedConfigService, PORTFOLIO_VIEW, AgentMetricsRecorder],
+      inject: [TypedConfigService, PORTFOLIO_VIEW, AgentMetricsRecorder, EdgeCohortPinState],
     },
     {
       // P5 (Design § Learning & measurement stack): ONE shared ExecQualityService instance, exported
@@ -744,6 +791,8 @@ function isTestEnv(): boolean {
     LLM_USAGE_SINK,
     PROMOTION_STATS,
     REFLECTION_EVIDENCE,
+    EDGE_POLICY_OVERRIDE,
+    EdgeCohortPinState,
   ],
 })
 export class AgenticBridgeModule {}

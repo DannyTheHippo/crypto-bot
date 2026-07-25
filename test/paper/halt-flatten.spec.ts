@@ -99,6 +99,7 @@ function build() {
   let mark = '100';
   const feed: FeedHealthPort = {
     getRefPrice: () => ({ mid: price(mark), at: epochMs(T) }),
+    updateRefPrice: () => undefined,
     health: () => 'LIVE',
     fetchCandles: () => Promise.resolve([]),
   };

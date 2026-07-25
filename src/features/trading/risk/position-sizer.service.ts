@@ -1,26 +1,37 @@
-import { Injectable, Inject } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
+import { InjectMetric, makeCounterProvider } from '@willsoto/nestjs-prometheus';
 import Decimal from 'decimal.js';
+import { Counter } from 'prom-client';
+import { positionKey } from '../../../domain/risk/evaluate';
+import {
+  applyFundingScaling,
+  liqSafeNotionalCap,
+  marginNotionalCap,
+} from '../../../domain/risk/perp-sizing';
+import { plannedStopNotionalHeadroom } from '../../../domain/risk/planned-stop-risk';
+import { encodeClientOrderId, epochMs, intentId, type VenueId } from '../../../domain/types/ids';
+import { roundToStep, roundToTick, type Price, type Qty } from '../../../domain/types/money';
+import type { OrderIntent } from '../../../domain/types/order-intent';
+import type { PortfolioSnapshot } from '../../../domain/types/portfolio';
+import type { Signal } from '../../../domain/types/signal';
+import { splitSymbol } from '../../../domain/types/symbol';
+import { PERP_VENUE_ID } from '../../../domain/types/venue-map';
 import { CLOCK, type ClockPort } from '../../../ports/clock';
 import {
   SIZER_DEPS,
   type PositionSizerPort,
-  type SizingResult,
   type SizerDeps,
+  type SizingResult,
 } from '../../../ports/risk';
-import { positionKey } from '../../../domain/risk/evaluate';
-import {
-  marginNotionalCap,
-  liqSafeNotionalCap,
-  applyFundingScaling,
-} from '../../../domain/risk/perp-sizing';
-import type { Signal } from '../../../domain/types/signal';
-import type { OrderIntent } from '../../../domain/types/order-intent';
-import type { PortfolioSnapshot } from '../../../domain/types/portfolio';
-import { splitSymbol } from '../../../domain/types/symbol';
-import { roundToStep, roundToTick, type Price, type Qty } from '../../../domain/types/money';
-import { intentId, encodeClientOrderId, epochMs, type VenueId } from '../../../domain/types/ids';
-import { PERP_VENUE_ID } from '../../../domain/types/venue-map';
 import { uuidv7 } from './uuidv7';
+
+// Profitability Edge Program: planned-stop sizing clamps and invalid-stop rejections.
+// @Optional injection so directly-constructed unit tests cover the metric-absent branch.
+export const PLANNED_STOP_SIZING_COUNTER = makeCounterProvider({
+  name: 'planned_stop_sizing_total',
+  help: 'Planned-stop entry risk cap outcomes (aggregate same-side cost-notional clamp or invalid stop)',
+  labelNames: ['outcome'] as const,
+});
 
 // v3 §1.2: PERP_VENUE_ID is the single canonical source (domain/types/venue-map.ts) — this retires
 // the local copy the pre-v3 pass kept here. A symbol's own :SETTLE suffix (splitSymbol) is the
@@ -68,6 +79,9 @@ export class PositionSizerService implements PositionSizerPort {
   constructor(
     @Inject(CLOCK) private readonly clock: ClockPort,
     @Inject(SIZER_DEPS) private readonly deps: SizerDeps,
+    @Optional()
+    @InjectMetric('planned_stop_sizing_total')
+    private readonly plannedStopSizing?: Counter<string>,
   ) {}
 
   size(signal: Signal, snapshot: PortfolioSnapshot): SizingResult {
@@ -86,6 +100,14 @@ export class PositionSizerService implements PositionSizerPort {
     const order = orderForKind(signal.kind, posQty);
     if (order === null) return { ok: false, reason: 'NO_POSITION' };
     const { side, reduceOnly } = order;
+
+    if (!reduceOnly) {
+      const invalidStop = this.plannedStopRiskRejectReason(signal);
+      if (invalidStop !== undefined) {
+        this.plannedStopSizing?.inc({ outcome: 'invalid_stop' });
+        return { ok: false, reason: invalidStop };
+      }
+    }
 
     // Limit price: hint or decision-time reference, rounded directionally to the tick. A hint or an
     // entry price rounds conservatively (BUY down, SELL up — never pay/receive worse than intended).
@@ -180,7 +202,7 @@ export class PositionSizerService implements PositionSizerPort {
     // venue-rounding/band gate downstream (F1, evaluate.ts) still applies unchanged.
     const rawQty: Decimal = reduceOnly
       ? posQty.abs().mul(new Decimal(signal.reduceFraction ?? '1'))
-      : this.entryNotional(signal, snapshot, side, posQty).div(limitPrice!);
+      : this.entryNotional(signal, snapshot, side, posQty, pos?.avgEntry).div(limitPrice!);
     // A reduce-only with nothing attributed (or a fully-zeroed reduceFraction) is a strategy no-op,
     // not a dust order — report it distinctly so trade analysis can separate "flat, nothing to
     // exit" from a genuine sub-min size. A non-sizeFraction entry that collapses to zero/negative
@@ -310,6 +332,7 @@ export class PositionSizerService implements PositionSizerPort {
     snapshot: PortfolioSnapshot,
     side: 'BUY' | 'SELL',
     posQty: Decimal,
+    avgEntry?: Price,
   ): Decimal {
     const isPerp = isPerpSignal(signal);
     const cappedEquity = this.cappedEquity(snapshot.equity);
@@ -326,9 +349,62 @@ export class PositionSizerService implements PositionSizerPort {
           : cappedEquity.mul(fraction).mul(signal.strength);
     }
 
+    base = this.applyPlannedStopRiskCap(
+      base,
+      signal,
+      snapshot,
+      side,
+      posQty,
+      avgEntry,
+      cappedEquity,
+    );
     base = this.applyVenueHeadroomClamp(base, signal, snapshot);
     base = this.applyAffordabilityClamp(base, signal, side, snapshot);
     return isPerp ? this.applyPerpCaps(base, signal, snapshot) : base;
+  }
+
+  // Profitability Edge Program: when SIZER_MAX_PLANNED_STOP_RISK_FRACTION > 0 and the entry signal
+  // carries stopLossPct, cap aggregate same-side cost-notional — max total = cappedEquity × fraction /
+  // stopLossPct; subtract held (|posQty|×avgEntry on same-side scale-ins) and same-side reserved
+  // entry notional; clamp the proposed order to the remainder. Applied before venueHeadroom/
+  // affordability/perp clamps. Disabled cap or absent stopLossPct ⇒ byte-identical pass-through.
+  private applyPlannedStopRiskCap(
+    target: Decimal,
+    signal: Signal,
+    snapshot: PortfolioSnapshot,
+    side: 'BUY' | 'SELL',
+    posQty: Decimal,
+    avgEntry: Price | undefined,
+    cappedEquity: Decimal,
+  ): Decimal {
+    const fraction = new Decimal(this.deps.maxPlannedStopRiskFraction ?? '0');
+    if (!fraction.isFinite() || fraction.lte(0)) return target;
+    if (signal.stopLossPct === undefined) return target;
+
+    const stopPct = new Decimal(signal.stopLossPct);
+    let consumed = this.reservedEntryNotional(signal, snapshot, side);
+    if (isSameSideEntry(side, posQty) && avgEntry !== undefined) {
+      consumed = consumed.add(posQty.abs().mul(avgEntry));
+    }
+
+    const remaining = plannedStopNotionalHeadroom(cappedEquity, fraction, stopPct, consumed);
+    const clamped = Decimal.min(target, remaining);
+    if (clamped.lt(target)) {
+      this.plannedStopSizing?.inc({ outcome: 'clamp' });
+    }
+    return clamped;
+  }
+
+  // When the planned-stop cap is enabled, ENTER_* without a valid stopLossPct fails closed.
+  private plannedStopRiskRejectReason(signal: Signal): 'INVALID_STOP_RISK' | undefined {
+    const fraction = new Decimal(this.deps.maxPlannedStopRiskFraction ?? '0');
+    if (!fraction.isFinite() || fraction.lte(0)) return undefined;
+    if (signal.kind !== 'ENTER_LONG' && signal.kind !== 'ENTER_SHORT') return undefined;
+    if (signal.stopLossPct === undefined) return 'INVALID_STOP_RISK';
+    if (!/^\d+(\.\d+)?$/.test(signal.stopLossPct)) return 'INVALID_STOP_RISK';
+    const stopPct = new Decimal(signal.stopLossPct);
+    if (!stopPct.isFinite() || stopPct.lte(0)) return 'INVALID_STOP_RISK';
+    return undefined;
   }
 
   // SIZER_EQUITY_CAP (C1, Design § Live-scale economics): sizing equity across every notional path

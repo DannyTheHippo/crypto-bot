@@ -2,16 +2,16 @@
 // test file — Vitest's default include glob only picks up *.spec.ts/*.test.ts, so this module is
 // only ever reached via import.
 import Decimal from 'decimal.js';
-import { AnthropicAgentClient } from '../../../src/features/trading/agentic/anthropic-agent-client';
-import { price, qty } from '../../../src/domain/types/money';
-import { strategyId, venueId, symbolId, epochMs } from '../../../src/domain/types/ids';
+import { epochMs, strategyId, symbolId, venueId } from '../../../src/domain/types/ids';
 import type { CandleEvent } from '../../../src/domain/types/market-events';
+import { price, qty } from '../../../src/domain/types/money';
+import { AnthropicAgentClient } from '../../../src/features/trading/agentic/anthropic-agent-client';
+import type { ScoringRow } from '../../../src/features/trading/agentic/counterfactual-scoring';
 import type {
   AgentDecisionInput,
   AgentMarketSnapshot,
   AgentTradingProfile,
 } from '../../../src/ports/agentic-strategy';
-import type { ScoringRow } from '../../../src/features/trading/agentic/counterfactual-scoring';
 
 // v3 consolidation spec §9: buildSystemPrompt's planMode option is DELETED — production only ever
 // serves the rich decision contract now. Several recorded-payload/replay eval fixtures still need to
@@ -65,6 +65,7 @@ export const SYM = symbolId('BTC/USDT');
 // strategy's toJournalAction ('long' entered, 'flat' closed).
 export function toScoringAction(action: string | undefined): ScoringRow['action'] {
   if (action === undefined) return 'error';
+  // Legacy recorded rows / pre-v3 scripts may still emit long/flat.
   if (action === 'long') return 'open_long';
   if (action === 'flat') return 'close';
   return action as ScoringRow['action'];
@@ -113,22 +114,40 @@ export function evalInput(candle: CandleEvent): AgentDecisionInput {
 }
 
 export interface ScriptedDecision {
-  readonly action: 'long' | 'flat' | 'hold';
+  readonly action: 'open_long' | 'open_short' | 'close' | 'adjust' | 'hold' | 'long' | 'flat';
   readonly confidence: number;
   readonly rationale?: string;
 }
 
 function toolUseResponseBody(decision: ScriptedDecision): unknown {
+  const action =
+    decision.action === 'long'
+      ? 'open_long'
+      : decision.action === 'flat'
+        ? 'close'
+        : decision.action;
+  const open =
+    action === 'open_long' || action === 'open_short'
+      ? {
+          sizeFraction: 0.1,
+          entry: { style: 'taker', offsetBps: 0 },
+          entryValidityBars: 2,
+          stopLossPct: 0.02,
+          takeProfitPct: 0.04,
+          maxHoldBars: 16,
+        }
+      : {};
   return {
     stop_reason: 'tool_use',
     content: [
       {
         type: 'tool_use',
-        name: 'submit_decision',
+        name: 'submit_trade',
         input: {
-          action: decision.action,
+          action,
           confidence: decision.confidence,
           rationale: decision.rationale ?? 'eval fixture rationale',
+          ...open,
         },
       },
     ],

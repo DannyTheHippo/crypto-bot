@@ -3,10 +3,10 @@
 // version, score each into its own Scorecard, and compare() them. This is exactly the scenario
 // compare()'s own refusal-without-flag docstring describes as the one caller who CAN vouch for
 // template equality.
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { SEED_PLAYBOOK } from '../../../src/features/trading/agentic/agentic-strategy.module';
-import { validatePlaybook } from '../../../src/features/trading/agentic/playbook-validator';
 import { compare, scoreRows } from '../../../src/features/trading/agentic/counterfactual-scoring';
+import { validatePlaybook } from '../../../src/features/trading/agentic/playbook-validator';
 import { replay, type ScriptedDecision } from './fixtures';
 
 const MODEL = 'claude-eval-fixture-model';
@@ -25,8 +25,8 @@ const SCRIPT: readonly ScriptedDecision[] = [
 // tightened — enough to change promptHash (playbook content is folded into the hash) without
 // tripping validatePlaybook's structural gate.
 const CANDIDATE_PLAYBOOK_CONTENT = SEED_PLAYBOOK.content.replace(
-  'Do not overtrade small, noisy fluctuations — each round trip costs real fees.',
-  'Prefer high-conviction setups only — each round trip costs real fees.',
+  'Fee arithmetic, quantified: a round trip costs ~20bps; your',
+  'Fee arithmetic, quantified: a round trip costs ~25bps; your',
 );
 
 describe('agentic eval — candidate-vs-champion A/B', () => {

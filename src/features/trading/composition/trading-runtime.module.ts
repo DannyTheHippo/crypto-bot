@@ -8,121 +8,124 @@ import {
   type OnModuleDestroy,
   type OnModuleInit,
 } from '@nestjs/common';
-import path from 'node:path';
 import Decimal from 'decimal.js';
+import path from 'node:path';
 import { TypedConfigService } from '../../../config/environment/typed-config.service';
-import { ObservabilityModule } from '../../common/observability/observability.module';
-import { RiskModule } from '../risk/risk.module';
-import { ExecutionModule } from '../execution/execution.module';
-import { ModeControlModule } from '../mode-control/mode-control.module';
-import { ModeControlService } from '../mode-control/mode-control.service';
-import { SignalSinkService, SIGNAL_REJECTIONS_COUNTER } from '../execution/signal-sink.service';
-import { HaltCoordinatorService } from '../execution/halt-coordinator.service';
-import { RecoveryCoordinatorService } from '../execution/recovery-coordinator.service';
-import { ProtectiveExitService, PROTECTIVE_EXITS_COUNTER } from '../risk/protective-exit.service';
-import { PlanStopRegistryService } from '../risk/plan-stop-registry.service';
-import { UnknownResolverService } from '../execution/unknown-resolver.service';
-import { ReconciliationService } from '../execution/reconciliation.service';
-import { EquitySamplerService } from '../execution/equity-sampler.service';
-import { BootRecoveryService } from '../execution/boot-recovery.service';
-import { DemoFillPollerService } from '../execution/demo-fill-poller.service';
-import { AlgoStopRecoveryService } from '../execution/algo-stop-recovery.service';
-import { StrategyRegistry } from '../agentic/strategy-registry';
-import { StrategyHost } from '../agentic/strategy-host';
+import { DEFAULT_FILTERS } from '../../../domain/risk/default-filters';
+import type { VenueId } from '../../../domain/types/ids';
+import { strategyId, symbolId, type SymbolId } from '../../../domain/types/ids';
+import type { CandleInterval } from '../../../domain/types/market-events';
+import { venueForSymbol } from '../../../domain/types/venue-map';
 import {
-  AgenticStrategyModule,
-  AGENT_LLM_BUDGET,
-  PLAYBOOK_PROVIDER_OVERRIDE,
-  ACTIVE_MENU_GATE_OVERRIDE,
-  REFLECTION_SERVICE,
-  agenticEnv,
-} from '../agentic/agentic-strategy.module';
+  AGENT_CLIENT,
+  AGENT_DECISION_JOURNAL,
+  AgentProposeError,
+  EDGE_POLICY,
+  PLAYBOOK_PROVIDER,
+  type AgentCalendarEvent,
+  type AgentClientPort,
+  type AgentDecisionInput,
+  type AgentDecisionJournalPort,
+  type AgentProposal,
+  type EdgePolicyPort,
+  type PlaybookProvider,
+} from '../../../ports/agentic-strategy';
+import { CLOCK, type ClockPort } from '../../../ports/clock';
+import { DERIVATIVES_FEED, type DerivativesFeedPort } from '../../../ports/derivatives-feed';
+import { EXCHANGE_PORT, type ExchangePort } from '../../../ports/exchange';
+import { EXCHANGE_STREAM, type ExchangeStreamPort } from '../../../ports/exchange-stream';
+import {
+  EXECUTION_STORE,
+  PORTFOLIO_VIEW,
+  type ExecutionStorePort,
+  type PortfolioViewPort,
+} from '../../../ports/execution';
+import { FEAR_GREED_FEED, type FearGreedFeedPort } from '../../../ports/fear-greed-feed';
+import { LIQUIDATION_FEED, type LiquidationFeedPort } from '../../../ports/liquidation-feed';
+import {
+  FEED_HEALTH,
+  MARKET_STREAM,
+  type FeedHealthPort,
+  type MarketStreamPort,
+} from '../../../ports/market-data';
+import { POSITIONING_FEED, type PositioningFeedPort } from '../../../ports/positioning-feed';
+import {
+  PROMOTION_READINESS,
+  PROMOTION_STATS,
+  REFLECTION_EVIDENCE,
+  type PromotionReadiness,
+  type PromotionReadinessPort,
+  type PromotionStatsPort,
+  type RoundTripEvidencePort,
+} from '../../../ports/promotion';
+import {
+  KILL_SWITCH,
+  PLAN_STOP_REGISTRY,
+  PROTECTIVE_EXIT_CONFIG,
+  type KillSwitchPort,
+  type PlanStopRegistryPort,
+  type ProtectiveExitConfig,
+} from '../../../ports/risk';
+import { SENTIMENT_FEED, type SentimentFeedPort } from '../../../ports/sentiment-feed';
+import {
+  SIGNAL_SINK,
+  STRATEGY_HOST,
+  STRATEGY_REGISTRY,
+  type StrategyHostPort,
+  type StrategyRegistryPort,
+} from '../../../ports/strategy';
+import { TRADE_FLOW_FEED, type TradeFlowFeedPort } from '../../../ports/trade-flow-feed';
+import { VENUE_REGISTRY, type VenueRuntimeDescriptor } from '../../../ports/venue-registry';
+import type { AgentDecideOutcome } from '../../common/observability/agent-metrics-recorder.service';
+import { AgentMetricsRecorder } from '../../common/observability/agent-metrics-recorder.service';
+import { ObservabilityModule } from '../../common/observability/observability.module';
+import { OpsEventLogger } from '../../common/observability/ops-event-logger';
 import type { DailyLlmBudget } from '../agentic/agent-budget';
 import { buildAgentPortfolioBlock } from '../agentic/agent-portfolio-block';
-import { loadMacroCalendar, filterUpcoming } from '../agentic/macro-calendar';
+import { assertAgenticLaneNotLive } from '../agentic/agentic-live-interlock';
+import {
+  ACTIVE_MENU_GATE_OVERRIDE,
+  AGENT_LLM_BUDGET,
+  agenticEnv,
+  AgenticStrategyModule,
+  PLAYBOOK_PROVIDER_OVERRIDE,
+  REFLECTION_SERVICE,
+} from '../agentic/agentic-strategy.module';
+import {
+  AgenticStrategy,
+  type AgenticStrategyDeps,
+  type AgenticStrategyParams,
+} from '../agentic/agentic.strategy';
+import { CrossSymbolContextService } from '../agentic/cross-symbol-context';
+import { filterUpcoming, loadMacroCalendar } from '../agentic/macro-calendar';
+import { PriceHistoryStore } from '../agentic/price-history-store';
 import {
   createPromotionEvaluator,
   PromotionEvaluator,
   type EvaluatorPlaybookStore,
 } from '../agentic/promotion-evaluator';
 import { ReflectionService } from '../agentic/reflection.service';
-import {
-  AgenticStrategy,
-  type AgenticStrategyParams,
-  type AgenticStrategyDeps,
-} from '../agentic/agentic.strategy';
-import { CrossSymbolContextService } from '../agentic/cross-symbol-context';
+import { StrategyHost } from '../agentic/strategy-host';
+import { StrategyRegistry } from '../agentic/strategy-registry';
 import { UniverseScannerService } from '../agentic/universe-scanner.service';
-import { PriceHistoryStore } from '../agentic/price-history-store';
-import { assertAgenticLaneNotLive } from '../agentic/agentic-live-interlock';
+import { AlgoStopRecoveryService } from '../execution/algo-stop-recovery.service';
+import { BootRecoveryService } from '../execution/boot-recovery.service';
+import { DemoFillPollerService } from '../execution/demo-fill-poller.service';
+import { EquitySamplerService } from '../execution/equity-sampler.service';
+import { ExecutionModule } from '../execution/execution.module';
+import { HaltCoordinatorService } from '../execution/halt-coordinator.service';
+import { ReconciliationService } from '../execution/reconciliation.service';
+import { RecoveryCoordinatorService } from '../execution/recovery-coordinator.service';
+import { SIGNAL_REJECTIONS_COUNTER, SignalSinkService } from '../execution/signal-sink.service';
+import { UnknownResolverService } from '../execution/unknown-resolver.service';
+import { ModeControlModule } from '../mode-control/mode-control.module';
+import { ModeControlService } from '../mode-control/mode-control.service';
+import { PlanStopRegistryService } from '../risk/plan-stop-registry.service';
+import { PROTECTIVE_EXITS_COUNTER, ProtectiveExitService } from '../risk/protective-exit.service';
+import { RiskModule } from '../risk/risk.module';
 import { symbolConstraintsFor } from './agentic-bridge.module';
 import { MergedExchangeStream } from './market-streams.module';
-import { AgentMetricsRecorder } from '../../common/observability/agent-metrics-recorder.service';
-import { OpsEventLogger } from '../../common/observability/ops-event-logger';
-import { DEFAULT_FILTERS } from '../../../domain/risk/default-filters';
-import { venueForSymbol } from '../../../domain/types/venue-map';
-import { symbolId, strategyId, type SymbolId } from '../../../domain/types/ids';
-import type { CandleInterval } from '../../../domain/types/market-events';
-import { CLOCK, type ClockPort } from '../../../ports/clock';
-import {
-  KILL_SWITCH,
-  PROTECTIVE_EXIT_CONFIG,
-  PLAN_STOP_REGISTRY,
-  type KillSwitchPort,
-  type ProtectiveExitConfig,
-  type PlanStopRegistryPort,
-} from '../../../ports/risk';
-import { EXCHANGE_PORT, type ExchangePort } from '../../../ports/exchange';
-import { EXCHANGE_STREAM, type ExchangeStreamPort } from '../../../ports/exchange-stream';
-import {
-  PORTFOLIO_VIEW,
-  EXECUTION_STORE,
-  type PortfolioViewPort,
-  type ExecutionStorePort,
-} from '../../../ports/execution';
-import {
-  MARKET_STREAM,
-  FEED_HEALTH,
-  type FeedHealthPort,
-  type MarketStreamPort,
-} from '../../../ports/market-data';
-import {
-  STRATEGY_HOST,
-  STRATEGY_REGISTRY,
-  SIGNAL_SINK,
-  type StrategyHostPort,
-  type StrategyRegistryPort,
-} from '../../../ports/strategy';
-import {
-  AGENT_CLIENT,
-  AGENT_DECISION_JOURNAL,
-  PLAYBOOK_PROVIDER,
-  AgentProposeError,
-  type AgentClientPort,
-  type AgentDecisionInput,
-  type AgentDecisionJournalPort,
-  type AgentProposal,
-  type AgentCalendarEvent,
-  type PlaybookProvider,
-} from '../../../ports/agentic-strategy';
-import type { AgentDecideOutcome } from '../../common/observability/agent-metrics-recorder.service';
-import {
-  PROMOTION_READINESS,
-  PROMOTION_STATS,
-  REFLECTION_EVIDENCE,
-  type PromotionReadinessPort,
-  type PromotionReadiness,
-  type RoundTripEvidencePort,
-  type PromotionStatsPort,
-} from '../../../ports/promotion';
-import { DERIVATIVES_FEED, type DerivativesFeedPort } from '../../../ports/derivatives-feed';
-import { SENTIMENT_FEED, type SentimentFeedPort } from '../../../ports/sentiment-feed';
-import { FEAR_GREED_FEED, type FearGreedFeedPort } from '../../../ports/fear-greed-feed';
-import { TRADE_FLOW_FEED, type TradeFlowFeedPort } from '../../../ports/trade-flow-feed';
-import { POSITIONING_FEED, type PositioningFeedPort } from '../../../ports/positioning-feed';
-import { LIQUIDATION_FEED, type LiquidationFeedPort } from '../../../ports/liquidation-feed';
-import { VENUE_REGISTRY, type VenueRuntimeDescriptor } from '../../../ports/venue-registry';
-import type { VenueId } from '../../../domain/types/ids';
+import { engageStartTradingFailure } from './start-trading-failure';
 
 // v3 spec §1.3: TradingRuntimeModule absorbs app.module.ts's root provider block (SignalSinkService
 // … STRATEGY_HOST, verbatim) plus TradingRuntimeService, extracted from the old AppModule class body.
@@ -261,6 +264,7 @@ export class TradingRuntimeService
     // above), never direct-constructed in a unit test (mirrors agentMetrics just above).
     private readonly opsEvents: OpsEventLogger,
     @Inject(AGENT_LLM_BUDGET) private readonly agentBudget: DailyLlmBudget,
+    @Inject(EDGE_POLICY) private readonly edgePolicy: EdgePolicyPort,
     // I1: the SAME scanner instance ACTIVE_MENU_GATE_OVERRIDE binds (see that token's own comment) —
     // shared with agentic-strategy.module.ts's AGENT_CLIENT factory via the identical DI token.
     @Inject(ACTIVE_MENU_GATE_OVERRIDE) private readonly universeScanner: UniverseScannerService,
@@ -321,7 +325,7 @@ export class TradingRuntimeService
     private readonly roundTripEvidence?: RoundTripEvidencePort,
     @Optional() @Inject(PROMOTION_STATS) promotionStats?: PromotionStatsPort,
     @Optional() @Inject(PLAYBOOK_PROVIDER_OVERRIDE) playbookStore?: EvaluatorPlaybookStore,
-    @Optional() @Inject(KILL_SWITCH) killSwitch?: KillSwitchPort,
+    @Optional() @Inject(KILL_SWITCH) private readonly killSwitch?: KillSwitchPort,
     // Push 3 P7c: resting-order role resolution (vtp/vsl), threaded into AgenticStrategyDeps.
     // intentStore below. @Optional like the other DB-backed deps: absent under test/ci/no-DB
     // leaves every role lookup 'unknown' (warn-once, leave-alone — never a blind cancel).
@@ -348,7 +352,7 @@ export class TradingRuntimeService
       journal: this.agentJournal,
       playbookStore,
       recorder: this.agentMetrics,
-      killSwitch,
+      killSwitch: this.killSwitch,
       registry: this.registry,
       logger: { warn: (m) => this.log.warn(m) },
     });
@@ -454,7 +458,24 @@ export class TradingRuntimeService
         }, 30_000),
       );
     }
-    void this.startTrading(mode);
+    // Catch pin/boot failures here: void+throw becomes unhandledRejection → process.exit(1)
+    // (main.ts) → docker restart storm while Nest already reported healthy (2026-07-24 HYPE
+    // setMarginMode -4067 with open orders). Fail-closed stays fail-closed via kill-switch HALT
+    // with flatten=true (the book may already be positioned from a prior run — pin fails before
+    // strategies start, so leave-naked is worse than an orderly flatten). The process must keep
+    // serving so reconcile/ops can run; pin itself now tolerates -4067 when margin is already
+    // isolated (ccxt-order-client), so this path is the residual for true pin/boot defects.
+    void this.startTrading(mode).catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.log.error(`startTrading failed (fail-closed, no restart): ${msg}`);
+      if (!this.killSwitch) {
+        this.log.error(
+          `START_TRADING_FAILED and KILL_SWITCH unwired — cannot HALT/flatten: ${msg.slice(0, 200)}`,
+        );
+        return;
+      }
+      engageStartTradingFailure(this.killSwitch, err);
+    });
   }
 
   onModuleDestroy(): void {
@@ -507,7 +528,8 @@ export class TradingRuntimeService
       // EXCHANGE_PORT (VenueRoutingExchangeAdapter) narrows this call to the perp venue's own port
       // and filters the symbol list to that venue's symbols internally (exchange-adapters.module.ts)
       // — a spot-only deployment no-ops (no perp port registered). Fail-closed on the perp runtime: a
-      // pin failure throws here and the boot dies — including a FRACTIONAL PERP_LEVERAGE_CAP, passed
+      // pin failure rejects this promise (caught by onApplicationBootstrap's startTrading().catch —
+      // kill-switch HALT+flatten, process stays up) — including a FRACTIONAL PERP_LEVERAGE_CAP, passed
       // through UNfloored so the client's integer guard refuses it (silently truncating a cap the
       // sizer still reads as a decimal would diverge venue leverage from sizing math — reviewer S2).
       // NB LiveExchangeAdapter does not delegate the hook — a live perp deployment (far future, own
@@ -569,6 +591,8 @@ export class TradingRuntimeService
         },
         onVenueTp: (event) => this.agentMetrics.recordVenueTp(event),
         onVenueStop: (event) => this.agentMetrics.recordVenueStop(event),
+        onRearmFallback: () => this.agentMetrics.recordRearmFallback(),
+        bookSnapshot: () => this.portfolio.snapshot(),
         // Backlog #55: without this the strategy falls back to its NOOP_LOGGER and every warn it
         // emits (venue-stop reconcile_error, intent-store failures, prescreen fail-open,
         // unknown-role) is invisible in production logs — metrics were the only observable.
@@ -584,6 +608,7 @@ export class TradingRuntimeService
         // (this closure runs once per registration but `deps` is captured by the factory), so each
         // instance records its own symbol's trailing return and reads the whole basket's ranking.
         crossSymbolContext: this.crossSymbolContext,
+        edgePolicy: this.edgePolicy,
         // W3 Part 2: ONE shared PriceHistoryStore instance — see AgenticStrategyDeps.priceHistory's
         // own comment.
         priceHistory: this.priceHistory,
@@ -803,6 +828,8 @@ export class TradingRuntimeService
       // AgenticStrategyParams.planStopForceBps's own comment on why this is independent of
       // PLAN_STOP_WATCH_ENABLED).
       planStopForceBps: this.config.risk.planStopForceBps,
+      maxPlannedStopRiskFraction: this.config.risk.maxPlannedStopRiskFraction,
+      sizingEquityCap: this.config.risk.equityCap,
     };
   }
 }

@@ -1,7 +1,7 @@
-import { Injectable, OnModuleInit, OnModuleDestroy, Optional, Inject } from '@nestjs/common';
+import { Inject, Injectable, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 import { InjectMetric, makeGaugeProvider } from '@willsoto/nestjs-prometheus';
-import { Gauge } from 'prom-client';
 import Decimal from 'decimal.js';
+import { Gauge } from 'prom-client';
 import { PROMOTION_READINESS, type PromotionReadinessPort } from '../../../ports/promotion';
 
 // Mirrors config.module.ts's own isTestOrCi check (no AppConfig field carries this — it's a raw
@@ -15,6 +15,10 @@ function isTestOrCiEnv(): boolean {
 export const PROMOTION_ROUND_TRIPS_GAUGE = makeGaugeProvider({
   name: 'agentic_promotion_round_trips',
   help: 'Closed demo round trips counted toward the earned-live promotion gate',
+});
+export const PROMOTION_WIN_RATE_GAUGE = makeGaugeProvider({
+  name: 'agentic_promotion_win_rate',
+  help: 'Fraction of closed demo round trips with per-trip net (realized − fees) > 0 over the promotion evidence window (0..1)',
 });
 export const PROMOTION_NET_PNL_GAUGE = makeGaugeProvider({
   name: 'agentic_promotion_net_pnl_usd',
@@ -45,6 +49,8 @@ export class PromotionMetricsService implements OnModuleInit, OnModuleDestroy {
   constructor(
     @InjectMetric('agentic_promotion_round_trips')
     private readonly roundTripsGauge: Gauge<string>,
+    @InjectMetric('agentic_promotion_win_rate')
+    private readonly winRateGauge: Gauge<string>,
     @InjectMetric('agentic_promotion_net_pnl_usd')
     private readonly netPnlGauge: Gauge<string>,
     @InjectMetric('agentic_promotion_llm_cost_usd')
@@ -65,6 +71,9 @@ export class PromotionMetricsService implements OnModuleInit, OnModuleDestroy {
     // Skip scheduling under test/ci: a 5-minute full-table DB scan has no unit-test value and
     // would otherwise leak a live interval into every suite that imports ObservabilityModule.
     if (isTestOrCiEnv()) return;
+    // Sample once at boot so Overview gauges (esp. newly added ones) are not empty for the first
+    // SAMPLE_INTERVAL_MS after a redeploy — setInterval alone would delay the first scrape.
+    void this.tick();
     this.sampleInterval = setInterval(() => void this.tick(), SAMPLE_INTERVAL_MS);
   }
 
@@ -76,6 +85,7 @@ export class PromotionMetricsService implements OnModuleInit, OnModuleDestroy {
     try {
       const { permitted, evidence } = await this.readiness.evaluate();
       this.roundTripsGauge.set(evidence.roundTrips);
+      this.winRateGauge.set(evidence.winRate);
       this.netPnlGauge.set(new Decimal(evidence.netPnl).toNumber());
       this.llmCostGauge.set(new Decimal(evidence.llmCostUsd).toNumber());
       this.windowDaysGauge.set(evidence.windowDays);

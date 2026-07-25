@@ -1,0 +1,312 @@
+[
+  {
+    "name": "US CPI (second-Wednesday 08:30 ET proxy — not BLS official day)",
+    "atMs": 1689165000000,
+    "note": "2023-07-12T08:30:00-04:00"
+  },
+  {
+    "name": "FOMC",
+    "atMs": 1690394400000,
+    "note": "Fed calendar decision day 2023-07-26T14:00:00-04:00"
+  },
+  {
+    "name": "US CPI (second-Wednesday 08:30 ET proxy — not BLS official day)",
+    "atMs": 1691584200000,
+    "note": "2023-08-09T08:30:00-04:00"
+  },
+  {
+    "name": "US CPI (second-Wednesday 08:30 ET proxy — not BLS official day)",
+    "atMs": 1694608200000,
+    "note": "2023-09-13T08:30:00-04:00"
+  },
+  {
+    "name": "FOMC",
+    "atMs": 1695232800000,
+    "note": "Fed calendar decision day 2023-09-20T14:00:00-04:00"
+  },
+  {
+    "name": "US CPI (second-Wednesday 08:30 ET proxy — not BLS official day)",
+    "atMs": 1697027400000,
+    "note": "2023-10-11T08:30:00-04:00"
+  },
+  {
+    "name": "FOMC",
+    "atMs": 1698861600000,
+    "note": "Fed calendar decision day 2023-11-01T14:00:00-04:00"
+  },
+  {
+    "name": "US CPI (second-Wednesday 08:30 ET proxy — not BLS official day)",
+    "atMs": 1699450200000,
+    "note": "2023-11-08T08:30:00-05:00"
+  },
+  {
+    "name": "US CPI (second-Wednesday 08:30 ET proxy — not BLS official day)",
+    "atMs": 1702474200000,
+    "note": "2023-12-13T08:30:00-05:00"
+  },
+  {
+    "name": "FOMC",
+    "atMs": 1702494000000,
+    "note": "Fed calendar decision day 2023-12-13T14:00:00-05:00"
+  },
+  {
+    "name": "US CPI (second-Wednesday 08:30 ET proxy — not BLS official day)",
+    "atMs": 1704893400000,
+    "note": "2024-01-10T08:30:00-05:00"
+  },
+  {
+    "name": "FOMC",
+    "atMs": 1706727600000,
+    "note": "Fed calendar decision day 2024-01-31T14:00:00-05:00"
+  },
+  {
+    "name": "US CPI (second-Wednesday 08:30 ET proxy — not BLS official day)",
+    "atMs": 1707917400000,
+    "note": "2024-02-14T08:30:00-05:00"
+  },
+  {
+    "name": "US CPI (second-Wednesday 08:30 ET proxy — not BLS official day)",
+    "atMs": 1710333000000,
+    "note": "2024-03-13T08:30:00-04:00"
+  },
+  {
+    "name": "FOMC",
+    "atMs": 1710957600000,
+    "note": "Fed calendar decision day 2024-03-20T14:00:00-04:00"
+  },
+  {
+    "name": "US CPI (second-Wednesday 08:30 ET proxy — not BLS official day)",
+    "atMs": 1712752200000,
+    "note": "2024-04-10T08:30:00-04:00"
+  },
+  {
+    "name": "FOMC",
+    "atMs": 1714586400000,
+    "note": "Fed calendar decision day 2024-05-01T14:00:00-04:00"
+  },
+  {
+    "name": "US CPI (second-Wednesday 08:30 ET proxy — not BLS official day)",
+    "atMs": 1715171400000,
+    "note": "2024-05-08T08:30:00-04:00"
+  },
+  {
+    "name": "US CPI (second-Wednesday 08:30 ET proxy — not BLS official day)",
+    "atMs": 1718195400000,
+    "note": "2024-06-12T08:30:00-04:00"
+  },
+  {
+    "name": "FOMC",
+    "atMs": 1718215200000,
+    "note": "Fed calendar decision day 2024-06-12T14:00:00-04:00"
+  },
+  {
+    "name": "US CPI (second-Wednesday 08:30 ET proxy — not BLS official day)",
+    "atMs": 1720614600000,
+    "note": "2024-07-10T08:30:00-04:00"
+  },
+  {
+    "name": "FOMC",
+    "atMs": 1722448800000,
+    "note": "Fed calendar decision day 2024-07-31T14:00:00-04:00"
+  },
+  {
+    "name": "US CPI (second-Wednesday 08:30 ET proxy — not BLS official day)",
+    "atMs": 1723638600000,
+    "note": "2024-08-14T08:30:00-04:00"
+  },
+  {
+    "name": "US CPI (second-Wednesday 08:30 ET proxy — not BLS official day)",
+    "atMs": 1726057800000,
+    "note": "2024-09-11T08:30:00-04:00"
+  },
+  {
+    "name": "FOMC",
+    "atMs": 1726682400000,
+    "note": "Fed calendar decision day 2024-09-18T14:00:00-04:00"
+  },
+  {
+    "name": "US CPI (second-Wednesday 08:30 ET proxy — not BLS official day)",
+    "atMs": 1728477000000,
+    "note": "2024-10-09T08:30:00-04:00"
+  },
+  {
+    "name": "FOMC",
+    "atMs": 1731006000000,
+    "note": "Fed calendar decision day 2024-11-07T14:00:00-05:00"
+  },
+  {
+    "name": "US CPI (second-Wednesday 08:30 ET proxy — not BLS official day)",
+    "atMs": 1731504600000,
+    "note": "2024-11-13T08:30:00-05:00"
+  },
+  {
+    "name": "US CPI (second-Wednesday 08:30 ET proxy — not BLS official day)",
+    "atMs": 1733923800000,
+    "note": "2024-12-11T08:30:00-05:00"
+  },
+  {
+    "name": "FOMC",
+    "atMs": 1734548400000,
+    "note": "Fed calendar decision day 2024-12-18T14:00:00-05:00"
+  },
+  {
+    "name": "US CPI (second-Wednesday 08:30 ET proxy — not BLS official day)",
+    "atMs": 1736343000000,
+    "note": "2025-01-08T08:30:00-05:00"
+  },
+  {
+    "name": "FOMC",
+    "atMs": 1738177200000,
+    "note": "Fed calendar decision day 2025-01-29T14:00:00-05:00"
+  },
+  {
+    "name": "US CPI (second-Wednesday 08:30 ET proxy — not BLS official day)",
+    "atMs": 1739367000000,
+    "note": "2025-02-12T08:30:00-05:00"
+  },
+  {
+    "name": "US CPI (second-Wednesday 08:30 ET proxy — not BLS official day)",
+    "atMs": 1741782600000,
+    "note": "2025-03-12T08:30:00-04:00"
+  },
+  {
+    "name": "FOMC",
+    "atMs": 1742407200000,
+    "note": "Fed calendar decision day 2025-03-19T14:00:00-04:00"
+  },
+  {
+    "name": "US CPI (second-Wednesday 08:30 ET proxy — not BLS official day)",
+    "atMs": 1744201800000,
+    "note": "2025-04-09T08:30:00-04:00"
+  },
+  {
+    "name": "FOMC",
+    "atMs": 1746640800000,
+    "note": "Fed calendar decision day 2025-05-07T14:00:00-04:00"
+  },
+  {
+    "name": "US CPI (second-Wednesday 08:30 ET proxy — not BLS official day)",
+    "atMs": 1747225800000,
+    "note": "2025-05-14T08:30:00-04:00"
+  },
+  {
+    "name": "US CPI (second-Wednesday 08:30 ET proxy — not BLS official day)",
+    "atMs": 1749645000000,
+    "note": "2025-06-11T08:30:00-04:00"
+  },
+  {
+    "name": "FOMC",
+    "atMs": 1750269600000,
+    "note": "Fed calendar decision day 2025-06-18T14:00:00-04:00"
+  },
+  {
+    "name": "US CPI (second-Wednesday 08:30 ET proxy — not BLS official day)",
+    "atMs": 1752064200000,
+    "note": "2025-07-09T08:30:00-04:00"
+  },
+  {
+    "name": "FOMC",
+    "atMs": 1753898400000,
+    "note": "Fed calendar decision day 2025-07-30T14:00:00-04:00"
+  },
+  {
+    "name": "US CPI (second-Wednesday 08:30 ET proxy — not BLS official day)",
+    "atMs": 1755088200000,
+    "note": "2025-08-13T08:30:00-04:00"
+  },
+  {
+    "name": "US CPI (second-Wednesday 08:30 ET proxy — not BLS official day)",
+    "atMs": 1757507400000,
+    "note": "2025-09-10T08:30:00-04:00"
+  },
+  {
+    "name": "FOMC",
+    "atMs": 1758132000000,
+    "note": "Fed calendar decision day 2025-09-17T14:00:00-04:00"
+  },
+  {
+    "name": "US CPI (second-Wednesday 08:30 ET proxy — not BLS official day)",
+    "atMs": 1759926600000,
+    "note": "2025-10-08T08:30:00-04:00"
+  },
+  {
+    "name": "FOMC",
+    "atMs": 1761760800000,
+    "note": "Fed calendar decision day 2025-10-29T14:00:00-04:00"
+  },
+  {
+    "name": "US CPI (second-Wednesday 08:30 ET proxy — not BLS official day)",
+    "atMs": 1762954200000,
+    "note": "2025-11-12T08:30:00-05:00"
+  },
+  {
+    "name": "US CPI (second-Wednesday 08:30 ET proxy — not BLS official day)",
+    "atMs": 1765373400000,
+    "note": "2025-12-10T08:30:00-05:00"
+  },
+  {
+    "name": "FOMC",
+    "atMs": 1765393200000,
+    "note": "Fed calendar decision day 2025-12-10T14:00:00-05:00"
+  },
+  {
+    "name": "US CPI (second-Wednesday 08:30 ET proxy — not BLS official day)",
+    "atMs": 1768397400000,
+    "note": "2026-01-14T08:30:00-05:00"
+  },
+  {
+    "name": "FOMC",
+    "atMs": 1769626800000,
+    "note": "Fed calendar decision day 2026-01-28T14:00:00-05:00"
+  },
+  {
+    "name": "US CPI (second-Wednesday 08:30 ET proxy — not BLS official day)",
+    "atMs": 1770816600000,
+    "note": "2026-02-11T08:30:00-05:00"
+  },
+  {
+    "name": "US CPI (second-Wednesday 08:30 ET proxy — not BLS official day)",
+    "atMs": 1773232200000,
+    "note": "2026-03-11T08:30:00-04:00"
+  },
+  {
+    "name": "FOMC",
+    "atMs": 1773856800000,
+    "note": "Fed calendar decision day 2026-03-18T14:00:00-04:00"
+  },
+  {
+    "name": "US CPI (second-Wednesday 08:30 ET proxy — not BLS official day)",
+    "atMs": 1775651400000,
+    "note": "2026-04-08T08:30:00-04:00"
+  },
+  {
+    "name": "FOMC",
+    "atMs": 1777485600000,
+    "note": "Fed calendar decision day 2026-04-29T14:00:00-04:00"
+  },
+  {
+    "name": "US CPI (second-Wednesday 08:30 ET proxy — not BLS official day)",
+    "atMs": 1778675400000,
+    "note": "2026-05-13T08:30:00-04:00"
+  },
+  {
+    "name": "US CPI (second-Wednesday 08:30 ET proxy — not BLS official day)",
+    "atMs": 1781094600000,
+    "note": "2026-06-10T08:30:00-04:00"
+  },
+  {
+    "name": "FOMC",
+    "atMs": 1781719200000,
+    "note": "Fed calendar decision day 2026-06-17T14:00:00-04:00"
+  },
+  {
+    "name": "US CPI (second-Wednesday 08:30 ET proxy — not BLS official day)",
+    "atMs": 1783513800000,
+    "note": "2026-07-08T08:30:00-04:00"
+  },
+  {
+    "name": "FOMC",
+    "atMs": 1785348000000,
+    "note": "Fed calendar decision day 2026-07-29T14:00:00-04:00"
+  }
+]

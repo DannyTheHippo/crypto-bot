@@ -1,5 +1,10 @@
 apiVersion: 1
 
+# v3: purge leftover v2 perp RO datasource UIDs that predate one-process cutover (spec §9).
+deleteDatasources:
+  - name: Postgres Perp (RO)
+    orgId: 1
+
 datasources:
   # W1 (Grafana rebuild): read-only truth source for panels Prometheus cannot answer (positions
   # table, agent_decisions incl. plan_json/thesis, closed round trips, promotion progress) — see

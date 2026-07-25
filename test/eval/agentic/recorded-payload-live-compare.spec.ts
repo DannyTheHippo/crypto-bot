@@ -22,14 +22,14 @@
 // same query journal.recent() issues under the hood, spelled out for manual inspection):
 //   psql "$DATABASE_URL" -c "SELECT id, event_time, model, prompt_hash FROM agent_decisions
 //     WHERE input_payload IS NOT NULL ORDER BY event_time ASC LIMIT 50;"
-import { readFileSync, writeFileSync } from 'node:fs';
-import { describe, it, expect } from 'vitest';
-import { z } from 'zod';
-import { Pool } from 'pg';
 import { drizzle } from 'drizzle-orm/node-postgres';
-import * as schema from '../../../src/database/schemas/trading';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { Pool } from 'pg';
+import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import { AgentDecisionJournalAdapter } from '../../../src/database/repositories/agent-decision-journal.adapter';
 import { PlaybookStoreAdapter } from '../../../src/database/repositories/playbook-store.adapter';
+import * as schema from '../../../src/database/schemas/trading';
 import {
   DECISION_TOOL,
   PROMPT_TEMPLATE_VERSION,
@@ -37,13 +37,13 @@ import {
   computePromptHash,
 } from '../../../src/features/trading/agentic/agent-prompt';
 import { SEED_PLAYBOOK } from '../../../src/features/trading/agentic/agentic-strategy.module';
-import { validatePlaybook } from '../../../src/features/trading/agentic/playbook-validator';
 import {
   combineScorecards,
   compare,
   scoreRows,
   type ScoringRow,
 } from '../../../src/features/trading/agentic/counterfactual-scoring';
+import { validatePlaybook } from '../../../src/features/trading/agentic/playbook-validator';
 import { EVAL_PROFILE } from './fixtures';
 import {
   composeRecordedUserMessage,
@@ -83,8 +83,8 @@ const SKIP = !API_KEY || !LIVE_ENABLED || !DB_URL || !resetAllowed;
 // A structurally valid, textually different candidate — same tweak candidate-vs-champion.spec.ts
 // uses, so both suites' notion of "candidate" stays recognizable across the eval harness.
 const CANDIDATE_PLAYBOOK_CONTENT = SEED_PLAYBOOK.content.replace(
-  'Do not overtrade small, noisy fluctuations — each round trip costs real fees.',
-  'Prefer high-conviction setups only — each round trip costs real fees.',
+  'Fee arithmetic, quantified: a round trip costs ~20bps; your',
+  'Fee arithmetic, quantified: a round trip costs ~25bps; your',
 );
 
 const liveDecisionSchema = z.object({

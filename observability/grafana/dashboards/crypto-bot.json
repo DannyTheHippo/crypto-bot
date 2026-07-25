@@ -1,7 +1,10 @@
 {
   "uid": "crypto-bot",
   "title": "crypto-bot",
-  "tags": ["crypto-bot", "v3"],
+  "tags": [
+    "crypto-bot",
+    "v3"
+  ],
   "timezone": "utc",
   "schemaVersion": 39,
   "refresh": "10s",
@@ -33,7 +36,7 @@
       "id": 101,
       "type": "stat",
       "title": "Kill Switch",
-      "description": "kill_switch_state{state=\"RUNNING\"} — 1 while RUNNING; any other engaged state pulls this to absent/0. Health-strip mirror of the Trading row's Kill Switch stat (id 8).",
+      "description": "kill_switch_state == 1 (instant) \u2014 active state label (RUNNING / HALTING / FLATTENING / HALTED / HALTED_DEGRADED). Instant query so historical state labels cannot appear beside the current one.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus-spot"
@@ -44,42 +47,88 @@
             "type": "prometheus",
             "uid": "prometheus-spot"
           },
-          "expr": "sum(kill_switch_state{state=\"RUNNING\"}) or vector(0)",
-          "refId": "A"
+          "expr": "kill_switch_state == 1",
+          "legendFormat": "{{ state }}",
+          "refId": "A",
+          "instant": true
         }
       ],
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "fixed",
-            "fixedColor": "text"
+            "mode": "thresholds"
           },
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "0": {
-                  "text": "DEGRADED",
-                  "color": "red",
-                  "index": 0
-                },
-                "1": {
-                  "text": "RUNNING",
-                  "color": "green",
-                  "index": 1
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "mappings": [],
+          "custom": {}
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "\\bRUNNING\\b"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
                 }
               }
-            }
-          ]
-        },
-        "overrides": []
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "\\b(HALTING|FLATTENING)\\b"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "\\bHALTED(_DEGRADED)?\\b"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "reduceOptions": {
-          "calcs": ["lastNotNull"]
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
         },
-        "textMode": "value",
-        "colorMode": "background"
+        "textMode": "name",
+        "colorMode": "background",
+        "graphMode": "none"
       },
       "gridPos": {
         "x": 0,
@@ -92,7 +141,7 @@
       "id": 102,
       "type": "stat",
       "title": "Effective Mode",
-      "description": "mode_info{effective} — the live paper/live verdict at a glance; EffectiveModeLive is an info-level alert, not an error. See the Ops row's Mode stat (id 47) for requested→effective.",
+      "description": "mode_info == 1 (instant) \u2014 live effective mode label only. Instant filter so a prior effective (e.g. paper during boot before pin/startTrading) cannot appear beside the current one. See Ops Mode (id 47) for requested\u2192effective.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus-spot"
@@ -103,9 +152,10 @@
             "type": "prometheus",
             "uid": "prometheus-spot"
           },
-          "expr": "mode_info",
+          "expr": "mode_info == 1",
           "legendFormat": "{{ effective }}",
-          "refId": "A"
+          "refId": "A",
+          "instant": true
         }
       ],
       "fieldConfig": {
@@ -127,7 +177,9 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": ["lastNotNull"]
+          "calcs": [
+            "lastNotNull"
+          ]
         },
         "textMode": "name"
       },
@@ -142,7 +194,7 @@
       "id": 103,
       "type": "stat",
       "title": "Equity",
-      "description": "equity_usdt — cash + Σ position×mark, the one book. Health-strip mirror of the Trading row's Equity stat (id 1).",
+      "description": "Net-of-cost equity: equity_usdt \u2212 agentic_promotion_llm_cost_usd. Book MTM already nets quote/base fees; evidence-epoch LLM spend (PromotionReadinessService) is subtracted. Hybrid when PROMOTION_EVIDENCE_EPOCH is set (lifetime book \u2212 post-epoch LLM). Absent LLM gauge \u2192 0 until the 5m PromotionMetrics sample. Trading Equity (id 1) stays book-only.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus-spot"
@@ -153,7 +205,7 @@
             "type": "prometheus",
             "uid": "prometheus-spot"
           },
-          "expr": "equity_usdt",
+          "expr": "equity_usdt - (agentic_promotion_llm_cost_usd or vector(0))",
           "refId": "A"
         }
       ],
@@ -177,7 +229,9 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": ["lastNotNull"]
+          "calcs": [
+            "lastNotNull"
+          ]
         },
         "textMode": "value"
       },
@@ -192,7 +246,7 @@
       "id": 104,
       "type": "stat",
       "title": "Day PnL",
-      "description": "day_pnl_usdt — equity minus start-of-day-UTC equity. Health-strip mirror of the Trading row's Day PnL stat (id 4).",
+      "description": "day_pnl_usdt \u2014 equity minus start-of-day-UTC equity. Overview health-strip Day PnL.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus-spot"
@@ -231,12 +285,14 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": ["lastNotNull"]
+          "calcs": [
+            "lastNotNull"
+          ]
         },
         "textMode": "value"
       },
       "gridPos": {
-        "x": 12,
+        "x": 16,
         "y": 1,
         "w": 4,
         "h": 4
@@ -246,7 +302,7 @@
       "id": 105,
       "type": "gauge",
       "title": "Drawdown",
-      "description": "drawdown_ratio — (peak − equity) / peak, 0..1. RISK_MAX_DRAWDOWN_PCT halts at 0.20; thresholds mark half (0.10) and three-quarters (0.15) of the halt line for early warning.",
+      "description": "drawdown_ratio \u2014 (peak \u2212 equity) / peak, 0..1. RISK_MAX_DRAWDOWN_PCT halts at 0.20; thresholds mark half (0.10) and three-quarters (0.15) of the halt line for early warning.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus-spot"
@@ -295,13 +351,15 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": ["lastNotNull"]
+          "calcs": [
+            "lastNotNull"
+          ]
         },
         "showThresholdLabels": false,
         "showThresholdMarkers": true
       },
       "gridPos": {
-        "x": 16,
+        "x": 20,
         "y": 1,
         "w": 4,
         "h": 4
@@ -311,7 +369,7 @@
       "id": 106,
       "type": "stat",
       "title": "Decision Age",
-      "description": "max(created_at) from agent_decisions (Postgres RO) — same journal-freshness query as the Model & Learning row's Age of Last Decision (id 34; the v2 Overview row used this per-lane, v3 carries one lineage). Rendered as relative time; created_at is epoch-ms.",
+      "description": "extract(epoch from (now() - max(created_at))) from agent_decisions (Postgres RO) \u2014 journal age in seconds for the single v3 lineage. Returns a numeric field (Stat defaults exclude time-typed columns, which made the prior max(created_at)+dateTimeFromNow panel show noValue). Null max \u2192 no decisions yet.",
       "datasource": {
         "type": "postgres",
         "uid": "postgres-ro-spot"
@@ -322,7 +380,7 @@
             "type": "postgres",
             "uid": "postgres-ro-spot"
           },
-          "rawSql": "SELECT max(created_at) AS \"Age\" FROM agent_decisions",
+          "rawSql": "SELECT extract(epoch from (now() - max(created_at)))::float8 AS \"Age\" FROM agent_decisions",
           "format": "table",
           "refId": "A",
           "editorMode": "code"
@@ -330,7 +388,8 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "dateTimeFromNow",
+          "unit": "s",
+          "decimals": 0,
           "color": {
             "mode": "thresholds"
           },
@@ -341,6 +400,14 @@
               {
                 "color": "green",
                 "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 3600
+              },
+              {
+                "color": "red",
+                "value": 21600
               }
             ]
           }
@@ -349,14 +416,16 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": ["lastNotNull"]
+          "calcs": [
+            "lastNotNull"
+          ]
         },
         "textMode": "value"
       },
       "gridPos": {
-        "x": 20,
-        "y": 1,
-        "w": 4,
+        "x": 18,
+        "y": 13,
+        "w": 6,
         "h": 4
       }
     },
@@ -364,7 +433,7 @@
       "id": 107,
       "type": "stat",
       "title": "Reconcile Status",
-      "description": "sum by (venue, result) (increase(reconciliation_runs_total[5m])) — per-venue pass outcomes in the last 5m (clean/mismatch/halt/error), so one venue's HALT is never masked by the other's clean passes (v3 spec §8). Absent entirely outside paper/testnet mode — trading-runtime.module.ts only schedules reconcile() there.",
+      "description": "sum by (venue, result) (increase(reconciliation_runs_total[5m])) \u2014 per-venue pass outcomes in the last 5m (clean/mismatch/halt/error), so one venue's HALT is never masked by the other's clean passes (v3 spec \u00a78). Absent entirely outside paper/testnet mode \u2014 trading-runtime.module.ts only schedules reconcile() there.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus-spot"
@@ -386,7 +455,7 @@
           "color": {
             "mode": "thresholds"
           },
-          "noValue": "no reconcile pass (mode ≠ paper/testnet)",
+          "noValue": "no reconcile pass (mode \u2260 paper/testnet)",
           "decimals": 0,
           "thresholds": {
             "mode": "absolute",
@@ -433,7 +502,9 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": ["lastNotNull"]
+          "calcs": [
+            "lastNotNull"
+          ]
         },
         "textMode": "value_and_name"
       },
@@ -448,7 +519,7 @@
       "id": 110,
       "type": "stat",
       "title": "Venue Free Cash",
-      "description": "venue_free_cash_usdt{venue} — free quote/margin balance per venue wallet. Health-strip mirror of the Trading row's Venue Free Cash stat (id 15).",
+      "description": "venue_free_cash_usdt{venue} \u2014 free quote/margin balance per venue wallet. Overview health strip.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus-spot"
@@ -488,7 +559,9 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": ["lastNotNull"]
+          "calcs": [
+            "lastNotNull"
+          ]
         },
         "textMode": "value_and_name"
       },
@@ -503,7 +576,7 @@
       "id": 108,
       "type": "stat",
       "title": "Budget Remaining",
-      "description": "agentic_budget_remaining_usd — ONE unified book-wide daily LLM budget. Health-strip mirror of the Model & Learning row's Budget Remaining Today stat (id 23).",
+      "description": "agentic_budget_remaining_usd \u2014 ONE unified book-wide daily LLM budget. Current value; Cost row Budget Burn-Down (id 40) is the trend.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus-spot"
@@ -546,7 +619,9 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": ["lastNotNull"]
+          "calcs": [
+            "lastNotNull"
+          ]
         },
         "textMode": "value"
       },
@@ -560,8 +635,8 @@
     {
       "id": 109,
       "type": "stat",
-      "title": "App RSS",
-      "description": "process_resident_memory_bytes (prom-client default) — same signal as the Ops row's Process RSS (id 49), tighter early-warning thresholds (0.9/1.2 GiB) for the top-of-dashboard strip. Drives AppMemoryHigh (>1.2 GiB for 10m) against the compose mem_limit (1536m).",
+      "title": "Win Rate",
+      "description": "agentic_promotion_win_rate \u2014 durable fraction of closed demo round trips with per-trip net (realized \u2212 fees) > 0 over the promotion evidence window (PromotionReadinessService, sampled 5m). Same walk as Promotion Round Trips; survives restarts.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus-spot"
@@ -572,13 +647,16 @@
             "type": "prometheus",
             "uid": "prometheus-spot"
           },
-          "expr": "process_resident_memory_bytes",
-          "refId": "A"
+          "expr": "agentic_promotion_win_rate",
+          "refId": "A",
+          "instant": true
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "bytes",
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
           "color": {
             "mode": "thresholds"
           },
@@ -586,16 +664,16 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "red",
                 "value": null
               },
               {
                 "color": "orange",
-                "value": 900000000
+                "value": 0.4
               },
               {
-                "color": "red",
-                "value": 1200000000
+                "color": "green",
+                "value": 0.5
               }
             ]
           }
@@ -604,7 +682,9 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": ["lastNotNull"]
+          "calcs": [
+            "lastNotNull"
+          ]
         },
         "textMode": "value"
       },
@@ -619,7 +699,7 @@
       "id": 9,
       "type": "stat",
       "title": "Promotion Net PnL",
-      "description": "agentic_promotion_net_pnl_usd — realized PnL minus fees minus LLM spend over the earned-live promotion evidence window (PromotionReadinessService, sampled 5m). ONE lineage, ONE book (v3: no per-lane split).",
+      "description": "agentic_promotion_net_pnl_usd \u2014 realized PnL minus fees minus LLM spend over the earned-live promotion evidence window (PromotionReadinessService, sampled 5m). ONE lineage, ONE book (v3: no per-lane split).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus-spot"
@@ -658,7 +738,9 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": ["lastNotNull"]
+          "calcs": [
+            "lastNotNull"
+          ]
         },
         "textMode": "value"
       },
@@ -673,7 +755,7 @@
       "id": 10,
       "type": "stat",
       "title": "Promotion Round Trips",
-      "description": "agentic_promotion_round_trips — closed demo round trips toward the >=30 promotion threshold.",
+      "description": "agentic_promotion_round_trips \u2014 closed demo round trips toward the >=30 promotion threshold.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus-spot"
@@ -711,7 +793,9 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": ["lastNotNull"]
+          "calcs": [
+            "lastNotNull"
+          ]
         },
         "textMode": "value"
       },
@@ -726,7 +810,7 @@
       "id": 11,
       "type": "stat",
       "title": "Promotion Window Days",
-      "description": "agentic_promotion_window_days — span between the first and last closed demo round trip; must reach >=14.",
+      "description": "agentic_promotion_window_days \u2014 span between the first and last closed demo round trip; must reach >=14.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus-spot"
@@ -744,6 +828,7 @@
       "fieldConfig": {
         "defaults": {
           "unit": "d",
+          "decimals": 1,
           "color": {
             "mode": "thresholds"
           },
@@ -765,7 +850,9 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": ["lastNotNull"]
+          "calcs": [
+            "lastNotNull"
+          ]
         },
         "textMode": "value"
       },
@@ -780,7 +867,7 @@
       "id": 12,
       "type": "stat",
       "title": "Promotion Ready",
-      "description": "agentic_promotion_ready — the earned-live verdict (>=30 closed demo round trips AND positive net-of-cost PnL over >=14 days). A permitted verdict still faces the unchanged four live gates and bootId-bound arming ceremony.",
+      "description": "agentic_promotion_ready \u2014 the earned-live verdict (>=30 closed demo round trips AND positive net-of-cost PnL over >=14 days). A permitted verdict still faces the unchanged four live gates and bootId-bound arming ceremony.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus-spot"
@@ -823,7 +910,9 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": ["lastNotNull"]
+          "calcs": [
+            "lastNotNull"
+          ]
         },
         "textMode": "value",
         "colorMode": "background"
@@ -839,7 +928,7 @@
       "id": 24,
       "type": "stat",
       "title": "Active Menu Size",
-      "description": "count(agentic_active_menu == 1) — combined 40-symbol basket (24 spot + 16 perp), menu size 8 (v3 §5.2).",
+      "description": "count(agentic_active_menu == 1) \u2014 symbols currently in the consulted menu. Configured AGENTIC_ACTIVE_MENU_SIZE defaults to 8 (v3 \u00a75.2); pin + per-venue floor can push the live count above that.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus-spot"
@@ -873,7 +962,9 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": ["lastNotNull"]
+          "calcs": [
+            "lastNotNull"
+          ]
         },
         "textMode": "value"
       },
@@ -887,8 +978,8 @@
     {
       "id": 35,
       "type": "stat",
-      "title": "Consults Today",
-      "description": "sum(increase(agentic_consult_gate_total{outcome=~\"consulted|forced_fill|forced_move|forced_fallback|forced_rearm\"}[24h])) — actual LLM consults today (not all gate evaluations).",
+      "title": "Consults (24h)",
+      "description": "sum(increase(agentic_consult_gate_total{outcome=~\"consulted|forced_fill|forced_move|forced_fallback|forced_rearm\"}[24h])) \u2014 actual LLM consults in the rolling 24h window (not calendar UTC day; not all gate evaluations).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus-spot"
@@ -922,7 +1013,9 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": ["lastNotNull"]
+          "calcs": [
+            "lastNotNull"
+          ]
         },
         "textMode": "value"
       },
@@ -937,7 +1030,7 @@
       "id": 13,
       "type": "stat",
       "title": "Open Orders (by venue)",
-      "description": "open_orders{venue} — v3 §8: venue-scoped fact, one series per venue (binance/binanceusdm) rather than the v2 per-process total.",
+      "description": "open_orders{venue} \u2014 v3 \u00a78: venue-scoped fact, one series per venue (binance/binanceusdm) rather than the v2 per-process total.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus-spot"
@@ -972,7 +1065,9 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": ["lastNotNull"]
+          "calcs": [
+            "lastNotNull"
+          ]
         },
         "textMode": "value_and_name"
       },
@@ -987,7 +1082,7 @@
       "id": 6,
       "type": "stat",
       "title": "Unrealized PnL",
-      "description": "unrealized_pnl_usdt — Σ signedQty×(mark − avgEntry) on open positions, embedded in equity above.",
+      "description": "unrealized_pnl_usdt \u2014 \u03a3 signedQty\u00d7(mark \u2212 avgEntry) on open positions, embedded in equity above.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus-spot"
@@ -1026,14 +1121,16 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": ["lastNotNull"]
+          "calcs": [
+            "lastNotNull"
+          ]
         },
         "textMode": "value"
       },
       "gridPos": {
-        "x": 18,
-        "y": 13,
-        "w": 6,
+        "x": 12,
+        "y": 1,
+        "w": 4,
         "h": 4
       }
     },
@@ -1053,7 +1150,7 @@
           "id": 2,
           "type": "stat",
           "title": "Cash",
-          "description": "cash_usdt — free quote (USDT) balance, book-wide.",
+          "description": "cash_usdt \u2014 free quote (USDT) balance, book-wide.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus-spot"
@@ -1088,7 +1185,9 @@
           },
           "options": {
             "reduceOptions": {
-              "calcs": ["lastNotNull"]
+              "calcs": [
+                "lastNotNull"
+              ]
             },
             "textMode": "value"
           },
@@ -1103,7 +1202,7 @@
           "id": 3,
           "type": "stat",
           "title": "Peak Equity",
-          "description": "peak_equity_usdt — high-water mark, persisted across restarts.",
+          "description": "peak_equity_usdt \u2014 high-water mark, persisted across restarts.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus-spot"
@@ -1138,7 +1237,9 @@
           },
           "options": {
             "reduceOptions": {
-              "calcs": ["lastNotNull"]
+              "calcs": [
+                "lastNotNull"
+              ]
             },
             "textMode": "value"
           },
@@ -1153,7 +1254,7 @@
           "id": 7,
           "type": "stat",
           "title": "Starting Cash",
-          "description": "starting_cash_usdt — the seed baseline (PortfolioConfig.startingCash), the return-since-inception denominator.",
+          "description": "starting_cash_usdt \u2014 the seed baseline (PortfolioConfig.startingCash), the return-since-inception denominator.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus-spot"
@@ -1188,7 +1289,9 @@
           },
           "options": {
             "reduceOptions": {
-              "calcs": ["lastNotNull"]
+              "calcs": [
+                "lastNotNull"
+              ]
             },
             "textMode": "value"
           },
@@ -1203,7 +1306,7 @@
           "id": 14,
           "type": "stat",
           "title": "In-Flight Intents (by venue)",
-          "description": "in_flight_intents{venue} — v3 §8: reserved-intent count per venue.",
+          "description": "in_flight_intents{venue} \u2014 v3 \u00a78: reserved-intent count per venue.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus-spot"
@@ -1238,7 +1341,9 @@
           },
           "options": {
             "reduceOptions": {
-              "calcs": ["lastNotNull"]
+              "calcs": [
+                "lastNotNull"
+              ]
             },
             "textMode": "value_and_name"
           },
@@ -1253,7 +1358,7 @@
           "id": 16,
           "type": "stat",
           "title": "Venue Capital Headroom",
-          "description": "venue_capital_headroom_usdt{venue} — NEW (v3 §6.1): venueCap(v) − open notional − reserved notional. Zero/negative means the next entry on that venue is BELOW_MINIMUM (headroom-exhausted, not a dust order).",
+          "description": "venue_capital_headroom_usdt{venue} \u2014 NEW (v3 \u00a76.1): venueCap(v) \u2212 open notional \u2212 reserved notional. Zero/negative means the next entry on that venue is BELOW_MINIMUM (headroom-exhausted, not a dust order).",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus-spot"
@@ -1289,7 +1394,9 @@
           },
           "options": {
             "reduceOptions": {
-              "calcs": ["lastNotNull"]
+              "calcs": [
+                "lastNotNull"
+              ]
             },
             "textMode": "value_and_name"
           },
@@ -1304,7 +1411,7 @@
           "id": 50,
           "type": "table",
           "title": "Open Positions (DB truth)",
-          "description": "positions rows with signed_qty <> 0 (Postgres RO) — the durable ledger the reconciler defends, one row per (mode, strategy, venue, symbol). float8 casts are DISPLAY-ONLY (reference-grade); the NUMERIC(38,18) column stays exact. Empty table = flat book.",
+          "description": "positions rows with signed_qty <> 0 (Postgres RO) \u2014 the durable ledger the reconciler defends, one row per (mode, strategy, venue, symbol). float8 casts are DISPLAY-ONLY (reference-grade); the NUMERIC(38,18) column stays exact. Empty table = flat book.",
           "datasource": {
             "type": "postgres",
             "uid": "postgres-ro-spot"
@@ -1315,7 +1422,7 @@
                 "type": "postgres",
                 "uid": "postgres-ro-spot"
               },
-              "rawSql": "SELECT venue, symbol, strategy_id AS strategy, signed_qty::float8 AS qty, avg_entry::float8 AS \"avg entry\", realized_pnl::float8 AS \"realized pnl\", updated_at AS updated FROM positions WHERE signed_qty <> 0 ORDER BY venue, symbol",
+              "rawSql": "SELECT mode, venue, symbol, strategy_id AS strategy, signed_qty::float8 AS qty, avg_entry::float8 AS \"avg entry\", realized_pnl::float8 AS \"realized pnl\", updated_at AS updated FROM positions WHERE signed_qty <> 0 ORDER BY mode, venue, symbol",
               "format": "table",
               "refId": "A",
               "editorMode": "code"
@@ -1372,7 +1479,7 @@
           "id": 1,
           "type": "timeseries",
           "title": "Equity (one book)",
-          "description": "equity_usdt over the dashboard window — the ONE unified book equity curve (cash + positions marked). The Overview strip shows the current value; this is the trend.",
+          "description": "equity_usdt over the dashboard window \u2014 the ONE unified book equity curve (cash + positions marked). Overview Equity (id 103) is net-of-cost (book \u2212 evidence-epoch LLM); this panel is the book-only trend used for risk/drawdown context.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus-spot"
@@ -1394,6 +1501,10 @@
               "custom": {
                 "drawStyle": "line",
                 "fillOpacity": 10
+              },
+              "color": {
+                "mode": "fixed",
+                "fixedColor": "#5794F2"
               }
             },
             "overrides": []
@@ -1402,7 +1513,9 @@
             "legend": {
               "displayMode": "list",
               "placement": "bottom",
-              "calcs": ["lastNotNull"]
+              "calcs": [
+                "lastNotNull"
+              ]
             }
           },
           "gridPos": {
@@ -1416,7 +1529,7 @@
           "id": 18,
           "type": "timeseries",
           "title": "Position Notional (by venue/strategy/symbol)",
-          "description": "position_notional_usdt{venue,strategy,symbol} — abs(position) × avgEntry, display-grade (v3 §8: +venue label).",
+          "description": "position_notional_usdt{venue,strategy,symbol} \u2014 abs(position) \u00d7 avgEntry, display-grade (v3 \u00a78: +venue label).",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus-spot"
@@ -1439,15 +1552,51 @@
                 "fillOpacity": 8,
                 "showPoints": "never"
               },
-              "unit": "currencyUSD"
+              "unit": "currencyUSD",
+              "color": {
+                "mode": "palette-classic"
+              }
             },
-            "overrides": []
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "^binance($| )"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#5794F2"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "^binanceusdm"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#B877D9"
+                    }
+                  }
+                ]
+              }
+            ]
           },
           "options": {
             "legend": {
               "displayMode": "list",
               "placement": "bottom",
-              "calcs": ["lastNotNull"]
+              "calcs": [
+                "lastNotNull"
+              ]
             }
           },
           "gridPos": {
@@ -1461,7 +1610,7 @@
           "id": 17,
           "type": "timeseries",
           "title": "Realized PnL (by venue/strategy/symbol)",
-          "description": "realized_pnl_usdt{venue,strategy,symbol} — where PnL is actually coming from, now venue-labeled (v3 §8).",
+          "description": "realized_pnl_usdt{venue,strategy,symbol} \u2014 where PnL is actually coming from, now venue-labeled (v3 \u00a78).",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus-spot"
@@ -1484,7 +1633,23 @@
                 "fillOpacity": 8,
                 "showPoints": "never"
               },
-              "unit": "currencyUSD"
+              "unit": "currencyUSD",
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "green",
+                    "value": 0
+                  }
+                ]
+              }
             },
             "overrides": []
           },
@@ -1492,7 +1657,9 @@
             "legend": {
               "displayMode": "list",
               "placement": "bottom",
-              "calcs": ["lastNotNull"]
+              "calcs": [
+                "lastNotNull"
+              ]
             }
           },
           "gridPos": {
@@ -1506,7 +1673,7 @@
           "id": 20,
           "type": "timeseries",
           "title": "Funding Payments Ingested (by venue/symbol)",
-          "description": "increase(funding_payments_ingested_total{venue,symbol}[1h]) — perp funding-settlement rows ingested (FundingIngestService, hourly poll).",
+          "description": "increase(funding_payments_ingested_total{venue,symbol}[1h]) \u2014 perp funding-settlement rows ingested (FundingIngestService, hourly poll).",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus-spot"
@@ -1527,15 +1694,51 @@
               "custom": {
                 "drawStyle": "bars",
                 "fillOpacity": 30
+              },
+              "color": {
+                "mode": "palette-classic"
               }
             },
-            "overrides": []
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "^binance($| )"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#5794F2"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "^binanceusdm"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#B877D9"
+                    }
+                  }
+                ]
+              }
+            ]
           },
           "options": {
             "legend": {
               "displayMode": "list",
               "placement": "bottom",
-              "calcs": ["sum"]
+              "calcs": [
+                "sum"
+              ]
             }
           },
           "gridPos": {
@@ -1549,7 +1752,7 @@
           "id": 19,
           "type": "timeseries",
           "title": "Reconciliation Runs (by venue/result)",
-          "description": "increase(reconciliation_runs_total{venue,result}[5m]) — one pass per venue per 30s tick (v3 §1.5), one series per venue×result. result=\"halt\" pages ReconciliationHalt; result=\"error\" pages ReconcilePassErrors.",
+          "description": "increase(reconciliation_runs_total{venue,result}[5m]) \u2014 one pass per venue per 30s tick (v3 \u00a71.5), one series per venue\u00d7result. result=\"halt\" pages ReconciliationHalt; result=\"error\" pages ReconcilePassErrors.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus-spot"
@@ -1570,6 +1773,107 @@
               "custom": {
                 "drawStyle": "bars",
                 "fillOpacity": 30
+              },
+              "color": {
+                "mode": "palette-classic"
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "\\bclean\\b"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#73BF69"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "\\bmismatch\\b"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#FF9830"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "\\b(halt|error)\\b"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#F2495C"
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "calcs": [
+                "sum"
+              ]
+            }
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 46,
+            "w": 24,
+            "h": 6
+          }
+        },
+        {
+          "id": 112,
+          "type": "timeseries",
+          "title": "Protective Exits",
+          "description": "increase(protective_exits_total{reason}[1h]) \u2014 bot-side STOP_LOSS / TRAILING_STOP / PLAN_STOP force-exits via ProtectiveExitService (full Strategy\u2192Risk\u2192Execution path). Runbook Risk & safety signal. Empty until first event.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-spot"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus-spot"
+              },
+              "expr": "increase(protective_exits_total[1h])",
+              "legendFormat": "{{ reason }}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "drawStyle": "bars",
+                "fillOpacity": 30,
+                "stacking": {
+                  "mode": "normal",
+                  "group": "A"
+                }
+              },
+              "color": {
+                "mode": "palette-classic"
               }
             },
             "overrides": []
@@ -1578,12 +1882,14 @@
             "legend": {
               "displayMode": "list",
               "placement": "bottom",
-              "calcs": ["sum"]
+              "calcs": [
+                "sum"
+              ]
             }
           },
           "gridPos": {
             "x": 0,
-            "y": 46,
+            "y": 52,
             "w": 24,
             "h": 6
           }
@@ -1606,7 +1912,7 @@
           "id": 21,
           "type": "stat",
           "title": "Active Playbook Version",
-          "description": "agentic_playbook_info{version} — one lineage, one series now (v3 §9: the two per-lane version sequences collapse into one).",
+          "description": "agentic_playbook_info{version} \u2014 one lineage, one series now (v3 \u00a79: the two per-lane version sequences collapse into one).",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus-spot"
@@ -1641,9 +1947,11 @@
           },
           "options": {
             "reduceOptions": {
-              "calcs": ["lastNotNull"]
+              "calcs": [
+                "lastNotNull"
+              ]
             },
-            "textMode": "value_and_name"
+            "textMode": "name"
           },
           "gridPos": {
             "x": 0,
@@ -1656,7 +1964,7 @@
           "id": 22,
           "type": "stat",
           "title": "Agent Client",
-          "description": "agent_client_info{kind} — 'stub' (inert, no ANTHROPIC_API_KEY / test/ci) vs 'anthropic' (live, actually deciding).",
+          "description": "agent_client_info{kind} \u2014 'stub' (inert, no ANTHROPIC_API_KEY / test/ci) vs 'anthropic' (live, actually deciding).",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus-spot"
@@ -1691,9 +1999,11 @@
           },
           "options": {
             "reduceOptions": {
-              "calcs": ["lastNotNull"]
+              "calcs": [
+                "lastNotNull"
+              ]
             },
-            "textMode": "value_and_name"
+            "textMode": "name"
           },
           "gridPos": {
             "x": 12,
@@ -1706,7 +2016,7 @@
           "id": 25,
           "type": "timeseries",
           "title": "Consult Gate Outcomes",
-          "description": "increase(agentic_consult_gate_total{outcome}[1h]) — consulted / skipped_scheduled / forced_fill / forced_move / forced_fallback / forced_rearm (all outcomes exported — XA1).",
+          "description": "increase(agentic_consult_gate_total{outcome}[1h]) \u2014 consulted / skipped_scheduled / forced_fill / forced_move / forced_fallback / forced_rearm (all outcomes exported \u2014 XA1). Synthetic fallback attaches (no directives while positioned) are tracked separately: increase(agentic_rearm_fallback_total[1h]).",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus-spot"
@@ -1730,15 +2040,111 @@
                 "stacking": {
                   "mode": "normal"
                 }
+              },
+              "color": {
+                "mode": "palette-classic"
               }
             },
-            "overrides": []
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "consulted"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#73BF69"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "skipped_scheduled"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#FADE2A"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "forced_fill"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#FF9830"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "forced_move"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#FF9830"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "forced_fallback"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#FF9830"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "forced_rearm"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#FF9830"
+                    }
+                  }
+                ]
+              }
+            ]
           },
           "options": {
             "legend": {
               "displayMode": "list",
               "placement": "bottom",
-              "calcs": ["sum"]
+              "calcs": [
+                "sum"
+              ]
             }
           },
           "gridPos": {
@@ -1752,7 +2158,7 @@
           "id": 26,
           "type": "timeseries",
           "title": "Reflection Outcomes",
-          "description": "increase(agentic_reflection_outcomes_total{outcome}[6h]) — every silent exit in the reflection loop is now a named outcome (W2).",
+          "description": "sum by (outcome) (max_over_time(agentic_reflection_outcomes_total[6h])) \u2014 6h high-water mark per outcome (Backlog #31). increase()/rate() miss the first sample after a container recreate; max_over_time survives redeploy-then-mint. Level in window, not an event tally \u2014 legend uses max, not sum.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus-spot"
@@ -1763,7 +2169,7 @@
                 "type": "prometheus",
                 "uid": "prometheus-spot"
               },
-              "expr": "increase(agentic_reflection_outcomes_total[6h])",
+              "expr": "sum by (outcome) (max_over_time(agentic_reflection_outcomes_total[6h]))",
               "legendFormat": "{{ outcome }}",
               "refId": "A"
             }
@@ -1776,15 +2182,66 @@
                 "stacking": {
                   "mode": "normal"
                 }
+              },
+              "color": {
+                "mode": "palette-classic"
               }
             },
-            "overrides": []
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "\\b(minted|auto_promoted|ok)\\b"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#73BF69"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "\\b(budget_deferred|attempt_started|no_change|skipped_)\\b"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#FADE2A"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "\\b(precondition_|.*_reject|run_failed|promote_failed|transport_error|http_error|malformed_envelope|refusal|no_tool_block|schema_fail|budget_exhausted)\\b"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#F2495C"
+                    }
+                  }
+                ]
+              }
+            ]
           },
           "options": {
             "legend": {
               "displayMode": "list",
               "placement": "bottom",
-              "calcs": ["sum"]
+              "calcs": [
+                "max"
+              ]
             }
           },
           "gridPos": {
@@ -1798,7 +2255,7 @@
           "id": 27,
           "type": "timeseries",
           "title": "Menu Churn",
-          "description": "increase(agentic_menu_churn_total{direction}[1h]) — combined-basket scanner menu entering/leaving symbols per recompute.",
+          "description": "increase(agentic_menu_churn_total{direction}[1h]) \u2014 combined-basket scanner menu entering/leaving symbols per recompute.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus-spot"
@@ -1819,15 +2276,51 @@
               "custom": {
                 "drawStyle": "bars",
                 "fillOpacity": 30
+              },
+              "color": {
+                "mode": "palette-classic"
               }
             },
-            "overrides": []
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "in"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#73BF69"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "out"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#FF9830"
+                    }
+                  }
+                ]
+              }
+            ]
           },
           "options": {
             "legend": {
               "displayMode": "list",
               "placement": "bottom",
-              "calcs": ["sum"]
+              "calcs": [
+                "sum"
+              ]
             }
           },
           "gridPos": {
@@ -1841,7 +2334,7 @@
           "id": 28,
           "type": "timeseries",
           "title": "Playbook Validator Rejections",
-          "description": "increase(playbook_validator_rejections_total{banned_token,token}[6h]) — a sustained pattern means the reflection loop can never iterate (AgenticReflectionRejects alert).",
+          "description": "increase(playbook_validator_rejections_total{banned_token,token}[6h]) \u2014 a sustained pattern means the reflection loop can never iterate (AgenticReflectionRejects alert).",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus-spot"
@@ -1862,15 +2355,51 @@
               "custom": {
                 "drawStyle": "bars",
                 "fillOpacity": 30
+              },
+              "color": {
+                "mode": "palette-classic"
               }
             },
-            "overrides": []
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "^true/"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#F2495C"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "^false/"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#8F8F8F"
+                    }
+                  }
+                ]
+              }
+            ]
           },
           "options": {
             "legend": {
               "displayMode": "list",
               "placement": "bottom",
-              "calcs": ["sum"]
+              "calcs": [
+                "sum"
+              ]
             }
           },
           "gridPos": {
@@ -1884,7 +2413,7 @@
           "id": 29,
           "type": "timeseries",
           "title": "Venue TP Events (by venue/event)",
-          "description": "increase(agentic_venue_tp_total{venue,event}[1h]) — v3 §8: +venue. Venue-resting take-profit lifecycle for plan-mode longs.",
+          "description": "increase(agentic_venue_tp_total{venue,event}[1h]) \u2014 v3 \u00a78: +venue. Venue-resting take-profit lifecycle for plan-mode longs. Empty until first event.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus-spot"
@@ -1908,15 +2437,51 @@
                 "stacking": {
                   "mode": "normal"
                 }
+              },
+              "color": {
+                "mode": "palette-classic"
               }
             },
-            "overrides": []
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "\\b(placed|filled_flat)\\b"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#73BF69"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "\\b(cancel_|drift_|orphan_|skipped_|qty_cancel|tp_race_hold)\\b"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#FF9830"
+                    }
+                  }
+                ]
+              }
+            ]
           },
           "options": {
             "legend": {
               "displayMode": "list",
               "placement": "bottom",
-              "calcs": ["sum"]
+              "calcs": [
+                "sum"
+              ]
             }
           },
           "gridPos": {
@@ -1930,7 +2495,7 @@
           "id": 30,
           "type": "timeseries",
           "title": "Venue Stop Events (by venue/event)",
-          "description": "increase(agentic_venue_stop_total{venue,event}[1h]) — v3 §8: +venue. force_fired means a venue stop evidently failed to fill on its own — worth an operator look.",
+          "description": "increase(agentic_venue_stop_total{venue,event}[1h]) \u2014 v3 \u00a78: +venue. force_fired means a venue stop evidently failed to fill on its own \u2014 worth an operator look. Empty until first event.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus-spot"
@@ -1954,15 +2519,66 @@
                 "stacking": {
                   "mode": "normal"
                 }
+              },
+              "color": {
+                "mode": "palette-classic"
               }
             },
-            "overrides": []
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "\\b(placed|filled_flat)\\b"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#73BF69"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "\\b(cancel_|drift_|orphan_|skipped_|qty_cancel|tp_race_hold|stood_down)\\b"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#FF9830"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "\\b(force_fired|reconcile_error|triggered)\\b"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#F2495C"
+                    }
+                  }
+                ]
+              }
+            ]
           },
           "options": {
             "legend": {
               "displayMode": "list",
               "placement": "bottom",
-              "calcs": ["sum"]
+              "calcs": [
+                "sum"
+              ]
             }
           },
           "gridPos": {
@@ -1975,8 +2591,8 @@
         {
           "id": 32,
           "type": "timeseries",
-          "title": "Playbook Version Attribution — Net PnL",
-          "description": "agentic_version_net_pnl_usd{version} — champion/candidate A/B attribution, unchanged by v3 (still feeds attributed auto-promotion).",
+          "title": "Playbook Version Attribution \u2014 Net PnL",
+          "description": "agentic_version_net_pnl_usd{version} \u2014 champion/candidate A/B attribution, unchanged by v3 (still feeds attributed auto-promotion).",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus-spot"
@@ -1994,19 +2610,56 @@
           ],
           "fieldConfig": {
             "defaults": {
+              "unit": "currencyUSD",
               "custom": {
                 "drawStyle": "line",
                 "fillOpacity": 8,
                 "showPoints": "never"
+              },
+              "color": {
+                "mode": "palette-classic"
               }
             },
-            "overrides": []
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "^v1$"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#73BF69"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "^v[2-9]\\d*$"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#5794F2"
+                    }
+                  }
+                ]
+              }
+            ]
           },
           "options": {
             "legend": {
               "displayMode": "list",
               "placement": "bottom",
-              "calcs": ["lastNotNull"]
+              "calcs": [
+                "lastNotNull"
+              ]
             }
           },
           "gridPos": {
@@ -2019,8 +2672,8 @@
         {
           "id": 33,
           "type": "timeseries",
-          "title": "Playbook Version Attribution — Round Trips",
-          "description": "agentic_version_round_trips{version} — closed demo round trips attributed to the playbook version active at entry.",
+          "title": "Playbook Version Attribution \u2014 Round Trips",
+          "description": "agentic_version_round_trips{version} \u2014 closed demo round trips attributed to the playbook version active at entry.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus-spot"
@@ -2042,15 +2695,51 @@
                 "drawStyle": "line",
                 "fillOpacity": 8,
                 "showPoints": "never"
+              },
+              "color": {
+                "mode": "palette-classic"
               }
             },
-            "overrides": []
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "^v1$"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#73BF69"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "^v[2-9]\\d*$"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#5794F2"
+                    }
+                  }
+                ]
+              }
+            ]
           },
           "options": {
             "legend": {
               "displayMode": "list",
               "placement": "bottom",
-              "calcs": ["lastNotNull"]
+              "calcs": [
+                "lastNotNull"
+              ]
             }
           },
           "gridPos": {
@@ -2064,7 +2753,7 @@
           "id": 31,
           "type": "timeseries",
           "title": "Capability Violations (by kind)",
-          "description": "increase(agentic_capability_violations_total{kind}[6h]) — NEW (v3 §4.3): a decision degraded to hold for violating its symbol's capabilities (e.g. open_short on a spot symbol). Full-width: a rare-event guardrail chart — any non-zero bar is a finding (prompt/mandate defect or capability-map bug), never dismissed as noise.",
+          "description": "increase(agentic_capability_violations_total{kind}[6h]) \u2014 NEW (v3 \u00a74.3): a decision degraded to hold for violating its symbol's capabilities (e.g. open_short on a spot symbol). Full-width: a rare-event guardrail chart \u2014 any non-zero bar is a finding (prompt/mandate defect or capability-map bug), never dismissed as noise. Empty until first event.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus-spot"
@@ -2085,15 +2774,36 @@
               "custom": {
                 "drawStyle": "bars",
                 "fillOpacity": 30
+              },
+              "color": {
+                "mode": "palette-classic"
               }
             },
-            "overrides": []
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "open_short_on_spot"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#F2495C"
+                    }
+                  }
+                ]
+              }
+            ]
           },
           "options": {
             "legend": {
               "displayMode": "list",
               "placement": "bottom",
-              "calcs": ["sum"]
+              "calcs": [
+                "sum"
+              ]
             }
           },
           "gridPos": {
@@ -2121,7 +2831,7 @@
           "id": 40,
           "type": "timeseries",
           "title": "Budget Burn-Down (vs $3/day breaker)",
-          "description": "agentic_budget_remaining_usd over the window — burn-down slope of the ONE unified daily LLM budget (resets each UTC day). A cliff-shaped drop is the R8-8 hot-loop signature (non-consuming-trigger class); compare with Decide Outcomes below. Current value lives in the Overview strip.",
+          "description": "agentic_budget_remaining_usd over the window \u2014 burn-down slope of the ONE unified daily LLM budget (resets each UTC day). A cliff-shaped drop is the R8-8 hot-loop signature (non-consuming-trigger class); compare with Decide Outcomes below. Current value lives in the Overview strip.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus-spot"
@@ -2144,7 +2854,31 @@
               "max": 3,
               "custom": {
                 "drawStyle": "line",
-                "fillOpacity": 10
+                "fillOpacity": 10,
+                "thresholdsStyle": {
+                  "mode": "dashed"
+                }
+              },
+              "color": {
+                "mode": "fixed",
+                "fixedColor": "#B877D9"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 0.5
+                  },
+                  {
+                    "color": "green",
+                    "value": 1
+                  }
+                ]
               }
             },
             "overrides": []
@@ -2153,7 +2887,9 @@
             "legend": {
               "displayMode": "list",
               "placement": "bottom",
-              "calcs": ["lastNotNull"]
+              "calcs": [
+                "lastNotNull"
+              ]
             }
           },
           "gridPos": {
@@ -2167,7 +2903,7 @@
           "id": 36,
           "type": "timeseries",
           "title": "LLM Tokens (by kind/model)",
-          "description": "increase(agent_tokens_total{kind,model}[1h]) — input/output/cache_read/cache_creation, split by model (decide vs reflection tiers).",
+          "description": "increase(agent_tokens_total{kind,model}[1h]) \u2014 input/output/cache_read/cache_creation, split by model (decide vs reflection tiers).",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus-spot"
@@ -2192,15 +2928,66 @@
                   "mode": "normal"
                 }
               },
-              "unit": "short"
+              "unit": "short",
+              "color": {
+                "mode": "palette-classic"
+              }
             },
-            "overrides": []
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "^input/"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#5794F2"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "^output/"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#73BF69"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "^cache_"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#B877D9"
+                    }
+                  }
+                ]
+              }
+            ]
           },
           "options": {
             "legend": {
               "displayMode": "list",
               "placement": "bottom",
-              "calcs": ["sum"]
+              "calcs": [
+                "sum"
+              ]
             }
           },
           "gridPos": {
@@ -2214,7 +3001,7 @@
           "id": 37,
           "type": "timeseries",
           "title": "Decide Outcomes (by outcome/model)",
-          "description": "increase(agent_decide_total{outcome,model}[1h]) — proposed/hold/noop/error_retryable/error_fatal/timeout/budget_blocked.",
+          "description": "increase(agent_decide_total{outcome,model}[1h]) \u2014 proposed/hold/noop/error_retryable/error_fatal/timeout/budget_blocked.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus-spot"
@@ -2239,15 +3026,81 @@
                   "mode": "normal"
                 }
               },
-              "unit": "short"
+              "unit": "short",
+              "color": {
+                "mode": "palette-classic"
+              }
             },
-            "overrides": []
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "^proposed/"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#73BF69"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "^(hold|noop)/"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#5794F2"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "^budget_blocked/"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#B877D9"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "^(error_|timeout)/"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#F2495C"
+                    }
+                  }
+                ]
+              }
+            ]
           },
           "options": {
             "legend": {
               "displayMode": "list",
               "placement": "bottom",
-              "calcs": ["sum"]
+              "calcs": [
+                "sum"
+              ]
             }
           },
           "gridPos": {
@@ -2261,7 +3114,7 @@
           "id": 38,
           "type": "stat",
           "title": "Decide Latency (p50)",
-          "description": "histogram_quantile(0.5, agent_decide_latency_seconds) — Sonnet decide-call latency.",
+          "description": "histogram_quantile(0.5, agent_decide_latency_seconds) \u2014 Sonnet decide-call latency.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus-spot"
@@ -2279,6 +3132,7 @@
           "fieldConfig": {
             "defaults": {
               "unit": "s",
+              "noValue": "no decides in window",
               "color": {
                 "mode": "thresholds"
               },
@@ -2304,7 +3158,9 @@
           },
           "options": {
             "reduceOptions": {
-              "calcs": ["lastNotNull"]
+              "calcs": [
+                "lastNotNull"
+              ]
             },
             "textMode": "value"
           },
@@ -2319,7 +3175,7 @@
           "id": 39,
           "type": "stat",
           "title": "Promotion LLM Cost",
-          "description": "agentic_promotion_llm_cost_usd — DB-backed, per-model, cache-aware LLM spend over the promotion evidence window (context for Promotion Net PnL in the Trading row).",
+          "description": "agentic_promotion_llm_cost_usd \u2014 DB-backed, per-model, cache-aware LLM spend over the promotion evidence window (context for Promotion Net PnL in the Trading row).",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus-spot"
@@ -2354,7 +3210,9 @@
           },
           "options": {
             "reduceOptions": {
-              "calcs": ["lastNotNull"]
+              "calcs": [
+                "lastNotNull"
+              ]
             },
             "textMode": "value"
           },
@@ -2383,7 +3241,7 @@
           "id": 49,
           "type": "timeseries",
           "title": "Process RSS (WATCH-V3-1 slope)",
-          "description": "process_resident_memory_bytes trend — WATCH-V3-1: the 40-symbol paper plateau is ~673MiB; a sustained demo-mode climb past ~900MiB (orange line) before soak end is a defect signal, 1.2GiB (red) is the AppMemoryHigh/mem_limit ceiling. A stat cannot show slope; the Overview strip carries the current value.",
+          "description": "process_resident_memory_bytes trend \u2014 WATCH-V3-1: the 40-symbol paper plateau is ~673MiB; a sustained demo-mode climb past ~900MiB (orange line) before soak end is a defect signal, 1.2GiB (red) is the AppMemoryHigh/mem_limit ceiling. A stat cannot show slope; read current value from this series' lastNotNull.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus-spot"
@@ -2425,6 +3283,10 @@
                     "value": 1200000000
                   }
                 ]
+              },
+              "color": {
+                "mode": "fixed",
+                "fixedColor": "#5794F2"
               }
             },
             "overrides": []
@@ -2433,7 +3295,10 @@
             "legend": {
               "displayMode": "list",
               "placement": "bottom",
-              "calcs": ["lastNotNull", "max"]
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ]
             }
           },
           "gridPos": {
@@ -2447,7 +3312,7 @@
           "id": 42,
           "type": "timeseries",
           "title": "Event Loop Utilization",
-          "description": "event_loop_utilization — EventLoopUtilizationHigh alerts above 0.9 sustained 5m.",
+          "description": "event_loop_utilization \u2014 EventLoopUtilizationHigh alerts above 0.9 sustained 5m.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus-spot"
@@ -2468,7 +3333,27 @@
               "custom": {
                 "drawStyle": "line",
                 "fillOpacity": 8,
-                "showPoints": "never"
+                "showPoints": "never",
+                "thresholdsStyle": {
+                  "mode": "dashed"
+                }
+              },
+              "color": {
+                "mode": "fixed",
+                "fixedColor": "#5794F2"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 0.9
+                  }
+                ]
               }
             },
             "overrides": []
@@ -2477,7 +3362,9 @@
             "legend": {
               "displayMode": "list",
               "placement": "bottom",
-              "calcs": ["lastNotNull"]
+              "calcs": [
+                "lastNotNull"
+              ]
             }
           },
           "gridPos": {
@@ -2491,7 +3378,7 @@
           "id": 41,
           "type": "timeseries",
           "title": "Event Loop Delay (p99)",
-          "description": "event_loop_delay_p99_seconds — budget 50ms (EventLoopBudgetBreach alert); a sustained breach starves the strategy → risk → execution hot path.",
+          "description": "event_loop_delay_p99_seconds \u2014 budget 50ms (EventLoopBudgetBreach alert); a sustained breach starves the strategy \u2192 risk \u2192 execution hot path.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus-spot"
@@ -2512,7 +3399,31 @@
               "custom": {
                 "drawStyle": "line",
                 "fillOpacity": 8,
-                "showPoints": "never"
+                "showPoints": "never",
+                "thresholdsStyle": {
+                  "mode": "dashed"
+                }
+              },
+              "color": {
+                "mode": "fixed",
+                "fixedColor": "#FF9830"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 0.05
+                  },
+                  {
+                    "color": "red",
+                    "value": 0.1
+                  }
+                ]
               }
             },
             "overrides": []
@@ -2521,7 +3432,9 @@
             "legend": {
               "displayMode": "list",
               "placement": "bottom",
-              "calcs": ["lastNotNull"]
+              "calcs": [
+                "lastNotNull"
+              ]
             }
           },
           "gridPos": {
@@ -2535,7 +3448,7 @@
           "id": 44,
           "type": "timeseries",
           "title": "Market Stream Forced Reconnects (by venue)",
-          "description": "increase(market_stream_forced_reconnects_total{venue}[1h]) — v3 §8: +venue, pending workstream #5's per-venue MarketStreamsModule facade (today's aggregate labels the sole configured venue, or 'aggregate' once a second venue is live — see metrics.service.ts's own comment). MarketStreamReconnectStorm pages at >=5/hour.",
+          "description": "increase(market_stream_forced_reconnects_total{venue}[1h]) \u2014 v3 \u00a78: +venue, pending workstream #5's per-venue MarketStreamsModule facade (today's aggregate labels the sole configured venue, or 'aggregate' once a second venue is live \u2014 see metrics.service.ts's own comment). MarketStreamReconnectStorm pages at >=5/hour. Empty until first event.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus-spot"
@@ -2556,15 +3469,51 @@
               "custom": {
                 "drawStyle": "bars",
                 "fillOpacity": 30
+              },
+              "color": {
+                "mode": "palette-classic"
               }
             },
-            "overrides": []
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "^binance($| )"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#5794F2"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "^binanceusdm"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#B877D9"
+                    }
+                  }
+                ]
+              }
+            ]
           },
           "options": {
             "legend": {
               "displayMode": "list",
               "placement": "bottom",
-              "calcs": ["sum"]
+              "calcs": [
+                "sum"
+              ]
             }
           },
           "gridPos": {
@@ -2578,7 +3527,7 @@
           "id": 43,
           "type": "timeseries",
           "title": "Market Channel Staleness (by venue/symbol/channel)",
-          "description": "market_channel_staleness_seconds{venue,symbol,channel} — v3 §8: +venue. MarketChannelStale pages at >600s on ticker/candle channels.",
+          "description": "market_channel_staleness_seconds{venue,symbol,channel} \u2014 v3 \u00a78: +venue. MarketChannelStale pages at >600s on ticker/candle channels.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus-spot"
@@ -2601,15 +3550,51 @@
                 "drawStyle": "line",
                 "fillOpacity": 4,
                 "showPoints": "never"
+              },
+              "color": {
+                "mode": "palette-classic"
               }
             },
-            "overrides": []
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "^binance($| )"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#5794F2"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "^binanceusdm"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "#B877D9"
+                    }
+                  }
+                ]
+              }
+            ]
           },
           "options": {
             "legend": {
               "displayMode": "list",
               "placement": "bottom",
-              "calcs": ["max"]
+              "calcs": [
+                "max"
+              ]
             }
           },
           "gridPos": {
@@ -2623,7 +3608,7 @@
           "id": 45,
           "type": "timeseries",
           "title": "Derivatives Feed Staleness",
-          "description": "derivatives_feed_staleness_seconds (-1 = never polled) — funding/OI/mark-basis context feed, book-wide poller.",
+          "description": "clamp_min(derivatives_feed_staleness_seconds, 0) + ((derivatives_feed_staleness_seconds < bool 0) * 900000000) \u2014 funding/OI/mark-basis context feed. Polled age when >=0; -1 (never polled) \u2192 900000000s sentinel (distinct from real age; red above 600s). clamp_min+bool form required: Grafana range empty/`or` paths painted phantom 0.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus-spot"
@@ -2634,7 +3619,7 @@
                 "type": "prometheus",
                 "uid": "prometheus-spot"
               },
-              "expr": "derivatives_feed_staleness_seconds",
+              "expr": "clamp_min(derivatives_feed_staleness_seconds, 0) + ((derivatives_feed_staleness_seconds < bool 0) * 900000000)",
               "legendFormat": "staleness",
               "refId": "A"
             }
@@ -2645,8 +3630,46 @@
               "custom": {
                 "drawStyle": "line",
                 "fillOpacity": 8,
-                "showPoints": "never"
-              }
+                "showPoints": "never",
+                "thresholdsStyle": {
+                  "mode": "dashed"
+                }
+              },
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "yellow",
+                    "value": 300
+                  },
+                  {
+                    "color": "red",
+                    "value": 600
+                  }
+                ]
+              },
+              "noValue": "never polled",
+              "min": 0,
+              "max": 900,
+              "mappings": [
+                {
+                  "type": "value",
+                  "options": {
+                    "900000000": {
+                      "text": "never polled",
+                      "color": "red",
+                      "index": 0
+                    }
+                  }
+                }
+              ]
             },
             "overrides": []
           },
@@ -2654,7 +3677,10 @@
             "legend": {
               "displayMode": "list",
               "placement": "bottom",
-              "calcs": ["lastNotNull"]
+              "calcs": [
+                "lastNotNull"
+              ],
+              "showLegend": true
             }
           },
           "gridPos": {
@@ -2668,7 +3694,7 @@
           "id": 46,
           "type": "timeseries",
           "title": "Sentiment Feed Staleness",
-          "description": "sentiment_feed_staleness_seconds (-1 = never polled) — CryptoPanic headline feed, book-wide poller.",
+          "description": "clamp_min(sentiment_feed_staleness_seconds, 0) + ((sentiment_feed_staleness_seconds < bool 0) * 900000000) \u2014 CryptoPanic headline feed. Polled age when >=0; -1 (never polled) \u2192 900000000s sentinel (distinct from real age; red above 600s). clamp_min+bool form required: Grafana range empty/`or` paths painted phantom 0.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus-spot"
@@ -2679,7 +3705,7 @@
                 "type": "prometheus",
                 "uid": "prometheus-spot"
               },
-              "expr": "sentiment_feed_staleness_seconds",
+              "expr": "clamp_min(sentiment_feed_staleness_seconds, 0) + ((sentiment_feed_staleness_seconds < bool 0) * 900000000)",
               "legendFormat": "staleness",
               "refId": "A"
             }
@@ -2690,8 +3716,46 @@
               "custom": {
                 "drawStyle": "line",
                 "fillOpacity": 8,
-                "showPoints": "never"
-              }
+                "showPoints": "never",
+                "thresholdsStyle": {
+                  "mode": "dashed"
+                }
+              },
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "yellow",
+                    "value": 300
+                  },
+                  {
+                    "color": "red",
+                    "value": 600
+                  }
+                ]
+              },
+              "noValue": "never polled",
+              "min": 0,
+              "max": 900,
+              "mappings": [
+                {
+                  "type": "value",
+                  "options": {
+                    "900000000": {
+                      "text": "never polled",
+                      "color": "red",
+                      "index": 0
+                    }
+                  }
+                }
+              ]
             },
             "overrides": []
           },
@@ -2699,7 +3763,10 @@
             "legend": {
               "displayMode": "list",
               "placement": "bottom",
-              "calcs": ["lastNotNull"]
+              "calcs": [
+                "lastNotNull"
+              ],
+              "showLegend": true
             }
           },
           "gridPos": {
@@ -2713,7 +3780,7 @@
           "id": 47,
           "type": "stat",
           "title": "Mode",
-          "description": "mode_info{requested,effective} — paper-honesty visibility; EffectiveModeLive is an info-level alert, not an error.",
+          "description": "mode_info == 1 (instant) \u2014 requested\u2192effective paper-honesty. Instant filter so historical label sets (e.g. testnet\u2192paper during boot before effective settles) cannot appear beside the current pair \u2014 same pattern as Kill Switch (id 1).",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus-spot"
@@ -2724,9 +3791,10 @@
                 "type": "prometheus",
                 "uid": "prometheus-spot"
               },
-              "expr": "mode_info",
-              "legendFormat": "{{ requested }} → {{ effective }}",
-              "refId": "A"
+              "expr": "mode_info == 1",
+              "legendFormat": "{{ requested }} \u2192 {{ effective }}",
+              "refId": "A",
+              "instant": true
             }
           ],
           "fieldConfig": {
@@ -2748,14 +3816,98 @@
           },
           "options": {
             "reduceOptions": {
-              "calcs": ["lastNotNull"]
+              "calcs": [
+                "lastNotNull"
+              ]
             },
             "textMode": "name"
           },
           "gridPos": {
             "x": 12,
             "y": 131,
-            "w": 12,
+            "w": 6,
+            "h": 4
+          }
+        },
+        {
+          "id": 111,
+          "type": "stat",
+          "title": "Reconciliation Last Success Age",
+          "description": "((time() - reconciliation_last_success_timestamp_seconds) and on() (reconciliation_last_success_timestamp_seconds > 0)) or on() vector(900000000) \u2014 age since last process-wide clean reconcile. Timestamp 0 / absent \u2192 sentinel 900000000 mapped to \"never succeeded\" (red). Uses `or on()` so the unlabeled sentinel is suppressed whenever a real age series exists (plain `or` would show both tiles).",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-spot"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus-spot"
+              },
+              "expr": "((time() - reconciliation_last_success_timestamp_seconds) and on() (reconciliation_last_success_timestamp_seconds > 0)) or on() vector(900000000)",
+              "legendFormat": "age",
+              "refId": "A",
+              "instant": true
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "yellow",
+                    "value": 120
+                  },
+                  {
+                    "color": "orange",
+                    "value": 300
+                  },
+                  {
+                    "color": "red",
+                    "value": 900
+                  }
+                ]
+              },
+              "mappings": [
+                {
+                  "type": "value",
+                  "options": {
+                    "900000000": {
+                      "text": "never succeeded",
+                      "color": "red",
+                      "index": 0
+                    }
+                  }
+                }
+              ]
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "graphMode": "none",
+            "textMode": "value",
+            "colorMode": "background"
+          },
+          "gridPos": {
+            "x": 18,
+            "y": 131,
+            "w": 6,
             "h": 4
           }
         },
@@ -2763,7 +3915,7 @@
           "id": 48,
           "type": "stat",
           "title": "Boot",
-          "description": "boot_info{boot_id} — the bootId-bound arming ceremony's own identifier.",
+          "description": "boot_info{boot_id} \u2014 the bootId-bound arming ceremony's own identifier.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus-spot"
@@ -2798,7 +3950,9 @@
           },
           "options": {
             "reduceOptions": {
-              "calcs": ["lastNotNull"]
+              "calcs": [
+                "lastNotNull"
+              ]
             },
             "textMode": "name"
           },

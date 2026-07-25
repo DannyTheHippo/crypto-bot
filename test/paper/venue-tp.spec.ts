@@ -89,6 +89,7 @@ function buildLoop() {
   // STALE_DATA is not what these scenarios are testing.
   const feed: FeedHealthPort = {
     getRefPrice: () => ({ mid: price(mid.value), at: epochMs(nowMs) }),
+    updateRefPrice: () => undefined,
     health: () => 'LIVE',
     fetchCandles: () => Promise.resolve([]),
   };

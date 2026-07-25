@@ -12,19 +12,19 @@
  *
  * Never skip or weaken these to make a suite pass.
  */
-import { describe, it, expect } from 'vitest';
-import { ModeControlService } from '../../src/features/trading/mode-control/mode-control.service';
+import { describe, expect, it } from 'vitest';
+import { ARMED_SESSION_TTL_MS, CHALLENGE_TTL_MS } from '../../src/domain/mode/arming';
+import { epochMs, venueId } from '../../src/domain/types/ids';
 import { assertAgenticLaneNotLive } from '../../src/features/trading/agentic/agentic-live-interlock';
 import { computeArmingHmac } from '../../src/features/trading/mode-control/hmac';
+import { ModeControlService } from '../../src/features/trading/mode-control/mode-control.service';
 import { KillSwitchService } from '../../src/features/trading/risk/kill-switch.service';
-import { ARMED_SESSION_TTL_MS, CHALLENGE_TTL_MS } from '../../src/domain/mode/arming';
 import type {
-  ModeControlConfig,
-  ModeAuditEvent,
-  KeyProbeResult,
   ArmPreconditionResult,
+  KeyProbeResult,
+  ModeAuditEvent,
+  ModeControlConfig,
 } from '../../src/ports/mode-control';
-import { epochMs, venueId } from '../../src/domain/types/ids';
 
 const T = 1_700_000_000_000;
 const SECRET = 'arming-secret';
@@ -227,6 +227,7 @@ describe('LIVE-GATE MATRIX — arming interlock safety rows', () => {
 describe('LIVE-GATE MATRIX — earned-live promotion gate (agentic boot interlock)', () => {
   const evidence = {
     roundTrips: 42,
+    winRate: 0.55,
     realizedPnl: '120',
     fees: '4',
     llmCostUsd: '20',

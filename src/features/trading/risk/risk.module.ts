@@ -1,8 +1,8 @@
 import { Module } from '@nestjs/common';
 import { randomBytes } from 'node:crypto';
-import { CLOCK, SystemClock } from '../../../ports/clock';
 import { TypedConfigService } from '../../../config/environment/typed-config.service';
 import type { TradingMode } from '../../../domain/types/mode';
+import { CLOCK, SystemClock } from '../../../ports/clock';
 // RISK_SIGNING_KEY is NOT self-provided here: §4.2 requires a single process-lifetime key
 // shared by exactly two consumers (this RiskEngine + Execution's verify). The composition root
 // provides it globally; RiskModule consumes it. Booting RiskModule without that provider fails
@@ -11,29 +11,29 @@ import type { TradingMode } from '../../../domain/types/mode';
 // KillSwitchService is likewise NOT self-provided: §5 mandates ONE kill switch shared by Risk
 // (engage + pre-trade read) and Execution (engage on conflict/unknown/reconcile). The composition
 // root binds it globally; RiskEngine/SignalGateway resolve it by class from that single instance.
-import { FEED_HEALTH, REAL_FEED_HEALTH, type FeedHealthPort } from '../../../ports/market-data';
+import { DEFAULT_FILTERS } from '../../../domain/risk/default-filters';
+import type { PartialRiskLimits } from '../../../domain/risk/limits';
 import { venueId, type VenueId } from '../../../domain/types/ids';
-import { SPOT_VENUE_ID, PERP_VENUE_ID } from '../../../domain/types/venue-map';
+import { PERP_VENUE_ID, SPOT_VENUE_ID } from '../../../domain/types/venue-map';
+import { FEED_HEALTH, REAL_FEED_HEALTH, type FeedHealthPort } from '../../../ports/market-data';
 import {
-  RISK_SIGNING_KEY,
+  POSITION_SIZER,
+  RISK_ENGINE,
   RISK_ENGINE_DEPS,
-  SIZER_DEPS,
   RISK_JOURNAL,
   RISK_JOURNAL_OVERRIDE,
-  RISK_ENGINE,
-  POSITION_SIZER,
-  SIGNAL_GATEWAY,
   RISK_LIMITS,
+  RISK_SIGNING_KEY,
+  SIGNAL_GATEWAY,
+  SIZER_DEPS,
   type RiskEngineDeps,
-  type SizerDeps,
   type RiskJournalPort,
+  type SizerDeps,
 } from '../../../ports/risk';
-import type { PartialRiskLimits } from '../../../domain/risk/limits';
-import { DEFAULT_FILTERS } from '../../../domain/risk/default-filters';
-import { RateBucketsService } from './rate-buckets.service';
 import { CrossingRegistryService } from './crossing-registry.service';
-import { PositionSizerService } from './position-sizer.service';
-import { RiskEngineService, RISK_REJECTIONS_COUNTER } from './risk-engine.service';
+import { PLANNED_STOP_SIZING_COUNTER, PositionSizerService } from './position-sizer.service';
+import { RateBucketsService } from './rate-buckets.service';
+import { RISK_REJECTIONS_COUNTER, RiskEngineService } from './risk-engine.service';
 import { SignalGatewayService } from './signal-gateway.service';
 
 const DEFAULT_LIMITS: PartialRiskLimits = {
@@ -53,6 +53,7 @@ const DEFAULT_LIMITS: PartialRiskLimits = {
 const noopFeedHealth: FeedHealthPort = {
   health: () => 'GAP',
   getRefPrice: () => undefined,
+  updateRefPrice: () => undefined,
   fetchCandles: () => Promise.resolve([]),
 };
 const noopJournal: RiskJournalPort = { record: () => undefined };
@@ -121,6 +122,9 @@ function maxAgentPositionFractionByVenueFor(
 }
 function equityCapFor(config: TypedConfigService | undefined): string | undefined {
   return config?.risk.equityCap;
+}
+function maxPlannedStopRiskFractionFor(config: TypedConfigService | undefined): string {
+  return config?.risk.maxPlannedStopRiskFraction ?? '0';
 }
 // v3 §6.1: AppConfig.venueCapitalSplit (VENUE_CAPITAL_SPLIT, plain string keys) converted to a
 // VenueId-keyed map for the sizer's applyVenueHeadroomClamp. Absent TypedConfigService
@@ -192,6 +196,7 @@ const CONFIG_OPTIONAL = { token: TypedConfigService, optional: true } as const;
         perp: perpDepsFor(config),
         maxAgentPositionFractionByVenue: maxAgentPositionFractionByVenueFor(config),
         equityCap: equityCapFor(config),
+        maxPlannedStopRiskFraction: maxPlannedStopRiskFractionFor(config),
         venueCapitalShare: venueCapitalShareFor(config),
       }),
       inject: [CONFIG_OPTIONAL],
@@ -213,6 +218,7 @@ const CONFIG_OPTIONAL = { token: TypedConfigService, optional: true } as const;
     RateBucketsService,
     CrossingRegistryService,
     PositionSizerService,
+    PLANNED_STOP_SIZING_COUNTER,
     RiskEngineService,
     RISK_REJECTIONS_COUNTER,
     SignalGatewayService,

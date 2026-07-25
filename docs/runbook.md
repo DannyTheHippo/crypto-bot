@@ -142,7 +142,8 @@ multi-asset wallet, so a BALANCE_DRIFT HALT there would fire on holdings the bot
 and the dedicated Spot Testnet keep it. A pass that still throws lands in
 `reconciliation_runs_total{venue,result="error"}` + a `PASS_ERROR:` reconciliations row AND a
 `reconcile pass failed:` warn log — a reconciler that logs nothing and counts nothing is broken, not
-healthy. Watch `reconciliation_last_success_timestamp_seconds` age in Grafana (per venue).
+healthy. Watch `reconciliation_last_success_timestamp_seconds` age in Grafana (process-wide
+gauge — Ops row “Reconciliation Last Success Age” stat; not per-venue). A `0` timestamp shows as “never succeeded”, not an epoch-scale age.
 
 ## Protective exits (bot-side stop-loss / trailing stop)
 
@@ -156,9 +157,9 @@ high-/low-water mark. Ops notes:
   backstop off — the model owns trailing via revisable stop directives).
 - The HWM/LWM is in-memory: after a restart trailing re-arms from `max/min(avgEntry, current)`, not the
   pre-restart extreme (documented boot amnesia).
-- Fires are visible as `protective_exits_total{reason="STOP_LOSS"|"TRAILING_STOP"}` (Grafana Risk &
-  safety row) and as `EXIT_LONG` / `EXIT_SHORT` signals with reason `STOP_LOSS`/`TRAILING_STOP` in the
-  signals table.
+- Fires are visible as `protective_exits_total{reason="STOP_LOSS"|"TRAILING_STOP"|"PLAN_STOP"}`
+  (Grafana Trading row “Protective Exits”) and as `EXIT_LONG` / `EXIT_SHORT` signals with reason
+  `STOP_LOSS`/`TRAILING_STOP`/`PLAN_STOP` in the signals table.
 - Guards: kill-switch must be RUNNING (HaltCoordinator owns halted states), dust positions skipped,
   never stacks on an open order/in-flight intent, 30s per-symbol re-fire cooldown.
 - The agent's system prompt discloses the backstop so it plans exits itself rather than leaning on it.
@@ -256,12 +257,14 @@ If the CLI is unavailable, run the two steps directly:
 ## Before arming at live capital
 
 The shipped `.env.app` `RISK_MAX_*` defaults are already sized for a ~$1k effective book
-(`SIZER_EQUITY_CAP=1000`, `SIZER_EQUITY_FRACTION=0.04`, e.g. `RISK_MAX_ORDER_NOTIONAL=400`,
-gross/net `1200`, daily loss `50`). Before arming with real funds at a **different** equity `E`:
+(`SIZER_EQUITY_CAP=1000`, `SIZER_EQUITY_FRACTION=0.04`, `SIZER_MAX_PLANNED_STOP_RISK_FRACTION=0.01`,
+e.g. `RISK_MAX_ORDER_NOTIONAL=400`, gross/net `1200`, daily loss `50`). Before arming with real funds
+at a **different** equity `E`:
 
 1. Set every `RISK_MAX_*` value (and `RISK_STALE_MAX_AGE_MS`) for the account's **actual** equity
-   `E`, and re-check `SIZER_EQUITY_CAP` / `SIZER_EQUITY_FRACTION` — every limit is a multiple of
-   `equity × fraction` when the fraction is > 0; a changed fraction invalidates cached numbers.
+   `E`, and re-check `SIZER_EQUITY_CAP` / `SIZER_EQUITY_FRACTION` / `SIZER_MAX_PLANNED_STOP_RISK_FRACTION`
+   — every limit is a multiple of `equity × fraction` when the fraction is > 0; a changed fraction
+   invalidates cached numbers.
 2. `RISK_MAX_POSITION_PER_SYMBOL` is a **base-qty** cap, not notional (`domain/risk/limits.ts`) —
    recompute it against the live mark price of the cheapest symbol currently in `TRADING_SYMBOLS`
    at arming time. A stale or placeholder price under- or over-constrains it, and because it is one

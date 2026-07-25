@@ -1,0 +1,371 @@
+{
+  "version": 1,
+  "frozenAt": "2026-07-24",
+  "preregReport": "reports/loop/edge-tournament-preregistration-2026-07-24.md",
+  "datasets": [
+    {
+      "id": "ohlcv-BTCUSDTUSDT-1d",
+      "url": "https://fapi.binance.com/fapi/v1/klines",
+      "requestParams": {
+        "symbol": "BTCUSDTUSDT",
+        "interval": "1d",
+        "smoke": false
+      },
+      "rangeStartMs": 1690243200000,
+      "rangeEndMs": 1784851200000,
+      "rowCount": 1096,
+      "sha256": "571d902ea8c992c0ccf5395b221a0bfedc79556b678d554b284d89135b50acab",
+      "cachePath": "test/backtest/edge-tournament/cache/ohlcv-BTCUSDTUSDT-1d.json"
+    },
+    {
+      "id": "ohlcv-ETHUSDTUSDT-1d",
+      "url": "https://fapi.binance.com/fapi/v1/klines",
+      "requestParams": {
+        "symbol": "ETHUSDTUSDT",
+        "interval": "1d",
+        "smoke": false
+      },
+      "rangeStartMs": 1690243200000,
+      "rangeEndMs": 1784851200000,
+      "rowCount": 1096,
+      "sha256": "9d48c459b076633a26b6bd00c3d9adc232590a8ba22cd5bb1f57f5ab9d0ee1a7",
+      "cachePath": "test/backtest/edge-tournament/cache/ohlcv-ETHUSDTUSDT-1d.json"
+    },
+    {
+      "id": "ohlcv-SOLUSDTUSDT-1d",
+      "url": "https://fapi.binance.com/fapi/v1/klines",
+      "requestParams": {
+        "symbol": "SOLUSDTUSDT",
+        "interval": "1d",
+        "smoke": false
+      },
+      "rangeStartMs": 1690243200000,
+      "rangeEndMs": 1784851200000,
+      "rowCount": 1096,
+      "sha256": "ab2d566ce2b0b6d3dae2acdea8e72f62122f8f856f8ccd63ea00c7bd7b86d0a1",
+      "cachePath": "test/backtest/edge-tournament/cache/ohlcv-SOLUSDTUSDT-1d.json"
+    },
+    {
+      "id": "ohlcv-ZECUSDTUSDT-1d",
+      "url": "https://fapi.binance.com/fapi/v1/klines",
+      "requestParams": {
+        "symbol": "ZECUSDTUSDT",
+        "interval": "1d",
+        "smoke": false
+      },
+      "rangeStartMs": 1690243200000,
+      "rangeEndMs": 1784851200000,
+      "rowCount": 1096,
+      "sha256": "dc6cdea0ba6823b905060e5e56437e8e2ab81c0788391b392ba327efda926741",
+      "cachePath": "test/backtest/edge-tournament/cache/ohlcv-ZECUSDTUSDT-1d.json"
+    },
+    {
+      "id": "ohlcv-AAVEUSDTUSDT-1d",
+      "url": "https://fapi.binance.com/fapi/v1/klines",
+      "requestParams": {
+        "symbol": "AAVEUSDTUSDT",
+        "interval": "1d",
+        "smoke": false
+      },
+      "rangeStartMs": 1690243200000,
+      "rangeEndMs": 1784851200000,
+      "rowCount": 1096,
+      "sha256": "081e68ec9a185781a698675bd3a39a4a5809658f9c017613589042b8bb236f58",
+      "cachePath": "test/backtest/edge-tournament/cache/ohlcv-AAVEUSDTUSDT-1d.json"
+    },
+    {
+      "id": "ohlcv-NEARUSDTUSDT-1d",
+      "url": "https://fapi.binance.com/fapi/v1/klines",
+      "requestParams": {
+        "symbol": "NEARUSDTUSDT",
+        "interval": "1d",
+        "smoke": false
+      },
+      "rangeStartMs": 1690243200000,
+      "rangeEndMs": 1784851200000,
+      "rowCount": 1096,
+      "sha256": "a1e3716134c6eded2392da282599d2edc23ece62615dcb69b26653870e8dbe18",
+      "cachePath": "test/backtest/edge-tournament/cache/ohlcv-NEARUSDTUSDT-1d.json"
+    },
+    {
+      "id": "ohlcv-HYPEUSDTUSDT-1d",
+      "url": "https://fapi.binance.com/fapi/v1/klines",
+      "requestParams": {
+        "symbol": "HYPEUSDTUSDT",
+        "interval": "1d",
+        "smoke": false
+      },
+      "rangeStartMs": 1748563200000,
+      "rangeEndMs": 1784851200000,
+      "rowCount": 421,
+      "sha256": "4148b9af4198128fae4349644596fe753507a1e5e9a7c87f07d996d67937dcd5",
+      "cachePath": "test/backtest/edge-tournament/cache/ohlcv-HYPEUSDTUSDT-1d.json"
+    },
+    {
+      "id": "ohlcv-KAITOUSDTUSDT-1d",
+      "url": "https://fapi.binance.com/fapi/v1/klines",
+      "requestParams": {
+        "symbol": "KAITOUSDTUSDT",
+        "interval": "1d",
+        "smoke": false
+      },
+      "rangeStartMs": 1740009600000,
+      "rangeEndMs": 1784851200000,
+      "rowCount": 520,
+      "sha256": "710117200e742425fc662fc740c348e5d3c1179e9008195579aab1d54734fb3a",
+      "cachePath": "test/backtest/edge-tournament/cache/ohlcv-KAITOUSDTUSDT-1d.json"
+    },
+    {
+      "id": "ohlcv-TRUMPUSDTUSDT-1d",
+      "url": "https://fapi.binance.com/fapi/v1/klines",
+      "requestParams": {
+        "symbol": "TRUMPUSDTUSDT",
+        "interval": "1d",
+        "smoke": false
+      },
+      "rangeStartMs": 1737158400000,
+      "rangeEndMs": 1784851200000,
+      "rowCount": 553,
+      "sha256": "79dd5329869109eeda142fb87c29cdc4022feb1251a217cfbb1d2f5130fd5b88",
+      "cachePath": "test/backtest/edge-tournament/cache/ohlcv-TRUMPUSDTUSDT-1d.json"
+    },
+    {
+      "id": "ohlcv-UNIUSDTUSDT-1d",
+      "url": "https://fapi.binance.com/fapi/v1/klines",
+      "requestParams": {
+        "symbol": "UNIUSDTUSDT",
+        "interval": "1d",
+        "smoke": false
+      },
+      "rangeStartMs": 1690243200000,
+      "rangeEndMs": 1784851200000,
+      "rowCount": 1096,
+      "sha256": "c2e832dee704951c673664240b792a812ad75cfb1a974c99808d92824f943305",
+      "cachePath": "test/backtest/edge-tournament/cache/ohlcv-UNIUSDTUSDT-1d.json"
+    },
+    {
+      "id": "ohlcv-BCHUSDTUSDT-1d",
+      "url": "https://fapi.binance.com/fapi/v1/klines",
+      "requestParams": {
+        "symbol": "BCHUSDTUSDT",
+        "interval": "1d",
+        "smoke": false
+      },
+      "rangeStartMs": 1690243200000,
+      "rangeEndMs": 1784851200000,
+      "rowCount": 1096,
+      "sha256": "c5de9b886821993fad043e9cc7aefb65cca44d4954c1557ba8ef861b843a9195",
+      "cachePath": "test/backtest/edge-tournament/cache/ohlcv-BCHUSDTUSDT-1d.json"
+    },
+    {
+      "id": "ohlcv-XRPUSDTUSDT-1d",
+      "url": "https://fapi.binance.com/fapi/v1/klines",
+      "requestParams": {
+        "symbol": "XRPUSDTUSDT",
+        "interval": "1d",
+        "smoke": false
+      },
+      "rangeStartMs": 1690243200000,
+      "rangeEndMs": 1784851200000,
+      "rowCount": 1096,
+      "sha256": "41e25eb4e24e66757fd95b856300c9b376e26d37a9f708bb62ce685ab3ecdfe1",
+      "cachePath": "test/backtest/edge-tournament/cache/ohlcv-XRPUSDTUSDT-1d.json"
+    },
+    {
+      "id": "ohlcv-LINKUSDTUSDT-1d",
+      "url": "https://fapi.binance.com/fapi/v1/klines",
+      "requestParams": {
+        "symbol": "LINKUSDTUSDT",
+        "interval": "1d",
+        "smoke": false
+      },
+      "rangeStartMs": 1690243200000,
+      "rangeEndMs": 1784851200000,
+      "rowCount": 1096,
+      "sha256": "717446fafcd626b409a110639e188c3671fd59261f6fd2f7bb23630a113c0fe3",
+      "cachePath": "test/backtest/edge-tournament/cache/ohlcv-LINKUSDTUSDT-1d.json"
+    },
+    {
+      "id": "ohlcv-AVAXUSDTUSDT-1d",
+      "url": "https://fapi.binance.com/fapi/v1/klines",
+      "requestParams": {
+        "symbol": "AVAXUSDTUSDT",
+        "interval": "1d",
+        "smoke": false
+      },
+      "rangeStartMs": 1690243200000,
+      "rangeEndMs": 1784851200000,
+      "rowCount": 1096,
+      "sha256": "1c07fca1178604583ca963a975d4a27711927f8e0c01236dd339db1f8eea9862",
+      "cachePath": "test/backtest/edge-tournament/cache/ohlcv-AVAXUSDTUSDT-1d.json"
+    },
+    {
+      "id": "ohlcv-SUIUSDTUSDT-1d",
+      "url": "https://fapi.binance.com/fapi/v1/klines",
+      "requestParams": {
+        "symbol": "SUIUSDTUSDT",
+        "interval": "1d",
+        "smoke": false
+      },
+      "rangeStartMs": 1690243200000,
+      "rangeEndMs": 1784851200000,
+      "rowCount": 1096,
+      "sha256": "833ed94bffd71e3103bb09cb26455589ce89ec52bfb2a21f3c4a5b5586b8c485",
+      "cachePath": "test/backtest/edge-tournament/cache/ohlcv-SUIUSDTUSDT-1d.json"
+    },
+    {
+      "id": "ohlcv-LTCUSDTUSDT-1d",
+      "url": "https://fapi.binance.com/fapi/v1/klines",
+      "requestParams": {
+        "symbol": "LTCUSDTUSDT",
+        "interval": "1d",
+        "smoke": false
+      },
+      "rangeStartMs": 1690243200000,
+      "rangeEndMs": 1784851200000,
+      "rowCount": 1096,
+      "sha256": "fcdddbed33a138743881089d869f06c1965be893fc3cc0570fa4b366630a4195",
+      "cachePath": "test/backtest/edge-tournament/cache/ohlcv-LTCUSDTUSDT-1d.json"
+    },
+    {
+      "id": "funding-binanceusdm-BTCUSDTUSDT",
+      "url": "binanceusdm fetchFundingRateHistory",
+      "requestParams": {
+        "symbol": "BTC/USDT:USDT",
+        "venue": "binanceusdm",
+        "smoke": false
+      },
+      "rangeStartMs": 1690243200000,
+      "rangeEndMs": 1747814400001,
+      "rowCount": 2000,
+      "sha256": "704541f7270f939b33854acb9a6a08f241340d4ea325804466918d675cd46ea8",
+      "cachePath": "test/backtest/edge-tournament/cache/funding-binanceusdm-BTCUSDTUSDT.json"
+    },
+    {
+      "id": "funding-binanceusdm-ETHUSDTUSDT",
+      "url": "binanceusdm fetchFundingRateHistory",
+      "requestParams": {
+        "symbol": "ETH/USDT:USDT",
+        "venue": "binanceusdm",
+        "smoke": false
+      },
+      "rangeStartMs": 1690243200000,
+      "rangeEndMs": 1747814400001,
+      "rowCount": 2000,
+      "sha256": "1407d51c781f1e99fc32d5664eb4a8b44aa494ca73a2dc8c860421376995f030",
+      "cachePath": "test/backtest/edge-tournament/cache/funding-binanceusdm-ETHUSDTUSDT.json"
+    },
+    {
+      "id": "funding-binanceusdm-SOLUSDTUSDT",
+      "url": "binanceusdm fetchFundingRateHistory",
+      "requestParams": {
+        "symbol": "SOL/USDT:USDT",
+        "venue": "binanceusdm",
+        "smoke": false
+      },
+      "rangeStartMs": 1690243200000,
+      "rangeEndMs": 1747814400001,
+      "rowCount": 2000,
+      "sha256": "e4a6aa8fc6af4bbc8d7c37e22df437936e1540ad29ac4b509f377b10f5dcfa6e",
+      "cachePath": "test/backtest/edge-tournament/cache/funding-binanceusdm-SOLUSDTUSDT.json"
+    },
+    {
+      "id": "funding-bybit-BTCUSDTUSDT",
+      "url": "bybit fetchFundingRateHistory",
+      "requestParams": {
+        "symbol": "BTC/USDT:USDT",
+        "venue": "bybit",
+        "smoke": false
+      },
+      "rangeStartMs": 1713312000000,
+      "rangeEndMs": 1784880000000,
+      "rowCount": 800,
+      "sha256": "283fc9f1008c6b653aee502723df4fd334c7bc0f62189ae24e8d42c1c2024cdb",
+      "cachePath": "test/backtest/edge-tournament/cache/funding-bybit-BTCUSDTUSDT.json"
+    },
+    {
+      "id": "funding-bybit-ETHUSDTUSDT",
+      "url": "bybit fetchFundingRateHistory",
+      "requestParams": {
+        "symbol": "ETH/USDT:USDT",
+        "venue": "bybit",
+        "smoke": false
+      },
+      "rangeStartMs": 1713312000000,
+      "rangeEndMs": 1784880000000,
+      "rowCount": 800,
+      "sha256": "2040d611bb830d7ee7462bf9da0987c984ce499034a3debce869c69378393706",
+      "cachePath": "test/backtest/edge-tournament/cache/funding-bybit-ETHUSDTUSDT.json"
+    },
+    {
+      "id": "funding-bybit-SOLUSDTUSDT",
+      "url": "bybit fetchFundingRateHistory",
+      "requestParams": {
+        "symbol": "SOL/USDT:USDT",
+        "venue": "bybit",
+        "smoke": false
+      },
+      "rangeStartMs": 1713312000000,
+      "rangeEndMs": 1784880000000,
+      "rowCount": 800,
+      "sha256": "4159c0bf037e8ade53f7f43c3919c953d6a991d020183d3adb7c4de0ead3a335",
+      "cachePath": "test/backtest/edge-tournament/cache/funding-bybit-SOLUSDTUSDT.json"
+    },
+    {
+      "id": "funding-okx-BTCUSDTUSDT",
+      "url": "okx fetchFundingRateHistory",
+      "requestParams": {
+        "symbol": "BTC/USDT:USDT",
+        "venue": "okx",
+        "smoke": false
+      },
+      "rangeStartMs": 1776758400000,
+      "rangeEndMs": 1784880000000,
+      "rowCount": 283,
+      "sha256": "5c1f5bfbccb61ee79badb772f47c48372c2e6f5bdf1ea80c392357ea4fb9d14c",
+      "cachePath": "test/backtest/edge-tournament/cache/funding-okx-BTCUSDTUSDT.json"
+    },
+    {
+      "id": "funding-okx-ETHUSDTUSDT",
+      "url": "okx fetchFundingRateHistory",
+      "requestParams": {
+        "symbol": "ETH/USDT:USDT",
+        "venue": "okx",
+        "smoke": false
+      },
+      "rangeStartMs": 1776758400000,
+      "rangeEndMs": 1784880000000,
+      "rowCount": 283,
+      "sha256": "d9ea110851a8605f48f2e67869ab06a3d788a25eb98226ec3a6cf2e3accc6d28",
+      "cachePath": "test/backtest/edge-tournament/cache/funding-okx-ETHUSDTUSDT.json"
+    },
+    {
+      "id": "funding-okx-SOLUSDTUSDT",
+      "url": "okx fetchFundingRateHistory",
+      "requestParams": {
+        "symbol": "SOL/USDT:USDT",
+        "venue": "okx",
+        "smoke": false
+      },
+      "rangeStartMs": 1776758400000,
+      "rangeEndMs": 1784880000000,
+      "rowCount": 283,
+      "sha256": "525677d8757f29888a5285865067878c748956effbefb26fbb32dbd3c7afcf26",
+      "cachePath": "test/backtest/edge-tournament/cache/funding-okx-SOLUSDTUSDT.json"
+    },
+    {
+      "id": "gdelt-crypto-news",
+      "url": "https://api.gdeltproject.org/api/v2/doc/doc",
+      "requestParams": {
+        "query": "cryptocurrency",
+        "mode": "timelinevolinfo",
+        "timespan": "90d"
+      },
+      "rangeStartMs": null,
+      "rangeEndMs": null,
+      "rowCount": 86,
+      "sha256": "d6e4c4572b93c763a5664f8e43ca3d08daa7f571eebd94a39b5901aeeffcbdd9",
+      "cachePath": "test/backtest/edge-tournament/cache/gdelt-crypto-news.json"
+    }
+  ]
+}

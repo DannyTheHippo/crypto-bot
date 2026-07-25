@@ -1,14 +1,30 @@
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { InjectMetric, makeCounterProvider, makeGaugeProvider } from '@willsoto/nestjs-prometheus';
-import { Counter, Gauge } from 'prom-client';
 import Decimal from 'decimal.js';
+import { Counter, Gauge } from 'prom-client';
+import {
+  balanceWithinEpsilon,
+  classifyVenueOpenOrder,
+  driftStrictlyGrowing,
+} from '../../../domain/oms/reconcile';
+import {
+  reduce,
+  TERMINAL_ORDER_STATES,
+  TransitionError,
+  type OrderEvent,
+  type OrderRecord,
+} from '../../../domain/oms/reducer';
+import type { FillRecord } from '../../../domain/types/exec-report';
+import type { ClientOrderId, EpochMs, SymbolId } from '../../../domain/types/ids';
+import { isOurClientOrderId, type VenueId } from '../../../domain/types/ids';
+import { feeAmount, price, qty } from '../../../domain/types/money';
+import { venueForSymbol } from '../../../domain/types/venue-map';
 import { CLOCK, type ClockPort } from '../../../ports/clock';
-import { KILL_SWITCH, type KillSwitchPort } from '../../../ports/risk';
 import {
   EXCHANGE_PORT,
   VENUE_EXCHANGE_PORTS,
-  type ExchangePort,
   type ExchangeOrderState,
+  type ExchangePort,
   type VenueFill,
   type VenuePosition,
 } from '../../../ports/exchange';
@@ -18,28 +34,12 @@ import {
   type ExecutionStorePort,
   type ReconConfig,
 } from '../../../ports/execution';
-import {
-  reduce,
-  TransitionError,
-  TERMINAL_ORDER_STATES,
-  type OrderEvent,
-  type OrderRecord,
-} from '../../../domain/oms/reducer';
-import { isOurClientOrderId, type VenueId } from '../../../domain/types/ids';
-import { venueForSymbol } from '../../../domain/types/venue-map';
-import { price, qty, feeAmount } from '../../../domain/types/money';
-import {
-  classifyVenueOpenOrder,
-  balanceWithinEpsilon,
-  driftStrictlyGrowing,
-} from '../../../domain/oms/reconcile';
-import type { ClientOrderId, SymbolId, EpochMs } from '../../../domain/types/ids';
-import type { FillRecord } from '../../../domain/types/exec-report';
+import { OPS_EVENTS, type OpsEventPort } from '../../../ports/observability';
+import { KILL_SWITCH, type KillSwitchPort } from '../../../ports/risk';
+import { VENUE_REGISTRY, type VenueRuntimeDescriptor } from '../../../ports/venue-registry';
+import { FillIngestorService } from './fill-ingestor.service';
 import { OrderBookService } from './order-book.service';
 import { PortfolioStateService } from './portfolio-state.service';
-import { FillIngestorService } from './fill-ingestor.service';
-import { VENUE_REGISTRY, type VenueRuntimeDescriptor } from '../../../ports/venue-registry';
-import { OPS_EVENTS, type OpsEventPort } from '../../../ports/observability';
 
 // Backlog #24: every mismatch carries a class so the counter (and its alert) can separate the
 // shared-wallet foreign-order steady state and other benign classes from actionable ones. Halting
@@ -246,6 +246,9 @@ export class ReconciliationService {
     }
     if (result.mismatches === 0 && !result.halted) {
       this.lastCleanAt = startedAt;
+      // Process-wide stamp only — matches lastCleanAt. Per-venue clean in reconcileOnce used to
+      // refresh this gauge while another venue mismatched (adversarial review 2026-07-24).
+      this.lastSuccessGauge?.set(startedAt / 1000);
     } else {
       this.lastMismatchAt = this.clock.now();
     }
@@ -378,7 +381,6 @@ export class ReconciliationService {
             ? 'mismatch'
             : 'clean';
     this.runsCounter?.inc({ venue: exchange.venue, result });
-    if (result === 'clean') this.lastSuccessGauge?.set(this.clock.now() / 1000);
     this.opsEvents?.emit({
       event: 'reconcile.pass',
       result,
@@ -443,7 +445,10 @@ export class ReconciliationService {
     // Skipped for symbols whose sweep failed — absence there is fetch failure, not venue truth
     // (adoptTerminal re-queries per order anyway, but there is no point burning calls on a venue
     // that just refused the symbol).
+    // Venue filter: never fetchOrder a spot coid against binanceusdm (or vice versa) — that was
+    // minting false adopt_query_failure on every dual-venue pass (2026-07-24 EdgePolicy soak T+0).
     for (const lo of localOpen) {
+      if (venueForSymbol(lo.symbol) !== exchange.venue) continue;
       if (venueCoids.has(lo.clientOrderId)) continue;
       if (failedSymbols.has(lo.symbol)) continue;
       await this.adoptTerminal(exchange, lo.clientOrderId, lo.symbol, acc);
@@ -465,7 +470,17 @@ export class ReconciliationService {
     }
     const event = this.terminalEventFor(venueOrder.status);
     if (event === undefined) {
-      bump(acc, 'adopt_non_adoptable'); // 'open'/'closed' here is inconsistent with absence from open orders — WARN
+      // Venue 'closed' (filled) must NOT fold as CANCELED/EXPIRED — that would retire without fills.
+      // Force a targeted myTrades backfill (same path as axis-2), then re-check local state.
+      if (venueOrder.status === 'closed') {
+        await this.backfillClosedOrderTrades(exchange, coid, symbol, acc);
+        const after = this.orders.get(coid);
+        if (after !== undefined && !TERMINAL_ORDER_STATES.has(after.state)) {
+          bump(acc, 'adopt_non_adoptable');
+        }
+        return;
+      }
+      bump(acc, 'adopt_non_adoptable'); // 'open'/other inconsistent with absence from open orders — WARN
       return;
     }
     bump(acc, 'adopted_terminal'); // adopting a terminal we missed via the stream
@@ -480,10 +495,43 @@ export class ReconciliationService {
     }
   }
 
+  /** Lookback for closed-order trade recovery when the running trades checkpoint is past the fill. */
+  private static readonly ADOPT_CLOSED_LOOKBACK_MS = 7 * 86_400_000;
+
+  private async backfillClosedOrderTrades(
+    exchange: ExchangePort,
+    coid: ClientOrderId,
+    symbol: SymbolId,
+    acc: PassAccumulator,
+  ): Promise<void> {
+    const rec = this.orders.get(coid);
+    if (rec?.venueOrderId === undefined) {
+      bump(acc, 'adopt_non_adoptable');
+      return;
+    }
+    const since = Math.max(
+      0,
+      this.clock.now() - ReconciliationService.ADOPT_CLOSED_LOOKBACK_MS,
+    ) as EpochMs;
+    let trades: readonly VenueFill[];
+    try {
+      trades = await exchange.fetchMyTrades(symbol, since);
+    } catch {
+      bump(acc, 'adopt_query_failure');
+      return;
+    }
+    const byVenueId = new Map<string, OrderRecord>([[rec.venueOrderId, rec]]);
+    for (const t of trades) {
+      if (t.clientOrderId !== rec.venueOrderId && t.clientOrderId !== coid) continue;
+      await this.reconcileTrade(exchange, t, byVenueId, acc);
+    }
+  }
+
   // Only the terminals an open (ACKED/PARTIALLY_FILLED) order may LEGALLY reach are adopted:
   // canceled and expired. 'rejected' is reachable only from SUBMITTING, so a venue 'rejected' on an
   // order we already hold an ack for is a contradiction, not an adopt — surfaced as a WARN (and the
-  // reducer would reject the illegal fold anyway). 'open'/'closed' are likewise non-adopt here.
+  // reducer would reject the illegal fold anyway). 'open' stays non-adoptable; 'closed' is handled
+  // above via trade backfill (never a synthetic cancel).
   private terminalEventFor(status: ExchangeOrderState['status']): OrderEvent | undefined {
     switch (status) {
       case 'canceled':

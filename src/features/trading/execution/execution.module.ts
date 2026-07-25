@@ -1,82 +1,82 @@
 import { Module, type Provider } from '@nestjs/common';
-import { CLOCK, SystemClock } from '../../../ports/clock';
-import { FEED_HEALTH, REAL_FEED_HEALTH, type FeedHealthPort } from '../../../ports/market-data';
 import { TypedConfigService } from '../../../config/environment/typed-config.service';
-import { SPOT_VENUE, PERP_VENUE } from '../../../domain/types/venue-map';
+import { PERP_VENUE, SPOT_VENUE } from '../../../domain/types/venue-map';
+import { CLOCK, SystemClock } from '../../../ports/clock';
 import {
-  EXECUTION_GATE,
-  PORTFOLIO_VIEW,
-  EXEC_OUTBOX,
-  EXECUTION_STORE,
-  EXEC_RUN_CONTEXT,
-  PORTFOLIO_CONFIG,
-  EXEC_FILTERS,
-  EXEC_REPORT_NOTIFY,
-  EQUITY_OBSERVER,
   EQUITY_LIMITS,
-  RECON_CONFIG,
-  INSTANCE_LOCK,
+  EQUITY_OBSERVER,
+  EXEC_FILTERS,
+  EXEC_OUTBOX,
   EXEC_OUTBOX_OVERRIDE,
-  EXECUTION_STORE_OVERRIDE,
-  INSTANCE_LOCK_OVERRIDE,
   EXEC_QUALITY_SINK,
   EXEC_QUALITY_SINK_OVERRIDE,
+  EXEC_REPORT_NOTIFY,
+  EXEC_RUN_CONTEXT,
+  EXECUTION_GATE,
+  EXECUTION_STORE,
+  EXECUTION_STORE_OVERRIDE,
+  INSTANCE_LOCK,
+  INSTANCE_LOCK_OVERRIDE,
+  PORTFOLIO_CONFIG,
+  PORTFOLIO_VIEW,
+  RECON_CONFIG,
   RECOVERY_CONFIG,
+  type EquityLimits,
+  type EquityObserver,
+  type ExecFilters,
   type ExecOutboxPort,
+  type ExecQualitySinkPort,
+  type ExecRunContext,
   type ExecutionStorePort,
   type InstanceLockPort,
-  type ExecRunContext,
   type PortfolioConfig,
-  type ExecFilters,
-  type EquityLimits,
   type ReconConfig,
-  type EquityObserver,
-  type ExecQualitySinkPort,
   type RecoveryConfig,
 } from '../../../ports/execution';
-import { InMemoryExecOutbox } from './in-memory-outbox';
-import { InMemoryExecutionStore } from './in-memory-store';
-import { InMemoryInstanceLock } from './in-memory-instance-lock';
-import { NonceLedgerService } from './nonce-ledger.service';
-import { FeeLedgerService } from './fee-ledger.service';
-import { PortfolioStateService } from './portfolio-state.service';
-import { EquitySamplerService } from './equity-sampler.service';
+import { FEED_HEALTH, REAL_FEED_HEALTH, type FeedHealthPort } from '../../../ports/market-data';
+import { AlgoStopRecoveryService } from './algo-stop-recovery.service';
+import { BootRecoveryService } from './boot-recovery.service';
+import { CrashRecoveryService } from './crash-recovery.service';
+import { DemoFillPollerService } from './demo-fill-poller.service';
 import { EquityMonitorService } from './equity-monitor.service';
-import { OrderBookService } from './order-book.service';
-import {
-  FillIngestorService,
-  FILLS_COUNTER,
-  ORDERS_FILLED_QTY_COUNTER,
-  ORDERS_FULLY_FILLED_COUNTER,
-  SLIPPAGE_DECISION_HISTOGRAM,
-  FEES_PAID_COUNTER,
-  ROUND_TRIPS_COUNTER,
-  TRADE_PNL_HISTOGRAM,
-} from './fill-ingestor.service';
+import { EquitySamplerService } from './equity-sampler.service';
+import { ExecReportConsumerService } from './exec-report-consumer.service';
 import {
   ExecutionGateService,
+  ORDER_SUBMIT_LATENCY,
   ORDERS_COUNTER,
   ORDERS_REJECTED_COUNTER,
   ORDERS_SUBMITTED_COUNTER,
   ORDERS_SUBMITTED_QTY_COUNTER,
-  ORDER_SUBMIT_LATENCY,
 } from './execution-gate.service';
-import { ExecReportConsumerService } from './exec-report-consumer.service';
-import { UnknownResolverService } from './unknown-resolver.service';
+import { FeeLedgerService } from './fee-ledger.service';
 import {
-  ReconciliationService,
+  FEES_PAID_COUNTER,
+  FillIngestorService,
+  FILLS_COUNTER,
+  ORDERS_FILLED_QTY_COUNTER,
+  ORDERS_FULLY_FILLED_COUNTER,
+  ROUND_TRIPS_COUNTER,
+  SLIPPAGE_DECISION_HISTOGRAM,
+  TRADE_PNL_HISTOGRAM,
+} from './fill-ingestor.service';
+import { InMemoryInstanceLock } from './in-memory-instance-lock';
+import { InMemoryExecOutbox } from './in-memory-outbox';
+import { InMemoryExecutionStore } from './in-memory-store';
+import { NonceLedgerService } from './nonce-ledger.service';
+import { OrderBookService } from './order-book.service';
+import { PortfolioStateService } from './portfolio-state.service';
+import {
+  RECON_LAST_SUCCESS_GAUGE,
   RECON_MISMATCH_COUNTER,
   RECON_RUNS_COUNTER,
-  RECON_LAST_SUCCESS_GAUGE,
+  ReconciliationService,
 } from './reconciliation.service';
-import { CrashRecoveryService } from './crash-recovery.service';
-import { BootRecoveryService } from './boot-recovery.service';
-import { DemoFillPollerService } from './demo-fill-poller.service';
-import { AlgoStopRecoveryService } from './algo-stop-recovery.service';
 import {
-  RecoveryCoordinatorService,
   RECOVERY_AUTO_RESUME_COUNTER,
+  RecoveryCoordinatorService,
 } from './recovery-coordinator.service';
+import { UnknownResolverService } from './unknown-resolver.service';
 
 // ExecutionModule owns the OMS edge: the outbox/store, the canonical portfolio, the gate and the
 // report consumer. EXCHANGE_PORT is NOT bound here — binding it to a concrete adapter (paper or
@@ -85,6 +85,7 @@ import {
 const noopFeedHealth: FeedHealthPort = {
   health: () => 'GAP',
   getRefPrice: () => undefined,
+  updateRefPrice: () => undefined,
   fetchCandles: () => Promise.resolve([]),
 };
 const REAL_FEED_HEALTH_OPTIONAL = { token: REAL_FEED_HEALTH, optional: true } as const;

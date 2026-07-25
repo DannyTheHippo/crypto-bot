@@ -1,28 +1,29 @@
-import { Injectable, OnModuleInit, OnModuleDestroy, Optional, Inject } from '@nestjs/common';
+import { Inject, Injectable, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 import {
   InjectMetric,
-  makeGaugeProvider,
   makeCounterProvider,
+  makeGaugeProvider,
   makeHistogramProvider,
 } from '@willsoto/nestjs-prometheus';
-import { Gauge, Counter } from 'prom-client';
-import { performance } from 'perf_hooks';
 import Decimal from 'decimal.js';
+import { performance } from 'perf_hooks';
+import { Counter, Gauge } from 'prom-client';
 import { TypedConfigService } from '../../../config/environment/typed-config.service';
+import { venueForSymbol } from '../../../domain/types/venue-map';
+import { DERIVATIVES_FEED, type DerivativesFeedPort } from '../../../ports/derivatives-feed';
+import { PORTFOLIO_VIEW, type PortfolioViewPort } from '../../../ports/execution';
 import {
   MARKET_STREAM_TELEMETRY,
   type MarketStreamTelemetryPort,
 } from '../../../ports/market-data';
+import { MODE_CONTROL, type ModeControlPort } from '../../../ports/mode-control';
 import { KILL_SWITCH, type KillSwitchPort } from '../../../ports/risk';
-import { PORTFOLIO_VIEW, type PortfolioViewPort } from '../../../ports/execution';
+import { SENTIMENT_FEED, type SentimentFeedPort } from '../../../ports/sentiment-feed';
 import {
   STRATEGY_REGISTRY,
-  type StrategyRegistryPort,
   type StrategyLifecycle,
+  type StrategyRegistryPort,
 } from '../../../ports/strategy';
-import { DERIVATIVES_FEED, type DerivativesFeedPort } from '../../../ports/derivatives-feed';
-import { SENTIMENT_FEED, type SentimentFeedPort } from '../../../ports/sentiment-feed';
-import { venueForSymbol } from '../../../domain/types/venue-map';
 import { EventLoopHealthIndicator } from './event-loop-health.indicator';
 
 export const EVENT_LOOP_DELAY_GAUGE = makeGaugeProvider({
@@ -37,7 +38,10 @@ export const EVENT_LOOP_UTILIZATION_GAUGE = makeGaugeProvider({
 
 export const MODE_INFO_GAUGE = makeGaugeProvider({
   name: 'mode_info',
-  help: 'Trading mode info',
+  help:
+    'Trading mode info — requested is always env requestedMode (pre-test/ci override); ' +
+    'effective is ModeControlPort.resolveMode().effective when MODE_CONTROL is bound ' +
+    '(arming-aware), otherwise boot configMode.',
   labelNames: ['requested', 'effective'],
 });
 
@@ -317,6 +321,14 @@ export const AGENTIC_REFLECTION_TRIGGER_COUNTER = makeCounterProvider({
   labelNames: ['outcome'] as const,
 });
 
+// 2026-07-24 fail-closed re-arm fallback: agentic.strategy.ts attaches a synthetic protective plan
+// when a positioned consult returns hold/adjust without directives — this counter is that attach's
+// Prometheus mirror (label-free; one series process-wide). Query: increase(agentic_rearm_fallback_total[24h]).
+export const AGENTIC_REARM_FALLBACK_COUNTER = makeCounterProvider({
+  name: 'agentic_rearm_fallback_total',
+  help: 'Synthetic protective plans attached when a positioned consult returned hold/adjust without directives',
+});
+
 // §strategy lifecycle — sampled in the 5s loop below (same pull pattern as kill_switch_state):
 // each strategy carries exactly one state at 1, all others in the union explicit 0 (not just absent),
 // so a terminal DRAINING/HALTED strategy is directly alertable rather than a "no data" gap.
@@ -401,15 +413,28 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
     @Optional()
     @Inject(MARKET_STREAM_TELEMETRY)
     private readonly marketStreamTelemetry?: MarketStreamTelemetryPort,
+    // @Optional so observability boots standalone (module-isolation tests without ModeControlModule).
+    // ModeControlModule is @Global in the running app, so Overview/Ops mode panels track
+    // resolveMode().effective after arming — not a stale boot-time configMode snapshot.
+    @Optional() @Inject(MODE_CONTROL) private readonly modeControl?: ModeControlPort,
   ) {}
 
-  onModuleInit() {
+  private sampleModeInfo(): void {
+    // Info-gauge pattern (same as kill_switch_state): reset so only the current label set carries 1.
+    // `requested` is always the raw env request (requestedMode) so Ops "{{ requested }} → {{ effective }}"
+    // still shows test/ci overrides (e.g. live → paper). `effective` is arming-aware when MODE_CONTROL
+    // is bound; ModeControlConfig.requested is configMode and must NOT overwrite this label.
+    this.modeInfoGauge.reset();
     const mode = this.configService.mode;
+    const requested = mode.requestedMode || 'paper';
+    const effective = this.modeControl ? this.modeControl.resolveMode().effective : mode.configMode;
+    this.modeInfoGauge.labels({ requested, effective }).set(1);
+  }
+
+  onModuleInit() {
     const app = this.configService.app;
 
-    this.modeInfoGauge
-      .labels({ requested: mode.requestedMode || 'paper', effective: mode.configMode })
-      .set(1);
+    this.sampleModeInfo();
     this.bootInfoGauge.labels({ boot_id: app.bootId }).set(1);
 
     let prevElu = performance.eventLoopUtilization();
@@ -432,6 +457,9 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
       const elu = performance.eventLoopUtilization(prevElu);
       prevElu = performance.eventLoopUtilization();
       this.loopUtilizationGauge.set(elu.utilization);
+
+      // Resample every tick so arming/disarm changes surface without process restart.
+      this.sampleModeInfo();
 
       if (this.killSwitch) {
         this.killSwitchGauge.reset(); // only the current state carries 1

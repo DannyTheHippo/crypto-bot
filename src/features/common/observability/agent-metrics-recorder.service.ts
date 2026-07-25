@@ -94,6 +94,8 @@ export class AgentMetricsRecorder {
     private readonly schemaRejectionsCounter: Counter<string>,
     @InjectMetric('agentic_reflection_trigger_total')
     private readonly reflectionTriggerCounter: Counter<string>,
+    @InjectMetric('agentic_rearm_fallback_total')
+    private readonly rearmFallbackCounter: Counter<string>,
   ) {}
 
   // `model` on both methods (#28): optional with an 'unknown' fallback so the label is always
@@ -295,6 +297,15 @@ export class AgentMetricsRecorder {
   recordReflectionTrigger(outcome: string): void {
     try {
       this.reflectionTriggerCounter.inc({ outcome });
+    } catch {
+      /* metrics must never throw into a trading path */
+    }
+  }
+
+  // 2026-07-24 fail-closed re-arm fallback — see AGENTIC_REARM_FALLBACK_COUNTER's own comment.
+  recordRearmFallback(): void {
+    try {
+      this.rearmFallbackCounter.inc();
     } catch {
       /* metrics must never throw into a trading path */
     }

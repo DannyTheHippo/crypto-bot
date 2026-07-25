@@ -187,6 +187,10 @@ SIZER_EQUITY_FRACTION=0.04 # 4% of equity per entry (compounding sizing; overrid
 # min(actualEquity, this cap) on every sizing path — production capital max ~$1k. v3 §3.2: now the
 # schema DEFAULT (was optional/uncapped); explicit '0' still disables the cap.
 SIZER_EQUITY_CAP=1000
+# Profitability Edge Program: aggregate planned-stop entry risk cap — max same-side cost notional =
+# cappedEquity × fraction / Signal.stopLossPct (held |qty|×avgEntry + reserved + proposed). Schema
+# default 0 disables; byte-identical when Signal.stopLossPct is also absent.
+SIZER_MAX_PLANNED_STOP_RISK_FRACTION=0.01
 PROTECT_STOP_LOSS_PCT=0.06 # bot-side backstop: force-exits via the normal risk path if price falls 6% below entry (must sit strictly above the model's own stop-loss upper bound 0.05); schema default 0 disables
 PROTECT_TRAILING_PCT=0 # bot-side trailing backstop DISABLED (the model owns trailing via revisable stop directives now); schema default 0 disables
 PLAN_STOP_WATCH_ENABLED=false # plan-aware 1s stop watcher — OFF per the pre-registered stop-slippage study verdict (NOT JUSTIFIED at N=3, mean leak +3.2bps — reports/loop/stop-slippage-2026-07-13.md)
@@ -247,6 +251,9 @@ AGENTIC_BOOK_STRUCTURE_ENABLED=true
 # Track-record block (Push 3 P6 Unit 4): this strategy's own realized tripCount/winRate/
 # meanNetBpsPerTrip/trailingWindowTrips, also net-vs-BTC-hold and net-vs-basket alpha.
 AGENTIC_TRACK_RECORD_ENABLED=true
+# Owner override 2026-07-24: deploy residual20-volbeta EdgePolicy in demo
+AGENTIC_EDGE_POLICY_ENABLED=true
+AGENTIC_EDGE_POLICY_FAMILY=residual20-volbeta
 
 # ── Risk limits (v3 §3.2: re-defaulted to the $1k-book scale — the deployed v2-contract values were
 # pre-$1k-book drift; schema defaults now match this deployed shape directly) ──

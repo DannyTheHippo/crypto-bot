@@ -125,6 +125,7 @@ function build() {
   const clock = { now: () => epochMs(T) };
   const feed: FeedHealthPort = {
     getRefPrice: () => ({ mid: price('100'), at: epochMs(T) }),
+    updateRefPrice: () => undefined,
     health: () => 'LIVE',
     fetchCandles: () => Promise.resolve([]),
   };

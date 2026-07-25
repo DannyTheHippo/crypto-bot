@@ -1,15 +1,15 @@
-import { Injectable, Inject, Optional } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import Decimal from 'decimal.js';
+import { sumFeesQuote, walkRoundTrips } from '../../../domain/risk/round-trips';
 import {
-  PROMOTION_STATS,
   PROMOTION_READINESS_CONFIG,
-  type PromotionStatsPort,
+  PROMOTION_STATS,
+  type PerModelTokenTotals,
+  type PromotionReadiness,
   type PromotionReadinessConfig,
   type PromotionReadinessPort,
-  type PromotionReadiness,
-  type PerModelTokenTotals,
+  type PromotionStatsPort,
 } from '../../../ports/promotion';
-import { walkRoundTrips, sumFeesQuote } from '../../../domain/risk/round-trips';
 
 const DEMO_MODE = 'testnet' as const;
 const MIN_ROUND_TRIPS = 30;
@@ -109,8 +109,14 @@ export class PromotionReadinessService implements PromotionReadinessPort {
     if (windowDays < MIN_WINDOW_DAYS) reasons.push('INSUFFICIENT_WINDOW');
     if (fundingDataMissing) reasons.push('FUNDING_DATA_MISSING');
 
+    // Per-trip win = net-of-fee PnL > 0 (realized − feesQuote). LLM spend is a book-level cost, not
+    // attributed per trip — same definition as RoundTripEvidence.netPnl / trackRecord.winRate.
+    const wins = cycles.reduce((n, c) => (c.realizedPnl.minus(c.feesQuote).gt(0) ? n + 1 : n), 0);
+    const winRate = cycles.length > 0 ? wins / cycles.length : 0;
+
     const evidence = {
       roundTrips: cycles.length,
+      winRate,
       realizedPnl: realizedPnl.toFixed(),
       fees: fees.toFixed(),
       llmCostUsd: llmCostUsd.toFixed(),
@@ -192,6 +198,7 @@ export class PromotionReadinessService implements PromotionReadinessPort {
 function zeroEvidence() {
   return {
     roundTrips: 0,
+    winRate: 0,
     realizedPnl: '0',
     fees: '0',
     llmCostUsd: '0',

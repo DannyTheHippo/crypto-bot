@@ -1,9 +1,12 @@
 import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
-import type { SymbolId, EpochMs } from '../../../domain/types/ids';
-import { epochMs } from '../../../domain/types/ids';
-import { splitSymbol } from '../../../domain/types/symbol';
-import type { ClockPort } from '../../../ports/clock';
-import type { DerivativesFeedPort, DerivativesSnapshot } from '../../../ports/derivatives-feed';
+import type { SymbolId, EpochMs } from '../../../domain/common/types/ids';
+import { epochMs } from '../../../domain/common/types/ids';
+import { splitSymbol } from '../../../domain/venue/types/symbol';
+import type { ClockPort } from '../../../ports/common/clock';
+import type {
+  DerivativesFeedPort,
+  DerivativesSnapshot,
+} from '../../../ports/venue/derivatives-feed';
 
 // Binance USDM funding settles 3x/day (every 8h) for the vast majority of listed perps; used only
 // to annualize the polled fundingRate into a display-grade percent when the venue response omits

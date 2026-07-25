@@ -1,10 +1,10 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { eq, and, desc, asc } from 'drizzle-orm';
-import type { TradingMode } from '../../domain/types/mode';
-import { DRIZZLE_DB } from '../database.tokens';
-import * as schema from '../schemas/trading';
-import { requireDb } from './persistence-guard';
+import type { TradingMode } from '../../../domain/trading/types/mode';
+import { DRIZZLE_DB } from '../../database.tokens';
+import * as schema from '../../schemas/trading';
+import { requireDb } from '../common/persistence-guard';
 
 export interface EquityInsert {
   runId: string;

@@ -6,7 +6,7 @@ export default defineConfig({
     globals: false,
     environment: 'node',
     // Harness agent worktrees live under .claude/worktrees/ and contain full repo copies —
-    // without this exclude, positional filters like `vitest run test/unit` match their copies too.
+    // without this exclude, positional filters like `vitest run test/features` match their copies too.
     exclude: [...configDefaults.exclude, '**/.claude/**'],
     coverage: {
       provider: 'v8',
@@ -18,15 +18,30 @@ export default defineConfig({
         // Money-critical decision logic: 100% branch (design §9). These globs fail the
         // build below threshold — Risk/OMS-reducer/ModeControl correctness is asserted,
         // not sampled. Per-glob thresholds apply to matched files; global covers the rest.
-        'src/domain/risk/**/*.ts': { lines: 100, branches: 100, functions: 100, statements: 100 },
+        'src/domain/trading/risk/**/*.ts': {
+          lines: 100,
+          branches: 100,
+          functions: 100,
+          statements: 100,
+        },
         'src/features/trading/risk/**/*.ts': {
           lines: 100,
           branches: 100,
           functions: 100,
           statements: 100,
         },
-        'src/domain/oms/**/*.ts': { lines: 100, branches: 100, functions: 100, statements: 100 },
-        'src/domain/mode/**/*.ts': { lines: 100, branches: 100, functions: 100, statements: 100 },
+        'src/domain/trading/oms/**/*.ts': {
+          lines: 100,
+          branches: 100,
+          functions: 100,
+          statements: 100,
+        },
+        'src/domain/trading/mode/**/*.ts': {
+          lines: 100,
+          branches: 100,
+          functions: 100,
+          statements: 100,
+        },
         // Execution is the order-authorization chokepoint (verify-reject matrix + write-ahead
         // ordering). The PaperExchangeAdapter (sim) stays at the global threshold — the
         // deterministic paper suite drives it hard.

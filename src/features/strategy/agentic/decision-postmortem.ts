@@ -1,5 +1,5 @@
 import Decimal from 'decimal.js';
-import type { AgentDecisionRow } from '../../../ports/agentic-strategy';
+import type { AgentDecisionRow } from '../../../ports/strategy/agentic-strategy';
 
 // ── Decision post-mortem digest for the reflection loop (X7) ──────────────────
 //

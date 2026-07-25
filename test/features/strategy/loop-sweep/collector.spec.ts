@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 // @ts-expect-error scripts/** live outside the tsconfig graph (see tsconfig.eslint.json's include list)
 // — the pure collector core is a stdlib-only .mjs with no declaration file. vitest/swc resolves it at
 // runtime; this directive mirrors alarms.spec.ts's bridge across the graph boundary (no 5th .d.ts).
-import * as coreModule from '../../../scripts/loop-collect-core.mjs';
+import * as coreModule from '../../../../scripts/loop-collect-core.mjs';
 
 // loop-collect-core.mjs is the PURE decision layer of the Y3 standing collector: cadence classification
 // (heartbeat/gap/seq), the line shapes, the rotation set, and the since-filter — no timers, no docker,

@@ -1,7 +1,7 @@
 import { Global, Module } from '@nestjs/common';
 import { ExecutionModule } from '../execution/execution.module';
 import { PortfolioStateService } from '../execution/portfolio-state.service';
-import { PORTFOLIO_VIEW } from '../../../ports/execution';
+import { PORTFOLIO_VIEW } from '../../../ports/trading/execution';
 
 // W3 Part 4: pure code motion out of app.module.ts — see db-health-bridge.module.ts's own header
 // comment on the boundaries 'app' zone widening this relies on.

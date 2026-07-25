@@ -6,20 +6,20 @@ import {
   balanceWithinEpsilon,
   classifyVenueOpenOrder,
   driftStrictlyGrowing,
-} from '../../../domain/oms/reconcile';
+} from '../../../domain/trading/oms/reconcile';
 import {
   reduce,
   TERMINAL_ORDER_STATES,
   TransitionError,
   type OrderEvent,
   type OrderRecord,
-} from '../../../domain/oms/reducer';
-import type { FillRecord } from '../../../domain/types/exec-report';
-import type { ClientOrderId, EpochMs, SymbolId } from '../../../domain/types/ids';
-import { isOurClientOrderId, type VenueId } from '../../../domain/types/ids';
-import { feeAmount, price, qty } from '../../../domain/types/money';
-import { venueForSymbol } from '../../../domain/types/venue-map';
-import { CLOCK, type ClockPort } from '../../../ports/clock';
+} from '../../../domain/trading/oms/reducer';
+import type { FillRecord } from '../../../domain/trading/types/exec-report';
+import type { ClientOrderId, EpochMs, SymbolId } from '../../../domain/common/types/ids';
+import { isOurClientOrderId, type VenueId } from '../../../domain/common/types/ids';
+import { feeAmount, price, qty } from '../../../domain/common/types/money';
+import { venueForSymbol } from '../../../domain/venue/types/venue-map';
+import { CLOCK, type ClockPort } from '../../../ports/common/clock';
 import {
   EXCHANGE_PORT,
   VENUE_EXCHANGE_PORTS,
@@ -27,16 +27,16 @@ import {
   type ExchangePort,
   type VenueFill,
   type VenuePosition,
-} from '../../../ports/exchange';
+} from '../../../ports/venue/exchange';
 import {
   EXECUTION_STORE,
   RECON_CONFIG,
   type ExecutionStorePort,
   type ReconConfig,
-} from '../../../ports/execution';
-import { OPS_EVENTS, type OpsEventPort } from '../../../ports/observability';
-import { KILL_SWITCH, type KillSwitchPort } from '../../../ports/risk';
-import { VENUE_REGISTRY, type VenueRuntimeDescriptor } from '../../../ports/venue-registry';
+} from '../../../ports/trading/execution';
+import { OPS_EVENTS, type OpsEventPort } from '../../../ports/common/observability';
+import { KILL_SWITCH, type KillSwitchPort } from '../../../ports/trading/risk';
+import { VENUE_REGISTRY, type VenueRuntimeDescriptor } from '../../../ports/venue/venue-registry';
 import { FillIngestorService } from './fill-ingestor.service';
 import { OrderBookService } from './order-book.service';
 import { PortfolioStateService } from './portfolio-state.service';

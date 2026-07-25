@@ -11,11 +11,11 @@ import {
 import Decimal from 'decimal.js';
 import path from 'node:path';
 import { TypedConfigService } from '../../../config/environment/typed-config.service';
-import { DEFAULT_FILTERS } from '../../../domain/risk/default-filters';
-import type { VenueId } from '../../../domain/types/ids';
-import { strategyId, symbolId, type SymbolId } from '../../../domain/types/ids';
-import type { CandleInterval } from '../../../domain/types/market-events';
-import { venueForSymbol } from '../../../domain/types/venue-map';
+import { DEFAULT_FILTERS } from '../../../domain/trading/risk/default-filters';
+import type { VenueId } from '../../../domain/common/types/ids';
+import { strategyId, symbolId, type SymbolId } from '../../../domain/common/types/ids';
+import type { CandleInterval } from '../../../domain/venue/types/market-events';
+import { venueForSymbol } from '../../../domain/venue/types/venue-map';
 import {
   AGENT_CLIENT,
   AGENT_DECISION_JOURNAL,
@@ -29,26 +29,26 @@ import {
   type AgentProposal,
   type EdgePolicyPort,
   type PlaybookProvider,
-} from '../../../ports/agentic-strategy';
-import { CLOCK, type ClockPort } from '../../../ports/clock';
-import { DERIVATIVES_FEED, type DerivativesFeedPort } from '../../../ports/derivatives-feed';
-import { EXCHANGE_PORT, type ExchangePort } from '../../../ports/exchange';
-import { EXCHANGE_STREAM, type ExchangeStreamPort } from '../../../ports/exchange-stream';
+} from '../../../ports/strategy/agentic-strategy';
+import { CLOCK, type ClockPort } from '../../../ports/common/clock';
+import { DERIVATIVES_FEED, type DerivativesFeedPort } from '../../../ports/venue/derivatives-feed';
+import { EXCHANGE_PORT, type ExchangePort } from '../../../ports/venue/exchange';
+import { EXCHANGE_STREAM, type ExchangeStreamPort } from '../../../ports/venue/exchange-stream';
 import {
   EXECUTION_STORE,
   PORTFOLIO_VIEW,
   type ExecutionStorePort,
   type PortfolioViewPort,
-} from '../../../ports/execution';
-import { FEAR_GREED_FEED, type FearGreedFeedPort } from '../../../ports/fear-greed-feed';
-import { LIQUIDATION_FEED, type LiquidationFeedPort } from '../../../ports/liquidation-feed';
+} from '../../../ports/trading/execution';
+import { FEAR_GREED_FEED, type FearGreedFeedPort } from '../../../ports/strategy/fear-greed-feed';
+import { LIQUIDATION_FEED, type LiquidationFeedPort } from '../../../ports/venue/liquidation-feed';
 import {
   FEED_HEALTH,
   MARKET_STREAM,
   type FeedHealthPort,
   type MarketStreamPort,
-} from '../../../ports/market-data';
-import { POSITIONING_FEED, type PositioningFeedPort } from '../../../ports/positioning-feed';
+} from '../../../ports/venue/market-data';
+import { POSITIONING_FEED, type PositioningFeedPort } from '../../../ports/venue/positioning-feed';
 import {
   PROMOTION_READINESS,
   PROMOTION_STATS,
@@ -57,7 +57,7 @@ import {
   type PromotionReadinessPort,
   type PromotionStatsPort,
   type RoundTripEvidencePort,
-} from '../../../ports/promotion';
+} from '../../../ports/trading/promotion';
 import {
   KILL_SWITCH,
   PLAN_STOP_REGISTRY,
@@ -65,24 +65,24 @@ import {
   type KillSwitchPort,
   type PlanStopRegistryPort,
   type ProtectiveExitConfig,
-} from '../../../ports/risk';
-import { SENTIMENT_FEED, type SentimentFeedPort } from '../../../ports/sentiment-feed';
+} from '../../../ports/trading/risk';
+import { SENTIMENT_FEED, type SentimentFeedPort } from '../../../ports/strategy/sentiment-feed';
 import {
   SIGNAL_SINK,
   STRATEGY_HOST,
   STRATEGY_REGISTRY,
   type StrategyHostPort,
   type StrategyRegistryPort,
-} from '../../../ports/strategy';
-import { TRADE_FLOW_FEED, type TradeFlowFeedPort } from '../../../ports/trade-flow-feed';
-import { VENUE_REGISTRY, type VenueRuntimeDescriptor } from '../../../ports/venue-registry';
+} from '../../../ports/strategy/strategy';
+import { TRADE_FLOW_FEED, type TradeFlowFeedPort } from '../../../ports/venue/trade-flow-feed';
+import { VENUE_REGISTRY, type VenueRuntimeDescriptor } from '../../../ports/venue/venue-registry';
 import type { AgentDecideOutcome } from '../../common/observability/agent-metrics-recorder.service';
 import { AgentMetricsRecorder } from '../../common/observability/agent-metrics-recorder.service';
 import { ObservabilityModule } from '../../common/observability/observability.module';
 import { OpsEventLogger } from '../../common/observability/ops-event-logger';
-import type { DailyLlmBudget } from '../agentic/agent-budget';
-import { buildAgentPortfolioBlock } from '../agentic/agent-portfolio-block';
-import { assertAgenticLaneNotLive } from '../agentic/agentic-live-interlock';
+import type { DailyLlmBudget } from '../../strategy/agentic/agent-budget';
+import { buildAgentPortfolioBlock } from '../../strategy/agentic/agent-portfolio-block';
+import { assertAgenticLaneNotLive } from '../../strategy/agentic/agentic-live-interlock';
 import {
   ACTIVE_MENU_GATE_OVERRIDE,
   AGENT_LLM_BUDGET,
@@ -90,24 +90,24 @@ import {
   AgenticStrategyModule,
   PLAYBOOK_PROVIDER_OVERRIDE,
   REFLECTION_SERVICE,
-} from '../agentic/agentic-strategy.module';
+} from '../../strategy/agentic/agentic-strategy.module';
 import {
   AgenticStrategy,
   type AgenticStrategyDeps,
   type AgenticStrategyParams,
-} from '../agentic/agentic.strategy';
-import { CrossSymbolContextService } from '../agentic/cross-symbol-context';
-import { filterUpcoming, loadMacroCalendar } from '../agentic/macro-calendar';
-import { PriceHistoryStore } from '../agentic/price-history-store';
+} from '../../strategy/agentic/agentic.strategy';
+import { CrossSymbolContextService } from '../../strategy/agentic/cross-symbol-context';
+import { filterUpcoming, loadMacroCalendar } from '../../strategy/agentic/macro-calendar';
+import { PriceHistoryStore } from '../../strategy/agentic/price-history-store';
 import {
   createPromotionEvaluator,
   PromotionEvaluator,
   type EvaluatorPlaybookStore,
-} from '../agentic/promotion-evaluator';
-import { ReflectionService } from '../agentic/reflection.service';
-import { StrategyHost } from '../agentic/strategy-host';
-import { StrategyRegistry } from '../agentic/strategy-registry';
-import { UniverseScannerService } from '../agentic/universe-scanner.service';
+} from '../../strategy/agentic/promotion-evaluator';
+import { ReflectionService } from '../../strategy/agentic/reflection.service';
+import { StrategyHost } from '../../strategy/agentic/strategy-host';
+import { StrategyRegistry } from '../../strategy/agentic/strategy-registry';
+import { UniverseScannerService } from '../../strategy/agentic/universe-scanner.service';
 import { AlgoStopRecoveryService } from '../execution/algo-stop-recovery.service';
 import { BootRecoveryService } from '../execution/boot-recovery.service';
 import { DemoFillPollerService } from '../execution/demo-fill-poller.service';
@@ -175,7 +175,7 @@ export class MetricsWrappingAgentClient implements AgentClientPort {
     }
   }
 
-  // AgentProposeError carries only RETRYABLE|FATAL (ports/agentic-strategy.ts) — no distinct TIMEOUT
+  // AgentProposeError carries only RETRYABLE|FATAL (ports/strategy/agentic-strategy.ts) — no distinct TIMEOUT
   // kind, and string-matching the message to detect an aborted call would violate the very reason
   // AgentProposeError exists (branch on kind, never on message text). 'timeout' is therefore never
   // emitted here; a timed-out call surfaces as error_retryable like any other transient failure.
@@ -500,7 +500,7 @@ export class TradingRuntimeService
     const unfiltered = symbols.filter((s) => !DEFAULT_FILTERS.has(s));
     if (unfiltered.length > 0) {
       throw new Error(
-        `TRADING_SYMBOLS entries without a DEFAULT_FILTERS row: ${unfiltered.join(', ')} — add venue filters (domain/risk/default-filters.ts) before trading them`,
+        `TRADING_SYMBOLS entries without a DEFAULT_FILTERS row: ${unfiltered.join(', ')} — add venue filters (domain/trading/risk/default-filters.ts) before trading them`,
       );
     }
     this.tradingSymbols = symbols.map((s) => symbolId(s));
@@ -823,7 +823,7 @@ export class TradingRuntimeService
       // limit leg (SIZER_DEPS.stopLimitBufferBps) — manageVenueStopSpot's drift check must compare
       // against this exact value or it reads the buffer itself as permanent drift.
       stopLimitBufferBps: this.config.risk.stopLimitBufferBps,
-      // ProtectiveExitService's OWN force-band threshold (ports/risk.ts's planStopForceBps) — the
+      // ProtectiveExitService's OWN force-band threshold (ports/trading/risk.ts's planStopForceBps) — the
       // strategy's bar-close 'stop' branch applies the SAME band on its own coarser cadence (see
       // AgenticStrategyParams.planStopForceBps's own comment on why this is independent of
       // PLAN_STOP_WATCH_ENABLED).

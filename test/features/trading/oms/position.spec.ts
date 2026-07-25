@@ -1,7 +1,11 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import Decimal from 'decimal.js';
-import { applyFillToPosition, FLAT, type PositionState } from '../../../src/domain/oms/position';
-import { setupDecimal } from '../../../src/domain/types/money';
+import {
+  applyFillToPosition,
+  FLAT,
+  type PositionState,
+} from '../../../../src/domain/trading/oms/position';
+import { setupDecimal } from '../../../../src/domain/common/types/money';
 
 // avgEntry is rounded to the money type's 18-dp ceiling, which depends on the production Decimal
 // config (precision 40); main.ts calls setupDecimal() at bootstrap. Existing cases here are

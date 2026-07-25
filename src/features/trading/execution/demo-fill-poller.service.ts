@@ -1,15 +1,15 @@
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
-import { CLOCK, type ClockPort } from '../../../ports/clock';
+import { CLOCK, type ClockPort } from '../../../ports/common/clock';
 import {
   EXCHANGE_PORT,
   VENUE_EXCHANGE_PORTS,
   type ExchangePort,
   type VenueFill,
-} from '../../../ports/exchange';
-import type { SymbolId, EpochMs, ClientOrderId, VenueId } from '../../../domain/types/ids';
-import { price, qty, feeAmount } from '../../../domain/types/money';
-import type { OrderRecord } from '../../../domain/oms/reducer';
-import type { FillRecord } from '../../../domain/types/exec-report';
+} from '../../../ports/venue/exchange';
+import type { SymbolId, EpochMs, ClientOrderId, VenueId } from '../../../domain/common/types/ids';
+import { price, qty, feeAmount } from '../../../domain/common/types/money';
+import type { OrderRecord } from '../../../domain/trading/oms/reducer';
+import type { FillRecord } from '../../../domain/trading/types/exec-report';
 import { OrderBookService } from './order-book.service';
 import { FillIngestorService } from './fill-ingestor.service';
 import { AlgoStopRecoveryService } from './algo-stop-recovery.service';

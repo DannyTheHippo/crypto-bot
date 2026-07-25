@@ -24,7 +24,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { runBacktest, type Bar } from './harness';
 import type { SharpeStats } from './stats';
-import type { CandleInterval } from '../../src/domain/types/market-events';
+import type { CandleInterval } from '../../src/domain/venue/types/market-events';
 import type { BarStrategy } from './strategy';
 import { SeedEntryStrategy, type SeedEntryConfig } from './strategies/seed-entry-strategy';
 

@@ -28,7 +28,7 @@
 //
 // An ENTRY -> EXIT pair is one EPISODE. A position still ON at the end of the data window (no matching
 // exit) is NOT a closed episode and is dropped — mirrors walkRoundTrips' closed-cycles-only convention
-// (src/domain/risk/round-trips.ts) used everywhere else in this backtest spine.
+// (src/domain/trading/risk/round-trips.ts) used everywhere else in this backtest spine.
 import Decimal from 'decimal.js';
 import { fundingPayment } from '../funding';
 

@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { Global, Module } from '@nestjs/common';
-import { RISK_SIGNING_KEY } from '../../../ports/risk';
+import { RISK_SIGNING_KEY } from '../../../ports/trading/risk';
 
 // W3 Part 4: pure code motion out of app.module.ts — see db-health-bridge.module.ts's own header
 // comment on the boundaries 'app' zone widening this relies on.

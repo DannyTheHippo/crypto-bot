@@ -1,9 +1,9 @@
 import { Logger } from '@nestjs/common';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import type { SignalJournalPort } from '../../ports/strategy';
-import type { ExecRunContext } from '../../ports/execution';
-import type { Signal } from '../../domain/types/signal';
-import type * as schema from '../schemas/trading';
+import type { SignalJournalPort } from '../../../ports/strategy/strategy';
+import type { ExecRunContext } from '../../../ports/trading/execution';
+import type { Signal } from '../../../domain/strategy/types/signal';
+import type * as schema from '../../schemas/trading';
 import { SignalRepository, type SignalInsert } from './signal.repository';
 
 // Composition-root binding for SIGNAL_JOURNAL: persists every routed signal (with its gateway outcome

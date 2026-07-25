@@ -1,9 +1,12 @@
 import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
-import type { SymbolId } from '../../../domain/types/ids';
-import { epochMs, symbolId } from '../../../domain/types/ids';
-import { splitSymbol } from '../../../domain/types/symbol';
-import type { ClockPort } from '../../../ports/clock';
-import type { LiquidationFeedPort, LiquidationSnapshot } from '../../../ports/liquidation-feed';
+import type { SymbolId } from '../../../domain/common/types/ids';
+import { epochMs, symbolId } from '../../../domain/common/types/ids';
+import { splitSymbol } from '../../../domain/venue/types/symbol';
+import type { ClockPort } from '../../../ports/common/clock';
+import type {
+  LiquidationFeedPort,
+  LiquidationSnapshot,
+} from '../../../ports/venue/liquidation-feed';
 
 // Rolling window default (minutes) — a constant, not an env knob (v0; mirrors V2_LOOKBACK_MS's own
 // "knob-free" rationale in derivatives-feed.service.ts — no per-deployment tuning needed yet).

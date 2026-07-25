@@ -1,18 +1,22 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { CLOCK, type ClockPort } from '../../../ports/clock';
+import { CLOCK, type ClockPort } from '../../../ports/common/clock';
 import {
   EXCHANGE_PORT,
   type ExchangePort,
   type AlgoOrderHistoryView,
   type VenueFill,
-} from '../../../ports/exchange';
-import { EXECUTION_STORE, type ExecutionStorePort } from '../../../ports/execution';
-import { reduce, TERMINAL_ORDER_STATES, type OrderEvent } from '../../../domain/oms/reducer';
-import { isAlgoRailIntent } from '../../../domain/oms/reconcile';
-import { clientOrderId, type ClientOrderId, type SymbolId } from '../../../domain/types/ids';
-import { price, qty, feeAmount } from '../../../domain/types/money';
-import type { OrderIntent } from '../../../domain/types/order-intent';
-import type { FillRecord } from '../../../domain/types/exec-report';
+} from '../../../ports/venue/exchange';
+import { EXECUTION_STORE, type ExecutionStorePort } from '../../../ports/trading/execution';
+import {
+  reduce,
+  TERMINAL_ORDER_STATES,
+  type OrderEvent,
+} from '../../../domain/trading/oms/reducer';
+import { isAlgoRailIntent } from '../../../domain/trading/oms/reconcile';
+import { clientOrderId, type ClientOrderId, type SymbolId } from '../../../domain/common/types/ids';
+import { price, qty, feeAmount } from '../../../domain/common/types/money';
+import type { OrderIntent } from '../../../domain/trading/types/order-intent';
+import type { FillRecord } from '../../../domain/trading/types/exec-report';
 import { OrderBookService } from './order-book.service';
 import { PortfolioStateService } from './portfolio-state.service';
 import { FillIngestorService } from './fill-ingestor.service';
@@ -43,7 +47,7 @@ export class AlgoStopRecoveryService {
 
   // True iff a non-terminal order record's in-flight intent rides the algo rail for this symbol —
   // the same isAlgoRailIntent predicate execution-gate/unknown-resolver/boot-recovery already share
-  // (domain/oms/reconcile.ts), so this can never classify a rail differently than they do. SYNC
+  // (domain/trading/oms/reconcile.ts), so this can never classify a rail differently than they do. SYNC
   // (in-flight map only) for callers that cannot await — kept byte-identical; hasAlgoAnchor below is
   // the async superset that also reaches a post-restart, store-only anchor. DemoFillPollerService no
   // longer calls this (it awaits hasAlgoAnchor instead, to reach the same anchor recoverSymbol
@@ -78,7 +82,7 @@ export class AlgoStopRecoveryService {
   // symbol) — fail OPEN, dropped from every symbol's candidate set, never surfaced as a false
   // 'unknown'.
   //
-  // Discriminator: isAlgoRailIntent (domain/oms/reconcile.ts) gates on intent.triggerPrice, which
+  // Discriminator: isAlgoRailIntent (domain/trading/oms/reconcile.ts) gates on intent.triggerPrice, which
   // the Drizzle store never persists (order_intents carries no trigger_price column) or restores
   // (loadIntentForRecovery omits it) — a pre-existing gap out of this change's scope to close via
   // migration. A store-rehydrated intent's triggerPrice is therefore always undefined, so

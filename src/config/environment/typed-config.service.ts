@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import type { AppConfig } from '../../ports/app-config';
+import type { AppConfig } from '../../ports/common/app-config';
 
 // The template-mirror's single sanctioned config read path (see CLAUDE.md's config-facade rules).
 // A thin typed facade over ConfigService<AppConfig, true> — one getter per AppConfig top-level key,

@@ -1,4 +1,4 @@
-import type { KillSwitchState } from '../domain/risk/kill-switch';
+import type { KillSwitchState } from '../../domain/trading/risk/kill-switch';
 
 // Backlog #52 (W12 operational event logging): the OpsEvent union + OPS_EVENTS token live in ports/
 // (not features/common/observability) so execution/risk feature services can depend on the port
@@ -11,7 +11,7 @@ export const OPS_EVENTS = Symbol('OPS_EVENTS');
 
 // Execution-lane diagnostic events only — distinct from the mode/arm/disarm/downgrade lifecycle,
 // which already has a durable, tamper-evident audit trail (ModeAuditEvent → audit_log,
-// ports/mode-control.ts). These mirror data already exposed as Prometheus counters/gauges; the
+// ports/trading/mode-control.ts). These mirror data already exposed as Prometheus counters/gauges; the
 // point of this port is a structured, queryable log surface, not a second source of truth.
 export type OpsEvent =
   | {

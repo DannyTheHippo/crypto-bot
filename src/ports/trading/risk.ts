@@ -1,12 +1,12 @@
-import type { Signal } from '../domain/types/signal';
-import type { OrderIntent } from '../domain/types/order-intent';
-import type { RiskDecision } from '../domain/types/risk-decision';
-import type { PortfolioSnapshot } from '../domain/types/portfolio';
-import type { KillSwitchState } from '../domain/risk/kill-switch';
-import type { SymbolFilters } from '../domain/risk/evaluate';
-import type { PartialRiskLimits } from '../domain/risk/limits';
-import type { TradingMode } from '../domain/types/mode';
-import type { VenueId } from '../domain/types/ids';
+import type { Signal } from '../../domain/strategy/types/signal';
+import type { OrderIntent } from '../../domain/trading/types/order-intent';
+import type { RiskDecision } from '../../domain/trading/types/risk-decision';
+import type { PortfolioSnapshot } from '../../domain/trading/types/portfolio';
+import type { KillSwitchState } from '../../domain/trading/risk/kill-switch';
+import type { SymbolFilters } from '../../domain/trading/risk/evaluate';
+import type { PartialRiskLimits } from '../../domain/trading/risk/limits';
+import type { TradingMode } from '../../domain/trading/types/mode';
+import type { VenueId } from '../../domain/common/types/ids';
 
 export const RISK_SIGNING_KEY = Symbol('RISK_SIGNING_KEY');
 export const RISK_LIMITS = Symbol('RISK_LIMITS');
@@ -51,7 +51,7 @@ export interface ProtectiveExitConfig {
 }
 
 // Plan-stop watcher (Push 3 P2): one entry per plan-managed LONG/SHORT position, keyed by
-// positionKey(strategyId, venue, symbol) (domain/risk/evaluate.ts) — the SAME key
+// positionKey(strategyId, venue, symbol) (domain/trading/risk/evaluate.ts) — the SAME key
 // ProtectiveExitService's own hwm/lwm/cooldown maps use. venueStopResting was future-proofing for a
 // later venue-side-stop build; Push 3 P7d is that build — AgenticStrategy (the sole writer) now
 // flips it true only once a placed stop is CONFIRMED resting (ack observed via restingOrderForRole
@@ -105,7 +105,7 @@ export interface SizerDeps {
   // test fixtures that omit it keep booting; PositionSizerService falls back to 50, mirroring
   // risk.module's SIZER_DEPS factory default.
   readonly stopLimitBufferBps?: number;
-  // Perp/swap entry-sizing caps (B2, domain/risk/perp-sizing.ts). Optional so existing spot-only
+  // Perp/swap entry-sizing caps (B2, domain/trading/risk/perp-sizing.ts). Optional so existing spot-only
   // fixtures keep booting unchanged — absent ⇒ a perp-venue entry sizes with no additional cap,
   // which is moot anyway since nothing emits a perp-venue Signal yet (B1's adapter is unwired).
   readonly perp?: {
@@ -119,7 +119,7 @@ export interface SizerDeps {
   // PER-VENUE fraction of cappedEquity (spot vs perp — AGENTIC_MAX_POSITION_FRACTION_SPOT/PERP),
   // and it also bounds same-side scale-in headroom. Replaces the single lane-wide
   // `maxAgentPositionFraction` (v2/transitional) — a venue's own class (spot/perp) picks its
-  // fraction, keyed by VenueId (domain/types/venue-map.ts's SPOT_VENUE_ID/PERP_VENUE_ID). Optional
+  // fraction, keyed by VenueId (domain/venue/types/venue-map.ts's SPOT_VENUE_ID/PERP_VENUE_ID). Optional
   // so existing test fixtures and module-isolation boots that never set it keep booting;
   // PositionSizerService falls back to '0.15' for any venue with no entry.
   readonly maxAgentPositionFractionByVenue?: ReadonlyMap<VenueId, string>;

@@ -2,24 +2,24 @@ import { Global, Logger, Module } from '@nestjs/common';
 import type { Exchange } from 'ccxt';
 import Decimal from 'decimal.js';
 import { TypedConfigService } from '../../../config/environment/typed-config.service';
-import type { EpochMs, SymbolId, VenueId } from '../../../domain/types/ids';
+import type { EpochMs, SymbolId, VenueId } from '../../../domain/common/types/ids';
 import type {
   CandleEvent,
   CandleInterval,
   ChannelHealth,
   OrderLevel,
-} from '../../../domain/types/market-events';
-import type { Price } from '../../../domain/types/money';
-import { venueForSymbol } from '../../../domain/types/venue-map';
-import type { VenueConfig, VenueEnvironment } from '../../../ports/app-config';
-import { CLOCK, SystemClock, type ClockPort } from '../../../ports/clock';
-import { VENUE_EXCHANGE_PORTS, type ExchangePort } from '../../../ports/exchange';
+} from '../../../domain/venue/types/market-events';
+import type { Price } from '../../../domain/common/types/money';
+import { venueForSymbol } from '../../../domain/venue/types/venue-map';
+import type { VenueConfig, VenueEnvironment } from '../../../ports/common/app-config';
+import { CLOCK, SystemClock, type ClockPort } from '../../../ports/common/clock';
+import { VENUE_EXCHANGE_PORTS, type ExchangePort } from '../../../ports/venue/exchange';
 import {
   EXCHANGE_STREAM,
   type ExchangeStreamPort,
   type RawUserEvent,
   type RawVenueEvent,
-} from '../../../ports/exchange-stream';
+} from '../../../ports/venue/exchange-stream';
 import {
   FEED_HEALTH,
   MARKET_STREAM,
@@ -30,8 +30,8 @@ import {
   type MarketStreamPort,
   type MarketStreamTelemetryPort,
   type SubscriptionSpec,
-} from '../../../ports/market-data';
-import { VENUE_REGISTRY, type VenueRuntimeDescriptor } from '../../../ports/venue-registry';
+} from '../../../ports/venue/market-data';
+import { VENUE_REGISTRY, type VenueRuntimeDescriptor } from '../../../ports/venue/venue-registry';
 import {
   CcxtExchangeStreamAdapter,
   RealWatchSource,
@@ -40,13 +40,16 @@ import {
   type ChannelTierResolver,
   type StreamAdapterLogger,
   type WatchSource,
-} from '../market-data/ccxt-stream.adapter';
+} from '../../venue/market-data/ccxt-stream.adapter';
 import {
   FeedHealthServiceWithBackfill,
   type OhlcvSource,
-} from '../market-data/feed-health.service';
-import { MarketDataService } from '../market-data/market-data.service';
-import { TeeingMarketStream, type PaperFeedSink } from '../market-data/teeing-market-stream';
+} from '../../venue/market-data/feed-health.service';
+import { MarketDataService } from '../../venue/market-data/market-data.service';
+import {
+  TeeingMarketStream,
+  type PaperFeedSink,
+} from '../../venue/market-data/teeing-market-stream';
 
 // v3 spec §1.3: MarketStreamsModule is MarketFeedModule's stream half, moved out of app.module.ts
 // and made venue-plural. CLOCK/WATCH_SOURCE are unchanged (lane-wide singletons); everything else
@@ -165,7 +168,7 @@ export class VenueRoutingFeedHealth implements VenueFeedHealth {
     return this.forSymbol(symbol)?.health(venueForSymbol(symbol), symbol, channel) ?? 'GAP';
   }
 
-  // The "no symbol" aggregate query (ports/market-data.ts's optional FeedHealthPort member) — worst
+  // The "no symbol" aggregate query (ports/venue/market-data.ts's optional FeedHealthPort member) — worst
   // channel health across every channel either venue currently tracks.
   worstHealth(): ChannelHealth {
     return worstChannelHealth(

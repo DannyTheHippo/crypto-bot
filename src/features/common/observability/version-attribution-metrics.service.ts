@@ -2,13 +2,13 @@ import { Injectable, OnModuleInit, OnModuleDestroy, Optional, Inject } from '@ne
 import { InjectMetric, makeGaugeProvider } from '@willsoto/nestjs-prometheus';
 import { Gauge } from 'prom-client';
 import Decimal from 'decimal.js';
-import { PROMOTION_STATS, type PromotionStatsPort } from '../../../ports/promotion';
+import { PROMOTION_STATS, type PromotionStatsPort } from '../../../ports/trading/promotion';
 import {
   AGENT_DECISION_JOURNAL,
   type AgentDecisionJournalPort,
   type AgentDecisionRow,
-} from '../../../ports/agentic-strategy';
-import { walkRoundTrips } from '../../../domain/risk/round-trips';
+} from '../../../ports/strategy/agentic-strategy';
+import { walkRoundTrips } from '../../../domain/trading/risk/round-trips';
 import { TypedConfigService } from '../../../config/environment/typed-config.service';
 
 // Mirrors promotion-metrics.service.ts's own raw process.env boundary check.

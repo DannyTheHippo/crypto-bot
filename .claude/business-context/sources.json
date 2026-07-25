@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "lastRefreshed": "2026-07-25T07:34:00.000Z",
+  "lastRefresh": {
+    "timestamp": "2026-07-25T07:34:00.000Z"
+  },
+  "readmeSweep": {
+    "scope": "root-only"
+  },
+  "sources": [
+    {
+      "id": "local-readme",
+      "type": "local",
+      "path": "README.md",
+      "feeds": ["product-context.md"],
+      "authStatus": "ok"
+    },
+    {
+      "id": "local-claude-root",
+      "type": "local",
+      "path": "CLAUDE.md",
+      "feeds": ["product-context.md", "domain-glossary.md"],
+      "authStatus": "ok"
+    },
+    {
+      "id": "local-claude-agent",
+      "type": "local",
+      "path": ".claude/CLAUDE.md",
+      "feeds": ["domain-glossary.md"],
+      "authStatus": "ok"
+    }
+  ]
+}

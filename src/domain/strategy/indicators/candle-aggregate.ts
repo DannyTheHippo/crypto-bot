@@ -1,6 +1,6 @@
-import type { CandleEvent } from '../types/market-events';
-import { qty } from '../types/money';
-import { epochMs, type EpochMs } from '../types/ids';
+import type { CandleEvent } from '../../venue/types/market-events';
+import { qty } from '../../common/types/money';
+import { epochMs, type EpochMs } from '../../common/types/ids';
 
 // Folds a single-symbol, time-ordered CandleEvent stream into `factor`-wide higher-timeframe
 // buckets. baseIntervalMs is an explicit param (rather than inferred from candle spacing) so the

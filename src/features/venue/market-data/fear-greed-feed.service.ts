@@ -1,8 +1,8 @@
 import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
-import type { EpochMs } from '../../../domain/types/ids';
-import { epochMs } from '../../../domain/types/ids';
-import type { ClockPort } from '../../../ports/clock';
-import type { FearGreedFeedPort, FearGreedSnapshot } from '../../../ports/fear-greed-feed';
+import type { EpochMs } from '../../../domain/common/types/ids';
+import { epochMs } from '../../../domain/common/types/ids';
+import type { ClockPort } from '../../../ports/common/clock';
+import type { FearGreedFeedPort, FearGreedSnapshot } from '../../../ports/strategy/fear-greed-feed';
 
 // latest() treats a snapshot older than this multiple of the poll interval as stale (absent to the
 // caller) — mirrors SentimentFeedService's own STALE_POLL_MULTIPLE.

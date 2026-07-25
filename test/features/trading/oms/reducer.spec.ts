@@ -9,8 +9,8 @@ import {
   type OrderRecord,
   type OrderState,
   type OrderEvent,
-} from '../../../src/domain/oms/reducer';
-import { clientOrderId } from '../../../src/domain/types/ids';
+} from '../../../../src/domain/trading/oms/reducer';
+import { clientOrderId } from '../../../../src/domain/common/types/ids';
 
 const COID = clientOrderId('cbp0190abcd123407abc89ab0123456789ab');
 

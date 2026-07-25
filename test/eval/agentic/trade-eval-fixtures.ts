@@ -7,14 +7,14 @@ import Decimal from 'decimal.js';
 import { Pool } from 'pg';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import * as schema from '../../../src/database/schemas/trading';
-import { AgentDecisionJournalAdapter } from '../../../src/database/repositories/agent-decision-journal.adapter';
-import { venueId } from '../../../src/domain/types/ids';
-import type { SymbolCapabilities } from '../../../src/features/trading/agentic/agent-prompt';
-import type { AgentTradingProfile } from '../../../src/ports/agentic-strategy';
+import { AgentDecisionJournalAdapter } from '../../../src/database/repositories/strategy/agent-decision-journal.adapter';
+import { venueId } from '../../../src/domain/common/types/ids';
+import type { SymbolCapabilities } from '../../../src/features/strategy/agentic/agent-prompt';
+import type { AgentTradingProfile } from '../../../src/ports/strategy/agentic-strategy';
 import {
   summarizeRecentDecisionOutcomes,
   type ScoringRow,
-} from '../../../src/features/trading/agentic/counterfactual-scoring';
+} from '../../../src/features/strategy/agentic/counterfactual-scoring';
 
 // Byte-matches the production client defaults (anthropic-agent-client.ts's capabilitiesFor:
 // DEFAULT_MAX_POSITION_FRACTION_PERP / DEFAULT_PERP_LEVERAGE_CAP) and the deployed $1k demo book

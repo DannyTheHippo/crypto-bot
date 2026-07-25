@@ -1,11 +1,11 @@
 import Decimal from 'decimal.js';
-import { symbolId, venueId, type VenueId } from '../../../domain/types/ids';
-import type { PortfolioSnapshot } from '../../../domain/types/portfolio';
+import { symbolId, venueId, type VenueId } from '../../../domain/common/types/ids';
+import type { PortfolioSnapshot } from '../../../domain/trading/types/portfolio';
 import type {
   AgentPortfolioBlock,
   AgentPortfolioPosition,
   AgentPortfolioVenue,
-} from '../../../ports/agentic-strategy';
+} from '../../../ports/strategy/agentic-strategy';
 import {
   computeBasketBtcBeta,
   BTC_BENCHMARK_SYMBOL,

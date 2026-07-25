@@ -5,7 +5,7 @@
 // EMA-cross, long-only. Indicator math reuses src/domain/indicators (the production indicator
 // library) and crosses to plain floats explicitly at the ctx.closes boundary — floats are fine for
 // indicators, never for money (CLAUDE.md rule 1); no float ever reaches the harness's fill/PnL path.
-import { emaFromNumbers } from '../../../src/domain/indicators/indicators';
+import { emaFromNumbers } from '../../../src/domain/strategy/indicators/indicators';
 import type { BarStrategy, BarContext, BacktestAction } from '../strategy';
 
 export interface RuleStrategyConfig {

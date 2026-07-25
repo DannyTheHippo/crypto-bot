@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
-import { reduce, type OrderRecord, type OrderEvent } from '../../../domain/oms/reducer';
-import type { ClientOrderId } from '../../../domain/types/ids';
+import { reduce, type OrderRecord, type OrderEvent } from '../../../domain/trading/oms/reducer';
+import type { ClientOrderId } from '../../../domain/common/types/ids';
 
 // Runtime cache of OrderRecords keyed by clientOrderId, shared by the gate (which creates
 // and submits) and the report consumer (which folds fills/cancels). State is the pure

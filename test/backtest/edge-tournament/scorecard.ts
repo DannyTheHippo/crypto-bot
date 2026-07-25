@@ -1,11 +1,15 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { TrialResult } from './types';
-import type { WinnerGateResult } from './types';
+import type { TrialResult, WinnerGateResult } from './types';
 
-/** Scorecard JSON path under candidates/ — writer only; no outcome scorecards yet. */
+/** Ephemeral scorecard path under research/candidates/ until promoted to research/scorecards/. */
 export function scorecardPath(trialId: string, asOfDate = '2026-07-24'): string {
-  return join(process.cwd(), 'candidates', `edge-tournament-${trialId}-${asOfDate}.json`);
+  return join(
+    process.cwd(),
+    'research',
+    'candidates',
+    `edge-tournament-${trialId}-${asOfDate}.json`,
+  );
 }
 
 export interface EdgeTournamentScorecard {
@@ -35,7 +39,7 @@ export function writeScorecard(
     gate: payload.gate,
     note: payload.note,
   };
-  mkdirSync(join(process.cwd(), 'candidates'), { recursive: true });
+  mkdirSync(join(process.cwd(), 'research', 'candidates'), { recursive: true });
   writeFileSync(path, JSON.stringify(doc, null, 2));
   return path;
 }

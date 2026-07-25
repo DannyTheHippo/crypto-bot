@@ -1,11 +1,11 @@
 import { Injectable, Inject } from '@nestjs/common';
-import { CLOCK, type ClockPort } from '../../../ports/clock';
+import { CLOCK, type ClockPort } from '../../../ports/common/clock';
 import { KillSwitchService } from './kill-switch.service';
 import { PositionSizerService } from './position-sizer.service';
 import { RiskEngineService } from './risk-engine.service';
-import type { Signal } from '../../../domain/types/signal';
-import type { PortfolioSnapshot } from '../../../domain/types/portfolio';
-import type { GatewayOutcome, SignalGatewayPort } from '../../../ports/risk';
+import type { Signal } from '../../../domain/strategy/types/signal';
+import type { PortfolioSnapshot } from '../../../domain/trading/types/portfolio';
+import type { GatewayOutcome, SignalGatewayPort } from '../../../ports/trading/risk';
 
 export type { GatewayOutcome };
 

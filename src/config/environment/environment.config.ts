@@ -1,13 +1,13 @@
 import * as crypto from 'crypto';
 import { z } from 'zod';
 import Decimal from 'decimal.js';
-import type { AppConfig, TradingMode, VenueConfig } from '../../ports/app-config';
-import { AGENTIC_MAX_STOP_LOSS_PCT } from '../../domain/risk/agentic-bounds';
-import { EDGE_POLICY_TRIAL_FAMILY_IDS } from '../../ports/agentic-strategy';
-import { splitSymbol } from '../../domain/types/symbol';
-import { symbolId } from '../../domain/types/ids';
+import type { AppConfig, TradingMode, VenueConfig } from '../../ports/common/app-config';
+import { AGENTIC_MAX_STOP_LOSS_PCT } from '../../domain/trading/risk/agentic-bounds';
+import { EDGE_POLICY_TRIAL_FAMILY_IDS } from '../../ports/strategy/agentic-strategy';
+import { splitSymbol } from '../../domain/venue/types/symbol';
+import { symbolId } from '../../domain/common/types/ids';
 
-export type { AppConfig, TradingMode } from '../../ports/app-config';
+export type { AppConfig, TradingMode } from '../../ports/common/app-config';
 
 const LIVE_CREDENTIAL_KEYS = [
   'BINANCE_LIVE_API_KEY',
@@ -24,7 +24,7 @@ const CANDLE_INTERVALS = ['1m', '5m', '15m', '1h', '4h', '1d'] as const;
 
 // Money/decimal-string knobs (RiskLimitsConfig fields + BASE_NOTIONAL): plain non-negative decimal
 // strings, validated here and converted to Decimal only where the consuming module already does so
-// (domain/risk/limits.ts) — never a native float on a money path.
+// (domain/trading/risk/limits.ts) — never a native float on a money path.
 const decimalString = z.string().regex(/^\d+(\.\d+)?$/, 'must be a non-negative decimal string');
 // Fraction knob (SIZER_EQUITY_FRACTION): a plain decimalString would accept '2' (200% of equity per
 // entry) — the bounded regex rejects anything above 1 at parse time, never via a float compare.
@@ -50,7 +50,7 @@ const SPOT_VENUE_ID = 'binance';
 const PERP_VENUE_ID = 'binanceusdm';
 
 // v3-transitional(#5): mirrors spec §1.2's venueForSymbol pure helper (settle-suffix check).
-// Workstream #5 mints the authoritative src/domain/types/venue-map.ts copy this converges on; this
+// Workstream #5 mints the authoritative src/domain/venue/types/venue-map.ts copy this converges on; this
 // local copy exists so the config layer's own cross-field refusals (VENUES coverage,
 // VENUE_CAPITAL_SPLIT key-set, AGENTIC_PLAN_MODE-vs-perp) can resolve a symbol's venue without
 // reaching into composition-layer code (config stays upstream of every feature, eslint-boundaries).
@@ -474,7 +474,7 @@ const envSchema = z
     // Marketable-exit crossing buffer (bps) for reduce-only intents (PositionSizerService): how far
     // the IOC limit crosses the spread so a partial fill doesn't leave sub-minNotional dust resting
     // away from market. Capped at 99 (< DEFAULT_LIMITS.maxBandBps=100 in risk.module) so a crossed
-    // exit price never trips domain/risk/evaluate.ts's price-band veto.
+    // exit price never trips domain/trading/risk/evaluate.ts's price-band veto.
     EXIT_CROSS_BUFFER_BPS: z.coerce.number().int().min(0).max(99).default(25),
     // Entry order type (PositionSizerService). 'LIMIT' (default) is byte-identical to pre-knob
     // behavior. 'LIMIT_MAKER' rests entries post-only (maker-fee, never taker) — the sizer falls
@@ -508,7 +508,7 @@ const envSchema = z
     PROTECT_STOP_LOSS_PCT: fractionString.default('0'),
     PROTECT_TRAILING_PCT: fractionString.default('0'),
     // Plan-stop watcher (Push 3 P2): when true, ProtectiveExitService's 1s tick consults the
-    // plan-stop registry (ports/risk.ts's PlanStopRegistryPort, populated by AgenticStrategy on plan
+    // plan-stop registry (ports/trading/risk.ts's PlanStopRegistryPort, populated by AgenticStrategy on plan
     // entry-fill) for each live position BEFORE the global stop/trailing logic above, firing the
     // SAME EXIT_LONG/EXIT_SHORT path off the plan's own stop price instead of avgEntry/hwm. Default
     // 'false' — the registry is never consulted, byte-identical to pre-feature. Rollback = flip back
@@ -522,7 +522,7 @@ const envSchema = z
     // have filled at a small breach; a wide miss means the venue-side order failed). Inert while
     // PLAN_STOP_WATCH_ENABLED is false.
     PLAN_STOP_FORCE_BPS: z.coerce.number().int().min(0).default(30),
-    // RiskLimitsConfig overlay knobs (domain/risk/limits.ts) — RiskModule merges these onto
+    // RiskLimitsConfig overlay knobs (domain/trading/risk/limits.ts) — RiskModule merges these onto
     // DEFAULT_LIMITS. v3 §3.2 defaults: re-defaulted to the $1k-book scale (the deployed v2-contract
     // values were pre-$1k-book drift) — an unconfigured deployment now inherits the book-scale
     // envelope directly instead of the legacy pre-D1 figures. maxDriftBps has no knob in this pass;
@@ -534,12 +534,12 @@ const envSchema = z
     RISK_MAX_DAILY_LOSS: decimalString.default('50'),
     RISK_MAX_DRAWDOWN_PCT: decimalString.default('0.2'),
     RISK_MAX_BAND_BPS: z.coerce.number().int().positive().default(100),
-    // P2 passive-exit override (domain/risk/limits.ts): a reduce-only intent priced on the passive
+    // P2 passive-exit override (domain/trading/risk/limits.ts): a reduce-only intent priced on the passive
     // side of ref (a resting take-profit) checks against this wider band instead of
     // RISK_MAX_BAND_BPS. Default 1200 (12%) covers plan-mode TP offsets well beyond the tight
     // RISK_MAX_BAND_BPS=100 (1%) that would otherwise veto every resting exit.
     RISK_MAX_PASSIVE_EXIT_BAND_BPS: z.coerce.number().int().positive().default(1200),
-    // P7b protective-stop trigger checks (domain/risk/evaluate.ts's hasTrigger branch): a trigger
+    // P7b protective-stop trigger checks (domain/trading/risk/evaluate.ts's hasTrigger branch): a trigger
     // order's |trigger − mid| / mid must be ≤ this (basis points). Default 2000 (20%) — wide enough
     // for a deliberately distant stop, tight enough to catch a badly-priced trigger as a bug.
     RISK_MAX_STOP_TRIGGER_BAND_BPS: z.coerce.number().int().positive().default(2000),
@@ -572,7 +572,7 @@ const envSchema = z
     // an early paper liquidation, never a missed one — see the adapter's own comment).
     PERP_MMR_FALLBACK: decimalString.default('0.005'),
     // B2: required liquidation-price buffer (fraction of price) a perp entry's liq price must
-    // clear at PERP_LEVERAGE_CAP/PERP_MMR_FALLBACK — domain/risk/perp-sizing.ts's
+    // clear at PERP_LEVERAGE_CAP/PERP_MMR_FALLBACK — domain/trading/risk/perp-sizing.ts's
     // liqSafeNotionalCap. '0.20' default (liq at least 20% away) is deliberately conservative;
     // moot until a perp-venue Signal exists (B1's adapter is unwired), so this default changes
     // nothing observable yet.
@@ -679,7 +679,7 @@ const envSchema = z
   .superRefine((data, ctx) => {
     // Backstop-vs-model-stop (Design § Conflict resolutions): ProtectiveExitService's bot-side
     // stop-loss backstop must sit STRICTLY ABOVE the v2 decision contract's stop-loss upper bound
-    // (domain/risk/agentic-bounds.ts) — otherwise the backstop could fire BEFORE the model's own
+    // (domain/trading/risk/agentic-bounds.ts) — otherwise the backstop could fire BEFORE the model's own
     // worst-case stop, silently overriding the model's exit ownership with a tighter bot-side exit
     // the model never agreed to. Fail CLOSED (config refusal at construction, never a runtime
     // place-then-reject): a misconfigured deployment must never boot into that gap. Skipped only
@@ -721,7 +721,7 @@ const envSchema = z
       });
     }
     // EXIT_CROSS_BUFFER_BPS is schema-capped at 99 (< the hardcoded RISK_MAX_BAND_BPS DEFAULT of
-    // 100) so a crossed reduce-only exit price never trips domain/risk/evaluate.ts's price-band
+    // 100) so a crossed reduce-only exit price never trips domain/trading/risk/evaluate.ts's price-band
     // veto — but RISK_MAX_BAND_BPS is itself a freely-settable operator knob, so that static cap
     // alone does not bind the CONFIGURED band. Fail CLOSED (permission/safety gate, config refusal
     // at construction, never a runtime place-then-reject): an operator who tightens

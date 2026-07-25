@@ -5,9 +5,9 @@ import {
   type KillSwitch,
   type KillSwitchState,
   type KillSwitchEvent,
-} from '../../../domain/risk/kill-switch';
-import type { KillSwitchPort } from '../../../ports/risk';
-import { OPS_EVENTS, type OpsEventPort } from '../../../ports/observability';
+} from '../../../domain/trading/risk/kill-switch';
+import type { KillSwitchPort } from '../../../ports/trading/risk';
+import { OPS_EVENTS, type OpsEventPort } from '../../../ports/common/observability';
 
 // Stateful wrapper over the pure kill-switch reducer. Engage comes from monitors,
 // reconciliation, OMS anomalies, rate runaway, or the admin API. Cancel/flatten
@@ -65,7 +65,7 @@ export class KillSwitchService implements KillSwitchPort {
 
   // Owner-authorized 2026-07-22: disengage HALTED/HALTED_DEGRADED → RUNNING. This method itself is
   // precondition-free (mirrors engage()) — RecoveryCoordinatorService is the SOLE caller and is
-  // solely responsible for confirming it is safe to call this (see ports/risk.ts's
+  // solely responsible for confirming it is safe to call this (see ports/trading/risk.ts's
   // KillSwitchPort.resume() and RecoveryCoordinatorService's own header comment). No other resume
   // path exists in-process today.
   resume(): void {

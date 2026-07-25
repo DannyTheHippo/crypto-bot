@@ -1,12 +1,12 @@
 import { Global, Module } from '@nestjs/common';
 import { ExecutionModule } from '../execution/execution.module';
 import { CrashRecoveryService } from '../execution/crash-recovery.service';
-import { KILL_SWITCH, type KillSwitchPort } from '../../../ports/risk';
+import { KILL_SWITCH, type KillSwitchPort } from '../../../ports/trading/risk';
 import {
   ARM_PRECONDITIONS,
   type ArmPreconditionsPort,
   type ArmPreconditionResult,
-} from '../../../ports/mode-control';
+} from '../../../ports/trading/mode-control';
 
 // v3 spec §1.3: moved out of app.module.ts verbatim — logic unchanged. §10b arm-hardening: real
 // ARM_PRECONDITIONS check, replacing the always-`{ok:true}` stub (mode-control.module.ts no longer

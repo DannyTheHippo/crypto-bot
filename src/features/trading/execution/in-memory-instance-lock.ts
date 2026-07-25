@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { InstanceLockPort } from '../../../ports/execution';
+import type { InstanceLockPort } from '../../../ports/trading/execution';
 
 // In-process single-writer guard (§1): the DB-less default. It enforces the one-lock-per-(venue,
 // apiKey) rule WITHIN this process — a re-acquire of a held key throws — which is enough for paper

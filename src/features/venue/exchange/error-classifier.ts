@@ -18,7 +18,7 @@ import {
   RateLimitExceeded,
   InvalidNonce,
 } from 'ccxt';
-import { AdapterError, type AdapterErrorClass } from '../../../ports/exchange';
+import { AdapterError, type AdapterErrorClass } from '../../../ports/venue/exchange';
 
 // §6.3 error classification (adapter-owned). The OMS decides the reducer event from the
 // AdapterErrorClass alone — never by re-inspecting a raw ccxt class — so this map is the

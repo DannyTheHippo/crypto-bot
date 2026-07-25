@@ -65,8 +65,8 @@ import Decimal from 'decimal.js';
 import {
   evaluatePlan,
   type PlanExecutorState,
-} from '../../../src/features/trading/agentic/plan-executor';
-import type { AgentDirectives } from '../../../src/ports/agentic-strategy';
+} from '../../../src/features/strategy/agentic/plan-executor';
+import type { AgentDirectives } from '../../../src/ports/strategy/agentic-strategy';
 import type { BarStrategy, BarContext, BacktestAction } from '../strategy';
 
 // The v3 submit_trade action vocabulary, verbatim (agent-prompt.ts's buildTradeTool action enum) —

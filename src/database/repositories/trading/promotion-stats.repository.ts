@@ -1,17 +1,17 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { eq, asc, desc, and, gte, notLike, sum, type SQL } from 'drizzle-orm';
-import type { TradingMode } from '../../domain/types/mode';
+import type { TradingMode } from '../../../domain/trading/types/mode';
 import type {
   PromotionStatsPort,
   PromotionFillRow,
   LlmTokenTotals,
   PerModelTokenTotals,
-} from '../../ports/promotion';
-import { DRIZZLE_DB } from '../database.tokens';
-import * as schema from '../schemas/trading';
-import { requireDb } from './persistence-guard';
-import { REPLAY_STRATEGY_ID_PREFIX } from '../../ports/agentic-strategy';
+} from '../../../ports/trading/promotion';
+import { DRIZZLE_DB } from '../../database.tokens';
+import * as schema from '../../schemas/trading';
+import { requireDb } from '../common/persistence-guard';
+import { REPLAY_STRATEGY_ID_PREFIX } from '../../../ports/strategy/agentic-strategy';
 
 // SQL LIKE pattern for R1 synthetic (replay-<runId>) strategyIds — excluded from epoch cost below.
 const REPLAY_STRATEGY_LIKE = `${REPLAY_STRATEGY_ID_PREFIX}%`;

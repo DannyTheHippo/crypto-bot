@@ -200,7 +200,7 @@ describe('edge-tournament foundation', () => {
     const manifest: EdgeTournamentManifest = {
       version: 1,
       frozenAt: '2026-07-24',
-      preregReport: 'reports/loop/edge-tournament-preregistration-2026-07-24.md',
+      preregReport: 'research/studies/edge-tournament-preregistration-2026-07-24.md',
       datasets: [entry],
     };
     const h1 = manifestHash(manifest);
@@ -328,9 +328,9 @@ describe('edge-tournament foundation', () => {
     }
   });
 
-  it('scorecard writer path lives under candidates/', () => {
+  it('scorecard writer path lives under research/candidates/', () => {
     expect(scorecardPath('xsec20-ew')).toMatch(
-      /candidates\/edge-tournament-xsec20-ew-2026-07-24\.json$/,
+      /research\/candidates\/edge-tournament-xsec20-ew-2026-07-24\.json$/,
     );
   });
 });

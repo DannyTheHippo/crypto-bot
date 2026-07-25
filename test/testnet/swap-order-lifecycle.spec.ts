@@ -17,8 +17,8 @@
 import { describe, it, expect } from 'vitest';
 import Decimal from 'decimal.js';
 import type { Exchange } from 'ccxt';
-import { buildCcxtExchange } from '../../src/features/trading/market-data/ccxt-stream.adapter';
-import { resolveVenueUrls } from '../../src/features/trading/market-data/venue-urls';
+import { buildCcxtExchange } from '../../src/features/venue/market-data/ccxt-stream.adapter';
+import { resolveVenueUrls } from '../../src/features/venue/market-data/venue-urls';
 import { assertSwapPrivateUrlSafe } from '../../src/shared/venue-safety/swap-url-guard';
 
 const API_KEY = process.env['BINANCE_DEMO_API_KEY'] ?? '';

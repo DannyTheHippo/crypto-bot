@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import Decimal from 'decimal.js';
-import { CLOCK, type ClockPort } from '../../../ports/clock';
+import { CLOCK, type ClockPort } from '../../../ports/common/clock';
 import {
   AdapterError,
   type ExchangePort,
@@ -10,32 +10,32 @@ import {
   type ExchangeOrderState,
   type VenueFill,
   type CredentialCheck,
-} from '../../../ports/exchange';
+} from '../../../ports/venue/exchange';
 import {
   EXEC_OUTBOX,
   EXEC_REPORT_NOTIFY,
   type ExecOutboxPort,
   type ExecReportNotify,
-} from '../../../ports/execution';
+} from '../../../ports/trading/execution';
 import {
   bookWalk,
   tradeThroughFill,
   type SimFill,
   type FeeCcy,
   type InsufficientDepthPolicy,
-} from '../../../domain/paper/fill';
-import { mulberry32 } from '../../../domain/rng/prng';
-import { splitSymbol } from '../../../domain/types/symbol';
-import { price, qty } from '../../../domain/types/money';
+} from '../../../domain/trading/paper/fill';
+import { mulberry32 } from '../../../domain/common/rng/prng';
+import { splitSymbol } from '../../../domain/venue/types/symbol';
+import { price, qty } from '../../../domain/common/types/money';
 import {
   epochMs,
   type ClientOrderId,
   type SymbolId,
   type VenueId,
   type EpochMs,
-} from '../../../domain/types/ids';
-import type { OrderLevel } from '../../../domain/types/market-events';
-import type { ExecReport, FillReport } from '../../../domain/types/exec-report';
+} from '../../../domain/common/types/ids';
+import type { OrderLevel } from '../../../domain/venue/types/market-events';
+import type { ExecReport, FillReport } from '../../../domain/trading/types/exec-report';
 
 export const PAPER_CONFIG = Symbol('PAPER_CONFIG');
 

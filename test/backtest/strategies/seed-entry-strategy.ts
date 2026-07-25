@@ -9,7 +9,7 @@
 // All indicator state is maintained INCREMENTALLY (O(1) amortized per bar) rather than recomputed from
 // ctx.closes on every call (as RuleStrategy's EMA-cross does) — the diagnostic sweeps 52 buckets over
 // series up to 70k bars, where an O(n) recompute per decide() call would be O(n^2) over a full run.
-// Each incremental tracker reproduces its src/domain/indicators/indicators.ts sibling's seed-then-smooth
+// Each incremental tracker reproduces its src/domain/strategy/indicators/indicators.ts sibling's seed-then-smooth
 // shape exactly (SMA seed over the first `period` values, then one incremental update per new bar).
 import type { BarStrategy, BarContext, BacktestAction } from '../strategy';
 

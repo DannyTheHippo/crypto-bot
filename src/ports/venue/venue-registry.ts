@@ -1,5 +1,5 @@
-import type { VenueConfig } from './app-config';
-import type { VenueId, SymbolId } from '../domain/types/ids';
+import type { VenueConfig } from '../common/app-config';
+import type { VenueId, SymbolId } from '../../domain/common/types/ids';
 
 // v3 spec §1.3: VENUE_REGISTRY is the composition root's per-venue fact table (composition builds
 // it purely from TypedConfigService — no network, no adapters). The token + descriptor shape live

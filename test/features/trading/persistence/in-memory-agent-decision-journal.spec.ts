@@ -1,12 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { InMemoryAgentDecisionJournal } from '../../../src/database/repositories/in-memory-agent-decision-journal';
+import { InMemoryAgentDecisionJournal } from '../../../../src/database/repositories/strategy/in-memory-agent-decision-journal';
 import type {
   AgentDecisionEntry,
   AgentPlan,
   RegimeTags,
-} from '../../../src/ports/agentic-strategy';
-import { REPLAY_STRATEGY_ID_PREFIX } from '../../../src/ports/agentic-strategy';
-import { strategyId, symbolId, venueId, epochMs } from '../../../src/domain/types/ids';
+} from '../../../../src/ports/strategy/agentic-strategy';
+import { REPLAY_STRATEGY_ID_PREFIX } from '../../../../src/ports/strategy/agentic-strategy';
+import { strategyId, symbolId, venueId, epochMs } from '../../../../src/domain/common/types/ids';
 
 const PLAN: AgentPlan = {
   entryOffsetBps: 10,

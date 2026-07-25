@@ -1,4 +1,4 @@
-import type { EpochMs } from '../domain/types/ids';
+import type { EpochMs } from '../../domain/common/types/ids';
 
 export const CLOCK = Symbol('CLOCK');
 

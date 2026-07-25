@@ -382,7 +382,7 @@ function quoteAssetOf(symbol) {
   return colonIdx === -1 ? quotePart : quotePart.slice(0, colonIdx);
 }
 
-// Simplified port of domain/risk/round-trips.ts's walkRoundTrips (no slippage evidence needed
+// Simplified port of domain/trading/risk/round-trips.ts's walkRoundTrips (no slippage evidence needed
 // here — this tool never renders meanSlippageBps). Same closure rule: a cycle closes when residual
 // position notional drops below dustNotional; unconvertible-asset fees are dropped (not summed),
 // mirroring that module's documented fail-closed convention rather than silently guessing a price.

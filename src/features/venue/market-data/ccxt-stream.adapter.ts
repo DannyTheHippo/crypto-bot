@@ -11,14 +11,14 @@ import type {
   ExchangeStreamPort,
   RawVenueEvent,
   RawUserEvent,
-} from '../../../ports/exchange-stream';
-import type { SubscriptionSpec } from '../../../ports/market-data';
-import type { VenueId, SymbolId, EpochMs } from '../../../domain/types/ids';
-import { epochMs } from '../../../domain/types/ids';
-import type { ClockPort } from '../../../ports/clock';
-import { CLOCK } from '../../../ports/clock';
-import type { VenueConfig } from '../../../ports/app-config';
-import type { ChannelHealth } from '../../../domain/types/market-events';
+} from '../../../ports/venue/exchange-stream';
+import type { SubscriptionSpec } from '../../../ports/venue/market-data';
+import type { VenueId, SymbolId, EpochMs } from '../../../domain/common/types/ids';
+import { epochMs } from '../../../domain/common/types/ids';
+import type { ClockPort } from '../../../ports/common/clock';
+import { CLOCK } from '../../../ports/common/clock';
+import type { VenueConfig } from '../../../ports/common/app-config';
+import type { ChannelHealth } from '../../../domain/venue/types/market-events';
 
 // Staleness threshold before a stream is marked DEGRADED
 const STALE_THRESHOLD_MS = 30_000;

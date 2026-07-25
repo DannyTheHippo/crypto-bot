@@ -10,12 +10,16 @@ import {
   EXEC_QUALITY_SINK,
   type ExecutionStorePort,
   type ExecQualitySinkPort,
-} from '../../../ports/execution';
-import { KILL_SWITCH, type KillSwitchPort } from '../../../ports/risk';
-import { reduce, TERMINAL_ORDER_STATES, type OrderRecord } from '../../../domain/oms/reducer';
-import { decodeClientOrderId } from '../../../domain/types/ids';
-import type { OrderIntent } from '../../../domain/types/order-intent';
-import type { FillRecord } from '../../../domain/types/exec-report';
+} from '../../../ports/trading/execution';
+import { KILL_SWITCH, type KillSwitchPort } from '../../../ports/trading/risk';
+import {
+  reduce,
+  TERMINAL_ORDER_STATES,
+  type OrderRecord,
+} from '../../../domain/trading/oms/reducer';
+import { decodeClientOrderId } from '../../../domain/common/types/ids';
+import type { OrderIntent } from '../../../domain/trading/types/order-intent';
+import type { FillRecord } from '../../../domain/trading/types/exec-report';
 import { OrderBookService } from './order-book.service';
 import { PortfolioStateService } from './portfolio-state.service';
 import { EquitySamplerService } from './equity-sampler.service';

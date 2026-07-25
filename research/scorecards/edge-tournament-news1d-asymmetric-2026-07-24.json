@@ -2,7 +2,7 @@
   "kind": "edge-tournament-scorecard",
   "trialId": "news1d-asymmetric",
   "asOfDate": "2026-07-24",
-  "preregReport": "reports/loop/edge-tournament-preregistration-2026-07-24.md",
+  "preregReport": "research/studies/edge-tournament-preregistration-2026-07-24.md",
   "result": {
     "trialId": "news1d-asymmetric",
     "aggregateNetPnlUsd": "17.9716980252571094483603244815013887",

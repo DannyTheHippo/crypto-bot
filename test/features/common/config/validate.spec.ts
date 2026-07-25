@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { validate as rawValidate } from '../../../src/config/environment/environment.config';
-import type { AppConfig } from '../../../src/ports/app-config';
+import { validate as rawValidate } from '../../../../src/config/environment/environment.config';
+import type { AppConfig } from '../../../../src/ports/common/app-config';
 
 // Most assertions in this file exercise pure field-parsing/defaulting mechanics and don't care
 // whether the boot path is test/ci or production — default NODE_ENV to 'test' so callers don't

@@ -51,20 +51,20 @@ import Decimal from 'decimal.js';
 import { Pool } from 'pg';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import * as schema from '../../../src/database/schemas/trading';
-import { AgentDecisionJournalAdapter } from '../../../src/database/repositories/agent-decision-journal.adapter';
+import { AgentDecisionJournalAdapter } from '../../../src/database/repositories/strategy/agent-decision-journal.adapter';
 import { appendFileSync, writeFileSync } from 'node:fs';
-import type { AgentDecisionRow } from '../../../src/ports/agentic-strategy';
+import type { AgentDecisionRow } from '../../../src/ports/strategy/agentic-strategy';
 import {
   PLAN_BOUNDS,
   PLAN_TOOL,
   PLAN_TEMPLATE_VERSION,
   computePromptHash,
-} from '../../../src/features/trading/agentic/agent-prompt';
-import { SEED_PLAYBOOK } from '../../../src/features/trading/agentic/agentic-strategy.module';
+} from '../../../src/features/strategy/agentic/agent-prompt';
+import { SEED_PLAYBOOK } from '../../../src/features/strategy/agentic/agentic-strategy.module';
 import {
   summarizeRecentDecisionOutcomes,
   type ScoringRow,
-} from '../../../src/features/trading/agentic/counterfactual-scoring';
+} from '../../../src/features/strategy/agentic/counterfactual-scoring';
 import { EVAL_PROFILE, toScoringAction, buildLegacyPlanSystemPrompt } from './fixtures';
 import {
   composeRecordedUserMessage,

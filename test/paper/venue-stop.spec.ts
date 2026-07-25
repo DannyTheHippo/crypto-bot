@@ -40,28 +40,28 @@ import { EquitySamplerService } from '../../src/features/trading/execution/equit
 import { FillIngestorService } from '../../src/features/trading/execution/fill-ingestor.service';
 import { ExecReportConsumerService } from '../../src/features/trading/execution/exec-report-consumer.service';
 import { ExecutionGateService } from '../../src/features/trading/execution/execution-gate.service';
-import type { ModeControlPort } from '../../src/ports/mode-control';
+import type { ModeControlPort } from '../../src/ports/trading/mode-control';
 import { SignalSinkService } from '../../src/features/trading/execution/signal-sink.service';
 import { InMemoryExecOutbox } from '../../src/features/trading/execution/in-memory-outbox';
 import { InMemoryExecutionStore } from '../../src/features/trading/execution/in-memory-store';
 import {
   PaperExchangeAdapter,
   type PaperConfig,
-} from '../../src/features/trading/exchange/paper-exchange.adapter';
+} from '../../src/features/venue/exchange/paper-exchange.adapter';
 import { KillSwitchService } from '../../src/features/trading/risk/kill-switch.service';
 import { RateBucketsService } from '../../src/features/trading/risk/rate-buckets.service';
 import { CrossingRegistryService } from '../../src/features/trading/risk/crossing-registry.service';
 import { PositionSizerService } from '../../src/features/trading/risk/position-sizer.service';
 import { RiskEngineService } from '../../src/features/trading/risk/risk-engine.service';
 import { SignalGatewayService } from '../../src/features/trading/risk/signal-gateway.service';
-import type { ExecRunContext } from '../../src/ports/execution';
-import type { SymbolFilters } from '../../src/domain/risk/evaluate';
-import type { PartialRiskLimits } from '../../src/domain/risk/limits';
-import type { Signal } from '../../src/domain/types/signal';
-import type { FeedHealthPort } from '../../src/ports/market-data';
-import type { OrderLevel } from '../../src/domain/types/market-events';
-import { price, qty } from '../../src/domain/types/money';
-import { strategyId, venueId, symbolId, epochMs } from '../../src/domain/types/ids';
+import type { ExecRunContext } from '../../src/ports/trading/execution';
+import type { SymbolFilters } from '../../src/domain/trading/risk/evaluate';
+import type { PartialRiskLimits } from '../../src/domain/trading/risk/limits';
+import type { Signal } from '../../src/domain/strategy/types/signal';
+import type { FeedHealthPort } from '../../src/ports/venue/market-data';
+import type { OrderLevel } from '../../src/domain/venue/types/market-events';
+import { price, qty } from '../../src/domain/common/types/money';
+import { strategyId, venueId, symbolId, epochMs } from '../../src/domain/common/types/ids';
 
 const T = 1_700_000_000_000;
 const SID = strategyId('agentic-venue-stop');
@@ -224,7 +224,7 @@ describe('AGENTIC_VENUE_STOP: venue-resting protective stop (paper end-to-end, s
     await loop.sink.recordSignal(restingStop('98', 2));
 
     // Risk APPROVED the intent (sized correctly — proves the sizer/risk-band path this signal
-    // exercises, position-sizer.service.ts's isRestingStopExit branch and domain/risk/evaluate.ts's
+    // exercises, position-sizer.service.ts's isRestingStopExit branch and domain/trading/risk/evaluate.ts's
     // T1-T3 trigger-order gates, both Push 3 P7b), but the SUBMIT itself terminal-rejects at the
     // adapter boundary — the outcome recorded by SignalSinkService is still 'APPROVED' (that outcome
     // reflects the RISK verdict, not the eventual venue result; see execution-gate.service.ts's own

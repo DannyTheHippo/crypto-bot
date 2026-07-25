@@ -92,7 +92,7 @@
 //     was not symmetric across models, since a model favouring tight, frequently-overshot TPs harvested
 //     more phantom edge than one setting wide ones.
 // Every fill is charged a flat settlementFeeBps (default 10bps) per leg, settled through
-// the REAL domain PnL machinery (applyFillToPosition, src/domain/oms/position.ts) exactly like
+// the REAL domain PnL machinery (applyFillToPosition, src/domain/trading/oms/position.ts) exactly like
 // harness.ts — a SHORT is SELL-to-open then BUY-to-close through that same signed-position code.
 //
 // BUDGET: usage is priced per model from test/shared/model-routing.ts's rate table (per-model
@@ -131,26 +131,36 @@ import {
   toIndicatorNumber,
   price,
   qty,
-} from '../../src/domain/types/money';
-import { applyFillToPosition, FLAT, type PositionState } from '../../src/domain/oms/position';
+} from '../../src/domain/common/types/money';
+import {
+  applyFillToPosition,
+  FLAT,
+  type PositionState,
+} from '../../src/domain/trading/oms/position';
 import {
   walkRoundTrips,
   type RoundTripFill,
   type ClosedRoundTrip,
-} from '../../src/domain/risk/round-trips';
+} from '../../src/domain/trading/risk/round-trips';
 import { takerFeeQuote } from './fill-models';
 import { fundingPayment } from './funding';
-import { aggregateCandles } from '../../src/domain/indicators/candle-aggregate';
+import { aggregateCandles } from '../../src/domain/strategy/indicators/candle-aggregate';
 import {
   emaFromNumbers,
   rsiFromNumbers,
   atrFromNumbers,
   pctChange,
-} from '../../src/domain/indicators/indicators';
-import { epochMs, symbolId, venueId, strategyId, type SymbolId } from '../../src/domain/types/ids';
-import { splitSymbol } from '../../src/domain/types/symbol';
-import { PERP_VENUE_ID, venueForSymbol } from '../../src/domain/types/venue-map';
-import type { CandleEvent, CandleInterval } from '../../src/domain/types/market-events';
+} from '../../src/domain/strategy/indicators/indicators';
+import {
+  epochMs,
+  symbolId,
+  venueId,
+  strategyId,
+  type SymbolId,
+} from '../../src/domain/common/types/ids';
+import { splitSymbol } from '../../src/domain/venue/types/symbol';
+import { PERP_VENUE_ID, venueForSymbol } from '../../src/domain/venue/types/venue-map';
+import type { CandleEvent, CandleInterval } from '../../src/domain/venue/types/market-events';
 import type {
   AgentDecisionInput,
   AgentDirectives,
@@ -158,15 +168,15 @@ import type {
   AgentHtfIndicators,
   AgentPositionSummary,
   AgentTradingProfile,
-} from '../../src/ports/agentic-strategy';
+} from '../../src/ports/strategy/agentic-strategy';
 import {
   buildMarketPayload,
   buildPlaybookBlock,
   buildSystemPrompt,
   buildTradeTool,
   type SymbolCapabilities,
-} from '../../src/features/trading/agentic/agent-prompt';
-import { tradeDecisionSchema } from '../../src/features/trading/agentic/anthropic-agent-client';
+} from '../../src/features/strategy/agentic/agent-prompt';
+import { tradeDecisionSchema } from '../../src/features/strategy/agentic/anthropic-agent-client';
 import {
   apiKeyEnvNameFor,
   callCostUsd,

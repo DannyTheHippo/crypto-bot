@@ -1,8 +1,12 @@
-import type { CandleEvent } from '../../../domain/types/market-events';
-import { toIndicatorNumber } from '../../../domain/types/money';
-import { atrFromNumbers } from '../../../domain/indicators/indicators';
-import { symbolId } from '../../../domain/types/ids';
-import { venueForSymbol, SPOT_VENUE_ID, PERP_VENUE_ID } from '../../../domain/types/venue-map';
+import type { CandleEvent } from '../../../domain/venue/types/market-events';
+import { toIndicatorNumber } from '../../../domain/common/types/money';
+import { atrFromNumbers } from '../../../domain/strategy/indicators/indicators';
+import { symbolId } from '../../../domain/common/types/ids';
+import {
+  venueForSymbol,
+  SPOT_VENUE_ID,
+  PERP_VENUE_ID,
+} from '../../../domain/venue/types/venue-map';
 
 // Basket entries are plain strings (ccxt symbol shape) here, not the branded SymbolId the domain
 // layer mints — venueForSymbol only needs the pure BASE/QUOTE[:SETTLE] shape splitSymbol parses, so

@@ -1,4 +1,4 @@
-import type { SymbolId, EpochMs } from '../domain/types/ids';
+import type { SymbolId, EpochMs } from '../../domain/common/types/ids';
 
 // Positioning context (2026-07-13): market-wide futures positioning (global long/short account
 // ratio), a separate REST-poll source surfaced to the agentic prompt when fresh — same shape as

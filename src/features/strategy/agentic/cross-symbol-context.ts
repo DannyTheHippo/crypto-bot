@@ -1,5 +1,5 @@
 import Decimal from 'decimal.js';
-import type { AgentCrossSymbol } from '../../../ports/agentic-strategy';
+import type { AgentCrossSymbol } from '../../../ports/strategy/agentic-strategy';
 
 // Cross-symbol relative-strength context (2026-07-12, Fable session). WHY: each agentic instance
 // trades ONE symbol and its runtime candle history is siloed to that symbol — an instance deciding

@@ -7,8 +7,8 @@ import {
   type Price,
   type Qty,
   type FeeAmount,
-} from '../types/money';
-import type { OrderLevel } from '../types/market-events';
+} from '../../common/types/money';
+import type { OrderLevel } from '../../venue/types/market-events';
 
 // Pure paper-fill model (§6.5). Deterministic over its inputs; latency/PRNG live in the
 // adapter. Two regimes: book-walk for market orders, trade-through for resting limits.

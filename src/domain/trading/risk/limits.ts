@@ -8,9 +8,9 @@ export interface RiskLimitsConfig {
   // P2 passive-exit override: a reduce-only intent priced on the PASSIVE side of the reference
   // (SELL ≥ mid, BUY-cover ≤ mid — a resting take-profit) checks against this wider band instead
   // of maxBandBps. Aggressive-side reduce-only intents and every non-reduce-only intent are
-  // unaffected — see domain/risk/evaluate.ts P2.
+  // unaffected — see domain/trading/risk/evaluate.ts P2.
   readonly maxPassiveExitBandBps: number;
-  // P7b protective-stop trigger checks (domain/risk/evaluate.ts's hasTrigger branch): a trigger
+  // P7b protective-stop trigger checks (domain/trading/risk/evaluate.ts's hasTrigger branch): a trigger
   // order's |trigger − mid| / mid must be ≤ this (basis points) — a trigger far beyond this is far
   // more likely a bug than a deliberately wide stop.
   readonly maxStopTriggerBandBps: number;

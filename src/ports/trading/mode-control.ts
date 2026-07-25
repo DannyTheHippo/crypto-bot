@@ -1,7 +1,11 @@
-import type { TradingMode } from '../domain/types/mode';
-import type { ModeResolution, EffectiveMode, DowngradeReason } from '../domain/mode/resolution';
-import type { DisarmTrigger } from '../domain/mode/arming';
-import type { VenueId } from '../domain/types/ids';
+import type { TradingMode } from '../../domain/trading/types/mode';
+import type {
+  ModeResolution,
+  EffectiveMode,
+  DowngradeReason,
+} from '../../domain/trading/mode/resolution';
+import type { DisarmTrigger } from '../../domain/trading/mode/arming';
+import type { VenueId } from '../../domain/common/types/ids';
 // Re-export so callers who import from the port don't need to know the domain path.
 export type { ModeResolution, EffectiveMode, DowngradeReason, DisarmTrigger };
 

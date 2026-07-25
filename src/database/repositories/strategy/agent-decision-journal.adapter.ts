@@ -6,9 +6,9 @@ import type {
   AgentDecisionRow,
   RegimeTags,
   SimilarSetupRow,
-} from '../../ports/agentic-strategy';
-import type { StrategyId, VenueId, SymbolId, EpochMs } from '../../domain/types/ids';
-import type * as schema from '../schemas/trading';
+} from '../../../ports/strategy/agentic-strategy';
+import type { StrategyId, VenueId, SymbolId, EpochMs } from '../../../domain/common/types/ids';
+import type * as schema from '../../schemas/trading';
 import { AgentDecisionRepository, type AgentDecisionInsert } from './agent-decision.repository';
 
 // Composition-root binding for AGENT_DECISION_JOURNAL: persists every agentic-lane decision to
@@ -18,12 +18,12 @@ import { AgentDecisionRepository, type AgentDecisionInsert } from './agent-decis
 // failed insert is logged, never thrown, so journaling can never break the decide() path.
 //
 // recent() ordering: oldest→newest (ascending event_time), matching AgentContext.recentDecisions'
-// documented "newest-last" convention (see ports/agentic-strategy.ts) — a caller folding persisted
+// documented "newest-last" convention (see ports/strategy/agentic-strategy.ts) — a caller folding persisted
 // rows into that in-memory trail sees the same chronological order from either source.
 // v3 (consolidation spec §2/§9): the DB column (and AgentDecisionInsert.action) narrows to the
 // rich-tool-contract-only vocabulary — the legacy 'long'/'flat' literals (the retired
 // DECISION_TOOL/SHORTS_DECISION_TOOL contract) are no longer accepted. AgentDecisionEntry.action
-// (ports/agentic-strategy.ts, owned by the agentic workstream) still declares the wider legacy union
+// (ports/strategy/agentic-strategy.ts, owned by the agentic workstream) still declares the wider legacy union
 // until that contract is fully deleted there, so this is a RUNTIME persistence-boundary guard AND a
 // narrowing type predicate: any action outside this set — including a well-typed legacy literal, or
 // a caller that narrowed/cast `action` to a type the compiler accepts while the real runtime value is
@@ -140,7 +140,7 @@ export class AgentDecisionJournalAdapter implements AgentDecisionJournalPort {
       // v3-transitional(#10): info_arm/thinking_arm columns are dropped (spec §2/§9 — the
       // derivatives-control A/B factorial was retired; the playbook champion/candidate A/B is NOT
       // retired and is attributed via consultId + playbookVersion, not an arm flag). entry.infoArm/
-      // entry.thinkingArm (still declared on AgentDecisionEntry, ports/agentic-strategy.ts, owned by
+      // entry.thinkingArm (still declared on AgentDecisionEntry, ports/strategy/agentic-strategy.ts, owned by
       // workstream #10) are read by the client for prompt-template selection but are simply never
       // forwarded to persistence now.
       consultId: entry.consultId ?? null,

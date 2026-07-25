@@ -1,7 +1,7 @@
 // Backtest harness — drives any BarStrategy (test/backtest/strategy.ts) over historical OHLCV bars
 // and settles every fill through the REAL domain PnL machinery: applyFillToPosition
-// (src/domain/oms/position.ts, signed/short-capable) for per-fill position accounting and
-// walkRoundTrips (src/domain/risk/round-trips.ts) for closed-cycle extraction — the SAME functions
+// (src/domain/trading/oms/position.ts, signed/short-capable) for per-fill position accounting and
+// walkRoundTrips (src/domain/trading/risk/round-trips.ts) for closed-cycle extraction — the SAME functions
 // production reconciliation and the promotion-readiness verdict use, so a backtest verdict is
 // evidence about the real settlement math, not a parallel reimplementation of it.
 //
@@ -14,13 +14,17 @@
 // sizing, fills, fees, funding, and PnL. Every BarStrategy implementation (RuleStrategy,
 // RecordedAgenticStrategy, LiveAgenticStrategy) shares this one settlement path.
 import Decimal from 'decimal.js';
-import { setupDecimal, roundToStep } from '../../src/domain/types/money';
-import { applyFillToPosition, FLAT, type PositionState } from '../../src/domain/oms/position';
+import { setupDecimal, roundToStep } from '../../src/domain/common/types/money';
+import {
+  applyFillToPosition,
+  FLAT,
+  type PositionState,
+} from '../../src/domain/trading/oms/position';
 import {
   walkRoundTrips,
   type RoundTripFill,
   type ClosedRoundTrip,
-} from '../../src/domain/risk/round-trips';
+} from '../../src/domain/trading/risk/round-trips';
 import { sharpeStats, type SharpeStats } from './stats';
 import {
   effectiveFillPrice,

@@ -1,15 +1,18 @@
 # EdgePolicy residual20-volbeta — 3h soak (check-and-fix)
 
 ## Clock
+
 - **Family:** `residual20-volbeta` (owner override of tournament gate fail)
 - **Soak T+0 (restart after recon fix):** 2026-07-24T15:46:59Z (boot `11673f15`)
 - **Cadence:** 30 minutes × 7 checks (T+0 … T+180)
 - **Rule:** any code/config/ops defect → fix → redeploy → **new T+0** (no elapsed credit)
 
 ## Checks
+
 Each tick: `pnpm loop:sweep` + edge probes (cohort log, flags, kill switch, recon both venues, RSS, LLM budget, decide liveness) + fix if dirty.
 
 ## History
+
 | Check | UTC | Verdict | Notes |
 | --- | --- | --- | --- |
 | pre | 2026-07-24T15:39Z | DIRTY | boot `51a98ca2`; adopt_non_adoptable + adopt_query_failure; stranded ACKED SELLs |
@@ -20,10 +23,11 @@ Each tick: `pnpm loop:sweep` + edge probes (cohort log, flags, kill switch, reco
 | T+90 | 2026-07-24T17:17:09Z | CLEAN | same boot; recon clean 90/90; kill RUNNING; EdgePolicy on; cohort still KAITO/UNI×TRUMP/HYPE; budget ~$2.77; RSS ~757MiB; 80 decides/30m; alarms=0 |
 
 ## Loop
+
 - interval: 30m
 - PID: 44691
 - sentinel: `AGENT_LOOP_TICK_edge_soak`
-- log: `reports/research/edge-policy-soak-2026-07-24.md` (canonical)
+- log: `research/studies/edge-policy-soak-2026-07-24.md` (canonical)
 - next tick: T+120 (~17:47Z)
 - remaining checks: T+120 … T+180 (3)
 - PASS requires seven consecutive CLEAN in this uninterrupted window on boot `11673f15`

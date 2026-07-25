@@ -37,8 +37,8 @@ export default tseslint.config(
       'test/backtest/ab-cells/**',
       // Same class: these specs import scripts/*.mjs (themselves outside tsconfig, see
       // scripts/** above) and are plain .mjs for the same reason — no tsconfig project.
-      'test/unit/scripts/arm-ceremony.spec.mjs',
-      'test/unit/scripts/resolve-stale-orders.spec.mjs',
+      'test/features/common/scripts/arm-ceremony.spec.mjs',
+      'test/features/common/scripts/resolve-stale-orders.spec.mjs',
       // Harness agent worktrees — full repo copies whose files have no tsconfig project context.
       '.claude/**',
     ],
@@ -237,9 +237,9 @@ export default tseslint.config(
       ],
     },
   },
-  // domain/types/money.ts: purity selectors only; money selectors are exempt here (Phase 1)
+  // domain/common/types/money.ts: purity selectors only; money selectors are exempt here (Phase 1)
   {
-    files: ['src/domain/types/money.ts'],
+    files: ['src/domain/common/types/money.ts'],
     rules: {
       'no-restricted-syntax': [
         'error',
@@ -297,20 +297,20 @@ export default tseslint.config(
       ],
     },
   },
-  // Minting boundary: only src/domain/risk/ and src/features/trading/risk/ may import from
-  // domain/risk/minting. All other files must go through the public port.
+  // Minting boundary: only src/domain/trading/risk/ and src/features/trading/risk/ may import from
+  // domain/trading/risk/minting. All other files must go through the public port.
   {
     files: ['src/**/*', 'test/**/*'],
-    ignores: ['src/domain/risk/**', 'src/features/trading/risk/**'],
+    ignores: ['src/domain/trading/risk/**', 'src/features/trading/risk/**'],
     rules: {
       'no-restricted-imports': [
         'error',
         {
           patterns: [
             {
-              group: ['**/domain/risk/minting', '**/domain/risk/minting/**'],
+              group: ['**/domain/trading/risk/minting', '**/domain/trading/risk/minting/**'],
               message:
-                'Import domain/risk/minting only from src/domain/risk/ or src/features/trading/risk/.',
+                'Import domain/trading/risk/minting only from src/domain/trading/risk/ or src/features/trading/risk/.',
             },
           ],
         },

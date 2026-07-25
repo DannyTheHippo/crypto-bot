@@ -3,7 +3,7 @@ import type {
   AgentClientPort,
   AgentDecisionInput,
   AgentProposal,
-} from '../../../ports/agentic-strategy';
+} from '../../../ports/strategy/agentic-strategy';
 
 // Default, INERT agent client. A deployed-but-unwired agentic lane proposes nothing — the bot trades
 // only what a real out-of-process LLM/agent later returns through a concrete adapter. Until that

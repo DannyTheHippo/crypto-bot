@@ -5,14 +5,14 @@ import {
   type EpochMs,
   type SymbolId,
   type VenueId,
-} from '../../../domain/types/ids';
+} from '../../../domain/common/types/ids';
 import type {
   AlgoOrderHistoryView,
   AlgoOrderState,
   ExchangeOrderState,
   VenueFill,
   VenueFundingPayment,
-} from '../../../ports/exchange';
+} from '../../../ports/venue/exchange';
 import type {
   CcxtBalances,
   CcxtFundingHistoryEntry,

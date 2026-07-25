@@ -1,14 +1,14 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import Decimal from 'decimal.js';
-import { CLOCK, type ClockPort } from '../../../ports/clock';
-import { FEED_HEALTH, type FeedHealthPort } from '../../../ports/market-data';
+import { CLOCK, type ClockPort } from '../../../ports/common/clock';
+import { FEED_HEALTH, type FeedHealthPort } from '../../../ports/venue/market-data';
 import {
   EXECUTION_STORE,
   EQUITY_OBSERVER,
   type ExecutionStorePort,
   type EquitySample,
   type EquityObserver,
-} from '../../../ports/execution';
+} from '../../../ports/trading/execution';
 import { PortfolioStateService } from './portfolio-state.service';
 
 // §8 post-trade equity sampling: equity = cash + Σ signedQty × mark (Decimal), on every fill

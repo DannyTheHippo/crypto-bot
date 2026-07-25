@@ -1,5 +1,5 @@
-import type { VenueId, SymbolId, ClientOrderId, EpochMs } from '../domain/types/ids';
-import type { OrderState } from '../domain/oms/reducer';
+import type { VenueId, SymbolId, ClientOrderId, EpochMs } from '../../domain/common/types/ids';
+import type { OrderState } from '../../domain/trading/oms/reducer';
 
 export const EXCHANGE_PORT = Symbol('EXCHANGE_PORT');
 // v3 §1.3: one concrete ExchangePort per VENUE_REGISTRY venue. EXCHANGE_PORT re-binds to a routing

@@ -1,6 +1,6 @@
 import { Injectable, Inject } from '@nestjs/common';
-import { CLOCK, type ClockPort } from '../../../ports/clock';
-import { makeBucket, tryConsume, type TokenBucket } from '../../../domain/risk/rate-bucket';
+import { CLOCK, type ClockPort } from '../../../ports/common/clock';
+import { makeBucket, tryConsume, type TokenBucket } from '../../../domain/trading/risk/rate-bucket';
 
 // §5 R1 token buckets. Order-path intents must pass global + per-symbol + per-strategy.
 // FLATTEN uses a reserved bucket so a runaway strategy can never starve a flatten.

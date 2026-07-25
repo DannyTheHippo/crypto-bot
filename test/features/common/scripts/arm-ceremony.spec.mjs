@@ -1,12 +1,12 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { computeProof, main } from '../../../scripts/arm-ceremony.mjs';
-import { verifyArmingHmac } from '../../../src/features/trading/mode-control/hmac.ts';
+import { computeProof, main } from '../../../../scripts/arm-ceremony.mjs';
+import { verifyArmingHmac } from '../../../../src/features/trading/mode-control/hmac.ts';
 
 // arm-ceremony.mjs runs standalone via `node` (outside the tsconfig/Nest graph — see
 // eslint.config.mjs's scripts/** ignore, hence this spec is plain .mjs too rather than importing
 // a bare .mjs from a typed .ts file). computeProof must satisfy the SAME server-side verifier the
 // running service uses (src/features/trading/mode-control/hmac.ts's verifyArmingHmac), proving the
-// CLI's proof is accepted by the real arming state machine (src/domain/mode/arming.ts's CONFIRM
+// CLI's proof is accepted by the real arming state machine (src/domain/trading/mode/arming.ts's CONFIRM
 // branch) without ever starting a server.
 describe('arm-ceremony computeProof', () => {
   it('produces a proof the server-side verifier accepts', () => {

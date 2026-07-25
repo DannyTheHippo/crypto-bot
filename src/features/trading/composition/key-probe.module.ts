@@ -1,10 +1,14 @@
 import { Global, Module } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { TypedConfigService } from '../../../config/environment/typed-config.service';
-import { SPOT_VENUE } from '../../../domain/types/venue-map';
-import { KEY_PROBE, type KeyProbePort, type KeyProbeResult } from '../../../ports/mode-control';
-import { venueId, type VenueId } from '../../../domain/types/ids';
-import { KeyProbeService } from '../exchange/key-probe.service';
+import { SPOT_VENUE } from '../../../domain/venue/types/venue-map';
+import {
+  KEY_PROBE,
+  type KeyProbePort,
+  type KeyProbeResult,
+} from '../../../ports/trading/mode-control';
+import { venueId, type VenueId } from '../../../domain/common/types/ids';
+import { KeyProbeService } from '../../venue/exchange/key-probe.service';
 import { buildOrderClient, resolveSandbox } from './exchange-adapters.module';
 
 // v3 spec §1.3/§7.1: gate-(c) KEY_PROBE, bound globally by the composition root (ModeControl

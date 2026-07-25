@@ -1,8 +1,8 @@
 import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
-import type { EpochMs } from '../../../domain/types/ids';
-import { epochMs } from '../../../domain/types/ids';
-import type { ClockPort } from '../../../ports/clock';
-import type { SentimentFeedPort, SentimentSnapshot } from '../../../ports/sentiment-feed';
+import type { EpochMs } from '../../../domain/common/types/ids';
+import { epochMs } from '../../../domain/common/types/ids';
+import type { ClockPort } from '../../../ports/common/clock';
+import type { SentimentFeedPort, SentimentSnapshot } from '../../../ports/strategy/sentiment-feed';
 
 // latest() treats a snapshot older than this multiple of the poll interval as stale (absent to the
 // caller) — mirrors DerivativesFeedService's STALE_POLL_MULTIPLE.

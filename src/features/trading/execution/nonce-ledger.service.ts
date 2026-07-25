@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { EpochMs } from '../../../domain/types/ids';
+import type { EpochMs } from '../../../domain/common/types/ids';
 
 // Single-use nonce ledger backing the §4.2 replay defence. TTL-bounded so it cannot grow
 // without limit: a nonce is only useful within its approval's TTL window — a replay past

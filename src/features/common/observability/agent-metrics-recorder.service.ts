@@ -58,7 +58,7 @@ export type AgentVenueStopEvent =
 
 // Typed recorder over the agentic-lane providers registered in metrics.service.ts. Exported from
 // ObservabilityModule so the composition root can hand it (or closures over it) to the agentic lane —
-// this module never imports features/trading/agentic itself (the boundaries wall runs the other way).
+// this module never imports features/strategy/agentic itself (the boundaries wall runs the other way).
 // Every method swallows and drops prom-client errors: metrics must never throw into a trading path.
 @Injectable()
 export class AgentMetricsRecorder {
@@ -110,7 +110,7 @@ export class AgentMetricsRecorder {
 
   // Cache kinds are inc'd only when the response actually carried the field: an absent series
   // (envelope never reported cache usage) and a zero series (confirmed zero cache reads) answer
-  // the W2.4 falsifiability check differently (see AgentUsage in ports/agentic-strategy.ts).
+  // the W2.4 falsifiability check differently (see AgentUsage in ports/strategy/agentic-strategy.ts).
   // These series also expose the cache-write premium the flat 3/15 accounting can't see —
   // cache_creation tokens bill above base input rate and appear in NEITHER input nor output.
   recordTokens(

@@ -14,7 +14,7 @@ import Decimal from 'decimal.js';
 // (sumFeesQuote) once, so per-cycle feesQuote here is evidence-only and MUST NOT be re-subtracted
 // into any verdict aggregate.
 
-// One ordered fill row. Structurally compatible with ports/promotion's PromotionFillRow (domain
+// One ordered fill row. Structurally compatible with ports/trading/promotion's PromotionFillRow (domain
 // may not import ports, so the shape is re-stated here); refPrice is the decide-time reference the
 // intent was sized against — optional, used only for slippage evidence.
 export interface RoundTripFill {
@@ -83,7 +83,7 @@ function freshCycle(): CycleState {
 
 // symbol is "BASE/QUOTE" (e.g. 'BTC/USDT') or ccxt's linear-swap "BASE/QUOTE:SETTLE" (e.g.
 // 'BTC/USDT:USDT'); the walk folds over historical fill rows and must never throw mid-walk on a
-// malformed symbol (unlike domain/types/symbol's splitSymbol), so parsing stays lenient here —
+// malformed symbol (unlike domain/venue/types/symbol's splitSymbol), so parsing stays lenient here —
 // split() always yields at least one element, so index 0 is asserted rather than defaulted (a ??
 // fallback would be an unreachable branch under the 100%-branch glob), and a missing/empty quote
 // part falls through to '' so the fee is reported as unconvertible rather than crashing the walk.

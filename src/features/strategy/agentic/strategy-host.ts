@@ -1,27 +1,27 @@
 import { Injectable, Inject, Logger } from '@nestjs/common';
-import type { StrategyId, SymbolId, EpochMs } from '../../../domain/types/ids';
-import { epochMs } from '../../../domain/types/ids';
+import type { StrategyId, SymbolId, EpochMs } from '../../../domain/common/types/ids';
+import { epochMs } from '../../../domain/common/types/ids';
 import type {
   CandleEvent,
   TickerEvent,
   OrderBookSnapshotEvent,
-} from '../../../domain/types/market-events';
-import type { MarketEvent } from '../../../domain/types/market-events';
-import type { SubscriptionSpec } from '../../../domain/types/subscription';
-import type { ExecReport } from '../../../domain/types/exec-report';
-import type { Signal } from '../../../domain/types/signal';
-import type { StrategyPortfolioView } from '../../../domain/types/portfolio';
-import type { MarketStreamPort, FeedHealthPort } from '../../../ports/market-data';
-import { MARKET_STREAM, FEED_HEALTH } from '../../../ports/market-data';
-import type { StrategyHostPort, SignalSinkPort } from '../../../ports/strategy';
-import { SIGNAL_SINK } from '../../../ports/strategy';
-import type { StrategyState } from '../../../ports/strategy';
+} from '../../../domain/venue/types/market-events';
+import type { MarketEvent } from '../../../domain/venue/types/market-events';
+import type { SubscriptionSpec } from '../../../domain/venue/types/subscription';
+import type { ExecReport } from '../../../domain/trading/types/exec-report';
+import type { Signal } from '../../../domain/strategy/types/signal';
+import type { StrategyPortfolioView } from '../../../domain/trading/types/portfolio';
+import type { MarketStreamPort, FeedHealthPort } from '../../../ports/venue/market-data';
+import { MARKET_STREAM, FEED_HEALTH } from '../../../ports/venue/market-data';
+import type { StrategyHostPort, SignalSinkPort } from '../../../ports/strategy/strategy';
+import { SIGNAL_SINK } from '../../../ports/strategy/strategy';
+import type { StrategyState } from '../../../ports/strategy/strategy';
 import type {
   AgentDecisionInput,
   AgentMarketSnapshot,
   AsyncStrategy,
   SymbolConstraints,
-} from '../../../ports/agentic-strategy';
+} from '../../../ports/strategy/agentic-strategy';
 import { StrategyRegistry } from './strategy-registry';
 
 // Consecutive decide() timeouts/rejections before auto-DRAINING the agentic strategy.

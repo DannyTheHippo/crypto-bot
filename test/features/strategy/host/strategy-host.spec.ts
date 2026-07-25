@@ -4,26 +4,29 @@ import Decimal from 'decimal.js';
 import {
   StrategyHost,
   type AgenticHostOptions,
-} from '../../../src/features/trading/agentic/strategy-host';
-import { StrategyRegistry } from '../../../src/features/trading/agentic/strategy-registry';
-import type { MarketStreamPort, FeedHealthPort } from '../../../src/ports/market-data';
-import type { SignalSinkPort } from '../../../src/ports/strategy';
+} from '../../../../src/features/strategy/agentic/strategy-host';
+import { StrategyRegistry } from '../../../../src/features/strategy/agentic/strategy-registry';
+import type { MarketStreamPort, FeedHealthPort } from '../../../../src/ports/venue/market-data';
+import type { SignalSinkPort } from '../../../../src/ports/strategy/strategy';
 import type {
   AsyncStrategy,
   AgentDecisionInput,
   StrategyInitContext,
   SymbolConstraints,
-} from '../../../src/ports/agentic-strategy';
+} from '../../../../src/ports/strategy/agentic-strategy';
 import type {
   MarketEvent,
   CandleEvent,
   CandleInterval,
-} from '../../../src/domain/types/market-events';
-import type { ExecReport } from '../../../src/domain/types/exec-report';
-import type { Signal } from '../../../src/domain/types/signal';
-import type { SubscriptionSpec } from '../../../src/domain/types/subscription';
-import type { Position, StrategyPortfolioView } from '../../../src/domain/types/portfolio';
-import { price, qty } from '../../../src/domain/types/money';
+} from '../../../../src/domain/venue/types/market-events';
+import type { ExecReport } from '../../../../src/domain/trading/types/exec-report';
+import type { Signal } from '../../../../src/domain/strategy/types/signal';
+import type { SubscriptionSpec } from '../../../../src/domain/venue/types/subscription';
+import type {
+  Position,
+  StrategyPortfolioView,
+} from '../../../../src/domain/trading/types/portfolio';
+import { price, qty } from '../../../../src/domain/common/types/money';
 import {
   strategyId,
   venueId,
@@ -31,7 +34,7 @@ import {
   epochMs,
   clientOrderId,
   type StrategyId,
-} from '../../../src/domain/types/ids';
+} from '../../../../src/domain/common/types/ids';
 
 const V = venueId('binance');
 const S = symbolId('BTC/USDT');

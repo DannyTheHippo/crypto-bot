@@ -3,7 +3,7 @@
 // source='promotion' row pointing at <version>; PlaybookStoreAdapter.resolve() picks up the
 // newest promotion row's parentVersion target on the NEXT process boot (see its header comment).
 // This script never touches a running process, and auto-promotion is deliberately NOT implemented
-// here — see src/features/trading/agentic/README.md for the evidence gate that gaits it.
+// here — see src/features/strategy/agentic/README.md for the evidence gate that gaits it.
 
 import pg from 'pg';
 import { resolveActiveVersion, mapUniqueViolation } from './lib/playbook-shared.mjs';

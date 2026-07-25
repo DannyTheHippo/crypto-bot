@@ -1,16 +1,16 @@
 import Decimal from 'decimal.js';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import type { StrategyId } from '../../../domain/types/ids';
+import type { StrategyId } from '../../../domain/common/types/ids';
 import type {
   AgentDecisionJournalPort,
   AgentDecisionRow,
   AgentUsage,
   LlmUsageSink,
-} from '../../../ports/agentic-strategy';
-import type { RoundTripEvidence, RoundTripEvidencePort } from '../../../ports/promotion';
-import type { KillSwitchPort } from '../../../ports/risk';
-import type { StrategyRegistryPort } from '../../../ports/strategy';
+} from '../../../ports/strategy/agentic-strategy';
+import type { RoundTripEvidence, RoundTripEvidencePort } from '../../../ports/trading/promotion';
+import type { KillSwitchPort } from '../../../ports/trading/risk';
+import type { StrategyRegistryPort } from '../../../ports/strategy/strategy';
 import { AttemptScopedBudget, type DailyLlmBudget } from './agent-budget';
 import { PLAYBOOK_BLOCK_END, PLAYBOOK_BLOCK_START } from './agent-prompt';
 import type { LoggerLike } from './anthropic-agent-client';
@@ -661,7 +661,7 @@ type ReflectionDraftGate =
     };
 
 // Reflection input is hypothesis-generation prompt material, never a trading decision — Decimal→
-// number here mirrors domain/types/money.ts's toIndicatorNumber, applied to the journal's own
+// number here mirrors domain/common/types/money.ts's toIndicatorNumber, applied to the journal's own
 // decimal STRING fields (refPrice/close) rather than a branded Price, since AgentDecisionRow already
 // stores them as plain strings.
 function indicatorFloat(decimalString: string): number {

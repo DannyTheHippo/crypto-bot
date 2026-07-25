@@ -27,23 +27,23 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { Pool } from 'pg';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { AgentDecisionJournalAdapter } from '../../../src/database/repositories/agent-decision-journal.adapter';
-import { PlaybookStoreAdapter } from '../../../src/database/repositories/playbook-store.adapter';
+import { AgentDecisionJournalAdapter } from '../../../src/database/repositories/strategy/agent-decision-journal.adapter';
+import { PlaybookStoreAdapter } from '../../../src/database/repositories/strategy/playbook-store.adapter';
 import * as schema from '../../../src/database/schemas/trading';
 import {
   DECISION_TOOL,
   PROMPT_TEMPLATE_VERSION,
   buildSystemPrompt,
   computePromptHash,
-} from '../../../src/features/trading/agentic/agent-prompt';
-import { SEED_PLAYBOOK } from '../../../src/features/trading/agentic/agentic-strategy.module';
+} from '../../../src/features/strategy/agentic/agent-prompt';
+import { SEED_PLAYBOOK } from '../../../src/features/strategy/agentic/agentic-strategy.module';
 import {
   combineScorecards,
   compare,
   scoreRows,
   type ScoringRow,
-} from '../../../src/features/trading/agentic/counterfactual-scoring';
-import { validatePlaybook } from '../../../src/features/trading/agentic/playbook-validator';
+} from '../../../src/features/strategy/agentic/counterfactual-scoring';
+import { validatePlaybook } from '../../../src/features/strategy/agentic/playbook-validator';
 import { EVAL_PROFILE } from './fixtures';
 import {
   composeRecordedUserMessage,

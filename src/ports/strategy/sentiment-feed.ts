@@ -1,4 +1,4 @@
-import type { EpochMs } from '../domain/types/ids';
+import type { EpochMs } from '../../domain/common/types/ids';
 
 // C4: read-only free news/sentiment feed (headlines only, no numeric scores) — a REST-poll source
 // alongside the WS-fed order book and C1's derivatives feed, surfaced to the agentic prompt when

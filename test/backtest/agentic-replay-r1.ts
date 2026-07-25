@@ -23,16 +23,22 @@
 // TRAINING-CUTOFF FLOOR: mirrors agentic-replay.ts's EARLIEST_ALLOWED_MS (2026-02-01) — the same
 // memorization-confound guard; runAgenticReplayR1 refuses if the first supplied bar predates it.
 import Decimal from 'decimal.js';
-import { setupDecimal, toIndicatorNumber, price, qty } from '../../src/domain/types/money';
+import { setupDecimal, toIndicatorNumber, price, qty } from '../../src/domain/common/types/money';
 import {
   emaFromNumbers,
   rsiFromNumbers,
   atrFromNumbers,
   pctChange,
-} from '../../src/domain/indicators/indicators';
-import { aggregateCandles } from '../../src/domain/indicators/candle-aggregate';
-import { epochMs, symbolId, venueId, strategyId, type SymbolId } from '../../src/domain/types/ids';
-import type { CandleEvent, CandleInterval } from '../../src/domain/types/market-events';
+} from '../../src/domain/strategy/indicators/indicators';
+import { aggregateCandles } from '../../src/domain/strategy/indicators/candle-aggregate';
+import {
+  epochMs,
+  symbolId,
+  venueId,
+  strategyId,
+  type SymbolId,
+} from '../../src/domain/common/types/ids';
+import type { CandleEvent, CandleInterval } from '../../src/domain/venue/types/market-events';
 import type {
   AgentDecisionInput,
   AgentDecisionJournalPort,
@@ -41,22 +47,22 @@ import type {
   AgentHtfIndicators,
   AgentPositionSummary,
   AgentTradingProfile,
-} from '../../src/ports/agentic-strategy';
-import { REPLAY_STRATEGY_ID_PREFIX } from '../../src/ports/agentic-strategy';
+} from '../../src/ports/strategy/agentic-strategy';
+import { REPLAY_STRATEGY_ID_PREFIX } from '../../src/ports/strategy/agentic-strategy';
 import {
   buildSystemPrompt,
   buildMarketPayload,
   buildPlaybookBlock,
-} from '../../src/features/trading/agentic/agent-prompt';
+} from '../../src/features/strategy/agentic/agent-prompt';
 import {
   replayPlanRow,
   DEFAULT_FLOOR_PROFILE,
-} from '../../src/features/trading/agentic/entry-rate-floor';
-import { simulateRoundTrip } from '../../src/features/trading/agentic/candidate-backtest';
+} from '../../src/features/strategy/agentic/entry-rate-floor';
+import { simulateRoundTrip } from '../../src/features/strategy/agentic/candidate-backtest';
 import {
   AttemptScopedBudget,
   DailyLlmBudget,
-} from '../../src/features/trading/agentic/agent-budget';
+} from '../../src/features/strategy/agentic/agent-budget';
 import type { Bar } from './harness';
 
 setupDecimal(); // production Decimal config (precision 40, ROUND_HALF_EVEN) — mirrors agentic-replay.ts

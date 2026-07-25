@@ -1,7 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import Decimal from 'decimal.js';
-import { CLOCK, type ClockPort } from '../../../ports/clock';
-import { KILL_SWITCH, type KillSwitchPort } from '../../../ports/risk';
+import { CLOCK, type ClockPort } from '../../../ports/common/clock';
+import { KILL_SWITCH, type KillSwitchPort } from '../../../ports/trading/risk';
 import {
   EXCHANGE_PORT,
   AdapterError,
@@ -9,19 +9,23 @@ import {
   type ExchangeOrderState,
   type AlgoOrderState,
   type VenueFill,
-} from '../../../ports/exchange';
-import { EXECUTION_STORE, type ExecutionStorePort } from '../../../ports/execution';
-import { reduce, TERMINAL_ORDER_STATES, type OrderEvent } from '../../../domain/oms/reducer';
-import { isAlgoRailIntent } from '../../../domain/oms/reconcile';
-import { mulberry32 } from '../../../domain/rng/prng';
+} from '../../../ports/venue/exchange';
+import { EXECUTION_STORE, type ExecutionStorePort } from '../../../ports/trading/execution';
+import {
+  reduce,
+  TERMINAL_ORDER_STATES,
+  type OrderEvent,
+} from '../../../domain/trading/oms/reducer';
+import { isAlgoRailIntent } from '../../../domain/trading/oms/reconcile';
+import { mulberry32 } from '../../../domain/common/rng/prng';
 import {
   queryBackoffMs,
   MAX_QUERY_ATTEMPTS,
   UNKNOWN_KILL_AFTER_MS,
-} from '../../../domain/oms/query-backoff';
-import { price, qty, feeAmount } from '../../../domain/types/money';
-import type { ClientOrderId, SymbolId, EpochMs } from '../../../domain/types/ids';
-import type { FillRecord } from '../../../domain/types/exec-report';
+} from '../../../domain/trading/oms/query-backoff';
+import { price, qty, feeAmount } from '../../../domain/common/types/money';
+import type { ClientOrderId, SymbolId, EpochMs } from '../../../domain/common/types/ids';
+import type { FillRecord } from '../../../domain/trading/types/exec-report';
 import { OrderBookService } from './order-book.service';
 import { PortfolioStateService } from './portfolio-state.service';
 import { FillIngestorService } from './fill-ingestor.service';

@@ -6,13 +6,13 @@ import {
   type AgentDecisionRow,
   type RegimeTags,
   type SimilarSetupRow,
-} from '../../ports/agentic-strategy';
-import type { EpochMs } from '../../domain/types/ids';
+} from '../../../ports/strategy/agentic-strategy';
+import type { EpochMs } from '../../../domain/common/types/ids';
 import { forwardMovePct } from './agent-decision.repository';
 
 // In-process AGENT_DECISION_JOURNAL default (DB-less paper/test substrate) — a working ring
 // buffer rather than a no-op, unlike SIGNAL_JOURNAL's undefined-under-no-DB binding (see
-// ports/strategy.ts): reflection's read side needs a real recent() even without a database.
+// ports/strategy/strategy.ts): reflection's read side needs a real recent() even without a database.
 // Ring-capped at MAX_ROWS; oldest row evicted first. recent() ordering matches
 // AgentDecisionJournalAdapter's: oldest→newest (see its header comment).
 @Injectable()

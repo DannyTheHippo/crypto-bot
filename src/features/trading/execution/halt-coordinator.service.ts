@@ -1,7 +1,7 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import Decimal from 'decimal.js';
-import { CLOCK, type ClockPort } from '../../../ports/clock';
-import { FEED_HEALTH, type FeedHealthPort } from '../../../ports/market-data';
+import { CLOCK, type ClockPort } from '../../../ports/common/clock';
+import { FEED_HEALTH, type FeedHealthPort } from '../../../ports/venue/market-data';
 import {
   KILL_SWITCH,
   RISK_ENGINE,
@@ -11,7 +11,7 @@ import {
   type RiskEnginePort,
   type PositionSizerPort,
   type PlanStopRegistryPort,
-} from '../../../ports/risk';
+} from '../../../ports/trading/risk';
 import {
   EXECUTION_GATE,
   PORTFOLIO_VIEW,
@@ -19,13 +19,13 @@ import {
   type ExecutionGatePort,
   type PortfolioViewPort,
   type ExecFilters,
-} from '../../../ports/execution';
-import { EXCHANGE_PORT, type ExchangePort } from '../../../ports/exchange';
-import { OPS_EVENTS, type OpsEventPort } from '../../../ports/observability';
-import { price, type Price } from '../../../domain/types/money';
-import type { Signal } from '../../../domain/types/signal';
-import type { Position } from '../../../domain/types/portfolio';
-import type { EpochMs } from '../../../domain/types/ids';
+} from '../../../ports/trading/execution';
+import { EXCHANGE_PORT, type ExchangePort } from '../../../ports/venue/exchange';
+import { OPS_EVENTS, type OpsEventPort } from '../../../ports/common/observability';
+import { price, type Price } from '../../../domain/common/types/money';
+import type { Signal } from '../../../domain/strategy/types/signal';
+import type { Position } from '../../../domain/trading/types/portfolio';
+import type { EpochMs } from '../../../domain/common/types/ids';
 
 const CANCEL_TIMEOUT_MS = 10_000; // §5: cancels unconfirmed in 10s ⇒ HALTED_DEGRADED
 const FLATTEN_TTL_MS = 60_000;

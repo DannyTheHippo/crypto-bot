@@ -3,7 +3,7 @@
 // why Vitest never picks this up directly.
 //
 // The fixtures below are literal JSON strings shaped exactly like agent_decisions.input_payload —
-// i.e. what buildMarketPayload (src/features/trading/agentic/agent-prompt.ts) actually renders and
+// i.e. what buildMarketPayload (src/features/strategy/agentic/agent-prompt.ts) actually renders and
 // AnthropicAgentClient.propose() persists verbatim. They are hand-built objects run through
 // JSON.stringify, not produced by calling buildMarketPayload, because the entire point of this
 // suite is to exercise rows the way they arrive from the DB: a flat rendered string with no
@@ -14,13 +14,13 @@ import type {
   AgentHtfIndicators,
   AgentIndicators,
   AgentPositionSummary,
-} from '../../../src/ports/agentic-strategy';
+} from '../../../src/ports/strategy/agentic-strategy';
 import {
   PLAYBOOK_BLOCK_START,
   PLAYBOOK_BLOCK_END,
-} from '../../../src/features/trading/agentic/agent-prompt';
-import { epochMs } from '../../../src/domain/types/ids';
-import type { ScoringRow } from '../../../src/features/trading/agentic/counterfactual-scoring';
+} from '../../../src/features/strategy/agentic/agent-prompt';
+import { epochMs } from '../../../src/domain/common/types/ids';
+import type { ScoringRow } from '../../../src/features/strategy/agentic/counterfactual-scoring';
 import { toScoringAction } from './fixtures';
 
 // Mirrors buildMarketPayload's return shape field-for-field (see that function's own comment for

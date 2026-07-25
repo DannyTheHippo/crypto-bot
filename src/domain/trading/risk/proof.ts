@@ -3,7 +3,7 @@ import type { OrderIntent } from '../types/order-intent';
 import type { ApprovalProof, RiskApprovedIntent } from '../types/risk-decision';
 import { intentCanonical } from './canonical';
 import { __mintApprovedIntent } from './minting';
-import type { EpochMs } from '../types/ids';
+import type { EpochMs } from '../../common/types/ids';
 
 // Layer-2 runtime forgery defense for RiskApprovedIntent (§4.2). Pure crypto over domain
 // types (node:crypto is deterministic — no clock/process/network), so it lives in domain and

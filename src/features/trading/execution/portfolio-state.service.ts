@@ -1,26 +1,26 @@
 import { Inject, Injectable } from '@nestjs/common';
 import Decimal from 'decimal.js';
-import { price } from '../../../domain/types/money';
-import { splitSymbol } from '../../../domain/types/symbol';
-import { positionKey } from '../../../domain/risk/evaluate';
-import { FLAT, type PositionState } from '../../../domain/oms/position';
-import { applyFillToPortfolio } from '../../../domain/oms/portfolio-fill';
-import type { OrderIntent } from '../../../domain/types/order-intent';
-import type { FillRecord } from '../../../domain/types/exec-report';
+import { price } from '../../../domain/common/types/money';
+import { splitSymbol } from '../../../domain/venue/types/symbol';
+import { positionKey } from '../../../domain/trading/risk/evaluate';
+import { FLAT, type PositionState } from '../../../domain/trading/oms/position';
+import { applyFillToPortfolio } from '../../../domain/trading/oms/portfolio-fill';
+import type { OrderIntent } from '../../../domain/trading/types/order-intent';
+import type { FillRecord } from '../../../domain/trading/types/exec-report';
 import type {
   Position,
   PortfolioSnapshot,
   StrategyPortfolioView,
   OpenOrderSummary,
   AssetBalance,
-} from '../../../domain/types/portfolio';
-import type { StrategyId, ClientOrderId, VenueId } from '../../../domain/types/ids';
-import { venueId } from '../../../domain/types/ids';
+} from '../../../domain/trading/types/portfolio';
+import type { StrategyId, ClientOrderId, VenueId } from '../../../domain/common/types/ids';
+import { venueId } from '../../../domain/common/types/ids';
 import {
   PORTFOLIO_CONFIG,
   type PortfolioConfig,
   type PortfolioViewPort,
-} from '../../../ports/execution';
+} from '../../../ports/trading/execution';
 import { FeeLedgerService } from './fee-ledger.service';
 
 interface OpenOrderRec {

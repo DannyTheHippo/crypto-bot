@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Y3 standing health-digest COLLECTOR — a long-running foreground process that runs the Y2 sweep
 // in-process every LOOP_COLLECT_INTERVAL_MS and appends one JSON line (+ a compact md section) per
-// tick under reports/loop/digests/. `pnpm loop:collect`. The OPERATOR chooses how to daemonize it
+// tick under research/loop/digests/. `pnpm loop:collect`. The OPERATOR chooses how to daemonize it
 // (launchd/tmux/nohup); this script installs nothing and exits cleanly on SIGTERM after the in-flight
 // tick finishes.
 //
@@ -24,8 +24,9 @@
 //       digests/archive/ (created if absent).
 //
 // The sweep is read-only against the stack (loop-transport.mjs); this collector only ever writes under
-// reports/loop/digests/ (single-writer guard below).
+// research/loop/digests/ (single-writer guard below).
 
+import { randomUUID } from 'node:crypto';
 import {
   appendFileSync,
   existsSync,
@@ -35,10 +36,8 @@ import {
   renameSync,
   writeFileSync,
 } from 'node:fs';
-import { join, resolve, sep, dirname } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { randomUUID } from 'node:crypto';
-import { runSweep } from './loop-sweep.mjs';
 import {
   buildDigestLine,
   buildGapLine,
@@ -48,10 +47,11 @@ import {
   rotationTargets,
   utcDateString,
 } from './loop-collect-core.mjs';
+import { runSweep } from './loop-sweep.mjs';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(SCRIPT_DIR, '..');
-const DIGESTS_DIR = join(REPO_ROOT, 'reports', 'loop', 'digests');
+const DIGESTS_DIR = join(REPO_ROOT, 'research', 'loop', 'digests');
 const ARCHIVE_DIR = join(DIGESTS_DIR, 'archive');
 const DEFAULT_INTERVAL_MS = 3_600_000;
 
@@ -68,7 +68,7 @@ function resolveIntervalMs() {
   return n;
 }
 
-// The ONLY writer: refuses any path escaping reports/loop/digests/ (mirrors loop-sweep.mjs's guard).
+// The ONLY writer: refuses any path escaping research/loop/digests/ (mirrors loop-sweep.mjs's guard).
 function pathUnderDigests(relName) {
   const target = resolve(DIGESTS_DIR, relName);
   if (target !== DIGESTS_DIR && !target.startsWith(DIGESTS_DIR + sep)) {

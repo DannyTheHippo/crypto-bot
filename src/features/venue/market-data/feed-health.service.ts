@@ -4,20 +4,20 @@ import type {
   ChannelHealth,
   CandleEvent,
   CandleInterval,
-} from '../../../domain/types/market-events';
-import type { VenueId, SymbolId, EpochMs } from '../../../domain/types/ids';
-import type { Price } from '../../../domain/types/money';
-import { epochMs } from '../../../domain/types/ids';
+} from '../../../domain/venue/types/market-events';
+import type { VenueId, SymbolId, EpochMs } from '../../../domain/common/types/ids';
+import type { Price } from '../../../domain/common/types/money';
+import { epochMs } from '../../../domain/common/types/ids';
 import type {
   FeedHealthPort,
   MarketChannelAge,
   MarketStreamTelemetryPort,
-} from '../../../ports/market-data';
-import { CLOCK, type ClockPort } from '../../../ports/clock';
+} from '../../../ports/venue/market-data';
+import { CLOCK, type ClockPort } from '../../../ports/common/clock';
 import { normalizeRawEvent } from './normalize';
-import type { ExchangeStreamPort } from '../../../ports/exchange-stream';
-import { EXCHANGE_STREAM } from '../../../ports/exchange-stream';
-import type { VenueConfig } from '../../../ports/app-config';
+import type { ExchangeStreamPort } from '../../../ports/venue/exchange-stream';
+import { EXCHANGE_STREAM } from '../../../ports/venue/exchange-stream';
+import type { VenueConfig } from '../../../ports/common/app-config';
 
 // How far ahead of our own clock a venue's event timestamp may sit before updateRefPrice refuses it.
 // Generous enough to absorb ordinary NTP skew and venue clock drift (a legitimately-stamped frame is

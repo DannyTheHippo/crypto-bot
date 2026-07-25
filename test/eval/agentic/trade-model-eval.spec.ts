@@ -66,8 +66,8 @@
 //   EVAL_TRADE_MODELS=1
 //   AGENTIC_EVAL_CANDIDATE_MODELS=claude-sonnet-5
 //   AGENTIC_EVAL_MAX_TOKENS=4096
-//   AGENTIC_EVAL_SCORECARD_FILE=candidates/trade-model-eval-sonnet5-<date>.json
-//   AGENTIC_EVAL_ROW_LOG_FILE=candidates/trade-model-eval-rows-sonnet5-<date>.jsonl
+//   AGENTIC_EVAL_SCORECARD_FILE=research/scorecards/trade-model-eval-sonnet5-<date>.json
+//   AGENTIC_EVAL_ROW_LOG_FILE=research/candidates/trade-model-eval-rows-sonnet5-<date>.jsonl
 //   AGENTIC_EVAL_TIMEOUT_MS=1800000
 //   pnpm eval:trade-models
 //
@@ -81,9 +81,9 @@
 //   MOONSHOT_API_KEY=sk-...
 //   AGENTIC_TOKEN_PRICES_JSON='{"kimi-k3":{"inputPerMtok":"3","outputPerMtok":"15"}}'
 //   AGENTIC_EVAL_MAX_TOKENS=4096
-//   AGENTIC_EVAL_BASELINE_SCORECARD_FILE=candidates/trade-model-eval-sonnet5-<date>.json
-//   AGENTIC_EVAL_SCORECARD_FILE=candidates/trade-model-eval-kimi-k3-<date>.json
-//   AGENTIC_EVAL_ROW_LOG_FILE=candidates/trade-model-eval-rows-kimi-k3-<date>.jsonl
+//   AGENTIC_EVAL_BASELINE_SCORECARD_FILE=research/scorecards/trade-model-eval-sonnet5-<date>.json
+//   AGENTIC_EVAL_SCORECARD_FILE=research/scorecards/trade-model-eval-kimi-k3-<date>.json
+//   AGENTIC_EVAL_ROW_LOG_FILE=research/candidates/trade-model-eval-rows-kimi-k3-<date>.jsonl
 //   AGENTIC_EVAL_TIMEOUT_MS=7200000
 //   pnpm eval:trade-models
 //
@@ -116,17 +116,17 @@ import {
   buildTradeTool,
   TRADE_TEMPLATE_VERSION,
   computePromptHash,
-} from '../../../src/features/trading/agentic/agent-prompt';
-import { tradeDecisionSchema } from '../../../src/features/trading/agentic/anthropic-agent-client';
+} from '../../../src/features/strategy/agentic/agent-prompt';
+import { tradeDecisionSchema } from '../../../src/features/strategy/agentic/anthropic-agent-client';
 import { EVAL_PROFILE } from './fixtures';
-import { SEED_PLAYBOOK } from '../../../src/features/trading/agentic/agentic-strategy.module';
+import { SEED_PLAYBOOK } from '../../../src/features/strategy/agentic/agentic-strategy.module';
 import {
   composeRecordedUserMessage,
   scoringRowFromPayload,
   type PromptIdentity,
   type RecordedDecisionOutcome,
 } from './recorded-payload-fixtures';
-import type { ScoringRow } from '../../../src/features/trading/agentic/counterfactual-scoring';
+import type { ScoringRow } from '../../../src/features/strategy/agentic/counterfactual-scoring';
 
 // Mirrors recorded-rows.spec.ts's read-only DB gate — same self-contained-per-spec copy convention
 // as trade-eval-fixtures.ts's own (unexported) loadFromPostgres gate and candidate-model-eval.spec.ts.

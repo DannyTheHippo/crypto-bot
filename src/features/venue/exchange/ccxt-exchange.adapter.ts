@@ -11,7 +11,7 @@ import {
   type AlgoOrderHistoryView,
   type VenuePosition,
   type VenueFundingPayment,
-} from '../../../ports/exchange';
+} from '../../../ports/venue/exchange';
 import {
   clientOrderId,
   symbolId,
@@ -19,8 +19,8 @@ import {
   type SymbolId,
   type VenueId,
   type EpochMs,
-} from '../../../domain/types/ids';
-import { splitSymbol } from '../../../domain/types/symbol';
+} from '../../../domain/common/types/ids';
+import { splitSymbol } from '../../../domain/venue/types/symbol';
 import { toAdapterError } from './error-classifier';
 import { CCXT_ORDER_CLIENT, type CcxtOrderClient } from './ccxt-order-client';
 import {

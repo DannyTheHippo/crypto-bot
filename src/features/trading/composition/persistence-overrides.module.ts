@@ -2,13 +2,13 @@ import { Global, Module } from '@nestjs/common';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import type { Pool } from 'pg';
 import { PersistenceModule } from '../../../database/database.module';
-import { DrizzleExecutionStore } from '../../../database/repositories/drizzle-execution-store';
-import { DrizzleExecOutbox } from '../../../database/repositories/drizzle-exec-outbox';
-import { PgAdvisoryInstanceLock } from '../../../database/repositories/pg-advisory-instance-lock';
-import { DrizzleModeAudit } from '../../../database/repositories/drizzle-mode-audit';
-import { RiskDecisionJournalAdapter } from '../../../database/repositories/risk-decision-journal.adapter';
-import { SignalJournalAdapter } from '../../../database/repositories/signal-journal.adapter';
-import { FundingPaymentsRepository } from '../../../database/repositories/funding-payments.repository';
+import { DrizzleExecutionStore } from '../../../database/repositories/trading/drizzle-execution-store';
+import { DrizzleExecOutbox } from '../../../database/repositories/trading/drizzle-exec-outbox';
+import { PgAdvisoryInstanceLock } from '../../../database/repositories/common/pg-advisory-instance-lock';
+import { DrizzleModeAudit } from '../../../database/repositories/trading/drizzle-mode-audit';
+import { RiskDecisionJournalAdapter } from '../../../database/repositories/trading/risk-decision-journal.adapter';
+import { SignalJournalAdapter } from '../../../database/repositories/trading/signal-journal.adapter';
+import { FundingPaymentsRepository } from '../../../database/repositories/venue/funding-payments.repository';
 import { DATABASE_POOL, DRIZZLE_DB } from '../../../database/database.tokens';
 import type * as schema from '../../../database/schemas/trading';
 import { TypedConfigService } from '../../../config/environment/typed-config.service';
@@ -20,11 +20,11 @@ import {
   type ExecutionStorePort,
   type InstanceLockPort,
   type ExecRunContext,
-} from '../../../ports/execution';
-import { MODE_AUDIT_OVERRIDE, type ModeAuditPort } from '../../../ports/mode-control';
-import { RISK_JOURNAL_OVERRIDE, type RiskJournalPort } from '../../../ports/risk';
-import { SIGNAL_JOURNAL, type SignalJournalPort } from '../../../ports/strategy';
-import { FUNDING_PAYMENTS, type FundingPaymentsPort } from '../../../ports/funding-payments';
+} from '../../../ports/trading/execution';
+import { MODE_AUDIT_OVERRIDE, type ModeAuditPort } from '../../../ports/trading/mode-control';
+import { RISK_JOURNAL_OVERRIDE, type RiskJournalPort } from '../../../ports/trading/risk';
+import { SIGNAL_JOURNAL, type SignalJournalPort } from '../../../ports/strategy/strategy';
+import { FUNDING_PAYMENTS, type FundingPaymentsPort } from '../../../ports/venue/funding-payments';
 
 // v3 spec §1.3: pure code motion of app.module.ts's DrizzlePersistenceGlobalModule — same seven
 // tokens, same factories. Policy change carried structurally rather than in code: v3 config refuses

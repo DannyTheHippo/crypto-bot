@@ -4,12 +4,12 @@
 // test/eval/agentic that can touch the network (double-gated further behind DATABASE_URL); every
 // other suite here is offline (scripted fetchFn or DB-only).
 import { describe, it, expect } from 'vitest';
-import { AnthropicAgentClient } from '../../../src/features/trading/agentic/anthropic-agent-client';
-import { SEED_PLAYBOOK } from '../../../src/features/trading/agentic/agentic-strategy.module';
+import { AnthropicAgentClient } from '../../../src/features/strategy/agentic/anthropic-agent-client';
+import { SEED_PLAYBOOK } from '../../../src/features/strategy/agentic/agentic-strategy.module';
 import {
   scoreRows,
   type ScoringRow,
-} from '../../../src/features/trading/agentic/counterfactual-scoring';
+} from '../../../src/features/strategy/agentic/counterfactual-scoring';
 import { evalCandle, evalInput, EVAL_PROFILE, toScoringAction } from './fixtures';
 
 const API_KEY = process.env['ANTHROPIC_API_KEY'];

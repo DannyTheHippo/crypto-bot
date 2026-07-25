@@ -6,25 +6,25 @@
 // HONESTY-CRITICAL study: the grid runs once, is reported as-is, and the spec asserts only mechanical
 // integrity (every cell ran, no NaN, the report got written) — the GO/NO-GO verdict is data, never an
 // assertion, so a NO-GO result must not fail this suite.
-import { describe, it, expect } from 'vitest';
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { datasetHash, logTrials, paramsHash } from '../experiment-log';
+import { expectedMaxSharpe, expectedMaxZ, winsorizedVariance } from '../stats';
+import { PRIOR_TRIALS } from '../trial-registry';
 import {
   allCells,
-  runCell,
-  evaluateCarryCell,
-  cellIsGo,
   carryDataAvailable,
-  priorDataAvailable,
+  cellIsGo,
+  evaluateCarryCell,
+  harvestPriorSharpes,
   loadCarryFunding,
   loadCarryOhlcv,
-  harvestPriorSharpes,
+  priorDataAvailable,
+  runCell,
   SYMBOLS,
 } from './carry-grid';
 import type { Bar, FundingRow } from './carry-sim';
-import { PRIOR_TRIALS } from '../trial-registry';
-import { logTrials, paramsHash, datasetHash } from '../experiment-log';
-import { expectedMaxZ, expectedMaxSharpe, winsorizedVariance } from '../stats';
 import { renderCarryReport, type CarryReportRow } from './report';
 
 const SKIP = !carryDataAvailable() || !priorDataAvailable();
@@ -33,8 +33,8 @@ const REPORT_PATH = join(
   '..',
   '..',
   '..',
-  'reports',
-  'loop',
+  'research',
+  'studies',
   'carry-study-2026-07-10.md',
 );
 

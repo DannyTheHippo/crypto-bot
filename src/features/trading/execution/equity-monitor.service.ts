@@ -1,8 +1,12 @@
 import { Inject, Injectable } from '@nestjs/common';
 import Decimal from 'decimal.js';
-import { KILL_SWITCH, type KillSwitchPort } from '../../../ports/risk';
-import { EQUITY_LIMITS, type EquityLimits, type EquitySample } from '../../../ports/execution';
-import { dailyLossTripped, drawdownTripped } from '../../../domain/risk/equity-monitor';
+import { KILL_SWITCH, type KillSwitchPort } from '../../../ports/trading/risk';
+import {
+  EQUITY_LIMITS,
+  type EquityLimits,
+  type EquitySample,
+} from '../../../ports/trading/execution';
+import { dailyLossTripped, drawdownTripped } from '../../../domain/trading/risk/equity-monitor';
 import { PortfolioStateService } from './portfolio-state.service';
 
 // §5 post-trade monitors — the PRIMARY owners of C1 (daily loss) and C2 (drawdown). Subscribed to

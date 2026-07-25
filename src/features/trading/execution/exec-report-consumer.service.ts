@@ -9,16 +9,16 @@ import {
   type ExecRunContext,
   type OutboxEntry,
   type ExecQualitySinkPort,
-} from '../../../ports/execution';
+} from '../../../ports/trading/execution';
 import {
   reduce,
   TERMINAL_ORDER_STATES,
   type OrderRecord,
   type OrderEvent,
-} from '../../../domain/oms/reducer';
-import type { ClientOrderId, EpochMs } from '../../../domain/types/ids';
-import type { OrderIntent } from '../../../domain/types/order-intent';
-import type { FillReport, FillRecord } from '../../../domain/types/exec-report';
+} from '../../../domain/trading/oms/reducer';
+import type { ClientOrderId, EpochMs } from '../../../domain/common/types/ids';
+import type { OrderIntent } from '../../../domain/trading/types/order-intent';
+import type { FillReport, FillRecord } from '../../../domain/trading/types/exec-report';
 import { OrderBookService } from './order-book.service';
 import { PortfolioStateService } from './portfolio-state.service';
 import { FillIngestorService } from './fill-ingestor.service';

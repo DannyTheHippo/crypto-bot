@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { recoveryEventFor, isUnresolved } from '../../../src/domain/oms/recovery';
-import type { OrderState } from '../../../src/domain/oms/reducer';
+import { recoveryEventFor, isUnresolved } from '../../../../src/domain/trading/oms/recovery';
+import type { OrderState } from '../../../../src/domain/trading/oms/reducer';
 
 describe('recoveryEventFor (§6.1 crash recovery, I1)', () => {
   it('degrades SUBMITTING to the SUBMIT_UNKNOWN path', () => {

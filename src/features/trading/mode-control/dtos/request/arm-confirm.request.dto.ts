@@ -1,6 +1,6 @@
 import { IsString, MinLength } from 'class-validator';
 
-// Wire contract mirrors ArmRequest's CONFIRM step (ports/mode-control.ts). Fields are hydrated by
+// Wire contract mirrors ArmRequest's CONFIRM step (ports/trading/mode-control.ts). Fields are hydrated by
 // the global ValidationPipe (never constructed in code) — hence the definite-assignment markers.
 export class ArmConfirmRequestDto {
   @IsString()

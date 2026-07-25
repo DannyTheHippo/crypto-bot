@@ -2,7 +2,7 @@ import type {
   AgentClientPort,
   AgentDecisionInput,
   AgentProposal,
-} from '../../../ports/agentic-strategy';
+} from '../../../ports/strategy/agentic-strategy';
 import type { DailyLlmBudget } from './agent-budget';
 import type { AgentProposeBatchResult, LoggerLike } from './anthropic-agent-client';
 

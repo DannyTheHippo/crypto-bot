@@ -16,8 +16,8 @@
 // unaffected by the adapter.
 import { describe, it, expect } from 'vitest';
 import Decimal from 'decimal.js';
-import { evaluatePlan } from '../../../src/features/trading/agentic/plan-executor';
-import type { AgentDirectives, AgentPlan } from '../../../src/ports/agentic-strategy';
+import { evaluatePlan } from '../../../src/features/strategy/agentic/plan-executor';
+import type { AgentDirectives, AgentPlan } from '../../../src/ports/strategy/agentic-strategy';
 import { RECORDED_PAYLOAD_ROWS, type RecordedMarketPayload } from './recorded-payload-fixtures';
 
 // Inert placeholders — see header note: evaluatePlan never reads these v2-only fields.

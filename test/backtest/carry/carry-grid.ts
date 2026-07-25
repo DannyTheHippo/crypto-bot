@@ -34,7 +34,7 @@ import {
 } from './carry-sim';
 import { sharpeStats, evaluateGate, type SharpeStats, type GateResult } from '../stats';
 import { PRIOR_TRIALS, loadBars, harvest, FEE_BPS_VIP0 } from '../trial-registry';
-import type { CandleInterval } from '../../../src/domain/types/market-events';
+import type { CandleInterval } from '../../../src/domain/venue/types/market-events';
 import type { Bar as HarnessBar } from '../harness';
 
 export const SYMBOLS = ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP', 'AVAX', 'LINK'] as const;

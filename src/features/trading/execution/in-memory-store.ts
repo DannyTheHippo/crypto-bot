@@ -1,19 +1,19 @@
 import { Injectable } from '@nestjs/common';
 import Decimal from 'decimal.js';
-import type { ClientOrderId, VenueId } from '../../../domain/types/ids';
-import type { OrderIntent } from '../../../domain/types/order-intent';
-import type { ApprovalProof } from '../../../domain/types/risk-decision';
-import type { FillRecord } from '../../../domain/types/exec-report';
-import type { Position } from '../../../domain/types/portfolio';
+import type { ClientOrderId, VenueId } from '../../../domain/common/types/ids';
+import type { OrderIntent } from '../../../domain/trading/types/order-intent';
+import type { ApprovalProof } from '../../../domain/trading/types/risk-decision';
+import type { FillRecord } from '../../../domain/trading/types/exec-report';
+import type { Position } from '../../../domain/trading/types/portfolio';
 import type {
   ExecutionStorePort,
   PersistedOrderEvent,
   EquitySample,
   ReconciliationRow,
   RecoveredOpenOrder,
-} from '../../../ports/execution';
-import type { OrderRecord, OrderState } from '../../../domain/oms/reducer';
-import type { SymbolId } from '../../../domain/types/ids';
+} from '../../../ports/trading/execution';
+import type { OrderRecord, OrderState } from '../../../domain/trading/oms/reducer';
+import type { SymbolId } from '../../../domain/common/types/ids';
 
 interface StoredOrder {
   state: OrderState;

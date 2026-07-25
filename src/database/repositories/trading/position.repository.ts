@@ -1,8 +1,8 @@
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { eq } from 'drizzle-orm';
-import type { TradingMode } from '../../domain/types/mode';
-import * as schema from '../schemas/trading';
-import { requireDb } from './persistence-guard';
+import type { TradingMode } from '../../../domain/trading/types/mode';
+import * as schema from '../../schemas/trading';
+import { requireDb } from '../common/persistence-guard';
 
 export interface PositionInsert {
   strategyId: string;

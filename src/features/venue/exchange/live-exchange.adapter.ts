@@ -8,9 +8,9 @@ import type {
   VenueFill,
   CredentialCheck,
   AlgoOrderState,
-} from '../../../ports/exchange';
-import { LIVE_ADAPTER_CAP } from '../../../ports/mode-control';
-import type { VenueId, SymbolId, ClientOrderId, EpochMs } from '../../../domain/types/ids';
+} from '../../../ports/venue/exchange';
+import { LIVE_ADAPTER_CAP } from '../../../ports/trading/mode-control';
+import type { VenueId, SymbolId, ClientOrderId, EpochMs } from '../../../domain/common/types/ids';
 
 // §10: the live-only ExchangePort. It is a thin guarded WRAPPER around a real CcxtExchangeAdapter
 // (built with live URLs + credentials at the composition root) — it adds NO venue logic of its own,

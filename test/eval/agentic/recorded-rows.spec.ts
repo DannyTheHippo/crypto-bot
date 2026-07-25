@@ -8,11 +8,11 @@ import { describe, it, expect } from 'vitest';
 import { Pool } from 'pg';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import * as schema from '../../../src/database/schemas/trading';
-import { AgentDecisionJournalAdapter } from '../../../src/database/repositories/agent-decision-journal.adapter';
+import { AgentDecisionJournalAdapter } from '../../../src/database/repositories/strategy/agent-decision-journal.adapter';
 import {
   scoreRows,
   type ScoringRow,
-} from '../../../src/features/trading/agentic/counterfactual-scoring';
+} from '../../../src/features/strategy/agentic/counterfactual-scoring';
 
 const DB_URL = process.env['DATABASE_URL'];
 

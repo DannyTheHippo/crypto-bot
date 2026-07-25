@@ -1,6 +1,6 @@
-import type { EdgePolicyFamilyId } from './agentic-strategy';
+import type { EdgePolicyFamilyId } from '../strategy/agentic-strategy';
 
-export type { TradingMode } from '../domain/types/mode';
+export type { TradingMode } from '../../domain/trading/types/mode';
 
 export type VenueEnvironment = 'paper' | 'testnet' | 'demo' | 'live';
 
@@ -17,7 +17,7 @@ export interface AppConfig {
   };
   mode: {
     requestedMode: string;
-    configMode: import('../domain/types/mode').TradingMode;
+    configMode: import('../../domain/trading/types/mode').TradingMode;
     // §3.5 sandbox flavor selected when configMode is testnet: 'testnet' (setSandboxMode,
     // purpose-built integration sandbox) or 'demo' (enableDemoTrading, live-mirroring dress
     // rehearsal). Each flavor uses its own non-interchangeable keys. Inert in paper/live.
@@ -229,13 +229,13 @@ export interface AppConfig {
     protectStopLossPct: string;
     protectTrailingPct: string;
     // Plan-stop watcher (Push 3 P2): default false — the 1s protective tick never consults the
-    // plan-stop registry (ports/risk.ts's PlanStopRegistryPort), byte-identical to pre-feature.
+    // plan-stop registry (ports/trading/risk.ts's PlanStopRegistryPort), byte-identical to pre-feature.
     // Rollback = flip back to false.
     planStopWatchEnabled: boolean;
     // Force-fire threshold (bps) for a registry entry whose venueStopResting is true — see
-    // ports/risk.ts's ProtectiveExitConfig.planStopForceBps for the full rationale.
+    // ports/trading/risk.ts's ProtectiveExitConfig.planStopForceBps for the full rationale.
     planStopForceBps: number;
-    // RiskLimitsConfig overlay knobs (domain/risk/limits.ts) — RiskModule merges these onto its
+    // RiskLimitsConfig overlay knobs (domain/trading/risk/limits.ts) — RiskModule merges these onto its
     // DEFAULT_LIMITS hardcoded fallback. maxDriftBps has no env knob (not part of this pass); it
     // stays hardcoded in DEFAULT_LIMITS.
     maxOrderNotional: string;
@@ -245,10 +245,10 @@ export interface AppConfig {
     maxDailyLoss: string;
     maxDrawdownPct: string;
     maxBandBps: number;
-    // P2 passive-exit override (domain/risk/limits.ts): reduce-only intents priced on the passive
+    // P2 passive-exit override (domain/trading/risk/limits.ts): reduce-only intents priced on the passive
     // side of ref (resting take-profits) check against this wider band instead of maxBandBps.
     maxPassiveExitBandBps: number;
-    // P7b protective-stop trigger checks (domain/risk/evaluate.ts): a trigger order's |trigger −
+    // P7b protective-stop trigger checks (domain/trading/risk/evaluate.ts): a trigger order's |trigger −
     // mid| / mid must be ≤ this (basis points).
     maxStopTriggerBandBps: number;
     // P7b: bps a spot STOP_LOSS_LIMIT's limit leg sits past its own trigger (PositionSizerService),
@@ -272,7 +272,7 @@ export interface AppConfig {
     leverageCap: string;
     mmrFallback: string;
     // B2: required liquidation-price buffer (fraction) a perp entry must clear — see
-    // domain/risk/perp-sizing.ts's liqSafeNotionalCap.
+    // domain/trading/risk/perp-sizing.ts's liqSafeNotionalCap.
     liqBufferPct: string;
   };
   // C1: read-only public derivatives-data feed (funding rate, open interest, mark/index basis) —

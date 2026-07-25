@@ -2,16 +2,16 @@
 // test file — Vitest's default include glob only picks up *.spec.ts/*.test.ts, so this module is
 // only ever reached via import.
 import Decimal from 'decimal.js';
-import { epochMs, strategyId, symbolId, venueId } from '../../../src/domain/types/ids';
-import type { CandleEvent } from '../../../src/domain/types/market-events';
-import { price, qty } from '../../../src/domain/types/money';
-import { AnthropicAgentClient } from '../../../src/features/trading/agentic/anthropic-agent-client';
-import type { ScoringRow } from '../../../src/features/trading/agentic/counterfactual-scoring';
+import { epochMs, strategyId, symbolId, venueId } from '../../../src/domain/common/types/ids';
+import type { CandleEvent } from '../../../src/domain/venue/types/market-events';
+import { price, qty } from '../../../src/domain/common/types/money';
+import { AnthropicAgentClient } from '../../../src/features/strategy/agentic/anthropic-agent-client';
+import type { ScoringRow } from '../../../src/features/strategy/agentic/counterfactual-scoring';
 import type {
   AgentDecisionInput,
   AgentMarketSnapshot,
   AgentTradingProfile,
-} from '../../../src/ports/agentic-strategy';
+} from '../../../src/ports/strategy/agentic-strategy';
 
 // v3 consolidation spec §9: buildSystemPrompt's planMode option is DELETED — production only ever
 // serves the rich decision contract now. Several recorded-payload/replay eval fixtures still need to

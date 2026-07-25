@@ -2,7 +2,7 @@
 //
 // Replays a flattened agent_decisions action sequence ('long'/'flat'/'hold', one row per bar) through
 // the real harness fill/PnL machinery — the offline counterpart to
-// src/features/trading/agentic/counterfactual-scoring.ts's toy-equity walk, but settled through
+// src/features/strategy/agentic/counterfactual-scoring.ts's toy-equity walk, but settled through
 // applyFillToPosition/walkRoundTrips instead of a standalone toy fold. Rows are accepted as
 // constructor input (no DB dependency — the caller reads agent_decisions itself). A plan (the
 // submit_plan tool payload) is NEVER reconstructed here: plans are not persisted alongside the

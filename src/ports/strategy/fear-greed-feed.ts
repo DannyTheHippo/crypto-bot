@@ -1,4 +1,4 @@
-import type { EpochMs } from '../domain/types/ids';
+import type { EpochMs } from '../../domain/common/types/ids';
 
 // X3a: read-only Crypto Fear & Greed Index (alternative.me) — a REST-poll source alongside the
 // derivatives/sentiment/tradeFlow/positioning feeds, surfaced to the agentic prompt when fresh.

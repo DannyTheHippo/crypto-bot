@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { ExecOutboxPort, OutboxAppend, OutboxEntry } from '../../../ports/execution';
+import type { ExecOutboxPort, OutboxAppend, OutboxEntry } from '../../../ports/trading/execution';
 
 // In-process EXEC_OUTBOX default (DB-less paper, and the deterministic test substrate).
 // append is idempotent on reportId; consume returns rows past max(fromCursor, lastAck);

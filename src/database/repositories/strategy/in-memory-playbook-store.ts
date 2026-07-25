@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import type { PlaybookProvider } from '../../ports/agentic-strategy';
+import type { PlaybookProvider } from '../../../ports/strategy/agentic-strategy';
 import type { PlaybookSeed, PlaybookVersionEntry } from './playbook-store.adapter';
 
 // current()'s resolution outcome — `source` here is HOW the active version was resolved (pin /

@@ -2,8 +2,8 @@ import { Inject, Injectable, Optional } from '@nestjs/common';
 import { InjectMetric, makeCounterProvider } from '@willsoto/nestjs-prometheus';
 import { Counter } from 'prom-client';
 import Decimal from 'decimal.js';
-import { CLOCK, type ClockPort } from '../../../ports/clock';
-import { FEED_HEALTH, type FeedHealthPort } from '../../../ports/market-data';
+import { CLOCK, type ClockPort } from '../../../ports/common/clock';
+import { FEED_HEALTH, type FeedHealthPort } from '../../../ports/venue/market-data';
 import {
   KILL_SWITCH,
   PROTECTIVE_EXIT_CONFIG,
@@ -11,13 +11,13 @@ import {
   type KillSwitchPort,
   type ProtectiveExitConfig,
   type PlanStopRegistryPort,
-} from '../../../ports/risk';
-import { PORTFOLIO_VIEW, type PortfolioViewPort } from '../../../ports/execution';
-import { SIGNAL_SINK, type SignalSinkPort } from '../../../ports/strategy';
-import { EXCHANGE_PORT, type ExchangePort } from '../../../ports/exchange';
-import type { Signal } from '../../../domain/types/signal';
-import type { Position } from '../../../domain/types/portfolio';
-import type { EpochMs } from '../../../domain/types/ids';
+} from '../../../ports/trading/risk';
+import { PORTFOLIO_VIEW, type PortfolioViewPort } from '../../../ports/trading/execution';
+import { SIGNAL_SINK, type SignalSinkPort } from '../../../ports/strategy/strategy';
+import { EXCHANGE_PORT, type ExchangePort } from '../../../ports/venue/exchange';
+import type { Signal } from '../../../domain/strategy/types/signal';
+import type { Position } from '../../../domain/trading/types/portfolio';
+import type { EpochMs } from '../../../domain/common/types/ids';
 
 // Push 3 P2: 'PLAN_STOP' is the plan-stop watcher's own reason — a registry hit fires through the
 // exact same fire() machinery (cancel-first, stacking guard, cooldown, kill-switch) as the legacy
@@ -45,7 +45,7 @@ export const PROTECTIVE_EXITS_COUNTER = makeCounterProvider({
 @Injectable()
 export class ProtectiveExitService {
   // High-water mark per LONG position key (positionKey(strategyId, venue, symbol) — see
-  // domain/risk/evaluate.ts). Seeded at max(avgEntry, ref) the first tick a position is seen: BOOT
+  // domain/trading/risk/evaluate.ts). Seeded at max(avgEntry, ref) the first tick a position is seen: BOOT
   // AMNESIA IS ACCEPTED — after a process restart this map is empty, so trailing protection re-arms
   // from max(entry, current) rather than the pre-restart peak. A real trailing stop that had already
   // ratcheted above that point loses its prior peak on restart; this is a deliberate simplicity
@@ -215,7 +215,7 @@ export class ProtectiveExitService {
       readonly stopPrice: string;
       readonly venueStopResting: boolean;
       // Push 3 P7d: present only for a CONFIRMED-resting perp algo-rail stop (see PlanStop's own
-      // header comment in ports/risk.ts) — threaded through to fire() so it can best-effort cancel
+      // header comment in ports/trading/risk.ts) — threaded through to fire() so it can best-effort cancel
       // the algo order before submitting the exit (never populated for a spot vsl, which the
       // existing hasOpenTp/CANCEL_OPEN path already clears).
       readonly algoId?: string;

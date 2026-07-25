@@ -3,7 +3,7 @@ import type {
   OrderBookSnapshotEvent,
   TradeEvent,
   CandleEvent,
-} from '../../../domain/types/market-events';
+} from '../../../domain/venue/types/market-events';
 
 // ── Ticker conflation cell ───────────────────────────────────────────────────
 // Latest-wins; conflatedCount tracks how many events were merged since last read.

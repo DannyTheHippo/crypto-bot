@@ -4,16 +4,16 @@
 // This suite never touches the network and never requires an API key — CI-exempt only because
 // ci.yml simply doesn't invoke it, not because it needs guarding.
 import { describe, expect, it } from 'vitest';
-import { venueForSymbol } from '../../../src/domain/types/venue-map';
+import { venueForSymbol } from '../../../src/domain/venue/types/venue-map';
 import {
   THINKING_TEMPLATE_VERSION,
   TRADE_TEMPLATE_VERSION,
   buildSystemPrompt,
   buildTradeTool,
   computePromptHash,
-} from '../../../src/features/trading/agentic/agent-prompt';
-import { SEED_PLAYBOOK } from '../../../src/features/trading/agentic/agentic-strategy.module';
-import { scoreRows } from '../../../src/features/trading/agentic/counterfactual-scoring';
+} from '../../../src/features/strategy/agentic/agent-prompt';
+import { SEED_PLAYBOOK } from '../../../src/features/strategy/agentic/agentic-strategy.module';
+import { scoreRows } from '../../../src/features/strategy/agentic/counterfactual-scoring';
 import { EVAL_PROFILE, SYM, replay, type ScriptedDecision } from './fixtures';
 
 const MODEL = 'claude-eval-fixture-model';

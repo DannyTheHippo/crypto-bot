@@ -295,7 +295,7 @@ if (!manifestOnly) {
 const manifest = {
   version: 1,
   frozenAt: '2026-07-24',
-  preregReport: 'reports/loop/edge-tournament-preregistration-2026-07-24.md',
+  preregReport: 'research/studies/edge-tournament-preregistration-2026-07-24.md',
   datasets,
 };
 

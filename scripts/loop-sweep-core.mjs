@@ -25,7 +25,7 @@
 // Measurement fails OPEN (§D): a failed probe (ok:false) becomes a named `probe_failed` annotation,
 // never a pass and never a throw — a partial digest with failures named beats a confident blank.
 
-// The venue ids this sweep reads reconciliations for — mirrors domain/types/venue-map.ts's
+// The venue ids this sweep reads reconciliations for — mirrors domain/venue/types/venue-map.ts's
 // SPOT_VENUE/PERP_VENUE (a node script outside the tsconfig graph cannot import that .ts directly;
 // re-verify against it before trusting this list).
 export const VENUES = ['binance', 'binanceusdm'];

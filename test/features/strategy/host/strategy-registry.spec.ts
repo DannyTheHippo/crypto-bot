@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { StrategyRegistry } from '../../../src/features/trading/agentic/strategy-registry';
-import { AgenticStrategy } from '../../../src/features/trading/agentic/agentic.strategy';
-import { StubAgentClient } from '../../../src/features/trading/agentic/agent-client.adapter';
-import type { AgenticStrategyParams } from '../../../src/features/trading/agentic/agentic.strategy';
-import { strategyId, venueId, symbolId } from '../../../src/domain/types/ids';
+import { StrategyRegistry } from '../../../../src/features/strategy/agentic/strategy-registry';
+import { AgenticStrategy } from '../../../../src/features/strategy/agentic/agentic.strategy';
+import { StubAgentClient } from '../../../../src/features/strategy/agentic/agent-client.adapter';
+import type { AgenticStrategyParams } from '../../../../src/features/strategy/agentic/agentic.strategy';
+import { strategyId, venueId, symbolId } from '../../../../src/domain/common/types/ids';
 
 const V = venueId('binance');
 const S = symbolId('BTC/USDT');

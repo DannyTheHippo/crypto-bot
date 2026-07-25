@@ -4,7 +4,7 @@ import {
   QUERY_BACKOFF_MS,
   MAX_QUERY_ATTEMPTS,
   UNKNOWN_KILL_AFTER_MS,
-} from '../../../src/domain/oms/query-backoff';
+} from '../../../../src/domain/trading/oms/query-backoff';
 
 describe('queryBackoffMs (§6.3 query loop)', () => {
   it('exposes the documented schedule and constants', () => {

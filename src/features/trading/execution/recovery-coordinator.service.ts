@@ -1,11 +1,11 @@
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { InjectMetric, makeCounterProvider } from '@willsoto/nestjs-prometheus';
 import type { Counter } from 'prom-client';
-import { KILL_SWITCH, type KillSwitchPort } from '../../../ports/risk';
-import { RECOVERY_CONFIG, type RecoveryConfig } from '../../../ports/execution';
-import { OPS_EVENTS, type OpsEventPort } from '../../../ports/observability';
-import type { KillSwitchState } from '../../../domain/risk/kill-switch';
-import type { EpochMs } from '../../../domain/types/ids';
+import { KILL_SWITCH, type KillSwitchPort } from '../../../ports/trading/risk';
+import { RECOVERY_CONFIG, type RecoveryConfig } from '../../../ports/trading/execution';
+import { OPS_EVENTS, type OpsEventPort } from '../../../ports/common/observability';
+import type { KillSwitchState } from '../../../domain/trading/risk/kill-switch';
+import type { EpochMs } from '../../../domain/common/types/ids';
 import { ReconciliationService } from './reconciliation.service';
 import { EquityMonitorService } from './equity-monitor.service';
 import { CrashRecoveryService } from './crash-recovery.service';

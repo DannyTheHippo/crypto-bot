@@ -4,8 +4,8 @@ import type {
   OutboxAppend,
   OutboxEntry,
   ExecRunContext,
-} from '../../ports/execution';
-import type * as schema from '../schemas/trading';
+} from '../../../ports/trading/execution';
+import type * as schema from '../../schemas/trading';
 import { OutboxRepository } from './outbox.repository';
 
 // Thin adapter: wraps OutboxRepository to satisfy ExecOutboxPort.

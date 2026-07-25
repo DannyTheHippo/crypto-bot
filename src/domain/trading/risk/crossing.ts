@@ -1,5 +1,5 @@
-import type { Price } from '../types/money';
-import type { StrategyId, SymbolId } from '../types/ids';
+import type { Price } from '../../common/types/money';
+import type { StrategyId, SymbolId } from '../../common/types/ids';
 
 // A resting order in the symbol-level open-interest registry (incl. in-flight).
 export interface RestingOrder {

@@ -62,7 +62,7 @@ Read in this order:
 3. `corepack pnpm --dir <repo> loop:digests <last-pass-ISO>` — every collector digest line since
    the last pass (both the hot dir and `digests/archive/`). This is the rehydration base: per-cycle
    counter deltas, fired alarms, host duty-cycle gaps, bootId provenance.
-4. `reports/loop/state.md` — the loop's only mutable memory: open WATCH lines, backlog, last-pass
+4. `research/loop/state.md` — the loop's only mutable memory: open WATCH lines, backlog, last-pass
    pointer, settled owner decisions (NOT re-openable by a pass — a pass that disputes one writes the
    argument into the report, never acts).
 5. `git -C <repo> log --oneline -20` — what shipped since the last pass.
@@ -258,7 +258,7 @@ conventional message. Dirty tree at pass start: note it, stage ONLY files this p
    `corepack pnpm --dir <repo>`, sandbox-disabled, `pipefail` on chains. An agentic-lane change also
    runs `pnpm eval:agentic`. `test:db` needs `DB_SUITE_ALLOW_RESET=1` +
    `DATABASE_URL=postgres://cryptobot:cryptobot@127.0.0.1:5432/cryptobot_test`. Report files gate on
-   `pnpm lint:md` (markdownlint owns `.md`; the `reports/loop/` backlog table is MD060-aligned —
+   `pnpm lint:md` (markdownlint owns `.md`; the `research/loop/` backlog table is MD060-aligned —
    `--fix` does not repair it).
 2. Cap: 3 consecutive validation failures → revert the working tree, record it, end the pass.
 3. Deploy: `docker compose build app && docker compose up -d app` — one build, one service; there
@@ -272,13 +272,13 @@ conventional message. Dirty tree at pass start: note it, stage ONLY files this p
 
 ## 6. Report and state (every pass, even empty ones)
 
-1. Append a dated entry to `reports/loop/LOG.md`: data window, headline metrics (gate scoreboard +
+1. Append a dated entry to `research/loop/LOG.md`: data window, headline metrics (gate scoreboard +
    $/day against the ONE breaker) + WATCH-V3-1 status (spot heap slope: paper plateau ~673MiB
    reference, a demo-mode sustained climb past ~900MiB before soak end is a defect signal), pass
    type, decision + rationale, diff (files + commit hash), gate results, soak verdict, flagged
    items, next-pass candidates. CANDIDATE passes record the experiments-registry row id of EVERY
    scored variant (honest-N).
-2. Update `reports/loop/state.md`: current stage, backlog with statuses, last-pass pointer, open
+2. Update `research/loop/state.md`: current stage, backlog with statuses, last-pass pointer, open
    WATCH lines, flagged items awaiting the owner. Keep both files current enough that the next pass
    needs nothing else.
 3. `pnpm lint:md` green after writing LOG.md/state.md.

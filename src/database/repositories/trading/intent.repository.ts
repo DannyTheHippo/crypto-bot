@@ -1,9 +1,9 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { eq } from 'drizzle-orm';
-import { DRIZZLE_DB } from '../database.tokens';
-import * as schema from '../schemas/trading';
-import { requireDb } from './persistence-guard';
+import { DRIZZLE_DB } from '../../database.tokens';
+import * as schema from '../../schemas/trading';
+import { requireDb } from '../common/persistence-guard';
 
 export interface IntentInsert {
   intentId: string;

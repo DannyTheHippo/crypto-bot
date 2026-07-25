@@ -7,7 +7,7 @@
 {
   "config": {
     "default": true,
-    "MD013": false, // line-length — reports/loop tables and prose run well past any column cap
+    "MD013": false, // line-length — research/loop tables and prose run well past any column cap
     "MD024": { "siblings_only": true }, // duplicate headings OK across sections (repeated pass-entry sub-headings), not under one parent
     "MD029": false, // ordered-list prefix — fights the common "numbered steps interleaved with code fences" README pattern; re-indenting fences to satisfy it changes rendering for no real gain
     "MD033": false, // inline HTML — allowed (occasional <br>, <details> in docs)
@@ -25,14 +25,13 @@
     ".pnpm-cache",
     "docs/archive",
     "reports/archive",
-    // Candidate-playbook exports are BYTE-EXACT copies of agent_playbook_versions rows — the
-    // experiments registry's params_hash is the sha256 of these bytes, so a lint fix (e.g.
-    // MD047 trailing newline) would silently break hash reproducibility. Data, not prose.
-    "candidates",
+    // Research scorecards / ephemeral dumps — data artifacts, not maintained prose.
+    "research/candidates",
+    "research/scorecards",
     // Harness agent worktrees — full repo copies; linting them double-reports everything.
     ".claude",
     // Y3 collector digest renders — machine-written per-tick md (scripts/loop-collect.mjs),
     // not maintained prose; a runtime artifact must never be able to redden the lint gate.
-    "reports/loop/digests",
+    "research/loop/digests",
   ],
 }

@@ -1,15 +1,84 @@
 {
+  "stack": "_base",
   "packageManager": "pnpm",
   "runner": "vitest",
   "formatter": "prettier",
   "linter": "eslint",
   "typeChecker": "tsc",
+  "languages": ["node"],
+  "primaryLanguage": "node",
+  "frameworkVersions": {
+    "nestjs": "11.1.x",
+    "typescript": "5.8.x",
+    "vitest": "4.1.x",
+    "drizzle-orm": "0.45.x",
+    "ccxt": "4.5.58"
+  },
   "scripts": {
     "build": "pnpm build",
     "lint": "pnpm lint",
     "typecheck": "pnpm typecheck",
     "format": "pnpm format:check",
-    "test": "pnpm test",
-    "coverage": "pnpm test:cov"
+    "test": "vitest run test/features test/domain test/ports test/livegate",
+    "test:livegate": "vitest run test/livegate",
+    "coverage": "vitest run --coverage test/features test/domain test/ports test/livegate",
+    "checks": "pnpm format:check && pnpm lint:md && pnpm lint && pnpm typecheck && pnpm test"
+  },
+  "agentDefaults": {
+    "model": "opus",
+    "effort": "xhigh"
+  },
+  "meta": {
+    "projectSize": 116013,
+    "agentDefaultsBasis": "loc-heuristic",
+    "monorepo": false,
+    "framework": "nestjs",
+    "testScope": ["test/features", "test/domain", "test/ports", "test/livegate"]
+  },
+  "discoveredAt": "2026-07-25T07:34:00.000Z",
+  "discovery": {
+    "sampleSize": 8,
+    "samples": [
+      {
+        "category": "nestjs-module",
+        "file": "src/features/strategy/agentic/agentic-strategy.module.ts",
+        "lastSampledAt": "2026-07-25T07:34:00.000Z"
+      },
+      {
+        "category": "port",
+        "file": "src/ports/strategy/agentic-strategy.ts",
+        "lastSampledAt": "2026-07-25T07:34:00.000Z"
+      },
+      {
+        "category": "domain",
+        "file": "src/domain/trading/risk/evaluate.ts",
+        "lastSampledAt": "2026-07-25T07:34:00.000Z"
+      },
+      {
+        "category": "repository",
+        "file": "src/database/repositories/trading/order.repository.ts",
+        "lastSampledAt": "2026-07-25T07:34:00.000Z"
+      },
+      {
+        "category": "feature-test",
+        "file": "test/features/trading/risk/evaluate.spec.ts",
+        "lastSampledAt": "2026-07-25T07:34:00.000Z"
+      },
+      {
+        "category": "domain-test",
+        "file": "test/domain/trading/round-trips.spec.ts",
+        "lastSampledAt": "2026-07-25T07:34:00.000Z"
+      },
+      {
+        "category": "port-test",
+        "file": "test/ports/common/clock.spec.ts",
+        "lastSampledAt": "2026-07-25T07:34:00.000Z"
+      },
+      {
+        "category": "eslint-boundaries",
+        "file": "eslint.config.mjs",
+        "lastSampledAt": "2026-07-25T07:34:00.000Z"
+      }
+    ]
   }
 }

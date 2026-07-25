@@ -33,22 +33,22 @@ import {
   INTENT_REPO,
   EXPERIMENT_REPO,
 } from './database.tokens';
-import { DB_HEALTH } from '../ports/db-health';
+import { DB_HEALTH } from '../ports/common/db-health';
 
-import { IntentRepository } from './repositories/intent.repository';
-import { OrderRepository } from './repositories/order.repository';
-import { FillRepository } from './repositories/fill.repository';
-import { SignalRepository } from './repositories/signal.repository';
-import { RiskDecisionRepository } from './repositories/risk-decision.repository';
-import { AgentDecisionRepository } from './repositories/agent-decision.repository';
-import { PlaybookVersionRepository } from './repositories/playbook-version.repository';
-import { OutboxRepository } from './repositories/outbox.repository';
-import { JournalRepository } from './repositories/journal.repository';
-import { ConfigSnapshotRepository } from './repositories/config-snapshot.repository';
-import { EquityRepository } from './repositories/equity.repository';
-import { ReconciliationRepository } from './repositories/reconciliation.repository';
-import { ModeTransitionRepository } from './repositories/mode-transition.repository';
-import { ExperimentRepository } from './repositories/experiment.repository';
+import { IntentRepository } from './repositories/trading/intent.repository';
+import { OrderRepository } from './repositories/trading/order.repository';
+import { FillRepository } from './repositories/trading/fill.repository';
+import { SignalRepository } from './repositories/trading/signal.repository';
+import { RiskDecisionRepository } from './repositories/trading/risk-decision.repository';
+import { AgentDecisionRepository } from './repositories/strategy/agent-decision.repository';
+import { PlaybookVersionRepository } from './repositories/strategy/playbook-version.repository';
+import { OutboxRepository } from './repositories/trading/outbox.repository';
+import { JournalRepository } from './repositories/trading/journal.repository';
+import { ConfigSnapshotRepository } from './repositories/trading/config-snapshot.repository';
+import { EquityRepository } from './repositories/trading/equity.repository';
+import { ReconciliationRepository } from './repositories/trading/reconciliation.repository';
+import { ModeTransitionRepository } from './repositories/trading/mode-transition.repository';
+import { ExperimentRepository } from './repositories/strategy/experiment.repository';
 import { DbHealthIndicator } from './db-health.indicator';
 
 const poolProvider: Provider = {

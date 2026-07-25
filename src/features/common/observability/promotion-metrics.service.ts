@@ -2,7 +2,7 @@ import { Inject, Injectable, OnModuleDestroy, OnModuleInit, Optional } from '@ne
 import { InjectMetric, makeGaugeProvider } from '@willsoto/nestjs-prometheus';
 import Decimal from 'decimal.js';
 import { Gauge } from 'prom-client';
-import { PROMOTION_READINESS, type PromotionReadinessPort } from '../../../ports/promotion';
+import { PROMOTION_READINESS, type PromotionReadinessPort } from '../../../ports/trading/promotion';
 
 // Mirrors config.module.ts's own isTestOrCi check (no AppConfig field carries this — it's a raw
 // process.env boundary check, same as that module and app-config.schema.ts's isTestOrCiEnv).

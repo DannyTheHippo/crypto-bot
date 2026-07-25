@@ -1,9 +1,9 @@
-import type { EpochMs, SymbolId } from '../../../domain/types/ids';
+import type { EpochMs, SymbolId } from '../../../domain/common/types/ids';
 import type {
   EdgePolicyFamilyId,
   EdgePolicyPort,
   EdgePolicySnapshot,
-} from '../../../ports/agentic-strategy';
+} from '../../../ports/strategy/agentic-strategy';
 
 /** Canonical inactive snapshot — every fail-closed path returns this shape. */
 export const EDGE_POLICY_INACTIVE: EdgePolicySnapshot = {

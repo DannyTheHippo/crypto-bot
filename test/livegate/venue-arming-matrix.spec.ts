@@ -19,18 +19,18 @@ import type {
   ModeAuditEvent,
   KeyProbeResult,
   ArmPreconditionResult,
-} from '../../src/ports/mode-control';
+} from '../../src/ports/trading/mode-control';
 import type {
   PromotionReadinessConfig,
   PromotionStatsPort,
   LlmTokenTotals,
-} from '../../src/ports/promotion';
-import { epochMs, venueId, type VenueId } from '../../src/domain/types/ids';
+} from '../../src/ports/trading/promotion';
+import { epochMs, venueId, type VenueId } from '../../src/domain/common/types/ids';
 import { buildVenueExchangePorts } from '../../src/features/trading/composition/exchange-adapters.module';
 import { buildVenueRegistry } from '../../src/features/trading/composition/venue-registry.module';
 import { InMemoryExecOutbox } from '../../src/features/trading/execution/in-memory-outbox';
-import { InMemoryFundingSink } from '../../src/features/trading/exchange/in-memory-funding-sink';
-import type { PaperConfig } from '../../src/features/trading/exchange/paper-exchange.adapter';
+import { InMemoryFundingSink } from '../../src/features/venue/exchange/in-memory-funding-sink';
+import type { PaperConfig } from '../../src/features/venue/exchange/paper-exchange.adapter';
 import type { TypedConfigService } from '../../src/config/environment/typed-config.service';
 
 const T = 1_700_000_000_000;

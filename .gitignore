@@ -8,7 +8,6 @@ coverage
 .env.*
 !.env.example
 !.env.app
-!.env.app-perp
 *.tsbuildinfo
 .claude/settings.local.json
 .serena/
@@ -18,22 +17,23 @@ coverage
 # sanity gates depend on predate this pattern and stay committed.
 test/backtest/data/ohlcv-*.json
 # Funding-rate history caches for the carry study — same reproducibility contract
-# (test/backtest/fetch-data.mjs --funding; ranges recorded in reports/loop/carry-study-*.md).
+# (test/backtest/fetch-data.mjs --funding; ranges recorded in research/studies/carry-study-*.md).
 test/backtest/data/funding-*.json
 # Fear & Greed index cache (alternative.me, free/no-key) for the non-price sweep — same
-# reproducibility contract (test/backtest/fetch-fng.mjs; range recorded in reports/loop/nonprice-*.md).
+# reproducibility contract (test/backtest/fetch-fng.mjs; range recorded in research studies).
 test/backtest/data/fng.json
 # Edge-tournament public-data caches (scripts/fetch-edge-tournament-data.mjs; manifest in cache/).
 test/backtest/edge-tournament/cache/
 # Local pg_dump snapshots (scripts/db-backup.sh) — operational artifacts, never committed.
 backups/
 # Y3 collector / Y2 sweep runtime output (scripts/loop-collect.mjs is the single writer; the
-# durable git record is reports/loop/LOG.md + state.md). Machine-written evidence artifacts,
+# durable git record is research/loop/LOG.md + state.md). Machine-written evidence artifacts,
 # never committed — tracking them would force per-tick commits or a permanently dirty tree.
-reports/loop/digests/
+research/loop/digests/
 # Offline eval corpus dumps (reproducible via scripts/dump-eval-corpus.mjs against the recorded
 # agent_decisions source — see that script's provenance note).
 test/eval/agentic/data/*.jsonl
-# Per-row eval audit trails (transient/bulky; the scorecard *.json beside them IS the tracked
-# deliverable, matching the e2/degradation scorecard precedent).
-candidates/*.jsonl
+# Ephemeral research dumps (row logs, unpromoted tournament JSON). Promoted scorecards live in
+# research/scorecards/ and are tracked deliberately.
+research/candidates/**
+!research/candidates/.gitkeep

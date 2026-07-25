@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
-import type { KeyProbePort, KeyProbeResult } from '../../../ports/mode-control';
-import { venueId, type VenueId } from '../../../domain/types/ids';
+import type { KeyProbePort, KeyProbeResult } from '../../../ports/trading/mode-control';
+import { venueId, type VenueId } from '../../../domain/common/types/ids';
 import { CCXT_ORDER_CLIENT, type CcxtOrderClient } from './ccxt-order-client';
 
 export const KEY_PROBE_CONFIG = Symbol('KEY_PROBE_CONFIG');

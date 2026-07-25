@@ -2,27 +2,32 @@ import { Inject, Injectable, Optional } from '@nestjs/common';
 import { InjectMetric, makeCounterProvider } from '@willsoto/nestjs-prometheus';
 import Decimal from 'decimal.js';
 import { Counter } from 'prom-client';
-import { positionKey } from '../../../domain/risk/evaluate';
+import { positionKey } from '../../../domain/trading/risk/evaluate';
 import {
   applyFundingScaling,
   liqSafeNotionalCap,
   marginNotionalCap,
-} from '../../../domain/risk/perp-sizing';
-import { plannedStopNotionalHeadroom } from '../../../domain/risk/planned-stop-risk';
-import { encodeClientOrderId, epochMs, intentId, type VenueId } from '../../../domain/types/ids';
-import { roundToStep, roundToTick, type Price, type Qty } from '../../../domain/types/money';
-import type { OrderIntent } from '../../../domain/types/order-intent';
-import type { PortfolioSnapshot } from '../../../domain/types/portfolio';
-import type { Signal } from '../../../domain/types/signal';
-import { splitSymbol } from '../../../domain/types/symbol';
-import { PERP_VENUE_ID } from '../../../domain/types/venue-map';
-import { CLOCK, type ClockPort } from '../../../ports/clock';
+} from '../../../domain/trading/risk/perp-sizing';
+import { plannedStopNotionalHeadroom } from '../../../domain/trading/risk/planned-stop-risk';
+import {
+  encodeClientOrderId,
+  epochMs,
+  intentId,
+  type VenueId,
+} from '../../../domain/common/types/ids';
+import { roundToStep, roundToTick, type Price, type Qty } from '../../../domain/common/types/money';
+import type { OrderIntent } from '../../../domain/trading/types/order-intent';
+import type { PortfolioSnapshot } from '../../../domain/trading/types/portfolio';
+import type { Signal } from '../../../domain/strategy/types/signal';
+import { splitSymbol } from '../../../domain/venue/types/symbol';
+import { PERP_VENUE_ID } from '../../../domain/venue/types/venue-map';
+import { CLOCK, type ClockPort } from '../../../ports/common/clock';
 import {
   SIZER_DEPS,
   type PositionSizerPort,
   type SizerDeps,
   type SizingResult,
-} from '../../../ports/risk';
+} from '../../../ports/trading/risk';
 import { uuidv7 } from './uuidv7';
 
 // Profitability Edge Program: planned-stop sizing clamps and invalid-stop rejections.
@@ -33,7 +38,7 @@ export const PLANNED_STOP_SIZING_COUNTER = makeCounterProvider({
   labelNames: ['outcome'] as const,
 });
 
-// v3 §1.2: PERP_VENUE_ID is the single canonical source (domain/types/venue-map.ts) — this retires
+// v3 §1.2: PERP_VENUE_ID is the single canonical source (domain/venue/types/venue-map.ts) — this retires
 // the local copy the pre-v3 pass kept here. A symbol's own :SETTLE suffix (splitSymbol) is the
 // second, venue-independent signal — either one is sufficient.
 function isPerpSignal(signal: Signal): boolean {
@@ -270,7 +275,7 @@ export class PositionSizerService implements PositionSizerPort {
 
   // Crosses refPrice past the spread by EXIT_CROSS_BUFFER_BPS: SELL prices down (marketable against
   // bids), BUY prices up (marketable against asks). Capped at 99bps in the config schema so the
-  // crossed price never trips domain/risk/evaluate.ts's price-band veto (maxBandBps=100). Falls back
+  // crossed price never trips domain/trading/risk/evaluate.ts's price-band veto (maxBandBps=100). Falls back
   // to 25 when deps omit the knob (module-isolation unit fixtures).
   private crossedExitPrice(side: 'BUY' | 'SELL', refPrice: Decimal): Decimal {
     const bufferBps = this.deps.exitCrossBufferBps ?? 25;

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import Decimal from 'decimal.js';
-import { applyFillToPortfolio } from '../../../src/domain/oms/portfolio-fill';
-import { FLAT } from '../../../src/domain/oms/position';
+import { applyFillToPortfolio } from '../../../../src/domain/trading/oms/portfolio-fill';
+import { FLAT } from '../../../../src/domain/trading/oms/position';
 
 const D = (s: string) => new Decimal(s);
 

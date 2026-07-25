@@ -1,4 +1,4 @@
-import type { PromotionReadiness } from '../../../ports/promotion';
+import type { PromotionReadiness } from '../../../ports/trading/promotion';
 
 // SAFETY INVARIANT (hard interlock for the agentic lane, earned-live edition). The agentic /
 // LLM-driven strategy is non-deterministic, so a LIVE-configured boot is refused unless the lane

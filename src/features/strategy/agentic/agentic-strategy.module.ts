@@ -1,8 +1,8 @@
 import { Logger, Module } from '@nestjs/common';
 import Decimal from 'decimal.js';
 import { TypedConfigService } from '../../../config/environment/typed-config.service';
-import { DEFAULT_FILTERS } from '../../../domain/risk/default-filters';
-import { price, qty } from '../../../domain/types/money';
+import { DEFAULT_FILTERS } from '../../../domain/trading/risk/default-filters';
+import { price, qty } from '../../../domain/common/types/money';
 import {
   AGENT_CLIENT,
   AGENT_DECISION_JOURNAL,
@@ -15,10 +15,10 @@ import {
   type EdgePolicyPort,
   type LlmUsageSink,
   type PlaybookProvider,
-} from '../../../ports/agentic-strategy';
-import { REFLECTION_EVIDENCE, type RoundTripEvidencePort } from '../../../ports/promotion';
-import { KILL_SWITCH, type KillSwitchPort } from '../../../ports/risk';
-import { STRATEGY_REGISTRY, type StrategyRegistryPort } from '../../../ports/strategy';
+} from '../../../ports/strategy/agentic-strategy';
+import { REFLECTION_EVIDENCE, type RoundTripEvidencePort } from '../../../ports/trading/promotion';
+import { KILL_SWITCH, type KillSwitchPort } from '../../../ports/trading/risk';
+import { STRATEGY_REGISTRY, type StrategyRegistryPort } from '../../../ports/strategy/strategy';
 import { BudgetedAgentClient, DailyLlmBudget, type ModelTokenRates } from './agent-budget';
 import { StubAgentClient } from './agent-client.adapter';
 import { AnthropicAgentClient, type AnthropicAgentClientConfig } from './anthropic-agent-client';
@@ -627,7 +627,7 @@ export function selectAgentClient(
 }
 
 // Multi-symbol (P7): per-decide venue-constraint resolution for the shared client, sourced from the
-// SAME DEFAULT_FILTERS table Risk/Execution enforce (domain/risk/default-filters) — the prompt's
+// SAME DEFAULT_FILTERS table Risk/Execution enforce (domain/trading/risk/default-filters) — the prompt's
 // tick/lot/minNotional can never drift from what the sizer actually rounds to. Returns undefined
 // for an unfiltered symbol, which falls back to the static profile's constraints in the client.
 function constraintsFromDefaultFilters(

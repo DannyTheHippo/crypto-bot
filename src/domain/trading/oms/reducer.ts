@@ -1,5 +1,5 @@
 import Decimal from 'decimal.js';
-import type { ClientOrderId } from '../types/ids';
+import type { ClientOrderId } from '../../common/types/ids';
 
 // Pure OMS state machine (§6.1). State is derived from the append-only order_events
 // journal by folding this reducer; illegal (state, event) pairs throw (I7 — never a

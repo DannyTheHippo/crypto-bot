@@ -1,7 +1,7 @@
 import { Module, type Provider } from '@nestjs/common';
 import { TypedConfigService } from '../../../config/environment/typed-config.service';
-import { PERP_VENUE, SPOT_VENUE } from '../../../domain/types/venue-map';
-import { CLOCK, SystemClock } from '../../../ports/clock';
+import { PERP_VENUE, SPOT_VENUE } from '../../../domain/venue/types/venue-map';
+import { CLOCK, SystemClock } from '../../../ports/common/clock';
 import {
   EQUITY_LIMITS,
   EQUITY_OBSERVER,
@@ -32,8 +32,12 @@ import {
   type PortfolioConfig,
   type ReconConfig,
   type RecoveryConfig,
-} from '../../../ports/execution';
-import { FEED_HEALTH, REAL_FEED_HEALTH, type FeedHealthPort } from '../../../ports/market-data';
+} from '../../../ports/trading/execution';
+import {
+  FEED_HEALTH,
+  REAL_FEED_HEALTH,
+  type FeedHealthPort,
+} from '../../../ports/venue/market-data';
 import { AlgoStopRecoveryService } from './algo-stop-recovery.service';
 import { BootRecoveryService } from './boot-recovery.service';
 import { CrashRecoveryService } from './crash-recovery.service';
@@ -91,7 +95,7 @@ const noopFeedHealth: FeedHealthPort = {
 const REAL_FEED_HEALTH_OPTIONAL = { token: REAL_FEED_HEALTH, optional: true } as const;
 const CONFIG_OPTIONAL = { token: TypedConfigService, optional: true } as const;
 // W3 Part 1: default exec-quality sink — a silent no-op until AgenticCompositionBridgeModule's
-// @Global() EXEC_QUALITY_SINK_OVERRIDE is wired (see ports/execution.ts's own token comment).
+// @Global() EXEC_QUALITY_SINK_OVERRIDE is wired (see ports/trading/execution.ts's own token comment).
 const noopExecQualitySink: ExecQualitySinkPort = { recordEntryAttempt: () => {} };
 
 // EXEC_RUN_CONTEXT.mode must track the boot config authority (paper/testnet/live) — it stamps the
@@ -146,7 +150,7 @@ const DEFAULT_RECON_CONFIG: ReconConfig = {
 // positions against an always-empty venue read and spuriously HALT.
 // v3 §1.2: retires this file's own local PERP_VENUE_ID copy (one of the three named-in-spec sites,
 // alongside app.module.ts's primaryVenue()/feedVenueConfig() and position-sizer.service.ts's own
-// copy — workstream #8's) in favor of the single canonical domain/types/venue-map.ts source. This
+// copy — workstream #8's) in favor of the single canonical domain/venue/types/venue-map.ts source. This
 // legacy single-venue RECON_CONFIG path is exercised only when ReconciliationService's venuePorts/
 // venueRegistry are absent (module-isolation fixtures) — the real v3 per-venue balanceAxis/
 // positionAxis/sweepSymbols come from VENUE_REGISTRY via ReconciliationService.venueReconConfig.

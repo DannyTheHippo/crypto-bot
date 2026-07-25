@@ -5,16 +5,16 @@ import {
   makeHistogramProvider,
 } from '@willsoto/nestjs-prometheus';
 import { Counter, Histogram } from 'prom-client';
-import { CLOCK, type ClockPort } from '../../../ports/clock';
-import { RISK_SIGNING_KEY } from '../../../ports/risk';
-import { MODE_CONTROL, type ModeControlPort } from '../../../ports/mode-control';
+import { CLOCK, type ClockPort } from '../../../ports/common/clock';
+import { RISK_SIGNING_KEY } from '../../../ports/trading/risk';
+import { MODE_CONTROL, type ModeControlPort } from '../../../ports/trading/mode-control';
 import {
   EXCHANGE_PORT,
   AdapterError,
   type ExchangePort,
   type ExchangeAck,
   type PlaceOrderRequest,
-} from '../../../ports/exchange';
+} from '../../../ports/venue/exchange';
 import {
   EXECUTION_STORE,
   EXEC_RUN_CONTEXT,
@@ -24,19 +24,19 @@ import {
   type SubmitAck,
   type ExecRunContext,
   type ExecFilters,
-} from '../../../ports/execution';
-import { verifyApproval } from '../../../domain/risk/proof';
+} from '../../../ports/trading/execution';
+import { verifyApproval } from '../../../domain/trading/risk/proof';
 import {
   initialOrder,
   TERMINAL_ORDER_STATES,
   type OrderEvent,
   type OrderState,
-} from '../../../domain/oms/reducer';
-import { isAlgoRailIntent } from '../../../domain/oms/reconcile';
-import type { RiskApprovedIntent } from '../../../domain/types/risk-decision';
-import type { OrderIntent } from '../../../domain/types/order-intent';
-import type { OpenOrderSummary } from '../../../domain/types/portfolio';
-import type { ClientOrderId, StrategyId } from '../../../domain/types/ids';
+} from '../../../domain/trading/oms/reducer';
+import { isAlgoRailIntent } from '../../../domain/trading/oms/reconcile';
+import type { RiskApprovedIntent } from '../../../domain/trading/types/risk-decision';
+import type { OrderIntent } from '../../../domain/trading/types/order-intent';
+import type { OpenOrderSummary } from '../../../domain/trading/types/portfolio';
+import type { ClientOrderId, StrategyId } from '../../../domain/common/types/ids';
 import { NonceLedgerService } from './nonce-ledger.service';
 import { OrderBookService } from './order-book.service';
 import { PortfolioStateService } from './portfolio-state.service';

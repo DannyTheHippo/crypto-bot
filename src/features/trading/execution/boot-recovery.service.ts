@@ -1,14 +1,14 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import Decimal from 'decimal.js';
-import { EXECUTION_STORE, type ExecutionStorePort } from '../../../ports/execution';
-import type { TradingMode } from '../../../domain/types/mode';
+import { EXECUTION_STORE, type ExecutionStorePort } from '../../../ports/trading/execution';
+import type { TradingMode } from '../../../domain/trading/types/mode';
 import {
   reduce,
   TERMINAL_ORDER_STATES,
   type OrderRecord,
   type OrderState,
-} from '../../../domain/oms/reducer';
-import { isAlgoRailIntent } from '../../../domain/oms/reconcile';
+} from '../../../domain/trading/oms/reducer';
+import { isAlgoRailIntent } from '../../../domain/trading/oms/reconcile';
 import { PortfolioStateService } from './portfolio-state.service';
 import { OrderBookService } from './order-book.service';
 import { CrashRecoveryService } from './crash-recovery.service';

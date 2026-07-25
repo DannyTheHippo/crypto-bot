@@ -10,7 +10,7 @@
 import { Pool } from 'pg';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import * as schema from '../../../src/database/schemas/trading';
-import { AgentDecisionJournalAdapter } from '../../../src/database/repositories/agent-decision-journal.adapter';
+import { AgentDecisionJournalAdapter } from '../../../src/database/repositories/strategy/agent-decision-journal.adapter';
 import { runBacktest, type Bar } from '../harness';
 import { RecordedAgenticStrategy, type RecordedRow } from '../strategies/recorded-agentic-strategy';
 import { loadBars } from '../trial-registry';

@@ -2,18 +2,18 @@
 // Deferred arm-ceremony CLI — `pnpm arm` (arming.controller.ts's own header comment defers "the
 // CLI wrapper" to runtime glue; this is that glue). Turns the two-step, bootId-bound live-arming
 // flow (docs/runbook.md §Re-arm) into one operator command: POST arm/request, compute the HMAC
-// proof locally within the 60s challenge TTL (CHALLENGE_TTL_MS, src/domain/mode/arming.ts), POST
+// proof locally within the 60s challenge TTL (CHALLENGE_TTL_MS, src/domain/trading/mode/arming.ts), POST
 // arm/confirm. This script automates ONLY the operator's client-side steps (posting bodies,
 // computing the proof, respecting the clock) — every server-side gate (challenge TTL, bootId
 // binding to the process's OWN cfg.bootId, constant-time HMAC verify in
 // src/features/trading/mode-control/hmac.ts, ARM preconditions, the four live gates in
-// src/domain/mode/resolution.ts) lives entirely server-side and is untouched by anything here.
+// src/domain/trading/mode/resolution.ts) lives entirely server-side and is untouched by anything here.
 
 import { createHmac } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 
 const DEFAULT_BASE_URL = 'http://localhost:3100';
-// Mirrors src/domain/mode/arming.ts's CHALLENGE_TTL_MS — used here only to warn the operator if
+// Mirrors src/domain/trading/mode/arming.ts's CHALLENGE_TTL_MS — used here only to warn the operator if
 // the round trip to compute+send the proof is eating into the server's own TTL budget; the actual
 // enforcement is server-side (reduceArming's CONFIRM branch).
 const CHALLENGE_TTL_MS = 60_000;

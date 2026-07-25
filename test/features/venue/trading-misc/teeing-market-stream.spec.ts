@@ -6,15 +6,15 @@ import {
   venueId,
   type EpochMs,
   type SymbolId,
-} from '../../../src/domain/types/ids';
-import type { MarketEvent, OrderLevel } from '../../../src/domain/types/market-events';
-import { price, qty, type Price } from '../../../src/domain/types/money';
+} from '../../../../src/domain/common/types/ids';
+import type { MarketEvent, OrderLevel } from '../../../../src/domain/venue/types/market-events';
+import { price, qty, type Price } from '../../../../src/domain/common/types/money';
 import {
   TeeingMarketStream,
   type PaperFeedSink,
   type RefPriceSink,
-} from '../../../src/features/trading/market-data/teeing-market-stream';
-import type { MarketStreamPort, SubscriptionSpec } from '../../../src/ports/market-data';
+} from '../../../../src/features/venue/market-data/teeing-market-stream';
+import type { MarketStreamPort, SubscriptionSpec } from '../../../../src/ports/venue/market-data';
 
 const V = venueId('binance');
 const S = symbolId('BTC/USDT');

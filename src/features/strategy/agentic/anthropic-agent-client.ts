@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import Decimal from 'decimal.js';
-import { price, qty, type Price } from '../../../domain/types/money';
-import type { CandleEvent } from '../../../domain/types/market-events';
-import type { EpochMs, SymbolId, VenueId } from '../../../domain/types/ids';
-import type { Signal } from '../../../domain/types/signal';
-import { venueForSymbol, PERP_VENUE_ID } from '../../../domain/types/venue-map';
+import { price, qty, type Price } from '../../../domain/common/types/money';
+import type { CandleEvent } from '../../../domain/venue/types/market-events';
+import type { EpochMs, SymbolId, VenueId } from '../../../domain/common/types/ids';
+import type { Signal } from '../../../domain/strategy/types/signal';
+import { venueForSymbol, PERP_VENUE_ID } from '../../../domain/venue/types/venue-map';
 import {
   AgentProposeError,
   type AgentBudgetBlock,
@@ -21,7 +21,7 @@ import {
   type PlaybookProvider,
   type RegimeTags,
   type SimilarSetupRow,
-} from '../../../ports/agentic-strategy';
+} from '../../../ports/strategy/agentic-strategy';
 import { deriveRegimeTags, renderSimilarSetups } from './episodic-memory';
 import {
   BOOK_STRUCTURE_TEMPLATE_VERSION,

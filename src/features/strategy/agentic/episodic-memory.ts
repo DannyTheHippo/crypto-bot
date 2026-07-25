@@ -1,4 +1,8 @@
-import type { AgentIndicators, RegimeTags, SimilarSetupRow } from '../../../ports/agentic-strategy';
+import type {
+  AgentIndicators,
+  RegimeTags,
+  SimilarSetupRow,
+} from '../../../ports/strategy/agentic-strategy';
 
 // R2 episodic memory: pure regime-tag derivation and retrieval rendering. deriveRegimeTags is a PURE
 // function of features the market payload already carries (see agent-prompt.ts's buildMarketPayload):

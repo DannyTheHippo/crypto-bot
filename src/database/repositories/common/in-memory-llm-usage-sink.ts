@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { LlmUsageSink, LlmUsageEntry } from '../../ports/agentic-strategy';
+import type { LlmUsageSink, LlmUsageEntry } from '../../../ports/strategy/agentic-strategy';
 
 // In-process LLM_USAGE_SINK default (DB-less paper/test substrate) — array-backed rather than a bare
 // no-op (mirrors InMemoryAgentDecisionJournal's own convention) so isolated-module tests can assert

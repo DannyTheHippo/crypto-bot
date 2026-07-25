@@ -18,7 +18,7 @@
 // (agentic.strategy.ts), not this module's.
 
 import Decimal from 'decimal.js';
-import type { AgentDirectives } from '../../../ports/agentic-strategy';
+import type { AgentDirectives } from '../../../ports/strategy/agentic-strategy';
 
 export interface PlanExecutorState {
   readonly plan: AgentDirectives;

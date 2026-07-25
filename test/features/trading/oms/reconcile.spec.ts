@@ -5,9 +5,14 @@ import {
   balanceWithinEpsilon,
   driftStrictlyGrowing,
   isAlgoRailIntent,
-} from '../../../src/domain/oms/reconcile';
-import { encodeClientOrderId, intentId, venueId, symbolId } from '../../../src/domain/types/ids';
-import { price } from '../../../src/domain/types/money';
+} from '../../../../src/domain/trading/oms/reconcile';
+import {
+  encodeClientOrderId,
+  intentId,
+  venueId,
+  symbolId,
+} from '../../../../src/domain/common/types/ids';
+import { price } from '../../../../src/domain/common/types/money';
 
 const OUR_COID = encodeClientOrderId(intentId('0190abcd-1234-7abc-89ab-0123456789ab'), 'paper');
 const D = (s: string) => new Decimal(s);

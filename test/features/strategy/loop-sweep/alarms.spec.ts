@@ -3,7 +3,7 @@ import { describe, it, expect } from 'vitest';
 // list) — the pure sweep core is a stdlib-only .mjs with no declaration file. vitest/swc resolves it
 // at runtime; this directive is the only bridge across the graph boundary the four-file deliverable
 // allows (no 5th .d.ts, no tsconfig edit).
-import * as coreModule from '../../../scripts/loop-sweep-core.mjs';
+import * as coreModule from '../../../../scripts/loop-sweep-core.mjs';
 
 // loop-sweep-core.mjs is the PURE decision layer of the Y2 health sweep: given a prior watermark and
 // this pass's probe results it derives {deltas, alarms, annotations} with no I/O. This spec pins the

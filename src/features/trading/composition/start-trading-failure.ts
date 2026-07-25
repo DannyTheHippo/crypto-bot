@@ -1,4 +1,4 @@
-import type { KillSwitchPort } from '../../../ports/risk';
+import type { KillSwitchPort } from '../../../ports/trading/risk';
 
 // Fire-and-forget startTrading().catch contract (2026-07-24): HALT with flatten=true — the
 // book may already be positioned when pin/boot fails mid-start. Kept in its own module so the

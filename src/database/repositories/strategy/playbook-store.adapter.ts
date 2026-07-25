@@ -1,7 +1,7 @@
 import { Logger } from '@nestjs/common';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import type { PlaybookProvider } from '../../ports/agentic-strategy';
-import type * as schema from '../schemas/trading';
+import type { PlaybookProvider } from '../../../ports/strategy/agentic-strategy';
+import type * as schema from '../../schemas/trading';
 import {
   PlaybookVersionRepository,
   type PlaybookVersionDbRow,

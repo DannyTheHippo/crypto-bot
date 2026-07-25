@@ -1,3 +1,5 @@
+<!-- Moved 2026-07-24: reports/loop → research/loop (repo organization). Historical path refs inside remain as narrative. -->
+
 # Daily profitability loop — state
 
 Playbook (durable procedure): `docs/planning/daily-profitability-loop.md`

@@ -1,6 +1,6 @@
 import { Global, Module } from '@nestjs/common';
-import { StrategyRegistry } from '../agentic/strategy-registry';
-import { STRATEGY_REGISTRY } from '../../../ports/strategy';
+import { StrategyRegistry } from '../../strategy/agentic/strategy-registry';
+import { STRATEGY_REGISTRY } from '../../../ports/strategy/strategy';
 
 // W3 Part 4: pure code motion out of app.module.ts — see db-health-bridge.module.ts's own header
 // comment on the boundaries 'app' zone widening this relies on.

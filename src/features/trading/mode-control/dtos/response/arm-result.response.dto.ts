@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import type { ArmFailureReason } from '../../../../../ports/mode-control';
+import type { ArmFailureReason } from '../../../../../ports/trading/mode-control';
 
 // Swagger wire-shape label only — the port's ArmResult stays a discriminated union at the
 // controller boundary (see arming.controller.ts's header comment). ok=true responses may carry

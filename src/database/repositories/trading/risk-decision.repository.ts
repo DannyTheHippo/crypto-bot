@@ -1,8 +1,8 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { DRIZZLE_DB } from '../database.tokens';
-import * as schema from '../schemas/trading';
-import { requireDb } from './persistence-guard';
+import { DRIZZLE_DB } from '../../database.tokens';
+import * as schema from '../../schemas/trading';
+import { requireDb } from '../common/persistence-guard';
 
 export interface RiskDecisionInsert {
   intentId: string;

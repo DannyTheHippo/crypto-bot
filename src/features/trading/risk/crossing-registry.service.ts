@@ -1,7 +1,11 @@
 import { Injectable } from '@nestjs/common';
-import { wouldCross, type RestingOrder, type CrossingProbe } from '../../../domain/risk/crossing';
-import type { ClientOrderId, StrategyId, SymbolId } from '../../../domain/types/ids';
-import type { Price } from '../../../domain/types/money';
+import {
+  wouldCross,
+  type RestingOrder,
+  type CrossingProbe,
+} from '../../../domain/trading/risk/crossing';
+import type { ClientOrderId, StrategyId, SymbolId } from '../../../domain/common/types/ids';
+import type { Price } from '../../../domain/common/types/money';
 
 // Symbol-level open-interest registry (resting + in-flight orders), keyed by
 // clientOrderId so an order can be added on approval and removed on terminal report.

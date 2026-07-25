@@ -1,7 +1,7 @@
 import { Logger } from '@nestjs/common';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import type { LlmUsageSink, LlmUsageEntry } from '../../ports/agentic-strategy';
-import type * as schema from '../schemas/trading';
+import type { LlmUsageSink, LlmUsageEntry } from '../../../ports/strategy/agentic-strategy';
+import type * as schema from '../../schemas/trading';
 import { LlmUsageRepository, type LlmUsageInsert } from './llm-usage.repository';
 
 // Composition-root binding for LLM_USAGE_SINK: persists reflection-path token usage to the llm_usage

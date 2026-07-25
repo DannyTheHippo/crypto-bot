@@ -3,7 +3,7 @@ import type {
   AgentDecisionRow,
   AgentDirectives,
   AgentUsage,
-} from '../../../ports/agentic-strategy';
+} from '../../../ports/strategy/agentic-strategy';
 import { buildPlaybookBlock, buildSystemPrompt } from './agent-prompt';
 import { evaluatePlan } from './plan-executor';
 import {

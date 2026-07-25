@@ -1,11 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { PinoLogger } from 'nestjs-pino';
-import type { OpsEvent, OpsEventPort } from '../../../ports/observability';
+import type { OpsEvent, OpsEventPort } from '../../../ports/common/observability';
 
 // Backlog #52 (W12 operational event logging) — decision record.
 // SCOPE: execution-lane diagnostic events (reconcile passes, kill-switch transitions, halt episodes,
-// boot readiness) — see OpsEvent's own header comment (ports/observability.ts). The boot/arm/mode/
-// disarm/downgrade lifecycle stays on ModeAuditEvent → audit_log (ports/mode-control.ts,
+// boot readiness) — see OpsEvent's own header comment (ports/common/observability.ts). The boot/arm/mode/
+// disarm/downgrade lifecycle stays on ModeAuditEvent → audit_log (ports/trading/mode-control.ts,
 // DrizzleModeAudit); this helper never touches that surface.
 // WHY PINO, NOT A NEW TABLE: every event here already exists as a Prometheus counter/gauge — this
 // adds a structured, queryable LOG surface for correlation/search, not a second source of truth.

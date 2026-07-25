@@ -16,7 +16,7 @@ import { Pool } from 'pg';
 import { PRIOR_TRIALS, loadBars } from './trial-registry';
 
 // ── canonical hashing ────────────────────────────────────────────────────────
-// Stable-key-order JSON, the same shape as src/domain/risk/canonical.ts's sortedKeys /
+// Stable-key-order JSON, the same shape as src/domain/trading/risk/canonical.ts's sortedKeys /
 // src/database/journal-hash.ts's canonicalPayload — reimplemented locally rather than imported so
 // this research module has zero dependency on src/database (Nest-owned, per CLAUDE.md rule 4's
 // "strategy lane" impurity boundary spirit) or decimal.js (params/dataset keys here are plain

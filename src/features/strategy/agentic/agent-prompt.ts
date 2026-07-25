@@ -8,10 +8,10 @@ import type {
   AgentPortfolioBlock,
   AgentBudgetBlock,
   AgentCalendarEvent,
-} from '../../../ports/agentic-strategy';
-import type { SymbolId, VenueId } from '../../../domain/types/ids';
-import { toIndicatorNumber } from '../../../domain/types/money';
-import { AGENTIC_MAX_STOP_LOSS_PCT } from '../../../domain/risk/agentic-bounds';
+} from '../../../ports/strategy/agentic-strategy';
+import type { SymbolId, VenueId } from '../../../domain/common/types/ids';
+import { toIndicatorNumber } from '../../../domain/common/types/money';
+import { AGENTIC_MAX_STOP_LOSS_PCT } from '../../../domain/trading/risk/agentic-bounds';
 
 // W2.3: HTF h1/h4 indicators (warmup raised to 340 bars) now supply the long-horizon view, so 30
 // bars of the strategy's own timeframe (≈7.5h of 15m detail) plus HTF regime context replaces the
@@ -92,7 +92,7 @@ export const LIQUIDATION_TEMPLATE_VERSION = 'lq1';
 export const BOOK_STRUCTURE_TEMPLATE_VERSION = 'bs1';
 // Track-record attribution tag (Push 3 P6 Unit 4, #17 residual): flag-ON appends the track-record
 // guidance sentence and renders the `trackRecord` payload block (a passthrough of
-// AgentContext.trackRecord — see ports/agentic-strategy.ts). Decide-side read of realized
+// AgentContext.trackRecord — see ports/strategy/agentic-strategy.ts). Decide-side read of realized
 // performance, no new feed/cost, so — like bs1 — it does NOT ride the information-context A/B
 // control arm. Stacks AFTER bs1.
 export const TRACK_RECORD_TEMPLATE_VERSION = 'tr1';
@@ -249,7 +249,7 @@ export const DECISION_V2_BOUNDS = {
   sizeFraction: { min: 0.005 },
   entryOffsetBps: { min: -150, max: 150 },
   entryValidityBars: { min: 1, max: 16 },
-  // Max sourced from domain/risk/agentic-bounds.ts (Decimal, not Number(), per the money-path lint
+  // Max sourced from domain/trading/risk/agentic-bounds.ts (Decimal, not Number(), per the money-path lint
   // rule) — the SAME bound the config-side PROTECT_STOP_LOSS_PCT cross-field refusal enforces, so
   // the two can never drift apart.
   stopLossPct: { min: 0.002, max: new Decimal(AGENTIC_MAX_STOP_LOSS_PCT).toNumber() },
@@ -1038,7 +1038,7 @@ export function buildUserMessage(
 // block. See the port module's own comment on these types for the full history.
 
 // Active model-owned exit directives for the open position — the v2 analogue of AgentPlan (see
-// ports/agentic-strategy.ts), rendered here rather than mutating AgentPositionSummary's own
+// ports/strategy/agentic-strategy.ts), rendered here rather than mutating AgentPositionSummary's own
 // managedPlan boolean (owned by the S2 port step).
 export interface TradeContractDirectives {
   readonly entryStyle: 'maker' | 'taker';

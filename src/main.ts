@@ -2,7 +2,7 @@ import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import { Logger } from 'nestjs-pino';
 import { AppModule } from './app.module';
-import { setupDecimal } from './domain/types/money';
+import { setupDecimal } from './domain/common/types/money';
 import { TypedConfigService } from './config/environment/typed-config.service';
 import { createApplicationConfig } from './config/app.config';
 

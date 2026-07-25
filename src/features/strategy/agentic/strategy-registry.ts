@@ -1,7 +1,11 @@
 import { Injectable } from '@nestjs/common';
-import type { StrategyId } from '../../../domain/types/ids';
-import type { AsyncStrategy } from '../../../ports/agentic-strategy';
-import type { StrategyRegistryPort, StrategyState, DrainPolicy } from '../../../ports/strategy';
+import type { StrategyId } from '../../../domain/common/types/ids';
+import type { AsyncStrategy } from '../../../ports/strategy/agentic-strategy';
+import type {
+  StrategyRegistryPort,
+  StrategyState,
+  DrainPolicy,
+} from '../../../ports/strategy/strategy';
 
 // Why a strategy is DRAINING. Provenance lives here (registry), not in host runtime state, so an
 // AUTO (3-strike failure) drain and its recovery probe can never override an OPERATOR (explicit

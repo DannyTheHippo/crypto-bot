@@ -1,4 +1,4 @@
-import type { TradingMode } from './mode';
+import type { TradingMode } from '../../trading/types/mode';
 
 // ── Branded primitives ───────────────────────────────────────────────────────
 

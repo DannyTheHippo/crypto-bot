@@ -1,10 +1,13 @@
 import Decimal from 'decimal.js';
-import type { StrategyId } from '../../../domain/types/ids';
-import type { PromotionStatsPort } from '../../../ports/promotion';
-import type { AgentDecisionJournalPort, AgentDecisionRow } from '../../../ports/agentic-strategy';
-import type { KillSwitchPort } from '../../../ports/risk';
-import type { StrategyRegistryPort } from '../../../ports/strategy';
-import { walkRoundTrips } from '../../../domain/risk/round-trips';
+import type { StrategyId } from '../../../domain/common/types/ids';
+import type { PromotionStatsPort } from '../../../ports/trading/promotion';
+import type {
+  AgentDecisionJournalPort,
+  AgentDecisionRow,
+} from '../../../ports/strategy/agentic-strategy';
+import type { KillSwitchPort } from '../../../ports/trading/risk';
+import type { StrategyRegistryPort } from '../../../ports/strategy/strategy';
+import { walkRoundTrips } from '../../../domain/trading/risk/round-trips';
 import type { LoggerLike } from './anthropic-agent-client';
 
 // Same demo-evidence pin as promotion-readiness.service.ts / version-attribution-metrics.service.ts:

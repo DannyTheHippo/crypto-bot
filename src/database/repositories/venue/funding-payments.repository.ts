@@ -1,12 +1,12 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { and, desc, eq } from 'drizzle-orm';
-import type { FundingPaymentRow, FundingPaymentsPort } from '../../ports/funding-payments';
-import type { TradingMode } from '../../domain/types/mode';
-import type { SymbolId, VenueId } from '../../domain/types/ids';
-import { DRIZZLE_DB } from '../database.tokens';
-import * as schema from '../schemas/trading';
-import { requireDb } from './persistence-guard';
+import type { FundingPaymentRow, FundingPaymentsPort } from '../../../ports/venue/funding-payments';
+import type { TradingMode } from '../../../domain/trading/types/mode';
+import type { SymbolId, VenueId } from '../../../domain/common/types/ids';
+import { DRIZZLE_DB } from '../../database.tokens';
+import * as schema from '../../schemas/trading';
+import { requireDb } from '../common/persistence-guard';
 
 // P5b writer + cursor-read side of funding_payments (0013_funding_payments.sql). Mirrors
 // FillRepository's insertIdempotent (venue, symbol, venue_trade_id ⇒ venue, symbol,

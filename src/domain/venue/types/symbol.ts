@@ -1,4 +1,4 @@
-import type { SymbolId } from './ids';
+import type { SymbolId } from '../../common/types/ids';
 
 // Unified ccxt symbol format is BASE/QUOTE (e.g. BTC/USDT), or ccxt's linear-swap perp form
 // BASE/QUOTE:SETTLE (e.g. BTC/USDT:USDT) where the :SETTLE suffix names the settlement asset —

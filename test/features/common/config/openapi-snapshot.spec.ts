@@ -3,8 +3,8 @@ import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { AppModule } from '../../../src/app.module';
-import { buildOpenApiDocument } from '../../../src/config/swagger.config';
+import { AppModule } from '../../../../src/app.module';
+import { buildOpenApiDocument } from '../../../../src/config/swagger.config';
 
 // ONE AppModule instantiation per file (prom-client is a process-global singleton — see
 // test/unit/execution/app-module.boot.spec.ts's header comment). This spec needs the real DI graph

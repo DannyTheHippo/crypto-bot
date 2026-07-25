@@ -13,9 +13,9 @@ import {
   buildSystemPrompt,
   buildUserMessage,
   computePromptHash,
-} from '../../../src/features/trading/agentic/agent-prompt';
-import { SEED_PLAYBOOK } from '../../../src/features/trading/agentic/agentic-strategy.module';
-import { compare, scoreRows } from '../../../src/features/trading/agentic/counterfactual-scoring';
+} from '../../../src/features/strategy/agentic/agent-prompt';
+import { SEED_PLAYBOOK } from '../../../src/features/strategy/agentic/agentic-strategy.module';
+import { compare, scoreRows } from '../../../src/features/strategy/agentic/counterfactual-scoring';
 import { EVAL_PROFILE, evalCandle, evalInput } from './fixtures';
 import {
   RECORDED_PAYLOAD_ROWS,

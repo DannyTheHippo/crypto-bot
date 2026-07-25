@@ -1,7 +1,14 @@
-import type { Price, Qty } from './money';
-import type { StrategyId, VenueId, SymbolId, IntentId, ClientOrderId, EpochMs } from './ids';
+import type { Price, Qty } from '../../common/types/money';
+import type {
+  StrategyId,
+  VenueId,
+  SymbolId,
+  IntentId,
+  ClientOrderId,
+  EpochMs,
+} from '../../common/types/ids';
 import type { TradingMode } from './mode';
-import type { Signal } from './signal';
+import type { Signal } from '../../strategy/types/signal';
 
 export interface OrderIntent {
   readonly intentId: IntentId;

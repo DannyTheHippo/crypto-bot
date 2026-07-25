@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import Decimal from 'decimal.js';
-import { bookWalk, tradeThroughFill } from '../../../src/domain/paper/fill';
-import { price, qty } from '../../../src/domain/types/money';
-import type { OrderLevel } from '../../../src/domain/types/market-events';
+import { bookWalk, tradeThroughFill } from '../../../../src/domain/trading/paper/fill';
+import { price, qty } from '../../../../src/domain/common/types/money';
+import type { OrderLevel } from '../../../../src/domain/venue/types/market-events';
 
 const bps = new Decimal('10'); // 0.1%
 const lvl = (p: string, q: string): OrderLevel => ({ price: price(p), qty: qty(q) });

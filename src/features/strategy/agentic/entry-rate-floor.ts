@@ -1,12 +1,12 @@
 import { z } from 'zod';
 import Decimal from 'decimal.js';
-import { price, qty } from '../../../domain/types/money';
-import { SPOT_VENUE_ID, PERP_VENUE_ID } from '../../../domain/types/venue-map';
+import { price, qty } from '../../../domain/common/types/money';
+import { SPOT_VENUE_ID, PERP_VENUE_ID } from '../../../domain/venue/types/venue-map';
 import type {
   AgentDirectives,
   AgentTradingProfile,
   AgentUsage,
-} from '../../../ports/agentic-strategy';
+} from '../../../ports/strategy/agentic-strategy';
 import {
   buildPlaybookBlock,
   buildSystemPrompt,

@@ -21,34 +21,34 @@
 //      (one GCP-lift seam) and returns {ok,value}|{ok,error} — a failed probe is reported, never thrown.
 //   4. Hands {prev watermark, cur probes} to the PURE core (loop-sweep-core.mjs), which derives the
 //      bootId-pinned deltas, the fired alarms, and the annotations — deltas only when bootId matches.
-//   5. Writes the digest JSON + updates the watermark UNDER reports/loop/digests/ ONLY (single writer
+//   5. Writes the digest JSON + updates the watermark UNDER research/loop/digests/ ONLY (single writer
 //      helper), and renders the markdown digest to stdout.
 //
 // Measurement fails OPEN: probe errors yield a partial digest with the failures named; the process
 // exits 0 unless the tool itself crashes. It never mutates the stack (read-only transport).
 
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
-import { join, resolve, sep, dirname } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve, sep } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
-  dockerPs,
-  dockerInspect,
-  dockerLogsTail,
-  psql,
-  promQuery,
-  hostState,
-} from './loop-transport.mjs';
-import {
+  AGENTIC_DAILY_COST_BREAKER_USD,
   computeSweep,
   extractCounters,
   VENUES,
-  AGENTIC_DAILY_COST_BREAKER_USD,
 } from './loop-sweep-core.mjs';
+import {
+  dockerInspect,
+  dockerLogsTail,
+  dockerPs,
+  hostState,
+  promQuery,
+  psql,
+} from './loop-transport.mjs';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(SCRIPT_DIR, '..');
-const DIGESTS_DIR = join(REPO_ROOT, 'reports', 'loop', 'digests');
+const DIGESTS_DIR = join(REPO_ROOT, 'research', 'loop', 'digests');
 const WATERMARK_PATH = join(DIGESTS_DIR, '.watermark.json');
 const ERROR_LOG_TAIL = 3000;
 const PINO_WARN_LEVEL = 40; // pino level>=40 = warn/error/fatal (§ error-scan)
@@ -57,7 +57,7 @@ const PINO_WARN_LEVEL = 40; // pino level>=40 = warn/error/fatal (§ error-scan)
 // project = crypto-bot). No lane variants — the v3 stack has exactly one app service.
 const APP_CONTAINER = 'crypto-bot-app-1';
 
-// ── the ONLY writer: refuses any path escaping reports/loop/digests/ ─────────────────────────────
+// ── the ONLY writer: refuses any path escaping research/loop/digests/ ─────────────────────────────
 function writeUnderDigests(relName, content) {
   const target = resolve(DIGESTS_DIR, relName);
   if (target !== DIGESTS_DIR && !target.startsWith(DIGESTS_DIR + sep)) {

@@ -38,14 +38,14 @@ export const FLAT_BASELINE_NET_PNL_USD = '0';
 /**
  * Measured incumbent agentic baseline (demo scoreboard, net-of-cost) — negative.
  * Binding gate vs flat is still >0; this documents the incumbent comparison.
- * Source: reports/loop/LOG.md Pass ~33 era scoreboard (~−$23 on live demo book).
+ * Source: research/loop/LOG.md Pass ~33 era scoreboard (~−$23 on live demo book).
  */
 export const AGENTIC_BASELINE_NET_PNL_USD = '-23.25';
 
 const AS_OF = '2026-07-24';
-const PREREG = 'reports/loop/edge-tournament-preregistration-2026-07-24.md';
-const LEDGER = join(process.cwd(), 'candidates', 'edge-tournament-trials.jsonl');
-const SUMMARY = join(process.cwd(), 'reports', 'loop', `edge-tournament-results-${AS_OF}.md`);
+const PREREG = 'research/studies/edge-tournament-preregistration-2026-07-24.md';
+const LEDGER = join(process.cwd(), 'research', 'candidates', 'edge-tournament-trials.jsonl');
+const SUMMARY = join(process.cwd(), 'research', 'studies', `edge-tournament-results-${AS_OF}.md`);
 
 function loadOhlcvMap(): Map<string, DailySeries> {
   const out = new Map<string, DailySeries>();

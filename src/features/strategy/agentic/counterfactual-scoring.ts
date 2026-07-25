@@ -1,12 +1,12 @@
 import Decimal from 'decimal.js';
-import type { AgentDecisionRow } from '../../../ports/agentic-strategy';
+import type { AgentDecisionRow } from '../../../ports/strategy/agentic-strategy';
 
 // ── Offline counterfactual scorer ────────────────────────────────────────────
 //
 // Prompt-iteration tooling for the agentic (LLM) lane's decision journal — NOT PnL validation.
 // Every exported metric here is a TOY RESEARCH METRIC: it is never step-D certification (the
 // agentic lane is permanently EXPERIMENT-ONLY, async, and replay-uncertifiable — CLAUDE.md rule 4,
-// ports/agentic-strategy.ts's own header), and it is never an auto-promotion input at current
+// ports/strategy/agentic-strategy.ts's own header), and it is never an auto-promotion input at current
 // trade rates (agentic-strategy/README.md § "Auto-promotion is deferred" — promotion stays a
 // human-pinned action until ≥30 matched closed trades/comparison window are available; a handful
 // of toy-scored decisions is statistically indistinguishable from noise). Scorecards exist only to
@@ -14,7 +14,7 @@ import type { AgentDecisionRow } from '../../../ports/agentic-strategy';
 // side by side.
 //
 // Money-path note: refPrice/close arrive here as decimal STRINGS already minted (and validated >0)
-// by domain/types/money.ts's price() at journal-write time. Converting them to plain numbers for
+// by domain/common/types/money.ts's price() at journal-write time. Converting them to plain numbers for
 // these indicator-grade research metrics mirrors reflection.service.ts's own `indicatorFloat`
 // helper (Decimal→number, never Number()/parseFloat() — both banned by lint outside src/domain) —
 // this file is not itself a money path (no Price/Qty is minted or moved here).

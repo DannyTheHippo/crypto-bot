@@ -367,7 +367,7 @@ export const agentDecisions = pgTable(
     inputTokens: integer('input_tokens'),
     outputTokens: integer('output_tokens'),
     // Cache-token analytics (true-spend accounting) — mirrors AgentDecisionEntry's absent-vs-null-
-    // vs-confirmed-zero semantics (ports/agentic-strategy.ts); null on rows that never called the
+    // vs-confirmed-zero semantics (ports/strategy/agentic-strategy.ts); null on rows that never called the
     // client (error/quiet-hold).
     cacheReadInputTokens: integer('cache_read_input_tokens'),
     cacheCreationInputTokens: integer('cache_creation_input_tokens'),
@@ -379,7 +379,7 @@ export const agentDecisions = pgTable(
     inputPayload: text('input_payload'),
     // Accepted trade plan, verbatim, for offline replay through the settlement backtest harness;
     // null whenever the decision carried no accepted plan (hold-without-plan/error). A LOCAL mirror
-    // of ports/agentic-strategy.ts's AgentDirectives — this file deliberately never imports ports
+    // of ports/strategy/agentic-strategy.ts's AgentDirectives — this file deliberately never imports ports
     // types (schema stays a pure DB-shape description), so sizeFraction/entryStyle/
     // partialCloseFraction?/thesis? must be kept in sync by hand with that interface.
     // nextConsultBars: portfolio-level consult-schedule value, merged in by
@@ -388,7 +388,7 @@ export const agentDecisions = pgTable(
     // regimeTags: a compact regime fingerprint (trend/vol/funding?/session) rides on EVERY arm —
     // stamped on every journaled row so a later consult can retrieve its own past setups by jsonb tag
     // equality (agent-decision.repository.ts's selectSimilarSetups). Kept in sync BY HAND with
-    // ports/agentic-strategy.ts's RegimeTags (this file deliberately never imports ports types).
+    // ports/strategy/agentic-strategy.ts's RegimeTags (this file deliberately never imports ports types).
     planJson: jsonb('plan_json').$type<
       | {
           readonly sizeFraction?: string;
@@ -471,7 +471,7 @@ export const agentPlaybookVersions = pgTable(
 // Reflection-path LLM token usage, kept separate from agent_decisions.input_tokens/output_tokens
 // (the decide-path's own per-call columns) so cost analysis can UNION the two without double
 // counting: decide-path tokens live on agent_decisions; this table's writers are the reflection loop
-// only (ReflectionService, via LlmUsageSink — ports/agentic-strategy.ts). kind is a 2-value union
+// only (ReflectionService, via LlmUsageSink — ports/strategy/agentic-strategy.ts). kind is a 2-value union
 // ('decide' | 'reflection') for future use, matching the repo's TS-level-only enum convention
 // (agent_decisions.action, agent_playbook_versions.source) — no DB CHECK constraint. strategy_id is
 // nullable: reflection runs are per-strategy, but a future 'decide' writer might not always resolve
@@ -487,7 +487,7 @@ export const llmUsage = pgTable('llm_usage', {
   inputTokens: integer('input_tokens').notNull(),
   outputTokens: integer('output_tokens').notNull(),
   // Cache-token analytics (true-spend accounting) — same absent-vs-zero semantics as
-  // LlmUsageEntry's cache fields (ports/agentic-strategy.ts).
+  // LlmUsageEntry's cache fields (ports/strategy/agentic-strategy.ts).
   cacheReadInputTokens: integer('cache_read_input_tokens'),
   cacheCreationInputTokens: integer('cache_creation_input_tokens'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
@@ -521,7 +521,7 @@ export const fundingEvents = pgTable('funding_events', {
 // fetchFundingHistory), DISTINCT from funding_events above (funding_events is the paper-sim
 // journal written by PaperPerpAdapter.applyFunding and carries fundingRate/markPrice/signedQty —
 // none of which are available on ccxt's unified FundingHistory row; see VenueFundingPayment's own
-// header comment in ports/exchange.ts). No tradingStamp (runId/bootId): the ingest poller reads
+// header comment in ports/venue/exchange.ts). No tradingStamp (runId/bootId): the ingest poller reads
 // venue history independent of any local run/boot, mode alone is what promotion nets on.
 // UNIQUE(venue, symbol, venue_payment_id) mirrors fills' own dedupe key — ON CONFLICT DO NOTHING
 // makes re-ingestion idempotent. Sign convention: amount_quote POSITIVE = received (a short

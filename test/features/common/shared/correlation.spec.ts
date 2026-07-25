@@ -4,8 +4,8 @@ import {
   CORRELATION_HEADER,
   currentCorrelationId,
   runWithCorrelation,
-} from '../../../src/shared/correlation/correlation';
-import { CorrelationMiddleware } from '../../../src/shared/correlation/correlation.middleware';
+} from '../../../../src/shared/correlation/correlation';
+import { CorrelationMiddleware } from '../../../../src/shared/correlation/correlation.middleware';
 
 describe('correlation ALS', () => {
   it('is undefined outside any scope', () => {

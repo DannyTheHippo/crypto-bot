@@ -16,7 +16,7 @@ import {
   MODE_TRANSITION_REPO,
   INTENT_REPO,
   DB_TRANSACTION,
-} from '../../../src/database/database.tokens';
+} from '../../../../src/database/database.tokens';
 
 describe('persistence DI tokens', () => {
   it('all tokens are unique symbols', () => {

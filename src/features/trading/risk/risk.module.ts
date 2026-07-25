@@ -1,8 +1,8 @@
 import { Module } from '@nestjs/common';
 import { randomBytes } from 'node:crypto';
 import { TypedConfigService } from '../../../config/environment/typed-config.service';
-import type { TradingMode } from '../../../domain/types/mode';
-import { CLOCK, SystemClock } from '../../../ports/clock';
+import type { TradingMode } from '../../../domain/trading/types/mode';
+import { CLOCK, SystemClock } from '../../../ports/common/clock';
 // RISK_SIGNING_KEY is NOT self-provided here: §4.2 requires a single process-lifetime key
 // shared by exactly two consumers (this RiskEngine + Execution's verify). The composition root
 // provides it globally; RiskModule consumes it. Booting RiskModule without that provider fails
@@ -11,11 +11,15 @@ import { CLOCK, SystemClock } from '../../../ports/clock';
 // KillSwitchService is likewise NOT self-provided: §5 mandates ONE kill switch shared by Risk
 // (engage + pre-trade read) and Execution (engage on conflict/unknown/reconcile). The composition
 // root binds it globally; RiskEngine/SignalGateway resolve it by class from that single instance.
-import { DEFAULT_FILTERS } from '../../../domain/risk/default-filters';
-import type { PartialRiskLimits } from '../../../domain/risk/limits';
-import { venueId, type VenueId } from '../../../domain/types/ids';
-import { PERP_VENUE_ID, SPOT_VENUE_ID } from '../../../domain/types/venue-map';
-import { FEED_HEALTH, REAL_FEED_HEALTH, type FeedHealthPort } from '../../../ports/market-data';
+import { DEFAULT_FILTERS } from '../../../domain/trading/risk/default-filters';
+import type { PartialRiskLimits } from '../../../domain/trading/risk/limits';
+import { venueId, type VenueId } from '../../../domain/common/types/ids';
+import { PERP_VENUE_ID, SPOT_VENUE_ID } from '../../../domain/venue/types/venue-map';
+import {
+  FEED_HEALTH,
+  REAL_FEED_HEALTH,
+  type FeedHealthPort,
+} from '../../../ports/venue/market-data';
 import {
   POSITION_SIZER,
   RISK_ENGINE,
@@ -29,7 +33,7 @@ import {
   type RiskEngineDeps,
   type RiskJournalPort,
   type SizerDeps,
-} from '../../../ports/risk';
+} from '../../../ports/trading/risk';
 import { CrossingRegistryService } from './crossing-registry.service';
 import { PLANNED_STOP_SIZING_COUNTER, PositionSizerService } from './position-sizer.service';
 import { RateBucketsService } from './rate-buckets.service';
@@ -107,7 +111,7 @@ function perpDepsFor(config: TypedConfigService | undefined): SizerDeps['perp'] 
 }
 // v3 §6.1/§6.2/§10 (workstream #8 consumes the per-venue-class fields directly, retiring the
 // transitional single-fraction read): spot symbols use AGENTIC_MAX_POSITION_FRACTION_SPOT, perp
-// symbols use …_PERP, keyed by VenueId via the canonical venue-map (domain/types/venue-map.ts) —
+// symbols use …_PERP, keyed by VenueId via the canonical venue-map (domain/venue/types/venue-map.ts) —
 // SPOT_VENUE_ID/PERP_VENUE_ID are the only two venues this pass wires. Absent TypedConfigService
 // (module-isolation boots) ⇒ undefined, falling through to PositionSizerService's own '0.15'
 // fallback — byte-identical to pre-v3 behavior.

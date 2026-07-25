@@ -1,14 +1,14 @@
 import { Global, Module } from '@nestjs/common';
 import { TypedConfigService } from '../../../config/environment/typed-config.service';
-import type { VenueConfig } from '../../../ports/app-config';
-import { VENUE_REGISTRY, type VenueRuntimeDescriptor } from '../../../ports/venue-registry';
-import { venueId, symbolId, type VenueId } from '../../../domain/types/ids';
-import { venueForSymbol, PERP_VENUE, SPOT_VENUE } from '../../../domain/types/venue-map';
+import type { VenueConfig } from '../../../ports/common/app-config';
+import { VENUE_REGISTRY, type VenueRuntimeDescriptor } from '../../../ports/venue/venue-registry';
+import { venueId, symbolId, type VenueId } from '../../../domain/common/types/ids';
+import { venueForSymbol, PERP_VENUE, SPOT_VENUE } from '../../../domain/venue/types/venue-map';
 
 // v3 spec §1.3: VENUE_REGISTRY is the composition root's per-venue fact table — built purely from
 // TypedConfigService (no network, no adapters), and every other composition module reads it instead
 // of `config.venues[0]` (the retired `primaryVenue()`/`feedVenueConfig()` pattern). Data, not a DI
-// scope: one flat module graph, one map. Token + descriptor shape live in ports/venue-registry.ts
+// scope: one flat module graph, one map. Token + descriptor shape live in ports/venue/venue-registry.ts
 // (re-exported here for existing import sites) — see that file's header for why.
 export { VENUE_REGISTRY, type VenueRuntimeDescriptor };
 

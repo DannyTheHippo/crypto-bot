@@ -1,15 +1,19 @@
 import Decimal from 'decimal.js';
-import type { EpochMs, SymbolId } from '../../../domain/types/ids';
-import type { CandleEvent, MarketEvent, OrderLevel } from '../../../domain/types/market-events';
-import { price } from '../../../domain/types/money';
-import type { MarketStreamPort, SubscriptionSpec } from '../../../ports/market-data';
+import type { EpochMs, SymbolId } from '../../../domain/common/types/ids';
+import type {
+  CandleEvent,
+  MarketEvent,
+  OrderLevel,
+} from '../../../domain/venue/types/market-events';
+import { price } from '../../../domain/common/types/money';
+import type { MarketStreamPort, SubscriptionSpec } from '../../../ports/venue/market-data';
 
 // Populated by the teeing stream on every ticker/book so the RiskEngine's mark is fresh — the
 // RiskEngine rejects STALE_DATA without it. FeedHealthService implements this.
 export interface RefPriceSink {
   updateRefPrice(
     symbol: SymbolId,
-    mid: import('../../../domain/types/money').Price,
+    mid: import('../../../domain/common/types/money').Price,
     at: EpochMs,
   ): void;
 }

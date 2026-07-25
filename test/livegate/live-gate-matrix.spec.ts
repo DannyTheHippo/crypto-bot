@@ -13,9 +13,9 @@
  * Never skip or weaken these to make a suite pass.
  */
 import { describe, expect, it } from 'vitest';
-import { ARMED_SESSION_TTL_MS, CHALLENGE_TTL_MS } from '../../src/domain/mode/arming';
-import { epochMs, venueId } from '../../src/domain/types/ids';
-import { assertAgenticLaneNotLive } from '../../src/features/trading/agentic/agentic-live-interlock';
+import { ARMED_SESSION_TTL_MS, CHALLENGE_TTL_MS } from '../../src/domain/trading/mode/arming';
+import { epochMs, venueId } from '../../src/domain/common/types/ids';
+import { assertAgenticLaneNotLive } from '../../src/features/strategy/agentic/agentic-live-interlock';
 import { computeArmingHmac } from '../../src/features/trading/mode-control/hmac';
 import { ModeControlService } from '../../src/features/trading/mode-control/mode-control.service';
 import { KillSwitchService } from '../../src/features/trading/risk/kill-switch.service';
@@ -24,7 +24,7 @@ import type {
   KeyProbeResult,
   ModeAuditEvent,
   ModeControlConfig,
-} from '../../src/ports/mode-control';
+} from '../../src/ports/trading/mode-control';
 
 const T = 1_700_000_000_000;
 const SECRET = 'arming-secret';
@@ -115,7 +115,7 @@ describe('LIVE-GATE MATRIX — 2⁴ effective-mode truth table', () => {
   // Gate (a) IS the requested TRADING_MODE (design §581 — there is no env flag independent of the
   // requested mode), so the `env` axis sets cfg.requested: env=false ⇒ requested=paper ⇒ paper
   // outright. The independent ENV_FLAG-downgrade reason (requested=live but the flag absent) is a
-  // pure-reducer concern asserted in test/unit/domain/mode/resolution.spec.ts. Only all-true → live.
+  // pure-reducer concern asserted in test/unit/domain/trading/mode/resolution.spec.ts. Only all-true → live.
   const axes = [false, true];
   for (const env of axes)
     for (const armed of axes)

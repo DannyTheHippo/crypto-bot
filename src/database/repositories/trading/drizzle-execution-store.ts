@@ -1,15 +1,21 @@
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import Decimal from 'decimal.js';
-import { price, qty } from '../../domain/types/money';
-import type { TradingMode } from '../../domain/types/mode';
-import type { StrategyId, VenueId, SymbolId, ClientOrderId, EpochMs } from '../../domain/types/ids';
-import { decodeClientOrderId, isOurClientOrderId } from '../../domain/types/ids';
-import type { Position } from '../../domain/types/portfolio';
-import type { OrderIntent } from '../../domain/types/order-intent';
-import type { ApprovalProof } from '../../domain/types/risk-decision';
-import type { FillRecord } from '../../domain/types/exec-report';
-import type { OrderRecord } from '../../domain/oms/reducer';
-import { isOrderState, TERMINAL_ORDER_STATES } from '../../domain/oms/reducer';
+import { price, qty } from '../../../domain/common/types/money';
+import type { TradingMode } from '../../../domain/trading/types/mode';
+import type {
+  StrategyId,
+  VenueId,
+  SymbolId,
+  ClientOrderId,
+  EpochMs,
+} from '../../../domain/common/types/ids';
+import { decodeClientOrderId, isOurClientOrderId } from '../../../domain/common/types/ids';
+import type { Position } from '../../../domain/trading/types/portfolio';
+import type { OrderIntent } from '../../../domain/trading/types/order-intent';
+import type { ApprovalProof } from '../../../domain/trading/types/risk-decision';
+import type { FillRecord } from '../../../domain/trading/types/exec-report';
+import type { OrderRecord } from '../../../domain/trading/oms/reducer';
+import { isOrderState, TERMINAL_ORDER_STATES } from '../../../domain/trading/oms/reducer';
 import type {
   ExecutionStorePort,
   PersistedOrderEvent,
@@ -17,8 +23,8 @@ import type {
   ReconciliationRow,
   RecoveredOpenOrder,
   ExecRunContext,
-} from '../../ports/execution';
-import * as schema from '../schemas/trading';
+} from '../../../ports/trading/execution';
+import * as schema from '../../schemas/trading';
 import { IntentRepository } from './intent.repository';
 import { OrderRepository } from './order.repository';
 import { FillRepository } from './fill.repository';

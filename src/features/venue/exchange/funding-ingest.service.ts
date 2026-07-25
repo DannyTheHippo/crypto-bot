@@ -1,11 +1,11 @@
 import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import Decimal from 'decimal.js';
-import type { ExchangePort } from '../../../ports/exchange';
-import type { FundingPaymentsPort } from '../../../ports/funding-payments';
-import type { TradingMode } from '../../../domain/types/mode';
-import type { SymbolId, EpochMs } from '../../../domain/types/ids';
-import { epochMs } from '../../../domain/types/ids';
-import type { ClockPort } from '../../../ports/clock';
+import type { ExchangePort } from '../../../ports/venue/exchange';
+import type { FundingPaymentsPort } from '../../../ports/venue/funding-payments';
+import type { TradingMode } from '../../../domain/trading/types/mode';
+import type { SymbolId, EpochMs } from '../../../domain/common/types/ids';
+import { epochMs } from '../../../domain/common/types/ids';
+import type { ClockPort } from '../../../ports/common/clock';
 
 // First-ever poll for a symbol backfills this far rather than the venue's full listing history —
 // bounded so a fresh deployment (or a symbol added mid-run) doesn't try to pull years of funding

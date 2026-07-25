@@ -21,33 +21,33 @@ import { ExecutionGateService } from '../../src/features/trading/execution/execu
 import { DemoFillPollerService } from '../../src/features/trading/execution/demo-fill-poller.service';
 import { AlgoStopRecoveryService } from '../../src/features/trading/execution/algo-stop-recovery.service';
 import { SignalSinkService } from '../../src/features/trading/execution/signal-sink.service';
-import { CcxtExchangeAdapter } from '../../src/features/trading/exchange/ccxt-exchange.adapter';
+import { CcxtExchangeAdapter } from '../../src/features/venue/exchange/ccxt-exchange.adapter';
 import type {
   CcxtOrderClient,
   CcxtOrder,
   CcxtTrade,
   CcxtBalances,
-} from '../../src/features/trading/exchange/ccxt-order-client';
+} from '../../src/features/venue/exchange/ccxt-order-client';
 import { KillSwitchService } from '../../src/features/trading/risk/kill-switch.service';
 import { RateBucketsService } from '../../src/features/trading/risk/rate-buckets.service';
 import { CrossingRegistryService } from '../../src/features/trading/risk/crossing-registry.service';
 import { PositionSizerService } from '../../src/features/trading/risk/position-sizer.service';
 import { RiskEngineService } from '../../src/features/trading/risk/risk-engine.service';
 import { SignalGatewayService } from '../../src/features/trading/risk/signal-gateway.service';
-import type { ModeControlPort } from '../../src/ports/mode-control';
-import type { ExecRunContext } from '../../src/ports/execution';
-import type { SymbolFilters } from '../../src/domain/risk/evaluate';
-import type { PartialRiskLimits } from '../../src/domain/risk/limits';
-import type { FeedHealthPort } from '../../src/ports/market-data';
-import type { Signal } from '../../src/domain/types/signal';
-import { price } from '../../src/domain/types/money';
+import type { ModeControlPort } from '../../src/ports/trading/mode-control';
+import type { ExecRunContext } from '../../src/ports/trading/execution';
+import type { SymbolFilters } from '../../src/domain/trading/risk/evaluate';
+import type { PartialRiskLimits } from '../../src/domain/trading/risk/limits';
+import type { FeedHealthPort } from '../../src/ports/venue/market-data';
+import type { Signal } from '../../src/domain/strategy/types/signal';
+import { price } from '../../src/domain/common/types/money';
 import {
   venueId,
   symbolId,
   strategyId,
   epochMs,
   decodeClientOrderId,
-} from '../../src/domain/types/ids';
+} from '../../src/domain/common/types/ids';
 
 const T = 1_700_000_000_000;
 const V = venueId('binance');

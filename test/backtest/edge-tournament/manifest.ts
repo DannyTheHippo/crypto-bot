@@ -1,5 +1,5 @@
 import * as crypto from 'node:crypto';
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 export const CACHE_DIR = join(__dirname, 'cache');
@@ -19,7 +19,7 @@ export interface ManifestDatasetEntry {
 export interface EdgeTournamentManifest {
   readonly version: 1;
   readonly frozenAt: string;
-  readonly preregReport: 'reports/loop/edge-tournament-preregistration-2026-07-24.md';
+  readonly preregReport: 'research/studies/edge-tournament-preregistration-2026-07-24.md';
   readonly datasets: readonly ManifestDatasetEntry[];
 }
 

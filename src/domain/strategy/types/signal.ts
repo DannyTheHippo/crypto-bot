@@ -1,5 +1,5 @@
-import type { EpochMs, StrategyId, SymbolId, VenueId } from './ids';
-import type { Price } from './money';
+import type { EpochMs, StrategyId, SymbolId, VenueId } from '../../common/types/ids';
+import type { Price } from '../../common/types/money';
 
 export interface Signal {
   readonly strategyId: StrategyId;
@@ -18,7 +18,7 @@ export interface Signal {
   readonly cancelSide?: 'BUY' | 'SELL';
   // Push 3 P7c: role-scoped narrowing alongside cancelSide — 'vtp' cancels only the resting
   // take-profit, 'vsl' only the resting protective stop (role resolved off the order's own intent
-  // dedupeKey — see SignalSinkService.cancelOpenForSignal / domain/oms/resting-order-role.ts).
+  // dedupeKey — see SignalSinkService.cancelOpenForSignal / domain/trading/oms/resting-order-role.ts).
   // Absent ⇒ every order matching cancelSide is cancelled (today's behavior, unchanged) — this is
   // the deliberate path for a cancel-first ahead of a full-size exit, which must clear BOTH a
   // resting TP and a resting stop.
@@ -50,7 +50,7 @@ export interface Signal {
   readonly dedupeKey: string;
   readonly reason: string;
   // S2 (rich decision contract, Design § Sizing flow): agentic-lane sizing directive — the model's
-  // conviction channel (AgentDirectives.sizeFraction, ports/agentic-strategy.ts), consumed only by
+  // conviction channel (AgentDirectives.sizeFraction, ports/strategy/agentic-strategy.ts), consumed only by
   // position-sizer.service.ts (C1) to compute notional as cappedEquity × min(sizeFraction,
   // maxAgentPositionFraction) instead of the legacy baseNotional×strength path. Exact decimal string
   // (money-adjacent — money hard rule 1). Absent ⇒ legacy sizing, byte-identical. Execution/

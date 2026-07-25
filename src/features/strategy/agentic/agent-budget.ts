@@ -5,7 +5,7 @@ import type {
   AgentDecisionInput,
   AgentProposal,
   AgentUsage,
-} from '../../../ports/agentic-strategy';
+} from '../../../ports/strategy/agentic-strategy';
 import type { LoggerLike } from './anthropic-agent-client';
 
 const NOOP_LOGGER: LoggerLike = { warn: () => undefined };

@@ -1,5 +1,5 @@
-import type { SymbolId } from './ids';
-import { venueId, type VenueId } from './ids';
+import type { SymbolId } from '../../common/types/ids';
+import { venueId, type VenueId } from '../../common/types/ids';
 import { splitSymbol } from './symbol';
 
 // v3 spec §1.2: the single, canonical symbol→venue resolution. Pure (imports only domain types) —

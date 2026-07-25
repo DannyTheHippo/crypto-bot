@@ -10,17 +10,17 @@
  */
 import { describe, it, expect } from 'vitest';
 import Decimal from 'decimal.js';
-import { buildCcxtExchange } from '../../src/features/trading/market-data/ccxt-stream.adapter';
-import { RealCcxtOrderClient } from '../../src/features/trading/exchange/ccxt-order-client';
-import { CcxtExchangeAdapter } from '../../src/features/trading/exchange/ccxt-exchange.adapter';
-import { AdapterError } from '../../src/ports/exchange';
+import { buildCcxtExchange } from '../../src/features/venue/market-data/ccxt-stream.adapter';
+import { RealCcxtOrderClient } from '../../src/features/venue/exchange/ccxt-order-client';
+import { CcxtExchangeAdapter } from '../../src/features/venue/exchange/ccxt-exchange.adapter';
+import { AdapterError } from '../../src/ports/venue/exchange';
 import {
   intentId,
   encodeClientOrderId,
   venueId,
   symbolId,
   epochMs,
-} from '../../src/domain/types/ids';
+} from '../../src/domain/common/types/ids';
 import { uuidv7 } from '../../src/features/trading/risk/uuidv7';
 import { randomBytes } from 'node:crypto';
 

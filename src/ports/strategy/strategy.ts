@@ -1,5 +1,5 @@
-import type { Signal } from '../domain/types/signal';
-import type { StrategyId } from '../domain/types/ids';
+import type { Signal } from '../../domain/strategy/types/signal';
+import type { StrategyId } from '../../domain/common/types/ids';
 import type { AsyncStrategy } from './agentic-strategy';
 
 // Signal journaling sink (§8 decision trail). The SignalSink records every signal it routes, tagged

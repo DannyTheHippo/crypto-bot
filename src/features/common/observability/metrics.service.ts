@@ -9,21 +9,21 @@ import Decimal from 'decimal.js';
 import { performance } from 'perf_hooks';
 import { Counter, Gauge } from 'prom-client';
 import { TypedConfigService } from '../../../config/environment/typed-config.service';
-import { venueForSymbol } from '../../../domain/types/venue-map';
-import { DERIVATIVES_FEED, type DerivativesFeedPort } from '../../../ports/derivatives-feed';
-import { PORTFOLIO_VIEW, type PortfolioViewPort } from '../../../ports/execution';
+import { venueForSymbol } from '../../../domain/venue/types/venue-map';
+import { DERIVATIVES_FEED, type DerivativesFeedPort } from '../../../ports/venue/derivatives-feed';
+import { PORTFOLIO_VIEW, type PortfolioViewPort } from '../../../ports/trading/execution';
 import {
   MARKET_STREAM_TELEMETRY,
   type MarketStreamTelemetryPort,
-} from '../../../ports/market-data';
-import { MODE_CONTROL, type ModeControlPort } from '../../../ports/mode-control';
-import { KILL_SWITCH, type KillSwitchPort } from '../../../ports/risk';
-import { SENTIMENT_FEED, type SentimentFeedPort } from '../../../ports/sentiment-feed';
+} from '../../../ports/venue/market-data';
+import { MODE_CONTROL, type ModeControlPort } from '../../../ports/trading/mode-control';
+import { KILL_SWITCH, type KillSwitchPort } from '../../../ports/trading/risk';
+import { SENTIMENT_FEED, type SentimentFeedPort } from '../../../ports/strategy/sentiment-feed';
 import {
   STRATEGY_REGISTRY,
   type StrategyLifecycle,
   type StrategyRegistryPort,
-} from '../../../ports/strategy';
+} from '../../../ports/strategy/strategy';
 import { EventLoopHealthIndicator } from './event-loop-health.indicator';
 
 export const EVENT_LOOP_DELAY_GAUGE = makeGaugeProvider({
@@ -269,7 +269,7 @@ export const MARKET_STREAM_FORCED_RECONNECTS_COUNTER = makeCounterProvider({
 // W1 (Grafana rebuild): funding-ingest / universe-scanner / agent-budget metrics recorded via
 // AgentMetricsRecorder from FundingIngestService/UniverseScannerService/TradingRuntimeService — same
 // cross-boundary duplicated-provider convention as AGENTIC_VENUE_TP_COUNTER/AGENTIC_VENUE_STOP_COUNTER
-// above (those callers live in features/trading/agentic too but are recorded through the same seam).
+// above (those callers live in features/strategy/agentic too but are recorded through the same seam).
 export const FUNDING_PAYMENTS_INGESTED_COUNTER = makeCounterProvider({
   name: 'funding_payments_ingested_total',
   help: 'Perp funding-payment settlement rows ingested from the venue (FundingIngestService), by venue/symbol',

@@ -1,5 +1,5 @@
 import { Global, Module, type Provider } from '@nestjs/common';
-import { CLOCK, SystemClock } from '../../../ports/clock';
+import { CLOCK, SystemClock } from '../../../ports/common/clock';
 import { TypedConfigService } from '../../../config/environment/typed-config.service';
 import {
   MODE_CONTROL,
@@ -9,12 +9,12 @@ import {
   MODE_AUDIT_OVERRIDE,
   type ModeAuditPort,
   type ModeControlConfig,
-} from '../../../ports/mode-control';
+} from '../../../ports/trading/mode-control';
 import {
   PROMOTION_READINESS,
   PROMOTION_READINESS_CONFIG,
   type PromotionReadinessConfig,
-} from '../../../ports/promotion';
+} from '../../../ports/trading/promotion';
 import { ModeControlService } from './mode-control.service';
 import { PromotionReadinessService } from './promotion-readiness.service';
 import { ArmingController } from './arming.controller';

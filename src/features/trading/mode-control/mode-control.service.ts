@@ -1,6 +1,6 @@
 import { Injectable, Inject } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { CLOCK, type ClockPort } from '../../../ports/clock';
+import { CLOCK, type ClockPort } from '../../../ports/common/clock';
 import {
   MODE_AUDIT,
   KEY_PROBE,
@@ -16,22 +16,22 @@ import {
   type ModeAuditPort,
   type KeyProbeResult,
   type KeyProbePort,
-} from '../../../ports/mode-control';
-import { KILL_SWITCH, type KillSwitchPort } from '../../../ports/risk';
+} from '../../../ports/trading/mode-control';
+import { KILL_SWITCH, type KillSwitchPort } from '../../../ports/trading/risk';
 import {
   INITIAL_ARMING,
   reduceArming,
   type ArmingState,
   type ArmFailure,
   type ArmingDeps,
-} from '../../../domain/mode/arming';
+} from '../../../domain/trading/mode/arming';
 import {
   resolveMode,
   type ModeResolutionVector,
   type ModeResolution,
-} from '../../../domain/mode/resolution';
-import type { TradingMode } from '../../../domain/types/mode';
-import { venueId, type VenueId } from '../../../domain/types/ids';
+} from '../../../domain/trading/mode/resolution';
+import type { TradingMode } from '../../../domain/trading/types/mode';
+import { venueId, type VenueId } from '../../../domain/common/types/ids';
 import { verifyArmingHmac } from './hmac';
 
 // v3 §7.1: local venue-id copies (same idiom as key-probe.service.ts and position-sizer.service.ts —

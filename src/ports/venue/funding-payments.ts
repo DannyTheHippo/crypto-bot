@@ -1,12 +1,12 @@
-import type { EpochMs, SymbolId, VenueId } from '../domain/types/ids';
-import type { TradingMode } from '../domain/types/mode';
+import type { EpochMs, SymbolId, VenueId } from '../../domain/common/types/ids';
+import type { TradingMode } from '../../domain/trading/types/mode';
 
-// P5b: crosses the features/trading/exchange (funding-ingest.service.ts) ↔ database boundary —
-// mirrors PROMOTION_STATS's own port-file-local token convention (ports/promotion.ts).
+// P5b: crosses the features/venue/exchange (funding-ingest.service.ts) ↔ database boundary —
+// mirrors PROMOTION_STATS's own port-file-local token convention (ports/trading/promotion.ts).
 export const FUNDING_PAYMENTS = Symbol('FUNDING_PAYMENTS');
 
 // One row ready for idempotent insert — the DB-facing shape of ExchangePort's VenueFundingPayment
-// (ports/exchange.ts) plus the mode stamp promotion nets on.
+// (ports/venue/exchange.ts) plus the mode stamp promotion nets on.
 export interface FundingPaymentRow {
   readonly venue: VenueId;
   readonly symbol: SymbolId;

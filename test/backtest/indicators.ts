@@ -9,8 +9,8 @@
 // If any candidate built on these clears the step-D gate and is promoted to src/domain/strategy/, the
 // indicator it uses moves with it into src/domain/strategy/indicators.ts (the production indicator
 // home) — these are deliberately written to be portable verbatim.
-import { toIndicatorNumber } from '../../src/domain/types/money';
-import type { Price } from '../../src/domain/types/money';
+import { toIndicatorNumber } from '../../src/domain/common/types/money';
+import type { Price } from '../../src/domain/common/types/money';
 
 export { toIndicatorNumber };
 

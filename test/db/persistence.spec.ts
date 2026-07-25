@@ -21,27 +21,33 @@ import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import * as path from 'path';
 import * as schema from '../../src/database/schemas/trading';
 import { computeAuditHash, AUDIT_INITIAL_PREV_HASH } from '../../src/database/journal-hash';
-import { JournalRepository } from '../../src/database/repositories/journal.repository';
-import { OutboxRepository } from '../../src/database/repositories/outbox.repository';
-import { FillRepository } from '../../src/database/repositories/fill.repository';
-import { DrizzleExecutionStore } from '../../src/database/repositories/drizzle-execution-store';
-import type { PersistedOrderEvent, ReconciliationRow } from '../../src/ports/execution';
-import { OrderRepository } from '../../src/database/repositories/order.repository';
-import { IntentRepository } from '../../src/database/repositories/intent.repository';
-import { RiskDecisionRepository } from '../../src/database/repositories/risk-decision.repository';
-import { SignalRepository } from '../../src/database/repositories/signal.repository';
-import { AgentDecisionRepository } from '../../src/database/repositories/agent-decision.repository';
-import { AgentDecisionJournalAdapter } from '../../src/database/repositories/agent-decision-journal.adapter';
-import { PlaybookStoreAdapter } from '../../src/database/repositories/playbook-store.adapter';
-import { LlmUsageRepository } from '../../src/database/repositories/llm-usage.repository';
-import { LlmUsageSinkAdapter } from '../../src/database/repositories/llm-usage-sink.adapter';
-import { PromotionStatsRepository } from '../../src/database/repositories/promotion-stats.repository';
-import type { AgentDecisionEntry } from '../../src/ports/agentic-strategy';
+import { JournalRepository } from '../../src/database/repositories/trading/journal.repository';
+import { OutboxRepository } from '../../src/database/repositories/trading/outbox.repository';
+import { FillRepository } from '../../src/database/repositories/trading/fill.repository';
+import { DrizzleExecutionStore } from '../../src/database/repositories/trading/drizzle-execution-store';
+import type { PersistedOrderEvent, ReconciliationRow } from '../../src/ports/trading/execution';
+import { OrderRepository } from '../../src/database/repositories/trading/order.repository';
+import { IntentRepository } from '../../src/database/repositories/trading/intent.repository';
+import { RiskDecisionRepository } from '../../src/database/repositories/trading/risk-decision.repository';
+import { SignalRepository } from '../../src/database/repositories/trading/signal.repository';
+import { AgentDecisionRepository } from '../../src/database/repositories/strategy/agent-decision.repository';
+import { AgentDecisionJournalAdapter } from '../../src/database/repositories/strategy/agent-decision-journal.adapter';
+import { PlaybookStoreAdapter } from '../../src/database/repositories/strategy/playbook-store.adapter';
+import { LlmUsageRepository } from '../../src/database/repositories/common/llm-usage.repository';
+import { LlmUsageSinkAdapter } from '../../src/database/repositories/common/llm-usage-sink.adapter';
+import { PromotionStatsRepository } from '../../src/database/repositories/trading/promotion-stats.repository';
+import type { AgentDecisionEntry } from '../../src/ports/strategy/agentic-strategy';
 import Decimal from 'decimal.js';
-import { price, qty } from '../../src/domain/types/money';
-import { venueId, symbolId, clientOrderId, strategyId, epochMs } from '../../src/domain/types/ids';
-import type { FillRecord } from '../../src/domain/types/exec-report';
-import type { Position } from '../../src/domain/types/portfolio';
+import { price, qty } from '../../src/domain/common/types/money';
+import {
+  venueId,
+  symbolId,
+  clientOrderId,
+  strategyId,
+  epochMs,
+} from '../../src/domain/common/types/ids';
+import type { FillRecord } from '../../src/domain/trading/types/exec-report';
+import type { Position } from '../../src/domain/trading/types/portfolio';
 
 const DB_URL = process.env['DATABASE_URL'];
 

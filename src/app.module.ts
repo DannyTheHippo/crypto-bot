@@ -8,7 +8,7 @@ import { CorrelationMiddleware } from './shared/correlation/correlation.middlewa
 import { RiskModule } from './features/trading/risk/risk.module';
 import { ExecutionModule } from './features/trading/execution/execution.module';
 import { ModeControlModule } from './features/trading/mode-control/mode-control.module';
-import { AgenticStrategyModule } from './features/trading/agentic/agentic-strategy.module';
+import { AgenticStrategyModule } from './features/strategy/agentic/agentic-strategy.module';
 import { DbHealthBridgeModule } from './features/trading/composition/db-health-bridge.module';
 import { PersistenceOverridesModule } from './features/trading/composition/persistence-overrides.module';
 import { PortfolioViewBridgeModule } from './features/trading/composition/portfolio-view-bridge.module';

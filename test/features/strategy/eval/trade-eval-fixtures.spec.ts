@@ -13,10 +13,10 @@ import {
   SYNTHETIC_PERP_CAPS,
   type TradeToolDecision,
   type TradeModelCandidateResult,
-} from '../../eval/agentic/trade-eval-fixtures';
-import { EVAL_PROFILE } from '../../eval/agentic/fixtures';
-import type { ScoringRow } from '../../../src/features/trading/agentic/counterfactual-scoring';
-import { epochMs } from '../../../src/domain/types/ids';
+} from '../../../eval/agentic/trade-eval-fixtures';
+import { EVAL_PROFILE } from '../../../eval/agentic/fixtures';
+import type { ScoringRow } from '../../../../src/features/strategy/agentic/counterfactual-scoring';
+import { epochMs } from '../../../../src/domain/common/types/ids';
 
 const T = 1_700_000_000_000;
 

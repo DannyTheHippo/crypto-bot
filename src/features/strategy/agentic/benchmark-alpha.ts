@@ -16,7 +16,7 @@ import Decimal from 'decimal.js';
 // digests never has to remember two different conventions.
 //
 // Money-path note: candle closes arrive here as decimal STRINGS already minted by
-// domain/types/money.ts's price() upstream. Decimal carries every intermediate step; the final bps
+// domain/common/types/money.ts's price() upstream. Decimal carries every intermediate step; the final bps
 // figure is rounded to a whole number via toDecimalPlaces(0) before toNumber(), matching
 // computeTrackRecordContext's own meanNetBpsPerTrip convention (a plain number field — reference-
 // grade prompt/scoreboard context, never a money path itself, same caveat as

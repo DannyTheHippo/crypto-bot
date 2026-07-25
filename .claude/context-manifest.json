@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "mappings": [
+    {
+      "pattern": "controller|service|module|nestjs|dto|guard|interceptor|inject|@Module",
+      "file": "contexts/nestjs-features.md"
+    },
+    {
+      "pattern": "domain|pure|evaluate|reducer|reconcile|oms|risk/|signal\\.ts",
+      "file": "contexts/domain-patterns.md"
+    },
+    {
+      "pattern": "port|Symbol\\(|RISK_|EXECUTION_|CLOCK|token",
+      "file": "contexts/ports-di.md"
+    },
+    {
+      "pattern": "boundaries|eslint-plugin-boundaries|hexagonal|composition",
+      "file": "contexts/hexagonal-boundaries.md"
+    },
+    {
+      "pattern": "money|decimal|price\\(|qty\\(|branded|NUMERIC",
+      "file": "contexts/money-safety.md"
+    },
+    {
+      "pattern": "drizzle|repository|schema|postgres|migrate",
+      "file": "contexts/database-conventions.md"
+    },
+    {
+      "pattern": "vitest|spec\\.ts|coverage|test:livegate|toBeCloseTo",
+      "file": "contexts/vitest-testing.md"
+    },
+    {
+      "pattern": "agentic|playbook|llm|promotion|edge.tournament|backtest",
+      "file": "contexts/agentic-strategy.md"
+    }
+  ],
+  "businessContextKeywords": {
+    "product|roadmap|paper mode|testnet|live interlock|why it exists": [
+      "business-context/product-context.md"
+    ],
+    "glossary|signal|riskapproved|oms|promotion readiness|four.gate|bucket": [
+      "business-context/domain-glossary.md"
+    ]
+  }
+}

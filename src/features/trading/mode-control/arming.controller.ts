@@ -1,6 +1,10 @@
 import { Controller, Post, Body, Inject, UseGuards } from '@nestjs/common';
 import { ApiResponse } from '@nestjs/swagger';
-import { MODE_CONTROL, type ModeControlPort, type ArmResult } from '../../../ports/mode-control';
+import {
+  MODE_CONTROL,
+  type ModeControlPort,
+  type ArmResult,
+} from '../../../ports/trading/mode-control';
 import { ArmRequestRequestDto } from './dtos/request/arm-request.request.dto';
 import { ArmConfirmRequestDto } from './dtos/request/arm-confirm.request.dto';
 import {

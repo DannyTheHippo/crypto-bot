@@ -1,6 +1,6 @@
 # Edge tournament results (2026-07-24)
 
-Preregistration: `reports/loop/edge-tournament-preregistration-2026-07-24.md`
+Preregistration: `research/studies/edge-tournament-preregistration-2026-07-24.md`
 Discovery N (conservative): **5239**
 Flat baseline: `0` · Agentic baseline: `-23.25`
 Real LLM spend this run: **$0** (deterministic calculators; hard cap `2`)

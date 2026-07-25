@@ -1,16 +1,16 @@
-import type { EpochMs, SymbolId, VenueId } from '../domain/types/ids';
+import type { EpochMs, SymbolId, VenueId } from '../../domain/common/types/ids';
 import type {
   CandleEvent,
   CandleInterval,
   ChannelHealth,
   MarketEvent,
-} from '../domain/types/market-events';
-import type { Price } from '../domain/types/money';
-import type { SubscriptionSpec } from '../domain/types/subscription';
+} from '../../domain/venue/types/market-events';
+import type { Price } from '../../domain/common/types/money';
+import type { SubscriptionSpec } from '../../domain/venue/types/subscription';
 
 // SubscriptionSpec is a pure domain descriptor; re-exported here for the many
 // market-data consumers that import it alongside these tokens.
-export type { SubscriptionSpec } from '../domain/types/subscription';
+export type { SubscriptionSpec } from '../../domain/venue/types/subscription';
 
 export const MARKET_STREAM = Symbol('MARKET_STREAM');
 export const FEED_HEALTH = Symbol('FEED_HEALTH');

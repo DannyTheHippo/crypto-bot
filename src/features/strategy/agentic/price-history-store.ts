@@ -1,5 +1,5 @@
-import type { SymbolId } from '../../../domain/types/ids';
-import type { CandleEvent } from '../../../domain/types/market-events';
+import type { SymbolId } from '../../../domain/common/types/ids';
+import type { CandleEvent } from '../../../domain/venue/types/market-events';
 import type { BenchmarkCandle } from './benchmark-alpha';
 
 // W3 Part 2 (Design § Learning & measurement stack): a small in-memory rolling price-history store,

@@ -1,4 +1,4 @@
-import type { SymbolId, EpochMs } from '../domain/types/ids';
+import type { SymbolId, EpochMs } from '../../domain/common/types/ids';
 
 // #43 (Push 3 P6 Unit 2): read-only public liquidation-order feed (binanceusdm forceOrder stream via
 // ccxt PRO's watchLiquidationsForSymbols) — a WS-fed sibling to the REST-polled derivatives/

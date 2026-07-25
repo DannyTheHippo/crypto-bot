@@ -35,16 +35,16 @@ import { z } from 'zod';
 import { Pool } from 'pg';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import * as schema from '../../../src/database/schemas/trading';
-import { AgentDecisionJournalAdapter } from '../../../src/database/repositories/agent-decision-journal.adapter';
-import { PlaybookStoreAdapter } from '../../../src/database/repositories/playbook-store.adapter';
+import { AgentDecisionJournalAdapter } from '../../../src/database/repositories/strategy/agent-decision-journal.adapter';
+import { PlaybookStoreAdapter } from '../../../src/database/repositories/strategy/playbook-store.adapter';
 import {
   DERIVATIVES_TEMPLATE_VERSION,
   PLAN_BOUNDS,
   PLAN_TOOL,
   PLAN_TEMPLATE_VERSION,
   computePromptHash,
-} from '../../../src/features/trading/agentic/agent-prompt';
-import { SEED_PLAYBOOK } from '../../../src/features/trading/agentic/agentic-strategy.module';
+} from '../../../src/features/strategy/agentic/agent-prompt';
+import { SEED_PLAYBOOK } from '../../../src/features/strategy/agentic/agentic-strategy.module';
 import { EVAL_PROFILE, buildLegacyPlanSystemPrompt } from './fixtures';
 import {
   composeRecordedUserMessage,

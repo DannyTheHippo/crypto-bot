@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   buildPlanJson,
   readPlanJson,
-} from '../../../src/database/repositories/agent-decision-journal.adapter';
-import type { AgentDirectives, RegimeTags } from '../../../src/ports/agentic-strategy';
+} from '../../../../src/database/repositories/strategy/agent-decision-journal.adapter';
+import type { AgentDirectives, RegimeTags } from '../../../../src/ports/strategy/agentic-strategy';
 
 // XA4 (A0 activation bundle): before this fix, plan_json was written ONLY when a plan object was
 // present — so v2 holds (the overwhelming majority of decisions) dropped their model-chosen

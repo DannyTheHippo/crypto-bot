@@ -3,19 +3,19 @@ import type {
   TickerEvent,
   OrderBookSnapshotEvent,
   CandleInterval,
-} from '../domain/types/market-events';
-import type { ExecReport } from '../domain/types/exec-report';
-import type { Signal } from '../domain/types/signal';
-import type { StrategyPortfolioView } from '../domain/types/portfolio';
-import type { StrategyId, VenueId, SymbolId, EpochMs } from '../domain/types/ids';
-import type { SubscriptionSpec } from '../domain/types/subscription';
-import type { Price, Qty } from '../domain/types/money';
-import type { DerivativesSnapshot } from './derivatives-feed';
+} from '../../domain/venue/types/market-events';
+import type { ExecReport } from '../../domain/trading/types/exec-report';
+import type { Signal } from '../../domain/strategy/types/signal';
+import type { StrategyPortfolioView } from '../../domain/trading/types/portfolio';
+import type { StrategyId, VenueId, SymbolId, EpochMs } from '../../domain/common/types/ids';
+import type { SubscriptionSpec } from '../../domain/venue/types/subscription';
+import type { Price, Qty } from '../../domain/common/types/money';
+import type { DerivativesSnapshot } from '../venue/derivatives-feed';
 import type { SentimentSnapshot } from './sentiment-feed';
 import type { FearGreedSnapshot } from './fear-greed-feed';
-import type { TradeFlowSnapshot } from './trade-flow-feed';
-import type { PositioningSnapshot } from './positioning-feed';
-import type { LiquidationSnapshot } from './liquidation-feed';
+import type { TradeFlowSnapshot } from '../venue/trade-flow-feed';
+import type { PositioningSnapshot } from '../venue/positioning-feed';
+import type { LiquidationSnapshot } from '../venue/liquidation-feed';
 
 // ── StrategyInitContext ───────────────────────────────────────────────────────
 //
@@ -188,7 +188,7 @@ export interface AgentDecisionRecord {
 }
 
 // Higher-timeframe indicator snapshot the host derives by aggregating the base-interval candle
-// history (see domain/indicators/candle-aggregate.ts) — longer-horizon trend/momentum context
+// history (see domain/strategy/indicators/candle-aggregate.ts) — longer-horizon trend/momentum context
 // alongside the strategy's own timeframe.
 export interface AgentHtfIndicators {
   readonly emaFast: number;
@@ -628,7 +628,7 @@ export interface AgentTradingProfile {
 // ── Agent decision journal ────────────────────────────────────────────────────
 //
 // Persists every agent decision (mapped to a signal or not) for offline analysis — mirrors
-// SIGNAL_JOURNAL's conventions (see SignalJournalPort in ports/strategy.ts): record is sync
+// SIGNAL_JOURNAL's conventions (see SignalJournalPort in ports/strategy/strategy.ts): record is sync
 // fire-and-forget, an analysis artifact rather than a safety interlock. The underlying table
 // (agent_decisions) is a PLAIN insert-only row, not append-only-hardened — that REVOKE/trigger
 // treatment is scoped to audit_log/order_events only (CLAUDE.md rule 6). A decision's forward
@@ -639,7 +639,7 @@ export const AGENT_DECISION_JOURNAL = Symbol('AGENT_DECISION_JOURNAL');
 // R2 (episodic memory): the compact regime fingerprint derived at decide() time from features the
 // market payload ALREADY carries — trend from the EMA fast/slow spread, a volatility bucket from
 // ATR/price, the funding sign when a derivatives snapshot rode in, and the UTC session bucket from
-// eventTime. Derivation is a pure spec-pinned function (features/trading/agentic/episodic-memory.ts's
+// eventTime. Derivation is a pure spec-pinned function (features/strategy/agentic/episodic-memory.ts's
 // deriveRegimeTags), called on BOTH the write side (agentic.strategy.ts stamps it on every journaled
 // row) and the read side (anthropic-agent-client.ts derives the same tags to retrieve matching past
 // setups), so a stored tag and a query tag can never drift. Persisted INSIDE plan_json's jsonb (no new

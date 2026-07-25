@@ -1,10 +1,10 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { desc, sql } from 'drizzle-orm';
-import { DRIZZLE_DB } from '../database.tokens';
-import * as schema from '../schemas/trading';
-import { canonicalPayload, computeAuditHash, AUDIT_INITIAL_PREV_HASH } from '../journal-hash';
-import { requireDb } from './persistence-guard';
+import { DRIZZLE_DB } from '../../database.tokens';
+import * as schema from '../../schemas/trading';
+import { canonicalPayload, computeAuditHash, AUDIT_INITIAL_PREV_HASH } from '../../journal-hash';
+import { requireDb } from '../common/persistence-guard';
 
 export interface JournalEntry {
   actor: string;

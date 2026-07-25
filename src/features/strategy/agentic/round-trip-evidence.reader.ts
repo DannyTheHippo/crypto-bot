@@ -4,8 +4,8 @@ import type {
   ReflectionTriggerSeed,
   RoundTripEvidence,
   RoundTripEvidencePort,
-} from '../../../ports/promotion';
-import { walkRoundTrips, type ClosedRoundTrip } from '../../../domain/risk/round-trips';
+} from '../../../ports/trading/promotion';
+import { walkRoundTrips, type ClosedRoundTrip } from '../../../domain/trading/risk/round-trips';
 
 const DEMO_MODE = 'testnet' as const;
 

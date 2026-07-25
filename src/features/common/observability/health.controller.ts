@@ -3,15 +3,15 @@ import { HealthCheck, HealthCheckService, HealthIndicatorResult } from '@nestjs/
 import { ApiResponse } from '@nestjs/swagger';
 import { TypedConfigService } from '../../../config/environment/typed-config.service';
 import { EventLoopHealthIndicator } from './event-loop-health.indicator';
-import { DB_HEALTH, type DbHealthPort } from '../../../ports/db-health';
-import { KILL_SWITCH, type KillSwitchPort } from '../../../ports/risk';
-import type { KillSwitchState } from '../../../domain/risk/kill-switch';
+import { DB_HEALTH, type DbHealthPort } from '../../../ports/common/db-health';
+import { KILL_SWITCH, type KillSwitchPort } from '../../../ports/trading/risk';
+import type { KillSwitchState } from '../../../domain/trading/risk/kill-switch';
 import {
   STRATEGY_REGISTRY,
   type StrategyRegistryPort,
   type StrategyLifecycle,
   type DrainReason,
-} from '../../../ports/strategy';
+} from '../../../ports/strategy/strategy';
 import { healthLiveApiExamples, healthReadyApiExamples } from './api-examples/health.api-examples';
 
 interface StrategyDetail {

@@ -1,4 +1,4 @@
-import type { VenueId, SymbolId } from './ids';
+import type { VenueId, SymbolId } from '../../common/types/ids';
 import type { CandleInterval } from './market-events';
 
 // A market-data subscription descriptor. Pure data — lives in the domain so both

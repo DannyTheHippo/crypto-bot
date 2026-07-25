@@ -2,24 +2,24 @@ import { Injectable, Inject, Optional, Logger } from '@nestjs/common';
 import { InjectMetric, makeCounterProvider } from '@willsoto/nestjs-prometheus';
 import { Counter } from 'prom-client';
 import Decimal from 'decimal.js';
-import { CLOCK, type ClockPort } from '../../../ports/clock';
-import { FEED_HEALTH, type FeedHealthPort } from '../../../ports/market-data';
+import { CLOCK, type ClockPort } from '../../../ports/common/clock';
+import { FEED_HEALTH, type FeedHealthPort } from '../../../ports/venue/market-data';
 import {
   RISK_ENGINE_DEPS,
   RISK_JOURNAL,
   type RiskEnginePort,
   type RiskEngineDeps,
   type RiskJournalPort,
-} from '../../../ports/risk';
-import { evaluate, type MarkInfo, type RiskEvalInput } from '../../../domain/risk/evaluate';
-import { mintApproval } from '../../../domain/risk/proof';
+} from '../../../ports/trading/risk';
+import { evaluate, type MarkInfo, type RiskEvalInput } from '../../../domain/trading/risk/evaluate';
+import { mintApproval } from '../../../domain/trading/risk/proof';
 import { KillSwitchService } from './kill-switch.service';
 import { RateBucketsService } from './rate-buckets.service';
 import { CrossingRegistryService } from './crossing-registry.service';
-import type { OrderIntent } from '../../../domain/types/order-intent';
-import type { PortfolioSnapshot } from '../../../domain/types/portfolio';
-import type { RiskDecision } from '../../../domain/types/risk-decision';
-import { epochMs, type EpochMs } from '../../../domain/types/ids';
+import type { OrderIntent } from '../../../domain/trading/types/order-intent';
+import type { PortfolioSnapshot } from '../../../domain/trading/types/portfolio';
+import type { RiskDecision } from '../../../domain/trading/types/risk-decision';
+import { epochMs, type EpochMs } from '../../../domain/common/types/ids';
 
 // §8 rejection taxonomy — risk stage. eslint-plugin-boundaries forbids features/trading/risk importing the
 // execution gate's orders_rejected_total, so risk vetoes are counted here by reason code; the

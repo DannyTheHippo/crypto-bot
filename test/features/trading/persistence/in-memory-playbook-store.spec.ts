@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { InMemoryPlaybookStore } from '../../../src/database/repositories/in-memory-playbook-store';
-import type { PlaybookSeed } from '../../../src/database/repositories/playbook-store.adapter';
+import { InMemoryPlaybookStore } from '../../../../src/database/repositories/strategy/in-memory-playbook-store';
+import type { PlaybookSeed } from '../../../../src/database/repositories/strategy/playbook-store.adapter';
 
 const SEED: PlaybookSeed = { version: 1, content: 'seed content' };
 

@@ -1,8 +1,8 @@
 import { Global, Module } from '@nestjs/common';
 import { RiskModule } from '../risk/risk.module';
-import { RISK_LIMITS } from '../../../ports/risk';
-import { LIMITS_COMPLETE } from '../../../ports/mode-control';
-import { validateLimits, type PartialRiskLimits } from '../../../domain/risk/limits';
+import { RISK_LIMITS } from '../../../ports/trading/risk';
+import { LIMITS_COMPLETE } from '../../../ports/trading/mode-control';
+import { validateLimits, type PartialRiskLimits } from '../../../domain/trading/risk/limits';
 
 // W3 Part 4: pure code motion out of app.module.ts — see db-health-bridge.module.ts's own header
 // comment on the boundaries 'app' zone widening this relies on.

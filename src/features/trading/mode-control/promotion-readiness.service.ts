@@ -1,6 +1,6 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import Decimal from 'decimal.js';
-import { sumFeesQuote, walkRoundTrips } from '../../../domain/risk/round-trips';
+import { sumFeesQuote, walkRoundTrips } from '../../../domain/trading/risk/round-trips';
 import {
   PROMOTION_READINESS_CONFIG,
   PROMOTION_STATS,
@@ -9,7 +9,7 @@ import {
   type PromotionReadinessConfig,
   type PromotionReadinessPort,
   type PromotionStatsPort,
-} from '../../../ports/promotion';
+} from '../../../ports/trading/promotion';
 
 const DEMO_MODE = 'testnet' as const;
 const MIN_ROUND_TRIPS = 30;
@@ -17,7 +17,7 @@ const MIN_WINDOW_DAYS = 14;
 const MTOK = new Decimal(1_000_000);
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-// The round-trip walk + fee-conversion rules live in src/domain/risk/round-trips.ts (pure, shared
+// The round-trip walk + fee-conversion rules live in src/domain/trading/risk/round-trips.ts (pure, shared
 // with the agentic reflection-evidence feed) — this service owns only the VERDICT: which reasons
 // gate `permitted`, the LLM cost math, and the evidence window. PromotionFillRow is structurally a
 // domain RoundTripFill, so rows flow into the walk unchanged. The extraction is behavior-preserving:

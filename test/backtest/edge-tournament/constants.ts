@@ -1,5 +1,5 @@
 // Frozen edge-tournament preregistration constants — RESEARCH TOOLING (off production gate).
-// Parameters locked 2026-07-24 per reports/plans/edge-tournament-preregistration-2026-07-24.md.
+// Parameters locked 2026-07-24 per research/studies/edge-tournament-preregistration-2026-07-24.md.
 
 /** Disclosed global discovery count for DSR diagnostic (conservative N). */
 export const GLOBAL_DISCOVERY_COUNT = 5239;

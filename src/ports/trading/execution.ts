@@ -1,16 +1,22 @@
-import type { ClientOrderId, StrategyId, SymbolId, VenueId, EpochMs } from '../domain/types/ids';
-import type { TradingMode } from '../domain/types/mode';
-import type { OrderIntent } from '../domain/types/order-intent';
-import type { ApprovalProof, RiskApprovedIntent } from '../domain/types/risk-decision';
+import type {
+  ClientOrderId,
+  StrategyId,
+  SymbolId,
+  VenueId,
+  EpochMs,
+} from '../../domain/common/types/ids';
+import type { TradingMode } from '../../domain/trading/types/mode';
+import type { OrderIntent } from '../../domain/trading/types/order-intent';
+import type { ApprovalProof, RiskApprovedIntent } from '../../domain/trading/types/risk-decision';
 import type {
   PortfolioSnapshot,
   StrategyPortfolioView,
   Position,
   OpenOrderSummary,
-} from '../domain/types/portfolio';
-import type { ExecReport, FillRecord } from '../domain/types/exec-report';
-import type { OrderRecord, OrderEvent, OrderState } from '../domain/oms/reducer';
-import type { SymbolFilters } from '../domain/risk/evaluate';
+} from '../../domain/trading/types/portfolio';
+import type { ExecReport, FillRecord } from '../../domain/trading/types/exec-report';
+import type { OrderRecord, OrderEvent, OrderState } from '../../domain/trading/oms/reducer';
+import type { SymbolFilters } from '../../domain/trading/risk/evaluate';
 
 // ── Tokens ────────────────────────────────────────────────────────────────────
 
@@ -181,7 +187,7 @@ export interface ExecutionStorePort {
   loadFilledQty(clientOrderId: ClientOrderId): Promise<string>;
   // Push 3 P7c: resting-order role resolution (vtp/vsl) — recovers the persisted intent for an open
   // order's clientOrderId so the caller can classify it off intent.source.dedupeKey (see
-  // domain/oms/resting-order-role.ts). Optional because it is a NEW read path: the in-memory store
+  // domain/trading/oms/resting-order-role.ts). Optional because it is a NEW read path: the in-memory store
   // implements it directly (paper/test); a store that hasn't wired it yet is simply absent here, and
   // every call site treats that identically to a lookup miss — resolves 'unknown' and leaves the
   // order alone (warn-once, never a blind cancel/reconcile). Read-only; never on the order-submit path.
@@ -311,7 +317,7 @@ export interface ExecQualitySinkPort {
   recordEntryAttempt(attempt: ExecQualityAttempt): void;
 }
 
-// The concrete sink (ExecQualityService) lives in features/trading/agentic, a different boundaries
+// The concrete sink (ExecQualityService) lives in features/strategy/agentic, a different boundaries
 // zone execution may not import directly — same cross-zone problem EXEC_OUTBOX_OVERRIDE et al. solve.
 // EXECUTION_MODULE's own EXEC_QUALITY_SINK provider falls back to a no-op when this override is
 // absent (module-isolation tests, or a boot where AgenticCompositionBridgeModule never wires it).

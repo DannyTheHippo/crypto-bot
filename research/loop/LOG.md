@@ -1,3 +1,5 @@
+<!-- Moved 2026-07-24: reports/loop → research/loop (repo organization). Historical path refs inside remain as narrative. -->
+
 # Daily profitability loop — pass log
 
 Append-only, newest last. One dated entry per pass (including empty passes), per
@@ -21,7 +23,7 @@ round trips, net −$14.52→−$14.72, LLM $11.53, window 1.83d, ready=0; equit
 - `STRATEGY_INTERVAL` 5m→15m; false `AGENTIC_MAX_CALLS_PER_DAY` comment corrected (5m config
   overran the 500 cap daily at 576 decides).
 - `AGENTIC_REFLECTION_MODEL` opus→`claude-sonnet-5` (owner call: keeps flat 3/15 pricing honest).
-- NEW deterministic prescreen gate (`src/features/trading/agentic/prescreen.ts`) ahead of every LLM
+- NEW deterministic prescreen gate (`src/features/strategy/agentic/prescreen.ts`) ahead of every LLM
   call: position*open / vol_expansion (10/50 stdev ratio >1.3) / breakout proximity (0.5% of 20-bar
   extremes) consult; quiet skips journal an honest HOLD (model='prescreen', tokens/latency null,
   excluded from scoring digest + recentDecisions ring). 6 `AGENTIC_PRESCREEN*\*`knobs;`agentic_prescreen_total{outcome}` counter; Grafana panel 142. Fail-open throughout.
@@ -363,7 +365,7 @@ CANCEL_PENDING`; `reconciliation_runs_total`: 174 clean then 105+ `error`; last 
   on the next recreate.
 - **Flagged for human review — proposed OMS/execution fix package** (all files are
   must-not-touch for a pass; sequencing matters, see restart hazard):
-  1. `domain/oms/reducer.ts` — CANCEL_PENDING: accept `VENUE_CANCELED`→CANCELED and
+  1. `domain/trading/oms/reducer.ts` — CANCEL_PENDING: accept `VENUE_CANCELED`→CANCELED and
      `VENUE_EXPIRED`→EXPIRED (venue confirming the cancel via the reconcile channel is the
      EXPECTED demo-venue outcome, not a contradiction; fills still win — the FILL arm stays
      first). Same two arms on CANCEL_UNKNOWN. Optionally add `CANCEL_ACK`-on-CANCELED to
@@ -399,7 +401,7 @@ CANCEL_PENDING`; `reconciliation_runs_total`: 174 clean then 105+ `error`; last 
   OMS fix package. Money-path discipline applied in full: regression tests first-class, reviewer
   dispatch before commit, full gates including livegate/paper/db, deploy + soak.
 - **Shipped `f5ce2c0` (12 files) — all four package items:**
-  1. `domain/oms/reducer.ts`: CANCEL_PENDING and CANCEL_UNKNOWN accept `VENUE_CANCELED`→CANCELED
+  1. `domain/trading/oms/reducer.ts`: CANCEL_PENDING and CANCEL_UNKNOWN accept `VENUE_CANCELED`→CANCELED
      and `VENUE_EXPIRED`→EXPIRED (reconcile-channel confirmation of a requested cancel; FILL arms
      untouched — fills still win); `CANCEL_ACK`-on-CANCELED joins the duplicate-terminal no-ops.
   2. `reconciliation.service.ts`: `adoptTerminal` isolates a `TransitionError` to that order —
@@ -1074,8 +1076,8 @@ the 30s-abort blocker; the first live confirmation (an attempt resolving to `min
 offline verifies Opus-in-240s; the unit tests verify only the plumbing.
 
 **Diff summary:** `src/ports/app-config.ts`, `src/config/environment/environment.config.ts`,
-`src/features/trading/agentic/agentic-strategy.module.ts`,
-`src/features/trading/agentic/reflection.service.ts`, `docker-compose.yml`, `.env.example`,
+`src/features/strategy/agentic/agentic-strategy.module.ts`,
+`src/features/strategy/agentic/reflection.service.ts`, `docker-compose.yml`, `.env.example`,
 `test/unit/agentic-strategy/reflection.service.spec.ts` (+2 tests),
 `test/unit/config/validate.spec.ts`, `test/unit/agentic-strategy/agent-client-selection.spec.ts` —
 single commit `ef325f6` (9 files, +116/−4). Report: this LOG entry + state.md — separate docs commit.
@@ -3171,7 +3173,7 @@ channel, which is why the flag demanded it. Seeded as backlog #55.
 
 ### Remaining #54 layer (b) — adapter response-shape fix, OWNER-GATED (exchange adapters are MUST-NOT)
 
-Exact proposed diff, `src/features/trading/exchange/ccxt-exchange.adapter.ts:221-228`:
+Exact proposed diff, `src/features/venue/exchange/ccxt-exchange.adapter.ts:221-228`:
 
 ```ts
     try {
@@ -4105,7 +4107,7 @@ changes (window targeting, normalization, cost parity) carry forward into hh-v1 
 **Harness build (all gates green — build/lint/typecheck/2679 tests, both eval specs skip
 cleanly in a bare shell, legacy spec byte-untouched):**
 
-- `src/features/trading/agentic/counterfactual-scoring.ts`: additive `shortEntries` (FLAT→
+- `src/features/strategy/agentic/counterfactual-scoring.ts`: additive `shortEntries` (FLAT→
   open_short) + `shortExits` (close-from-SHORT) buckets; deliberate relabel out of
   `heldShort`/`stayedFlat` — same mislabel class the P4b fix addressed; raw forward return
   stored, sign correction stays consumer-side. Unit-pinned (3 new cases, 45/45 green).

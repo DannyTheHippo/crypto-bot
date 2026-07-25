@@ -4,9 +4,9 @@
 // compare()'s own refusal-without-flag docstring describes as the one caller who CAN vouch for
 // template equality.
 import { describe, expect, it } from 'vitest';
-import { SEED_PLAYBOOK } from '../../../src/features/trading/agentic/agentic-strategy.module';
-import { compare, scoreRows } from '../../../src/features/trading/agentic/counterfactual-scoring';
-import { validatePlaybook } from '../../../src/features/trading/agentic/playbook-validator';
+import { SEED_PLAYBOOK } from '../../../src/features/strategy/agentic/agentic-strategy.module';
+import { compare, scoreRows } from '../../../src/features/strategy/agentic/counterfactual-scoring';
+import { validatePlaybook } from '../../../src/features/strategy/agentic/playbook-validator';
 import { replay, type ScriptedDecision } from './fixtures';
 
 const MODEL = 'claude-eval-fixture-model';

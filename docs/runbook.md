@@ -171,7 +171,7 @@ share the same book and the same process. Rules:
 
 - **APPEND new symbols, never reorder** — positions/journals key off the instance id; reordering
   re-attributes state.
-- Every entry needs a `DEFAULT_FILTERS` row (domain/risk/default-filters.ts) — boot fails loud otherwise.
+- Every entry needs a `DEFAULT_FILTERS` row (domain/trading/risk/default-filters.ts) — boot fails loud otherwise.
 - One shared **book-wide** LLM budget (`AGENTIC_MAX_CALLS_PER_DAY` / daily cost stop, etc.); entry caps
   apply per instance. Deployed decide interval is `STRATEGY_INTERVAL=15m` (~96 bars/day per symbol) —
   budget with `AGENTIC_ACTIVE_MENU_SIZE` and portfolio consult in mind.
@@ -265,7 +265,7 @@ at a **different** equity `E`:
    `E`, and re-check `SIZER_EQUITY_CAP` / `SIZER_EQUITY_FRACTION` / `SIZER_MAX_PLANNED_STOP_RISK_FRACTION`
    — every limit is a multiple of `equity × fraction` when the fraction is > 0; a changed fraction
    invalidates cached numbers.
-2. `RISK_MAX_POSITION_PER_SYMBOL` is a **base-qty** cap, not notional (`domain/risk/limits.ts`) —
+2. `RISK_MAX_POSITION_PER_SYMBOL` is a **base-qty** cap, not notional (`domain/trading/risk/limits.ts`) —
    recompute it against the live mark price of the cheapest symbol currently in `TRADING_SYMBOLS`
    at arming time. A stale or placeholder price under- or over-constrains it, and because it is one
    flat value across all symbols it is necessarily decorative for the highest-priced symbols

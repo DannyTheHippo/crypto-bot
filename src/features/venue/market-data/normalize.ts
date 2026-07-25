@@ -1,6 +1,6 @@
 import Decimal from 'decimal.js';
-import { price, qty, type Price } from '../../../domain/types/money';
-import { epochMs } from '../../../domain/types/ids';
+import { price, qty, type Price } from '../../../domain/common/types/money';
+import { epochMs } from '../../../domain/common/types/ids';
 import type {
   MarketEvent,
   TickerEvent,
@@ -9,9 +9,9 @@ import type {
   OrderBookSnapshotEvent,
   OrderLevel,
   CandleInterval,
-} from '../../../domain/types/market-events';
-import type { RawVenueEvent } from '../../../ports/exchange-stream';
-import type { EpochMs, VenueId, SymbolId } from '../../../domain/types/ids';
+} from '../../../domain/venue/types/market-events';
+import type { RawVenueEvent } from '../../../ports/venue/exchange-stream';
+import type { EpochMs, VenueId, SymbolId } from '../../../domain/common/types/ids';
 
 // Per-(venue, symbol, channel) monotonic sequence counter.
 // Bigint to avoid integer overflow over long-running processes.

@@ -18,23 +18,23 @@ import { NonceLedgerService } from '../../src/features/trading/execution/nonce-l
 import { FillIngestorService } from '../../src/features/trading/execution/fill-ingestor.service';
 import { ExecReportConsumerService } from '../../src/features/trading/execution/exec-report-consumer.service';
 import { ExecutionGateService } from '../../src/features/trading/execution/execution-gate.service';
-import type { ModeControlPort } from '../../src/ports/mode-control';
+import type { ModeControlPort } from '../../src/ports/trading/mode-control';
 import { HaltCoordinatorService } from '../../src/features/trading/execution/halt-coordinator.service';
 import {
   PaperExchangeAdapter,
   type PaperConfig,
-} from '../../src/features/trading/exchange/paper-exchange.adapter';
+} from '../../src/features/venue/exchange/paper-exchange.adapter';
 import { KillSwitchService } from '../../src/features/trading/risk/kill-switch.service';
 import { RateBucketsService } from '../../src/features/trading/risk/rate-buckets.service';
 import { CrossingRegistryService } from '../../src/features/trading/risk/crossing-registry.service';
 import { PositionSizerService } from '../../src/features/trading/risk/position-sizer.service';
 import { RiskEngineService } from '../../src/features/trading/risk/risk-engine.service';
-import type { ExecFilters, EquityLimits, ExecRunContext } from '../../src/ports/execution';
-import type { SymbolFilters } from '../../src/domain/risk/evaluate';
-import type { PartialRiskLimits } from '../../src/domain/risk/limits';
-import type { FeedHealthPort } from '../../src/ports/market-data';
-import type { OrderLevel } from '../../src/domain/types/market-events';
-import { price, qty } from '../../src/domain/types/money';
+import type { ExecFilters, EquityLimits, ExecRunContext } from '../../src/ports/trading/execution';
+import type { SymbolFilters } from '../../src/domain/trading/risk/evaluate';
+import type { PartialRiskLimits } from '../../src/domain/trading/risk/limits';
+import type { FeedHealthPort } from '../../src/ports/venue/market-data';
+import type { OrderLevel } from '../../src/domain/venue/types/market-events';
+import { price, qty } from '../../src/domain/common/types/money';
 import {
   intentId,
   encodeClientOrderId,
@@ -42,8 +42,8 @@ import {
   venueId,
   symbolId,
   epochMs,
-} from '../../src/domain/types/ids';
-import type { OrderIntent } from '../../src/domain/types/order-intent';
+} from '../../src/domain/common/types/ids';
+import type { OrderIntent } from '../../src/domain/trading/types/order-intent';
 
 const T = 1_700_000_000_000;
 const V = venueId('binance');

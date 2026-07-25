@@ -2,17 +2,17 @@ import { Inject, Injectable } from '@nestjs/common';
 import Decimal from 'decimal.js';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { and, count, desc, eq, gte, isNotNull, like, notLike, sql } from 'drizzle-orm';
-import { DRIZZLE_DB } from '../database.tokens';
-import * as schema from '../schemas/trading';
-import { requireDb } from './persistence-guard';
-import { REPLAY_STRATEGY_ID_PREFIX } from '../../ports/agentic-strategy';
+import { DRIZZLE_DB } from '../../database.tokens';
+import * as schema from '../../schemas/trading';
+import { requireDb } from '../common/persistence-guard';
+import { REPLAY_STRATEGY_ID_PREFIX } from '../../../ports/strategy/agentic-strategy';
 import type {
   AgentPlan,
   AgentDirectives,
   RegimeTags,
   SimilarSetupRow,
-} from '../../ports/agentic-strategy';
-import type { EpochMs } from '../../domain/types/ids';
+} from '../../../ports/strategy/agentic-strategy';
+import type { EpochMs } from '../../../domain/common/types/ids';
 
 // SQL LIKE pattern for R1 synthetic (replay-<runId>) strategyIds — `%` matches the runId suffix.
 const REPLAY_STRATEGY_LIKE = `${REPLAY_STRATEGY_ID_PREFIX}%`;

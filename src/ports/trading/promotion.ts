@@ -1,4 +1,4 @@
-import type { TradingMode } from '../domain/types/mode';
+import type { TradingMode } from '../../domain/trading/types/mode';
 
 // ── Tokens ────────────────────────────────────────────────────────────────────
 
@@ -104,7 +104,7 @@ export interface PromotionStatsPort {
   latestReflectionAt?(): Promise<number | null>;
   // P5b: Σ funding_payments.amount_quote for mode (sinceMs-scoped like fillsForMode; absent ⇒
   // all-time) — POSITIVE = received, NEGATIVE = paid (see VenueFundingPayment's sign-convention
-  // comment, ports/exchange.ts), ADDED directly into the promotion net. hasRows distinguishes
+  // comment, ports/venue/exchange.ts), ADDED directly into the promotion net. hasRows distinguishes
   // "zero net because payments cancelled out" from "zero net because nothing was ever ingested" —
   // PromotionReadinessService uses it for the fail-open missing-data flag. Optional so existing
   // fakes/implementations remain valid; absent ⇒ treated as no funding data (netQuote '0',
@@ -120,7 +120,7 @@ export interface PromotionStatsPort {
 export const REFLECTION_EVIDENCE = Symbol('REFLECTION_EVIDENCE');
 
 // One CLOSED demo round trip, walked from venue fills with the same dust-closure rule the
-// promotion verdict uses (src/domain/risk/round-trips.ts) — realized venue truth, in contrast to
+// promotion verdict uses (src/domain/trading/risk/round-trips.ts) — realized venue truth, in contrast to
 // the journal-reconstructed t+1 close-price proxies reflection otherwise learns from. All money
 // fields are decimal strings; netPnl = realizedPnl (gross) − feesQuote (convertible fees only —
 // an unconvertible fee asset is the promotion verdict's concern, not this evidence feed's).

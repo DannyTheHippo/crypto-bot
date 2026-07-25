@@ -1,7 +1,7 @@
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { InjectMetric, makeCounterProvider } from '@willsoto/nestjs-prometheus';
 import { Counter } from 'prom-client';
-import { SIGNAL_GATEWAY, type SignalGatewayPort } from '../../../ports/risk';
+import { SIGNAL_GATEWAY, type SignalGatewayPort } from '../../../ports/trading/risk';
 import {
   PORTFOLIO_VIEW,
   EXECUTION_GATE,
@@ -9,16 +9,19 @@ import {
   type PortfolioViewPort,
   type ExecutionGatePort,
   type ExecutionStorePort,
-} from '../../../ports/execution';
+} from '../../../ports/trading/execution';
 import {
   SIGNAL_JOURNAL,
   type SignalSinkPort,
   type SignalJournalPort,
-} from '../../../ports/strategy';
-import type { Signal } from '../../../domain/types/signal';
-import type { ClientOrderId } from '../../../domain/types/ids';
-import type { OpenOrderSummary } from '../../../domain/types/portfolio';
-import { roleForDedupeKey, type RestingOrderRole } from '../../../domain/oms/resting-order-role';
+} from '../../../ports/strategy/strategy';
+import type { Signal } from '../../../domain/strategy/types/signal';
+import type { ClientOrderId } from '../../../domain/common/types/ids';
+import type { OpenOrderSummary } from '../../../domain/trading/types/portfolio';
+import {
+  roleForDedupeKey,
+  type RestingOrderRole,
+} from '../../../domain/trading/oms/resting-order-role';
 
 // Front-door rejection counter: signals dropped at the gateway (kill-switch/TTL/dedupe) or sizer
 // (below-min / no-ref / no-position) before reaching the RiskEngine. These were only journaled to
@@ -70,7 +73,7 @@ export class SignalSinkService implements SignalSinkPort {
   ) {}
 
   // Push 3 P7c: shared with AgenticStrategy's own roleForOrder (feature-boundary walls forbid
-  // importing one from the other — both call the same pure domain/oms/resting-order-role.ts
+  // importing one from the other — both call the same pure domain/trading/oms/resting-order-role.ts
   // classifier over their own store lookup). A store failure must never affect trading — fails open
   // to 'unknown', the same as an absent store or a foreign/undecodable order.
   private async roleForOrder(clientOrderId: ClientOrderId): Promise<RestingOrderRole> {

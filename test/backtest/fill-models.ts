@@ -6,7 +6,7 @@
 // makes it correct for shorts automatically: a SHORT entry is a SELL (receives less, same rule as a
 // LONG exit) and a SHORT exit/cover is a BUY (pays more, same rule as a LONG entry) — no special
 // short-casing needed. Mirrors the toy-equity haircut convention in
-// src/features/trading/agentic/counterfactual-scoring.ts (TOY_TAKER_FEE_BPS / TOY_ADVERSE_HAIRCUT_BPS,
+// src/features/strategy/agentic/counterfactual-scoring.ts (TOY_TAKER_FEE_BPS / TOY_ADVERSE_HAIRCUT_BPS,
 // 10bps taker + 5bps haircut), independently re-derived on Decimal here since this module runs
 // against arbitrary bar arrays rather than ScoringRow (that module's dependency, not reused directly).
 //

@@ -14,10 +14,10 @@ import { Pool } from 'pg';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { runAgenticReplayR1, EARLIEST_ALLOWED_MS } from './agentic-replay-r1';
 import type { Bar } from './harness';
-import type { CandleInterval } from '../../src/domain/types/market-events';
-import type { AgentDecisionJournalPort } from '../../src/ports/agentic-strategy';
-import { InMemoryAgentDecisionJournal } from '../../src/database/repositories/in-memory-agent-decision-journal';
-import { AgentDecisionJournalAdapter } from '../../src/database/repositories/agent-decision-journal.adapter';
+import type { CandleInterval } from '../../src/domain/venue/types/market-events';
+import type { AgentDecisionJournalPort } from '../../src/ports/strategy/agentic-strategy';
+import { InMemoryAgentDecisionJournal } from '../../src/database/repositories/strategy/in-memory-agent-decision-journal';
+import { AgentDecisionJournalAdapter } from '../../src/database/repositories/strategy/agent-decision-journal.adapter';
 import * as schema from '../../src/database/schemas/trading';
 
 const RUN = process.env['REPLAY_AGENTIC_RUN'] === '1';

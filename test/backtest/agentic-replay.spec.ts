@@ -14,8 +14,8 @@ import { describe, it, expect } from 'vitest';
 import Decimal from 'decimal.js';
 import { runAgenticReplay, EARLIEST_ALLOWED_MS, capabilitiesForSymbol } from './agentic-replay';
 import { LiveAgenticStrategy } from './strategies/live-agentic-strategy';
-import { symbolId } from '../../src/domain/types/ids';
-import type { AgentDirectives } from '../../src/ports/agentic-strategy';
+import { symbolId } from '../../src/domain/common/types/ids';
+import type { AgentDirectives } from '../../src/ports/strategy/agentic-strategy';
 import type { Bar } from './harness';
 import type { BarContext, BarStrategy } from './strategy';
 

@@ -2,47 +2,47 @@ import { Global, Module, Logger } from '@nestjs/common';
 import { binanceusdm as BinanceUsdmExchange, binance as BinanceSpotExchange } from 'ccxt';
 import { pro as ccxtPro } from 'ccxt';
 import { TypedConfigService } from '../../../config/environment/typed-config.service';
-import { CLOCK, type ClockPort } from '../../../ports/clock';
-import { symbolId, type SymbolId } from '../../../domain/types/ids';
-import { splitSymbol } from '../../../domain/types/symbol';
-import { PERP_VENUE, PERP_VENUE_ID, SPOT_VENUE } from '../../../domain/types/venue-map';
-import { DERIVATIVES_FEED, type DerivativesFeedPort } from '../../../ports/derivatives-feed';
-import { SENTIMENT_FEED, type SentimentFeedPort } from '../../../ports/sentiment-feed';
-import { FEAR_GREED_FEED, type FearGreedFeedPort } from '../../../ports/fear-greed-feed';
-import { TRADE_FLOW_FEED, type TradeFlowFeedPort } from '../../../ports/trade-flow-feed';
-import { POSITIONING_FEED, type PositioningFeedPort } from '../../../ports/positioning-feed';
-import { LIQUIDATION_FEED, type LiquidationFeedPort } from '../../../ports/liquidation-feed';
-import { FUNDING_PAYMENTS, type FundingPaymentsPort } from '../../../ports/funding-payments';
+import { CLOCK, type ClockPort } from '../../../ports/common/clock';
+import { symbolId, type SymbolId } from '../../../domain/common/types/ids';
+import { splitSymbol } from '../../../domain/venue/types/symbol';
+import { PERP_VENUE, PERP_VENUE_ID, SPOT_VENUE } from '../../../domain/venue/types/venue-map';
+import { DERIVATIVES_FEED, type DerivativesFeedPort } from '../../../ports/venue/derivatives-feed';
+import { SENTIMENT_FEED, type SentimentFeedPort } from '../../../ports/strategy/sentiment-feed';
+import { FEAR_GREED_FEED, type FearGreedFeedPort } from '../../../ports/strategy/fear-greed-feed';
+import { TRADE_FLOW_FEED, type TradeFlowFeedPort } from '../../../ports/venue/trade-flow-feed';
+import { POSITIONING_FEED, type PositioningFeedPort } from '../../../ports/venue/positioning-feed';
+import { LIQUIDATION_FEED, type LiquidationFeedPort } from '../../../ports/venue/liquidation-feed';
+import { FUNDING_PAYMENTS, type FundingPaymentsPort } from '../../../ports/venue/funding-payments';
 import {
   DerivativesFeedService,
   type DerivativesRestSource,
-} from '../market-data/derivatives-feed.service';
+} from '../../venue/market-data/derivatives-feed.service';
 import {
   SentimentFeedService,
   type SentimentHttpSource,
-} from '../market-data/sentiment-feed.service';
+} from '../../venue/market-data/sentiment-feed.service';
 import {
   FearGreedFeedService,
   type FearGreedHttpSource,
-} from '../market-data/fear-greed-feed.service';
+} from '../../venue/market-data/fear-greed-feed.service';
 import {
   TradeFlowFeedService,
   type TradeFlowRestSource,
-} from '../market-data/trade-flow-feed.service';
+} from '../../venue/market-data/trade-flow-feed.service';
 import {
   PositioningFeedService,
   type PositioningRestSource,
-} from '../market-data/positioning-feed.service';
+} from '../../venue/market-data/positioning-feed.service';
 import {
   LiquidationFeedService,
   type LiquidationWatchSource,
-} from '../market-data/liquidation-feed.service';
-import { FundingIngestService } from '../exchange/funding-ingest.service';
+} from '../../venue/market-data/liquidation-feed.service';
+import { FundingIngestService } from '../../venue/exchange/funding-ingest.service';
 import { AgentMetricsRecorder } from '../../common/observability/agent-metrics-recorder.service';
 import { ObservabilityModule } from '../../common/observability/observability.module';
-import { VENUE_REGISTRY, type VenueRuntimeDescriptor } from '../../../ports/venue-registry';
-import { VENUE_EXCHANGE_PORTS, type ExchangePort } from '../../../ports/exchange';
-import type { VenueId } from '../../../domain/types/ids';
+import { VENUE_REGISTRY, type VenueRuntimeDescriptor } from '../../../ports/venue/venue-registry';
+import { VENUE_EXCHANGE_PORTS, type ExchangePort } from '../../../ports/venue/exchange';
+import type { VenueId } from '../../../domain/common/types/ids';
 
 // v3 spec §1.3: ContextFeedsModule is MarketFeedModule's poller half, moved out of app.module.ts.
 // Every feed is constructed ONCE over whichever symbol subset its underlying market actually covers

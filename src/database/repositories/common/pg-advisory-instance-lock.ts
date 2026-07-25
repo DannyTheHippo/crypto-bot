@@ -1,5 +1,5 @@
 import type { Pool, PoolClient } from 'pg';
-import type { InstanceLockPort } from '../../ports/execution';
+import type { InstanceLockPort } from '../../../ports/trading/execution';
 
 // §1/§6 single-writer interlock via PostgreSQL session-level advisory locks.
 // pg_advisory_lock is session-scoped: the lock is held for the life of the connection.

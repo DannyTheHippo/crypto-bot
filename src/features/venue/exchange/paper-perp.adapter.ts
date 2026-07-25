@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import Decimal from 'decimal.js';
-import { CLOCK, type ClockPort } from '../../../ports/clock';
+import { CLOCK, type ClockPort } from '../../../ports/common/clock';
 import {
   AdapterError,
   type ExchangePort,
@@ -10,21 +10,21 @@ import {
   type ExchangeOrderState,
   type VenueFill,
   type CredentialCheck,
-} from '../../../ports/exchange';
+} from '../../../ports/venue/exchange';
 import {
   EXEC_OUTBOX,
   EXEC_REPORT_NOTIFY,
   type ExecOutboxPort,
   type ExecReportNotify,
-} from '../../../ports/execution';
+} from '../../../ports/trading/execution';
 import {
   bookWalk,
   tradeThroughFill,
   type SimFill,
   type InsufficientDepthPolicy,
-} from '../../../domain/paper/fill';
-import { mulberry32 } from '../../../domain/rng/prng';
-import { price, qty, feeAmount, roundToMoneyPrecision } from '../../../domain/types/money';
+} from '../../../domain/trading/paper/fill';
+import { mulberry32 } from '../../../domain/common/rng/prng';
+import { price, qty, feeAmount, roundToMoneyPrecision } from '../../../domain/common/types/money';
 import {
   clientOrderId as makeClientOrderId,
   epochMs,
@@ -32,9 +32,9 @@ import {
   type SymbolId,
   type VenueId,
   type EpochMs,
-} from '../../../domain/types/ids';
-import type { OrderLevel } from '../../../domain/types/market-events';
-import type { ExecReport, FillReport } from '../../../domain/types/exec-report';
+} from '../../../domain/common/types/ids';
+import type { OrderLevel } from '../../../domain/venue/types/market-events';
+import type { ExecReport, FillReport } from '../../../domain/trading/types/exec-report';
 import {
   assertSwapPrivateUrlSafe,
   type SwapBootMode,
@@ -43,7 +43,7 @@ import {
 export const PAPER_PERP_CONFIG = Symbol('PAPER_PERP_CONFIG');
 
 // A funding-payment settlement row, shaped to mirror the funding_events table
-// (src/database/schemas/trading/trading.schema.ts). Kept adapter-local (not ports/execution.ts)
+// (src/database/schemas/trading/trading.schema.ts). Kept adapter-local (not ports/trading/execution.ts)
 // rather than widening a shared port: nothing outside this adapter consumes it this pass.
 export interface FundingEventPayload {
   readonly mode: 'paper' | 'testnet' | 'live';

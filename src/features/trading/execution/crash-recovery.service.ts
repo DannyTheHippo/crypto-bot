@@ -1,8 +1,8 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { EXECUTION_STORE, type ExecutionStorePort } from '../../../ports/execution';
-import { reduce } from '../../../domain/oms/reducer';
-import { recoveryEventFor, isUnresolved } from '../../../domain/oms/recovery';
-import type { ClientOrderId } from '../../../domain/types/ids';
+import { EXECUTION_STORE, type ExecutionStorePort } from '../../../ports/trading/execution';
+import { reduce } from '../../../domain/trading/oms/reducer';
+import { recoveryEventFor, isUnresolved } from '../../../domain/trading/oms/recovery';
+import type { ClientOrderId } from '../../../domain/common/types/ids';
 import { OrderBookService } from './order-book.service';
 
 // §6.1 crash recovery. On startup the OrderBook is rebuilt from the durable order_events journal;

@@ -1,4 +1,4 @@
-import type { VenueId, SymbolId, EpochMs } from '../domain/types/ids';
+import type { VenueId, SymbolId, EpochMs } from '../../domain/common/types/ids';
 import type { SubscriptionSpec } from './market-data';
 
 export const EXCHANGE_STREAM = Symbol('EXCHANGE_STREAM');

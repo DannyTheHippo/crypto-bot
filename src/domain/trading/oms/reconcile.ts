@@ -1,6 +1,6 @@
 import Decimal from 'decimal.js';
-import { isOurClientOrderId, venueId } from '../types/ids';
-import { splitSymbol } from '../types/symbol';
+import { isOurClientOrderId, venueId } from '../../common/types/ids';
+import { splitSymbol } from '../../venue/types/symbol';
 import type { OrderIntent } from '../types/order-intent';
 
 // §6.4 reconciliation — pure comparison/classification. The service performs the IO (fetch venue
@@ -35,7 +35,7 @@ const ALGO_RAIL_VENUE_ID = venueId('binanceusdm');
 // Push 3 P7f (fixes 1-3, structural root cause): true iff `intent` rides the swap venue's ALGO/
 // conditional-order rail (binanceusdm STOP_MARKET) — invisible to fetchOpenOrders/cancelOrder/
 // fetchOrder (the regular rail), reachable only through fetchOpenAlgoOrders/cancelAlgoOrder (see
-// ports/exchange.ts's AlgoOrderState). A trigger price ALONE is not sufficient — a SPOT
+// ports/venue/exchange.ts's AlgoOrderState). A trigger price ALONE is not sufficient — a SPOT
 // STOP_LOSS_LIMIT also carries triggerPrice but rests on the regular open-orders rail (see
 // OrderIntent's own header comment on the type split), so both conditions are load-bearing: the
 // venue/symbol perp discriminator is the exact one position-sizer.service.ts's isPerpSignal already

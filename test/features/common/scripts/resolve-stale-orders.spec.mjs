@@ -5,7 +5,7 @@ import {
   assertApplySetSafe,
   resolveRow,
   MAX_APPLY_ROWS,
-} from '../../../scripts/resolve-stale-orders.mjs';
+} from '../../../../scripts/resolve-stale-orders.mjs';
 
 // resolve-stale-orders.mjs mutates the production orders table (backlog #25) — this spec pins the
 // safety rails offline: dry-run writes nothing, testnet rows are untouchable, the blast-radius

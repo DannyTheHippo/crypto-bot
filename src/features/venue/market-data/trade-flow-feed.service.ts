@@ -1,9 +1,9 @@
 import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
-import type { SymbolId, EpochMs } from '../../../domain/types/ids';
-import { epochMs } from '../../../domain/types/ids';
-import { splitSymbol } from '../../../domain/types/symbol';
-import type { ClockPort } from '../../../ports/clock';
-import type { TradeFlowFeedPort, TradeFlowSnapshot } from '../../../ports/trade-flow-feed';
+import type { SymbolId, EpochMs } from '../../../domain/common/types/ids';
+import { epochMs } from '../../../domain/common/types/ids';
+import { splitSymbol } from '../../../domain/venue/types/symbol';
+import type { ClockPort } from '../../../ports/common/clock';
+import type { TradeFlowFeedPort, TradeFlowSnapshot } from '../../../ports/venue/trade-flow-feed';
 
 // latest() treats a snapshot older than this multiple of the poll interval as stale (absent to the
 // caller) — mirrors DerivativesFeedService's STALE_POLL_MULTIPLE.

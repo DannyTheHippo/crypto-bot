@@ -1,9 +1,9 @@
 import { Logger } from '@nestjs/common';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import type { RiskJournalPort } from '../../ports/risk';
-import type { ExecRunContext } from '../../ports/execution';
-import type { RiskDecision } from '../../domain/types/risk-decision';
-import type * as schema from '../schemas/trading';
+import type { RiskJournalPort } from '../../../ports/trading/risk';
+import type { ExecRunContext } from '../../../ports/trading/execution';
+import type { RiskDecision } from '../../../domain/trading/types/risk-decision';
+import type * as schema from '../../schemas/trading';
 import { RiskDecisionRepository, type RiskDecisionInsert } from './risk-decision.repository';
 
 // Composition-root binding for RISK_JOURNAL: persists every risk verdict to risk_decisions for

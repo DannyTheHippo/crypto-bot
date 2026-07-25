@@ -21,7 +21,7 @@
 //     rejected past CORRELATION_TOLERANCE_MS (a real mismatch, not just clock skew).
 //   - Entry order -> its expiry mechanism: agent_decisions rows with model='plan-executor' and
 //     rationale 'plan cleared: cancel_entry'/'plan cleared: plan_expired' (see
-//     src/features/trading/agentic/agentic.strategy.ts's runActivePlan) — same strategy/symbol, first
+//     src/features/strategy/agentic/agentic.strategy.ts's runActivePlan) — same strategy/symbol, first
 //     one at or after the entry decision's created_at.
 //
 // Fill ground truth (task-flagged #40 caveat): orders.first_fill_at was only stamped for good starting

@@ -9,13 +9,13 @@
 // Output is one JSON line per row (the durable line, verbatim) so it pipes into jq.
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { filterSince } from './loop-collect-core.mjs';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(SCRIPT_DIR, '..');
-const DIGESTS_DIR = join(REPO_ROOT, 'reports', 'loop', 'digests');
+const DIGESTS_DIR = join(REPO_ROOT, 'research', 'loop', 'digests');
 const ARCHIVE_DIR = join(DIGESTS_DIR, 'archive');
 
 function readJsonlLines(dir) {

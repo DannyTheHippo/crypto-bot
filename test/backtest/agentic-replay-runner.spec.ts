@@ -23,7 +23,7 @@ import { writeFileSync, readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import { runAgenticReplay, EARLIEST_ALLOWED_MS, type AgenticReplayOpts } from './agentic-replay';
 import type { Bar } from './harness';
-import type { CandleInterval } from '../../src/domain/types/market-events';
+import type { CandleInterval } from '../../src/domain/venue/types/market-events';
 
 const RUN = process.env['BACKTEST_AGENTIC_RUN'] === '1';
 

@@ -1,4 +1,4 @@
-import type { SymbolId, EpochMs } from '../domain/types/ids';
+import type { SymbolId, EpochMs } from '../../domain/common/types/ids';
 
 // C1: read-only public derivatives-data feed (funding rate, open interest, mark/index basis) — a
 // separate REST-poll source alongside the WS-fed order book, surfaced to the agentic prompt when
@@ -46,7 +46,7 @@ export interface DerivativesFeedPort {
   // as absent, never served past its shelf life.
   latest(symbol: SymbolId): DerivativesSnapshot | null;
   // Feed-wide (not per-symbol) health, sampled by MetricsService's pull loop (see metrics.service.ts)
-  // — mirrors FeedHealthPort's own data-plus-health shape (ports/market-data.ts). null before the
+  // — mirrors FeedHealthPort's own data-plus-health shape (ports/venue/market-data.ts). null before the
   // first successful poll. pollErrorCount is a monotonic cumulative count since process start,
   // consumed via delta against the previous sample (same pattern as the event-loop-utilization
   // gauge's prevElu in metrics.service.ts) rather than reset on read.

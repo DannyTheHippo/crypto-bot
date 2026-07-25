@@ -2,15 +2,15 @@ import { Global, Module } from '@nestjs/common';
 import Decimal from 'decimal.js';
 import { TypedConfigService } from '../../../config/environment/typed-config.service';
 import { ExecutionModule } from '../execution/execution.module';
-import type { VenueConfig, VenueEnvironment } from '../../../ports/app-config';
-import { CLOCK, type ClockPort } from '../../../ports/clock';
-import { LIVE_ADAPTER_CAP } from '../../../ports/mode-control';
+import type { VenueConfig, VenueEnvironment } from '../../../ports/common/app-config';
+import { CLOCK, type ClockPort } from '../../../ports/common/clock';
+import { LIVE_ADAPTER_CAP } from '../../../ports/trading/mode-control';
 import {
   EXEC_OUTBOX,
   EXEC_REPORT_NOTIFY,
   type ExecOutboxPort,
   type ExecReportNotify,
-} from '../../../ports/execution';
+} from '../../../ports/trading/execution';
 import {
   EXCHANGE_PORT,
   VENUE_EXCHANGE_PORTS,
@@ -25,36 +25,36 @@ import {
   type AlgoOrderHistoryView,
   type VenuePosition,
   type VenueFundingPayment,
-} from '../../../ports/exchange';
-import type { ClientOrderId, SymbolId, EpochMs } from '../../../domain/types/ids';
-import { venueId, type VenueId } from '../../../domain/types/ids';
-import { venueForSymbol, PERP_VENUE } from '../../../domain/types/venue-map';
+} from '../../../ports/venue/exchange';
+import type { ClientOrderId, SymbolId, EpochMs } from '../../../domain/common/types/ids';
+import { venueId, type VenueId } from '../../../domain/common/types/ids';
+import { venueForSymbol, PERP_VENUE } from '../../../domain/venue/types/venue-map';
 import { assertSwapPrivateUrlSafe } from '../../../shared/venue-safety/swap-url-guard';
-import { buildCcxtExchange } from '../market-data/ccxt-stream.adapter';
-import { RealCcxtOrderClient } from '../exchange/ccxt-order-client';
-import { CcxtExchangeAdapter } from '../exchange/ccxt-exchange.adapter';
-import { LiveExchangeAdapter } from '../exchange/live-exchange.adapter';
+import { buildCcxtExchange } from '../../venue/market-data/ccxt-stream.adapter';
+import { RealCcxtOrderClient } from '../../venue/exchange/ccxt-order-client';
+import { CcxtExchangeAdapter } from '../../venue/exchange/ccxt-exchange.adapter';
+import { LiveExchangeAdapter } from '../../venue/exchange/live-exchange.adapter';
 import {
   PaperExchangeAdapter,
   PAPER_CONFIG,
   type PaperConfig,
-} from '../exchange/paper-exchange.adapter';
+} from '../../venue/exchange/paper-exchange.adapter';
 import {
   PaperPerpAdapter,
   FUNDING_SINK,
   type PaperPerpConfig,
   type FundingSinkPort,
-} from '../exchange/paper-perp.adapter';
+} from '../../venue/exchange/paper-perp.adapter';
 // v3-integration(#6): in-memory-funding-sink.ts is on the §9 deletion list ("funding payments are
 // DB-mandatory") but no DB-backed writer for the funding_events table (PaperPerpAdapter's OWN
 // funding-simulation journal, distinct from the funding_payments venue-ingest table §6 already owns)
 // exists yet. Binding the in-memory sink here is a deliberate stopgap — flag for #6/#8 to land a
 // Drizzle-backed FundingSinkPort and delete this import in the same pass as the file's removal.
-import { InMemoryFundingSink } from '../exchange/in-memory-funding-sink';
-import { VENUE_REGISTRY, type VenueRuntimeDescriptor } from '../../../ports/venue-registry';
+import { InMemoryFundingSink } from '../../venue/exchange/in-memory-funding-sink';
+import { VENUE_REGISTRY, type VenueRuntimeDescriptor } from '../../../ports/venue/venue-registry';
 
 // v3 spec §1.3: ExchangeAdaptersModule replaces PaperExchangeModule. VENUE_EXCHANGE_PORTS (token
-// defined in ports/exchange.ts — see that file for why) holds one concrete ExchangePort per registry
+// defined in ports/venue/exchange.ts — see that file for why) holds one concrete ExchangePort per registry
 // venue (paper/testnet/demo/live per configMode, exactly mirroring app.module.ts's retired
 // single-venue PaperExchangeModule branch-per-mode); EXCHANGE_PORT re-binds to the
 // VenueRoutingExchangeAdapter facade so every existing single-injection call site (Risk engine, OMS,

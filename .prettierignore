@@ -23,10 +23,11 @@ test/backtest/data/funding-*.json
 # registry's params_hash is the sha256 of those bytes) and their eval-written scorecards
 # (AGENTIC_EVAL_SCORECARD_FILE output). Artifacts, not authored code; also excluded from
 # markdownlint (.markdownlint-cli2.jsonc).
-candidates
+research/candidates
+research/scorecards
 
 # Y3 collector / Y2 sweep runtime output (single-line JSONL, timestamped sweep JSONs, rendered
 # md digests) — machine-written by scripts/loop-collect.mjs & loop-sweep.mjs, rewritten at
 # runtime; formatting them churns the collector's own files. Gitignored; also excluded from
 # markdownlint (.markdownlint-cli2.jsonc).
-reports/loop/digests
+research/loop/digests

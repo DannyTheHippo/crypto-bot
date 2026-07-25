@@ -6,7 +6,7 @@
 // LiveAgenticStrategy). This is a DIFFERENT, narrower port than src/ports/strategy.ts's production
 // Strategy interface (which the retired src/domain/strategy/* implemented) — that port speaks
 // CandleEvent/Signal against the live event bus; this one speaks plain bar arrays for offline replay.
-import type { PositionState } from '../../src/domain/oms/position';
+import type { PositionState } from '../../src/domain/trading/oms/position';
 
 export type BacktestAction =
   | { readonly type: 'enter'; readonly side: 'LONG' | 'SHORT'; readonly sizeHint?: string }

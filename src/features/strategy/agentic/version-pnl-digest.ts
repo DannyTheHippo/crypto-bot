@@ -1,6 +1,6 @@
 import Decimal from 'decimal.js';
-import type { AgentDecisionRow } from '../../../ports/agentic-strategy';
-import type { RoundTripEvidence } from '../../../ports/promotion';
+import type { AgentDecisionRow } from '../../../ports/strategy/agentic-strategy';
+import type { RoundTripEvidence } from '../../../ports/trading/promotion';
 import { attributeVersion } from './promotion-evaluator';
 
 // ── Per-playbook-version net-PnL digest for the reflection loop (X8) ──────────

@@ -1,6 +1,6 @@
 import { Global, Module } from '@nestjs/common';
 import { KillSwitchService } from '../risk/kill-switch.service';
-import { KILL_SWITCH } from '../../../ports/risk';
+import { KILL_SWITCH } from '../../../ports/trading/risk';
 
 // W3 Part 4: pure code motion out of app.module.ts — see db-health-bridge.module.ts's own header
 // comment on the boundaries 'app' zone widening this relies on.

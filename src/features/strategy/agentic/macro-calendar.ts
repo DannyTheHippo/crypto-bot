@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import type { AgentCalendarEvent } from '../../../ports/agentic-strategy';
+import type { AgentCalendarEvent } from '../../../ports/strategy/agentic-strategy';
 
 // I1 (Design § Enriched model inputs): repo-maintained macro-event calendar
 // (data/macro-calendar.json, seeded at I2) — FOMC/CPI/major scheduled events, published far ahead,

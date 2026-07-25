@@ -21,7 +21,7 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import * as path from 'path';
 import * as schema from '../../src/database/schemas/trading';
-import { ExperimentRepository } from '../../src/database/repositories/experiment.repository';
+import { ExperimentRepository } from '../../src/database/repositories/strategy/experiment.repository';
 import { PRIOR_TRIAL_ROWS } from '../backtest/experiment-log';
 import { PRIOR_TRIALS } from '../backtest/trial-registry';
 

@@ -1,8 +1,8 @@
-import type { ModeAuditPort, ModeAuditEvent } from '../../ports/mode-control';
+import type { ModeAuditPort, ModeAuditEvent } from '../../../ports/trading/mode-control';
 import { JournalRepository } from './journal.repository';
 import { ModeTransitionRepository } from './mode-transition.repository';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import type * as schema from '../schemas/trading';
+import type * as schema from '../../schemas/trading';
 
 // DrizzleModeAudit: fire-and-forget (record returns void; callers never await).
 // Every event → audit_log hash chain. Mode-transition events → mode_transitions table too.

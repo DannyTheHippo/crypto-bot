@@ -1,9 +1,12 @@
 import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
-import type { SymbolId, EpochMs } from '../../../domain/types/ids';
-import { epochMs } from '../../../domain/types/ids';
-import { splitSymbol } from '../../../domain/types/symbol';
-import type { ClockPort } from '../../../ports/clock';
-import type { PositioningFeedPort, PositioningSnapshot } from '../../../ports/positioning-feed';
+import type { SymbolId, EpochMs } from '../../../domain/common/types/ids';
+import { epochMs } from '../../../domain/common/types/ids';
+import { splitSymbol } from '../../../domain/venue/types/symbol';
+import type { ClockPort } from '../../../ports/common/clock';
+import type {
+  PositioningFeedPort,
+  PositioningSnapshot,
+} from '../../../ports/venue/positioning-feed';
 
 const STALE_POLL_MULTIPLE = 2;
 

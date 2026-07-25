@@ -6,16 +6,16 @@ import { TypedConfigService } from '../../../config/environment/typed-config.ser
 import { DRIZZLE_DB } from '../../../database/database.tokens';
 import type * as schema from '../../../database/schemas/trading';
 import { PersistenceModule } from '../../../database/database.module';
-import { AgentDecisionJournalAdapter } from '../../../database/repositories/agent-decision-journal.adapter';
-import { InMemoryAgentDecisionJournal } from '../../../database/repositories/in-memory-agent-decision-journal';
-import { LlmUsageSinkAdapter } from '../../../database/repositories/llm-usage-sink.adapter';
-import { InMemoryLlmUsageSink } from '../../../database/repositories/in-memory-llm-usage-sink';
-import { PromotionStatsRepository } from '../../../database/repositories/promotion-stats.repository';
+import { AgentDecisionJournalAdapter } from '../../../database/repositories/strategy/agent-decision-journal.adapter';
+import { InMemoryAgentDecisionJournal } from '../../../database/repositories/strategy/in-memory-agent-decision-journal';
+import { LlmUsageSinkAdapter } from '../../../database/repositories/common/llm-usage-sink.adapter';
+import { InMemoryLlmUsageSink } from '../../../database/repositories/common/in-memory-llm-usage-sink';
+import { PromotionStatsRepository } from '../../../database/repositories/trading/promotion-stats.repository';
 import {
   PlaybookStoreAdapter,
   type PlaybookVersionEntry,
-} from '../../../database/repositories/playbook-store.adapter';
-import { InMemoryPlaybookStore } from '../../../database/repositories/in-memory-playbook-store';
+} from '../../../database/repositories/strategy/playbook-store.adapter';
+import { InMemoryPlaybookStore } from '../../../database/repositories/strategy/in-memory-playbook-store';
 import { ObservabilityModule } from '../../common/observability/observability.module';
 import { AgentMetricsRecorder } from '../../common/observability/agent-metrics-recorder.service';
 import { RiskModule } from '../risk/risk.module';
@@ -29,25 +29,25 @@ import {
   PAYLOAD_EXTRAS_PROVIDER_OVERRIDE,
   REFLECTION_METRICS_RECORDER_OVERRIDE,
   SEED_PLAYBOOK_V3,
-} from '../agentic/agentic-strategy.module';
-import type { DailyLlmBudget } from '../agentic/agent-budget';
-import { buildAgentPortfolioBlock } from '../agentic/agent-portfolio-block';
-import { loadMacroCalendar, filterUpcoming } from '../agentic/macro-calendar';
-import { ExecQualityService } from '../agentic/exec-quality.service';
-import { PriceHistoryStore } from '../agentic/price-history-store';
-import { validatePlaybook } from '../agentic/playbook-validator';
-import { UniverseScannerService } from '../agentic/universe-scanner.service';
-import { RoundTripEvidenceReader } from '../agentic/round-trip-evidence.reader';
-import { EDGE_POLICY_OVERRIDE } from '../agentic/disabled-edge-policy';
-import { EdgeCohortPinState } from '../agentic/edge-cohort-pin-state';
-import { ResidualVolbetaEdgePolicy } from '../agentic/residual-volbeta-edge-policy';
-import { FEED_HEALTH, type FeedHealthPort } from '../../../ports/market-data';
+} from '../../strategy/agentic/agentic-strategy.module';
+import type { DailyLlmBudget } from '../../strategy/agentic/agent-budget';
+import { buildAgentPortfolioBlock } from '../../strategy/agentic/agent-portfolio-block';
+import { loadMacroCalendar, filterUpcoming } from '../../strategy/agentic/macro-calendar';
+import { ExecQualityService } from '../../strategy/agentic/exec-quality.service';
+import { PriceHistoryStore } from '../../strategy/agentic/price-history-store';
+import { validatePlaybook } from '../../strategy/agentic/playbook-validator';
+import { UniverseScannerService } from '../../strategy/agentic/universe-scanner.service';
+import { RoundTripEvidenceReader } from '../../strategy/agentic/round-trip-evidence.reader';
+import { EDGE_POLICY_OVERRIDE } from '../../strategy/agentic/disabled-edge-policy';
+import { EdgeCohortPinState } from '../../strategy/agentic/edge-cohort-pin-state';
+import { ResidualVolbetaEdgePolicy } from '../../strategy/agentic/residual-volbeta-edge-policy';
+import { FEED_HEALTH, type FeedHealthPort } from '../../../ports/venue/market-data';
 import {
   LiveVersionRewardSource,
   type VersionRewardSource,
 } from '../../common/observability/version-attribution-metrics.service';
 import { FUNDING_INGEST } from './context-feeds.module';
-import type { FundingIngestService } from '../exchange/funding-ingest.service';
+import type { FundingIngestService } from '../../venue/exchange/funding-ingest.service';
 import {
   AGENT_DECISION_JOURNAL,
   LLM_USAGE_SINK,
@@ -57,27 +57,27 @@ import {
   type LlmUsageSink,
   type PlaybookProvider,
   type SymbolConstraints,
-} from '../../../ports/agentic-strategy';
+} from '../../../ports/strategy/agentic-strategy';
 import {
   PROMOTION_STATS,
   REFLECTION_EVIDENCE,
   type PromotionStatsPort,
   type RoundTripEvidencePort,
-} from '../../../ports/promotion';
+} from '../../../ports/trading/promotion';
 import {
   PORTFOLIO_VIEW,
   EXEC_QUALITY_SINK_OVERRIDE,
   type PortfolioViewPort,
   type ExecQualitySinkPort,
-} from '../../../ports/execution';
-import { RISK_LIMITS } from '../../../ports/risk';
-import { CLOCK, type ClockPort } from '../../../ports/clock';
-import type { PartialRiskLimits } from '../../../domain/risk/limits';
-import type { SymbolFilters } from '../../../domain/risk/evaluate';
-import { DEFAULT_FILTERS } from '../../../domain/risk/default-filters';
-import { price, qty } from '../../../domain/types/money';
-import type { PortfolioSnapshot } from '../../../domain/types/portfolio';
-import { symbolId, type VenueId } from '../../../domain/types/ids';
+} from '../../../ports/trading/execution';
+import { RISK_LIMITS } from '../../../ports/trading/risk';
+import { CLOCK, type ClockPort } from '../../../ports/common/clock';
+import type { PartialRiskLimits } from '../../../domain/trading/risk/limits';
+import type { SymbolFilters } from '../../../domain/trading/risk/evaluate';
+import { DEFAULT_FILTERS } from '../../../domain/trading/risk/default-filters';
+import { price, qty } from '../../../domain/common/types/money';
+import type { PortfolioSnapshot } from '../../../domain/trading/types/portfolio';
+import { symbolId, type VenueId } from '../../../domain/common/types/ids';
 
 // v3 spec §1.3: AgenticBridgeModule replaces AgenticCompositionBridgeModule (pure code motion out of
 // app.module.ts) — same twelve tokens, with two v3 deltas: PLAYBOOK_PROVIDER_OVERRIDE's validator
@@ -89,7 +89,7 @@ import { symbolId, type VenueId } from '../../../domain/types/ids';
 // PlaybookStoreAdapter nor InMemoryPlaybookStore share a formal port for it yet (reflection/promotion
 // needs one); both classes already satisfy this shape structurally, so this is just the type
 // PLAYBOOK_PROVIDER_OVERRIDE's binding below is typed against, without a premature port addition to
-// ports/agentic-strategy.ts.
+// ports/strategy/agentic-strategy.ts.
 interface PlaybookStorePort extends PlaybookProvider {
   append(
     content: string,
@@ -106,7 +106,7 @@ interface PlaybookStorePort extends PlaybookProvider {
 // crosses versions — and whatever this returns still passes through ValidatingPlaybookProvider (the
 // outer wrap below) exactly as ACTIVE does, so routing is safe by construction.
 //
-// Determinism: PlaybookProvider.current() (ports/agentic-strategy.ts) takes no per-call argument — no
+// Determinism: PlaybookProvider.current() (ports/strategy/agentic-strategy.ts) takes no per-call argument — no
 // strategyId/basedOnSeq reaches this layer, and threading either through AGENT_CLIENT/agent-prompt just
 // to key routing would be new plumbing this task deliberately avoids. Routing is therefore keyed off
 // wall-clock: a UTC-minute bucket (`floor(Date.now() / 60_000) % 100`) compared against `pct`. Every
@@ -372,7 +372,7 @@ export class ValidatingPlaybookProvider implements PlaybookStorePort {
   }
 }
 
-// SymbolFilters (venue rounding rules Risk/Execution enforce, see domain/risk/default-filters.ts) →
+// SymbolFilters (venue rounding rules Risk/Execution enforce, see domain/trading/risk/default-filters.ts) →
 // SymbolConstraints (the agentic port's own name for the identical shape). Exported for
 // trading-runtime.module.ts's STRATEGY_HOST factory (constraintsFor), which needs the SAME lookup the
 // trading profile below reads — never a second, independently-drifting copy.
@@ -662,7 +662,7 @@ function isTestEnv(): boolean {
       useFactory: (): PriceHistoryStore => new PriceHistoryStore(),
     },
     {
-      // W3 Part 1: composition-root bridge for the exec-quality fan-out (ports/execution.ts's
+      // W3 Part 1: composition-root bridge for the exec-quality fan-out (ports/trading/execution.ts's
       // EXEC_QUALITY_SINK_OVERRIDE — mirrors EXEC_OUTBOX_OVERRIDE's Global-module override pattern).
       // ExecutionModule cannot import ExecQualityService directly (boundaries forbid execution →
       // agentic), so this @Global() module — which already owns the ExecQualityService instance —
@@ -738,7 +738,7 @@ function isTestEnv(): boolean {
         { token: FUNDING_INGEST, optional: true },
       ],
     },
-    // G4a: lets ReflectionService (features/trading/agentic, which cannot import
+    // G4a: lets ReflectionService (features/strategy/agentic, which cannot import
     // features/common/observability — the boundary wall) record validator-rejection tripwires
     // through its own LOCAL structural type rather than the concrete class. Same useExisting pattern
     // the DB_HEALTH/PORTFOLIO_VIEW bridges use.

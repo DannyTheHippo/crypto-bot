@@ -1,13 +1,13 @@
 import { Injectable, Inject } from '@nestjs/common';
-import type { MarketStreamPort, SubscriptionSpec } from '../../../ports/market-data';
-import type { MarketEvent } from '../../../domain/types/market-events';
-import type { ExchangeStreamPort } from '../../../ports/exchange-stream';
-import { EXCHANGE_STREAM } from '../../../ports/exchange-stream';
-import type { ClockPort } from '../../../ports/clock';
-import { CLOCK } from '../../../ports/clock';
-import type { EpochMs } from '../../../domain/types/ids';
+import type { MarketStreamPort, SubscriptionSpec } from '../../../ports/venue/market-data';
+import type { MarketEvent } from '../../../domain/venue/types/market-events';
+import type { ExchangeStreamPort } from '../../../ports/venue/exchange-stream';
+import { EXCHANGE_STREAM } from '../../../ports/venue/exchange-stream';
+import type { ClockPort } from '../../../ports/common/clock';
+import { CLOCK } from '../../../ports/common/clock';
+import type { EpochMs } from '../../../domain/common/types/ids';
 import { normalizeRawEvent, type BookLimits } from './normalize';
-import type { CandleInterval } from '../../../domain/types/market-events';
+import type { CandleInterval } from '../../../domain/venue/types/market-events';
 
 @Injectable()
 export class MarketDataService implements MarketStreamPort {

@@ -1,4 +1,4 @@
-import { epochMs, type EpochMs } from '../types/ids';
+import { epochMs, type EpochMs } from '../../common/types/ids';
 
 // Domain constants: not env-tunable in v1. The challenge window is short (phishing
 // mitigation); the armed session is an 8-hour trading day before forced re-auth.

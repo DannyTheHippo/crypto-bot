@@ -1,49 +1,38 @@
 # crypto-bot
 
-A Binance spot trading bot with paper-first defaults, a four-gate live interlock, strict money-safety,
-a risk engine, a kill-switch, and full observability. Written in NestJS 11 / TypeScript strict. The
-active strategy lane is agentic — an LLM (`ACTIVE_STRATEGY=agentic`) proposes Signals on a configurable
-candle interval; the older deterministic EMA-cross/donchian lane was retired (owner decision
-2026-07-03; see `docs/archive/nightly-improvement.md`, historical). The agentic lane is gated: it stays
-paper/demo until `PromotionReadinessService` certifies it (>=30 closed demo round trips and positive
-net-of-cost PnL over >=14 days), on top of the unchanged four-gate live interlock below. Paper mode
-requires no credentials and no network access to the exchange.
+A Binance **spot + USDⓈ-M perp** trading bot (one process, both venues) with paper-first defaults,
+a four-gate live interlock, strict money-safety, a risk engine, a kill-switch, and full
+observability. Written in NestJS 11 / TypeScript strict.
 
-Three modes: **paper** (default — fully in-memory simulator driven by real market data, no credentials
-required), **testnet** (real `CcxtExchangeAdapter` against a Binance sandbox — either Binance Demo
-Trading or Binance Spot Testnet), and **live** (real funds, behind a four-gate interlock that cannot
-be satisfied in any CI environment).
+The active strategy lane is agentic — an LLM (`ACTIVE_STRATEGY=agentic`) proposes Signals on a
+configurable candle interval. The older deterministic EMA-cross/donchian lane was retired (owner
+decision 2026-07-03; historical write-up is git-history-only). The agentic lane stays paper/demo
+until `PromotionReadinessService` certifies it (>=30 closed demo round trips and positive
+net-of-cost PnL over >=14 days), on top of the unchanged four-gate live interlock. Paper mode
+requires no credentials.
 
-**Economics.** Sizing is capped at `equity = min(actualEquity, SIZER_EQUITY_CAP)` on every sizing
-path — production capital max ~$1k (`SIZER_EQUITY_CAP=1000` in `.env.app`); the demo stack runs the
-same $1k effective book plus book-scale breakers, so demo evidence transfers directly to the live
-capital target. Spot trades a 24-symbol basket (`TRADING_SYMBOLS` in `.env.app`), with a deterministic
-scanner (`UniverseScannerService`, no LLM call) selecting the top-N active menu daily by volume × ATR%
-ranking. A separate perp lane (`.env.app-perp`, `docker compose --profile perp`) trades USDⓈ-M
-perpetual shorts at up to 2x isolated-margin leverage (`PERP_LEVERAGE_CAP=2`), with funding payments
-ingested and accounted into net-of-cost PnL.
+Three modes: **paper** (default — in-memory simulator driven by real market data), **testnet**
+(real `CcxtExchangeAdapter` against a Binance sandbox — Demo Trading or Spot Testnet), and **live**
+(real funds, four-gate interlock that cannot be satisfied in CI).
+
+**Economics.** Sizing is capped at `equity = min(actualEquity, SIZER_EQUITY_CAP)` (~$1k production
+cap). Spot trades a configured symbol basket with a deterministic scanner selecting the daily
+active menu. Perps use isolated-margin leverage up to `PERP_LEVERAGE_CAP` with funding payments
+ingested into net-of-cost PnL — same process, knobs in `.env.app` (no separate compose profile).
 
 ---
 
 ## Features / safety highlights
 
 - **Paper is the default.** Any missing or invalid `TRADING_MODE` input safely resolves to paper.
-  No credential is ever required to run or test the bot.
-- **Four-gate live interlock.** Live mode requires all of: explicit env flag (`TRADING_MODE=live`) +
-  a bootId-bound in-memory arming handshake + withdrawals-disabled validated keys + complete risk
-  limits. CI strips live secrets unconditionally; the live adapter is absent from the object graph in
-  test/ci environments.
-- **Money is never a native float.** All prices, quantities, notionals, fees, and balances use
-  `decimal.js` Decimals wrapped in branded types. `parseFloat`/`Number()` on money paths is banned
-  by lint. DB columns are `NUMERIC(38,18)`. Venue-facing rounding is explicit and directional.
-- **Append-only audit.** `audit_log` and `order_events` tables are append-only; no UPDATE/DELETE is
-  permitted and DB triggers enforce this.
-- **Reconciliation HALT — no auto-flatten.** A balance drift, unknown open order, or fill for an
-  unknown order halts the bot. It never auto-flattens on mismatch because local state may be wrong.
-- **Order path is enforced.** Strategy → Risk (sizing + veto) → Execution → ExchangeAdapter.
-  ESLint boundary zones prevent strategies from importing execution or adapter code.
-- **OMS deduplication.** Intent is persisted before any network call. Unknown outcomes are
-  `OUTCOME_AMBIGUOUS`, never retried blind.
+- **Four-gate live interlock.** Env flag + bootId-bound arming handshake + withdrawals-disabled
+  validated keys + complete risk limits. CI strips live secrets; live adapter absent in test/ci.
+- **Money is never a native float.** `decimal.js` branded types; lint bans `parseFloat`/`Number()`
+  on money paths; DB `NUMERIC(38,18)`; venue rounding is explicit and directional.
+- **Append-only audit.** `audit_log` / `order_events` — no UPDATE/DELETE; DB triggers enforce.
+- **Reconciliation HALT — no auto-flatten.**
+- **Order path enforced.** Strategy → Risk → Execution → ExchangeAdapter (eslint boundaries).
+- **OMS deduplication.** Persist intent before network; unknown ⇒ `OUTCOME_AMBIGUOUS`, never blind retry.
 
 ---
 
@@ -53,47 +42,31 @@ ingested and accounted into net-of-cost PnL.
 | -------------------- | ----------------------------------------------------------- |
 | Node.js              | >=22 (Node 24 recommended)                                  |
 | pnpm                 | 10.32.1                                                     |
-| Docker + Compose     | optional — for full-stack (Postgres + Prometheus + Grafana) |
+| Docker + Compose     | optional — Postgres + Prometheus + Grafana                  |
 | Binance Demo account | optional — for testnet/demo mode                            |
 
 ---
 
 ## Quick start — local (paper mode)
 
-No credentials required. The bot runs fully in-memory against live Binance market data for pricing.
-
 ```bash
 pnpm install
-cp .env.example .env        # secrets only — fill API keys
-# Deploy knobs (mode, strategy, risk) are in committed .env.app — edit there if needed.
+cp .env.example .env        # secrets only
 pnpm build
 pnpm start
 ```
 
-The server starts on `http://localhost:3100` (configurable via `PORT`). Confirm it is healthy:
+Health: `curl http://localhost:3100/health/ready`
 
-```bash
-curl http://localhost:3100/health/ready
-```
-
-To force paper mode regardless of `.env` contents:
-
-```bash
-TRADING_MODE=paper pnpm start
-```
+Force paper: `TRADING_MODE=paper pnpm start`
 
 ---
 
-## Quick start — docker-compose (full stack)
-
-Brings up Postgres 16, Prometheus, Grafana, and (once the `app` service is wired) the bot itself.
+## Quick start — docker-compose
 
 ```bash
 docker compose up --build
 ```
-
-With no credentials in `.env`, the app still boots but cannot place sandbox orders until keys are set.
-Deploy knobs (including `TRADING_MODE`) come from committed `.env.app`; secrets from gitignored `.env`.
 
 | Service    | URL                   | Default credentials                          |
 | ---------- | --------------------- | -------------------------------------------- |
@@ -101,155 +74,83 @@ Deploy knobs (including `TRADING_MODE`) come from committed `.env.app`; secrets 
 | Grafana    | http://localhost:3101 | admin / admin (or `$GRAFANA_ADMIN_PASSWORD`) |
 | Prometheus | http://localhost:9090 | —                                            |
 
-Grafana dashboards and Prometheus scrape config are provisioned automatically from `observability/`.
-
----
-
-## Running against Binance Demo
-
-Binance Demo Trading (`demo-api.binance.com`) is the recommended pre-live environment: it uses
-live-mirroring data and your real Binance account keys (with demo enabled on the account).
-
-1. Create a Demo Trading API key at [demo.binance.com](https://demo.binance.com). Disable
-   withdrawals on the key.
-2. Set `TRADING_MODE=testnet` and `SANDBOX_ENV=demo` in `.env.app` (already the compose defaults).
-3. Set demo keys in `.env`:
-
-```dotenv
-BINANCE_DEMO_API_KEY=your-demo-key-here
-BINANCE_DEMO_API_SECRET=your-demo-secret-here
-```
-
-4. Run:
-
-```bash
-pnpm build
-pnpm start
-```
-
-For sandbox internals (Demo vs Spot Testnet URL selection, venue capabilities, multi-symbol operation),
-see the "Running against a sandbox" section of [docs/runbook.md](docs/runbook.md).
-
-> **Note:** Binance Spot Testnet (`SANDBOX_ENV=testnet`) uses `BINANCE_TESTNET_*` keys and connects
-> to `testnet.binance.vision`. The two key pairs are non-interchangeable. Testnet books are thin and
-> synthetic; demo is the realistic sandbox.
-
 ---
 
 ## Configuration
 
-**Secrets** (API keys, arming tokens): gitignored `.env` — copy from `.env.example`.
+**Secrets:** gitignored `.env` (from `.env.example`).
 
-**Deploy knobs** (mode, strategy, risk limits, agentic tuning): committed `.env.app` (spot lane) and
-`.env.app-perp` (perp profile). Docker compose loads `env_file: [lane file, .env]`; host `pnpm start`
-loads `.env` then `.env.app` via `AppConfigModule`.
+**Deploy knobs:** committed `.env.app` (one process / both venues). Compose loads
+`env_file: [.env.app, .env]` (later wins). Host `pnpm start` loads `.env` then `.env.app`
+via `AppConfigModule` (first path wins — same effective precedence).
 
-| Variable                              | File                         | Meaning                                                                           |
-| ------------------------------------- | ---------------------------- | --------------------------------------------------------------------------------- |
-| `TRADING_MODE`                        | `.env.app`                   | `paper` \| `testnet` \| `live`                                                    |
-| `SANDBOX_ENV`                         | `.env.app`                   | `demo` \| `testnet` — picks the Binance sandbox when `TRADING_MODE=testnet`       |
-| `FEED_ENV`                            | `.env.app`                   | Market-data feed environment (`live` = public Binance streams, no credentials)    |
-| `BINANCE_DEMO_API_KEY` / `_SECRET`    | `.env`                       | Binance Demo Trading credentials (used when `SANDBOX_ENV=demo`)                   |
-| `BINANCE_TESTNET_API_KEY` / `_SECRET` | `.env`                       | Binance Spot Testnet credentials (used when `SANDBOX_ENV=testnet`)                |
-| `BINANCE_LIVE_API_KEY` / `_SECRET`    | `.env`                       | Live credentials — read only when `TRADING_MODE=live`                             |
-| `ARMING_SECRET`                       | `.env`                       | HMAC key for the live arming handshake                                            |
-| `TRADING_SYMBOLS`                     | `.env.app`                   | Symbols the agentic lane trades (must each have a filter entry in risk module)    |
-| `STRATEGY_INTERVAL`                   | `.env.app`                   | Candle interval: `1m` \| `5m` \| `15m` \| `1h` \| `4h` \| `1d`                    |
-| `ACTIVE_STRATEGY`                     | `.env.app`                   | Strategy lane — closed enum, `agentic` is the only registered lane                |
-| `BASE_NOTIONAL`                       | `.env.app`                   | Quote (USDT) per order                                                            |
-| `STARTING_CASH`                       | `.env.app`                   | In-memory quote balance the bot tracks (set near the account's USDT balance)      |
-| `SIZER_EQUITY_CAP`                    | `.env.app`                   | Hard cap on sizing equity — `min(actualEquity, cap)`; production capital max ~$1k |
-| `AGENTIC_SHORTS_ENABLED`              | `.env.app-perp`              | Enables plan-mode shorts — requires a perp-capable venue (spot boot throws)       |
-| `PERP_LEVERAGE_CAP`                   | `.env.app` / `.env.app-perp` | Isolated-margin leverage cap (spot lane `1`, perp lane `2`)                       |
-| `DATABASE_URL`                        | `.env.app`                   | Postgres connection string — optional; paper/demo run fine without it             |
-| `GRAFANA_ADMIN_PASSWORD`              | `.env`                       | Grafana admin password (docker-compose)                                           |
-| `PORT`                                | `.env.app`                   | HTTP server port                                                                  |
-| `LOG_LEVEL`                           | `.env.app`                   | `fatal` \| `error` \| `warn` \| `info` \| `debug` \| `trace`                      |
+| Variable | File | Meaning |
+| -------- | ---- | ------- |
+| `TRADING_MODE` | `.env.app` | `paper` \| `testnet` \| `live` |
+| `SANDBOX_ENV` | `.env.app` | `demo` \| `testnet` when testnet mode |
+| `AGENTIC_SHORTS_ENABLED` | `.env.app` | plan-mode shorts (perp-capable venue) |
+| `PERP_LEVERAGE_CAP` | `.env.app` | isolated-margin leverage cap |
+| `SIZER_EQUITY_CAP` | `.env.app` | hard cap on sizing equity |
+| `BINANCE_*_API_KEY` / `_SECRET` | `.env` | demo / testnet / live keys |
+| `ARMING_SECRET` | `.env` | live arming HMAC key |
 
-Full knob list with comments: [`.env.app`](.env.app). Perp lane: [`.env.app-perp`](.env.app-perp).
+Full knob list: [`.env.app`](.env.app).
 
 ---
 
 ## Testing
 
 ```bash
-pnpm test              # unit tests + live-gate suite (required before any completion claim)
-pnpm test:livegate     # live-gate suite only — proves paper is default; sacred, never skip
-pnpm test:paper        # paper loop integration (no network)
-pnpm test:cov          # unit + live-gate with coverage
-pnpm test:db           # DB integration tests — requires Postgres at DATABASE_URL (must end in _test,
-                       # or set DB_SUITE_ALLOW_RESET=1)
-pnpm test:testnet      # order-lifecycle scenarios against the configured Binance sandbox —
-                       # requires BINANCE_DEMO_* or BINANCE_TESTNET_* credentials; all-skipped
-                       # green without them; intended for nightly runs
-pnpm backtest          # test/backtest research harness (edge program) — OFF the production test
-                       # gate; does not certify the agentic lane for live (CLAUDE.md rule 4)
-pnpm checks            # format:check + lint:md + lint + typecheck + test, in that order
+pnpm test              # features + domain + ports unit + livegate (required before completion claims)
+pnpm test:livegate     # sacred — never skip
+pnpm test:paper        # paper loop integration
+pnpm test:cov          # coverage on the production gate suites
+pnpm test:db           # Postgres integration
+pnpm test:testnet      # sandbox order lifecycle (env-gated; nightly)
+pnpm backtest          # research harness — OFF the production gate
+pnpm checks            # format:check + lint:md + lint + typecheck + test
 ```
 
-Run `pnpm build && pnpm lint && pnpm typecheck && pnpm test` (or `pnpm checks`) before any pull request.
+---
+
+## Research
+
+Non-runtime artifacts live under `research/`:
+
+| Path | Role |
+| ---- | ---- |
+| `research/loop/{state,LOG}.md` | Tracked ops loop memory |
+| `research/loop/digests/` | Ignored collector/sweep runtime |
+| `research/scorecards/` | Tracked promoted eval/tournament scorecards |
+| `research/candidates/` | Ignored ephemeral dumps / jsonl |
+| `research/studies/` | Tracked study writeups |
+
+Scripts: `pnpm loop:*`, `pnpm eval:*`, `pnpm backtest`, `pnpm fetch:edge-tournament`, `pnpm run:edge-tournament`.
 
 ---
 
 ## Observability
 
-The app exposes:
-
-- `GET /metrics` — Prometheus metrics (mode, kill-switch state, order counts, fill latency, etc.)
-- `GET /health/live` — liveness probe
-- `GET /health/ready` — readiness probe (reports DB and market-data status)
-
-In a docker-compose stack, Grafana at `http://localhost:3101` comes up with dashboards pre-provisioned
-from `observability/grafana/provisioning/`. Prometheus scrapes the app on the configured interval.
-
-`bootId` and `run_id` are threaded through every metric label and structured log line to correlate
-events across a boot session.
+- `GET /metrics`, `GET /health/live`, `GET /health/ready`
+- Grafana/Prometheus provisioned from `observability/`
 
 ---
 
 ## Architecture
 
-The codebase is hexagonal (ports & adapters) in three rings. `src/domain/` is pure: no I/O, no
-NestJS, no ccxt, no `Date.now`, no `process.env` — only typed domain logic (indicators, risk rules,
-OMS state-machine reducer, paper fill model, mode/arming resolution). `src/ports/` holds interfaces
-and DI tokens. `src/features/` contains the impure NestJS shells: `trading/agentic` (the LLM strategy
-lane — StrategyHost, agent client, plan executor, promotion evaluator), `trading/market-data`,
-`trading/risk`, `trading/execution`, `trading/exchange` (ccxt adapters + paper/perp adapters),
-`trading/mode-control` (arming interlock, key probe, promotion readiness), and `common/observability`.
-`src/database/` holds Drizzle repositories and schemas. `src/config/environment/` validates `AppConfig`
-(Zod). `app.module.ts` is the composition root — the only file that knows concretions. The agentic lane
-sits outside `src/domain`: it is async and calls an out-of-process LLM, so it is intentionally not
-pure/deterministic (see CLAUDE.md rule 4).
+Hexagonal rings with **domain buckets** repeated across layers (`common` · `venue` · `trading` ·
+`strategy`):
 
-Order path: **Strategy** (the agentic lane) emits Signals (conviction, no quantities) → **Risk** sizes
-and vetoes → **Execution** stamps a `RiskApprovedIntent` (brand + HMAC proof) → **ExchangeAdapter**
-places the order. Execution never widens its signature; strategies cannot import execution or adapter
-code (`eslint-plugin-boundaries` enforces the wall).
+- `src/domain/` — pure (no Nest/ccxt/`Date.now`/`process.env`)
+- `src/ports/` — interfaces + DI tokens only
+- `src/features/` — Nest implementations (leaves under group folders)
+- `src/database/` — Drizzle schemas + bucketed repositories
+- `src/config/`, `src/shared/` — config + cross-cutting infra
 
-This section and [Project layout](#project-layout) below are the current source of truth.
-[docs/archive/design-plan.md](docs/archive/design-plan.md) is retained as a historical reference for
-the original phased build order; it predates the agentic-lane rebuild and no longer describes the
-current module layout.
+Order path: **Strategy** (`features/strategy/agentic`) → **Risk** → **Execution** →
+**ExchangeAdapter**. Composition wiring lives in `features/trading/composition/` (app zone).
 
----
-
-## Safety & operations
-
-Paper is the default and live is gated. In paper mode no credentials are needed and no orders reach
-any venue. The live interlock requires four independent gates to hold simultaneously:
-
-1. `TRADING_MODE=live` in the environment
-2. A bootId-bound two-step arming handshake (`POST /mode/arm/request` → `POST /mode/arm/confirm`
-   with an HMAC-SHA256 response) — armed session TTL is 8 hours
-3. Exchange keys validated with withdrawals disabled (the probe's self-reported verdict is never
-   trusted; ModeControl recomputes from the restriction snapshot)
-4. Complete risk limits present in config
-
-`NODE_ENV=test` or `CI` strips live secrets from the validated `AppConfig` and removes the live
-adapter from the object graph entirely — CI cannot reach live.
-
-Operational procedures (halt response, reconciliation mismatch recovery, re-arm after restart,
-paper-honesty checks) are in [docs/runbook.md](docs/runbook.md).
+Detailed agent layout: [`.claude/CLAUDE.md`](.claude/CLAUDE.md) (generated/refreshed via `/init`).
 
 ---
 
@@ -257,41 +158,35 @@ paper-honesty checks) are in [docs/runbook.md](docs/runbook.md).
 
 ```text
 src/
-  domain/                    pure domain logic — no I/O, NestJS, ccxt, Date.now, or process.env
-    types/                   branded Decimal types (Price, Qty, Notional, …), Signal, OrderIntent, money
-    indicators/              candle aggregation, technical indicators
-    mode/                    arming + mode resolution (pure)
-    oms/                     state-machine reducer, reconcile, recovery, position/fill math
-    paper/                   paper fill model
-    risk/                    pure rule functions, sizing, kill-switch, round-trips
-    rng/                     seeded PRNG
-  ports/                     interfaces + DI tokens only; imports domain types only
-  config/environment/        AppConfig validation (Zod)
-  database/                  Drizzle repositories, schemas, migration runner
+  domain/{common,venue,trading,strategy}/   pure domain
+  ports/{common,venue,trading,strategy}/    interfaces + tokens
   features/
-    trading/
-      agentic/                the LLM strategy lane — StrategyHost, agent client, prompt, plan
-                               executor, promotion evaluator, reflection, playbook validator,
-                               universe scanner (scanner-gated active menu), benchmark-alpha,
-                               exec-quality, macro calendar, portfolio-block, agent budget
-      market-data/            ccxt stream adapter, normalization, feed health, derivatives/sentiment feeds
-      risk/                   RiskEngine, sizer, kill-switch, signal gateway
-      execution/               ExecutionService, OMS, fill ingestor, reconciliation, boot recovery
-      exchange/                CcxtExchangeAdapter, live/paper/paper-perp adapters, error classifier,
-                               funding-payments ingest (perp lane)
-      mode-control/            ModeControl, arming interlock, key probe, promotion readiness
-    common/observability/     Prometheus metrics, health endpoints, logger config
-  shared/                     correlation middleware, exception filters, venue-safety guards
-  app.module.ts               composition root
-drizzle/                      schema definitions and migrations
-observability/                Prometheus config, Grafana provisioning (dashboards + datasources)
-docs/                         runbook.md, archive/ (historical), planning/, specs/
+    common/observability/
+    venue/{exchange,market-data}/
+    trading/{composition,risk,execution,mode-control}/
+    strategy/agentic/
+  database/{schemas/trading,repositories/{common,venue,trading,strategy}}/
+  config/  shared/  app.module.ts
+test/
+  features/{common,venue,trading,strategy}/  # mirrors features
+  domain/  ports/                            # pure + port contract specs
+  paper/ livegate/ backtest/ eval/ db/ testnet/
+research/{loop,scorecards,candidates,studies}/
+docs/{runbook.md,planning/}
+drizzle/  observability/  scripts/
 ```
+
+---
+
+## Safety & operations
+
+See [docs/runbook.md](docs/runbook.md). Daily profitability loop:
+[docs/planning/daily-profitability-loop.md](docs/planning/daily-profitability-loop.md).
 
 ---
 
 ## Links
 
-- [Architecture & design](#architecture) (current — this README)
-- [Architecture & design (historical)](docs/archive/design-plan.md)
+- [Architecture](#architecture) (this README)
 - [Operations runbook](docs/runbook.md)
+- [Agent hard rules](CLAUDE.md)

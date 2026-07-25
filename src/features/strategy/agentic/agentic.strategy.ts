@@ -1,31 +1,31 @@
 import Decimal from 'decimal.js';
-import type { CandleEvent, CandleInterval } from '../../../domain/types/market-events';
-import type { Signal } from '../../../domain/types/signal';
-import type { StrategyId, VenueId, SymbolId, EpochMs } from '../../../domain/types/ids';
-import type { SubscriptionSpec } from '../../../domain/types/subscription';
+import type { CandleEvent, CandleInterval } from '../../../domain/venue/types/market-events';
+import type { Signal } from '../../../domain/strategy/types/signal';
+import type { StrategyId, VenueId, SymbolId, EpochMs } from '../../../domain/common/types/ids';
+import type { SubscriptionSpec } from '../../../domain/venue/types/subscription';
 import type {
   OpenOrderSummary,
   PortfolioSnapshot,
   Position,
-} from '../../../domain/types/portfolio';
-import type { Price } from '../../../domain/types/money';
+} from '../../../domain/trading/types/portfolio';
+import type { Price } from '../../../domain/common/types/money';
 import {
   toIndicatorNumber,
   price,
   roundToMoneyPrecision,
   roundToTick,
   roundToStep,
-} from '../../../domain/types/money';
-import { AGENTIC_MAX_STOP_LOSS_PCT } from '../../../domain/risk/agentic-bounds';
-import { plannedStopNotionalCap } from '../../../domain/risk/planned-stop-risk';
-import { splitSymbol } from '../../../domain/types/symbol';
-import { aggregateCandles } from '../../../domain/indicators/candle-aggregate';
+} from '../../../domain/common/types/money';
+import { AGENTIC_MAX_STOP_LOSS_PCT } from '../../../domain/trading/risk/agentic-bounds';
+import { plannedStopNotionalCap } from '../../../domain/trading/risk/planned-stop-risk';
+import { splitSymbol } from '../../../domain/venue/types/symbol';
+import { aggregateCandles } from '../../../domain/strategy/indicators/candle-aggregate';
 import {
   emaFromNumbers,
   rsiFromNumbers,
   atrFromNumbers,
   pctChange,
-} from '../../../domain/indicators/indicators';
+} from '../../../domain/strategy/indicators/indicators';
 import {
   AgentProposeError,
   type AsyncStrategy,
@@ -45,17 +45,17 @@ import {
   type AgentProposal,
   type EdgePolicyPort,
   type StrategyInitContext,
-} from '../../../ports/agentic-strategy';
+} from '../../../ports/strategy/agentic-strategy';
 import { MAX_REASON_LEN, type LoggerLike } from './anthropic-agent-client';
 import { buildMarketPayload } from './agent-prompt';
 import { deriveRegimeTags } from './episodic-memory';
-import type { RoundTripEvidencePort } from '../../../ports/promotion';
-import type { DerivativesFeedPort } from '../../../ports/derivatives-feed';
-import type { SentimentFeedPort } from '../../../ports/sentiment-feed';
-import type { FearGreedFeedPort } from '../../../ports/fear-greed-feed';
-import type { TradeFlowFeedPort } from '../../../ports/trade-flow-feed';
-import type { PositioningFeedPort } from '../../../ports/positioning-feed';
-import type { LiquidationFeedPort } from '../../../ports/liquidation-feed';
+import type { RoundTripEvidencePort } from '../../../ports/trading/promotion';
+import type { DerivativesFeedPort } from '../../../ports/venue/derivatives-feed';
+import type { SentimentFeedPort } from '../../../ports/strategy/sentiment-feed';
+import type { FearGreedFeedPort } from '../../../ports/strategy/fear-greed-feed';
+import type { TradeFlowFeedPort } from '../../../ports/venue/trade-flow-feed';
+import type { PositioningFeedPort } from '../../../ports/venue/positioning-feed';
+import type { LiquidationFeedPort } from '../../../ports/venue/liquidation-feed';
 import { evaluatePlan, type PlanExecutorAction, type PlanExecutorState } from './plan-executor';
 import { CrossSymbolContextService } from './cross-symbol-context';
 import {
@@ -66,12 +66,15 @@ import {
   type BenchmarkCandle,
 } from './benchmark-alpha';
 import type { PriceHistoryStore } from './price-history-store';
-import { positionKey } from '../../../domain/risk/evaluate';
-import type { PlanStop, PlanStopRegistryPort } from '../../../ports/risk';
-import type { ExecutionStorePort } from '../../../ports/execution';
-import type { AlgoOrderState, ExchangePort } from '../../../ports/exchange';
-import { clientOrderId } from '../../../domain/types/ids';
-import { roleForDedupeKey, type RestingOrderRole } from '../../../domain/oms/resting-order-role';
+import { positionKey } from '../../../domain/trading/risk/evaluate';
+import type { PlanStop, PlanStopRegistryPort } from '../../../ports/trading/risk';
+import type { ExecutionStorePort } from '../../../ports/trading/execution';
+import type { AlgoOrderState, ExchangePort } from '../../../ports/venue/exchange';
+import { clientOrderId } from '../../../domain/common/types/ids';
+import {
+  roleForDedupeKey,
+  type RestingOrderRole,
+} from '../../../domain/trading/oms/resting-order-role';
 
 // binanceusdm (USD-M swap): mirrors position-sizer.service.ts's own local PERP_VENUE_ID convention
 // (the eslint-plugin-boundaries wall forbids importing that feature's constant — features may only
@@ -184,7 +187,7 @@ export interface AgenticStrategyParams {
   // compare against the SAME buffered expectation or every bar reads the buffer itself as permanent
   // drift and churns cancel/re-place forever. Absent ⇒ falls back to the sizer's own default (50).
   readonly stopLimitBufferBps?: number;
-  // Force-fire threshold (bps), mirrors ports/risk.ts's ProtectiveExitConfig.planStopForceBps: the
+  // Force-fire threshold (bps), mirrors ports/trading/risk.ts's ProtectiveExitConfig.planStopForceBps: the
   // bar-close executor's own 'stop' exit stands down while a confirmed-resting venue stop should
   // still have room to fill on its own, UNLESS the close has already breached the plan's stop price
   // by more than this many bps — a resting venue stop should already have filled at a small breach,
@@ -385,7 +388,7 @@ export interface AgenticStrategyDeps {
   // actually crosses into a new week with no trade-count trigger having already fired it.
   readonly checkWeeklyReflection?: () => void;
   // computeTrackRecordContext's data source: realized (venue-fill-derived) closed round trips, the
-  // same evidence feed the reflection lane reads (ports/promotion.ts). Optional — absent means
+  // same evidence feed the reflection lane reads (ports/trading/promotion.ts). Optional — absent means
   // trackRecordEnabled is inert even when true (no in-strategy fallback is computed, since the
   // strategy has no other access to realized fills). B3: previously also fed the now-deleted
   // expectancy ladder — trackRecord is this dep's only remaining consumer.
@@ -448,7 +451,7 @@ export interface AgenticStrategyDeps {
   // the SignalSink/sizer consume; absent is safe only while maxPlannedStopRiskFraction is disabled.
   readonly bookSnapshot?: () => PortfolioSnapshot;
   // Push 3 P7d: the swap algo/conditional-order rail's round-trip primitives, narrowed off
-  // ExchangePort (ports/exchange.ts) — the ONLY port through which this strategy ever reaches the
+  // ExchangePort (ports/venue/exchange.ts) — the ONLY port through which this strategy ever reaches the
   // algo rail (never the concrete adapter directly; eslint-plugin-boundaries allows importing
   // `ports/*` types from any feature, so this narrowing stays boundary-clean). Optional: absent (no
   // exchange port wired — paper/test boots, or a spot-only deployment where CcxtExchangeAdapter's
@@ -528,7 +531,7 @@ const DEFAULT_MODEL_ID = 'unknown';
 // Mean netPnl (USD, Decimal-computed off the evidence port's decimal strings) over the last
 // TRACK_RECORD_WINDOW_TRIPS CLOSED round trips for THIS strategyId; fewer than
 // TRACK_RECORD_MIN_TRIPS ⇒ insufficient data ⇒ context omitted (see computeTrackRecordContext).
-// RoundTripEvidencePort.recentRoundTrips is lane-wide, not strategyId-scoped (ports/promotion.ts) —
+// RoundTripEvidencePort.recentRoundTrips is lane-wide, not strategyId-scoped (ports/trading/promotion.ts) —
 // FETCH_LIMIT over-fetches so filtering down to this.id still has a chance of finding a full window
 // in a multi-symbol deployment; the extra rows are discarded below.
 const TRACK_RECORD_WINDOW_TRIPS = 15;
@@ -576,7 +579,7 @@ function buildErrorJournalRationale(
 // decisions before handing off — it still owns NO trading logic itself (Risk still sizes/vetoes
 // every proposed signal). The agent's proposed signals flow through the Risk chokepoint (the host
 // calls recordSignal); the host imposes the wall-clock timeout, so decide just enriches and
-// delegates. Live access is EARNED via the promotion gate, never assumed (see ports/agentic-strategy.ts).
+// delegates. Live access is EARNED via the promotion gate, never assumed (see ports/strategy/agentic-strategy.ts).
 export class AgenticStrategy implements AsyncStrategy {
   readonly kind = 'agentic' as const;
   readonly id: StrategyId;
@@ -1360,7 +1363,7 @@ export class AgenticStrategy implements AsyncStrategy {
       // AGENTIC_VENUE_STOP force-band (Push 3 P7d): the bar-close executor's own 'stop' exit stands
       // down while a CONFIRMED-resting venue stop (registry venueStopResting true) should still have
       // room to fill on its own — the SAME force-band ProtectiveExitService's 1s watcher already
-      // applies (tickPlanStop, ports/risk.ts's planStopForceBps), just on this strategy's coarser
+      // applies (tickPlanStop, ports/trading/risk.ts's planStopForceBps), just on this strategy's coarser
       // bar-close cadence. Failure direction: standing down is the measurement/veto-only side of this
       // decision (the venue stop is still live and expected to fill), so it fails OPEN toward
       // deferring; the force-fire branch below is the fail-safe that never defers indefinitely — a
@@ -1638,7 +1641,7 @@ export class AgenticStrategy implements AsyncStrategy {
   // AGENTIC_VENUE_STOP (Push 3 P7d): dispatches to the venue-appropriate reconciliation loop — SPOT
   // rests a STOP_LOSS_LIMIT on the regular open-orders rail (mirrors manageVenueTp almost exactly);
   // PERP rests a STOP_MARKET on the swap algo/conditional rail instead, which never appears in
-  // openOrders (see AlgoOrderState's own header comment in ports/exchange.ts), so reconciliation
+  // openOrders (see AlgoOrderState's own header comment in ports/venue/exchange.ts), so reconciliation
   // there goes through AgenticStrategyDeps.algoOrders.fetchOpenAlgoOrders. No-op ([]) whenever the
   // flag is off, position isn't LONG/SHORT, or the resting order is already correctly priced/sized.
   private async manageVenueStop(
@@ -2953,7 +2956,7 @@ export class AgenticStrategy implements AsyncStrategy {
         // no new column). Null on every non-batched or pre-v2 decision.
         nextConsultBars: proposal?.nextConsultBars ?? null,
         // v3 (consolidation spec §2/§9): info_arm/thinking_arm dropped — see AgentDecisionEntry's own
-        // comment (ports/agentic-strategy.ts). proposal.infoArm/thinkingArm (the client's own A/B
+        // comment (ports/strategy/agentic-strategy.ts). proposal.infoArm/thinkingArm (the client's own A/B
         // treatment-truth telemetry) still exist and are unaffected; they are simply no longer
         // forwarded to the journal, since the v3 agent_decisions table has no columns for them.
         // R2: regime fingerprint for episodic-memory retrieval — see regimeTagsFor.
@@ -2961,7 +2964,7 @@ export class AgenticStrategy implements AsyncStrategy {
       });
     } catch {
       // A journal failure must never affect trading — it's an analysis artifact, not a safety
-      // interlock (see AGENT_DECISION_JOURNAL doc in ports/agentic-strategy.ts).
+      // interlock (see AGENT_DECISION_JOURNAL doc in ports/strategy/agentic-strategy.ts).
     }
   }
 

@@ -232,7 +232,7 @@ describe('DailyLlmBudget', () => {
             cacheReadPerMtok: 0.3,
             cacheWritePerMtok: 6,
           },
-          'claude-opus-4-8': {
+          'claude-opus-5': {
             inputPerMtok: 5,
             outputPerMtok: 25,
             cacheReadPerMtok: 0.5,
@@ -243,7 +243,7 @@ describe('DailyLlmBudget', () => {
       () => T,
     );
     budget.recordUsage({ inputTokens: 1_000_000, outputTokens: 0 }, 'claude-sonnet-5'); // 3
-    budget.recordUsage({ inputTokens: 1_000_000, outputTokens: 1_000_000 }, 'claude-opus-4-8'); // 5 + 25 = 30
+    budget.recordUsage({ inputTokens: 1_000_000, outputTokens: 1_000_000 }, 'claude-opus-5'); // 5 + 25 = 30
     expect(budget.snapshot().costUsd).toBe(33);
   });
 
@@ -256,7 +256,7 @@ describe('DailyLlmBudget', () => {
         priceInputPerMtok: 3,
         priceOutputPerMtok: 15,
         pricesByModel: {
-          'claude-opus-4-8': {
+          'claude-opus-5': {
             inputPerMtok: 5,
             outputPerMtok: 25,
             cacheReadPerMtok: 0.5,

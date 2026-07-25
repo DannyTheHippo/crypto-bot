@@ -172,7 +172,7 @@ export interface ModelRate {
 const DEFAULT_TOKEN_PRICES_PER_MTOK: Readonly<Record<string, ModelRate>> = {
   'claude-sonnet-5': { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 6 },
   'claude-haiku-4-5-20251001': { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 2 },
-  'claude-opus-4-8': { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 10 },
+  'claude-opus-5': { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 10 },
 };
 // Sonnet-tier fallback for a model id absent from both the override map and the defaults above —
 // this is a toy cost estimate (never a promotion input), so failing OPEN to a mid-tier guess rather

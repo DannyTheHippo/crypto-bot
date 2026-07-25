@@ -14,7 +14,7 @@
 //   DATABASE_URL=postgres://...   (must end in _test, or set DB_SUITE_ALLOW_RESET=1)
 //   ANTHROPIC_API_KEY=sk-ant-...
 //   EVAL_LIVE=1
-//   AGENTIC_MODEL=claude-opus-4-8        (optional, defaults below)
+//   AGENTIC_MODEL=claude-opus-5        (optional, defaults below)
 //   AGENTIC_EVAL_ROW_LIMIT=10            (optional, defaults below — each row costs 2 real calls)
 //   pnpm exec vitest run test/eval/agentic/recorded-payload-live-compare.spec.ts
 //
@@ -54,7 +54,7 @@ import {
 const API_KEY = process.env['ANTHROPIC_API_KEY'];
 const LIVE_ENABLED = process.env['EVAL_LIVE'] === '1';
 const DB_URL = process.env['DATABASE_URL'];
-const MODEL = process.env['AGENTIC_MODEL'] ?? 'claude-opus-4-8';
+const MODEL = process.env['AGENTIC_MODEL'] ?? 'claude-opus-5';
 const ROW_LIMIT = Number(process.env['AGENTIC_EVAL_ROW_LIMIT'] ?? '10');
 // Wall-clock budget must scale with the row budget (each row is 2 sequential real API calls,
 // ~3-5s each) — a fixed cap silently contradicts a raised AGENTIC_EVAL_ROW_LIMIT: the run dies on

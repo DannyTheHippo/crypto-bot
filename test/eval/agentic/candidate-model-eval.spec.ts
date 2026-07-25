@@ -23,7 +23,7 @@
 //   DATABASE_URL=postgres://...              (must end in _test, or set DB_SUITE_ALLOW_RESET=1)
 //   ANTHROPIC_API_KEY=sk-ant-...
 //   EVAL_CANDIDATES=1
-//   AGENTIC_EVAL_CANDIDATE_MODELS=claude-haiku-4-5-20251001,claude-opus-4-8   (optional, comma-sep)
+//   AGENTIC_EVAL_CANDIDATE_MODELS=claude-haiku-4-5-20251001,claude-opus-5   (optional, comma-sep)
 //   ROW_LIMIT=50                             (optional — rows actually REPLAYED per candidate model;
 //                                              each replayed row costs one real API call per model)
 //   ROW_QUERY_LIMIT=1000                     (optional — rows FETCHED before the >=200 filter/slice)

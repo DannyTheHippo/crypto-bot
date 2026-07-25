@@ -21,7 +21,7 @@ describe.skipIf(SKIP)('agentic eval — live (guarded, real Anthropic API call)'
     const client = new AnthropicAgentClient(
       {
         apiKey: API_KEY!,
-        model: process.env['AGENTIC_MODEL'] ?? 'claude-opus-4-8',
+        model: process.env['AGENTIC_MODEL'] ?? 'claude-opus-5',
         timeoutMs: 30_000,
         maxTokens: 512,
         signalTtlMs: 60_000,
@@ -44,7 +44,7 @@ describe.skipIf(SKIP)('agentic eval — live (guarded, real Anthropic API call)'
       close: candle.close.toFixed(),
       playbookVersion: proposal.playbookVersion ?? null,
       promptHash: proposal.promptHash ?? 'unknown',
-      model: process.env['AGENTIC_MODEL'] ?? 'claude-opus-4-8',
+      model: process.env['AGENTIC_MODEL'] ?? 'claude-opus-5',
       symbol: String(candle.symbol),
     };
     expect(() => scoreRows([row])).not.toThrow();

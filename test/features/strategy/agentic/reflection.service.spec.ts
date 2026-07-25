@@ -1424,8 +1424,8 @@ describe('createReflectionService', () => {
   // Asserted off the actual request body — the only place the choice becomes observable.
   it.each([
     [
-      { AGENTIC_REFLECTION_MODEL: 'claude-opus-4-8', AGENTIC_MODEL: 'claude-sonnet-5' },
-      'claude-opus-4-8',
+      { AGENTIC_REFLECTION_MODEL: 'claude-opus-5', AGENTIC_MODEL: 'claude-sonnet-5' },
+      'claude-opus-5',
     ],
     [{ AGENTIC_MODEL: 'claude-haiku-4-5' }, 'claude-haiku-4-5'],
     [{}, 'claude-sonnet-5'],
@@ -2379,7 +2379,7 @@ describe('backlog #39: mint-time entry-rate floor', () => {
       'open_long',
     );
     const service = new ReflectionService(
-      floorCfg({ model: 'claude-opus-4-8', decideModel: 'claude-sonnet-5' }),
+      floorCfg({ model: 'claude-opus-5', decideModel: 'claude-sonnet-5' }),
       h.deps,
     );
 
@@ -2389,7 +2389,7 @@ describe('backlog #39: mint-time entry-rate floor', () => {
     expect(h.fetchFn).toHaveBeenCalledTimes(1 + FLOOR_ROWS);
     const modelOf = (i: number): string =>
       (requestBodyOf(h.fetchFn, i) as unknown as { model: string }).model;
-    expect(modelOf(0)).toBe('claude-opus-4-8');
+    expect(modelOf(0)).toBe('claude-opus-5');
     for (let i = 1; i <= FLOOR_ROWS; i++) {
       expect(modelOf(i)).toBe('claude-sonnet-5');
     }

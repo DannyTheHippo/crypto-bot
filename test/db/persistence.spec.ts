@@ -1048,7 +1048,7 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
       venue: 'binance',
       triggerKind: 'candle' as const,
       basedOnSeq: 42n,
-      model: 'claude-opus-4-8',
+      model: 'claude-opus-5',
       action: 'open_long' as const,
       confidence: 0.82,
       rationale: 'trend + momentum confluence',
@@ -1581,7 +1581,7 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
     const repo = new LlmUsageRepository(db);
     await repo.insert({
       kind: 'reflection',
-      model: 'claude-opus-4-8',
+      model: 'claude-opus-5',
       mode: 'paper',
       strategyId: 'agentic-dt-1',
       inputTokens: 512,
@@ -1599,7 +1599,7 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
     }>(
       `SELECT kind, model, mode, strategy_id, input_tokens, output_tokens, created_at
        FROM public.llm_usage WHERE model = $1`,
-      ['claude-opus-4-8'],
+      ['claude-opus-5'],
     );
     expect(rows.rows).toHaveLength(1);
     const row = rows.rows[0]!;
@@ -1615,7 +1615,7 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
     const repo = new LlmUsageRepository(db);
     await repo.insert({
       kind: 'reflection',
-      model: 'claude-opus-4-8-nullable-sid',
+      model: 'claude-opus-5-nullable-sid',
       mode: 'testnet',
       strategyId: null,
       inputTokens: 1,
@@ -1624,7 +1624,7 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
 
     const rows = await pool.query<{ strategy_id: string | null }>(
       `SELECT strategy_id FROM public.llm_usage WHERE model = $1`,
-      ['claude-opus-4-8-nullable-sid'],
+      ['claude-opus-5-nullable-sid'],
     );
     expect(rows.rows).toHaveLength(1);
     expect(rows.rows[0]!.strategy_id).toBeNull();
@@ -1634,7 +1634,7 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
     const adapter = new LlmUsageSinkAdapter(db, 'live');
     adapter.record({
       kind: 'reflection',
-      model: 'claude-opus-4-8-adapter',
+      model: 'claude-opus-5-adapter',
       strategyId: strategyId('agentic-dt-2'),
       inputTokens: 7,
       outputTokens: 3,
@@ -1644,7 +1644,7 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
 
     const rows = await pool.query<{ mode: string; strategy_id: string | null }>(
       `SELECT mode, strategy_id FROM public.llm_usage WHERE model = $1`,
-      ['claude-opus-4-8-adapter'],
+      ['claude-opus-5-adapter'],
     );
     expect(rows.rows).toHaveLength(1);
     expect(rows.rows[0]!.mode).toBe('live');

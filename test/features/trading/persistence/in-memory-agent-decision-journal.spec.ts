@@ -24,7 +24,7 @@ function entry(eventTime: number, overrides: Partial<AgentDecisionEntry> = {}): 
     triggerKind: 'candle',
     basedOnSeq: 1n,
     eventTime: epochMs(eventTime),
-    model: 'claude-opus-4-8',
+    model: 'claude-opus-5',
     action: 'hold',
     confidence: 0.5,
     rationale: 'no edge',

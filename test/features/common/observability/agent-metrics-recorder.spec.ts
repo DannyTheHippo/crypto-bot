@@ -110,11 +110,11 @@ describe('AgentMetricsRecorder', () => {
 
   it('recordTokens keeps per-model series separate (#28: decide vs reflection $/day split)', async () => {
     recorder.recordTokens(120, 45, undefined, undefined, 'claude-sonnet-5');
-    recorder.recordTokens(500, 90, undefined, undefined, 'claude-opus-4-8');
+    recorder.recordTokens(500, 90, undefined, undefined, 'claude-opus-5');
     const metric = await register.getSingleMetricAsString('agent_tokens_total');
     expect(metric).toContain('kind="input",model="claude-sonnet-5"} 120');
-    expect(metric).toContain('kind="input",model="claude-opus-4-8"} 500');
-    expect(metric).toContain('kind="output",model="claude-opus-4-8"} 90');
+    expect(metric).toContain('kind="input",model="claude-opus-5"} 500');
+    expect(metric).toContain('kind="output",model="claude-opus-5"} 90');
   });
 
   it('recordTokens falls back to model="unknown" when no model is given', async () => {

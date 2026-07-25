@@ -647,11 +647,11 @@ describe('validate()', () => {
     it('AGENTIC_REFLECTION_MODEL present → carried into cfg.agentic (priced, so the gate-honesty refusal below does not trip)', () => {
       const cfg = validate({
         PORT: '3100',
-        AGENTIC_REFLECTION_MODEL: 'claude-opus-4-8',
+        AGENTIC_REFLECTION_MODEL: 'claude-opus-5',
         AGENTIC_TOKEN_PRICES_JSON:
-          '{"claude-opus-4-8":{"inputPerMtok":"5","outputPerMtok":"25","cacheReadPerMtok":"0.5","cacheWritePerMtok":"10"}}',
+          '{"claude-opus-5":{"inputPerMtok":"5","outputPerMtok":"25","cacheReadPerMtok":"0.5","cacheWritePerMtok":"10"}}',
       });
-      expect(cfg.agentic.reflectionModel).toBe('claude-opus-4-8');
+      expect(cfg.agentic.reflectionModel).toBe('claude-opus-5');
     });
 
     it('AGENTIC_PLAYBOOK_PIN absent → undefined (unpinned)', () => {
@@ -832,9 +832,9 @@ describe('validate()', () => {
       const cfg = validate({
         PORT: '3100',
         AGENTIC_TOKEN_PRICES_JSON:
-          '{"claude-opus-4-8":{"inputPerMtok":"5","outputPerMtok":"25","cacheReadPerMtok":"0.5","cacheWritePerMtok":"10"}}',
+          '{"claude-opus-5":{"inputPerMtok":"5","outputPerMtok":"25","cacheReadPerMtok":"0.5","cacheWritePerMtok":"10"}}',
       });
-      expect(cfg.agentic.tokenPrices?.['claude-opus-4-8']).toEqual({
+      expect(cfg.agentic.tokenPrices?.['claude-opus-5']).toEqual({
         inputPerMtok: '5',
         outputPerMtok: '25',
         cacheReadPerMtok: '0.5',
@@ -851,26 +851,26 @@ describe('validate()', () => {
       expect(() =>
         validate({
           PORT: '3100',
-          AGENTIC_TOKEN_PRICES_JSON: '{"claude-opus-4-8":{"inputPerMtok":"5"}}',
+          AGENTIC_TOKEN_PRICES_JSON: '{"claude-opus-5":{"inputPerMtok":"5"}}',
         }),
       ).toThrow(/AGENTIC_TOKEN_PRICES_JSON failed validation/);
     });
 
     describe('AGENTIC_REFLECTION_MODEL pricing gate-honesty refusal (review finding, major)', () => {
       const OPUS_PRICED =
-        '{"claude-opus-4-8":{"inputPerMtok":"5","outputPerMtok":"25","cacheReadPerMtok":"0.5","cacheWritePerMtok":"10"}}';
+        '{"claude-opus-5":{"inputPerMtok":"5","outputPerMtok":"25","cacheReadPerMtok":"0.5","cacheWritePerMtok":"10"}}';
 
       it('throws when a differing reflection model has no AGENTIC_TOKEN_PRICES_JSON at all', () => {
-        expect(() =>
-          validate({ PORT: '3100', AGENTIC_REFLECTION_MODEL: 'claude-opus-4-8' }),
-        ).toThrow(/AGENTIC_REFLECTION_MODEL.*AGENTIC_MODEL.*AGENTIC_TOKEN_PRICES_JSON/s);
+        expect(() => validate({ PORT: '3100', AGENTIC_REFLECTION_MODEL: 'claude-opus-5' })).toThrow(
+          /AGENTIC_REFLECTION_MODEL.*AGENTIC_MODEL.*AGENTIC_TOKEN_PRICES_JSON/s,
+        );
       });
 
       it('throws when AGENTIC_TOKEN_PRICES_JSON is configured but omits the reflection model', () => {
         expect(() =>
           validate({
             PORT: '3100',
-            AGENTIC_REFLECTION_MODEL: 'claude-opus-4-8',
+            AGENTIC_REFLECTION_MODEL: 'claude-opus-5',
             AGENTIC_TOKEN_PRICES_JSON:
               '{"claude-sonnet-5":{"inputPerMtok":"3","outputPerMtok":"15","cacheReadPerMtok":"0.3","cacheWritePerMtok":"6"}}',
           }),
@@ -881,7 +881,7 @@ describe('validate()', () => {
         expect(() =>
           validate({
             PORT: '3100',
-            AGENTIC_REFLECTION_MODEL: 'claude-opus-4-8',
+            AGENTIC_REFLECTION_MODEL: 'claude-opus-5',
             AGENTIC_TOKEN_PRICES_JSON: OPUS_PRICED,
           }),
         ).not.toThrow();
@@ -905,22 +905,22 @@ describe('validate()', () => {
         expect(() =>
           validate({
             PORT: '3100',
-            AGENTIC_REFLECTION_MODEL: 'claude-opus-4-8',
+            AGENTIC_REFLECTION_MODEL: 'claude-opus-5',
             AGENTIC_TOKEN_PRICES_JSON: '{nope',
           }),
         ).toThrow(/AGENTIC_TOKEN_PRICES_JSON is not valid JSON/);
       });
 
-      // Shipped-lane regression: the deployed .env.app pins AGENTIC_REFLECTION_MODEL=claude-opus-4-8
+      // Shipped-lane regression: the deployed .env.app pins AGENTIC_REFLECTION_MODEL=claude-opus-5
       // with a price map covering both models — must never trip this refusal.
       it('shipped lane shape (opus reflection + both-model price map) never trips', () => {
         expect(() =>
           validate({
             PORT: '3100',
             AGENTIC_MODEL: 'claude-sonnet-5',
-            AGENTIC_REFLECTION_MODEL: 'claude-opus-4-8',
+            AGENTIC_REFLECTION_MODEL: 'claude-opus-5',
             AGENTIC_TOKEN_PRICES_JSON:
-              '{"claude-sonnet-5":{"inputPerMtok":"3","outputPerMtok":"15","cacheReadPerMtok":"0.3","cacheWritePerMtok":"6"},"claude-opus-4-8":{"inputPerMtok":"5","outputPerMtok":"25","cacheReadPerMtok":"0.5","cacheWritePerMtok":"10"}}',
+              '{"claude-sonnet-5":{"inputPerMtok":"3","outputPerMtok":"15","cacheReadPerMtok":"0.3","cacheWritePerMtok":"6"},"claude-opus-5":{"inputPerMtok":"5","outputPerMtok":"25","cacheReadPerMtok":"0.5","cacheWritePerMtok":"10"}}',
           }),
         ).not.toThrow();
       });

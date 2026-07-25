@@ -350,7 +350,7 @@ describe('PromotionReadinessService', () => {
           cacheReadPerMtok: '0.3',
           cacheWritePerMtok: '6',
         },
-        'claude-opus-4-8': {
+        'claude-opus-5': {
           inputPerMtok: '5',
           outputPerMtok: '25',
           cacheReadPerMtok: '0.5',
@@ -372,7 +372,7 @@ describe('PromotionReadinessService', () => {
             cacheCreationTokens: 1_000_000,
           },
           {
-            model: 'claude-opus-4-8',
+            model: 'claude-opus-5',
             inputTokens: 1_000_000,
             outputTokens: 1_000_000,
             cacheReadTokens: 0,

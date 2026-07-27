@@ -229,7 +229,10 @@ matched against 0.365 sold, corrupting the second cycle's accounting too. True B
 Consequences, both on gauges the promotion gate reads:
 
 - `agentic_promotion_round_trips` is inflated — a phantom trip counts toward the ≥30 floor.
-- `agentic_promotion_net_pnl_usd` is distorted, here by roughly $6 against a −$40 total (~15%).
+- `agentic_promotion_net_pnl_usd` is distorted. Measured at deploy: **−$40.05 → −$37.74**, i.e.
+  $2.31 on a −$40 total (~6%). An earlier estimate in this document put it near $6; the observed
+  figure is the one to trust, and it is recorded here rather than the estimate being quietly
+  deleted.
 
 It would recur on any multi-fill order whose first fill is under $5 — routine at
 `SIZER_EQUITY_CAP=1000` with 0.04 sizing (~$40 positions filling in slices).
@@ -247,6 +250,15 @@ BUY booking −1) with no stated rationale; they were characterization tests of 
 been rewritten to encode the corrected semantics, alongside a new BCH-shaped regression that folds a
 sub-dust first fill into one cycle. Verified live: the corrected walk yields 23 cycles, zero
 phantoms, Arm 1 −108.1 bps — reproducing the production gauges with no manual exclusion.
+
+**Deployed 2026-07-27** (commit `6a84d23`, image rebuilt, `app` recreated while holding six open
+positions). Post-deploy gauges confirm the fix end to end: `agentic_promotion_round_trips` 24 → 23,
+`agentic_promotion_net_pnl_usd` −$40.05 → −$37.74, `agentic_promotion_win_rate` 0.17391 (= 4/23,
+matching this study's Arm 1 exactly), kill switch RUNNING. Two incidental confirmations from the same
+boot: **WATCH-V4-3 satisfied** — a redeploy while carrying perp exposure produced zero `perp pin:` /
+`START_TRADING_FAILED` / `FLATTENING` lines and zero errors, the first real-conditions test of
+`287ef6c` — and `agentic_budget_remaining_usd` read $1.69 rather than a reset $3.00, confirming
+`f2d74b6`'s durable budget seed survives a redeploy.
 
 **The verdict above is unaffected**: no arm cell is positive under either walk.
 

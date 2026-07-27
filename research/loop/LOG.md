@@ -4688,3 +4688,64 @@ The `byVenueId` venue-qualification defect is the ranked money-path item. Profit
 untouched this pass and remains the point: 22 trips of the 30 needed, window 3.82d of 14, and
 net-of-cost still deeply negative at −$39.86 against $15.20 of LLM spend — the cost line alone is
 ~38% of the deficit.
+
+### ADDENDUM (same pass, after owner correction) — the four deferrals were wrong; all four are fixed
+
+Owner ruling, verbatim: _"do not defer defects. daily loop is for improving profitability, not for
+fixing backlog bugs (those must get fixed immediately if possible). if this is not explicit in the
+daily loop workflow: make it explicit"_.
+
+Both halves done.
+
+**The playbook now says it outright** (`docs/planning/daily-profitability-loop.md` §4, new
+subsection § DEFECTS ARE NEVER DEFERRED). The rule I leaned on — "never two money-path items in one
+pass" — governs chosen IMPROVEMENTS and never licensed a deferral; that is now stated, along with
+the fact that the only sanctioned deferral is a fix that cannot be made without crossing the
+MUST-NOT rails, and that "it was a big change" and "the pass already shipped something" are not
+blockers. § Flagged is redefined as owner-capability-limits only, not a defect queue, and the
+MAINTENANCE pass type explicitly stops being where defects live.
+
+**All four defects shipped, each its own commit, gates green, one deploy, one soak:**
+
+- **`9d69d91` — the trade index was neither venue-safe nor fresh.** `byVenueId` was keyed on
+  `venueOrderId` alone while built from the book-wide OrderBookService, but that id is unique only
+  per venue (`order.repository.ts` says so in a comment), so a perp trade could fold onto a spot
+  order — wrong position, wrong intent. `OrderRecord` could not even express the check; it now
+  carries `symbol` (persisted, so rehydrated records still know their venue), and a record whose
+  venue cannot be established is deliberately NOT indexed — it falls to the venue-scoped durable
+  tier rather than being guessed at. Same commit: the index was snapshotted once per pass, so an
+  order ACKed inside the ~60s window reached the durable tier as "non-terminal, lost in memory" and
+  HALTED the whole book — a corruption verdict on an order that was simply young. A miss now re-reads
+  the live book once before that conclusion is available.
+- **`132fb3d` — fills after a terminal fold lost their money effect.** The in-flight intent map was
+  treated as the authority; it is cleared on the terminal fold, so later fills in the same batch were
+  written to `fills`, folded onto the order, and dropped before position and cash. Invisible on spot
+  (balanceAxis off, position axis perp-only). The ingestor now falls back to the durable intent —
+  safe because the line is only reached when `saveFill` INSERTED the row, so nothing can double-count.
+- **`f2d74b6` — the daily cost breaker did not survive a redeploy.** Seeded at boot from the durable
+  token ledgers. Live proof on the deploy: `daily LLM budget seeded from durable spend since
+  2026-07-27T00:00:00Z: $1.2294 of $3 already spent today` — the previous boot read $0.00 on the same
+  day. Fails OPEN (a spend cap, not a safety interlock) and does not restore the per-day call count,
+  which the ledgers do not store; both stated in the code rather than left to be discovered.
+
+Every regression test was verified load-bearing by reverting its own fix: the collision test folds
+onto the spot order, the mid-pass test halts as FILL_FOR_UNKNOWN_ORDER, the terminal-fold test ends
+at 0.9995 of 1, and the budget test starts a redeploy at a full $3.
+
+**Gates:** format:check, lint, lint:md, typecheck, build, test (168 files / **2967**),
+test:livegate (55) — green at each commit.
+
+**Deploy + soak (boot `17f4bf05`, 15:04:28Z):** 0 sweep alarms; both venues CLEAN on all 14 passes;
+kill switch RUNNING; clean stamp fresh at 71s; `reconciliation_mismatch_total` absent entirely;
+`agentic_budget_remaining_usd` **1.7706** — i.e. correctly carrying the $1.23 already spent instead
+of resetting to $3.00; RSS 725 MiB (WATCH-V3-1 inside bounds); 10 warn lines, all benign.
+
+**Nothing is deferred.** § Flagged now holds only the two genuine owner-capability items (the
+shared-org Anthropic rate limit and the CryptoPanic key). The state.md WATCH set gains WATCH-V4-4
+for attribution correctness.
+
+**Standing note for the next pass, in the spirit of the ruling:** this pass shipped six fixes and
+zero profitability work. Net-of-cost is −$40.05 on 22 of 30 trips with $15.20 of LLM spend against
+it. Two consecutive passes consumed by repair is the trigger the playbook now names for
+recommending a systemic change rather than absorbing it quietly — if the next pass is also all
+repair, that recommendation is due.

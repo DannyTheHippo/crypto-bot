@@ -268,8 +268,28 @@ never changes for strategy evolution.
   `reconciliation_mismatch_total{class="fill_overflow"}` stays 0. Named defect outcome: any non-zero
   reading is a book HALT that will NOT re-fire and is NOT repaired by restart — capture the
   `FILL_OVERFLOW:{symbol}` reason from `audit_log` immediately (the container log is the only other
-  copy, and the sweep truncates its messages to 48 chars), then treat § Flagged rank 1 as the
-  probable cause.
+  copy, and the sweep truncates its messages to 48 chars). Its likeliest cause — the unqualified
+  trade index — was fixed the same pass (`9d69d91`), so a fire now means a genuinely new shape.
+- **TRADE-ATTRIBUTION FAMILY CLOSED (Pass 40, 2026-07-27) — four defects the adversarial review
+  surfaced, all fixed in-pass after the owner's do-not-defer ruling.** (1) `9d69d91`: the axis-2
+  trade index was keyed on `venueOrderId` ALONE while built book-wide, but that id is unique only per
+  venue — a perp trade could fold onto a spot order. `OrderRecord` now carries `symbol` (persisted),
+  and a record whose venue cannot be established is not indexed at all. (2) `9d69d91`: the same index
+  was snapshotted once per pass, so an order ACKed mid-pass reached the durable tier as
+  "non-terminal, lost in memory" and HALTED the book — a false corruption verdict on an order that
+  was merely young; the index is now re-read once on a miss. (3) `132fb3d`: fills arriving after an
+  order folded terminal within one batch were journaled but never applied to position/cash (the
+  in-flight map is cleared on the terminal fold) — invisible on spot, where balanceAxis is off and
+  the position axis is perp-only; the ingestor now falls back to the durable intent. (4) `f2d74b6`:
+  the daily cost breaker was in-memory only, so every redeploy handed the lane a fresh full $3 — it
+  is now seeded at boot from the durable token ledgers (live-verified: "$1.2294 of $3 already spent
+  today" where the previous boot would have read $0.00).
+  **WATCH-V4-4 (attribution correctness).** Expected-positive: `fills` rows always carry the
+  clientOrderId of an order on the SAME venue as the fill, no `FILL_FOR_UNKNOWN_ORDER` halt fires on
+  an order younger than the pass that halted it, and `sum(fills.qty)` per order equals
+  `orders.cum_qty` for every terminal order. Named defect outcome: any of those three breaking means
+  the index or the fold has a shape none of the four fixes covers — do not patch the symptom;
+  re-derive which tier resolved the trade first.
 - **REDEPLOY IS NO LONGER A COIN FLIP WHILE HOLDING PERP EXPOSURE (Pass 40, 2026-07-27, fix
   `287ef6c`).** The boot-time perp pin halted the book (`START_TRADING_FAILED`, flatten=true) on a
   FLAT symbol carrying a resting algo-rail stop: the venue refuses `setMarginMode` with -4067 while
@@ -964,42 +984,13 @@ when the info-context A/B resolves.
 
 ## Flagged for human review (open)
 
-> **NOT owner-gated — the four items below are LOOP-DOMAIN and carried here only because Pass 40
-> already shipped two money-path fixes.** They are the next pass's ranked work, not a waiting queue.
-> Recorded deviation: playbook §4 says a defect is fixed in the pass that finds it; Pass 40 fixed two
-> and deferred these four, because they form one coherent change to the trade-attribution index that
-> deserves its own pass and its own review. Do not let them age.
-
-- **OPEN DEFECT (rank 1, next money-path item) — the axis-2 trade index is keyed on `venueOrderId`
-  alone, across BOTH venues (Pass 40, 2026-07-27).** `reconciliation.service.ts`'s `reconcileTrades`
-  builds `byVenueId` from `this.orders.all()` (book-wide: one process, both venues) with no venue
-  qualification, and `OrderRecord` carries neither venue nor symbol, so no check is possible after
-  the fact. `order.repository.ts` states the broken invariant explicitly: "venue_order_id is only
-  unique per venue." A collision folds a perp trade onto a spot order — wrong position, wrong
-  symbol, fill filed under the wrong intent. Also the likeliest real-world cause of the new
-  `FILL_OVERFLOW` halt, which is why the runbook entry names it. Fix requires threading venue (or
-  symbol) onto `OrderRecord` or keying the map `${venue}:${venueOrderId}`.
-- **OPEN DEFECT (rank 2, same family) — the same per-pass index can mint a FALSE
-  `FILL_FOR_UNKNOWN_ORDER` HALT.** `byVenueId` is built once per axis; an order ACKed after that
-  snapshot but whose fill arrives in the same pass matches neither the index nor the coid tier, so
-  the durable lookup finds it non-terminal and halts the whole book as corruption. A pass issues ~80
-  sequential REST calls over ~60s, so the window is tens of seconds every pass; today it is usually
-  masked by the 10s fill poller winning the race and setting `hasFill`.
-- **KNOWN GAP (rank 3, same family) — post-terminal fills lose their position/cash effect.** When an
-  intermediate fold inside one pass reaches FILLED (residual < stepSize), `FillIngestorService`
-  clears the in-flight intent, and every later fill in that pass is journaled but never applied to
-  position/cash. Detectability is PERP-ONLY: `balanceAxis` is off on demo and `positionAxis` is
-  perp-only, so on spot nothing compares the fills table against the portfolio. Trigger is narrow
-  (trailing trades summing to less than the order's stepSize) — that narrowness, not rarity of
-  multi-trade backfills, is what bounds it. `algo-stop-recovery.service.ts` already carries the
-  precedent remedy (re-establish `addInFlight` around the fold loop).
-- **OPEN DEFECT (rank 4) — the daily LLM cost breaker does not survive a restart.**
-  `agentic_budget_remaining_usd` read $3.00 (full) immediately after Pass 40's second redeploy
-  despite ~$0.31 spent that UTC day: the meter is in-memory per boot. On a day with several
-  redeploys the $3/day breaker is effectively unbounded. Evidence integrity is NOT affected — the
-  promotion walk prices durable `agent_decisions`/`llm_usage` token rows
-  (`agentic_promotion_llm_cost_usd` $15.20) — so this is a cost-control defect, not a measurement
-  one. Fix by seeding the day's spend from the durable ledger at boot.
+> **This section is for defects that CANNOT be fixed without crossing the §4 MUST-NOT rails — owner
+> capability limits only. It is not a defect queue.** Owner ruling 2026-07-27, verbatim: "do not
+> defer defects … those must get fixed immediately if possible"; the daily loop is a profitability
+> engine, not a bug tracker. Pass 40 initially parked four defects here citing the
+> one-money-path-item-per-pass limit, was corrected, and fixed all four in the same pass. That limit
+> governs chosen IMPROVEMENTS only and never licenses a deferral — now stated outright in playbook §4
+> (§ DEFECTS ARE NEVER DEFERRED).
 
 - **SHARED-ORG RATE-LIMIT — RECURRING; owner action requested (Pass 35, 2026-07-20; first
   recorded X9 same day).** The trading app and interactive/orchestration sessions share ONE

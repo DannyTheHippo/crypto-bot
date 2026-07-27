@@ -169,6 +169,12 @@ normalized as background noise (the ~10-min STALE_DATA blackouts, the unflagged 
 When the sweep is clean, select exactly ONE pass type — highest-priority eligible. Priority:
 correctness bugs on the trading path > promotion-ready evidence > candidate work > maintenance.
 
+Pass-type selection governs the IMPROVEMENT the pass chooses. It never gates defect repair: any
+defect found along the way is fixed in this pass on top of the chosen type (§ DEFECTS ARE NEVER
+DEFERRED). A pass whose defect work crowds out the improvement entirely says so in LOG.md — and if
+that happens on consecutive passes, the report recommends what to change about the system so passes
+stop being consumed by repair, because repair is not what this loop is for.
+
 Autonomy (owner 2026-07-17): ALL demo money-path work — risk, execution, OMS, exchange adapters,
 defect fixes AND new capability — is loop-domain. Measurement, config, and deploy decisions are
 loop-domain too: decide, apply, record — do not flag. The live-money flip (four gates + bootId
@@ -179,10 +185,31 @@ OMS-semantics); full gates + `test:livegate` + `test:paper` green; deploy soak p
 decision record + a WATCH line in state.md (change-discipline shape — every WATCH carries an
 explicit expected-positive signature, a named defect outcome, and a resolution deadline/owner-pass);
 behavior-changing capability additionally ships two-step (code flag-off, then a separate enable
-commit with its own review). Never two money-path items in one pass. Bugs are NEVER backlog
-material — a defect found by a pass is fixed IN that pass; the only sanctioned deferral is a fix
-that exceeds the MUST-NOT rails below, which goes to "Flagged for human review" with evidence +
-exact diff.
+commit with its own review).
+
+### DEFECTS ARE NEVER DEFERRED (owner, 2026-07-27 — this overrides everything below it)
+
+**This loop is a profitability engine. It is not a bug tracker, and it is not a maintenance run.**
+A defect the pass finds is fixed IN that pass — however many there are, and regardless of which
+subsystem they touch. There is no "next pass will take it", no ranked defect queue, no defect rows
+in the backlog. The backlog holds **profitability work ONLY**.
+
+The one-money-path-item-per-pass limit applies to **improvements and new capability** — things the
+pass chose to build. It has never applied to defect fixes and MUST NOT be used to justify deferring
+one: a pass that finds five defects fixes five defects, each as its own commit, each with its own
+review, gates, and soak. (This rule was written down because Pass 40 did exactly the wrong thing —
+it shipped two fixes, then deferred four more defects to "the next pass's ranked work" by citing the
+per-pass limit. Owner correction, verbatim: "do not defer defects … those must get fixed immediately
+if possible".)
+
+The ONLY sanctioned deferral is a fix that cannot be made without crossing the MUST-NOT rails below
+(live gates + arming, append-only tables, secrets/redaction). That one goes to "Flagged for human
+review" with evidence + the exact proposed diff — never to the backlog.
+
+If a defect genuinely cannot be fixed in the pass, that is a **blocked** state, not a scheduling
+choice: say so explicitly in LOG.md with the specific blocker (missing capability, missing owner
+credential, an unreproducible shape), not with a priority argument. "It was a big change" and "the
+pass already shipped something" are not blockers.
 
 Pass types, reframed for the unified book:
 
@@ -199,9 +226,11 @@ Pass types, reframed for the unified book:
   `agentic_version_round_trips{version}`, walked over the ONE book (no lane split to reconcile).
   Manual `playbook:promote` ONLY when auto-promotion is legitimately stuck (record why). Rollback
   via `AGENTIC_PLAYBOOK_PIN`.
-- MAINTENANCE — default. Trading-path correctness bugs (outrank everything); the current stage's
-  open items; the backlog (re-verify each against current code before implementing — inherited items
-  go stale); new ideas from today's evidence (add to backlog even when not chosen).
+- MAINTENANCE — default. The current stage's open items; the backlog (re-verify each against current
+  code before implementing — inherited items go stale); new ideas from today's evidence (add to
+  backlog even when not chosen). Note this pass type is NOT where defects live: trading-path
+  correctness bugs are repaired in whatever pass finds them, not scheduled into a maintenance slot,
+  and the backlog they are never added to is profitability-only.
 
 Scanner/menu shape (spec §5): one `UniverseScannerService` ranks the combined 40-symbol basket (24
 spot + 16 perp) — score = 24h-quote-volume rank × ATR% rank, cross-venue-comparable by

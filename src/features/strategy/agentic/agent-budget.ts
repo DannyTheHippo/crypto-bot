@@ -321,7 +321,18 @@ export class BudgetedAgentClient implements AgentClientPort {
         );
         this.lastWarnedDayKey = dayKey;
       }
-      return { signals: [] };
+      // H4 (2026-07-27): an explicit decision, never a decision-less proposal — a decision-less hold
+      // persists byte-identical to a genuine model hold (empty rationale, confidence 0),
+      // undiagnosable from the journal alone. See anthropic-agent-client.ts's own soft-hold branches
+      // for the same discipline.
+      return {
+        signals: [],
+        decision: {
+          action: 'hold',
+          confidence: 0,
+          rationale: `budget_exhausted: daily LLM budget exhausted (day ${dayKey})`,
+        },
+      };
     }
     const proposal = await this.inner.propose(input);
     this.budget.recordUsage(proposal.usage, this.model);

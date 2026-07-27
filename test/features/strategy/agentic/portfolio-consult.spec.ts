@@ -17,6 +17,11 @@ import type { TickerEvent } from '../../../../src/domain/venue/types/market-even
 import { price } from '../../../../src/domain/common/types/money';
 import { strategyId, venueId, symbolId, epochMs } from '../../../../src/domain/common/types/ids';
 
+// expect.stringMatching is typed `any`, which trips @typescript-eslint/no-unsafe-assignment when
+// embedded in an object literal. One typed wrapper keeps the asymmetric matcher without spraying
+// casts across every H4 rationale-tag assertion below.
+const rationaleMatching = (re: RegExp): string => expect.stringMatching(re) as string;
+
 const T = 1_700_000_000_000;
 const V = venueId('binance');
 
@@ -179,7 +184,16 @@ describe('BatchingAgentClient', () => {
     await vi.advanceTimersByTimeAsync(3000);
 
     await expect(p1).resolves.toEqual({ signals: [] });
-    await expect(p2).resolves.toEqual({ signals: [] });
+    // H4 (2026-07-27): an explicit decision, not a decision-less proposal — see
+    // batching-agent-client.ts's own comment on this defensive-backstop branch.
+    await expect(p2).resolves.toEqual({
+      signals: [],
+      decision: {
+        action: 'hold',
+        confidence: 0,
+        rationale: rationaleMatching(/^missing_from_batch_result: /),
+      },
+    });
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('ETH/USDT'));
   });
 
@@ -244,8 +258,18 @@ describe('BatchingAgentClient', () => {
     const p2 = client.propose(buildInput('ETH/USDT', 'agentic-2'));
     await vi.advanceTimersByTimeAsync(3000);
 
-    await expect(p1).resolves.toEqual({ signals: [] });
-    await expect(p2).resolves.toEqual({ signals: [] });
+    // H4 (2026-07-27): this IS the deployed shape (AGENTIC_PORTFOLIO_CONSULT=true) — every entry
+    // resolves with an explicit budget_exhausted: hold decision, never a decision-less proposal.
+    const expected = {
+      signals: [],
+      decision: {
+        action: 'hold',
+        confidence: 0,
+        rationale: rationaleMatching(/^budget_exhausted: /),
+      },
+    };
+    await expect(p1).resolves.toEqual(expected);
+    await expect(p2).resolves.toEqual(expected);
     expect(proposeBatch).not.toHaveBeenCalled();
   });
 
@@ -375,8 +399,12 @@ describe('BatchingAgentClient', () => {
     const activeProposal = client.propose(buildInput('BTC/USDT', 'agentic-1'));
     const inertProposal = client.propose(buildInput('ETH/USDT', 'agentic-2'));
 
-    // The gated-out symbol resolves immediately — no timer advance needed.
-    await expect(inertProposal).resolves.toEqual({ signals: [] });
+    // The gated-out symbol resolves immediately — no timer advance needed. H4 (2026-07-27): an
+    // explicit decision, not a decision-less proposal — see batching-agent-client.ts's own comment.
+    await expect(inertProposal).resolves.toEqual({
+      signals: [],
+      decision: { action: 'hold', confidence: 0, rationale: rationaleMatching(/^off_menu: /) },
+    });
 
     await vi.advanceTimersByTimeAsync(3000);
     await activeProposal;
@@ -636,6 +664,12 @@ describe('AnthropicAgentClient.proposeBatch', () => {
     expect(result.proposals.get('BTC/USDT')?.consultId).toBe(
       result.proposals.get('ETH/USDT')?.consultId,
     );
+    // H4 (2026-07-27): every soft-held symbol stamps an explicit envelope_malformed: hold decision.
+    for (const symbol of ['BTC/USDT', 'ETH/USDT']) {
+      const decision = result.proposals.get(symbol)?.decision;
+      expect(decision, symbol).toMatchObject({ action: 'hold', confidence: 0 });
+      expect(decision?.rationale, symbol).toMatch(/^envelope_malformed: /);
+    }
   });
 
   it('no submit_portfolio tool_use block soft-holds every symbol (usage still recorded on the first)', async () => {
@@ -657,6 +691,12 @@ describe('AnthropicAgentClient.proposeBatch', () => {
     expect(result.proposals.get('BTC/USDT')?.signals).toEqual([]);
     expect(result.proposals.get('BTC/USDT')?.usage).toBeDefined();
     expect(result.proposals.get('ETH/USDT')?.usage).toBeUndefined();
+    // H4 (2026-07-27): every soft-held symbol stamps an explicit no_tool_use: hold decision.
+    for (const symbol of ['BTC/USDT', 'ETH/USDT']) {
+      const decision = result.proposals.get(symbol)?.decision;
+      expect(decision, symbol).toMatchObject({ action: 'hold', confidence: 0 });
+      expect(decision?.rationale, symbol).toMatch(/^no_tool_use: /);
+    }
   });
 
   it('a top-level decisions field missing from the tool payload soft-holds every symbol', async () => {
@@ -768,6 +808,37 @@ describe('AnthropicAgentClient.proposeBatch', () => {
       (singleFetch.mock.calls[0]![1] as RequestInit).body as string,
     ) as { system: unknown };
     expect(batchBody.system).toEqual(singleBody.system);
+  });
+
+  // H5 (2026-07-27): 8/57 live schema rejections were `decisions` missing entirely, 11 more were a
+  // resolved symbol absent from it. A per-call reminder block (never cache_control — rides uncached
+  // alongside the volatile per-symbol blocks) names every resolved symbol explicitly.
+  it('appends an UNCACHED portfolio-completeness reminder block naming every resolved symbol', async () => {
+    const fetchFn = vi.fn();
+    const client = new AnthropicAgentClient(buildCfg(), fetchFn);
+    fetchFn.mockResolvedValue(
+      apiResponse(
+        portfolioBody([
+          { symbol: 'BTC/USDT', action: 'hold', confidence: 0.5, rationale: 'r' },
+          { symbol: 'ETH/USDT', action: 'hold', confidence: 0.5, rationale: 'r' },
+        ]),
+      ),
+    );
+
+    await client.proposeBatch([
+      buildInput('BTC/USDT', 'agentic-1'),
+      buildInput('ETH/USDT', 'agentic-2'),
+    ]);
+
+    const sentBody = JSON.parse((fetchFn.mock.calls[0]![1] as RequestInit).body as string) as {
+      messages: { content: { type: string; text?: string; cache_control?: unknown }[] }[];
+    };
+    const blocks = sentBody.messages[0]!.content;
+    const completenessBlock = blocks[blocks.length - 1]!;
+    expect(completenessBlock.cache_control).toBeUndefined();
+    expect(completenessBlock.text).toContain('exactly one entry per symbol');
+    expect(completenessBlock.text).toContain('BTC/USDT');
+    expect(completenessBlock.text).toContain('ETH/USDT');
   });
 
   it('one tryReserveCall-equivalent HTTP request answers ALL resolvable symbols — never one fetch per symbol', async () => {

@@ -284,8 +284,24 @@ export interface SymbolCapabilities {
 // enumeration of what 'open_*' demands. Source of truth is requireTradeDirectives
 // (anthropic-agent-client.ts:135-153) — the two must stay in sync; a field added/removed there without
 // a matching edit here silently re-opens the same masked-degrade failure mode this pass fixed.
+export const REQUIRED_DIRECTIVES_SENTENCE =
+  "Opening a position ('open_long'/'open_short', including a scale-in) REQUIRES all six directive fields together: sizeFraction, entry, entryValidityBars, stopLossPct, takeProfitPct, and maxHoldBars — omitting any one of them rejects the whole decision. The same six fields are REQUIRED on a re-arm 'hold' while positioned without directives.";
 const TRADE_ACTION_DESCRIPTION =
-  "'open_long' opens a new long, or SCALES INTO an existing long-side position (fresh directives, max-hold clock restarts); 'open_short' opens a new short, or scales into an existing short — VALID ONLY for a symbol whose capabilities.shorts is true (an open_short on a symbol with shorts:false is rejected and journaled as a capability violation, never executed); an 'open_*' on the OPPOSITE side of an existing position is a no-op hold, never an accidental flip — close first. 'close' fully exits the open position, long or short; 'adjust' revises the CURRENT position's directives in place (entry/side are ignored; optionally pair with partialCloseFraction for a partial close) — never opens a new position; 'hold' leaves the position unchanged when directives are already being enforced, OR re-arms managed execution when the position summary omits `directives` (a restart wipes the in-memory plan — you are consulted every bar until you re-attach the full six-field directive set on a 'hold'; entry fields are ignored on that re-arm, stop/TP anchor to the existing avgEntry). Opening a position ('open_long'/'open_short', including a scale-in) REQUIRES all six directive fields together: sizeFraction, entry, entryValidityBars, stopLossPct, takeProfitPct, and maxHoldBars — omitting any one of them rejects the whole decision. The same six fields are REQUIRED on a re-arm 'hold' while positioned without directives.";
+  "'open_long' opens a new long, or SCALES INTO an existing long-side position (fresh directives, max-hold clock restarts); 'open_short' opens a new short, or scales into an existing short — VALID ONLY for a symbol whose capabilities.shorts is true (an open_short on a symbol with shorts:false is rejected and journaled as a capability violation, never executed); an 'open_*' on the OPPOSITE side of an existing position is a no-op hold, never an accidental flip — close first. 'close' fully exits the open position, long or short; 'adjust' revises the CURRENT position's directives in place (entry/side are ignored; optionally pair with partialCloseFraction for a partial close) — never opens a new position; 'hold' leaves the position unchanged when directives are already being enforced, OR re-arms managed execution when the position summary omits `directives` (a restart wipes the in-memory plan — you are consulted every bar until you re-attach the full six-field directive set on a 'hold'; entry fields are ignored on that re-arm, stop/TP anchor to the existing avgEntry). " +
+  REQUIRED_DIRECTIVES_SENTENCE;
+
+// 2026-07-27 (H5): a CAPABILITY-NEUTRAL restatement of REQUIRED_DIRECTIVES_SENTENCE above, hoisted
+// into the TOP-LEVEL description of both buildTradeTool and buildTradePortfolioTool below — strict
+// tool-use models weight a tool's own top-level description more heavily than a nested enum-value
+// description, and 8/57 live schema rejections in the prior week were a missing required field
+// despite the field-requirement sentence already living in the (nested) action description. Never
+// names 'open_short' explicitly, unlike REQUIRED_DIRECTIVES_SENTENCE above: an all-spot
+// submit_portfolio batch's description must not advertise open_short (its own shorts-eligibility
+// sentence stays capability-gated, see buildTradePortfolioTool's anyShorts branch) — this sentence
+// only states the FIELD requirement (the actual cause of the 8 live rejections), never the action
+// name, so hoisting it costs no capability leak.
+const REQUIRED_DIRECTIVES_FIELDS_SENTENCE =
+  "Opening a new position, or scaling into one, REQUIRES all six directive fields together: sizeFraction, entry, entryValidityBars, stopLossPct, takeProfitPct, and maxHoldBars — omitting any one of them rejects the whole decision. The same six fields are REQUIRED on a re-arm 'hold' while positioned without directives.";
 
 // Shared field set for the v2 trade tools (everything but `action`/`symbol`, which differ per
 // tool) — consumed identically by the single-symbol and per-element portfolio schemas below, so the
@@ -343,7 +359,11 @@ function tradeFieldSchemas(sizeFractionBoundText: string) {
     },
     thesis: {
       type: 'string',
-      description: `Your current reasoning for this position/decision — STRICTLY at most ${DECISION_V2_BOUNDS.thesisMaxLen} characters; exceeding this cap rejects the WHOLE decision, which then degrades to a hold, so stay under the limit. Optional on 'open_*'/'adjust'. Persisted and fed back to you at your next consult as currentThesis.`,
+      // H5 (2026-07-27): 25/57 live schema rejections in the prior week were this field alone
+      // overrunning the cap — free-text rationale, never a money/risk field, so the client now
+      // truncates rather than rejects (see tradeDirectiveFieldShape's thesis schema). Still worth
+      // staying under the limit: anything past it is silently dropped from what you see next consult.
+      description: `Your current reasoning for this position/decision — aim for at most ${DECISION_V2_BOUNDS.thesisMaxLen} characters; anything past that is silently truncated (never rejects the decision). Optional on 'open_*'/'adjust'. Persisted and fed back to you at your next consult as currentThesis.`,
     },
   } as const;
 }
@@ -363,7 +383,8 @@ export function buildTradeTool(caps: SymbolCapabilities) {
       'Submit your trading decision for this symbol under the rich decision contract: action, position size, entry pricing, and revisable exit directives.' +
       (caps.shorts
         ? ` Shorts are enabled for this symbol; leverage is capped at ${caps.leverage}x.`
-        : ' This symbol is spot-only; shorts are not available.'),
+        : ' This symbol is spot-only; shorts are not available.') +
+      ` ${REQUIRED_DIRECTIVES_FIELDS_SENTENCE}`,
     strict: true,
     input_schema: {
       type: 'object',
@@ -404,7 +425,8 @@ export function buildTradePortfolioTool(capsBySymbol: ReadonlyMap<SymbolId, Symb
       (anyShorts
         ? " 'open_short' is valid only for a symbol whose own capabilities.shorts is true."
         : '') +
-      ' `nextConsultBars` is PORTFOLIO-LEVEL: it schedules when the WHOLE BATCH is next consulted, not any one symbol.',
+      ' `nextConsultBars` is PORTFOLIO-LEVEL: it schedules when the WHOLE BATCH is next consulted, not any one symbol.' +
+      ` ${REQUIRED_DIRECTIVES_FIELDS_SENTENCE}`,
     strict: true,
     input_schema: {
       type: 'object',

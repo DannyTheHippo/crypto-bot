@@ -13,6 +13,11 @@ import type {
 import { strategyId, venueId, symbolId, epochMs } from '../../../../src/domain/common/types/ids';
 import { price } from '../../../../src/domain/common/types/money';
 
+// expect.stringMatching is typed `any`, which trips @typescript-eslint/no-unsafe-assignment when
+// embedded in an object literal. One typed wrapper keeps the asymmetric matcher without spraying
+// casts across every H4 rationale-tag assertion below.
+const rationaleMatching = (re: RegExp): string => expect.stringMatching(re) as string;
+
 const T = 1_700_000_000_000; // 2023-11-14T22:13:20.000Z (UTC)
 const SID = strategyId('agentic-1');
 const V = venueId('binance');
@@ -336,7 +341,16 @@ describe('BudgetedAgentClient', () => {
     expect(inner.calls).toBe(1);
 
     const proposal = await client.propose(decisionInput());
-    expect(proposal).toEqual({ signals: [] });
+    // H4 (2026-07-27): an explicit decision, not a decision-less proposal — see
+    // agent-budget.ts's own comment on the budget-exhausted branch.
+    expect(proposal).toEqual({
+      signals: [],
+      decision: {
+        action: 'hold',
+        confidence: 0,
+        rationale: rationaleMatching(/^budget_exhausted: /),
+      },
+    });
     expect(inner.calls).toBe(1); // second call never reached the inner client
   });
 
@@ -376,7 +390,14 @@ describe('BudgetedAgentClient', () => {
     expect(budget.snapshot().calls).toBe(1); // the call was paid for even though it failed
 
     const proposal = await client.propose(decisionInput()); // second call now blocked by the cap
-    expect(proposal).toEqual({ signals: [] });
+    expect(proposal).toEqual({
+      signals: [],
+      decision: {
+        action: 'hold',
+        confidence: 0,
+        rationale: rationaleMatching(/^budget_exhausted: /),
+      },
+    });
     expect(inner.calls).toBe(1);
   });
 });

@@ -131,7 +131,18 @@ export class BatchingAgentClient implements AgentClientPort {
     // never reaches the LLM. Gate absent (undefined) ⇒ this branch never taken, byte-identical to
     // pre-U1 behavior.
     if (this.activeMenuGate !== undefined && !this.activeMenuGate.isActive(symbol)) {
-      return Promise.resolve({ signals: [] });
+      // H4 (2026-07-27): an explicit decision, never a decision-less proposal — a decision-less hold
+      // persists byte-identical to a genuine model hold (empty rationale, confidence 0),
+      // undiagnosable from the journal alone. See anthropic-agent-client.ts's own soft-hold branches
+      // for the same discipline.
+      return Promise.resolve({
+        signals: [],
+        decision: {
+          action: 'hold',
+          confidence: 0,
+          rationale: `off_menu: symbol ${symbol} is not in the active trading menu`,
+        },
+      });
     }
     return new Promise<AgentProposal>((resolve, reject) => {
       this.pending.push({ symbol, input, resolve, reject });
@@ -169,7 +180,21 @@ export class BatchingAgentClient implements AgentClientPort {
         );
         this.lastWarnedBudgetDayKey = dayKey;
       }
-      for (const entry of batch) entry.resolve({ signals: [] });
+      // H4 (2026-07-27): this IS the deployed shape (AGENTIC_PORTFOLIO_CONSULT=true) — the
+      // single-symbol BudgetedAgentClient.propose() budget-exhausted branch (agent-budget.ts) never
+      // fires in production once batching is on, so THIS short-circuit is the one that actually
+      // masked 88 empty-rationale holds/7d as a genuine model hold. An explicit decision, never a
+      // decision-less proposal — see agent-budget.ts's own comment for the same discipline.
+      for (const entry of batch) {
+        entry.resolve({
+          signals: [],
+          decision: {
+            action: 'hold',
+            confidence: 0,
+            rationale: `budget_exhausted: daily LLM budget exhausted (day ${dayKey})`,
+          },
+        });
+      }
       return;
     }
 
@@ -209,11 +234,21 @@ export class BatchingAgentClient implements AgentClientPort {
       const proposal = result.proposals.get(entry.symbol);
       if (proposal === undefined) {
         // Defensive backstop only: AnthropicAgentClient.proposeBatch already guarantees full
-        // coverage (with its own warn) for every symbol it was asked about.
+        // coverage (with its own warn) for every symbol it was asked about — this branch should be
+        // unreachable in practice. H4 (2026-07-27): stamped with an explicit decision anyway, on the
+        // same discipline as every other soft-hold in this file — an unreachable-in-practice branch
+        // is still a masked hold if it ever DOES fire.
         this.logger.warn(
           `agentic portfolio batch: symbol ${entry.symbol} absent from batch result — holding`,
         );
-        entry.resolve({ signals: [] });
+        entry.resolve({
+          signals: [],
+          decision: {
+            action: 'hold',
+            confidence: 0,
+            rationale: `missing_from_batch_result: symbol ${entry.symbol} absent from batch result`,
+          },
+        });
       } else {
         entry.resolve(proposal);
       }

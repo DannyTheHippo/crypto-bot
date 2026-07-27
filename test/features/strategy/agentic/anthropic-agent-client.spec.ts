@@ -806,6 +806,84 @@ describe('AnthropicAgentClient', () => {
     });
   });
 
+  // H4 (2026-07-27): the seven propose-failure branches that previously returned a decision-less
+  // `{ signals: [] }` (indistinguishable in the journal from a genuine, empty-rationale model hold —
+  // 88 such rows/7d, live DB) now each stamp an explicit `decision` with a named rationale tag.
+  // `signals` stays `[]` in every case — this is purely an observability change.
+  describe('H4: named decision on every soft-hold branch (never a decision-less proposal)', () => {
+    it('malformed response envelope stamps an envelope_malformed: hold decision', async () => {
+      const fetchFn = vi.fn();
+      const client = new AnthropicAgentClient(buildCfg(), fetchFn);
+      fetchFn.mockResolvedValue(apiResponse('not-an-object'));
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+      });
+
+      const proposal = await client.propose(input);
+
+      expect(proposal.signals).toEqual([]);
+      expect(proposal.decision).toMatchObject({ action: 'hold', confidence: 0 });
+      expect(proposal.decision?.rationale).toMatch(/^envelope_malformed: /);
+    });
+
+    it('a model refusal stamps a model_refusal: hold decision', async () => {
+      const fetchFn = vi.fn();
+      const client = new AnthropicAgentClient(buildCfg(), fetchFn);
+      fetchFn.mockResolvedValue(apiResponse({ stop_reason: 'refusal', content: [] }));
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+      });
+
+      const proposal = await client.propose(input);
+
+      expect(proposal.signals).toEqual([]);
+      expect(proposal.decision).toMatchObject({ action: 'hold', confidence: 0 });
+      expect(proposal.decision?.rationale).toMatch(/^model_refusal: /);
+    });
+
+    it('a max_tokens truncation (no tool block) stamps a truncated_max_tokens: hold decision, distinct from a plain no_tool_use', async () => {
+      const fetchFn = vi.fn();
+      const client = new AnthropicAgentClient(buildCfg(), fetchFn);
+      fetchFn.mockResolvedValue(
+        apiResponse({
+          stop_reason: 'max_tokens',
+          content: [{ type: 'text' }],
+          usage: { input_tokens: 5000, output_tokens: 1024 },
+        }),
+      );
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+      });
+
+      const proposal = await client.propose(input);
+
+      expect(proposal.signals).toEqual([]);
+      expect(proposal.decision).toMatchObject({ action: 'hold', confidence: 0 });
+      expect(proposal.decision?.rationale).toMatch(/^truncated_max_tokens: /);
+    });
+
+    it('a plain no-tool-use response (not a max_tokens truncation) stamps a no_tool_use: hold decision', async () => {
+      const fetchFn = vi.fn();
+      const client = new AnthropicAgentClient(buildCfg(), fetchFn);
+      fetchFn.mockResolvedValue(
+        apiResponse({ stop_reason: 'tool_use', content: [{ type: 'text' }] }),
+      );
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+      });
+
+      const proposal = await client.propose(input);
+
+      expect(proposal.signals).toEqual([]);
+      expect(proposal.decision).toMatchObject({ action: 'hold', confidence: 0 });
+      expect(proposal.decision?.rationale).toMatch(/^no_tool_use: /);
+    });
+  });
+
   describe('HTTP status classification', () => {
     it.each([400, 401, 403, 404, 422])(
       'classifies HTTP %d as FATAL — throws once, never retries, never leaks the key',
@@ -1822,9 +1900,28 @@ describe('AnthropicAgentClient', () => {
         expect(schema.safeParse(openLong({ maxHoldBars: 288 })).success).toBe(true);
       });
 
-      it('accepts thesis at exactly 300 chars, rejects 301', () => {
-        expect(schema.safeParse(openLong({ thesis: 'a'.repeat(300) })).success).toBe(true);
-        expect(schema.safeParse(openLong({ thesis: 'a'.repeat(301) })).success).toBe(false);
+      it('accepts thesis at exactly 300 chars unchanged', () => {
+        const parsed = schema.safeParse(openLong({ thesis: 'a'.repeat(300) }));
+        expect(parsed.success).toBe(true);
+        if (parsed.success) expect(parsed.data.thesis).toHaveLength(300);
+      });
+
+      // H5 (2026-07-27): a thesis overrunning the cap is TRUNCATED, never rejected — 25/57 live
+      // schema rejections in the prior week were this field alone voiding an otherwise-valid trade
+      // directive. See tradeDirectiveFieldShape's thesis schema in anthropic-agent-client.ts.
+      it('truncates a 301-char thesis to exactly 300 instead of rejecting the whole decision', () => {
+        const parsed = schema.safeParse(openLong({ thesis: 'a'.repeat(301) }));
+        expect(parsed.success).toBe(true);
+        if (parsed.success) expect(parsed.data.thesis).toHaveLength(300);
+      });
+
+      it('leaves money/risk fields still rejecting when malformed (thesis leniency does not weaken them)', () => {
+        expect(
+          schema.safeParse(openLong({ thesis: 'a'.repeat(301), sizeFraction: 999 })).success,
+        ).toBe(false);
+        expect(
+          schema.safeParse(openLong({ thesis: 'a'.repeat(301), stopLossPct: -1 })).success,
+        ).toBe(false);
       });
     });
 

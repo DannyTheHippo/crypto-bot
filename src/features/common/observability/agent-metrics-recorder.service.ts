@@ -9,7 +9,17 @@ export type AgentDecideOutcome =
   | 'error_retryable'
   | 'error_fatal'
   | 'timeout'
-  | 'budget_blocked';
+  | 'budget_blocked'
+  // H4 (2026-07-27): the four remaining post-200 (or pre-call) soft-hold branches, previously
+  // collapsed into 'hold' — see anthropic-agent-client.ts/agent-budget.ts/batching-agent-client.ts's
+  // own decision.rationale tags and trading-runtime.module.ts's outcomeForProposal, which now
+  // branches on those tags before falling through to 'hold'. 'truncated' covers BOTH the
+  // truncated_max_tokens and no_tool_use rationale tags — the distinction is queryable via the
+  // journal rationale, not a separate metric label.
+  | 'envelope_malformed'
+  | 'model_refusal'
+  | 'truncated'
+  | 'off_menu';
 
 export type AgentTokenKind = 'input' | 'output' | 'cache_read' | 'cache_creation';
 

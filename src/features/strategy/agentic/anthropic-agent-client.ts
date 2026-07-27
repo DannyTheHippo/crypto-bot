@@ -112,7 +112,16 @@ function tradeDirectiveFieldShape(sizeFractionMax: number) {
       .min(DECISION_V2_BOUNDS.partialCloseFraction.min)
       .max(DECISION_V2_BOUNDS.partialCloseFraction.max)
       .optional(),
-    thesis: z.string().max(DECISION_V2_BOUNDS.thesisMaxLen).optional(),
+    // H5 (2026-07-27): 25/57 live schema rejections in the prior week were this field alone
+    // overrunning its cap — a cosmetic free-text overrun that voided an otherwise-valid trade
+    // directive. thesis is free text (never money/risk), and Signal.reason is ALREADY truncated to
+    // MAX_REASON_LEN downstream (buildProposalFromTradeDecision below), so truncating here loses
+    // nothing and eliminates the whole failure class (a raised fixed cap can always be exceeded
+    // again; truncation cannot fail). No `.max()` — the transform makes the bound unconditional.
+    thesis: z
+      .string()
+      .transform((s) => s.slice(0, DECISION_V2_BOUNDS.thesisMaxLen))
+      .optional(),
   };
 }
 
@@ -672,6 +681,16 @@ export class AnthropicAgentClient implements AgentClientPort {
       this.logger.warn('anthropic api: malformed response envelope');
       return {
         signals: [],
+        // H4 (2026-07-27): an explicit decision, never a decision-less proposal — a decision-less
+        // hold persists byte-identical to a genuine model hold (empty rationale, confidence 0),
+        // undiagnosable from the journal alone (88 such rows/7d, live DB). See the schema_rejected/
+        // capability_violation branches above for the same discipline; envelope_malformed carries no
+        // zod issue (the envelope itself never parsed), so the rationale is a fixed description.
+        decision: {
+          action: 'hold',
+          confidence: 0,
+          rationale: 'envelope_malformed: anthropic response failed envelope validation',
+        },
         latencyMs,
         playbookVersion: ctx.playbookVersion,
         promptHash,
@@ -695,6 +714,13 @@ export class AnthropicAgentClient implements AgentClientPort {
       this.logger.warn('anthropic api: model refused to decide');
       return {
         signals: [],
+        // H4: named degrade — see the malformed-envelope branch above for why a decision-less hold
+        // is a masked failure mode.
+        decision: {
+          action: 'hold',
+          confidence: 0,
+          rationale: 'model_refusal: model declined to decide (stop_reason=refusal)',
+        },
         usage,
         latencyMs,
         playbookVersion: ctx.playbookVersion,
@@ -715,18 +741,24 @@ export class AnthropicAgentClient implements AgentClientPort {
       // rationale holds, indistinguishable from a real hold. Name it loudly so it is diagnosable and
       // so raising AGENTIC_MAX_TOKENS is an evidence-backed decision. Still soft-holds (signals: []):
       // a truncation must never throw into decide(), only surface.
+      // H4: same distinction stamped into the rationale as the log line above — 'truncated_max_tokens'
+      // vs 'no_tool_use' — so the two causes stay separately queryable in the journal.
+      let rationale: string;
       if (envelope.data.stop_reason === 'max_tokens') {
         this.logger.warn(
           `anthropic api: response truncated at max_tokens before a ${toolName} tool_use block ` +
             `(output_tokens=${usage?.outputTokens ?? 'unknown'}) — degraded to hold; raise AGENTIC_MAX_TOKENS if frequent`,
         );
+        rationale = `truncated_max_tokens: response truncated at max_tokens before a ${toolName} tool_use block (output_tokens=${usage?.outputTokens ?? 'unknown'})`;
       } else {
         this.logger.warn(
           `anthropic api: no ${toolName} tool_use block in response (stop_reason=${envelope.data.stop_reason ?? 'unknown'})`,
         );
+        rationale = `no_tool_use: no ${toolName} tool_use block in response (stop_reason=${envelope.data.stop_reason ?? 'unknown'})`;
       }
       return {
         signals: [],
+        decision: { action: 'hold', confidence: 0, rationale },
         usage,
         latencyMs,
         playbookVersion: ctx.playbookVersion,
@@ -959,9 +991,18 @@ export class AnthropicAgentClient implements AgentClientPort {
       type: 'text',
       text: `${i === 0 && !playbookBlock ? '' : '\n\n'}Symbol ${i + 1} of ${resolved.length} (${r.symbolKey}):\n${r.inputPayload}`,
     }));
+    // H5 (2026-07-27): 8/57 live schema rejections were `decisions` missing entirely, 11 more were a
+    // resolved symbol absent from it — a per-call reminder, not just the tool's own (cached-adjacent,
+    // stable) description text, closes both. Rides UNCACHED alongside the volatile symbolBlocks
+    // (never cache_control) so it costs no prompt-cache invalidation; no cache_control field on this
+    // block, same convention as symbolBlocks above.
+    const completenessBlock: AnthropicTextBlock = {
+      type: 'text',
+      text: `\n\nThe decisions array must contain exactly one entry per symbol listed above (${resolved.map((r) => r.symbolKey).join(', ')}), matched by its exact symbol string — including an explicit "hold" entry for any symbol you are not acting on. Never omit a listed symbol.`,
+    };
     const userContent: AnthropicTextBlock[] = playbookBlock
-      ? [playbookBlock, ...symbolBlocks]
-      : symbolBlocks;
+      ? [playbookBlock, ...symbolBlocks, completenessBlock]
+      : [...symbolBlocks, completenessBlock];
 
     const timeoutMs = opts.timeoutMsOverride ?? this.cfg.timeoutMs;
     const started = Date.now();
@@ -994,6 +1035,14 @@ export class AnthropicAgentClient implements AgentClientPort {
         consultId,
         ctx.infoArm,
         ctx.thinkingArm,
+        // H4: named degrade on every resolved symbol — see the single-symbol malformed-envelope
+        // branch above for why a decision-less hold is a masked failure mode.
+        {
+          action: 'hold',
+          confidence: 0,
+          rationale:
+            'envelope_malformed: anthropic response failed envelope validation (portfolio batch)',
+        },
       );
     }
     const usage = envelope.data.usage
@@ -1043,6 +1092,14 @@ export class AnthropicAgentClient implements AgentClientPort {
         consultId,
         ctx.infoArm,
         ctx.thinkingArm,
+        // H4: named degrade on every resolved symbol — mirrors the single-symbol no-tool-use branch's
+        // 'no_tool_use' tag (the batch path does not distinguish max_tokens truncation in its own log
+        // line, so there is no truncated_max_tokens variant here).
+        {
+          action: 'hold',
+          confidence: 0,
+          rationale: `no_tool_use: no ${portfolioTool.name} tool_use block in response (portfolio batch)`,
+        },
       );
     }
 

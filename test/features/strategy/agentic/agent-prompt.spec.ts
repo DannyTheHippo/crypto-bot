@@ -1974,6 +1974,19 @@ describe('v2 trade tools (v3 unified contract, DECISION_V2_BOUNDS)', () => {
       expect(description).toContain('REQUIRES all six directive fields');
     });
 
+    // H5 (2026-07-27): 8/57 live schema rejections were a missing required field despite the
+    // sentence already living in the action enum's own (nested) description — strict tool-use models
+    // weight a tool's own TOP-LEVEL description more heavily. Hoisted (not moved) into both tools'
+    // top-level `description` so the same sentence lives in the higher-weighted spot too.
+    it('the required-six-directive-fields sentence is hoisted into the TOP-LEVEL description of both submit_trade and submit_portfolio', () => {
+      const tradeTool = buildTradeTool(spotCaps('0.15'));
+      const portfolioTool = buildTradePortfolioTool(
+        new Map([[symbolId('BTC/USDT'), spotCaps('0.15')]]),
+      );
+      expect(tradeTool.description).toContain('REQUIRES all six directive fields');
+      expect(portfolioTool.description).toContain('REQUIRES all six directive fields');
+    });
+
     it('submit_portfolio tool description states decisions must be an actual JSON array, never a string-encoded one', () => {
       const tool = buildTradePortfolioTool(new Map([[symbolId('BTC/USDT'), spotCaps('0.15')]]));
       expect(tool.description).toContain(
@@ -1981,12 +1994,15 @@ describe('v2 trade tools (v3 unified contract, DECISION_V2_BOUNDS)', () => {
       );
     });
 
-    it('thesis description states the character cap is STRICT and exceeding it rejects the whole decision', () => {
+    // H5 (2026-07-27): thesis now truncates rather than rejects — the model-facing text was updated
+    // to match (see agent-prompt.ts's tradeFieldSchemas thesis description and the client's
+    // tradeDirectiveFieldShape thesis schema).
+    it('thesis description states overrunning the cap is silently truncated, never a rejection', () => {
       const description = buildTradeTool(spotCaps('0.15')).input_schema.properties.thesis
         .description;
-      expect(description).toContain('STRICTLY');
-      expect(description).toContain('rejects the WHOLE decision');
-      expect(description).toContain('degrades to a hold');
+      expect(description).toContain(String(DECISION_V2_BOUNDS.thesisMaxLen));
+      expect(description).toContain('silently truncated');
+      expect(description).not.toContain('rejects the WHOLE decision');
     });
   });
 

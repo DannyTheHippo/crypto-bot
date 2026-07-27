@@ -186,12 +186,24 @@ export class MetricsWrappingAgentClient implements AgentClientPort {
     return 'error_retryable';
   }
 
-  // A proposal with no client-supplied decision and no signals is either a genuine soft no-op (stub
-  // client, malformed response, refusal — see anthropic-agent-client.ts) or the budget gate's inert
-  // `{ signals: [] }` short-circuit (agent-budget.ts) — the two are indistinguishable from the
-  // proposal shape alone, so the budget snapshot (read AFTER propose() resolves, reflecting whether
-  // THIS call's reservation attempt was the one that failed) breaks the tie.
+  // H4 (2026-07-27): every soft-hold branch across anthropic-agent-client.ts/agent-budget.ts/
+  // batching-agent-client.ts now stamps an explicit decision.rationale tag (see each file's own
+  // comment) instead of returning a decision-less proposal, so the outcome can be read directly off
+  // the rationale prefix rather than inferred. This also makes the OLD race-prone post-hoc
+  // `budget.snapshot().exhausted` heuristic below unnecessary for the budget case — but it is left in
+  // place as a fallback for the (now much rarer) genuinely decision-less proposal a stub/fake client
+  // might still return, so a caller that hasn't adopted the new tags doesn't regress to 'hold'-only.
   private outcomeForProposal(proposal: AgentProposal): AgentDecideOutcome {
+    const rationale = proposal.decision?.rationale;
+    if (rationale !== undefined) {
+      if (rationale.startsWith('envelope_malformed:')) return 'envelope_malformed';
+      if (rationale.startsWith('model_refusal:')) return 'model_refusal';
+      if (rationale.startsWith('truncated_max_tokens:') || rationale.startsWith('no_tool_use:')) {
+        return 'truncated';
+      }
+      if (rationale.startsWith('budget_exhausted:')) return 'budget_blocked';
+      if (rationale.startsWith('off_menu:')) return 'off_menu';
+    }
     if (!proposal.decision) {
       let exhausted = false;
       try {
@@ -701,6 +713,10 @@ export class TradingRuntimeService
         }, 10_000),
       );
     }
+    // M1 (2026-07-27): fire once synchronously at registration time — the 15s interval below only
+    // fires ITS OWN first tick after a full 15s, so a Prometheus scrape landing between boot and
+    // that first tick previously read the gauge's default 0 instead of the real remaining budget.
+    this.logPortfolio();
     this.driverTimers.push(
       setInterval(() => {
         this.logPortfolio();
@@ -743,32 +759,58 @@ export class TradingRuntimeService
       this.log.log(`fill poll: ingested=${ingested} skippedUnknown=${skippedUnknown}`);
   }
 
+  // M1 (2026-07-27): agentic_budget_remaining_usd was observed stuck at 0 with zero LLM calls this
+  // boot — the cap wiring is correct, so the gauge WRITE was silently never happening. This is the
+  // ONLY call site for setBudgetRemainingUsd, and — unlike every other metrics call site in this
+  // repo — it previously had no top-level try/catch, so a throw anywhere later in the function
+  // (portfolio snapshot, macro calendar filtering) skipped the gauge write forever. Fixed by giving
+  // the gauge update its OWN try/catch as the very first thing this function does (so nothing above
+  // it can throw, and a failure in the logging half below can never take the gauge write down with
+  // it), then wrapping the remaining logging work in a second try/catch (observability must never
+  // throw into a trading path — warn and move on).
   private logPortfolio(): void {
-    const snap = this.portfolio.snapshot();
-    const positions = [...snap.positions.values()].map(
-      (p) => `${p.symbol}:${p.signedQty.toFixed()}@${p.avgEntry.toFixed()}`,
-    );
-    this.log.log(
-      `portfolio: equity=${snap.equity.toFixed()} cash=${snap.balances.get('USDT')?.free.toFixed() ?? '?'} ` +
-        `positions=[${positions.join(',')}] openOrders=${snap.openOrders.length} inFlight=${snap.inFlightIntents.length}`,
-    );
-    // I1 (Design § Enriched model inputs): boot-log echo of the SAME sources
-    // PAYLOAD_EXTRAS_PROVIDER_OVERRIDE's own closure computes on every decide()/batch — this log line
-    // is now a redundant-but-harmless periodic sanity echo, not the only consumer. cappedEquity
-    // mirrors risk.module.ts's equityCapFor(config) so this log and the sizer's own cap can never
-    // silently disagree.
-    const portfolioBlock = buildAgentPortfolioBlock(snap, this.config.risk.equityCap);
-    const budgetBlock = this.agentBudget.budgetBlock();
-    // W1 (Grafana rebuild): remainingUsdToday is a decimal string (money-adjacent, never a money
-    // arithmetic path) — Decimal round-trip, never Number(), mirrors promotion-metrics.service.ts's
-    // own evidence.netPnl conversion.
-    this.agentMetrics.setBudgetRemainingUsd(new Decimal(budgetBlock.remainingUsdToday).toNumber());
-    const upcoming = filterUpcoming(this.macroCalendar, this.clock.now());
-    this.log.log(
-      `agent context: cappedEquity=${portfolioBlock.cappedEquity} ` +
-        `grossExposure=${portfolioBlock.grossExposure} remainingCallsToday=${budgetBlock.remainingCallsToday} ` +
-        `remainingUsdToday=${budgetBlock.remainingUsdToday} upcomingCalendarEvents=${upcoming.length}`,
-    );
+    let budgetBlock: ReturnType<DailyLlmBudget['budgetBlock']> | undefined;
+    try {
+      budgetBlock = this.agentBudget.budgetBlock();
+      // W1 (Grafana rebuild): remainingUsdToday is a decimal string (money-adjacent, never a money
+      // arithmetic path) — Decimal round-trip, never Number(), mirrors promotion-metrics.service.ts's
+      // own evidence.netPnl conversion.
+      this.agentMetrics.setBudgetRemainingUsd(
+        new Decimal(budgetBlock.remainingUsdToday).toNumber(),
+      );
+    } catch (err) {
+      this.log.warn(
+        `logPortfolio: budget gauge update failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    try {
+      const snap = this.portfolio.snapshot();
+      const positions = [...snap.positions.values()].map(
+        (p) => `${p.symbol}:${p.signedQty.toFixed()}@${p.avgEntry.toFixed()}`,
+      );
+      this.log.log(
+        `portfolio: equity=${snap.equity.toFixed()} cash=${snap.balances.get('USDT')?.free.toFixed() ?? '?'} ` +
+          `positions=[${positions.join(',')}] openOrders=${snap.openOrders.length} inFlight=${snap.inFlightIntents.length}`,
+      );
+      // I1 (Design § Enriched model inputs): boot-log echo of the SAME sources
+      // PAYLOAD_EXTRAS_PROVIDER_OVERRIDE's own closure computes on every decide()/batch — this log
+      // line is now a redundant-but-harmless periodic sanity echo, not the only consumer.
+      // cappedEquity mirrors risk.module.ts's equityCapFor(config) so this log and the sizer's own
+      // cap can never silently disagree. Re-reads budgetBlock (cheap, synchronous, side-effect-free —
+      // see DailyLlmBudget.budgetBlock) rather than reusing the value above, so a gauge-update failure
+      // above never blanks the remainingCallsToday/remainingUsdToday this log line still wants.
+      const portfolioBlock = buildAgentPortfolioBlock(snap, this.config.risk.equityCap);
+      const logBudgetBlock = budgetBlock ?? this.agentBudget.budgetBlock();
+      const upcoming = filterUpcoming(this.macroCalendar, this.clock.now());
+      this.log.log(
+        `agent context: cappedEquity=${portfolioBlock.cappedEquity} ` +
+          `grossExposure=${portfolioBlock.grossExposure} remainingCallsToday=${logBudgetBlock.remainingCallsToday} ` +
+          `remainingUsdToday=${logBudgetBlock.remainingUsdToday} upcomingCalendarEvents=${upcoming.length}`,
+      );
+    } catch (err) {
+      this.log.warn(`logPortfolio failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   // v3 §1.3 (flagged venues[0] misroute fix): venue is now a pure function of the symbol

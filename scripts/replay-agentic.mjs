@@ -74,7 +74,9 @@ function loadSeedPlaybookContent() {
     REPO_ROOT,
     'dist',
     'features',
-    'trading',
+    // 'strategy', not 'trading' — see playbook-candidate.mjs's identical fix. The agentic lane lives
+    // under features/strategy/agentic; the stale spelling resolved to a path that never existed.
+    'strategy',
     'agentic',
     'agentic-strategy.module.js',
   );
@@ -82,7 +84,9 @@ function loadSeedPlaybookContent() {
     REPO_ROOT,
     'src',
     'features',
-    'trading',
+    // 'strategy', not 'trading' — see playbook-candidate.mjs's identical fix. The agentic lane lives
+    // under features/strategy/agentic; the stale spelling resolved to a path that never existed.
+    'strategy',
     'agentic',
     'agentic-strategy.module.ts',
   );

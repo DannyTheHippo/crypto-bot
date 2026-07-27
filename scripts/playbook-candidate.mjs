@@ -41,7 +41,11 @@ function loadValidatePlaybook() {
     '..',
     'dist',
     'features',
-    'trading',
+    // 'strategy', not 'trading' — the agentic lane lives under features/strategy/agentic (see
+    // .claude/CLAUDE.md § Project layout). The stale 'trading' spelling made this resolve to a path
+    // that has never existed, so the freshness check below reported "run pnpm build first" on every
+    // invocation including immediately after a successful build.
+    'strategy',
     'agentic',
     'playbook-validator.js',
   );
@@ -50,7 +54,11 @@ function loadValidatePlaybook() {
     '..',
     'src',
     'features',
-    'trading',
+    // 'strategy', not 'trading' — the agentic lane lives under features/strategy/agentic (see
+    // .claude/CLAUDE.md § Project layout). The stale 'trading' spelling made this resolve to a path
+    // that has never existed, so the freshness check below reported "run pnpm build first" on every
+    // invocation including immediately after a successful build.
+    'strategy',
     'agentic',
     'playbook-validator.ts',
   );

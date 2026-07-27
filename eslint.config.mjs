@@ -54,6 +54,7 @@ export default tseslint.config(
       // scripts/** above) and are plain .mjs for the same reason — no tsconfig project.
       'test/features/common/scripts/arm-ceremony.spec.mjs',
       'test/features/common/scripts/resolve-stale-orders.spec.mjs',
+      'test/features/common/scripts/agentic-script-paths.spec.mjs',
       // Harness agent worktrees — full repo copies whose files have no tsconfig project context.
       '.claude/**',
     ],

@@ -12,6 +12,7 @@ import { isAlgoRailIntent } from '../../../domain/trading/oms/reconcile';
 import { PortfolioStateService } from './portfolio-state.service';
 import { OrderBookService } from './order-book.service';
 import { CrashRecoveryService } from './crash-recovery.service';
+import { isUnresolved } from '../../../domain/trading/oms/recovery';
 
 // States with a venue ack behind them: the order may genuinely rest venue-side, so it belongs in
 // the portfolio open set where reconciliation adopts venue truth for it and the stale-entry sweep
@@ -98,15 +99,32 @@ export class BootRecoveryService {
           this.portfolio.openOrder(o.strategyId, o.summary);
           registered += 1;
         }
-        // Restore the write-ahead intent alongside the order (the persisted pair, §6.2) regardless
-        // of rail: fill application, the unknown-resolver's query loop (both rails, fix 2), and
-        // Risk's E1 in-flight clamp all read the in-memory intent — recovering the order without it
-        // left later fills journaled but never applied to position/cash (2026-07-11: an unmanaged
-        // 6.9-LINK position).
-        if (o.intent !== null) {
-          this.portfolio.addInFlight(o.intent);
-          rehydrated += 1;
-        }
+      }
+      // Restore the write-ahead intent alongside the order (the persisted pair, §6.2) regardless of
+      // rail: fill application, the unknown-resolver's query loop (both rails, fix 2), and Risk's E1
+      // in-flight clamp all read the in-memory intent — recovering the order without it left later
+      // fills journaled but never applied to position/cash (2026-07-11: an unmanaged 6.9-LINK
+      // position).
+      //
+      // 2026-07-27: widened from VENUE_CONFIRMED_OPEN alone to also cover the UNRESOLVED states.
+      // That gate answers "does this belong in the portfolio OPEN-ORDERS set" — a different question
+      // from "should its intent be restored" — and fusing the two silently dropped the intent for
+      // every RECONCILE_REQUIRED / SUBMIT_UNKNOWN row across a restart. Two live-observed
+      // consequences: unknown-resolver's re-query pass reads the symbol off the intent, so a frozen
+      // order became permanently un-adoptable after a restart ("no in-flight intent, staying
+      // frozen"); and freeze()'s own promise that "the in-flight intent stays, reserving worst-case
+      // exposure" silently stopped holding, un-reserving that exposure from Risk's E1 clamp.
+      // Restoring it is the fail-CLOSED direction (exposure counted, not forgotten).
+      // NEW/SUBMITTING stay excluded deliberately — those never confirmed landing at the venue, so
+      // reserving capital for an order that may never exist is the wrong direction. The open-orders
+      // registration above is left gated exactly as before, so reconciliation's UNKNOWN_OURS
+      // classification is untouched.
+      if (
+        o.intent !== null &&
+        (VENUE_CONFIRMED_OPEN.has(record.state) || isUnresolved(record.state))
+      ) {
+        this.portfolio.addInFlight(o.intent);
+        rehydrated += 1;
       }
     }
     const degraded = await this.crashRecovery.recoverOnBoot();

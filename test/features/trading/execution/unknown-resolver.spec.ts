@@ -15,14 +15,25 @@ import {
   type VenueFill,
 } from '../../../../src/ports/venue/exchange';
 import type { KillSwitchPort } from '../../../../src/ports/trading/risk';
-import { epochMs, venueId } from '../../../../src/domain/common/types/ids';
+import {
+  epochMs,
+  venueId,
+  intentId,
+  type ClientOrderId,
+  type SymbolId,
+} from '../../../../src/domain/common/types/ids';
 import { makeIntent, fixedFeed, killSwitchStub, SYM, V, T } from './helpers';
 import { qty, price } from '../../../../src/domain/common/types/money';
 import type { OrderIntent } from '../../../../src/domain/trading/types/order-intent';
 
 const QUOTE = '0.001'; // step size used in tests
 
-type FetchBehavior = ExchangeOrderState | (() => ExchangeOrderState);
+// The (coid, symbol) params are optional for existing zero-arg fetch closures (TS permits calling
+// a function with fewer args than its declared type); the reconcile-adopt multi-order tests below
+// use them to route a per-order status.
+type FetchBehavior =
+  | ExchangeOrderState
+  | ((coid: ClientOrderId, symbol: SymbolId) => ExchangeOrderState);
 
 function venueState(over: Partial<ExchangeOrderState> = {}): ExchangeOrderState {
   return {
@@ -91,9 +102,9 @@ function build(
       cancels.push(coid);
       return Promise.resolve({ clientOrderId: coid, venueOrderId: 'v1' });
     },
-    fetchOrder: () => {
+    fetchOrder: (coid, symbol) => {
       const b = opts.fetch ?? venueState();
-      return Promise.resolve(typeof b === 'function' ? b() : b);
+      return Promise.resolve(typeof b === 'function' ? b(coid, symbol) : b);
     },
     fetchOpenOrders: () => Promise.resolve([]),
     fetchBalances: () => Promise.resolve(new Map()),
@@ -620,5 +631,149 @@ describe('UnknownResolverService — algo-rail SUBMIT_UNKNOWN resolution (fix 2)
     await ctx.resolver.tick(epochMs(T + 61_000));
     const sixtySec = ctx.kills.filter((k) => k.reason === 'UNKNOWN_UNRESOLVED_60S');
     expect(sixtySec).toHaveLength(1);
+  });
+});
+
+// 2026-07-27 defect fix: RECONCILE_REQUIRED was a permanent trap — nothing ever re-queried a frozen
+// order, so ONE order reaching it disabled kill-switch auto-resume forever (crashRecovery
+// .hasUnresolvedOrders() never clears). This bounded, rate-limited re-query pass is the fix.
+describe('UnknownResolverService — RECONCILE_REQUIRED reconcile-adopt pass (2026-07-27 defect fix)', () => {
+  const FREEZE_TICK = T + 5000 * 5; // register() + polls(5)'s 5th (inconclusive) poll — see below
+  const FREEZE_STATUS = 'throw' as const;
+
+  // Drives an order to RECONCILE_REQUIRED via the SAME 5-inconclusive-polls path the existing
+  // "five transient inconclusive polls" test above already proves, so the freeze itself is not
+  // re-tested here — only what happens to a frozen order afterward.
+  async function freezeToReconcileRequired(ctx: Ctx, coid: ClientOrderId): Promise<void> {
+    await register(ctx);
+    await polls(ctx, 5);
+    expect(ctx.orders.get(coid)?.state).toBe('RECONCILE_REQUIRED');
+    expect(ctx.resolver.isFrozen(SYM)).toBe(true);
+  }
+
+  it('adopts a definitive terminal, leaves RECONCILE_REQUIRED, and unfreezes the symbol', async () => {
+    let status: typeof FREEZE_STATUS | ExchangeOrderState['status'] = FREEZE_STATUS;
+    const ctx = build({
+      fetch: () => {
+        if (status === FREEZE_STATUS) throw ambiguous('RequestTimeout');
+        return venueState({ status });
+      },
+    });
+    const coid = seedUnknown(ctx, 'submit');
+    await freezeToReconcileRequired(ctx, coid);
+
+    status = 'canceled'; // the venue now confirms a DEFINITIVE terminal
+    await ctx.resolver.tick(epochMs(FREEZE_TICK + 60_000)); // past the reconcile-requery interval
+    expect(ctx.orders.get(coid)?.state).toBe('CANCELED');
+    expect(ctx.resolver.isFrozen(SYM)).toBe(false);
+  });
+
+  it('a re-query that throws stays frozen', async () => {
+    const ctx = build({
+      fetch: () => {
+        throw ambiguous('RequestTimeout');
+      },
+    });
+    const coid = seedUnknown(ctx, 'submit');
+    await freezeToReconcileRequired(ctx, coid);
+    await ctx.resolver.tick(epochMs(FREEZE_TICK + 60_000));
+    expect(ctx.orders.get(coid)?.state).toBe('RECONCILE_REQUIRED');
+    expect(ctx.resolver.isFrozen(SYM)).toBe(true);
+  });
+
+  it('a re-query returning not-found stays frozen', async () => {
+    // NOT_FOUND is special-cased during *_UNKNOWN resolution (onNotFound), so freezing must go
+    // through a plain transient error first — not-found only applies to the reconcile-adopt query.
+    let notFoundAfterFreeze = false;
+    const ctx = build({
+      fetch: () => {
+        throw ambiguous(notFoundAfterFreeze ? 'OrderNotFound' : 'RequestTimeout');
+      },
+    });
+    const coid = seedUnknown(ctx, 'submit');
+    await freezeToReconcileRequired(ctx, coid);
+    notFoundAfterFreeze = true;
+    await ctx.resolver.tick(epochMs(FREEZE_TICK + 60_000));
+    expect(ctx.orders.get(coid)?.state).toBe('RECONCILE_REQUIRED');
+    expect(ctx.resolver.isFrozen(SYM)).toBe(true);
+  });
+
+  it('a re-query returning still-open stays frozen', async () => {
+    let status: typeof FREEZE_STATUS | ExchangeOrderState['status'] = FREEZE_STATUS;
+    const ctx = build({
+      fetch: () => {
+        if (status === FREEZE_STATUS) throw ambiguous('RequestTimeout');
+        return venueState({ status, cumQty: '0' });
+      },
+    });
+    const coid = seedUnknown(ctx, 'submit');
+    await freezeToReconcileRequired(ctx, coid);
+    status = 'open';
+    await ctx.resolver.tick(epochMs(FREEZE_TICK + 60_000));
+    expect(ctx.orders.get(coid)?.state).toBe('RECONCILE_REQUIRED');
+    expect(ctx.resolver.isFrozen(SYM)).toBe(true);
+  });
+
+  it('rate-limits: repeated ticks inside the interval issue only ONE venue re-query', async () => {
+    let calls = 0;
+    let status: typeof FREEZE_STATUS | ExchangeOrderState['status'] = FREEZE_STATUS;
+    const ctx = build({
+      fetch: () => {
+        calls += 1;
+        if (status === FREEZE_STATUS) throw ambiguous('RequestTimeout');
+        return venueState({ status });
+      },
+    });
+    const coid = seedUnknown(ctx, 'submit');
+    await freezeToReconcileRequired(ctx, coid);
+    const callsAtFreeze = calls;
+
+    status = 'canceled';
+    // Several ticks inside the 60s window: none of them may re-query yet.
+    await ctx.resolver.tick(epochMs(FREEZE_TICK + 1_000));
+    await ctx.resolver.tick(epochMs(FREEZE_TICK + 30_000));
+    await ctx.resolver.tick(epochMs(FREEZE_TICK + 59_000));
+    expect(calls).toBe(callsAtFreeze);
+    expect(ctx.orders.get(coid)?.state).toBe('RECONCILE_REQUIRED');
+
+    await ctx.resolver.tick(epochMs(FREEZE_TICK + 60_000)); // now past the interval
+    expect(calls).toBe(callsAtFreeze + 1); // exactly one new query
+    expect(ctx.orders.get(coid)?.state).toBe('CANCELED');
+  });
+
+  it('two frozen orders on the SAME symbol: resolving one does not unfreeze it, resolving both does', async () => {
+    const intentA = makeIntent();
+    const intentB = makeIntent({ intentId: intentId('0190abcd-1234-7abc-89ab-0123456789ac') });
+    const coidA = intentA.clientOrderId;
+    const coidB = intentB.clientOrderId;
+
+    let statusA: typeof FREEZE_STATUS | ExchangeOrderState['status'] = FREEZE_STATUS;
+    let statusB: typeof FREEZE_STATUS | ExchangeOrderState['status'] = FREEZE_STATUS;
+    const ctx = build({
+      fetch: (coid) => {
+        const s = coid === coidA ? statusA : statusB;
+        if (s === FREEZE_STATUS) throw ambiguous('RequestTimeout');
+        return venueState({ status: s });
+      },
+    });
+    seedUnknown(ctx, 'submit', intentA);
+    seedUnknown(ctx, 'submit', intentB);
+
+    await register(ctx);
+    await polls(ctx, 5); // both freeze on the same 5th inconclusive poll
+    expect(ctx.orders.get(coidA)?.state).toBe('RECONCILE_REQUIRED');
+    expect(ctx.orders.get(coidB)?.state).toBe('RECONCILE_REQUIRED');
+    expect(ctx.resolver.isFrozen(SYM)).toBe(true);
+
+    statusA = 'canceled';
+    await ctx.resolver.tick(epochMs(FREEZE_TICK + 60_000));
+    expect(ctx.orders.get(coidA)?.state).toBe('CANCELED');
+    expect(ctx.orders.get(coidB)?.state).toBe('RECONCILE_REQUIRED');
+    expect(ctx.resolver.isFrozen(SYM)).toBe(true); // B still frozen — the symbol must stay frozen
+
+    statusB = 'canceled';
+    await ctx.resolver.tick(epochMs(FREEZE_TICK + 120_000));
+    expect(ctx.orders.get(coidB)?.state).toBe('CANCELED');
+    expect(ctx.resolver.isFrozen(SYM)).toBe(false); // both cleared — now it unfreezes
   });
 });

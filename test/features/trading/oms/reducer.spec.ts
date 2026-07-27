@@ -195,6 +195,58 @@ describe('OMS reducer (§6.1)', () => {
         TransitionError,
       );
     });
+
+    // 2026-07-27 defect fix: the only other legal exit from this state, emitted by the resolver's
+    // bounded re-query pass on a DEFINITIVE venue terminal.
+    it.each<'CANCELED' | 'REJECTED' | 'EXPIRED'>(['CANCELED', 'REJECTED', 'EXPIRED'])(
+      'RECONCILE_ADOPT_TERMINAL(%s) adopts the venue terminal',
+      (terminal) => {
+        expect(
+          reduce(rec('RECONCILE_REQUIRED'), { type: 'RECONCILE_ADOPT_TERMINAL', terminal }).state,
+        ).toBe(terminal);
+      },
+    );
+
+    it('RECONCILE_ADOPT_TERMINAL(FILLED) adopts when cumQty already reached qty', () => {
+      const r = reduce(rec('RECONCILE_REQUIRED', { cumQty: new Decimal('10') }), {
+        type: 'RECONCILE_ADOPT_TERMINAL',
+        terminal: 'FILLED',
+      });
+      expect(r.state).toBe('FILLED');
+    });
+
+    it('RECONCILE_ADOPT_TERMINAL(FILLED) FAILS CLOSED when cumQty is short of qty', () => {
+      expect(() =>
+        reduce(rec('RECONCILE_REQUIRED', { cumQty: new Decimal('9') }), {
+          type: 'RECONCILE_ADOPT_TERMINAL',
+          terminal: 'FILLED',
+        }),
+      ).toThrow(TransitionError);
+    });
+
+    it('RECONCILE_ADOPT_TERMINAL is illegal from a live (non-terminal) state', () => {
+      for (const s of ['ACKED', 'NEW'] as const) {
+        expect(() =>
+          reduce(rec(s), { type: 'RECONCILE_ADOPT_TERMINAL', terminal: 'CANCELED' }),
+        ).toThrow(TransitionError);
+      }
+    });
+
+    // reduceTerminal's untouched contradiction handling (see "terminals" describe block below):
+    // a terminal state receiving anything but a duplicate/FILL freezes to RECONCILE_REQUIRED rather
+    // than throwing — RECONCILE_ADOPT_TERMINAL is not special-cased there, so it follows the SAME
+    // pre-existing rule as e.g. REJECT-on-FILLED, never a new throw path.
+    it('RECONCILE_ADOPT_TERMINAL on an already-terminal order is a contradiction, not a throw', () => {
+      expect(
+        reduce(rec('CANCELED'), { type: 'RECONCILE_ADOPT_TERMINAL', terminal: 'REJECTED' }).state,
+      ).toBe('RECONCILE_REQUIRED');
+    });
+
+    it('FILL in RECONCILE_REQUIRED still behaves exactly as before (regression)', () => {
+      expect(reduce(rec('RECONCILE_REQUIRED'), fill('2')).state).toBe('RECONCILE_REQUIRED');
+      expect(reduce(rec('RECONCILE_REQUIRED'), fill('2')).cumQty.toFixed()).toBe('2');
+      expect(reduce(rec('RECONCILE_REQUIRED'), fill('10')).state).toBe('FILLED');
+    });
   });
 
   describe('terminals (late cross-channel events)', () => {

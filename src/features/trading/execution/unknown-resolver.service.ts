@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import Decimal from 'decimal.js';
 import { CLOCK, type ClockPort } from '../../../ports/common/clock';
 import { KILL_SWITCH, type KillSwitchPort } from '../../../ports/trading/risk';
@@ -15,6 +15,7 @@ import {
   reduce,
   TERMINAL_ORDER_STATES,
   type OrderEvent,
+  type OrderRecord,
 } from '../../../domain/trading/oms/reducer';
 import { isAlgoRailIntent } from '../../../domain/trading/oms/reconcile';
 import { mulberry32 } from '../../../domain/common/rng/prng';
@@ -34,6 +35,33 @@ const TERMINAL = TERMINAL_ORDER_STATES;
 const NOT_FOUND_CODES: ReadonlySet<string> = new Set(['OrderNotFound', 'ORDER_NOT_FOUND']);
 const MAX_CANCEL_REISSUES = 3; // §6.1: >3 cancel reissues while still open ⇒ RECONCILE_REQUIRED
 const JITTER_SEED = 0x5165_5279; // fixed ⇒ the ±20% backoff jitter replays deterministically
+
+// 2026-07-27 defect fix: RECONCILE_REQUIRED was a permanent trap — no mechanism ever re-queried a
+// frozen order, so ANY order reaching it permanently disabled kill-switch auto-resume (crashRecovery
+// .hasUnresolvedOrders() — recovery-coordinator.service.ts — never clears). One re-query per frozen
+// order per interval: this runs on the same 1s tick() as every *_UNKNOWN poll, and a real deployment
+// can have dozens of frozen orders across 40 symbols, so it must never hammer the venue every tick.
+const RECONCILE_REQUERY_INTERVAL_MS = 60_000;
+
+// Mirrors mapVenueStatus's own status semantics below (canceled/rejected/expired/closed cases,
+// resolveOne's regular-rail switch) — not a second mapping, just the terminal-only subset of it.
+// 'open' has no terminal counterpart: a still-resting order proves nothing, so it stays frozen.
+function reconcileTerminalFor(
+  status: ExchangeOrderState['status'],
+): 'FILLED' | 'CANCELED' | 'REJECTED' | 'EXPIRED' | undefined {
+  switch (status) {
+    case 'canceled':
+      return 'CANCELED';
+    case 'rejected':
+      return 'REJECTED';
+    case 'expired':
+      return 'EXPIRED';
+    case 'closed':
+      return 'FILLED'; // reduce()'s own FAIL-CLOSED guard rejects this unless cumQty already ≥ qty
+    case 'open':
+      return undefined;
+  }
+}
 
 type UnknownKind = 'submit' | 'cancel';
 
@@ -65,6 +93,10 @@ export class UnknownResolverService {
   private readonly pending = new Map<string, Pending>();
   private readonly frozen = new Set<string>();
   private readonly rng = mulberry32(JITTER_SEED);
+  private readonly log = new Logger(UnknownResolverService.name);
+  // clientOrderId -> next allowed re-query, for the RECONCILE_REQUIRED sweep only (separate from
+  // `pending`'s *_UNKNOWN backoff schedule — a frozen order is no longer tracked there).
+  private readonly reconcileNextQueryAt = new Map<string, EpochMs>();
 
   constructor(
     @Inject(CLOCK) private readonly clock: ClockPort,
@@ -96,6 +128,7 @@ export class UnknownResolverService {
       }
       if (now >= p.nextDueAt) await this.resolveOne(p, now);
     }
+    await this.reconcileFrozen(now);
   }
 
   // Reconcile the tracking set with the order book: register fresh unknowns (symbol + TTL come from
@@ -189,7 +222,7 @@ export class UnknownResolverService {
     }
     if (found.algoId.length > 0) this.orders.setVenueOrderId(p.coid, found.algoId);
     if (this.orders.get(p.coid)!.state === 'SUBMIT_UNKNOWN') {
-      await this.fold(p, 'query-algo-ack', { type: 'ACK', venueOrderId: found.algoId });
+      await this.fold(p.coid, 'query-algo-ack', { type: 'ACK', venueOrderId: found.algoId });
     }
     this.pending.delete(p.coid);
   }
@@ -208,7 +241,7 @@ export class UnknownResolverService {
           await this.reissueCancel(p, now); // still resting — re-issue the cancel, bounded
         } else if (this.orders.get(p.coid)!.state === 'SUBMIT_UNKNOWN') {
           // open with cum 0: the order landed but never acked back — fold the explicit ack.
-          await this.fold(p, 'query-ack', { type: 'ACK', venueOrderId: venue.venueOrderId });
+          await this.fold(p.coid, 'query-ack', { type: 'ACK', venueOrderId: venue.venueOrderId });
           this.pending.delete(p.coid);
         } else {
           this.pending.delete(p.coid); // backfill already advanced it past SUBMIT_UNKNOWN
@@ -216,7 +249,7 @@ export class UnknownResolverService {
         return;
       case 'canceled':
         await this.fold(
-          p,
+          p.coid,
           'query-canceled',
           p.kind === 'cancel' ? { type: 'CANCEL_ACK' } : { type: 'VENUE_CANCELED' },
         );
@@ -231,7 +264,7 @@ export class UnknownResolverService {
         if (p.kind === 'submit') {
           // Defect A commit-1: no venue reason text is available on this path (ExchangeOrderState
           // carries no rejection message) — 'query-rejected' records at least the resolution source.
-          await this.fold(p, 'query-rejected', { type: 'REJECT' }, 'query-rejected');
+          await this.fold(p.coid, 'query-rejected', { type: 'REJECT' }, 'query-rejected');
           this.pending.delete(p.coid);
         } else {
           await this.freeze(p, 'query-inconclusive'); // a rejected order we hold a cancel-ack for: contradiction
@@ -239,7 +272,7 @@ export class UnknownResolverService {
         return;
       case 'expired':
         if (p.kind === 'submit') {
-          await this.fold(p, 'query-expired', { type: 'VENUE_EXPIRED' });
+          await this.fold(p.coid, 'query-expired', { type: 'VENUE_EXPIRED' });
           this.pending.delete(p.coid);
         } else {
           await this.freeze(p, 'query-inconclusive');
@@ -276,7 +309,7 @@ export class UnknownResolverService {
     // events distinct precisely so a lapsed intent is never resubmitted on its deterministic id.
     const intent = this.portfolio.inFlightIntent(p.coid);
     const expired = intent === undefined || this.clock.now() > intent.expiresAt;
-    await this.fold(p, expired ? 'query-not-found-expired' : 'query-not-found', {
+    await this.fold(p.coid, expired ? 'query-not-found-expired' : 'query-not-found', {
       type: expired ? 'QUERY_NOT_FOUND_EXPIRED' : 'QUERY_NOT_FOUND',
     });
     this.pending.delete(p.coid); // NEW is resubmit-eligible; resubmit orchestration is a follow-up
@@ -310,23 +343,116 @@ export class UnknownResolverService {
   // QUERY_INCONCLUSIVE ⇒ RECONCILE_REQUIRED. The symbol is frozen and the in-flight intent stays,
   // reserving worst-case exposure until reconciliation or an operator resolves it.
   private async freeze(p: Pending, dedupeKey: string): Promise<void> {
-    await this.fold(p, dedupeKey, { type: 'QUERY_INCONCLUSIVE' });
+    await this.fold(p.coid, dedupeKey, { type: 'QUERY_INCONCLUSIVE' });
     this.frozen.add(p.symbol);
     this.pending.delete(p.coid);
   }
 
+  // 2026-07-27 defect fix: the bounded, rate-limited re-query pass that ends RECONCILE_REQUIRED's
+  // previous permanence. Scans the WHOLE order book (frozen orders have no Pending entry, unlike
+  // *_UNKNOWN) rather than a second tracking set — RECONCILE_REQUIRED is rare enough that an O(n)
+  // scan per tick is not a concern, and it avoids a second registration/desync path to maintain.
+  private async reconcileFrozen(now: EpochMs): Promise<void> {
+    // Drop bookkeeping for anything resolved out-of-band (e.g. a stream fill completing it while
+    // frozen) — mirrors sync()'s own "forget what an out-of-band event already resolved" cleanup,
+    // so this map never grows unbounded over a long-running process.
+    for (const coid of this.reconcileNextQueryAt.keys()) {
+      if (this.orders.get(coid as ClientOrderId)?.state !== 'RECONCILE_REQUIRED') {
+        this.reconcileNextQueryAt.delete(coid);
+      }
+    }
+    for (const rec of this.orders.all()) {
+      if (rec.state !== 'RECONCILE_REQUIRED') continue;
+      const due = this.reconcileNextQueryAt.get(rec.clientOrderId);
+      if (due === undefined) {
+        // First sighting: register only, mirroring sync()'s *_UNKNOWN registration — a freeze() a
+        // few lines up THIS SAME tick must never be immediately re-queried (the rejected/expired
+        // "contradiction" freezes rely on that gap staying real, not a same-tick round trip back to
+        // the venue). The rate-limit clock starts from discovery, exactly like the *_UNKNOWN backoff.
+        this.reconcileNextQueryAt.set(
+          rec.clientOrderId,
+          (now + RECONCILE_REQUERY_INTERVAL_MS) as EpochMs,
+        );
+        continue;
+      }
+      if (now < due) continue;
+      this.reconcileNextQueryAt.set(
+        rec.clientOrderId,
+        (now + RECONCILE_REQUERY_INTERVAL_MS) as EpochMs,
+      );
+      await this.reconcileOne(rec);
+    }
+  }
+
+  // One frozen order's re-query. Fail CLOSED on every ambiguous outcome — no intent (cannot resolve
+  // the symbol to query), a throwing/erroring fetchOrder, a non-terminal venue status, or the
+  // reducer's own FILLED-short-cumQty guard rejecting the adoption — all leave the order frozen for
+  // the next interval, logged at WARN (naturally rate-limited: this only runs once per interval per
+  // order, per reconcileFrozen's own gate above).
+  private async reconcileOne(rec: OrderRecord): Promise<void> {
+    const intent = this.portfolio.inFlightIntent(rec.clientOrderId);
+    if (intent === undefined) {
+      this.log.warn(`reconcile-adopt ${rec.clientOrderId}: no in-flight intent, staying frozen`);
+      return;
+    }
+    let venue: ExchangeOrderState;
+    try {
+      venue = await this.exchange.fetchOrder(rec.clientOrderId, intent.symbol);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.log.warn(`reconcile-adopt ${rec.clientOrderId}: query failed (${msg}), staying frozen`);
+      return;
+    }
+    const terminal = reconcileTerminalFor(venue.status);
+    if (terminal === undefined) {
+      this.log.warn(
+        `reconcile-adopt ${rec.clientOrderId}: venue still ${venue.status}, staying frozen`,
+      );
+      return;
+    }
+    try {
+      reduce(rec, { type: 'RECONCILE_ADOPT_TERMINAL', terminal }); // pre-check: never fold an illegal transition
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.log.warn(
+        `reconcile-adopt ${rec.clientOrderId}: adoption rejected (${msg}), staying frozen`,
+      );
+      return;
+    }
+    const { applied } = await this.fold(rec.clientOrderId, 'reconcile-adopt', {
+      type: 'RECONCILE_ADOPT_TERMINAL',
+      terminal,
+    });
+    if (!applied) return; // journal said duplicate — leave frozen, retry next interval
+    this.reconcileNextQueryAt.delete(rec.clientOrderId);
+    this.unfreezeIfClear(intent.symbol);
+  }
+
+  // Only unfreeze a symbol once NO order for it is still RECONCILE_REQUIRED — never on the first
+  // order to clear (never place/cancel/flatten anything here, purely a local bookkeeping check).
+  private unfreezeIfClear(symbol: SymbolId): void {
+    const stillFrozen = this.orders.all().some((r) => {
+      if (r.state !== 'RECONCILE_REQUIRED') return false;
+      return this.portfolio.inFlightIntent(r.clientOrderId)?.symbol === symbol;
+    });
+    if (!stillFrozen) this.frozen.delete(symbol);
+  }
+
   // Fold one resolver-derived event: pure reduce → journal (idempotent on the dedupe key) → commit
-  // only if the journal accepted it (replay-safe) → retire on a terminal. A tracked entry's order
-  // is always in the book, so the record is read unconditionally.
+  // only if the journal accepted it (replay-safe) → retire on a terminal. Takes a bare coid (rather
+  // than a Pending) so the RECONCILE_REQUIRED sweep can reuse it too — a frozen order has no Pending
+  // entry (freeze() already deleted it). The order is always in the book, so the read is unconditional.
+  // Returns `applied` so a caller that must react to a duplicate-skip (reconcileOne) can — every
+  // pre-existing call site ignores it, exactly as before.
   private async fold(
-    p: Pending,
+    coid: ClientOrderId,
     dedupeKey: string,
     event: OrderEvent,
     reason?: string,
-  ): Promise<void> {
-    const next = reduce(this.orders.get(p.coid)!, event);
+  ): Promise<{ applied: boolean }> {
+    const next = reduce(this.orders.get(coid)!, event);
     const { applied } = await this.store.appendOrderEvent({
-      clientOrderId: p.coid,
+      clientOrderId: coid,
       dedupeKey,
       event,
       derivedState: next.state,
@@ -334,12 +460,13 @@ export class UnknownResolverService {
       venueOrderId: next.venueOrderId,
       ...(reason !== undefined ? { reason } : {}),
     });
-    if (!applied) return;
+    if (!applied) return { applied: false };
     this.orders.commit(next);
     if (TERMINAL.has(next.state)) {
-      this.portfolio.clearInFlight(p.coid);
-      this.portfolio.closeOrder(p.coid);
+      this.portfolio.clearInFlight(coid);
+      this.portfolio.closeOrder(coid);
     }
+    return { applied: true };
   }
 
   // Sweep realized trades since the intent was created (a wide overlap is free under I3 dedupe) and

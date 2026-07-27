@@ -52,6 +52,11 @@ function serializeEvent(event: PersistedOrderEvent['event']): Record<string, unk
       ...(event.message !== undefined ? { message: event.message } : {}),
     };
   }
+  if (event.type === 'RECONCILE_ADOPT_TERMINAL') {
+    // 2026-07-27 defect fix: the audited row must show WHICH terminal the re-query pass adopted —
+    // the default `{ type }`-only fallback below would otherwise drop the one fact that matters.
+    return { type: event.type, terminal: event.terminal };
+  }
   return { type: event.type };
 }
 

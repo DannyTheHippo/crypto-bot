@@ -367,6 +367,41 @@ describe('BootRecoveryService (§4.2 snapshot-restore)', () => {
     expect(portfolio.inFlightIntent(clientOrderId(newCoid))).toBeUndefined();
   });
 
+  // 2026-07-27 regression: an UNRESOLVED row (RECONCILE_REQUIRED / SUBMIT_UNKNOWN) lost its intent
+  // across a restart because intent rehydration was fused to the VENUE_CONFIRMED_OPEN gate. Live
+  // consequence: unknown-resolver's re-query pass reads the symbol off the intent, so every frozen
+  // order logged "no in-flight intent, staying frozen" forever and could never be adopted from venue
+  // truth — and freeze()'s "the in-flight intent stays, reserving worst-case exposure" promise
+  // silently stopped holding across restarts.
+  it('rehydrates the intent for UNRESOLVED rows (frozen/unknown) without registering them open', async () => {
+    const portfolio = makePortfolio();
+    const frozenCoid = 'cbp-recover-00000000000000000000051';
+    const submitUnknownCoid = 'cbp-recover-00000000000000000000052';
+    const neverLandedCoid = 'cbp-recover-00000000000000000000053';
+    const svc = new BootRecoveryService(
+      fakeStore({ latest: null, sodEquity: null, positions: [] }, [
+        recovered('RECONCILE_REQUIRED', frozenCoid, { intent: intentFor(frozenCoid) }),
+        recovered('SUBMIT_UNKNOWN', submitUnknownCoid, { intent: intentFor(submitUnknownCoid) }),
+        recovered('NEW', neverLandedCoid, { intent: intentFor(neverLandedCoid) }),
+      ]),
+      portfolio,
+      new OrderBookService(),
+      crashRecoveryStub({ n: 0 }),
+    );
+
+    await svc.recoverOnBoot('testnet');
+
+    // Unresolved → intent restored: the resolver needs it to re-query, and the exposure stays reserved.
+    expect(portfolio.inFlightIntent(clientOrderId(frozenCoid))).toBeDefined();
+    expect(portfolio.inFlightIntent(clientOrderId(submitUnknownCoid))).toBeDefined();
+    // Still NOT in the open-orders set — that gate is deliberately unchanged, so reconciliation's
+    // UNKNOWN_OURS classification behaves exactly as before this fix.
+    expect(portfolio.snapshot().openOrders.map((o) => o.clientOrderId)).not.toContain(frozenCoid);
+    // Never-landed rows remain excluded from both — reserving capital for an order the venue may
+    // never have seen is the wrong direction.
+    expect(portfolio.inFlightIntent(clientOrderId(neverLandedCoid))).toBeUndefined();
+  });
+
   // Push 3 P7f fix 3: mirrors execution-gate.service.ts's own fix 1 — a crash-recovered algo-rail
   // order must not resurrect into the regular open-orders set either, though its intent still
   // rehydrates (both rails need the in-flight reservation for fix 2's unknown-resolver + the E1

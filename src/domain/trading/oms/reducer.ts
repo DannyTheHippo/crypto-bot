@@ -82,7 +82,13 @@ export type OrderEvent =
   | { type: 'CANCEL_REJECT_UNKNOWN' }
   | { type: 'QUERY_NOT_FOUND' } // not found AND resubmit-eligible (intent TTL unexpired)
   | { type: 'QUERY_NOT_FOUND_EXPIRED' } // not found AND intent TTL expired ⇒ local cancel
-  | { type: 'QUERY_INCONCLUSIVE' };
+  | { type: 'QUERY_INCONCLUSIVE' }
+  // 2026-07-27 defect fix: RECONCILE_REQUIRED had no mechanism to ever leave — no HTTP route
+  // supplies the "operator evidence" the old comment promised, so one order reaching it disabled
+  // kill-switch auto-resume forever. Emitted only by the resolver's bounded, rate-limited re-query
+  // pass (unknown-resolver.service.ts's reconcileFrozen) on a DEFINITIVE venue-confirmed terminal —
+  // never from placing/cancelling anything.
+  | { type: 'RECONCILE_ADOPT_TERMINAL'; terminal: 'FILLED' | 'CANCELED' | 'REJECTED' | 'EXPIRED' };
 
 export class TransitionError extends Error {
   constructor(state: OrderState, eventType: OrderEvent['type']) {
@@ -243,8 +249,18 @@ export function reduce(rec: OrderRecord, event: OrderEvent): OrderRecord {
       }
 
     case 'RECONCILE_REQUIRED':
-      // Frozen: fills are still ingested (facts), everything else awaits operator evidence.
+      // Frozen: fills are still ingested (facts). RECONCILE_ADOPT_TERMINAL is the one other
+      // exit — a re-query pass's DEFINITIVE venue terminal; everything else still awaits it.
       if (event.type === 'FILL') return withFill(rec, event.cumQty, 'RECONCILE_REQUIRED');
+      if (event.type === 'RECONCILE_ADOPT_TERMINAL') {
+        // FAIL CLOSED: a venue "filled" claim our own fill journal does not corroborate (cumQty
+        // short of qty) must never fabricate a completed order — adoption refuses and the state
+        // stays frozen for the next pass rather than silently completing a possibly-partial order.
+        if (event.terminal === 'FILLED' && rec.cumQty.lt(rec.qty)) {
+          throw new TransitionError(rec.state, event.type);
+        }
+        return { ...rec, state: event.terminal };
+      }
       throw new TransitionError(rec.state, event.type);
 
     case 'FILLED':

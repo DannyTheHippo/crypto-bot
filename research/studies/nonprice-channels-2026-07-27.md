@@ -113,6 +113,59 @@ attenuates below the fee on the holdout is recorded as a **failure**, not as "pr
 precisely how the funding-contrarian frontier died, and repeating that mistake is the one outcome
 this rule exists to prevent.
 
+## RESULT — Wikipedia and DVOL: 15 of 15 cells FAIL (2026-07-27)
+
+Harness `test/backtest/nonprice-study.mjs`, run against the cached series. Deterministic bootstrap
+seed, so a rerun reproduces these numbers exactly.
+
+| Channel | Signal | h | n | blocks | IS spread | 95% CI | p | Verdict |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Wikipedia | `views_z` | 1 | 2350 | 35 | +49.6 bps | [−27, 109] | 0.204 | FAIL |
+| Wikipedia | `views_z` | 3 | 2340 | 35 | +149.9 | [−43, 299] | 0.152 | FAIL |
+| Wikipedia | `views_z` | 7 | 2320 | 34 | **+345.0** | [−20, 689] | 0.072 | FAIL |
+| Wikipedia | `views_d` | 1 | 2400 | 35 | +31.1 | [−29, 107] | 0.312 | FAIL |
+| Wikipedia | `views_d` | 3 | 2390 | 35 | −17.0 | [−127, 92] | 0.921 | FAIL |
+| Wikipedia | `views_d` | 7 | 2360 | 35 | −4.9 | [−147, 142] | 0.927 | FAIL |
+| DVOL | `dvol_z` | 1 | 472 | 35 | −34.2 | [−99, 58] | 0.606 | FAIL |
+| DVOL | `dvol_z` | 3 | 470 | 35 | −37.6 | [−256, 150] | 0.721 | FAIL |
+| DVOL | `dvol_z` | 7 | 464 | 34 | −151.3 | [−602, 334] | 0.615 | FAIL |
+| DVOL | `dvol_d` | 1 | 480 | 35 | +11.2 | [−76, 98] | 0.791 | FAIL |
+| DVOL | `dvol_d` | 3 | 478 | 35 | +92.4 | [−30, 209] | 0.153 | FAIL |
+| DVOL | `dvol_d` | 7 | 472 | 35 | −12.4 | [−298, 171] | 0.877 | FAIL |
+| DVOL | `vrp` | 1 | 442 | 32 | +43.6 | [−67, 113] | 0.565 | FAIL |
+| DVOL | `vrp` | 3 | 440 | 32 | +153.8 | [−105, 351] | 0.262 | FAIL |
+| DVOL | `vrp` | 7 | 436 | 32 | **+268.6** | [−211, 620] | 0.348 | FAIL |
+
+**Every confidence interval spans zero.** The best p-value across all 15 cells is 0.072 — it would
+not clear an uncorrected 0.05, let alone the pre-registered Bonferroni threshold of 1.85e-3. No cell
+reached the holdout, because the pass rule requires clearing fee AND Bonferroni in-sample first.
+
+The two largest point estimates are worth naming precisely because they are the trap this study was
+built to avoid: `views_z` at h=7 shows **+345 bps** and `vrp` at h=7 shows **+268.6 bps**, both of
+which would look like a discovery in a report that quoted point estimates. Their intervals are
+[−20, 689] and [−211, 620]. At this sample size a 7-day horizon simply cannot resolve an effect of
+that size from zero, and quoting either as a finding would be the exact error that killed the
+funding-contrarian frontier.
+
+Honest note on power: the DVOL cells rest on n≈440–480 observations from **two** assets, so they are
+a weak test rather than a strong refutation — a real but modest DVOL effect could hide inside those
+intervals. The Wikipedia cells, at n≈2,350 across ten assets, are a genuinely powered null.
+
+## GDELT — NOT TESTED (channel unavailable at its rate limit)
+
+12 of the 27 cells could not be run. The DOC 2.0 API serves short spans fine but **fails outright on
+any span ≥90 days at any backoff** (probe-verified: 429s and connection failures through 15/30/45/60/
+75/90-second retries), so the backfill must walk the window in 7-day chunks at ~6 s spacing — 120
+requests per query — and the throttle is sticky enough that this did not complete within the session.
+
+This is recorded as **UNTESTED, not as a failure.** GDELT remains the one channel here with both
+15-minute granularity and deep history, and it deserves a proper attempt: run
+`node test/backtest/fetch-nonprice.mjs gdelt` as a long-running background job, confirm
+`nonprice-gdelt-bitcoin.json` covers the window, then re-run `nonprice-study.mjs` — the 12 GDELT
+cells will populate automatically against the same frozen criteria. Nothing about the pass rule or
+the correction changes; the Bonferroni denominator was fixed at 27 up front precisely so a channel
+arriving late cannot alter the bar for the others.
+
 ## What follows a pass, and what follows a fail
 
 - **Pass.** Build the channel as a production feed adapter behind the existing port pattern

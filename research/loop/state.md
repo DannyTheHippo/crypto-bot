@@ -1154,6 +1154,22 @@ when the info-context A/B resolves.
 
 ### Standing verdicts (binding evidence — passes must NOT re-derive these)
 
+- **NON-PRICE CHANNELS — Wikipedia attention and Deribit DVOL/VRP TESTED AND FAILED; GDELT UNTESTED
+  (Pass 41, 2026-07-27; preregistered `research/studies/nonprice-channels-2026-07-27.md`, harness
+  `test/backtest/nonprice-study.mjs`).** This tests the program's own long-standing claim that "the
+  only possible edge is information the price series does not contain" — which had never been
+  checked. **15 of 15 runnable cells FAIL.** Every 95% CI spans zero; the best p across all cells is
+  0.072, short of even an uncorrected 0.05 against a pre-registered Bonferroni bar of 1.85e-3. No
+  cell reached the holdout. Wikipedia (n≈2,350, 10 assets over ~9 months, ≥100 views/day floor) is a
+  genuinely powered null; DVOL (n≈440–480, BTC/ETH only) is a weak test, so a modest DVOL effect
+  could still hide inside its intervals. **Do NOT quote the point estimates**: `views_z`@h7 reads
+  +345 bps and `vrp`@h7 +268.6 bps, with CIs [−20, 689] and [−211, 620] — at this n a 7-day horizon
+  cannot resolve them from zero, and quoting either as a finding is exactly the error that killed the
+  funding-contrarian frontier. **GDELT is UNTESTED, not failed** (12 cells): DOC 2.0 fails outright
+  on any span ≥90 days at any backoff and its ~1 req/5s throttle is sticky, so the window must be
+  walked in 7-day chunks (120 requests/query) — it did not finish in-session. Re-run
+  `node test/backtest/fetch-nonprice.mjs gdelt` as a long background job, then re-run the study; the
+  Bonferroni denominator was fixed at 27 up front so a late-arriving channel cannot move the bar.
 - **THE ENTRY SIGNAL IS SIGNIFICANTLY NEGATIVE, AND WORSE THAN RANDOM (Pass 41, 2026-07-27;
   31-agent adversarial diagnosis, 2,300+ cuts, 24 actionable claims attacked, 6 survived).** This is
   the program's central finding and it supersedes any assumption that the lane merely lacks edge.

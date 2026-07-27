@@ -1154,6 +1154,44 @@ when the info-context A/B resolves.
 
 ### Standing verdicts (binding evidence — passes must NOT re-derive these)
 
+- **THE ENTRY SIGNAL IS SIGNIFICANTLY NEGATIVE, AND WORSE THAN RANDOM (Pass 41, 2026-07-27;
+  31-agent adversarial diagnosis, 2,300+ cuts, 24 actionable claims attacked, 6 survived).** This is
+  the program's central finding and it supersedes any assumption that the lane merely lacks edge.
+  - **Forward returns are negative at every horizon** (n=61 entries): +1 bar **−16.9 bps t=−4.58**
+    CI [−25.2, −8.6], hit 25% against a ~50% base; +4 −31.9 t=−2.78; +8 **−47.3 t=−3.95**; +24
+    −66.5 t=−3.14 (n=57). All 12 primary cells negative (P = 2.4e-4 under coin flips). Survives
+    **Bonferroni over 195 cuts** (α=2.56e-4) at four cells. Trimming the best and worst observations
+    makes it MORE negative (−17.3 t=−4.95; 3+3 → −18.0 t=−5.80). Both time-halves negative at all
+    horizons. Long leg n=43 carries it (−19.9/−29.2/−56.3/−93.5); the short leg n=18 is not
+    significant on its own. Market-neutral residuals are ~half the size and still significant at
+    h=1/8/24 (−9.8 t=−2.84 / −28.0 t=−2.66 / −35.8 t=−2.09) but NOT at h=4 — so the causal
+    "picks bad bars" reading holds net-of-beta at three of four horizons, not all four.
+  - **Worse than random: a random-bar placebo on the same symbols and long/short mix gives
+    p = 0.0013–0.0037.** Entry TIMING is measurably worse than choosing a bar by coin flip.
+  - **A random entry at the model's own declared 2%/4%/48-bar geometry earns gross −1.07 bps — a
+    martingale — and net −21.07 bps, i.e. exactly the fee** (34 symbol×side cells, 32,368 overlapping
+    windows, intrabar resolution, cluster-robust t = −12.83). A six-bracket geometry sweep
+    (1/2, 1.5/3, 2/4, 3/6, 2/2, 4/2) lands every bracket in [−24.32, −18.93] bps. **Under any
+    bracket a random entry earns ≈0 gross, so net ≈ −fees always. Only entry alpha exceeding fees
+    can produce profit.** CORRECTION to the exit study's arithmetic: the correct break-even is the
+    CONDITIONAL (stop-or-TP) hit rate **36.67%**, not 34% — max-hold exits dominate the population.
+    Observed conditional hit rate 18.85%, cluster CI [13.42, 22.92], P(≥34%) = 0.
+  - **No conditional subgroup rescues it: 1,807 cuts examined, 0 of 188 counterfactual cuts positive
+    at n≥8.** Smallest p among ALL positive-mean cuts is 0.302; BH at q=0.05 yields zero discoveries;
+    family-wise permutation over 120 realised cuts gives p = 0.378. **There is no attribute-based
+    entry filter to deploy** — the search is exhausted over everything the system records.
+  - **The one attractive-looking cut is an artifact.** `stopLossPct > 2.5%` realised +203.8 bps is
+    **4 of 4 KAITO**, and KAITO is rank 1 of 17 on unconditional 48-bar drift in this window
+    (+2238 bps total). All four winners won by DISCRETIONARY early close, not geometry: replayed
+    mechanically the same cut goes **+203.8 → −158.1**. Counterfactual stop-width buckets show the
+    widest is worst (−197.5). **Do not widen stops. Do not concentrate on KAITO** (its own realised
+    aggregate is n=8, −2.2 bps).
+  - **Cost cutting cannot close the gap.** Gross realised −$20.10 on $1,982.66 of notional =
+    **−101.9 bps/trip** (95% CI [−185, −8], P(gross > 0) = 0.018); marking the 4 open cycles — all
+    four losing — gives n=27 at **−106.0 bps/trip**. Required gross edge for net-of-cost break-even
+    under the BEST achievable cost structure is **+13.0 bps/trip** (demo fees) or **+24.2** (live
+    20 bps). The gap is **115–130 bps/trip**, and LLM spend is $15.48 of the $37.56 net loss — **free
+    inference still leaves −$22.08.** Do not propose cost work as a profitability lever.
 - **NO EXIT RULE RESCUES THESE ENTRIES — verdict ENTRIES (Pass 41, 2026-07-27; pre-registered
   study `research/studies/edge-verdict-2026-08-10.md`, harness `test/backtest/exit-attribution.spec.ts`
   over `test/backtest/exit-simulator.ts`).** Three arms over the 23 recorded round trips, intrabar

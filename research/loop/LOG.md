@@ -4844,3 +4844,45 @@ what the C4 per-block ablation measures, and it is now the top cost item.
 satisfied** for the first time under real conditions (redeploys while carrying six open positions,
 `287ef6c` working) — and `agentic_budget_remaining_usd` carrying prior spend rather than resetting,
 confirming `f2d74b6`.
+
+### Pass 41 addendum — the edge diagnosis (31 agents, 2,300+ cuts, 6 claims survived refutation)
+
+Ran while the fixes above were shipping. Six independent analyses of the v3 corpus, every actionable
+claim then attacked by an adversarial refuter whose default was to reject it. 24 claims attacked,
+**6 survived**. Full verdict in state.md § Standing verdicts; the load-bearing results:
+
+**The entry signal is not merely edgeless — it is significantly negative, and worse than random.**
+Forward returns are negative at every horizon (n=61: −16.9 bps at 15m, t=−4.58; −47.3 at 2h,
+t=−3.95), surviving Bonferroni over 195 cuts, and trimming the best and worst observations makes it
+MORE negative. A random-bar placebo on the same symbols and long/short mix returns p = 0.0013–0.0037:
+**entry timing is measurably worse than a coin flip.** Market-neutral residuals halve the effect but
+keep it significant at three of four horizons.
+
+**And a random entry cannot profit under ANY bracket.** At the model's own 2%/4%/48-bar geometry a
+random entry earns gross −1.07 bps — a martingale — and net −21.07, i.e. exactly the fee; a
+six-bracket sweep lands every bracket in [−24.32, −18.93]. So net ≈ −fees always, and **only entry
+alpha exceeding fees can ever produce profit.** This also corrects the exit study's arithmetic: the
+right bar is the CONDITIONAL stop-or-TP hit rate, **36.67%** not 34%, because max-hold exits
+dominate. Observed conditional hit rate 18.85%, P(≥34%) = 0.
+
+**Nothing rescues it conditionally.** 1,807 cuts; 0 of 188 counterfactual cuts positive at n≥8;
+smallest p among all positive-mean cuts 0.302; zero BH discoveries. The one attractive cut
+(`stopLossPct > 2.5%`, +203.8 bps) is 4-of-4 KAITO — the window's strongest drifter — and all four
+winners won by discretionary early close, not geometry: replayed mechanically it goes +203.8 →
+**−158.1**. Do not widen stops; do not concentrate on KAITO.
+
+**Cost work is not a lever.** Gross −101.9 bps/trip (n=23, CI [−185, −8], P(gross>0) = 0.018), −106.0
+including the four open cycles (all losing). Break-even needs +13.0 bps/trip on demo fees, +24.2 on
+live. The gap is 115–130 bps/trip and LLM spend is $15.48 of the $37.56 net loss — **free inference
+still leaves −$22.08.**
+
+**Consequence for the program.** The demo lane's purpose is to earn the promotion gate (≥30 closed
+trips AND positive net-of-cost over ≥14 days). We now have rigorous evidence that net-of-cost cannot
+go positive with this entry signal, so continuing unchanged spends ~$2.6/day accumulating evidence
+for a gate it is provably unable to pass. That is a program-level decision — what this project is
+FOR — and it is surfaced to the owner rather than resolved by config. No further behaviour change was
+made on n=23 evidence: notably the exit study's Arm 2 (mechanical beats discretionary by ~30 bps) and
+this diagnosis's S3 (all four winners won BY discretion) point opposite ways, which is exactly the
+noise level that forbids acting. **C4 (payload ablation, ~$18) is CANCELLED** — it would optimise the
+cost of a strategy that should not be running, and S2 has already established no attribute of the
+signal is positive.

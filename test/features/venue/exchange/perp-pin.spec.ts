@@ -93,6 +93,81 @@ describe('perp venue pinning (#51)', () => {
     expect(setLeverage).not.toHaveBeenCalled();
   });
 
+  // 2026-07-27 boot halt: KAITO/USDT:USDT was FLAT but carried a resting algo-rail STOP_MARKET, so
+  // the venue refused setMarginMode with -4067 while fetchPositions returned nothing (it drops
+  // zero-size rows). "Cannot tell" was read as "not isolated" and the pin flattened the book over a
+  // symbol the venue already had on isolated margin.
+  it('tolerates -4067 on a FLAT symbol by falling back to the v2 position-risk endpoint, which returns zero-size rows', async () => {
+    const setMarginMode = vi
+      .fn()
+      .mockRejectedValue(
+        new Error(
+          'binanceusdm {"code":-4067,"msg":"Position side cannot be changed if there exists open orders."}',
+        ),
+      );
+    const setLeverage = vi.fn().mockResolvedValue({});
+    const fetchPositions = vi.fn().mockResolvedValue([]); // flat ⇒ ccxt yields no row at all
+    const fapiPrivateV2GetPositionRisk = vi
+      .fn()
+      .mockResolvedValue([{ symbol: 'KAITOUSDT', marginType: 'isolated' }]);
+    const market = vi.fn().mockReturnValue({ id: 'KAITOUSDT' });
+    const exchange = {
+      setMarginMode,
+      setLeverage,
+      fetchPositions,
+      fapiPrivateV2GetPositionRisk,
+      market,
+    } as unknown as Exchange;
+    const client = new RealCcxtOrderClient(exchange);
+    await expect(client.pinPerpVenueDefaults(['KAITO/USDT:USDT'], 5)).resolves.toBeUndefined();
+    expect(fapiPrivateV2GetPositionRisk).toHaveBeenCalledWith({ symbol: 'KAITOUSDT' });
+    expect(setLeverage).toHaveBeenCalledWith(5, 'KAITO/USDT:USDT');
+  });
+
+  it('still fail-closes on a FLAT symbol the fallback reports as cross — the fallback widens visibility, never tolerance', async () => {
+    const setMarginMode = vi
+      .fn()
+      .mockRejectedValue(
+        new Error(
+          'binanceusdm {"code":-4067,"msg":"Position side cannot be changed if there exists open orders."}',
+        ),
+      );
+    const setLeverage = vi.fn().mockResolvedValue({});
+    const exchange = {
+      setMarginMode,
+      setLeverage,
+      fetchPositions: vi.fn().mockResolvedValue([]),
+      fapiPrivateV2GetPositionRisk: vi
+        .fn()
+        .mockResolvedValue([{ symbol: 'KAITOUSDT', marginType: 'cross' }]),
+      market: vi.fn().mockReturnValue({ id: 'KAITOUSDT' }),
+    } as unknown as Exchange;
+    const client = new RealCcxtOrderClient(exchange);
+    await expect(client.pinPerpVenueDefaults(['KAITO/USDT:USDT'], 5)).rejects.toThrow(
+      /setMarginMode.*fail-closed/,
+    );
+    expect(setLeverage).not.toHaveBeenCalled();
+  });
+
+  it('a venue without the fallback endpoint keeps the old fail-closed behaviour on an unverifiable -4067', async () => {
+    const setMarginMode = vi
+      .fn()
+      .mockRejectedValue(
+        new Error(
+          'binanceusdm {"code":-4067,"msg":"Position side cannot be changed if there exists open orders."}',
+        ),
+      );
+    const exchange = {
+      setMarginMode,
+      setLeverage: vi.fn().mockResolvedValue({}),
+      fetchPositions: vi.fn().mockResolvedValue([]),
+    } as unknown as Exchange;
+    const client = new RealCcxtOrderClient(exchange);
+    await expect(client.pinPerpVenueDefaults(['KAITO/USDT:USDT'], 5)).rejects.toThrow(
+      /setMarginMode.*fail-closed/,
+    );
+  });
+
   it('throws fail-closed on any other venue error', async () => {
     const { exchange } = fakeExchange({
       setMarginMode: vi.fn().mockRejectedValue(new Error('binanceusdm 403 forbidden')),

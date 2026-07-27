@@ -276,6 +276,13 @@ export class RealCcxtOrderClient implements CcxtOrderClient {
       ): Promise<
         readonly { symbol?: string; marginMode?: string; info?: { marginType?: string } }[]
       >;
+      // Binance USD-M only, and the ONLY endpoint that answers for a FLAT symbol — see
+      // marginAlreadyIsolated. Optional + presence-guarded, so any other venue simply falls through
+      // to the fail-closed throw rather than gaining a silent tolerance.
+      fapiPrivateV2GetPositionRisk?(
+        params: Record<string, unknown>,
+      ): Promise<readonly { symbol?: string; marginType?: string }[]>;
+      market?(symbol: string): { id?: string } | undefined;
     };
     const alreadySet = (err: unknown): boolean => {
       const msg = err instanceof Error ? err.message : String(err);
@@ -285,15 +292,43 @@ export class RealCcxtOrderClient implements CcxtOrderClient {
       const msg = err instanceof Error ? err.message : String(err);
       return msg.includes('-4067') || /cannot be changed if there exists open orders/i.test(msg);
     };
+    // Answers "does the venue already have this symbol on isolated margin?" — the only thing that
+    // makes a -4067 tolerable. Fail-closed throughout: ONLY an explicit 'isolated' returns true.
+    //
+    // Two sources, because one is blind. fetchPositions drops zero-size rows, so a FLAT symbol
+    // yields nothing there and the question is unanswerable — which is NOT the same as "not
+    // isolated". Treating it as such halted a boot on 2026-07-27: KAITO/USDT:USDT was flat but
+    // carried a resting ALGO-rail STOP_MARKET, the venue counted that as an open order and refused
+    // setMarginMode with -4067, fetchPositions returned 0 rows, and the pin threw
+    // START_TRADING_FAILED — flattening the book over a symbol the venue already had on isolated.
+    // Since protective stops rest on perp symbols as a matter of course, this made every redeploy
+    // while holding perp exposure a coin flip.
+    //
+    // The v2 position-risk endpoint DOES return flat symbols. Probe-verified on demo-fapi with
+    // pinned ccxt 4.5.58 (2026-07-27): fapiPrivateV2GetPositionRisk({symbol:'KAITOUSDT'}) →
+    // positionAmt "0.0", marginType "isolated"; fetchPositions, fetchPositionsRisk and
+    // fapiPrivateV3GetPositionRisk all returned 0 rows for the same symbol.
     const marginAlreadyIsolated = async (symbol: string): Promise<boolean> => {
-      if (ex.fetchPositions === undefined) return false;
+      if (ex.fetchPositions !== undefined) {
+        try {
+          const rows = await ex.fetchPositions([symbol]);
+          for (const row of rows) {
+            if (row.symbol !== undefined && row.symbol !== symbol) continue;
+            const mode = (row.marginMode ?? row.info?.marginType ?? '').toLowerCase();
+            if (mode === 'isolated') return true;
+            if (mode === 'cross') return false; // definitive: do not second-guess it below
+          }
+        } catch {
+          // fall through to the flat-symbol source
+        }
+      }
+      if (ex.fapiPrivateV2GetPositionRisk === undefined || ex.market === undefined) return false;
       try {
-        const rows = await ex.fetchPositions([symbol]);
+        const id = ex.market(symbol)?.id;
+        if (id === undefined) return false;
+        const rows = await ex.fapiPrivateV2GetPositionRisk({ symbol: id });
         for (const row of rows) {
-          if (row.symbol !== undefined && row.symbol !== symbol) continue;
-          const mode = (row.marginMode ?? row.info?.marginType ?? '').toLowerCase();
-          if (mode === 'isolated') return true;
-          if (mode === 'cross') return false;
+          if ((row.marginType ?? '').toLowerCase() === 'isolated') return true;
         }
         return false;
       } catch {

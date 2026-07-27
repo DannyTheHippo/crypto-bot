@@ -17,6 +17,7 @@ import {
   ALPHA,
   BONFERRONI_CELLS,
   HORIZONS,
+  MIN_COMPLETION_RATE,
   MIN_ENTRIES,
   REQUIRED_EDGE_BPS,
   assertArmsAreReachable,
@@ -26,6 +27,7 @@ import {
   loadCorpus,
   loadRecordedEntries,
   loadSeries,
+  preflightCanSpend,
   resolveArms,
   runReplay,
   scoreRecordedEntries,
@@ -142,12 +144,25 @@ describe.runIf(PAID && API_KEY.length > 0 && CORPUS_PRESENT)(
         console.log(`payload sha256: ${manifest.payloadSha256}`);
         console.log(`arms: ${arms.map((a) => a.arm.name).join(', ')}\n`);
 
+        const model = process.env.PLAYBOOK_SPACE_MODEL ?? 'claude-sonnet-5';
+        // ONE call before thousands. Runs 1 and 2 (2026-07-28) both burned through the corpus
+        // discovering mid-run that the account could not pay; the old pre-flight checked that a key
+        // EXISTED, never that it could SPEND.
+        const preflight = await preflightCanSpend(API_KEY, model);
+        if (!preflight.ok) {
+          throw new Error(
+            `PRE-FLIGHT FAILED — the API refused a 1-token probe with HTTP ${preflight.status}. ` +
+              `No paid call was made. Detail: ${preflight.detail}`,
+          );
+        }
+        console.log('pre-flight: API accepted a 1-token probe — proceeding\n');
+
         const run = await runReplay(
           rows,
           arms,
           {
             apiKey: API_KEY,
-            model: process.env.PLAYBOOK_SPACE_MODEL ?? 'claude-sonnet-5',
+            model,
             timeoutMs: 120_000,
             sizeFractionMax: '0.25',
             shortsEnabled: true,
@@ -162,8 +177,30 @@ describe.runIf(PAID && API_KEY.length > 0 && CORPUS_PRESENT)(
 
         console.log(
           `\nrun: rowsCovered=${run.rowsCovered}/${rows.length} (common to ALL arms) calls=${run.meter.calls} spend=$${run.meter.usd}` +
-            `${run.aborted ? ' ABORTED ON BUDGET — partial, not complete' : ''}\n`,
+            `${run.aborted ? ' ABORTED ON BUDGET — partial, not complete' : ''}`,
         );
+        console.log(
+          `transport: ok=${run.transport.ok} 429=${run.transport.rateLimited} 5xx=${run.transport.serverError} ` +
+            `otherHttp=${run.transport.otherHttp} net=${run.transport.networkError} retries=${run.transport.retries}`,
+        );
+        console.log(
+          `completion: ${run.completion.parsed}/${run.completion.total} = ${(run.completion.rate * 100).toFixed(1)}% ` +
+            `(floor ${(MIN_COMPLETION_RATE * 100).toFixed(0)}%)\n`,
+        );
+
+        if (run.voided) {
+          // Fails CLOSED. Run 1 (2026-07-28) made all 4,632 calls, reported aborted=false, and printed
+          // a clean NO_SURVIVOR table off a ~13% completion rate — the arm means were drawn from a
+          // small non-random subsample of whichever calls happened to survive rate limiting. A run
+          // like that must never reach the results table, so this throws rather than reports.
+          throw new Error(
+            `RUN VOID — completion ${(run.completion.rate * 100).toFixed(1)}% is below the ` +
+              `${(MIN_COMPLETION_RATE * 100).toFixed(0)}% floor ` +
+              `(429=${run.transport.rateLimited}, 5xx=${run.transport.serverError}, ` +
+              `net=${run.transport.networkError}). No verdict may be published from this run. ` +
+              `Lower PLAYBOOK_SPACE_CONCURRENCY and re-run.`,
+          );
+        }
 
         const byId = new Map(rows.map((r) => [r.id, r]));
         const table: Record<string, unknown>[] = [];
@@ -264,6 +301,8 @@ describe.runIf(PAID && API_KEY.length > 0 && CORPUS_PRESENT)(
                 rowsCovered: run.rowsCovered,
                 corpusRows: rows.length,
                 aborted: run.aborted,
+                transport: run.transport,
+                completion: run.completion,
                 ...run.meter,
               },
               bar: {

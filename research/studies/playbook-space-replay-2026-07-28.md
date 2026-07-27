@@ -255,6 +255,72 @@ Two facts surfaced by the failure, both now pinned:
   a row count.
 - Registry row via `scripts/log-eval-experiment.mjs --source study`.
 
+## Amendment 2 (2026-07-28) — runs 1 and 2 are VOID; the account ran out of credit
+
+**No verdict has been produced. The bar above has not moved and no arm has been scored.**
+
+### What happened
+
+| run | concurrency | calls | spend | completion | status |
+| --- | --- | --- | --- | --- | --- |
+| smoke | 4 | 61 | $0.9943 | healthy | budget-capped as designed |
+| 1 | 6 | 4,632 | $7.5004 | **~13%** | **VOID** |
+| 2 | 3 | 4,632 | $0.0000 | **0%** | **VOID** |
+
+Run 1 completed all 386 rows × 12 arms, reported `aborted=false`, and wrote a clean-looking
+`NO_SURVIVOR` table. **It was worthless.** Only ~500 of 4,632 calls carried any `usage`, and the
+$7.50 spend against a ~$75 estimate is what gave it away: roughly 87% of calls failed at the HTTP
+layer before the model ever ran. Run 2, at lower concurrency, failed 100%.
+
+Cause, confirmed by a direct one-call probe:
+
+```text
+HTTP 400 invalid_request_error
+"Your credit balance is too low to access the Anthropic API."
+```
+
+The Anthropic credit balance was exhausted **during run 1** — the smoke run and the first ~500 calls
+of run 1 spent it (~$8.49 total this session). Every call after that point returned 400.
+
+### Why it produced a plausible-looking table instead of an error
+
+`replayPlanRow` (`entry-rate-floor.ts:174`) collapses **every** failure mode to `{ok:false}` — a
+deliberate degrade-not-abort choice that is correct for its own callers, where one bad row must never
+kill a batch. But `{ok:false}` is also what a genuine `hold` looks like to the scoring layer, so a
+run in which the API refused 87% of calls is arithmetically indistinguishable from a run in which the
+model simply declined to trade. The arm means were computed over whichever small, non-random
+subsample of calls happened to land before the money ran out.
+
+**This is the most dangerous failure this study could have had**: not a crash, but a confident
+answer. Had the completion rate not been cross-checked against the spend, run 1's `NO_SURVIVOR` would
+have been written into `state.md` as the verdict that ended the program.
+
+### Guards added, all fail-closed
+
+1. **`preflightCanSpend`** — one 1-token call before the run. Any non-2xx aborts before the first paid
+   call, quoting the API's own error body. The previous pre-flight verified a key *existed*; it never
+   verified the key could *spend*, which is the check that actually mattered. Verified: aborts in
+   0.5 s with the credit message and zero paid calls.
+2. **`instrumentedFetch`** — wraps the transport to count `ok` / 429 / 5xx / other-4xx / network
+   failures and retry 429s and 5xx with `retry-after`-aware backoff. Instrumenting at the fetch layer
+   keeps the distinction `replayPlanRow` legitimately discards, without changing production code.
+3. **`MIN_COMPLETION_RATE = 0.9`** — a run whose parsed fraction falls below 90% is marked
+   `voided: true` and the harness **throws instead of publishing a table**. This is the guard that
+   would have caught run 1 on its own, without anyone noticing the spend discrepancy.
+
+### Status
+
+**BLOCKED on an owner-only capability.** Purchasing API credit is not something this program can do
+for itself — the same class as a dedicated org key or live capital. The corpus, the arms, the bar and
+the harness are all frozen and committed; the study is one funded API key away from running, and
+nothing about it needs to be re-decided.
+
+Estimated cost to complete, revised down from measurement rather than guessed: run 1's ~500 real
+calls cost $7.50, but that figure is inflated by cold caches and failed-call overhead. The smoke run's
+$0.0163/call over 4,632 calls gives **~$75**; the observed cache behaviour at `chunk=40` suggests
+materially less. **Budget $90, the pre-registered cap, unchanged.**
+
 ## Results
 
-*To be filled in after the run. The bar above does not move.*
+*Not yet produced — see Amendment 2. Runs 1 and 2 are VOID and no arm has been scored. The bar above
+does not move.*

@@ -859,6 +859,14 @@ export class ReflectionService {
   // a blocked weekly attempt retries NEXT week — the trade-count trigger keeps its own
   // retry-on-next-close semantics untouched.
   private lastWeeklyFireAt = 0;
+  // "One fire per UTC-week bucket per boot" (above) was calibrated when redeploys were rare. It is
+  // not: 13 boots in 4 days on 2026-07-25→27, and 41 on 2026-07-24. Both weekly guards live in
+  // memory and start at 0, and utcWeekKey(0) is 1970, so EVERY boot re-armed the bucket and fired a
+  // fresh weekly attempt that never passes through evaluateTrigger and therefore never sees the
+  // cooldown — mints v4 and v7 landed 8s and 3s after their boot's first intent. The stamp is now
+  // seeded once per boot from the durable lane-global last-reflection time before the weekly path
+  // may fire at all, which keeps the W6 protection and adds the across-boot bound it was missing.
+  private weeklySeed: 'unseeded' | 'seeding' | 'ready' = 'unseeded';
   private inFlight = false;
   // XA2: the current attempt's session-scoped spend gate — assigned fresh at every attempt start
   // (after the pre-flight reserve passes), so a stale wrapper never carries caps across attempts.
@@ -1009,6 +1017,31 @@ export class ReflectionService {
   checkWeeklyReflectionTrigger(strategyId: StrategyId): void {
     try {
       if (this.inert) return;
+      // Durable weekly bound: the stamp is restored from the DB once per boot BEFORE the weekly
+      // path may fire — otherwise a redeploy re-arms the bucket (see the field's comment). The seed
+      // chains straight into the fire so the very first call can still fire this bar; it does not
+      // defer to the next one. Fails OPEN (see seedWeeklyStamp) to exactly the pre-fix per-boot
+      // behaviour, never worse, and the in-memory guards below still bound it either way.
+      if (this.weeklySeed === 'seeding') return;
+      if (this.weeklySeed === 'unseeded') {
+        void this.seedWeeklyStamp().then(() => {
+          this.fireWeeklyIfDue(strategyId);
+        });
+        return;
+      }
+      this.fireWeeklyIfDue(strategyId);
+    } catch (err) {
+      this.warn(
+        `reflection: checkWeeklyReflectionTrigger failed unexpectedly: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  // The weekly guards themselves, split out so the seed path and the already-seeded path share one
+  // implementation. Own try/catch because it runs inside a promise tail on the seed path, where an
+  // unexpected throw would otherwise surface as an unhandled rejection.
+  private fireWeeklyIfDue(strategyId: StrategyId): void {
+    try {
       const now = (this.deps.nowFn ?? Date.now)();
       if (utcWeekKey(now) === utcWeekKey(this.lastAttemptAt)) return;
       if (utcWeekKey(now) === utcWeekKey(this.lastWeeklyFireAt)) return;
@@ -1027,13 +1060,42 @@ export class ReflectionService {
         });
     } catch (err) {
       this.warn(
-        `reflection: checkWeeklyReflectionTrigger failed unexpectedly: ${err instanceof Error ? err.message : String(err)}`,
+        `reflection: weekly fire check failed unexpectedly: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }
 
   private warn(msg: string): void {
     (this.deps.logger ?? NOOP_LOGGER).warn(msg);
+  }
+
+  // One-time-per-boot restore of the weekly fire stamp from durable truth. reflectionSeed's
+  // lastReflectionAt is LANE-GLOBAL (PromotionStatsPort.latestReflectionAt), which is the right
+  // scope: the weekly trigger throttles lane-global playbook work and the API spend behind it, so
+  // any strategy's attempt last week must bound every strategy's weekly path this week. max() only
+  // ever advances the stamp — a genuine fire that raced the read is never rolled back.
+  private async seedWeeklyStamp(): Promise<void> {
+    if (this.weeklySeed !== 'unseeded') return;
+    this.weeklySeed = 'seeding';
+    if (this.deps.evidence === undefined) {
+      this.weeklySeed = 'ready';
+      return;
+    }
+    try {
+      const seed = await this.deps.evidence.reflectionSeed();
+      if (seed.lastReflectionAt !== null) {
+        this.lastWeeklyFireAt = Math.max(this.lastWeeklyFireAt, seed.lastReflectionAt);
+        this.lastAttemptAt = Math.max(this.lastAttemptAt, seed.lastReflectionAt);
+      }
+    } catch (err) {
+      // Fail OPEN: reflection is a diagnostic loop, not a safety gate, and refusing to ever fire
+      // would be a worse failure than the pre-fix per-boot bound this degrades back to.
+      this.warn(
+        `reflection: weekly-stamp seed failed, falling back to per-boot bound: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      this.weeklySeed = 'ready';
+    }
   }
 
   // One-time-per-strategy durable-state restore. max() on both counters: the seed may only advance
@@ -1220,6 +1282,17 @@ export class ReflectionService {
       triggerRestored = true;
       const nowTrades = this.tradesSinceLastAttempt.get(key) ?? 0;
       this.tradesSinceLastAttempt.set(key, nowTrades + preAttempt.trades);
+      // NOTE (2026-07-27): rolling `lastAttemptAt` back here un-consumes the COOLDOWN as well as
+      // the trigger, even when the attempt already burned Opus calls — and ~78% of attempts mint
+      // nothing (18 attempts, 4 mints, 69 calls). That was investigated as a second churn cause and
+      // DELIBERATELY LEFT ALONE: measured inter-attempt gaps that violate the 6h cooldown (15, 29,
+      // 45, 87, 105, 120 min) are equally explained by the weekly-trigger defect fixed above, which
+      // bypassed the cooldown outright on every boot, and backlog #31's rollback is a deliberate,
+      // separately-tested contract ("a transport failure must not cost a learning cycle"). Overriding
+      // it on an unisolated signal would trade a documented behaviour for a guess. Re-measure attempt
+      // spacing once the weekly fix has been live for a week; if gaps under 6h persist on the
+      // trade-count path, this is the remaining suspect and can be split then (restore the trigger,
+      // hold the cooldown once attemptBudget.snapshot().costUsd > 0).
       this.lastAttemptAt = preAttempt.lastAttemptAt;
     };
     // #50: any throw between the trigger consume above and a recorded outcome would otherwise

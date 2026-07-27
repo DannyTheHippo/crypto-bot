@@ -1620,6 +1620,93 @@ function requestBodyOf(
   };
 }
 
+describe('weekly trigger: durable across-boot bound (2026-07-27)', () => {
+  // Pre-fix, both weekly guards were in-memory and started at 0, and utcWeekKey(0) is 1970 — so
+  // EVERY boot re-armed the bucket and fired a weekly attempt that never passes through
+  // evaluateTrigger and therefore never sees the 6h cooldown. With 13 boots in 4 days (41 on
+  // 2026-07-24) that was the dominant reflection-churn path: mints v4 and v7 landed 8s and 3s after
+  // their boot's first intent.
+  it('a fresh boot does NOT re-fire when the durable stamp is inside the current UTC week', async () => {
+    const h = buildHarness();
+    const ev = fakeEvidence({
+      seed: {
+        closedTradesTotal: 0,
+        closedSinceLastReflection: 0,
+        lastReflectionAt: h.clock.now - 60_000, // an attempt one minute ago, same week
+      },
+    });
+    h.fetchFn.mockResolvedValue(
+      apiResponse(revisionToolBody({ playbook: validPlaybookContent('weekly'), changelog: 'q' })),
+    );
+    const service = new ReflectionService(baseCfg({ everyNTrades: 100 }), {
+      ...h.deps,
+      evidence: ev.port,
+    });
+
+    service.checkWeeklyReflectionTrigger(SID);
+    await flush();
+    expect(h.fetchFn).not.toHaveBeenCalled();
+    expect(h.storeApi.appended).toHaveLength(0);
+  });
+
+  it('still fires when the durable stamp is from a previous UTC week', async () => {
+    const h = buildHarness();
+    const ev = fakeEvidence({
+      seed: {
+        closedTradesTotal: 0,
+        closedSinceLastReflection: 0,
+        lastReflectionAt: h.clock.now - 8 * 24 * 60 * 60 * 1000,
+      },
+    });
+    h.fetchFn.mockResolvedValue(
+      apiResponse(revisionToolBody({ playbook: validPlaybookContent('weekly'), changelog: 'q' })),
+    );
+    const service = new ReflectionService(baseCfg({ everyNTrades: 100 }), {
+      ...h.deps,
+      evidence: ev.port,
+    });
+
+    service.checkWeeklyReflectionTrigger(SID);
+    await flush();
+    expect(h.storeApi.appended).toHaveLength(1);
+  });
+
+  it('seeds exactly once per boot however many bars call the trigger', async () => {
+    const h = buildHarness();
+    const ev = fakeEvidence({
+      seed: { closedTradesTotal: 0, closedSinceLastReflection: 0, lastReflectionAt: h.clock.now },
+    });
+    const service = new ReflectionService(baseCfg({ everyNTrades: 100 }), {
+      ...h.deps,
+      evidence: ev.port,
+    });
+
+    for (let i = 0; i < 5; i += 1) {
+      service.checkWeeklyReflectionTrigger(SID);
+      await flush();
+    }
+    expect(ev.seedCalls()).toBe(1);
+  });
+
+  it('fails OPEN to the per-boot bound when the durable seed read throws', async () => {
+    // Reflection is a diagnostic loop, not a safety gate: a DB failure must degrade to the pre-fix
+    // in-memory behaviour, never disable weekly reflection permanently.
+    const h = buildHarness();
+    const ev = fakeEvidence({ seedError: new Error('stats down') });
+    h.fetchFn.mockResolvedValue(
+      apiResponse(revisionToolBody({ playbook: validPlaybookContent('weekly'), changelog: 'q' })),
+    );
+    const service = new ReflectionService(baseCfg({ everyNTrades: 100 }), {
+      ...h.deps,
+      evidence: ev.port,
+    });
+
+    service.checkWeeklyReflectionTrigger(SID);
+    await flush();
+    expect(h.storeApi.appended).toHaveLength(1);
+  });
+});
+
 describe('ReflectionService realized evidence + trigger seeding', () => {
   it('the DB seed revives a redeploy-starved trigger (fires earlier than in-memory counting would)', async () => {
     const h = buildHarness();

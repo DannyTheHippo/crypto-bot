@@ -23,6 +23,9 @@ export default tseslint.config(
       // Same class: the non-price channel backfill CLI (Wikipedia / Deribit DVOL / GDELT) for the
       // 2026-07-27 channel study — bare .mjs run via `node`, outside any tsconfig project.
       'test/backtest/fetch-nonprice.mjs',
+      // Same class: the horizon + passive-baseline study — bare .mjs run via `node`
+      // (self-contained, reads only cached JSON, no src/ imports), outside any tsconfig project.
+      'test/backtest/horizon-study.mjs',
       // Same class: the non-price channel forward-return study — bare .mjs run via `node`
       // (self-contained, reads only cached JSON, no src/ imports), outside any tsconfig project.
       'test/backtest/nonprice-study.mjs',

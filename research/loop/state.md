@@ -1154,6 +1154,34 @@ when the info-context A/B resolves.
 
 ### Standing verdicts (binding evidence — passes must NOT re-derive these)
 
+- **HORIZON WAS NOT THE CONSTRAINT EITHER, AND ACTIVE LOST TO PASSIVE ACROSS 7 YEARS (Pass 41,
+  2026-07-27; preregistered `research/studies/horizon-and-baseline-2026-07-27.md`, harness
+  `test/backtest/horizon-study.mjs`).** Tests the named frontier the settled price-TA verdict left
+  open (multi-day cross-sectional momentum — the killed search covered 15m–1d only; no cell here is
+  inside 1d). 4 signals × 3 horizons (7/30/90d) × 2 fee tiers over 2,600 daily bars, 16 assets,
+  2019-08-04 → 2026-07-27. **24 of 24 cells FAIL.** Every cell has NEGATIVE excess over the passive
+  basket; `xs_rev7`@h7 is significantly worse at **p=0.0000 over 364 periods**. Maker fees (4 bps)
+  move results ~+0.16%/period and change no verdict — **the fee tier was never the binding
+  constraint at these horizons.**
+  - **The under-powered result reversed under power, which is the methodological headline.** At 400
+    bars, three momentum signals showed +6.3 to +7.2% excess per 30-day period, both halves
+    positive, compounding to +25–38% vs +14.5% buy-and-hold. At 2,600 bars the same cells read
+    −5.36%, −6.37%, −5.46%, both halves negative. n went 11 → 84. Acting on the first run would have
+    shipped a value-destroyer with a plausible story. **Never act on a sub-n≥12 cell.**
+  - **Why every active strategy lost: the return was BETA and long-short discards it.** The basket
+    earned +6.64% per 30-day period; a market-neutral construction strips that out and keeps only
+    cross-sectional dispersion, which was negative after costs at every horizon. The strategies did
+    not fail to find the return — they were built to throw it away.
+  - **The gate asks the wrong question.** `PromotionReadinessService` requires net-of-cost > 0. A
+    strategy earning +3%/yr while the basket earns +12% passes it and destroys value. Nothing in
+    this program had ever been benchmarked against doing nothing, which is why it took until now to
+    notice the bot lost ~4% of its book over a window where the same 16 assets returned **+0.39%**
+    equal-weight. **Any future strategy must clear the passive basket net of all costs, not zero.**
+  - **Survivorship caveat, load-bearing:** the 16 assets survived to 2026 and were scanner-liquid,
+    so the +697% buy-and-hold figure is inflated and is NOT an achievable ex-ante return — nobody in
+    2019 could have known to hold these names. The bias inflates basket and strategies alike, so the
+    *excess* is the robust quantity, and it is negative everywhere. The robust claim is RELATIVE
+    (active lost to passive), never the absolute passive number.
 - **NON-PRICE CHANNELS — Wikipedia attention and Deribit DVOL/VRP TESTED AND FAILED; GDELT UNTESTED
   (Pass 41, 2026-07-27; preregistered `research/studies/nonprice-channels-2026-07-27.md`, harness
   `test/backtest/nonprice-study.mjs`).** This tests the program's own long-standing claim that "the

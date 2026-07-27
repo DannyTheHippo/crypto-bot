@@ -20,6 +20,12 @@ export default tseslint.config(
       'test/backtest/fetch-data.mjs',
       // Same class: the Fear&Greed-index fetch CLI for the non-price sweep, bare .mjs via `node`.
       'test/backtest/fetch-fng.mjs',
+      // Same class: the non-price channel backfill CLI (Wikipedia / Deribit DVOL / GDELT) for the
+      // 2026-07-27 channel study — bare .mjs run via `node`, outside any tsconfig project.
+      'test/backtest/fetch-nonprice.mjs',
+      // Same class: the non-price channel forward-return study — bare .mjs run via `node`
+      // (self-contained, reads only cached JSON, no src/ imports), outside any tsconfig project.
+      'test/backtest/nonprice-study.mjs',
       // Same class: the standalone multi-strategy research sweep — bare .mjs run via `node`
       // (self-contained, no src/ imports), outside any tsconfig project.
       'test/backtest/multi-strategy/**',

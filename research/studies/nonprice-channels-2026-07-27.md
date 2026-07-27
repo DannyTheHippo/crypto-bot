@@ -1,0 +1,132 @@
+# Non-price information channels — preregistration (2026-07-27)
+
+Frozen before any channel series is joined to any return. Channels, transforms, horizons, the
+in-sample/holdout split, the multiple-comparisons correction and the pass rule below cannot change
+after a result is seen. Any later variation is a new registered trial. Negative evidence is a result.
+
+## Why this study exists, and why it is the last one of its kind
+
+`research/loop/state.md` § Standing verdicts now records, on adversarially-verified evidence, that
+the agentic lane's entry signal is not merely edgeless but **significantly negative and worse than
+random** (n=61, −16.9 bps at 15m, t=−4.58, random-bar placebo p = 0.0013–0.0037), that **no
+conditional subgroup rescues it** (1,807 cuts, 0 of 188 counterfactual cuts positive at n≥8), that
+**no exit rule rescues it** (16 cells, all negative), and that **a random entry earns ≈0 gross under
+any bracket** so net ≈ −fees always. The arithmetic consequence is that only entry alpha exceeding
+fees can produce profit, and the required edge is +13.0 bps/trip on demo fees or +24.2 on live
+against a measured −106.0.
+
+The same file has recorded since 2026-07-12 that single-venue price-technical analysis is settled
+empty (4,562 trials, zero survivors at any fee level including 0 bps), that funding carry is NO-GO
+(0/126 cells), and that the funding-contrarian frontier died on its second holdout. The standing
+conclusion drawn from those is: *"the LLM lane cannot profit by reading price better; its only
+possible edge is information the price series does not contain."*
+
+**That claim has never been tested.** This study tests it. If every channel here fails, the honest
+reading is that the hypothesis space this architecture can reach is exhausted, and the
+recommendation becomes to stop rather than iterate.
+
+## Honest prior
+
+Low. Four independent searches have returned nothing, the one deployed public-data policy
+(`residual20-volbeta`) failed its own pre-registered gate, and the entry signal is measurably worse
+than chance. The expected outcome of this study is a fourth negative. It is worth running only
+because the channel class is genuinely untested and cheap to test offline, and because a clean
+negative here converts an open question into a closed one.
+
+## Channels (frozen)
+
+Selected for one property above all: **fetchable history**. A channel that can only be forward-tested
+costs months of live evidence before a verdict and is excluded regardless of plausibility — which is
+why crypto news RSS and Binance's open-interest / long-short history (30-day retention only) are NOT
+in this study.
+
+1. **GDELT DOC 2.0** — keyless global news tone and volume, `mode=timelinetone` / `timelinevol`.
+   Probe-verified 2026-07-27: `timeline[0].data[] = {date: "20260726T171500Z", value}`, resolution
+   adapts to span (15m at 1 day). Throttles at roughly one request per 5 s and the throttle is
+   **sticky after a burst** — the backfill must pace and back off, and that pacing is part of the
+   recorded method, not a workaround.
+2. **Wikipedia Pageviews** — keyless daily per-article attention. Probe-verified: 176 daily points
+   over 2026-02-01→07-26 for `Bitcoin`, shape `{timestamp: "2026020100", views}`. **Daily only** —
+   there is no hourly per-article endpoint. Per-asset traffic must be reported before any altcoin
+   result is believed.
+3. **Deribit DVOL** — keyless BTC/ETH implied-volatility index,
+   `public/get_volatility_index_data`. Probe-verified: 1000 points of `[ts, open, high, low, close]`
+   per call plus a `continuation` token for pagination. A genuinely different signal class from
+   anything already killed here (a derivatives risk-premium measure, not price-momentum or funding).
+
+## Transforms (frozen — 9 signals)
+
+All computed from a **trailing** window only; the signal at day *t* may use no data after *t*'s close.
+
+| # | Channel | Signal | Definition |
+| --- | --- | --- | --- |
+| 1 | GDELT | `tone_z` | z-score of daily mean tone over a trailing 90-day window |
+| 2 | GDELT | `tone_d` | 1-day change in daily mean tone |
+| 3 | GDELT | `vol_z` | z-score of daily volume intensity, trailing 90 days |
+| 4 | GDELT | `vol_d` | 1-day change in daily volume intensity |
+| 5 | Wikipedia | `views_z` | z-score of log(daily views), trailing 90 days |
+| 6 | Wikipedia | `views_d` | 1-day change in log(daily views) |
+| 7 | DVOL | `dvol_z` | z-score of the daily-close index, trailing 90 days |
+| 8 | DVOL | `dvol_d` | 1-day change in the index |
+| 9 | DVOL | `vrp` | index minus trailing 30-day realized volatility (variance risk premium) |
+
+## Universe, horizons, and returns
+
+- **Universe.** Wikipedia: the 16 daily-bar symbols. DVOL: BTC and ETH only, by construction.
+  GDELT: BTC and ETH plus one crypto-wide query.
+- **Wikipedia traffic floor — mean ≥ 100 views/day, fixed 2026-07-27 after seeing traffic and
+  BEFORE joining any series to any return.** Backfill resolved all 16 articles at 421 daily points
+  each, but traffic spans three orders of magnitude: BTC 4,309/day, ETH 1,099, DOGE 612, SOL 527,
+  ZEC 241, LTC 230, ADA 173, BCH 164, UNI 143, LINK 105 — then AAVE 62, TRX 53, DOT 23, **XRP 14,
+  NEAR 4, AVAX 1**. The bottom group are disambiguation stubs or wrong pages (XRP's real traffic
+  plainly lives elsewhere), where day-to-day counts are Poisson noise rather than attention. The
+  floor is a **data-quality** criterion, independent of any outcome, which is why fixing it on
+  inspection of traffic alone is legitimate — but it is stamped here, before any return is joined,
+  so it cannot later be tuned to a result. **Qualifying: BTC, ETH, SOL, DOGE, ZEC, LTC, ADA, BCH,
+  UNI, LINK (10 assets).** The six excluded are reported as excluded, never silently dropped.
+- **Horizons.** +1, +3 and +7 **daily** bars, close to close. Daily because the binding channel
+  (Wikipedia) is daily-only; testing a daily signal at 15m would manufacture comparisons.
+- **Returns.** Binance spot daily closes, already cached (16 symbols × 400 bars). Long-short spreads
+  are computed as top-tercile minus bottom-tercile mean forward return, which is the tradable form.
+
+## Statistics (frozen)
+
+- **Cells: 9 signals × 3 horizons = 27.** Bonferroni α = 0.05 / 27 = **1.85e-3**. Every cell is
+  reported, winners and losers, with n.
+- **Standard errors** are cluster-robust by symbol AND by 7-day time block; the more conservative of
+  the two is the one reported. Overlapping forward windows make naive t-statistics meaningless.
+- **Split.** Chronological, fixed now and never re-cut: **in-sample = the first 60%** of each series,
+  **holdout = the final 40%**, untouched until a cell has already passed in-sample.
+- **Hurdle.** 20 bps round trip. A statistically significant spread smaller than the fee is a
+  negative result, and will be reported as one.
+
+## Pass rule (frozen)
+
+A channel passes only if some cell satisfies **all three**:
+
+1. in-sample long-short spread **|spread| > 20 bps** per trade at that horizon;
+2. in-sample **p < 1.85e-3** (Bonferroni-corrected, cluster-robust);
+3. the **same cell, same sign**, clears |spread| > 20 bps on the untouched holdout.
+
+Anything less is a fail. In particular a cell that is significant in-sample and reverses or
+attenuates below the fee on the holdout is recorded as a **failure**, not as "promising" — that is
+precisely how the funding-contrarian frontier died, and repeating that mistake is the one outcome
+this rule exists to prevent.
+
+## What follows a pass, and what follows a fail
+
+- **Pass.** Build the channel as a production feed adapter behind the existing port pattern
+  (port in `src/ports/strategy/`, adapter under `src/features/venue/market-data/`, payload block in
+  `agent-prompt.ts`), **flag-OFF and byte-identical when absent**, then a two-step enable with its
+  own decision record and WATCH. A passing channel is a hypothesis to trade cautiously, never a
+  certified edge, and it does not touch the live gates.
+- **Fail.** Record "no non-price channel found" in § Standing verdicts alongside the existing four
+  negatives, and recommend stopping this architecture rather than iterating. No production code is
+  written for a failed channel.
+
+## Production boundary
+
+Read-only research under `test/`. No production code changes, no money path, no live gate touched.
+The LLM lane keeps proposing every Signal and Risk keeps sizing and vetoing it. The live flip, the
+four live gates and the promotion requirement (≥30 demo round trips, positive net-of-cost PnL,
+≥14 days) are untouched by this study in every branch.

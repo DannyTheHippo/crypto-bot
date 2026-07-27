@@ -132,6 +132,40 @@ groups:
           summary: 'Reconciliation passes are erroring (result="error" in the last 15m)'
           runbook: 'docs/runbook.md#reconciliation-mismatch-64'
 
+      # 2026-07-27 incident (Task C3): reconciliation_last_success_timestamp_seconds is the EXACT
+      # gauge RecoveryCoordinatorService's cleanWithin/cleanAfter/cleanIsLatest preconditions read to
+      # gate kill-switch auto-resume — it sat at literal 0 for 39h with zero alarm (lastCleanAt never
+      # once set). 0 is ALSO the gauge's uninitialised-at-boot default, so a naive
+      # `time() - gauge > X` is always huge the moment the process starts; the `==0` branch below
+      # catches "never once succeeded" directly (boot or otherwise) while `for: 30m` gives a fresh
+      # boot's first genuinely clean pass time to land before paging.
+      - alert: ReconciliationNeverCleanSustained
+        expr: |
+          reconciliation_last_success_timestamp_seconds == 0
+          or
+          (time() - reconciliation_last_success_timestamp_seconds) > 7200
+        for: 30m
+        labels: { severity: critical }
+        annotations:
+          summary: 'No clean reconciliation pass has succeeded in 2h+ (or ever) — kill-switch auto-resume stays gated'
+          runbook: 'docs/runbook.md#reconciliation-mismatch-64'
+
+      # 2026-07-27 (Task C3, same incident as ReconciliationNeverCleanSustained above): sweep_failure
+      # was added to reconciliation.service.ts's NON_ACTIONABLE_CLASSES so a transient per-symbol
+      # sweep error can no longer starve the clean stamp forever (verified: a failing venue's sweep
+      # reproduced read-only in the same container/credentials succeeded 48/48 — client-state, not
+      # venue divergence). That relaxation means a CHRONIC sweep_failure axis — the one case the old
+      # all-or-nothing clean gate accidentally caught — could now go silently invisible; this backstops
+      # exactly that: severity warning (the class is individually transient by design; only a
+      # sustained run of it, not a single blip, is actionable).
+      - alert: ReconciliationSweepFailureSustained
+        expr: increase(reconciliation_mismatch_total{class="sweep_failure"}[30m]) > 0
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: 'sweep_failure mismatches persisting 15m+ — a reconciliation read axis is chronically unconfirmed'
+          runbook: 'docs/runbook.md#reconciliation-mismatch-64'
+
   - name: crypto-bot-market-data
     rules:
       # 2026-07-16 incident (Pass 30): all five spot candle channels hung silently for 8h — ccxt's
@@ -213,4 +247,36 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: 'Reflection has rejected candidates in the last 24h but minted none — the learning loop is rejecting and never advancing the playbook'
+          runbook: 'docs/runbook.md'
+
+      # 2026-07-27 (45h production halt): agent_decide_total emitted ZERO rows for the whole outage
+      # and nothing paged — AgentClientFatalLatch above only trips on one specific outcome
+      # (error_fatal), so a lane that stops calling decide() at all for any OTHER reason (crash loop,
+      # scheduler wedge, an outcome this file never anticipated) had no backstop. Window: normal
+      # cadence is STRATEGY_INTERVAL=15m, but AGENTIC_FALLBACK_CONSULT_BARS=8 stretches a legitimately
+      # quiet market's consult gap to a 2h floor — 6h gives 3x that floor's margin so a slow news day
+      # can never false-positive. `or absent_over_time(...)` catches the total-silence case directly
+      # (the metric never emits a single sample, exactly what happened in the outage) — relying on
+      # `sum(increase(...))==0` alone would hit the same first-post-reset-sample undercount trap
+      # AgenticReflectionNeverMinted documents above.
+      - alert: AgenticLaneSilent
+        expr: |
+          sum(increase(agent_decide_total[6h])) == 0
+          or
+          absent_over_time(agent_decide_total[6h])
+        for: 0m
+        labels: { severity: critical }
+        annotations:
+          summary: 'Zero agent_decide_total activity in 6h — the agentic strategy lane has gone silent'
+          runbook: 'docs/runbook.md'
+
+      # agentic_budget_remaining_usd has a known stale/uninitialised-at-boot failure mode (a peer is
+      # fixing it separately) — for: 5m, deliberately NOT 0m, so a fresh boot's transient 0 never
+      # pages before the gauge is populated from a real budget read.
+      - alert: AgenticBudgetExhausted
+        expr: agentic_budget_remaining_usd == 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: 'Agentic LLM budget remaining is $0 — the lane may be throttled or refusing calls'
           runbook: 'docs/runbook.md'

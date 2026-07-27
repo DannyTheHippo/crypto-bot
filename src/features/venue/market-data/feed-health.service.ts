@@ -94,8 +94,11 @@ export class FeedHealthService implements FeedHealthPort, MarketStreamTelemetryP
 
   // XA6: a tier-parked channel (ccxt-stream.adapter.ts ChannelTierResolver) deregisters entirely —
   // channelAges()/staleness gauges must not carry a deliberately-off channel as an ever-aging
-  // DEGRADED entry. health() then answers 'GAP' for it (the unknown-channel default), which is the
-  // correct fail-safe read for the RiskEngine's 'book'-health entry gate.
+  // DEGRADED entry. health() then answers 'GAP' for it (the unknown-channel default) —
+  // RiskEngineService reads that alongside the ticker channel's health and takes the best of the
+  // two (the old book-only entry gate was repealed 2026-07-22, see risk-engine.service.ts's own
+  // header comment), so a parked book alone no longer vetoes entry: ticker stays subscribed
+  // regardless of tier and keeps the mark's feedHealth LIVE.
   clearChannel(venue: VenueId, symbol: SymbolId, channel: string): void {
     this.channelStates.delete(this.channelKey(venue, symbol, channel));
   }

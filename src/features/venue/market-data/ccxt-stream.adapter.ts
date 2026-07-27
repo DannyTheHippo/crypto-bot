@@ -202,7 +202,9 @@ export interface StreamAdapterLogger {
 // churn events brushing the RiskEngine's 5s staleness veto exactly when re-consults fire (A0,
 // 2026-07-20). Only active-menu + positioned symbols can ever be consulted or enter (the batching
 // client's ActiveMenuGate and the scanner's position pin guarantee both), so only they need the
-// heavy channels: `book` (risk mark + the RiskEngine's 'book'-health entry gate) and `trades`
+// heavy channels: `book` (a risk-mark input — RiskEngineService takes the best of book/ticker
+// health, not book alone; the old book-only entry gate was repealed 2026-07-22, see
+// risk-engine.service.ts's own header comment and reports/loop/LOG.md) and `trades`
 // (paper-sim fills). Every symbol keeps `candles` (strategy warmup + the scanner's OWN ranking
 // metrics — deriveScanMetrics reads the streamed 15m window, so rankings populate without any REST
 // path) and `ticker` (ref price). The resolver is late-bound (setChannelTierResolver) because the
@@ -742,9 +744,13 @@ export class CcxtExchangeStreamAdapter implements ExchangeStreamPort {
   private async runBookLoop(push: (ev: RawVenueEvent) => void, symbol: SymbolId): Promise<void> {
     const channel = 'book';
     // XA6 tier-gated channel — same park/resume shape as runTradesLoop (see its comment). Parking
-    // book leaves the RiskEngine's 'book'-health gate reading GAP for the symbol, which is correct:
-    // a lite (non-menu, unpositioned) symbol cannot be consulted, so it must not pass entry gates
-    // either; promotion re-subscribes and the first snapshot restores LIVE.
+    // book only drops the heavy per-symbol subscription itself: feed.health('book') answers GAP once
+    // parked, but RiskEngineService no longer gates entry on book alone (that invariant was repealed
+    // 2026-07-22 — see risk-engine.service.ts's own header comment) — it takes the best of
+    // book/ticker, and ticker stays subscribed regardless of tier, so a lite symbol's mark health is
+    // unaffected by parking. The "don't enter off-menu" rule now lives in batching-agent-client.ts's
+    // off-menu block instead; promotion here still re-subscribes book and the first snapshot
+    // restores LIVE for it.
     let parked: boolean | null = null;
     let needsSlot = true;
     while (this.running) {

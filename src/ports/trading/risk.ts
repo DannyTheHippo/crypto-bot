@@ -175,6 +175,26 @@ export interface KillSwitchPort {
   resume(): void;
 }
 
+// M2: kill-switch transitions are low-frequency, high-stakes — the durable, hash-chained audit_log
+// side of the split ops-event-logger.ts's header comment documents (that pipe is the high-volume
+// pino/Prometheus mirror; this is the OTHER half, for the engage()/resume() boundary specifically,
+// not every dispatch()-level lifecycle step). No composition binding ⇒ undefined (paper/no-DB/test),
+// matching every other *_OVERRIDE-style token's fail-to-undefined posture; KillSwitchService's own
+// @Optional injection treats absence as a silent no-op.
+export interface KillSwitchAuditEntry {
+  readonly reason: string;
+  readonly flatten: boolean;
+  readonly priorState: KillSwitchState;
+  readonly newState: KillSwitchState;
+  readonly timestamp: string;
+}
+
+export interface KillSwitchAuditPort {
+  record(entry: KillSwitchAuditEntry): void;
+}
+
+export const KILL_SWITCH_AUDIT = Symbol('KILL_SWITCH_AUDIT');
+
 // PositionSizer turns a Signal (conviction) into a concrete OrderIntent, or rejects
 // it below the exchange minimum (never a dust order).
 export type SizingResult =

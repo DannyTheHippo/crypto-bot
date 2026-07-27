@@ -6,7 +6,11 @@ import {
   type KillSwitchState,
   type KillSwitchEvent,
 } from '../../../domain/trading/risk/kill-switch';
-import type { KillSwitchPort } from '../../../ports/trading/risk';
+import {
+  KILL_SWITCH_AUDIT,
+  type KillSwitchPort,
+  type KillSwitchAuditPort,
+} from '../../../ports/trading/risk';
 import { OPS_EVENTS, type OpsEventPort } from '../../../ports/common/observability';
 
 // Stateful wrapper over the pure kill-switch reducer. Engage comes from monitors,
@@ -28,6 +32,11 @@ export class KillSwitchService implements KillSwitchPort {
     @Optional()
     @Inject(OPS_EVENTS)
     private readonly opsEvents?: OpsEventPort,
+    // M2: same @Optional posture as opsEvents above — every pre-existing direct-construction unit
+    // test keeps constructing without it (KillSwitchModule binds the real Drizzle-backed adapter).
+    @Optional()
+    @Inject(KILL_SWITCH_AUDIT)
+    private readonly audit?: KillSwitchAuditPort,
   ) {}
 
   state(): KillSwitchState {
@@ -44,10 +53,12 @@ export class KillSwitchService implements KillSwitchPort {
   // reconciliation, OMS anomaly, admin) engaged it.
   engage(reason: string, flatten: boolean): void {
     this.lastReason = reason;
+    const priorState = this.ks.state;
     this.log.error(
-      `kill switch engaged: ${reason} (flatten=${flatten}, prior state=${this.ks.state})`,
+      `kill switch engaged: ${reason} (flatten=${flatten}, prior state=${priorState})`,
     );
     this.dispatch({ type: 'ENGAGE', flatten });
+    this.recordAudit(reason, flatten, priorState);
   }
 
   // Lifecycle progressions Execution drives (HALTING→…→HALTED).
@@ -69,7 +80,32 @@ export class KillSwitchService implements KillSwitchPort {
   // KillSwitchPort.resume() and RecoveryCoordinatorService's own header comment). No other resume
   // path exists in-process today.
   resume(): void {
+    const priorState = this.ks.state;
     this.dispatch({ type: 'RESUME' });
+    // No flatten flag applies to a resume (that field is engage()-only, per the reducer's own
+    // ENGAGE-only event shape) — recorded false; lastReason still carries the cause that gated the
+    // halt, giving the audit row context for why the switch had been down.
+    this.recordAudit(this.lastReason, false, priorState);
+  }
+
+  // M2: audit_log's hash-chained table is exactly what a low-frequency, high-stakes transition
+  // like this needs (see ports/trading/risk.ts's KillSwitchAuditPort header comment for the split
+  // against the high-volume pino/Prometheus ops-event mirror). FAIL OPEN: this is a side-channel
+  // audit write, never a control-flow input — engage()/resume() dispatch the reducer transition
+  // (their safety-critical, fail-CLOSED duty) BEFORE this call, so a throwing audit port can never
+  // stop the kill switch from actually engaging or resuming.
+  private recordAudit(reason: string, flatten: boolean, priorState: KillSwitchState): void {
+    try {
+      this.audit?.record({
+        reason,
+        flatten,
+        priorState,
+        newState: this.ks.state,
+        timestamp: new Date().toISOString(),
+      });
+    } catch {
+      /* fail OPEN — see this method's header comment */
+    }
   }
 
   dispatch(event: KillSwitchEvent): void {

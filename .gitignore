@@ -36,8 +36,14 @@ backups/
 # never committed — tracking them would force per-tick commits or a permanently dirty tree.
 research/loop/digests/
 # Offline eval corpus dumps (reproducible via scripts/dump-eval-corpus.mjs against the recorded
-# agent_decisions source — see that script's provenance note).
+# agent_decisions source — see that script's provenance note). Multi-MB payload dumps; the rule
+# exists so a research corpus never lands in git history.
 test/eval/agentic/data/*.jsonl
+# EXCEPT the recorded-entry index (6 KB: id/symbol/event_time/action only, no payloads). The
+# playbook-space replay's SCORER SANITY GATE scores this file and must reproduce -16.9 bps at h=1 —
+# the check that validates the whole study's arithmetic. Ignoring it would make the one gate that
+# proves the numbers unrunnable for anyone without the live DB.
+!test/eval/agentic/data/recorded-entries-v3.jsonl
 # Ephemeral research dumps (row logs, unpromoted tournament JSON). Promoted scorecards live in
 # research/scorecards/ and are tracked deliberately.
 research/candidates/**

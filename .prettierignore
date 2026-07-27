@@ -19,6 +19,11 @@ openapi.json
 test/backtest/data/ohlcv-*.json
 test/backtest/data/funding-*.json
 
+# Eval-corpus dumps (raw psql row_to_json output). playbooks-lineage.json is the same class as
+# research/candidates below — byte-exact agent_playbook_versions copies, where reformatting would
+# change the very bytes the playbook-space replay hashes into its run manifest.
+test/eval/agentic/data
+
 # Candidate-playbook exports (byte-exact agent_playbook_versions copies — the experiments
 # registry's params_hash is the sha256 of those bytes) and their eval-written scorecards
 # (AGENTIC_EVAL_SCORECARD_FILE output). Artifacts, not authored code; also excluded from

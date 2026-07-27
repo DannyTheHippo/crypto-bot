@@ -1154,21 +1154,43 @@ when the info-context A/B resolves.
 
 ### Standing verdicts (binding evidence — passes must NOT re-derive these)
 
-- **SPECIFIED, NOT BUILT — the promotion gate needs a passive benchmark (Pass 41, 2026-07-27).**
-  The single most valuable change implied by this pass, deliberately left as a design rather than
-  shipped, and the reason is worth keeping: `PromotionReadinessService` has no market-data source. It
-  reads fills, token ledgers and funding only, so "what would the basket have returned over the
-  evidence window" is not computable inside it today. The change therefore needs a new optional port
-  (a benchmark-return provider over the evidence window), its composition-root wiring, and a two-step
-  enable — not a one-line edit. Building live-arming machinery for a configuration this same pass
-  recommends stopping would be speculative work, so the design is recorded and the code is not
-  written. **Design, ready to implement:** add `benchmarkReturn` to the readiness inputs behind an
-  OPTIONAL port; add reason `BELOW_PASSIVE_BENCHMARK` when net-of-cost return over the window fails
-  to exceed the equal-weight basket over the identical window net of all costs; **absent port ⇒
-  behave exactly as today** (fail-open on the benchmark alone, so wiring can land dark and be enabled
-  in a second step). Direction of the change is strictly stricter, which is the safe direction for a
-  live-arming input. **Whoever restarts this program should land that before any strategy trades**,
-  because the current bar demonstrably passes value-destroying strategies.
+- **BUILT DARK — the promotion gate's passive benchmark (Pass 41, 2026-07-27; specified `4d930e0`,
+  built `6cb9c6d`).** Supersedes this entry's former "SPECIFIED, NOT BUILT" text, which was stale the
+  moment the code landed. **What exists now:** `PassiveBenchmarkPort` + `PASSIVE_BENCHMARK` token
+  (`src/ports/trading/promotion.ts:227`), an `@Optional()` trailing constructor arg on
+  `PromotionReadinessService`, `passivePnlQuote` in the evidence payload, and reason
+  `BELOW_PASSIVE_BENCHMARK` at `promotion-readiness.service.ts:133`. **What does NOT exist: any
+  provider binding the token.** No composition-root binding ⇒ `benchmark` is `undefined` ⇒
+  `passivePnlQuote` is `null` ⇒ the clause never fires and the verdict is byte-identical to the
+  pre-2026-07-27 gate. That is the intended two-step enable, not an oversight; step two is binding a
+  provider, and it is deliberately NOT taken while the program has no strategy worth arming.
+  - **Correction to a claim made during Pass-42 planning:** "the bar is now beat-the-basket instead of
+    net > 0" is FALSE. `:130` `NON_POSITIVE_NET_PNL` and `:133` `BELOW_PASSIVE_BENCHMARK` are
+    independent `reasons.push` clauses — both block, and once the port is bound a strategy must clear
+    BOTH zero and the basket. The change is strictly stricter, which is the safe direction for a
+    live-arming input.
+  - **Known weakness of the bar itself, recorded before it is ever enabled:** the required improvement
+    spans ~0 to ~190 bps/trip purely as a function of what the basket does over the window. A criterion
+    whose outcome is dominated by an exogenous variable is a beta bet. Whoever enables step two should
+    exposure-match the benchmark to the strategy's realised gross exposure (~50% here), or prefer an
+    A/B arm difference (regime-controlled by construction) as the kill criterion with beat-the-basket
+    kept as a separate deployment gate.
+- **NOT A FINDING — the inversion test is a tautological restatement (Pass 42, 2026-07-28; harness
+  `test/backtest/inversion-test.mjs`).** It reproduces the ENTRIES verdict exactly (−16.9 bps at h=1)
+  and reports the sign-flipped mirror: **+16.9 / +31.9 / +47.3 / +66.5 bps at h=1/4/8/24.** Those
+  numbers are **arithmetic, not evidence.** Negating every observation negates the mean and mirrors
+  the CI, the t-statistic, both chronological halves and the placebo p by construction — a run that
+  did NOT reproduce them would mean the harness was broken. **Do NOT cite +66.5 bps, or any inverted
+  figure, as an edge.** The only genuinely new content is magnitude versus the fee, and there:
+  - **h=1 FAILS the fee**: +16.9 gross against a 20 bps round trip is **−3.1 net**, and the bootstrap
+    lower bound (+10.9) sits under even the optimistic +13.0 bps demo-fee requirement.
+  - h=8/24 would clear on point estimate, but rest on n=61 entries, a single ~4-day regime, and a
+    **mixture over ~9 playbook versions** — the same three weaknesses that make the original finding
+    an indictment of the churning mixture rather than of any one evaluated playbook.
+  - **Adverse selection may not invert.** Entries were maker-side at 76% fill; being reliably on the
+    wrong side of a print does not imply the other side of that print was available to take.
+  Status: a **hypothesis for offline replay**, admitted as one arm of the Pass-42 playbook-space
+  study, and nothing more. Fading a model is a classic overfitting trap and this is exactly its shape.
 - **HORIZON WAS NOT THE CONSTRAINT EITHER, AND ACTIVE LOST TO PASSIVE ACROSS 7 YEARS (Pass 41,
   2026-07-27; preregistered `research/studies/horizon-and-baseline-2026-07-27.md`, harness
   `test/backtest/horizon-study.mjs`).** Tests the named frontier the settled price-TA verdict left

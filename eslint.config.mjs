@@ -32,6 +32,9 @@ export default tseslint.config(
       // Same class: the non-price channel forward-return study — bare .mjs run via `node`
       // (self-contained, reads only cached JSON, no src/ imports), outside any tsconfig project.
       'test/backtest/nonprice-study.mjs',
+      // Same class: the entry-signal inversion test — bare .mjs run via `node` (cached JSON plus a
+      // read-only `docker exec psql`, no src/ imports), outside any tsconfig project.
+      'test/backtest/inversion-test.mjs',
       // Same class: the standalone multi-strategy research sweep — bare .mjs run via `node`
       // (self-contained, no src/ imports), outside any tsconfig project.
       'test/backtest/multi-strategy/**',

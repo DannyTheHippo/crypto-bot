@@ -1154,6 +1154,32 @@ when the info-context A/B resolves.
 
 ### Standing verdicts (binding evidence — passes must NOT re-derive these)
 
+- **NO EXIT RULE RESCUES THESE ENTRIES — verdict ENTRIES (Pass 41, 2026-07-27; pre-registered
+  study `research/studies/edge-verdict-2026-08-10.md`, harness `test/backtest/exit-attribution.spec.ts`
+  over `test/backtest/exit-simulator.ts`).** Three arms over the 23 recorded round trips, intrabar
+  stop/TP resolution, zero LLM calls: Arm 1 actual (discretionary closes) −108.1 bps at 17.4% hit;
+  Arm 2 the model's own declared plan run mechanically −78.4 bps at 22.7%; Arm 3 best of 14 geometry
+  cells (stop ×1.5, TP ×0.5) −45.0 bps at 40.0%. **All 16 cells negative.** Break-even is ~34% at the
+  model's own declared R:R 2.02 after 20 bps fees. Wider stops buy hit rate monotonically
+  (17.4% → 40%) without turning expectancy positive and a shorter take-profit wins at every stop
+  multiple — the signature of entries with no directional edge. **Do NOT re-run exit-rule sweeps.**
+  Two corollaries: letting the declared plan run beats the model's own hand by 29.7 bps (real, but
+  under the pre-registered 30 bps bar and nowhere near profitability), and the live exit mix is 16 of
+  22 closes by the model's own `close` action against 3 venue stops and 2 venue TPs, with
+  `PROTECT_STOP_LOSS_PCT=0.06` never having fired — `pnl-v1`'s "stopped out 2-3× more often than they
+  take profit" was a single-symbol BTC-perp 4h BACKTEST and does not describe this book.
+- **Consult cadence is ON TARGET; batching fragmentation is not a profitability lever (Pass 41,
+  2026-07-27).** The true unit of work is 627 symbol-decisions over 6 days = 104/day ≈ 13
+  menu-waves/day against the 16/day design point at `.env.app:100`; the model picks
+  `nextConsultBars` 8/12/16, not 1. Any "N consults/day vs 16" comparison must count menu waves, not
+  API calls — the two differ ~5× because batching fragments (133 of 272 calls carry one symbol, only
+  6 the full menu, since each of the 40 strategy instances holds its own `barsSinceConsult` while
+  `agent-prompt.ts:458` tells the model the value is portfolio-level). Fixing that fragmentation is
+  worth ~11% of tokens ≈ **$0.20/day** — input per symbol only improves 3,060 → 2,571 from batch-1 to
+  batch-8 because the shared prefix is small and already cached. Worth doing for HTTP volume and
+  shared-org 429 pressure; not for money. **The remaining cost lever is payload SIZE**
+  (~2,600–3,000 input tokens per symbol-decision; decide $10.53 / reflection $5.01 ≈ $2.6/day;
+  $0.0167 per symbol-decision), which is what the C4 per-block ablation measures.
 - **Gate-override audit + classification (2026-07-22; owner gate-override grant, verbatim: "You
   are welcome to change any owner gate/decision (not live flip; that's only me)"; change-discipline
   binds every change — pre-register, record what/why, never rewrite history).** A four-pass

@@ -4749,3 +4749,98 @@ zero profitability work. Net-of-cost is −$40.05 on 22 of 30 trips with $15.20 
 it. Two consecutive passes consumed by repair is the trigger the playbook now names for
 recommending a systemic change rather than absorbing it quietly — if the next pass is also all
 repair, that recommendation is due.
+
+## Pass 41 — 2026-07-27, ~17:10–18:30Z (owner-delegated: "do whatever you think is best to achieve profitability")
+
+Answers the previous entry's standing note directly: this pass is profitability work, not repair.
+The program's first real measurement of WHERE the deficit comes from, plus three defects that the
+measurement itself surfaced. All six commits gated, committed and deployed.
+
+**The exit-attribution study — verdict ENTRIES** (`research/studies/edge-verdict-2026-08-10.md`,
+pre-registered before any arm ran; harness `test/backtest/exit-attribution.spec.ts` over the new
+`test/backtest/exit-simulator.ts`). The question nobody had asked: of the gap between the ~34% hit
+rate the strategy needs at its own declared R:R 2.02 and the 18.2% it achieves, how much is the
+model's discretionary exit timing, how much its declared geometry, and how much the entries? Three
+arms over the 23 recorded round trips, zero LLM calls, zero dollars:
+
+- Arm 1 actual (discretionary closes) — 23 trips, 17.4% hit, **−108.1 bps**
+- Arm 2 declared plan run mechanically — 22 trips, 22.7% hit, **−78.4 bps**
+- Arm 3 best of 14 geometry cells (stop ×1.5, TP ×0.5) — 20 trips, 40.0% hit, **−45.0 bps**
+
+Every one of the 16 cells loses money. Letting the declared plan run beats the model's own hand by
+29.7 bps — real, and a fraction under the pre-registered 30 bps bar, recorded as the frozen rule
+reads it rather than moving the bar afterwards. Wider stops buy hit rate monotonically (17.4% →
+40%) without turning expectancy positive, and a shorter take-profit wins at every stop multiple:
+the signature of entries with no directional edge. **No exit rule rescues these entries.**
+
+Motivating fact the study rests on, measured from `order_intents`: the model's own `close` action is
+16 of 22 exits (72.7%), against 3 venue stops and 2 venue take-profits, and
+`PROTECT_STOP_LOSS_PCT=0.06` has fired **zero** times ever — it cannot be the routine exit, since
+`AGENTIC_MAX_STOP_LOSS_PCT='0.05'` caps the model below it and the config refuses to boot otherwise.
+`pnl-v1`'s "stopped out 2-3× more often than they take profit" was a BTC-perp 4h backtest where only
+mechanical exits exist; it does not describe this book.
+
+**Defect 1 — the dust rule minted phantom round trips (`6a84d23`, deployed).** Chasing a −10,004 bps
+outlier in Arm 1: `walkRoundTrips` applied the $5 dust closure test on the way IN as well as out, so
+a multi-fill order whose first fill landed under the floor closed a trip at that first fill with cost
+and no proceeds, then reset. BCH/USDT:USDT filled 0.022 @ 218.49 = $4.81 and booked a phantom; the
+remaining 0.343 bought was then matched against 0.365 sold. True BCH PnL −$1.16, walk booked ~−$7.30.
+`CycleState` now tracks `peakNotional` and the dust rule may only close a cycle that actually held a
+position of at least `dustNotional`. Fail direction deliberate and unchanged — a cycle that never
+reaches dust stays open and is excluded, so the gate UNDER-counts rather than admitting a phantom,
+and since phantoms inflated the count the fix makes the ≥30-trip floor strictly harder to reach.
+Two existing specs asserted the old behaviour with no stated rationale (characterization tests of
+the defect); rewritten, plus a BCH-shaped regression. **Live: `agentic_promotion_round_trips` 24 →
+23, `agentic_promotion_net_pnl_usd` −$40.05 → −$37.74, win rate 0.17391 = 4/23 matching the study's
+Arm 1 exactly.** An earlier estimate in the study put the distortion near $6; the measured figure is
+$2.31 and the correction is recorded in place rather than the estimate quietly deleted.
+
+**Defect 2 — the weekly reflection trigger re-armed on every boot (`bf06d26`, deployed).**
+`checkWeeklyReflectionTrigger` bounds itself with two in-memory stamps that both start at 0;
+`utcWeekKey(0)` is 1970, and the path never calls `evaluateTrigger`, so every boot fired an Opus
+attempt no cooldown could throttle. Fine when "one fire per bucket per boot" was written (the W6 fix,
+07-20); not fine at 13 boots in 4 days, or the 41 of 07-24 — mints v4 and v7 landed 8s and 3s after
+their own boot's first intent, and measured inter-attempt gaps run 15/29/45/87/105/120 min against a
+6h cooldown. Now seeded once per boot from the durable lane-global `latestReflectionAt` before the
+weekly path may fire, chaining into the fire so the first call still fires. Fails OPEN to the pre-fix
+bound. Four regressions. **Live: zero reflection calls across two boots since; playbook rows still 8.**
+
+**Defect 3 — the daily spend cap could not see replay dollars (`61e0dea`, deployed).** `f2d74b6`
+seeded the breaker from `llmTokenTotals`, which excludes `replay-%` rows. Correct for evidence — one
+unfiltered replay run outweighs a 14-day budget and would poison netPnl — and wrong for a spend cap,
+since a replay decide bills the same account. Split into two named folds over one query rather than a
+boolean, because a flag on the evidence method could be passed the wrong way and silently poison a
+live-arming input. Latent today (zero replay rows) and fixed anyway, since the failure is silent.
+`test:db` extended to pin both directions on live Postgres (evidence delta 1000, spend delta 8000);
+`cryptobot_test` created for it. **Live: seed line reads $1.3731 of $3 already spent today.**
+
+**Two things investigated and deliberately NOT changed.** (1) The backlog #31 rollback also restores
+`lastAttemptAt`, un-consuming the COOLDOWN even when an attempt already burned Opus calls (~78% of
+attempts mint nothing: 18 attempts, 4 mints, 69 calls). Left alone and recorded in-code: the observed
+sub-6h gaps are equally explained by defect 2, and #31 is a deliberate contract with 13 specs.
+Re-measure spacing in a week; if gaps persist on the trade-count path, that is the remaining suspect.
+(2) A seed-const bump can change the champion a candidate is being compared against, and the
+`skipped_unresolved_candidate` guard does not cover the seed path — but current impact is zero,
+because the promotion evaluator cannot return a verdict at this trip density anyway (symmetric
+10-trip floor plus `MIN_SHARED_SYMBOLS=2` × `MIN_PAIRED_TRIPS=3`, against 23 trips over 15
+(strategy, symbol) groups). A design gap, not a defect; revisit when density supports a verdict.
+
+**Two of my own framings corrected by measurement.** (1) "43.8 consults/day against a 16/day design
+point" compared fragmented API calls to menu waves. The true unit is 627 symbol-decisions over 6
+days = 104/day ≈ 13 menu-waves/day — **on target**, and the model picks `nextConsultBars` 8/12/16,
+not 1. Cadence is not a defect. (2) Batching does fragment badly (133 of 272 calls carry one symbol,
+only 6 carry the full menu of 8, because each of the 40 strategy instances holds its own
+`barsSinceConsult` while `agent-prompt.ts:458` tells the model the value is portfolio-level) — but
+input tokens per symbol only improve 3,060 → 2,571 from batch-1 to batch-8, since the shared prefix
+is small and already cached. Perfect batching saves ~11% ≈ **$0.20/day**, not the 5× assumed. Worth
+fixing for HTTP volume and shared-org 429 pressure; not a profitability lever.
+
+**The remaining cost lever is payload size:** ~2,600–3,000 input tokens per symbol-decision × 627
+decisions; decide $10.53, reflection $5.01, ≈$2.6/day; $0.0167 per symbol-decision. That is exactly
+what the C4 per-block ablation measures, and it is now the top cost item.
+
+**Standing greens through all three deploys:** kill switch RUNNING, zero `perp pin:` /
+`START_TRADING_FAILED` / `FLATTENING` lines and zero ERROR lines on every boot — **WATCH-V4-3
+satisfied** for the first time under real conditions (redeploys while carrying six open positions,
+`287ef6c` working) — and `agentic_budget_remaining_usd` carrying prior spend rather than resetting,
+confirming `f2d74b6`.

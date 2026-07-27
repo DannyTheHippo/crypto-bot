@@ -1154,6 +1154,21 @@ when the info-context A/B resolves.
 
 ### Standing verdicts (binding evidence — passes must NOT re-derive these)
 
+- **SPECIFIED, NOT BUILT — the promotion gate needs a passive benchmark (Pass 41, 2026-07-27).**
+  The single most valuable change implied by this pass, deliberately left as a design rather than
+  shipped, and the reason is worth keeping: `PromotionReadinessService` has no market-data source. It
+  reads fills, token ledgers and funding only, so "what would the basket have returned over the
+  evidence window" is not computable inside it today. The change therefore needs a new optional port
+  (a benchmark-return provider over the evidence window), its composition-root wiring, and a two-step
+  enable — not a one-line edit. Building live-arming machinery for a configuration this same pass
+  recommends stopping would be speculative work, so the design is recorded and the code is not
+  written. **Design, ready to implement:** add `benchmarkReturn` to the readiness inputs behind an
+  OPTIONAL port; add reason `BELOW_PASSIVE_BENCHMARK` when net-of-cost return over the window fails
+  to exceed the equal-weight basket over the identical window net of all costs; **absent port ⇒
+  behave exactly as today** (fail-open on the benchmark alone, so wiring can land dark and be enabled
+  in a second step). Direction of the change is strictly stricter, which is the safe direction for a
+  live-arming input. **Whoever restarts this program should land that before any strategy trades**,
+  because the current bar demonstrably passes value-destroying strategies.
 - **HORIZON WAS NOT THE CONSTRAINT EITHER, AND ACTIVE LOST TO PASSIVE ACROSS 7 YEARS (Pass 41,
   2026-07-27; preregistered `research/studies/horizon-and-baseline-2026-07-27.md`, harness
   `test/backtest/horizon-study.mjs`).** Tests the named frontier the settled price-TA verdict left

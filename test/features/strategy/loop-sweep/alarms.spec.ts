@@ -39,6 +39,7 @@ interface Core {
   LIVENESS_MIN_ELAPSED_MS: number;
   VENUES: [string, string];
   AGENTIC_DAILY_COST_BREAKER_USD: number;
+  RECONCILE_CLEAN_STAMP_STALE_MS: number;
 }
 const core = coreModule as unknown as Core;
 const {
@@ -47,6 +48,7 @@ const {
   LIVENESS_MIN_ELAPSED_MS,
   VENUES,
   AGENTIC_DAILY_COST_BREAKER_USD,
+  RECONCILE_CLEAN_STAMP_STALE_MS,
 } = core;
 const [SPOT, PERP] = VENUES;
 
@@ -64,6 +66,7 @@ interface Probes {
   consultGate: { ok: boolean; value: { total: number } };
   fills: { ok: boolean; value: { count: number } };
   reconcile: Record<string, ReconcileProbe>;
+  reconcileCleanStamp: { ok: boolean; value: { seconds: number } };
   killSwitch: { ok: boolean; value: { state: string } };
   cost: { ok: boolean; value: { spendUsd: number } };
   wsRecreations: { ok: boolean; value: { count: number } };
@@ -73,6 +76,7 @@ interface App {
   bootId: string;
   containerHealthy: boolean;
   restartCount: number;
+  startedAt: string;
   probes: Probes;
 }
 
@@ -91,6 +95,11 @@ function baseProbes(): Probes {
     consultGate: { ok: true, value: { total: 50 } },
     fills: { ok: true, value: { count: 10 } },
     reconcile: baseReconcileByVenue(200),
+    // Stamped 1 min before the sweep reads it — comfortably fresh.
+    reconcileCleanStamp: {
+      ok: true,
+      value: { seconds: (WM_TIME + EXPECTED_SWEEP_INTERVAL_MS - 60_000) / 1000 },
+    },
     killSwitch: { ok: true, value: { state: 'RUNNING' } },
     cost: { ok: true, value: { spendUsd: 0.1 } },
     wsRecreations: { ok: true, value: { count: 2 } },
@@ -99,8 +108,19 @@ function baseProbes(): Probes {
 }
 
 function baseApp(): App {
-  return { bootId: 'boot-A', containerHealthy: true, restartCount: 3, probes: baseProbes() };
+  return {
+    bootId: 'boot-A',
+    containerHealthy: true,
+    restartCount: 3,
+    // Docker's StartedAt shape — the fallback age source when the clean stamp reads 0.
+    startedAt: new Date(WM_TIME - 24 * 60 * 60 * 1000).toISOString(),
+    probes: baseProbes(),
+  };
 }
+
+// The sweep's own wall-clock inside these fixtures (see curWith) — every age assertion is relative
+// to this, never to the watermark instant.
+const NOW = WM_TIME + EXPECTED_SWEEP_INTERVAL_MS;
 
 // Watermark counters that MATCH baseProbes exactly — a test perturbs only the counter it exercises so
 // deltas are zero everywhere else (isolating the one alarm under test).
@@ -227,6 +247,61 @@ describe('loop-sweep-core alarms', () => {
     const halts = alarms.filter((a) => a.kind === 'reconcile_halt');
     expect(halts).toHaveLength(1);
     expect(halts[0]?.venue).toBe(SPOT);
+  });
+
+  // 2026-07-27 incident: perp reported MISMATCH on EVERY pass (adopt_non_adoptable on an order
+  // stranded non-terminal) and the sweep raised ZERO alarms, because latestResult was never 'HALT'.
+  // The fact that mattered was invisible: no pass was stamping actionable-clean, so kill-switch
+  // auto-resume was disarmed for the whole book.
+  it('reconcile_clean_stamp_stale fires when no pass has stamped actionable-clean past the bound, even with no HALT anywhere', () => {
+    const app = baseApp();
+    app.probes.reconcileCleanStamp.value.seconds =
+      (NOW - (RECONCILE_CLEAN_STAMP_STALE_MS + 60_000)) / 1000;
+    const { alarms } = computeSweep({ prev: baseWatermark(), cur: curWith(app) });
+    expect(kinds(alarms)).not.toContain('reconcile_halt');
+    const stale = alarms.filter((a) => a.kind === 'reconcile_clean_stamp_stale');
+    expect(stale).toHaveLength(1);
+    expect(stale[0]?.detail).toContain('auto-resume is disarmed');
+  });
+
+  it('reconcile_clean_stamp_stale does NOT fire while the stamp is fresh — benign per-pass mismatches keep refreshing it', () => {
+    const app = baseApp();
+    // Both venues read MISMATCH (the shared-wallet foreign-order steady state), yet the stamp is
+    // current: the raw `result` column is not the quantity auto-resume depends on.
+    app.probes.reconcile = baseReconcileByVenue(200, 'MISMATCH');
+    app.probes.reconcileCleanStamp.value.seconds =
+      (NOW - (RECONCILE_CLEAN_STAMP_STALE_MS - 60_000)) / 1000;
+    const { alarms } = computeSweep({ prev: baseWatermark(), cur: curWith(app) });
+    expect(kinds(alarms)).not.toContain('reconcile_clean_stamp_stale');
+  });
+
+  it('a never-stamped gauge (0, the uninitialised-at-boot default) is aged off StartedAt — a fresh boot is not paged before its first pass can land', () => {
+    const app = baseApp();
+    app.probes.reconcileCleanStamp.value.seconds = 0;
+    app.startedAt = new Date(NOW - 60_000).toISOString();
+    const { alarms } = computeSweep({ prev: baseWatermark(), cur: curWith(app) });
+    expect(kinds(alarms)).not.toContain('reconcile_clean_stamp_stale');
+  });
+
+  it('a never-stamped gauge on a long-running container DOES fire, naming that it never stamped this boot', () => {
+    const app = baseApp();
+    app.probes.reconcileCleanStamp.value.seconds = 0;
+    app.startedAt = new Date(NOW - (RECONCILE_CLEAN_STAMP_STALE_MS + 60_000)).toISOString();
+    const { alarms } = computeSweep({ prev: baseWatermark(), cur: curWith(app) });
+    const stale = alarms.find((a) => a.kind === 'reconcile_clean_stamp_stale');
+    expect(stale?.detail).toContain('never stamped this boot');
+  });
+
+  it('a never-stamped gauge with an unparseable StartedAt is a named probe failure, never a silent pass (§C.9)', () => {
+    const app = baseApp();
+    app.probes.reconcileCleanStamp.value.seconds = 0;
+    app.startedAt = 'not-a-timestamp';
+    const { alarms, annotations } = computeSweep({ prev: baseWatermark(), cur: curWith(app) });
+    expect(kinds(alarms)).not.toContain('reconcile_clean_stamp_stale');
+    const failed = annotations.find(
+      (a) => a.kind === 'probe_failed' && a.probe === 'reconcileCleanStamp',
+    );
+    expect(failed?.detail).toContain('age undetermined, not clean');
   });
 
   it(`cost_breaker_proximity fires at >=80% of the $${AGENTIC_DAILY_COST_BREAKER_USD} unified daily breaker`, () => {

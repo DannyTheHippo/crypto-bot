@@ -56,6 +56,8 @@ type MismatchClass =
   | 'backfilled_fill' // benign: a fill we missed via the stream, re-applied
   | 'adopt_query_failure' // transient: order held open locally but fetchOrder failed
   | 'adopt_non_adoptable' // suspicious: venue status inconsistent with absence from open orders
+  | 'fill_overflow' // halting: I4 — backfilled fills exceed the order's qty + one step
+  | 'fill_fold_failed' // suspicious: the fill row committed but its fold threw (row without a fold)
   | 'sweep_failure'; // transient: a per-symbol open-orders/trades/balances sweep threw
 
 interface PassAccumulator {
@@ -763,12 +765,61 @@ export class ReconciliationService {
     );
   }
 
+  // Fold from the LIVE book record, never the caller's snapshot. byVenueId (reconcileTrades) is
+  // built ONCE per pass, so when one pass backfills several trades of the SAME order every fold
+  // would restart from that snapshot's cumQty: the reducer's own stale-fill guard compares against
+  // the record it is handed, so each fold looks fresh, journals a non-monotone FILL, and commit()
+  // regresses the book to the LAST trade's qty alone. The venue-FILLED order is then stranded
+  // non-terminal, which reports adopt_non_adoptable on every subsequent pass — an actionable class,
+  // so the clean stamp (and RecoveryCoordinatorService's auto-resume with it) is starved forever.
+  // Same defect and same remedy as demo-fill-poller.service.ts's 2026-07-11 fix; this call site was
+  // missed then. Live proof 2026-07-27: BCH/USDT:USDT, 8 trades in one pass, cum_qty 0.045 of 0.365.
   private async applyTrade(t: VenueFill, rec: OrderRecord, acc: PassAccumulator): Promise<void> {
-    const { applied } = await this.ingestor.ingest(
-      rec,
-      this.toFillRecord(t, rec.clientOrderId),
-      `reconcile:${t.venueTradeId}`,
-    );
+    const live = this.orders.get(rec.clientOrderId) ?? rec;
+    let applied: boolean;
+    try {
+      ({ applied } = await this.ingestor.ingest(
+        live,
+        this.toFillRecord(t, live.clientOrderId),
+        `reconcile:${t.venueTradeId}`,
+      ));
+    } catch (err) {
+      // Contained deliberately, and for ANY throw past ingest's saveFill — not just the reducer's.
+      // Two independent reasons, both learned here:
+      //   1. reconcileOnce rethrows, so an escaping error skips the positions and balances axes —
+      //      the 2026-07-07 100%-reconcile-downtime shape adoptTerminal already guards against.
+      //   2. saveFill commits the fill row BEFORE the fold (fill-ingestor.service.ts), so the row
+      //      survives the throw and reconcileTrade's hasFill filter skips this trade on every later
+      //      pass. Whatever threw is therefore never re-detected: loud once, silent forever.
+      // Because of (2) the residue — a committed fill row whose fold never landed — is NOT
+      // self-healing, at runtime or at boot (rebuildCumFromFills folds through the same reducer and
+      // refuses identically). Repair is manual; see docs/runbook.md § Reconciliation mismatch.
+      // The reason string carries the symbol so the append-only kill-switch audit and the
+      // reconciliations `detail` column stay diagnosable without the container log (the C4 lesson),
+      // matching BALANCE_DRIFT:${asset} / POSITION_DRIFT:${symbol} below.
+      const detail = `${t.symbol} trade ${t.venueTradeId} on ${live.clientOrderId}`;
+      if (err instanceof TransitionError) {
+        // I4 cumQty overflow: the journal now holds more filled qty than qty + one step. Folding
+        // cumulatively is what makes this reachable per PASS rather than per TRADE. Fail CLOSED —
+        // a money-model divergence HALTs (rule 6, never auto-flattened).
+        bump(acc, 'fill_overflow');
+        acc.halts.push(`FILL_OVERFLOW:${t.symbol}`);
+        this.log.error(`fill overflow: ${detail} folds past qty ${live.qty.toFixed()} + step`);
+        return;
+      }
+      // Anything else (a journal write, the portfolio fold, the equity sample) is contained ONLY
+      // when the fill row actually committed — that is what makes the trade unretryable and the
+      // escape harmful. A throw AT saveFill leaves no row, so the trade IS retried next pass and the
+      // pass-error accounting (runs{result=error} + a PASS_ERROR reconciliations row) is the correct,
+      // already-pinned outcome: rethrow, exactly as before this containment existed.
+      if (!(await this.store.hasFill(t.venue, t.symbol, t.venueTradeId))) throw err;
+      // Row committed, fold did not land. Transient infrastructure rather than a proven money
+      // divergence, so it is surfaced as an actionable mismatch — blocking THIS pass's clean stamp —
+      // without halting the book on a database blip.
+      bump(acc, 'fill_fold_failed');
+      this.log.error(`fill fold failed: ${detail} — ${describeError(err)}`);
+      return;
+    }
     if (applied) bump(acc, 'backfilled_fill'); // a fill we had missed via the stream — backfilled + WARN
   }
 

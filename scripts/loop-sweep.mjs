@@ -214,6 +214,18 @@ function gather() {
         })();
   }
 
+  // The clean STAMP, which is a different question from the rows above: this gauge is
+  // ReconciliationService's `lastCleanAt` (set only on an actionable-clean, unhalted pass) and it is
+  // the precondition RecoveryCoordinatorService reads before auto-resuming the kill switch. The
+  // per-venue `result` column cannot answer it — that column is written off the RAW mismatch total,
+  // so benign shared-wallet noise reads MISMATCH while the stamp refreshes fine (2026-07-27). Read
+  // absolutely, never as a rate: 0 is the uninitialised-at-boot default, and the core ages that off
+  // the container's StartedAt.
+  probes.reconcileCleanStamp = (() => {
+    const s = promScalar(promQuery('reconciliation_last_success_timestamp_seconds'));
+    return s.ok ? { ok: true, value: { seconds: s.value } } : s;
+  })();
+
   // kill-switch STATE (metric, never /health — §C.1: /health/ready hardcoded RUNNING once). One
   // switch for the whole book (v3 spec §8: kill_switch_state carried, no venue label).
   probes.killSwitch = (() => {

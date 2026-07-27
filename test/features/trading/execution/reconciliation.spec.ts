@@ -717,6 +717,89 @@ describe('ReconciliationService (§6.4)', () => {
     expect(r.halted).toBe(false);
   });
 
+  // 2026-07-27 incident regression: several trades of ONE order inside a SINGLE pass. byVenueId is
+  // built once per pass, so folding from it restarts every trade at that snapshot's cumQty — the
+  // order ends at the LAST trade's qty, stays non-terminal forever, and reports adopt_non_adoptable
+  // on every later pass (starving the clean stamp and auto-resume). Live shape: 8 trades summing to
+  // the full qty left cum_qty at the final trade's 0.045 of 0.365.
+  it('two partial trades of the SAME order in ONE pass accumulate to FILLED — folds read the live book, never the per-pass venueOrderId snapshot', async () => {
+    const coid = makeIntent().clientOrderId; // BUY 1 @ 100, step 0.001
+    const half = (tradeId: string): VenueFill => ({ ...trade('v1', tradeId), qty: '0.5' });
+    const ctx = build(
+      { openOrders: [venueOrder(coid, 'open')], trades: [half('partial-1'), half('partial-2')] },
+      undefined,
+      undefined,
+      undefined,
+      { balanceAxis: false }, // isolate to the trade axis — the fills move local cash off the stub
+    );
+    seedOpenOrder(ctx, coid, {}, 'v1');
+    const r = await ctx.recon.reconcile();
+    expect(ctx.orders.get(coid)?.cumQty.toFixed()).toBe('1'); // 0.5 + 0.5, not the last trade's 0.5
+    expect(ctx.orders.get(coid)?.state).toBe('FILLED');
+    expect(ctx.store.fills.size).toBe(2);
+    expect(r.halted).toBe(false);
+    // The incident's defining artifact was a NON-MONOTONE cumQty run in the append-only journal
+    // (0.022, 0.05, …, 0.045). Pin the sequence, not just the end state — rule 6 makes those rows
+    // permanent, so a regression here is unrepairable after the fact.
+    expect(ctx.store.events.filter((e) => e.event.type === 'FILL').map((e) => e.cumQty)).toEqual([
+      '0.5',
+      '1',
+    ]);
+    // Money: every fill must still reach the portfolio. Exact string, never toBeCloseTo.
+    const positions = [...ctx.portfolio.snapshot().positions.values()];
+    expect(positions).toHaveLength(1);
+    expect(positions[0]!.signedQty.toFixed()).toBe('1');
+  });
+
+  it('a backfill that would fold PAST the order qty halts as FILL_OVERFLOW carrying the symbol, and the LATER axes still run — an escaping reducer throw would abort the pass before them', async () => {
+    const coid = makeIntent().clientOrderId; // qty 1, step 0.001
+    const ctx = build({
+      openOrders: [venueOrder(coid, 'open')],
+      // Two FULL-qty trades attributed to one order: the second fold sees cumQty 2 > qty + step.
+      trades: [trade('v1', 'overflow-1'), trade('v1', 'overflow-2')],
+      // Balances axis LEFT ON and deliberately disagreeing (the first fill moved local cash to
+      // 99900 while the venue still says 100000). BALANCE_DRIFT can only appear if the pass reached
+      // the balances axis AFTER the overflow — that is what pins "the pass finishes".
+    });
+    seedOpenOrder(ctx, coid, {}, 'v1');
+    const r = await ctx.recon.reconcile(); // must RESOLVE, not reject
+    expect(r.halted).toBe(true);
+    const reason = ctx.engages.map((e) => e.reason).join('|');
+    expect(reason).toContain(`FILL_OVERFLOW:${SYM}`); // symbol carried into the audit trail
+    expect(reason).toContain('BALANCE_DRIFT'); // the later axis ran
+    expect(r.actionableMismatches).toBeGreaterThan(0); // fail closed — never stamps clean
+
+    // The residue, and why the runbook calls this a one-shot notification: BOTH fill rows are
+    // committed (saveFill runs before the fold), so the already-recorded filter skips the offending
+    // trade next pass and the overflow is NEVER re-detected. Pinned so the operator-facing claim
+    // cannot silently stop being true.
+    expect(ctx.store.fills.size).toBe(2);
+    ctx.engages.length = 0;
+    await ctx.recon.reconcile();
+    expect(ctx.engages.map((e) => e.reason).join('|')).not.toContain('FILL_OVERFLOW');
+  });
+
+  it('a NON-reducer throw past saveFill is contained as fill_fold_failed — actionable (blocks the clean stamp) but not a halt, since a store blip is not a proven money divergence', async () => {
+    const coid = makeIntent().clientOrderId;
+    const ctx = build(
+      {
+        openOrders: [venueOrder(coid, 'open')],
+        trades: [trade('v1', 'fold-fail-1')],
+      },
+      undefined,
+      undefined,
+      undefined,
+      { balanceAxis: false },
+    );
+    seedOpenOrder(ctx, coid, {}, 'v1');
+    // The fill row commits, then the journal write fails — the shape a Postgres blip produces.
+    ctx.store.appendOrderEvent = () => Promise.reject(new Error('store down'));
+    const r = await ctx.recon.reconcile();
+    expect(r.halted).toBe(false);
+    expect(r.actionableMismatches).toBeGreaterThan(0);
+    expect(ctx.store.fills.size).toBe(1); // the residue: row committed, fold never landed
+  });
+
   it('a venue-shaped trade (numeric order id, no coid) resolving to a NON-terminal durable-only order HALTs as FILL_FOR_UNKNOWN_ORDER — in-memory-lost live state is ours, never foreign (cluster-A)', async () => {
     const ctx = build(
       { trades: [trade('77777777', 'venue-shaped-2')] },

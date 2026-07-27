@@ -125,6 +125,20 @@ flattening on wrong state can double the damage. Passes are **per-venue**
   the OMS never recorded — reconcile the position before any further trading.
 - **BALANCE_DRIFT beyond ε** (abs+rel tolerance) ⇒ HALT. **BALANCE_LEAK** (within-ε drift growing
   monotonically across 3 passes) ⇒ HALT — a systematic leak.
+- **FILL_OVERFLOW:{symbol}** (a backfilled trade folds past the order's qty + one step) ⇒ HALT.
+  **This one does NOT clear itself, and the halt does not re-fire.** The fill row is committed to
+  `fills` before the fold is attempted, so the next pass's already-recorded filter skips the trade:
+  no second bump, no second halt, and once the affected order is terminal a later pass can end
+  actionable-clean and auto-resume the book over a divergence nobody repaired. A restart does not fix
+  it either — boot recovery rebuilds `cumQty` from the same fill journal and the reducer refuses the
+  same overflow ("row left untouched"). Treat the first fire as the only notification you get.
+  Likeliest cause is local mis-attribution rather than venue divergence: the axis-2 trade index is
+  keyed on `venueOrderId` alone while that id is unique only per venue, so a trade can be folded onto
+  the sibling venue's order. Investigate by comparing `sum(fills.qty)` against `orders.cum_qty` and
+  `orders.qty` for the coid in the halt reason, and confirm the fill's venue matches the order's.
+- **FILL_FOLD_FAILED** (same shape, non-reducer cause — a store write, portfolio fold, or equity
+  sample threw after the fill row committed) ⇒ actionable mismatch, no halt. Blocks that pass's clean
+  stamp only; the same never-re-detected residue applies, so check the warn log for the coid.
 - **FOREIGN open order / trade** (not our prefix) ⇒ WARN, ignore (another account/bot on the same key).
 - **Missed fill for a known order** ⇒ backfilled via the FillIngestor (WARN).
 - A venue `rejected` for an order we believe ACKED ⇒ WARN inconsistency (never an illegal terminal adopt).

@@ -166,6 +166,86 @@ could have known to hold these particular 16 names. The robust claim is **relati
 and selection lost to passive exposure across every horizon, both fee tiers, and 7 years — not the
 absolute passive number.
 
+## AMENDMENT 3 — long-only overlays (new family, recorded before running)
+
+The main result diagnosed *why* every active strategy lost: the return was beta, and a market-neutral
+long-short construction strips it out by design. That diagnosis implies a distinct, untested
+question — **can an overlay that KEEPS the beta beat simply holding it?** Timing and tilting are not
+the same hypothesis as market-neutral selection, and nothing in this program has tested them.
+
+New family, `test/backtest/longonly-study.mjs`. Long-only, never short, weights sum to ≤ 1 with the
+remainder in cash:
+
+| Signal | Definition |
+| --- | --- |
+| `lo_all` | equal-weight everything — **a sanity arm**: it IS the benchmark, so its excess must come out ≈0. A non-zero reading means the harness is wrong, and the run is void. |
+| `lo_top3` | hold only the top tercile by trailing 30-day return |
+| `lo_trend` | hold each asset only while it is above its own 50-day MA; the rest sits in cash |
+| `lo_btc_regime` | hold the full basket while BTC is above its 50-day MA, else all cash |
+| `lo_voltarget` | weight ∝ 1/(trailing 30-day vol), normalised |
+
+- **Horizons: 7 and 30 days** (rebalance = holding period). 90 excluded up front — the main run
+  showed n=28 there, and inference at that n is not worth the multiplicity.
+- **4 scored signals × 2 horizons = 8 cells.** Bonferroni α = 0.05/8 = **6.25e-3**. `lo_all` is
+  excluded from the count because it is a harness check, not a hypothesis.
+- **Fees on turnover**, one-way = half the round-trip tier, charged as `(feeBps/2) × Σ|Δw|`. A
+  strategy that sits still pays nothing, which is the whole point of testing overlays.
+- **Same pass rule as the main study**: positive excess over the equal-weight basket at the 20 bps
+  tier, p < 6.25e-3, both chronological halves positive, n ≥ 12.
+- **Same survivorship caveat (Amendment 2), and it bites harder here.** Long-only momentum on a
+  universe selected for surviving to 2026 is the single most bias-favoured construction in this
+  whole document. A pass would be presumed biased until reproduced on a point-in-time universe; a
+  fail under a bias this favourable is strong.
+
+## RESULT (Amendment 3) — no long-only overlay beats holding, but the statistic is contested
+
+`test/backtest/longonly-study.mjs`, same window and seed. Sanity arm `lo_all` reproduces the
+benchmark exactly up to fee drag (taker 1448.56% / maker 1451.21% against a 1451.87% benchmark, drag
+scaling with the tier) — harness confirmed. Note: the first run flagged SANITY-FAIL because the
+assertion demanded `|excess| < 1e-9`; the arm legitimately pays turnover the benchmark does not, so
+**the assertion was mis-specified, not the harness.** Corrected to "identical up to fee drag,
+drag negative only", and recorded rather than silently amended.
+
+| Signal | h | n | Excess/period (taker) | p | Halves | Compounded vs basket |
+| --- | --- | --- | --- | --- | --- | --- |
+| `lo_top3` | 7 | 364 | +0.26% | 0.421 | +0.34 / +0.18 | **+2630% vs +1452%** |
+| `lo_top3` | 30 | 84 | +1.07% | 0.505 | −0.40 / +2.53 | +2920% vs +1257% |
+| `lo_trend` | 7 | 364 | −0.16% | 0.654 | −0.11 / −0.21 | +2468% vs +1452% |
+| `lo_trend` | 30 | 84 | −2.98% | 0.214 | −3.89 / −2.07 | +823% vs +1257% |
+| `lo_btc_regime` | 7 | 364 | +0.08% | 0.667 | +0.41 / −0.24 | **+5432% vs +1452%** |
+| `lo_btc_regime` | 30 | 84 | −0.72% | 0.853 | −2.37 / +0.92 | +2234% vs +1257% |
+| `lo_voltarget` | 7 | 364 | −0.06% | 0.592 | −0.06 / −0.05 | +1406% vs +1452% |
+| `lo_voltarget` | 30 | 84 | −0.15% | 0.703 | −0.36 / +0.05 | +1343% vs +1257% |
+
+**Verdict per the frozen rule: FAIL, all 8 cells.** Best p is 0.346 against a 6.25e-3 bar; no cell
+combines positive excess, significance and both halves positive.
+
+**The honest complication, recorded rather than acted on.** Two cells show enormous COMPOUNDED gaps
+against a near-zero, insignificant arithmetic excess — `lo_btc_regime`@h7 turns 1 unit into ~55
+against ~15.5 for holding. That is not a contradiction: it is the geometric-vs-arithmetic gap.
+Sitting in cash through drawdowns lowers volatility, and lower volatility compounds better at the
+same arithmetic mean. **My pre-registered statistic (arithmetic mean of per-period excess) is
+therefore mismatched to a hypothesis whose entire benefit is volatility reduction.**
+
+That is a defect in the test design, not evidence of an edge, and it is emphatically **not** promoted
+to a pass — moving the goalpost after seeing the number is the precise failure this document exists
+to prevent. What it justifies is a *future, separately pre-registered* test whose statistic is
+terminal wealth or drawdown-adjusted return, fixed in advance, with three things that this run does
+not have:
+
+1. **A resampling scheme matched to signal persistence.** BTC's 50-day-MA regime switches 128 times
+   over 2,550 days (median run 6 days, mean 20), so per-period independence is roughly defensible
+   here — but it must be argued, not assumed, for any slower signal.
+2. **A point-in-time universe.** Long-only momentum on assets selected for surviving to 2026 is the
+   most bias-favoured construction in this entire document (Amendment 2), and trend-following on a
+   survivor basket is close to a best case by construction.
+3. **Honest priors.** Trend-following and momentum are among the most published, most crowded ideas
+   in systematic trading. A positive backtest on 16 hand-selected survivors is the expected output of
+   that setup whether or not the effect is real going forward.
+
+So: no pass, a named defect in my own statistic, and a specified successor test. Anyone reading the
++5432% column as a result has read it wrong.
+
 ## What follows
 
 - **Pass** → the horizon/fee wall was the binding constraint. Rebuild around a multi-day rebalance

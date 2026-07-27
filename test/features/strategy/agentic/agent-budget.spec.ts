@@ -91,6 +91,52 @@ describe('DailyLlmBudget', () => {
     expect(budget.tryReserveCall()).toBe(false);
   });
 
+  // The meter is in-memory per UTC day, so before seeding existed every redeploy handed the lane a
+  // fresh full budget — a three-deploy day authorised 3x the configured cap.
+  it('seedDaySpend restores the day’s durable spend so the breaker survives a redeploy', () => {
+    const budget = new DailyLlmBudget(
+      {
+        maxCallsPerDay: 100,
+        maxTokensPerDay: 1_000_000,
+        maxCostUsdPerDay: 3,
+        priceInputPerMtok: 3,
+        priceOutputPerMtok: 15,
+      },
+      () => T,
+    );
+    expect(budget.snapshot().costUsd).toBe(0); // fresh boot: the trap
+
+    budget.seedDaySpend([
+      { model: 'claude-sonnet-5', usage: { inputTokens: 1_000_000, outputTokens: 0 } },
+    ]);
+
+    expect(budget.snapshot().costUsd).toBe(3);
+    expect(budget.tryReserveCall()).toBe(false); // cap already reached, exactly as pre-restart
+  });
+
+  it('seedDaySpend is idempotent and never re-adds history behind live spend', () => {
+    const caps = {
+      maxCallsPerDay: 100,
+      maxTokensPerDay: 1_000_000,
+      maxCostUsdPerDay: 10,
+      priceInputPerMtok: 3,
+      priceOutputPerMtok: 15,
+    };
+    const rows = [{ model: 'm', usage: { inputTokens: 1_000_000, outputTokens: 0 } }];
+
+    const twice = new DailyLlmBudget(caps, () => T);
+    twice.seedDaySpend(rows);
+    twice.seedDaySpend(rows); // a second seed would double-count the same durable rows
+    expect(twice.snapshot().costUsd).toBe(3);
+
+    // A seed arriving after the meter already recorded a live call would re-add spend that call
+    // already counted — refused outright.
+    const afterLiveSpend = new DailyLlmBudget(caps, () => T);
+    afterLiveSpend.recordUsage({ inputTokens: 1_000_000, outputTokens: 0 }, 'm');
+    afterLiveSpend.seedDaySpend(rows);
+    expect(afterLiveSpend.snapshot().costUsd).toBe(3);
+  });
+
   it('rolls over on a UTC day change (nowFn seam, no fake timers)', () => {
     let clock = T;
     const nowFn = () => clock;

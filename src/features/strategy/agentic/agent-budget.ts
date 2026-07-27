@@ -71,6 +71,7 @@ export class DailyLlmBudget {
   private inputTokens = 0;
   private outputTokens = 0;
   private costUsd = 0;
+  private seeded = false;
 
   constructor(
     private readonly caps: DailyLlmBudgetCaps,
@@ -129,6 +130,28 @@ export class DailyLlmBudget {
     const costCap = this.caps.maxCostUsdPerDay ?? 0;
     if (costCap > 0 && new Decimal(this.costUsd).plus(estimatedUsd).gt(costCap)) return false;
     return true;
+  }
+
+  // Seed today's counters from durable spend already on record. The breaker is an in-memory
+  // per-UTC-day meter, so before this existed EVERY redeploy handed the lane a fresh full budget:
+  // on a day with three deploys the "$3/day" cap authorised $12 (observed 2026-07-27 — the gauge
+  // read a full $3.00 immediately after a redeploy that followed ~$0.31 of spend). The durable
+  // ledgers were never wrong; only this meter was, so evidence walks were unaffected and this is a
+  // cost-control repair, not a measurement one.
+  //
+  // Idempotent per instance: seeding twice would double-count, so it happens at most once, and never
+  // after the meter has already recorded a live call (a seed landing mid-day behind real spend would
+  // re-add history already counted). Rows are priced through recordUsage, so per-model rates, cache
+  // tokens and the fail-closed unknown-model rate all behave exactly as they do for live calls.
+  //
+  // NOTE what is NOT restored: the per-day CALL count. The durable ledgers store token totals per
+  // model, not the number of calls, so maxCallsPerDay still resets across a redeploy. The USD
+  // breaker is the binding constraint and it is now durable; the call cap remains best-effort.
+  seedDaySpend(rows: readonly { model?: string; usage: AgentUsage }[]): void {
+    if (this.seeded || this.calls > 0 || this.costUsd > 0) return;
+    this.seeded = true;
+    this.rollIfNeeded();
+    for (const row of rows) this.recordUsage(row.usage, row.model);
   }
 
   // model: the id the call was actually priced against (e.g. the decide model vs a pricier

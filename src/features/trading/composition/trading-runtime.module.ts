@@ -335,7 +335,7 @@ export class TradingRuntimeService
     @Optional()
     @Inject(REFLECTION_EVIDENCE)
     private readonly roundTripEvidence?: RoundTripEvidencePort,
-    @Optional() @Inject(PROMOTION_STATS) promotionStats?: PromotionStatsPort,
+    @Optional() @Inject(PROMOTION_STATS) private readonly promotionStats?: PromotionStatsPort,
     @Optional() @Inject(PLAYBOOK_PROVIDER_OVERRIDE) playbookStore?: EvaluatorPlaybookStore,
     @Optional() @Inject(KILL_SWITCH) private readonly killSwitch?: KillSwitchPort,
     // Push 3 P7c: resting-order role resolution (vtp/vsl), threaded into AgenticStrategyDeps.
@@ -502,6 +502,48 @@ export class TradingRuntimeService
   // registered + enabled, the host starts (warmup + live consume), and — because the venue fills its
   // own orders with no WS user stream yet — the fill poller sweeps fetchMyTrades per venue. Portfolio
   // is logged on a cadence so a run is observable. The only hard human gate stays paper→live.
+  // The daily cost breaker is an in-memory per-UTC-day meter, so every redeploy used to hand the
+  // lane a fresh full budget — on a three-deploy day the "$3/day" cap authorised $12. Re-seed it
+  // from the durable token ledgers (the same rows the promotion walk prices, replay runs already
+  // excluded by that query's own filter) so the breaker survives a restart.
+  //
+  // Fails OPEN, deliberately: no stats source (test/ci/no-DB) or a throwing query leaves the meter
+  // at zero and logs, rather than blocking the boot. This is a spend cap, not a safety interlock —
+  // failing closed here would take the lane down over a database hiccup, and the breaker's own
+  // per-call gate still bounds a runaway within the day.
+  private async seedDailyLlmBudget(): Promise<void> {
+    if (this.promotionStats === undefined) return;
+    const startOfUtcDayMs = Date.UTC(
+      new Date(this.clock.now()).getUTCFullYear(),
+      new Date(this.clock.now()).getUTCMonth(),
+      new Date(this.clock.now()).getUTCDate(),
+    );
+    try {
+      const totals = await this.promotionStats.llmTokenTotals(startOfUtcDayMs);
+      this.agentBudget.seedDaySpend(
+        totals.perModel.map((m) => ({
+          model: m.model,
+          usage: {
+            inputTokens: m.inputTokens,
+            outputTokens: m.outputTokens,
+            cacheReadInputTokens: m.cacheReadTokens,
+            cacheCreationInputTokens: m.cacheCreationTokens,
+          },
+        })),
+      );
+      const snap = this.agentBudget.snapshot();
+      this.log.log(
+        `daily LLM budget seeded from durable spend since ${new Date(startOfUtcDayMs).toISOString()}: ` +
+          `$${snap.costUsd.toFixed(4)} of $${snap.maxCostUsdPerDay} already spent today`,
+      );
+    } catch (err) {
+      this.log.warn(
+        `daily LLM budget seed failed (${err instanceof Error ? err.message : String(err)}) — ` +
+          `breaker starts this boot at zero spend, so today's cap may over-authorise`,
+      );
+    }
+  }
+
   private async startTrading(mode: 'paper' | 'testnet' | 'live'): Promise<void> {
     // Multi-symbol (P7): one agentic strategy instance per configured symbol, across BOTH venues
     // (v3: TRADING_SYMBOLS spans the combined 40-symbol basket). Every symbol MUST have a
@@ -516,6 +558,8 @@ export class TradingRuntimeService
       );
     }
     this.tradingSymbols = symbols.map((s) => symbolId(s));
+
+    await this.seedDailyLlmBudget();
 
     if (mode !== 'paper') {
       // Defect A commit-1 (2026-07-16 phantom perp position): heal any already-phantom position

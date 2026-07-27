@@ -176,7 +176,7 @@ export class ExecutionGateService implements ExecutionGatePort {
     this.nonces.record(proof.nonce, proof.approvedAtMs, proof.ttlMs);
 
     // Write-ahead: intent + NEW order, then SUBMITTING — all durable before the network call.
-    const recNew = initialOrder(coid, intent.qty, this.stepSize(intent.symbol));
+    const recNew = initialOrder(coid, intent.qty, this.stepSize(intent.symbol), intent.symbol);
     await this.store.saveIntent(intent, proof);
     await this.store.saveNewOrder(recNew, intent);
     this.orders.create(recNew);

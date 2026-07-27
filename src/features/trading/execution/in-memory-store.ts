@@ -22,6 +22,7 @@ interface StoredOrder {
   venueOrderId?: string;
   intentId?: string;
   venue?: string;
+  symbol?: string;
 }
 
 // In-process EXECUTION_STORE default (DB-less paper, and the test substrate). Mirrors the
@@ -52,6 +53,7 @@ export class InMemoryExecutionStore implements ExecutionStorePort {
       cumQty: record.cumQty.toFixed(),
       intentId: intent.intentId,
       venue: intent.venue,
+      symbol: intent.symbol,
     });
     return Promise.resolve();
   }
@@ -146,6 +148,7 @@ export class InMemoryExecutionStore implements ExecutionStorePort {
           venueOrderId: o.venueOrderId,
           attempt: 0,
           cancelWanted: false,
+          symbol: o.symbol as SymbolId | undefined,
         };
         return Promise.resolve(record);
       }

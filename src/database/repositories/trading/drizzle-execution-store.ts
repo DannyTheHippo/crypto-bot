@@ -330,6 +330,7 @@ export class DrizzleExecutionStore implements ExecutionStorePort {
     qty: string;
     cumQty: string;
     venueOrderId: string | null;
+    symbol: string;
   }): OrderRecord {
     if (!isOrderState(r.state)) {
       throw new Error(
@@ -345,6 +346,10 @@ export class DrizzleExecutionStore implements ExecutionStorePort {
       venueOrderId: r.venueOrderId ?? undefined,
       attempt: 0,
       cancelWanted: false,
+      // Persisted, unlike the runtime-only fields above — a rehydrated record must still be able to
+      // name its own venue (reconciliation's trade index refuses to match a record whose venue it
+      // cannot establish).
+      symbol: r.symbol as SymbolId,
     };
   }
 

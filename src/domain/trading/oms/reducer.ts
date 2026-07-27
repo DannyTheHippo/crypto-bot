@@ -1,5 +1,5 @@
 import Decimal from 'decimal.js';
-import type { ClientOrderId } from '../../common/types/ids';
+import type { ClientOrderId, SymbolId } from '../../common/types/ids';
 
 // Pure OMS state machine (§6.1). State is derived from the append-only order_events
 // journal by folding this reducer; illegal (state, event) pairs throw (I7 — never a
@@ -60,6 +60,13 @@ export interface OrderRecord {
   readonly venueOrderId?: string;
   readonly attempt: number;
   readonly cancelWanted: boolean;
+  // Which market this order belongs to. Carried so a consumer holding only an OrderRecord can tell
+  // WHICH VENUE it is on (venueForSymbol) — `venueOrderId` alone cannot: that id is unique only per
+  // venue (order.repository.ts's findByVenueOrderId is venue-scoped for exactly this reason), so a
+  // book-wide index keyed on it can hand a perp trade a spot order. Optional because it is not part
+  // of the state machine and every pre-existing record/test predates it; consumers MUST treat
+  // `undefined` as "venue unknown" and fall back to a venue-scoped source, never as a match.
+  readonly symbol?: SymbolId;
 }
 
 export type OrderEvent =
@@ -103,6 +110,7 @@ export function initialOrder(
   clientOrderId: ClientOrderId,
   qty: Decimal,
   stepSize: string,
+  symbol?: SymbolId,
 ): OrderRecord {
   return {
     clientOrderId,
@@ -112,6 +120,7 @@ export function initialOrder(
     stepSize,
     attempt: 0,
     cancelWanted: false,
+    symbol,
   };
 }
 

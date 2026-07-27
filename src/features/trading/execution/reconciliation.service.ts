@@ -677,10 +677,7 @@ export class ReconciliationService {
     // so a trade is resolved to a local order via the venueOrderId recorded on ACK first — the
     // cb-prefix coid lookup below only ever matches an adapter (paper) that echoes our own
     // clientOrderId directly. Built once per pass, not per trade (this.orders.all() is a full scan).
-    const byVenueId = new Map<string, OrderRecord>();
-    for (const rec of this.orders.all()) {
-      if (rec.venueOrderId !== undefined) byVenueId.set(rec.venueOrderId, rec);
-    }
+    const byVenueId = this.venueOrderIndex(exchange);
     for (const symbol of this.sweepSymbols(exchange, cfg)) {
       const key = `${exchange.venue}|${symbol}`;
       const checkpoint = this.checkpoints.get(key) ?? (0 as EpochMs);
@@ -702,6 +699,39 @@ export class ReconciliationService {
     }
   }
 
+  // venueOrderId → order, for THIS venue only. Two rules, both learned the hard way:
+  //
+  //  1. VENUE-SCOPED. A venue order id is unique only per venue (order.repository.ts's
+  //     findByVenueOrderId is venue-scoped for exactly this reason), while this.orders.all() is
+  //     book-wide — one process, both venues. An unqualified index can therefore hand a perp trade a
+  //     SPOT order, folding the fill onto the wrong symbol's position and filing it under the wrong
+  //     intent. A record whose symbol is unknown is NOT indexed: it falls through to the venue-scoped
+  //     durable tier, which can answer the venue question this record cannot.
+  //  2. REBUILT ON DEMAND, not cached across the pass. A pass issues dozens of sequential REST calls
+  //     over ~60s; an order ACKed after a cached snapshot was taken would miss every in-memory tier
+  //     and reach the durable tier as a non-terminal "lost in memory" order — a false
+  //     FILL_FOR_UNKNOWN_ORDER halt of the whole book. Callers re-read on a miss (resolveVenueOrder).
+  private venueOrderIndex(exchange: ExchangePort): Map<string, OrderRecord> {
+    const index = new Map<string, OrderRecord>();
+    for (const rec of this.orders.all()) {
+      if (rec.venueOrderId === undefined) continue;
+      if (rec.symbol === undefined) continue;
+      if (venueForSymbol(rec.symbol) !== exchange.venue) continue;
+      index.set(rec.venueOrderId, rec);
+    }
+    return index;
+  }
+
+  // The pass-start index first (cheap), then one fresh scan before concluding the order is unknown —
+  // so an order that ACKed mid-pass resolves instead of halting the book.
+  private resolveVenueOrder(
+    exchange: ExchangePort,
+    byVenueId: ReadonlyMap<string, OrderRecord>,
+    venueOrderId: string,
+  ): OrderRecord | undefined {
+    return byVenueId.get(venueOrderId) ?? this.venueOrderIndex(exchange).get(venueOrderId);
+  }
+
   private async reconcileTrade(
     exchange: ExchangePort,
     t: VenueFill,
@@ -717,7 +747,7 @@ export class ReconciliationService {
     // correctly once this filter has ruled out "already seen it."
     if (await this.store.hasFill(t.venue, t.symbol, t.venueTradeId)) return;
 
-    const viaVenueId = byVenueId.get(t.clientOrderId);
+    const viaVenueId = this.resolveVenueOrder(exchange, byVenueId, t.clientOrderId);
     if (viaVenueId !== undefined) {
       await this.applyTrade(t, viaVenueId, acc);
       return;

@@ -53,6 +53,10 @@ interface ExchangeScript {
   fetchOrder?: () => ExchangeOrderState;
   trades?: VenueFill[];
   tradesThrow?: boolean;
+  // Test-only hook fired inside fetchMyTrades, i.e. AFTER the trade axis has built its venue-order
+  // index and before any trade is classified — the only window in which a mid-pass ACK can be
+  // simulated (axis 1 runs earlier, so ACKing there would land before the index is built).
+  beforeTrades?: () => void;
   balances?: () => Map<string, { free: string; locked: string }>;
   balancesThrow?: boolean;
   // Absent (both undefined) leaves ExchangePort.fetchPositions undefined, matching a spot/paper
@@ -117,10 +121,12 @@ function build(
               ? script.balances()
               : new Map([['USDT', { free: '100000', locked: '0' }]]),
           ),
-    fetchMyTrades: () =>
-      script.tradesThrow
+    fetchMyTrades: () => {
+      script.beforeTrades?.();
+      return script.tradesThrow
         ? Promise.reject(new Error('trades down'))
-        : Promise.resolve(script.trades ?? []),
+        : Promise.resolve(script.trades ?? []);
+    },
     validateCredentials: () => Promise.reject(new Error('unused')),
     ...(script.positions !== undefined || script.positionsThrow
       ? {
@@ -171,7 +177,7 @@ function seedOpenOrder(
   venueOrderId = 'v1',
 ) {
   const intent = makeIntent({ clientOrderId: coid, ...over });
-  ctx.orders.create(initialOrder(coid, intent.qty, '0.001'));
+  ctx.orders.create(initialOrder(coid, intent.qty, '0.001', SYM));
   ctx.orders.apply(coid, { type: 'SUBMIT_SENT' });
   ctx.orders.apply(coid, { type: 'ACK', venueOrderId });
   ctx.portfolio.addInFlight(intent);
@@ -818,7 +824,7 @@ describe('ReconciliationService (§6.4)', () => {
     // memory must still HALT unconditionally, unchanged.
     const lost = OTHER_COID;
     await ctx.store.saveNewOrder(
-      initialOrder(lost, qty('1'), '0.001'),
+      initialOrder(lost, qty('1'), '0.001', SYM),
       makeIntent({ clientOrderId: lost }),
     );
     await ctx.store.appendOrderEvent({
@@ -848,7 +854,7 @@ describe('ReconciliationService (§6.4)', () => {
     );
     const lost = OTHER_COID;
     await ctx.store.saveNewOrder(
-      initialOrder(lost, qty('1'), '0.001'),
+      initialOrder(lost, qty('1'), '0.001', SYM),
       makeIntent({ clientOrderId: lost }),
     );
     await ctx.store.appendOrderEvent({
@@ -891,7 +897,7 @@ describe('ReconciliationService (§6.4)', () => {
     );
     const lost = OTHER_COID;
     await ctx.store.saveNewOrder(
-      initialOrder(lost, qty('1'), '0.001'),
+      initialOrder(lost, qty('1'), '0.001', SYM),
       makeIntent({ clientOrderId: lost }),
     );
     await ctx.store.appendOrderEvent({
@@ -1595,7 +1601,7 @@ describe('ReconciliationService — trailing coverage close-out (§1.5)', () => 
     // index build) sees an OrderRecord with venueOrderId === undefined — the guarded arm must skip
     // it, never index it under a bogus key.
     const intent = makeIntent({ clientOrderId: coid });
-    ctx.orders.create(initialOrder(coid, intent.qty, '0.001'));
+    ctx.orders.create(initialOrder(coid, intent.qty, '0.001', SYM));
     ctx.orders.apply(coid, { type: 'SUBMIT_SENT' }); // SUBMITTING — no venueOrderId yet
     ctx.portfolio.addInFlight(intent);
     ctx.portfolio.openOrder(intent.strategyId, {
@@ -1612,6 +1618,47 @@ describe('ReconciliationService — trailing coverage close-out (§1.5)', () => 
     expect(ctx.orders.get(coid)?.state).toBe('FILLED');
     expect(ctx.store.fills.size).toBe(1);
     expect(r.halted).toBe(false);
+  });
+
+  // A pass issues dozens of sequential REST calls over ~60s. An order ACKed inside that window is
+  // absent from a pass-start snapshot of the venue-order index, matches neither in-memory tier, and
+  // reaches the durable tier as a NON-terminal "lost in memory" order — which halts the whole book
+  // as corruption. The index is therefore re-read on a miss before that conclusion is drawn.
+  it('an order ACKed mid-pass still resolves its own trade instead of halting as FILL_FOR_UNKNOWN_ORDER', async () => {
+    const seeded = makeIntent().clientOrderId;
+    const late = OTHER_COID; // ACKs only once the pass is already underway
+    const lateVenueId = 'v-late';
+    // Declared before build() so the hook can close over the context the fixture returns.
+    let acked = false;
+    const ctx: Ctx = build(
+      {
+        openOrders: [venueOrder(seeded, 'open')],
+        trades: [{ ...trade(lateVenueId, 'late-ack-1'), qty: '1' }],
+        beforeTrades: () => {
+          if (acked) return;
+          acked = true;
+          ctx.orders.apply(late, { type: 'ACK', venueOrderId: lateVenueId });
+        },
+      },
+      undefined,
+      undefined,
+      undefined,
+      { balanceAxis: false },
+    );
+    seedOpenOrder(ctx, seeded, {}, 'v1');
+    // The late order exists but is still SUBMITTING when the pass starts — it has no venueOrderId,
+    // so no index built before the hook fires can possibly name it.
+    const lateIntent = makeIntent({ clientOrderId: late });
+    ctx.orders.create(initialOrder(late, lateIntent.qty, '0.001', SYM));
+    ctx.orders.apply(late, { type: 'SUBMIT_SENT' });
+    ctx.portfolio.addInFlight(lateIntent);
+
+    const r = await ctx.recon.reconcile();
+
+    expect(ctx.engages.map((e) => e.reason).join('|')).not.toContain('FILL_FOR_UNKNOWN_ORDER');
+    expect(r.halted).toBe(false);
+    expect(ctx.orders.get(late)?.cumQty.toFixed()).toBe('1'); // resolved and folded
+    expect(ctx.store.fills.size).toBe(1);
   });
 
   it("a fill whose store.saveFill reports not-inserted (a concurrent writer already recorded it between reconcile's own hasFill check and its own saveFill call) is a silent no-op — no backfilled_fill double count", async () => {
@@ -1716,7 +1763,7 @@ describe('ReconciliationService — venue-axis symbol/position filtering (§1.5 
     const { orders, portfolio, recon } = buildMultiVenue(ports, registry);
     // A local open order on SYM (venueForSymbol(SYM) === SPOT) — no PERP-side state at all.
     const coid = makeIntent().clientOrderId;
-    orders.create(initialOrder(coid, makeIntent().qty, '0.001'));
+    orders.create(initialOrder(coid, makeIntent().qty, '0.001', SYM));
     orders.apply(coid, { type: 'SUBMIT_SENT' });
     orders.apply(coid, { type: 'ACK', venueOrderId: 'v1' });
     portfolio.openOrder(makeIntent().strategyId, {
@@ -1732,6 +1779,56 @@ describe('ReconciliationService — venue-axis symbol/position filtering (§1.5 
     // PERP's own sweepSymbols() must stay empty (cfg.sweepSymbols is [] and the SPOT order's
     // symbol must not bleed in) — fetchOpenOrders is never even called for PERP.
     expect(perpFetchOpenOrders).not.toHaveBeenCalled();
+  });
+
+  // A venue order id is unique only PER VENUE, but the trade index is built from the book-wide
+  // OrderBookService. Before this was venue-qualified, a perp trade carrying id 'v1' matched the
+  // SPOT order that happened to hold the same id and folded the fill onto the wrong symbol's
+  // position, filed under the wrong intent.
+  it('a PERP trade whose venueOrderId collides with a SPOT order does NOT fold onto that spot order', async () => {
+    const PERP_SYM = symbolId('BTC/USDT:USDT');
+    const collidingId = 'v1'; // held by the spot order below AND named by the perp trade
+    const perpTrade: VenueFill = {
+      venue: PERP,
+      symbol: PERP_SYM,
+      venueTradeId: 'perp-collide-1',
+      clientOrderId: collidingId as VenueFill['clientOrderId'],
+      price: '100',
+      qty: '1',
+      fee: null,
+      liquidity: 'taker',
+      venueTimestamp: epochMs(T),
+    };
+    const ports = new Map([
+      [SPOT, fakePort(SPOT)],
+      [PERP, fakePort(PERP, { fetchMyTrades: () => Promise.resolve([perpTrade]) })],
+    ]);
+    const registry = new Map([
+      [SPOT, { ...descriptor(SPOT, false), symbols: [SYM] }],
+      [PERP, { ...descriptor(PERP, true), symbols: [PERP_SYM] }],
+    ]);
+    const { store, orders, portfolio, recon } = buildMultiVenue(ports, registry);
+    const spotCoid = makeIntent().clientOrderId;
+    orders.create(initialOrder(spotCoid, makeIntent().qty, '0.001', SYM));
+    orders.apply(spotCoid, { type: 'SUBMIT_SENT' });
+    orders.apply(spotCoid, { type: 'ACK', venueOrderId: collidingId });
+    portfolio.addInFlight(makeIntent({ clientOrderId: spotCoid }));
+    portfolio.openOrder(makeIntent().strategyId, {
+      clientOrderId: spotCoid,
+      symbol: SYM,
+      side: 'BUY',
+      qty: makeIntent().qty,
+      limitPrice: price('100'),
+    });
+
+    await recon.reconcile();
+
+    // The spot order is untouched: no fill folded onto it, no position minted on its symbol.
+    expect(orders.get(spotCoid)?.cumQty.toFixed()).toBe('0');
+    expect(orders.get(spotCoid)?.state).toBe('ACKED');
+    expect(portfolio.snapshot().positions.size).toBe(0);
+    // The perp trade resolves to nothing of ours and is ignored as foreign — never mis-attributed.
+    expect(store.fills.size).toBe(0);
   });
 
   it('adopt loop does not fetchOrder a spot coid on the perp venue (cross-venue filter)', async () => {
@@ -1752,7 +1849,7 @@ describe('ReconciliationService — venue-axis symbol/position filtering (§1.5 
     ]);
     const { orders, portfolio, recon } = buildMultiVenue(ports, registry);
     const coid = makeIntent().clientOrderId;
-    orders.create(initialOrder(coid, makeIntent().qty, '0.001'));
+    orders.create(initialOrder(coid, makeIntent().qty, '0.001', SYM));
     orders.apply(coid, { type: 'SUBMIT_SENT' });
     orders.apply(coid, { type: 'ACK', venueOrderId: 'v1' });
     portfolio.openOrder(makeIntent().strategyId, {

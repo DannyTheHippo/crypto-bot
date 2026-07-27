@@ -63,6 +63,15 @@ interface PassAccumulator {
   readonly halts: string[];
 }
 
+// `mismatches` stays the RAW total every pre-existing consumer already reads (the reconciliations
+// row, the runs counter's result label, ops events). `actionableMismatches` is additive and feeds
+// exactly one decision: whether runOnePass may stamp lastCleanAt (Task C3).
+interface PassResult {
+  readonly mismatches: number;
+  readonly actionableMismatches: number;
+  readonly halted: boolean;
+}
+
 function bump(acc: PassAccumulator, cls: MismatchClass): void {
   acc.mismatches.set(cls, (acc.mismatches.get(cls) ?? 0) + 1);
 }
@@ -73,14 +82,72 @@ function totalMismatches(acc: PassAccumulator): number {
   return total;
 }
 
+// Task C3 (2026-07-27 incident). The clean stamp below used to demand a LITERAL process-wide zero,
+// which made auto-resume unreachable in practice: on a shared demo wallet the benign classes are a
+// documented 24/7 steady state, so one venue's routine noise permanently starved cleanWithin/
+// cleanAfter/cleanIsLatest and RecoveryCoordinatorService could never resume ANY halt — including
+// halts with nothing to do with reconciliation. Live proof: 39h halted, lastCleanAt never once set,
+// reconciliation_last_success_timestamp_seconds pinned at 0.
+//
+// Membership is copied from the taxonomy comments above, not invented here: the three 'benign'
+// classes (already excluded from the ReconciliationMismatch alert in observability/alerts.rules.yml
+// for exactly this reason) plus 'sweep_failure', whose own comment reads "transient ... re-checked
+// next pass" — verified 2026-07-27 by reproducing a failing venue's entire sweep read-only, in the
+// same container, with the app's own credentials and an identically-constructed ccxt client: 48/48
+// succeeded, i.e. the failures were client-state, not venue divergence.
+//
+// DELIBERATELY EXCLUDED: 'adopt_query_failure' (a specific order's true state is unknown) and
+// 'adopt_non_adoptable' ('suspicious' per its own comment). Both still block the clean stamp.
+const NON_ACTIONABLE_CLASSES: ReadonlySet<MismatchClass> = new Set<MismatchClass>([
+  'foreign_open_order',
+  'adopted_terminal',
+  'backfilled_fill',
+  'sweep_failure',
+]);
+
+// Counts only mismatches that represent a real, unexplained divergence. This NEVER feeds `halted`,
+// the halts[] list, or the persisted `mismatches` total — it exists solely to decide whether a pass
+// may stamp lastCleanAt. A halting class still halts exactly as before (hard rule 6 untouched).
+function actionableMismatches(acc: PassAccumulator): number {
+  let total = 0;
+  for (const [cls, n] of acc.mismatches) if (!NON_ACTIONABLE_CLASSES.has(cls)) total += n;
+  return total;
+}
+
+// 2026-07-27 incident: 39h / 93,738 binance sweep_failure increments with the `detail` column lying
+// "clean" the whole time (sweep_failure never pushes to acc.halts, and the halts-or-clean expression
+// below had no other branch). class:count keeps the row falsifiable without repeating a raw error
+// body (that lives only in the rate-limited WARN — see logAxisError). Sorted by class name so the
+// string is stable across passes/tests, not insertion-order-dependent.
+function summarizeMismatches(acc: PassAccumulator): string {
+  return [...acc.mismatches.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([cls, n]) => `${cls}:${n}`)
+    .join(',');
+}
+
+// Shared by describeError (below) and the axis-error counter's error_class label — ccxt's exception
+// hierarchy is a small closed set, so the constructor name alone is a bounded-cardinality label.
+function errorClassName(err: unknown): string {
+  return err instanceof Error ? err.constructor.name : typeof err;
+}
+
 // Compact, redaction-safe error description for the reconciliations row: class name + a truncated
 // message (ccxt errors can be verbose; secrets never appear in a class name, and the message cap
 // bounds what a venue error body can drag into the row).
 function describeError(err: unknown): string {
-  const name = err instanceof Error ? err.constructor.name : typeof err;
   const message = err instanceof Error ? err.message : String(err);
-  return `${name}:${message}`.slice(0, 160);
+  return `${errorClassName(err)}:${message}`.slice(0, 160);
 }
+
+// Same 2026-07-27 incident: the four sweep catches below discarded the caught error entirely, so a
+// constant 48-mismatch/pass binance failure ran for 39h with nothing to diagnose it by even though a
+// read-only reproduction of the identical sweep, in the same container, succeeded. One WARN per
+// venue:axis per interval so a 30s-cadence pass sweeping dozens of symbols cannot flood the log; the
+// counter below stays per-event/unrate-limited so alerting never loses an increment to this throttle.
+const AXIS_ERROR_LOG_INTERVAL_MS = 60_000;
+
+type ReconAxis = 'openOrders' | 'trades' | 'positions' | 'balances';
 
 // §8/§10 reconciliation_mismatch_total — incremented per pass by the pass's mismatch count, split
 // by mismatch class since backlog #24 (a clean pass increments nothing — increase() handles the
@@ -102,6 +169,17 @@ export const RECON_RUNS_COUNTER = makeCounterProvider({
   labelNames: ['venue', 'result'] as const,
 });
 
+// Task C4 (2026-07-27 incident): the ONLY diagnostic surface for a per-symbol axis sweep throw —
+// sweep_failure on RECON_MISMATCH_COUNTER above says a symbol failed, never which error. error_class
+// is the caught error's constructor name (or `typeof` for a non-Error throw); ccxt's exception
+// hierarchy is a small closed set so cardinality stays bounded. @Optional so directly-constructed
+// unit tests need not supply it.
+export const RECON_AXIS_ERROR_COUNTER = makeCounterProvider({
+  name: 'reconciliation_axis_error_total',
+  help: 'Per-event sweep errors by venue/axis/error_class — the cause behind sweep_failure (Task C4)',
+  labelNames: ['venue', 'axis', 'error_class'] as const,
+});
+
 export const RECON_LAST_SUCCESS_GAUGE = makeGaugeProvider({
   name: 'reconciliation_last_success_timestamp_seconds',
   help: 'Unix time of the last clean (no-mismatch, not-halted) reconciliation pass (§8)',
@@ -118,6 +196,9 @@ export class ReconciliationService {
   private readonly checkpoints = new Map<string, EpochMs>();
   private readonly driftHistory = new Map<string, Decimal[]>();
   private readonly positionDivergenceStreak = new Map<string, number>();
+  // Task C4: keyed `${venue}:${axis}` — rate-limits the diagnostic WARN below, never the counter
+  // (which is per-event so alerting cannot lose an increment to this throttle).
+  private readonly lastAxisErrorLogAt = new Map<string, EpochMs>();
   private readonly log = new Logger('Reconciliation');
   // RecoveryCoordinatorService's own universal precondition read (owner-authorized auto-resume,
   // 2026-07-22): the wall-clock of the last pass that closed with zero mismatches and no halt,
@@ -139,7 +220,7 @@ export class ReconciliationService {
   private lastMismatchAt: EpochMs | undefined;
   // The currently-running pass, or undefined when idle — see reconcile()'s own re-entrancy comment.
   // Concurrent callers coalesce onto this instead of starting an interleaved second pass.
-  private inFlight: Promise<{ mismatches: number; halted: boolean }> | undefined;
+  private inFlight: Promise<PassResult> | undefined;
 
   constructor(
     @Inject(CLOCK) private readonly clock: ClockPort,
@@ -179,6 +260,12 @@ export class ReconciliationService {
     @Optional()
     @Inject(OPS_EVENTS)
     private readonly opsEvents?: OpsEventPort,
+    // Task C4: appended last, after every pre-existing constructor param, so no existing positional
+    // construction site (this file's own reconciliation.spec.ts fixture, module-isolation boot specs)
+    // needs updating — @Optional, same convention as mismatchCounter/runsCounter above.
+    @Optional()
+    @InjectMetric('reconciliation_axis_error_total')
+    private readonly axisErrorCounter?: Counter<string>,
   ) {}
 
   // v3 §1.5: one pass per venue per tick, one reconciliations row per venue pass. Mismatches sum
@@ -195,7 +282,7 @@ export class ReconciliationService {
   // positionDivergenceStreak are mutated without a lock and would interleave), and it also let a slow
   // CLEAN pass land its stamp AFTER a newer pass had already found a divergence. Concurrent callers now
   // coalesce onto the in-flight pass instead of starting a second one.
-  async reconcile(): Promise<{ mismatches: number; halted: boolean }> {
+  async reconcile(): Promise<PassResult> {
     const inFlight = this.inFlight;
     if (inFlight !== undefined) {
       // Visible, never silent: a chronically slow reconciler must show up as skipped passes rather than
@@ -225,7 +312,7 @@ export class ReconciliationService {
     }
   }
 
-  private async runOnePass(): Promise<{ mismatches: number; halted: boolean }> {
+  private async runOnePass(): Promise<PassResult> {
     // ASYMMETRIC STAMPING, deliberately fail-closed (security review, 2026-07-22). A CLEAN verdict is
     // credited to the instant the pass STARTED — the earliest moment its observations could describe —
     // never to completion. A multi-second pass that read venue truth at t0 and returns clean at t0+45s
@@ -234,7 +321,7 @@ export class ReconciliationService {
     // A NON-clean verdict is stamped at completion (and, for a halt, at DETECTION inside reconcileOnce),
     // i.e. always the LATEST possible instant — so the clean-vs-dirty comparison can never favour clean.
     const startedAt = this.clock.now();
-    let result: { mismatches: number; halted: boolean };
+    let result: PassResult;
     try {
       result = await this.reconcileEveryVenue();
     } catch (err) {
@@ -244,7 +331,10 @@ export class ReconciliationService {
       this.lastMismatchAt = this.clock.now();
       throw err;
     }
-    if (result.mismatches === 0 && !result.halted) {
+    // Task C3: `actionableMismatches`, not the raw total — see NON_ACTIONABLE_CLASSES above. The
+    // `!result.halted` conjunct is UNCHANGED, so a live halting divergence (the current
+    // POSITION_DRIFT re-halting every pass) still blocks the stamp exactly as it always did.
+    if (result.actionableMismatches === 0 && !result.halted) {
       this.lastCleanAt = startedAt;
       // Process-wide stamp only — matches lastCleanAt. Per-venue clean in reconcileOnce used to
       // refresh this gauge while another venue mismatched (adversarial review 2026-07-24).
@@ -255,9 +345,10 @@ export class ReconciliationService {
     return result;
   }
 
-  private async reconcileEveryVenue(): Promise<{ mismatches: number; halted: boolean }> {
+  private async reconcileEveryVenue(): Promise<PassResult> {
     if (this.venuePorts && this.venueRegistry && this.venueRegistry.size > 0) {
       let mismatches = 0;
+      let actionable = 0;
       let halted = false;
       for (const descriptor of this.venueRegistry.values()) {
         const port = this.venuePorts.get(descriptor.venue);
@@ -267,9 +358,10 @@ export class ReconciliationService {
         }
         const result = await this.reconcileOnce(port, this.venueReconConfig(descriptor));
         mismatches += result.mismatches;
+        actionable += result.actionableMismatches;
         halted = halted || result.halted;
       }
-      return { mismatches, halted };
+      return { mismatches, actionableMismatches: actionable, halted };
     }
     return this.reconcileOnce(this.exchange, this.cfg);
   }
@@ -325,10 +417,7 @@ export class ReconciliationService {
     };
   }
 
-  private async reconcileOnce(
-    exchange: ExchangePort,
-    cfg: ReconConfig,
-  ): Promise<{ mismatches: number; halted: boolean }> {
+  private async reconcileOnce(exchange: ExchangePort, cfg: ReconConfig): Promise<PassResult> {
     const acc: PassAccumulator = { mismatches: new Map(), halts: [] };
 
     // An axis throw past its own per-item guards must still land in the reconciliations row and the
@@ -367,7 +456,11 @@ export class ReconciliationService {
       detail:
         passError !== undefined
           ? `PASS_ERROR:${describeError(passError)}`
-          : acc.halts.join(',') || 'clean',
+          : acc.halts.length > 0
+            ? acc.halts.join(',')
+            : mismatchTotal > 0
+              ? summarizeMismatches(acc) // H1 fix: sweep_failure etc. never populate acc.halts — 'clean' must not lie
+              : 'clean',
     });
     // Per-class increments (#24); a clean pass increments nothing — increase() over an absent
     // series is 0, so the alert semantics are unchanged from the old 0-inc.
@@ -391,7 +484,33 @@ export class ReconciliationService {
     // surfaces the true cause.
     // eslint-disable-next-line @typescript-eslint/only-throw-error -- original throw, type unknown
     if (passError !== undefined) throw passError;
-    return { mismatches: mismatchTotal, halted };
+    return { mismatches: mismatchTotal, actionableMismatches: actionableMismatches(acc), halted };
+  }
+
+  // Task C4 diagnostic pair for the four axis-sweep catches below. FAIL OPEN, deliberately: this is a
+  // measurement/veto-only side-channel describing a sweep failure, never a control-flow input to it —
+  // a throwing logger or a throwing prom-client counter must never abort the very sweep it is trying
+  // to describe (the 2026-07-27 incident this exists for was already the result of one bare `catch {}`
+  // destroying diagnosability; a second silent failure mode here would repeat it).
+  private logAxisError(venue: VenueId, axis: ReconAxis, err: unknown): void {
+    const key = `${venue}:${axis}`;
+    const now = this.clock.now();
+    const last = this.lastAxisErrorLogAt.get(key);
+    if (last !== undefined && now - last < AXIS_ERROR_LOG_INTERVAL_MS) return;
+    this.lastAxisErrorLogAt.set(key, now);
+    try {
+      this.log.warn(`reconcile sweep failure venue=${venue} axis=${axis}: ${describeError(err)}`);
+    } catch {
+      /* observability must never throw into a trading path */
+    }
+  }
+
+  private incAxisErrorCounter(venue: VenueId, axis: ReconAxis, err: unknown): void {
+    try {
+      this.axisErrorCounter?.inc({ venue, axis, error_class: errorClassName(err) });
+    } catch {
+      /* metrics must never throw into a trading path */
+    }
   }
 
   // Axis 1 — open orders joined on clientOrderId. Swept PER SYMBOL: ccxt's binance throws on a
@@ -422,7 +541,9 @@ export class ReconciliationService {
     for (const symbol of this.sweepSymbols(exchange, cfg)) {
       try {
         venueOpen.push(...(await exchange.fetchOpenOrders(symbol)));
-      } catch {
+      } catch (err) {
+        this.logAxisError(exchange.venue, 'openOrders', err);
+        this.incAxisErrorCounter(exchange.venue, 'openOrders', err);
         bump(acc, 'sweep_failure'); // could not sweep this symbol's open orders — surfaced, re-checked next pass
         failedSymbols.add(symbol);
       }
@@ -565,7 +686,9 @@ export class ReconciliationService {
       let trades: readonly VenueFill[];
       try {
         trades = await exchange.fetchMyTrades(symbol, since);
-      } catch {
+      } catch (err) {
+        this.logAxisError(exchange.venue, 'trades', err);
+        this.incAxisErrorCounter(exchange.venue, 'trades', err);
         bump(acc, 'sweep_failure'); // could not sweep this symbol's trades — surfaced
         continue;
       }
@@ -670,7 +793,9 @@ export class ReconciliationService {
     let venuePositions: readonly VenuePosition[];
     try {
       venuePositions = await exchange.fetchPositions!(symbols);
-    } catch {
+    } catch (err) {
+      this.logAxisError(exchange.venue, 'positions', err);
+      this.incAxisErrorCounter(exchange.venue, 'positions', err);
       bump(acc, 'sweep_failure'); // could not read venue positions — surfaced, re-checked next pass (fail OPEN)
       return;
     }
@@ -714,7 +839,9 @@ export class ReconciliationService {
     let venueBalances: ReadonlyMap<string, { free: string; locked: string }>;
     try {
       venueBalances = await exchange.fetchBalances();
-    } catch {
+    } catch (err) {
+      this.logAxisError(exchange.venue, 'balances', err);
+      this.incAxisErrorCounter(exchange.venue, 'balances', err);
       bump(acc, 'sweep_failure');
       return;
     }

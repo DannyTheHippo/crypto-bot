@@ -71,6 +71,7 @@ import { NonceLedgerService } from './nonce-ledger.service';
 import { OrderBookService } from './order-book.service';
 import { PortfolioStateService } from './portfolio-state.service';
 import {
+  RECON_AXIS_ERROR_COUNTER,
   RECON_LAST_SUCCESS_GAUGE,
   RECON_MISMATCH_COUNTER,
   RECON_RUNS_COUNTER,
@@ -238,6 +239,7 @@ const providers: Provider[] = [
   ReconciliationService,
   RECON_MISMATCH_COUNTER,
   RECON_RUNS_COUNTER,
+  RECON_AXIS_ERROR_COUNTER,
   RECON_LAST_SUCCESS_GAUGE,
   ORDERS_COUNTER,
   ORDERS_REJECTED_COUNTER,

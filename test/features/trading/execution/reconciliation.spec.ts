@@ -7,6 +7,7 @@ import {
   encodeClientOrderId,
   epochMs,
   intentId,
+  symbolId,
   venueId,
   type VenueId,
 } from '../../../../src/domain/common/types/ids';
@@ -42,6 +43,9 @@ const OTHER_COID = encodeClientOrderId(intentId('0190ffff-1234-7abc-89ab-0123456
 interface ExchangeScript {
   openOrders?: ExchangeOrderState[];
   openOrdersThrow?: boolean;
+  // Task C4: a specific Error (subclass) to throw instead of the generic 'open orders down' one —
+  // lets a test assert on the injected instance's own message/constructor name.
+  openOrdersThrowError?: Error;
   // Test-only latch: when set, fetchOpenOrders awaits it before resolving, so a pass can be held
   // mid-flight to exercise ReconciliationService's re-entrancy guard (the unguarded 30s driver
   // interval can otherwise start a second interleaved pass — security review 2026-07-22).
@@ -63,6 +67,7 @@ function build(
   runsCounter?: Counter<string>,
   lastSuccessGauge?: Gauge<string>,
   cfgOver: Partial<ReconConfig> = {},
+  axisErrorCounter?: Counter<string>,
 ) {
   let nowMs = T;
   const clock = { now: () => epochMs(nowMs) };
@@ -99,6 +104,7 @@ function build(
         )(),
       ),
     fetchOpenOrders: async () => {
+      if (script.openOrdersThrowError) throw script.openOrdersThrowError;
       if (script.openOrdersThrow) throw new Error('open orders down');
       if (script.openOrdersGate !== undefined) await script.openOrdersGate;
       return script.openOrders ?? [];
@@ -141,6 +147,7 @@ function build(
     undefined, // venuePorts — single-venue legacy path (see this file's own CFG-driven fixtures)
     undefined, // venueRegistry
     opsEventLogger,
+    axisErrorCounter,
   );
   return {
     store,
@@ -211,7 +218,7 @@ describe('ReconciliationService (§6.4)', () => {
     });
     ctx.portfolio.applyFill(intent, makeFill({ qty: intent.qty, price: intent.refPrice })); // creates the position
     const r = await ctx.recon.reconcile();
-    expect(r).toEqual({ mismatches: 0, halted: false }); // position symbol swept, balances agree
+    expect(r).toEqual({ mismatches: 0, actionableMismatches: 0, halted: false }); // position symbol swept, balances agree
   });
 
   it('increments reconciliation_mismatch_total with the mismatch class label (#24): a foreign open order counts as foreign_open_order', async () => {
@@ -247,18 +254,32 @@ describe('ReconciliationService (§6.4)', () => {
     expect(incCalls.at(-1)).toEqual([{ venue: V, result: 'clean' }]);
     expect(setCalls.at(-1)).toEqual([T / 1000]);
 
-    // mismatch pass (foreign open order) → result 'mismatch', no new gauge set
+    // Mismatch pass → result 'mismatch', no new gauge set. Task C3 re-decision (2026-07-27): this
+    // case used to use a foreign open order, but a foreign order is a BENIGN class and no longer
+    // withholds the clean stamp (that literal-zero requirement is exactly what starved auto-resume
+    // for 39h). The invariant worth pinning is unchanged in substance — an ACTIONABLE mismatch must
+    // not advance the gauge — so it now uses adopt_query_failure (local-open, venue-absent, fetchOrder
+    // throws): non-halting, actionable, and therefore still clean-blocking.
     const setCountAfterClean = setCalls.length;
-    const mismatch = build(
+    const mismatch = build({ openOrders: [] }, undefined, runs, lastSuccess, {
+      sweepSymbols: [SYM],
+    });
+    seedOpenOrder(mismatch, OTHER_COID);
+    await mismatch.recon.reconcile();
+    expect(incCalls.at(-1)).toEqual([{ venue: V, result: 'mismatch' }]);
+    expect(setCalls.length).toBe(setCountAfterClean); // gauge unchanged on an ACTIONABLE mismatch
+
+    // Companion to the above: a benign-only pass DOES advance the gauge post-C3.
+    const benign = build(
       { openOrders: [venueOrder('someoneElseOrder', 'open')] },
       undefined,
       runs,
       lastSuccess,
       { sweepSymbols: [SYM] },
     );
-    await mismatch.recon.reconcile();
-    expect(incCalls.at(-1)).toEqual([{ venue: V, result: 'mismatch' }]);
-    expect(setCalls.length).toBe(setCountAfterClean); // gauge unchanged on a non-clean pass
+    await benign.recon.reconcile();
+    expect(incCalls.at(-1)).toEqual([{ venue: V, result: 'mismatch' }]); // raw total still non-zero
+    expect(setCalls.length).toBe(setCountAfterClean + 1); // but the clean stamp advances
 
     // halt pass (our-prefix unknown open) → result 'halt'
     const halt = build(
@@ -275,7 +296,7 @@ describe('ReconciliationService (§6.4)', () => {
   it('a clean pass: no mismatches, not halted, one reconciliations row', async () => {
     const ctx = build();
     const r = await ctx.recon.reconcile();
-    expect(r).toEqual({ mismatches: 0, halted: false });
+    expect(r).toEqual({ mismatches: 0, actionableMismatches: 0, halted: false });
     expect(ctx.store.reconciliations).toHaveLength(1);
     expect(ctx.store.reconciliations[0]!.detail).toBe('clean');
     expect(ctx.engages).toHaveLength(0);
@@ -361,6 +382,97 @@ describe('ReconciliationService (§6.4)', () => {
     expect(ctx.orders.get(coid)?.state).toBe('ACKED'); // absence ≠ venue truth when the fetch failed
   });
 
+  // Task C4 (2026-07-27 incident): 39h / 93,738 binance sweep_failure increments with the caught
+  // error discarded by a bare `catch {}` — these four cases are the diagnostic surfacing fix.
+  describe('axis-error diagnostics (Task C4) and the detail precedence fix (Task H1)', () => {
+    class FakeVenueTimeout extends Error {}
+
+    it("a per-symbol sweep failure logs a WARN containing the injected error's message and increments reconciliation_axis_error_total with venue/axis/error_class", async () => {
+      const err = new FakeVenueTimeout('binance timed out fetching open orders');
+      const axisErrorCounter = { inc: vi.fn() } as unknown as Counter<string>;
+      const logged: string[] = [];
+      const warnSpy = vi
+        .spyOn(Logger.prototype, 'warn')
+        .mockImplementation((msg: unknown) => void logged.push(String(msg)));
+      try {
+        const ctx = build(
+          { openOrdersThrowError: err },
+          undefined,
+          undefined,
+          undefined,
+          { sweepSymbols: [SYM] },
+          axisErrorCounter,
+        );
+        await ctx.recon.reconcile();
+        expect(logged.some((l) => l.includes('binance timed out fetching open orders'))).toBe(true);
+        expect((axisErrorCounter.inc as ReturnType<typeof vi.fn>).mock.calls).toContainEqual([
+          { venue: V, axis: 'openOrders', error_class: 'FakeVenueTimeout' },
+        ]);
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it('rate-limits the WARN to one line per venue:axis per pass while the counter increments per-event: the same error on 3 symbols logs once but increments 3 times', async () => {
+      const err = new FakeVenueTimeout('symbol-scoped timeout');
+      const axisErrorCounter = { inc: vi.fn() } as unknown as Counter<string>;
+      const logged: string[] = [];
+      const warnSpy = vi
+        .spyOn(Logger.prototype, 'warn')
+        .mockImplementation((msg: unknown) => void logged.push(String(msg)));
+      try {
+        const ctx = build(
+          { openOrdersThrowError: err },
+          undefined,
+          undefined,
+          undefined,
+          { sweepSymbols: [SYM, symbolId('ETH/USDT'), symbolId('SOL/USDT')] },
+          axisErrorCounter,
+        );
+        await ctx.recon.reconcile();
+        expect(logged.filter((l) => l.includes('symbol-scoped timeout'))).toHaveLength(1); // rate-limited
+        expect((axisErrorCounter.inc as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(3); // per-event
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it('a throwing logger and a throwing counter do not break the pass (fail-open regression)', async () => {
+      const throwingCounter = {
+        inc: vi.fn(() => {
+          throw new Error('counter exploded');
+        }),
+      } as unknown as Counter<string>;
+      const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {
+        throw new Error('logger exploded');
+      });
+      try {
+        const ctx = build(
+          { openOrdersThrow: true },
+          undefined,
+          undefined,
+          undefined,
+          { sweepSymbols: [SYM] },
+          throwingCounter,
+        );
+        const r = await ctx.recon.reconcile();
+        expect(r.mismatches).toBe(1); // the sweep_failure mismatch still landed
+        expect(r.halted).toBe(false);
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it('a pass with sweep_failure mismatches and no halts persists a detail naming the class and count, never "clean"', async () => {
+      const ctx = build({ openOrdersThrow: true }, undefined, undefined, undefined, {
+        sweepSymbols: [SYM],
+      });
+      const r = await ctx.recon.reconcile();
+      expect(r.halted).toBe(false);
+      expect(ctx.store.reconciliations[0]!.detail).toBe('sweep_failure:1');
+    });
+  });
+
   it('balanceAxis=false skips the balances axis entirely (shared demo account)', async () => {
     const ctx = build(
       { balances: () => new Map([['USDT', { free: '90000', locked: '0' }]]) }, // would be BALANCE_DRIFT
@@ -370,7 +482,7 @@ describe('ReconciliationService (§6.4)', () => {
       { balanceAxis: false },
     );
     const r = await ctx.recon.reconcile();
-    expect(r).toEqual({ mismatches: 0, halted: false });
+    expect(r).toEqual({ mismatches: 0, actionableMismatches: 0, halted: false });
     expect(ctx.engages).toHaveLength(0);
   });
 
@@ -972,7 +1084,7 @@ describe('ReconciliationService (§6.4)', () => {
       );
       seedLocalLong(ctx);
       const r = await ctx.recon.reconcile();
-      expect(r).toEqual({ mismatches: 0, halted: false });
+      expect(r).toEqual({ mismatches: 0, actionableMismatches: 0, halted: false });
     });
 
     it('positionAxis:false ⇒ axis skipped even when fetchPositions is defined (spot-lane config)', async () => {
@@ -992,7 +1104,7 @@ describe('ReconciliationService (§6.4)', () => {
       const ctx = build({}, undefined, undefined, undefined, { balanceAxis: false });
       seedLocalLong(ctx); // would drift POSITION_DRIFT if the axis ran — no venue truth ⇒ never observed
       const r = await ctx.recon.reconcile();
-      expect(r).toEqual({ mismatches: 0, halted: false });
+      expect(r).toEqual({ mismatches: 0, actionableMismatches: 0, halted: false });
     });
 
     it('fetchPositions throw ⇒ sweep_failure only, no halt', async () => {
@@ -1018,7 +1130,7 @@ describe('ReconciliationService (§6.4)', () => {
       );
       seedLocalLong(ctx, '0.001');
       const r = await ctx.recon.reconcile();
-      expect(r).toEqual({ mismatches: 0, halted: false });
+      expect(r).toEqual({ mismatches: 0, actionableMismatches: 0, halted: false });
     });
   });
 });
@@ -1109,7 +1221,7 @@ describe('ReconciliationService — v3 multi-venue iteration (§1.5)', () => {
 
     const result = await recon.reconcile();
 
-    expect(result).toEqual({ mismatches: 0, halted: false });
+    expect(result).toEqual({ mismatches: 0, actionableMismatches: 0, halted: false });
     expect(store.reconciliations).toHaveLength(2);
     expect(store.reconciliations.map((r) => r.venue).sort()).toEqual([PERP, SPOT].sort());
   });
@@ -1157,7 +1269,7 @@ describe('ReconciliationService — v3 multi-venue iteration (§1.5)', () => {
     try {
       const result = await recon.reconcile();
 
-      expect(result).toEqual({ mismatches: 0, halted: false }); // the skip is not a mismatch
+      expect(result).toEqual({ mismatches: 0, actionableMismatches: 0, halted: false }); // the skip is not a mismatch
       expect(store.reconciliations).toHaveLength(1); // only the ported venue wrote a row
       expect(store.reconciliations[0]!.venue).toBe(SPOT);
       expect(logged).toEqual([`no exchange port registered for venue "${PERP}" — skipping`]);
@@ -1191,6 +1303,61 @@ describe('ReconciliationService — cleanWithin/cleanAfter/cleanIsLatest (Recove
     expect(ctx.recon.cleanAfter(epochMs(T - 1))).toBe(true); // clean pass came after
     expect(ctx.recon.cleanAfter(epochMs(T))).toBe(false); // equal — not STRICTLY after (fail closed)
     expect(ctx.recon.cleanAfter(epochMs(T + 1))).toBe(false); // clean pass predates this instant
+  });
+
+  // Task C3 (2026-07-27 incident): the stamp used to demand a literal process-wide zero, so one
+  // venue's routine benign noise starved auto-resume forever — 39h halted with lastCleanAt never set
+  // once. These pin the exact discount set: benign/transient classes stamp, everything else does not.
+  it('C3: a pass whose only mismatch is benign (foreign open order) still stamps lastCleanAt', async () => {
+    const ctx = build(
+      { openOrders: [venueOrder('someoneElseOrder', 'open')] },
+      undefined,
+      undefined,
+      undefined,
+      {
+        sweepSymbols: [SYM],
+      },
+    );
+    const r = await ctx.recon.reconcile();
+    expect(r.halted).toBe(false);
+    expect(r.mismatches).toBe(1); // raw total still reports the foreign order — unchanged for every consumer
+    expect(r.actionableMismatches).toBe(0);
+    expect(ctx.recon.cleanWithin(1_000_000, epochMs(T))).toBe(true);
+    expect(ctx.recon.cleanIsLatest()).toBe(true);
+  });
+
+  it('C3: a pass whose only mismatch is a transient sweep_failure still stamps lastCleanAt', async () => {
+    const ctx = build({ openOrdersThrow: true }, undefined, undefined, undefined, {
+      sweepSymbols: [SYM],
+    });
+    const r = await ctx.recon.reconcile();
+    expect(r.halted).toBe(false);
+    expect(r.mismatches).toBeGreaterThan(0);
+    expect(r.actionableMismatches).toBe(0);
+    expect(ctx.recon.cleanWithin(1_000_000, epochMs(T))).toBe(true);
+  });
+
+  it('C3: adopt_query_failure is NOT discounted — a local open order the venue does not list, whose fetchOrder throws, still blocks the stamp', async () => {
+    const ctx = build({ openOrders: [] }, undefined, undefined, undefined, { sweepSymbols: [SYM] });
+    seedOpenOrder(ctx, OTHER_COID); // local-open, venue-absent, default fetchOrder throws
+    const r = await ctx.recon.reconcile();
+    expect(r.actionableMismatches).toBeGreaterThan(0);
+    expect(ctx.recon.cleanWithin(1_000_000, epochMs(T))).toBe(false);
+    expect(ctx.recon.cleanIsLatest()).toBe(false);
+  });
+
+  it('C3: a halting class still blocks the stamp even when actionableMismatches would otherwise be discounted', async () => {
+    const ctx = build(
+      { openOrders: [venueOrder(OTHER_COID, 'open'), venueOrder('someoneElseOrder', 'open')] },
+      undefined,
+      undefined,
+      undefined,
+      { sweepSymbols: [SYM] },
+    );
+    const r = await ctx.recon.reconcile();
+    expect(r.halted).toBe(true); // unknown_ours_open — hard rule 6 path, untouched by C3
+    expect(ctx.recon.cleanWithin(1_000_000, epochMs(T))).toBe(false);
+    expect(ctx.recon.cleanIsLatest()).toBe(false);
   });
 
   it('a mismatch/halt pass never stamps lastCleanAt — both stay false afterward', async () => {

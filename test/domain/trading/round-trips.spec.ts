@@ -117,24 +117,68 @@ describe('domain/risk round-trip walk', () => {
     expect(cycles[0]!.openedAt).toBe(3); // the null-join rows never opened the cycle
   });
 
-  it('a dust-close on a stray SELL yields a cycle with no entry VWAP', () => {
-    // 0.01 × 100 = 1 < dust 5 → the lone SELL closes instantly; nothing was bought.
+  // BEHAVIOUR CHANGED 2026-07-27. These two cases previously asserted that a sub-dust fill mints a
+  // whole round trip on its own — a stray 0.01 SELL booking +1 of realized PnL, a stray 0.01 BUY
+  // booking −1 (i.e. −100% of its own notional). That is the phantom-trip defect, written down as
+  // expected behaviour: it fires while a position is still BUILDING, so a multi-fill order whose
+  // first fill lands under the dust floor closes a trip with cost and no proceeds. Observed live on
+  // BCH/USDT:USDT (first fill 0.022 @ 218.49 = $4.81 against a $5 floor). The dust rule now requires
+  // the cycle to have actually held a position of at least dustNotional before it may close one.
+  it('does not mint a round trip from a stray sub-dust SELL that never opened a position', () => {
     const { cycles } = walkRoundTrips(
       [fill({ side: 'SELL', qty: '0.01', price: '100', executedAt: 7 })],
       DUST,
     );
-    expect(cycles).toHaveLength(1);
-    expect(cycles[0]!.entryVwap).toBeNull();
-    expect(cycles[0]!.exitVwap!.toFixed()).toBe('100');
-    expect(cycles[0]!.realizedPnl.toFixed()).toBe('1');
+    // Stays open: real inventory, not a completed trip. It joins the next cycle for this group
+    // rather than inflating the promotion gate's trip count with a phantom.
+    expect(cycles).toHaveLength(0);
   });
 
-  it('a dust-close on a tiny BUY yields a cycle with no exit VWAP', () => {
+  it('does not mint a round trip from a stray sub-dust BUY that never opened a position', () => {
     const { cycles } = walkRoundTrips([fill({ qty: '0.01', price: '100', executedAt: 8 })], DUST);
+    expect(cycles).toHaveLength(0);
+  });
+
+  it('folds a multi-fill entry whose FIRST fill is sub-dust into ONE cycle (BCH regression)', () => {
+    // The live shape: 0.022 @ 218.49 = $4.81 < $5 opens the order, seven more fills build to 0.365,
+    // then the exit closes it. Pre-fix this walked as TWO cycles — a −10,004 bps phantom at fill 1
+    // plus a second fragment matching 0.343 bought against 0.365 sold.
+    const { cycles } = walkRoundTrips(
+      [
+        fill({ symbol: 'BCH/USDT:USDT', qty: '0.022', price: '218.49', executedAt: 1 }),
+        fill({ symbol: 'BCH/USDT:USDT', qty: '0.343', price: '218.49', executedAt: 2 }),
+        fill({
+          symbol: 'BCH/USDT:USDT',
+          side: 'SELL',
+          qty: '0.365',
+          price: '215.31',
+          executedAt: 3,
+        }),
+      ],
+      DUST,
+    );
     expect(cycles).toHaveLength(1);
-    expect(cycles[0]!.exitVwap).toBeNull();
-    expect(cycles[0]!.entryVwap!.toFixed()).toBe('100');
-    expect(cycles[0]!.realizedPnl.toFixed()).toBe('-1');
+    const c = cycles[0]!;
+    expect(c.boughtQty.toFixed()).toBe('0.365');
+    expect(c.soldQty.toFixed()).toBe('0.365');
+    // 0.365 × (215.31 − 218.49) = −1.1607 — the true round-trip loss, not the −7.3 the split booked.
+    expect(c.realizedPnl.toFixed(4)).toBe('-1.1607');
+    expect(c.openedAt).toBe(1);
+    expect(c.closedAt).toBe(3);
+  });
+
+  it('still dust-closes a residual once the cycle has held a real position', () => {
+    // Peak notional 100 ≥ dust, so winding down to a 0.01 × 100 = 1 residual closes the trip —
+    // the wind-down case the dust rule exists for is untouched by the build-up guard.
+    const { cycles } = walkRoundTrips(
+      [
+        fill({ qty: '1', price: '100', executedAt: 1 }),
+        fill({ side: 'SELL', qty: '0.99', price: '110', executedAt: 2 }),
+      ],
+      DUST,
+    );
+    expect(cycles).toHaveLength(1);
+    expect(cycles[0]!.realizedPnl.toFixed()).toBe('8.9');
   });
 
   it('accumulates per-cycle fees: quote directly, base at the fill price', () => {

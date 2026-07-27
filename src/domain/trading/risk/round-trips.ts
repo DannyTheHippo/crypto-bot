@@ -65,6 +65,14 @@ interface CycleState {
   slippageSum: Decimal;
   slippageCount: number;
   openedAt: number | null;
+  // Largest absolute position notional this cycle has ever held. The dust rule may only CLOSE a
+  // cycle that actually opened one: without this, a multi-fill order whose first fill is smaller
+  // than dustNotional closes a phantom round trip at that first fill (observed 2026-07-27 —
+  // BCH/USDT:USDT filled 0.022 @ 218.49 = $4.81 against a $5 dust floor, minting a -10,004 bps
+  // trip with cost and no proceeds, then resetting so the remaining 0.343 bought was matched
+  // against 0.365 sold). That inflates the promotion gate's round-trip count and distorts its
+  // net PnL, so the guard is a correctness fix on a live-arming input, not a cosmetic one.
+  peakNotional: Decimal;
 }
 
 function freshCycle(): CycleState {
@@ -78,6 +86,7 @@ function freshCycle(): CycleState {
     slippageSum: new Decimal(0),
     slippageCount: 0,
     openedAt: null,
+    peakNotional: new Decimal(0),
   };
 }
 
@@ -175,7 +184,12 @@ export function walkRoundTrips(
       }
 
       const residualNotional = cycle.signedQty.abs().mul(price);
-      if (residualNotional.lt(dustNotional)) {
+      if (residualNotional.gt(cycle.peakNotional)) cycle.peakNotional = residualNotional;
+      // Fail direction: a cycle that never reaches dustNotional stays OPEN and its fills are
+      // excluded from the walk entirely, so the promotion gate UNDER-counts round trips rather
+      // than admitting a phantom — the same under-count-never-false-permit discipline the
+      // epoch-straddle bound already documents.
+      if (residualNotional.lt(dustNotional) && cycle.peakNotional.gte(dustNotional)) {
         cycles.push({
           strategyId,
           symbol,

@@ -1104,7 +1104,10 @@ describe('validate()', () => {
   describe('perp config', () => {
     it('PERP_LEVERAGE_CAP defaults to 2 (v3) and overrides as an exact decimal string', () => {
       expect(validate({ PORT: '3100' }).perp.leverageCap).toBe('2');
-      expect(validate({ PORT: '3100', PERP_LEVERAGE_CAP: '5' }).perp.leverageCap).toBe('5');
+      // '3', not the new production '5' — paired with the unconfigured default MMR/buffer
+      // (0.005/0.20), 5/0.005/0.20 now trips the F1a zeroing refusal (see its own describe block
+      // below); this test only exercises override plumbing.
+      expect(validate({ PORT: '3100', PERP_LEVERAGE_CAP: '3' }).perp.leverageCap).toBe('3');
     });
 
     it('rejects PERP_LEVERAGE_CAP=0 (fail closed: a zero cap divides margin/liqPrice by zero)', () => {
@@ -1116,7 +1119,10 @@ describe('validate()', () => {
 
     it('PERP_LIQ_BUFFER_PCT defaults to 0.20 and overrides as an exact decimal string', () => {
       expect(validate({ PORT: '3100' }).perp.liqBufferPct).toBe('0.20');
-      expect(validate({ PORT: '3100', PERP_LIQ_BUFFER_PCT: '0.5' }).perp.liqBufferPct).toBe('0.5');
+      // '0.3', not '0.5' — paired with the unconfigured default leverage/MMR (2/0.005, distance
+      // 0.495), 0.5 now trips the F1a zeroing refusal (see its own describe block below); this
+      // test only exercises override plumbing.
+      expect(validate({ PORT: '3100', PERP_LIQ_BUFFER_PCT: '0.3' }).perp.liqBufferPct).toBe('0.3');
     });
 
     it('throws on a PERP_LIQ_BUFFER_PCT value outside the 0..1 fraction range', () => {
@@ -1131,6 +1137,40 @@ describe('validate()', () => {
     it('has no `enabled` field — PERP_VENUE_ENABLED is deleted (v3 §3.4)', () => {
       const perp = validate({ PORT: '3100' }).perp as unknown as Record<string, unknown>;
       expect(perp).not.toHaveProperty('enabled');
+    });
+
+    // F1a: liqSafeNotionalCap is not a graduated cap — a leverage/MMR/buffer triple either clears
+    // the required liq-price buffer (any notional is safe) or it doesn't (every notional is
+    // rejected). A triple that lands on the zero branch produces no boot-time signal today — refuse
+    // at construction rather than let a misconfigured deployment boot into silent zero-size perp
+    // entries.
+    describe('perp leverage/MMR/buffer zeroing refusal (F1a)', () => {
+      it('throws when leverage 5 pairs with the OLD default MMR/buffer (0.005/0.20)', () => {
+        // 1/5 - 0.005 = 0.195 < 0.20 ⇒ liqSafeNotionalCap collapses to 0 — exactly the trap the
+        // 2x→5x leverage cap change would have fallen into under the old buffer.
+        expect(() => validate({ PORT: '3100', PERP_LEVERAGE_CAP: '5' })).toThrow(
+          /PERP_LEVERAGE_CAP/,
+        );
+      });
+
+      it('boots clean at the new production triple (5 / 0.02 / 0.15)', () => {
+        const cfg = validate({
+          PORT: '3100',
+          PERP_LEVERAGE_CAP: '5',
+          PERP_MMR_FALLBACK: '0.02',
+          PERP_LIQ_BUFFER_PCT: '0.15',
+        });
+        expect(cfg.perp.leverageCap).toBe('5');
+        expect(cfg.perp.mmrFallback).toBe('0.02');
+        expect(cfg.perp.liqBufferPct).toBe('0.15');
+      });
+
+      it('boots clean at the current unconfigured default triple (2 / 0.005 / 0.20)', () => {
+        const cfg = validate({ PORT: '3100' });
+        expect(cfg.perp.leverageCap).toBe('2');
+        expect(cfg.perp.mmrFallback).toBe('0.005');
+        expect(cfg.perp.liqBufferPct).toBe('0.20');
+      });
     });
   });
 

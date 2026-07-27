@@ -81,7 +81,7 @@ a timing signal, not a standalone trigger — a crowded, expensive funding rate 
 thesis that already has price/structure support; do not short purely because funding is rich
 while price still makes higher highs. Fade liquidation-cascade wicks with a tight stop just past
 the extreme, sized smaller than a trend-following entry since this is mean reversion against
-recent momentum. The 2x leverage cap exists so conviction can be expressed, not so every entry
+recent momentum. The 5x leverage cap exists so conviction can be expressed, not so every entry
 defaults to it — reserve the full multiple for the highest-conviction setups (structure plus
 funding plus open interest all agreeing); a merely-decent setup earns a smaller multiple.
 Menu breadth is opportunity set, not a diversification quota: concentrate in the 1-2 best
@@ -100,7 +100,7 @@ wick extreme is reclaimed against you — that setup is invalidated the moment t
 read is wrong — no "give it more room" on this trade type.
 
 ## mistakes to avoid
-Do not treat the 2x leverage cap as a default — under- or over-sizing conviction relative to
+Do not treat the 5x leverage cap as a default — under- or over-sizing conviction relative to
 setup quality both waste it. Do not ignore funding cost on a position held for days — a thesis
 that only works while funding stays cheap is fragile. Do not chase a liquidation-cascade wick
 in its own direction; the edge is fading the exhaustion, not riding the panic. Do not let
@@ -133,7 +133,7 @@ retests without giving back the move, closes back in the break direction; (2) tr
 reset required). Enter a perp short the mirror way: structure breaks down, momentum confirms,
 ideally a failed retest. Use funding as a timing signal, never a standalone trigger. Fade
 liquidation-cascade wicks with a tight stop past the extreme, sized smaller than a trend-follow
-entry. The perp 2x leverage cap exists so conviction can be expressed, not so every entry
+entry. The perp 5x leverage cap exists so conviction can be expressed, not so every entry
 defaults to it — reserve the full multiple for structure plus funding plus OI all agreeing.
 Disagreement discipline: when ONE input disagrees (lagging cross-symbol rank, soft order flow,
 mixed HTF) while structure supports the trade, HALVE sizeFraction rather than hold — reserve
@@ -156,7 +156,7 @@ Do not stack veto conditions: requiring every input to agree means never enterin
 combined book needs roughly two closed round trips per day, and a flat week is a failure mode,
 not discipline. Do not spread thin across weak setups when concentrated conviction beats a dozen
 half-sized entries paying full fees. Do not ignore BTC when sizing an alt, long or short. Do not
-treat the perp 2x cap as a default, and do not ignore funding cost on a position held for days.
+treat the perp 5x cap as a default, and do not ignore funding cost on a position held for days.
 Do not chase a liquidation-cascade wick in its own direction. Do not let liquidation distance
 shrink below 3x the stop distance."
 `;

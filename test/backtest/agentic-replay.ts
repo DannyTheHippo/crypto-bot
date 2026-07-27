@@ -215,14 +215,16 @@ const INTERVAL_MS: Record<CandleInterval, number> = {
 const HTF_TARGET_MS: Record<'h1' | 'h4', number> = { h1: 3_600_000, h4: 14_400_000 };
 const INDICATOR_WARMUP_CLOSES = 21;
 
-// Mirrors anthropic-agent-client.ts's module-private DEFAULT_MAX_POSITION_FRACTION_SPOT/PERP and
-// DEFAULT_PERP_LEVERAGE_CAP (not exported — same local-redeclaration precedent as
-// test/eval/agentic/trade-eval-fixtures.ts's SYNTHETIC_PERP_CAPS, which pins the same numbers against
-// the deployed .env.app values). A backtest must advertise a symbol exactly what a live decide
-// advertises it, or the model is answering a different question — re-check on any drift there.
+// Pins what a LIVE decide actually advertises, which is the deployed .env.app value — not
+// anthropic-agent-client.ts's DEFAULT_* fallbacks, which only apply when the knob is absent (same
+// local-redeclaration precedent as test/eval/agentic/trade-eval-fixtures.ts's SYNTHETIC_PERP_CAPS).
+// Those two diverged at the 2026-07-27 leverage change: the zod/client default stays '2' while
+// .env.app pins '5', so mirroring the default here would understate the live cap. A backtest must
+// advertise a symbol exactly what a live decide advertises it, or the model is answering a different
+// question — re-check against .env.app on any drift.
 const MAX_POSITION_FRACTION_SPOT = '0.15';
 const MAX_POSITION_FRACTION_PERP = '0.35';
-const PERP_LEVERAGE_CAP = '2';
+const PERP_LEVERAGE_CAP = '5';
 
 // Mirrors anthropic-agent-client.ts's local (not exported) EPHEMERAL_1H — the same 1h cache TTL, so a
 // multi-bar replay run (many sequential calls sharing one system prompt + playbook prefix) actually

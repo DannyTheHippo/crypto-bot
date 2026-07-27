@@ -3,6 +3,7 @@ import { z } from 'zod';
 import Decimal from 'decimal.js';
 import type { AppConfig, TradingMode, VenueConfig } from '../../ports/common/app-config';
 import { AGENTIC_MAX_STOP_LOSS_PCT } from '../../domain/trading/risk/agentic-bounds';
+import { liqSafeNotionalCap } from '../../domain/trading/risk/perp-sizing';
 import { EDGE_POLICY_TRIAL_FAMILY_IDS } from '../../ports/strategy/agentic-strategy';
 import { splitSymbol } from '../../domain/venue/types/symbol';
 import { symbolId } from '../../domain/common/types/ids';
@@ -778,6 +779,27 @@ const envSchema = z
             `${data.AGENTIC_REFLECTION_MODEL} to AGENTIC_TOKEN_PRICES_JSON.`,
         });
       }
+    }
+    // Perp leverage/MMR/buffer zeroing refusal (F1a). domain/trading/risk/perp-sizing.ts's
+    // liqSafeNotionalCap is not a graduated cap: the configured triple either clears the required
+    // liq-price buffer (any notional is liq-safe ⇒ Infinity) or it doesn't (⇒ 0, rejecting every
+    // entry). A triple that lands on the zero branch produces no boot-time signal today — every
+    // perp entry silently rejects NO_POSITION/BELOW_MINIMUM at runtime. Fail CLOSED (config refusal
+    // at construction, never a runtime place-then-reject): refuse boot rather than let a
+    // misconfigured leverage/MMR/buffer combination silently collapse every perp entry to zero size.
+    const perpLeverageCapDec = new Decimal(data.PERP_LEVERAGE_CAP);
+    const perpMmrFallbackDec = new Decimal(data.PERP_MMR_FALLBACK);
+    const perpLiqBufferPctDec = new Decimal(data.PERP_LIQ_BUFFER_PCT);
+    if (liqSafeNotionalCap(perpLeverageCapDec, perpMmrFallbackDec, perpLiqBufferPctDec).isZero()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['PERP_LEVERAGE_CAP'],
+        message:
+          `PERP_LEVERAGE_CAP (${data.PERP_LEVERAGE_CAP}) / PERP_MMR_FALLBACK ` +
+          `(${data.PERP_MMR_FALLBACK}) / PERP_LIQ_BUFFER_PCT (${data.PERP_LIQ_BUFFER_PCT}) zero out ` +
+          `liqSafeNotionalCap — every perp entry would silently collapse to zero size, rejecting ` +
+          `with NO_POSITION/BELOW_MINIMUM at runtime with no boot-time signal.`,
+      });
     }
   });
 

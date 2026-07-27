@@ -347,7 +347,7 @@ export const SEED_PLAYBOOK: { readonly version: number; readonly content: string
 };
 
 // Perp lane counterpart to SEED_PLAYBOOK above — two-sided (shorts as readily as longs),
-// funding-flip and liquidation-cascade patterns, and leverage discipline for the 2x cap. Requires
+// funding-flip and liquidation-cascade patterns, and leverage discipline for the 5x cap. Requires
 // {shortsAllowed: true, leverageAllowed: true} to pass validatePlaybook; never served to a spot lane.
 // X2 (perp basket widening, 2026-07-20): version 5 — adds the menu-breadth passage to ## entry
 // rules (below) so a multi-symbol scanner menu (8-symbol basket, active menu 4) does not read as a
@@ -388,7 +388,7 @@ export const SEED_PLAYBOOK_PERP: { readonly version: number; readonly content: s
     'thesis that already has price/structure support; do not short purely because funding is rich',
     'while price still makes higher highs. Fade liquidation-cascade wicks with a tight stop just past',
     'the extreme, sized smaller than a trend-following entry since this is mean reversion against',
-    'recent momentum. The 2x leverage cap exists so conviction can be expressed, not so every entry',
+    'recent momentum. The 5x leverage cap exists so conviction can be expressed, not so every entry',
     'defaults to it — reserve the full multiple for the highest-conviction setups (structure plus',
     'funding plus open interest all agreeing); a merely-decent setup earns a smaller multiple.',
     'Menu breadth is opportunity set, not a diversification quota: concentrate in the 1-2 best',
@@ -407,7 +407,7 @@ export const SEED_PLAYBOOK_PERP: { readonly version: number; readonly content: s
     'read is wrong — no "give it more room" on this trade type.',
     '',
     '## mistakes to avoid',
-    'Do not treat the 2x leverage cap as a default — under- or over-sizing conviction relative to',
+    'Do not treat the 5x leverage cap as a default — under- or over-sizing conviction relative to',
     'setup quality both waste it. Do not ignore funding cost on a position held for days — a thesis',
     'that only works while funding stays cheap is fragile. Do not chase a liquidation-cascade wick',
     'in its own direction; the edge is fading the exhaustion, not riding the panic. Do not let',
@@ -429,12 +429,19 @@ export const SEED_PLAYBOOK_PERP: { readonly version: number; readonly content: s
 // returns ANY row at seed.version without checking source, so a pre-existing reflection v2 would
 // be served as "seed" and the trimmed prose never went ACTIVE. Content-only edits of an existing
 // version are a live no-op.
+// version 7→8 (F1b, perp leverage cap 2x→5x): the live DB already carries a reflection-minted row
+// at version 7 (append()'s maxVersion()+1 advanced past 6 during the v6 era) — bumping to 7 would
+// repeat the exact v1→2 collision above (ensureSeed serving the reflection row instead of this
+// content). 8 is the smallest version confirmed clear at the time of this change; because
+// append() keeps advancing maxVersion()+1 while the reflection loop runs, this is best-effort, not
+// a guarantee — confirm the live max version immediately before deploy and bump again if the loop
+// has since reached 8.
 // INTEGRATION ITEM (flagged, not resolved here): this folds the SEED CONSTS only, not either lane's
 // live ACTIVE reflection-minted text — reading the v2 DBs' current ACTIVE row is a cutover-time step
 // (the task brief explicitly defers it: "the cutover task owns the DB read"), so a future commit may
 // still need to re-fold real ACTIVE prose in before the v3 demo cutover flips PROMOTION_EVIDENCE_EPOCH.
 export const SEED_PLAYBOOK_V3: { readonly version: number; readonly content: string } = {
-  version: 6,
+  version: 8,
   content: [
     '## regime notes',
     'One book, two venues (spot + perp), one scanner menu. Swing horizon: hold hours to days on 15m',
@@ -458,7 +465,7 @@ export const SEED_PLAYBOOK_V3: { readonly version: number; readonly content: str
     'reset required). Enter a perp short the mirror way: structure breaks down, momentum confirms,',
     'ideally a failed retest. Use funding as a timing signal, never a standalone trigger. Fade',
     'liquidation-cascade wicks with a tight stop past the extreme, sized smaller than a trend-follow',
-    'entry. The perp 2x leverage cap exists so conviction can be expressed, not so every entry',
+    'entry. The perp 5x leverage cap exists so conviction can be expressed, not so every entry',
     'defaults to it — reserve the full multiple for structure plus funding plus OI all agreeing.',
     'Disagreement discipline: when ONE input disagrees (lagging cross-symbol rank, soft order flow,',
     'mixed HTF) while structure supports the trade, HALVE sizeFraction rather than hold — reserve',
@@ -481,7 +488,7 @@ export const SEED_PLAYBOOK_V3: { readonly version: number; readonly content: str
     'combined book needs roughly two closed round trips per day, and a flat week is a failure mode,',
     'not discipline. Do not spread thin across weak setups when concentrated conviction beats a dozen',
     'half-sized entries paying full fees. Do not ignore BTC when sizing an alt, long or short. Do not',
-    'treat the perp 2x cap as a default, and do not ignore funding cost on a position held for days.',
+    'treat the perp 5x cap as a default, and do not ignore funding cost on a position held for days.',
     'Do not chase a liquidation-cascade wick in its own direction. Do not let liquidation distance',
     'shrink below 3x the stop distance.',
   ].join('\n'),

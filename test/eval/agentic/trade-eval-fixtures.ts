@@ -18,13 +18,13 @@ import {
 
 // Byte-matches the production client defaults (anthropic-agent-client.ts's capabilitiesFor:
 // DEFAULT_MAX_POSITION_FRACTION_PERP / DEFAULT_PERP_LEVERAGE_CAP) and the deployed $1k demo book
-// (.env.app: AGENTIC_MAX_POSITION_FRACTION_PERP=0.35, PERP_LEVERAGE_CAP=2,
+// (.env.app: AGENTIC_MAX_POSITION_FRACTION_PERP=0.35, PERP_LEVERAGE_CAP=5,
 // VENUE_CAPITAL_SPLIT.binanceusdm=500) — replaying against these advertises exactly what a live
 // perp symbol advertises, never a synthetic best-case.
 export const SYNTHETIC_PERP_CAPS: SymbolCapabilities = {
   venue: venueId('binanceusdm'),
   shorts: true,
-  leverage: '2',
+  leverage: '5',
   maxSizeFraction: '0.35',
   venueFreeCash: '500',
 };

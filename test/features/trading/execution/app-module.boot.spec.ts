@@ -163,10 +163,12 @@ describe('AppModule composition', () => {
       // is empty regardless).
       expect(metrics.text).toContain('# TYPE strategy_lifecycle gauge');
       // G3c: AppModule.onModuleInit resolves the playbook and records it at boot, unconditionally
-      // (not gated behind the test/ci skip that guards the periodic trading drivers) —
-      // SEED_PLAYBOOK_V3 version 2 (2026-07-23 trim+bump): unified single lineage — ensureSeed
-      // inserts this version on a greenfield DB (content-only edits of v1 are a live no-op).
-      expect(metrics.text).toContain('agentic_playbook_info{version="6"} 1');
+      // (not gated behind the test/ci skip that guards the periodic trading drivers) — ensureSeed
+      // inserts SEED_PLAYBOOK_V3's version on a greenfield DB (content-only edits of an existing
+      // version are a live no-op, so the leverage-copy change had to carry a bump). Tracks
+      // SEED_PLAYBOOK_V3.version: 6 → 8 at F1b, skipping 7 because the live DB already holds a
+      // reflection-minted version 7.
+      expect(metrics.text).toContain('agentic_playbook_info{version="8"} 1');
       // E: onModuleInit records the bound client kind at boot. Under test/ci no ANTHROPIC_API_KEY is
       // read, so the inert StubAgentClient binds and the gauge carries kind="stub".
       expect(metrics.text).toContain('agent_client_info{kind="stub"} 1');

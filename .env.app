@@ -269,9 +269,18 @@ RISK_STALE_MAX_AGE_MS=5000 # ref-price staleness veto threshold (ms)
 
 # ── Perp/swap mechanics (bind to perp-venue symbols only — VENUES/TRADING_SYMBOLS above) ──
 # PERP_VENUE_ENABLED DELETED (§3.4): venue presence in VENUES is the signal now.
-PERP_LEVERAGE_CAP=2 # isolated-margin leverage cap (owner round 6: "perp gets leverage to a 2x cap")
-PERP_MMR_FALLBACK=0.005 # conservative fallback maintenance-margin-rate (1-2x BTC/ETH bracket)
-PERP_LIQ_BUFFER_PCT=0.20 # B2: required liq-price buffer a perp entry must clear (fraction)
+PERP_LEVERAGE_CAP=5 # isolated-margin leverage cap. Owner decision 2026-07-27 supersedes round 6's 2x.
+# Re-derived 2026-07-27 from live venue truth: fetchMarketLeverageTiers over all 16 configured perp
+# symbols gives a worst-case lowest-bracket MMR of 0.02 (TRUMP/USDT:USDT and SUI/USDT:USDT). The old
+# 0.005 was a 1-2x BTC/ETH-bracket figure and understated the deployed basket by 4x — tolerable at the
+# 2x cap (slack 0.495), not at 5x (slack 0.18). Flat worst-case, not per-symbol: real per-symbol tiers
+# stay deferred tech debt.
+PERP_MMR_FALLBACK=0.02 # measured worst-case maintenance-margin-rate across the live perp basket
+# Owner decision 2026-07-27: 0.20 -> 0.15, a deliberate reduction in the minimum acceptable
+# liquidation cushion, taken to admit the 5x cap. Check: 1/5 - 0.02 = 0.18 >= 0.15, 3pp of headroom.
+# environment.config.ts now REFUSES BOOT on any leverage/MMR/buffer triple that zeroes
+# liqSafeNotionalCap, so this class of silent zero-size-entry misconfiguration cannot recur.
+PERP_LIQ_BUFFER_PCT=0.15 # B2: required liq-price buffer a perp entry must clear (fraction)
 
 # ── Persistence (v3 §9: single postgres service — the lane-split postgres/postgres-perp pair
 # collapses into one, matching the single unified process above) ──

@@ -880,10 +880,13 @@ describe('PositionSizerService', () => {
     });
 
     it('liq buffer binds and rejects the entry outright when leverage/MMR fall short of the buffer, on both directions', () => {
-      // 1/5 - 0.005 = 0.195 < 0.2 buffer ⇒ liqSafeNotional collapses to 0 regardless of margin.
+      // 1/10 - 0.02 = 0.08 < 0.15 buffer ⇒ liqSafeNotional collapses to 0 regardless of margin.
+      // L=5 (the old must-reject case under the 0.005/0.2 triple) is now the production default
+      // under the new 5x/0.02/0.15 policy (0.18 >= 0.15 clears — see the positive-coverage test
+      // below) — this case moves to L=10 so the reject branch stays covered.
       const perpDeps = {
         filters: perpFilters(),
-        perp: { leverageCap: '5', mmrFallback: '0.005', liqBufferPct: '0.2' },
+        perp: { leverageCap: '10', mmrFallback: '0.02', liqBufferPct: '0.15' },
       };
       const long = new PositionSizerService(clock, deps(perpDeps)).size(
         signal({ venue: V_PERP, symbol: SYM_PERP, kind: 'ENTER_LONG' }),
@@ -896,6 +899,31 @@ describe('PositionSizerService', () => {
         snapshot(new Map(), { balances: marginBalance('10000') }),
       );
       expect(short).toEqual({ ok: false, reason: 'NO_POSITION' });
+    });
+
+    it('sizes to a nonzero notional at the new production triple (leverage 5, mmr 0.02, buffer 0.15), symmetric on both directions', () => {
+      // 1/5 - 0.02 = 0.18 >= 0.15 (buffer) ⇒ liq cap is Infinity; margin×leverageCap = 50×5 = 250
+      // binds under the 1000 legacy notional ⇒ qty = 250/100 = 2.5, identical on both sides.
+      const perpDeps = {
+        filters: perpFilters(),
+        perp: { leverageCap: '5', mmrFallback: '0.02', liqBufferPct: '0.15' },
+      };
+      const long = new PositionSizerService(clock, deps(perpDeps)).size(
+        signal({ venue: V_PERP, symbol: SYM_PERP, kind: 'ENTER_LONG' }),
+        snapshot(new Map(), { balances: marginBalance('50') }),
+      );
+      expect(long.ok).toBe(true);
+      if (long.ok) expect(long.intent.qty.toFixed()).toBe('2.5');
+
+      const short = new PositionSizerService(clock, deps(perpDeps)).size(
+        signal({ venue: V_PERP, symbol: SYM_PERP, kind: 'ENTER_SHORT' }),
+        snapshot(new Map(), { balances: marginBalance('50') }),
+      );
+      expect(short.ok).toBe(true);
+      if (short.ok) {
+        expect(short.intent.side).toBe('SELL');
+        expect(short.intent.qty.toFixed()).toBe('2.5');
+      }
     });
 
     it('applies the margin cap identically to ENTER_SHORT (both directions symmetric, unlike the spot BUY-only quote clamp)', () => {

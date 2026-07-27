@@ -412,7 +412,12 @@ describe('SEED_PLAYBOOK_PERP (P2 expert seed)', () => {
 
 describe('SEED_PLAYBOOK_V3 (v3 §9/§10 work item 3 — one lineage, both venues folded)', () => {
   it('passes validatePlaybook with the fixed v3 capabilities {shortsAllowed: true, leverageAllowed: true} (§1.3)', () => {
-    expect(SEED_PLAYBOOK_V3.version).toBe(6);
+    // 6 → 8 at the 2026-07-27 leverage change (F1b): the seed prose now states a 5x perp cap, and
+    // ensureSeed serves whatever row already exists at the seed's version number regardless of
+    // source, so a content edit only goes live behind a bump. 7 is skipped because the live DB
+    // already holds a reflection-minted version 7 (verified against agent_playbook_versions before
+    // deploy) — reusing it would serve that row and silently discard this prose.
+    expect(SEED_PLAYBOOK_V3.version).toBe(8);
     expect(
       validatePlaybook(SEED_PLAYBOOK_V3.content, { shortsAllowed: true, leverageAllowed: true }),
     ).toEqual({ ok: true });

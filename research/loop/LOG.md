@@ -4886,3 +4886,66 @@ this diagnosis's S3 (all four winners won BY discretion) point opposite ways, wh
 noise level that forbids acting. **C4 (payload ablation, ~$18) is CANCELLED** — it would optimise the
 cost of a strategy that should not be running, and S2 has already established no attribute of the
 signal is positive.
+
+---
+
+## 2026-07-28 — Pass 42 (playbook-space replay; soak baseline)
+
+**Window:** 2026-07-27 22:00Z → in progress. **Baseline metrics (22:35Z):** 23 closed round trips,
+net **−$38.48** (was −$37.56 at Pass 41), LLM $16.20, window 3.91d, win rate 17.4%,
+`agentic_promotion_ready=0`; container healthy, RestartCount 0, bootId `dcd11f81`, 0 sweep alarms.
+
+**Decision: the approved 90-day live A/B was WITHDRAWN and replaced with a two-day offline test.**
+Two adversarial reviews landed after approval and broke it. The premise was that the damning ENTRIES
+evidence came from a defective system — false: the random-bar placebo draws its null from the same 61
+(symbol, side) pairs, so it is _selection-invariant_ and a schema filter cannot make the survivors'
+bar-timing look worse than random within their own symbols. The finding stands. Three blocking
+defects would also have been hit on contact (dead validator path `scripts/playbook-candidate.mjs:42-45`;
+lapse deadlock when reflection is disabled; and the false claim that the bar had become
+beat-the-basket _instead of_ net > 0 — both clauses block). And the run bought under one bit: the gate
+re-evaluates after every closed trade with no alpha spending, ~6% false-positive per look across
+30–60 looks, ~45% power, for ~$240 and a quarter of a year.
+
+**Shipped this pass:**
+
+- `0516344` — the $0 inversion test committed, and recorded in state.md as a **tautological
+  restatement, NOT a finding**. It reports +16.9/+31.9/+47.3/+66.5 bps at h=1/4/8/24, which is
+  arithmetic: negating a negative mean mirrors the CI, t, halves and placebo p by construction. Only
+  magnitude-vs-fee is new, and **h=1 fails** (+16.9 gross − 20 bps = −3.1 net; CI lower bound +10.9 is
+  under even the +13.0 requirement). Also corrected the stale "SPECIFIED, NOT BUILT" passive-benchmark
+  verdict to **BUILT DARK** (port + clause exist, no provider binds `PASSIVE_BENCHMARK`, so the clause
+  is inert), and recorded that `NON_POSITIVE_NET_PNL` still blocks alongside it.
+- `83578d8` — preregistration + harness for the playbook-space replay
+  (`research/studies/playbook-space-replay-2026-07-28.md`, `test/eval/agentic/`). 12 arms × 386
+  recorded FLAT market states, scored on the identical metric that produced −16.9 bps, bar frozen at
+  +13.0 bps with a cluster bootstrap over SYMBOLS (not rows), Bonferroni over 48 cells, random-bar
+  placebo, both halves, trimming, and n≥12. ~$46 est. against a $90 hard cap.
+- `b9b52a6` — **DEFECT FIXED: the live champion playbook has been feeding every decide call half a
+  sentence.** v9 (champion since 2026-07-27 09:47) ends its entry-rules section at _"If ONE input
+  disagrees (lagging"_ — an unterminated clause with an unclosed parenthesis. Cause:
+  `compressPlaybookToMaxChars` cuts an over-cap section at a word boundary, which is correct, and then
+  stops, which is not. Fix drops the trailing partial sentence in one bounded pass at the end (never
+  >25% of a body, never below `MIN_SECTION_BODY_CHARS`), preserving the 2026-07-24 review's
+  anti-144-char-wipe guard. Regression test verified to FAIL against pre-fix code.
+
+**Flagged, deliberately NOT fixed — schema rejections drop intended entries.**
+`agentic_schema_rejections_total{kind="element"}=4`, `{kind="batch"}=2` since boot (~6h). All four
+element rejections are `sizeFraction is required when action is 'open_long'/'open_short'` — the model
+emits an open with no size, the element fails validation, and it degrades to a hold. The batch
+rejections are worse: they hold _every_ symbol in that wave. The prompt already states the
+six-fields-together requirement in four separate places (`agent-prompt.ts:288,304,319,596`), and the
+model omits it anyway — the likely root cause is that `sizeFraction` is JSON-schema-OPTIONAL (the
+requirement is conditional, enforced by a zod `superRefine`), so the model never sees "required".
+
+Not fixed, and the reason matters: the only fix that works is a corrective retry on the live decide
+path, which would make **more** entries fire — and entries are measured at −106 bps/trip. Repairing
+this would increase the loss rate while contaminating the very soak measuring it. The failure
+direction is already safe (hold, never a fabricated size). **It belongs on the Phase-B blocker list,
+conditional on an arm surviving the replay**; if nothing survives, fixing it would only make the
+system lose money faster. Recorded here because it also **biases every entry-rate measurement
+downward**, including this study's corpus.
+
+**Confirmed NOT a defect:** 126 `reconcile pass still in flight` warnings. `reconciliation.service.ts:294-301`
+documents a moderate skip rate as expected and healthy — a ~60s pass on a 30s tick means skipped ticks
+are what keeps passes running back-to-back. Alarming would be a sustained 100% skip rate or completed
+passes trending to zero; neither is present (binance 8, binanceusdm 9 completed this window).

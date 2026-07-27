@@ -320,7 +320,56 @@ calls cost $7.50, but that figure is inflated by cold caches and failed-call ove
 $0.0163/call over 4,632 calls gives **~$75**; the observed cache behaviour at `chunk=40` suggests
 materially less. **Budget $90, the pre-registered cap, unchanged.**
 
+## Amendment 3 (2026-07-28) — the KIMI leg is a SEPARATE TRIAL, not a substitute
+
+Owner direction, with Anthropic credit to be purchased shortly: run the study on the Moonshot key in
+the meantime. Moonshot exposes an **Anthropic-compatible surface** (`https://api.moonshot.ai/anthropic`),
+so `replayPlanRow` reaches `kimi-k3` with nothing but a `baseUrl` + key swap — the identical request
+shape, no second code path, and therefore no chance of the two legs drifting apart. Probe-verified
+2026-07-28: `kimi-k3` → HTTP 200; `kimi-k2-0905-preview` and `kimi-latest` → 404.
+
+**This does not answer the question the study was written to answer**, and the distinction is the
+whole reason this is a separate registration rather than a parameter tweak. The decide model is a
+pre-registered constant, because the champion IS `claude-sonnet-5` and the learning hypothesis is a
+claim about the deployed system.
+
+| | |
+| --- | --- |
+| **Trial id** | `playbook-space-replay-kimi-2026-07-28` |
+| **Answers** | Is there a playbook text such that **kimi-k3's** entries on these 386 states clear +13.0 bps? |
+| **Does NOT answer** | Whether the champion's learning hypothesis is alive. A NO SURVIVOR here does **not** kill it; a SURVIVOR here does **not** establish it. |
+| **Changed** | decide model `claude-sonnet-5` → `kimi-k3`; base URL |
+| **Unchanged** | corpus + manifest hash, all 12 arms, metric, horizons, +13.0 bps bar, Bonferroni 48, cluster bootstrap, placebo, halves, trimming, n≥12 |
+
+### Why this is worth running on its own merits, not as a consolation prize
+
+1. **It is a replication test of the central finding.** The ENTRIES verdict says this lane's entries
+   are *anti-predictive*. If that is a property of the **architecture** — the payload, the contract,
+   the 15m horizon, the symbol menu — kimi should reproduce it. If kimi's entries are **not**
+   negative, the defect localises to the model rather than the design, which is a materially
+   different diagnosis than anything on record and would reopen a frontier the program has closed.
+2. **It is far better powered.** Measured head-to-head (state.md, 2026-07-22): kimi's propose rate is
+   **0.38 vs sonnet's 0.07**, ~5×. The sonnet leg risked most arms landing UNDERPOWERED at n<12;
+   kimi should clear n≥12 on most arms, so more of the 48 cells are actually decidable.
+3. It is roughly half the cost (head-to-head: cost −54%).
+
+### Known properties of this model that the design must respect
+
+- **Schema-valid 0.71** (head-to-head; "kimi's mode is thesis >300 chars"). A naive 90% *parsed*-rate
+  floor would have voided this run for the sole reason that kimi writes long theses. The guard is
+  therefore split: **transport rate** (HTTP 200 + parseable envelope) gates and voids at <90%;
+  **schema-valid rate** is reported per arm and never gates. A model that breaks the contract is
+  data, not a broken harness.
+- Prior verdicts on this model are **HOLD / NO FLIP** for the live lane (offline replay 2026-07-21;
+  head-to-head 2026-07-22). Nothing here reopens that; the loop stays on Claude regardless of this
+  trial's outcome.
+- **USD figures on this leg are nominal at sonnet rates.** The meter prices kimi tokens at $3/$15 per
+  Mtok because this program has no authoritative kimi-k3 price. Since kimi measured ~54% cheaper,
+  the meter **over-estimates**, which is the safe direction for a spend cap — it stops early rather
+  than overspending. Reported spend is an upper bound, not a measurement.
+
 ## Results
 
-*Not yet produced — see Amendment 2. Runs 1 and 2 are VOID and no arm has been scored. The bar above
-does not move.*
+*Not yet produced for the champion (`claude-sonnet-5`) leg — see Amendment 2; runs 1 and 2 are VOID
+and no arm has been scored on it. The bar above does not move. The kimi leg's results are recorded
+below under their own trial id and do not substitute for it.*

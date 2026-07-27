@@ -17,8 +17,8 @@ import {
   ALPHA,
   BONFERRONI_CELLS,
   HORIZONS,
-  MIN_COMPLETION_RATE,
   MIN_ENTRIES,
+  MIN_TRANSPORT_RATE,
   REQUIRED_EDGE_BPS,
   assertArmsAreReachable,
   computeCell,
@@ -145,10 +145,14 @@ describe.runIf(PAID && API_KEY.length > 0 && CORPUS_PRESENT)(
         console.log(`arms: ${arms.map((a) => a.arm.name).join(', ')}\n`);
 
         const model = process.env.PLAYBOOK_SPACE_MODEL ?? 'claude-sonnet-5';
+        // Moonshot exposes an ANTHROPIC-COMPATIBLE surface at /anthropic, so the identical
+        // replayPlanRow request shape reaches kimi with nothing but a baseUrl + key swap — no
+        // second code path, and therefore no chance of the two legs drifting apart.
+        const baseUrl = process.env.PLAYBOOK_SPACE_BASE_URL ?? 'https://api.anthropic.com';
         // ONE call before thousands. Runs 1 and 2 (2026-07-28) both burned through the corpus
         // discovering mid-run that the account could not pay; the old pre-flight checked that a key
         // EXISTED, never that it could SPEND.
-        const preflight = await preflightCanSpend(API_KEY, model);
+        const preflight = await preflightCanSpend(API_KEY, model, baseUrl);
         if (!preflight.ok) {
           throw new Error(
             `PRE-FLIGHT FAILED — the API refused a 1-token probe with HTTP ${preflight.status}. ` +
@@ -163,6 +167,7 @@ describe.runIf(PAID && API_KEY.length > 0 && CORPUS_PRESENT)(
           {
             apiKey: API_KEY,
             model,
+            baseUrl,
             timeoutMs: 120_000,
             sizeFractionMax: '0.25',
             shortsEnabled: true,
@@ -184,21 +189,26 @@ describe.runIf(PAID && API_KEY.length > 0 && CORPUS_PRESENT)(
             `otherHttp=${run.transport.otherHttp} net=${run.transport.networkError} retries=${run.transport.retries}`,
         );
         console.log(
-          `completion: ${run.completion.parsed}/${run.completion.total} = ${(run.completion.rate * 100).toFixed(1)}% ` +
-            `(floor ${(MIN_COMPLETION_RATE * 100).toFixed(0)}%)\n`,
+          `transport rate: ${run.completion.transported}/${run.completion.total} = ` +
+            `${(run.completion.transportRate * 100).toFixed(1)}% (VOID floor ${(MIN_TRANSPORT_RATE * 100).toFixed(0)}%)`,
+        );
+        console.log(
+          `schema-valid rate: ${run.completion.parsed}/${run.completion.transported} = ` +
+            `${(run.completion.schemaRate * 100).toFixed(1)}% — REPORTED, never gating (model behaviour)\n`,
         );
 
         if (run.voided) {
-          // Fails CLOSED. Run 1 (2026-07-28) made all 4,632 calls, reported aborted=false, and printed
-          // a clean NO_SURVIVOR table off a ~13% completion rate — the arm means were drawn from a
-          // small non-random subsample of whichever calls happened to survive rate limiting. A run
-          // like that must never reach the results table, so this throws rather than reports.
+          // Fails CLOSED on TRANSPORT only. Run 1 (2026-07-28) made all 4,632 calls, reported
+          // aborted=false, and printed a clean NO_SURVIVOR table off a ~13% transport rate — the arm
+          // means came from whichever small, non-random subsample landed before the credit ran out.
+          // A run like that must never reach the results table, so this throws rather than reports.
+          // A low SCHEMA rate deliberately does NOT trip this: that is the model talking.
           throw new Error(
-            `RUN VOID — completion ${(run.completion.rate * 100).toFixed(1)}% is below the ` +
-              `${(MIN_COMPLETION_RATE * 100).toFixed(0)}% floor ` +
+            `RUN VOID — transport ${(run.completion.transportRate * 100).toFixed(1)}% is below the ` +
+              `${(MIN_TRANSPORT_RATE * 100).toFixed(0)}% floor ` +
               `(429=${run.transport.rateLimited}, 5xx=${run.transport.serverError}, ` +
-              `net=${run.transport.networkError}). No verdict may be published from this run. ` +
-              `Lower PLAYBOOK_SPACE_CONCURRENCY and re-run.`,
+              `otherHttp=${run.transport.otherHttp}, net=${run.transport.networkError}). ` +
+              `No verdict may be published from this run.`,
           );
         }
 
@@ -289,12 +299,17 @@ describe.runIf(PAID && API_KEY.length > 0 && CORPUS_PRESENT)(
         );
 
         mkdirSync(OUT_DIR, { recursive: true });
-        const outFile = join(OUT_DIR, 'playbook-space-replay-2026-07-28.json');
+        // Trial-scoped filename: the champion and kimi legs are SEPARATE registered trials
+        // (Amendment 3), so they must never overwrite each other's results.
+        const trialId = `playbook-space-replay-${model}-2026-07-28`;
+        const outFile = join(OUT_DIR, `${trialId}.json`);
         writeFileSync(
           outFile,
           JSON.stringify(
             {
-              study: 'playbook-space-replay-2026-07-28',
+              study: trialId,
+              model,
+              baseUrl,
               manifest,
               run: {
                 rowsAttempted: run.rowsAttempted,

@@ -193,7 +193,59 @@ describe('FillIngestorService', () => {
     expect(r.applied).toBe(true);
     expect(r.record.state).toBe('FILLED');
     expect(ctx.store.fills.size).toBe(1);
-    expect(ctx.portfolio.snapshot().positions.size).toBe(0); // no intent → no position fold
+    // No intent in-flight AND none in the store (saveIntent was never called) — the fold has nothing
+    // to attribute the fill to, so the position stays untouched. Contrast the terminal-then-more-
+    // fills case below, where the durable intent IS present and the money effect must still land.
+    expect(ctx.portfolio.snapshot().positions.size).toBe(0);
+  });
+
+  // Several trades of ONE order inside a single batch, where an intermediate fold already reached
+  // FILLED because the residual fell under stepSize. ingest clears the in-flight registration on
+  // that terminal fold, so every later fill in the batch used to lose its money effect: written to
+  // `fills`, folded onto the order, never applied to position or cash. On the spot demo venue
+  // nothing would have caught the divergence (balanceAxis off, position axis perp-only).
+  it('a fill arriving after the order already folded terminal still reaches position and cash', async () => {
+    const ctx = build();
+    const intent = makeIntent({ qty: qty('1') }); // stepSize 0.001 below
+    const coid = intent.clientOrderId;
+    await ctx.store.saveIntent(intent, { nonce: 'n', approvedAtMs: T, ttlMs: 60_000 } as never);
+    ctx.orders.create(initialOrder(coid, intent.qty, '0.001', SYM));
+    ctx.orders.apply(coid, { type: 'SUBMIT_SENT' });
+    const acked = ctx.orders.apply(coid, { type: 'ACK', venueOrderId: 'v1' });
+    ctx.portfolio.addInFlight(intent);
+
+    // 0.9995 of 1 leaves a residual under the 0.001 step ⇒ the reducer calls it FILLED and ingest
+    // clears the in-flight intent.
+    const first = await ctx.ingestor.ingest(
+      acked,
+      makeFill({
+        clientOrderId: coid,
+        venueTradeId: 't1',
+        qty: qty('0.9995'),
+        price: price('100'),
+      }),
+      'rep-1',
+    );
+    expect(first.record.state).toBe('FILLED');
+    expect(ctx.portfolio.inFlightIntent(coid)).toBeUndefined(); // the trap is now armed
+
+    const second = await ctx.ingestor.ingest(
+      first.record,
+      makeFill({
+        clientOrderId: coid,
+        venueTradeId: 't2',
+        qty: qty('0.0005'),
+        price: price('100'),
+      }),
+      'rep-2',
+    );
+
+    expect(second.applied).toBe(true);
+    expect(ctx.store.fills.size).toBe(2);
+    // Both fills reached the position — exact strings, never toBeCloseTo.
+    const positions = [...ctx.portfolio.snapshot().positions.values()];
+    expect(positions).toHaveLength(1);
+    expect(positions[0]!.signedQty.toFixed()).toBe('1');
   });
 
   it('increments fills_total metric once per newly-inserted fill (not on duplicates)', async () => {

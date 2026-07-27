@@ -161,7 +161,21 @@ export class FillIngestorService {
     });
     this.orders.commit(next);
 
-    const intent = this.portfolio.inFlightIntent(coid);
+    // The in-flight map is the fast path, NOT the authority. It is cleared the moment an order folds
+    // terminal (below), so a later fill for the same order — several trades of one order inside a
+    // single reconcile/poll batch, where an intermediate fold already reached FILLED because the
+    // residual fell under stepSize — would find nothing here and have its money effect dropped:
+    // journaled into `fills`, folded into the order, never applied to position or cash. That is the
+    // shape boot-recovery.service.ts already names as a bug ("later fills journaled but never
+    // applied to position/cash — 2026-07-11: an unmanaged 6.9-LINK position"), and on the spot demo
+    // venue nothing would catch it (balanceAxis is off there and the position axis is perp-only).
+    // Safe by construction: this line is only reached when saveFill INSERTED the row, so the fill has
+    // never been applied anywhere and cannot be double-counted. Falls back to the durable intent, and
+    // stays a no-op when there is genuinely no intent at all (a foreign/pre-boot fill).
+    const intent =
+      this.portfolio.inFlightIntent(coid) ??
+      (await this.store.loadIntentByClientOrderId?.(coid)) ??
+      undefined;
     if (intent !== undefined) {
       const application = this.portfolio.applyFill(intent, fill);
       // §8 fill-rate numerator + decision slippage. The .toNumber() calls are the sanctioned

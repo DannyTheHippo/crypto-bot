@@ -271,6 +271,7 @@ export function compressPlaybookToMaxChars(
     sections.map((s) => (s.body.length > 0 ? `${s.heading}\n${s.body}` : s.heading)).join('\n\n');
 
   const originalLen = content.length;
+  const trimmedSections = new Set<number>();
   let guard = 0;
   while (true) {
     const joinLen = joinSections().length;
@@ -320,10 +321,57 @@ export function compressPlaybookToMaxChars(
       };
     }
     sections[longest] = { heading: sections[longest]!.heading, body: next };
+    trimmedSections.add(longest);
+  }
+
+  // Final pass: a budgeted cut lands on a WORD boundary, which routinely leaves a body ending
+  // mid-sentence — the live champion (agent_playbook_versions v9, 3996 chars) ends its entry-rules
+  // section at "If ONE input disagrees (lagging", an unterminated clause with an unclosed
+  // parenthesis, and that text was composed into every decide call. Drop the dangling fragment.
+  //
+  // Bounded deliberately, and applied ONCE at the end rather than per-iteration: the 2026-07-24
+  // adversarial review caught an unbounded lastIndexOf cut turning a 16-char overflow into a 144-char
+  // wipe, so this refuses to remove more than DANGLING_TRIM_MAX_FRACTION of a body or to push it
+  // under MIN_SECTION_BODY_CHARS. When the fragment is too expensive to remove the text is left as
+  // it is — a slightly ragged playbook beats an amputated one, and this only ever SHORTENS, so the
+  // char cap it just satisfied cannot be re-broken.
+  for (const i of trimmedSections) {
+    const body = sections[i]!.body;
+    const tidied = dropDanglingSentence(body);
+    if (tidied !== null) sections[i] = { heading: sections[i]!.heading, body: tidied };
   }
 
   const compressed = joinSections();
   return { ok: true, content: compressed, trimmedChars: originalLen - compressed.length };
+}
+
+/** Most a single body may lose to the dangling-fragment cleanup — see its caller's comment. */
+const DANGLING_TRIM_MAX_FRACTION = 0.25;
+const SENTENCE_END_RE = /[.;!?]/;
+
+/**
+ * Returns `body` with a trailing partial sentence removed, or null when it already ends cleanly or
+ * the removal would cost too much. Never lengthens, never empties.
+ */
+function dropDanglingSentence(body: string): string | null {
+  const trimmedEnd = body.replace(/\s+$/u, '');
+  if (trimmedEnd.length === 0) return null;
+  const last = trimmedEnd[trimmedEnd.length - 1]!;
+  if (SENTENCE_END_RE.test(last)) return null;
+
+  let cut = -1;
+  for (let i = trimmedEnd.length - 1; i >= 0; i--) {
+    if (SENTENCE_END_RE.test(trimmedEnd[i]!)) {
+      cut = i;
+      break;
+    }
+  }
+  if (cut < 0) return null;
+
+  const candidate = trimmedEnd.slice(0, cut + 1).replace(/\s+$/u, '');
+  if (candidate.length < MIN_SECTION_BODY_CHARS) return null;
+  if (body.length - candidate.length > body.length * DANGLING_TRIM_MAX_FRACTION) return null;
+  return candidate;
 }
 
 function trimBodyToBudget(body: string, budget: number): string {

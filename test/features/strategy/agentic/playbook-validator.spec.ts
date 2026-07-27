@@ -480,6 +480,79 @@ describe('compressPlaybookToMaxChars', () => {
     expect(validatePlaybook(result.content)).toEqual({ ok: true });
   });
 
+  it('drops a dangling partial sentence left by the budgeted cut (live v9 shape)', () => {
+    // REGRESSION, from real live data: agent_playbook_versions v9 (3996 chars, the champion at
+    // 2026-07-27) ends its entry-rules section at "...sub-$3 notional trips cannot outrun costs. If
+    // ONE input disagrees (lagging" — the budgeted cut landed on a word boundary, which is what it is
+    // designed to do, and left an unterminated clause with an unclosed parenthesis that was then
+    // composed into every live decide call.
+    const danglingTail =
+      'If ONE input disagrees (lagging indicator, thin volume) size down instead';
+    const entryBody =
+      `${'Enter on a break-and-hold with a named invalidation. '.repeat(6)}` +
+      `Sizing: concentrate, 2-3 positions max, sub-$3 notional trips cannot outrun costs. ` +
+      `${danglingTail}.`;
+    const head = [
+      '## regime notes',
+      'Regime body with enough prose to stay above the minimum section floor after a small trim.',
+      '',
+      '## entry rules',
+      entryBody,
+      '',
+      '## exit rules',
+      'Exit body with enough prose to stay above the minimum section floor after a small trim.',
+      '',
+      '## mistakes to avoid',
+      'Mistakes body with enough prose to stay above the minimum section floor after a trim.',
+    ].join('\n');
+
+    // Overflow small enough that the cut lands INSIDE the final sentence rather than removing it.
+    const overflow = 24;
+    const cap = head.length - overflow;
+    const result = compressPlaybookToMaxChars(head, cap);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.content.length).toBeLessThanOrEqual(cap);
+    expect(validatePlaybook(result.content)).toEqual({ ok: true });
+    // The whole point: no half-sentence survives, and specifically not an unclosed parenthesis.
+    const entrySection = result.content.split('## exit rules')[0]!;
+    const entryText = entrySection.split('## entry rules')[1]!.trim();
+    expect(entryText.endsWith('.')).toBe(true);
+    expect(entryText).not.toContain('(lagging indicator, thin');
+    // Bounded: the earlier complete sentences are untouched, so this never becomes the 144-char wipe
+    // the 2026-07-24 adversarial review caught.
+    expect(entryText).toContain('cannot outrun costs.');
+  });
+
+  it('leaves a body alone when dropping its dangling fragment would cost too much', () => {
+    // The guard that keeps this cleanup from regressing into an unbounded cut: one enormous
+    // terminator-free tail means the only sentence boundary is far back, so the fragment stays.
+    const tail = 'x'.repeat(600);
+    const head = [
+      '## regime notes',
+      'Regime body with enough prose to stay above the minimum section floor after a small trim.',
+      '',
+      '## entry rules',
+      `Enter on a break-and-hold with a named invalidation. ${tail}`,
+      '',
+      '## exit rules',
+      'Exit body with enough prose to stay above the minimum section floor after a small trim.',
+      '',
+      '## mistakes to avoid',
+      'Mistakes body with enough prose to stay above the minimum section floor after a trim.',
+    ].join('\n');
+
+    const cap = head.length - 20;
+    const result = compressPlaybookToMaxChars(head, cap);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.content.length).toBeLessThanOrEqual(cap);
+    expect(validatePlaybook(result.content)).toEqual({ ok: true });
+    // Dropping back to the lone terminator would delete ~90% of the body — refused, so the tail lives.
+    expect(result.content).toContain('xxxxx');
+  });
+
   it('refuses to empty a section body', () => {
     const content = [
       '## regime notes',

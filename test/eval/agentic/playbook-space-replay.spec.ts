@@ -161,7 +161,7 @@ describe.runIf(PAID && API_KEY.length > 0 && CORPUS_PRESENT)(
         );
 
         console.log(
-          `\nrun: rows=${run.rowsAttempted}/${rows.length} calls=${run.meter.calls} spend=$${run.meter.usd}` +
+          `\nrun: rowsCovered=${run.rowsCovered}/${rows.length} (common to ALL arms) calls=${run.meter.calls} spend=$${run.meter.usd}` +
             `${run.aborted ? ' ABORTED ON BUDGET — partial, not complete' : ''}\n`,
         );
 
@@ -261,6 +261,7 @@ describe.runIf(PAID && API_KEY.length > 0 && CORPUS_PRESENT)(
               manifest,
               run: {
                 rowsAttempted: run.rowsAttempted,
+                rowsCovered: run.rowsCovered,
                 corpusRows: rows.length,
                 aborted: run.aborted,
                 ...run.meter,

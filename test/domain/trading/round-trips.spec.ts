@@ -167,6 +167,38 @@ describe('domain/risk round-trip walk', () => {
     expect(c.closedAt).toBe(3);
   });
 
+  // The entryVwap/exitVwap null branches used to be reached by the two stray-dust cases above.
+  // Under the peak-notional guard a sub-dust fill no longer closes anything, so the only way to
+  // close a cycle with one side empty is a COLLAPSE in price: the dust test measures the residual at
+  // the CURRENT fill's price, so a position that stays open in units can fall under the dust floor
+  // in quote terms. Contrived, and deliberately kept — a token that falls ~4 orders of magnitude is
+  // exactly when a one-sided cycle would be booked, and the null branches exist for it.
+  it('a short whose price collapses closes with no entry VWAP (never bought)', () => {
+    const { cycles } = walkRoundTrips(
+      [
+        fill({ side: 'SELL', qty: '1', price: '100', executedAt: 1 }), // peak notional 100 ≥ dust
+        fill({ side: 'SELL', qty: '0.001', price: '0.01', executedAt: 2 }), // residual 0.01 < dust
+      ],
+      DUST,
+    );
+    expect(cycles).toHaveLength(1);
+    expect(cycles[0]!.entryVwap).toBeNull();
+    expect(cycles[0]!.exitVwap).not.toBeNull();
+  });
+
+  it('a long whose price collapses closes with no exit VWAP (never sold)', () => {
+    const { cycles } = walkRoundTrips(
+      [
+        fill({ qty: '1', price: '100', executedAt: 1 }),
+        fill({ qty: '0.001', price: '0.01', executedAt: 2 }),
+      ],
+      DUST,
+    );
+    expect(cycles).toHaveLength(1);
+    expect(cycles[0]!.exitVwap).toBeNull();
+    expect(cycles[0]!.entryVwap).not.toBeNull();
+  });
+
   it('still dust-closes a residual once the cycle has held a real position', () => {
     // Peak notional 100 ≥ dust, so winding down to a 0.01 × 100 = 1 residual closes the trip —
     // the wind-down case the dust rule exists for is untouched by the build-up guard.

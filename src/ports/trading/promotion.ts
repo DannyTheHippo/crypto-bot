@@ -98,6 +98,7 @@ export interface PromotionStatsPort {
   // the fail-closed direction). sinceMs filters to rows created at/after that instant; absent ⇒
   // all-time.
   llmTokenTotals(sinceMs?: number): Promise<LlmTokenTotals>;
+  // ↓ see PassiveBenchmarkPort below for the benchmark half of the verdict.
   // Same fold, but WITHOUT the replay exclusion — every token that cost real money, including
   // `replay-<runId>` decide rows. Exists as a separate method rather than a boolean on
   // llmTokenTotals above precisely because that one feeds the live-arming promotion verdict: a
@@ -192,8 +193,38 @@ export interface PromotionReadinessEvidence {
   // exist in-window — a visible measurement-gap signal, deliberately OUTSIDE `reasons` so it never
   // blocks promotion (fail-open; see PromotionReadinessConfig.fundingDataExpected's own comment).
   readonly fundingDataMissing: boolean;
+  // What the passive equal-weight basket would have earned, in quote units, on the SAME capital over
+  // the SAME window — or null when no benchmark port is bound or it could not be computed. Compared
+  // against netPnl above to produce BELOW_PASSIVE_BENCHMARK. Null is not a failure: the gate simply
+  // does not apply the benchmark clause, which is the pre-enable behavior (see PassiveBenchmarkPort).
+  readonly passivePnlQuote: string | null;
   readonly reasons: string[];
 }
+
+// The benchmark half of the promotion verdict (2026-07-27).
+//
+// WHY THIS EXISTS: the gate previously asked only for net-of-cost PnL > 0. That bar passes a
+// strategy earning +3%/yr while the basket earns +12% — i.e. it certifies value destruction as
+// success. Measured on this very lane: the bot lost ~4% of its book over a window in which the same
+// 16 assets returned +0.39% equal-weight, and over 7 years every active strategy tested
+// underperformed passive exposure (research/studies/horizon-and-baseline-2026-07-27.md, 24/24 cells
+// negative). Beating zero is not evidence of skill; beating the alternative is.
+//
+// Implementations answer in QUOTE UNITS rather than as a return fraction so the capital assumption
+// lives with the adapter that knows the book size, and the service stays a pure comparison.
+export interface PassiveBenchmarkPort {
+  /**
+   * What an equal-weight buy-and-hold of the demo universe would have earned, in quote units, on the
+   * same capital the strategy was sized against, over [fromMs, toMs].
+   *
+   * Returns null when it cannot be computed (no venue data, window too short, universe empty). Null
+   * is a MEASUREMENT GAP, not a verdict: the readiness service drops the benchmark clause entirely
+   * rather than guessing, exactly as it does for absent funding data.
+   */
+  passivePnlQuote(fromMs: number, toMs: number): Promise<string | null>;
+}
+
+export const PASSIVE_BENCHMARK = Symbol('PASSIVE_BENCHMARK');
 
 export interface PromotionReadiness {
   readonly permitted: boolean;

@@ -513,6 +513,7 @@ describe('live interlock (earned-live gate: a live-configured agentic boot needs
       firstClosedAt: 1,
       lastClosedAt: 2,
       fundingDataMissing: false,
+      passivePnlQuote: null,
       reasons: [],
     },
   };

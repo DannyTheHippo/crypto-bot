@@ -28,6 +28,7 @@ const FAKE_EVIDENCE = {
   firstClosedAt: 1,
   lastClosedAt: 2,
   fundingDataMissing: false,
+  passivePnlQuote: null,
   reasons: [] as string[],
 };
 

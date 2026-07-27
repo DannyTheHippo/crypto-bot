@@ -6,6 +6,7 @@ import type {
   PromotionReadinessConfig,
   PromotionStatsPort,
 } from '../../../../src/ports/trading/promotion';
+import type { PassiveBenchmarkPort } from '../../../../src/ports/trading/promotion';
 
 const CFG: PromotionReadinessConfig = {
   tokenPriceInputPerMtok: '3',
@@ -529,6 +530,83 @@ describe('PromotionReadinessService', () => {
       // Only the epoch-forward trip survives the filter → 1 round trip, window 0 days.
       expect(v.evidence.roundTrips).toBe(1);
       expect(v.evidence.windowDays).toBe(0);
+    });
+  });
+
+  describe('passive benchmark clause (2026-07-27)', () => {
+    // Two closed trips 15 days apart so the window/round-trip clauses are not what is under test;
+    // only BELOW_PASSIVE_BENCHMARK's own presence or absence is asserted here.
+    const CLOSE_A = 1_000;
+    const CLOSE_B = CLOSE_A + 15 * DAY;
+    const profitableFills: PromotionFillRow[] = [
+      fill({ executedAt: CLOSE_A - 1, side: 'BUY', qty: '1', price: '100' }),
+      fill({ executedAt: CLOSE_A, side: 'SELL', qty: '1', price: '150' }),
+      fill({ executedAt: CLOSE_B - 1, side: 'BUY', qty: '1', price: '100' }),
+      fill({ executedAt: CLOSE_B, side: 'SELL', qty: '1', price: '150' }),
+    ];
+    const benchmarkOf = (value: string | null): PassiveBenchmarkPort => ({
+      passivePnlQuote: () => Promise.resolve(value),
+    });
+
+    it('no port bound ⇒ the clause never fires and the verdict is unchanged', async () => {
+      const v = await new PromotionReadinessService(statsOf(profitableFills).port, CFG).evaluate();
+      expect(v.evidence.passivePnlQuote).toBeNull();
+      expect(v.evidence.reasons).not.toContain('BELOW_PASSIVE_BENCHMARK');
+    });
+
+    it('port returns null (measurement gap) ⇒ clause dropped, never guessed', async () => {
+      const v = await new PromotionReadinessService(
+        statsOf(profitableFills).port,
+        CFG,
+        benchmarkOf(null),
+      ).evaluate();
+      expect(v.evidence.passivePnlQuote).toBeNull();
+      expect(v.evidence.reasons).not.toContain('BELOW_PASSIVE_BENCHMARK');
+    });
+
+    it('beating zero but LOSING to the basket is blocked — the whole point of the clause', async () => {
+      // netPnl is +100 (two trips of +50). Passive would have earned 250 on the same capital.
+      const v = await new PromotionReadinessService(
+        statsOf(profitableFills).port,
+        CFG,
+        benchmarkOf('250'),
+      ).evaluate();
+      expect(v.evidence.netPnl).toBe('100');
+      expect(v.evidence.passivePnlQuote).toBe('250');
+      expect(v.evidence.reasons).toContain('BELOW_PASSIVE_BENCHMARK');
+      expect(v.permitted).toBe(false);
+    });
+
+    it('exactly matching the basket is NOT beating it (<= blocks, so a tie fails)', async () => {
+      const v = await new PromotionReadinessService(
+        statsOf(profitableFills).port,
+        CFG,
+        benchmarkOf('100'),
+      ).evaluate();
+      expect(v.evidence.reasons).toContain('BELOW_PASSIVE_BENCHMARK');
+    });
+
+    it('beating the basket clears the clause', async () => {
+      const v = await new PromotionReadinessService(
+        statsOf(profitableFills).port,
+        CFG,
+        benchmarkOf('99'),
+      ).evaluate();
+      expect(v.evidence.passivePnlQuote).toBe('99');
+      expect(v.evidence.reasons).not.toContain('BELOW_PASSIVE_BENCHMARK');
+    });
+
+    it('no closed trips ⇒ no window ⇒ the port is never consulted', async () => {
+      let calls = 0;
+      const spy: PassiveBenchmarkPort = {
+        passivePnlQuote: () => {
+          calls += 1;
+          return Promise.resolve('250');
+        },
+      };
+      const v = await new PromotionReadinessService(statsOf([]).port, CFG, spy).evaluate();
+      expect(calls).toBe(0);
+      expect(v.evidence.passivePnlQuote).toBeNull();
     });
   });
 });

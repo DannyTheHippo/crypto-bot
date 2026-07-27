@@ -2,8 +2,10 @@ import { Inject, Injectable, Optional } from '@nestjs/common';
 import Decimal from 'decimal.js';
 import { sumFeesQuote, walkRoundTrips } from '../../../domain/trading/risk/round-trips';
 import {
+  PASSIVE_BENCHMARK,
   PROMOTION_READINESS_CONFIG,
   PROMOTION_STATS,
+  type PassiveBenchmarkPort,
   type PerModelTokenTotals,
   type PromotionReadiness,
   type PromotionReadinessConfig,
@@ -30,6 +32,14 @@ export class PromotionReadinessService implements PromotionReadinessPort {
   constructor(
     @Optional() @Inject(PROMOTION_STATS) private readonly stats: PromotionStatsPort | undefined,
     @Inject(PROMOTION_READINESS_CONFIG) private readonly cfg: PromotionReadinessConfig,
+    // Optional so the port can land dark: unbound ⇒ the benchmark clause never fires and the verdict
+    // is byte-identical to the pre-2026-07-27 gate. Binding it at the composition root is the enable.
+    // Trailing + `?` (rather than this file's `| undefined` convention for stats above) so every
+    // existing 2-arg construction — three test suites, incl. both livegate matrices — keeps
+    // compiling untouched. Same semantics: unbound ⇒ clause never fires.
+    @Optional()
+    @Inject(PASSIVE_BENCHMARK)
+    private readonly benchmark?: PassiveBenchmarkPort,
   ) {}
 
   async evaluate(): Promise<PromotionReadiness> {
@@ -101,6 +111,18 @@ export class PromotionReadinessService implements PromotionReadinessPort {
     const windowDays =
       cycles.length > 0 && windowStart !== null ? (lastClosedAt! - windowStart) / DAY_MS : 0;
 
+    // Passive benchmark (2026-07-27). "net-of-cost > 0" certifies value destruction as success — a
+    // strategy earning +3% while the basket earns +12% clears it. So the bar is now ALSO "beat the
+    // alternative", not merely "beat zero". Absent port or an uncomputable window drops the clause
+    // (measurement gap, same fail-open as funding data) — which is deliberately the pre-wiring
+    // behavior, so the port can land dark and be enabled by binding it at the composition root.
+    const passivePnlQuote =
+      windowStart !== null && lastClosedAt !== null
+        ? ((await this.benchmark?.passivePnlQuote(windowStart, lastClosedAt)) ?? null)
+        : null;
+    const belowPassiveBenchmark =
+      passivePnlQuote !== null && netPnl.lte(new Decimal(passivePnlQuote));
+
     const reasons: string[] = [];
     if (hasUnresolvedFill) reasons.push('UNRESOLVED_FILL');
     if (unconvertibleFeeAsset) reasons.push('UNCONVERTIBLE_FEE_ASSET');
@@ -108,6 +130,7 @@ export class PromotionReadinessService implements PromotionReadinessPort {
     if (netPnl.lte(0)) reasons.push('NON_POSITIVE_NET_PNL');
     if (windowDays < MIN_WINDOW_DAYS) reasons.push('INSUFFICIENT_WINDOW');
     if (fundingDataMissing) reasons.push('FUNDING_DATA_MISSING');
+    if (belowPassiveBenchmark) reasons.push('BELOW_PASSIVE_BENCHMARK');
 
     // Per-trip win = net-of-fee PnL > 0 (realized − feesQuote). LLM spend is a book-level cost, not
     // attributed per trip — same definition as RoundTripEvidence.netPnl / trackRecord.winRate.
@@ -126,6 +149,7 @@ export class PromotionReadinessService implements PromotionReadinessPort {
       firstClosedAt,
       lastClosedAt,
       fundingDataMissing,
+      passivePnlQuote,
       reasons,
     };
 
@@ -208,6 +232,10 @@ function zeroEvidence() {
     firstClosedAt: null,
     lastClosedAt: null,
     fundingDataMissing: false,
+    // No stats source ⇒ no window ⇒ nothing to benchmark against. Null, never '0': a zero here
+    // would read as "passive earned nothing", which the NON_POSITIVE_NET_PNL clause would then
+    // silently double-count against a break-even strategy.
+    passivePnlQuote: null,
   };
 }
 

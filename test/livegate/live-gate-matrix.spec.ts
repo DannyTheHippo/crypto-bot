@@ -237,6 +237,7 @@ describe('LIVE-GATE MATRIX — earned-live promotion gate (agentic boot interloc
     firstClosedAt: 1,
     lastClosedAt: 2,
     fundingDataMissing: false,
+    passivePnlQuote: null,
     reasons: [] as string[],
   };
 

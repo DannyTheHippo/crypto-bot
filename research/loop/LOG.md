@@ -4528,3 +4528,163 @@ livelock-prone path, zero functional gain.
 
 Revisit ONLY if one of these changes: the mark stops being ticker-fed, positioned symbols stop being
 pinned, or book coverage starts mattering to something other than the (now-fixed) health probe.
+
+## 2026-07-27 — Pass 40 (scheduled): the clean stamp was starved again, through a new door
+
+**Window:** 12:38–14:14Z. Boots: `24d37a6e` (10:23Z, the previous pass's fix) → `9e4a26f9` (13:55Z)
+→ `b8fab8bc` (14:07Z, current). Tip `3a2eeff` → `287ef6c`.
+
+**Headline:** promotion 22 round trips / win rate 18.2% / net-of-cost **−$39.86** (LLM $15.20) /
+window 3.82d / ready **0**. Equity 4980.15, drawdown 0.41%. RSS 718 MiB (WATCH-V3-1: paper plateau
+673, defect line 900 — inside bounds). Kill switch RUNNING; both venues CLEAN;
+`reconciliation_last_success_timestamp_seconds` fresh at 86s.
+
+**Pass type: DEFECT (incident-first gate).** Two defects found and shipped, plus the measurement
+hole that hid the first one. Recorded deviation: the playbook's "never two money-path items in one
+pass" was broken deliberately — the second defect was surfaced BY the first one's deploy and left
+the book halted with eight positions and their protective orders cancelled. Leaving that for the
+next pass was the larger risk. Both shipped as separate commits with separate gates and soaks.
+
+### The sweep said 0 alarms while the perp venue had not reconciled clean in 27 minutes
+
+First `loop:sweep` of the pass: **0 alarms**. The DB said otherwise — `binanceusdm` had gone
+`MISMATCH` on _every_ pass since 12:16:03Z with `detail: adopt_non_adoptable:1`, and
+`reconciliation_last_success_timestamp_seconds` was frozen at 12:14:03Z. Prometheus had it right
+(`ReconciliationMismatch{class="adopt_non_adoptable"}` firing); the loop's own primary evidence tool
+did not, because `reconcile_halt` only tests `latestResult === 'HALT'`. A venue mismatching 100% of
+passes forever is not a HALT, so the sweep reported quiet health. This is the §C.1
+zero-delta-while-green class aimed at the tool itself.
+
+### Defect 1 — a multi-fill backfill strands the order and starves the clean stamp (`968088f`)
+
+`reconcileTrades` builds its `byVenueId` index ONCE per pass. `applyTrade` folded every trade from
+that snapshot, so when one pass backfilled several trades of the same order each fold restarted from
+the same `cumQty`. The reducer's stale-fill guard compares against the record it is _handed_, so
+every fold looked fresh, journaled a non-monotone FILL, and `commit()` regressed the book.
+
+Evidence, not inference: `cbt019fa380a5947b21a589519735fa5e8e` (BCH/USDT:USDT, qty 0.365) took 8
+trades in one pass — `order_events` cumQty run `0.022, 0.05, 0.05, 0.05, 0.05, 0.05, 0.048, 0.045`
+(increments, not cumulative) — `fills` summing to exactly 0.365, and `orders.cum_qty` left at
+**0.045**, the last trade's qty, state `PARTIALLY_FILLED`. Reconciliation then found it locally-open
+and venue-absent every pass ⇒ `adopt_non_adoptable` ⇒ an actionable class ⇒ `lastCleanAt` never
+stamped ⇒ **RecoveryCoordinatorService's auto-resume disarmed for the whole book**. That is the same
+permanent-trap shape `b9837bd` fixed for `sweep_failure` two hours earlier, reached through another
+door. The identical defect and remedy are documented at `demo-fill-poller.service.ts` (2026-07-11);
+this call site was missed then. The other three ingest callers were checked and are correct.
+
+Not a money-loss defect: `portfolio.applyFill` runs per fill, so the position (0.365) was right
+throughout. The damage was to order state and, through it, to recovery.
+
+Fix: fold from the live book record. Contained what the now-cumulative fold makes reachable — an I4
+overflow halts as `FILL_OVERFLOW:{symbol}` instead of escaping, which would abort the pass before the
+positions and balances axes AND leave a committed fill row that the already-recorded filter skips
+forever. Non-reducer throws past a committed row become `fill_fold_failed` (actionable, no halt); a
+throw AT `saveFill` still rethrows, since no row means the trade retries and PASS_ERROR is correct.
+Runbook gained both classes and the fact that `FILL_OVERFLOW` neither re-detects nor survives repair
+by restart.
+
+**Live heal, as predicted:** boot recovery rebuilt it from the fill journal —
+`0.045 → 0.365 (RECONCILE_REQUIRED → FILLED)` — and perp went CLEAN on every pass after.
+
+### Measurement — the sweep now reads the gauge that actually gates recovery (same commit)
+
+Replaced `reconcile_halt`'s blind spot with `reconcile_clean_stamp_stale`, reading
+`reconciliation_last_success_timestamp_seconds` — the gauge that _is_ `lastCleanAt` and _is_ what
+auto-resume gates on. First attempt used the reconciliations table's `CLEAN`-row age and was wrong:
+that column is written off the RAW mismatch total, so benign shared-wallet noise reads MISMATCH while
+the stamp refreshes fine — `alerts.rules.yml` already rejects a clean-row age for exactly this reason
+("would fire forever on a working reconciler"). Caught by adversarial review, reworked before commit.
+Gauge 0 is aged off the container's StartedAt so a fresh boot is not paged; a future-dated stamp
+(container/host clock skew across suspend) is a named probe failure, never quiet health.
+
+Live positive control: the reworked sweep named the exact condition the old one reported as 0
+alarms — _"no actionable-clean reconciliation pass in 69min (last stamp 12:14:03Z) — kill-switch
+auto-resume is disarmed while this holds"_.
+
+### Defect 2 — the boot pin halts the book over a flat symbol it cannot see (`287ef6c`)
+
+Surfaced by defect 1's deploy. Boot `9e4a26f9` engaged the kill switch with
+`START_TRADING_FAILED: perp pin: setMarginMode(isolated, KAITO/USDT:USDT) failed: -4067`,
+**flatten=true**. First `START_TRADING_FAILED` in the entire audit history. Cancels drained, then the
+switch sat wedged in FLATTENING for ~11 minutes: eight positions held with their protective orders
+cancelled and the bot unable to act — worse than either running or flat.
+
+Keyed venue probe (demo-fapi, pinned ccxt 4.5.58) rather than a guess:
+
+- `fetchPositions(['KAITO/USDT:USDT'])` → **0 rows** (flat; ccxt drops zero-size rows)
+- `fetchPositionsRisk`, `fapiPrivateV3GetPositionRisk` → 0 rows
+- `fapiPrivateV2GetPositionRisk({symbol:'KAITOUSDT'})` → `positionAmt "0.0"`, **`marginType
+  "isolated"`**, leverage 5
+- the blocking "open order" was our own algo-rail stop, `clientAlgoId
+  cbt019fa3d2dde1742cae993661bd530553`, `algoStatus NEW` — invisible to `fetchOpenOrders`
+
+So the pin's desired state was already true on the venue; only the verification path was blind. The
+-4067 tolerance added on 2026-07-24 verifies via `fetchPositions`, which cannot answer for a FLAT
+symbol, and "cannot tell" was treated as "not isolated". Since protective stops rest on perp symbols
+as a matter of course, **every redeploy while holding perp exposure was a coin flip** — including the
+next pass's.
+
+Fix: fall back to the v2 position-risk endpoint when `fetchPositions` cannot answer. Fail-closed in
+both directions — only an explicit `isolated` returns true, a definitive `cross` is not
+second-guessed, and a venue without the endpoint keeps the old behaviour. The fallback widens
+visibility, never tolerance. All three arms pinned by tests.
+
+**Deploy `b8fab8bc` came up RUNNING**, no pin error, positions intact.
+
+### Collector
+
+Dead since 2026-07-25T11:02Z (last digest line; no process) — the 49.6h gap the first sweep
+annotated. Not a host reboot (uptime 15 days). Restarted on current code, pid 64361, sentinel
+verified. Rehydration for this pass therefore came from `loop:sweep` + the DB, per the playbook's
+fallback.
+
+### Gates and reviews
+
+Both commits: `format:check`, `lint`, `lint:md`, `typecheck`, `build`, `test`, `test:livegate` green
+(2959 then 2962 tests; livegate 55). Two adversarial review rounds on defect 1 — round 1 returned two
+blocking findings (the wrong-quantity alarm; the uncontained widened throw), round 2 one must-fix
+(no identifier in the halt reason, no runbook entry, the residue's one-shot property undocumented).
+All folded in. Regression tests are load-bearing: both fail with their fix reverted, defect 1's
+producing exactly the live `0.5`-instead-of-`1` shape.
+
+### Soak verdict — PASS
+
+40 min across two deploys. 0 sweep alarms, both venues CLEAN on every pass, kill switch RUNNING,
+`reconciliation_mismatch_total` absent entirely this boot, stamp fresh at 86s (auto-resume re-armed),
+RSS 718 MiB flat, 9 warn lines all benign (reconcile coalescing skips, a Nest route-path deprecation,
+the expected agentic-lane banner).
+
+### Flagged / deferred, with evidence
+
+- **OPEN DEFECT (next pass's money-path item) — `byVenueId` is keyed on `venueOrderId` alone, across
+  both venues.** `order.repository.ts` documents that id as unique _per venue_; a collision folds a
+  perp trade onto a spot order. This is also the likeliest real-world cause of the new
+  `FILL_OVERFLOW` halt, which is why the runbook entry names it. Fix needs `OrderRecord` to carry
+  venue or symbol — materially larger, deserves its own pass and review.
+- **OPEN DEFECT (same family) — the same per-pass index can mint a false `FILL_FOR_UNKNOWN_ORDER`
+  HALT.** An order ACKed after the index is built resolves via neither tier; the durable lookup finds
+  it non-terminal and halts the book. Window is tens of seconds per pass.
+- **KNOWN GAP (same family) — post-terminal fills lose their position/cash effect.** If an
+  intermediate fold in one pass reaches FILLED (residual < stepSize) the in-flight intent is cleared
+  and later fills in that pass are journaled but never applied. Review corrected two of my three
+  risk premises and the record should say so: multi-trade reconcile backfills are NOT rare (this
+  incident was 8 in one pass), and detectability is perp-only — `balanceAxis` is off on demo and
+  `positionAxis` is perp-only, so on spot nothing compares the fills table to the portfolio. The
+  narrow trigger (trailing trades summing to less than stepSize) still holds and is what bounds it.
+  Net still strictly better than pre-fix, which stranded the order _and_ starved recovery.
+- **`pnpm test:cov` is RED** at the declared 100% branch thresholds for
+  `src/features/trading/{execution,risk}/**` (98.27% / 99.42%). Pre-existing — uncovered lines are
+  `summarizeMismatches`'s comparator and `backfillClosedOrderTrades`; this pass's new lines are fully
+  covered. Not in `pnpm checks`, so the declared gate is honestly green; recording it rather than
+  chasing it.
+- **Observation — the daily LLM cost breaker is in-memory and resets to full on every redeploy.**
+  `agentic_budget_remaining_usd` read $3.00 after today's second deploy despite ~$0.31 spent. The
+  durable ledgers are unaffected (`agentic_promotion_llm_cost_usd` $15.20 is computed from them), so
+  evidence is intact, but the $3/day breaker does not survive restarts. Backlog candidate.
+
+### Next-pass candidates
+
+The `byVenueId` venue-qualification defect is the ranked money-path item. Profitability itself is
+untouched this pass and remains the point: 22 trips of the 30 needed, window 3.82d of 14, and
+net-of-cost still deeply negative at −$39.86 against $15.20 of LLM spend — the cost line alone is
+~38% of the deficit.

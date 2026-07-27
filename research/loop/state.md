@@ -245,6 +245,48 @@ never changes for strategy evolution.
   same defect class as WATCH-X2-era degrade guidance. Deploy of the fix + a hardened-contract
   re-baseline is the remaining loop step (I commit + deploy — loop-domain per the 2026-07-22
   gate-override grant; the live-money flip is the only human gate).
+- **RECOVERY RE-DISARMED AND RE-ARMED (Pass 40, 2026-07-27) — the clean stamp is the single point
+  of failure for kill-switch auto-resume, and it has now been starved twice by two unrelated
+  causes.** `b9837bd` (07-27 morning) freed it from `sweep_failure`; two hours later a
+  multi-fill backfill stranded an order non-terminal and `adopt_non_adoptable` starved it again
+  (defect + fix `968088f`, full narrative in LOG.md). Standing consequence for every future pass:
+  **treat `reconciliation_last_success_timestamp_seconds` as a first-class liveness signal, not a
+  dashboard curio** — any actionable mismatch class that can recur on every pass disarms recovery
+  for the whole book, silently, while health stays green. `loop:sweep` now alarms on it
+  (`reconcile_clean_stamp_stale`, 30-min bound); before this pass it could not see the condition at
+  all. NOTE the measurement trap that cost a review round: the `reconciliations.result` column is
+  written off the RAW mismatch total, so a `CLEAN`-row age is NOT the stamp and would fire forever
+  on benign shared-wallet noise — read the gauge, never the rows.
+  **WATCH-V4-1 (clean-stamp liveness).** Expected-positive: the gauge's age stays under ~2 min at
+  every pass, `reconciliation_mismatch_total{class="adopt_non_adoptable"}` stays 0, and no order sits
+  non-terminal while its `fills` sum equals its `qty`. Named defect outcome: the age exceeds 30 min
+  again (the sweep now says so out loud) ⇒ a THIRD starvation cause exists — root-cause it before any
+  other work, checking `sum(fills.qty)` against `orders.cum_qty` for non-terminal orders first, since
+  that is the shape twice running. Deadline: next pass confirms the first ≥12h window with the stamp
+  never stale.
+  **WATCH-V4-2 (FILL_OVERFLOW is one-shot by construction).** Expected-positive:
+  `reconciliation_mismatch_total{class="fill_overflow"}` stays 0. Named defect outcome: any non-zero
+  reading is a book HALT that will NOT re-fire and is NOT repaired by restart — capture the
+  `FILL_OVERFLOW:{symbol}` reason from `audit_log` immediately (the container log is the only other
+  copy, and the sweep truncates its messages to 48 chars), then treat § Flagged rank 1 as the
+  probable cause.
+- **REDEPLOY IS NO LONGER A COIN FLIP WHILE HOLDING PERP EXPOSURE (Pass 40, 2026-07-27, fix
+  `287ef6c`).** The boot-time perp pin halted the book (`START_TRADING_FAILED`, flatten=true) on a
+  FLAT symbol carrying a resting algo-rail stop: the venue refuses `setMarginMode` with -4067 while
+  `fetchPositions` drops zero-size rows, so the -4067 tolerance could not verify a symbol the venue
+  already had on isolated margin. Probe-verified fallback to `fapiPrivateV2GetPositionRisk` (the
+  only source that returns flat symbols — `fetchPositionsRisk` and the v3 endpoint do not).
+  **Durable fact for future venue work: on binanceusdm, "no position row" never means "not
+  isolated", and a resting algo-rail order is invisible to `fetchOpenOrders` but visible to the
+  venue's own open-order check.**
+  **WATCH-V4-3 (redeploy safety).** Expected-positive: every future redeploy that happens while a
+  perp symbol carries a resting stop boots to `kill_switch_state{state="RUNNING"}` with no
+  `perp pin:` line in the boot log. Named defect outcome: another `START_TRADING_FAILED` at boot ⇒
+  the pin has a THIRD unverifiable shape — probe the venue for that symbol before editing the guard,
+  and do not widen the tolerance without positive proof of `isolated`, which is the whole point of
+  the gate. Standing operational note surfaced by this incident: a `flatten=true` halt CANCELS
+  resting protective orders first, so a wedged FLATTENING state leaves open positions with no
+  venue-side protection — an unsafe resting state, not a safe one.
 - **Kimi-K3 experiment COMPLETE — offline replay verdict HOLD (2026-07-21/22, task #15 run
   phase):** kimi-k3 replayed over the newest 100 recorded consult payloads (1,363 payload rows
   loaded; v2 corpus served from a read-only clone of the retired `crypto-bot_postgres_data`
@@ -921,6 +963,43 @@ when the info-context A/B resolves.
 | 48 | Weekly vol-ranked symbol rotation (universe-study follow-on) | 2 | M | DESIGN-GATED (2026-07-22 sweep): the 5→8 sequencing gate is OBE (universe now 40 symbols + vol×ATR scanner + menu-8); residual = the open rotation-vs-promotion-walk attribution design |
 
 ## Flagged for human review (open)
+
+> **NOT owner-gated — the four items below are LOOP-DOMAIN and carried here only because Pass 40
+> already shipped two money-path fixes.** They are the next pass's ranked work, not a waiting queue.
+> Recorded deviation: playbook §4 says a defect is fixed in the pass that finds it; Pass 40 fixed two
+> and deferred these four, because they form one coherent change to the trade-attribution index that
+> deserves its own pass and its own review. Do not let them age.
+
+- **OPEN DEFECT (rank 1, next money-path item) — the axis-2 trade index is keyed on `venueOrderId`
+  alone, across BOTH venues (Pass 40, 2026-07-27).** `reconciliation.service.ts`'s `reconcileTrades`
+  builds `byVenueId` from `this.orders.all()` (book-wide: one process, both venues) with no venue
+  qualification, and `OrderRecord` carries neither venue nor symbol, so no check is possible after
+  the fact. `order.repository.ts` states the broken invariant explicitly: "venue_order_id is only
+  unique per venue." A collision folds a perp trade onto a spot order — wrong position, wrong
+  symbol, fill filed under the wrong intent. Also the likeliest real-world cause of the new
+  `FILL_OVERFLOW` halt, which is why the runbook entry names it. Fix requires threading venue (or
+  symbol) onto `OrderRecord` or keying the map `${venue}:${venueOrderId}`.
+- **OPEN DEFECT (rank 2, same family) — the same per-pass index can mint a FALSE
+  `FILL_FOR_UNKNOWN_ORDER` HALT.** `byVenueId` is built once per axis; an order ACKed after that
+  snapshot but whose fill arrives in the same pass matches neither the index nor the coid tier, so
+  the durable lookup finds it non-terminal and halts the whole book as corruption. A pass issues ~80
+  sequential REST calls over ~60s, so the window is tens of seconds every pass; today it is usually
+  masked by the 10s fill poller winning the race and setting `hasFill`.
+- **KNOWN GAP (rank 3, same family) — post-terminal fills lose their position/cash effect.** When an
+  intermediate fold inside one pass reaches FILLED (residual < stepSize), `FillIngestorService`
+  clears the in-flight intent, and every later fill in that pass is journaled but never applied to
+  position/cash. Detectability is PERP-ONLY: `balanceAxis` is off on demo and `positionAxis` is
+  perp-only, so on spot nothing compares the fills table against the portfolio. Trigger is narrow
+  (trailing trades summing to less than the order's stepSize) — that narrowness, not rarity of
+  multi-trade backfills, is what bounds it. `algo-stop-recovery.service.ts` already carries the
+  precedent remedy (re-establish `addInFlight` around the fold loop).
+- **OPEN DEFECT (rank 4) — the daily LLM cost breaker does not survive a restart.**
+  `agentic_budget_remaining_usd` read $3.00 (full) immediately after Pass 40's second redeploy
+  despite ~$0.31 spent that UTC day: the meter is in-memory per boot. On a day with several
+  redeploys the $3/day breaker is effectively unbounded. Evidence integrity is NOT affected — the
+  promotion walk prices durable `agent_decisions`/`llm_usage` token rows
+  (`agentic_promotion_llm_cost_usd` $15.20) — so this is a cost-control defect, not a measurement
+  one. Fix by seeding the day's spend from the durable ledger at boot.
 
 - **SHARED-ORG RATE-LIMIT — RECURRING; owner action requested (Pass 35, 2026-07-20; first
   recorded X9 same day).** The trading app and interactive/orchestration sessions share ONE

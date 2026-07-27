@@ -70,16 +70,38 @@ export class PromotionStatsRepository implements PromotionStatsPort {
     }));
   }
 
+  // EVIDENCE fold — replay excluded. Feeds the promotion verdict's llmCostUsd.
   async llmTokenTotals(sinceMs?: number): Promise<LlmTokenTotals> {
+    return this.tokenTotals(sinceMs, false);
+  }
+
+  // SPEND fold — replay INCLUDED. Feeds the daily cost breaker only. A replay run bills the same
+  // Anthropic account as a live decide, so a cap that cannot see those dollars is not a cap; the
+  // evidence fold above must still never see them, because one unfiltered run outweighs a lane's
+  // whole 14-day budget and would poison netPnl. Two folds, two truths, one query.
+  async llmSpendTotalsAllSources(sinceMs?: number): Promise<LlmTokenTotals> {
+    return this.tokenTotals(sinceMs, true);
+  }
+
+  private async tokenTotals(
+    sinceMs: number | undefined,
+    includeReplay: boolean,
+  ): Promise<LlmTokenTotals> {
     const db = requireDb(this.db);
     const since = sinceMs === undefined ? undefined : new Date(sinceMs);
     // R1 cost exclusion (BY FILTER): synthetic replay-<runId> decide rows must NEVER enter the lane's
     // epoch token cost — one unfiltered replay run exceeds a lane's 14-day breaker budget and poisons
     // netPnl. The reflection llm_usage side needs no such filter: the R1 engine writes no llm_usage
     // rows at all (replay decides ride agent_decisions only), so that half is excluded by construction.
-    const notReplay = notLike(schema.agentDecisions.strategyId, REPLAY_STRATEGY_LIKE);
+    const notReplay = includeReplay
+      ? undefined
+      : notLike(schema.agentDecisions.strategyId, REPLAY_STRATEGY_LIKE);
     const decideWhere =
-      since === undefined ? notReplay : and(notReplay, gte(schema.agentDecisions.createdAt, since));
+      since === undefined
+        ? notReplay
+        : notReplay === undefined
+          ? gte(schema.agentDecisions.createdAt, since)
+          : and(notReplay, gte(schema.agentDecisions.createdAt, since));
     const reflectionWhere =
       since === undefined
         ? eq(schema.llmUsage.kind, 'reflection')

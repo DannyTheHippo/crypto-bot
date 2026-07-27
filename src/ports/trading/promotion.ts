@@ -98,6 +98,14 @@ export interface PromotionStatsPort {
   // the fail-closed direction). sinceMs filters to rows created at/after that instant; absent ⇒
   // all-time.
   llmTokenTotals(sinceMs?: number): Promise<LlmTokenTotals>;
+  // Same fold, but WITHOUT the replay exclusion — every token that cost real money, including
+  // `replay-<runId>` decide rows. Exists as a separate method rather than a boolean on
+  // llmTokenTotals above precisely because that one feeds the live-arming promotion verdict: a
+  // flag there could be passed the wrong way round and silently poison netPnl, whereas two named
+  // methods make each caller's intent unmistakable. Use ONLY for spend caps (the daily cost
+  // breaker), never for evidence. Optional so existing fakes stay valid — an implementation that
+  // omits it leaves the breaker on the evidence-filtered query, i.e. today's behaviour.
+  llmSpendTotalsAllSources?(sinceMs?: number): Promise<LlmTokenTotals>;
   // Epoch ms of the newest llm_usage kind='reflection' row, null when reflection has never run.
   // Optional so existing fakes/implementations remain valid; the reflection trigger seed treats an
   // absent method the same as "never reflected".

@@ -1757,6 +1757,7 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
     const adapter = new AgentDecisionJournalAdapter(db);
 
     const beforeTotals = await promo.llmTokenTotals();
+    const beforeSpend = await promo.llmSpendTotalsAllSources();
     const sumIn = (t: typeof beforeTotals) => t.perModel.reduce((s, m) => s + m.inputTokens, 0);
 
     // One real lane row and one synthetic replay row, both with big token counts so a leak is loud.
@@ -1782,6 +1783,12 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
     const synthetic = await adapter.recentSynthetic(500);
     expect(synthetic.some((r) => r.promptHash === 'hash-r1-syn')).toBe(true);
     expect(synthetic.every((r) => r.strategyId.startsWith('replay-'))).toBe(true);
+
+    // ...but the SPEND fold sees both (2026-07-27). A replay decide bills the same Anthropic
+    // account as a live one, so the daily cost breaker — which seeds off this method — must count
+    // it, while the evidence fold above must not. Delta here is 1000 + 7000.
+    const afterSpend = await promo.llmSpendTotalsAllSources();
+    expect(sumIn(afterSpend) - sumIn(beforeSpend)).toBe(8000);
   });
 
   it('(k) fillsForMode carries the intent refPrice (null on an unresolved join) for slippage evidence', async () => {

@@ -504,8 +504,13 @@ export class TradingRuntimeService
   // is logged on a cadence so a run is observable. The only hard human gate stays paper→live.
   // The daily cost breaker is an in-memory per-UTC-day meter, so every redeploy used to hand the
   // lane a fresh full budget — on a three-deploy day the "$3/day" cap authorised $12. Re-seed it
-  // from the durable token ledgers (the same rows the promotion walk prices, replay runs already
-  // excluded by that query's own filter) so the breaker survives a restart.
+  // from the durable token ledgers so the breaker survives a restart.
+  //
+  // Reads the ALL-SOURCES fold, not the evidence one (2026-07-27): a `replay-<runId>` decide bills
+  // the same Anthropic account as a live decide, so a spend cap that cannot see those dollars is
+  // not a cap. The evidence fold keeps excluding them — that filter is correct for netPnl and wrong
+  // here, which is why the two are separate methods. Falls back to the evidence fold when the port
+  // does not implement the all-sources one (older fakes), i.e. to the pre-2026-07-27 behaviour.
   //
   // Fails OPEN, deliberately: no stats source (test/ci/no-DB) or a throwing query leaves the meter
   // at zero and logs, rather than blocking the boot. This is a spend cap, not a safety interlock —
@@ -519,7 +524,8 @@ export class TradingRuntimeService
       new Date(this.clock.now()).getUTCDate(),
     );
     try {
-      const totals = await this.promotionStats.llmTokenTotals(startOfUtcDayMs);
+      const totals = await (this.promotionStats.llmSpendTotalsAllSources?.(startOfUtcDayMs) ??
+        this.promotionStats.llmTokenTotals(startOfUtcDayMs));
       this.agentBudget.seedDaySpend(
         totals.perModel.map((m) => ({
           model: m.model,

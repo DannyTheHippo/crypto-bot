@@ -5000,3 +5000,41 @@ never loaded, including `AgenticLaneSilent` and `AgenticBudgetExhausted`, the tw
 caught this outage. Prometheus reads `alerts.rules.yml` once at process start and has been up 5 days.
 Not recreated here: doing so belongs with the app redeploy that ships `ee4ddf3`, as one coherent
 deploy, and recreating it mid-incident against another agent's in-flight edits was the wrong order.
+
+### Pass 42 soak — the latch fix VALIDATED in production, with a before/after measurement
+
+Deployed `ee4ddf3` at 2026-07-28T01:29Z and recreated the prometheus container in the same window
+(it had run 5 days on a stale rules file, so **4 committed alerts had never loaded** — including
+`AgenticLaneSilent` and `AgenticBudgetExhausted`, the two that would have caught this outage. All 20
+rules are now live).
+
+Both provider accounts remain unfunded, so the lane still cannot make a real LLM call. That turns the
+soak into a controlled test of the failure path itself, and the fix measures cleanly:
+
+| window | rows | action | rationale |
+| --- | --- | --- | --- |
+| BEFORE (21:16Z→01:29Z outage) | 45 | `hold` | **EMPTY** — indistinguishable from a genuine model hold |
+| AFTER (T+2h soak hour) | 15 | `error` | populated with the API's own 400 body |
+
+**Zero `hold`-with-empty-rationale rows since the deploy.** `agent_decide_total{outcome="client_latched"}=7`
+and `{outcome="error_fatal"}=8` — the fatal count exceeding the latched count is the 30-minute cooldown
+working: the latch expires, one probe is allowed through, it fails again, and suppression resumes.
+Before the fix that sequence was a single fatal followed by unbounded silence.
+
+**A trap this pass fell into and corrected.** The T+1h pass read `PHANTOM=0` and it was tempting to
+call the fix validated. It was not: `agent_decide_total` had **no series at all**, the consult gate
+showed only `skipped_scheduled`, and all 120 decides were deterministic `prescreen` rows — the lane
+had attempted zero consults, so nothing had exercised the latch. The fix only became testable at
+T+2h when `AGENTIC_FALLBACK_CONSULT_BARS=8` forced a consult (`forced_fallback=15`). **A green
+metric that nothing has exercised is not evidence.**
+
+The soak's own phantom detector was then mis-specified in the opposite direction — it counted any
+null-token claude row, which after the fix includes the honest `action='error'` rows, i.e. it scored
+the repair as the defect. Narrowed to the thing that actually matters: `action='hold'` AND empty
+rationale.
+
+**Soak status, hours 0–2:** 0 firing alerts, 0 pending, RestartCount 0, container healthy, kill switch
+RUNNING, equity flat at 4978.18 (peak 5000.70), 4 open orders, 0 level>=50 errors, 0 halts. The only
+recurring warn is the documented-healthy `reconcile pass still in flight` (61/hour). **Not a CLEAN
+soak in the intended sense** — the LLM lane is dead for lack of funding, so the strategy path is
+untested; it self-heals within 30 min of credit landing.

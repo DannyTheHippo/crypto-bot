@@ -71,14 +71,30 @@ ORDER BY event_time, id
 - **FLAT-position only** — an arm cannot open from a non-flat state, so the 265 in-position rows would
   cost money and yield zero entry observations. 62 of the 63 recorded entries live inside this subset,
   so the corpus still **contains** the population the −16.9 bps finding was drawn from.
-- Recorded action mix within it: 321 hold, 43 open_long, 19 open_short, 3 close. Champion entry rate
-  **16.1%** of flat consults.
+- Recorded action mix within it: 321 hold, 43 open_long, 19 open_short, 3 close — a realised entry
+  rate of **16.1%** of flat consults, produced by the live MIXTURE of playbook versions, not by any
+  single one.
 - Frozen by a manifest written **before the first call**: row ids in order plus a SHA-256 over the
   concatenated payloads. A run whose manifest hash does not match is void.
 
 `input_payload` is the market-context JSON **excluding** playbook text by construction
 (`buildMarketPayload` has no playbookContent parameter), which is what makes a clean arm swap
 possible at all.
+
+### Correction (2026-07-28, before any results existed) — which version is the champion
+
+Arm 1 was originally labelled `champion_v9`. **v9 is not the champion.** `agentic_playbook_info`
+reports the app running **version 8**; v9 is an unresolved `source='reflection'` CANDIDATE sitting
+above it and taking `AGENTIC_PLAYBOOK_AB_PCT=40`% of decides through the A/B. The arms now carry the
+roles the live system actually assigns — `champion_v8` (active) and `candidate_v9` (on 40% of
+traffic). Publishing a table that called v9 "champion" would have misstated which text is in charge.
+Nothing else changed: the same two playbook texts are replayed, under correct names, and no result
+existed when this was fixed.
+
+The same error reached a commit message (`b9b52a6` calls v9 "the live champion") and `state.md`. The
+truncation defect it describes is real and unchanged — v9's entry-rules section still ends mid-sentence
+and that text still reaches 40% of live decides — but it is the **candidate's** text, not the
+champion's.
 
 ## Arms (frozen — 12)
 
@@ -89,8 +105,8 @@ playbook block cache-controlled — the exact shape the live decide path sends.
 
 | # | arm | what it tests |
 | --- | --- | --- |
-| 1 | `champion_v9` | the live champion verbatim, truncation included — the status quo |
-| 2 | `seed_v8` | the seed v9 descends from — is reflection's revision better than its parent? |
+| 1 | `champion_v8` | the ACTIVE champion (`agentic_playbook_info` version=8) — the true status quo |
+| 2 | `candidate_v9` | the unresolved A/B candidate already taking 40% of live decides, verbatim including its truncated entry-rules section — is reflection's revision better than its parent? |
 | 3 | `seed_v1` | the original 2026-07-21 seed — a different lineage |
 | 4 | `minimal` | a neutral 4-section stub — the model's own priors, unguided |
 | 5 | `trade_almost_never` | extreme abstention; "a flat week is a success" |
@@ -160,7 +176,7 @@ reporting it as PASS would be the exact error that killed the funding-contrarian
 
 ### Reported but NOT gating
 
-- Action mix per arm (entry rate, hold rate) and **decision change-rate vs `champion_v9`** — a
+- Action mix per arm (entry rate, hold rate) and **decision change-rate vs `champion_v8`** — a
   candidate that changes <5% of decisions measures nothing in an A/B however many trips accrue.
 - Per-arm token spend and USD cost.
 - Every arm's full numbers, winners and losers alike. No arm is dropped from the report.
@@ -228,7 +244,7 @@ reporting it as PASS would be the exact error that killed the funding-contrarian
   **n = 61 and −16.9 bps at h=1 to within 0.5 bps** of `test/backtest/inversion-test.mjs`. This is an
   **agreement check between two independent implementations on an identical row set**, which is what
   validates arithmetic.
-  It deliberately does **not** ask the `champion_v9` arm to reproduce those entries — the recorded
+  It deliberately does **not** ask the `champion_v8` arm to reproduce those entries — the recorded
   entries are a mixture over ~9 playbook versions, so a single-playbook replay reproducing them is
   neither expected nor required.
 

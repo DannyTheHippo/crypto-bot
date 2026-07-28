@@ -25,16 +25,23 @@ export interface PlaybookArm {
 }
 
 // ── Arms 1-3: the real lineage, pulled verbatim from the DB ──────────────────────────────────────
+// NAMING CORRECTED 2026-07-28, before any results existed. v9 was originally labelled `champion_v9`.
+// It is NOT the champion: `agentic_playbook_info` reports the app running **version 8**, and v9 is an
+// unresolved `source='reflection'` CANDIDATE sitting above it, receiving AGENTIC_PLAYBOOK_AB_PCT=40%
+// of decides through the A/B. Publishing a results table that called v9 "champion" would have
+// misrepresented which text is actually in charge — so the arms now carry the roles the live system
+// actually assigns.
 const DB_ARMS: readonly PlaybookArm[] = [
   {
-    name: 'champion_v9',
-    source: { kind: 'db', version: 9 },
-    tests: 'the live champion verbatim (truncation included) — the status quo',
+    name: 'champion_v8',
+    source: { kind: 'db', version: 8 },
+    tests: 'the ACTIVE champion (agentic_playbook_info version=8) — the true status quo',
   },
   {
-    name: 'seed_v8',
-    source: { kind: 'db', version: 8 },
-    tests: "the seed v9 descends from — is reflection's revision better than its parent?",
+    name: 'candidate_v9',
+    source: { kind: 'db', version: 9 },
+    tests:
+      'the unresolved A/B candidate on 40% of decides, verbatim including its truncated entry-rules section',
   },
   {
     name: 'seed_v1',

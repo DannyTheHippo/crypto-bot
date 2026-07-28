@@ -234,7 +234,7 @@ describe.runIf(PAID && API_KEY.length > 0 && CORPUS_PRESENT)(
               dir: r.action === 'open_short' ? -1 : 1,
             }));
           const changed = results.filter((r) => {
-            const champ = (run.perArm.get('champion_v9') ?? []).find((c) => c.rowId === r.rowId);
+            const champ = (run.perArm.get('champion_v8') ?? []).find((c) => c.rowId === r.rowId);
             return champ !== undefined && champ.action !== r.action;
           }).length;
 

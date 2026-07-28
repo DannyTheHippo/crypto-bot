@@ -1437,3 +1437,27 @@ them. Surviving md set (9): CLAUDE.md (v2 lane-file drift corrected same commit:
 `.env.app-perp`/`--profile perp` references removed to match the v3 tree), README, the
 playbook, the runbook, LOG.md, this file, and the three `src/` boundary READMEs (current,
 v3-aligned).
+
+- **CORRECTION — v8 is the champion, v9 is a CANDIDATE (2026-07-28, Pass 42).** Two artefacts of this
+  pass called v9 "the live champion": commit `b9b52a6` and the playbook-space arm label
+  `champion_v9`. Both are wrong. `agentic_playbook_info` reports the app running **version 8**;
+  **v9 is an unresolved `source='reflection'` candidate** sitting above it, taking
+  `AGENTIC_PLAYBOOK_AB_PCT=40`% of decides through the A/B. The study arms are renamed to the roles
+  the live system actually assigns (`champion_v8`, `candidate_v9`) before any result existed. The
+  truncation defect `b9b52a6` fixed is real and unchanged — v9's entry-rules section ends mid-sentence
+  at *"If ONE input disagrees (lagging"* and that text still reaches 40% of live decides — it is the
+  candidate's text, not the champion's.
+- **THE CANDIDATE-LAPSE DEADLOCK IS LIVE, NOT HYPOTHETICAL (2026-07-28, Pass 42).** The Phase-B
+  blocker list predicted it; it is currently in force. `scripts/playbook-candidate.mjs:168-180` refuses
+  to mint past ANY unresolved candidate above the active version, and its `blocking` filter carries
+  **no age predicate**. v9 has been unresolved for ~16 h. Its three escape routes:
+  - **promotion** — needs attributed A/B evidence the promotion evaluator will accept;
+  - **age lapse** — `AGENTIC_CANDIDATE_LAPSE_HOURS=336` (14 days), so not before ~2026-08-10;
+  - **abstention lapse** — needs ≥15 attributed real decides with zero entries.
+
+  Both lapse routes live in `reflection.service.ts`, so both require the LLM lane to be calling. With
+  both provider accounts unfunded the lane makes zero real decides, so **no evidence accrues on any
+  route and `pnpm playbook:candidate` stays blocked until either funding returns or the 14-day age
+  lapse fires.** The mint path being dead was previously masked by a second defect — the script's
+  validator path pointed at a directory that never existed (fixed `0911c37`), so it exited 1 before
+  ever reaching this check. Fixing that path is what made the deadlock observable.

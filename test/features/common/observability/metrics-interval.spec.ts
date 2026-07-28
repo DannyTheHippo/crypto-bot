@@ -24,6 +24,10 @@ import {
   STRATEGY_REGISTRY,
   type StrategyRegistryPort,
 } from '../../../../src/ports/strategy/strategy';
+import {
+  MARKET_STREAM_TELEMETRY,
+  type MarketStreamTelemetryPort,
+} from '../../../../src/ports/venue/market-data';
 
 describe('EventLoopHealthIndicator.getMonitor() and MetricsService interval', () => {
   let moduleRef: TestingModule;
@@ -285,6 +289,111 @@ describe('MetricsService venue-labeled sampling (v3 §8/§6.1) — PORTFOLIO_VIE
     expect(register.getSingleMetric('venue_free_cash_usdt'), 'registered').toBeDefined();
     const metric = await register.getSingleMetricAsString('venue_free_cash_usdt');
     expect(metric).not.toContain('venue=');
+  });
+});
+
+// Pass 44 (2026-07-28): a counter that has never been incremented exports NO series at all, so
+// "zero forced reconnects" and "telemetry unbound / metric renamed" were the same read — an empty
+// instant vector. loop:sweep annotated probe_failed[wsRecreations] on every single sweep because of
+// it, voiding a negative read (playbook §C.9) on the counter that caught both 2026-07-21 soak
+// defects. The fix publishes each venue's child at its true zero on first sight.
+const RECONNECTS: Map<ReturnType<typeof venueId>, number> = new Map([
+  [venueId('binance'), 0],
+  [venueId('binanceusdm'), 0],
+]);
+const FAKE_STREAM_TELEMETRY: MarketStreamTelemetryPort = {
+  channelAges: () => [],
+  forcedReconnectCount: () => [...RECONNECTS.values()].reduce((a, b) => a + b, 0),
+  forcedReconnectCountByVenue: () => RECONNECTS,
+};
+@Global()
+@Module({
+  providers: [{ provide: MARKET_STREAM_TELEMETRY, useValue: FAKE_STREAM_TELEMETRY }],
+  exports: [MARKET_STREAM_TELEMETRY],
+})
+class FakeStreamTelemetryBridgeModule {}
+
+describe('MetricsService forced-reconnect sampling (v3 §8) — MARKET_STREAM_TELEMETRY present', () => {
+  let moduleRef: TestingModule;
+
+  beforeAll(async () => {
+    process.env['NODE_ENV'] = 'test';
+    process.env['PORT'] = '3100';
+    register.clear();
+    RECONNECTS.set(venueId('binance'), 0);
+    RECONNECTS.set(venueId('binanceusdm'), 0);
+    vi.useFakeTimers();
+
+    moduleRef = await Test.createTestingModule({
+      imports: [AppConfigModule, FakeStreamTelemetryBridgeModule, ObservabilityModule],
+    }).compile();
+    await moduleRef.init();
+  });
+
+  afterAll(async () => {
+    vi.useRealTimers();
+    await moduleRef.close();
+    register.clear();
+    // Leave the shared fixture as this suite found it — the next suite to bind it must not inherit
+    // this one's counts.
+    RECONNECTS.set(venueId('binance'), 0);
+    RECONNECTS.set(venueId('binanceusdm'), 0);
+  });
+
+  it('publishes every venue at 0 on the first sample, so a quiet lane is a readable zero and not an empty vector', async () => {
+    vi.advanceTimersByTime(5000);
+    const metric = await register.getSingleMetricAsString('market_stream_forced_reconnects_total');
+    expect(metric).toContain('venue="binance"} 0');
+    expect(metric).toContain('venue="binanceusdm"} 0');
+  });
+
+  it('still applies the real delta once a venue actually forces a reconnect, without double-counting the zero seed', async () => {
+    RECONNECTS.set(venueId('binanceusdm'), 3);
+    vi.advanceTimersByTime(5000);
+    let metric = await register.getSingleMetricAsString('market_stream_forced_reconnects_total');
+    expect(metric).toContain('venue="binanceusdm"} 3');
+    expect(metric).toContain('venue="binance"} 0');
+
+    RECONNECTS.set(venueId('binanceusdm'), 5);
+    vi.advanceTimersByTime(5000);
+    metric = await register.getSingleMetricAsString('market_stream_forced_reconnects_total');
+    expect(metric).toContain('venue="binanceusdm"} 5');
+  });
+});
+
+// Own module init, because "first sight" is only first sight once: MetricsService can start AFTER
+// reconnects have accumulated (module init order, or telemetry rebuilt underneath it), and the zero
+// seed must land on the real total rather than adding to it or masking it.
+describe('MetricsService forced-reconnect sampling — venue first seen with a non-zero total', () => {
+  let moduleRef: TestingModule;
+
+  beforeAll(async () => {
+    process.env['NODE_ENV'] = 'test';
+    process.env['PORT'] = '3100';
+    register.clear();
+    RECONNECTS.set(venueId('binance'), 7);
+    RECONNECTS.set(venueId('binanceusdm'), 0);
+    vi.useFakeTimers();
+
+    moduleRef = await Test.createTestingModule({
+      imports: [AppConfigModule, FakeStreamTelemetryBridgeModule, ObservabilityModule],
+    }).compile();
+    await moduleRef.init();
+  });
+
+  afterAll(async () => {
+    vi.useRealTimers();
+    await moduleRef.close();
+    register.clear();
+    RECONNECTS.set(venueId('binance'), 0);
+    RECONNECTS.set(venueId('binanceusdm'), 0);
+  });
+
+  it('lands on the accumulated total exactly once — not 0, and not total + the seed', async () => {
+    vi.advanceTimersByTime(5000);
+    const metric = await register.getSingleMetricAsString('market_stream_forced_reconnects_total');
+    expect(metric).toContain('venue="binance"} 7');
+    expect(metric).toContain('venue="binanceusdm"} 0');
   });
 });
 

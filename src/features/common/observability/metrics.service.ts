@@ -268,10 +268,11 @@ export const MARKET_CHANNEL_STALENESS_GAUGE = makeGaugeProvider({
   help: 'Seconds since each market-data websocket channel last delivered an event, by venue',
   labelNames: ['venue', 'symbol', 'channel'] as const,
 });
-// v3 §8: +venue. MarketStreamTelemetryPort.forcedReconnectCount() is still a single process-wide
-// aggregate today (the per-venue split is workstream #5's MarketStreamsModule merge, spec §1.3:
-// "forced-reconnect counts summed per venue") — see the sampling loop below for how the aggregate is
-// labeled until that facade lands.
+// v3 §8: +venue. The per-venue facade HAS landed — VenueRoutingFeedHealth.forcedReconnectCountByVenue()
+// (composition/market-streams.module.ts) returns one entry per registered venue, so the sampling loop
+// below emits real `venue` labels and only falls back to a single 'aggregate' series for telemetry
+// shapes that predate the split (module-isolation fixtures). Corrected Pass 44; the comment claimed
+// the facade was still pending for six days after it shipped.
 export const MARKET_STREAM_FORCED_RECONNECTS_COUNTER = makeCounterProvider({
   name: 'market_stream_forced_reconnects_total',
   help:
@@ -634,7 +635,19 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
           ? [...perVenue.entries()]
           : [['aggregate', telemetry.forcedReconnectCount()]];
         for (const [venue, total] of entries) {
-          const prev = prevForcedReconnectsByVenue.get(venue) ?? 0;
+          const seen = prevForcedReconnectsByVenue.get(venue);
+          if (seen === undefined) {
+            // Materialise the series at its true zero the first time a venue is seen. prom-client
+            // only creates a labeled child when that child is touched, so a lane that has never
+            // forced a reconnect exported NO series at all — and `sum(market_stream_forced_
+            // reconnects_total)` then returns an empty instant vector, which is indistinguishable
+            // from unbound telemetry or a renamed metric. loop:sweep read exactly that and annotated
+            // probe_failed[wsRecreations] on every sweep, voiding a negative read (playbook §C.9) on
+            // the one counter that caught both 2026-07-21 soak defects. inc(…, 0) is the documented
+            // way to publish a zero-valued counter child; the real delta still applies below.
+            this.marketStreamReconnectsCounter.inc({ venue }, 0);
+          }
+          const prev = seen ?? 0;
           if (total > prev) {
             this.marketStreamReconnectsCounter.inc({ venue }, total - prev);
           }

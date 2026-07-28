@@ -3348,7 +3348,7 @@
           "id": 44,
           "type": "timeseries",
           "title": "Market Stream Forced Reconnects (by venue)",
-          "description": "increase(market_stream_forced_reconnects_total{venue}[1h]) \u2014 v3 \u00a78: +venue, pending workstream #5's per-venue MarketStreamsModule facade (today's aggregate labels the sole configured venue, or 'aggregate' once a second venue is live \u2014 see metrics.service.ts's own comment). MarketStreamReconnectStorm pages at >=5/hour. Empty until first event.",
+          "description": "increase(market_stream_forced_reconnects_total{venue}[1h]) \u2014 v3 \u00a78: +venue, via VenueRoutingFeedHealth.forcedReconnectCountByVenue (the workstream-#5 facade has landed; 'aggregate' remains only as a fallback for telemetry shapes predating it). MarketStreamReconnectStorm pages at >=5/hour. Each venue publishes a 0 series from the first sample (Pass 44) \u2014 a flat zero line is a real reading, and NO series at all now means the telemetry is unbound, not that the lane is quiet.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus-spot"

@@ -66,6 +66,7 @@ interface FiringAlert {
   severity: string;
   activeAt: string | null;
   summary: string;
+  scope?: string;
 }
 interface Probes {
   decides: { ok: boolean; value: { count: number; latestCreatedAtMs: number } };

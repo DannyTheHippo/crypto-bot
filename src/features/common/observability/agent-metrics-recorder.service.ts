@@ -27,6 +27,32 @@ export type AgentDecideOutcome =
   // actually dead and stops the moment it recovers — so it can carry an alert that self-clears.
   | 'client_latched';
 
+// Outcomes that mean the client is latched (no HTTP call was made, or the call that just failed
+// latched it). Drive agent_client_latched to 1.
+const LATCHED_DECIDE_OUTCOMES: ReadonlySet<AgentDecideOutcome> = new Set([
+  'client_latched',
+  'error_fatal',
+]);
+
+// Outcomes that PROVE a request reached the API, so the latch cannot be in force — including the ones
+// that are themselves failures, because reaching them at all required an HTTP round trip. Drive
+// agent_client_latched to 0.
+//
+// Deliberately an allowlist and not "everything else": 'off_menu' and 'budget_blocked' (the outcomes
+// behind BatchingAgentClient's `off_menu:` / `budget_exhausted:` rationale tags) are pre-call
+// short-circuits that never touch the Anthropic client, so they must leave the level alone. See
+// recordDecide.
+const PROVES_CALL_COMPLETED_OUTCOMES: ReadonlySet<AgentDecideOutcome> = new Set([
+  'proposed',
+  'hold',
+  'noop',
+  'error_retryable',
+  'timeout',
+  'envelope_malformed',
+  'model_refusal',
+  'truncated',
+]);
+
 export type AgentTokenKind = 'input' | 'output' | 'cache_read' | 'cache_creation';
 
 // P6 (Design § Learning & measurement stack): mirrors agentic.strategy.ts's ConsultGateOutcome
@@ -128,14 +154,19 @@ export class AgentMetricsRecorder {
       // handleFailure before being thrown. Setting it here rather than only on 'client_latched' is what
       // makes detection land within one scrape of the failing call instead of waiting for the next
       // suppressed consult (up to a 2h fallback-gate floor away).
-      // Any OTHER outcome means a call completed, so the latch cannot be in force — including the
-      // outcomes that are themselves failures ('error_retryable', 'truncated', …), because reaching
-      // them at all proves the client made an HTTP request.
-      if (outcome === 'client_latched' || outcome === 'error_fatal') {
+      if (LATCHED_DECIDE_OUTCOMES.has(outcome)) {
         this.clientLatchedGauge.set(1);
-      } else {
+      } else if (PROVES_CALL_COMPLETED_OUTCOMES.has(outcome)) {
         this.clientLatchedGauge.set(0);
       }
+      // Everything else leaves the gauge UNCHANGED, which is the whole point of using two explicit
+      // sets instead of an else-branch. 'off_menu' and 'budget_blocked' are returned by
+      // BatchingAgentClient BEFORE inner.proposeBatch is ever called (batching-agent-client.ts) — they
+      // never reach AnthropicAgentClient, so they prove nothing about the latch. Clearing on them
+      // would drop this gauge to 0 while the lane was still latched and silence the critical alert:
+      // exactly the blindness this metric exists to remove, reintroduced one layer up. A NEW outcome
+      // added later also lands here and is inert until someone classifies it deliberately, rather than
+      // silently clearing a live alert.
     } catch {
       /* metrics must never throw into a trading path */
     }

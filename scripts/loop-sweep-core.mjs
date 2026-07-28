@@ -302,7 +302,8 @@ function computeApp(prev, cur, elapsedMs = null, nowMs = null) {
   if (promAlerts && promAlerts.ok === true && promAlerts.value) {
     for (const a of promAlerts.value.firing || []) {
       const detail =
-        `${a.alertname} (${a.severity}) firing since ${a.activeAt ?? 'unknown'}` +
+        `${a.alertname}${a.scope ? `{${a.scope}}` : ''} (${a.severity}) ` +
+        `firing since ${a.activeAt ?? 'unknown'}` +
         `${a.summary ? ` — ${a.summary}` : ''}`;
       if (a.severity === 'critical') {
         alarms.push({ kind: 'prometheus_alert_firing', detail });

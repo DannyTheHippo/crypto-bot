@@ -191,11 +191,22 @@ export function parsePromRules(res, { expectedAlertNames = null, nowMs = null } 
       const rows = instances.length > 0 ? instances : [{ labels: rule.labels, activeAt: null }];
       for (const inst of rows) {
         const labels = inst.labels || {};
+        // The instance's DISTINGUISHING labels (everything past alertname/severity) — without them two
+        // firing instances of the same venue-labeled rule render as byte-identical alarms, so a pass
+        // reading `ReconciliationHalt` twice cannot tell whether one venue or both are halted. Several
+        // rules in alerts.rules.yml are per-venue or per-symbol, which is precisely when a firing
+        // instance's identity is the actionable part.
+        const scope = Object.entries(labels)
+          .filter(([k]) => k !== 'alertname' && k !== 'severity')
+          .sort(([a], [b]) => (a < b ? -1 : 1))
+          .map(([k, v]) => `${k}=${v}`)
+          .join(',');
         firing.push({
           alertname: labels.alertname || rule.name,
           severity: labels.severity || (rule.labels && rule.labels.severity) || 'unknown',
           activeAt: inst.activeAt || null,
           summary: (rule.annotations && rule.annotations.summary) || '',
+          scope,
         });
       }
     }

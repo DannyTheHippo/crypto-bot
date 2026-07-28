@@ -105,6 +105,21 @@ describe('AgentMetricsRecorder', () => {
     );
   });
 
+  // The review's must-fix: 'off_menu' and 'budget_exhausted' are returned by BatchingAgentClient
+  // BEFORE inner.proposeBatch, so they never reach the Anthropic client and prove nothing about the
+  // latch. Clearing on them would drop the gauge to 0 while the lane was still latched and silence the
+  // critical alert — the exact blindness the metric exists to remove, one layer up.
+  it.each(['off_menu', 'budget_blocked'] as const)(
+    'recordDecide leaves agent_client_latched UNCHANGED on %s — a pre-call short-circuit cannot clear a latch',
+    async (outcome) => {
+      recorder.recordDecide('client_latched');
+      recorder.recordDecide(outcome);
+      expect(await register.getSingleMetricAsString('agent_client_latched')).toContain(
+        'agent_client_latched 1',
+      );
+    },
+  );
+
   it('recordDecide clears agent_client_latched on any outcome that proves a call completed, including a retryable failure', async () => {
     recorder.recordDecide('client_latched');
     recorder.recordDecide('error_retryable');

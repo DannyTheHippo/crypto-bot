@@ -16,6 +16,7 @@ interface FiringAlert {
   severity: string;
   activeAt: string | null;
   summary: string;
+  scope?: string;
 }
 type ProbeResult =
   | { ok: true; value: { ruleCount: number; alertingCount: number; firing: FiringAlert[] } }
@@ -122,6 +123,63 @@ describe('parsePromRules', () => {
       activeAt: '2026-07-27T21:16:25Z',
       summary: 'lane latched',
     });
+  });
+
+  // Without the instance's distinguishing labels, two firing instances of a per-venue rule render as
+  // byte-identical alarms and a pass cannot tell whether one venue or both are halted.
+  it('carries each firing instance’s distinguishing labels as scope, excluding alertname/severity', () => {
+    const res = parsePromRules(
+      rulesBody([
+        alertingRule({
+          name: 'ReconciliationHalt',
+          state: 'firing',
+          labels: { severity: 'critical' },
+          alerts: [
+            {
+              state: 'firing',
+              activeAt: '2026-07-27T22:00:00Z',
+              labels: { alertname: 'ReconciliationHalt', severity: 'critical', venue: 'binance' },
+            },
+            {
+              state: 'firing',
+              activeAt: '2026-07-27T22:01:00Z',
+              labels: {
+                alertname: 'ReconciliationHalt',
+                severity: 'critical',
+                venue: 'binanceusdm',
+              },
+            },
+          ],
+        }),
+      ]),
+      { nowMs: NOW },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.firing.map((f) => f.scope)).toEqual(['venue=binance', 'venue=binanceusdm']);
+  });
+
+  it('leaves scope empty for a rule with no labels beyond alertname/severity', () => {
+    const res = parsePromRules(
+      rulesBody([
+        alertingRule({
+          name: 'AgentClientFatalLatch',
+          state: 'firing',
+          labels: { severity: 'critical' },
+          alerts: [
+            {
+              state: 'firing',
+              activeAt: '2026-07-27T21:16:25Z',
+              labels: { alertname: 'AgentClientFatalLatch', severity: 'critical' },
+            },
+          ],
+        }),
+      ]),
+      { nowMs: NOW },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.firing[0]?.scope).toBe('');
   });
 
   it('a firing rule with an empty alerts[] still yields one entry — a firing rule can never read as silent', () => {

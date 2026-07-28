@@ -59,14 +59,24 @@ Read in this order:
 1. This playbook.
 2. `date -u` — anchor wall-clock BEFORE any log forensics. Unanchored timestamp comparison
    fabricated a 40-minute phantom-bug chase (Y1 §C.10). Verify the clock before the code.
-3. `corepack pnpm --dir <repo> loop:digests <last-pass-ISO>` — every collector digest line since
+3. `corepack pnpm --dir <repo> loop:lock "pass <N>"` — take the pass lease BEFORE any edit, and KEEP
+   the `nonce=` it prints; §6 needs it. A refusal means another pass is live in this same working
+   tree: end this pass, record the collision, and **do NOT run `loop:unlock`** — you do not hold that
+   lease, and freeing it would re-enable the very collision you just detected (the release is
+   nonce-gated so it will refuse, but do not try). On 2026-07-28 two scheduled passes overlapped, one
+   committed the other's in-flight work twice, and a gate run read the test count moving
+   mid-verification (state.md § Flagged). Two honest limits: the lease is time-based (2h, fails OPEN
+   — it cannot detect a dead holder, only an expired one), and it binds only passes that call it, so
+   a refusal is evidence of overlap while a clean acquire is NOT proof of its absence.
+4. `corepack pnpm --dir <repo> loop:digests <last-pass-ISO>` — every collector digest line since
    the last pass (both the hot dir and `digests/archive/`). This is the rehydration base: per-cycle
    counter deltas, fired alarms, host duty-cycle gaps, bootId provenance.
-4. `research/loop/state.md` — the loop's only mutable memory: open WATCH lines, backlog, last-pass
+5. `research/loop/state.md` — the loop's only mutable memory: open WATCH lines, backlog, last-pass
    pointer, settled owner decisions (NOT re-openable by a pass — a pass that disputes one writes the
    argument into the report, never acts).
-5. `git -C <repo> log --oneline -20` — what shipped since the last pass.
-6. Project memory index (auto-loaded) — env quirks, validation recipes.
+6. `git -C <repo> log --oneline -20` — what shipped since the last pass. Re-run this BEFORE
+   committing: on 2026-07-28 two foreign commits landed on `main` mid-pass (§ the lease above).
+7. Project memory index (auto-loaded) — env quirks, validation recipes.
 
 If the digest history has a host-sleep gap (annotated gap line), that window is dark — the stack
 runs on a sleeping MacBook; check `pmset -g log`/`uptime` before suspecting a bug (Y1 §D host-state).
@@ -119,6 +129,10 @@ rule):
   watermark while the container is healthy.
 - `restart_storm` — RestartCount climbing fast (the R8-6 wedge-to-OOM class; a single restart is an
   ordinary redeploy, not an alarm).
+- `reconcile_clean_stamp_stale` — `reconciliation_last_success_timestamp_seconds` older than 30 min
+  (added Pass 40, 2026-07-27; this list omitted it until Pass 44 re-verified against the core).
+  Read the GAUGE, never a `CLEAN` row age: `reconciliations.result` is written off the RAW mismatch
+  total, so a row-age check fires forever on benign shared-wallet noise (WATCH-V4-1).
 - `prometheus_alert_firing` (added Pass 43, 2026-07-28) — a **critical**-severity rule in
   `observability/alerts.rules.yml` is firing. The sweep reads Prometheus' own `/api/v1/rules`, so this
   alarm kind inherits every rule in that file, including rules written after the sweep code. Only
@@ -326,6 +340,10 @@ conventional message. Dirty tree at pass start: note it, stage ONLY files this p
    WATCH lines, flagged items awaiting the owner. Keep both files current enough that the next pass
    needs nothing else.
 3. `pnpm lint:md` green after writing LOG.md/state.md.
+4. `corepack pnpm --dir <repo> loop:unlock <nonce>` — release the pass lease taken at §1 step 3,
+   using the nonce that step printed. Last action of the pass, after the report is written. A pass
+   that TOOK the lease releases it, including one ending early; a pass REFUSED at §1 step 3 never
+   holds it and must not try.
 
 ## 7. Stop conditions (report-only, change nothing)
 

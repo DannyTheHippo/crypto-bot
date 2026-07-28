@@ -35,6 +35,9 @@ backups/
 # durable git record is research/loop/LOG.md + state.md). Machine-written evidence artifacts,
 # never committed — tracking them would force per-tick commits or a permanently dirty tree.
 research/loop/digests/
+# Pass-concurrency lease (scripts/loop-pass-lock.mjs). Runtime coordination state for whichever pass
+# holds the working tree — committing it would hand the next clone a phantom lock.
+research/loop/.pass.lock
 # Offline eval corpus dumps (reproducible via scripts/dump-eval-corpus.mjs against the recorded
 # agent_decisions source — see that script's provenance note). Multi-MB payload dumps; the rule
 # exists so a research corpus never lands in git history.

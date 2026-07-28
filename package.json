@@ -21,6 +21,8 @@
     "loop:sweep": "node scripts/loop-sweep.mjs",
     "loop:collect": "node scripts/loop-collect.mjs",
     "loop:digests": "node scripts/loop-digests-since.mjs",
+    "loop:lock": "node scripts/loop-pass-lock.mjs",
+    "loop:unlock": "node scripts/loop-pass-lock.mjs release",
     "--- CHECKS ---": "--------------------------------",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit -p tsconfig.eslint.json",

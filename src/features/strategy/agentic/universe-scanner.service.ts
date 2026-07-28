@@ -48,6 +48,20 @@ const DEFAULT_HYSTERESIS_RANK = 12;
 // discipline as the hysteresis band above.
 const VENUE_FLOOR = 2;
 
+// Coverage fraction that makes a same-day corrective re-rank worthwhile (Pass 44, 2026-07-28). The
+// quorum guard below only demands `menuSize` scored symbols before stamping the UTC day, so the
+// FIRST scan of a boot ranks whichever symbols happened to warm up first and then freezes that
+// partial ranking until 00:00Z the next day. Measured live: nine minutes after the 08:05:55Z
+// redeploy the scan stamped the day with 11 of 40 symbols scored, locking ETH/USDT and
+// ETH/USDT:USDT — the second-most-liquid pair on both venues — out of the menu (and out of the
+// book/trades channel tier, which keys off isActive()) for the whole day. Not 1.0 because a
+// permanently cold basket member (delisted, or a thin symbol whose trade-driven candles never fill a
+// 15-bar ATR window) must not be able to withhold the repair forever; at 0.9 the tolerance is 4 cold
+// symbols of 40, and with 5 or more permanently cold the repair never fires and the defect returns
+// in full — the `scored`/`basket` fields on the universe_scan journal line are what make that
+// visible, so a pass reading a partial `scored` with no later corrective line has found exactly that.
+const COVERAGE_REFRESH_FRACTION = 0.9;
+
 export interface ScanMetrics {
   readonly quoteVolume24h: number;
   readonly atrPct: number;
@@ -62,7 +76,7 @@ export interface RankedSymbol {
   // Combined score (see recompute()'s own comment for the exact formula). Infinity for a symbol with
   // no metrics recorded yet (never ranked below an actually-scored symbol).
   readonly score: number;
-  // 1-indexed position in the combined ranking — the number the rank-18 hysteresis band compares
+  // 1-indexed position in the combined ranking — the number the rank-12 hysteresis band compares
   // against.
   readonly rank: number;
   readonly pinned: boolean;
@@ -146,12 +160,17 @@ export class UniverseScannerService {
   // undefined = never recomputed yet. Deliberately NOT pre-seeded to the full basket: recompute()'s
   // hysteresis rule reads this as "the incumbent set", and a full-basket pre-seed would make the
   // very FIRST recompute treat every basket member as an incumbent — silently retaining everything
-  // inside the rank-18 band on the very first boot ranking, before the scanner has ever chosen an
+  // inside the rank-12 band on the very first boot ranking, before the scanner has ever chosen an
   // active menu. isActive()/activeMenu() below supply the "everything active" safe default instead,
   // without polluting recompute()'s own incumbent bookkeeping.
   private active: Set<string> | undefined;
   private lastRanking: readonly RankedSymbol[] = [];
   private lastRecomputedDayKey: string | undefined;
+  // Basket coverage (count of scored symbols) behind the ranking currently applied, and whether that
+  // ranking was laid down below the coverage bar. Only a partial stamp is repairable — see the three
+  // gates in maybeRecompute.
+  private lastAppliedScoredCount = 0;
+  private stampedPartial = false;
 
   constructor(cfg: UniverseScannerConfig) {
     this.basket = cfg.basket;
@@ -194,13 +213,74 @@ export class UniverseScannerService {
   // chance to warm up, not on the first raw ingest event.
   maybeRecompute(now: number): boolean {
     const dayKey = utcDayKey(now);
-    if (this.lastRecomputedDayKey === dayKey) return false;
-    this.recompute(now);
+    if (this.lastRecomputedDayKey !== dayKey) {
+      // A genuinely new UTC day (or the first scan of this process): rank with hysteresis.
+      const applied = this.recompute(now);
+      // Only a ranking that was itself laid down BELOW the coverage bar is repairable. Set after the
+      // apply, never before: a throw out of recompute (isPinned reads the portfolio snapshot, and the
+      // driving setInterval has no catch) must not consume the repair having applied nothing.
+      if (applied) this.stampedPartial = this.lastAppliedScoredCount < this.coverageBar();
+      return true;
+    }
+    // Same UTC day, ranking already stamped. The day key alone is NOT sufficient evidence that the
+    // ranking is trustworthy: the stamp may have been laid down mid-warmup, over a fraction of the
+    // basket (see COVERAGE_REFRESH_FRACTION).
+    //
+    // FAILURE DIRECTION — this gate fails CLOSED, toward the pre-fix frozen ranking. It is a menu
+    // QUALITY repair, not a safety gate: every branch below that declines to act leaves exactly the
+    // behaviour that shipped before this repair existed, and a symbol carrying a position, a resting
+    // order, or an edge-cohort pin is held on the menu by the pin path regardless of what it decides.
+    // Declining is therefore always safe; acting when it should not is the expensive direction,
+    // because a menu change re-tiers ws subscriptions and drops a symbol's consult.
+    //
+    // Gate 1: a ranking already stamped at or above the bar is NOT partial, so re-ranking it would
+    // silently defeat the v3 §5.3 hysteresis band — an unrelated symbol warming up at rank 40 would
+    // evict a rank-3 incumbent the band exists to hold. Only repair what was actually broken.
+    if (!this.stampedPartial) return false;
+    const scored = this.scoredBasketCount();
+    // Gate 2: coverage must genuinely have improved on what the applied ranking saw. `this.metrics`
+    // is append-only and the basket is fixed, so coverage is monotone — this is what bounds the
+    // repair to at most (basket.length − bar + 1) applies per day, each one requiring a NEWLY
+    // scoreable symbol. Menu changes re-tier ws subscriptions, and an unbounded refresh loop is the
+    // resubscribe herd that tripped the demo venue's 1008 burst limit twice in the 2026-07-21 soak.
+    if (scored <= this.lastAppliedScoredCount) return false;
+    // Gate 3: below the bar the repair would trade one partial ranking for another.
+    if (scored < this.coverageBar()) return false;
+    // Hysteresis is a DAY-to-DAY anti-flap device: it exists so an incumbent does not rotate out on
+    // ordinary rank noise between daily scans. Retaining incumbents here would instead preserve the
+    // partial-warmup menu this repair is correcting — and grow the consulted set toward the rank-12
+    // band (~12 + pins) against a $3/day breaker sized for menu-8. The repair ranks over materially
+    // better coverage than the menu it replaces.
+    const applied = this.recompute(now, { retainIncumbents: false });
+    // Once the applied ranking has seen the whole basket there is nothing left to repair. Stopping
+    // here rather than at the first apply above the bar is deliberate: the bar is 90%, so a repair
+    // that fired at 36 of 40 would otherwise freeze the last 4 symbols out for the rest of the day —
+    // the same lockout this repair exists to remove, just narrower.
+    if (applied && this.lastAppliedScoredCount >= this.basket.length) this.stampedPartial = false;
     return true;
   }
 
+  // ceil(90% of the basket). Read through a helper so the three gates above and the journal cannot
+  // drift apart.
+  private coverageBar(): number {
+    return Math.ceil(this.basket.length * COVERAGE_REFRESH_FRACTION);
+  }
+
+  // Count of BASKET members that have scoreable metrics — the SAME predicate recompute() applies to
+  // build `withMetrics` (basket membership ∩ a present metrics entry), so the gates above and the
+  // count recompute() records can never disagree. `this.metrics` alone is not a coverage measure: it
+  // is keyed by whatever symbol string recordCandles was called with.
+  private scoredBasketCount(): number {
+    let scored = 0;
+    for (const symbol of this.basket) {
+      if (this.metrics.has(symbol)) scored += 1;
+    }
+    return scored;
+  }
+
   // Forces a recompute regardless of the day-key cadence — the boot-time / test entry point.
-  recompute(now: number): void {
+  // Returns whether a ranking was actually APPLIED (false = the quorum guard declined).
+  recompute(now: number, opts?: { readonly retainIncumbents?: boolean }): boolean {
     const ranked = this.basket.map((symbol) => ({ symbol, metrics: this.metrics.get(symbol) }));
     const withMetrics = ranked.filter(
       (r): r is { symbol: string; metrics: ScanMetrics } => r.metrics !== undefined,
@@ -222,9 +302,10 @@ export class UniverseScannerService {
           quorum,
         }),
       );
-      return;
+      return false;
     }
     this.lastRecomputedDayKey = utcDayKey(now);
+    this.lastAppliedScoredCount = withMetrics.length;
 
     // Two independent rank orders (1 = best): descending quote volume, descending ATR%.
     const byVolume = [...withMetrics].sort(
@@ -252,17 +333,18 @@ export class UniverseScannerService {
     scored.sort((a, b) => a.score - b.score || a.symbol.localeCompare(b.symbol));
 
     // Empty (never Set(basket)) on the FIRST recompute — see the `active` field's own comment: a
-    // full-basket incumbent set would spuriously hysteresis-retain everything inside the rank-18
+    // full-basket incumbent set would spuriously hysteresis-retain everything inside the rank-12
     // band on the very first boot ranking.
     const previousActive = this.active ?? new Set<string>();
     const menuSize = Math.min(this.menuSize, this.basket.length);
     const candidateActive = new Set<string>(scored.slice(0, menuSize).map((r) => r.symbol));
 
+    const retainIncumbents = opts?.retainIncumbents ?? true;
     scored.forEach((r, i) => {
       const rank = i + 1;
       // Hysteresis: an incumbent (previously active) symbol outside the fresh top-N stays active
       // until its combined rank drops below the hysteresis band.
-      if (previousActive.has(r.symbol) && rank <= this.hysteresisRank) {
+      if (retainIncumbents && previousActive.has(r.symbol) && rank <= this.hysteresisRank) {
         candidateActive.add(r.symbol);
       }
       // Pin: an open-position/resting-order symbol is ALWAYS active, independent of rank or
@@ -327,11 +409,18 @@ export class UniverseScannerService {
         event: 'universe_scan',
         date: utcDayKey(now),
         menuSize,
+        // Coverage at stamp time, stated outright: an unscored symbol serializes as score:null (a
+        // JSON.stringify(Infinity) artifact), so reading coverage off `ranked` meant counting nulls.
+        // `corrective` marks the same-day re-rank that repairs a partial-warmup stamp.
+        scored: withMetrics.length,
+        basket: this.basket.length,
+        corrective: !retainIncumbents,
         ranked: this.lastRanking.map((r) => ({ symbol: r.symbol, rank: r.rank, score: r.score })),
         menuIn,
         menuOut,
       }),
     );
+    return true;
   }
 
   // Safe default before the first recompute (WORK4): everything is active, so a fresh instance can

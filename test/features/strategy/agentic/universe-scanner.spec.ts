@@ -386,6 +386,152 @@ describe('UniverseScannerService', () => {
     expect(scanner.isActive('C/USDT')).toBe(false);
   });
 
+  // Pass 44 (2026-07-28). The quorum guard only demands `menuSize` scored symbols before stamping
+  // the UTC day, so the first scan of a boot freezes whatever partial warmup it saw until 00:00Z
+  // the next day. Live: nine minutes after a redeploy the scan stamped the day with 11 of 40 scored
+  // and locked ETH out of the menu — and out of the book/trades channel tier, which keys off
+  // isActive() — for the rest of the day. Every redeploy re-armed it (the day key is in-memory).
+  describe('partial-warmup correction', () => {
+    // 10 symbols, menuSize 2: quorum is 2, so a 2-of-10 warmup stamps the day exactly as production
+    // did. The 90% coverage bar is ceil(10 × 0.9) = 9.
+    const basket = Array.from({ length: 10 }, (_, i) => `S${i}/USDT`);
+
+    it('re-ranks once when the basket actually warms up, replacing the menu the partial scan chose', () => {
+      const log = vi.fn();
+      const scanner = new UniverseScannerService({ basket, menuSize: 2, logger: { log } });
+
+      // Warmup step 1: only the two worst symbols in the eventual ranking have reported.
+      scanner.recordMetrics('S8/USDT', rankedMetrics(9));
+      scanner.recordMetrics('S9/USDT', rankedMetrics(10));
+      expect(scanner.maybeRecompute(T)).toBe(true);
+      expect([...scanner.activeMenu()].sort()).toEqual(['S8/USDT', 'S9/USDT']);
+
+      // Coverage improves but is still short of the 9-symbol bar — the ranking stays frozen.
+      for (const i of [0, 1, 2, 3, 4, 5]) scanner.recordMetrics(`S${i}/USDT`, rankedMetrics(i + 1));
+      expect(scanner.maybeRecompute(T + 60_000)).toBe(false);
+      expect([...scanner.activeMenu()].sort()).toEqual(['S8/USDT', 'S9/USDT']);
+
+      // 9 of 10 scored: the correction fires and the genuinely top-ranked symbols take the menu.
+      scanner.recordMetrics('S6/USDT', rankedMetrics(7));
+      expect(scanner.maybeRecompute(T + 120_000)).toBe(true);
+      expect([...scanner.activeMenu()].sort()).toEqual(['S0/USDT', 'S1/USDT']);
+      expect(scanner.isActive('S8/USDT')).toBe(false);
+    });
+
+    it('keeps repairing until the applied ranking has seen the whole basket, then stops for the day', () => {
+      const scanner = new UniverseScannerService({ basket, menuSize: 2 });
+      scanner.recordMetrics('S8/USDT', rankedMetrics(9));
+      scanner.recordMetrics('S9/USDT', rankedMetrics(10));
+      scanner.maybeRecompute(T);
+      for (const i of [0, 1, 2, 3, 4, 5, 6])
+        scanner.recordMetrics(`S${i}/USDT`, rankedMetrics(i + 1));
+      expect(scanner.maybeRecompute(T + 60_000)).toBe(true); // repair #1, at the 9-of-10 bar
+
+      // The last symbol warms up after the bar was already crossed. Stopping at the first repair
+      // would freeze it out until 00:00Z — the same lockout, just narrower. It ranks #1 here, so a
+      // scanner that ignored it would be consulting a demonstrably worse menu all day.
+      scanner.recordMetrics('S7/USDT', { quoteVolume24h: 10_000, atrPct: 0.9 });
+      expect(scanner.maybeRecompute(T + 120_000)).toBe(true); // repair #2, at full coverage
+      expect(scanner.isActive('S7/USDT')).toBe(true);
+
+      // Applied ranking has now seen all 10 — nothing left to repair, so the loop goes quiet even
+      // though maybeRecompute keeps being called every 15s.
+      expect(scanner.maybeRecompute(T + 180_000)).toBe(false);
+      expect(scanner.maybeRecompute(T + 240_000)).toBe(false);
+
+      expect(scanner.maybeRecompute(T + DAY_MS)).toBe(true); // next UTC day: normal daily cadence
+    });
+
+    // Reviewer finding, 2026-07-28: the first version of this repair triggered on "coverage grew AND
+    // is now >= the bar", which also fires on a day whose ranking was never partial — letting an
+    // irrelevant symbol warming up at the bottom of the basket evict a top-ranked incumbent the v3
+    // §5.3 hysteresis band exists to hold. The repair must only touch a ranking that was itself
+    // stamped below the bar.
+    it('never re-ranks a day that was stamped at full coverage, so the hysteresis band survives', () => {
+      const scanner = new UniverseScannerService({ basket, menuSize: 2 });
+      // Day 1: 9 of 10 scored — at the bar, so this stamp is NOT partial.
+      for (const i of [0, 1, 2, 3, 4, 5, 6, 7, 8])
+        scanner.recordMetrics(`S${i}/USDT`, rankedMetrics(i + 1));
+      scanner.maybeRecompute(T);
+      expect([...scanner.activeMenu()].sort()).toEqual(['S0/USDT', 'S1/USDT']);
+
+      // Day 2: S1 slips to rank 3, S2 takes its place. Hysteresis retains S1 (rank 3 <= band 12).
+      scanner.recordMetrics('S1/USDT', rankedMetrics(3));
+      scanner.recordMetrics('S2/USDT', rankedMetrics(2));
+      scanner.maybeRecompute(T + DAY_MS);
+      expect(scanner.isActive('S1/USDT')).toBe(true);
+
+      // Later that day the final symbol warms up and ranks LAST — no bearing on the menu at all.
+      scanner.recordMetrics('S9/USDT', rankedMetrics(10));
+      expect(scanner.maybeRecompute(T + DAY_MS + 60_000)).toBe(false);
+      expect(scanner.isActive('S1/USDT')).toBe(true); // the incumbent is still held by the band
+    });
+
+    it('the correction does not carry incumbents over: hysteresis is a day-to-day anti-flap device, not a warmup artifact preserver', () => {
+      const scanner = new UniverseScannerService({ basket, menuSize: 2 });
+      scanner.recordMetrics('S8/USDT', rankedMetrics(9));
+      scanner.recordMetrics('S9/USDT', rankedMetrics(10));
+      scanner.maybeRecompute(T);
+
+      // S8 lands at rank 9 under full coverage — inside the default rank-12 hysteresis band, so a
+      // retaining re-rank would keep it and grow the consulted set past the menu the $3/day breaker
+      // is sized for.
+      for (const i of [0, 1, 2, 3, 4, 5, 6])
+        scanner.recordMetrics(`S${i}/USDT`, rankedMetrics(i + 1));
+      scanner.maybeRecompute(T + 60_000);
+
+      const s8Rank = scanner.ranking().find((r) => r.symbol === 'S8/USDT')?.rank ?? 0;
+      expect(s8Rank).toBeGreaterThan(2); // outside the fresh menu
+      expect(s8Rank).toBeLessThanOrEqual(12); // but inside the band a retaining re-rank would honour
+      expect(scanner.isActive('S8/USDT')).toBe(false);
+      expect(scanner.activeMenu()).toHaveLength(2);
+    });
+
+    it('a symbol pinned by an open position survives the correction even though it is outside the fresh menu', () => {
+      const scanner = new UniverseScannerService({
+        basket,
+        menuSize: 2,
+        isPinned: (s) => s === 'S9/USDT',
+      });
+      scanner.recordMetrics('S8/USDT', rankedMetrics(9));
+      scanner.recordMetrics('S9/USDT', rankedMetrics(10));
+      scanner.maybeRecompute(T);
+      for (const i of [0, 1, 2, 3, 4, 5, 6])
+        scanner.recordMetrics(`S${i}/USDT`, rankedMetrics(i + 1));
+      scanner.maybeRecompute(T + 60_000);
+
+      expect(scanner.isActive('S9/USDT')).toBe(true); // pinned: a position never loses its consult
+      expect(scanner.isActive('S8/USDT')).toBe(false); // merely an incumbent: rotates out
+    });
+
+    it('the scan journal states coverage outright and flags the corrective re-rank', () => {
+      const log = vi.fn();
+      const scanner = new UniverseScannerService({ basket, menuSize: 2, logger: { log } });
+      scanner.recordMetrics('S8/USDT', rankedMetrics(9));
+      scanner.recordMetrics('S9/USDT', rankedMetrics(10));
+      scanner.maybeRecompute(T);
+      const first = JSON.parse(log.mock.calls[0]![0] as string) as Record<string, unknown>;
+      expect(first).toMatchObject({ scored: 2, basket: 10, corrective: false });
+
+      for (const i of [0, 1, 2, 3, 4, 5, 6])
+        scanner.recordMetrics(`S${i}/USDT`, rankedMetrics(i + 1));
+      scanner.maybeRecompute(T + 60_000);
+      const second = JSON.parse(log.mock.calls[1]![0] as string) as Record<string, unknown>;
+      expect(second).toMatchObject({ scored: 9, basket: 10, corrective: true });
+    });
+
+    it('never fires when the basket cannot reach the coverage bar, leaving the pre-fix behaviour exactly as it was (fails toward the status quo, never worse)', () => {
+      const scanner = new UniverseScannerService({ basket, menuSize: 2 });
+      scanner.recordMetrics('S8/USDT', rankedMetrics(9));
+      scanner.recordMetrics('S9/USDT', rankedMetrics(10));
+      scanner.maybeRecompute(T);
+      // 8 of 10 scored — one short of the bar, forever.
+      for (const i of [0, 1, 2, 3, 4, 5]) scanner.recordMetrics(`S${i}/USDT`, rankedMetrics(i + 1));
+      expect(scanner.maybeRecompute(T + 60_000)).toBe(false);
+      expect([...scanner.activeMenu()].sort()).toEqual(['S8/USDT', 'S9/USDT']);
+    });
+  });
+
   it('quorum guard: partial metrics below quorum (1 of 2 required) skips the same way and logs the scored/quorum counts', () => {
     const log = vi.fn();
     const basket = ['A/USDT', 'B/USDT', 'C/USDT'];

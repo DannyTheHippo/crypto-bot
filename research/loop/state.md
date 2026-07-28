@@ -307,6 +307,50 @@ never changes for strategy evolution.
   the gate. Standing operational note surfaced by this incident: a `flatten=true` halt CANCELS
   resting protective orders first, so a wedged FLATTENING state leaves open positions with no
   venue-side protection — an unsafe resting state, not a safe one.
+- **A GUARD THAT WAS BUILT, BELIEVED, AND NEVER LOADED (Pass 43, 2026-07-28) — plus the loop learning
+  to read the alerts it owns.** Two failures of the same shape, one causing the other's invisibility.
+  (1) **The lane died silently for 3h.** The Anthropic account's credit ran out at 2026-07-27T21:16:25Z;
+  the 400 is FATAL, so `AnthropicAgentClient` latched — and the latch held until a container recreate.
+  Every surface stayed green because a latched client still journals a decision row per symbol: 30 rows
+  with `action='hold'` and an EMPTY rationale, indistinguishable from genuine model holds, while
+  `agent_tokens_total` sat frozen at 203,835. Fixes `ee4ddf3`/`7fa5ba8`: the latch expires after
+  `FATAL_LATCH_COOLDOWN_MS` (30 min) so a cause fixed OUTSIDE the process self-heals with no redeploy,
+  and the short-circuit journals `action='error'` with a `client_latched:` rationale metered as
+  `agent_decide_total{outcome="client_latched"}`. **Verified, not assumed: those degraded rows carry
+  `playbook_version IS NULL`, so `countVersionEntryStats` (the abstention-lapse evidence base) cannot
+  see them — no statistic is corrupted, before or after.**
+  (2) **`loop:sweep` never read Prometheus.** This stack has no Alertmanager by design, which makes the
+  pass the alert consumer — and the sweep only re-derived conditions it had been taught one at a time.
+  It now reads `/api/v1/rules` and promotes firing rules to `prometheus_alert_firing`. **CRITICAL ONLY:**
+  ≥1 rule was firing 58.4% of the last 7 days (ReconciliationMismatch 1135/1440 min; sticky
+  AgenticReflectionNeverMinted 4084 min/7d), and playbook §3 makes any alarm block improvement work, so
+  promoting warnings would wedge the loop on ~6 passes in 10; `EffectiveModeLive` is severity `info` and
+  fires permanently once live is armed. Warning/info annotate instead.
+  **DURABLE FACT, the most reusable thing this pass found: Prometheus reads `alerts.rules.yml` ONCE at
+  process start.** It is a read-only bind mount, the container has no `--web.enable-lifecycle`, and
+  `docker compose up -d prometheus` is a NO-OP because compose sees no change — only
+  `--force-recreate` (or a restart) reloads it. Consequence discovered live: the running Prometheus was
+  serving a pre-2026-07-22 file, **16 alerting rules against 20 committed**, so the four alerts written
+  on 07-27 to catch a silent lane had never evaluated once. Any pass editing that file MUST recreate the
+  container (now required in playbook §5 step 3 and `docs/runbook.md` § Deploy), and the sweep's
+  `promAlerts` probe now fails and NAMES any committed alert the running Prometheus has not loaded.
+  Name-set comparison only — Prometheus re-renders PromQL, so diffing query text false-positives on
+  every multi-line rule. Correcting an overstatement rather than leaving it flattering:
+  `AgenticLaneSilent` would NOT have caught this outage (`agent_decide_total` kept incrementing); the
+  staleness is real, that rule was not the miss.
+  **WATCH-V4-5 (the latch is observable and self-healing).** Expected-positive, in three parts:
+  `agent_client_latched` reads 0 whenever the lane is making calls and 1 within one scrape of a
+  suppressed call, with `AgentClientFatalLatch` following it in both directions; ZERO
+  `action='hold'`-with-empty-rationale rows ever appear again; and once a provider is funded the lane
+  resumes within 30 min with NO redeploy. Named defect outcome: a latch that outlives its cooldown
+  without a fresh `error_fatal` means the expiry path is not being reached — read `latchRationale`'s warn
+  line (`latch expired … resuming calls`) before touching the state machine; and an
+  `AgentClientFatalLatch` that will not clear after recovery means the gauge is being set from a stale
+  outcome, which is a `recordDecide` bug, not an alert-tuning problem. **Status at hand-off: the
+  NEGATIVE direction is live-verified (gauge 0, alert inactive, `health=ok`, 20/20 rules loaded on boot
+  `7c6b68d3`); the POSITIVE direction is UNPROVEN on this build** — the accounts are unfunded but bar
+  counters reset on the 07:30Z redeploy, so the first consult attempt was up to 2h out. Deadline: the
+  next pass confirms it from a sweep, and must not infer it from the unit tests.
 - **Kimi-K3 experiment COMPLETE — offline replay verdict HOLD (2026-07-21/22, task #15 run
   phase):** kimi-k3 replayed over the newest 100 recorded consult payloads (1,363 payload rows
   loaded; v2 corpus served from a read-only clone of the retired `crypto-bot_postgres_data`
@@ -595,6 +639,17 @@ fix: OMS algo-rail containment, 7 sub-fixes), `a6f0573` (P8a factorial ENABLE, s
   scheduling decisions tied to the factorial window.
 
 ## Current stage
+
+**Current order & status (last updated Pass 43, 2026-07-28T07:50Z).** Live build `7fa5ba8`, boot
+`7c6b68d3` (deployed 07:30:10Z, app + prometheus both recreated), 4 containers healthy, kill switch
+RUNNING, both venues reconciling CLEAN, 20/20 alert rules loaded and evaluating. Book: 28 closed round
+trips, net-of-cost **−$39.64**, `agentic_promotion_ready=0`, equity ~$4,978, 5 positions (4 spot dust +
+SOL/USDT:USDT 0.64) under 4 resting protective orders. **The lane is NOT trading and cannot: both
+provider accounts are unfunded (§ Flagged), so the client latches by design and journals named
+`client_latched` degrades.** Open WATCH lines: V4-1 through V4-4 all holding; **V4-5 half-verified —
+its negative direction is live, its positive direction is unproven on this build and is the next pass's
+first job.** Nothing is queued for deploy. Everything else waits on funding, and funding should be read
+against Pass 41's ENTRIES verdict before it happens.
 
 **Stage 2 — learning-loop edge** (deployed 2026-07-08; Stage 1 cost floor CLOSED — see ladder
 above). The reframing forensics (2026-07-08, still the operative diagnosis):
@@ -992,6 +1047,28 @@ when the info-context A/B resolves.
 > governs chosen IMPROVEMENTS only and never licenses a deferral — now stated outright in playbook §4
 > (§ DEFECTS ARE NEVER DEFERRED).
 
+- **BOTH PROVIDER ACCOUNTS ARE UNFUNDED — the single blocker on the entire program (Passes 42/43,
+  2026-07-28).** Anthropic returns `400 invalid_request_error: "Your credit balance is too low"`
+  (exhausted mid-run at 21:16Z on 07-27); Moonshot returns `429 suspended — insufficient balance`.
+  Consequences: the champion cannot trade at all (the lane latches, correctly, and journals named
+  `client_latched` degrades), AND the frozen playbook-space replay — the one study that could answer
+  whether ANY playbook text clears the +13.0 bps bar — cannot run. Purchasing credit is a financial
+  action, outside what an automated pass may do; this is a capability limit, not a policy gate.
+  **On resumption nothing needs redeploying or re-deciding:** the lane self-heals within 30 min of
+  credit landing (`FATAL_LATCH_COOLDOWN_MS`, and that is a tested property — see WATCH-V4-5), and the
+  study's corpus, 12 arms, metric and bar are all committed and frozen.
+  **Read alongside Pass 41's diagnosis before funding, because they interact:** entries are
+  significantly negative and worse than a random-bar placebo, so resuming spends ~$2.6/day
+  accumulating evidence for a gate the current entry signal provably cannot pass. Whether that is
+  worth doing is a decision about what this project is FOR — surfaced by Pass 41, restated by 42, and
+  now unavoidable rather than deferrable. The loop does not decide it and has not assumed either answer.
+- **TWO SCHEDULED PASSES RAN CONCURRENTLY IN ONE WORKING TREE (2026-07-28, Pass 42 + Pass 43).** Both
+  sessions edited the same files; one committed the other's in-flight work twice (`ee4ddf3`, `7fa5ba8`)
+  and caught the test count moving 3009 → 3011 mid-verification because writes were still landing. No
+  work was lost, but nothing structural prevented it — a concurrent pass can land a half-finished tree
+  inside another's gate run, and the resulting failure would be attributed to the wrong cause. Owner
+  visibility wanted because the scheduler config is owner-owned; the loop-side mitigation (a lock file
+  the playbook checks at §1) is loop-domain and is the next pass's first candidate.
 - **SHARED-ORG RATE-LIMIT — RECURRING; owner action requested (Pass 35, 2026-07-20; first
   recorded X9 same day).** The trading app and interactive/orchestration sessions share ONE
   Anthropic org budget; heavy fleet windows 429 the app's consults. Recurrences beyond the

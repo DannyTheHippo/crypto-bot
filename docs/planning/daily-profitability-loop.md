@@ -119,6 +119,16 @@ rule):
   watermark while the container is healthy.
 - `restart_storm` — RestartCount climbing fast (the R8-6 wedge-to-OOM class; a single restart is an
   ordinary redeploy, not an alarm).
+- `prometheus_alert_firing` (added Pass 43, 2026-07-28) — a **critical**-severity rule in
+  `observability/alerts.rules.yml` is firing. The sweep reads Prometheus' own `/api/v1/rules`, so this
+  alarm kind inherits every rule in that file, including rules written after the sweep code. Only
+  `critical` becomes an alarm; `warning`/`info` land as `prometheus_alert_firing_nonblocking`
+  annotations, because ≥1 rule was firing 58.4% of the last 7 days when this was measured and
+  promoting those would wedge this very gate (`EffectiveModeLive` is severity `info` and fires
+  permanently once live is armed). To make a warning blocking, raise its severity in the rules file —
+  that judgement belongs there, not in the sweep. NOTE the probe's own positive controls: a stale rules
+  file (a committed alert the running Prometheus never loaded), an unhealthy rule, or a rule group that
+  has stopped evaluating all FAIL the probe rather than reading as "nothing firing".
 
 `probe_failed` is technically an ANNOTATION kind in the core (not pushed to the `alarms` array —
 verify at `loop-sweep-core.mjs:117-133` before treating it otherwise), but it still forces the same
@@ -292,7 +302,12 @@ conventional message. Dirty tree at pass start: note it, stage ONLY files this p
 2. Cap: 3 consecutive validation failures → revert the working tree, record it, end the pass.
 3. Deploy: `docker compose build app && docker compose up -d app` — one build, one service; there
    is no `--profile perp` variant anymore (the perp compose profile and its three services were
-   deleted at the v3 cutover, spec §9).
+   deleted at the v3 cutover, spec §9). **If the pass touched `observability/alerts.rules.yml` or
+   `prometheus.yml`, it MUST also run `docker compose up -d --force-recreate prometheus`** — that file
+   is a read-only bind mount read once at process start, there is no `--web.enable-lifecycle` reload
+   endpoint, and a plain `up -d prometheus` is a no-op. Skipping it is how the four alerts added
+   2026-07-27 sat unloaded for 36h (Pass 43); `loop:sweep`'s `promAlerts` probe now names any committed
+   alert the running Prometheus has not loaded.
 4. Soak (15-30 min): run `loop:sweep` post-deploy and confirm the change's expected observable
    named in its WATCH line — health 200, decides flowing on both venues, no `EXPIRED` signals, cost
    rate sane against the ONE $3/day breaker, no new alarm, protective exits present. Regression →

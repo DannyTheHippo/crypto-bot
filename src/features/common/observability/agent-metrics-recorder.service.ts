@@ -112,6 +112,8 @@ export class AgentMetricsRecorder {
     private readonly reflectionTriggerCounter: Counter<string>,
     @InjectMetric('agentic_rearm_fallback_total')
     private readonly rearmFallbackCounter: Counter<string>,
+    @InjectMetric('agent_client_latched')
+    private readonly clientLatchedGauge: Gauge<string>,
   ) {}
 
   // `model` on both methods (#28): optional with an 'unknown' fallback so the label is always
@@ -119,6 +121,21 @@ export class AgentMetricsRecorder {
   recordDecide(outcome: AgentDecideOutcome, model?: string): void {
     try {
       this.decideCounter.inc({ outcome, model: model ?? 'unknown' });
+      // The latch LEVEL, derived from the same outcome rather than plumbed separately, so it can never
+      // disagree with the counter it is read alongside. 'error_fatal' is treated as latched because in
+      // this codebase it implies the latch: AgentProposeError is constructed only in
+      // anthropic-agent-client.ts's attemptOnce, and every FATAL classification passes through
+      // handleFailure before being thrown. Setting it here rather than only on 'client_latched' is what
+      // makes detection land within one scrape of the failing call instead of waiting for the next
+      // suppressed consult (up to a 2h fallback-gate floor away).
+      // Any OTHER outcome means a call completed, so the latch cannot be in force — including the
+      // outcomes that are themselves failures ('error_retryable', 'truncated', …), because reaching
+      // them at all proves the client made an HTTP request.
+      if (outcome === 'client_latched' || outcome === 'error_fatal') {
+        this.clientLatchedGauge.set(1);
+      } else {
+        this.clientLatchedGauge.set(0);
+      }
     } catch {
       /* metrics must never throw into a trading path */
     }

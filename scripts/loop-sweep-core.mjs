@@ -169,6 +169,18 @@ function computeApp(prev, cur, elapsedMs = null, nowMs = null) {
   if (curBoot === null) {
     annotations.push({ kind: 'probe_failed', probe: 'bootId', detail: 'bootId unresolved' });
   }
+  // promAlerts is MANDATORY, like bootId above: the generic loop only visits keys that EXIST, so an
+  // absent probe would yield neither an alarm nor an annotation and the sweep would silently revert to
+  // its pre-2026-07-28 blindness — reading as `Alarms (0)` for the one condition that must never read
+  // that way. Latent while gather() always assigns it; stated so a second probe-bag producer (a
+  // replayed digest, a refactor) cannot reintroduce the incident class by omission.
+  if (!probes.promAlerts) {
+    annotations.push({
+      kind: 'probe_failed',
+      probe: 'promAlerts',
+      detail: 'no result — prometheus alert state was never read this sweep',
+    });
+  }
 
   // Provenance-before-interpretation: deltas only survive a matching bootId.
   const prevBoot = (prev && prev.bootId) || null;

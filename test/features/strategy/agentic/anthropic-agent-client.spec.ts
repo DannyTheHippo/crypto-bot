@@ -1122,6 +1122,7 @@ describe('AnthropicAgentClient', () => {
         expect(fetchFn).toHaveBeenCalledTimes(2);
 
         expect(warn.mock.calls.some((c) => String(c[0]).includes('latch expired'))).toBe(true);
+        expect(warn.mock.calls.some((c) => String(c[0]).includes('resuming calls'))).toBe(true);
       } finally {
         vi.useRealTimers();
       }

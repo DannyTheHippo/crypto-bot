@@ -37,6 +37,20 @@ compose profiles.
 docker compose build app && docker compose up -d app
 ```
 
+- **After editing `observability/alerts.rules.yml` or `prometheus.yml`, recreate prometheus too:**
+
+```sh
+docker compose up -d --force-recreate prometheus
+```
+
+  The rules file is a read-only bind mount that Prometheus reads ONCE at process start, and the
+  container has no `--web.enable-lifecycle`, so there is no reload endpoint. A plain `up -d prometheus`
+  is a **no-op** — from compose's view nothing about the service changed — which is why the flag is
+  required. This was found the hard way on 2026-07-28: the running Prometheus was still serving a
+  pre-2026-07-22 rules file (16 alerts loaded against 20 committed), so the four alerts added on
+  07-27 to catch a silent lane had never evaluated once. `pnpm loop:sweep` now fails its `promAlerts`
+  probe and names the missing rules when this happens.
+
 - Host `pnpm start`: `AppConfigModule` loads `envFilePath: ['.env', '.env.app']` — first path wins
   (same effective precedence as compose). Test/CI: `ignoreEnvFile: true`.
 - Standing sync rule: deploy knob changes go to `.env.app`, the zod schema in

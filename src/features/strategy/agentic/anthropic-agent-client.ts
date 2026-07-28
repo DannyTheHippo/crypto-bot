@@ -541,9 +541,11 @@ const firstIssueSummary = (error: z.ZodError): string => {
 //
 // 30 min keeps the original intent intact: the comment this replaces worried about hammering "at
 // candle cadence", and the candle is STRATEGY_INTERVAL=15m, so a 30-minute floor is still strictly
-// slower than the cadence it was written to suppress — at most two failed requests per hour, and a
-// 4xx bills nothing. What it buys is that this outage class is now bounded at 30 minutes instead of
-// unbounded.
+// slower than the cadence it was written to suppress — and a 4xx bills nothing either way. In the
+// deployed shape (AGENTIC_PORTFOLIO_CONSULT=true) the whole consulting menu is coalesced into one
+// batched request, so that is ~2 failed requests/hour; with batching off it is one ordinary bar's
+// worth of per-symbol calls twice an hour instead of every 15m, still a reduction. What the expiry
+// buys is that this outage class is bounded at 30 minutes instead of unbounded.
 const FATAL_LATCH_COOLDOWN_MS = 30 * 60 * 1000;
 
 // Concrete AGENT_CLIENT adapter: calls the real Anthropic Messages API and maps its tool-use
@@ -592,9 +594,12 @@ export class AnthropicAgentClient implements AgentClientPort {
   }
 
   // The latch, asked once per call. Returns the short-circuit rationale while suppression is in
-  // force, or null once the cooldown has expired (clearing the latch so this call probes). Reading it
-  // has the side effect of clearing — that is the point: there is no separate timer to schedule, wake,
-  // or leak, and a client nobody calls never probes.
+  // force, or null once the cooldown has expired. Expiry RELEASES suppression outright rather than
+  // handing out a single probe token: `latchedAtMs` goes null, and only a fresh FATAL (handleFailure)
+  // sets it again. So a recovered client resumes at full cadence immediately — no success path needs
+  // to clear anything — and a still-broken one re-latches on its next attempt.
+  // Reading has the side effect of clearing, deliberately: there is no separate timer to schedule,
+  // wake, or leak, and a client nobody calls never probes.
   private latchRationale(nowMs: number): string | null {
     if (this.latchedAtMs === null) return null;
     const heldMs = nowMs - this.latchedAtMs;
@@ -603,7 +608,7 @@ export class AnthropicAgentClient implements AgentClientPort {
     if (heldMs >= FATAL_LATCH_COOLDOWN_MS || heldMs < 0) {
       this.latchedAtMs = null;
       this.logger.warn(
-        `anthropic api: fatal-error latch expired after ${Math.round(heldMs / 60_000)}min — allowing one probe call`,
+        `anthropic api: fatal-error latch expired after ${Math.round(heldMs / 60_000)}min — resuming calls`,
       );
       return null;
     }

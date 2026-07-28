@@ -21,6 +21,7 @@ import {
   AGENTIC_SCHEMA_REJECTIONS_COUNTER,
   AGENTIC_REFLECTION_TRIGGER_COUNTER,
   AGENTIC_REARM_FALLBACK_COUNTER,
+  AGENT_CLIENT_LATCHED_GAUGE,
 } from '../../../../src/features/common/observability/metrics.service';
 import { AgentMetricsRecorder } from '../../../../src/features/common/observability/agent-metrics-recorder.service';
 
@@ -50,6 +51,7 @@ describe('AgentMetricsRecorder', () => {
         AGENTIC_SCHEMA_REJECTIONS_COUNTER,
         AGENTIC_REFLECTION_TRIGGER_COUNTER,
         AGENTIC_REARM_FALLBACK_COUNTER,
+        AGENT_CLIENT_LATCHED_GAUGE,
         AgentMetricsRecorder,
       ],
     }).compile();
@@ -61,7 +63,7 @@ describe('AgentMetricsRecorder', () => {
     register.clear();
   });
 
-  it('registers all eighteen agentic-lane metrics', async () => {
+  it('registers all nineteen agentic-lane metrics', async () => {
     const names = (await register.getMetricsAsJSON()).map((m) => m.name);
     for (const name of [
       'agent_decide_total',
@@ -82,9 +84,38 @@ describe('AgentMetricsRecorder', () => {
       'agentic_schema_rejections_total',
       'agentic_reflection_trigger_total',
       'agentic_rearm_fallback_total',
+      'agent_client_latched',
     ]) {
       expect(names, name).toContain(name);
     }
+  });
+
+  // The 2026-07-27 outage's alerting lesson: every counter-derived form of "the lane is dead right
+  // now" either cannot clear or cannot fire in time, so the latch is published as a LEVEL. These pin
+  // both directions, because an alert that cannot clear is as bad as one that cannot fire.
+  it('recordDecide raises agent_client_latched on a suppressed call and on the fatal that starts the latch', async () => {
+    recorder.recordDecide('client_latched', 'claude-sonnet-5');
+    expect(await register.getSingleMetricAsString('agent_client_latched')).toContain(
+      'agent_client_latched 1',
+    );
+    register.resetMetrics();
+    recorder.recordDecide('error_fatal', 'claude-sonnet-5');
+    expect(await register.getSingleMetricAsString('agent_client_latched')).toContain(
+      'agent_client_latched 1',
+    );
+  });
+
+  it('recordDecide clears agent_client_latched on any outcome that proves a call completed, including a retryable failure', async () => {
+    recorder.recordDecide('client_latched');
+    recorder.recordDecide('error_retryable');
+    expect(await register.getSingleMetricAsString('agent_client_latched')).toContain(
+      'agent_client_latched 0',
+    );
+    recorder.recordDecide('client_latched');
+    recorder.recordDecide('proposed');
+    expect(await register.getSingleMetricAsString('agent_client_latched')).toContain(
+      'agent_client_latched 0',
+    );
   });
 
   it('recordDecide increments agent_decide_total{outcome,model}', async () => {
@@ -328,8 +359,17 @@ describe('AgentMetricsRecorder — never throws into a trading path', () => {
       throwing as unknown as Counter<string>,
       throwing as unknown as Counter<string>,
       throwing as unknown as Counter<string>,
+      // agent_client_latched: a `set` that throws — recordDecide writes the latch LEVEL alongside the
+      // counter, so a misbehaving gauge must not escape into the decide path either.
+      {
+        ...throwing,
+        set: () => {
+          throw new Error('boom');
+        },
+      } as unknown as Gauge<string>,
     );
     expect(() => recorder.recordDecide('proposed')).not.toThrow();
+    expect(() => recorder.recordDecide('client_latched')).not.toThrow();
     expect(() => recorder.recordTokens(1, 1)).not.toThrow();
     expect(() => recorder.observeDecideLatency(1)).not.toThrow();
     expect(() => recorder.setPlaybookInfo(1)).not.toThrow();

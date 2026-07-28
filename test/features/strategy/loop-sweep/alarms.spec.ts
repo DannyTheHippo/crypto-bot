@@ -78,7 +78,11 @@ interface Probes {
   wsRecreations: { ok: boolean; value: { count: number } };
   rss: { ok: boolean; value: { bytes: number } };
   promAlerts:
-    | { ok: true; error?: undefined; value: { ruleCount: number; firing: FiringAlert[] } }
+    | {
+        ok: true;
+        error?: undefined;
+        value: { ruleCount: number; alertingCount: number; firing: FiringAlert[] };
+      }
     | { ok: false; error: string; value?: undefined };
 }
 interface App {
@@ -114,7 +118,7 @@ function baseProbes(): Probes {
     wsRecreations: { ok: true, value: { count: 2 } },
     rss: { ok: true, value: { bytes: 1000 } },
     // Rules demonstrably loaded and nothing firing — the only shape that legitimately reads as quiet.
-    promAlerts: { ok: true, value: { ruleCount: 16, firing: [] } },
+    promAlerts: { ok: true, value: { ruleCount: 20, alertingCount: 20, firing: [] } },
   };
 }
 
@@ -285,7 +289,8 @@ describe('loop-sweep-core alarms', () => {
     app.probes.promAlerts = {
       ok: true,
       value: {
-        ruleCount: 16,
+        ruleCount: 20,
+        alertingCount: 20,
         firing: [
           {
             alertname: 'AgentClientFatalLatch',
@@ -314,19 +319,66 @@ describe('loop-sweep-core alarms', () => {
     expect(fired[1]?.detail).toContain('ReconciliationHalt');
   });
 
-  it('zero loaded rules is a probe failure, never a quiet pass — an empty firing list is only meaningful when rules exist (§C.9)', () => {
+  // Only `critical` blocks. Measured on this stack when the promotion was written: ≥1 rule was firing
+  // 58.4% of the last 7 days, dominated by warning-severity rules the program knowingly runs through
+  // (ReconciliationMismatch 1135 of 1440 min; AgenticReflectionNeverMinted 4084 min/7d). Since playbook
+  // §3 makes ANY alarm block all improvement work, promoting warnings would have wedged the loop on
+  // roughly six passes in ten — and `info` (EffectiveModeLive) fires permanently once live is armed.
+  it('promotes only critical alerts to alarms — warning and info annotate instead, so the incident gate is not wedged by rules the program runs through', () => {
     const app = baseApp();
     app.probes.promAlerts = {
-      ok: false,
-      error: 'rules api: prometheus has ZERO rules loaded — firing state unknowable, not clean',
+      ok: true,
+      value: {
+        ruleCount: 20,
+        alertingCount: 20,
+        firing: [
+          {
+            alertname: 'ReconciliationMismatch',
+            severity: 'warning',
+            activeAt: '2026-07-27T04:00:00Z',
+            summary: 'benign shared-wallet noise',
+          },
+          {
+            alertname: 'EffectiveModeLive',
+            severity: 'info',
+            activeAt: '2026-07-27T04:00:00Z',
+            summary: 'live is legitimate when armed',
+          },
+          {
+            alertname: 'AgentClientFatalLatch',
+            severity: 'critical',
+            activeAt: '2026-07-27T21:16:25Z',
+            summary: 'lane latched',
+          },
+        ],
+      },
     };
     app.probes.decides.value.count = 130;
     app.probes.consultGate.value.total = 70;
     app.probes.reconcile = baseReconcileByVenue(220);
     const { alarms, annotations } = computeSweep({ prev: baseWatermark(), cur: curWith(app) });
-    expect(kinds(alarms)).not.toContain('prometheus_alert_firing');
+    const fired = alarms.filter((a) => a.kind === 'prometheus_alert_firing');
+    expect(fired).toHaveLength(1);
+    expect(fired[0]?.detail).toContain('AgentClientFatalLatch');
+    const nonBlocking = annotations.filter((n) => n.kind === 'prometheus_alert_firing_nonblocking');
+    expect(nonBlocking).toHaveLength(2);
+    expect(nonBlocking.map((n) => n.detail).join(' ')).toContain('ReconciliationMismatch');
+    expect(nonBlocking.map((n) => n.detail).join(' ')).toContain('EffectiveModeLive');
+  });
+
+  // An ABSENT probe key, not a failed one: the generic probe-failure loop only visits keys that exist,
+  // so omission would produce zero alarms AND zero annotations — reading as `Alarms (0)` for the one
+  // condition that must never read that way.
+  it('an absent promAlerts probe is a named failure — the sweep can never silently stop reading alert state', () => {
+    const app = baseApp();
+    const probes = app.probes as unknown as Record<string, unknown>;
+    delete probes.promAlerts;
+    app.probes.decides.value.count = 130;
+    app.probes.consultGate.value.total = 70;
+    app.probes.reconcile = baseReconcileByVenue(220);
+    const { annotations } = computeSweep({ prev: baseWatermark(), cur: curWith(app) });
     const failed = annotations.find((n) => n.kind === 'probe_failed' && n.probe === 'promAlerts');
-    expect(failed?.detail).toContain('ZERO rules loaded');
+    expect(failed?.detail).toContain('never read');
   });
 
   it('reconcile_clean_stamp_stale does NOT fire while the stamp is fresh — benign per-pass mismatches keep refreshing it', () => {

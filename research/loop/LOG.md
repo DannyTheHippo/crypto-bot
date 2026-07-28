@@ -5038,3 +5038,26 @@ RUNNING, equity flat at 4978.18 (peak 5000.70), 4 open orders, 0 level>=50 error
 recurring warn is the documented-healthy `reconcile pass still in flight` (61/hour). **Not a CLEAN
 soak in the intended sense** — the LLM lane is dead for lack of funding, so the strategy path is
 untested; it self-heals within 30 min of credit landing.
+
+### Pass 42 soak — STOPPED at T+5h by owner direction, pending account funding
+
+Hours 0–5 of an intended 12. Stopped deliberately rather than run out the clock on a lane that
+cannot trade. Every hour was identical and stable: RestartCount 0, container healthy, kill switch
+RUNNING, equity flat at 4978.17–4978.18 (peak 5000.70), 4 open orders, 0 `level>=50` errors, 0 halts,
+120 deterministic `prescreen` decides/hour, 0 real LLM calls.
+
+**NOT a clean soak, and the reason is not a defect.** `AgentClientFatalLatch` fired correctly from
+T+4h onward because the lane genuinely is latched — both provider accounts are unfunded. The
+strategy path was never exercised, so this soak says nothing about strategy behaviour. What it DID
+validate, under a controlled failure, is the outage machinery itself:
+
+- the 30-min cooldown cycles exactly as designed (`latch expired → one probe → 400 → re-latch`,
+  once per interval, `error_fatal` and `client_latched` advancing in the expected ratio);
+- **0 `hold`-with-empty-rationale rows across all 5 hours**, against 45 in the equivalent pre-fix
+  window — the journal-poisoning defect is gone;
+- the alert that had never loaded in 5 days of Prometheus uptime now fires on the real condition.
+
+Two transient venue-poll failures (BCH, OPUSDT), isolated and non-recurring — not defects.
+
+**Resume condition:** fund a provider, then the lane self-heals within 30 min with no restart, and the
+soak can run for real against a lane that actually trades.

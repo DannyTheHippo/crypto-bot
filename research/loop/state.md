@@ -1230,11 +1230,28 @@ when the info-context A/B resolves.
   could still hide inside its intervals. **Do NOT quote the point estimates**: `views_z`@h7 reads
   +345 bps and `vrp`@h7 +268.6 bps, with CIs [−20, 689] and [−211, 620] — at this n a 7-day horizon
   cannot resolve them from zero, and quoting either as a finding is exactly the error that killed the
-  funding-contrarian frontier. **GDELT is UNTESTED, not failed** (12 cells): DOC 2.0 fails outright
-  on any span ≥90 days at any backoff and its ~1 req/5s throttle is sticky, so the window must be
-  walked in 7-day chunks (120 requests/query) — it did not finish in-session. Re-run
-  `node test/backtest/fetch-nonprice.mjs gdelt` as a long background job, then re-run the study; the
-  Bonferroni denominator was fixed at 27 up front so a late-arriving channel cannot move the bar.
+  funding-contrarian frontier. **GDELT is UNTESTED, and is now established as UNTESTABLE VIA DOC 2.0
+  FROM THIS HOST** (12 cells; closed 2026-07-28, Pass 42). The 7-day-chunk backfill ran to completion
+  as a background job — **366 requests, 0 successes, 122 failed chunks on every one of the three
+  queries.** A follow-up single-request probe after minutes of idling still returns:
+  - `HTTP 429 — "Please limit requests to one every 5 seconds… All high-traffic users should switch
+    to our ngrams dataset"`, on `https` and `http`, on `timelinetone` and `timelinevol`, at
+    `timespan=1d` (the smallest possible ask). DNS resolves fine (104.197.47.124), so this is a
+    throttle, not an outage.
+  - **The 6 s spacing was not enough and the throttle is STICKY**: it latches after a burst and does
+    not release for at least tens of minutes. The pre-registration predicted the stickiness; what is
+    now settled is that no pacing this harness can apply makes a full-window backfill possible.
+  - **Do NOT re-run `fetch-nonprice.mjs gdelt`.** It cannot succeed from this host, and each attempt
+    re-latches the throttle.
+  - **The one real alternative, named and NOT built:** GDELT's own 429 body points high-volume users
+    at the **Web NGrams dataset** (bulk files, not a per-query API). That is a genuine path to the
+    same signal class, and it is deliberately not built — it is a new bulk-ingestion component, and
+    the non-price hypothesis has already failed 15 of 15 runnable cells on two independent channels
+    inside a program whose central finding is that this architecture's entries are anti-predictive.
+    Recorded as a costed frontier, not a backlog item.
+  - The Bonferroni denominator was fixed at 27 up front, so the correction stands unchanged and no
+    late-arriving channel can move the bar. **The non-price study is CLOSED at 15/15 FAIL + 12
+    permanently untested.**
 - **THE ENTRY SIGNAL IS SIGNIFICANTLY NEGATIVE, AND WORSE THAN RANDOM (Pass 41, 2026-07-27;
   31-agent adversarial diagnosis, 2,300+ cuts, 24 actionable claims attacked, 6 survived).** This is
   the program's central finding and it supersedes any assumption that the lane merely lacks edge.

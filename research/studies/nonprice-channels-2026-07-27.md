@@ -183,3 +183,48 @@ Read-only research under `test/`. No production code changes, no money path, no 
 The LLM lane keeps proposing every Signal and Risk keeps sizing and vetoing it. The live flip, the
 four live gates and the promotion requirement (≥30 demo round trips, positive net-of-cost PnL,
 ≥14 days) are untouched by this study in every branch.
+
+## Closure — GDELT is untestable via DOC 2.0 from this host (2026-07-28)
+
+The "proper attempt" promised above was made and **failed at the transport layer, not the statistics
+layer**. `node test/backtest/fetch-nonprice.mjs gdelt` ran to completion as a long background job:
+
+```text
+bitcoin:  chunks ok=0 fail=122 tonePoints=0 volPoints=0
+ethereum: chunks ok=0 fail=122 tonePoints=0 volPoints=0
+crypto:   chunks ok=0 fail=122 tonePoints=0 volPoints=0
+```
+
+**366 requests, 0 successes.** A single follow-up probe after minutes of idling — the smallest ask the
+endpoint accepts (`timespan=1d`) — still returns:
+
+```text
+HTTP 429
+"Please limit requests to one every 5 seconds or contact ... All high-traffic users
+ should switch to our ngrams dataset"
+```
+
+Identical on `https` and `http`, on `timelinetone` and `timelinevol`. DNS resolves
+(`104.197.47.124`), so this is a throttle, not an outage.
+
+**What this settles and what it does not.** It settles that the 6 s spacing is insufficient and that
+the throttle is **sticky** — it latches after a burst and does not release for at least tens of
+minutes, so no pacing this harness can apply will complete a full-window backfill. It settles
+nothing whatsoever about whether news tone predicts returns. **GDELT's 12 cells stay UNTESTED, never
+FAILED**, and quoting them as evidence either way would be exactly the error this study was built to
+avoid.
+
+**Do not re-run the backfill.** It cannot succeed from this host and each attempt re-latches the
+throttle.
+
+**The named alternative, deliberately not built.** GDELT's own 429 body points high-volume users at
+the **Web NGrams dataset** — bulk files rather than a per-query API, and a genuine route to the same
+signal class. It is not built because it is a new bulk-ingestion component, and the non-price
+hypothesis has already failed **15 of 15 runnable cells across two independent channels** inside a
+program whose central finding is that this architecture's entries are anti-predictive. It is recorded
+as a costed frontier, not a backlog item.
+
+**Study status: CLOSED.** 15/15 runnable cells FAIL; 12 GDELT cells permanently untested by this
+route. The Bonferroni denominator stays 27 as pre-registered, so the correction applied to the
+runnable cells is unchanged — fixing it up front is precisely what makes this closure legitimate
+rather than a post-hoc narrowing of the family.

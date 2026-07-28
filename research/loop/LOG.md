@@ -5217,10 +5217,12 @@ Partial and honestly bounded. The gauge's **negative** direction is confirmed li
 boot, alert inactive, rule `health=ok`). Its **positive** direction — gauge → 1 and the alert firing
 within one scrape of a suppressed call — was NOT observed before this pass ended: the accounts are still
 unfunded, but bar counters reset on each redeploy, so the first consult attempt is up to 2h out
-(`AGENTIC_FALLBACK_CONSULT_BARS=8`), and this pass redeployed twice. A 27-minute watcher polling the
-gauge, the decide counter and firing alerts every 60s recorded `latched=0, decide={}, firing=[]`
-throughout — consistent with a lane that has not yet attempted a consult, and the final sweep's
-`consult-gate by outcome: {}` says exactly that.
+(`AGENTIC_FALLBACK_CONSULT_BARS=8`), and this pass redeployed twice. A watcher polled the gauge, the
+decide counter and firing alerts every 60s for **40 minutes (07:42Z→08:22Z, 40 readings, spanning the
+08:05:55Z redeploy)** and recorded `latched=0, decide={}, firing=[]` on every one — `agent_decide_total`
+had no series at all, i.e. the lane never attempted a consult, which the final sweep's `consult-gate by
+outcome: {}` says independently. So the window is a clean negative: nothing exercised the latch, rather
+than the latch being exercised and the gauge failing to move.
 
 The equivalent cycle WAS validated on the previous build by the soak entries above (`error_fatal` 21 /
 `client_latched` 34 over ~10h, the 30-min cooldown visible in the ratio). What is unproven is

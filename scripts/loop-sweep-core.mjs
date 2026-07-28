@@ -87,6 +87,25 @@ export const RESTART_STORM_THRESHOLD = 1;
 // sweep interval.
 export const RECONCILE_CLEAN_STAMP_STALE_MS = 30 * 60 * 1000;
 
+// `agentic_budget_remaining_usd` is only `set()` when the lane actually evaluates its budget, so on a
+// fresh boot it sits at prom-client's default 0 until the first decide. The sweep derives
+// spend = breaker − remaining, which turns that uninitialised 0 into "spend = the entire breaker" and
+// fires cost_breaker_proximity on a boot that has spent nothing. Found live 2026-07-28 on a boot whose
+// own log line read `daily LLM budget seeded … $0.0000 of $3 already spent today` while the sweep
+// reported `spend $3 >= 80% of $3`.
+//
+// A false alarm here is not cosmetic: playbook §3 makes any alarm block the next pass's improvement
+// work, so a deploy-shaped fiction would consume a pass. observability/alerts.rules.yml's
+// AgenticBudgetExhausted already guards the identical gauge with `for: 5m` and says why ("so a fresh
+// boot's transient 0 never pages before the gauge is populated"); this is the same 5 minutes, aged off
+// the container's StartedAt because a sweep has no rule-evaluation history to lean on.
+//
+// Fails OPEN toward NOT alarming, and ONLY for the ambiguous reading: a 0 past the grace window is a
+// real exhaustion and still alarms, and any non-zero remaining is unambiguous and unaffected. A
+// genuinely exhausted breaker on a young boot is annotated rather than alarmed for 5 minutes — the
+// honest verdict, since remaining=0 on a young boot cannot distinguish the two.
+export const BUDGET_GAUGE_INIT_GRACE_MS = 5 * 60 * 1000;
+
 // DB-durable scalar counters whose absolute zero, while a sibling counter proves the stack IS
 // returning data, is a negative-read void (§C.9) — Prometheus gauges (rss) and rate-y counters are
 // excluded. `reconcile` is durable too but is checked per-venue separately (it is no longer a scalar).
@@ -317,7 +336,30 @@ function computeApp(prev, cur, elapsedMs = null, nowMs = null) {
   if (cost && cost.ok === true && cost.value && Number.isFinite(cost.value.spendUsd)) {
     // Epsilon guard: 0.8 * 3 has an IEEE754 remainder that would silently swallow the exact-80%
     // boundary case a fixed-price breaker configuration lands on routinely.
-    if (cost.value.spendUsd >= COST_PROXIMITY_RATIO * AGENTIC_DAILY_COST_BREAKER_USD - 1e-9) {
+    const overProximity =
+      cost.value.spendUsd >= COST_PROXIMITY_RATIO * AGENTIC_DAILY_COST_BREAKER_USD - 1e-9;
+    // The uninitialised-gauge reading (see BUDGET_GAUGE_INIT_GRACE_MS): remaining exactly 0 on a
+    // container too young to have evaluated its budget yet.
+    const startedMsForBudget = Date.parse((cur && cur.startedAt) || '');
+    const bootAgeMs =
+      Number.isFinite(nowMs) && Number.isFinite(startedMsForBudget)
+        ? nowMs - startedMsForBudget
+        : null;
+    const gaugeLooksUninitialised =
+      cost.value.remainingUsd === 0 &&
+      bootAgeMs !== null &&
+      bootAgeMs >= 0 &&
+      bootAgeMs < BUDGET_GAUGE_INIT_GRACE_MS;
+    if (overProximity && gaugeLooksUninitialised) {
+      annotations.push({
+        kind: 'budget_gauge_uninitialised',
+        probe: 'cost',
+        detail:
+          `agentic_budget_remaining_usd reads 0 on a container ${Math.round(bootAgeMs / 1000)}s old ` +
+          `(under the ${BUDGET_GAUGE_INIT_GRACE_MS / 60000}min init grace) — the gauge is only set once the lane ` +
+          `evaluates its budget, so this is not evidence of spend; re-read after the first decide`,
+      });
+    } else if (overProximity) {
       alarms.push({
         kind: 'cost_breaker_proximity',
         detail: `spend $${cost.value.spendUsd} >= ${COST_PROXIMITY_RATIO * 100}% of $${AGENTIC_DAILY_COST_BREAKER_USD} daily breaker`,

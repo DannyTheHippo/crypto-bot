@@ -40,6 +40,7 @@ interface Core {
   VENUES: [string, string];
   AGENTIC_DAILY_COST_BREAKER_USD: number;
   RECONCILE_CLEAN_STAMP_STALE_MS: number;
+  BUDGET_GAUGE_INIT_GRACE_MS: number;
 }
 const core = coreModule as unknown as Core;
 const {
@@ -49,6 +50,7 @@ const {
   VENUES,
   AGENTIC_DAILY_COST_BREAKER_USD,
   RECONCILE_CLEAN_STAMP_STALE_MS,
+  BUDGET_GAUGE_INIT_GRACE_MS,
 } = core;
 const [SPOT, PERP] = VENUES;
 
@@ -75,7 +77,7 @@ interface Probes {
   reconcile: Record<string, ReconcileProbe>;
   reconcileCleanStamp: { ok: boolean; value: { seconds: number } };
   killSwitch: { ok: boolean; value: { state: string } };
-  cost: { ok: boolean; value: { spendUsd: number } };
+  cost: { ok: boolean; value: { spendUsd: number; remainingUsd?: number } };
   wsRecreations: { ok: boolean; value: { count: number } };
   rss: { ok: boolean; value: { bytes: number } };
   promAlerts:
@@ -425,6 +427,37 @@ describe('loop-sweep-core alarms', () => {
   it(`cost_breaker_proximity fires at >=80% of the $${AGENTIC_DAILY_COST_BREAKER_USD} unified daily breaker`, () => {
     const app = baseApp();
     app.probes.cost.value.spendUsd = 0.8 * AGENTIC_DAILY_COST_BREAKER_USD;
+    const { alarms } = computeSweep({ prev: baseWatermark(), cur: curWith(app) });
+    expect(kinds(alarms)).toContain('cost_breaker_proximity');
+  });
+
+  // Found live 2026-07-28: agentic_budget_remaining_usd is only set once the lane evaluates its
+  // budget, so a fresh boot reads prom-client's default 0 and spend = breaker − remaining renders the
+  // whole breaker as spent. The boot's own log said `$0.0000 of $3 already spent today` while the sweep
+  // said `spend $3 >= 80%`. Playbook §3 makes any alarm block improvement work, so a deploy-shaped
+  // fiction would consume a pass.
+  it('cost_breaker_proximity does NOT fire on an uninitialised budget gauge inside the boot grace — it annotates', () => {
+    const app = baseApp();
+    app.probes.cost.value = { spendUsd: AGENTIC_DAILY_COST_BREAKER_USD, remainingUsd: 0 };
+    app.startedAt = new Date(NOW - 20_000).toISOString(); // 20s old
+    const { alarms, annotations } = computeSweep({ prev: baseWatermark(), cur: curWith(app) });
+    expect(kinds(alarms)).not.toContain('cost_breaker_proximity');
+    const note = annotations.find((n) => n.kind === 'budget_gauge_uninitialised');
+    expect(note?.detail).toContain('not evidence of spend');
+  });
+
+  it('cost_breaker_proximity DOES fire on a remaining-0 gauge past the boot grace — a real exhaustion is not suppressed', () => {
+    const app = baseApp();
+    app.probes.cost.value = { spendUsd: AGENTIC_DAILY_COST_BREAKER_USD, remainingUsd: 0 };
+    app.startedAt = new Date(NOW - (BUDGET_GAUGE_INIT_GRACE_MS + 60_000)).toISOString();
+    const { alarms } = computeSweep({ prev: baseWatermark(), cur: curWith(app) });
+    expect(kinds(alarms)).toContain('cost_breaker_proximity');
+  });
+
+  it('a NON-zero remaining is unambiguous and alarms even on a brand-new boot', () => {
+    const app = baseApp();
+    app.probes.cost.value = { spendUsd: 0.8 * AGENTIC_DAILY_COST_BREAKER_USD, remainingUsd: 0.6 };
+    app.startedAt = new Date(NOW - 20_000).toISOString();
     const { alarms } = computeSweep({ prev: baseWatermark(), cur: curWith(app) });
     expect(kinds(alarms)).toContain('cost_breaker_proximity');
   });

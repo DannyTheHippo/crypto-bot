@@ -384,6 +384,58 @@ claim about the deployed system.
   the meter **over-estimates**, which is the safe direction for a spend cap — it stops early rather
   than overspending. Reported spend is an upper bound, not a measurement.
 
+## Amendment 4 (2026-07-28) — the MODEL is a first-class axis; the question is which lane, not whether one lane
+
+**Owner correction, and it changes the design, not just the budget:** *"the question is **which** lane
+is best and can become profitable; not whether the current one can become profitable."*
+
+As originally written this study held the decide model fixed at the champion and registered kimi as a
+**separate trial** (Amendment 3). That answers "can THIS lane become profitable" — the wrong question.
+Amendment 3's separation is hereby **superseded**: kimi is not a side trial, it is an arm of the
+primary study.
+
+| | before | after |
+| --- | --- | --- |
+| factors | 12 arms × 4 horizons | **2 models × 12 arms × 4 horizons** |
+| family / Bonferroni denominator | 48 | **96** |
+| α | 1.0417e-3 | **5.2083e-4** |
+| verdict rule | per-model | **joint across the axis** |
+
+`MODEL_AXIS = ['claude-sonnet-5', 'kimi-k3']`, declared in code **before any result exists** — a
+denominator chosen after seeing which models happened to run is not a correction at all. Each model
+runs as its own process for operational convenience; the statistics are joint and `aggregateVerdict`
+decides.
+
+### Three rules this forces, each with a test
+
+1. **A partial axis is `INCOMPLETE`, never `NO_SURVIVOR`.** If only one model runs and finds nothing,
+   the honest statement is "the other lane is untested" — not "no lane works". This is the same error
+   shape as reading a rate-limited run as a finding, and it is now impossible to express.
+2. **Ranking is not passing.** `bestPowered` names the best lane even when every lane fails, so
+   "which is best" always has a defensible answer — but the bar is **absolute** (+13.0 bps), not
+   relative. A field of failures has a winner and that winner is still a failure.
+3. **An underpowered cell can never be "best".** `bestPowered` is restricted to n ≥ 12, so a 3-entry
+   cell with a spectacular mean cannot become the headline.
+
+### Power is barely affected; cost is what changes
+
+Doubling the family moves the Bonferroni z from ≈3.48 to ≈3.66. At n≈62 entries/arm and the observed
+SD of ≈29 bps (SE ≈ 3.7), the mean needed to clear the bar moves from ≈25.9 to ≈26.5 bps — **a 0.6 bps
+difference.** The correction is not the binding constraint; **the corpus is.** So adding the model axis
+buys a direct answer to the owner's question at essentially no statistical cost.
+
+### Budget, measured
+
+Per-call cost is measured from the $1 smoke run (61 calls, $0.9943) at this exact request shape:
+**$0.0163/call**. The kimi ratio is measured from the 2026-07-22 head-to-head ($0.012446 vs
+$0.027210 per decide = **0.457×**).
+
+| leg | calls | est. cost | cap |
+| --- | --- | --- | --- |
+| `claude-sonnet-5` | 4,632 | **~$75** | $90 |
+| `kimi-k3` | 4,632 | **~$35** | $45 |
+| **total** | 9,264 | **~$110** | $135 |
+
 ## Results
 
 *Not yet produced for the champion (`claude-sonnet-5`) leg — see Amendment 2; runs 1 and 2 are VOID

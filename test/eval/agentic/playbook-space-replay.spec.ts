@@ -19,6 +19,8 @@ import {
   HORIZONS,
   MIN_ENTRIES,
   MIN_TRANSPORT_RATE,
+  MODEL_AXIS,
+  aggregateVerdict,
   REQUIRED_EDGE_BPS,
   assertArmsAreReachable,
   computeCell,
@@ -119,12 +121,78 @@ describe('playbook-space replay — free preconditions', () => {
 
   it('reports the frozen bar so a reader never has to reconstruct it', () => {
     expect(REQUIRED_EDGE_BPS).toBe(13.0);
-    expect(BONFERRONI_CELLS).toBe(48);
+    // models x arms x horizons. The MODEL is a first-class factor (Amendment 4): the question is
+    // which lane is best, not whether one fixed lane works, so the family the correction protects
+    // spans the model axis. 2 x 12 x 4 = 96.
+    expect([...MODEL_AXIS]).toEqual(['claude-sonnet-5', 'kimi-k3']);
+    expect(BONFERRONI_CELLS).toBe(MODEL_AXIS.length * 12 * HORIZONS.length);
+    expect(BONFERRONI_CELLS).toBe(96);
     // Exact equality, not toBeCloseTo — a significance threshold is a frozen constant, and the
     // repo-wide ban on approximate assertions is the right rule to inherit here.
-    expect(ALPHA).toBe(0.05 / 48);
+    expect(ALPHA).toBe(0.05 / 96);
     expect(MIN_ENTRIES).toBe(12);
     expect([...HORIZONS]).toEqual([1, 4, 8, 24]);
+  });
+
+  describe('joint verdict across the model axis', () => {
+    const cell = (model: string, arm: string, n: number, mean: number, verdict: string) => ({
+      model,
+      arm,
+      h: 1,
+      n,
+      mean,
+      ciLo: mean - 5,
+      verdict,
+    });
+
+    it('a PARTIAL axis is INCOMPLETE, never NO_SURVIVOR', () => {
+      // The trap this exists to prevent: one model runs, finds nothing, and the study gets written up
+      // as "no lane works" when the other lane was simply never tested. Same error shape as reading a
+      // rate-limited run as a finding.
+      const v = aggregateVerdict(
+        new Map([['claude-sonnet-5', [cell('claude-sonnet-5', 'champion_v8', 40, -19, 'FAIL')]]]),
+      );
+      expect(v.verdict).toBe('INCOMPLETE');
+      expect(v.complete).toBe(false);
+      expect(v.modelsDeclared).toEqual(['claude-sonnet-5', 'kimi-k3']);
+    });
+
+    it('NO_SURVIVOR only once every declared model has run', () => {
+      const v = aggregateVerdict(
+        new Map([
+          ['claude-sonnet-5', [cell('claude-sonnet-5', 'champion_v8', 40, -19, 'FAIL')]],
+          ['kimi-k3', [cell('kimi-k3', 'champion_v8', 40, 4, 'FAIL')]],
+        ]),
+      );
+      expect(v.verdict).toBe('NO_SURVIVOR');
+      // "Which lane is best" still gets an answer — but ranking is NOT passing.
+      expect(v.bestPowered?.model).toBe('kimi-k3');
+      expect(v.passes).toHaveLength(0);
+    });
+
+    it('reports the winning lane by model AND arm when one clears the bar', () => {
+      const v = aggregateVerdict(
+        new Map([
+          ['claude-sonnet-5', [cell('claude-sonnet-5', 'champion_v8', 40, -19, 'FAIL')]],
+          ['kimi-k3', [cell('kimi-k3', 'inverted', 40, 31, 'PASS')]],
+        ]),
+      );
+      expect(v.verdict).toBe('SURVIVOR');
+      expect(v.passes[0]?.model).toBe('kimi-k3');
+      expect(v.passes[0]?.arm).toBe('inverted');
+    });
+
+    it('an underpowered cell can never be the best lane', () => {
+      // n=3 with a huge mean is noise, and "best" must not surface it as the answer.
+      const v = aggregateVerdict(
+        new Map([
+          ['claude-sonnet-5', [cell('claude-sonnet-5', 'one_symbol_btc', 3, 900, 'UNDERPOWERED')]],
+          ['kimi-k3', [cell('kimi-k3', 'champion_v8', 40, -19, 'FAIL')]],
+        ]),
+      );
+      expect(v.bestPowered?.model).toBe('kimi-k3');
+      expect(v.bestPowered?.n).toBe(40);
+    });
   });
 });
 

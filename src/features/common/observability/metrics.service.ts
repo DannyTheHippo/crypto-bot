@@ -147,6 +147,20 @@ export const AGENT_DECIDE_COUNTER = makeCounterProvider({
   help: 'Agentic lane decide() outcomes',
   labelNames: ['outcome', 'model'] as const,
 });
+// 1 while AnthropicAgentClient is inside its FATAL-error latch (no LLM calls being made), 0 once a
+// decide completes normally. A LEVEL, deliberately, not a counter-window: the 2026-07-27 outage
+// showed that every counter-derived formulation of "the lane is dead right now" is either unable to
+// clear (`sum(agent_decide_total{outcome="error_fatal"}) > 0` holds until a container recreate) or
+// unable to fire in time — `increase(...{outcome="client_latched"}[2h])` reads 0 through the FIRST
+// latch, because prom-client creates a label child lazily and a batched consult births the whole
+// series in one tick, so every sample in the range is equal (the same first-sample-after-reset trap
+// alerts.rules.yml documents for AgenticReflectionNeverMinted). A gauge fires on the next scrape and
+// clears on the next scrape, and depends on no consult cadence, so a host-sleep gap cannot false-clear
+// it. Label-less: one client, one book.
+export const AGENT_CLIENT_LATCHED_GAUGE = makeGaugeProvider({
+  name: 'agent_client_latched',
+  help: 'Agentic lane client latched degraded by a FATAL API error (1) or making calls normally (0)',
+});
 export const AGENT_TOKENS_COUNTER = makeCounterProvider({
   name: 'agent_tokens_total',
   help: 'Agentic lane LLM token usage, by kind and model',

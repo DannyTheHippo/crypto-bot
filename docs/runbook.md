@@ -307,6 +307,46 @@ unchanged four live gates and the bootId-bound arming ceremony — the promotion
 attempt arming; it does not replace it. Rules 1–3 and 5–6 in `CLAUDE.md` still bind: the lane only
 proposes a Signal; Risk still sizes/vetoes it.
 
+## Agentic lane silent — `AgentClientFatalLatch` / `AgenticLaneSilent`
+
+Both alerts name this runbook and it said nothing about them until the 2026-07-27 outage, when a
+latched client cost 3h+ of dead lane. The failure is dangerous precisely because nothing else looks
+wrong: container healthy, kill switch RUNNING, reconciliation CLEAN on both venues, and
+`agent_decisions` rows still arriving at full cadence.
+
+**What the latch is.** `AnthropicAgentClient` classifies HTTP 400/401/403/404/422 as FATAL and
+suppresses further calls (`FATAL_LATCH_COOLDOWN_MS`, 30 min) so a rejected request cannot be hammered
+at candle cadence. Since 2026-07-28 the latch EXPIRES rather than holding until a container recreate —
+one probe is allowed through per cooldown, so a cause fixed outside the process (credit top-up, key
+restore, permission change) self-heals without a redeploy.
+
+**Confirming it.** In order, cheapest first:
+
+1. `ALERTS{alertstate="firing"}` via promtool, or `pnpm loop:sweep` (which now promotes every firing
+   Prometheus rule to a `prometheus_alert_firing` alarm — this stack has no Alertmanager, so a rule
+   only reaches a human when a sweep or a person reads it).
+2. `sum(agent_decide_total{outcome="client_latched"})` — emitted on every SUPPRESSED call, so it is
+   the live "the lane is dead right now" signal. `outcome="error_fatal"` counts only the single
+   failure that STARTED the latch and never resets before a recreate.
+3. `sum(agent_tokens_total)` flat and `agentic_promotion_llm_cost_usd` flat across a window that
+   contains consults is the independent confirmation — counters that cannot lie about whether calls
+   were billed.
+4. The cause, verbatim, is in the journal:
+   `select created_at, rationale from agent_decisions where action = 'error' order by created_at desc limit 5;`
+   The API's own error body is embedded there (never the key).
+
+**Acting on it.** Read the FATAL status before doing anything: 401/403 is a key or permission
+problem, 400 is a rejected request OR an exhausted credit balance (the body says which), 404 is a bad
+model id or base URL. Fix the cause at its source; a container recreate clears the latch but repairs
+nothing, and the lane will re-latch on the next consult. Buying API credit is owner-only — it is a
+financial action and outside what an automated pass may do.
+
+**While it is latched.** Nothing unsafe is happening: no LLM call means no new proposal, resting
+venue stops and take-profits continue to protect and close open positions, and Risk, the kill switch
+and the live gates are untouched. What IS lost is every decide on every bar, and the journal rows for
+those bars are marked `action='error'` with a `client_latched:` rationale so they are never counted as
+the model choosing to hold.
+
 ## Paper-honesty (§10) — the CI-cannot-reach-live guarantee
 
 The mandatory live-gate matrix (`test/livegate/`, sacred suite) proves effective mode is `live` ONLY

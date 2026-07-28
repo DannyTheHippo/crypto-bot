@@ -1048,13 +1048,112 @@ describe('AnthropicAgentClient', () => {
       expect((firstErr as AgentProposeError).kind).toBe('FATAL');
       expect(fetchFn).toHaveBeenCalledTimes(1);
 
-      await expect(client.propose(input)).resolves.toEqual({ signals: [] });
-      await expect(client.propose(input)).resolves.toEqual({ signals: [] });
+      const second = await client.propose(input);
+      expect(second.signals).toEqual([]);
+      const third = await client.propose(input);
+      expect(third.signals).toEqual([]);
 
       expect(fetchFn).toHaveBeenCalledTimes(1); // latched — no further HTTP calls
       expect(warn).toHaveBeenCalledTimes(1); // logged once, at latch time — not per short-circuit
       expect(String(warn.mock.calls[0]![0])).toContain('401');
       expect(String(warn.mock.calls[0]![0])).not.toContain(cfg.apiKey);
+    });
+
+    // 2026-07-27 incident: the short-circuit returned a decision-less proposal, so the strategy's
+    // inferStubDecision persisted `hold` with confidence 0 and an EMPTY rationale — byte-identical to
+    // a genuine model hold. 30 such rows accumulated over 3h and every entry-rate/hold-rate read
+    // counted them as the model choosing to hold.
+    it('names the short-circuit in the journal — action error (never hold) and a client_latched rationale', async () => {
+      const cfg = buildCfg({ timeoutMs: 10000 });
+      const fetchFn = vi.fn().mockResolvedValue(apiResponse(undefined, { ok: false, status: 400 }));
+      const client = new AnthropicAgentClient(cfg, fetchFn, { warn: vi.fn() });
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+      });
+
+      await client.propose(input).catch(() => undefined);
+      const latchedProposal = await client.propose(input);
+
+      expect(latchedProposal.signals).toEqual([]);
+      expect(latchedProposal.decision?.action).toBe('error');
+      expect(latchedProposal.decision?.rationale.startsWith('client_latched:')).toBe(true);
+
+      // Batch path carries the same named decision for EVERY symbol in the wave — a latched batch
+      // holds the whole menu, so the whole menu must say why.
+      const batch = await client.proposeBatch([input, input]);
+      for (const proposal of batch.proposals.values()) {
+        expect(proposal.decision?.action).toBe('error');
+        expect(proposal.decision?.rationale.startsWith('client_latched:')).toBe(true);
+      }
+    });
+
+    // The latch used to hold until the container was recreated. Every FATAL status this client
+    // recognises is fixable outside the process (credit top-up, key restore, permission), so a
+    // permanent latch modelled a transient condition as terminal — 3h+ of dead lane on 2026-07-27.
+    it('expires after the cooldown and allows exactly one probe call — recovery needs no redeploy', async () => {
+      vi.useFakeTimers();
+      try {
+        const warn = vi.fn();
+        const cfg = buildCfg({ timeoutMs: 10000 });
+        const fetchFn = vi
+          .fn()
+          .mockResolvedValue(apiResponse(undefined, { ok: false, status: 400 }));
+        const client = new AnthropicAgentClient(cfg, fetchFn, { warn });
+        const input = buildInput({
+          tickers: new Map([[SYM, ticker('100', 1n)]]),
+          context: FLAT_CONTEXT,
+        });
+
+        await client.propose(input).catch(() => undefined);
+        expect(fetchFn).toHaveBeenCalledTimes(1);
+
+        // One minute short of the cooldown: still suppressed.
+        await vi.advanceTimersByTimeAsync(29 * 60 * 1000);
+        await client.propose(input);
+        expect(fetchFn).toHaveBeenCalledTimes(1);
+
+        // Past the cooldown: the next call probes. It fails again (the cause is still unfixed), which
+        // re-latches — so the call after THAT is suppressed rather than hammering.
+        await vi.advanceTimersByTimeAsync(2 * 60 * 1000);
+        await client.propose(input).catch(() => undefined);
+        expect(fetchFn).toHaveBeenCalledTimes(2);
+        await client.propose(input);
+        expect(fetchFn).toHaveBeenCalledTimes(2);
+
+        expect(warn.mock.calls.some((c) => String(c[0]).includes('latch expired'))).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('recovers for real once the underlying cause is fixed — the probe after the cooldown succeeds and the client stays open', async () => {
+      vi.useFakeTimers();
+      try {
+        const cfg = buildCfg({ timeoutMs: 10000 });
+        const fetchFn = vi
+          .fn()
+          .mockResolvedValueOnce(apiResponse(undefined, { ok: false, status: 400 }))
+          .mockResolvedValue(apiResponse(toolUseBody({ action: 'hold', thesis: 'flat' })));
+        const client = new AnthropicAgentClient(cfg, fetchFn, { warn: vi.fn() });
+        const input = buildInput({
+          tickers: new Map([[SYM, ticker('100', 1n)]]),
+          context: FLAT_CONTEXT,
+        });
+
+        await client.propose(input).catch(() => undefined);
+        await vi.advanceTimersByTimeAsync(31 * 60 * 1000);
+
+        const recovered = await client.propose(input);
+        expect(fetchFn).toHaveBeenCalledTimes(2);
+        expect(recovered.decision?.rationale.startsWith('client_latched:')).toBe(false);
+
+        // Latch cleared, not merely skipped once: the immediately following call also reaches HTTP.
+        await client.propose(input);
+        expect(fetchFn).toHaveBeenCalledTimes(3);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 

@@ -61,6 +61,12 @@ interface ReconcileProbe {
 
 // Fixed-shape probe bag (not Record<string,...>) so noUncheckedIndexedAccess doesn't force every
 // mutation site below through an `undefined` check — each field is a known, always-present key.
+interface FiringAlert {
+  alertname: string;
+  severity: string;
+  activeAt: string | null;
+  summary: string;
+}
 interface Probes {
   decides: { ok: boolean; value: { count: number; latestCreatedAtMs: number } };
   consultGate: { ok: boolean; value: { total: number } };
@@ -71,6 +77,9 @@ interface Probes {
   cost: { ok: boolean; value: { spendUsd: number } };
   wsRecreations: { ok: boolean; value: { count: number } };
   rss: { ok: boolean; value: { bytes: number } };
+  promAlerts:
+    | { ok: true; error?: undefined; value: { ruleCount: number; firing: FiringAlert[] } }
+    | { ok: false; error: string; value?: undefined };
 }
 interface App {
   bootId: string;
@@ -104,6 +113,8 @@ function baseProbes(): Probes {
     cost: { ok: true, value: { spendUsd: 0.1 } },
     wsRecreations: { ok: true, value: { count: 2 } },
     rss: { ok: true, value: { bytes: 1000 } },
+    // Rules demonstrably loaded and nothing firing — the only shape that legitimately reads as quiet.
+    promAlerts: { ok: true, value: { ruleCount: 16, firing: [] } },
   };
 }
 
@@ -262,6 +273,60 @@ describe('loop-sweep-core alarms', () => {
     const stale = alarms.filter((a) => a.kind === 'reconcile_clean_stamp_stale');
     expect(stale).toHaveLength(1);
     expect(stale[0]?.detail).toContain('auto-resume is disarmed');
+  });
+
+  // 2026-07-28 incident: AgentClientFatalLatch fired critical at 21:16Z (the Anthropic account's
+  // credit ran out; the client latched and made zero LLM calls for ~3h) and three consecutive
+  // collector digests still reported `alarms:[]`. Every liveness delta kept moving — the latched
+  // client journals a decision row per symbol — so nothing in this core could see it. The sweep now
+  // inherits Prometheus' own verdict instead of only re-deriving conditions it was taught.
+  it('prometheus_alert_firing promotes every firing rule to an alarm, one per firing instance', () => {
+    const app = baseApp();
+    app.probes.promAlerts = {
+      ok: true,
+      value: {
+        ruleCount: 16,
+        firing: [
+          {
+            alertname: 'AgentClientFatalLatch',
+            severity: 'critical',
+            activeAt: '2026-07-27T21:16:25Z',
+            summary: 'Agent client hit a FATAL API error',
+          },
+          {
+            alertname: 'ReconciliationHalt',
+            severity: 'critical',
+            activeAt: '2026-07-27T22:00:00Z',
+            summary: 'book halted',
+          },
+        ],
+      },
+    };
+    app.probes.decides.value.count = 130;
+    app.probes.consultGate.value.total = 70;
+    app.probes.reconcile = baseReconcileByVenue(220);
+    const { alarms } = computeSweep({ prev: baseWatermark(), cur: curWith(app) });
+    const fired = alarms.filter((a) => a.kind === 'prometheus_alert_firing');
+    expect(fired).toHaveLength(2);
+    expect(fired[0]?.detail).toContain('AgentClientFatalLatch');
+    expect(fired[0]?.detail).toContain('critical');
+    expect(fired[0]?.detail).toContain('2026-07-27T21:16:25Z');
+    expect(fired[1]?.detail).toContain('ReconciliationHalt');
+  });
+
+  it('zero loaded rules is a probe failure, never a quiet pass — an empty firing list is only meaningful when rules exist (§C.9)', () => {
+    const app = baseApp();
+    app.probes.promAlerts = {
+      ok: false,
+      error: 'rules api: prometheus has ZERO rules loaded — firing state unknowable, not clean',
+    };
+    app.probes.decides.value.count = 130;
+    app.probes.consultGate.value.total = 70;
+    app.probes.reconcile = baseReconcileByVenue(220);
+    const { alarms, annotations } = computeSweep({ prev: baseWatermark(), cur: curWith(app) });
+    expect(kinds(alarms)).not.toContain('prometheus_alert_firing');
+    const failed = annotations.find((n) => n.kind === 'probe_failed' && n.probe === 'promAlerts');
+    expect(failed?.detail).toContain('ZERO rules loaded');
   });
 
   it('reconcile_clean_stamp_stale does NOT fire while the stamp is fresh — benign per-pass mismatches keep refreshing it', () => {

@@ -196,18 +196,30 @@ groups:
 
   - name: crypto-bot-agentic
     rules:
-      # The Anthropic client latches itself degraded on the first FATAL API error (bad key, rejected
-      # schema — anthropic-agent-client.ts): every later propose() short-circuits to an empty
-      # proposal, which the metrics wrapper records as 'hold', so the lane looks alive while making
-      # zero LLM calls (2026-07-07: a 400 on the first plan-mode decide cost ~1h of dead air with a
-      # single warn line). agent_decide_total resets on the container recreate that also clears the
-      # latch, so this fires for exactly the latch's lifetime.
+      # The Anthropic client latches itself degraded on a FATAL API error (bad key, rejected schema,
+      # exhausted credit — anthropic-agent-client.ts): every later propose() short-circuits without an
+      # HTTP call, so the lane looks alive while making zero LLM calls (2026-07-07: a 400 on the first
+      # plan-mode decide cost ~1h of dead air; 2026-07-27: a credit-exhaustion 400 at 21:16Z cost 3h+).
+      #
+      # Keyed on outcome="client_latched" — emitted on every SUPPRESSED call — and NOT on
+      # outcome="error_fatal", which counts the single failure that started the latch. That older expr
+      # (`sum(...{outcome="error_fatal"}) > 0`) could not distinguish "the lane is dead right now" from
+      # "a fatal happened at some point this boot": it stayed firing until a container recreate even
+      # after recovery, which is now reachable because the latch expires (FATAL_LATCH_COOLDOWN_MS)
+      # instead of holding until restart. A permanently-stuck critical alert is worse than none — the
+      # daily loop consumes this endpoint directly (there is no Alertmanager), so a rule that never
+      # clears would mask every later alert behind its own noise.
+      #
+      # 2h window, not something tighter: AGENTIC_FALLBACK_CONSULT_BARS=8 at STRATEGY_INTERVAL=15m is
+      # the guarantee that a consult WILL be attempted, so a shorter window could false-CLEAR during a
+      # quiet market while the lane is still dead. The cost is that it lingers up to 2h after real
+      # recovery — the safe direction for a critical alert.
       - alert: AgentClientFatalLatch
-        expr: sum(agent_decide_total{outcome="error_fatal"}) > 0
+        expr: sum(increase(agent_decide_total{outcome="client_latched"}[2h])) > 0
         for: 0m
         labels: { severity: critical }
         annotations:
-          summary: 'Agent client hit a FATAL API error — lane latched degraded (zero LLM calls) until the app container is recreated'
+          summary: 'Agent client is latched degraded by a FATAL API error — decides are being suppressed with zero LLM calls (self-clears within 2h of recovery)'
           runbook: 'docs/runbook.md'
 
       # W2 (2026-07-08): the reflection learning loop was silently dead for 4 days because every

@@ -203,6 +203,7 @@ export class MetricsWrappingAgentClient implements AgentClientPort {
       }
       if (rationale.startsWith('budget_exhausted:')) return 'budget_blocked';
       if (rationale.startsWith('off_menu:')) return 'off_menu';
+      if (rationale.startsWith('client_latched:')) return 'client_latched';
     }
     if (!proposal.decision) {
       let exhausted = false;

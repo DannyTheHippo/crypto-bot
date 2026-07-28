@@ -42,6 +42,7 @@ import {
   dockerLogsTail,
   dockerPs,
   hostState,
+  promApi,
   promQuery,
   psql,
 } from './loop-transport.mjs';
@@ -49,6 +50,7 @@ import {
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(SCRIPT_DIR, '..');
 const DIGESTS_DIR = join(REPO_ROOT, 'research', 'loop', 'digests');
+const ALERT_RULES_PATH = join(REPO_ROOT, 'observability', 'alerts.rules.yml');
 const WATERMARK_PATH = join(DIGESTS_DIR, '.watermark.json');
 const ERROR_LOG_TAIL = 3000;
 const PINO_WARN_LEVEL = 40; // pino level>=40 = warn/error/fatal (§ error-scan)
@@ -106,6 +108,149 @@ function promScalar(res) {
   if (!parsed.ok) return { ok: false, error: parsed.error };
   if (parsed.value.length === 0) return { ok: false, error: 'empty instant vector (no series)' };
   return { ok: true, value: parsed.value[0].value };
+}
+
+// ── prometheus /api/v1/rules parsing ─────────────────────────────────────────────────────────────
+// The loop IS the alert consumer — there is no Alertmanager in this stack and none is wanted, so a
+// rule that fires reaches a human ONLY if a pass reads it. Before this probe existed the sweep
+// re-derived a handful of conditions in its own core and was blind to every OTHER rule in
+// observability/alerts.rules.yml; on 2026-07-27 AgentClientFatalLatch fired critical at 21:16Z and
+// three consecutive collector digests still reported `alarms:[]` because nothing read it.
+//
+// An empty firing list is meaningless on its own (§C.9 negative-read void) — it is only evidence
+// when the rules it would have come from are demonstrably loaded, current, and evaluating. Hence
+// /api/v1/rules (rules + live state + health + evaluation times) rather than the ALERTS series
+// (state only), and hence THREE positive controls rather than a rule count:
+//
+//   1. NAME SET vs the committed file. Discovered by this probe's own review, 2026-07-28: the
+//      running Prometheus was serving a rules file predating 2026-07-22 — 16 rules loaded against
+//      20 committed — because the container mounts alerts.rules.yml read-only and reads it ONCE at
+//      process start, while the deploy step recreates only `app`. The four alerts added 2026-07-27
+//      to catch a silent lane (AgenticLaneSilent, ReconciliationNeverCleanSustained,
+//      ReconciliationSweepFailureSustained, AgenticBudgetExhausted) had therefore never evaluated
+//      once. A count check passes 16>0 happily; only a NAME check says which rules are missing.
+//      Deliberately name-only, not expr-diffing: Prometheus re-renders PromQL, so comparing query
+//      text would false-positive on every multi-line rule. An expr edited under an unchanged name
+//      is caught by the deploy step reloading prometheus, not here — see docs/runbook.md § Deploy.
+//   2. HEALTH. A rule whose query errors sits at health='err' with a frozen state='inactive'
+//      forever, reading as quietly not-firing. Also covers the freshly-restarted case, where every
+//      rule is health='unknown' until its group's first evaluation.
+//   3. EVALUATION FRESHNESS. A group that has stopped evaluating serves its last state indefinitely.
+//
+// Every one of them fails the probe (measurement fails OPEN — a named annotation, never an alarm,
+// never a silent pass).
+export const RULE_EVAL_STALE_FACTOR = 3;
+
+export function parsePromRules(res, { expectedAlertNames = null, nowMs = null } = {}) {
+  if (!res.ok) return { ok: false, error: res.error };
+  let body;
+  try {
+    body = JSON.parse(res.value);
+  } catch (err) {
+    return { ok: false, error: `rules api: unparseable JSON (${String(err)})` };
+  }
+  if (!body || body.status !== 'success' || !body.data || !Array.isArray(body.data.groups)) {
+    return { ok: false, error: `rules api: unexpected envelope (status=${body && body.status})` };
+  }
+  let ruleCount = 0;
+  let alertingCount = 0;
+  const loadedNames = new Set();
+  const unhealthy = [];
+  const staleGroups = [];
+  const firing = [];
+  for (const group of body.data.groups) {
+    const intervalMs = Number(group && group.interval) * 1000;
+    const lastEvalMs = Date.parse((group && group.lastEvaluation) || '');
+    if (
+      Number.isFinite(nowMs) &&
+      Number.isFinite(intervalMs) &&
+      intervalMs > 0 &&
+      Number.isFinite(lastEvalMs) &&
+      nowMs - lastEvalMs > RULE_EVAL_STALE_FACTOR * intervalMs
+    ) {
+      staleGroups.push(
+        `${group.name} (last evaluated ${Math.round((nowMs - lastEvalMs) / 1000)}s ago, interval ${group.interval}s)`,
+      );
+    }
+    for (const rule of (group && group.rules) || []) {
+      ruleCount += 1;
+      if (rule.type !== 'alerting') continue;
+      alertingCount += 1;
+      loadedNames.add(rule.name);
+      if (rule.health !== 'ok') {
+        unhealthy.push(
+          `${rule.name} (health=${rule.health}${rule.lastError ? ': ' + rule.lastError : ''})`,
+        );
+      }
+      if (rule.state !== 'firing') continue;
+      // One entry per firing INSTANCE (a rule can fire for several label sets at once), falling back
+      // to the rule itself when the instance list is empty so a firing rule can never read as silent.
+      const instances = Array.isArray(rule.alerts)
+        ? rule.alerts.filter((a) => a && a.state === 'firing')
+        : [];
+      const rows = instances.length > 0 ? instances : [{ labels: rule.labels, activeAt: null }];
+      for (const inst of rows) {
+        const labels = inst.labels || {};
+        firing.push({
+          alertname: labels.alertname || rule.name,
+          severity: labels.severity || (rule.labels && rule.labels.severity) || 'unknown',
+          activeAt: inst.activeAt || null,
+          summary: (rule.annotations && rule.annotations.summary) || '',
+        });
+      }
+    }
+  }
+  if (alertingCount === 0) {
+    return {
+      ok: false,
+      error:
+        'rules api: prometheus has ZERO alerting rules loaded — firing state unknowable, not clean',
+    };
+  }
+  if (expectedAlertNames && expectedAlertNames.length > 0) {
+    const missing = expectedAlertNames.filter((n) => !loadedNames.has(n));
+    if (missing.length > 0) {
+      return {
+        ok: false,
+        error:
+          `rules api: prometheus is serving a STALE rules file — ${missing.length} committed alert(s) never loaded ` +
+          `(${missing.join(', ')}); it reads alerts.rules.yml once at process start, so recreate the prometheus container`,
+      };
+    }
+  }
+  if (unhealthy.length > 0) {
+    return {
+      ok: false,
+      error: `rules api: ${unhealthy.length} rule(s) not healthy — their firing state is not a current read: ${unhealthy.join('; ')}`,
+    };
+  }
+  if (staleGroups.length > 0) {
+    return {
+      ok: false,
+      error: `rules api: ${staleGroups.length} rule group(s) have stopped evaluating — firing state is frozen, not current: ${staleGroups.join('; ')}`,
+    };
+  }
+  return { ok: true, value: { ruleCount, alertingCount, firing } };
+}
+
+// The alert names the repo COMMITTED, as the name-set control's expectation. Parsed with a regex
+// rather than a YAML dependency: this script is stdlib-only by design (it runs outside the tsconfig
+// graph and outside node_modules' guarantees), and `- alert: <Name>` is a shape markdownlint-adjacent
+// churn cannot plausibly break. Returns null — the control is SKIPPED, not failed — when the file
+// cannot be read, because an unreadable local file says nothing about what Prometheus loaded.
+export function readExpectedAlertNames(rulesPath) {
+  let text;
+  try {
+    text = readFileSync(rulesPath, 'utf8');
+  } catch {
+    return null;
+  }
+  const names = [];
+  for (const line of text.split('\n')) {
+    const m = line.match(/^\s*-\s*alert:\s*(\S+)\s*$/);
+    if (m) names.push(m[1]);
+  }
+  return names.length > 0 ? names : null;
 }
 
 // ── psql single-row `-Atc` parsing: pipe-delimited columns on one line ───────────────────────────
@@ -264,6 +409,15 @@ function gather() {
     return { ok: true, value: { spendUsd, remainingUsd: remaining.value, verified: true } };
   })();
 
+  // Every Prometheus alerting rule's live state, in one read (see parsePromRules' header for why
+  // this is the authoritative source and not the ALERTS series). This is the ONLY probe whose scope
+  // is the whole rules file rather than one metric, so it is the sweep's backstop against a
+  // condition the core never learned to check for itself.
+  probes.promAlerts = parsePromRules(promApi('/api/v1/rules'), {
+    expectedAlertNames: readExpectedAlertNames(ALERT_RULES_PATH),
+    nowMs: Date.now(),
+  });
+
   // Error/warn scan: tail (never --since), pino level>=40, top-5 distinct msg prefixes.
   const errorScan = scanErrors(APP_CONTAINER);
 
@@ -365,6 +519,14 @@ function renderMarkdown({ sweptIso, host, git, app, result }) {
     L.push(`- bootId: ${app.bootId ?? 'UNRESOLVED'}`);
     L.push(`- RestartCount: ${app.restartCount ?? 'n/a'} · StartedAt: ${app.startedAt ?? 'n/a'}`);
     L.push(`- cost breaker: $${AGENTIC_DAILY_COST_BREAKER_USD}/day`);
+    const pa = app.probes && app.probes.promAlerts;
+    L.push(
+      `- prometheus rules: ${
+        pa && pa.ok
+          ? `${pa.value.ruleCount} loaded, ${pa.value.firing.length} firing`
+          : `probe_failed — ${(pa && pa.error) || 'no result'}`
+      }`,
+    );
     L.push(
       `- deltas vs watermark: ${result.deltas ? JSON.stringify(result.deltas) : 'reset (boot changed or first sweep)'}`,
     );

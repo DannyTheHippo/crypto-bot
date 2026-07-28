@@ -95,6 +95,28 @@ export function promQuery(expr) {
   ]);
 }
 
+// Prometheus HTTP API GET, issued from INSIDE the one prometheus container against its own
+// localhost:9090 — same container and same read-only posture as promQuery above, so a GCP lift
+// re-points both here together. `wget` (busybox, /bin/wget in the prom/prometheus image) rather than
+// host curl: host curl is auto-denied in this environment, and promtool has no sub-command that
+// returns the rules/alerts endpoints.
+//
+// Why an HTTP read at all when promQuery exists: the synthetic `ALERTS` series answers "what is
+// firing" but CANNOT answer "were any rules loaded", so an empty ALERTS result is indistinguishable
+// from a Prometheus that failed to load alerts.rules.yml — precisely the negative-read void (§C.9)
+// the sweep is built to refuse. /api/v1/rules returns both facts in one response, making the
+// positive control intrinsic to the read rather than a second query that could itself go stale.
+export function promApi(path) {
+  return run('docker', [
+    'exec',
+    PROM_CONTAINER,
+    'wget',
+    '-q',
+    '-O-',
+    `http://localhost:9090${path}`,
+  ]);
+}
+
 // Host duty-cycle provenance (§D open-with-host-state): power source, boot time, load. Each sub-read is
 // wrapped independently so a missing tool on one axis never voids the others; the aggregate is always ok.
 export function hostState() {

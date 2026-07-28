@@ -262,6 +262,44 @@ function computeApp(prev, cur, elapsedMs = null, nowMs = null) {
       });
     }
   }
+  // Prometheus' own firing alerts. This stack has NO Alertmanager (deliberately) — the loop pass is
+  // the alert consumer, so a rule that fires is seen only if the sweep reads it. Every other alarm in
+  // this core re-derives ONE condition the core was taught; this one inherits the whole rules file,
+  // including rules written after this code.
+  //
+  // 2026-07-28: AgentClientFatalLatch fired critical at 21:16Z and the collector reported `alarms:[]`
+  // for three consecutive hourly digests while the agentic lane made zero LLM calls — the sweep's
+  // liveness deltas kept moving because the latched client still journals a decision row per symbol.
+  //
+  // SEVERITY SPLIT, and why it is not "trust the rule and promote everything". An alarm is not a
+  // notification here: playbook §3 makes ANY alarm force a defect investigation and blocks all
+  // improvement work until it clears. Measured against this stack's own history at the time of
+  // writing, ≥1 rule was firing 58.4% of the last 7 days and 59.2% of the last 24h — dominated by
+  // warning-severity rules the program has knowingly been running through for weeks
+  // (ReconciliationMismatch 1135 of 1440 min; AgenticReflectionNeverMinted 4084 min/7d, sticky by a
+  // 24h max_over_time). Promoting those would have wedged the loop on roughly six passes in ten,
+  // burying the one critical signal this change exists to surface. `info` is worse than useless as an
+  // alarm: EffectiveModeLive is severity info and fires permanently once live trading is armed, by
+  // design. So critical BLOCKS and everything else ANNOTATES — still in the digest, still read by the
+  // pass, just not a gate. Raising a warning to blocking is a one-line severity edit in
+  // observability/alerts.rules.yml, which is where that judgement belongs.
+  //
+  // Fails OPEN as measurement must: an unreadable, stale, unhealthy or non-evaluating rules API is
+  // the generic `probe_failed` annotation above (never a silent pass) — see parsePromRules.
+  const promAlerts = probes.promAlerts;
+  if (promAlerts && promAlerts.ok === true && promAlerts.value) {
+    for (const a of promAlerts.value.firing || []) {
+      const detail =
+        `${a.alertname} (${a.severity}) firing since ${a.activeAt ?? 'unknown'}` +
+        `${a.summary ? ` — ${a.summary}` : ''}`;
+      if (a.severity === 'critical') {
+        alarms.push({ kind: 'prometheus_alert_firing', detail });
+      } else {
+        annotations.push({ kind: 'prometheus_alert_firing_nonblocking', detail });
+      }
+    }
+  }
+
   const cost = probes.cost;
   if (cost && cost.ok === true && cost.value && Number.isFinite(cost.value.spendUsd)) {
     // Epsilon guard: 0.8 * 3 has an IEEE754 remainder that would silently swallow the exact-80%

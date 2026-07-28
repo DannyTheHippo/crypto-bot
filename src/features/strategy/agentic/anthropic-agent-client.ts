@@ -526,15 +526,37 @@ const firstIssueSummary = (error: z.ZodError): string => {
     : 'unknown schema issue';
 };
 
+// How long a FATAL classification suppresses calls before ONE probe attempt is allowed through.
+//
+// FAILURE DIRECTION — this gate fails OPEN (toward re-probing), deliberately. It is an inference-
+// availability gate, not a safety interlock: nothing it permits can move money on its own, because a
+// re-probe can at most produce a proposal that Risk still sizes and vetoes, behind the unchanged kill
+// switch and live gates. What a permanently-closed latch DOES do is stop the entire strategy while
+// every health surface stays green — which is exactly what happened on 2026-07-27T21:16Z, when the
+// Anthropic account's credit ran out, one 400 latched the client, and the lane made zero LLM calls
+// for over three hours until a human noticed. Every FATAL status this client recognises (400/401/403/
+// 404/422) is a condition an operator can fix WITHOUT touching the process — top up credit, restore a
+// key, lift a permission — so "latched until the container is recreated" wrongly modelled all of them
+// as permanent.
+//
+// 30 min keeps the original intent intact: the comment this replaces worried about hammering "at
+// candle cadence", and the candle is STRATEGY_INTERVAL=15m, so a 30-minute floor is still strictly
+// slower than the cadence it was written to suppress — at most two failed requests per hour, and a
+// 4xx bills nothing. What it buys is that this outage class is now bounded at 30 minutes instead of
+// unbounded.
+const FATAL_LATCH_COOLDOWN_MS = 30 * 60 * 1000;
+
 // Concrete AGENT_CLIENT adapter: calls the real Anthropic Messages API and maps its tool-use
 // decision to a proposed AgentProposal. Stateless across decisions — the strategy owns the
 // decision-history trail — but stateful across FAILURES: a FATAL classification latches this
-// instance to degraded so a bad key/request can't be hammered at candle cadence. Risk still
+// instance to degraded so a bad key/request can't be hammered at candle cadence. The latch expires
+// after FATAL_LATCH_COOLDOWN_MS so a fixed-outside-the-process cause self-heals. Risk still
 // sizes/vetoes whatever signal is returned.
 export class AnthropicAgentClient implements AgentClientPort {
-  // Set once by a FATAL failure; every propose()/proposeBatch() call after that short-circuits with
-  // no HTTP call.
-  private degraded = false;
+  // Wall-clock of the most recent FATAL failure, or null when no latch is in force. Every
+  // propose()/proposeBatch() call within FATAL_LATCH_COOLDOWN_MS of it short-circuits with no HTTP
+  // call; the first call after that window clears the latch and is allowed to probe.
+  private latchedAtMs: number | null = null;
   // Dedupes the "stored playbook failed validation" warn to once per distinct invalid content,
   // rather than once per candle-cadence propose() call while the same bad playbook sits stored.
   private lastInvalidPlaybookContent: string | null = null;
@@ -569,9 +591,40 @@ export class AnthropicAgentClient implements AgentClientPort {
     };
   }
 
+  // The latch, asked once per call. Returns the short-circuit rationale while suppression is in
+  // force, or null once the cooldown has expired (clearing the latch so this call probes). Reading it
+  // has the side effect of clearing — that is the point: there is no separate timer to schedule, wake,
+  // or leak, and a client nobody calls never probes.
+  private latchRationale(nowMs: number): string | null {
+    if (this.latchedAtMs === null) return null;
+    const heldMs = nowMs - this.latchedAtMs;
+    // A latch stamped in the future (clock step) is treated as expired rather than trusted, so a
+    // clock jump can never extend suppression indefinitely.
+    if (heldMs >= FATAL_LATCH_COOLDOWN_MS || heldMs < 0) {
+      this.latchedAtMs = null;
+      this.logger.warn(
+        `anthropic api: fatal-error latch expired after ${Math.round(heldMs / 60_000)}min — allowing one probe call`,
+      );
+      return null;
+    }
+    // H4 tag discipline (see the envelope_malformed/capability_violation branches): a named rationale
+    // rather than a decision-less proposal, so the journal row is queryable and trading-runtime's
+    // outcomeForProposal can meter it as `client_latched` instead of an indistinguishable 'hold'. On
+    // 2026-07-27, 30 such rows persisted as bare holds with an EMPTY rationale — visually identical to
+    // a genuine model hold, and silently counted as one by every entry-rate measurement.
+    return `client_latched: agent client latched degraded by a FATAL api error ${Math.round(heldMs / 1000)}s ago — no call made, retrying after ${FATAL_LATCH_COOLDOWN_MS / 60_000}min`;
+  }
+
+  // action 'error', not 'hold' — the same named-degrade discipline as capability_violation below: a
+  // call that never happened must never read as a model that chose to hold.
+  private static latchedDecision(rationale: string): AgentDecisionMeta {
+    return { action: 'error', confidence: null, rationale };
+  }
+
   async propose(input: AgentDecisionInput): Promise<AgentProposal> {
-    if (this.degraded) {
-      return { signals: [] };
+    const latched = this.latchRationale(Date.now());
+    if (latched !== null) {
+      return { signals: [], decision: AnthropicAgentClient.latchedDecision(latched) };
     }
 
     const symbol = input.trigger.event.symbol;
@@ -857,10 +910,14 @@ export class AnthropicAgentClient implements AgentClientPort {
     opts: AgentProposeBatchOptions = {},
   ): Promise<AgentProposeBatchResult> {
     if (inputs.length === 0) return { proposals: new Map() };
-    if (this.degraded) {
+    const latched = this.latchRationale(Date.now());
+    if (latched !== null) {
       return {
         proposals: new Map<string, AgentProposal>(
-          inputs.map((i) => [String(i.trigger.event.symbol), { signals: [] }]),
+          inputs.map((i) => [
+            String(i.trigger.event.symbol),
+            { signals: [], decision: AnthropicAgentClient.latchedDecision(latched) },
+          ]),
         ),
       };
     }
@@ -1685,13 +1742,15 @@ export class AnthropicAgentClient implements AgentClientPort {
 
   // On a FATAL classification, log once and latch this instance to degraded. The message now
   // carries the API error body (attemptOnce embeds it — the body states the invalid_request
-  // cause and never credentials); the key itself never appears in any error path.
+  // cause and never credentials); the key itself never appears in any error path. Re-stamping on
+  // every FATAL means a cause that is still unfixed extends the suppression a full cooldown from the
+  // last probe, never from the first failure.
   private handleFailure(err: AgentProposeError): void {
     if (err.kind === 'FATAL') {
       this.logger.warn(
-        `anthropic api: fatal error (status ${err.status ?? 'n/a'}) — latching agent client to degraded, no further calls will be made — ${err.message}`,
+        `anthropic api: fatal error (status ${err.status ?? 'n/a'}) — latching agent client to degraded for ${FATAL_LATCH_COOLDOWN_MS / 60_000}min, no calls until then — ${err.message}`,
       );
-      this.degraded = true;
+      this.latchedAtMs = Date.now();
     } else {
       // Transport-reason gap fix (soak-flagged): a RETRYABLE failure previously logged nothing at
       // all — err.message is this client's own sanitized diagnostic (never credentials/body), so

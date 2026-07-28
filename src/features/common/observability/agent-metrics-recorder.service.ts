@@ -19,7 +19,13 @@ export type AgentDecideOutcome =
   | 'envelope_malformed'
   | 'model_refusal'
   | 'truncated'
-  | 'off_menu';
+  | 'off_menu'
+  // 2026-07-28: a call SUPPRESSED before it happened, because the client is inside its FATAL-error
+  // latch cooldown. Distinct from 'error_fatal' (which counts the one failure that STARTED the
+  // latch) in the way that matters for alerting: error_fatal is a permanent record of a past event
+  // and only resets on a container recreate, whereas this is emitted continuously while the lane is
+  // actually dead and stops the moment it recovers — so it can carry an alert that self-clears.
+  | 'client_latched';
 
 export type AgentTokenKind = 'input' | 'output' | 'cache_read' | 'cache_creation';
 

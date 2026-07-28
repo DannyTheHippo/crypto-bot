@@ -351,6 +351,38 @@ never changes for strategy evolution.
   `464c608b`); the POSITIVE direction is UNPROVEN on this build** — the accounts are unfunded but bar
   counters reset on the 07:30Z redeploy, so the first consult attempt was up to 2h out. Deadline: the
   next pass confirms it from a sweep, and must not infer it from the unit tests.
+  **STILL UNPROVEN AFTER PASS 44, and the cause is now understood well enough to stop treating it as
+  bad luck.** `agent_decide_total` had no series on either 07-28 boot and the consult gate read
+  `{"skipped_scheduled": 40}` — nothing exercised the latch. `AGENTIC_FALLBACK_CONSULT_BARS=8` (2h)
+  counts bars in memory, so EVERY redeploy pushes the first fallback consult 2h out; 07-28's deploys
+  (08:05:55Z, 08:53:50Z) each reset it. With 3 scheduled passes/day that each deploy, a lane whose only
+  live trigger is the fallback schedule can be starved by the loop's own deploy cadence. A third pass
+  must not simply defer this to "the next sweep" again: either persist the bar counters across boots,
+  or verify the latch by a route that does not wait on the fallback clock.
+- **A MENU CHOSEN FROM A QUARTER OF THE BASKET, AND A COUNTER THAT READ AS A BROKEN PROBE (Pass 44,
+  2026-07-28).** Both were live for days, both were invisible to a green sweep, and both were found by
+  reading what the stack actually published rather than whether it was healthy.
+  (1) `2c7a005` — the universe scanner's quorum guard demanded `menuSize` (8) scored symbols before
+  stamping the UTC day key, against a 40-symbol basket. A scan 9m08s after the 08:05:55Z redeploy
+  stamped the day over **11 of 40** scored symbols and froze that ranking until 00:00Z; the other 29
+  could win neither a menu slot nor the book/trades channel tier, which keys off the same
+  `isActive()`. Independently confirmed at the time: candle:15m on all 40 symbols, book on exactly 13
+  — the menu size. The day key is in-memory, so every redeploy re-armed it. Repair: a ranking stamped
+  below 90% basket coverage re-ranks as coverage improves and stops at full coverage, with hysteresis
+  suppressed on the repair (it is a day-to-day anti-flap device, and retaining incumbents would
+  preserve the partial menu while growing the consulted set toward the rank-12 band).
+  **Two review findings changed the design, both worth remembering:** triggering on "coverage grew AND
+  is now ≥ bar" ALSO fires on a day that was never partial, letting a symbol warming up at rank 40
+  evict a rank-3 incumbent the band exists to hold; and a hard one-shot repair re-creates the same
+  lockout for the residual 4-of-40.
+  (2) `4c8a5ca` — `market_stream_forced_reconnects_total` is incremented only on `total > prev`, and
+  prom-client creates a labeled child only when touched, so a lane with zero forced reconnects
+  exported NO series. `loop:sweep`'s `sum(...)` got an empty vector and annotated
+  `probe_failed[wsRecreations]` on EVERY sweep — a permanent §C.9 negative-read void on the one
+  counter that caught both 2026-07-21 soak defects. Each venue now publishes at its true zero.
+  **DURABLE FACT, and it generalises past this metric: in prom-client a labeled counter that has never
+  been incremented is indistinguishable from a metric that does not exist. Any counter whose ZERO is
+  meaningful evidence must be seeded at its labels, or every query against it is a void read.**
 - **Kimi-K3 experiment COMPLETE — offline replay verdict HOLD (2026-07-21/22, task #15 run
   phase):** kimi-k3 replayed over the newest 100 recorded consult payloads (1,363 payload rows
   loaded; v2 corpus served from a read-only clone of the retired `crypto-bot_postgres_data`
@@ -640,17 +672,40 @@ fix: OMS algo-rail containment, 7 sub-fixes), `a6f0573` (P8a factorial ENABLE, s
 
 ## Current stage
 
-**Current order & status (last updated Pass 43, 2026-07-28T08:12Z).** Live build `13d94c9`, boot
-`464c608b` (app deployed 08:05:55Z; prometheus force-recreated at 07:30Z on the same rules file), 4
-containers healthy, kill switch RUNNING, both venues reconciling CLEAN, 20/20 alert rules loaded,
-none unhealthy, sweep `Alarms (0)` with its positive control passing. RSS 757 MiB (WATCH-V3-1 fine). Book: 28 closed round
-trips, net-of-cost **−$39.64**, `agentic_promotion_ready=0`, equity ~$4,978, 5 positions (4 spot dust +
-SOL/USDT:USDT 0.64) under 4 resting protective orders. **The lane is NOT trading and cannot: both
-provider accounts are unfunded (§ Flagged), so the client latches by design and journals named
-`client_latched` degrades.** Open WATCH lines: V4-1 through V4-4 all holding; **V4-5 half-verified —
-its negative direction is live, its positive direction is unproven on this build and is the next pass's
-first job.** Nothing is queued for deploy. Everything else waits on funding, and funding should be read
-against Pass 41's ENTRIES verdict before it happens.
+**Current order & status (last updated Pass 44, 2026-07-28T09:10Z).** Live build `6369c0b`, boot
+`899d4a09` (app deployed 08:53:50Z; prometheus force-recreated at 07:30Z and NOT touched since — no
+pass has changed the rules file), 4 containers healthy, kill switch RUNNING, both venues reconciling
+CLEAN (10/9 in the last 10 min), clean stamp 98s old, 20/20 alert rules loaded and 0 firing, sweep
+`Alarms (0)`. RSS 751 MiB climbing to plateau from 337 MiB at boot (WATCH-V3-1 fine). Book: 28 closed
+round trips, net-of-cost **−$39.6370**, win rate 17.9%, window 4.30d, `agentic_promotion_ready=0`,
+equity $4,978.17. **The lane is NOT trading and cannot: both provider accounts are unfunded
+(§ Flagged), so the client latches by design.** Zero LLM spend today —
+`agentic_budget_remaining_usd` is the full $3.
+
+**Book composition, corrected — Pass 43's hand-off said this wrongly and the next pass would have
+inherited it:** there are **4 positions, all spot dust** (ZEC/AAVE/BTC/SOL), and **no** SOL/USDT:USDT
+position — that 0.64 was closed by a venue stop at 01:06:07Z on 07-28 (`order_events`:
+`FILL cumQty=0.64 reason=venue_stop_filled:algoId=1000000147822464`). There are also **no resting
+protective orders**: the 4 non-terminal `orders` rows are never-ACKed zombies from 07-24 (see
+WATCH-V4-6), and the venue reports `open_orders_checked=0` on every reconcile.
+
+Open WATCH lines: V4-1 through V4-4 holding; **V4-5 still half-verified** (negative direction live,
+positive direction unproven for a second consecutive pass — see its own note on why the deploy rhythm
+keeps starving it); **V4-6 NEW and open**. Nothing is queued for deploy. Everything else waits on
+funding, and funding should be read against Pass 41's ENTRIES verdict before it happens.
+
+**Pass 44 shipped three fixes (`2c7a005`, `4c8a5ca`, `6369c0b`), all gates green (3054 tests) and
+soaked on boot `899d4a09`.** The one worth carrying forward: **the universe scanner was freezing each
+UTC day's whole 8-symbol menu from a partial warmup.** `recompute()` stamped the day key as soon as
+`menuSize` (8) symbols had metrics — 20% of a 40-symbol basket — so a scan 9 minutes after a redeploy
+locked in a ranking over 11 of 40 symbols, with the other 29 unable to win a menu slot OR the
+book/trades channel tier (same `isActive()`) until 00:00Z. Every redeploy re-armed it. Measured cost:
+`ETH/USDT:USDT` ranks 5th of 40 at full coverage and was off the menu all morning. A ranking stamped
+below 90% coverage is now repairable until it has seen the whole basket; live soak showed the exact
+designed sequence — stamp at 27/40, repair at 38/40 (one symbol swapped), repair at 40/40 (no churn).
+**Standing lesson: a quorum expressed as a fraction of the OUTPUT (the menu) rather than of the INPUT
+(the basket) will always under-guard — the guard's own comment named this failure and its threshold
+still missed it.**
 
 **Two loop-tooling defects Pass 43's own review and post-deploy sweep found in its OWN fixes, both
 shipped** — worth knowing because each was the fix re-creating, one layer up, the failure it removed:
@@ -1076,13 +1131,51 @@ when the info-context A/B resolves.
   accumulating evidence for a gate the current entry signal provably cannot pass. Whether that is
   worth doing is a decision about what this project is FOR — surfaced by Pass 41, restated by 42, and
   now unavoidable rather than deferrable. The loop does not decide it and has not assumed either answer.
-- **TWO SCHEDULED PASSES RAN CONCURRENTLY IN ONE WORKING TREE (2026-07-28, Pass 42 + Pass 43).** Both
-  sessions edited the same files; one committed the other's in-flight work twice (`ee4ddf3`, `7fa5ba8`)
-  and caught the test count moving 3009 → 3011 mid-verification because writes were still landing. No
-  work was lost, but nothing structural prevented it — a concurrent pass can land a half-finished tree
-  inside another's gate run, and the resulting failure would be attributed to the wrong cause. Owner
-  visibility wanted because the scheduler config is owner-owned; the loop-side mitigation (a lock file
-  the playbook checks at §1) is loop-domain and is the next pass's first candidate.
+- **OPEN DEFECT — WATCH-V4-6: AN ORDER THAT REACHES `NEW` VIA `QUERY_NOT_FOUND` CAN NEVER BECOME
+  TERMINAL (Pass 44, 2026-07-28).** Four orders have sat non-terminal since 2026-07-24, each with the
+  identical event chain and nothing after it: `SUBMIT_SENT → SUBMIT_AMBIGUOUS → QUERY_NOT_FOUND`
+  (`ZEC/USDT:USDT`, `SOL/USDT:USDT`, `KAITO/USDT:USDT`, `NEAR/USDT:USDT`).
+  Root cause, read from code not inferred: `SUBMIT_UNKNOWN + QUERY_NOT_FOUND → NEW` is deliberate
+  ("resubmit-eligible, same clientOrderId (TTL live)", `reducer.ts:194-195`) and its TTL-lapsed
+  sibling `QUERY_NOT_FOUND_EXPIRED → CANCELED` exists — but the TTL is evaluated **only at query
+  time** (`unknown-resolver.service.ts:310-315`), ~7s after submit, when it is obviously still live.
+  The resolver then drops the order from `pending` with the comment *"NEW is resubmit-eligible;
+  resubmit orchestration is a follow-up"*. That follow-up was never built, so nothing re-queries the
+  order, nothing expires it, and nothing resubmits it.
+  **Live impact today is nil, and that is measured:** `open_orders{venue}`=0 both venues,
+  `in_flight_intents`=0, `venue_capital_headroom_usdt{binanceusdm}`=500 (full, so no phantom reserve),
+  `reconciliation_mismatch_total` has no series across the whole 4 days these rows have existed, and
+  the clean stamp is fresh. The portfolio view correctly excludes never-ACKed orders.
+  **Why Pass 44 did not fix it:** the repair is the missing capability the code itself names — TTL
+  re-examination plus a venue re-query before terminalizing (never blind; hard rule 5). That is new
+  OMS money-path orchestration, not a line change. `NEW + CANCEL_REQUESTED → CANCELED` ("never sent,
+  local-only", `reducer.ts:153`) is already the right terminal transition, so no reducer change is
+  needed — the missing piece is the sweep that decides when to emit it.
+  **Expected-positive:** the count of orders in a non-terminal state with no in-flight intent stays at
+  these 4 and does not grow. **Named defect outcome:** it grows ⇒ the ambiguous-submit path is
+  producing zombies at a rate that will eventually meet a book-wide non-terminal scan, which is
+  exactly the shape that starved the clean stamp twice in Pass 40 (`adopt_non_adoptable`). Check
+  `sum(fills.qty)` vs `orders.cum_qty` for non-terminal orders first, as WATCH-V4-1 already says.
+- **TWO SCHEDULED PASSES RAN CONCURRENTLY IN ONE WORKING TREE (2026-07-28, Pass 42 + Pass 43;
+  RECURRED live during Pass 44).** Pass 44 observed it from inside: commits `8a15ad0` (08:18:21Z) and
+  `b5eee27` (08:23:03Z) landed on `main` from another session mid-pass. No damage — neither touched
+  Pass 44's files, and both changed `test/eval`, which the production gate glob excludes — but it is
+  now three recorded occurrences. **Loop-side mitigation SHIPPED (`6369c0b`): `pnpm loop:lock` /
+  `pnpm loop:unlock <nonce>`, playbook §1 step 3 and §6 step 4.** Honest limits, because the guard
+  must not be trusted past its evidence: it is a 120-min time lease (not a liveness check — a pass is
+  a session, not a watchable process), and **it only binds passes that CALL it**, which is exactly why
+  it did not prevent the Pass 44 collision. A refusal is evidence of overlap; a clean acquire is not
+  proof of its absence. **The scheduler config that lets two passes co-fire remains owner-owned and
+  open.**
+  Original occurrence (Pass 42/43): both sessions edited the same files; one committed the other's
+  in-flight work twice (`ee4ddf3`, `7fa5ba8`) and caught the test count moving 3009 → 3011
+  mid-verification because writes were still landing. No work was lost, but nothing structural
+  prevented it — a concurrent pass can land a half-finished tree inside another's gate run, and the
+  resulting failure would be attributed to the wrong cause.
+  Standing procedure for any pass that sees this: assess damage before trusting a gate result — which
+  files the foreign commits touched, whether they intersect this pass's own, and whether they fall
+  inside the production gate glob. Pass 44 did exactly that and could then stand behind its 3054-test
+  run; a pass that skips it cannot.
 - **SHARED-ORG RATE-LIMIT — RECURRING; owner action requested (Pass 35, 2026-07-20; first
   recorded X9 same day).** The trading app and interactive/orchestration sessions share ONE
   Anthropic org budget; heavy fleet windows 429 the app's consults. Recurrences beyond the

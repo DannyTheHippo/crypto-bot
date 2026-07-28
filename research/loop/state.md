@@ -348,7 +348,7 @@ never changes for strategy evolution.
   `AgentClientFatalLatch` that will not clear after recovery means the gauge is being set from a stale
   outcome, which is a `recordDecide` bug, not an alert-tuning problem. **Status at hand-off: the
   NEGATIVE direction is live-verified (gauge 0, alert inactive, `health=ok`, 20/20 rules loaded on boot
-  `7c6b68d3`); the POSITIVE direction is UNPROVEN on this build** — the accounts are unfunded but bar
+  `464c608b`); the POSITIVE direction is UNPROVEN on this build** — the accounts are unfunded but bar
   counters reset on the 07:30Z redeploy, so the first consult attempt was up to 2h out. Deadline: the
   next pass confirms it from a sweep, and must not infer it from the unit tests.
 - **Kimi-K3 experiment COMPLETE — offline replay verdict HOLD (2026-07-21/22, task #15 run
@@ -640,9 +640,10 @@ fix: OMS algo-rail containment, 7 sub-fixes), `a6f0573` (P8a factorial ENABLE, s
 
 ## Current stage
 
-**Current order & status (last updated Pass 43, 2026-07-28T07:50Z).** Live build `7fa5ba8`, boot
-`7c6b68d3` (deployed 07:30:10Z, app + prometheus both recreated), 4 containers healthy, kill switch
-RUNNING, both venues reconciling CLEAN, 20/20 alert rules loaded and evaluating. Book: 28 closed round
+**Current order & status (last updated Pass 43, 2026-07-28T08:12Z).** Live build `13d94c9`, boot
+`464c608b` (app deployed 08:05:55Z; prometheus force-recreated at 07:30Z on the same rules file), 4
+containers healthy, kill switch RUNNING, both venues reconciling CLEAN, 20/20 alert rules loaded,
+none unhealthy, sweep `Alarms (0)` with its positive control passing. RSS 757 MiB (WATCH-V3-1 fine). Book: 28 closed round
 trips, net-of-cost **−$39.64**, `agentic_promotion_ready=0`, equity ~$4,978, 5 positions (4 spot dust +
 SOL/USDT:USDT 0.64) under 4 resting protective orders. **The lane is NOT trading and cannot: both
 provider accounts are unfunded (§ Flagged), so the client latches by design and journals named
@@ -650,6 +651,19 @@ provider accounts are unfunded (§ Flagged), so the client latches by design and
 its negative direction is live, its positive direction is unproven on this build and is the next pass's
 first job.** Nothing is queued for deploy. Everything else waits on funding, and funding should be read
 against Pass 41's ENTRIES verdict before it happens.
+
+**Two loop-tooling defects Pass 43's own review and post-deploy sweep found in its OWN fixes, both
+shipped** — worth knowing because each was the fix re-creating, one layer up, the failure it removed:
+(1) `354187e` — `agent_client_latched` was cleared by `off_menu` / `budget_blocked`, which are
+`BatchingAgentClient` short-circuits that never reach the Anthropic client, so an off-menu symbol or a
+budget-exhausted day would have silenced the critical alert while the lane was still latched. Now an
+explicit two-set classification, and an unclassified future outcome leaves the level untouched.
+(2) `13d94c9` — `agentic_budget_remaining_usd` is only set once the lane evaluates its budget, so a
+fresh boot's default 0 made the sweep read `spend $3 >= 80% of $3` on a container that had spent
+nothing. Now annotated inside a 5-min init grace (mirroring `AgenticBudgetExhausted`'s own `for: 5m`),
+still alarming on a real 0 past it. **Standing lesson for any future sweep alarm: a false alarm is not
+free — §3 makes it block the next pass, and an alarm that cries wolf trains the reader to skip it, which
+is the habit that let the 07-27 outage stay invisible for three hours.**
 
 **Stage 2 — learning-loop edge** (deployed 2026-07-08; Stage 1 cost floor CLOSED — see ladder
 above). The reframing forensics (2026-07-08, still the operative diagnosis):

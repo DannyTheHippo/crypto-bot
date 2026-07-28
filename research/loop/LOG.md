@@ -5086,11 +5086,15 @@ to access the Anthropic API"`.
 pre-flight aborted on the identical error — and recorded the study as blocked without connecting it to
 the production lane, writing "0 sweep alarms" in the same entry. One cause, two consequences, one seen.
 
-### The adversarial review — 16 findings, 5 survived, and it broke my own fix
+### The adversarial review — 20 findings, 7 survived, and it broke my own fix twice
 
 Four lenses over the working diff, every finding then attacked by an independent skeptic defaulting to
-rejection. **Honest coverage note: three lenses reported (16 findings); the safety-rails lens never
-returned, so that dimension was not covered by the review and was verified by hand instead — see below.**
+rejection. **CORRECTION to what this entry first said:** I reported "16 findings, 5 survived, the
+safety-rails lens never returned" from a partial journal read while the run was still going. The final
+tally is **4 lenses, 20 findings, 7 survived** — the safety-rails lens did return, and it was the lens
+that caught the worst remaining defect (below). The earlier number is left visible here rather than
+quietly overwritten, because "a lens did not report" was exactly the kind of claim that should not have
+been made before the run finished.
 
 Survivors, all fixed before commit:
 
@@ -5125,13 +5129,30 @@ probe runs), renew-on-release (harmful alone — it would suppress a recovered c
 description (untouched file, 4 names already stale for six days), and a companion `error_fatal` rule
 (the gauge covers it).
 
-**The safety dimension, verified by hand since the lens never reported.** The concern is that ~12
-`action='error'` rows/hour during a latch corrupt a statistic. Measured, not argued: all 103 degraded
-rows since 21:00Z (56 `error` + 47 `hold`) carry `playbook_version IS NULL` and `input_payload IS NULL`,
-and `countVersionEntryStats` — the abstention-lapse evidence base — filters `playbook_version = <v>`.
-So they cannot reach it, before or after this change. The order path is untouched: a suppressed call
-returns `signals: []`, so nothing reaches Risk at all, and a post-cooldown probe can at most produce a
-proposal that Risk still sizes and vetoes behind the unchanged kill switch and live gates.
+**The safety dimension, checked by hand AND then by the lens.** My own check: ~12 `action='error'`
+rows/hour during a latch could corrupt a statistic. Measured, not argued — all 103 degraded rows since
+21:00Z (56 `error` + 47 `hold`) carry `playbook_version IS NULL` and `input_payload IS NULL`, and
+`countVersionEntryStats` (the abstention-lapse evidence base) filters `playbook_version = <v>`, so they
+cannot reach it, before or after. The order path is untouched: a suppressed call returns `signals: []`,
+so nothing reaches Risk at all, and a post-cooldown probe can at most produce a proposal Risk still
+sizes and vetoes behind the unchanged kill switch and live gates. The lens independently traced all four
+secret-bearing paths (log, journal rationale, metric label, sweep digest) and found no leak.
+
+**But the lens also found a defect I had introduced and would have shipped — `354187e`.** My
+`recordDecide` drove `agent_client_latched` to 0 on "any outcome that is not the latch", with a comment
+asserting that reaching such an outcome "means a call completed". False for two of them: `off_menu` and
+`budget_blocked` are returned by `BatchingAgentClient` BEFORE `inner.proposeBatch` is ever called, so
+they never touch the client and prove nothing. An off-menu symbol or a budget-exhausted day would have
+dropped the gauge to 0 while the client was still latched — clearing the critical alert and returning
+the sweep to reporting no alarm. **The exact blindness this whole pass exists to remove, reintroduced
+one layer up by the fix for it.** Now two explicit sets (latched / proves-a-round-trip-happened) with
+everything else leaving the level untouched, so a NEW outcome added later is inert rather than silently
+clearing a live alert. Both regressions verified load-bearing by restoring the else-branch.
+
+Second late survivor, same commit: `parsePromRules` kept only `alertname`/`severity` per firing
+instance, so two instances of a per-venue rule rendered as byte-identical alarms — a pass reading
+`ReconciliationHalt` twice could not tell whether one venue or both were halted. Instances now carry
+their distinguishing labels as `scope`, rendered `AlertName{venue=binanceusdm}`.
 
 ### A durable finding worth more than the fix: committed alerts had never loaded
 
@@ -5156,31 +5177,56 @@ touching that file, and says why a plain `up -d prometheus` is a no-op; and `doc
 "Agentic lane silent" section that both alerts' `runbook:` annotation had been pointing at since before
 it existed.
 
+### One more defect, found by the pass's own post-deploy sweep — `13d94c9`
+
+The sweep that verified `354187e` raised `cost_breaker_proximity — spend $3 >= 80% of $3` against a
+container whose own boot log read `daily LLM budget seeded from durable spend … $0.0000 of $3 already
+spent today`. `agentic_budget_remaining_usd` is only `set()` once the lane evaluates its budget, so a
+fresh boot reads prom-client's default 0, and the sweep's `spend = breaker − remaining` renders that as
+the entire breaker spent. **A false alarm on every deploy — which under §3 consumes the next pass, and
+which teaches the reader to skip `cost_breaker_proximity`, the same habit that let the 07-27 outage stay
+invisible.** Now annotated (`budget_gauge_uninitialised`) only for the genuinely ambiguous reading —
+remaining exactly 0 inside a 5-minute init grace, mirroring `AgenticBudgetExhausted`'s own `for: 5m` on
+the identical gauge. A 0 past the grace is a real exhaustion and still alarms; any non-zero remaining is
+unaffected. Three cases pin all three directions. Live confirmation the fix is right for the right
+reason, not by luck: the following sweep read `Alarms (0)` with the gauge having since populated to
+**$3**, i.e. the unambiguous path, not the suppressed one.
+
 ### Diff, gates, deploy
 
-`ee4ddf3` (latch cooldown + named short-circuit + sweep alert consumption) and `7fa5ba8` (the
-post-review hardening: level gauge, critical-only severity split, name-set control, `parsePromRules`
-tests, runbook/playbook deploy step). Gates green: format:check, lint, lint:md, typecheck, build,
-**test 170 files / 3011 tests** (livegate 55 included), `eval:agentic` 21 passed. Both latch tests
-verified load-bearing by reverting the fix (`FATAL_LATCH_COOLDOWN_MS = Infinity` → both fail).
+Four commits: `ee4ddf3` (latch cooldown + named short-circuit + sweep alert consumption), `7fa5ba8`
+(post-review hardening: level gauge, critical-only severity split, name-set control, `parsePromRules`
+tests, runbook/playbook deploy step), `354187e` (the two late-review survivors), `13d94c9` (the
+budget-gauge false alarm). Gates green at each: format:check, lint, lint:md, typecheck, build, **test
+170 files / 3018 tests** (livegate 55), `eval:agentic` 21. Every regression verified load-bearing by
+reverting its own fix — `FATAL_LATCH_COOLDOWN_MS = Infinity` fails both latch tests, restoring the
+else-branch fails both gauge tests.
 
-**`7fa5ba8` was committed but NOT deployed** — the running Prometheus still held the pre-review expr,
-which is the very class this pass just fixed. Deployed here: app rebuild + `--force-recreate prometheus`
-at **07:30:10Z, boot `7c6b68d3`**. Verified live, not assumed: 20/20 rules loaded, none unhealthy,
-`AgentClientFatalLatch` expr now `agent_client_latched == 1` with `health=ok`, gauge present and
-reading **0** on a boot with no latch, kill switch RUNNING, clean stamp fresh, sweep `Alarms (0)` with
-the positive control passing (`prometheus rules: 20 loaded, 0 firing`).
+**`7fa5ba8` was committed but NOT deployed** when this pass resumed — the running Prometheus still held
+the pre-review expr, which is the very class this pass had just fixed. Deploys: app +
+`--force-recreate prometheus` at 07:30:10Z (boot `7c6b68d3`), then app again at **08:05:55Z, boot
+`464c608b`**, the live build. Verified live, not assumed: 20/20 rules loaded and none unhealthy,
+`AgentClientFatalLatch` expr `agent_client_latched == 1` with `health=ok`, gauge present, kill switch
+RUNNING, both venues CLEAN, sweep `Alarms (0)` with the positive control passing (`prometheus rules: 20
+loaded, 0 firing`). RSS 757 MiB — above the 673 MiB paper reference, well under the 900 MiB WATCH-V3-1
+defect line, and consistent with the 747 MiB read on the previous boot rather than a new climb.
 
 ### Soak
 
 Partial and honestly bounded. The gauge's **negative** direction is confirmed live (0 on a healthy
-boot, alert inactive, rule evaluating). Its **positive** direction — gauge → 1 and the alert firing
+boot, alert inactive, rule `health=ok`). Its **positive** direction — gauge → 1 and the alert firing
 within one scrape of a suppressed call — was NOT observed before this pass ended: the accounts are still
-unfunded, but bar counters reset on redeploy, so the first consult attempt is up to 2h out
-(`AGENTIC_FALLBACK_CONSULT_BARS=8`). The equivalent cycle was validated on the previous build by the
-soak entries above (`error_fatal` 21 / `client_latched` 34 over ~10h, the 30-min cooldown visible in the
-ratio); what is unproven is specifically the gauge path added in `7fa5ba8`. That is what WATCH-V4-5
-exists to close, and it is stated as unproven rather than inferred from the unit tests.
+unfunded, but bar counters reset on each redeploy, so the first consult attempt is up to 2h out
+(`AGENTIC_FALLBACK_CONSULT_BARS=8`), and this pass redeployed twice. A 27-minute watcher polling the
+gauge, the decide counter and firing alerts every 60s recorded `latched=0, decide={}, firing=[]`
+throughout — consistent with a lane that has not yet attempted a consult, and the final sweep's
+`consult-gate by outcome: {}` says exactly that.
+
+The equivalent cycle WAS validated on the previous build by the soak entries above (`error_fatal` 21 /
+`client_latched` 34 over ~10h, the 30-min cooldown visible in the ratio). What is unproven is
+specifically the gauge path added in `7fa5ba8` and corrected in `354187e`. Stated as unproven rather
+than inferred from the unit tests — the previous soak entry's own lesson was that a green metric nothing
+has exercised is not evidence, and that applies to my own fix too.
 
 ### Book state
 

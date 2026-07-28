@@ -197,6 +197,13 @@ describe.runIf(PAID && API_KEY.length > 0 && CORPUS_PRESENT)(
             `${(run.completion.schemaRate * 100).toFixed(1)}% — REPORTED, never gating (model behaviour)\n`,
         );
 
+        if (run.transport.billingStop !== null) {
+          throw new Error(
+            `RUN ABORTED — the provider reported an unrecoverable billing state and the run stopped ` +
+              `immediately rather than retrying it. Detail: ${run.transport.billingStop}`,
+          );
+        }
+
         if (run.voided) {
           // Fails CLOSED on TRANSPORT only. Run 1 (2026-07-28) made all 4,632 calls, reported
           // aborted=false, and printed a clean NO_SURVIVOR table off a ~13% transport rate — the arm

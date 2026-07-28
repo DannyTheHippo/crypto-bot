@@ -4949,3 +4949,54 @@ downward**, including this study's corpus.
 documents a moderate skip rate as expected and healthy — a ~60s pass on a 30s tick means skipped ticks
 are what keeps passes running back-to-back. Alarming would be a sustained 100% skip rate or completed
 passes trending to zero; neither is present (binance 8, binanceusdm 9 completed this window).
+
+### Pass 42 addendum — both provider accounts are unfunded; the study is blocked, not answered
+
+**No verdict exists for the playbook-space study on either leg.** Three attempts, three different
+failure modes, all of them "we were never allowed to ask" masquerading as "the model declined":
+
+| leg | provider | signal | what happened |
+| --- | --- | --- | --- |
+| run 1 | Anthropic | `400 credit balance too low` | 4,632 calls, ~13% transport, printed a clean **NO_SURVIVOR table anyway** |
+| run 2 | Anthropic | `400` | pre-flight caught it in 0.5 s, zero paid calls |
+| kimi | Moonshot | `429 suspended — insufficient balance` | retried a suspended account for **3 hours** |
+
+Spend this session: **$8.49 on Anthropic** (smoke $0.9943 + run 1 $7.5004), which exhausted the
+balance mid-run. Moonshot was already suspended — its pre-flight passed at launch and the account
+went unavailable during the run, or the probe raced the suspension.
+
+**The dangerous one was run 1.** `replayPlanRow` collapses every failure to `{ok:false}`, which is
+also what a genuine `hold` looks like to the scorer — so an API refusing 87% of calls is
+arithmetically indistinguishable from a model declining to trade. It produced a complete-looking
+table. Had the completion rate not been cross-checked against the $7.50-vs-$75 spend gap, that
+NO_SURVIVOR would have been written into § Standing verdicts as the verdict that ended the program.
+
+**Four fail-closed guards now stand between this study and a false answer** (`053b886`, `a566d3a`,
+`72692f7`): a 1-token pre-flight that aborts before the first paid call; transport instrumentation
+counting ok/429/5xx/4xx/network; a 90% **transport**-rate floor that throws instead of publishing;
+and body-based retryability so a billing 429 stops instead of backing off. The floor is keyed on
+transport and NOT on parsed rate, deliberately — kimi's schema-valid rate is 0.71, so a parsed-rate
+floor would have voided a good run because the model writes long theses.
+
+**Live-lane consequence, and the loop's own fix.** At 21:16Z the credit exhaustion produced a 400,
+which `classifyHttpStatus` treats as FATAL, which latched `AnthropicAgentClient` permanently. For
+~4 hours the lane journaled **45 rows** with `model='claude-sonnet-5'`, `action='hold'`, and
+`input_tokens`/`output_tokens`/`latency_ms` all NULL with an empty rationale — indistinguishable from
+genuine champion holds by model and action alone, while every health surface stayed green (kill
+switch RUNNING, container healthy, RestartCount 0, 0 sweep alarms). The daily loop independently
+diagnosed and fixed exactly this in a concurrent pass, then stalled before committing; committed as
+`ee4ddf3` with attribution and **not redeployed**. Corpus safety was checked rather than assumed: all
+45 phantom rows carry `input_payload IS NULL`, so the frozen 386-row corpus excludes them.
+
+**Blocked on owner-only capability:** funding either provider account. Corpus, arms, bar and harness
+are frozen and committed; nothing needs re-deciding.
+
+**Also this pass:** the non-price study CLOSED — GDELT is untestable from this host (366 requests, 0
+successes, sticky 429; the Web NGrams route named and deliberately not built), leaving 15/15 runnable
+cells FAIL plus 12 permanently untested.
+
+**Standing gap, not acted on:** Prometheus is serving a **stale rules file** — 4 committed alerts have
+never loaded, including `AgenticLaneSilent` and `AgenticBudgetExhausted`, the two that would have
+caught this outage. Prometheus reads `alerts.rules.yml` once at process start and has been up 5 days.
+Not recreated here: doing so belongs with the app redeploy that ships `ee4ddf3`, as one coherent
+deploy, and recreating it mid-incident against another agent's in-flight edits was the wrong order.

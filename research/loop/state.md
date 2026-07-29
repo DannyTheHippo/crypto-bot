@@ -396,6 +396,36 @@ never changes for strategy evolution.
   prom-client twin (an untouched labeled counter is indistinguishable from a missing metric). Same
   disease, different substrate — the question to ask of any field about to be cited as evidence is not
   "what does it say" but "what wrote it".
+- **FOUR MORE SITES OF THE SAME DISEASE, AND THE GENERAL FORM OF IT (Pass 47, 2026-07-29, `1cb2253` +
+  `446e1da`).** Asking "what wrote it" of everything the loop reads turned up four more in one pass, and
+  they are worth stating together because the fourth is the alarm that was supposed to catch the others.
+  (1) **Deploy provenance was a constant for every automated deploy.** Compose declared no `build.args`,
+  so `GIT_SHA` was reachable only through `docker compose build --build-arg` — and **`docker compose up`
+  rejects `--build-arg` outright** ("unknown flag", verified live), so the scheduled task's own
+  `up -d --build` form could not stamp it at any point in its history. The runbook's form worked, which is
+  precisely why the defect was invisible: whichever pass used the runbook produced a real sha and the
+  metric looked alive. **Durable fact: two documented commands for one operation is not a style problem —
+  it is a measurement hazard, because the working one hides the broken one.** The repo's four deploy
+  commands now collapse to one, and the real driver was the scheduled task's `SKILL.md` OUTSIDE the repo,
+  where no repo gate can ever check it.
+  (2) **`build_info` was resolved by array order** — the identical `boot_info` defect recorded above, one
+  metric over, found by review rather than by a symptom.
+  (3) **`zero_decides` could never fire on a dead lane.** `probes.decides` counted `agent_decisions` rows
+  unfiltered, but that table takes a row per symbol per scheduled skip. Measured: 160 rows/hour for 12
+  consecutive hours with **zero** real model decides underneath, straight through a 39h outage;
+  `agentic_consult_gate_total` is incremented by `skipped_scheduled` the same way, so both halves of the
+  alarm's condition were permanently false. **The playbook named this alarm as the primary dead-lane
+  detector. It had never been able to fire on one.**
+  (4) **Three counters had zero children**, so `reconciliation_mismatch_total{class=…}` — the literal
+  expected-positive signature of WATCH-V4-1 and WATCH-V4-2 — returned an empty vector rather than a zero,
+  and successive passes confirmed both WATCH lines against an instrument that could not answer. Pass 44
+  fixed exactly this on one counter and left three siblings. **Durable fact, procedural: fixing an
+  instance of a known defect class is not finishing — the next action is to enumerate its siblings.**
+  **THE GENERAL FORM, now with four substrates behind it (a NOT NULL column, a prom-client child, a build
+  arg, a row count): a reading is only evidence if something could have made it come out differently.**
+  A constant, an unseeded label, an unsupplied build arg and a counter of non-events all pass every query
+  and every green dashboard identically to a real measurement. The test is not whether the number looks
+  plausible — it is whether any state of the world produces a different one.
 - **AN OUTAGE THAT WAS OVER BEFORE ANYONE LOOKED (Pass 45, 2026-07-29, fix `b43777a`).** `loop:sweep`
   read Prometheus' INSTANTANEOUS rule state and nothing else, so with passes 8h apart any alert that
   fired AND resolved in between was invisible to every pass, permanently. Demonstrated, not theorised: a
@@ -805,16 +835,36 @@ fix: OMS algo-rail containment, 7 sub-fixes), `a6f0573` (P8a factorial ENABLE, s
 > 41's ENTRIES verdict together before funding — entries currently measure worse than a random-bar
 > placebo, so resuming spends ~$2.6/day gathering evidence for a gate the present signal cannot pass.
 
-**Current order & status (last updated Pass 46, 2026-07-29T09:15Z).** Live build `c50db12` (this
-pass's reconciliation-audit fix), boot `f7a477f3` from 09:09:12Z at `RestartCount` 0. Note the boot
-churn: the 22h `899d4a09` boot ended at 08:17:56Z when a CONCURRENT session deployed `af67acf`, and
-this pass deployed twice more (09:05:26Z, then 09:09:12Z to restore build provenance — see below).
-Prometheus force-recreated by that concurrent session, now **21 rules loaded, 0 firing**. 4 containers
-healthy, kill switch RUNNING, both venues reconciling CLEAN, clean stamp fresh (WATCH-V4-1 holds).
-Book unchanged — 28 closed round trips, net-of-cost **−$39.6370**, win rate 0.179, LLM cost $16.1979,
-trade-anchored window **4.30 of the 14 days** required, `agentic_promotion_ready` **0**, 0 fills.
-Champion playbook **v8** (+$6.77 over 5 trips — the only lineage meaningfully positive; v2 alone is
-−$24.76 over 14 and accounts for most of the book's loss).
+**Current order & status (last updated Pass 47, 2026-07-29T11:15Z).** Live build `446e1da`, boot
+`1d68a57c` from 11:03:17Z at `RestartCount` 0, deployed with `GIT_SHA=446e1da` through the playbook's
+own `up -d --build` form. Prometheus force-recreated (the rules file changed): **22 rules loaded, 1
+firing** — `AgenticNoSuccessfulDecideSustained` (warning, non-blocking), which is Pass 47's new
+restart-surviving lane-liveness signal doing its job, not a regression. 4 containers healthy, kill
+switch RUNNING, both venues reconciling CLEAN, clean stamp fresh (WATCH-V4-1 holds), RSS 711.5 MiB.
+Book unchanged and independently re-derived from metrics — 28 closed round trips, net-of-cost
+**−$39.6370**, win rate 0.179, LLM cost $16.1979, trade-anchored window **4.30 of the 14 days**
+required, `agentic_promotion_ready` **0**, 0 fills. Champion playbook **v8** (+$6.77 over 5 trips —
+the only lineage meaningfully positive; v2 alone is −$24.76 over 14 and accounts for most of the
+book's loss; n=5 is far under this loop's own "never act on a sub-n≥12 cell" bar).
+
+**Pass 47 shipped four defects in two commits (`1cb2253`, `446e1da`), all four the same disease.**
+(1) **Deploy provenance read `unknown` for every automated pass**: compose declared no `build.args`,
+so `GIT_SHA` was reachable only via `docker compose build --build-arg` — and `docker compose up`
+rejects that flag outright, so the scheduled task's `up -d --build` form *structurally could not*
+stamp it. Only the runbook path worked, which is why the metric read a real sha and the gap stayed
+invisible. Compose now interpolates `${GIT_SHA:-unknown}`; all four documented deploy commands
+collapse to that one form; **the scheduled task's own `SKILL.md` (outside the repo) was the real
+driver and was fixed too** — it also still told every pass to rehydrate with the deleted
+`loop:digests`, and never mentioned the pass lease. (2) **`zero_decides` can never fire on a dead
+lane**: `probes.decides` counted `agent_decisions` rows unfiltered, but that table takes a row per
+symbol per scheduled skip — 160 rows/hour for 12 straight hours with **zero** real model decides
+underneath. A separate `realDecides` probe now counts genuine calls. (3) **WATCH-V4-8 RESOLVED** —
+`agent_last_success_timestamp_seconds`, seeded at boot from the durable ledger, read **38.80h stale
+on a boot minutes old** while `agent_client_latched` read 0 in the same scrape. (4) **Three counters
+had zero children**, so `reconciliation_mismatch_total{class=…}` — the literal expected-positive of
+WATCH-V4-1 and V4-2 — returned an empty vector, not a zero; passes had been confirming both against
+an instrument that could not answer (re-verified this pass against `audit_log` directly: the verdicts
+stand, the citation was void). Gates green: 3147/3147 tests, livegate 55/55, build clean.
 
 **Sweep alarms: 0 — and that is the finding, not the good news.** At 07:37Z the sweep fired
 `AgentClientFatalLatch` (critical, firing since 07-28T10:45:25Z). By 08:37Z it fired **nothing**,
@@ -847,11 +897,22 @@ WATCH-V4-6), and `open_orders{venue}` reads 0 on both venues.
 > citation was void. Kept visible rather than silently rewritten: the claim was inherited into a pass
 > hand-off and would have been inherited again.
 
-Open WATCH lines: V4-1 through V4-4 holding; **V4-5 RESOLVED by Pass 45** (positive direction proven
-live on the 22h boot — only its untestable funded-resumption clause remains); **V4-6 open, re-checked
-and not growing** (still exactly the 4 non-terminal orders from 07-24); **V4-7 open**; **V4-8 NEW**
-(Pass 46, below). Nothing is queued for deploy. Everything else waits on funding, and funding should be
+Open WATCH lines: V4-1 through V4-4 holding, each re-verified by Pass 47 against DB truth rather than
+against the metrics that turned out to be void (V4-4: 197 perp fills → perp orders, 12 spot → spot
+orders, **zero cross-venue folding**; 0 `cum_qty`-vs-fills mismatches); **V4-5 RESOLVED by Pass 45**
+(positive direction proven live on the 22h boot — only its untestable funded-resumption clause
+remains); **V4-6 open, re-checked and not growing** (still exactly the 4 non-terminal orders from
+07-24); **V4-7 open**; **V4-8 RESOLVED by Pass 47** — its fix is deployed and its expected-positive
+was confirmed live, with the new alert firing at 11:04:25Z on an 8-minute-old boot.
+Nothing is queued for deploy. Everything else waits on funding, and funding should be
 read against Pass 41's ENTRIES verdict before it happens.
+
+**Queued by the owner 2026-07-29 (research, not started):** could the daily loop — or a similar
+subscription-based path — call app endpoints to execute trades as the bot would, routing around the
+funding blocker entirely? Two constraints to design against before anything is built: hard rule 2
+forbids bypassing Risk, so the entry point must be the **Signal** boundary and not the order boundary;
+and the promotion gate measures a specific decider, so "whose evidence is this?" needs an answer
+before loop-originated trades are allowed to count toward it.
 
 **WATCH-V4-8 (a redeploy must not be able to erase a standing outage).** Expected-positive: after any
 redeploy, the pass can still tell within its 15-30 min soak whether the lane is actually calling the
@@ -869,6 +930,25 @@ this pass** and the reason is specific, not a priority call: its fix touches
 rewritten ~50 min earlier by a concurrent unleased session (`af67acf`) whose own deploy soak was still
 running — a rules-file edit additionally requires a Prometheus `--force-recreate`. Deadline: next pass
 with an uncontended tree.
+**RESOLVED — Pass 47, 2026-07-29, commit `446e1da`.** The tree was uncontended and the fix shipped as
+specified: `agent_last_success_timestamp_seconds` is seeded at boot from `agent_decisions`, so it reads
+the TRUE age on the first scrape of every boot. Confirmed from LIVE state, not from unit tests — on the
+minutes-old boot `1d68a57c` the gauge read `2026-07-27T20:15:31.331Z`, **38.80h stale, in the same
+scrape where `agent_client_latched` read 0**, and `AgenticNoSuccessfulDecideSustained` fired at
+11:04:25Z on an 8-minute-old boot. Three design points worth keeping, each of which review changed:
+(a) the success predicate is **structural** — `prompt_hash <> '' AND latency_ms IS NOT NULL AND
+strategy_id NOT LIKE 'replay-%'`, two columns written together and only by code that already parsed a
+response body — so scheduled skips, latched suppressions and thrown errors are excluded by the shape of
+the write path rather than by a list of rationale strings someone has to remember; review narrowed it
+further to exclude post-200 degrades, which is why the lifetime count reads 575 and not 660.
+(b) **severity `warning`, deliberately**: `loop:sweep` promotes only `critical` to the blocking alarm and
+§3 blocks improvement work until alarms clear, so a critical would wedge every future pass on a
+condition no pass can fix — it lands as `prometheus_alert_firing_nonblocking` and sweep alarms stayed 0.
+(c) **`for: 5m`, not the soak length** — the sweep reads only rules already in state `firing`, so a `for:`
+equal to the playbook's 15-min MINIMUM soak would still be `pending` when the soak-ending sweep runs,
+invisible on the very pass that shipped it. A firing after a long host sleep is the expected recurring
+case, not an edge; suppressing it by gating on `process_start_time` would reintroduce exactly the
+boot-scoped blindness this rule removes.
 
 **Pass 45 shipped one fix (`b43777a`, gates green at 3082 tests) and it needed no deploy — it is
 host-side loop tooling.** `loop:sweep` could only ever see alerts that were still firing at the instant

@@ -89,6 +89,16 @@ describe('validate()', () => {
     }
   });
 
+  // Deploy provenance is a measurement input, so it fails OPEN in BOTH directions — absent and
+  // malformed. Compose interpolates it from the deployer's ambient GIT_SHA now, so an over-long value
+  // is reachable by accident; throwing here would crash-loop the container and raise restart_storm on
+  // an observability field. The degraded value is the one the sweep names as VOID.
+  it('reads APP_GIT_SHA through, and degrades an over-long one to unknown rather than refusing boot', () => {
+    expect(validate({ PORT: '3100', APP_GIT_SHA: 'c50db12' }).app.gitSha).toBe('c50db12');
+    expect(validate({ PORT: '3100' }).app.gitSha).toBe('unknown');
+    expect(validate({ PORT: '3100', APP_GIT_SHA: 'x'.repeat(65) }).app.gitSha).toBe('unknown');
+  });
+
   it('config is deep-frozen', () => {
     const cfg = validate({ PORT: '3100' });
     expect(Object.isFrozen(cfg)).toBe(true);

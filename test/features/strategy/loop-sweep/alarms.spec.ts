@@ -72,6 +72,7 @@ interface FiringAlert {
 }
 interface Probes {
   decides: { ok: boolean; value: { count: number; latestCreatedAtMs: number } };
+  realDecides: { ok: boolean; value: { count: number; latestCreatedAtMs: number } };
   consultGate: { ok: boolean; value: { total: number } };
   fills: { ok: boolean; value: { count: number } };
   reconcile: Record<string, ReconcileProbe>;
@@ -116,6 +117,9 @@ function baseReconcileByVenue(
 function baseProbes(): Probes {
   return {
     decides: { ok: true, value: { count: 100, latestCreatedAtMs: WM_TIME } },
+    // Matches the watermark's `realDecides: 20` below by default — a test perturbs it explicitly to
+    // exercise the dead-lane annotation, exactly like every other counter in this fixture.
+    realDecides: { ok: true, value: { count: 20, latestCreatedAtMs: WM_TIME } },
     consultGate: { ok: true, value: { total: 50 } },
     fills: { ok: true, value: { count: 10 } },
     reconcile: baseReconcileByVenue(200),
@@ -165,6 +169,7 @@ function baseWatermark(): Record<string, unknown> {
       restartCount: 3,
       counters: {
         decides: 100,
+        realDecides: 20,
         consultGate: 50,
         fills: 10,
         reconcileByVenue,
@@ -227,6 +232,65 @@ describe('loop-sweep-core alarms', () => {
     app.probes.reconcile = baseReconcileByVenue(220);
     const { alarms } = computeSweep({ prev: baseWatermark(), cur: curWith(app) });
     expect(kinds(alarms)).not.toContain('zero_decides');
+  });
+
+  // The defect this pass fixes: `decides` is an UNFILTERED agent_decisions row count, so a scheduled
+  // skip (no model call at all) advances it identically to a real decide. Live proof, 2026-07-29: 160
+  // rows/hour for 12 straight hours while both LLM provider accounts sat unfunded and the lane made
+  // ZERO real model calls — `zero_decides` above is structurally incapable of firing on that shape,
+  // because `deltas.decides` never reads 0. These cases pin the SEPARATE `realDecides` instrument that
+  // makes the dead lane visible without touching `zero_decides`'s own job (detecting the scheduler
+  // itself stalling, which DOES freeze the raw row count).
+  describe('real vs total decide liveness (the dead-LLM-lane class)', () => {
+    it('reports the total and the real counter as genuinely independent deltas', () => {
+      const app = baseApp();
+      app.probes.decides.value.count = 260; // total climbs by 160 (the observed scheduled-skip rate)
+      // realDecides left at its baseApp default (20 === watermark 20) — zero real decides this window.
+      const { deltas } = computeSweep({ prev: baseWatermark(), cur: curWith(app) });
+      expect(deltas?.decides).toBe(160);
+      expect(deltas?.realDecides).toBe(0);
+      // The two must never collapse into one number — that collapse IS the defect being fixed.
+      expect(deltas?.decides).not.toBe(deltas?.realDecides);
+    });
+
+    it('the dead-lane shape (total climbing, real decides flat) is annotated — and does NOT alarm', () => {
+      const app = baseApp();
+      app.probes.decides.value.count = 260; // scheduler alive: total row count climbs
+      app.probes.consultGate.value.total = 86; // consult-gate climbs too (skipped_scheduled outcomes)
+      app.probes.reconcile = baseReconcileByVenue(220); // journal_silence stays silent
+      // realDecides unchanged from baseApp (20) — zero genuine model round trips this window.
+      const { alarms, annotations } = computeSweep({ prev: baseWatermark(), cur: curWith(app) });
+      // The exact prior blindness: zero_decides cannot see this, because deltas.decides is 160, not 0.
+      expect(kinds(alarms)).not.toContain('zero_decides');
+      const note = annotations.find((a) => a.kind === 'no_real_decides_in_window');
+      expect(note).toBeDefined();
+      expect(note?.probe).toBe('realDecides');
+      expect(note?.detail).toContain('160');
+      // Never promoted to a blocking alarm (playbook §3 would wedge every future pass on an unfunded
+      // account with no clear date) — this MUST stay an annotation regardless of how the total moves.
+      expect(kinds(alarms)).not.toContain('no_real_decides_in_window');
+    });
+
+    it('stays silent when the lane is genuinely alive — a real decide in the window clears the annotation', () => {
+      const app = baseApp();
+      app.probes.decides.value.count = 260;
+      app.probes.consultGate.value.total = 86;
+      app.probes.reconcile = baseReconcileByVenue(220);
+      app.probes.realDecides.value.count = 21; // one genuine model round trip this window
+      const { annotations } = computeSweep({ prev: baseWatermark(), cur: curWith(app) });
+      expect(kinds(annotations)).not.toContain('no_real_decides_in_window');
+    });
+
+    it('an absent realDecides probe is a named failure, never a silently clean digest', () => {
+      const app = baseApp();
+      const probes = app.probes as unknown as Record<string, unknown>;
+      delete probes.realDecides;
+      const { annotations } = computeSweep({ prev: baseWatermark(), cur: curWith(app) });
+      const failed = annotations.find(
+        (a) => a.kind === 'probe_failed' && a.probe === 'realDecides',
+      );
+      expect(failed).toBeDefined();
+    });
   });
 
   it("journal_silence fires per venue when that venue's reconciliations journal produced no new rows while healthy", () => {

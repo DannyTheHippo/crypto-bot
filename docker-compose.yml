@@ -4,6 +4,13 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # `docker compose up` rejects --build-arg outright ("unknown flag"), so this interpolation is the
+      # ONLY way the scheduled deploy's `up -d --build` form can stamp the commit:
+      #   GIT_SHA=$(git rev-parse --short HEAD) docker compose up -d --build app
+      # The default keeps a prefix-less build working — a measurement input must never refuse a deploy —
+      # and `loop:sweep` names the resulting void instead of printing it as a reading.
+      args:
+        GIT_SHA: ${GIT_SHA:-unknown}
     # Host reboot stopped the stack 2026-07-10T23:28Z and nothing restarted it (~50 min lane
     # downtime until the next loop pass). unless-stopped survives daemon/host restarts while
     # keeping a deliberate `docker stop`/`compose stop` sticky.

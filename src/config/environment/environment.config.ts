@@ -195,7 +195,15 @@ const envSchema = z
     // Baked into the image by the Dockerfile's GIT_SHA build arg. Optional by design: an image built
     // without it still boots and simply reports build_info{git_sha="unknown"} — deploy provenance is
     // observability, and a measurement input must never be able to refuse a boot.
-    APP_GIT_SHA: z.string().max(64).default('unknown'),
+    //
+    // Fails OPEN on a malformed value too, not just an absent one, because compose now interpolates
+    // this from the deployer's AMBIENT `GIT_SHA` (`args: GIT_SHA: ${GIT_SHA:-unknown}`) rather than an
+    // explicit --build-arg: a shell or CI that already exports something over-long would otherwise
+    // throw here, crash-loop the container under `restart: unless-stopped`, and raise restart_storm —
+    // a pure observability input blocking the deploy it exists to record. Degrading to 'unknown'
+    // lands it as the VOID the sweep already names (build_provenance_void), which is the honest
+    // reading; truncating instead would mint a short string indistinguishable from a real sha.
+    APP_GIT_SHA: z.string().max(64).default('unknown').catch('unknown'),
     TRADING_MODE: z.string().optional(),
     NODE_ENV: z.string().optional(),
     CI: z.string().optional(),

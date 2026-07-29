@@ -22,10 +22,14 @@ COPY --from=builder /app/drizzle ./drizzle
 COPY --from=builder /app/data ./data
 COPY --from=builder /app/package.json ./package.json
 
-# Deploy provenance, surfaced as build_info{git_sha} on /metrics. Supplied at build time:
-#   docker compose build --build-arg GIT_SHA=$(git rev-parse --short HEAD)
+# Deploy provenance, surfaced as build_info{git_sha} on /metrics. Supplied through compose's `args:`
+# interpolation, which is the ONE form both subcommands accept:
+#   GIT_SHA=$(git rev-parse --short HEAD) docker compose up -d --build app
+# `docker compose up` rejects --build-arg outright, so the env-var prefix — not the flag — is what the
+# scheduled `up --build` deploy can actually use.
 # Deliberately optional — an image built without it boots normally and reports 'unknown', because a
-# measurement input must never be able to refuse a deploy.
+# measurement input must never be able to refuse a deploy. The sweep names that omission instead of
+# printing it as a reading (build_provenance_void, loop-sweep-core.mjs).
 ARG GIT_SHA=unknown
 ENV APP_GIT_SHA=$GIT_SHA
 

@@ -130,6 +130,17 @@ export const RECONCILE_CLEAN_STAMP_STALE_MS = 30 * 60 * 1000;
 // honest verdict, since remaining=0 on a young boot cannot distinguish the two.
 export const BUDGET_GAUGE_INIT_GRACE_MS = 5 * 60 * 1000;
 
+// The values `build_info{git_sha}` can carry that are NOT a reading: 'unknown' is both the Dockerfile
+// ARG default and the zod default, so it is what every image built without the GIT_SHA build arg
+// reports, and an absent or empty label is no reading either. Exported so the runner's digest line and
+// this core render the same verdict — the runner used to launder a missing label into the string
+// 'unknown', which is what made a non-reading indistinguishable from a reading.
+export function isBuildProvenanceVoid(gitSha) {
+  if (gitSha === null || gitSha === undefined) return true;
+  const s = String(gitSha).trim();
+  return s === '' || s === 'unknown';
+}
+
 // DB-durable scalar counters whose absolute zero, while a sibling counter proves the stack IS
 // returning data, is a negative-read void (§C.9) — Prometheus gauges (rss) and rate-y counters are
 // excluded. `reconcile` is durable too but is checked per-venue separately (it is no longer a scalar).
@@ -150,6 +161,11 @@ export function extractCounters(appCur) {
   }
   return {
     decides: val(p.decides, 'count'),
+    // Deliberately NOT in DURABLE_COUNTERS below: unlike `decides`/`fills`, a real 0 here is the
+    // CURRENT true state (both LLM provider accounts unfunded since 2026-07-27T21:16Z) rather than a
+    // suspicious empty read alongside live siblings — voiding it would misreport the very condition
+    // this counter exists to surface.
+    realDecides: val(p.realDecides, 'count'),
     consultGate: val(p.consultGate, 'total'),
     fills: val(p.fills, 'count'),
     reconcileByVenue,
@@ -158,7 +174,14 @@ export function extractCounters(appCur) {
   };
 }
 
-const SCALAR_COUNTER_KEYS = ['decides', 'consultGate', 'fills', 'wsRecreations', 'rssBytes'];
+const SCALAR_COUNTER_KEYS = [
+  'decides',
+  'realDecides',
+  'consultGate',
+  'fills',
+  'wsRecreations',
+  'rssBytes',
+];
 
 function diffCounters(prevCounters, curCounters) {
   const out = {};
@@ -211,6 +234,17 @@ function computeApp(prev, cur, elapsedMs = null, nowMs = null) {
   const curBoot = (cur && cur.bootId) || null;
   if (curBoot === null) {
     annotations.push({ kind: 'probe_failed', probe: 'bootId', detail: 'bootId unresolved' });
+  }
+  // realDecides is MANDATORY, like bootId above and promAlerts/build below: the generic probe-failure
+  // loop only visits keys that EXIST, so an omitted probe would yield neither an alarm nor an
+  // annotation and a dead LLM lane would go back to being visible only through the unfiltered
+  // `decides` row count — the exact ambiguity this probe exists to remove.
+  if (!probes.realDecides) {
+    annotations.push({
+      kind: 'probe_failed',
+      probe: 'realDecides',
+      detail: 'no result — genuine model-decide liveness was never read this sweep',
+    });
   }
   // promAlerts is MANDATORY, like bootId above: the generic loop only visits keys that EXIST, so an
   // absent probe would yield neither an alarm nor an annotation and the sweep would silently revert to
@@ -502,6 +536,45 @@ function computeApp(prev, cur, elapsedMs = null, nowMs = null) {
     }
   }
 
+  // Deploy provenance — which commit the RUNNING image was built from, the third thing the retired
+  // daemon stamped (it read the working tree, which is not what is deployed). Same defect class as the
+  // reconciliations audit columns whose only writer supplied a literal, and prom-client's
+  // never-incremented labeled counter: a constant supplied by the sole writer is indistinguishable from
+  // a measurement at every query, forever. So 'unknown', empty and absent are all VOID (§C.9), never a
+  // value.
+  //
+  // Annotation, never an alarm, and that is the failure direction on purpose: playbook §3 makes any
+  // named alarm block all improvement work until it clears, and this is a measurement/veto-only gate —
+  // a broken measurement must never block the thing it measures, which here is the deploy itself.
+  //
+  // Mandatory like promAlerts and promAlertsSince above, and for the same reason: the generic
+  // probe-failure loop only visits keys that EXIST, so an absent probe would yield neither an alarm
+  // nor an annotation — and since the collector daemon was retired, build_info is the loop's ONLY
+  // between-pass memory of which image served the window.
+  const build = probes.build;
+  if (!build) {
+    annotations.push({
+      kind: 'probe_failed',
+      probe: 'build',
+      detail: 'no result — deploy provenance was never read this sweep',
+    });
+  }
+  // An `ok:true` probe carrying no value at all is a non-reading by the same definition, and takes
+  // the same VOID path the runner's digest cell gives it — the two used to disagree on exactly that
+  // shape, which is what exporting one predicate was for.
+  const raw = build && build.value ? build.value.gitSha : null;
+  if (build && build.ok === true && isBuildProvenanceVoid(raw)) {
+    annotations.push({
+      kind: 'build_provenance_void',
+      probe: 'build',
+      detail:
+        `build_info carries ${raw === null || raw === undefined ? 'no git_sha label' : `git_sha="${raw}"`} — ` +
+        'the image was built without the GIT_SHA build arg, so which commit served this window is ' +
+        'UNRECORDED, not read-as-unknown. Redeploy with ' +
+        'GIT_SHA=$(git rev-parse --short HEAD) docker compose up -d --build app',
+    });
+  }
+
   // The warn-log scan is a fixed LINE tail, so the time it covers is whatever the log rate makes it —
   // at this stack's rate 3000 lines was under 2h, far short of the inter-pass gap. That is not a bug in
   // the tail so much as a fact a pass must be told, because a short window turns "no warnings" into a
@@ -599,6 +672,29 @@ function computeApp(prev, cur, elapsedMs = null, nowMs = null) {
         kind: 'zero_decides',
         detail:
           'decide + consult-gate liveness counters unchanged since watermark while container healthy',
+      });
+    }
+    // ANNOTATION, deliberately never an alarm — the exact shape `decides` above cannot see: the
+    // scheduler keeps ticking (deltas.decides may be well above 0, e.g. the observed 160/hour of
+    // scheduled-skip rows) while the model has answered zero times this window. Not promoted for the
+    // reason argued at length beside AGENTIC_DAILY_COST_BREAKER_USD and prometheus_alert_firing above:
+    // playbook §3 makes ANY alarm block all improvement work until it clears, this account has been
+    // unfunded since 2026-07-27T21:16Z with no owner-set recovery date, and the condition is already
+    // paged twice over — AgentClientFatalLatch (critical, Prometheus) and
+    // AgenticNoSuccessfulDecideSustained (warning, backed by the same agent_last_success_timestamp_
+    // seconds gauge lastSuccessfulDecideAt seeds). A third, sweep-native alarm on the same dead
+    // account would only add a second permanent wedge, never new information — so this fails toward
+    // disclosure (visible every pass, for exactly as long as it is true) rather than toward blocking
+    // the improvement work it measures.
+    if (Number.isFinite(deltas.realDecides) && deltas.realDecides === 0) {
+      annotations.push({
+        kind: 'no_real_decides_in_window',
+        probe: 'realDecides',
+        detail:
+          `0 accepted decides (prompt_hash+latency_ms set, non-replay, no post-200 degrade tag) since ` +
+          `watermark while the raw agent_decisions row count moved by Δ${deltas.decides ?? 'n/a'} — ` +
+          'scheduled-skip and error rows advance that counter with no model call at all, and a ' +
+          'schema-rejected row makes a call that yields nothing, so neither is evidence of a live LLM lane',
       });
     }
     for (const venue of VENUES) {

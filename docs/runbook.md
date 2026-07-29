@@ -34,15 +34,20 @@ compose profiles.
 - Deploy after a code/knob change:
 
 ```sh
-docker compose build --build-arg GIT_SHA=$(git rev-parse --short HEAD) app && docker compose up -d app
+GIT_SHA=$(git rev-parse --short HEAD) docker compose up -d --build app
 ```
 
+  ONE form, deliberately: it is the only one that works everywhere. `docker compose up` rejects
+  `--build-arg` ("unknown flag"), so the older `build --build-arg … && up -d` form was structurally
+  unusable by the scheduled pass, which deploys with `up -d --build`; the env-var prefix feeds
+  compose's `args: GIT_SHA: ${GIT_SHA:-unknown}` and reaches the image through both subcommands.
   `GIT_SHA` bakes the commit into the image and surfaces as `build_info{git_sha}` on `/metrics` —
   deploy provenance in the TSDB, which is where it lives now that the collector daemon (which used
-  to stamp the working-tree tip on every hourly digest) is retired. Omitting the arg is safe: the
+  to stamp the working-tree tip on every hourly digest) is retired. Omitting the prefix is safe: the
   image reports `git_sha="unknown"` and boots normally, because a measurement input must never be
-  able to refuse a deploy. Query which build served a past window with
-  `build_info` over the range in question.
+  able to refuse a deploy — but the next `loop:sweep` NAMES the omission (`build_provenance_void`, an
+  annotation, never an alarm) instead of printing `unknown` as if it were a reading. Query which
+  build served a past window with `build_info` over the range in question.
 
 - **After editing `observability/alerts.rules.yml` or `prometheus.yml`, recreate prometheus too:**
 
@@ -328,12 +333,39 @@ unchanged four live gates and the bootId-bound arming ceremony — the promotion
 attempt arming; it does not replace it. Rules 1–3 and 5–6 in `CLAUDE.md` still bind: the lane only
 proposes a Signal; Risk still sizes/vetoes it.
 
-## Agentic lane silent — `AgentClientFatalLatch` / `AgenticLaneSilent`
+## Agentic lane silent — `AgentClientFatalLatch` / `AgenticLaneSilent` / `AgenticNoSuccessfulDecideSustained`
 
-Both alerts name this runbook and it said nothing about them until the 2026-07-27 outage, when a
+All three alerts name this runbook and it said nothing about them until the 2026-07-27 outage, when a
 latched client cost 3h+ of dead lane. The failure is dangerous precisely because nothing else looks
 wrong: container healthy, kill switch RUNNING, reconciliation CLEAN on both venues, and
 `agent_decisions` rows still arriving at full cadence.
+
+**Read `AgenticNoSuccessfulDecideSustained` first, and do not dismiss it because the other two are
+clear.** It is the only one of the three that survives a restart. The first two are boot-scoped by
+construction — `agent_client_latched` is a level the new process has not set yet and
+`agent_decide_total` is a counter whose window restarts with the container — so a redeploy clears
+both while the lane stays dead, which is exactly what happened on 2026-07-29 (a 08:17Z redeploy over
+a lane that had not reached the model since 07-27T20:15Z: 21 rules loaded, 0 firing, 37h dead). It is
+`warning`, therefore non-blocking, therefore easy to skip past; `warning` here means "no pass can fix
+this without the owner funding the accounts", never "probably noise". Confirm it against the durable
+journal, which is the same evidence the boot seed reads:
+
+```sql
+select max(created_at) from agent_decisions
+ where prompt_hash <> '' and latency_ms is not null and strategy_id not like 'replay-%'
+   and not starts_with(rationale, 'schema_rejected:')
+   and not starts_with(rationale, 'envelope_malformed:')
+   and not starts_with(rationale, 'model_refusal:')
+   and not starts_with(rationale, 'truncated_max_tokens:')
+   and not starts_with(rationale, 'no_tool_use:')
+   and not starts_with(rationale, 'capability_violation:');
+```
+
+Drop the `not starts_with` lines to see whether the model is answering but producing nothing usable:
+a marker that moves only when they are dropped means schema rejection, not an unreachable API — check
+`agentic_schema_rejections_total` and the rejected rows' own rationale text. Two firings are expected
+rather than faults: the first ~2h after a host wake (the duty cycle ages the gauge while the lane is
+fine), and any window in which the accounts are unfunded.
 
 **What the latch is.** `AnthropicAgentClient` classifies HTTP 400/401/403/404/422 as FATAL and
 suppresses further calls (`FATAL_LATCH_COOLDOWN_MS`, 30 min) so a rejected request cannot be hammered

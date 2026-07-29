@@ -65,7 +65,7 @@ Force paper: `TRADING_MODE=paper pnpm start`
 ## Quick start — docker-compose
 
 ```bash
-docker compose up --build
+GIT_SHA=$(git rev-parse --short HEAD) docker compose up --build
 ```
 
 | Service    | URL                   | Default credentials                          |

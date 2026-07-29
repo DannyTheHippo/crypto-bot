@@ -16,9 +16,12 @@
 //   2. Provenance FIRST: container health + RestartCount + StartedAt (docker inspect), bootId
 //      (boot_info metric), working-tree git tip — recorded before a single counter is read.
 //   3. Liveness probes: agentic_consult_gate_total by outcome, agent_decisions count + latest
-//      created_at, fills, per-venue reconciliations tail, kill-switch state, ws forced-reconnects,
-//      RSS, and the LLM cost-vs-breaker proximity. Every stack read goes through loop-transport.mjs
-//      (one GCP-lift seam) and returns {ok,value}|{ok,error} — a failed probe is reported, never thrown.
+//      created_at (raw row count — includes scheduled-skip rows with no model call), a SEPARATE
+//      genuine-model-decide count on the same table filtered to a completed round trip (see
+//      `probes.realDecides`), fills, per-venue reconciliations tail, kill-switch state, ws
+//      forced-reconnects, RSS, and the LLM cost-vs-breaker proximity. Every stack read goes through
+//      loop-transport.mjs (one GCP-lift seam) and returns {ok,value}|{ok,error} — a failed probe is
+//      reported, never thrown.
 //   4. Hands {prev watermark, cur probes} to the PURE core (loop-sweep-core.mjs), which derives the
 //      bootId-pinned deltas, the fired alarms, and the annotations — deltas only when bootId matches.
 //   5. Writes the digest JSON + updates the watermark UNDER research/loop/digests/ ONLY (single writer
@@ -36,6 +39,7 @@ import {
   ALERT_LOOKBACK_MS,
   computeSweep,
   extractCounters,
+  isBuildProvenanceVoid,
   VENUES,
 } from './loop-sweep-core.mjs';
 import {
@@ -342,6 +346,50 @@ export function resolveBootId(bootInfoSeries) {
   };
 }
 
+// ── build provenance, with the same ambiguity refused for the same reason ────────────────────────
+// `build_info` is set beside `boot_info` in one onModuleInit and scraped by one target, so it
+// inherits the identical post-redeploy window: two series under one instance until the outgoing
+// sample ages out of the instant lookback. Taking [0] there reads the OUTGOING image's sha — and a
+// deploy is precisely when the sha changes, so that is the one sweep whose provenance matters most
+// (the playbook runs a sweep inside that window, §5 step 4). Refused rather than resolved by print
+// order; it lands as probe_failed[build], the same fail-open direction a missing probe takes.
+//
+// A missing label stays DISTINCT from a present-but-empty one: both are void, but the dedupe must
+// not drop falsy members the way resolveBootId's `.filter(Boolean)` does, or "no label at all"
+// silently becomes "one series with a label".
+export function resolveBuildSha(buildInfoSeries) {
+  if (!buildInfoSeries.ok) return buildInfoSeries;
+  if (buildInfoSeries.value.length === 0)
+    return { ok: false, error: 'empty instant vector (no build_info series)' };
+  const shas = [...new Set(buildInfoSeries.value.map((s) => s.labels.git_sha))];
+  if (shas.length > 1) {
+    const rendered = shas.map((s) => (s === undefined ? '<no label>' : `"${s}"`)).join(', ');
+    return {
+      ok: false,
+      error:
+        `build_info served ${shas.length} git shas at once (${rendered}) — a redeploy is mid-flight ` +
+        'and provenance is unresolvable this sweep, so no build is named rather than whichever one ' +
+        'promtool printed first',
+    };
+  }
+  // Verbatim, including the literal 'unknown' and an absent label (null). The old `|| 'unknown'`
+  // fallback collapsed "no label" and "built without the arg" into a string the digest then printed
+  // as a value; the core classifies instead (isBuildProvenanceVoid).
+  return { ok: true, value: { gitSha: shas[0] === undefined ? null : shas[0] } };
+}
+
+// The digest cell for that probe, exported for the same reason the resolver is: an untested render is
+// how a non-reading gets printed as a reading again. One predicate decides here and in the core
+// (isBuildProvenanceVoid), so the line and the annotation can never disagree.
+export function formatRunningBuild(buildProbe) {
+  if (!buildProbe || buildProbe.ok !== true)
+    return `probe_failed — ${(buildProbe && buildProbe.error) || 'no result'}`;
+  const sha = buildProbe.value ? buildProbe.value.gitSha : null;
+  if (!isBuildProvenanceVoid(sha)) return sha;
+  const found = sha === null || sha === undefined ? 'no git_sha label' : `git_sha="${sha}"`;
+  return `VOID (${found}) — image built without GIT_SHA, provenance unrecorded`;
+}
+
 // ── psql single-row `-Atc` parsing: pipe-delimited columns on one line ───────────────────────────
 function parsePsqlRow(res) {
   if (!res.ok) return { ok: false, error: res.error };
@@ -397,10 +445,58 @@ function gather() {
 
   // agent_decisions liveness (count + latest created_at as epoch ms) — account-level: the one
   // decision loop drives both venues (agent_decide_total carried "one lane", v3 spec §8).
+  //
+  // THIS IS AN UNFILTERED ROW COUNT. agent_decisions gets a row per symbol per scheduled skip where
+  // no model call happens at all — verified live 2026-07-29: 160 rows/hour, every hour, for 12
+  // straight hours while both LLM provider accounts sat unfunded (Anthropic 400 "credit balance too
+  // low", Moonshot 429 suspended) and the lane made ZERO real model calls. Same defect class as Pass
+  // 44 (a never-incremented labeled counter reads identical to a nonexistent one) and Pass 46 (a
+  // NOT-NULL column whose only writer supplies a literal reads identical to a measurement): a
+  // liveness counter that counts non-events is indistinguishable from a live lane. Kept anyway — it
+  // is not useless, only mislabelled: if the SCHEDULER itself stalls this row count DOES freeze, so it
+  // still detects the 8.2h candle-stall class. `probes.realDecides` below is the separate instrument
+  // for "did the model actually answer".
   probes.decides = (() => {
     const row = parsePsqlRow(
       psql(
         'select count(*), coalesce((extract(epoch from max(created_at))*1000)::bigint,0) from agent_decisions',
+        { cwd: REPO_ROOT },
+      ),
+    );
+    if (!row.ok) return row;
+    const count = Number(row.value[0]);
+    const latest = Number(row.value[1]);
+    if (!Number.isFinite(count)) return { ok: false, error: `unparseable count: ${row.value[0]}` };
+    return {
+      ok: true,
+      value: { count, latestCreatedAtMs: Number.isFinite(latest) ? latest : null },
+    };
+  })();
+
+  // GENUINE model-decide liveness — the counter `decides` above cannot be, by construction (a
+  // scheduled-skip row and a real decide are the same table, same shape, no separate flag). Same
+  // structural predicate PromotionStatsRepository.lastSuccessfulDecideAt uses to seed
+  // agent_last_success_timestamp_seconds (WATCH-V4-8), copied verbatim rather than re-derived so the
+  // two instruments can never disagree — a .mjs script cannot import the TS constant, so the tag list
+  // below is a hand-mirror of DEGRADED_DECIDE_RATIONALE_TAGS (domain/strategy/types) and must be
+  // edited with it. prompt_hash and latency_ms are set TOGETHER, and only by code that has already
+  // received and parsed an HTTP response body (MetricsWrappingAgentClient); the degrade tags are then
+  // subtracted because a post-200 degrade carries both too, and "the model answered with something
+  // unusable" is not liveness. The replay-<runId> exclusion matches tokenTotals' BY-FILTER exclusion
+  // in the same repository — an R1 backfill writes agent_decisions rows carrying both fields, and a
+  // backfill must never make a dead lane read fresh. Verified live 2026-07-29: 0 rows in the last 12h,
+  // 575 of 22,873 lifetime (660 before the degrade subtraction, 85 of them schema_rejected holds),
+  // newest 2026-07-27T20:15:31Z (38.3h stale) — matching lastSuccessfulDecideAt's own comment exactly.
+  probes.realDecides = (() => {
+    const row = parsePsqlRow(
+      psql(
+        "select count(*), coalesce((extract(epoch from max(created_at))*1000)::bigint,0) from agent_decisions where prompt_hash <> '' and latency_ms is not null and strategy_id not like 'replay-%'" +
+          " and not starts_with(rationale, 'schema_rejected:')" +
+          " and not starts_with(rationale, 'envelope_malformed:')" +
+          " and not starts_with(rationale, 'model_refusal:')" +
+          " and not starts_with(rationale, 'truncated_max_tokens:')" +
+          " and not starts_with(rationale, 'no_tool_use:')" +
+          " and not starts_with(rationale, 'capability_violation:')",
         { cwd: REPO_ROOT },
       ),
     );
@@ -631,13 +727,7 @@ function gather() {
   // Which build is actually serving — the deploy-provenance fact the collector used to stamp on every
   // hourly digest line from the working tree. Read from the RUNNING process, which is the version that
   // matters; the working-tree tip is recorded separately and the two legitimately differ mid-pass.
-  probes.build = (() => {
-    const s = parsePromSeries(promQuery('build_info'));
-    if (!s.ok) return s;
-    if (s.value.length === 0)
-      return { ok: false, error: 'empty instant vector (no build_info series)' };
-    return { ok: true, value: { gitSha: s.value[0].labels.git_sha || 'unknown' } };
-  })();
+  probes.build = resolveBuildSha(parsePromSeries(promQuery('build_info')));
 
   // Parsed only now, once the live names exist to subtract. When promAlerts failed there are no names,
   // so everything in the window would read as resolved — the core voids the whole probe in that case
@@ -786,6 +876,32 @@ function renderMarkdown({ sweptIso, host, git, app, result }) {
     L.push(
       `- deltas vs watermark: ${result.deltas ? JSON.stringify(result.deltas) : 'reset (boot changed or first sweep)'}`,
     );
+    // Unambiguous by construction: `decides` in the JSON line above is a raw agent_decisions ROW
+    // count (one row per symbol per scheduled skip, no model call required) and reads as "N decisions
+    // were made" to anyone who has not read this comment. Spelled out here so a reader can never
+    // mistake a scheduler tick for a model round trip — the exact confusion that let 160 rows/hour
+    // read as a live lane while both LLM providers sat unfunded for 12+ straight hours.
+    L.push(
+      `- decide rows vs REAL model decides: Δ${result.deltas ? (result.deltas.decides ?? 'n/a') : 'n/a'} total agent_decisions row(s) ` +
+        '(ALL outcomes incl. scheduled-skip/error — NOT evidence of a model call) vs ' +
+        `Δ${result.deltas ? (result.deltas.realDecides ?? 'n/a') : 'n/a'} REAL model decide(s) ` +
+        "(prompt_hash<>'' AND latency_ms IS NOT NULL AND strategy_id NOT LIKE 'replay-%' AND no " +
+        'post-200 degrade tag on the rationale — same predicate ' +
+        'PromotionStatsRepository.lastSuccessfulDecideAt uses to seed ' +
+        'agent_last_success_timestamp_seconds)',
+    );
+    const rd = app.probes && app.probes.realDecides;
+    L.push(
+      `- real model decides (lifetime): ${
+        rd && rd.ok === true
+          ? `${rd.value.count} total, newest ${
+              Number.isFinite(rd.value.latestCreatedAtMs) && rd.value.latestCreatedAtMs > 0
+                ? new Date(rd.value.latestCreatedAtMs).toISOString()
+                : 'never recorded'
+            }`
+          : `probe_failed — ${(rd && rd.error) || 'no result'}`
+      }`,
+    );
     if (app.consultByOutcome) {
       L.push(`- consult-gate by outcome: ${JSON.stringify(app.consultByOutcome)}`);
     }
@@ -809,13 +925,14 @@ function renderMarkdown({ sweptIso, host, git, app, result }) {
                   .join('; ')
       }`,
     );
-    // Deploy provenance from the RUNNING process. Rendered rather than annotated: a pass that has
-    // just committed legitimately sits ahead of the deployed image, so a drift annotation would fire
-    // on almost every pass and teach the reader to skip it. Stated as fact, next to the tree tip it
-    // should be compared against.
-    const bi = app.probes && app.probes.build;
+    // Deploy provenance from the RUNNING process. The sha is rendered rather than annotated: a pass
+    // that has just committed legitimately sits ahead of the deployed image, so a DRIFT annotation
+    // would fire on almost every pass and teach the reader to skip it. Stated as fact, next to the
+    // tree tip it should be compared against. A VOID reading is the opposite case and the core does
+    // annotate it (build_provenance_void) — an image built without GIT_SHA has no provenance to
+    // state, and printing the ARG default here as if it were read is the §C.9 void this line caused.
     L.push(
-      `- running build: ${bi && bi.ok ? bi.value.gitSha : `probe_failed — ${(bi && bi.error) || 'no result'}`}` +
+      `- running build: ${formatRunningBuild(app.probes && app.probes.build)}` +
         ` (working tree ${git ?? 'n/a'})`,
     );
     const sus = app.probes && app.probes.suspends;

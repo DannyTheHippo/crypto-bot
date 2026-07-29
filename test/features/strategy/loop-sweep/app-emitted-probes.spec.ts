@@ -26,13 +26,26 @@ interface Core {
   EXPECTED_SWEEP_INTERVAL_MS: number;
   VENUES: [string, string];
 }
+interface BuildProbe {
+  ok: boolean;
+  error?: string;
+  value?: { gitSha: string | null };
+}
+interface LabelSeries {
+  ok: boolean;
+  error?: string;
+  value?: { labels: Record<string, string> }[];
+}
 interface SweepModule {
-  resolveBootId: (series: { ok: boolean; value?: { labels: Record<string, string> }[] }) => {
+  resolveBootId: (series: LabelSeries) => {
     bootId: string | null;
     error: string | null;
   };
+  resolveBuildSha: (series: LabelSeries) => BuildProbe;
+  formatRunningBuild: (probe: BuildProbe | undefined) => string;
 }
-const { resolveBootId } = sweepModule as unknown as SweepModule;
+const { resolveBootId, resolveBuildSha, formatRunningBuild } =
+  sweepModule as unknown as SweepModule;
 const { computeSweep, ALERT_LOOKBACK_MS, EXPECTED_SWEEP_INTERVAL_MS, VENUES } =
   coreModule as unknown as Core;
 
@@ -49,6 +62,7 @@ function baseApp(): Record<string, unknown> {
     startedAt: new Date(WM_TIME - 24 * 60 * 60 * 1000).toISOString(),
     probes: {
       decides: { ok: true, value: { count: 100, latestCreatedAtMs: WM_TIME } },
+      realDecides: { ok: true, value: { count: 20, latestCreatedAtMs: WM_TIME } },
       consultGate: { ok: true, value: { total: 50 } },
       fills: { ok: true, value: { count: 10 } },
       reconcile,
@@ -163,6 +177,162 @@ describe('log-event counter (the durable half of the error scan)', () => {
     expect(out.annotations.find((a) => a.kind === 'log_errors_in_window')?.detail).toContain(
       '4 error/fatal',
     );
+  });
+});
+
+// The third recorded instance of one defect class: a value supplied only by its own writer as a
+// constant is indistinguishable from a measurement at every query, forever (the reconciliations audit
+// columns whose writer supplied a literal, Pass 46; prom-client's never-incremented labeled counter,
+// Pass 44). Here 'unknown' is BOTH the Dockerfile ARG default and the zod default, so it is what every
+// image built without a GIT_SHA prefix reports — and the probe used to print it as a reading.
+describe('deploy provenance (build_info{git_sha})', () => {
+  it('reads a real sha as a value and says nothing about it', () => {
+    const out = run(baseApp());
+    expect(out.annotations.map((a) => a.kind)).not.toContain('build_provenance_void');
+    expect(out.alarms).toEqual([]);
+  });
+
+  // Third element is the DISCRIMINATING fragment: 'GIT_SHA' alone appears twice as fixed prose in
+  // every branch of the detail, so asserting it proves only that the boilerplate rendered — the four
+  // cases are four different readings and the assertions have to be able to tell them apart.
+  const nonReadings: [string, string | null, string][] = [
+    ['the ARG/zod default', 'unknown', 'git_sha="unknown"'],
+    ['an empty label', '', 'git_sha=""'],
+    ['a whitespace-only label', '  ', 'git_sha="  "'],
+    ['a missing label', null, 'no git_sha label'],
+  ];
+  for (const [label, gitSha, fragment] of nonReadings) {
+    it(`voids ${label}, and annotates rather than alarms`, () => {
+      const out = run(withProbe('build', { ok: true, value: { gitSha } }));
+      const note = out.annotations.find((a) => a.kind === 'build_provenance_void');
+      // PRESENCE, not merely "no alarm fired": a no-alarm assertion alone would still pass with the
+      // whole check deleted, which is the review finding the last pass caught.
+      expect(note).toBeDefined();
+      expect(note?.probe).toBe('build');
+      expect(note?.detail).toContain(fragment);
+      // A rendered `null`/`undefined` would be a label value that never existed, indistinguishable in
+      // the committed digest from a label literally set to the string 'null'.
+      if (gitSha === null) expect(note?.detail).not.toContain('null');
+      expect(note?.detail).toContain('GIT_SHA');
+      // Measurement/veto-only, fails OPEN: playbook §3 makes any named alarm block all improvement
+      // work, and a broken provenance read must never block the deploy it measures.
+      expect(out.alarms).toEqual([]);
+    });
+  }
+
+  it('leaves an unreadable metric as the named probe failure, not a void verdict', () => {
+    // Carries a stale value alongside the error on purpose, so the `ok === true` guard is what keeps
+    // the void verdict away: a read that never happened must not yield an image-provenance verdict.
+    const out = run(
+      withProbe('build', {
+        ok: false,
+        error: 'empty instant vector (no build_info series)',
+        value: { gitSha: 'unknown' },
+      }),
+    );
+    expect(out.annotations.find((a) => a.probe === 'build')?.kind).toBe('probe_failed');
+    expect(out.annotations.map((a) => a.kind)).not.toContain('build_provenance_void');
+    expect(out.alarms).toEqual([]);
+  });
+
+  // The one shape the two renderers used to disagree on: the core stayed silent (its guard required
+  // `build.value`) while the digest already printed VOID.
+  it('voids an ok probe that carries no value, and the digest line agrees', () => {
+    const out = run(withProbe('build', { ok: true }));
+    expect(out.annotations.find((a) => a.kind === 'build_provenance_void')?.probe).toBe('build');
+    expect(formatRunningBuild({ ok: true })).toContain('VOID');
+    expect(out.alarms).toEqual([]);
+  });
+
+  // Mandatory-key, like promAlerts/promAlertsSince: the generic probe-failure loop only visits keys
+  // that exist, and build_info is the loop's only between-pass memory of which image served.
+  it('names an absent probe rather than reading a clean sweep', () => {
+    const app = baseApp();
+    delete (app.probes as Record<string, unknown>).build;
+    const out = run(app);
+    expect(out.annotations.find((a) => a.probe === 'build')?.kind).toBe('probe_failed');
+    expect(out.alarms).toEqual([]);
+  });
+});
+
+// The same post-redeploy window resolveBootId refuses, on the sibling metric: build_info is set beside
+// boot_info in one onModuleInit and scraped by one target, so it serves two series for the minutes
+// after a recreate — and a deploy is exactly when the sha changes, so [0] would read the OUTGOING
+// image's commit for the one sweep whose provenance matters most (the playbook soaks inside it).
+describe('resolveBuildSha', () => {
+  // null means the series carries no git_sha label at all — a different fact from an empty one.
+  const series = (...shas: (string | null)[]) => ({
+    ok: true,
+    value: shas.map((git_sha) => {
+      const labels: Record<string, string> = { instance: 'app:3100' };
+      if (git_sha !== null) labels.git_sha = git_sha;
+      return { labels };
+    }),
+  });
+
+  it('resolves the single-series case verbatim, without laundering', () => {
+    expect(resolveBuildSha(series('c50db12'))).toEqual({ ok: true, value: { gitSha: 'c50db12' } });
+    expect(resolveBuildSha(series('unknown'))).toEqual({ ok: true, value: { gitSha: 'unknown' } });
+    expect(resolveBuildSha(series(null))).toEqual({ ok: true, value: { gitSha: null } });
+  });
+
+  it('collapses duplicate rows carrying the same sha', () => {
+    expect(resolveBuildSha(series('c50db12', 'c50db12')).value).toEqual({ gitSha: 'c50db12' });
+  });
+
+  it('REFUSES to pick when a redeploy has two builds in the lookback', () => {
+    const out = resolveBuildSha(series('c50db12', 'unknown'));
+    expect(out.ok).toBe(false);
+    expect(out.error).toContain('2 git shas');
+    expect(out.error).toContain('unresolvable');
+  });
+
+  // A missing label is a distinct member, not one to filter out — otherwise "one labelled series
+  // beside one unlabelled" collapses into a confident single reading.
+  it('counts an absent label as its own series', () => {
+    const out = resolveBuildSha(series('c50db12', null));
+    expect(out.ok).toBe(false);
+    expect(out.error).toContain('<no label>');
+  });
+
+  it('names an empty vector and passes an upstream failure through untouched', () => {
+    expect(resolveBuildSha({ ok: true, value: [] })).toEqual({
+      ok: false,
+      error: 'empty instant vector (no build_info series)',
+    });
+    expect(resolveBuildSha({ ok: false, error: 'promtool exited 1' })).toEqual({
+      ok: false,
+      error: 'promtool exited 1',
+    });
+  });
+});
+
+// The digest cell, pinned for the reason resolveBootId was extracted: an untested render is how a
+// non-reading gets printed as a reading again — `- running build: unknown` was the original defect.
+describe('formatRunningBuild', () => {
+  it('prints a real sha as the bare value', () => {
+    expect(formatRunningBuild({ ok: true, value: { gitSha: 'c50db12' } })).toBe('c50db12');
+  });
+
+  it('never prints a non-reading as a value', () => {
+    for (const gitSha of ['unknown', '', '  ', null] as (string | null)[]) {
+      const line = formatRunningBuild({ ok: true, value: { gitSha } });
+      expect(line).toContain('VOID');
+      expect(line).toContain('provenance unrecorded');
+      // The constant must not stand where the sha stands.
+      expect(line.startsWith('unknown')).toBe(false);
+    }
+    expect(formatRunningBuild({ ok: true, value: { gitSha: null } })).toContain('no git_sha label');
+    expect(formatRunningBuild({ ok: true, value: { gitSha: 'unknown' } })).toContain(
+      'git_sha="unknown"',
+    );
+  });
+
+  it('reports an unread probe as a named failure, void or not', () => {
+    expect(formatRunningBuild({ ok: false, error: 'promtool exited 1' })).toBe(
+      'probe_failed — promtool exited 1',
+    );
+    expect(formatRunningBuild(undefined)).toBe('probe_failed — no result');
   });
 });
 

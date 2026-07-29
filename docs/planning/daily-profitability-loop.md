@@ -360,9 +360,16 @@ conventional message. Dirty tree at pass start: note it, stage ONLY files this p
    `pnpm lint:md` (markdownlint owns `.md`; the `research/loop/` backlog table is MD060-aligned —
    `--fix` does not repair it).
 2. Cap: 3 consecutive validation failures → revert the working tree, record it, end the pass.
-3. Deploy: `docker compose build app && docker compose up -d app` — one build, one service; there
-   is no `--profile perp` variant anymore (the perp compose profile and its three services were
-   deleted at the v3 cutover, spec §9). **If the pass touched `observability/alerts.rules.yml` or
+3. Deploy: `GIT_SHA=$(git -C "<repo>" rev-parse --short HEAD) docker compose -f "<repo>/docker-compose.yml" up -d --build app`
+   — one build, one service; there is no `--profile perp` variant anymore (the perp compose profile
+   and its three services were deleted at the v3 cutover, spec §9). Both `<repo>` placeholders are
+   QUOTED because this repo's path contains spaces: unquoted, the `git -C` word-splits, exits
+   non-zero with empty stdout, and — being an assignment prefix — takes that failure nowhere, so
+   `${GIT_SHA:-unknown}` bakes the literal `unknown` and the deploy still succeeds. The `GIT_SHA`
+   prefix is not bookkeeping: `up` rejects `--build-arg`, so the prefix is the ONLY mechanism that
+   stamps `build_info{git_sha}`, and a prefix-less deploy loses the pass's record of which build
+   served the window. `loop:sweep` annotates that as `build_provenance_void`
+   (annotation, never an alarm). **If the pass touched `observability/alerts.rules.yml` or
    `prometheus.yml`, it MUST also run `docker compose up -d --force-recreate prometheus`** — that file
    is a read-only bind mount read once at process start, there is no `--web.enable-lifecycle` reload
    endpoint, and a plain `up -d prometheus` is a no-op. Skipping it is how the four alerts added

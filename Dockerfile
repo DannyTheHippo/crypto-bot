@@ -22,6 +22,13 @@ COPY --from=builder /app/drizzle ./drizzle
 COPY --from=builder /app/data ./data
 COPY --from=builder /app/package.json ./package.json
 
+# Deploy provenance, surfaced as build_info{git_sha} on /metrics. Supplied at build time:
+#   docker compose build --build-arg GIT_SHA=$(git rev-parse --short HEAD)
+# Deliberately optional — an image built without it boots normally and reports 'unknown', because a
+# measurement input must never be able to refuse a deploy.
+ARG GIT_SHA=unknown
+ENV APP_GIT_SHA=$GIT_SHA
+
 USER node
 
 EXPOSE 3100

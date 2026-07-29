@@ -2,7 +2,8 @@
 # (/metrics via @willsoto/nestjs-prometheus): event_loop_delay_p99_seconds, event_loop_utilization,
 # mode_info{requested,effective}, boot_info{boot_id}, kill_switch_state{state} (MetricsService, 5s),
 # reconciliation_mismatch_total + reconciliation_runs_total{venue,result} (ReconciliationService), and
-# agent_decide_total{outcome} (AgentMetricsRecorder). All rules are ACTIVE — none stubbed.
+# agent_decide_total{outcome} (AgentMetricsRecorder), and app_log_events_total{level,event}
+# (log-event-metrics.ts, via the pino logMethod hook). All rules are ACTIVE — none stubbed.
 # Trading gauges (equity_usdt, day_pnl_usdt, drawdown_ratio, realized_pnl_usdt, position_*, fills_total,
 # orders_total{outcome}, orders_rejected_total{code}) are also emitted and surfaced on the Grafana
 # dashboards; add threshold alerts here (e.g. daily-loss / drawdown approaching limits) as desired.
@@ -46,6 +47,28 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: 'crypto-bot RSS sustained above 1.2 GiB for 10m ({{ $value | humanize1024 }}B) — approaching the 1536m compose mem_limit'
+          runbook: 'docs/runbook.md'
+
+      # 2026-07-29: a 49-minute demo-fapi outage (293 fill-poll + 47 reconcile-sweep + 16
+      # funding-ingest failures, 502s from the venue) opened and closed inside one inter-pass gap and
+      # left ZERO trace on every surface a loop pass reads — the alarm list showed only an unrelated
+      # latch, and the `docker logs` tail the pass reads had already scrolled past all 340 lines.
+      # app_log_events_total (log-event-metrics.ts) puts that class in the TSDB where it survives a
+      # container recreate; this rule is what makes it arrive rather than wait to be queried.
+      #
+      # error|fatal ONLY, deliberately. A warn-rate companion belongs here too, but this stack has no
+      # measured warn baseline yet — the metric ships with this rule — and a threshold guessed without
+      # one either never fires or fires forever. Add it once a week of samples exists; until then a
+      # warn-driven incident is caught by the pass's own log read, exactly as it is today.
+      #
+      # Severity warning, not critical: this is a derived measurement, so it annotates a pass rather
+      # than gating one. Fails OPEN by construction — a dead counter reads 0 and never blocks.
+      - alert: AppErrorLogRateElevated
+        expr: sum(rate(app_log_events_total{level=~"error|fatal"}[15m])) > 0.05
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: 'Sustained error/fatal log rate ({{ $value | humanize }}/s over 15m) — a failure axis is retrying, not resolving'
           runbook: 'docs/runbook.md'
 
   - name: crypto-bot-mode

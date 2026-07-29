@@ -96,6 +96,14 @@ services:
       - prometheus_data_v3:/prometheus
     command:
       - --config.file=/etc/prometheus/prometheus.yml
+      # Retention was never set, so this ran on the image default of 15d. Since the loop collector
+      # daemon was retired (2026-07-29) the TSDB IS the loop's between-pass memory — counter deltas,
+      # alert history, the log-event breakdown and suspend evidence all live here and nowhere else —
+      # so the horizon is now load-bearing and stated explicitly rather than inherited. The size cap
+      # is the backstop: whichever bound is hit first wins, so a cardinality surprise costs old
+      # samples instead of the host's disk.
+      - --storage.tsdb.retention.time=90d
+      - --storage.tsdb.retention.size=8GB
 
   grafana:
     image: grafana/grafana:12.0.1

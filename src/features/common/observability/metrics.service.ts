@@ -25,6 +25,7 @@ import {
   type StrategyRegistryPort,
 } from '../../../ports/strategy/strategy';
 import { EventLoopHealthIndicator } from './event-loop-health.indicator';
+import { materializeLogEventSeries } from './log-event-metrics';
 
 export const EVENT_LOOP_DELAY_GAUGE = makeGaugeProvider({
   name: 'event_loop_delay_p99_seconds',
@@ -50,6 +51,36 @@ export const BOOT_INFO_GAUGE = makeGaugeProvider({
   help: 'Boot info',
   labelNames: ['boot_id'],
 });
+
+// Deploy provenance in the TSDB. Replaces the loop collector's per-hour `git` stamp, which was the
+// only record of which commit the running image was built from at a given hour and lived solely in
+// gitignored digest files. Set once at boot; `unknown` when the image was built without the
+// GIT_SHA build arg (see Dockerfile) — a missing label is never a boot failure.
+export const BUILD_INFO_GAUGE = makeGaugeProvider({
+  name: 'build_info',
+  help: 'Build provenance (1 on the git sha this image was built from)',
+  labelNames: ['git_sha'],
+});
+
+// Host-suspend detection, replacing the collector's `pmset -g ps` / `sysctl kern.boottime` /
+// `uptime` probes — none of which exist inside a Linux container, and all of which described the
+// HOST rather than the process whose gap actually matters. When the MacBook sleeps, the Docker
+// Desktop VM freezes with it: wall time jumps on resume while CLOCK_MONOTONIC (performance.now)
+// does not, so the divergence between the two deltas across one 5s tick IS the suspend duration,
+// observed from inside the process that was suspended.
+export const APP_WALL_CLOCK_SKEW_GAUGE = makeGaugeProvider({
+  name: 'app_wall_clock_skew_seconds',
+  help: 'Wall-clock advance minus monotonic advance over the last sample tick (a positive spike is a host/VM suspend)',
+});
+export const APP_SUSPEND_EVENTS_COUNTER = makeCounterProvider({
+  name: 'app_suspend_events_total',
+  help: 'Sample ticks whose wall-clock/monotonic divergence exceeded the suspend threshold',
+});
+
+// A tick that loses more than this to wall-vs-monotonic divergence is a suspend, not scheduler
+// jitter. The sample loop is 5s and an event-loop stall that long already pages via
+// EventLoopBudgetBreach, so the threshold only has to clear normal drift by a wide margin.
+const SUSPEND_THRESHOLD_MS = 120_000;
 
 // §5/§8 kill-switch state, sampled in the 5s loop: only the active state's series carries 1 (the
 // gauge is reset each tick so stale states do not linger). Drives the KillSwitchEngaged /
@@ -374,6 +405,12 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
     private readonly modeInfoGauge: Gauge<string>,
     @InjectMetric('boot_info')
     private readonly bootInfoGauge: Gauge<string>,
+    @InjectMetric('build_info')
+    private readonly buildInfoGauge: Gauge<string>,
+    @InjectMetric('app_wall_clock_skew_seconds')
+    private readonly wallClockSkewGauge: Gauge<string>,
+    @InjectMetric('app_suspend_events_total')
+    private readonly suspendEventsCounter: Counter<string>,
     @InjectMetric('kill_switch_state')
     private readonly killSwitchGauge: Gauge<string>,
     @InjectMetric('equity_usdt') private readonly equityGauge: Gauge<string>,
@@ -451,8 +488,16 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
 
     this.sampleModeInfo();
     this.bootInfoGauge.labels({ boot_id: app.bootId }).set(1);
+    this.buildInfoGauge.labels({ git_sha: app.gitSha }).set(1);
+    // Publish the zero-valued warn/error/fatal children so a quiet app exports real series rather
+    // than an empty vector that reads identically to an unwired metric.
+    materializeLogEventSeries();
 
     let prevElu = performance.eventLoopUtilization();
+    // Wall-vs-monotonic baselines for suspend detection. Date.now() tracks the host clock (which
+    // resyncs on wake); performance.now() is monotonic and does not advance while the VM is frozen.
+    let prevWallMs = Date.now();
+    let prevMonotonicMs = performance.now();
     // C1: cumulative poll-error count as of the previous sample — diffed each tick into the Counter
     // (prom-client Counters only support .inc(), never .set()), same technique as prevElu above.
     let prevDerivativesPollErrors = 0;
@@ -464,6 +509,16 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
     const prevForcedReconnectsByVenue = new Map<string, number>();
 
     this.sampleInterval = setInterval(() => {
+      const wallMs = Date.now();
+      const monotonicMs = performance.now();
+      const skewMs = wallMs - prevWallMs - (monotonicMs - prevMonotonicMs);
+      prevWallMs = wallMs;
+      prevMonotonicMs = monotonicMs;
+      this.wallClockSkewGauge.set(skewMs / 1000);
+      if (skewMs >= SUSPEND_THRESHOLD_MS) {
+        this.suspendEventsCounter.inc();
+      }
+
       const monitor = this.eventLoopIndicator.getMonitor();
       if (monitor) {
         this.loopDelayGauge.set(monitor.percentile(99) / 1e9);

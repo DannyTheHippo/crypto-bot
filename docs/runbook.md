@@ -34,8 +34,15 @@ compose profiles.
 - Deploy after a code/knob change:
 
 ```sh
-docker compose build app && docker compose up -d app
+docker compose build --build-arg GIT_SHA=$(git rev-parse --short HEAD) app && docker compose up -d app
 ```
+
+  `GIT_SHA` bakes the commit into the image and surfaces as `build_info{git_sha}` on `/metrics` —
+  deploy provenance in the TSDB, which is where it lives now that the collector daemon (which used
+  to stamp the working-tree tip on every hourly digest) is retired. Omitting the arg is safe: the
+  image reports `git_sha="unknown"` and boots normally, because a measurement input must never be
+  able to refuse a deploy. Query which build served a past window with
+  `build_info` over the range in question.
 
 - **After editing `observability/alerts.rules.yml` or `prometheus.yml`, recreate prometheus too:**
 

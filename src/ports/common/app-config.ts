@@ -14,6 +14,9 @@ export interface AppConfig {
   app: {
     port: number;
     bootId: string;
+    // Git sha this image was built from (Dockerfile GIT_SHA build arg), or 'unknown' when the build
+    // did not supply one. Exported as build_info{git_sha} — deploy provenance in the TSDB.
+    gitSha: string;
   };
   mode: {
     requestedMode: string;

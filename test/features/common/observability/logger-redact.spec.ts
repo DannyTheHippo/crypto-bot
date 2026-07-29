@@ -4,12 +4,24 @@ import pino from 'pino';
 import {
   REDACT_PATHS,
   buildPinoHttpOptions,
+  buildPinoOptions,
 } from '../../../../src/features/common/observability/logger.config';
+
+// Redaction moved onto the pino instance when the logger started being constructed here and handed
+// to pino-http (needed so the app_log_events_total logMethod hook sees EVERY line, not just
+// pino-http's own request-completed line). buildPinoOptions is that instance's options.
+function redactionOf(opts: ReturnType<typeof buildPinoOptions>) {
+  const redact = opts.redact;
+  if (redact === undefined || typeof redact !== 'object' || Array.isArray(redact)) {
+    throw new Error('expected a redact object on the pino options');
+  }
+  return redact;
+}
 
 describe('Logger pino config redact paths', () => {
   it('includes all required redact paths', () => {
-    const config = buildPinoHttpOptions({ level: 'info', bootId: 'test-boot', mode: 'paper' });
-    const redactPaths = config.pinoHttp.redact.paths;
+    const opts = buildPinoOptions({ level: 'info', bootId: 'test-boot', mode: 'paper' });
+    const redactPaths = redactionOf(opts).paths;
 
     for (const required of REDACT_PATHS) {
       expect(redactPaths).toContain(required);
@@ -17,8 +29,16 @@ describe('Logger pino config redact paths', () => {
   });
 
   it('uses [REDACTED] censor value', () => {
+    const opts = buildPinoOptions({ level: 'info', bootId: 'test-boot', mode: 'paper' });
+    expect(redactionOf(opts).censor).toBe('[REDACTED]');
+  });
+
+  // The wrapper still has to hand pino-http a real logger, or nestjs-pino silently builds its own
+  // (unredacted, unhooked) one.
+  it('hands pino-http a constructed logger instance', () => {
     const config = buildPinoHttpOptions({ level: 'info', bootId: 'test-boot', mode: 'paper' });
-    expect(config.pinoHttp.redact.censor).toBe('[REDACTED]');
+    expect(typeof config.pinoHttp.logger.error).toBe('function');
+    expect(config.pinoHttp.logger.level).toBe('info');
   });
 
   it('behaviorally redacts apiKey and headers from logged objects', () => {

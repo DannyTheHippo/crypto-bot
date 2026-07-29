@@ -80,6 +80,9 @@ function canonicalJsonWithoutSecrets(config: AppConfig): string {
     'armingSecret',
     'liveBaseUrlOverride',
     'bootId',
+    // Not a secret — excluded for the same reason as bootId: it changes on every build, and a hash
+    // that moves per deploy cannot serve its purpose of detecting knob drift between deploys.
+    'gitSha',
     'db',
   ]);
   const sanitized: Record<string, unknown> = {};
@@ -189,6 +192,10 @@ const envSchema = z
   .object({
     PORT: z.coerce.number().int().min(1).max(65535).default(3100),
     LOG_LEVEL: z.enum(PINO_LEVELS).default('info'),
+    // Baked into the image by the Dockerfile's GIT_SHA build arg. Optional by design: an image built
+    // without it still boots and simply reports build_info{git_sha="unknown"} — deploy provenance is
+    // observability, and a measurement input must never be able to refuse a boot.
+    APP_GIT_SHA: z.string().max(64).default('unknown'),
     TRADING_MODE: z.string().optional(),
     NODE_ENV: z.string().optional(),
     CI: z.string().optional(),
@@ -854,6 +861,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
   const {
     PORT: port,
     LOG_LEVEL: logLevel,
+    APP_GIT_SHA: gitSha,
     DATABASE_URL: dbUrl,
     VENUE_CAPITAL_SPLIT: venueCapitalSplitRaw,
     SANDBOX_ENV: sandboxEnv,
@@ -1062,7 +1070,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       };
 
   const partialConfig: Omit<AppConfig, 'configHash'> = {
-    app: { port, bootId },
+    app: { port, bootId, gitSha },
     mode: { requestedMode: rawMode, configMode, sandboxEnv, downgrades },
     observability: { logLevel },
     db: { url: dbUrl },

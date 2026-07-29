@@ -111,6 +111,18 @@ export interface PromotionStatsPort {
   // Optional so existing fakes/implementations remain valid; the reflection trigger seed treats an
   // absent method the same as "never reflected".
   latestReflectionAt?(): Promise<number | null>;
+  // WATCH-V4-8: epoch ms of the newest agent_decisions row that produced an ACCEPTED decide, null
+  // when the lane has never reached the model with a usable answer. prompt_hash and latency_ms are
+  // written together and only by client code that has already parsed a response body
+  // (agentic.strategy.ts's recordJournalEntry copies them straight off the proposal), so scheduled
+  // skips, latched suppressions and thrown errors all carry ''/NULL and are excluded structurally
+  // rather than by matching rationale text; the post-200 degrades DO carry both and are excluded by
+  // their rationale tag instead (DEGRADED_DECIDE_RATIONALE_TAGS, domain/strategy/types) — a lane whose
+  // every consult is schema-rejected is dead in the only sense that matters. Seeds
+  // agent_last_success_timestamp_seconds so a redeploy cannot launder a standing lane outage into a
+  // green board. Optional so existing fakes stay valid; an absent method leaves the gauge unseeded
+  // (0 = "never", which the staleness alert reads as stale).
+  lastSuccessfulDecideAt?(): Promise<number | null>;
   // P5b: Σ funding_payments.amount_quote for mode (sinceMs-scoped like fillsForMode; absent ⇒
   // all-time) — POSITIVE = received, NEGATIVE = paid (see VenueFundingPayment's sign-convention
   // comment, ports/venue/exchange.ts), ADDED directly into the promotion net. hasRows distinguishes

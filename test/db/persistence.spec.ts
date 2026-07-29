@@ -1852,4 +1852,36 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
     );
     expect(await repo.latestReflectionAt()).toBe(after);
   });
+
+  // WATCH-V4-8. The only test that can catch a wrong SQL predicate: each row after the first is a
+  // distinct way the liveness marker could be wrongly refreshed, and every one is a real shape from the
+  // live journal — a scheduled skip (20,859 rows), a latched error (241), an R1 replay backfill and a
+  // schema-rejected degrade (85 rows), the last two of which DO carry prompt_hash + latency_ms and are
+  // therefore the only ones a hash/latency-only predicate would wrongly accept.
+  it('(k) lastSuccessfulDecideAt: only an accepted decide moves the marker', async () => {
+    const repo = new PromotionStatsRepository(db);
+    await pool.query(
+      `INSERT INTO public.agent_decisions
+         (strategy_id, symbol, venue, trigger_kind, based_on_seq, event_time, model, action, rationale,
+          prompt_hash, latency_ms, created_at)
+       VALUES
+        ('agentic-v48','BTC/USDT','binance','candle',0,900101,'claude-x','hold','real decide',
+         'hash-v48-real', 900, now() + interval '3 hour'),
+        ('agentic-v48','BTC/USDT','binance','candle',0,900102,'prescreen','hold','scheduled skip',
+         '', NULL, now() + interval '4 hour'),
+        ('agentic-v48','BTC/USDT','binance','candle',0,900103,'claude-x','error','client_latched: no call made',
+         '', NULL, now() + interval '5 hour'),
+        ('replay-v48','BTC/USDT','binance','candle',0,900104,'claude-x','open_long','replay backfill',
+         'hash-v48-syn', 800, now() + interval '6 hour'),
+        ('agentic-v48','BTC/USDT','binance','candle',0,900105,'claude-x','hold','schema_rejected: decisions: Required',
+         'hash-v48-rej', 700, now() + interval '7 hour'),
+        ('agentic-v48','BTC/USDT','binance','candle',0,900106,'claude-x','error','capability_violation:open_short_on_spot',
+         'hash-v48-cap', 600, now() + interval '8 hour')`,
+    );
+
+    const real = await pool.query<{ created_at: Date }>(
+      `SELECT created_at FROM public.agent_decisions WHERE prompt_hash = 'hash-v48-real'`,
+    );
+    expect(await repo.lastSuccessfulDecideAt()).toBe(real.rows[0]!.created_at.getTime());
+  });
 });

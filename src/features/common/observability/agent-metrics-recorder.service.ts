@@ -53,6 +53,22 @@ const PROVES_CALL_COMPLETED_OUTCOMES: ReadonlySet<AgentDecideOutcome> = new Set(
   'truncated',
 ]);
 
+// Pass 47 (2026-07-29): the two bound `kind` sets below back the zero-seed in the constructor. Both
+// mirror anthropic-agent-client.ts's own literal enumerations exactly — duplicated rather than
+// imported (the boundaries wall forbids this feature importing features/strategy/agentic, same
+// convention as ConsultGateOutcome/AgentVenueTpEvent/AgentVenueStopEvent above).
+//
+// CAPABILITY_VIOLATION_KINDS: recordCapabilityViolation's `kind` param is typed as plain `string` (no
+// literal union pins it), but grep of every call site in the codebase (anthropic-agent-client.ts:864,
+// :1269) shows exactly one value is ever produced — 'open_short_on_spot'. Seeding only that one,
+// not a wider guessed set: a fabricated child the increment path could never reach would be its own
+// measurement lie.
+const CAPABILITY_VIOLATION_KINDS = ['open_short_on_spot'] as const;
+// SCHEMA_REJECTION_KINDS: AnthropicAgentClientConfig.recordSchemaFailure's own signature pins this as
+// a closed four-member literal union (single/batch/element/missing_symbol) — genuinely enumerable,
+// unlike the open-ended `outcome`/`event` strings on the recorder's other methods.
+const SCHEMA_REJECTION_KINDS = ['single', 'batch', 'element', 'missing_symbol'] as const;
+
 export type AgentTokenKind = 'input' | 'output' | 'cache_read' | 'cache_creation';
 
 // P6 (Design § Learning & measurement stack): mirrors agentic.strategy.ts's ConsultGateOutcome
@@ -105,6 +121,9 @@ export type AgentVenueStopEvent =
 @Injectable()
 export class AgentMetricsRecorder {
   private activePlaybookVersion: number | null = null;
+  // Epoch ms mirror of agent_last_success_timestamp_seconds. Guarded in seedLastSuccessAt only (see
+  // its max() check); recordModelRoundTrip sets it unconditionally, deliberately — see its comment.
+  private lastSuccessAtMs = 0;
 
   constructor(
     @InjectMetric('agent_decide_total') private readonly decideCounter: Counter<string>,
@@ -140,7 +159,66 @@ export class AgentMetricsRecorder {
     private readonly rearmFallbackCounter: Counter<string>,
     @InjectMetric('agent_client_latched')
     private readonly clientLatchedGauge: Gauge<string>,
-  ) {}
+    @InjectMetric('agent_last_success_timestamp_seconds')
+    private readonly lastSuccessGauge: Gauge<string>,
+  ) {
+    // Pass 47 (2026-07-29): prom-client only materialises a labeled child once it is touched, so
+    // before this seed a lane that had never hit one of these `kind` values exported NO series for
+    // it — an empty vector indistinguishable from unbound telemetry or a renamed metric (the same
+    // defect Pass 44 fixed for market_stream_forced_reconnects_total). Seeded once, over the two
+    // closed sets above, so a quiet lane reads as a real zero rather than a void. Measurement-only:
+    // wrapped so a misbehaving counter can never escape this constructor and therefore never block
+    // boot (fail OPEN) — same convention as every recordXxx method below.
+    try {
+      for (const kind of CAPABILITY_VIOLATION_KINDS) {
+        this.capabilityViolationsCounter.inc({ kind }, 0);
+      }
+      for (const kind of SCHEMA_REJECTION_KINDS) {
+        this.schemaRejectionsCounter.inc({ kind }, 0);
+      }
+    } catch {
+      /* metrics must never throw into a trading path */
+    }
+  }
+
+  // WATCH-V4-8: stamped by MetricsWrappingAgentClient when the returned proposal carries the
+  // structural proof of a completed round trip (promptHash + latencyMs, assigned together and only
+  // after a response body was parsed) AND is not one of the post-200 degrades — deliberately NOT
+  // derived from AgentDecideOutcome the way the latch level above is. The outcome sets cannot express
+  // this: 'error_retryable' is in PROVES_CALL_COMPLETED_OUTCOMES (any HTTP reply disproves a latch)
+  // yet a 429 is exactly what a SUSPENDED Moonshot account returns, and 'hold' also covers the
+  // decision-less `{ signals: [] }` early returns where no call was made at all (47 such rows in the
+  // live journal) as well as every schema_rejected degrade. All of those would keep this gauge fresh
+  // through the very outage it exists to expose. Reading the same evidence the boot seed's SQL
+  // predicate reads also keeps the two congruent by construction rather than by comment.
+  //
+  // Unconditional, unlike the seed below, and the direction is the reason: an unguarded set can only
+  // move the gauge toward MORE stale, which is the fail-toward-alerting direction a measurement
+  // should take. A max() here would do the opposite — across a backwards wall-clock correction (this
+  // host sleeps and resumes; app_wall_clock_skew_seconds exists because of it) it would freeze the
+  // gauge at a value ahead of time(), making time() - gauge negative and SUPPRESSING the staleness
+  // alert for the length of the skew.
+  recordModelRoundTrip(atMs: number = Date.now()): void {
+    try {
+      this.lastSuccessGauge.set(atMs / 1000);
+      this.lastSuccessAtMs = atMs;
+    } catch {
+      /* metrics must never throw into a trading path */
+    }
+  }
+
+  // Boot seed from the durable journal (seed-agent-last-success.ts), max()-guarded in the one
+  // direction that matters: startTrading seeds while the strategy host is already registered, so a
+  // seed landing after this boot's first live round trip would otherwise rewind liveness by hours.
+  seedLastSuccessAt(atMs: number): void {
+    try {
+      if (atMs <= this.lastSuccessAtMs) return;
+      this.lastSuccessGauge.set(atMs / 1000);
+      this.lastSuccessAtMs = atMs;
+    } catch {
+      /* metrics must never throw into a trading path */
+    }
+  }
 
   // `model` on both methods (#28): optional with an 'unknown' fallback so the label is always
   // materialized (never prom-client's implicit "") and pre-label call sites/test fakes keep working.

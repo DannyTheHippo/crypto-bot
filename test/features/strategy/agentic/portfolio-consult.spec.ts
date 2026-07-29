@@ -739,6 +739,13 @@ describe('AnthropicAgentClient.proposeBatch', () => {
     expect(result.proposals.get('BTC/USDT')?.usage).toBeDefined();
     expect(result.proposals.get('ETH/USDT')?.signals).toEqual([]);
     expect(result.proposals.get('ETH/USDT')?.usage).toBeUndefined();
+    // WATCH-V4-8: the refusal must be NAMED on every symbol, not left decision-less. A decision-less
+    // hold persists byte-identical to a genuine model hold, and the liveness predicate excludes
+    // degrades by their rationale tag — untagged, a permanently refusing model would keep
+    // agent_last_success_timestamp_seconds fresh over a lane producing nothing.
+    for (const key of ['BTC/USDT', 'ETH/USDT']) {
+      expect(result.proposals.get(key)?.decision?.rationale).toMatch(/^model_refusal:/);
+    }
     // Review nice-to-have: the refusal fan-out stamps the shared batch consultId too.
     expect(result.proposals.get('BTC/USDT')?.consultId).toBeDefined();
     expect(result.proposals.get('BTC/USDT')?.consultId).toBe(

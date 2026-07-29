@@ -129,3 +129,179 @@ describe('MetricsWrappingAgentClient token forwarding (agent_tokens_total)', () 
     expect(args).toEqual([100, 20, undefined, undefined, DECIDE_MODEL]);
   });
 });
+
+// WATCH-V4-8: liveness is stamped from the proposal's own evidence — round-trip proof (promptHash +
+// latencyMs, assigned together and only after a response body was parsed) AND the absence of a
+// post-200 degrade tag — never from the decide outcome. The suppressed cases below are the ones that
+// would otherwise keep the gauge fresh through the very outage it exists to expose: a latched
+// suppression and an off-menu short circuit make no call at all; a decision-less `{ signals: [] }`
+// early return (no usable ref price, stub client) classifies as a plain 'hold' — 47 such rows sit in
+// the live journal; and the degrade cases DO carry hash+latency, which is why they need their own
+// exclusion (85 of the 660 hash+latency rows in the live journal are schema_rejected holds, and a
+// lane rejecting 100% of its consults reaches Risk with nothing while looking permanently alive).
+describe('MetricsWrappingAgentClient liveness stamp (agent_last_success_timestamp_seconds)', () => {
+  function stampsFor(proposal: AgentProposal): Promise<number> {
+    const inner: AgentClientPort = { propose: () => Promise.resolve(proposal) };
+    let stamps = 0;
+    const recorder = {
+      observeDecideLatency: () => undefined,
+      recordTokens: () => undefined,
+      recordDecide: () => undefined,
+      recordModelRoundTrip: () => {
+        stamps += 1;
+      },
+    } as unknown as AgentMetricsRecorder;
+    const budget = new DailyLlmBudget({ maxCallsPerDay: 1, maxTokensPerDay: 1 });
+    const client = new MetricsWrappingAgentClient(inner, recorder, budget, DECIDE_MODEL);
+    return client.propose(minimalInput()).then(() => stamps);
+  }
+
+  it('stamps once when the proposal carries a completed round trip', async () => {
+    expect(
+      await stampsFor({
+        signals: [],
+        decision: { action: 'hold', confidence: 0.5, rationale: 'no edge' },
+        promptHash: 'abc123',
+        latencyMs: 1200,
+      }),
+    ).toBe(1);
+  });
+
+  it.each([
+    [
+      'a latched suppression (no call made)',
+      {
+        signals: [],
+        decision: { action: 'error', confidence: null, rationale: 'client_latched: no call made' },
+      },
+    ],
+    [
+      'an off-menu short circuit (never reaches the client)',
+      {
+        signals: [],
+        decision: { action: 'hold', confidence: 0, rationale: 'off_menu: not in the active menu' },
+      },
+    ],
+    ['a decision-less early return that classifies as hold', { signals: [] }],
+    // The post-200 degrades: the model answered, the answer was unusable, nothing reached Risk. Each
+    // carries the SAME promptHash/latencyMs an accepted decision carries, so only the rationale tag
+    // separates them — that is what these four pin.
+    [
+      'a schema-rejected payload (answered, but nothing reached Risk)',
+      {
+        signals: [],
+        decision: {
+          action: 'hold',
+          confidence: 0,
+          rationale: 'schema_rejected: decisions: Required',
+        },
+        promptHash: 'abc123',
+        latencyMs: 1200,
+      },
+    ],
+    [
+      'a capability violation (journalled action=error, still hash+latency)',
+      {
+        signals: [],
+        decision: {
+          action: 'error',
+          confidence: null,
+          rationale: 'capability_violation:open_short_on_spot',
+        },
+        promptHash: 'abc123',
+        latencyMs: 1200,
+      },
+    ],
+    [
+      'a malformed response envelope',
+      {
+        signals: [],
+        decision: {
+          action: 'hold',
+          confidence: 0,
+          rationale: 'envelope_malformed: anthropic response failed envelope validation',
+        },
+        promptHash: 'abc123',
+        latencyMs: 1200,
+      },
+    ],
+    [
+      'a model refusal',
+      {
+        signals: [],
+        decision: {
+          action: 'hold',
+          confidence: 0,
+          rationale: 'model_refusal: model declined to decide (stop_reason=refusal)',
+        },
+        promptHash: 'abc123',
+        latencyMs: 1200,
+      },
+    ],
+    [
+      'a max_tokens truncation',
+      {
+        signals: [],
+        decision: {
+          action: 'hold',
+          confidence: 0,
+          rationale: 'truncated_max_tokens: response truncated at max_tokens',
+        },
+        promptHash: 'abc123',
+        latencyMs: 1200,
+      },
+    ],
+    [
+      'a response with no tool_use block',
+      {
+        signals: [],
+        decision: {
+          action: 'hold',
+          confidence: 0,
+          rationale: 'no_tool_use: no submit_trade tool_use block in response',
+        },
+        promptHash: 'abc123',
+        latencyMs: 1200,
+      },
+    ],
+  ] as [string, AgentProposal][])('does not stamp on %s', async (_label, proposal) => {
+    expect(await stampsFor(proposal)).toBe(0);
+  });
+
+  // The fee-floor rejection is NOT a degrade: the model produced a valid decision and the local edge
+  // floor declined to act on it, which is the lane working. Pinned so a future tightening of the
+  // exclusion list cannot quietly swallow a healthy no-trade and make a live lane read as dead.
+  it('stamps on a fee-floor-rejected decision — a local veto is not a failed round trip', async () => {
+    expect(
+      await stampsFor({
+        signals: [],
+        decision: {
+          action: 'hold',
+          confidence: 0.6,
+          rationale: '[rejected: tp below fee floor] breakout continuation',
+        },
+        promptHash: 'abc123',
+        latencyMs: 1200,
+      }),
+    ).toBe(1);
+  });
+
+  it('does not stamp when a decide throws — a 429 from a suspended account is not liveness', async () => {
+    const inner: AgentClientPort = {
+      propose: () => Promise.reject(new Error('anthropic api http 429')),
+    };
+    let stamps = 0;
+    const recorder = {
+      observeDecideLatency: () => undefined,
+      recordTokens: () => undefined,
+      recordDecide: () => undefined,
+      recordModelRoundTrip: () => {
+        stamps += 1;
+      },
+    } as unknown as AgentMetricsRecorder;
+    const budget = new DailyLlmBudget({ maxCallsPerDay: 1, maxTokensPerDay: 1 });
+    const client = new MetricsWrappingAgentClient(inner, recorder, budget, DECIDE_MODEL);
+    await expect(client.propose(minimalInput())).rejects.toThrow('429');
+    expect(stamps).toBe(0);
+  });
+});

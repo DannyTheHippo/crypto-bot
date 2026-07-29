@@ -1,7 +1,21 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { eq, asc, desc, and, gte, notLike, sum, type SQL } from 'drizzle-orm';
+import {
+  eq,
+  ne,
+  asc,
+  desc,
+  and,
+  gte,
+  isNotNull,
+  not,
+  notLike,
+  sql,
+  sum,
+  type SQL,
+} from 'drizzle-orm';
 import type { TradingMode } from '../../../domain/trading/types/mode';
+import { DEGRADED_DECIDE_RATIONALE_TAGS } from '../../../domain/strategy/types/decide-rationale';
 import type {
   PromotionStatsPort,
   PromotionFillRow,
@@ -207,6 +221,40 @@ export class PromotionStatsRepository implements PromotionStatsPort {
       .from(schema.llmUsage)
       .where(eq(schema.llmUsage.kind, 'reflection'))
       .orderBy(desc(schema.llmUsage.createdAt), desc(schema.llmUsage.id))
+      .limit(1);
+    const first = rows[0];
+    return first === undefined ? null : first.createdAt.getTime();
+  }
+
+  // WATCH-V4-8 boot seed for agent_last_success_timestamp_seconds — see the port's own comment for
+  // why prompt_hash/latency_ms are the predicate rather than the action/rationale text. The replay
+  // exclusion is the same one tokenTotals applies BY FILTER above: an R1 `replay-<runId>` backfill
+  // writes agent_decisions rows carrying both fields, and a backfill must never make a dead lane
+  // read fresh. The degrade-tag exclusion is the other half of the same discipline: a post-200
+  // degrade carries hash+latency too, so hash+latency alone would count "the model answered with
+  // something unusable" as liveness (see DEGRADED_DECIDE_RATIONALE_TAGS). starts_with(), not NOT
+  // LIKE: every tag contains an underscore, which LIKE reads as a single-character wildcard, so
+  // 'schema_rejected:%' would also exclude a thesis opening 'schema rejected: …'.
+  // created_at (DB wall clock), not event_time (the market snapshot's bar-open instant, stale by up
+  // to a bar by construction) — same choice latestReflectionAt makes.
+  // Verified against the live journal 2026-07-29: 575 of 22,873 rows match (660 before the degrade
+  // exclusion, 85 of which were schema_rejected holds), newest 2026-07-27T20:15:31Z — a genuine model
+  // hold, so the seeded instant is unchanged by the exclusion — 0 replay rows.
+  async lastSuccessfulDecideAt(): Promise<number | null> {
+    const rows = await requireDb(this.db)
+      .select({ createdAt: schema.agentDecisions.createdAt })
+      .from(schema.agentDecisions)
+      .where(
+        and(
+          ne(schema.agentDecisions.promptHash, ''),
+          isNotNull(schema.agentDecisions.latencyMs),
+          notLike(schema.agentDecisions.strategyId, REPLAY_STRATEGY_LIKE),
+          ...DEGRADED_DECIDE_RATIONALE_TAGS.map((tag) =>
+            not(sql`starts_with(${schema.agentDecisions.rationale}, ${tag})`),
+          ),
+        ),
+      )
+      .orderBy(desc(schema.agentDecisions.createdAt), desc(schema.agentDecisions.id))
       .limit(1);
     const first = rows[0];
     return first === undefined ? null : first.createdAt.getTime();

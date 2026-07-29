@@ -192,6 +192,18 @@ export const AGENT_CLIENT_LATCHED_GAUGE = makeGaugeProvider({
   name: 'agent_client_latched',
   help: 'Agentic lane client latched degraded by a FATAL API error (1) or making calls normally (0)',
 });
+// WATCH-V4-8 (2026-07-29): the only agentic liveness signal that SURVIVES a process restart, because
+// TradingRuntimeService seeds it at boot from the durable agent_decisions journal instead of letting
+// it be born at 0. Every other agentic signal is boot-scoped by construction — agent_client_latched
+// is a level the new process has not set yet, agent_decide_total is a counter whose window restarts
+// — so an 08:17Z redeploy on 2026-07-29 cleared the critical latch alert and wiped the decide series
+// while both provider accounts were still unfunded and the lane had not reached the model since
+// 07-27T20:15Z: a green board over a 37h-dead lane. Same shape as the cost breaker's boot seed
+// (f2d74b6) and reconciliation_last_success_timestamp_seconds. Label-less: one client, one lane.
+export const AGENT_LAST_SUCCESS_GAUGE = makeGaugeProvider({
+  name: 'agent_last_success_timestamp_seconds',
+  help: 'Unix time of the last agentic decide that completed a model round trip (seeded at boot from agent_decisions)',
+});
 export const AGENT_TOKENS_COUNTER = makeCounterProvider({
   name: 'agent_tokens_total',
   help: 'Agentic lane LLM token usage, by kind and model',

@@ -242,10 +242,43 @@ describe('ReconciliationService (§6.4)', () => {
     );
     const r = await ctx.recon.reconcile();
     expect(r.mismatches).toBeGreaterThan(0);
-    expect((counter.inc as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual([
+    // Not calls[0]: the constructor now seeds every known class's zero series first (Pass 47) — the
+    // pass's own increment lands somewhere after those, not necessarily first.
+    expect((counter.inc as ReturnType<typeof vi.fn>).mock.calls).toContainEqual([
       { class: 'foreign_open_order' },
       r.mismatches,
     ]);
+  });
+
+  // Pass 47 (2026-07-29): WATCH-V4-1/2 (research/loop/state.md) read
+  // reconciliation_mismatch_total{class="adopt_non_adoptable"} / {class="fill_overflow"} expecting a
+  // literal 0 to mean "stays 0" — a class prom-client had never touched instead exported an empty
+  // vector (void read, §C.9), identical to the market_stream_forced_reconnects_total defect Pass 44
+  // fixed. Asserted at CONSTRUCTION, before reconcile() ever runs, so deleting the seed (and leaving
+  // only the per-pass `this.mismatchCounter?.inc({ class: cls }, n)` call) fails this test — the
+  // vacuous-test check the task calls for.
+  it('seeds every mismatch class at its true zero on construction (Pass 47), before any pass runs', () => {
+    const counter = { inc: vi.fn() } as unknown as Counter<string>;
+    build({}, counter); // construction alone — no reconcile() call
+    const calls = (counter.inc as ReturnType<typeof vi.fn>).mock.calls;
+    const allClasses = [
+      'unknown_ours_open',
+      'fill_for_unknown_order',
+      'balance_drift',
+      'balance_leak',
+      'position_drift',
+      'foreign_open_order',
+      'adopted_terminal',
+      'backfilled_fill',
+      'adopt_query_failure',
+      'adopt_non_adoptable',
+      'fill_overflow',
+      'fill_fold_failed',
+      'sweep_failure',
+    ];
+    for (const cls of allClasses) {
+      expect(calls, cls).toContainEqual([{ class: cls }, 0]);
+    }
   });
 
   it('records reconciliation_runs_total{venue,result} and stamps last-success only on a clean pass', async () => {

@@ -319,3 +319,64 @@ groups:
         annotations:
           summary: 'Agentic LLM budget remaining is $0 — the lane may be throttled or refusing calls'
           runbook: 'docs/runbook.md'
+
+      # WATCH-V4-8 (2026-07-29): a redeploy must not be able to erase a standing outage. Both LLM
+      # provider accounts were unfunded and the lane had not reached the model since 07-27T20:15:31Z,
+      # yet an 08:17:56Z redeploy reset agent_client_latched to 0, cleared AgentClientFatalLatch and
+      # wiped the boot-scoped agent_decide_total series — 21 rules loaded, 0 firing, over a 37h-dead
+      # lane. Every other rule in this group is boot-scoped by construction (a level the new process
+      # has not set yet, or a counter window that restarts with the container), so none of them can
+      # see across a restart. agent_last_success_timestamp_seconds is seeded at boot from
+      # agent_decisions, so it reads the TRUE age on the first scrape of EVERY boot and the playbook's
+      # mandated 15-30 min post-deploy soak can no longer sign off on a dead lane.
+      #
+      # 9h is the lane's structural ceiling plus margin, not taste. The model self-schedules the whole
+      # batch via nextConsultBars, bounded at 32 (agent-prompt.ts DECISION_V2_BOUNDS) x 15m
+      # (STRATEGY_INTERVAL) = 8h; AGENTIC_FALLBACK_CONSULT_BARS=8 only FLOORS the gap at 2h when no
+      # schedule is live, it does not cap it — so the ~3h a naive reading of the fallback clock
+      # suggests would false-positive on a legitimate long self-schedule. Measured over the real
+      # decides in agent_decisions on 2026-07-29: p95 gap 30min, p99 111min, and exactly three gaps
+      # above 3h — 210min, 270min, and one of 2806min (46.8h). That widest gap is NOT the 07-27 LLM
+      # outage: it spans 07-25T11:00Z→07-27T09:46Z, a window in which agent_decisions holds zero rows
+      # of ANY kind (not even scheduled skips) between 07-25T15:00Z and 07-27T09:00Z — the host was
+      # asleep. The 07-27 outage itself has produced no gap row at all, because it has not closed. So
+      # the widest gap observed with the app actually RUNNING is 270min, and 9h clears it by 2x while
+      # still sitting above the 8h structural ceiling.
+      #
+      # Severity WARNING, and that is the load-bearing choice. loop:sweep promotes only `critical` to
+      # the blocking prometheus_alert_firing alarm, and the playbook blocks all improvement work until
+      # alarms clear. This lane is dead now and stays dead until the owner funds the accounts, so a
+      # critical here would fire on the next deploy and wedge every subsequent pass on a condition no
+      # pass can fix (a false alarm is not free). A firing after a long host sleep is the EXPECTED
+      # recurring case, not an edge: the documented duty cycle produces multi-day host-down windows
+      # (43h observed above), and on every wake the boot seed correctly stamps a >9h-old timestamp,
+      # so this annotates until the first post-wake consult. Gating the expr on process_start_time to
+      # suppress that would reintroduce exactly the boot-scoped blindness this rule removes.
+      # Annotating hands the pass the fact it was missing without handing it a gate it cannot clear;
+      # promotion to blocking is a one-line severity edit once the accounts are funded.
+      # AgentClientFatalLatch stays critical and still pages the moment a live latch is observable
+      # in-process — this is its restart-surviving companion, not its replacement.
+      #
+      # An unseeded gauge reads 0 (prom-client emits a label-less gauge from registration), so
+      # time() - 0 is already past the threshold and "never succeeded" needs no second branch. The
+      # `or absent_over_time(...)` is a different case and the same one AgenticLaneSilent above guards:
+      # a gauge that STOPS being emitted while the process stays up (a registration/scrape-path
+      # regression) empties the first branch's vector and would read as permanently healthy, with
+      # TargetDown silent because nothing is down. A 15m lookback cannot fire on a redeploy — a
+      # restart leaves samples earlier in the window — only on a series that is genuinely gone.
+      # for: 5m covers the seconds-scale window between process start and the boot seed (startTrading
+      # seeds ahead of the venue pin) with ~50x margin. It is NOT set to the soak length: loop:sweep
+      # reads only rules in state `firing` (scripts/loop-sweep.mjs) and the history probe queries
+      # ALERTS{alertstate="firing"}, so a `for:` equal to the playbook's 15-min MINIMUM soak would
+      # still be `pending` when the soak-ending sweep runs — invisible to the digest, on the very pass
+      # that shipped this. 5m leaves >=10 min of margin inside the shortest legal soak.
+      - alert: AgenticNoSuccessfulDecideSustained
+        expr: |
+          (time() - agent_last_success_timestamp_seconds) > 32400
+          or
+          absent_over_time(agent_last_success_timestamp_seconds[15m])
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: 'No agentic decide has produced an accepted decision in 9h+ (or ever, or the liveness gauge stopped being emitted) — unlike agent_client_latched this signal survives a redeploy'
+          runbook: 'docs/runbook.md'

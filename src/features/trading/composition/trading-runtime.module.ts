@@ -15,6 +15,7 @@ import { DEFAULT_FILTERS } from '../../../domain/trading/risk/default-filters';
 import type { VenueId } from '../../../domain/common/types/ids';
 import { strategyId, symbolId, type SymbolId } from '../../../domain/common/types/ids';
 import type { CandleInterval } from '../../../domain/venue/types/market-events';
+import { isDegradedDecideRationale } from '../../../domain/strategy/types/decide-rationale';
 import { venueForSymbol } from '../../../domain/venue/types/venue-map';
 import {
   AGENT_CLIENT,
@@ -125,6 +126,7 @@ import { PROTECTIVE_EXITS_COUNTER, ProtectiveExitService } from '../risk/protect
 import { RiskModule } from '../risk/risk.module';
 import { symbolConstraintsFor } from './agentic-bridge.module';
 import { MergedExchangeStream } from './market-streams.module';
+import { seedAgentLastSuccess } from './seed-agent-last-success';
 import { engageStartTradingFailure } from './start-trading-failure';
 
 // v3 spec §1.3: TradingRuntimeModule absorbs app.module.ts's root provider block (SignalSinkService
@@ -167,6 +169,22 @@ export class MetricsWrappingAgentClient implements AgentClientPort {
         );
       }
       this.recorder.recordDecide(this.outcomeForProposal(proposal), this.model);
+      // WATCH-V4-8 liveness stamp, two conditions and both load-bearing. promptHash and latencyMs are
+      // assigned together, and only by client code that has already parsed a response body
+      // (anthropic-agent-client.ts sets both at every post-attemptWithRetry return; the latch/off-menu/
+      // budget short circuits and the no-ref-price `{ signals: [] }` early return carry neither), so
+      // their presence — not the decide outcome — is the round-trip proof. But a parsed body is not yet
+      // a decide: every post-200 degrade returns signals: [] carrying both fields, so the degrade tags
+      // are excluded too, or a lane rejecting 100% of its consults on schema would read permanently
+      // fresh. Same two-part predicate the boot seed's SQL runs over the journal, off the same shared
+      // tag list, so the two cannot drift.
+      if (
+        proposal.promptHash !== undefined &&
+        proposal.latencyMs !== undefined &&
+        !isDegradedDecideRationale(proposal.decision?.rationale)
+      ) {
+        this.recorder.recordModelRoundTrip();
+      }
       return proposal;
     } catch (err) {
       this.recorder.observeDecideLatency((Date.now() - started) / 1000);
@@ -567,6 +585,9 @@ export class TradingRuntimeService
     this.tradingSymbols = symbols.map((s) => symbolId(s));
 
     await this.seedDailyLlmBudget();
+    // Seeded HERE, seconds into the boot and ahead of the venue pin/key-probe network calls below, so
+    // the pre-seed window the staleness alert's `for:` has to ride out is seconds rather than minutes.
+    await seedAgentLastSuccess(this.agentMetrics, this.log, this.promotionStats);
 
     if (mode !== 'paper') {
       // Defect A commit-1 (2026-07-16 phantom perp position): heal any already-phantom position

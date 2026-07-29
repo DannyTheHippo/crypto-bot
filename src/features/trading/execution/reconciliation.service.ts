@@ -61,6 +61,26 @@ type MismatchClass =
   | 'fill_fold_failed' // suspicious: the fill row committed but its fold threw (row without a fold)
   | 'sweep_failure'; // transient: a per-symbol open-orders/trades/balances sweep threw
 
+// Pass 47 (2026-07-29): the full MismatchClass enumeration, used only to seed each class's zero
+// series at construction (see the constructor below) — kept as a plain list rather than derived from
+// the type (TypeScript unions carry no runtime member list), so a class added to MismatchClass above
+// without a matching entry here silently keeps that one class unseeded rather than failing to compile.
+const ALL_MISMATCH_CLASSES: readonly MismatchClass[] = [
+  'unknown_ours_open',
+  'fill_for_unknown_order',
+  'balance_drift',
+  'balance_leak',
+  'position_drift',
+  'foreign_open_order',
+  'adopted_terminal',
+  'backfilled_fill',
+  'adopt_query_failure',
+  'adopt_non_adoptable',
+  'fill_overflow',
+  'fill_fold_failed',
+  'sweep_failure',
+];
+
 interface PassAccumulator {
   readonly mismatches: Map<MismatchClass, number>;
   readonly halts: string[];
@@ -283,7 +303,24 @@ export class ReconciliationService {
     @Optional()
     @InjectMetric('reconciliation_axis_error_total')
     private readonly axisErrorCounter?: Counter<string>,
-  ) {}
+  ) {
+    // Pass 47 (2026-07-29): prom-client only materialises a labeled child once it is touched, so
+    // before this seed a process that had never hit one of the 13 classes above exported NO series
+    // for it at all — indistinguishable from an empty vector caused by unbound telemetry or a renamed
+    // metric (same defect Pass 44 fixed for market_stream_forced_reconnects_total). WATCH-V4-1/2
+    // (research/loop/state.md) read reconciliation_mismatch_total{class="adopt_non_adoptable"} and
+    // {class="fill_overflow"} expecting "stays 0" to be a real reading — before this seed, on a
+    // process where neither class had ever fired, that expectation was actually a void read (§C.9).
+    // Seeded once here over the closed enumeration above. Measurement-only and must never block a
+    // boot: wrapped so a misbehaving counter can never escape this constructor (fail OPEN).
+    if (this.mismatchCounter) {
+      try {
+        for (const cls of ALL_MISMATCH_CLASSES) this.mismatchCounter.inc({ class: cls }, 0);
+      } catch {
+        /* metrics must never throw into a trading path */
+      }
+    }
+  }
 
   // v3 §1.5: one pass per venue per tick, one reconciliations row per venue pass. Mismatches sum
   // across venues; halted is true if ANY venue's pass halted (the kill switch is one book-level

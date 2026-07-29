@@ -22,6 +22,7 @@ import {
   AGENTIC_REFLECTION_TRIGGER_COUNTER,
   AGENTIC_REARM_FALLBACK_COUNTER,
   AGENT_CLIENT_LATCHED_GAUGE,
+  AGENT_LAST_SUCCESS_GAUGE,
 } from '../../../../src/features/common/observability/metrics.service';
 import { AgentMetricsRecorder } from '../../../../src/features/common/observability/agent-metrics-recorder.service';
 
@@ -52,6 +53,7 @@ describe('AgentMetricsRecorder', () => {
         AGENTIC_REFLECTION_TRIGGER_COUNTER,
         AGENTIC_REARM_FALLBACK_COUNTER,
         AGENT_CLIENT_LATCHED_GAUGE,
+        AGENT_LAST_SUCCESS_GAUGE,
         AgentMetricsRecorder,
       ],
     }).compile();
@@ -63,7 +65,7 @@ describe('AgentMetricsRecorder', () => {
     register.clear();
   });
 
-  it('registers all nineteen agentic-lane metrics', async () => {
+  it('registers all twenty agentic-lane metrics', async () => {
     const names = (await register.getMetricsAsJSON()).map((m) => m.name);
     for (const name of [
       'agent_decide_total',
@@ -85,6 +87,7 @@ describe('AgentMetricsRecorder', () => {
       'agentic_reflection_trigger_total',
       'agentic_rearm_fallback_total',
       'agent_client_latched',
+      'agent_last_success_timestamp_seconds',
     ]) {
       expect(names, name).toContain(name);
     }
@@ -282,6 +285,29 @@ describe('AgentMetricsRecorder', () => {
     expect(metric).toContain('kind="element"} 2');
   });
 
+  // Pass 47 (2026-07-29): prom-client only materialises a labeled child once touched, so before this
+  // seed a lane that had never violated a capability exported NO series at all for
+  // agentic_capability_violations_total — an empty vector indistinguishable from unbound telemetry
+  // (same defect Pass 44 fixed for market_stream_forced_reconnects_total). Asserted with NO prior call
+  // to recordCapabilityViolation in this test — the module was only just compiled in beforeEach — so
+  // deleting the constructor seed and leaving only the per-violation `.inc` call fails this test.
+  it('seeds agentic_capability_violations_total{kind="open_short_on_spot"} at 0 on construction, before any violation is recorded', async () => {
+    const metric = await register.getSingleMetricAsString('agentic_capability_violations_total');
+    expect(metric).toContain('kind="open_short_on_spot"} 0');
+  });
+
+  // Same Pass 47 defect, the schema-rejection sibling: all four kinds
+  // (single/batch/element/missing_symbol) are the closed set anthropic-agent-client.ts's
+  // recordSchemaFailure signature pins — every one must publish its true zero, not just the ones a
+  // given lane has happened to hit. No recordSchemaFailure call precedes this assertion.
+  it.each(['single', 'batch', 'element', 'missing_symbol'] as const)(
+    'seeds agentic_schema_rejections_total{kind="%s"} at 0 on construction, before any rejection is recorded',
+    async (kind) => {
+      const metric = await register.getSingleMetricAsString('agentic_schema_rejections_total');
+      expect(metric).toContain(`kind="${kind}"} 0`);
+    },
+  );
+
   it('recordReflectionTrigger increments agentic_reflection_trigger_total{outcome}', async () => {
     recorder.recordReflectionTrigger('fired');
     recorder.recordReflectionTrigger('cooldown');
@@ -337,6 +363,64 @@ describe('AgentMetricsRecorder', () => {
     const metric = await register.getSingleMetricAsString('agentic_budget_remaining_usd');
     expect(metric).toContain('agentic_budget_remaining_usd 0.42');
   });
+
+  // WATCH-V4-8. T0/T1 are the real instants from the 2026-07-29 incident: the last completed round
+  // trip, and the moment the board still read green on a 37h-dead lane.
+  const T0 = 1_785_183_331_000; // 2026-07-27T20:15:31Z — newest successful decide in the live journal
+  const T1 = 1_785_318_000_000; // 2026-07-29T09:40:00Z
+
+  it('recordModelRoundTrip publishes the round-trip instant in unix SECONDS', async () => {
+    recorder.recordModelRoundTrip(T1);
+    expect(
+      await register.getSingleMetricAsString('agent_last_success_timestamp_seconds'),
+    ).toContain(`agent_last_success_timestamp_seconds ${T1 / 1000}`);
+  });
+
+  it('seedLastSuccessAt publishes the durable seed, and a later live round trip moves it forward', async () => {
+    recorder.seedLastSuccessAt(T0);
+    expect(
+      await register.getSingleMetricAsString('agent_last_success_timestamp_seconds'),
+    ).toContain(`agent_last_success_timestamp_seconds ${T0 / 1000}`);
+    recorder.recordModelRoundTrip(T1);
+    expect(
+      await register.getSingleMetricAsString('agent_last_success_timestamp_seconds'),
+    ).toContain(`agent_last_success_timestamp_seconds ${T1 / 1000}`);
+  });
+
+  // The seed is max()-guarded in this one direction: startTrading seeds while the strategy host is
+  // already registered, and a seed landing after this boot's first live round trip would rewind
+  // liveness by hours and fire a false staleness alert.
+  it('a stale seed arriving after a newer live stamp is ignored', async () => {
+    recorder.recordModelRoundTrip(T1);
+    recorder.seedLastSuccessAt(T0);
+    expect(
+      await register.getSingleMetricAsString('agent_last_success_timestamp_seconds'),
+    ).toContain(`agent_last_success_timestamp_seconds ${T1 / 1000}`);
+  });
+
+  // The defect this metric exists to remove: nothing on the decide path may refresh liveness on its
+  // own. 'error_retryable' is the load-bearing member — it clears agent_client_latched (any HTTP
+  // reply disproves a latch) and a SUSPENDED Moonshot account answers 429, i.e. retryable; 'hold'
+  // is the other, because it also covers the decision-less early returns where no call was made.
+  it.each([
+    'proposed',
+    'hold',
+    'noop',
+    'error_retryable',
+    'error_fatal',
+    'client_latched',
+    'budget_blocked',
+    'off_menu',
+  ] as const)(
+    'recordDecide(%s) alone never stamps agent_last_success_timestamp_seconds',
+    async (outcome) => {
+      recorder.seedLastSuccessAt(T0);
+      recorder.recordDecide(outcome, 'claude-sonnet-5');
+      expect(
+        await register.getSingleMetricAsString('agent_last_success_timestamp_seconds'),
+      ).toContain(`agent_last_success_timestamp_seconds ${T0 / 1000}`);
+    },
+  );
 });
 
 describe('AgentMetricsRecorder — never throws into a trading path', () => {
@@ -382,6 +466,14 @@ describe('AgentMetricsRecorder — never throws into a trading path', () => {
           throw new Error('boom');
         },
       } as unknown as Gauge<string>,
+      // agent_last_success_timestamp_seconds: same treatment — the liveness stamp sits on the decide
+      // path too (MetricsWrappingAgentClient.propose), so a throwing gauge must not escape it either.
+      {
+        ...throwing,
+        set: () => {
+          throw new Error('boom');
+        },
+      } as unknown as Gauge<string>,
     );
     expect(() => recorder.recordDecide('proposed')).not.toThrow();
     expect(() => recorder.recordDecide('client_latched')).not.toThrow();
@@ -402,5 +494,7 @@ describe('AgentMetricsRecorder — never throws into a trading path', () => {
     expect(() => recorder.recordSchemaFailure('single')).not.toThrow();
     expect(() => recorder.recordReflectionTrigger('fired')).not.toThrow();
     expect(() => recorder.recordRearmFallback()).not.toThrow();
+    expect(() => recorder.recordModelRoundTrip(1)).not.toThrow();
+    expect(() => recorder.seedLastSuccessAt(1)).not.toThrow();
   });
 });

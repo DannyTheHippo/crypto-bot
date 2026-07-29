@@ -1121,20 +1121,27 @@ export class AnthropicAgentClient implements AgentClientPort {
     // symbol only, mirroring the per-symbol loop below).
     if (envelope.data.stop_reason === 'refusal') {
       this.logger.warn('anthropic api: model refused to decide (portfolio batch)');
-      resolved.forEach((r, i) => {
-        proposals.set(r.symbolKey, {
-          signals: [],
-          ...(i === 0 && usage ? { usage } : {}),
-          latencyMs,
-          playbookVersion: ctx.playbookVersion,
-          promptHash,
-          inputPayload: r.inputPayload,
-          consultId,
-          infoArm: ctx.infoArm,
-          thinkingArm: ctx.thinkingArm,
-        });
-      });
-      return { proposals, usage };
+      return this.softHoldBatch(
+        resolved,
+        usage,
+        latencyMs,
+        ctx.playbookVersion,
+        promptHash,
+        consultId,
+        ctx.infoArm,
+        ctx.thinkingArm,
+        // WATCH-V4-8: this was the last soft-hold branch H4 left decision-less, and the omission was
+        // load-bearing twice over — the row persisted byte-identical to a genuine model hold, and the
+        // liveness predicate (which excludes degrades by their rationale tag) had nothing to read, so a
+        // permanently refusing model would have kept the staleness gauge fresh. Same tag the
+        // single-symbol path stamps.
+        {
+          action: 'hold',
+          confidence: 0,
+          rationale:
+            'model_refusal: model declined to decide (stop_reason=refusal, portfolio batch)',
+        },
+      );
     }
 
     const toolBlock = envelope.data.content?.find(
@@ -1325,10 +1332,10 @@ export class AnthropicAgentClient implements AgentClientPort {
     consultId: string,
     infoArm: boolean,
     thinkingArm: boolean,
-    // 2026-07-22 schema-hardening: stamped on EVERY resolved symbol when the whole-batch schema
-    // rejection routes every symbol through this ONE soft-hold as a unit (the malformed-envelope/
-    // missing-tool-block callers above pass nothing here — those failure modes have no schema issue
-    // to account for).
+    // 2026-07-22 schema-hardening: stamped on EVERY resolved symbol, since a whole-batch degrade
+    // routes every symbol through this ONE soft-hold as a unit. Every caller now passes a tag (H4
+    // named the malformed-envelope/missing-tool-block ones, WATCH-V4-8 the refusal) — the parameter
+    // stays optional only so a future caller with no diagnosis to offer is not forced to invent one.
     decision?: AgentDecisionMeta,
   ): AgentProposeBatchResult {
     const proposals = new Map<string, AgentProposal>();

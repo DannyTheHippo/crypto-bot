@@ -120,7 +120,7 @@ Non-runtime artifacts live under `research/`:
 | Path | Role |
 | ---- | ---- |
 | `research/loop/{state,LOG}.md` | Tracked ops loop memory |
-| `research/loop/digests/` | Ignored collector/sweep runtime |
+| `research/loop/digests/` | Ignored sweep runtime (digest JSON + watermark) |
 | `research/scorecards/` | Tracked promoted eval/tournament scorecards |
 | `research/candidates/` | Ignored ephemeral dumps / jsonl |
 | `research/studies/` | Tracked study writeups |

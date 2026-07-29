@@ -41,14 +41,24 @@ candidate A/B, one unified `AGENTIC_DAILY_COST_STOP_USD=$3/day` breaker. NOTE: t
 `plans/2026-07-v3-consolidation-spec.md` is git-history-only (2026-07-21 owner md prune) — read
 any "spec §N" citation in this playbook via `git show`.
 
-## 1. Rehydrate — from digest history, never a raw log window
+## 1. Rehydrate — from durable metrics, never a raw log window
 
-Start every pass from the collector's durable history, NOT a 24h `docker logs` window (the
-raw-window model is exactly what made R8-7's day-long spot-decide suppression invisible; Y1 §D).
-`loop:digests`/`loop:sweep`/`loop:collect` are single-app shaped (Y2/Y3 rebuilt for v3): one app
-container to inspect, per-venue reconcile alarms so one venue's HALT is never masked by the
-other's clean rows, the unified $3/day budget gauge, and a genuinely single-process RSS reading
-(one process now serves both venues, so RSS is no longer split per lane).
+Start every pass from durable, queryable history, NOT a 24h `docker logs` window (the raw-window
+model is exactly what made R8-7's day-long spot-decide suppression invisible; Y1 §D).
+
+**The hourly collector daemon was RETIRED 2026-07-29** and `loop:digests`/`loop:collect` no longer
+exist. It scraped from outside what the app can publish itself — `pmset`/`sysctl`/`uptime` for host
+state, a `docker logs` tail for the error picture, the working-tree tip for the deployed commit —
+and it failed silently twice in nine days (nine cycles of `deltas:null` after surviving the v3
+cutover; then 49.6h dead with no host reboot). The app now emits all three as metrics
+(`app_log_events_total`, `app_suspend_events_total` + `app_wall_clock_skew_seconds`, `build_info`),
+Prometheus retains them for 90d, and `loop:sweep` reads them. Rehydration is therefore ONE command
+(§2) instead of a daemon plus a reader.
+
+What the retirement cost, stated plainly: there is no longer a per-hour series of counter deltas —
+the sweep sees the window between passes, not each hour inside it. Nothing consumed that series (the
+180 hourly `sweep-*.json` files were written and read by nothing), but a future question that needs
+per-hour resolution must go to Prometheus range queries, not to a digest file.
 
 Run all stack commands sandbox-disabled (`dangerouslyDisableSandbox: true`); never `cd` into the
 repo (the fnm hook breaks) — use `git -C <repo>` / `corepack pnpm --dir <repo>` / PATH-prefixed
@@ -68,9 +78,10 @@ Read in this order:
    mid-verification (state.md § Flagged). Two honest limits: the lease is time-based (2h, fails OPEN
    — it cannot detect a dead holder, only an expired one), and it binds only passes that call it, so
    a refusal is evidence of overlap while a clean acquire is NOT proof of its absence.
-4. `corepack pnpm --dir <repo> loop:digests <last-pass-ISO>` — every collector digest line since
-   the last pass (both the hot dir and `digests/archive/`). This is the rehydration base: per-cycle
-   counter deltas, fired alarms, host duty-cycle gaps, bootId provenance.
+4. `corepack pnpm --dir <repo> loop:sweep` — the rehydration base AND the evidence sweep, one run
+   (§2). It carries counter deltas since the last sweep, everything Prometheus fired and resolved in
+   the last 12h, the error/warn breakdown from the log-event counter, host duty cycle from
+   `app_suspend_events_total`, and bootId + running-build provenance.
 5. `research/loop/state.md` — the loop's only mutable memory: open WATCH lines, backlog, last-pass
    pointer, settled owner decisions (NOT re-openable by a pass — a pass that disputes one writes the
    argument into the report, never acts).
@@ -78,8 +89,11 @@ Read in this order:
    committing: on 2026-07-28 two foreign commits landed on `main` mid-pass (§ the lease above).
 7. Project memory index (auto-loaded) — env quirks, validation recipes.
 
-If the digest history has a host-sleep gap (annotated gap line), that window is dark — the stack
-runs on a sleeping MacBook; check `pmset -g log`/`uptime` before suspecting a bug (Y1 §D host-state).
+If the sweep carries an `app_suspended` annotation, that window is dark — the stack runs on a
+sleeping MacBook and the app process was frozen with it; treat counter gaps across it as duty cycle
+before suspecting a bug (Y1 §D host-state). That annotation is measured from inside the suspended
+process (wall-clock advance minus monotonic advance), so unlike the old `pmset` read it describes
+the thing that actually stopped.
 
 ## 2. Evidence sweep — `pnpm loop:sweep` IS the sweep
 
@@ -87,10 +101,17 @@ Run `corepack pnpm --dir <repo> loop:sweep` (sandbox-disabled). It is the whole 
 hand-run docker/promtool command list from the pre-Y2 era was RETIRED, and the tool was itself
 rebuilt single-app-shaped for v3 (`scripts/loop-sweep.mjs` header). It is deterministic and
 metrics/DB-first: host duty-cycle state, then the one app container's provenance (health +
-RestartCount + StartedAt + bootId + git tip) BEFORE any counter, then bootId-pinned liveness deltas
-(`agentic_consult_gate_total` by outcome, `agent_decisions` count + latest `created_at`, fills,
-per-venue reconciliations tail, kill-switch state, ws forced-reconnects, single-process RSS, LLM
-cost-vs-breaker proximity against the ONE $3/day breaker).
+RestartCount + StartedAt + bootId + running build + git tip) BEFORE any counter, then bootId-pinned
+liveness deltas (`agentic_consult_gate_total` by outcome, `agent_decisions` count + latest
+`created_at`, fills, per-venue reconciliations tail, kill-switch state, ws forced-reconnects,
+single-process RSS, LLM cost-vs-breaker proximity against the ONE $3/day breaker), plus the
+app-emitted replacements for the retired collector: the log-event counter, suspend evidence, and the
+deployed git sha.
+
+The log-event counter is reported TWICE and the two numbers legitimately differ — `increase()` over
+the 12h window undercounts a message class first seen inside that window (prom-client creates a
+label child lazily, so its first and last sample are equal), while the since-boot cumulative is exact
+but blind before the last restart. Read the larger as the floor; neither over-reports.
 
 The digest's alarms and annotations ARE the pass's evidence base. Rules that bind every sweep:
 

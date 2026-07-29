@@ -399,10 +399,52 @@ never changes for strategy evolution.
   Prometheus rule that fires between passes appears in exactly one of the two alert lists. Named defect
   outcome: an incident is later found in the container log or the DB that appeared in NEITHER list ⇒ the
   ALERTS series is not the complete record this assumes — check `alert_window_partial` for that pass
-  first, since a scrape hole explains it without any code being wrong. **Open sub-item:** the collector
-  daemon holds the OLD sweep code in memory until restarted, so hourly digests lag the pass-run sweep
-  (Pass 45 could not restart it — `kill` denied to that session, and a second collector would break the
-  single-writer watermark discipline).
+  first, since a scrape hole explains it without any code being wrong. **Open sub-item RESOLVED BY
+  DELETION 2026-07-29** — there is no collector daemon left to hold stale code (see the record below).
+- **THE COLLECTOR DAEMON WAS RETIRED; THE APP EMITS WHAT IT USED TO SCRAPE (owner-directed,
+  2026-07-29, `af67acf` + follow-up).** Owner framing: "the collector daemon must not run in the
+  background; it should be part of the app runtime. this is why we have observability."
+  The daemon read the app the hard way — 21 blocking `spawnSync` calls a tick, 16 of them `docker`,
+  plus `pmset`/`sysctl`/`uptime` — and every one was a workaround for a fact the app could publish
+  itself. It also failed silently twice in nine days (nine `deltas:null` cycles after surviving the v3
+  cutover; 49.6h dead with no host reboot). Lifting it INTO the container was rejected: that needs
+  `/var/run/docker.sock` mounted into the trading process, and a collector inside `crypto-bot-app-1`
+  cannot report that `crypto-bot-app-1` is down.
+  Three metric families replace the four things only it could capture: `app_log_events_total{level,event}`
+  (pino `logMethod` hook, 60-key cardinality cap, fails OPEN on the log path) for the error scan;
+  `app_suspend_events_total` + `app_wall_clock_skew_seconds` (wall-vs-monotonic divergence on the
+  existing 5s sampler, no new timer) for host duty cycle; `build_info{git_sha}` for deploy provenance.
+  Prometheus retention was never configured — it ran on the 15d image default — and is now 90d + 8GB
+  because the TSDB is the between-pass memory. `AppErrorLogRateElevated` (warning, error|fatal only —
+  no warn baseline exists yet) makes the counter arrive instead of waiting to be queried.
+  **Expected-positive:** every pass's sweep carries `running build`, `host duty cycle`, and a two-reading
+  `log events` line, all with real values; the since-boot log-event total agrees with the `docker logs`
+  warn+ count over the same span. Verified live at ship: counter 4+2+1 vs tail 4+2+1.
+  **Named defect outcome:** an incident found in the container log that moved NEITHER log-event reading
+  ⇒ the pino hook is not on the path assumed (check that `pinoHttp.logger` is still the constructed
+  instance — pino-http silently builds its own, unhooked and unredacted, if that option is dropped).
+  **Two open threads:** (1) the old daemon process (pid 64361) is STILL RUNNING on in-memory code —
+  `kill` was denied to this session as it was to Pass 45 — so it keeps advancing `.watermark.json`
+  hourly until an owner runs `kill -TERM 64361` or the host reboots; its scripts are deleted, so it
+  cannot restart. No regression (that is exactly today's behaviour), but the watermark is not yet
+  pass-to-pass. (2) The windowed-query refactor that would delete `.watermark.json` outright was
+  SEPARATED, not done — see the record below.
+- **DEFERRED: windowed queries replacing the watermark (2026-07-29).** The plan for the collector
+  retirement also proposed making every delta a windowed query — `increase(x[w])` for Prometheus,
+  `where ts > now()-w` for Postgres — which would delete `.watermark.json` and the whole single-writer
+  discipline with it. Separated after the discovery that it is NOT required by the retirement: with the
+  daemon gone the watermark advances once per pass, which is the granularity inter-pass deltas always
+  wanted. It remains worth doing — any ad-hoc `pnpm loop:sweep` still silently shortens the next pass's
+  window — but it is a 580-line rewrite of the spec suite that encodes the loop's defect-class
+  knowledge, and stacking it on the daemon removal put the loop's own safety net at risk in a single
+  pass. **Not a blocker; a named, dated follow-up.**
+- **A PROVENANCE GUARD THAT WAS RESOLVING AMBIGUITY BY ARRAY ORDER (found 2026-07-29 during the
+  above).** For a few minutes after every redeploy Prometheus serves the PREVIOUS boot's `boot_info`
+  alongside the new one, and `gather()` took `[0]`. Picking the stale id is not cosmetic: the core
+  computes deltas ONLY when bootId matches the watermark, so the old id MATCHED and a cross-boot delta
+  passed the `boot_changed` guard. Caught live — two sweeps 90s apart, unchanged `StartedAt`, different
+  bootIds, the first reporting `decides:120` across a boot boundary. `resolveBootId` now refuses to pick
+  when more than one id is served, which fails toward `probe_failed[bootId]` and suppresses the deltas.
 - **A MENU CHOSEN FROM A QUARTER OF THE BASKET, AND A COUNTER THAT READ AS A BROKEN PROBE (Pass 44,
   2026-07-28).** Both were live for days, both were invisible to a green sweep, and both were found by
   reading what the stack actually published rather than whether it was healthy.

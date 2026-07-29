@@ -325,6 +325,23 @@ export function parseAlertsFiredWithin(res, { currentlyFiringNames = [] } = {}) 
   return { ok: true, value: { resolved: [...byName.values()], lookbackMs: ALERT_LOOKBACK_MS } };
 }
 
+// ── bootId provenance, with ambiguity refused rather than resolved by array order ────────────────
+// Extracted and exported because it is a provenance GUARD, and an untested guard is a guard that
+// silently stops guarding. See its call site in gather() for the incident that motivated it.
+export function resolveBootId(bootInfoSeries) {
+  if (!bootInfoSeries.ok) return { bootId: null, error: null };
+  const ids = [...new Set(bootInfoSeries.value.map((s) => s.labels.boot_id).filter(Boolean))];
+  if (ids.length === 1) return { bootId: ids[0], error: null };
+  if (ids.length === 0) return { bootId: null, error: null };
+  return {
+    bootId: null,
+    error:
+      `boot_info served ${ids.length} boot ids at once (${ids.join(', ')}) — a redeploy is ` +
+      'mid-flight and provenance is unresolvable this sweep, so deltas are suppressed rather than ' +
+      'computed against whichever id was printed first',
+  };
+}
+
 // ── psql single-row `-Atc` parsing: pipe-delimited columns on one line ───────────────────────────
 function parsePsqlRow(res) {
   if (!res.ok) return { ok: false, error: res.error };
@@ -358,11 +375,24 @@ function gather() {
   }
 
   // bootId — from the boot_info metric label (metrics-first, §D: survives a NOOP_LOGGER the logs
-  // do not). One series carries boot_id.
-  let bootId = null;
-  const bootInfo = parsePromSeries(promQuery('boot_info'));
-  if (bootInfo.ok && bootInfo.value.length > 0) {
-    bootId = bootInfo.value[0].labels.boot_id || null;
+  // do not).
+  //
+  // AMBIGUITY IS REFUSED, never resolved by array order. For a few minutes after every redeploy
+  // Prometheus can still serve the PREVIOUS boot's series alongside the new one (the old child is
+  // gone from the exposition but its last sample is inside the instant-query lookback until a
+  // staleness marker lands), so `boot_info` legitimately returns two series with one `instance`.
+  // Taking [0] then picks by whatever order promtool printed — and picking the stale one is not a
+  // cosmetic error: the core computes deltas ONLY when bootId matches the watermark, so reading the
+  // old id makes a cross-boot delta pass that guard and fabricate a window that never existed.
+  // Observed live 2026-07-29: two sweeps 90s apart, unchanged StartedAt, different bootIds, and the
+  // first reported decides:120 across a boot boundary.
+  //
+  // Fails toward disclosure: an unresolved bootId becomes probe_failed[bootId] in the core, which
+  // suppresses deltas rather than guessing — the same direction a missing probe already takes.
+  const boot = resolveBootId(parsePromSeries(promQuery('boot_info')));
+  const bootId = boot.bootId;
+  if (boot.error) {
+    probes.bootInfo = { ok: false, error: boot.error };
   }
 
   // agent_decisions liveness (count + latest created_at as epoch ms) — account-level: the one
@@ -524,6 +554,90 @@ function gather() {
     expectedAlertNames: readExpectedAlertNames(ALERT_RULES_PATH),
     nowMs: Date.now(),
   });
+
+  // ── the in-app replacements for what the retired collector daemon scraped from outside ──────────
+  const windowS = Math.round(ALERT_LOOKBACK_MS / 1000);
+
+  // app_log_events_total is the DURABLE half of the error scan. The `docker logs` tail below is still
+  // read, but only for narrative — its window is whatever the log rate makes it and a container
+  // recreate erases it outright, whereas this survives in the TSDB for the retention horizon and
+  // covers exactly the window the pass reasons over.
+  //
+  // TWO readings, because neither alone is honest here:
+  //   window — increase() over the lookback. Correct across process restarts (it sums pre- and
+  //     post-reset), but it UNDERCOUNTS a label child born inside the window: prom-client creates a
+  //     child lazily at its first increment, so a message class that fired once has an identical
+  //     first and last sample and increase() reads 0. Same first-sample trap alerts.rules.yml
+  //     documents for AgenticReflectionNeverMinted.
+  //   boot — the raw cumulative. Exact for everything since the current process started, immune to
+  //     the newborn-child problem, and blind to anything before the last restart.
+  // Together they bracket the truth: `boot` is the exact floor for this boot, `window` reaches back
+  // across restarts. Reported side by side rather than reconciled, because collapsing them would
+  // require guessing which failure mode applied.
+  probes.logEvents = (() => {
+    const sumByLevel = (expr) => {
+      const res = parsePromSeries(promQuery(expr));
+      if (!res.ok) return null;
+      const out = {};
+      for (const s of res.value) {
+        if (s.labels.level) out[s.labels.level] = s.value;
+      }
+      return out;
+    };
+    const byLevelWindow = sumByLevel(
+      `sum by (level) (increase(app_log_events_total[${windowS}s]))`,
+    );
+    if (byLevelWindow === null) {
+      return { ok: false, error: 'app_log_events_total window query returned no parseable series' };
+    }
+    const byLevelBoot = sumByLevel('sum by (level) (app_log_events_total)') || {};
+    // `none` is the zero-materialising child (log-event-metrics.ts), never a real event — excluded so
+    // the top list carries only things that actually happened. Ranked on the since-boot value, the
+    // exact one.
+    const topRes = parsePromSeries(
+      promQuery(`topk(5, sum by (level, event) (app_log_events_total{event!="none"}))`),
+    );
+    const top = topRes.ok
+      ? topRes.value
+          .filter((s) => s.value > 0)
+          .map((s) => ({
+            level: s.labels.level || 'unknown',
+            event: s.labels.event || '?',
+            count: s.value,
+          }))
+          .sort((a, b) => b.count - a.count)
+      : [];
+    return { ok: true, value: { byLevelWindow, byLevelBoot, top, windowMs: ALERT_LOOKBACK_MS } };
+  })();
+
+  // Host duty cycle, measured from INSIDE the suspended process rather than from `pmset`/`uptime` on
+  // the host. The gauge is per-tick, so the window's max is the largest single freeze in it.
+  probes.suspends = (() => {
+    const count = promScalar(promQuery(`increase(app_suspend_events_total[${windowS}s])`));
+    if (!count.ok) return count;
+    const maxSkew = promScalar(
+      promQuery(`max_over_time(app_wall_clock_skew_seconds[${windowS}s])`),
+    );
+    return {
+      ok: true,
+      value: {
+        count: count.value,
+        maxSkewSeconds: maxSkew.ok ? maxSkew.value : null,
+        windowMs: ALERT_LOOKBACK_MS,
+      },
+    };
+  })();
+
+  // Which build is actually serving — the deploy-provenance fact the collector used to stamp on every
+  // hourly digest line from the working tree. Read from the RUNNING process, which is the version that
+  // matters; the working-tree tip is recorded separately and the two legitimately differ mid-pass.
+  probes.build = (() => {
+    const s = parsePromSeries(promQuery('build_info'));
+    if (!s.ok) return s;
+    if (s.value.length === 0)
+      return { ok: false, error: 'empty instant vector (no build_info series)' };
+    return { ok: true, value: { gitSha: s.value[0].labels.git_sha || 'unknown' } };
+  })();
 
   // Parsed only now, once the live names exist to subtract. When promAlerts failed there are no names,
   // so everything in the window would read as resolved — the core voids the whole probe in that case
@@ -695,6 +809,38 @@ function renderMarkdown({ sweptIso, host, git, app, result }) {
                   .join('; ')
       }`,
     );
+    // Deploy provenance from the RUNNING process. Rendered rather than annotated: a pass that has
+    // just committed legitimately sits ahead of the deployed image, so a drift annotation would fire
+    // on almost every pass and teach the reader to skip it. Stated as fact, next to the tree tip it
+    // should be compared against.
+    const bi = app.probes && app.probes.build;
+    L.push(
+      `- running build: ${bi && bi.ok ? bi.value.gitSha : `probe_failed — ${(bi && bi.error) || 'no result'}`}` +
+        ` (working tree ${git ?? 'n/a'})`,
+    );
+    const sus = app.probes && app.probes.suspends;
+    if (sus && sus.ok) {
+      L.push(
+        `- host duty cycle: ${Math.round(sus.value.count)} suspend(s) in ${ALERT_LOOKBACK_MS / 3_600_000}h` +
+          `${Number.isFinite(sus.value.maxSkewSeconds) ? `, longest ${(sus.value.maxSkewSeconds / 60).toFixed(0)}min` : ''}`,
+      );
+    } else {
+      L.push(`- host duty cycle: probe_failed — ${(sus && sus.error) || 'no result'}`);
+    }
+    const le = app.probes && app.probes.logEvents;
+    if (le && le.ok) {
+      const fmt = (m) =>
+        ['fatal', 'error', 'warn'].map((lv) => `${lv}=${Math.round((m || {})[lv] ?? 0)}`).join(' ');
+      L.push(
+        `- log events — ${ALERT_LOOKBACK_MS / 3_600_000}h window: ${fmt(le.value.byLevelWindow)} · ` +
+          `this boot (exact): ${fmt(le.value.byLevelBoot)}`,
+      );
+      for (const t of le.value.top.slice(0, 5)) {
+        L.push(`  - ${Math.round(t.count)}× [${t.level}] ${t.event} (this boot)`);
+      }
+    } else {
+      L.push(`- log events: probe_failed — ${(le && le.error) || 'no result'}`);
+    }
     const es = app.errorScan;
     if (es.ok) {
       // The span is stated next to the count because the count alone reads as a whole-window verdict
@@ -712,11 +858,12 @@ function renderMarkdown({ sweptIso, host, git, app, result }) {
 }
 
 // One read-only pass: gather probes, run the pure core, persist the sweep JSON + advance the
-// watermark, and return the digest object + rendered markdown. In-process callers (loop-collect.mjs)
-// reuse this so a collector tick and a `pnpm loop:sweep` invocation share one code path — the watermark
-// advances identically whether the interval driver is a human CLI run or the standing collector. A
-// probe failure is data on the returned digest; only a tool-level crash throws (the CLI wrapper and
-// the collector each decide how to surface that).
+// watermark, and return the digest object + rendered markdown. Exported rather than inlined into
+// main() because the hourly collector daemon used to drive it in-process; that daemon was retired
+// 2026-07-29 (the app emits what it used to scrape), so `pnpm loop:sweep` is now the ONLY driver and
+// the watermark advances once per pass rather than once an hour — which is the granularity the
+// inter-pass deltas always wanted. A probe failure is data on the returned digest; only a tool-level
+// crash throws.
 export function runSweep() {
   const sweptAtMs = Date.now();
   const sweptIso = new Date(sweptAtMs).toISOString();
@@ -758,8 +905,8 @@ function main() {
   process.stderr.write(`loop-sweep: digest written to ${digestPath}\n`);
 }
 
-// CLI entry-point guard: run the sweep ONLY when executed directly. An `import` (loop-collect.mjs
-// reuses runSweep) must NOT fire a full blocking sweep as an import side effect.
+// CLI entry-point guard: run the sweep ONLY when executed directly. An `import` (the spec suite
+// imports runSweep's siblings) must NOT fire a full blocking sweep as an import side effect.
 const invokedDirectly = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (invokedDirectly) {
   try {

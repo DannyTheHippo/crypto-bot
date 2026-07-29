@@ -1,5 +1,5 @@
 // Pure decision core for the pass-concurrency lease (scripts/loop-pass-lock.mjs is the thin IO
-// wrapper). Split out for the same reason loop-sweep-core.mjs and loop-collect-core.mjs are: the
+// wrapper). Split out for the same reason loop-sweep-core.mjs is: the
 // interesting behaviour is the classification, and a guard shipped without tests is a guard nobody
 // has checked. Every function here is pure — no fs, no clock, no process.
 //

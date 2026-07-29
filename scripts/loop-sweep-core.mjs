@@ -39,11 +39,16 @@ export const HOST_SLEEP_GAP_FACTOR = 2;
 // so a runaway is flagged BEFORE the pool zeroes and starves the process.
 export const COST_PROXIMITY_RATIO = 0.8;
 
-// How far back a pass asks Prometheus "did anything fire while nobody was looking". Sized off the
-// design inter-pass gap above with margin, NOT off the watermark: the standing collector sweeps
-// hourly and advances the watermark every tick, so a watermark-sized window would be ~1h and would
-// miss exactly the incidents this lookback exists to surface. 1.5x8h covers a slipped pass without
-// reaching so far back that a pass re-reads week-old history.
+// How far back a pass asks Prometheus "did anything fire while nobody was looking", and the window
+// every other TSDB-backed retrospective probe uses (log events, suspends). Sized off the design
+// inter-pass gap above with margin. 1.5x8h covers a slipped pass without reaching so far back that a
+// pass re-reads week-old history.
+//
+// It was deliberately NOT sized off the watermark while the hourly collector daemon existed, because
+// that daemon advanced the watermark every tick and a watermark-sized window would have been ~1h.
+// The daemon was retired 2026-07-29 (the app emits these facts itself now), so the watermark and the
+// inter-pass gap coincide again — but this stays fixed and independent of the watermark, because a
+// pass that runs a second ad-hoc sweep must not silently shrink its own retrospective window.
 export const ALERT_LOOKBACK_MS = 1.5 * EXPECTED_SWEEP_INTERVAL_MS;
 
 // How close a log tail's oldest line must sit to the container's StartedAt to count as reaching boot.
@@ -438,6 +443,62 @@ function computeApp(prev, cur, elapsedMs = null, nowMs = null) {
           detail,
         });
       }
+    }
+  }
+
+  // ── what the retired collector daemon used to scrape from outside, now emitted by the app ────────
+  // Host duty cycle. The daemon read `pmset -g ps` / `sysctl kern.boottime` / `uptime` — host facts,
+  // from a process that was never the one suspended, and unavailable to anything running in a Linux
+  // container. app_suspend_events_total is the same question asked from inside: wall-clock advance
+  // minus monotonic advance across one 5s tick, which across a Docker-VM freeze IS the freeze.
+  // Annotation, never an alarm: a sleeping laptop is this stack's documented duty cycle, and the
+  // reason to surface it is to stop a pass blaming counters for a gap the host caused (§D host-state).
+  const suspends = probes.suspends;
+  if (suspends && suspends.ok === true && suspends.value && suspends.value.count > 0) {
+    const skew = suspends.value.maxSkewSeconds;
+    annotations.push({
+      kind: 'app_suspended',
+      probe: 'suspends',
+      detail:
+        `the app process was frozen ${Math.round(suspends.value.count)} time(s) in the last ` +
+        `${ALERT_LOOKBACK_MS / 3_600_000}h` +
+        `${Number.isFinite(skew) ? `, longest ${(skew / 60).toFixed(0)}min` : ''} — ` +
+        'counter gaps across that window are host duty cycle, not necessarily a defect',
+    });
+  }
+
+  // Error/warn volume, from the counter rather than the log tail. This is the DURABLE half: it covers
+  // the full lookback and survives the container recreate that deletes the json-file log outright,
+  // which is what let a 49-minute venue outage reach a pass with no trace at all (2026-07-29). Zero is
+  // a real, trustworthy read here — log-event-metrics.ts materialises the warn/error/fatal children at
+  // 0, so a quiet app exports actual zeros instead of the empty vector that would be a §C.9 void.
+  //
+  // The probe carries two readings that fail in opposite directions (see its own comment in the
+  // runner): the windowed one undercounts a message class first seen inside the window, the
+  // since-boot one is exact but blind before the last restart. Taking the MAX is the only
+  // non-guessing reduction — whichever is larger is a count that genuinely occurred, so the
+  // annotation can never over-report, and it can only under-report the case where both readings are
+  // individually blind to different halves of the window.
+  const logEvents = probes.logEvents;
+  if (logEvents && logEvents.ok === true && logEvents.value) {
+    const errorsIn = (m) => ((m || {}).error || 0) + ((m || {}).fatal || 0);
+    const windowErrors = errorsIn(logEvents.value.byLevelWindow);
+    const bootErrors = errorsIn(logEvents.value.byLevelBoot);
+    const errors = Math.max(windowErrors, bootErrors);
+    if (errors > 0) {
+      const top = (logEvents.value.top || [])
+        .filter((t) => t.level === 'error' || t.level === 'fatal')
+        .slice(0, 3)
+        .map((t) => `${Math.round(t.count)}x ${t.event}`)
+        .join(', ');
+      annotations.push({
+        kind: 'log_errors_in_window',
+        probe: 'logEvents',
+        detail:
+          `${Math.round(errors)} error/fatal log line(s) ` +
+          `(${Math.round(windowErrors)} over the ${ALERT_LOOKBACK_MS / 3_600_000}h window, ` +
+          `${Math.round(bootErrors)} since this boot)${top ? ` — ${top}` : ''}`,
+      });
     }
   }
 

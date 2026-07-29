@@ -33,6 +33,7 @@ import {
   RECON_CONFIG,
   type ExecutionStorePort,
   type ReconConfig,
+  AXIS_NOT_RUN,
 } from '../../../ports/trading/execution';
 import { OPS_EVENTS, type OpsEventPort } from '../../../ports/common/observability';
 import { KILL_SWITCH, type KillSwitchPort } from '../../../ports/trading/risk';
@@ -63,6 +64,20 @@ type MismatchClass =
 interface PassAccumulator {
   readonly mismatches: Map<MismatchClass, number>;
   readonly halts: string[];
+  // Audit counts for the reconciliations row (2026-07-29). Mutable by design: each axis adds what it
+  // actually examined, so a row records the work the pass did rather than a constant.
+  //
+  // READ A ZERO CAREFULLY — it has THREE causes on the symbol-swept axes, and only the first means
+  // "the venue had none": (1) swept and genuinely empty; (2) every symbol's sweep THREW, so the venue
+  // was never read at all (the documented live shape — 93,738 binance sweep_failure increments over
+  // 39h on 2026-07-27); (3) the venue's symbol set is empty. Cases 2 and 3 are absences of
+  // observation, not observations of absence. `sweep_failure` in the same row's mismatch classes
+  // separates 1 from 2 — except where a halt from another axis takes over `detail`, which is why this
+  // note exists rather than a claim that a 0 is self-explanatory. A DISABLED axis is the one case
+  // encoded in-band: it writes AXIS_NOT_RUN (below), never 0.
+  openOrdersChecked: number;
+  tradesChecked: number;
+  balancesChecked: number;
 }
 
 // `mismatches` stays the RAW total every pre-existing consumer already reads (the reconciliations
@@ -420,7 +435,14 @@ export class ReconciliationService {
   }
 
   private async reconcileOnce(exchange: ExchangePort, cfg: ReconConfig): Promise<PassResult> {
-    const acc: PassAccumulator = { mismatches: new Map(), halts: [] };
+    const acc: PassAccumulator = {
+      mismatches: new Map(),
+      halts: [],
+      openOrdersChecked: 0,
+      tradesChecked: 0,
+      balancesChecked: 0,
+    };
+    const startedAt = this.clock.now();
 
     // An axis throw past its own per-item guards must still land in the reconciliations row and the
     // runs counter — a pass that silently never completes is indistinguishable from a healthy idle
@@ -450,11 +472,21 @@ export class ReconciliationService {
     }
 
     const mismatchTotal = totalMismatches(acc);
+    const finishedAt = this.clock.now();
     await this.store.saveReconciliation({
-      ts: this.clock.now(),
+      ts: finishedAt,
       venue: exchange.venue,
       mismatches: mismatchTotal,
       halted,
+      // Measured across the whole axis chain including a thrown pass — an errored pass's cost is the
+      // most interesting duration there is (the 2026-07-28 venue outage ran passes to timeout).
+      // Clamped: measurement-only, feeds no decision, so it fails OPEN on a backwards wall clock.
+      durationMs: Math.max(0, finishedAt - startedAt),
+      openOrdersChecked: acc.openOrdersChecked,
+      tradesChecked: acc.tradesChecked,
+      // Distinguishes "compared no assets" from "the axis never ran", which is the live case: every
+      // configured venue is `demo`, so venueReconConfig turns balanceAxis off on all of them.
+      balancesChecked: cfg.balanceAxis ? acc.balancesChecked : AXIS_NOT_RUN,
       detail:
         passError !== undefined
           ? `PASS_ERROR:${describeError(passError)}`
@@ -550,6 +582,7 @@ export class ReconciliationService {
         failedSymbols.add(symbol);
       }
     }
+    acc.openOrdersChecked += venueOpen.length;
     const localOpen = this.portfolio.snapshot().openOrders;
     const localCoids = new Set<string>(localOpen.map((o) => o.clientOrderId));
     const venueCoids = new Set<string>(venueOpen.map((o) => o.clientOrderId));
@@ -691,6 +724,7 @@ export class ReconciliationService {
         bump(acc, 'sweep_failure'); // could not sweep this symbol's trades — surfaced
         continue;
       }
+      acc.tradesChecked += trades.length;
       for (const t of trades) {
         await this.reconcileTrade(exchange, t, byVenueId, acc);
         if (t.venueTimestamp > (this.checkpoints.get(key) ?? 0))
@@ -927,6 +961,7 @@ export class ReconciliationService {
       return;
     }
     const local = this.portfolio.snapshot().balances;
+    acc.balancesChecked += local.size;
     for (const [asset, bal] of local) {
       const localTotal = bal.free.add(bal.locked);
       const v = venueBalances.get(asset);

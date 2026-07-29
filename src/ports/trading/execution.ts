@@ -227,13 +227,41 @@ export interface RecoveredOpenOrder {
   readonly intent: OrderIntent | null;
 }
 
+// An axis that did not RUN at all writes this instead of a count, because 0 already means "ran and
+// examined nothing" and the two must not collide — the whole point of the 2026-07-29 repair. Negative
+// by design: the columns are signed integers, so the sentinel is storable, sorts below every real
+// count, and cannot be mistaken for one.
+export const AXIS_NOT_RUN = -1;
+
 // §6.4 reconciliation audit row.
+// The four count fields below were columns on the table from the start but were written as a
+// hardcoded 0 by the only persisting store, so all 23,973 rows since the v3 cutover recorded nothing
+// (found 2026-07-29). They are part of the contract now so a store cannot invent them: an audit row
+// that cannot say what the pass examined is not an audit row.
+//
+// SCOPE LIMIT on openOrdersChecked, stated because the value was already misread once: it counts
+// REGULAR-rail open orders only (ExchangePort.fetchOpenOrders). Venue-side protective/algo stops live
+// behind fetchOpenAlgoOrders and this axis never calls it, so NO value of this field — zero or not —
+// is evidence about resting protective orders. state.md's 2026-07-28 "the venue reports
+// open_orders_checked=0 on every reconcile" was wrong twice over: the number was a constant, and the
+// question it was answering is not one this field can answer.
 export interface ReconciliationRow {
   readonly ts: EpochMs;
   readonly venue: string;
   readonly mismatches: number;
   readonly halted: boolean;
   readonly detail: string;
+  // Wall-clock across the whole axis chain, including a thrown pass. Measurement-only: it feeds no
+  // decision anywhere, so it fails OPEN — a backwards wall-clock step (SystemClock is Date.now() on a
+  // host that sleeps) reads as 0 rather than propagating a negative.
+  readonly durationMs: number;
+  // Venue-returned rows examined, or AXIS_NOT_RUN.
+  readonly openOrdersChecked: number;
+  readonly tradesChecked: number;
+  // LOCAL assets compared against venue truth — not a count of venue balances. A venue asset with no
+  // local entry is never compared, so this is deliberately the local denominator. AXIS_NOT_RUN
+  // whenever balanceAxis is off, which is every demo venue, i.e. the entire current deployment.
+  readonly balancesChecked: number;
 }
 
 // §6.4 reconciliation tunables. epsAbs/epsRel form the per-asset balance tolerance band; overlapMs

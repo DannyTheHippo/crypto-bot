@@ -25,7 +25,7 @@ import type {
   VenueFill,
   VenuePosition,
 } from '../../../../src/ports/venue/exchange';
-import type { ReconConfig } from '../../../../src/ports/trading/execution';
+import { AXIS_NOT_RUN, type ReconConfig } from '../../../../src/ports/trading/execution';
 import type { OpsEvent, OpsEventPort } from '../../../../src/ports/common/observability';
 import type { VenueRuntimeDescriptor } from '../../../../src/ports/venue/venue-registry';
 import { fixedFeed, killSwitchStub, makeFill, makeIntent, SYM, T, V } from './helpers';
@@ -306,6 +306,55 @@ describe('ReconciliationService (§6.4)', () => {
     expect(ctx.store.reconciliations).toHaveLength(1);
     expect(ctx.store.reconciliations[0]!.detail).toBe('clean');
     expect(ctx.engages).toHaveLength(0);
+  });
+
+  // 2026-07-29: every reconciliations row written since the v3 cutover carried durationMs /
+  // openOrdersChecked / tradesChecked / balancesChecked as a literal 0 — the persisting store
+  // hardcoded them because ReconciliationRow never carried them, so 23,973 audit rows said nothing
+  // about the pass that wrote them, and `open_orders_checked=0` had already been cited as venue
+  // evidence when it was a constant. A constant is indistinguishable from a real measured zero, so
+  // this pins a NON-zero value on every field whose axis produced one.
+  it('the reconciliations row records what the pass actually examined, not a constant', async () => {
+    const ctxRef: { current?: Ctx } = {};
+    const ctx = build(
+      {
+        openOrders: [venueOrder('someoneElseOrder', 'open')],
+        // foreign trades: counted by the axis, ignored by classification — so the count is pinned
+        // NON-zero without dragging a halt into the assertion. A toBe(0) here would pass just as
+        // happily with the increment deleted, which is the whole failure mode being pinned.
+        trades: [trade('someoneElseTrade', 'foreign-1'), trade('someoneElseTrade', 'foreign-2')],
+        // fires mid-pass, after the open-orders axis and before the row is written
+        beforeTrades: () => ctxRef.current!.setNow(T + 250),
+      },
+      undefined,
+      undefined,
+      undefined,
+      { sweepSymbols: [SYM] },
+    );
+    ctxRef.current = ctx;
+    await ctx.recon.reconcile();
+
+    const row = ctx.store.reconciliations[0]!;
+    expect(row.openOrdersChecked).toBe(1); // the one open order the venue sweep returned
+    expect(row.tradesChecked).toBe(2); // both trades the sweep returned
+    expect(row.balancesChecked).toBe(1); // the local USDT balance the axis compared
+    expect(row.durationMs).toBe(250); // read off the clock across the pass, not a literal
+  });
+
+  // The deployed config is the one this matters for: every venue is `demo`, so venueReconConfig
+  // turns balanceAxis off and the count would otherwise be a 0 indistinguishable from the constant
+  // it replaced — on the ONLY configuration that actually runs.
+  it('a disabled axis writes AXIS_NOT_RUN, never a zero that reads as "compared nothing"', async () => {
+    const ctx = build({}, undefined, undefined, undefined, {
+      sweepSymbols: [SYM],
+      balanceAxis: false,
+    });
+    await ctx.recon.reconcile();
+
+    const row = ctx.store.reconciliations[0]!;
+    expect(row.balancesChecked).toBe(AXIS_NOT_RUN);
+    expect(row.balancesChecked).not.toBe(0);
+    expect(row.openOrdersChecked).toBe(0); // this axis DID run and found none — a measured zero
   });
 
   // Backlog #52: reconcile.pass is a diagnostic mirror of the same result the runsCounter increments —

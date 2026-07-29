@@ -9,6 +9,11 @@ export interface ReconciliationInsert {
   // VENUE_REGISTRY and writes one row per venue pass, so venue is required (no lane-wide aggregate
   // row exists).
   venue: string;
+  // 2026-07-29: the column defaults to now() and this field did not exist, so the store silently
+  // dropped ReconciliationRow.ts and every row was stamped at INSERT time instead of at the instant
+  // the pass measured. Identical in ordinary operation and different exactly when it matters — a slow
+  // or retried write. Carried explicitly now so the audit row's clock is the pass's clock.
+  ts: Date;
   durationMs: number;
   openOrdersChecked: number;
   tradesChecked: number;

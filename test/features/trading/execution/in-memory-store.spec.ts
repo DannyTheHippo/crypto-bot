@@ -267,6 +267,10 @@ describe('InMemoryExecutionStore', () => {
       mismatches: 0,
       halted: false,
       detail: 'clean',
+      durationMs: 42,
+      openOrdersChecked: 0,
+      tradesChecked: 0,
+      balancesChecked: 0,
     });
     expect(store.reconciliations).toHaveLength(1);
   });

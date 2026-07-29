@@ -273,10 +273,11 @@ export class DrizzleExecutionStore implements ExecutionStorePort {
       // v3 (consolidation spec §2): venue is now a first-class column (was folded into the
       // discrepancies jsonb blob only) — kept out of discrepancies now that it has its own column.
       venue: row.venue,
-      durationMs: 0,
-      openOrdersChecked: 0,
-      tradesChecked: 0,
-      balancesChecked: 0,
+      ts: new Date(row.ts),
+      durationMs: row.durationMs,
+      openOrdersChecked: row.openOrdersChecked,
+      tradesChecked: row.tradesChecked,
+      balancesChecked: row.balancesChecked,
       discrepancies: { mismatches: row.mismatches, detail: row.detail },
       result: row.halted ? 'HALT' : row.mismatches > 0 ? 'MISMATCH' : 'CLEAN',
       mode: this.ctx.mode,

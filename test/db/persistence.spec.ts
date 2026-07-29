@@ -911,6 +911,10 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
       mismatches: 0,
       halted: false,
       detail: 'clean',
+      durationMs: 1_234,
+      openOrdersChecked: 3,
+      tradesChecked: 7,
+      balancesChecked: 2,
     };
     const perpRow: ReconciliationRow = {
       ts: epochMs(1_800_080_100_000),
@@ -918,6 +922,10 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
       mismatches: 2,
       halted: false,
       detail: 'balance drift',
+      durationMs: 5_678,
+      openOrdersChecked: 0,
+      tradesChecked: 11,
+      balancesChecked: 0,
     };
     await store.saveReconciliation(spotRow);
     await store.saveReconciliation(perpRow);
@@ -927,9 +935,15 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
       result: string;
       discrepancies: { mismatches: number; detail: string; venue?: string };
       run_id: string;
+      ts: Date;
+      duration_ms: number;
+      open_orders_checked: number;
+      trades_checked: number;
+      balances_checked: number;
     }>(
-      `SELECT venue, result, discrepancies, run_id FROM public.reconciliations
-       WHERE run_id = 'run-recon-v3' ORDER BY venue`,
+      `SELECT venue, result, discrepancies, run_id, ts, duration_ms, open_orders_checked,
+              trades_checked, balances_checked
+       FROM public.reconciliations WHERE run_id = 'run-recon-v3' ORDER BY venue`,
     );
     expect(rows).toHaveLength(2);
     expect(rows[0]!.venue).toBe('binance');
@@ -939,6 +953,20 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
     expect(rows[1]!.venue).toBe('binanceusdm');
     expect(rows[1]!.result).toBe('MISMATCH');
     expect(rows[1]!.discrepancies).toEqual({ mismatches: 2, detail: 'balance drift' });
+    // 2026-07-29: these four were written as a literal 0 for every row since the v3 cutover, so the
+    // audit row could not say what the pass examined and one of them had been cited as venue
+    // evidence. Pinned per-row (not just "non-zero somewhere") so a future constant cannot pass.
+    expect(rows[0]!.duration_ms).toBe(1_234);
+    expect(rows[0]!.open_orders_checked).toBe(3);
+    expect(rows[0]!.trades_checked).toBe(7);
+    expect(rows[0]!.balances_checked).toBe(2);
+    expect(rows[1]!.duration_ms).toBe(5_678);
+    expect(rows[1]!.trades_checked).toBe(11);
+    // ts was dropped entirely by this store until 2026-07-29 — the column's now() default meant every
+    // row was stamped at INSERT time, so the port's timestamp reached nothing. Pinned to the supplied
+    // instant, which the default could never produce.
+    expect(rows[0]!.ts.toISOString()).toBe(new Date(1_800_080_000_000).toISOString());
+    expect(rows[1]!.ts.toISOString()).toBe(new Date(1_800_080_100_000).toISOString());
   });
 
   it('(i2) reconciliations.venue is NOT NULL', async () => {

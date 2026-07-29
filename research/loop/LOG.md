@@ -5484,3 +5484,123 @@ Grafana dashboard description change picks up on Grafana's own provisioning poll
    against. That arithmetic is worth re-deriving from spec §5.2 before funding lands, not after.
 4. Everything else still waits on funding, and funding should still be read against Pass 41's ENTRIES
    verdict first.
+
+---
+
+## 2026-07-28/29 — Pass 45 (incident-first: an outage that was over before anyone looked)
+
+**Window:** 2026-07-28T16:07Z → 2026-07-29T07:00Z (pass lease `7109445f81e18a20`, taken 16:07:14Z).
+Boot `899d4a09` throughout (StartedAt 2026-07-28T08:53:50Z, RestartCount 0 — one unbroken 22h boot,
+which is what made this pass's WATCH resolution possible).
+
+**Headline:** kill switch RUNNING · reconcile clean stamp 47-99s old all pass (WATCH-V4-1 holds) ·
+reconcile CLEAN-only both venues · fills 0 · **`agentic_budget_remaining_usd` = $3.00 of $3, i.e. the
+lane spent NOTHING in 22h** · `agent_decide_total` = `error_fatal` 67 + `client_latched` 197, and
+**zero successful decides on this boot** · `promotion_ready` has no series (0 closed round trips).
+Net-of-cost PnL unchanged and still negative; the promotion gate did not move, and could not.
+
+### The sweep fired one alarm, and the alarm was not the story
+
+`prometheus_alert_firing` — `AgentClientFatalLatch` (critical), firing since 10:45:25Z. Root cause is
+the already-flagged one, re-confirmed verbatim from the container log:
+`400 invalid_request_error: "Your credit balance is too low to access the Anthropic API."`
+Nine latch events, eight expiries, all on one boot. **Not a new finding and not fixable here** — see
+§ Flagged; purchasing credit is a financial action outside what an automated pass may take.
+
+The story is what the sweep could **not** show. Reading the container log directly rather than the
+sweep's summary turned up a **49-minute demo-fapi outage, 09:22:36Z → 10:11:34Z**: 293 perp fill-poll
+failures, 47 `reconcile sweep failure venue=binanceusdm axis=trades`, and a one-shot funding-ingest
+failure on all 16 perp symbols — request timeouts and `502 Bad Gateway` from the venue's own nginx.
+It fired `ReconciliationSweepFailureSustained` and `ReconciliationMismatch`, self-healed, and by the
+16:07Z sweep had left **no trace in any surface the pass reads**: the alarm list showed the unrelated
+latch, and the warn tail (3000 LINES ≈ under 2h at this stack's rate) had scrolled past all 340 lines.
+
+Venue-side and over. The point is that a 3×/day consumer was structurally incapable of seeing it —
+the same blindness class as the 45h outage of 07-25/27, one layer further in.
+
+### Shipped — `b43777a` (loop tooling; no money path touched)
+
+`loop:sweep` now also reads the rules file BACKWARDS. Prometheus keeps the synthetic `ALERTS` series
+in its own TSDB, so the history was already there and cost one instant query nobody was making.
+
+- `promAlertsSince` — alerts that fired in the last 12h (`1.5 × EXPECTED_SWEEP_INTERVAL_MS`) and are
+  no longer firing. **Annotation-only by design:** a fixed lookback makes a derived alarm sticky for
+  the whole window, and §3 blocks improvement work until an alarm clears — history never can. Sized
+  off the design inter-pass gap, NOT the watermark, because the standing collector advances the
+  watermark hourly and a watermark-sized window would be ~1h.
+- **Two positive controls**, because an empty `ALERTS` window reads identically to a Prometheus
+  serving no rules. The live rules probe is necessary but present-tense; scrape coverage over the
+  window (via `up`, 2880 expected samples at 15s) is the retrospective half. Below 90% the window has
+  holes. Positive findings still stand — only the negative weakens.
+- History is captured **before** the live read, so an alert starting between the two round-trips is
+  subtracted rather than announced as resolved.
+- `ERROR_LOG_TAIL` 3000 → 20000 (~12h here), and the scan now discloses the span it actually covered
+  instead of letting the count read as a whole-window verdict.
+
+Verified live, twice: the sweep now names both resolved alerts and surfaces all 340 previously-hidden
+warn lines, with coverage reading 2880/2880.
+
+**The adversarial review earned its keep — three defects, all in the new guards' own fail directions,
+all fixed before commit.** (1) The boot-reach suppression compared signed, so a tail reaching lines
+OLDER than `StartedAt` — which docker produces on every in-place restart, since it does not truncate
+the log — counted as "reaches boot" and silently killed the disclosure, worst exactly after a restart
+storm. (2) A tail with no parseable timestamp was skipped rather than disclosed, leaving the digest
+printing a confident `warn+ lines: 0` over a window of unknown depth. (3) The retrospective claim
+rested on a present-tense control, reachable through the sweep's own advice to recreate the Prometheus
+container — which is itself a hole in the history it then reads. That third one is why the coverage
+probe exists at all; it was not in the original design.
+
+### WATCH-V4-5 — POSITIVE DIRECTION PROVEN, closing an item Passes 43 and 44 both left open
+
+Pass 44 wrote that a third pass "must not simply defer this to 'the next sweep' again". It did not
+have to: the unfunded account drove the fatal path repeatedly across one 22h boot, which is exactly
+the evidence the fallback clock kept denying. All three clauses confirmed from live state, not tests:
+
+1. `agent_client_latched` = 1 while calls are suppressed, with `AgentClientFatalLatch` following it —
+   inactive on the 07-28 07:30Z boot, firing since 10:45:25Z.
+2. **Zero `action='hold'`-with-empty-rationale rows since the fix deployed.** 135 such rows exist; the
+   newest is `2026-07-28T01:15:18Z`, ~6h before `ee4ddf3` booted. Every one predates the fix. Since
+   then the same condition produces 197 named `client_latched:` degrades at `action='error'` instead.
+3. **The latch expires and resumes with NO redeploy** — 8 expiries on one boot, `RestartCount` 0.
+
+Unproven only in its funded-resumption clause ("the lane resumes within 30 min of credit landing"),
+which cannot be tested without credit. The load-bearing half — that the latch self-heals rather than
+wedging until a human recreates the container — is now demonstrated.
+
+### Checked and NOT a finding
+
+The warn stream is 65% one message: `reconcile pass still in flight — skipping this tick` (743 of
+1135). It reads alarming and is not. The skip rate over the window is ~52% (743 of ~1440 30s ticks),
+inside the healthy band a prior pass measured and documented in `reconciliation.service.ts:294-301`
+(62 skips/hour against 57-58 completed passes/venue), it is already metered as
+`reconciliation_runs_total{result="skipped"}`, and the coalescing is what keeps passes running
+back-to-back. Demoting a deliberate "visible, never silent" decision on the money path to quiet the
+sweep's top-5 would have been cosmetics at the cost of a real signal. Left alone.
+
+### Gates and deploy
+
+`format:check` · `lint:md` · `lint` (exit 0) · `typecheck` · **`test` 3082 passed / 172 files** ·
+`build` · `test:livegate` 55 — all green before commit. Test delta +15 over the 3067 baseline,
+matching the 15 cases added. No `eval:agentic` run: this pass touched no agentic-lane code.
+
+**Deploy: none required, and none made.** The change is host-side loop tooling — the app image does
+not run it, and `pnpm loop:sweep` picks it up on the next invocation (verified twice live). No
+`alerts.rules.yml` / `prometheus.yml` edit, so no Prometheus recreate.
+
+**One honest gap: the collector daemon (pid 64361, up 1d17h) still holds the OLD sweep code in
+memory** and will keep writing pre-change hourly digests until restarted. `kill` is denied to this
+session and SIGTERM is the collector's only stop path, so this pass could not restart it — and
+starting a second collector would violate the single-writer discipline on the watermark, so it
+deliberately did not. Impact is bounded: a PASS runs its own `loop:sweep` (playbook §2 — "the sweep
+IS `loop:sweep`"), which is current. Only the hourly rehydration digests lag.
+
+### Flagged / next-pass candidates
+
+1. **Restart the collector daemon** (`pnpm loop:collect`, after SIGTERM to the old pid) so hourly
+   digests carry the new probes. Needs a `kill` this session did not have.
+2. **WATCH-V4-6 — the `QUERY_NOT_FOUND` terminalization.** Unchanged from Pass 44 and still the one
+   defect with a real capability blocker. Re-checked this pass: still exactly 4 non-terminal orders
+   from 2026-07-24, not growing — expected-positive holds.
+3. **Both provider accounts remain unfunded.** Nothing in this program moves until that is resolved,
+   and per Pass 41 it should be read against the ENTRIES verdict before funding, not after.
+4. The menu-economics re-derivation from spec §5.2 (Pass 44's item 3) is still open and still cheap.

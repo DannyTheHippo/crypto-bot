@@ -39,6 +39,25 @@ export const HOST_SLEEP_GAP_FACTOR = 2;
 // so a runaway is flagged BEFORE the pool zeroes and starves the process.
 export const COST_PROXIMITY_RATIO = 0.8;
 
+// How far back a pass asks Prometheus "did anything fire while nobody was looking". Sized off the
+// design inter-pass gap above with margin, NOT off the watermark: the standing collector sweeps
+// hourly and advances the watermark every tick, so a watermark-sized window would be ~1h and would
+// miss exactly the incidents this lookback exists to surface. 1.5x8h covers a slipped pass without
+// reaching so far back that a pass re-reads week-old history.
+export const ALERT_LOOKBACK_MS = 1.5 * EXPECTED_SWEEP_INTERVAL_MS;
+
+// How close a log tail's oldest line must sit to the container's StartedAt to count as reaching boot.
+// The question this answers is "does the tail reach boot", where a false YES suppresses a real
+// disclosure of blindness — so the margin is deliberately SMALL against a 12h window, wide enough only
+// for the framework/Nest chatter that can precede the app's own pino stream by seconds.
+export const LOG_BOOT_REACH_MS = 60 * 1000;
+
+// Minimum fraction of the alert window Prometheus must actually have scraped before an EMPTY alert
+// history counts as evidence of a quiet window. Below it the window has holes (Prometheus down,
+// restarted, or host-slept) and alerts that fired inside a hole left no ALERTS samples at all. 0.9
+// tolerates a container recreate and ordinary scrape jitter without tolerating an outage.
+export const ALERT_COVERAGE_MIN_RATIO = 0.9;
+
 // Delta-starvation alarms (zero_decides, journal_silence) fire only when the inter-sweep window is
 // long enough that silence is actually abnormal: two sweeps minutes apart legitimately share the
 // same counters (observed 2026-07-20 — back-to-back acceptance runs tripped zero_decides on a
@@ -328,6 +347,147 @@ function computeApp(prev, cur, elapsedMs = null, nowMs = null) {
         alarms.push({ kind: 'prometheus_alert_firing', detail });
       } else {
         annotations.push({ kind: 'prometheus_alert_firing_nonblocking', detail });
+      }
+    }
+  }
+
+  // ...and the same rules file read BACKWARDS, over ALERT_LOOKBACK_MS. The probe above answers "what
+  // is firing right now", which is the wrong question for a consumer that samples 3x/day: an alert
+  // that fires and resolves inside the ~8h gap between passes is invisible to every pass, forever.
+  //
+  // Measured, not hypothetical (2026-07-28, the pass that added this): a 49-minute demo-fapi outage
+  // (09:22-10:11Z, 502s from the venue's own nginx) broke 293 perp fill polls and 47 trade-axis
+  // reconcile sweeps and fired both ReconciliationSweepFailureSustained and ReconciliationMismatch.
+  // By the 16:07Z pass both had resolved, and that pass's sweep named the outage NOWHERE — one alarm,
+  // for an unrelated latch. The warn-log tail could not cover it either (see log_window_short below).
+  //
+  // ANNOTATION-ONLY, and that is a design decision rather than timidity. A fixed lookback makes any
+  // derived alarm STICKY for the whole window, while playbook §3 makes an alarm block all improvement
+  // work until it CLEARS — and an incident that is already over can never clear. Promoting these would
+  // wedge the loop for 12h after every blip, which is the same failure mode the severity split above
+  // exists to avoid. The live read stays the only alarm gate; this one exists to make history visible,
+  // not to gate on it. Resolved CRITICALs get their own annotation kind so a pass cannot skim past one.
+  //
+  // Trusted ONLY when the live rules probe passed in the SAME sweep: an empty ALERTS window is
+  // indistinguishable from a Prometheus serving zero rules (§C.9 negative-read void), and the three
+  // positive controls that refuse that reading live in parsePromRules. No control, no evidence.
+  //
+  // Mandatory like promAlerts above, and for the same reason: the generic probe-failure loop only
+  // visits keys that EXIST, so an absent probe would produce neither an alarm nor an annotation and the
+  // sweep would silently revert to reading only the present tense — the exact blindness this block was
+  // added to remove, reading as a clean digest.
+  const alertsSince = probes.promAlertsSince;
+  if (!alertsSince) {
+    annotations.push({
+      kind: 'probe_failed',
+      probe: 'promAlertsSince',
+      detail: 'no result — prometheus alert HISTORY was never read this sweep',
+    });
+  }
+  if (alertsSince && alertsSince.ok === true && alertsSince.value) {
+    // The live rules probe proves rules are loaded, healthy and evaluating NOW. That is a present-tense
+    // control on a retrospective claim, so it is necessary but NOT sufficient: if Prometheus itself was
+    // down, restarted, or host-slept inside the window it wrote no ALERTS samples for that stretch, and
+    // "nothing fired" would be a void read wearing a passing control. Reachable through this sweep's own
+    // prescribed remediation — parsePromRules tells the operator to RECREATE the prometheus container on
+    // a stale rules file, and the recreate that fixes the live probe is itself a hole in the history.
+    // So scrape coverage is checked as a second, retrospective control (see promCoverage in the runner).
+    //
+    // A coverage shortfall does NOT discard the alerts found: anything present in the window genuinely
+    // fired, and positive evidence survives a partial window. It is the NEGATIVE that weakens, so the
+    // shortfall is annotated alongside whatever was found and an empty list stops reading as clean.
+    const coverage = probes.promCoverage;
+    if (!(promAlerts && promAlerts.ok === true)) {
+      annotations.push({
+        kind: 'probe_voided',
+        probe: 'promAlertsSince',
+        detail:
+          'alert history read is VOID this sweep — the live rules probe failed, so an empty or ' +
+          'partial window carries no positive control (an unloaded rules file reads identically)',
+      });
+    } else {
+      if (!coverage || coverage.ok !== true || !coverage.value) {
+        annotations.push({
+          kind: 'alert_window_unverified',
+          probe: 'promCoverage',
+          detail:
+            `scrape coverage over the ${ALERT_LOOKBACK_MS / 3_600_000}h alert window could not be ` +
+            'read, so an empty history is NOT evidence of a quiet window — only what it DID find is',
+        });
+      } else if (coverage.value.ratio < ALERT_COVERAGE_MIN_RATIO) {
+        annotations.push({
+          kind: 'alert_window_partial',
+          probe: 'promCoverage',
+          detail:
+            `prometheus scraped only ${(coverage.value.ratio * 100).toFixed(0)}% of the ` +
+            `${ALERT_LOOKBACK_MS / 3_600_000}h alert window (${coverage.value.samples} of ~` +
+            `${coverage.value.expected} samples) — it was down, restarted or host-slept for the rest, ` +
+            'so alerts that fired in the gap left no ALERTS samples and cannot appear below',
+        });
+      }
+      for (const a of alertsSince.value.resolved || []) {
+        const detail =
+          `${a.alertname} (${a.severity}) fired and RESOLVED within the last ` +
+          `${ALERT_LOOKBACK_MS / 3_600_000}h — ${a.samples} firing sample(s); it is not firing now, ` +
+          `so nothing above will show it`;
+        annotations.push({
+          kind:
+            a.severity === 'critical'
+              ? 'prometheus_alert_resolved_critical'
+              : 'prometheus_alert_resolved',
+          detail,
+        });
+      }
+    }
+  }
+
+  // The warn-log scan is a fixed LINE tail, so the time it covers is whatever the log rate makes it —
+  // at this stack's rate 3000 lines was under 2h, far short of the inter-pass gap. That is not a bug in
+  // the tail so much as a fact a pass must be told, because a short window turns "no warnings" into a
+  // §C.9 negative-read void rather than evidence. Disclosed whenever the window is narrower than the
+  // alert lookback the pass reasons over.
+  const scan = cur && cur.errorScan;
+  if (scan && scan.ok === true && scan.value) {
+    if (!Number.isFinite(scan.value.oldestMs)) {
+      // No parseable timestamp in the whole tail — reachable via NOOP_LOGGER, a non-pino log format, or
+      // an empty tail after rotation. A warn count over a window of UNKNOWN depth is the §C.9 negative
+      // read verbatim, and staying silent here would be strictly worse than the short window below:
+      // the digest would print a confident `warn+ lines: 0` with nothing to qualify it.
+      annotations.push({
+        kind: 'log_window_unknown',
+        detail:
+          `warn scan returned ${scan.value.lines ?? 0} parseable line(s) and no usable timestamp, so ` +
+          'the window it covers is unknown — its warn count is not evidence about any span',
+      });
+    } else {
+      // Span on ONE clock. oldestMs/newestMs are the CONTAINER's pino clock while nowMs is the host's,
+      // and this host's Docker VM clock drifts across suspend/resume (see the reconcile-stamp skew guard
+      // above). Mixing them let a lagging container clock inflate the span and SUPPRESS the disclosure —
+      // fail-closed on a host with a documented sleep duty cycle. Tail staleness is a separate fact and
+      // is reported separately rather than folded into the span.
+      const spanMs = scan.value.newestMs - scan.value.oldestMs;
+      // A tail that reaches the container's own start is COMPLETE, however few hours that spans — there
+      // are no older lines to have missed. Without this the annotation would fire on every sweep for the
+      // first 12h after any redeploy and say "warnings are UNREAD" when the window is in fact total,
+      // which is the same overstatement-of-blindness this whole change exists to remove.
+      //
+      // ABSOLUTE distance, not signed: docker does not truncate the json-file log when a container
+      // restarts in place, so a tail can reach lines OLDER than StartedAt. A signed `<=` treated every
+      // such tail as reaching boot and silently suppressed the disclosure — worst exactly after a restart
+      // storm, when the unread window is both largest and most likely to hold the cause.
+      const startedMs = Date.parse(cur.startedAt || '');
+      const reachesBoot =
+        Number.isFinite(startedMs) &&
+        Math.abs(scan.value.oldestMs - startedMs) <= LOG_BOOT_REACH_MS;
+      if (Number.isFinite(spanMs) && spanMs < ALERT_LOOKBACK_MS && !reachesBoot) {
+        annotations.push({
+          kind: 'log_window_short',
+          detail:
+            `warn scan covers only ${(spanMs / 3_600_000).toFixed(1)}h ` +
+            `(${scan.value.lines} lines parsed from a ${scan.value.scanned}-line tail request) vs the ` +
+            `${ALERT_LOOKBACK_MS / 3_600_000}h alert lookback — warnings older than that are UNREAD, ` +
+            'not absent',
+        });
       }
     }
   }

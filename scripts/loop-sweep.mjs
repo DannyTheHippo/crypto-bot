@@ -33,6 +33,7 @@ import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   AGENTIC_DAILY_COST_BREAKER_USD,
+  ALERT_LOOKBACK_MS,
   computeSweep,
   extractCounters,
   VENUES,
@@ -52,8 +53,18 @@ const REPO_ROOT = join(SCRIPT_DIR, '..');
 const DIGESTS_DIR = join(REPO_ROOT, 'research', 'loop', 'digests');
 const ALERT_RULES_PATH = join(REPO_ROOT, 'observability', 'alerts.rules.yml');
 const WATERMARK_PATH = join(DIGESTS_DIR, '.watermark.json');
-const ERROR_LOG_TAIL = 3000;
+// Raised 3000 -> 20000 on 2026-07-28. The tail is a LINE bound but the pass reasons in TIME, and at
+// this stack's log rate (~1.6k lines/h) 3000 lines covered under 2h — so a 49-minute venue outage
+// that ended 6h before the pass ran produced 340 warn lines the sweep never saw. 20k lines is ~12h
+// here, matching ALERT_LOOKBACK_MS; the core discloses the span actually achieved (log_window_short)
+// rather than trusting this number, because the log rate is not ours to fix.
+export const ERROR_LOG_TAIL = 20000;
 const PINO_WARN_LEVEL = 40; // pino level>=40 = warn/error/fatal (§ error-scan)
+
+// observability/prometheus.yml's global.scrape_interval, in seconds. Used ONLY to derive the expected
+// sample count for the alert-window coverage control — a drift between the two shows up as an apparent
+// coverage shortfall, which annotates (fails toward disclosure) rather than passing silently.
+const PROM_SCRAPE_INTERVAL_S = 15;
 
 // The single app container this sweep reads (docker compose default `<project>-<service>-N`,
 // project = crypto-bot). No lane variants — the v3 stack has exactly one app service.
@@ -264,6 +275,56 @@ export function readExpectedAlertNames(rulesPath) {
   return names.length > 0 ? names : null;
 }
 
+// ── prometheus ALERTS history: what fired while nobody was looking ───────────────────────────────
+// Companion to parsePromRules above, reading the same rules file BACKWARDS. Prometheus keeps the
+// synthetic ALERTS series in its own TSDB, so "did anything fire since the last pass" costs one
+// instant query and no new infrastructure. Why it is needed at all, and why it annotates rather than
+// alarms, is argued where it is consumed (loop-sweep-core.mjs, § alertsSince).
+//
+// Rows of `count_over_time(ALERTS{alertstate="firing"}[Ns])`, reduced to one entry per alert NAME.
+// Name-keyed, not label-set-keyed, deliberately: the same alert can appear both with and without
+// instance/job labels across one window, because a rule whose expr aggregates (`sum(...)` — e.g.
+// ReconcilerStalled, AgenticReflectionRejects and AgenticLaneSilent in observability/alerts.rules.yml)
+// drops the target labels its siblings keep. Treating those as distinct entries would report a
+// still-firing alert as "resolved" — the one error this probe must not make. The cost of collapsing is
+// that a per-venue rule which resolved on one venue while still firing on the other is not reported
+// here; that is under-reporting confined to alert names the pass is ALREADY seeing live above, so it
+// can never introduce a blind spot, only decline to add detail.
+// The subtraction list, extracted so it is testable. Inline in gather() this was the single most
+// load-bearing untested line in the probe: swapping `.alertname` for `.scope`, or dropping the map,
+// leaves every unit test green while re-introducing the false "resolved" the whole design prevents.
+// A failed/absent live probe yields NO names — the core refuses to interpret the window in that case
+// rather than this function guessing a safe default.
+export function firingAlertNames(promAlertsProbe) {
+  if (!promAlertsProbe || promAlertsProbe.ok !== true || !promAlertsProbe.value) return [];
+  return (promAlertsProbe.value.firing || []).map((a) => a.alertname).filter(Boolean);
+}
+
+export function parseAlertsFiredWithin(res, { currentlyFiringNames = [] } = {}) {
+  const parsed = parsePromSeries(res);
+  if (!parsed.ok) return { ok: false, error: parsed.error };
+  const live = new Set(currentlyFiringNames);
+  const byName = new Map();
+  for (const s of parsed.value) {
+    const alertname = s.labels.alertname;
+    if (!alertname || live.has(alertname)) continue;
+    const severity = s.labels.severity || 'unknown';
+    const samples = Number.isFinite(s.value) ? s.value : 0;
+    const prev = byName.get(alertname);
+    if (!prev) {
+      byName.set(alertname, { alertname, severity, samples });
+      continue;
+    }
+    // Critical wins, and the longest-running label set sets the sample count: a name that fired critical
+    // on any label set is reported critical, never softened by a warning-severity sibling. Only
+    // `critical` promotes — the remaining severities carry no order worth encoding, and all 20 committed
+    // rules declare one, so the first-seen value stands for them.
+    if (severity === 'critical') prev.severity = 'critical';
+    prev.samples = Math.max(prev.samples, samples);
+  }
+  return { ok: true, value: { resolved: [...byName.values()], lookbackMs: ALERT_LOOKBACK_MS } };
+}
+
 // ── psql single-row `-Atc` parsing: pipe-delimited columns on one line ───────────────────────────
 function parsePsqlRow(res) {
   if (!res.ok) return { ok: false, error: res.error };
@@ -424,9 +485,51 @@ function gather() {
   // this is the authoritative source and not the ALERTS series). This is the ONLY probe whose scope
   // is the whole rules file rather than one metric, so it is the sweep's backstop against a
   // condition the core never learned to check for itself.
+  // The same question asked of the recent past, and of the present. ORDER MATTERS, in the direction
+  // that makes the race safe: the history is CAPTURED first and the live rule state read second.
+  //
+  // These are two separate `docker exec` round-trips seconds apart. Reading live-first means an alert
+  // that begins firing between them is missing from the subtraction list but present in the window, so
+  // the sweep would announce a live alert as "fired and RESOLVED … nothing above will show it" — the one
+  // error this probe must never make. Capturing history first inverts it: a newly-firing alert lands in
+  // both reads and is subtracted, and the residual error becomes silently under-reporting an alert that
+  // resolved in the gap. Under-reporting a just-resolved alert is recoverable on the next sweep;
+  // contradicting the alarm list is not.
+  const alertsSinceRaw = promQuery(
+    `count_over_time(ALERTS{alertstate="firing"}[${Math.round(ALERT_LOOKBACK_MS / 1000)}s])`,
+  );
+
+  // Retrospective positive control for the window above (the core argues why the live rules probe is
+  // necessary but not sufficient). `up` is written on every scrape whether the target is healthy or not,
+  // so its sample count over the window measures PROMETHEUS' own coverage — the thing that decides
+  // whether "no alerts fired" is a fact or a hole. Expected = window / scrape_interval, re-verified
+  // against observability/prometheus.yml (global.scrape_interval: 15s) — a config change there without
+  // one here shows up as a coverage shortfall, which fails toward disclosure, not toward silence.
+  probes.promCoverage = (() => {
+    const windowS = Math.round(ALERT_LOOKBACK_MS / 1000);
+    const samples = promScalar(promQuery(`count_over_time(up{job="crypto-bot"}[${windowS}s])`));
+    if (!samples.ok) return samples;
+    const expected = Math.round(windowS / PROM_SCRAPE_INTERVAL_S);
+    return {
+      ok: true,
+      value: {
+        samples: samples.value,
+        expected,
+        ratio: expected > 0 ? samples.value / expected : 0,
+      },
+    };
+  })();
+
   probes.promAlerts = parsePromRules(promApi('/api/v1/rules'), {
     expectedAlertNames: readExpectedAlertNames(ALERT_RULES_PATH),
     nowMs: Date.now(),
+  });
+
+  // Parsed only now, once the live names exist to subtract. When promAlerts failed there are no names,
+  // so everything in the window would read as resolved — the core voids the whole probe in that case
+  // rather than trusting a subtraction against an empty set.
+  probes.promAlertsSince = parseAlertsFiredWithin(alertsSinceRaw, {
+    currentlyFiringNames: firingAlertNames(probes.promAlerts),
   });
 
   // Error/warn scan: tail (never --since), pino level>=40, top-5 distinct msg prefixes.
@@ -448,9 +551,17 @@ function gather() {
 function scanErrors(container) {
   const res = dockerLogsTail(container, ERROR_LOG_TAIL);
   if (!res.ok) return { ok: false, error: res.error };
+  return { ok: true, value: scanPinoLines(res.value) };
+}
+
+// The pure half of scanErrors, split out so the span rule below is testable without docker.
+export function scanPinoLines(text) {
   const prefixCounts = new Map();
   let matched = 0;
-  for (const raw of res.value.split('\n')) {
+  let lines = 0;
+  let oldestMs = null;
+  let newestMs = null;
+  for (const raw of String(text ?? '').split('\n')) {
     const line = raw.trim();
     if (!line || line[0] !== '{') continue;
     let obj;
@@ -458,6 +569,15 @@ function scanErrors(container) {
       obj = JSON.parse(line);
     } catch {
       continue;
+    }
+    lines += 1;
+    // Span is tracked over EVERY parsed line, ABOVE the warn filter — not just warn+ ones. The question
+    // it answers is "how far back does this tail reach", and a window whose only warn line is recent
+    // still covers whatever its oldest line says. Taking the span from warn lines alone would report the
+    // window as short exactly when it was quietly healthy, i.e. manufacture doubt about a real green.
+    if (Number.isFinite(obj.time)) {
+      if (oldestMs === null || obj.time < oldestMs) oldestMs = obj.time;
+      if (newestMs === null || obj.time > newestMs) newestMs = obj.time;
     }
     if (!Number.isFinite(obj.level) || obj.level < PINO_WARN_LEVEL) continue;
     matched += 1;
@@ -469,7 +589,7 @@ function scanErrors(container) {
     .sort((a, b) => b[1] - a[1])
     .slice(0, 5)
     .map(([prefix, count]) => ({ prefix, count }));
-  return { ok: true, value: { matched, scanned: ERROR_LOG_TAIL, top } };
+  return { matched, scanned: ERROR_LOG_TAIL, lines, oldestMs, newestMs, top };
 }
 
 function loadWatermark() {
@@ -488,6 +608,17 @@ function buildWatermark(sweptAtMs, app) {
       ? { bootId: app.bootId, restartCount: app.restartCount, counters: extractCounters(app) }
       : null,
   };
+}
+
+// Human-readable tail span. `Number.isFinite` does NOT bound a Date: a corrupt or foreign line carrying
+// a finite but out-of-range `time` makes toISOString throw RangeError, which would cost the entire
+// markdown render for a cosmetic field.
+function describeSpan({ oldestMs, newestMs }) {
+  if (!Number.isFinite(oldestMs) || !Number.isFinite(newestMs)) return 'span unknown';
+  const hours = ((newestMs - oldestMs) / 3_600_000).toFixed(1);
+  const oldestIso =
+    Math.abs(oldestMs) <= 8.64e15 ? new Date(oldestMs).toISOString() : 'unrenderable';
+  return `${hours}h back to ${oldestIso}`;
 }
 
 function renderMarkdown({ sweptIso, host, git, app, result }) {
@@ -544,9 +675,33 @@ function renderMarkdown({ sweptIso, host, git, app, result }) {
     if (app.consultByOutcome) {
       L.push(`- consult-gate by outcome: ${JSON.stringify(app.consultByOutcome)}`);
     }
+    // Mirrors the core's verdict rather than restating the raw probe: when the live rules probe failed
+    // the resolved list is UNSUBTRACTED and may name alerts that are firing right now, so rendering it
+    // as fact would contradict the alarm list directly above it.
+    const ps = app.probes && app.probes.promAlertsSince;
+    const liveOk = Boolean(
+      app.probes && app.probes.promAlerts && app.probes.promAlerts.ok === true,
+    );
+    L.push(
+      `- alerts fired+resolved in the last ${ALERT_LOOKBACK_MS / 3_600_000}h: ${
+        !ps || !ps.ok
+          ? `probe_failed — ${(ps && ps.error) || 'no result'}`
+          : !liveOk
+            ? 'VOID — live rules probe failed, nothing to subtract firing alerts against'
+            : (ps.value.resolved || []).length === 0
+              ? 'none'
+              : ps.value.resolved
+                  .map((a) => `${a.alertname} (${a.severity}, ${a.samples} samples)`)
+                  .join('; ')
+      }`,
+    );
     const es = app.errorScan;
     if (es.ok) {
-      L.push(`- warn+ lines (tail ${es.value.scanned}): ${es.value.matched}`);
+      // The span is stated next to the count because the count alone reads as a whole-window verdict
+      // and is not one — see the core's log_window_short annotation.
+      L.push(
+        `- warn+ lines (${es.value.lines} parsed from a ${es.value.scanned}-line tail request, covers ${describeSpan(es.value)}): ${es.value.matched}`,
+      );
       for (const t of es.value.top) L.push(`  - ${t.count}× ${t.prefix}`);
     } else {
       L.push(`- error scan: probe_failed — ${es.error}`);

@@ -87,6 +87,14 @@ interface Probes {
         value: { ruleCount: number; alertingCount: number; firing: FiringAlert[] };
       }
     | { ok: false; error: string; value?: undefined };
+  promAlertsSince: {
+    ok: boolean;
+    value: {
+      resolved: { alertname: string; severity: string; samples: number }[];
+      lookbackMs: number;
+    };
+  };
+  promCoverage: { ok: boolean; value: { samples: number; expected: number; ratio: number } };
 }
 interface App {
   bootId: string;
@@ -122,6 +130,11 @@ function baseProbes(): Probes {
     rss: { ok: true, value: { bytes: 1000 } },
     // Rules demonstrably loaded and nothing firing — the only shape that legitimately reads as quiet.
     promAlerts: { ok: true, value: { ruleCount: 20, alertingCount: 20, firing: [] } },
+    // Both alert-HISTORY probes are mandatory in the core (an absent one annotates), so the base bag
+    // carries their quiet shape: a fully-scraped window in which nothing fired and resolved. Their own
+    // behaviour is pinned in alert-history.spec.ts; here they only need to stay silent.
+    promAlertsSince: { ok: true, value: { resolved: [], lookbackMs: 12 * 60 * 60 * 1000 } },
+    promCoverage: { ok: true, value: { samples: 2880, expected: 2880, ratio: 1 } },
   };
 }
 

@@ -144,10 +144,35 @@ rule):
   file (a committed alert the running Prometheus never loaded), an unhealthy rule, or a rule group that
   has stopped evaluating all FAIL the probe rather than reading as "nothing firing".
 
-`probe_failed` is technically an ANNOTATION kind in the core (not pushed to the `alarms` array —
-verify at `loop-sweep-core.mjs:117-133` before treating it otherwise), but it still forces the same
-investigation posture: a stack read errored, so nothing downstream of it can be trusted this sweep
+`probe_failed` is technically an ANNOTATION kind in the core (not pushed to the `alarms` array — verify
+at `loop-sweep-core.mjs`'s `computeApp` probe loop, ~L182-220, before treating it otherwise; the old
+`:117-133` citation in this file pointed at `extractCounters` and was stale), but it still forces the
+same investigation posture: a stack read errored, so nothing downstream of it can be trusted this sweep
 (§C.9 negative-read-void discipline).
+
+**Read the annotations, not just the alarms — these kinds carry incidents the alarm list CANNOT show**
+(added Pass 45, 2026-07-28, after a 49-min demo-fapi outage fired two rules and had fully resolved
+before the pass ran, leaving the sweep reporting one unrelated alarm and naming the outage nowhere):
+
+- `prometheus_alert_resolved` / `prometheus_alert_resolved_critical` — a rule that fired at some point
+  in the last `ALERT_LOOKBACK_MS` (12h) and is no longer firing. Deliberately NOT alarms: a fixed
+  lookback would make them sticky for 12h, and §3 blocks improvement work until an alarm clears, which
+  history can never do. **A resolved critical is a defect investigation anyway** — treat it as one.
+- `probe_voided` — a sibling of `probe_failed` with a distinct meaning: the probe itself SUCCEEDED, but
+  a control it depends on did not, so its result carries no evidential weight. Today the only case is
+  the alert history when the live rules probe failed: nothing is available to subtract currently-firing
+  alerts against, so the list may name alerts that are firing right now. Treat as a failed read.
+- `alert_window_partial` / `alert_window_unverified` — the retrospective control on the above. The live
+  rules probe is present-tense; if Prometheus was down, restarted or host-slept inside the 12h window it
+  wrote no `ALERTS` samples for that stretch, so "nothing fired" would be a hole wearing a passing
+  control. Scrape coverage is measured against `up`; below 90% the window has gaps. **Positive findings
+  still stand** — only the empty reading weakens.
+- `log_window_short` / `log_window_unknown` — the warn scan is a fixed LINE tail, so a chatty INFO
+  stream shrinks the TIME it covers. When it covers less than the alert lookback, warnings older than
+  the stated span are UNREAD, not absent. Suppressed only when the tail reaches the container's own
+  start (within 60s either way — docker does not truncate the log on an in-place restart, so a tail can
+  legitimately predate `StartedAt`). `log_window_unknown` means no line carried a usable timestamp, so
+  the warn count describes no span at all.
 
 Before touching anything, run the §C defect-class triage — these are the shapes green surfaces hide.
 Each is a named check with its catching probe:

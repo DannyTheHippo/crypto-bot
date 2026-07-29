@@ -5604,3 +5604,131 @@ IS `loop:sweep`"), which is current. Only the hourly rehydration digests lag.
 3. **Both provider accounts remain unfunded.** Nothing in this program moves until that is resolved,
    and per Pass 41 it should be read against the ENTRIES verdict before funding, not after.
 4. The menu-economics re-derivation from spec §5.2 (Pass 44's item 3) is still open and still cheap.
+
+## 2026-07-29 — Pass 46 (a NOT NULL column that never measured anything, and a redeploy that erased an outage)
+
+**Window:** 2026-07-29T07:37Z → 09:15Z (pass lease `1b42f3614efda993`, taken 07:37:22Z).
+**Boots this window: four.** `899d4a09` (the 22h boot) → `f9dc22ef` at 08:17:56Z, deployed by a
+CONCURRENT session, not this pass → `2ceaae5b` at 09:05:26Z (this pass's fix) → `f7a477f3` at
+09:09:12Z (rebuild to restore build provenance).
+
+### ⛔ Headline: the Anthropic account is not funded — that is why every LLM request fails
+
+Re-confirmed live at 09:00Z, verbatim from the API:
+`400 invalid_request_error: "Your credit balance is too low to access the Anthropic API."`
+
+Nothing in the code is broken. The lane calls, receives a FATAL 400, latches for 30 minutes, retries,
+receives the same 400, re-latches — which is correct behaviour against an unfunded account. The
+Moonshot fallback is unfunded too (`429 suspended — insufficient balance`). **Zero LLM decides ⇒ zero
+trades ⇒ zero promotion progress, continuously since 2026-07-27T21:16Z.** Adding credit is a financial
+action no automated pass may take; it is the single owner action the whole program waits on. On
+resumption nothing needs redeploying — the latch self-heals within 30 min of credit landing
+(proven live, WATCH-V4-5).
+
+Scoreboard, unmoved and unmovable while this holds: **28 of 30** closed round trips, net-of-cost
+**−$39.6370**, win rate 0.179, LLM cost $16.1979, trade-anchored window **4.30 of 14 days**,
+`agentic_promotion_ready` **0**. Champion playbook **v8**, +$6.77 over 5 trips — the only lineage
+meaningfully positive at n>3; v2 alone is −$24.76 over 14 and accounts for most of the book's loss.
+
+### The sweep went from one critical alarm to zero, and nothing was fixed
+
+07:37Z: `AgentClientFatalLatch` (critical), firing since 07-28T10:45:25Z. 08:37Z: **Alarms (0)**.
+
+Between them, a concurrent session redeployed. That reset `agent_client_latched` to 0, cleared the
+alert, and wiped the boot-scoped `agent_decide_total` series entirely — `error_fatal 67` and
+`client_latched 197` became **no series at all** (verified with a positive control: 88 series scraped,
+19 `agent*` present, that one absent). The unfunded condition underneath was completely unchanged.
+
+**A redeploy launders a persistent lane outage into a green board.** The blind window is bounded but
+wide: `AGENTIC_FALLBACK_CONSULT_BARS=8` at 15m bars puts the first consult attempt — the only thing
+that can re-latch — ~2h out, and `AgenticLaneSilent`'s 6h range selectors still see the previous boot's
+samples, so neither guard fires. **The playbook's mandated 15-30 min post-deploy soak sits entirely
+inside that window.** A pass could deploy, soak green, and sign off on a dead lane. The only surface
+naming the outage at 08:37Z was Pass 45's day-old `prometheus_alert_resolved_critical` annotation —
+shipped yesterday, earning its keep on its first full day. Recorded as **WATCH-V4-8**, with the fix
+shape (seed a last-success timestamp from the durable ledger at boot, exactly as `f2d74b6` did for the
+cost breaker and as `reconciliation_last_success_timestamp_seconds` already does). Not shipped — see
+§ Not shipped, and why.
+
+### Shipped — `c50db12`: an audit table whose measurement columns were all a literal zero
+
+`reconciliations` carries four NOT NULL measurement columns. The only persisting store wrote `0` into
+all four because `ReconciliationRow` never carried them. **23,973 rows since the v3 cutover, zero
+non-zero values in any of the four, ever.**
+
+What surfaced it was a contradiction, not a hunch: `duration_ms` read 0 while the same subsystem logged
+**865** `reconcile pass still in flight — skipping this tick` warnings in 14h — which only happens when
+passes overrun their tick — and the service's own comment says a pass issues "dozens of sequential REST
+calls over ~60s". A pass cannot both take 0ms and overrun its tick.
+
+It was worse than a dead field, because it had already been read as evidence. Pass 45's hand-off and
+state.md both concluded _"there are no resting protective orders … the venue reports
+`open_orders_checked=0` on every reconcile"_ — from a hardcoded constant. And the falsification goes
+deeper than the constant: that axis sweeps the REGULAR rail via `fetchOpenOrders`, while protective/algo
+stops live behind `fetchOpenAlgoOrders`, which it never calls — so **no value of that field is evidence
+about protective orders**. The conclusion survives on independent gauges (`open_orders{venue}`=0,
+`venue_capital_headroom_usdt`=500); the citation was void. Struck and corrected in state.md rather than
+quietly rewritten, because it had already been inherited once.
+
+**The adversarial review changed the fix, and that half matters more than the first.** Version one
+threaded real counts and would still have written `balances_checked=0` forever **on the only
+configuration that runs** — every configured venue is `demo`, so `venueReconConfig` turns `balanceAxis`
+off on all of them. A disabled axis now writes `AXIS_NOT_RUN` (−1). The review also caught that the new
+gate test asserted `tradesChecked` `toBe(0)`, which would have passed with the increment deleted, and
+that the store dropped `ReconciliationRow.ts` entirely (the column's `now()` default stamped every row
+at INSERT time) — the same defect class one field over. Both fixed before commit.
+
+**Live-verified post-deploy**, which is the whole point:
+
+| | before | after |
+| --- | --- | --- |
+| `duration_ms` | 0 on all 23,973 rows | 14,291-23,268 ms |
+| `trades_checked` | 0 always | 458, then 7 |
+| `balances_checked` | 0 always | −1 (`AXIS_NOT_RUN`) |
+| `open_orders_checked` | 0 (constant) | 0 (now a _measured_ zero) |
+
+Two venue passes at 14-23s each ≈ 37s against a 30s tick — the 865 skips are explained arithmetically
+for the first time, and the field that explains them now exists.
+
+**Gates:** format, lint, typecheck, **3092** unit+livegate, build, plus `test:db` 64/64 against live
+Postgres. **Soak:** clean — 0 alarms, container healthy, `RestartCount` 0, kill switch RUNNING, both
+venues CLEAN, 5 warn lines all benign.
+
+### Also fixed: the build-provenance probe read `unknown` on its first real deploy
+
+`af67acf` (shipped ~50 min earlier by the concurrent session) added a `running build:` probe so a pass
+can tell which build is live. The Dockerfile takes `ARG GIT_SHA=unknown`, but the documented deploy
+command — `docker compose build app`, playbook §5 step 3 — does not pass `--build-arg`. So the first
+deploy following the documented procedure (mine) produced `running build: unknown`, defeating the
+probe. Rebuilt with `--build-arg GIT_SHA=$(git rev-parse --short HEAD)`; now reads
+`running build: c50db12`. **The deploy procedure in the playbook and runbook still omits the flag** —
+left to the session that owns those files this morning, noted here so it is not lost.
+
+### Not shipped, and why — a concurrent unleased session held the tree
+
+I acquired the pass lease cleanly at 07:37:22Z. Between 08:16:55Z and 08:29:16Z another session landed
+**`af67acf` and `f630f63` on `main`**, redeployed the app at 08:17:56Z, and force-recreated Prometheus
+(20 → 21 rules). This is the **fourth** recorded concurrency occurrence and **the first with production
+blast radius**: previous ones touched only `test/eval`, which the gate glob excludes, while these
+rewrote `src/features/common/observability/**`, `src/config/**`, `observability/alerts.rules.yml` and
+the sweep itself.
+
+Damage assessment before trusting anything, per the standing procedure: zero file overlap with this
+pass, and both commits were fully committed with a clean tree before my gate ran — so the 3092-test
+result stands. **WATCH-V4-8's fix was not shipped for a specific reason, not a priority one:** it
+touches `metrics.service.ts` and `alerts.rules.yml`, both rewritten 50 minutes earlier by that session
+while its own deploy soak was still running, and a rules-file edit requires a Prometheus
+`--force-recreate` that would have destroyed that soak. That is a blocked state with a named blocker.
+**The scheduler config that lets two passes co-fire remains owner-owned and open** — it has now caused
+four collisions and this one deployed twice under another pass's feet.
+
+### Flagged / next pass
+
+1. **THE ACCOUNT IS UNFUNDED.** Owner action. Everything else is downstream of it.
+2. **WATCH-V4-8** — ship the durable last-success gauge on an uncontended tree.
+3. **The deploy procedure omits `--build-arg GIT_SHA`** — playbook §5 step 3 and `docs/runbook.md`.
+4. **WATCH-V4-6** — unchanged, still exactly 4 non-terminal orders from 07-24, not growing.
+5. Provider failover is **not** reachable by config alone — `AnthropicAgentClientConfig` has an optional
+   `baseUrl` honored at the fetch, but no production code path ever assigns it, and `MOONSHOT` /
+   `AGENTIC_EVAL_*` appear nowhere in `src/**` (positive control: `ANTHROPIC_API_KEY` hits 6 files).
+   Moot while both accounts are unfunded; recorded so the next pass does not re-derive it.

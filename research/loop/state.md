@@ -364,6 +364,38 @@ never changes for strategy evolution.
   tested without credit; the load-bearing half — self-heal rather than wedge-until-recreate — is done.
   The starvation analysis Pass 44 wrote remains correct and still applies to any pass that deploys: a
   redeploy pushes the first fallback consult 2h out. It was simply not binding on a boot left alone.
+- **AN AUDIT TABLE WHOSE MEASUREMENT COLUMNS WERE ALL A LITERAL ZERO (Pass 46, 2026-07-29, fix
+  `c50db12`).** `reconciliations` carries four NOT NULL measurement columns — `duration_ms`,
+  `open_orders_checked`, `trades_checked`, `balances_checked`. The only persisting store wrote `0` into
+  all four, because `ReconciliationRow` never carried them. Measured, not inferred: **23,973 rows since
+  the v3 cutover, zero non-zero values in any of the four, ever.**
+  **What made it more than a dead field: it had already been read as evidence.** Pass 45's hand-off and
+  state.md both concluded "there are no resting protective orders … the venue reports
+  `open_orders_checked=0` on every reconcile" — from a constant (struck and corrected above). The
+  falsification cuts deeper than the constant: `reconcileOpenOrders` sweeps the REGULAR rail via
+  `fetchOpenOrders`, while protective/algo stops live behind `fetchOpenAlgoOrders`, which that axis
+  never calls — so **no value of that field, zero or not, is evidence about protective orders.** The
+  conclusion survives on independent gauges; the citation never should have been made.
+  **The contradiction that surfaced it:** `duration_ms` read 0 while the same subsystem logged 865
+  `reconcile pass still in flight — skipping this tick` warnings in 14h, which can only happen when
+  passes overrun their tick, and the service's own comment says a pass issues "dozens of sequential REST
+  calls over ~60s". A pass cannot both take 0ms and overrun. **Now measured live: 14.3-23.3s per venue
+  pass**, two venues ≈ 37s against a 30s tick — the skip rate is explained arithmetically for the first
+  time, and the field that explains it exists.
+  **The adversarial review changed the fix, and this is the half worth remembering.** The first version
+  threaded real counts and would still have written `balances_checked=0` forever **on the only
+  configuration that runs**: every configured venue is `demo`, so `venueReconConfig` turns `balanceAxis`
+  off on all of them. A disabled axis now writes `AXIS_NOT_RUN` (−1) — storable in the signed column,
+  uncollidable with a real count. Live-verified post-deploy: `bc=-1` on both venues, `tc=458` then `7`
+  on binance, `duration_ms` non-zero on every row. The review also caught that the new gate test
+  asserted `tradesChecked` `toBe(0)` — which would have passed with the increment deleted — and that the
+  store dropped `ReconciliationRow.ts` entirely (the column's `now()` default stamped every row at
+  INSERT time), the same defect class one field over. Both fixed before commit.
+  **DURABLE FACT, and it generalises past this table: a NOT NULL column whose only writer supplies a
+  literal is indistinguishable from a measured value at every query, forever.** Pass 44 recorded the
+  prom-client twin (an untouched labeled counter is indistinguishable from a missing metric). Same
+  disease, different substrate — the question to ask of any field about to be cited as evidence is not
+  "what does it say" but "what wrote it".
 - **AN OUTAGE THAT WAS OVER BEFORE ANYONE LOOKED (Pass 45, 2026-07-29, fix `b43777a`).** `loop:sweep`
   read Prometheus' INSTANTANEOUS rule state and nothing else, so with passes 8h apart any alert that
   fired AND resolved in between was invisible to every pass, permanently. Demonstrated, not theorised: a
@@ -758,44 +790,97 @@ fix: OMS algo-rail containment, 7 sub-fixes), `a6f0573` (P8a factorial ENABLE, s
 
 ## Current stage
 
-**Current order & status (last updated Pass 45, 2026-07-29T07:00Z).** Live build `b43777a` (loop
-tooling only — the RUNNING app image is still Pass 44's `6369c0b`; this pass required no deploy), boot
-`899d4a09` unbroken since 2026-07-28T08:53:50Z at `RestartCount` 0 — 22h, the longest of the program
-so far, and the reason WATCH-V4-5 could finally be proven. Prometheus force-recreated 07-28T07:30Z and
-NOT touched since (no pass has changed the rules file). 4 containers healthy, kill switch RUNNING, both
-venues reconciling CLEAN, clean stamp 47-99s old all pass (WATCH-V4-1 holds), 20/20 alert rules loaded.
-Book unchanged from Pass 44 — 28 closed round trips, net-of-cost **−$39.6370**, `agentic_promotion_ready`
-has no series, 0 fills this window. **The lane is NOT trading and cannot: both provider accounts are
-unfunded (§ Flagged), so the client latches by design** — `agent_decide_total` reads `error_fatal` 67 +
-`client_latched` 197 and **zero successful decides on this boot**, with `agentic_budget_remaining_usd`
-the full $3 after 22h. That $3.00 is the symptom, not a green.
+> ## ⛔ THE ANTHROPIC ACCOUNT IS NOT FUNDED — THIS IS WHY EVERY LLM REQUEST FAILS
+>
+> Re-confirmed live at 2026-07-29T09:00Z (Pass 46), verbatim from the API:
+> `400 invalid_request_error: "Your credit balance is too low to access the Anthropic API."`
+> **Nothing is broken in the code.** The lane calls, gets a FATAL 400, latches for 30 min, retries,
+> gets the same 400, and re-latches — correct behaviour against an unfunded account. The Moonshot
+> fallback account is unfunded too (`429 suspended — insufficient balance`), so there is no second
+> provider to reach for. Consequence: **zero LLM decides, therefore zero trades, therefore zero
+> progress toward the promotion gate, since 2026-07-27T21:16Z.**
+> **Adding credit is a financial action no automated pass may take — this is the single owner action
+> the entire program is waiting on.** On resumption nothing needs redeploying: the latch self-heals
+> within 30 min of credit landing (proven live, WATCH-V4-5). Read § Flagged's funding entry and Pass
+> 41's ENTRIES verdict together before funding — entries currently measure worse than a random-bar
+> placebo, so resuming spends ~$2.6/day gathering evidence for a gate the present signal cannot pass.
 
-**Sweep `Alarms (1)`: `AgentClientFatalLatch` (critical), firing since 07-28T10:45:25Z** — the known
-unfunded-account condition, re-confirmed verbatim (`400 invalid_request_error: "Your credit balance is
-too low"`). Not a new defect and not fixable by a pass.
+**Current order & status (last updated Pass 46, 2026-07-29T09:15Z).** Live build `c50db12` (this
+pass's reconciliation-audit fix), boot `f7a477f3` from 09:09:12Z at `RestartCount` 0. Note the boot
+churn: the 22h `899d4a09` boot ended at 08:17:56Z when a CONCURRENT session deployed `af67acf`, and
+this pass deployed twice more (09:05:26Z, then 09:09:12Z to restore build provenance — see below).
+Prometheus force-recreated by that concurrent session, now **21 rules loaded, 0 firing**. 4 containers
+healthy, kill switch RUNNING, both venues reconciling CLEAN, clean stamp fresh (WATCH-V4-1 holds).
+Book unchanged — 28 closed round trips, net-of-cost **−$39.6370**, win rate 0.179, LLM cost $16.1979,
+trade-anchored window **4.30 of the 14 days** required, `agentic_promotion_ready` **0**, 0 fills.
+Champion playbook **v8** (+$6.77 over 5 trips — the only lineage meaningfully positive; v2 alone is
+−$24.76 over 14 and accounts for most of the book's loss).
+
+**Sweep alarms: 0 — and that is the finding, not the good news.** At 07:37Z the sweep fired
+`AgentClientFatalLatch` (critical, firing since 07-28T10:45:25Z). By 08:37Z it fired **nothing**,
+because the 08:17:56Z redeploy reset `agent_client_latched` to 0, cleared the alert, and wiped the
+boot-scoped `agent_decide_total` series entirely — while the unfunded condition underneath was
+completely unchanged. **A redeploy launders a persistent lane outage into a green board.** The window
+is bounded but wide: `AGENTIC_FALLBACK_CONSULT_BARS=8` at 15m bars means the first consult attempt —
+the only thing that can re-latch — is ~2h out, and `AgenticLaneSilent`'s 6h range selectors still see
+the previous boot's samples, so neither guard fires. **The playbook's mandated 15-30 min post-deploy
+soak sits entirely inside that blind window**; a pass could deploy, soak green, and sign off on a dead
+lane. Today the ONLY surface naming the outage was Pass 45's day-old `prometheus_alert_resolved_critical`
+annotation. **WATCH-V4-8** covers this (below).
 
 **Book composition, corrected — Pass 43's hand-off said this wrongly and the next pass would have
 inherited it:** there are **4 positions, all spot dust** (ZEC/AAVE/BTC/SOL), and **no** SOL/USDT:USDT
 position — that 0.64 was closed by a venue stop at 01:06:07Z on 07-28 (`order_events`:
 `FILL cumQty=0.64 reason=venue_stop_filled:algoId=1000000147822464`). There are also **no resting
 protective orders**: the 4 non-terminal `orders` rows are never-ACKed zombies from 07-24 (see
-WATCH-V4-6), and the venue reports `open_orders_checked=0` on every reconcile.
+WATCH-V4-6), and `open_orders{venue}` reads 0 on both venues.
+
+> **CORRECTION (Pass 46, 2026-07-29).** The sentence above originally closed with "and the venue
+> reports `open_orders_checked=0` on every reconcile." That was wrong twice over and is struck.
+> (1) `reconciliations.open_orders_checked` was a **hardcoded 0** in the persisting store — all 23,973
+> rows since the v3 cutover, never once non-zero — so it was a constant read as venue truth, the exact
+> §C.9 negative-read void this loop warns about. Fixed and deployed this pass (`c50db12`); the column
+> now carries real counts. (2) Even corrected, this axis **cannot answer that question**:
+> `reconcileOpenOrders` sweeps the REGULAR rail via `fetchOpenOrders`, while venue-side protective/algo
+> stops live behind `fetchOpenAlgoOrders`, which it never calls. The CONCLUSION still stands on the
+> independent `open_orders{venue}`=0 gauge and `venue_capital_headroom_usdt`=500 — only this particular
+> citation was void. Kept visible rather than silently rewritten: the claim was inherited into a pass
+> hand-off and would have been inherited again.
 
 Open WATCH lines: V4-1 through V4-4 holding; **V4-5 RESOLVED by Pass 45** (positive direction proven
 live on the 22h boot — only its untestable funded-resumption clause remains); **V4-6 open, re-checked
-and not growing** (still exactly the 4 non-terminal orders from 07-24); **V4-7 NEW** (the sweep can see
-across passes). Nothing is queued for deploy. Everything else waits on funding, and funding should be
+and not growing** (still exactly the 4 non-terminal orders from 07-24); **V4-7 open**; **V4-8 NEW**
+(Pass 46, below). Nothing is queued for deploy. Everything else waits on funding, and funding should be
 read against Pass 41's ENTRIES verdict before it happens.
+
+**WATCH-V4-8 (a redeploy must not be able to erase a standing outage).** Expected-positive: after any
+redeploy, the pass can still tell within its 15-30 min soak whether the lane is actually calling the
+model — not merely that `agent_client_latched` reads 0 on a boot too young to have tried. Named defect
+outcome: a pass reports a clean lane inside the ~2h post-deploy window and the next pass finds the
+latch alert firing again with no intervening change ⇒ the soak signed off on a dead lane, and the
+signal needs to survive process restarts. **The fix shape is already proven twice in this repo:** seed
+the gauge from the durable ledger at boot, exactly as `f2d74b6` did for the cost breaker (which handed
+every redeploy a fresh full $3 until it read the token ledgers) and as
+`reconciliation_last_success_timestamp_seconds` does for reconcile liveness. Concretely, an
+`agent_last_success_timestamp_seconds` seeded at boot from `agent_decisions` would have read ~34h stale
+throughout this pass, on every boot, with no dependence on whether the lane had tried yet. **NOT shipped
+this pass** and the reason is specific, not a priority call: its fix touches
+`src/features/common/observability/metrics.service.ts` and `observability/alerts.rules.yml`, both
+rewritten ~50 min earlier by a concurrent unleased session (`af67acf`) whose own deploy soak was still
+running — a rules-file edit additionally requires a Prometheus `--force-recreate`. Deadline: next pass
+with an uncontended tree.
 
 **Pass 45 shipped one fix (`b43777a`, gates green at 3082 tests) and it needed no deploy — it is
 host-side loop tooling.** `loop:sweep` could only ever see alerts that were still firing at the instant
 it looked, so with passes 8h apart an incident that fired and resolved in between was invisible to
 every pass. A 49-minute demo-fapi outage on 07-28 proved it live (details in § A MENU… above's
 successor entry, and LOG.md). The sweep now also reads the last 12h of the `ALERTS` series, with a
-scrape-coverage control so an empty history cannot pass as a quiet window. **The one open thread: the
-collector daemon still runs the OLD sweep code in memory** — `kill` was denied to that session and a
-second collector would break the single-writer watermark discipline, so the next pass with signal
-permission should SIGTERM pid 64361 and re-run `pnpm loop:collect`. Pass-run sweeps are already current.
+scrape-coverage control so an empty history cannot pass as a quiet window. ~~The one open thread: the
+collector daemon still runs the OLD sweep code in memory.~~ **RESOLVED structurally by `af67acf` +
+`f630f63` (2026-07-29, concurrent session): the collector daemon is RETIRED — the app now emits what
+the daemon used to scrape from outside, and `loop:sweep` reads it directly.** `pnpm loop:collect` and
+`pnpm loop:digests` no longer exist; a pass rehydrating from digest history now reads the sweep's own
+digests in `research/loop/digests/`.
 
 **Pass 44 shipped three fixes (`2c7a005`, `4c8a5ca`, `6369c0b`), all gates green (3054 tests) and
 soaked on boot `899d4a09`.** The one worth carrying forward: **the universe scanner was freezing each

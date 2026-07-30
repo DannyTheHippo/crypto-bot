@@ -11,15 +11,27 @@
 // One-unresolved-candidate discipline: refuses to mint a second candidate (reflection OR
 // loop-candidate source) above the active version until the existing one is promoted/lapses — the
 // same "newest wins, only one live at a time" rationale PlaybookAbRoutingProvider's own comment
-// gives for candidate routing.
+// gives for candidate routing. The classification behind that refusal (and the lapse that bounds
+// it) lives in playbook-candidate-core.mjs, which also states both gates' failure directions; this
+// file is the IO shell.
 
-import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 import { resolveActiveVersion, mapUniqueViolation } from './lib/playbook-shared.mjs';
+import {
+  DEFAULT_ABSTAIN_LAPSE_DECIDES,
+  DEFAULT_CANDIDATE_LAPSE_HOURS,
+  classifyCandidateGate,
+  classifyContentChange,
+  deriveValidationOpts,
+  findBlockingCandidate,
+  intEnv,
+  needsAbstentionEvidence,
+  parseArgs,
+} from './playbook-candidate-core.mjs';
 
 const { Pool } = pg;
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -27,7 +39,7 @@ const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 function usageError(message) {
   console.error(`playbook:candidate: ${message}`);
   console.error(
-    'usage: node scripts/playbook-candidate.mjs <candidate-file> [--metrics <scorecard.json>]',
+    'usage: node scripts/playbook-candidate.mjs <candidate-file> [--metrics <scorecard.json>] [--supersede]',
   );
   process.exitCode = 1;
 }
@@ -90,20 +102,37 @@ function datasetHashFromMetrics(metricsJson) {
   return typeof rowRange === 'string' ? rowRange : JSON.stringify(rowRange);
 }
 
-async function main() {
-  const args = process.argv.slice(2);
-  const candidateFile = args[0];
-  let metricsFile;
-  for (let i = 1; i < args.length; i++) {
-    if (args[i] === '--metrics') {
-      metricsFile = args[i + 1];
-      i++;
-    }
+// The blocking candidate's LIFETIME decide/entry counts — the SQL form of
+// AgentDecisionJournalPort.versionEntryStats (agent-decision.repository.ts#countVersionEntryStats):
+// real-LLM rows only, entries are the two OPEN actions. Returns undefined on any failure, which the
+// gate reads as "no evidence" and therefore does NOT lapse.
+async function readVersionEntryStats(pool, version) {
+  try {
+    const { rows } = await pool.query(
+      `SELECT count(*)::int AS decides,
+              count(*) FILTER (WHERE action IN ('open_long', 'open_short'))::int AS entries
+         FROM public.agent_decisions
+        WHERE playbook_version = $1 AND model LIKE 'claude%'`,
+      [version],
+    );
+    const row = rows[0];
+    if (!row) return undefined;
+    return { decides: row.decides ?? 0, entries: row.entries ?? 0 };
+  } catch (err) {
+    console.warn(
+      `playbook:candidate: abstention-lapse evidence read failed (not lapsing): ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return undefined;
   }
-  if (!candidateFile) {
-    usageError('missing <candidate-file> argument');
+}
+
+async function main() {
+  const parsed = parseArgs(process.argv.slice(2));
+  if (parsed.error) {
+    usageError(parsed.error);
     return;
   }
+  const { candidateFile, metricsFile, supersede } = parsed;
 
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
@@ -141,11 +170,18 @@ async function main() {
   const validatePlaybook = loadValidatePlaybook();
   if (!validatePlaybook) return; // loadValidatePlaybook already printed the reason + set exitCode
 
-  const validation = validatePlaybook(content);
+  // Capabilities must match what the runtime read path uses or this CLI rejects prose the lane
+  // serves — see playbook-candidate-core.mjs's header for the failure direction.
+  const { opts: validationOpts, derivedFrom } = deriveValidationOpts(process.env.VENUES);
+  const validation = validatePlaybook(content, validationOpts);
   if (!validation.ok) {
     console.error(
       `playbook:candidate: candidate rejected: ${validation.reason}` +
         (validation.bannedToken ? ` (bannedToken=${validation.bannedToken})` : ''),
+    );
+    console.error(
+      `playbook:candidate: validated with shortsAllowed=${validationOpts.shortsAllowed} ` +
+        `leverageAllowed=${validationOpts.leverageAllowed}, derived from ${derivedFrom}.`,
     );
     process.exitCode = 1;
     return;
@@ -154,7 +190,7 @@ async function main() {
   const pool = new Pool({ connectionString: databaseUrl });
   try {
     const { rows } = await pool.query(
-      'SELECT version, content, source, parent_version FROM public.agent_playbook_versions ORDER BY version',
+      'SELECT version, content, source, parent_version, created_at FROM public.agent_playbook_versions ORDER BY version',
     );
     const active = resolveActiveVersion(rows, process.env.AGENTIC_PLAYBOOK_PIN);
     if (active === undefined) {
@@ -165,15 +201,60 @@ async function main() {
       return;
     }
 
-    const blocking = rows
-      .filter(
-        (r) => (r.source === 'reflection' || r.source === 'loop-candidate') && r.version > active,
-      )
-      .sort((a, b) => b.version - a.version)[0];
-    if (blocking) {
+    const change = classifyContentChange(content, rows.find((r) => r.version === active)?.content);
+    if (!change.changed) {
       console.error(
-        `playbook:candidate: an unresolved candidate already exists at version ${blocking.version} ` +
-          `(source=${blocking.source}) — resolve it (promote or let it lapse) before minting another.`,
+        `playbook:candidate: candidate is byte-identical to the active playbook (version ${active}, ` +
+          `sha256 ${change.candidateSha.slice(0, 12)}) — nothing to A/B, refusing to burn a version.`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+
+    const lapseMs =
+      intEnv(process.env.AGENTIC_CANDIDATE_LAPSE_HOURS, DEFAULT_CANDIDATE_LAPSE_HOURS) * 3_600_000;
+    const abstainLapseDecides = intEnv(
+      process.env.AGENTIC_ABSTAIN_LAPSE_DECIDES,
+      DEFAULT_ABSTAIN_LAPSE_DECIDES,
+    );
+    const blocking = findBlockingCandidate(rows, active);
+    const nowMs = Date.now();
+    const gateInput = { blocking, nowMs, lapseMs, abstainLapseDecides, supersede };
+    const stats = needsAbstentionEvidence(gateInput)
+      ? await readVersionEntryStats(pool, blocking.version)
+      : undefined;
+    const gate = classifyCandidateGate({ ...gateInput, stats });
+    if (!gate.proceed) {
+      console.error(`playbook:candidate: ${gate.reason}`);
+      process.exitCode = 1;
+      return;
+    }
+    if (gate.lapse === 'age') {
+      console.warn(
+        `playbook:candidate: candidate v${gate.blocking.version} lapsed after ${Math.round(gate.ageMs / 3_600_000)}h ` +
+          'without resolving — minting over it (deliberate, logged orphaning; the row is retained).',
+      );
+    } else if (gate.lapse === 'abstention') {
+      console.warn(
+        `playbook:candidate: candidate v${gate.blocking.version} provably abstains live ` +
+          `(${gate.stats.entries} entries in ${gate.stats.decides} lifetime attributed decides ≥ ${abstainLapseDecides}) — ` +
+          'lapsing it early and minting over it.',
+      );
+    }
+
+    // Pre-check via to_regclass rather than try/catch-ing the INSERT itself: a 42P01
+    // (undefined_table) mid-transaction would abort the transaction, and the COMMIT below would then
+    // silently no-op as a rollback — losing the playbook insert along with it. Hoisted above BEGIN
+    // so --supersede can refuse BEFORE writing anything.
+    const { rows: regRows } = await pool.query("SELECT to_regclass('public.experiments') AS reg");
+    const experimentsExists = regRows[0]?.reg !== null;
+    // --supersede's entire purpose is the RECORD (agent_playbook_versions is append-only historical
+    // evidence, so an override that leaves no trace of what it overrode is worse than the deadlock
+    // it relieves). Fails CLOSED: no registry, no override.
+    if (gate.lapse === 'supersede' && !experimentsExists) {
+      console.error(
+        'playbook:candidate: --supersede cannot record the supersession — public.experiments does not exist. ' +
+          'Refusing to orphan a candidate off the record; run migrations first.',
       );
       process.exitCode = 1;
       return;
@@ -190,24 +271,47 @@ async function main() {
         [nextVersion, content, active],
       );
 
-      if (metricsJson !== undefined) {
-        // Pre-check via to_regclass rather than try/catch-ing the INSERT itself: a 42P01
-        // (undefined_table) mid-transaction would abort the transaction, and the COMMIT below would
-        // then silently no-op as a rollback — losing the playbook insert along with it.
-        const { rows: regRows } = await client.query(
-          "SELECT to_regclass('public.experiments') AS reg",
+      // Supersession evidence, in the SAME transaction as the mint it authorises — a committed
+      // orphaning with an uncommitted record is the one outcome this flag must never produce.
+      if (gate.lapse === 'supersede') {
+        await client.query(
+          `INSERT INTO public.experiments (family, source, params_hash, dataset_hash, label, metrics)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [
+            'playbook-supersede',
+            'loop',
+            change.candidateSha,
+            `superseded:v${gate.blocking.version}`,
+            `v${gate.blocking.version} (${gate.blocking.source}) superseded by v${nextVersion} via --supersede`,
+            JSON.stringify({
+              supersededVersion: gate.blocking.version,
+              supersededSource: gate.blocking.source,
+              supersededAgeHours: gate.ageMs === null ? null : Math.round(gate.ageMs / 3_600_000),
+              lapseHours: Math.round(lapseMs / 3_600_000),
+              newVersion: nextVersion,
+              activeVersion: active,
+            }),
+          ],
         );
-        if (regRows[0]?.reg === null) {
+      }
+
+      if (metricsJson !== undefined) {
+        if (!experimentsExists) {
           console.warn(
             'playbook:candidate: public.experiments table does not exist yet — skipping the metrics row; the playbook candidate insert proceeds alone.',
           );
         } else {
-          const paramsHash = createHash('sha256').update(content).digest('hex');
           const datasetHash = datasetHashFromMetrics(metricsJson);
           await client.query(
             `INSERT INTO public.experiments (family, source, params_hash, dataset_hash, metrics)
              VALUES ($1, $2, $3, $4, $5)`,
-            ['playbook-candidate', 'loop', paramsHash, datasetHash, JSON.stringify(metricsJson)],
+            [
+              'playbook-candidate',
+              'loop',
+              change.candidateSha,
+              datasetHash,
+              JSON.stringify(metricsJson),
+            ],
           );
         }
       }
@@ -228,7 +332,10 @@ async function main() {
 
     console.log(
       `playbook:candidate: version ${nextVersion} inserted as an INACTIVE loop-candidate (parent ${active}). ` +
-        `It will be picked up by the existing A/B routing, or promote it directly once vetted.`,
+        `It will be picked up by the existing A/B routing, or promote it directly once vetted.` +
+        (gate.lapse === 'supersede'
+          ? ` Supersession of v${gate.blocking.version} recorded in public.experiments (family=playbook-supersede); no row was deleted.`
+          : ''),
     );
   } finally {
     await pool.end();

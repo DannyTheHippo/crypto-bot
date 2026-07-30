@@ -125,7 +125,8 @@ Domain/risk tests use exact money strings and branded id mint helpers.
 - **Strategy lane:** agentic only (`ACTIVE_STRATEGY=agentic`); LLM calls in
   `features/strategy/agentic/`; promotion gate via `PromotionReadinessService`.
 - **Observability:** Prometheus metrics, pino logging with redact list, Grafana in `observability/`.
-- **Research:** `research/loop/state.md` tracks edge program; scorecards/studies committed;
+- **Research:** `research/loop/STATUS.md` is the loop's entry point (charter/verdicts/watches
+  alongside it); scorecards/studies committed;
   candidates ephemeral.
 
 ## Validation

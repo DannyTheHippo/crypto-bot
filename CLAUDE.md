@@ -79,7 +79,7 @@ Venue I/O: `src/features/venue/{exchange,market-data}/`. Composition (app zone):
    deterministic pure lane (ema-cross/donchian) and its replay-determinism gate were RETIRED by
    owner decision 2026-07-03 (git-history-only — pruned 2026-07-21);
    the test/backtest research harness was REBUILT 2026-07-10 by owner decision (edge program —
-   research/loop/state.md § Flagged) and stays OFF the production test gate (`pnpm backtest`).
+   research/loop/watches.md § Flagged) and stays OFF the production test gate (`pnpm backtest`).
 5. OMS: never blind-resubmit — unknown outcome ⇒ query by clientOrderId first
    (same-id dedupe is NOT a safety net on Binance: open-orders-only). Persist intent
    before any network call. Unknown >60s ⇒ kill switch. Unmapped errors are

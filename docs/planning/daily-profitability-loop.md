@@ -1,14 +1,15 @@
 # Daily profitability loop — playbook (v4)
 
 > **v2 freeze: this playbook is maintenance-only until the v3 local demo cutover record appears in
-> state.md § Strategic frame; from that record onward this v4 procedure is fully active — no
-> further human gate.** As of this writing (state.md's 2026-07-21 "v3 BUILD COMPLETE + VALIDATION
-> GATE" record) the v3 build is done and gated but cutover has NOT yet been recorded — the owner
-> session still owes the Grafana overview row, the dashboard-regression pass, and the stale-file
-> cleanup before flipping the cutover switch. A pass that finds no cutover record in state.md runs
-> §1-§3 (rehydrate, sweep, incident gate) unchanged but treats §4 as MAINTENANCE-only (critical
-> fixes on the current build); once the cutover record lands, §4's full pass-type menu is live with
-> no further owner gate.
+> `research/loop/archive/state-2026-07-30.md` § Strategic frame; from that record onward this v4
+> procedure is fully active — no further human gate.** As of this writing (that file's 2026-07-21
+> "v3 BUILD COMPLETE + VALIDATION GATE" record) the v3 build is done and gated but cutover has NOT
+> yet been recorded — the owner session still owes the Grafana overview row, the dashboard-regression
+> pass, and the stale-file cleanup before flipping the cutover switch. A pass that finds no cutover
+> record runs §1-§3 (rehydrate, sweep, incident gate) unchanged but treats §4 as MAINTENANCE-only
+> (critical fixes on the current build); once the cutover record lands, §4's full pass-type menu is
+> live with no further owner gate. (Both records live in that archive file since the 2026-07-30
+> state split; the cutover record is dated 2026-07-21 and IS present.)
 
 Audience: a Claude session executing one pass. Cadence: 2-4 passes/day (owner 2026-07-10 — the
 loop runs on subscription, not a per-day API budget). Trigger (owner-run):
@@ -75,19 +76,36 @@ Read in this order:
    lease, and freeing it would re-enable the very collision you just detected (the release is
    nonce-gated so it will refuse, but do not try). On 2026-07-28 two scheduled passes overlapped, one
    committed the other's in-flight work twice, and a gate run read the test count moving
-   mid-verification (state.md § Flagged). Two honest limits: the lease is time-based (2h, fails OPEN
+   mid-verification (`research/loop/watches.md` § Flagged). Two honest limits: the lease is
+   time-based (2h, fails OPEN
    — it cannot detect a dead holder, only an expired one), and it binds only passes that call it, so
    a refusal is evidence of overlap while a clean acquire is NOT proof of its absence.
 4. `corepack pnpm --dir <repo> loop:sweep` — the rehydration base AND the evidence sweep, one run
    (§2). It carries counter deltas since the last sweep, everything Prometheus fired and resolved in
    the last 12h, the error/warn breakdown from the log-event counter, host duty cycle from
    `app_suspend_events_total`, and bootId + running-build provenance.
-5. `research/loop/state.md` — the loop's only mutable memory: open WATCH lines, backlog, last-pass
-   pointer, settled owner decisions (NOT re-openable by a pass — a pass that disputes one writes the
-   argument into the report, never acts).
-6. `git -C <repo> log --oneline -20` — what shipped since the last pass. Re-run this BEFORE
+5. `research/loop/STATUS.md` — **the ONE state file a pass reads at start**, and the only one it
+   always reads: the ⛔ owner-blocked banner, current order & status (live build/boot, the book, the
+   promotion scoreboard, what is deployed, last-pass pointer), the open WATCH lines one line each,
+   the open backlog table, the open flagged items, and an index of every other loop file. It is
+   capped at 200 lines so this step stays cheap; it replaced `state.md` (1,932 lines) on 2026-07-30
+   because rehydration had become the largest fixed cost in the pass. `state.md` is now a 17-line
+   stub and holds nothing.
+6. The rest of `research/loop/` is read **on demand only**, when STATUS points you at it:
+   - `charter.md` — before deciding whether something is loop-domain or owner-gated, before firing a
+     pre-authorization, and whenever a settled owner decision is in play (NOT re-openable by a pass
+     — a pass that disputes one writes the argument into the report, never acts).
+   - `verdicts.md` — before proposing work in an area it covers (entry signal, exit rules, cost
+     levers, decide-model choice, price TA, non-price channels, promotion benchmark, playbook
+     lineage). Binding: do not re-derive, do not act against one without new evidence of equal weight.
+   - `watches.md` — when a WATCH's exact expected-positive or named defect outcome matters, or an
+     open flagged item is needed in full.
+   - `LOG.md` — the last five pass entries. Older entries: `archive/LOG-through-pass-47.md`. The
+     record behind any STATUS/watch/verdict line: `archive/state-2026-07-30.md`. Read an archive only
+     when a pointer sends you there.
+7. `git -C <repo> log --oneline -20` — what shipped since the last pass. Re-run this BEFORE
    committing: on 2026-07-28 two foreign commits landed on `main` mid-pass (§ the lease above).
-7. Project memory index (auto-loaded) — env quirks, validation recipes.
+8. Project memory index (auto-loaded) — env quirks, validation recipes.
 
 If the sweep carries an `app_suspended` annotation, that window is dark — the stack runs on a
 sleeping MacBook and the app process was frozen with it; treat counter gaps across it as duty cycle
@@ -276,7 +294,8 @@ arming ceremony) is the ONLY human gate. Evidence gates stay in full force.
 
 Loop-domain work carries: mandatory adversarial reviewer dispatch before commit (multi-lens for
 OMS-semantics); full gates + `test:livegate` + `test:paper` green; deploy soak per §5; a dated
-decision record + a WATCH line in state.md (change-discipline shape — every WATCH carries an
+decision record + a WATCH line (full text in `research/loop/watches.md`, one line in
+`research/loop/STATUS.md`; change-discipline shape — every WATCH carries an
 explicit expected-positive signature, a named defect outcome, and a resolution deadline/owner-pass);
 behavior-changing capability additionally ships two-step (code flag-off, then a separate enable
 commit with its own review).
@@ -413,11 +432,24 @@ conventional message. Dirty tree at pass start: note it, stage ONLY files this p
    type, decision + rationale, diff (files + commit hash), gate results, soak verdict, flagged
    items, next-pass candidates. CANDIDATE passes record the experiments-registry row id of EVERY
    scored variant (honest-N).
-2. Update `research/loop/state.md`: current stage, backlog with statuses, last-pass pointer, open
-   WATCH lines, flagged items awaiting the owner. Keep both files current enough that the next pass
-   needs nothing else.
-3. `pnpm lint:md` green after writing LOG.md/state.md.
-4. `corepack pnpm --dir <repo> loop:unlock <nonce>` — release the pass lease taken at §1 step 3,
+2. Update `research/loop/STATUS.md` — it is the file the NEXT pass reads, and the only one it is
+   guaranteed to read: current order & status (live build/boot, the book, the promotion scoreboard,
+   what is deployed, last-pass pointer), the open WATCH lines ONE LINE EACH, the backlog table, the
+   open flagged items. Anything longer than a line goes to the file that owns it — `charter.md` (a
+   new owner decision, grant or pre-authorization), `verdicts.md` (a new binding do-not-re-derive
+   verdict), `watches.md` (a new or changed WATCH, a new flagged item) — and STATUS keeps the
+   one-liner plus the pointer. **STATUS.md is capped at 200 lines: if an edit pushes it over, move a
+   body out, never trim the fact.** Keep STATUS + LOG current enough that the next pass needs
+   nothing else at start.
+3. **Rotate, so the hot files cannot grow without bound again.** `LOG.md` keeps only the LAST FIVE
+   pass entries. When this pass's entry makes six, move the OLDEST verbatim to
+   `research/loop/archive/LOG-through-pass-47.md` — appended at the end, chronological order
+   preserved, byte-identical. Nothing is ever deleted from a loop file: content MOVES, and a pointer
+   is left where it was. This rule is the actual fix for rehydration cost; a one-off compaction just
+   re-grows (`state.md` reached 1,932 lines and `LOG.md` 5,886 under the old 30-day rule).
+4. `pnpm lint:md` green after writing LOG.md/STATUS.md (markdownlint owns `.md`; the STATUS backlog
+   table is MD060-aligned — `--fix` does not repair it).
+5. `corepack pnpm --dir <repo> loop:unlock <nonce>` — release the pass lease taken at §1 step 3,
    using the nonce that step printed. Last action of the pass, after the report is written. A pass
    that TOOK the lease releases it, including one ending early; a pass REFUSED at §1 step 3 never
    holds it and must not try.
@@ -441,13 +473,15 @@ standing rule).
   owner plan `how-can-we-save-snuggly-grove`) BUILD COMPLETE and gated on `main` — commits `4178b6a`
   (config), `64e588a` (schema), `d351cbc` (checkpoint), `08f23c2` (streams), `cef43ee` (tool
   contract), `36071e5` (wiring), `20762a9` (assembly), `a7be88b` (gate fixes); `app.module.ts`
-  2,427→72 lines, one process/one book/4-container compose (state.md 2026-07-21 record). Footprint
+  2,427→72 lines, one process/one book/4-container compose
+  (`research/loop/archive/state-2026-07-30.md`, 2026-07-21 record). Footprint
   verdict: e2-medium PASS — full 40-symbol dual-venue graph, live feeds, 15-min host paper boot: RSS
   plateau ~673MiB flat, health 200 throughout, `--max-old-space-size=1024` held.
 - **Cutover status: NOT YET RECORDED.** Remaining before the cutover record lands (owner,
   2026-07-21): Grafana overview row + dashboard-regression pass, aggressive stale-file cleanup
-  (loop-core exempt). Until the cutover record appears in state.md § Strategic frame, treat every
-  §4 pass as MAINTENANCE-only per the freeze banner at the top of this document.
+  (loop-core exempt). Until the cutover record appears in
+  `research/loop/archive/state-2026-07-30.md` § Strategic frame, treat every §4 pass as
+  MAINTENANCE-only per the freeze banner at the top of this document.
 - **Evidence epoch:** `PROMOTION_EVIDENCE_EPOCH` is ONE knob now (no per-venue split); `.env.app`'s
   current value is explicitly marked "RE-STAMP AT CUTOVER — do not treat this value as final" — a
   pass must NOT walk the promotion scoreboard against it until the cutover re-stamp lands.
@@ -462,9 +496,10 @@ standing rule).
 - **Promotion gate:** ≥30 closed demo round trips AND positive net-of-cost PnL over ≥14 days,
   walked over the ONE book (`PromotionReadinessService`).
 
-WATCH lines a pass must check (full text in state.md; the pre-v3 lane-scoped WATCH-XA1/X2/XA6/XA7/
-X7-X8/Y2-Y3/X9 lines describe the BUILD that led here and are historical record, not standing
-checks against the current build):
+WATCH lines a pass must check (one line each in `research/loop/STATUS.md`, full text in
+`research/loop/watches.md`; the pre-v3 lane-scoped WATCH-XA1/X2/XA6/XA7/X7-X8/Y2-Y3/X9 lines
+describe the BUILD that led here and are historical record, not standing checks against the current
+build — they stayed with their decision records in `research/loop/archive/state-2026-07-30.md`):
 
 - WATCH-V3-1 — spot heap slope on the demo soak: paper plateau ~673MiB is the reference; a
   demo-mode sustained climb past ~900MiB before the soak ends is a defect signal.

@@ -412,7 +412,7 @@ financial action and outside what an automated pass may do.
 cause specifically — `AgentClientLatchedUnfundedAccount` (warning) does instead, and `pnpm loop:sweep`
 prints an unmissable `## LLM PROVIDER ACCOUNT UNFUNDED` banner ahead of its alarms section. This is
 the KNOWN standing blocker (both the Anthropic and Moonshot accounts, since 2026-07-27T21:16Z per
-research/loop/state.md) and is NOT investigable by an automated pass — do not open a defect
+research/loop/STATUS.md) and is NOT investigable by an automated pass — do not open a defect
 investigation over it. The only remedy is the owner adding credit; the lane self-heals within 30
 minutes of credit landing, with no redeploy required.
 

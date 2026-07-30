@@ -31,12 +31,13 @@
 // exits 0 unless the tool itself crashes. It never mutates the stack (read-only transport).
 
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   AGENTIC_DAILY_COST_BREAKER_USD,
   ALERT_LOOKBACK_MS,
+  classifyUnrecordedSweeps,
   computeSweep,
   extractCounters,
   isBuildProvenanceVoid,
@@ -57,6 +58,7 @@ const REPO_ROOT = join(SCRIPT_DIR, '..');
 const DIGESTS_DIR = join(REPO_ROOT, 'research', 'loop', 'digests');
 const ALERT_RULES_PATH = join(REPO_ROOT, 'observability', 'alerts.rules.yml');
 const WATERMARK_PATH = join(DIGESTS_DIR, '.watermark.json');
+const PASS_LOG_PATH = join(REPO_ROOT, 'research', 'loop', 'LOG.md');
 // Raised 3000 -> 20000 on 2026-07-28. The tail is a LINE bound but the pass reasons in TIME, and at
 // this stack's log rate (~1.6k lines/h) 3000 lines covered under 2h — so a 49-minute venue outage
 // that ended 6h before the pass ran produced 340 warn lines the sweep never saw. 20k lines is ~12h
@@ -937,6 +939,27 @@ function loadWatermark() {
   }
 }
 
+// The two repo-artifact reads behind the pass-record audit (see classifyUnrecordedSweeps in the
+// core). Both return null on any failure rather than throwing: the core turns a null into the loud
+// `pass_record_audit_undetermined` note, so a missing LOG.md or an unlistable digests dir costs this
+// one check and never the sweep. Local file reads, not stack access — they stay host-local after a
+// GCP lift, same as gitTip().
+function readPassLog() {
+  try {
+    return readFileSync(PASS_LOG_PATH, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+function listDigestNames() {
+  try {
+    return readdirSync(DIGESTS_DIR);
+  } catch {
+    return null;
+  }
+}
+
 // The next watermark: bootId + RestartCount + scalar counters for the app, plus the sweep timestamp.
 function buildWatermark(sweptAtMs, app) {
   return {
@@ -1170,6 +1193,15 @@ export function runSweep() {
         : `docker ps failed: ${ps.error}`,
     });
   }
+
+  // Audits the loop's own record-keeping, not the stack — the only check here whose subject is this
+  // repo. Merged into result.annotations before the digest is written so the finding is persisted in
+  // the digest JSON too, not only printed: an unrecorded pass is exactly the fact a later pass has to
+  // reconstruct from artifacts.
+  result.annotations.push(
+    ...classifyUnrecordedSweeps({ digestNames: listDigestNames(), logText: readPassLog() })
+      .annotations,
+  );
 
   const digest = { sweptIso, sweptAtMs, git, host, app, result };
 

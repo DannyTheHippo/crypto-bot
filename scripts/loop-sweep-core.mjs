@@ -18,6 +18,10 @@
 //   computeSweep({ prev, cur }) -> { deltas, alarms, annotations }
 //     prev : the prior watermark object ({ sweptAtMs, app }), or null on the first-ever sweep.
 //     cur  : this pass's gathered probes ({ sweptAtMs, app }) — see gather() in loop-sweep.mjs.
+//   classifyUnrecordedSweeps({ digestNames, logText }) -> { status, unrecorded, ..., annotations }
+//     the loop's self-audit: which sweeps ran without leaving a pass entry behind (see its own
+//     section at the foot of this file). Kept OUT of computeSweep because its inputs are repo
+//     artifacts, not stack probes, and must not land in the digest's `cur`.
 // Provenance-before-interpretation (§C.6, §D): counter deltas are computed ONLY when the current
 // bootId matches the watermark's bootId — a restart resets process counters, so a cross-boot "delta"
 // is meaningless and would fabricate negatives. A bootId mismatch yields the verbatim annotation
@@ -799,4 +803,249 @@ export function computeSweep({ prev, cur }) {
   }
 
   return { deltas, alarms, annotations };
+}
+
+// ── pass-record audit: did every sweep that ran leave a pass entry behind? ────────────────────────
+// Written for the Pass 48 finding (2026-07-30), which recorded the defect and explicitly did not fix
+// it: three sweeps on 2026-07-29 (16:07Z scheduled, 19:33Z, 19:46Z) left NO entry in
+// research/loop/LOG.md at all, and nothing noticed — "the loop has no detector for its own unrecorded
+// passes". A sweep that ran with no pass entry is indistinguishable from a pass that never ran, so
+// the loop cannot audit its own cadence from its own artifacts, which is the one thing the artifacts
+// exist for.
+//
+// FAIL DIRECTION — fails OPEN, and never into a false clean. This is a measurement/reporting probe:
+// an unreadable LOG.md, an unlistable digests dir, or a name this parser cannot read must never throw
+// and must never become an ALARM (playbook §3 makes any named alarm block the pass's improvement
+// work, and a broken measurement must not block the thing it measures). The other half is the trap
+// this repo keeps re-hitting — a fail-open that reads as "clean" because it emits nothing, and an
+// absence a reader scores as zero. So every cannot-determine path emits `pass_record_audit_
+// undetermined` verbatim, exactly the split `log_window_unknown` / `log_window_short` already draw
+// between "no reading" and "a reading of zero". Silence from this check means CLEAN and only clean,
+// because each way it can fail to run is loud.
+
+// The hourly collector daemon drove runSweep() IN-PROCESS, so every digest it left is a daemon tick
+// with no pass behind it — visible as the :24:29 hourly cadence across ~200 files, ending at
+// sweep-2026-07-29T08-24-29-554Z.json. Judging those as passes would report ~14 "unrecorded passes"
+// per pre-retirement day, forever, which is the cry-wolf that makes a detector get ignored. The
+// daemon was retired 2026-07-29 (see ALERT_LOOKBACK_MS's comment); this floor is inert the moment
+// LOG.md's rotation window advances past it, since the audit floor is the LATER of the two.
+export const COLLECTOR_DAEMON_RETIRED_AT_MS = Date.parse('2026-07-29T09:00:00Z');
+
+// A pass writes its `**Window:**` line before its closing gate/deploy/soak steps, so the pass's own
+// last sweep can land minutes after the end it claimed. Without slack the detector's loudest false
+// positive would be accusing the very pass that recorded itself. 30 min covers a gate+deploy tail and
+// stays far short of the 4.9h gap that made this check necessary.
+export const PASS_WINDOW_END_TOLERANCE_MS = 30 * 60 * 1000;
+
+const DIGEST_NAME_RE = /^sweep-(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z\.json$/;
+
+// The runner mints the digest name as `sweep-${sweptIso.replace(/[:.]/g, '-')}.json`; this inverts
+// exactly that transform. Reading the stamp off the NAME rather than opening ~200 JSON files is not
+// an optimisation only — a digest whose body is truncated or mid-write still has a readable name, and
+// the name is what the writer guarantees.
+export function parseDigestStampMs(name) {
+  const m = DIGEST_NAME_RE.exec(String(name ?? ''));
+  if (!m) return null;
+  const ms = Date.parse(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}.${m[7]}Z`);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+// LOG.md's own conventions, read off the file rather than assumed: one `## <date> — Pass <n> (title)`
+// heading per pass, where <date> is `2026-07-29` or the two-day `2026-07-28/29`, and the first
+// `**Window:**` line under it carries the span. Sub-headings are `###` and never match.
+const PASS_HEADING_RE = /^##\s+(\d{4}-\d{2}-\d{2})(?:\/\d{1,2})?\s+—\s+Pass\s+(\d+)\b/;
+const WINDOW_LINE_RE = /^\*\*Window:\*\*\s*(.+)$/;
+// Both stamp shapes the retained entries actually use — fully qualified, or bare `HH:MMZ` inheriting
+// the date to its left. ANCHORED on purpose: an unanchored match would happily lift a time out of the
+// prose that trails the window on the same line and call it the pass boundary.
+const WINDOW_ABS_STAMP_RE = /^\s*(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})Z/;
+const WINDOW_TIME_ONLY_RE = /^\s*(\d{2}):(\d{2})Z/;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function parseWindowSide(text, defaultDate) {
+  const abs = WINDOW_ABS_STAMP_RE.exec(text);
+  if (abs) {
+    const ms = Date.parse(`${abs[1]}T${abs[2]}:${abs[3]}:00Z`);
+    return Number.isFinite(ms) ? ms : null;
+  }
+  const rel = WINDOW_TIME_ONLY_RE.exec(text);
+  if (!rel) return null;
+  const ms = Date.parse(`${defaultDate}T${rel[1]}:${rel[2]}:00Z`);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+// Either both bounds parse or the entry counts as UNPARSED — a half-read window would silently shrink
+// a pass's coverage and manufacture the exact false accusation this detector must not make. Ends that
+// are prose ('→ in progress', archived Pass 43) take that path by construction.
+function parsePassWindow(raw, headingDate) {
+  const sides = String(raw).split('→');
+  if (sides.length < 2) return { startMs: null, endMs: null };
+  const startMs = parseWindowSide(sides[0], headingDate);
+  if (!Number.isFinite(startMs)) return { startMs: null, endMs: null };
+  const startDate = new Date(startMs).toISOString().slice(0, 10);
+  let endMs = parseWindowSide(sides[1], startDate);
+  if (!Number.isFinite(endMs)) return { startMs: null, endMs: null };
+  // A bare end time earlier than the start is the next calendar day — the overnight pass the
+  // `## 2026-07-28/29 — Pass 45` heading shape exists for (16:07Z → 07:00Z).
+  if (endMs < startMs) endMs += DAY_MS;
+  return { startMs, endMs };
+}
+
+export function parseLogPassEntries(logText) {
+  if (typeof logText !== 'string') return [];
+  const entries = [];
+  let cur = null;
+  for (const line of logText.split('\n')) {
+    const heading = PASS_HEADING_RE.exec(line);
+    if (heading) {
+      cur = {
+        heading: line.trim(),
+        pass: Number(heading[2]),
+        date: heading[1],
+        window: null,
+        startMs: null,
+        endMs: null,
+      };
+      entries.push(cur);
+      continue;
+    }
+    if (!cur || cur.window !== null) continue;
+    const window = WINDOW_LINE_RE.exec(line);
+    if (!window) continue;
+    cur.window = window[1].trim();
+    const span = parsePassWindow(window[1], cur.date);
+    cur.startMs = span.startMs;
+    cur.endMs = span.endMs;
+  }
+  return entries;
+}
+
+// Every count is zero here on purpose: an undetermined audit evaluated nothing, and reporting a
+// partial tally next to a verdict that does not exist is the same "absence reads as a reading" defect
+// the annotation is written to prevent.
+function undeterminedResult(reasons) {
+  return {
+    status: 'undetermined',
+    unrecorded: [],
+    evaluated: 0,
+    skippedBeforeFloor: 0,
+    pendingAfterLastEntry: 0,
+    unreadableNames: 0,
+    annotations: [
+      {
+        kind: 'pass_record_audit_undetermined',
+        detail:
+          `sweeps could not be audited against LOG.md pass entries: ${reasons.join('; ')} — this is ` +
+          'NOT a clean result, it is no reading at all',
+      },
+    ],
+  };
+}
+
+// digestNames: the bare filenames under research/loop/digests/ (the runner readdir's them; this stays
+// I/O-free). logText: the LOG.md contents, or null when the read failed.
+export function classifyUnrecordedSweeps({ digestNames, logText }) {
+  if (typeof logText !== 'string' || logText.trim() === '') {
+    return undeterminedResult(['research/loop/LOG.md was unreadable or empty']);
+  }
+  if (!Array.isArray(digestNames)) {
+    return undeterminedResult(['the research/loop/digests/ directory could not be listed']);
+  }
+
+  const entries = parseLogPassEntries(logText);
+  if (entries.length === 0) {
+    return undeterminedResult([
+      'no `## <date> — Pass <n>` entries parsed out of LOG.md (heading convention changed?)',
+    ]);
+  }
+  // One unparseable window blanks the WHOLE verdict rather than just its own entry: every gap between
+  // the entries that did parse could be the span this one covers, so no gap is attributable while it
+  // is unknown. Suppressing the verdict here is the fail-open direction — a false "unrecorded pass"
+  // sends a pass hunting a record that exists.
+  const unparsed = entries.filter((e) => !Number.isFinite(e.startMs) || !Number.isFinite(e.endMs));
+  if (unparsed.length > 0) {
+    return undeterminedResult([
+      `${unparsed.length} of ${entries.length} retained pass entr${unparsed.length === 1 ? 'y has' : 'ies have'} ` +
+        `an unreadable **Window:** line (${unparsed.map((e) => `Pass ${e.pass}`).join(', ')}), so no ` +
+        'gap between the others can be attributed',
+    ]);
+  }
+
+  // Floor: below it a digest is not this check's business — either it predates the retained LOG window
+  // (its pass entry rotated VERBATIM into research/loop/archive/, which this check does not read, so
+  // an absence there is expected and means nothing) or it predates the collector daemon's retirement.
+  const oldestEntryStartMs = Math.min(...entries.map((e) => e.startMs));
+  const floorMs = Math.max(oldestEntryStartMs, COLLECTOR_DAEMON_RETIRED_AT_MS);
+  // Ceiling: a pass writes its entry at the END of the pass, so every sweep after the newest recorded
+  // entry may belong to the pass running right now — including this very sweep. Judging them would
+  // accuse the in-flight pass on every single run. Deriving the ceiling from the data rather than from
+  // a fixed grace period is what lets the check stay quiet during a 15h pass (Pass 45) and still name
+  // a gap the moment a LATER pass records itself.
+  const newestEntryEndMs = Math.max(...entries.map((e) => e.endMs)) + PASS_WINDOW_END_TOLERANCE_MS;
+
+  const unrecorded = [];
+  let evaluated = 0;
+  let skippedBeforeFloor = 0;
+  let pendingAfterLastEntry = 0;
+  let unreadableNames = 0;
+  for (const name of digestNames) {
+    // The digests dir is not exclusively sweep digests — it also holds the watermark, the retired
+    // daemon's per-day .jsonl/.md rollups and its log. Those are not this check's input at all, so
+    // they are passed over silently; only a name that CLAIMS to be a sweep digest and still will not
+    // parse is a hole worth disclosing.
+    if (!String(name).startsWith('sweep-')) continue;
+    const ms = parseDigestStampMs(name);
+    if (ms === null) {
+      unreadableNames += 1;
+      continue;
+    }
+    if (ms < floorMs) {
+      skippedBeforeFloor += 1;
+      continue;
+    }
+    if (ms > newestEntryEndMs) {
+      pendingAfterLastEntry += 1;
+      continue;
+    }
+    evaluated += 1;
+    const covered = entries.some(
+      (e) => ms >= e.startMs && ms <= e.endMs + PASS_WINDOW_END_TOLERANCE_MS,
+    );
+    if (!covered) unrecorded.push({ name, sweptAtMs: ms, sweptIso: new Date(ms).toISOString() });
+  }
+  unrecorded.sort((a, b) => a.sweptAtMs - b.sweptAtMs);
+
+  const annotations = [];
+  // A name this parser cannot read is a hole in the audit's INPUT, not a verdict — it is disclosed
+  // alongside whatever verdict the readable names support, never instead of it.
+  if (unreadableNames > 0) {
+    annotations.push({
+      kind: 'pass_record_audit_undetermined',
+      detail:
+        `${unreadableNames} file(s) under research/loop/digests/ do not carry a readable sweep ` +
+        'stamp in their name and were not audited — the verdict below covers the rest only',
+    });
+  }
+  if (unrecorded.length > 0) {
+    const shown = unrecorded.slice(0, 8).map((u) => u.sweptIso);
+    const more = unrecorded.length - shown.length;
+    annotations.push({
+      kind: 'sweeps_unrecorded_in_log',
+      detail:
+        `${unrecorded.length} sweep(s) ran with no LOG.md pass entry covering them: ` +
+        `${shown.join(', ')}${more > 0 ? ` (+${more} more)` : ''} — a sweep that left no pass entry ` +
+        'is indistinguishable from a pass that never ran, so the cadence cannot be audited until ' +
+        'each is written up or explained (Pass 48 finding, 2026-07-30)',
+    });
+  }
+
+  return {
+    status: unrecorded.length > 0 ? 'unrecorded' : 'clean',
+    unrecorded,
+    evaluated,
+    skippedBeforeFloor,
+    pendingAfterLastEntry,
+    unreadableNames,
+    annotations,
+  };
 }

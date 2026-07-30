@@ -144,8 +144,11 @@ here rather than duplicated below.
 > governs chosen IMPROVEMENTS only and never licenses a deferral — now stated outright in playbook §4
 > (§ DEFECTS ARE NEVER DEFERRED).
 
-- **BOTH PROVIDER ACCOUNTS ARE UNFUNDED — the single blocker on the entire program (Passes 42/43,
-  2026-07-28).** Anthropic returns `400 invalid_request_error: "Your credit balance is too low"`
+- ~~**BOTH PROVIDER ACCOUNTS ARE UNFUNDED — the single blocker on the entire program (Passes 42/43,
+  2026-07-28).**~~ **Struck 2026-07-30T09:01Z when funding returned — read the AMENDED block at the
+  end of this item, which also carries the standing latch-cause guidance. Nothing below is deleted;
+  the 2026-07-28 body stands as written.**
+  Anthropic returns `400 invalid_request_error: "Your credit balance is too low"`
   (exhausted mid-run at 21:16Z on 07-27); Moonshot returns `429 suspended — insufficient balance`.
   Consequences: the champion cannot trade at all (the lane latches, correctly, and journals named
   `client_latched` degrades), AND the frozen playbook-space replay — the one study that could answer
@@ -159,6 +162,28 @@ here rather than duplicated below.
   accumulating evidence for a gate the current entry signal provably cannot pass. Whether that is
   worth doing is a decision about what this project is FOR — surfaced by Pass 41, restated by 42, and
   now unavoidable rather than deferrable. The loop does not decide it and has not assumed either answer.
+  **AMENDED 2026-07-30T09:01Z — FUNDING RETURNED AND THE PREDICTION HELD (Pass 48).** Credit landed
+  between 07:45:18Z (Pass 48 confirmed the `400` still live at that timestamp) and 09:01Z, and **the
+  lane self-healed with no redeploy**: first real decide 2026-07-30T09:01:01Z (45.6s, full thesis),
+  first proposes 09:15:31Z (`open_long` ZEC spot + perp), 597 lifetime real decides at 11:04Z against
+  575 before, 6 fills in 24h, `open_orders` 3 per venue. So the "on resumption nothing needs
+  redeploying or re-deciding" clause above is now live-verified rather than inferred, and it closes the
+  one WATCH-V4-5 clause that could not be tested without credit. **Only the Anthropic account was
+  funded — the Moonshot fallback is untested since and is presumed still suspended.** Full record:
+  `STATUS.md` § The LLM lane.
+  **The item stays listed, struck rather than moved to the archive, because the condition recurs the
+  moment the balance runs out again — and the response is then fixed: read the CAUSE, do not open an
+  investigation.** `agent_client_latch_cause{cause="insufficient_credit"} == 1` means the balance is
+  out again: an owner capability limit, not a defect, and no pass can fix it. `loop:sweep` prints a
+  banner naming it ABOVE the alarms section, and `AgentClientLatchedUnfundedAccount` is severity
+  `warning` on purpose so it annotates instead of wedging playbook §3. **The demotion is cause-specific
+  and fails CLOSED:** any other cause classifies as `other`, keeps `AgentClientFatalLatch` at
+  `critical`, and IS a full incident. Passes 42-47 each re-derived the blocker from scratch — that is
+  the waste this exists to end (shipped Pass 48, `8002888`).
+  **What funding does NOT settle:** the Pass 41 reading quoted directly above is unchanged — entries
+  are significantly negative and worse than a random-bar placebo, so a live lane spends ~$2.6/day
+  accumulating evidence for a gate the present entry signal provably cannot pass. That decision is
+  still the owner's, and the loop still has not assumed either answer.
 
 - **OPEN DEFECT — WATCH-V4-6 (`QUERY_NOT_FOUND` terminalization, Pass 44, 2026-07-28):** full text
   above under § Open WATCH lines, kept there so the WATCH and the defect cannot drift apart.

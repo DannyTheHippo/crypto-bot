@@ -14,6 +14,64 @@ classification** bullet, which stood last in this section, is now `charter.md` �
 
 ## Standing verdicts (binding evidence — passes must NOT re-derive these)
 
+- **TWO BARS, AND THEY ARE NEVER THE SAME BAR — a research-bar FAIL IS NOT a deployment veto (owner
+  ruling 2026-07-30: _"if a less-bad playbook is found than the running one, deploy it. less-bad is
+  always better than dropping it since it is CLOSER to profitability"_).** Read this before answering
+  "should I deploy X?" — it stands first because the verdicts below it are research-bar verdicts and
+  every one of them is silent on deployment.
+  - **The RESEARCH bar** — mean **> +13.0 bps** AND the bootstrap 95% CI **lower bound > +13.0 bps**,
+    under the pre-registered Bonferroni α, plus the random-bar placebo (playbook-space study: bar
+    clauses at `research/studies/playbook-space-replay-2026-07-28.md:149-168`, α = 2.5e-3 on a family
+    of 20 at `:724-736`). It answers **"does an edge exist?"** It governs every claim of edge and every
+    step toward live money. Nothing else may be called an edge.
+  - **The DEPLOYMENT bar** — beats the **currently running** playbook on the SAME corpus, the SAME
+    metric and the SAME horizon, all three declared before the comparison is looked at. It answers
+    **"which of several losing options should run?"** It governs playbook selection and nothing else.
+  - **The load-bearing consequence: `NO_SURVIVOR` is a RESEARCH-bar verdict and says NOTHING WHATEVER
+    against the deployment bar.** 20 of 20 declared cells scored, 0 passes
+    (`playbook-space-replay-2026-07-28.md:801-810`) means no funded arm cleared +13.0 bps. It does not
+    mean the arms are indistinguishable, and it does not mean the status quo wins by default — the
+    study measured every arm's mean and the champion is not the best of them. **Do NOT re-derive
+    "research-bar FAIL ⇒ do not deploy". It is FALSE, and applying it throws away everything the study
+    measured while leaving the worst-measured option running.**
+  - **The worked example, which is also the live decision.** On the identical 354-row corpus and the
+    identical forward-return metric, `inverted` beats `champion_v8` at **every** horizon
+    (`playbook-space-replay-2026-07-28.md:749-756`): h=1 **−0.8 vs −12.7**; h=4 **+0.8 vs −36.3**;
+    h=8 **+19.3 vs −32.7**; h=24 **+47.6 vs −70.1** bps. `inverted` n=117 over 20 clusters at every
+    horizon; `champion_v8` n=70 at h=1/4/8 and n=69 at h=24. Net of the 20 bps round trip (the ENTRY
+    SIGNAL verdict below: _"+24.2 (live 20 bps)"_), h=24 reads **+27.6 for `inverted` against −90.1** —
+    arithmetic on the two means, not a new measurement. Under the deployment bar that is not a close
+    call; under the research bar both are failures, and both statements are true at once.
+  - **Guardrail 1 — `inverted` FAILS the research bar and deploying it is NOT a claim of edge.** h=24
+    CI lower bound **−12.2**, h=8 **+1.1**, both under +13.0; `p vs bar` 0.1947 / 0.2215. The existing
+    hedge in the NO_SURVIVOR verdict below — **never quote +47.6 as an edge** — stays true and stays
+    binding, and this verdict does not soften it by one basis point. Deployment is a choice among
+    losers; it licenses no write-up, no promotion evidence, and no move toward live capital.
+  - **Guardrail 2 — in-sample, one regime.** The arms are scored on the corpus that generated the
+    finding, 6.35 calendar days, 2026-07-21 → 27 (`playbook-space-replay-2026-07-28.md:69-73, 218-223`).
+    A deployment decision may rest on this; an edge claim may not.
+  - **Guardrail 3 — adverse selection may not invert, and offline replay structurally cannot measure
+    it.** The recorded entries were maker-side at **76% fill**; being reliably on the wrong side of a
+    print does not imply the other side of that print was available at the same terms
+    (`playbook-space-replay-2026-07-28.md:224-226`; § NOT A FINDING below). The study's "the bias is
+    identical across arms" argument covers the entry PRICE level, not whether the faded side fills at
+    all. **A divergence between replay-predicted and live-realised entry return is therefore a FINDING
+    to report, not noise to explain away.**
+  - **Guardrail 4 — this is NOT the arithmetic inversion test, and the two must never be collapsed.**
+    `test/backtest/inversion-test.mjs` negates recorded observations, so its +16.9 / +31.9 / +47.3 /
+    +66.5 bps mirror is a tautology (§ NOT A FINDING below). The `inverted` ARM is different in kind:
+    playbook PROSE run through the model, producing its **own 117 entries** against the champion's 70
+    on the same rows — the arm text and the header comment stating precisely this distinction are at
+    `test/eval/agentic/playbook-space-arms.ts:100-133`. Citing the sign-flip mirror as support for the
+    arm, or dismissing the arm as "just the sign-flip", are the same error in opposite directions.
+  - **Guardrail 5 — reverting a failed deployment falls back to the NEXT-LEAST-BAD arm, never to
+    `champion_v8` by default.** At h=24 the funded sonnet ranking is `inverted` +47.6 > `minimal` −40.7
+    (n=89) > `champion_v8` −70.1 > `momentum_pure` −85.3 (`playbook-space-replay-2026-07-28.md:749-764`),
+    so the fallback from `inverted` is `minimal`, and reverting to the champion would revert to a
+    **worse-measured** option. The ranking is horizon-specific — at h=1 it reads `inverted` −0.8 >
+    `champion_v8` −12.7 = `momentum_pure` −12.7 > `minimal` −13.3 — which is why the horizon is
+    declared before the comparison, not chosen after it.
+
 - **THE DECIDE MODEL IS NOT THE LEVER — playbook-space replay, NO_SURVIVOR (2026-07-30;
   `research/studies/playbook-space-replay-2026-07-28.md`, Amendments 4-5).** 20 of 20 pre-registered
   cells scored across two models, 4 playbook arms, 4 horizons, 354 recorded FLAT rows, α = 2.5e-3.
@@ -310,3 +368,17 @@ classification** bullet, which stood last in this section, is now `charter.md` �
   lapse fires.** The mint path being dead was previously masked by a second defect — the script's
   validator path pointed at a directory that never existed (fixed `0911c37`), so it exited 1 before
   ever reaching this check. Fixing that path is what made the deadlock observable.
+
+  **AMENDED 2026-07-30 (Pass 48) — ONE PRECONDITION MET, THE DEFECT UNCHANGED. This is NOT resolved.**
+  The Anthropic account was funded at 2026-07-30T09:01Z and the lane resumed real decides with no
+  redeploy (`STATUS.md` § The LLM lane), so the "until either funding returns…" clause above has had
+  its funding half satisfied. **That is the only thing that changed.**
+  `scripts/playbook-candidate.mjs:168-180` still refuses to mint past ANY unresolved candidate above
+  the active version, its `blocking` filter still carries **no age predicate**, and
+  `pnpm playbook:candidate` is therefore still blocked; v9 is still unresolved and still takes
+  `AGENTIC_PLAYBOOK_AB_PCT=40`% of live decides. What funding bought is narrow: the two lapse routes,
+  which require the LLM lane to be calling, can now accrue evidence at all. It did not bring either
+  materially nearer — the age lapse still cannot fire before ~2026-08-10, and the abstention lapse
+  needs ≥15 attributed real decides with **zero** entries while the lane resumed proposing the same
+  morning (`open_long` ZEC spot + perp, 09:15:31Z). Repairing the script itself is a separate change
+  and is not claimed here.

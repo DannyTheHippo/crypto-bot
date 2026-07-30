@@ -93,6 +93,7 @@ files below, with a one-line pointer here.
 | WATCH-V4-4 | `fills` rows carry the clientOrderId of an order on the SAME venue, and `sum(fills.qty)` equals `orders.cum_qty` for every terminal order | holds — 197 perp→perp, 12 spot→spot, zero cross-venue folding |
 | WATCH-V4-6 | the count of orders non-terminal with no in-flight intent stays at 4 and does not grow | holds — still exactly the 4 from 07-24, `cum_qty` 0 |
 | WATCH-V4-7 | every digest carries an "alerts fired+resolved in the last 12h" line and a warn-scan span at or above the alert lookback | holds |
+| WATCH-V4-9 | every replay-driven measurement reports `capsSource: 'recorded'` on 100% of rows, and a candidate the entry-rate floor rejects is rejected for abstaining, not for proposing a size the recorded row actually permitted | defect FIXED + shipped `8c6d098` (2026-07-30) and the study it blocked ran to completion (20/20 cells, NO_SURVIVOR, `verdicts.md`); the named defect outcome did NOT fire — entry rate moved 2.5% → 19.1% against the recorded 16.1%. Still open as a standing check on the mint-time gates: any run reading a non-`recorded` row voids it, and if a later re-measure falls back below 16.1% the next suspect is the system prompt (`DEFAULT_FLOOR_PROFILE`), then the live ~9-version mixture |
 
 Resolved WATCH lines (V3-2, V3-3, V4-5, V4-8) are kept in full in `watches.md` § Resolved — they are
 closed, not deleted; do not re-open one without new evidence.
@@ -103,11 +104,21 @@ closed, not deleted; do not re-open one without new evidence.
 
 | # | Item | Stage | Effort | Status / next check |
 | --- | --- | --- | --- | --- |
-| 18 | Per-hour/session expectancy gating (last residual of the W4.4 seeds — fee-tier/BNB dropped: demo fees flat 10bps, § Standing verdicts; trade-flow widening shipped Phase 3) | 2+ | M | DATA-GATED (2026-07-22 sweep): 0 closed trips post-cutover (worse than the 07-13 "10 trips" skip) — per-hour buckets statistically empty |
-| 44 | Spot OCO exits (fuse executor stop + venue TP into one venue-side pair) — needs demo `orderList/oco` support proof; ccxt 4.5.58 has no unified spot OCO | 2 | M | PROBE-GATED (2026-07-22 sweep): needs a keyed demo-venue orderList/oco capability probe + the still-unmet venue-TP capture data (fills=0 post-cutover) |
-| 45 | Trailing-stop plan field — wait for venue-TP capture data (Phase-2 WATCH counters) before designing | 2 | M | DATA-GATED (2026-07-22 sweep): venue-TP/stop capture data still unmet (fills=0 post-cutover) |
-| 47 | Adaptive consult cadence (vary the 15m consult rhythm by regime) | 2 | M | DATA-GATED (2026-07-22 sweep): Phase-5 consult baseline still ~1 day old / trade-gated |
 | 48 | Weekly vol-ranked symbol rotation (universe-study follow-on) | 2 | M | DESIGN-GATED (2026-07-22 sweep): the 5→8 sequencing gate is OBE (universe now 40 symbols + vol×ATR scanner + menu-8); residual = the open rotation-vs-promotion-walk attribution design |
+
+### Closed 2026-07-30 (Pass 48) — OBSOLETE, answered by evidence, not awaiting data
+
+Four rows retired here rather than deleted (closed-ledger convention, `charter.md` § Backlog: one
+line per retired ID). Each was gated on data that the 2026-07-27 verdicts have since made
+irrelevant — **do not re-open one on the grounds that its gate has cleared**; the gate is moot
+because the question behind it is answered.
+
+| # | Item | Why it is OBSOLETE — the verdict that answers it (`verdicts.md`) |
+| --- | --- | --- |
+| 18 | Per-hour/session expectancy gating | It is a conditional-subgroup cut, and that search is exhausted: 1,807 cuts examined, **0 of 188 counterfactual cuts positive at n≥8**, smallest p among positive-mean cuts 0.302, BH at q=0.05 yields zero discoveries. "There is no attribute-based entry filter to deploy" (§ THE ENTRY SIGNAL IS SIGNIFICANTLY NEGATIVE). More closed trips would not change this — the cut class itself is dead |
+| 44 | Spot OCO exits (venue-side stop+TP pair) | Exit geometry, and the exit study is **16 of 16 cells negative** across three arms and 14 geometry cells, with an explicit "**Do NOT re-run exit-rule sweeps**" (§ NO EXIT RULE RESCUES THESE ENTRIES). A demo `orderList/oco` probe would prove only that a negative-expectancy exit can be placed venue-side |
+| 45 | Trailing-stop plan field | Same verdict: wider stops buy hit rate monotonically (17.4% → 40%) **without turning expectancy positive**, and a shorter TP wins at every stop multiple — the signature of entries with no directional edge. The venue-TP capture data it waited on cannot reverse that |
+| 47 | Adaptive consult cadence | Priced and rejected: cadence/batching work is worth ~**$0.20/day** and "**Consult cadence is ON TARGET; batching fragmentation is not a profitability lever**" (§ Consult cadence). The remaining cost lever is payload SIZE, which the C4 per-block ablation covers as a separate plan step — not this item |
 
 ## Flagged for human review (open) — owner capability limits only, full text in `watches.md`
 

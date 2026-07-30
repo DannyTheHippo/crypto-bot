@@ -114,8 +114,19 @@ AGENTIC_WAKE_MOVE_PCT=0.008 # XA1 2026-07-20: 1.5% never fires in the dominant s
 AGENTIC_PLAN_EXIT_TTL_BARS=2 # TTL (bars) on plan-executor exit signals; 1-bar TTL races its own age (a max_hold exit expired live 2026-07-07 at 902.2s vs 900s)
 AGENTIC_DRAIN_COOLDOWN_BASE_MS=30000 # first AUTO-drain cooldown backoff
 AGENTIC_DRAIN_COOLDOWN_MAX_MS=900000 # ceiling on AUTO-drain cooldown backoff
-AGENTIC_REFLECTION_EVERY_N_TRADES=2 # closed trades between reflection runs, counted PER STRATEGY
-AGENTIC_REFLECTION_COOLDOWN_MS=21600000 # min wall-clock between reflection runs (schema default 7d; this stack pins 6h)
+# 0 makes ReflectionService permanently inert (`this.inert = cfg.everyNTrades <= 0 || !cfg.apiKey`,
+# reflection.service.ts:891) — onClosedTrade returns at :930 and checkWeeklyReflectionTrigger at
+# :1019, both before any counter or timer is touched. Retired 2026-07-30 by
+# research/studies/entry-rate-rederivation-2026-07-30.md: claude-opus-5 at $5.01 of $16.79 total LLM
+# spend (30%) bought 4 mints from 18 attempts across 69 calls, off ONE strategy's newest 200 journal
+# rows (today overwhelmingly prescreen noise). The daily loop reads the whole DB for free and mints
+# via `pnpm playbook:candidate`, now the ONLY minting path. This also retires the mint-time
+# entry-rate floor (measureEntryRate's sole caller is reflection.service.ts:1711) — intended, per §4
+# mechanism 2 of that record. AGENTIC_REFLECTION_MODEL stays set, so the claude-opus-5 entry in
+# AGENTIC_TOKEN_PRICES_JSON below MUST stay: environment.config.ts's superRefine refuses boot
+# without it, and PromotionReadinessService re-prices the historical Opus llm_usage rows.
+AGENTIC_REFLECTION_EVERY_N_TRADES=0
+AGENTIC_REFLECTION_COOLDOWN_MS=21600000 # min wall-clock between reflection runs (schema default 7d; this stack pins 6h) — moot while EVERY_N_TRADES=0
 # AGENTIC_AUTO_PROMOTE_MIN_TRADES DELETED (§3.4): the legacy count-only auto-promotion path is gone —
 # AppConfig.agentic.autoPromoteMinTrades is now a hardcoded-0 transitional field, not an env knob.
 AGENTIC_AUTO_PROMOTE_MIN_ATTRIBUTED_TRADES=10 # attributed auto-promotion: candidate promotes only after ≥N of ITS OWN A/B-attributed closed trips AND mean net/trip > champion's (SYMMETRIC: champion needs ≥N in-window trips too); 0 disables

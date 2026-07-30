@@ -1,7 +1,7 @@
 import { Test, type TestingModule } from '@nestjs/testing';
 import { register } from 'prom-client';
 import type { Counter, Gauge, Histogram } from 'prom-client';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   AGENT_DECIDE_COUNTER,
   AGENT_TOKENS_COUNTER,
@@ -255,6 +255,29 @@ describe('AgentMetricsRecorder', () => {
     expect(metric).toContain('kind="cache_creation",model="claude-sonnet-5"} 2000');
   });
 
+  // Pass 50: the composition root calls this once at construction with [decideModel, reflectionModel]
+  // — a shared model (the common case: no AGENTIC_REFLECTION_MODEL override) must dedupe to one
+  // series pair, not two identical ones.
+  it('seedTokenModels seeds agent_tokens_total{kind,model}=0 for input/output only, deduplicating a shared decide/reflection model', async () => {
+    recorder.seedTokenModels(['claude-sonnet-5', 'claude-sonnet-5']);
+    const metric = await register.getSingleMetricAsString('agent_tokens_total');
+    expect(metric).toContain('kind="input",model="claude-sonnet-5"} 0');
+    expect(metric).toContain('kind="output",model="claude-sonnet-5"} 0');
+    // cache_read/cache_creation stay absent — recordTokens' own W2.4 absent-vs-zero distinction would
+    // be erased if this seed also zeroed them (see the seed's own comment).
+    expect(metric).not.toContain('kind="cache_read"');
+    expect(metric).not.toContain('kind="cache_creation"');
+  });
+
+  it('seedTokenModels seeds each distinct model separately when the reflection model is overridden', async () => {
+    recorder.seedTokenModels(['claude-sonnet-5', 'claude-opus-5']);
+    const metric = await register.getSingleMetricAsString('agent_tokens_total');
+    expect(metric).toContain('kind="input",model="claude-sonnet-5"} 0');
+    expect(metric).toContain('kind="output",model="claude-sonnet-5"} 0');
+    expect(metric).toContain('kind="input",model="claude-opus-5"} 0');
+    expect(metric).toContain('kind="output",model="claude-opus-5"} 0');
+  });
+
   it('observeDecideLatency records into the latency histogram', async () => {
     recorder.observeDecideLatency(3);
     const metric = await register.getSingleMetricAsString('agent_decide_latency_seconds');
@@ -281,6 +304,21 @@ describe('AgentMetricsRecorder', () => {
     expect(metric).toContain('banned_token="false",token="none"} 1');
   });
 
+  // Pass 50 (2026-07-30, adversarial-review fix): mirrors the Pass 47/49 seeding tests elsewhere in
+  // this file — asserted at CONSTRUCTION, before recordValidatorRejection is ever called, so deleting
+  // the constructor seed (leaving only recordValidatorRejection's own `.inc` call) fails this test.
+  // Exactly ONE child, not both banned_token values: validatePlaybook always pairs
+  // bannedTokenHit:true with a real denylist label, so banned_token="true" NEVER arrives with
+  // token="none" — seeding that pair would be an unreachable, fabricated child (see the seed's own
+  // comment). The ~20 real denylist labels live in the reflection validator, across the boundaries
+  // wall this file cannot cross, so only the structural-rejection shape is seedable here.
+  it('seeds playbook_validator_rejections_total{banned_token="false",token="none"} at 0 on construction, before any rejection is recorded', async () => {
+    const metric = await register.getSingleMetricAsString('playbook_validator_rejections_total');
+    expect(metric).toContain('banned_token="false",token="none"} 0');
+    // banned_token="true" is UNREACHABLE with token="none" — must not be seeded.
+    expect(metric).not.toContain('banned_token="true",token="none"');
+  });
+
   it('setClientInfo sets agent_client_info{kind} to 1', async () => {
     recorder.setClientInfo('stub');
     const metric = await register.getSingleMetricAsString('agent_client_info');
@@ -301,6 +339,22 @@ describe('AgentMetricsRecorder', () => {
     expect(metric).toContain('outcome="forced_move"} 1');
     expect(metric).toContain('outcome="forced_fallback"} 1');
     expect(metric).toContain('outcome="forced_rearm"} 1');
+  });
+
+  // Pass 50: same construction-only seeding convention as the playbook-validator test above, applied
+  // to the six-member ConsultGateOutcome set. No recordConsultGate call precedes this assertion.
+  it('seeds agentic_consult_gate_total at 0 for all six outcomes on construction, before any consult is recorded', async () => {
+    const metric = await register.getSingleMetricAsString('agentic_consult_gate_total');
+    for (const outcome of [
+      'consulted',
+      'skipped_scheduled',
+      'forced_fill',
+      'forced_move',
+      'forced_fallback',
+      'forced_rearm',
+    ]) {
+      expect(metric, outcome).toContain(`outcome="${outcome}"} 0`);
+    }
   });
 
   it('recordReflectionOutcome increments agentic_reflection_outcomes_total{outcome}', async () => {
@@ -327,6 +381,58 @@ describe('AgentMetricsRecorder', () => {
     const metric = await register.getSingleMetricAsString('agentic_venue_stop_total');
     expect(metric).toContain('venue="unknown",event="placed"} 1');
     expect(metric).toContain('venue="binance",event="force_fired"} 2');
+  });
+
+  // Pass 50 (2026-07-30): the composition root (trading-runtime.module.ts) calls this once at
+  // construction with the configured venue list — AgentMetricsRecorder has no config dependency of
+  // its own (see the method's own comment), so this exercises it directly with a fixture venue list.
+  // Adversarial review (2026-07-30) confirmed the ONLY production writer (onVenueStop) now passes
+  // this registration's own params.venue rather than falling through to 'unknown' — so this
+  // configured-venue seed is truthful, not a fabricated cross-product.
+  it('seedVenueStopVenues seeds agentic_venue_stop_total{venue,event}=0 for every given venue across all twelve events', async () => {
+    recorder.seedVenueStopVenues(['binance', 'binanceusdm']);
+    const metric = await register.getSingleMetricAsString('agentic_venue_stop_total');
+    for (const venue of ['binance', 'binanceusdm']) {
+      for (const event of [
+        'placed',
+        'skipped_existing',
+        'skipped_inflight',
+        'cancel_for_exit',
+        'drift_cancel',
+        'qty_cancel',
+        'orphan_cancel',
+        'filled_flat',
+        'stood_down',
+        'force_fired',
+        'reconcile_error',
+        'triggered',
+      ]) {
+        expect(metric, `${venue}/${event}`).toContain(`venue="${venue}",event="${event}"} 0`);
+      }
+    }
+  });
+
+  // Pass 50 (adversarial-review fix): the agentic_venue_tp_total twin, seedable for the identical
+  // reason — onVenueTp's call site had the sibling instance of the same missing-venue defect, fixed
+  // in the same commit.
+  it('seedVenueTpVenues seeds agentic_venue_tp_total{venue,event}=0 for every given venue across all nine events', async () => {
+    recorder.seedVenueTpVenues(['binance', 'binanceusdm']);
+    const metric = await register.getSingleMetricAsString('agentic_venue_tp_total');
+    for (const venue of ['binance', 'binanceusdm']) {
+      for (const event of [
+        'placed',
+        'skipped_existing',
+        'skipped_inflight',
+        'cancel_for_exit',
+        'drift_cancel',
+        'qty_cancel',
+        'tp_race_hold',
+        'orphan_cancel',
+        'filled_flat',
+      ]) {
+        expect(metric, `${venue}/${event}`).toContain(`venue="${venue}",event="${event}"} 0`);
+      }
+    }
   });
 
   it('recordCapabilityViolation increments agentic_capability_violations_total{kind}', async () => {
@@ -375,6 +481,16 @@ describe('AgentMetricsRecorder', () => {
     const metric = await register.getSingleMetricAsString('agentic_reflection_trigger_total');
     expect(metric).toContain('outcome="fired"} 1');
     expect(metric).toContain('outcome="cooldown"} 2');
+  });
+
+  // Pass 50: same construction-only seeding convention as the playbook-validator/consult-gate tests
+  // above, applied to the four-member REFLECTION_TRIGGER_OUTCOMES set. No recordReflectionTrigger
+  // call precedes this assertion.
+  it('seeds agentic_reflection_trigger_total at 0 for all four outcomes on construction, before any trigger is recorded', async () => {
+    const metric = await register.getSingleMetricAsString('agentic_reflection_trigger_total');
+    for (const outcome of ['below_threshold', 'cooldown', 'inflight', 'fired']) {
+      expect(metric, outcome).toContain(`outcome="${outcome}"} 0`);
+    }
   });
 
   it('recordRearmFallback increments agentic_rearm_fallback_total', async () => {
@@ -562,5 +678,61 @@ describe('AgentMetricsRecorder — never throws into a trading path', () => {
     expect(() => recorder.recordRearmFallback()).not.toThrow();
     expect(() => recorder.recordModelRoundTrip(1)).not.toThrow();
     expect(() => recorder.seedLastSuccessAt(1)).not.toThrow();
+    expect(() => recorder.seedTokenModels(['claude-sonnet-5'])).not.toThrow();
+    expect(() => recorder.seedVenueTpVenues(['binance'])).not.toThrow();
+    expect(() => recorder.seedVenueStopVenues(['binance'])).not.toThrow();
+  });
+
+  // Adversarial review (2026-07-30): the Pass 47/48 constructor block used to seed
+  // capabilityViolationsCounter/schemaRejectionsCounter/latchCauseGauge inside ONE shared try, so a
+  // throw from any one of them silently cancelled the other two's seed as well — same
+  // non-cross-cancellation defect the Pass 50 blocks avoid by construction. Pins the fix directly: a
+  // throwing capabilityViolationsCounter must not prevent the schemaRejections/latchCause seeds.
+  it('a throwing capabilityViolationsCounter does not cancel the schemaRejections/latchCause seeds', () => {
+    const noop = {
+      inc: vi.fn(),
+      observe: vi.fn(),
+      labels: vi.fn(() => ({ set: vi.fn() })),
+      remove: vi.fn(),
+      set: vi.fn(),
+    };
+    const throwingCapability = {
+      inc: () => {
+        throw new Error('boom');
+      },
+    };
+    const schemaRejections = { inc: vi.fn() };
+    const latchCauseSet = vi.fn();
+    const latchCause = { labels: vi.fn(() => ({ set: latchCauseSet })) };
+
+    new AgentMetricsRecorder(
+      noop as unknown as Counter<string>, // decideCounter
+      noop as unknown as Counter<string>, // tokensCounter
+      noop as unknown as Histogram<string>, // decideLatency
+      noop as unknown as Gauge<string>, // playbookInfoGauge
+      noop as unknown as Counter<string>, // validatorRejectionsCounter
+      noop as unknown as Gauge<string>, // clientInfoGauge
+      noop as unknown as Counter<string>, // consultGateCounter
+      noop as unknown as Counter<string>, // reflectionOutcomesCounter
+      noop as unknown as Counter<string>, // venueTpCounter
+      noop as unknown as Counter<string>, // venueStopCounter
+      noop as unknown as Counter<string>, // fundingIngestedCounter
+      noop as unknown as Gauge<string>, // activeMenuGauge
+      noop as unknown as Counter<string>, // menuChurnCounter
+      noop as unknown as Gauge<string>, // budgetRemainingGauge
+      throwingCapability as unknown as Counter<string>, // capabilityViolationsCounter — THROWS
+      schemaRejections as unknown as Counter<string>, // schemaRejectionsCounter
+      noop as unknown as Counter<string>, // reflectionTriggerCounter
+      noop as unknown as Counter<string>, // rearmFallbackCounter
+      noop as unknown as Gauge<string>, // clientLatchedGauge
+      noop as unknown as Gauge<string>, // lastSuccessGauge
+      latchCause as unknown as Gauge<string>, // latchCauseGauge
+    );
+
+    expect(schemaRejections.inc).toHaveBeenCalledWith({ kind: 'single' }, 0);
+    expect(schemaRejections.inc).toHaveBeenCalledWith({ kind: 'batch' }, 0);
+    expect(schemaRejections.inc).toHaveBeenCalledWith({ kind: 'element' }, 0);
+    expect(schemaRejections.inc).toHaveBeenCalledWith({ kind: 'missing_symbol' }, 0);
+    expect(latchCauseSet).toHaveBeenCalledWith(0);
   });
 });

@@ -55,6 +55,18 @@ function classifyCause(reason: string): Cause {
   return 'unrecognized';
 }
 
+// Pass 50 (2026-07-30): the four causes emitObservability's resumeCounter.inc can ACTUALLY receive.
+// 'unrecognized' is deliberately excluded — allConditionsClear (below) refuses it unconditionally
+// before emitObservability is ever reached, so that label is unreachable for this counter; seeding
+// it would be the same fabricated-child lie reconciliation.service.ts's ALL_MISMATCH_CLASSES comment
+// warns against, one file over.
+const SEEDED_RESUME_CAUSES: readonly Cause[] = [
+  'reconcile_mismatch',
+  'unknown_unresolved',
+  'max_drawdown',
+  'daily_loss',
+];
+
 // §12 recovery program. Owner-authorized 2026-07-22, fully informed: FULL auto-resume in all modes
 // incl. live, chosen over the recommended mode-scoped option after the real-money risk (a live kill
 // switch clearing without human review) was disclosed. Safety is preserved by per-cause
@@ -135,7 +147,19 @@ export class RecoveryCoordinatorService {
     @Optional()
     @InjectMetric('recovery_auto_resume_total')
     private readonly resumeCounter?: Counter<string>,
-  ) {}
+  ) {
+    // Pass 50: mirrors reconciliation.service.ts's own Pass 47/49 zero-seed blocks — prom-client only
+    // materialises a labeled child once touched, so a process that never resumed on a given cause
+    // exported NO series for it, indistinguishable from an unbound metric. Fail OPEN: wrapped so a
+    // misbehaving counter can never escape the constructor and therefore never block boot.
+    if (this.resumeCounter) {
+      try {
+        for (const reason of SEEDED_RESUME_CAUSES) this.resumeCounter.inc({ reason }, 0);
+      } catch {
+        /* metrics must never throw into a trading path */
+      }
+    }
+  }
 
   // Synchronous by construction: every check below (hasUnresolvedOrders/cleanWithin/causeCleared) is
   // an in-memory read, deliberately never a fresh network call (see this class's own header comment

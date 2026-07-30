@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import type { Counter } from 'prom-client';
 import { RecoveryCoordinatorService } from '../../../../src/features/trading/execution/recovery-coordinator.service';
 import { KillSwitchService } from '../../../../src/features/trading/risk/kill-switch.service';
@@ -66,6 +66,10 @@ function build(opts: BuildOpts = {}) {
     opsEvents,
     counter,
   );
+  // Pass 50: the constructor itself now seeds recovery_auto_resume_total{reason}=0 for every
+  // resumable cause — clear those construction-time calls so every build() caller below asserts only
+  // the ticks/resumes its own test drives. The seed itself has its own dedicated test below.
+  counterCalls.length = 0;
   return { killSwitch, service, events, counterCalls };
 }
 
@@ -371,6 +375,51 @@ describe('RecoveryCoordinatorService (owner-authorized auto-resume, 2026-07-22)'
       { event: 'recovery.auto_resume', from: 'HALTED', reason: 'daily_loss' },
     ]);
     expect(counterCalls).toEqual([{ reason: 'daily_loss' }]);
+  });
+
+  // Pass 50 (2026-07-30): prom-client only materialises a labeled child once touched, so before this
+  // seed a process that had never auto-resumed on a given cause exported NO series for it — an empty
+  // vector indistinguishable from an unbound metric (the same defect Pass 47/49 fixed in
+  // reconciliation.service.ts). Asserted at CONSTRUCTION, before any tick() ever runs — deleting the
+  // constructor seed and leaving only emitObservability's own `.inc({reason: cause})` call fails this.
+  it('seeds recovery_auto_resume_total{reason}=0 for every resumable cause on construction, before any resume', () => {
+    const killSwitch = new KillSwitchService();
+    const crashRecovery = { hasUnresolvedOrders: () => false } as unknown as CrashRecoveryService;
+    const reconciliation = {
+      cleanWithin: () => true,
+      cleanAfter: () => true,
+      cleanIsLatest: () => true,
+    } as unknown as ReconciliationService;
+    const equityMonitor = {
+      causeCleared: () => true,
+      observationSeq: () => 0,
+    } as unknown as EquityMonitorService;
+    const config: RecoveryConfig = { autoResumeEnabled: true };
+    const counter = { inc: vi.fn() } as unknown as Counter<string>;
+    new RecoveryCoordinatorService(
+      killSwitch,
+      config,
+      reconciliation,
+      equityMonitor,
+      crashRecovery,
+      undefined,
+      counter,
+    );
+    const calls = (counter.inc as ReturnType<typeof vi.fn>).mock.calls;
+    for (const reason of [
+      'reconcile_mismatch',
+      'unknown_unresolved',
+      'max_drawdown',
+      'daily_loss',
+    ]) {
+      expect(calls, reason).toContainEqual([{ reason }, 0]);
+    }
+    // 'unrecognized' can never reach this counter (allConditionsClear refuses it unconditionally,
+    // before emitObservability's own inc call) — seeding it would be a fabricated child no code path
+    // could ever move.
+    expect(calls.some(([labels]) => (labels as { reason: string }).reason === 'unrecognized')).toBe(
+      false,
+    );
   });
 
   it('does not evaluate while still draining (HALTING, not yet settled) — resets debounce, never throws', () => {

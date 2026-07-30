@@ -41,6 +41,11 @@ interface CauseProbe {
   error?: string;
   value?: { cause: string | null };
 }
+interface ConsultGateProbe {
+  ok: boolean;
+  error?: string;
+  value?: { total: number; byOutcome: Record<string, number> };
+}
 interface RenderInput {
   sweptIso: string;
   host: { powerSource?: string; bootTime?: string; uptime?: string; errors?: string[] };
@@ -56,10 +61,17 @@ interface SweepModule {
   resolveBuildSha: (series: LabelSeries) => BuildProbe;
   formatRunningBuild: (probe: BuildProbe | undefined) => string;
   promActiveCause: (res: { ok: boolean; value?: string; error?: string }) => CauseProbe;
+  promConsultGateTotal: (res: { ok: boolean; value?: string; error?: string }) => ConsultGateProbe;
   renderMarkdown: (input: RenderInput) => string;
 }
-const { resolveBootId, resolveBuildSha, formatRunningBuild, promActiveCause, renderMarkdown } =
-  sweepModule as unknown as SweepModule;
+const {
+  resolveBootId,
+  resolveBuildSha,
+  formatRunningBuild,
+  promActiveCause,
+  promConsultGateTotal,
+  renderMarkdown,
+} = sweepModule as unknown as SweepModule;
 const { computeSweep, ALERT_LOOKBACK_MS, EXPECTED_SWEEP_INTERVAL_MS, VENUES } =
   coreModule as unknown as Core;
 
@@ -444,6 +456,58 @@ describe('promActiveCause (agent_client_latch_cause probe)', () => {
   });
 });
 
+// One promtool `query instant` row for agentic_consult_gate_total{outcome}, same shape convention as
+// causeRow above.
+function gateRow(outcome: string, value: number): string {
+  return `agentic_consult_gate_total{outcome="${outcome}"} => ${value} @[1785258935.402]`;
+}
+
+describe('promConsultGateTotal (agentic_consult_gate_total probe)', () => {
+  it('sums every outcome child and keeps the by-outcome breakdown', () => {
+    const res = promOut(gateRow('consulted', 12), gateRow('skipped_scheduled', 3));
+    expect(promConsultGateTotal(res)).toEqual({
+      ok: true,
+      value: { total: 15, byOutcome: { consulted: 12, skipped_scheduled: 3 } },
+    });
+  });
+
+  // Pass 50 (2026-07-30): before this fix, an empty instant vector summed to `total: 0` via a plain
+  // reduce over zero series and reported `ok: true` — indistinguishable from a genuinely quiet
+  // consult-gate window. Same not-a-zero contract promScalar/promActiveCause already apply; the
+  // constructor zero-seed (agent-metrics-recorder.service.ts) means a real boot never hits this path,
+  // but a binary predating the seed (or a renamed/dropped metric) still must not read as a measured 0.
+  it('fails the probe on an EMPTY vector rather than reading it as a measured total of 0', () => {
+    const out = promConsultGateTotal({ ok: true, value: '' });
+    expect(out.ok).toBe(false);
+    expect(out.error).toContain('empty instant vector');
+    expect(out.error).toContain('never seeded');
+  });
+
+  it('passes an upstream transport failure through untouched', () => {
+    expect(promConsultGateTotal({ ok: false, error: 'promtool exited 1' })).toEqual({
+      ok: false,
+      error: 'promtool exited 1',
+    });
+  });
+});
+
+// Deleting the promConsultGateTotal fix and reverting to the pre-Pass-50 plain-reduce probe would
+// make this pass — the generic probe_failed loop only fires when the probe genuinely returns
+// ok:false, so this is the end-to-end proof the runner's empty-vector fix reaches the core's alarm
+// surface rather than being swallowed at the probe boundary.
+describe('agentic_consult_gate_total — an empty-vector probe failure reaches the core', () => {
+  it('names a probe_failed[consultGate] annotation, never a silent {} reading', () => {
+    const out = run(
+      withProbe('consultGate', {
+        ok: false,
+        error: 'empty instant vector (no series) — agentic_consult_gate_total was never seeded',
+      }),
+    );
+    expect(out.annotations.find((a) => a.probe === 'consultGate')?.kind).toBe('probe_failed');
+    expect(out.alarms).toEqual([]);
+  });
+});
+
 describe('agent_client_latch_cause — mandatory probe in the core', () => {
   // Mandatory-key, like realDecides/promAlerts/build: the generic probe-failure loop only visits
   // keys that EXIST, and an absent latchCause probe must not read as a silent pass.
@@ -470,14 +534,27 @@ describe('agent_client_latch_cause — mandatory probe in the core', () => {
 });
 
 describe('renderMarkdown — LLM provider unfunded banner', () => {
-  // renderMarkdown's App section reads app.errorScan directly (a top-level gather() field, not a
-  // probes.* entry) — baseApp() above only feeds computeSweep, so the render fixture adds it.
+  // renderMarkdown's App section reads app.probes.errorScan (moved INTO probes by the adversarial-
+  // review fix, 2026-07-30 — see gather()'s own comment) — baseApp() above only feeds computeSweep
+  // and has no errorScan probe of its own, so the render fixture adds it alongside the existing probes.
   function withErrorScan(app: Record<string, unknown>): Record<string, unknown> {
     return {
       ...app,
-      errorScan: {
-        ok: true,
-        value: { matched: 0, scanned: 20000, lines: 0, oldestMs: null, newestMs: null, top: [] },
+      probes: {
+        ...(app.probes as Record<string, unknown>),
+        errorScan: {
+          ok: true,
+          value: {
+            matched: 0,
+            scanned: 20000,
+            lines: 0,
+            oldestMs: null,
+            newestMs: null,
+            named: [],
+            other: 0,
+            top: [],
+          },
+        },
       },
     };
   }

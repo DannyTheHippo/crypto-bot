@@ -145,6 +145,34 @@ export function promActiveCause(res) {
   return { ok: true, value: { cause: active ? (active.labels.cause ?? null) : null } };
 }
 
+// Pass 50 (2026-07-30): agentic_consult_gate_total by outcome. Before this fix the probe summed
+// `sum by (outcome) (agentic_consult_gate_total)` with a plain reduce over whatever series came
+// back — an EMPTY instant vector (metric never registered: an old binary, or a renamed/dropped
+// metric) summed to `total: 0` and reported `ok: true`, indistinguishable from a genuinely quiet
+// consult-gate window. Every sibling scalar probe (promScalar) and the labeled agent_client_
+// latch_cause probe (promActiveCause above) already refuse an empty vector as a probe FAILURE, never
+// a quiet zero — this brings agentic_consult_gate_total into the same not-a-zero contract. The Pass
+// 50 constructor zero-seed (agent-metrics-recorder.service.ts) means a real boot never returns an
+// empty vector here either, so this is a defense against the same predating-binary/renamed-metric
+// case promActiveCause's own comment names, not a case this sweep expects to hit routinely.
+export function promConsultGateTotal(res) {
+  const parsed = parsePromSeries(res);
+  if (!parsed.ok) return { ok: false, error: parsed.error };
+  if (parsed.value.length === 0) {
+    return {
+      ok: false,
+      error: 'empty instant vector (no series) — agentic_consult_gate_total was never seeded',
+    };
+  }
+  let total = 0;
+  const byOutcome = {};
+  for (const s of parsed.value) {
+    total += s.value;
+    if (s.labels.outcome) byOutcome[s.labels.outcome] = s.value;
+  }
+  return { ok: true, value: { total, byOutcome } };
+}
+
 // ── prometheus /api/v1/rules parsing ─────────────────────────────────────────────────────────────
 // The loop IS the alert consumer — there is no Alertmanager in this stack and none is wanted, so a
 // rule that fires reaches a human ONLY if a pass reads it. Before this probe existed the sweep
@@ -531,19 +559,15 @@ function gather() {
   })();
 
   // consult-gate total + by-outcome breakdown (Prometheus, log-independent backstop). Account-level
-  // (agentic_consult_gate_total carries no venue label — v3 spec §8).
-  const gateSeries = parsePromSeries(promQuery('sum by (outcome) (agentic_consult_gate_total)'));
-  let consultByOutcome = null;
-  probes.consultGate = (() => {
-    if (!gateSeries.ok) return gateSeries;
-    let total = 0;
-    consultByOutcome = {};
-    for (const s of gateSeries.value) {
-      total += s.value;
-      if (s.labels.outcome) consultByOutcome[s.labels.outcome] = s.value;
-    }
-    return { ok: true, value: { total } };
-  })();
+  // (agentic_consult_gate_total carries no venue label — v3 spec §8). promConsultGateTotal (above)
+  // owns the empty-vector-is-a-failure contract — see its own comment.
+  const gateResult = promConsultGateTotal(
+    promQuery('sum by (outcome) (agentic_consult_gate_total)'),
+  );
+  const consultByOutcome = gateResult.ok ? gateResult.value.byOutcome : null;
+  probes.consultGate = gateResult.ok
+    ? { ok: true, value: { total: gateResult.value.total } }
+    : gateResult;
 
   probes.fills = (() => {
     const row = parsePsqlRow(psql('select count(*) from fills', { cwd: REPO_ROOT }));
@@ -773,8 +797,13 @@ function gather() {
     currentlyFiringNames: firingAlertNames(probes.promAlerts),
   });
 
-  // Error/warn scan: tail (never --since), pino level>=40, top-5 distinct msg prefixes.
-  const errorScan = scanErrors(APP_CONTAINER);
+  // Error/warn scan: tail (never --since), pino level>=40, named categories + top-5 distinct prefixes.
+  // Assigned INTO probes (adversarial review, 2026-07-30), not returned as a sibling field: the core's
+  // generic probe-failure loop iterates Object.entries(probes) only, so a sibling errorScan was
+  // invisible to it — a docker-logs-tail failure (or the warn-breakdown consistency check above)
+  // produced NO annotation of any kind, a silent failure on the one probe whose own log_window_short/
+  // log_window_unknown disclosures exist specifically to stop a warn count being misread as clean.
+  probes.errorScan = scanErrors(APP_CONTAINER);
 
   return {
     bootId,
@@ -783,7 +812,6 @@ function gather() {
     startedAt,
     probes,
     consultByOutcome,
-    errorScan,
   };
 }
 
@@ -792,12 +820,41 @@ function gather() {
 function scanErrors(container) {
   const res = dockerLogsTail(container, ERROR_LOG_TAIL);
   if (!res.ok) return { ok: false, error: res.error };
-  return { ok: true, value: scanPinoLines(res.value) };
+  const value = scanPinoLines(res.value);
+  // Fails OPEN like every other probe in this file (never crashes the whole sweep over one broken
+  // breakdown), but LOUD: an internal-consistency failure becomes a named probe_failed annotation —
+  // never a silently under-reported `other` — see the assertion's own comment below for the incident
+  // this closes.
+  if (value.consistencyError) return { ok: false, error: value.consistencyError };
+  return { ok: true, value };
 }
+
+// Pass 50 (2026-07-30): named message-FAMILY categories, matched by substring test on the raw message
+// rather than the 48-char raw-prefix map below. A raw prefix fragments a single incident class into
+// many buckets whenever the incident's own identifier (symbol, channel, venue) sits at the START of
+// the message — market-stream's `${symbol}|${channel}` sits right after the fixed "market-stream "
+// lead-in (ccxt-stream.adapter.ts's handleLoopError), so a single network incident touching several
+// symbol/channel pairs produces several distinctly-prefixed buckets, each individually too small to
+// crack the top-5 raw-prefix list even though the incident as a whole is not small — invisible in the
+// digest, and burying it made the warn count useless for diagnosis. `feed poll failed ... request
+// timed out` (derivatives/sentiment/positioning/trade-flow/fear-greed feed services) fragments the
+// same way, one bucket per feed's own marketId/symbol.
+const NAMED_WARN_CATEGORIES = [
+  {
+    name: 'market-stream loop error (resubscribing)',
+    test: (msg) => msg.includes('market-stream ') && msg.includes('loop error (resubscribing)'),
+  },
+  {
+    name: 'feed poll failed (request timed out)',
+    test: (msg) =>
+      msg.includes('feed poll failed') && msg.toLowerCase().includes('request timed out'),
+  },
+];
 
 // The pure half of scanErrors, split out so the span rule below is testable without docker.
 export function scanPinoLines(text) {
   const prefixCounts = new Map();
+  const namedCounts = new Map(NAMED_WARN_CATEGORIES.map((c) => [c.name, 0]));
   let matched = 0;
   let lines = 0;
   let oldestMs = null;
@@ -823,14 +880,53 @@ export function scanPinoLines(text) {
     if (!Number.isFinite(obj.level) || obj.level < PINO_WARN_LEVEL) continue;
     matched += 1;
     const msg = typeof obj.msg === 'string' ? obj.msg : '';
-    const prefix = msg.slice(0, 48) || '(no msg)';
-    prefixCounts.set(prefix, (prefixCounts.get(prefix) ?? 0) + 1);
+    // Each matched line lands in EXACTLY ONE bucket — a named category if it matches, otherwise the
+    // raw-prefix map — never both, never neither. That mutual exclusivity is what makes the
+    // consistency assertion below a genuine regression guard rather than decoration: a future edit
+    // that breaks it (e.g. a category test that stops excluding the prefix path) trips the assertion
+    // immediately instead of silently misreporting `other`.
+    const category = NAMED_WARN_CATEGORIES.find((c) => c.test(msg));
+    if (category) {
+      namedCounts.set(category.name, namedCounts.get(category.name) + 1);
+    } else {
+      const prefix = msg.slice(0, 48) || '(no msg)';
+      prefixCounts.set(prefix, (prefixCounts.get(prefix) ?? 0) + 1);
+    }
   }
+  const named = [...namedCounts.entries()]
+    .filter(([, count]) => count > 0)
+    .map(([name, count]) => ({ name, count }));
   const top = [...prefixCounts.entries()]
     .sort((a, b) => b[1] - a[1])
     .slice(0, 5)
     .map(([prefix, count]) => ({ prefix, count }));
-  return { matched, scanned: ERROR_LOG_TAIL, lines, oldestMs, newestMs, top };
+  const namedTotal = named.reduce((sum, n) => sum + n.count, 0);
+  const unnamedTotal = [...prefixCounts.values()].reduce((sum, n) => sum + n, 0);
+  // DERIVED, not independently tallied (Pass 50): `other` is defined as matched minus the named sum,
+  // by construction — never a second, separately-maintained count that could disagree with `matched`.
+  // scanPinoLines had no `other` field before this fix (there was nothing here to drift); the point of
+  // deriving it this way is to rule the possibility out permanently, not to have fixed a prior drift.
+  const other = matched - namedTotal;
+  // The assertion itself: fails OPEN (scanErrors above turns this into a named probe_failed
+  // annotation, never a process crash or a silently wrong digest line) but LOUD — a future regression
+  // that breaks the named/prefix mutual exclusivity above (e.g. a category test that stops excluding
+  // the raw-prefix path) must surface immediately rather than silently misreporting the total.
+  const consistencyError =
+    other === unnamedTotal
+      ? null
+      : `warn breakdown does not sum to its own total — matched=${matched} named=${namedTotal} ` +
+        `other=${other} but the unnamed-prefix tally is ${unnamedTotal}`;
+  return {
+    matched,
+    scanned: ERROR_LOG_TAIL,
+    lines,
+    oldestMs,
+    newestMs,
+    named,
+    other,
+    top,
+    consistencyError,
+  };
 }
 
 function loadWatermark() {
@@ -1022,13 +1118,18 @@ export function renderMarkdown({ sweptIso, host, git, app, result }) {
     } else {
       L.push(`- log events: probe_failed — ${(le && le.error) || 'no result'}`);
     }
-    const es = app.errorScan;
+    // errorScan lives under probes (adversarial review, 2026-07-30) — see gather()'s own comment.
+    const es = (app.probes && app.probes.errorScan) || { ok: false, error: 'no result' };
     if (es.ok) {
       // The span is stated next to the count because the count alone reads as a whole-window verdict
       // and is not one — see the core's log_window_short annotation.
       L.push(
-        `- warn+ lines (${es.value.lines} parsed from a ${es.value.scanned}-line tail request, covers ${describeSpan(es.value)}): ${es.value.matched}`,
+        `- warn+ lines (${es.value.lines} parsed from a ${es.value.scanned}-line tail request, covers ${describeSpan(es.value)}): ${es.value.matched}` +
+          ` (named ${(es.value.named || []).reduce((s, n) => s + n.count, 0)}, other ${es.value.other})`,
       );
+      // Pass 50: named message-family buckets FIRST — these are the classes worth an operator's eye
+      // (see NAMED_WARN_CATEGORIES' own comment for why raw-prefix ranking alone buried them).
+      for (const n of es.value.named || []) L.push(`  - ${n.count}× [named] ${n.name}`);
       for (const t of es.value.top) L.push(`  - ${t.count}× ${t.prefix}`);
     } else {
       L.push(`- error scan: probe_failed — ${es.error}`);

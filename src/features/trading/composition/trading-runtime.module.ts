@@ -390,6 +390,7 @@ export class TradingRuntimeService
       this.config.agentic.model,
     );
     this.agentClientKind = rawAgentClient.constructor.name;
+    this.seedConfiguredLabelSets();
     // I1 (Design § Enriched model inputs): repo-maintained macro calendar, loaded once at boot for
     // THIS class's own boot log line (logPortfolio below) — the live payload's calendar block reads
     // its own separately-loaded copy via PAYLOAD_EXTRAS_PROVIDER_OVERRIDE (AgenticBridgeModule), not
@@ -408,6 +409,26 @@ export class TradingRuntimeService
       registry: this.registry,
       logger: { warn: (m) => this.log.warn(m) },
     });
+  }
+
+  // Pass 50 (2026-07-30): agent_tokens_total{model}/agentic_venue_tp_total{venue}/
+  // agentic_venue_stop_total{venue} are config-driven label sets AgentMetricsRecorder cannot
+  // enumerate on its own (no TypedConfigService dependency of its own — see each seed method's own
+  // comment) — this is the one place both the decide/reflection model pair and the configured venue
+  // list are already resolved, so they are handed in once at construction rather than duplicating
+  // that resolution inside the recorder. The venue-tp/venue-stop seeds are truthful only because
+  // onVenueTp/onVenueStop below now pass params.venue instead of falling through to 'unknown'
+  // (adversarial-review fix, same commit). Extracted to its own method (rather than inlined in the
+  // constructor) so it is testable via the same Object.create-prototype harness this file's own
+  // logPortfolio spec already establishes, without needing the full ~30-collaborator constructor.
+  private seedConfiguredLabelSets(): void {
+    this.agentMetrics.seedTokenModels([
+      this.config.agentic.model,
+      this.config.agentic.reflectionModel ?? this.config.agentic.model,
+    ]);
+    const venueIds = this.config.venues.map((v) => v.id);
+    this.agentMetrics.seedVenueTpVenues(venueIds);
+    this.agentMetrics.seedVenueStopVenues(venueIds);
   }
 
   // Resolves the active playbook version once at boot and surfaces it to Prometheus
@@ -664,6 +685,10 @@ export class TradingRuntimeService
     // literal) so a future second agentic registration would each wire the reflection loop's
     // lifecycle check against ITS OWN strategy id (see ReflectionService.runReflection).
     this.registry.register('agentic', (id, p) => {
+      // Cast up-front (not just at the AgenticStrategy construction call below) so this closure can
+      // read params.venue for the venue-labeled metrics wired below — each registration's OWN
+      // per-symbol venue (venueForSymbol, agenticParams' own comment), never a process-wide guess.
+      const params = p as AgenticStrategyParams;
       const deps: AgenticStrategyDeps = {
         journal: this.agentJournal,
         onClosedTrade: (count) => {
@@ -694,8 +719,13 @@ export class TradingRuntimeService
           this.universeScanner.recordCandles(String(symbol), candles);
           this.priceHistory.recordWindow(symbol, candles);
         },
-        onVenueTp: (event) => this.agentMetrics.recordVenueTp(event),
-        onVenueStop: (event) => this.agentMetrics.recordVenueStop(event),
+        // Adversarial review fix (2026-07-30): both call sites previously omitted the venue argument,
+        // so every series landed under recordVenueTp/recordVenueStop's own 'unknown' pre-v3 fallback
+        // — the per-venue label these counters declare was never actually populated in production.
+        // params.venue is this registration's own per-symbol venue (agenticParams above), the same
+        // fact the venue-labeled seed below now seeds over.
+        onVenueTp: (event) => this.agentMetrics.recordVenueTp(event, params.venue),
+        onVenueStop: (event) => this.agentMetrics.recordVenueStop(event, params.venue),
         onRearmFallback: () => this.agentMetrics.recordRearmFallback(),
         bookSnapshot: () => this.portfolio.snapshot(),
         // Backlog #55: without this the strategy falls back to its NOOP_LOGGER and every warn it

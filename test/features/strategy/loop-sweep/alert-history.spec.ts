@@ -28,7 +28,10 @@ interface ScanValue {
   lines: number;
   oldestMs: number | null;
   newestMs: number | null;
+  named: { name: string; count: number }[];
+  other: number;
   top: { prefix: string; count: number }[];
+  consistencyError: string | null;
 }
 interface SweepModule {
   parseAlertsFiredWithin: (
@@ -217,6 +220,70 @@ describe('scanPinoLines', () => {
     const linesPerHour = 1600; // measured on this stack, 2026-07-28
     expect(ERROR_LOG_TAIL / linesPerHour).toBeGreaterThanOrEqual(ALERT_LOOKBACK_MS / 3_600_000);
   });
+
+  // Pass 50 (2026-07-30): scanPinoLines had no `other` field before this fix — this pins the guarantee
+  // the derivation makes going forward: `other` is matched minus the named-category sum, BY
+  // CONSTRUCTION, never a second independently-maintained tally that could disagree with `matched`.
+  // Deleting the derivation (replacing it with any independently-computed `other`) fails this test.
+  it('derives other as matched minus the named-category sum, never an independent tally', () => {
+    const t0 = 1_700_000_000_000;
+    const out = scanPinoLines(
+      [
+        line(t0, 50, 'venue timeout: BTC/USDT'),
+        line(t0, 50, 'venue timeout: ETH/USDT'),
+        line(t0, 50, 'venue timeout: SOL/USDT'),
+      ].join('\n'),
+    );
+    expect(out.matched).toBe(3);
+    expect(out.named).toEqual([]);
+    expect(out.other).toBe(3);
+    expect(out.consistencyError).toBeNull();
+  });
+
+  // The exact fragmentation defect this fix closes: per-symbol/per-channel identifiers embedded right
+  // after a fixed lead-in ("market-stream ${symbol}|${channel} loop error (resubscribing): ...")
+  // fragment a single incident into many distinctly-prefixed raw buckets, none individually large
+  // enough to crack the top-5 list — so without a named category the whole incident reads as
+  // undifferentiated `other`, and WITH one it reads as a single visible, countable bucket.
+  it('collapses market-stream resubscribe lines across different symbol/channel pairs into one named bucket', () => {
+    const t0 = 1_700_000_000_000;
+    const out = scanPinoLines(
+      [
+        line(t0, 40, 'market-stream BTC/USDT|book loop error (resubscribing): Error: reset'),
+        line(t0, 40, 'market-stream ETH/USDT|trade loop error (resubscribing): Error: reset'),
+        line(t0, 40, 'market-stream SOL/USDT|candle:1m loop error (resubscribing): Error: reset'),
+      ].join('\n'),
+    );
+    expect(out.matched).toBe(3);
+    expect(out.named).toEqual([{ name: 'market-stream loop error (resubscribing)', count: 3 }]);
+    expect(out.other).toBe(0);
+    expect(out.top).toEqual([]); // fully absorbed into the named bucket, not fragmented across `top`
+  });
+
+  // Same fragmentation defect, the feed-poll sibling — derivatives/sentiment/positioning/trade-flow/
+  // fear-greed feed services each embed their own marketId right after "feed poll failed".
+  it('collapses feed-poll-timeout lines across different feeds/marketIds into one named bucket', () => {
+    const t0 = 1_700_000_000_000;
+    const out = scanPinoLines(
+      [
+        line(t0, 40, 'derivatives-feed poll failed for BTCUSDT: request timed out'),
+        line(t0, 40, 'sentiment-feed poll failed: request timed out'),
+      ].join('\n'),
+    );
+    expect(out.matched).toBe(2);
+    expect(out.named).toEqual([{ name: 'feed poll failed (request timed out)', count: 2 }]);
+    expect(out.other).toBe(0);
+  });
+
+  // A "feed poll failed" line for a DIFFERENT cause (not a timeout) must not fall into the timeout
+  // bucket — the category is a substring test on the FULL message, not just the leading phrase.
+  it('does not fold a non-timeout feed-poll failure into the timeout-named bucket', () => {
+    const out = scanPinoLines(
+      line(1_700_000_000_000, 40, 'sentiment-feed poll failed: 503 Service Unavailable'),
+    );
+    expect(out.named).toEqual([]);
+    expect(out.other).toBe(1);
+  });
 });
 
 // ── core consumption ─────────────────────────────────────────────────────────────────────────────
@@ -227,6 +294,13 @@ const NOW = WM_TIME + EXPECTED_SWEEP_INTERVAL_MS;
 function baseApp(over: Record<string, unknown> = {}): Record<string, unknown> {
   const reconcile: Record<string, unknown> = {};
   for (const venue of VENUES) reconcile[venue] = { ok: true, value: { count: 200 } };
+  // errorScan moved INTO probes (adversarial review, 2026-07-30): gather() now assigns
+  // probes.errorScan rather than a sibling top-level field, so the generic probe_failed loop
+  // (Object.entries(probes)) actually covers a scan failure — a sibling field was invisible to it,
+  // silently losing log_window_short/log_window_unknown on exactly the failure they exist to catch.
+  // `over.probes` is merged INTO the default probe set (never replaces it), so a call site can
+  // override/add just `probes.errorScan` without re-supplying every other default probe.
+  const { probes: probesOver, ...rest } = over;
   return {
     bootId: 'boot-A',
     containerHealthy: true,
@@ -245,8 +319,9 @@ function baseApp(over: Record<string, unknown> = {}): Record<string, unknown> {
       promAlerts: { ok: true, value: { ruleCount: 20, alertingCount: 20, firing: [] } },
       promAlertsSince: { ok: true, value: { resolved: [], lookbackMs: ALERT_LOOKBACK_MS } },
       promCoverage: { ok: true, value: { samples: 2880, expected: 2880, ratio: 1 } },
+      ...(probesOver as Record<string, unknown> | undefined),
     },
-    ...over,
+    ...rest,
   };
 }
 
@@ -387,7 +462,7 @@ describe('loop-sweep-core log window disclosure', () => {
 
   it('discloses a warn window narrower than the alert lookback', () => {
     // Tail reaches 2h back; the container booted 24h ago, so 10h of warnings really are unread.
-    const out = run(baseApp({ errorScan: scan(NOW - 2 * 60 * 60 * 1000) }));
+    const out = run(baseApp({ probes: { errorScan: scan(NOW - 2 * 60 * 60 * 1000) } }));
     const note = out.annotations.find((a) => a.kind === 'log_window_short');
     expect(note?.detail).toContain('2.0h');
     expect(note?.detail).toContain('UNREAD');
@@ -400,7 +475,7 @@ describe('loop-sweep-core log window disclosure', () => {
     const startedAt = new Date(NOW - 3 * 60 * 60 * 1000).toISOString();
     const app = baseApp({
       startedAt,
-      errorScan: scan(Date.parse(startedAt) + LOG_BOOT_REACH_MS - 1),
+      probes: { errorScan: scan(Date.parse(startedAt) + LOG_BOOT_REACH_MS - 1) },
     });
     expect(run(app).annotations.map((a) => a.kind)).not.toContain('log_window_short');
   });
@@ -410,7 +485,7 @@ describe('loop-sweep-core log window disclosure', () => {
   it('still discloses when the tail starts well after the container did', () => {
     const app = baseApp({
       startedAt: new Date(NOW - 20 * 60 * 60 * 1000).toISOString(),
-      errorScan: scan(NOW - 6 * 60 * 60 * 1000),
+      probes: { errorScan: scan(NOW - 6 * 60 * 60 * 1000) },
     });
     expect(run(app).annotations.map((a) => a.kind)).toContain('log_window_short');
   });
@@ -422,7 +497,7 @@ describe('loop-sweep-core log window disclosure', () => {
   it('discloses a short window whose tail predates the container start (in-place restart)', () => {
     const app = baseApp({
       startedAt: new Date(NOW - 30 * 60 * 1000).toISOString(),
-      errorScan: scan(NOW - 40 * 60 * 1000),
+      probes: { errorScan: scan(NOW - 40 * 60 * 1000) },
     });
     expect(run(app).annotations.map((a) => a.kind)).toContain('log_window_short');
   });
@@ -431,9 +506,11 @@ describe('loop-sweep-core log window disclosure', () => {
   // would let the digest print a confident `warn+ lines: 0` with nothing qualifying it.
   it('discloses an unknown window instead of skipping the check', () => {
     const app = baseApp({
-      errorScan: {
-        ok: true,
-        value: { matched: 0, scanned: 20000, lines: 0, oldestMs: null, newestMs: null, top: [] },
+      probes: {
+        errorScan: {
+          ok: true,
+          value: { matched: 0, scanned: 20000, lines: 0, oldestMs: null, newestMs: null, top: [] },
+        },
       },
     });
     expect(run(app).annotations.map((a) => a.kind)).toContain('log_window_unknown');
@@ -445,16 +522,18 @@ describe('loop-sweep-core log window disclosure', () => {
   it('measures the span on the container clock alone, immune to host skew', () => {
     const app = baseApp({
       startedAt: new Date(NOW - 20 * 60 * 60 * 1000).toISOString(),
-      errorScan: {
-        ok: true,
-        value: {
-          matched: 5,
-          scanned: 20000,
-          lines: 900,
-          // A ~1.5h tail read through an 11h container-clock lag.
-          oldestMs: NOW - 12.5 * 60 * 60 * 1000,
-          newestMs: NOW - 11 * 60 * 60 * 1000,
-          top: [],
+      probes: {
+        errorScan: {
+          ok: true,
+          value: {
+            matched: 5,
+            scanned: 20000,
+            lines: 900,
+            // A ~1.5h tail read through an 11h container-clock lag.
+            oldestMs: NOW - 12.5 * 60 * 60 * 1000,
+            newestMs: NOW - 11 * 60 * 60 * 1000,
+            top: [],
+          },
         },
       },
     });

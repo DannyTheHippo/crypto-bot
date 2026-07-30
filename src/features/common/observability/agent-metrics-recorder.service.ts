@@ -79,6 +79,13 @@ export type AgentClientLatchCauseLabel = (typeof AGENT_CLIENT_LATCH_CAUSES)[numb
 
 export type AgentTokenKind = 'input' | 'output' | 'cache_read' | 'cache_creation';
 
+// Pass 50 (2026-07-30): agent_tokens_total's zero-seed only ever covers 'input'/'output' — NOT the
+// full AgentTokenKind union. 'cache_read'/'cache_creation' are deliberately excluded: recordTokens'
+// own comment establishes that an ABSENT cache series (envelope never reported cache usage) and a
+// ZERO cache series (confirmed zero reads) answer the W2.4 falsifiability check differently, so
+// zero-seeding them here at construction would erase that distinction before any real call ever runs.
+const AGENT_TOKEN_SEED_KINDS = ['input', 'output'] as const;
+
 // P6 (Design § Learning & measurement stack): mirrors agentic.strategy.ts's ConsultGateOutcome
 // (B2) — duplicated rather than imported, same boundaries-wall convention as AgentVenueTpEvent/
 // AgentVenueStopEvent below. Supersedes the retired AgentPrescreenOutcome/AgentPrescreenReason
@@ -92,6 +99,18 @@ export type ConsultGateOutcome =
   | 'forced_fallback'
   | 'forced_rearm';
 
+// Pass 50: the six-member ConsultGateOutcome set above, kept as its own runtime array (a union type
+// carries no runtime member list) so the constructor's zero-seed below can iterate it — same
+// hand-kept-in-sync convention as reconciliation.service.ts's ALL_MISMATCH_CLASSES.
+const ALL_CONSULT_GATE_OUTCOMES: readonly ConsultGateOutcome[] = [
+  'consulted',
+  'skipped_scheduled',
+  'forced_fill',
+  'forced_move',
+  'forced_fallback',
+  'forced_rearm',
+];
+
 // Mirrors agentic.strategy.ts's VenueTpEvent — duplicated rather than imported (the boundaries wall
 // forbids this feature importing trading/agentic, same convention as ConsultGateOutcome above).
 export type AgentVenueTpEvent =
@@ -104,6 +123,22 @@ export type AgentVenueTpEvent =
   | 'tp_race_hold'
   | 'orphan_cancel'
   | 'filled_flat';
+
+// Pass 50 (adversarial-review fix): the nine-member AgentVenueTpEvent set above, kept as its own
+// runtime array for the same reason ALL_CONSULT_GATE_OUTCOMES is above — backs seedVenueTpVenues'
+// zero-seed below. Only seedable now that trading-runtime.module.ts's onVenueTp closure passes a real
+// venue (params.venue) instead of always falling through to recordVenueTp's 'unknown' default.
+const ALL_AGENT_VENUE_TP_EVENTS: readonly AgentVenueTpEvent[] = [
+  'placed',
+  'skipped_existing',
+  'skipped_inflight',
+  'cancel_for_exit',
+  'drift_cancel',
+  'qty_cancel',
+  'tp_race_hold',
+  'orphan_cancel',
+  'filled_flat',
+];
 
 // Mirrors agentic.strategy.ts's VenueStopEvent (Push 3 P7d) — duplicated rather than imported, same
 // convention as AgentVenueTpEvent above. 'triggered' (Defect A commit-1, 2026-07-16) — see
@@ -121,6 +156,30 @@ export type AgentVenueStopEvent =
   | 'force_fired'
   | 'reconcile_error'
   | 'triggered';
+
+// Pass 50: the twelve-member AgentVenueStopEvent set above, kept as its own runtime array for the
+// same reason ALL_CONSULT_GATE_OUTCOMES is above — backs seedVenueStopVenues' zero-seed below.
+const ALL_AGENT_VENUE_STOP_EVENTS: readonly AgentVenueStopEvent[] = [
+  'placed',
+  'skipped_existing',
+  'skipped_inflight',
+  'cancel_for_exit',
+  'drift_cancel',
+  'qty_cancel',
+  'orphan_cancel',
+  'filled_flat',
+  'stood_down',
+  'force_fired',
+  'reconcile_error',
+  'triggered',
+];
+
+// Backlog #53 Pass 50: mirrors ReflectionService's own four-exit set (below_threshold/cooldown/
+// inflight/fired) — kept as a literal array with the type DERIVED from it (not the reverse, unlike
+// ConsultGateOutcome/AgentVenueStopEvent above), so the constructor's zero-seed and
+// recordReflectionTrigger's own param type read the exact same closed set and cannot drift apart.
+const REFLECTION_TRIGGER_OUTCOMES = ['below_threshold', 'cooldown', 'inflight', 'fired'] as const;
+export type ReflectionTriggerOutcome = (typeof REFLECTION_TRIGGER_OUTCOMES)[number];
 
 // Typed recorder over the agentic-lane providers registered in metrics.service.ts. Exported from
 // ObservabilityModule so the composition root can hand it (or closures over it) to the agentic lane —
@@ -176,19 +235,122 @@ export class AgentMetricsRecorder {
     // before this seed a lane that had never hit one of these `kind` values exported NO series for
     // it — an empty vector indistinguishable from unbound telemetry or a renamed metric (the same
     // defect Pass 44 fixed for market_stream_forced_reconnects_total). Seeded once, over the closed
-    // sets above (Pass 48 adds agent_client_latch_cause's own three-member set to the same seed
-    // block), so a quiet lane reads as a real zero rather than a void. Measurement-only: wrapped so a
-    // misbehaving counter can never escape this constructor and therefore never block boot (fail
-    // OPEN) — same convention as every recordXxx method below.
+    // sets above (Pass 48 adds agent_client_latch_cause's own three-member set), so a quiet lane
+    // reads as a real zero rather than a void. Measurement-only: wrapped so a misbehaving counter can
+    // never escape this constructor and therefore never block boot (fail OPEN) — same convention as
+    // every recordXxx method below. Split into three OWN try/catches (adversarial review, 2026-07-30
+    // — same non-cross-cancellation rationale as the Pass 50 block just below): the three counters
+    // previously shared one try, so a throw from any one of them silently cancelled the other two's
+    // seed as well.
     try {
       for (const kind of CAPABILITY_VIOLATION_KINDS) {
         this.capabilityViolationsCounter.inc({ kind }, 0);
       }
+    } catch {
+      /* metrics must never throw into a trading path */
+    }
+    try {
       for (const kind of SCHEMA_REJECTION_KINDS) {
         this.schemaRejectionsCounter.inc({ kind }, 0);
       }
+    } catch {
+      /* metrics must never throw into a trading path */
+    }
+    try {
       for (const cause of AGENT_CLIENT_LATCH_CAUSES) {
         this.latchCauseGauge.labels({ cause }).set(0);
+      }
+    } catch {
+      /* metrics must never throw into a trading path */
+    }
+
+    // Pass 50 (2026-07-30): each of the next three seeds gets its OWN try/catch — reconciliation.
+    // service.ts's Pass 49 comment explains why: sharing one try would let any single counter's
+    // failure silently cancel every other block's seed, one throw taking down siblings it has nothing
+    // to do with. All three are closed literal sets this file already owns, so — unlike
+    // seedTokenModels/seedVenueTpVenues/seedVenueStopVenues below — none needs config injected from
+    // the composition root.
+    try {
+      for (const outcome of REFLECTION_TRIGGER_OUTCOMES) {
+        this.reflectionTriggerCounter.inc({ outcome }, 0);
+      }
+    } catch {
+      /* metrics must never throw into a trading path */
+    }
+    try {
+      for (const outcome of ALL_CONSULT_GATE_OUTCOMES) {
+        this.consultGateCounter.inc({ outcome }, 0);
+      }
+    } catch {
+      /* metrics must never throw into a trading path */
+    }
+    try {
+      // Exactly ONE reachable child, not a banned_token × token cross-product (adversarial review,
+      // 2026-07-30): playbook-validator.ts's validatePlaybook sets bannedTokenHit:true ALWAYS
+      // alongside a real bannedToken label (its one `return` for a denylist match sets both fields
+      // together — see its own ~:199-209); both call sites (agentic-bridge.module.ts,
+      // reflection.service.ts) read `validation.bannedTokenHit ?? false` paired with
+      // `validation.bannedToken`, so `banned_token="true"` NEVER arrives with `token="none"` — only
+      // with a real denylist label. `banned_token="true", token="none"` would therefore be a
+      // fabricated, unreachable child. The ~20 real denylist labels themselves live in the reflection
+      // validator, across the boundaries wall this file cannot cross, so they cannot be enumerated
+      // here either — 'false'/'none' (the structural-rejection shape) is the one child this recorder
+      // can seed truthfully.
+      this.validatorRejectionsCounter.inc({ banned_token: 'false', token: 'none' }, 0);
+    } catch {
+      /* metrics must never throw into a trading path */
+    }
+  }
+
+  // Pass 50: agent_tokens_total's `model` label is config-driven (AGENTIC_MODEL/
+  // AGENTIC_REFLECTION_MODEL), not a closed literal this file can enumerate on its own — the
+  // composition root (trading-runtime.module.ts) is the one place both configured model ids are
+  // already resolved (the exact pair MetricsWrappingAgentClient's own `model` param carries), so it
+  // hands them here once at boot rather than this recorder duplicating that resolution and risking
+  // drift from the real one. Deduplicated: decide and reflection share one model unless
+  // AGENTIC_REFLECTION_MODEL is explicitly overridden. Fail OPEN, own try/catch — measurement-only,
+  // must never block boot.
+  seedTokenModels(models: readonly string[]): void {
+    try {
+      for (const model of new Set(models)) {
+        for (const kind of AGENT_TOKEN_SEED_KINDS) {
+          this.tokensCounter.inc({ kind, model }, 0);
+        }
+      }
+    } catch {
+      /* metrics must never throw into a trading path */
+    }
+  }
+
+  // Pass 50: agentic_venue_stop_total's `venue` label is config-driven (TypedConfigService.venues),
+  // same rationale as seedTokenModels above — handed in from the composition root rather than
+  // guessed. Deliberately does NOT seed venue:'unknown' — adversarial review (2026-07-30) confirmed
+  // the ONLY production writer (trading-runtime.module.ts's onVenueStop closure) now passes this
+  // registration's own params.venue, so 'unknown' is reachable only via recordVenueStop's own
+  // pre-v3 default argument for a caller that omits venue entirely (a stale fixture/test, never this
+  // process's real wiring) — seeding it here would be the same fabricated-child lie a configured-venue
+  // cross-product avoids everywhere else in this file.
+  seedVenueStopVenues(venues: readonly string[]): void {
+    try {
+      for (const venue of venues) {
+        for (const event of ALL_AGENT_VENUE_STOP_EVENTS) {
+          this.venueStopCounter.inc({ venue, event }, 0);
+        }
+      }
+    } catch {
+      /* metrics must never throw into a trading path */
+    }
+  }
+
+  // Pass 50 (adversarial-review fix): the agentic_venue_tp_total twin — seedable for the identical
+  // reason seedVenueStopVenues is now: onVenueTp's own call site previously omitted venue too (the
+  // sibling instance of the same defect class), fixed in the same commit.
+  seedVenueTpVenues(venues: readonly string[]): void {
+    try {
+      for (const venue of venues) {
+        for (const event of ALL_AGENT_VENUE_TP_EVENTS) {
+          this.venueTpCounter.inc({ venue, event }, 0);
+        }
       }
     } catch {
       /* metrics must never throw into a trading path */
@@ -468,8 +630,11 @@ export class AgentMetricsRecorder {
 
   // Backlog #53: ReflectionService.evaluateTrigger calls this at each of its four exits
   // (below_threshold/cooldown/inflight/fired) — see AGENTIC_REFLECTION_TRIGGER_COUNTER's own
-  // comment. `outcome` is the same bound set the ReflectionMetricsRecorder interface pins.
-  recordReflectionTrigger(outcome: string): void {
+  // comment. `outcome` is the same bound set the ReflectionMetricsRecorder interface pins — narrowed
+  // to ReflectionTriggerOutcome (Pass 50) so this signature and the constructor's zero-seed read the
+  // same array; still assignable to ReflectionMetricsRecorder.recordReflectionTrigger?(outcome:
+  // string) via TS's bivariant method-parameter checking.
+  recordReflectionTrigger(outcome: ReflectionTriggerOutcome): void {
     try {
       this.reflectionTriggerCounter.inc({ outcome });
     } catch {

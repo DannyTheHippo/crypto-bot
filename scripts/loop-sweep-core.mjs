@@ -590,8 +590,10 @@ function computeApp(prev, cur, elapsedMs = null, nowMs = null) {
   // at this stack's rate 3000 lines was under 2h, far short of the inter-pass gap. That is not a bug in
   // the tail so much as a fact a pass must be told, because a short window turns "no warnings" into a
   // §C.9 negative-read void rather than evidence. Disclosed whenever the window is narrower than the
-  // alert lookback the pass reasons over.
-  const scan = cur && cur.errorScan;
+  // alert lookback the pass reasons over. errorScan lives under probes (adversarial review,
+  // 2026-07-30 — see gather()'s own comment): reading it there means a scan FAILURE also flows
+  // through the generic probe_failed loop above, rather than being a sibling field invisible to it.
+  const scan = probes.errorScan;
   if (scan && scan.ok === true && scan.value) {
     if (!Number.isFinite(scan.value.oldestMs)) {
       // No parseable timestamp in the whole tail — reachable via NOOP_LOGGER, a non-pino log format, or

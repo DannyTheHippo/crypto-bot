@@ -365,6 +365,61 @@ export class ReconciliationService {
         /* metrics must never throw into a trading path */
       }
     }
+
+    // Pass 50 (2026-07-30): reconciliation_axis_error_total's own zero-seed, in its OWN try/catch for
+    // the same non-cross-cancellation reason as the runsCounter block above. `error_class` is
+    // deliberately NOT enumerated — it is a ccxt exception constructor name, an OPEN set this file
+    // only discovers at runtime (errorClassName below), so inventing members would be the exact
+    // fabricated-child lie ALL_MISMATCH_CLASSES' own comment warns against, one level down. Crossed
+    // instead with the explicit sentinel error_class:'none' (log-event-metrics.ts's NONE_EVENT is the
+    // same convention) over the two genuinely closed dimensions: venue and axis. openOrders/trades run
+    // unconditionally for every venue this pass reaches; positions/balances are seeded ONLY where that
+    // VENUE'S OWN ReconConfig actually enables the axis (venueReconConfig — perpCapable / non-demo
+    // environment) — seeding an axis a venue's own config has turned off (every configured venue today
+    // has balanceAxis off, per venueReconConfig's own comment) would itself be an unreachable child.
+    if (this.axisErrorCounter) {
+      try {
+        if (this.venuePorts && this.venueRegistry && this.venueRegistry.size > 0) {
+          for (const descriptor of this.venueRegistry.values()) {
+            const port = this.venuePorts.get(descriptor.venue);
+            if (!port) continue;
+            const venueCfg = this.venueReconConfig(descriptor);
+            this.axisErrorCounter.inc(
+              { venue: descriptor.venue, axis: 'openOrders', error_class: 'none' },
+              0,
+            );
+            this.axisErrorCounter.inc(
+              { venue: descriptor.venue, axis: 'trades', error_class: 'none' },
+              0,
+            );
+            if ((venueCfg.positionAxis ?? true) && port.fetchPositions !== undefined) {
+              this.axisErrorCounter.inc(
+                { venue: descriptor.venue, axis: 'positions', error_class: 'none' },
+                0,
+              );
+            }
+            if (venueCfg.balanceAxis) {
+              this.axisErrorCounter.inc(
+                { venue: descriptor.venue, axis: 'balances', error_class: 'none' },
+                0,
+              );
+            }
+          }
+        } else {
+          const venue = this.exchange.venue;
+          this.axisErrorCounter.inc({ venue, axis: 'openOrders', error_class: 'none' }, 0);
+          this.axisErrorCounter.inc({ venue, axis: 'trades', error_class: 'none' }, 0);
+          if ((this.cfg.positionAxis ?? true) && this.exchange.fetchPositions !== undefined) {
+            this.axisErrorCounter.inc({ venue, axis: 'positions', error_class: 'none' }, 0);
+          }
+          if (this.cfg.balanceAxis) {
+            this.axisErrorCounter.inc({ venue, axis: 'balances', error_class: 'none' }, 0);
+          }
+        }
+      } catch {
+        /* metrics must never throw into a trading path */
+      }
+    }
   }
 
   // v3 §1.5: one pass per venue per tick, one reconciliations row per venue pass. Mismatches sum

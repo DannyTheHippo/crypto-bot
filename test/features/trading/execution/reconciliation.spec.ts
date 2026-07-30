@@ -300,6 +300,23 @@ describe('ReconciliationService (§6.4)', () => {
     expect(calls).toContainEqual([{ venue: 'all', result: 'skipped' }, 0]);
   });
 
+  // Pass 50 (2026-07-30): reconciliation_axis_error_total's own zero-seed, single-venue legacy path.
+  // openOrders/trades always reachable; positions is unreachable here (the legacy `exchange` fixture
+  // never implements fetchPositions unless a script opts in), and balances IS reachable (default CFG
+  // has balanceAxis: true) — so exactly those three axes seed, not a blind four-axis cross-product,
+  // proving the seed reads each venue's OWN axis config.
+  it('seeds reconciliation_axis_error_total{venue,axis,error_class="none"} at construction, only for axes this venue can actually reach', () => {
+    const axisErrorCounter = { inc: vi.fn() } as unknown as Counter<string>;
+    build({}, undefined, undefined, undefined, {}, axisErrorCounter); // construction alone — no reconcile() call
+    const calls = (axisErrorCounter.inc as ReturnType<typeof vi.fn>).mock.calls;
+    for (const axis of ['openOrders', 'trades', 'balances']) {
+      expect(calls, axis).toContainEqual([{ venue: V, axis, error_class: 'none' }, 0]);
+    }
+    // positions is unreachable off the default legacy fixture (no fetchPositions implemented) — must
+    // not be seeded, or it would be a fabricated child this fixture's exchange can never move.
+    expect(calls.some(([labels]) => (labels as { axis: string }).axis === 'positions')).toBe(false);
+  });
+
   it('records reconciliation_runs_total{venue,result} and stamps last-success only on a clean pass', async () => {
     const runs = { inc: vi.fn() } as unknown as Counter<string>;
     const lastSuccess = { set: vi.fn() } as unknown as Gauge<string>;
@@ -538,7 +555,12 @@ describe('ReconciliationService (§6.4)', () => {
         );
         await ctx.recon.reconcile();
         expect(logged.filter((l) => l.includes('symbol-scoped timeout'))).toHaveLength(1); // rate-limited
-        expect((axisErrorCounter.inc as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(3); // per-event
+        // Pass 50: the constructor now seeds this counter's reachable zero children first — filter
+        // those out (error_class:'none') to count only this pass's real per-event increments.
+        const realCalls = (axisErrorCounter.inc as ReturnType<typeof vi.fn>).mock.calls.filter(
+          ([labels]) => (labels as { error_class: string }).error_class !== 'none',
+        );
+        expect(realCalls).toHaveLength(3); // per-event
       } finally {
         warnSpy.mockRestore();
       }
@@ -1370,6 +1392,7 @@ describe('ReconciliationService — v3 multi-venue iteration (§1.5)', () => {
     ports: ReadonlyMap<VenueId, ExchangePort>,
     registry: ReadonlyMap<VenueId, VenueRuntimeDescriptor>,
     runsCounter?: Counter<string>,
+    axisErrorCounter?: Counter<string>,
   ) {
     const clock = { now: () => epochMs(T) };
     const store = new InMemoryExecutionStore();
@@ -1395,6 +1418,8 @@ describe('ReconciliationService — v3 multi-venue iteration (§1.5)', () => {
       undefined,
       ports,
       registry,
+      undefined,
+      axisErrorCounter,
     );
     return { store, recon };
   }
@@ -1420,6 +1445,31 @@ describe('ReconciliationService — v3 multi-venue iteration (§1.5)', () => {
       }
     }
     expect(calls).toContainEqual([{ venue: 'all', result: 'skipped' }, 0]);
+  });
+
+  // Pass 50 (2026-07-30): the axis-error seed's own multi-venue registry-path test. Both descriptors
+  // are 'demo' environment (balanceAxis off, per venueReconConfig) and fakePort never implements
+  // fetchPositions — so, unlike the single-venue legacy test above, NEITHER positions NOR balances is
+  // reachable for either venue here, and the seed must reflect that rather than a blind cross-product.
+  it('seeds reconciliation_axis_error_total{venue,axis} over every registry venue, restricted to axes each venue can reach', () => {
+    const axisErrorCounter = { inc: vi.fn() } as unknown as Counter<string>;
+    const ports = new Map([
+      [SPOT, fakePort(SPOT)],
+      [PERP, fakePort(PERP)],
+    ]);
+    const registry = new Map([
+      [SPOT, descriptor(SPOT, false)],
+      [PERP, descriptor(PERP, true)],
+    ]);
+    buildMultiVenue(ports, registry, undefined, axisErrorCounter); // construction alone
+    const calls = (axisErrorCounter.inc as ReturnType<typeof vi.fn>).mock.calls;
+    for (const venue of [SPOT, PERP]) {
+      for (const axis of ['openOrders', 'trades']) {
+        expect(calls, `${venue}/${axis}`).toContainEqual([{ venue, axis, error_class: 'none' }, 0]);
+      }
+    }
+    expect(calls.some(([labels]) => (labels as { axis: string }).axis === 'positions')).toBe(false);
+    expect(calls.some(([labels]) => (labels as { axis: string }).axis === 'balances')).toBe(false);
   });
 
   it('runs one pass per venue and writes one reconciliations row per venue', async () => {

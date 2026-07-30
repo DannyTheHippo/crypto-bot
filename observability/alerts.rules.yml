@@ -135,10 +135,30 @@ groups:
       # "Stalled" = no pass COMPLETING, deliberately not "no clean pass": on the shared demo
       # wallet, foreign resting orders make a small per-pass mismatch count the healthy steady
       # state (WARN-and-ignore class), so a clean-pass age would fire forever on a working
-      # reconciler. Any result but error means venue truth was read end-to-end. 10 minutes =
-      # 20 missed 30s passes, far beyond transient venue flake.
+      # reconciler. 10 minutes = 20 missed 30s passes, far beyond transient venue flake.
+      #
+      # Pass 49 (2026-07-30): `result!="error"` was wrong — it counts `skipped` (the re-entrancy
+      # branch in reconciliation.service.ts, engaged when a tick coalesces onto a still-running pass
+      # WITHOUT reading any venue truth at all) as proof of a completed pass. The two venues reconcile
+      # sequentially in one 30s-ticked pass and a pass takes longer than the tick, so on a HEALTHY
+      # reconciler every other tick is a skip already (measured live: 1290 skipped vs 1282+1282 clean
+      # over a 20.7h boot) — and a WEDGED pass makes every later tick a skip too, so the skip rate
+      # RISES exactly when passes stop completing. The old selector was therefore suppressed by the
+      # very counter that climbs during the outage it exists to catch (measured live:
+      # sum(increase(result!="error"[10m])) = 28.72, of which result="skipped" alone contributed 9.23).
+      # Narrowed to only the results that prove a pass read venue truth end-to-end: clean, mismatch, or
+      # halt.
+      #
+      # `or absent(...)` is not optional on a critical liveness gate: the sibling
+      # AgentClientFatalLatch fix (this same file) found that an `and`-shaped expr collapses to the
+      # empty set the instant its operand series is absent — the same failure mode applies here to a
+      # bare `sum(increase(...)) == 0`, which reads as absent (never firing) rather than 0 if the
+      # series itself has never been created (e.g. a fresh process before the constructor's own
+      # zero-seed below has run, or a metric rename). absent() catches that case directly.
       - alert: ReconcilerStalled
-        expr: sum(increase(reconciliation_runs_total{result!="error"}[10m])) == 0
+        expr: |
+          sum(increase(reconciliation_runs_total{result=~"clean|mismatch|halt"}[10m])) == 0
+          or absent(reconciliation_runs_total{result=~"clean|mismatch|halt"})
         for: 0m
         labels: { severity: critical }
         annotations:

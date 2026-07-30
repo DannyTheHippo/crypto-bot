@@ -81,6 +81,22 @@ const ALL_MISMATCH_CLASSES: readonly MismatchClass[] = [
   'sweep_failure',
 ];
 
+// Pass 49 (2026-07-30): reconciliation_runs_total's own `result` label. Type derived FROM the array
+// (not the other way around, per agent-metrics-recorder.service.ts:77-78's own convention) so the
+// writer (reconcileOnce, below) and the construction-time zero-seed (also below) read the SAME
+// closed set — a fifth member added to a hand-written union type would compile and go unseeded,
+// exactly the drift a derived type rules out. `skipped` is deliberately NOT a member — it is written
+// only against the fixed `{venue:'all'}` child (the re-entrancy branch in reconcile()), never
+// per-venue, so it is seeded as its own single child rather than crossed with every venue.
+//
+// This duplicates OpsEvent's 'reconcile.pass' member's own `result` field type (already imported into
+// this file from ports/common/observability.ts) rather than referencing it: that field's type is not
+// itself exported — extracting it would need an `Extract<OpsEvent, { event: 'reconcile.pass' }>['result']`
+// indirection in place of the array-derived pattern this file already uses for ALL_MISMATCH_CLASSES.
+// Keep the two lists in sync if either changes.
+const ALL_PASS_RESULTS = ['clean', 'mismatch', 'halt', 'error'] as const;
+type ReconRunResult = (typeof ALL_PASS_RESULTS)[number];
+
 interface PassAccumulator {
   readonly mismatches: Map<MismatchClass, number>;
   readonly halts: string[];
@@ -311,11 +327,40 @@ export class ReconciliationService {
     // (research/loop/state.md) read reconciliation_mismatch_total{class="adopt_non_adoptable"} and
     // {class="fill_overflow"} expecting "stays 0" to be a real reading — before this seed, on a
     // process where neither class had ever fired, that expectation was actually a void read (§C.9).
-    // Seeded once here over the closed enumeration above. Measurement-only and must never block a
-    // boot: wrapped so a misbehaving counter can never escape this constructor (fail OPEN).
+    // Measurement-only and must never block a boot: wrapped so a misbehaving counter can never escape
+    // this constructor (fail OPEN).
     if (this.mismatchCounter) {
       try {
         for (const cls of ALL_MISMATCH_CLASSES) this.mismatchCounter.inc({ class: cls }, 0);
+      } catch {
+        /* metrics must never throw into a trading path */
+      }
+    }
+
+    // Pass 49 (2026-07-30): the runs-counter twin, in its OWN try/catch — a throw here must never be
+    // able to un-seed the mismatch-class block above, and vice versa; sharing one try would let either
+    // counter's failure silently cancel the other's seed. Live-verified: a halt whose child receives
+    // exactly one increment is invisible to increase() forever after (a lazily-created child sits at 1
+    // permanently, so any LATER window's increase() reads 0) — demonstrated live on the sibling
+    // agentic_reflection_outcomes_total (reads 1, `increase(...[24h])` reads 0). Sustained re-halts
+    // still fire today (TSDB: {result="halt",venue="binanceusdm"} climbed 4→20 over 9 consecutive
+    // evaluations on 2026-07-26, and again for venue="binance" on 2026-07-27) — this seed is what
+    // makes a SINGLE halt increment visible too, closing the gap between "re-halts happen to page" and
+    // "every halt pages." Venue source matches reconcileEveryVenue's own condition (below) exactly —
+    // venuePorts AND venueRegistry both present and non-empty — so the seed can never name a venue
+    // that condition would route to the legacy this.exchange fallback instead (a populated registry
+    // with no venuePorts would otherwise seed a child no writer can ever move: the fabricated-child
+    // lie this file's own ALL_MISMATCH_CLASSES comment warns against, one level down).
+    if (this.runsCounter) {
+      try {
+        const venues =
+          this.venuePorts && this.venueRegistry && this.venueRegistry.size > 0
+            ? [...this.venueRegistry.values()].map((d) => d.venue)
+            : [this.exchange.venue];
+        for (const venue of venues) {
+          for (const result of ALL_PASS_RESULTS) this.runsCounter.inc({ venue, result }, 0);
+        }
+        this.runsCounter.inc({ venue: 'all', result: 'skipped' }, 0);
       } catch {
         /* metrics must never throw into a trading path */
       }
@@ -536,7 +581,7 @@ export class ReconciliationService {
     // Per-class increments (#24); a clean pass increments nothing — increase() over an absent
     // series is 0, so the alert semantics are unchanged from the old 0-inc.
     for (const [cls, n] of acc.mismatches) this.mismatchCounter?.inc({ class: cls }, n);
-    const result =
+    const result: ReconRunResult =
       passError !== undefined
         ? 'error'
         : halted

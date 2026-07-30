@@ -329,3 +329,58 @@ describe('AgentClientFatalLatch expr — absent-tolerant on purpose', () => {
     expect(expr).not.toContain('and on(instance, job)');
   });
 });
+
+describe('ReconcilerStalled expr — proves a pass completed, tolerates an absent series', () => {
+  // Pass 49 (2026-07-30): `result!="error"` counted `skipped` (a re-entrancy coalesce that reads no
+  // venue truth at all) as proof of a completed pass — and the skip rate RISES exactly when a pass is
+  // wedged (every later tick coalesces onto the stuck one), so the old selector was suppressed by the
+  // very fault it exists to catch. This is the only executable guard against that selector coming
+  // back; nothing else in the suite queries prometheus or exercises the expr text itself.
+  it('never selects on result!="error", and only selects the results that prove a pass completed', () => {
+    const rulesText = readFileSync(
+      join(process.cwd(), 'observability', 'alerts.rules.yml'),
+      'utf8',
+    );
+    const match = rulesText.match(
+      /- alert: ReconcilerStalled\s*\n\s*expr: \|\s*\n([\s\S]*?)\n\s*for:/,
+    );
+    expect(match).not.toBeNull();
+    const expr = match![1];
+    expect(expr).not.toContain('result!="error"');
+    expect(expr).toContain('result=~"clean|mismatch|halt"');
+  });
+
+  // A `sum(increase(...)) == 0` bare comparison reads as absent (never firing), not 0, the moment the
+  // underlying series has never been created — the same collapse-to-empty failure mode the
+  // AgentClientFatalLatch fix above guards against on its own operand. absent() is the only
+  // executable guard that this critical liveness gate keeps its absent-tolerant branch.
+  it('carries an absent() branch so a never-created series still fires, rather than reading as silently healthy', () => {
+    const rulesText = readFileSync(
+      join(process.cwd(), 'observability', 'alerts.rules.yml'),
+      'utf8',
+    );
+    const match = rulesText.match(
+      /- alert: ReconcilerStalled\s*\n\s*expr: \|\s*\n([\s\S]*?)\n\s*for:/,
+    );
+    expect(match).not.toBeNull();
+    expect(match![1]).toContain('absent(reconciliation_runs_total{result=~"clean|mismatch|halt"})');
+  });
+});
+
+describe('ReconciliationHalt expr — still selects the label the construction-time seed must cover', () => {
+  // Pass 49 (2026-07-30): ReconciliationHalt (`increase(reconciliation_runs_total{result="halt"}[5m])
+  // > 0`) cannot fire on a one-shot halt unless the {result="halt"} child already exists BEFORE the
+  // halt — a prom-client child created lazily on its first increment sits at 1 forever, so
+  // increase() over any later window reads 0. reconciliation.service.ts's constructor now seeds every
+  // (venue, result) pair (including halt) at 0 — see
+  // test/features/trading/execution/reconciliation.spec.ts's own construction-only seed tests for the
+  // executable proof; this spec only pins that the alert's selector still names the label the seed
+  // must cover.
+  it("ReconciliationHalt still selects reconciliation_runs_total's result label the seed must cover", () => {
+    const rulesText = readFileSync(
+      join(process.cwd(), 'observability', 'alerts.rules.yml'),
+      'utf8',
+    );
+    expect(rulesText).toContain('increase(reconciliation_runs_total{result="halt"}[5m]) > 0');
+  });
+});

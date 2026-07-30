@@ -281,6 +281,25 @@ describe('ReconciliationService (§6.4)', () => {
     }
   });
 
+  // Pass 49 (2026-07-30): the runs-counter twin of the seed test above — same construction-only
+  // assertion, extended to reconciliation_runs_total. This is what makes ReconciliationHalt
+  // (observability/alerts.rules.yml) able to fire on a ONE-SHOT halt: without this seed, a halt's
+  // first increment lazily creates the {result="halt"} child at 1, and increase() over any LATER
+  // window reads 0 forever (the same newborn-child trap live-verified on
+  // agentic_reflection_outcomes_total). Deleting the seed (leaving only the per-pass
+  // `this.runsCounter?.inc({venue,result})` call) fails this test. Legacy single-venue construction
+  // path here (no venuePorts/venueRegistry) — the v3 multi-venue registry path has its own seed test
+  // below (§1.5 multi-venue iteration block).
+  it('seeds every (venue, result) pair — including halt — on reconciliation_runs_total at construction (Pass 49), before any pass runs', () => {
+    const runs = { inc: vi.fn() } as unknown as Counter<string>;
+    build({}, undefined, runs); // construction alone — no reconcile() call
+    const calls = (runs.inc as ReturnType<typeof vi.fn>).mock.calls;
+    for (const result of ['clean', 'mismatch', 'halt', 'error']) {
+      expect(calls, result).toContainEqual([{ venue: V, result }, 0]);
+    }
+    expect(calls).toContainEqual([{ venue: 'all', result: 'skipped' }, 0]);
+  });
+
   it('records reconciliation_runs_total{venue,result} and stamps last-success only on a clean pass', async () => {
     const runs = { inc: vi.fn() } as unknown as Counter<string>;
     const lastSuccess = { set: vi.fn() } as unknown as Gauge<string>;
@@ -1350,6 +1369,7 @@ describe('ReconciliationService — v3 multi-venue iteration (§1.5)', () => {
   function buildMultiVenue(
     ports: ReadonlyMap<VenueId, ExchangePort>,
     registry: ReadonlyMap<VenueId, VenueRuntimeDescriptor>,
+    runsCounter?: Counter<string>,
   ) {
     const clock = { now: () => epochMs(T) };
     const store = new InMemoryExecutionStore();
@@ -1371,13 +1391,36 @@ describe('ReconciliationService — v3 multi-venue iteration (§1.5)', () => {
       portfolio,
       ingestor,
       undefined,
-      undefined,
+      runsCounter,
       undefined,
       ports,
       registry,
     );
     return { store, recon };
   }
+
+  // Pass 49 (2026-07-30): mirrors the single-venue seed test above (Pass 47) for
+  // reconciliation_runs_total, but through the v3 registry path — the venue source the seed loop must
+  // use to avoid naming a venue this pass never actually writes to (or missing one it does).
+  it('seeds every (venue, result) pair — including halt — at construction, over every registry venue', () => {
+    const runs = { inc: vi.fn() } as unknown as Counter<string>;
+    const ports = new Map([
+      [SPOT, fakePort(SPOT)],
+      [PERP, fakePort(PERP)],
+    ]);
+    const registry = new Map([
+      [SPOT, descriptor(SPOT, false)],
+      [PERP, descriptor(PERP, true)],
+    ]);
+    buildMultiVenue(ports, registry, runs); // construction alone — no reconcile() call
+    const calls = (runs.inc as ReturnType<typeof vi.fn>).mock.calls;
+    for (const venue of [SPOT, PERP]) {
+      for (const result of ['clean', 'mismatch', 'halt', 'error']) {
+        expect(calls, `${venue}/${result}`).toContainEqual([{ venue, result }, 0]);
+      }
+    }
+    expect(calls).toContainEqual([{ venue: 'all', result: 'skipped' }, 0]);
+  });
 
   it('runs one pass per venue and writes one reconciliations row per venue', async () => {
     const ports = new Map([

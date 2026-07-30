@@ -436,8 +436,426 @@ $0.027210 per decide = **0.457×**).
 | `kimi-k3` | 4,632 | **~$35** | $45 |
 | **total** | 9,264 | **~$110** | $135 |
 
+## Amendment 5 (2026-07-30, before any edge call) — the funded design, sized from measured cost
+
+**Owner funded both accounts (Anthropic $100, Moonshot $15) with an explicit constraint:** *"we should
+not consume the full funding amounts (moonshot 15 usd can be consumed)"*, and, when the arithmetic was
+put to them, *"if the funding is not enough for full row depth: use less rows"*.
+
+The Amendment-4 design costs ~$110–160 and its kimi leg alone needs ~$35–80 against a $15 balance, so
+it is **not fundable**. This amendment replaces it with a design sized from a **measured** per-call
+cost. Nothing about the bar moves: **+13.0 bps, the 95% CI clause, MIN_ENTRIES=12, the placebo and the
+trimming battery are all unchanged.**
+
+### The lever that was chosen, and why it is the right one
+
+Cost is `rows x arms`. Power is a function of **rows** alone (entries per cell). The Bonferroni family
+is a function of **arms** alone. So the two ways to spend less are not equivalent:
+
+| cut | effect on cost | effect on the mean an arm must post to pass |
+| --- | --- | --- |
+| halve **rows** | halves it | 1/sqrt(n): about 26 bps → about 33 bps, and low-entry-rate arms drop below MIN_ENTRIES |
+| halve **arms** | halves it | slightly **easier** — a smaller family raises alpha |
+
+**Arms absorb the budget; rows are held at full depth.** Cutting arms costs *coverage of playbook
+space*, not sensitivity. Row depth gives way only if the model axis cannot otherwise be funded at all
+(the owner's ordering above) — and never below a **150-row floor**, since at the corpus entry rate no
+cell could reach MIN_ENTRIES beneath it. In the event, **row depth did not have to give way.**
+
+### Frozen arm priority — declared before any cost was known
+
+The arm COUNT falls out of measured cost, so the arm ORDER is frozen first; that makes the count the
+only free parameter and removes every opportunity to pick arms once something is known about them.
+
+`champion_v8`, `inverted`, `minimal`, `momentum_pure`, `meanrev_pure`, `shorts_only`, `candidate_v9`,
+`seed_v1`, `leaders_only`, `high_conviction_only`, `trade_almost_never`, `one_symbol_btc`
+
+Ranking is on prior and on **expected power**, both computable before any call. The last three rank
+last because a pre-run power calculation says they cannot produce a powered cell on this corpus
+(`high_conviction_only` fires ~1 in 20; `trade_almost_never` is built to abstain; `one_symbol_btc` is
+capped by the ~15 BTC rows the corpus holds) — **not** because of anything observed. The lever tier
+below still covers all twelve.
+
+### Two tiers
+
+- **EDGE tier** — the hypothesis test. Full row depth. Shared arms run on *every* model in the axis, so
+  the model comparison is on identical arms and identical rows.
+- **LEVER tier** — all twelve arms, few rows, measuring **entry rate and decision-change only**. This
+  answers pre-registration weakness 6 (is playbook prose a lever on behaviour at all?), which is a
+  question about *proportions* — 33 rows pins one to about ±9 points, while pinning a 29 bps-SD return
+  mean needs hundreds. It tests **no hypothesis against the bar and contributes nothing to the
+  Bonferroni family**; that exclusion is only honest because `verdictFor` is never called on it. Capped
+  at 20% of the lead budget so the diagnostic can never outbid the study.
+
+### Calibration (2026-07-30) — measured, not assumed
+
+Two costs were on record and they disagreed by 2.4x ($0.0163/call smoke, $0.039668/call live decide
+path), so the budget could not be allocated without measuring. One arm, 40 spanning rows, per model:
+
+| | `claude-sonnet-5` | `kimi-k3` |
+| --- | --- | --- |
+| USD/call metered | $0.017305 | $0.007967 |
+| **USD/call effective** (sizing basis) | **$0.017305** | **$0.010557** |
+| transport | 100% | 100% (after the fix below) |
+| schema-valid | 80% | 50% |
+| empty-body 200s | 0 | 13 of 53 attempts |
+
+The **live** figure was the outlier: the replay amortises its cache write across a 40-row chunk, the
+live path re-warms far more often. The smoke figure held.
+
+`usdPerCallEffective` scales the metered cost by attempts-per-usable-response. The meter can only price
+a response that carried a `usage` block, so retried attempts cost it nothing while quite possibly
+costing the account something. Whether Moonshot bills them is not observable from here, so **the budget
+assumes it does** — wrong in the safe direction.
+
+**The measured kimi ratio is 0.61x sonnet, not the 0.457x Amendment 4 assumed.** kimi-k3 lists at the
+same $3/$15/$0.30 per Mtok as sonnet-5, so the earlier ratio was never a rate difference; it was a
+token-count artefact of two non-comparable configurations, and it should not have been carried forward
+as a planning constant.
+
+### DEFECT found by the calibration gate: HTTP 200 with an empty body
+
+The first two kimi probes returned **transport 72.5% and 55%**, below the 90% floor, and were correctly
+voided. The cause was not rate limiting, latency, or billing: `ok: 40` of 40 attempts, zero 429s, zero
+5xx, zero retries. **Moonshot's Anthropic-compatible surface returns HTTP 200 with a zero-length body on
+roughly 30–45% of these requests.** `res.json()` throws, `replayPlanRow` collapses that to
+`{ok:false}` with no usage, and the calibration reads it as transport failure.
+
+It is **non-deterministic** — the same corpus row returned an empty body on one run and 2,365 bytes on
+the next — which is what makes it retryable and what proves it is provider-side rather than
+payload-dependent. `instrumentedFetch` now counts `emptyBody` separately and retries it after a short
+fixed delay (not the exponential 429 backoff; there is nothing to back off from). **Transport went 55%
+→ 97.5% → 100%.** Note this makes lowering concurrency counter-productive: probe 2 at concurrency 2 and
+a 300s timeout was *worse* (55%) than probe 1 at concurrency 4 (72.5%).
+
+Two further guards were added, both fail-closed: a calibration below the transport floor is **unusable
+for sizing** (it is the one input every later decision rests on), and a calibration file written by an
+older harness is rejected by name rather than surfacing three frames down as an arithmetic complaint.
+
+**Also measured, and it is not a harness bug:** Moonshot does not honour forced `tool_choice`. Roughly
+a third of responses come back `stop_reason: "end_turn"` with a bare text block and no `tool_use`
+block, despite `tool_choice: {type:'tool'}`. That is why kimi's schema-valid rate is 50% against
+sonnet's 80%. It is reported, never gating — provider behaviour is data, not a broken run.
+
+### The funded design
+
+| | value |
+| --- | --- |
+| edge rows/arm | **386 — full depth** (the axis could afford it) |
+| shared edge arms (both models) | **3** — `champion_v8`, `inverted`, `minimal` |
+| `claude-sonnet-5`-only edge arms | **1** — `momentum_pure` |
+| lever tier | 12 arms x **33** rows, `claude-sonnet-5` |
+| **family / Bonferroni denominator** | **28** (2x3x4 + 1x4), against 96 for the full grid |
+| **alpha** | **1.7857e-3** |
+| est. spend, `claude-sonnet-5` | **$33.57** of the $35 allocation |
+| est. spend, `kimi-k3` | **$12.23** of the $13 allocation |
+
+Total ≈ **$45.80 of the $115 funded** — about 40%, honouring the owner's constraint. The Anthropic
+allocation is $35 rather than the $100 balance because **the live lane has first claim on that account**:
+measured decide-path spend is $1.86/day mean and $3.63 worst day (`agent_decisions`, 282 calls at
+$0.039668/call), so leaving $65 is roughly 35 days of lane runway. A study that starves the bot it is
+studying is not a saving.
+
+The design is written to `research/candidates/playbook-space-design.json` by the sizing step and
+**read** by the edge run, which refuses to start without it. That ordering is the point: a design file
+that exists before the first edge call is evidence the family was fixed before any hypothesis was
+tested.
+
+### Shrinking the family makes passing easier — stated plainly
+
+Going from 96 cells to 28 raises alpha from 5.2083e-4 to 1.7857e-3. **That direction deserves
+scrutiny**, so: the justification is that **fewer hypotheses are actually being tested**, not that an
+easier bar was wanted. An untested arm is not a suppressed test. The clauses that do *not* depend on
+alpha — `mean > 13.0` and a 95% CI lower bound above 13.0 — are untouched by any budget decision, and
+there is a test asserting that a cell missing the bar fails under **any** family size. So a cheaper
+study cannot argue the fee floor down.
+
+### What the reduced design costs, honestly
+
+**A NO_SURVIVOR verdict is now weaker than Amendment 4's would have been.** Four arms on sonnet and
+three on kimi is not "a deliberately wide span of twelve"; it is seven cells of playbook space. The
+decision rule is therefore weakened to match: **0 passes ⇒ no playbook among the FUNDED arms clears the
+fee, and the learning hypothesis is unsupported — not proven dead.** The five unfunded arms remain
+untested, and any write-up saying otherwise is overclaiming. The lever tier still covers all twelve for
+the behavioural question.
+
+### Entry-rate instability — a power risk, recorded before the edge run
+
+Two identical 40-row probes of `champion_v8` on `claude-sonnet-5` (same rows, same prompt, same
+harness) produced **8 entries of 39 parsed** and then **0 of 32**. Under a binomial at p=0.2, zero in 32
+has probability ~0.08%, so these two measurements are not reconcilable as sampling noise on a stable
+rate.
+
+This matters because n per cell is what decides whether any cell can be powered: at 20.5% the champion
+gives n≈77 on 386 rows, at 0% it gives n=0 and returns UNDERPOWERED. It is also **consistent with the
+live system's own known behaviour** — the live objective carries an entry-rate floor precisely because
+the model abstains more than the promotion gate can tolerate, and sonnet's live figure rests on only 14
+proposes.
+
+**Consequence for the run order:** the **LEVER tier runs first**, as a power check, for $6.85 rather
+than discovering n=0 after $27 of edge calls. Its only permitted consequence is to report which arms
+will return UNDERPOWERED. **The frozen priority order does not move on the strength of it** — swapping
+an arm in because its measured entry rate looks better is exactly the cherry-picking the freeze exists
+to prevent. Any change to the order must be its own dated amendment, made before the edge run, and must
+say why.
+
 ## Results
 
-*Not yet produced for the champion (`claude-sonnet-5`) leg — see Amendment 2; runs 1 and 2 are VOID
-and no arm has been scored on it. The bar above does not move. The kimi leg's results are recorded
-below under their own trial id and do not substitute for it.*
+### LEVER tier — `claude-sonnet-5`, 12 arms x 33 rows, 396 calls, $5.3996, transport 100%
+
+| arm | parsed | entries | entry rate | changed vs champion | projected n at 386 rows |
+| --- | --- | --- | --- | --- | --- |
+| `champion_v8` | 22 | 1 | 4.5% | — | 18 |
+| `inverted` | 21 | 0 | 0.0% | 36.4% | **0** |
+| `minimal` | 21 | 1 | 4.8% | 9.1% | 18 |
+| `momentum_pure` | 24 | 3 | 12.5% | 15.2% | 48 |
+| `meanrev_pure` | 33 | 0 | 0.0% | 36.4% | **0** |
+| `shorts_only` | 25 | 0 | 0.0% | 30.3% | **0** |
+| `candidate_v9` | 24 | 2 | 8.3% | 9.1% | 32 |
+| `seed_v1` | 24 | 1 | 4.2% | 6.1% | 16 |
+| `leaders_only` | 32 | 0 | 0.0% | 33.3% | **0** |
+| `high_conviction_only` | 30 | 0 | 0.0% | 27.3% | **0** |
+| `trade_almost_never` | 32 | 0 | 0.0% | 33.3% | **0** |
+| `one_symbol_btc` | 32 | 0 | 0.0% | 33.3% | **0** |
+
+**Weakness 6 is answered, affirmatively: playbook prose IS a lever on behaviour.** Zero inert arms —
+every arm changed 6–36% of decisions against the champion. What it does *not* move is entries: **8
+entries across 320 parsed rows, 2.5%.**
+
+### The edge tier was NOT run, and must not be run as designed
+
+Seven of twelve arms produce **zero** entries. Of the four funded edge arms, `inverted` — a shared arm
+and the one carrying the only positive-prior lead — projects **n=0**, and `champion_v8`/`minimal`
+project n=18 off a **single observed entry each** (the 95% CI on 1/22 spans roughly 0–89). The design
+would have bought $45.80 of mostly UNDERPOWERED cells. This is exactly what the pre-run power check
+exists to prevent, and it cost $5.40 instead of $45.80 to learn.
+
+### The replay under-enters by 4x against live, and the cause is NOT yet identified
+
+On the identical 33 sampled rows the **live** system entered **6 times (18.2%)**; the replay of the
+same champion entered **once (4.5%)**. Across the full corpus the live recorded distribution is
+`hold` 83.2%, `open_long` 11.1%, `open_short` 4.9%, `close` 0.8% — a **16.1% entry rate**. The replay
+under-enters by **4x on the same market states with nominally the same playbook.** That is a measured
+fact and it is what blocks the edge tier.
+
+#### A DEFECT was found and fixed, but it is not established as the cause
+
+`replayPlanRow` built its capabilities object from **constants** while the recorded row payload carried
+the real ones, so the replay contradicted its own input. The corpus records **three** distinct
+capability profiles (153 rows perp/shorts/lev 2/0.35, 139 rows spot/no-shorts/lev 1/0.15, 18 rows
+lev 5) plus per-row cash of $380–700; the harness replaced all of it with one constant set.
+
+Three of those four values **do** reach the model, via the tool description:
+
+| recorded | harness sent | reaches the model? |
+| --- | --- | --- |
+| `maxSizeFraction` 0.35 perp / 0.15 spot | `0.25` (caller's) | **yes** — as the stated `sizeFraction` ceiling *and* the zod bound |
+| `shorts` false on 139 spot rows | `true` (study's flag) | **yes** — "shorts are enabled for this symbol" |
+| `leverage` 1 / 2 / 5 | `'2'` | **yes** — "leverage is capped at 2x" |
+| `venueFreeCash` $380–700 | `'0'` | **no** |
+
+**Correction to this document's first diagnosis, which was wrong.** I initially recorded that
+`venueFreeCash: '0'` told the model it had no money and caused the abstention. The regression test
+written to protect that claim **refuted it**: `buildTradeTool` renders shorts, leverage and
+maxSizeFraction only — never free cash. The sole free-cash figure a replay shows the model is the true
+one already inside the recorded payload. The claim is retracted; the test
+(`entry-rate-floor-capabilities.spec.ts`) now asserts the absence so it cannot be re-derived.
+
+The real contradiction was the **sizeFraction ceiling**: the tool advertised `[0.005, 0.25]` and bounded
+the schema at 0.25 while the payload advertised 0.35, so a model that believed its payload and proposed
+0.30 was schema-rejected — abstention manufactured by the harness's own inconsistency. Plus shorts
+offered on 139 spot rows where live forbade them, and the wrong leverage on 28 rows.
+
+**Fixed** by deriving capabilities per-row from the recorded payload (`recordedCapabilities`), with the
+zod bound taken from `caps` rather than `cfg` so the bound and the advertised limit can no longer
+disagree. Fails OPEN to the config path when a payload carries no capabilities (synthetic fixtures),
+and reports `capsSource` per call so the **caller** fails closed — the study now voids any run with a
+single non-`recorded` row. 12 regression tests.
+
+**Not confined to this study.** `replayPlanRow` is the shared call-builder for two MINT-TIME production
+gates — `measureEntryRate` (`entry-rate-floor.ts`), the floor requiring >=1 entry in 12 replays before a
+candidate may be minted, and the candidate expectancy backtest (`candidate-backtest.ts:255,264`). Both
+were measuring candidate behaviour against a 0.25 ceiling and uniform shorts/leverage regardless of what
+each row recorded.
+
+**Still unexplained:** whether fixing this closes the 4x gap. The remaining untested candidate is the
+system prompt — the replay builds it from `DEFAULT_FLOOR_PROFILE`, which may differ materially from the
+live prompt — followed by the live mixture over ~9 playbook versions against this replay's single arm.
+**Re-measure before attributing anything.**
+
+### The fix closed the gap — the capabilities mismatch WAS the cause
+
+Post-fix lever tier, same 33 rows, same arms, 396 calls, $5.7551, transport 100%:
+
+| arm | pre-fix entry rate | **post-fix** | projected n at 386 rows |
+| --- | --- | --- | --- |
+| `champion_v8` | 4.5% | **30.3%** | 117 |
+| `inverted` | 0.0% | **35.5%** | 137 |
+| `minimal` | 4.8% | **40.6%** | 157 |
+| `momentum_pure` | 12.5% | **34.4%** | 133 |
+| `candidate_v9` | 8.3% | **32.3%** | 125 |
+| `seed_v1` | 4.2% | **22.6%** | 87 |
+| `shorts_only` | 0.0% | **21.2%** | 82 |
+| `high_conviction_only` | 0.0% | **9.1%** | 35 |
+| `trade_almost_never` | 0.0% | **3.2%** | 12 |
+| `meanrev_pure` / `leaders_only` / `one_symbol_btc` | 0.0% | 0.0% | 0 |
+
+**All arms: 8/320 = 2.5% → 73/383 = 19.1%**, against the live recorded **18.2%** on the same 33 rows and
+**16.1%** across the corpus. The replay now reproduces live entry behaviour. Parse rates rose too
+(31–33 of 33, against 21–33 pre-fix), which is the signature of the `sizeFraction` bound contradiction
+being the mechanism: fewer legal proposals were being rejected as schema failures.
+
+Still zero inert arms — every arm changes 9–55% of decisions against the champion.
+
+### Post-fix calibration, and a reversal on cost
+
+| | `claude-sonnet-5` | `kimi-k3` |
+| --- | --- | --- |
+| USD/call metered | $0.013673 | $0.016945 |
+| **USD/call effective** | **$0.013673** | **$0.026265** |
+| transport | 100% | 100% |
+| schema-valid | 97.5% | 47.5% |
+| empty-body 200s | 0 | 15 of 55 attempts |
+
+**kimi is now 1.9x sonnet, not 0.61x.** The reversal is entirely the empty-body retry burden, charged
+conservatively on the assumption Moonshot bills a response it never delivered. Kimi's schema-valid rate
+stays near half sonnet's, which is the forced-`tool_choice` non-compliance already recorded.
+
+### Re-sized design (family fixed 2026-07-30, before the first edge call)
+
+Budgets are what REMAINED of each allocation after calibration and the two lever runs ($21.91 lead,
+$9.30 follow) — a re-size mid-study must budget what is left, not what it started with.
+
+| | value |
+| --- | --- |
+| edge rows/arm | **354 of 386** — REDUCED; the axis could not afford full depth at kimi's effective cost |
+| shared edge arms (both models) | **1** — `champion_v8` |
+| `claude-sonnet-5`-only edge arms | **3** — `inverted`, `minimal`, `momentum_pure` |
+| **family / Bonferroni denominator** | **20** (2x1x4 + 3x4) |
+| **alpha** | **2.5e-3** |
+
+The row reduction is the owner's declared fallback firing for the first time. **Consequence, stated
+plainly: the cross-model comparison now rests on `champion_v8` alone.** The declared rule spends on depth
+before breadth and it was followed rather than re-decided after seeing the number — but it means "which
+lane is best" is answered on the status-quo playbook only, not on each model's best arm.
+
+## Results — `claude-sonnet-5` leg (complete)
+
+354 rows, 4 arms, 1,416 calls, **$19.4220**, transport **100%**, schema **92.9%**, no abort, no
+unfaithful-capability rows.
+
+| arm | h | n | clusters | mean bps | CI lo | p vs bar | placebo p | verdict |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `champion_v8` | 1 | 70 | 16 | −12.7 | −24.3 | 1.0000 | 0.9828 | FAIL (mean) |
+| `champion_v8` | 4 | 70 | 16 | −36.3 | −54.2 | 1.0000 | 0.9990 | FAIL (mean) |
+| `champion_v8` | 8 | 70 | 16 | −32.7 | −54.2 | 1.0000 | 0.9854 | FAIL (mean) |
+| `champion_v8` | 24 | 69 | 16 | −70.1 | −119.5 | 0.9994 | 0.9976 | FAIL (mean) |
+| `inverted` | 1 | 117 | 20 | −0.8 | −7.7 | 1.0000 | 0.5030 | FAIL (mean) |
+| `inverted` | 4 | 117 | 20 | +0.8 | −10.9 | 0.9873 | 0.3408 | FAIL (mean) |
+| `inverted` | 8 | 117 | 20 | **+19.3** | +1.1 | 0.2215 | 0.0228 | FAIL (CI lower bound) |
+| `inverted` | 24 | 117 | 20 | **+47.6** | −12.2 | 0.1947 | **0.0020** | FAIL (CI lower bound) |
+| `minimal` | 1 | 91 | 18 | −13.3 | −16.8 | 1.0000 | 0.9964 | FAIL (mean) |
+| `minimal` | 4 | 91 | 18 | −27.0 | −36.3 | 1.0000 | 0.9984 | FAIL (mean) |
+| `minimal` | 8 | 91 | 18 | −27.2 | −40.2 | 1.0000 | 0.9828 | FAIL (mean) |
+| `minimal` | 24 | 89 | 18 | −40.7 | −83.1 | 0.9758 | 0.9770 | FAIL (mean) |
+| `momentum_pure` | 1 | 55 | 16 | −12.7 | −22.0 | 1.0000 | 0.9746 | FAIL (mean) |
+| `momentum_pure` | 4 | 55 | 16 | −31.5 | −42.4 | 1.0000 | 0.9930 | FAIL (mean) |
+| `momentum_pure` | 8 | 55 | 16 | −46.4 | −62.7 | 1.0000 | 0.9948 | FAIL (mean) |
+| `momentum_pure` | 24 | 53 | 16 | −85.3 | −137.6 | 1.0000 | 0.9986 | FAIL (mean) |
+
+**0 of 16 cells pass. Every cell is POWERED** (n = 53–117 against MIN_ENTRIES=12), so these are real
+failures, not absent measurements — which is the first time this study has been able to say that.
+
+Three readings worth recording:
+
+1. **The original verdict reproduces under the FIXED harness.** `champion_v8` at h=1 is **−12.7 bps**
+   against the −16.9 bps ENTRIES verdict, on a different row sample and a single playbook rather than the
+   live 9-version mixture. So the capabilities defect did not manufacture the negative finding — the
+   finding survives its repair, and the harness now agrees with live entry behaviour while still
+   producing it.
+2. **`inverted` is the only arm that is not flatly dead, and it still fails.** Mean **+19.3** at h=8 and
+   **+47.6** at h=24 clear the +13.0 bar; both fail on the **CI lower bound** (+1.1 and −12.2), and both
+   fail `p vs bar`. Its h=24 placebo p of **0.0020 is below alpha** — so the entry TIMING carries
+   information beyond side-and-symbol drift, which a pure-beta explanation would not produce. This is
+   "not proven", not "disproven": at n=117 across 20 clusters the interval is simply too wide to call,
+   exactly as pre-registration weakness 1 anticipated. **It is a FAIL under the frozen rule and must not
+   be quoted as an edge.**
+3. **Unguided is no better than guided.** `minimal` (−13.3 at h=1) sits within a bar of the champion, and
+   `momentum_pure` is the worst arm at long horizons (−85.3). Prose changes behaviour — 9–55% of
+   decisions — without changing sign.
+
+## Results — `kimi-k3` leg (complete)
+
+354 rows, 1 shared arm, 354 calls, **$4.3953 metered**, transport **99.2%**, schema **48.7%**, no abort.
+**172 empty-body 200s across 546 attempts (31.5%)**, all retried through — the defect rate measured in
+calibration, reproduced at scale, and handled. Conservative real cost ≈ $6.78; the meter cannot price a
+response the provider never delivered.
+
+| arm | h | n | clusters | mean bps | CI lo | p vs bar | placebo p | verdict |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `champion_v8` | 1 | 100 | 19 | −10.7 | −17.5 | 1.0000 | 0.9884 | FAIL (mean) |
+| `champion_v8` | 4 | 100 | 19 | −29.6 | −45.0 | 1.0000 | 0.9994 | FAIL (mean) |
+| `champion_v8` | 8 | 100 | 19 | −44.1 | −59.1 | 1.0000 | 1.0000 | FAIL (mean) |
+| `champion_v8` | 24 | 96 | 18 | −66.1 | −99.3 | 1.0000 | 0.9998 | FAIL (mean) |
+
+## STUDY VERDICT: NO_SURVIVOR
+
+Computed by `aggregateVerdict`, not by hand
+(`research/candidates/playbook-space-joint-verdict-2026-07-28.json`):
+
+- **complete: true** — both declared models ran; **20 of 20 declared cells scored**
+- **passes: 0**
+- **best POWERED cell: `claude-sonnet-5`/`inverted`@h24, mean +47.6 bps, CI lo −12.2, n=117** — ranking
+  is not passing; this is the least-bad cell in a field of failures, and it fails.
+
+### The model is not the lever — and this is the cleanest result in the study
+
+`champion_v8` is the one arm both models ran, on identical rows:
+
+| h | `claude-sonnet-5` (n=70) | `kimi-k3` (n=100) |
+| --- | --- | --- |
+| 1 | −12.7 | −10.7 |
+| 4 | −36.3 | −29.6 |
+| 8 | −32.7 | −44.1 |
+| 24 | −70.1 | −66.1 |
+
+Two different models, different vendors, different schema-compliance (92.9% vs 48.7%), different
+willingness to trade — and **entry quality is indistinguishable.** Every cell fails on the mean, none is
+close. Swapping the decide model does not move the sign.
+
+**And on net terms, the higher-frequency lane is strictly worse.** kimi entered **62.0%** of parsed rows
+against sonnet's **21.8%** — roughly 3x the round trips for the same gross expectancy, which is 3x the
+fee drag. So the answer to *"which lane is best"* is: **sonnet, and only because it trades less.**
+Neither is profitable, and "trades less" is the same lever the live objective is built to suppress.
+
+### What this does and does not settle
+
+**Settles:** entry quality is invariant to (a) the decide model, across two vendors; (b) playbook prose,
+across four deliberately divergent texts that changed 9–55% of decisions; (c) horizon, across h ∈
+{1,4,8,24}. `minimal` — no guidance at all — lands within a bar of the champion. The −16.9 bps ENTRIES
+verdict **reproduces under the repaired harness** at −12.7 (sonnet) and −10.7 (kimi).
+
+**Does not settle, and must not be written up as settled:** Amendment 5's weakened decision rule binds
+here. Four arms on sonnet and one on kimi is **not** the twelve-arm span the original rule was calibrated
+on, so **0 passes means no playbook among the FUNDED arms clears the fee — the learning hypothesis is
+UNSUPPORTED, not proven dead.** Seven arms were never edge-tested; three of them
+(`meanrev_pure`, `leaders_only`, `one_symbol_btc`) produce zero entries on this corpus and are untestable
+here regardless.
+
+**The one live thread:** `inverted` at h=8/24 has a mean above the bar (+19.3, +47.6) and an h=24 placebo
+p of 0.0020 — below alpha — so its entry timing carries information beyond side-and-symbol drift. It
+fails on interval width (CI lo +1.1 and −12.2) at n=117 across 20 clusters, exactly as pre-registration
+weakness 1 predicted. That is **not proven**, not **disproven**, and under the frozen rule it is a FAIL.
+It is also in-sample on one 6.35-day regime and mostly a sign-flip of a known negative, so it is a
+hypothesis for an out-of-sample test, never an edge to deploy.
+
+### Spend
+
+| leg | metered |
+| --- | --- |
+| Anthropic — calibration x3, lever x2, sonnet edge | **$32.51** |
+| Moonshot — calibration x5, diagnosis, kimi edge | **$6.81** (≈$9 conservative) |
+| **total** | **≈$39.3 of $115 funded (34%)** |
+
+Inside both allocations. The $45.80 originally projected for a 4-arm/3-arm design was not needed, because
+row depth fell to 354 and kimi funded one arm.

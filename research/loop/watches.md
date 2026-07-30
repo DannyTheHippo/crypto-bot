@@ -106,6 +106,34 @@ here rather than duplicated below.
   first, since a scrape hole explains it without any code being wrong. **Open sub-item RESOLVED BY
   DELETION 2026-07-29** — there is no collector daemon left to hold stale code (see the record below).
 
+### WATCH-V4-9 — the replay must describe the same account live described (2026-07-30; source: `research/studies/playbook-space-replay-2026-07-28.md` Amendment 5)
+
+  **WATCH-V4-9 (replay capability fidelity).** `replayPlanRow` built its capabilities from CONSTANTS
+  while the recorded row payload carried the real ones, so it advertised a `sizeFraction` ceiling of
+  0.25 against a recorded 0.35 (and bounded the schema there, manufacturing schema rejections from
+  models that believed their own payload), offered shorts on the 139 SPOT rows recorded `shorts:false`,
+  and stated leverage 2 on rows recorded at 1 or 5. This is not confined to research: the same builder
+  serves two MINT-TIME gates — `measureEntryRate`'s entry-rate floor and the candidate expectancy
+  backtest — so both judged candidates against a ceiling and a short-side availability the live row
+  never had. **Fixed 2026-07-30** by deriving capabilities per row from the payload
+  (`recordedCapabilities`), with the zod bound taken from those capabilities so bound and advertised
+  limit cannot disagree; `capsSource` is reported per call and the playbook-space study voids any run
+  with a single non-`recorded` row (12 regression tests,
+  `test/features/strategy/agentic/entry-rate-floor-capabilities.spec.ts`).
+
+  Expected-positive: every replay-driven measurement reports `capsSource: 'recorded'` on 100% of rows,
+  and a candidate that the entry-rate floor rejects is rejected for abstaining, not for proposing a size
+  the recorded row actually permitted. Named defect outcome: **the 4x entry-rate gap does not close.**
+  The replay entered 4.5% of 33 rows where the LIVE system entered 18.2% of the same rows with nominally
+  the same playbook; if a post-fix re-measure still reads far below the recorded 16.1% corpus rate, the
+  cause is NOT capabilities and the next suspect is the system prompt — the replay builds it from
+  `DEFAULT_FLOOR_PROFILE`, which is not known to match the live prompt — followed by the live mixture
+  over ~9 playbook versions versus a single replayed arm. **A first diagnosis blamed
+  `venueFreeCash: '0'` and was WRONG** (the tool description never carries free cash; the regression
+  test now asserts its absence so the claim cannot be re-derived) — so do not attribute the gap to
+  anything without re-measuring it. Deadline: before any paid edge tier runs, since entry rate is the
+  input the whole design is sized against and an unpowered cell cannot answer the study's question.
+
 ## Flagged for human review (open)
 
 > **This section is for defects that CANNOT be fixed without crossing the §4 MUST-NOT rails — owner

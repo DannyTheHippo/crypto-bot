@@ -14,6 +14,58 @@ classification** bullet, which stood last in this section, is now `charter.md` �
 
 ## Standing verdicts (binding evidence — passes must NOT re-derive these)
 
+- **THE DECIDE MODEL IS NOT THE LEVER — playbook-space replay, NO_SURVIVOR (2026-07-30;
+  `research/studies/playbook-space-replay-2026-07-28.md`, Amendments 4-5).** 20 of 20 pre-registered
+  cells scored across two models, 4 playbook arms, 4 horizons, 354 recorded FLAT rows, α = 2.5e-3.
+  **0 passes.** Joint verdict computed by `aggregateVerdict`, artifact at
+  `research/candidates/playbook-space-joint-verdict-2026-07-28.json`. Cost $39.3 of the $115 funded.
+  - **`champion_v8` on identical rows: sonnet −12.7 / −36.3 / −32.7 / −70.1 bps at h=1/4/8/24 (n=70);
+    kimi-k3 −10.7 / −29.6 / −44.1 / −66.1 (n=100).** Two vendors, schema compliance 92.9% vs 48.7%,
+    entry rate 21.8% vs 62.0% — **entry quality indistinguishable, every cell failing on the mean.**
+    Do not re-run a model swap expecting a different sign.
+  - **Net-terms corollary:** at equal gross expectancy the higher-frequency lane is strictly worse.
+    kimi took ~3x the round trips for the same edge, so ~3x the fee drag. "Which lane is best" resolves
+    to **sonnet, and only because it trades less** — the very lever the live objective suppresses.
+  - **Prose is not the lever either.** `minimal` (no guidance) −13.3 bps at h=1, within a bar of the
+    champion; `momentum_pure` −12.7 → −85.3. All arms changed 9-55% of decisions vs the champion, so the
+    prose moved behaviour without moving the sign. Zero inert arms.
+  - **The −16.9 bps ENTRIES verdict REPRODUCES under the repaired harness** (−12.7 sonnet, −10.7 kimi),
+    so the capabilities defect below did not manufacture it.
+  - **SCOPE LIMIT, binding on any write-up:** four arms on sonnet and one on kimi is not the twelve-arm
+    span the original decision rule assumed. **0 passes ⇒ the learning hypothesis is UNSUPPORTED on the
+    funded arms, NOT proven dead.** Seven arms were never edge-tested; `meanrev_pure`, `leaders_only`
+    and `one_symbol_btc` yield zero entries on this corpus and are untestable here at any budget.
+  - **One live thread, and it is a FAIL:** `inverted` at h=8/24 posts means of **+19.3 / +47.6 bps**
+    above the +13.0 bar with an h=24 placebo p of **0.0020 (below α)** — its entry timing carries
+    information beyond side-and-symbol drift. It fails on interval width (CI lo +1.1, −12.2) at n=117 /
+    20 clusters. In-sample, one 6.35-day regime, and largely a sign-flip of a known negative. **Never
+    quote +47.6 as an edge**; it is at most an out-of-sample hypothesis.
+
+- **DEFECT, FIXED — the replay described a different account than live did (2026-07-30).**
+  `replayPlanRow` built capabilities from CONSTANTS while each recorded row carried the real ones: it
+  advertised (and zod-bounded) a `sizeFraction` ceiling of 0.25 against a recorded 0.35 perp / 0.15 spot,
+  offered shorts on the 139 SPOT rows recorded `shorts:false`, and stated leverage 2 on rows recorded at
+  1 or 5. **Measured effect: entry rate 2.5% vs a live-recorded 16.1% on the same corpus; the fix moved
+  it to 19.1%.** The mechanism was the bound contradiction — a model that believed its payload and
+  proposed 0.30 was scored as a schema failure. **This reached production:** the same builder serves the
+  mint-time entry-rate floor (`measureEntryRate`) and the candidate expectancy backtest, so both judged
+  candidates against limits the live rows never had. Fixed via `recordedCapabilities` (per-row, bound
+  taken from the capabilities so it cannot contradict the advertised limit), `capsSource` reported per
+  call, callers fail closed. 12 regression tests. See WATCH-V4-9.
+  - **A first diagnosis blamed `venueFreeCash: '0'` and was WRONG** — `buildTradeTool` never renders free
+    cash. A test asserts its absence so the claim cannot be re-derived.
+
+- **Moonshot's Anthropic-compatible surface returns HTTP 200 with an EMPTY BODY on ~30-45% of requests
+  (2026-07-30).** Measured 172 of 546 attempts (31.5%) on the kimi edge leg, 13-22 of ~55 in each
+  calibration. Non-deterministic — the same row returned empty once and 2,365 bytes the next call — so it
+  is provider-side, not payload-dependent, and retryable. It presents as success: `ok: 40/40`, zero 429s,
+  zero 5xx. Two kimi calibrations were correctly VOIDED at 55% and 72.5% transport before the cause was
+  found. **Lowering concurrency makes it worse** (concurrency 2 / 300s timeout scored 55% against
+  concurrency 4's 72.5%). Fixed by counting `emptyBody` separately and retrying after a short fixed
+  delay; transport went to 99.2-100%. **Consequence for any kimi budget: the USD meter cannot price these
+  attempts, so kimi's effective cost is ~1.55x its metered cost — $0.0263/call effective vs sonnet's
+  $0.0137, i.e. kimi is ~1.9x MORE expensive, not the 0.61x a token-rate comparison suggests.**
+
 - **BUILT DARK — the promotion gate's passive benchmark (Pass 41, 2026-07-27; specified `4d930e0`,
   built `6cb9c6d`).** Supersedes this entry's former "SPECIFIED, NOT BUILT" text, which was stale the
   moment the code landed. **What exists now:** `PassiveBenchmarkPort` + `PASSIVE_BENCHMARK` token

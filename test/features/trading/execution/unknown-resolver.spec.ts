@@ -22,9 +22,10 @@ import {
   type ClientOrderId,
   type SymbolId,
 } from '../../../../src/domain/common/types/ids';
-import { makeIntent, fixedFeed, killSwitchStub, SYM, V, T } from './helpers';
+import { makeIntent, makeFill, fixedFeed, killSwitchStub, D, SYM, V, T } from './helpers';
 import { qty, price } from '../../../../src/domain/common/types/money';
 import type { OrderIntent } from '../../../../src/domain/trading/types/order-intent';
+import type { ApprovalProof } from '../../../../src/domain/trading/types/risk-decision';
 
 const QUOTE = '0.001'; // step size used in tests
 
@@ -775,5 +776,252 @@ describe('UnknownResolverService — RECONCILE_REQUIRED reconcile-adopt pass (20
     await ctx.resolver.tick(epochMs(FREEZE_TICK + 120_000));
     expect(ctx.orders.get(coidB)?.state).toBe('CANCELED');
     expect(ctx.resolver.isFrozen(SYM)).toBe(false); // both cleared — now it unfreezes
+  });
+});
+
+// 2026-07-30 defect fix (WATCH-V4-6): NEW reached via QUERY_NOT_FOUND was the second permanent trap
+// — nothing re-queried it, nothing re-examined its TTL, nothing resubmitted it, so four live rows
+// sat non-terminal from 2026-07-24. These cover the one path that may now terminalize such an order
+// and, at greater length, every path that must REFUSE to (the gate fails CLOSED: an order wrongly
+// marked terminal in an append-only journal is unrecoverable, one left stuck is merely untidy).
+describe('UnknownResolverService — stranded-NEW sweep (WATCH-V4-6, 2026-07-30 defect fix)', () => {
+  const TTL_MS = 10_000; // intent expiresAt = T + TTL_MS
+  const AGE_FLOOR_MS = 300_000; // STRANDED_NEW_MIN_AGE_MS, measured from intent.createdAt
+  const ELIGIBLE = T + AGE_FLOOR_MS + 1; // first instant both the TTL and the age floor are cleared
+
+  const PROOF: ApprovalProof = {
+    intentHash: 'h',
+    hmac: 'm',
+    nonce: 'n',
+    approvedAtMs: epochMs(1),
+    ttlMs: 2000,
+    limitsVersion: 'v1',
+    snapshotSeq: 1n,
+  };
+
+  // createdAt is pinned to T (helpers' default is epoch 0, which would clear the age floor
+  // instantly and make the floor untestable).
+  const strandedIntent = (over: Partial<OrderIntent> = {}) =>
+    makeIntent({ createdAt: epochMs(T), expiresAt: epochMs(T + TTL_MS), ...over });
+
+  // Walks the REAL chain the four live rows walked — SUBMIT_SENT → SUBMIT_AMBIGUOUS →
+  // QUERY_NOT_FOUND (TTL still live at the ~5s poll) → NEW — rather than hand-placing the state, so
+  // the fixture cannot drift from the path that produces the defect.
+  async function strandAtNew(ctx: Ctx, intent: OrderIntent): Promise<ClientOrderId> {
+    const coid = seedUnknown(ctx, 'submit', intent);
+    await settle(ctx);
+    expect(ctx.orders.get(coid)?.state).toBe('NEW');
+    return coid;
+  }
+
+  // The sweep registers an order on the first tick it sees it and re-queries one interval later.
+  async function sweep(ctx: Ctx, at: number) {
+    await ctx.resolver.tick(epochMs(at));
+    await ctx.resolver.tick(epochMs(at + 60_000));
+  }
+
+  it('a fresh order reaching NEW is terminalized once the TTL and the age floor are both cleared', async () => {
+    const ctx = build({
+      fetch: () => {
+        throw ambiguous('OrderNotFound');
+      },
+    });
+    const coid = await strandAtNew(ctx, strandedIntent());
+    await sweep(ctx, ELIGIBLE);
+    expect(ctx.orders.get(coid)?.state).toBe('CANCELED');
+    expect(ctx.portfolio.inFlightIntent(coid)).toBeUndefined(); // reserve released
+  });
+
+  it('terminalizes a boot-recovered order whose in-flight intent is gone, off the durable intent', async () => {
+    const intent = strandedIntent();
+    const ctx = build({
+      fetch: () => {
+        throw ambiguous('OrderNotFound');
+      },
+    });
+    const coid = await strandAtNew(ctx, intent);
+    // Post-restart shape: boot recovery re-seeds a NEW row into the book but deliberately does NOT
+    // rehydrate its intent, so only the durable write-ahead row remains.
+    await ctx.store.saveIntent(intent, PROOF);
+    ctx.portfolio.clearInFlight(coid);
+    await sweep(ctx, ELIGIBLE);
+    expect(ctx.orders.get(coid)?.state).toBe('CANCELED');
+  });
+
+  it('appends a CANCEL_REQUESTED journal row rather than rewriting the QUERY_NOT_FOUND history', async () => {
+    const ctx = build({
+      fetch: () => {
+        throw ambiguous('OrderNotFound');
+      },
+    });
+    const coid = await strandAtNew(ctx, strandedIntent());
+    await sweep(ctx, ELIGIBLE);
+    // seedUnknown folds SUBMIT_SENT/SUBMIT_AMBIGUOUS straight into the book, so the journal holds
+    // only what the resolver itself wrote — which is the point: the terminal is an APPENDED row,
+    // and the QUERY_NOT_FOUND that stranded the order is still there, unmodified.
+    const journal = ctx.store.events.filter((e) => e.clientOrderId === coid);
+    expect(journal.map((e) => e.event.type)).toEqual(['QUERY_NOT_FOUND', 'CANCEL_REQUESTED']);
+    expect(journal.at(-1)?.reason).toBe('STRANDED_NEW_NEVER_LANDED');
+    expect(journal.at(-1)?.derivedState).toBe('CANCELED');
+  });
+
+  // ── fail-CLOSED direction: ambiguous evidence must NEVER terminalize ────────────────────────
+
+  it('leaves the order NEW while the intent TTL is still live', async () => {
+    const ctx = build({
+      fetch: () => {
+        throw ambiguous('OrderNotFound');
+      },
+    });
+    const coid = await strandAtNew(ctx, strandedIntent({ expiresAt: epochMs(ELIGIBLE + 60_000) }));
+    await sweep(ctx, ELIGIBLE);
+    expect(ctx.orders.get(coid)?.state).toBe('NEW');
+  });
+
+  it('leaves the order NEW until the age floor is cleared, even with a long-lapsed TTL', async () => {
+    const ctx = build({
+      fetch: () => {
+        throw ambiguous('OrderNotFound');
+      },
+    });
+    const coid = await strandAtNew(ctx, strandedIntent());
+    await sweep(ctx, T + TTL_MS + 1); // TTL lapsed, age floor not yet reached
+    expect(ctx.orders.get(coid)?.state).toBe('NEW');
+    await sweep(ctx, ELIGIBLE);
+    expect(ctx.orders.get(coid)?.state).toBe('CANCELED'); // and it does terminalize afterwards
+  });
+
+  it('leaves the order NEW when no durable intent can be found (age unestablishable)', async () => {
+    const ctx = build({
+      fetch: () => {
+        throw ambiguous('OrderNotFound');
+      },
+    });
+    const coid = await strandAtNew(ctx, strandedIntent());
+    ctx.portfolio.clearInFlight(coid); // and saveIntent was never called — nothing durable either
+    await sweep(ctx, ELIGIBLE);
+    expect(ctx.orders.get(coid)?.state).toBe('NEW');
+  });
+
+  it('leaves the order NEW when the venue ANSWERS the re-query — any status means it landed', async () => {
+    for (const status of ['open', 'closed', 'canceled', 'rejected', 'expired'] as const) {
+      let stranded = false;
+      const ctx = build({
+        fetch: () => {
+          if (!stranded) throw ambiguous('OrderNotFound');
+          return venueState({ status, cumQty: '0' });
+        },
+      });
+      const coid = await strandAtNew(ctx, strandedIntent());
+      stranded = true;
+      await sweep(ctx, ELIGIBLE);
+      expect(ctx.orders.get(coid)?.state).toBe('NEW');
+    }
+  });
+
+  it('leaves the order NEW when the re-query fails inconclusively (transient, AUTH_FATAL, or unclassified)', async () => {
+    for (const err of [
+      ambiguous('RequestTimeout'),
+      new AdapterError('AUTH_FATAL', 'AuthenticationError', 'creds'),
+      new Error('boom'), // not an AdapterError at all — code is unknown, so it proves nothing
+    ]) {
+      let stranded = false;
+      const ctx = build({
+        fetch: () => {
+          throw stranded ? err : ambiguous('OrderNotFound');
+        },
+      });
+      const coid = await strandAtNew(ctx, strandedIntent());
+      stranded = true;
+      await sweep(ctx, ELIGIBLE);
+      expect(ctx.orders.get(coid)?.state).toBe('NEW');
+    }
+  });
+
+  it('leaves the order NEW when the durable fill journal holds a fill for it', async () => {
+    const intent = strandedIntent();
+    const coid = intent.clientOrderId;
+    const ctx = build({
+      fetch: () => {
+        throw ambiguous('OrderNotFound');
+      },
+    });
+    await strandAtNew(ctx, intent);
+    // A fill the in-memory cum never saw (the exact "absence of evidence is not evidence" case):
+    // the journal is the authority, so its non-zero total must veto terminalization.
+    await ctx.store.saveFill(makeFill({ clientOrderId: coid, venueTradeId: 'td-journal' }), 'i1');
+    await sweep(ctx, ELIGIBLE);
+    expect(ctx.orders.get(coid)?.state).toBe('NEW');
+  });
+
+  it('leaves the order NEW when the in-memory record already carries a non-zero cumQty', async () => {
+    const ctx = build({
+      fetch: () => {
+        throw ambiguous('OrderNotFound');
+      },
+    });
+    const coid = await strandAtNew(ctx, strandedIntent());
+    ctx.orders.commit({ ...ctx.orders.get(coid)!, cumQty: D('0.5') });
+    await sweep(ctx, ELIGIBLE);
+    expect(ctx.orders.get(coid)?.state).toBe('NEW');
+  });
+
+  it('leaves the order NEW when the durable reads themselves fail (store unavailable)', async () => {
+    const down = () => Promise.reject(new Error('db down'));
+    const notFound = () => {
+      throw ambiguous('OrderNotFound');
+    };
+
+    const fills = build({ fetch: notFound });
+    const fillsCoid = await strandAtNew(fills, strandedIntent());
+    fills.store.loadFilledQty = down;
+    await sweep(fills, ELIGIBLE);
+    expect(fills.orders.get(fillsCoid)?.state).toBe('NEW');
+
+    const intents = build({ fetch: notFound });
+    const intentsCoid = await strandAtNew(intents, strandedIntent());
+    intents.portfolio.clearInFlight(intentsCoid); // forces the durable intent read
+    intents.store.loadIntentByClientOrderId = down;
+    await sweep(intents, ELIGIBLE);
+    expect(intents.orders.get(intentsCoid)?.state).toBe('NEW');
+  });
+
+  it('leaves the order NEW when a venueOrderId was ever recorded for it', async () => {
+    const ctx = build({
+      fetch: () => {
+        throw ambiguous('OrderNotFound');
+      },
+    });
+    const coid = await strandAtNew(ctx, strandedIntent());
+    ctx.orders.setVenueOrderId(coid, 'v-late'); // the venue named it at some point — never terminalize
+    await sweep(ctx, ELIGIBLE);
+    expect(ctx.orders.get(coid)?.state).toBe('NEW');
+  });
+
+  // ── cadence ────────────────────────────────────────────────────────────────────────────────
+
+  it('rate-limits: no venue call before the age floor, then at most one per order per interval', async () => {
+    let stranded = false;
+    let queries = 0;
+    const ctx = build({
+      fetch: () => {
+        queries += 1;
+        // Inconclusive once stranded, so the order stays NEW and keeps being swept.
+        throw ambiguous(stranded ? 'RequestTimeout' : 'OrderNotFound');
+      },
+    });
+    const coid = await strandAtNew(ctx, strandedIntent());
+    stranded = true;
+    const atStrand = queries;
+
+    await ctx.resolver.tick(epochMs(T + 65_000)); // due, but the age floor is not cleared yet
+    expect(queries).toBe(atStrand);
+    await ctx.resolver.tick(epochMs(ELIGIBLE));
+    expect(queries).toBe(atStrand + 1);
+    await ctx.resolver.tick(epochMs(ELIGIBLE + 59_000)); // inside the interval
+    expect(queries).toBe(atStrand + 1);
+    await ctx.resolver.tick(epochMs(ELIGIBLE + 60_000));
+    expect(queries).toBe(atStrand + 2);
+    expect(ctx.orders.get(coid)?.state).toBe('NEW'); // inconclusive throughout — never terminalized
   });
 });

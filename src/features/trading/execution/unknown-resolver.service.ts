@@ -27,6 +27,7 @@ import {
 import { price, qty, feeAmount } from '../../../domain/common/types/money';
 import type { ClientOrderId, SymbolId, EpochMs } from '../../../domain/common/types/ids';
 import type { FillRecord } from '../../../domain/trading/types/exec-report';
+import type { OrderIntent } from '../../../domain/trading/types/order-intent';
 import { OrderBookService } from './order-book.service';
 import { PortfolioStateService } from './portfolio-state.service';
 import { FillIngestorService } from './fill-ingestor.service';
@@ -42,6 +43,22 @@ const JITTER_SEED = 0x5165_5279; // fixed ⇒ the ±20% backoff jitter replays d
 // order per interval: this runs on the same 1s tick() as every *_UNKNOWN poll, and a real deployment
 // can have dozens of frozen orders across 40 symbols, so it must never hammer the venue every tick.
 const RECONCILE_REQUERY_INTERVAL_MS = 60_000;
+
+// 2026-07-30 defect fix (WATCH-V4-6): NEW was the second permanent trap. `SUBMIT_UNKNOWN +
+// QUERY_NOT_FOUND → NEW` is deliberate ("resubmit-eligible", reducer.ts) but the resubmit
+// orchestration onNotFound's own comment promised was never built, and sync() only ever tracks
+// *_UNKNOWN — so nothing re-queried such an order, nothing re-examined its TTL (evaluated once, ~7s
+// after submit, when it is obviously still live) and nothing resubmitted it. Four rows had been
+// non-terminal since 2026-07-24 on exactly that chain. Same bounded, rate-limited shape as the
+// RECONCILE_REQUIRED sweep above: one re-query per order per interval, off the same 1s tick.
+const STRANDED_NEW_REQUERY_INTERVAL_MS = 60_000;
+
+// Age floor an order must clear before this sweep will even consider it, measured from the intent's
+// createdAt. The intent TTL alone is NOT a sufficient bound: expiresAt is signal.ttlMs, a
+// strategy-tunable knob that can legitimately be a few seconds, while a venue's order-query endpoint
+// can lag its own matching engine. Anchoring the floor here keeps the terminalization window
+// independent of that knob and orders of magnitude beyond any query-visibility lag.
+const STRANDED_NEW_MIN_AGE_MS = 300_000;
 
 // Mirrors mapVenueStatus's own status semantics below (canceled/rejected/expired/closed cases,
 // resolveOne's regular-rail switch) — not a second mapping, just the terminal-only subset of it.
@@ -97,6 +114,10 @@ export class UnknownResolverService {
   // clientOrderId -> next allowed re-query, for the RECONCILE_REQUIRED sweep only (separate from
   // `pending`'s *_UNKNOWN backoff schedule — a frozen order is no longer tracked there).
   private readonly reconcileNextQueryAt = new Map<string, EpochMs>();
+  // clientOrderId -> next allowed re-query, for the stranded-NEW sweep only. Separate map for the
+  // same reason as the one above: a NEW order has no `pending` entry (onNotFound deleted it) and,
+  // after a restart, no in-flight intent either — there is no existing tracking set to reuse.
+  private readonly strandedNewNextQueryAt = new Map<string, EpochMs>();
 
   constructor(
     @Inject(CLOCK) private readonly clock: ClockPort,
@@ -129,6 +150,7 @@ export class UnknownResolverService {
       if (now >= p.nextDueAt) await this.resolveOne(p, now);
     }
     await this.reconcileFrozen(now);
+    await this.sweepStrandedNew(now);
   }
 
   // Reconcile the tracking set with the order book: register fresh unknowns (symbol + TTL come from
@@ -312,7 +334,10 @@ export class UnknownResolverService {
     await this.fold(p.coid, expired ? 'query-not-found-expired' : 'query-not-found', {
       type: expired ? 'QUERY_NOT_FOUND_EXPIRED' : 'QUERY_NOT_FOUND',
     });
-    this.pending.delete(p.coid); // NEW is resubmit-eligible; resubmit orchestration is a follow-up
+    // NEW is resubmit-eligible; resubmit orchestration is still a follow-up. What is no longer
+    // outstanding is the dead end that absence created (WATCH-V4-6): sweepStrandedNew re-examines
+    // the order every interval and terminalizes it only once never-landed is positively established.
+    this.pending.delete(p.coid);
   }
 
   private async reissueCancel(p: Pending, now: EpochMs): Promise<void> {
@@ -426,6 +451,134 @@ export class UnknownResolverService {
     if (!applied) return; // journal said duplicate — leave frozen, retry next interval
     this.reconcileNextQueryAt.delete(rec.clientOrderId);
     this.unfreezeIfClear(intent.symbol);
+  }
+
+  // 2026-07-30 WATCH-V4-6 fix: the missing sweep over orders stranded at NEW. Whole-book scan for
+  // the same reason reconcileFrozen does one — these orders carry no Pending entry — plus one more:
+  // boot recovery re-seeds them into the book on every restart, so the sweep must find them from the
+  // book alone, with no runtime registration behind them.
+  private async sweepStrandedNew(now: EpochMs): Promise<void> {
+    for (const coid of this.strandedNewNextQueryAt.keys()) {
+      if (this.orders.get(coid as ClientOrderId)?.state !== 'NEW') {
+        this.strandedNewNextQueryAt.delete(coid);
+      }
+    }
+    for (const rec of this.orders.all()) {
+      if (rec.state !== 'NEW') continue;
+      const due = this.strandedNewNextQueryAt.get(rec.clientOrderId);
+      if (due === undefined) {
+        // First sighting registers only, mirroring reconcileFrozen and sync(). Load-bearing here:
+        // execution-gate.service.ts's submit() straddles an await between orders.create() (state
+        // NEW) and the SUBMIT_SENT fold, so a tick CAN observe a healthy order mid-submit — it must
+        // never be examined on the tick that first sees it. The age floor below independently
+        // excludes that order too — this is the second of the two guards, not the only one.
+        this.strandedNewNextQueryAt.set(
+          rec.clientOrderId,
+          (now + STRANDED_NEW_REQUERY_INTERVAL_MS) as EpochMs,
+        );
+        continue;
+      }
+      if (now < due) continue;
+      this.strandedNewNextQueryAt.set(
+        rec.clientOrderId,
+        (now + STRANDED_NEW_REQUERY_INTERVAL_MS) as EpochMs,
+      );
+      await this.resolveStrandedNew(rec, now);
+    }
+  }
+
+  // One stranded-NEW order's terminalization decision.
+  //
+  // FAILURE DIRECTION: CLOSED, and deliberately asymmetric. This is an irreversible-action gate —
+  // order_events is append-only, so a CANCELED folded onto an order that actually filled can never
+  // be walked back, and the book would then silently carry an unmanaged position. An order left at
+  // NEW is merely untidy: it holds no venue-side exposure, reserves no capital once its intent is
+  // gone, and is not `isUnresolved`, so it blocks neither live arming nor kill-switch auto-resume.
+  // Terminalizing therefore demands POSITIVE evidence of never-landed on every axis; absence of
+  // evidence, an unreadable store, a venue that answers at all, or a query that merely fails all
+  // leave the order exactly where it is, to be re-examined next interval.
+  //
+  // The four required facts, each independently capable of refusing:
+  //   1. no venueOrderId was ever recorded — we never held an ack naming this order;
+  //   2. the DURABLE fill journal (not the in-memory cum) sums to zero for this clientOrderId;
+  //   3. a durable intent exists, its TTL has lapsed, and the order clears the age floor;
+  //   4. a FRESH re-query still answers a DEFINITIVE not-found — hard rule 5's query-first, because
+  //      the original QUERY_NOT_FOUND that stranded the order is days stale by the time we get here.
+  // A re-query that RESOLVES with any status — including 'open' — is proof the order landed, so the
+  // sweep refuses. That contradiction belongs to reconciliation's UNKNOWN_OURS_OPEN halt, not here;
+  // this sweep never places, cancels, adopts or flattens anything at the venue. An AUTH_FATAL on the
+  // re-query likewise only refuses: the *_UNKNOWN query loop above owns kill-switch escalation, and
+  // a measurement sweep must not gain a second trigger for it.
+  //
+  // The fold is CANCEL_REQUESTED on NEW ("never sent, local-only", reducer.ts) — an existing, already
+  // audited transition, so no reducer change — written as a NEW append-only order_events row.
+  private async resolveStrandedNew(rec: OrderRecord, now: EpochMs): Promise<void> {
+    const coid = rec.clientOrderId;
+    const refuse = (why: string): void => {
+      this.log.warn(`stranded-new ${coid}: ${why} — staying NEW`);
+    };
+    if (rec.venueOrderId !== undefined) {
+      refuse('a venueOrderId is recorded, so the venue once named this order');
+      return;
+    }
+    if (!rec.cumQty.isZero()) {
+      refuse(`cumQty is ${rec.cumQty.toFixed()}`);
+      return;
+    }
+    const intent = this.portfolio.inFlightIntent(coid) ?? (await this.loadDurableIntent(coid));
+    if (intent === undefined) {
+      refuse('no durable intent, so neither its symbol nor its age can be established');
+      return;
+    }
+    // Not yet eligible is the ordinary state of a healthy young order, not an anomaly — no WARN.
+    if (now <= intent.expiresAt || now - intent.createdAt <= STRANDED_NEW_MIN_AGE_MS) return;
+
+    let journaled: Decimal;
+    try {
+      journaled = new Decimal(await this.store.loadFilledQty(coid));
+    } catch (err) {
+      refuse(`fill-journal read failed (${String(err)})`);
+      return;
+    }
+    if (journaled.gt(0)) {
+      refuse(`the fill journal holds ${journaled.toFixed()} for it`);
+      return;
+    }
+
+    try {
+      const venue = await this.exchange.fetchOrder(coid, intent.symbol);
+      refuse(`the venue answers '${venue.status}', so the order landed after all`);
+      return;
+    } catch (err) {
+      const code = err instanceof AdapterError ? err.code : 'UNKNOWN';
+      if (!NOT_FOUND_CODES.has(code)) {
+        refuse(`re-query inconclusive (${code})`);
+        return;
+      }
+    }
+    await this.fold(
+      coid,
+      'stranded-new-not-found',
+      { type: 'CANCEL_REQUESTED' },
+      'STRANDED_NEW_NEVER_LANDED',
+    );
+    this.log.log(
+      `stranded-new ${coid}: venue not-found on re-query, zero journaled fills, no ack — locally canceled`,
+    );
+  }
+
+  // The durable write-ahead intent for an order the in-memory in-flight map no longer holds. Boot
+  // recovery deliberately does NOT rehydrate intents for NEW rows (boot-recovery.service.ts: an
+  // order that never confirmed landing must not reserve capital), which is precisely why a stranded
+  // NEW order has none after a restart — and why this read, rather than the in-flight map, is what
+  // lets the sweep work across boots at all. A store that never wired the optional read, a missing
+  // row, or a throwing read all resolve `undefined`, and the caller refuses (fail closed).
+  private async loadDurableIntent(coid: ClientOrderId): Promise<OrderIntent | undefined> {
+    try {
+      return (await this.store.loadIntentByClientOrderId?.(coid)) ?? undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   // Only unfreeze a symbol once NO order for it is still RECONCILE_REQUIRED — never on the first

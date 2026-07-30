@@ -79,6 +79,61 @@ const floorResponseSchema = z.object({
     .optional(),
 });
 
+/**
+ * Whether a replay used the capabilities the LIVE system recorded on that row, or fell back to the
+ * config-derived stand-in. Surfaced per call so a caller can require faithfulness — see replayPlanRow's
+ * own failure-direction note.
+ */
+export type CapabilitiesSource = 'recorded' | 'config';
+
+// The capabilities block as the live decide payload records it (agent-prompt.ts renders this same shape
+// into the tool description). Every field required: a partial block is a different contract, and
+// silently filling the gaps with constants is the defect this schema exists to stop.
+const recordedCapabilitiesSchema = z.object({
+  capabilities: z.object({
+    venue: z.string(),
+    shorts: z.boolean(),
+    leverage: z.string(),
+    maxSizeFraction: z.string(),
+    venueFreeCash: z.string(),
+  }),
+});
+
+/**
+ * The capabilities the live system actually presented to the model on this row, or undefined when the
+ * payload does not carry them (synthetic fixtures, pre-v3 corpora).
+ *
+ * Never throws: a malformed payload is a measurement problem for the caller to report, not a reason to
+ * abort a replay batch.
+ */
+export function recordedCapabilities(rowPayload: string): SymbolCapabilities | undefined {
+  let parsed: ReturnType<typeof recordedCapabilitiesSchema.safeParse>;
+  try {
+    parsed = recordedCapabilitiesSchema.safeParse(JSON.parse(rowPayload));
+  } catch {
+    return undefined;
+  }
+  if (!parsed.success) return undefined;
+  const caps = parsed.data.capabilities;
+  // `venue` is a BRANDED VenueId, so the recorded string is resolved against the two ids this system
+  // knows rather than cast. An unrecognised venue falls back to the config path instead of being
+  // force-branded — a replay against a venue the code does not model is not a faithful replay.
+  const venue =
+    caps.venue === String(PERP_VENUE_ID)
+      ? PERP_VENUE_ID
+      : caps.venue === String(SPOT_VENUE_ID)
+        ? SPOT_VENUE_ID
+        : undefined;
+  if (venue === undefined) return undefined;
+  return {
+    venue,
+    shorts: caps.shorts,
+    leverage: caps.leverage,
+    maxSizeFraction: caps.maxSizeFraction,
+    venueFreeCash: caps.venueFreeCash,
+  };
+}
+
 export interface PlanReplayCallConfig {
   readonly apiKey: string;
   // The DECIDE model, not the reflection model — see EntryRateFloorConfig.model's own comment.
@@ -102,6 +157,11 @@ export interface PlanReplayCallConfig {
 // was unusable.
 export interface PlanReplayResult {
   readonly ok: boolean;
+  /**
+   * Which capabilities the call presented. Populated on EVERY return path including failures — a caller
+   * checking faithfulness must not have that answer withheld by an unrelated transport error.
+   */
+  readonly capsSource?: CapabilitiesSource;
   readonly action?: 'open_long' | 'open_short' | 'close' | 'adjust' | 'hold';
   // Present only when action is 'open_long'/'open_short' — the only actions the v2 schema's own
   // requireTradeDirectives superRefine guarantees carry the full directive set (see
@@ -124,21 +184,40 @@ export async function replayPlanRow(
   rowPayload: string,
   fetchFn: typeof fetch,
 ): Promise<PlanReplayResult> {
-  // v3: this replay's own capabilities object — venue/leverage are illustrative (this harness asks a
-  // structural question, not a live-venue one; see DEFAULT_FLOOR_PROFILE's own comment), shorts/
-  // maxSizeFraction are the two facts that actually vary the tool/schema shape.
-  const caps: SymbolCapabilities = {
+  // v3: capabilities come from the RECORDED ROW whenever it carries them, because the row payload is
+  // the ground truth for what the live system told the model on that row — and the previous
+  // constant-capabilities version contradicted its own input in four places at once (2026-07-30):
+  //
+  //   - `venueFreeCash: '0'` while the payload advertised $380-700. The field is documented as
+  //     display-grade (never a zod bound), which is precisely the trap: it is not ENFORCED, it is
+  //     PERSUASIVE, and a model told it has no money holds. Measured effect: on 33 identical rows the
+  //     live system entered 6 times (18.2%), this replay entered once (4.5%) with the same playbook.
+  //   - `maxSizeFraction: cfg.sizeFractionMax` (0.25 as the study called it) against a payload
+  //     advertising 0.35 on perp and 0.15 on spot — so the schema BOUND disagreed with the advertised
+  //     limit, and a model that believed the payload and proposed 0.30 was schema-rejected for it.
+  //   - `shorts: cfg.shortsEnabled` uniformly, which enabled shorts on the 139 SPOT rows where the
+  //     recorded capabilities say `shorts: false`. Those short entries are unreachable live.
+  //   - `leverage: '2'` on rows recorded at 1 and 5.
+  //
+  // FAILURE DIRECTION: falls OPEN to the cfg-derived object when the payload carries no capabilities
+  // (synthetic fixtures, pre-v3 corpora) — this is a measurement harness and must never refuse to
+  // measure. `capsSource` reports which path ran so a CALLER can fail closed on it; the playbook-space
+  // study requires 'recorded' for every row, which is where the strictness belongs.
+  const recorded = recordedCapabilities(rowPayload);
+  const caps: SymbolCapabilities = recorded ?? {
     venue: cfg.shortsEnabled ? PERP_VENUE_ID : SPOT_VENUE_ID,
     shorts: cfg.shortsEnabled ?? false,
     leverage: '2',
     maxSizeFraction: cfg.sizeFractionMax,
     venueFreeCash: '0',
   };
+  const capsSource: CapabilitiesSource = recorded ? 'recorded' : 'config';
   const tool = buildTradeTool(caps);
-  // sizeFractionMax is money-adjacent (AgentDirectives.sizeFraction's own comment) — Decimal→toNumber,
+  // maxSizeFraction is money-adjacent (AgentDirectives.sizeFraction's own comment) — Decimal→toNumber,
   // never Number()/parseFloat(), mirrors agent-prompt.ts's own DECISION_V2_BOUNDS.stopLossPct.max
   // conversion (this is a schema BOUND, not a stored money value, so a plain number result is fine).
-  const sizeFractionMaxNum = new Decimal(cfg.sizeFractionMax).toNumber();
+  // Taken from `caps`, not `cfg`, so the bound and the advertised limit can no longer disagree.
+  const sizeFractionMaxNum = new Decimal(caps.maxSizeFraction).toNumber();
   const schema = tradeDecisionSchema(sizeFractionMaxNum);
 
   // W2.4-style cache split: the playbook block (the stable prefix shared by every row in this batch)
@@ -171,10 +250,10 @@ export async function replayPlanRow(
       }),
       signal: controller.signal,
     });
-    if (!res.ok) return { ok: false };
+    if (!res.ok) return { ok: false, capsSource };
     const body: unknown = await res.json();
     const envelope = floorResponseSchema.safeParse(body);
-    if (!envelope.success) return { ok: false };
+    if (!envelope.success) return { ok: false, capsSource };
     const usage: AgentUsage | undefined = envelope.data.usage
       ? {
           inputTokens: envelope.data.usage.input_tokens,
@@ -186,13 +265,14 @@ export async function replayPlanRow(
     const toolBlock = envelope.data.content?.find(
       (b) => b.type === 'tool_use' && b.name === tool.name,
     );
-    if (!toolBlock) return { ok: false, usage };
+    if (!toolBlock) return { ok: false, usage, capsSource };
     const parsed = schema.safeParse(toolBlock.input);
-    if (!parsed.success) return { ok: false, usage };
+    if (!parsed.success) return { ok: false, usage, capsSource };
     const action = parsed.data.action;
     const isOpen = action === 'open_long' || action === 'open_short';
     return {
       ok: true,
+      capsSource,
       action,
       usage,
       // requireTradeDirectives (anthropic-agent-client.ts) guarantees sizeFraction/entry/
@@ -218,7 +298,7 @@ export async function replayPlanRow(
     };
   } catch {
     // Transport error / timeout / body-read failure — skip this row, never fail the whole caller.
-    return { ok: false };
+    return { ok: false, capsSource };
   } finally {
     clearTimeout(timer);
   }

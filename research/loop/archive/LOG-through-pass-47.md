@@ -5069,3 +5069,216 @@ Two transient venue-poll failures (BCH, OPUSDT), isolated and non-recurring — 
 
 **Resume condition:** fund a provider, then the lane self-heals within 30 min with no restart, and the
 soak can run for real against a lane that actually trades.
+
+## 2026-07-28 — Pass 43 (the concurrent pass that diagnosed the latch, reviewed its own fix, and shipped the hardening)
+
+**Window:** 00:07Z → 07:50Z. `date -u` anchored first. **This is the pass whose work the entries above
+credit as "a concurrent pass" — `ee4ddf3` and `7fa5ba8` are its commits, committed by the other session
+after this one stalled mid-flight.** Two sessions ran the loop against ONE working tree tonight. That is
+recorded here as a hazard, not a footnote: the tree was edited concurrently, and only the other
+session's discipline (three consecutive full-gate runs, and noticing the test count move 3009 → 3011
+mid-verification because this session's writes were still landing) kept it coherent. Nothing was lost,
+but nothing guaranteed that.
+
+### What this pass contributed that is not already recorded above
+
+**The incident diagnosis, from the alert nobody was reading.** Sweep at pass start: `Alarms (0)`.
+`AgentClientFatalLatch` had been firing critical since 21:16:25Z — 2h51m. Four independent counters
+agreed the lane had made zero LLM calls: `agent_tokens_total` frozen at 203,835 since 20:20Z,
+`agentic_promotion_llm_cost_usd` frozen at $16.197899, `agentic_budget_remaining_usd` frozen at
+$0.9696084 straight through the UTC rollover, and 30 journal rows with an EMPTY rationale between
+21:30:15Z and 00:00:43Z. The cause was one row: `FATAL (status 400) … "Your credit balance is too low
+to access the Anthropic API"`.
+
+**The near-miss worth naming.** Pass 42 hit this same credit wall two hours earlier — its study
+pre-flight aborted on the identical error — and recorded the study as blocked without connecting it to
+the production lane, writing "0 sweep alarms" in the same entry. One cause, two consequences, one seen.
+
+### The adversarial review — 20 findings, 7 survived, and it broke my own fix twice
+
+Four lenses over the working diff, every finding then attacked by an independent skeptic defaulting to
+rejection. **CORRECTION to what this entry first said:** I reported "16 findings, 5 survived, the
+safety-rails lens never returned" from a partial journal read while the run was still going. The final
+tally is **4 lenses, 20 findings, 7 survived** — the safety-rails lens did return, and it was the lens
+that caught the worst remaining defect (below). The earlier number is left visible here rather than
+quietly overwritten, because "a lens did not report" was exactly the kind of claim that should not have
+been made before the run finished.
+
+Survivors, all fixed before commit:
+
+- **The alert I wrote could not fire on the first latch of a container's life.**
+  `increase(agent_decide_total{outcome="client_latched"}[2h])` reads 0 through it, because prom-client
+  creates a label child lazily and a batched consult births the whole series in one tick — every sample
+  in the range is then equal. That is the same first-sample-after-reset trap `alerts.rules.yml` already
+  documents 35 lines below, and worst-case detection would have been ~4h: **worse than the 3h outage
+  the fix was written for.** Replaced with a level gauge, `agent_client_latched`, set from the same
+  outcome that drives the counter (1 on `client_latched` AND on `error_fatal`, since every FATAL in this
+  codebase routes through `handleFailure` before being thrown — verified: `AgentProposeError` is
+  constructed at exactly two sites, both in `attemptOnce`). Fires on the next scrape, clears on the
+  next scrape, and depends on no consult cadence — which also dissolved three further findings about
+  window-vs-knob coupling and host-sleep false-clears.
+- **Promoting every firing rule to an alarm would have wedged the loop.** Measured before choosing:
+  ≥1 rule was firing **58.4% of the last 7 days** and 59.2% of the last 24h, dominated by warnings the
+  program knowingly runs through (ReconciliationMismatch 1135 of 1440 minutes; AgenticReflectionNeverMinted
+  4084 min/7d, sticky by a 24h `max_over_time`). Since playbook §3 makes any alarm block all improvement
+  work, that is ~6 passes in 10 blocked — and `EffectiveModeLive` is severity `info` and fires
+  permanently once live is armed. Now critical blocks; warning/info annotate.
+- **`ruleCount > 0` was not a positive control, and the proof was live.** See the durable finding below.
+- **My own "zero rules is a probe failure" test was not load-bearing** — the pre-existing generic
+  probe-failure loop satisfied it unchanged, and `parsePromRules`, the sole decider of whether an empty
+  firing list is evidence or a void, had no test at all. Now exported and unit-tested against captured
+  `/api/v1/rules` payload shapes (`test/features/strategy/loop-sweep/prom-rules.spec.ts`, 13 cases).
+- Two claims in my own comments were **false and were corrected**: the expiry log said "allowing one
+  probe call" when expiry actually releases suppression outright, and "at most two failed requests per
+  hour" holds only in the deployed batched shape.
+
+Refuted and deliberately NOT acted on: clear-on-success (a no-op — the latch is already null before a
+probe runs), renew-on-release (harmful alone — it would suppress a recovered client), the Grafana panel
+description (untouched file, 4 names already stale for six days), and a companion `error_fatal` rule
+(the gauge covers it).
+
+**The safety dimension, checked by hand AND then by the lens.** My own check: ~12 `action='error'`
+rows/hour during a latch could corrupt a statistic. Measured, not argued — all 103 degraded rows since
+21:00Z (56 `error` + 47 `hold`) carry `playbook_version IS NULL` and `input_payload IS NULL`, and
+`countVersionEntryStats` (the abstention-lapse evidence base) filters `playbook_version = <v>`, so they
+cannot reach it, before or after. The order path is untouched: a suppressed call returns `signals: []`,
+so nothing reaches Risk at all, and a post-cooldown probe can at most produce a proposal Risk still
+sizes and vetoes behind the unchanged kill switch and live gates. The lens independently traced all four
+secret-bearing paths (log, journal rationale, metric label, sweep digest) and found no leak.
+
+**But the lens also found a defect I had introduced and would have shipped — `354187e`.** My
+`recordDecide` drove `agent_client_latched` to 0 on "any outcome that is not the latch", with a comment
+asserting that reaching such an outcome "means a call completed". False for two of them: `off_menu` and
+`budget_blocked` are returned by `BatchingAgentClient` BEFORE `inner.proposeBatch` is ever called, so
+they never touch the client and prove nothing. An off-menu symbol or a budget-exhausted day would have
+dropped the gauge to 0 while the client was still latched — clearing the critical alert and returning
+the sweep to reporting no alarm. **The exact blindness this whole pass exists to remove, reintroduced
+one layer up by the fix for it.** Now two explicit sets (latched / proves-a-round-trip-happened) with
+everything else leaving the level untouched, so a NEW outcome added later is inert rather than silently
+clearing a live alert. Both regressions verified load-bearing by restoring the else-branch.
+
+Second late survivor, same commit: `parsePromRules` kept only `alertname`/`severity` per firing
+instance, so two instances of a per-venue rule rendered as byte-identical alarms — a pass reading
+`ReconciliationHalt` twice could not tell whether one venue or both were halted. Instances now carry
+their distinguishing labels as `scope`, rendered `AlertName{venue=binanceusdm}`.
+
+### A durable finding worth more than the fix: committed alerts had never loaded
+
+The review's name-set control found it while being written. The running Prometheus was serving a rules
+file predating **2026-07-22** — 16 alerting rules loaded against 20 committed — because the container
+reads `alerts.rules.yml` from a read-only bind mount ONCE at process start, has no
+`--web.enable-lifecycle`, and the documented deploy step recreates only `app`. The four alerts added on
+07-27 specifically to catch a silent lane (`AgenticLaneSilent`, `AgenticBudgetExhausted`,
+`ReconciliationNeverCleanSustained`, `ReconciliationSweepFailureSustained`) had therefore **never
+evaluated once**. The pass that wrote them believed it had installed four backstops and had installed
+nothing.
+
+Correcting the overstatement rather than leaving it flattering: `AgenticLaneSilent` would **not** have
+caught this outage — `agent_decide_total` kept incrementing throughout, which is exactly why every
+surface looked healthy. The staleness is a real defect; that particular rule was not the miss.
+
+Three consequences, all shipped: `loop:sweep` now fails its `promAlerts` probe and names any committed
+alert the running Prometheus has not loaded (name sets only — Prometheus re-renders PromQL, so diffing
+query text would false-positive on every multi-line rule); the deploy step in both
+`docs/runbook.md` and playbook §5 now requires `docker compose up -d --force-recreate prometheus` after
+touching that file, and says why a plain `up -d prometheus` is a no-op; and `docs/runbook.md` gained the
+"Agentic lane silent" section that both alerts' `runbook:` annotation had been pointing at since before
+it existed.
+
+### One more defect, found by the pass's own post-deploy sweep — `13d94c9`
+
+The sweep that verified `354187e` raised `cost_breaker_proximity — spend $3 >= 80% of $3` against a
+container whose own boot log read `daily LLM budget seeded from durable spend … $0.0000 of $3 already
+spent today`. `agentic_budget_remaining_usd` is only `set()` once the lane evaluates its budget, so a
+fresh boot reads prom-client's default 0, and the sweep's `spend = breaker − remaining` renders that as
+the entire breaker spent. **A false alarm on every deploy — which under §3 consumes the next pass, and
+which teaches the reader to skip `cost_breaker_proximity`, the same habit that let the 07-27 outage stay
+invisible.** Now annotated (`budget_gauge_uninitialised`) only for the genuinely ambiguous reading —
+remaining exactly 0 inside a 5-minute init grace, mirroring `AgenticBudgetExhausted`'s own `for: 5m` on
+the identical gauge. A 0 past the grace is a real exhaustion and still alarms; any non-zero remaining is
+unaffected. Three cases pin all three directions. Live confirmation the fix is right for the right
+reason, not by luck: the following sweep read `Alarms (0)` with the gauge having since populated to
+**$3**, i.e. the unambiguous path, not the suppressed one.
+
+### Diff, gates, deploy
+
+Four commits: `ee4ddf3` (latch cooldown + named short-circuit + sweep alert consumption), `7fa5ba8`
+(post-review hardening: level gauge, critical-only severity split, name-set control, `parsePromRules`
+tests, runbook/playbook deploy step), `354187e` (the two late-review survivors), `13d94c9` (the
+budget-gauge false alarm). Gates green at each: format:check, lint, lint:md, typecheck, build, **test
+170 files / 3018 tests** (livegate 55), `eval:agentic` 21. Every regression verified load-bearing by
+reverting its own fix — `FATAL_LATCH_COOLDOWN_MS = Infinity` fails both latch tests, restoring the
+else-branch fails both gauge tests.
+
+**`7fa5ba8` was committed but NOT deployed** when this pass resumed — the running Prometheus still held
+the pre-review expr, which is the very class this pass had just fixed. Deploys: app +
+`--force-recreate prometheus` at 07:30:10Z (boot `7c6b68d3`), then app again at **08:05:55Z, boot
+`464c608b`**, the live build. Verified live, not assumed: 20/20 rules loaded and none unhealthy,
+`AgentClientFatalLatch` expr `agent_client_latched == 1` with `health=ok`, gauge present, kill switch
+RUNNING, both venues CLEAN, sweep `Alarms (0)` with the positive control passing (`prometheus rules: 20
+loaded, 0 firing`). RSS 757 MiB — above the 673 MiB paper reference, well under the 900 MiB WATCH-V3-1
+defect line, and consistent with the 747 MiB read on the previous boot rather than a new climb.
+
+### Soak
+
+Partial and honestly bounded. The gauge's **negative** direction is confirmed live (0 on a healthy
+boot, alert inactive, rule `health=ok`). Its **positive** direction — gauge → 1 and the alert firing
+within one scrape of a suppressed call — was NOT observed before this pass ended: the accounts are still
+unfunded, but bar counters reset on each redeploy, so the first consult attempt is up to 2h out
+(`AGENTIC_FALLBACK_CONSULT_BARS=8`), and this pass redeployed twice. A watcher polled the gauge, the
+decide counter and firing alerts every 60s for **40 minutes (07:42Z→08:22Z, 40 readings, spanning the
+08:05:55Z redeploy)** and recorded `latched=0, decide={}, firing=[]` on every one — `agent_decide_total`
+had no series at all, i.e. the lane never attempted a consult, which the final sweep's `consult-gate by
+outcome: {}` says independently. So the window is a clean negative: nothing exercised the latch, rather
+than the latch being exercised and the gauge failing to move.
+
+The equivalent cycle WAS validated on the previous build by the soak entries above (`error_fatal` 21 /
+`client_latched` 34 over ~10h, the 30-min cooldown visible in the ratio). What is unproven is
+specifically the gauge path added in `7fa5ba8` and corrected in `354187e`. Stated as unproven rather
+than inferred from the unit tests — the previous soak entry's own lesson was that a green metric nothing
+has exercised is not evidence, and that applies to my own fix too.
+
+### Book state
+
+Unchanged by any of this: 28 closed round trips, net **−$39.64**, `agentic_promotion_ready=0`, equity
+~$4,978, 5 positions (4 spot dust residuals + SOL/USDT:USDT 0.64 @ 77.38 ≈ $50 notional), 4 resting
+protective orders, kill switch RUNNING, both venues reconciling CLEAN. Four round trips closed DURING
+the outage via resting venue orders and net-of-cost improved $1.36 over that window — n=4, noise, and
+recorded only because it is the kind of number that gets over-read later.
+
+WATCH-V4-1 through V4-4 all hold: clean-stamp age 88s at pass start, `adopt_non_adoptable` and
+`fill_overflow` both absent from `reconciliation_mismatch_total`, zero cross-venue fills, no terminal
+order whose `fills` sum diverges from `cum_qty`, and no `perp pin:` / `START_TRADING_FAILED` line across
+two redeploys.
+
+### This pass shipped zero profitability work, and that is now three passes in a row of repair
+
+Playbook §4 names consecutive repair-dominated passes as the trigger for recommending a systemic change
+rather than absorbing it quietly. The recommendation is not "loop faster": **the loop is currently
+unable to do profitability work at all, for a reason no amount of process fixes.** Both provider
+accounts are unfunded, so the champion cannot trade and the one study that could answer whether any
+playbook variant clears +13.0 bps cannot run. Meanwhile Pass 41's diagnosis stands — entries are
+significantly negative, worse than a random-bar placebo — so funding the account resumes spending
+~$2.6/day accumulating evidence for a gate the current entry signal provably cannot pass.
+
+Those two facts together make this an owner decision about what the project is FOR, not a loop
+decision, and it is the same decision Pass 41 surfaced and Pass 42 restated. The honest framing: the
+credit exhaustion did not create that decision, it just removed the option of deferring it.
+
+### Flagged (owner-capability only)
+
+- **Fund a provider account** — the sole blocker on both the live lane and the frozen playbook-space
+  study. Purchasing credit is a financial action outside what an automated pass may do. The lane
+  self-heals within 30 min of credit landing, with no redeploy, and that is now a tested property
+  rather than a hope.
+- The pre-existing shared-org Anthropic rate-limit item and the CryptoPanic key, both unchanged.
+
+### Next-pass candidates
+
+1. Close WATCH-V4-5 — confirm `agent_client_latched` → 1 and the alert firing on the first suppressed
+   call after 07:30Z (free, needs only a sweep once the fallback gate has fired).
+2. **Only one session may run this loop at a time.** Tonight two did, in one tree. Before the next
+   scheduled pass, decide the mechanism (a lock file the playbook checks, or a scheduler change) — a
+   concurrent pass that lands a half-finished tree into another's gate run is a defect waiting to be
+   attributed to the wrong cause.
+3. Everything else waits on funding.

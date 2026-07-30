@@ -7,69 +7,67 @@ else is looked up on demand; § Index says which file answers which question. La
 2026-07-30**. Keep this under 200 lines: anything that grows past a few lines belongs in one of the
 files below, with a one-line pointer here.
 
-## ⛔ Owner-blocked — read this before investigating anything
+## The LLM lane — FUNDED AND TRADING AGAIN as of 2026-07-30T09:01Z; do not investigate a latch
 
-> ## ⛔ THE ANTHROPIC ACCOUNT IS NOT FUNDED — THIS IS WHY THERE ARE NO TRADES
+> ## ✅ THE ACCOUNT WAS FUNDED MID-PASS ON 2026-07-30 — THE LANE IS ALIVE
 >
-> **DO NOT INVESTIGATE IT. STOP HERE IF YOUR SWEEP SHOWS A LATCHED AGENT CLIENT, ZERO DECIDES, OR ZERO TRADES. This is the
-> cause. It is settled. It is not a defect. No pass can fix it.** Owner directive, 2026-07-30,
-> verbatim: _"lack of trading is because of the anthropic api account being unfunded. this should not
-> have to turn into investigations on each pass. make it clear in state or log so that later loop
-> passes do not investigate it; they should be able to tell immediately."_
+> **The 60-hour outage is OVER.** Credit landed between 07:45Z (Pass 48 confirmed the `400` live at
+> 07:45:18Z) and 09:01Z, and **the lane self-healed with no redeploy** — first real decide
+> 2026-07-30T09:01:01Z (45.6s, full thesis), first proposes 09:15:31Z (`open_long` ZEC spot + perp).
+> Measured at 11:04Z: **597 lifetime real decides** (575 before), 6 fills in 24h, `open_orders` 3 per
+> venue, `agentic_budget_remaining_usd` $2.40 of $3. **This closes the one clause of WATCH-V4-5 that
+> could not be tested without credit** — the funded-resumption path is now proven live, not inferred.
 >
-> Re-confirmed live at 2026-07-30T07:45Z (Pass 48; previously Pass 46 at 09:00Z on 07-29), verbatim
-> from the API: `400 invalid_request_error: "Your credit balance is too low to access the Anthropic
-> API."` — 28 latches and 27 cooldown expiries on boot `1d68a57c` alone, 100% that one status, newest
-> line 07:45:18Z, nothing redacted.
-> **Nothing is broken in the code.** The lane calls, gets a FATAL 400, latches for 30 min, retries,
-> gets the same 400, and re-latches — correct behaviour against an unfunded account. The Moonshot
-> fallback account is unfunded too (`429 suspended — insufficient balance`), so there is no second
-> provider to reach for. Consequence: **zero LLM decides, therefore zero trades, therefore zero
-> progress toward the promotion gate, since 2026-07-27T21:16Z.**
-> **Adding credit is a financial action no automated pass may take — this is the single owner action
-> the entire program is waiting on.** On resumption nothing needs redeploying: the latch self-heals
-> within 30 min of credit landing (proven live, WATCH-V4-5). Read § Flagged's funding entry and Pass
-> 41's ENTRIES verdict together before funding — entries currently measure worse than a random-bar
-> placebo, so resuming spends ~$2.6/day gathering evidence for a gate the present signal cannot pass.
+> **The standing rule survives the good news, because the condition can recur the moment the balance
+> runs out again.** Owner directive, 2026-07-30, verbatim: _"lack of trading is because of the
+> anthropic api account being unfunded. this should not have to turn into investigations on each pass.
+> make it clear in state or log so that later loop passes do not investigate it; they should be able to
+> tell immediately."_
 >
-> **How a pass tells, in one read, without any investigation (shipped Pass 48, 2026-07-30):**
-> `loop:sweep` prints a banner naming this condition ABOVE its alarms section, and the alert split
-> makes it non-blocking — `AgentClientLatchedUnfundedAccount` is severity `warning` deliberately, so
-> it annotates rather than wedging playbook §3. The machine-readable fact is
-> `agent_client_latch_cause{cause="insufficient_credit"} == 1`. **The demotion is cause-specific and
-> fails CLOSED:** any other latch cause classifies as `other`, keeps `AgentClientFatalLatch` at
-> `critical`, and IS a full incident. Passes 42–47 each re-derived this blocker from scratch — that is
-> the waste this banner and the alert split exist to end.
+> **So: if a future sweep shows a latched client, read the CAUSE, do not open an investigation.**
+> `agent_client_latch_cause{cause="insufficient_credit"} == 1` means the balance is out again — an
+> owner capability limit, not a defect, and no pass can fix it. `loop:sweep` prints a banner naming it
+> ABOVE the alarms section, and `AgentClientLatchedUnfundedAccount` is severity `warning` on purpose so
+> it annotates instead of wedging playbook §3. **The demotion is cause-specific and fails CLOSED:** any
+> other cause classifies as `other`, keeps `AgentClientFatalLatch` at `critical`, and IS a full
+> incident. Passes 42–47 each re-derived the blocker from scratch — that is the waste this exists to end.
+>
+> **Before treating resumed trading as unambiguously good, read `verdicts.md`.** Entries measure
+> significantly negative and worse than a random-bar placebo, so a live lane spends ~$2.6/day
+> accumulating evidence for a gate the present signal provably cannot pass. Pass 48's research
+> recommends funding the frozen 12-arm playbook-space replay study (~$110, pre-registered, decisive in
+> both directions) rather than the trading lane. That is an owner call, not a loop call.
 
 ## Current order & status
 
-- **HEAD:** `a03b35d`. **Live build:** `446e1da`, boot `1d68a57c` (deployed 2026-07-29T11:03:17Z,
-  `RestartCount` 0). **Pass 48's commits are NOT deployed — pending deploy this pass.**
-- **Pass 48 (2026-07-30) shipped two commits.** `8002888` — the agent-client latch-cause split, so
-  the unfunded-account condition annotates instead of forcing an investigation every pass
-  (`agent_client_latch_cause{cause="insufficient_credit"}`, and `AgentClientLatchedUnfundedAccount`
-  at severity `warning` on purpose); `a03b35d` — seeded `reconciliation_runs_total` and narrowed
-  `ReconcilerStalled`, the two critical alerts guarding hard rule 6 that could not fire. A third
-  commit seeding ~7 more void-read instruments is in flight from a concurrent session.
-- **Deploy note:** Pass 48 edited `observability/alerts.rules.yml`, so the deploy MUST also run
-  `docker compose up -d --force-recreate prometheus` (playbook §5 step 3) — that file is read once at
-  Prometheus process start and a plain `up -d prometheus` is a no-op. 22 rules were loaded at the
-  07-29 deploy.
+- **HEAD = live build `e091ba5`**, boot `4a43ac63` (deployed 2026-07-30T11:02:19Z, `RestartCount` 0,
+  healthy). Prometheus force-recreated the same deploy: **23 rules loaded, 0 firing**. Post-deploy
+  sweep at 11:04Z: **0 alarms**.
+- **Pass 48 (2026-07-30) shipped four commits.** `8002888` — agent-client latch-cause split, so an
+  unfunded account annotates instead of forcing an investigation every pass;
+  `a03b35d` — seeded `reconciliation_runs_total` and narrowed `ReconcilerStalled`, **the two critical
+  alerts guarding hard rule 6, neither of which could fire**; `e1ce4e1` — the loop hot/cold state
+  split that created this file (rehydration 1,932 → 152 lines); `e091ba5` — seven more instruments
+  whose zero was a void read, plus two loop-sweep honesty fixes.
+- **Verified live post-deploy:** `build_info{git_sha="e091ba5"}`, `kill_switch_state{state="RUNNING"}`,
+  and every seeded child publishing a true zero — including
+  `reconciliation_runs_total{result="halt"}` on BOTH venues, which is the whole point of `a03b35d`.
 - **Soaking a deploy: the first ~2h after a redeploy is a blind window for the LLM lane.**
-  `AGENTIC_FALLBACK_CONSULT_BARS=8` at 15m bars means the first consult attempt — the only thing
-  that can re-latch the client — is ~2h out, so the playbook's 15-30 min soak sits entirely inside
-  it. Judge lane liveness from `agent_last_success_timestamp_seconds` (seeded at boot from
-  `agent_decisions` since `446e1da`, so it reads the TRUE age on a fresh boot), never from
-  `agent_client_latched` reading 0 on a boot too young to have tried. WATCH-V4-8, `watches.md`.
-- **Alerts:** `AgenticNoSuccessfulDecideSustained` (severity `warning`, non-blocking) firing since
-  2026-07-29T11:04:25Z — Pass 47's restart-surviving lane-liveness signal doing its job, not a
-  regression.
-- **The book** (Pass 47, independently re-derived from metrics): **28** closed round trips,
-  net-of-cost **−$39.6370**, win rate **0.1786**, LLM cost **$16.1979**, trade-anchored window
-  **4.30 of the 14 days** required, `agentic_promotion_ready` **0**, 0 fills, `equity_usdt`
-  **4978.17**, RSS **711.5 MiB**. Four positions, all spot dust (ZEC/AAVE/BTC/SOL);
-  `open_orders{venue}` 0 on both venues; no resting protective orders. **None of it can move while
-  the account is unfunded** — the last real model decide was 2026-07-27T20:15:31Z.
+  `AGENTIC_FALLBACK_CONSULT_BARS=8` at 15m bars means the first consult attempt is ~2h out, so the
+  playbook's 15-30 min soak sits entirely inside it. Judge lane liveness from
+  `agent_last_success_timestamp_seconds` (seeded at boot from `agent_decisions` since `446e1da`, so it
+  reads the TRUE age on a fresh boot), never from `agent_client_latched` reading 0 on a boot too young
+  to have tried. WATCH-V4-8, `watches.md`.
+- **The book, re-derived from metrics at 11:04Z — and it MOVED for the first time since 07-27:**
+  **29** closed round trips (was 28), net-of-cost **−$41.1723** (was −$39.6370, so **$1.54 worse**),
+  win rate **0.1724**, LLM cost **$16.7940**, trade-anchored window **6.71 of the 14 days** required
+  (was 4.30), `agentic_promotion_ready` **0**, 6 fills in 24h, `open_orders` **3 per venue** (was 0 —
+  the lane is placing protective stops again), `equity_usdt` **4976.88**, RSS **717 MiB**
+  (WATCH-V3-1 fine). Champion playbook **v8** active.
+- **Read the direction, not just the motion:** the window advanced 2.4 days and the book got $1.54
+  worse over one closed trip. That is exactly what `verdicts.md` predicts — the gate needs ≥30 trips
+  AND positive net-of-cost, and every additional trip on the present entry signal moves the first
+  number toward the bar while moving the second away from it.
 - **Playbook lineage:** champion **v8** (+$6.77 over 5 trips — the only meaningfully positive
   lineage; v2 alone is −$24.76 over 14 and accounts for most of the book's loss; n=5 is far under
   this loop's own "never act on a sub-n≥12 cell" bar, so it stays an observation). **v9 is an
@@ -113,8 +111,14 @@ closed, not deleted; do not re-open one without new evidence.
 
 ## Flagged for human review (open) — owner capability limits only, full text in `watches.md`
 
-- **BOTH PROVIDER ACCOUNTS ARE UNFUNDED** — the single blocker on the entire program. Purchasing
-  credit is a financial action no automated pass may take. See the banner above.
+- ~~**BOTH PROVIDER ACCOUNTS ARE UNFUNDED**~~ — **RESOLVED 2026-07-30T09:01Z**, the Anthropic account
+  was funded and the lane self-healed with no redeploy (banner above). The Moonshot fallback is
+  untested since and presumed still suspended. The item stays listed, struck rather than deleted,
+  because the condition recurs whenever the balance runs out and the response is then unchanged: read
+  `agent_client_latch_cause`, do not investigate.
+- **The open question funding does NOT answer** — `verdicts.md`: entries are worse than a random-bar
+  placebo, so a live lane accumulates evidence for a gate the present signal cannot pass. Pass 48's
+  research recommends the ~$110 frozen replay study over the trading lane. Owner call.
 - **WATCH-V4-6 — an order reaching `NEW` via `QUERY_NOT_FOUND` can never become terminal.** Four
   zombie orders since 2026-07-24; live impact measured nil. The repair is new OMS orchestration
   (TTL re-examination + venue re-query before terminalizing), not a line change.

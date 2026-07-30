@@ -119,9 +119,11 @@ playbook block cache-controlled — the exact shape the live decide path sends.
 | 12 | `shorts_only` | short-biased — the long leg carried the loss (−19.9/−29.2/−56.3/−93.5 vs a short leg of n=18 that was not significant on its own) |
 
 **Arms 5 and 6 are the point of the exercise.** Both are structurally forbidden by the live system:
-`reflection.service.ts:526-537` states that "a flat week is a FAILING week, not discipline… the
-promotion gate needs roughly two closed round trips per day… if it cannot, loosen instead", backed by
-a mint-time entry-rate floor and a live-abstention lapse. Against −106 bps/trip, trading less is the
+[`research/loop/playbook-authoring.md`](../loop/playbook-authoring.md) — the ANTI-RATCHET OBJECTIVE,
+preserved verbatim from its original source `reflection.service.ts:526-537` — states that "a flat
+week is a FAILING week, not discipline… the promotion gate needs roughly two closed round trips per
+day… if it cannot, loosen instead", backed by a mint-time entry-rate floor and a live-abstention
+lapse. Against −106 bps/trip, trading less is the
 only lever with positive expected effect, and three mechanisms exist to suppress it. If the live
 objective forbids the only winning move, the search cannot find it however long it runs — so the
 span here must contain what the live span cannot.

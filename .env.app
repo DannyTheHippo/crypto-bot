@@ -258,7 +258,7 @@ AGENTIC_EDGE_POLICY_FAMILY=residual20-volbeta
 # Arm 1's -108.1 bps across 23 recorded round trips) — changes NO geometry, and does not reopen the
 # settled exit-rule sweep. SHIPPED FLAG-OFF: the enable is a separate config-only step with its own
 # WATCH line (research/loop/verdicts.md, 2026-07-30 entry).
-AGENTIC_PLAN_AUTHORITATIVE_EXITS=false
+AGENTIC_PLAN_AUTHORITATIVE_EXITS=true
 
 # ── Risk limits (v3 §3.2: re-defaulted to the $1k-book scale — the deployed v2-contract values were
 # pre-$1k-book drift; schema defaults now match this deployed shape directly) ──

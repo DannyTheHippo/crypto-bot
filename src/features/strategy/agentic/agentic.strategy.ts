@@ -369,7 +369,7 @@ interface ActivePlanState {
 export interface AgenticStrategyDeps {
   readonly journal?: AgentDecisionJournalPort;
   // Fires once per detected LONG→FLAT or (Push II Phase 8) SHORT→FLAT round trip, with the running
-  // closed-trade count. A later reflection task subscribes; the strategy itself takes no action
+  // closed-trade count. The promotion evaluator subscribes; the strategy itself takes no action
   // beyond counting and calling it.
   readonly onClosedTrade?: (count: number) => void;
   // B2: fires once per decide() call with the consult-schedule gate's outcome — mirrors the
@@ -381,14 +381,8 @@ export interface AgenticStrategyDeps {
   // Structurally satisfied by UniverseScannerService; absent ⇒ every symbol treated as active
   // (fail OPEN toward consulting — same failure direction as the scanner's own warmup default).
   readonly menuGate?: { isActive(symbol: string): boolean };
-  // P3: sibling of onClosedTrade — ReflectionService.checkWeeklyReflectionTrigger has no timer of its
-  // own (see that method's header comment: "wiring a periodic caller belongs in agentic.strategy.ts's
-  // decide() loop"). Fires once per decide() call, same cadence as onConsultGate below; the callee
-  // self-gates on UTC-week-bucket equality so this is a cheap no-op on every bar except the one that
-  // actually crosses into a new week with no trade-count trigger having already fired it.
-  readonly checkWeeklyReflection?: () => void;
   // computeTrackRecordContext's data source: realized (venue-fill-derived) closed round trips, the
-  // same evidence feed the reflection lane reads (ports/trading/promotion.ts). Optional — absent means
+  // same evidence feed the promotion gate reads (ports/trading/promotion.ts). Optional — absent means
   // trackRecordEnabled is inert even when true (no in-strategy fallback is computed, since the
   // strategy has no other access to realized fills). B3: previously also fed the now-deleted
   // expectancy ladder — trackRecord is this dep's only remaining consumer.
@@ -595,8 +589,6 @@ export class AgenticStrategy implements AsyncStrategy {
   private readonly onClosedTrade?: (count: number) => void;
   private readonly onConsultGate?: (outcome: ConsultGateOutcome) => void;
   private readonly menuGate?: { isActive(symbol: string): boolean };
-  // P3 — see AgenticStrategyDeps.checkWeeklyReflection's own comment.
-  private readonly checkWeeklyReflection?: () => void;
   private readonly logger: LoggerLike;
   private readonly entryTtlBars: number;
   private readonly planMode: boolean;
@@ -732,7 +724,6 @@ export class AgenticStrategy implements AsyncStrategy {
     this.onClosedTrade = deps.onClosedTrade;
     this.onConsultGate = deps.onConsultGate;
     this.menuGate = deps.menuGate;
-    this.checkWeeklyReflection = deps.checkWeeklyReflection;
     this.logger = deps.logger ?? NOOP_LOGGER;
     this.entryTtlBars = params.entryTtlBars ?? 0;
     this.planMode = params.planMode ?? false;
@@ -882,8 +873,6 @@ export class AgenticStrategy implements AsyncStrategy {
       noopSuppressed: this.noopSuppressed,
     });
     this.onConsultGate?.(gate);
-    // P3: weekly time-based reflection trigger — same per-decide() cadence as onConsultGate above.
-    this.checkWeeklyReflection?.();
     const consultNow = gate !== 'skipped_scheduled';
 
     // W3.1: an active plan is managed deterministically between consults — its OWN terminal verdicts

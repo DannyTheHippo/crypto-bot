@@ -256,7 +256,7 @@ groups:
       # `increase(...{outcome="client_latched"}[2h])` reads 0 through the FIRST latch of a container's
       # life, because prom-client creates a label child lazily and a batched consult births the whole
       # series in one tick — every sample in the range is then equal (the same first-sample-after-reset
-      # trap AgenticReflectionNeverMinted documents below), pushing worst-case detection past 4h. Any
+      # trap AgenticLaneSilent documents below), pushing worst-case detection past 4h. Any
       # window also couples the rule's correctness to consult cadence, so a host-sleep gap wider than
       # the window would false-CLEAR while the lane was still dead — this stack runs on a laptop with a
       # documented sleep duty cycle. A gauge fires on the next scrape, clears on the next scrape, and
@@ -313,45 +313,6 @@ groups:
           summary: 'LLM provider account is unfunded — decides suppressed. This is NOT a defect and is not investigable by an automated pass; the only remedy is the owner adding credit. The lane self-heals within 30 minutes of credit landing, with no redeploy required.'
           runbook: 'docs/runbook.md'
 
-      # W2 (2026-07-08): the reflection learning loop was silently dead for 4 days because every
-      # minted candidate tripped the polarity-blind banned-word validator (confirmed live:
-      # playbook_validator_rejections_total{banned_token="true"}=1, playbook stuck at the v1 seed).
-      # The reflection prompt was reworded to avoid the trigger words; this alert warns if a future
-      # model still emits a banned token so the loop can never iterate — instead of it dying
-      # invisibly again. Warning, not critical: one rejection is recoverable (the seed stays
-      # active); a sustained pattern is the real failure. Requires agentic_reflection_outcomes_total
-      # (added W2, AgentMetricsRecorder). Threshold dropped to >=1 (from >=2): reflection.service.ts
-      # now retries a rejected draft once with feedback before recording validator_reject (backlog
-      # #31), so a recorded validator_reject is already a two-strike event — the old >=2-in-6h bar
-      # would have required FOUR consecutive draft rejections to fire.
-      - alert: AgenticReflectionRejects
-        expr: sum(increase(agentic_reflection_outcomes_total{outcome="validator_reject"}[6h])) >= 1
-        for: 0m
-        labels: { severity: warning }
-        annotations:
-          summary: 'A reflection candidate was rejected by the playbook validator after its feedback retry (validator_reject in 6h) — the learning loop cannot iterate'
-          runbook: 'docs/runbook.md'
-
-      # Backlog #31: a level-based (max_over_time, not increase/rate) companion to
-      # AgenticReflectionRejects — increase() and rate() both miss a counter's first sample after a
-      # container recreate resets it (a fresh series has nothing to increase FROM), so a lane that
-      # reflects exactly once right after a redeploy and gets rejected would never trip a
-      # increase()-based alert. sum(max_over_time(...[24h])) instead reads the highest value the
-      # counter held at any scrape in the window, which survives a mid-window reset because the
-      # pre-reset high-water mark is still in the range. `unless` fires only when rejects are present
-      # AND minted is absent in the same 24h window — a lane that eventually mints (even after
-      # earlier rejects) does not trip this.
-      - alert: AgenticReflectionNeverMinted
-        expr: |
-          sum(max_over_time(agentic_reflection_outcomes_total{outcome="validator_reject"}[24h])) > 0
-          unless
-          sum(max_over_time(agentic_reflection_outcomes_total{outcome="minted"}[24h])) > 0
-        for: 0m
-        labels: { severity: warning }
-        annotations:
-          summary: 'Reflection has rejected candidates in the last 24h but minted none — the learning loop is rejecting and never advancing the playbook'
-          runbook: 'docs/runbook.md'
-
       # 2026-07-27 (45h production halt): agent_decide_total emitted ZERO rows for the whole outage
       # and nothing paged — AgentClientFatalLatch above only trips on one specific outcome
       # (error_fatal), so a lane that stops calling decide() at all for any OTHER reason (crash loop,
@@ -360,8 +321,13 @@ groups:
       # quiet market's consult gap to a 2h floor — 6h gives 3x that floor's margin so a slow news day
       # can never false-positive. `or absent_over_time(...)` catches the total-silence case directly
       # (the metric never emits a single sample, exactly what happened in the outage) — relying on
-      # `sum(increase(...))==0` alone would hit the same first-post-reset-sample undercount trap
-      # AgenticReflectionNeverMinted documents above.
+      # `sum(increase(...))==0` alone would hit the first-post-reset-sample undercount trap:
+      # increase() and rate() both miss a counter's first sample after a container recreate resets it
+      # (a fresh series has nothing to increase FROM), so a lane that emits exactly one decide right
+      # after a redeploy reads as zero activity. This rule is the surviving in-file reference for that
+      # trap — the two AgenticReflection* alerts that used to document it were deleted 2026-07-30 with
+      # the in-process reflection loop (they selected label values only reflection ever wrote, so they
+      # would have selected empty series forever).
       - alert: AgenticLaneSilent
         expr: |
           sum(increase(agent_decide_total[6h])) == 0

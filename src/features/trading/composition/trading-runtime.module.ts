@@ -90,7 +90,6 @@ import {
   agenticEnv,
   AgenticStrategyModule,
   PLAYBOOK_PROVIDER_OVERRIDE,
-  REFLECTION_SERVICE,
 } from '../../strategy/agentic/agentic-strategy.module';
 import {
   AgenticStrategy,
@@ -109,7 +108,6 @@ import {
   PromotionEvaluator,
   type EvaluatorPlaybookStore,
 } from '../../strategy/agentic/promotion-evaluator';
-import { ReflectionService } from '../../strategy/agentic/reflection.service';
 import { StrategyHost } from '../../strategy/agentic/strategy-host';
 import { StrategyRegistry } from '../../strategy/agentic/strategy-registry';
 import { UniverseScannerService } from '../../strategy/agentic/universe-scanner.service';
@@ -345,7 +343,6 @@ export class TradingRuntimeService
     // Always bound (ContextFeedsModule's LIQUIDATION_FEED factory returns the NOOP shape when
     // AGENTIC_LIQUIDATIONS_ENABLED is off/test-ci) — never @Optional, mirrors derivativesFeed.
     @Inject(LIQUIDATION_FEED) private readonly liquidationFeed: LiquidationFeedPort,
-    @Inject(REFLECTION_SERVICE) private readonly reflectionService: ReflectionService,
     @Inject(PROMOTION_READINESS) private readonly promotionReadiness: PromotionReadinessPort,
     // Backlog #51: the adapter behind EXCHANGE_PORT, for the perp deploy pin in startTrading — only
     // perp-capable adapters implement pinPerpVenueDefaults, everything else no-ops via `?.`. The
@@ -365,11 +362,11 @@ export class TradingRuntimeService
     // from config, present in every boot including test/ci).
     @Inject(VENUE_REGISTRY)
     private readonly venueRegistry: ReadonlyMap<VenueId, VenueRuntimeDescriptor>,
-    // W5 attributed auto-promotion: the evaluator promotes a reflection candidate to ACTIVE on its
-    // own A/B-attributed evidence beating the champion (see promotion-evaluator.ts). Built here from
-    // the same store the reflection loop writes and the DB-backed stats/journal, and wired as a
-    // second onClosedTrade observer alongside reflection below. All deps @Optional: absent under
-    // test/ci/no-DB leaves the evaluator inert (createPromotionEvaluator's own inert guard).
+    // W5 attributed auto-promotion: the evaluator promotes a candidate to ACTIVE on its own
+    // A/B-attributed evidence beating the champion (see promotion-evaluator.ts). Built here from the
+    // playbook store `pnpm playbook:candidate` writes and the DB-backed stats/journal, and wired as
+    // the onClosedTrade observer. All deps @Optional: absent under test/ci/no-DB leaves the
+    // evaluator inert (createPromotionEvaluator's own inert guard).
     // W4.2 expectancy ladder's realized-evidence feed — @Optional like the token's other consumers:
     // absent under test/ci/no-DB, which leaves the ladder inert regardless of its flag.
     @Optional()
@@ -414,18 +411,17 @@ export class TradingRuntimeService
   // Pass 50 (2026-07-30): agent_tokens_total{model}/agentic_venue_tp_total{venue}/
   // agentic_venue_stop_total{venue} are config-driven label sets AgentMetricsRecorder cannot
   // enumerate on its own (no TypedConfigService dependency of its own — see each seed method's own
-  // comment) — this is the one place both the decide/reflection model pair and the configured venue
-  // list are already resolved, so they are handed in once at construction rather than duplicating
-  // that resolution inside the recorder. The venue-tp/venue-stop seeds are truthful only because
+  // comment) — this is the one place both the decide model and the configured venue list are
+  // already resolved, so they are handed in once at construction rather than duplicating that
+  // resolution inside the recorder. The decide model is the only model the lane calls since the
+  // in-process reflection loop (which tagged its own tokens with AGENTIC_REFLECTION_MODEL) was
+  // deleted 2026-07-30 — seeding the reflection model too would publish a permanently-zero child. The venue-tp/venue-stop seeds are truthful only because
   // onVenueTp/onVenueStop below now pass params.venue instead of falling through to 'unknown'
   // (adversarial-review fix, same commit). Extracted to its own method (rather than inlined in the
   // constructor) so it is testable via the same Object.create-prototype harness this file's own
   // logPortfolio spec already establishes, without needing the full ~30-collaborator constructor.
   private seedConfiguredLabelSets(): void {
-    this.agentMetrics.seedTokenModels([
-      this.config.agentic.model,
-      this.config.agentic.reflectionModel ?? this.config.agentic.model,
-    ]);
+    this.agentMetrics.seedTokenModels([this.config.agentic.model]);
     const venueIds = this.config.venues.map((v) => v.id);
     this.agentMetrics.seedVenueTpVenues(venueIds);
     this.agentMetrics.seedVenueStopVenues(venueIds);
@@ -682,8 +678,8 @@ export class TradingRuntimeService
     // validation (boot) rather than at registry.enable.
     const active = this.config.strategy.active;
     // onClosedTrade is built per-registered-instance (using the factory's own `id`, not a fixed
-    // literal) so a future second agentic registration would each wire the reflection loop's
-    // lifecycle check against ITS OWN strategy id (see ReflectionService.runReflection).
+    // literal) so a future second agentic registration would each wire the promotion evaluator's
+    // attribution against ITS OWN strategy id.
     this.registry.register('agentic', (id, p) => {
       // Cast up-front (not just at the AgenticStrategy construction call below) so this closure can
       // read params.venue for the venue-labeled metrics wired below — each registration's OWN
@@ -691,16 +687,9 @@ export class TradingRuntimeService
       const params = p as AgenticStrategyParams;
       const deps: AgenticStrategyDeps = {
         journal: this.agentJournal,
-        onClosedTrade: (count) => {
-          this.reflectionService.onClosedTrade(id, count);
-          // W5: the attributed evaluator observes the same closed-trade seam; inert unless
-          // AGENTIC_AUTO_PROMOTE_MIN_ATTRIBUTED_TRADES > 0 and the DB-backed deps are bound.
-          this.promotionEvaluator.onClosedTrade(id, count);
-        },
-        // P3: sibling of onClosedTrade above, wired the same per-instance way — fires this
-        // registration's OWN strategy id into the weekly time-based trigger every decide() call (see
-        // AgenticStrategyDeps.checkWeeklyReflection's own comment for why the caller lives here).
-        checkWeeklyReflection: () => this.reflectionService.checkWeeklyReflectionTrigger(id),
+        // W5: the attributed evaluator observes the closed-trade seam; inert unless
+        // AGENTIC_AUTO_PROMOTE_MIN_ATTRIBUTED_TRADES > 0 and the DB-backed deps are bound.
+        onClosedTrade: (count) => this.promotionEvaluator.onClosedTrade(id, count),
         // P6: onConsultGate wired to the renamed recorder — evaluateConsultSchedule's
         // ConsultGateOutcome now matches AgentMetricsRecorder.recordConsultGate's param exactly.
         onConsultGate: (outcome) => this.agentMetrics.recordConsultGate(outcome),

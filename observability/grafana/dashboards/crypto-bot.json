@@ -2263,7 +2263,7 @@
           "id": 28,
           "type": "timeseries",
           "title": "Playbook Validator Rejections",
-          "description": "increase(playbook_validator_rejections_total{banned_token,token}[6h]) \u2014 a sustained pattern means the reflection loop can never iterate (AgenticReflectionRejects alert).",
+          "description": "increase(playbook_validator_rejections_total{banned_token,token}[6h]) \u2014 a sustained pattern means playbook candidates cannot be adopted (the read-path validator gate, agentic-bridge.module.ts).",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus-spot"

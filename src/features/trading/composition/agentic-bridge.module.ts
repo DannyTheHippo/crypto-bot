@@ -125,6 +125,12 @@ interface PlaybookStorePort extends PlaybookProvider {
 // exactly like 'reflection' rows here — same INACTIVE-until-promoted shape, same "newest wins above
 // active" precedence, same local structural gate below. promotion/seed never route (they ARE, or
 // resolve to, the active version already).
+//
+// 'reflection' is HISTORICAL-ONLY as of 2026-07-30: reflection.service.ts, the only writer of that
+// source value, was deleted (research/studies/entry-rate-rederivation-2026-07-30.md). It stays in
+// this set because the READ side still routes rows already in the DB — v9 is a live
+// source='reflection' candidate currently taking 40% of decides, and dropping the value here would
+// stop routing those decides instantly. Remove only once no unresolved 'reflection' row remains.
 const CANDIDATE_SOURCES = new Set<PlaybookVersionEntry['source']>(['reflection', 'loop-candidate']);
 
 // #46 (Thompson multi-candidate A/B routing) — decision record, pre-registered per

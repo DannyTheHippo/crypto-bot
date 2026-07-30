@@ -527,3 +527,59 @@ describe('evaluatePlan — mutable directives (adjust semantics)', () => {
     expect(result).toEqual({ type: 'exit', reason: 'take_profit' });
   });
 });
+
+// AGENTIC_PLAN_AUTHORITATIVE_EXITS (2026-07-30) rests on ONE claim about this module: the directive
+// set the model declares at entry is a COMPLETE exit rule on its own — every terminal outcome is
+// reachable from that single declared set with no further model input. The per-branch cases above
+// each pin one boundary; these pin the composite, which is what makes it safe to drop a mid-trade
+// 'close' (anthropic-agent-client.ts's close branch). One declared plan, one entry price, three
+// forward paths, three mechanical exits — long and short.
+describe('evaluatePlan — a declared plan is a complete exit rule by itself', () => {
+  // The model's own declared numbers: stop 2% away, take-profit 4% away, forced exit after 20 bars.
+  const declared = PLAN;
+
+  it('LONG: the declared stop, take-profit and maxHold each exit unaided from the same directive set', () => {
+    const forward = (closePrice: string, barsElapsed: number) =>
+      evaluatePlan(
+        input({
+          state: state({ plan: declared, entryPrice: '100', barsElapsed }),
+          closePrice,
+          positionSide: 'LONG',
+        }),
+      );
+
+    expect(forward('99', 1)).toEqual({ type: 'hold' });
+    expect(forward('98', 1)).toEqual({ type: 'exit', reason: 'stop' });
+    expect(forward('104', 1)).toEqual({ type: 'exit', reason: 'take_profit' });
+    expect(forward('101', 20)).toEqual({ type: 'exit', reason: 'max_hold' });
+  });
+
+  it('SHORT: the same declared set exits unaided on the mirrored levels', () => {
+    const forward = (closePrice: string, barsElapsed: number) =>
+      evaluatePlan(
+        input({
+          state: state({ plan: declared, entryPrice: '100', barsElapsed }),
+          closePrice,
+          positionSide: 'SHORT',
+        }),
+      );
+
+    expect(forward('101', 1)).toEqual({ type: 'hold' });
+    expect(forward('102', 1)).toEqual({ type: 'exit', reason: 'stop' });
+    expect(forward('96', 1)).toEqual({ type: 'exit', reason: 'take_profit' });
+    expect(forward('99', 20)).toEqual({ type: 'exit', reason: 'max_hold' });
+  });
+
+  it('maxHold is a hard deadline, not advice: it exits on a bar that breaches neither price level', () => {
+    // The bar that matters for the suppressed-close case — price sitting quietly inside both levels,
+    // which is exactly when the model would have reached for a discretionary 'close'.
+    const quietBarAtDeadline = evaluatePlan(
+      input({
+        state: state({ plan: declared, entryPrice: '100', barsElapsed: declared.maxHoldBars }),
+        closePrice: '100.5',
+        positionSide: 'LONG',
+      }),
+    );
+    expect(quietBarAtDeadline).toEqual({ type: 'exit', reason: 'max_hold' });
+  });
+});

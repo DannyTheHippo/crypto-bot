@@ -395,6 +395,17 @@ const envSchema = z
       .enum(['true', 'false'])
       .default('false')
       .transform((v) => v === 'true'),
+    // Plan-authoritative exits (2026-07-30): once a plan is declared at entry, its declared
+    // stopLossPct/takeProfitPct/maxHoldBars own the exit and a later mid-trade 'close' from the model
+    // is dropped. Reproduces the exit-attribution study's Arm 2 (+29.7 bps/trip vs the discretionary
+    // Arm 1 over 23 recorded round trips — research-bar FAIL under the 30 bps bar, deployment-bar win;
+    // verdicts.md § NO EXIT RULE RESCUES THESE ENTRIES). Changes NO geometry. 'true'/'false' (not
+    // z.coerce.boolean(), same rationale as AGENTIC_TRACK_RECORD_ENABLED above). Default 'false' ⇒
+    // byte-identical to pre-feature.
+    AGENTIC_PLAN_AUTHORITATIVE_EXITS: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
     // Phase 4 (Profitability Edge Program): tournament-derived systematic edge policy — off by default.
     // 'true'/'false' (not z.coerce.boolean(), same rationale as AGENTIC_TRACK_RECORD_ENABLED above).
     // Default 'false' ⇒ DisabledEdgePolicy bound, byte-identical runtime.
@@ -928,6 +939,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     PROMOTION_DUST_NOTIONAL: promotionDustNotional,
     AGENTIC_PLAN_MODE: agenticPlanMode,
     AGENTIC_PLAN_EXIT_TTL_BARS: agenticPlanExitTtlBars,
+    AGENTIC_PLAN_AUTHORITATIVE_EXITS: agenticPlanAuthoritativeExits,
     AGENTIC_QUIET_PAYLOAD_SAMPLE_BARS: agenticQuietPayloadSampleBars,
     AGENTIC_VENUE_TP: agenticVenueTp,
     AGENTIC_VENUE_TP_REPLACE_DRIFT_BPS: agenticVenueTpReplaceDriftBps,
@@ -1155,6 +1167,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       venueStopReplaceDriftBps: agenticVenueStopReplaceDriftBps,
       planMode: agenticPlanMode,
       planExitTtlBars: agenticPlanExitTtlBars,
+      planAuthoritativeExits: agenticPlanAuthoritativeExits,
       quietPayloadSampleBars: agenticQuietPayloadSampleBars,
     },
     risk: {

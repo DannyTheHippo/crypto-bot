@@ -174,13 +174,6 @@ const ALL_AGENT_VENUE_STOP_EVENTS: readonly AgentVenueStopEvent[] = [
   'triggered',
 ];
 
-// Backlog #53 Pass 50: mirrors ReflectionService's own four-exit set (below_threshold/cooldown/
-// inflight/fired) — kept as a literal array with the type DERIVED from it (not the reverse, unlike
-// ConsultGateOutcome/AgentVenueStopEvent above), so the constructor's zero-seed and
-// recordReflectionTrigger's own param type read the exact same closed set and cannot drift apart.
-const REFLECTION_TRIGGER_OUTCOMES = ['below_threshold', 'cooldown', 'inflight', 'fired'] as const;
-export type ReflectionTriggerOutcome = (typeof REFLECTION_TRIGGER_OUTCOMES)[number];
-
 // Typed recorder over the agentic-lane providers registered in metrics.service.ts. Exported from
 // ObservabilityModule so the composition root can hand it (or closures over it) to the agentic lane —
 // this module never imports features/strategy/agentic itself (the boundaries wall runs the other way).
@@ -220,8 +213,6 @@ export class AgentMetricsRecorder {
     private readonly capabilityViolationsCounter: Counter<string>,
     @InjectMetric('agentic_schema_rejections_total')
     private readonly schemaRejectionsCounter: Counter<string>,
-    @InjectMetric('agentic_reflection_trigger_total')
-    private readonly reflectionTriggerCounter: Counter<string>,
     @InjectMetric('agentic_rearm_fallback_total')
     private readonly rearmFallbackCounter: Counter<string>,
     @InjectMetric('agent_client_latched')
@@ -264,19 +255,12 @@ export class AgentMetricsRecorder {
       /* metrics must never throw into a trading path */
     }
 
-    // Pass 50 (2026-07-30): each of the next three seeds gets its OWN try/catch — reconciliation.
+    // Pass 50 (2026-07-30): each of the next two seeds gets its OWN try/catch — reconciliation.
     // service.ts's Pass 49 comment explains why: sharing one try would let any single counter's
     // failure silently cancel every other block's seed, one throw taking down siblings it has nothing
-    // to do with. All three are closed literal sets this file already owns, so — unlike
-    // seedTokenModels/seedVenueTpVenues/seedVenueStopVenues below — none needs config injected from
+    // to do with. Both are closed literal sets this file already owns, so — unlike
+    // seedTokenModels/seedVenueTpVenues/seedVenueStopVenues below — neither needs config injected from
     // the composition root.
-    try {
-      for (const outcome of REFLECTION_TRIGGER_OUTCOMES) {
-        this.reflectionTriggerCounter.inc({ outcome }, 0);
-      }
-    } catch {
-      /* metrics must never throw into a trading path */
-    }
     try {
       for (const outcome of ALL_CONSULT_GATE_OUTCOMES) {
         this.consultGateCounter.inc({ outcome }, 0);
@@ -623,20 +607,6 @@ export class AgentMetricsRecorder {
   recordSchemaFailure(kind: string): void {
     try {
       this.schemaRejectionsCounter.inc({ kind });
-    } catch {
-      /* metrics must never throw into a trading path */
-    }
-  }
-
-  // Backlog #53: ReflectionService.evaluateTrigger calls this at each of its four exits
-  // (below_threshold/cooldown/inflight/fired) — see AGENTIC_REFLECTION_TRIGGER_COUNTER's own
-  // comment. `outcome` is the same bound set the ReflectionMetricsRecorder interface pins — narrowed
-  // to ReflectionTriggerOutcome (Pass 50) so this signature and the constructor's zero-seed read the
-  // same array; still assignable to ReflectionMetricsRecorder.recordReflectionTrigger?(outcome:
-  // string) via TS's bivariant method-parameter checking.
-  recordReflectionTrigger(outcome: ReflectionTriggerOutcome): void {
-    try {
-      this.reflectionTriggerCounter.inc({ outcome });
     } catch {
       /* metrics must never throw into a trading path */
     }

@@ -6,31 +6,20 @@ import { price, qty } from '../../../domain/common/types/money';
 import {
   AGENT_CLIENT,
   AGENT_DECISION_JOURNAL,
-  LLM_USAGE_SINK,
   PLAYBOOK_PROVIDER,
   EDGE_POLICY,
   type AgentClientPort,
   type AgentDecisionJournalPort,
   type AgentTradingProfile,
   type EdgePolicyPort,
-  type LlmUsageSink,
   type PlaybookProvider,
 } from '../../../ports/strategy/agentic-strategy';
-import { REFLECTION_EVIDENCE, type RoundTripEvidencePort } from '../../../ports/trading/promotion';
-import { KILL_SWITCH, type KillSwitchPort } from '../../../ports/trading/risk';
-import { STRATEGY_REGISTRY, type StrategyRegistryPort } from '../../../ports/strategy/strategy';
 import { BudgetedAgentClient, DailyLlmBudget, type ModelTokenRates } from './agent-budget';
 import { StubAgentClient } from './agent-client.adapter';
 import { AnthropicAgentClient, type AnthropicAgentClientConfig } from './anthropic-agent-client';
 import { BatchingAgentClient, type ActiveMenuGate } from './batching-agent-client';
 import { createEdgePolicyPort, EDGE_POLICY_OVERRIDE } from './disabled-edge-policy';
 import { MAX_SIMILAR_SETUPS } from './episodic-memory';
-import { ExecQualityService } from './exec-quality.service';
-import {
-  createReflectionService,
-  type ReflectionMetricsRecorder,
-  type ReflectionPlaybookStore,
-} from './reflection.service';
 
 // Matches AGENTIC_MODEL's schema default and the AGENTIC_TOKEN_PRICE_* defaults (Sonnet-5 at 3/15)
 // — see environment.config.ts's AGENTIC_MODEL comment for the cost-honesty rationale.
@@ -84,8 +73,8 @@ function toModelTokenRates(
   return out;
 }
 
-// Local to this module (see G2b task brief) — health/metrics/reflection inject this token later to
-// read DailyLlmBudget.snapshot() without depending on which AgentClientPort got selected.
+// Local to this module (see G2b task brief) — health/metrics inject this token to read
+// DailyLlmBudget.snapshot() without depending on which AgentClientPort got selected.
 export const AGENT_LLM_BUDGET = Symbol('AGENT_LLM_BUDGET');
 
 // Local seam (same pattern as AGENT_LLM_BUDGET above) for the composition root's real playbook store
@@ -116,22 +105,22 @@ export const PAYLOAD_EXTRAS_PROVIDER_OVERRIDE = Symbol('PAYLOAD_EXTRAS_PROVIDER_
 // undefined — byte-identical to pre-U1 (every symbol proposes).
 export const ACTIVE_MENU_GATE_OVERRIDE = Symbol('ACTIVE_MENU_GATE_OVERRIDE');
 
-// REFLECTION_SERVICE: the G4a trade-triggered reflection loop (see reflection.service.ts's own
-// header comment). Exported so the composition root can inject it and wire
-// AgenticStrategyDeps.onClosedTrade to it (strategy.ts cannot import this module — the boundary
-// wall — so the wiring itself happens at app.module.ts).
-export const REFLECTION_SERVICE = Symbol('REFLECTION_SERVICE');
-
 // Same seam pattern as PLAYBOOK_PROVIDER_OVERRIDE/AGENT_TRADING_PROFILE_OVERRIDE above, for the
-// composition root's real AgentMetricsRecorder (observability module) to reach ReflectionService's
-// validator-rejection tripwire without this module importing features/common/observability (boundary wall).
-// Consumed via reflection.service.ts's own LOCAL structural type (ReflectionMetricsRecorder);
-// absent (module-isolation contexts) leaves the tripwire unrecorded — telemetry-only, never a
-// safety gate. v3 spec §4.3/§9/§10 work item 1: the AGENT_CLIENT factory below ALSO injects this
-// SAME override to wire AnthropicAgentClientConfig.recordCapabilityViolation — one override token,
-// two consumers, rather than app.module.ts binding a second useExisting for one more
-// AgentMetricsRecorder method.
+// composition root's real AgentMetricsRecorder (observability module) to reach the AGENT_CLIENT
+// factory below without this module importing features/common/observability (boundary wall).
+// Consumed via the LOCAL structural type below; absent (module-isolation contexts) leaves the two
+// client-side degrade paths unrecorded — telemetry-only, never a safety gate. The name is
+// historical: this token was introduced for ReflectionService's validator-rejection tripwire, and
+// the reflection loop was deleted 2026-07-30 (research/studies/entry-rate-rederivation-2026-07-30.md)
+// while the AGENT_CLIENT consumer stayed.
 export const REFLECTION_METRICS_RECORDER_OVERRIDE = Symbol('REFLECTION_METRICS_RECORDER_OVERRIDE');
+
+// The trimmed shape of that recorder the AGENT_CLIENT factory actually needs. Both methods optional:
+// see the token's own comment on the module-isolation case.
+interface AgentClientMetricsRecorder {
+  recordCapabilityViolation?(kind: string): void;
+  recordSchemaFailure?(kind: string): void;
+}
 
 // Builds the env-shaped record selectAgentClient/createAgentLlmBudget read. Sources the validated
 // AGENTIC_* fields (G1c) off TypedConfigService rather than raw process.env when available, so the
@@ -173,6 +162,9 @@ export function agenticEnv(config?: TypedConfigService): Record<string, string |
     // minEdgeMultiple/minRr fields stay only for the legacy (non-tradeContract) plan-mode path and
     // fall back to their own '1.5' defaults when this env key is absent, same as before.
     AGENTIC_PLAN_EXIT_TTL_BARS: String(agentic.planExitTtlBars),
+    // Plan-authoritative exits: sourced off the validated config field (never raw process.env), same
+    // no-drift convention as every other schema-backed AGENTIC_* key in this map.
+    AGENTIC_PLAN_AUTHORITATIVE_EXITS: String(agentic.planAuthoritativeExits),
     AGENTIC_QUIET_PAYLOAD_SAMPLE_BARS: String(agentic.quietPayloadSampleBars),
     AGENTIC_TOKEN_PRICE_CACHE_READ_PER_MTOK: agentic.tokenPriceCacheReadPerMtok,
     AGENTIC_TOKEN_PRICE_CACHE_WRITE_PER_MTOK: agentic.tokenPriceCacheWritePerMtok,
@@ -602,6 +594,10 @@ export function selectAgentClient(
       recordCapabilityViolation,
       // 2026-07-22 schema-hardening: absent ⇒ metric unrecorded (see the param's own comment).
       recordSchemaFailure,
+      // 2026-07-30 plan-authoritative exits: off by default ⇒ byte-identical (every model 'close'
+      // still maps to an exit signal). See the close branch in anthropic-agent-client.ts's
+      // buildProposalFromTradeDecision for the measured basis and failure direction.
+      planAuthoritativeExits: env['AGENTIC_PLAN_AUTHORITATIVE_EXITS'] === 'true',
     },
     fetch,
     new Logger('AnthropicAgentClient'),
@@ -697,11 +693,7 @@ function constraintsFromDefaultFilters(
         activeMenuGate: ActiveMenuGate | undefined,
         payloadExtrasProvider: AnthropicAgentClientConfig['payloadExtrasProvider'] | undefined,
         journal: AgentDecisionJournalPort | undefined,
-        // v3 spec §4.3/§9/§10 work item 1: reuses the SAME override REFLECTION_SERVICE's own factory
-        // injects below (useExisting: AgentMetricsRecorder at the composition root) — see
-        // ReflectionMetricsRecorder's own comment on why the capability-violation method rides this
-        // reflection-named seam instead of a second override token.
-        metricsRecorder: ReflectionMetricsRecorder | undefined,
+        metricsRecorder: AgentClientMetricsRecorder | undefined,
       ) =>
         selectAgentClient(
           agenticEnv(config),
@@ -734,56 +726,7 @@ function constraintsFromDefaultFilters(
         { token: REFLECTION_METRICS_RECORDER_OVERRIDE, optional: true },
       ],
     },
-    {
-      // G4a wiring. Every injected token besides AGENT_LLM_BUDGET is optional: PLAYBOOK_PROVIDER_OVERRIDE/
-      // AGENT_DECISION_JOURNAL/REFLECTION_METRICS_RECORDER_OVERRIDE/LLM_USAGE_SINK are bound by
-      // AgenticCompositionBridgeModule (app.module.ts), KILL_SWITCH by KillSwitchModule, STRATEGY_REGISTRY
-      // by StrategyRegistryBridgeModule — all @Global, so they resolve here without this module importing
-      // any of them, but resolve to undefined in an isolated AgenticStrategyModule-only test context
-      // (ReflectionService then fails every precondition closed rather than guessing — see its own deps
-      // comment; LLM_USAGE_SINK absent simply means reflection-path usage goes unpersisted).
-      provide: REFLECTION_SERVICE,
-      useFactory: (
-        budget: DailyLlmBudget,
-        config: TypedConfigService | undefined,
-        playbookStore: ReflectionPlaybookStore | undefined,
-        journal: AgentDecisionJournalPort | undefined,
-        recorder: ReflectionMetricsRecorder | undefined,
-        killSwitch: KillSwitchPort | undefined,
-        registry: StrategyRegistryPort | undefined,
-        usageSink: LlmUsageSink | undefined,
-        evidence: RoundTripEvidencePort | undefined,
-        execQuality: ExecQualityService | undefined,
-      ) =>
-        createReflectionService(agenticEnv(config), {
-          budget,
-          playbookStore,
-          journal,
-          recorder,
-          killSwitch,
-          registry,
-          usageSink,
-          evidence,
-          // P5 seam close: ExecQualityService is optional (absent in an isolated
-          // AgenticStrategyModule-only test context) — a pull, not a snapshot, per this field's own
-          // comment (ReflectionServiceDeps.execQuality).
-          execQuality: execQuality ? () => execQuality.digest() : undefined,
-          logger: new Logger('ReflectionService'),
-        }),
-      inject: [
-        AGENT_LLM_BUDGET,
-        { token: TypedConfigService, optional: true },
-        { token: PLAYBOOK_PROVIDER_OVERRIDE, optional: true },
-        { token: AGENT_DECISION_JOURNAL, optional: true },
-        { token: REFLECTION_METRICS_RECORDER_OVERRIDE, optional: true },
-        { token: KILL_SWITCH, optional: true },
-        { token: STRATEGY_REGISTRY, optional: true },
-        { token: LLM_USAGE_SINK, optional: true },
-        { token: REFLECTION_EVIDENCE, optional: true },
-        { token: ExecQualityService, optional: true },
-      ],
-    },
   ],
-  exports: [AGENT_CLIENT, AGENT_LLM_BUDGET, PLAYBOOK_PROVIDER, REFLECTION_SERVICE, EDGE_POLICY],
+  exports: [AGENT_CLIENT, AGENT_LLM_BUDGET, PLAYBOOK_PROVIDER, EDGE_POLICY],
 })
 export class AgenticStrategyModule {}

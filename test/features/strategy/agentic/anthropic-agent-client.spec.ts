@@ -410,6 +410,130 @@ describe('AnthropicAgentClient', () => {
     });
   });
 
+  // AGENTIC_PLAN_AUTHORITATIVE_EXITS (2026-07-30). Reproduces the exit-attribution study's Arm 2:
+  // the model's declared stop/take-profit/maxHold run mechanically and its mid-trade 'close' is
+  // ignored entirely (test/backtest/exit-attribution.spec.ts only ever calls simulateExit — it has
+  // no 'close' input at all). Measured −78.4 bps/trip vs Arm 1's −108.1: +29.7 bps of the model's
+  // own discretion removed. NOT a new exit rule and NOT a geometry change — the settled sweep
+  // (verdicts.md § NO EXIT RULE RESCUES THESE ENTRIES) stays closed.
+  describe('plan-authoritative exits (AGENTIC_PLAN_AUTHORITATIVE_EXITS)', () => {
+    const withDirectives = (side: 'LONG' | 'SHORT'): AgentContext => ({
+      indicators: null,
+      position: {
+        side,
+        qty: '1',
+        avgEntry: '100',
+        realizedPnl: '0',
+        unrealizedPnlPct: null,
+        openOrders: 0,
+        // Present exactly when the strategy holds an activePlan while positioned — the gate's own
+        // positive-evidence predicate (AgentPositionSummary.directives).
+        directives: {
+          entryStyle: 'maker',
+          stopLossPct: '0.02',
+          takeProfitPct: '0.04',
+          maxHoldBars: 20,
+        },
+        barsHeld: 3,
+        barsUntilForcedExit: 17,
+      },
+      recentDecisions: [],
+    });
+
+    async function proposeClose(
+      cfgOver: Partial<AnthropicAgentClientConfig>,
+      context: AgentContext,
+      toolInput: Record<string, unknown> = { action: 'close' },
+    ) {
+      const fetchFn = vi.fn();
+      const client = new AnthropicAgentClient(buildCfg(cfgOver), fetchFn);
+      fetchFn.mockResolvedValue(apiResponse(toolUseBody(toolInput, 'tool_use', 'submit_trade')));
+      return client.propose(buildInput({ tickers: new Map([[SYM, ticker('100', 1n)]]), context }));
+    }
+
+    it.each([{ side: 'LONG' as const }, { side: 'SHORT' as const }])(
+      '$side: a mid-trade close cannot override the declared plan — no exit signal is emitted',
+      async ({ side }) => {
+        const proposal = await proposeClose(
+          { planAuthoritativeExits: true },
+          withDirectives(side),
+          { action: 'close', thesis: 'losing patience with this one' },
+        );
+
+        expect(proposal.signals).toEqual([]);
+        // Journalled as 'hold', never 'close': a directive-less 'close' is what makes
+        // agentic.strategy.ts clear the active plan, and a cleared plan is the unmanaged position
+        // this gate exists to prevent.
+        expect(proposal.decision?.action).toBe('hold');
+        // The model's intent survives, queryable: WHERE rationale LIKE 'plan_authoritative_close:%'.
+        expect(proposal.decision?.rationale).toBe(
+          'plan_authoritative_close: losing patience with this one',
+        );
+        // No directives ride along either — nothing may restart the maxHold clock off a close.
+        expect(proposal.plan).toBeUndefined();
+      },
+    );
+
+    it('is inert with the flag off: the same close still maps to EXIT_LONG (two-step-enable claim)', async () => {
+      const proposal = await proposeClose({}, withDirectives('LONG'));
+
+      expect(proposal.signals).toHaveLength(1);
+      expect(proposal.signals[0]!.kind).toBe('EXIT_LONG');
+      expect(proposal.decision?.action).toBe('close');
+    });
+
+    // FAILURE DIRECTION: toward EXITING. The gate fires only on positive evidence that a
+    // deterministic executor is already enforcing the declared invalidation. A positioned symbol
+    // whose `directives` are ABSENT is the restart case — the in-memory plan was lost and nothing is
+    // enforcing anything — so the close must go through rather than strand an unmanaged position.
+    it('lets the close through when the position carries NO enforced directives (plan lost)', async () => {
+      const proposal = await proposeClose({ planAuthoritativeExits: true }, LONG_CONTEXT);
+
+      expect(proposal.signals).toHaveLength(1);
+      expect(proposal.signals[0]!.kind).toBe('EXIT_LONG');
+      expect(proposal.decision?.action).toBe('close');
+    });
+
+    it('lets the close through when no context is supplied at all', async () => {
+      const fetchFn = vi.fn();
+      const client = new AnthropicAgentClient(buildCfg({ planAuthoritativeExits: true }), fetchFn);
+      fetchFn.mockResolvedValue(
+        apiResponse(toolUseBody({ action: 'close' }, 'tool_use', 'submit_trade')),
+      );
+      // No context ⇒ side resolves FLAT ⇒ nothing to close, and the action is NOT rewritten: the
+      // gate never claims a suppression it did not make.
+      const proposal = await client.propose(
+        buildInput({ tickers: new Map([[SYM, ticker('100', 1n)]]) }),
+      );
+
+      expect(proposal.signals).toEqual([]);
+      expect(proposal.decision?.action).toBe('close');
+    });
+
+    it('leaves a close while FLAT untouched (nothing declared, nothing to suppress)', async () => {
+      const proposal = await proposeClose({ planAuthoritativeExits: true }, FLAT_CONTEXT);
+
+      expect(proposal.signals).toEqual([]);
+      expect(proposal.decision?.action).toBe('close');
+    });
+
+    // SCOPE, stated so a later pass does not read more into this than was measured: only the
+    // 'close' ACTION is dropped. An 'adjust' is the model revising the plan it declared — the
+    // sanctioned channel, not a deviation from it — and its partial close is not the exit channel
+    // the 29.7 bps was measured on (a partial never closes a round trip in walkRoundTrips).
+    it('does not touch an adjust-driven partial close', async () => {
+      const proposal = await proposeClose(
+        { planAuthoritativeExits: true },
+        withDirectives('LONG'),
+        { action: 'adjust', partialCloseFraction: 0.5 },
+      );
+
+      expect(proposal.signals).toHaveLength(1);
+      expect(proposal.signals[0]!.kind).toBe('EXIT_LONG');
+      expect(proposal.decision?.action).toBe('adjust');
+    });
+  });
+
   describe('decision and usage telemetry', () => {
     it('always fills AgentProposal.decision from the validated tool payload', async () => {
       const fetchFn = vi.fn();

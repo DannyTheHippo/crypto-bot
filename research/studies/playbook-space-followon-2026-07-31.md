@@ -6,6 +6,22 @@ Bonferroni denominators, the placebo, the underpowered rule, the funded ladder, 
 decision rules below cannot change after a result is seen. Any later variation is a new registered
 trial.
 
+**Amended 2026-07-30 to the owner-funded design, before the freeze and before any paid call.** The
+amendment narrows the funded set and adds two pre-registrations; it does not touch the metric, the
+horizons, the bars, the corpora or the guards. Owner decisions of record:
+
+1. **Funded: `haiku_swarm` ($5.10) + its `haiku_single` control ($1.70) = $6.80. Nothing else in
+   Family A.** Family B is unchanged.
+2. **`tool_use_trader` is DEFERRED, not cancelled** (§ `tool_use_trader` — deferred, and why).
+3. **The four prose arms stay deferred**, as already registered.
+4. **The deployment-bar ranking is itself the product** — directly actionable: an arm that beats the
+   running playbook ships regardless of its research-bar verdict (§ Decision rules).
+
+Two consequences follow and are registered here rather than discovered later: Family A's denominator
+drops to **4 cells, α = 0.0125** (§ Family A α), and the paid `incumbent_control` is replaced by a
+zero-cost **sequencing constraint** with a falsifiable check and a stated residual risk
+(§ The sequencing constraint).
+
 The direct predecessor is [`playbook-space-replay-2026-07-28.md`](playbook-space-replay-2026-07-28.md).
 Its 20-cell family is **SPENT** — every cell it declared was scored and the verdict
 (`NO_SURVIVOR`) is published. Nothing here re-uses that denominator, and no arm below may be scored
@@ -87,7 +103,12 @@ it. less-bad is always better than dropping it since it is CLOSER to profitabili
 - **Incumbent identity is read at comparison time** from `agentic_playbook_info`, not hardcoded here.
   At this document's freeze the running champion is **v8** with **v9** as an unresolved candidate on
   `AGENTIC_PLAYBOOK_AB_PCT=40`% of decides (`STATUS.md`). If `inverted` ships before this trial runs,
-  `inverted` is the incumbent and the Family A control below is `inverted`'s text.
+  `inverted` is the incumbent and the Family A comparator is `inverted`'s recorded row.
+- **The Family A comparator is the PREDECESSOR'S RECORDED ROW, not an in-run re-measure**, because
+  `incumbent_control` is unfunded. Both `champion_v8` and `inverted` have recorded rows in the
+  2026-07-28 results, so either can serve depending on which is running. **The claim that this
+  comparison is prompt-controlled is conditional on the byte-identity check** in § The sequencing
+  constraint, and is reported as between-run whenever that check fails.
 - **Reverting** a failed deployment falls back to the **next-least-bad** arm at the declared horizon,
   never to `champion_v8` by default (`verdicts.md` Guardrail 5).
 
@@ -128,14 +149,83 @@ enough that funding prose arms ahead of anything else would be poor use of the b
 1. **The architecture axis** — the one axis with no evidence against it. Model is settled (two
    vendors, indistinguishable). Prose is settled for SIGN (`minimal` ≈ champion). Architecture has
    never been measured on this corpus at all, and `architecture-options-2026-07-28.md` names two
-   concrete candidates that the existing harness can run for tens of dollars rather than build.
+   concrete candidates that the existing harness can run for tens of dollars rather than build. The
+   funded design buys **one** of them.
 2. **The deployment-bar ranking** — which, unlike the research bar, produces an actionable answer
-   whatever the means come out as. It is the part of this trial that cannot fail to be useful.
+   whatever the means come out as. **Owner ruling 2026-07-30: the ranking is itself the product.** It
+   is not a consolation output of a failed edge hunt; it is a directly actionable result, and it is
+   the part of this trial that cannot fail to be useful.
 
-The architecture memo's own predictions are recorded here as priors so they can be scored: haiku
-swarm **NEUTRAL-TO-WORSE** (ensembling reduces variance, not bias, and the finding is a bias —
-averaging more draws from a biased predictor converges _on_ the bias); tool use **WEAK** unless it
-reaches information genuinely absent from the payload.
+### The architecture screen as a SCORED PRIOR — what it is, and what it is not
+
+[`architecture-options-2026-07-28.md`](architecture-options-2026-07-28.md) (committed `c1206fc`,
+2026-07-28) predicted **BOTH** arms negative before either was funded: haiku swarm
+**NEUTRAL-TO-WORSE** (ensembling reduces variance, not bias, and the finding is a bias — averaging
+more draws from a biased predictor converges _on_ the bias); tool use **WEAK** unless it reaches
+information genuinely absent from the payload.
+
+Its evidentiary class is stated here in the memo's own words so no reader upgrades it:
+**reasoned-but-unmeasured.** _"No new measurement was made — both provider accounts are unfunded — so
+nothing here is a finding. It is a screen."_ A screen is a prior. It cannot settle an arm, and this
+trial does not treat it as having settled one.
+
+Three things follow, and all three are registered before the result:
+
+- **The anti-swarm argument is MODEL-AGNOSTIC.** "Ensembling reduces variance, not bias" is a
+  property of averaging, not a property of haiku. It is therefore **genuinely separate** from the
+  haiku-4.5 single-model decide verdict, and a reader must not collapse the two: a swarm could fail
+  because averaging is the wrong lever, or because haiku is a worse decider than sonnet, and those
+  are different findings with different consequences. **`haiku_single` exists to tell them apart**,
+  and that is its whole job.
+- **The 2026-07-30 `NO_SURVIVOR` verdict STRENGTHENS the screen, it does not weaken it.** The
+  predecessor measured the failure as a **bias** — worse than a random-bar placebo, negative in both
+  chronological halves, more negative under trimming. A variance-reduction instrument aimed at a bias
+  is the exact configuration the screen said would not help. The prior is now better-supported than
+  when it was written.
+- **The memo nevertheless recommended running this test at this price** — _"it is a ~$5 question, so
+  it can simply be answered"_ — and that recommendation is why the arm is funded despite a negative
+  prior. **Scoring a pre-registered prediction is strictly stronger than leaving it unscored.** A
+  screen that is never tested stays an opinion however well-argued; a screen that is tested becomes
+  either a validated instrument for the next screening decision or a corrected one. Both outcomes are
+  worth $5.10, and the negative prior is the reason the spend stops at one arm rather than two.
+
+### The enhanced-loop interaction — pre-registered BEFORE the result
+
+Concurrent work moves authoring, decision-history curation and entry policy onto the **free daily
+loop**. That changes what a paid swarm is worth, and the direction is **down**. Three named mechanisms
+are registered here **before the swarm arm runs**, for one reason: an explanation produced after a
+negative result is a story, and the same explanation registered beforehand is a prediction.
+
+1. **Wrong instrument for the measured failure.** The loop is a **bias-correction** instrument — it
+   revises the text in response to realised outcomes. A swarm is a **variance-reduction** instrument
+   — it averages draws at fixed text. The measured failure is a **bias**: worse than a random-bar
+   placebo, negative in **both** chronological halves, and **more** negative under trimming. Trimming
+   removing the tails and making it worse is the signature of a centre that is displaced, not of a
+   spread that is wide. Averaging more draws from a displaced centre converges **on** the
+   displacement.
+2. **They actively interfere, they do not merely fail to help.** Majority vote collapses minority
+   actions to the mode. That produces **fewer distinct action/outcome pairs** in the very corpus the
+   loop learns from — a swarmed lane records a narrower slice of the action space per unit time, so
+   the free instrument that does address bias gets a thinner diet. Buying variance reduction
+   therefore costs the bias-correction channel its raw material.
+3. **The price comparison is not close.** The loop aggregates **hundreds of REALISED outcomes at
+   $0**. The swarm buys **N=3 views of one UNREALISED payload at 3× the call cost per decide** and,
+   in live operation, 3× the rate-limit and latency footprint. Even granting the swarm its best case,
+   it is the more expensive instrument aimed at the smaller share of the error.
+
+**The honest counter, and it is a real one.** The loop is **retrospective and between-decides**; a
+swarm is **per-decide**. If the failure were per-decide sampling noise — the model landing on a bad
+draw at the moment of decision — the loop structurally could not reach it and only a swarm could.
+That argument is sound as far as it goes.
+
+**What closes the gap is the measurement, not the argument.** Both chronological halves negative and
+the result worsening under trimming is not what per-decide sampling noise looks like; it is what a
+displaced centre looks like. So the counter survives as a mechanism and fails as an explanation of
+**this** corpus's numbers.
+
+**Registered consequence, both directions:** a negative swarm result may cite these three mechanisms
+as pre-registered rather than post-hoc. A **positive** swarm result puts mechanism 2 into live
+conflict with the loop and MUST be reported as an unresolved interaction, not as a clean win.
 
 ## Family A — in-sample, the frozen 354-row corpus
 
@@ -191,12 +281,14 @@ are "unrun". They are excluded from Family A and from its denominator.
 ### The architecture arms — the one axis with no evidence against it
 
 Both come from [`architecture-options-2026-07-28.md`](architecture-options-2026-07-28.md), which
-proposed them and priced their falsification at ~$5 rather than building either.
+proposed them and priced their falsification at ~$5 rather than building either. **One is funded
+(`haiku_swarm`); the other is deferred with its reason on the record and its specification intact.**
 
-#### `haiku_swarm` — memo option (a)
+#### `haiku_swarm` — memo option (a) — **FUNDED, $5.10**
 
-- **N = 3** `claude-haiku-4-5` calls per corpus row, the **same playbook text as the incumbent
-  control**, so the only thing that varies against the control is the architecture.
+- **N = 3** `claude-haiku-4-5` calls per corpus row, on the **incumbent's own playbook text**
+  (`champion_v8` as the predecessor measured it), so the only thing that varies against the
+  comparator is the architecture.
 - Majority vote over the parsed action ∈ {`open_long`, `open_short`, everything-else}. Entry side is
   the majority side. **No majority, or a tie, resolves to hold** — declared here because a 3-way vote
   over 3 voters can genuinely tie.
@@ -209,7 +301,32 @@ proposed them and priced their falsification at ~$5 rather than building either.
   because `haiku_swarm` vs a sonnet incumbent would confound architecture with model. The swarm's
   claim is only interpretable against a single haiku on the same rows.
 
-#### `tool_use_trader` — memo option (b)
+#### `tool_use_trader` — memo option (b) — **DEFERRED, not cancelled**
+
+**Owner decision 2026-07-30: deferred.** The reason is recorded because it is the reason, not a
+budget excuse — the arm was cut on its argument first and its price second:
+
+- **The arm serves `get_candles` over a cached price series. That is price history.** The class is
+  settled empty: **4,562 backtests, zero survivors at any fee level including 0 bps.** Extended
+  history and full-resolution higher timeframes are genuinely absent from the payload, but absence
+  from the payload is not the same as presence of information — they are still price.
+- **It is the category error the memo itself warned against.** By
+  `architecture-options-2026-07-28.md`'s own test — _"tools add access, not information"_; _"never
+  build tool use to discover whether a channel works"_ — an arm that spends a tool round-trip to
+  reach more of an exhausted channel is exactly the build the memo said not to make. The screen's
+  authority is not selectively applied: it is used to fund `haiku_swarm` (a ~$5 question worth
+  answering) and to defer this arm (a $11.66 question already answered) in the same breath.
+- **It was the most expensive funded arm** at **2.40×** a sonnet arm, which makes the category error
+  the costliest line in the previous ladder.
+- **The memo's genuine target class is not testable here at any price.** Order-book depth, trade
+  flow, cross-venue spread and funding term structure are the channels a tool could reach that price
+  history cannot — and **this system does not record any of them.** No arm built on this corpus can
+  test that class, so deferring this arm forecloses nothing that was reachable. Building the
+  recording first is the prerequisite, and it is out of scope here.
+
+**The specification below is kept complete and unchanged so a later trial can fund the arm without
+re-deciding anything** — the same treatment the four prose arms get. What it would cost, what it
+would need calibrated, and where it sits in the ladder are all still declared.
 
 The memo's verdict is that tools add **access**, not **information**, and that tool use aimed at data
 the payload already carries is searching an exhausted space more expensively. So the arm is
@@ -237,29 +354,142 @@ specified to reach only what the payload genuinely lacks:
 Cells = scored arms × 4 horizons. **Controls are excluded** (see § The control exclusion, and the
 clause that keeps it honest).
 
+The funded design scores **one** arm: `haiku_swarm`. `haiku_single` is a control and
+`incumbent_control` is not funded at all (§ The sequencing constraint), so neither enters the
+denominator.
+
+**Scored arms = 1. Horizons = 4. Cells = 1 × 4 = 4. α = 0.05 / 4 = 0.0125.**
+
 | scored arms funded | cells | α = 0.05 / cells |
 | --- | --- | --- |
-| 2 (`haiku_swarm`, `tool_use_trader`) — **the funded design** | **8** | **6.25e-3** |
-| 3 | 12 | 4.1667e-3 |
-| 4 | 16 | 3.125e-3 |
-| 5 | 20 | 2.5e-3 |
-| 6 (the full design) | 24 | 2.0833e-3 |
+| 1 (`haiku_swarm`) — **the funded design** | **4** | **0.0125** |
+| 2 (+ `tool_use_trader`) | 8 | 6.25e-3 |
+| 3 (+ `candidate_v9`) | 12 | 4.1667e-3 |
+| 4 (+ `shorts_only`) | 16 | 3.125e-3 |
+| 5 (+ `seed_v1`) | 20 | 2.5e-3 |
+| 6 (+ `high_conviction_only`) — the full design | 24 | 2.0833e-3 |
 
-**The funded figure is α = 0.05 / 8 = 6.25e-3**, and it is written to the design JSON by the sizing
+**The funded figure is α = 0.05 / 4 = 0.0125**, and it is written to the design JSON by the sizing
 step before the first edge call. α may only move along this ladder as arms are **added** by the
 declared order in § The funded ladder — never by dropping an arm after something is known about it.
+The ladder now starts at the funded design rather than in the middle of it, so the only legal
+direction of travel is tighter.
+
+**Family A and Family B both land on α = 0.0125, and that is a coincidence of arithmetic, not a
+pooled family.** Each is 1 scored arm × 4 horizons in its own corpus. They are corrected separately
+and the equality carries no meaning; a result in one is never quoted against the other's α.
 
 ### The control exclusion, and the clause that stops it being a loophole
 
-`incumbent_control` and `haiku_single` are **controls**: they exist to make another arm's number
-interpretable, they are never scored against the +13.0 bar, and they contribute nothing to the
-denominator. That exclusion is only honest under a rule with teeth, so:
+`haiku_single` (Family A) and `champion_v8` (Family B) are **controls**: they exist to make another
+arm's number interpretable, they are never scored against the +13.0 bar, and they contribute nothing
+to the denominator. `incumbent_control` was a third and is no longer funded (§ The sequencing
+constraint). That exclusion is only honest under a rule with teeth, so:
 
 **A control can never PASS. If a control posts a mean above +13.0 with a CI lower bound above +13.0,
 that is NOT a pass, NOT a survivor and NOT quotable as an edge.** It becomes the pre-registered
 hypothesis of a new trial with its own denominator. The harness refuses to call `verdictFor` on a
 control, and the results file marks the tier explicitly — the same discipline the predecessor's lever
 tier ran under.
+
+**A control's mean IS admissible to the deployment ranking**, and that needs saying now that a
+control is half the funded Family A spend. The deployment bar is a ranking of measured means among
+options that all have to be somewhere, so `haiku_single`'s mean is reported in the ranking like any
+other. But **deploying `haiku_single` would be a MODEL swap, not a playbook swap**, and
+`verdicts.md` § THE DECIDE MODEL IS NOT THE LEVER already stands against it. So it ships only under
+the full robustness clause (h=24 **and** ≥3 of 4 horizons), is logged as a **model change** with its
+own live cost delta, and never as a playbook selection. It still cannot PASS the research bar under
+any outcome.
+
+## The sequencing constraint — what replaces the paid `incumbent_control`
+
+`incumbent_control` was $4.86 to re-measure `champion_v8` **inside this run**, so that the deployment
+comparison — the one comparison this trial has to get right — carried no between-run confound. The
+owner funded $6.80, which does not include it. The choice was therefore between dropping the control
+(and quietly accepting a confound) or overspending. **Neither. It is replaced by a zero-cost ordering
+constraint, and its limits are stated rather than glossed.**
+
+### Why ordering can substitute at all
+
+The replay harness does **not** replay a recorded request. It rebuilds the prompt from live source
+every run: `test/eval/agentic/playbook-space-replay.ts` imports `buildPlaybookBlock` and
+`buildSystemPrompt` from `src/features/strategy/agentic/agent-prompt.ts`, and `replayPlanRow`
+(`src/features/strategy/agentic/entry-rate-floor.ts`) composes the system prompt, the playbook block
+and the `buildTradeTool(caps)` schema at call time around the frozen recorded payload string.
+
+So the predecessor's `champion_v8` numbers are reproducible **only** while that file is unchanged.
+Run the swarm arm first and it shares the predecessor's exact prompt surface; the recorded
+`champion_v8` row from the 2026-07-28 study is then directly comparable and no re-measure is needed.
+Run it after any edit to that file and the $4.86 is owed again.
+
+### The constraint, stated as a falsifiable check rather than a promise
+
+> **The `haiku_swarm` arm MUST run at a commit where
+> `src/features/strategy/agentic/agent-prompt.ts` is BYTE-IDENTICAL to that file as it stood at the
+> commit the predecessor's `champion_v8` leg ran at. The run records its own commit SHA in the result
+> file. The check is `git rev-parse <run-SHA>:src/features/strategy/agentic/agent-prompt.ts` against
+> the predecessor's blob `c471c33055abad7c7ec0cb9978f81c61bc3c487d`. EQUAL ⇒ the deployment
+> comparison against the recorded `champion_v8` row may be claimed as prompt-controlled. NOT EQUAL ⇒
+> the comparison degrades to BETWEEN-RUN and MUST be reported as between-run — no exception, no
+> partial credit, and no argument that the differing hunk "does not matter".**
+
+Three deliberate properties:
+
+- **The gate is the whole file, not an enumeration of known-pending edits.** Reasoning per change
+  about which export lands on the replayed request has to be redone correctly every time and is
+  exactly the reasoning that gets waived under time pressure. Byte-identity needs no judgement.
+- **The SHA check is scoped to that ONE file, not to the repository HEAD.** A repo-wide SHA match
+  would fail on unrelated commits, which would make the constraint unusable in practice and would
+  itself become the argument for waiving it.
+- **`c471c33055abad7c7ec0cb9978f81c61bc3c487d` is the blob at `2f1c917`** — the commit that published
+  the predecessor's `NO_SURVIVOR` results — **and it is still the blob at this document's freeze**, so
+  the constraint is satisfiable today. It is recorded as a literal because the predecessor's result
+  artifact is gitignored (`.gitignore` `research/candidates/**`) and carries no commit field, so the
+  run SHA cannot be recovered from the artifact later. Two adjacent files are also currently
+  unchanged from that commit — `test/eval/agentic/playbook-space-arms.ts` (already hash-frozen in the
+  manifest) and `test/eval/agentic/playbook-space-replay.ts` — recorded as observation, not added as
+  further gates.
+
+### The four pending changes are instances of the rule, not the rule
+
+Four plan steps currently queued edit that file. They are listed so the critical path is visible, and
+the rule binds on a fifth that nobody has written yet:
+
+| # | pending change | site |
+| --- | --- | --- |
+| 1 | `recentDecisions` render — `MAX_DECISION_HISTORY` 30→12, 120-char rendered-reason cap | `renderDecisionLines`; the constant lives in `agentic.strategy.ts` |
+| 2 | tool schema — drop the `anyShorts` branch in `buildTradePortfolioTool` and the capability sentence in `buildTradeTool` | `agent-prompt.ts` |
+| 3 | `nextConsultBars` tool-description fix | `agent-prompt.ts:456-459` |
+| 4 | `quoteAssetOf` — the `USDT:USDT` render on perp symbols | `agent-prompt.ts:691-694`, feeding `renderDecisionLines` |
+
+Only part of change 2 (the `buildTradeTool` capability sentence) demonstrably alters **this replay's**
+request, because `replayPlanRow` uses `buildTradeTool`, not the portfolio tool, and replays the
+recorded payload verbatim rather than re-rendering decision history. **That observation is not a
+licence to run after it.** It is per-change reasoning of exactly the kind the byte-identity gate
+exists to make unnecessary, and it is incomplete on its own terms: changes 1 and 4 alter the
+`input_payload` the live lane RECORDS, which is the corpus **Family B** will freeze — so they are not
+free even where Family A's replay is untouched.
+
+### The practical consequence, stated plainly
+
+**The swarm arm is now on the critical path ahead of four separate plan steps.** It either runs soon
+— before any of them lands — or the $4.86 `incumbent_control` has to be funded after all, taking
+Family A from $6.80 to $11.66 and requiring a new owner decision on the spend. That is the real
+trade, and it is visible here rather than implied. It is registered as rank 5 of the ladder,
+**contingent**: funded if and only if the byte-identity check fails.
+
+### What sequencing CANNOT control
+
+The constraint removes the prompt-surface confound. It does not remove:
+
+- **Provider-side model drift between the two run dates.** `claude-sonnet-5` on 2026-07-28 and
+  whatever the same alias serves on the swarm arm's run date are not guaranteed to be the same
+  weights or the same serving stack. **No sequencing constraint can remove this**, an in-run control
+  would have removed it, and it is the residual price of the substitution.
+- **Re-run variance at fixed prompt and fixed model** — sampling noise across two executions of the
+  same configuration, still unquantified (it was never measured, and this trial does not measure it).
+- Neither is fixable within $6.80. Both are reported alongside any deployment claim this comparison
+  supports.
 
 ## Family B — out-of-sample, a NEW corpus
 
@@ -366,38 +596,46 @@ uses a **fixed z = 1.96 regardless of α**, the p-clause uses the family's z.
 Cluster SEs are read off the predecessor's own bootstrap intervals for `inverted`, its best-powered
 arm (n=117, 20 clusters), as `(mean − CI_lo) / 1.96`:
 
-| h | SE (bps) | CI clause needs | p-clause at α=6.25e-3 (z=2.498) | binding requirement |
+| h | SE (bps) | CI clause needs | p-clause at α=0.0125 (z=2.2414) | binding requirement |
 | --- | --- | --- | --- | --- |
-| 1 | 3.52 | +19.9 | +21.8 | **+21.8** |
-| 4 | 5.97 | +24.7 | +27.9 | **+27.9** |
-| 8 | 9.29 | +31.2 | +36.2 | **+36.2** |
-| 24 | 30.51 | +72.8 | +89.2 | **+89.2** |
+| 1 | 3.52 | +19.9 | +20.9 | **+20.9** |
+| 4 | 5.97 | +24.7 | +26.4 | **+26.4** |
+| 8 | 9.29 | +31.2 | +33.8 | **+33.8** |
+| 24 | 30.51 | +72.8 | +81.4 | **+81.4** |
 
 **This is why `inverted` at +47.6 bps failed and why no family size would have rescued it.** At h=24
-the cluster interval is so wide that an arm must post roughly **+89 bps** to pass. The gap was 42 bps
-of interval width, not a rounding error in α.
+the cluster interval is so wide that an arm must post roughly **+81 bps** to pass even at this
+trial's loosest possible α — the narrowest funded family the design permits. The gap was ~34 bps of
+interval width, not a rounding error in α. Both families use these figures: their α is the same
+0.0125 and the SEs are read off the same best-powered arm.
 
 ## The asymmetry that lets this trial afford more arms than the last one
 
 Widening the family costs **research-bar power** and costs the **deployment bar nothing**, because
 "beats the incumbent" is a ranking of measured means, not an α-corrected test against a null.
 
-Quantified on the table above — tripling the family from 8 cells to 24 raises the required mean by:
+Quantified on the table above — going the whole way from the funded 4 cells to the full design's 24,
+a **six-fold** widening, raises the required mean by:
 
-| h | α=6.25e-3 (8 cells) | α=2.0833e-3 (24 cells) | cost of tripling the family |
+| h | α=0.0125 (4 cells, funded) | α=2.0833e-3 (24 cells, full design) | cost of six-folding the family |
 | --- | --- | --- | --- |
-| 1 | +21.8 | +23.1 | **+1.3 bps** |
-| 4 | +27.9 | +30.1 | **+2.2 bps** |
-| 8 | +36.2 | +39.6 | **+3.4 bps** |
-| 24 | +89.2 | +100.4 | **+11.2 bps** |
+| 1 | +20.9 | +23.1 | **+2.2 bps** |
+| 4 | +26.4 | +30.1 | **+3.7 bps** |
+| 8 | +33.8 | +39.6 | **+5.8 bps** |
+| 24 | +81.4 | +100.4 | **+19.0 bps** |
 
-At h=1/4/8 a three-fold family costs 1.3–3.4 bps of required mean, which is small against a bar of
-+13.0 and an observed spread of −85 to +48. At h=24 it costs 11.2 bps, which is not small — but h=24
-already requires +89, so the marginal α cost is irrelevant to any decision anyone would make there.
+At h=1/4/8 a six-fold family costs 2.2–5.8 bps of required mean, which is small against a bar of
++13.0 and an observed spread of −85 to +48. At h=24 it costs 19.0 bps, which is not small — but h=24
+already requires +81, so the marginal α cost is irrelevant to any decision anyone would make there.
 
 **So the constraint on arm count in this trial is money, not statistics**, and every arm the budget
-buys also buys a deployment-bar data point at zero statistical cost. That is the reverse of the
-predecessor's situation and it is why the ladder below adds arms rather than protecting α.
+buys also buys a deployment-bar data point at zero statistical cost.
+
+**The funded family is nonetheless the narrowest the design permits, and that is a funding outcome,
+not a power win.** α sitting at its loosest is a consequence of buying one scored arm; it buys ~2 bps
+of required mean at the horizons anyone would act on, and it costs five arms' worth of
+deployment-bar data points, which cost nothing statistically. Stating it the other way round would
+be dressing a budget cut as a design choice.
 
 The direction deserves scrutiny, so the same guard the predecessor wrote applies unchanged: the
 clauses that do **not** depend on α — `mean > 13.0` and a 95% CI lower bound above 13.0 — are
@@ -440,39 +678,60 @@ before sizing.
 
 ### Totals
 
-| item | cost |
-| --- | --- |
-| **Calibration** — haiku shape (40 rows × 3), tool-use shape (40 × 2.4×), sonnet re-check (40) | **$2.45** |
-| **Family A — `incumbent_control`** (sonnet, 354 rows) | $4.86 |
-| **Family A — `tool_use_trader`** | $11.66 |
-| **Family A — `haiku_swarm`** (N=3) | $5.10 |
-| **Family A — `haiku_single`** control | $1.70 |
-| **Family A — `candidate_v9`** | $4.86 |
-| **Family A — `shorts_only`** | $4.86 |
-| **Family A — `seed_v1`** | $4.86 |
-| **Family A — `high_conviction_only`** | $4.86 |
-| **Family B — `inverted`** | $4.86 |
-| **Family B — `champion_v8`** control | $4.86 |
-| **FULL DESIGN TOTAL** | **$54.93** |
+Calibration is itemised because two of its three probes travel with arms that are no longer funded or
+were never funded:
 
-**$54.93 against $67.49 remaining Anthropic is 81% of the balance**, leaving $12.56 — about **4.2 days**
-of live lane at the $3/day cap. **The full design fits the balance and does not fit the allocation.**
-That distinction is the whole content of the next section: a study that starves the bot it is
-studying is not a saving.
+| calibration probe | calls | cost | funded? |
+| --- | --- | --- | --- |
+| haiku shape (40 rows × 3 calls) | 120 | $0.58 | **yes** |
+| sonnet re-check (40 rows) | 40 | $0.55 | **yes** — Family B runs two sonnet legs |
+| tool-use shape (40 rows × 2.4×) | 96 equiv. | $1.32 | no — travels with `tool_use_trader` |
+| **funded calibration** | | **$1.13** | |
+| **full-design calibration** | | **$2.45** | |
+
+| item | cost | funded? |
+| --- | --- | --- |
+| **Calibration** — funded probes (haiku shape + sonnet re-check) | **$1.13** | **yes** |
+| **Family B — `inverted`** | $4.86 | **yes** |
+| **Family B — `champion_v8`** control | $4.86 | **yes** |
+| **Family A — `haiku_swarm`** (N=3) | $5.10 | **yes** |
+| **Family A — `haiku_single`** control | $1.70 | **yes** |
+| **FUNDED TOTAL** | **$17.65** | |
+| — of which **Family A: $5.10 + $1.70 = $6.80** | | |
+| Calibration — tool-use probe | $1.32 | deferred with the arm |
+| **Family A — `tool_use_trader`** | $11.66 | deferred |
+| **Family A — `incumbent_control`** (sonnet, 354 rows) | $4.86 | contingent (§ The sequencing constraint) |
+| **Family A — `candidate_v9`** | $4.86 | deferred |
+| **Family A — `shorts_only`** | $4.86 | deferred |
+| **Family A — `seed_v1`** | $4.86 | deferred |
+| **Family A — `high_conviction_only`** | $4.86 | deferred |
+| **FULL DESIGN TOTAL** | **$54.93** | |
+
+Arithmetic, so it can be checked rather than trusted: funded = $1.13 + $4.86 + $4.86 + $5.10 + $1.70
+= **$17.65**, of which Family A is **$6.80**. Full design = $17.65 + $1.32 + $11.66 + $4.86 +
+(4 × $4.86 = $19.44) = **$54.93**, unchanged from the pre-amendment figure.
+
+**$54.93 against $67.49 remaining Anthropic is 81% of the balance. $17.65 is 26% of it**, leaving
+**$49.84** — about **16.6 days** of live lane at the $3/day cap, **26.8 days** at the $1.86/day
+measured mean. The full design fits the balance and does not fit the allocation; the funded design
+fits both with room, and the difference is five deferred arms rather than any weakening of the study
+it actually runs.
 
 ## The funded ladder — what is cut, and why
 
 ### The allocation, declared
 
-- **Research allocation: $37.00.**
-- **Live-lane reserve: $30.49** — about **10 days** at the $3/day cap, **16 days** at the $1.86/day
-  measured mean.
+- **Research allocation: $18.00** — funded estimate **$17.65**, owner decision 2026-07-30.
+- **Live-lane reserve: $49.84** — about **16.6 days** at the $3/day cap, **26.8 days** at the
+  $1.86/day measured mean.
 
-The reserve is smaller than the predecessor's 35 days, and the reason is on the record rather than
-implied: `verdicts.md` establishes that the live lane accumulates evidence for a gate the present
-entry signal provably cannot pass, at ~$2.6/day. Lane runway has real but declining value; the
-architecture axis has never been measured. The split is a loop-domain measurement decision, recorded
-here with its date and its reasoning so it can be disputed against something concrete.
+The pre-amendment split was $37.00 research / $30.49 reserve, argued on the grounds that
+`verdicts.md` establishes the live lane accumulating evidence for a gate the present entry signal
+provably cannot pass, at ~$2.6/day — declining runway value against an unmeasured architecture axis.
+**The owner decision reverses the emphasis and the document records that rather than re-arguing it:**
+research drops to $18.00, the reserve roughly doubles, and the axis is still measured because the
+question the memo priced at ~$5 is the cheap half of what $37.00 would have bought. Both figures are
+loop-domain measurement decisions carrying their date, disputable against something concrete.
 
 ### The frozen ladder — declared before any cost is measured
 
@@ -481,45 +740,65 @@ to pick arms once something is known about them.
 
 | rank | unit | cost | cumulative | funded? |
 | --- | --- | --- | --- | --- |
-| 0 | **Calibration** (mandatory; sizing reads it) | $2.45 | $2.45 | **yes** |
-| 1 | **Family B** — `inverted` + `champion_v8` control | $9.72 | $12.17 | **yes** |
-| 2 | Family A — `incumbent_control` | $4.86 | $17.03 | **yes** |
-| 3 | Family A — `tool_use_trader` | $11.66 | $28.69 | **yes** |
-| 4 | Family A — `haiku_swarm` | $5.10 | $33.79 | **yes** |
-| 5 | Family A — `haiku_single` control | $1.70 | $35.49 | **yes** |
+| 0 | **Calibration** — haiku shape + sonnet re-check (mandatory; sizing reads it) | $1.13 | $1.13 | **yes** |
+| 1 | **Family B** — `inverted` + `champion_v8` control | $9.72 | $10.85 | **yes** |
+| 2 | Family A — `haiku_swarm` | $5.10 | $15.95 | **yes** |
+| 3 | Family A — `haiku_single` control | $1.70 | $17.65 | **yes** |
+| 4 | Family A — `tool_use_trader` (+ its $1.32 calibration probe) | $12.98 | $30.63 | no — deferred |
+| 5 | Family A — `incumbent_control` | $4.86 | $35.49 | **contingent** |
 | 6 | Family A — `candidate_v9` | $4.86 | $40.35 | no |
 | 7 | Family A — `shorts_only` | $4.86 | $45.21 | no |
 | 8 | Family A — `seed_v1` | $4.86 | $50.07 | no |
 | 9 | Family A — `high_conviction_only` | $4.86 | $54.93 | no |
 
-**Funded total: $35.49 of the $37.00 allocation. Hard cap $40.00**, enforced in-harness by a USD
+**Rank 5 is the one conditional entry in the ladder and its condition is mechanical, not
+discretionary:** `incumbent_control` is funded **if and only if** the byte-identity check in
+§ The sequencing constraint fails — i.e. the swarm arm could not run before `agent-prompt.ts`
+changed. It is not available for any other reason, and its condition cannot be evaluated after
+seeing a result because the check runs on the run's own recorded SHA before scoring.
+
+**Funded total: $17.65 of the $18.00 allocation. Hard cap $21.00**, enforced in-harness by a USD
 meter that prices every returned `usage` and **refuses to start a call that could cross the cap** —
 fail-closed on attempt start, mirroring `AttemptScopedBudget` (`agent-budget.ts:126`) after the
-2026-07-20 Opus runaway spent $2.48 against a $1.50 stop. The $4.51 of headroom between estimate and
-cap is not decoration: it is what absorbs a calibration coming in above the planning rate, which is
-precisely what happened to the predecessor's kimi figure.
+2026-07-20 Opus runaway spent $2.48 against a $1.50 stop. The $3.35 of headroom between estimate and
+cap is not decoration and it is sized against the one unmeasured number in the design: if haiku
+calibrates at **0.50× sonnet** instead of the assumed 0.35× — a 43% overrun — the funded set costs
+$0.82 (haiku probe) + $0.55 + $9.72 + $7.28 (swarm) + $2.43 (single) = **$20.80**, still under the
+cap. A worse overrun than that is refused mid-run rather than discovered in the invoice, which is
+precisely what the predecessor's kimi figure taught.
 
 ### What is cut, and why it is the right cut
 
-**Four prose arms — `candidate_v9`, `shorts_only`, `seed_v1`, `high_conviction_only` — are cut.**
-They are fully specified above so that a later trial can fund them without re-deciding anything.
+**Five arms are cut and one paid control is replaced.** All are fully specified above so that a later
+trial can fund them without re-deciding anything.
+
+- **Four prose arms** — `candidate_v9`, `shorts_only`, `seed_v1`, `high_conviction_only`.
+- **`tool_use_trader`**, on the argument in its own section, not on price alone.
+- **`incumbent_control`**, replaced by a zero-cost sequencing constraint with a stated residual risk
+  (§ The sequencing constraint) rather than dropped silently.
+
+The reasoning behind that shape:
 
 - **Arms before rows, always.** Cost scales as rows × arms; power comes from rows; and a smaller
   family _loosens_ α. Cutting rows would raise the required mean by 1/sqrt(n) on every remaining cell
   and push `high_conviction_only` under MIN_ENTRIES, for the same money.
 - **Prose is cut before architecture** because prose is the axis with five recorded failures and
   architecture is the axis with no evidence against it. Paying $19.44 for four more draws from a
-  distribution that has produced five failures, instead of $16.76 for the first measurement of an
+  distribution that has produced five failures, instead of $6.80 for the first measurement of an
   untested axis, would be spending on the question already answered.
+- **The tool arm is cut ahead of the swarm despite both sitting on the architecture axis**, because
+  only one of them is aimed at a channel the system has never measured. The other is aimed at price
+  history, which is measured, settled and empty. Same axis, different questions.
 - **The three zero-entry arms are not in the ladder at all.** They are a recorded outcome, not a
   deferred cut.
 
 **If the budget stretches further** — a top-up, or a calibration cheaper than the planning rate —
-the ladder adds ranks 6→9 **in that order**, and Family A's α tightens along the published table
-(8 → 12 → 16 → 20 → 24 cells). **If it does not stretch**, the ladder drops from the bottom of the
-funded set upward: rank 5, then 4, then 3. Rank 1 (Family B) and rank 2 (the incumbent control) are
-never dropped — without them the trial has neither an out-of-sample test nor a deployment comparison,
-which are its two reasons to exist.
+the ladder adds ranks 4, then 6→9 **in that order**, and Family A's α tightens along the published
+table (4 → 8 → 12 → 16 → 20 → 24 cells). Rank 5 is skipped in that traversal: it is
+condition-triggered, not budget-triggered. **If it does not stretch**, the ladder drops from the
+bottom of the funded set upward: rank 3, then 2. Rank 1 (Family B) is never dropped, and rank 2 is
+the trial's only scored Family A arm — dropping both leaves the trial with neither an out-of-sample
+test nor the architecture measurement, which are its two reasons to exist.
 
 ## Guards carried forward, all fail-closed
 
@@ -549,9 +828,17 @@ Each one was earned by a failure and none is re-litigated here:
    truncates every arm at the same row and cross-arm comparison stays valid. A partial run is
    reported as partial with its true row count.
 7. **Look-ahead assertion on `get_candles`** (§ `tool_use_trader`) — run-voiding, because a leak
-   there is indistinguishable from the result the trial is looking for.
+   there is indistinguishable from the result the trial is looking for. Dormant while that arm is
+   deferred; it is part of the kept specification and binds the moment the arm is funded.
 8. **Every arm must pass the live `validatePlaybook` gate**, asserted in the runner. An arm the live
    validator would reject is not a reachable point in playbook space.
+9. **Prompt-surface byte-identity check** (§ The sequencing constraint) — the run records its own
+   commit SHA and the `agent-prompt.ts` blob hash. **This guard fails OPEN by design and is the one
+   exception in this list:** it is a measurement-quality gate, not a safety gate, so a mismatch
+   **downgrades the reported attribution to between-run** rather than voiding the run. Voiding on
+   mismatch would let a routine unrelated edit destroy $6.80 of already-collected data, which is the
+   wrong failure direction for a gate that measures nothing about correctness of the numbers
+   themselves. The downgrade is mandatory and machine-recorded, never a reporting judgement.
 
 ## Weaknesses, stated before the result
 
@@ -562,15 +849,18 @@ Each one was earned by a failure and none is re-litigated here:
    `haiku_single` decomposes it, but only partially: a swarm-vs-single-haiku contrast is clean, while
    a swarm-vs-sonnet-incumbent contrast is not, and the deployment-bar comparison necessarily uses
    the latter.
-3. **The tool-use arm changes the request shape**, not only the information available. Turn 1 runs
-   `tool_choice: auto` where every other arm runs a single forced call. Turn 2 is forced so the
-   decision shape matches, but the first turn's freedom is a real difference between this arm and the
-   rest, and a difference in its result cannot be cleanly attributed to the tool alone.
-4. **The tool may reach nothing that matters.** The memo's own screen says tools add access, not
-   information, and the 1,807-cut adversarial search already covered everything the system records
-   (0 of 188 counterfactual cuts positive at n≥8). Extended candle history is genuinely absent from
-   the payload, but it is still _price_, and price TA is settled empty across 4,562 backtests at
-   every fee level including zero. **This arm's honest prior is that it measures a null.**
+3. **The tool-use arm changes the request shape** (deferred arm; weakness retained against the kept
+   specification). Turn 1 runs `tool_choice: auto` where every other arm runs a single forced call.
+   Turn 2 is forced so the decision shape matches, but the first turn's freedom is a real difference
+   between this arm and the rest, and a difference in its result cannot be cleanly attributed to the
+   tool alone.
+4. **The tool may reach nothing that matters** (deferred arm). The memo's own screen says tools add
+   access, not information, and the 1,807-cut adversarial search already covered everything the
+   system records (0 of 188 counterfactual cuts positive at n≥8). Extended candle history is
+   genuinely absent from the payload, but it is still _price_, and price TA is settled empty across
+   4,562 backtests at every fee level including zero. **This arm's honest prior is that it measures a
+   null** — which is why it is deferred rather than funded, and the weakness is now the deferral's
+   stated reason as well as the arm's.
 5. **Family B's corpus is conditioned on the deployed policy.** Which rows are FLAT depends on what
    the live arm entered, so the post-cut FLAT population is not an independent draw from the same
    population as the frozen corpus. `champion_v8` as regime control mitigates but does not remove
@@ -583,10 +873,22 @@ Each one was earned by a failure and none is re-litigated here:
    level, not whether the faded side fills at all.
 8. **The haiku per-call rate is assumed, not measured.** The calibration gate is what turns it into a
    number, and the design is not sized until it does.
-9. **Re-run variance between the frozen study and this one is not quantified.** It is why
-   `incumbent_control` is re-measured **in the same run** rather than read off the predecessor's
-   table — reusing those numbers would have saved $4.86 and introduced an uncontrolled between-run
-   confound into the one comparison the trial has to get right.
+9. **Re-run variance between the frozen study and this one is not quantified, and the funded design
+   no longer buys the control that would have removed it.** The pre-amendment design re-measured
+   `incumbent_control` **in the same run** for exactly this reason. The owner-funded $6.80 does not
+   include it, so it is **substituted, not deleted**: a zero-cost byte-identity constraint on
+   `src/features/strategy/agentic/agent-prompt.ts` between this run and the predecessor's
+   `champion_v8` leg (§ The sequencing constraint). What the substitution buys and what it does not:
+
+   - **Removed by sequencing:** the prompt-surface confound. If the blob check passes, both legs saw
+     the same system prompt, the same playbook block and the same tool schema.
+   - **NOT removed, and no ordering can remove it:** provider-side model drift between the two run
+     dates, and plain re-run sampling variance at fixed prompt and fixed model. An in-run control
+     would have absorbed both. This is the residual risk of taking the $4.86 back, and any deployment
+     claim resting on this comparison carries it explicitly.
+   - **Escape hatch, pre-registered:** if the blob check fails, the comparison is reported as
+     between-run **and** `incumbent_control` becomes fundable at ladder rank 5. The failure mode is a
+     known cost with a known price, not a silent degradation.
 
 ## Decision rules (frozen)
 
@@ -605,9 +907,20 @@ Each one was earned by a failure and none is re-litigated here:
 
 ### Deployment bar
 
+**Owner ruling 2026-07-30: the deployment-bar ranking is itself the product of this trial, and it is
+directly actionable.** It is not a by-product of a failed edge hunt and it is not advisory. An arm
+that beats the running playbook **ships, regardless of its research-bar verdict** — the research bar
+has no veto here, and a `NO_SURVIVOR` alongside a shipped arm is the expected outcome, not a
+contradiction to be reconciled.
+
 - Evaluated **independently of, and regardless of, the research-bar outcome.**
 - The arm with the best mean at h=24 that also beats the incumbent at ≥3 of 4 horizons **ships**,
   including — especially — when it has just been recorded as a research-bar FAIL.
+- **A control's mean enters the ranking** (§ The control exclusion), but a `haiku_single` win ships
+  as a logged **model change** under the same robustness clause, never as a playbook selection.
+- The comparison uses the predecessor's recorded incumbent row, and its controlled-vs-between-run
+  status is reported per § The sequencing constraint. **A between-run comparison still produces a
+  ranking and still ships** — it is reported with the weaker attribution, not suppressed.
 - No arm beats the incumbent ⇒ the incumbent stays. That is a result, not a default.
 - Shipping is logged as a choice among losers, with `verdicts.md` Guardrails 1–5 attached.
 
@@ -615,10 +928,15 @@ Each one was earned by a failure and none is re-litigated here:
 
 > **0 passes ⇒ the learning hypothesis is UNSUPPORTED on the funded arms, NOT proven dead.**
 
-Four prose arms are cut from Family A by budget, and three more produce zero entries on this corpus
-and are untestable here at any budget. Any write-up that reads this trial's `NO_SURVIVOR` as
-"playbook space is empty" is overclaiming, and the same sentence that bound the predecessor binds
-this trial without softening.
+**Family A now funds exactly ONE scored arm, so this limit binds harder than it did on the
+predecessor, not softer.** Four prose arms are cut by budget, `tool_use_trader` is deferred on
+argument, three more produce zero entries on this corpus and are untestable here at any budget, and
+the memo's genuine target class — order-book depth, trade flow, cross-venue, funding term structure —
+**is not recorded by this system at all** and so is untestable on any corpus it can currently build.
+A `NO_SURVIVOR` here is a statement about `haiku_swarm` at h ∈ {1, 4, 8, 24} on 354 in-sample rows and
+about nothing else. Any write-up that reads it as "playbook space is empty" or "architecture is
+settled" is overclaiming, and the same sentence that bound the predecessor binds this trial without
+softening.
 
 ## Provenance
 
@@ -629,7 +947,12 @@ this trial without softening.
   still frozen by that file's content hash in the manifest.
 - Replay shape: `replayPlanRow`, `src/features/strategy/agentic/entry-rate-floor.ts`, with per-row
   `recordedCapabilities` (the 2026-07-30 fix) and `capsSource` reported per call.
-- Prompt builders: `buildSystemPrompt` / `buildPlaybookBlock`, `agent-prompt.ts`.
+- Prompt builders: `buildSystemPrompt` / `buildPlaybookBlock`, `agent-prompt.ts`, imported directly
+  by the replay harness and rebuilt at call time (`replayPlanRow` also builds `buildTradeTool(caps)`).
+  **This file's blob hash is the sequencing constraint's checked object**, pinned at
+  `c471c33055abad7c7ec0cb9978f81c61bc3c487d` (the blob at `2f1c917`, the commit that published the
+  predecessor's results, and still the blob at this document's freeze). The run records its own
+  commit SHA next to it.
 - Design file: `research/candidates/playbook-space-followon-design.json`, written by the sizing step
   from the **measured** calibration and **read** by the edge run, which refuses to start without it.
   A design file that exists before the first edge call is the evidence that the families were fixed
@@ -638,5 +961,6 @@ this trial without softening.
 - Binding context: [`research/loop/verdicts.md`](../loop/verdicts.md) § Standing verdicts (the two-bar
   rule stands first), [`playbook-space-replay-2026-07-28.md`](playbook-space-replay-2026-07-28.md)
   (predecessor, Amendment 5 and § What this does and does not settle), and
-  [`architecture-options-2026-07-28.md`](architecture-options-2026-07-28.md) (the two architecture
-  arms and their predicted outcomes).
+  [`architecture-options-2026-07-28.md`](architecture-options-2026-07-28.md) (committed `c1206fc`,
+  2026-07-28 — the two architecture arms and their predicted outcomes, scored as a prior by this
+  trial per § The architecture screen as a SCORED PRIOR).

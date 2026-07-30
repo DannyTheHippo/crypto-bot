@@ -185,7 +185,7 @@ export const AGENT_DECIDE_COUNTER = makeCounterProvider({
 // unable to fire in time — `increase(...{outcome="client_latched"}[2h])` reads 0 through the FIRST
 // latch, because prom-client creates a label child lazily and a batched consult births the whole
 // series in one tick, so every sample in the range is equal (the same first-sample-after-reset trap
-// alerts.rules.yml documents for AgenticReflectionNeverMinted). A gauge fires on the next scrape and
+// alerts.rules.yml documents for AgenticLaneSilent). A gauge fires on the next scrape and
 // clears on the next scrape, and depends on no consult cadence, so a host-sleep gap cannot false-clear
 // it. Label-less: one client, one book.
 export const AGENT_CLIENT_LATCHED_GAUGE = makeGaugeProvider({
@@ -386,15 +386,6 @@ export const AGENTIC_SCHEMA_REJECTIONS_COUNTER = makeCounterProvider({
   name: 'agentic_schema_rejections_total',
   help: 'Per-call tool-payload schema rejections degraded to hold by the client zod layer, by kind',
   labelNames: ['kind'] as const,
-});
-
-// Backlog #53: fail-open measurement of ReflectionService.evaluateTrigger's silent pre-fire exits
-// (below_threshold/cooldown/inflight/fired) — pre-registered as pure observability, no control-flow
-// change, so a metrics-layer failure must never affect whether reflection fires.
-export const AGENTIC_REFLECTION_TRIGGER_COUNTER = makeCounterProvider({
-  name: 'agentic_reflection_trigger_total',
-  help: 'ReflectionService.evaluateTrigger exits, by outcome (below_threshold/cooldown/inflight/fired)',
-  labelNames: ['outcome'] as const,
 });
 
 // 2026-07-24 fail-closed re-arm fallback: agentic.strategy.ts attaches a synthetic protective plan

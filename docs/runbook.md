@@ -220,12 +220,13 @@ share the same book and the same process. Rules:
 - One shared **book-wide** LLM budget (`AGENTIC_MAX_CALLS_PER_DAY` / daily cost stop, etc.); entry caps
   apply per instance. Deployed decide interval is `STRATEGY_INTERVAL=15m` (~96 bars/day per symbol) —
   budget with `AGENTIC_ACTIVE_MENU_SIZE` and portfolio consult in mind.
-- In-process reflection is OFF (`AGENTIC_REFLECTION_EVERY_N_TRADES`, deployed `0` since 2026-07-30 —
-  `research/studies/entry-rate-rederivation-2026-07-30.md`). `ReflectionService` is inert, so no
-  reflection call, no auto-mint, and no mint-time entry-rate floor. `pnpm playbook:candidate` is the
-  only minting path; the playbook stays book-global and realized round-trip evidence spans all symbols.
-  Keep the `claude-opus-5` entry in `AGENTIC_TOKEN_PRICES_JSON` — `AGENTIC_REFLECTION_MODEL` is still
-  set, so boot refuses without it and the promotion gate still re-prices historical Opus rows.
+- In-process reflection is GONE — `reflection.service.ts` and its knobs were deleted 2026-07-30
+  (`research/studies/entry-rate-rederivation-2026-07-30.md`), after being switched off by config the
+  same day. No reflection call, no auto-mint, no mint-time entry-rate floor, no mint-time expectancy
+  backtest. `pnpm playbook:candidate` is the only minting path; the playbook stays book-global and
+  realized round-trip evidence spans all symbols. Keep the `claude-opus-5` entry in
+  `AGENTIC_TOKEN_PRICES_JSON` — `AGENTIC_REFLECTION_MODEL` is still set (deliberately), so boot
+  refuses without it and the promotion gate still re-prices the historical Opus `llm_usage` rows.
 - `pnpm playbook:candidate` runs with `node --env-file-if-exists=.env.app` so its lapse/abstention
   gates read the DEPLOYED `AGENTIC_CANDIDATE_LAPSE_HOURS` (336 h) instead of the script's own 720 h
   code default. Real environment variables still win over the file, so an exported host

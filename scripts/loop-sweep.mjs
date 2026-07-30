@@ -338,7 +338,7 @@ export function readExpectedAlertNames(rulesPath) {
 // Rows of `count_over_time(ALERTS{alertstate="firing"}[Ns])`, reduced to one entry per alert NAME.
 // Name-keyed, not label-set-keyed, deliberately: the same alert can appear both with and without
 // instance/job labels across one window, because a rule whose expr aggregates (`sum(...)` — e.g.
-// ReconcilerStalled, AgenticReflectionRejects and AgenticLaneSilent in observability/alerts.rules.yml)
+// ReconcilerStalled and AgenticLaneSilent in observability/alerts.rules.yml)
 // drops the target labels its siblings keep. Treating those as distinct entries would report a
 // still-firing alert as "resolved" — the one error this probe must not make. The cost of collapsing is
 // that a per-venue rule which resolved on one venue while still firing on the other is not reported
@@ -727,7 +727,7 @@ function gather() {
   //     post-reset), but it UNDERCOUNTS a label child born inside the window: prom-client creates a
   //     child lazily at its first increment, so a message class that fired once has an identical
   //     first and last sample and increase() reads 0. Same first-sample trap alerts.rules.yml
-  //     documents for AgenticReflectionNeverMinted.
+  //     documents for AgenticLaneSilent.
   //   boot — the raw cumulative. Exact for everything since the current process started, immune to
   //     the newborn-child problem, and blind to anything before the last restart.
   // Together they bracket the truth: `boot` is the exact floor for this boot, `window` reaches back

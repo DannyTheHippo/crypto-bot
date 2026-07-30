@@ -4,7 +4,7 @@ import request from 'supertest';
 import { describe, expect, it } from 'vitest';
 import { AppModule } from '../../../../src/app.module';
 import { symbolId, venueId, type VenueId } from '../../../../src/domain/common/types/ids';
-import { REFLECTION_SERVICE } from '../../../../src/features/strategy/agentic/agentic-strategy.module';
+import { AGENT_LLM_BUDGET } from '../../../../src/features/strategy/agentic/agentic-strategy.module';
 import { VenueRoutingExchangeAdapter } from '../../../../src/features/trading/composition/exchange-adapters.module';
 import { LiveExchangeAdapter } from '../../../../src/features/venue/exchange/live-exchange.adapter';
 import { PaperExchangeAdapter } from '../../../../src/features/venue/exchange/paper-exchange.adapter';
@@ -92,10 +92,10 @@ describe('AppModule composition', () => {
       expect(app.get(EXCHANGE_PORT, { strict: false })).toBeDefined();
       expect(app.get(KILL_SWITCH, { strict: false })).toBeDefined(); // single global kill switch
       expect(app.get(INSTANCE_LOCK, { strict: false })).toBeDefined();
-      // G4a: REFLECTION_SERVICE resolves through the full DI graph (AGENT_LLM_BUDGET plus every
-      // @Global-bound optional token it depends on) even though startTrading() — which would wire
-      // AgenticStrategyDeps.onClosedTrade to it — never fires under test/ci.
-      expect(app.get(REFLECTION_SERVICE, { strict: false })).toBeDefined();
+      // AgenticStrategyModule's own provider block resolves through the full DI graph (this token
+      // backs the AGENT_CLIENT factory) even though startTrading() never fires under test/ci. It
+      // replaced REFLECTION_SERVICE here when the in-process reflection loop was deleted 2026-07-30.
+      expect(app.get(AGENT_LLM_BUDGET, { strict: false })).toBeDefined();
       // The Phase-6 OMS-hardening graph resolves: resolver/reconciliation/crash-recovery in
       // ExecutionModule, and the cross-module HaltCoordinator (RISK_ENGINE + POSITION_SIZER) at root.
       expect(app.get(UnknownResolverService, { strict: false })).toBeDefined();

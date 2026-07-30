@@ -401,7 +401,9 @@ describe('loop-sweep-core alarms', () => {
 
   // Only `critical` blocks. Measured on this stack when the promotion was written: ≥1 rule was firing
   // 58.4% of the last 7 days, dominated by warning-severity rules the program knowingly runs through
-  // (ReconciliationMismatch 1135 of 1440 min; AgenticReflectionNeverMinted 4084 min/7d). Since playbook
+  // (ReconciliationMismatch 1135 of 1440 min; AgenticReflectionNeverMinted 4084 min/7d — that rule was
+  // deleted 2026-07-30 with the in-process reflection loop, but the measurement it produced is what
+  // set this policy, so it is quoted as history rather than restated against a live rule). Since playbook
   // §3 makes ANY alarm block all improvement work, promoting warnings would have wedged the loop on
   // roughly six passes in ten — and `info` (EffectiveModeLive) fires permanently once live is armed.
   it('promotes only critical alerts to alarms — warning and info annotate instead, so the incident gate is not wedged by rules the program runs through', () => {

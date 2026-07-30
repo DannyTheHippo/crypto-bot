@@ -14,25 +14,18 @@ decision 2026-07-03; this module is now the only strategy lane under active deve
 ## Self-improvement loop
 
 ```text
-journal → reflection (hypothesis generation) → human review (eval scorecards) → promotion → active
-                                                                                  (or: reflection auto-promotes directly, below)
+journal → offline candidate drafting (§ Loop-drafted candidates) → promotion → active
+                                                                     (or: the attributed evaluator auto-promotes, below)
 ```
 
 1. **Journal.** Every decide-path call is recorded to `AGENT_DECISION_JOURNAL`
    (`agent-decision-journal.adapter.ts` / in-memory fallback).
-2. **Reflection** (`reflection.service.ts`, trade-triggered, detached from the decide path).
-   **DISABLED IN THE DEPLOYED CONFIGURATION** — `AGENTIC_REFLECTION_EVERY_N_TRADES=0` since
-   2026-07-30 (`research/studies/entry-rate-rederivation-2026-07-30.md`) makes the service inert
-   (`this.inert = cfg.everyNTrades <= 0 || !cfg.apiKey`), so step 2 does not run and the mint-time
-   entry-rate floor it hosts does not run either; step 4's CLI is the only minting path. The
-   mechanics below describe the code as it behaves whenever the knob is non-zero. After
-   every `everyNTrades` closed trades (default 10, config `AGENTIC_REFLECTION_EVERY_N_TRADES`), and
-   never more than once per cooldown (default 7 days, tunable via `AGENTIC_REFLECTION_COOLDOWN_MS`,
-   floored at 0), it reviews recent journal rows — closed round-trips, a hold summary, and a
-   **forward-outcome digest** (per-decision t+1 outcomes bucketed by entry/exit/held-long/stayed-flat
-   and by confidence, from `counterfactual-scoring.ts`) — and drafts a candidate playbook revision.
-   `append(content, 'reflection', parentVersion)` mints an **INACTIVE** candidate row — reflection
-   never activates anything itself.
+2. **Candidate drafting.** In-process reflection (`reflection.service.ts`) used to occupy this step;
+   it was switched off by config and then **deleted outright on 2026-07-30**
+   (`research/studies/entry-rate-rederivation-2026-07-30.md`), together with the mint-time entry-rate
+   floor and mint-time expectancy backtest it hosted. `pnpm playbook:candidate` (§ Loop-drafted
+   candidates) is the only minting path now. Historical rows still carry `source='reflection'` and are
+   still routed by the A/B provider — that source value is historical-only, never newly written.
 3. **Human review.** Candidates are scored against eval scorecards (a separate task/harness) before
    anyone decides whether to promote one.
 4. **Promotion** (`scripts/playbook-promote.mjs`, this task — §G4b). A human runs
@@ -63,22 +56,19 @@ Both paths are exercised in `test/unit/persistence/in-memory-playbook-store.spec
 
 ## Auto-promotion
 
-Alongside the manual path above, `reflection.service.ts` can also promote a candidate itself
-(`maybeAutoPromote`), gated behind `AGENTIC_AUTO_PROMOTE_MIN_TRADES` (default `0`, which disables
-it — candidates then stay INACTIVE for manual `playbook:promote`). The deployed demo bot
-(`docker-compose.yml`) sets it to `30`.
+Alongside the manual path above, `promotion-evaluator.ts` can promote a candidate itself, gated
+behind `AGENTIC_AUTO_PROMOTE_MIN_ATTRIBUTED_TRADES` (`0` disables it — candidates then stay INACTIVE
+for manual `playbook:promote`). It observes the strategy's closed-trade seam
+(`AgenticStrategyDeps.onClosedTrade`, wired in `trading-runtime.module.ts`) and promotes only on the
+candidate's OWN A/B-attributed evidence beating the champion's, symmetrically (both arms need the
+minimum in-window trip count) and above the `AGENTIC_PROMOTE_MIN_POS` probability-of-superiority
+floor. Promotion appends the same `source='promotion'` row the manual path writes, so it is still
+subject to the once-per-UTC-day partial unique index; if that write fails (e.g. a manual promotion
+already landed that day), auto-promotion is non-fatal — the candidate simply stays INACTIVE and
+remains promotable later, by either path.
 
-Auto-promotion only runs as the tail end of a reflection attempt that actually mints a new
-candidate — it is not a standalone scheduler, so it inherits every precondition reflection already
-has (§ Self-improvement loop step 2: `everyNTrades` cadence, the cooldown, the kill switch, the
-strategy's `ACTIVE` lifecycle, and the LLM budget). When a reflection run mints a candidate, it is
-promoted immediately if the strategy's **cumulative** closed-trade count is `>=
-AGENTIC_AUTO_PROMOTE_MIN_TRADES` — this is a running total, not a per-window or matched-trade
-sample, so raising the threshold is the only lever against noisy early promotions. Promotion appends
-the same `source='promotion'` row the manual path writes, so it is still subject to the
-once-per-UTC-day partial unique index; if that write fails (e.g. a manual promotion already landed
-that day), auto-promotion is non-fatal — the candidate simply stays INACTIVE and remains promotable
-later, by either path.
+The count-only `AGENTIC_AUTO_PROMOTE_MIN_TRADES` path this section used to document was retired with
+reflection itself (`AppConfig.agentic.autoPromoteMinTrades` is a hardcoded-0 transitional field).
 
 ## Loop-drafted candidates (offline research path)
 
@@ -90,21 +80,18 @@ every scored variant, winners AND losers, is logged to the append-only `experime
 for honest trial accounting) → inject only a champion-beating draft via
 `pnpm playbook:candidate <file> [--metrics <scorecard.json>]`. The CLI validates through the
 same compiled `validatePlaybook` gate the runtime uses (refusing on a stale `dist/`), inserts
-INACTIVE with `source='loop-candidate'`, and refuses while any reflection or loop candidate is
-still unresolved in A/B. From there the standard machinery owns it: the 25% A/B router treats
-`loop-candidate` rows exactly like `reflection` rows, attribution accrues per version, and
+INACTIVE with `source='loop-candidate'`, and refuses while any historical `reflection` row or loop
+candidate is still unresolved in A/B. From there the standard machinery owns it: the 25% A/B router
+treats `loop-candidate` rows exactly like the historical `reflection` rows, attribution accrues per version, and
 promotion (auto or manual) is unchanged. Read-side re-validation still applies on every
 compose — injection grants no new trust.
 
 ## Safety bounds on every loop iteration
 
-- `DailyLlmBudget` (`agent-budget.ts`) caps calls and tokens per UTC day, shared across the decide
-  and reflection paths.
+- `DailyLlmBudget` (`agent-budget.ts`) caps calls and tokens per UTC day for the decide path (the
+  only in-process LLM path left since reflection was deleted).
 - The B5 entry cap (`maxEntriesPerDay`, wired in `app.module.ts`'s `STRATEGY_HOST` factory) bounds
   new-entry signals regardless of what the model proposes.
-- Reflection checks the kill switch and the strategy's registry lifecycle (must be `ACTIVE`) before
-  running, and fails closed (aborts) if either dependency is unavailable rather than assuming a
-  missing check would have passed.
 - `ValidatingPlaybookProvider` (`app.module.ts`) re-validates playbook content before it reaches the
   LLM prompt on every read, independent of promotion — untrusted, previously-model-authored content
   never composes into the system prompt unchecked.

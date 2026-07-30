@@ -274,6 +274,55 @@ classification** bullet, which stood last in this section, is now `charter.md` �
   22 closes by the model's own `close` action against 3 venue stops and 2 venue TPs, with
   `PROTECT_STOP_LOSS_PCT=0.06` never having fired — `pnl-v1`'s "stopped out 2-3× more often than they
   take profit" was a single-symbol BTC-perp 4h BACKTEST and does not describe this book.
+- **ACTED ON THE FIRST COROLLARY ABOVE — the declared plan now outranks a mid-trade `close`
+  (2026-07-30, deployment-bar action; code shipped FLAG-OFF, not yet enabled).** This is **NOT a new
+  exit rule** and it does **NOT reopen the settled sweep** directly above. That sweep tested 16
+  alternative _geometries_ and killed all of them; this changes **no geometry and no default** — it
+  removes the model's discretion to deviate from the geometry it had already declared itself.
+  Restating the two bars deliberately, because a future pass will otherwise misread this as a
+  re-run: at **+29.7 bps/trip** it is a **RESEARCH-bar FAIL** (`verdicts.md:272` — "real, but under
+  the pre-registered 30 bps bar and nowhere near profitability") and a **DEPLOYMENT-bar win** over
+  what runs today, exactly the split the standing two-bar ruling at the top of this file governs.
+  - **Measured basis, unchanged from the study above** (same 23 recorded round trips, same harness,
+    paired by construction): Arm 1, what the lane actually did with discretionary closes included,
+    **−108.1 bps/trip at 17.4% hit**; Arm 2, the model's own declared stop/take-profit/maxHold run
+    mechanically, **−78.4 bps at 22.7%**. −108.1 is the number any future measurement of this change
+    must be compared against.
+  - **What Arm 2 simulated, read off the harness rather than the prose:**
+    `test/backtest/exit-attribution.spec.ts:265` calls `simulateExit` with the entry decision's own
+    `stopLossPct`/`takeProfitPct`/`maxHoldBars`, and `test/backtest/exit-simulator.ts:103-123` exits
+    on **stop, take-profit or max_hold and nothing else** — it has no `close` input at all. Arm 2
+    therefore honoured **no** model `close`, in any direction. The shipped gate drops it outright for
+    that reason: this reproduces a measurement, it does not improve on one.
+  - **Shipped:** `AGENTIC_PLAN_AUTHORITATIVE_EXITS` (default `false`, `.env.app` + zod schema),
+    consumed in `anthropic-agent-client.ts`'s `buildProposalFromTradeDecision` close branch. When a
+    positioned symbol carries enforced `directives`, the `close` emits no exit signal and is
+    journalled as a `hold` tagged `plan_authoritative_close:` (queryable; deliberately NOT a
+    `DEGRADED_DECIDE_RATIONALE_TAGS` member — the consult was healthy, the system overrode it).
+    Journalling it as `hold` rather than `close` is load-bearing: a directive-less `close` is what
+    makes `agentic.strategy.ts` clear the active plan, and a cleared plan is the unmanaged position
+    the gate exists to prevent.
+  - **Failure direction: fails toward EXITING.** The gate suppresses an exit, and an exit that fails
+    to fire leaves a position open against its own declared invalidation, so it fires only on
+    positive evidence that a deterministic executor is already enforcing that invalidation. No
+    context, absent `directives` (the restart case — the in-memory plan was lost), or FLAT ⇒ the
+    close executes unchanged. The evidence is strong: `agentic.strategy.ts:884` runs `evaluatePlan`
+    **before** the consult gate on every bar and lets its stop/take_profit/max_hold verdict own the
+    bar outright, so a suppressed close can only land on a bar the declared plan itself called hold —
+    with `AGENTIC_VENUE_STOP`/`_TP` resting at the venue meanwhile.
+  - **Scope limits, stated so nothing is read into this that was not measured.** Only the `close`
+    _action_ is dropped: the 29.7 bps sits in that channel (16 of 22 closes were the model's own
+    `close`; a partial close never closes a round trip in `walkRoundTrips`). An `adjust` — the
+    sanctioned channel for revising a declared plan — still applies in full, so this reproduces
+    Arm 2's exit-SOURCE semantics but not its implicit geometry freeze (Arm 2 replayed the geometry
+    declared at ENTRY and never saw later revisions). Also unshipped: a Prometheus counter for the
+    suppression, because its wiring passes through `trading-runtime.module.ts`, concurrently owned by
+    another pass; the journal rationale tag is the queryable surface until then.
+  - **WATCH-PLAN-AUTHORITY-1 (UNFIRED — the flag is off).** The enable is a separate config-only
+    step. First post-enable observation must show `plan_authoritative_close:` holds appearing at
+    roughly the historical close rate (~16 per 22 exits) AND the exit mix shifting toward venue
+    stop/TP/max_hold. A storm of positions running to `max_hold` with realised bps _worse_ than
+    −108.1 = revert (flip the flag) and record. Resolve explicitly at the next observation.
 - **Consult cadence is ON TARGET; batching fragmentation is not a profitability lever (Pass 41,
   2026-07-27).** The true unit of work is 627 symbol-decisions over 6 days = 104/day ≈ 13
   menu-waves/day against the 16/day design point at `.env.app:100`; the model picks

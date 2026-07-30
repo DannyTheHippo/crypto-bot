@@ -387,6 +387,12 @@ export interface AnthropicAgentClientConfig {
   readonly similarSetupsProvider?: (
     tags: RegimeTags,
   ) => Promise<readonly SimilarSetupRow[]> | readonly SimilarSetupRow[];
+  // AGENTIC_PLAN_AUTHORITATIVE_EXITS (2026-07-30): when true, a mid-trade 'close' is DROPPED for a
+  // position whose declared directives are still being enforced — the plan the model itself declared
+  // at entry (stopLossPct/takeProfitPct/maxHoldBars) owns the exit. Absent/false ⇒ byte-identical to
+  // pre-feature (every 'close' maps to EXIT_LONG/EXIT_SHORT as before). See the close branch in
+  // buildProposalFromTradeDecision for the gate, its measured basis, and its failure direction.
+  readonly planAuthoritativeExits?: boolean;
 }
 
 // Placeholder profile used only when no real AgentTradingProfile has been wired yet — keeps the
@@ -566,6 +572,23 @@ const schemaRejectedRationale = (summary: string): string => {
   const prefix = 'schema_rejected: ';
   const budget = SCHEMA_REJECTED_RATIONALE_MAX_LEN - prefix.length;
   return `${prefix}${summary.length > budget ? `${summary.slice(0, budget)}…` : summary}`;
+};
+// AGENTIC_PLAN_AUTHORITATIVE_EXITS (2026-07-30): the self-describing rationale stamped when a
+// mid-trade 'close' is dropped because the position is still under its own declared plan — queryable
+// as `WHERE rationale LIKE 'plan_authoritative_close:%'`. The model's own thesis is preserved after
+// the prefix so the journal still records WHY it wanted out, on the same truncation discipline as
+// schemaRejectedRationale above.
+//
+// Deliberately NOT a DEGRADED_DECIDE_RATIONALE_TAGS member (domain/strategy/types/decide-rationale.
+// ts): those tags mark a consult that reached the model and came back with nothing usable, and they
+// feed WATCH-V4-8's "is the lane alive" signal. This consult came back with a perfectly valid
+// decision that the SYSTEM overrode — counting it as a degrade would indict a healthy lane.
+const PLAN_AUTHORITATIVE_CLOSE_RATIONALE_MAX_LEN = 160;
+const planAuthoritativeCloseRationale = (thesis: string | undefined): string => {
+  const prefix = 'plan_authoritative_close: ';
+  const body = thesis ?? '';
+  const budget = PLAN_AUTHORITATIVE_CLOSE_RATIONALE_MAX_LEN - prefix.length;
+  return `${prefix}${body.length > budget ? `${body.slice(0, budget)}…` : body}`;
 };
 const firstIssueSummary = (error: z.ZodError): string => {
   const first = error.issues[0];
@@ -1658,6 +1681,10 @@ export class AnthropicAgentClient implements AgentClientPort {
 
     let signals: Signal[] = [];
     let plan: AgentDirectives | undefined;
+    // What actually gets journalled / handed to the strategy's plan bookkeeping. Diverges from the
+    // model's own `action` only on the plan-authoritative close below.
+    let journalAction: typeof action = action;
+    let journalRationale = thesis ?? '';
 
     // Fresh entry (FLAT) or a same-side scale-in (already positioned) — both emit an ENTER signal
     // with fresh directives; the strategy owns restarting the maxHold clock on a scale-in (Design
@@ -1697,7 +1724,56 @@ export class AnthropicAgentClient implements AgentClientPort {
     } else if (isOppositeOpen) {
       // no-op — signals/plan stay at their defaults ([]/undefined).
     } else if (action === 'close') {
-      if (side === 'LONG') {
+      // ── AGENTIC_PLAN_AUTHORITATIVE_EXITS: the declared plan outranks a mid-trade 'close' ───────
+      //
+      // NOT A NEW EXIT RULE, and it does NOT reopen the settled exit-rule sweep. "No exit rule
+      // rescues these entries" (verdicts.md § NO EXIT RULE RESCUES THESE ENTRIES, Pass 41; harness
+      // test/backtest/exit-attribution.spec.ts over exit-simulator.ts) tested 16 alternative
+      // GEOMETRY cells and found every one negative. This changes no geometry and no default — it
+      // removes the model's discretion to deviate from the geometry it already declared itself.
+      //
+      // Measured basis, same 23 recorded round trips, paired by construction: Arm 1 (what the lane
+      // actually did, discretionary closes included) −108.1 bps/trip at 17.4% hit; Arm 2 (the model's
+      // OWN declared stopLossPct/takeProfitPct/maxHoldBars run mechanically, its 'close' ignored
+      // entirely) −78.4 bps at 22.7%. Arm 2 is what this branch reproduces: +29.7 bps/trip. Under the
+      // owner's 2026-07-30 two-bar ruling that is a RESEARCH-bar FAIL (verdicts.md:272 — "real, but
+      // under the pre-registered 30 bps bar and nowhere near profitability") and a DEPLOYMENT-bar win
+      // over what runs today. 16 of 22 live closes were the model's own hand, so the surface is real.
+      //
+      // Arm 2 honoured NO model 'close' at all — simulateExit only ever exits on stop / take-profit /
+      // max_hold — so this drops the close outright rather than permitting it in some direction. This
+      // must reproduce a measurement, not improve on it.
+      //
+      // Journalled as 'hold' (not 'close') on purpose: agentic.strategy.ts's plan bookkeeping clears
+      // the active plan on a directive-less 'close'/'flat', and a cleared plan is exactly the
+      // unmanaged position this gate exists to prevent. A directive-less 'hold' leaves activePlan
+      // untouched. The model's intent survives in the rationale tag above.
+      //
+      // FAILURE DIRECTION — fails toward EXITING. This gate suppresses an exit, and an exit that
+      // fails to fire leaves a position open against its own declared invalidation, so it may only
+      // fire on POSITIVE evidence that a deterministic executor is already enforcing that
+      // invalidation: `directives` is present exactly when the strategy holds an activePlan while
+      // positioned (AgentPositionSummary.directives). No context, no directives, or FLAT ⇒ the close
+      // executes unchanged. That evidence is strong: agentic.strategy.ts runs evaluatePlan BEFORE the
+      // consult gate every bar and lets its stop/take_profit/max_hold verdict own the bar outright, so
+      // a suppressed close can only ever happen on a bar where the declared plan itself said hold —
+      // and AGENTIC_VENUE_STOP/_TP keep the stop and take-profit resting at the venue meanwhile.
+      const enforcedDirectives =
+        this.cfg.planAuthoritativeExits === true && (side === 'LONG' || side === 'SHORT')
+          ? input.context?.position.directives
+          : undefined;
+      if (enforcedDirectives !== undefined) {
+        journalAction = 'hold';
+        journalRationale = planAuthoritativeCloseRationale(thesis);
+        // Loud, and low-volume by construction (16 model closes over the 6-day measurement window).
+        // A model that re-issues 'close' on the same unchanged position still trips agentic.strategy.
+        // ts's XA5 repeated-noop breaker exactly as a repeated 'close' does today — the streak label
+        // changes, the breaker does not, and plan enforcement continues while consults are suppressed.
+        this.logger.warn(
+          `close suppressed by declared plan: ${String(symbol)} ${side} stop=${enforcedDirectives.stopLossPct} ` +
+            `tp=${enforcedDirectives.takeProfitPct} maxHold=${enforcedDirectives.maxHoldBars}`,
+        );
+      } else if (side === 'LONG') {
         signals = [{ ...common, kind: 'EXIT_LONG', strength: 1 }];
       } else if (side === 'SHORT') {
         signals = [{ ...common, kind: 'EXIT_SHORT', strength: 1 }];
@@ -1738,7 +1814,7 @@ export class AnthropicAgentClient implements AgentClientPort {
 
     return {
       signals,
-      decision: { action, confidence: null, rationale: thesis ?? '' },
+      decision: { action: journalAction, confidence: null, rationale: journalRationale },
       ...(plan ? { plan } : {}),
       usage,
       latencyMs,

@@ -12,7 +12,7 @@ interface SeedHarness {
   seedConfiguredLabelSets(): void;
 }
 
-function makeHarness(opts: { model?: string; reflectionModel?: string; venueIds?: string[] }): {
+function makeHarness(opts: { model?: string; venueIds?: string[] }): {
   service: SeedHarness;
   seedTokenModels: ReturnType<typeof vi.fn>;
   seedVenueTpVenues: ReturnType<typeof vi.fn>;
@@ -24,7 +24,7 @@ function makeHarness(opts: { model?: string; reflectionModel?: string; venueIds?
   const service = Object.create(TradingRuntimeService.prototype) as Record<string, unknown>;
   service['agentMetrics'] = { seedTokenModels, seedVenueTpVenues, seedVenueStopVenues };
   service['config'] = {
-    agentic: { model: opts.model ?? 'claude-sonnet-5', reflectionModel: opts.reflectionModel },
+    agentic: { model: opts.model ?? 'claude-sonnet-5' },
     venues: (opts.venueIds ?? ['binance', 'binanceusdm']).map((id) => ({ id })),
   };
   return {
@@ -36,19 +36,14 @@ function makeHarness(opts: { model?: string; reflectionModel?: string; venueIds?
 }
 
 describe('TradingRuntimeService.seedConfiguredLabelSets', () => {
-  it('seeds agent_tokens_total models with [decideModel, decideModel] when no reflection override is configured', () => {
+  // The decide model is the ONLY model seeded since the in-process reflection loop was deleted
+  // (2026-07-30) — AGENTIC_REFLECTION_MODEL stays a config field for the pricing gate-honesty
+  // refusal, but no call path tags tokens with it anymore, so seeding it would publish a
+  // permanently-zero agent_tokens_total{model="claude-opus-5"} child.
+  it('seeds agent_tokens_total models with the decide model only, ignoring any reflection override', () => {
     const { service, seedTokenModels } = makeHarness({ model: 'claude-sonnet-5' });
     service.seedConfiguredLabelSets();
-    expect(seedTokenModels).toHaveBeenCalledWith(['claude-sonnet-5', 'claude-sonnet-5']);
-  });
-
-  it('seeds agent_tokens_total models with [decideModel, reflectionModel] when AGENTIC_REFLECTION_MODEL is configured', () => {
-    const { service, seedTokenModels } = makeHarness({
-      model: 'claude-sonnet-5',
-      reflectionModel: 'claude-opus-5',
-    });
-    service.seedConfiguredLabelSets();
-    expect(seedTokenModels).toHaveBeenCalledWith(['claude-sonnet-5', 'claude-opus-5']);
+    expect(seedTokenModels).toHaveBeenCalledWith(['claude-sonnet-5']);
   });
 
   it('seeds agentic_venue_tp_total and agentic_venue_stop_total with the configured venue ids', () => {

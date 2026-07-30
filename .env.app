@@ -75,21 +75,18 @@ STRATEGY_INTERVAL=15m # candle interval the agent decides on (schema default 5m;
 # activates the LIVE agentic lane (it starts proposing decisions on each closed candle); leaving it
 # blank binds the inert stub, so the demo boots healthy but never trades until a key is supplied.
 AGENTIC_MODEL=claude-sonnet-5 # Anthropic model id (schema default; matches the AGENTIC_TOKEN_PRICE_* defaults below)
-# Reflection-path model override; unset = reflection uses AGENTIC_MODEL (one model, one price). If
-# you pin a pricier model, raise BOTH AGENTIC_TOKEN_PRICE_* knobs to its rates — the flat pricing
-# then over-counts the cheaper decide path, which is the fail-closed direction for earned-live.
-# Reflection on the Opus tier (owner decision 2026-07-08: strengthen Tier-2 learning). Per-model
-# pricing below keeps the gate honest.
+# The in-process reflection loop was DELETED 2026-07-30 (research/studies/
+# entry-rate-rederivation-2026-07-30.md), so no call path runs this model anymore. The knob stays
+# set on purpose: it is what keeps environment.config.ts's superRefine demanding a claude-opus-5
+# entry in AGENTIC_TOKEN_PRICES_JSON below, and PromotionReadinessService re-prices the historical
+# Opus llm_usage rows (all 69 of them) through that map every time the earned-live gate runs.
+# Unsetting it would let the map's Opus entry be dropped later and silently under-count that spend.
 AGENTIC_REFLECTION_MODEL=claude-opus-5
 AGENTIC_TIMEOUT_MS=90000 # per-call DECIDE request timeout. v3 soak defect #3 (2026-07-21): 30s was
 # calibrated for v2's single-symbol decide; the v3 menu-8 batched submit_portfolio call measures
 # 20-35s (avg 24.1s, decide-latency histogram) and the 30s abort killed 15 of the first 16 consult
 # attempts as transport-RETRYABLE. 90s = ~3x the measured shape, still <=10% of a 15m bar so a
 # wedged call cannot eat the retry window — the fail-fast intent survives at batched scale.
-# Reflection-path timeout, separate from the decide timeout above — Opus + adaptive thinking over
-# the large calibration/attribution prompt cannot answer in 30s. Reflection is off the trading hot
-# path (detached), so 240s is free headroom against Opus worst-case rather than a tight estimate.
-AGENTIC_REFLECTION_TIMEOUT_MS=240000
 AGENTIC_MAX_TOKENS=4096 # max output tokens per LLM call (schema default; v2 rich decision contract — directives, thesis, portfolio scheduling — needs headroom)
 AGENTIC_MIN_DECISION_INTERVAL_MS=0 # floor between agent decisions; 0 = every closed candle
 AGENTIC_WARMUP_BARS=340 # closed candles retained; ≥336 keeps h4 (and h1) HTF indicators non-null at 15m
@@ -114,37 +111,27 @@ AGENTIC_WAKE_MOVE_PCT=0.008 # XA1 2026-07-20: 1.5% never fires in the dominant s
 AGENTIC_PLAN_EXIT_TTL_BARS=2 # TTL (bars) on plan-executor exit signals; 1-bar TTL races its own age (a max_hold exit expired live 2026-07-07 at 902.2s vs 900s)
 AGENTIC_DRAIN_COOLDOWN_BASE_MS=30000 # first AUTO-drain cooldown backoff
 AGENTIC_DRAIN_COOLDOWN_MAX_MS=900000 # ceiling on AUTO-drain cooldown backoff
-# 0 makes ReflectionService permanently inert (`this.inert = cfg.everyNTrades <= 0 || !cfg.apiKey`,
-# reflection.service.ts:891) — onClosedTrade returns at :930 and checkWeeklyReflectionTrigger at
-# :1019, both before any counter or timer is touched. Retired 2026-07-30 by
-# research/studies/entry-rate-rederivation-2026-07-30.md: claude-opus-5 at $5.01 of $16.79 total LLM
-# spend (30%) bought 4 mints from 18 attempts across 69 calls, off ONE strategy's newest 200 journal
-# rows (today overwhelmingly prescreen noise). The daily loop reads the whole DB for free and mints
-# via `pnpm playbook:candidate`, now the ONLY minting path. This also retires the mint-time
-# entry-rate floor (measureEntryRate's sole caller is reflection.service.ts:1711) — intended, per §4
-# mechanism 2 of that record. AGENTIC_REFLECTION_MODEL stays set, so the claude-opus-5 entry in
-# AGENTIC_TOKEN_PRICES_JSON below MUST stay: environment.config.ts's superRefine refuses boot
-# without it, and PromotionReadinessService re-prices the historical Opus llm_usage rows.
-AGENTIC_REFLECTION_EVERY_N_TRADES=0
-AGENTIC_REFLECTION_COOLDOWN_MS=21600000 # min wall-clock between reflection runs (schema default 7d; this stack pins 6h) — moot while EVERY_N_TRADES=0
+# AGENTIC_REFLECTION_EVERY_N_TRADES / _COOLDOWN_MS DELETED 2026-07-30 along with reflection.service.ts
+# itself (research/studies/entry-rate-rederivation-2026-07-30.md: claude-opus-5 at $5.01 of $16.79
+# total LLM spend bought 4 mints from 18 attempts across 69 calls, off ONE strategy's newest 200
+# journal rows). `pnpm playbook:candidate` — which reads the whole DB for free — is the ONLY minting
+# path now. Both knobs still carry zod defaults, but nothing reads them.
 # AGENTIC_AUTO_PROMOTE_MIN_TRADES DELETED (§3.4): the legacy count-only auto-promotion path is gone —
 # AppConfig.agentic.autoPromoteMinTrades is now a hardcoded-0 transitional field, not an env knob.
 AGENTIC_AUTO_PROMOTE_MIN_ATTRIBUTED_TRADES=10 # attributed auto-promotion: candidate promotes only after ≥N of ITS OWN A/B-attributed closed trips AND mean net/trip > champion's (SYMMETRIC: champion needs ≥N in-window trips too); 0 disables
 AGENTIC_PROMOTE_MIN_POS=0.70 # probability-of-superiority floor (Mann–Whitney over candidate-vs-champion trip pairs, ties half): promotion also needs PoS ≥ this
-# AGENTIC_CANDIDATE_LAPSE_HOURS (unresolved-candidate lapse, reflection mint guard — no schema entry,
-# read off raw process.env by reflection.service.ts): spot lane's 336h carried forward as the single
-# book's value (owner session 2026-07-17: doubled from 168h so a live, evidence-participating
+# AGENTIC_CANDIDATE_LAPSE_HOURS (unresolved-candidate lapse — no schema entry, read off raw
+# process.env by scripts/playbook-candidate.mjs, which `pnpm playbook:candidate` loads this file
+# into via --env-file-if-exists): spot lane's 336h carried forward as the single book's value
+# (owner session 2026-07-17: doubled from 168h so a live, evidence-participating
 # candidate resolves on evidence, not age). The perp lane ran 168h separately pre-cutover; both
 # lanes converge on one candidate lineage now (§1.3's AgenticBridgeModule, one playbook lineage), so
 # only one lapse clock exists post-cutover.
 AGENTIC_CANDIDATE_LAPSE_HOURS=336
-AGENTIC_MINT_FLOOR_ROWS=12 # backlog #39 mint-time entry-rate floor: replay a fresh reflection draft against this many of the newest real FLAT-consult payloads (lane-wide) before it may occupy the A/B slot; 0 disables the floor entirely
-AGENTIC_MINT_FLOOR_MIN_ROWS=6 # below this many qualifying FLAT-consult rows the corpus is too young to judge — the floor SKIPS (fail-open, mint proceeds unchecked)
-AGENTIC_MINT_FLOOR_MIN_ENTRIES=1 # floor passes once the replay produces at least this many entries
-AGENTIC_ABSTAIN_LAPSE_DECIDES=15 # #39 companion: an unresolved candidate with ≥ this many attributed real decides and ZERO entries lapses immediately; 0 disables
-AGENTIC_MINT_BACKTEST_ROWS=60 # mint-time candidate-vs-champion offline expectancy backtest: replays this many of the newest recorded rows (any action) against BOTH the draft candidate and the current champion; 0 disables
-AGENTIC_MINT_BACKTEST_MARGIN_BPS=10 # noise HANDICAP, not a hurdle: the candidate mints unless its mean net bps/trip trails the champion's by MORE than this
-AGENTIC_MINT_BACKTEST_MIN_TRIPS=3 # minimum simulated round trips BOTH arms need before the backtest verdict is trusted; below this the backtest fails open (mint proceeds unbacktested)
+# AGENTIC_MINT_FLOOR_ROWS / _MIN_ROWS / _MIN_ENTRIES and AGENTIC_MINT_BACKTEST_ROWS / _MARGIN_BPS /
+# _MIN_TRIPS DELETED 2026-07-30: both mint-time gates were reflection-only (measureEntryRate and
+# runCandidateBacktest each had exactly one caller, reflection.service.ts) and went with it.
+AGENTIC_ABSTAIN_LAPSE_DECIDES=15 # STILL LIVE — read by scripts/playbook-candidate.mjs: an unresolved candidate with ≥ this many attributed real decides and ZERO entries lapses immediately; 0 disables
 # v3 §3.2 default: true — the only deployed shape (schema default flips false→true). Plan-based
 # trading (submit_plan + deterministic executor) is required for shorts and the venue-resting
 # TP/stop rails below — environment.config.ts refuses AGENTIC_PLAN_MODE=false whenever any perp
@@ -265,6 +252,13 @@ AGENTIC_TRACK_RECORD_ENABLED=true
 # Owner override 2026-07-24: deploy residual20-volbeta EdgePolicy in demo
 AGENTIC_EDGE_POLICY_ENABLED=true
 AGENTIC_EDGE_POLICY_FAMILY=residual20-volbeta
+# Plan-authoritative exits (2026-07-30): once a plan is declared at entry its declared
+# stopLossPct/takeProfitPct/maxHoldBars own the exit, and a later mid-trade 'close' from the model
+# is dropped. Reproduces the exit-attribution study's Arm 2 (+29.7 bps/trip over the discretionary
+# Arm 1's -108.1 bps across 23 recorded round trips) — changes NO geometry, and does not reopen the
+# settled exit-rule sweep. SHIPPED FLAG-OFF: the enable is a separate config-only step with its own
+# WATCH line (research/loop/verdicts.md, 2026-07-30 entry).
+AGENTIC_PLAN_AUTHORITATIVE_EXITS=false
 
 # ── Risk limits (v3 §3.2: re-defaulted to the $1k-book scale — the deployed v2-contract values were
 # pre-$1k-book drift; schema defaults now match this deployed shape directly) ──

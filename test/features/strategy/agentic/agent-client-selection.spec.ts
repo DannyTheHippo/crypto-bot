@@ -510,6 +510,7 @@ describe('agenticEnv', () => {
       autoPromoteMinTrades: 9,
       autoPromoteMinAttributedTrades: 10,
       planExitTtlBars: 2,
+      planAuthoritativeExits: false,
       quietPayloadSampleBars: 4,
       venueTpEnabled: false,
       venueTpReplaceDriftBps: 10,
@@ -592,6 +593,9 @@ describe('agenticEnv', () => {
       AGENTIC_MAX_POSITION_FRACTION_SPOT: '0.15',
       AGENTIC_MAX_POSITION_FRACTION_PERP: '0.35',
       PERP_LEVERAGE_CAP: '3',
+      // Plan-authoritative exits (2026-07-30): same validated-config sourcing, never a raw
+      // process.env fall-through.
+      AGENTIC_PLAN_AUTHORITATIVE_EXITS: 'false',
     });
     // AGENTIC_DERIVATIVES_AB_PCT read-site deleted (v3 spec §9/§10 work item 3) — no longer
     // overridden off agentic.derivativesAbPct; asserting its ABSENCE from the override set (rather

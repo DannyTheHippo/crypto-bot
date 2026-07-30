@@ -446,6 +446,8 @@ describe('validate()', () => {
         // v3 default flips false→true (the only deployed shape).
         planMode: true,
         planExitTtlBars: 2,
+        // Plan-authoritative exits ship flag-off: unset ⇒ false ⇒ every model 'close' still exits.
+        planAuthoritativeExits: false,
         quietPayloadSampleBars: 0,
         // v3 defaults flip false→true (the only deployed shape; the mutual-exclusion refusal that
         // used to gate this combination is retired — §3.5).

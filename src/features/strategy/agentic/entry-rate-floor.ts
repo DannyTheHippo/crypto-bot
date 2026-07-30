@@ -7,24 +7,18 @@ import type {
   AgentTradingProfile,
   AgentUsage,
 } from '../../../ports/strategy/agentic-strategy';
-import {
-  buildPlaybookBlock,
-  buildSystemPrompt,
-  buildTradeTool,
-  type SymbolCapabilities,
-} from './agent-prompt';
+import { buildTradeTool, type SymbolCapabilities } from './agent-prompt';
 import { tradeDecisionSchema } from './anthropic-agent-client';
 
-// Backlog #39 mint-time entry-rate floor: a reflection candidate minted from all-loss evidence can
-// rationally raise the entry bar so far that it structurally never fires (observed live: v2 entered
-// 0 of 17 real FLAT consults). Such a candidate can never accrue the attributed trips its own
-// promotion verdict needs, so it squats in the A/B slot until the unresolved-candidate lapse. This
-// module answers one narrow, offline question — "would the DECIDE model, under this DRAFT playbook,
-// have entered any of these real recorded FLAT-position market states" — by replaying the exact
-// recorded payload strings through ONE live call per row, under the v2 rich decision contract (P3:
-// migrated off the legacy submit_plan shape — see replayPlanRow below), the same request shape the
-// live decide path sends. It is UNABLE to mint or promote anything itself: the caller
-// (reflection.service.ts) is the only place a veto or a pass is acted on.
+// Offline single-row replay of the DECIDE path: given a recorded AgentDecisionRow.inputPayload
+// string, ask what the decide model would have done under a given playbook, by re-issuing ONE live
+// call in the exact request shape the live decide path sends (v2 rich decision contract — P3
+// migrated it off the legacy submit_plan shape; see replayPlanRow below). Introduced for backlog
+// #39's mint-time entry-rate floor, whose measureEntryRate driver was deleted with the in-process
+// reflection loop on 2026-07-30 (research/studies/entry-rate-rederivation-2026-07-30.md). What
+// survives here is the replay primitive itself, still used by candidate-backtest.ts and the
+// test/backtest agentic replay harness. It is UNABLE to mint or promote anything: every verdict is
+// the caller's.
 
 // Illustrative default profile for the replay's system prompt — the floor asks a structural
 // question ("does this playbook's entry bar ever fire"), not "what is the strategy's live fee tier
@@ -302,47 +296,4 @@ export async function replayPlanRow(
   } finally {
     clearTimeout(timer);
   }
-}
-
-export interface EntryRateFloorConfig extends PlanReplayCallConfig {
-  readonly playbookContent: string;
-}
-
-export type EntryRateMeasurement =
-  | { readonly consults: number; readonly entries: number; readonly usages: readonly AgentUsage[] }
-  | { readonly skipped: string };
-
-// Replays `rows` (recorded AgentDecisionRow.inputPayload strings, already filtered to FLAT-position
-// consults by the caller) through ONE live Anthropic call each, sequentially — small enough a batch
-// (see reflection.service.ts's mintFloorRows default) that a delay between calls buys nothing. A
-// malformed/failed single call costs one skipped row, never the whole floor (mirrors this codebase's
-// recorded-payload eval harness's own per-row degrade-not-abort convention). Never throws.
-export async function measureEntryRate(
-  cfg: EntryRateFloorConfig,
-  rows: readonly string[],
-  fetchFn: typeof fetch,
-): Promise<EntryRateMeasurement> {
-  if (rows.length === 0) {
-    return { skipped: 'no rows to replay' };
-  }
-
-  // v3 consolidation spec §4.4: buildSystemPrompt always builds the rich-decision-contract prompt
-  // now (no more tradeContract/shortsEnabled options — shorts is documented unconditionally, and the
-  // legacy plan-mode minEdgeMultiple/minRr sentence is gone with the legacy prompt it belonged to).
-  const systemPrompt = buildSystemPrompt(DEFAULT_FLOOR_PROFILE);
-  const playbookBlock = buildPlaybookBlock(cfg.playbookContent);
-
-  let consults = 0;
-  let entries = 0;
-  const usages: AgentUsage[] = [];
-
-  for (const rowPayload of rows) {
-    const result = await replayPlanRow(cfg, systemPrompt, playbookBlock, rowPayload, fetchFn);
-    if (result.usage) usages.push(result.usage);
-    if (!result.ok) continue;
-    consults += 1;
-    if (result.action === 'open_long' || result.action === 'open_short') entries += 1;
-  }
-
-  return { consults, entries, usages };
 }

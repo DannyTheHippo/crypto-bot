@@ -381,7 +381,9 @@ function computeApp(prev, cur, elapsedMs = null, nowMs = null) {
   // writing, ≥1 rule was firing 58.4% of the last 7 days and 59.2% of the last 24h — dominated by
   // warning-severity rules the program has knowingly been running through for weeks
   // (ReconciliationMismatch 1135 of 1440 min; AgenticReflectionNeverMinted 4084 min/7d, sticky by a
-  // 24h max_over_time). Promoting those would have wedged the loop on roughly six passes in ten,
+  // 24h max_over_time — that rule was deleted 2026-07-30 with the in-process reflection loop; the
+  // measurement is quoted as the history that set this policy, not as a live rule). Promoting those
+  // would have wedged the loop on roughly six passes in ten,
   // burying the one critical signal this change exists to surface. `info` is worse than useless as an
   // alarm: EffectiveModeLive is severity info and fires permanently once live trading is armed, by
   // design. So critical BLOCKS and everything else ANNOTATES — still in the digest, still read by the

@@ -149,6 +149,11 @@ export interface AppConfig {
     // a max_hold exit expired at age 902.2s vs ttl 900s). Two bars gives jitter headroom; Risk's
     // own ref-price staleness veto is the freshness gate, this TTL is only replay protection.
     planExitTtlBars: number;
+    // Plan-authoritative exits (2026-07-30): once a plan is declared at entry, its declared
+    // stopLossPct/takeProfitPct/maxHoldBars own the exit and a later mid-trade 'close' from the model
+    // is dropped (anthropic-agent-client.ts's close branch carries the measured basis and failure
+    // direction). Changes no geometry. Default false ⇒ byte-identical.
+    planAuthoritativeExits: boolean;
     // Attributed auto-promotion: candidate-attributed closed-trip floor before the promotion
     // evaluator may promote a reflection candidate to ACTIVE on evidence (candidate mean net/trip
     // beats champion). 0 disables the evaluator. Distinct from autoPromoteMinTrades, the legacy

@@ -19,7 +19,6 @@ import {
   AGENTIC_BUDGET_REMAINING_GAUGE,
   AGENTIC_CAPABILITY_VIOLATIONS_COUNTER,
   AGENTIC_SCHEMA_REJECTIONS_COUNTER,
-  AGENTIC_REFLECTION_TRIGGER_COUNTER,
   AGENTIC_REARM_FALLBACK_COUNTER,
   AGENT_CLIENT_LATCHED_GAUGE,
   AGENT_CLIENT_LATCH_CAUSE_GAUGE,
@@ -51,7 +50,6 @@ describe('AgentMetricsRecorder', () => {
         AGENTIC_BUDGET_REMAINING_GAUGE,
         AGENTIC_CAPABILITY_VIOLATIONS_COUNTER,
         AGENTIC_SCHEMA_REJECTIONS_COUNTER,
-        AGENTIC_REFLECTION_TRIGGER_COUNTER,
         AGENTIC_REARM_FALLBACK_COUNTER,
         AGENT_CLIENT_LATCHED_GAUGE,
         AGENT_LAST_SUCCESS_GAUGE,
@@ -67,7 +65,7 @@ describe('AgentMetricsRecorder', () => {
     register.clear();
   });
 
-  it('registers all twenty-one agentic-lane metrics', async () => {
+  it('registers all twenty agentic-lane metrics', async () => {
     const names = (await register.getMetricsAsJSON()).map((m) => m.name);
     for (const name of [
       'agent_decide_total',
@@ -86,7 +84,6 @@ describe('AgentMetricsRecorder', () => {
       'agentic_budget_remaining_usd',
       'agentic_capability_violations_total',
       'agentic_schema_rejections_total',
-      'agentic_reflection_trigger_total',
       'agentic_rearm_fallback_total',
       'agent_client_latched',
       'agent_last_success_timestamp_seconds',
@@ -474,25 +471,6 @@ describe('AgentMetricsRecorder', () => {
     },
   );
 
-  it('recordReflectionTrigger increments agentic_reflection_trigger_total{outcome}', async () => {
-    recorder.recordReflectionTrigger('fired');
-    recorder.recordReflectionTrigger('cooldown');
-    recorder.recordReflectionTrigger('cooldown');
-    const metric = await register.getSingleMetricAsString('agentic_reflection_trigger_total');
-    expect(metric).toContain('outcome="fired"} 1');
-    expect(metric).toContain('outcome="cooldown"} 2');
-  });
-
-  // Pass 50: same construction-only seeding convention as the playbook-validator/consult-gate tests
-  // above, applied to the four-member REFLECTION_TRIGGER_OUTCOMES set. No recordReflectionTrigger
-  // call precedes this assertion.
-  it('seeds agentic_reflection_trigger_total at 0 for all four outcomes on construction, before any trigger is recorded', async () => {
-    const metric = await register.getSingleMetricAsString('agentic_reflection_trigger_total');
-    for (const outcome of ['below_threshold', 'cooldown', 'inflight', 'fired']) {
-      expect(metric, outcome).toContain(`outcome="${outcome}"} 0`);
-    }
-  });
-
   it('recordRearmFallback increments agentic_rearm_fallback_total', async () => {
     recorder.recordRearmFallback();
     recorder.recordRearmFallback();
@@ -633,7 +611,6 @@ describe('AgentMetricsRecorder — never throws into a trading path', () => {
       throwing as unknown as Counter<string>,
       throwing as unknown as Counter<string>,
       throwing as unknown as Counter<string>,
-      throwing as unknown as Counter<string>,
       // agent_client_latched: a `set` that throws — recordDecide writes the latch LEVEL alongside the
       // counter, so a misbehaving gauge must not escape into the decide path either.
       {
@@ -674,7 +651,6 @@ describe('AgentMetricsRecorder — never throws into a trading path', () => {
     expect(() => recorder.setBudgetRemainingUsd(1)).not.toThrow();
     expect(() => recorder.recordCapabilityViolation('open_short_on_spot')).not.toThrow();
     expect(() => recorder.recordSchemaFailure('single')).not.toThrow();
-    expect(() => recorder.recordReflectionTrigger('fired')).not.toThrow();
     expect(() => recorder.recordRearmFallback()).not.toThrow();
     expect(() => recorder.recordModelRoundTrip(1)).not.toThrow();
     expect(() => recorder.seedLastSuccessAt(1)).not.toThrow();
@@ -722,7 +698,6 @@ describe('AgentMetricsRecorder — never throws into a trading path', () => {
       noop as unknown as Gauge<string>, // budgetRemainingGauge
       throwingCapability as unknown as Counter<string>, // capabilityViolationsCounter — THROWS
       schemaRejections as unknown as Counter<string>, // schemaRejectionsCounter
-      noop as unknown as Counter<string>, // reflectionTriggerCounter
       noop as unknown as Counter<string>, // rearmFallbackCounter
       noop as unknown as Gauge<string>, // clientLatchedGauge
       noop as unknown as Gauge<string>, // lastSuccessGauge

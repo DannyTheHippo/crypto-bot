@@ -19,6 +19,7 @@ import {
 import { AGENTIC_MAX_STOP_LOSS_PCT } from '../../../domain/trading/risk/agentic-bounds';
 import { plannedStopNotionalCap } from '../../../domain/trading/risk/planned-stop-risk';
 import { splitSymbol } from '../../../domain/venue/types/symbol';
+import { isModelAuthoredDecision } from '../../../domain/strategy/types/decide-rationale';
 import { aggregateCandles } from '../../../domain/strategy/indicators/candle-aggregate';
 import {
   emaFromNumbers,
@@ -490,10 +491,14 @@ export interface AgenticStrategyDeps {
   readonly edgePolicy?: EdgePolicyPort;
 }
 
-// B3 (Design § Enriched model inputs): decision ring widened 10 -> 30 — more self-consistency
-// context per consult now that consults are portfolio-scheduled (far less frequent than the old
-// per-bar cadence), so the ring covers a comparable wall-clock span at the new consult rate.
-const MAX_DECISION_HISTORY = 30;
+// B3 (Design § Enriched model inputs) widened this 10 -> 30 on the reasoning that a portfolio-
+// scheduled consult cadence needed more rings to cover the same wall-clock span. 2026-07-30 payload
+// audit: recentDecisions had become the single largest block in the prompt (~2,974 chars ≈ 1,487
+// tok/symbol, larger than the candle window) and 382 of its 405 live ring lines were non-model rows
+// — a defect the write-site filter below fixes at the source. With only real decisions entering the
+// ring, 12 is chosen over 30: self-consistency context is what this block buys, and the marginal
+// value of the 13th-most-recent decision does not cover its per-symbol, per-consult token cost.
+const MAX_DECISION_HISTORY = 12;
 const INDICATOR_WARMUP_CLOSES = 21;
 const MAX_JOURNAL_RATIONALE_LEN = 2000;
 // XA5 (A0 activation bundle): consecutive identical positioned-noop consults before the repeated-
@@ -680,13 +685,14 @@ export class AgenticStrategy implements AsyncStrategy {
   // reclassification (fail safe to the prior LONG-when-any-qty behavior).
   private minNotional: Price | null = null;
 
-  // Ring buffer of past decisions, newest-last, capped — self-consistency context handed to the
-  // agent each call. The client itself stays stateless; this trail lives host-side in the strategy.
-  // Bound proof: MAX_DECISION_HISTORY caps this via the shift() right after every push (below), and
+  // Ring buffer of past MODEL-AUTHORED decisions, newest-last, capped — self-consistency context
+  // handed to the agent each call (see the isModelAuthoredDecision gate at the single push site for
+  // what is excluded and why). The client itself stays stateless; this trail lives host-side in the
+  // strategy. Bound proof: MAX_DECISION_HISTORY caps this via the shift() right after that push, and
   // its ONLY consumer — `recentDecisions: [...this.history]` — is spread in full and rendered
   // unconditionally by agent-prompt.ts's renderDecisionLines (iterates recentDecisions.length, no
-  // independent slice(-N)). No reader ever needs more than the cap already retains, so 30 stays the
-  // proven bound; this array can never grow past it.
+  // independent slice(-N)). No reader ever needs more than the cap already retains, so the cap is
+  // the proven bound; this array can never grow past it.
   private readonly history: AgentDecisionRecord[] = [];
   // Combined (realized + unrealized) PnL at the time the most recently pushed, not-yet-annotated
   // history record was made — diffed against the next call's combined PnL to fill that record's
@@ -941,17 +947,27 @@ export class AgenticStrategy implements AsyncStrategy {
 
     this.annotatePreviousOutcome(lastClose, context.position, lastCandle, heldDuringPrev);
 
-    this.history.push({
-      eventTime: input.snapshot.eventTime,
-      action: decision.action,
-      close: lastClose,
-      // Truncated to the same bound the client itself applies to a fresh rationale (MAX_REASON_LEN)
-      // before this re-enters a later prompt as recentDecisions — an un-truncated rationale (up to
-      // MAX_JOURNAL_RATIONALE_LEN) would otherwise carry ~10x more unframed prior-model free text
-      // into every subsequent call than the playbook's own DATA-framed block does.
-      reason: decision.rationale.slice(0, MAX_REASON_LEN),
-    });
-    if (this.history.length > MAX_DECISION_HISTORY) this.history.shift();
+    // 2026-07-30: only rows the MODEL actually authored enter the ring. A latched no-call ('error'),
+    // a post-200 degrade, and the off-menu/budget-exhausted pre-call short-circuits are lane-health
+    // facts, not decisions — they were 382 of 405 live ring lines, and the system prompt's own
+    // framing of this block ("the action/close/reason YOU gave on a prior call") was false for every
+    // one of them. Nothing is lost: all of them are already persisted in agent_decisions.rationale
+    // and metered by trading-runtime's outcomeForProposal. A 'plan_authoritative_close:' row IS
+    // model-authored (the consult was healthy; the system overrode the exit) and still enters.
+    // The journal write below is deliberately NOT filtered — the trail stays complete on disk.
+    if (isModelAuthoredDecision(decision.action, decision.rationale)) {
+      this.history.push({
+        eventTime: input.snapshot.eventTime,
+        action: decision.action,
+        close: lastClose,
+        // Truncated to the same bound the client itself applies to a fresh rationale (MAX_REASON_LEN)
+        // before this re-enters a later prompt as recentDecisions — an un-truncated rationale (up to
+        // MAX_JOURNAL_RATIONALE_LEN) would otherwise carry ~10x more unframed prior-model free text
+        // into every subsequent call than the playbook's own DATA-framed block does.
+        reason: decision.rationale.slice(0, MAX_REASON_LEN),
+      });
+      if (this.history.length > MAX_DECISION_HISTORY) this.history.shift();
+    }
 
     this.recordJournalEntry(input, decision, proposal);
 

@@ -1004,7 +1004,9 @@ export async function runAgenticReplay(opts: AgenticReplayOpts): Promise<Agentic
   // Production's own v3 prompt + tool, built once per run: every feed flag stays off (the fair-proxy
   // payload attaches none of those blocks), so the prompt documents exactly what the payload carries.
   const systemPrompt = buildSystemPrompt(tradingProfile);
-  const tool = buildTradeTool(caps);
+  // 2026-07-30: capability-free tool (see buildTradeTool's own comment) — `caps` still reaches the
+  // replayed model through the payload's capabilities block, same channel as live.
+  const tool = buildTradeTool();
 
   const fallback: BarStrategy = { decide: () => ({ type: 'hold' }) };
   const strategy = new LiveAgenticStrategy(undefined, budget, fallback);

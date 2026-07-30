@@ -781,7 +781,7 @@ export class AnthropicAgentClient implements AgentClientPort {
       barsHeld: input.context?.position.barsHeld,
       barsUntilForcedExit: input.context?.position.barsUntilForcedExit,
     });
-    const activeTool = buildTradeTool(caps);
+    const activeTool = buildTradeTool();
     const userContent: string | AnthropicTextBlock[] = ctx.playbookContent
       ? [
           {
@@ -1097,16 +1097,13 @@ export class AnthropicAgentClient implements AgentClientPort {
     // absent-when-no-call convention.
     const consultId = randomUUID();
 
-    // v3 consolidation spec §4.3: ONE portfolio tool — capsBySymbol carries each resolved symbol's
-    // own capabilities (venue/shorts/leverage/maxSizeFraction/venueFreeCash); the batched tool
-    // description mentions shorts only when at least one resolved symbol actually has it (see
-    // buildTradePortfolioTool's own comment). No more shorts/tradeContract lane branching, no
-    // separate portfolio-vs-single template tag: toolSchemaJson (below) already distinguishes
-    // submit_trade from submit_portfolio structurally.
-    const capsBySymbol = new Map<SymbolId, SymbolCapabilities>(
-      resolved.map((r) => [r.symbolId, r.caps]),
-    );
-    const portfolioTool = buildTradePortfolioTool(capsBySymbol);
+    // v3 consolidation spec §4.3: ONE portfolio tool, and (2026-07-30) one BYTE-IDENTICAL portfolio
+    // tool — the batch composition no longer varies it at all. Each resolved symbol's own
+    // capabilities (venue/shorts/leverage/maxSizeFraction/venueFreeCash) reach the model through its
+    // own payload block instead, which is also the only copy the zod capability check enforces
+    // against. No shorts/tradeContract lane branching, no separate portfolio-vs-single template tag:
+    // toolSchemaJson (below) already distinguishes submit_trade from submit_portfolio structurally.
+    const portfolioTool = buildTradePortfolioTool();
 
     const promptHash = computePromptHash({
       templateVersion:

@@ -19,6 +19,9 @@ const T = 1_700_000_000_000;
 const V = venueId('binance');
 const PERP_V = venueId('binanceusdm');
 const BTC = symbolId('BTC/USDT');
+const ETH = symbolId('ETH/USDT');
+const SHIB = symbolId('SHIB/USDT');
+// ALT/USDT deliberately has NO DEFAULT_FILTERS row — the dust filter's fail-open case.
 const ALT = symbolId('ALT/USDT');
 const SID = strategyId('agentic-1');
 
@@ -232,6 +235,181 @@ describe('buildAgentPortfolioBlock — perVenue (v3 §6.4)', () => {
     // headroom = 100 (cap) − 500 (|5| × 100 open notional) = −400.
     expect(block.perVenue).toEqual([
       { venue: 'binance', freeCash: '0', capitalShare: '100', headroom: '-400' },
+    ]);
+  });
+});
+
+// Every expectation below is an EXACT string (toBeCloseTo is banned on money): the trim is display-only
+// but its output is still a money string, so it gets money-string assertions.
+describe('buildAgentPortfolioBlock — display-only precision trim', () => {
+  // 0.123456789012345 × 1000.0000001 = 123.4567890246906789 — the "notional is a Decimal multiply of
+  // two full-precision values" case that put the longest tails in the payload.
+  function messySnapshot(): PortfolioSnapshot {
+    return {
+      ...emptySnapshot(),
+      equity: new Decimal('1000.000000000049'),
+      balances: new Map([
+        ['USDT', { free: new Decimal('212.4100000000000001'), locked: new Decimal('0') }],
+      ]),
+      positions: new Map([
+        [
+          'BTC/USDT',
+          position({
+            signedQty: new Decimal('0.123456789012345'),
+            avgEntry: price('1000.0000001'),
+          }),
+        ],
+      ]),
+    };
+  }
+
+  it('renders quote amounts at cents and quantities at significant digits', () => {
+    const block = buildAgentPortfolioBlock(messySnapshot(), undefined);
+
+    expect(block.cappedEquity).toBe('1000');
+    expect(block.freeQuote).toBe('212.41');
+    expect(block.grossExposure).toBe('123.46');
+    expect(block.positions).toEqual([
+      { symbol: 'BTC/USDT', side: 'LONG', qty: '0.123457', notional: '123.46' },
+    ]);
+  });
+
+  it('trims the equity cap itself, not just the uncapped equity', () => {
+    const block = buildAgentPortfolioBlock(messySnapshot(), '499.999999999');
+
+    expect(block.cappedEquity).toBe('500');
+  });
+
+  it('keeps significant digits meaningful across quantity scales (a fixed decimal count could not)', () => {
+    const snapshot: PortfolioSnapshot = {
+      ...emptySnapshot(),
+      positions: new Map([
+        [
+          'SHIB/USDT',
+          position({
+            symbol: SHIB,
+            signedQty: new Decimal('-12345678.912345'),
+            avgEntry: price('0.00001'),
+          }),
+        ],
+        [
+          'BTC/USDT',
+          position({ signedQty: new Decimal('0.000123456789'), avgEntry: price('100000') }),
+        ],
+      ]),
+    };
+
+    const block = buildAgentPortfolioBlock(snapshot, undefined);
+
+    expect(block.positions).toEqual([
+      // 12345678.912345 × 0.00001 = 123.45678912345.
+      { symbol: 'SHIB/USDT', side: 'SHORT', qty: '12345700', notional: '123.46' },
+      // 0.000123456789 × 100000 = 12.3456789.
+      { symbol: 'BTC/USDT', side: 'LONG', qty: '0.000123457', notional: '12.35' },
+    ]);
+  });
+
+  it('renders no full-precision decimal tail anywhere in the block', () => {
+    const snapshot: PortfolioSnapshot = {
+      ...messySnapshot(),
+      inFlightIntents: [reservedIntent({ qty: qty('0.333333333333'), limitPrice: price('3.3') })],
+      venueBalances: new Map([
+        [
+          V,
+          new Map([
+            ['USDT', { free: new Decimal('212.4100000000000001'), locked: new Decimal('0') }],
+          ]),
+        ],
+      ]),
+    };
+
+    // No priceHistory ⇒ correlation omitted, so this regex sees money strings only. btcBeta is a
+    // port-typed native `number` statistic (AgentPortfolioBlock.correlation), not a money string —
+    // out of this helper's remit by design.
+    const block = buildAgentPortfolioBlock(snapshot, '499.999999999', undefined, {
+      binance: '500',
+    });
+
+    // headroom = 500 − 123.4567890246906789 (open) − 1.0999999999989 (reserved) = 375.4432109753104211.
+    expect(block.perVenue).toEqual([
+      { venue: 'binance', freeCash: '212.41', capitalShare: '500', headroom: '375.44' },
+    ]);
+    expect(JSON.stringify(block)).not.toMatch(/\.\d{10}/);
+  });
+});
+
+describe('buildAgentPortfolioBlock — sub-minNotional dust positions', () => {
+  // ETH/USDT minNotional is 5 (DEFAULT_FILTERS): 0.0001 × 49999 = 4.9999 is un-exitable dust — and
+  // note it would RENDER as '5' after the cents trim, i.e. look like it met the minimum it misses.
+  function dustEth(): Position {
+    return position({ symbol: ETH, signedQty: new Decimal('0.0001'), avgEntry: price('49999') });
+  }
+
+  it('drops a position whose notional is under its venue minNotional', () => {
+    const snapshot: PortfolioSnapshot = {
+      ...emptySnapshot(),
+      positions: new Map([['ETH/USDT', dustEth()]]),
+    };
+
+    const block = buildAgentPortfolioBlock(snapshot, undefined);
+
+    expect(block.positions).toEqual([]);
+  });
+
+  it('still counts dropped dust in grossExposure (the book gross the sizer sees, never understated)', () => {
+    const snapshot: PortfolioSnapshot = {
+      ...emptySnapshot(),
+      positions: new Map([
+        [
+          'BTC/USDT',
+          position({
+            signedQty: new Decimal('0.123456789012345'),
+            avgEntry: price('1000.0000001'),
+          }),
+        ],
+        ['ETH/USDT', dustEth()],
+      ]),
+    };
+
+    const block = buildAgentPortfolioBlock(snapshot, undefined);
+
+    expect(block.positions).toEqual([
+      { symbol: 'BTC/USDT', side: 'LONG', qty: '0.123457', notional: '123.46' },
+    ]);
+    // 123.4567890246906789 + 4.9999 = 128.4566890246906789.
+    expect(block.grossExposure).toBe('128.46');
+  });
+
+  it('keeps a position sitting exactly at minNotional (strictly-below is the dust test)', () => {
+    const snapshot: PortfolioSnapshot = {
+      ...emptySnapshot(),
+      positions: new Map([
+        [
+          'ETH/USDT',
+          position({ symbol: ETH, signedQty: new Decimal('0.05'), avgEntry: price('100') }),
+        ],
+      ]),
+    };
+
+    const block = buildAgentPortfolioBlock(snapshot, undefined);
+
+    expect(block.positions).toEqual([
+      { symbol: 'ETH/USDT', side: 'LONG', qty: '0.05', notional: '5' },
+    ]);
+  });
+
+  it('keeps a position whose symbol has no DEFAULT_FILTERS row (fail open — never hide an unclassifiable position)', () => {
+    const snapshot: PortfolioSnapshot = {
+      ...emptySnapshot(),
+      positions: new Map([
+        ['ALT/USDT', position({ symbol: ALT, signedQty: new Decimal('2'), avgEntry: price('1') })],
+      ]),
+    };
+
+    const block = buildAgentPortfolioBlock(snapshot, undefined);
+
+    expect(block.positions).toEqual([
+      { symbol: 'ALT/USDT', side: 'LONG', qty: '2', notional: '2' },
     ]);
   });
 });

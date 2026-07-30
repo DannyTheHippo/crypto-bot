@@ -443,7 +443,7 @@ describe.skipIf(SKIP)(
         const runContractFingerprint = contractFingerprint({
           templateVersion: TRADE_TEMPLATE_VERSION,
           playbookContent: SEED_PLAYBOOK.content,
-          toolSchemaJson: JSON.stringify(buildTradeTool(SYNTHETIC_PERP_CAPS)),
+          toolSchemaJson: JSON.stringify(buildTradeTool()),
           thinking: THINKING_LABEL,
           maxTokens: MAX_TOKENS,
         });
@@ -458,7 +458,7 @@ describe.skipIf(SKIP)(
 
           // ONE system prompt and ONE tool built per model (not per row) — identical for every model
           // in this run, the head-to-head invariant hh-v1 depends on.
-          const tool = buildTradeTool(SYNTHETIC_PERP_CAPS);
+          const tool = buildTradeTool();
           const systemPrompt = buildSystemPrompt(EVAL_PROFILE);
           const promptHash = computePromptHash({
             templateVersion: TRADE_TEMPLATE_VERSION,

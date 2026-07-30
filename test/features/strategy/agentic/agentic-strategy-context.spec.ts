@@ -374,11 +374,12 @@ describe('AgenticStrategy context building', () => {
     expect(client.inputs[0]!.context!.position.side).toBe('LONG');
   });
 
-  it('keeps a newest-last ring of at most 30 past decisions, dropping the oldest once it overflows', async () => {
-    // B3 (Design § Enriched model inputs) widened the ring 10 -> 30 — mirrors agentic.strategy.ts's
-    // (private, unexported) MAX_DECISION_HISTORY. RING_SIZE + 1 scripted decisions feed the ring the
-    // (RING_SIZE + 2)th decide's context is captured from, so the very first one is provably evicted.
-    const RING_SIZE = 30;
+  it('keeps a newest-last ring of at most 12 past decisions, dropping the oldest once it overflows', async () => {
+    // Mirrors agentic.strategy.ts's (private, unexported) MAX_DECISION_HISTORY, narrowed 30 -> 12 on
+    // 2026-07-30 alongside the write-site filter below — see that constant's own comment. RING_SIZE +
+    // 1 scripted decisions feed the ring the (RING_SIZE + 2)th decide's context is captured from, so
+    // the very first one is provably evicted.
+    const RING_SIZE = 12;
     const cycle = ['long', 'flat', 'hold'] as const;
     const actionsForCalls = Array.from(
       { length: RING_SIZE + 1 },
@@ -424,6 +425,79 @@ describe('AgenticStrategy context building', () => {
     const stored = inputs[1]!.context!.recentDecisions[0]!;
     expect(stored.reason).toHaveLength(200);
     expect(stored.reason).toBe(longRationale.slice(0, 200));
+  });
+
+  // 2026-07-30 (A): 382 of 405 live ring lines were records of calls that never happened or came
+  // back unusable — non-decisions re-fed to the model every consult, for every symbol, under a system
+  // prompt that describes the block as "the action/close/reason YOU gave on a prior call". Each case
+  // below is one such write site's own decision shape, scripted verbatim.
+  describe('only model-authored decisions enter the ring', () => {
+    async function ringAfter(decision: {
+      action: 'hold' | 'error';
+      rationale: string;
+    }): Promise<AgentDecisionInput[]> {
+      const inputs: AgentDecisionInput[] = [];
+      const client: AgentClientPort = {
+        propose: (input) => {
+          inputs.push(input);
+          return Promise.resolve({
+            signals: [],
+            decision: { ...decision, confidence: null },
+          });
+        },
+      };
+      const strategy = makeStrategy(client);
+      await strategy.decide(buildInput({ eventTime: T }));
+      await strategy.decide(buildInput({ eventTime: T + 60_000 }));
+      return inputs;
+    }
+
+    it.each([
+      // AnthropicAgentClient.latchedDecision — a FATAL-latched call that never left the process.
+      [
+        'client_latched',
+        { action: 'error' as const, rationale: 'client_latched: cause=fatal_400' },
+      ],
+      // The four post-200 degrades (DEGRADED_DECIDE_RATIONALE_TAGS) — reached the model, unusable.
+      [
+        'schema_rejected',
+        { action: 'hold' as const, rationale: 'schema_rejected: (root): required' },
+      ],
+      ['no_tool_use', { action: 'hold' as const, rationale: 'no_tool_use: text-only response' }],
+      [
+        'capability_violation',
+        { action: 'hold' as const, rationale: 'capability_violation:open_short_on_spot' },
+      ],
+      // BatchingAgentClient / BudgetedAgentClient pre-call short-circuits — no call was made.
+      ['off_menu', { action: 'hold' as const, rationale: 'off_menu: symbol not in active menu' }],
+      [
+        'budget_exhausted',
+        { action: 'hold' as const, rationale: 'budget_exhausted: daily LLM budget exhausted' },
+      ],
+    ])('a %s row never enters the ring', async (_label, decision) => {
+      const inputs = await ringAfter(decision);
+      expect(inputs[1]!.context!.recentDecisions).toEqual([]);
+    });
+
+    // The counter-case that makes the filter a filter and not a blanket. AGENTIC_PLAN_AUTHORITATIVE_
+    // EXITS stamps this tag on a consult that reached the model and returned a perfectly valid
+    // decision the SYSTEM then overrode — deliberately NOT a DEGRADED_DECIDE_RATIONALE_TAGS member
+    // (see anthropic-agent-client.ts's planAuthoritativeCloseRationale), and a real model decision
+    // the next consult must still see.
+    it('a plan_authoritative_close row DOES enter the ring', async () => {
+      const inputs = await ringAfter({
+        action: 'hold',
+        rationale: 'plan_authoritative_close: losing patience with this one',
+      });
+      const ring = inputs[1]!.context!.recentDecisions;
+      expect(ring).toHaveLength(1);
+      expect(ring[0]!.reason).toBe('plan_authoritative_close: losing patience with this one');
+    });
+
+    it('an ordinary model hold with a plain rationale still enters the ring', async () => {
+      const inputs = await ringAfter({ action: 'hold', rationale: 'chop, no edge' });
+      expect(inputs[1]!.context!.recentDecisions.map((d) => d.reason)).toEqual(['chop, no edge']);
+    });
   });
 
   it('clears the decision history on stop, so the next decide sees an empty ring', async () => {

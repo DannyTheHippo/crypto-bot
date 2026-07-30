@@ -4,7 +4,6 @@
 // This suite never touches the network and never requires an API key — CI-exempt only because
 // ci.yml simply doesn't invoke it, not because it needs guarding.
 import { describe, expect, it } from 'vitest';
-import { venueForSymbol } from '../../../src/domain/venue/types/venue-map';
 import {
   THINKING_TEMPLATE_VERSION,
   TRADE_TEMPLATE_VERSION,
@@ -14,7 +13,7 @@ import {
 } from '../../../src/features/strategy/agentic/agent-prompt';
 import { SEED_PLAYBOOK } from '../../../src/features/strategy/agentic/agentic-strategy.module';
 import { scoreRows } from '../../../src/features/strategy/agentic/counterfactual-scoring';
-import { EVAL_PROFILE, SYM, replay, type ScriptedDecision } from './fixtures';
+import { EVAL_PROFILE, replay, type ScriptedDecision } from './fixtures';
 
 const MODEL = 'claude-eval-fixture-model';
 const CLOSES = ['100', '102', '108', '104', '96', '99', '101'];
@@ -28,16 +27,9 @@ const SCRIPT: readonly ScriptedDecision[] = [
   { action: 'hold', confidence: 0.5 },
 ];
 
-/** Caps matching AnthropicAgentClient.capabilitiesFor defaults for the eval fixture symbol. */
-function evalFixtureCaps() {
-  return {
-    venue: venueForSymbol(SYM),
-    shorts: false,
-    leverage: '1',
-    maxSizeFraction: '0.15',
-    venueFreeCash: '0',
-  };
-}
+// 2026-07-30: the fixture caps object this file used to build for buildTradeTool is gone with the
+// tool's parameter — the tool is byte-identical for every symbol now, so the expected promptHash
+// below no longer depends on this symbol's capabilities at all.
 
 describe('agentic eval — replay runner (offline, fixture fetchFn)', () => {
   it('drives buildSystemPrompt/buildUserMessage + AnthropicAgentClient through a full candle window and produces one scorecard', async () => {
@@ -65,7 +57,7 @@ describe('agentic eval — replay runner (offline, fixture fetchFn)', () => {
     const expectedPromptHash = computePromptHash({
       templateVersion: `${TRADE_TEMPLATE_VERSION}+${THINKING_TEMPLATE_VERSION}`,
       playbookContent: SEED_PLAYBOOK.content,
-      toolSchemaJson: JSON.stringify(buildTradeTool(evalFixtureCaps())),
+      toolSchemaJson: JSON.stringify(buildTradeTool()),
       modelId: MODEL,
     });
     expect(rows[0]!.promptHash).toBe(expectedPromptHash);

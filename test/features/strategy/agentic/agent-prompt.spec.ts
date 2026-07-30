@@ -14,7 +14,6 @@ import {
   buildTradePortfolioTool,
   buildUserMessage,
   computePromptHash,
-  type SymbolCapabilities,
 } from '../../../../src/features/strategy/agentic/agent-prompt';
 import { normalizeRawEvent } from '../../../../src/features/venue/market-data/normalize';
 import type { RawVenueEvent } from '../../../../src/ports/venue/exchange-stream';
@@ -954,6 +953,83 @@ describe('buildUserMessage', () => {
       expect(payload.recentDecisions[0]).toContain('n/a');
       expect(raw).not.toContain('NaN');
     });
+
+    // 2026-07-30 (D): quoteAssetOf split on '/' alone, so ccxt's linear-swap form BASE/QUOTE:SETTLE
+    // rendered its PnL unit as "USDT:USDT" — on all 16 live perp symbols, i.e. every perp decision
+    // line ever sent. Asserted against the real renderer, not the hand-maintained fixture mirror.
+    it('renders the quote asset, never the raw :SETTLE suffix, for a perp symbol', () => {
+      const PERP = symbolId('BTC/USDT:USDT');
+      const perpCandle: CandleEvent = { ...candle(0), symbol: PERP };
+      const input: AgentDecisionInput = {
+        strategyId: SID,
+        trigger: { kind: 'candle', event: perpCandle },
+        snapshot: {
+          eventTime: epochMs(T),
+          candles: new Map(),
+          tickers: new Map(),
+          books: new Map(),
+          execReports: [],
+          portfolio: { strategyId: SID, positions: new Map(), openOrders: [] },
+        },
+        context: {
+          indicators: null,
+          position: {
+            side: 'FLAT',
+            qty: '0',
+            avgEntry: null,
+            realizedPnl: '0',
+            unrealizedPnlPct: null,
+            openOrders: 0,
+          },
+          recentDecisions: [
+            {
+              eventTime: epochMs(T - 60_000),
+              action: 'close',
+              close: 100,
+              reason: 'r',
+              outcome: { priceMovePct: 1, positionPnlDelta: '2.5', heldDuring: 'LONG' },
+            },
+          ],
+        },
+      };
+      const raw = buildUserMessage(input);
+      const payload = JSON.parse(raw) as { recentDecisions: string[] };
+
+      expect(payload.recentDecisions[0]).toContain('+2.5 USDT');
+      expect(raw).not.toContain('USDT:USDT (');
+      expect(payload.recentDecisions[0]).not.toContain('USDT:USDT');
+    });
+
+    // 2026-07-30 (A): this block is re-sent in full, per symbol, on every consult, and the rationale
+    // was rendered untruncated — the write-site MAX_REASON_LEN=200 cap is not a render cap.
+    it('truncates a rendered reason past 120 chars, and leaves a shorter one byte-identical', () => {
+      const long = 'z'.repeat(400);
+      const short = 'y'.repeat(120);
+      const context: AgentContext = {
+        indicators: null,
+        position: {
+          side: 'FLAT',
+          qty: '0',
+          avgEntry: null,
+          realizedPnl: '0',
+          unrealizedPnlPct: null,
+          openOrders: 0,
+        },
+        recentDecisions: [
+          { eventTime: epochMs(T - 120_000), action: 'hold', close: 100, reason: long },
+          { eventTime: epochMs(T - 60_000), action: 'hold', close: 100, reason: short },
+        ],
+      };
+      const payload = JSON.parse(buildUserMessage(buildInput({ context }))) as {
+        recentDecisions: string[];
+      };
+
+      expect(payload.recentDecisions[0]).toContain(`("${'z'.repeat(120)}…")`);
+      expect(payload.recentDecisions[0]).not.toContain('z'.repeat(121));
+      // Exactly at the cap is not truncated — no ellipsis, no lost character.
+      expect(payload.recentDecisions[1]).toContain(`("${short}")`);
+      expect(payload.recentDecisions[1]).not.toContain('…');
+    });
   });
 
   describe('order book rendering', () => {
@@ -1749,27 +1825,9 @@ describe('DECISION_TOOL', () => {
 // v3 consolidation spec §9: SHORTS_DECISION_TOOL is DELETED outright (no eval fixture imports it) —
 // the unified submit_trade/submit_portfolio contract below replaces the whole lane-split family.
 
-// v3 consolidation spec §4.1/§4.2: per-symbol capability fixtures shared by the tool-shape tests
-// below — spot never shorts, perp always does; leverage/venueFreeCash are illustrative here (the
-// tool description only reads maxSizeFraction/shorts/leverage, never venueFreeCash).
-function spotCaps(maxSizeFraction: string): SymbolCapabilities {
-  return {
-    venue: venueId('binance'),
-    shorts: false,
-    leverage: '1',
-    maxSizeFraction,
-    venueFreeCash: '100',
-  };
-}
-function perpCaps(maxSizeFraction: string): SymbolCapabilities {
-  return {
-    venue: venueId('binanceusdm'),
-    shorts: true,
-    leverage: '2',
-    maxSizeFraction,
-    venueFreeCash: '100',
-  };
-}
+// 2026-07-30: the per-symbol capability fixtures that used to parameterize these tool-shape tests
+// are gone with the parameters themselves — neither factory takes an argument any more (see the
+// byte-identity tests below for why that is the point).
 
 describe('strict tool schemas stay within the API-accepted JSON-schema subset', () => {
   // Anthropic strict tool use rejects constraint keywords with HTTP 400 at request time ("For
@@ -1812,14 +1870,10 @@ describe('strict tool schemas stay within the API-accepted JSON-schema subset', 
     // walked recursively (properties + items, including the nested `entry` object and the
     // `decisions[].*` element schema for the portfolio tool) so no numeric min/max keyword can ever
     // sneak into a wire schema and 400 the client's first live call (see this describe's own header
-    // comment for the documented incident). ONE schema shape now (action enum always includes
-    // open_short) — spot/perp caps only vary the DESCRIPTION text, never the schema keywords.
-    ['TRADE_TOOL_SPOT', buildTradeTool(spotCaps('0.15'))],
-    ['TRADE_TOOL_PERP', buildTradeTool(perpCaps('0.35'))],
-    [
-      'TRADE_PORTFOLIO_TOOL',
-      buildTradePortfolioTool(new Map([[symbolId('BTC/USDT'), spotCaps('0.15')]])),
-    ],
+    // comment for the documented incident). ONE schema shape, and (2026-07-30) one description text
+    // too — neither factory takes a capability argument any more.
+    ['TRADE_TOOL', buildTradeTool()],
+    ['TRADE_PORTFOLIO_TOOL', buildTradePortfolioTool()],
   ])('%s uses only schema keywords the strict API accepts', (_label, tool) => {
     expect(tool.strict).toBe(true);
     assertSchemaNode(tool.input_schema, 'input_schema');
@@ -1841,44 +1895,71 @@ describe('strict tool schemas stay within the API-accepted JSON-schema subset', 
 // violation-degrade coverage), never a schema-shape concern any more.
 describe('v2 trade tools (v3 unified contract, DECISION_V2_BOUNDS)', () => {
   it('buildTradeTool is submit_trade, strict, and ALWAYS includes open_short in the action enum', () => {
-    const spot = buildTradeTool(spotCaps('0.15'));
-    const perp = buildTradeTool(perpCaps('0.35'));
-    expect(spot.name).toBe('submit_trade');
-    expect(spot.strict).toBe(true);
-    expect(spot.input_schema.additionalProperties).toBe(false);
-    expect(spot.input_schema.properties.action.enum).toEqual([
+    const tool = buildTradeTool();
+    expect(tool.name).toBe('submit_trade');
+    expect(tool.strict).toBe(true);
+    expect(tool.input_schema.additionalProperties).toBe(false);
+    expect(tool.input_schema.properties.action.enum).toEqual([
       'open_long',
       'open_short',
       'close',
       'adjust',
       'hold',
     ]);
-    expect(perp.input_schema.properties.action.enum).toEqual(
-      spot.input_schema.properties.action.enum,
-    );
   });
 
-  it('mentions shorts/leverage in the description only when capabilities.shorts is true', () => {
-    const spot = buildTradeTool(spotCaps('0.15'));
-    const perp = buildTradeTool(perpCaps('0.35'));
-    expect(spot.description.toLowerCase()).not.toContain('shorts are enabled');
-    expect(perp.description.toLowerCase()).toContain('shorts are enabled');
-    expect(perp.description).toContain('2x');
+  // 2026-07-30 (B): the tool schema is the FIRST block of the cached request prefix (canonical cache
+  // position 0, ahead of the system breakpoint — anthropic-agent-client.ts's attemptOnce), so any
+  // per-call variation in it invalidates both breakpoints on every consult. These two tests pin the
+  // property that makes the prefix stable: the factories take no input, so there is nothing left
+  // that COULD fork them.
+  it('buildTradeTool takes no arguments and returns byte-identical JSON on every call', () => {
+    expect(JSON.stringify(buildTradeTool())).toBe(JSON.stringify(buildTradeTool()));
+    expect(buildTradeTool.length).toBe(0);
   });
 
-  it('injects this symbol capabilities.maxSizeFraction into the sizeFraction description rather than a hardcoded JSON-schema bound', () => {
-    const spot = buildTradeTool(spotCaps('0.15'));
-    const perp = buildTradeTool(perpCaps('0.35'));
-    expect(spot.input_schema.properties.sizeFraction.description).toContain(
-      `[${DECISION_V2_BOUNDS.sizeFraction.min}, 0.15]`,
+  it('buildTradePortfolioTool takes no arguments and returns byte-identical JSON on every call', () => {
+    expect(JSON.stringify(buildTradePortfolioTool())).toBe(
+      JSON.stringify(buildTradePortfolioTool()),
     );
-    expect(perp.input_schema.properties.sizeFraction.description).toContain(
-      `[${DECISION_V2_BOUNDS.sizeFraction.min}, 0.35]`,
+    expect(buildTradePortfolioTool.length).toBe(0);
+  });
+
+  it('states no per-symbol capability FACT in either tool description — the payload capabilities block owns those', () => {
+    // The removed forks: a shorts-enabled/spot-only sentence and a concrete "capped at Nx" leverage
+    // figure on submit_trade, a batch-composition-gated shorts sentence on submit_portfolio. Each
+    // was a second copy of something the payload already renders per symbol (buildMarketPayload's
+    // capabilities block) and zod already enforces. What survives is the POINTER to that block,
+    // which is capability-neutral and identical for every symbol.
+    for (const description of [
+      buildTradeTool().description,
+      buildTradePortfolioTool().description,
+    ]) {
+      expect(description).not.toContain('Shorts are enabled');
+      expect(description).not.toContain('spot-only');
+      expect(description).not.toMatch(/capped at \d+x/);
+      expect(description).toContain('capabilities');
+    }
+  });
+
+  it('bounds sizeFraction by symbol-referential prose, never a baked-in number or a JSON-schema bound', () => {
+    const description = buildTradeTool().input_schema.properties.sizeFraction.description;
+    expect(description).toContain(
+      `[${DECISION_V2_BOUNDS.sizeFraction.min}, this symbol's own capabilities.maxSizeFraction`,
     );
+    // The single-symbol path used to bake the concrete per-symbol number in here, which is what made
+    // the tool JSON vary per symbol. Any decimal fraction reappearing as the upper bound is that
+    // regression.
+    expect(description).not.toMatch(/\[0\.005, 0\.\d+\]/);
+    // Both tools read the SAME field text, so submit_portfolio's element schema cannot drift from it.
+    expect(
+      buildTradePortfolioTool().input_schema.properties.decisions.items.properties.sizeFraction
+        .description,
+    ).toBe(description);
     // No numeric min/max schema keyword anywhere on sizeFraction — same allowlist walk as above, but
     // asserted directly here to make the "description-only, never JSON-schema" contract explicit.
-    expect(spot.input_schema.properties.sizeFraction).not.toHaveProperty('minimum');
-    expect(spot.input_schema.properties.sizeFraction).not.toHaveProperty('maximum');
+    expect(buildTradeTool().input_schema.properties.sizeFraction).not.toHaveProperty('minimum');
+    expect(buildTradeTool().input_schema.properties.sizeFraction).not.toHaveProperty('maximum');
   });
 
   it('recursive walk: no v2 tool schema node anywhere carries a minimum/maximum/minLength/maxLength keyword', () => {
@@ -1903,17 +1984,13 @@ describe('v2 trade tools (v3 unified contract, DECISION_V2_BOUNDS)', () => {
         walk(node['items'] as Record<string, unknown>);
       }
     }
-    for (const tool of [
-      buildTradeTool(spotCaps('0.15')),
-      buildTradeTool(perpCaps('0.35')),
-      buildTradePortfolioTool(new Map([[symbolId('BTC/USDT'), spotCaps('0.15')]])),
-    ]) {
+    for (const tool of [buildTradeTool(), buildTradePortfolioTool()]) {
       walk(tool.input_schema);
     }
   });
 
   it('every DECISION_V2_BOUNDS range with a fixed max is stated in the matching field description', () => {
-    const tool = buildTradeTool(spotCaps('0.15'));
+    const tool = buildTradeTool();
     const props = tool.input_schema.properties;
     expect(props.entryValidityBars.description).toContain(
       `[${DECISION_V2_BOUNDS.entryValidityBars.min}, ${DECISION_V2_BOUNDS.entryValidityBars.max}]`,
@@ -1943,7 +2020,7 @@ describe('v2 trade tools (v3 unified contract, DECISION_V2_BOUNDS)', () => {
     const REQUIRED_ON_OPEN_TEXT = "Required on 'open_long'/'open_short', including a scale-in";
 
     it("sizeFraction/entryValidityBars/stopLossPct/takeProfitPct/maxHoldBars descriptions all state 'required on open'", () => {
-      const props = buildTradeTool(spotCaps('0.15')).input_schema.properties;
+      const props = buildTradeTool().input_schema.properties;
       for (const field of [
         'sizeFraction',
         'entryValidityBars',
@@ -1959,8 +2036,7 @@ describe('v2 trade tools (v3 unified contract, DECISION_V2_BOUNDS)', () => {
     });
 
     it('TRADE_ACTION_DESCRIPTION enumerates all six open_* directive fields as a REQUIRED set', () => {
-      const description = buildTradeTool(spotCaps('0.15')).input_schema.properties.action
-        .description;
+      const description = buildTradeTool().input_schema.properties.action.description;
       for (const field of [
         'sizeFraction',
         'entry',
@@ -1979,16 +2055,12 @@ describe('v2 trade tools (v3 unified contract, DECISION_V2_BOUNDS)', () => {
     // weight a tool's own TOP-LEVEL description more heavily. Hoisted (not moved) into both tools'
     // top-level `description` so the same sentence lives in the higher-weighted spot too.
     it('the required-six-directive-fields sentence is hoisted into the TOP-LEVEL description of both submit_trade and submit_portfolio', () => {
-      const tradeTool = buildTradeTool(spotCaps('0.15'));
-      const portfolioTool = buildTradePortfolioTool(
-        new Map([[symbolId('BTC/USDT'), spotCaps('0.15')]]),
-      );
-      expect(tradeTool.description).toContain('REQUIRES all six directive fields');
-      expect(portfolioTool.description).toContain('REQUIRES all six directive fields');
+      expect(buildTradeTool().description).toContain('REQUIRES all six directive fields');
+      expect(buildTradePortfolioTool().description).toContain('REQUIRES all six directive fields');
     });
 
     it('submit_portfolio tool description states decisions must be an actual JSON array, never a string-encoded one', () => {
-      const tool = buildTradePortfolioTool(new Map([[symbolId('BTC/USDT'), spotCaps('0.15')]]));
+      const tool = buildTradePortfolioTool();
       expect(tool.description).toContain(
         '`decisions` MUST be an actual JSON array of decision objects — never a string-encoded array',
       );
@@ -1998,8 +2070,7 @@ describe('v2 trade tools (v3 unified contract, DECISION_V2_BOUNDS)', () => {
     // to match (see agent-prompt.ts's tradeFieldSchemas thesis description and the client's
     // tradeDirectiveFieldShape thesis schema).
     it('thesis description states overrunning the cap is silently truncated, never a rejection', () => {
-      const description = buildTradeTool(spotCaps('0.15')).input_schema.properties.thesis
-        .description;
+      const description = buildTradeTool().input_schema.properties.thesis.description;
       expect(description).toContain(String(DECISION_V2_BOUNDS.thesisMaxLen));
       expect(description).toContain('silently truncated');
       expect(description).not.toContain('rejects the WHOLE decision');
@@ -2007,14 +2078,14 @@ describe('v2 trade tools (v3 unified contract, DECISION_V2_BOUNDS)', () => {
   });
 
   it('entry.style is maker|taker and entry.offsetBps is documented as maker-only', () => {
-    const entry = buildTradeTool(spotCaps('0.15')).input_schema.properties.entry;
+    const entry = buildTradeTool().input_schema.properties.entry;
     expect(entry.properties.style.enum).toEqual(['maker', 'taker']);
     expect(entry.properties.offsetBps.description.toLowerCase()).toContain("style is 'taker'");
   });
 
-  describe('portfolio batch tool: exactly ONE portfolio-level nextConsultBars', () => {
+  describe('portfolio batch tool: exactly ONE nextConsultBars, described as what it actually is', () => {
     it('carries nextConsultBars at the top level, not inside each decision element', () => {
-      const tool = buildTradePortfolioTool(new Map([[symbolId('BTC/USDT'), spotCaps('0.15')]]));
+      const tool = buildTradePortfolioTool();
       const topProps = tool.input_schema.properties;
       expect(topProps).toHaveProperty('nextConsultBars');
       expect(topProps.nextConsultBars.type).toBe('integer');
@@ -2029,32 +2100,39 @@ describe('v2 trade tools (v3 unified contract, DECISION_V2_BOUNDS)', () => {
       expect(occurrences).toBe(1);
     });
 
-    it('per-element action enum always includes open_short regardless of the batch composition', () => {
-      const allSpot = buildTradePortfolioTool(new Map([[symbolId('BTC/USDT'), spotCaps('0.15')]]));
-      const mixed = buildTradePortfolioTool(
-        new Map([
-          [symbolId('BTC/USDT'), spotCaps('0.15')],
-          [symbolId('SOL/USDT:USDT'), perpCaps('0.35')],
-        ]),
-      );
-      expect(allSpot.input_schema.properties.decisions.items.properties.action.enum).toContain(
-        'open_short',
-      );
-      expect(mixed.input_schema.properties.decisions.items.properties.action.enum).toEqual(
-        allSpot.input_schema.properties.decisions.items.properties.action.enum,
+    it('per-element action enum always includes open_short', () => {
+      expect(
+        buildTradePortfolioTool().input_schema.properties.decisions.items.properties.action.enum,
+      ).toContain('open_short');
+    });
+
+    it("gates open_short on the symbol's own capabilities block rather than on the batch composition", () => {
+      // 2026-07-30 (B): this sentence used to be appended only when some symbol in the batch had
+      // shorts — the batch path's last capability fork. It is now unconditional AND still true for an
+      // all-spot batch, because it states the precondition instead of asserting shorts exist.
+      expect(buildTradePortfolioTool().description).toContain(
+        "'open_short' is valid only for a symbol whose own capabilities.shorts is true.",
       );
     });
 
-    it('mentions shorts only when at least one resolved symbol in the batch has capabilities.shorts', () => {
-      const allSpot = buildTradePortfolioTool(new Map([[symbolId('BTC/USDT'), spotCaps('0.15')]]));
-      const mixed = buildTradePortfolioTool(
-        new Map([
-          [symbolId('BTC/USDT'), spotCaps('0.15')],
-          [symbolId('SOL/USDT:USDT'), perpCaps('0.35')],
-        ]),
-      );
-      expect(allSpot.description.toLowerCase()).not.toContain('open_short');
-      expect(mixed.description.toLowerCase()).toContain('open_short');
+    // 2026-07-30 (C): the description asserted the value schedules "the WHOLE BATCH". It never did —
+    // each symbol's own strategy instance adopts the value into its OWN scheduledConsultBars/
+    // barsSinceConsult pair (agentic.strategy.ts), and a fill or adverse move re-consults that symbol
+    // alone; batching only coalesces whichever symbols are due on the same bar. Every scheduling
+    // decision the model made rested on a system that does not exist.
+    it('does not claim nextConsultBars schedules the whole batch as a unit', () => {
+      const tool = buildTradePortfolioTool();
+      const nextConsultBars = tool.input_schema.properties.nextConsultBars.description;
+      for (const text of [tool.description, nextConsultBars]) {
+        expect(text).not.toContain('WHOLE BATCH');
+        expect(text).not.toContain('PORTFOLIO-LEVEL');
+        expect(text).not.toContain('Portfolio-level');
+      }
+      // What it says instead: one value, applied to every symbol, counted down independently.
+      expect(nextConsultBars).toContain('applied to every symbol in this batch');
+      expect(nextConsultBars).toContain('OWN clock');
+      expect(nextConsultBars).toContain('per-symbol scheduling is not supported');
+      expect(tool.description).toContain('counts it down on its own clock');
     });
   });
 });

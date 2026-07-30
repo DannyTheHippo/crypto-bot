@@ -32,3 +32,36 @@ export function isDegradedDecideRationale(rationale: string | undefined): boolea
     rationale !== undefined && DEGRADED_DECIDE_RATIONALE_TAGS.some((t) => rationale.startsWith(t))
   );
 }
+
+// The tags stamped by the branches that short-circuit BEFORE any model call is made: the client's
+// own FATAL latch (anthropic-agent-client.ts's latchRationale), the active-menu gate and the daily
+// LLM-budget gate (batching-agent-client.ts, agent-budget.ts). Deliberately a SEPARATE list from
+// DEGRADED_DECIDE_RATIONALE_TAGS above rather than an extension of it: those tags mean "reached the
+// model, came back with nothing usable" and feed WATCH-V4-8's liveness signal, which a no-call
+// short-circuit must never contaminate.
+//
+// trading-runtime.module.ts's outcomeForProposal reads the same three prefixes, but maps each to a
+// DISTINCT metric label ('client_latched' / 'off_menu' / 'budget_blocked'), so it keeps its own
+// ordered branch instead of a set-membership test — a shared list would not express that mapping.
+export const PRE_CALL_DECIDE_RATIONALE_TAGS = [
+  'client_latched:',
+  'off_menu:',
+  'budget_exhausted:',
+] as const;
+
+// True only when the MODEL itself authored this decision. Two exclusions, both non-decisions: the
+// 'error' action (the client's own named degrade for a call that never happened — see
+// AnthropicAgentClient.latchedDecision) and any rationale carrying a degrade or pre-call tag above.
+//
+// 'plan_authoritative_close:' (anthropic-agent-client.ts) is a member of NEITHER list on purpose:
+// that consult reached the model and came back with a perfectly valid decision the SYSTEM then
+// overrode, so it stays model-authored here — the same reasoning that keeps it out of the degrade
+// list. Callers that trim what is fed back to the model (agentic.strategy.ts's decision ring) must
+// keep those rows.
+export function isModelAuthoredDecision(action: string, rationale: string | undefined): boolean {
+  if (action === 'error') return false;
+  if (isDegradedDecideRationale(rationale)) return false;
+  return (
+    rationale === undefined || !PRE_CALL_DECIDE_RATIONALE_TAGS.some((t) => rationale.startsWith(t))
+  );
+}

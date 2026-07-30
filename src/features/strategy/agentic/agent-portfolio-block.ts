@@ -1,5 +1,6 @@
 import Decimal from 'decimal.js';
 import { symbolId, venueId, type VenueId } from '../../../domain/common/types/ids';
+import { DEFAULT_FILTERS } from '../../../domain/trading/risk/default-filters';
 import type { PortfolioSnapshot } from '../../../domain/trading/types/portfolio';
 import type {
   AgentPortfolioBlock,
@@ -12,6 +13,39 @@ import {
   type BenchmarkCandle,
 } from './benchmark-alpha';
 import type { PriceHistoryStore } from './price-history-store';
+
+// DISPLAY-ONLY rendering of the money/quantity strings this block puts in the prompt payload. Nothing
+// produced here is stored, returned to a caller, or fed back into a computation: the PortfolioSnapshot
+// is untouched, every Decimal accumulated below (grossExposure, headroom, venueOpenNotional) keeps
+// full precision, and the trim happens on the very last step — the string. The model's only sizing
+// input is a sizeFraction it proposes; no order qty, price, or balance is ever derived from these
+// strings, and the two callers (agentic-bridge.module.ts's payload extras, trading-runtime.module.ts's
+// periodic log line) both consume the block as text.
+//
+// Same sanctioned shape as agent-prompt.ts's per-candle `reduce` helper, and the same reasoning: still
+// Decimal all the way to the rendered string — .toDecimalPlaces()/.toSignificantDigits() never drop to
+// a native float (money hard rule), they only trim the rendered precision of context data. Held
+// deliberately un-exported so a rounded string cannot leave this module (the module itself is already
+// walled inside features/strategy/agentic by eslint-plugin-boundaries).
+//
+// Quote vs quantity split: a QUOTE amount's meaning is absolute — a cent is the smallest unit anyone
+// acts on, so a `212.41000000000000014` tail is pure token noise — hence fixed decimals. A QUANTITY's
+// meaning is scale-relative (0.00012345 BTC and 12345678 SHIB are each one position), so a fixed
+// decimal count would erase the small-lot one and pad the large-lot one — hence significant digits,
+// the same trim the candle helper applies to prices and volumes.
+const QUOTE_DISPLAY_DECIMALS = 2;
+const QTY_SIGNIFICANT_DIGITS = 6;
+
+// ROUND_HALF_UP = nearest cent, the neutral choice for a figure nobody transacts on. Hard rule 1's
+// "venue-facing rounding is explicit and directional" binds on the sizer/adapter path, not here —
+// these strings never reach a venue.
+function renderQuote(d: Decimal): string {
+  return d.toDecimalPlaces(QUOTE_DISPLAY_DECIMALS, Decimal.ROUND_HALF_UP).toFixed();
+}
+
+function renderQty(d: Decimal): string {
+  return d.toSignificantDigits(QTY_SIGNIFICANT_DIGITS, Decimal.ROUND_HALF_UP).toFixed();
+}
 
 // I1 (Design § Enriched model inputs, § Live-scale economics): the batch payload's portfolio-state
 // block — capped equity/free quote/gross exposure/open positions, built from the SAME
@@ -42,19 +76,30 @@ export function buildAgentPortfolioBlock(
   for (const p of snapshot.positions.values()) {
     if (p.signedQty.isZero()) continue;
     const notional = p.signedQty.abs().mul(p.avgEntry);
+    // Dust still counts toward grossExposure: that figure is the book's TRUE gross, the same one
+    // risk-engine.service.ts's exposure check and the sizer's headroom clamp compute — only the
+    // per-position row below is dropped, so the model never sees an understated exposure.
     grossExposure = grossExposure.plus(notional);
+    // A position under the venue minNotional is un-exitable dust: a reduce-only exit sized to that qty
+    // is rejected BELOW_MINIMUM by the sizer, so listing it only buys exit proposals that can never
+    // execute (agentic.strategy.ts's heldIsDust reclassifies the per-symbol summary to FLAT for
+    // exactly this reason — the batch-wide block owes the model the same view). minNotional comes from
+    // the SAME DEFAULT_FILTERS table Risk/Execution enforce, keyed by market id. No row for the symbol
+    // ⇒ keep the row: fail open, never hide a position we cannot classify.
+    const minNotional = DEFAULT_FILTERS.get(String(p.symbol))?.minNotional;
+    if (minNotional !== undefined && notional.lt(minNotional)) continue;
     positions.push({
       symbol: String(p.symbol),
       side: p.signedQty.isNegative() ? 'SHORT' : 'LONG',
-      qty: p.signedQty.abs().toFixed(),
-      notional: notional.toFixed(),
+      qty: renderQty(p.signedQty.abs()),
+      notional: renderQuote(notional),
     });
   }
 
   return {
-    cappedEquity: cappedEquity.toFixed(),
-    freeQuote: freeQuote.toFixed(),
-    grossExposure: grossExposure.toFixed(),
+    cappedEquity: renderQuote(cappedEquity),
+    freeQuote: renderQuote(freeQuote),
+    grossExposure: renderQuote(grossExposure),
     positions,
     ...buildCorrelation(priceHistory),
     ...buildPerVenue(snapshot, venueCapitalShare),
@@ -116,9 +161,11 @@ function buildPerVenue(
       .sub(venueReservedNotional(snapshot, venue));
     return {
       venue: key,
-      freeCash: freeCash.toFixed(),
+      freeCash: renderQuote(freeCash),
+      // capitalShare is the operator-authored config string verbatim (AppConfig.venueCapitalSplit) —
+      // never a computed Decimal, so it carries no precision tail to trim.
       capitalShare,
-      headroom: headroom.toFixed(),
+      headroom: renderQuote(headroom),
     };
   });
   return { perVenue };

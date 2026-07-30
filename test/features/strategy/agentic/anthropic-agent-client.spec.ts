@@ -2392,13 +2392,28 @@ describe('AnthropicAgentClient', () => {
     });
   });
 
-  // v3 consolidation spec §4.2/§4.3: propose() always builds submit_trade from this SYMBOL's own
-  // capabilities (venueForSymbol + cfg.maxPositionFractionSpot/Perp) — no more tradeContract/
-  // shortsEnabled/perpCapableVenue construction options (request-shape only; both fixtures use
-  // stop_reason 'refusal' so the response never reaches schema parsing — A1's own response-mapping
-  // coverage lives in the 'v2 trade-contract mapping (A1)' describe block below).
-  describe('per-symbol capability tool selection (v3)', () => {
-    it('SYM (spot, BTC/USDT) sends submit_trade with maxPositionFractionSpot baked into the description', async () => {
+  // v3 consolidation spec §4.2/§4.3: propose() always resolves this SYMBOL's own capabilities
+  // (venueForSymbol + cfg.maxPositionFractionSpot/Perp) — no more tradeContract/shortsEnabled/
+  // perpCapableVenue construction options (request-shape only; both fixtures use stop_reason
+  // 'refusal' so the response never reaches schema parsing — A1's own response-mapping coverage lives
+  // in the 'v2 trade-contract mapping (A1)' describe block below).
+  //
+  // 2026-07-30: those capabilities used to be baked into the TOOL description, which made the tools
+  // block — canonical cache position 0, ahead of the system breakpoint — vary per symbol and
+  // invalidate both cache breakpoints every consult. They now ride only in the payload's own
+  // capabilities block. These tests therefore assert BOTH halves: the per-symbol values still reach
+  // the model (unchanged property, moved channel), and the tool is byte-identical across symbols
+  // (the new property).
+  describe('per-symbol capability routing (v3)', () => {
+    /** The user-message text the model reads, whether it rode as a bare string or as text blocks. */
+    const userText = (body: { messages: { content: unknown }[] }): string => {
+      const content = body.messages[0]!.content;
+      return typeof content === 'string'
+        ? content
+        : (content as { text: string }[]).map((c) => c.text).join('');
+    };
+
+    it('SYM (spot, BTC/USDT) routes maxPositionFractionSpot to the model via the payload capabilities block', async () => {
       const fetchFn = vi
         .fn()
         .mockResolvedValue(
@@ -2412,13 +2427,20 @@ describe('AnthropicAgentClient', () => {
         buildInput({ tickers: new Map([[SYM, ticker('100', 1n)]]), context: FLAT_CONTEXT }),
       );
       const [, init] = fetchFn.mock.calls[0] as [string, RequestInit];
-      const body = JSON.parse(init.body as string) as { tools: { name: string }[] };
+      const body = JSON.parse(init.body as string) as {
+        tools: { name: string }[];
+        messages: { content: unknown }[];
+      };
       expect(body.tools).toHaveLength(1);
       expect(body.tools[0]!.name).toBe('submit_trade');
-      expect(JSON.stringify(body.tools[0])).toContain('0.15');
+      // The spot ceiling still reaches the model, on the channel that now carries it.
+      expect(userText(body)).toContain('"maxSizeFraction":"0.15"');
+      expect(userText(body)).toContain('"shorts":false');
+      // ...and no longer via the tool, which is what stops the cache prefix forking per symbol.
+      expect(JSON.stringify(body.tools[0])).not.toContain('0.15');
     });
 
-    it('a perp symbol (:USDT settle) sends submit_trade with maxPositionFractionPerp baked in and the shorts-enabled description', async () => {
+    it('a perp symbol (:USDT settle) routes maxPositionFractionPerp/leverage/shorts via the payload, and sends the SAME tool bytes as spot', async () => {
       const fetchFn = vi
         .fn()
         .mockResolvedValue(
@@ -2454,11 +2476,32 @@ describe('AnthropicAgentClient', () => {
           description: string;
           input_schema: { properties: { action: { enum: string[] } } };
         }[];
+        messages: { content: unknown }[];
       };
       expect(body.tools[0]!.name).toBe('submit_trade');
       expect(body.tools[0]!.input_schema.properties.action.enum).toContain('open_short');
-      expect(body.tools[0]!.description).toContain('Shorts are enabled');
-      expect(JSON.stringify(body.tools[0])).toContain('0.35');
+      // Every perp capability the tool used to advertise still reaches the model, per symbol.
+      expect(userText(body)).toContain('"maxSizeFraction":"0.35"');
+      expect(userText(body)).toContain('"leverage":"2"');
+      expect(userText(body)).toContain('"shorts":true');
+
+      // The property B buys: a perp consult and a spot consult send byte-identical tool JSON, so the
+      // cached prefix survives a basket that mixes venues. Built from the same code path the spot
+      // test above exercises, compared directly rather than by matching description prose.
+      const spotFetch = vi
+        .fn()
+        .mockResolvedValue(
+          apiResponse(toolUseBody({ action: 'hold', confidence: 0.5, rationale: 'r' }, 'refusal')),
+        );
+      await new AnthropicAgentClient(
+        buildCfg({ maxPositionFractionSpot: '0.15' }),
+        spotFetch,
+      ).propose(
+        buildInput({ tickers: new Map([[SYM, ticker('100', 1n)]]), context: FLAT_CONTEXT }),
+      );
+      const [, spotInit] = spotFetch.mock.calls[0] as [string, RequestInit];
+      const spotBody = JSON.parse(spotInit.body as string) as { tools: unknown[] };
+      expect(JSON.stringify(body.tools[0])).toBe(JSON.stringify(spotBody.tools[0]));
     });
   });
 

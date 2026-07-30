@@ -206,7 +206,11 @@ export async function replayPlanRow(
     venueFreeCash: '0',
   };
   const capsSource: CapabilitiesSource = recorded ? 'recorded' : 'config';
-  const tool = buildTradeTool(caps);
+  // 2026-07-30: the tool no longer carries any per-symbol capability text at all (see
+  // buildTradeTool's own comment) — the recorded row's `capabilities` block, which rides in
+  // rowPayload verbatim, is now the ONLY channel telling the replayed model its shorts/leverage/
+  // maxSizeFraction, exactly as live. `caps` still binds the zod bound below.
+  const tool = buildTradeTool();
   // maxSizeFraction is money-adjacent (AgentDirectives.sizeFraction's own comment) — Decimal→toNumber,
   // never Number()/parseFloat(), mirrors agent-prompt.ts's own DECISION_V2_BOUNDS.stopLossPct.max
   // conversion (this is a schema BOUND, not a stored money value, so a plain number result is fine).

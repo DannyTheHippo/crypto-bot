@@ -10,6 +10,7 @@ import type {
   AgentCalendarEvent,
 } from '../../../ports/strategy/agentic-strategy';
 import type { SymbolId, VenueId } from '../../../domain/common/types/ids';
+import { splitSymbol } from '../../../domain/venue/types/symbol';
 import { toIndicatorNumber } from '../../../domain/common/types/money';
 import { AGENTIC_MAX_STOP_LOSS_PCT } from '../../../domain/trading/risk/agentic-bounds';
 
@@ -295,11 +296,9 @@ const TRADE_ACTION_DESCRIPTION =
 // tool-use models weight a tool's own top-level description more heavily than a nested enum-value
 // description, and 8/57 live schema rejections in the prior week were a missing required field
 // despite the field-requirement sentence already living in the (nested) action description. Never
-// names 'open_short' explicitly, unlike REQUIRED_DIRECTIVES_SENTENCE above: an all-spot
-// submit_portfolio batch's description must not advertise open_short (its own shorts-eligibility
-// sentence stays capability-gated, see buildTradePortfolioTool's anyShorts branch) — this sentence
-// only states the FIELD requirement (the actual cause of the 8 live rejections), never the action
-// name, so hoisting it costs no capability leak.
+// names 'open_short' explicitly, unlike REQUIRED_DIRECTIVES_SENTENCE above — it states only the FIELD
+// requirement (the actual cause of the 8 live rejections), which is capability-neutral, so the same
+// bytes serve both tools.
 const REQUIRED_DIRECTIVES_FIELDS_SENTENCE =
   "Opening a new position, or scaling into one, REQUIRES all six directive fields together: sizeFraction, entry, entryValidityBars, stopLossPct, takeProfitPct, and maxHoldBars — omitting any one of them rejects the whole decision. The same six fields are REQUIRED on a re-arm 'hold' while positioned without directives.";
 
@@ -308,15 +307,22 @@ const REQUIRED_DIRECTIVES_FIELDS_SENTENCE =
 // model reads byte-identical field text whether it is filling submit_trade or one element of
 // submit_portfolio's decisions array. `as const` (no separate return-type annotation) so the literal
 // enum/required tuples survive the spread into each factory's own `as const` object below.
-// sizeFractionBoundText is a pre-formatted description fragment for the upper bound: buildTradeTool
-// passes the CONCRETE per-symbol number (one capabilities object, one bound); buildTradePortfolioTool
-// passes symbol-referential prose instead (ONE shared items schema across every element in the batch,
-// each with its own maxSizeFraction — see that factory's own comment).
-function tradeFieldSchemas(sizeFractionBoundText: string) {
+//
+// 2026-07-30: sizeFraction's upper bound is symbol-referential prose on BOTH paths, not a number.
+// It used to be the concrete per-symbol figure on the single-symbol path, which made the tool JSON
+// vary per symbol — and tools sit at canonical cache position 0, ahead of the system breakpoint
+// (anthropic-agent-client.ts's attemptOnce), so a per-call fork there invalidates BOTH breakpoints
+// every consult. The number itself is not lost: it is rendered per symbol in the payload's own
+// capabilities block (buildMarketPayload) and enforced by the client's zod layer, which is where
+// the actual authority has always been.
+const SIZE_FRACTION_BOUND_TEXT =
+  "this symbol's own capabilities.maxSizeFraction (shown in its payload block)";
+
+function tradeFieldSchemas() {
   return {
     sizeFraction: {
       type: 'number',
-      description: `Fraction of (equity-capped) account equity to size this trade at — your conviction channel (there is no separate confidence field); in [${DECISION_V2_BOUNDS.sizeFraction.min}, ${sizeFractionBoundText}]. Required on 'open_long'/'open_short', including a scale-in; ignored otherwise. An independent Risk engine has final authority and may veto, shrink, or resize the resulting order — it, not you, controls the final position size.`,
+      description: `Fraction of (equity-capped) account equity to size this trade at — your conviction channel (there is no separate confidence field); in [${DECISION_V2_BOUNDS.sizeFraction.min}, ${SIZE_FRACTION_BOUND_TEXT}]. Required on 'open_long'/'open_short', including a scale-in; ignored otherwise. An independent Risk engine has final authority and may veto, shrink, or resize the resulting order — it, not you, controls the final position size.`,
     },
     entry: {
       type: 'object',
@@ -375,15 +381,19 @@ function tradeFieldSchemas(sizeFractionBoundText: string) {
 // concern, not a schema-shape concern (see TRADE_ACTION_DESCRIPTION's own comment). No JSON-schema
 // minimum/maximum anywhere: strict tool use 400s on numeric bounds — bounds ride in descriptions
 // only, enforced by the client's zod schema.
-export function buildTradeTool(caps: SymbolCapabilities) {
-  const fields = tradeFieldSchemas(caps.maxSizeFraction);
+//
+// 2026-07-30: takes no arguments — the last capability fork (a shorts/leverage sentence and the
+// concrete maxSizeFraction bound) is gone, so this returns the SAME bytes on every call and the
+// tools block at cache position 0 stops varying per symbol. Both facts are still told to the model,
+// per symbol, by the payload's own capabilities block, and both are still ENFORCED by the client's
+// zod capability check — the tool description was only ever a second, forkier copy.
+export function buildTradeTool() {
+  const fields = tradeFieldSchemas();
   return {
     name: 'submit_trade',
     description:
       'Submit your trading decision for this symbol under the rich decision contract: action, position size, entry pricing, and revisable exit directives.' +
-      (caps.shorts
-        ? ` Shorts are enabled for this symbol; leverage is capped at ${caps.leverage}x.`
-        : ' This symbol is spot-only; shorts are not available.') +
+      " This symbol's own capabilities block in the user message states whether shorts are available for it and at what leverage." +
       ` ${REQUIRED_DIRECTIVES_FIELDS_SENTENCE}`,
     strict: true,
     input_schema: {
@@ -403,29 +413,27 @@ export function buildTradeTool(caps: SymbolCapabilities) {
 }
 
 // v3 consolidation spec §4.3: portfolio-consult batch tool — replaces submit_portfolio's legacy
-// plan-shaped element with the v2 trade fields, and carries exactly ONE portfolio-level
-// nextConsultBars (per-symbol scheduling would desync the basket and collapse batching). Tool NAME
-// stays submit_portfolio (unchanged) so the batching seam that already targets it by name needs no
-// rename; only the wire shape changes. capsBySymbol is NOT baked per-element into the schema (one
-// `decisions.items` schema is shared across every symbol in the batch — a JSON schema cannot vary
-// per array element), so sizeFraction's upper bound rides symbol-referential prose instead of a
-// number; the actual per-symbol bound/capability is read from that element's own capabilities block
-// in the payload and enforced by the client's zod layer (§4.2/§4.3). capsBySymbol is consulted only
-// to decide whether the description needs to mention shorts/leverage at all (an all-spot batch never
-// mentions them, keeping the tool description accurate to what the batch can actually do).
-export function buildTradePortfolioTool(capsBySymbol: ReadonlyMap<SymbolId, SymbolCapabilities>) {
-  const fields = tradeFieldSchemas(
-    "this symbol's own capabilities.maxSizeFraction (shown in its payload block)",
-  );
-  const anyShorts = [...capsBySymbol.values()].some((c) => c.shorts);
+// plan-shaped element with the v2 trade fields, and carries exactly ONE nextConsultBars (the wire
+// shape has no room for a per-symbol one: `decisions.items` is a single schema shared by every
+// element). Tool NAME stays submit_portfolio (unchanged) so the batching seam that already targets
+// it by name needs no rename; only the wire shape changes. Per-symbol capability facts are not baked
+// into the schema at all — sizeFraction's upper bound rides symbol-referential prose, and the actual
+// per-symbol bound/capability is read from that element's own capabilities block in the payload and
+// enforced by the client's zod layer (§4.2/§4.3).
+//
+// 2026-07-30: takes no arguments. It used to receive capsBySymbol solely to decide whether to append
+// a shorts-eligibility sentence — the batch path's only capability fork, and the thing that made the
+// tools block (canonical cache position 0, ahead of the system breakpoint) vary with batch
+// composition. The sentence is now unconditional and already true either way: it states the
+// capabilities-block precondition rather than asserting shorts exist somewhere in this batch.
+export function buildTradePortfolioTool() {
+  const fields = tradeFieldSchemas();
   return {
     name: 'submit_portfolio',
     description:
       'Submit your trading decisions for ALL symbols presented in this consult in ONE call, under the rich decision contract — one account, two wallets, a fixed capital split; each symbol\'s own capabilities block (venue, shorts, leverage, maxSizeFraction, venueFreeCash) states what is available for THAT symbol. The `decisions` array must contain exactly one entry per symbol shown in the user message, matched back by its `symbol` field (copy it verbatim) — including an entry whose action is "hold" for any symbol you are not acting on. `decisions` MUST be an actual JSON array of decision objects — never a string-encoded array; a decision serialized as a quoted JSON string inside the array is silently dropped.' +
-      (anyShorts
-        ? " 'open_short' is valid only for a symbol whose own capabilities.shorts is true."
-        : '') +
-      ' `nextConsultBars` is PORTFOLIO-LEVEL: it schedules when the WHOLE BATCH is next consulted, not any one symbol.' +
+      " 'open_short' is valid only for a symbol whose own capabilities.shorts is true." +
+      ' `nextConsultBars` is ONE value applied to EVERY symbol in this batch — per-symbol scheduling is not supported — but each symbol then counts it down on its own clock and can be woken on its own, so the symbols consulted together now are not necessarily consulted together next time.' +
       ` ${REQUIRED_DIRECTIVES_FIELDS_SENTENCE}`,
     strict: true,
     input_schema: {
@@ -455,7 +463,13 @@ export function buildTradePortfolioTool(capsBySymbol: ReadonlyMap<SymbolId, Symb
         },
         nextConsultBars: {
           type: 'integer',
-          description: `Portfolio-level: bars until you want the WHOLE BATCH consulted again (a fill or a large-enough adverse move on any symbol wakes you sooner regardless of this schedule); ONE value applies to every symbol — per-symbol scheduling is not supported; integer in [${DECISION_V2_BOUNDS.nextConsultBars.min}, ${DECISION_V2_BOUNDS.nextConsultBars.max}].`,
+          // 2026-07-30: this said the value schedules "the WHOLE BATCH". It does not, and never did:
+          // the one returned value is adopted INDEPENDENTLY by each symbol's own strategy instance
+          // (agentic.strategy.ts's scheduledConsultBars/barsSinceConsult, one pair per symbol), and a
+          // fill, an adverse move, or the fallback cadence re-consults that symbol alone. Batching is
+          // opportunistic coalescing of whichever symbols happen to be due on the same bar, not a
+          // basket clock — so the model was scheduling against a system that does not exist.
+          description: `Bars until you want to be consulted again. ONE value — it is applied to every symbol in this batch (per-symbol scheduling is not supported), but each symbol then counts those bars on its OWN clock: a fill, or a large-enough adverse move, re-consults THAT symbol sooner regardless of this schedule, and only the symbols due on the same bar are consulted together. Integer in [${DECISION_V2_BOUNDS.nextConsultBars.min}, ${DECISION_V2_BOUNDS.nextConsultBars.max}].`,
         },
       },
       required: ['decisions', 'nextConsultBars'],
@@ -688,10 +702,28 @@ export function buildSystemPrompt(
   ].join(' ');
 }
 
+// The unit suffix on a decision line's PnL delta. A plain split on '/' returned "USDT:USDT" for
+// every perp symbol (ccxt's linear-swap form is BASE/QUOTE:SETTLE — domain/venue/types/symbol.ts),
+// which is all 16 live perp symbols. splitSymbol is the one parser that knows both forms.
+//
+// FAILURE DIRECTION — fails OPEN to no suffix: this is display-only decoration on a historical
+// context line, so an unparseable symbol must render a unitless delta rather than throw the whole
+// prompt build (splitSymbol throws by design on a malformed symbol; its callers on the money path
+// want that, this one does not).
 function quoteAssetOf(symbol: string): string {
-  const parts = symbol.split('/');
-  return parts.length > 1 ? parts[1]! : '';
+  try {
+    return splitSymbol(symbol as SymbolId).quote;
+  } catch {
+    return '';
+  }
 }
+
+// Cap on the model's own prior rationale as RENDERED into a decision line. Distinct from, and
+// tighter than, MAX_REASON_LEN (anthropic-agent-client.ts), which the strategy applies at the ring's
+// WRITE site: this block is re-sent in full on every consult for every symbol, so the rendered
+// budget is what actually costs tokens. 120 chars keeps the gist of a one-line rationale — enough to
+// recognise a thesis being repeated — without paying for the whole of it N rings deep.
+const MAX_RENDERED_REASON_LEN = 120;
 
 // One merged human-readable line per past decision — action/close plus its outcome once known (the
 // most recent entry has none yet). Replaces what used to be two payload fields (recentDecisions +
@@ -711,7 +743,13 @@ function renderDecisionLines(
     const agoCount = n - i;
     const closeStr = Number.isFinite(d.close) ? String(d.close) : 'n/a';
     let line = `${agoCount} decision${agoCount === 1 ? '' : 's'} ago: ${d.action} @ ${closeStr}`;
-    if (d.reason) line += ` ("${d.reason}")`;
+    if (d.reason) {
+      const reason =
+        d.reason.length > MAX_RENDERED_REASON_LEN
+          ? `${d.reason.slice(0, MAX_RENDERED_REASON_LEN)}…`
+          : d.reason;
+      line += ` ("${reason}")`;
+    }
     if (d.outcome) {
       const pct = d.outcome.priceMovePct;
       const pctStr = pct === null ? 'n/a' : `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`;

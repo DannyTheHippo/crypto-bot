@@ -23,10 +23,21 @@ import { join } from 'node:path';
 import {
   ARM_PRIORITY,
   CALIBRATION_ROWS,
+  DEPLOYMENT_MIN_HORIZONS_WON,
+  DEPLOYMENT_PRIMARY_HORIZON,
   DESIGN_FILE,
+  FOLLOWON_DESIGN_FILE,
+  FOLLOWON_FAMILY_A_ALPHA,
+  FOLLOWON_FAMILY_A_AUTHORISED_USD,
+  FOLLOWON_FAMILY_A_CELLS,
+  FOLLOWON_HARD_CAP_USD,
+  FOLLOWON_MODEL,
+  FOLLOWON_OVERRUN_TOLERANCE,
+  FOLLOWON_PLAYBOOK_ARM,
   FOLLOW_STUDY_BUDGET_USD,
   FULL_DESIGN_CELLS,
   HORIZONS,
+  INCUMBENT_PROMPT_BLOB,
   LEAD_STUDY_BUDGET_USD,
   LEVER_PROBE_ROWS,
   MAX_LEAD_ONLY_EDGE_ARMS,
@@ -36,35 +47,49 @@ import {
   MIN_TRANSPORT_RATE,
   MODEL_AXIS,
   REQUIRED_EDGE_BPS,
+  SINGLE_ARM,
+  SWARM_ARM,
+  SWARM_N,
+  aggregateFamilyVerdict,
   aggregateVerdict,
   alphaFor,
   assertArmPriorityCoversEveryArm,
   assertArmsAreReachable,
   assertDesignMatchesCorpus,
   bonferroniCells,
+  checkPromptSurface,
+  compareToIncumbent,
   computeCell,
   corpusManifest,
   edgeArmsFor,
   fwdBps,
   loadCorpus,
   loadDesign,
+  loadFollowonDesign,
   loadRecordedEntries,
+  loadRecordedIncumbentCells,
   loadSeries,
+  majorityVote,
   preflightCanSpend,
+  ratesFor,
   resolveArms,
   runReplay,
   scoreRecordedEntries,
   selectArms,
   sizeDesign,
+  sizeFollowonFamilyA,
   strideSample,
   verdictFor,
   writeDesign,
+  writeFollowonDesign,
   type CorpusRow,
+  type FollowonDesign,
   type Observation,
   type LaneCell,
   type StudyDesign,
   type TransportStats,
 } from './playbook-space-replay';
+import type { PlaybookArm } from './playbook-space-arms';
 
 const OUT_DIR = join(process.cwd(), 'research', 'candidates');
 
@@ -1212,6 +1237,833 @@ describe.runIf(LEVER && API_KEY.length > 0 && CORPUS_PRESENT)(
         expect(table).toHaveLength(ARM_PRIORITY.length);
       },
       3 * 60 * 60 * 1000,
+    );
+  },
+);
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// FOLLOW-ON, Family A — preregistered in research/studies/playbook-space-followon-2026-07-31.md
+//
+// THREE MODES, in the order they must be run:
+//   - PLAYBOOK_SPACE_FOLLOWON_CALIBRATE=1 — the haiku swarm-shape probe (40 rows x 3 calls) and the
+//     sonnet re-check (40 rows x 1 call), ~$1.13. The haiku per-call rate is the design's one
+//     unmeasured number and nothing may be sized until it is measured.
+//   - PLAYBOOK_SPACE_FOLLOWON_SIZE=1 — free, no network. Reads the haiku probe, applies the frozen
+//     sizing rule, REFUSES past the pre-registered overrun tolerance, writes the design.
+//   - PLAYBOOK_SPACE_FOLLOWON=1 — the paid run: `haiku_swarm` (N=3, majority vote) and its
+//     `haiku_single` control, chunk-major over the frozen 354 rows, both bars reported.
+//
+// The free checks below run under `pnpm eval:agentic` so the follow-on harness cannot rot either.
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+
+const FOLLOWON_CALIBRATE = process.env.PLAYBOOK_SPACE_FOLLOWON_CALIBRATE === '1';
+const FOLLOWON_SIZE = process.env.PLAYBOOK_SPACE_FOLLOWON_SIZE === '1';
+const FOLLOWON_PAID = process.env.PLAYBOOK_SPACE_FOLLOWON === '1';
+
+const FOLLOWON_TRIAL_ID = 'playbook-space-followon-2026-07-31';
+/** Scoped so the follow-on can never overwrite an artifact the pre-registration cites as evidence. */
+const followonCalibrationFile = (model: string): string =>
+  join(OUT_DIR, `playbook-space-followon-calibration-${model}.json`);
+
+/**
+ * A CONTROL can never PASS — the pre-registration's anti-loophole clause, given teeth here rather
+ * than left to a reviewer's discipline. The way to guarantee a control is never scored against the
+ * +13.0 bar is to make calling the scorer on one a crash.
+ */
+const CONTROL_ARMS: ReadonlySet<string> = new Set([SINGLE_ARM]);
+
+function verdictForScoredArm(
+  armName: string,
+  stats: Parameters<typeof verdictFor>[0],
+  alpha: number,
+): ReturnType<typeof verdictFor> {
+  if (CONTROL_ARMS.has(armName)) {
+    throw new Error(
+      `${armName} is a CONTROL — verdictFor must never be called on it. A control exists to make ` +
+        `another arm's number interpretable; it is never scored against the +${REQUIRED_EDGE_BPS} ` +
+        `bps bar and can never be a survivor (prereg § The control exclusion).`,
+    );
+  }
+  return verdictFor(stats, alpha);
+}
+
+/**
+ * Both Family A units carry the INCUMBENT'S OWN playbook text, so the only thing varying against the
+ * comparator is the architecture. They are synthesised here rather than appended to
+ * playbook-space-arms.ts precisely because they are not new points in playbook SPACE — that file's
+ * twelve arms stay unchanged and still frozen.
+ */
+function followonArms(): readonly { readonly arm: PlaybookArm; readonly content: string }[] {
+  const [incumbent] = selectArms(resolveArms(), [FOLLOWON_PLAYBOOK_ARM]);
+  const content = incumbent!.content;
+  return [
+    {
+      arm: {
+        name: SWARM_ARM,
+        source: { kind: 'literal' },
+        content,
+        tests: `N=${SWARM_N} ${FOLLOWON_MODEL} voters on the incumbent's own text, majority vote`,
+      },
+      content,
+    },
+    {
+      arm: {
+        name: SINGLE_ARM,
+        source: { kind: 'literal' },
+        content,
+        tests: `CONTROL — one ${FOLLOWON_MODEL} call on the same text; separates architecture from model`,
+      },
+      content,
+    },
+  ];
+}
+
+describe('follow-on Family A — free preconditions', () => {
+  it('transcribes the frozen family arithmetic', () => {
+    // 1 scored arm (haiku_swarm) x 4 horizons. The control is excluded from the denominator, which
+    // is only honest because a control can never PASS — asserted separately below.
+    expect(FOLLOWON_FAMILY_A_CELLS).toBe(4);
+    expect(FOLLOWON_FAMILY_A_ALPHA).toBe(0.05 / 4);
+    expect(SWARM_N).toBe(3);
+    expect(FOLLOWON_MODEL).toBe('claude-haiku-4-5');
+    expect(FOLLOWON_PLAYBOOK_ARM).toBe('champion_v8');
+    expect(FOLLOWON_FAMILY_A_AUTHORISED_USD).toBe(6.8);
+    expect(FOLLOWON_HARD_CAP_USD).toBe(21.0);
+    // The economic bar is untouched by any budget decision — same guarantee the predecessor made.
+    expect(REQUIRED_EDGE_BPS).toBe(13.0);
+  });
+
+  it('the majority vote resolves exactly as the pre-registration fixes it', () => {
+    expect(majorityVote(['open_long', 'open_long', 'hold'], 3)).toBe('open_long');
+    expect(majorityVote(['open_short', 'open_short', 'open_long'], 3)).toBe('open_short');
+    // Everything-else winning is a hold, and needs no branch of its own.
+    expect(majorityVote(['hold', 'hold', 'open_long'], 3)).toBe('hold');
+    // A genuine 3-way split over 3 voters: "No majority, or a tie, resolves to hold".
+    expect(majorityVote(['open_long', 'open_short', 'hold'], 3)).toBe('hold');
+    // Majority is over the VOTERS, not the votes cast: one surviving voter cannot carry a row, or a
+    // swarm arm would silently degrade into a single-call arm on every row two voters failed.
+    expect(majorityVote(['open_long'], 3)).toBe('hold');
+    expect(majorityVote(['open_long', 'open_long'], 3)).toBe('open_long');
+    expect(majorityVote([], 3)).toBe('hold');
+  });
+
+  it('a CONTROL can never be handed to the scorer', () => {
+    const anyStats = {
+      n: 60,
+      clusters: 20,
+      mean: 99,
+      ciLo: 90,
+      ciHi: 110,
+      pVsBar: 0,
+      placeboP: 0,
+      firstHalf: 99,
+      secondHalf: 99,
+      trimmed: 99,
+    };
+    // Even a spectacular control result is not a pass, not a survivor and not quotable as an edge.
+    expect(() => verdictForScoredArm(SINGLE_ARM, anyStats, FOLLOWON_FAMILY_A_ALPHA)).toThrow(
+      /is a CONTROL/,
+    );
+    expect(verdictForScoredArm(SWARM_ARM, anyStats, FOLLOWON_FAMILY_A_ALPHA).verdict).toBe('PASS');
+  });
+
+  it('prices haiku from its own rates and refuses an unpriced model', () => {
+    expect(ratesFor(FOLLOWON_MODEL)).toEqual({
+      input: 1,
+      output: 5,
+      cacheRead: 0.1,
+      cacheWrite: 1.25,
+    });
+    // A meter that priced an unknown model at zero would never bind its cap.
+    expect(() => ratesFor('some-model-nobody-priced')).toThrow(/refusing to meter it at zero/);
+  });
+
+  it('the sizing rule REFUSES a measured rate that overruns the authorisation', () => {
+    // At the ASSUMED 0.35x-sonnet rate the funded design lands on its estimate and proceeds.
+    const atAssumed = sizeFollowonFamilyA({
+      rows: 354,
+      haikuUsdPerCall: 0.004802,
+      haikuUsdPerCallEffective: 0.004802,
+      corpusSha256: 'abc',
+      calibrationSpentUsd: 1.13,
+    });
+    // Exact, not approximate: this is a budget figure, and the repo-wide ban on approximate
+    // assertions is the right rule to inherit for one.
+    expect(atAssumed.measured.projectedFamilyAUsd).toBe(354 * 3 * 0.004802 + 354 * 0.004802);
+    expect(atAssumed.cells).toBe(FOLLOWON_FAMILY_A_CELLS);
+    expect(atAssumed.alpha).toBe(FOLLOWON_FAMILY_A_ALPHA);
+    // Past the prereg's own 43% overrun scenario it stops and reports rather than spending through.
+    expect(() =>
+      sizeFollowonFamilyA({
+        rows: 354,
+        haikuUsdPerCall: 0.01,
+        haikuUsdPerCallEffective: 0.01,
+        corpusSha256: 'abc',
+        calibrationSpentUsd: 1.13,
+      }),
+    ).toThrow(/OVER ITS AUTHORISATION/);
+    expect(atAssumed.overrunToleranceUsd).toBe(
+      FOLLOWON_FAMILY_A_AUTHORISED_USD * FOLLOWON_OVERRUN_TOLERANCE,
+    );
+  });
+
+  it('the deployment bar ships only under the full robustness clause', () => {
+    const cells = (means: readonly number[]): LaneCell[] =>
+      [...HORIZONS].map((h, i) => ({
+        model: FOLLOWON_MODEL,
+        arm: SWARM_ARM,
+        h,
+        n: 60,
+        mean: means[i]!,
+        ciLo: means[i]! - 20,
+        verdict: 'FAIL',
+      }));
+    const incumbent = cells([-12.7, -36.3, -32.7, -70.1]).map((c) => ({
+      ...c,
+      arm: FOLLOWON_PLAYBOOK_ARM,
+    }));
+
+    // Beats at every horizon: ships, and a research-bar FAIL is NOT a veto on that.
+    const clean = compareToIncumbent(
+      SWARM_ARM,
+      cells([-5, -10, -10, -20]),
+      FOLLOWON_PLAYBOOK_ARM,
+      incumbent,
+      'PROMPT-CONTROLLED',
+    );
+    expect(clean.ships).toBe(true);
+    expect(clean.horizonsWon).toBe(4);
+    expect(clean.beatsAtPrimary).toBe(true);
+
+    // Wins at h=24 alone: horizon-dependent, and does NOT ship. Stricter than the owner ruling
+    // requires, and the cost — leaving a marginally-better arm undeployed — is declared.
+    const only24 = compareToIncumbent(
+      SWARM_ARM,
+      cells([-40, -50, -60, -20]),
+      FOLLOWON_PLAYBOOK_ARM,
+      incumbent,
+      'PROMPT-CONTROLLED',
+    );
+    expect(only24.beatsAtPrimary).toBe(true);
+    expect(only24.horizonsWon).toBe(1);
+    expect(only24.ships).toBe(false);
+    expect(only24.horizonDependent).toBe(true);
+
+    // Loses at h=24 but wins the other three: the incumbent stays. That is a result, not a default.
+    const lose24 = compareToIncumbent(
+      SWARM_ARM,
+      cells([-5, -10, -10, -90]),
+      FOLLOWON_PLAYBOOK_ARM,
+      incumbent,
+      'PROMPT-CONTROLLED',
+    );
+    expect(lose24.ships).toBe(false);
+    expect(lose24.horizonDependent).toBe(false);
+    expect(DEPLOYMENT_PRIMARY_HORIZON).toBe(24);
+    expect(DEPLOYMENT_MIN_HORIZONS_WON).toBe(3);
+  });
+
+  it('a partial family is INCOMPLETE, never NO_SURVIVOR', () => {
+    const c = (h: number, mean: number, verdict: string): LaneCell => ({
+      model: FOLLOWON_MODEL,
+      arm: SWARM_ARM,
+      h,
+      n: 60,
+      mean,
+      ciLo: mean - 20,
+      verdict,
+    });
+    expect(aggregateFamilyVerdict([c(1, -20, 'FAIL')], FOLLOWON_FAMILY_A_CELLS).verdict).toBe(
+      'INCOMPLETE',
+    );
+    const full = aggregateFamilyVerdict(
+      [c(1, -20, 'FAIL'), c(4, -30, 'FAIL'), c(8, -25, 'FAIL'), c(24, -60, 'FAIL')],
+      FOLLOWON_FAMILY_A_CELLS,
+    );
+    expect(full.verdict).toBe('NO_SURVIVOR');
+    // Ranking is not passing: bestPowered names the least-bad cell even when every cell fails.
+    expect(full.bestPowered?.h).toBe(1);
+    expect(full.passes).toHaveLength(0);
+  });
+
+  it('reports the prompt-surface check and its FAIL-OPEN direction', () => {
+    const check = checkPromptSurface();
+    console.log(
+      `\nprompt surface: runSha=${check.runSha} head=${check.headBlob} worktree=${check.worktreeBlob}\n` +
+        `  pinned=${check.pinnedBlob} -> ${check.attribution}`,
+    );
+    expect(check.pinnedBlob).toBe(INCUMBENT_PROMPT_BLOB);
+    // Guard 9 is the one guard in the list that fails OPEN: a mismatch downgrades the reported
+    // attribution, it never voids a run that already cost money. So nothing here asserts the
+    // outcome — only that the two possible outcomes are the only two.
+    expect(['PROMPT-CONTROLLED', 'BETWEEN-RUN']).toContain(check.attribution);
+    expect(check.promptControlled).toBe(check.attribution === 'PROMPT-CONTROLLED');
+  });
+
+  it('both Family A units carry the incumbent playbook text, unmodified', () => {
+    const arms = followonArms();
+    expect(arms.map((a) => a.arm.name)).toEqual([SWARM_ARM, SINGLE_ARM]);
+    // Identical text: the architecture is the only variable between them and against the comparator.
+    expect(arms[0]!.content).toBe(arms[1]!.content);
+    assertArmsAreReachable(arms);
+    // The twelve frozen arms are untouched by the follow-on.
+    expect(resolveArms()).toHaveLength(12);
+  });
+});
+
+// ── FOLLOW-ON CALIBRATION: measure the haiku rate before anything is sized on it ───────────────────
+describe.runIf(FOLLOWON_CALIBRATE && API_KEY.length > 0 && CORPUS_PRESENT)(
+  'follow-on Family A — CALIBRATION probes',
+  () => {
+    it(
+      'measures the haiku swarm shape and re-checks the sonnet rate',
+      async () => {
+        const corpus = loadCorpus();
+        const rows = strideSample(corpus, CALIBRATION_ROWS);
+        const manifest = corpusManifest(corpus);
+        const arms = followonArms();
+        assertArmsAreReachable(arms);
+
+        const probes = [
+          {
+            label: 'haiku swarm shape',
+            model: FOLLOWON_MODEL,
+            arms: [arms[0]!],
+            voters: SWARM_N,
+            capUsd: '2',
+            reserve: '0.02',
+          },
+          {
+            label: 'sonnet re-check',
+            model: MODEL_AXIS[0],
+            arms: selectArms(resolveArms(), [FOLLOWON_PLAYBOOK_ARM]),
+            voters: 1,
+            capUsd: '2',
+            reserve: '0.05',
+          },
+        ] as const;
+
+        for (const probe of probes) {
+          console.log(
+            `\ncalibration probe: ${probe.label} — model=${probe.model} rows=${rows.length} ` +
+              `voters=${probe.voters} arm=${FOLLOWON_PLAYBOOK_ARM}`,
+          );
+          const preflight = await preflightCanSpend(API_KEY, probe.model, BASE_URL);
+          if (!preflight.ok) {
+            throw new Error(
+              `PRE-FLIGHT FAILED for ${probe.model} — HTTP ${preflight.status}. No paid call was ` +
+                `made. Detail: ${preflight.detail}`,
+            );
+          }
+
+          const run = await runReplay(
+            rows,
+            probe.arms,
+            {
+              apiKey: API_KEY,
+              model: probe.model,
+              baseUrl: BASE_URL,
+              timeoutMs: Number(process.env.PLAYBOOK_SPACE_TIMEOUT_MS ?? 120_000),
+              sizeFractionMax: '0.25',
+              shortsEnabled: true,
+              rowsPerChunk: rows.length,
+              concurrency: Number(process.env.PLAYBOOK_SPACE_CONCURRENCY ?? 4),
+              capUsd: probe.capUsd,
+              reservePerCallUsd: probe.reserve,
+              rates: ratesFor(probe.model),
+              votesPerRow: probe.voters,
+              onProgress: (m) => console.log(`  ${m}`),
+            },
+            fetch,
+          );
+
+          if (run.unfaithfulCapsRows > 0) {
+            throw new Error(
+              `RUN VOID — ${run.unfaithfulCapsRows} row(s) replayed with capabilities the live ` +
+                `system did not record.`,
+            );
+          }
+          if (run.transport.billingStop !== null) {
+            throw new Error(`RUN ABORTED — billing state: ${run.transport.billingStop}`);
+          }
+
+          const results = run.perArm.get(probe.arms[0].arm.name) ?? [];
+          const parsed = results.filter((r) => r.ok);
+          const entries = parsed.filter(
+            (r) => r.action === 'open_long' || r.action === 'open_short',
+          ).length;
+          const usdPerCall = run.meter.calls === 0 ? 0 : Number(run.meter.usd) / run.meter.calls;
+          const calibration: Calibration = {
+            model: probe.model,
+            baseUrl: BASE_URL,
+            rows: run.rowsCovered,
+            calls: run.meter.calls,
+            usd: run.meter.usd,
+            usdPerCall,
+            usdPerCallEffective:
+              run.transport.ok === 0
+                ? usdPerCall
+                : usdPerCall * (run.transport.attempts / run.transport.ok),
+            transportRate: run.completion.transportRate,
+            schemaRate: run.completion.schemaRate,
+            entryRate: parsed.length === 0 ? 0 : entries / parsed.length,
+            transport: run.transport,
+            transportFloorMet: run.completion.transportRate >= MIN_TRANSPORT_RATE,
+            timeoutMs: Number(process.env.PLAYBOOK_SPACE_TIMEOUT_MS ?? 120_000),
+            concurrency: Number(process.env.PLAYBOOK_SPACE_CONCURRENCY ?? 4),
+            corpusSha256: manifest.payloadSha256,
+          };
+
+          console.log(`  calls              ${calibration.calls}`);
+          console.log(`  spend              $${calibration.usd}`);
+          console.log(`  USD/call           $${usdPerCall.toFixed(6)} (metered)`);
+          console.log(
+            `  USD/call effective $${calibration.usdPerCallEffective.toFixed(6)} ` +
+              `(${run.transport.attempts} attempts / ${run.transport.ok} usable)`,
+          );
+          console.log(`  empty-body 200s    ${run.transport.emptyBody}`);
+          console.log(
+            `  transport rate     ${(calibration.transportRate * 100).toFixed(1)}% ` +
+              `(VOID floor ${(MIN_TRANSPORT_RATE * 100).toFixed(0)}%)`,
+          );
+          console.log(`  schema-valid rate  ${(calibration.schemaRate * 100).toFixed(1)}%`);
+          console.log(`  entry rate         ${(calibration.entryRate * 100).toFixed(1)}%`);
+          console.log(
+            `  projected n at 354 rows: ${Math.round(354 * calibration.entryRate)} ` +
+              `(MIN_ENTRIES ${MIN_ENTRIES})`,
+          );
+
+          mkdirSync(OUT_DIR, { recursive: true });
+          writeFileSync(
+            followonCalibrationFile(probe.model),
+            JSON.stringify(calibration, null, 2),
+            'utf8',
+          );
+          console.log(`  wrote ${followonCalibrationFile(probe.model)}`);
+
+          // Fails CLOSED on transport. A VOID calibration is a valid, valuable outcome and must not
+          // be spent through — this is the money the run would otherwise burn measuring a pipe.
+          expect(run.completion.transportRate).toBeGreaterThanOrEqual(MIN_TRANSPORT_RATE);
+          expect(usdPerCall).toBeGreaterThan(0);
+        }
+      },
+      60 * 60 * 1000,
+    );
+  },
+);
+
+// ── FOLLOW-ON SIZING: fix the family. Free, and it must happen before the first edge call ─────────
+describe.runIf(FOLLOWON_SIZE && CORPUS_PRESENT)('follow-on Family A — size the design', () => {
+  it('sizes from the MEASURED haiku rate, or refuses', () => {
+    const file = followonCalibrationFile(FOLLOWON_MODEL);
+    if (!existsSync(file)) {
+      throw new Error(
+        `cannot size Family A — no haiku calibration at ${file}. Run ` +
+          `PLAYBOOK_SPACE_FOLLOWON_CALIBRATE=1 first; the haiku rate is the design's one ` +
+          `unmeasured number and a planning constant carried into a budget is what the kimi ` +
+          `estimate's 0.61x-to-1.9x reversal cost.`,
+      );
+    }
+    const cal = JSON.parse(readFileSync(file, 'utf8')) as Calibration;
+    const corpus = loadCorpus();
+    const manifest = corpusManifest(corpus);
+    if (cal.corpusSha256 !== manifest.payloadSha256) {
+      throw new Error('the haiku calibration was measured on a different corpus');
+    }
+    if (!cal.transportFloorMet) {
+      throw new Error(
+        `haiku calibration is VOID — transport ${(cal.transportRate * 100).toFixed(1)}% below the ` +
+          `${(MIN_TRANSPORT_RATE * 100).toFixed(0)}% floor. A cost measured through a broken pipe ` +
+          `cannot size a study.`,
+      );
+    }
+    // The row depth is the PREDECESSOR'S, read from its own design file, so Family A runs the
+    // identical 354-row spanning sample its comparator was measured on.
+    const predecessor = loadDesign();
+    assertDesignMatchesCorpus(predecessor, manifest.payloadSha256);
+
+    const sonnetRecheck = followonCalibrationFile(MODEL_AXIS[0]);
+    const calibrationSpent =
+      Number(cal.usd) +
+      (existsSync(sonnetRecheck)
+        ? Number((JSON.parse(readFileSync(sonnetRecheck, 'utf8')) as Calibration).usd)
+        : 0);
+
+    const design = sizeFollowonFamilyA({
+      rows: predecessor.edgeRows,
+      haikuUsdPerCall: cal.usdPerCall,
+      haikuUsdPerCallEffective: cal.usdPerCallEffective,
+      corpusSha256: manifest.payloadSha256,
+      calibrationSpentUsd: calibrationSpent,
+    });
+    writeFollowonDesign(design);
+
+    console.log(`\nsized Family A (family FIXED at this moment, before any edge call):`);
+    console.log(`  rows                 ${design.rows}`);
+    console.log(`  scored arms          ${design.scoredArms.join(', ')} (N=${design.swarmN})`);
+    console.log(`  controls             ${design.controlArms.join(', ')} — never scored`);
+    console.log(`  cells                ${design.cells}`);
+    console.log(`  alpha                ${design.alpha}`);
+    console.log(`  measured $/call      $${design.measured.haikuUsdPerCall.toFixed(6)}`);
+    console.log(
+      `  measured $/call eff  $${design.measured.haikuUsdPerCallEffective.toFixed(6)} ` +
+        `(assumed $0.004802 — ratio ${(design.measured.haikuUsdPerCallEffective / 0.004802).toFixed(2)}x)`,
+    );
+    console.log(
+      `  projected Family A   $${design.measured.projectedFamilyAUsd.toFixed(2)} ` +
+        `(swarm $${design.measured.projectedSwarmUsd.toFixed(2)} + control ` +
+        `$${design.measured.projectedSingleUsd.toFixed(2)}) vs $${design.authorisedUsd.toFixed(2)} authorised`,
+    );
+    console.log(`  calibration spent    $${calibrationSpent.toFixed(4)}`);
+    console.log(`  hard cap             $${design.hardCapUsd.toFixed(2)}`);
+    console.log(`wrote ${FOLLOWON_DESIGN_FILE}\n`);
+
+    expect(design.cells).toBe(FOLLOWON_FAMILY_A_CELLS);
+    expect(design.alpha).toBe(FOLLOWON_FAMILY_A_ALPHA);
+    expect(design.rows).toBe(predecessor.edgeRows);
+  });
+});
+
+// ── FOLLOW-ON PAID RUN: the swarm arm and its control, both bars ──────────────────────────────────
+describe.runIf(FOLLOWON_PAID && API_KEY.length > 0 && CORPUS_PRESENT)(
+  'follow-on Family A — PAID run',
+  () => {
+    it(
+      'replays haiku_swarm and haiku_single over the frozen corpus and reports both bars',
+      async () => {
+        const corpus = loadCorpus();
+        const series = loadSeries(corpus.map((r) => r.symbol));
+        const manifest = corpusManifest(corpus);
+        const design: FollowonDesign = loadFollowonDesign();
+        if (design.corpusSha256 !== manifest.payloadSha256) {
+          throw new Error(
+            `design was sized for corpus ${design.corpusSha256.slice(0, 12)} but this corpus is ` +
+              `${manifest.payloadSha256.slice(0, 12)} — the design does not transfer.`,
+          );
+        }
+        const rows = strideSample(corpus, design.rows);
+        const arms = followonArms();
+        assertArmsAreReachable(arms);
+
+        // Recorded BEFORE the run so the artifact carries the SHA the calls were actually made at.
+        const promptSurface = checkPromptSurface();
+
+        console.log(`\ncorpus: ${manifest.rows} rows, ${manifest.symbols} symbols`);
+        console.log(`payload sha256: ${manifest.payloadSha256}`);
+        console.log(
+          `rows this run: ${rows.length} (the predecessor's own 354-row spanning sample)`,
+        );
+        console.log(`model: ${design.model}   arms: ${arms.map((a) => a.arm.name).join(', ')}`);
+        console.log(
+          `family: ${design.cells} cells, alpha ${design.alpha} (1 scored arm x 4 horizons; ` +
+            `${SINGLE_ARM} is a CONTROL and enters no denominator)`,
+        );
+        console.log(
+          `prompt surface: ${promptSurface.attribution} — runSha ${promptSurface.runSha}, ` +
+            `agent-prompt.ts head=${promptSurface.headBlob} worktree=${promptSurface.worktreeBlob}, ` +
+            `pinned=${promptSurface.pinnedBlob}`,
+        );
+
+        const preflight = await preflightCanSpend(API_KEY, design.model, BASE_URL);
+        if (!preflight.ok) {
+          throw new Error(
+            `PRE-FLIGHT FAILED — the API refused a 1-token probe with HTTP ${preflight.status}. ` +
+              `No paid call was made. Detail: ${preflight.detail}`,
+          );
+        }
+        console.log('pre-flight: API accepted a 1-token probe — proceeding\n');
+
+        // The cap is the pre-registered overrun tolerance, which is TIGHTER than the $21 hard cap
+        // and is the figure the run may actually reach. Both are asserted before the first call.
+        const capUsd = process.env.PLAYBOOK_SPACE_CAP_USD ?? String(design.overrunToleranceUsd);
+        if (Number(capUsd) > design.hardCapUsd) {
+          throw new Error(`cap $${capUsd} exceeds the $${design.hardCapUsd} hard cap`);
+        }
+        console.log(`spend cap this run: $${Number(capUsd).toFixed(2)}\n`);
+
+        const run = await runReplay(
+          rows,
+          arms,
+          {
+            apiKey: API_KEY,
+            model: design.model,
+            baseUrl: BASE_URL,
+            timeoutMs: Number(process.env.PLAYBOOK_SPACE_TIMEOUT_MS ?? 120_000),
+            sizeFractionMax: '0.25',
+            shortsEnabled: true,
+            rowsPerChunk: Number(process.env.PLAYBOOK_SPACE_CHUNK ?? 40),
+            concurrency: Number(process.env.PLAYBOOK_SPACE_CONCURRENCY ?? 4),
+            capUsd,
+            reservePerCallUsd: '0.02',
+            rates: ratesFor(design.model),
+            // Chunk-major with BOTH arms in the same pass, so a budget abort truncates them at the
+            // same row and the swarm-vs-control contrast stays on identical rows.
+            votesPerArm: { [SWARM_ARM]: design.swarmN, [SINGLE_ARM]: 1 },
+            onProgress: (m) => console.log(`  ${m}`),
+          },
+          fetch,
+        );
+
+        console.log(
+          `\nrun: rowsCovered=${run.rowsCovered}/${rows.length} calls=${run.meter.calls} ` +
+            `spend=$${run.meter.usd}${run.aborted ? ' ABORTED ON BUDGET — partial, not complete' : ''}`,
+        );
+        console.log(
+          `transport: ok=${run.transport.ok} 429=${run.transport.rateLimited} ` +
+            `5xx=${run.transport.serverError} otherHttp=${run.transport.otherHttp} ` +
+            `net=${run.transport.networkError} emptyBody=${run.transport.emptyBody} ` +
+            `retries=${run.transport.retries}`,
+        );
+        console.log(
+          `transport rate: ${run.completion.transported}/${run.completion.total} = ` +
+            `${(run.completion.transportRate * 100).toFixed(1)}% ` +
+            `(VOID floor ${(MIN_TRANSPORT_RATE * 100).toFixed(0)}%) — CALLS, not rows`,
+        );
+        console.log(
+          `schema-valid rate: ${(run.completion.schemaRate * 100).toFixed(1)}% — reported, never gating\n`,
+        );
+
+        if (run.unfaithfulCapsRows > 0) {
+          throw new Error(
+            `RUN VOID — ${run.unfaithfulCapsRows} row(s) replayed with capabilities the live ` +
+              `system did not record (WATCH-V4-9).`,
+          );
+        }
+        if (run.transport.billingStop !== null) {
+          throw new Error(`RUN ABORTED — billing state: ${run.transport.billingStop}`);
+        }
+        if (run.voided) {
+          throw new Error(
+            `RUN VOID — transport ${(run.completion.transportRate * 100).toFixed(1)}% is below the ` +
+              `${(MIN_TRANSPORT_RATE * 100).toFixed(0)}% floor ` +
+              `(429=${run.transport.rateLimited}, 5xx=${run.transport.serverError}, ` +
+              `otherHttp=${run.transport.otherHttp}, net=${run.transport.networkError}, ` +
+              `emptyBody=${run.transport.emptyBody}). No verdict may be published from this run.`,
+          );
+        }
+
+        const table: Record<string, unknown>[] = [];
+        const scoredCells: LaneCell[] = [];
+        const meansByArm = new Map<string, LaneCell[]>();
+
+        for (const { arm } of arms) {
+          const isControl = CONTROL_ARMS.has(arm.name);
+          const results = run.perArm.get(arm.name) ?? [];
+          const parsed = results.filter((r) => r.ok);
+          const entries = parsed
+            .filter((r) => r.action === 'open_long' || r.action === 'open_short')
+            .map((r) => ({
+              symbol: r.symbol,
+              eventTime: r.eventTime,
+              dir: r.action === 'open_short' ? (-1 as const) : (1 as const),
+            }));
+
+          for (const h of HORIZONS) {
+            const obs: Observation[] = [];
+            for (const e of entries) {
+              const v = fwdBps(series, e.symbol, e.eventTime, h, e.dir);
+              if (v !== null) obs.push({ symbol: e.symbol, bps: v });
+            }
+            const seed = 20260731 + arm.name.length * 1000 + h;
+            const stats = computeCell(
+              obs,
+              entries.map((e) => ({ symbol: e.symbol, dir: e.dir })),
+              series,
+              h,
+              seed,
+            );
+            const scored = isControl
+              ? { verdict: 'CONTROL', failedClause: null }
+              : verdictForScoredArm(arm.name, stats, design.alpha);
+            const cell: LaneCell = {
+              model: design.model,
+              arm: arm.name,
+              h,
+              n: stats.n,
+              mean: stats.mean,
+              ciLo: stats.ciLo,
+              verdict: scored.verdict,
+            };
+            if (!isControl) scoredCells.push(cell);
+            const list = meansByArm.get(arm.name);
+            if (list) list.push(cell);
+            else meansByArm.set(arm.name, [cell]);
+            table.push({
+              model: design.model,
+              arm: arm.name,
+              tier: isControl ? 'CONTROL' : 'SCORED',
+              tests: arm.tests,
+              h,
+              rowsParsed: parsed.length,
+              entryRate: parsed.length > 0 ? entries.length / parsed.length : 0,
+              ...stats,
+              verdict: scored.verdict,
+              failedClause: scored.failedClause,
+            });
+          }
+        }
+
+        // Pre-registered mechanism 2 — "majority vote collapses minority actions to the mode" — is
+        // free to measure here and would otherwise only ever be argued.
+        const swarmRows = run.perArm.get(SWARM_ARM) ?? [];
+        const singleRows = run.perArm.get(SINGLE_ARM) ?? [];
+        const unanimous = swarmRows.filter(
+          (r) => (r.votes?.length ?? 0) === design.swarmN && new Set(r.votes).size === 1,
+        ).length;
+        const collapsed = swarmRows.filter(
+          (r) => (r.votes?.length ?? 0) > 1 && new Set(r.votes).size > 1,
+        ).length;
+        const disagreed = swarmRows.filter((r) => {
+          const s = singleRows.find((c) => c.rowId === r.rowId);
+          return s !== undefined && s.action !== r.action;
+        }).length;
+
+        console.log(
+          'arm            tier     h   n   clus  mean      CI                 p        placebo  halves            trim     verdict',
+        );
+        console.log('-'.repeat(132));
+        for (const r of table) {
+          const s = r as unknown as {
+            arm: string;
+            tier: string;
+            h: number;
+            n: number;
+            clusters: number;
+            mean: number;
+            ciLo: number;
+            ciHi: number;
+            pVsBar: number;
+            placeboP: number;
+            firstHalf: number;
+            secondHalf: number;
+            trimmed: number;
+            verdict: string;
+          };
+          const f = (x: number, w = 7): string =>
+            (Number.isFinite(x) ? x.toFixed(1) : 'n/a').padStart(w);
+          console.log(
+            `${s.arm.padEnd(14)} ${s.tier.padEnd(8)} ${String(s.h).padEnd(3)} ${String(s.n).padEnd(3)} ` +
+              `${String(s.clusters).padEnd(4)} ${f(s.mean, 8)} [${f(s.ciLo)},${f(s.ciHi)}] ` +
+              `${s.pVsBar.toFixed(4).padStart(7)} ${s.placeboP.toFixed(4).padStart(7)}  ` +
+              `${f(s.firstHalf, 7)}/${f(s.secondHalf, 7)} ${f(s.trimmed)}  ${s.verdict}`,
+          );
+        }
+        console.log('-'.repeat(132));
+
+        // RESEARCH BAR — computed by the aggregator, never asserted in prose. Only SCORED cells are
+        // handed to it; the control's numbers are reported and never enter a verdict.
+        const research = aggregateFamilyVerdict(scoredCells, design.cells);
+        console.log(`\nRESEARCH BAR (alpha ${design.alpha}, ${design.cells} declared cells)`);
+        console.log(`  cells scored : ${research.cellsScored} of ${research.cellsDeclared}`);
+        console.log(
+          `  passes       : ${
+            research.passes.length === 0
+              ? 'none'
+              : research.passes.map((p) => `${p.arm}@h${p.h}`).join(', ')
+          }`,
+        );
+        if (research.bestPowered !== null) {
+          const b = research.bestPowered;
+          console.log(
+            `  bestPowered  : ${b.arm}@h${b.h} mean=${b.mean.toFixed(1)} n=${b.n} — ranking is NOT passing`,
+          );
+        }
+        console.log(`  VERDICT      : ${research.verdict}`);
+
+        // DEPLOYMENT BAR — evaluated independently of, and regardless of, the research-bar outcome.
+        const incumbent = loadRecordedIncumbentCells(FOLLOWON_PLAYBOOK_ARM);
+        if (incumbent.corpusSha256 !== manifest.payloadSha256) {
+          throw new Error(
+            'the recorded incumbent row was measured on a different corpus — an arm is only ever ' +
+              'compared to an incumbent measured on the corpus it was itself scored on.',
+          );
+        }
+        const deployment = [...meansByArm].map(([armName, cells]) =>
+          compareToIncumbent(
+            armName,
+            cells,
+            FOLLOWON_PLAYBOOK_ARM,
+            incumbent.cells,
+            promptSurface.attribution,
+          ),
+        );
+        console.log(
+          `\nDEPLOYMENT BAR vs ${FOLLOWON_PLAYBOOK_ARM} (recorded 2026-07-28 row; ` +
+            `${promptSurface.attribution})`,
+        );
+        for (const d of deployment) {
+          for (const c of d.perHorizon) {
+            console.log(
+              `  ${d.arm.padEnd(14)} h${String(c.h).padEnd(3)} ${c.armMean.toFixed(1).padStart(8)} vs ` +
+                `${c.incumbentMean.toFixed(1).padStart(8)}  delta ${c.deltaBps.toFixed(1).padStart(8)}  ` +
+                `${c.beats ? 'BEATS' : 'loses'}`,
+            );
+          }
+          console.log(
+            `  ${d.arm} -> beats at h${d.primaryHorizon}: ${d.beatsAtPrimary}, horizons won ` +
+              `${d.horizonsWon}/${d.horizonsCompared}, SHIPS: ${d.ships}` +
+              `${d.horizonDependent ? ' (horizon-dependent — does NOT ship)' : ''}`,
+          );
+        }
+        console.log(
+          `\nswarm mechanics: unanimous ${unanimous}/${swarmRows.length} rows, split ` +
+            `${collapsed} rows collapsed to the mode, ${disagreed} rows where the swarm's action ` +
+            `differed from the single-call control's`,
+        );
+
+        mkdirSync(OUT_DIR, { recursive: true });
+        const outFile = join(OUT_DIR, `${FOLLOWON_TRIAL_ID}.json`);
+        writeFileSync(
+          outFile,
+          JSON.stringify(
+            {
+              study: FOLLOWON_TRIAL_ID,
+              family: 'A',
+              model: design.model,
+              baseUrl: BASE_URL,
+              manifest,
+              design,
+              promptSurface,
+              armsRun: arms.map((a) => a.arm.name),
+              run: {
+                rowsAttempted: run.rowsAttempted,
+                rowsCovered: run.rowsCovered,
+                rowsSampled: rows.length,
+                corpusRows: corpus.length,
+                aborted: run.aborted,
+                transport: run.transport,
+                completion: run.completion,
+                ...run.meter,
+              },
+              bar: {
+                requiredEdgeBps: REQUIRED_EDGE_BPS,
+                alpha: design.alpha,
+                cells: design.cells,
+                minEntries: MIN_ENTRIES,
+              },
+              cells: table,
+              researchBar: research,
+              deploymentBar: deployment,
+              swarmMechanics: {
+                rows: swarmRows.length,
+                unanimous,
+                splitCollapsedToMode: collapsed,
+                actionDifferedFromSingle: disagreed,
+              },
+            },
+            null,
+            2,
+          ),
+          'utf8',
+        );
+        console.log(`\nwrote ${outFile}`);
+
+        expect(table).toHaveLength(arms.length * HORIZONS.length);
+        expect(scoredCells).toHaveLength(design.cells);
+        // Metered spend can never exceed the cap the run declared before its first call.
+        expect(Number(run.meter.usd)).toBeLessThanOrEqual(Number(capUsd));
+      },
+      6 * 60 * 60 * 1000,
     );
   },
 );

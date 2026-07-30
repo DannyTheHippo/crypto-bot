@@ -71,6 +71,35 @@ classification** bullet, which stood last in this section, is now `charter.md` �
     **worse-measured** option. The ranking is horizon-specific — at h=1 it reads `inverted` −0.8 >
     `champion_v8` −12.7 = `momentum_pure` −12.7 > `minimal` −13.3 — which is why the horizon is
     declared before the comparison, not chosen after it.
+  - **ACTED ON 2026-07-30 (Pass 49) — `inverted` IS THE LIVE PLAYBOOK, v10. A RESEARCH-BAR FAIL,
+    SHIPPED ON DEPLOYMENT-BAR GROUNDS.** Recorded in those words on purpose: the worked example above
+    stopped being a worked example and became the deployment. `agentic_playbook_info` reads
+    `version="10"` since the 2026-07-30T16:57:19Z boot; `agent_playbook_versions` carries version
+    **10, `source='loop-candidate'`, `parent_version=8`** (minted 16:56:43.469Z, the `inverted` arm's
+    prose verbatim, 1,933 chars) and version **11, `source='promotion'`, `parent_version=10`**
+    (16:56:57.909Z). It is the FIRST `source='loop-candidate'` row in the program's history.
+    - **Every guardrail 1-5 above binds on the deployment and none is softened by it.** In particular
+      guardrail 1: `inverted` FAILS the research bar on interval width (h=24 CI lo **−12.2**, h=8
+      **+1.1**, both under +13.0; `p vs bar` 0.1947 / 0.2215), so **never quote +47.6 as an edge**.
+      Guardrail 2: in-sample, one 6.35-day regime. Guardrail 5: a revert falls back to `minimal`, not
+      to `champion_v8`.
+    - **Guardrail 3 is now a live measurement, not a caveat.** Adverse selection may not invert, and
+      offline replay structurally cannot measure whether it does — the recorded entries were
+      maker-side at **76% fill**. **A divergence between replay-predicted and live-realised entry
+      return is a FINDING to report, whichever way it points**: live worse than replay is the
+      adverse-selection hypothesis confirming; live better is a finding about the replay. Operational
+      form: `watches.md` § WATCH-PLAYBOOK-V10-1.
+    - **ATTRIBUTION LIMIT — binding on every future pass.** `AGENTIC_PLAN_AUTHORITATIVE_EXITS` went
+      live on the SAME boot, six minutes after this promotion. **No pass may claim either change moved
+      the realised book on its own.** There is no control arm. Their EVIDENCE is separable — this one
+      is measured on entry forward return, which does not depend on how a position is exited; the
+      other on exit behaviour given entries, which does not depend on which bar was chosen — and each
+      therefore keeps an independent replay-measured basis. Their realised-PnL contributions do not
+      decompose at any trip rate.
+    - **The candidate-lapse deadlock recorded at the end of this file is RESOLVED as a consequence**,
+      by `--supersede` and not by a lapse: `experiments` id 8, family `playbook-supersede`, label
+      `v9 (reflection) superseded by v10 via --supersede`, `supersededAgeHours` 79 against a 336h
+      window. **No row was deleted** — all ten versions including v9 remain.
 
 - **THE DECIDE MODEL IS NOT THE LEVER — playbook-space replay, NO_SURVIVOR (2026-07-30;
   `research/studies/playbook-space-replay-2026-07-28.md`, Amendments 4-5).** 20 of 20 pre-registered
@@ -98,6 +127,65 @@ classification** bullet, which stood last in this section, is now `charter.md` �
     information beyond side-and-symbol drift. It fails on interval width (CI lo +1.1, −12.2) at n=117 /
     20 clusters. In-sample, one 6.35-day regime, and largely a sign-flip of a known negative. **Never
     quote +47.6 as an edge**; it is at most an out-of-sample hypothesis.
+
+- **ARCHITECTURE IS NOT THE LEVER EITHER — the haiku 3-vote swarm does NOT ship, and the screen that
+  predicted it is now VALIDATED (2026-07-30, Pass 49; Family A of
+  `research/studies/playbook-space-followon-2026-07-31.md`, scorecard
+  `research/scorecards/playbook-space-followon-2026-07-31.json`).** Read this before proposing any
+  ensemble, multi-call, self-consistency or majority-vote variant of the decide path.
+  - **Deployment bar: it LOSES the declared primary horizon, so the incumbent stays.** Against
+    `champion_v8` on the identical 354-row corpus and metric — h=1 −12.15 vs −12.69 (beats), h=4
+    −22.58 vs −36.34 (beats), h=8 −35.38 vs −32.70 (loses), **h=24 primary −71.83 vs −70.10 (LOSES)**.
+    2 of 4, and not horizon-dependently. **"No arm beats the incumbent, so the incumbent stays" is a
+    result, not a default.**
+  - **Research bar: `NO_SURVIVOR`.** 4 of 4 declared cells scored at α=0.0125, **0 passes**, every one
+    POWERED (n=78–82 over 15 clusters against `MIN_ENTRIES=12`), every one failing the FIRST clause:
+    means **−12.15 / −22.58 / −35.38 / −71.83** against a required **+20.9 / +26.4 / +33.8 / +81.4**.
+  - **The pre-registered screen scored CORRECT, on the mechanism and not just the direction.**
+    `architecture-options-2026-07-28.md` called it NEUTRAL-TO-WORSE before funding, on the argument
+    that ensembling reduces variance rather than bias while the measured failure is a bias. The swarm
+    is worse than its own single-call control at **3 of 4** horizons, at **3.00× the calls**
+    (`$0.010506` vs `$0.003502` per decide) for near-identical entry rates (**24.58% vs 24.86%**), and
+    placebo p is **0.9902 / 0.9946 / 0.9980 / 1.0000** — a displaced centre, exactly what a
+    variance-reduction instrument cannot move. **The screen is now a validated instrument for the next
+    screening decision, which is worth more than the arm was.** Its three registered mechanisms may be
+    cited as pre-registered rather than post-hoc; mechanism 2 has measurement — of 354 rows, **282
+    unanimous, 71 split-collapsed-to-mode, 53 where the swarm's action differed from the control's.**
+  - **Attribution was PROMPT-CONTROLLED and that is verified, not asserted.**
+    `src/features/strategy/agentic/agent-prompt.ts` is blob
+    `c471c33055abad7c7ec0cb9978f81c61bc3c487d` at HEAD, on disk and at the pin — re-verified at all
+    eight commits the run spanned, including two peer commits that landed mid-run and touched neither.
+    So the `$4.86` in-run sonnet control was genuinely unnecessary. **Not removed by this:** provider
+    -side model drift and re-run variance, which the funded design explicitly declined to buy out.
+  - **A LEAD, EXPLICITLY NOT ACTED ON — do not read this as a finding.** A **single** haiku call beat
+    the sonnet incumbent at h=1/4/8 (**−7.12 / −10.77 / −30.30** vs −12.69 / −36.34 / −32.70) and
+    **LOST the declared primary h=24: −80.30 vs −70.10.** Three independent reasons it does not ship,
+    any one sufficient: the pre-registered robustness clause requires h=24 **AND** ≥3 of 4 — both, not
+    either; acting on "wins 3 of 4" cherry-picks against a primary declared before the numbers were
+    seen; and it is a **model** change on the axis § THE DECIDE MODEL IS NOT THE LEVER already settled
+    `NO_SURVIVOR`. **Never cite it as evidence for a decide-model swap.**
+  - **The incumbent it was measured against is no longer the incumbent, and that STRENGTHENS the
+    NO-GO.** The study correctly read the champion as `champion_v8` at comparison time; `inverted`
+    shipped 16 minutes later. Against the live v10 the swarm's h=24 −71.83 sits against `inverted`'s
+    replayed **+47.6** — ~119 bps worse, losing at every horizon rather than two. That comparison
+    crosses models (haiku arm vs sonnet arm) so it is weaker than the like-for-like one the study ran,
+    but it points the same way. **Do not re-open the swarm on "it nearly beat the champion".**
+  - **Spend `$6.1728` of `$7.93` authorised** (calibration `$1.2142` + paid run `$4.9586`), 6.6% under
+    projection, hard cap `$21` not approached, `rowsCovered = 354/354`, `aborted = false`.
+  - **COST INPUT ROUTED ONWARD, not absorbed:** the sonnet re-check measured **`$0.0191125`/call,
+    1.39× the predecessor's `$0.013717`** on the same prompt surface and model alias. Likely
+    **cache amortisation over a single 40-row chunk** against a predecessor that spread its writes
+    over 354 rows and four arms — a caution, **not** evidence of provider repricing. Family A is
+    unaffected (priced off the haiku probe); **Family B is not** — its two sonnet legs were budgeted
+    `$4.86` each on the older figure and would land nearer **`$6.77`** each. Re-size from the
+    re-checked rate or say why not.
+  - **Two arithmetic footnotes, so neither is re-derived as a defect.** (1) The haiku **0.273×** ratio
+    is against the PREDECESSOR's sonnet price: `$0.0037475` / `$0.013717` = 0.273, inside the
+    pre-registered 0.21–0.33 band. Against the re-checked `$0.0191125` the same numerator is
+    **0.196×**, below that band — both true, and the band was declared against the older figure.
+    (2) The re-check entered on 3 of 34 parsed rows (8.8%) against the predecessor's 19.8% for the
+    same arm; at n=34 the 95% interval on 8.8% reaches ~23%, which contains 19.8%, so it is **within
+    sampling error and evidence of nothing in either direction.**
 
 - **DEFECT, FIXED — the replay described a different account than live did (2026-07-30).**
   `replayPlanRow` built capabilities from CONSTANTS while each recorded row carried the real ones: it
@@ -323,6 +411,34 @@ classification** bullet, which stood last in this section, is now `charter.md` �
     roughly the historical close rate (~16 per 22 exits) AND the exit mix shifting toward venue
     stop/TP/max_hold. A storm of positions running to `max_hold` with realised bps _worse_ than
     −108.1 = revert (flip the flag) and record. Resolve explicitly at the next observation.
+  - **STEP TWO TAKEN 2026-07-30 (Pass 49, `4218d78`) — `AGENTIC_PLAN_AUTHORITATIVE_EXITS=true`.**
+    `.env.app:261`, live since the 16:57:19Z boot on build `4218d78`. Step one booted clean at
+    16:51:44Z on `9a63edf` (`RestartCount` 0, kill switch RUNNING, 21 rules healthy and none firing,
+    `loop:sweep` 0 alarms); that was the precondition, and this is the enable. **The bullet above is
+    left standing verbatim as the pre-enable record — WATCH-PLAN-AUTHORITY-1 is now FIRED, not
+    unfired**, and its live form is `watches.md` § WATCH-PLAN-AUTHORITY-1.
+    - **Measured basis, unchanged and not re-derived:** the declared plan run mechanically is
+      **−78.4 bps/trip at 22.7% hit** against **−108.1 bps at 17.4%** for the model's actual
+      discretionary hand, over the same 23 recorded round trips — 29.7 bps, with 16 of 22 live closes
+      being the model's own `close`. **BASELINE FOR THE NEXT MEASUREMENT: −108.1 bps/trip at 17.4%
+      hit.** Research-bar FAIL (under the pre-registered 30 bps bar), deployment-bar win.
+    - **The failure mode this creates is a plan lost to a restart**, since a position whose in-memory
+      plan is gone has no declared stop left to exit on. The gate **fails toward EXITING** — no
+      context, absent `directives`, or FLAT ⇒ the close executes unchanged — and `AGENTIC_VENUE_STOP`
+      / `AGENTIC_VENUE_TP` are both `true`. Confirmed live rather than trusted from the spec: 6
+      `ACKED` protective orders resting across both venues at 17:13Z, each with a `venue_order_id`,
+      and the first round trip under the flag (`KAITO/USDT:USDT`) exited at 17:11:55Z **by its
+      declared `STOP_MARKET`, not by a `close`**.
+    - **ATTRIBUTION LIMIT — binding on every future pass.** The `inverted` playbook promotion went
+      live on the SAME boot. **No pass may claim either change moved the realised book on its own.**
+      Evidence separable, realised PnL not — full statement under the two-bar ruling at the top of
+      this file.
+    - **Correction to the trip-rate figure that framed the limit:** the ~3.8 trips/day quoted when the
+      change was written is **not reproducible from the live gauges**. 32 closed trips over a
+      6.9663-day trade-anchored window is 4.6/day; the funded stretch runs far faster (29 → 32 between
+      2026-07-30T11:04Z and 17:15Z ≈ 11.7/day). The attribution limit does not depend on the rate and
+      is unaffected. What the higher rate changes is the timeline: a first re-measure against −108.1
+      may be days away rather than weeks.
 - **Consult cadence is ON TARGET; batching fragmentation is not a profitability lever (Pass 41,
   2026-07-27).** The true unit of work is 627 symbol-decisions over 6 days = 104/day ≈ 13
   menu-waves/day against the 16/day design point at `.env.app:100`; the model picks
@@ -431,3 +547,46 @@ classification** bullet, which stood last in this section, is now `charter.md` �
   needs ≥15 attributed real decides with **zero** entries while the lane resumed proposing the same
   morning (`open_long` ZEC spot + perp, 09:15:31Z). Repairing the script itself is a separate change
   and is not claimed here.
+
+  **RESOLVED 2026-07-30 (Pass 49) — by repairing the script, and via `--supersede`, not via a lapse.**
+  `2c4e339` ported the runtime's age and abstention lapses into `scripts/playbook-candidate.mjs`, added
+  a no-change sha256 check and a `--supersede` flag that records the supersession and deletes no row.
+  v9 was superseded by v10 at 2026-07-30T16:56:43.469Z: `experiments` id 8, family
+  `playbook-supersede`, label `v9 (reflection) superseded by v10 via --supersede`, metrics
+  `{"lapseHours":336,"newVersion":10,"activeVersion":8,"supersededSource":"reflection",`
+  `"supersededVersion":9,"supersededAgeHours":79}`. **Neither lapse route fired and neither is claimed
+  to have** — at 79h against a 336h window the age route was nowhere near, and the abstention route
+  correctly did not fire because v9 had 61 decides and **6 entries**, so it traded.
+  - **The gate's declared failure direction survived the repair, which is the part worth keeping.** It
+    fails CLOSED but **TIME-BOUNDED**: minting orphans a live candidate and writes an uncorrectable
+    `parent_version`, so it refuses — but a permanently-closed gate is itself the failure, so the
+    refusal expires at `candidateLapseMs`, lifts on proven abstention, and yields to `--supersede`,
+    with the abstention sub-read failing toward NOT lapsing. `--supersede` itself fails CLOSED: no
+    `experiments` table ⇒ refuse the override entirely, and the record is written in the same
+    transaction as the mint it authorises.
+  - **A worse defect was found underneath and is the real story.** `playbook-shared.mjs` resolved the
+    active version via the FIRST seed row by version, while `PlaybookStoreAdapter.ensureSeed` looks up
+    `seed.version` specifically and the composition root binds `SEED_PLAYBOOK_V3` at **8**. On a clean
+    v3 database those agree; **the live table is not clean** — four seed rows survive at versions
+    **1, 2, 6 and 8**, no promotion row, empty pin — so the helper returned **1** while the running
+    process resolved **8**. Every candidate this CLI had ever been asked to mint would have written
+    `parent_version=1` into an **append-only table that cannot be corrected afterwards**. It had never
+    been asked: `source` read `reflection` 4, `seed` 4, `loop-candidate` **0**. The fix takes the
+    newest seed row, justified by the documented bump-above-all-prior-rows rule at
+    `agentic-strategy.module.ts:426-438`. **Verified in the first row it ever produced: v10 carries
+    `parent_version=8`, not 1.** The defect and its first production use were the same event.
+  - Also corrected: the CLI validated with no opts (spot-strict) while the runtime passes
+    `{shortsAllowed, leverageAllowed}`, so it rejected perp-legal prose the live lane accepts (fails
+    OPEN, never to spot-strict, bounded because `ValidatingPlaybookProvider` re-validates the same
+    bytes on the read path); and `AGENTIC_CANDIDATE_LAPSE_HOURS` was read from a bare environment that
+    nothing loaded `.env.app` into, so it fell back to a 720h code default against a deployed 336h
+    policy — fixed by loading the deploy file, not by hardcoding a deploy value into a code default.
+  - **`pnpm playbook:candidate` is now the ONLY minting path**, because in-process reflection was
+    deleted the same pass (`9a63edf`). `'reflection'` stays in `CANDIDATE_SOURCES` — removing it would
+    instantly stop routing v9's live decides — and is documented in-code as historical-only with its
+    removal condition.
+  - **One live knob now describes a state that no longer exists.** `AGENTIC_PLAYBOOK_AB_PCT=40` routes
+    to the newest INACTIVE candidate above the active version; with v9 superseded and sitting below
+    v10 there is none, so the A/B routes nothing. Since the deploy all four real decides read
+    `playbook_version=10` (v9 took 40 of the previous 24h's 88). Not a defect — but a pass should
+    either mint a genuine candidate to compare against `inverted` or set the knob to 0 and say so.

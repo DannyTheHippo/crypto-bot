@@ -19,6 +19,7 @@
 //
 // This module makes paid network calls. It is research, OFF the production test gate.
 
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -383,8 +384,42 @@ export function assertDesignMatchesCorpus(d: StudyDesign, payloadSha256: string)
 }
 const N_BOOT = 20_000;
 const N_PLACEBO = 5_000;
-/** Sonnet-5 list rates as configured in .env.app (USD per 1M tokens). */
-const RATES = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 6 } as const;
+
+/** USD per 1M tokens. */
+export interface TokenRates {
+  readonly input: number;
+  readonly output: number;
+  readonly cacheRead: number;
+  readonly cacheWrite: number;
+}
+
+/** Sonnet-5 list rates as configured in .env.app. */
+const RATES: TokenRates = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 6 };
+
+/**
+ * haiku-4-5 list rates — $1/$5 per Mtok (repo reference: the AGENTIC_TOKEN_PRICES_JSON example in
+ * candidate-model-eval.spec.ts's header), with the provider's standard cache multipliers on the
+ * input rate (read 0.1x, write 1.25x).
+ */
+const HAIKU_RATES: TokenRates = { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 };
+
+export const MODEL_RATES: Readonly<Record<string, TokenRates>> = {
+  'claude-sonnet-5': RATES,
+  'claude-haiku-4-5': HAIKU_RATES,
+};
+
+/**
+ * Fails CLOSED on an unpriced model. A meter that priced an unknown model at zero would never bind
+ * its cap — the exact posture the 2026-07-20 Opus runaway punished. A caller that deliberately
+ * meters an Anthropic-compatible surface at sonnet rates (the kimi leg) passes `rates` explicitly.
+ */
+export function ratesFor(model: string): TokenRates {
+  const r = MODEL_RATES[model];
+  if (r === undefined) {
+    throw new Error(`ratesFor: no token rates for model ${model} — refusing to meter it at zero`);
+  }
+  return r;
+}
 
 // Deterministic PRNG — Date.now()/Math.random() would make a run unreproducible, and every statistic
 // below is a resampling statistic whose value depends on the stream.
@@ -671,18 +706,27 @@ export interface JointVerdict {
  *    is surfaced only so "which is best" has a defensible answer even when the answer is "all of them
  *    lose, this one loses least".
  */
+function summariseCells(all: readonly LaneCell[]): {
+  readonly passes: readonly LaneCell[];
+  readonly bestPowered: LaneCell | null;
+} {
+  const powered = all.filter((c) => c.n >= MIN_ENTRIES);
+  return {
+    passes: all.filter((c) => c.verdict === 'PASS'),
+    bestPowered:
+      powered.length === 0
+        ? null
+        : powered.reduce((best, c) => (c.mean > best.mean ? c : best), powered[0]!),
+  };
+}
+
 export function aggregateVerdict(
   perModelCells: ReadonlyMap<string, readonly LaneCell[]>,
   design: StudyDesign,
 ): JointVerdict {
   const modelsRun = [...perModelCells.keys()].sort();
   const all = [...perModelCells.values()].flat();
-  const passes = all.filter((c) => c.verdict === 'PASS');
-  const powered = all.filter((c) => c.n >= MIN_ENTRIES);
-  const bestPowered =
-    powered.length === 0
-      ? null
-      : powered.reduce((best, c) => (c.mean > best.mean ? c : best), powered[0]!);
+  const { passes, bestPowered } = summariseCells(all);
   const complete = MODEL_AXIS.every((m) => perModelCells.has(m));
   return {
     modelsRun,
@@ -846,10 +890,16 @@ export class UsdMeter {
     private readonly capUsd: Decimal,
     /** Conservative per-call reservation, so the cap binds BEFORE the call, not after. */
     private readonly reserveUsd: Decimal,
+    private readonly rates: TokenRates = RATES,
   ) {}
 
-  canSpend(): boolean {
-    return this.spent.plus(this.reserveUsd).lte(this.capUsd);
+  /**
+   * `units` reserves for a whole indivisible group of calls up front — an N-voter swarm row must be
+   * affordable in full before its first call, because a row that runs out of budget after 1 of 3
+   * votes cannot reach a majority and would silently record a `hold` that no voter cast.
+   */
+  canSpend(units = 1): boolean {
+    return this.spent.plus(this.reserveUsd.mul(units)).lte(this.capUsd);
   }
 
   record(usage?: {
@@ -861,10 +911,12 @@ export class UsdMeter {
     this.calls += 1;
     if (!usage) return;
     this.spent = this.spent
-      .plus(new Decimal(usage.inputTokens).div(1_000_000).mul(RATES.input))
-      .plus(new Decimal(usage.outputTokens).div(1_000_000).mul(RATES.output))
-      .plus(new Decimal(usage.cacheReadInputTokens ?? 0).div(1_000_000).mul(RATES.cacheRead))
-      .plus(new Decimal(usage.cacheCreationInputTokens ?? 0).div(1_000_000).mul(RATES.cacheWrite));
+      .plus(new Decimal(usage.inputTokens).div(1_000_000).mul(this.rates.input))
+      .plus(new Decimal(usage.outputTokens).div(1_000_000).mul(this.rates.output))
+      .plus(new Decimal(usage.cacheReadInputTokens ?? 0).div(1_000_000).mul(this.rates.cacheRead))
+      .plus(
+        new Decimal(usage.cacheCreationInputTokens ?? 0).div(1_000_000).mul(this.rates.cacheWrite),
+      );
   }
 
   snapshot(): { readonly calls: number; readonly usd: string } {
@@ -1109,9 +1161,11 @@ export function completionStats(
   let total = 0;
   for (const list of perArm.values()) {
     for (const r of list) {
-      total += 1;
-      if (r.hadUsage) transported += 1;
-      if (r.ok) parsed += 1;
+      // Counts CALLS, not rows. The `?? ` fallbacks make a single-call row (`calls` absent) score
+      // exactly as it did before multi-voter rows existed, so the frozen arms' figures are unmoved.
+      total += r.calls ?? 1;
+      transported += r.transportedCalls ?? (r.hadUsage ? 1 : 0);
+      parsed += r.parsedCalls ?? (r.ok ? 1 : 0);
     }
   }
   return {
@@ -1145,6 +1199,18 @@ export interface ArmRowResult {
    * from 18.2% to 4.5% on identical rows. The study therefore requires 'recorded' for every row.
    */
   readonly capsSource?: string;
+  /**
+   * Call-level accounting, present only on multi-voter (swarm) rows.
+   *
+   * A swarm row is N calls, so row-level `ok`/`hadUsage` would hide a third of the transport
+   * failures behind whichever voter did answer. The transport floor is a statement about CALLS, so
+   * the counts it reads have to be counts of calls.
+   */
+  readonly calls?: number;
+  readonly transportedCalls?: number;
+  readonly parsedCalls?: number;
+  /** Each voter's parsed action, in call order; a voter that did not parse contributes nothing. */
+  readonly votes?: readonly string[];
 }
 
 export interface RunOptions extends PlanReplayCallConfig {
@@ -1152,6 +1218,18 @@ export interface RunOptions extends PlanReplayCallConfig {
   readonly concurrency: number;
   readonly capUsd: string;
   readonly reservePerCallUsd: string;
+  /** Token rates the meter prices this run at. Defaults to sonnet-5 list rates. */
+  readonly rates?: TokenRates;
+  /** Voters per row. 1 (default) is the single-call shape every frozen arm ran under. */
+  readonly votesPerRow?: number;
+  /**
+   * Per-arm override of `votesPerRow`, keyed by arm name.
+   *
+   * A swarm arm and its single-call control must run in the SAME chunk-major pass — guard 6 exists
+   * so a budget abort truncates every arm at the same row — and they differ only in voter count, so
+   * the voter count has to be an arm-level property rather than a run-level one.
+   */
+  readonly votesPerArm?: Readonly<Record<string, number>>;
   readonly onProgress?: (msg: string) => void;
 }
 
@@ -1222,6 +1300,34 @@ async function mapWithConcurrency<T, R>(
   return out;
 }
 
+export type SwarmAction = 'open_long' | 'open_short' | 'hold';
+
+/**
+ * The swarm's scored action, exactly as the 2026-07-31 follow-on pre-registration fixes it:
+ * "Majority vote over the parsed action in {open_long, open_short, everything-else}. Entry side is
+ * the majority side. No majority, or a tie, resolves to hold."
+ *
+ * MAJORITY IS OVER THE VOTERS, NOT OVER THE VOTES CAST. A voter whose call failed or whose answer
+ * broke the contract casts nothing, so it can only make a majority harder to reach — the same
+ * fail-toward-hold direction the pre-registration declares for a tie. Counting a majority of the
+ * *cast* votes would let a single surviving voter carry a 3-voter row, which is a single-call arm
+ * wearing a swarm's name.
+ */
+export function majorityVote(votes: readonly string[], voters: number): SwarmAction {
+  let long = 0;
+  let short = 0;
+  for (const v of votes) {
+    if (v === 'open_long') long += 1;
+    else if (v === 'open_short') short += 1;
+  }
+  // Strictly more than half, so at most one bucket can ever reach it — including the
+  // everything-else bucket, whose win is a hold and needs no branch of its own.
+  const needed = Math.floor(voters / 2) + 1;
+  if (long >= needed) return 'open_long';
+  if (short >= needed) return 'open_short';
+  return 'hold';
+}
+
 /**
  * CHUNK-MAJOR ordering — a chunk of rows, then all twelve arms within it, then the next chunk. Two
  * reasons, both load-bearing: a budget abort truncates EVERY arm at the same row (so cross-arm
@@ -1237,7 +1343,20 @@ export async function runReplay(
   const systemPrompt = buildSystemPrompt(DEFAULT_FLOOR_PROFILE);
   const blocks = new Map(arms.map(({ arm, content }) => [arm.name, buildPlaybookBlock(content)]));
   const perArm = new Map<string, ArmRowResult[]>(arms.map(({ arm }) => [arm.name, []]));
-  const meter = new UsdMeter(new Decimal(opts.capUsd), new Decimal(opts.reservePerCallUsd));
+  const votersFor = (armName: string): number => {
+    const n = opts.votesPerArm?.[armName] ?? opts.votesPerRow ?? 1;
+    if (!Number.isInteger(n) || n < 1) {
+      throw new Error(`runReplay: voters for ${armName} must be a positive integer, got ${n}`);
+    }
+    return n;
+  };
+  // Refuse at construction rather than discover a bad voter count mid-run, after money is spent.
+  for (const { arm } of arms) votersFor(arm.name);
+  const meter = new UsdMeter(
+    new Decimal(opts.capUsd),
+    new Decimal(opts.reservePerCallUsd),
+    opts.rates,
+  );
   // Every call goes through the instrumented wrapper: without it a rate-limited run is
   // indistinguishable from a run where the model held on every row (run 1, 2026-07-28, VOID).
   const stats = newTransportStats();
@@ -1260,26 +1379,55 @@ export async function runReplay(
         break;
       }
       const block = blocks.get(arm.name)!;
+      const voters = votersFor(arm.name);
       const results = await mapWithConcurrency(chunk, opts.concurrency, async (row) => {
-        if (!meter.canSpend()) return { row, res: null };
-        const res = await replayPlanRow(opts, systemPrompt, block, row.inputPayload, fetchFn);
-        meter.record(res.usage);
-        return { row, res };
+        // The WHOLE row is reserved before its first call: a swarm row that runs out of budget
+        // after 1 of 3 votes could not reach a majority and would record a hold nobody voted for.
+        if (!meter.canSpend(voters)) return null;
+        const calls: Awaited<ReturnType<typeof replayPlanRow>>[] = [];
+        for (let v = 0; v < voters; v += 1) {
+          const res = await replayPlanRow(opts, systemPrompt, block, row.inputPayload, fetchFn);
+          meter.record(res.usage);
+          calls.push(res);
+        }
+        const first = calls[0]!;
+        if (voters === 1) {
+          // The single-call shape every frozen arm ran under, unchanged — no vote fields, and the
+          // RAW action rather than a bucketed one, so decision-change counts stay comparable.
+          return {
+            rowId: row.id,
+            symbol: row.symbol,
+            eventTime: row.eventTime,
+            ok: first.ok,
+            hadUsage: first.usage !== undefined,
+            ...(first.action !== undefined ? { action: first.action } : {}),
+            ...(first.capsSource !== undefined ? { capsSource: first.capsSource } : {}),
+          } satisfies ArmRowResult;
+        }
+        const votes = calls.flatMap((c) => (c.ok && c.action !== undefined ? [c.action] : []));
+        // Report the OFFENDING source when any voter saw non-recorded capabilities, so the
+        // run-voiding faithfulness check sees a swarm row exactly as it sees a single-call row.
+        const unfaithful = calls.find((c) => c.capsSource !== 'recorded');
+        return {
+          rowId: row.id,
+          symbol: row.symbol,
+          eventTime: row.eventTime,
+          ok: votes.length > 0,
+          hadUsage: calls.some((c) => c.usage !== undefined),
+          action: majorityVote(votes, voters),
+          capsSource: unfaithful?.capsSource ?? 'recorded',
+          calls: calls.length,
+          transportedCalls: calls.filter((c) => c.usage !== undefined).length,
+          parsedCalls: votes.length,
+          votes,
+        } satisfies ArmRowResult;
       });
-      for (const { row, res } of results) {
+      for (const res of results) {
         if (res === null) {
           aborted = true;
           continue;
         }
-        perArm.get(arm.name)!.push({
-          rowId: row.id,
-          symbol: row.symbol,
-          eventTime: row.eventTime,
-          ok: res.ok,
-          hadUsage: res.usage !== undefined,
-          ...(res.action !== undefined ? { action: res.action } : {}),
-          ...(res.capsSource !== undefined ? { capsSource: res.capsSource } : {}),
-        });
+        perArm.get(arm.name)!.push(res);
       }
     }
     if (!aborted) rowsAttempted = Math.min(start + opts.rowsPerChunk, rows.length);
@@ -1308,4 +1456,350 @@ export async function runReplay(
     // TRANSPORT rate, not parsed rate — a model that breaks the schema is data, not a broken run.
     voided: completion.transportRate < MIN_TRANSPORT_RATE,
   };
+}
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// FOLLOW-ON, Family A — preregistered in research/studies/playbook-space-followon-2026-07-31.md
+//
+// One scored arm (`haiku_swarm`, N=3 majority vote on the incumbent's own playbook text) and one
+// control (`haiku_single`, 1 call, same text). Everything below is a transcription of that frozen
+// document; nothing here may be re-derived after a result is seen.
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+
+/** The incumbent's playbook text is what both arms run — the architecture is the only variable. */
+export const FOLLOWON_PLAYBOOK_ARM = 'champion_v8';
+export const FOLLOWON_MODEL = 'claude-haiku-4-5';
+export const SWARM_ARM = 'haiku_swarm';
+export const SINGLE_ARM = 'haiku_single';
+/** Prereg § haiku_swarm: "N = 3 rather than 5", and the reason is that variance is the wrong lever. */
+export const SWARM_N = 3;
+
+/** Prereg § Family A alpha: 1 scored arm x 4 horizons = 4 cells, alpha = 0.05 / 4. */
+export const FOLLOWON_FAMILY_A_CELLS = 4;
+export const FOLLOWON_FAMILY_A_ALPHA = 0.05 / FOLLOWON_FAMILY_A_CELLS;
+
+/** Owner decision 2026-07-30: haiku_swarm $5.10 + haiku_single $1.70. */
+export const FOLLOWON_FAMILY_A_AUTHORISED_USD = 6.8;
+/** Prereg § The funded ladder: "Funded total: $17.65 of the $18.00 allocation. Hard cap $21.00". */
+export const FOLLOWON_HARD_CAP_USD = 21.0;
+
+/**
+ * How far a MEASURED haiku rate may push Family A past its $6.80 authorisation before the run
+ * refuses to start.
+ *
+ * Not invented here: the pre-registration sized its own $3.35 of headroom against exactly one
+ * scenario — "if haiku calibrates at 0.50x sonnet instead of the assumed 0.35x, a 43% overrun". So
+ * 1.43x the authorisation is the document's own stated tolerance, and a projection past it is the
+ * case the prereg never funded. Fails CLOSED: this gates spending, so it refuses rather than
+ * proceeds.
+ */
+export const FOLLOWON_OVERRUN_TOLERANCE = 1.43;
+
+/** Prereg § Deployment-bar declarations. Primary horizon declared before any comparison is seen. */
+export const DEPLOYMENT_PRIMARY_HORIZON = 24;
+/** The robustness clause: h=24 AND at least 3 of the 4 horizons, deliberately stricter than owner. */
+export const DEPLOYMENT_MIN_HORIZONS_WON = 3;
+
+// ── the sequencing constraint (prereg guard 9 — fails OPEN, downgrades attribution) ───────────────
+export const PROMPT_SURFACE_FILE = 'src/features/strategy/agentic/agent-prompt.ts';
+/** The blob at 2f1c917, the commit that published the predecessor's NO_SURVIVOR results. */
+export const INCUMBENT_PROMPT_BLOB = 'c471c33055abad7c7ec0cb9978f81c61bc3c487d';
+
+export interface PromptSurfaceCheck {
+  readonly runSha: string;
+  /** Blob of PROMPT_SURFACE_FILE at HEAD — the check the prereg writes literally. */
+  readonly headBlob: string;
+  /** Blob of the file as it sits on disk, which is what the run actually sends. */
+  readonly worktreeBlob: string;
+  readonly pinnedBlob: string;
+  readonly promptControlled: boolean;
+  readonly attribution: 'PROMPT-CONTROLLED' | 'BETWEEN-RUN';
+  readonly note: string;
+}
+
+/**
+ * FAILS OPEN, and that direction is the pre-registration's, not a convenience: guard 9 is a
+ * measurement-QUALITY gate, so a mismatch downgrades the reported attribution to BETWEEN-RUN rather
+ * than voiding a run that already cost real money. An unreadable git tree lands in the same place.
+ *
+ * The worktree blob is checked alongside HEAD's because HEAD's is what the prereg's command reads
+ * while the worktree's is what the process actually loads — a dirty checkout would otherwise satisfy
+ * the letter of the constraint while replaying different bytes.
+ */
+export function checkPromptSurface(cwd = process.cwd()): PromptSurfaceCheck {
+  const git = (args: readonly string[]): string => {
+    try {
+      return execFileSync('git', [...args], { cwd, encoding: 'utf8' }).trim();
+    } catch {
+      return '';
+    }
+  };
+  const runSha = git(['rev-parse', 'HEAD']);
+  const headBlob = git(['rev-parse', `HEAD:${PROMPT_SURFACE_FILE}`]);
+  const worktreeBlob = git(['hash-object', PROMPT_SURFACE_FILE]);
+  const promptControlled =
+    headBlob === INCUMBENT_PROMPT_BLOB && worktreeBlob === INCUMBENT_PROMPT_BLOB;
+  return {
+    runSha,
+    headBlob,
+    worktreeBlob,
+    pinnedBlob: INCUMBENT_PROMPT_BLOB,
+    promptControlled,
+    attribution: promptControlled ? 'PROMPT-CONTROLLED' : 'BETWEEN-RUN',
+    note: promptControlled
+      ? 'agent-prompt.ts is byte-identical at HEAD and on disk to the blob the predecessor ran — ' +
+        'the deployment comparison against the recorded champion_v8 row is prompt-controlled. ' +
+        'Provider-side model drift and re-run variance are NOT removed by this and are not fixable ' +
+        'within the funded design.'
+      : 'agent-prompt.ts differs from the predecessor blob — the deployment comparison is ' +
+        'BETWEEN-RUN. No partial credit, and no argument that the differing hunk does not matter.',
+  };
+}
+
+// ── the design, sized from a MEASURED haiku rate ──────────────────────────────────────────────────
+export interface FollowonDesign {
+  readonly family: 'A';
+  readonly study: string;
+  readonly corpusSha256: string;
+  readonly rows: number;
+  readonly model: string;
+  readonly playbookArm: string;
+  readonly swarmN: number;
+  readonly scoredArms: readonly string[];
+  readonly controlArms: readonly string[];
+  readonly horizons: readonly number[];
+  readonly cells: number;
+  readonly alpha: number;
+  readonly requiredEdgeBps: number;
+  readonly minEntries: number;
+  readonly measured: {
+    readonly haikuUsdPerCall: number;
+    readonly haikuUsdPerCallEffective: number;
+    readonly projectedSwarmUsd: number;
+    readonly projectedSingleUsd: number;
+    readonly projectedFamilyAUsd: number;
+  };
+  readonly authorisedUsd: number;
+  readonly overrunToleranceUsd: number;
+  readonly hardCapUsd: number;
+}
+
+export const FOLLOWON_DESIGN_FILE = join(
+  process.cwd(),
+  'research',
+  'candidates',
+  'playbook-space-followon-design.json',
+);
+
+/**
+ * Sizes Family A from the measured haiku rate and REFUSES rather than spending through an overrun.
+ *
+ * The refusal is the point. The predecessor's kimi estimate reversed from 0.61x to 1.9x between two
+ * calibrations, and the haiku rate here is the design's one unmeasured number — so a projection that
+ * lands past the pre-registration's own stated tolerance is a stop-and-report, not a budget note.
+ */
+export function sizeFollowonFamilyA(input: {
+  readonly rows: number;
+  readonly haikuUsdPerCall: number;
+  readonly haikuUsdPerCallEffective: number;
+  readonly corpusSha256: string;
+  readonly calibrationSpentUsd: number;
+}): FollowonDesign {
+  for (const [name, value] of [
+    ['rows', input.rows],
+    ['haikuUsdPerCallEffective', input.haikuUsdPerCallEffective],
+  ] as const) {
+    if (!(value > 0) || !Number.isFinite(value)) {
+      throw new Error(
+        `sizeFollowonFamilyA: ${name} must be a positive finite number, got ${value}`,
+      );
+    }
+  }
+  const projectedSwarmUsd = input.rows * SWARM_N * input.haikuUsdPerCallEffective;
+  const projectedSingleUsd = input.rows * input.haikuUsdPerCallEffective;
+  const projectedFamilyAUsd = projectedSwarmUsd + projectedSingleUsd;
+  const tolerance = FOLLOWON_FAMILY_A_AUTHORISED_USD * FOLLOWON_OVERRUN_TOLERANCE;
+  if (projectedFamilyAUsd > tolerance) {
+    throw new Error(
+      `MEASURED CALIBRATION PUTS FAMILY A OVER ITS AUTHORISATION — projected ` +
+        `$${projectedFamilyAUsd.toFixed(2)} (swarm $${projectedSwarmUsd.toFixed(2)} + control ` +
+        `$${projectedSingleUsd.toFixed(2)}) at a measured $${input.haikuUsdPerCallEffective.toFixed(6)}/call ` +
+        `against the $${FOLLOWON_FAMILY_A_AUTHORISED_USD.toFixed(2)} owner authorisation and a ` +
+        `$${tolerance.toFixed(2)} tolerance (the prereg's own 43% overrun scenario). ` +
+        `STOP AND REPORT — do not spend through it.`,
+    );
+  }
+  if (input.calibrationSpentUsd + projectedFamilyAUsd > FOLLOWON_HARD_CAP_USD) {
+    throw new Error(
+      `HARD CAP — calibration $${input.calibrationSpentUsd.toFixed(2)} plus projected ` +
+        `$${projectedFamilyAUsd.toFixed(2)} exceeds the $${FOLLOWON_HARD_CAP_USD.toFixed(2)} cap.`,
+    );
+  }
+  return {
+    family: 'A',
+    study: 'playbook-space-followon-2026-07-31',
+    corpusSha256: input.corpusSha256,
+    rows: input.rows,
+    model: FOLLOWON_MODEL,
+    playbookArm: FOLLOWON_PLAYBOOK_ARM,
+    swarmN: SWARM_N,
+    scoredArms: [SWARM_ARM],
+    controlArms: [SINGLE_ARM],
+    horizons: [...HORIZONS],
+    cells: FOLLOWON_FAMILY_A_CELLS,
+    alpha: FOLLOWON_FAMILY_A_ALPHA,
+    requiredEdgeBps: REQUIRED_EDGE_BPS,
+    minEntries: MIN_ENTRIES,
+    measured: {
+      haikuUsdPerCall: input.haikuUsdPerCall,
+      haikuUsdPerCallEffective: input.haikuUsdPerCallEffective,
+      projectedSwarmUsd,
+      projectedSingleUsd,
+      projectedFamilyAUsd,
+    },
+    authorisedUsd: FOLLOWON_FAMILY_A_AUTHORISED_USD,
+    overrunToleranceUsd: tolerance,
+    hardCapUsd: FOLLOWON_HARD_CAP_USD,
+  };
+}
+
+export function writeFollowonDesign(d: FollowonDesign, file = FOLLOWON_DESIGN_FILE): void {
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, JSON.stringify(d, null, 2), 'utf8');
+}
+
+export function loadFollowonDesign(file = FOLLOWON_DESIGN_FILE): FollowonDesign {
+  if (!existsSync(file)) {
+    throw new Error(
+      `no sized follow-on design at ${file} — run the haiku calibration probe first ` +
+        `(PLAYBOOK_SPACE_FOLLOWON_CALIBRATE=1). The edge run refuses to size its own family.`,
+    );
+  }
+  return JSON.parse(readFileSync(file, 'utf8')) as FollowonDesign;
+}
+
+// ── the two bars, computed ────────────────────────────────────────────────────────────────────────
+export interface FamilyVerdict {
+  readonly cellsScored: number;
+  readonly cellsDeclared: number;
+  readonly complete: boolean;
+  readonly passes: readonly LaneCell[];
+  readonly bestPowered: LaneCell | null;
+  readonly verdict: 'SURVIVOR' | 'NO_SURVIVOR' | 'INCOMPLETE';
+}
+
+/**
+ * The RESEARCH-bar verdict for one family, on the same contract `aggregateVerdict` applies across
+ * the model axis and through the same `summariseCells` core: an incomplete family is INCOMPLETE and
+ * never NO_SURVIVOR, and ranking (`bestPowered`) is never passing.
+ *
+ * Only SCORED cells may be passed in. A control's cells never enter — the pre-registration's
+ * anti-loophole clause is that a control can never PASS, so the way to honour it is to never hand a
+ * control's numbers to a verdict function in the first place.
+ */
+export function aggregateFamilyVerdict(
+  cells: readonly LaneCell[],
+  cellsDeclared: number,
+): FamilyVerdict {
+  const { passes, bestPowered } = summariseCells(cells);
+  const complete = cells.length >= cellsDeclared;
+  return {
+    cellsScored: cells.length,
+    cellsDeclared,
+    complete,
+    passes,
+    bestPowered,
+    verdict: !complete ? 'INCOMPLETE' : passes.length > 0 ? 'SURVIVOR' : 'NO_SURVIVOR',
+  };
+}
+
+export interface HorizonComparison {
+  readonly h: number;
+  readonly armMean: number;
+  readonly incumbentMean: number;
+  readonly deltaBps: number;
+  readonly beats: boolean;
+}
+
+export interface DeploymentComparison {
+  readonly arm: string;
+  readonly incumbent: string;
+  readonly primaryHorizon: number;
+  readonly perHorizon: readonly HorizonComparison[];
+  readonly beatsAtPrimary: boolean;
+  readonly horizonsWon: number;
+  readonly horizonsCompared: number;
+  /** h=24 AND >= 3 of 4 horizons — the pre-registered robustness clause, computed not asserted. */
+  readonly ships: boolean;
+  /** Wins at h=24 alone: reported as horizon-dependent, and does NOT ship. */
+  readonly horizonDependent: boolean;
+  readonly attribution: PromptSurfaceCheck['attribution'];
+}
+
+/**
+ * The DEPLOYMENT bar: a ranking of measured means among options that all have to be somewhere. Not
+ * alpha-corrected, because it tests no hypothesis against a null — and evaluated independently of,
+ * and regardless of, the research-bar outcome.
+ */
+export function compareToIncumbent(
+  armName: string,
+  armCells: readonly LaneCell[],
+  incumbentName: string,
+  incumbentCells: readonly LaneCell[],
+  attribution: PromptSurfaceCheck['attribution'],
+): DeploymentComparison {
+  const perHorizon: HorizonComparison[] = [];
+  for (const h of HORIZONS) {
+    const a = armCells.find((c) => c.h === h);
+    const i = incumbentCells.find((c) => c.h === h);
+    if (a === undefined || i === undefined) continue;
+    perHorizon.push({
+      h,
+      armMean: a.mean,
+      incumbentMean: i.mean,
+      deltaBps: a.mean - i.mean,
+      beats: a.mean > i.mean,
+    });
+  }
+  const beatsAtPrimary = perHorizon.find((c) => c.h === DEPLOYMENT_PRIMARY_HORIZON)?.beats ?? false;
+  const horizonsWon = perHorizon.filter((c) => c.beats).length;
+  const ships = beatsAtPrimary && horizonsWon >= DEPLOYMENT_MIN_HORIZONS_WON;
+  return {
+    arm: armName,
+    incumbent: incumbentName,
+    primaryHorizon: DEPLOYMENT_PRIMARY_HORIZON,
+    perHorizon,
+    beatsAtPrimary,
+    horizonsWon,
+    horizonsCompared: perHorizon.length,
+    ships,
+    horizonDependent: beatsAtPrimary && !ships,
+    attribution,
+  };
+}
+
+/**
+ * The predecessor's RECORDED rows, which are the Family A comparator because `incumbent_control` is
+ * unfunded (prereg § The sequencing constraint). Read from the 2026-07-28 leg artifact rather than
+ * re-measured, and the comparison's controlled-vs-between-run status is reported separately.
+ */
+export function loadRecordedIncumbentCells(
+  arm: string,
+  file = join(
+    process.cwd(),
+    'research',
+    'candidates',
+    'playbook-space-replay-claude-sonnet-5-2026-07-28.json',
+  ),
+): { readonly cells: readonly LaneCell[]; readonly corpusSha256: string } {
+  if (!existsSync(file)) {
+    throw new Error(`predecessor result artifact not found: ${file} — no deployment comparator`);
+  }
+  const leg = JSON.parse(readFileSync(file, 'utf8')) as {
+    manifest: { payloadSha256: string };
+    cells: (LaneCell & { arm: string })[];
+  };
+  const cells = leg.cells.filter((c) => c.arm === arm);
+  if (cells.length === 0) throw new Error(`predecessor artifact has no recorded rows for ${arm}`);
+  return { cells, corpusSha256: leg.manifest.payloadSha256 };
 }

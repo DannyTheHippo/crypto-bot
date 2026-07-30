@@ -1,0 +1,299 @@
+{
+  "criteriaVersion": "playbook-space-followon-2026-07-31",
+  "templateVersion": "v3",
+  "corpusSource": "agent_decisions.input_payload (frozen 354-row FLAT corpus, 2026-07-21..27)",
+  "corpusFingerprint": "f1dd13c695f8009ed64f0e0f0b1f0ed82327e0cabfd716a6674859092125d229",
+  "window": {
+    "rowSince": 1784646000000,
+    "rowUntil": 1785180600000,
+    "firstEventTime": 1784646000000,
+    "lastEventTime": 1785180600000,
+    "rowsLoaded": 386,
+    "rowsReplayed": 354
+  },
+  "capabilities": "recorded (per-row, capsSource=recorded on 100% of rows)",
+  "thinking": "disabled",
+  "maxTokens": 512,
+  "tokenPrices": {
+    "claude-haiku-4-5/haiku_swarm": {
+      "inputPerMtok": "1",
+      "outputPerMtok": "5"
+    },
+    "claude-haiku-4-5/haiku_single": {
+      "inputPerMtok": "1",
+      "outputPerMtok": "5"
+    }
+  },
+  "championReference": {
+    "arm": "champion_v8",
+    "model": "claude-sonnet-5",
+    "source": "research/candidates/playbook-space-replay-claude-sonnet-5-2026-07-28.json",
+    "attribution": "PROMPT-CONTROLLED",
+    "promptBlob": "c471c33055abad7c7ec0cb9978f81c61bc3c487d"
+  },
+  "runSha": "9a63edf7e565b99eee7579bb26dc095763af172b",
+  "promptSurface": {
+    "runSha": "9a63edf7e565b99eee7579bb26dc095763af172b",
+    "headBlob": "c471c33055abad7c7ec0cb9978f81c61bc3c487d",
+    "worktreeBlob": "c471c33055abad7c7ec0cb9978f81c61bc3c487d",
+    "pinnedBlob": "c471c33055abad7c7ec0cb9978f81c61bc3c487d",
+    "promptControlled": true,
+    "attribution": "PROMPT-CONTROLLED",
+    "note": "agent-prompt.ts is byte-identical at HEAD and on disk to the blob the predecessor ran — the deployment comparison against the recorded champion_v8 row is prompt-controlled. Provider-side model drift and re-run variance are NOT removed by this and are not fixable within the funded design."
+  },
+  "researchBar": {
+    "cellsScored": 4,
+    "cellsDeclared": 4,
+    "complete": true,
+    "passes": [],
+    "bestPowered": {
+      "model": "claude-haiku-4-5",
+      "arm": "haiku_swarm",
+      "h": 1,
+      "n": 82,
+      "mean": -12.149767838120592,
+      "ciLo": -16.696727274773856,
+      "verdict": "FAIL"
+    },
+    "verdict": "NO_SURVIVOR"
+  },
+  "swarmMechanics": {
+    "rows": 354,
+    "unanimous": 282,
+    "splitCollapsedToMode": 71,
+    "actionDifferedFromSingle": 53
+  },
+  "spendUsd": "4.9586",
+  "candidates": [
+    {
+      "model": "claude-haiku-4-5/haiku_swarm",
+      "rowsReplayed": 354,
+      "schemaValidRate": 1,
+      "tradeSanityRate": null,
+      "proposeCount": 87,
+      "proposeRate": 0.2457627118644068,
+      "actionHistogram": {
+        "entries": 82,
+        "rowsParsed": 354
+      },
+      "directionalForwardProxyBps": -12.149767838120592,
+      "costPerDecideUsd": 0.010505508474576269,
+      "tier": "SCORED",
+      "votersPerRow": 3,
+      "cells": [
+        {
+          "h": 1,
+          "n": 82,
+          "clusters": 15,
+          "meanBps": -12.149767838120592,
+          "ciLoBps": -16.696727274773856,
+          "ciHiBps": -7.868851901430236,
+          "pVsBar": 1,
+          "placeboP": 0.9902,
+          "firstHalf": -18.125146888655994,
+          "secondHalf": -6.174388787585189,
+          "trimmed": -11.82962702360598,
+          "verdict": "FAIL"
+        },
+        {
+          "h": 4,
+          "n": 82,
+          "clusters": 15,
+          "meanBps": -22.578061508783566,
+          "ciLoBps": -33.89975512308447,
+          "ciHiBps": -13.658609768627148,
+          "pVsBar": 1,
+          "placeboP": 0.9946,
+          "firstHalf": -27.43516412444517,
+          "secondHalf": -17.720958893121946,
+          "trimmed": -21.606512956236237,
+          "verdict": "FAIL"
+        },
+        {
+          "h": 8,
+          "n": 82,
+          "clusters": 15,
+          "meanBps": -35.37523459279867,
+          "ciLoBps": -48.87166362555104,
+          "ciHiBps": -18.614465134173685,
+          "pVsBar": 1,
+          "placeboP": 0.998,
+          "firstHalf": -32.7136425166977,
+          "secondHalf": -38.03682666889965,
+          "trimmed": -33.82708949852282,
+          "verdict": "FAIL"
+        },
+        {
+          "h": 24,
+          "n": 78,
+          "clusters": 15,
+          "meanBps": -71.82625563548618,
+          "ciLoBps": -122.0513821692802,
+          "ciHiBps": -18.5217486404945,
+          "pVsBar": 1,
+          "placeboP": 1,
+          "firstHalf": -55.84642348552567,
+          "secondHalf": -87.8060877854467,
+          "trimmed": -68.95413107258919,
+          "verdict": "FAIL"
+        }
+      ],
+      "deploymentBar": {
+        "arm": "haiku_swarm",
+        "incumbent": "champion_v8",
+        "primaryHorizon": 24,
+        "perHorizon": [
+          {
+            "h": 1,
+            "armMean": -12.149767838120592,
+            "incumbentMean": -12.693950202323892,
+            "deltaBps": 0.5441823642032997,
+            "beats": true
+          },
+          {
+            "h": 4,
+            "armMean": -22.578061508783566,
+            "incumbentMean": -36.340791166615034,
+            "deltaBps": 13.762729657831468,
+            "beats": true
+          },
+          {
+            "h": 8,
+            "armMean": -35.37523459279867,
+            "incumbentMean": -32.70169819735427,
+            "deltaBps": -2.673536395444401,
+            "beats": false
+          },
+          {
+            "h": 24,
+            "armMean": -71.82625563548618,
+            "incumbentMean": -70.09682182983828,
+            "deltaBps": -1.7294338056479006,
+            "beats": false
+          }
+        ],
+        "beatsAtPrimary": false,
+        "horizonsWon": 2,
+        "horizonsCompared": 4,
+        "ships": false,
+        "horizonDependent": false,
+        "attribution": "PROMPT-CONTROLLED"
+      }
+    },
+    {
+      "model": "claude-haiku-4-5/haiku_single",
+      "rowsReplayed": 354,
+      "schemaValidRate": 1,
+      "tradeSanityRate": null,
+      "proposeCount": 88,
+      "proposeRate": 0.24858757062146894,
+      "actionHistogram": {
+        "entries": 84,
+        "rowsParsed": 354
+      },
+      "directionalForwardProxyBps": -7.120537036360681,
+      "costPerDecideUsd": 0.00350183615819209,
+      "tier": "CONTROL",
+      "votersPerRow": 1,
+      "cells": [
+        {
+          "h": 1,
+          "n": 84,
+          "clusters": 16,
+          "meanBps": -7.120537036360681,
+          "ciLoBps": -14.809512933008318,
+          "ciHiBps": 0.4527040860503005,
+          "pVsBar": 1,
+          "placeboP": 0.9306,
+          "firstHalf": -12.988504880861672,
+          "secondHalf": -1.2525691918596902,
+          "trimmed": -6.685540368498614,
+          "verdict": "CONTROL"
+        },
+        {
+          "h": 4,
+          "n": 84,
+          "clusters": 16,
+          "meanBps": -10.771271906554226,
+          "ciLoBps": -26.792921115448937,
+          "ciHiBps": 3.25486700952685,
+          "pVsBar": 1,
+          "placeboP": 0.9016,
+          "firstHalf": -19.794341810868964,
+          "secondHalf": -1.7482020022394889,
+          "trimmed": -10.32475439670964,
+          "verdict": "CONTROL"
+        },
+        {
+          "h": 8,
+          "n": 84,
+          "clusters": 16,
+          "meanBps": -30.304585047649805,
+          "ciLoBps": -47.65289106833091,
+          "ciHiBps": -8.278858965708325,
+          "pVsBar": 1,
+          "placeboP": 0.9912,
+          "firstHalf": -24.805281709197683,
+          "secondHalf": -35.80388838610194,
+          "trimmed": -28.670525210669734,
+          "verdict": "CONTROL"
+        },
+        {
+          "h": 24,
+          "n": 77,
+          "clusters": 15,
+          "meanBps": -80.29667589991946,
+          "ciLoBps": -142.19642852546414,
+          "ciHiBps": -21.292846583574704,
+          "pVsBar": 1,
+          "placeboP": 1,
+          "firstHalf": -79.29709838478985,
+          "secondHalf": -81.2706232223535,
+          "trimmed": -77.61213421656875,
+          "verdict": "CONTROL"
+        }
+      ],
+      "deploymentBar": {
+        "arm": "haiku_single",
+        "incumbent": "champion_v8",
+        "primaryHorizon": 24,
+        "perHorizon": [
+          {
+            "h": 1,
+            "armMean": -7.120537036360681,
+            "incumbentMean": -12.693950202323892,
+            "deltaBps": 5.573413165963211,
+            "beats": true
+          },
+          {
+            "h": 4,
+            "armMean": -10.771271906554226,
+            "incumbentMean": -36.340791166615034,
+            "deltaBps": 25.569519260060808,
+            "beats": true
+          },
+          {
+            "h": 8,
+            "armMean": -30.304585047649805,
+            "incumbentMean": -32.70169819735427,
+            "deltaBps": 2.397113149704463,
+            "beats": true
+          },
+          {
+            "h": 24,
+            "armMean": -80.29667589991946,
+            "incumbentMean": -70.09682182983828,
+            "deltaBps": -10.199854070081187,
+            "beats": false
+          }
+        ],
+        "beatsAtPrimary": false,
+        "horizonsWon": 3,
+        "horizonsCompared": 4,
+        "ships": false,
+        "horizonDependent": false,
+        "attribution": "PROMPT-CONTROLLED"
+      }
+    }
+  ]
+}

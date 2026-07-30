@@ -36,6 +36,27 @@ WATCH-V3-1: spot heap slope on the demo soak (paper plateau 673 MiB is the
   that is the shape twice running. Deadline: next pass confirms the first ≥12h window with the stamp
   never stale.
 
+  **AMENDED 2026-07-30 (Pass 49) — THE VERIFICATION SURFACE WAS WRONG, AND THE CLAUSE IS BREACHED
+  ONCE.** Passes 47 and 48 each recorded this WATCH as holding with the citation "no
+  `adopt_non_adoptable` in `audit_log`". That reading is true and worthless: **`audit_log` has never
+  carried a single row of this class, over its whole history** — the class is written to
+  `reconciliations.discrepancies` and to the boot-scoped
+  `reconciliation_mismatch_total{class="adopt_non_adoptable"}` counter, and nowhere else. Two
+  successive passes confirmed an expected-positive against a table structurally incapable of
+  contradicting it, which is the same void-read disease those same passes were fixing elsewhere.
+  **Check `reconciliations` from now on** — `select venue, ts, discrepancies from reconciliations
+  where discrepancies::text like '%adopt_non_adoptable%'`. The metric alone is not enough either: it
+  is boot-scoped and this loop redeploys on most passes.
+  Read on the right surface the clause IS breached: **101 rows carry it.** 100 are the
+  already-diagnosed 2026-07-27 `binanceusdm` BCH fold defect (`reconciliation.service.ts:969-977`),
+  fixed. **One is new and was never recorded: 2026-07-30T09:30:15.860Z, `binance`, boot `1d68a57c`,
+  a single pass, `{"detail":"adopt_non_adoptable:1","mismatches":1}`.** It self-cleared — 825 `CLEAN`
+  binance passes in the same 14h window, clean stamp 86s old at Pass 49's close — so the **named
+  defect outcome did NOT fire** and the stamp was never starved. The single event is **not
+  root-caused** and stays an open check. A second occurrence is a root-cause pass: start from which
+  order the venue reported `open`/other while absent from open orders, which is what the class means
+  (`reconciliation.service.ts:59`).
+
 ### WATCH-V4-2 — FILL_OVERFLOW is one-shot by construction (Pass 40, 2026-07-27; same record)
 
   **WATCH-V4-2 (FILL_OVERFLOW is one-shot by construction).** Expected-positive:
@@ -64,37 +85,6 @@ WATCH-V3-1: spot heap slope on the demo soak (paper plateau 673 MiB is the
   `orders.cum_qty` for every terminal order. Named defect outcome: any of those three breaking means
   the index or the fold has a shape none of the four fixes covers — do not patch the symptom;
   re-derive which tier resolved the trade first.
-
-### WATCH-V4-6 — an order reaching `NEW` via `QUERY_NOT_FOUND` can never become terminal (Pass 44, 2026-07-28)
-
-This one is simultaneously an open WATCH and an open flagged defect; the full § Flagged entry is
-here rather than duplicated below.
-
-- **OPEN DEFECT — WATCH-V4-6: AN ORDER THAT REACHES `NEW` VIA `QUERY_NOT_FOUND` CAN NEVER BECOME
-  TERMINAL (Pass 44, 2026-07-28).** Four orders have sat non-terminal since 2026-07-24, each with the
-  identical event chain and nothing after it: `SUBMIT_SENT → SUBMIT_AMBIGUOUS → QUERY_NOT_FOUND`
-  (`ZEC/USDT:USDT`, `SOL/USDT:USDT`, `KAITO/USDT:USDT`, `NEAR/USDT:USDT`).
-  Root cause, read from code not inferred: `SUBMIT_UNKNOWN + QUERY_NOT_FOUND → NEW` is deliberate
-  ("resubmit-eligible, same clientOrderId (TTL live)", `reducer.ts:194-195`) and its TTL-lapsed
-  sibling `QUERY_NOT_FOUND_EXPIRED → CANCELED` exists — but the TTL is evaluated **only at query
-  time** (`unknown-resolver.service.ts:310-315`), ~7s after submit, when it is obviously still live.
-  The resolver then drops the order from `pending` with the comment _"NEW is resubmit-eligible;
-  resubmit orchestration is a follow-up"_. That follow-up was never built, so nothing re-queries the
-  order, nothing expires it, and nothing resubmits it.
-  **Live impact today is nil, and that is measured:** `open_orders{venue}`=0 both venues,
-  `in_flight_intents`=0, `venue_capital_headroom_usdt{binanceusdm}`=500 (full, so no phantom reserve),
-  `reconciliation_mismatch_total` has no series across the whole 4 days these rows have existed, and
-  the clean stamp is fresh. The portfolio view correctly excludes never-ACKed orders.
-  **Why Pass 44 did not fix it:** the repair is the missing capability the code itself names — TTL
-  re-examination plus a venue re-query before terminalizing (never blind; hard rule 5). That is new
-  OMS money-path orchestration, not a line change. `NEW + CANCEL_REQUESTED → CANCELED` ("never sent,
-  local-only", `reducer.ts:153`) is already the right terminal transition, so no reducer change is
-  needed — the missing piece is the sweep that decides when to emit it.
-  **Expected-positive:** the count of orders in a non-terminal state with no in-flight intent stays at
-  these 4 and does not grow. **Named defect outcome:** it grows ⇒ the ambiguous-submit path is
-  producing zombies at a rate that will eventually meet a book-wide non-terminal scan, which is
-  exactly the shape that starved the clean stamp twice in Pass 40 (`adopt_non_adoptable`). Check
-  `sum(fills.qty)` vs `orders.cum_qty` for non-terminal orders first, as WATCH-V4-1 already says.
 
 ### WATCH-V4-7 — the sweep can see across passes (Pass 45, 2026-07-29; source: the "AN OUTAGE THAT WAS OVER BEFORE ANYONE LOOKED" record)
 
@@ -133,6 +123,82 @@ here rather than duplicated below.
   test now asserts its absence so the claim cannot be re-derived) — so do not attribute the gap to
   anything without re-measuring it. Deadline: before any paid edge tier runs, since entry rate is the
   input the whole design is sized against and an unpowered cell cannot answer the study's question.
+
+### WATCH-PLAN-AUTHORITY-1 — the declared plan now owns the exit (FIRED 2026-07-30, Pass 49)
+
+  **WATCH-PLAN-AUTHORITY-1.** Opened in `verdicts.md` while the flag was off; **it is no longer
+  UNFIRED — `AGENTIC_PLAN_AUTHORITATIVE_EXITS=true` at `.env.app:261` since the 16:57:19Z boot of
+  2026-07-30.** While a positioned symbol carries enforced `directives`, the model's `close` emits no
+  exit signal and is journalled as a `hold` tagged `plan_authoritative_close:`; positions exit ONLY
+  via the declared stop, take-profit or maxHold.
+  **Expected-positive, in two parts:** `plan_authoritative_close:` holds appear at roughly the
+  historical close rate (~16 per 22 exits), AND the exit mix shifts toward venue stop / TP / max_hold.
+  **BASELINE FOR THE NEXT MEASUREMENT: −108.1 bps/trip at 17.4% hit** (Arm 1 of the exit study, the
+  lane's actual discretionary hand over 23 recorded round trips). The replay-measured target is
+  Arm 2's **−78.4 bps at 22.7%**, i.e. 29.7 bps better — a research-bar FAIL under the pre-registered
+  30 bps bar and a deployment-bar win.
+  **Named defect outcome:** a storm of positions running to `max_hold` with realised bps **worse than
+  −108.1** ⇒ flip the flag back and record it. **The failure mode to watch for specifically is a plan
+  lost to a restart**, since a position whose in-memory plan is gone has no declared stop left to exit
+  on. The gate fails toward EXITING by construction — no context, absent `directives`, or FLAT ⇒ the
+  close executes unchanged — and `AGENTIC_VENUE_STOP`/`AGENTIC_VENUE_TP` are both `true`, so stop and
+  take-profit rest at the venue meanwhile. **Confirm that live rather than trusting the spec**: at
+  Pass 49's close, 6 `ACKED` protective orders rested across both venues, every one carrying a
+  `venue_order_id`, and the first round trip under the flag (`KAITO/USDT:USDT`, entered 16:30:38Z)
+  closed at **17:11:55Z by its declared `STOP_MARKET`**, not by a `close`.
+  **Deadline: the next pass with ≥5 closed round trips under the flag resolves this explicitly.**
+  Read § WATCH-PLAYBOOK-V10-1 before attributing anything it measures.
+
+### WATCH-PLAYBOOK-V10-1 — `inverted` is live, and the divergence is the finding (2026-07-30, Pass 49)
+
+  **WATCH-PLAYBOOK-V10-1 (replay-predicted vs live-realised entry return).** `agentic_playbook_info`
+  reads `version="10"` since the 16:57:19Z boot: the `inverted` arm's prose, minted
+  `source='loop-candidate'` `parent_version=8` and promoted the same minute. **It is a RESEARCH-BAR
+  FAIL deployed on DEPLOYMENT-BAR grounds** — see `verdicts.md`; nothing here licenses an edge claim.
+  **Expected-positive:** live-realised entry forward return under v10 lands materially above
+  `champion_v8`'s replayed `−12.7 / −36.3 / −32.7 / −70.1 bps` at h=1/4/8/24, in the direction the
+  replay predicted (`inverted` `−0.8 / +0.8 / +19.3 / +47.6`, deltas `+11.9 / +37.1 / +52.0 / +117.7`).
+  **Named defect outcome — and it is deliberately symmetric:** a **divergence in EITHER direction
+  between replay-predicted and live-realised entry return is a FINDING to report**, not noise to
+  explain away. Live materially WORSE than the replay is the adverse-selection hypothesis confirming —
+  the recorded entries were maker-side at **76% fill**, and offline replay structurally cannot measure
+  whether the faded side of a print was available at the same terms. Live materially BETTER than the
+  replay is equally a finding, about the replay rather than about the strategy. **Report it whichever
+  way it points; do not quietly attribute either outcome to noise.**
+  **Do NOT quote +47.6 as an edge** under any live result: the arm fails the research bar on interval
+  width (h=24 CI lo **−12.2**, h=8 **+1.1**, both under +13.0), and it is in-sample on one 6.35-day
+  regime, 2026-07-21 → 27.
+  **Attribution rail, binding:** `AGENTIC_PLAN_AUTHORITATIVE_EXITS` went live on the same boot, six
+  minutes after the promotion. Their EVIDENCE is separable — this WATCH measures entry forward return,
+  which does not depend on how a position is exited; WATCH-PLAN-AUTHORITY-1 measures exit behaviour
+  GIVEN entries, which does not depend on which bar was chosen. **Their realised-PnL contributions are
+  NOT separable, and no pass may claim either change moved the book on its own.**
+  Deadline: first pass with ≥12 entries attributable to `playbook_version=10` (this loop's own
+  "never act on a sub-n≥12 cell" bar).
+
+### WATCH-V4-10 — an orphaned perp algo stop resting against a flat book (2026-07-30, Pass 49)
+
+  **WATCH-V4-10 (orphaned perp algo stop).** Observed while verifying WATCH-PLAN-AUTHORITY-1, not
+  looked for. `HYPE/USDT:USDT` `BUY STOP_MARKET`, submitted 2026-07-30T13:00:31Z as protection for a
+  SHORT that closed at **16:00:31Z**, was still `ACKED` at 17:13Z — **73+ minutes and two boots after
+  the position it protected went flat.**
+  **Bounded, and say so before anyone panics:** the resting perp stop is `reduceOnly` by construction
+  (`agentic.strategy.ts:2086`), so triggering it against a flat book reduces nothing rather than
+  opening an unintended long. This is untidy, not dangerous.
+  **The one code path that can produce it, stated as a candidate and NOT as a diagnosis:**
+  `cancelPerpAlgoStopIfResting` (`agentic.strategy.ts:2096-2101`) returns silently when its `entry`
+  snapshot is `undefined`. That snapshot is read from `planStopRegistry` BEFORE `clearPlan()`, so a
+  plan already cleared leaves nothing to read and the cancel becomes a no-op **with no counter
+  incremented**. `agentic_venue_stop_total{event="orphan_cancel"}` reads 0 on this boot, which is
+  consistent with BOTH "never needed" and "silently skipped" — the same void-read shape Passes
+  44/47/48 have now fixed at six other sites. **Mechanism NOT established.** This pass observed the
+  state and the path; it did not prove the path is what happened.
+  **Expected-positive:** no perp algo stop remains `ACKED` more than one 15m bar after its position
+  goes flat. **Named defect outcome:** a second orphan appears ⇒ the silent-return branch is the
+  suspect and the first thing to build is a counter that distinguishes "no cancel needed" from
+  "cancel skipped because the registry row was gone" — do not patch the cancel before the read exists,
+  because a fix on an unreadable path is unverifiable. Deadline: next pass re-checks
+  `select symbol, type, state from orders where state = 'ACKED'` against the live position set.
 
 ## Flagged for human review (open)
 
@@ -185,8 +251,13 @@ here rather than duplicated below.
   accumulating evidence for a gate the present entry signal provably cannot pass. That decision is
   still the owner's, and the loop still has not assumed either answer.
 
-- **OPEN DEFECT — WATCH-V4-6 (`QUERY_NOT_FOUND` terminalization, Pass 44, 2026-07-28):** full text
-  above under § Open WATCH lines, kept there so the WATCH and the defect cannot drift apart.
+- ~~**OPEN DEFECT — WATCH-V4-6 (`QUERY_NOT_FOUND` terminalization, Pass 44, 2026-07-28)**~~ —
+  **CLOSED 2026-07-30 (Pass 49), commit `83eae1f`.** It was flagged here as a *missing capability*
+  rather than as a deferral, and the capability was built: `sweepStrandedNew`, zero reducer changes,
+  four independent positive facts required before any terminalization. All four zombie orders reached
+  `CANCELED` on the first tick after deploy with nothing run by hand. Full text and the live evidence
+  moved with the WATCH to § Resolved WATCH lines below, so the WATCH and the defect still cannot drift
+  apart. Struck rather than deleted, per this section's convention.
 
 - **TWO SCHEDULED PASSES RAN CONCURRENTLY IN ONE WORKING TREE (2026-07-28, Pass 42 + Pass 43;
   RECURRED live during Pass 44).** Pass 44 observed it from inside: commits `8a15ad0` (08:18:21Z) and
@@ -235,6 +306,79 @@ here rather than duplicated below.
   hygiene only.
 
 ## Resolved WATCH lines — closed, kept, not deleted
+
+### WATCH-V4-6 — an order reaching `NEW` via `QUERY_NOT_FOUND` can never become terminal (RESOLVED Pass 49, 2026-07-30)
+
+Moved here from § Open WATCH lines by Pass 49, byte-identical **except two emphasis delimiters**:
+the `_"NEW is resubmit-eligible…"_` quote is now asterisk-delimited. MD049 runs at markdownlint's
+default `consistent` mode (it is not configured in `.markdownlint-cli2.jsonc`), so the FIRST emphasis
+in a file fixes that file's expected style — and moving this block down the file changed which one
+that was. Wording unchanged; only the two markers.
+
+This one is simultaneously an open WATCH and an open flagged defect; the full § Flagged entry is
+here rather than duplicated below.
+
+- **OPEN DEFECT — WATCH-V4-6: AN ORDER THAT REACHES `NEW` VIA `QUERY_NOT_FOUND` CAN NEVER BECOME
+  TERMINAL (Pass 44, 2026-07-28).** Four orders have sat non-terminal since 2026-07-24, each with the
+  identical event chain and nothing after it: `SUBMIT_SENT → SUBMIT_AMBIGUOUS → QUERY_NOT_FOUND`
+  (`ZEC/USDT:USDT`, `SOL/USDT:USDT`, `KAITO/USDT:USDT`, `NEAR/USDT:USDT`).
+  Root cause, read from code not inferred: `SUBMIT_UNKNOWN + QUERY_NOT_FOUND → NEW` is deliberate
+  ("resubmit-eligible, same clientOrderId (TTL live)", `reducer.ts:194-195`) and its TTL-lapsed
+  sibling `QUERY_NOT_FOUND_EXPIRED → CANCELED` exists — but the TTL is evaluated **only at query
+  time** (`unknown-resolver.service.ts:310-315`), ~7s after submit, when it is obviously still live.
+  The resolver then drops the order from `pending` with the comment *"NEW is resubmit-eligible;
+  resubmit orchestration is a follow-up"*. That follow-up was never built, so nothing re-queries the
+  order, nothing expires it, and nothing resubmits it.
+  **Live impact today is nil, and that is measured:** `open_orders{venue}`=0 both venues,
+  `in_flight_intents`=0, `venue_capital_headroom_usdt{binanceusdm}`=500 (full, so no phantom reserve),
+  `reconciliation_mismatch_total` has no series across the whole 4 days these rows have existed, and
+  the clean stamp is fresh. The portfolio view correctly excludes never-ACKed orders.
+  **Why Pass 44 did not fix it:** the repair is the missing capability the code itself names — TTL
+  re-examination plus a venue re-query before terminalizing (never blind; hard rule 5). That is new
+  OMS money-path orchestration, not a line change. `NEW + CANCEL_REQUESTED → CANCELED` ("never sent,
+  local-only", `reducer.ts:153`) is already the right terminal transition, so no reducer change is
+  needed — the missing piece is the sweep that decides when to emit it.
+  **Expected-positive:** the count of orders in a non-terminal state with no in-flight intent stays at
+  these 4 and does not grow. **Named defect outcome:** it grows ⇒ the ambiguous-submit path is
+  producing zombies at a rate that will eventually meet a book-wide non-terminal scan, which is
+  exactly the shape that starved the clean stamp twice in Pass 40 (`adopt_non_adoptable`). Check
+  `sum(fills.qty)` vs `orders.cum_qty` for non-terminal orders first, as WATCH-V4-1 already says.
+
+  **RESOLVED — Pass 49, 2026-07-30, commit `83eae1f`.** The expected-positive held for six days
+  (the count never grew past 4) and the missing capability was built rather than the symptom patched.
+  `sweepStrandedNew` mirrors the shipped `reconcileFrozen` pass — same tick, same 60s per-order
+  rate limit, same fold — with **ZERO reducer changes**: the terminal is the already-audited
+  `NEW + CANCEL_REQUESTED → CANCELED` transition, written as an appended `order_events` row with
+  reason `STRANDED_NEW_NEVER_LANDED`. Nothing cancels, adopts or flattens at the venue; no signature
+  was widened; the reconciliation HALT path is untouched.
+  **Fails CLOSED, and the four positive facts are the point.** An order wrongly terminalized in an
+  append-only journal is unrecoverable and would silently orphan a position, while one left at `NEW`
+  is untidy only — it is not `isUnresolved`, so it blocks neither live arming nor auto-resume.
+  Terminalization therefore requires four independent facts, each able to veto alone: no
+  `venueOrderId` ever recorded; the DURABLE fill journal sums to zero (not the in-memory cum); a
+  durable intent whose TTL has lapsed AND a 5-minute age floor anchored on `intent.createdAt`
+  (the TTL alone is a strategy-tunable knob); and a FRESH `fetchOrder` still throwing a definitive
+  not-found, since the original `QUERY_NOT_FOUND` is days stale. A re-query resolving with ANY
+  status — including open — refuses, because that contradiction belongs to `UNKNOWN_OURS_OPEN`.
+  **Verified live against the DB, not the metric.** All four terminalized on the first tick after the
+  16:51:44Z deploy with nothing run by hand: `ZEC/USDT:USDT` at 16:52:47Z, `SOL/USDT:USDT`,
+  `KAITO/USDT:USDT` and `NEAR/USDT:USDT` at 16:52:49Z — every one `CANCELED`, `cum_qty` 0,
+  `venue_order_id` NULL, **zero `fills` rows**. `order_events` carries exactly four
+  `CANCEL_REQUESTED` rows with payload
+  `{"type":"CANCEL_REQUESTED","reason":"STRANDED_NEW_NEVER_LANDED"}`, each appended as the 4th event
+  after the unchanged `SUBMIT_SENT → SUBMIT_AMBIGUOUS → QUERY_NOT_FOUND` chain of 2026-07-24.
+  Nothing was rewritten. Book-wide there are now **zero** non-terminal orders lacking a
+  `venue_order_id`.
+  **The join that cost a wrong query, written down so it costs nobody else one:**
+  `order_events.order_id` is the **intent UUID**, NOT the `client_order_id`. The `orders` row
+  keys on both; `order_events` keys only on the intent id.
+  **Never-filled was established by evidence, not assumed.** The open-orders-only caveat in hard rule
+  5 is real for `fetchOpenOrders` and for placement-time dedupe, but the resolver queries
+  `fetchOrder`, which does return closed orders — and the fix deliberately does not rest on that
+  venue-retention semantics. The decisive corroboration is indirect: reconciliation axis 1 classifies
+  any venue open order carrying our prefix with no local open row as `UNKNOWN_OURS_OPEN` and HALTs,
+  and post-restart these four were not in the local open set, so six days of passes would have halted
+  had any been resting. They never landed.
 
 ### WATCH-V4-5 — the latch is observable and self-healing (RESOLVED Pass 45, 2026-07-29)
 

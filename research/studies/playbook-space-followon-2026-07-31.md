@@ -938,6 +938,230 @@ about nothing else. Any write-up that reads it as "playbook space is empty" or "
 settled" is overclaiming, and the same sentence that bound the predecessor binds this trial without
 softening.
 
+## Results — Family A, run 2026-07-30
+
+**Nothing above this line changed.** This section records what the frozen design returned; it amends
+no arm, no bar, no horizon, no denominator and no guard. Family B has not run — its corpus has not
+accrued (§ When it triggers) — so **Family B is UNTESTED, not failed**, and nothing here speaks to
+it.
+
+**Headline, both bars at once, neither cancelling the other:**
+
+- **RESEARCH bar: `NO_SURVIVOR`.** 4 of 4 declared cells scored, 0 passes. Every `haiku_swarm` cell
+  is negative and none comes within 25 bps of the +13.0 bar, let alone the +20.9/+26.4/+33.8/+81.4
+  the power table says a pass needs.
+- **DEPLOYMENT bar: the swarm does NOT ship. The incumbent `champion_v8` stays.** The swarm loses at
+  the declared primary horizon h=24 and wins only 2 of 4 horizons. That is a result, not a default.
+- **The architecture screen's pre-registered prediction scored CORRECT.**
+
+### Calibration — the one unmeasured number, measured
+
+| probe | calls | spend | $/call metered | $/call effective | transport | schema | entry rate |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| haiku swarm shape (40 rows x 3) | 120 | $0.4497 | **$0.0037475** | $0.0037475 | 100.0% | 100.0% | 20.0% |
+| sonnet re-check (40 rows x 1) | 40 | $0.7645 | $0.0191125 | $0.0191125 | 100.0% | 85.0% | 8.8% |
+| **funded calibration total** | **160** | **$1.2142** | | | | | |
+
+Zero retries, zero empty bodies, zero 429s on either probe — the transport floor was met with room,
+so neither probe is VOID.
+
+**The haiku rate came in CHEAPER than the planning constant, and inside the band the design
+predicted.** Measured $0.0037475 against the assumed $0.004802 is **0.78x the assumption**, and
+against the predecessor's measured sonnet rate ($0.013717) it is **0.273x** — inside the 0.21–0.33
+true-ratio band § Per-call rates named, which confirms the round-up to 0.35 erred expensive exactly
+as intended. The overrun gate therefore never fired; had the rate landed past
+$6.80 x 1.43 = $9.72 of projected Family A spend, the harness would have refused to start.
+
+**One observation recorded because it is not free, and it is a caution rather than a finding:** the
+sonnet re-check measured **$0.0191125/call, 1.39x the predecessor's $0.013717** on the same prompt
+surface and model alias. The likely mechanism is cache amortisation — this probe is a single 40-row
+chunk carrying one cache write, where the predecessor's edge leg spread its writes over 354 rows and
+four arms — and it does not touch Family A, which is priced entirely off the haiku probe. **It does
+bear on Family B's sizing**, whose two sonnet legs were budgeted at $4.86 each on the older figure.
+
+The same probe entered on **3 of 34 parsed rows (8.8%)** against the predecessor's 70 of 354
+(19.8%) for the same arm. At n=34 the 95% interval on 8.8% runs to roughly 23%, which contains
+19.8% — so this is **within sampling error and is evidence of nothing in either direction.** It
+neither shows provider-side drift nor rules it out, which is precisely the residual the funded design
+declined to buy out (§ What sequencing CANNOT control).
+
+### Spend — metered, against the authorisation and the cap
+
+| item | authorised | metered |
+| --- | --- | --- |
+| Calibration (haiku shape + sonnet re-check) | $1.13 | **$1.2142** |
+| `haiku_swarm` + `haiku_single`, 1,416 calls | $6.80 | **$4.9586** |
+| **Family A total** | **$7.93** | **$6.1728** |
+| Hard cap | | **$21.00 — not approached** |
+
+The sized design projected $5.3065 for the paid run and it came in at $4.9586, **6.6% under
+projection**. The run was never budget-aborted: `rowsCovered = 354/354`, `aborted = false`, so both
+arms cover the identical row set and the cross-arm contrast is on identical rows.
+
+### The sequencing constraint — the check, both ways
+
+| | value |
+| --- | --- |
+| run SHA | `9a63edf7e565b99eee7579bb26dc095763af172b` |
+| `agent-prompt.ts` blob at the run SHA | `c471c33055abad7c7ec0cb9978f81c61bc3c487d` |
+| same file in the working tree at run time | `c471c33055abad7c7ec0cb9978f81c61bc3c487d` |
+| pinned predecessor blob | `c471c33055abad7c7ec0cb9978f81c61bc3c487d` |
+| **attribution** | **PROMPT-CONTROLLED** |
+
+**EQUAL, checked before the first paid call and again after the last one.** The check was run three
+times against three different HEADs and returned the same blob every time: at `193107e` before the
+harness was launched, at the run's own recorded SHA `9a63edf` (the reflection deletion, which landed
+between launch and the run's first call), and at `4218d78` (the plan-authoritative exit flip, which
+landed mid-run) afterwards. Neither concurrent commit touched the checked file.
+The worktree hash is recorded alongside HEAD's because HEAD's is what the constraint's command reads
+while the worktree's is what the process actually loaded — a dirty checkout would otherwise satisfy
+the letter of the constraint while replaying different bytes.
+
+So the deployment comparison against the recorded `champion_v8` row **may be claimed as
+prompt-controlled**, and `incumbent_control` (ladder rank 5) is **not** triggered. What this does not
+remove is unchanged and carried here explicitly: provider-side model drift between 2026-07-28 and
+2026-07-30, and plain re-run variance at fixed prompt and fixed model. Neither was fixable within
+$6.80.
+
+### Run health
+
+`rowsCovered` 354/354 · calls 1,416 · **transport 1,415/1,416 = 99.93%** (VOID floor 90%) ·
+schema-valid **100.0%** · `capsSource: 'recorded'` on 100% of rows · 0 rate-limited, 0 5xx, 0
+empty-body 200s, 6 transient network errors of which 5 were retried successfully and 1 call was lost.
+No billing stop. The run is not voided on any guard.
+
+The 100% schema rate is worth one line because the predecessor's kimi leg made the opposite case:
+`claude-haiku-4-5` answered the v2 rich decision contract cleanly on every single transported call.
+Whatever is wrong with this lane, it is not that haiku cannot fill in the form.
+
+### RESEARCH bar — `haiku_swarm`, alpha = 0.0125, 4 cells
+
+| h | n | clusters | mean | 95% CI | p vs bar | placebo p | halves | trimmed | verdict |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 82 | 15 | **-12.15** | [-16.70, -7.87] | 1.0000 | 0.9902 | -18.13 / -6.17 | -11.83 | **FAIL** |
+| 4 | 82 | 15 | **-22.58** | [-33.90, -13.66] | 1.0000 | 0.9946 | -27.44 / -17.72 | -21.61 | **FAIL** |
+| 8 | 82 | 15 | **-35.38** | [-48.87, -18.61] | 1.0000 | 0.9980 | -32.71 / -38.04 | -33.83 | **FAIL** |
+| 24 | 78 | 15 | **-71.83** | [-122.05, -18.52] | 1.0000 | 1.0000 | -55.85 / -87.81 | -68.95 | **FAIL** |
+
+Every cell is powered (n >= 12), so none is `UNDERPOWERED` and none can be dismissed on depth. The
+binding failure is the **first** clause every time — `mean <= bar` — so no later clause is even
+reached, and the CI upper bound is below the bar at every horizon too. **The placebo is the sharpest
+statement in the table:** at p = 0.99–1.00 the swarm's entries are worse than bars drawn at random
+from the same symbols with the same long/short mix, at all four horizons. That is the signature of a
+displaced centre, not a wide spread, and it is the same signature the predecessor measured.
+
+**Verdict, computed by the aggregator and not asserted here: `NO_SURVIVOR`,** with 4 of 4 declared
+cells scored so the family is complete rather than `INCOMPLETE`. `bestPowered` is
+`haiku_swarm@h=1` at -12.15 bps — **and ranking is not passing.**
+
+**Scope limit, binding verbatim:** 0 passes ⇒ the learning hypothesis is UNSUPPORTED on the funded
+arms, NOT proven dead. This is a statement about `haiku_swarm` at h in {1,4,8,24} on 354 in-sample
+rows and about nothing else. Four prose arms remain cut by budget, `tool_use_trader` deferred on
+argument, three arms untestable here at any budget, and the memo's genuine target class — order-book
+depth, trade flow, cross-venue spread, funding term structure — is still not recorded by this system
+at all.
+
+### CONTROL — `haiku_single`, reported and never scored
+
+| h | n | clusters | mean | 95% CI | placebo p | halves | trimmed |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 84 | 16 | -7.12 | [-14.81, 0.45] | 0.9306 | -12.99 / -1.25 | -6.69 |
+| 4 | 84 | 16 | -10.77 | [-26.79, 3.25] | 0.9016 | -19.79 / -1.75 | -10.32 |
+| 8 | 84 | 16 | -30.30 | [-47.65, -8.28] | 0.9912 | -24.81 / -35.80 | -28.67 |
+| 24 | 77 | 15 | -80.30 | [-142.20, -21.29] | 1.0000 | -79.30 / -81.27 | -77.61 |
+
+**This is a CONTROL. It carries no verdict, entered no denominator, and could not have PASSED under
+any outcome** — the harness refuses to call `verdictFor` on it and throws if asked. Its means are
+admissible to the deployment ranking and to nothing else.
+
+### The decomposition the control was bought for
+
+The whole job of `haiku_single` was to tell "the swarm shape hurts" apart from "haiku is a worse
+decider". It lands cleanly, and the answer is the first one:
+
+| h | `haiku_swarm` | `haiku_single` | swarm minus single |
+| --- | --- | --- | --- |
+| 1 | -12.15 | -7.12 | **-5.03** |
+| 4 | -22.58 | -10.77 | **-11.81** |
+| 8 | -35.38 | -30.30 | **-5.08** |
+| 24 | -71.83 | -80.30 | +8.47 |
+
+**Ensembling three haiku voters is WORSE than one haiku voter at 3 of the 4 horizons**, at a
+strictly higher price — 3x the calls for 1.06x the measured dollars and 3x the live rate-limit and
+latency footprint. The two arms' entry rates are nearly identical (24.58% vs 24.86%), so the swarm is
+not buying selectivity either; it is taking the same number of trips and losing more on them.
+
+And the model is not the culprit: `haiku_single` **beats** the sonnet `champion_v8` at h=1, 4 and 8.
+Whatever `verdicts.md`'s forward-proxy reading of haiku-4.5 established elsewhere, on this corpus a
+single haiku call on the champion's text is not the worse decider — so the swarm's deficit cannot be
+attributed to the model, which is exactly the confound the control existed to remove.
+
+### DEPLOYMENT bar — vs `champion_v8`'s recorded 2026-07-28 row, PROMPT-CONTROLLED
+
+Incumbent identity read at comparison time: **`champion_v8`** (`STATUS.md`: "Champion playbook v8
+active", v9 still an unresolved candidate on 40% of decides). `inverted` had not shipped, so the
+comparator is `champion_v8`'s recorded row on the identical 354-row corpus and the identical metric.
+
+| h | `haiku_swarm` | `champion_v8` | delta | | `haiku_single` | delta | |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | -12.15 | -12.69 | +0.54 | BEATS | -7.12 | +5.57 | BEATS |
+| 4 | -22.58 | -36.34 | +13.76 | BEATS | -10.77 | +25.57 | BEATS |
+| 8 | -35.38 | -32.70 | -2.67 | loses | -30.30 | +2.40 | BEATS |
+| **24 (primary)** | -71.83 | -70.10 | **-1.73** | **loses** | -80.30 | **-10.20** | **loses** |
+
+- **`haiku_swarm`: does NOT ship.** It loses at the declared primary horizon and wins 2 of 4. It is
+  not even horizon-dependent — there is no horizon story to tell.
+- **`haiku_single`: does NOT ship either.** It wins 3 of 4 but loses at h=24, and the robustness
+  clause requires h=24 **and** >= 3 of 4. Both conditions, not either. It would in any case have
+  shipped as a logged **model change** under `verdicts.md` § THE DECIDE MODEL IS NOT THE LEVER, never
+  as a playbook selection.
+- **No arm beats the incumbent, so the incumbent stays. That is a result, not a default.**
+
+**The two bars agree here, and that is a coincidence rather than a rule.** Both arms fail both bars.
+Had either cleared the deployment bar it would have shipped on a research-bar FAIL without
+hedging — the rule did not bind this time because no arm reached it.
+
+### The architecture screen, scored as a pre-registered prior
+
+[`architecture-options-2026-07-28.md`](architecture-options-2026-07-28.md) predicted the haiku swarm
+**NEUTRAL-TO-WORSE** before it was funded, reasoning that ensembling reduces variance rather than
+bias and that the measured failure is a bias.
+
+**SCORED CORRECT, and on the mechanism as well as the direction.** The swarm is worse than its own
+single-call control at 3 of 4 horizons; it fails the deployment bar against the incumbent; and the
+placebo p of 0.99–1.00 at every horizon says the residual failure is still a displaced centre, which
+is the thing a variance-reduction instrument structurally cannot move. The screen is now a
+**validated** instrument for the next screening decision rather than a well-argued opinion, which is
+what the $6.17 bought and is worth more than the arm itself was.
+
+The three enhanced-loop mechanisms registered before the run may therefore be cited as
+pre-registered rather than post-hoc. Mechanism 2 in particular has measured raw material rather than
+an argument: **71 of 354 rows had split votes collapsed to the mode, and on 53 rows the swarm's
+action differed from the single-call control's** — so majority vote demonstrably narrows the recorded
+action space, which is the diet the free bias-correction loop feeds on. 282 of 354 rows were
+unanimous, so the swarm was inert on 80% of rows and actively harmful on the remainder.
+
+The registered positive-result clause (a swarm win would have put mechanism 2 into live conflict with
+the loop and had to be reported as an unresolved interaction) **did not trigger.**
+
+### What this does and does not settle
+
+- **Settles:** the architecture axis is no longer unmeasured. Ensembling at fixed text, on this
+  corpus, is worse than not ensembling — measured, not argued.
+- **Does not settle:** `tool_use_trader` (deferred, specification intact), the four cut prose arms,
+  and the channels this system does not record. Family B is untested and its `INCOMPLETE` status is
+  unchanged by anything here.
+- **Licenses nothing.** No edge claim, no promotion evidence, no move toward live capital.
+  `verdicts.md` Guardrails 1–5 stand word for word.
+
+### Artifacts
+
+- Result: `research/candidates/playbook-space-followon-2026-07-31.json` (gitignored)
+- Design, written before the first edge call: `research/candidates/playbook-space-followon-design.json`
+- Calibration: `research/candidates/playbook-space-followon-calibration-{claude-haiku-4-5,claude-sonnet-5}.json`
+- Scorecard + registry row: `research/scorecards/playbook-space-followon-2026-07-31.json`,
+  `scripts/log-eval-experiment.mjs --family playbook-space-followon --source study`
+
 ## Provenance
 
 - Harness: `test/eval/agentic/playbook-space-replay.ts`, driven by

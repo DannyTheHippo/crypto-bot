@@ -1,12 +1,17 @@
 <!-- Created 2026-07-30 (Pass 48) by the LOG.md rotation. Everything below is VERBATIM from
      research/loop/LOG.md; nothing was edited or pruned. -->
 
-# Daily profitability loop — pass log archive (Pass 0 → Pass 42)
+# Daily profitability loop — pass log archive (Pass 0 → Pass 44)
 
 Rotated out of `research/loop/LOG.md` on 2026-07-30 so the hot log holds only the last five pass
-entries. This file covers **2026-07-06 (Pass 0) through 2026-07-28 (Pass 42, including its
-addenda)** — i.e. everything older than the five entries `LOG.md` kept at Pass 48 (Passes 43-47).
-The filename names the era, not the last entry inside it.
+entries. This file covers **2026-07-06 (Pass 0) through 2026-07-28 (Pass 44, including the Pass 42
+addenda)**. The filename names the era, not the last entry inside it.
+
+Two corrections to what this header said when it was created, both checkable and both wrong: the
+first rotation left Pass **43** in this file, not in `LOG.md`, so the hot log kept Passes 44-48 and
+not "43-47"; and the era now runs to Pass 44, rotated out by Pass 49 on 2026-07-30 to make room for
+its own entry. Entry order in this file stays chronological — Pass 44 (07-28 08:14Z) follows Pass 43
+(07-28 00:07Z) correctly.
 
 Append future rotations to the END of this file, keeping chronological order. Never delete an entry:
 the whole point of this loop's memory is that a pass cannot repeat a settled experiment.
@@ -5282,3 +5287,331 @@ credit exhaustion did not create that decision, it just removed the option of de
    concurrent pass that lands a half-finished tree into another's gate run is a defect waiting to be
    attributed to the wrong cause.
 3. Everything else waits on funding.
+
+## 2026-07-28 — Pass 44 (the whole day's menu was picked from a quarter of the basket)
+
+**Window:** 08:14Z → 09:10Z. `date -u` first. Sweep at pass start: `Alarms (0)`, two annotations.
+Entry boot `464c608b` (git `54e0e02`), exit boot `899d4a09` (git `6369c0b`). Book unchanged and not
+trading: 28 closed round trips, net-of-cost **−$39.6370**, win rate 17.9%, window 4.30d,
+`agentic_promotion_ready=0`, equity $4,978.17. `agentic_budget_remaining_usd` $3.00 — zero LLM spend,
+because both provider accounts are still unfunded (§ Flagged, unchanged and still the only real
+blocker on profitability).
+
+Pass type: **MAINTENANCE**, and the improvement it chose is a money-path correctness fix — the
+scanner that decides which symbols the lane is allowed to trade at all.
+
+### The finding: `menuSize` was the quorum, and 8 is 20% of the basket
+
+`UniverseScannerService` ranks the 40-symbol basket (24 spot + 16 perp) by 24h-quote-volume rank ×
+ATR% rank and promotes the top 8 to the active menu. `isActive()` gates two separate things: which
+symbols the LLM lane consults, and which symbols get the heavy book/trades ws channel tier. A
+UTC-day-key guard makes the ranking idempotent within a day, and `recompute()` stamps that day key as
+soon as a quorum of `menuSize` symbols have scoreable metrics.
+
+The container's own journal, read at pass start:
+
+```text
+08:15:03Z  universe_scan  menuSize 8  scored 11 of 40  ranks 12-40 score:null
+```
+
+The stamp landed 9m08s after the 08:05:55Z redeploy, while the 340-bar REST OHLCV warmup was still
+in flight for 29 of 40 symbols. Those 29 could not compete for a menu slot for the rest of the UTC
+day — and could not get book depth either, since the tier resolver keys off the same `isActive()`.
+Confirmed independently: `market_channel_staleness_seconds` showed **candle:15m on all 40 symbols but
+book on exactly 13**, matching the 13-member menu.
+
+Not a rare race. `lastRecomputedDayKey` is in-memory, so every redeploy re-arms it, and this loop
+redeploys on most passes. The quorum guard's own comment names this exact failure ("stamping the day
+key then would freeze an arbitrary alphabetical menu until the next UTC day") — it just set the bar
+at a menu's worth instead of a basket's worth, so it caught the all-cold case and missed the
+partially-warm one, which is the case that actually happens.
+
+**What it cost, measured after the fix rather than argued:** at full coverage `ETH/USDT:USDT` ranks
+**5th of 40**. On the 08:05Z boot it was unscored, rank 22 by alphabet, and off the menu all morning.
+A genuine top-8 symbol was excluded from both consults and book depth because it had not finished
+backfilling nine minutes after a deploy.
+
+### The fix, and the two things review stopped it doing
+
+`2c7a005`. A ranking stamped below 90% basket coverage is now _repairable_: it re-ranks as coverage
+improves and stops once the applied ranking has seen the whole basket. Three gates, all failing
+CLOSED toward the pre-fix frozen ranking — declining is always safe here, because a symbol carrying a
+position, a resting order, or an edge-cohort membership is held on the menu by the pin path
+regardless of what the scanner decides.
+
+Adversarial review (two lenses, both returned "request changes") killed two versions of this:
+
+- **The first version silently defeated the hysteresis band.** It triggered on "coverage grew AND is
+  now ≥ bar", which also fires on a day that was never partial. The reviewer reproduced it: a symbol
+  warming up at rank 40 evicts a rank-3 incumbent that the v3 §5.3 band exists to hold, losing that
+  symbol its consult and its book tier until 00:00Z, for zero informational gain. Now the repair only
+  touches a ranking that was itself stamped below the bar, and a test pins it.
+- **A hard one-shot cap would have re-created the defect, narrower.** Stopping at the first repair
+  above the bar freezes the residual 4-of-40 out for the day. The repair now continues to full
+  coverage. Churn stays bounded because coverage is monotone (`metrics` is append-only, basket fixed).
+
+Hysteresis is deliberately suppressed on a repair: it is a day-to-day anti-flap device, and retaining
+incumbents would preserve the partial menu being corrected while growing the consulted set toward the
+rank-12 band, against a $3/day breaker sized for menu-8.
+
+**Soak — the fix verified live on boot `899d4a09`, not inferred from tests:**
+
+| scan | time | `corrective` | coverage | menu churn |
+| --- | --- | --- | --- | --- |
+| 1 | 09:00:12Z | false | **27/40** | 14 in (the partial stamp — pre-fix, this froze until 00:00Z) |
+| 2 | 09:00:42Z | **true** | **38/40** | ZEC/USDT:USDT in, TRUMP/USDT:USDT out |
+| 3 | 09:01:27Z | **true** | **40/40** | none — the menu was already right |
+
+Total churn for the whole repair: **one symbol swap**, inside 75 seconds, against a wrong menu for a
+whole day. The resubscribe-herd worry that shaped the design did not materialise, and scan 3 shows
+why — by full coverage the ranking had already converged, so the closing repair cost nothing.
+
+### Second defect: a counter nobody had incremented was reading as a broken probe
+
+`4c8a5ca`. `market_stream_forced_reconnects_total` is incremented only when the running total exceeds
+the last sample. With zero forced reconnects that branch never runs, and prom-client only creates a
+labeled child when it is touched — so a healthy lane exported **no series at all**. `loop:sweep`
+queries `sum(...)`, got an empty instant vector, and annotated `probe_failed[wsRecreations]` on every
+single sweep, including both of today's digests.
+
+That is a permanent §C.9 negative-read void sitting on the one counter that caught **both**
+2026-07-21 soak defects (the candle-watchdog storm and the futures depth-rate stall). The signal most
+likely to matter next was the signal the sweep could not read, and it had been annotating itself as
+broken for days without anyone acting on it — the same "alert nobody read" shape as Pass 43.
+
+Each venue now publishes at its true zero on first sight. **Verified twice live:** the metric went
+from no series to `{venue="binance"} 0` / `{venue="binanceusdm"} 0` within one sampling tick of the
+deploy, and the post-deploy sweep's annotation list dropped from two entries to one — the
+`probe_failed[wsRecreations]` line is gone. A first-sight total that is already non-zero lands on that
+total exactly once; the zero seed adds nothing (own suite, since first sight happens once per init).
+
+### Third: two sessions edited this working tree again, and this time from inside the pass
+
+`6369c0b`. While this pass was running, **two commits it did not make landed on `main`** — `8a15ad0`
+(08:18:21Z) and `b5eee27` (08:23:03Z). Same hazard as Pass 42/43, now observed live rather than
+reconstructed. Damage assessment, done before trusting any gate result: neither commit touched any
+file this pass owns, and both changed files under `test/eval`, which the production gate glob
+(`test/features test/domain test/ports test/livegate`) excludes — so the 3054-test result is this
+pass's own. `git status` showed no foreign uncommitted work at any point.
+
+`pnpm loop:lock` / `pnpm loop:unlock <nonce>` now take and release a pass lease, wired into playbook
+§1 step 3 and §6 step 4, with the decision logic in a pure core and a spec **on the production gate**
+— the split the sibling loop-sweep/loop-collect tooling already uses. Writing those tests and taking
+the review found three defects in the guard itself:
+
+- **`release` had no ownership check, so the guard defeated itself along its own documented path.**
+  Playbook §6 runs for every pass _including one refused at §1_; that pass would reach `loop:unlock`,
+  delete the live holder's lease, and re-enable the collision it had just detected. Release is now
+  nonce-gated, and refusing to delete costs nothing because the lease expires on its own.
+- **A future-dated stamp inverted the declared failure direction.** A negative age is always below
+  the staleness bound, so the stale-break branch could never fire — every later pass refused for
+  (skew + 120 min). This stack runs on a MacBook whose clock is corrected on resume, which is why the
+  playbook opens with `date -u` at all.
+- **`loop:lock relase` took a fresh 120-minute lease while printing "acquired".** Typos within edit
+  distance 1 of a verb, and anything option-shaped, now exit non-zero. Verified live.
+
+Stated in the script header rather than implied: this is a time-based lease, not a liveness check,
+and **it only binds passes that call it** — which is exactly why it did not prevent today's
+collision, since the colliding session predates it. A refusal is evidence of overlap; a clean acquire
+is not proof of its absence. The scheduler config that lets two passes co-fire is owner-owned and
+stays flagged.
+
+### Not fixed, and the blocker named honestly
+
+**Four orders have been non-terminal since 2026-07-24, and nothing can ever terminalize them.** All
+four (`ZEC/USDT:USDT`, `SOL/USDT:USDT`, `KAITO/USDT:USDT`, `NEAR/USDT:USDT`) carry the identical
+event chain and nothing after it:
+
+```text
+SUBMIT_SENT → SUBMIT_AMBIGUOUS → QUERY_NOT_FOUND      (then nothing, for 4 days)
+```
+
+`SUBMIT_UNKNOWN + QUERY_NOT_FOUND → NEW` is deliberate — "resubmit-eligible, same clientOrderId (TTL
+live)" — and the TTL-lapsed sibling `QUERY_NOT_FOUND_EXPIRED → CANCELED` exists. But the TTL is
+evaluated **only at query time**, 7 seconds after submit, when it was obviously still live.
+`unknown-resolver.service.ts:315` then drops the order from `pending` with the comment _"NEW is
+resubmit-eligible; resubmit orchestration is a follow-up"_. That follow-up was never built, so the
+order is resubmit-eligible forever and nothing resubmits it: a permanent non-terminal row.
+
+Live impact today is nil, and that is measured, not assumed: `open_orders{venue}` = 0 on both venues,
+`in_flight_intents` = 0, `venue_capital_headroom_usdt{binanceusdm}` = 500 (full — no phantom reserve),
+`reconciliation_mismatch_total` has no series at all across the 4 days these rows have existed, and
+the clean stamp is 98s old. The portfolio view correctly excludes never-ACKed orders.
+
+**Why it is not fixed in this pass, without a priority argument:** the correct repair is the _missing
+capability_ the code names — TTL re-examination plus a venue re-query before terminalizing (never
+blind, hard rule 5). That is new orchestration on the OMS money path, and it is not a line to change.
+Shipping it thinly, in the same pass that already shipped three reviewed fixes, is precisely the
+"fix re-creating one layer up the failure it removed" pattern Pass 43 recorded twice. It goes to
+§ Flagged with the evidence and the proposed remedy, not to the backlog. **New WATCH-V4-6 below.**
+
+### Corrections to what state.md said at hand-off
+
+Both were checkable and both were wrong; the next pass would have read them as truth:
+
+- "5 positions (4 spot dust + SOL/USDT:USDT 0.64)" — there is **no** SOL perp position. `positions`
+  holds 4 spot dust rows only. The SOL 0.64 was closed by a venue stop at 01:06:07Z today
+  (`order_events`: `FILL cumQty=0.64 reason=venue_stop_filled:algoId=1000000147822464`).
+- "under 4 resting protective orders" — there are **no** resting protective orders. Those 4 rows are
+  the never-ACKed zombies above; the venue reports `open_orders_checked=0` on every reconcile.
+
+### WATCH-V4-5 — still unproven, and the deploy rhythm is why
+
+`agent_decide_total` has no series on either boot today and the consult gate reads
+`{"skipped_scheduled": 40}`, so nothing has exercised the latch. Structural, not bad luck:
+`AGENTIC_FALLBACK_CONSULT_BARS=8` (2h) runs off **in-memory** bar counters, so every redeploy pushes
+the first fallback consult 2h out. Today's two deploys (08:05:55Z, 08:53:50Z) each reset it; the next
+window is ~10:53Z. With 3 scheduled passes/day that each deploy, a lane whose only consult trigger is
+the fallback schedule can be starved by the loop's own deploy cadence. Recorded as an observation,
+not a defect — the reset is arguable design — but it is the reason V4-5's positive direction has now
+survived two passes unverified, and it will keep surviving until either the counters persist across
+boots or a pass verifies the latch without waiting on the fallback clock.
+
+### Gates and deploy
+
+`format:check` · `lint:md` · `lint` · `typecheck` · **`test` 3054 passed / 171 files** · `build` ·
+`eval:agentic` (25 passed, 8 skipped) — all green before each commit. The test delta is exactly +36
+over the 3018 baseline, matching the 36 tests added; verified by stashing the specs and re-running,
+which also confirmed all 33 pre-existing tests in the touched files pass against the new source.
+Deployed `docker compose up -d --build app` at 08:53:50Z → boot `899d4a09`, healthy in 7s,
+RestartCount 0, no `perp pin:` line and no `START_TRADING_FAILED` (WATCH-V4-3 holds across a redeploy
+made while 4 non-terminal perp order rows exist).
+
+Soak (post-deploy sweep 09:02:14Z): **0 alarms**, one `boot_changed` annotation, 20/20 alert rules
+loaded and 0 firing, kill switch RUNNING, reconcile CLEAN-only both venues (10/9), clean stamp 98s
+old (WATCH-V4-1 expected-positive), RSS 751 MiB climbing to plateau from 337 MiB at boot — inside
+WATCH-V3-1, well under the 900 MiB line. Only benign warns (the same three categories as pre-deploy).
+Prometheus was NOT recreated: this pass did not touch `alerts.rules.yml` or `prometheus.yml`. The
+Grafana dashboard description change picks up on Grafana's own provisioning poll; not forced.
+
+### Next-pass candidates
+
+1. **WATCH-V4-6 (below): build the QUERY_NOT_FOUND terminalization.** It is the one defect this pass
+   found and did not fix, and the blocker is missing capability, not scope.
+2. **Verify WATCH-V4-5's positive direction without waiting on the fallback clock** — three passes
+   have now deferred it to "the next sweep" while every deploy resets the 2h counter. Either persist
+   the bar counters across boots or find a trigger a pass can exercise directly.
+3. **Re-read the menu economics now that the menu is chosen from full coverage.** The repair changed
+   _which_ 8 symbols get consulted, not how many, but the pinned set (4 spot dust + 4 edge-cohort +
+   floor) pushes the live consulted count to 14 — 1.75× the menu-8 the $3/day breaker was sized
+   against. That arithmetic is worth re-deriving from spec §5.2 before funding lands, not after.
+4. Everything else still waits on funding, and funding should still be read against Pass 41's ENTRIES
+   verdict first.
+
+## 2026-07-28/29 — Pass 45 (incident-first: an outage that was over before anyone looked)
+
+**Window:** 2026-07-28T16:07Z → 2026-07-29T07:00Z (pass lease `7109445f81e18a20`, taken 16:07:14Z).
+Boot `899d4a09` throughout (StartedAt 2026-07-28T08:53:50Z, RestartCount 0 — one unbroken 22h boot,
+which is what made this pass's WATCH resolution possible).
+
+**Headline:** kill switch RUNNING · reconcile clean stamp 47-99s old all pass (WATCH-V4-1 holds) ·
+reconcile CLEAN-only both venues · fills 0 · **`agentic_budget_remaining_usd` = $3.00 of $3, i.e. the
+lane spent NOTHING in 22h** · `agent_decide_total` = `error_fatal` 67 + `client_latched` 197, and
+**zero successful decides on this boot** · `promotion_ready` has no series (0 closed round trips).
+Net-of-cost PnL unchanged and still negative; the promotion gate did not move, and could not.
+
+### The sweep fired one alarm, and the alarm was not the story
+
+`prometheus_alert_firing` — `AgentClientFatalLatch` (critical), firing since 10:45:25Z. Root cause is
+the already-flagged one, re-confirmed verbatim from the container log:
+`400 invalid_request_error: "Your credit balance is too low to access the Anthropic API."`
+Nine latch events, eight expiries, all on one boot. **Not a new finding and not fixable here** — see
+§ Flagged; purchasing credit is a financial action outside what an automated pass may take.
+
+The story is what the sweep could **not** show. Reading the container log directly rather than the
+sweep's summary turned up a **49-minute demo-fapi outage, 09:22:36Z → 10:11:34Z**: 293 perp fill-poll
+failures, 47 `reconcile sweep failure venue=binanceusdm axis=trades`, and a one-shot funding-ingest
+failure on all 16 perp symbols — request timeouts and `502 Bad Gateway` from the venue's own nginx.
+It fired `ReconciliationSweepFailureSustained` and `ReconciliationMismatch`, self-healed, and by the
+16:07Z sweep had left **no trace in any surface the pass reads**: the alarm list showed the unrelated
+latch, and the warn tail (3000 LINES ≈ under 2h at this stack's rate) had scrolled past all 340 lines.
+
+Venue-side and over. The point is that a 3×/day consumer was structurally incapable of seeing it —
+the same blindness class as the 45h outage of 07-25/27, one layer further in.
+
+### Shipped — `b43777a` (loop tooling; no money path touched)
+
+`loop:sweep` now also reads the rules file BACKWARDS. Prometheus keeps the synthetic `ALERTS` series
+in its own TSDB, so the history was already there and cost one instant query nobody was making.
+
+- `promAlertsSince` — alerts that fired in the last 12h (`1.5 × EXPECTED_SWEEP_INTERVAL_MS`) and are
+  no longer firing. **Annotation-only by design:** a fixed lookback makes a derived alarm sticky for
+  the whole window, and §3 blocks improvement work until an alarm clears — history never can. Sized
+  off the design inter-pass gap, NOT the watermark, because the standing collector advances the
+  watermark hourly and a watermark-sized window would be ~1h.
+- **Two positive controls**, because an empty `ALERTS` window reads identically to a Prometheus
+  serving no rules. The live rules probe is necessary but present-tense; scrape coverage over the
+  window (via `up`, 2880 expected samples at 15s) is the retrospective half. Below 90% the window has
+  holes. Positive findings still stand — only the negative weakens.
+- History is captured **before** the live read, so an alert starting between the two round-trips is
+  subtracted rather than announced as resolved.
+- `ERROR_LOG_TAIL` 3000 → 20000 (~12h here), and the scan now discloses the span it actually covered
+  instead of letting the count read as a whole-window verdict.
+
+Verified live, twice: the sweep now names both resolved alerts and surfaces all 340 previously-hidden
+warn lines, with coverage reading 2880/2880.
+
+**The adversarial review earned its keep — three defects, all in the new guards' own fail directions,
+all fixed before commit.** (1) The boot-reach suppression compared signed, so a tail reaching lines
+OLDER than `StartedAt` — which docker produces on every in-place restart, since it does not truncate
+the log — counted as "reaches boot" and silently killed the disclosure, worst exactly after a restart
+storm. (2) A tail with no parseable timestamp was skipped rather than disclosed, leaving the digest
+printing a confident `warn+ lines: 0` over a window of unknown depth. (3) The retrospective claim
+rested on a present-tense control, reachable through the sweep's own advice to recreate the Prometheus
+container — which is itself a hole in the history it then reads. That third one is why the coverage
+probe exists at all; it was not in the original design.
+
+### WATCH-V4-5 — POSITIVE DIRECTION PROVEN, closing an item Passes 43 and 44 both left open
+
+Pass 44 wrote that a third pass "must not simply defer this to 'the next sweep' again". It did not
+have to: the unfunded account drove the fatal path repeatedly across one 22h boot, which is exactly
+the evidence the fallback clock kept denying. All three clauses confirmed from live state, not tests:
+
+1. `agent_client_latched` = 1 while calls are suppressed, with `AgentClientFatalLatch` following it —
+   inactive on the 07-28 07:30Z boot, firing since 10:45:25Z.
+2. **Zero `action='hold'`-with-empty-rationale rows since the fix deployed.** 135 such rows exist; the
+   newest is `2026-07-28T01:15:18Z`, ~6h before `ee4ddf3` booted. Every one predates the fix. Since
+   then the same condition produces 197 named `client_latched:` degrades at `action='error'` instead.
+3. **The latch expires and resumes with NO redeploy** — 8 expiries on one boot, `RestartCount` 0.
+
+Unproven only in its funded-resumption clause ("the lane resumes within 30 min of credit landing"),
+which cannot be tested without credit. The load-bearing half — that the latch self-heals rather than
+wedging until a human recreates the container — is now demonstrated.
+
+### Checked and NOT a finding
+
+The warn stream is 65% one message: `reconcile pass still in flight — skipping this tick` (743 of
+1135). It reads alarming and is not. The skip rate over the window is ~52% (743 of ~1440 30s ticks),
+inside the healthy band a prior pass measured and documented in `reconciliation.service.ts:294-301`
+(62 skips/hour against 57-58 completed passes/venue), it is already metered as
+`reconciliation_runs_total{result="skipped"}`, and the coalescing is what keeps passes running
+back-to-back. Demoting a deliberate "visible, never silent" decision on the money path to quiet the
+sweep's top-5 would have been cosmetics at the cost of a real signal. Left alone.
+
+### Gates and deploy
+
+`format:check` · `lint:md` · `lint` (exit 0) · `typecheck` · **`test` 3082 passed / 172 files** ·
+`build` · `test:livegate` 55 — all green before commit. Test delta +15 over the 3067 baseline,
+matching the 15 cases added. No `eval:agentic` run: this pass touched no agentic-lane code.
+
+**Deploy: none required, and none made.** The change is host-side loop tooling — the app image does
+not run it, and `pnpm loop:sweep` picks it up on the next invocation (verified twice live). No
+`alerts.rules.yml` / `prometheus.yml` edit, so no Prometheus recreate.
+
+**One honest gap: the collector daemon (pid 64361, up 1d17h) still holds the OLD sweep code in
+memory** and will keep writing pre-change hourly digests until restarted. `kill` is denied to this
+session and SIGTERM is the collector's only stop path, so this pass could not restart it — and
+starting a second collector would violate the single-writer discipline on the watermark, so it
+deliberately did not. Impact is bounded: a PASS runs its own `loop:sweep` (playbook §2 — "the sweep
+IS `loop:sweep`"), which is current. Only the hourly rehydration digests lag.
+
+### Flagged / next-pass candidates
+
+1. **Restart the collector daemon** (`pnpm loop:collect`, after SIGTERM to the old pid) so hourly
+   digests carry the new probes. Needs a `kill` this session did not have.
+2. **WATCH-V4-6 — the `QUERY_NOT_FOUND` terminalization.** Unchanged from Pass 44 and still the one
+   defect with a real capability blocker. Re-checked this pass: still exactly 4 non-terminal orders
+   from 2026-07-24, not growing — expected-positive holds.
+3. **Both provider accounts remain unfunded.** Nothing in this program moves until that is resolved,
+   and per Pass 41 it should be read against the ENTRIES verdict before funding, not after.
+4. The menu-economics re-derivation from spec §5.2 (Pass 44's item 3) is still open and still cheap.

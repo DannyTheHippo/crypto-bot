@@ -20,7 +20,11 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
-import { resolveActiveVersion, mapUniqueViolation } from './lib/playbook-shared.mjs';
+import {
+  resolveActiveVersion,
+  mapUniqueViolation,
+  readVersionEntryStats,
+} from './lib/playbook-shared.mjs';
 import {
   DEFAULT_ABSTAIN_LAPSE_DECIDES,
   DEFAULT_CANDIDATE_LAPSE_HOURS,
@@ -100,30 +104,6 @@ function datasetHashFromMetrics(metricsJson) {
   const rowRange = metricsJson?.rowRange;
   if (rowRange === undefined || rowRange === null) return 'unknown';
   return typeof rowRange === 'string' ? rowRange : JSON.stringify(rowRange);
-}
-
-// The blocking candidate's LIFETIME decide/entry counts — the SQL form of
-// AgentDecisionJournalPort.versionEntryStats (agent-decision.repository.ts#countVersionEntryStats):
-// real-LLM rows only, entries are the two OPEN actions. Returns undefined on any failure, which the
-// gate reads as "no evidence" and therefore does NOT lapse.
-async function readVersionEntryStats(pool, version) {
-  try {
-    const { rows } = await pool.query(
-      `SELECT count(*)::int AS decides,
-              count(*) FILTER (WHERE action IN ('open_long', 'open_short'))::int AS entries
-         FROM public.agent_decisions
-        WHERE playbook_version = $1 AND model LIKE 'claude%'`,
-      [version],
-    );
-    const row = rows[0];
-    if (!row) return undefined;
-    return { decides: row.decides ?? 0, entries: row.entries ?? 0 };
-  } catch (err) {
-    console.warn(
-      `playbook:candidate: abstention-lapse evidence read failed (not lapsing): ${err instanceof Error ? err.message : String(err)}`,
-    );
-    return undefined;
-  }
 }
 
 async function main() {
@@ -221,7 +201,7 @@ async function main() {
     const nowMs = Date.now();
     const gateInput = { blocking, nowMs, lapseMs, abstainLapseDecides, supersede };
     const stats = needsAbstentionEvidence(gateInput)
-      ? await readVersionEntryStats(pool, blocking.version)
+      ? await readVersionEntryStats(pool, blocking.version, 'playbook:candidate')
       : undefined;
     const gate = classifyCandidateGate({ ...gateInput, stats });
     if (!gate.proceed) {

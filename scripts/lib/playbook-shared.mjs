@@ -1,6 +1,6 @@
 // Shared helpers for the operator/loop CLIs against public.agent_playbook_versions
-// (playbook-promote.mjs, playbook-candidate.mjs). Kept dependency-free (no pg import here) so both
-// callers own their own Pool lifecycle.
+// (playbook-promote.mjs, playbook-candidate.mjs, loop-authoring.mjs). Kept dependency-free (no pg
+// import here) so every caller owns its own Pool lifecycle.
 
 // Mirrors PlaybookStoreAdapter.resolve()'s precedence (pin > newest promotion's parentVersion >
 // seed) closely enough for an operator "is this already active?" hint — not authoritative; the
@@ -27,6 +27,31 @@ export function resolveActiveVersion(rows, pinEnv) {
   // running process resolved 8. Every candidate this CLI minted would have recorded
   // parent_version=1 into an append-only table that cannot be corrected afterwards.
   return rows.filter((r) => r.source === 'seed').sort((a, b) => b.version - a.version)[0]?.version;
+}
+
+// A playbook version's LIFETIME decide/entry counts — the SQL form of
+// AgentDecisionJournalPort.versionEntryStats (agent-decision.repository.ts#countVersionEntryStats):
+// real-LLM rows only, entries are the two OPEN actions. Returns undefined on any failure, which every
+// caller must read as "no evidence" rather than as a measured zero — playbook-candidate's abstention
+// lapse and loop-authoring's evidence digest both depend on that distinction.
+export async function readVersionEntryStats(pool, version, scriptName) {
+  try {
+    const { rows } = await pool.query(
+      `SELECT count(*)::int AS decides,
+              count(*) FILTER (WHERE action IN ('open_long', 'open_short'))::int AS entries
+         FROM public.agent_decisions
+        WHERE playbook_version = $1 AND model LIKE 'claude%'`,
+      [version],
+    );
+    const row = rows[0];
+    if (!row) return undefined;
+    return { decides: row.decides ?? 0, entries: row.entries ?? 0 };
+  } catch (err) {
+    console.warn(
+      `${scriptName}: versionEntryStats read failed for v${version} (treated as NO evidence): ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return undefined;
+  }
 }
 
 // Maps a Postgres unique-violation (23505) on agent_playbook_versions into the operator-facing

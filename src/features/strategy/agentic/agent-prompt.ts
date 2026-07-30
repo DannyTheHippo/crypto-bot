@@ -9,6 +9,8 @@ import type {
   AgentBudgetBlock,
   AgentCalendarEvent,
 } from '../../../ports/strategy/agentic-strategy';
+import type { SentimentSnapshot } from '../../../ports/strategy/sentiment-feed';
+import type { FearGreedSnapshot } from '../../../ports/strategy/fear-greed-feed';
 import type { SymbolId, VenueId } from '../../../domain/common/types/ids';
 import { splitSymbol } from '../../../domain/venue/types/symbol';
 import { toIndicatorNumber } from '../../../domain/common/types/money';
@@ -1023,14 +1025,13 @@ const MAX_SENTIMENT_ITEMS = 5;
 // attached a fresh SentimentSnapshot to the snapshot (SentimentFeedPort.latest; absent whenever
 // SENTIMENT_FEED_ENABLED is off, the key is absent, or the feed's own poll is stale) — headlines
 // only, never a numeric score (see SentimentSnapshot's own header comment).
-function buildSentimentBlock(input: AgentDecisionInput): {
+function buildSentimentBlock(sentiment: SentimentSnapshot | undefined): {
   readonly items: readonly {
     readonly title: string;
     readonly source: string;
     readonly publishedAt: string;
   }[];
 } | null {
-  const sentiment = input.snapshot.sentiment;
   if (!sentiment || sentiment.items.length === 0) return null;
   return { items: sentiment.items.slice(0, MAX_SENTIMENT_ITEMS) };
 }
@@ -1040,12 +1041,11 @@ function buildSentimentBlock(input: AgentDecisionInput): {
 // fresh FearGreedSnapshot to the snapshot (FearGreedFeedPort.latest; absent whenever
 // FEAR_GREED_FEED_ENABLED is off or the feed's own poll is stale). MODULATOR-NOT-VETO: this is
 // sizing/context, never a standalone entry veto — see this file's fearGreed guidance sentence.
-function buildFearGreedBlock(input: AgentDecisionInput): {
+function buildFearGreedBlock(fearGreed: FearGreedSnapshot | undefined): {
   readonly value: number;
   readonly classification: string;
   readonly trend: 'rising' | 'falling' | 'flat' | null;
 } | null {
-  const fearGreed = input.snapshot.fearGreed;
   if (!fearGreed) return null;
   return {
     value: fearGreed.value,
@@ -1159,11 +1159,73 @@ export interface BuildMarketPayloadExtras {
   // element alike. Absent only for a pre-v3 caller/fixture that hasn't wired it yet (omit-entirely
   // convention, same as every extras field above); a v3 boot always supplies it.
   readonly capabilities?: SymbolCapabilities;
+  // Batch-wide overrides for the two LANE-WIDE feed blocks (SentimentFeedPort.latest() and
+  // FearGreedFeedPort.latest() both take NO symbol argument — see their own port comments). Supplied
+  // ONLY by proposeBatch, and only after it has verified every element of the batch renders the same
+  // value, so hoisting them into the one shared block loses nothing. Absent ⇒ the block falls back to
+  // input.snapshot.{sentiment,fearGreed} exactly as before, which is what every single-symbol call,
+  // recorded-row replay and offline fixture does — those paths stay byte-identical.
+  readonly sentiment?: SentimentSnapshot;
+  readonly fearGreed?: FearGreedSnapshot;
+}
+
+// The batch-invariant slice of a rendered payload: every key here is a function of `extras` ALONE
+// (never of `input`), which is what makes hoisting it out of the per-symbol blocks safe — the batch
+// calls payloadExtrasProvider ONCE, so all N elements were already being handed the same values and
+// rendering N byte-identical copies of them.
+//
+// This is the SINGLE definition of the partition: buildSharedPayload emits exactly these keys and
+// buildMarketPayload({ omitShared: true }) drops exactly these keys, so
+// `full === { ...shared, ...symbolOnly }` holds key-for-key by construction rather than by two lists
+// staying manually in sync.
+//
+// Deliberately NOT here, having been checked against 86 recorded + 16 live multi-symbol waves:
+//  - liquidation — LiquidationFeedPort.latest(symbol) keeps a PER-SYMBOL trailing window; it renders
+//    identically today only because the windows are usually empty.
+//  - trackRecord — round trips are filtered by `strategyId === this.id` and there is one strategy
+//    instance per symbol (netVsBtcHoldBps is only ever populated on the BTC instance): measured 0%
+//    identical across live waves.
+//  - edgePolicy — its `cohort` IS batch-wide, but `sideEligibility` is per-symbol; splitting one key
+//    across both blocks would break the flat-merge contract above and show the model a half-object of
+//    the block that gates its side selection.
+//  - position / eventTime / interval / recentDecisions / execReportsSinceLastDecide — identical in
+//    most waves, but only incidentally (a flat book, one shared bar, an empty ring).
+function sharedFields(extras: BuildMarketPayloadExtras): Record<string, unknown> {
+  const sentiment = buildSentimentBlock(extras.sentiment);
+  const fearGreed = buildFearGreedBlock(extras.fearGreed);
+  return {
+    ...(sentiment ? { sentiment } : {}),
+    ...(fearGreed ? { fearGreed } : {}),
+    ...(extras.portfolio ? { portfolio: extras.portfolio } : {}),
+    ...(extras.budget ? { budget: extras.budget } : {}),
+    ...(extras.calendar !== undefined ? { calendar: extras.calendar } : {}),
+    ...(extras.execQuality !== undefined ? { execQuality: extras.execQuality } : {}),
+    ...(extras.fundingAccrualQuote !== undefined
+      ? { fundingAccrualQuote: extras.fundingAccrualQuote }
+      : {}),
+  };
+}
+
+// The once-per-batch block carrying every key sharedFields covers. null when the caller supplied no
+// shared extras at all (an unwired provider, or a single-symbol consult) — the client then emits no
+// shared block whatsoever, so that path stays byte-identical to pre-split.
+export function buildSharedPayload(extras: BuildMarketPayloadExtras = {}): string | null {
+  const shared = sharedFields(extras);
+  return Object.keys(shared).length === 0 ? null : JSON.stringify(shared);
+}
+
+export interface BuildMarketPayloadOptions {
+  // true ⇒ drop exactly the keys buildSharedPayload(extras) emits, because they ride in that one
+  // shared block instead. Absent/false ⇒ the FULL payload, byte-identical to pre-split — which is
+  // what AgentProposal.inputPayload is always rendered with, so the journalled corpus keeps carrying
+  // every block and stays self-comparable against rows recorded before this split existed.
+  readonly omitShared?: boolean;
 }
 
 export function buildMarketPayload(
   input: AgentDecisionInput,
   extras: BuildMarketPayloadExtras = {},
+  opts: BuildMarketPayloadOptions = {},
 ): string {
   const symbol = input.trigger.event.symbol;
   const candles = input.snapshot.candles.get(symbol) ?? [];
@@ -1201,8 +1263,10 @@ export function buildMarketPayload(
   const orderBook = buildOrderBookBlock(input, symbol);
   const derivatives = buildDerivativesBlock(input, { v2Enabled: extras.derivativesV2Enabled });
   const fundingHistory = buildFundingHistoryBlock(input);
-  const sentiment = buildSentimentBlock(input);
-  const fearGreed = buildFearGreedBlock(input);
+  // extras wins when the batch hoisted these lane-wide blocks into its shared payload; every other
+  // caller passes neither and reads the snapshot exactly as before.
+  const sentiment = buildSentimentBlock(extras.sentiment ?? input.snapshot.sentiment);
+  const fearGreed = buildFearGreedBlock(extras.fearGreed ?? input.snapshot.fearGreed);
   const tradeFlow = buildTradeFlowBlock(input);
   const positioning = buildPositioningBlock(input);
   const liquidation = buildLiquidationBlock(input);
@@ -1314,5 +1378,11 @@ export function buildMarketPayload(
       eventTime: r.eventTime,
     })),
   };
-  return JSON.stringify(payload);
+  if (!opts.omitShared) return JSON.stringify(payload);
+  // Subtractive by construction: the full object above is built first and unchanged, then exactly
+  // the shared keys are removed. Key order of what remains is therefore identical to the full
+  // render's, and no key can be dropped here that buildSharedPayload does not emit.
+  const symbolOnly: Record<string, unknown> = { ...payload };
+  for (const key of Object.keys(sharedFields(extras))) delete symbolOnly[key];
+  return JSON.stringify(symbolOnly);
 }

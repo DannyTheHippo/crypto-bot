@@ -492,12 +492,34 @@ export interface AgenticStrategyDeps {
 }
 
 // B3 (Design § Enriched model inputs) widened this 10 -> 30 on the reasoning that a portfolio-
-// scheduled consult cadence needed more rings to cover the same wall-clock span. 2026-07-30 payload
-// audit: recentDecisions had become the single largest block in the prompt (~2,974 chars ≈ 1,487
-// tok/symbol, larger than the candle window) and 382 of its 405 live ring lines were non-model rows
-// — a defect the write-site filter below fixes at the source. With only real decisions entering the
-// ring, 12 is chosen over 30: self-consistency context is what this block buys, and the marginal
-// value of the 13th-most-recent decision does not cover its per-symbol, per-consult token cost.
+// scheduled consult cadence needed more rings to cover the same wall-clock span. It was narrowed to
+// 12 on 2026-07-30 in the same pass that added the write-site filter below, justified by a payload
+// audit that sampled 405 live ring lines and found 382 of them non-model rows.
+//
+// RE-MEASURED against agent_decisions 2026-07-30, because that audit sample was drawn DURING the
+// provider-outage window where every consult latched ('client_latched:' / action 'error'), and the
+// two changes interact — a cap counted in model-authored rows is not the same cap counted in mixed
+// rows. What the live journal actually says (payload rows carry the rendered block verbatim, so
+// these are measurements, not estimates):
+//
+//   - Line cost: 258 chars per rendered model-authored line (178 post-filter lines) vs 222 per
+//     pre-filter line (2,389 lines, 07-21 → 07-30 11:00Z) — real decisions carry a rationale, the
+//     dropped noise rows did not. A FULL ring therefore costs ~3.1k chars at 12 against ~6.7k at 30.
+//   - Realized occupancy: the 30-cap almost never bound. Pre-filter rings averaged 14.8 lines /
+//     3,275 chars, of which 86.8% (2,073 of 2,389) were already model-authored. The old ring
+//     carried ~12.8 real decisions in steady state — so 12 is within one row of the self-consistency
+//     window that was actually in use, and the block's token cost is flat, not halved.
+//   - Wall clock, healthy regime (07-21 12:00Z → 07-26, median over 25 strategies): 3.11
+//     model-authored rows/strategy/day and 4.22 consult rows/day ⇒ 12 model rows ≈ 3.9 days against
+//     ≈ 7.1 days for 30 mixed rows. The window shortened, as intended.
+//   - Wall clock, degraded regime (14d incl. the outage): 12 model rows spanned a MEDIAN 126h
+//     against 42h for the last 30 consult rows — 3x LONGER, because model rows go scarce exactly
+//     when noise rows go dense. renderDecisionLines labels entries "N decisions ago" with no
+//     wall-clock cue, so during an outage the model reads week-old decisions as recent ones. Cost is
+//     bounded either way (the cap is on rows, not on age); this is a fidelity caveat on the block's
+//     framing, not a reason to shrink the cap.
+//
+// 12 CONFIRMED on those numbers.
 const MAX_DECISION_HISTORY = 12;
 const INDICATOR_WARMUP_CLOSES = 21;
 const MAX_JOURNAL_RATIONALE_LEN = 2000;
@@ -949,9 +971,10 @@ export class AgenticStrategy implements AsyncStrategy {
 
     // 2026-07-30: only rows the MODEL actually authored enter the ring. A latched no-call ('error'),
     // a post-200 degrade, and the off-menu/budget-exhausted pre-call short-circuits are lane-health
-    // facts, not decisions — they were 382 of 405 live ring lines, and the system prompt's own
-    // framing of this block ("the action/close/reason YOU gave on a prior call") was false for every
-    // one of them. Nothing is lost: all of them are already persisted in agent_decisions.rationale
+    // facts, not decisions — and the system prompt's own framing of this block ("the action/close/
+    // reason YOU gave on a prior call") was false for every one of them. Share of ring lines they
+    // held is regime-dependent (re-measured 2026-07-30, see MAX_DECISION_HISTORY): 382 of 405 during
+    // the provider outage that prompted this filter, 13.2% across the healthy week before it. Nothing is lost: all of them are already persisted in agent_decisions.rationale
     // and metered by trading-runtime's outcomeForProposal. A 'plan_authoritative_close:' row IS
     // model-authored (the consult was healthy; the system overrode the exit) and still enters.
     // The journal write below is deliberately NOT filtered — the trail stays complete on disk.

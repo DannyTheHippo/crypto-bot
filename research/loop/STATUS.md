@@ -53,10 +53,9 @@ files below, with a one-line pointer here.
 
 ## Current order & status
 
-- **HEAD = live build `4218d78`**, boot `b894ce22` (deployed 2026-07-30T16:57:19.888Z,
-  `RestartCount` 0, healthy). Prometheus force-recreated: **21 rules across 5 groups, every rule
-  `health: ok` and `state: inactive`, 0 firing** (read off `/api/v1/rules`). Sweep at 17:08:20Z:
-  **0 alarms**. `count(ALERTS)` empty.
+- **HEAD = live build `61d6b6c`** (`build_info{git_sha}`), boot `f30074f2` (`boot.ready` 2026-07-30T18:29:04.398Z,
+  `RestartCount` 0, healthy). Re-verified on THIS boot: **21 rules across 5 groups, every rule `health: ok` and
+  `state: inactive`, 0 firing** (`/api/v1/rules`); `count(ALERTS)` empty. Past `4218d78`: `d0d91c7`, `c23ab3a`.
 - **Pass 49 shipped eleven commits, `8c6d098` … `4218d78`, plus one live DB action in no commit**
   (the v10 mint + promotion): the completed playbook-space study (`2f1c917`, NO_SURVIVOR 20/20); the
   two-bar rule + four backlog items retired OBSOLETE (`c521f39`); the ANTI-RATCHET retirement, prompt
@@ -70,9 +69,10 @@ files below, with a one-line pointer here.
   horizons, placebo p 0.99–1.00 (a displaced centre, which variance reduction cannot move). Spend
   `$6.1728` of `$7.93`. **A single haiku beat the incumbent at h=1/4/8 but LOST h=24 — a LEAD, not a
   finding, and NOT a licence to swap the decide model.** Against the now-live v10 the swarm loses at
-  every horizon. **Do not re-run ensemble/multi-call architecture arms.** Cost routed onward: sonnet
-  re-checked at `$0.0191125`/call, 1.39× the older `$0.013717` (likely cache amortisation) — Family
-  B's sonnet legs re-size from the new figure. Full record: `verdicts.md`.
+  every horizon. **Do not re-run ensemble/multi-call architecture arms.** Cost routed onward: sonnet is `$0.0191125`/call,
+  1.39× the older `$0.013717`, the **cache-amortisation explanation RETRACTED** and the mechanism unknown; Family B
+  re-budgets to **$13.53**, **$1.70 past the $18.00 research allocation** — re-measure at rank 0 first, never cut rows.
+  Full record: `playbook-space-followon-2026-07-31.md` § The sonnet rate rise; `verdicts.md`.
 - **The book, re-derived from the gauges at 17:15:42Z:** **32** closed round trips (was 29),
   net-of-cost **−$41.8850** (was −$41.1723), win rate **0.1875**, LLM cost **$17.8605**,
   trade-anchored window **6.9663 of the 14 days** required, `agentic_promotion_ready` **0**,

@@ -974,10 +974,95 @@ $6.80 x 1.43 = $9.72 of projected Family A spend, the harness would have refused
 
 **One observation recorded because it is not free, and it is a caution rather than a finding:** the
 sonnet re-check measured **$0.0191125/call, 1.39x the predecessor's $0.013717** on the same prompt
-surface and model alias. The likely mechanism is cache amortisation — this probe is a single 40-row
-chunk carrying one cache write, where the predecessor's edge leg spread its writes over 354 rows and
-four arms — and it does not touch Family A, which is priced entirely off the haiku probe. **It does
-bear on Family B's sizing**, whose two sonnet legs were budgeted at $4.86 each on the older figure.
+surface and model alias. It does not touch Family A, which is priced entirely off the haiku probe.
+**It does bear on Family B's sizing**, whose two sonnet legs were budgeted at $4.86 each on the older
+figure. § The sonnet rate rise below tests the mechanism this paragraph originally asserted and
+retracts it.
+
+### The sonnet rate rise — the cache-amortisation explanation is FALSIFIED, and nothing replaces it
+
+**Retraction, 2026-07-30.** This document first attributed the 1.39x to cache amortisation, arguing
+that "this probe is a single 40-row chunk carrying one cache write, where the predecessor's edge leg
+spread its writes over 354 rows and four arms". That comparison is against the wrong baseline, and
+the right baseline was already on disk. Both calibration artifacts, read side by side:
+
+| | predecessor probe | follow-on re-check |
+| --- | --- | --- |
+| artifact | `playbook-space-calibration-claude-sonnet-5.json` | `playbook-space-followon-calibration-claude-sonnet-5.json` |
+| rows / calls | **40 / 40** | **40 / 40** |
+| concurrency | **4** | **4** |
+| `corpusSha256` | `f1dd13c6…` | `f1dd13c6…` (identical) |
+| spend | $0.5469 | $0.7645 |
+| **$/call** | **$0.0136725** | **$0.0191125** |
+| schema rate | 0.975 | **0.850** |
+| entry rate | 20.5% | 8.8% |
+
+**The chunk sizes are identical**, on the identical corpus hash at the identical concurrency. The
+predecessor's own single-40-row chunk cost **$0.0136725** — within **0.3%** of its 354-row, four-arm
+edge leg's $0.013717. So a 40-row chunk on this corpus does _not_ cost more per call than a 354-row
+one, and chunk-size amortisation has **zero** explanatory power for the 1.39x. The original claim was
+checkable and it is false.
+
+**What is left is unmeasured, and the artifacts cannot settle it** — both record USD only, with no
+input/output/cache-read/cache-write token split. Three candidates, ranked by the evidence actually
+available:
+
+1. **Output-token burden.** The re-check's schema rate is **0.850 against 0.975** — 6 malformed
+   replies of 40 against 1 of 40. At this shape a malformed reply is typically one that ran long, and
+   sonnet output bills at $15/Mtok against $3/Mtok input, so a handful of max-length replies moves
+   $/call materially. This is the only candidate with in-artifact evidence, and it is a
+   **correlation, not a measurement**.
+2. **Cold versus warm prefix cache, independently of chunk size.** The probes ran **3h55m apart**
+   (14:58Z and 18:53Z), and the predecessor's ran two minutes after its lever tier finished (14:56Z)
+   where the re-check had no sonnet traffic for hours. This is a real mechanism — it is simply not
+   the one the retracted paragraph named, and nothing here measures it.
+3. **Provider-side drift on the `claude-sonnet-5` alias**, which is the exact residual
+   § What sequencing CANNOT control declared the funded design would not buy out.
+
+**Verdict: the rise is not established as a price change and is not established as an artifact.** It
+is treated as the **planning figure** for Family B on the narrow ground that it is the more recent
+measurement at the shape Family B will run — not because a mechanism was found.
+
+### Family B re-budget at the measured rate
+
+| item | at $0.013717 (as budgeted) | at $0.0191125 (measured) |
+| --- | --- | --- |
+| `inverted`, 354 rows | $4.86 | **$6.77** |
+| `champion_v8` control, 354 rows | $4.86 | **$6.77** |
+| **Family B total** | **$9.72** | **$13.53** |
+
+Against the three constraints the design declared, which do not agree with each other:
+
+| constraint | figure | Family A spent | + Family B re-budgeted | verdict |
+| --- | --- | --- | --- | --- |
+| Anthropic balance | $67.49 | $6.1728 | $19.70 of $67.49 | **fits, $47.79 left** |
+| in-harness hard cap | $21.00 | $6.1728 | **$19.70** | **fits by $1.30** |
+| declared research allocation | $18.00 | $6.1728 | **$19.70** | **EXCEEDS by $1.70** |
+
+**So the trigger is still affordable and the allocation is what breaks, not the balance.** Stated
+plainly rather than absorbed: at the measured rate Family B does not fit the $18.00 research
+allocation, and the hard cap's headroom falls from $3.35 to **$1.30** — a further 10% overrun on
+Family B ($1.35) would trip a cap whose entire design purpose was to absorb exactly that.
+
+**Rows are not the adjustment, and that is pre-registered, not chosen now.** § What is cut says
+"arms before rows, always"; § Corpus (trigger, not schedule) says a shortfall "is a wait, never a
+row-depth cut"; § The funded ladder says rank 1 is never dropped and `champion_v8` is what makes
+Family B interpretable in either direction. Two admissible routes, in order:
+
+1. **Re-measure first.** Ladder rank 0 is mandatory and sizing reads it, so Family B re-calibrates
+   before its first paid call regardless. If the rate reverts toward $0.0137 the question dissolves
+   ($6.1728 + $9.72 = $15.89, inside the allocation).
+2. **If it does not revert, amend the allocation to $19.70 with a dated record** — a loop-domain
+   measurement decision, disputable against something concrete — and leave the $21.00 hard cap where
+   it is, so the fail-closed meter still refuses a run that would overshoot.
+
+**One limitation of the re-check that its funding rationale did not anticipate.** It was funded as
+Family B's sonnet calibration (§ Totals: _"yes — Family B runs two sonnet legs"_), but it ran against
+`corpusSha256 f1dd13c6…` — the **frozen Family A corpus**, because Family B's post-cut corpus does
+not exist yet. $/call is payload-length driven, so this is a rate estimate on the wrong corpus rather
+than a corpus-matched sizing input, and rank 0's obligation is only partly discharged for Family B.
+No additional spend is proposed here; the point is that route 1 above is a requirement, not a
+courtesy.
 
 The same probe entered on **3 of 34 parsed rows (8.8%)** against the predecessor's 70 of 354
 (19.8%) for the same arm. At n=34 the 95% interval on 8.8% runs to roughly 23%, which contains

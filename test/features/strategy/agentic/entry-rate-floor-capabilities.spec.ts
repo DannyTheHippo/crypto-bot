@@ -21,9 +21,11 @@
 // replayed model its shorts/leverage/maxSizeFraction — exactly as live — and `caps` binds only the
 // zod schema. The assertions below moved from the tool to the payload with it.
 //
-// Since `replayPlanRow` is the shared call-builder for two MINT-TIME gates — the entry-rate floor
-// (`measureEntryRate`) and the candidate expectancy backtest — these mismatches reached production
-// decisions about which playbooks may be minted, not just this study.
+// At the time, `replayPlanRow` was the shared call-builder for two MINT-TIME gates — the entry-rate
+// floor (`measureEntryRate`) and the candidate expectancy backtest — so these mismatches reached
+// production decisions about which playbooks may be minted, not just this study. Both gates went with
+// the reflection loop later that day; the primitive's fidelity is still load-bearing for every
+// replay-driven measurement, and nothing stops a future gate from calling it again.
 
 import { describe, it, expect } from 'vitest';
 import {
@@ -256,15 +258,34 @@ describe('replayPlanRow capability sourcing', () => {
     const rejected = await replayPlanRow(cfg(), 'sys', 'pb', noCaps, over.fetchFn);
     expect(rejected.capsSource).toBe('config');
     expect(rejected.ok).toBe(false);
+  });
 
-    // KNOWN BEHAVIOUR CHANGE (2026-07-30), recorded rather than asserted away: on THIS path — and
-    // only this path — the model is now told no numeric ceiling on any channel. The tool no longer
-    // bakes one in, and a row with no capabilities block has none to read, so a config-sourced replay
-    // can propose over the bound and be schema-rejected without ever having been told the limit.
-    // That is the same class of manufactured abstention this file was written to remove, so it is
-    // called out here. It cannot reach the mint-time gates: those require capsSource 'recorded', and
-    // every live payload carries a capabilities block unconditionally (anthropic-agent-client.ts).
-    expect(JSON.stringify(over.body().tools)).not.toContain('0.25');
+  it('SHOWS the config ceiling on the fallback path, so the bound is never enforced unstated', async () => {
+    // The hole this closes (opened 2026-07-30 when the tool description stopped carrying capability
+    // text, closed the same day): on the config path the tool bakes in no ceiling AND the row has no
+    // capabilities block to read, so the model was bound at cfg.sizeFractionMax without ever being
+    // told the number — a proposal over it was schema-rejected for a limit it was never shown. That
+    // is the same manufactured abstention this file exists to remove (the recorded instance measured
+    // 2.5% entry against a live 16.1%), reached through silence instead of through disagreement.
+    //
+    // The fix mirrors LIVE rather than forking the tool: live sends the number in the payload's
+    // capabilities block and keeps one byte-identical tool at cache position 0, so the fallback block
+    // is appended to the user message too.
+    const noCaps = JSON.stringify({ symbol: 'X' });
+    const { fetchFn, body } = captureFetch(openLong(0.1));
+    await replayPlanRow(cfg({ shortsEnabled: true }), 'sys', 'pb', noCaps, fetchFn);
+    const messages = userText(body());
+    expect(messages).toContain('"maxSizeFraction":"0.25"');
+    expect(messages).toContain('"shorts":true');
+    expect(messages).toContain('binanceusdm');
+    // Still not in the tool: the tool JSON must stay identical across rows or a mixed batch
+    // invalidates both cache breakpoints on every call.
+    expect(JSON.stringify(body().tools)).not.toContain('0.25');
+    // The recorded row is untouched by any of this — it already carries its own block, and appending
+    // a second one would contradict it.
+    const recordedCall = captureFetch(openLong(0.1));
+    await replayPlanRow(cfg(), 'sys', 'pb', payload(PERP_CAPS), recordedCall.fetchFn);
+    expect(userText(recordedCall.body())).toBe(`pb\n\n${payload(PERP_CAPS)}`);
   });
 
   it('reports capsSource on failure paths, not only on success', async () => {

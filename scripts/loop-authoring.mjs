@@ -134,6 +134,32 @@ async function readDecisionSummary(pool, isModelAuthoredDecision) {
 }
 
 /**
+ * The hold lengths the RUNNING playbook's own plans actually ask for, as {h, n} pairs.
+ *
+ * Read rather than assumed because the horizon set the study measured (1/4/8/24) and the set the
+ * model plans at are DIFFERENT sets — v10's `plan_json.maxHoldBars` reads 48 and 40, never 24
+ * (measured 2026-07-30). Feeding both into the per-horizon table is what makes the unmeasured rows
+ * appear as UNMEASURED instead of simply being absent.
+ *
+ * Same `model LIKE 'claude%'` predicate as readDecisionSummary: a prescreen row carries no plan the
+ * drafting model authored. The `~ '^[0-9]+$'` guard keeps a malformed plan out of the cast rather
+ * than failing the whole query on one bad row.
+ */
+async function readPlannedHorizons(pool, version) {
+  const { rows } = await pool.query(
+    `SELECT (plan_json->>'maxHoldBars')::int AS h, count(*)::int AS n
+       FROM public.agent_decisions
+      WHERE playbook_version = $1
+        AND model LIKE 'claude%'
+        AND plan_json->>'maxHoldBars' ~ '^[0-9]+$'
+      GROUP BY 1
+      ORDER BY 1`,
+    [version],
+  );
+  return rows.map((r) => ({ h: Number(r.h), n: Number(r.n) }));
+}
+
+/**
  * Closed round trips, walked by the PRODUCTION walker loaded from dist — never a second FIFO
  * implementation in this script. `walkRoundTrips` is what the promotion evaluator itself walks, so a
  * divergent count here would be a bug in the evidence, not a second opinion.
@@ -226,11 +252,30 @@ function buildDraftingPrompt(guidanceText, digest, incumbent) {
     'You are drafting a replacement crypto trading playbook for a live agentic lane.',
     '',
     'STANDING OBJECTIVE, which supersedes anything in the preserved guidance below that implies an',
-    'entry-rate target: minimise entries subject to the lane remaining observable. Abstention is a',
-    "permitted terminal state and a flat week is a CORRECT week. This lane's measured entries are",
-    'significantly negative and worse than a random-bar placebo, and no attribute-based filter has',
-    'been found that fixes it, so "trade less" is the only lever with positive expected effect.',
-    'Source: research/studies/entry-rate-rederivation-2026-07-30.md.',
+    'entry-rate target. It is QUALIFIED PER HORIZON, and the qualification is the whole instruction —',
+    'an unqualified "minimise entries" would cut the only cells that clear the cost floor:',
+    '',
+    '  * At a horizon whose MEASURED net-per-trip is NEGATIVE: reduce the entry rate. Abstention is a',
+    '    permitted terminal state there and a flat week is a CORRECT week.',
+    '  * At a horizon whose MEASURED net-per-trip is NOT negative: HOLD the rate. Do not cut it, and do',
+    '    not raise it either — a mean above the floor whose interval is not is not a licence to trade',
+    '    more.',
+    '  * At a horizon with NO measurement: it is UNVALIDATED, not favourable. Reason about it as',
+    '    unknown risk. Do not treat the absence of a measured loss as evidence of a gain.',
+    '',
+    'Net-per-trip is gross forward return MINUS the break-even cost floor, which is +13.0 bps/trip at',
+    'demo fees and +24.2 bps/trip live (research/loop/verdicts.md). It is NOT a flat 20 bps, and a',
+    'gross mean must clear the floor of the lane it actually runs on. The PER-HORIZON NET table in the',
+    'evidence block below is the only source for which horizons are which — read it, do not assume.',
+    '',
+    'HOLD LENGTH IS PAST THE LAST MEASURED POINT. Measurement exists at h = 1, 4, 8 and 24 bars and',
+    "nowhere else, while the running playbook's own plan_json.maxHoldBars reads 40 and 48. Any",
+    'reasoning about how long to hold beyond h=24 is extrapolation, not a validated horizon; the table',
+    'marks those rows UNMEASURED for that reason.',
+    '',
+    "What is NOT in dispute: this lane's measured entries are significantly negative and worse than a",
+    'random-bar placebo at the horizons where a measurement exists, and no attribute-based filter has',
+    'been found that fixes it. Source: research/studies/entry-rate-rederivation-2026-07-30.md.',
     '',
     'You will be judged on ONE thing: whether your draft beats the CURRENTLY RUNNING playbook on the',
     'same recorded market states, the same forward-return metric and the same horizons. You are not',
@@ -455,11 +500,24 @@ async function main() {
       }
     }
     const roundTrips = await readRoundTrips(pool, roundTripModule.walkRoundTrips);
-    const digest = buildEvidenceDigest({ decisions, versionStats, roundTrips, incumbent });
+    const plannedHorizons = await readPlannedHorizons(pool, incumbent.version);
+    const digest = buildEvidenceDigest({
+      decisions,
+      versionStats,
+      roundTrips,
+      incumbent,
+      plannedHorizons,
+    });
     console.log(
       `  ${decisions.total} model-authored decides (${decisions.excludedNonModel} non-LLM rows and ` +
         `${decisions.excluded} degraded/pre-call rows excluded), ${versionStats.length} versions with ` +
         `stats, ${roundTrips?.count ?? 0} closed round trips (${roundTrips?.mode ?? 'no fills'})`,
+    );
+    console.log(
+      `  planned hold lengths under v${incumbent.version}: ` +
+        (plannedHorizons.length === 0
+          ? 'none recorded'
+          : plannedHorizons.map((p) => `h=${p.h} x${p.n}`).join(', ')),
     );
 
     // Derived here rather than at stage 3 because the DRAFTING prompt needs it too: telling the model

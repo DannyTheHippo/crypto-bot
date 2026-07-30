@@ -115,7 +115,9 @@ AGENTIC_DRAIN_COOLDOWN_MAX_MS=900000 # ceiling on AUTO-drain cooldown backoff
 # itself (research/studies/entry-rate-rederivation-2026-07-30.md: claude-opus-5 at $5.01 of $16.79
 # total LLM spend bought 4 mints from 18 attempts across 69 calls, off ONE strategy's newest 200
 # journal rows). `pnpm playbook:candidate` — which reads the whole DB for free — is the ONLY minting
-# path now. Both knobs still carry zod defaults, but nothing reads them.
+# path now. Their zod schema entries — and AGENTIC_REFLECTION_TIMEOUT_MS, which was never set
+# here — were stripped from environment.config.ts on 2026-07-30. A stale env file still boots:
+# unknown keys are ignored, which is the fail-open direction a retired knob requires.
 # AGENTIC_AUTO_PROMOTE_MIN_TRADES DELETED (§3.4): the legacy count-only auto-promotion path is gone —
 # AppConfig.agentic.autoPromoteMinTrades is now a hardcoded-0 transitional field, not an env knob.
 AGENTIC_AUTO_PROMOTE_MIN_ATTRIBUTED_TRADES=10 # attributed auto-promotion: candidate promotes only after ≥N of ITS OWN A/B-attributed closed trips AND mean net/trip > champion's (SYMMETRIC: champion needs ≥N in-window trips too); 0 disables

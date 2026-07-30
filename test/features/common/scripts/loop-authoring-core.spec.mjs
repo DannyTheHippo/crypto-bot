@@ -2,11 +2,14 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
+  COST_FLOOR_BPS,
   DEFAULT_MINT_FLOOR_MIN_ENTRIES,
   DEFAULT_MINT_FLOOR_MIN_ROWS,
+  MEASURED_HORIZON_CELLS,
   RETIRED_OBJECTIVE_MARKERS,
   assertNoRetiredObjective,
   buildEvidenceDigest,
+  buildPerHorizonNetTable,
   classifyEntryRateFloor,
   classifyMintGate,
   parseArgs,
@@ -422,6 +425,100 @@ describe('loop-authoring reporting', () => {
     });
     expect(gate.mint).toBe(false);
     expect(cell(24, 47).mean).toBe(47);
+  });
+});
+
+describe('loop-authoring per-horizon net table', () => {
+  // The standing objective is qualified PER HORIZON ("reduce the rate where net is negative, hold
+  // where it is not"), so the drafting model must be SHOWN the net. The failure this suite guards is
+  // the void read: an unmeasured horizon that is omitted, or rendered as a zero, reads to a model as
+  // "measured, and fine" — and the horizons the running playbook actually holds to (40, 48) are
+  // exactly the ones nothing has ever measured.
+
+  const PLANNED = [
+    { h: 40, n: 1 },
+    { h: 48, n: 5 },
+  ];
+
+  /** Single-digit horizons are right-padded in the table, so `h=1` renders as `h= 1`. */
+  const rowFor = (table, h) =>
+    table.split('\n').find((l) => new RegExp(`^h=\\s*${h}\\b`).test(l.trim()));
+
+  it('renders an UNMEASURED horizon as UNMEASURED — not omitted, not defaulted to zero', () => {
+    const table = buildPerHorizonNetTable({ incumbent: { version: 10 }, plannedHorizons: PLANNED });
+    for (const h of [40, 48]) {
+      const row = rowFor(table, h);
+      expect(row, `h=${h} row must exist`).toBeDefined();
+      expect(row).toContain('UNMEASURED');
+      expect(row).toContain('NOT zero and NOT favourable');
+      // No figure may appear on an unmeasured row: a "+0.0" or an "n=0" is the interpolation the
+      // instruction forbids.
+      expect(row).not.toMatch(/[+-]\d+\.\d/);
+      expect(row).not.toContain('NET');
+    }
+  });
+
+  it('carries the horizons the running playbook actually plans, with their counts', () => {
+    const table = buildPerHorizonNetTable({ incumbent: { version: 10 }, plannedHorizons: PLANNED });
+    expect(table).toContain('planned this hold length 5x');
+    expect(table).toContain('planned this hold length 1x');
+  });
+
+  it('nets every measured cell against the demo floor and never a flat 20 bps', () => {
+    const table = buildPerHorizonNetTable({ incumbent: { version: 10 }, plannedHorizons: PLANNED });
+    expect(COST_FLOOR_BPS).toEqual({ demo: 13.0, live: 24.2 });
+    // h=1 gross -0.8 - 13.0 = -13.8; h=24 gross +47.6 - 13.0 = +34.6 (a flat-20 floor would read
+    // +27.6, the figure verdicts.md records as an error).
+    expect(table).toContain('NET  -13.8');
+    expect(table).toContain('NET  +34.6');
+    expect(table).not.toContain('+27.6');
+    expect(table).toContain('+24.2 bps/trip live');
+  });
+
+  it('labels each measured horizon with the action the standing objective prescribes', () => {
+    const table = buildPerHorizonNetTable({ incumbent: { version: 10 } });
+    expect(rowFor(table, 1)).toContain('NET NEGATIVE — reduce the entry rate here');
+    expect(rowFor(table, 4)).toContain('NET NEGATIVE — reduce the entry rate here');
+    // h=8 nets +6.3 at the mean but -11.9 at the CI lower bound: hold, do not raise.
+    expect(rowFor(table, 8)).toContain(
+      'CI lower bound below the floor — hold the rate, do not raise it',
+    );
+    expect(rowFor(table, 24)).toContain('hold the rate, do not raise it');
+  });
+
+  it('renders EVERY horizon UNMEASURED when the running playbook has no frozen measurement', () => {
+    // The same posture resolveIncumbent takes: no literal fallback. Quoting v10's cells for another
+    // version would attribute a measurement to a playbook nobody scored.
+    expect(MEASURED_HORIZON_CELLS[8]).toBeUndefined();
+    const table = buildPerHorizonNetTable({
+      incumbent: { version: 8 },
+      plannedHorizons: [{ h: 24, n: 3 }],
+    });
+    expect(table).toContain('No frozen per-horizon measurement exists');
+    expect(table).toContain('every row below is UNMEASURED');
+    expect(rowFor(table, 24)).toContain('UNMEASURED');
+  });
+
+  it('measures h in {1,4,8,24} and NOTHING beyond — the declared horizon set, unchanged', () => {
+    expect(MEASURED_HORIZON_CELLS[10].cells.map((c) => c.h)).toEqual([1, 4, 8, 24]);
+  });
+
+  it('reports no horizons rather than an empty table when nothing is measured or planned', () => {
+    expect(buildPerHorizonNetTable({ incumbent: { version: 8 } })).toContain(
+      'no horizons to report',
+    );
+  });
+
+  it('reaches the drafting model — the digest carries the table, not just this function', () => {
+    const digest = buildEvidenceDigest({
+      decisions: undefined,
+      versionStats: [],
+      roundTrips: null,
+      incumbent: { version: 10 },
+      plannedHorizons: PLANNED,
+    });
+    expect(digest).toContain('PER-HORIZON FORWARD RETURN, NET OF THE COST FLOOR');
+    expect(rowFor(digest, 48)).toContain('UNMEASURED');
   });
 });
 

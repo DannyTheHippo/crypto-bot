@@ -41,8 +41,10 @@ import {
   MEMORY_TEMPLATE_VERSION,
   TRADE_TEMPLATE_VERSION,
   type SymbolCapabilities,
+  type BuildMarketPayloadExtras,
   buildMarketPayload,
   buildPlaybookBlock,
+  buildSharedPayload,
   buildSystemPrompt,
   buildTradeTool,
   buildTradePortfolioTool,
@@ -242,6 +244,22 @@ export interface LoggerLike {
 
 const NOOP_LOGGER: LoggerLike = { warn: () => undefined };
 
+// What payloadExtrasProvider answers. Named (rather than inlined twice on the config field) because
+// the inline shape had drifted: it declared four keys while the composition root's closure
+// (agentic-bridge.module.ts's PAYLOAD_EXTRAS_PROVIDER_OVERRIDE) already returned six —
+// `execQuality`/`fundingAccrualQuote` reached buildMarketPayload structurally untyped, so nothing
+// checked that they even existed. Every key except venueFreeCash is a BuildMarketPayloadExtras field
+// spread straight through; venueFreeCash is consumed here instead (capabilitiesFor keys it per
+// symbol) and never rendered as its own payload key.
+export interface AgentPayloadExtras {
+  readonly portfolio?: AgentPortfolioBlock;
+  readonly budget?: AgentBudgetBlock;
+  readonly calendar?: readonly AgentCalendarEvent[];
+  readonly execQuality?: string;
+  readonly fundingAccrualQuote?: string;
+  readonly venueFreeCash?: ReadonlyMap<VenueId, string>;
+}
+
 export interface AnthropicAgentClientConfig {
   readonly apiKey: string;
   readonly model: string;
@@ -359,19 +377,7 @@ export interface AnthropicAgentClientConfig {
   // per-symbol off the one returned map, via capabilitiesFor). Absent ⇒ no provider invoked, no
   // portfolio/budget/calendar keys ever added and venueFreeCash reads as '0' — byte-identical to
   // pre-I1b (S1's own omit-when-absent tests already pin this) for the pre-v3 fields.
-  readonly payloadExtrasProvider?: () =>
-    | {
-        readonly portfolio?: AgentPortfolioBlock;
-        readonly budget?: AgentBudgetBlock;
-        readonly calendar?: readonly AgentCalendarEvent[];
-        readonly venueFreeCash?: ReadonlyMap<VenueId, string>;
-      }
-    | Promise<{
-        readonly portfolio?: AgentPortfolioBlock;
-        readonly budget?: AgentBudgetBlock;
-        readonly calendar?: readonly AgentCalendarEvent[];
-        readonly venueFreeCash?: ReadonlyMap<VenueId, string>;
-      }>;
+  readonly payloadExtrasProvider?: () => AgentPayloadExtras | Promise<AgentPayloadExtras>;
   // R2 (episodic memory): when true, documents the similarSetups block in the system prompt and adds
   // the '+mem1' promptHash tag. Absent/false ⇒ byte-identical prompt/hash — same convention as the
   // feed-enabled flags. Gated separately from similarSetupsProvider's own per-call presence (the
@@ -706,6 +712,41 @@ export class AnthropicAgentClient implements AgentClientPort {
     return { action: 'error', confidence: null, rationale };
   }
 
+  // The two feed blocks that are lane-wide BY PORT CONTRACT — SentimentFeedPort.latest() and
+  // FearGreedFeedPort.latest() both take no symbol argument — but which reach this client through
+  // each element's own snapshot (agentic.strategy.ts merges them per instance), so a poll landing
+  // mid-coalescing-window could in principle leave two elements holding different readings.
+  //
+  // Hoisting is therefore gated on the batch AGREEING: a key is promoted to the shared block only
+  // when every element renders it byte-identically. FAILS OPEN — any disagreement, or a single
+  // element missing the block, drops the key from the shared set entirely and each element renders
+  // its own copy exactly as before. This is a token-deduplication optimisation, never a gate, so a
+  // dissenting element must cost tokens rather than lose its reading.
+  //
+  // Only these two qualify. Checked against 86 recorded and 16 live multi-symbol waves and rejected:
+  // `liquidation` (LiquidationFeedPort.latest(symbol) — per-symbol trailing window) and `trackRecord`
+  // (round trips filtered by strategyId, one instance per symbol) are per-symbol by construction, and
+  // hoisting either on today's incidental agreement would silently attribute one symbol's flow or
+  // realized record to the whole batch the first time they diverged.
+  private static laneWideFeedBlocks(
+    inputs: readonly AgentDecisionInput[],
+  ): Pick<BuildMarketPayloadExtras, 'sentiment' | 'fearGreed'> {
+    const agreed = <K extends 'sentiment' | 'fearGreed'>(
+      key: K,
+    ): AgentDecisionInput['snapshot'][K] | undefined => {
+      const first = inputs[0]?.snapshot[key];
+      if (first === undefined) return undefined;
+      const rendered = JSON.stringify(first);
+      return inputs.every((i) => JSON.stringify(i.snapshot[key]) === rendered) ? first : undefined;
+    };
+    const sentiment = agreed('sentiment');
+    const fearGreed = agreed('fearGreed');
+    return {
+      ...(sentiment !== undefined ? { sentiment } : {}),
+      ...(fearGreed !== undefined ? { fearGreed } : {}),
+    };
+  }
+
   async propose(input: AgentDecisionInput): Promise<AgentProposal> {
     const latched = this.latchRationale(Date.now());
     if (latched !== null) {
@@ -1013,6 +1054,16 @@ export class AnthropicAgentClient implements AgentClientPort {
     // calling this per resolved element would render N identical copies of the same snapshot and
     // waste tokens.
     const payloadExtras = await this.cfg.payloadExtrasProvider?.();
+    // ...which is exactly what happened anyway until 2026-07-30: the ONE extras object was spread
+    // into EVERY symbol element below, so the batch paid for N copies of the same portfolio/budget/
+    // calendar/execQuality/fundingAccrualQuote blocks. They now ride in a single shared block ahead
+    // of the symbol blocks (see sharedExtras/sharedPayload below), and buildMarketPayload's
+    // omitShared drops precisely them from each element.
+    const sharedExtras: BuildMarketPayloadExtras = {
+      ...payloadExtras,
+      ...AnthropicAgentClient.laneWideFeedBlocks(inputs),
+    };
+    const sharedPayload = buildSharedPayload(sharedExtras);
 
     interface ResolvedInput {
       readonly symbolKey: string;
@@ -1023,7 +1074,10 @@ export class AnthropicAgentClient implements AgentClientPort {
       readonly basedOnSeq: bigint;
       readonly eventTime: EpochMs;
       readonly lastCandle: CandleEvent | undefined;
+      // The FULL render — journalled on AgentProposal.inputPayload, never sent.
       readonly inputPayload: string;
+      // The same render minus the shared block's keys — sent, never journalled.
+      readonly wirePayload: string;
       // v3 consolidation spec §4.2: this element's own symbol capability facts — computed once here
       // (not re-derived per parse) so both the portfolio-tool builder and the per-element capability
       // check below read the SAME object.
@@ -1058,21 +1112,28 @@ export class AnthropicAgentClient implements AgentClientPort {
       // R2: retrieval is PER-SYMBOL (regime is per-symbol, unlike the batch-wide payloadExtras above)
       // — one indexed journal read per element, never an API call.
       const similarSetups = await this.resolveSimilarSetups(input);
-      const inputPayload = buildMarketPayload(input, {
+      const elementExtras: BuildMarketPayloadExtras = {
         constraints,
         derivativesV2Enabled: ctx.derivativesV2Enabled,
         bookStructureEnabled: this.cfg.bookStructureFeedEnabled ?? false,
         // I1b: the ONE batch-wide payloadExtras computed above, stamped on every element the same
         // way consultId/nextConsultBars already are — plus THIS element's own position-summary
         // thesis/directives and capabilities (per-symbol, unlike portfolio/budget/calendar).
-        ...payloadExtras,
+        ...sharedExtras,
         capabilities: caps,
         similarSetups,
         currentThesis: input.context?.position.currentThesis,
         directives: input.context?.position.directives,
         barsHeld: input.context?.position.barsHeld,
         barsUntilForcedExit: input.context?.position.barsUntilForcedExit,
-      });
+      };
+      // TWO pure string builds off the SAME extras — no I/O, no second provider call, nothing that
+      // can observe a different world between them, so the wire copy and the journalled copy cannot
+      // drift. The FULL render is what AgentProposal.inputPayload carries: the journal keeps every
+      // block it carried before the shared-block split, so the frozen corpus stays self-comparable
+      // and the replay harnesses (entry-rate-floor.ts, candidate-backtest.ts) keep seeing whole rows.
+      const inputPayload = buildMarketPayload(input, elementExtras);
+      const wirePayload = buildMarketPayload(input, elementExtras, { omitShared: true });
       resolved.push({
         symbolKey,
         symbolId,
@@ -1083,6 +1144,7 @@ export class AnthropicAgentClient implements AgentClientPort {
         eventTime,
         lastCandle,
         inputPayload,
+        wirePayload,
         caps,
       });
     }
@@ -1126,9 +1188,20 @@ export class AnthropicAgentClient implements AgentClientPort {
           cache_control: EPHEMERAL_1H,
         } satisfies AnthropicTextBlock)
       : undefined;
+    // The batch-wide blocks, sent ONCE. Placed AFTER the playbook block deliberately: the playbook is
+    // the cache_control prefix and every recorded eval row was generated with it first, so moving it
+    // would replay the frozen corpus under a composition it was never produced under. Uncached like
+    // the symbol blocks — portfolio/budget change every wave, so a cache breakpoint here would only
+    // buy write cost.
+    const sharedBlock: AnthropicTextBlock | undefined = sharedPayload
+      ? {
+          type: 'text',
+          text: `${playbookBlock ? '\n\n' : ''}Batch-wide context — these facts apply to EVERY symbol below and are stated once instead of being repeated in each symbol block:\n${sharedPayload}`,
+        }
+      : undefined;
     const symbolBlocks: AnthropicTextBlock[] = resolved.map((r, i) => ({
       type: 'text',
-      text: `${i === 0 && !playbookBlock ? '' : '\n\n'}Symbol ${i + 1} of ${resolved.length} (${r.symbolKey}):\n${r.inputPayload}`,
+      text: `${i === 0 && !playbookBlock && !sharedBlock ? '' : '\n\n'}Symbol ${i + 1} of ${resolved.length} (${r.symbolKey}):\n${r.wirePayload}`,
     }));
     // H5 (2026-07-27): 8/57 live schema rejections were `decisions` missing entirely, 11 more were a
     // resolved symbol absent from it — a per-call reminder, not just the tool's own (cached-adjacent,
@@ -1139,9 +1212,12 @@ export class AnthropicAgentClient implements AgentClientPort {
       type: 'text',
       text: `\n\nThe decisions array must contain exactly one entry per symbol listed above (${resolved.map((r) => r.symbolKey).join(', ')}), matched by its exact symbol string — including an explicit "hold" entry for any symbol you are not acting on. Never omit a listed symbol.`,
     };
-    const userContent: AnthropicTextBlock[] = playbookBlock
-      ? [playbookBlock, ...symbolBlocks, completenessBlock]
-      : [...symbolBlocks, completenessBlock];
+    const userContent: AnthropicTextBlock[] = [
+      ...(playbookBlock ? [playbookBlock] : []),
+      ...(sharedBlock ? [sharedBlock] : []),
+      ...symbolBlocks,
+      completenessBlock,
+    ];
 
     const timeoutMs = opts.timeoutMsOverride ?? this.cfg.timeoutMs;
     const started = Date.now();

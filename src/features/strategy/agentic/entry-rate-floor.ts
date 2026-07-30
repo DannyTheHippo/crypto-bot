@@ -16,9 +16,10 @@ import { tradeDecisionSchema } from './anthropic-agent-client';
 // migrated it off the legacy submit_plan shape; see replayPlanRow below). Introduced for backlog
 // #39's mint-time entry-rate floor, whose measureEntryRate driver was deleted with the in-process
 // reflection loop on 2026-07-30 (research/studies/entry-rate-rederivation-2026-07-30.md). What
-// survives here is the replay primitive itself, still used by candidate-backtest.ts and the
-// test/backtest agentic replay harness. It is UNABLE to mint or promote anything: every verdict is
-// the caller's.
+// survives here is the replay primitive itself. Its remaining callers are both research-side as of
+// 2026-07-30 — test/backtest/agentic-replay-r1.ts and test/eval/agentic/playbook-space-replay.spec.ts
+// (candidate-backtest.ts no longer imports it; it replays plans through plan-executor directly). It is
+// UNABLE to mint or promote anything: every verdict is the caller's.
 
 // Illustrative default profile for the replay's system prompt — the floor asks a structural
 // question ("does this playbook's entry bar ever fire"), not "what is the strategy's live fee tier
@@ -165,12 +166,11 @@ export interface PlanReplayResult {
   readonly usage?: AgentUsage;
 }
 
-// The shared call-builder both measureEntryRate (this file) and candidate-backtest.ts's mint-time
-// expectancy backtest replay through: ONE v2 (submit_trade) Anthropic call for a single
-// (systemPrompt, playbookBlock, rowPayload) triple, forced tool_choice, thinking off, playbook block
-// cached — the exact request shape the live decide path sends under the rich decision contract.
-// Extracted so the two callers can never let their request-building drift apart (backlog #39's
-// companion feature reuses this verbatim rather than duplicating the fetch/timeout/parse plumbing).
+// The shared call-builder every replay caller goes through: ONE v2 (submit_trade) Anthropic call for a
+// single (systemPrompt, playbookBlock, rowPayload) triple, forced tool_choice, thinking off, playbook
+// block cached — the exact request shape the live decide path sends under the rich decision contract.
+// Extracted so no caller can let its request-building drift from the others (each reuses this verbatim
+// rather than duplicating the fetch/timeout/parse plumbing).
 export async function replayPlanRow(
   cfg: PlanReplayCallConfig,
   systemPrompt: string,
@@ -196,7 +196,9 @@ export async function replayPlanRow(
   // FAILURE DIRECTION: falls OPEN to the cfg-derived object when the payload carries no capabilities
   // (synthetic fixtures, pre-v3 corpora) — this is a measurement harness and must never refuse to
   // measure. `capsSource` reports which path ran so a CALLER can fail closed on it; the playbook-space
-  // study requires 'recorded' for every row, which is where the strictness belongs.
+  // study requires 'recorded' for every row, which is where the strictness belongs. The fallback
+  // object is also SHOWN to the model on that path (see fallbackCapabilities below), so the zod bound
+  // and the advertised limit agree on every path, not just the recorded one.
   const recorded = recordedCapabilities(rowPayload);
   const caps: SymbolCapabilities = recorded ?? {
     venue: cfg.shortsEnabled ? PERP_VENUE_ID : SPOT_VENUE_ID,
@@ -218,12 +220,35 @@ export async function replayPlanRow(
   const sizeFractionMaxNum = new Decimal(caps.maxSizeFraction).toNumber();
   const schema = tradeDecisionSchema(sizeFractionMaxNum);
 
+  // On the config path the row carries no capabilities block, so the model would be shown NO numeric
+  // ceiling on ANY channel while `schema` silently bound it at cfg.sizeFractionMax — a model that
+  // proposed over an unstated limit would be schema-rejected for it. That is exactly the manufactured
+  // abstention entry-rate-floor-capabilities.spec.ts exists to prevent (the recorded instance of it
+  // measured 2.5% against a live 16.1%), just sourced from silence instead of from disagreement. The
+  // tool's own sizeFraction text points AT this block ("this symbol's own capabilities.maxSizeFraction
+  // (shown in its payload block)", agent-prompt.ts) so without it the pointer dangles.
+  //
+  // Appended rather than merged into rowPayload, and only on this path: the recorded row text stays
+  // byte-verbatim, and the tool JSON stays identical for every call (tools sit at canonical cache
+  // position 0 — forking buildTradeTool per row would invalidate BOTH cache breakpoints on a mixed
+  // batch, which is why the number lives in the payload channel live too).
+  const fallbackCapabilities = recorded
+    ? ''
+    : `\n\n${JSON.stringify({
+        capabilities: {
+          venue: String(caps.venue),
+          shorts: caps.shorts,
+          leverage: caps.leverage,
+          maxSizeFraction: caps.maxSizeFraction,
+          venueFreeCash: caps.venueFreeCash,
+        },
+      })}`;
   // W2.4-style cache split: the playbook block (the stable prefix shared by every row in this batch)
   // rides its own cache_control block; the volatile per-row market payload follows uncached — same
   // two-block layout as anthropic-agent-client.ts's own userContent.
   const userContent: FloorTextBlock[] = [
     { type: 'text', text: playbookBlock, cache_control: EPHEMERAL_1H },
-    { type: 'text', text: `\n\n${rowPayload}` },
+    { type: 'text', text: `\n\n${rowPayload}${fallbackCapabilities}` },
   ];
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), cfg.timeoutMs);

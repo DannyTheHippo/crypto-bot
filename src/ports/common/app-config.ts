@@ -44,15 +44,13 @@ export interface AppConfig {
   // agentic-strategy.module.ts).
   agentic: {
     model: string;
-    // Reflection-path model override; absent ⇒ reflection uses `model` (one model, one price —
-    // pinning a pricier model requires raising AGENTIC_TOKEN_PRICE_* to its rates, fail-closed).
+    // Survives the 2026-07-30 deletion of the in-process reflection loop because it no longer names a
+    // call path: it is the input to environment.config.ts's pricing gate-honesty refusal (a
+    // reflectionModel differing from `model` demands its own AGENTIC_TOKEN_PRICES_JSON entry), which
+    // is what keeps PromotionReadinessService's re-pricing of the historical Opus llm_usage rows
+    // honest. Absent ⇒ one model, one price, refusal never trips.
     reflectionModel?: string;
     timeoutMs: number;
-    // Reflection-path request timeout. Separate from timeoutMs (the decide path): reflection runs a
-    // pricier model (reflectionModel, e.g. Opus) with adaptive thinking over a large evidence prompt,
-    // so it legitimately needs far longer than a fast decide — sharing the 30s decide timeout aborted
-    // every attempt live (2026-07-09). Off the trading hot path, so a generous value costs nothing.
-    reflectionTimeoutMs: number;
     maxTokens: number;
     minDecisionIntervalMs: number;
     warmupBars: number;
@@ -87,19 +85,6 @@ export interface AppConfig {
     maxEntriesPerDay: number;
     drainCooldownBaseMs: number;
     drainCooldownMaxMs: number;
-    reflectionEveryNTrades: number;
-    reflectionCooldownMs: number;
-    // Mint-time candidate-vs-champion offline expectancy backtest (reflection.service.ts's
-    // runMintBacktest): rows of the newest recorded decisions replayed against BOTH the draft
-    // candidate and the current champion playbook, simulating each 'long' plan's outcome. 0 disables
-    // (default; the actual reflection wiring reads this off raw process.env, not this field — see
-    // environment.config.ts's own comment).
-    mintBacktestRows: number;
-    // Noise handicap (bps): the candidate mints unless its mean net bps/trip trails the champion's
-    // by MORE than this (candidate >= champion − margin passes).
-    mintBacktestMarginBps: number;
-    // Minimum simulated round trips BOTH arms need before the backtest verdict is trusted.
-    mintBacktestMinTrips: number;
     // v3-transitional(#10): AGENTIC_AUTO_PROMOTE_MIN_TRADES is deleted (§3.4) — the legacy
     // count-only auto-promotion path is permanently superseded by autoPromoteMinAttributedTrades
     // below. reflection.service.ts/agentic-strategy.module.ts still read this field;

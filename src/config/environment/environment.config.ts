@@ -229,15 +229,10 @@ const envSchema = z
     // the flat pricing then OVER-counts decide-path cost, which is the fail-closed direction.
     AGENTIC_REFLECTION_MODEL: z.string().min(1).optional(),
     AGENTIC_TIMEOUT_MS: z.coerce.number().int().positive().default(30000),
-    // Reflection-path request timeout, DELIBERATELY separate from (and much larger than) the decide
-    // timeout above. Reflection runs AGENTIC_REFLECTION_MODEL (a pricier tier, e.g. Opus) with
-    // adaptive thinking over a large calibration/attribution prompt; the 30s decide timeout aborted
-    // every live attempt (2026-07-09: "transport error: This operation was aborted"), stranding the
-    // learning loop at the seed playbook. Since backlog #32 the reflection call STREAMS (SSE), so
-    // this value is the IDLE-gap budget (aborts when no chunk arrives for this long — liveness, not
-    // total duration) plus a 3× hard cap on the whole call; a healthy long generation keeps
-    // emitting deltas and never trips it, removing the wall-clock guess about Opus's worst case.
-    AGENTIC_REFLECTION_TIMEOUT_MS: z.coerce.number().int().positive().default(240000),
+    // AGENTIC_REFLECTION_TIMEOUT_MS DELETED 2026-07-30 with the in-process reflection loop
+    // (research/studies/entry-rate-rederivation-2026-07-30.md) — its only reader was that service's
+    // streaming call. AGENTIC_REFLECTION_MODEL above is NOT deleted alongside it: it is the input to
+    // the pricing gate-honesty refusal in the superRefine below.
     // v3 §3.2 default: 1024→4096 — the rich decision contract's richer per-consult output (directives,
     // thesis, portfolio scheduling) needs the headroom the deployed shape already carried.
     AGENTIC_MAX_TOKENS: z.coerce.number().int().positive().default(4096),
@@ -319,21 +314,10 @@ const envSchema = z
     AGENTIC_MAX_ENTRIES_PER_DAY: z.coerce.number().int().positive().default(12),
     AGENTIC_DRAIN_COOLDOWN_BASE_MS: z.coerce.number().int().positive().default(30_000),
     AGENTIC_DRAIN_COOLDOWN_MAX_MS: z.coerce.number().int().positive().default(900_000),
-    // 0 disables periodic reflection: it makes ReflectionService permanently inert
-    // (`this.inert = cfg.everyNTrades <= 0 || !cfg.apiKey`, reflection.service.ts:891), and
-    // onClosedTrade returns on that flag (:930) before incrementing any counter. The DEPLOYED value
-    // is 0 as of 2026-07-30 (.env.app) — retired by
-    // research/studies/entry-rate-rederivation-2026-07-30.md; the daily loop mints via
-    // `pnpm playbook:candidate` instead. The default stays 10 so an unset environment keeps the
-    // historical shape; only the deployed file opts out.
-    AGENTIC_REFLECTION_EVERY_N_TRADES: z.coerce.number().int().min(0).default(10),
-    // Minimum wall-clock between reflection attempts (F7 tunable). Default 7 days; floored at 0. A
-    // cost/noise throttle, never a safety gate — see reflection.service.ts's SEVEN_DAYS_MS comment.
-    AGENTIC_REFLECTION_COOLDOWN_MS: z.coerce
-      .number()
-      .int()
-      .min(0)
-      .default(7 * 24 * 60 * 60 * 1000),
+    // AGENTIC_REFLECTION_EVERY_N_TRADES / _COOLDOWN_MS DELETED 2026-07-30 with the in-process
+    // reflection loop (research/studies/entry-rate-rederivation-2026-07-30.md): both gated
+    // ReflectionService's own cadence and nothing else ever read them. `pnpm playbook:candidate` is
+    // the only minting path now and takes no cadence knob from this schema.
     // Absent means unpinned — no default (an explicit default would look like a pin).
     AGENTIC_PLAYBOOK_PIN: z.coerce.number().int().positive().optional(),
     // W4.1 champion/candidate A/B: percent (0-50) of decides deterministically routed to a newer
@@ -438,24 +422,10 @@ const envSchema = z
     // (promoted on LANE-WIDE trade count with zero candidate-attributed evidence) is superseded by
     // AGENTIC_AUTO_PROMOTE_MIN_ATTRIBUTED_TRADES below. agentic.autoPromoteMinTrades is a
     // transitional derived field (hardcoded 0 — permanently disabled), not an env knob.
-    // Mint-time candidate-vs-champion offline expectancy backtest (reflection.service.ts's
-    // runMintBacktest): rows of the newest recorded decisions (regardless of action) replayed against
-    // BOTH the draft candidate and the current champion playbook, simulating each 'long' plan's
-    // outcome. 0 (default) disables it entirely — a brand-new, LLM-call-doubling knob (2 arms × rows
-    // calls per mint attempt) defaults OFF for any unconfigured deployment, like other experimental
-    // knobs; this deployment's docker-compose.yml opts in explicitly. NOTE: reflection.service.ts's
-    // createReflectionService reads this off raw process.env (same convention as the mint-floor
-    // knobs below, which have no schema entry at all) rather than through this validated field —
-    // this schema entry exists so the knob is documented/bounded/configHash-visible, not because the
-    // reflection wiring consumes AppConfig.agentic.mintBacktestRows directly.
-    AGENTIC_MINT_BACKTEST_ROWS: z.coerce.number().int().min(0).default(0),
-    // Noise HANDICAP (bps), not a beat-the-champion hurdle: the candidate mints unless its mean net
-    // bps/trip trails the champion's by MORE than this (candidate >= champion − margin passes);
-    // trailing by more is treated exactly like a floor rejection.
-    AGENTIC_MINT_BACKTEST_MARGIN_BPS: z.coerce.number().int().min(0).default(10),
-    // Minimum simulated round trips BOTH arms need before the backtest verdict is trusted — below
-    // this the sample is too thin to judge and the backtest fails open (mint proceeds unbacktested).
-    AGENTIC_MINT_BACKTEST_MIN_TRIPS: z.coerce.number().int().min(0).default(3),
+    // AGENTIC_MINT_BACKTEST_ROWS / _MARGIN_BPS / _MIN_TRIPS DELETED 2026-07-30: the mint-time
+    // candidate-vs-champion expectancy backtest was reflection-only (runCandidateBacktest had exactly
+    // one caller, reflection.service.ts) and went with it. The schema entries were documentation for
+    // a knob the wiring read off raw process.env, so nothing consumed these validated fields either.
     // Attributed auto-promotion (owner decision 2026-07-08): the promotion evaluator promotes a
     // reflection candidate only once the CANDIDATE's own attributed closed trips reach this floor
     // AND its mean net/trip (realized − fees) beats the champion's over the same trailing window.
@@ -475,8 +445,8 @@ const envSchema = z
     // the moment reflectionModel ≠ model — flat pricing under-counts a pricier reflection model.
     // Absent models fall back to the flat knobs above; unknown models in cost rows price at the
     // MOST EXPENSIVE configured rates (fail-closed). Validated below; a malformed value fails boot.
-    // The deployed map MUST keep its claude-opus-5 entry even though reflection is switched off
-    // (AGENTIC_REFLECTION_EVERY_N_TRADES=0, 2026-07-30): AGENTIC_REFLECTION_MODEL is still set and
+    // The deployed map MUST keep its claude-opus-5 entry even though the reflection loop itself was
+    // deleted (2026-07-30): AGENTIC_REFLECTION_MODEL is still set and
     // still differs from AGENTIC_MODEL, so the superRefine below refuses boot without it, and
     // PromotionReadinessService re-prices the 69 historical Opus llm_usage rows on every evaluation.
     AGENTIC_TOKEN_PRICES_JSON: z.string().optional(),
@@ -897,7 +867,6 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     AGENTIC_MODEL: agenticModel,
     AGENTIC_REFLECTION_MODEL: agenticReflectionModel,
     AGENTIC_TIMEOUT_MS: agenticTimeoutMs,
-    AGENTIC_REFLECTION_TIMEOUT_MS: agenticReflectionTimeoutMs,
     AGENTIC_MAX_TOKENS: agenticMaxTokens,
     AGENTIC_MIN_DECISION_INTERVAL_MS: agenticMinDecisionIntervalMs,
     AGENTIC_WARMUP_BARS: agenticWarmupBars,
@@ -913,8 +882,6 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     AGENTIC_MAX_ENTRIES_PER_DAY: agenticMaxEntriesPerDay,
     AGENTIC_DRAIN_COOLDOWN_BASE_MS: agenticDrainCooldownBaseMs,
     AGENTIC_DRAIN_COOLDOWN_MAX_MS: agenticDrainCooldownMaxMs,
-    AGENTIC_REFLECTION_EVERY_N_TRADES: agenticReflectionEveryNTrades,
-    AGENTIC_REFLECTION_COOLDOWN_MS: agenticReflectionCooldownMs,
     AGENTIC_PLAYBOOK_PIN: agenticPlaybookPin,
     AGENTIC_PLAYBOOK_AB_PCT: agenticPlaybookAbPct,
     AGENTIC_DERIVATIVES_V2_ENABLED: agenticDerivativesV2Enabled,
@@ -926,9 +893,6 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     AGENTIC_EDGE_POLICY_FAMILY: agenticEdgePolicyFamily,
     AGENTIC_PORTFOLIO_CONSULT: agenticPortfolioConsult,
     AGENTIC_PORTFOLIO_WINDOW_MS: agenticPortfolioWindowMs,
-    AGENTIC_MINT_BACKTEST_ROWS: agenticMintBacktestRows,
-    AGENTIC_MINT_BACKTEST_MARGIN_BPS: agenticMintBacktestMarginBps,
-    AGENTIC_MINT_BACKTEST_MIN_TRIPS: agenticMintBacktestMinTrips,
     AGENTIC_AUTO_PROMOTE_MIN_ATTRIBUTED_TRADES: agenticAutoPromoteMinAttributedTrades,
     AGENTIC_TOKEN_PRICE_INPUT_PER_MTOK: agenticTokenPriceInputPerMtok,
     AGENTIC_TOKEN_PRICE_OUTPUT_PER_MTOK: agenticTokenPriceOutputPerMtok,
@@ -1110,7 +1074,6 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       model: agenticModel,
       reflectionModel: agenticReflectionModel,
       timeoutMs: agenticTimeoutMs,
-      reflectionTimeoutMs: agenticReflectionTimeoutMs,
       maxTokens: agenticMaxTokens,
       minDecisionIntervalMs: agenticMinDecisionIntervalMs,
       warmupBars: agenticWarmupBars,
@@ -1132,11 +1095,6 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       maxEntriesPerDay: agenticMaxEntriesPerDay,
       drainCooldownBaseMs: agenticDrainCooldownBaseMs,
       drainCooldownMaxMs: agenticDrainCooldownMaxMs,
-      reflectionEveryNTrades: agenticReflectionEveryNTrades,
-      reflectionCooldownMs: agenticReflectionCooldownMs,
-      mintBacktestRows: agenticMintBacktestRows,
-      mintBacktestMarginBps: agenticMintBacktestMarginBps,
-      mintBacktestMinTrips: agenticMintBacktestMinTrips,
       // v3-transitional(#10): AGENTIC_AUTO_PROMOTE_MIN_TRADES is deleted (§3.4) — the legacy
       // count-only path is permanently superseded by autoPromoteMinAttributedTrades below.
       // reflection.service.ts / agentic-strategy.module.ts still read this field; hardcoded 0

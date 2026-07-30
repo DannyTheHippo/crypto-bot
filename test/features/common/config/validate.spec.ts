@@ -405,7 +405,6 @@ describe('validate()', () => {
         model: 'claude-sonnet-5',
         reflectionModel: undefined,
         timeoutMs: 30000,
-        reflectionTimeoutMs: 240000,
         maxTokens: 4096,
         minDecisionIntervalMs: 0,
         warmupBars: 50,
@@ -424,11 +423,6 @@ describe('validate()', () => {
         maxEntriesPerDay: 12,
         drainCooldownBaseMs: 30_000,
         drainCooldownMaxMs: 900_000,
-        reflectionEveryNTrades: 10,
-        reflectionCooldownMs: 604_800_000,
-        mintBacktestRows: 0,
-        mintBacktestMarginBps: 10,
-        mintBacktestMinTrips: 3,
         // v3-transitional(#10): AGENTIC_AUTO_PROMOTE_MIN_TRADES deleted — permanently 0.
         autoPromoteMinTrades: 0,
         autoPromoteMinAttributedTrades: 0,
@@ -479,9 +473,6 @@ describe('validate()', () => {
         AGENTIC_MAX_ENTRIES_PER_DAY: '20',
         AGENTIC_DRAIN_COOLDOWN_BASE_MS: '15000',
         AGENTIC_DRAIN_COOLDOWN_MAX_MS: '600000',
-        AGENTIC_REFLECTION_EVERY_N_TRADES: '5',
-        AGENTIC_REFLECTION_COOLDOWN_MS: '3600000',
-        AGENTIC_REFLECTION_TIMEOUT_MS: '90000',
         AGENTIC_MAX_POSITION_FRACTION_SPOT: '0.25',
         AGENTIC_FALLBACK_CONSULT_BARS: '8',
         AGENTIC_WAKE_MOVE_PCT: '0.03',
@@ -499,9 +490,6 @@ describe('validate()', () => {
       expect(cfg.agentic.maxEntriesPerDay).toBe(20);
       expect(cfg.agentic.drainCooldownBaseMs).toBe(15000);
       expect(cfg.agentic.drainCooldownMaxMs).toBe(600000);
-      expect(cfg.agentic.reflectionEveryNTrades).toBe(5);
-      expect(cfg.agentic.reflectionCooldownMs).toBe(3600000);
-      expect(cfg.agentic.reflectionTimeoutMs).toBe(90000);
       expect(cfg.agentic.maxPositionFractionSpot).toBe('0.25');
       expect(cfg.agentic.fallbackConsultBars).toBe(8);
       expect(cfg.agentic.wakeMovePct).toBe('0.03');
@@ -646,12 +634,35 @@ describe('validate()', () => {
       });
     });
 
-    it('AGENTIC_REFLECTION_EVERY_N_TRADES=0 is valid (means off)', () => {
-      const cfg = validate({ PORT: '3100', AGENTIC_REFLECTION_EVERY_N_TRADES: '0' });
-      expect(cfg.agentic.reflectionEveryNTrades).toBe(0);
+    it('the reflection-loop and mint-backtest knobs are gone from cfg.agentic, and a stale env still boots', () => {
+      // Deleted 2026-07-30 with the in-process reflection loop and its mint-time backtest. Same
+      // `in`-assertion convention as the retired shortsEnabled/derivativesAbPct fields above. A
+      // deployment whose env file still carries the keys must boot unchanged (they are simply
+      // unknown keys now), which is the fail-open direction a retired knob requires.
+      const cfg = validate({
+        PORT: '3100',
+        AGENTIC_REFLECTION_EVERY_N_TRADES: '5',
+        AGENTIC_REFLECTION_COOLDOWN_MS: '3600000',
+        AGENTIC_REFLECTION_TIMEOUT_MS: '90000',
+        AGENTIC_MINT_BACKTEST_ROWS: '60',
+        AGENTIC_MINT_BACKTEST_MARGIN_BPS: '15',
+        AGENTIC_MINT_BACKTEST_MIN_TRIPS: '5',
+      });
+      for (const field of [
+        'reflectionEveryNTrades',
+        'reflectionCooldownMs',
+        'reflectionTimeoutMs',
+        'mintBacktestRows',
+        'mintBacktestMarginBps',
+        'mintBacktestMinTrips',
+      ]) {
+        expect(field in cfg.agentic).toBe(false);
+      }
+      // reflectionModel is NOT one of them — see the two cases below for why it survives.
+      expect('reflectionModel' in cfg.agentic).toBe(true);
     });
 
-    it('AGENTIC_REFLECTION_MODEL absent → undefined (reflection follows AGENTIC_MODEL)', () => {
+    it('AGENTIC_REFLECTION_MODEL absent → undefined (one model, one price)', () => {
       const cfg = validate({ PORT: '3100' });
       expect(cfg.agentic.reflectionModel).toBeUndefined();
     });
@@ -726,12 +737,6 @@ describe('validate()', () => {
       );
     });
 
-    it('throws on negative AGENTIC_REFLECTION_EVERY_N_TRADES', () => {
-      expect(() => validate({ PORT: '3100', AGENTIC_REFLECTION_EVERY_N_TRADES: '-1' })).toThrow(
-        /AGENTIC_REFLECTION_EVERY_N_TRADES/,
-      );
-    });
-
     it('ANTHROPIC_API_KEY never enters AppConfig (secret stays out of the validated schema)', () => {
       const cfg = validate({ PORT: '3100', ANTHROPIC_API_KEY: 'sk-secret' });
       expect(cfg as unknown as Record<string, unknown>).not.toHaveProperty('ANTHROPIC_API_KEY');
@@ -753,23 +758,6 @@ describe('validate()', () => {
         validate({ PORT: '3100', AGENTIC_AUTO_PROMOTE_MIN_TRADES: '30' }).agentic
           .autoPromoteMinTrades,
       ).toBe(0);
-    });
-
-    it('AGENTIC_MINT_BACKTEST_* default to (0, 10, 3) — off unless a deployment opts in — and coerce', () => {
-      const defaults = validate({ PORT: '3100' }).agentic;
-      expect(defaults.mintBacktestRows).toBe(0);
-      expect(defaults.mintBacktestMarginBps).toBe(10);
-      expect(defaults.mintBacktestMinTrips).toBe(3);
-
-      const overridden = validate({
-        PORT: '3100',
-        AGENTIC_MINT_BACKTEST_ROWS: '60',
-        AGENTIC_MINT_BACKTEST_MARGIN_BPS: '15',
-        AGENTIC_MINT_BACKTEST_MIN_TRIPS: '5',
-      }).agentic;
-      expect(overridden.mintBacktestRows).toBe(60);
-      expect(overridden.mintBacktestMarginBps).toBe(15);
-      expect(overridden.mintBacktestMinTrips).toBe(5);
     });
 
     it('AGENTIC_TOKEN_PRICE_*_PER_MTOK and PROMOTION_DUST_NOTIONAL default and override as decimal strings', () => {

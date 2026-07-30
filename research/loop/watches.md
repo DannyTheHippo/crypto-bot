@@ -57,6 +57,74 @@ WATCH-V3-1: spot heap slope on the demo soak (paper plateau 673 MiB is the
   order the venue reported `open`/other while absent from open orders, which is what the class means
   (`reconciliation.service.ts:59`).
 
+  **AMENDED AGAIN 2026-07-30T21:52Z — THE SECOND OCCURRENCE ARRIVED, THE ROOT-CAUSE PASS RAN, AND
+  "STAYS 0" WAS NEVER THE RIGHT EXPECTATION.** The trigger the amendment above set fired, so this is
+  the root-cause pass it demanded.
+
+  **Two counts in the amendment above are wrong and are corrected here rather than quietly restated.**
+  The class now carries **102** rows, not 101. And of the 100 rows dated 2026-07-27, **99 are
+  `binanceusdm` and 1 is `binance`** (`adopt_non_adoptable:2`, 15:45:22.821Z) — the amendment called
+  all 100 `binanceusdm`. Query, run against the durable surface it named:
+  `select venue, ts, result, open_orders_checked, discrepancies->>'detail' from reconciliations where
+  discrepancies->>'detail' like '%adopt_non_adoptable%' order by ts`.
+
+  **The second occurrence: 2026-07-30T19:00:30.599Z, `binance`, boot `f30074f2`, row id 28052,
+  `{"detail":"adopt_non_adoptable:1","mismatches":1}`, `open_orders_checked` 2.**
+
+  **All three `binance` occurrences share one signature, and it is a race between two non-atomic
+  venue reads:**
+
+  | occurrence | detail | `open_orders_checked` | order(s) that reached `ACKED` just before | lag |
+  | --- | --- | --- | --- | --- |
+  | 2026-07-27T15:45:22.821Z | `:2` | 0 | `BTC/USDT` LIMIT 15:45:02Z, `BTC/USDT` STOP_LOSS_LIMIT 15:45:03Z | 19–20s |
+  | 2026-07-30T09:30:15.860Z | `:1` | 0 | `ZEC/USDT` LIMIT 09:30:03Z | 12s |
+  | 2026-07-30T19:00:30.599Z | `:1` | 2 | `BTC/USDT` STOP_LOSS_LIMIT 19:00:02Z, `ZEC/USDT` STOP_LOSS_LIMIT 19:00:11Z | 19s |
+
+  Each self-cleared on the **very next pass for that venue**, with `open_orders_checked` rising by
+  exactly the number that had been missing: 0 → 1 at 09:31:45Z, 2 → 3 at 19:01:29Z.
+
+  **Mechanism, read off the code rather than inferred from the pattern.** `reconcileOpenOrders`
+  snapshots `fetchOpenOrders`, then for every local open order absent from that snapshot calls
+  `fetchOrder` (`reconciliation.service.ts:743-748`). The two venue reads are **not atomic**. An order
+  ACKed seconds earlier is legitimately absent from a list snapshot taken before it landed AND
+  legitimately `open` on its own fetch — which is verbatim the condition line 776 bumps as
+  `adopt_non_adoptable`. **The class cannot distinguish this race from a real defect**, so on a lane
+  that places orders on 15m-bar boundaries against a 60s pass cadence, "stays 0" is unachievable by
+  construction and its breach carries no information.
+
+  **THE CLAUSE IS RE-DERIVED, AND THIS IS A TIGHTENING, NOT A WEAKENING.** "Stays 0" demanded nothing
+  of an occurrence except that it not happen; the replacement demands a positive explanation for every
+  one:
+
+  > **Expected-positive (replaces "stays 0"):** every `adopt_non_adoptable` occurrence is BOTH
+  > **transient** — absent from the next pass for that venue — AND **explained** — an order on that
+  > venue reached `ACKED` within the preceding pass interval. Both clauses, per occurrence, checked on
+  > `reconciliations` (durable) and not on the boot-scoped counter.
+  >
+  > **Named defect outcome:** an occurrence failing EITHER clause. **≥2 consecutive passes on one
+  > venue** is the 2026-07-27 `binanceusdm` shape (99 rows over 1h39m, the fold defect at
+  > `reconciliation.service.ts:969-977`) and is what actually starves the stamp, because the class is
+  > deliberately **actionable** (`reconciliation.service.ts:152-153`) and so blocks `lastCleanAt`
+  > every pass it fires. **An occurrence with no ACK in the preceding interval** is an unexplained
+  > divergence — root-cause from the specific coid.
+
+  **The "re-specify it against the classes that DO halt" option is REJECTED, on the watch's own
+  subject.** WATCH-V4-1 is *clean-stamp liveness*. What starves the stamp is any ACTIONABLE mismatch,
+  halting or not — and `adopt_non_adoptable` is on this watch precisely because it is actionable and
+  **non-halting**, the one combination that can starve a stamp for hours without paging anything.
+  Moving the clause to `UNKNOWN_OURS_OPEN` would hand the watch a subject that hard rule 6 and the
+  halt path already cover, and would leave the real starvation mechanism unwatched. **The class was
+  never expected to HALT and was never meant to** — it pushes nothing to `acc.halts`
+  (`reconciliation.service.ts:776`), and every one of the 1,727 recorded HALTs came from
+  `POSITION_DRIFT`, `UNKNOWN_OURS_OPEN` or `FILL_FOR_UNKNOWN_ORDER`, the last at 2026-07-27T16:46:02Z.
+  The stamp-age clause and the `sum(fills.qty)` clause are unchanged.
+
+  **State at re-derivation (2026-07-30T21:46:46Z):** 24h reads **2,840 `CLEAN` / 10 `MISMATCH` / 0
+  `HALT`** with `kill_switch_state{state="RUNNING"} == 1`. The boot-scoped
+  `reconciliation_mismatch_total{class="adopt_non_adoptable"}` reads **1** — the Pass 47 zero-seed
+  working as designed, so that is a real reading rather than a void one, but it still only covers boot
+  `f30074f2`.
+
 ### WATCH-V4-2 — FILL_OVERFLOW is one-shot by construction (Pass 40, 2026-07-27; same record)
 
   **WATCH-V4-2 (FILL_OVERFLOW is one-shot by construction).** Expected-positive:
@@ -199,6 +267,63 @@ WATCH-V3-1: spot heap slope on the demo soak (paper plateau 673 MiB is the
   "cancel skipped because the registry row was gone" — do not patch the cancel before the read exists,
   because a fix on an unreadable path is unverifiable. Deadline: next pass re-checks
   `select symbol, type, state from orders where state = 'ACKED'` against the live position set.
+
+  **RE-CHECKED 2026-07-30T21:51Z — the record is still stranded, and THE DEADLINE QUERY ABOVE IS A
+  VOID READ.** Two questions were being run together and they separate cleanly.
+
+  **1. The local record is unchanged, and it is worse than recorded.**
+  `cbt019fb31cb7c97ea0a8dfa5462d3d3764` (venue order `1000000150396877`), `binanceusdm`
+  `HYPE/USDT:USDT` `BUY` `STOP_MARKET`, qty 1.49, trigger 53.254, still `ACKED` with `terminal_at`
+  NULL and `updated_at` frozen at 2026-07-30T13:00:32.760Z. The short it protected closed at
+  **16:00:39.991Z** (`cbt019fb3c15b877621a1bf9b70162d067c`, `BUY LIMIT` FILLED), and `positions`
+  carries **no HYPE row** — the perp book holds only `BTC/USDT:USDT` +0.0018. So: **8h51m after
+  submission, 5h51m orphaned, and FOUR boots have started since its own** (`181b2965`, `923ed595`,
+  `b894ce22`, `f30074f2`, per `reconciliations.boot_id` windows) — not the two recorded above.
+
+  **2. Whether it is still RESTING AT THE VENUE is unanswerable from anything this system records,
+  and `state = 'ACKED'` is not evidence either way.** `boot-recovery.service.ts:97-101` deliberately
+  does **not** register algo-rail orders into `portfolio.openOrders`, and reconciliation's open-orders
+  axis iterates exactly that set to decide what to adopt terminal
+  (`reconciliation.service.ts:723,743-748`). **After any boot, no reconciliation pass can fold a perp
+  algo stop terminal, whatever the venue says** — so `ACKED` is the expected local reading whether the
+  order rests or not.
+
+  **Corroborated in the pass counts.** `binanceusdm` `open_orders_checked` reads **1** on every pass
+  while the local book holds **4** non-terminal `binanceusdm` orders — and exactly **1 of the 4 is
+  regular-rail** (the 17:30:05Z `BTC/USDT:USDT SELL LIMIT`); the other three are `STOP_MARKET` on the
+  algo rail, which `fetchOpenOrders` does not surface. On spot `binance` the two counts agree exactly
+  (3 non-terminal, `open_orders_checked` 3). **"1 binanceusdm open order" therefore carries zero
+  information about the HYPE stop**, and any reading of it as "the stop is still resting" is
+  unsupported.
+
+  **Directly demonstrated this boot.** `agentic_venue_stop_total{event="drift_cancel",
+  venue="binanceusdm"}` reads **1** and `{event="placed"}` reads **1** on boot `f30074f2`, while **no
+  `binanceusdm` `STOP_MARKET` record reached a terminal state on this boot at all**. A venue-side algo
+  cancel and the local terminal fold are decoupled here, measured, not argued.
+
+  **3. Counter-evidence against the tempting general claim, kept because it constrains the
+  diagnosis.** Cross-boot perp stops are **not** universally stranded: at 16:52:15Z / 16:52:26Z /
+  16:52:29Z, on boot `181b2965`, three previous-boot stops were `CANCELED` and folded terminal
+  (`BTC/USDT:USDT` submitted 10:45:27Z, `UNI/USDT:USDT` 11:00:32Z, `UNI/USDT:USDT` 11:45:33Z). A
+  cross-boot cancel-and-fold path exists and ran that minute; it reached neither the HYPE stop nor the
+  `BTC/USDT:USDT` stop submitted 11:45:33Z, which is **also still `ACKED`**. **Mechanism still NOT
+  established** — this pass narrowed where to look and proved what the old read cannot tell you; it
+  did not prove a cause. `agentic_venue_stop_total{event="orphan_cancel"}` is still **0** on both
+  venues, the same void read as before.
+
+  **The named defect outcome has NOT fired on its own terms.** The second stranded record
+  (`BTC/USDT:USDT`, 11:45:33Z) sits against an **open** position and was plausibly superseded by the
+  19:00:09Z stop, so it is a superseded-duplicate shape rather than a second orphan against a flat
+  book. Recorded as adjacent, not counted as the trigger.
+
+  **Re-derived deadline check, because the old one cannot answer its own question.** Replace
+  `select symbol, type, state from orders where state = 'ACKED'` with: **the count of non-terminal
+  `STOP_MARKET` records whose symbol has no `positions` row, cross-checked against
+  `fetchOpenAlgoOrders` for those symbols.** The second half does not exist as a scheduled read today
+  — `manageVenueStopPerp` runs the algo-rail scan only for POSITIONED symbols, and a flat symbol is
+  exactly the case in question. **So the first thing to build is still a READ, not a fix**, and the
+  read now has two jobs rather than one: distinguish "no cancel needed" from "cancel skipped", and
+  distinguish "resting at the venue" from "gone at the venue, stranded in our book".
 
 ## Flagged for human review (open)
 

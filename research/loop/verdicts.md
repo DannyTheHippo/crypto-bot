@@ -590,3 +590,67 @@ classification** bullet, which stood last in this section, is now `charter.md` �
     v10 there is none, so the A/B routes nothing. Since the deploy all four real decides read
     `playbook_version=10` (v9 took 40 of the previous 24h's 88). Not a defect — but a pass should
     either mint a genuine candidate to compare against `inverted` or set the knob to 0 and say so.
+
+- **DECISION 2026-07-30 — the preserved authoring prompt's DEAD-INPUT paragraphs are NOT trimmed, and
+  the caveat carries a falsifiable check instead.** `research/loop/playbook-authoring.md` instructs the
+  model to weigh `regretDigest`, `versionPnl`, `closedTrades`, `realizedRoundTrips`, `calibration`,
+  `execQuality` and `crossSymbol`; `loop:authoring` supplies none of them, and
+  `scripts/loop-authoring.mjs:239-245` already says so at runtime and forbids inventing figures for a
+  digest the call did not carry. **Decision: leave the drafting path as it is.** Three reasons, in
+  order of weight:
+  - **No clean cut exists at paragraph granularity.** The FIVE-areas paragraph names a digest and its
+    lesson inside the same clause ("closedTrades and realizedRoundTrips show what sizeFraction choices
+    the model made … favor concentrating conviction in a few good setups"). Trimming the dead input
+    reference discards reasoning that stands on its own, which is exactly what the caveat's own
+    wording tells the model to keep.
+  - **The strip mechanism is narrow on purpose.** `assertNoRetiredObjective` fails CLOSED by throwing
+    and exists for the one paragraph that carries a **live objective conflict** (ANTI-RATCHET, which
+    would silently re-impose a retired entry-rate target). Extending its fences to paragraphs whose
+    only fault is naming an absent input converts a safety mechanism into an editorial one and dilutes
+    what a fence means.
+  - **The cost of leaving it is small and the risk is checkable rather than assumed.** It is one
+    drafting call per variant, and the guidance block is a minority of a prompt that also carries the
+    whole-DB evidence block and the incumbent playbook.
+  - **The check, so this is a decision and not a shrug:** scan every draft the authoring pass produces
+    (`agent_playbook_versions` where `source = 'loop-candidate'`, plus the run's recorded changelog)
+    for any figure attributed to one of the seven absent digests. **One such citation is evidence the
+    caveat is insufficient, and the trim then happens at assembly time with measured cause** — never
+    by editing `playbook-authoring.md`, which is a preservation artifact. **Current sample: zero
+    drafts.** v10 came from the playbook-space study's `inverted` arm via `--supersede`, not from
+    `loop:authoring`, so the check is prospective and no pass may report it as holding yet.
+
+- **PLAN STEP 14 IS NOT CLOSED — and the closure argument fails on measurement, not on principle
+  (2026-07-30).** The step: _"apply rate reduction only where net-per-trip stays negative; have the
+  loop set the rate from measured per-horizon net."_ The proposed closure was that `inverted` (v10)
+  plus plan-authoritative exits already satisfy it by holding positions toward h=24, where
+  `inverted`'s net-of-fee point estimate is positive. **Checked against the live stack, three of that
+  argument's load-bearing claims do not survive.**
+  - **The declared deadline is 48 bars, not 24.** Under `playbook_version = 10` the model's own
+    `plan_json.maxHoldBars` reads **48 on 5 declarations and 40 on 1** — never 24, and 48 bars is
+    12 hours against h=24's six. The modal declaration across v6-v10 is likewise 48. Forward return is
+    measured only at h ∈ {1, 4, 8, 24}; **nothing in this program has ever measured h=48 for any arm**,
+    so "plan-authoritative exits hold positions toward the horizon where net is positive" is an
+    unmeasured extrapolation past the last measured point.
+  - **The +27.6 figure matches neither of the repo's own cost floors.** It is +47.6 gross minus a flat
+    20 bps. This program's break-even gross is **+13.0 bps demo** and **+24.2 bps live**
+    (`playbook-space-followon-2026-07-31.md` § The RESEARCH bar; `entry-rate-rederivation-2026-07-30.md`),
+    giving **+34.6** on the demo basis the lane actually runs and **+23.4** on the live one. Neither is
+    +27.6.
+  - **It is a point estimate the program has already forbidden quoting as a level.** `inverted`'s h=24
+    CI lower bound is **−12.2 gross**, i.e. below zero net on any fee basis, and `STATUS.md` says
+    outright: never quote +47.6 as an edge.
+  - **Half the step is satisfied only vacuously.** "Apply rate reduction only where net-per-trip stays
+    negative" cannot have been violated by the deployed arm, because **no rate reduction is in force on
+    it** — `inverted` enters at ~35% against the champion's ~30%. Satisfied because the antecedent is
+    false, not because a mechanism enforces the condition.
+
+  **The gap that remains, named concretely so it is not a request for machinery.** The standing
+  objective in the drafting prompt (`scripts/loop-authoring.mjs:228-233`) reads "minimise entries
+  subject to the lane remaining observable" **with no per-horizon qualification at all**, and the
+  evidence block the same call supplies carries **no per-horizon net table**. So (i) step 14's "only
+  where net-per-trip stays negative" condition exists nowhere in the shipped path — it simply has not
+  bitten yet — and (ii) "have the loop set the rate from measured per-horizon net" is unimplemented,
+  because the loop is never shown the measured per-horizon net. **Both are single-site edits in
+  `scripts/loop-authoring.mjs`** — one qualifying clause and one addition to the evidence block. **No
+  new machinery is warranted and none should be built**; the step stays open until those two land, or
+  until a dated record re-specifies it against what was actually measured.

@@ -442,6 +442,128 @@ export function renderTwoBars({ arm, deployment, research }) {
   return lines.join('\n');
 }
 
+// ── the per-horizon net table ────────────────────────────────────────────────────────────────────
+
+/**
+ * Break-even GROSS forward return per trip, by lane. NOT a flat 20 bps — that figure appears nowhere
+ * in this program's own cost model, and a +27.6 "net" derived from it is recorded as an error in
+ * research/loop/verdicts.md § the +27.6 figure. Demo mirrors REQUIRED_EDGE_BPS in
+ * test/eval/agentic/playbook-space-replay.ts; both trace to verdicts.md § THE ENTRY SIGNAL.
+ */
+export const COST_FLOOR_BPS = Object.freeze({ demo: 13.0, live: 24.2 });
+
+/**
+ * The FROZEN per-horizon measurement of a running playbook, keyed by version.
+ *
+ * Keyed rather than global because a table quoted for the wrong playbook is worse than no table: v10
+ * is the `inverted` arm of the completed playbook-space study, and no other version's cells were
+ * measured under that harness. An incumbent with no key here renders EVERY horizon UNMEASURED, which
+ * is the honest reading — the same reason resolveIncumbent never falls back to a literal version.
+ *
+ * Frozen numbers, transcribed from research/studies/playbook-space-replay-2026-07-28.md § Results —
+ * `claude-sonnet-5` leg (the `inverted` rows). h ∈ {1,4,8,24} is the whole declared horizon set
+ * (HORIZONS in playbook-space-replay.ts); NOTHING was measured at h=40 or h=48, which is exactly
+ * where the running playbook's own plans sit.
+ */
+export const MEASURED_HORIZON_CELLS = Object.freeze({
+  10: Object.freeze({
+    arm: 'inverted',
+    source: 'research/studies/playbook-space-replay-2026-07-28.md § Results — claude-sonnet-5 leg',
+    cells: Object.freeze([
+      Object.freeze({ h: 1, n: 117, clusters: 20, meanBps: -0.8, ciLoBps: -7.7 }),
+      Object.freeze({ h: 4, n: 117, clusters: 20, meanBps: 0.8, ciLoBps: -10.9 }),
+      Object.freeze({ h: 8, n: 117, clusters: 20, meanBps: 19.3, ciLoBps: 1.1 }),
+      Object.freeze({ h: 24, n: 117, clusters: 20, meanBps: 47.6, ciLoBps: -12.2 }),
+    ]),
+  }),
+});
+
+/** Explicit sign on every figure — an unsigned "0.8" in a table of losses reads as a gain. */
+function bps(value) {
+  const v = Number(value);
+  return `${v >= 0 ? '+' : '-'}${Math.abs(v).toFixed(1)}`;
+}
+
+/**
+ * The per-horizon NET table the drafting model is judged against.
+ *
+ * Exists because the standing objective is qualified PER HORIZON ("reduce the rate where net is
+ * negative, hold where it is not") and the model was previously never shown the net — an instruction
+ * nothing in the prompt made implementable.
+ *
+ * VOID-READ POSTURE, which is the load-bearing behaviour here: a horizon with no measured cell is
+ * rendered as an explicit UNMEASURED row. It is never omitted and never defaulted — an absent row
+ * reads to a model as a zero, and a zero at a horizon of unknown sign is a favourable reading this
+ * program has no evidence for. `plannedHorizons` is what the running playbook's own
+ * plan_json.maxHoldBars actually asks for, so the horizons it holds to appear in the table whether or
+ * not anyone has measured them.
+ *
+ * @param {{incumbent?:{version:number}, plannedHorizons?:{h:number,n:number}[], floorBps?:number}} input
+ * @returns {string}
+ */
+export function buildPerHorizonNetTable({
+  incumbent,
+  plannedHorizons = [],
+  floorBps = COST_FLOOR_BPS.demo,
+} = {}) {
+  const measured = MEASURED_HORIZON_CELLS[incumbent?.version];
+  const planned = new Map(
+    (plannedHorizons ?? [])
+      .filter((p) => Number.isFinite(Number(p?.h)))
+      .map((p) => [Number(p.h), Number(p.n) || 0]),
+  );
+  const byHorizon = new Map((measured?.cells ?? []).map((c) => [c.h, c]));
+  const horizons = [...new Set([...byHorizon.keys(), ...planned.keys()])].sort((a, b) => a - b);
+
+  const lines = [
+    `## PER-HORIZON FORWARD RETURN, NET OF THE COST FLOOR (+${floorBps.toFixed(1)} bps/trip, demo fees)`,
+    `The floor is +${COST_FLOOR_BPS.demo.toFixed(1)} bps/trip at demo fees and ` +
+      `+${COST_FLOOR_BPS.live.toFixed(1)} bps/trip live (research/loop/verdicts.md). NET = gross mean ` +
+      'minus the floor of the lane the arm runs on. There is no flat-20-bps floor in this program.',
+    measured === undefined
+      ? `No frozen per-horizon measurement exists for the running playbook (v${incumbent?.version ?? '?'}) — ` +
+        'every row below is UNMEASURED.'
+      : `Measured cells: the ${measured.arm} arm, ${measured.source}.`,
+  ];
+  if (horizons.length === 0) {
+    lines.push('no horizons to report — neither a measured cell nor a planned hold length exists');
+    return lines.join('\n');
+  }
+  for (const h of horizons) {
+    const label = `  h=${String(h).padStart(2)}`;
+    const plannedNote =
+      planned.has(h) === false
+        ? ''
+        : `  [the running playbook planned this hold length ${planned.get(h)}x]`;
+    const cell = byHorizon.get(h);
+    if (cell === undefined) {
+      lines.push(
+        `${label}  UNMEASURED — no cell exists at this horizon. NOT zero and NOT favourable: ` +
+          `unvalidated.${plannedNote}`,
+      );
+      continue;
+    }
+    const netMean = cell.meanBps - floorBps;
+    const netCiLo = cell.ciLoBps - floorBps;
+    const verdict =
+      netMean < 0
+        ? 'NET NEGATIVE — reduce the entry rate here'
+        : netCiLo > 0
+          ? 'NET POSITIVE at the mean AND the CI lower bound — hold the rate here'
+          : 'NET POSITIVE at the mean ONLY, CI lower bound below the floor — hold the rate, do not raise it';
+    lines.push(
+      `${label}  n=${cell.n}  gross mean ${bps(cell.meanBps).padStart(6)}  ` +
+        `CI lo ${bps(cell.ciLoBps).padStart(6)}  NET ${bps(netMean).padStart(6)}  ` +
+        `(NET at CI lo ${bps(netCiLo)})  ${verdict}${plannedNote}`,
+    );
+  }
+  lines.push(
+    'A gross mean is not an edge: the h=24 cell fails the research bar on its interval and must never ' +
+      'be quoted as a level (research/loop/STATUS.md).',
+  );
+  return lines.join('\n');
+}
+
 // ── evidence digest handed to the drafting model ─────────────────────────────────────────────────
 
 /**
@@ -453,7 +575,13 @@ export function renderTwoBars({ arm, deployment, research }) {
  * here, and a missing input renders as an explicit "no data" line rather than a zero that reads like a
  * measurement.
  */
-export function buildEvidenceDigest({ decisions, versionStats, roundTrips, incumbent }) {
+export function buildEvidenceDigest({
+  decisions,
+  versionStats,
+  roundTrips,
+  incumbent,
+  plannedHorizons,
+}) {
   const lines = [];
   lines.push('## DECISION JOURNAL (whole table, MODEL-AUTHORED rows only)');
   if (!decisions || decisions.total === 0) {
@@ -503,6 +631,9 @@ export function buildEvidenceDigest({ decisions, versionStats, roundTrips, incum
       `mean net per trip: ${roundTrips.meanNetPerTripQuote} quote over ${roundTrips.symbols} symbols`,
     );
   }
+
+  lines.push('');
+  lines.push(buildPerHorizonNetTable({ incumbent, plannedHorizons }));
   return lines.join('\n');
 }
 

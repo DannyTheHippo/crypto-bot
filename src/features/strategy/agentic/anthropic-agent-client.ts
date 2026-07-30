@@ -455,6 +455,54 @@ function classifyHttpStatus(status: number): 'RETRYABLE' | 'FATAL' {
   return 'FATAL';
 }
 
+// Pass 48 (2026-07-30): a SECOND classification, orthogonal to classifyHttpStatus above — that one
+// decides whether to keep calling, this one decides WHY a FATAL call failed, so the latch it causes
+// can be told apart from an owner-blocked-but-already-diagnosed condition (an unfunded LLM provider
+// account) from one that is actually actionable (a bad/revoked key). Read from the provider's OWN
+// error body only (attemptOnce's `detail`, embedded in AgentProposeError.message below) — never
+// guessed from anything else.
+//
+// FAILURE DIRECTION, stated because this drives an alert-severity split (observability/
+// alerts.rules.yml's AgentClientFatalLatch/AgentClientLatchedUnfundedAccount): this classifier fails
+// CLOSED toward 'other'. 'other' keeps the critical alert armed; only a positive, specific match on
+// the provider's own credit-exhaustion wording demotes it to the known-cause warning. An unrecognised
+// FATAL error must never be quietly demoted — that is the whole safety property this function buys.
+export type AgentClientLatchCause = 'insufficient_credit' | 'auth' | 'other';
+
+export function classifyLatchCause(
+  status: number | undefined,
+  message: string,
+): AgentClientLatchCause {
+  if (status === 401 || status === 403) return 'auth';
+  if (
+    status === 400 &&
+    message.includes('invalid_request_error') &&
+    /credit balance/i.test(message)
+  ) {
+    return 'insufficient_credit';
+  }
+  return 'other';
+}
+
+// Every call SUPPRESSED after the one that latched carries no err object of its own — only the
+// rationale latchRationale() embeds below, since that is the one thing that survives from the
+// original FATAL failure to every later short-circuit. Failure direction mirrors classifyLatchCause
+// exactly: an unparseable or missing tag reads 'other', never a guess toward the demoted cause.
+//
+// Anchored to the literal prefix latchRationale() emits, not a bare `cause=` scan: rationale is
+// model-authored verbatim text (thesis ?? ''), and this tag now drives an alert-severity SUPPRESSION
+// (observability/alerts.rules.yml's AgentClientFatalLatch), not just a noisy false-positive — an
+// unanchored match lets any model thesis containing "cause=insufficient_credit" silently demote a
+// real fault to the known-unfunded warning.
+const LATCH_CAUSE_TAG =
+  /^client_latched: agent client latched degraded by a FATAL api error \(cause=(insufficient_credit|auth|other)\)/;
+export function parseLatchCauseFromClientLatchedRationale(
+  rationale: string,
+): AgentClientLatchCause {
+  const match = LATCH_CAUSE_TAG.exec(rationale);
+  return (match?.[1] as AgentClientLatchCause | undefined) ?? 'other';
+}
+
 // Retry-After per RFC 9110: either a delay in seconds, or an HTTP-date to wait until.
 function parseRetryAfterMs(header: string | null | undefined): number | undefined {
   if (!header) return undefined;
@@ -559,6 +607,10 @@ export class AnthropicAgentClient implements AgentClientPort {
   // propose()/proposeBatch() call within FATAL_LATCH_COOLDOWN_MS of it short-circuits with no HTTP
   // call; the first call after that window clears the latch and is allowed to probe.
   private latchedAtMs: number | null = null;
+  // The classified cause of the failure that set latchedAtMs above — read only while latchedAtMs is
+  // non-null (see latchRationale), and re-stamped alongside it on every fresh FATAL (handleFailure).
+  // Default value is inert: never read until a first latch sets it for real.
+  private latchedCause: AgentClientLatchCause = 'other';
   // Dedupes the "stored playbook failed validation" warn to once per distinct invalid content,
   // rather than once per candle-cadence propose() call while the same bad playbook sits stored.
   private lastInvalidPlaybookContent: string | null = null;
@@ -617,7 +669,12 @@ export class AnthropicAgentClient implements AgentClientPort {
     // outcomeForProposal can meter it as `client_latched` instead of an indistinguishable 'hold'. On
     // 2026-07-27, 30 such rows persisted as bare holds with an EMPTY rationale — visually identical to
     // a genuine model hold, and silently counted as one by every entry-rate measurement.
-    return `client_latched: agent client latched degraded by a FATAL api error ${Math.round(heldMs / 1000)}s ago — no call made, retrying after ${FATAL_LATCH_COOLDOWN_MS / 60_000}min`;
+    //
+    // Pass 48: the `cause=` tag is the ONLY way trading-runtime.module.ts's MetricsWrappingAgentClient
+    // can learn WHY this call is suppressed — a suppressed call carries no err object of its own, so
+    // the classification made once at latch time (handleFailure) has to survive as text here (see
+    // parseLatchCauseFromClientLatchedRationale).
+    return `client_latched: agent client latched degraded by a FATAL api error (cause=${this.latchedCause}) ${Math.round(heldMs / 1000)}s ago — no call made, retrying after ${FATAL_LATCH_COOLDOWN_MS / 60_000}min`;
   }
 
   // action 'error', not 'hold' — the same named-degrade discipline as capability_violation below: a
@@ -1756,9 +1813,12 @@ export class AnthropicAgentClient implements AgentClientPort {
   // carries the API error body (attemptOnce embeds it — the body states the invalid_request
   // cause and never credentials); the key itself never appears in any error path. Re-stamping on
   // every FATAL means a cause that is still unfixed extends the suppression a full cooldown from the
-  // last probe, never from the first failure.
+  // last probe, never from the first failure. Pass 48: classifyLatchCause runs off this SAME
+  // err.status/err.message the log line already prints — the cause and the latch are stamped
+  // together so they can never read as two different failures.
   private handleFailure(err: AgentProposeError): void {
     if (err.kind === 'FATAL') {
+      this.latchedCause = classifyLatchCause(err.status, err.message);
       this.logger.warn(
         `anthropic api: fatal error (status ${err.status ?? 'n/a'}) — latching agent client to degraded for ${FATAL_LATCH_COOLDOWN_MS / 60_000}min, no calls until then — ${err.message}`,
       );

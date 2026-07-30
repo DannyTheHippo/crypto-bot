@@ -125,6 +125,26 @@ function promScalar(res) {
   return { ok: true, value: parsed.value[0].value };
 }
 
+// Pass 48 (2026-07-30): reads agent_client_latch_cause — a closed three-member set seeded at 0 for
+// every boot (Pass 47/48 zero-seed convention, metrics.service.ts/agent-metrics-recorder.service.ts)
+// — and returns which single child, if any, currently reads 1. Follows promScalar's own
+// not-a-zero contract rather than parsePromSeries': an EMPTY vector means the gauge was never
+// registered (a binary predating this metric, or the metric renamed/dropped) and is a probe
+// FAILURE, never a quiet "not latched" — the exact distinction promScalar already draws for a plain
+// scalar gauge, extended here to a labeled closed set.
+export function promActiveCause(res) {
+  const parsed = parsePromSeries(res);
+  if (!parsed.ok) return { ok: false, error: parsed.error };
+  if (parsed.value.length === 0) {
+    return {
+      ok: false,
+      error: 'empty instant vector (no series) — agent_client_latch_cause was never seeded',
+    };
+  }
+  const active = parsed.value.find((s) => s.value === 1);
+  return { ok: true, value: { cause: active ? (active.labels.cause ?? null) : null } };
+}
+
 // ── prometheus /api/v1/rules parsing ─────────────────────────────────────────────────────────────
 // The loop IS the alert consumer — there is no Alertmanager in this stack and none is wanted, so a
 // rule that fires reaches a human ONLY if a pass reads it. Before this probe existed the sweep
@@ -607,6 +627,23 @@ function gather() {
     return { ok: true, value: { spendUsd, remainingUsd: remaining.value, verified: true } };
   })();
 
+  // Pass 48: which closed-set cause (if any) is behind the current agent_client_latched — the
+  // whole point being that this pass never has to re-investigate the known, owner-blocked
+  // unfunded-account condition (see the '## LLM PROVIDER ACCOUNT UNFUNDED' banner in
+  // renderMarkdown below). MANDATORY like realDecides/promAlerts/build further down: the generic
+  // probe-failure loop in loop-sweep-core.mjs only visits keys that EXIST, so an absent probe would
+  // read as "cause unknown, no banner" rather than the classifier crash it actually was.
+  //
+  // Pass 48 review: an instant read of agent_client_latched itself measured avg_over_time = 0.836
+  // over 24h (943/5759 scrapes at 0) — a no-op decide (a proposal with no ref price returns early
+  // with no HTTP call, yet is tagged outcome="hold") clears the level and cause on the very next
+  // scrape after a latch, so an instant read of the cause misses the banner ~1 in 6 sweeps for a
+  // condition that never actually cleared. max_over_time(...[6h]) reads whichever cause held 1 at
+  // ANY scrape in the window, so a real-but-momentarily-cleared latch still shows its cause. Cost:
+  // the banner can persist up to 6h after credit actually lands — accepted, since a false "still
+  // unfunded" banner just wastes one glance, while a missed one sends a pass to re-investigate.
+  probes.latchCause = promActiveCause(promQuery('max_over_time(agent_client_latch_cause[6h])'));
+
   // Every Prometheus alerting rule's live state, in one read (see parsePromRules' header for why
   // this is the authoritative source and not the ALERTS series). This is the ONLY probe whose scope
   // is the whole rules file rather than one metric, so it is the sweep's backstop against a
@@ -825,10 +862,37 @@ function describeSpan({ oldestMs, newestMs }) {
   return `${hours}h back to ${oldestIso}`;
 }
 
-function renderMarkdown({ sweptIso, host, git, app, result }) {
+export function renderMarkdown({ sweptIso, host, git, app, result }) {
   const L = [];
   L.push(`# Loop health sweep — ${sweptIso}`);
   L.push('');
+
+  // Pass 48 (2026-07-30): unmissable, BEFORE the alarms section (in fact before everything else),
+  // so a pass reading the digest top-to-bottom hits this before it ever reaches the Alarms header.
+  // Does NOT touch how alarms are computed (loop-sweep-core.mjs is untouched by this block) and adds
+  // no new alarm kind — the alert-severity split in observability/alerts.rules.yml is what stops
+  // this condition from blocking; this banner only makes the digest say it in plain language.
+  const latchCause = app && app.probes && app.probes.latchCause;
+  if (latchCause && latchCause.ok === true && latchCause.value?.cause === 'insufficient_credit') {
+    const rd = app.probes.realDecides;
+    const lastReal =
+      rd &&
+      rd.ok === true &&
+      Number.isFinite(rd.value?.latestCreatedAtMs) &&
+      rd.value.latestCreatedAtMs > 0
+        ? new Date(rd.value.latestCreatedAtMs).toISOString()
+        : 'never recorded';
+    L.push('## LLM PROVIDER ACCOUNT UNFUNDED — KNOWN STANDING BLOCKER, NOT A DEFECT');
+    L.push('');
+    L.push(
+      `The agentic lane's LLM provider account has no credit. Decides are suppressed. **This is not ` +
+        `a defect and is not investigable by an automated pass — do NOT open a defect investigation.** ` +
+        `The only fix is the owner adding credit to the account; the lane self-heals within 30 ` +
+        `minutes of credit landing, with no redeploy required. Last real model decide: ${lastReal}.`,
+    );
+    L.push('');
+  }
+
   L.push('## Host state');
   L.push(`- power: ${host.powerSource ?? 'n/a'}`);
   L.push(`- boot time: ${host.bootTime ?? 'n/a'}`);

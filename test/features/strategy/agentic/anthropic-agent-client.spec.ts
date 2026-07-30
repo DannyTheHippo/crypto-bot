@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   AnthropicAgentClient,
+  classifyLatchCause,
+  parseLatchCauseFromClientLatchedRationale,
   tradeDecisionSchema,
   tradeElementSchema,
   tradePortfolioSchema,
@@ -198,7 +200,15 @@ function liquidationSnapshot(): LiquidationSnapshot {
 
 function apiResponse(
   body: unknown,
-  opts: { ok?: boolean; status?: number; headers?: Record<string, string> } = {},
+  opts: {
+    ok?: boolean;
+    status?: number;
+    headers?: Record<string, string>;
+    // Cause-classification tests need a real error body (attemptOnce's `detail` reads res.text()).
+    // Omitted (as every pre-existing call site leaves it) means no `.text` method at all, matching
+    // the original mock exactly — attemptOnce's own catch then reports '[unreadable body]'.
+    text?: string;
+  } = {},
 ): Response {
   const headerMap = new Map(
     Object.entries(opts.headers ?? {}).map(([k, v]) => [k.toLowerCase(), v]),
@@ -208,6 +218,7 @@ function apiResponse(
     status: opts.status ?? 200,
     headers: { get: (name: string) => headerMap.get(name.toLowerCase()) ?? null },
     json: () => Promise.resolve(body),
+    ...(opts.text !== undefined ? { text: () => Promise.resolve(opts.text) } : {}),
   } as unknown as Response;
 }
 
@@ -1155,6 +1166,113 @@ describe('AnthropicAgentClient', () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+  });
+
+  // Pass 48 (2026-07-30): classifyLatchCause/parseLatchCauseFromClientLatchedRationale tell an
+  // owner-blocked, already-diagnosed condition (an unfunded LLM provider account) apart from one that
+  // needs real investigation (a bad/revoked key) or is simply unrecognised — see the functions' own
+  // FAILURE DIRECTION comment for why 'other' is the safe default.
+  describe('FATAL latch cause classification', () => {
+    const CREDIT_EXHAUSTED_BODY = JSON.stringify({
+      type: 'error',
+      error: {
+        type: 'invalid_request_error',
+        message:
+          'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.',
+      },
+    });
+
+    it('classifyLatchCause: 401/403 -> auth, a credit-exhaustion 400 -> insufficient_credit, anything else -> other', () => {
+      expect(classifyLatchCause(401, 'anthropic api http 401')).toBe('auth');
+      expect(classifyLatchCause(403, 'anthropic api http 403')).toBe('auth');
+      expect(classifyLatchCause(400, `anthropic api http 400 — ${CREDIT_EXHAUSTED_BODY}`)).toBe(
+        'insufficient_credit',
+      );
+      // A 400 that is genuinely something else — never demoted just because it shares the status.
+      expect(
+        classifyLatchCause(
+          400,
+          'anthropic api http 400 — {"type":"error","error":{"type":"invalid_request_error","message":"max_tokens: Field required"}}',
+        ),
+      ).toBe('other');
+      expect(classifyLatchCause(404, 'anthropic api http 404')).toBe('other');
+      expect(classifyLatchCause(422, 'anthropic api http 422')).toBe('other');
+      expect(classifyLatchCause(undefined, '[unreadable body]')).toBe('other');
+    });
+
+    it('parseLatchCauseFromClientLatchedRationale: reads the embedded tag, and fails closed to other when it is missing or unrecognised', () => {
+      // Pinned to the ACTUAL prefix latchRationale() emits (not an abbreviated stand-in) — the
+      // regex is anchored to this literal string precisely so a model-authored thesis cannot spoof
+      // the tag; a fixture using a shortened form would not catch a regression to the unanchored match.
+      expect(
+        parseLatchCauseFromClientLatchedRationale(
+          'client_latched: agent client latched degraded by a FATAL api error (cause=insufficient_credit) 5s ago — no call made, retrying after 10min',
+        ),
+      ).toBe('insufficient_credit');
+      expect(
+        parseLatchCauseFromClientLatchedRationale(
+          'client_latched: agent client latched degraded by a FATAL api error (cause=auth) 5s ago — no call made, retrying after 10min',
+        ),
+      ).toBe('auth');
+      expect(parseLatchCauseFromClientLatchedRationale('client_latched: no cause tag at all')).toBe(
+        'other',
+      );
+    });
+
+    it('embeds cause=insufficient_credit in the client_latched rationale for a real credit-exhaustion 400', async () => {
+      const cfg = buildCfg({ timeoutMs: 10000 });
+      const fetchFn = vi
+        .fn()
+        .mockResolvedValue(
+          apiResponse(undefined, { ok: false, status: 400, text: CREDIT_EXHAUSTED_BODY }),
+        );
+      const client = new AnthropicAgentClient(cfg, fetchFn, { warn: vi.fn() });
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+      });
+
+      await client.propose(input).catch(() => undefined);
+      const latched = await client.propose(input);
+
+      expect(latched.decision?.rationale).toContain('cause=insufficient_credit');
+    });
+
+    it('embeds cause=auth in the client_latched rationale for a 401', async () => {
+      const cfg = buildCfg({ timeoutMs: 10000 });
+      const fetchFn = vi.fn().mockResolvedValue(apiResponse(undefined, { ok: false, status: 401 }));
+      const client = new AnthropicAgentClient(cfg, fetchFn, { warn: vi.fn() });
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+      });
+
+      await client.propose(input).catch(() => undefined);
+      const latched = await client.propose(input);
+
+      expect(latched.decision?.rationale).toContain('cause=auth');
+    });
+
+    it('fails CLOSED to cause=other on an unrecognised 400 body — never quietly demoted', async () => {
+      const cfg = buildCfg({ timeoutMs: 10000 });
+      const fetchFn = vi.fn().mockResolvedValue(
+        apiResponse(undefined, {
+          ok: false,
+          status: 400,
+          text: '{"type":"error","error":{"type":"invalid_request_error","message":"max_tokens: Field required"}}',
+        }),
+      );
+      const client = new AnthropicAgentClient(cfg, fetchFn, { warn: vi.fn() });
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+      });
+
+      await client.propose(input).catch(() => undefined);
+      const latched = await client.propose(input);
+
+      expect(latched.decision?.rationale).toContain('cause=other');
     });
   });
 

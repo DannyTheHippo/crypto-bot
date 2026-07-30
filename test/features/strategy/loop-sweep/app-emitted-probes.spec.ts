@@ -36,6 +36,18 @@ interface LabelSeries {
   error?: string;
   value?: { labels: Record<string, string> }[];
 }
+interface CauseProbe {
+  ok: boolean;
+  error?: string;
+  value?: { cause: string | null };
+}
+interface RenderInput {
+  sweptIso: string;
+  host: { powerSource?: string; bootTime?: string; uptime?: string; errors?: string[] };
+  git: string | null;
+  app: Record<string, unknown> | null;
+  result: { alarms: unknown[]; annotations: unknown[] };
+}
 interface SweepModule {
   resolveBootId: (series: LabelSeries) => {
     bootId: string | null;
@@ -43,8 +55,10 @@ interface SweepModule {
   };
   resolveBuildSha: (series: LabelSeries) => BuildProbe;
   formatRunningBuild: (probe: BuildProbe | undefined) => string;
+  promActiveCause: (res: { ok: boolean; value?: string; error?: string }) => CauseProbe;
+  renderMarkdown: (input: RenderInput) => string;
 }
-const { resolveBootId, resolveBuildSha, formatRunningBuild } =
+const { resolveBootId, resolveBuildSha, formatRunningBuild, promActiveCause, renderMarkdown } =
   sweepModule as unknown as SweepModule;
 const { computeSweep, ALERT_LOOKBACK_MS, EXPECTED_SWEEP_INTERVAL_MS, VENUES } =
   coreModule as unknown as Core;
@@ -85,6 +99,7 @@ function baseApp(): Record<string, unknown> {
         },
       },
       build: { ok: true, value: { gitSha: 'af67acf' } },
+      latchCause: { ok: true, value: { cause: null } },
     },
     ...{},
   };
@@ -374,5 +389,148 @@ describe('resolveBootId', () => {
     const out = run(app);
     const failed = out.annotations.find((a) => a.probe === 'bootId');
     expect(failed?.kind).toBe('probe_failed');
+  });
+});
+
+// Pass 48 (2026-07-30): the owner's own words — "lack of trading is because of the anthropic api
+// account being unfunded ... make it clear in state or log so that later loop passes do not
+// investigate it". These pin the probe that reads WHICH closed-set cause is active, its mandatory-
+// probe treatment in the core, and the digest banner that makes the condition unmissable.
+
+// One promtool `query instant` row, in the exact shape loop-transport's promQuery returns — same
+// helper shape as alert-history.spec.ts's own `row`/`promOut`.
+function causeRow(cause: string, value: number): string {
+  return `agent_client_latch_cause{cause="${cause}"} => ${value} @[1785258935.402]`;
+}
+function promOut(...rows: string[]): { ok: true; value: string } {
+  return { ok: true, value: rows.join('\n') + '\n' };
+}
+
+describe('promActiveCause (agent_client_latch_cause probe)', () => {
+  it('reports the one cause child reading 1', () => {
+    const res = promOut(
+      causeRow('insufficient_credit', 1),
+      causeRow('auth', 0),
+      causeRow('other', 0),
+    );
+    expect(promActiveCause(res)).toEqual({ ok: true, value: { cause: 'insufficient_credit' } });
+  });
+
+  it('reports cause: null when every child reads 0 — not latched', () => {
+    const res = promOut(
+      causeRow('insufficient_credit', 0),
+      causeRow('auth', 0),
+      causeRow('other', 0),
+    );
+    expect(promActiveCause(res)).toEqual({ ok: true, value: { cause: null } });
+  });
+
+  // The Pass 47/48 zero-seed convention (metrics.service.ts) means a real boot NEVER returns an empty
+  // vector — an empty read here means the metric was never registered at all (an old binary, a
+  // renamed/dropped metric), which is a probe FAILURE, never a quiet "not latched". Same not-a-zero
+  // contract promScalar already applies to a plain scalar gauge, one label deeper.
+  it('fails the probe on an EMPTY vector rather than reading it as "not latched"', () => {
+    const out = promActiveCause({ ok: true, value: '' });
+    expect(out.ok).toBe(false);
+    expect(out.error).toContain('empty instant vector');
+    expect(out.error).toContain('never seeded');
+  });
+
+  it('passes an upstream transport failure through untouched', () => {
+    expect(promActiveCause({ ok: false, error: 'promtool exited 1' })).toEqual({
+      ok: false,
+      error: 'promtool exited 1',
+    });
+  });
+});
+
+describe('agent_client_latch_cause — mandatory probe in the core', () => {
+  // Mandatory-key, like realDecides/promAlerts/build: the generic probe-failure loop only visits
+  // keys that EXIST, and an absent latchCause probe must not read as a silent pass.
+  it('names an absent probe rather than reading a clean sweep', () => {
+    const app = baseApp();
+    delete (app.probes as Record<string, unknown>).latchCause;
+    const out = run(app);
+    expect(out.annotations.find((a) => a.probe === 'latchCause')?.kind).toBe('probe_failed');
+    expect(out.alarms).toEqual([]);
+  });
+
+  it('names a failed probe with the SAME kind, via the generic loop', () => {
+    const out = run(
+      withProbe('latchCause', { ok: false, error: 'empty instant vector (no series)' }),
+    );
+    expect(out.annotations.find((a) => a.probe === 'latchCause')?.kind).toBe('probe_failed');
+  });
+
+  it('says nothing extra when the cause reads null (not latched)', () => {
+    const out = run(baseApp());
+    expect(out.annotations.find((a) => a.probe === 'latchCause')).toBeUndefined();
+    expect(out.alarms).toEqual([]);
+  });
+});
+
+describe('renderMarkdown — LLM provider unfunded banner', () => {
+  // renderMarkdown's App section reads app.errorScan directly (a top-level gather() field, not a
+  // probes.* entry) — baseApp() above only feeds computeSweep, so the render fixture adds it.
+  function withErrorScan(app: Record<string, unknown>): Record<string, unknown> {
+    return {
+      ...app,
+      errorScan: {
+        ok: true,
+        value: { matched: 0, scanned: 20000, lines: 0, oldestMs: null, newestMs: null, top: [] },
+      },
+    };
+  }
+  function render(app: Record<string, unknown> | null): string {
+    return renderMarkdown({
+      sweptIso: '2026-07-30T12:00:00.000Z',
+      host: {},
+      git: 'af67acf',
+      app: app ? withErrorScan(app) : null,
+      result: { alarms: [], annotations: [] },
+    });
+  }
+
+  it('prints the banner, BEFORE the Alarms section, when the active cause is insufficient_credit', () => {
+    const app = withProbe('latchCause', { ok: true, value: { cause: 'insufficient_credit' } });
+    const md = render(app);
+    expect(md).toContain('## LLM PROVIDER ACCOUNT UNFUNDED');
+    expect(md).toContain('not a defect');
+    expect(md).toContain('do NOT open a defect investigation');
+    expect(md).toContain('owner adding credit');
+    expect(md).toContain('self-heals within 30');
+    // BEFORE the alarms section, not merely present somewhere in the digest.
+    expect(md.indexOf('## LLM PROVIDER ACCOUNT UNFUNDED')).toBeLessThan(md.indexOf('## Alarms'));
+  });
+
+  it('includes the last real model decide timestamp from the existing realDecides probe', () => {
+    const app = withProbe('latchCause', { ok: true, value: { cause: 'insufficient_credit' } });
+    (app.probes as Record<string, unknown>).realDecides = {
+      ok: true,
+      value: { count: 5, latestCreatedAtMs: 1_785_183_331_000 },
+    };
+    const md = render(app);
+    expect(md).toContain('2026-07-27T20:15:31.000Z');
+  });
+
+  it.each(['other', 'auth'])('does not print the banner when the active cause is %s', (cause) => {
+    const app = withProbe('latchCause', { ok: true, value: { cause } });
+    expect(render(app)).not.toContain('LLM PROVIDER ACCOUNT UNFUNDED');
+  });
+
+  it('does not print the banner when nothing is latched (cause: null)', () => {
+    const app = withProbe('latchCause', { ok: true, value: { cause: null } });
+    expect(render(app)).not.toContain('LLM PROVIDER ACCOUNT UNFUNDED');
+  });
+
+  // Fails toward NO banner, never toward guessing insufficient_credit off a broken read — a probe
+  // failure is a named annotation elsewhere in the digest, never a silent stand-in for the banner.
+  it('does not print the banner when the latchCause probe itself failed', () => {
+    const app = withProbe('latchCause', { ok: false, error: 'promtool exited 1' });
+    expect(render(app)).not.toContain('LLM PROVIDER ACCOUNT UNFUNDED');
+  });
+
+  it('does not print the banner when there is no app at all', () => {
+    expect(render(null)).not.toContain('LLM PROVIDER ACCOUNT UNFUNDED');
   });
 });

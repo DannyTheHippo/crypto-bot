@@ -258,6 +258,17 @@ function computeApp(prev, cur, elapsedMs = null, nowMs = null) {
       detail: 'no result — prometheus alert state was never read this sweep',
     });
   }
+  // latchCause is MANDATORY, like realDecides/promAlerts/build: the generic probe-failure loop only
+  // visits keys that EXIST, so an absent probe would silently read as "no known cause, no banner"
+  // rather than the classifier crash it actually was — the exact silent-pass shape this pass exists
+  // to prevent for its OWN metric (renderMarkdown's '## LLM PROVIDER ACCOUNT UNFUNDED' banner).
+  if (!probes.latchCause) {
+    annotations.push({
+      kind: 'probe_failed',
+      probe: 'latchCause',
+      detail: 'no result — the agent_client_latch_cause classification was never read this sweep',
+    });
+  }
 
   // Provenance-before-interpretation: deltas only survive a matching bootId.
   const prevBoot = (prev && prev.bootId) || null;

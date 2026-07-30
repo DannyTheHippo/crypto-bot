@@ -241,12 +241,56 @@ groups:
       # the window would false-CLEAR while the lane was still dead — this stack runs on a laptop with a
       # documented sleep duty cycle. A gauge fires on the next scrape, clears on the next scrape, and
       # depends on no cadence at all.
+      #
+      # Pass 48 (2026-07-30): SPLIT off the one cause the loop cannot do anything about. Both operands
+      # are per-instance (this stack runs exactly one target, job="crypto-bot" — observability/
+      # prometheus.yml), so `on(instance, job)` pins the match rather than leaning on the default
+      # common-label behavior. This fires ONLY when latched AND the active cause is anything other
+      # than insufficient_credit — the unfunded-account case pages via AgentClientLatchedUnfundedAccount
+      # below instead, at warning, so the daily loop stops re-investigating a condition it is already
+      # told about (research/loop/state.md — the account has been unfunded since 2026-07-27T21:16Z).
+      #
+      # `unless`, not `and (… == 0)`: verified live that agent_client_latch_cause currently returns an
+      # EMPTY vector on this Prometheus (a rollback, a rename, or the recorder constructor swallowing a
+      # seed-loop throw by design all produce the same absence), and `and on(...) (rhs == 0)` collapses
+      # to empty the moment its right side is absent — the critical would then die silently over a dead
+      # lane instead of firing. `unless` keeps this armed whenever the cause series is absent OR reads
+      # anything but 1 for insufficient_credit, and only the positive {cause="insufficient_credit"}==1
+      # match suppresses it — fails CLOSED toward paging, per the classifier's own failure direction.
       - alert: AgentClientFatalLatch
-        expr: agent_client_latched == 1
+        expr: |
+          agent_client_latched == 1
+          unless on(instance, job) (agent_client_latch_cause{cause="insufficient_credit"} == 1)
         for: 0m
         labels: { severity: critical }
         annotations:
-          summary: 'Agent client is latched degraded by a FATAL API error — decides suppressed, zero LLM calls (clears on the first decide that completes)'
+          summary: 'Agent client is latched degraded by a FATAL API error for a cause OTHER than the known unfunded-account one — decides suppressed, zero LLM calls (clears on the first decide that completes)'
+          runbook: 'docs/runbook.md'
+
+      # Pass 48 companion: the SAME latch, but ONLY for the one cause a loop pass cannot fix and has
+      # already diagnosed — an unfunded LLM provider account (Anthropic AND Moonshot both unfunded
+      # since 2026-07-27T21:16Z, research/loop/state.md). Severity warning, deliberately: loop:sweep
+      # promotes only `critical` to the blocking prometheus_alert_firing alarm (playbook §3), and this
+      # condition is owner-blocked, not investigable — promoting it would wedge every pass on a fact it
+      # already knows, exactly the defect this pass exists to remove.
+      #
+      # What `for: 5m` actually does here (an all-zero fresh boot cannot false-positive this rule with
+      # or without a grace window — at all-zero, this rule's own operand
+      # {cause="insufficient_credit"}==1 is empty, so it cannot fire in that state): the recorder writes
+      # the latch level and its cause in one synchronous block, so a FRESH insufficient_credit latch
+      # suppresses AgentClientFatalLatch on the very same scrape that sets the cause — leaving a
+      # 5-minute window in which NEITHER alert is firing. Accepted: this warning is annotation-only (it
+      # never gates the loop), and the operator-facing banner in loop-sweep.mjs's renderMarkdown is
+      # driven off the metric directly, not off this alert's firing state, so the 5m gap costs nothing
+      # observable.
+      - alert: AgentClientLatchedUnfundedAccount
+        expr: |
+          agent_client_latched == 1
+          and on(instance, job) (agent_client_latch_cause{cause="insufficient_credit"} == 1)
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: 'LLM provider account is unfunded — decides suppressed. This is NOT a defect and is not investigable by an automated pass; the only remedy is the owner adding credit. The lane self-heals within 30 minutes of credit landing, with no redeploy required.'
           runbook: 'docs/runbook.md'
 
       # W2 (2026-07-08): the reflection learning loop was silently dead for 4 days because every

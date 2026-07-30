@@ -820,10 +820,18 @@ fix: OMS algo-rail containment, 7 sub-fixes), `a6f0573` (P8a factorial ENABLE, s
 
 ## Current stage
 
-> ## ⛔ THE ANTHROPIC ACCOUNT IS NOT FUNDED — THIS IS WHY EVERY LLM REQUEST FAILS
+> ## ⛔ THE ANTHROPIC ACCOUNT IS NOT FUNDED — THIS IS WHY THERE ARE NO TRADES
 >
-> Re-confirmed live at 2026-07-29T09:00Z (Pass 46), verbatim from the API:
-> `400 invalid_request_error: "Your credit balance is too low to access the Anthropic API."`
+> **DO NOT INVESTIGATE IT. STOP HERE IF YOUR SWEEP SHOWS A LATCHED AGENT CLIENT, ZERO DECIDES, OR ZERO TRADES. This is the
+> cause. It is settled. It is not a defect. No pass can fix it.** Owner directive, 2026-07-30,
+> verbatim: _"lack of trading is because of the anthropic api account being unfunded. this should not
+> have to turn into investigations on each pass. make it clear in state or log so that later loop
+> passes do not investigate it; they should be able to tell immediately."_
+>
+> Re-confirmed live at 2026-07-30T07:45Z (Pass 48; previously Pass 46 at 09:00Z on 07-29), verbatim
+> from the API: `400 invalid_request_error: "Your credit balance is too low to access the Anthropic
+> API."` — 28 latches and 27 cooldown expiries on boot `1d68a57c` alone, 100% that one status, newest
+> line 07:45:18Z, nothing redacted.
 > **Nothing is broken in the code.** The lane calls, gets a FATAL 400, latches for 30 min, retries,
 > gets the same 400, and re-latches — correct behaviour against an unfunded account. The Moonshot
 > fallback account is unfunded too (`429 suspended — insufficient balance`), so there is no second
@@ -834,6 +842,15 @@ fix: OMS algo-rail containment, 7 sub-fixes), `a6f0573` (P8a factorial ENABLE, s
 > within 30 min of credit landing (proven live, WATCH-V4-5). Read § Flagged's funding entry and Pass
 > 41's ENTRIES verdict together before funding — entries currently measure worse than a random-bar
 > placebo, so resuming spends ~$2.6/day gathering evidence for a gate the present signal cannot pass.
+>
+> **How a pass tells, in one read, without any investigation (shipped Pass 48, 2026-07-30):**
+> `loop:sweep` prints a banner naming this condition ABOVE its alarms section, and the alert split
+> makes it non-blocking — `AgentClientLatchedUnfundedAccount` is severity `warning` deliberately, so
+> it annotates rather than wedging playbook §3. The machine-readable fact is
+> `agent_client_latch_cause{cause="insufficient_credit"} == 1`. **The demotion is cause-specific and
+> fails CLOSED:** any other latch cause classifies as `other`, keeps `AgentClientFatalLatch` at
+> `critical`, and IS a full incident. Passes 42–47 each re-derived this blocker from scratch — that is
+> the waste this banner and the alert split exist to end.
 
 **Current order & status (last updated Pass 47, 2026-07-29T11:15Z).** Live build `446e1da`, boot
 `1d68a57c` from 11:03:17Z at `RestartCount` 0, deployed with `GIT_SHA=446e1da` through the playbook's
@@ -850,7 +867,7 @@ book's loss; n=5 is far under this loop's own "never act on a sub-n≥12 cell" b
 **Pass 47 shipped four defects in two commits (`1cb2253`, `446e1da`), all four the same disease.**
 (1) **Deploy provenance read `unknown` for every automated pass**: compose declared no `build.args`,
 so `GIT_SHA` was reachable only via `docker compose build --build-arg` — and `docker compose up`
-rejects that flag outright, so the scheduled task's `up -d --build` form *structurally could not*
+rejects that flag outright, so the scheduled task's `up -d --build` form _structurally could not_
 stamp it. Only the runbook path worked, which is why the metric read a real sha and the gap stayed
 invisible. Compose now interpolates `${GIT_SHA:-unknown}`; all four documented deploy commands
 collapse to that one form; **the scheduled task's own `SKILL.md` (outside the repo) was the real
@@ -1298,7 +1315,7 @@ class), so passes become synthesis/action points, not the sole observation mecha
 digest-driven triggering would need alerting infra that does not exist and the dashboard-only
 alert posture is an owner decision. State hygiene: state.md 1434→788 lines, eight resolved
 pre-2026-07-20 records moved verbatim to `archive/state-2026-07.md` (pointer section at the
-foot); WATCH-V2-*/WATCH-R8-* moved with their records as superseded by the 2026-07-20
+foot); WATCH-V2-_/WATCH-R8-_ moved with their records as superseded by the 2026-07-20
 re-baseline; LOG.md gains the >30d rotation rule (no entries old enough to rotate yet). The v3
 playbook's three-ledger check already paid for itself pre-enable: it caught the sweep tool's
 stale perp breaker constant (0.75 vs the X2 1.50 — fixed, 76be4a8).
@@ -1407,8 +1424,8 @@ when the info-context A/B resolves.
   ("resubmit-eligible, same clientOrderId (TTL live)", `reducer.ts:194-195`) and its TTL-lapsed
   sibling `QUERY_NOT_FOUND_EXPIRED → CANCELED` exists — but the TTL is evaluated **only at query
   time** (`unknown-resolver.service.ts:310-315`), ~7s after submit, when it is obviously still live.
-  The resolver then drops the order from `pending` with the comment *"NEW is resubmit-eligible;
-  resubmit orchestration is a follow-up"*. That follow-up was never built, so nothing re-queries the
+  The resolver then drops the order from `pending` with the comment _"NEW is resubmit-eligible;
+  resubmit orchestration is a follow-up"_. That follow-up was never built, so nothing re-queries the
   order, nothing expires it, and nothing resubmits it.
   **Live impact today is nil, and that is measured:** `open_orders{venue}`=0 both venues,
   `in_flight_intents`=0, `venue_capital_headroom_usdt{binanceusdm}`=500 (full, so no phantom reserve),
@@ -1669,7 +1686,7 @@ when the info-context A/B resolves.
   - **Survivorship caveat, load-bearing:** the 16 assets survived to 2026 and were scanner-liquid,
     so the +697% buy-and-hold figure is inflated and is NOT an achievable ex-ante return — nobody in
     2019 could have known to hold these names. The bias inflates basket and strategies alike, so the
-    *excess* is the robust quantity, and it is negative everywhere. The robust claim is RELATIVE
+    _excess_ is the robust quantity, and it is negative everywhere. The robust claim is RELATIVE
     (active lost to passive), never the absolute passive number.
 - **NON-PRICE CHANNELS — Wikipedia attention and Deribit DVOL/VRP TESTED AND FAILED; GDELT UNTESTED
   (Pass 41, 2026-07-27; preregistered `research/studies/nonprice-channels-2026-07-27.md`, harness
@@ -1897,7 +1914,7 @@ v3-aligned).
   `AGENTIC_PLAYBOOK_AB_PCT=40`% of decides through the A/B. The study arms are renamed to the roles
   the live system actually assigns (`champion_v8`, `candidate_v9`) before any result existed. The
   truncation defect `b9b52a6` fixed is real and unchanged — v9's entry-rules section ends mid-sentence
-  at *"If ONE input disagrees (lagging"* and that text still reaches 40% of live decides — it is the
+  at _"If ONE input disagrees (lagging"_ and that text still reaches 40% of live decides — it is the
   candidate's text, not the champion's.
 - **THE CANDIDATE-LAPSE DEADLOCK IS LIVE, NOT HYPOTHETICAL (2026-07-28, Pass 42).** The Phase-B
   blocker list predicted it; it is currently in force. `scripts/playbook-candidate.mjs:168-180` refuses

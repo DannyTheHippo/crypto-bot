@@ -192,6 +192,24 @@ export const AGENT_CLIENT_LATCHED_GAUGE = makeGaugeProvider({
   name: 'agent_client_latched',
   help: 'Agentic lane client latched degraded by a FATAL API error (1) or making calls normally (0)',
 });
+// Pass 48 (2026-07-30): companion to agent_client_latched — WHICH of the three closed causes
+// (anthropic-agent-client.ts's classifyLatchCause) is driving the current latch, so the daily loop
+// can tell an owner-blocked, already-diagnosed condition (an unfunded LLM provider account) apart
+// from one that needs real investigation, instead of re-discovering the same 400 every pass. Seeded
+// at 0 for the whole cause union at construction (agent-metrics-recorder.service.ts, same Pass 47
+// zero-seed convention as its neighbours) so a lane that has never latched for a given cause reads a
+// real zero rather than an absent series. While latched, exactly one child reads 1; a latch with no
+// classified cause (should not happen given classifyLatchCause's closed return type, but the wiring
+// is not literally unrepresentable) leaves all three at 0 — see recordDecide's own comment for how
+// this stays in lockstep with agent_client_latched.
+// FAILURE DIRECTION: the classifier driving this fails CLOSED toward 'other' — an unrecognised FATAL
+// error keeps AgentClientFatalLatch armed rather than silently demoting it to the known-cause warning
+// (observability/alerts.rules.yml's AgentClientLatchedUnfundedAccount).
+export const AGENT_CLIENT_LATCH_CAUSE_GAUGE = makeGaugeProvider({
+  name: 'agent_client_latch_cause',
+  help: 'Which closed-set cause (insufficient_credit/auth/other) is driving agent_client_latched=1; all-0 when not latched',
+  labelNames: ['cause'],
+});
 // WATCH-V4-8 (2026-07-29): the only agentic liveness signal that SURVIVES a process restart, because
 // TradingRuntimeService seeds it at boot from the durable agent_decisions journal instead of letting
 // it be born at 0. Every other agentic signal is boot-scoped by construction — agent_client_latched

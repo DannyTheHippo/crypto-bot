@@ -97,6 +97,10 @@ import {
   type AgenticStrategyDeps,
   type AgenticStrategyParams,
 } from '../../strategy/agentic/agentic.strategy';
+import {
+  classifyLatchCause,
+  parseLatchCauseFromClientLatchedRationale,
+} from '../../strategy/agentic/anthropic-agent-client';
 import { CrossSymbolContextService } from '../../strategy/agentic/cross-symbol-context';
 import { filterUpcoming, loadMacroCalendar } from '../../strategy/agentic/macro-calendar';
 import { PriceHistoryStore } from '../../strategy/agentic/price-history-store';
@@ -168,7 +172,16 @@ export class MetricsWrappingAgentClient implements AgentClientPort {
           this.model,
         );
       }
-      this.recorder.recordDecide(this.outcomeForProposal(proposal), this.model);
+      const outcome = this.outcomeForProposal(proposal);
+      // Pass 48: the ONLY outcome a latch cause can ever be read from post-hoc — every subsequent
+      // suppressed call embeds it in the rationale (anthropic-agent-client.ts's latchRationale)
+      // because, unlike the FATAL failure in the catch block below, this call has no err object of
+      // its own to classify from.
+      const latchCause =
+        outcome === 'client_latched' && proposal.decision?.rationale
+          ? parseLatchCauseFromClientLatchedRationale(proposal.decision.rationale)
+          : undefined;
+      this.recorder.recordDecide(outcome, this.model, latchCause);
       // WATCH-V4-8 liveness stamp, two conditions and both load-bearing. promptHash and latencyMs are
       // assigned together, and only by client code that has already parsed a response body
       // (anthropic-agent-client.ts sets both at every post-attemptWithRetry return; the latch/off-menu/
@@ -188,7 +201,15 @@ export class MetricsWrappingAgentClient implements AgentClientPort {
       return proposal;
     } catch (err) {
       this.recorder.observeDecideLatency((Date.now() - started) / 1000);
-      this.recorder.recordDecide(this.outcomeForError(err), this.model);
+      const outcome = this.outcomeForError(err);
+      // Pass 48: the FATAL failure that STARTS a latch is the one call site with a real error object
+      // to classify from (anthropic-agent-client.ts's classifyLatchCause reads the same status/
+      // message this catch block already has via `err`).
+      const latchCause =
+        outcome === 'error_fatal' && err instanceof AgentProposeError
+          ? classifyLatchCause(err.status, err.message)
+          : undefined;
+      this.recorder.recordDecide(outcome, this.model, latchCause);
       throw err;
     }
   }

@@ -69,6 +69,14 @@ const CAPABILITY_VIOLATION_KINDS = ['open_short_on_spot'] as const;
 // unlike the open-ended `outcome`/`event` strings on the recorder's other methods.
 const SCHEMA_REJECTION_KINDS = ['single', 'batch', 'element', 'missing_symbol'] as const;
 
+// Pass 48 (2026-07-30): mirrors anthropic-agent-client.ts's own AgentClientLatchCause union exactly —
+// duplicated rather than imported, same boundaries-wall convention as the two sets above and
+// ConsultGateOutcome/AgentVenueTpEvent/AgentVenueStopEvent below (this feature cannot import
+// features/strategy/agentic). Backs both the constructor's zero-seed and recordDecide's cause-set
+// call below, so the seeded set and the writer can never drift apart.
+const AGENT_CLIENT_LATCH_CAUSES = ['insufficient_credit', 'auth', 'other'] as const;
+export type AgentClientLatchCauseLabel = (typeof AGENT_CLIENT_LATCH_CAUSES)[number];
+
 export type AgentTokenKind = 'input' | 'output' | 'cache_read' | 'cache_creation';
 
 // P6 (Design § Learning & measurement stack): mirrors agentic.strategy.ts's ConsultGateOutcome
@@ -161,20 +169,26 @@ export class AgentMetricsRecorder {
     private readonly clientLatchedGauge: Gauge<string>,
     @InjectMetric('agent_last_success_timestamp_seconds')
     private readonly lastSuccessGauge: Gauge<string>,
+    @InjectMetric('agent_client_latch_cause')
+    private readonly latchCauseGauge: Gauge<string>,
   ) {
     // Pass 47 (2026-07-29): prom-client only materialises a labeled child once it is touched, so
     // before this seed a lane that had never hit one of these `kind` values exported NO series for
     // it — an empty vector indistinguishable from unbound telemetry or a renamed metric (the same
-    // defect Pass 44 fixed for market_stream_forced_reconnects_total). Seeded once, over the two
-    // closed sets above, so a quiet lane reads as a real zero rather than a void. Measurement-only:
-    // wrapped so a misbehaving counter can never escape this constructor and therefore never block
-    // boot (fail OPEN) — same convention as every recordXxx method below.
+    // defect Pass 44 fixed for market_stream_forced_reconnects_total). Seeded once, over the closed
+    // sets above (Pass 48 adds agent_client_latch_cause's own three-member set to the same seed
+    // block), so a quiet lane reads as a real zero rather than a void. Measurement-only: wrapped so a
+    // misbehaving counter can never escape this constructor and therefore never block boot (fail
+    // OPEN) — same convention as every recordXxx method below.
     try {
       for (const kind of CAPABILITY_VIOLATION_KINDS) {
         this.capabilityViolationsCounter.inc({ kind }, 0);
       }
       for (const kind of SCHEMA_REJECTION_KINDS) {
         this.schemaRejectionsCounter.inc({ kind }, 0);
+      }
+      for (const cause of AGENT_CLIENT_LATCH_CAUSES) {
+        this.latchCauseGauge.labels({ cause }).set(0);
       }
     } catch {
       /* metrics must never throw into a trading path */
@@ -222,7 +236,15 @@ export class AgentMetricsRecorder {
 
   // `model` on both methods (#28): optional with an 'unknown' fallback so the label is always
   // materialized (never prom-client's implicit "") and pre-label call sites/test fakes keep working.
-  recordDecide(outcome: AgentDecideOutcome, model?: string): void {
+  // `latchCause` (Pass 48) is the caller's own classification (anthropic-agent-client.ts's
+  // classifyLatchCause on a fresh FATAL, or parseLatchCauseFromClientLatchedRationale on every later
+  // suppressed call) — folded into this SAME method, rather than a second public one, so the cause
+  // gauge can never move on an outcome the latch gauge did not also move on.
+  recordDecide(
+    outcome: AgentDecideOutcome,
+    model?: string,
+    latchCause?: AgentClientLatchCauseLabel,
+  ): void {
     try {
       this.decideCounter.inc({ outcome, model: model ?? 'unknown' });
       // The latch LEVEL, derived from the same outcome rather than plumbed separately, so it can never
@@ -234,8 +256,19 @@ export class AgentMetricsRecorder {
       // suppressed consult (up to a 2h fallback-gate floor away).
       if (LATCHED_DECIDE_OUTCOMES.has(outcome)) {
         this.clientLatchedGauge.set(1);
+        // Cause rides alongside the coarser level, set only when the caller supplied one — absent
+        // (a caller/fixture that predates Pass 48) leaves the cause gauge exactly where it already
+        // was rather than guessing, the same two-explicit-sets discipline as the level below.
+        if (latchCause) {
+          for (const c of AGENT_CLIENT_LATCH_CAUSES) {
+            this.latchCauseGauge.labels({ cause: c }).set(c === latchCause ? 1 : 0);
+          }
+        }
       } else if (PROVES_CALL_COMPLETED_OUTCOMES.has(outcome)) {
         this.clientLatchedGauge.set(0);
+        for (const c of AGENT_CLIENT_LATCH_CAUSES) {
+          this.latchCauseGauge.labels({ cause: c }).set(0);
+        }
       }
       // Everything else leaves the gauge UNCHANGED, which is the whole point of using two explicit
       // sets instead of an else-branch. 'off_menu' and 'budget_blocked' are returned by

@@ -63,6 +63,11 @@ docker compose up -d --force-recreate prometheus
   07-27 to catch a silent lane had never evaluated once. `pnpm loop:sweep` now fails its `promAlerts`
   probe and names the missing rules when this happens.
 
+  The `AgentClientFatalLatch`/`AgentClientLatchedUnfundedAccount` split (Pass 48) needs the app image
+  carrying `agent_client_latch_cause` live BEFORE prometheus is recreated with the new rules; with the
+  `unless` form the wrong order degrades to a spurious critical that self-clears once the cause series
+  appears (fail closed, the intended direction) rather than the alert dying silently.
+
 - Host `pnpm start`: `AppConfigModule` loads `envFilePath: ['.env', '.env.app']` — first path wins
   (same effective precedence as compose). Test/CI: `ignoreEnvFile: true`.
 - Standing sync rule: deploy knob changes go to `.env.app`, the zod schema in
@@ -381,18 +386,35 @@ restore, permission change) self-heals without a redeploy.
 2. `sum(agent_decide_total{outcome="client_latched"})` — emitted on every SUPPRESSED call, so it is
    the live "the lane is dead right now" signal. `outcome="error_fatal"` counts only the single
    failure that STARTED the latch and never resets before a recreate.
-3. `sum(agent_tokens_total)` flat and `agentic_promotion_llm_cost_usd` flat across a window that
-   contains consults is the independent confirmation — counters that cannot lie about whether calls
-   were billed.
+3. `agent_client_latched` (the LEVEL itself) confirms the lane is latched right now, and
+   `agent_client_latch_cause{cause}` (Pass 48, 2026-07-30) names WHY without reading a single log
+   line: exactly one of `insufficient_credit`/`auth`/`other` reads 1 while latched, all three read 0
+   once it clears. `agent_last_success_timestamp_seconds` is the independent confirmation that
+   survives a redeploy — `time() - agent_last_success_timestamp_seconds` growing across the outage
+   is a fact no counter reset can hide.
+   **Do NOT use `agent_tokens_total` for this** — it is a labeled counter that prom-client only
+   materializes once a real token usage event touches it (recordTokens), so while the lane has made
+   zero LLM calls it exports NO series at all, not a confirmed zero. An absent `agent_tokens_total`
+   series is a void read (§C.9), not evidence that nothing was billed — do not read it either way.
 4. The cause, verbatim, is in the journal:
    `select created_at, rationale from agent_decisions where action = 'error' order by created_at desc limit 5;`
-   The API's own error body is embedded there (never the key).
+   The API's own error body is embedded there (never the key). `agent_client_latch_cause`'s
+   classification is derived from this SAME text (anthropic-agent-client.ts's classifyLatchCause) —
+   the two can never disagree.
 
 **Acting on it.** Read the FATAL status before doing anything: 401/403 is a key or permission
 problem, 400 is a rejected request OR an exhausted credit balance (the body says which), 404 is a bad
 model id or base URL. Fix the cause at its source; a container recreate clears the latch but repairs
 nothing, and the lane will re-latch on the next consult. Buying API credit is owner-only — it is a
 financial action and outside what an automated pass may do.
+
+**When the cause is `insufficient_credit`.** `AgentClientFatalLatch` (critical) does not fire for this
+cause specifically — `AgentClientLatchedUnfundedAccount` (warning) does instead, and `pnpm loop:sweep`
+prints an unmissable `## LLM PROVIDER ACCOUNT UNFUNDED` banner ahead of its alarms section. This is
+the KNOWN standing blocker (both the Anthropic and Moonshot accounts, since 2026-07-27T21:16Z per
+research/loop/state.md) and is NOT investigable by an automated pass — do not open a defect
+investigation over it. The only remedy is the owner adding credit; the lane self-heals within 30
+minutes of credit landing, with no redeploy required.
 
 **While it is latched.** Nothing unsafe is happening: no LLM call means no new proposal, resting
 venue stops and take-profits continue to protect and close open positions, and Risk, the kill switch

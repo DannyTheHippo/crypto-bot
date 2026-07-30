@@ -22,6 +22,7 @@ import {
   AGENTIC_REFLECTION_TRIGGER_COUNTER,
   AGENTIC_REARM_FALLBACK_COUNTER,
   AGENT_CLIENT_LATCHED_GAUGE,
+  AGENT_CLIENT_LATCH_CAUSE_GAUGE,
   AGENT_LAST_SUCCESS_GAUGE,
 } from '../../../../src/features/common/observability/metrics.service';
 import { AgentMetricsRecorder } from '../../../../src/features/common/observability/agent-metrics-recorder.service';
@@ -54,6 +55,7 @@ describe('AgentMetricsRecorder', () => {
         AGENTIC_REARM_FALLBACK_COUNTER,
         AGENT_CLIENT_LATCHED_GAUGE,
         AGENT_LAST_SUCCESS_GAUGE,
+        AGENT_CLIENT_LATCH_CAUSE_GAUGE,
         AgentMetricsRecorder,
       ],
     }).compile();
@@ -65,7 +67,7 @@ describe('AgentMetricsRecorder', () => {
     register.clear();
   });
 
-  it('registers all twenty agentic-lane metrics', async () => {
+  it('registers all twenty-one agentic-lane metrics', async () => {
     const names = (await register.getMetricsAsJSON()).map((m) => m.name);
     for (const name of [
       'agent_decide_total',
@@ -88,6 +90,7 @@ describe('AgentMetricsRecorder', () => {
       'agentic_rearm_fallback_total',
       'agent_client_latched',
       'agent_last_success_timestamp_seconds',
+      'agent_client_latch_cause',
     ]) {
       expect(names, name).toContain(name);
     }
@@ -134,6 +137,63 @@ describe('AgentMetricsRecorder', () => {
     expect(await register.getSingleMetricAsString('agent_client_latched')).toContain(
       'agent_client_latched 0',
     );
+  });
+
+  // Pass 48: agent_client_latch_cause is the WHY behind agent_client_latched, at the same LEVEL
+  // granularity — these mirror the pinned agent_client_latched behavior above one label deeper.
+  it('seeds agent_client_latch_cause at 0 for all three causes on construction, before any latch is recorded', async () => {
+    const metric = await register.getSingleMetricAsString('agent_client_latch_cause');
+    expect(metric).toContain('cause="insufficient_credit"} 0');
+    expect(metric).toContain('cause="auth"} 0');
+    expect(metric).toContain('cause="other"} 0');
+  });
+
+  it('recordDecide(error_fatal, cause) raises exactly the classified cause and holds every other cause at 0', async () => {
+    recorder.recordDecide('error_fatal', 'claude-sonnet-5', 'insufficient_credit');
+    const metric = await register.getSingleMetricAsString('agent_client_latch_cause');
+    expect(metric).toContain('cause="insufficient_credit"} 1');
+    expect(metric).toContain('cause="auth"} 0');
+    expect(metric).toContain('cause="other"} 0');
+  });
+
+  it('recordDecide(client_latched, cause) re-affirms the cause on every suppressed call, and switches cleanly if it changes', async () => {
+    recorder.recordDecide('client_latched', undefined, 'auth');
+    let metric = await register.getSingleMetricAsString('agent_client_latch_cause');
+    expect(metric).toContain('cause="auth"} 1');
+    expect(metric).toContain('cause="insufficient_credit"} 0');
+
+    // A later latch (a container recreate, or a genuinely different cause) must not leave the OLD
+    // cause child stuck at 1 alongside the new one — exactly one child reads 1 at any time.
+    recorder.recordDecide('client_latched', undefined, 'insufficient_credit');
+    metric = await register.getSingleMetricAsString('agent_client_latch_cause');
+    expect(metric).toContain('cause="insufficient_credit"} 1');
+    expect(metric).toContain('cause="auth"} 0');
+  });
+
+  it('recordDecide clears every cause back to 0 on any outcome that proves a call completed', async () => {
+    recorder.recordDecide('error_fatal', undefined, 'insufficient_credit');
+    recorder.recordDecide('proposed');
+    const metric = await register.getSingleMetricAsString('agent_client_latch_cause');
+    expect(metric).toContain('cause="insufficient_credit"} 0');
+    expect(metric).toContain('cause="auth"} 0');
+    expect(metric).toContain('cause="other"} 0');
+  });
+
+  it.each(['off_menu', 'budget_blocked'] as const)(
+    'recordDecide leaves agent_client_latch_cause UNCHANGED on %s — a pre-call short-circuit proves nothing',
+    async (outcome) => {
+      recorder.recordDecide('error_fatal', undefined, 'auth');
+      recorder.recordDecide(outcome);
+      const metric = await register.getSingleMetricAsString('agent_client_latch_cause');
+      expect(metric).toContain('cause="auth"} 1');
+    },
+  );
+
+  it('recordDecide(client_latched) with no cause supplied leaves the gauge exactly where it was, rather than guessing', async () => {
+    recorder.recordDecide('error_fatal', undefined, 'auth');
+    recorder.recordDecide('client_latched'); // no third argument — a caller/fixture predating Pass 48
+    const metric = await register.getSingleMetricAsString('agent_client_latch_cause');
+    expect(metric).toContain('cause="auth"} 1');
   });
 
   it('recordDecide increments agent_decide_total{outcome,model}', async () => {
@@ -474,9 +534,15 @@ describe('AgentMetricsRecorder — never throws into a trading path', () => {
           throw new Error('boom');
         },
       } as unknown as Gauge<string>,
+      // agent_client_latch_cause: the base `throwing.labels` already throws, which is enough to
+      // exercise the constructor's own seed loop AND recordDecide's cause-setting loop below.
+      throwing as unknown as Gauge<string>,
     );
     expect(() => recorder.recordDecide('proposed')).not.toThrow();
     expect(() => recorder.recordDecide('client_latched')).not.toThrow();
+    expect(() =>
+      recorder.recordDecide('error_fatal', 'claude-sonnet-5', 'insufficient_credit'),
+    ).not.toThrow();
     expect(() => recorder.recordTokens(1, 1)).not.toThrow();
     expect(() => recorder.observeDecideLatency(1)).not.toThrow();
     expect(() => recorder.setPlaybookInfo(1)).not.toThrow();

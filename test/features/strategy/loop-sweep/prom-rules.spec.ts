@@ -1,4 +1,5 @@
 import { join } from 'node:path';
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 // @ts-expect-error scripts/** live outside the tsconfig graph (see tsconfig.eslint.json's include
 // list) — loop-sweep.mjs is a stdlib-only .mjs with no declaration file. Same bridge as
@@ -305,5 +306,26 @@ describe('readExpectedAlertNames', () => {
 
   it('returns null for an unreadable file — the control is SKIPPED, never failed, since a missing local file says nothing about what prometheus loaded', () => {
     expect(readExpectedAlertNames('/nonexistent/alerts.rules.yml')).toBeNull();
+  });
+});
+
+describe('AgentClientFatalLatch expr — absent-tolerant on purpose', () => {
+  // Brittle by design: `and on(instance, job) (rhs == 0)` collapses to the EMPTY set the moment the
+  // right-hand series is absent (a rollback, a rename, or the recorder constructor swallowing a
+  // seed-loop throw), which silently stops the critical alert from firing over a dead lane — the one
+  // failure mode that must never come back with a one-token revert. This is the only executable guard
+  // on that property; nothing else in the suite queries prometheus or exercises the expr text itself.
+  it('uses the absent-tolerant `unless` form, never `and on(...) (rhs == 0)`', () => {
+    const rulesText = readFileSync(
+      join(process.cwd(), 'observability', 'alerts.rules.yml'),
+      'utf8',
+    );
+    const match = rulesText.match(
+      /- alert: AgentClientFatalLatch\s*\n\s*expr: \|\s*\n([\s\S]*?)\n\s*for:/,
+    );
+    expect(match).not.toBeNull();
+    const expr = match![1];
+    expect(expr).toContain('unless on(instance, job)');
+    expect(expr).not.toContain('and on(instance, job)');
   });
 });

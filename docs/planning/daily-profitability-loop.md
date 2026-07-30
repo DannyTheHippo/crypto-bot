@@ -133,8 +133,32 @@ the gated `test` suite, so it rots silently — a RED harness is itself a flagge
 ## 3. Incident-first gate — any alarm forces defect investigation FIRST
 
 If `loop:sweep` fires ANY named alarm, this pass IS a defect investigation. Improvement work (§4
-CANDIDATE/PROMOTION/MAINTENANCE-backlog) waits until the alarm is root-caused and cleared. The
-sweep's alarm kinds, read from `scripts/loop-sweep-core.mjs`'s `computeSweep`/`computeApp` (the
+CANDIDATE/PROMOTION/MAINTENANCE-backlog) waits until the alarm is root-caused and cleared.
+
+> ### ⛔ THE ONE EXCEPTION: A KNOWN, OWNER-BLOCKED CONDITION IS NOT AN INCIDENT
+>
+> **The LLM provider account is unfunded. That is why there are no trades. Do NOT investigate it.**
+> Since 2026-07-27T21:16Z every decide attempt returns `400 invalid_request_error: "Your credit
+> balance is too low to access the Anthropic API."`; the Moonshot fallback account is suspended for
+> the same reason. The code is behaving correctly — it latches, waits out a 30-min cooldown, retries,
+> and re-latches. Passes 42 through 47 each re-derived this from scratch, and passes 43/46/48 each
+> re-confirmed it live. That is six passes spent on one already-answered question.
+>
+> `loop:sweep` now names this condition in a banner ABOVE the alarms section, and the
+> `AgentClientLatchedUnfundedAccount` rule carries severity `warning` on purpose so it annotates
+> instead of blocking. **A pass that sees that banner is done with the subject.** The one-command
+> re-confirmation, if you want it, is `agent_client_latch_cause` on the metrics endpoint — the child
+> reading 1 tells you the cause, and `insufficient_credit` means owner-blocked.
+>
+> **Fails CLOSED by construction, which is what makes the exemption safe:** the demotion applies only
+> to a positive match on the provider's own credit-exhaustion error. A latch for ANY other cause —
+> auth failure, an unrecognised fatal, a real code defect — classifies as `other`, keeps
+> `AgentClientFatalLatch` at severity `critical`, and is a full incident under the rule above.
+> **Generalise the shape, not the special case:** an alarm whose cause is recorded, whose remedy is
+> outside what a pass may do, and whose signature is positively identified is annotated and named, not
+> re-investigated. Any condition that does not meet all three tests is an incident.
+
+The sweep's alarm kinds, read from `scripts/loop-sweep-core.mjs`'s `computeSweep`/`computeApp` (the
 authoritative list — re-verify against that file before citing, per this playbook's own standing
 rule):
 

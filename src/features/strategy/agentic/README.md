@@ -20,7 +20,12 @@ journal → reflection (hypothesis generation) → human review (eval scorecards
 
 1. **Journal.** Every decide-path call is recorded to `AGENT_DECISION_JOURNAL`
    (`agent-decision-journal.adapter.ts` / in-memory fallback).
-2. **Reflection** (`reflection.service.ts`, trade-triggered, detached from the decide path). After
+2. **Reflection** (`reflection.service.ts`, trade-triggered, detached from the decide path).
+   **DISABLED IN THE DEPLOYED CONFIGURATION** — `AGENTIC_REFLECTION_EVERY_N_TRADES=0` since
+   2026-07-30 (`research/studies/entry-rate-rederivation-2026-07-30.md`) makes the service inert
+   (`this.inert = cfg.everyNTrades <= 0 || !cfg.apiKey`), so step 2 does not run and the mint-time
+   entry-rate floor it hosts does not run either; step 4's CLI is the only minting path. The
+   mechanics below describe the code as it behaves whenever the knob is non-zero. After
    every `everyNTrades` closed trades (default 10, config `AGENTIC_REFLECTION_EVERY_N_TRADES`), and
    never more than once per cooldown (default 7 days, tunable via `AGENTIC_REFLECTION_COOLDOWN_MS`,
    floored at 0), it reviews recent journal rows — closed round-trips, a hold summary, and a

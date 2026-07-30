@@ -220,8 +220,16 @@ share the same book and the same process. Rules:
 - One shared **book-wide** LLM budget (`AGENTIC_MAX_CALLS_PER_DAY` / daily cost stop, etc.); entry caps
   apply per instance. Deployed decide interval is `STRATEGY_INTERVAL=15m` (~96 bars/day per symbol) —
   budget with `AGENTIC_ACTIVE_MENU_SIZE` and portfolio consult in mind.
-- Reflection triggers per instance (`AGENTIC_REFLECTION_EVERY_N_TRADES`, deployed `2`) against its own
-  journal window; the playbook stays book-global, and realized round-trip evidence spans all symbols.
+- In-process reflection is OFF (`AGENTIC_REFLECTION_EVERY_N_TRADES`, deployed `0` since 2026-07-30 —
+  `research/studies/entry-rate-rederivation-2026-07-30.md`). `ReflectionService` is inert, so no
+  reflection call, no auto-mint, and no mint-time entry-rate floor. `pnpm playbook:candidate` is the
+  only minting path; the playbook stays book-global and realized round-trip evidence spans all symbols.
+  Keep the `claude-opus-5` entry in `AGENTIC_TOKEN_PRICES_JSON` — `AGENTIC_REFLECTION_MODEL` is still
+  set, so boot refuses without it and the promotion gate still re-prices historical Opus rows.
+- `pnpm playbook:candidate` runs with `node --env-file-if-exists=.env.app` so its lapse/abstention
+  gates read the DEPLOYED `AGENTIC_CANDIDATE_LAPSE_HOURS` (336 h) instead of the script's own 720 h
+  code default. Real environment variables still win over the file, so an exported host
+  `DATABASE_URL` overrides `.env.app`'s container-internal one — export it as before.
 - The earned-live promotion verdict counts round trips across ALL instances (per (strategyId, symbol)
   walk over demo fills).
 

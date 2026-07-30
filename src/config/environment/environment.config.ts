@@ -319,7 +319,13 @@ const envSchema = z
     AGENTIC_MAX_ENTRIES_PER_DAY: z.coerce.number().int().positive().default(12),
     AGENTIC_DRAIN_COOLDOWN_BASE_MS: z.coerce.number().int().positive().default(30_000),
     AGENTIC_DRAIN_COOLDOWN_MAX_MS: z.coerce.number().int().positive().default(900_000),
-    // 0 disables periodic reflection.
+    // 0 disables periodic reflection: it makes ReflectionService permanently inert
+    // (`this.inert = cfg.everyNTrades <= 0 || !cfg.apiKey`, reflection.service.ts:891), and
+    // onClosedTrade returns on that flag (:930) before incrementing any counter. The DEPLOYED value
+    // is 0 as of 2026-07-30 (.env.app) — retired by
+    // research/studies/entry-rate-rederivation-2026-07-30.md; the daily loop mints via
+    // `pnpm playbook:candidate` instead. The default stays 10 so an unset environment keeps the
+    // historical shape; only the deployed file opts out.
     AGENTIC_REFLECTION_EVERY_N_TRADES: z.coerce.number().int().min(0).default(10),
     // Minimum wall-clock between reflection attempts (F7 tunable). Default 7 days; floored at 0. A
     // cost/noise throttle, never a safety gate — see reflection.service.ts's SEVEN_DAYS_MS comment.
@@ -458,6 +464,10 @@ const envSchema = z
     // the moment reflectionModel ≠ model — flat pricing under-counts a pricier reflection model.
     // Absent models fall back to the flat knobs above; unknown models in cost rows price at the
     // MOST EXPENSIVE configured rates (fail-closed). Validated below; a malformed value fails boot.
+    // The deployed map MUST keep its claude-opus-5 entry even though reflection is switched off
+    // (AGENTIC_REFLECTION_EVERY_N_TRADES=0, 2026-07-30): AGENTIC_REFLECTION_MODEL is still set and
+    // still differs from AGENTIC_MODEL, so the superRefine below refuses boot without it, and
+    // PromotionReadinessService re-prices the 69 historical Opus llm_usage rows on every evaluation.
     AGENTIC_TOKEN_PRICES_JSON: z.string().optional(),
     // Owner-declared evidence epoch (ISO-8601 instant, e.g. 2026-07-08T12:00:00Z): the promotion
     // gate evaluates fills/tokens/window from this instant instead of all-time, so post-fix

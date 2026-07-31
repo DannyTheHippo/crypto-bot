@@ -71,6 +71,7 @@ interface FiringAlert {
   scope?: string;
 }
 interface Probes {
+  orderRejects?: Record<string, unknown>;
   decides: { ok: boolean; value: { count: number; latestCreatedAtMs: number } };
   realDecides: { ok: boolean; value: { count: number; latestCreatedAtMs: number } };
   consultGate: { ok: boolean; value: { total: number } };
@@ -114,6 +115,12 @@ function baseReconcileByVenue(
   return out;
 }
 
+function baseOrderRejects(rejects: number, submits = 20): Record<string, unknown> {
+  const byVenue: Record<string, unknown> = {};
+  for (const venue of VENUES) byVenue[venue] = { submits, rejects };
+  return { ok: true, value: { byVenue, errors: [] } };
+}
+
 function baseProbes(): Probes {
   return {
     decides: { ok: true, value: { count: 100, latestCreatedAtMs: WM_TIME } },
@@ -139,6 +146,12 @@ function baseProbes(): Probes {
     // behaviour is pinned in alert-history.spec.ts; here they only need to stay silent.
     promAlertsSince: { ok: true, value: { resolved: [], lookbackMs: 12 * 60 * 60 * 1000 } },
     promCoverage: { ok: true, value: { samples: 2880, expected: 2880, ratio: 1 } },
+    // Venue acceptance, at the HEALTHY baseline this alarm was derived from: binanceusdm measured
+    // 0 rejects in its most recent 20 submits on 2026-07-31 (4/186 = 2.2% lifetime). Present in the
+    // base bag because the check fails CLOSED — an absent orderRejects probe is an unread acceptance
+    // rate and alarms by design, so a fixture that omits it is asserting a defect, not a quiet stack.
+    // Its own behaviour is pinned in venue-reject-rate.spec.ts.
+    orderRejects: baseOrderRejects(0),
   };
 }
 

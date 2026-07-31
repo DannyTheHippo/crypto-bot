@@ -112,6 +112,16 @@ function baseApp(): Record<string, unknown> {
       },
       build: { ok: true, value: { gitSha: 'af67acf' } },
       latchCause: { ok: true, value: { cause: null } },
+      // Healthy venue acceptance (binanceusdm's measured 0/20 on 2026-07-31). Mandatory in the base
+      // bag: the reject-rate check fails CLOSED, so an absent probe is an ALARM, not a quiet stack —
+      // see venue-reject-rate.spec.ts, which pins that direction deliberately.
+      orderRejects: {
+        ok: true,
+        value: {
+          byVenue: Object.fromEntries(VENUES.map((v) => [v, { submits: 20, rejects: 0 }])),
+          errors: [],
+        },
+      },
     },
     ...{},
   };

@@ -319,6 +319,16 @@ function baseApp(over: Record<string, unknown> = {}): Record<string, unknown> {
       promAlerts: { ok: true, value: { ruleCount: 20, alertingCount: 20, firing: [] } },
       promAlertsSince: { ok: true, value: { resolved: [], lookbackMs: ALERT_LOOKBACK_MS } },
       promCoverage: { ok: true, value: { samples: 2880, expected: 2880, ratio: 1 } },
+      // Healthy venue acceptance (binanceusdm's measured 0/20 on 2026-07-31). In the base bag because
+      // the reject-rate check fails CLOSED — an absent probe alarms, so omitting it here would make
+      // every alert-history assertion carry an unrelated alarm. Pinned in venue-reject-rate.spec.ts.
+      orderRejects: {
+        ok: true,
+        value: {
+          byVenue: Object.fromEntries(VENUES.map((v) => [v, { submits: 20, rejects: 0 }])),
+          errors: [],
+        },
+      },
       ...(probesOver as Record<string, unknown> | undefined),
     },
     ...rest,

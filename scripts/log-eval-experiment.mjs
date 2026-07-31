@@ -11,6 +11,18 @@
 // intentional, not an inconsistency to reconcile). Reads REGISTRY_DATABASE_URL ONLY, never
 // DATABASE_URL — the eval harness binds DATABASE_URL to a scratch corpus DB (candidate-model-eval.spec.ts),
 // and a registry write must never be aimed at that scratch DB by accident.
+//
+// THE REGISTRY IS THE PRODUCTION `public.experiments` TABLE — not a test-only mirror. Three facts fix
+// that, so the next reader does not re-derive the "should this have its own database?" question:
+// (1) the table exists so the deflated-Sharpe multiple-testing count N is honest "across sessions
+// rather than reset per-process" (src/database/schemas/trading/trading.schema.ts § experiments), which
+// is precisely what a per-run or per-suite scratch DB cannot do; (2) it is hardened append-only
+// alongside audit_log/order_events — REVOKE UPDATE/DELETE/TRUNCATE plus immutability triggers
+// (drizzle/0001_v3_append_only_hardening.sql § experiments); (3) scripts/playbook-candidate.mjs
+// already INSERTs into public.experiments over the plain DATABASE_URL with no registry gate at all.
+// So writing production here is the DESIGNED behaviour. The gate below therefore exists to make the
+// operator NAME that production target deliberately (REGISTRY_ALLOW_PRODUCTION_DB=1), not to keep the
+// write away from production — a gate that could never open would make the mint unreachable forever.
 import { readFileSync } from 'node:fs';
 import * as crypto from 'node:crypto';
 import { Pool } from 'pg';
@@ -127,9 +139,18 @@ function dbNameEndsWithTest(url) {
   }
 }
 
+// Opens ⟺ REGISTRY_DATABASE_URL is set AND the target is either a rehearsal database (`_test` suffix,
+// so a local dry run needs no production opt-in) or one the operator named deliberately.
+//
+// DB_SUITE_ALLOW_RESET is deliberately NOT a third route. Its documented meaning is the OPPOSITE of
+// this one: it exists so READ-ONLY suites can acknowledge a production DATABASE_URL, and "must never
+// double as a license to reset one" (test/db/destructive-guard.ts § assertDestructiveTargetIsTestDb).
+// Setting it in an app env to reach this write would also un-skip suites that INSERT into this very
+// append-only table and take advisory locks against the live single-writer interlock. Keeping it here
+// would re-create exactly the coupling this predicate exists to break.
 function gateOpen(dbUrl) {
   if (!dbUrl) return false;
-  return process.env.DB_SUITE_ALLOW_RESET === '1' || dbNameEndsWithTest(dbUrl);
+  return dbNameEndsWithTest(dbUrl) || process.env.REGISTRY_ALLOW_PRODUCTION_DB === '1';
 }
 
 async function main() {
@@ -157,9 +178,11 @@ async function main() {
   if (!gateOpen(registryUrl)) {
     console.error(
       'log-eval-experiment: refusing to write — REGISTRY_DATABASE_URL is unset, or its database ' +
-        'name does not end in "_test" and DB_SUITE_ALLOW_RESET is not "1". This gate fails CLOSED: ' +
-        'this script only exists to write the registry, so an ambiguous target must abort loudly ' +
-        'rather than silently skip or write to the wrong database.',
+        'name does not end in "_test" and REGISTRY_ALLOW_PRODUCTION_DB is not "1". The registry IS ' +
+        'the production public.experiments table, so a production target is expected here — set ' +
+        'REGISTRY_ALLOW_PRODUCTION_DB=1 to name it deliberately. This gate fails CLOSED: this script ' +
+        'only exists to write the registry, so an ambiguous target must abort loudly rather than ' +
+        'silently skip or write to the wrong database.',
     );
     process.exitCode = 1;
     return;
@@ -221,6 +244,13 @@ async function main() {
       corpusFingerprint: scorecard.corpusFingerprint,
       championReference: scorecard.championReference,
       window: scorecard.window,
+      // How many rows had ALREADY been scored against this corpus when this decision was taken.
+      // Carried into the row itself rather than left derivable, because the registry only grows: a
+      // count re-derived later answers a different question than the one the decision faced. `null`
+      // when the producing pass did not count — never coerced to 0, which would be a false claim.
+      priorAttemptsOnCorpus: scorecard.priorAttemptsOnCorpus ?? null,
+      priorAttemptsKey: scorecard.priorAttemptsKey ?? null,
+      priorAttemptsOnCorpusFingerprint: scorecard.priorAttemptsOnCorpusFingerprint ?? null,
     },
   }));
 

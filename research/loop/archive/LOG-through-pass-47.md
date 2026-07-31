@@ -5958,3 +5958,125 @@ sweeps are now covered by a pass entry, which is what the detector checks — ve
 `pnpm loop:sweep` after writing it, not assumed. **Do not re-investigate them.** The standing lesson is the one Pass 48 already drew: a pass that writes nothing is
 indistinguishable from a pass that never ran, and the loop could not audit its own cadence until
 `0fc3bd1`.
+
+## 2026-07-30 — Pass 48 (four alarms that could not fire, and the account funded itself mid-pass)
+
+**Window:** 2026-07-30T07:45Z → 11:10Z. Lease `93440505ff45f0f3`. The lock **broke a stale lease**
+("pass 47b research: loop-as-decider", 721 min old) — that session took the lease at ~19:44Z on 07-29
+and never released it. Two sweeps ran on 07-29 (16:07Z scheduled, 19:33/19:46Z) that left **no LOG
+entry at all**. The loop has no detector for its own unrecorded passes; noted as a finding, not fixed.
+
+**Sweep at open:** 1 alarm — `AgentClientFatalLatch` (critical, firing since 07-29T13:00:25Z), the
+known unfunded-account condition. Annotations: `AgenticNoSuccessfulDecideSustained` (warning) and
+`no_real_decides_in_window` — Δ1920 raw `agent_decisions` rows against **Δ0 real model decides**,
+Pass 47's new probe doing exactly its job.
+
+**Pass type:** defect investigation, forced by §3, then owner-directed work. Five parallel
+investigations plus adversarial verification of every claim (20 agents).
+
+### THE HEADLINE, and it was not the plan: the account was funded mid-pass
+
+At 07:45Z the 400s were live and confirmed from the container log (28 latches / 27 expiries on boot
+`1d68a57c`, 100% `credit balance too low`, newest 07:45:18Z). By the post-deploy check the lane was
+**alive**: first real decide **2026-07-30T09:01:01Z** (45.6s, full thesis), first proposes 09:15:31Z
+(`open_long` ZEC spot + perp), 597 lifetime real decides against 575 in the morning, 6 fills in 24h,
+`open_orders` 3 per venue where it was 0, $0.60 of the $3 breaker spent. Credit landed between 07:45Z
+and 09:01Z and **the lane self-healed with no redeploy**. That closes the one clause of WATCH-V4-5
+that could never be tested without credit — the funded-resumption path is now proven live.
+
+**The scoreboard moved for the first time since 07-27, and the direction matters more than the
+motion:** 29 closed trips (was 28), window **6.71 of 14 days** (was 4.30), net-of-cost **−$41.1723**
+(was −$39.6370). One trip advanced the window 2.4 days and cost $1.54. That is precisely what
+`verdicts.md` predicts: every additional trip on the present entry signal moves the trip count toward
+the bar while moving net-of-cost away from it.
+
+### Four defects shipped, all four measurement lies, two of them CRITICAL alerts that could not fire
+
+**1. `8002888` — six passes investigated one unfunded account because the alarm could not say so.**
+Owner directive, verbatim: _"lack of trading is because of the anthropic api account being unfunded.
+this should not have to turn into investigations on each pass."_ The cause was structural:
+`AgentClientFatalLatch` is `critical`, `loop:sweep` promotes every firing critical to a blocking
+alarm, and §3 makes any alarm force a defect investigation. A permanent owner-blocked fact wedged
+every pass. `classifyLatchCause` now reads the provider's own error body — 401/403 ⇒ `auth`, 400 +
+`invalid_request_error` + `/credit balance/i` ⇒ `insufficient_credit`, everything else ⇒ `other` —
+and the alert splits, with the known cause landing at `warning`. **Fails CLOSED**: only a positive
+match demotes. Review found three defects in the first cut, each in the new guard's own failure
+direction: the `and`-shaped expr collapsed to empty when the cause series was absent (silencing the
+critical over a dead lane — the void-read disease reintroduced in the alert that catches a dead
+lane; now `unless`); the banner keyed on an instant gauge measuring `avg_over_time` **0.836** over
+24h, so one sweep in five would print nothing over the exact condition it announces (now a 6h
+`max_over_time`); and the `cause=` tag was model-spoofable into **false reassurance** (now anchored
+to the emitted string).
+
+**2. `a03b35d` — the two critical alerts guarding hard rule 6 could not fire.**
+`ReconciliationHalt` selects `{result="halt"}`, a child that was never seeded — measured live, the
+selector returned an EMPTY vector against a positive control returning three series. A prom-client
+child born lazily sits at its first value forever, so `increase()` reads 0: demonstrated on a live
+sibling reading **1** with `increase([24h])` = **0**. Precision, because the first draft overstated
+it: the alert is not dead in general (it fired 9 consecutive evaluations on 07-26) — what is
+invisible is a halt whose child receives exactly ONE increment, and WATCH-V4-2 records that
+`FILL_OVERFLOW` is precisely that. `ReconcilerStalled` used `result!="error"`, which includes the
+re-entrancy `skipped` child — the counter that RISES when passes stop completing. Measured: old
+selector 27.95, of which skip alone 10.26; narrowed selector 18.46 on a healthy reconciler.
+
+**3. `e1ce4e1` — the loop's memory was its largest fixed cost.** Owner directive: _"clean up log.md
+and state.md … you can find a better way to keep the loop hydrated."_ state.md 1,932 lines + LOG.md
+5,886, read three times a day. Split by one question — what must a pass read before it can act:
+`STATUS.md` (152 lines, capped 200) always; `charter.md` / `verdicts.md` / `watches.md` on demand;
+archives for the rest. **Nothing deleted, proven two ways**: 50/50 moved blocks byte-identical in
+their destinations, and every non-blank source line present in the new set. The actual fix is the
+rotation rule in §6 — a one-off compaction just re-grows.
+
+**4. `e091ba5` — seven more instruments whose zero nobody could read**, enumerating the siblings of a
+known class. Review caught this commit committing the very defect it removes, twice:
+`agentic_venue_stop_total` was seeded over both venues while the only writer passed no venue and
+always resolved `'unknown'` (live: the sole three series were `venue="unknown"`), so it fabricated 24
+dead children **and the new spec pinned the inversion**; fixed at the writer, and `onVenueTp` had the
+identical defect. `playbook_validator_rejections_total` was seeded at an unreachable pair.
+
+### Gates, deploy, soak
+
+Gates green at every commit: `format:check`, `lint`, `lint:md` 0 errors, `typecheck`, `build`,
+`test` **3205/3205 across 176 files** (3147 at pass start), `test:livegate` **55/55**,
+`promtool check rules` SUCCESS 23 rules. Deployed 11:02:19Z, boot `4a43ac63`, `RestartCount` 0,
+`GIT_SHA=e091ba5` — `build_info{git_sha="e091ba5"}` confirmed; Prometheus force-recreated (rules
+changed) → 23 loaded, 0 firing. **Soak: 0 alarms.** Verified live rather than inferred: every seeded
+child publishing a true zero, including `reconciliation_runs_total{result="halt"}` on both venues;
+`kill_switch_state` RUNNING; `agentic_consult_gate_total` now exports all six outcomes (three
+before). The new banner correctly stays SILENT — the lane is not latched. Worth recording: the prose
+banner in STATUS.md went stale within 90 minutes of being written, while the metric-driven banner
+self-corrected. That is the "what wrote it" discipline paying out on the same day it was written.
+
+### Research: loop-as-decider — NO-GO, with a positive recommendation
+
+Owner-queued 2026-07-29, answered by a dedicated opus pass. **Verdict NO-GO on loop-originated
+trading, live and demo, on evidentiary not mechanical grounds.** Free inference is a COST lever, and
+the gate's own arithmetic bounds it: LLM spend is 68.3 bps/trip of an ~183 bps/trip deficit, so it
+removes **37% of the requirement and 0% of its cause** — the residual gap is the 115–130 bps
+`verdicts.md` already binds. For a loop decider to be anything else, its entries would have to beat
+the production decider by **≥115 bps/trip**, against an incumbent measuring ~100 bps BELOW a
+martingale; the one measured decider swap in this repo moved ~10 bps on a proxy. Two corrections to
+the first-pass read: the promotion gate **is** decider-blind structurally (`fillsForMode` has no
+decider predicate, unlike the existing replay exclusion) even though the data is decider-attributable
+via `prompt_hash`; and a subscription decider **does not route around the funding blocker** — the
+study's `aggregateVerdict` returns `INCOMPLETE` unless both declared models run, so it adds a
+prerequisite in front of it. **Recommendation: fund the ~$110 frozen 12-arm replay study, not the
+trading lane** — it is pre-registered, frozen, and decisive in both directions.
+
+### Flagged / next pass
+
+1. **The scheduler does NOT double-fire** — checked: `0 2,10,18 * * *` with 414s jitter, one fire per
+   slot. Pass 47's open recommendation is closed. The 07-28 collisions came from interactive sessions
+   overlapping scheduled ones, which the lease binds only if they call it.
+2. **Two passes on 07-29 left no LOG entry**, and one left a lease dangling 12h. The loop cannot
+   detect its own unrecorded passes; a sweep annotation comparing the newest digest against the
+   newest LOG entry would close it. Not built this pass.
+3. **A research agent wrote to the working tree** despite a read-only instruction (it was dispatched
+   as `general-purpose`, which carries Write). Two out-of-scope files were reverted, copies
+   quarantined. Read-only research must be dispatched to an agent type without write tools.
+4. **`agent_last_success_timestamp_seconds` is now the single best lane-liveness read** — it caught
+   the resumption within one scrape of the deploy, from the durable ledger, with no dependence on
+   whether the client had tried yet.
+5. **The funding question the owner now faces is not "is it funded" but "should the lane spend it"** —
+   `verdicts.md` says the present entry signal cannot clear the gate, and Pass 48's research names the
+   study as the better use of the next $110.

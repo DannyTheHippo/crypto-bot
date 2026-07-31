@@ -290,9 +290,11 @@ const envSchema = z
     // (reduce-only EXIT_LONG, exitStyle RESTING) instead of waiting for plan-executor's own
     // close-price crossing to fire an IOC exit. v3 §3.2 default: false→true (the only deployed
     // shape). The v2 "both TP+STOP only if all venues perp" refusal is RETIRED (§3.5) — mixed-venue
-    // boots are the v3 norm and the mutual-exclusion rule is structurally unenforceable on them; a
-    // per-symbol rule (perp rests both legs, spot rests TP-only) replaces it in the strategy lane
-    // (workstream #10), not here.
+    // boots are the v3 norm and the mutual-exclusion rule is structurally unenforceable on them; the
+    // per-symbol rule (perp rests both legs, spot rests TP-only) is implemented directly in the
+    // strategy lane's manageVenueStopSpot (agentic.strategy.ts, 2026-07-31 fix) — spot only manages
+    // an already-resting stop and never places a new one, so the two legs never contend for the same
+    // free base balance.
     AGENTIC_VENUE_TP: z
       .enum(['true', 'false'])
       .default('true')
@@ -300,11 +302,14 @@ const envSchema = z
     // Re-place threshold (bps): a resting TP SELL priced more than this many bps away from the
     // plan's current TP price gets cancelled this bar for next-bar re-placement.
     AGENTIC_VENUE_TP_REPLACE_DRIFT_BPS: z.coerce.number().int().positive().default(10),
-    // Push 3 P7d: venue-resting protective stop lifecycle for plan-mode positions — rests the plan's
-    // stop at the venue (SPOT: STOP_LOSS_LIMIT on the regular open-orders rail; PERP: STOP_MARKET on
-    // the swap algo/conditional rail) instead of relying solely on the executor's own bar-close
-    // stop-price crossing. v3 §3.2 default: false→true (the only deployed shape) — see AGENTIC_VENUE_TP
-    // above for the retired mutual-exclusion refusal.
+    // Push 3 P7d: venue-resting protective stop lifecycle for plan-mode positions. PERP rests the
+    // plan's stop at the venue (STOP_MARKET on the swap algo/conditional rail) instead of relying
+    // solely on the executor's own bar-close stop-price crossing. SPOT no longer places one
+    // (2026-07-31 fix — see manageVenueStopSpot's header comment, agentic.strategy.ts): it only
+    // manages/cancels an already-resting legacy STOP_LOSS_LIMIT on the regular open-orders rail,
+    // never places a new one, and defers to the bar-close software stop instead. v3 §3.2 default:
+    // false→true (the only deployed shape) — see AGENTIC_VENUE_TP above for the retired
+    // mutual-exclusion refusal.
     AGENTIC_VENUE_STOP: z
       .enum(['true', 'false'])
       .default('true')

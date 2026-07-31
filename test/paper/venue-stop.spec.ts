@@ -10,15 +10,18 @@ import { describe, it, expect } from 'vitest';
 // treating a trigger order as an always-resting plain LIMIT would misrepresent that and corrupt
 // paper P&L/behavior tests, so P7a chose to fail closed instead of mis-simulate. That decision
 // predates this task and is out of P7d's scope to change (a paper-side trigger-watch engine is a
-// separate, sizable build). The practical consequence: a RESTING_STOP signal (manageVenueStop's spot
-// placement, exitStyle 'RESTING_STOP' + triggerPriceHint) can never actually rest in THIS harness —
-// it TERMINAL_REJECTs at submission every time, so the "entry → stop rests → intra-bar breach fills
-// → FLAT" and "cancel-first clears a resting vsl" scenarios this file was drafted to prove
-// end-to-end are not expressible here. They are unit-covered instead, against a directly-constructed
-// AgenticStrategy (no paper-adapter boundary involved) —
-// test/unit/agentic-strategy/venue-stop-lifecycle.spec.ts's SPOT describe block: placement, drift/
-// qty reconciliation, position_closed orphan cleanup in both directions (stop-fills-cancels-TP and
-// TP-fills-cancels-stop), the bar-close force-band stand-down/force-fire pair, and restart re-arm.
+// separate, sizable build). The practical consequence at the time: a RESTING_STOP signal (spot
+// manageVenueStop's own would-be placement, exitStyle 'RESTING_STOP' + triggerPriceHint) could never
+// actually rest in THIS harness — it TERMINAL_REJECTed at submission every time, so the
+// "entry → stop rests → intra-bar breach fills → FLAT" and "cancel-first clears a resting vsl"
+// scenarios this file was drafted to prove end-to-end were not expressible here. 2026-07-31 fix:
+// spot no longer places a STOP_LOSS_LIMIT at all (manageVenueStopSpot manages an already-resting one
+// only — see its own header comment, agentic.strategy.ts), retiring the placement scenario for a
+// second, independent reason. Drift/qty reconciliation of a pre-existing resting 'vsl', its
+// position_closed orphan cleanup in both directions (stop-fills-cancels-TP and TP-fills-cancels-
+// stop), the bar-close force-band stand-down/force-fire pair, and restart re-arm remain
+// unit-covered instead, against a directly-constructed AgenticStrategy (no paper-adapter boundary
+// involved) — test/features/strategy/agentic/venue-stop-lifecycle.spec.ts's SPOT describe block.
 // The role-scoped CANCEL_OPEN cancelRole mechanism itself (SignalSinkService.cancelOpenForSignal) is
 // type-agnostic — it resolves a resting order's role off its OWN persisted intent's dedupeKey,
 // never off order type — and is already proven end-to-end for both roles by venue-tp.spec.ts's own

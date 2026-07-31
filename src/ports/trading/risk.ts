@@ -54,10 +54,13 @@ export interface ProtectiveExitConfig {
 // positionKey(strategyId, venue, symbol) (domain/trading/risk/evaluate.ts) — the SAME key
 // ProtectiveExitService's own hwm/lwm/cooldown maps use. venueStopResting was future-proofing for a
 // later venue-side-stop build; Push 3 P7d is that build — AgenticStrategy (the sole writer) now
-// flips it true only once a placed stop is CONFIRMED resting (ack observed via restingOrderForRole
-// on spot, or a matching fetchOpenAlgoOrders row on a perp — never optimistically at signal-emission
+// flips it true only once a stop is CONFIRMED resting (ack observed via restingOrderForRole on
+// spot, or a matching fetchOpenAlgoOrders row on a perp — never optimistically at signal-emission
 // time, so the watcher/executor never stand down on a stop that may not have actually landed) and
-// false again the moment a reconcile bar finds it missing (filled, cancelled, or never acked).
+// false again the moment a reconcile bar finds it missing (filled, cancelled, or never acked). On
+// perp the strategy itself PLACES the stop it later confirms; on spot, since the 2026-07-31 fix, it
+// never places one — it only ADOPTS an already-resting legacy STOP_LOSS_LIMIT, confirmed the same
+// way. The confirm-before-flag mechanism is unchanged either way.
 export interface PlanStop {
   readonly side: 'LONG' | 'SHORT';
   readonly stopPrice: string;

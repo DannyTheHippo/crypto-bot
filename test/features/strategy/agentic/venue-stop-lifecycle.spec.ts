@@ -318,18 +318,30 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
     });
   });
 
-  it('places a RESTING_STOP EXIT_LONG at entry × (1 − stopLossPct) on the fill-observation bar', async () => {
+  it('SPOT never places a resting stop, even on the fill-observation bar (2026-07-31 fix) — stands the registry down instead', async () => {
+    // Confirmed defect (independent adversarial review, 2026-07-31): on spot, manageVenueTp's 'vtp'
+    // and this loop's 'vsl' both size to 100% of the position and reduceOnly is dropped on spot
+    // (ccxt-exchange.adapter.ts), so resting BOTH legs meant they contended for the same free base
+    // and the loser terminal-rejected. This is the regression pin for its fix — see
+    // manageVenueStopSpot's own header comment for the full rationale.
     const client = new PlanningClient();
-    const strategy = new AgenticStrategy(SID, makeParams(), client);
+    const events: VenueStopEvent[] = [];
+    const registry = planStopRegistry();
+    const strategy = new AgenticStrategy(SID, makeParams(), client, {
+      onVenueStop: (e) => events.push(e),
+      planStopRegistry: registry,
+    });
     await strategy.decide(buildInput(0));
 
     const out = await strategy.decide(buildInput(1, { position: longPosition('100') }));
     expect(client.calls).toBe(1);
-    expect(out).toHaveLength(1);
-    expect(out[0]!.kind).toBe('EXIT_LONG');
-    expect(out[0]!.exitStyle).toBe('RESTING_STOP');
-    expect(out[0]!.triggerPriceHint!.toFixed()).toBe('98'); // 100 × (1 − 0.02) exactly
-    expect(out[0]!.dedupeKey).toContain('venue_stop_place');
+    expect(out).toEqual([]);
+    expect(events).toEqual([]);
+    expect(registry.get(REG_KEY)).toEqual({
+      side: 'LONG',
+      stopPrice: '98',
+      venueStopResting: false,
+    });
   });
 
   it('confirms resting (registry venueStopResting → true) once the ack is observed; skipped_existing at the buffered-leg expectation (never the raw trigger)', async () => {
@@ -342,8 +354,8 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
       planStopRegistry: registry,
     });
     await strategy.decide(buildInput(0));
-    await strategy.decide(buildInput(1, { position: longPosition('100') })); // placed
-    expect(registry.get(REG_KEY)?.venueStopResting).toBe(false); // not yet confirmed
+    await strategy.decide(buildInput(1, { position: longPosition('100') })); // spot never places (2026-07-31 fix) — stands down
+    expect(registry.get(REG_KEY)?.venueStopResting).toBe(false); // never placed
     events.length = 0;
 
     // Default stopLimitBufferBps=50 (sizer's own default): trigger 98 × (1 − 0.005) = 97.51 exactly
@@ -419,11 +431,12 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
       { onVenueStop: (e) => events.push(e), intentStore: vslOnlyIntentStore() },
     );
     await strategy.decide(buildInput(0));
-    await strategy.decide(buildInput(1, { position: longPositionSubStep() })); // places STOP at 97.51
+    await strategy.decide(buildInput(1, { position: longPositionSubStep() })); // spot never places (2026-07-31 fix) — stands down
     events.length = 0;
 
-    // Bar 2: the STOP_LOSS_LIMIT rests at the buffered leg 97.51, qty 0.00123 = roundToStep(0.0012345,
-    // 0.00001, 'down'). The 0.0000045 residue is un-protectable dust (below one step), not a mismatch.
+    // Bar 2: a STOP_LOSS_LIMIT already rests at the buffered leg 97.51 (e.g. seeded before this fix)
+    // — qty 0.00123 = roundToStep(0.0012345, 0.00001, 'down'). The 0.0000045 residue is
+    // un-protectable dust (below one step), not a mismatch.
     const out = await strategy.decide(
       buildInput(2, {
         position: longPositionSubStep(),
@@ -470,10 +483,10 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
       planStopRegistry: registry,
     });
     await strategy.decide(buildInput(0));
-    await strategy.decide(buildInput(1, { position: longPosition('100') })); // placed
+    await strategy.decide(buildInput(1, { position: longPosition('100') })); // spot never places (2026-07-31 fix) — stands down
     await strategy.decide(
       buildInput(2, { position: longPosition('100'), openOrders: [restingSell('97.51')] }),
-    ); // confirmed resting
+    ); // a stop already resting at the venue (e.g. seeded before this fix) is confirmed resting
     expect(registry.get(REG_KEY)?.venueStopResting).toBe(true);
     events.length = 0;
 
@@ -495,10 +508,10 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
       planStopRegistry: registry,
     });
     await strategy.decide(buildInput(0));
-    await strategy.decide(buildInput(1, { position: longPosition('100') })); // placed
+    await strategy.decide(buildInput(1, { position: longPosition('100') })); // spot never places (2026-07-31 fix) — stands down
     await strategy.decide(
       buildInput(2, { position: longPosition('100'), openOrders: [restingSell('97.51')] }),
-    ); // confirmed resting
+    ); // a stop already resting at the venue (e.g. seeded before this fix) is confirmed resting
     events.length = 0;
 
     // close 97 breaches the stop (98) by ~102bps — past the 30bps force band; the resting stop
@@ -516,6 +529,33 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
     expect(out[0]!.kind).toBe('EXIT_LONG');
     expect(out[0]!.cancelBeforeSubmit).toEqual({ side: 'SELL' }); // role-agnostic — clears vtp+vsl
     expect(out[0]!.reason).toBe('plan exit: stop');
+  });
+
+  // MUST-FIX 6 (2026-07-31 fix review): the force-band guard above (planStopForceBps) is declared
+  // "FAILS OPEN — on spot, do not place, keep the bar-close software stop armed", but nothing
+  // previously pinned that the guard only ever DEFERS when a stop is CONFIRMED resting
+  // (registry venueStopResting true) — never when nothing rests at all. On spot post-fix,
+  // venueStopResting is false whenever no legacy 'vsl' happens to be resting, so this is the common
+  // case, not an edge case: the guard must let the bar-close exit through immediately.
+  it('fails open at the guard: with NO venue stop resting (the spot norm post-2026-07-31 fix), a breach inside the force band still fires the plan exit — the defer only applies to a CONFIRMED-resting stop', async () => {
+    const client = new PlanningClient();
+    const events: VenueStopEvent[] = [];
+    const strategy = new AgenticStrategy(SID, makeParams({ planStopForceBps: 30 }), client, {
+      onVenueStop: (e) => events.push(e),
+    });
+    await strategy.decide(buildInput(0));
+    await strategy.decide(buildInput(1, { position: longPosition('100') })); // no resting order — spot never places (2026-07-31 fix), stands down
+    events.length = 0;
+
+    // close 97.9 breaches the stop (98) by ~10.2bps — WITHIN the 30bps force band used by the
+    // stand-down test above, but nothing rests server-side here, so the guard must not defer.
+    const out = await strategy.decide(
+      buildInput(2, { close: '97.9', position: longPosition('100') }),
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0]!.kind).toBe('EXIT_LONG');
+    expect(out[0]!.reason).toBe('plan exit: stop');
+    expect(events).not.toContain('stood_down');
   });
 
   it('cancel-first on a max_hold exit clears the resting stop even when AGENTIC_VENUE_TP is off (venueStopEnabled alone gates the cancel-first block, Defect B #49)', async () => {
@@ -553,11 +593,12 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
       ),
     });
     await strategy.decide(buildInput(0));
-    await strategy.decide(buildInput(1, { position: longPosition('100') })); // places both vtp+vsl
+    await strategy.decide(buildInput(1, { position: longPosition('100') })); // places vtp only — spot never places vsl (2026-07-31 fix)
     tpEvents.length = 0;
     stopEvents.length = 0;
 
-    // Bar 2: FLAT (the stop filled externally) — the TP, still resting, is the orphan to clean up.
+    // Bar 2: FLAT (the stop filled externally — e.g. a legacy vsl resting from before this fix) —
+    // the TP, still resting, is the orphan to clean up.
     const tpOrder = restingSell('103', '0.001', 'cbp00000000000000070008000000000000b2');
     const out = await strategy.decide(buildInput(2, { openOrders: [tpOrder] }));
     expect(out).toHaveLength(1);
@@ -589,7 +630,7 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
     expect(stopEvents).toEqual(['filled_flat', 'orphan_cancel']);
   });
 
-  it('restart re-arm: the first managed bar after a bare-LONG re-arm places the resting stop off avgEntry, same site as a fresh fill', async () => {
+  it('restart re-arm: the first managed bar after a bare-LONG re-arm captures entryPrice/stopPrice but never places a venue stop on SPOT (2026-07-31 fix)', async () => {
     class RearmingClient implements AgentClientPort {
       calls = 0;
       propose(): Promise<AgentProposal> {
@@ -616,34 +657,130 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
     expect(registry.get(REG_KEY)).toBeUndefined();
 
     const second = await strategy.decide(buildInput(1, { position: held })); // first managed bar
-    expect(second).toHaveLength(1);
-    expect(second[0]!.exitStyle).toBe('RESTING_STOP');
-    expect(second[0]!.triggerPriceHint!.toFixed()).toBe('98');
-    expect(events).toEqual(['placed']);
+    expect(second).toEqual([]); // SPOT never places — see manageVenueStopSpot's header comment
+    expect(events).toEqual([]);
     expect(registry.get(REG_KEY)).toEqual({
       side: 'LONG',
       stopPrice: '98',
-      venueStopResting: false, // placed, not yet confirmed resting (no ack observed this bar)
+      venueStopResting: false, // never placed — setPlanStop still seeds side/stopPrice independently
     });
   });
 
   // Push 3 P7f fix 6 regression: a transient intent-store throw while classifying the resting SELL
-  // must skip placement this bar (fail toward no-op), never read as "nothing resting" and place a
-  // DUPLICATE stop next to the one already resting.
-  it('fix 6: an intent-store throw during SPOT reconcile skips placement this bar (no duplicate stop)', async () => {
+  // must skip this bar's reconcile decision (fail toward no-op), never read as "nothing resting" —
+  // still true post-2026-07-31 fix even though spot no longer places: an unverified read must not
+  // let the stand-down branch flip venueStopResting false while a stop may genuinely rest server-side.
+  it('fix 6: an intent-store throw during SPOT reconcile leaves a CONFIRMED-resting stop confirmed — the flag must not flip false on an unverified read', async () => {
     const client = new PlanningClient();
-    const throwingStore: Pick<ExecutionStorePort, 'loadIntentByClientOrderId'> = {
-      loadIntentByClientOrderId: () => Promise.reject(new Error('db down')),
+    const registry = planStopRegistry();
+    let throwing = false;
+    const store: Pick<ExecutionStorePort, 'loadIntentByClientOrderId'> = {
+      loadIntentByClientOrderId: (coid) =>
+        throwing
+          ? Promise.reject(new Error('db down'))
+          : Promise.resolve(intentWithDedupeKey(String(coid), 'agentic:venue_stop_place:fixture')),
     };
     const strategy = new AgenticStrategy(SID, makeParams(), client, {
-      intentStore: throwingStore,
+      intentStore: store,
+      planStopRegistry: registry,
     });
     await strategy.decide(buildInput(0));
-    await strategy.decide(buildInput(1, { position: longPosition('100') })); // placed
-    const out = await strategy.decide(
+    await strategy.decide(buildInput(1, { position: longPosition('100') })); // spot never places (2026-07-31 fix) — stands down
+
+    // Bar 2: a clean read confirms the resting 'vsl' — venueStopResting flips true.
+    await strategy.decide(
       buildInput(2, { position: longPosition('100'), openOrders: [restingSell('97.51')] }),
     );
-    expect(out).toEqual([]); // skipped, NOT a second 'placed' RESTING_STOP signal
+    expect(registry.get(REG_KEY)?.venueStopResting).toBe(true);
+
+    // Bar 3: the SAME resting order, but the store now throws classifying it — the store-error
+    // branch must return [] WITHOUT touching setVenueStopResting, leaving the prior CONFIRMED
+    // `true` in place. Removing the store-error early-return makes roleForOrderChecked's collapsed
+    // 'unknown' fall through to the stand-down branch instead, flipping this false — verified by
+    // temporarily deleting that branch locally: the assertion below fails as expected.
+    throwing = true;
+    const out = await strategy.decide(
+      buildInput(3, { position: longPosition('100'), openOrders: [restingSell('97.51')] }),
+    );
+    expect(out).toEqual([]); // skipped — store-error fail-toward-no-op, not a stand-down
+    expect(registry.get(REG_KEY)?.venueStopResting).toBe(true);
+  });
+
+  // 2026-07-31 fix regression coverage: the two roles used to be exercised in isolation on spot,
+  // never together — the very gap that let the double-rest defect (both legs sizing to 100% of the
+  // position, contending for the same free base) go unnoticed.
+  it('a resting vtp (from manageVenueTp) never causes a placement — the loop stays role-scoped, standing the registry down', async () => {
+    const client = new PlanningClient();
+    const registry = planStopRegistry();
+    const strategy = new AgenticStrategy(SID, makeParams(), client, {
+      planStopRegistry: registry,
+      intentStore: roledIntentStore(new Map([['cbp00000000000000070008000000000000b2', 'vtp']])),
+    });
+    await strategy.decide(buildInput(0));
+    await strategy.decide(buildInput(1, { position: longPosition('100') }));
+
+    // Bar 2: a 'vtp' rests at the FULL step-rounded qty (manageVenueTp's own resting order) — this
+    // loop only matches role 'vsl', so it must never mistake the vtp for a stop to manage, and must
+    // never place its own stop alongside it.
+    const vtpOrder = restingSell('103', '0.001', 'cbp00000000000000070008000000000000b2');
+    const out = await strategy.decide(
+      buildInput(2, { position: longPosition('100'), openOrders: [vtpOrder] }),
+    );
+    expect(out).toEqual([]);
+    expect(registry.get(REG_KEY)?.venueStopResting).toBe(false);
+  });
+
+  it('regression guard: a spot vsl already resting at the venue (seeded before this fix, never placed by this strategy instance) is still scanned, confirmed, and cancellable — never stranded', async () => {
+    const client = new PlanningClient();
+    const events: VenueStopEvent[] = [];
+    const registry = planStopRegistry();
+    const strategy = new AgenticStrategy(SID, makeParams(), client, {
+      onVenueStop: (e) => events.push(e),
+      intentStore: vslOnlyIntentStore(),
+      planStopRegistry: registry,
+    });
+    await strategy.decide(buildInput(0));
+
+    // Bar 1: a 'vsl' already rests — this strategy instance never placed it (the stand-down branch
+    // ran with no openOrders on every prior bar in the other tests above; here the FIRST bar this
+    // instance ever sees a stop already resting server-side). manageVenueStopSpot must still find,
+    // confirm, and manage it rather than treating a stop it didn't itself place as unmanaged.
+    await strategy.decide(
+      buildInput(1, { position: longPosition('100'), openOrders: [restingSell('97.51')] }),
+    );
+    expect(registry.get(REG_KEY)?.venueStopResting).toBe(true);
+    events.length = 0;
+
+    // Bar 2: it genuinely drifts — proves the cancel path (the only way to retire a pre-existing
+    // resting stop now that placement is gone) still fires and un-confirms the registry.
+    const out = await strategy.decide(
+      buildInput(2, { position: longPosition('100'), openOrders: [restingSell('96')] }),
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0]!.kind).toBe('CANCEL_OPEN');
+    expect(out[0]!.cancelRole).toBe('vsl');
+    expect(events).toEqual(['drift_cancel']);
+    expect(registry.get(REG_KEY)?.venueStopResting).toBe(false);
+  });
+
+  it('invariant: SPOT never emits two same-side reduce-only placements in one bar (the TP+STOP double-rest defect this fix retires)', async () => {
+    const client = new PlanningClient();
+    const strategy = new AgenticStrategy(SID, { ...makeParams(), venueTpEnabled: true }, client);
+    await strategy.decide(buildInput(0));
+
+    // Fill-observation bar, no resting orders yet: pre-fix this emitted BOTH a 'RESTING' TP and a
+    // 'RESTING_STOP' stop, one SELL each against the same free base — exactly the contention
+    // measured live (78% combined InsufficientFunds terminal-reject rate across both legs over one
+    // week; vtp 86.6%/vsl 58.5% split by role — both artifacts of the two legs fighting over the
+    // same balance, neither a property of either leg alone).
+    const out = await strategy.decide(buildInput(1, { position: longPosition('100') }));
+    const placements = out.filter(
+      (s) =>
+        (s.kind === 'EXIT_LONG' || s.kind === 'EXIT_SHORT') &&
+        (s.exitStyle === 'RESTING' || s.exitStyle === 'RESTING_STOP'),
+    );
+    expect(placements).toHaveLength(1);
+    expect(placements[0]!.exitStyle).toBe('RESTING'); // the TP only — the stop never places on spot
   });
 });
 

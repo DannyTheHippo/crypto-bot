@@ -1679,11 +1679,12 @@ export class AgenticStrategy implements AsyncStrategy {
   }
 
   // AGENTIC_VENUE_STOP (Push 3 P7d): dispatches to the venue-appropriate reconciliation loop — SPOT
-  // rests a STOP_LOSS_LIMIT on the regular open-orders rail (mirrors manageVenueTp almost exactly);
-  // PERP rests a STOP_MARKET on the swap algo/conditional rail instead, which never appears in
-  // openOrders (see AlgoOrderState's own header comment in ports/venue/exchange.ts), so reconciliation
-  // there goes through AgenticStrategyDeps.algoOrders.fetchOpenAlgoOrders. No-op ([]) whenever the
-  // flag is off, position isn't LONG/SHORT, or the resting order is already correctly priced/sized.
+  // only MANAGES an already-resting STOP_LOSS_LIMIT on the regular open-orders rail (2026-07-31 fix:
+  // it never places a new one — see manageVenueStopSpot's own header comment for why); PERP rests a
+  // STOP_MARKET on the swap algo/conditional rail instead, which never appears in openOrders (see
+  // AlgoOrderState's own header comment in ports/venue/exchange.ts), so reconciliation there goes
+  // through AgenticStrategyDeps.algoOrders.fetchOpenAlgoOrders. No-op ([]) whenever the flag is off,
+  // position isn't LONG/SHORT, or the resting order is already correctly priced/sized.
   private async manageVenueStop(
     input: AgentDecisionInput,
     context: AgentContext,
@@ -1739,13 +1740,33 @@ export class AgenticStrategy implements AsyncStrategy {
     return price(roundToMoneyPrecision(raw).toFixed());
   }
 
-  // SPOT reconciliation: mirrors manageVenueTp's own place/drift/qty loop, role-scoped to 'vsl' via
-  // restingOrderForRole. The one structural difference is the drift EXPECTATION: a resting
-  // STOP_LOSS_LIMIT's own OpenOrderSummary.limitPrice is the BUFFERED limit leg PositionSizerService
-  // built past the trigger (position-sizer.service.ts's isRestingStopExit branch), never the raw
-  // trigger — comparing against the raw trigger would read the buffer itself (default 50bps) as
-  // permanent drift and churn cancel/re-place forever, so spotStopExpectedLimit replicates the
-  // sizer's own buffer formula before comparing.
+  // SPOT reconciliation: MANAGE-ONLY, never place. Confirmed defect (independent adversarial review,
+  // 2026-07-31): on spot, both manageVenueTp's 'vtp' and this loop's 'vsl' size to 100% of the
+  // position and reduceOnly is dropped on spot (ccxt-exchange.adapter.ts), so the two legs contend
+  // for the SAME free base balance and the loser always terminal-rejects. The 7-day binance
+  // reduce_only SELL rejection rate was 78% COMBINED across both legs (122/154, InsufficientFunds);
+  // split by role it was vtp 86.6% (97/112) and vsl 58.5% (24/41) over the same window — both
+  // per-role rates are artifacts of the two legs fighting over the same balance, not a property of
+  // either leg alone, and neither predicts the post-fix rate: once only one leg is placed it has the
+  // base to itself. (An earlier version of this comment attributed the 78% combined figure to the
+  // stop leg alone and read it as a reason to drop the stop — the split above does not support that;
+  // the actual justification is below.) Dropping the spot STOP_LOSS_LIMIT is NOT because it fails to
+  // fill: every spot stop that ever reached its trigger over the same measured week filled at or
+  // inside the trigger, zero partials, zero non-fills (ZEC/BTC/SOL/AAVE, 2026-07-25 through 07-31) —
+  // a fill-failure argument was considered against that 4/4 record and dropped. The real trade is
+  // narrower: resting a venue stop stands the bar-close software stop DOWN (runActivePlan's
+  // venueStopResting guard), so keeping the stop leg trades a race the TP leg already covers for a
+  // choice between one control and one control (venue stop vs. software stop), not two controls and
+  // one — not worth making just to win that race. So below: if nothing rests, stand down
+  // (setVenueStopResting(key, false)) and return — FAILS OPEN, never place. If a 'vsl' IS
+  // already resting (e.g. from before this fix, or a manual/legacy order), the drift/qty/cancel
+  // reconciliation below still runs unchanged — a resting stop is scanned, drift-managed and
+  // cancellable, never stranded. The drift EXPECTATION mirrors manageVenueTp's own place/drift/qty
+  // loop with one structural difference: a resting STOP_LOSS_LIMIT's own OpenOrderSummary.limitPrice
+  // is the BUFFERED limit leg PositionSizerService built past the trigger (position-sizer.service.ts's
+  // isRestingStopExit branch), never the raw trigger — comparing against the raw trigger would read
+  // the buffer itself (default 50bps) as permanent drift and churn cancel/re-place forever, so
+  // spotStopExpectedLimit replicates the sizer's own buffer formula before comparing.
   private async manageVenueStopSpot(
     input: AgentDecisionInput,
     active: ActivePlanState,
@@ -1756,9 +1777,9 @@ export class AgenticStrategy implements AsyncStrategy {
     key: string,
   ): Promise<Signal[]> {
     // Push 3 P7f fix 6: scans inline (rather than restingOrderForRole) so a STORE-ERROR on any
-    // candidate is visible to the placement decision below — restingOrderForRole's own collapsed
-    // 'unknown' would read a store throw identically to "no stop rests here", placing a DUPLICATE
-    // next to one already resting server-side. See roleForOrderChecked's own header comment.
+    // candidate is visible below — restingOrderForRole's own collapsed 'unknown' would read a
+    // store throw identically to "no stop rests here", standing venueStopResting down while a
+    // legacy 'vsl' may genuinely still rest server-side. See roleForOrderChecked's own header comment.
     const stopCandidates = input.snapshot.portfolio.openOrders.filter(
       (o) => o.symbol === this.symbol && o.side === stopSide,
     );
@@ -1775,32 +1796,24 @@ export class AgenticStrategy implements AsyncStrategy {
     }
 
     if (!restingVsl && storeError) {
-      // Fail-toward-no-op: a transient store failure proves nothing about whether a stop already
-      // rests — SKIP placement this bar (retry next bar) rather than risk placing a duplicate.
-      // Deliberately does NOT touch setVenueStopResting: an unverified `true` here would falsely
-      // stand down the bar-close force-band/watcher backstop (CLAUDE.md fail-direction: leaving it
-      // at its last-known value, never optimistically flipping it, is the safe direction).
+      // Fail-toward-no-op: a transient store failure proves nothing about whether a legacy stop
+      // already rests — skip this bar's reconcile decision (retry next bar) rather than guess.
+      // Deliberately does NOT touch setVenueStopResting: an unverified flip either way would
+      // corrupt the bar-close force-band/watcher's own read of whether a stop is CONFIRMED resting
+      // (CLAUDE.md fail-direction: leaving it at its last-known value, never optimistically
+      // flipping it, is the safe direction).
       this.logger.warn(
-        `venue-stop reconcile: intent-store lookup failed for ${this.symbol} — skipping this bar's placement decision to avoid a duplicate stop`,
+        `venue-stop reconcile: intent-store lookup failed for ${this.symbol} — skipping this bar's reconcile decision, venueStopResting left unchanged`,
       );
       return [];
     }
 
     if (!restingVsl) {
-      // Confirm-before-flag, mirrored on the way DOWN too: a reconcile bar that finds nothing
-      // resting (filled, cancelled, or never acked) must never leave the registry claiming a stop is
-      // resting — the watcher's stand-down/force-band decision reads this flag directly.
+      // 2026-07-31 fix: no placement on spot (see this function's header comment for the full
+      // rationale) — confirm-before-flag DOWN so the watcher never believes a venue stop rests when
+      // none does, and let the bar-close software stop stay the sole armed protective control.
       this.setVenueStopResting(key, false);
-      if (
-        active.venueStopPlacedAtBar !== null &&
-        active.barsElapsed <= active.venueStopPlacedAtBar + 1
-      ) {
-        this.onVenueStop?.('skipped_inflight');
-        return [];
-      }
-      active.venueStopPlacedAtBar = active.barsElapsed;
-      this.onVenueStop?.('placed');
-      return [this.buildVenueStopSignal(input, lastCandle, stopSide, currentStop)];
+      return [];
     }
 
     active.venueStopPlacedAtBar = null;

@@ -425,11 +425,18 @@ research/loop/STATUS.md) and is NOT investigable by an automated pass — do not
 investigation over it. The only remedy is the owner adding credit; the lane self-heals within 30
 minutes of credit landing, with no redeploy required.
 
-**While it is latched.** Nothing unsafe is happening: no LLM call means no new proposal, resting
-venue stops and take-profits continue to protect and close open positions, and Risk, the kill switch
-and the live gates are untouched. What IS lost is every decide on every bar, and the journal rows for
-those bars are marked `action='error'` with a `client_latched:` rationale so they are never counted as
-the model choosing to hold.
+**While it is latched.** No LLM call means no new proposal, but nothing unsafe is happening on its
+own: on PERP, the resting venue stop and take-profit both continue to protect and close open
+positions. On SPOT (2026-07-31 fix — see `manageVenueStopSpot`'s header comment,
+`agentic.strategy.ts`), only the take-profit still rests at the venue; downside protection is the
+bar-close software stop inside `runActivePlan`, which keeps evaluating every managed bar regardless
+of whether the LLM answers, so a latch alone does not silence it. That stop is in-memory, though — a
+restart DURING the latch wipes it, and re-arming it needs a fresh LLM-answered consult (the very
+thing latched), so a restart-during-latch on spot falls back to the global `PROTECT_STOP_LOSS_PCT`
+backstop (`ProtectiveExitService`) until the LLM recovers. Risk, the kill switch and the live gates
+are untouched throughout. What IS lost is every decide on every bar proposing anything new, and the
+journal rows for those bars are marked `action='error'` with a `client_latched:` rationale so they
+are never counted as the model choosing to hold.
 
 ## Paper-honesty (§10) — the CI-cannot-reach-live guarantee
 

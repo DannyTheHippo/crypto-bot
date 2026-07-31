@@ -15,74 +15,6 @@ than the five below are in that archive; older still is git history. Current sta
 
 ---
 
-## 2026-07-30 — Pass 49 addendum c (RECONSTRUCTED by Pass 50: three commits shipped and deployed, and left no entry)
-
-**Window:** 2026-07-30T18:25Z → 22:19Z. **This entry was NOT written by the session it describes.**
-Pass 50 reconstructed it on 2026-07-31 from commits, diffs, the loop records that session DID
-update, and the digest its own deploy produced. Written so the window has a covering record and the
-unrecorded-pass detector has an answer rather than a permanent annotation.
-
-**What happened, plainly:** a session shipped `c23ab3a`, `61d6b6c` and `8d39363`, deployed the last
-of them to production (boot `54cdb77a`, 22:18:08Z), and updated `STATUS.md`, `verdicts.md`,
-`watches.md` and the follow-on study — but appended **nothing** to `LOG.md`. `git log -- LOG.md`
-confirms it positively: the file's newest touch is `d0d91c7`, Pass 49's own records commit. This is
-the second unrecorded-session occurrence in three days.
-
-### What the three commits did
-
-**`c23ab3a` — the decision-history ring was mostly noise.** The ring fed the model 30 rows with no
-filter on `action`; of 405 sampled lines **382 carried `action:'error'`** — rows stamped for calls
-that never reached the model at all. `PRE_CALL_DECIDE_RATIONALE_TAGS` and
-`isModelAuthoredDecision()` were added to `decide-rationale.ts` to exclude them, keeping
-`plan_authoritative_close:` rows because those are real decisions the system overrode.
-`MAX_DECISION_HISTORY` 30 → 12. The tool schemas were unified for cache-breakpoint stability, and
-the commit is explicit that the JSON got BIGGER and this is **not** a token saving.
-
-**`61d6b6c` — the authoring pass, and a retired objective wearing a different name.**
-`scripts/loop-authoring.mjs` + `loop-authoring-core.mjs` (1,280 lines) and a `loop:authoring` script:
-the loop can now draft candidate playbooks itself. The finding worth keeping: the ANTI-RATCHET
-objective retired in Pass 49 was fenced behind three `[RETIRED]` markers, and an X7 `postMortems`
-paragraph **outside every fence** relabelled the same objective and told the model to treat a
-rank-filter relaxation "as a strong prompt to act." The first implementation passed all four marker
-assertions and still leaked it into the assembled prompt. It was caught only by scanning the
-generated output — a fence that checks its source and not its product is not a fence.
-
-**`8d39363` — three of six keys were not batch-invariant, and one would have been a correctness
-bug.** Batch-invariant payload keys were hoisted behind a cache breakpoint. `liquidation` was
-dropped from the plan because `LiquidationFeedPort.latest(symbol)` prunes a per-symbol buffer —
-it measured 100% identical across 16 live waves only because those windows were quiet, and hoisting
-it **would have attributed one symbol's liquidation cascade to the whole batch** the first time a
-real one hit. `trackRecord` was 0% identical in 10 of 10 waves. Measured saving ~210-230 tok/symbol
-against the ~839 the plan projected, and the commit retracts the larger figure itself: structural
-invariance and incidental agreement are not the same thing. It also corrected `c23ab3a`'s own
-headline — the 382-of-405 sample was taken DURING the provider outage; across the healthy week the
-noise share is **13.2%**, so the ring trim is roughly cost-FLAT, not halved.
-
-### What that session recorded elsewhere, which binds later passes
-
-`verdicts.md` gained two entries — the preserved authoring prompt's dead-input paragraphs are NOT
-trimmed (a falsifiable draft-scan check replaces the trim), and **PLAN STEP 14 IS NOT CLOSED**, its
-closure argument failing on three measured counts including that the live `maxHoldBars` reads 48 on
-5 of 6 declarations while nothing in this program has ever measured h=48. `watches.md` gained the
-WATCH-V4-1 re-derivation (a second `adopt_non_adoptable` at 19:00:30Z; "stays 0" replaced by
-"transient AND explained") and the WATCH-V4-10 structural finding that boot recovery excludes
-algo-rail orders from `portfolio.openOrders`, so after any boot no reconciliation pass can fold a
-perp algo stop terminal whatever the venue reports.
-
-### What cannot be reconstructed, and one thing that was left wrong
-
-Gone: whether this was one session or several, interactive or autonomous, and every rejected
-alternative not already narrated in a commit body. Also absent is any independent artifact that the
-claimed gates ran — there is no CI here, so the gate counts (3,166 → 3,217 → 3,232 tests) are the
-author's own prose. Noted, not disputed: Pass 50 re-ran the full gate on the resulting tree and
-found it green.
-
-Left wrong and fixed by Pass 50: `STATUS.md`'s "Current order & status" still read `HEAD = live
-build 61d6b6c`, boot `f30074f2` — **the state before that session's own deploy**. The pointer the
-next pass reads first was stale in the same commit that made it stale.
-
----
-
 ## 2026-07-31 — Pass 50 (five defects on one rail, and the instrument that could not see any of them)
 
 **Window:** 2026-07-31T00:07Z → 08:05Z. Lease taken 00:07:25Z (`9bf2dbae343a1910`). **The host slept
@@ -816,3 +748,91 @@ and no resting order — is UNREAD**, and an unread check is not a passing one.
 3. The `-4024` repair, via one of the two correct seams.
 4. The pin-leak audit the failed agent owed.
 5. `output_config: {effort: …}` as a cost-negative truncation experiment.
+
+## 2026-07-31 — Pass 54 (the grid was flattering, and nothing here can be shown to learn)
+
+**Window:** 2026-07-31T20:40Z → 21:15Z. Lease `30c1a5be616fd056`, taken 20:40:39Z, no collision.
+**Owner-directed research session**, not a scheduled pass — recorded with a `**Window:**` line because
+Pass 53 spent effort reconstructing the one Pass 52 omitted.
+
+**The question asked:** could a vastly more intelligent but cheaper decide model (GPT-5.6 after its
+price cut, or kimi-k3) push the book toward profitability. **The owner then reframed it** to: the
+least-bad config / model / architecture that can potentially LEARN an edge. The reframe is what
+produced the findings; the original question was answerable from the record alone.
+
+Full record: `research/studies/learning-capacity-2026-07-31.md`.
+
+### Headline — the declared horizon grid was measuring the wrong thing
+
+Forward return is scored at h ∈ {1,4,8,24} bars. That grid was never matched to holding behaviour.
+Measured, n=40 closes over 10 days: **median hold 234.4 min ≈ 15.6 bars, mean 817.3 min ≈ 54.5 bars.**
+Re-scored at hold-matched horizons ($0, no new model calls, control reproduces `loop:forward-return`
+exactly at h=1):
+
+| version | h=1 | h=8 | h=24 | **h=16** | **h=54** |
+| --- | --- | --- | --- | --- | --- |
+| v1 | −16.9 | −47.4 | −58.5 | **−57.6** | **−111.3** |
+| v2 | −15.9 | −70.8 | −155.6 | **−94.5** | **−174.8** |
+
+**This reconciles two ledgers that have disagreed for a week.** Realized gross is **−69.1 bps/round
+trip** on the current book (−$23.17 over $3,353.99 notional, 38 trips) and −101.9/−106.0 in the older
+record; h=1 said −16.9. **The hold-matched horizons bracket every realized figure; h=1 brackets none.**
+Order-of-magnitude agreement only — the cells are v1/v2 while realized spans all eight arms, and
+forward return measures entry drift not round-trip PnL. Consequence: the gap to the +13.0 bps bar is
+**~70–125 bps at the horizon that counts**, not the ~30 the old grid implied. No ordering flips.
+
+### Nothing here can currently be SHOWN to learn
+
+Eight live playbook versions; **only v1 (n=28,k=13) and v2 (n=18,k=11) ever reached the power bar, and
+they are the two oldest.** 78 entries / 8 versions = 9.75 against a bar of 12.
+
+**The mechanism is DIVISION, not suppression — the obvious confound was checked and would have
+inverted the story.** Trading did not slow: **2026-07-24 was simultaneously the highest-volume day in
+the program's history (24 entries) and its heaviest minting day (v2,v3,v6,v7 all live)** — four arms
+sharing 24 entries is ~6 each, half the bar, on the best day there has ever been. The two POWERED
+versions are the two that had the book largely to themselves. 07-26/07-28/07-29 produced zero decides
+(outage, host sleep), compounding but not causing it.
+
+### The model question, on the reframed terms
+
+No model supplies edge (best cell ever: −7.12 bps vs a +13.0 bar). In a learning architecture the
+model is a **substrate for running many experiments**, so price buys **search rate, not PnL** — haiku
+~4–5× more arms per dollar, GPT-5.6 Luna ~15× on rate. The cost thesis is dead on its own terms:
+**gross with inference FREE is −$23.17.** kimi-k3 excluded — quality disqualification, and Moonshot's
+~31.5% empty-200 rate makes it 1.9× MORE expensive. **The haiku question is NOT settled and cannot be
+settled offline for free:** the replay cells persist only per-(arm,horizon) aggregates, so re-scoring
+haiku at h=16 needs a fresh paid run. Verified in the spec, not assumed.
+
+### Shipped — three commits, gate green (3414 tests / 184 files, livegate 55/55, build clean)
+
+`1064503` the hold-matched re-score tool. `4b7e021` a corpus builder — v4 is 587 rows (+52%) but
+**currently INERT**: the OHLCV cache stops at ~07-27 so 34% of rows score null at every horizon (the
+known `279713e` truncation; a $0 re-fetch is the unlock). `3958c8c` a decide-model A/B config gate,
+**flag-off**, with a fail-closed boot refusal.
+
+**The A/B gate is NOT a working A/B and the commit says so.** Three findings recorded against its own
+interest: `abArm` had **zero production call sites** before it (playbook routing uses its own inline
+bucket — the "independent salt" requirement was vacuous); the arm is drawn **once per BOOT** because
+the client pins one model per instance and `AGENT_CLIENT` is a singleton, so the claimed benefit is
+**not delivered**; and attribution journals/meters every arm-B decide **as arm A**, which would poison
+the promotion gate's own cost and PnL inputs. `AGENTIC_MODEL_AB_PCT` stays 0.
+
+### Also found
+
+`leaders_only` and `one_symbol_btc` are **structurally unscoreable** — capped at 3 and 1 symbol-clusters
+by their own playbook text against a floor of 5. The untested search space is 5 arms, not 7.
+
+### The decision this turns on — OWNER
+
+**Daily minting and powered evidence are mutually exclusive.** Holding an arm to n≥12 AND k≥5 takes
+2–4 days; daily minting guarantees no arm is ever readable. That override is a dated owner decision
+(`candidate-routing-override-2026-07-31.md`) and change-discipline forbids reopening it silently.
+Recommendation: suspend daily minting for the live lane, move iteration offline (~$5/arm, hours). If
+kept, record explicitly that the live lane is a **corpus generator, not an evidence source**.
+
+### Next
+
+1. Refresh the OHLCV cache ($0) — nothing downstream is scoreable without it.
+2. Close the attribution gap and the per-call-model constraint before any A/B enable.
+3. Then a pre-registered paid re-run of haiku vs sonnet at the hold-matched horizon.
+4. **Re-read every prior study against the horizon finding** — all were scored on the flattering grid.

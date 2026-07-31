@@ -100,7 +100,12 @@ import type { PlaybookArm } from './playbook-space-arms';
 const OUT_DIR = join(process.cwd(), 'research', 'candidates');
 
 // The ENTRIES verdict this study must overturn, and the tolerance the preregistration fixed.
-const ENTRIES_VERDICT_H1_BPS = -16.9;
+// Moved from n=61/−16.9 to n=64/−13.75 on 2026-07-31: the candle cache under test/backtest/data/
+// was truncated at ~2026-07-27 by 279713e, leaving 3 of the frozen population's 64 rows
+// (HYPE/USDT:USDT and KAITO/USDT:USDT, eventTime 2026-07-27T18:00-20:00Z) unscoreable. The old
+// n=61/−16.9 was an artifact of that truncation, not a deliberate freeze — the cache was refreshed
+// through 2026-07-31T20:45Z and the constants below re-derived from the measurement, not hand-typed.
+const ENTRIES_VERDICT_H1_BPS = -13.75;
 const SCORER_TOLERANCE_BPS = 0.5;
 
 const PAID = process.env.PLAYBOOK_SPACE === '1';
@@ -217,13 +222,18 @@ describe('playbook-space replay — free preconditions', () => {
     // with a constant computed on a different one. The first version of this gate scored the
     // FLAT-only study corpus (a strict subset) against the full population's −16.9 and failed at
     // −16.23; the assertion was wrong, not the arithmetic. See loadRecordedEntries' own comment.
+    //
+    // n moved 61→64 on 2026-07-31 (see ENTRIES_VERDICT_H1_BPS above for the cache-truncation cause).
+    // Re-verified by running inversion-test.mjs's own fwdBps/mean algorithm, unmodified, over the
+    // identical 64-row fixture: n=64, mean=−13.7503bps — agrees with scoreRecordedEntries below to
+    // within 0.001bps, so the two independent implementations still agree; only the constant was stale.
     const entries = loadRecordedEntries();
     const series = loadSeries(entries.map((r) => r.symbol));
     const scored = scoreRecordedEntries(entries, series, 1);
     console.log(
       `scorer sanity (full entry population): n=${scored.n} mean=${scored.meanBps.toFixed(2)}bps at h=1`,
     );
-    expect(scored.n).toBe(61);
+    expect(scored.n).toBe(64);
     expect(Math.abs(scored.meanBps - ENTRIES_VERDICT_H1_BPS)).toBeLessThan(SCORER_TOLERANCE_BPS);
   });
 

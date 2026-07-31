@@ -6451,3 +6451,71 @@ V4-9 holds (the study ran with `capsSource: 'recorded'` on 100% of rows).
    `agent_client_latch_cause{cause="insufficient_credit"}` is the read, not an investigation.
 
 ---
+
+## 2026-07-30 — Pass 49 addendum c (RECONSTRUCTED by Pass 50: three commits shipped and deployed, and left no entry)
+
+**Window:** 2026-07-30T18:25Z → 22:19Z. **This entry was NOT written by the session it describes.**
+Pass 50 reconstructed it on 2026-07-31 from commits, diffs, the loop records that session DID
+update, and the digest its own deploy produced. Written so the window has a covering record and the
+unrecorded-pass detector has an answer rather than a permanent annotation.
+
+**What happened, plainly:** a session shipped `c23ab3a`, `61d6b6c` and `8d39363`, deployed the last
+of them to production (boot `54cdb77a`, 22:18:08Z), and updated `STATUS.md`, `verdicts.md`,
+`watches.md` and the follow-on study — but appended **nothing** to `LOG.md`. `git log -- LOG.md`
+confirms it positively: the file's newest touch is `d0d91c7`, Pass 49's own records commit. This is
+the second unrecorded-session occurrence in three days.
+
+### What the three commits did
+
+**`c23ab3a` — the decision-history ring was mostly noise.** The ring fed the model 30 rows with no
+filter on `action`; of 405 sampled lines **382 carried `action:'error'`** — rows stamped for calls
+that never reached the model at all. `PRE_CALL_DECIDE_RATIONALE_TAGS` and
+`isModelAuthoredDecision()` were added to `decide-rationale.ts` to exclude them, keeping
+`plan_authoritative_close:` rows because those are real decisions the system overrode.
+`MAX_DECISION_HISTORY` 30 → 12. The tool schemas were unified for cache-breakpoint stability, and
+the commit is explicit that the JSON got BIGGER and this is **not** a token saving.
+
+**`61d6b6c` — the authoring pass, and a retired objective wearing a different name.**
+`scripts/loop-authoring.mjs` + `loop-authoring-core.mjs` (1,280 lines) and a `loop:authoring` script:
+the loop can now draft candidate playbooks itself. The finding worth keeping: the ANTI-RATCHET
+objective retired in Pass 49 was fenced behind three `[RETIRED]` markers, and an X7 `postMortems`
+paragraph **outside every fence** relabelled the same objective and told the model to treat a
+rank-filter relaxation "as a strong prompt to act." The first implementation passed all four marker
+assertions and still leaked it into the assembled prompt. It was caught only by scanning the
+generated output — a fence that checks its source and not its product is not a fence.
+
+**`8d39363` — three of six keys were not batch-invariant, and one would have been a correctness
+bug.** Batch-invariant payload keys were hoisted behind a cache breakpoint. `liquidation` was
+dropped from the plan because `LiquidationFeedPort.latest(symbol)` prunes a per-symbol buffer —
+it measured 100% identical across 16 live waves only because those windows were quiet, and hoisting
+it **would have attributed one symbol's liquidation cascade to the whole batch** the first time a
+real one hit. `trackRecord` was 0% identical in 10 of 10 waves. Measured saving ~210-230 tok/symbol
+against the ~839 the plan projected, and the commit retracts the larger figure itself: structural
+invariance and incidental agreement are not the same thing. It also corrected `c23ab3a`'s own
+headline — the 382-of-405 sample was taken DURING the provider outage; across the healthy week the
+noise share is **13.2%**, so the ring trim is roughly cost-FLAT, not halved.
+
+### What that session recorded elsewhere, which binds later passes
+
+`verdicts.md` gained two entries — the preserved authoring prompt's dead-input paragraphs are NOT
+trimmed (a falsifiable draft-scan check replaces the trim), and **PLAN STEP 14 IS NOT CLOSED**, its
+closure argument failing on three measured counts including that the live `maxHoldBars` reads 48 on
+5 of 6 declarations while nothing in this program has ever measured h=48. `watches.md` gained the
+WATCH-V4-1 re-derivation (a second `adopt_non_adoptable` at 19:00:30Z; "stays 0" replaced by
+"transient AND explained") and the WATCH-V4-10 structural finding that boot recovery excludes
+algo-rail orders from `portfolio.openOrders`, so after any boot no reconciliation pass can fold a
+perp algo stop terminal whatever the venue reports.
+
+### What cannot be reconstructed, and one thing that was left wrong
+
+Gone: whether this was one session or several, interactive or autonomous, and every rejected
+alternative not already narrated in a commit body. Also absent is any independent artifact that the
+claimed gates ran — there is no CI here, so the gate counts (3,166 → 3,217 → 3,232 tests) are the
+author's own prose. Noted, not disputed: Pass 50 re-ran the full gate on the resulting tree and
+found it green.
+
+Left wrong and fixed by Pass 50: `STATUS.md`'s "Current order & status" still read `HEAD = live
+build 61d6b6c`, boot `f30074f2` — **the state before that session's own deploy**. The pointer the
+next pass reads first was stale in the same commit that made it stale.
+
+---

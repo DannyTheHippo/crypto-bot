@@ -134,6 +134,52 @@ classification** bullet, which stood last in this section, is now `charter.md` �
       `v9 (reflection) superseded by v10 via --supersede`, `supersededAgeHours` 79 against a 336h
       window. **No row was deleted** — all ten versions including v9 remain.
 
+- **THE DECLARED HORIZON GRID WAS NEVER MATCHED TO HOLDING BEHAVIOUR, AND IT FLATTERS EVERY RESULT
+  (2026-07-31; `research/studies/learning-capacity-2026-07-31.md`).** h ∈ {1,4,8,24} bars was
+  inherited. Measured holding period, n=40 closes over 10 days: **median 234.4 min ≈ 15.6 bars, mean
+  817.3 min ≈ 54.5 bars** — so h=24 is the only declared horizon near the median and the mean hold
+  runs past the grid entirely. Re-scored at hold-matched horizons ($0, `pnpm loop:horizon-rescore`,
+  control reproduces `loop:forward-return` exactly at h=1): **v1 −16.9 → h=16 −57.6, h=54 −111.3;
+  v2 −15.9 → h=16 −94.5, h=54 −174.8.**
+  - **It reconciles two ledgers that had disagreed several-fold.** Realized gross is −69.1 bps/round
+    trip on the current book (−$23.17 over $3,353.99 notional, 38 trips) and −101.9/−106.0 in the
+    older record; h=1 said −16.9. **The hold-matched horizons bracket every realized figure; h=1
+    brackets none.** Order-of-magnitude agreement only — the cells are v1/v2 while realized spans all
+    eight arms, and forward return measures entry drift, not round-trip PnL.
+  - **Binding on every future write-up:** the gap to the +13.0 bps bar is **~70–125 bps at the horizon
+    the book actually trades**, not the ~30 the old grid implied. **Every arm ever scored — including
+    the haiku and kimi cells below — was scored on its most flattering horizon**, so a prior result
+    may not be quoted as a horizon-general finding without re-reading it against this.
+  - **No ordering flips** among the powered arms (v1 beats v2 at every horizon, old grid and new), so
+    nothing already ranked is re-ranked; the correction changes magnitudes, not order.
+  - **What this does NOT settle:** the offline replay cells persist only per-(arm, horizon) aggregates
+    — no per-row action or direction is written anywhere — so re-scoring haiku vs sonnet at h=16
+    requires a fresh **paid** replay run. Verified in `playbook-space-replay.spec.ts`, not assumed.
+
+- **CORRECTION, 2026-07-31 — THE `−16.9 bps` ENTRIES FIGURE IS WRONG. It is `−13.75` on the complete
+  population.** Nothing below is deleted; this amends every citation of it in this file.
+  `recorded-entries-v3.jsonl` has always held **64** rows, but 3 of them (HYPE/USDT:USDT and
+  KAITO/USDT:USDT, eventTime 2026-07-27T18:00–20:00Z) fell past the `279713e` OHLCV-cache truncation
+  boundary and were therefore **unscoreable**. Every reading of that fixture — including the frozen
+  SCORER SANITY GATE, which hardcoded `n=61` — silently scored 61 of 64 rows. The cache was refreshed
+  through 2026-07-31T20:45Z; the three rows return forward returns of **+11.8 / +71.5 / +69.1 bps**,
+  moving the population to **n=64, mean −13.7503 bps**.
+  - **Both implementations agree at the new value** — `inversion-test.mjs`'s algorithm run against the
+    identical 64-row population gives −13.7503 against the TS scorer's −13.75, within 0.001 bps. So
+    this was never an arithmetic disagreement; the gate's premise held and only its constants were
+    stale. The gate now asserts n=64 / −13.75.
+  - **Citations in this file that are now stale and must be read with this correction:** the
+    "`−16.9 bps` ENTRIES verdict REPRODUCES under the repaired harness" line; the "reproduces the
+    ENTRIES verdict exactly (−16.9 bps at h=1)" line and its sign-flipped mirror
+    (+16.9/+31.9/+47.3/+66.5 — **only h=1 was re-derived; h=4/8/24 are UNVERIFIED against the repaired
+    cache**); and every "n=61" reference.
+  - **NOT re-derived, flagged rather than assumed:** the original Pass-41 study measurement
+    (2026-07-27, "n=61 entries … −16.9 bps t=−4.58") was not re-run here, so whether the same defect
+    touched it is **open**. A pass quoting it owes that check first.
+  - **The general lesson, which is the reusable part:** a frozen constant that reads a mutable cache is
+    not frozen — it silently encodes whatever defect the cache had on the day it was written, and it
+    fails only when the defect is FIXED. Prefer pinning the data, or re-deriving the constant.
+
 - **THE DECIDE MODEL IS NOT THE LEVER — playbook-space replay, NO_SURVIVOR (2026-07-30;
   `research/studies/playbook-space-replay-2026-07-28.md`, Amendments 4-5).** 20 of 20 pre-registered
   cells scored across two models, 4 playbook arms, 4 horizons, 354 recorded FLAT rows, α = 2.5e-3.

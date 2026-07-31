@@ -25,33 +25,31 @@ else is looked up on demand; § Index says which file answers which question. La
 > seams need the margin/base-lock rationale at `agentic.strategy.ts:1434-1438` resolved first.
 > Forensics, exact diffs and the refutation: `incidents/2026-07-31-perp-exit-band-rejects.md`.
 
+## ⚠ THE HORIZON GRID FLATTERS EVERY RESULT — re-read any prior finding before quoting it
+
+> h ∈ {1,4,8,24} bars was never matched to holding behaviour. **Measured: median hold 15.6 bars, mean
+> 54.5.** Re-scored ($0, control reproduces at h=1): **v1 −16.9 → h=16 −57.6, h=54 −111.3; v2 −15.9 →
+> h=16 −94.5, h=54 −174.8.** This **reconciles** forward return with realized gross (−69.1 bps/trip
+> now, −101.9/−106.0 in the older record) — the hold-matched horizons bracket every realized figure,
+> h=1 brackets none. **The gap to the +13.0 bar is ~70–125 bps, not ~30.** No ordering flips. Full
+> text and the paid-run caveat: `verdicts.md`; `research/studies/learning-capacity-2026-07-31.md`.
+
 ## ⚠ TWO LIVE BEHAVIOUR CHANGES SHIPPED 2026-07-30, AND NEITHER MAY BE CREDITED ALONE
 
-> **1. `inverted` is the live playbook (v10)** since the 16:57:19Z boot — a **RESEARCH-BAR FAIL
-> shipped on DEPLOYMENT-BAR grounds**, h=24 CI lower bound **−12.2**. **Never quote +47.6 as an edge.**
-> Four horizon figures and the maker-fill caveat: `verdicts.md`; `watches.md` § WATCH-PLAYBOOK-V10-1.
->
-> **2. `AGENTIC_PLAN_AUTHORITATIVE_EXITS=true`** (`.env.app:261`, same boot) — positions exit only via
-> declared stop / TP / maxHold. **BASELINE FOR THE NEXT MEASUREMENT: −108.1 bps/trip at 17.4% hit;**
-> revert if positions storm to `max_hold` worse than that. Fails toward EXITING.
-> `watches.md` § WATCH-PLAN-AUTHORITY-1.
->
-> **3. THE ATTRIBUTION LIMIT — read before writing any result.** Both are live simultaneously with no
-> control arm. Their EVIDENCE is separable; **their realised-PnL contributions are NOT. No pass may
-> claim either one moved the book on its own.**
+> **v10 `inverted`** is live — a RESEARCH-BAR FAIL shipped on deployment-bar grounds, h=24 CI lower
+> bound −12.2; **never quote +47.6 as an edge.** **`AGENTIC_PLAN_AUTHORITATIVE_EXITS=true`**
+> (`.env.app:261`, same boot) — baseline **−108.1 bps/trip at 17.4% hit**, revert if positions storm to
+> `max_hold` worse. **ATTRIBUTION LIMIT:** both live simultaneously, no control arm — evidence is
+> separable, **realised-PnL contributions are NOT.** `verdicts.md`; `watches.md` § V10-1, § PLAN-AUTHORITY-1.
 
 ## The LLM lane — FUNDED AND TRADING; do not investigate a latch
 
-> The 60-hour outage ended 2026-07-30T09:01Z; the lane self-healed with no redeploy. **Only Anthropic
-> was funded** — Moonshot untested since, presumed suspended. **759 real model decides lifetime**
-> (Pass 53). Owner directive 2026-07-30, verbatim: *"lack of trading is because of the anthropic api
-> account being unfunded. this should not have to turn into investigations on each pass."* So: **if a
-> sweep shows a latched client, read the CAUSE, do not investigate.**
-> `agent_client_latch_cause{cause="insufficient_credit"} == 1` means the balance is out — an owner
-> capability limit. Cause-specific and fails CLOSED: any other cause is `other`, keeps
-> `AgentClientFatalLatch` at `critical`, and IS a full incident.
-> **Funding does not make resumed trading unambiguously good** — entries measure significantly
-> negative and worse than a random-bar placebo. Owner call, § Flagged.
+> Anthropic funded 2026-07-30, Moonshot presumed suspended. Owner directive, verbatim: *"lack of
+> trading is because of the anthropic api account being unfunded. this should not have to turn into
+> investigations on each pass."* **If a sweep shows a latched client, read the CAUSE, do not
+> investigate.** `agent_client_latch_cause{cause="insufficient_credit"} == 1` means the balance is out
+> (owner capability limit); fails CLOSED — any other cause is `other`, keeps `AgentClientFatalLatch` at
+> `critical`, and IS a full incident. **Funding does not make resumed trading unambiguously good.**
 
 ## Current order & status
 
@@ -72,46 +70,56 @@ else is looked up on demand; § Index says which file answers which question. La
 - **A promtool trap:** checking `/etc/prometheus/alerts.rules.yml` inside the container after a
   host-side edit is VOID (dangling inode; reads like corruption, is not). Recipe now in playbook §5.3.
 - **THE BAR THIS PROGRAM GATES ON WAS NEVER DERIVED.** +13.0/+24.2 enter the repo fully formed in
-  `7b3e977` with no operands, and every later citation is circular. **Measured demo cost is 9.29
-  bps/round trip.** No verdict moves (the gap is 111–126, not 115–130) but the h=1 inversion bullet's
-  arithmetic changed — amended in `verdicts.md`. `research/studies/fee-floor-derivation-2026-07-31.md`.
-- **FAMILY B IS BLOCKED, and not for scheduling reasons.** `assertDesignMatchesCorpus` fails CLOSED;
-  the on-disk corpus hashes `030367ba…` against the `f1dd13c6…` every artifact records, and payload
-  bytes match the live DB 386/386 ⇒ **unpinned row order among `event_time` ties**. NOT re-pinned:
-  someone must choose between a deterministically re-ordered corpus and accepting the 20 cells as
-  recorded-but-unreproducible. `research/studies/corpus-fingerprint-drift-2026-07-31.md`.
-- **The book at 17:05Z:** **37** closed round trips (was 35), net-of-cost **−$40.7534** (was
-  −$42.3358), LLM cost $20.598, trade-anchored window 7.891 of 14 days, win rate 27.03%,
-  `agentic_promotion_ready` 0, `equity_usdt` 4981.69, kill switch RUNNING. Two trips closed since Pass
-  52 and net-of-cost improved $1.58. **RSS 752 MiB at 3.6h into the previous boot — DOWN from Pass
-  52's 763 MiB**, so WATCH-V3-1 holds and the "highest recorded, watch it" note is retired.
+  `7b3e977` with no operands; every later citation is circular. Measured demo cost 9.29 bps/round trip.
+  `research/studies/fee-floor-derivation-2026-07-31.md`.
+- **THE `−16.9 bps` ENTRIES FIGURE IS WRONG — it is `−13.75` (n=64, not 61).** The frozen fixture always
+  held 64 rows; 3 fell past the `279713e` OHLCV truncation, so every reading silently scored 61. Both
+  implementations agree at −13.7503. **Five `verdicts.md` citations are stale**, the +16.9/+31.9/+47.3/
+  +66.5 mirror is UNVERIFIED beyond h=1, and Pass-41's original was NOT re-derived. **A frozen constant
+  reading a mutable cache is not frozen — it fails only when the defect is FIXED.**
+- **FAMILY B IS BLOCKED, not for scheduling reasons.** `assertDesignMatchesCorpus` fails CLOSED; the
+  on-disk corpus hashes `030367ba…` against the `f1dd13c6…` every artifact records, payload bytes match
+  386/386 ⇒ **unpinned row order among `event_time` ties**. NOT re-pinned — someone must choose between
+  a re-ordered corpus and accepting the 20 cells as recorded-but-unreproducible.
+  `research/studies/corpus-fingerprint-drift-2026-07-31.md`.
+- **The book at 17:05Z:** **37** closed round trips, net-of-cost **−$40.7534**, LLM cost $20.598,
+  window 7.891/14 days, win rate 27.03%, `promotion_ready` 0, `equity_usdt` 4981.69, kill switch
+  RUNNING. **RSS 752 MiB — DOWN from Pass 52's 763**, so WATCH-V3-1 holds.
 - **78% of spot orders were rejected for a week and nothing noticed** (binance 156/122 vs binanceusdm
-  135/3; both protective legs sized 100% with `reduceOnly` dropped on spot). Fixed `f5abf8a`, **still
-  unverified** — top banner and WATCH-V4-13.
-- **THE PROMOTION GATE IS NOT REACHABLE ON THIS EDGE — arithmetic, not opinion.** Trips **37** vs a
-  floor of 30, so **the WINDOW binds, not the count**: `windowStart` pins to 2026-07-23T18:00:26Z, so
-  14 days cannot be met before **2026-08-06T18:00Z** whatever happens, and net-of-cost must cross zero
-  by then (**+5.5% to +6.2% on the $1000 book** against a trailing −$0.72/trip). Gross trading is
-  negative, so **zero LLM spend still cannot make it positive**, and NEITHER DIRECTION REACHES IT —
-  `netPnl` burns cost on wall-clock while `windowDays` advances only on closes, so abstaining freezes
-  the window AND bleeds. `LOG.md` § Pass 51; `research/studies/success-exit-2026-07-31.md`.
-- **Cost shape:** LLM runs AT the $3/day breaker (±2%, not a boot artifact). Only **5.4% of wakes
-  consult**, and of 205 consults in 24h just 21 are the organic schedule — 116 `forced_move`, 48
-  `forced_fallback`. **The timing knobs, not the model, set the bill.** (WATCH-V4-10 CLOSED Pass 52 —
-  breach real, recorded root cause wrong; see the WATCH table and `watches.md`.)
-- **`test:cov` is GREEN (`400c08e`; Pass 52: 94.22/88.05/92.82/95.61 vs 90/85/90/90) but the
-  STRUCTURAL cause is untouched — `pnpm test` and `pnpm checks` still omit `--coverage`**, so the
-  mandated 100% globs stay advisory and the same six-day regression can recur (backlog 56). Four
-  branches are `/* v8 ignore next */`-annotated rather than tested, two not pre-authorized —
-  spot-check their reachability arguments. Detail: `LOG.md` § Pass 51.
-- **Truncated OHLCV caches are NOT restored** (cause corrected in `279713e`: the unconditional write
-  plus a tf-less funding filename, not the `targetBars=200` default two passes blamed). Both globs are
-  gitignored ⇒ restore by re-fetch: `<SYM>/USDT:USDT 1h 26000 --funding` for BTC/ETH/SOL/XRP, 70080
-  bars for the three spot 15m series.
+  135/3). Fixed `f5abf8a`, **still unverified** — top banner and WATCH-V4-13.
+- **THE PROMOTION GATE IS NOT REACHABLE ON THIS EDGE — arithmetic, not opinion.** 37 trips vs a floor
+  of 30, so **the WINDOW binds**: `windowStart` pins to 2026-07-23T18:00:26Z, so 14 days cannot be met
+  before **2026-08-06T18:00Z**, and net-of-cost must cross zero by then (**+5.5–6.2% on the $1000
+  book**). Gross is negative, so **zero LLM spend cannot make it positive**; and abstaining freezes the
+  window AND bleeds, so neither direction reaches it. `research/studies/success-exit-2026-07-31.md`.
+- **Cost shape:** LLM runs AT the $3/day breaker. Only **5.4% of wakes consult**; of 205 consults in
+  24h just 21 are the organic schedule — 116 `forced_move`, 48 `forced_fallback`. **The timing knobs,
+  not the model, set the bill.** (WATCH-V4-10 CLOSED Pass 52 — see `watches.md`.)
+- **`test:cov` is GREEN but the STRUCTURAL cause is untouched — `pnpm test`/`pnpm checks` still omit
+  `--coverage`**, so the mandated 100% globs stay advisory (backlog 56). Four branches are
+  `/* v8 ignore next */`-annotated rather than tested, two not pre-authorized. `LOG.md` § Pass 51.
+- **Corpus v4 (587 rows, +52%) and OHLCV RESTORED Pass 54** — all 26 corpus symbols now run to
+  2026-07-31T20:45Z (were stuck at ~07-27). Rows scoreable: **h=16 59.3% → 97.4%, h=54 → 90.6%.**
+  Gitignored ⇒ a fresh clone re-fetches; funding files stay stale but `fwdBps` never reads them.
+  `leaders_only`/`one_symbol_btc` are **structurally unscoreable** (3 and 1 clusters vs a floor of 5) —
+  **5 untested arms, not 7.**
+- **NOTHING HERE CAN CURRENTLY BE SHOWN TO LEARN — the mechanism is DIVISION, not suppression.** Eight
+  live versions; **only v1 (n=28,k=13) and v2 (n=18,k=11) ever reached n≥12 AND k≥5, and they are the
+  two oldest.** 78 entries / 8 = 9.75 vs a bar of 12. Trading did not slow — **2026-07-24 was both the
+  highest-volume day (24 entries) and the heaviest minting day (v2,v3,v6,v7)**, ~6 per arm on the best
+  day there has been. **OWNER DECISION OWED: daily minting and powered evidence are mutually
+  exclusive** (`candidate-routing-override-2026-07-31.md` is a dated owner call — do not reopen it
+  silently). Suspend it and iterate offline, or record the live lane as a **corpus generator, not an
+  evidence source**.
+- **A decide-model A/B config gate shipped FLAG-OFF (`3958c8c`) and is NOT a working A/B.** `abArm` had
+  **zero production call sites** before it; the arm is drawn **once per BOOT** (client pins one model
+  per instance, `AGENT_CLIENT` is a singleton) so it stays sequential; and attribution journals/meters
+  every arm-B decide **as arm A**, poisoning the promotion gate's own cost/PnL inputs.
+  **`AGENTIC_MODEL_AB_PCT` stays 0** until the latter two are closed.
 - **UNREAD, and an unread check is not a passing one:** whether any of the 14 `agentic_active_menu`
   symbols is **pinned with no open position and no resting order** (a pin-set leak, which would be a
   defect). Pass 53's fourth investigator died on its output contract before answering. Owed work.
-- **Last pass:** Pass 53, 2026-07-31 (`LOG.md`). Cadence 3×/day; take the pass lease before any edit
+- **Last pass:** Pass 54, 2026-07-31 (`LOG.md`). Cadence 3×/day; take the pass lease before any edit
   (playbook §1 step 3) and release it last (§6 step 5). The lease is 2h and time-based: a pass that
   spans a host sleep will find its own lease expired and may break it.
 
@@ -126,7 +134,6 @@ else is looked up on demand; § Index says which file answers which question. La
 | WATCH-V4-4 | `fills` rows carry a same-venue clientOrderId and sum to `orders.cum_qty` on every terminal order | holds |
 | WATCH-V4-7 | every digest carries an alerts-fired-and-resolved line and a warn-scan span at or above the alert lookback | holds |
 | WATCH-V4-9 | every replay-driven measurement reports `capsSource: 'recorded'` on 100% of rows | holds — standing check on the mint-time gates |
-| WATCH-V4-10 | no perp algo stop stays `ACKED` more than one 15m bar after its position goes flat | **CLOSED Pass 52 — breach real, RECORDED ROOT CAUSE WRONG.** Venue truth: `REJECTED` / "Reduce only reject", fired 4m08s after flat, no spawned order, no fill. Cause was `REJECTED` normalizing to `UNKNOWN` (the one status `recoverIntent` never folds), NOT the boot-recovery exclusion — reconciliation axis 1 is regular-rail by construction. Full text + two residual strands: `watches.md` |
 | WATCH-V4-11 | `orphan_scan` > 0 on a boot with a flat perp bar, and every resolved algo-rail cancel appends `algo-hist:CANCELED` to `order_events` | answered once on the `ae5df10b` boot (`orphan_scan=16 readopt=4 cancel=0 cancel_failed=0`); re-seeded to 0 by the `f5abf8a` redeploy, so it needs one more flat perp bar to re-read |
 | WATCH-V4-12 | truncation degrades carry `truncated_max_tokens:` with `output_tokens` == 4096, not `schema_rejected:`; baseline 10 of 37 over 14 days | **FIRST READING Pass 53 — EXPECTED-POSITIVE CONFIRMED, defect outcome absent.** 7 rows this boot, min = max = 4096; `schema_rejected:` rows top out at 358. Disclosed: 4 of 11 rows over 14d carry NULL `output_tokens` (unreadable, not contradicted). **Do NOT raise `AGENTIC_MAX_TOKENS` in response — refuted** (the $3/day USD breaker binds, and a 12288 ceiling projects past the 75s batch HTTP budget, where an abort THROWS and 3 strikes auto-DRAIN the lane). In-contract lever is `output_config: {effort}`, absent from the client today |
 | WATCH-V4-14 | a terminal-reject burst of ≥3 in 15m surfaces as a `prometheus_alert_firing_nonblocking` annotation naming `VenueTerminalRejectBurst` in the FIRST sweep after it, and agrees with the sweep's own rate alarm | **NEW Pass 53, UNFIRED.** Named defect outcomes: it fires on the 2/hour spot bleed (threshold mis-derived); or a burst occurs and it stays silent (`for: 5m` outliving a ~5m burst is the specific risk); or it lands as an ALARM, meaning severity drifted to `critical` and §3 is now wedgeable. **An unfired alert is not a passing one** — if nothing rejects by 2026-08-07, record it as UNTESTED |
@@ -135,7 +142,7 @@ else is looked up on demand; § Index says which file answers which question. La
 | WATCH-PLAYBOOK-V10-1 | live entry forward return under v10 lands above `champion_v8`'s replayed −12.7/−36.3/−32.7/−70.1 bps | **OPEN, and now INSTRUMENTED (Pass 52).** `pnpm loop:forward-return`, surfaced every sweep. First reading v10 n=4/clusters=4 ⇒ UNDERPOWERED (bar: n≥12 AND clusters≥5). No divergence evaluated; point estimates are not quoted at rollup by design. A divergence EITHER way is a FINDING |
 | WATCH-DEPLOY-HALVES-1 | the first authoring run under the amended bar reports a `halvesVerdict` at h=24 with a non-null `halvesSplitAtMs`, THE SAME for every arm | **NEW Pass 52, SAMPLE ZERO.** Named defects: every candidate `UNDETERMINED` (clause decorative) or a per-arm `halvesSplitAtMs` (split not shared). The frozen recorded-incumbent path reads UNDETERMINED by construction and that is accepted, not a defect. **An unrun check is not a passing one** |
 
-Resolved WATCH lines (V3-2, V3-3, V4-5, V4-6, V4-8) are kept in full in `watches.md` § Resolved — closed, not deleted; do not re-open one without new evidence.
+Resolved WATCH lines (V3-2, V3-3, V4-5, V4-6, V4-8, **V4-10 moved out Pass 54**) are kept in full in `watches.md` § Resolved — closed, not deleted; do not re-open one without new evidence.
 
 ## Backlog (open — improvements ONLY, never bugs; conventions in `charter.md`)
 
@@ -152,22 +159,16 @@ the question is answered. Full ledger and reasons: `charter.md` § Backlog and t
 
 ## Flagged for human review (open) — owner capability limits only, full text in `watches.md`
 
-- **THE OWNER DECISION THIS PROGRAM NOW TURNS ON — a live lane is accumulating evidence for a gate
-  that CANNOT be passed, and Pass 52 made that arithmetic rather than opinion.** An arm must post
-  **+20.9 / +26.4 / +33.8 / +81.4 bps** at h=1/4/8/24. **CORRECTED: the bar is CLUSTER-limited, not
-  n-limited** (the bootstrap resamples symbols) — and at **h=1/4 it is unreachable at ANY cluster
-  count**, because the best mean ever observed sits below the fee floor and `mean > floor` is α-free
-  and n-free. h=8/24 need **64–219 clusters against a 40-symbol universe**. Under the live +24.2
-  floor, no horizon is rescuable. Thirty more days costs ~13% of the $1000 book to buy precision on a
-  sign that is not in doubt. **Three exits, and the objection that this is "STOP with extra steps" is
-  carried unrebutted: `research/studies/success-exit-2026-07-31.md`. It asks four questions.**
-- **ONE `.env.app` edit remains hook-blocked** (a global PreToolUse hook blocks all `.env*` edits and
-  passes run unattended): `:153` still says spot rests a `STOP_LOSS_LIMIT` — FALSE since `f5abf8a`;
-  replacement text in `LOG.md` § Pass 51 § Flagged. **`:159` `AGENTIC_PLAYBOOK_AB_PCT=40` NEEDS NO
-  EDIT and must NOT be zeroed** — the owner overrode Pass 51's "set it to 0, withhold v12" on
-  2026-07-31 in favour of daily minting, so the 40 is now load-bearing and a pass that tidies the
-  dead-looking knob silently cancels the decision (`research/studies/candidate-routing-override-2026-07-31.md`).
-  `maxVersion()` is 11, so the next mint is v12.
+- **THE OWNER DECISION THIS PROGRAM TURNS ON — a live lane is accumulating evidence for a gate that
+  CANNOT be passed, and that is arithmetic, not opinion.** An arm must post **+20.9/+26.4/+33.8/+81.4
+  bps** at h=1/4/8/24; the bar is **CLUSTER-limited**, at h=1/4 **unreachable at ANY cluster count**,
+  and h=8/24 need 64–219 clusters against a 40-symbol universe. **Three exits, and the "STOP with extra
+  steps" objection is unrebutted: `research/studies/success-exit-2026-07-31.md`. It asks four questions.**
+- **ONE `.env.app` edit remains hook-blocked** (a global PreToolUse hook blocks all `.env*` edits):
+  `:153` still says spot rests a `STOP_LOSS_LIMIT` — FALSE since `f5abf8a`; text in `LOG.md` § Pass 51.
+  **`:159` `AGENTIC_PLAYBOOK_AB_PCT=40` NEEDS NO EDIT and must NOT be zeroed** — the owner overrode
+  Pass 51 in favour of daily minting, so a pass that tidies the dead-looking knob silently cancels the
+  decision (`research/studies/candidate-routing-override-2026-07-31.md`). Next mint is v12.
 - **Both provider accounts** — Anthropic funded 2026-07-30, Moonshot presumed suspended. Recurs
   whenever the balance runs out; read `agent_client_latch_cause`, do not investigate.
 - **Two scheduled passes have run concurrently in one tree** — four occurrences, one with production
@@ -194,7 +195,6 @@ the question is answered. Full ledger and reasons: `charter.md` § Backlog and t
 | `digests/` | `loop:sweep` writes its digest here; rehydration reads the newest |
 | `incidents/` | a named incident note written by an earlier pass |
 
-**Maintenance rule (playbook §6 — a one-off compaction just re-grows).** Each pass appends to `LOG.md` and
-updates THIS file; past five entries the oldest rotates VERBATIM to `archive/LOG-through-pass-47.md`.
-**Nothing is ever deleted from any loop file — only moved, with a pointer left behind.** Outgrown a few
-lines? Move the body out. (Pass 53 moved backlog 54/55 → `charter.md`, the promtool trap → playbook §5.)
+**Maintenance rule (playbook §6 — a one-off compaction just re-grows).** Each pass appends to `LOG.md` and updates THIS file; past five entries the oldest rotates VERBATIM to `archive/LOG-through-pass-47.md`.
+**Nothing is ever deleted from a loop file — only moved, with a pointer left behind.** Outgrown a few lines?
+Move the body out. (P53: backlog 54/55 → `charter.md`, promtool trap → playbook §5. P54: WATCH-V4-10 → `watches.md`.)

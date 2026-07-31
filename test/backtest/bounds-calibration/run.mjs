@@ -29,12 +29,15 @@
 //      (psql -Atc "<query>" -F',' ... or any JSON-array export of the same rows in the same order.)
 //
 //   2) Candles — 15m OHLCV for the five traded symbols spanning the entries' event_time range,
-//      fetched the same way as test/backtest/fetch-data.mjs's extended invocation:
-//        node test/backtest/fetch-data.mjs BTC/USDT 15m 300
-//        node test/backtest/fetch-data.mjs ETH/USDT 15m 300
-//        node test/backtest/fetch-data.mjs SOL/USDT 15m 300
-//        node test/backtest/fetch-data.mjs XRP/USDT 15m 300
-//        node test/backtest/fetch-data.mjs LINK/USDT 15m 300
+//      fetched the same way as test/backtest/fetch-data.mjs's extended invocation. 70080 bars @ 15m
+//      is 730 days — matches the other 15m caches already on disk (ohlcv-{DOGE,XRP,AVAX,LINK}USDT-
+//      15m.json), so re-running this recipe extends/no-ops instead of tripping fetch-data.mjs's
+//      no-shrink guard on an existing longer cache:
+//        node test/backtest/fetch-data.mjs BTC/USDT 15m 70080
+//        node test/backtest/fetch-data.mjs ETH/USDT 15m 70080
+//        node test/backtest/fetch-data.mjs SOL/USDT 15m 70080
+//        node test/backtest/fetch-data.mjs XRP/USDT 15m 70080
+//        node test/backtest/fetch-data.mjs LINK/USDT 15m 70080
 //      then merged into one object keyed by symbol with the slash stripped (BTCUSDT, ETHUSDT, ...).
 //
 // Entry-fill assumption: each entry's decision bar is the bar whose `openTime` equals the entry's

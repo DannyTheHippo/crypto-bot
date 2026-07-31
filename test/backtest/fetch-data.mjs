@@ -5,12 +5,14 @@
 //   Refreshes the fixed BTC/USDT spot BTCUSDT-{tf}.json files the recovered indicators/sanity-gate
 //   fixtures pin against (unchanged behavior from the pre-rebuild script).
 //
-// Extended invocation: node test/backtest/fetch-data.mjs <SYMBOL> <TIMEFRAME> [targetBars] [--funding]
+// Extended invocation: node test/backtest/fetch-data.mjs <SYMBOL> <TIMEFRAME> <targetBars> [--funding]
 //   e.g. node test/backtest/fetch-data.mjs BTC/USDT:USDT 4h 500 --funding
 //   TIMEFRAME is one of 15m/1h/4h/1d. Writes test/backtest/data/ohlcv-<SYMBOL>-<TIMEFRAME>.json, and
 //   with --funding also test/backtest/data/funding-<SYMBOL>.json via fetchFundingRateHistory (SYMBOL
 //   must be a linear-swap market, e.g. 'BTC/USDT:USDT' — spot markets carry no funding).
-//   targetBars defaults to 200 — a SMOKE fetch, not a bulk pull; raise it deliberately per-run.
+//   targetBars is REQUIRED — no implicit default. Both cache writes go through writeCacheNoShrink,
+//   which refuses to overwrite a longer on-disk history with a shorter one (raise targetBars or set
+//   FETCH_DATA_ALLOW_SHRINK=1 to overwrite deliberately).
 //
 // Sandbox-disabled for network either way (public REST only).
 import ccxt from 'ccxt';
@@ -139,6 +141,40 @@ function safeName(symbol) {
   return symbol.replace(/[/:]/g, '');
 }
 
+// Refuses to shrink an on-disk cache — fails CLOSED for WRITING: a write that would replace a longer
+// history with a shorter one is refused rather than silently truncating; a write that genuinely
+// extends coverage is never blocked. Assumes row count is a valid span proxy for both writers: the
+// OHLCV filename carries the tf so count is monotone in span for a given file; funding row count is
+// proportional to span and every window ends at ~now, so a larger count is always a superset window,
+// never a shifted one.
+function writeCacheNoShrink(path, next, label) {
+  let onDisk = 0;
+  if (existsSync(path)) {
+    try {
+      // A non-array cache is as untrustworthy a span reference as an unparseable one — both read as
+      // 0 so the file stays refetchable rather than being locked behind FETCH_DATA_ALLOW_SHRINK.
+      const parsed = JSON.parse(readFileSync(path, 'utf8'));
+      onDisk = Array.isArray(parsed) ? parsed.length : 0;
+    } catch {
+      onDisk = 0;
+    }
+  }
+  if (onDisk > next.length) {
+    if (process.env.FETCH_DATA_ALLOW_SHRINK === '1') {
+      console.warn(
+        `${label}: overwriting ${onDisk}-row cache at ${path} with ${next.length} rows (FETCH_DATA_ALLOW_SHRINK=1)`,
+      );
+    } else {
+      throw new Error(
+        `${label}: refusing to shrink ${path} from ${onDisk} rows to ${next.length} rows — raise ` +
+          `targetBars (the window is targetBars x timeframe) or set FETCH_DATA_ALLOW_SHRINK=1 to ` +
+          `overwrite deliberately`,
+      );
+    }
+  }
+  writeFileSync(path, JSON.stringify(next));
+}
+
 async function fetchExtended(symbol, tf, targetBars, withFunding) {
   if (!EXT_TIMEFRAMES.has(tf)) {
     throw new Error(`extended fetch supports ${[...EXT_TIMEFRAMES].join('/')}, got ${tf}`);
@@ -150,19 +186,27 @@ async function fetchExtended(symbol, tf, targetBars, withFunding) {
     Date.now() - targetBars * INTERVAL_MS[tf],
     targetBars,
   );
-  writeFileSync(ohlcvOut, JSON.stringify(bars));
+  if (bars.length < targetBars) {
+    console.warn(`${symbol} ${tf}: venue returned ${bars.length} of ${targetBars} requested bars`);
+  }
+  writeCacheNoShrink(ohlcvOut, bars, `${symbol} ${tf}`);
   console.log(`\n${symbol} ${tf}: wrote ${bars.length} bars -> ${ohlcvOut}`);
 
   if (withFunding) {
     const fundingOut = join(DATA_DIR, `funding-${safeName(symbol)}.json`);
     // ~3 funding events/day on Binance perps; size the funding window to match the OHLCV request.
+    // The filename carries no tf, so this span (targetBars x tf) is the ONLY thing distinguishing one
+    // symbol's funding pull from another's on disk — a short-timeframe fetch competes for the same
+    // file as a long-history study. Kept as-is: three readers depend on the tf-less name
+    // (carry/carry-grid.ts, agentic-replay.ts, multi-strategy/funding-signal.mjs) — renaming it is a
+    // larger, separate change.
     const days = (targetBars * INTERVAL_MS[tf]) / 86_400_000;
     const rows = await fetchFundingHistoryPaged(
       symbol,
       Date.now() - days * 86_400_000,
       Math.ceil(days * 3) + 10,
     );
-    writeFileSync(fundingOut, JSON.stringify(rows));
+    writeCacheNoShrink(fundingOut, rows, `${symbol} funding`);
     console.log(`${symbol} funding: wrote ${rows.length} rows -> ${fundingOut}`);
   }
 }
@@ -171,7 +215,15 @@ async function fetchExtended(symbol, tf, targetBars, withFunding) {
 const [, , symArg, tfArg, targetArg, ...rest] = process.argv;
 
 if (symArg && tfArg) {
-  const targetBars = targetArg ? Number(targetArg) : 200; // smoke-fetch default, see file header
+  if (!targetArg) {
+    throw new Error('targetBars is required for the extended invocation — see file header usage');
+  }
+  const targetBars = Number(targetArg);
+  if (!Number.isInteger(targetBars) || targetBars <= 0) {
+    // Number('abc') is NaN, and `bars.length < NaN` is always false — an unguarded NaN skips the
+    // paging loop entirely and writes an EMPTY array over whatever cache already exists.
+    throw new Error(`targetBars must be a positive integer, got '${targetArg}'`);
+  }
   const withFunding = rest.includes('--funding');
   await fetchExtended(symArg, tfArg, targetBars, withFunding);
   console.log('done.');

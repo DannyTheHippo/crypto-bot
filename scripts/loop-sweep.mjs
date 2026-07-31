@@ -37,12 +37,18 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   AGENTIC_DAILY_COST_BREAKER_USD,
   ALERT_LOOKBACK_MS,
+  classifyHarnessRuns,
   classifyUnrecordedSweeps,
   computeSweep,
   extractCounters,
+  HARNESS_ARTIFACT_NAME,
   isBuildProvenanceVoid,
+  VENUE_REJECT_RATE_ALARM_THRESHOLD,
+  VENUE_REJECT_WINDOW_MAX_AGE_MS,
+  VENUE_REJECT_WINDOW_SUBMITS,
   VENUES,
 } from './loop-sweep-core.mjs';
+import { forwardReturnAnnotations } from './loop-forward-return.mjs';
 import {
   dockerInspect,
   dockerLogsTail,
@@ -580,6 +586,60 @@ function gather() {
       : { ok: false, error: `unparseable fills count: ${row.value[0]}` };
   })();
 
+  // VENUE ACCEPTANCE RATE — per venue, over the most recent VENUE_REJECT_WINDOW_SUBMITS submissions.
+  // The one question no other probe in this sweep asks: did the venue actually TAKE the orders? Every
+  // liveness counter here passed for a week while 78% of spot submits bounced (see
+  // classifyVenueRejectRates for the full derivation and the measured baselines).
+  //
+  // The reject representation was confirmed against the live DB on 2026-07-31 rather than assumed:
+  // `order_events.event_type = 'REJECT'` with the ccxt error class in `payload->>'code'` (148 of the
+  // 152 lifetime rejects were InsufficientFunds on binance, 4 OrderNotFillable on binanceusdm).
+  // order_events carries no venue column, so venue comes from the join to order_intents on
+  // intent_id — order_events.order_id IS orders.intent_id (declared FK), one SUBMIT_SENT per intent.
+  //
+  // Per-venue rather than one grouped query for the same reason `reconcile` above is split: a
+  // grouped read would let a healthy venue's volume dilute a sibling's pathology, which is precisely
+  // how a 78%-vs-2.2% split hid inside a 40% blended average.
+  probes.orderRejects = (() => {
+    const byVenue = {};
+    const errors = [];
+    for (const venue of VENUES) {
+      const row = parsePsqlRow(
+        psql(
+          'select count(*), count(*) filter (where r.order_id is not null) from (' +
+            'select e.order_id from order_events e ' +
+            'join order_intents i on i.intent_id = e.order_id ' +
+            `where e.event_type = 'SUBMIT_SENT' and i.venue = '${venue}' ` +
+            `and e.ts > now() - interval '${VENUE_REJECT_WINDOW_MAX_AGE_MS} milliseconds' ` +
+            `order by e.ts desc, e.id desc limit ${VENUE_REJECT_WINDOW_SUBMITS}) s ` +
+            "left join (select distinct order_id from order_events where event_type = 'REJECT') r " +
+            'on r.order_id = s.order_id',
+          { cwd: REPO_ROOT },
+        ),
+      );
+      if (!row.ok) {
+        errors.push(`${venue}: ${row.error}`);
+        continue;
+      }
+      const submits = Number(row.value[0]);
+      const rejects = Number(row.value[1]);
+      // An unparseable count is left OUT of the map rather than coerced to 0 — the core reads a
+      // missing venue as UNREADABLE and alarms, which is the fail-closed direction. A 0 here would
+      // read as a perfectly clean venue.
+      if (!Number.isFinite(submits) || !Number.isFinite(rejects)) {
+        errors.push(`${venue}: unparseable counts (${row.value[0]}|${row.value[1]})`);
+        continue;
+      }
+      byVenue[venue] = { submits, rejects };
+    }
+    // `ok` stays true on a PARTIAL read: the venues that answered are judged on their own evidence,
+    // and the ones that did not are absent from the map, which the core turns into a per-venue
+    // unreadable alarm. Returning ok:false wholesale would collapse two different findings into one.
+    return errors.length === VENUES.length
+      ? { ok: false, error: errors.join('; ') }
+      : { ok: true, value: { byVenue, errors } };
+  })();
+
   // reconciliations: per-venue row count + latest verdict (CLEAN/MISMATCH/HALT) for the reconcile-halt
   // + journal-silence checks. The reconciliations table is venue-scoped (venue NOT NULL, one row per
   // venue-pass per tick — trading.schema.ts) even on the single stack, so this stays split by venue
@@ -952,6 +1012,20 @@ function readPassLog() {
   }
 }
 
+// The off-gate harness monitor's result artifact, written by a SEPARATE invocation
+// (`pnpm loop:harness`) so this 3x/day sweep never executes a test suite. Returns null on any
+// failure, exactly like readPassLog above: the core turns null into per-harness `harness_never_run`
+// notes, so an absent or unreadable artifact costs this one check and never the sweep. It cannot
+// distinguish "absent" from "unreadable" here on purpose — that judgement is the core's, and this
+// function's only job is to avoid throwing.
+function readHarnessArtifact() {
+  try {
+    return readFileSync(join(DIGESTS_DIR, HARNESS_ARTIFACT_NAME), 'utf8');
+  } catch {
+    return null;
+  }
+}
+
 function listDigestNames() {
   try {
     return readdirSync(DIGESTS_DIR);
@@ -1088,6 +1162,25 @@ export function renderMarkdown({ sweptIso, host, git, app, result }) {
     if (app.consultByOutcome) {
       L.push(`- consult-gate by outcome: ${JSON.stringify(app.consultByOutcome)}`);
     }
+    // Rendered on EVERY pass, alarm or not. The alarm above only speaks when the rate is bad, and a
+    // number that appears only when it is bad teaches the reader nothing about what normal looks
+    // like — which is exactly how a 78%-vs-2.2% split survived a week of passes unremarked. A failed
+    // read prints as VOID, never as a blank or a zero.
+    const or_ = app.probes && app.probes.orderRejects;
+    L.push(
+      `- venue acceptance (last ${VENUE_REJECT_WINDOW_SUBMITS} submits/venue, alarm at ` +
+        `${Math.round(VENUE_REJECT_RATE_ALARM_THRESHOLD * 100)}%): ${
+          or_ && or_.ok === true
+            ? VENUES.map((v) => {
+                const r = or_.value.byVenue[v];
+                return r
+                  ? `${v} ${r.rejects}/${r.submits}` +
+                      `${r.submits > 0 ? ` (${((r.rejects / r.submits) * 100).toFixed(1)}%)` : ''}`
+                  : `${v} VOID`;
+              }).join(' · ')
+            : `probe_failed — ${(or_ && or_.error) || 'no result'}`
+        }`,
+    );
     // Mirrors the core's verdict rather than restating the raw probe: when the live rules probe failed
     // the resolved list is UNSUBTRACTED and may name alerts that are firing right now, so rendering it
     // as fact would contradict the alarm list directly above it.
@@ -1201,6 +1294,30 @@ export function runSweep() {
   result.annotations.push(
     ...classifyUnrecordedSweeps({ digestNames: listDigestNames(), logText: readPassLog() })
       .annotations,
+  );
+
+  // WATCH-PLAYBOOK-V10-1: realised entry forward return, measured off the journal's own dense 15m
+  // price grid. Merged here rather than inside computeSweep for the SAME reason as the audit above —
+  // computeSweep's output feeds the watermark, and a watermark carrying a bootstrap CI would be
+  // nonsense. It is also NOT gated on `app.ok`: postgres is durable and up when the app is not, so
+  // gating would turn an app outage into a silent void read (the absence would look like agreement).
+  // Fails OPEN and by construction: forwardReturnAnnotations() cannot throw, and this measurement
+  // never contributes an alarm — an adverse divergence is a FINDING, not a fault.
+  result.annotations.push(...forwardReturnAnnotations({ cwd: REPO_ROOT }));
+
+  // Backlog 54: the off-gate harnesses (test/eval, test/backtest, and the loop-sweep specs) surfaced
+  // as annotations. Merged here beside the two above and for the same reason — its subject is this
+  // repo's tooling, not the stack, so it has no business in computeSweep's watermark-feeding output.
+  //
+  // The sweep does NOT run the suites: `pnpm loop:harness` does that and writes the artifact, and
+  // this reads it. One file read, no test execution, so the 3x/day sweep stays fast.
+  //
+  // Fails OPEN and never alarms (opposite of the reject-rate check added to computeApp this pass,
+  // which is a money-path HEALTH gate and fails CLOSED). The one thing it will not do is go quiet: a
+  // stale, missing, or unreadable result each gets its OWN annotation kind, so "nobody has run this
+  // in 12 hours" can never be read as "it passed".
+  result.annotations.push(
+    ...classifyHarnessRuns({ artifactText: readHarnessArtifact(), nowMs: sweptAtMs }).annotations,
   );
 
   const digest = { sweptIso, sweptAtMs, git, host, app, result };

@@ -770,6 +770,23 @@ function computeApp(prev, cur, elapsedMs = null, nowMs = null) {
     }
   }
 
+  // Per-venue venue-acceptance rate (see classifyVenueRejectRates' section for the derivation and the
+  // fail-CLOSED argument). Deliberately NOT gated on `containerHealthy`, unlike the delta-starvation
+  // alarms above: those compare two counter readings and are meaningless without a proven-live
+  // process, whereas this reads a DURABLE append-only journal whose rows stay true whether the
+  // container is healthy right now or not. Gating it would let an unhealthy container suppress the
+  // very finding most likely to accompany one.
+  //
+  // A failed probe reaches here as an ALARM and ALSO as the generic `probe_failed` annotation emitted
+  // at the top of this function. The duplication is intentional and cheap: the annotation is the
+  // uniform "this probe did not answer" record every probe gets, the alarm is this specific check's
+  // fail-closed direction. Removing either would make one of the two contracts a special case.
+  {
+    const rejectVerdict = classifyVenueRejectRates(probes.orderRejects);
+    alarms.push(...rejectVerdict.alarms);
+    annotations.push(...rejectVerdict.annotations);
+  }
+
   return { deltas, alarms, annotations };
 }
 
@@ -1054,4 +1071,357 @@ export function classifyUnrecordedSweeps({ digestNames, logText }) {
     unreadableNames,
     annotations,
   };
+}
+
+// ── per-venue order-reject rate: the instrument that would have caught Pass 51's headline ─────────
+// Written for the 2026-07-31 finding: binance spot ran 156 submits / 122 InsufficientFunds rejects
+// over 7 days (78.2%) against binanceusdm's 127/3 (2.4%), FOR A WEEK, with no alarm anywhere. It was
+// found only by decomposing cost out of the DB by hand. Every existing liveness check passed the
+// whole time, and they were right to: the lane WAS deciding, the journal WAS moving, reconciliation
+// WAS clean. Orders were being manufactured and thrown away, and nothing in the stack asks whether
+// the venue accepted them.
+//
+// FAIL DIRECTION — HEALTH ALARM, FAILS CLOSED. This is the money path's acceptance rate, not a
+// measurement of the loop's own research output, so a reading it cannot obtain must ALARM rather
+// than pass silently: `venue_reject_rate_unreadable` fires when the probe failed, when the payload
+// is the wrong shape, or when a venue's counts are not a coherent pair. That is the OPPOSITE
+// direction from the forward-return annotation merged in loop-sweep.mjs, and deliberately so — a
+// forward-return measurement that breaks must never block the pass that carries it (a broken
+// measurement blocking the thing it measures is the fail-open rule), whereas a reject rate that
+// cannot be read means nobody knows whether the book is transacting at all. Same split
+// rules/code-hygiene.md draws: measurement/veto-only gates fail OPEN, safety gates fail CLOSED.
+//
+// The one path that is NOT an alarm is a determinate reading of thin volume — see
+// VENUE_REJECT_MIN_SUBMITS. That is a successful read of a small sample, not a failed read, and it
+// is annotated BY NAME with its raw counts so it can never be mistaken for a clean bill.
+
+// The window is the most recent N SUBMIT_SENT events per venue, not a fixed time span. Two reasons,
+// both measured:
+//   * VOLUME. This book submits ~30 spot orders/day and the rate per rolling 12h ranged 0-48 over
+//     2026-07-23..31. A 12h calendar window therefore sits at or below the denominator floor on
+//     ordinary quiet stretches (measured 2026-07-31T11:43Z: 5 spot submits in 12h), which would make
+//     the instrument undetermined most of the time.
+//   * CLEARING. playbook §3 makes ANY firing alarm block the next pass's improvement work, so an
+//     alarm must clear as soon as the defect does. A 7-day calendar window would keep this lit for a
+//     full week after a fix landed; 20 submits clears in well under a day at the observed cadence.
+// 20 rather than 10 because the false-alarm arithmetic below is decisively better at 20 (0.08% vs
+// 1.86% per pass) at no cost in detection power.
+export const VENUE_REJECT_WINDOW_SUBMITS = 20;
+
+// Recency bound ON TOP of the volume window: a venue that stopped submitting must not keep alarming
+// off week-old evidence forever. Past this age the surviving sample is whatever is left inside 7
+// days, which falls below the floor and reports undetermined by name rather than stale-but-confident.
+export const VENUE_REJECT_WINDOW_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+// THE THRESHOLD, DERIVED — every number here was measured against the live DB on 2026-07-31 and is
+// falsifiable by re-running the query in loop-sweep.mjs's orderRejects probe.
+//
+//   healthy reference (binanceusdm): 4 rejects / 186 submits lifetime = 2.15%
+//                                    3 / 127 over 7 days             = 2.36%
+//                                    0 / 20  over the recent-20 window = 0%
+//   pathology (binance spot):      148 / 196 lifetime                = 75.5%
+//                                  122 / 156 over 7 days             = 78.2%
+//                                   16 / 20  over the recent-20 window = 80.0%
+//
+// The healthy point estimate is 2.15%, but 4 rejects is a small sample and a threshold set off a
+// point estimate would be overconfident. The Wilson one-sided 99.9% upper bound on 4/186 is 8.45% —
+// the highest true reject rate the healthy venue's own data can support. 20% is 2.4x that ceiling
+// and 9.3x the point estimate, while sitting 3.9x BELOW the measured pathology. The geometric
+// midpoint of the two populations is 13.0%, so 20% is deliberately on the conservative side of the
+// gap: it cannot fire on a venue whose true rate is anywhere near the healthy one, and it cannot
+// miss a rate within 4x of the pathology.
+//
+// Not a round number chosen for looking reasonable: 20% is the point at which the two measured
+// populations are separated by more than an order of magnitude on the healthy side and a factor of
+// four on the pathological side simultaneously. Re-derive it if the healthy baseline moves —
+// specifically, if binanceusdm's own rate ever climbs past the 8.45% ceiling, this constant is
+// making a claim its evidence no longer supports.
+export const VENUE_REJECT_RATE_ALARM_THRESHOLD = 0.2;
+
+// Denominator floor. At the threshold above, ceil(0.2 * 6) = 2, so 6 is the SMALLEST window in which
+// one unlucky reject cannot by itself trip the alarm — at n=5 a single reject is already 20%, and a
+// venue at the healthy 2.15% produces at least one reject in 5 submits 10.3% of the time, which
+// would be a false alarm roughly every third day at 3 passes/day.
+//
+// Across n = 6..20 the per-pass false-alarm probability for a venue at the healthy 2.15% peaks at
+// 1.86% (n=10, where 2 rejects are needed) and falls to 0.08% at the full 20-submit window. Against
+// the measured pathology (78.2%) detection at n=20 is a certainty, and on DAY ONE of the real defect
+// (2026-07-23: 9 rejects / 21 submits = 42.9%) it fires — which is the whole claim being made for
+// this instrument, and the reason it exists.
+export const VENUE_REJECT_MIN_SUBMITS = 6;
+
+/**
+ * Per-venue reject-rate verdict. PURE: no I/O, no clock, no env, and it cannot throw — the whole body
+ * is guarded, and the guard's own failure path is an ALARM, matching this check's fail-CLOSED
+ * direction (see the section header).
+ *
+ * @param probe the `orderRejects` probe from gather(): { ok, value: { byVenue: { [venue]: { submits,
+ *   rejects } } } }, or a failed probe.
+ * @returns { alarms, annotations } — merged by computeApp into the same lists zero_decides and
+ *   journal_silence feed, so a reject-rate alarm is indistinguishable in handling from any other.
+ */
+export function classifyVenueRejectRates(probe) {
+  const alarms = [];
+  const annotations = [];
+  try {
+    if (!probe || probe.ok !== true || !probe.value || typeof probe.value !== 'object') {
+      alarms.push({
+        kind: 'venue_reject_rate_unreadable',
+        detail:
+          'the per-venue order-reject rate could not be read at all ' +
+          `(${(probe && probe.error) || 'no probe result'}) — this is a HEALTH probe and it fails ` +
+          'CLOSED: an unread acceptance rate means nobody knows whether the book is transacting, ' +
+          'which is not the same as knowing it is fine',
+      });
+      return { alarms, annotations };
+    }
+    const byVenue = probe.value.byVenue;
+    if (!byVenue || typeof byVenue !== 'object') {
+      alarms.push({
+        kind: 'venue_reject_rate_unreadable',
+        detail:
+          'the order-reject probe returned a payload with no per-venue map — shape unusable, ' +
+          'so the rate is unknown rather than acceptable (fails CLOSED)',
+      });
+      return { alarms, annotations };
+    }
+    for (const venue of VENUES) {
+      const row = byVenue[venue];
+      const submits = row ? row.submits : undefined;
+      const rejects = row ? row.rejects : undefined;
+      // Every incoherent pair is an unread rate, not a low one: a negative count, a reject total
+      // exceeding the submits it is a fraction of, or an absent venue all mean the query did not
+      // answer the question. Fails CLOSED for the reason in the section header.
+      if (
+        !row ||
+        !Number.isFinite(submits) ||
+        !Number.isFinite(rejects) ||
+        submits < 0 ||
+        rejects < 0 ||
+        rejects > submits
+      ) {
+        alarms.push({
+          kind: 'venue_reject_rate_unreadable',
+          venue,
+          detail:
+            `no coherent submit/reject pair for ${venue} (submits=${String(submits)}, ` +
+            `rejects=${String(rejects)}) — the acceptance rate is UNKNOWN for this venue, not clean`,
+        });
+        continue;
+      }
+      if (submits < VENUE_REJECT_MIN_SUBMITS) {
+        // A determinate reading of a small sample — a successful read, so NOT an alarm. Named and
+        // carrying its raw counts so a thin-volume window can never be scored as a clean bill: the
+        // absence-reads-as-health trap this repo keeps re-hitting.
+        annotations.push({
+          kind: 'venue_reject_rate_undetermined',
+          venue,
+          probe: 'orderRejects',
+          detail:
+            `${rejects}/${submits} submit(s) rejected for ${venue} in the most recent ` +
+            `${VENUE_REJECT_WINDOW_SUBMITS}-submit window — below the ${VENUE_REJECT_MIN_SUBMITS}-submit ` +
+            'floor, so the rate is UNDETERMINED, not acceptable (one unlucky reject is already ' +
+            `${Math.round(VENUE_REJECT_RATE_ALARM_THRESHOLD * 100)}% at this denominator)`,
+        });
+        continue;
+      }
+      const rate = rejects / submits;
+      if (rate >= VENUE_REJECT_RATE_ALARM_THRESHOLD) {
+        alarms.push({
+          kind: 'venue_reject_rate_high',
+          venue,
+          detail:
+            `${rejects}/${submits} = ${(rate * 100).toFixed(1)}% of the most recent submits to ` +
+            `${venue} were rejected by the venue, at or above the ${Math.round(
+              VENUE_REJECT_RATE_ALARM_THRESHOLD * 100,
+            )}% threshold (healthy reference: binanceusdm 4/186 = 2.2% lifetime; Wilson 99.9% upper ` +
+            'bound 8.45%) — orders are being manufactured and thrown away, which every liveness ' +
+            'counter in this sweep reads as a working lane',
+        });
+      }
+    }
+  } catch (err) {
+    alarms.push({
+      kind: 'venue_reject_rate_unreadable',
+      detail:
+        'the per-venue reject-rate classifier threw and produced NO verdict: ' +
+        `${err instanceof Error ? err.message : String(err)} — fails CLOSED, because a health check ` +
+        'that cannot run is not a health check that passed',
+    });
+  }
+  return { alarms, annotations };
+}
+
+// ── off-gate harness monitor: making a silent suite's result impossible to miss ───────────────────
+// Written for backlog 54 (2026-07-31). `test/backtest` and `test/eval` are deliberately OFF the
+// production gate (`pnpm test`), which means their failures are invisible by construction — three
+// consecutive passes shipped only defect repairs and the loop's own words for it were "every defect
+// found was invisible by construction". The 2026-07-31 session proved it twice in one sitting: the
+// counterfactual-scoring horizon fix broke `eval:agentic` AND a test/features/strategy/eval spec, and
+// both were caught only because a human ran them by hand. `pnpm eval:agentic` was likewise hand-
+// verified green in Pass 51. That hand-check is what this automates.
+//
+// SPLIT OF LABOUR — the sweep must NOT run the suites. `pnpm loop:sweep` runs 3x/day and has to stay
+// fast; a vitest run inside it would make the health sweep hostage to a test suite. So a separate
+// invocation (`pnpm loop:harness`, scripts/loop-harness.mjs) executes them and writes a result
+// artifact, and the sweep only READS that artifact. The sweep's cost is one file read.
+//
+// FAIL DIRECTION — FAILS OPEN, annotations only, never an alarm. A broken harness monitor must not
+// block a pass (playbook §3 makes any alarm block improvement work, and this is a measurement of the
+// loop's own tooling, not of the money path). Even a harness that genuinely FAILED is an annotation:
+// the point is disclosure, and the pass decides what to do about it.
+//
+// THE OTHER HALF, WHICH IS THE ENTIRE POINT — a STALE result must read as its own named annotation
+// and NEVER as clean. "No run in 12 hours" and "last run passed" must be impossible to confuse. This
+// repo has a documented history of void reads where absence looked like health (log_window_unknown vs
+// log_window_short, pass_record_audit_undetermined, the forward-return work's named-undetermined
+// cells earlier this same session), so every non-fresh state below gets its OWN kind: harness_stale,
+// harness_never_run, harness_result_unreadable. Silence from this check is impossible — a fresh pass
+// emits `harness_ok` explicitly, so the check's own liveness is visible in every digest.
+
+// The suites worth watching. Declared here (pure data) rather than in the runner so the CLASSIFIER
+// can name a harness that is missing from the artifact entirely — a monitored suite that never ran is
+// exactly the state a runner-owned list could not report, because a runner that never ran writes
+// nothing at all.
+export const MONITORED_HARNESSES = [
+  {
+    id: 'loop-sweep-specs',
+    label: 'loop-sweep specs (incl. forward-return.spec.ts)',
+    args: ['run', 'test/features/strategy/loop-sweep'],
+  },
+  { id: 'eval-agentic', label: 'pnpm eval:agentic (test/eval)', args: ['run', 'test/eval'] },
+  { id: 'backtest', label: 'pnpm backtest (test/backtest)', args: ['run', 'test/backtest'] },
+];
+
+// The artifact scripts/loop-harness.mjs writes and loop-sweep.mjs reads, under research/loop/digests/
+// (gitignored — machine-written evidence, same as the sweep JSONs and the watermark). Named here so
+// the writer and the reader cannot drift apart.
+export const HARNESS_ARTIFACT_NAME = '.harness-runs.json';
+
+// Freshness bound. The monitor is expected to run once per pass, and passes run 3x/day on the
+// EXPECTED_SWEEP_INTERVAL_MS cadence, so 1.5x that interval tolerates exactly ONE slipped run and
+// calls the second miss stale — the same 1.5x margin, for the same reason, that ALERT_LOOKBACK_MS
+// uses against the same cadence. Deliberately not generous: the failure mode being defended against
+// is a result that quietly ages into fiction while the digest keeps printing its verdict.
+export const HARNESS_RESULT_STALE_MS = 1.5 * EXPECTED_SWEEP_INTERVAL_MS;
+
+function harnessAgeText(ageMs) {
+  return ageMs >= 3_600_000
+    ? `${(ageMs / 3_600_000).toFixed(1)}h`
+    : `${Math.round(ageMs / 60_000)}min`;
+}
+
+/**
+ * Off-gate harness verdicts. PURE: no I/O, no clock, no env, cannot throw. `artifactText` is the raw
+ * file contents (or null when the file is absent) and `nowMs` is the sweep's own wall-clock, passed
+ * in rather than read so every age check is reproducible off a fixture.
+ *
+ * Returns ONE annotation per monitored harness, always — there is no path on which a monitored suite
+ * goes unmentioned, which is what makes silence-equals-clean unavailable as a misreading.
+ */
+export function classifyHarnessRuns({ artifactText = null, nowMs = null, harnesses = null } = {}) {
+  const annotations = [];
+  const monitored = Array.isArray(harnesses) ? harnesses : MONITORED_HARNESSES;
+  try {
+    let runs = null;
+    let parseError = null;
+    if (typeof artifactText === 'string' && artifactText.trim() !== '') {
+      try {
+        const parsed = JSON.parse(artifactText);
+        runs =
+          parsed && typeof parsed.runs === 'object' && parsed.runs !== null ? parsed.runs : null;
+        if (runs === null) parseError = 'artifact has no `runs` object';
+      } catch (err) {
+        parseError = err instanceof Error ? err.message : String(err);
+      }
+    }
+
+    for (const h of monitored) {
+      const scope = { kind: '', probe: h.id };
+      if (parseError !== null) {
+        annotations.push({
+          ...scope,
+          kind: 'harness_result_unreadable',
+          detail:
+            `${h.label}: the harness artifact could not be parsed (${parseError}) — NO reading for ` +
+            'this suite, which is not the same as a passing one',
+        });
+        continue;
+      }
+      const run = runs ? runs[h.id] : undefined;
+      if (!run || typeof run !== 'object') {
+        annotations.push({
+          ...scope,
+          kind: 'harness_never_run',
+          detail:
+            `${h.label}: NO recorded run at all${runs ? ' in the harness artifact' : ' (artifact absent)'} — ` +
+            'this suite is off the production gate, so nothing else in this repo would notice it ' +
+            'breaking; run `pnpm loop:harness` to produce a reading',
+        });
+        continue;
+      }
+      const finishedAtMs = run.finishedAtMs;
+      if (!Number.isFinite(finishedAtMs) || typeof run.ok !== 'boolean') {
+        annotations.push({
+          ...scope,
+          kind: 'harness_result_unreadable',
+          detail:
+            `${h.label}: the recorded run is malformed (finishedAtMs=${String(finishedAtMs)}, ` +
+            `ok=${String(run.ok)}) — NO usable verdict, not a pass`,
+        });
+        continue;
+      }
+      if (!Number.isFinite(nowMs)) {
+        annotations.push({
+          ...scope,
+          kind: 'harness_result_unreadable',
+          detail:
+            `${h.label}: recorded verdict ${run.ok ? 'PASS' : 'FAIL'} carries no computable age (the ` +
+            'sweep supplied no clock reading) — freshness UNKNOWN, so the verdict is not usable',
+        });
+        continue;
+      }
+      const ageMs = nowMs - finishedAtMs;
+      // A future-dated result is as unusable as an ancient one — clock skew or a hand-edited
+      // artifact, either way the age is not a reading. Grouped with STALE rather than passed.
+      if (ageMs > HARNESS_RESULT_STALE_MS || ageMs < 0) {
+        annotations.push({
+          ...scope,
+          kind: 'harness_stale',
+          detail:
+            `${h.label}: STALE — last run finished ${
+              ageMs < 0 ? `${harnessAgeText(-ageMs)} in the FUTURE` : `${harnessAgeText(ageMs)} ago`
+            }, past the ${HARNESS_RESULT_STALE_MS / 3_600_000}h freshness bound. Its recorded verdict was ` +
+            `${run.ok ? 'PASS' : 'FAIL'}, and that verdict is NOT evidence about the current tree — ` +
+            'this is a stale reading, NOT a clean one',
+        });
+        continue;
+      }
+      annotations.push({
+        ...scope,
+        kind: run.ok ? 'harness_ok' : 'harness_failed',
+        detail:
+          `${h.label}: ${run.ok ? 'PASS' : 'FAIL'} ${harnessAgeText(ageMs)} ago` +
+          `${Number.isFinite(run.exitCode) ? ` (exit ${run.exitCode})` : ''}` +
+          `${typeof run.summary === 'string' && run.summary !== '' ? ` — ${run.summary}` : ''}` +
+          (run.ok
+            ? ''
+            : ' — this suite is OFF the production gate, so nothing else in this repo will fail on it'),
+      });
+    }
+  } catch (err) {
+    // Fails OPEN, by name: the monitor breaking must never block a pass, and must never be silent.
+    return {
+      annotations: [
+        {
+          kind: 'harness_monitor_failed',
+          detail:
+            'the off-gate harness monitor threw and produced NO readings: ' +
+            `${err instanceof Error ? err.message : String(err)} — every monitored suite is ` +
+            'unreported this pass, which is a void read, not a clean one',
+        },
+      ],
+    };
+  }
+  return { annotations };
 }

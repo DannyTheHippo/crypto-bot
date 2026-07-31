@@ -141,8 +141,8 @@ const ALL_AGENT_VENUE_TP_EVENTS: readonly AgentVenueTpEvent[] = [
 ];
 
 // Mirrors agentic.strategy.ts's VenueStopEvent (Push 3 P7d) — duplicated rather than imported, same
-// convention as AgentVenueTpEvent above. 'triggered' (Defect A commit-1, 2026-07-16) — see
-// VenueStopEvent's own comment.
+// convention as AgentVenueTpEvent above. 'triggered' (Defect A commit-1, 2026-07-16) and the three
+// orphan-reconcile labels (2026-07-31) — see VenueStopEvent's own comment.
 export type AgentVenueStopEvent =
   | 'placed'
   | 'skipped_existing'
@@ -155,24 +155,45 @@ export type AgentVenueStopEvent =
   | 'stood_down'
   | 'force_fired'
   | 'reconcile_error'
-  | 'triggered';
+  | 'triggered'
+  | 'orphan_scan'
+  | 'orphan_readopt'
+  | 'orphan_cancel_failed';
 
-// Pass 50: the twelve-member AgentVenueStopEvent set above, kept as its own runtime array for the
-// same reason ALL_CONSULT_GATE_OUTCOMES is above — backs seedVenueStopVenues' zero-seed below.
-const ALL_AGENT_VENUE_STOP_EVENTS: readonly AgentVenueStopEvent[] = [
-  'placed',
-  'skipped_existing',
-  'skipped_inflight',
-  'cancel_for_exit',
-  'drift_cancel',
-  'qty_cancel',
-  'orphan_cancel',
-  'filled_flat',
-  'stood_down',
-  'force_fired',
-  'reconcile_error',
-  'triggered',
-];
+// Pass 50: the fifteen-member AgentVenueStopEvent set above, kept as its own runtime value for the
+// same reason ALL_CONSULT_GATE_OUTCOMES is above — backs seedVenueStopVenues' zero-seed below. The
+// seed is the whole point for the three orphan labels: an unseeded child reads as ABSENT in the
+// scrape, and absent is indistinguishable from zero.
+//
+// Keyed off a `satisfies Record<AgentVenueStopEvent, true>` map rather than the sibling arrays'
+// plain literal (2026-07-31 adversarial review): a `readonly AgentVenueStopEvent[]` annotation only
+// checks that every MEMBER is a valid label, never that every LABEL is a member — so a sixteenth
+// event would compile while silently missing the zero-seed, which is precisely the unreadable-zero
+// defect this set exists to prevent. Record<> is exhaustive in both directions: a missing key and a
+// stray key are both compile errors. Only this set carries the pin; the sibling arrays keep their
+// literal style until they earn the same treatment.
+const AGENT_VENUE_STOP_EVENT_KEYS = {
+  placed: true,
+  skipped_existing: true,
+  skipped_inflight: true,
+  cancel_for_exit: true,
+  drift_cancel: true,
+  qty_cancel: true,
+  orphan_cancel: true,
+  filled_flat: true,
+  stood_down: true,
+  force_fired: true,
+  reconcile_error: true,
+  triggered: true,
+  orphan_scan: true,
+  orphan_readopt: true,
+  orphan_cancel_failed: true,
+} satisfies Record<AgentVenueStopEvent, true>;
+
+// Object.keys widens to string[]; the assertion is sound because the map above is pinned exhaustive.
+const ALL_AGENT_VENUE_STOP_EVENTS = Object.keys(
+  AGENT_VENUE_STOP_EVENT_KEYS,
+) as readonly AgentVenueStopEvent[];
 
 // Typed recorder over the agentic-lane providers registered in metrics.service.ts. Exported from
 // ObservabilityModule so the composition root can hand it (or closures over it) to the agentic lane —

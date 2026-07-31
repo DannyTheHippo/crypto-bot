@@ -242,6 +242,15 @@ export type VenueTpEvent =
 // actually fired (venue algo-history rail, not a local guess) — recovery already ingested the fill
 // onto the OMS, so this bar neither re-places the stop nor emits an exit signal (see
 // manageVenueStopPerp's gone-branch).
+// The three orphan-reconcile labels (2026-07-31 stale-non-terminal-algo-stop defect):
+// reconcileOrphanedAlgoStop emitted NOTHING on any of its four outcomes, so a zero on 'orphan_cancel'
+// was unreadable — it could equally mean "no orphan was ever matched" or "one was matched and the
+// cancel threw into the bare catch every bar" (the live HYPE/USDT:USDT stop that sat ACKED ~11h across
+// three boots was exactly that ambiguity). 'orphan_scan' — the no-active-plan scan reached its venue
+// read (a non-zero value is the only proof this path runs at all); 'orphan_readopt' — branch (a)
+// re-adopted a stop the CURRENT position still needs; 'orphan_cancel_failed' — branch (b) matched an
+// orphan but cancelAlgoOrder threw. Branch (b)'s SUCCESS reuses 'orphan_cancel', the same event
+// runActivePlan's position_closed branch already emits for the identical cleanup.
 export type VenueStopEvent =
   | 'placed'
   | 'skipped_existing'
@@ -254,7 +263,10 @@ export type VenueStopEvent =
   | 'stood_down'
   | 'force_fired'
   | 'reconcile_error'
-  | 'triggered';
+  | 'triggered'
+  | 'orphan_scan'
+  | 'orphan_readopt'
+  | 'orphan_cancel_failed';
 
 // B2 (Design § Deleted scaffolding): supersedes prescreen.ts's PrescreenOutcome/PrescreenReason —
 // see evaluateConsultSchedule below for what drives each value. 'consulted' is the organic
@@ -1967,6 +1979,9 @@ export class AgenticStrategy implements AsyncStrategy {
       this.onVenueStop?.('drift_cancel');
       try {
         await this.algoOrders!.cancelAlgoOrder!(restingAlgo.algoId, this.symbol);
+        // Fire-and-forget by contract (see journalAlgoStopCanceled) — this catch can therefore only
+        // ever be the cancel itself.
+        void this.journalAlgoStopCanceled();
       } catch {
         // Best-effort — see cancelPerpAlgoStopIfResting's own comment on the failure direction. The
         // next reconcile bar re-observes the (still-drifted) order and retries.
@@ -1986,8 +2001,9 @@ export class AgenticStrategy implements AsyncStrategy {
       this.onVenueStop?.('qty_cancel');
       try {
         await this.algoOrders!.cancelAlgoOrder!(restingAlgo.algoId, this.symbol);
+        void this.journalAlgoStopCanceled(); // fire-and-forget, same as the drift branch above
       } catch {
-        // Best-effort, same as the drift branch above.
+        // Best-effort, same as the drift branch above — reachable only from the cancel.
       }
       return [];
     }
@@ -2051,8 +2067,17 @@ export class AgenticStrategy implements AsyncStrategy {
     try {
       open = await this.algoOrders.fetchOpenAlgoOrders(this.symbol);
     } catch {
-      return; // best-effort — retried next bar, same failure direction as the rest of this lane
+      // Measurement-only emit, FAILS OPEN (onVenueStop is no-op-defaulted and its own recorder
+      // swallows) — the read failure itself is the behavior, unchanged: retried next bar, same
+      // failure direction as the rest of this lane. Same label manageVenueStopPerp's identical
+      // fetch failure already emits, so both rails' read failures land on one series.
+      this.onVenueStop?.('reconcile_error');
+      return;
     }
+    // Every guard above is satisfied and the venue answered: this is the only evidence the
+    // no-active-plan reconcile path executes at all. Without it a zero on the labels below is
+    // indistinguishable from the path never running.
+    this.onVenueStop?.('orphan_scan');
     let ours: AlgoOrderState | undefined;
     for (const o of open) {
       if (o.clientAlgoId === undefined) continue;
@@ -2076,6 +2101,7 @@ export class AgenticStrategy implements AsyncStrategy {
         venueStopResting: true,
         algoId: ours.algoId,
       });
+      this.onVenueStop?.('orphan_readopt');
       return;
     }
 
@@ -2087,8 +2113,17 @@ export class AgenticStrategy implements AsyncStrategy {
     try {
       await this.algoOrders.cancelAlgoOrder(ours.algoId, this.symbol);
     } catch {
-      // Best-effort — see cancelPerpAlgoStopIfResting's own comment on the failure direction.
+      // Best-effort — see cancelPerpAlgoStopIfResting's own comment on the failure direction. The
+      // emit is what makes the swallow readable: without it a zero on 'orphan_cancel' cannot
+      // distinguish "never matched" from "matched and the cancel threw". Returns rather than falling
+      // through, so ONE cancel can never emit both this label and the success label below.
+      this.onVenueStop?.('orphan_cancel_failed');
+      return;
     }
+    // Outside the try deliberately: the two labels are mutually exclusive by construction, not by
+    // the recorder happening to swallow its own throws.
+    this.onVenueStop?.('orphan_cancel');
+    void this.journalAlgoStopCanceled();
   }
 
   // Shared placement-signal shape for both rails — PositionSizerService's isRestingStopExit branch
@@ -2167,8 +2202,46 @@ export class AgenticStrategy implements AsyncStrategy {
     try {
       await this.algoOrders.cancelAlgoOrder(algoId, this.symbol);
       this.onVenueStop?.(event);
+      // NOT awaited (see journalAlgoStopCanceled): this method's 'cancel_for_exit' call site runs
+      // BETWEEN the cancel and the caller's exit-Signal construction, with the position already
+      // unprotected on the algo rail — awaiting a multi-round-trip venue sweep here would withhold
+      // that exit for as long as the venue stays slow. Also keeps this catch attributable to the
+      // cancel alone.
+      void this.journalAlgoStopCanceled();
     } catch {
       // Best-effort — see this method's own header comment on the failure direction.
+    }
+  }
+
+  // 2026-07-31 stale-non-terminal-algo-stop defect: a cancel this strategy issues on the algo rail is
+  // invisible to the OMS — no exec report ever arrives for it, so the local order row stays
+  // non-terminal, its intent stays registered in inFlightIntents (boot-recovery.service.ts), and
+  // HaltCoordinatorService.driveFlattening reads that registration as a BUSY symbol
+  // (halt-coordinator.service.ts) — blocking a HALT flatten until the next boot. A live BTC/USDT:USDT
+  // SELL STOP_MARKET cancelled at the venue by the drift_cancel path stayed non-terminal in our book
+  // for exactly this reason. AgenticStrategyDeps.onAlgoStopGone is the ONLY route back to
+  // AlgoStopRecoveryService (eslint-plugin-boundaries forbids this feature importing execution): it
+  // reads the venue's own algo-history rail and APPENDS the CANCELED fold — never an UPDATE or DELETE,
+  // order_events is append-only. Cleanup/measurement seam ⇒ FAILS OPEN, on BOTH axes: a throw is
+  // swallowed here, AND every call site starts this with `void` rather than awaiting it, because
+  // failing open on exceptions but not on latency is not failing open at all. What is behind the
+  // seam is a multi-round-trip venue sweep (recoverSymbol → a store lookup per non-terminal order,
+  // then fetchOpenAlgoOrders + the algo-history reads per candidate) against an exchange client with
+  // no configured timeout, so ccxt's 10s default applies PER CALL; the callers that would await it
+  // are (1) the cancel-first path, which holds a risk-reducing exit Signal it must not delay while
+  // the position sits unprotected, and (2) reconcileOrphanedAlgoStop, which runs inside a 2s
+  // non-LLM decide() budget whose overrun drops the whole bar's result and trips auto-DRAIN. No
+  // call site reads the verdict, so nothing is lost by not waiting. Never rejects (the catch below
+  // is total), so a bare `void` cannot leak an unhandled rejection. The one asymmetry deliberately
+  // preserved: a failed FOLD leaves the order non-terminal (foldVenueTerminal's own
+  // `if (!applied) return`), so the next recovery sweep retries rather than this path resurrecting
+  // anything.
+  private async journalAlgoStopCanceled(): Promise<void> {
+    if (!this.onAlgoStopGone) return;
+    try {
+      await this.onAlgoStopGone(this.symbol);
+    } catch {
+      // FAILS OPEN — see this method's own header comment on the failure direction.
     }
   }
 

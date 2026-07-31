@@ -719,10 +719,11 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
     });
   });
 
-  it('drift_cancel calls cancelAlgoOrder directly (no CANCEL_OPEN signal — the algo rail is never in openOrders)', async () => {
+  it('drift_cancel calls cancelAlgoOrder directly (no CANCEL_OPEN signal — the algo rail is never in openOrders) and journals the cancel', async () => {
     const events: VenueStopEvent[] = [];
     const resting = algoOrder('90'); // far from the expected trigger 98 — genuine drift
     const cancelled: Array<{ algoId: string; symbol: string }> = [];
+    const goneCalls: Array<ReturnType<typeof symbolId>> = [];
     let fetchCalls = 0;
     const client = new PlanningClient();
     const strategy = new AgenticStrategy(SID, perpParams(), client, {
@@ -741,6 +742,12 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
           return Promise.resolve();
         },
       },
+      // 2026-07-31: the live BTC/USDT:USDT stop this path cancelled at 22:45Z stayed non-terminal in
+      // our book because the cancel was never journaled — the fold seam closes that.
+      onAlgoStopGone: (symbol) => {
+        goneCalls.push(symbol);
+        return Promise.resolve('canceled');
+      },
       planStopRegistry: planStopRegistry(),
     });
     await strategy.decide(perpInput(0));
@@ -751,12 +758,14 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
     expect(out).toEqual([]); // no Signal — the cancel happened via the direct adapter call
     expect(events).toEqual(['drift_cancel']);
     expect(cancelled).toEqual([{ algoId: resting.algoId, symbol: String(PERP_SYM) }]);
+    expect(goneCalls).toEqual([PERP_SYM]);
   });
 
-  it('qty_cancel calls cancelAlgoOrder directly', async () => {
+  it('qty_cancel calls cancelAlgoOrder directly and journals the cancel', async () => {
     const events: VenueStopEvent[] = [];
     const resting = algoOrder('98', '0.0005'); // qty mismatch vs the 0.001 position
     const cancelled: string[] = [];
+    const goneCalls: Array<ReturnType<typeof symbolId>> = [];
     let fetchCalls = 0;
     const client = new PlanningClient();
     const strategy = new AgenticStrategy(SID, perpParams(), client, {
@@ -772,6 +781,10 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
           return Promise.resolve();
         },
       },
+      onAlgoStopGone: (symbol) => {
+        goneCalls.push(symbol);
+        return Promise.resolve('canceled');
+      },
     });
     await strategy.decide(perpInput(0));
     await strategy.decide(perpInput(1, { position: perpLongPosition('100') })); // placed
@@ -781,6 +794,7 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
     expect(out).toEqual([]);
     expect(events).toEqual(['qty_cancel']);
     expect(cancelled).toEqual([resting.algoId]);
+    expect(goneCalls).toEqual([PERP_SYM]);
   });
 
   it('does NOT churn a perp algo stop when its qty is the position step-rounded (dust residue → skipped_existing)', async () => {
@@ -848,9 +862,10 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
     expect(cancelled).toEqual([resting.algoId]);
   });
 
-  it('cancel-first on a max_hold exit cancels the resting algo stop by its registry algoId before the IOC exit', async () => {
+  it('cancel-first on a max_hold exit cancels the resting algo stop by its registry algoId before the IOC exit, and journals the cancel', async () => {
     const resting = algoOrder('98');
     const cancelled: string[] = [];
+    const goneCalls: Array<ReturnType<typeof symbolId>> = [];
     const registry = planStopRegistry();
     let fetchCalls = 0;
     // nextConsultBars: 100 — see the SPOT max_hold test's own rationale above.
@@ -867,6 +882,10 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
           return Promise.resolve();
         },
       },
+      onAlgoStopGone: (symbol) => {
+        goneCalls.push(symbol);
+        return Promise.resolve('canceled');
+      },
       planStopRegistry: registry,
     });
     await strategy.decide(perpInput(0));
@@ -881,6 +900,7 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
     }
     const out = await strategy.decide(perpInput(8, { position: perpLongPosition('100') }));
     expect(cancelled).toEqual([resting.algoId]); // cancelled by the registry's cached algoId
+    expect(goneCalls).toEqual([PERP_SYM]); // and journaled, so the local order can reach terminal
     expect(out).toHaveLength(1); // no CANCEL_OPEN Signal on the algo rail — exit only
     expect(out[0]!.kind).toBe('EXIT_LONG');
     expect(out[0]!.reason).toBe('plan exit: max_hold');
@@ -998,6 +1018,67 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
     expect(out[0]!.reason).toBe('plan exit: max_hold');
   });
 
+  // 2026-07-31 (adversarial review S3): the cancel-first path is the ONE place where a signal is at
+  // stake behind the fold seam — cancelPerpAlgoStopIfResting runs BETWEEN the algo cancel and the
+  // caller's exit-Signal construction, after clearPlan() has already torn down the registry. That is
+  // the exact geometry P7f fix 5 above documents ("leaving a naked position with no crossed exit and
+  // no resting stop"), so the journal call must be as incapable of costing the exit as the fallback
+  // lookup now is. Passes trivially while the call is `void`-ed — which is the point: an `await`
+  // reintroduced here would fail this test instead of silently re-breaking the contract.
+  it('S3: a max_hold exit still emits exactly one EXIT signal when the onAlgoStopGone journal seam rejects', async () => {
+    const shortPlan: AgentDirectives = { ...PLAN, maxHoldBars: 1 };
+    class ShortPlanClient implements AgentClientPort {
+      calls = 0;
+      propose(input: AgentDecisionInput): Promise<AgentProposal> {
+        this.calls += 1;
+        const signal: Signal = {
+          strategyId: SID,
+          venue: PERP_V,
+          symbol: PERP_SYM,
+          kind: 'ENTER_LONG',
+          strength: 0.8,
+          refPrice: price('100'),
+          basedOnSeq: 1n,
+          eventTime: input.snapshot.eventTime,
+          ttlMs: 120_000,
+          dedupeKey: `k${this.calls}`,
+          reason: 'r',
+        };
+        return Promise.resolve({
+          signals: [signal],
+          decision: { action: 'long', confidence: 0.8, rationale: 'r' },
+          plan: shortPlan,
+        });
+      }
+    }
+    const resting = algoOrder('98');
+    const cancelled: string[] = [];
+    let fetchCalls = 0;
+    const strategy = new AgenticStrategy(SID, perpParams(), new ShortPlanClient(), {
+      intentStore: roledIntentStore(new Map([[resting.clientAlgoId!, 'vsl']])),
+      algoOrders: {
+        // Bar 0's orphan boot check must see nothing (call #1); the cancel-first fallback lookup is
+        // call #2 — same shape as the on-demand fallback test above.
+        fetchOpenAlgoOrders: () => {
+          fetchCalls += 1;
+          return Promise.resolve(fetchCalls === 1 ? [] : [resting]);
+        },
+        cancelAlgoOrder: (algoId) => {
+          cancelled.push(algoId);
+          return Promise.resolve();
+        },
+      },
+      onAlgoStopGone: () => Promise.reject(new Error('recovery sweep exploded')),
+      planStopRegistry: planStopRegistry(),
+    });
+    await strategy.decide(perpInput(0));
+    const out = await strategy.decide(perpInput(1, { position: perpLongPosition('100') }));
+    expect(cancelled).toEqual([resting.algoId]); // the venue cancel still happened
+    expect(out).toHaveLength(1); // and the exit Signal was NOT dropped by the rejected journal
+    expect(out[0]!.kind).toBe('EXIT_LONG');
+    expect(out[0]!.reason).toBe('plan exit: max_hold');
+  });
+
   // Push 3 P7f fix 6 regression: a transient intent-store throw while classifying a candidate must
   // read as "cannot tell" (skip placement this bar), never as "nothing resting" (which would place a
   // DUPLICATE stop next to one already resting server-side).
@@ -1049,7 +1130,11 @@ describe('AgenticStrategy venue-resting protective stop lifecycle (AGENTIC_VENUE
     expect(out[0]!.exitStyle).toBe('RESTING');
     expect(out[0]!.limitPriceHint!.toFixed()).toBe('103');
     expect(tpEvents).toContain('placed');
-    expect(stopEvents).toEqual(['reconcile_error']); // no 'placed' — placement decision skipped
+    // Two, not one, since 2026-07-31: bar 0 (no active plan yet) runs the orphan scan, whose OWN
+    // fetchOpenAlgoOrders read hits the same rejection and now says so instead of returning silently;
+    // bar 1 is the managed-bar reconcile this regression was written for. No 'placed' either bar —
+    // both placement decisions were skipped.
+    expect(stopEvents).toEqual(['reconcile_error', 'reconcile_error']);
     // The registry's stand-down flag is untouched by the failed read (set at plan attach, never
     // flipped by an unverified reconcile) — the watcher/force-band backstops stay armed.
     expect(registry.get(PERP_REG_KEY)?.venueStopResting).not.toBe(true);
@@ -1196,8 +1281,10 @@ describe('AgenticStrategy — orphaned perp algo stop reconcile on boot/no-activ
 
   it('branch (a) re-adopts a lane-owned resting stop into the registry when the position is LONG/SHORT', async () => {
     const resting = algoOrder('97'); // the venue's OWN resting trigger — adopted verbatim
+    const events: VenueStopEvent[] = [];
     const registry = planStopRegistry();
     const strategy = new AgenticStrategy(SID, perpParams(), new NoPlanClient(), {
+      onVenueStop: (e) => events.push(e),
       intentStore: roledIntentStore(new Map([[resting.clientAlgoId!, 'vsl']])),
       algoOrders: { fetchOpenAlgoOrders: () => Promise.resolve([resting]) },
       planStopRegistry: registry,
@@ -1215,13 +1302,19 @@ describe('AgenticStrategy — orphaned perp algo stop reconcile on boot/no-activ
       venueStopResting: true,
       algoId: resting.algoId,
     });
+    // 2026-07-31: every exit of this function is now labelled — 'orphan_scan' proves the scan
+    // reached the venue read at all, 'orphan_readopt' names which branch it took.
+    expect(events).toEqual(['orphan_scan', 'orphan_readopt']);
   });
 
-  it('branch (b) cancels the orphan when the position is FLAT (nothing left to protect)', async () => {
+  it('branch (b) cancels the orphan when the position is FLAT (nothing left to protect), journals the cancel, and labels both', async () => {
     const resting = algoOrder('97');
     const cancelled: string[] = [];
+    const events: VenueStopEvent[] = [];
+    const goneCalls: Array<ReturnType<typeof symbolId>> = [];
     const registry = planStopRegistry();
     const strategy = new AgenticStrategy(SID, perpParams(), new NoPlanClient(), {
+      onVenueStop: (e) => events.push(e),
       intentStore: roledIntentStore(new Map([[resting.clientAlgoId!, 'vsl']])),
       algoOrders: {
         fetchOpenAlgoOrders: () => Promise.resolve([resting]),
@@ -1230,22 +1323,98 @@ describe('AgenticStrategy — orphaned perp algo stop reconcile on boot/no-activ
           return Promise.resolve();
         },
       },
+      // 2026-07-31 stale-non-terminal-algo-stop defect: without this the venue cancel is never
+      // journaled, the local order row stays non-terminal, and its intent keeps the symbol BUSY in
+      // HaltCoordinatorService.driveFlattening until the next boot.
+      onAlgoStopGone: (symbol) => {
+        goneCalls.push(symbol);
+        return Promise.resolve('canceled');
+      },
       planStopRegistry: registry,
     });
     await strategy.decide(buildInput(0, { symbol: PERP_SYM, venue: PERP_V })); // no position ⇒ FLAT
     expect(cancelled).toEqual([resting.algoId]);
+    expect(goneCalls).toEqual([PERP_SYM]); // the fold seam ran on the successful cancel
+    expect(events).toEqual(['orphan_scan', 'orphan_cancel']);
     expect(registry.get(PERP_REG_KEY)).toBeUndefined(); // never adopted — nothing to protect
+  });
+
+  // The label that makes a zero on 'orphan_cancel' readable: before this, a matched orphan whose
+  // cancel threw every bar was indistinguishable from no orphan ever being matched (the live
+  // HYPE/USDT:USDT stop that sat ACKED ~11h across three boots).
+  it('branch (b) emits orphan_cancel_failed and does NOT journal when cancelAlgoOrder throws', async () => {
+    const resting = algoOrder('97');
+    const events: VenueStopEvent[] = [];
+    const goneCalls: Array<ReturnType<typeof symbolId>> = [];
+    const strategy = new AgenticStrategy(SID, perpParams(), new NoPlanClient(), {
+      onVenueStop: (e) => events.push(e),
+      intentStore: roledIntentStore(new Map([[resting.clientAlgoId!, 'vsl']])),
+      algoOrders: {
+        fetchOpenAlgoOrders: () => Promise.resolve([resting]),
+        cancelAlgoOrder: () => Promise.reject(new Error('venue rejected the cancel')),
+      },
+      onAlgoStopGone: (symbol) => {
+        goneCalls.push(symbol);
+        return Promise.resolve('canceled');
+      },
+      planStopRegistry: planStopRegistry(),
+    });
+    const out = await strategy.decide(buildInput(0, { symbol: PERP_SYM, venue: PERP_V }));
+    expect(out).toEqual([]); // FAILS OPEN — the swallowed cancel never blocks the bar
+    expect(events).toEqual(['orphan_scan', 'orphan_cancel_failed']);
+    expect(goneCalls).toEqual([]); // nothing was cancelled at the venue ⇒ nothing to fold
+  });
+
+  it('emits reconcile_error when the orphan scan’s own fetchOpenAlgoOrders read throws', async () => {
+    const events: VenueStopEvent[] = [];
+    const strategy = new AgenticStrategy(SID, perpParams(), new NoPlanClient(), {
+      onVenueStop: (e) => events.push(e),
+      algoOrders: { fetchOpenAlgoOrders: () => Promise.reject(new Error('adapter shape throw')) },
+      planStopRegistry: planStopRegistry(),
+    });
+    const out = await strategy.decide(buildInput(0, { symbol: PERP_SYM, venue: PERP_V }));
+    expect(out).toEqual([]);
+    expect(events).toEqual(['reconcile_error']); // no 'orphan_scan' — the read never returned
+  });
+
+  // FAIL-OPEN contract for the fold seam: journalAlgoStopCanceled swallows, so a recovery-service
+  // throw can never propagate out of decide() and cost the bar its signals.
+  it('a throwing onAlgoStopGone never propagates out of decide() (fail-open cleanup seam)', async () => {
+    const resting = algoOrder('97');
+    const events: VenueStopEvent[] = [];
+    const cancelled: string[] = [];
+    const strategy = new AgenticStrategy(SID, perpParams(), new NoPlanClient(), {
+      onVenueStop: (e) => events.push(e),
+      intentStore: roledIntentStore(new Map([[resting.clientAlgoId!, 'vsl']])),
+      algoOrders: {
+        fetchOpenAlgoOrders: () => Promise.resolve([resting]),
+        cancelAlgoOrder: (algoId) => {
+          cancelled.push(algoId);
+          return Promise.resolve();
+        },
+      },
+      onAlgoStopGone: () => Promise.reject(new Error('recovery sweep exploded')),
+      planStopRegistry: planStopRegistry(),
+    });
+    const out = await strategy.decide(buildInput(0, { symbol: PERP_SYM, venue: PERP_V }));
+    expect(out).toEqual([]); // resolved, not rejected
+    expect(cancelled).toEqual([resting.algoId]);
+    // The cancel still counts as a cancel — the fold failure leaves the order non-terminal for the
+    // next recovery sweep to retry, it never rewrites this bar's outcome.
+    expect(events).toEqual(['orphan_scan', 'orphan_cancel']);
   });
 
   it('no-ops once the registry already holds an entry for this key (avoids re-scanning every flat bar)', async () => {
     const resting = algoOrder('97');
     let fetchCalls = 0;
+    const events: VenueStopEvent[] = [];
     const registry = planStopRegistry(
       new Map([
         [PERP_REG_KEY, { side: 'LONG', stopPrice: '97', venueStopResting: true, algoId: 'cached' }],
       ]),
     );
     const strategy = new AgenticStrategy(SID, perpParams(), new NoPlanClient(), {
+      onVenueStop: (e) => events.push(e),
       intentStore: roledIntentStore(new Map([[resting.clientAlgoId!, 'vsl']])),
       algoOrders: {
         fetchOpenAlgoOrders: () => {
@@ -1263,5 +1432,6 @@ describe('AgenticStrategy — orphaned perp algo stop reconcile on boot/no-activ
       }),
     );
     expect(fetchCalls).toBe(0); // already-adopted guard short-circuits before the venue call
+    expect(events).toEqual([]); // and short-circuits BEFORE 'orphan_scan' — the scan never ran
   });
 });

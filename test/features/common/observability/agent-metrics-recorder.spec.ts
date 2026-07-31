@@ -375,9 +375,13 @@ describe('AgentMetricsRecorder', () => {
     recorder.recordVenueStop('placed');
     recorder.recordVenueStop('force_fired', 'binance');
     recorder.recordVenueStop('force_fired', 'binance');
+    recorder.recordVenueStop('orphan_scan', 'binanceusdm');
+    recorder.recordVenueStop('orphan_cancel_failed', 'binanceusdm');
     const metric = await register.getSingleMetricAsString('agentic_venue_stop_total');
     expect(metric).toContain('venue="unknown",event="placed"} 1');
     expect(metric).toContain('venue="binance",event="force_fired"} 2');
+    expect(metric).toContain('venue="binanceusdm",event="orphan_scan"} 1');
+    expect(metric).toContain('venue="binanceusdm",event="orphan_cancel_failed"} 1');
   });
 
   // Pass 50 (2026-07-30): the composition root (trading-runtime.module.ts) calls this once at
@@ -386,7 +390,10 @@ describe('AgentMetricsRecorder', () => {
   // Adversarial review (2026-07-30) confirmed the ONLY production writer (onVenueStop) now passes
   // this registration's own params.venue rather than falling through to 'unknown' — so this
   // configured-venue seed is truthful, not a fabricated cross-product.
-  it('seedVenueStopVenues seeds agentic_venue_stop_total{venue,event}=0 for every given venue across all twelve events', async () => {
+  // 2026-07-31: the three orphan-reconcile labels join the set. The zero-seed is load-bearing for
+  // them specifically — reconcileOrphanedAlgoStop's outcomes are rare by design, and an unseeded
+  // child is ABSENT from the scrape, which reads identically to "the path ran and found nothing".
+  it('seedVenueStopVenues seeds agentic_venue_stop_total{venue,event}=0 for every given venue across all fifteen events', async () => {
     recorder.seedVenueStopVenues(['binance', 'binanceusdm']);
     const metric = await register.getSingleMetricAsString('agentic_venue_stop_total');
     for (const venue of ['binance', 'binanceusdm']) {
@@ -403,6 +410,9 @@ describe('AgentMetricsRecorder', () => {
         'force_fired',
         'reconcile_error',
         'triggered',
+        'orphan_scan',
+        'orphan_readopt',
+        'orphan_cancel_failed',
       ]) {
         expect(metric, `${venue}/${event}`).toContain(`venue="${venue}",event="${event}"} 0`);
       }

@@ -20,6 +20,7 @@
     "arm": "node scripts/arm-ceremony.mjs",
     "loop:sweep": "node scripts/loop-sweep.mjs",
     "loop:forward-return": "node scripts/loop-forward-return.mjs",
+    "loop:horizon-rescore": "node scripts/loop-horizon-rescore.mjs",
     "loop:harness": "node scripts/loop-harness.mjs",
     "loop:authoring": "node --env-file-if-exists=.env.app scripts/loop-authoring.mjs",
     "loop:experiment": "node --env-file-if-exists=.env.app scripts/log-eval-experiment.mjs",

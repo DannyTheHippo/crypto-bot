@@ -416,6 +416,57 @@ WATCH-V3-1: spot heap slope on the demo soak (paper plateau 673 MiB is the
   **Failure direction:** FAILS OPEN — an absent or unreadable `stop_reason` falls back to the old
   tag, and the degrade itself (soft hold, empty signals, metric) is byte-identical on every branch.
 
+### WATCH-V4-13 — spot rests one protective leg, and the zero that looks like proof is not (2026-07-31, Pass 51)
+
+  Source: the Pass 51 record in `LOG.md`, commit `f5abf8a`.
+
+  **What shipped.** On spot, both protective legs sized to 100% of the position and `reduceOnly` is
+  dropped on spot, so a resting `'vtp'` and a resting `'vsl'` competed for the same free base and the
+  loser terminal-rejected. Measured over the 7 days to 2026-07-31: binance spot **156 submits, 122
+  `InsufficientFunds`** (78%), against binanceusdm **135 submits, 3 rejects**. All 122 were
+  `reduce_only` SELLs on SOL/USDT, ZEC/USDT, AAVE/USDT. Spot now rests the TP only;
+  `manageVenueStopSpot` stands down (`setVenueStopResting(key, false)`) instead of placing.
+
+  **Expected-positive:** on the FIRST spot entry after `f5abf8a`,
+  `agentic_venue_stop_total{venue="binance",event="stood_down"}` increments,
+  `{venue="binance",event="placed"}` stays **0**, and no `InsufficientFunds` appears in
+  `order_events` for a spot `reduce_only` SELL.
+
+  **Named defect outcome:** a `binance` `placed` increment (the stand-down is not on the live path),
+  OR a spot `InsufficientFunds` on a `reduce_only` SELL (something else still places a second leg),
+  OR a `'vsl'` resting on `binance` that stops being scanned — that last one would mean the
+  manage-only path was bypassed and the WATCH-V4-10 stranding class has been re-created on spot.
+
+  **READ THIS BEFORE QUOTING THE COUNTER: a zero is not evidence here.** `InsufficientFunds` since
+  the 09:27:23Z deploy is 0 — and it was ALSO 0 for the six hours BEFORE the deploy, against 32 in
+  the prior 24h. The last spot position closed at 01:54Z, so no spot leg of either role is being
+  placed and the contention cannot recur either way. Under §C.9 the post-deploy zero is a **VOID
+  NEGATIVE READ**. The positive control this WATCH requires is an actual spot entry; until one
+  exists the change is verified by tests and review only, never by production.
+
+  **Failure direction, declared:** FAILS OPEN — when nothing rests, stand down and place nothing,
+  keeping the bar-close software stop armed. This is deliberately the opposite of the naive reading:
+  the placement was guaranteed to be rejected, so a false belief that a venue stop rests is the
+  hazard, not the absence of one. The compensating control is pinned by a test (spot plan-stop
+  breach still fires `EXIT_LONG` with no resting order).
+
+  **The rationale that was REFUTED on review, recorded so it is not re-invented.** The choice was
+  first argued on "a spot `STOP_LOSS_LIMIT` can trigger into a thin book and fail to fill". False:
+  all four spot stops that ever reached their trigger filled at or inside it, zero partials, within
+  1.3bps (ZEC, BTC, SOL, AAVE, 2026-07-25 → 07-31). The 78% was also misattributed to the stop leg
+  alone — it is the COMBINED rate; per role it was vtp 86.6% (97/112) and vsl 58.5% (24/41), and both
+  are artifacts of the contention itself, so neither predicts the post-fix rate.
+
+  **Known residual, deliberately accepted.** The bar-close software stop lives inside `runActivePlan`
+  and is gated on an in-memory `activePlan` that dies with the process, whereas the venue order it
+  replaces survived restarts and LLM outages. A restart DURING an LLM latch therefore drops spot
+  downside coverage to `PROTECT_STOP_LOSS_PCT`. That combination is real on this stack (a 60-hour
+  latch ended 2026-07-30) and is the strongest argument for the inverted choice (rest the stop, let
+  the TP be software). Revisit if a restart-during-latch is ever observed with an open spot position.
+
+  **Deadline:** the next pass that sees a spot entry reads the three counters above and records the
+  outcome. Until then this WATCH is OPEN and UNVERIFIED, not passing.
+
 ## Flagged for human review (open)
 
 > **This section is for defects that CANNOT be fixed without crossing the §4 MUST-NOT rails — owner

@@ -5899,3 +5899,62 @@ Pass 46's `c50db12` confirmed in production: `duration_ms` 16–22s per venue pa
    hard rule 2 forbids bypassing Risk, so the entry point must be the Signal boundary, not the order
    boundary, and the promotion-evidence question (whose decider is the gate measuring?) needs an
    answer before any such trades are allowed to count.
+
+## 2026-07-29 — Pass 47 addendum b (RECONSTRUCTED by Pass 49: it ran, it left no record, and what it decided is gone)
+
+**Window:** 2026-07-29T16:07Z → 19:47Z. **This entry was NOT written by the pass it describes.** It was
+reconstructed on 2026-07-30 by Pass 49 from the three sweep digests that pass (or passes) left behind,
+because the unrecorded-pass detector shipped in `0fc3bd1` named them and would otherwise keep naming
+them forever. **Everything below is read off `research/loop/digests/`, git, or the DB. Nothing here is
+inferred about intent.**
+
+**What ran, and it is exactly three sweeps:** `2026-07-29T16:07:26.407Z` (the day's third scheduled
+slot), `19:33:03.572Z` and `19:46:38.834Z`. The detector names these three and nothing else, against
+the committed `LOG.md` and all 198 digests.
+
+**What they observed — identical across all three, which is the whole story:**
+
+| | 16:07:26Z | 19:33:03Z | 19:46:38Z |
+| --- | --- | --- | --- |
+| git tip | `14d197f` | `14d197f` | `14d197f` |
+| bootId | `1d68a57c` | `1d68a57c` | `1d68a57c` |
+| container | healthy, `RestartCount` 0 | healthy, `RestartCount` 0 | healthy, `RestartCount` 0 |
+| blocking alarm | `AgentClientFatalLatch` (critical) | same | same |
+| Δ raw `decides` | 800 | 560 | 40 |
+| **Δ REAL decides** | **0** | **0** | **0** |
+| Δ fills | 0 | 0 | 0 |
+
+`AgentClientFatalLatch` had been firing since 2026-07-29T13:00:25Z — the unfunded-account condition.
+Lifetime real decides sat frozen at **575**, newest `2026-07-27T20:15:31Z`, across all three. The lane
+was dead for the whole window and the book could not move.
+
+**What CANNOT be reconstructed, stated plainly rather than guessed at: what any of them decided,
+attempted or concluded.** They left no `LOG.md` entry, no commit — **`main` has no commit between
+`14d197f` (2026-07-29T11:15Z) and `8c6d098` (2026-07-30T15:23Z)** — and no artefact under
+`research/`. A digest records what the stack looked like, never what the pass thought. That is
+irrecoverable and no future pass should spend time trying.
+
+**The one thing that can be said about the shape of the work, and it is inference from policy rather
+than from evidence, so it is labelled as such:** playbook §3 forces a defect investigation while any
+critical alarm fires, and one was firing throughout. So all three windows were almost certainly spent
+re-deriving the unfunded-account blocker — the seventh, eighth and ninth times, after Passes 42-47.
+That is precisely the waste Pass 48's `8002888` latch-cause split exists to end, and it is the
+strongest available argument that the split was worth shipping.
+
+**Corroborating trace:** Pass 48's lock **broke a stale lease** labelled _"pass 47b research:
+loop-as-decider"_, taken ~19:44Z on 07-29 and never released — which places the 19:33/19:46Z pair with
+an owner-queued research question rather than with the scheduled slot. That question was later
+answered properly, with a verdict, inside Pass 48 (**NO-GO on loop-originated trading**). So the work
+was not lost, only its record; the 16:07Z scheduled slot has no such trace and nothing survives of it.
+
+**Why the heading says "Pass 47 addendum b" and not "Pass 47b".** The detector's own heading regex is
+`/^##\s+(\d{4}-\d{2}-\d{2})(?:\/\d{1,2})?\s+—\s+Pass\s+(\d+)\b/`
+(`scripts/loop-sweep-core.mjs:858`), so a `\d+` must follow `Pass` — `Pass 47b` does not parse and
+this entry would not have covered anything. The session's own lease called itself _47b_; the heading
+is shaped for the matcher, and this sentence records the discrepancy rather than hiding it.
+
+**This entry exists so the annotation has a resolution instead of becoming permanent noise.** The
+sweeps are now covered by a pass entry, which is what the detector checks — verified by re-running
+`pnpm loop:sweep` after writing it, not assumed. **Do not re-investigate them.** The standing lesson is the one Pass 48 already drew: a pass that writes nothing is
+indistinguishable from a pass that never ran, and the loop could not audit its own cadence until
+`0fc3bd1`.

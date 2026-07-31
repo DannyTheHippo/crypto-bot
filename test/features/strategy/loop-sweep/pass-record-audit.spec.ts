@@ -342,9 +342,17 @@ describe('the real artifacts', () => {
         orphanAtMs = (prevEnd ?? 0) + Math.floor(gapMs / 2);
       }
     }
-    // A 3x/day cadence always leaves hours between passes; if it ever does not, this case is testing
-    // nothing and should say so loudly rather than pass vacuously.
-    expect(widestGapMs).toBeGreaterThan(4 * PASS_WINDOW_END_TOLERANCE_MS);
+    // Non-vacuity guard, and the bound is DERIVED rather than chosen. The orphan is placed at the
+    // gap's midpoint, and coverage is `ms <= endMs + PASS_WINDOW_END_TOLERANCE_MS`, so a midpoint
+    // orphan escapes the preceding entry iff gap/2 > tolerance — i.e. iff gap > 2x tolerance. Below
+    // that this case silently tests nothing, so it must fail loudly instead.
+    //
+    // Was 4x until 2026-07-31 (Pass 53). The 4x carried no derivation; its stated premise — "a 3x/day
+    // cadence always leaves hours between passes" — is simply false once passes run back-to-back, and
+    // it broke the moment Pass 52's window was recorded (Pass 51 ended 09:45Z, Pass 52 started 09:52Z),
+    // shrinking the widest retained gap to 1.8h. Tightening to the exact threshold keeps the guard
+    // real: it still fails if the retained entries ever close to within an hour of each other.
+    expect(widestGapMs).toBeGreaterThan(2 * PASS_WINDOW_END_TOLERANCE_MS);
     expect(orphanAtMs).toBeGreaterThan(COLLECTOR_DAEMON_RETIRED_AT_MS);
 
     const orphanIso = new Date(orphanAtMs).toISOString();

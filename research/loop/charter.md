@@ -157,6 +157,18 @@ post-cutover), **#44** PROBE-GATED (demo orderList/oco capability probe), **#48*
 (rotation-vs-promotion-walk attribution; its 5→8 sequencing gate is OBE), **#42-ENABLE** fires
 when the info-context A/B resolves.
 
+Closed ledger — rows moved out of `STATUS.md` when done, kept in full here (nothing is deleted):
+
+- **#54 — put the off-gate harnesses on a run whose failure `loop:sweep` surfaces.** DONE Pass 52
+  (`f60c79a`): `pnpm loop:harness` writes an artifact and the sweep reads it. Fails OPEN, but
+  `harness_stale` / `harness_never_run` / `harness_result_unreadable` are each named, so
+  silence-equals-clean is unavailable.
+- **#55 — alarm on venue order-reject rate by venue in `loop:sweep`.** DONE Pass 52 (`f60c79a`): 20%
+  threshold derived from binanceusdm's 4/186 lifetime baseline (Wilson 99.9% upper bound 8.45%),
+  floor n≥6, last-20-submits window bounded to 7 days. Fails CLOSED. **It earned itself on 2026-07-31
+  — it is the only instrument that caught the `-4024` exit-reject incident** (Pass 53,
+  `incidents/2026-07-31-perp-exit-band-rejects.md`). Do not tune it to silence a true finding.
+
 ## Gate-override audit + classification (2026-07-22)
 
 > Moved here 2026-07-30 from state.md § Standing verdicts, where it stood as the one policy bullet

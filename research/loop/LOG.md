@@ -15,377 +15,6 @@ than the five below are in that archive; older still is git history. Current sta
 
 ---
 
-## 2026-07-30 — Pass 49 (a research-bar failure deployed on deployment-bar grounds, and two live behaviour changes nobody will be able to tell apart)
-
-**Window:** 2026-07-30T15:23Z → 17:16Z. Eleven commits, `8c6d098` … `4218d78`, plus one live
-database action that is in no commit at all (the playbook mint + promotion). Two deploys: boot
-`181b2965` at 16:51:44Z on `9a63edf`, then boot `b894ce22` at **16:57:19.888Z on `4218d78`**,
-`RestartCount` 0, container healthy. `build_info{git_sha="4218d78"}` confirmed live.
-
-**Sweep at 17:08:20Z: `Alarms (0)`.** 21 alert rules loaded across 5 groups, **every rule
-`health":"ok"` and every rule `state":"inactive"`** (read off `/api/v1/rules`, not inferred from the
-sweep's count line); `count(ALERTS)` returns an empty vector. Five annotations: `boot_changed`, three
-`prometheus_alert_resolved*` for alerts that fired and cleared during the 60-hour outage, and
-`sweeps_unrecorded_in_log` — the detector shipped in this pass, on its first production sweep.
-
-**Book, re-derived from the gauges at 17:15:42Z and NOT copied from Pass 48:** **32** closed round
-trips (was 29), net-of-cost **−$41.8850** (was −$41.1723), win rate **0.1875**, LLM cost
-**$17.8605** (was $16.7940), trade-anchored window **6.9663 of the 14 days** required,
-`agentic_promotion_ready` **0**, `equity_usdt` **4978.39**, `agentic_budget_remaining_usd` **$1.3221**
-of $3, RSS **711.4 MiB** (WATCH-V3-1 fine), `kill_switch_state` RUNNING, `open_orders` binance 3 /
-binanceusdm 2. Champion playbook is no longer v8 — see below.
-
-**Read the book carefully: it moved twice in one hour, and the two moves say different things.**
-At 17:07Z it read 31 trips at **−$39.0415** — a `$2.13` IMPROVEMENT over Pass 48 across two trips.
-At 17:15Z it read 32 at **net −$41.8850** — a `$2.84` loss on one trip. n=1 and n=2. Neither number
-is evidence about anything shipped today, and the first one is the more dangerous of the two: those
-two trips closed BEFORE the 16:51/16:57Z deploys, so they ran under v8/v9 and under the model's own
-discretionary `close`. **Exactly one closed round trip has run under either change** — KAITO/USDT:USDT,
-entered 16:30:38Z, closed **17:11:55Z by its declared venue `STOP_MARKET`**, which is the behaviour the
-enable predicts and a −$2.84 sample of it.
-
-### 1. `inverted` is the live playbook (v10) — A RESEARCH-BAR FAIL, SHIPPED ON DEPLOYMENT-BAR GROUNDS
-
-`agentic_playbook_info` reads **`version="10"`**. `agent_playbook_versions` now carries ten rows:
-version **10, `source='loop-candidate'`, `parent_version=8`**, minted 16:56:43.469Z; version **11,
-`source='promotion'`, `parent_version=10`**, written 16:56:57.909Z with the content
-`promoted version 10 via playbook:promote on 2026-07-30T16:56:57.909Z`. The v10 content is the
-`inverted` arm's prose verbatim (1,933 chars, opening `## regime notes` / "Treat the obvious read of a
-chart here as a contrary indicator rather than a signal").
-
-**Say it in these words, because a later pass will otherwise read the deployment as a claim of edge:
-this is a RESEARCH-BAR FAIL deployed on DEPLOYMENT-BAR grounds.** On the identical 354-row corpus and
-the identical forward-return metric (`research/studies/playbook-space-replay-2026-07-28.md:749-756`),
-`inverted` beats `champion_v8` at **every** horizon —
-
-| h | `champion_v8` | `inverted` | delta |
-| --- | --- | --- | --- |
-| 1 | −12.7 (n=70) | −0.8 (n=117) | **+11.9 bps** |
-| 4 | −36.3 (n=70) | +0.8 (n=117) | **+37.1 bps** |
-| 8 | −32.7 (n=70) | +19.3 (n=117) | **+52.0 bps** |
-| 24 | −70.1 (n=69) | +47.6 (n=117) | **+117.7 bps** |
-
-— and fails the research bar anyway, on **interval width**: h=24 CI lower bound **−12.2**, h=8 **+1.1**,
-both under the pre-registered +13.0 bps, `p vs bar` 0.1947 / 0.2215. The deltas are arithmetic on two
-measured means, not a fifth measurement.
-
-**Three things this deployment does NOT license, each one a way a future pass could overclaim:**
-
-- **Never quote +47.6 as an edge.** The hedge in the NO_SURVIVOR verdict stands unsoftened. Deployment
-  is a choice among losers; it licenses no write-up, no promotion evidence, no move toward live money.
-- **In-sample, one regime.** The arms are scored on the corpus that generated the finding: 6.35
-  calendar days, 2026-07-21 → 27.
-- **Adverse selection may not invert, and offline replay structurally CANNOT measure whether it does.**
-  The recorded entries were maker-side at **76% fill**. Being reliably on the wrong side of a print
-  does not imply the other side of that print was available at the same terms; the study's "the bias is
-  identical across arms" argument covers the entry PRICE level, not whether the faded side fills at all.
-  **A divergence between replay-predicted and live-realised entry return is therefore a FINDING to
-  report, whichever way it points** — a live result WORSE than the replay is the adverse-selection
-  hypothesis confirming, and a live result BETTER than it is equally a finding about the replay.
-
-### 2. `AGENTIC_PLAN_AUTHORITATIVE_EXITS=true` — the model no longer owns the exit
-
-`.env.app:261`. Step one shipped dark in `9a63edf` and booted clean at 16:51:44Z; this is step two.
-While a positioned symbol carries enforced `directives`, the model's `close` emits no exit signal and
-is journalled as a `hold` tagged `plan_authoritative_close:`. Positions then exit ONLY via the declared
-stop, take-profit or maxHold.
-
-**Measured basis, unchanged and not re-derived here:** the declared plan run mechanically is
-**−78.4 bps/trip at 22.7% hit** against **−108.1 bps at 17.4%** for the model's actual discretionary
-hand, over the same 23 recorded round trips — **29.7 bps**, with 16 of 22 live closes being the model's
-own `close`. Research-bar FAIL (under the pre-registered 30 bps bar), deployment-bar win.
-
-**BASELINE FOR THE NEXT MEASUREMENT: −108.1 bps/trip at 17.4% hit.** Nothing else.
-
-**The failure mode this creates, named before it happens: a plan lost to a restart.** The gate fails
-toward EXITING — no context, absent `directives`, or FLAT ⇒ the close executes unchanged — and
-`AGENTIC_VENUE_STOP`/`_TP` are both `true`, with venue stop/TP resting confirmed live (6 `ACKED`
-protective orders across both venues at 17:13Z, every one carrying a `venue_order_id`). Live
-corroboration on the first trip: KAITO exited by its `STOP_MARKET`, not by a `close`. Zero
-`plan_authoritative_close:` rows exist yet — the four real decides since the deploy were all `hold`.
-
-### 3. THE ATTRIBUTION LIMIT — stated now rather than discovered later
-
-**Both changes above are live simultaneously, and the realised book cannot separate them.** Record it
-explicitly so no later pass claims otherwise: **no future pass may claim either change moved the book
-on its own.** There is no A/B arm; both went live inside six minutes of each other on the same boot.
-
-What IS separable is their **evidence**, and that is the reason both were allowed to ship together:
-the playbook promotion is measured on **entry forward return**, which does not depend on how a position
-is exited, and the exits change is measured on **exit behaviour GIVEN entries**, which does not depend
-on which bar was chosen. Each therefore carries an independent replay-measured basis. Their
-realised-PnL contributions do not decompose, and at any observed trip rate they will not.
-
-**Correction to the trip-rate figure that framed this:** the ~3.8 trips/day used when the change was
-written is not reproducible from the live gauges. 32 trips over a 6.9663-day trade-anchored window is
-**4.6/day** as a lifetime average, and the funded stretch is far faster than that — 29 → 32 trips
-between 11:04Z and 17:15Z is **~11.7/day**, and the window advanced 0.256d while 3 trips closed. The
-attribution limit does not depend on the rate and is not weakened by the correction: two simultaneous
-changes with no control arm are inseparable in realised PnL at any frequency. What the higher rate DOES
-change is the timeline — enough trips to compare the exit mix against the −108.1 baseline may accrue in
-days rather than weeks, so the first re-measure is nearer than "weeks" implied.
-
-### 4. The first `source='loop-candidate'` row ever minted, and it caught a live corruption on first use
-
-`agent_playbook_versions.source` read `reflection` 4, `seed` 4, `loop-candidate` **0**: the
-loop-to-lane authoring channel had never produced a single row in the program's life. `2c4e339` fixed
-three defects in `pnpm playbook:candidate`, and **the one that mattered was not derivable from source
-and had to be settled against the live database.** `playbook-shared.mjs` resolved the active version
-via the FIRST seed row by version, while `PlaybookStoreAdapter.ensureSeed` looks up `seed.version`
-specifically and the composition root binds `SEED_PLAYBOOK_V3` at **8**. On a clean v3 database those
-agree. **The live table is not clean:** four seed rows survive at versions **1, 2, 6 and 8**, no
-promotion row, empty pin. The helper returned **1** while the running process resolved **8**.
-
-So the first candidate this CLI ever minted would have written `parent_version=1` into an **append-only
-table that cannot be corrected afterwards** — a false lineage for the live playbook, permanently. The
-fix takes the newest seed row (justified by the documented bump-above-all-prior-rows rule at
-`agentic-strategy.module.ts:426-438`). **Verified in the shipped row: v10 carries `parent_version=8`,
-not 1.** The defect and its first production use were the same event.
-
-**v9 superseded, nothing deleted.** The candidate-lapse deadlock (`verdicts.md`) is resolved as a
-consequence: `--supersede` recorded the supersession in `experiments` — id 8, family
-`playbook-supersede`, label `v9 (reflection) superseded by v10 via --supersede`, metrics
-`{"lapseHours":336,"newVersion":10,"activeVersion":8,"supersededSource":"reflection",`
-`"supersededVersion":9,"supersededAgeHours":79}` — and **no row was removed**: the table still holds
-all ten versions including 9. v9 took 40 of the last 24h's 88 real decides; since the deploy all four
-real decides read `playbook_version=10`.
-
-### 5. WATCH-V4-6 CLOSES — four orders that could never become terminal, terminal on the first tick
-
-Open since 2026-07-24. `83eae1f` shipped `sweepStrandedNew`; the four rows terminalized on the first
-tick after the 16:51:44Z deploy, **with nothing run by hand**. Verified against the DB, not the metric:
-
-| symbol | state | `cum_qty` | fills | `venue_order_id` | terminal at |
-| --- | --- | --- | --- | --- | --- |
-| ZEC/USDT:USDT | CANCELED | 0 | 0 | NULL | 16:52:47Z |
-| SOL/USDT:USDT | CANCELED | 0 | 0 | NULL | 16:52:49Z |
-| KAITO/USDT:USDT | CANCELED | 0 | 0 | NULL | 16:52:49Z |
-| NEAR/USDT:USDT | CANCELED | 0 | 0 | NULL | 16:52:49Z |
-
-`order_events` carries exactly **four** `CANCEL_REQUESTED` rows with payload
-`{"type":"CANCEL_REQUESTED","reason":"STRANDED_NEW_NEVER_LANDED"}`, each appended as the 4th event
-after the unchanged `SUBMIT_SENT → SUBMIT_AMBIGUOUS → QUERY_NOT_FOUND` chain from 2026-07-24. Nothing
-was rewritten; the journal is append-only and stayed that way.
-
-**The join is on `order_events.order_id` = the intent UUID, NOT the `client_order_id`.** Stated because
-it cost a wrong query in this pass and will cost the next one the same if it is not written down: the
-`orders` row keys on both, and `order_events` keys only on the intent id.
-
-The book-wide check now reads **zero** non-terminal orders lacking a `venue_order_id`. The 6 orders
-still `ACKED` are genuine resting protective orders placed today, every one with a venue id.
-
-### 6. Reflection deleted, and the cost saving stated honestly rather than banked
-
-`193107e` turned it off (`AGENTIC_REFLECTION_EVERY_N_TRADES` 2 → 0, the schema's documented off switch,
-`.min(0)`), `9a63edf` deleted it: `reflection.service.ts`, `version-pnl-digest.ts`,
-`decision-postmortem.ts` and their three specs — **6,596 deleted lines, −149 tests / −3 test files**
-(3146 passed across 177 files at the commit, inside the predicted −154/−3). Two alerts,
-`AgenticReflectionRejects` and `AgenticReflectionNeverMinted`, were DELETED rather than rewritten
-because both select label values only reflection ever wrote and would otherwise select empty series
-forever — **23 rules → 21, confirmed live, with zero `AgenticReflection*` rules in the API response.**
-`agentic_reflection_trigger_total` has no series at all.
-
-**`AGENTIC_REFLECTION_MODEL=claude-opus-5` (`.env.app:84`) and the `claude-opus-5` entry in
-`AGENTIC_TOKEN_PRICES_JSON` (`.env.app:169`) are KEPT ON PURPOSE. Boot REFUSES without them** —
-`environment.config.ts`'s superRefine demands a price entry when the reflection model differs from the
-decide model, and `PromotionReadinessService` re-prices the 69 historical Opus rows through the same
-map on every evaluation. Deleting the price entry breaks the process, not the gate.
-
-`agent_tokens_total{model="claude-opus-5"}` is now **ABSENT** rather than a permanently-zero seeded
-child: the only series are the four `claude-sonnet-5` kinds. That is the intended shape — the child was
-never seeded, and there is nothing left to write it.
-
-**The honest cost note, because the saving is easy to overclaim.** `agent_tokens_total{claude-opus-5}`
-read **0 on the pre-deploy boot**, so the **$5.01** reflection figure is a HISTORICAL accumulation, not
-a guaranteed forward daily rate. `llm_usage` bears that out and then some: 69 reflection rows total
-(58 `claude-opus-4-8` + 11 `claude-opus-5`), and the **newest is 2026-07-27T09:47:23Z** — three days
-before deletion, with zero reflection calls in between. Reflection fires on closed trades and trades
-are infrequent. **Do not book $5.01/day, or any daily rate, as saved.** The real value of the deletion
-is the one `9aa8400` names: it permanently removes the ANTI-RATCHET objective, which pre-committed the
-loop against the only lever with positive expected effect. The 118-line authoring prompt survives
-verbatim at `research/loop/playbook-authoring.md`, byte-identity established programmatically.
-
-### 7. The unrecorded-pass detector fired on its first sweep, and here is the resolution it was owed
-
-`0fc3bd1`. Pass 48 recorded that two sweeps on 2026-07-29 left no LOG entry and did not fix it. The
-detector shipped this pass named **exactly three** sweeps and nothing else, on the 16:52:18Z sweep and
-again at 17:08:20Z: **2026-07-29T16:07:26.407Z, 19:33:03.572Z and 19:46:38.834Z**.
-
-**That annotation will keep firing until those three are written up or explained, so here is the
-explanation — and it is not a happy one.** From their digests, all three:
-
-- ran on git tip **`14d197f`** (Pass 47's own LOG commit) against boot **`1d68a57c`**, container
-  healthy, `RestartCount` 0, one unbroken boot across all three;
-- carried the SAME blocking alarm: **`AgentClientFatalLatch` (critical), firing since
-  2026-07-29T13:00:25Z** — the unfunded-account condition;
-- measured **`realDecides` delta 0** on every one, against raw `decides` deltas of 800 / 560 / 40. The
-  lifetime real-decide count sat frozen at **575**, newest 2026-07-27T20:15:31Z. **Zero fills.**
-
-**No commit landed on `main` between `14d197f` (2026-07-29T11:15Z) and `8c6d098` (2026-07-30T15:23Z).**
-So what CAN be reconstructed is the state each pass observed; what CANNOT is what any of them decided,
-attempted or concluded, because they left no commit, no LOG entry and no artefact. Under playbook §3 a
-firing critical alarm forces a defect investigation, so all three were almost certainly spent
-re-deriving the unfunded-account blocker — the seventh, eighth and ninth times that had happened, and
-precisely the waste Pass 48's `8002888` latch-cause split exists to end. **They ran unrecorded and
-cannot now be reconstructed. This paragraph is the resolution: the annotation has an answer, not a
-permanent noise source.** The 19:33/19:46Z pair matches the "pass 47b research: loop-as-decider" lease
-that Pass 48 found dangling 721 minutes; that question was later answered properly inside Pass 48.
-
-### 8. Two findings this pass did NOT fix, both surfaced while verifying something else
-
-**(a) WATCH-V4-1's `adopt_non_adoptable` clause has been read against a table that can never carry
-it.** Passes 47 and 48 both recorded "no `adopt_non_adoptable` in `audit_log`". That is true and
-worthless: `audit_log` holds **zero** rows of that class over its entire history, because the class is
-written to `reconciliations.discrepancies` and to the boot-scoped
-`reconciliation_mismatch_total{class="adopt_non_adoptable"}` counter, never to `audit_log`. Read on the
-right surface, the clause **is breached**: 101 rows carry it, including one on **2026-07-30T09:30:15Z,
-`binance`, boot `1d68a57c`** — a single pass, not sustained, self-cleared, with 825 `CLEAN` binance
-passes in the same 14h window and the clean stamp 86s old at 17:09Z. The 100-row 2026-07-27 run on
-`binanceusdm` is the already-diagnosed BCH fold defect (`reconciliation.service.ts:969-977`), fixed.
-The V4-1 **named defect outcome did not fire** — the stamp never went stale — but the expected-positive
-did, once, and no pass has ever recorded it. WATCH-V4-1's verification surface is corrected in
-`watches.md`; the single 09:30Z event is **not** root-caused here and is left as an open check.
-
-**(b) An orphaned perp algo stop has been resting against a flat book for 73+ minutes.**
-`HYPE/USDT:USDT` `BUY STOP_MARKET`, submitted 13:00:31Z as protection for a SHORT that closed at
-16:00:31Z, still `ACKED` at 17:13Z and still resting through two boots. `cancelPerpAlgoStopIfResting`
-(`agentic.strategy.ts:2096-2101`) returns silently when its `entry` snapshot is `undefined` — the
-`planStopRegistry` row is read BEFORE `clearPlan()`, so a plan already cleared leaves nothing to read
-and the cancel is a no-op **with no counter incremented**. `agentic_venue_stop_total{event="orphan_cancel"}`
-reads 0 on this boot, which is consistent with both "never needed" and "silently skipped" — the same
-void-read shape Passes 44/47/48 have now fixed at six other sites. **Bounded, not dangerous:** the
-resting stop is `reduceOnly` by construction (`agentic.strategy.ts:2086`), so triggering it against a
-flat book reduces nothing rather than opening an unintended long. **Mechanism NOT established** — this
-pass observed the state and the one code path that can produce it, and did not prove that path is what
-happened. New **WATCH-V4-10**, `watches.md`.
-
-### 9. The funded architecture arm RAN, and it is decisive: the swarm does NOT ship
-
-Family A of `research/studies/playbook-space-followon-2026-07-31.md`, run by the peer arm during this
-pass. Verified against its own artifacts
-(`research/scorecards/playbook-space-followon-2026-07-31.json`), not transcribed from the hand-off.
-
-**Deployment bar — the swarm loses the PRIMARY horizon, so the incumbent stays.** Against
-`champion_v8` on the identical 354-row corpus and the identical metric: h=1 −12.15 vs −12.69
-(beats), h=4 −22.58 vs −36.34 (beats), h=8 −35.38 vs −32.70 (loses), **h=24 primary −71.83 vs −70.10
-(LOSES)**. Wins 2 of 4 and not even horizon-dependently — there is no horizon story to tell.
-
-**Research bar — `NO_SURVIVOR`, 4 of 4 cells scored at α=0.0125, 0 passes, and every cell POWERED**
-(n=78–82 over 15 clusters, against `MIN_ENTRIES=12`). Every cell fails the FIRST clause, the mean:
-**−12.15 / −22.58 / −35.38 / −71.83** against a required **+20.9 / +26.4 / +33.8 / +81.4**. These are
-real failures, not absent measurements.
-
-**The pre-registered screen scored CORRECT, on the mechanism as well as the direction.**
-`architecture-options-2026-07-28.md` called the haiku swarm NEUTRAL-TO-WORSE before a dollar was
-spent, reasoning that ensembling reduces variance rather than bias while the measured failure is a
-bias. The swarm is worse than its own single-call control at **3 of 4** horizons, at **3.00× the
-calls** (`$0.010506` vs `$0.003502` per decide — exactly 3 voters) for near-identical entry rates
-(**24.58% vs 24.86%**), and the placebo p is **0.9902 / 0.9946 / 0.9980 / 1.0000** at h=1/4/8/24 — a
-displaced centre, which is precisely what a variance-reduction instrument structurally cannot move.
-The screen is now a validated instrument rather than a well-argued opinion, and that is worth more
-than the arm was.
-
-**Pre-registered mechanism 2 got MEASUREMENT rather than argument:** of 354 rows, **282 unanimous,
-71 with split votes collapsed to the mode, and 53 where the swarm's action differed from the
-single-call control's.**
-
-**Blob-pinned attribution HELD, so the in-run sonnet control was genuinely unnecessary.**
-`src/features/strategy/agentic/agent-prompt.ts` is blob `c471c33055abad7c7ec0cb9978f81c61bc3c487d` at
-HEAD, on disk, and at the pin — **independently re-verified here at all eight commits of this pass**,
-including the two peer commits that landed mid-run, neither of which touched it. The comparison is
-therefore PROMPT-CONTROLLED, and the `$4.86` an in-run control would have cost was correctly not
-spent. What this does NOT remove, and the study says so itself: provider-side model drift and re-run
-variance.
-
-**Spend `$6.1728` of `$7.93` authorised** (calibration `$1.2142` + paid run `$4.9586`), 6.6% under
-the sized projection, hard cap `$21` not approached, `rowsCovered = 354/354`, `aborted = false` — so
-both arms cover the identical row set.
-
-**A LEAD, recorded so a future pass CANNOT mistake it for a finding.** A single haiku call beat the
-sonnet incumbent at h=1/4/8 (**−7.12 / −10.77 / −30.30** against −12.69 / −36.34 / −32.70) and **LOST
-the declared primary h=24: −80.30 against −70.10.** It does not ship, for three independent reasons
-and any one of them is sufficient: (1) the pre-registered robustness clause requires h=24 **AND**
-≥3 of 4 — both, not either; (2) acting on "wins 3 of 4" is cherry-picking against a primary that was
-declared before the numbers were seen; (3) it would be a **model** change, on an axis `verdicts.md`
-§ THE DECIDE MODEL IS NOT THE LEVER has already settled `NO_SURVIVOR`. **It is a lead. It is not
-evidence, and it is not a licence to swap the decide model.**
-
-**Two things this pass adds that the arm could not know, both worth carrying forward:**
-
-- **The incumbent it was measured against is no longer the incumbent.** The study read the champion as
-  `champion_v8` at comparison time, correctly — `inverted` had not shipped yet. It shipped 16 minutes
-  later. Against the ACTUAL live playbook the swarm's h=24 −71.83 sits against `inverted`'s replayed
-  **+47.6**, i.e. **~119 bps worse**, and it loses at every horizon rather than two. The comparison
-  crosses models (haiku arm vs sonnet arm) so it is weaker than the like-for-like one the study ran —
-  but it points the same way and it makes the NO-GO stronger, not weaker. **Nobody should re-open the
-  swarm on the grounds that it "nearly beat the champion".**
-- **The `0.273×` haiku ratio is against the PREDECESSOR's sonnet price, not the re-checked one.**
-  Measured haiku `$0.0037475`/call against `$0.013717` is 0.273× — inside the pre-registered 0.21–0.33
-  band, as recorded. Against the re-checked sonnet rate `$0.0191125` the same numerator is **0.196×**,
-  i.e. BELOW that band. Both are true; the band was declared against the older figure and the study
-  used it correctly. Stated so a later reader does not recompute 0.196 and conclude the calibration
-  broke its own gate.
-
-**ROUTED ONWARD, not absorbed silently — a cost input the next study must re-size against.** The
-sonnet re-check measured **`$0.0191125`/call, 1.39× the predecessor's `$0.013717`** on the same prompt
-surface and model alias. The likely mechanism is **cache amortisation over a single 40-row chunk**
-against a predecessor that spread its cache writes over 354 rows and four arms — so it is a caution,
-not a price rise, and it is not evidence of provider repricing. **Family A is unaffected** (priced
-entirely off the haiku probe). **Family B is not:** its two sonnet legs were budgeted at `$4.86` each
-on the older figure and would land nearer **`$6.77`** each. Anyone sizing Family B re-derives from the
-re-checked rate or explains why not. Related and equally inconclusive: the re-check entered on 3 of 34
-parsed rows (8.8%) against the predecessor's 19.8% for the same arm — at n=34 the 95% interval on 8.8%
-reaches roughly 23%, which contains 19.8%, so **that is within sampling error and is evidence of
-nothing in either direction.**
-
-### Gates, deploy, soak
-
-Gates were run and recorded per commit by the sessions that shipped them: `format:check`, `lint`,
-`lint:md`, `typecheck`, `build`, `test` (3217/3217 across 177 files at `8c6d098`/`2f1c917`; 3146/177
-after the reflection deletion), `test:livegate` **55/55**, `test:paper` 17. `execution/**` stays
-coverage-gated at 100% and `83eae1f` verified by stash-diff that the uncovered set is exactly the
-pre-existing baseline shifted +26 lines. **This pass added no code and ran no gate of its own beyond
-`lint:md`** — it is a records pass; the numbers above are the shipping sessions', attributed to them.
-
-Deploy 16:57:19.888Z, boot `b894ce22`, `RestartCount` 0, `GIT_SHA=4218d78`. Prometheus force-recreated
-(rules file changed) → **21 rules, 5 groups, all `health: ok`, 0 firing**. Soak: **0 alarms**, kill
-switch RUNNING, both venues CLEAN (22 clean / 12 skipped / 0 mismatch / 0 halt / 0 error on this boot),
-clean stamp 86s, 14 warn lines this boot and all three categories benign (11× reconcile-in-flight skip,
-2× unsupported route path, 1× the standing `ACTIVE_STRATEGY=agentic` unvalidated banner).
-
-**Standing WATCH lines, checked against DB truth:** V3-1 holds (711.4 MiB, under 900). V4-1 holds on
-its stamp clause (86s) and is **breached once** on its `adopt_non_adoptable` clause — above. V4-2 holds
-(zero `fill_overflow` anywhere, ever). V4-3 holds (two redeploys with perp stops resting, both to
-`RestartCount` 0 / RUNNING, no `perp pin:` line). V4-4 holds (0 orders whose fills sum disagrees with
-`cum_qty`; 218 perp→perp and 14 spot→spot, **zero cross-venue folding**). **V4-6 RESOLVED.** V4-7 holds.
-V4-9 holds (the study ran with `capsSource: 'recorded'` on 100% of rows).
-
-### Flagged / next pass
-
-0. **Do NOT re-run a multi-call/ensemble architecture arm, and do NOT swap the decide model to
-   haiku.** § 9: the swarm loses the declared primary and fails 4 of 4 research cells; the single-haiku
-   lead loses the primary too and would be a model change on a settled axis. The next study re-sizes
-   its sonnet legs off `$0.0191125`/call, not `$0.013717`.
-1. **The first real measurement to take is the exit mix, against −108.1 bps/trip at 17.4% hit.** Look
-   for `plan_authoritative_close:` holds at roughly the historical close rate (~16 per 22 exits) and the
-   exit mix shifting toward venue stop / TP / max_hold. A storm of positions running to `max_hold` with
-   realised bps WORSE than −108.1 ⇒ revert the flag and record it. WATCH-PLAN-AUTHORITY-1 is now FIRED,
-   not pending.
-2. **The second is entry forward return under v10, and it is the one that can produce a genuine
-   finding** — replay-predicted vs live-realised. Report the divergence whichever way it points; the
-   adverse-selection question is the whole reason it is worth measuring.
-3. **Neither may be claimed to have moved the book on its own.** § The attribution limit.
-4. **WATCH-V4-10** (orphaned perp algo stop) and the single 09:30Z `adopt_non_adoptable` — both
-   observed, neither root-caused.
-5. **`AGENTIC_PLAYBOOK_AB_PCT=40` now routes nothing.** v9 is superseded and sits below the active
-   version, so there is no unresolved candidate above v10 for the A/B to route to. That is correct
-   today and is a **live knob describing a state that no longer exists** — worth a decision next pass:
-   mint a genuine v11 candidate to compare against `inverted`, or set the knob to 0 and say so.
-6. **Only the Anthropic account is funded.** Moonshot is untested since and presumed still suspended;
-   `agent_client_latch_cause{cause="insufficient_credit"}` is the read, not an investigation.
-
----
-
 ## 2026-07-30 — Pass 49 addendum c (RECONSTRUCTED by Pass 50: three commits shipped and deployed, and left no entry)
 
 **Window:** 2026-07-30T18:25Z → 22:19Z. **This entry was NOT written by the session it describes.**
@@ -958,6 +587,13 @@ require a pass to go looking for it in `order_events`.
 
 ## 2026-07-31 — Pass 52 (three instruments the loop never had, and the bar it gates on was never derived)
 
+**Window:** 2026-07-31T09:52Z → 12:34Z. **RECONSTRUCTED by Pass 53**, not recorded by the session
+itself — being owner-directed rather than scheduled, it wrote no `**Window:**` line, and one missing
+line blanks the WHOLE sweep-coverage verdict by construction (`classifyUnrecordedSweeps` treats any
+unparseable entry as making every gap unattributable). Bounds are evidence, not memory: first and
+last digests of the session, `sweep-2026-07-31T09-52-43-609Z.json` → `sweep-2026-07-31T12-34-11-885Z`
+(the post-deploy soak), bracketing the nine commits `b28e54b` 12:19:11Z … `c78d193` 12:32:07Z.
+
 **Owner-directed session, not a scheduled pass.** Seven commits `b28e54b` … `fd4e389`. Full gate
 green: format/lint/lint:md/typecheck/build, **3384 tests / 183 files** (from 3267/179), livegate
 55/55, `eval:agentic` 62 passed, `test:db` 4 passed, `test:cov` 94.22/88.05/92.82/95.61 against
@@ -1022,3 +658,161 @@ PROCEEDING in a gate declared fail-closed. Also learned: the husky pre-commit ho
 WHOLE repo, so no commit can land while any peer has the tree mid-edit.
 
 **Deploy is DUE** — HEAD is seven commits ahead of live `f5abf8a` and this time the delta is runtime.
+
+_(Pass 53 note: that deploy DID happen at 12:33Z, and the commit count above is off — `b28e54b`…`fd4e389`
+is eight commits, nine counting the `c78d193` docs commit, not seven.)_
+
+## 2026-07-31 — Pass 53 (a position that could not be exited, and the 45 minutes nobody could have seen)
+
+**Window:** 2026-07-31T16:07Z → 17:15Z. Lease `195186b5400588b5`, taken 16:07:30Z, no collision.
+Pass type: **DEFECT INVESTIGATION** — forced by §3, two named alarms. Live build at pass start
+`c78d193` (deployed by Pass 52 at 12:33Z, after that pass wrote its STATUS; the "A DEPLOY IS DUE"
+banner was already stale when it was read).
+
+### Headline
+
+| metric | now | at Pass 52 |
+| --- | --- | --- |
+| closed round trips | **37** | 35 |
+| net-of-cost PnL | **−$40.7534** | −$42.3358 |
+| LLM cost (epoch) | $20.598 | $19.41 |
+| trade-anchored window | 7.891 / 14 days | 7.329 |
+| win rate | 27.03% | — |
+| `agentic_promotion_ready` | 0 | 0 |
+| `equity_usdt` | 4981.69 | 4978.33 |
+| day budget left at 16:07Z | $0.786 of $3 | $0.978 |
+
+**WATCH-V3-1 holds.** RSS 752.4 MiB (788,971,520 B) at 3.6h into the `93e21a99` boot — _below_ Pass
+52's 763 MiB reading, against the ~673 MiB paper reference and the ~900 MiB defect line. Not a climb.
+
+### The alarm that mattered
+
+`loop:sweep` fired `venue_reject_rate_high` on BOTH venues. `binance` 16/20 is the known pre-`f5abf8a`
+window (unchanged, all 20 submits predate the fix; still clears itself). **`binanceusdm` 12/20 = 60%
+was new, and it is a real trading-path defect.** Full forensics:
+`research/loop/incidents/2026-07-31-perp-exit-band-rejects.md`.
+
+Between 13:00:36Z and 13:06:10Z the app made 13 attempts to exit a 70.3 KAITO/USDT:USDT long. Twelve
+were terminal-rejected `BadRequest -4024 "Limit price can't be lower than X"`; the thirteenth
+stranded (`SUBMIT_AMBIGUOUS` → `QUERY_NOT_FOUND` → `STRANDED_NEW_NEVER_LANDED` at 13:11:14).
+
+**The cause is a frame mismatch, not a pricing bug.** `market-streams.module.ts:77-79` builds market
+data against `FEED_ENV=live` while orders execute against `SANDBOX_ENV=demo`. Binance `-4024` is the
+`PERCENT_PRICE` SELL lower bound evaluated against **the venue's own mark**, and the demo perp book
+was stalled 5.7% above the live tape (demo 5m volume 281–300 vs production 223k–644k). Reconstructed
+to six decimals off testnet `markPriceKlines`: mark 1.124900 × `multiplierDown` 0.9500 = 1.068655 —
+the exact floor returned at 13:01:09, 13:01:39 and 13:04:40. **Our reference price was itself below
+the floor on all 12 attempts** (shortfall 10.6–39.4 bps), so `EXIT_CROSS_BUFFER_BPS=25` was 40–70% of
+each shortfall but removing it prevents **zero** rejects. There is no venue price-band clamp anywhere
+on the order path: `SymbolFilters` carries only tick/step/minQty/minNotional, `PERCENT_PRICE` appears
+nowhere in `src/`, and `evaluate.ts:174-194` measures deviation against **our own** `refMid`.
+
+**The cost was not the rejects.** The first attempt was a `plan exit: stop`, so `cancelFirstEligible`
+cancelled the resting `STOP_MARKET` at 13:00:38.029 — two seconds after the signal and _before_ the
+replacement was known to be accepted — and `clearPlan()` dropped the plan stop. The position carried
+no venue stop and no plan stop until 13:45:34: **45 minutes**. A second, independent gap: the stranded
+order held `inFlightSymbols`, which suppressed the 1s protective backstop entirely from 13:06:40 to
+13:11:14. A third: `protective_exits_total` counts FIRES, not fills, so it read a healthy `12` while
+nothing exited, and the retry cooldown stamps on fire — hence 30s forever, no backoff, no cap.
+
+**Mitigating, and it cuts both ways:** the cancelled stop's trigger (1.0797) was priced off the LIVE
+feed and could never have fired against a demo mark of 1.1249. The protection lost was already
+notional on this venue split.
+
+### What shipped
+
+1. **`VenueTerminalRejectBurst`** (`observability/alerts.rules.yml`) — `sum by (code)
+   (increase(orders_rejected_total{stage="exchange"}[15m])) >= 3`, `for: 5m`, **`severity: warning`**.
+   Warning is load-bearing: the sweep promotes only `critical` to a blocking alarm, and a critical here
+   would wedge §3 on a self-resolving condition. Threshold checked against both known reject axes — the
+   13:00Z hour spikes to 12 (fires); the spot `InsufficientFunds` bleed runs a measured 2/hour (does
+   not). Fails OPEN. `WATCH-V4-14`.
+2. **The reconcile guard stopped shouting.** 214 warns/3.6h of "reconcile pass still in flight" is
+   expected behaviour confirmed by three verifiers: one pass costs ~38.6s p50 (binance 22.04 +
+   binanceusdm 16.62, n=479 over 4h) against a 30s timer, so the measured gap between COMPLETED passes
+   is 60.00s p50 / 90.46s max over 239 intervals. Demoted to `debug`; visibility stays in
+   `reconciliation_runs_total{result="skipped"}`, which `ReconcilerStalled` deliberately excludes
+   (`a03b35d`). Also corrected `trading-runtime.module.ts`, which called 30s the cadence — it is the
+   timer period, and mismatch-detection latency is ~60s.
+3. **The sweep can audit its own coverage again.** Pass 52 left no `**Window:**` line (owner-directed
+   session), and ONE unparseable entry blanks the WHOLE verdict by construction. Reconstructed from
+   evidence — first/last digest of that session bracketing its nine commits. Its non-vacuity test then
+   failed honestly, because the reconstruction closed the gap it was exercising; the `4 ×
+   PASS_WINDOW_END_TOLERANCE_MS` bound was arbitrary and its premise ("a 3×/day cadence always leaves
+   hours between passes") is false once passes run back-to-back. Tightened to the **derived** bound: a
+   midpoint orphan escapes iff gap > 2 × tolerance. Still a real guard — it fails if entries ever close
+   to within an hour.
+
+### WATCH-V4-12 — first reading, expected-positive CONFIRMED
+
+The `submit_portfolio` warns are two unrelated failures with opposite verdicts. The "payload failed
+schema validation" class is **output-budget truncation**, correctly re-tagged. Measured:
+
+| tag | rows (boot) | `output_tokens` (boot) | rows (14d) | at exactly 4096 |
+| --- | --- | --- | --- | --- |
+| `truncated_max_tokens:` | 7 | min = max = **4096** | 11 | 7 |
+| `schema_rejected:` | 8 | 168 – **358** | 137 | 12 |
+
+Every measurable `truncated_max_tokens:` row carries exactly 4096; **zero sit "well below 4096", so
+the named defect outcome did not occur.** Disclosed rather than counted: 4 of the 11 carry NULL
+`output_tokens` (usage is recorded on a batch's first symbol only) — unreadable, not contradicted.
+
+**The obvious response was refuted and must not be re-proposed.** Raising `AGENTIC_MAX_TOKENS` to
+12288 is adversarial to the one budget currently ~30% from tripping (the $3/day USD breaker, not the
+token/day cap), and the batch HTTP budget is 75s against a projected ~83–91s at that ceiling — an
+abort THROWS rather than soft-holding, and three strikes auto-DRAIN the lane. The stated fallback
+(`thinking: {budget_tokens}`) is a 400 on this model, and 400 is in `FATAL_STATUSES` — an immediate
+latch. The in-contract lever is `output_config: {effort: …}`, which appears nowhere in
+`anthropic-agent-client.ts`, so the lane pays for default thinking depth. Cost-negative and reversible;
+that is the experiment to run, not the ceiling raise.
+
+### Gates, deploy, soak
+
+`format:check` ✓ · `lint` ✓ · `lint:md` 0 errors ✓ · `typecheck` ✓ · `test` **3384/3384, 183 files** ✓
+· `build` ✓ · `test:livegate` **55/55** ✓. Deployed `35042cc`, `build_info{git_sha}` confirmed,
+new bootId `4753ef53`, `RestartCount` 0, healthy. Prometheus force-recreated (the rules file changed):
+**23 rules loaded**, 0 unhealthy, `VenueTerminalRejectBurst` present, none firing. Kill switch RUNNING.
+
+**A trap worth recording.** `promtool check rules /etc/prometheus/alerts.rules.yml` FAILED mid-pass
+with "line 448: found unexpected end of stream", which reads exactly like a corrupt rules file. It was
+not. A host-side rewrite of a **single-file bind mount** leaves the container's path pointing at a
+dangling inode — the committed bytes parsed cleanly (22 rules) and all 22 running rules were healthy
+throughout. Validate an edit by `docker cp`-ing it in and checking the copy; a check against the
+mounted path after a host edit is VOID.
+
+### Not done, and why — stated as a blocker, not a priority
+
+**The `-4024` repair itself did not ship.** This is a blocked state, not a scheduling choice. The
+leading sub-fix ("retain the plan-stop registry row until the exit is accepted") was **refuted on
+evidence**: `manageVenueStop` is gated on `this.activePlan`, not the registry, so retention re-arms
+nothing, and it would additionally disable the `orphan_readopt` recovery path and make the stand-down
+defer to a stop that does not exist. The two correct seams (defer the algo-stop cancel until the exit
+ACKs; or a plan-independent re-arm) both require first resolving the margin/base-lock rationale at
+`agentic.strategy.ts:1434-1438`, and the root cause sits behind a `FEED_ENV` choice with a very wide
+blast radius. Shipping a half-understood lifecycle change on the protective-exit path is the specific
+thing this repo's rules forbid. The exact proposed diffs, the refutation, and the two corrections
+(`-4023` not `-4025`; prefer a `markPrice × multiplierDown` bound over parsing the venue's error
+string) are in the incident note.
+
+**CANDIDATE was not run and today's authoring slot is still UNSPENT** — the incident gate took the
+pass. Worth flagging loudly: `loop:authoring` has **never minted, 0 `playbook-authoring-attempt` rows
+lifetime**, because the registry gate `633f901` fixed in Pass 52 made it impossible. That fix is
+therefore **unverified**, and `WATCH-DEPLOY-HALVES-1` sits at SAMPLE ZERO for the same reason. The
+first authoring run is the highest-value single action available to the next pass.
+
+**One investigation returned nothing.** The fourth agent (RSS trajectory + menu-composition/pin-leak
+audit) died on its structured-output contract after 52 tool calls. RSS was re-read directly and holds;
+**the pin-leak question — whether any of the 14 active-menu symbols is pinned with no open position
+and no resting order — is UNREAD**, and an unread check is not a passing one.
+
+### Next-pass candidates
+
+1. `loop:authoring` — unspent slot, unverified `633f901`, SAMPLE-ZERO watch. First.
+2. Quantify the demo/live divergence across all 37 closed round trips. The divergence is **episodic,
+   not a standing offset** (3 bps apart at this trip's entry, 21 bps at its partial exit, 572 bps
+   during the stall), so "demo PnL is fictional" is NOT supported by this incident — but how much
+   recorded PnL is attributable to decoupling is unmeasured, and it conditions the whole promotion
+   scoreboard. Worth more than any single fix above.
+3. The `-4024` repair, via one of the two correct seams.
+4. The pin-leak audit the failed agent owed.
+5. `output_config: {effort: …}` as a cost-negative truncation experiment.

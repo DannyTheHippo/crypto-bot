@@ -465,6 +465,36 @@ WATCH-V3-1: spot heap slope on the demo soak (paper plateau 673 MiB is the
   **Failure direction:** FAILS OPEN — an absent or unreadable `stop_reason` falls back to the old
   tag, and the degrade itself (soft hold, empty signals, metric) is byte-identical on every branch.
 
+  **FIRST READING — 2026-07-31, Pass 53. Expected-positive CONFIRMED on every measurable row; the
+  named defect outcome did NOT occur.** Measured on boot `93e21a99` (since 12:33:12Z) and over 14 days:
+
+  | tag | rows (boot) | `output_tokens` (boot) | rows (14d) | at exactly 4096 (14d) |
+  | --- | --- | --- | --- | --- |
+  | `truncated_max_tokens:` | 7 | min = max = **4096** | 11 | 7 |
+  | `schema_rejected:` | 8 | 168 – **358** | 137 | 12 |
+
+  Every `truncated_max_tokens:` row carrying a usage number carries exactly 4096 — 7 of 7 on this
+  boot, 7 of 7 measurable over 14 days. **Zero rows sit "well below 4096", so the named defect outcome
+  is not present.** The tags discriminate cleanly: this boot's `schema_rejected:` rows top out at 358
+  output tokens, an order of magnitude off the ceiling.
+
+  **Disclosed rather than counted as a pass:** the remaining **4** of the 11 `truncated_max_tokens:`
+  rows carry `output_tokens` NULL (usage is recorded on the first symbol of a batch only), so the
+  signature is *unreadable* on them, not contradicted. The 12 `schema_rejected:` rows at 4096 across
+  14 days are pre-change rows — the population the re-tag was built to reclassify — and are the reason
+  the 14-day figures must not be read as a post-change rate.
+
+  **What the reading COSTS, which is the part worth acting on.** Truncation is not free capacity: the
+  5 truncating consults on this boot each ran 27.6–32.1s and spent the full 4096 output tokens, while
+  an 8-symbol consult that succeeded spent 1150 tokens in 13.3s — so batch width does not explain it.
+  Each truncation degrades a whole batch to hold. **Do NOT respond by raising `AGENTIC_MAX_TOKENS`**:
+  that fix was refuted on review (see `LOG.md` § Pass 53) because the binding constraint is the $3/day
+  USD breaker, not the token/day cap, and because the batch HTTP budget is 75s against a projected
+  ~83–91s at a 12288 ceiling — an abort THROWS rather than soft-holding, and three strikes auto-DRAIN
+  the lane. The in-contract lever is `output_config: {effort: …}`, which appears nowhere in
+  `anthropic-agent-client.ts` today, so the lane runs at the API default and pays for thinking depth
+  it may not need.
+
 ### WATCH-V4-13 — spot rests one protective leg, and the zero that looks like proof is not (2026-07-31, Pass 51)
 
   Source: the Pass 51 record in `LOG.md`, commit `f5abf8a`.
@@ -543,6 +573,36 @@ WATCH-V3-1: spot heap slope on the demo soak (paper plateau 673 MiB is the
 
   **Deadline:** the next pass that sees a spot entry reads the three counters above and records the
   outcome. Until then this WATCH is OPEN and UNVERIFIED, not passing.
+
+### WATCH-V4-14 — a terminal venue reject burst is now audible between passes (2026-07-31, Pass 53)
+
+  Source: the Pass 53 record in `LOG.md`, commit for `VenueTerminalRejectBurst`; full forensics in
+  `research/loop/incidents/2026-07-31-perp-exit-band-rejects.md`.
+
+  **What happened.** 12 reduce-only KAITO/USDT:USDT exits were terminal-rejected `-4024` in five
+  minutes and every continuously-running surface read healthy — `protective_exits_total` counts FIRES
+  not FILLS (it read 12), and no rule in `alerts.rules.yml` referenced `orders_rejected_total`. Only
+  the sweep's per-venue rate alarm caught it, ~3h later.
+
+  **Expected-positive:** the next terminal-reject burst of ≥3 in 15m appears as a
+  `prometheus_alert_firing_nonblocking` annotation naming `VenueTerminalRejectBurst` with its `code`
+  label, in the FIRST sweep after the burst — and the sweep's own `venue_reject_rate_high` alarm and
+  this rule agree about whether a burst happened.
+
+  **Named defect outcome:** (a) the rule fires on the binance spot `InsufficientFunds` bleed (measured
+  2/hour, so it must NOT — that would mean the threshold is mis-derived and the rule is noise); (b) a
+  reject burst occurs and the rule stays silent (`stage="exchange"` is not the label the venue path
+  actually writes, or `for: 5m` outlives the burst — a 12-reject burst spanning 5m sits right at that
+  boundary and is the specific thing to check on the first real firing); (c) it lands as an ALARM
+  rather than an annotation, which would mean the severity was changed to `critical` and the loop's
+  own §3 gate is now wedgeable by a self-resolving condition.
+
+  **Failure direction:** FAILS OPEN — measurement only. It cannot block an order, a fill, or an exit.
+
+  **Deadline:** the first pass that observes any terminal venue reject reads all three surfaces (this
+  rule, the sweep's rate alarm, `orders_rejected_total`) and records whether they agree. If no reject
+  of any kind occurs by 2026-08-07, the rule is UNTESTED and must be recorded as such — an unfired
+  alert is not a passing one.
 
 ## Flagged for human review (open)
 

@@ -473,6 +473,14 @@ conventional message. Dirty tree at pass start: note it, stage ONLY files this p
    endpoint, and a plain `up -d prometheus` is a no-op. Skipping it is how the four alerts added
    2026-07-27 sat unloaded for 36h (Pass 43); `loop:sweep`'s `promAlerts` probe now names any committed
    alert the running Prometheus has not loaded.
+   **Validating a rules edit: `promtool check rules /etc/prometheus/alerts.rules.yml` is VOID after any
+   host-side edit of that file** and fails with a YAML "unexpected end of stream" that reads exactly
+   like corruption. It is not — a single-FILE bind mount leaves the container resolving a dangling
+   inode once the host replaces it (Pass 53 chased this; the committed bytes parsed fine and all 22
+   running rules were healthy throughout). Check the edit by copying it in first:
+   `docker cp "<repo>/observability/alerts.rules.yml" crypto-bot-prometheus-1:/tmp/new-rules.yml &&
+   docker exec crypto-bot-prometheus-1 promtool check rules /tmp/new-rules.yml`. After the recreate,
+   confirm the count moved via Prometheus' own `/api/v1/rules`, not via the mounted path.
 4. Soak (15-30 min): run `loop:sweep` post-deploy and confirm the change's expected observable
    named in its WATCH line — health 200, decides flowing on both venues, no `EXPIRED` signals, cost
    rate sane against the ONE $3/day breaker, no new alarm, protective exits present. Regression →

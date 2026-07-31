@@ -15,16 +15,24 @@ import {
   type TradeModelCandidateResult,
 } from '../../../eval/agentic/trade-eval-fixtures';
 import { EVAL_PROFILE } from '../../../eval/agentic/fixtures';
-import type { ScoringRow } from '../../../../src/features/strategy/agentic/counterfactual-scoring';
+import {
+  BAR_MS,
+  type ScoringRow,
+} from '../../../../src/features/strategy/agentic/counterfactual-scoring';
 import { epochMs } from '../../../../src/domain/common/types/ids';
 
 const T = 1_700_000_000_000;
 
-// Mirrors test/unit/agentic-strategy/counterfactual-scoring.spec.ts's own row() helper exactly —
+// Mirrors test/features/strategy/agentic/counterfactual-scoring.spec.ts's own row() helper exactly —
 // same convention, same defaults.
+//
+// Rows are spaced ONE BAR apart, not 60s. forwardReturn() looks the horizon up by wall clock
+// (t0 + horizon * BAR_MS) rather than by array index, so a 60s-spaced fixture yields no forward
+// observation at all and every proxy below would read null. The index parameter still names the
+// chronological position; it is the spacing that has to match the lane's real bar.
 function row(index: number, over: Partial<ScoringRow> = {}): ScoringRow {
   return {
-    eventTime: epochMs(T + index * 60_000),
+    eventTime: epochMs(T + index * BAR_MS),
     action: 'hold',
     confidence: null,
     refPrice: null,

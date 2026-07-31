@@ -18,6 +18,13 @@ import type { AgentDecisionRow } from '../../../ports/strategy/agentic-strategy'
 // these indicator-grade research metrics mirrors reflection.service.ts's own `indicatorFloat`
 // helper (Decimal→number, never Number()/parseFloat() — both banned by lint outside src/domain) —
 // this file is not itself a money path (no Price/Qty is minted or moved here).
+//
+// Prior fix (2026-07-31, horizon-arithmetic): forwardReturn() used to walk `horizon` bars by INDEX
+// (row i+horizon), which silently assumed the journal sits on a fixed-cadence bar grid. It does not —
+// the 60-hour outage ending 2026-07-30T09:01Z left a multi-day hole in rows near it, so `i+horizon`
+// there landed on a row from a completely different wall-clock interval than `horizon` bars away.
+// forwardReturn now looks up the target WALL-CLOCK time instead and returns null (a gap) when the
+// nearest row overshoots it by more than one bar — see forwardReturn's own comment and BAR_MS.
 
 // `symbol` is declared as plain string (AgentDecisionRow's branded SymbolId is assignable to it)
 // because grouping is the ONLY thing it drives here — no money/venue call is keyed off it. Without
@@ -41,8 +48,9 @@ export type ForwardReturnHorizon = (typeof FORWARD_RETURN_HORIZONS)[number];
 
 export interface HorizonStats {
   readonly horizon: ForwardReturnHorizon;
-  // Rows with a defined forward return at this horizon (excludes 'error' rows and rows within
-  // `horizon` bars of the end of their group, which have no future close to measure against).
+  // Rows with a defined forward return at this horizon (excludes 'error' rows; rows whose group
+  // hasn't reached `horizon` bars ahead yet; and rows where a gap in the series leaves no row within
+  // one bar of the target time — see forwardReturn's own comment).
   readonly sampleCount: number;
   readonly hitCount: number;
   readonly hitRate: number | null; // null when sampleCount === 0
@@ -81,13 +89,43 @@ function toIndicatorFloat(decimalString: string): number {
   return new Decimal(decimalString).toNumber();
 }
 
-// Forward return of row i over `horizon` bars, computed from SUBSEQUENT rows' closes (no candle
-// table exists here — decisions run at candle cadence, so row i+horizon's close is the only
-// available proxy for "the price horizon bars later"). null when there's no row that far ahead in
-// the SAME group's own chronological subsequence, or either endpoint's close is unrecorded.
+// One bar's wall-clock width, for the horizon lookup below. Hardcoded because this module is pure
+// (no @nestjs/config, no DI — money-path note above) and so cannot read STRATEGY_INTERVAL itself;
+// mirrors the SAME deployed-15m fact exec-quality.service.ts's own DEFAULT_BAR_INTERVAL_MS and
+// agentic.strategy.ts's own INTERVAL_MS['15m'] each separately hardcode (per .env.app's
+// STRATEGY_INTERVAL=15m pin) — there is no single shared export today, so a bar-width change needs
+// all three updated together.
+export const BAR_MS = 15 * 60 * 1000;
+
+// Forward return of row i over `horizon` bars, computed from a SUBSEQUENT row's close (no candle
+// table exists here — decisions run at candle cadence, so a later row's close is the only available
+// proxy for "the price horizon bars later"). Looks up the first row at or after the WALL-CLOCK target
+// time `rows[i].eventTime + horizon * BAR_MS` — never row `i + horizon` by INDEX (the pre-2026-07-31
+// defect this replaced): the journal is not a fixed-cadence bar grid, rows can be missing (the
+// 60-hour outage ending 2026-07-30T09:01Z is the incident that surfaced this — for rows near that
+// gap, `i + horizon` landed on a row from a completely different wall-clock interval than `horizon`
+// bars away), so index arithmetic silently measured the wrong interval whenever anything was missing
+// in between.
+//
+// Two DIFFERENT null cases below, deliberately not collapsed into one:
+//   - no row has reached the target time yet (the forward bar HASN'T HAPPENED — the normal case at
+//     the live edge of a group; same case the old "j >= rows.length" check covered).
+//   - the nearest row at/after the target overshoots it by more than one bar — a HOLE in the series
+//     (something between i and the match is missing). Scoring against it would measure the wrong
+//     interval, exactly the defect above; this returns null instead rather than guessing.
+// Also null when either endpoint's close is unrecorded, same as before.
 function forwardReturn(rows: readonly ScoringRow[], i: number, horizon: number): number | null {
-  const j = i + horizon;
-  if (j >= rows.length) return null;
+  const targetTime = rows[i]!.eventTime + horizon * BAR_MS;
+  let j = -1;
+  for (let k = i + 1; k < rows.length; k++) {
+    if (rows[k]!.eventTime >= targetTime) {
+      j = k;
+      break;
+    }
+  }
+  if (j === -1) return null; // hasn't happened yet
+  if (rows[j]!.eventTime - targetTime > BAR_MS) return null; // a hole — overshoots by more than 1 bar
+
   const fromClose = rows[i]!.close;
   const toClose = rows[j]!.close;
   if (fromClose === null || toClose === null) return null;

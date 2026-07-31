@@ -7,9 +7,12 @@
 // AnthropicAgentClient.propose() persists verbatim. They are hand-built objects run through
 // JSON.stringify, not produced by calling buildMarketPayload, because the entire point of this
 // suite is to exercise rows the way they arrive from the DB: a flat rendered string with no
-// surviving AgentDecisionInput to reconstruct. Four rows, one simulated 1m-candle decide() cadence
-// (T, T+60s, T+120s, T+180s) on BTC/USDT, so they also double as a chronological sequence for
-// counterfactual-scoring's forward-return math (which reads consecutive rows, not wall-clock gaps).
+// surviving AgentDecisionInput to reconstruct. Four rows, one decide() call per row on BTC/USDT,
+// spaced exactly one STRATEGY_INTERVAL bar apart (T, T+900s, T+1800s, T+2700s) so they also double
+// as a chronological sequence for counterfactual-scoring's forward-return math. That math now reads
+// WALL-CLOCK gaps, not consecutive-row position (2026-07-31 horizon-arithmetic fix,
+// counterfactual-scoring.ts's own BAR_MS/forwardReturn comments): rows must actually be one bar
+// apart for horizon-1 to see them as consecutive, so the spacing here is load-bearing, not cosmetic.
 import type {
   AgentHtfIndicators,
   AgentIndicators,
@@ -82,7 +85,7 @@ const ROW_A: RecordedMarketPayload = {
 const ROW_B: RecordedMarketPayload = {
   symbol: 'BTC/USDT',
   interval: '1m',
-  eventTime: 1_700_000_060_000,
+  eventTime: 1_700_000_900_000, // T + 900s — one STRATEGY_INTERVAL bar after ROW_A (BAR_MS)
   candles: [
     [1_699_999_940_000, '99.20', '100.00', '99.00', '99.80', '14.0'],
     [1_700_000_000_000, '99.80', '100.50', '99.50', '100.00', '15.2'],
@@ -112,7 +115,7 @@ const ROW_B: RecordedMarketPayload = {
 const ROW_C: RecordedMarketPayload = {
   symbol: 'BTC/USDT',
   interval: '1m',
-  eventTime: 1_700_000_120_000,
+  eventTime: 1_700_001_800_000, // T + 1800s — two bars after ROW_A
   candles: [
     [1_700_000_000_000, '99.80', '100.50', '99.50', '100.00', '15.2'],
     [1_700_000_060_000, '100.00', '101.80', '99.90', '101.50', '18.7'],
@@ -142,14 +145,14 @@ const ROW_C: RecordedMarketPayload = {
     '2 decisions ago: hold @ 100 ("eval fixture rationale")',
     '1 decision ago: long @ 101.5 ("eval fixture rationale") → price then moved -2.46%, position PnL delta -0.0025 USDT (held long)',
   ],
-  execReportsSinceLastDecide: [{ kind: 'FILL', eventTime: 1_700_000_120_000 }],
+  execReportsSinceLastDecide: [{ kind: 'FILL', eventTime: 1_700_001_800_000 }],
 };
 
 // Row D — recovery, ticker back, first h1 htf reading, still long.
 const ROW_D: RecordedMarketPayload = {
   symbol: 'BTC/USDT',
   interval: '1m',
-  eventTime: 1_700_000_180_000,
+  eventTime: 1_700_002_700_000, // T + 2700s — three bars after ROW_A
   candles: [
     [1_700_000_060_000, '100.00', '101.80', '99.90', '101.50', '18.7'],
     [1_700_000_120_000, '101.50', '101.60', '98.70', '99.00', '22.3'],

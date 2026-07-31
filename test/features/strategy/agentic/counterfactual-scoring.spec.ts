@@ -7,6 +7,7 @@ import {
   summarizeRegimeSplit,
   scoreNotTakenOptions,
   summarizeRecentDecisionOutcomes,
+  BAR_MS,
   type ScoringRow,
   type Scorecard,
 } from '../../../../src/features/strategy/agentic/counterfactual-scoring';
@@ -14,9 +15,12 @@ import { epochMs } from '../../../../src/domain/common/types/ids';
 
 const T = 1_700_000_000_000;
 
+// One bar apart per index, matching forwardReturn's wall-clock lookup (2026-07-31 fix) exactly —
+// every fixture below stays on a contiguous grid, so "index i+horizon" and "wall-clock horizon bars
+// ahead" agree, and every existing assertion's numbers are unchanged from the pre-fix index walk.
 function row(index: number, over: Partial<ScoringRow> = {}): ScoringRow {
   return {
-    eventTime: epochMs(T + index * 60_000),
+    eventTime: epochMs(T + index * BAR_MS),
     action: 'hold',
     confidence: null,
     refPrice: null,
@@ -239,6 +243,43 @@ describe('forward returns / hit rate', () => {
     // Only row 0 is scored (row 1 is an 'error' row, never a decision); (150-100)/100=+0.5 -> hit.
     expect(h1.sampleCount).toBe(1);
     expect(h1.hitCount).toBe(1);
+    expect(h1.hitRate).toBe(1);
+  });
+});
+
+describe('forwardReturn — wall-clock horizon lookup (2026-07-31 horizon-arithmetic fix)', () => {
+  it('a missing decision window (no intermediate rows) yields NO observation, rather than scoring the far bar', () => {
+    // The historical defect: row(0) and a second row 6 bars away by WALL CLOCK (horizon 1 + 5 —
+    // e.g. the missing decisions during the 60-hour outage ending 2026-07-30T09:01Z) are the only
+    // two rows in the group. The pre-fix INDEX walk computed j = i+horizon = 0+1 = 1, which happens
+    // to be a valid array index here (array length 2) — it would have scored rows[1]'s close as
+    // "1 bar forward" even though it is 6 bars away in wall-clock time. The fix looks up the
+    // WALL-CLOCK target time instead: nothing lands within one bar of t0+1*BAR_MS, so horizon 1 must
+    // report NO observation for row 0.
+    const rows: ScoringRow[] = [
+      row(0, { action: 'open_long', close: '100' }),
+      row(1 + 5, { action: 'hold', close: '999999' }), // wildly different close proves it's unused
+    ];
+    const [scorecard] = scoreRows(rows);
+    const h1 = horizonStats(scorecard!, 1);
+    expect(h1.sampleCount).toBe(0);
+    expect(h1.hitCount).toBe(0);
+    expect(h1.hitRate).toBeNull();
+  });
+
+  it('a contiguous series (no gaps) still returns the identical forward return the old index walk did', () => {
+    const rows: ScoringRow[] = [
+      row(0, { action: 'open_long', close: '100' }),
+      row(1, { action: 'hold', close: '105' }),
+      row(2, { action: 'hold', close: '110' }),
+    ];
+    const [scorecard] = scoreRows(rows);
+    const h1 = horizonStats(scorecard!, 1);
+    // i0 LONG (105-100)/100=+0.05 -> hit; i1 maintains LONG (110-105)/105=+0.0476 -> hit — the same
+    // numbers a plain i+1 index walk gives on a healthy, one-bar-per-row grid (no behaviour change
+    // on healthy data).
+    expect(h1.sampleCount).toBe(2);
+    expect(h1.hitCount).toBe(2);
     expect(h1.hitRate).toBe(1);
   });
 });

@@ -149,7 +149,8 @@ describe('agentic eval — recorded input_payload render checks (offline, no net
 
     expect(championCard!.rowCount).toBe(RECORDED_PAYLOAD_ROWS.length);
     expect(championCard!.horizonStats).toHaveLength(3);
-    // 4 chronological rows -> exactly 3 horizon-1 samples (i, i+1 pairs); horizon 4/24 have none yet.
+    // 4 rows, one STRATEGY_INTERVAL bar apart -> exactly 3 horizon-1 samples (each row's forward
+    // return resolves against the very next row's close); horizon 4/24 have none yet.
     const horizon1 = championCard!.horizonStats.find((s) => s.horizon === 1);
     expect(horizon1?.sampleCount).toBe(3);
     expect(horizon1?.hitRate).not.toBeNull();

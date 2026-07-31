@@ -440,9 +440,19 @@ export class ReconciliationService {
   async reconcile(): Promise<PassResult> {
     const inFlight = this.inFlight;
     if (inFlight !== undefined) {
-      // Visible, never silent: a chronically slow reconciler must show up as skipped passes rather than
-      // as a mysteriously idle cadence (the same "a silent skip once hid a per-pass throw for weeks"
-      // lesson the driver's own catch comment records).
+      // Visible, never silent — but the visibility lives in the counter below, not in this log line.
+      // reconciliation_runs_total{venue="all",result="skipped"} is scraped and is exactly what
+      // ReconcilerStalled (observability/alerts.rules.yml) is built to ignore: its expr sums only
+      // result=~"clean|mismatch|halt" over a 10m window, deliberately EXCLUDING result="skipped", so a
+      // coalesced tick can never masquerade as a completed pass (`a03b35d`, 2026-07-30, narrowed the
+      // expr from result!="error" for exactly that reason — skipped alone was contributing 9.23 of a
+      // 28.72 window sum). debug is therefore the right level for this line: it carries no per-occurrence
+      // payload (no venue, no duration, no elapsed-in-flight) that the counter beside it doesn't already
+      // capture, so at warn it was strictly less informative noise dominating the warn bucket
+      // (~214 occurrences/3.6h, ~1:1 against completed passes) for zero added signal. This is a
+      // measurement/observability-only edit on a path that fails OPEN by design: the log call must
+      // never block reconciliation, and the re-entrancy guard and kill-switch detection inside
+      // reconcileOnce are untouched — a coalescing tick still can never bypass or swallow a HALT.
       //
       // A MODERATE SKIP RATE IS EXPECTED AND HEALTHY — do not read it as a fault. Measured in the
       // 2026-07-22 soak: 62 skips/hour against 57-58 completed passes per venue (119 ≈ the 120 ticks
@@ -452,7 +462,7 @@ export class ReconciliationService {
       // to "stop the skips" would make it strictly worse (a 60s tick landing mid-pass would skip to
       // 120s). What IS alarming: a sustained 100% skip rate, or completed-pass count trending toward
       // zero — that means a pass is wedged, not merely slow.
-      this.log.warn(
+      this.log.debug(
         'reconcile pass still in flight — skipping this tick (coalesced onto the running pass)',
       );
       this.runsCounter?.inc({ venue: 'all', result: 'skipped' });

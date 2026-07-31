@@ -466,8 +466,12 @@ export class TradingRuntimeService
 
   // §6/§8 periodic drivers — the runtime FIRING of logic unit-tested in isolation: the halt
   // coordinator and unknown-order resolver tick each second, equity samples every 5s, reconciliation
-  // sweeps every 30s (ReconciliationService.reconcile() iterates VENUE_REGISTRY internally — one pass
-  // per venue per tick, §1.5 — so this single timer already drives per-venue reconciliation). SKIPPED
+  // is timed every 30s (ReconciliationService.reconcile() iterates VENUE_REGISTRY internally — one
+  // pass per venue per tick, §1.5 — so this single timer already drives per-venue reconciliation).
+  // 30s is the TIMER PERIOD, not the effective cadence: a pass costs ~38.6s, so roughly every other
+  // tick coalesces onto the still-running pass (reconciliation.service.ts's re-entrancy guard) and the
+  // measured effective cadence between COMPLETED passes is ~60s p50 (max 90.5s observed). Reason about
+  // mismatch-detection latency using ~60s, not 30s. SKIPPED
   // under test/ci so timers never fire inside the suite — the tick/reconcile/sample logic is verified
   // directly in the unit/paper tests; only the firing was deferred. Each fire is fire-and-forget with
   // its rejection swallowed (the services engage the kill switch on real faults).

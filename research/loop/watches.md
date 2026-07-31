@@ -325,6 +325,97 @@ WATCH-V3-1: spot heap slope on the demo soak (paper plateau 673 MiB is the
   read now has two jobs rather than one: distinguish "no cancel needed" from "cancel skipped", and
   distinguish "resting at the venue" from "gone at the venue, stranded in our book".
 
+  **ROOT-CAUSED 2026-07-31 (Pass 50, `59df4c9` + `a2d7d33`) — and the Pass 49 suspect is REFUTED.**
+  The "undefined `entry` read after `clearPlan()`" hypothesis is dead: both live call sites snapshot
+  `stopEntry` BEFORE `clearPlan()`. The actual finding is that `reconcileOrphanedAlgoStop` **did**
+  reach its `fetchOpenAlgoOrders` call for HYPE on every bar — every guard between `decide()` and it
+  is satisfied (`planMode` set, `activePlan` null, venue stop enabled, perp venue, no registry entry,
+  position FLAT) — but its no-plan branch emitted NOTHING on any of its four outcomes, so "never
+  matched" and "matched, and `cancelAlgoOrder` threw into a bare `catch {}`" were indistinguishable
+  by construction. Branch (b)'s cancel has demonstrably never succeeded for this order: the boot
+  sweep folded two sibling perp stops terminal at 16:52Z via `algo-hist:CANCELED:{algoId}` and never
+  folded this one.
+
+  Second mechanism, same rail: the `binanceusdm BTC/USDT:USDT` stop from 19:00:09Z **was** cancelled
+  at the venue at 22:45Z by `drift_cancel`, and is still non-terminal locally because **no algo-rail
+  cancel was ever journaled on any path**. So one rail carried both a cancel that never happens and a
+  cancel that happens and is never recorded.
+
+  **Escalated from untidy to money-path:** a stale non-terminal algo order keeps its intent in
+  `inFlightIntents` (`boot-recovery.service.ts:122-128`) and `driveFlattening` marks that symbol BUSY
+  off exactly that set (`halt-coordinator.service.ts:153`), so `allFlat` never becomes true for it —
+  **a HALT cannot complete for that symbol until the next boot**. `cancelRestingAlgoStops` was itself
+  the fifth un-journaled cancel, making the HALT path both producer and victim.
+
+  **This WATCH stays OPEN.** The fix is prevention and measurement, not a heal: the four already
+  stranded rows will NOT terminalize, because their cancels predate the seam. Closure requires the
+  venue-truth read this entry has demanded since Pass 49.
+
+### WATCH-V4-11 — the algo rail can now say which failure it is having (2026-07-31, Pass 50)
+
+  Source: the Pass 50 record in `LOG.md`, commits `59df4c9` (strategy sites) and `a2d7d33` (HALT
+  path). This is the instrument WATCH-V4-10 was missing; V4-10 stays open on the venue-truth read.
+
+  **Expected-positive:** on a boot that has run at least one flat perp bar,
+  `agentic_venue_stop_total{event="orphan_scan"}` reads **> 0** — proving the no-active-plan
+  reconcile path executes at all — and every algo-rail cancel that resolves is followed by an
+  `algo-hist:CANCELED:{algoId}` row in `order_events` for that order, so a cancelled stop reaches a
+  terminal local state instead of resting `ACKED` across boots. All 15 `VenueStopEvent` labels remain
+  zero-pre-seeded on both venues (30 children), so an absent child is a bug, not a zero.
+
+  **The discrimination this exists to provide, stated so it is read correctly:**
+  `orphan_scan` > 0 with `orphan_cancel` **and** `orphan_cancel_failed` both 0 means the scan runs
+  and never matches the stranded order — the venue is not returning it, or the id does not resolve.
+  `orphan_cancel_failed` > 0 means it matches and the cancel throws. Before this pass both readings
+  were the same zero.
+
+  **Named defect outcome:** `orphan_scan` still reading **0** on a boot older than a few bars with a
+  flat perp symbol in the menu — that would mean a guard short-circuits before the scan and the Pass
+  50 proof chain is wrong. Also a defect: an `orphan_cancel` increment with no corresponding
+  `order_events` append for that order, which would mean the journal seam is being swallowed rather
+  than firing.
+
+  **Deadline:** the next pass reads these counters on the post-`3f215aa` boot and records which of
+  the two V4-10 failures is live. That reading is the input to V4-10's closure.
+
+  **Failure direction, declared:** every counter and the journal call are a measurement/cleanup seam
+  and FAIL OPEN — all five call sites are `void`, never awaited, because the fold performs venue reads
+  against no configured ccxt timeout and previously sat inline between a stop cancel and the exit
+  signal built from it, and inside a reconcile path on a 2s non-LLM budget whose overrun drops the bar
+  and trips auto-DRAIN. A test pins that a rejecting seam still emits the EXIT signal, so a
+  reintroduced `await` fails loudly.
+
+### WATCH-V4-12 — a truncated consult is no longer filed as a schema rejection (2026-07-31, Pass 50)
+
+  Source: the Pass 50 record in `LOG.md`, commits `daf8dbe` (production) and `f9ed0ea` (replay
+  harness parity).
+
+  **Expected-positive:** `agent_decisions` rows whose degrade is an output-budget truncation carry
+  `truncated_max_tokens:` rather than `schema_rejected:`, on BOTH the single and batch paths and on
+  both the empty-tool-input and no-tool-block branches. The measurable signature is that a row
+  tagged `truncated_max_tokens:` carries `output_tokens` equal to `AGENTIC_MAX_TOKENS` (4096); the
+  baseline is **10 of 37** such rejections over the 14 days to 2026-07-31.
+
+  **Why it is worth watching rather than just fixing:** each truncation degrades a whole batch to
+  hold, so the rate is a direct read on how much decide capacity the 4096-token output budget is
+  costing. If the rate is materially above the 10/37 baseline once it is separately countable, the
+  lever is the output budget or the thinking configuration — not the schema.
+
+  **Named defect outcome:** `truncated_max_tokens:` rows appearing with `output_tokens` well below
+  4096 (the tag is being applied to something that is not a truncation), or the combined
+  `schema_rejected:` + `truncated_max_tokens:` rate rising above its pre-change level (the re-tag was
+  supposed to reclassify, not to add).
+
+  **Known bucket move, declared rather than discovered later:** re-tagged rows move from
+  `agent_decide_total{outcome="hold"}` to `{outcome="truncated"}` via `outcomeForProposal`. Both tags
+  sit in `PROVES_CALL_COMPLETED_OUTCOMES` and neither in `LATCHED_DECIDE_OUTCOMES`, so the latch
+  gauges are unmoved, and the boundary is pinned by the `schema_rejected: → 'hold'` case added to
+  `agent-decide-outcome-tags.spec.ts`. **A reader comparing hold volume across the 2026-07-31 deploy
+  boundary must expect a step, and it is this.**
+
+  **Failure direction:** FAILS OPEN — an absent or unreadable `stop_reason` falls back to the old
+  tag, and the degrade itself (soft hold, empty signals, metric) is byte-identical on every branch.
+
 ## Flagged for human review (open)
 
 > **This section is for defects that CANNOT be fixed without crossing the §4 MUST-NOT rails — owner

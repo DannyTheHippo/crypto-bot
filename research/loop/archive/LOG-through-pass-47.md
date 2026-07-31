@@ -1,11 +1,13 @@
 <!-- Created 2026-07-30 (Pass 48) by the LOG.md rotation. Everything below is VERBATIM from
      research/loop/LOG.md; nothing was edited or pruned. -->
 
-# Daily profitability loop — pass log archive (Pass 0 → Pass 44)
+# Daily profitability loop — pass log archive (Pass 0 → Pass 47)
 
 Rotated out of `research/loop/LOG.md` on 2026-07-30 so the hot log holds only the last five pass
-entries. This file covers **2026-07-06 (Pass 0) through 2026-07-28 (Pass 44, including the Pass 42
-addenda)**. The filename names the era, not the last entry inside it.
+entries. This file covers **2026-07-06 (Pass 0) through 2026-07-29 (Pass 47)**. Passes 46 and 47
+were appended at the end by Pass 50 on 2026-07-31 to make room for the Pass 49 addendum c
+reconstruction and the Pass 50 entry; they sit after the Pass 44 material, so the file is
+chronological throughout. The filename names the era, not the last entry inside it.
 
 Two corrections to what this header said when it was created, both checkable and both wrong: the
 first rotation left Pass **43** in this file, not in `LOG.md`, so the hot log kept Passes 44-48 and
@@ -5615,3 +5617,285 @@ IS `loop:sweep`"), which is current. Only the hourly rehydration digests lag.
 3. **Both provider accounts remain unfunded.** Nothing in this program moves until that is resolved,
    and per Pass 41 it should be read against the ENTRIES verdict before funding, not after.
 4. The menu-economics re-derivation from spec §5.2 (Pass 44's item 3) is still open and still cheap.
+
+---
+
+## 2026-07-29 — Pass 46 (a NOT NULL column that never measured anything, and a redeploy that erased an outage)
+
+**Window:** 2026-07-29T07:37Z → 09:15Z (pass lease `1b42f3614efda993`, taken 07:37:22Z).
+**Boots this window: four.** `899d4a09` (the 22h boot) → `f9dc22ef` at 08:17:56Z, deployed by a
+CONCURRENT session, not this pass → `2ceaae5b` at 09:05:26Z (this pass's fix) → `f7a477f3` at
+09:09:12Z (rebuild to restore build provenance).
+
+### ⛔ Headline: the Anthropic account is not funded — that is why every LLM request fails
+
+Re-confirmed live at 09:00Z, verbatim from the API:
+`400 invalid_request_error: "Your credit balance is too low to access the Anthropic API."`
+
+Nothing in the code is broken. The lane calls, receives a FATAL 400, latches for 30 minutes, retries,
+receives the same 400, re-latches — which is correct behaviour against an unfunded account. The
+Moonshot fallback is unfunded too (`429 suspended — insufficient balance`). **Zero LLM decides ⇒ zero
+trades ⇒ zero promotion progress, continuously since 2026-07-27T21:16Z.** Adding credit is a financial
+action no automated pass may take; it is the single owner action the whole program waits on. On
+resumption nothing needs redeploying — the latch self-heals within 30 min of credit landing
+(proven live, WATCH-V4-5).
+
+Scoreboard, unmoved and unmovable while this holds: **28 of 30** closed round trips, net-of-cost
+**−$39.6370**, win rate 0.179, LLM cost $16.1979, trade-anchored window **4.30 of 14 days**,
+`agentic_promotion_ready` **0**. Champion playbook **v8**, +$6.77 over 5 trips — the only lineage
+meaningfully positive at n>3; v2 alone is −$24.76 over 14 and accounts for most of the book's loss.
+
+### The sweep went from one critical alarm to zero, and nothing was fixed
+
+07:37Z: `AgentClientFatalLatch` (critical), firing since 07-28T10:45:25Z. 08:37Z: **Alarms (0)**.
+
+Between them, a concurrent session redeployed. That reset `agent_client_latched` to 0, cleared the
+alert, and wiped the boot-scoped `agent_decide_total` series entirely — `error_fatal 67` and
+`client_latched 197` became **no series at all** (verified with a positive control: 88 series scraped,
+19 `agent*` present, that one absent). The unfunded condition underneath was completely unchanged.
+
+**A redeploy launders a persistent lane outage into a green board.** The blind window is bounded but
+wide: `AGENTIC_FALLBACK_CONSULT_BARS=8` at 15m bars puts the first consult attempt — the only thing
+that can re-latch — ~2h out, and `AgenticLaneSilent`'s 6h range selectors still see the previous boot's
+samples, so neither guard fires. **The playbook's mandated 15-30 min post-deploy soak sits entirely
+inside that window.** A pass could deploy, soak green, and sign off on a dead lane. The only surface
+naming the outage at 08:37Z was Pass 45's day-old `prometheus_alert_resolved_critical` annotation —
+shipped yesterday, earning its keep on its first full day. Recorded as **WATCH-V4-8**, with the fix
+shape (seed a last-success timestamp from the durable ledger at boot, exactly as `f2d74b6` did for the
+cost breaker and as `reconciliation_last_success_timestamp_seconds` already does). Not shipped — see
+§ Not shipped, and why.
+
+### Shipped — `c50db12`: an audit table whose measurement columns were all a literal zero
+
+`reconciliations` carries four NOT NULL measurement columns. The only persisting store wrote `0` into
+all four because `ReconciliationRow` never carried them. **23,973 rows since the v3 cutover, zero
+non-zero values in any of the four, ever.**
+
+What surfaced it was a contradiction, not a hunch: `duration_ms` read 0 while the same subsystem logged
+**865** `reconcile pass still in flight — skipping this tick` warnings in 14h — which only happens when
+passes overrun their tick — and the service's own comment says a pass issues "dozens of sequential REST
+calls over ~60s". A pass cannot both take 0ms and overrun its tick.
+
+It was worse than a dead field, because it had already been read as evidence. Pass 45's hand-off and
+state.md both concluded _"there are no resting protective orders … the venue reports
+`open_orders_checked=0` on every reconcile"_ — from a hardcoded constant. And the falsification goes
+deeper than the constant: that axis sweeps the REGULAR rail via `fetchOpenOrders`, while protective/algo
+stops live behind `fetchOpenAlgoOrders`, which it never calls — so **no value of that field is evidence
+about protective orders**. The conclusion survives on independent gauges (`open_orders{venue}`=0,
+`venue_capital_headroom_usdt`=500); the citation was void. Struck and corrected in state.md rather than
+quietly rewritten, because it had already been inherited once.
+
+**The adversarial review changed the fix, and that half matters more than the first.** Version one
+threaded real counts and would still have written `balances_checked=0` forever **on the only
+configuration that runs** — every configured venue is `demo`, so `venueReconConfig` turns `balanceAxis`
+off on all of them. A disabled axis now writes `AXIS_NOT_RUN` (−1). The review also caught that the new
+gate test asserted `tradesChecked` `toBe(0)`, which would have passed with the increment deleted, and
+that the store dropped `ReconciliationRow.ts` entirely (the column's `now()` default stamped every row
+at INSERT time) — the same defect class one field over. Both fixed before commit.
+
+**Live-verified post-deploy**, which is the whole point:
+
+| | before | after |
+| --- | --- | --- |
+| `duration_ms` | 0 on all 23,973 rows | 14,291-23,268 ms |
+| `trades_checked` | 0 always | 458, then 7 |
+| `balances_checked` | 0 always | −1 (`AXIS_NOT_RUN`) |
+| `open_orders_checked` | 0 (constant) | 0 (now a _measured_ zero) |
+
+Two venue passes at 14-23s each ≈ 37s against a 30s tick — the 865 skips are explained arithmetically
+for the first time, and the field that explains them now exists.
+
+**Gates:** format, lint, typecheck, **3092** unit+livegate, build, plus `test:db` 64/64 against live
+Postgres. **Soak:** clean — 0 alarms, container healthy, `RestartCount` 0, kill switch RUNNING, both
+venues CLEAN, 5 warn lines all benign.
+
+### Also fixed: the build-provenance probe read `unknown` on its first real deploy
+
+`af67acf` (shipped ~50 min earlier by the concurrent session) added a `running build:` probe so a pass
+can tell which build is live. The Dockerfile takes `ARG GIT_SHA=unknown`, but the documented deploy
+command — `docker compose build app`, playbook §5 step 3 — does not pass `--build-arg`. So the first
+deploy following the documented procedure (mine) produced `running build: unknown`, defeating the
+probe. Rebuilt with `--build-arg GIT_SHA=$(git rev-parse --short HEAD)`; now reads
+`running build: c50db12`. **The deploy procedure in the playbook and runbook still omits the flag** —
+left to the session that owns those files this morning, noted here so it is not lost.
+
+### Not shipped, and why — a concurrent unleased session held the tree
+
+I acquired the pass lease cleanly at 07:37:22Z. Between 08:16:55Z and 08:29:16Z another session landed
+**`af67acf` and `f630f63` on `main`**, redeployed the app at 08:17:56Z, and force-recreated Prometheus
+(20 → 21 rules). This is the **fourth** recorded concurrency occurrence and **the first with production
+blast radius**: previous ones touched only `test/eval`, which the gate glob excludes, while these
+rewrote `src/features/common/observability/**`, `src/config/**`, `observability/alerts.rules.yml` and
+the sweep itself.
+
+Damage assessment before trusting anything, per the standing procedure: zero file overlap with this
+pass, and both commits were fully committed with a clean tree before my gate ran — so the 3092-test
+result stands. **WATCH-V4-8's fix was not shipped for a specific reason, not a priority one:** it
+touches `metrics.service.ts` and `alerts.rules.yml`, both rewritten 50 minutes earlier by that session
+while its own deploy soak was still running, and a rules-file edit requires a Prometheus
+`--force-recreate` that would have destroyed that soak. That is a blocked state with a named blocker.
+**The scheduler config that lets two passes co-fire remains owner-owned and open** — it has now caused
+four collisions and this one deployed twice under another pass's feet.
+
+### Flagged / next pass
+
+1. **THE ACCOUNT IS UNFUNDED.** Owner action. Everything else is downstream of it.
+2. **WATCH-V4-8** — ship the durable last-success gauge on an uncontended tree.
+3. **The deploy procedure omits `--build-arg GIT_SHA`** — playbook §5 step 3 and `docs/runbook.md`.
+4. **WATCH-V4-6** — unchanged, still exactly 4 non-terminal orders from 07-24, not growing.
+5. Provider failover is **not** reachable by config alone — `AnthropicAgentClientConfig` has an optional
+   `baseUrl` honored at the fetch, but no production code path ever assigns it, and `MOONSHOT` /
+   `AGENTIC_EVAL_*` appear nowhere in `src/**` (positive control: `ANTHROPIC_API_KEY` hits 6 files).
+   Moot while both accounts are unfunded; recorded so the next pass does not re-derive it.
+
+## 2026-07-29 — Pass 47 (four measurement lies, one of them the alarm that was supposed to catch the other three)
+
+**Window:** 2026-07-29T09:15Z → 11:15Z. Lease `25798a2449a344ac` taken 09:15:21Z, tree uncontended.
+Pass 46 released its lease at ~09:15Z, so this pass began **21 seconds after the previous one ended** —
+back-to-back, not concurrent. Consequence recorded below.
+
+**Sweep:** 0 alarms at open. Two annotations: `prometheus_alert_resolved_critical`
+(`AgentClientFatalLatch`, 662 firing samples) and `short_interval` (gap 167s). Playbook §3 makes a
+resolved critical a defect investigation anyway, which is where this pass started.
+
+**Book — unchanged, independently re-derived from metrics rather than copied from Pass 46:**
+`agentic_promotion_round_trips` 28, `agentic_promotion_net_pnl_usd` −39.6370,
+`agentic_promotion_llm_cost_usd` 16.1979, `agentic_promotion_win_rate` 0.1786,
+`agentic_promotion_window_days` 4.2953 of 14, `agentic_promotion_ready` 0. 0 fills this window.
+Champion v8 remains the only meaningfully positive lineage (+$6.77/5 trips) against v2's −$24.76/14 —
+n=5 is far under this loop's own "never act on a sub-n≥12 cell" bar, so it stays an observation.
+`equity_usdt` 4978.17. RSS 711.5 MiB (WATCH-V3-1: under the 900 MiB line).
+
+**Pass type:** defect investigation. No improvement work was eligible and that is not a scheduling
+excuse — every open backlog row is DATA-GATED on closed trips that cannot accrue while the lane is
+dead, and § Standing verdicts forecloses the rest (entry signal worse than a random-bar placebo; exit
+sweeps closed; "do not propose cost work as a profitability lever"). The one unblocked lever is owner
+funding. Stated plainly because the playbook asks for it: **this pass shipped no profitability work
+because none exists that funding does not gate.**
+
+### The four defects, all shipped
+
+All four are the same disease at four sites: **a value supplied by its own writer as a constant, or a
+counter that counts non-events, is indistinguishable from a measurement at every query, forever.**
+Pass 44 recorded it for prom-client children; Pass 46 for a NOT NULL column. This pass found four more.
+
+**1. Deploy provenance read `unknown` for anyone following the playbook** (owner-raised mid-pass).
+The Dockerfile takes `GIT_SHA` as a build arg; the compose `build:` block declared no `args:`. So the
+arg was reachable only via `docker compose build --build-arg` — the runbook's form. The playbook's §5
+form supplied nothing, and the scheduled task's form (`up -d --build`) **cannot** supply it:
+`docker compose up` rejects `--build-arg` outright ("unknown flag"), verified live. Every automated
+deploy baked the literal `unknown`; the runbook path baked a real sha. That is why the metric read
+`c50db12` today and the gap stayed invisible — Pass 46 happened to use the runbook form.
+Compose now interpolates `${GIT_SHA:-unknown}`, the one mechanism both subcommands accept (proven
+end-to-end on compose v5.3.1 with a throwaway image before any repo edit), and all four documented
+deploy commands collapse to that form. **The actual driver was outside the repo** — the scheduled
+task's own `SKILL.md` — and was fixed too, along with two other rots in it: it still told every pass
+to rehydrate with `loop:digests`, which Pass 46 deleted, and it never mentioned the pass lease.
+Two further defects fell out of the fix: `build_info` was resolved by **array order** (the identical
+`boot_info` defect found 2026-07-29, one metric over — after a redeploy Prometheus serves both boots'
+series and the probe took `[0]`), and `APP_GIT_SHA` now fails OPEN on a **malformed** value, not just
+an absent one, because compose interpolates the deployer's ambient `GIT_SHA` and an over-long export
+would have thrown in zod, crash-looped under `restart: unless-stopped`, and raised `restart_storm` —
+an observability input blocking the deploy it exists to record. It degrades to `unknown` rather than
+truncating, because a truncated string is indistinguishable from a real sha.
+
+**2. `zero_decides` cannot fire on a dead lane — the most consequential finding.**
+`probes.decides` is an unfiltered `select count(*) from agent_decisions`, but that table takes a row
+per symbol per scheduled skip, where no model call happens. Measured over the 12h before the fix:
+
+| hour (UTC) | all rows | scheduled skips | errors | REAL decides |
+| ---------- | -------- | --------------- | ------ | ------------ |
+| 08:00 | 160 | 154 | 6 | **0** |
+| 07:00 | 160 | 153 | 7 | **0** |
+| 06:00 | 160 | 147 | 13 | **0** |
+| … every hour identical … | 160 | ~150 | ~13 | **0** |
+
+160 rows/hour, every hour, zero real decides — through a lane dead since 2026-07-27T20:15:31Z.
+`agentic_consult_gate_total` is incremented by `skipped_scheduled` the same way, so both halves of the
+alarm's condition are permanently false. **The alarm the playbook names as the primary dead-lane
+detector has never been able to fire on a dead lane.** The total is kept (it does detect a stalled
+scheduler — the real 8.2h candle-stall class); a separate `realDecides` probe now counts genuine model
+calls with the same structural predicate the app uses to seed its gauge, so the two cannot disagree.
+Annotation only, never an alarm — reasoning under defect 3.
+
+**3. WATCH-V4-8 — a redeploy launders a standing outage into a green board.** Queued by Pass 46 with
+the deadline "next pass with an uncontended tree"; this was it. Reproduced live at pass open: with the
+lane 34h dead, `agent_client_latched` 0, budget $3, 21 rules loaded / 0 firing, 0 sweep alarms.
+`agent_last_success_timestamp_seconds` is now seeded at boot from `agent_decisions`, so it reads the
+TRUE age on the first scrape of every boot. The success predicate is structural rather than a
+rationale string match — `prompt_hash <> '' AND latency_ms IS NOT NULL AND strategy_id NOT LIKE
+'replay-%'`, two columns written together and only by code that already parsed a response body — so
+skips, latched suppressions and thrown errors are excluded by the shape of the write path. Review
+narrowed it further (a post-200 degrade is not a decide either), which is why the lifetime count reads
+575 and not the 660 the first predicate selected.
+`AgenticNoSuccessfulDecideSustained` is **severity warning, deliberately**: `loop:sweep` promotes only
+`critical` to the blocking alarm and §3 blocks improvement work until alarms clear, so a critical here
+would wedge every future pass on a condition no pass can fix. `for: 5m` and not the soak length —
+the sweep reads only rules already `firing`, so a `for:` equal to the playbook's 15-min MINIMUM soak
+would still be `pending` when the soak-ending sweep runs, invisible on the very pass that shipped it.
+9h threshold: the model self-schedules up to 32 bars × 15m = 8h, and the widest real decide gap with
+the app actually running is 270min.
+
+**4. Three counters whose zero was a void read.** `reconciliation_mismatch_total`,
+`agentic_schema_rejections_total` and `agentic_capability_violations_total` were registered with
+**zero children** — HELP/TYPE present, no series — so every query returned an empty vector, not a zero.
+`reconciliation_mismatch_total{class="adopt_non_adoptable"}` and `{class="fill_overflow"}` are the
+literal expected-positive signatures of WATCH-V4-1 and WATCH-V4-2: **successive passes have confirmed
+both against an instrument that could not answer.** Both re-verified this pass directly against
+`audit_log` (zero rows) — the verdicts stand, the citation never should have been made. All 13 mismatch
+classes and 4 schema kinds are now seeded from their own type unions; the capability counter is seeded
+at the single kind its call sites actually produce, verified by enumerating them, because a guessed
+label would be a fabricated child — the same lie one level down. Pass 44 fixed exactly this on
+`market_stream_forced_reconnects_total` and left three siblings.
+
+### Gates, commits, deploy, soak
+
+Gates green on the full tree: `format:check`, `lint:md` (0 errors), `lint`, `typecheck`,
+**`test` 3147/3147 across 175 files**, `build`, **`test:livegate` 55/55**.
+Commits: `1cb2253` (defects 1+2 — sweep tooling, compose, docs) and `446e1da` (defects 3+4 — app
+metrics). **Two commits for four defects, not four**: defects 1/2 both rewrite
+`scripts/loop-sweep{,-core}.mjs` and 3/4 both rewrite `agent-metrics-recorder.service.ts`, so a
+four-way split needed per-hunk staging that could produce an intermediate commit failing its own spec.
+The seams are where the files actually separate. Each defect got its own adversarial review regardless.
+Deployed 11:03:17Z, boot `1d68a57c`, `RestartCount` 0, `GIT_SHA=446e1da` via the playbook's own
+`up -d --build` form; Prometheus force-recreated (rules file changed) → **22 rules loaded**.
+
+**Soak — every fix verified live, not inferred from tests:**
+
+- `build_info{git_sha="446e1da"}`; digest reads `running build: 446e1da (working tree 446e1da)`.
+- `agent_last_success_timestamp_seconds` = 1785183331.331 → **38.80h stale on a boot minutes old**,
+  in the same scrape where `agent_client_latched` reads 0. The defect and its fix, side by side.
+- **`AgenticNoSuccessfulDecideSustained` FIRING at 11:04:25Z on an 8-minute-old boot** — the signal
+  that did not exist before this pass, since every other rule reads green on a fresh boot.
+  It lands as `prometheus_alert_firing_nonblocking`, so **sweep alarms stayed 0** and §3 is not wedged:
+  exactly the designed failure direction.
+- 13 + 4 + 1 counter series now publishing true zeros.
+- `kill_switch_state` RUNNING, reconciles CLEAN both venues, `ReconciliationNeverCleanSustained`
+  self-cleared once the first post-boot reconcile landed, 0 loop errors, RSS 711.5 MiB.
+
+### Standing WATCH lines, verified against DB truth (not against the metrics that were void)
+
+WATCH-V4-1 holds (clean stamp 105s; no `adopt_non_adoptable` in `audit_log`). V4-2 holds (no
+`FILL_OVERFLOW`). V4-3 holds (boot at `RestartCount` 0, kill switch RUNNING, no `perp pin:` line).
+V4-4 holds (0 `cum_qty`-vs-fills mismatches; 197 perp fills → perp orders, 12 spot → spot orders,
+**zero cross-venue folding**). V4-6 holds (still exactly the 4 non-terminal orders from 07-24,
+`cum_qty` 0, not growing). V4-7 holds. **WATCH-V4-8 RESOLVED** — expected-positive confirmed live above.
+Pass 46's `c50db12` confirmed in production: `duration_ms` 16–22s per venue pass (was a literal 0),
+`balances_checked` −1 (AXIS_NOT_RUN); two venues ≈39s against a 30s tick, which explains the
+"reconcile pass still in flight" warns arithmetically for the first time.
+
+### Flagged / next pass
+
+1. **Funding remains the only thing standing between this program and progress.** Unchanged and
+   owner-only. Last real model decide 2026-07-27T20:15:31Z; the lane has now been dead ~39h.
+2. **Back-to-back passes are a measurement problem, not just waste.** This pass started 21s after
+   Pass 46 ended, which tripped the `short_interval` floor and **suppressed delta-starvation alarms
+   for the whole pass**. Combined with defects 2 and 3, that made three independent mechanisms capable
+   of hiding a dead lane from a single pass. Two are now fixed; the scheduling one is owner-owned
+   (§ Flagged, the co-fire item). Recommend the 3×/day schedule be checked for double-firing.
+3. **Owner research request, queued 2026-07-29:** whether the daily loop (or a similar
+   subscription-based path) could call app endpoints to execute trades as the bot would — routing
+   around the funding blocker entirely. Not started this pass. First constraint to design against:
+   hard rule 2 forbids bypassing Risk, so the entry point must be the Signal boundary, not the order
+   boundary, and the promotion-evidence question (whose decider is the gate measuring?) needs an
+   answer before any such trades are allowed to count.

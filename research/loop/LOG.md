@@ -15,286 +15,6 @@ than the five below are in that archive; older still is git history. Current sta
 
 ---
 
-## 2026-07-29 — Pass 46 (a NOT NULL column that never measured anything, and a redeploy that erased an outage)
-
-**Window:** 2026-07-29T07:37Z → 09:15Z (pass lease `1b42f3614efda993`, taken 07:37:22Z).
-**Boots this window: four.** `899d4a09` (the 22h boot) → `f9dc22ef` at 08:17:56Z, deployed by a
-CONCURRENT session, not this pass → `2ceaae5b` at 09:05:26Z (this pass's fix) → `f7a477f3` at
-09:09:12Z (rebuild to restore build provenance).
-
-### ⛔ Headline: the Anthropic account is not funded — that is why every LLM request fails
-
-Re-confirmed live at 09:00Z, verbatim from the API:
-`400 invalid_request_error: "Your credit balance is too low to access the Anthropic API."`
-
-Nothing in the code is broken. The lane calls, receives a FATAL 400, latches for 30 minutes, retries,
-receives the same 400, re-latches — which is correct behaviour against an unfunded account. The
-Moonshot fallback is unfunded too (`429 suspended — insufficient balance`). **Zero LLM decides ⇒ zero
-trades ⇒ zero promotion progress, continuously since 2026-07-27T21:16Z.** Adding credit is a financial
-action no automated pass may take; it is the single owner action the whole program waits on. On
-resumption nothing needs redeploying — the latch self-heals within 30 min of credit landing
-(proven live, WATCH-V4-5).
-
-Scoreboard, unmoved and unmovable while this holds: **28 of 30** closed round trips, net-of-cost
-**−$39.6370**, win rate 0.179, LLM cost $16.1979, trade-anchored window **4.30 of 14 days**,
-`agentic_promotion_ready` **0**. Champion playbook **v8**, +$6.77 over 5 trips — the only lineage
-meaningfully positive at n>3; v2 alone is −$24.76 over 14 and accounts for most of the book's loss.
-
-### The sweep went from one critical alarm to zero, and nothing was fixed
-
-07:37Z: `AgentClientFatalLatch` (critical), firing since 07-28T10:45:25Z. 08:37Z: **Alarms (0)**.
-
-Between them, a concurrent session redeployed. That reset `agent_client_latched` to 0, cleared the
-alert, and wiped the boot-scoped `agent_decide_total` series entirely — `error_fatal 67` and
-`client_latched 197` became **no series at all** (verified with a positive control: 88 series scraped,
-19 `agent*` present, that one absent). The unfunded condition underneath was completely unchanged.
-
-**A redeploy launders a persistent lane outage into a green board.** The blind window is bounded but
-wide: `AGENTIC_FALLBACK_CONSULT_BARS=8` at 15m bars puts the first consult attempt — the only thing
-that can re-latch — ~2h out, and `AgenticLaneSilent`'s 6h range selectors still see the previous boot's
-samples, so neither guard fires. **The playbook's mandated 15-30 min post-deploy soak sits entirely
-inside that window.** A pass could deploy, soak green, and sign off on a dead lane. The only surface
-naming the outage at 08:37Z was Pass 45's day-old `prometheus_alert_resolved_critical` annotation —
-shipped yesterday, earning its keep on its first full day. Recorded as **WATCH-V4-8**, with the fix
-shape (seed a last-success timestamp from the durable ledger at boot, exactly as `f2d74b6` did for the
-cost breaker and as `reconciliation_last_success_timestamp_seconds` already does). Not shipped — see
-§ Not shipped, and why.
-
-### Shipped — `c50db12`: an audit table whose measurement columns were all a literal zero
-
-`reconciliations` carries four NOT NULL measurement columns. The only persisting store wrote `0` into
-all four because `ReconciliationRow` never carried them. **23,973 rows since the v3 cutover, zero
-non-zero values in any of the four, ever.**
-
-What surfaced it was a contradiction, not a hunch: `duration_ms` read 0 while the same subsystem logged
-**865** `reconcile pass still in flight — skipping this tick` warnings in 14h — which only happens when
-passes overrun their tick — and the service's own comment says a pass issues "dozens of sequential REST
-calls over ~60s". A pass cannot both take 0ms and overrun its tick.
-
-It was worse than a dead field, because it had already been read as evidence. Pass 45's hand-off and
-state.md both concluded _"there are no resting protective orders … the venue reports
-`open_orders_checked=0` on every reconcile"_ — from a hardcoded constant. And the falsification goes
-deeper than the constant: that axis sweeps the REGULAR rail via `fetchOpenOrders`, while protective/algo
-stops live behind `fetchOpenAlgoOrders`, which it never calls — so **no value of that field is evidence
-about protective orders**. The conclusion survives on independent gauges (`open_orders{venue}`=0,
-`venue_capital_headroom_usdt`=500); the citation was void. Struck and corrected in state.md rather than
-quietly rewritten, because it had already been inherited once.
-
-**The adversarial review changed the fix, and that half matters more than the first.** Version one
-threaded real counts and would still have written `balances_checked=0` forever **on the only
-configuration that runs** — every configured venue is `demo`, so `venueReconConfig` turns `balanceAxis`
-off on all of them. A disabled axis now writes `AXIS_NOT_RUN` (−1). The review also caught that the new
-gate test asserted `tradesChecked` `toBe(0)`, which would have passed with the increment deleted, and
-that the store dropped `ReconciliationRow.ts` entirely (the column's `now()` default stamped every row
-at INSERT time) — the same defect class one field over. Both fixed before commit.
-
-**Live-verified post-deploy**, which is the whole point:
-
-| | before | after |
-| --- | --- | --- |
-| `duration_ms` | 0 on all 23,973 rows | 14,291-23,268 ms |
-| `trades_checked` | 0 always | 458, then 7 |
-| `balances_checked` | 0 always | −1 (`AXIS_NOT_RUN`) |
-| `open_orders_checked` | 0 (constant) | 0 (now a _measured_ zero) |
-
-Two venue passes at 14-23s each ≈ 37s against a 30s tick — the 865 skips are explained arithmetically
-for the first time, and the field that explains them now exists.
-
-**Gates:** format, lint, typecheck, **3092** unit+livegate, build, plus `test:db` 64/64 against live
-Postgres. **Soak:** clean — 0 alarms, container healthy, `RestartCount` 0, kill switch RUNNING, both
-venues CLEAN, 5 warn lines all benign.
-
-### Also fixed: the build-provenance probe read `unknown` on its first real deploy
-
-`af67acf` (shipped ~50 min earlier by the concurrent session) added a `running build:` probe so a pass
-can tell which build is live. The Dockerfile takes `ARG GIT_SHA=unknown`, but the documented deploy
-command — `docker compose build app`, playbook §5 step 3 — does not pass `--build-arg`. So the first
-deploy following the documented procedure (mine) produced `running build: unknown`, defeating the
-probe. Rebuilt with `--build-arg GIT_SHA=$(git rev-parse --short HEAD)`; now reads
-`running build: c50db12`. **The deploy procedure in the playbook and runbook still omits the flag** —
-left to the session that owns those files this morning, noted here so it is not lost.
-
-### Not shipped, and why — a concurrent unleased session held the tree
-
-I acquired the pass lease cleanly at 07:37:22Z. Between 08:16:55Z and 08:29:16Z another session landed
-**`af67acf` and `f630f63` on `main`**, redeployed the app at 08:17:56Z, and force-recreated Prometheus
-(20 → 21 rules). This is the **fourth** recorded concurrency occurrence and **the first with production
-blast radius**: previous ones touched only `test/eval`, which the gate glob excludes, while these
-rewrote `src/features/common/observability/**`, `src/config/**`, `observability/alerts.rules.yml` and
-the sweep itself.
-
-Damage assessment before trusting anything, per the standing procedure: zero file overlap with this
-pass, and both commits were fully committed with a clean tree before my gate ran — so the 3092-test
-result stands. **WATCH-V4-8's fix was not shipped for a specific reason, not a priority one:** it
-touches `metrics.service.ts` and `alerts.rules.yml`, both rewritten 50 minutes earlier by that session
-while its own deploy soak was still running, and a rules-file edit requires a Prometheus
-`--force-recreate` that would have destroyed that soak. That is a blocked state with a named blocker.
-**The scheduler config that lets two passes co-fire remains owner-owned and open** — it has now caused
-four collisions and this one deployed twice under another pass's feet.
-
-### Flagged / next pass
-
-1. **THE ACCOUNT IS UNFUNDED.** Owner action. Everything else is downstream of it.
-2. **WATCH-V4-8** — ship the durable last-success gauge on an uncontended tree.
-3. **The deploy procedure omits `--build-arg GIT_SHA`** — playbook §5 step 3 and `docs/runbook.md`.
-4. **WATCH-V4-6** — unchanged, still exactly 4 non-terminal orders from 07-24, not growing.
-5. Provider failover is **not** reachable by config alone — `AnthropicAgentClientConfig` has an optional
-   `baseUrl` honored at the fetch, but no production code path ever assigns it, and `MOONSHOT` /
-   `AGENTIC_EVAL_*` appear nowhere in `src/**` (positive control: `ANTHROPIC_API_KEY` hits 6 files).
-   Moot while both accounts are unfunded; recorded so the next pass does not re-derive it.
-
-## 2026-07-29 — Pass 47 (four measurement lies, one of them the alarm that was supposed to catch the other three)
-
-**Window:** 2026-07-29T09:15Z → 11:15Z. Lease `25798a2449a344ac` taken 09:15:21Z, tree uncontended.
-Pass 46 released its lease at ~09:15Z, so this pass began **21 seconds after the previous one ended** —
-back-to-back, not concurrent. Consequence recorded below.
-
-**Sweep:** 0 alarms at open. Two annotations: `prometheus_alert_resolved_critical`
-(`AgentClientFatalLatch`, 662 firing samples) and `short_interval` (gap 167s). Playbook §3 makes a
-resolved critical a defect investigation anyway, which is where this pass started.
-
-**Book — unchanged, independently re-derived from metrics rather than copied from Pass 46:**
-`agentic_promotion_round_trips` 28, `agentic_promotion_net_pnl_usd` −39.6370,
-`agentic_promotion_llm_cost_usd` 16.1979, `agentic_promotion_win_rate` 0.1786,
-`agentic_promotion_window_days` 4.2953 of 14, `agentic_promotion_ready` 0. 0 fills this window.
-Champion v8 remains the only meaningfully positive lineage (+$6.77/5 trips) against v2's −$24.76/14 —
-n=5 is far under this loop's own "never act on a sub-n≥12 cell" bar, so it stays an observation.
-`equity_usdt` 4978.17. RSS 711.5 MiB (WATCH-V3-1: under the 900 MiB line).
-
-**Pass type:** defect investigation. No improvement work was eligible and that is not a scheduling
-excuse — every open backlog row is DATA-GATED on closed trips that cannot accrue while the lane is
-dead, and § Standing verdicts forecloses the rest (entry signal worse than a random-bar placebo; exit
-sweeps closed; "do not propose cost work as a profitability lever"). The one unblocked lever is owner
-funding. Stated plainly because the playbook asks for it: **this pass shipped no profitability work
-because none exists that funding does not gate.**
-
-### The four defects, all shipped
-
-All four are the same disease at four sites: **a value supplied by its own writer as a constant, or a
-counter that counts non-events, is indistinguishable from a measurement at every query, forever.**
-Pass 44 recorded it for prom-client children; Pass 46 for a NOT NULL column. This pass found four more.
-
-**1. Deploy provenance read `unknown` for anyone following the playbook** (owner-raised mid-pass).
-The Dockerfile takes `GIT_SHA` as a build arg; the compose `build:` block declared no `args:`. So the
-arg was reachable only via `docker compose build --build-arg` — the runbook's form. The playbook's §5
-form supplied nothing, and the scheduled task's form (`up -d --build`) **cannot** supply it:
-`docker compose up` rejects `--build-arg` outright ("unknown flag"), verified live. Every automated
-deploy baked the literal `unknown`; the runbook path baked a real sha. That is why the metric read
-`c50db12` today and the gap stayed invisible — Pass 46 happened to use the runbook form.
-Compose now interpolates `${GIT_SHA:-unknown}`, the one mechanism both subcommands accept (proven
-end-to-end on compose v5.3.1 with a throwaway image before any repo edit), and all four documented
-deploy commands collapse to that form. **The actual driver was outside the repo** — the scheduled
-task's own `SKILL.md` — and was fixed too, along with two other rots in it: it still told every pass
-to rehydrate with `loop:digests`, which Pass 46 deleted, and it never mentioned the pass lease.
-Two further defects fell out of the fix: `build_info` was resolved by **array order** (the identical
-`boot_info` defect found 2026-07-29, one metric over — after a redeploy Prometheus serves both boots'
-series and the probe took `[0]`), and `APP_GIT_SHA` now fails OPEN on a **malformed** value, not just
-an absent one, because compose interpolates the deployer's ambient `GIT_SHA` and an over-long export
-would have thrown in zod, crash-looped under `restart: unless-stopped`, and raised `restart_storm` —
-an observability input blocking the deploy it exists to record. It degrades to `unknown` rather than
-truncating, because a truncated string is indistinguishable from a real sha.
-
-**2. `zero_decides` cannot fire on a dead lane — the most consequential finding.**
-`probes.decides` is an unfiltered `select count(*) from agent_decisions`, but that table takes a row
-per symbol per scheduled skip, where no model call happens. Measured over the 12h before the fix:
-
-| hour (UTC) | all rows | scheduled skips | errors | REAL decides |
-| ---------- | -------- | --------------- | ------ | ------------ |
-| 08:00 | 160 | 154 | 6 | **0** |
-| 07:00 | 160 | 153 | 7 | **0** |
-| 06:00 | 160 | 147 | 13 | **0** |
-| … every hour identical … | 160 | ~150 | ~13 | **0** |
-
-160 rows/hour, every hour, zero real decides — through a lane dead since 2026-07-27T20:15:31Z.
-`agentic_consult_gate_total` is incremented by `skipped_scheduled` the same way, so both halves of the
-alarm's condition are permanently false. **The alarm the playbook names as the primary dead-lane
-detector has never been able to fire on a dead lane.** The total is kept (it does detect a stalled
-scheduler — the real 8.2h candle-stall class); a separate `realDecides` probe now counts genuine model
-calls with the same structural predicate the app uses to seed its gauge, so the two cannot disagree.
-Annotation only, never an alarm — reasoning under defect 3.
-
-**3. WATCH-V4-8 — a redeploy launders a standing outage into a green board.** Queued by Pass 46 with
-the deadline "next pass with an uncontended tree"; this was it. Reproduced live at pass open: with the
-lane 34h dead, `agent_client_latched` 0, budget $3, 21 rules loaded / 0 firing, 0 sweep alarms.
-`agent_last_success_timestamp_seconds` is now seeded at boot from `agent_decisions`, so it reads the
-TRUE age on the first scrape of every boot. The success predicate is structural rather than a
-rationale string match — `prompt_hash <> '' AND latency_ms IS NOT NULL AND strategy_id NOT LIKE
-'replay-%'`, two columns written together and only by code that already parsed a response body — so
-skips, latched suppressions and thrown errors are excluded by the shape of the write path. Review
-narrowed it further (a post-200 degrade is not a decide either), which is why the lifetime count reads
-575 and not the 660 the first predicate selected.
-`AgenticNoSuccessfulDecideSustained` is **severity warning, deliberately**: `loop:sweep` promotes only
-`critical` to the blocking alarm and §3 blocks improvement work until alarms clear, so a critical here
-would wedge every future pass on a condition no pass can fix. `for: 5m` and not the soak length —
-the sweep reads only rules already `firing`, so a `for:` equal to the playbook's 15-min MINIMUM soak
-would still be `pending` when the soak-ending sweep runs, invisible on the very pass that shipped it.
-9h threshold: the model self-schedules up to 32 bars × 15m = 8h, and the widest real decide gap with
-the app actually running is 270min.
-
-**4. Three counters whose zero was a void read.** `reconciliation_mismatch_total`,
-`agentic_schema_rejections_total` and `agentic_capability_violations_total` were registered with
-**zero children** — HELP/TYPE present, no series — so every query returned an empty vector, not a zero.
-`reconciliation_mismatch_total{class="adopt_non_adoptable"}` and `{class="fill_overflow"}` are the
-literal expected-positive signatures of WATCH-V4-1 and WATCH-V4-2: **successive passes have confirmed
-both against an instrument that could not answer.** Both re-verified this pass directly against
-`audit_log` (zero rows) — the verdicts stand, the citation never should have been made. All 13 mismatch
-classes and 4 schema kinds are now seeded from their own type unions; the capability counter is seeded
-at the single kind its call sites actually produce, verified by enumerating them, because a guessed
-label would be a fabricated child — the same lie one level down. Pass 44 fixed exactly this on
-`market_stream_forced_reconnects_total` and left three siblings.
-
-### Gates, commits, deploy, soak
-
-Gates green on the full tree: `format:check`, `lint:md` (0 errors), `lint`, `typecheck`,
-**`test` 3147/3147 across 175 files**, `build`, **`test:livegate` 55/55**.
-Commits: `1cb2253` (defects 1+2 — sweep tooling, compose, docs) and `446e1da` (defects 3+4 — app
-metrics). **Two commits for four defects, not four**: defects 1/2 both rewrite
-`scripts/loop-sweep{,-core}.mjs` and 3/4 both rewrite `agent-metrics-recorder.service.ts`, so a
-four-way split needed per-hunk staging that could produce an intermediate commit failing its own spec.
-The seams are where the files actually separate. Each defect got its own adversarial review regardless.
-Deployed 11:03:17Z, boot `1d68a57c`, `RestartCount` 0, `GIT_SHA=446e1da` via the playbook's own
-`up -d --build` form; Prometheus force-recreated (rules file changed) → **22 rules loaded**.
-
-**Soak — every fix verified live, not inferred from tests:**
-
-- `build_info{git_sha="446e1da"}`; digest reads `running build: 446e1da (working tree 446e1da)`.
-- `agent_last_success_timestamp_seconds` = 1785183331.331 → **38.80h stale on a boot minutes old**,
-  in the same scrape where `agent_client_latched` reads 0. The defect and its fix, side by side.
-- **`AgenticNoSuccessfulDecideSustained` FIRING at 11:04:25Z on an 8-minute-old boot** — the signal
-  that did not exist before this pass, since every other rule reads green on a fresh boot.
-  It lands as `prometheus_alert_firing_nonblocking`, so **sweep alarms stayed 0** and §3 is not wedged:
-  exactly the designed failure direction.
-- 13 + 4 + 1 counter series now publishing true zeros.
-- `kill_switch_state` RUNNING, reconciles CLEAN both venues, `ReconciliationNeverCleanSustained`
-  self-cleared once the first post-boot reconcile landed, 0 loop errors, RSS 711.5 MiB.
-
-### Standing WATCH lines, verified against DB truth (not against the metrics that were void)
-
-WATCH-V4-1 holds (clean stamp 105s; no `adopt_non_adoptable` in `audit_log`). V4-2 holds (no
-`FILL_OVERFLOW`). V4-3 holds (boot at `RestartCount` 0, kill switch RUNNING, no `perp pin:` line).
-V4-4 holds (0 `cum_qty`-vs-fills mismatches; 197 perp fills → perp orders, 12 spot → spot orders,
-**zero cross-venue folding**). V4-6 holds (still exactly the 4 non-terminal orders from 07-24,
-`cum_qty` 0, not growing). V4-7 holds. **WATCH-V4-8 RESOLVED** — expected-positive confirmed live above.
-Pass 46's `c50db12` confirmed in production: `duration_ms` 16–22s per venue pass (was a literal 0),
-`balances_checked` −1 (AXIS_NOT_RUN); two venues ≈39s against a 30s tick, which explains the
-"reconcile pass still in flight" warns arithmetically for the first time.
-
-### Flagged / next pass
-
-1. **Funding remains the only thing standing between this program and progress.** Unchanged and
-   owner-only. Last real model decide 2026-07-27T20:15:31Z; the lane has now been dead ~39h.
-2. **Back-to-back passes are a measurement problem, not just waste.** This pass started 21s after
-   Pass 46 ended, which tripped the `short_interval` floor and **suppressed delta-starvation alarms
-   for the whole pass**. Combined with defects 2 and 3, that made three independent mechanisms capable
-   of hiding a dead lane from a single pass. Two are now fixed; the scheduling one is owner-owned
-   (§ Flagged, the co-fire item). Recommend the 3×/day schedule be checked for double-firing.
-3. **Owner research request, queued 2026-07-29:** whether the daily loop (or a similar
-   subscription-based path) could call app endpoints to execute trades as the bot would — routing
-   around the funding blocker entirely. Not started this pass. First constraint to design against:
-   hard rule 2 forbids bypassing Risk, so the entry point must be the Signal boundary, not the order
-   boundary, and the promotion-evidence question (whose decider is the gate measuring?) needs an
-   answer before any such trades are allowed to count.
-
 ## 2026-07-29 — Pass 47 addendum b (RECONSTRUCTED by Pass 49: it ran, it left no record, and what it decided is gone)
 
 **Window:** 2026-07-29T16:07Z → 19:47Z. **This entry was NOT written by the pass it describes.** It was
@@ -844,3 +564,255 @@ V4-9 holds (the study ran with `capsSource: 'recorded'` on 100% of rows).
    mint a genuine v11 candidate to compare against `inverted`, or set the knob to 0 and say so.
 6. **Only the Anthropic account is funded.** Moonshot is untested since and presumed still suspended;
    `agent_client_latch_cause{cause="insufficient_credit"}` is the read, not an investigation.
+
+---
+
+## 2026-07-30 — Pass 49 addendum c (RECONSTRUCTED by Pass 50: three commits shipped and deployed, and left no entry)
+
+**Window:** 2026-07-30T18:25Z → 22:19Z. **This entry was NOT written by the session it describes.**
+Pass 50 reconstructed it on 2026-07-31 from commits, diffs, the loop records that session DID
+update, and the digest its own deploy produced. Written so the window has a covering record and the
+unrecorded-pass detector has an answer rather than a permanent annotation.
+
+**What happened, plainly:** a session shipped `c23ab3a`, `61d6b6c` and `8d39363`, deployed the last
+of them to production (boot `54cdb77a`, 22:18:08Z), and updated `STATUS.md`, `verdicts.md`,
+`watches.md` and the follow-on study — but appended **nothing** to `LOG.md`. `git log -- LOG.md`
+confirms it positively: the file's newest touch is `d0d91c7`, Pass 49's own records commit. This is
+the second unrecorded-session occurrence in three days.
+
+### What the three commits did
+
+**`c23ab3a` — the decision-history ring was mostly noise.** The ring fed the model 30 rows with no
+filter on `action`; of 405 sampled lines **382 carried `action:'error'`** — rows stamped for calls
+that never reached the model at all. `PRE_CALL_DECIDE_RATIONALE_TAGS` and
+`isModelAuthoredDecision()` were added to `decide-rationale.ts` to exclude them, keeping
+`plan_authoritative_close:` rows because those are real decisions the system overrode.
+`MAX_DECISION_HISTORY` 30 → 12. The tool schemas were unified for cache-breakpoint stability, and
+the commit is explicit that the JSON got BIGGER and this is **not** a token saving.
+
+**`61d6b6c` — the authoring pass, and a retired objective wearing a different name.**
+`scripts/loop-authoring.mjs` + `loop-authoring-core.mjs` (1,280 lines) and a `loop:authoring` script:
+the loop can now draft candidate playbooks itself. The finding worth keeping: the ANTI-RATCHET
+objective retired in Pass 49 was fenced behind three `[RETIRED]` markers, and an X7 `postMortems`
+paragraph **outside every fence** relabelled the same objective and told the model to treat a
+rank-filter relaxation "as a strong prompt to act." The first implementation passed all four marker
+assertions and still leaked it into the assembled prompt. It was caught only by scanning the
+generated output — a fence that checks its source and not its product is not a fence.
+
+**`8d39363` — three of six keys were not batch-invariant, and one would have been a correctness
+bug.** Batch-invariant payload keys were hoisted behind a cache breakpoint. `liquidation` was
+dropped from the plan because `LiquidationFeedPort.latest(symbol)` prunes a per-symbol buffer —
+it measured 100% identical across 16 live waves only because those windows were quiet, and hoisting
+it **would have attributed one symbol's liquidation cascade to the whole batch** the first time a
+real one hit. `trackRecord` was 0% identical in 10 of 10 waves. Measured saving ~210-230 tok/symbol
+against the ~839 the plan projected, and the commit retracts the larger figure itself: structural
+invariance and incidental agreement are not the same thing. It also corrected `c23ab3a`'s own
+headline — the 382-of-405 sample was taken DURING the provider outage; across the healthy week the
+noise share is **13.2%**, so the ring trim is roughly cost-FLAT, not halved.
+
+### What that session recorded elsewhere, which binds later passes
+
+`verdicts.md` gained two entries — the preserved authoring prompt's dead-input paragraphs are NOT
+trimmed (a falsifiable draft-scan check replaces the trim), and **PLAN STEP 14 IS NOT CLOSED**, its
+closure argument failing on three measured counts including that the live `maxHoldBars` reads 48 on
+5 of 6 declarations while nothing in this program has ever measured h=48. `watches.md` gained the
+WATCH-V4-1 re-derivation (a second `adopt_non_adoptable` at 19:00:30Z; "stays 0" replaced by
+"transient AND explained") and the WATCH-V4-10 structural finding that boot recovery excludes
+algo-rail orders from `portfolio.openOrders`, so after any boot no reconciliation pass can fold a
+perp algo stop terminal whatever the venue reports.
+
+### What cannot be reconstructed, and one thing that was left wrong
+
+Gone: whether this was one session or several, interactive or autonomous, and every rejected
+alternative not already narrated in a commit body. Also absent is any independent artifact that the
+claimed gates ran — there is no CI here, so the gate counts (3,166 → 3,217 → 3,232 tests) are the
+author's own prose. Noted, not disputed: Pass 50 re-ran the full gate on the resulting tree and
+found it green.
+
+Left wrong and fixed by Pass 50: `STATUS.md`'s "Current order & status" still read `HEAD = live
+build 61d6b6c`, boot `f30074f2` — **the state before that session's own deploy**. The pointer the
+next pass reads first was stale in the same commit that made it stale.
+
+---
+
+## 2026-07-31 — Pass 50 (five defects on one rail, and the instrument that could not see any of them)
+
+**Window:** 2026-07-31T00:07Z → 08:05Z. Lease taken 00:07:25Z (`9bf2dbae343a1910`). **The host slept
+~7.5h mid-pass**; the 2h lease expired underneath the pass and a re-probe at 07:41:39Z broke a stale
+lease carrying **its own label** and re-acquired as `504746bf0b6db4aa`. No other pass was live, and
+the lease behaved exactly as documented — it is time-based and cannot detect a live holder. Recorded
+because a future reader seeing two nonces for one pass deserves the reason.
+
+**Sweep 00:07:32Z: 0 alarms**, one annotation (`ReconciliationMismatch`, warning, fired and resolved
+in-window). §3's incident gate therefore did not bind, and the pass selected its own work.
+
+### The book
+
+| metric | Pass 49 (17:15Z) | this pass (07:50Z) |
+| --- | --- | --- |
+| closed round trips | 32 | **34** |
+| net-of-cost | −$41.8850 | **−$44.2337** |
+| win rate | 0.1875 | **0.2059** |
+| LLM cost | $17.8605 | **$19.3709** |
+| trade-anchored window | 6.966 / 14 d | **7.329 / 14 d** |
+| `agentic_promotion_ready` | 0 | **0** |
+
+Two trips closed overnight, one of them a winner. Realized PnL moved **−$0.82** and LLM spend
+**+$0.99** — so the net-of-cost loss this window is mostly the cost of asking. `equity_usdt`
+4976.77, kill switch RUNNING, RSS well inside WATCH-V3-1. **The lane is funded and trading:** real
+model decides 669 → **722** lifetime.
+
+### Pass type: defect repair. The improvement was crowded out entirely, and this is the second such pass
+
+Six defects found, six fixed and shipped, one commit each — the playbook's "a pass that finds five
+defects fixes five defects" applied literally. No candidate or promotion work was attempted. Per §4
+that obliges a recommendation rather than a repeat, and it is in § Flagged below.
+
+### 1. Five un-journaled cancels on one rail — WATCH-V4-10 root-caused, and the earlier suspect refuted
+
+`59df4c9`, `a2d7d33`. The HYPE/USDT:USDT stop has now been `ACKED` ~11h across 3+ boots against a
+flat book. Pass 49 suspected an undefined `entry` read after `clearPlan()`; **that is refuted** —
+both live call sites snapshot `stopEntry` first.
+
+The real shape is two mechanisms with one root. `reconcileOrphanedAlgoStop` **did** reach its
+`fetchOpenAlgoOrders` call for HYPE on every bar — every guard between `decide()` and it is
+satisfied — but its no-plan branch emitted nothing on any of its four outcomes, so "never matched"
+and "matched, and the cancel threw into a bare `catch {}`" were indistinguishable **by
+construction**. Meanwhile the BTC/USDT:USDT stop from 19:00:09Z **was** cancelled at the venue at
+22:45Z by `drift_cancel` and is still non-terminal locally, because no algo-rail cancel was ever
+journaled on any path. One rail: a cancel that never happens, and a cancel that happens and is never
+recorded.
+
+**Why it is money-path and not housekeeping:** a stale non-terminal algo order keeps its intent in
+`inFlightIntents`, and `driveFlattening` marks a symbol BUSY off exactly that set. The HALT path is
+simultaneously the producer of the stranding (`cancelRestingAlgoStops` cancels and journals nothing)
+and its victim — `allFlat` never becomes true for that symbol, so **a HALT cannot complete for it
+until the next boot**. Four such registrations were live when the pass started.
+
+Fixed: every exit of the orphan reconciler now carries a label (12 → 15, zero-pre-seeded, the array
+now derived from a `satisfies Record<AgentVenueStopEvent, true>` map so a sixteenth cannot miss the
+seed), including `orphan_cancel_failed` — the label that makes a zero on `orphan_cancel` readable.
+All five cancel sites now journal through the pre-existing `onAlgoStopGone` seam, which folds the
+local row terminal by **appending** `algo-hist:CANCELED` — no UPDATE, no DELETE, rule 6 intact.
+
+**The review earned its keep here.** The first implementation `await`ed that fold inline — between a
+stop cancel and the exit signal built from it, and inside a reconcile path running on a **2s**
+non-LLM budget whose overrun drops the bar and trips auto-DRAIN — against venue reads with **no
+configured ccxt timeout** (10s default, per call). It declared FAILS OPEN and honoured that for
+throws but not for latency. All five calls are now `void`, and a test pins that a rejecting seam
+still emits the EXIT signal, so a reintroduced `await` fails loudly rather than silently re-breaking
+the contract P7f fix 5 exists for.
+
+**Stated so no later pass misreads it: this is prevention and measurement, not a heal.** The four
+stranded rows will not terminalize — their cancels predate the seam. What ships is the ability to
+say which failure is live: `orphan_scan` above zero with both cancel counters at zero means the scan
+runs and never matches.
+
+### 2. A truncated tool call and a rejected one were the same journal row
+
+`daf8dbe`, `f9ed0ea`. Ten of 37 `decisions: expected array, received undefined` rejections in the
+trailing 14 days carry `output_tokens` of **exactly 4096** — `AGENTIC_MAX_TOKENS`. Adaptive thinking
+eats the whole output budget before any tool argument is written, the block arrives `{}`, and zod
+reports a missing field. Both causes stamped `schema_rejected:`, so the journal could not measure
+how often the lane loses a whole batch to truncation. `truncated_max_tokens:` already existed for
+the no-block case and now covers the empty-block case on both paths — including the batch
+`!toolBlock` branch, because batch is the deployed shape and leaving it out would have under-counted
+truncations on the only path that runs.
+
+Two review catches: the re-tag moves rows between `agent_decide_total{outcome}` buckets, which is
+now declared and pinned by the `schema_rejected → hold` case the outcome-tag spec was missing; and
+the replay harness carried a comment asserting parity with production that this change made false,
+so the harness was taught the same rule rather than left silently disagreeing with live.
+
+### 3. Two research harnesses that had been answering a different question than production
+
+`f9ed0ea`, `3f215aa`. Both off the production gate, so both rotted unseen.
+
+**A red spec nobody ran.** `agentic-replay.spec.ts` pinned `caps.leverage` at `'2'` while `.env.app`
+has pinned `'5'` since the 2026-07-27 owner decision. That commit moved the harness fixture and its
+own message required it — "or backtests answer a different question than production" — but missed
+this assertion. The harness scores candidates that get promoted to the live lane, so the divergence
+meant candidates scored against a sizing constraint the venue no longer enforces.
+
+**A test run that rewrote a committed study.** `vitest run test/backtest/` silently overwrote
+`research/studies/carry-study-2026-07-10.md`, 124 lines each way. That file is the evidence behind a
+**settled** NO-GO. The rewrite replaced published evidence with weaker evidence: funding rows per
+symbol **3250 → 31**, V 1.7369730 → 1.0255109, SR0\* 3.5943 → 2.7618, cells with ≤1 holdout episode
+18 → 81. Under a green test run, invisibly; it was caught only by reading `git status`. The write is
+now opt-in behind `CARRY_STUDY_WRITE=1` — fails CLOSED for writing, never for testing.
+
+**And the collapse itself is a separate, still-open defect.** `fetchExtended()` in
+`test/backtest/fetch-data.mjs` defaults `targetBars` to 200 — its own header calls that a smoke
+fetch — and has **no `existsSync` guard**, so it overwrites a full-history cache with a smoke-sized
+one. The cache proves it: `funding-{BTC,ETH,SOL,XRP}` are dated Jul 27 with 31 rows over 10 days
+while `funding-{AVAX,DOGE,LINK}` are untouched from Jul 12 with 3250 rows over three years. Any
+carry-adjacent measurement taken today runs on ~1% of its intended data.
+
+### 4. The rail had no alert, and a dashboard that coloured nothing
+
+`d2ab9fa`. `agentic_venue_stop_total` had **zero** alert rules, so `orphan_cancel_failed` — the exact
+recurrence signature of the 11h stranding — could fire every bar forever and reach nobody, this
+loop's sweep included. `AgenticOrphanStopCancelFailing` fires on more than one failure in 30m (a
+single one is a venue blip the next bar retries; two means the same order failed on consecutive
+bars). **Severity `warning` deliberately:** the counter was zero-seeded minutes earlier, and only
+`critical` becomes a blocking sweep alarm — handing an unbaselined counter that power on day one
+risks wedging every future pass on a threshold nobody has validated. The rule states what would
+justify promotion.
+
+A companion rule for the quieter failure — `orphan_scan` climbing while both cancel counters stay
+flat — was **considered and rejected as premature**: that is also the healthy steady state for every
+symbol with no stranded order. Separating them needs venue-side algo-order age against tracked
+positions, which does not exist yet.
+
+The dashboard's orange override never matched anything it was written for: its prefix alternatives
+end in `_` followed by `\b`, and `_` is a word character, so the boundary never asserts. Verified
+programmatically against all fifteen labels rather than by eye.
+
+### Gates, deploy, soak
+
+`format:check` ✓ · `lint` ✓ · `lint:md` 0 errors ✓ · `typecheck` ✓ · `build` ✓ · `test`
+**3249 passed / 179 files** ✓ · `test:livegate` **55/55** ✓. Each commit additionally passed the
+pre-commit hook. `test:cov` is red at HEAD and was **not** caused by this pass —
+`reconciliation.service.ts`, `unknown-resolver.service.ts` and `position-sizer.service.ts` are the
+sub-100% files under the two 100% globs and none was touched; `halt-coordinator.service.ts` is
+100/100/100/100.
+
+Deploy 07:47:51Z, `GIT_SHA=3f215aa`, `build_info{git_sha="3f215aa"}` confirmed on the running
+process, `RestartCount` 0, healthy. Prometheus force-recreated (rules file changed): **22 rules
+across 5 groups, 0 firing**, `AgenticOrphanStopCancelFailing` loaded `health: ok`. All 15
+venue-stop labels zero-pre-seeded on **both** venues (30 children) — the exhaustiveness pin works on
+the live process, not just in the type-checker.
+
+**One honest caveat on the soak.** The 07:45:59Z pre-deploy sweep was VOID by its own controls: the
+container had restarted 16s earlier as the host came back from sleep, so `bootId`, the rules probe
+and the alert history all failed. That is duty cycle, not a defect, but it means this pass's
+pre-deploy baseline is thinner than usual and the post-deploy read below is the load-bearing one.
+
+### WATCH lines
+
+V3-1 holds. V4-1 holds on its re-derived clause — the 19:00:30Z `adopt_non_adoptable` is transient
+and explained (two binance `STOP_LOSS_LIMIT` ACKs 19-28s before the sweep), and the alert's 5 firing
+samples are the `for: 0m` rule staying hot ~5 min after one event, not a sustained fault. V4-2 holds
+(zero `fill_overflow` ever). V4-4 holds. V4-7 holds. **V4-10 is root-caused and instrumented but
+NOT closed** — the stranded rows persist by design of the fix. New **WATCH-V4-11** (algo-rail
+observability) and **WATCH-V4-12** (truncation tagging) in `watches.md`.
+
+### Flagged / next pass
+
+1. **The improvement was crowded out for the second consecutive pass, and the recommendation is not
+   "try harder next time".** Five of six defects this pass were _invisible failures_ — a counter
+   never emitted, a cancel never journaled, a study silently rewritten, a spec nobody runs, an alert
+   that does not exist. The loop keeps finding these because nothing runs between passes that would.
+   The cheapest structural fix is to put the off-gate harnesses (`test/backtest`, `test/eval`) on a
+   scheduled run whose failure is surfaced by `loop:sweep`, so a rotted harness costs minutes
+   instead of days. That is one commit and it is the highest-leverage thing available.
+2. **`fetchExtended()`'s 200-bar default with no `existsSync` guard** — named in §3, not fixed
+   (different file, different fix). It will keep truncating caches silently.
+3. **`AGENTIC_PLAYBOOK_AB_PCT=40` still routes nothing.** Inherited from Pass 49 and untouched: mint
+   a v11 candidate against `inverted` (`loop:authoring` now exists to draft one) or set the knob to
+   0 and say so. This is the profitability decision this pass did not get to.
+4. **The unresolved question underneath all of it.** Net-of-cost is −$44.23 over 34 trips at a 0.206
+   win rate, and `verdicts.md` holds that entries measure significantly negative and worse than a
+   random-bar placebo. This pass spent its whole budget making the lane *observable*, which was
+   worth doing, and moved the edge not at all. An owner call remains open on whether a lane that
+   provably cannot pass its own gate should keep accruing ~$1/day of evidence.

@@ -699,6 +699,52 @@ describe('AnthropicAgentClient.proposeBatch', () => {
     }
   });
 
+  // 2026-07-31: batch is the DEPLOYED shape (AGENTIC_PORTFOLIO_CONSULT=true) — a max_tokens stop with
+  // NO submit_portfolio tool_use block at all is the MORE direct batch truncation (mirrors the
+  // single-symbol propose() !toolBlock branch's own truncated_max_tokens distinction).
+  it('a max_tokens stop with no submit_portfolio tool_use block soft-holds every symbol with a truncated_max_tokens: hold decision (not no_tool_use)', async () => {
+    const fetchFn = vi.fn();
+    const client = new AnthropicAgentClient(buildCfg(), fetchFn);
+    fetchFn.mockResolvedValue(
+      apiResponse({
+        stop_reason: 'max_tokens',
+        content: [{ type: 'text', text: 'nope' }],
+        usage: { input_tokens: 10, output_tokens: 4096 },
+      }),
+    );
+
+    const result = await client.proposeBatch([
+      buildInput('BTC/USDT', 'agentic-1'),
+      buildInput('ETH/USDT', 'agentic-2'),
+    ]);
+
+    for (const symbol of ['BTC/USDT', 'ETH/USDT']) {
+      const decision = result.proposals.get(symbol)?.decision;
+      expect(decision, symbol).toMatchObject({ action: 'hold', confidence: 0 });
+      expect(decision?.rationale, symbol).toMatch(/^truncated_max_tokens: /);
+    }
+  });
+
+  it('a plain no-tool-use batch response (not a max_tokens truncation) still stamps no_tool_use: — no regression', async () => {
+    const fetchFn = vi.fn();
+    const client = new AnthropicAgentClient(buildCfg(), fetchFn);
+    fetchFn.mockResolvedValue(
+      apiResponse({
+        stop_reason: 'end_turn',
+        content: [{ type: 'text', text: 'nope' }],
+      }),
+    );
+
+    const result = await client.proposeBatch([
+      buildInput('BTC/USDT', 'agentic-1'),
+      buildInput('ETH/USDT', 'agentic-2'),
+    ]);
+
+    for (const symbol of ['BTC/USDT', 'ETH/USDT']) {
+      expect(result.proposals.get(symbol)?.decision?.rationale, symbol).toMatch(/^no_tool_use: /);
+    }
+  });
+
   it('a top-level decisions field missing from the tool payload soft-holds every symbol', async () => {
     const fetchFn = vi.fn();
     const client = new AnthropicAgentClient(buildCfg(), fetchFn);
@@ -1093,6 +1139,99 @@ describe('AnthropicAgentClient.proposeBatch — v2 trade contract (A2)', () => {
     }
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('holding all'));
     expect(recordSchemaFailure).toHaveBeenCalledWith('batch');
+  });
+
+  // XA4 addendum (2026-07-31): mirrors anthropic-agent-client.spec.ts's single-symbol XA4 truncation
+  // case — a tool_use block IS present (the `!toolBlock` batch branch above already has its own
+  // no-truncated_max_tokens-variant comment; this is the OTHER branch, the one that DOES parse a
+  // schema), but its `input` is empty because max_tokens cut the response off before real arguments
+  // landed, so tradePortfolioSchema fails with 'decisions: expected array, received undefined' — the
+  // same truncation signature the live journal shows on 10/37 schema_rejected rows over 14d with
+  // output_tokens pinned at exactly 4096.
+  it('a whole-batch schema rejection caused by max_tokens truncation (empty tool input) stamps a truncated_max_tokens: hold decision (not schema_rejected) for every symbol, still soft-holds, and still fires recordSchemaFailure(batch)', async () => {
+    const fetchFn = vi.fn();
+    const warn = vi.fn();
+    const recordSchemaFailure = vi.fn();
+    const client = new AnthropicAgentClient(tradeCfg({ recordSchemaFailure }), fetchFn, { warn });
+    fetchFn.mockResolvedValue(
+      apiResponse({
+        stop_reason: 'max_tokens',
+        content: [{ type: 'tool_use', name: 'submit_portfolio', input: {} }],
+      }),
+    );
+
+    const result = await client.proposeBatch([
+      buildInput('BTC/USDT', 'agentic-1'),
+      buildInput('ETH/USDT', 'agentic-2'),
+    ]);
+
+    for (const symbol of ['BTC/USDT', 'ETH/USDT']) {
+      const proposal = result.proposals.get(symbol);
+      expect(proposal?.signals, symbol).toEqual([]);
+      expect(proposal?.decision, symbol).toMatchObject({ action: 'hold', confidence: 0 });
+      expect(proposal?.decision?.rationale, symbol).toMatch(/^truncated_max_tokens: /);
+    }
+    expect(recordSchemaFailure).toHaveBeenCalledWith('batch');
+  });
+
+  it('a whole-batch schema rejection with stop_reason=end_turn (not max_tokens) still stamps schema_rejected: for every symbol — no regression from the truncation-tag branch', async () => {
+    const fetchFn = vi.fn();
+    const client = new AnthropicAgentClient(tradeCfg(), fetchFn);
+    // Same 'decisions serialized as a string, not an array' shape as the schema_rejected test above
+    // (a genuine top-level schema failure), just with an explicit non-max_tokens stop_reason.
+    fetchFn.mockResolvedValue(
+      apiResponse({
+        stop_reason: 'end_turn',
+        content: [
+          {
+            type: 'tool_use',
+            name: 'submit_portfolio',
+            input: {
+              decisions: JSON.stringify([openLongElement('BTC/USDT')]),
+              nextConsultBars: 8,
+            },
+          },
+        ],
+      }),
+    );
+
+    const result = await client.proposeBatch([
+      buildInput('BTC/USDT', 'agentic-1'),
+      buildInput('ETH/USDT', 'agentic-2'),
+    ]);
+
+    for (const symbol of ['BTC/USDT', 'ETH/USDT']) {
+      expect(result.proposals.get(symbol)?.decision?.rationale, symbol).toMatch(
+        /^schema_rejected: /,
+      );
+    }
+  });
+
+  it('a whole-batch schema rejection with stop_reason absent/unreadable falls back to schema_rejected: (fail-open) for every symbol without throwing', async () => {
+    const fetchFn = vi.fn();
+    const client = new AnthropicAgentClient(tradeCfg(), fetchFn);
+    fetchFn.mockResolvedValue(
+      apiResponse({
+        content: [
+          {
+            type: 'tool_use',
+            name: 'submit_portfolio',
+            input: { decisions: JSON.stringify([openLongElement('BTC/USDT')]), nextConsultBars: 8 },
+          },
+        ],
+      }),
+    );
+
+    const result = await client.proposeBatch([
+      buildInput('BTC/USDT', 'agentic-1'),
+      buildInput('ETH/USDT', 'agentic-2'),
+    ]);
+
+    for (const symbol of ['BTC/USDT', 'ETH/USDT']) {
+      expect(result.proposals.get(symbol)?.decision?.rationale, symbol).toMatch(
+        /^schema_rejected: /,
+      );
+    }
   });
 
   it('(c) the single portfolio-level nextConsultBars is stamped on EVERY proposal — resolved, malformed-element, and missing-symbol alike', async () => {

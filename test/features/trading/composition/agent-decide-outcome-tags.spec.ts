@@ -100,6 +100,27 @@ describe('MetricsWrappingAgentClient outcome classification — H4 rationale tag
     expect(outcome).toBe('truncated');
   });
 
+  // 2026-07-31 (schemaFailureRationale, anthropic-agent-client.ts): pins the boundary the
+  // truncated_max_tokens: case above sits right next to — a genuine schema_rejected: (no max_tokens
+  // truncation involved) falls through every named branch and lands on the pre-existing
+  // action==='hold' fallthrough, NOT 'truncated'. Re-tagging a truncation-caused failure from
+  // schema_rejected: to truncated_max_tokens: therefore moves it from {outcome="hold"} to
+  // {outcome="truncated"} on agent_decide_total — checked benign (both labels are in
+  // PROVES_CALL_COMPLETED_OUTCOMES, neither in LATCHED_DECIDE_OUTCOMES) but a real bucket move, pinned
+  // here so a future change to either tag's classification fails this test instead of silently
+  // reshaping the metric.
+  it("schema_rejected: rationale -> hold (falls through every named branch, NOT 'truncated')", async () => {
+    const outcome = await outcomeFor({
+      signals: [],
+      decision: {
+        action: 'hold',
+        confidence: 0,
+        rationale: 'schema_rejected: action: Invalid option',
+      },
+    });
+    expect(outcome).toBe('hold');
+  });
+
   it('budget_exhausted: rationale -> budget_blocked (reuses the pre-existing label)', async () => {
     const outcome = await outcomeFor({
       signals: [],

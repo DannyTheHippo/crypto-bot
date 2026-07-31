@@ -573,12 +573,32 @@ const describeSchemaFailure = (error: z.ZodError, input: unknown): string => {
 // comments on the failure mode this makes queryable: `WHERE rationale LIKE 'schema_rejected%'`).
 // Carries only the FIRST issue (describeSchemaFailure above is the full warn-log diagnostic — this is
 // the short, journal-persisted account), truncated to stay a short single-line rationale.
-const SCHEMA_REJECTED_RATIONALE_MAX_LEN = 160;
-const schemaRejectedRationale = (summary: string): string => {
-  const prefix = 'schema_rejected: ';
-  const budget = SCHEMA_REJECTED_RATIONALE_MAX_LEN - prefix.length;
+const DEGRADE_RATIONALE_MAX_LEN = 160;
+const prefixedRationale = (prefix: string, summary: string): string => {
+  const budget = DEGRADE_RATIONALE_MAX_LEN - prefix.length;
   return `${prefix}${summary.length > budget ? `${summary.slice(0, budget)}…` : summary}`;
 };
+const schemaRejectedRationale = (summary: string): string =>
+  prefixedRationale('schema_rejected: ', summary);
+// XA4 addendum (2026-07-31): a `stop_reason: 'max_tokens'` reaching a schema-FAILURE branch (a
+// tool_use block IS present, unlike the !toolBlock branch above) is the same truncation that branch
+// already names — the output budget ran out before valid arguments landed, so `toolBlock.input` is
+// empty/incomplete and zod's own issue ("expected array, received undefined") IS the truncation
+// signature. Reuses the exact 'truncated_max_tokens: ' tag spelling from the !toolBlock branch so the
+// two truncation shapes stay one queryable bucket instead of splitting into schema_rejected (10/37
+// live schema_rejected rows over the trailing 14d journaled output_tokens pinned at exactly 4096).
+// Fails OPEN to schema_rejected for any other/missing stop_reason — never a soft-hold/control-flow
+// change (same decision shape, same recordSchemaFailure call either way). NOT diagnosability-only,
+// though: trading-runtime.module.ts's outcomeForProposal maps 'truncated_max_tokens:' to
+// AgentDecideOutcome 'truncated' while 'schema_rejected:' falls through to 'hold', so every re-tagged
+// row also moves agent_decide_total from {outcome="hold"} to {outcome="truncated"}. Checked benign
+// (both tags are in PROVES_CALL_COMPLETED_OUTCOMES, neither in LATCHED_DECIDE_OUTCOMES, both alert
+// rules and the Grafana panel are label-agnostic — agent-metrics-recorder.service.ts:32-54) and pinned
+// by test/features/trading/composition/agent-decide-outcome-tags.spec.ts's schema_rejected:→'hold' case.
+const schemaFailureRationale = (stopReason: string | undefined, summary: string): string =>
+  stopReason === 'max_tokens'
+    ? prefixedRationale('truncated_max_tokens: ', summary)
+    : schemaRejectedRationale(summary);
 // AGENTIC_PLAN_AUTHORITATIVE_EXITS (2026-07-30): the self-describing rationale stamped when a
 // mid-trade 'close' is dropped because the position is still under its own declared plan — queryable
 // as `WHERE rationale LIKE 'plan_authoritative_close:%'`. The model's own thesis is preserved after
@@ -964,7 +984,10 @@ export class AnthropicAgentClient implements AgentClientPort {
         decision: {
           action: 'hold',
           confidence: 0,
-          rationale: schemaRejectedRationale(firstIssueSummary(parsedTrade.error)),
+          rationale: schemaFailureRationale(
+            envelope.data.stop_reason,
+            firstIssueSummary(parsedTrade.error),
+          ),
         },
         usage,
         latencyMs,
@@ -1301,10 +1324,26 @@ export class AnthropicAgentClient implements AgentClientPort {
       (b) => b.type === 'tool_use' && b.name === portfolioTool.name,
     );
     if (!toolBlock) {
-      // Soft-hold, same rationale as the malformed-envelope path above (enable-gate must-fix).
-      this.logger.warn(
-        `anthropic api: no ${portfolioTool.name} tool_use block in response (portfolio batch) — holding all`,
-      );
+      // 2026-07-31: batch is the DEPLOYED shape (AGENTIC_PORTFOLIO_CONSULT=true, see
+      // prepareDecideContext) — the H4 comment this replaces claimed the batch path had no
+      // truncated_max_tokens variant, which meant the MORE direct batch truncation (max_tokens with no
+      // tool block at all) stayed invisible to `WHERE rationale LIKE 'truncated_max_tokens:%'` and
+      // under-counted the very truncation rate this tag exists to measure. Mirrors the single-symbol
+      // propose()'s own `!toolBlock` branch's stop_reason==='max_tokens' distinction exactly (same
+      // XA4 discipline), fails OPEN to the prior no_tool_use: tag for any other/missing stop_reason.
+      let rationale: string;
+      if (envelope.data.stop_reason === 'max_tokens') {
+        this.logger.warn(
+          `anthropic api: response truncated at max_tokens before a ${portfolioTool.name} tool_use ` +
+            `block (portfolio batch, output_tokens=${usage?.outputTokens ?? 'unknown'}) — holding all; raise AGENTIC_MAX_TOKENS if frequent`,
+        );
+        rationale = `truncated_max_tokens: response truncated at max_tokens before a ${portfolioTool.name} tool_use block (portfolio batch, output_tokens=${usage?.outputTokens ?? 'unknown'})`;
+      } else {
+        this.logger.warn(
+          `anthropic api: no ${portfolioTool.name} tool_use block in response (portfolio batch) — holding all`,
+        );
+        rationale = `no_tool_use: no ${portfolioTool.name} tool_use block in response (portfolio batch)`;
+      }
       return this.softHoldBatch(
         resolved,
         usage,
@@ -1314,22 +1353,16 @@ export class AnthropicAgentClient implements AgentClientPort {
         consultId,
         ctx.infoArm,
         ctx.thinkingArm,
-        // H4: named degrade on every resolved symbol — mirrors the single-symbol no-tool-use branch's
-        // 'no_tool_use' tag (the batch path does not distinguish max_tokens truncation in its own log
-        // line, so there is no truncated_max_tokens variant here).
-        {
-          action: 'hold',
-          confidence: 0,
-          rationale: `no_tool_use: no ${portfolioTool.name} tool_use block in response (portfolio batch)`,
-        },
+        { action: 'hold', confidence: 0, rationale },
       );
     }
 
     const tradePortfolioParsed = tradePortfolioSchema.safeParse(toolBlock.input);
     if (!tradePortfolioParsed.success) {
       // Soft-hold like the malformed-envelope path above, but a SCHEMA failure (not a missing tool
-      // block): meter it and stamp an explicit schema_rejected hold decision so the degrade is
-      // queryable in the journal — the malformed-envelope path above does neither.
+      // block): meter it and stamp an explicit schema_rejected (or, if stop_reason=max_tokens,
+      // truncated_max_tokens — see schemaFailureRationale) hold decision so the degrade is queryable
+      // in the journal — the malformed-envelope path above does neither.
       this.cfg.recordSchemaFailure?.('batch');
       this.logger.warn(
         `anthropic api: ${portfolioTool.name} payload failed schema validation (portfolio batch) — holding all — ${describeSchemaFailure(tradePortfolioParsed.error, toolBlock.input)}`,
@@ -1346,7 +1379,10 @@ export class AnthropicAgentClient implements AgentClientPort {
         {
           action: 'hold',
           confidence: 0,
-          rationale: schemaRejectedRationale(firstIssueSummary(tradePortfolioParsed.error)),
+          rationale: schemaFailureRationale(
+            envelope.data.stop_reason,
+            firstIssueSummary(tradePortfolioParsed.error),
+          ),
         },
       );
     }

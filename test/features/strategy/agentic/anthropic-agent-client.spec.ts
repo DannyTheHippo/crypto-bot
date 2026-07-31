@@ -914,6 +914,74 @@ describe('AnthropicAgentClient', () => {
       },
     );
 
+    // XA4 addendum (2026-07-31): a tool_use block IS present here (unlike the no-tool-block XA4 case
+    // below), but its `input` is empty because max_tokens cut the response off before real arguments
+    // landed — the same truncation, just caught one branch later by tradeDecisionSchema.safeParse
+    // instead of the `!toolBlock` check. Distinguishing it from an ordinary schema_rejected keeps the
+    // truncation rate queryable (10/37 live schema_rejected rows over the trailing 14d journaled
+    // output_tokens pinned at exactly 4096 — see anthropic-agent-client.ts's schemaFailureRationale).
+    it('a max_tokens truncation WITH a tool_use block present but empty input stamps truncated_max_tokens: (not schema_rejected), still degrades to hold, and still fires recordSchemaFailure(single)', async () => {
+      const fetchFn = vi.fn();
+      const warn = vi.fn();
+      const recordSchemaFailure = vi.fn();
+      const client = new AnthropicAgentClient(buildCfg({ recordSchemaFailure }), fetchFn, {
+        warn,
+      });
+      fetchFn.mockResolvedValue(apiResponse(toolUseBody({}, 'max_tokens')));
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+      });
+
+      const proposal = await client.propose(input);
+
+      expect(proposal.signals).toEqual([]);
+      expect(proposal.decision).toMatchObject({ action: 'hold', confidence: 0 });
+      expect(proposal.decision?.rationale).toMatch(/^truncated_max_tokens: /);
+      expect(warn).toHaveBeenCalled();
+      expect(recordSchemaFailure).toHaveBeenCalledWith('single');
+    });
+
+    it('a genuinely malformed payload with stop_reason=end_turn (not max_tokens) still stamps schema_rejected: — no regression from the truncation-tag branch', async () => {
+      const fetchFn = vi.fn();
+      const client = new AnthropicAgentClient(buildCfg(), fetchFn);
+      fetchFn.mockResolvedValue(
+        apiResponse(toolUseBody({ action: 'short', confidence: 0.5, rationale: 'r' }, 'end_turn')),
+      );
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+      });
+
+      const proposal = await client.propose(input);
+
+      expect(proposal.decision?.rationale).toMatch(/^schema_rejected: /);
+    });
+
+    it('a malformed payload with stop_reason absent/unreadable falls back to schema_rejected: (fail-open) without throwing', async () => {
+      const fetchFn = vi.fn();
+      const client = new AnthropicAgentClient(buildCfg(), fetchFn);
+      fetchFn.mockResolvedValue(
+        apiResponse({
+          content: [
+            {
+              type: 'tool_use',
+              name: 'submit_trade',
+              input: { action: 'short', confidence: 0.5, rationale: 'r' },
+            },
+          ],
+        }),
+      );
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+      });
+
+      const proposal = await client.propose(input);
+
+      expect(proposal.decision?.rationale).toMatch(/^schema_rejected: /);
+    });
+
     it('never logs the API key across any refusal/invalid-payload warn branch', async () => {
       const warn = vi.fn();
       const cfg = buildCfg({ apiKey: 'sk-ant-do-not-leak-me' });

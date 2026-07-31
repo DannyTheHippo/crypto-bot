@@ -17,6 +17,7 @@ import {
 import { BudgetedAgentClient, DailyLlmBudget, type ModelTokenRates } from './agent-budget';
 import { StubAgentClient } from './agent-client.adapter';
 import { AnthropicAgentClient, type AnthropicAgentClientConfig } from './anthropic-agent-client';
+import { abArm } from './ab-assignment';
 import { BatchingAgentClient, type ActiveMenuGate } from './batching-agent-client';
 import { createEdgePolicyPort, EDGE_POLICY_OVERRIDE } from './disabled-edge-policy';
 import { MAX_SIMILAR_SETUPS } from './episodic-memory';
@@ -24,6 +25,12 @@ import { MAX_SIMILAR_SETUPS } from './episodic-memory';
 // Matches AGENTIC_MODEL's schema default and the AGENTIC_TOKEN_PRICE_* defaults (Sonnet-5 at 3/15)
 // — see environment.config.ts's AGENTIC_MODEL comment for the cost-honesty rationale.
 const DEFAULT_MODEL = 'claude-sonnet-5';
+// abArm salt for the decide-model A/B (environment.config.ts's AGENTIC_MODEL_AB_PCT). Must stay
+// distinct from every other salt this lane hashes through abArm (the whole point of a keyed PRF per
+// arm — see ab-assignment.ts's own header comment) so the model arm and any other A/B can co-occur in
+// all four combinations rather than moving together. Exported so agent-client-selection.spec.ts can
+// pin it directly for the salt-independence tests, without duplicating the literal.
+export const MODEL_AB_SALT = 'model-v1';
 const DEFAULT_TIMEOUT_MS = 30000;
 const DEFAULT_MAX_TOKENS = 1024;
 const DEFAULT_SIGNAL_TTL_MS = 120000;
@@ -529,6 +536,14 @@ export function selectAgentClient(
   // AnthropicAgentClientConfig.recordSchemaFailure — see that field's own comment. Absent ⇒ the
   // schema-rejection degrade still happens (hold + schema_rejected: rationale), just unrecorded.
   recordSchemaFailure?: AnthropicAgentClientConfig['recordSchemaFailure'],
+  // Decide-model A/B (AGENTIC_MODEL_AB_PCT): the wall-clock instant the arm is drawn at, trailing so
+  // every existing positional caller is unaffected. AnthropicAgentClient pins ONE model for its whole
+  // lifetime (this.cfg.model, read fresh on every request but never reassigned — anthropic-agent-
+  // client.ts's attemptOnce), and this factory itself runs once per boot (the AGENT_CLIENT provider is
+  // a Nest singleton), so the arm this draws is fixed for the boot's lifetime, re-drawn on the next
+  // boot/redeploy — not re-rolled per decide. Defaulted for real callers; tests override it to pin a
+  // minute deterministically.
+  now: () => number = Date.now,
 ): AgentClientPort {
   const apiKey = env['ANTHROPIC_API_KEY'];
   if (!apiKey || env['NODE_ENV'] === 'test' || env['CI']) {
@@ -537,10 +552,19 @@ export function selectAgentClient(
   // R2: off by default ⇒ byte-identical (no similarSetups sentence/block/tag). The provider is gated
   // by the SAME flag so the block can never render without its describing system-prompt sentence.
   const episodicMemoryEnabled = env['AGENTIC_EPISODIC_MEMORY_ENABLED'] === 'true';
+  // Decide-model A/B: AGENTIC_MODEL_B only ever serves if it is actually configured — pct>0 with no
+  // AGENTIC_MODEL_B is a boot refusal at the config layer (environment.config.ts's superRefine), but
+  // this module-isolation entry point (raw env, no validate() in front of it) has no such gate, so the
+  // `modelB !== undefined` guard is the fail-safe backstop: arm B can never fire onto `undefined`.
+  const modelAbPct = intEnv(env['AGENTIC_MODEL_AB_PCT'], 0);
+  const modelB = env['AGENTIC_MODEL_B'];
+  const minute = Math.floor(now() / 60_000);
+  const useModelB = modelB !== undefined && abArm(minute, MODEL_AB_SALT, modelAbPct);
+  const selectedModel = useModelB ? modelB : (env['AGENTIC_MODEL'] ?? DEFAULT_MODEL);
   const client = new AnthropicAgentClient(
     {
       apiKey,
-      model: env['AGENTIC_MODEL'] ?? DEFAULT_MODEL,
+      model: selectedModel,
       timeoutMs: intEnv(env['AGENTIC_TIMEOUT_MS'], DEFAULT_TIMEOUT_MS),
       maxTokens: intEnv(env['AGENTIC_MAX_TOKENS'], DEFAULT_MAX_TOKENS),
       signalTtlMs: intEnv(env['SIGNAL_TTL_MS'], DEFAULT_SIGNAL_TTL_MS),
@@ -600,7 +624,10 @@ export function selectAgentClient(
     new Logger('AnthropicAgentClient'),
     playbookProvider,
   );
-  const model = env['AGENTIC_MODEL'] ?? DEFAULT_MODEL;
+  // `model` mirrors client's own cfg.model — both must read the SAME arm-resolved value (whichever
+  // model actually served this boot's calls) so recordUsage's per-model rate lookup and the
+  // BatchingAgentClient config's own `model` field never drift from what the client actually requests.
+  const model = selectedModel;
   if (env['AGENTIC_PORTFOLIO_CONSULT'] === 'true') {
     // v3 consolidation spec §9: the shorts+consult plan-mode guard is DELETED — the unified
     // submit_portfolio tool always expresses 'open_short' per element (§4.3), so there is no more

@@ -228,6 +228,21 @@ const envSchema = z
     // If you pin a PRICIER model here, set both AGENTIC_TOKEN_PRICE_* knobs to that model's rates —
     // the flat pricing then OVER-counts decide-path cost, which is the fail-closed direction.
     AGENTIC_REFLECTION_MODEL: z.string().min(1).optional(),
+    // Second decide-model arm for a keyed-PRF paired A/B (abArm, ab-assignment.ts) — same free-form
+    // shape as AGENTIC_MODEL above, no provider enum. Read raw off process.env by
+    // agentic-strategy.module.ts's selectAgentClient (same convention as AGENTIC_PORTFOLIO_CONSULT
+    // and the derivatives/sentiment/fear-greed feed flags below — not every AGENTIC_* knob is
+    // projected into AppConfig.agentic); declared here only so this schema's superRefine can gate it.
+    AGENTIC_MODEL_B: z.string().min(1).optional(),
+    // Percent of boots keyed-PRF-routed to AGENTIC_MODEL_B instead of AGENTIC_MODEL (selectAgentClient
+    // wires a NEW salt, independent of AGENTIC_PLAYBOOK_AB_PCT's, so a boot's model arm and its
+    // playbook arm are uncorrelated). 0 (default) ⇒ selectAgentClient never reads AGENTIC_MODEL_B,
+    // byte-identical to pre-A/B. Motivation: a sequential (whole-deployment) model comparison at this
+    // lane's ~4.2-7.7 entries/day needs ~18-34 days to detect a 15bps effect and ~4-8 months for the
+    // 5.6bps effect this repo already measured with no control arm (playbook v10 and
+    // AGENTIC_PLAN_AUTHORITATIVE_EXITS shipped on the same boot six minutes apart) — this knob exists
+    // so a future model comparison is paired and randomized instead of confounded.
+    AGENTIC_MODEL_AB_PCT: z.coerce.number().int().min(0).max(100).default(0),
     AGENTIC_TIMEOUT_MS: z.coerce.number().int().positive().default(30000),
     // AGENTIC_REFLECTION_TIMEOUT_MS DELETED 2026-07-30 with the in-process reflection loop
     // (research/studies/entry-rate-rederivation-2026-07-30.md) — its only reader was that service's
@@ -788,6 +803,43 @@ const envSchema = z
             `flat AGENTIC_TOKEN_PRICE_* knobs, under-counting a pricier reflection model's real ` +
             `spend inside the earned-live promotion gate. Add a per-model entry for ` +
             `${data.AGENTIC_REFLECTION_MODEL} to AGENTIC_TOKEN_PRICES_JSON.`,
+        });
+      }
+    }
+    // Model-arm pricing gate-honesty refusal — same failure direction and same ratesFor() fail-OPEN
+    // branch (AGENTIC_TOKEN_PRICES_JSON absent, or configured but missing this model) as the
+    // AGENTIC_REFLECTION_MODEL refusal just above; mirrored deliberately rather than shared, since the
+    // two knobs gate independent things (reflection-path override vs decide-path A/B) and must be able
+    // to diverge later without one guard's edit silently reshaping the other's message. An unpriced
+    // AGENTIC_MODEL_B routed by a live AGENTIC_MODEL_AB_PCT would silently mis-cost every arm-B call in
+    // both the runtime daily-cost breaker and the promotion scoreboard, and cost feeds
+    // NON_POSITIVE_NET_PNL directly. Refuse at construction (permission/safety gate, fails CLOSED)
+    // rather than let a misconfigured A/B boot on understated LLM-cost evidence.
+    if (data.AGENTIC_MODEL_AB_PCT > 0) {
+      let hasEntry = false;
+      if (data.AGENTIC_MODEL_B !== undefined && data.AGENTIC_TOKEN_PRICES_JSON !== undefined) {
+        try {
+          const parsedMap: unknown = JSON.parse(data.AGENTIC_TOKEN_PRICES_JSON);
+          hasEntry =
+            typeof parsedMap === 'object' &&
+            parsedMap !== null &&
+            Object.prototype.hasOwnProperty.call(parsedMap, data.AGENTIC_MODEL_B);
+        } catch {
+          hasEntry = true; // malformed JSON fails boot separately via parseTokenPrices below
+        }
+      }
+      if (!hasEntry) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['AGENTIC_TOKEN_PRICES_JSON'],
+          message:
+            `AGENTIC_MODEL_AB_PCT (${data.AGENTIC_MODEL_AB_PCT}) is > 0 but AGENTIC_MODEL_B ` +
+            `(${data.AGENTIC_MODEL_B ?? 'unset'}) is unset, or has no entry in ` +
+            `AGENTIC_TOKEN_PRICES_JSON — with the map unset (or missing this model), ` +
+            `PromotionReadinessService prices EVERY model at the flat AGENTIC_TOKEN_PRICE_* knobs, ` +
+            `under-counting arm B's real spend inside the earned-live promotion gate. Set ` +
+            `AGENTIC_MODEL_B and add its entry to AGENTIC_TOKEN_PRICES_JSON, or set ` +
+            `AGENTIC_MODEL_AB_PCT=0.`,
         });
       }
     }

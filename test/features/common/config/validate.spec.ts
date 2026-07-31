@@ -596,6 +596,84 @@ describe('validate()', () => {
       });
     });
 
+    // Decide-model A/B (AGENTIC_MODEL_AB_PCT). Neither knob is projected into cfg.agentic —
+    // agentic-strategy.module.ts's selectAgentClient reads both raw off process.env, same convention
+    // as AGENTIC_PORTFOLIO_CONSULT's sibling flags below (not every schema-validated AGENTIC_* key
+    // has a cfg.agentic counterpart) — so these tests exercise validate()'s throw/no-throw contract
+    // rather than a projected field.
+    describe('AGENTIC_MODEL_AB_PCT / AGENTIC_MODEL_B pricing gate-honesty refusal', () => {
+      const OPUS_PRICED_MODEL_B =
+        '{"claude-opus-5":{"inputPerMtok":"5","outputPerMtok":"25","cacheReadPerMtok":"0.5","cacheWritePerMtok":"10"}}';
+
+      it('AGENTIC_MODEL_AB_PCT defaults to 0 and never trips the refusal', () => {
+        expect(() => validate({ PORT: '3100' })).not.toThrow();
+      });
+
+      it('throws on AGENTIC_MODEL_AB_PCT above 100', () => {
+        expect(() => validate({ PORT: '3100', AGENTIC_MODEL_AB_PCT: '101' })).toThrow(
+          /AGENTIC_MODEL_AB_PCT/,
+        );
+      });
+
+      it('throws on negative AGENTIC_MODEL_AB_PCT', () => {
+        expect(() => validate({ PORT: '3100', AGENTIC_MODEL_AB_PCT: '-1' })).toThrow(
+          /AGENTIC_MODEL_AB_PCT/,
+        );
+      });
+
+      it('throws when AGENTIC_MODEL_AB_PCT > 0 and AGENTIC_MODEL_B is unset', () => {
+        expect(() => validate({ PORT: '3100', AGENTIC_MODEL_AB_PCT: '30' })).toThrow(
+          /AGENTIC_MODEL_AB_PCT.*AGENTIC_MODEL_B/s,
+        );
+      });
+
+      it('throws when AGENTIC_MODEL_B is set but AGENTIC_TOKEN_PRICES_JSON is absent', () => {
+        expect(() =>
+          validate({ PORT: '3100', AGENTIC_MODEL_AB_PCT: '30', AGENTIC_MODEL_B: 'claude-opus-5' }),
+        ).toThrow(/AGENTIC_TOKEN_PRICES_JSON/);
+      });
+
+      it('throws when AGENTIC_TOKEN_PRICES_JSON is configured but omits AGENTIC_MODEL_B', () => {
+        expect(() =>
+          validate({
+            PORT: '3100',
+            AGENTIC_MODEL_AB_PCT: '30',
+            AGENTIC_MODEL_B: 'claude-opus-5',
+            AGENTIC_TOKEN_PRICES_JSON:
+              '{"claude-sonnet-5":{"inputPerMtok":"3","outputPerMtok":"15","cacheReadPerMtok":"0.3","cacheWritePerMtok":"6"}}',
+          }),
+        ).toThrow(/AGENTIC_TOKEN_PRICES_JSON/);
+      });
+
+      it('passes when AGENTIC_MODEL_B has its own AGENTIC_TOKEN_PRICES_JSON entry', () => {
+        expect(() =>
+          validate({
+            PORT: '3100',
+            AGENTIC_MODEL_AB_PCT: '30',
+            AGENTIC_MODEL_B: 'claude-opus-5',
+            AGENTIC_TOKEN_PRICES_JSON: OPUS_PRICED_MODEL_B,
+          }),
+        ).not.toThrow();
+      });
+
+      it('never trips when AGENTIC_MODEL_AB_PCT is 0, regardless of AGENTIC_MODEL_B/pricing state', () => {
+        expect(() =>
+          validate({ PORT: '3100', AGENTIC_MODEL_AB_PCT: '0', AGENTIC_MODEL_B: 'claude-opus-5' }),
+        ).not.toThrow();
+      });
+
+      it('malformed AGENTIC_TOKEN_PRICES_JSON still fails via its own throw, not this refusal', () => {
+        expect(() =>
+          validate({
+            PORT: '3100',
+            AGENTIC_MODEL_AB_PCT: '30',
+            AGENTIC_MODEL_B: 'claude-opus-5',
+            AGENTIC_TOKEN_PRICES_JSON: '{nope',
+          }),
+        ).toThrow(/AGENTIC_TOKEN_PRICES_JSON is not valid JSON/);
+      });
+    });
+
     describe('PROTECT_STOP_LOSS_PCT vs the v2 stop-loss upper bound (D1 backstop-vs-model-stop)', () => {
       it('default PROTECT_STOP_LOSS_PCT (0, disabled) never trips the refusal', () => {
         expect(validate({ PORT: '3100' }).risk.protectStopLossPct).toBe('0');

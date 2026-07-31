@@ -3,11 +3,13 @@ import type { TypedConfigService } from '../../../../src/config/environment/type
 import { epochMs, strategyId, symbolId, venueId } from '../../../../src/domain/common/types/ids';
 import type { TickerEvent } from '../../../../src/domain/venue/types/market-events';
 import { price } from '../../../../src/domain/common/types/money';
+import { abArm } from '../../../../src/features/strategy/agentic/ab-assignment';
 import { BudgetedAgentClient } from '../../../../src/features/strategy/agentic/agent-budget';
 import { StubAgentClient } from '../../../../src/features/strategy/agentic/agent-client.adapter';
 import {
   agenticEnv,
   createAgentLlmBudget,
+  MODEL_AB_SALT,
   SEED_PLAYBOOK,
   SEED_PLAYBOOK_PERP,
   SEED_PLAYBOOK_V3,
@@ -455,6 +457,185 @@ describe('seed selection (v3 §9/§10 — ONE lineage regardless of AGENTIC_SHOR
       playbookProvider: { current(): Promise<{ content: string }> };
     };
     await expect(anthropic.playbookProvider.current()).resolves.toEqual(SEED_PLAYBOOK_V3);
+  });
+
+  // Decide-model A/B (AGENTIC_MODEL_AB_PCT/AGENTIC_MODEL_B, abArm's MODEL_AB_SALT). Model selection
+  // happens ONCE at selectAgentClient construction time — AnthropicAgentClient pins one model
+  // (this.cfg.model) for its whole lifetime, read fresh per request but never reassigned — so these
+  // tests drive one propose() call per client and read the arm off the actual outbound request body
+  // (`model`) rather than reaching into AnthropicAgentClientConfig's private field (see the
+  // env-override test above for why: it has no accessor).
+  describe('decide-model A/B (AGENTIC_MODEL_AB_PCT)', () => {
+    function holdResponse() {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        json: () =>
+          Promise.resolve({
+            stop_reason: 'tool_use',
+            content: [
+              {
+                type: 'tool_use',
+                name: 'submit_trade',
+                input: { action: 'hold', confidence: 0.5, rationale: 'r' },
+              },
+            ],
+          }),
+      };
+    }
+
+    function buildInput(): AgentDecisionInput {
+      const symbol = symbolId('BTC/USDT');
+      const tickerEvt: TickerEvent = {
+        kind: 'TICKER',
+        venue: venueId('binance'),
+        symbol,
+        channel: 'ticker',
+        seq: 1n,
+        eventTime: epochMs(1_700_000_000_000),
+        ingestTime: epochMs(1_700_000_000_001),
+        bid: price('100'),
+        ask: price('100'),
+        last: price('100'),
+      };
+      const snapshot: AgentMarketSnapshot = {
+        eventTime: epochMs(1_700_000_000_000),
+        candles: new Map(),
+        tickers: new Map([[symbol, tickerEvt]]),
+        books: new Map(),
+        execReports: [],
+        portfolio: { strategyId: strategyId('agentic-1'), positions: new Map(), openOrders: [] },
+      };
+      return {
+        strategyId: strategyId('agentic-1'),
+        trigger: { kind: 'ticker', event: tickerEvt },
+        snapshot,
+        context: {
+          indicators: null,
+          position: {
+            side: 'FLAT',
+            qty: '0',
+            avgEntry: null,
+            realizedPnl: '0',
+            unrealizedPnlPct: null,
+            openOrders: 0,
+          },
+          recentDecisions: [],
+        },
+      };
+    }
+
+    // Drives one decide through the real construction path and reads back which model the outbound
+    // Anthropic request actually named — the only observable proof selectAgentClient's private
+    // AnthropicAgentClientConfig doesn't otherwise expose (see this describe block's own header
+    // comment).
+    async function requestedModel(
+      env: Record<string, string | undefined>,
+      now: () => number,
+    ): Promise<string> {
+      const fetchStub = vi.fn().mockResolvedValue(holdResponse());
+      vi.stubGlobal('fetch', fetchStub);
+      const client = selectAgentClient(
+        env,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        now,
+      ) as BudgetedAgentClient;
+      await client.propose(buildInput());
+      const [, init] = fetchStub.mock.calls[0] as [string, RequestInit];
+      const body = JSON.parse(init.body as string) as { model: string };
+      return body.model;
+    }
+
+    it('AGENTIC_MODEL_AB_PCT unset (0) selects AGENTIC_MODEL for a spread of minutes — byte-identical to pre-A/B', async () => {
+      for (const minute of [0, 1, 30, 61, 100_000]) {
+        const model = await requestedModel(
+          {
+            ANTHROPIC_API_KEY: 'k',
+            AGENTIC_MODEL: 'claude-arm-a',
+            AGENTIC_MODEL_B: 'claude-arm-b',
+          },
+          () => minute * 60_000,
+        );
+        expect(model).toBe('claude-arm-a');
+      }
+    });
+
+    it('AGENTIC_MODEL_AB_PCT=100 with AGENTIC_MODEL_B configured always selects arm B, for every minute', async () => {
+      for (const minute of [0, 1, 30, 61, 100_000]) {
+        const model = await requestedModel(
+          {
+            ANTHROPIC_API_KEY: 'k',
+            AGENTIC_MODEL: 'claude-arm-a',
+            AGENTIC_MODEL_B: 'claude-arm-b',
+            AGENTIC_MODEL_AB_PCT: '100',
+          },
+          () => minute * 60_000,
+        );
+        expect(model).toBe('claude-arm-b');
+      }
+    });
+
+    it("never routes to AGENTIC_MODEL_B when it is unset — fail-safe backstop for a misconfigured AGENTIC_MODEL_AB_PCT>0 reaching this module-isolation entry point without environment.config.ts's own boot refusal in front of it", async () => {
+      const model = await requestedModel(
+        { ANTHROPIC_API_KEY: 'k', AGENTIC_MODEL: 'claude-arm-a', AGENTIC_MODEL_AB_PCT: '100' },
+        () => 0,
+      );
+      expect(model).toBe('claude-arm-a');
+    });
+
+    it('assignment is deterministic per minute — two draws landing in the SAME minute select the same arm', async () => {
+      const env = {
+        ANTHROPIC_API_KEY: 'k',
+        AGENTIC_MODEL: 'claude-arm-a',
+        AGENTIC_MODEL_B: 'claude-arm-b',
+        AGENTIC_MODEL_AB_PCT: '50',
+      };
+      // Both timestamps floor to minute 7 — abArm(7, MODEL_AB_SALT, 50) is the same lookup either way,
+      // regardless of which model that lookup happens to land on.
+      const early = await requestedModel(env, () => 7 * 60_000);
+      const late = await requestedModel(env, () => 7 * 60_000 + 59_000);
+      expect(late).toBe(early);
+    });
+  });
+
+  // MODEL_AB_SALT's own independence property (rather than selectAgentClient's construction wiring
+  // above) — mirrors ab-assignment.spec.ts's own "joint hit-rate matches the product of marginals"
+  // methodology, run against 'th-v1' (an existing arm salt from that same spec) to prove MODEL_AB_SALT
+  // is a genuinely independent PRF stream and not merely a differently-spelled alias of one.
+  describe('MODEL_AB_SALT independence (abArm)', () => {
+    const MINUTE_DOMAIN = 20_000;
+
+    function marginalRate(salt: string, pct: number, n: number): number {
+      let hits = 0;
+      for (let m = 0; m < n; m++) if (abArm(m, salt, pct)) hits++;
+      return hits / n;
+    }
+
+    it('is a distinct salt from every other salt this codebase hashes through abArm', () => {
+      expect(MODEL_AB_SALT).not.toBe('info-ctx-v1');
+      expect(MODEL_AB_SALT).not.toBe('th-v1');
+    });
+
+    it("joint hit-rate with another arm's salt (th-v1) matches the product of marginals within ±2pp — the model arm and any other abArm-routed arm can land on all four combinations, never move together", () => {
+      const pct = 30;
+      const marginalModel = marginalRate(MODEL_AB_SALT, pct, MINUTE_DOMAIN);
+      const marginalOther = marginalRate('th-v1', pct, MINUTE_DOMAIN);
+      let both = 0;
+      for (let m = 0; m < MINUTE_DOMAIN; m++) {
+        if (abArm(m, MODEL_AB_SALT, pct) && abArm(m, 'th-v1', pct)) both++;
+      }
+      const jointRate = (both / MINUTE_DOMAIN) * 100;
+      const productRate = marginalModel * marginalOther * 100;
+      expect(Math.abs(jointRate - productRate)).toBeLessThan(2.0);
+    });
   });
 });
 

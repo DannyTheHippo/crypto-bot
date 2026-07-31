@@ -2,9 +2,20 @@ import Decimal from 'decimal.js';
 import { describe, expect, it } from 'vitest';
 import type { SymbolFilters } from '../../../../src/domain/trading/risk/evaluate';
 import { positionKey } from '../../../../src/domain/trading/risk/evaluate';
-import { epochMs, strategyId, symbolId, venueId } from '../../../../src/domain/common/types/ids';
+import type { SymbolId } from '../../../../src/domain/common/types/ids';
+import {
+  epochMs,
+  intentId,
+  strategyId,
+  symbolId,
+  venueId,
+} from '../../../../src/domain/common/types/ids';
 import { price, qty } from '../../../../src/domain/common/types/money';
 import type { RiskApprovedIntent } from '../../../../src/domain/trading/types/risk-decision';
+import type {
+  AlgoRecoverOutcome,
+  AlgoStopRecoveryService,
+} from '../../../../src/features/trading/execution/algo-stop-recovery.service';
 import { FeeLedgerService } from '../../../../src/features/trading/execution/fee-ledger.service';
 import { HaltCoordinatorService } from '../../../../src/features/trading/execution/halt-coordinator.service';
 import { PortfolioStateService } from '../../../../src/features/trading/execution/portfolio-state.service';
@@ -39,6 +50,27 @@ function fakePlanStops(seed: ReadonlyMap<string, PlanStop> = new Map()): PlanSto
   };
 }
 
+// AlgoStopRecoveryService fake for the journal seam. The coordinator fires it WITHOUT awaiting
+// (fail-open: the drain must never sit behind a venue read), so `settled` exposes the in-flight
+// promises for a test to await deliberately — the tests never rely on incidental microtask ordering.
+// `hooks.onRecover` is mutable so a test can install a behavior that closes over the built ctx.
+function fakeAlgoRecovery() {
+  const calls: SymbolId[] = [];
+  const pending: Promise<unknown>[] = [];
+  const hooks: { onRecover: (symbol: SymbolId) => Promise<AlgoRecoverOutcome> } = {
+    onRecover: () => Promise.resolve('none'),
+  };
+  const service: Pick<AlgoStopRecoveryService, 'recoverSymbol'> = {
+    recoverSymbol: (symbol) => {
+      calls.push(symbol);
+      const p = hooks.onRecover(symbol);
+      pending.push(p.catch(() => undefined)); // settled() must not itself reject on the fail-open case
+      return p;
+    },
+  };
+  return { calls, hooks, service, settled: () => Promise.all(pending) };
+}
+
 const FILTERS: ExecFilters = new Map<string, SymbolFilters>([
   [String(SYM), { tickSize: '0.01', stepSize: '0.001', minQty: '0.001', minNotional: '5' }],
 ]);
@@ -49,6 +81,7 @@ function build(
     engine?: RiskEnginePort;
     planStops?: PlanStopRegistryPort;
     exchange?: Pick<ExchangePort, 'cancelAlgoOrder'>;
+    algoRecovery?: Pick<AlgoStopRecoveryService, 'recoverSymbol'>;
   } = {},
 ) {
   let nowMs = T;
@@ -147,6 +180,7 @@ function build(
     opts.planStops,
     opts.exchange,
     opsEventLogger,
+    opts.algoRecovery,
   );
   return { clock, setNow, killSwitch, portfolio, coord, submits, flattenAllReasons, opsEvents };
 }
@@ -437,11 +471,17 @@ describe('HaltCoordinatorService — HALTING algo-rail stop cancel (fix 7a)', ()
     const exchange: Pick<ExchangePort, 'cancelAlgoOrder'> = {
       cancelAlgoOrder: () => Promise.reject(new Error('venue down')),
     };
-    const ctx = build({ planStops, exchange });
+    const rec = fakeAlgoRecovery();
+    const ctx = build({ planStops, exchange, algoRecovery: rec.service });
     seedPosition(ctx, '2');
     ctx.killSwitch.engage('anomaly', false);
     await expect(ctx.coord.tick(epochMs(T))).resolves.toBeUndefined();
     expect(ctx.flattenAllReasons).toEqual(['HALT']);
+    // The journal is keyed off cancels that ACTUALLY landed: a throw leaves the stop possibly still
+    // resting at the venue, and folding a live stop terminal is the one direction this seam must
+    // never take.
+    await rec.settled();
+    expect(rec.calls).toHaveLength(0);
   });
 
   it('skips registry entries with no algoId (spot vsl — nothing to cancel here)', async () => {
@@ -511,6 +551,115 @@ describe('HaltCoordinatorService — HALTING algo-rail stop cancel (fix 7a)', ()
     const ctx = build(); // no planStops/exchange — pre-fix construction shape
     ctx.killSwitch.engage('anomaly', false);
     await expect(ctx.coord.tick(epochMs(T))).resolves.toBeUndefined();
+    expect(ctx.flattenAllReasons).toEqual(['HALT']);
+  });
+});
+
+// 2026-07-31 stale-non-terminal-algo-stop defect: an algo-rail cancel is invisible to the OMS, so the
+// local order row stays non-terminal and its intent stays registered in inFlightIntents — which
+// driveFlattening reads as a BUSY symbol, blocking the very HALT that produced the stranding.
+// The coordinator therefore journals each cancel that LANDED through AlgoStopRecoveryService
+// (append-only CANCELED fold), fire-and-forget so the drain never waits on a venue read.
+describe('HaltCoordinatorService — HALTING algo-stop cancel journal', () => {
+  const KEY = positionKey(strategyId('s1'), venueId('binance'), SYM);
+  const STOP_IID = intentId('0190abcd-1234-7abc-89ab-0123456789cd');
+  const STOP_COID = makeIntent({ intentId: STOP_IID }).clientOrderId;
+
+  const restingAlgoStop = (): PlanStopRegistryPort =>
+    fakePlanStops(
+      new Map([
+        [
+          KEY,
+          {
+            side: 'LONG',
+            stopPrice: '95',
+            venueStopResting: true,
+            algoId: 'algo-1',
+          } satisfies PlanStop,
+        ],
+      ]),
+    );
+
+  const okCancel: Pick<ExchangePort, 'cancelAlgoOrder'> = {
+    cancelAlgoOrder: () => Promise.resolve(),
+  };
+
+  // The stranding the fix targets: the cancelled stop's own STOP_MARKET intent, still registered
+  // in-flight because no exec report will ever arrive to retire it.
+  function seedStrandedStopIntent(ctx: Ctx) {
+    ctx.portfolio.addInFlight(
+      makeIntent({ intentId: STOP_IID, side: 'SELL', type: 'STOP_MARKET', qty: qty('2') }),
+    );
+  }
+
+  it('journals a landed algo-stop cancel through recovery for that symbol', async () => {
+    const rec = fakeAlgoRecovery();
+    const ctx = build({
+      planStops: restingAlgoStop(),
+      exchange: okCancel,
+      algoRecovery: rec.service,
+    });
+    seedPosition(ctx, '2');
+    ctx.killSwitch.engage('anomaly', false);
+    await ctx.coord.tick(epochMs(T));
+    await rec.settled();
+    expect(rec.calls).toEqual([SYM]);
+    expect(ctx.flattenAllReasons).toEqual(['HALT']); // regular-rail flatten still ran
+  });
+
+  it('REGRESSION: a symbol whose algo stop was cancelled no longer blocks FLATTENING — ALL_FLAT is reached', async () => {
+    const rec = fakeAlgoRecovery();
+    const ctx = build({
+      planStops: restingAlgoStop(),
+      exchange: okCancel,
+      algoRecovery: rec.service,
+    });
+    // Sub-minNotional long: NOT dust by qty, so the busy guard genuinely applies to it, but
+    // UNFLATTENABLE once it is evaluated — so allFlat is reachable within one FLATTENING tick and
+    // this asserts on killSwitch.allFlat()'s own observable (HALTED), not a proxy for it.
+    seedPosition(ctx, '0.001');
+    seedStrandedStopIntent(ctx);
+    // Mirror foldVenueTerminal's effect on a CANCELED fold: the order retires from in-flight.
+    rec.hooks.onRecover = async () => {
+      await Promise.resolve();
+      ctx.portfolio.clearInFlight(STOP_COID);
+      return 'canceled';
+    };
+    ctx.killSwitch.engage('drawdown', true); // HALTING, flatten requested
+    await ctx.coord.tick(epochMs(T)); // cancel + journal; no open orders ⇒ cancels confirmed
+    expect(ctx.killSwitch.state()).toBe('FLATTENING');
+    await rec.settled(); // the journal is fire-and-forget — await it deliberately, never incidentally
+    await ctx.coord.tick(epochMs(T + 100));
+    expect(ctx.killSwitch.state()).toBe('HALTED'); // ALL_FLAT — the stale registration is gone
+  });
+
+  it('control: with no recovery wired the same symbol stalls FLATTENING forever (the defect)', async () => {
+    const ctx = build({ planStops: restingAlgoStop(), exchange: okCancel }); // journal seam absent
+    seedPosition(ctx, '0.001');
+    seedStrandedStopIntent(ctx);
+    ctx.killSwitch.engage('drawdown', true);
+    await ctx.coord.tick(epochMs(T));
+    await ctx.coord.tick(epochMs(T + 100));
+    // Busy on a registration nothing will ever clear ⇒ allFlat can never be declared for SYM: the
+    // HALT cannot complete until the next boot. Byte-identical to pre-fix behavior when unwired.
+    expect(ctx.killSwitch.state()).toBe('FLATTENING');
+  });
+
+  it('FAILS OPEN: a rejecting recovery call never propagates and never stops the drain', async () => {
+    const rec = fakeAlgoRecovery();
+    rec.hooks.onRecover = () => Promise.reject(new Error('venue read timed out'));
+    const ctx = build({
+      planStops: restingAlgoStop(),
+      exchange: okCancel,
+      algoRecovery: rec.service,
+    });
+    seedPosition(ctx, '0.001');
+    ctx.killSwitch.engage('drawdown', true);
+    await expect(ctx.coord.tick(epochMs(T))).resolves.toBeUndefined();
+    await rec.settled();
+    expect(rec.calls).toEqual([SYM]); // the rejection is the dep's own, not a stubbed success
+    await ctx.coord.tick(epochMs(T + 100));
+    expect(ctx.killSwitch.state()).toBe('HALTED'); // drain completed regardless
     expect(ctx.flattenAllReasons).toEqual(['HALT']);
   });
 });

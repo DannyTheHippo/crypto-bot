@@ -25,7 +25,8 @@ import { OPS_EVENTS, type OpsEventPort } from '../../../ports/common/observabili
 import { price, type Price } from '../../../domain/common/types/money';
 import type { Signal } from '../../../domain/strategy/types/signal';
 import type { Position } from '../../../domain/trading/types/portfolio';
-import type { EpochMs } from '../../../domain/common/types/ids';
+import type { EpochMs, SymbolId } from '../../../domain/common/types/ids';
+import { AlgoStopRecoveryService } from './algo-stop-recovery.service';
 
 const CANCEL_TIMEOUT_MS = 10_000; // §5: cancels unconfirmed in 10s ⇒ HALTED_DEGRADED
 const FLATTEN_TTL_MS = 60_000;
@@ -83,6 +84,14 @@ export class HaltCoordinatorService {
     @Optional()
     @Inject(OPS_EVENTS)
     private readonly opsEvents?: OpsEventPort,
+    // 2026-07-31 stale-non-terminal-algo-stop defect: the JOURNAL seam for the algo cancels below
+    // (see journalAlgoStopCanceled). Same feature folder, so this is a plain class injection — no
+    // boundaries crossing. @Optional for the same reason as the pair above: every pre-existing
+    // direct-construction unit test keeps constructing without it, and an unwired deployment stays
+    // byte-identical to pre-fix behavior.
+    @Optional()
+    @Inject(AlgoStopRecoveryService)
+    private readonly algoRecovery?: Pick<AlgoStopRecoveryService, 'recoverSymbol'>,
   ) {}
 
   async tick(now: EpochMs): Promise<void> {
@@ -131,16 +140,55 @@ export class HaltCoordinatorService {
   private async cancelRestingAlgoStops(): Promise<void> {
     if (!this.planStops || !this.exchange?.cancelAlgoOrder) return;
     const positions = this.portfolio.snapshot().positions;
+    const canceled = new Set<SymbolId>();
     for (const [key, stop] of this.planStops.entries()) {
       if (stop.algoId === undefined) continue;
       const pos = positions.get(key);
       if (pos === undefined) continue; // registry entry stale/foreign to this snapshot — no symbol to cancel against
       try {
         await this.exchange.cancelAlgoOrder(stop.algoId, pos.symbol);
+        canceled.add(pos.symbol);
       } catch {
         // Fail-safe direction: proceed to the regular-rail flatten regardless — see this method's
         // own header comment.
       }
+    }
+    // NOT awaited — see journalAlgoStopCanceled's own header on why this seam must never sit in the
+    // drain's critical path.
+    for (const symbol of canceled) void this.journalAlgoStopCanceled(symbol);
+  }
+
+  // 2026-07-31 stale-non-terminal-algo-stop defect: an algo-rail cancel is invisible to the OMS (no
+  // exec report ever arrives for one), so the local order row above stays non-terminal and its intent
+  // stays registered in inFlightIntents (boot-recovery.service.ts). driveFlattening below reads that
+  // registration as a BUSY symbol — which makes this HALT both the producer of the stranding and its
+  // victim: allFlat never becomes true for that symbol, so the drain cannot complete for it. Nothing
+  // heals it in between (gate.flattenAll cannot see the algo rail by design — see the caller's own
+  // header; the demo poller only recovers symbols carrying an unmatched fill; the runtime's own
+  // AlgoStopRecoveryService.sweep is boot-only), so absent this call it waits for the next boot.
+  // recoverSymbol reads the venue's OWN algo-history rail and APPENDS the CANCELED fold — never an
+  // UPDATE or DELETE, order_events is append-only (hard rule 6).
+  //
+  // Cleanup/measurement seam ⇒ FAILS OPEN, and here that is load-bearing rather than incidental: the
+  // HALT drain is the safety path, so this is fire-and-forget (`void` at the call site), never
+  // awaited and never bounded-then-awaited. recoverSymbol makes up to three venue reads per intent
+  // and no ccxt timeout is configured anywhere in features/venue/exchange (the library's 10s default
+  // applies per call), so awaiting it inline would let a degraded venue stall the drain for tens of
+  // seconds. Every throw is swallowed here and can never reach the drain.
+  //
+  // Two asymmetries deliberately preserved. A failed FOLD leaves the order non-terminal
+  // (foldVenueTerminal's own `if (!applied) return`), so a later sweep retries instead of this path
+  // resurrecting anything. And recoverIntent reads fetchOpenAlgoOrders FIRST, returning 'none' while
+  // the stop is still on the venue's open-algo set — a stale or slow read therefore fails toward
+  // "still resting", so this call can never terminalize an order still live at the venue. The cost of
+  // that direction: a venue that still lists the just-cancelled stop makes this pass a no-op and the
+  // row waits for the boot sweep — the same place it waited before this fix, never worse.
+  private async journalAlgoStopCanceled(symbol: SymbolId): Promise<void> {
+    if (!this.algoRecovery) return;
+    try {
+      await this.algoRecovery.recoverSymbol(symbol);
+    } catch {
+      // FAILS OPEN — see this method's own header comment on the failure direction.
     }
   }
 

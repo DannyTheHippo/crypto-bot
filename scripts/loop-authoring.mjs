@@ -23,6 +23,7 @@
 // correct.
 
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -37,10 +38,14 @@ import {
 } from './lib/playbook-shared.mjs';
 import { deriveValidationOpts } from './playbook-candidate-core.mjs';
 import {
+  AUTHORING_ATTEMPT_FAMILY,
   assertNoRetiredObjective,
   buildEvidenceDigest,
   classifyEntryRateFloor,
   classifyMintGate,
+  classifyRegistrySplitBrain,
+  classifySameDayGate,
+  corpusAttemptKey,
   parseArgs,
   parsePlaybookInfoVersion,
   renderTwoBars,
@@ -245,6 +250,115 @@ async function readGaugeVersion(url) {
   }
 }
 
+// ── the once-per-UTC-day ceiling ─────────────────────────────────────────────────────────────────
+
+/**
+ * The DB's own clock and the day's blocking attempt row, in ONE round trip and over ONE connection.
+ *
+ * One statement rather than two because a boundary and a row read against two different clocks is the
+ * defect this gate exists to rule out: `now()` is stable within a statement, so `now_ms` and the
+ * `created_at >= …` predicate below cannot disagree. `date_trunc('day', now() AT TIME ZONE 'UTC')`
+ * yields the naive UTC wall clock, and the trailing `AT TIME ZONE 'UTC'` casts it back to a
+ * timestamptz so it compares against `created_at` (timestamptz) without a silent local-zone shift.
+ *
+ * The LEFT JOIN onto a one-row source is what makes "no attempt today" a ROW with null columns rather
+ * than an empty result: the clock must come back either way, because the refusal message names the
+ * instant the next slot opens.
+ *
+ * ORDER BY created_at ASC picks the FIRST attempt of the day — the one that actually took the slot.
+ *
+ * Errors are RETURNED, never thrown: an unreachable registry is a verdict this gate must classify
+ * (CLOSED), not an exception that would skip the gate entirely.
+ */
+async function readSameDayAttempt(pool) {
+  try {
+    const { rows } = await pool.query(
+      `SELECT (extract(epoch FROM now()) * 1000)::bigint AS now_ms,
+              e.id::text AS id,
+              (extract(epoch FROM e.created_at) * 1000)::bigint AS created_at_ms,
+              to_char(e.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS created_at
+         FROM (SELECT 1) AS clock_row
+         LEFT JOIN public.experiments e
+                ON e.family = $1
+               AND e.created_at >= date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+        ORDER BY e.created_at ASC
+        LIMIT 1`,
+      [AUTHORING_ATTEMPT_FAMILY],
+    );
+    const row = rows[0];
+    return {
+      nowMsFromDb: Number(row?.now_ms),
+      blockingRow:
+        row?.id === null || row?.id === undefined
+          ? null
+          : { id: row.id, createdAt: row.created_at, createdAtMs: Number(row.created_at_ms) },
+      registryError: null,
+    };
+  } catch (err) {
+    return {
+      nowMsFromDb: null,
+      blockingRow: null,
+      registryError: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+/**
+ * Takes the day's slot by INSERTing the attempt row — BEFORE the drafting call, so the ceiling bounds
+ * spend rather than describing it afterwards.
+ *
+ * `params_hash` and `dataset_hash` are NOT NULL on this table and this row is a MARKER, not a trial.
+ * They are therefore filled with canonical descriptions of what the row is, never borrowed from a
+ * scored run: a marker carrying a trial's hashes would be indistinguishable from a scored row under
+ * `experiments_family_params_dataset_idx`, and this table is append-only, so that confusion would be
+ * permanent. The day key is hashed into `params_hash` so two rows claiming the same day are visibly
+ * the same claim.
+ *
+ * There is no unique index to lean on (adding one to an append-only money-adjacent table is
+ * report-only work), so the last-writer-wins race between two simultaneous passes is handled by the
+ * pass lease in scripts/loop-pass-lock.mjs rather than here. Returns the new row's id, or null when
+ * the write failed — a slot that could not be claimed refuses the pass, since an unclaimed slot
+ * bounds nothing.
+ */
+async function claimTodaysSlot(
+  pool,
+  { utcDay, nowMsFromDb, nextSlotIso, incumbentVersion, model },
+) {
+  const sha256 = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO public.experiments (family, params_hash, dataset_hash, source, label, metrics)
+       VALUES ($1, $2, $3, 'loop', $4, $5)
+       RETURNING id::text AS id`,
+      [
+        AUTHORING_ATTEMPT_FAMILY,
+        sha256({ family: AUTHORING_ATTEMPT_FAMILY, utcDay, incumbentVersion, model }),
+        sha256({ dataset: null, note: 'day-slot marker — this row measures nothing' }),
+        `authoring-attempt-${utcDay}`,
+        JSON.stringify({
+          kind: 'authoring-attempt-slot',
+          utcDay,
+          claimedAtMsFromDb: nowMsFromDb,
+          nextSlotIso,
+          incumbentVersion,
+          model,
+          note:
+            'Marker for the once-per-UTC-day authoring ceiling, written BEFORE the drafting call. It ' +
+            'records an ATTEMPT, not a result: the scored variants land under family=' +
+            '"playbook-authoring" at stage 6, and their absence next to this row means the pass ' +
+            'refused or failed after claiming the day.',
+        }),
+      ],
+    );
+    return rows[0]?.id ?? null;
+  } catch (err) {
+    console.error(
+      `${LOG}: could not claim today's slot — ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return null;
+  }
+}
+
 // ── stage 2: the drafting prompt ─────────────────────────────────────────────────────────────────
 
 function buildDraftingPrompt(guidanceText, digest, incumbent) {
@@ -391,11 +505,66 @@ function syntheticVariants(incumbent) {
  * row's label from `candidate.model`, so several variants on one model would collide into
  * indistinguishable labels — and an evidence row nobody can attribute is not evidence.
  */
-function buildScorecard(score, report) {
+/**
+ * How many registry rows have ALREADY been scored against this corpus, before this pass adds its own.
+ *
+ * FAILS OPEN, and the direction is not negotiable: this is a measurement, and a measurement that
+ * cannot be taken must never block the thing it measures. A query error, a missing table or an
+ * underivable key all return `null`, which every consumer renders as "NOT COUNTED" — never as zero.
+ * Zero is a claim; "not counted" is the truth in that case, and the difference is the whole point of
+ * a counter whose absence was the original defect.
+ *
+ * Both counts are taken: the identity key (see `corpusAttemptKey` for why it is the key) and the
+ * payload fingerprint. The second is carried purely so the drift between them stays visible on every
+ * pass rather than being rediscovered.
+ */
+async function readPriorAttemptsOnCorpus(pool, corpus) {
+  const key = corpusAttemptKey(corpus);
+  if (key === null) return null;
+  try {
+    const { rows } = await pool.query(
+      `SELECT
+         count(*) FILTER (
+           WHERE metrics->'window'->>'rowsLoaded' = $1
+             AND metrics->'window'->>'rowSince'   = $2
+             AND metrics->'window'->>'rowUntil'   = $3
+         )::int AS by_identity,
+         count(*) FILTER (WHERE metrics->>'corpusFingerprint' = $4)::int AS by_fingerprint
+       FROM public.experiments`,
+      [
+        String(key.rowsLoaded),
+        String(key.rowSince),
+        String(key.rowUntil),
+        String(corpus.payloadSha256 ?? ''),
+      ],
+    );
+    return {
+      key,
+      count: rows[0]?.by_identity ?? 0,
+      byFingerprint: rows[0]?.by_fingerprint ?? 0,
+    };
+  } catch (err) {
+    console.warn(
+      `${LOG}: could not count prior attempts on this corpus — ` +
+        `${err instanceof Error ? err.message : String(err)}. Reported as NOT COUNTED (fails OPEN: ` +
+        'a broken measurement must never block the thing it measures).',
+    );
+    return null;
+  }
+}
+
+function buildScorecard(score, report, priorAttemptsOnCorpus) {
   const primary = report.cells.find((c) => c.h === 24) ?? report.cells[0];
   return {
     criteriaVersion: 'loop-authoring-v1',
     corpusFingerprint: score.corpus.payloadSha256,
+    // The count at THIS row's own decision moment, frozen into an append-only row. Recorded per-row
+    // rather than derived later because the registry only ever grows: a count re-derived afterwards
+    // answers "how many attempts exist now", and the question that matters is "how many had already
+    // been made when this decision was taken".
+    priorAttemptsOnCorpus: priorAttemptsOnCorpus?.count ?? null,
+    priorAttemptsKey: priorAttemptsOnCorpus?.key ?? null,
+    priorAttemptsOnCorpusFingerprint: priorAttemptsOnCorpus?.byFingerprint ?? null,
     corpusSource: 'agent_decisions.input_payload (corpus-v3-flat.jsonl)',
     templateVersion: 'v3',
     window: {
@@ -452,6 +621,22 @@ async function main() {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
     fail('DATABASE_URL is required — this pass reads the real journal, no default.');
+    return;
+  }
+
+  // SPLIT-BRAIN GUARD, before the first paid drafting call so a misconfigured pass refuses cheaply
+  // rather than after spending on two drafts. This pass READS the same-day gate and the attempt
+  // counter over the DATABASE_URL pool below, while stage 6 WRITES every scored variant over
+  // log-eval-experiment.mjs's REGISTRY_DATABASE_URL; if those diverge the gate reads a table nobody
+  // writes and the counter under-reports forever — a silent failure that looks like success, because
+  // every stage still prints OK. Fails CLOSED. Rationale and the parsed-not-string comparison:
+  // classifyRegistrySplitBrain in loop-authoring-core.mjs.
+  const splitBrain = classifyRegistrySplitBrain({
+    databaseUrl,
+    registryUrl: process.env.REGISTRY_DATABASE_URL,
+  });
+  if (!splitBrain.ok) {
+    fail(splitBrain.reason);
     return;
   }
 
@@ -544,6 +729,79 @@ async function main() {
     );
     console.log('  ANTI-RATCHET assertion: PASSED (guidance and assembled prompt both clean)');
 
+    // ── the once-per-UTC-day ceiling ───────────────────────────────────────────────────────────
+    // PLACEMENT IS THE SUBTLE PART, in both directions.
+    //
+    // AFTER every cheap precondition — stale dist, an unreachable DB, an unresolvable incumbent, the
+    // retired-objective assertion, the split-brain guard — so that an environmental failure does not
+    // burn the day's only slot. A pass that dies on a missing build has spent nothing and must be
+    // able to run again in the same day.
+    //
+    // BEFORE the first paid drafting call, because bounding spend is the whole point. Gating on the
+    // SCORED rows instead would be too late: stage 4's replay is the expensive part and runs before
+    // stage 6 logs anything, so a scored-row gate would permit two full replays in a day.
+    //
+    // --draft-file lands on the refusing side of that line deliberately: it skips the drafting call
+    // and still spends the full stage-4 replay budget. --dry-run is the only exemption.
+    //
+    // The API-key check is HOISTED above the gate for the same reason the gate sits after the dist
+    // check: a run that cannot make its drafting call at all must not consume the day. Both LLM
+    // accounts were unfunded as recently as 2026-07-29, so this is a live failure mode, not a
+    // hypothetical one.
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!dryRun && draftFile === undefined && !apiKey) {
+      fail('ANTHROPIC_API_KEY is required for a real drafting call (use --dry-run otherwise).');
+      return;
+    }
+    // Same reasoning for the supplied draft: an unreadable --draft-file is an environmental failure,
+    // and it would otherwise surface only after the slot had been claimed.
+    if (draftFile !== undefined && !existsSync(draftFile)) {
+      fail(`--draft-file ${draftFile} does not exist — nothing to score.`);
+      return;
+    }
+    const attempt = await readSameDayAttempt(pool);
+    const sameDay = classifySameDayGate({
+      blockingRow: attempt.blockingRow,
+      nowMsFromDb: attempt.nowMsFromDb,
+      dryRun,
+      registryError: attempt.registryError,
+    });
+    console.log(`  ONCE-PER-UTC-DAY: ${sameDay.verdict}`);
+    console.log(`  ${sameDay.reason}`);
+    if (!sameDay.proceed) {
+      if (sameDay.verdict === 'SLOT_SPENT') {
+        // Not an error exit: refusing the second run of a UTC day is this gate working, not failing —
+        // the same posture as a mint refusal on a measured bar.
+        console.log(`\n${LOG}: no run today (slot spent). Artifacts in ${outDir}`);
+        return;
+      }
+      // An unreadable registry IS an environmental failure, so it exits non-zero — unlike a spent
+      // slot, it is a condition someone must fix rather than a normal day's outcome.
+      fail(sameDay.reason);
+      return;
+    }
+    if (!sameDay.exempt) {
+      const claimedId = await claimTodaysSlot(pool, {
+        utcDay: sameDay.utcDay,
+        nowMsFromDb: attempt.nowMsFromDb,
+        nextSlotIso: sameDay.nextSlotIso,
+        incumbentVersion: incumbent.version,
+        model,
+      });
+      if (claimedId === null) {
+        fail(
+          "could not claim today's authoring slot in public.experiments — refusing to draft. An " +
+            'unclaimed slot bounds nothing, so proceeding would leave the once-per-UTC-day ceiling ' +
+            'unenforced for the rest of the day.',
+        );
+        return;
+      }
+      console.log(
+        `  claimed ${sameDay.utcDay}: public.experiments id=${claimedId} ` +
+          `(family=${AUTHORING_ATTEMPT_FAMILY}) — next slot ${sameDay.nextSlotIso}`,
+      );
+    }
+
     let variants;
     if (draftFile !== undefined) {
       variants = [
@@ -558,11 +816,8 @@ async function main() {
       variants = syntheticVariants(incumbent);
       console.log(`  DRY RUN: ${variants.length} deterministic stand-in variants, no paid call`);
     } else {
-      const apiKey = process.env.ANTHROPIC_API_KEY;
-      if (!apiKey) {
-        fail('ANTHROPIC_API_KEY is required for a real drafting call (use --dry-run otherwise).');
-        return;
-      }
+      // The key's presence was checked BEFORE the day gate — a run that could never draft must not
+      // consume the day's slot on its way to failing.
       const drafted = [];
       for (const [i, temperature] of [0.2, 0.8].entries()) {
         const v = await draftVariant(apiKey, model, prompt, temperature, `draft_t${i + 1}`);
@@ -649,10 +904,21 @@ async function main() {
       return;
     }
 
+    // Read BEFORE stage 6 writes this pass's own rows, so the number is "attempts that PRECEDED this
+    // decision" rather than a count that includes it.
+    const priorAttemptsOnCorpus = await readPriorAttemptsOnCorpus(pool, score.corpus);
+
     // ── stage 5 ────────────────────────────────────────────────────────────────────────────────
     console.log('\nstage 5 — the two bars, side by side (they are NEVER the same bar)');
     for (const d of score.deployment) {
-      console.log(renderTwoBars({ arm: d.arm, deployment: d, research: score.research }));
+      console.log(
+        renderTwoBars({
+          arm: d.arm,
+          deployment: d,
+          research: score.research,
+          priorAttemptsOnCorpus,
+        }),
+      );
       console.log('');
     }
     const shipping = score.deployment.filter((d) => d.ships === true);
@@ -674,7 +940,7 @@ async function main() {
     const scorecards = score.arms.map((report) => ({
       report,
       file: join(outDir, `scorecard-${report.arm}.json`),
-      card: buildScorecard(score, report),
+      card: buildScorecard(score, report, priorAttemptsOnCorpus),
     }));
     for (const s of scorecards) writeFileSync(s.file, JSON.stringify(s.card, null, 2), 'utf8');
     let experimentsLogged = false;
@@ -740,6 +1006,7 @@ async function main() {
       floor,
       run: scoringExitOk ? score : { ...score, voided: true },
       experimentsLogged,
+      priorAttemptsOnCorpus,
     });
     console.log(`\n  MINT GATE: ${gate.mint ? 'PROCEED' : 'REFUSED'}`);
     console.log(`  ${gate.reason}`);

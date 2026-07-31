@@ -534,6 +534,13 @@ export function fwdBps(
 export interface Observation {
   readonly symbol: string;
   readonly bps: number;
+  /**
+   * The entry row's event time. REQUIRED, and it is the whole implementation cost of the deployment
+   * bar's chronological-halves clause: the time was previously dropped at the one line that built
+   * this object, so a CALENDAR split — the only split two different arms can share — was not
+   * computable from a cell's own inputs (halves-clause record § 3.4).
+   */
+  readonly eventTime: number;
 }
 
 export interface CellStats {
@@ -545,8 +552,27 @@ export interface CellStats {
   /** One-sided bootstrap p against the +13.0 bps null (share of draws at or below the bar). */
   readonly pVsBar: number;
   readonly placeboP: number;
+  /**
+   * INDEX-split halves: the midpoint of THIS cell's own observation vector.
+   *
+   * Chronological per arm (the vector is built in row order and the corpus is chronological), which
+   * is exactly what the research bar's clause 5 needs — it compares one arm against the CONSTANT
+   * +13.0 bps and no cross-arm comparability is required. They are frozen clauses of a
+   * pre-registered bar and must never be redefined. They are ALSO unusable for any BETWEEN-arm
+   * comparison: each arm splits at its own entry count, and the same arm's split moves between
+   * horizons whenever a forward return is unavailable (halves-clause record § 3.1-3.3).
+   */
   readonly firstHalf: number;
   readonly secondHalf: number;
+  /**
+   * TIME-split halves against a shared split instant, and the ONLY halves a between-arm comparison
+   * may read. `NaN`/0 when `computeCell` was called without a `splitAtMs` — an honest "not measured",
+   * which the deployment bar reads as UNDETERMINED rather than as a failure.
+   */
+  readonly firstHalfAt: number;
+  readonly secondHalfAt: number;
+  readonly nFirstHalfAt: number;
+  readonly nSecondHalfAt: number;
   readonly trimmed: number;
 }
 
@@ -612,12 +638,22 @@ function placeboP(
   return draws === 0 ? 1 : atLeastAsGood / draws;
 }
 
+/**
+ * `splitAtMs` is OPTIONAL and touches nothing that existed before it.
+ *
+ * When it is absent every pre-existing field is computed byte-identically — the argument is read
+ * only after the resampling statistics are finished, so it cannot perturb the PRNG stream, and the
+ * four `*At` fields it feeds read `NaN`/0. That guarantee is what lets a frozen, pre-registered
+ * research bar and a newly-added deployment clause share one function, and it is asserted directly
+ * in the spec rather than left as a claim.
+ */
 export function computeCell(
   obs: readonly Observation[],
   entries: readonly { symbol: string; dir: 1 | -1 }[],
   series: ReadonlyMap<string, Series>,
   h: number,
   seed: number,
+  splitAtMs?: number,
 ): CellStats {
   const rand = makeRand(seed);
   const bps = obs.map((o) => o.bps);
@@ -625,6 +661,14 @@ export function computeCell(
   const draws = clusterBootstrap(obs, rand);
   const half = Math.floor(bps.length / 2);
   const sorted = [...bps].sort((a, b) => a - b);
+  // Calendar assignment, both sides of a SHARED instant: strictly before is early, everything else
+  // is late (record § 4 definition 3). No RNG, no sorting of the vector, no dependence on this
+  // arm's own entry count — that independence is the entire reason the field exists.
+  const earlyAt: number[] = [];
+  const lateAt: number[] = [];
+  if (splitAtMs !== undefined) {
+    for (const o of obs) (o.eventTime < splitAtMs ? earlyAt : lateAt).push(o.bps);
+  }
   return {
     n: bps.length,
     clusters: new Set(obs.map((o) => o.symbol)).size,
@@ -636,8 +680,41 @@ export function computeCell(
     placeboP: placeboP(entries, series, h, m, rand),
     firstHalf: mean(bps.slice(0, half)),
     secondHalf: mean(bps.slice(half)),
+    firstHalfAt: mean(earlyAt),
+    secondHalfAt: mean(lateAt),
+    nFirstHalfAt: earlyAt.length,
+    nSecondHalfAt: lateAt.length,
     trimmed: sorted.length > 2 ? mean(sorted.slice(1, -1)) : Number.NaN,
   };
+}
+
+/**
+ * The run's ONE split instant: the median `eventTime` of the COMMON row set — the rows every arm
+ * answered, not any arm's entries.
+ *
+ * Sorted ascending, `T` is the time at index `floor(|C| / 2)`; for even `|C|` that is the upper of
+ * the two central times (record § 4 definition 2). Arm-independent, horizon-independent, and
+ * computed before any comparison is read. Returns `undefined` for an empty common set, which
+ * propagates as an honest UNDETERMINED rather than a fabricated boundary.
+ */
+export function commonRowsSplitAtMs(
+  perArm: ReadonlyMap<string, readonly ArmRowResult[]>,
+): number | undefined {
+  const lists = [...perArm.values()];
+  if (lists.length === 0) return undefined;
+  const timeById = new Map<string, number>();
+  for (const list of lists) for (const r of list) timeById.set(r.rowId, r.eventTime);
+  // The intersection, computed here rather than assumed: truncateToCommonRows already guarantees it,
+  // but a split instant that silently followed one arm's row set would be the arm-relative boundary
+  // this whole clause exists to avoid.
+  let common = new Set<string>(lists[0]!.map((r) => r.rowId));
+  for (const list of lists.slice(1)) {
+    const ids = new Set(list.map((r) => r.rowId));
+    common = new Set([...common].filter((id) => ids.has(id)));
+  }
+  if (common.size === 0) return undefined;
+  const times = [...common].map((id) => timeById.get(id)!).sort((a, b) => a - b);
+  return times[Math.floor(times.length / 2)];
 }
 
 export type Verdict = 'PASS' | 'UNDERPOWERED' | 'FAIL';
@@ -679,6 +756,20 @@ export interface LaneCell {
   readonly mean: number;
   readonly ciLo: number;
   readonly verdict: string;
+  /**
+   * The TIME-split halves of `CellStats`, carried here because `compareToIncumbent` consumes
+   * `LaneCell` and the clause is not expressible without them.
+   *
+   * OPTIONAL because a cell can legitimately not have them: a comparator read from a frozen artifact
+   * never will (§ 6.2). Absent reads as UNDETERMINED. These are NEVER the index-split
+   * `firstHalf`/`secondHalf` — those are deliberately not declared here, and the different names are
+   * the first of two barriers against substituting them (the second is in
+   * `loadRecordedIncumbentCells`).
+   */
+  readonly firstHalfAt?: number;
+  readonly secondHalfAt?: number;
+  readonly nFirstHalfAt?: number;
+  readonly nSecondHalfAt?: number;
 }
 
 export interface JointVerdict {
@@ -1500,6 +1591,20 @@ export const DEPLOYMENT_PRIMARY_HORIZON = 24;
 /** The robustness clause: h=24 AND at least 3 of the 4 horizons, deliberately stricter than owner. */
 export const DEPLOYMENT_MIN_HORIZONS_WON = 3;
 
+/**
+ * Minimum observations in EACH of the four halves (arm-early, arm-late, incumbent-early,
+ * incumbent-late) for the chronological-halves clause to be DETERMINED.
+ *
+ * Not a new number: a half-mean is a mean, and this program has exactly one declared minimum n for
+ * reading one — `MIN_ENTRIES = 12`, the research bar's clause 7, whose justification is empirical
+ * ("the horizon study's n=11 cell showed +6.3% excess and reversed at n=84"). A half is a
+ * cell-shaped quantity so it inherits the cell-shaped floor. Declared in the pre-registration record
+ * (deployment-bar-halves-clause-2026-07-31.md § 8) BEFORE any run under the new bar, together with
+ * the accepted consequence that a low-frequency arm faces a weaker deployment bar than a
+ * high-frequency one.
+ */
+export const DEPLOYMENT_HALF_MIN_ENTRIES = MIN_ENTRIES;
+
 // ── the sequencing constraint (prereg guard 9 — fails OPEN, downgrades attribution) ───────────────
 export const PROMPT_SURFACE_FILE = 'src/features/strategy/agentic/agent-prompt.ts';
 /** The blob at 2f1c917, the commit that published the predecessor's NO_SURVIVOR results. */
@@ -1721,6 +1826,25 @@ export interface HorizonComparison {
   readonly beats: boolean;
 }
 
+export type HalvesVerdict = 'BOTH_WON' | 'HALF_LOST' | 'UNDETERMINED';
+
+/** The four half-means the clause compares, plus the counts and instant that decide DETERMINED. */
+export interface DeploymentHalves {
+  /** The run's shared split instant, or null when the comparison was handed none. */
+  readonly splitAtMs: number | null;
+  readonly armEarly: number;
+  readonly armLate: number;
+  readonly incumbentEarly: number;
+  readonly incumbentLate: number;
+  readonly armEarlyN: number;
+  readonly armLateN: number;
+  readonly incumbentEarlyN: number;
+  readonly incumbentLateN: number;
+  readonly minEntries: number;
+  readonly determined: boolean;
+  readonly reason: string;
+}
+
 export interface DeploymentComparison {
   readonly arm: string;
   readonly incumbent: string;
@@ -1729,17 +1853,110 @@ export interface DeploymentComparison {
   readonly beatsAtPrimary: boolean;
   readonly horizonsWon: number;
   readonly horizonsCompared: number;
-  /** h=24 AND >= 3 of 4 horizons — the pre-registered robustness clause, computed not asserted. */
+  /**
+   * h=24 AND >= 3 of 4 horizons: the ORIGINAL two pre-registered conjuncts, unchanged and reported
+   * separately so the halves clause can be told apart from the horizon clause in every output.
+   */
+  readonly beatsHorizonBar: boolean;
+  /** Both original conjuncts AND the halves clause did not MEASURE a lost half. */
   readonly ships: boolean;
-  /** Wins at h=24 alone: reported as horizon-dependent, and does NOT ship. */
+  /** Wins at h=24 but misses the 3-of-4 clause. Unchanged in meaning and value by the halves clause. */
   readonly horizonDependent: boolean;
+  /** The chronological-halves clause at the PRIMARY horizon only — three-valued, never a boolean. */
+  readonly halvesVerdict: HalvesVerdict;
+  readonly halves: DeploymentHalves;
   readonly attribution: PromptSurfaceCheck['attribution'];
+}
+
+/**
+ * The chronological-halves clause, at the primary horizon only.
+ *
+ * Reads ONLY the `*At` (calendar-split) fields. A cell that carries no `*At` fields — every cell
+ * read from a frozen artifact, and every cell computed before a split instant existed — is
+ * UNDETERMINED, which is the honest answer and never a failure. It is deliberately NOT satisfiable
+ * from `firstHalf`/`secondHalf`: those measure each arm's own rank midpoint, so a BOTH_WON obtained
+ * from them would carry the name of a robustness guard while measuring an arithmetic accident
+ * (record § 6.3).
+ */
+function judgeHalves(
+  armPrimary: LaneCell | undefined,
+  incumbentPrimary: LaneCell | undefined,
+  splitAtMs: number | undefined,
+): { readonly verdict: HalvesVerdict; readonly halves: DeploymentHalves } {
+  const armEarly = armPrimary?.firstHalfAt ?? Number.NaN;
+  const armLate = armPrimary?.secondHalfAt ?? Number.NaN;
+  const incumbentEarly = incumbentPrimary?.firstHalfAt ?? Number.NaN;
+  const incumbentLate = incumbentPrimary?.secondHalfAt ?? Number.NaN;
+  const armEarlyN = armPrimary?.nFirstHalfAt ?? 0;
+  const armLateN = armPrimary?.nSecondHalfAt ?? 0;
+  const incumbentEarlyN = incumbentPrimary?.nFirstHalfAt ?? 0;
+  const incumbentLateN = incumbentPrimary?.nSecondHalfAt ?? 0;
+
+  const means = [armEarly, armLate, incumbentEarly, incumbentLate];
+  const counts = [armEarlyN, armLateN, incumbentEarlyN, incumbentLateN];
+  const allFinite = means.every((v) => Number.isFinite(v));
+  const allPowered = counts.every((c) => c >= DEPLOYMENT_HALF_MIN_ENTRIES);
+  const determined = allFinite && allPowered;
+
+  // Ties are NOT wins, matching `beats: a.mean > i.mean` on the horizon table.
+  const verdict: HalvesVerdict = !determined
+    ? 'UNDETERMINED'
+    : armEarly > incumbentEarly && armLate > incumbentLate
+      ? 'BOTH_WON'
+      : 'HALF_LOST';
+  const shape = (n: number): string => `${n}`;
+  const reason = !allFinite
+    ? `a half-mean is not finite (arm ${armEarlyN}/${armLateN} vs incumbent ` +
+      `${incumbentEarlyN}/${incumbentLateN} entries) — the clause is UNDETERMINED and fails OPEN. ` +
+      'Most often this is a comparator read from a frozen artifact, which carries no per-entry ' +
+      'times and can never satisfy the clause at any effort.'
+    : !allPowered
+      ? `a half holds fewer than ${DEPLOYMENT_HALF_MIN_ENTRIES} entries (arm ` +
+        `${shape(armEarlyN)}/${shape(armLateN)}, incumbent ${shape(incumbentEarlyN)}/` +
+        `${shape(incumbentLateN)}) — UNDETERMINED, fails OPEN.`
+      : verdict === 'BOTH_WON'
+        ? `wins BOTH chronological halves at the primary horizon (early ${armEarly.toFixed(1)} vs ` +
+          `${incumbentEarly.toFixed(1)}, late ${armLate.toFixed(1)} vs ${incumbentLate.toFixed(1)} bps).`
+        : `loses the ${armEarly > incumbentEarly ? 'LATE' : 'EARLY'} half at the primary horizon ` +
+          `(early ${armEarly.toFixed(1)} vs ${incumbentEarly.toFixed(1)}, late ${armLate.toFixed(1)} ` +
+          `vs ${incumbentLate.toFixed(1)} bps) — a win located in half of a single-regime window. ` +
+          'Fails CLOSED: it does not ship.';
+
+  return {
+    verdict,
+    halves: {
+      splitAtMs: splitAtMs ?? null,
+      armEarly,
+      armLate,
+      incumbentEarly,
+      incumbentLate,
+      armEarlyN,
+      armLateN,
+      incumbentEarlyN,
+      incumbentLateN,
+      minEntries: DEPLOYMENT_HALF_MIN_ENTRIES,
+      determined,
+      reason,
+    },
+  };
 }
 
 /**
  * The DEPLOYMENT bar: a ranking of measured means among options that all have to be somewhere. Not
  * alpha-corrected, because it tests no hypothesis against a null — and evaluated independently of,
  * and regardless of, the research-bar outcome.
+ *
+ * THE THIRD CONJUNCT, added 2026-07-31 under the pre-registered record
+ * `research/studies/deployment-bar-halves-clause-2026-07-31.md`: the arm must also not LOSE either
+ * chronological half at the primary horizon. That docstring above is not weakened by it — the clause
+ * introduces no null, no p-value and no alpha; it compares the same two measured means twice on
+ * disjoint subsets of the same rows. The bar remains a ranking that now has to hold on both halves
+ * of the window rather than on the window's average alone.
+ *
+ * Two failure directions, and they differ: a MEASURED half-loss fails CLOSED (does not ship), an
+ * UNDETERMINED half fails OPEN (ships, and is reported). The unattended mint gate is the single
+ * caller that refuses on UNDETERMINED, for a reason about authority rather than evidence —
+ * `classifyMintGate` in scripts/loop-authoring-core.mjs.
  */
 export function compareToIncumbent(
   armName: string,
@@ -1747,6 +1964,7 @@ export function compareToIncumbent(
   incumbentName: string,
   incumbentCells: readonly LaneCell[],
   attribution: PromptSurfaceCheck['attribution'],
+  splitAtMs?: number,
 ): DeploymentComparison {
   const perHorizon: HorizonComparison[] = [];
   for (const h of HORIZONS) {
@@ -1763,7 +1981,17 @@ export function compareToIncumbent(
   }
   const beatsAtPrimary = perHorizon.find((c) => c.h === DEPLOYMENT_PRIMARY_HORIZON)?.beats ?? false;
   const horizonsWon = perHorizon.filter((c) => c.beats).length;
-  const ships = beatsAtPrimary && horizonsWon >= DEPLOYMENT_MIN_HORIZONS_WON;
+  // The two ORIGINAL conjuncts, isolated. `horizonDependent` is defined against THIS rather than
+  // against `ships`, which keeps its value identical to what it was before the halves clause existed
+  // and keeps the two refusals distinguishable: "wins h=24 only" and "loses a half" are different
+  // findings and a reader must never see the second reported as the first.
+  const beatsHorizonBar = beatsAtPrimary && horizonsWon >= DEPLOYMENT_MIN_HORIZONS_WON;
+  const { verdict: halvesVerdict, halves } = judgeHalves(
+    armCells.find((c) => c.h === DEPLOYMENT_PRIMARY_HORIZON),
+    incumbentCells.find((c) => c.h === DEPLOYMENT_PRIMARY_HORIZON),
+    splitAtMs,
+  );
+  const ships = beatsHorizonBar && halvesVerdict !== 'HALF_LOST';
   return {
     arm: armName,
     incumbent: incumbentName,
@@ -1772,8 +2000,11 @@ export function compareToIncumbent(
     beatsAtPrimary,
     horizonsWon,
     horizonsCompared: perHorizon.length,
+    beatsHorizonBar,
     ships,
-    horizonDependent: beatsAtPrimary && !ships,
+    horizonDependent: beatsAtPrimary && !beatsHorizonBar,
+    halvesVerdict,
+    halves,
     attribution,
   };
 }
@@ -1782,6 +2013,22 @@ export function compareToIncumbent(
  * The predecessor's RECORDED rows, which are the Family A comparator because `incumbent_control` is
  * unfunded (prereg § The sequencing constraint). Read from the 2026-07-28 leg artifact rather than
  * re-measured, and the comparison's controlled-vs-between-run status is reported separately.
+ *
+ * EVERY CELL IS REBUILT FIELD BY FIELD, and that is a safety barrier rather than a style choice.
+ *
+ * The frozen artifact's cells carry `firstHalf`/`secondHalf` — the INDEX-split fields — and the
+ * parse type does not declare them, so before this projection existed they arrived at runtime while
+ * being invisible to the compiler. Spreading the parsed object into a `LaneCell` would therefore
+ * have made the deployment bar's chronological-halves clause satisfiable from an arm-relative rank
+ * artifact: `UNDETERMINED` would silently become a green `BOTH_WON`, reported as a robustness guard
+ * that had passed (halves-clause record § 6.3 — "worse than not having the clause"). Listing the
+ * fields makes that substitution structurally impossible rather than merely discouraged, and the
+ * accompanying spec asserts it.
+ *
+ * The artifact is frozen and carries no per-row data at all, so the incumbent's per-entry event
+ * times cannot be recovered at any effort. Whenever the comparator is this recorded row the halves
+ * clause reads UNDETERMINED BY CONSTRUCTION, fails open, and the deployment decision runs on the two
+ * original conjuncts exactly as it did before the clause existed (§ 6.2).
  */
 export function loadRecordedIncumbentCells(
   arm: string,
@@ -1797,9 +2044,27 @@ export function loadRecordedIncumbentCells(
   }
   const leg = JSON.parse(readFileSync(file, 'utf8')) as {
     manifest: { payloadSha256: string };
-    cells: (LaneCell & { arm: string })[];
+    cells: {
+      model: string;
+      arm: string;
+      h: number;
+      n: number;
+      mean: number;
+      ciLo: number;
+      verdict: string;
+    }[];
   };
-  const cells = leg.cells.filter((c) => c.arm === arm);
+  const cells: LaneCell[] = leg.cells
+    .filter((c) => c.arm === arm)
+    .map((c) => ({
+      model: c.model,
+      arm: c.arm,
+      h: c.h,
+      n: c.n,
+      mean: c.mean,
+      ciLo: c.ciLo,
+      verdict: c.verdict,
+    }));
   if (cells.length === 0) throw new Error(`predecessor artifact has no recorded rows for ${arm}`);
   return { cells, corpusSha256: leg.manifest.payloadSha256 };
 }

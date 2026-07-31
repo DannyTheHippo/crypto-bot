@@ -283,6 +283,14 @@ normalized as background noise (the ~10-min STALE_DATA blackouts, the unflagged 
 When the sweep is clean, select exactly ONE pass type — highest-priority eligible. Priority:
 correctness bugs on the trading path > promotion-ready evidence > candidate work > maintenance.
 
+CANDIDATE is eligible only while today's authoring slot is UNSPENT: a UTC day whose
+`playbook-authoring-attempt` row already exists in `public.experiments` falls through to MAINTENANCE,
+and a pass that runs `loop:authoring` anyway gets a refusal rather than a second mint. That day slot
+replaced the old "eligible only when no unresolved candidate sits in A/B" condition, which daily
+minting makes permanently false (owner override,
+`research/studies/candidate-routing-override-2026-07-31.md`). The ceiling is enforced in code, so a
+pass need not — and must not — decide for itself whether it has already run today; ask the gate.
+
 Pass-type selection governs the IMPROVEMENT the pass chooses. It never gates defect repair: any
 defect found along the way is fixed in this pass on top of the chosen type (§ DEFECTS ARE NEVER
 DEFERRED). A pass whose defect work crowds out the improvement entirely says so in LOG.md — and if
@@ -328,14 +336,51 @@ pass already shipped something" are not blockers.
 
 Pass types, reframed for the unified book:
 
-- CANDIDATE — eligible only when no unresolved candidate sits in A/B. Draft 1-3 playbook variants
-  in-session grounded in sweep evidence (each rationale cites a specific metric/row, never a
-  hunch); score each offline (`AGENTIC_CANDIDATE_PLAYBOOK_FILE=<file>` against
-  `recorded-payload-live-compare.spec.ts`, ≤$20/gate); log EVERY scored variant (winner and losers)
-  to the experiments registry; inject only the best if it beat the champion
-  (`playbook:candidate <file> --metrics <scorecard.json>`). One playbook lineage now (seed v1) — no
-  per-venue lineage split. The live A/B + attributed auto-promotion take over — a candidate pass
-  never manually promotes.
+- CANDIDATE — run `pnpm loop:authoring`, AT MOST ONCE PER UTC DAY. The pass does NOT hand-draft and
+  does NOT hand-score: the script drafts, validates against the real `validatePlaybook`, scores
+  through the playbook-space replay engine, logs EVERY scored variant (winners AND losers) to
+  `public.experiments`, gates on the deployment bar, and mints via `playbook:candidate` — end to end,
+  in that order. A pass that drafts a variant by hand is not doing this pass type; it is doing a
+  superseded one.
+
+  **The once-per-UTC-day ceiling is MECHANICAL, not remembered.** `classifySameDayGate`
+  (`scripts/loop-authoring-core.mjs`) refuses a second run on a `playbook-authoring-attempt` row
+  already written for the current UTC day, and the day boundary comes from the **DATABASE clock, not
+  the host's** — this stack runs on a laptop that sleeps, so a host-derived UTC midnight is a skewed
+  boundary. The gate sits after the cheap preconditions (stale dist, unreachable DB, unresolvable
+  incumbent, retired-objective assertion, split-brain guard) so an environmental failure does not burn
+  the day's slot, and before the first paid drafting call so it actually bounds spend. There is **no
+  override flag** — an escape hatch would turn it back into a rule a pass can forget. `--dry-run` is
+  exempt (spends nothing, writes nothing); `--draft-file` is NOT (it still spends the full stage-4
+  replay budget).
+
+  **`MINT GATE: REFUSED` on a measured bar IS this pass working, not failing.** The deployment bar is
+  "beats the currently running playbook on the same corpus, metric and horizons"; most drafts will not.
+  Record the refusal and its blockers verbatim in LOG.md, with the experiments-registry row ids of
+  every scored variant — a refusal that was measured and logged is the pass's deliverable, and a pass
+  that reports a refusal as an incident is misreading it. The pass exits 0 on that path deliberately.
+
+  Daily minting is an OWNER DECISION that overrode Pass 51's "set `AGENTIC_PLAYBOOK_AB_PCT=0` and
+  withhold v12" — read `research/studies/candidate-routing-override-2026-07-31.md` before acting on
+  the routing knob. § 4 of that record is binding: executing the override requires NO env edit, and a
+  pass that "tidies up" the dead-looking 40% knob silently cancels it. Its § 6 is binding too — the
+  A/B split is a deterministic time pattern, not randomization, so no pass may quote a v12-minus-v10
+  delta as a causal effect.
+
+  Host invocation (`.env.app:294` names the compose-internal host `postgres`, which does not resolve
+  from the host — hence `127.0.0.1`; and the registry write needs both variables, spelled IDENTICALLY
+  or the split-brain guard refuses, which is why they come from one shell variable):
+
+  ```bash
+  DB=postgres://cryptobot:cryptobot@127.0.0.1:5432/cryptobot   # .env.app:294, host swapped
+  DATABASE_URL="$DB" REGISTRY_DATABASE_URL="$DB" REGISTRY_ALLOW_PRODUCTION_DB=1 \
+    corepack pnpm --dir <repo> loop:authoring --label "authoring-$(date -u +%F)"
+  ```
+
+  `REGISTRY_ALLOW_PRODUCTION_DB=1` is required and expected: the registry IS the production
+  `public.experiments` table, and the flag exists to make the operator name that target deliberately
+  (`scripts/log-eval-experiment.mjs` header). One playbook lineage — no per-venue split. The live A/B
+  and its attributed auto-promotion take over; a candidate pass never manually promotes.
 - PROMOTION — eligible when a live candidate has enough attributed round trips. Verify the
   evaluator's verdict against `agentic_version_net_pnl_usd{version}` /
   `agentic_version_round_trips{version}`, walked over the ONE book (no lane split to reconcile).

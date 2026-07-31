@@ -16,7 +16,7 @@
 // draft ships iff it BEATS THE RUNNING PLAYBOOK on the same corpus, metric and horizons, and the
 // research bar is reported alongside so the two are never conflated.
 //
-// FAILURE DIRECTIONS — five gates, and they do not all point the same way:
+// FAILURE DIRECTIONS — seven gates, and they do not all point the same way:
 //
 //  * resolveIncumbent fails CLOSED. The deployment bar is DEFINED by the currently running playbook
 //    ("beats the currently running playbook", verdicts.md § Standing verdicts, first entry), so a
@@ -51,6 +51,23 @@
 //    Complete experiment logging is one of its preconditions ON PURPOSE: a pass that records only its
 //    winners launders a selection effect into the registry, so partial logging blocks the mint exactly
 //    as a failed measurement does.
+//
+//  * classifyRegistrySplitBrain fails CLOSED, including on a target it cannot identify. Reads and
+//    writes landing in two different databases is the one defect of this pass that is invisible in its
+//    own output — every stage still prints OK — so an unparseable URL is treated as ambiguity rather
+//    than agreement. (This entry was missing from this list until 2026-07-31; the guard itself
+//    documents the direction at its own definition.)
+//
+//  * classifySameDayGate fails CLOSED, and has NO override flag. It is the once-per-UTC-day ceiling on
+//    the whole pass. A same-day attempt row refuses; an unreadable registry ALSO refuses, because the
+//    pass cannot honour its log-everything precondition against a registry it cannot reach and would
+//    only spend the drafting and replay budget to arrive at a guaranteed stage-7 refusal. The day
+//    boundary is the DATABASE clock and never the host's: this stack runs on a laptop that sleeps
+//    (worst measured duty cycle 8%/24h; one pass spanned a ~7.5h sleep and expired its own 2h lease),
+//    so a host-derived UTC midnight is a skewed boundary while the DB is the one clock every writer
+//    shares. `--dry-run` is the ONLY exemption and it is not a hole: it spends nothing and writes
+//    nothing, so it can neither burn the slot nor need bounding. `--draft-file` is deliberately NOT
+//    exempt — it skips the drafting call and still spends the full stage-4 replay budget.
 
 // ── the retired objective, and how it is kept out of the drafting prompt ─────────────────────────
 
@@ -315,6 +332,87 @@ export function classifyEntryRateFloor({
   };
 }
 
+// ── the attempt counter ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * The corpus identity a prior-attempt count is grouped by — and it is deliberately NOT the payload
+ * fingerprint.
+ *
+ * The multiplicity nobody was tracking is "how many times has something been scored against this
+ * corpus". Three keys were available and two do not answer it:
+ *
+ * - `dataset_hash` folds the RUN's own shape into the hash — `rowsLoaded` AND `rowsReplayed`
+ *   (log-eval-experiment.mjs § datasetHash). Two runs against the identical corpus at different row
+ *   budgets get different values, so grouping by it counts run CONFIGURATIONS. Correct key for "was
+ *   this the same run setup"; wrong key for "how many bites at this apple".
+ * - `metrics->>'corpusFingerprint'` is the payload sha over every row's id and payload bytes. It is
+ *   the *conceptually* right key and it is MEASURABLY BROKEN here: the corpus on disk hashes to
+ *   `030367ba…` while ten frozen artifacts covering 20 scored cells record `f1dd13c6…`, with every
+ *   identity field matching. Keying on it reports ZERO prior attempts on a corpus that has already
+ *   been scored twenty times over — the loophole is the counter's present state, not a future risk
+ *   (halves-clause record § 7.3; cause and evidence in
+ *   research/studies/corpus-fingerprint-drift-2026-07-31.md).
+ *
+ * So the key is `(rowsLoaded, rowSince, rowUntil)` out of `metrics.window`, which every registry row
+ * written by a scorecard already carries because log-eval-experiment.mjs copies the window verbatim.
+ * The three fields it does NOT use were each rejected against the actual rows, not on taste:
+ *
+ * - `symbolCount` is recorded nowhere by any writer that has ever run. Including it would null the
+ *   key on every historical row and reproduce the exact defect being worked around.
+ * - `firstEventTime` is NOT corpus-stable across writers. Registry row id=5 replayed a 40-row
+ *   subsample of the SAME 204-row corpus as rows 2/3/4/6/7 and records `firstEventTime`
+ *   1783862100000 against their 1783716300000 — it tracks the REPLAYED SUBSET. Keying on it would
+ *   split runs that share a corpus, which is the same failure in a different coordinate.
+ * - That same row id=5 also records a different `corpusFingerprint` (`99a3c1a3…` vs `bc9390e4…`)
+ *   from its five siblings. So the fingerprint's inability to identify one corpus is not a
+ *   one-off tied to the playbook-space drift — it has fired twice, on two unrelated corpora.
+ *
+ * `rowSince`/`rowUntil` hold at 1783714500000/1783876500000 across ALL SIX of those rows, including
+ * id=5. That is the measurement this key is chosen on.
+ *
+ * WHAT IT GIVES UP, stated rather than discovered later: two genuinely different corpora that happen
+ * to share a row count and both query bounds count as one, and rows written without a `window` at
+ * all (ids 1 and 8 today) are invisible to it. The key is deliberately COARSE, and that is only
+ * acceptable because the counter is a REPORT with no threshold attached — an over-count is a louder
+ * warning, where the fingerprint's under-count is a silent all-clear.
+ */
+export function corpusAttemptKey(corpus) {
+  if (corpus === undefined || corpus === null) return null;
+  const rows = corpus.rows ?? corpus.rowsLoaded;
+  const rowSince = corpus.rowSince ?? corpus.firstEventTime;
+  const rowUntil = corpus.rowUntil ?? corpus.lastEventTime;
+  for (const v of [rows, rowSince, rowUntil]) {
+    if (typeof v !== 'number' || !Number.isFinite(v)) return null;
+  }
+  return { rowsLoaded: rows, rowSince, rowUntil };
+}
+
+/**
+ * One line describing the count, honest about which key produced it.
+ *
+ * The fingerprint count is carried alongside and rendered whenever it DISAGREES with the identity
+ * count, because that disagreement is the § 7.3 drift measuring itself on every pass — the moment it
+ * closes, or widens, a reader sees it without going looking.
+ */
+export function renderPriorAttempts(a) {
+  if (a === undefined || a === null) return 'NOT COUNTED';
+  const { count, byFingerprint, key } = a;
+  const where =
+    key === undefined || key === null
+      ? 'unkeyed'
+      : `rows=${key.rowsLoaded}, since=${key.rowSince}, until=${key.rowUntil}`;
+  const drift =
+    typeof byFingerprint === 'number' && byFingerprint !== count
+      ? `; the payload fingerprint matches only ${byFingerprint} of them — the corpus-fingerprint ` +
+        'drift (halves-clause record § 7.3) is still open and this is it measuring itself'
+      : '';
+  return (
+    `${count} prior registry row(s) on this corpus identity (${where})${drift}. ` +
+    'REPORTED, never a gate — no threshold is declared, and one chosen after seeing these counts ' +
+    'would be the post-hoc bar-setting the record refuses.'
+  );
+}
+
 // ── the two bars ─────────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -330,9 +428,25 @@ export function classifyEntryRateFloor({
  * not a deployment veto" is the first standing verdict in research/loop/verdicts.md, on an explicit
  * owner ruling, and applying the opposite rule "throws away everything the study measured while
  * leaving the worst-measured option running".
- * @returns {{mint:boolean,reason:string,deploymentVerdict:string,researchVerdict:string,blockers:string[]}}
+ *
+ * `priorAttemptsOnCorpus` is likewise REPORTED and never gates — see `renderPriorAttempts`. It rides
+ * in the reason so the count is on the record next to the decision it qualifies.
+ *
+ * ONE clause of the deployment bar is re-read here rather than taken from `ships`, and only one: the
+ * chronological-halves outcome, which blocks on UNDETERMINED. That is not a re-derivation of the bar
+ * — `ships` already carries the halves clause's CLOSED direction — it is a caller-specific
+ * restriction on a clause whose OPEN direction is deliberate everywhere else. The reason is authority
+ * rather than evidence, and it is spelled out at the branch.
+ * @returns {{mint:boolean,reason:string,deploymentVerdict:string,researchVerdict:string,blockers:string[],priorAttemptsOnCorpus:object|null}}
  */
-export function classifyMintGate({ deployment, research, floor, run, experimentsLogged }) {
+export function classifyMintGate({
+  deployment,
+  research,
+  floor,
+  run,
+  experimentsLogged,
+  priorAttemptsOnCorpus,
+}) {
   const blockers = [];
 
   if (run === undefined || run === null) {
@@ -354,14 +468,37 @@ export function classifyMintGate({ deployment, research, floor, run, experiments
 
   if (deployment === undefined || deployment === null) {
     blockers.push('no deployment comparison — the incumbent was never scored on the same rows');
-  } else if (deployment.ships !== true) {
-    blockers.push(
-      deployment.horizonDependent === true
-        ? `beats the incumbent at h=${deployment.primaryHorizon} only (${deployment.horizonsWon}/${deployment.horizonsCompared} horizons) — ` +
-            'horizon-dependent, and the pre-registered robustness clause does not ship it'
-        : `does not beat the incumbent under the declared deployment bar (${deployment.horizonsWon}/${deployment.horizonsCompared} horizons won, ` +
-            `primary h=${deployment.primaryHorizon} ${deployment.beatsAtPrimary === true ? 'won' : 'lost'})`,
-    );
+  } else {
+    if (deployment.ships !== true) {
+      blockers.push(
+        deployment.halvesVerdict === 'HALF_LOST'
+          ? `LOSES A CHRONOLOGICAL HALF at h=${deployment.primaryHorizon} — ${deployment.halves?.reason ?? 'one half not won'} ` +
+              `It wins the horizon clause (${deployment.horizonsWon}/${deployment.horizonsCompared} horizons), so this ` +
+              'is NOT the horizon-dependent refusal: the window average is carried by half the window'
+          : deployment.horizonDependent === true
+            ? `beats the incumbent at h=${deployment.primaryHorizon} only (${deployment.horizonsWon}/${deployment.horizonsCompared} horizons) — ` +
+              'horizon-dependent, and the pre-registered robustness clause does not ship it'
+            : `does not beat the incumbent under the declared deployment bar (${deployment.horizonsWon}/${deployment.horizonsCompared} horizons won, ` +
+              `primary h=${deployment.primaryHorizon} ${deployment.beatsAtPrimary === true ? 'won' : 'lost'})`,
+      );
+    }
+    // THE ASYMMETRY, and it is about AUTHORITY rather than evidence. The halves clause fails OPEN
+    // everywhere else — an unmeasurable clause is not a failed clause, and blocking a deployment on a
+    // clause that could not be computed leaves the worst-measured option running for a reason that is
+    // not evidence about the arms (halves-clause record § 5.2). But this gate is the UNATTENDED mint:
+    // the row it writes lands in an append-only registry and cannot be retracted, and "the robustness
+    // clause could not be computed" is precisely the condition under which an automated selection walk
+    // would be invisible. A human may ship on an unverifiable clause; a pass writing on its own
+    // authority may not (§ 5.3). An ABSENT verdict is treated as UNDETERMINED for the same reason —
+    // a comparison that carries no halves field did not compute the clause either.
+    if (deployment.halvesVerdict !== 'BOTH_WON' && deployment.halvesVerdict !== 'HALF_LOST') {
+      blockers.push(
+        `the chronological-halves clause is ${deployment.halvesVerdict ?? 'ABSENT'} — ` +
+          `${deployment.halves?.reason ?? 'the comparison carries no halves verdict at all'} ` +
+          'It fails OPEN for a human reader and CLOSED here: an unattended mint writes an ' +
+          'append-only row on its own authority and may not do so on an unverifiable robustness clause.',
+      );
+    }
   }
 
   if (floor === undefined || floor === null) {
@@ -385,20 +522,33 @@ export function classifyMintGate({ deployment, research, floor, run, experiments
       ? 'NOT COMPARED'
       : deployment.ships === true
         ? 'SHIPS'
-        : deployment.horizonDependent === true
-          ? 'HORIZON-DEPENDENT'
-          : 'LOSES';
+        : deployment.halvesVerdict === 'HALF_LOST'
+          ? 'HALF-LOST'
+          : deployment.horizonDependent === true
+            ? 'HORIZON-DEPENDENT'
+            : 'LOSES';
+
+  // Reported on EVERY mint decision, pass or refusal, and embedded in each scorecard so an
+  // append-only row records the count at its OWN decision moment. It is a REPORT, not a gate: no
+  // threshold is declared anywhere, because a threshold chosen after seeing the counts would be the
+  // post-hoc bar-setting the halves record refuses (§ 9.2). Absent ⇒ said to be absent, never 0.
+  const attempts =
+    priorAttemptsOnCorpus === undefined || priorAttemptsOnCorpus === null
+      ? 'prior attempts on this corpus: NOT COUNTED'
+      : `prior attempts on this corpus: ${renderPriorAttempts(priorAttemptsOnCorpus)}`;
 
   return {
     mint: blockers.length === 0,
     blockers,
     deploymentVerdict,
     researchVerdict,
+    priorAttemptsOnCorpus: priorAttemptsOnCorpus ?? null,
     reason:
       blockers.length === 0
         ? `deployment bar ${deploymentVerdict}, research bar ${researchVerdict} — the deployment bar ` +
-          'governs playbook selection and nothing else; this mint is NOT a claim of edge.'
-        : `refusing to mint: ${blockers.join('; ')}.`,
+          'governs playbook selection and nothing else; this mint is NOT a claim of edge. ' +
+          `${attempts}.`
+        : `refusing to mint: ${blockers.join('; ')}. ${attempts}.`,
   };
 }
 
@@ -406,7 +556,7 @@ export function classifyMintGate({ deployment, research, floor, run, experiments
  * The two verdicts side by side, never merged. verdicts.md's first standing verdict exists because
  * they were being conflated, so this renders both with their own labels even when they agree.
  */
-export function renderTwoBars({ arm, deployment, research }) {
+export function renderTwoBars({ arm, deployment, research, priorAttemptsOnCorpus }) {
   const lines = [
     `  variant:          ${arm}`,
     `  DEPLOYMENT bar    (beats the RUNNING playbook on the same corpus/metric/horizons):`,
@@ -417,7 +567,15 @@ export function renderTwoBars({ arm, deployment, research }) {
     lines.push(
       `    incumbent ${deployment.incumbent}, primary h=${deployment.primaryHorizon}, ` +
         `${deployment.horizonsWon}/${deployment.horizonsCompared} horizons won ⇒ ` +
-        `${deployment.ships === true ? 'SHIPS' : deployment.horizonDependent === true ? 'HORIZON-DEPENDENT (does NOT ship)' : 'LOSES'}`,
+        `${
+          deployment.ships === true
+            ? 'SHIPS'
+            : deployment.halvesVerdict === 'HALF_LOST'
+              ? 'HALF-LOST (does NOT ship)'
+              : deployment.horizonDependent === true
+                ? 'HORIZON-DEPENDENT (does NOT ship)'
+                : 'LOSES'
+        }`,
     );
     for (const h of deployment.perHorizon ?? []) {
       lines.push(
@@ -425,8 +583,17 @@ export function renderTwoBars({ arm, deployment, research }) {
           `${h.incumbentMean.toFixed(1).padStart(8)} bps  Δ ${h.deltaBps.toFixed(1).padStart(8)}  ${h.beats ? 'win' : 'loss'}`,
       );
     }
+    // The third conjunct, on its own line and never folded into the horizon count: "wins h=24 only"
+    // and "loses a half" are different findings about different failure shapes.
+    lines.push(
+      `    chronological halves (h=${deployment.primaryHorizon} only): ${deployment.halvesVerdict ?? 'ABSENT'}` +
+        `${deployment.halves?.reason ? ` — ${deployment.halves.reason}` : ''}`,
+    );
     lines.push(`    attribution: ${deployment.attribution}`);
   }
+  // The multiplicity nobody was counting. Printed next to the bar it qualifies, because a bar read
+  // without it looks like one comparison rather than the n-th.
+  lines.push(`  ATTEMPTS ON THIS CORPUS: ${renderPriorAttempts(priorAttemptsOnCorpus)}`);
   lines.push(
     '  RESEARCH bar      (does an edge exist? mean AND CI lo > +13.0 bps under the family alpha):',
   );
@@ -442,13 +609,296 @@ export function renderTwoBars({ arm, deployment, research }) {
   return lines.join('\n');
 }
 
+// ── the registry split-brain guard ───────────────────────────────────────────────────────────────
+
+/**
+ * Parses a pg URL down to the only components that decide whether two connection strings address the
+ * same table. An empty port is the pg default, so `host/db` and `host:5432/db` are the same target;
+ * everything else is compared verbatim — hostnames especially, because this process cannot know
+ * whether `localhost` and `127.0.0.1` resolve to the same server. Returns null when the URL cannot be
+ * identified at all, which callers must treat as ambiguity rather than agreement.
+ *
+ * `render` carries host, port and database ONLY. The URLs it is built from carry a password, and
+ * every caller of this module prints the result.
+ */
+function parsePgTarget(url) {
+  if (typeof url !== 'string' || url === '') return null;
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  const database = parsed.pathname.replace(/^\//, '');
+  if (parsed.hostname === '' || database === '') return null;
+  const port = parsed.port === '' ? '5432' : parsed.port;
+  return {
+    host: parsed.hostname,
+    port,
+    database,
+    render: `${parsed.hostname}:${port}/${database}`,
+  };
+}
+
+/**
+ * Refuses an authoring pass whose READS and WRITES would land in different databases.
+ *
+ * The same-day gate and the attempt counter READ over the shell's DATABASE_URL pool, while stage 6
+ * WRITES every scored variant to public.experiments over log-eval-experiment.mjs's
+ * REGISTRY_DATABASE_URL. If those two diverge, the gate reads a table nobody writes and the counter
+ * under-reports forever — and every stage still prints OK, so it is a silent failure that looks like
+ * success. That is the whole reason this is a refusal and not a warning.
+ *
+ * Failure direction: CLOSED. An unparseable or unidentifiable URL on either side refuses, because a
+ * target this process cannot name is ambiguity, not agreement. An UNSET registryUrl is NOT this
+ * guard's business — log-eval-experiment.mjs's own gate already fails closed on it, and duplicating
+ * that refusal here would break `--dry-run`, which logs nothing and so needs no registry at all.
+ */
+export function classifyRegistrySplitBrain({ databaseUrl, registryUrl }) {
+  if (registryUrl === undefined || registryUrl === null || registryUrl === '') {
+    return { ok: true, checked: false, reason: null };
+  }
+  const read = parsePgTarget(databaseUrl);
+  const write = parsePgTarget(registryUrl);
+  if (read === null || write === null) {
+    const which = read === null ? 'DATABASE_URL' : 'REGISTRY_DATABASE_URL';
+    return {
+      ok: false,
+      checked: true,
+      reason:
+        `cannot compare the read and write targets — ${which} is not a URL this pass can identify ` +
+        '(host and database name). An unidentifiable target is ambiguity, not agreement, so this ' +
+        'guard refuses rather than assuming the two agree.',
+    };
+  }
+  if (read.render === write.render) return { ok: true, checked: true, reason: null };
+  return {
+    ok: false,
+    checked: true,
+    reason:
+      `REGISTRY SPLIT BRAIN — DATABASE_URL addresses ${read.render} but REGISTRY_DATABASE_URL ` +
+      `addresses ${write.render}. This pass READS its same-day gate and attempt counter over the ` +
+      'first and WRITES every scored variant to public.experiments over the second; split across two ' +
+      'databases the gate reads a table nobody writes and the counter under-reports forever, while ' +
+      'every stage still reports success. Point both at the same host and database — spelled the ' +
+      'same way, since this pass cannot know whether two spellings resolve to one server.',
+  };
+}
+
+// ── the once-per-UTC-day ceiling ─────────────────────────────────────────────────────────────────
+
+/**
+ * The family every day-slot marker is written under. One family, so the gate's read and the shell's
+ * write can never drift apart: the SCORED rows land under `playbook-authoring`, and keying the
+ * ceiling on those instead would be too late to bound anything — stage 4's replay is the expensive
+ * part and runs before stage 6 logs it, so a scored-row gate permits two full replays in a day.
+ */
+export const AUTHORING_ATTEMPT_FAMILY = 'playbook-authoring-attempt';
+
+/**
+ * The UTC day `ms` falls in, as `YYYY-MM-DD`. Deterministic in its argument: `new Date(ms)` reads the
+ * host clock only when constructed with no argument, which is exactly what this module never does.
+ */
+function utcDayKey(ms) {
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+/**
+ * The instant the NEXT UTC day opens, strictly after `ms`.
+ *
+ * `Date.UTC` normalises a day overflow into the following month or year, so 31 December and the end
+ * of February need no special case — they are asserted anyway, because "the arithmetic is obviously
+ * right" is how off-by-one boundaries survive review.
+ */
+function nextUtcMidnightMs(ms) {
+  const d = new Date(ms);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1);
+}
+
+/**
+ * A finite epoch-ms, or null. STRICT about the falsy cases on purpose: `Number(null)` is 0, so a bare
+ * `Number()` coercion turns a missing clock into 1970-01-01 — a readable boundary in the wrong
+ * direction (the gate would proceed, and a row from any real date would look like a different day).
+ * Numeric strings are accepted because pg returns `bigint` as text.
+ */
+function finiteMs(value) {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+/**
+ * The once-per-UTC-day ceiling on the whole authoring pass. Fails CLOSED — see the header.
+ *
+ * PURE, and the purity is the feature rather than a style preference. A documented "run this once a
+ * day" rule is a rule an unattended pass can forget, and the failure is invisible: two mints in a day
+ * both look like successful passes. This function turns the rule into a decision that is a function
+ * of its arguments alone — which is also what makes the host-sleep problem structurally unable to
+ * recur here. `nowMsFromDb` is the DATABASE clock, taken in the same round trip as `blockingRow` so
+ * the boundary and the row are read against one clock; nothing in this file can reach a host clock to
+ * disagree with it.
+ *
+ * There is deliberately NO override flag. An `--i-really-mean-it` escape converts a mechanical gate
+ * back into a documented one, and a documented one is precisely what this replaces.
+ *
+ * @param {{blockingRow?:{id?:string|number,createdAt?:string,createdAtMs?:number}|null,
+ *          nowMsFromDb?:number|null, dryRun?:boolean, registryError?:string|null}} input
+ * @returns {{proceed:boolean, exempt:boolean, verdict:'EXEMPT'|'SLOT_OPEN'|'SLOT_SPENT'|'CLOCK_UNAVAILABLE',
+ *            utcDay:string|null, nextSlotMs:number|null, nextSlotIso:string|null,
+ *            blockingRow:{id:string,createdAt:string,createdAtMs:number|null}|null, reason:string}}
+ */
+export function classifySameDayGate({
+  blockingRow = null,
+  nowMsFromDb = null,
+  dryRun = false,
+  registryError = null,
+} = {}) {
+  const nowMs = finiteMs(nowMsFromDb);
+  const clockReadable = nowMs !== null;
+  const utcDay = clockReadable ? utcDayKey(nowMs) : null;
+  const nextSlotMs = clockReadable ? nextUtcMidnightMs(nowMs) : null;
+  const nextSlotIso = nextSlotMs === null ? null : new Date(nextSlotMs).toISOString();
+  // Rendered from whatever the row actually carries, never fabricated: an unknown timestamp says so.
+  const candidate =
+    blockingRow === null || blockingRow === undefined
+      ? null
+      : {
+          id: String(blockingRow.id ?? 'unknown'),
+          createdAtMs: finiteMs(blockingRow.createdAtMs),
+          createdAt:
+            typeof blockingRow.createdAt === 'string' && blockingRow.createdAt !== ''
+              ? blockingRow.createdAt
+              : finiteMs(blockingRow.createdAtMs) === null
+                ? 'unknown'
+                : new Date(finiteMs(blockingRow.createdAtMs)).toISOString(),
+        };
+  // THE DAY COMPARISON IS MADE HERE, not left to the SQL predicate that fetched the row. Both are
+  // computed off the same DB clock, so this is not a second opinion — it is the one that is unit
+  // tested, which matters because a `date_trunc('day', now() AT TIME ZONE 'UTC')` written without its
+  // closing cast silently becomes a LOCAL midnight, and a boundary that is wrong by a few hours looks
+  // exactly like a boundary that is right. A row whose own timestamp is unreadable is treated as
+  // blocking (CLOSED): the query said it was today's and nothing here contradicts it.
+  const staleRow =
+    candidate !== null &&
+    clockReadable &&
+    candidate.createdAtMs !== null &&
+    utcDayKey(candidate.createdAtMs) !== utcDay;
+  const blocker = candidate === null || staleRow ? null : candidate;
+
+  if (dryRun === true) {
+    return {
+      proceed: true,
+      exempt: true,
+      verdict: 'EXEMPT',
+      utcDay,
+      nextSlotMs,
+      nextSlotIso,
+      blockingRow: candidate,
+      reason:
+        '--dry-run is EXEMPT from the once-per-UTC-day ceiling: it makes no paid call and writes no ' +
+        'row, so it can neither burn the day’s slot nor need bounding by it. --draft-file is NOT ' +
+        'exempt — it skips the drafting call and still spends the full stage-4 replay budget.' +
+        (candidate === null
+          ? ''
+          : ` (An attempt row exists — id=${candidate.id}, ${candidate.createdAt} — and is ignored ` +
+            `here; a real run would ${staleRow ? 'also proceed, since that row is not from the current UTC day' : 'refuse on it'}.)`),
+    };
+  }
+
+  if (registryError !== null && registryError !== undefined && registryError !== '') {
+    return {
+      proceed: false,
+      exempt: false,
+      verdict: 'CLOCK_UNAVAILABLE',
+      utcDay,
+      nextSlotMs,
+      nextSlotIso,
+      blockingRow: blocker,
+      reason:
+        `the registry could not be read (${registryError}), so neither the day boundary nor the day’s ` +
+        'attempt row can be established. Fails CLOSED, and not out of caution: this pass cannot ' +
+        'honour its log-everything precondition against a registry it cannot reach, so proceeding ' +
+        'would spend the drafting and replay budget to arrive at a guaranteed mint refusal.',
+    };
+  }
+
+  if (!clockReadable) {
+    return {
+      proceed: false,
+      exempt: false,
+      verdict: 'CLOCK_UNAVAILABLE',
+      utcDay: null,
+      nextSlotMs: null,
+      nextSlotIso: null,
+      blockingRow: blocker,
+      reason:
+        'the DATABASE clock was not readable, so the UTC day boundary cannot be established. Fails ' +
+        'CLOSED, and the host clock is NOT a fallback: this stack runs on a laptop that sleeps (one ' +
+        'pass spanned a ~7.5h sleep and expired its own 2h lease), so a host-derived UTC midnight is ' +
+        'a skewed boundary while the DB is the one clock every writer shares.',
+    };
+  }
+
+  if (blocker !== null) {
+    return {
+      proceed: false,
+      exempt: false,
+      verdict: 'SLOT_SPENT',
+      utcDay,
+      nextSlotMs,
+      nextSlotIso,
+      blockingRow: blocker,
+      reason:
+        `the ${utcDay} slot is already spent: public.experiments id=${blocker.id} ` +
+        `(family='${AUTHORING_ATTEMPT_FAMILY}') was written at ${blocker.createdAt}, inside the ` +
+        `current UTC day as the DATABASE clock reads it. The next slot opens at ${nextSlotIso}. ` +
+        'There is no override flag by design — an escape hatch would convert this mechanical ceiling ' +
+        'back into a documented rule, which is the thing it replaces.',
+    };
+  }
+
+  return {
+    proceed: true,
+    exempt: false,
+    verdict: 'SLOT_OPEN',
+    utcDay,
+    nextSlotMs,
+    nextSlotIso,
+    blockingRow: null,
+    reason:
+      `no ${AUTHORING_ATTEMPT_FAMILY} row exists for ${utcDay} (the UTC day per the DATABASE clock, ` +
+      `now ${new Date(nowMs).toISOString()}) — this pass takes the day’s single slot, and the next ` +
+      `one opens at ${nextSlotIso}.` +
+      (staleRow
+        ? ` The newest attempt row (id=${candidate.id}, ${candidate.createdAt}) falls in an EARLIER ` +
+          'UTC day and therefore blocks nothing — the day comparison is made against the DB clock ' +
+          'here, not left to the query that fetched the row.'
+        : ''),
+  };
+}
+
 // ── the per-horizon net table ────────────────────────────────────────────────────────────────────
 
 /**
- * Break-even GROSS forward return per trip, by lane. NOT a flat 20 bps — that figure appears nowhere
- * in this program's own cost model, and a +27.6 "net" derived from it is recorded as an error in
- * research/loop/verdicts.md § the +27.6 figure. Demo mirrors REQUIRED_EDGE_BPS in
+ * Break-even GROSS forward return per trip, by lane. Demo mirrors REQUIRED_EDGE_BPS in
  * test/eval/agentic/playbook-space-replay.ts; both trace to verdicts.md § THE ENTRY SIGNAL.
+ *
+ * Do NOT substitute a flat 20 bps: a +27.6 "net" derived that way is recorded as an error in
+ * research/loop/verdicts.md § the +27.6 figure. (This comment previously claimed 20 bps "appears
+ * nowhere in this program's own cost model" — FALSE, corrected 2026-07-31. It is stated at
+ * research/studies/edge-verdict-2026-08-10.md:93 as the verified binance SPOT schedule, 10 bps/leg
+ * maker = taker. The reason not to use it is that this book is ~85% perp by notional, where the
+ * schedule is 2/4/5 bps/leg.)
+ *
+ * These two floors are ASSERTED, NOT DERIVED — they enter the repo fully formed in commit 7b3e977.
+ * Measured over every post-epoch fill, the demo lane actually pays 9.29 bps/round trip, so 13.0 is
+ * CONSERVATIVE by ~3 bps. Left at 13.0 deliberately: this gates whether a candidate may claim it
+ * clears cost, so erring high is the correct direction, and no verdict turns on the difference (the
+ * measured performance gap exceeds 110 bps). Full derivation and per-venue rates:
+ * research/studies/fee-floor-derivation-2026-07-31.md.
  */
 export const COST_FLOOR_BPS = Object.freeze({ demo: 13.0, live: 24.2 });
 

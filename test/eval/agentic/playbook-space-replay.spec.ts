@@ -18,12 +18,14 @@
 // missing key into a red suite would push someone toward deleting it.
 
 import { describe, it, expect } from 'vitest';
-import { writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
+import { writeFileSync, mkdirSync, mkdtempSync, existsSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   ARM_PRIORITY,
   CALIBRATION_ROWS,
   DEPLOYMENT_MIN_HORIZONS_WON,
+  DEPLOYMENT_HALF_MIN_ENTRIES,
   DEPLOYMENT_PRIMARY_HORIZON,
   DESIGN_FILE,
   FOLLOWON_DESIGN_FILE,
@@ -58,6 +60,7 @@ import {
   assertDesignMatchesCorpus,
   bonferroniCells,
   checkPromptSurface,
+  commonRowsSplitAtMs,
   compareToIncumbent,
   computeCell,
   corpusManifest,
@@ -82,7 +85,10 @@ import {
   verdictFor,
   writeDesign,
   writeFollowonDesign,
+  type ArmRowResult,
+  type CellStats,
   type CorpusRow,
+  type DeploymentComparison,
   type FollowonDesign,
   type Observation,
   type LaneCell,
@@ -292,6 +298,12 @@ describe('Amendment 5 — the sizing rule', () => {
       placeboP: 0,
       firstHalf: 9.0,
       secondHalf: 9.0,
+      // The TIME-split fields are unmeasured here, and stay that way: `verdictFor` implements the
+      // research bar, which reads only the index-split pair.
+      firstHalfAt: Number.NaN,
+      secondHalfAt: Number.NaN,
+      nFirstHalfAt: 0,
+      nSecondHalfAt: 0,
       trimmed: 9.0,
     };
     expect(verdictFor(missesTheBar, alphaFor(TEST_DESIGN)).verdict).toBe('FAIL');
@@ -902,8 +914,12 @@ describe.runIf(PAID && API_KEY.length > 0 && CORPUS_PRESENT)(
             const obs: Observation[] = [];
             for (const e of entries) {
               const v = fwdBps(series, e.symbol, e.eventTime, h, e.dir);
-              if (v !== null) obs.push({ symbol: e.symbol, bps: v });
+              if (v !== null) obs.push({ symbol: e.symbol, bps: v, eventTime: e.eventTime });
             }
+            // NO `splitAtMs` here, deliberately. This leg is a transcription of a frozen
+            // pre-registration that publishes a RESEARCH verdict and no deployment comparison, so it
+            // computes exactly the cells it always computed; `computeCell` is byte-identical on every
+            // pre-existing field when the argument is absent.
             // Seed varies per cell so no two cells share a resampling stream, but is a pure function of
             // (arm, horizon) so the whole run reproduces exactly.
             const seed = 20260728 + arm.name.length * 1000 + h;
@@ -1358,6 +1374,10 @@ describe('follow-on Family A — free preconditions', () => {
       placeboP: 0,
       firstHalf: 99,
       secondHalf: 99,
+      firstHalfAt: Number.NaN,
+      secondHalfAt: Number.NaN,
+      nFirstHalfAt: 0,
+      nSecondHalfAt: 0,
       trimmed: 99,
     };
     // Even a spectacular control result is not a pass, not a survivor and not quotable as an edge.
@@ -1462,7 +1482,399 @@ describe('follow-on Family A — free preconditions', () => {
     expect(DEPLOYMENT_PRIMARY_HORIZON).toBe(24);
     expect(DEPLOYMENT_MIN_HORIZONS_WON).toBe(3);
   });
+});
 
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// THE CHRONOLOGICAL-HALVES CLAUSE on the DEPLOYMENT bar.
+//
+// Pre-registered in research/studies/deployment-bar-halves-clause-2026-07-31.md, under owner autonomy
+// grant 6 (a dated record before the change). The clause adds a third conjunct: an arm must not LOSE
+// either chronological half at the primary horizon.
+//
+// The suite's centre of gravity is NOT the happy path. It is the two ways this change could quietly
+// corrupt something that already works: by moving the frozen research bar, and by satisfying itself
+// from the arm-relative index-split fields that happen to be lying around at runtime.
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+describe('the deployment bar’s chronological-halves clause', () => {
+  const BAR = 900_000;
+  const T0 = 1784646000000;
+
+  /** A deterministic 15m series per symbol — enough for fwdBps and the placebo to have real work. */
+  const seriesFixture = (): ReadonlyMap<string, { ts: number[]; close: number[] }> => {
+    const build = (scale: number): { ts: number[]; close: number[] } => {
+      const ts: number[] = [];
+      const close: number[] = [];
+      for (let i = 0; i < 400; i += 1) {
+        ts.push(T0 + i * BAR);
+        close.push(100 + Math.sin(i / 6) * 4 * scale + i * 0.01);
+      }
+      return { ts, close };
+    };
+    return new Map([
+      ['BTC/USDT', build(1)],
+      ['ETH/USDT', build(1.7)],
+      ['SOL/USDT', build(0.6)],
+    ]);
+  };
+
+  const SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT'] as const;
+
+  /** `count` observations spread over `count` consecutive bars from `startBar`. */
+  const obsFrom = (count: number, startBar: number, bps: (i: number) => number): Observation[] =>
+    Array.from({ length: count }, (_, i) => ({
+      symbol: SYMBOLS[i % SYMBOLS.length]!,
+      bps: bps(i),
+      eventTime: T0 + (startBar + i) * BAR,
+    }));
+
+  const entriesFor = (obs: readonly Observation[]): { symbol: string; dir: 1 | -1 }[] =>
+    obs.map((o) => ({ symbol: o.symbol, dir: 1 as const }));
+
+  /** Every field `CellStats` carried BEFORE this change. The frozen surface. */
+  const PRE_EXISTING_FIELDS = [
+    'n',
+    'clusters',
+    'mean',
+    'ciLo',
+    'ciHi',
+    'pVsBar',
+    'placeboP',
+    'firstHalf',
+    'secondHalf',
+    'trimmed',
+  ] as const;
+
+  const pickExisting = (s: CellStats): Record<string, unknown> =>
+    Object.fromEntries(
+      PRE_EXISTING_FIELDS.map((k) => [k, (s as unknown as Record<string, unknown>)[k]]),
+    );
+
+  it('computeCell is BYTE-IDENTICAL on every pre-existing field whether or not splitAtMs is passed', () => {
+    // THE most important assertion in this file. `computeCell` is shared by a frozen, pre-registered
+    // RESEARCH bar and a newly-added DEPLOYMENT clause. If the new parameter perturbed the PRNG
+    // stream by so much as one draw, every bootstrap CI, p-value and placebo p in the frozen study
+    // would move — silently, and in a way no verdict would report.
+    const obs = obsFrom(60, 0, (i) => Math.sin(i / 3) * 40 - 5);
+    const entries = entriesFor(obs);
+    const series = seriesFixture();
+    const splitAtMs = T0 + 30 * BAR;
+
+    const without = computeCell(obs, entries, series, 24, 4242);
+    const with_ = computeCell(obs, entries, series, 24, 4242, splitAtMs);
+
+    // Byte-identical, asserted on the serialised form rather than field by field, so a future field
+    // added to the pre-existing list cannot slip past this by being forgotten in a loop.
+    expect(JSON.stringify(pickExisting(with_))).toBe(JSON.stringify(pickExisting(without)));
+    expect(pickExisting(with_)).toEqual(pickExisting(without));
+
+    // And the new fields are the ONLY difference: absent argument ⇒ honestly unmeasured, never 0.0,
+    // which would be a measured "no edge in this half" the run never computed.
+    expect(without.nFirstHalfAt).toBe(0);
+    expect(without.nSecondHalfAt).toBe(0);
+    expect(Number.isNaN(without.firstHalfAt)).toBe(true);
+    expect(Number.isNaN(without.secondHalfAt)).toBe(true);
+    expect(with_.nFirstHalfAt + with_.nSecondHalfAt).toBe(60);
+  });
+
+  it('splits by CALENDAR TIME, not by rank — two arms of different length share one boundary', () => {
+    const series = seriesFixture();
+    const splitAtMs = T0 + 40 * BAR;
+    // Same window, very different entry counts — the § 3.3 situation (champion_v8 n=69 vs inverted
+    // n=117 on identical rows). An index split would put their boundaries 24 entries apart.
+    const dense = obsFrom(80, 0, () => 10);
+    const sparse = obsFrom(20, 0, () => 10);
+    const denseCell = computeCell(dense, entriesFor(dense), series, 24, 1, splitAtMs);
+    const sparseCell = computeCell(sparse, entriesFor(sparse), series, 24, 1, splitAtMs);
+
+    // Both arms' early halves cover the SAME calendar window, so their counts reflect how many
+    // entries each actually placed in it rather than a fixed half of its own vector.
+    expect(denseCell.nFirstHalfAt).toBe(40);
+    expect(denseCell.nSecondHalfAt).toBe(40);
+    expect(sparseCell.nFirstHalfAt).toBe(20);
+    expect(sparseCell.nSecondHalfAt).toBe(0);
+    // The index split, by contrast, halves each arm's OWN vector — which is exactly why it cannot be
+    // reused here, and this asserts the two really are different quantities.
+    expect(sparseCell.firstHalf).not.toBeNaN();
+    expect(Number.isNaN(sparseCell.secondHalfAt)).toBe(true);
+  });
+
+  it('the split instant is the median eventTime of the COMMON rows, and is arm-independent', () => {
+    const row = (rowId: string, bar: number): ArmRowResult => ({
+      rowId,
+      symbol: 'BTC/USDT',
+      eventTime: T0 + bar * BAR,
+      ok: true,
+      hadUsage: true,
+    });
+    // Arm B is missing r5: the common set is {r1..r4}, so the boundary must be computed on four rows
+    // and not on either arm's own five.
+    const perArm = new Map<string, ArmRowResult[]>([
+      ['a', [row('r1', 0), row('r2', 1), row('r3', 2), row('r4', 3), row('r5', 99)]],
+      ['b', [row('r1', 0), row('r2', 1), row('r3', 2), row('r4', 3)]],
+    ]);
+    // |C| = 4 ⇒ index floor(4/2) = 2 ⇒ the UPPER of the two central times, as the record fixes it.
+    expect(commonRowsSplitAtMs(perArm)).toBe(T0 + 2 * BAR);
+    // Odd |C| ⇒ the median row's own time.
+    perArm.set('b', [row('r1', 0), row('r2', 1), row('r3', 2)]);
+    expect(commonRowsSplitAtMs(perArm)).toBe(T0 + 1 * BAR);
+    // No common rows at all ⇒ no boundary, and the clause reads UNDETERMINED rather than inventing one.
+    expect(
+      commonRowsSplitAtMs(
+        new Map([
+          ['a', [row('r1', 0)]],
+          ['b', [row('r9', 5)]],
+        ]),
+      ),
+    ).toBe(undefined);
+    expect(commonRowsSplitAtMs(new Map())).toBe(undefined);
+  });
+
+  // ── the frozen research bar does not move ───────────────────────────────────────────────────────
+
+  it('verdictFor is PROVABLY unmoved — it reads the index halves and never the time halves', () => {
+    // Constructed to fail if the two pairs were ever confused: the INDEX halves clear the +13.0 bar,
+    // the TIME halves are far below it. The research bar's clause 5 is about the index pair, so the
+    // verdict must be PASS. A PASS here and a FAIL after swapping the pairs is the proof.
+    const clearsOnIndexHalves = {
+      n: 60,
+      clusters: 20,
+      mean: 40,
+      ciLo: 25,
+      ciHi: 55,
+      pVsBar: 0,
+      placeboP: 0,
+      firstHalf: 38,
+      secondHalf: 42,
+      firstHalfAt: -900,
+      secondHalfAt: -900,
+      nFirstHalfAt: 30,
+      nSecondHalfAt: 30,
+      trimmed: 39,
+    };
+    expect(verdictFor(clearsOnIndexHalves, 0.05).verdict).toBe('PASS');
+    expect(verdictFor(clearsOnIndexHalves, 0.05).failedClause).toBeNull();
+
+    // The mirror image: index halves below the bar, time halves spectacular. Still a FAIL, and on
+    // the halves clause specifically — the research bar cannot be satisfied by the new fields.
+    const failsOnIndexHalves = {
+      ...clearsOnIndexHalves,
+      firstHalf: 2,
+      secondHalf: 2,
+      firstHalfAt: 900,
+      secondHalfAt: 900,
+    };
+    expect(verdictFor(failsOnIndexHalves, 0.05)).toEqual({
+      verdict: 'FAIL',
+      failedClause: 'a chronological half <= bar',
+    });
+  });
+
+  // ── the three-valued outcome ────────────────────────────────────────────────────────────────────
+
+  const laneCells = (
+    arm: string,
+    means: readonly number[],
+    halves?: { early: number; late: number; earlyN?: number; lateN?: number },
+  ): LaneCell[] =>
+    [...HORIZONS].map((h, i) => ({
+      model: FOLLOWON_MODEL,
+      arm,
+      h,
+      n: 60,
+      mean: means[i]!,
+      ciLo: means[i]! - 20,
+      verdict: 'FAIL',
+      ...(halves !== undefined && h === DEPLOYMENT_PRIMARY_HORIZON
+        ? {
+            firstHalfAt: halves.early,
+            secondHalfAt: halves.late,
+            nFirstHalfAt: halves.earlyN ?? 30,
+            nSecondHalfAt: halves.lateN ?? 30,
+          }
+        : {}),
+    }));
+
+  const INCUMBENT_MEANS = [-12.7, -36.3, -32.7, -70.1] as const;
+
+  it('an arm that wins overall but LOSES one half does not ship — and is not a horizon refusal', () => {
+    // Wins all four horizons, so BOTH pre-existing conjuncts are satisfied. The entire window
+    // advantage sits in the late half; the early half loses. That is the failure shape the clause
+    // exists to remove, and it fails CLOSED.
+    const d = compareToIncumbent(
+      SWARM_ARM,
+      laneCells(SWARM_ARM, [-5, -10, -10, -20], { early: -95.0, late: 55.0 }),
+      FOLLOWON_PLAYBOOK_ARM,
+      laneCells(FOLLOWON_PLAYBOOK_ARM, [...INCUMBENT_MEANS], { early: -60.0, late: -80.0 }),
+      'PROMPT-CONTROLLED',
+      T0 + 40 * BAR,
+    );
+    expect(d.beatsAtPrimary).toBe(true);
+    expect(d.horizonsWon).toBe(4);
+    // The two ORIGINAL conjuncts are reported intact and still say "win".
+    expect(d.beatsHorizonBar).toBe(true);
+    expect(d.ships).toBe(false);
+    expect(d.halvesVerdict).toBe('HALF_LOST');
+    // DISTINGUISHABLE from the horizon-dependent refusal — not merely differently valued, but
+    // impossible to confuse: horizonDependent is FALSE here, where a 1-of-4 win sets it TRUE.
+    expect(d.horizonDependent).toBe(false);
+    expect(d.halves.reason).toContain('EARLY');
+    expect(d.halves.determined).toBe(true);
+    expect(d.halves.splitAtMs).toBe(T0 + 40 * BAR);
+  });
+
+  it('winning both halves ships, and a TIE in a half is not a win', () => {
+    const armCells = (early: number, late: number): LaneCell[] =>
+      laneCells(SWARM_ARM, [-5, -10, -10, -20], { early, late });
+    const incumbent = laneCells(FOLLOWON_PLAYBOOK_ARM, [...INCUMBENT_MEANS], {
+      early: -60.0,
+      late: -80.0,
+    });
+    const compare = (early: number, late: number): DeploymentComparison =>
+      compareToIncumbent(
+        SWARM_ARM,
+        armCells(early, late),
+        FOLLOWON_PLAYBOOK_ARM,
+        incumbent,
+        'PROMPT-CONTROLLED',
+        T0,
+      );
+
+    const won = compare(-50.0, -70.0);
+    expect(won.halvesVerdict).toBe('BOTH_WON');
+    expect(won.ships).toBe(true);
+
+    // Ties are NOT wins, matching `beats: a.mean > i.mean` on the horizon table exactly.
+    const tied = compare(-60.0, -70.0);
+    expect(tied.halvesVerdict).toBe('HALF_LOST');
+    expect(tied.ships).toBe(false);
+  });
+
+  it('UNDETERMINED fails OPEN — ships is unchanged, and the reason says why', () => {
+    const incumbent = laneCells(FOLLOWON_PLAYBOOK_ARM, [...INCUMBENT_MEANS], {
+      early: -60.0,
+      late: -80.0,
+    });
+    // (a) the arm carries no time halves at all — a cell computed without a split instant.
+    const noHalves = compareToIncumbent(
+      SWARM_ARM,
+      laneCells(SWARM_ARM, [-5, -10, -10, -20]),
+      FOLLOWON_PLAYBOOK_ARM,
+      incumbent,
+      'PROMPT-CONTROLLED',
+    );
+    expect(noHalves.halvesVerdict).toBe('UNDETERMINED');
+    // FAILS OPEN: the two pre-registered conjuncts decide alone, exactly as before the clause existed.
+    expect(noHalves.ships).toBe(true);
+    expect(noHalves.beatsHorizonBar).toBe(true);
+    expect(noHalves.halves.reason).toContain('fails OPEN');
+    expect(noHalves.halves.determined).toBe(false);
+
+    // (b) a half below the declared n-floor. Same direction, different reason.
+    const thin = compareToIncumbent(
+      SWARM_ARM,
+      laneCells(SWARM_ARM, [-5, -10, -10, -20], {
+        early: -50.0,
+        late: -70.0,
+        earlyN: DEPLOYMENT_HALF_MIN_ENTRIES - 1,
+      }),
+      FOLLOWON_PLAYBOOK_ARM,
+      incumbent,
+      'PROMPT-CONTROLLED',
+      T0,
+    );
+    expect(thin.halvesVerdict).toBe('UNDETERMINED');
+    expect(thin.ships).toBe(true);
+    expect(thin.halves.reason).toContain(`fewer than ${DEPLOYMENT_HALF_MIN_ENTRIES}`);
+    // The floor is the research bar's own MIN_ENTRIES, not a number invented for this clause.
+    expect(DEPLOYMENT_HALF_MIN_ENTRIES).toBe(MIN_ENTRIES);
+    expect(DEPLOYMENT_HALF_MIN_ENTRIES).toBe(12);
+  });
+
+  // ── the substitution that must not happen (record § 6.3) ────────────────────────────────────────
+
+  it('the recorded-incumbent path CANNOT substitute the index-split halves for the time halves', () => {
+    // The real frozen artifact carries `firstHalf`/`secondHalf` on every cell while the parse type
+    // does not declare them, so they arrive at runtime invisible to the compiler. This fixture goes
+    // further and ALSO carries `firstHalfAt`/`secondHalfAt` — the exact fields the clause reads — so
+    // the test fails if `loadRecordedIncumbentCells` ever passes a parsed object through instead of
+    // rebuilding it. Spectacular values, so a leak would flip UNDETERMINED to a green BOTH_WON.
+    const file = join(mkdtempSync(join(tmpdir(), 'halves-trap-')), 'recorded-leg.json');
+    writeFileSync(
+      file,
+      JSON.stringify({
+        manifest: { payloadSha256: 'deadbeef' },
+        cells: [...HORIZONS].map((h) => ({
+          model: 'claude-sonnet-5',
+          arm: FOLLOWON_PLAYBOOK_ARM,
+          h,
+          n: 69,
+          mean: -70.1,
+          ciLo: -90,
+          verdict: 'FAIL',
+          firstHalf: -1000,
+          secondHalf: -1000,
+          firstHalfAt: -1000,
+          secondHalfAt: -1000,
+          nFirstHalfAt: 34,
+          nSecondHalfAt: 35,
+        })),
+      }),
+      'utf8',
+    );
+
+    const loaded = loadRecordedIncumbentCells(FOLLOWON_PLAYBOOK_ARM, file);
+    expect(loaded.cells).toHaveLength(HORIZONS.length);
+    for (const c of loaded.cells) {
+      // Nothing beyond the seven declared fields survives the projection — asserted on the KEY SET,
+      // because checking a few named fields would miss the next one somebody adds to the artifact.
+      expect(Object.keys(c).sort()).toEqual(['arm', 'ciLo', 'h', 'mean', 'model', 'n', 'verdict']);
+      expect(c.firstHalfAt).toBeUndefined();
+      expect(c.secondHalfAt).toBeUndefined();
+      expect((c as unknown as Record<string, unknown>).firstHalf).toBeUndefined();
+    }
+
+    // End to end: the comparison against a recorded row is UNDETERMINED BY CONSTRUCTION. If the
+    // artifact's halves had leaked through, an arm at -50/-70 would beat -1000/-1000 twice over and
+    // this would read BOTH_WON — a false robustness pass wearing the name of a guard.
+    const d = compareToIncumbent(
+      SWARM_ARM,
+      laneCells(SWARM_ARM, [-5, -10, -10, -20], { early: -50.0, late: -70.0 }),
+      FOLLOWON_PLAYBOOK_ARM,
+      loaded.cells,
+      'BETWEEN-RUN',
+      T0,
+    );
+    expect(d.halvesVerdict).not.toBe('BOTH_WON');
+    expect(d.halvesVerdict).toBe('UNDETERMINED');
+    expect(d.halves.incumbentEarlyN).toBe(0);
+    expect(Number.isNaN(d.halves.incumbentEarly)).toBe(true);
+    // …and it still ships on the two original conjuncts. The clause is inert here, not obstructive.
+    expect(d.ships).toBe(true);
+  });
+
+  it('the REAL frozen artifact does carry the index halves — otherwise the guard above is vacuous', () => {
+    // If the artifact ever stopped carrying `firstHalf`, the trap test would pass for the wrong
+    // reason. This asserts the hazard is real in the file that is actually read in production.
+    const real = join(
+      process.cwd(),
+      'research',
+      'candidates',
+      'playbook-space-replay-claude-sonnet-5-2026-07-28.json',
+    );
+    if (!existsSync(real)) return;
+    const raw = JSON.parse(readFileSync(real, 'utf8')) as {
+      cells: Record<string, unknown>[];
+    };
+    const champion = raw.cells.filter((c) => c.arm === FOLLOWON_PLAYBOOK_ARM);
+    expect(champion.length).toBeGreaterThan(0);
+    expect(champion[0]).toHaveProperty('firstHalf');
+    expect(champion[0]).toHaveProperty('secondHalf');
+    // And no per-row data anywhere, which is why the incumbent's own event times are unrecoverable.
+    expect(champion[0]).not.toHaveProperty('firstHalfAt');
+  });
+});
+
+describe('follow-on Family A — free preconditions (continued)', () => {
   it('a partial family is INCOMPLETE, never NO_SURVIVOR', () => {
     const c = (h: number, mean: number, verdict: string): LaneCell => ({
       model: FOLLOWON_MODEL,
@@ -1846,6 +2258,17 @@ describe.runIf(FOLLOWON_PAID && API_KEY.length > 0 && CORPUS_PRESENT)(
         const scoredCells: LaneCell[] = [];
         const meansByArm = new Map<string, LaneCell[]>();
 
+        // ONE split instant for the whole run, computed off the COMMON row set before any comparison
+        // is read — arm-independent and horizon-independent by construction.
+        const splitAtMs = commonRowsSplitAtMs(run.perArm);
+        console.log(
+          `halves split instant: ${
+            splitAtMs === undefined
+              ? 'NONE (empty common row set) — the halves clause reads UNDETERMINED'
+              : `${splitAtMs} (${new Date(splitAtMs).toISOString()}), median eventTime of the ${run.rowsCovered} common rows`
+          }`,
+        );
+
         for (const { arm } of arms) {
           const isControl = CONTROL_ARMS.has(arm.name);
           const results = run.perArm.get(arm.name) ?? [];
@@ -1862,7 +2285,7 @@ describe.runIf(FOLLOWON_PAID && API_KEY.length > 0 && CORPUS_PRESENT)(
             const obs: Observation[] = [];
             for (const e of entries) {
               const v = fwdBps(series, e.symbol, e.eventTime, h, e.dir);
-              if (v !== null) obs.push({ symbol: e.symbol, bps: v });
+              if (v !== null) obs.push({ symbol: e.symbol, bps: v, eventTime: e.eventTime });
             }
             const seed = 20260731 + arm.name.length * 1000 + h;
             const stats = computeCell(
@@ -1871,6 +2294,7 @@ describe.runIf(FOLLOWON_PAID && API_KEY.length > 0 && CORPUS_PRESENT)(
               series,
               h,
               seed,
+              splitAtMs,
             );
             const scored = isControl
               ? { verdict: 'CONTROL', failedClause: null }
@@ -1883,6 +2307,10 @@ describe.runIf(FOLLOWON_PAID && API_KEY.length > 0 && CORPUS_PRESENT)(
               mean: stats.mean,
               ciLo: stats.ciLo,
               verdict: scored.verdict,
+              firstHalfAt: stats.firstHalfAt,
+              secondHalfAt: stats.secondHalfAt,
+              nFirstHalfAt: stats.nFirstHalfAt,
+              nSecondHalfAt: stats.nSecondHalfAt,
             };
             if (!isControl) scoredCells.push(cell);
             const list = meansByArm.get(arm.name);
@@ -1985,6 +2413,7 @@ describe.runIf(FOLLOWON_PAID && API_KEY.length > 0 && CORPUS_PRESENT)(
             FOLLOWON_PLAYBOOK_ARM,
             incumbent.cells,
             promptSurface.attribution,
+            splitAtMs,
           ),
         );
         console.log(
@@ -2002,8 +2431,10 @@ describe.runIf(FOLLOWON_PAID && API_KEY.length > 0 && CORPUS_PRESENT)(
           console.log(
             `  ${d.arm} -> beats at h${d.primaryHorizon}: ${d.beatsAtPrimary}, horizons won ` +
               `${d.horizonsWon}/${d.horizonsCompared}, SHIPS: ${d.ships}` +
-              `${d.horizonDependent ? ' (horizon-dependent — does NOT ship)' : ''}`,
+              `${d.horizonDependent ? ' (horizon-dependent — does NOT ship)' : ''}` +
+              `${d.halvesVerdict === 'HALF_LOST' ? ' (LOST A CHRONOLOGICAL HALF — does NOT ship)' : ''}`,
           );
+          console.log(`    halves clause: ${d.halvesVerdict} — ${d.halves.reason}`);
         }
         console.log(
           `\nswarm mechanics: unanimous ${unanimous}/${swarmRows.length} rows, split ` +
@@ -2040,7 +2471,11 @@ describe.runIf(FOLLOWON_PAID && API_KEY.length > 0 && CORPUS_PRESENT)(
                 alpha: design.alpha,
                 cells: design.cells,
                 minEntries: MIN_ENTRIES,
+                deploymentHalfMinEntries: DEPLOYMENT_HALF_MIN_ENTRIES,
               },
+              // The run's ONE split instant, recorded so every halves figure below is re-derivable
+              // from the artifact alone. null means the clause had no boundary and read UNDETERMINED.
+              halvesSplitAtMs: splitAtMs ?? null,
               cells: table,
               researchBar: research,
               deploymentBar: deployment,

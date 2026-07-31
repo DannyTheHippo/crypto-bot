@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
+  AUTHORING_ATTEMPT_FAMILY,
   COST_FLOOR_BPS,
   DEFAULT_MINT_FLOOR_MIN_ENTRIES,
   DEFAULT_MINT_FLOOR_MIN_ROWS,
@@ -12,8 +13,12 @@ import {
   buildPerHorizonNetTable,
   classifyEntryRateFloor,
   classifyMintGate,
+  classifyRegistrySplitBrain,
+  classifySameDayGate,
+  corpusAttemptKey,
   parseArgs,
   parsePlaybookInfoVersion,
+  renderPriorAttempts,
   renderTwoBars,
   resolveIncumbent,
   stripRetiredGuidance,
@@ -64,8 +69,26 @@ function deployment(overrides = {}) {
     beatsAtPrimary: true,
     horizonsWon: 4,
     horizonsCompared: 4,
+    beatsHorizonBar: true,
     ships: true,
     horizonDependent: false,
+    // The chronological-halves clause, DETERMINED and won on both sides. The harness computes this;
+    // the fixture only has to carry the shape the gate reads.
+    halvesVerdict: 'BOTH_WON',
+    halves: {
+      splitAtMs: 1784913300000,
+      armEarly: 40,
+      armLate: 54,
+      incumbentEarly: -60,
+      incumbentLate: -80,
+      armEarlyN: 30,
+      armLateN: 30,
+      incumbentEarlyN: 34,
+      incumbentLateN: 35,
+      minEntries: 12,
+      determined: true,
+      reason: 'wins BOTH chronological halves at the primary horizon.',
+    },
     attribution: 'PROMPT-CONTROLLED',
     ...overrides,
   };
@@ -341,6 +364,139 @@ describe('loop-authoring mint gate', () => {
     expect(gate.mint).toBe(false);
     expect(gate.blockers.join(' ')).toContain('only its winners');
   });
+
+  // ── the chronological-halves clause (deployment-bar-halves-clause-2026-07-31.md) ───────────────
+
+  it('does NOT mint a HALF-LOST win, and says so differently from the horizon refusal', () => {
+    // Wins every horizon INCLUDING the primary — the two original conjuncts are both satisfied — and
+    // still does not ship, because the win is located in half of a single-regime window.
+    const gate = classifyMintGate({
+      deployment: deployment({
+        ships: false,
+        halvesVerdict: 'HALF_LOST',
+        halves: {
+          splitAtMs: 1784913300000,
+          armEarly: -90,
+          armLate: 120,
+          incumbentEarly: -60,
+          incumbentLate: -80,
+          armEarlyN: 30,
+          armLateN: 30,
+          incumbentEarlyN: 34,
+          incumbentLateN: 35,
+          minEntries: 12,
+          determined: true,
+          reason: 'loses the EARLY half at the primary horizon.',
+        },
+      }),
+      research: RESEARCH_FAIL,
+      floor: FLOOR_PASS,
+      run: HEALTHY_RUN,
+      experimentsLogged: true,
+    });
+    expect(gate).toMatchObject({ mint: false, deploymentVerdict: 'HALF-LOST' });
+    const blockers = gate.blockers.join(' ');
+    expect(blockers).toContain('LOSES A CHRONOLOGICAL HALF');
+    // The distinguishability requirement: a reader must never see this reported as the OTHER
+    // refusal. The horizon refusal's own two phrases are absent, and the text says which one this is
+    // NOT — asserted positively, because the discriminating sentence is the deliverable.
+    expect(blockers).not.toContain('only (4/4 horizons)');
+    expect(blockers).not.toContain('the pre-registered robustness clause does not ship it');
+    expect(blockers).toContain('is NOT the horizon-dependent refusal');
+    expect(gate.deploymentVerdict).not.toBe('HORIZON-DEPENDENT');
+    // And the arm did win the horizon clause outright, so the two refusals cannot be conflated.
+    expect(gate.blockers).toHaveLength(1);
+  });
+
+  it.each([
+    [
+      'UNDETERMINED',
+      {
+        halvesVerdict: 'UNDETERMINED',
+        halves: { determined: false, reason: 'a half-mean is not finite.' },
+      },
+    ],
+    // A comparison from a harness that predates the clause did not compute it either — same
+    // condition, so the same refusal. Absent is never read as satisfied.
+    ['ABSENT', { halvesVerdict: undefined, halves: undefined }],
+  ])(
+    'refuses the UNATTENDED mint on a %s halves clause, even though it SHIPS',
+    (_label, overrides) => {
+      const d = deployment(overrides);
+      // The clause fails OPEN for a human: `ships` is unaffected, and that is the point of the
+      // asymmetry — the gate restricts the WRITER, not the finding.
+      expect(d.ships).toBe(true);
+      const gate = classifyMintGate({
+        deployment: d,
+        research: RESEARCH_FAIL,
+        floor: FLOOR_PASS,
+        run: HEALTHY_RUN,
+        experimentsLogged: true,
+      });
+      expect(gate.mint).toBe(false);
+      // Still SHIPS: the deployment verdict is NOT downgraded. Only the automated write is refused.
+      expect(gate.deploymentVerdict).toBe('SHIPS');
+      const blockers = gate.blockers.join(' ');
+      expect(blockers).toContain('chronological-halves clause is');
+      expect(blockers).toContain('on its own authority');
+    },
+  );
+
+  it('reports the attempt count on the record, and NOT COUNTED rather than a zero', () => {
+    const counted = classifyMintGate({
+      deployment: deployment(),
+      research: RESEARCH_FAIL,
+      floor: FLOOR_PASS,
+      run: HEALTHY_RUN,
+      experimentsLogged: true,
+      priorAttemptsOnCorpus: {
+        count: 6,
+        byFingerprint: 2,
+        key: { rowsLoaded: 386, rowSince: 1784646000000, rowUntil: 1785180600000 },
+      },
+    });
+    expect(counted.mint).toBe(true);
+    expect(counted.reason).toContain('6 prior registry row(s)');
+    // The count is a REPORT. It must never be readable as a threshold that was cleared.
+    expect(counted.reason).toContain('never a gate');
+    // The fingerprint disagreement is surfaced wherever it exists, not buried.
+    expect(counted.reason).toContain('drift');
+
+    const uncounted = classifyMintGate({
+      deployment: deployment(),
+      research: RESEARCH_FAIL,
+      floor: FLOOR_PASS,
+      run: HEALTHY_RUN,
+      experimentsLogged: true,
+    });
+    // An unmeasured count reads as unmeasured. A zero here would be a false claim about history.
+    expect(uncounted.reason).toContain('NOT COUNTED');
+    expect(uncounted.mint).toBe(true);
+  });
+
+  it('keys the counter on the identity tuple, never on the drifting fields', () => {
+    expect(corpusAttemptKey({ rows: 386, firstEventTime: 10, lastEventTime: 20 })).toEqual({
+      rowsLoaded: 386,
+      rowSince: 10,
+      rowUntil: 20,
+    });
+    // rowSince/rowUntil win over firstEventTime/lastEventTime when both are present: registry row
+    // id=5 records a firstEventTime of its replayed SUBSET while its five siblings on the same
+    // corpus record the corpus's. The query bounds held across all six.
+    expect(
+      corpusAttemptKey({
+        rowsLoaded: 204,
+        rowSince: 1783714500000,
+        rowUntil: 1783876500000,
+        firstEventTime: 1783862100000,
+        lastEventTime: 1783876500000,
+      }),
+    ).toEqual({ rowsLoaded: 204, rowSince: 1783714500000, rowUntil: 1783876500000 });
+    // Underivable ⇒ null ⇒ "NOT COUNTED". Never a fabricated key that would silently group nothing.
+    expect(corpusAttemptKey({ rows: 386 })).toBeNull();
+    expect(corpusAttemptKey(null)).toBeNull();
+    expect(renderPriorAttempts(null)).toBe('NOT COUNTED');
+  });
 });
 
 describe('loop-authoring reporting', () => {
@@ -411,6 +567,35 @@ describe('loop-authoring reporting', () => {
     expect(
       renderTwoBars({ arm: 'x', deployment: deployment(), research: RESEARCH_FAIL }),
     ).toContain('h=24');
+  });
+
+  it('renders the halves clause on its own line and the attempt count beside the bar', () => {
+    const out = renderTwoBars({
+      arm: 'x',
+      deployment: deployment(),
+      research: RESEARCH_FAIL,
+      priorAttemptsOnCorpus: {
+        count: 6,
+        byFingerprint: 2,
+        key: { rowsLoaded: 386, rowSince: 1784646000000, rowUntil: 1785180600000 },
+      },
+    });
+    expect(out).toContain('chronological halves');
+    expect(out).toContain('BOTH_WON');
+    expect(out).toContain('ATTEMPTS ON THIS CORPUS');
+    expect(out).toContain('6 prior registry row(s)');
+  });
+
+  it('labels a HALF-LOST refusal as such rather than as a horizon-dependent one', () => {
+    const out = renderTwoBars({
+      arm: 'x',
+      deployment: deployment({ ships: false, halvesVerdict: 'HALF_LOST' }),
+      research: RESEARCH_FAIL,
+    });
+    expect(out).toContain('HALF-LOST (does NOT ship)');
+    expect(out).not.toContain('HORIZON-DEPENDENT');
+    // An uncounted pass says so here too.
+    expect(out).toContain('NOT COUNTED');
   });
 
   it('scores cells only through the harness — this core never recomputes a bar', () => {
@@ -544,5 +729,261 @@ describe('loop-authoring argv', () => {
     [['stray'], 'unknown option'],
   ])('rejects %j rather than silently ignoring it', (argv, fragment) => {
     expect(parseArgs(argv).error).toContain(fragment);
+  });
+});
+
+// 4. THE SPLIT BRAIN. The pass READS its same-day gate and attempt counter over DATABASE_URL and
+//    WRITES every scored variant to public.experiments over REGISTRY_DATABASE_URL. Divergence is the
+//    worst class of defect this pass can have: the gate reads a table nobody writes and the counter
+//    under-reports forever, while every stage still prints OK. It is asserted because there is no
+//    output in which it would ever look wrong.
+describe('registry split-brain guard', () => {
+  const PASSWORD = 'hunter2';
+  const READ = `postgres://cryptobot:${PASSWORD}@127.0.0.1:5432/cryptobot`;
+
+  it('passes when both URLs address the same host and database', () => {
+    expect(classifyRegistrySplitBrain({ databaseUrl: READ, registryUrl: READ })).toMatchObject({
+      ok: true,
+      checked: true,
+    });
+  });
+
+  it('ignores credential and query-string differences — they do not change the target', () => {
+    const sameTargetOtherCreds =
+      'postgres://other:different@127.0.0.1:5432/cryptobot?sslmode=require';
+    expect(
+      classifyRegistrySplitBrain({ databaseUrl: READ, registryUrl: sameTargetOtherCreds }).ok,
+    ).toBe(true);
+  });
+
+  it('treats an omitted port as the pg default rather than a divergence', () => {
+    expect(
+      classifyRegistrySplitBrain({
+        databaseUrl: 'postgres://cryptobot@db.internal/cryptobot',
+        registryUrl: 'postgres://cryptobot@db.internal:5432/cryptobot',
+      }).ok,
+    ).toBe(true);
+  });
+
+  it.each([
+    ['a different database', `postgres://cryptobot:${PASSWORD}@127.0.0.1:5432/cryptobot_test`],
+    ['a different host', `postgres://cryptobot:${PASSWORD}@postgres:5432/cryptobot`],
+    ['a different port', `postgres://cryptobot:${PASSWORD}@127.0.0.1:5433/cryptobot`],
+  ])('refuses on %s', (_label, registryUrl) => {
+    const verdict = classifyRegistrySplitBrain({ databaseUrl: READ, registryUrl });
+    expect(verdict.ok).toBe(false);
+    expect(verdict.reason).toContain('SPLIT BRAIN');
+  });
+
+  // Not a normalisation the guard is allowed to make: this process cannot know whether the two
+  // spellings reach one server, and guessing wrong is the silent failure the guard exists to stop.
+  it('reports localhost vs 127.0.0.1 as the genuine ambiguity it is', () => {
+    const verdict = classifyRegistrySplitBrain({
+      databaseUrl: READ,
+      registryUrl: `postgres://cryptobot:${PASSWORD}@localhost:5432/cryptobot`,
+    });
+    expect(verdict.ok).toBe(false);
+    expect(verdict.reason).toContain('localhost');
+  });
+
+  it('never prints the password in a refusal', () => {
+    const verdict = classifyRegistrySplitBrain({
+      databaseUrl: READ,
+      registryUrl: `postgres://cryptobot:${PASSWORD}@postgres:5432/cryptobot`,
+    });
+    expect(verdict.ok).toBe(false);
+    expect(verdict.reason).not.toContain(PASSWORD);
+    expect(verdict.reason).toContain('127.0.0.1:5432/cryptobot');
+  });
+
+  // Fails CLOSED: a target this pass cannot identify is ambiguity, not agreement.
+  it.each([
+    ['an unparseable registry URL', READ, 'not-a-url'],
+    ['an unparseable DATABASE_URL', 'not-a-url', READ],
+    ['a registry URL with no database name', READ, 'postgres://cryptobot@127.0.0.1:5432'],
+  ])('refuses on %s', (_label, databaseUrl, registryUrl) => {
+    const verdict = classifyRegistrySplitBrain({ databaseUrl, registryUrl });
+    expect(verdict.ok).toBe(false);
+    expect(verdict.reason).toContain('ambiguity');
+  });
+
+  // Not this guard's job: log-eval-experiment.mjs's own gate fails closed on an unset registry, and
+  // refusing here would break --dry-run, which logs nothing and needs no registry at all.
+  it.each([[undefined], [''], [null]])('stays out of the way when the registry URL is %j', (v) => {
+    expect(classifyRegistrySplitBrain({ databaseUrl: READ, registryUrl: v })).toMatchObject({
+      ok: true,
+      checked: false,
+    });
+  });
+});
+
+// 5. THE ONCE-PER-UTC-DAY CEILING. A documented "run this at most once a day" rule is one an
+//    unattended pass can forget, and the forgetting is invisible — two mints in a day both look like
+//    successful passes. classifySameDayGate turns the rule into a decision that is a function of its
+//    arguments alone, with the day boundary taken from the DATABASE clock: this stack runs on a
+//    laptop that sleeps, and a host-derived UTC midnight is a skewed boundary. The purity assertion at
+//    the bottom of this block is what makes that failure structurally unable to recur.
+describe('once-per-UTC-day gate', () => {
+  const NOW = Date.UTC(2026, 6, 31, 12, 3, 42);
+  const NEXT_SLOT = '2026-08-01T00:00:00.000Z';
+  const TODAYS_ROW = {
+    id: '42',
+    createdAt: '2026-07-31T09:00:00Z',
+    createdAtMs: Date.UTC(2026, 6, 31, 9, 0, 0),
+  };
+  const YESTERDAYS_ROW = {
+    id: '41',
+    createdAt: '2026-07-30T23:59:59Z',
+    createdAtMs: Date.UTC(2026, 6, 30, 23, 59, 59),
+  };
+
+  it('proceeds when no attempt row exists for the DB clock’s UTC day', () => {
+    const verdict = classifySameDayGate({ blockingRow: null, nowMsFromDb: NOW, dryRun: false });
+    expect(verdict).toMatchObject({
+      proceed: true,
+      exempt: false,
+      verdict: 'SLOT_OPEN',
+      utcDay: '2026-07-31',
+      nextSlotIso: NEXT_SLOT,
+      blockingRow: null,
+    });
+    expect(verdict.reason).toContain(AUTHORING_ATTEMPT_FAMILY);
+  });
+
+  it('refuses on a same-day row, naming its id, its created_at and the next slot', () => {
+    const verdict = classifySameDayGate({
+      blockingRow: TODAYS_ROW,
+      nowMsFromDb: NOW,
+      dryRun: false,
+    });
+    expect(verdict.proceed).toBe(false);
+    expect(verdict.verdict).toBe('SLOT_SPENT');
+    // All three are the operator's whole remedy: which row took the slot, when, and when the next
+    // one opens. A refusal missing any of them sends the reader to psql.
+    expect(verdict.reason).toContain('id=42');
+    expect(verdict.reason).toContain('2026-07-31T09:00:00Z');
+    expect(verdict.reason).toContain(NEXT_SLOT);
+    expect(verdict.blockingRow).toMatchObject({ id: '42' });
+  });
+
+  it('proceeds when the newest row falls in the PREVIOUS UTC day', () => {
+    // The day comparison is made here rather than trusted from the SQL predicate that fetched the
+    // row: a date_trunc written without its closing `AT TIME ZONE 'UTC'` silently becomes a LOCAL
+    // midnight, and a boundary wrong by a few hours looks exactly like one that is right.
+    const verdict = classifySameDayGate({
+      blockingRow: YESTERDAYS_ROW,
+      nowMsFromDb: NOW,
+      dryRun: false,
+    });
+    expect(verdict.proceed).toBe(true);
+    expect(verdict.verdict).toBe('SLOT_OPEN');
+    expect(verdict.blockingRow).toBeNull();
+    expect(verdict.reason).toContain('EARLIER');
+  });
+
+  it.each([
+    ['a same-day row', TODAYS_ROW],
+    ['no row at all', null],
+    ['a row whose timestamp is unreadable', { id: '7', createdAtMs: Number.NaN }],
+  ])('exempts --dry-run given %s — it spends nothing and writes nothing', (_label, blockingRow) => {
+    const verdict = classifySameDayGate({ blockingRow, nowMsFromDb: NOW, dryRun: true });
+    expect(verdict).toMatchObject({ proceed: true, exempt: true, verdict: 'EXEMPT' });
+    // The exemption is stated with its own reason, and names the case that is NOT exempt.
+    expect(verdict.reason).toContain('--draft-file is NOT');
+  });
+
+  it.each([
+    // The boundary the arithmetic is most likely to get wrong, in every shape that exists.
+    ['a month boundary', Date.UTC(2026, 0, 31, 23, 59, 59, 999), '2026-02-01T00:00:00.000Z'],
+    ['a year boundary', Date.UTC(2026, 11, 31, 12, 0, 0), '2027-01-01T00:00:00.000Z'],
+    ['a leap-day boundary', Date.UTC(2028, 1, 28, 23, 0, 0), '2028-02-29T00:00:00.000Z'],
+    // Exactly at midnight the day's slot has just opened, so the NEXT one is 24h out, not now.
+    ['midnight itself', Date.UTC(2026, 6, 31, 0, 0, 0), '2026-08-01T00:00:00.000Z'],
+  ])('opens the next slot correctly across %s', (_label, nowMsFromDb, expected) => {
+    const verdict = classifySameDayGate({ blockingRow: null, nowMsFromDb, dryRun: false });
+    expect(verdict.nextSlotIso).toBe(expected);
+    expect(verdict.nextSlotMs).toBe(Date.parse(expected));
+  });
+
+  it.each([
+    ['an unreadable DB clock', { blockingRow: null, nowMsFromDb: null }],
+    ['a NaN DB clock', { blockingRow: null, nowMsFromDb: Number.NaN }],
+    [
+      'an unreachable registry',
+      { blockingRow: null, nowMsFromDb: NOW, registryError: 'ECONNREFUSED 127.0.0.1:5432' },
+    ],
+  ])('fails CLOSED on %s', (_label, input) => {
+    const verdict = classifySameDayGate({ ...input, dryRun: false });
+    expect(verdict.proceed).toBe(false);
+    expect(verdict.verdict).toBe('CLOCK_UNAVAILABLE');
+  });
+
+  it('treats a row it cannot date as blocking — the query said today and nothing contradicts it', () => {
+    const verdict = classifySameDayGate({
+      blockingRow: { id: '99', createdAt: 'unparseable' },
+      nowMsFromDb: NOW,
+      dryRun: false,
+    });
+    expect(verdict.proceed).toBe(false);
+    expect(verdict.reason).toContain('id=99');
+  });
+
+  it('has NO override flag — the escape hatch would make it a documented rule again', () => {
+    // Mechanical, not a promise: argv rejects the flag outright, and an unknown key handed to the
+    // classifier changes nothing about the refusal.
+    expect(parseArgs(['--i-really-mean-it']).error).toContain('unknown option');
+    expect(parseArgs(['--force']).error).toContain('unknown option');
+    const withJunk = classifySameDayGate({
+      blockingRow: TODAYS_ROW,
+      nowMsFromDb: NOW,
+      dryRun: false,
+      force: true,
+      override: 'yes',
+    });
+    expect(withJunk.proceed).toBe(false);
+  });
+
+  it.each([[undefined], [{}], [{ blockingRow: { id: {} }, nowMsFromDb: 'not-a-number' }]])(
+    'never throws on %j — a gate that throws is a gate that skipped its own decision',
+    (input) => {
+      expect(() => classifySameDayGate(input)).not.toThrow();
+      expect(classifySameDayGate(input).proceed).toBe(false);
+    },
+  );
+
+  // THE PURITY ASSERTION. This is the one that makes the host-sleep problem structurally unable to
+  // recur: if any future edit reaches for the host clock, `Date.now` throwing here fails the suite
+  // rather than shipping a boundary that skews whenever the laptop sleeps through midnight.
+  it('is a function of its arguments alone — no host clock, no ambient state', () => {
+    const args = { blockingRow: TODAYS_ROW, nowMsFromDb: NOW, dryRun: false };
+    const baseline = classifySameDayGate(args);
+
+    const realNow = Date.now;
+    try {
+      Date.now = () => {
+        throw new Error(
+          'classifySameDayGate read the HOST clock — the day boundary must come from the DB',
+        );
+      };
+      expect(classifySameDayGate(args)).toEqual(baseline);
+    } finally {
+      Date.now = realNow;
+    }
+
+    // Same arguments, same answer, repeatedly — including the rendered strings, which are what the
+    // operator acts on.
+    expect(classifySameDayGate(args)).toEqual(baseline);
+    expect(classifySameDayGate({ ...args })).toEqual(baseline);
+
+    // And the boundary follows the ARGUMENT, not today: a DB clock on a completely different UTC day
+    // yields that day's slot, with no trace of the day this suite happens to run on.
+    const longAgo = classifySameDayGate({
+      blockingRow: null,
+      nowMsFromDb: Date.UTC(2001, 1, 28, 23, 59, 0),
+      dryRun: false,
+    });
+    expect(longAgo.utcDay).toBe('2001-02-28');
+    expect(longAgo.nextSlotIso).toBe('2001-03-01T00:00:00.000Z');
+    expect(longAgo.reason).not.toContain(new Date().toISOString().slice(0, 10));
   });
 });

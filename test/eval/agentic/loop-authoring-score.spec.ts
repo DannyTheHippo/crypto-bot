@@ -33,6 +33,7 @@ import {
   MIN_TRANSPORT_RATE,
   aggregateFamilyVerdict,
   assertArmsAreReachable,
+  commonRowsSplitAtMs,
   compareToIncumbent,
   computeCell,
   corpusManifest,
@@ -268,6 +269,12 @@ describe.runIf(SCORE)(
         const reference = run.perArm.get(incumbentName) ?? [];
         const reports: ArmReport[] = [];
 
+        // The run's ONE split instant for the deployment bar's chronological-halves clause: the
+        // median eventTime of the COMMON row set, computed once, before any comparison is read. This
+        // pass re-measures the incumbent IN-RUN, so unlike the Family A path the clause is genuinely
+        // determinable here — both sides have per-entry times against the same boundary.
+        const splitAtMs = commonRowsSplitAtMs(run.perArm);
+
         for (const v of named) {
           const results = run.perArm.get(v.name) ?? [];
           const parsed = results.filter((r) => r.ok);
@@ -288,7 +295,7 @@ describe.runIf(SCORE)(
             const obs: Observation[] = [];
             for (const e of entries) {
               const val = fwdBps(series, e.symbol, e.eventTime, h, e.dir);
-              if (val !== null) obs.push({ symbol: e.symbol, bps: val });
+              if (val !== null) obs.push({ symbol: e.symbol, bps: val, eventTime: e.eventTime });
             }
             // Seed is a pure function of (arm, horizon) so the whole run reproduces, and differs per
             // cell so no two cells share a resampling stream.
@@ -298,6 +305,7 @@ describe.runIf(SCORE)(
               series,
               h,
               20260730 + (hash32(v.name) % 100000) + h,
+              splitAtMs,
             );
             const { verdict, failedClause } = verdictFor(stats, alpha);
             // `...stats` FIRST so it supplies LaneCell's n/mean/ciLo along with the clauses the
@@ -329,6 +337,7 @@ describe.runIf(SCORE)(
             incumbentName,
             incumbentCells,
             ATTRIBUTION,
+            splitAtMs,
           ),
         );
         // Only candidate cells enter the research verdict — the comparator can never PASS, and the way
@@ -347,6 +356,9 @@ describe.runIf(SCORE)(
           corpus: manifest,
           rowsRequested: rows.length,
           rowsCovered: run.rowsCovered,
+          // The run's ONE split instant, so every halves figure in `deployment` below is re-derivable
+          // from this file alone. null means the clause had no boundary and read UNDETERMINED.
+          halvesSplitAtMs: splitAtMs ?? null,
           alpha,
           cellsDeclared: scoredCells,
           horizons: [...HORIZONS],
@@ -372,8 +384,10 @@ describe.runIf(SCORE)(
         for (const d of deployment) {
           console.log(
             `DEPLOYMENT ${d.arm} vs ${d.incumbent}: ${d.horizonsWon}/${d.horizonsCompared} horizons, ` +
-              `primary h=${d.primaryHorizon} ${d.beatsAtPrimary ? 'won' : 'lost'} ⇒ ${d.ships ? 'SHIPS' : 'does NOT ship'}`,
+              `primary h=${d.primaryHorizon} ${d.beatsAtPrimary ? 'won' : 'lost'}, halves ` +
+              `${d.halvesVerdict} ⇒ ${d.ships ? 'SHIPS' : 'does NOT ship'}`,
           );
+          console.log(`  halves: ${d.halves.reason}`);
         }
         console.log(
           `RESEARCH ${research.cellsScored}/${research.cellsDeclared} cells, ${research.passes.length} passes ⇒ ${research.verdict}`,

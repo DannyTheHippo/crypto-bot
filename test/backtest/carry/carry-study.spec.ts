@@ -4,8 +4,9 @@
 // either this study's own 7-symbol dataset or the PRIOR_TRIALS legacy dataset is absent (both are
 // gitignored; a fresh CI checkout has neither, so the whole suite skips there). This is an
 // HONESTY-CRITICAL study: the grid runs once, is reported as-is, and the spec asserts only mechanical
-// integrity (every cell ran, no NaN, the report got written) — the GO/NO-GO verdict is data, never an
-// assertion, so a NO-GO result must not fail this suite.
+// integrity (every cell ran, no NaN) — the GO/NO-GO verdict is data, never an assertion, so a NO-GO
+// result must not fail this suite. Writing the committed report is opt-in (CARRY_STUDY_WRITE=1, see
+// the gate below) — a plain run never touches research/.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -37,6 +38,19 @@ const REPORT_PATH = join(
   'studies',
   'carry-study-2026-07-10.md',
 );
+
+// Artifact-write gate (2026-07-31 incident, this file). `vitest run test/backtest/` was found to
+// silently OVERWRITE the committed REPORT_PATH — the evidence behind the funding-carry sub-plan's
+// settled NO-GO verdict — with numbers regenerated off whatever the local gitignored data cache
+// currently held: funding rows per symbol had silently collapsed 3250 -> 31 for BTC/ETH/SOL/XRP
+// (test/backtest/data/funding-{BTC,ETH,SOL,XRP}USDTUSDT.json, a truncated re-fetch), which moved V,
+// SR0*, and the worst-outlier cell in the write. A suite run must never replace published evidence
+// with weaker evidence invisibly. Mirrors test/features/common/config/openapi-snapshot.spec.ts's
+// OPENAPI_WRITE idiom (env-flag-gated write vs. compare-only). Failure direction: this gate fails
+// CLOSED for WRITING (no flag => REPORT_PATH is never touched, unconditionally) and must NEVER fail
+// closed for TESTING — the grid's own mechanical-integrity assertions below run and must still pass
+// identically whether or not the flag is set; only the filesystem write is conditional.
+const CARRY_STUDY_WRITE = process.env['CARRY_STUDY_WRITE'] === '1';
 
 function formatTs(ms: number): string {
   return new Date(ms).toISOString().slice(0, 16);
@@ -114,9 +128,13 @@ describe.skipIf(SKIP)('funding-carry offline study (task S2, carry-build GO/NO-G
       fundingRows: btc.funding.length,
     });
 
-    mkdirSync(dirname(REPORT_PATH), { recursive: true });
-    writeFileSync(REPORT_PATH, report);
-    console.log(`carry-study report written to ${REPORT_PATH}`);
+    if (CARRY_STUDY_WRITE) {
+      mkdirSync(dirname(REPORT_PATH), { recursive: true });
+      writeFileSync(REPORT_PATH, report);
+      console.log(`carry-study report written to ${REPORT_PATH}`);
+    } else {
+      console.log(`carry-study: CARRY_STUDY_WRITE not set — skipped write to ${REPORT_PATH}`);
+    }
 
     // Honest-N ledger (registration discipline, trial-registry.ts header): every cell of this grid
     // — winners and losers alike — is written to the append-only experiments table. logTrials is a

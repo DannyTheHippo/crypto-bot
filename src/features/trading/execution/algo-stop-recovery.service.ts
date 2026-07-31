@@ -160,6 +160,26 @@ export class AlgoStopRecoveryService {
       return 'canceled';
     }
 
+    // WATCH-V4-10 (2026-07-31): a REJECTED conditional is terminal at the venue with NO fill of its
+    // own — the observed shape is a reduce-only stop firing after its position already closed
+    // ("Reduce only reject"; demo-fapi algoId 1000000150396877 triggered 4m after HYPE went flat).
+    // Before this branch REJECTED normalized to UNKNOWN and fell into the fail-OPEN return above, so
+    // nothing could ever retire it and the order sat ACKED across four boots — the WATCH's defect.
+    //
+    // Failure direction, deliberately SPLIT because this is the money path:
+    //   - no spawnedOrderId  ⇒ the venue never created a regular-rail order, so there is provably no
+    //     fill to lose. Fold terminal (fail CLOSED on the strand: the order is retired, exposure
+    //     released, and the reduce-only stop stops shadowing a position it no longer belongs to).
+    //   - spawnedOrderId set ⇒ some quantity MAY have executed before the rejection. Retiring here
+    //     would discard that fill from position/cash forever, so fall through to the TRIGGERED path,
+    //     which ingests only what fetchMyTrades can positively prove and returns 'unknown' (retry
+    //     next sweep, never a guessed fold) when it can prove nothing. Never trade a possible lost
+    //     fill for a tidier order book.
+    if (view.status === 'REJECTED' && view.spawnedOrderId === undefined) {
+      await this.foldVenueTerminal(intent, view);
+      return 'canceled';
+    }
+
     return this.recoverTriggeredFill(intent, symbol, view);
   }
 
@@ -167,6 +187,12 @@ export class AlgoStopRecoveryService {
   // order from in-flight/open — the identical fold shape reconciliation.service.ts's own `fold` uses
   // for venue-adopted terminals, reused here under the algo-history dedupe key instead of
   // `reconcile:{event.type}` (a different venue source, so it needs its own dedupe namespace).
+  //
+  // Event mapping: CANCELED ⇒ VENUE_CANCELED, everything else this is called with (EXPIRED, and
+  // WATCH-V4-10's REJECTED) ⇒ VENUE_EXPIRED. REJECT is deliberately NOT used — the reducer accepts it
+  // only from SUBMITTING/SUBMIT_UNKNOWN, and these orders are ACKED (the venue accepted the
+  // conditional; only the order it later spawned was rejected). VENUE_EXPIRED is the honest, legal
+  // ACKED-terminal fold for "it ended without filling".
   private async foldVenueTerminal(intent: OrderIntent, view: AlgoOrderHistoryView): Promise<void> {
     const coid = intent.clientOrderId;
     const rec = this.orders.get(coid);

@@ -178,8 +178,15 @@ export function normalizeAlgoOrder(o: RawAlgoOrder, fallbackSymbol: SymbolId): A
 // ── Algo-history normalization (Defect A) ──────────────────────────────────────
 
 // NEW collapses to RESTING, TRIGGERED/FINISHED collapse to TRIGGERED (both mean the algo rail's job
-// is done — the reducer only needs to know a fill may exist), CANCELED/EXPIRED pass through, and any
-// other value is UNKNOWN rather than trusted (recoverSymbol retries UNKNOWN/RESTING identically).
+// is done — the reducer only needs to know a fill may exist), CANCELED/EXPIRED/REJECTED pass
+// through, and any other value is UNKNOWN rather than trusted (recoverSymbol retries UNKNOWN/RESTING
+// identically).
+//
+// WATCH-V4-10: REJECTED used to fall through this `default` into UNKNOWN, which is the one answer
+// recoverSymbol never folds — so a reduce-only stop that fired against an already-flat position
+// ("Reduce only reject", probe-verified on demo-fapi 2026-07-31) could never be retired and sat
+// ACKED across every subsequent boot. It is a DEFINITIVE venue terminal, not an absence of
+// information, so it gets its own member rather than being trusted as either CANCELED or TRIGGERED.
 function mapAlgoHistoryStatus(raw: string | undefined): AlgoOrderHistoryView['status'] {
   switch (raw) {
     case 'NEW':
@@ -191,6 +198,8 @@ function mapAlgoHistoryStatus(raw: string | undefined): AlgoOrderHistoryView['st
       return 'CANCELED';
     case 'EXPIRED':
       return 'EXPIRED';
+    case 'REJECTED':
+      return 'REJECTED';
     default:
       return 'UNKNOWN';
   }

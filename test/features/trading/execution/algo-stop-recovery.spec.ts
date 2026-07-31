@@ -974,3 +974,121 @@ describe('AlgoStopRecoveryService.hasAlgoAnchor', () => {
     expect(await ctx.svc.hasAlgoAnchor(SYM_PERP)).toBe(true);
   });
 });
+
+// WATCH-V4-10 (2026-07-31). Live geometry, venue-verified on demo-fapi: HYPE/USDT:USDT stop
+// cbt019fb31cb7c97ea0a8dfa5462d3d3764 (algoId 1000000150396877) fired at 2026-07-30T16:04:39.939Z,
+// ~4 minutes AFTER its position went flat, and the venue answered algoStatus REJECTED with
+// rejectReason "Reduce only reject" and an EMPTY actualOrderId (no spawned order, no fill).
+// REJECTED had no case in mapAlgoHistoryStatus, so it normalized to UNKNOWN — the one answer
+// recoverIntent never folds — and the order sat ACKED across four boots with nothing able to retire
+// it. These tests pin the terminal fold and, critically, its FAIL-CLOSED boundary.
+const REJECTED_VIEW: AlgoOrderHistoryView = {
+  algoId: '999',
+  clientAlgoId: STOP_COID,
+  status: 'REJECTED',
+  qty: '0.001',
+  triggerPrice: '48000',
+};
+
+describe('AlgoStopRecoveryService.recoverSymbol — REJECTED (WATCH-V4-10)', () => {
+  it('REJECTED with no spawned order: folds VENUE_EXPIRED under algo-hist:REJECTED:999, zero ingests', async () => {
+    const ctx = build({ openAlgo: [], algoStatus: REJECTED_VIEW });
+    seedAlgoIntent(ctx);
+
+    const result = await ctx.svc.recoverSymbol(SYM_PERP);
+
+    expect(result).toBe('canceled'); // terminal-no-fill, same aggregate class as CANCELED/EXPIRED
+    expect(ctx.orders.get(STOP_COID)?.state).toBe('EXPIRED');
+    expect(ctx.store.fills.size).toBe(0);
+    expect(ctx.portfolio.snapshot().inFlightIntents).toHaveLength(0);
+    const ev = ctx.store.events.find((e) => e.dedupeKey === 'algo-hist:REJECTED:999');
+    // VENUE_EXPIRED, never REJECT: the reducer accepts REJECT only from SUBMITTING/SUBMIT_UNKNOWN,
+    // and this order is ACKED (the venue accepted the conditional; only its spawned order was
+    // rejected). A REJECT fold here would throw TransitionError and strand the order all over again.
+    expect(ev?.event).toEqual({ type: 'VENUE_EXPIRED' });
+  });
+
+  it('an algo-rail order that SURVIVED A BOOT is reached and folded terminal — without ever entering portfolio.openOrders', async () => {
+    // The acceptance case. Post-restart geometry: boot recovery seeded the ACKED record from the
+    // persisted orders row and deliberately did NOT register it in the portfolio open-orders set
+    // (boot-recovery.service.ts:97-101 — that set is regular-rail only, and reconciliation's axis 1
+    // is regular-rail BY CONSTRUCTION since its venue source is fetchOpenOrders, which never returns
+    // an algo order). This test pins that the algo rail's OWN reconciliation reaches the order
+    // anyway, so the strand is closed without widening the regular-rail open set.
+    const ctx = build({ openAlgo: [], algoStatus: REJECTED_VIEW });
+    await seedPostBootAlgoIntent(ctx);
+    expect(ctx.portfolio.snapshot().inFlightIntents).toHaveLength(0); // the post-restart gap
+    expect(ctx.portfolio.snapshot().openOrders).toHaveLength(0); // never regular-rail registered
+
+    const result = await ctx.svc.recoverSymbol(SYM_PERP);
+
+    expect(result).toBe('canceled');
+    expect(ctx.orders.get(STOP_COID)?.state).toBe('EXPIRED');
+    // Still absent from the regular-rail open set — the fold did not depend on it being there.
+    expect(ctx.portfolio.snapshot().openOrders).toHaveLength(0);
+    expect(ctx.store.fills.size).toBe(0);
+  });
+
+  it('REJECTED while STILL RESTING on the open rail is never folded — a live stop is untouchable', async () => {
+    // Ordering guard: the open-algo scan runs first and short-circuits. A venue that reports a stale
+    // REJECTED history row while the order is demonstrably still resting must never retire it —
+    // doing so would leave a real position unprotected.
+    const ctx = build({ openAlgo: [RESTING_ROW], algoStatus: REJECTED_VIEW });
+    seedAlgoIntent(ctx);
+
+    const result = await ctx.svc.recoverSymbol(SYM_PERP);
+
+    expect(result).toBe('none');
+    expect(ctx.orders.get(STOP_COID)?.state).toBe('ACKED');
+    expect(ctx.store.events).toHaveLength(0);
+  });
+
+  it('REJECTED WITH a spawned order but no provable trade: FAILS CLOSED — no fold, retried next sweep', async () => {
+    // The fail-closed boundary. If the venue names a spawned order, quantity MAY have executed
+    // before the rejection. Retiring the order here would discard that fill from position/cash
+    // forever, so recovery must return 'unknown' and leave the record live rather than tidy the book.
+    const ctx = build({
+      openAlgo: [],
+      algoStatus: { ...REJECTED_VIEW, spawnedOrderId: 'spawn-777' },
+      trades: [],
+    });
+    seedAlgoIntent(ctx);
+
+    const result = await ctx.svc.recoverSymbol(SYM_PERP);
+
+    expect(result).toBe('unknown');
+    expect(ctx.orders.get(STOP_COID)?.state).toBe('ACKED'); // never retired on a maybe
+    expect(ctx.store.events).toHaveLength(0);
+    expect(ctx.store.fills.size).toBe(0);
+  });
+
+  it('REJECTED WITH a spawned order that DID trade: the fill is ingested, never discarded', async () => {
+    const trade: VenueFill = {
+      venue: V_PERP,
+      symbol: SYM_PERP,
+      venueTradeId: '777001',
+      clientOrderId: clientOrderId('spawn-777'),
+      price: '48000',
+      qty: '0.001',
+      fee: null,
+      liquidity: 'taker',
+      venueTimestamp: epochMs(T),
+    };
+    const ctx = build({
+      openAlgo: [],
+      algoStatus: { ...REJECTED_VIEW, spawnedOrderId: 'spawn-777' },
+      trades: [trade],
+    });
+    seedAlgoIntent(ctx);
+
+    const result = await ctx.svc.recoverSymbol(SYM_PERP);
+
+    expect(result).toBe('triggered');
+    expect(ctx.orders.get(STOP_COID)?.state).toBe('FILLED');
+    // Ingested under the STOP INTENT's own coid, exact venue strings — the partial-rejection fill
+    // reaches the OMS instead of being swallowed by a terminal-no-fill fold.
+    const fill = ctx.store.fills.get(`${V_PERP}|${SYM_PERP}|777001`);
+    expect(fill?.qty.toFixed()).toBe('0.001'); // exact string, never toBeCloseTo
+    expect(fill?.price.toFixed()).toBe('48000');
+  });
+});

@@ -4,6 +4,7 @@ import {
   normalizeTrade,
   normalizeBalances,
   normalizeFundingPayment,
+  normalizeAlgoHistory,
 } from '../../../../src/features/venue/exchange/ccxt-normalize';
 import { clientOrderId, venueId, symbolId, epochMs } from '../../../../src/domain/common/types/ids';
 import type {
@@ -11,6 +12,7 @@ import type {
   CcxtTrade,
   CcxtBalances,
   CcxtFundingHistoryEntry,
+  RawAlgoOrder,
 } from '../../../../src/features/venue/exchange/ccxt-order-client';
 
 const SYM = symbolId('BTC/USDT');
@@ -271,5 +273,53 @@ describe('normalizeBalances', () => {
     const result = normalizeBalances(raw);
     expect(result.has('BADENTRY')).toBe(false);
     expect(result.has('BTC')).toBe(true);
+  });
+});
+
+describe('normalizeAlgoHistory status mapping', () => {
+  // Verbatim demo-fapi row for the WATCH-V4-10 strand (keyed probe 2026-07-31): HYPE stop
+  // cbt019fb31cb7c97ea0a8dfa5462d3d3764 fired ~4 minutes after its position went flat, so the
+  // reduce-only order it spawned was refused and the conditional ended REJECTED with an EMPTY
+  // actualOrderId. Field-for-field as the venue returned it, timestamps as JSON strings included.
+  const REJECTED_ROW: RawAlgoOrder = {
+    algoId: '1000000150396877',
+    clientAlgoId: 'cbt019fb31cb7c97ea0a8dfa5462d3d3764',
+    symbol: 'HYPEUSDT',
+    side: 'BUY',
+    orderType: 'STOP_MARKET',
+    quantity: '1.49',
+    triggerPrice: '54.57400',
+    algoStatus: 'REJECTED',
+    reduceOnly: true,
+    actualOrderId: '',
+    updateTime: '1785427479999',
+    triggerTime: '1785427479939',
+  };
+
+  it('REJECTED maps to its own terminal member, NOT UNKNOWN (the strand root cause)', () => {
+    const view = normalizeAlgoHistory(REJECTED_ROW);
+    // Before this mapping existed REJECTED fell through to UNKNOWN, which recoverIntent treats as
+    // "the sweep could not tell" and retries forever — nothing could ever retire the order.
+    expect(view?.status).toBe('REJECTED');
+    expect(view?.algoId).toBe('1000000150396877');
+    expect(view?.clientAlgoId).toBe('cbt019fb31cb7c97ea0a8dfa5462d3d3764');
+  });
+
+  it('an empty actualOrderId yields NO spawnedOrderId, so the caller may fold terminal-no-fill', () => {
+    // '' means absent, never a valid id. This is what lets recoverIntent distinguish "provably no
+    // fill" (fold) from "a spawned order may have executed" (fail closed, never fold).
+    expect(normalizeAlgoHistory(REJECTED_ROW)?.spawnedOrderId).toBeUndefined();
+  });
+
+  it('a REJECTED row that DOES name a spawned order surfaces it (drives the fail-closed path)', () => {
+    const view = normalizeAlgoHistory({ ...REJECTED_ROW, actualOrderId: '901234' });
+    expect(view?.status).toBe('REJECTED');
+    expect(view?.spawnedOrderId).toBe('901234');
+  });
+
+  it('an unrecognized algoStatus still collapses to UNKNOWN', () => {
+    expect(normalizeAlgoHistory({ ...REJECTED_ROW, algoStatus: 'SOMETHING_NEW' })?.status).toBe(
+      'UNKNOWN',
+    );
   });
 });

@@ -126,10 +126,20 @@ export class AdapterError extends Error {
 // to TRIGGERED (both mean "the order fired and the algo rail's job is done"), and anything the
 // adapter does not recognize collapses to UNKNOWN rather than being trusted — recoverSymbol treats
 // UNKNOWN/RESTING identically (retry next sweep, never a fold).
+//
+// WATCH-V4-10 (2026-07-31): REJECTED is its OWN member, not another UNKNOWN. A reduce-only stop that
+// fires after its position already closed is answered by the venue as algoStatus REJECTED
+// (rejectReason "Reduce only reject") — probe-verified on demo-fapi for algoId 1000000150396877,
+// clientAlgoId cbt019fb31cb7c97ea0a8dfa5462d3d3764, triggered 2026-07-30T16:04:39.939Z, 4m after the
+// HYPE position went flat. Collapsing that into UNKNOWN made it indistinguishable from "the sweep
+// could not tell", which recoverSymbol retries forever — so the order sat ACKED across four boots
+// with no mechanism that could ever retire it. REJECTED is a DEFINITIVE terminal answer and must be
+// foldable; keeping it distinct from CANCELED/EXPIRED preserves the caller's ability to fail CLOSED
+// when the row also names a spawned order (see AlgoStopRecoveryService.recoverIntent).
 export interface AlgoOrderHistoryView {
   readonly algoId: string;
   readonly clientAlgoId?: string;
-  readonly status: 'RESTING' | 'TRIGGERED' | 'CANCELED' | 'EXPIRED' | 'UNKNOWN';
+  readonly status: 'RESTING' | 'TRIGGERED' | 'CANCELED' | 'EXPIRED' | 'REJECTED' | 'UNKNOWN';
   readonly spawnedOrderId?: string;
   readonly qty: string;
   readonly triggerPrice: string;

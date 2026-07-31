@@ -57,9 +57,9 @@ else is looked up on demand; § Index says which file answers which question. La
 
 - **Live build `35042cc`** (`build_info{git_sha}` confirmed), boot **2026-07-31T16:52:51.674Z**,
   bootId `4753ef53`, `RestartCount` 0, healthy. **23** Prometheus rules loaded (was 22), 0 unhealthy,
-  0 firing — Prometheus WAS force-recreated this pass because `alerts.rules.yml` changed. HEAD is
-  deployed; no deploy is due. The redeploy re-seeds the `agentic_venue_stop_total` counters
-  WATCH-V4-11 and V4-13 read — factor that into their provenance.
+  0 firing — Prometheus WAS force-recreated this pass because `alerts.rules.yml` changed. HEAD
+  (`7d2e1d2`) is one records-only commit ahead: **zero runtime delta, no deploy due.** The redeploy
+  re-seeds the `agentic_venue_stop_total` counters WATCH-V4-11 and V4-13 read — note that provenance.
 - **Pass 53 was a DEFECT INVESTIGATION forced by §3** (two alarms). It shipped the visibility fixes,
   NOT the `-4024` repair — see the banner above for the blocker. Three commits: the
   `VenueTerminalRejectBurst` alert (WATCH-V4-14), the reconcile skip-log demotion (214 warns/3.6h that

@@ -2420,7 +2420,7 @@
           "id": 30,
           "type": "timeseries",
           "title": "Venue Stop Events (by venue/event)",
-          "description": "increase(agentic_venue_stop_total{venue,event}[1h]) \u2014 v3 \u00a78: +venue. force_fired means a venue stop evidently failed to fill on its own \u2014 worth an operator look. Empty until first event.",
+          "description": "increase(agentic_venue_stop_total{venue,event}[1h]) \u2014 v3 \u00a78: +venue. force_fired means a venue stop evidently failed to fill on its own \u2014 worth an operator look. Empty until first event. `orphan_scan` (2026-07-31) is excluded from this expr: it fires on essentially every flat-perp bar per symbol (reconcileOrphanedAlgoStop's own proof-of-execution label, not a lifecycle event) and at ~16 symbols \u00d7 15m cadence would out-increment the rest of this panel's series ~20x over, stacked, erasing the labels this panel exists to show. Its trend (and the orphan_cancel/orphan_readopt/orphan_cancel_failed match rate against it) is queryable directly; see AgenticOrphanStopCancelFailing in alerts.rules.yml for the alerted failure axis.",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus-spot"
@@ -2431,7 +2431,7 @@
                 "type": "prometheus",
                 "uid": "prometheus-spot"
               },
-              "expr": "increase(agentic_venue_stop_total[1h])",
+              "expr": "increase(agentic_venue_stop_total{event!=\"orphan_scan\"}[1h])",
               "legendFormat": "{{ venue }} {{ event }}",
               "refId": "A"
             }
@@ -2468,7 +2468,7 @@
               {
                 "matcher": {
                   "id": "byRegexp",
-                  "options": "\\b(cancel_|drift_|orphan_|skipped_|qty_cancel|tp_race_hold|stood_down)\\b"
+                  "options": "\\b(cancel_\\w+|drift_\\w+|orphan_(?!cancel_failed\\b)\\w+|skipped_\\w+|qty_cancel|tp_race_hold|stood_down)\\b"
                 },
                 "properties": [
                   {
@@ -2483,7 +2483,7 @@
               {
                 "matcher": {
                   "id": "byRegexp",
-                  "options": "\\b(force_fired|reconcile_error|triggered)\\b"
+                  "options": "\\b(force_fired|reconcile_error|triggered|orphan_cancel_failed)\\b"
                 },
                 "properties": [
                   {

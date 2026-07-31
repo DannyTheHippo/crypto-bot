@@ -410,3 +410,38 @@ groups:
         annotations:
           summary: 'No agentic decide has produced an accepted decision in 9h+ (or ever, or the liveness gauge stopped being emitted) — unlike agent_client_latched this signal survives a redeploy'
           runbook: 'docs/runbook.md'
+
+      # 2026-07-31: agentic_venue_stop_total had NO alert of any kind — a binanceusdm
+      # HYPE/USDT:USDT BUY STOP_MARKET sat non-terminal for ~11h across 3+ boots because
+      # reconcileOrphanedAlgoStop's best-effort cancel (agentic.strategy.ts) throws into a bare
+      # `catch {}` and nothing downstream could tell "never matched" from "matched and the cancel
+      # threw" — until this pass added the `orphan_cancel_failed` label (alongside `orphan_scan`/
+      # `orphan_readopt`) precisely to make that second case visible. Without a rule here, the exact
+      # recurrence signature of that incident — this label incrementing every ~15m bar forever —
+      # could fire indefinitely and page no one.
+      #
+      # Threshold >1 in a 30m window, not >0: reconcileOrphanedAlgoStop runs once per symbol per bar
+      # with no active plan (STRATEGY_INTERVAL=15m), so a single failed cancel is a plausible
+      # transient venue blip (a 5xx, a rate limit) that the very next bar's retry already clears —
+      # exactly the "best-effort, retried next bar" failure direction the call site itself documents.
+      # Two or more inside one 30-minute window means the SAME stranded order failed to cancel on
+      # back-to-back bars, which is the actual incident shape (a stop that never clears keeps
+      # matching and keeps throwing).
+      #
+      # Severity WARNING, deliberately, not critical: `orphan_cancel_failed` was zero-seeded minutes
+      # before this rule was written (Pass 2026-07-31) and this stack has no measured baseline for it
+      # at all — zero historical firings to confirm the threshold doesn't trip on ordinary venue
+      # flake. loop-sweep-core.mjs's prometheus_alert_firing gate promotes only `critical` to a
+      # blocking alarm that halts all improvement work until it clears; handing an unbaselined,
+      # hours-old counter that power on day one risks wedging every future pass on a threshold no
+      # one has validated. Promote to critical once this rule has accumulated a real observation
+      # window (recommend >=7 days) with zero false positives against a confirmed-healthy
+      # reconciler — i.e. evidence the >1/30m threshold fires only on genuine stuck-order incidents,
+      # not on isolated venue hiccups.
+      - alert: AgenticOrphanStopCancelFailing
+        expr: increase(agentic_venue_stop_total{event="orphan_cancel_failed"}[30m]) > 1
+        for: 0m
+        labels: { severity: warning }
+        annotations:
+          summary: 'Orphan algo-stop cancel failed repeatedly ({{ $value }} in 30m, venue {{ $labels.venue }}) — reconcileOrphanedAlgoStop cannot clear a stranded stop'
+          runbook: 'docs/runbook.md'

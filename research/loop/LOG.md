@@ -788,6 +788,38 @@ container had restarted 16s earlier as the host came back from sleep, so `bootId
 and the alert history all failed. That is duty cycle, not a defect, but it means this pass's
 pre-deploy baseline is thinner than usual and the post-deploy read below is the load-bearing one.
 
+### Soak addendum — the new instrument produced its first reading, and it discriminates
+
+First decide bar after the deploy (08:00Z bar, read 08:01:13Z, boot `ae5df10b`):
+
+```text
+orphan_scan=16  orphan_readopt=4  orphan_cancel=0  orphan_cancel_failed=0  reconcile_error=0
+```
+
+on `binanceusdm`; `binance` reads 0 throughout, which is correct — the path is perp-only.
+
+**WATCH-V4-11's expected-positive HOLDS on its first read.** 16 scans is one per perp symbol in the
+universe on a single bar, so the no-active-plan reconcile path demonstrably executes; before this
+pass that fact was unobservable.
+
+**And it answers WATCH-V4-10's open question, which two passes could not.** The reading is
+`orphan_scan` > 0 with **both** cancel counters at 0 and no `reconcile_error` — so the branch does
+not throw, and case (d) is out. It runs and matches nothing. Crucially, `orphan_readopt=4` in the
+same bar proves `fetchOpenAlgoOrders` **is** returning live algo orders and they **are** resolving to
+our ids — four resting stops on positioned symbols were re-adopted. So the venue read works; it
+simply does not return the HYPE stop.
+
+**The most probable reading, stated with its alternative rather than as a conclusion:** the HYPE
+`STOP_MARKET` is **gone at the venue and stranded only in our book** — which is the benign half of
+the pair `watches.md` said was unanswerable from any scheduled read. The alternative it does not
+fully exclude is an id-resolution mismatch specific to that one order, placed a day earlier by an
+older build. The 4 readopts weigh heavily against that but do not kill it.
+
+**The one probe that settles it** is a keyed `fetchAlgoOrderStatus(cbt019fb31cb7c97ea0a8dfa5462d3d3764,
+HYPE/USDT:USDT)` — the primitive already exists on the adapter and has no scheduled caller. That is
+the next pass's cheapest high-value action, and if it returns CANCELED/EXPIRED then the remaining
+work on V4-10 is a fold of four stale local rows, not a venue problem.
+
 ### WATCH lines
 
 V3-1 holds. V4-1 holds on its re-derived clause — the 19:00:30Z `adopt_non_adoptable` is transient

@@ -66,9 +66,18 @@ files below, with a one-line pointer here.
   non-terminal algo intent marks its symbol BUSY for `driveFlattening`, so a HALT cannot complete for
   it until the next boot. The fix is prevention + measurement — **the four already-stranded rows will
   NOT terminalize.** `watches.md` § WATCH-V4-10 / V4-11.
-- **The first reading the next pass should take** is `agentic_venue_stop_total{event="orphan_scan"}`
-  on this boot. Above 0 with both cancel counters 0 ⇒ the scan runs and never matches;
-  `orphan_cancel_failed` > 0 ⇒ it matches and the cancel throws. Before Pass 50 both were one zero.
+- **THE INSTRUMENT ALREADY ANSWERED IT, on the first bar after the deploy** (08:01:13Z, boot
+  `ae5df10b`): `orphan_scan=16 orphan_readopt=4 orphan_cancel=0 orphan_cancel_failed=0
+  reconcile_error=0` on `binanceusdm` (`binance` 0 throughout — the path is perp-only). The scan runs
+  once per perp symbol, does **not** throw, and matches nothing to cancel — while re-adopting 4
+  resting stops on positioned symbols in the same bar, which proves `fetchOpenAlgoOrders` is
+  returning live algo orders and they resolve to our ids. **Most probable: the HYPE stop is gone at
+  the venue and stranded only in our book** — the benign half of the pair `watches.md` called
+  unanswerable. Not fully excluded: an id-resolution mismatch on that one older order.
+- **Next pass's cheapest high-value action:** a keyed
+  `fetchAlgoOrderStatus(cbt019fb31cb7c97ea0a8dfa5462d3d3764, HYPE/USDT:USDT)` — the primitive exists
+  on the adapter with no scheduled caller. CANCELED/EXPIRED ⇒ what remains of V4-10 is folding four
+  stale local rows, not a venue problem.
 - **A test run rewrote a committed study, and the data behind it has collapsed.** `vitest run
   test/backtest/` overwrote `carry-study-2026-07-10.md` (the evidence under a settled NO-GO) with
   funding rows **3250 → 31**. Write is now gated behind `CARRY_STUDY_WRITE=1`. **Still open:**

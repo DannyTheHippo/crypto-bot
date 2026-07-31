@@ -14,25 +14,41 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { Pool } from 'pg';
 import { PgAdvisoryInstanceLock } from '../../src/database/repositories/common/pg-advisory-instance-lock';
+import { dbNameEndsWithTest, assertDestructiveTargetIsTestDb } from './destructive-guard';
 
 const DB_URL = process.env['DATABASE_URL'];
-
-function dbNameEndsWithTest(url: string): boolean {
-  try {
-    return new URL(url).pathname.replace(/^\//, '').endsWith('_test');
-  } catch {
-    return false;
-  }
-}
 
 const resetAllowed =
   process.env['DB_SUITE_ALLOW_RESET'] === '1' || (!!DB_URL && dbNameEndsWithTest(DB_URL));
 const SKIP = !DB_URL || !resetAllowed;
 
+// Unconditional (not gated on SKIP): see the matching block in persistence.spec.ts — this suite
+// takes pg_advisory_lock against the same lock the live single-writer interlock uses, so it needs
+// the identical structural wall even though it never runs DROP SCHEMA itself.
+describe('DB integration — destructive-target hard wall', () => {
+  it('assertDestructiveTargetIsTestDb throws for a database name not ending in _test', () => {
+    expect(() =>
+      assertDestructiveTargetIsTestDb('postgres://cryptobot:cryptobot@127.0.0.1:5432/cryptobot'),
+    ).toThrow(/refuses to run a destructive DB suite/);
+  });
+
+  it('assertDestructiveTargetIsTestDb does not throw for a _test-suffixed database name', () => {
+    expect(() =>
+      assertDestructiveTargetIsTestDb(
+        'postgres://cryptobot:cryptobot@127.0.0.1:5432/cryptobot_test',
+      ),
+    ).not.toThrow();
+  });
+});
+
 describe.skipIf(SKIP)('DB integration — PgAdvisoryInstanceLock (single-writer interlock)', () => {
   let pool: Pool;
 
   beforeAll(() => {
+    // HARD SAFETY WALL, independent of DB_SUITE_ALLOW_RESET: this suite takes pg_advisory_lock
+    // against the same lock the live single-writer interlock uses, so aiming it at a non-_test
+    // database must be structurally impossible, same as persistence.spec.ts's DROP SCHEMA guard.
+    assertDestructiveTargetIsTestDb(DB_URL!);
     // max >= 2 so two locks can hold distinct sessions concurrently — the whole point of the test.
     pool = new Pool({ connectionString: DB_URL!, max: 4 });
   });

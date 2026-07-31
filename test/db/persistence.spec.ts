@@ -48,37 +48,14 @@ import {
 } from '../../src/domain/common/types/ids';
 import type { FillRecord } from '../../src/domain/trading/types/exec-report';
 import type { Position } from '../../src/domain/trading/types/portfolio';
+import { dbNameEndsWithTest, assertDestructiveTargetIsTestDb } from './destructive-guard';
 
 const DB_URL = process.env['DATABASE_URL'];
-
-function dbNameEndsWithTest(url: string): boolean {
-  try {
-    return new URL(url).pathname.replace(/^\//, '').endsWith('_test');
-  } catch {
-    return false;
-  }
-}
 
 const resetAllowed =
   process.env['DB_SUITE_ALLOW_RESET'] === '1' || (!!DB_URL && dbNameEndsWithTest(DB_URL));
 
 const SKIP = !DB_URL || !resetAllowed;
-
-// HARD SAFETY WALL, independent of every env flag above: this suite DROPs the public schema, so
-// it must be structurally impossible to aim it at a non-_test database. DB_SUITE_ALLOW_RESET
-// exists so READ-ONLY suites (test/eval) can acknowledge a production DATABASE_URL — it must
-// never double as a license to reset one. Incident 2026-07-10: an accidental full-suite vitest
-// invocation with ALLOW_RESET=1 + the production URL dropped the live `cryptobot` schema; this
-// throw (not a skip — a skip would hide the misconfiguration) is the guarantee it cannot recur.
-function assertDestructiveTargetIsTestDb(url: string): void {
-  if (!dbNameEndsWithTest(url)) {
-    throw new Error(
-      `persistence.spec.ts refuses to DROP SCHEMA on database "${new URL(url).pathname.replace(/^\//, '')}": ` +
-        'destructive DB suites only ever run against a database whose name ends in _test, ' +
-        'regardless of DB_SUITE_ALLOW_RESET.',
-    );
-  }
-}
 
 // drizzle ≥0.44 wraps query failures in DrizzleQueryError with the pg error (code 23505,
 // "duplicate key value violates unique constraint") on the `cause` chain, so unique-violation
@@ -101,6 +78,26 @@ function pad18(s: string): string {
 }
 
 const MIGRATIONS_FOLDER = path.resolve(__dirname, '../../drizzle');
+
+// Unconditional (not gated on SKIP): this is a pure-function guard, so it needs no live DB, and it
+// must keep running even when test:db itself is skipped (e.g. no DATABASE_URL locally) — a future
+// edit that weakens or deletes assertDestructiveTargetIsTestDb must fail this test, not just go
+// unexercised. drizzle-adapters.spec.ts carries an identical block importing the same function.
+describe('DB integration — destructive-target hard wall', () => {
+  it('assertDestructiveTargetIsTestDb throws for a database name not ending in _test', () => {
+    expect(() =>
+      assertDestructiveTargetIsTestDb('postgres://cryptobot:cryptobot@127.0.0.1:5432/cryptobot'),
+    ).toThrow(/refuses to run a destructive DB suite/);
+  });
+
+  it('assertDestructiveTargetIsTestDb does not throw for a _test-suffixed database name', () => {
+    expect(() =>
+      assertDestructiveTargetIsTestDb(
+        'postgres://cryptobot:cryptobot@127.0.0.1:5432/cryptobot_test',
+      ),
+    ).not.toThrow();
+  });
+});
 
 describe.skipIf(SKIP)('DB integration — persistence layer', () => {
   let pool: Pool;

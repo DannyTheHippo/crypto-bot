@@ -246,6 +246,55 @@ WATCH-V3-1: spot heap slope on the demo soak (paper plateau 673 MiB is the
 
 ### WATCH-V4-10 — an orphaned perp algo stop resting against a flat book (2026-07-30, Pass 49)
 
+  **CLOSED 2026-07-31 — the breach was real, the recorded root cause was WRONG, and the fix is
+  elsewhere. Read this block before the original text below it.**
+
+  **Venue truth** (keyed `demo-fapi` read via `fapiPrivateGetAllAlgoOrders` by `clientAlgoId` — the
+  same endpoint and args `CcxtExchangeAdapter.fetchAlgoOrderStatus` uses):
+  `cbt019fb31cb7c97ea0a8dfa5462d3d3764` / algoId `1000000150396877`, `HYPE/USDT:USDT`,
+  `BUY STOP_MARKET` 1.49 @ trigger 54.574, `reduceOnly`. **`algoStatus REJECTED`,
+  `rejectReason "Reduce only reject"`, `triggerTime 2026-07-30T16:04:39.939Z`, `actualOrderId ""`**
+  — no spawned order, no fill — and absent from `fetchOpenAlgoOrders`. So it was never resting,
+  never filled and never cancelled: it **fired 4m08s after its position went flat, was refused, and
+  died venue-side.** There is no live stray order and it cannot re-fire. The current −1.44 short is
+  separately protected by `cbt019fb79e51…`, verified `algoStatus NEW`.
+
+  **The breach is confirmed.** ACKed 2026-07-30T13:00:32.760Z for the −1.49 short; position FLAT at
+  2026-07-30T16:00:31.969Z; the local row stayed `ACKED` with `terminal_at NULL` and only two events
+  ever (`SUBMIT_SENT`, `ACK`) for ~21.5h across four boots, ~10.5h of it against a flat book. Every
+  other HYPE stop got `CANCELED` cleanly.
+
+  **NOT caused by the `boot-recovery.service.ts` `openOrders` exclusion** — that hypothesis was
+  recorded here and is refuted. Reconciliation axis 1 is regular-rail **by construction**: its venue
+  source is `fetchOpenOrders`, which never returns algo orders. And `fetchOrder` on an algo
+  clientOrderId throws `BadRequest -1102`, so registering algo orders into that set would have sent
+  `adoptTerminal` down a path that fails every 30s — permanent `adopt_query_failure` noise, forever,
+  and still no terminal fold. The algo rail already has its own boot reconciliation
+  (`AlgoStopRecoveryService`, wired at `trading-runtime.module.ts:642`).
+
+  **Actual root cause:** `mapAlgoHistoryStatus` (`ccxt-normalize.ts`) had no `REJECTED` case, so it
+  fell to `default: return 'UNKNOWN'` — and `UNKNOWN` is the one status `recoverIntent` deliberately
+  never folds (fail-open, retry next sweep). A rejected-on-trigger stop was therefore **un-retirable
+  by any pass on any boot**, which is exactly the recorded symptom reached by a different mechanism.
+
+  **Fix:** `REJECTED` is now its own `AlgoOrderHistoryView` member and folds terminal via
+  `VENUE_EXPIRED` — not `REJECT`, which the reducer accepts only from `SUBMITTING`/`SUBMIT_UNKNOWN`,
+  so a `REJECT` fold from `ACKED` would throw `TransitionError` and re-strand the order. Appended
+  `order_events` row under dedupe namespace `algo-hist:REJECTED:{algoId}`; hard rule 6 intact.
+  **Failure direction, split deliberately because this is the money path:** no `spawnedOrderId` ⇒ the
+  venue provably created no order, so no fill can be lost ⇒ fold terminal (fails CLOSED on the
+  strand); `spawnedOrderId` present ⇒ quantity may have executed, so route to the TRIGGERED path
+  which ingests only what `fetchMyTrades` positively proves and returns `'unknown'` otherwise. A
+  possibly-lost fill is never traded for a tidier book. The live row self-heals on the next boot
+  sweep — no DB surgery.
+
+  **Two residual strands of the same class, recorded rather than fixed:** the algo-history query is
+  bounded by `startTime = intent.createdAt` and venue retention, so a stop whose history row ages
+  out reverts to `UNKNOWN`-forever; and `AlgoStopRecoveryService.sweep` is boot-only, so between
+  boots the only route in is the bar-level `onAlgoStopGone` hook.
+
+  ---
+
   **WATCH-V4-10 (orphaned perp algo stop).** Observed while verifying WATCH-PLAN-AUTHORITY-1, not
   looked for. `HYPE/USDT:USDT` `BUY STOP_MARKET`, submitted 2026-07-30T13:00:31Z as protection for a
   SHORT that closed at **16:00:31Z**, was still `ACKED` at 17:13Z — **73+ minutes and two boots after
@@ -449,6 +498,34 @@ WATCH-V3-1: spot heap slope on the demo soak (paper plateau 673 MiB is the
   the placement was guaranteed to be rejected, so a false belief that a venue stop rests is the
   hazard, not the absence of one. The compensating control is pinned by a test (spot plan-stop
   breach still fires `EXIT_LONG` with no resting order).
+
+  **Reading taken 2026-07-31T11:23Z — STILL UNVERIFIABLE, and now quantified rather than argued.**
+  The positive control has not occurred: **zero `binance` rows in `order_intents` since the
+  09:27:23Z boot.** All three intents on this boot are `binanceusdm` (one reduce-only LIMIT BUY, two
+  reduce-only STOP_MARKET); the newest `binance` intent is 2026-07-31T01:45:02Z, *before* the
+  deploy. So no spot leg of either role has been attempted and the contention cannot recur either
+  way — the post-deploy `InsufficientFunds` zero remains a VOID NEGATIVE READ, exactly as this
+  WATCH predicted.
+  The counters themselves are healthy, which is what makes the zero readable at all: every
+  `agentic_venue_stop_total{venue="binance",...}` child is present and reads `0` — including
+  `stood_down` **and** `placed` — because the recorder zero-seeds its closed label set at
+  construction. These are REAL zeros, not absent series. `agentic_venue_tp_total{venue="binance"}`
+  is likewise all-zero while `binanceusdm` shows `placed=1`, `skipped_existing=17`, confirming the
+  metric path is live and only spot is quiet.
+  **The WATCH stays OPEN.** It resolves on the first spot entry, not on a date. Note the counters
+  reset on every redeploy, so a pass reading them after a restart must re-establish that a spot
+  entry occurred *on that boot* before treating any value as evidence.
+
+  **Why the retry loop stopped BEFORE the fix deployed — asked and answered, so it is not left as a
+  mystery.** The new `venue_reject_rate_high` alarm (below) observed that binance spot's submits
+  ended 2026-07-31T01:45Z, roughly 7.7h before the `f5abf8a` deploy at 09:27Z, and flagged that
+  something other than the fix ended it. It did — and the cause is mundane. All 16 rejects in that
+  window were `reduce_only SELL ZEC/USDT`, retrying every 30 minutes against a position that dusted
+  out: `positions` now reads binance ZEC/USDT **0.000736** (~$0.35), AAVE **0.000649**, BTC
+  **0.00000755**, SOL **0.000476** — every one below `minNotional`. With no position to protect, no
+  protective leg is placed, so the loop ended for lack of a subject rather than for lack of the
+  defect. **This does NOT credit the fix and does not weaken the void read above** — it removes an
+  apparent anomaly, nothing more. The fix is still unverified and still needs a real spot entry.
 
   **The rationale that was REFUTED on review, recorded so it is not re-invented.** The choice was
   first argued on "a spot `STOP_LOSS_LIMIT` can trigger into a thin book and fail to fill". False:
@@ -745,3 +822,36 @@ Amended the same day after soak defect #2:
   same defect class as WATCH-X2-era degrade guidance. Deploy of the fix + a hardened-contract
   re-baseline is the remaining loop step (I commit + deploy — loop-domain per the 2026-07-22
   gate-override grant; the live-money flip is the only human gate).
+
+### WATCH-DEPLOY-HALVES-1 — the halves clause is wired, not decorative (2026-07-31)
+
+  Source: `research/studies/deployment-bar-halves-clause-2026-07-31.md`; clause recorded in
+  `verdicts.md` § Standing verdicts, TWO BARS → DEPLOYMENT bar.
+
+  **Why a WATCH at all.** The clause reports `UNDETERMINED` whenever any of the four half-means is
+  non-finite, and `UNDETERMINED` fails OPEN. A clause that is *always* undetermined therefore looks
+  identical, in every shipped artifact, to a clause that is working and never triggering. Nothing
+  else would surface that.
+
+  **Expected-positive:** the first authoring run under the amended bar reports a `halvesVerdict` for
+  the candidate at h=24, and `halvesSplitAtMs` is present, non-null, and **the same value for every
+  arm in the run**.
+
+  **Named defect outcomes, either of which means the guard is measuring nothing:**
+
+  1. every candidate returns `UNDETERMINED` — the plumbing is decorative and the third conjunct
+     never binds;
+  2. `halvesSplitAtMs` differs per arm — the split is not shared, so the two arms' halves cover
+     different calendar windows and the clause has silently reverted to the index-split semantics
+     the record exists to prevent.
+
+  **Known-and-accepted, not a defect:** the frozen recorded-incumbent path (the 2026-07-28 artifact)
+  cannot carry time-split fields — that leg never computed them — so any comparison against it reads
+  `UNDETERMINED` by construction. Do NOT "fix" that by substituting the artifact's index-split
+  `firstHalf`/`secondHalf`; they arrive at runtime, the parsed type does not declare them, and the
+  substitution would turn UNDETERMINED into a green pass. It is structurally blocked and pinned by a
+  test.
+
+  **Resolution:** the pass following the first non-dry `pnpm loop:authoring` run. Until such a run
+  exists the sample is zero, and **no pass may report this WATCH as holding** — an unrun check is not
+  a passing one.

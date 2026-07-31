@@ -27,6 +27,39 @@ classification** bullet, which stood last in this section, is now `charter.md` �
   - **The DEPLOYMENT bar** — beats the **currently running** playbook on the SAME corpus, the SAME
     metric and the SAME horizon, all three declared before the comparison is looked at. It answers
     **"which of several losing options should run?"** It governs playbook selection and nothing else.
+    - **AMENDED 2026-07-31 — a CHRONOLOGICAL-HALVES clause** (change-discipline record:
+      `research/studies/deployment-bar-halves-clause-2026-07-31.md`). The arm must beat the incumbent
+      at the primary horizon in **BOTH halves** of the replay window, split at a **single
+      arm-independent instant** — the median `eventTime` of the common row set, written to the
+      results file as `halvesSplitAtMs`. Why: every candidate is scored against ONE static corpus
+      from a single ~6-day regime, and nothing tracked cumulative attempts, so repeated
+      "beat the incumbent" selection walks toward that sample's noise.
+    - **Do NOT reuse the research bar's `firstHalf`/`secondHalf` for this.** They are real and
+      correct where they are used — each arm split at its OWN median INDEX, compared against a
+      CONSTANT (+13.0), which needs no cross-arm comparability. They are unsound for a BETWEEN-arm
+      comparison: arms post different entry counts on the same rows (`inverted` n=117 vs
+      `champion_v8` n=70), and the count even moves BETWEEN HORIZONS for one arm (`champion_v8` is
+      n=70 at h=1/4/8 but n=69 at h=24), so the two arms' halves cover different calendar windows.
+      The frozen recorded-incumbent artifact carries those fields at runtime while its parsed type
+      does not declare them, so the substitution is _available_ and would silently turn UNDETERMINED
+      into a green pass. It is now structurally blocked and pinned by a test.
+    - **Three-valued, and the two failure directions differ on purpose.** A **measured** half-loss
+      (`HALF_LOST`) fails **CLOSED** — does not ship; a primary-horizon win carried entirely by one
+      half of a single-regime window is a regime artifact, and the owner rule governs what to do with
+      a FOUND improvement, not what counts as FINDING one. An **UNDETERMINED** half fails **OPEN** —
+      it ships and is reported, because refusing on a missing measurement would leave the
+      worse-measured option running, which is the failure the bullet above forbids. **But the loop's
+      UNATTENDED mint refuses on UNDETERMINED**: a human may ship on an unverifiable clause; a pass
+      writing to an append-only table on its own authority may not.
+    - **Binds FORWARD ONLY. v10's deployment was decided under the un-amended bar and is NOT
+      retroactively reopened** — do not re-litigate whether `inverted` clears a clause it was never
+      measured against.
+    - **The cumulative attempt count is now reported with every deployment decision**, keyed on the
+      corpus identity tuple `(rowsLoaded, rowSince, rowUntil)`. It is NOT keyed on
+      `corpusFingerprint`: that hash has proven unstable across runs on an identical row set
+      (`research/studies/corpus-fingerprint-drift-2026-07-31.md` — the payload bytes match the live
+      DB 386/386, but row order among `event_time` ties is unpinned, and the drift has now fired
+      twice). The count reads **6 by identity and 0 by fingerprint** — the drift measuring itself.
   - **The load-bearing consequence: `NO_SURVIVOR` is a RESEARCH-bar verdict and says NOTHING WHATEVER
     against the deployment bar.** 20 of 20 declared cells scored, 0 passes
     (`playbook-space-replay-2026-07-28.md:801-810`) means no funded arm cleared +13.0 bps. It does not
@@ -240,8 +273,15 @@ classification** bullet, which stood last in this section, is now `charter.md` �
   the CI, the t-statistic, both chronological halves and the placebo p by construction — a run that
   did NOT reproduce them would mean the harness was broken. **Do NOT cite +66.5 bps, or any inverted
   figure, as an edge.** The only genuinely new content is magnitude versus the fee, and there:
-  - **h=1 FAILS the fee**: +16.9 gross against a 20 bps round trip is **−3.1 net**, and the bootstrap
-    lower bound (+10.9) sits under even the optimistic +13.0 bps demo-fee requirement.
+  - **h=1 CLEARS the measured fee, and the verdict is unaffected (corrected 2026-07-31,
+    `research/studies/fee-floor-derivation-2026-07-31.md`).** This bullet previously read "+16.9
+    gross against a 20 bps round trip is −3.1 net … the bootstrap lower bound (+10.9) sits under
+    even the optimistic +13.0". **Both cost bases are wrong for this book.** Measured over every
+    post-epoch fill, the demo lane pays **9.29 bps per round trip** — binance spot 10.0 bps/leg on
+    15% of notional, binanceusdm 2/4/5 bps/leg on the other 85%. So h=1 reads **+7.6 net**, not
+    −3.1, and +10.9 clears a 9.29 floor. **NOTHING FOLLOWS FROM THIS.** The arm is a sign-flip whose
+    CI, t, halves and placebo p mirror by construction (bullet above); `p vs bar` was never computed
+    against 9.29; and the prohibition on citing any inverted figure as an edge stands untouched.
   - h=8/24 would clear on point estimate, but rest on n=61 entries, a single ~4-day regime, and a
     **mixture over ~9 playbook versions** — the same three weaknesses that make the original finding
     an indictment of the churning mixture rather than of any one evaluated playbook.
@@ -348,6 +388,13 @@ classification** bullet, which stood last in this section, is now `charter.md` �
     under the BEST achievable cost structure is **+13.0 bps/trip** (demo fees) or **+24.2** (live
     20 bps). The gap is **115–130 bps/trip**, and LLM spend is $15.48 of the $37.56 net loss — **free
     inference still leaves −$22.08.** Do not propose cost work as a profitability lever.
+    (**Both floors are ASSERTED, NEVER DERIVED** — they enter the repo fully formed in commit
+    `7b3e977` with no operands, and "BEST achievable cost structure" is defined nowhere; every later
+    occurrence is a citation and the graph is circular. Measured 2026-07-31 over every post-epoch
+    fill, the demo lane pays **9.29 bps/round trip**, so +13.0 is CONSERVATIVE by ~3 bps and the gap
+    is **111–126**, not 115–130. Derivation, per-venue rates and the ruled-out explanations:
+    `research/studies/fee-floor-derivation-2026-07-31.md`. The conclusion is unchanged and
+    strengthened — ~4 bps of correction against a gap exceeding 110.)
 - **NO EXIT RULE RESCUES THESE ENTRIES — verdict ENTRIES (Pass 41, 2026-07-27; pre-registered
   study `research/studies/edge-verdict-2026-08-10.md`, harness `test/backtest/exit-attribution.spec.ts`
   over `test/backtest/exit-simulator.ts`).** Three arms over the 23 recorded round trips, intrabar

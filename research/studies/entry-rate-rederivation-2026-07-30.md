@@ -245,7 +245,13 @@ the case for entries without new measurement is not evidence and does not reopen
 from any corpus used to select or tune it, all of:**
 
 1. **mean forward return > +13.0 bps** per round trip at the pre-registered horizon (the demo fee floor,
-   `verdicts.md:202-203`; +24.2 bps if the intended venue is live);
+   `verdicts.md` § THE ENTRY SIGNAL "Cost cutting cannot close the gap"; +24.2 bps if the intended
+   venue is live). _Citation corrected 2026-07-31 — this previously pointed at `verdicts.md:202-203`,
+   which is the Moonshot HTTP-200 verdict, not the fee floor. The threshold is deliberately left at
+   +13.0 even though the measured demo cost is **9.29 bps/round trip**
+   (`research/studies/fee-floor-derivation-2026-07-31.md`): this is a REVERSAL condition, so a
+   conservative floor is the correct direction and lowering it would weaken the trial this record
+   exists to require._
 2. **bootstrap 95% CI lower bound > +13.0 bps**, resampling **symbols, not entries** (5,000 draws) —
    multiple entries on one symbol within hours are not independent observations;
 3. **random-bar placebo p < the trial's pre-registered Bonferroni α**, same symbols and same long/short
@@ -335,3 +341,145 @@ thresholds or clauses, hard rules 1–7, or the §4 MUST-NOT structural invarian
    the frozen bar on interval width, it is in-sample, and it is largely a sign-flip of a known
    negative. If it were ever tested out-of-sample and passed § 6, that would reverse this record — and
    that is the correct way for this record to be overturned.
+
+## 9. AMENDMENT 2026-07-31 — §5 described a rolling window that does not exist
+
+**Nothing above this line has been edited.** This program amends records; it never rewrites them. §5
+stands as written and is now read together with this section.
+
+**What is corrected:** the MECHANISM §5 gives for the gate being unreachable (`:203-206`), and one
+consequence of the same misreading in §2 (`:65-68`). **What is NOT corrected:** the conclusion. The
+promotion gate is not reachable on this edge. That survives intact, on arithmetic that is cleaner than
+the arithmetic the record originally offered.
+
+### 9.1 What this amendment is, and the three things it is not
+
+§6 (`:276-277`) excludes "The promotion gate is unreachable" offered as an argument on its own from
+being grounds to restore the pro-entry objective. **This amendment is not that argument and must not be
+read as an opening for it.** Stated explicitly, because the failure mode is foreseeable:
+
+- **Correcting a stated mechanism against the live gauges is a MEASUREMENT of the gate's own code, not
+  the excluded argument.** It reports what `PromotionReadinessService` computes. It moves no evidence
+  about whether entries are profitable, and it is offered as a repair to this record, not as a case
+  against it.
+- **§3 and §4 are UNDISTURBED.** Entries measure −16.9 bps at h=1, t=−4.58, hit 25% against a ~50% base
+  (`:86`), and lose to a random-bar placebo on the same symbols and the same long/short mix at
+  p = 0.0013–0.0037 (`:89`). The ~105 bps/trip gross-vs-gross selection cost (`:155-165`) and its
+  attribution hedge (`:324-332`) are untouched. Not one figure in either section depends on how the
+  window clause is computed, and nothing below re-opens either.
+- **Nothing here licenses "so trade more."** See § 9.5. The corrected mechanism makes the "trade more"
+  reading _worse_ founded than the wrong mechanism did, not better.
+
+### 9.2 What the code actually does — verified 2026-07-31, with line numbers
+
+All in `src/features/trading/mode-control/promotion-readiness.service.ts` unless stated.
+
+| fact | line | what is there |
+| --- | --- | --- |
+| evidence fetch | `:75-80` | `this.stats.fillsForMode(DEMO_MODE, epochMs)` inside the `Promise.all` — **every** fill at/after the epoch. The port contract says so verbatim: "sinceMs, when set, filters to fills executed at/after that instant (evidence-epoch gating); absent ⇒ all-time" (`src/ports/trading/promotion.ts:92-95`). There is no upper bound and no trailing period. |
+| cycles | `:83` | `walkRoundTrips(fills, dustNotional)` over that whole set — cumulative since epoch, never a slice. |
+| window | `:100-112` | `firstClosedAt`/`lastClosedAt` are `Math.min`/`Math.max` of `closedAt` over **all** cycles; `windowStart = Math.max(firstClosedAt, epochMs)` (`:107-110`); `windowDays = (lastClosedAt! - windowStart) / DAY_MS` (`:111-112`). A single span from first close to last close. |
+| count clause | `:129` | `if (cycles.length < MIN_ROUND_TRIPS) reasons.push('INSUFFICIENT_ROUND_TRIPS')` — a cumulative count, compared to a constant. |
+| window clause | `:131` | `if (windowDays < MIN_WINDOW_DAYS) reasons.push('INSUFFICIENT_WINDOW')` — a **separate** `if`, on a **separate** quantity. |
+| thresholds | `:17-18` | `const MIN_ROUND_TRIPS = 30;` `const MIN_WINDOW_DAYS = 14;` |
+| verdict | `:156` | `reasons.length === 0 ? { permitted: true … }` — every clause must be clear **at one and the same evaluation**. |
+
+**The two counters are independent conjuncts, both cumulative since the evidence epoch
+(`PROMOTION_EVIDENCE_EPOCH=2026-07-21T11:21:00Z`, `.env.app:178`), and both monotone non-decreasing:**
+`cycles.length` only grows as closing fills append, and `windowDays` only grows because `windowStart`
+is pinned while `lastClosedAt` is a running maximum.
+
+Two boundary conditions on that monotonicity, stated so the claim is not stronger than the code: it
+holds **for a fixed evidence epoch over an append-only fill history**. Moving `PROMOTION_EVIDENCE_EPOCH`
+forward would cut both counters, and the service's own straddle note (`:53-70`) documents that an epoch
+declared mid-position suppresses trips — in the fail-closed direction, never a false permit.
+
+**Therefore §5's sentence at `:203-204` — "fewer entries means fewer closed round trips means the
+30-trip clause is never satisfied within any window the 14-day clause admits" — describes a rolling
+14-day window inside which 30 trips must land. No such window exists in the code.** The 30 and the 14
+are never composed into a rate. `:129` never reads `windowDays`, and `:111-112` never reads
+`cycles.length` beyond the non-empty guard.
+
+### 9.3 The correct derivation, and its source
+
+Re-derived by the loop at `research/loop/STATUS.md:78-85` and reproduced here rather than restated
+loosely. Live book at 2026-07-31T09:52Z (`STATUS.md:62-65`):
+
+| gauge | value | clause |
+| --- | --- | --- |
+| closed round trips | **35** against a floor of 30 | `INSUFFICIENT_ROUND_TRIPS` (`:129`) is **NOT FIRING**, and being monotone it cannot fire again |
+| trade-anchored window | **7.329** of 14 days | `INSUFFICIENT_WINDOW` (`:131`) **IS FIRING** |
+| net-of-cost PnL | **−$42.3358** (LLM cost $19.41) | `NON_POSITIVE_NET_PNL` (`:130`) **IS FIRING** |
+| `agentic_promotion_ready` | **0** | `reasons.length !== 0` (`:156`) |
+
+So the count clause was already satisfied before this record was written, and the record's §5 argued
+against a clause that had stopped binding. **The window binds, not the count.** `windowStart` pins to
+the first closed trip at **2026-07-23T18:00:26Z**, so `windowDays` cannot reach 14 before
+**2026-08-06T18:00Z** whatever happens in between (`STATUS.md:79-81`) — the pin is `Math.max` of a fixed
+first close and a fixed epoch, so no trading pattern moves it.
+
+**The binding clause on the merits is `NON_POSITIVE_NET_PNL` at −$42.3358.** For `permitted` to be true
+at the earliest arithmetically possible instant, net-of-cost must also cross zero by then: **+$55 to
++$62 over ~6.3 days, i.e. +5.5% to +6.2% on the $1000 effective book**, about +$2.4 to +$2.8 per trip
+against a trailing −$0.72 (`STATUS.md:81-83`). Gross trading is negative (−$24.86), so **cutting LLM
+spend to zero cannot make net-of-cost positive** — LLM spend is a tax on a losing edge, not its cause
+(`STATUS.md:83-85`). That is the same conclusion §5 reached at `:216-220`, reached correctly.
+
+**One further correction while the clause list is open.** §5 says at `:215-216` that "the gate has two
+clauses". It has **seven** reason clauses (`:127-133`): `UNRESOLVED_FILL`, `UNCONVERTIBLE_FEE_ASSET`,
+`INSUFFICIENT_ROUND_TRIPS`, `NON_POSITIVE_NET_PNL`, `INSUFFICIENT_WINDOW`, `FUNDING_DATA_MISSING`,
+`BELOW_PASSIVE_BENCHMARK`. Two are firing today. `BELOW_PASSIVE_BENCHMARK` (`:133`) is **dark**:
+`PASSIVE_BENCHMARK` appears nowhere outside the port and this service, so `this.benchmark` is
+`undefined`, `passivePnlQuote` is `null` (`:119-122`) and `belowPassiveBenchmark` is `false`
+(`:123-124`) — the documented land-dark posture at `:36-39`. Binding it at the composition root would
+make the gate strictly harder, never easier. §5's conclusion is unaffected either way.
+
+### 9.4 The same misreading is upstream, in §2 — and it cuts against the objective, not for it
+
+§2 (`:65-68`) derives the ANTI-RATCHET OBJECTIVE's entry-rate target as "`MIN_ROUND_TRIPS = 30` over
+`MIN_WINDOW_DAYS = 14` … 30/14 ≈ 2.14" and calls the objective "a faithful restatement of the promotion
+gate's arithmetic". **Under the code as it actually reads, it is not a restatement of anything.** The
+gate never divides one constant by the other. 30 trips whose first and last closes are 60 days apart
+clear both clauses at 0.5 trips/day; 30 trips inside 13 days clear neither. **2.14/day is the rate
+required only in the single limiting case where the window is exactly 14 days — a ceiling on the
+required rate, which the objective encoded as a floor.**
+
+This is recorded because it is an error in this record's own reasoning, and because of its direction:
+the deleted objective's most concrete-sounding justification — that the promotion gate _demanded_ ~2
+round trips per day — was not a property of the promotion gate. It never was. That makes §4's account
+of the three suppression mechanisms (`:174-189`) stronger, not weaker.
+
+### 9.5 What this does NOT license, stated so it cannot be quoted out of context
+
+**"The window is trade-anchored, so trade more to advance it" is refuted by the same code that
+establishes the correction.** `closedAt` is the closing fill's own `executedAt`
+(`src/domain/trading/risk/round-trips.ts:200`), so `lastClosedAt` — and with it `windowDays` — advances
+**only when a round trip closes**, never with wall-clock. Under the amended objective a fully
+abstaining lane freezes `windowDays` at 7.329 and `INSUFFICIENT_WINDOW` fires forever. That reads like
+an argument for trading. It is not, for three reasons that are all in the code and the book:
+
+1. **Both clauses must be clear at one evaluation** (`:156`), and both are cumulative since the same
+   epoch. `netPnl` (`:92`) carries every loss already taken. Trading to advance the window does not
+   reset the −$42.3358; it must be earned back _on top of_ whatever the new trips cost.
+2. **Each additional trip moves the two numbers in opposite directions.** At the realised −106.0
+   bps/trip of §4 (`:144`), a trip advances the window while pushing `netPnl` further below zero. §5
+   already recorded this observed directly (`:216-220`): the window advanced 2.4 days and the trip
+   count 28 → 29 while net-of-cost went −$39.6370 → −$41.1723.
+3. **The requirement that follows is a reversal test, not a trading decision.** Clearing both clauses by
+   2026-08-06 needs +5.5% to +6.2% on the effective book from an entry signal measured at −16.9 bps and
+   below a random-bar placebo. Producing that is precisely § 6, on a disjoint corpus, with a frozen
+   pre-registration. **Trading more is not a way to obtain it.**
+4. **Added 2026-07-31 (`research/studies/success-exit-2026-07-31.md`) — abstention is not neutral
+   either, and this is the reason the section above is not the whole answer.** The two clauses run on
+   **different clocks**: `netPnl` (`:92`) subtracts `llmCostUsd`, which accrues on **wall-clock**,
+   while `windowDays` advances only on **closes**. So a lane that stops trading entirely **freezes the
+   window while still burning net-of-cost — both firing clauses worsen together.** Measured live
+   between two reads 1.62h apart: trip count unchanged at 35, LLM **+$0.3172**, net **−$0.2320**.
+   The honest consequence: neither trading more nor trading less reaches this gate. It is not a dial
+   to be turned in either direction — it is a gate that only new evidence opens, which is § 6.
+
+**Standing after this amendment.** §5's conclusion — the gate is unreachable on this edge, and that is
+the accepted, chosen cost — is unchanged and is now better founded. §6's exclusion at `:276-277` binds
+exactly as before: this section is a mechanism repair against live gauges, and no pass may cite it,
+alone or with §5, as grounds to restore a pro-entry objective. The only route back is the § 6 trial.
+**Until it fires, the target remains: minimise entries subject to the lane remaining observable.**

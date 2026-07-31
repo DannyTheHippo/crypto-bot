@@ -5,8 +5,10 @@
 # agent_decide_total{outcome} (AgentMetricsRecorder), and app_log_events_total{level,event}
 # (log-event-metrics.ts, via the pino logMethod hook). All rules are ACTIVE — none stubbed.
 # Trading gauges (equity_usdt, day_pnl_usdt, drawdown_ratio, realized_pnl_usdt, position_*, fills_total,
-# orders_total{outcome}, orders_rejected_total{code}) are also emitted and surfaced on the Grafana
-# dashboards; add threshold alerts here (e.g. daily-loss / drawdown approaching limits) as desired.
+# orders_total{outcome}, orders_rejected_total{stage,code}) are also emitted and surfaced on the Grafana
+# dashboards. VenueTerminalRejectBurst below (crypto-bot-execution) covers venue-side reject bursts on
+# orders_rejected_total{stage="exchange"}; add further threshold alerts here (e.g. daily-loss / drawdown
+# approaching limits) as desired.
 groups:
   - name: crypto-bot-health
     rules:
@@ -444,4 +446,36 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: 'Orphan algo-stop cancel failed repeatedly ({{ $value }} in 30m, venue {{ $labels.venue }}) — reconcileOrphanedAlgoStop cannot clear a stranded stop'
+          runbook: 'docs/runbook.md'
+
+  - name: crypto-bot-execution
+    rules:
+      # 2026-07-31 incident: the app submitted 12 reduce-only KAITO/USDT:USDT exit orders to
+      # binanceusdm between 13:00:38Z and 13:05:40Z and the venue terminal-rejected every one with
+      # BadRequest -4024 (PERCENT_PRICE band) — the position sat with no venue stop for 45 minutes,
+      # and nothing on any continuously-running surface showed it: protective_exits_total counts
+      # FIRES, not FILLS (it read a healthy 12), no rule in this file referenced
+      # orders_rejected_total, and the loop's own sweep only runs ~3x/day. This rule closes that
+      # gap — continuous coverage of terminal venue rejects between passes. stage="exchange" means
+      # the VENUE rejected the order (as opposed to the app's own execution gate); grouped by code
+      # so a burst pages with its reason attached.
+      #
+      # Threshold >=3 in 15m, checked against both known reject axes on this stack:
+      #   - the 2026-07-31 incident was 12 rejects in ~5 minutes — fires comfortably.
+      #   - the known binance spot InsufficientFunds bleed runs a measured 2/hour (order_events,
+      #     event_type='REJECT', 2026-07-27..07-31) — 0.5 per 15m, so it deliberately does NOT fire
+      #     here; that slow bleed is the sweep's per-venue reject-RATE alarm's job, not a burst
+      #     detector's.
+      #
+      # Severity WARNING, and that is load-bearing: loop-sweep-core.mjs's prometheus_alert_firing
+      # gate promotes only `critical` to a blocking alarm that halts all improvement work, and this
+      # stack already carries a blocking per-venue reject-RATE alarm (added 2026-07-31) as the place
+      # for that judgement. A critical here would wedge the loop on a condition that resolves on its
+      # own (retry, reconciliation, or the kill switch) — this rule's job is annotation, not gating.
+      - alert: VenueTerminalRejectBurst
+        expr: sum by (code) (increase(orders_rejected_total{stage="exchange"}[15m])) >= 3
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: 'Venue terminal-rejected {{ $value }} orders with code {{ $labels.code }} in the last 15m — a reject burst is not landing venue-side'
           runbook: 'docs/runbook.md'

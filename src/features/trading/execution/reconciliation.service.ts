@@ -392,6 +392,7 @@ export class ReconciliationService {
               { venue: descriptor.venue, axis: 'trades', error_class: 'none' },
               0,
             );
+            /* v8 ignore next -- the `?? true` fallback is unreachable here: venueReconConfig (above) always sets positionAxis to descriptor.perpCapable, a required boolean, never undefined; the `??` exists only for the single-venue path's own `this.cfg.positionAxis ?? true` below, where cfg.positionAxis genuinely is optional */
             if ((venueCfg.positionAxis ?? true) && port.fetchPositions !== undefined) {
               this.axisErrorCounter.inc(
                 { venue: descriptor.venue, axis: 'positions', error_class: 'none' },

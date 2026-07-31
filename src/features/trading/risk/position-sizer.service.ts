@@ -384,6 +384,7 @@ export class PositionSizerService implements PositionSizerPort {
   ): Decimal {
     const fraction = new Decimal(this.deps.maxPlannedStopRiskFraction ?? '0');
     if (!fraction.isFinite() || fraction.lte(0)) return target;
+    /* v8 ignore next -- unreachable: this method is only reached via entryNotional's single call site (the !reduceOnly leg), which is itself only reached once plannedStopRiskRejectReason (called earlier, same !reduceOnly guard) has already rejected an undefined stopLossPct as INVALID_STOP_RISK — so signal.stopLossPct is always defined here */
     if (signal.stopLossPct === undefined) return target;
 
     const stopPct = new Decimal(signal.stopLossPct);
@@ -404,6 +405,7 @@ export class PositionSizerService implements PositionSizerPort {
   private plannedStopRiskRejectReason(signal: Signal): 'INVALID_STOP_RISK' | undefined {
     const fraction = new Decimal(this.deps.maxPlannedStopRiskFraction ?? '0');
     if (!fraction.isFinite() || fraction.lte(0)) return undefined;
+    /* v8 ignore next -- unreachable: this method's single call site (size(), inside `if (!reduceOnly)`) is only reached for kinds orderForKind maps to reduceOnly:false, i.e. exactly ENTER_LONG/ENTER_SHORT, so the condition is always false */
     if (signal.kind !== 'ENTER_LONG' && signal.kind !== 'ENTER_SHORT') return undefined;
     if (signal.stopLossPct === undefined) return 'INVALID_STOP_RISK';
     if (!/^\d+(\.\d+)?$/.test(signal.stopLossPct)) return 'INVALID_STOP_RISK';

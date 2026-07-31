@@ -317,6 +317,24 @@ describe('ReconciliationService (§6.4)', () => {
     expect(calls.some(([labels]) => (labels as { axis: string }).axis === 'positions')).toBe(false);
   });
 
+  // Companion to the seed test above: the single-venue legacy path's OWN positions/balances
+  // reachability checks (this.cfg.positionAxis / this.exchange.fetchPositions / this.cfg.balanceAxis)
+  // are each a real branch, not vacuously false forever — this pins the true arm of both.
+  it('single-venue axis-error seed reaches positions when the fixture implements fetchPositions, and skips balances when the venue config disables it', () => {
+    const axisErrorCounter = { inc: vi.fn() } as unknown as Counter<string>;
+    build(
+      { positions: () => [] },
+      undefined,
+      undefined,
+      undefined,
+      { balanceAxis: false },
+      axisErrorCounter,
+    ); // construction alone
+    const calls = (axisErrorCounter.inc as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls).toContainEqual([{ venue: V, axis: 'positions', error_class: 'none' }, 0]);
+    expect(calls.some(([labels]) => (labels as { axis: string }).axis === 'balances')).toBe(false);
+  });
+
   it('records reconciliation_runs_total{venue,result} and stamps last-success only on a clean pass', async () => {
     const runs = { inc: vi.fn() } as unknown as Counter<string>;
     const lastSuccess = { set: vi.fn() } as unknown as Gauge<string>;
@@ -729,6 +747,94 @@ describe('ReconciliationService (§6.4)', () => {
     const r = await ctx.recon.reconcile();
     expect(ctx.orders.get(coid)?.state).toBe('ACKED');
     expect(r.mismatches).toBeGreaterThan(0);
+    expect(r.halted).toBe(false);
+  });
+
+  it('a "closed" order whose local record never captured a venueOrderId refuses via adopt_non_adoptable rather than guessing which trades are its own', async () => {
+    const intent = makeIntent();
+    const coid = intent.clientOrderId;
+    const ctx = build({
+      openOrders: [],
+      fetchOrder: () => venueOrder(coid, 'closed'),
+    });
+    // Believed open in the portfolio (a crash between placeOrder and the ACK persist), but the
+    // order-book record itself never recorded a venueOrderId — backfillClosedOrderTrades cannot
+    // resolve WHICH venue order id any trades would belong to.
+    ctx.orders.create(initialOrder(coid, intent.qty, '0.001', SYM));
+    ctx.orders.apply(coid, { type: 'SUBMIT_SENT' }); // no ACK — venueOrderId stays undefined
+    ctx.portfolio.addInFlight(intent);
+    ctx.portfolio.openOrder(intent.strategyId, {
+      clientOrderId: coid,
+      symbol: SYM,
+      side: 'BUY',
+      qty: intent.qty,
+      limitPrice: price('100'),
+    });
+    const r = await ctx.recon.reconcile();
+    expect(ctx.orders.get(coid)?.state).toBe('SUBMITTING'); // untouched — never adopted
+    expect(r.mismatches).toBeGreaterThan(0);
+    expect(r.halted).toBe(false);
+    expect(ctx.store.reconciliations[0]!.detail).toContain('adopt_non_adoptable');
+  });
+
+  it("a fetchMyTrades failure during closed-order backfill records adopt_query_failure, and — combined with the trade axis's own sweep_failure — the detail column sorts by class name", async () => {
+    const coid = makeIntent().clientOrderId;
+    const ctx = build({
+      openOrders: [],
+      fetchOrder: () => venueOrder(coid, 'closed'),
+      tradesThrow: true, // both the closed-order backfill AND the trade axis call fetchMyTrades
+    });
+    seedOpenOrder(ctx, coid);
+    const r = await ctx.recon.reconcile();
+    expect(ctx.orders.get(coid)?.state).toBe('ACKED'); // never adopted — the query itself failed
+    expect(r.halted).toBe(false);
+    // Three classes land: the failed backfill query itself (adopt_query_failure), the still-
+    // non-terminal record adoptTerminal notices afterward (adopt_non_adoptable), and the trade
+    // axis's own independent sweep of the same symbol (sweep_failure) — sorted alphabetically,
+    // never insertion order.
+    expect(ctx.store.reconciliations[0]!.detail).toBe(
+      'adopt_non_adoptable:1,adopt_query_failure:1,sweep_failure:1',
+    );
+  });
+
+  it('closed-order backfill applies only the trade matching the recorded venueOrderId, skipping a foreign one under the same symbol', async () => {
+    const coid = makeIntent().clientOrderId;
+    const ctx = build({
+      openOrders: [],
+      fetchOrder: () => venueOrder(coid, 'closed'),
+      trades: [trade('foreign-venue-id', 'skip-1'), trade('v1', 'match-1')],
+      balances: () =>
+        new Map([
+          ['USDT', { free: '99900', locked: '0' }],
+          ['BTC', { free: '1', locked: '0' }],
+        ]),
+    });
+    seedOpenOrder(ctx, coid, {}, 'v1');
+    const r = await ctx.recon.reconcile();
+    expect(ctx.orders.get(coid)?.state).toBe('FILLED'); // only the matching trade folded it terminal
+    expect(ctx.store.fills.size).toBe(1); // the foreign trade under the same venueOrderId scope skipped
+    expect(r.mismatches).toBeGreaterThan(0); // backfilled_fill
+    expect(r.halted).toBe(false);
+  });
+
+  it('venueOrderIndex never indexes a record with no symbol recorded — a trade citing that venueOrderId falls through as foreign rather than risking a cross-venue mismatch', async () => {
+    const coid = makeIntent().clientOrderId;
+    const ctx = build(
+      { openOrders: [], trades: [trade('v-nosym', 'nosym-1')] },
+      undefined,
+      undefined,
+      undefined,
+      { sweepSymbols: [SYM] },
+    );
+    // A record with no symbol (a legacy/lost-symbol row) — venueOrderIndex must skip it rather than
+    // index it blind, which could hand a DIFFERENT venue's trade to this record (its own header
+    // comment's rule 1).
+    ctx.orders.create(initialOrder(coid, qty('1'), '0.001')); // no symbol argument
+    ctx.orders.apply(coid, { type: 'SUBMIT_SENT' });
+    ctx.orders.apply(coid, { type: 'ACK', venueOrderId: 'v-nosym' });
+    const r = await ctx.recon.reconcile();
+    expect(ctx.orders.get(coid)?.cumQty.toFixed()).toBe('0'); // never resolved via the in-memory index
+    expect(ctx.store.fills.size).toBe(0);
     expect(r.halted).toBe(false);
   });
 
@@ -1355,7 +1461,10 @@ describe('ReconciliationService — v3 multi-venue iteration (§1.5)', () => {
   const SPOT = venueId('binance');
   const PERP = venueId('binanceusdm');
 
-  function fakePort(venue: VenueId, script: { balancesThrow?: boolean } = {}): ExchangePort {
+  function fakePort(
+    venue: VenueId,
+    script: { balancesThrow?: boolean; positions?: () => VenuePosition[] } = {},
+  ): ExchangePort {
     return {
       venue,
       capabilities: {
@@ -1375,13 +1484,18 @@ describe('ReconciliationService — v3 multi-venue iteration (§1.5)', () => {
           : Promise.resolve(new Map([['USDT', { free: '100000', locked: '0' }]])),
       fetchMyTrades: () => Promise.resolve([]),
       validateCredentials: () => Promise.reject(new Error('unused')),
+      ...(script.positions ? { fetchPositions: () => Promise.resolve(script.positions!()) } : {}),
     };
   }
 
-  function descriptor(venue: VenueId, perpCapable: boolean): VenueRuntimeDescriptor {
+  function descriptor(
+    venue: VenueId,
+    perpCapable: boolean,
+    environment: 'demo' | 'live' = 'demo',
+  ): VenueRuntimeDescriptor {
     return {
       venue,
-      config: { id: venue, environment: 'demo' },
+      config: { id: venue, environment },
       symbols: [],
       capitalShare: '500',
       perpCapable,
@@ -1470,6 +1584,24 @@ describe('ReconciliationService — v3 multi-venue iteration (§1.5)', () => {
     }
     expect(calls.some(([labels]) => (labels as { axis: string }).axis === 'positions')).toBe(false);
     expect(calls.some(([labels]) => (labels as { axis: string }).axis === 'balances')).toBe(false);
+  });
+
+  // Companion: the registry-path seed loop's own reachability branches (positionAxis/fetchPositions,
+  // balanceAxis) are each real, not vacuously false forever — and a registry venue with NO matching
+  // port entry (`if (!port) continue`, mirroring reconcileEveryVenue's own guard) must be skipped
+  // rather than seeding a phantom child no writer can ever move.
+  it('seeds positions for a perp-capable venue whose port implements fetchPositions, balances for a non-demo venue, and skips a registry venue with no matching port', () => {
+    const axisErrorCounter = { inc: vi.fn() } as unknown as Counter<string>;
+    const ports = new Map([[PERP, fakePort(PERP, { positions: () => [] })]]); // SPOT has no port entry
+    const registry = new Map([
+      [SPOT, descriptor(SPOT, false)], // registered, but no matching port
+      [PERP, descriptor(PERP, true, 'live')], // perpCapable + non-demo ⇒ both axes reachable
+    ]);
+    buildMultiVenue(ports, registry, undefined, axisErrorCounter); // construction alone
+    const calls = (axisErrorCounter.inc as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls).toContainEqual([{ venue: PERP, axis: 'positions', error_class: 'none' }, 0]);
+    expect(calls).toContainEqual([{ venue: PERP, axis: 'balances', error_class: 'none' }, 0]);
+    expect(calls.some(([labels]) => (labels as { venue: VenueId }).venue === SPOT)).toBe(false);
   });
 
   it('runs one pass per venue and writes one reconciliations row per venue', async () => {

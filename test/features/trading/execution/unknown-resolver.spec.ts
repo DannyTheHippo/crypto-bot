@@ -777,6 +777,169 @@ describe('UnknownResolverService — RECONCILE_REQUIRED reconcile-adopt pass (20
     expect(ctx.orders.get(coidB)?.state).toBe('CANCELED');
     expect(ctx.resolver.isFrozen(SYM)).toBe(false); // both cleared — now it unfreezes
   });
+
+  it('adopts a definitive REJECTED terminal via the same reconcile-adopt pass', async () => {
+    let status: typeof FREEZE_STATUS | ExchangeOrderState['status'] = FREEZE_STATUS;
+    const ctx = build({
+      fetch: () => {
+        if (status === FREEZE_STATUS) throw ambiguous('RequestTimeout');
+        return venueState({ status });
+      },
+    });
+    const coid = seedUnknown(ctx, 'submit');
+    await freezeToReconcileRequired(ctx, coid);
+    status = 'rejected';
+    await ctx.resolver.tick(epochMs(FREEZE_TICK + 60_000));
+    expect(ctx.orders.get(coid)?.state).toBe('REJECTED');
+    expect(ctx.resolver.isFrozen(SYM)).toBe(false);
+  });
+
+  it('adopts a definitive EXPIRED terminal via the same reconcile-adopt pass', async () => {
+    let status: typeof FREEZE_STATUS | ExchangeOrderState['status'] = FREEZE_STATUS;
+    const ctx = build({
+      fetch: () => {
+        if (status === FREEZE_STATUS) throw ambiguous('RequestTimeout');
+        return venueState({ status });
+      },
+    });
+    const coid = seedUnknown(ctx, 'submit');
+    await freezeToReconcileRequired(ctx, coid);
+    status = 'expired';
+    await ctx.resolver.tick(epochMs(FREEZE_TICK + 60_000));
+    expect(ctx.orders.get(coid)?.state).toBe('EXPIRED');
+    expect(ctx.resolver.isFrozen(SYM)).toBe(false);
+  });
+
+  it('adopts "closed" as FILLED when the recorded cumQty already covers qty', async () => {
+    let status: typeof FREEZE_STATUS | ExchangeOrderState['status'] = FREEZE_STATUS;
+    const ctx = build({
+      fetch: () => {
+        if (status === FREEZE_STATUS) throw ambiguous('RequestTimeout');
+        return venueState({ status, cumQty: '1', qty: '1' });
+      },
+    });
+    const coid = seedUnknown(ctx, 'submit');
+    await freezeToReconcileRequired(ctx, coid);
+    // reconcileOne never backfills fills itself — it only checks reduce()'s FAIL-CLOSED guard
+    // against what the in-memory record already carries, so the record is seeded directly here.
+    ctx.orders.commit({ ...ctx.orders.get(coid)!, cumQty: D('1') });
+    status = 'closed';
+    await ctx.resolver.tick(epochMs(FREEZE_TICK + 60_000));
+    expect(ctx.orders.get(coid)?.state).toBe('FILLED');
+    expect(ctx.resolver.isFrozen(SYM)).toBe(false);
+  });
+
+  it('refuses to adopt "closed" as FILLED when the recorded cumQty falls short — stays frozen (reduce()\'s FAIL-CLOSED guard)', async () => {
+    let status: typeof FREEZE_STATUS | ExchangeOrderState['status'] = FREEZE_STATUS;
+    const ctx = build({
+      fetch: () => {
+        if (status === FREEZE_STATUS) throw ambiguous('RequestTimeout');
+        return venueState({ status });
+      },
+    });
+    const coid = seedUnknown(ctx, 'submit');
+    await freezeToReconcileRequired(ctx, coid); // cumQty stays 0 throughout — never filled
+    status = 'closed';
+    await ctx.resolver.tick(epochMs(FREEZE_TICK + 60_000));
+    expect(ctx.orders.get(coid)?.state).toBe('RECONCILE_REQUIRED'); // adoption rejected by reduce()
+    expect(ctx.resolver.isFrozen(SYM)).toBe(true);
+  });
+
+  it('reconcile-adopt refuses when no in-flight intent can resolve the query symbol, staying frozen', async () => {
+    const ctx = build({
+      fetch: () => {
+        throw ambiguous('RequestTimeout');
+      },
+    });
+    const coid = seedUnknown(ctx, 'submit');
+    await freezeToReconcileRequired(ctx, coid);
+    ctx.portfolio.clearInFlight(coid); // simulates a restart with no intent rehydrated
+    await ctx.resolver.tick(epochMs(FREEZE_TICK + 60_000));
+    expect(ctx.orders.get(coid)?.state).toBe('RECONCILE_REQUIRED');
+    expect(ctx.resolver.isFrozen(SYM)).toBe(true);
+  });
+
+  it('reconcile-adopt query throwing a non-Error value is stringified and stays frozen', async () => {
+    let stage: 'freeze' | 'nonerror' = 'freeze';
+    const ctx = build({
+      fetch: () => {
+        if (stage === 'freeze') throw ambiguous('RequestTimeout');
+        // eslint-disable-next-line @typescript-eslint/only-throw-error -- exercising the non-Error branch
+        throw 'raw string failure';
+      },
+    });
+    const coid = seedUnknown(ctx, 'submit');
+    await freezeToReconcileRequired(ctx, coid);
+    stage = 'nonerror';
+    await ctx.resolver.tick(epochMs(FREEZE_TICK + 60_000));
+    expect(ctx.orders.get(coid)?.state).toBe('RECONCILE_REQUIRED');
+    expect(ctx.resolver.isFrozen(SYM)).toBe(true);
+  });
+
+  it('a reconcile-adopt fold the journal rejects as a duplicate leaves the order frozen with the retry entry retained', async () => {
+    let status: typeof FREEZE_STATUS | ExchangeOrderState['status'] = FREEZE_STATUS;
+    let calls = 0;
+    const ctx = build({
+      fetch: () => {
+        calls += 1;
+        if (status === FREEZE_STATUS) throw ambiguous('RequestTimeout');
+        return venueState({ status });
+      },
+    });
+    const coid = seedUnknown(ctx, 'submit');
+    await freezeToReconcileRequired(ctx, coid);
+
+    // A prior life already journaled this exact reconcile-adopt fold under its dedupe key.
+    await ctx.store.appendOrderEvent({
+      clientOrderId: coid,
+      dedupeKey: 'reconcile-adopt',
+      event: { type: 'RECONCILE_ADOPT_TERMINAL', terminal: 'CANCELED' },
+      derivedState: 'CANCELED',
+      cumQty: '0',
+    });
+
+    status = 'canceled';
+    const callsBeforeRetry = calls;
+    await ctx.resolver.tick(epochMs(FREEZE_TICK + 60_000));
+    expect(calls).toBe(callsBeforeRetry + 1); // reconcileOne DID query this interval
+    expect(ctx.orders.get(coid)?.state).toBe('RECONCILE_REQUIRED'); // commit skipped — duplicate
+    expect(ctx.resolver.isFrozen(SYM)).toBe(true); // never unfrozen
+
+    // The retry entry survived the duplicate-skip: the NEXT interval queries again rather than
+    // treating this pass as resolved.
+    await ctx.resolver.tick(epochMs(FREEZE_TICK + 120_000));
+    expect(calls).toBe(callsBeforeRetry + 2);
+  });
+
+  it('drops stale reconcileNextQueryAt bookkeeping once an order resolves out-of-band, so a later refreeze is a fresh first sighting rather than an immediate re-query off the stale due', async () => {
+    let calls = 0;
+    const ctx = build({
+      fetch: () => {
+        calls += 1;
+        throw ambiguous('RequestTimeout'); // every reconcile-adopt query stays inconclusive
+      },
+    });
+    const coid = seedUnknown(ctx, 'submit');
+    await freezeToReconcileRequired(ctx, coid); // registers reconcileNextQueryAt[coid] = FREEZE_TICK + 60_000
+    const callsAtFreeze = calls;
+
+    // Out-of-band stream fill resolves the order while frozen (mirrors the code's own "a stream
+    // fill completing it while frozen" comment) — well past the original due.
+    const T1 = FREEZE_TICK + 65_000;
+    ctx.orders.apply(coid, { type: 'FILL', cumQty: D('1') });
+    await ctx.resolver.tick(epochMs(T1));
+    expect(ctx.orders.get(coid)?.state).toBe('FILLED');
+    expect(calls).toBe(callsAtFreeze); // no longer RECONCILE_REQUIRED — skipped, never re-queried
+
+    // A fresh contradiction re-freezes the SAME clientOrderId.
+    ctx.orders.apply(coid, { type: 'VENUE_CANCELED' }); // FILLED + VENUE_CANCELED ⇒ RECONCILE_REQUIRED
+    await ctx.resolver.tick(epochMs(T1 + 1)); // already past the ORIGINAL (now-stale) due
+    expect(ctx.orders.get(coid)?.state).toBe('RECONCILE_REQUIRED'); // unchanged this tick
+    // Discriminator: had the stale bookkeeping survived, its due (already elapsed) would have
+    // triggered an IMMEDIATE re-query here. The cleanup drops it, so this is a first sighting —
+    // register-only, no query — and `calls` stays flat.
+    expect(calls).toBe(callsAtFreeze);
+  });
 });
 
 // 2026-07-30 defect fix (WATCH-V4-6): NEW reached via QUERY_NOT_FOUND was the second permanent trap

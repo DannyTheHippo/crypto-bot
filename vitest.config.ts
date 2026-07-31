@@ -70,6 +70,16 @@ export default defineConfig({
         // with no branchable logic; they are covered by test:db (integration, unsandboxed).
         'src/database/schemas/**',
         'src/database/repositories/**',
+        // Ops CLI entrypoints (argv parsing, process.exit, direct venue/db calls) — the manual
+        // arming/sweep/resolve ceremonies themselves, not business logic. Each one's testable
+        // decision logic is split into a co-located `*-core.mjs` that IS test-driven and stays
+        // measured (loop-sweep-core.mjs, loop-authoring-core.mjs, loop-pass-lock-core.mjs,
+        // playbook-candidate-core.mjs) — do not widen this to a blanket `scripts/**` exclude,
+        // that would drop those cores' real coverage from the denominator too.
+        'scripts/arm-ceremony.mjs',
+        'scripts/loop-transport.mjs',
+        'scripts/loop-sweep.mjs',
+        'scripts/resolve-stale-orders.mjs',
       ],
     },
   },

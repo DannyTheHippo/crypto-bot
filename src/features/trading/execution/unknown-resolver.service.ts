@@ -438,6 +438,7 @@ export class UnknownResolverService {
     try {
       reduce(rec, { type: 'RECONCILE_ADOPT_TERMINAL', terminal }); // pre-check: never fold an illegal transition
     } catch (err) {
+      /* v8 ignore next -- the String(err) arm is unreachable: this try block calls only reduce(), which throws exclusively TransitionError (extends Error); the ternary exists solely to narrow `unknown` for the type-checker */
       const msg = err instanceof Error ? err.message : String(err);
       this.log.warn(
         `reconcile-adopt ${rec.clientOrderId}: adoption rejected (${msg}), staying frozen`,

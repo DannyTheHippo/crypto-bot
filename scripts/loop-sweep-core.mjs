@@ -685,14 +685,7 @@ function computeApp(prev, cur, elapsedMs = null, nowMs = null) {
   // enum) AND an inter-sweep window long enough for silence to be abnormal (LIVENESS_MIN_ELAPSED_MS;
   // unknown elapsed does not suppress — see the constant's comment).
   const intervalTooShort = Number.isFinite(elapsedMs) && elapsedMs < LIVENESS_MIN_ELAPSED_MS;
-  if (deltas !== null && cur && cur.containerHealthy === true && !intervalTooShort) {
-    if (deltas.decides === 0 && (deltas.consultGate === 0 || deltas.consultGate === null)) {
-      alarms.push({
-        kind: 'zero_decides',
-        detail:
-          'decide + consult-gate liveness counters unchanged since watermark while container healthy',
-      });
-    }
+  if (deltas !== null && cur && cur.containerHealthy === true) {
     // ANNOTATION, deliberately never an alarm — the exact shape `decides` above cannot see: the
     // scheduler keeps ticking (deltas.decides may be well above 0, e.g. the observed 160/hour of
     // scheduled-skip rows) while the model has answered zero times this window. Not promoted for the
@@ -704,7 +697,9 @@ function computeApp(prev, cur, elapsedMs = null, nowMs = null) {
     // seconds gauge lastSuccessfulDecideAt seeds). A third, sweep-native alarm on the same dead
     // account would only add a second permanent wedge, never new information — so this fails toward
     // disclosure (visible every pass, for exactly as long as it is true) rather than toward blocking
-    // the improvement work it measures.
+    // the improvement work it measures. Deliberately OUTSIDE the intervalTooShort gate below: unlike
+    // the delta-starvation alarms, a short window between sweeps does not make a real-zero-decides
+    // reading any less true, and disclosure that costs nothing should not wait on the liveness floor.
     if (Number.isFinite(deltas.realDecides) && deltas.realDecides === 0) {
       annotations.push({
         kind: 'no_real_decides_in_window',
@@ -716,20 +711,29 @@ function computeApp(prev, cur, elapsedMs = null, nowMs = null) {
           'schema-rejected row makes a call that yields nothing, so neither is evidence of a live LLM lane',
       });
     }
-    for (const venue of VENUES) {
-      if (deltas.reconcileByVenue[venue] === 0) {
+    if (!intervalTooShort) {
+      if (deltas.decides === 0 && (deltas.consultGate === 0 || deltas.consultGate === null)) {
         alarms.push({
-          kind: 'journal_silence',
-          venue,
-          detail: `reconciliations journal produced no new rows for ${venue} since watermark while container healthy`,
+          kind: 'zero_decides',
+          detail:
+            'decide + consult-gate liveness counters unchanged since watermark while container healthy',
         });
       }
+      for (const venue of VENUES) {
+        if (deltas.reconcileByVenue[venue] === 0) {
+          alarms.push({
+            kind: 'journal_silence',
+            venue,
+            detail: `reconciliations journal produced no new rows for ${venue} since watermark while container healthy`,
+          });
+        }
+      }
+    } else {
+      annotations.push({
+        kind: 'short_interval',
+        detail: `sweep gap ${Math.round(elapsedMs / 1000)}s < ${LIVENESS_MIN_ELAPSED_MS / 60000}min liveness floor — delta-starvation alarms suppressed this sweep`,
+      });
     }
-  } else if (deltas !== null && cur && cur.containerHealthy === true && intervalTooShort) {
-    annotations.push({
-      kind: 'short_interval',
-      detail: `sweep gap ${Math.round(elapsedMs / 1000)}s < ${LIVENESS_MIN_ELAPSED_MS / 60000}min liveness floor — delta-starvation alarms suppressed this sweep`,
-    });
   }
 
   // Negative-read void (§C.9): a durable counter reads exactly 0 while a SIBLING counter returned data

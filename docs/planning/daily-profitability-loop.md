@@ -208,9 +208,11 @@ rule):
   has stopped evaluating all FAIL the probe rather than reading as "nothing firing".
 
 `probe_failed` is technically an ANNOTATION kind in the core (not pushed to the `alarms` array — verify
-at `loop-sweep-core.mjs`'s `computeApp` probe loop, ~L182-220, before treating it otherwise; the old
-`:117-133` citation in this file pointed at `extractCounters` and was stale), but it still forces the
-same investigation posture: a stack read errored, so nothing downstream of it can be trusted this sweep
+by searching `loop-sweep-core.mjs` for `kind: 'probe_failed'` before treating it otherwise, never by
+line range: this is the THIRD stale line-range citation on this exact sentence — first `:117-133`
+pointed at `extractCounters`, then `~L182-220` rotted as the file grew 632 → 1053 lines. Verified this
+pass: 10 push sites, all into `annotations`, zero into `alarms`), but it still forces the same
+investigation posture: a stack read errored, so nothing downstream of it can be trusted this sweep
 (§C.9 negative-read-void discipline).
 
 **Read the annotations, not just the alarms — these kinds carry incidents the alarm list CANNOT show**
@@ -352,14 +354,22 @@ promotion pacing derived in spec §5.2: ≥30 closed round trips over ≥14 trad
 ≥2.14 closed trips/day; at menu-8 and the planning-band 12-24 wakes/day, expected entries/day run
 4.8-9.6 (≥2.2× the pace floor) against the unified $3/day breaker (menu-8 × 16 wakes ≈ $2.40/day).
 A pass reviewing menu/cadence math re-derives it from spec §5.2 rather than trusting this summary
-verbatim — the arithmetic depends on live entry-fraction and per-wake cost measurements that drift.
-Venue-floor-2 watch (spec §5.3): after ranking, if fewer than 2 of either venue's symbols land in
-the fresh top-8, that venue's best-ranked remaining members are promoted until it holds 2 (menu may
-transiently exceed 8 by ≤2) — a pass must confirm neither venue is starved of menu slots across a
+verbatim — the arithmetic depends on live entry-fraction and per-wake cost measurements that drift,
+and note that it is derived at `menuSize`, not at live menu cardinality (see the venue-floor note
+below): `isActive()` gates LLM spend per symbol directly (`batching-agent-client.ts:133`), so at a
+live count above 8 this estimate under-states actual per-wake cost.
+Venue-floor-2 watch (spec §5.3): the floor is evaluated AFTER ranking, hysteresis retention, and
+pinning — against the post-pin active set, not the fresh top-8 (`universe-scanner.service.ts:373`
+filters `candidateActive`, which pinning at `:350-354` already populated; the code's own comment at
+`:360` documents this ordering deliberately). Live menu size is therefore `menuSize` + pins +
+hysteresis-band overflow, unbounded above by the pin set — an open-position/resting-order symbol is
+ALWAYS active independent of rank or hysteresis, "a position must never lose its consult" (`:350-352`)
+— not the `menuSize`+2 ceiling an earlier draft of this doc claimed; the live menu holds 14 symbols
+(8 ranked plus 6 pinned) at time of writing. A pass must confirm neither venue is starved of menu slots across a
 sustained ranking run; the floor only ever ADDS symbols (fails OPEN toward coverage), so its absence
 from a digest is not itself alarming, but a sustained one-venue rank sweep with zero floor
-promotions on the OTHER venue when that venue's raw ranks are genuinely outside top-8 is the
-signature to watch for.
+promotions on the OTHER venue when that venue's raw ranks are genuinely outside the post-pin active
+set is the signature to watch for.
 
 Capability-violation counter watch: `agentic_capability_violations_total{kind}` — an `open_short`
 proposed against a spot symbol (`capabilities.shorts=false`) degrades to `hold`, journals

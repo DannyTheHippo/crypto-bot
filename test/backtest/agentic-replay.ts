@@ -761,9 +761,14 @@ async function callModel(params: {
   // emitting the call — not a clean schema failure. Counted separately BEFORE the schema parse below,
   // which would otherwise fold it into schema_rejected (a missing block still parses `undefined`
   // against the schema and fails the same way a structurally-invalid input does) and collapse exactly
-  // the distinction the 2026-07-22 contract-hardening pass exists to preserve. A tool_use block that IS
-  // present but stop_reason is max_tokens falls through to the ordinary schema check below, same as
-  // production — a partial-but-parseable block is still a legitimate parse attempt, not a truncation.
+  // the distinction the 2026-07-22 contract-hardening pass exists to preserve. UPDATED 2026-07-31
+  // (schemaFailureRationale parity): a tool_use block that IS present but stop_reason is max_tokens no
+  // longer falls through to the ordinary schema check below as a plain schema_rejected — production's
+  // anthropic-agent-client.ts now tags THAT case truncated_max_tokens too (the block exists but its
+  // input is empty/incomplete because the budget ran out before real arguments landed), so the schema-
+  // parse branch below mirrors the same stop_reason==='max_tokens' test production added, keeping the
+  // two instruments' schema_rejected/truncated counts comparable (see the schema-parse branch's own
+  // comment a few lines down).
   if (!toolBlock && envelope.data.stop_reason === 'max_tokens') {
     return failed(
       `truncated: max_tokens stop before a ${params.tool.name} tool_use block ` +
@@ -784,6 +789,20 @@ async function callModel(params: {
     const summary = firstIssue
       ? `${firstIssue.path.map(String).join('.') || '(root)'}: ${firstIssue.message}`
       : 'unknown schema issue';
+    // 2026-07-31: mirrors production's schemaFailureRationale (anthropic-agent-client.ts) — a tool_use
+    // block present with an empty/incomplete input under a max_tokens stop is the SAME truncation the
+    // no-tool-block branch above already counts as truncated, just caught one step later by the schema
+    // parse. Counting it as schema_rejected here while production now counts it truncated_max_tokens
+    // would silently desync this harness's decisionOutcomeCounts.schema_rejected from the live journal's
+    // `WHERE rationale LIKE 'schema_rejected:%'` — exactly the parity this file exists to hold.
+    if (envelope.data.stop_reason === 'max_tokens') {
+      return failed(
+        `truncated: max_tokens stop with a ${params.tool.name} tool_use block present but an ` +
+          `incomplete/empty input (schema issue: ${summary}, output_tokens=${usage?.outputTokens ?? 'unknown'})`,
+        costUsd,
+        'truncated',
+      );
+    }
     // Self-describing, exactly like production's schemaRejectedRationale — a masked degrade is
     // undiagnosable from the aggregate alone.
     return failed(`schema_rejected: ${summary}`, costUsd, 'schema_rejected');

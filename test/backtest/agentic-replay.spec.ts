@@ -120,6 +120,21 @@ function truncatedFetch(): typeof fetch {
     );
 }
 
+// 2026-07-31 (schemaFailureRationale parity): unlike truncatedFetch above, the tool_use block IS
+// present here — just with an empty input, because max_tokens cut the response off after the block
+// opened but before real arguments landed. Distinct from malformedFetch (stop_reason: 'tool_use', a
+// genuine schema failure, no truncation involved).
+function malformedMaxTokensFetch(): typeof fetch {
+  return () =>
+    Promise.resolve(
+      fakeResponse({
+        stop_reason: 'max_tokens',
+        content: [{ type: 'tool_use', name: 'submit_trade', input: {} }],
+        usage: { input_tokens: 100, output_tokens: 4096 },
+      }),
+    );
+}
+
 function bar(ts: number, o: number, h: number, l: number, c: number): Bar {
   return [ts, o, h, l, c, 1];
 }
@@ -136,7 +151,10 @@ describe('agentic-replay (offline, v3 contract)', () => {
     it('a :SETTLE-suffixed perp symbol is shorts-capable and carries the perp caps', () => {
       const caps = capabilitiesForSymbol(symbolId(PERP), '500');
       expect(caps.shorts).toBe(true);
-      expect(caps.leverage).toBe('2');
+      // Tracks .env.app's PERP_LEVERAGE_CAP via agentic-replay.ts's own PERP_LEVERAGE_CAP mirror
+      // (2026-07-27 owner decision raised 2 -> 5; that commit updated the harness fixture but missed
+      // this expectation). Reconciled 2026-07-31 — re-check both on any future PERP_LEVERAGE_CAP drift.
+      expect(caps.leverage).toBe('5');
       expect(caps.maxSizeFraction).toBe('0.35');
       expect(String(caps.venue)).toBe('binanceusdm');
     });
@@ -676,6 +694,21 @@ describe('agentic-replay (offline, v3 contract)', () => {
         symbol: SPOT,
         bars,
         fetchFn: truncatedFetch(),
+      });
+
+      expect(result.decisionOutcomeCounts.truncated).toBe(2);
+      expect(result.decisionOutcomeCounts.schema_rejected).toBe(0);
+      expect(result.decisionOutcomeCounts.hold).toBe(0);
+      expect(result.decisionsAccepted).toBe(0);
+    });
+
+    it('2026-07-31 (schemaFailureRationale parity): a max_tokens truncation WITH a tool_use block present but empty input is counted as truncated, not schema_rejected — mirrors production', async () => {
+      const bars: Bar[] = [bar(T0, 100, 100, 99, 100), bar(T0 + HOUR, 100, 100, 99.8, 100)];
+      const result = await runAgenticReplay({
+        ...BASE_OPTS,
+        symbol: SPOT,
+        bars,
+        fetchFn: malformedMaxTokensFetch(),
       });
 
       expect(result.decisionOutcomeCounts.truncated).toBe(2);

@@ -178,6 +178,107 @@ generating corpus. If daily minting is kept instead, then record explicitly that
 **corpus generator, not an evidence source**, so no future pass quotes an underpowered live arm as a
 result.
 
+## 7a. PRE-REGISTRATION — `arm-sweep-v1`, frozen 2026-07-31T21:55Z, before any paid call
+
+**No paid call has been made by this section.** Frozen so the verdict cannot be selected after seeing
+results (`rules/change-discipline.md`).
+
+**Why this and not something else.** Entries, exits, cost and the decide model are all settled
+NO-lever verdicts. The only unsearched dimension left is the ARM space, and the instrument for it just
+improved materially: OHLCV restored (h=16 scoreability 59.3% → 97.4%) and the hold-matched horizon
+identified. Of twelve arms, four have been edge-tested; three are declared unpowerable by the file's
+own pre-run power calculation; `leaders_only`/`one_symbol_btc` are structurally capped at 3 and 1
+clusters against a floor of 5.
+
+**Arms under test (2):**
+
+- **`shorts_only`** — the primary. It appears in NO prior record. The book is long-biased (53
+  `open_long` vs 25 `open_short` lifetime) and its entry signal is measured significantly negative, so
+  a short-biased arm is the natural counter-hypothesis and has never been scored.
+- **`meanrev_pure`** — yielded zero entries on the 386-row corpus; whether the restored candle
+  coverage and wider window surface its pattern is genuinely unmeasured.
+
+`candidate_v9` and `seed_v1` are excluded: they are historical playbook versions, not novel
+hypotheses, and budget is scarce.
+
+**Corpus:** `corpus-v3-flat.jsonl` (386 rows) — chosen over the new 587-row v4 **deliberately, for
+comparability**: the published `champion_v8` sonnet baseline was measured on it, and a head-to-head
+against a differently-sourced baseline is not a head-to-head. Model: **claude-sonnet-5**, matching the
+incumbent — using a cheaper model here would confound the arm effect with a model effect, which is the
+specific error the `haiku_single` control existed to prevent.
+
+**Horizons scored:** h ∈ {1, 4, 8, 16, 24}. **h=16 is the PRIMARY** (median hold 15.6 bars, § 1).
+Declaring the primary before the numbers are seen is the whole point; a later "wins 3 of 4" reading
+against a different primary is cherry-picking and is refused in advance.
+
+**Bars, unchanged from the existing research bar — NOT re-derived, NOT loosened:** mean > +13.0 bps;
+cluster-bootstrap 95% CI lower bound > +13.0 resampling symbols; p < per-family Bonferroni α; random-bar
+placebo p < α; both chronological halves > bar; trimmed mean > bar; **n ≥ 12 AND clusters ≥ 5**.
+
+**Budget: HARD CAP $18**, in-harness USD meter armed, fail-closed on attempt start.
+**Calibrate → size → run**, because a planning constant carried into a budget is exactly what reversed
+the kimi estimate from 0.61× to 1.9×:
+
+1. **Calibration leg, ~30 rows, ≤$2.** Measures actual $/call AND — more importantly — each arm's
+   **entry rate**.
+2. **The sizing gate, declared now:** if an arm's calibrated entry rate implies it cannot reach n ≥ 12
+   AND clusters ≥ 5 on 386 rows, **the remaining budget for that arm is NOT spent.** Refusing to buy a
+   guaranteed-UNDERPOWERED cell is the gate working, not a failure. `shorts_only` carries a specific
+   known risk here: shorts are a per-symbol capability (spot refuses them and degrades to hold), so on
+   a spot-heavy corpus its entry population may be structurally too small — this is the first thing
+   the calibration must answer.
+3. Full legs only for arms that clear the sizing gate.
+
+**Named failure outcomes, so the run cannot be read as a success by default:** transport < 0.9 ⇒ VOID
+and unpublishable; corpus or contract fingerprint mismatch ⇒ throw; any cell UNDERPOWERED ⇒ reported as
+UNDERPOWERED, never as a null result.
+
+**Expected outcome, stated in advance:** most probable is NO_SURVIVOR, consistent with 20/20 prior
+cells. That would still be worth the $18, because it closes the last unsearched dimension with a
+measurement instead of an assumption. **A refusal that was measured and logged is the deliverable.**
+
+## 7b. RESULT — `arm-sweep-v1`: SIZING-GATE REFUSAL, $0.92 of $18 spent, no cell scored
+
+Calibration leg: 30 rows/arm, 60 calls, **transport 100%** (valid and publishable), $/call measured
+**$0.015393**, total **$0.9236**.
+
+| arm | calls | parsed | entries | entry rate | projected n @386 | outcome |
+| --- | --- | --- | --- | --- | --- | --- |
+| `shorts_only` | 30/30 | 23 | **0** | 0.0% | 0 | UNDERPOWERED_PROJECTION — leg NOT funded |
+| `meanrev_pure` | 30/30 | 30 | **0** | 0.0% | 0 | UNDERPOWERED_PROJECTION — leg NOT funded |
+
+**Neither full leg was funded**, per the pre-registration's own frozen sizing rule. The gate was
+verified to fire before any network call (a full-leg invocation refused in 63ms, zero paid calls).
+**No h ∈ {1,4,8,16,24} cell was ever scored** — the study never reached the edge-test stage. This is a
+refusal one step UPSTREAM of NO_SURVIVOR: NO_SURVIVOR requires entries to score against the bar, and
+there were none.
+
+**The anticipated risk was wrong, and the real constraint is more interesting.** § 7a predicted
+`shorts_only` might be starved by the spot/perp split. It is not: the corpus is spot=139 / perp=247, so
+the eligible population ceiling is 247 rows, far above the 12 needed. **The model simply never proposed
+an entry — long or short — on any of the 60 calibration rows, under either arm.** The zero is in the
+entry RATE, not the eligible population.
+
+**Stated limit, because a 0/30 is not a proven zero.** By the rule of three, 0 entries in 30 rows puts
+the 95% upper bound on the true entry rate at ~10%, which on 386 rows would be ~39 entries — enough to
+clear n ≥ 12. **So this result does NOT establish that these arms cannot be scored; it establishes
+their entry rate is likely under ~10%.** The gate refused on the point estimate, which is what the
+frozen rule said to do, and following a frozen rule is the correct behaviour even when a wider
+calibration might have decided otherwise. A future pre-registration wanting a firmer answer should size
+its calibration for the rate it needs to exclude, not reuse 30 rows.
+
+**Why more budget was not spent anyway, as a judgement recorded rather than hidden:** the prior on
+these arms clearing +13.0 bps is very low — 20/20 prior cells failed, every arm tested moved behaviour
+without moving the sign (`minimal` −13.3, `momentum_pure` −12.7 → −85.3) — and an arm that trades at
+under ~10% is approaching `trade_almost_never`, already declared unpowerable. An arm that does not
+trade cannot produce an edge; it can only avoid losses, and § 2 of `success-exit-2026-07-31.md` already
+settles that abstention freezes the promotion window while continuing to burn net-of-cost.
+
+**What this closes.** The arm space was the last unsearched dimension. It is now searched to the depth
+$18 buys, and the two genuinely novel hypotheses do not produce a scoreable population. Combined with
+the standing NO-lever verdicts on entries, exits, cost and the decide model, **no untested lever
+remains that this program has identified.**
+
 ## 8. Next, in order
 
 1. Refresh the OHLCV cache through 2026-07-31 ($0). Nothing downstream is scoreable without it.

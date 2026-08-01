@@ -439,7 +439,7 @@ const REVISION_TOOL = {
  * Fails CLOSED per variant: a refused, malformed or empty reply yields no variant rather than a
  * placeholder, because a placeholder that reached stage 4 would spend replay budget scoring nothing.
  */
-async function draftVariant(apiKey, model, prompt, temperature, label) {
+async function draftVariant(apiKey, model, prompt, stanceInstruction, label) {
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -450,17 +450,23 @@ async function draftVariant(apiKey, model, prompt, temperature, label) {
     body: JSON.stringify({
       model,
       max_tokens: 4096,
-      temperature,
+      // No temperature/top_p/top_k: this model family rejects any non-default sampling parameter
+      // with HTTP 400, so variant diversity is steered through the stance instruction appended to
+      // the user turn below instead of the sampling knob.
       system: [{ type: 'text', text: prompt }],
-      messages: [{ role: 'user', content: 'Draft the replacement playbook now.' }],
+      messages: [
+        { role: 'user', content: `Draft the replacement playbook now. ${stanceInstruction}` },
+      ],
       tools: [REVISION_TOOL],
       tool_choice: { type: 'tool', name: REVISION_TOOL.name },
     }),
     signal: AbortSignal.timeout(180_000),
   });
   if (!res.ok) {
+    const errorBody = await res.text();
     console.warn(
-      `${LOG}: drafting call for ${label} refused with HTTP ${res.status} — no variant.`,
+      `${LOG}: drafting call for ${label} refused with HTTP ${res.status} — ` +
+        `${errorBody.slice(0, 500)}`,
     );
     return null;
   }
@@ -819,8 +825,24 @@ async function main() {
       // The key's presence was checked BEFORE the day gate — a run that could never draft must not
       // consume the day's slot on its way to failing.
       const drafted = [];
-      for (const [i, temperature] of [0.2, 0.8].entries()) {
-        const v = await draftVariant(apiKey, model, prompt, temperature, `draft_t${i + 1}`);
+      // Two stances, not two temperatures (the model rejects the parameter — see draftVariant):
+      // one conservative pass and one exploratory pass, both steered by prompt instruction alone.
+      const stances = [
+        {
+          label: 'draft_conservative',
+          instruction:
+            'Draft a CONSERVATIVE revision: change as little as possible from the incumbent, ' +
+            'only what the evidence directly supports.',
+        },
+        {
+          label: 'draft_exploratory',
+          instruction:
+            'Draft an EXPLORATORY revision: where the evidence permits, consider a materially ' +
+            'different approach rather than a minimal edit.',
+        },
+      ];
+      for (const { label: stanceLabel, instruction } of stances) {
+        const v = await draftVariant(apiKey, model, prompt, instruction, stanceLabel);
         if (v !== null) drafted.push(v);
       }
       variants = drafted;

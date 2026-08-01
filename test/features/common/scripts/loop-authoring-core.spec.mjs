@@ -57,7 +57,7 @@ function cell(h, mean) {
 
 function deployment(overrides = {}) {
   return {
-    arm: 'draft_t1',
+    arm: 'draft_conservative',
     incumbent: 'incumbent_v10',
     primaryHorizon: 24,
     perHorizon: [
@@ -502,7 +502,7 @@ describe('loop-authoring mint gate', () => {
 describe('loop-authoring reporting', () => {
   it('renders both bars with their own labels and never merges them', () => {
     const out = renderTwoBars({
-      arm: 'draft_t1',
+      arm: 'draft_conservative',
       deployment: deployment(),
       research: RESEARCH_FAIL,
     });

@@ -1,5 +1,99 @@
 # Success and stop criteria — what would justify live money, and what would justify stopping (2026-07-31)
 
+> ## ⛔ AMENDMENT 1 — **ADOPTED BY THE OWNER, 2026-08-01. THIS RECORD NOW ENACTS.**
+>
+> Nothing below this banner is edited; the original text stands as written, including the
+> "IT ENACTS NOTHING" paragraph that follows and § 11's "Until the owner answers, nothing changes."
+> **Both are superseded as of 2026-08-01 and are retained as history, not as current state.**
+>
+> **The owner was asked § 11's four questions and answered `1C, 2A, 3A, 4A`:**
+>
+> | # | Question | Answer | Effect |
+> | --- | --- | --- | --- |
+> | 1 | GO LIVE clauses / G1 horizon | **C** | **G1 is RE-CUT from h ∈ {1,4} to the hold-matched h = 16.** |
+> | 2 | STOP clauses | **A** | § 7 accepted as written. S1 frozen ledger and S3 (−$200 net-of-cost / $150 LLM) are LIVE triggers. |
+> | 3 | Dated decision window | **A** | § 8 accepted as written. **Closes 2026-08-31**; a written verdict is required; an extension without a named measurement is itself a stop trigger. |
+> | 4 | Criteria at all, or stop now | **A** | **Criteria adopted; the program runs to 2026-08-31.** |
+>
+> **What Q1 = C changes, and the cost it accepts.** h = 16 is the median holding period measured
+> 2026-07-31 (median 15.6 bars, mean 54.5 — `learning-capacity-2026-07-31.md` § 1), so the clause now
+> asks about the horizon the book actually trades rather than one it does not. **§ 3's own argument
+> cuts against this and is not withdrawn:** at h = 1/4 roughly three quarters and two thirds of the
+> requirement is real fee floor, whereas by h = 24 it is 74% interval width — "writing a criterion at
+> h = 24 is writing an unreachable clause and calling it rigour". h = 16 sits between h = 8 (46.2%
+> interval) and h = 24 (73.9%), so **the re-cut buys behavioural realism at the cost of making the
+> clause more of a sample-size question.** The owner was shown this trade-off before answering.
+>
+> **CORRECTION, same day, against this amendment's own first draft: G1 at h = 16 IS evaluable today.**
+> The draft said "the re-cut G1 has no number yet". That was wrong and is corrected here rather than
+> silently edited. **The clause's number is the floor — `mean > +24.2 AND cluster-CI lower bound >
+> +24.2` — and the floor does not move with the horizon.** § 3's requirement table is not the clause;
+> it is the FEASIBILITY analysis, answering "what mean would an arm need for its CI lower bound to
+> clear the floor at K clusters". So the re-cut is well-defined; what was missing is how hard it is.
+>
+> **The feasibility figure at h = 16 is a BOUND, not a point, and that is a finding rather than a
+> shortfall (derived 2026-08-01).** The method was recovered and **the control PASSED** — it reproduces
+> all four published rows exactly, `req(K) = floor + z·SE(20)·sqrt(20/K)`, z = 2.2414, floor 24.2,
+> including the undocumented convention that `mean` and `ciLo` are rounded to 1dp *before* the SE
+> subtraction (raw inputs miss the published digits by 0.02–0.04).
+>
+> A point value at h = 16 needs `inverted`'s own `SE(20)` at h = 16, and **that input does not exist and
+> cannot be recovered by arithmetic**: the offline grid is frozen at `{1,4,8,24}`
+> (`playbook-space-replay.ts:46`), and only per-(arm, horizon) AGGREGATES are ever written to disk — the
+> per-row action/direction that a re-score would need is never persisted. Recovering it requires a fresh
+> **paid** replay run. Live is no substitute: the deployed arm (v10 = `inverted`) reads h = 16 n = 10,
+> mean −20.5 bps — **UNDERPOWERED** against `MIN_ENTRIES = 12`, so it is not evidence.
+>
+> What monotonicity of `SE(20,h)` does support, and nothing stronger:
+>
+> | | K=20 | K=28 | K=40 | interval share @K=20 |
+> | --- | --- | --- | --- | --- |
+> | h = 8 (published) | +45.0 | +41.8 | +38.9 | 46.2% |
+> | **h = 16 (bounded)** | **[+45.0, +92.6]** | **[+41.8, +82.0]** | **[+38.9, +72.6]** | **[46.2%, 73.9%]** |
+> | h = 24 (published) | +92.6 | +82.0 | +72.6 | 73.9% |
+>
+> **The plain reading, and it does not favour the re-cut.** Even the FLOOR of that bound (46.2%) exceeds
+> h = 4's honest 35.6%. So h = 16 is **never as defensible as h ∈ {1,4}**: at best it is "floor-limited
+> like h = 8" — which § 3 called *"a stronger reason to exclude it, not a weaker one"* — and at worst it
+> is as interval-dominated as h = 24. Interpolation was forbidden and the data shows why: `SE(20)` grows
+> 1.70×, 1.56×, then **3.29×** across the grid, so any linear or √h fill-in would materially misstate it.
+>
+> **The gap, stated only from what exists.** `inverted`'s own h = 16 performance is **UNMEASURED** — not
+> zero, not interpolatable, unmeasured. The only POWERED h = 16 measurements in the repo are v1 (−57.6,
+> n = 28, k = 13) and v2 (−94.5, n = 18, k = 11), which are **different playbook versions**; citing
+> either as `inverted`'s best-ever would be the population-mixing error this record exists to prevent.
+>
+> **What Q4 = A did NOT do: it did not rebut § 10.** The objection that these criteria are "a STOP
+> written in the vocabulary of a success criterion" is **still carried unresolved**, and the arithmetic
+> in § 3 and § 5 is unchanged by the decision. The owner chose to run the criteria with that objection
+> outstanding. Recorded plainly so a later reader does not mistake adoption for refutation.
+>
+> **Immediate consequences, now work rather than prose:** G4 and G5 were written as clauses about
+> instruments that do not exist — `BELOW_PASSIVE_BENCHMARK` is dark (no composition-root binding) and
+> `agentic_promotion_blocked{reason}` is § 9's "missing instrument". Adopting § 6 makes both
+> **prerequisites**, so both are being built. A live flip is impossible until they read correctly.
+>
+> **S3 WILL PROBABLY DECIDE THIS BEFORE THE WINDOW DOES — projected at adoption, so it is not a
+> surprise later.** Measured 2026-08-01T06:10Z: net-of-cost **−$48.54** over 8.47 window-days (40
+> closed trips), LLM **$22.04**.
+>
+> | S3 trigger | remaining | current rate | fires in | date |
+> | --- | --- | --- | --- | --- |
+> | net-of-cost −$200 | $151.46 | −$5.73/day | **26.4 days** | **~2026-08-27** |
+> | LLM spend $150 | $127.96 | $2.60/day | 49.2 days | ~2026-09-19 |
+>
+> **So the budget stop lands ~4 days BEFORE § 8's 2026-08-31 close.** On current trajectory the program
+> terminates on its own budget trigger rather than on a written verdict — Q2 = A and Q3 = A interact
+> that way, and the interaction was not visible in either question on its own. Two honest caveats: the
+> −$5.73/day is the epoch average, not a forecast, and it improves automatically if PnL improves; and
+> S3 firing is a STOP, not a failure — it is the clause working. A pass that sees it fire must record it
+> as a triggered criterion, never quietly extend the window (an extension without a named measurement
+> is itself a stop trigger, § 8).
+>
+> **Unchanged by all of the above:** the 16 live-flip code gates, the bootId arming ceremony and
+> `PromotionReadinessService` remain the ONLY human gate and remain outside autonomy grant 6. These
+> criteria sit **on top of** that gate, never instead of it.
+
 **THIS RECORD IS A RECOMMENDATION TO THE OWNER. IT ENACTS NOTHING.** It changes no clause, no
 threshold, no configuration and no code. `charter.md:170-174` enumerates the set the 2026-07-22
 gate-override grant did **not** touch, verbatim: *"KEPT — the ONLY human gate, unchanged: the 16
@@ -477,3 +571,10 @@ This record asks for a decision and assumes none. Four questions:
 
 Until the owner answers, nothing changes: the gate keeps returning `permitted: false`, the four live
 gates keep binding, and this record has enacted nothing.
+
+> **SUPERSEDED 2026-08-01 — the owner answered `1C, 2A, 3A, 4A`.** See § AMENDMENT 1 at the top of this
+> file. The paragraph immediately above is retained as written because nothing in a loop record is
+> rewritten; it describes the state before the answer, not the state now. The gate does still return
+> `permitted: false` and the four live gates do still bind — what changed is that § 6 and § 7 are now
+> adopted criteria with a dated window, G1 is re-cut to h = 16 pending its derivation, and S3's budget
+> triggers are live.

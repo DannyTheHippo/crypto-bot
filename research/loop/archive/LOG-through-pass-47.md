@@ -6519,3 +6519,217 @@ build 61d6b6c`, boot `f30074f2` — **the state before that session's own deploy
 next pass reads first was stale in the same commit that made it stale.
 
 ---
+
+## 2026-07-31 — Pass 50 (five defects on one rail, and the instrument that could not see any of them)
+
+**Window:** 2026-07-31T00:07Z → 08:05Z. Lease taken 00:07:25Z (`9bf2dbae343a1910`). **The host slept
+~7.5h mid-pass**; the 2h lease expired underneath the pass and a re-probe at 07:41:39Z broke a stale
+lease carrying **its own label** and re-acquired as `504746bf0b6db4aa`. No other pass was live, and
+the lease behaved exactly as documented — it is time-based and cannot detect a live holder. Recorded
+because a future reader seeing two nonces for one pass deserves the reason.
+
+**Sweep 00:07:32Z: 0 alarms**, one annotation (`ReconciliationMismatch`, warning, fired and resolved
+in-window). §3's incident gate therefore did not bind, and the pass selected its own work.
+
+### The book
+
+| metric | Pass 49 (17:15Z) | this pass (07:50Z) |
+| --- | --- | --- |
+| closed round trips | 32 | **34** |
+| net-of-cost | −$41.8850 | **−$44.2337** |
+| win rate | 0.1875 | **0.2059** |
+| LLM cost | $17.8605 | **$19.3709** |
+| trade-anchored window | 6.966 / 14 d | **7.329 / 14 d** |
+| `agentic_promotion_ready` | 0 | **0** |
+
+Two trips closed overnight, one of them a winner. Realized PnL moved **−$0.82** and LLM spend
+**+$0.99** — so the net-of-cost loss this window is mostly the cost of asking. `equity_usdt`
+4976.77, kill switch RUNNING, RSS well inside WATCH-V3-1. **The lane is funded and trading:** real
+model decides 669 → **722** lifetime.
+
+### Pass type: defect repair. The improvement was crowded out entirely, and this is the second such pass
+
+Six defects found, six fixed and shipped, one commit each — the playbook's "a pass that finds five
+defects fixes five defects" applied literally. No candidate or promotion work was attempted. Per §4
+that obliges a recommendation rather than a repeat, and it is in § Flagged below.
+
+### 1. Five un-journaled cancels on one rail — WATCH-V4-10 root-caused, and the earlier suspect refuted
+
+`59df4c9`, `a2d7d33`. The HYPE/USDT:USDT stop has now been `ACKED` ~11h across 3+ boots against a
+flat book. Pass 49 suspected an undefined `entry` read after `clearPlan()`; **that is refuted** —
+both live call sites snapshot `stopEntry` first.
+
+The real shape is two mechanisms with one root. `reconcileOrphanedAlgoStop` **did** reach its
+`fetchOpenAlgoOrders` call for HYPE on every bar — every guard between `decide()` and it is
+satisfied — but its no-plan branch emitted nothing on any of its four outcomes, so "never matched"
+and "matched, and the cancel threw into a bare `catch {}`" were indistinguishable **by
+construction**. Meanwhile the BTC/USDT:USDT stop from 19:00:09Z **was** cancelled at the venue at
+22:45Z by `drift_cancel` and is still non-terminal locally, because no algo-rail cancel was ever
+journaled on any path. One rail: a cancel that never happens, and a cancel that happens and is never
+recorded.
+
+**Why it is money-path and not housekeeping:** a stale non-terminal algo order keeps its intent in
+`inFlightIntents`, and `driveFlattening` marks a symbol BUSY off exactly that set. The HALT path is
+simultaneously the producer of the stranding (`cancelRestingAlgoStops` cancels and journals nothing)
+and its victim — `allFlat` never becomes true for that symbol, so **a HALT cannot complete for it
+until the next boot**. Four such registrations were live when the pass started.
+
+Fixed: every exit of the orphan reconciler now carries a label (12 → 15, zero-pre-seeded, the array
+now derived from a `satisfies Record<AgentVenueStopEvent, true>` map so a sixteenth cannot miss the
+seed), including `orphan_cancel_failed` — the label that makes a zero on `orphan_cancel` readable.
+All five cancel sites now journal through the pre-existing `onAlgoStopGone` seam, which folds the
+local row terminal by **appending** `algo-hist:CANCELED` — no UPDATE, no DELETE, rule 6 intact.
+
+**The review earned its keep here.** The first implementation `await`ed that fold inline — between a
+stop cancel and the exit signal built from it, and inside a reconcile path running on a **2s**
+non-LLM budget whose overrun drops the bar and trips auto-DRAIN — against venue reads with **no
+configured ccxt timeout** (10s default, per call). It declared FAILS OPEN and honoured that for
+throws but not for latency. All five calls are now `void`, and a test pins that a rejecting seam
+still emits the EXIT signal, so a reintroduced `await` fails loudly rather than silently re-breaking
+the contract P7f fix 5 exists for.
+
+**Stated so no later pass misreads it: this is prevention and measurement, not a heal.** The four
+stranded rows will not terminalize — their cancels predate the seam. What ships is the ability to
+say which failure is live: `orphan_scan` above zero with both cancel counters at zero means the scan
+runs and never matches.
+
+### 2. A truncated tool call and a rejected one were the same journal row
+
+`daf8dbe`, `f9ed0ea`. Ten of 37 `decisions: expected array, received undefined` rejections in the
+trailing 14 days carry `output_tokens` of **exactly 4096** — `AGENTIC_MAX_TOKENS`. Adaptive thinking
+eats the whole output budget before any tool argument is written, the block arrives `{}`, and zod
+reports a missing field. Both causes stamped `schema_rejected:`, so the journal could not measure
+how often the lane loses a whole batch to truncation. `truncated_max_tokens:` already existed for
+the no-block case and now covers the empty-block case on both paths — including the batch
+`!toolBlock` branch, because batch is the deployed shape and leaving it out would have under-counted
+truncations on the only path that runs.
+
+Two review catches: the re-tag moves rows between `agent_decide_total{outcome}` buckets, which is
+now declared and pinned by the `schema_rejected → hold` case the outcome-tag spec was missing; and
+the replay harness carried a comment asserting parity with production that this change made false,
+so the harness was taught the same rule rather than left silently disagreeing with live.
+
+### 3. Two research harnesses that had been answering a different question than production
+
+`f9ed0ea`, `3f215aa`. Both off the production gate, so both rotted unseen.
+
+**A red spec nobody ran.** `agentic-replay.spec.ts` pinned `caps.leverage` at `'2'` while `.env.app`
+has pinned `'5'` since the 2026-07-27 owner decision. That commit moved the harness fixture and its
+own message required it — "or backtests answer a different question than production" — but missed
+this assertion. The harness scores candidates that get promoted to the live lane, so the divergence
+meant candidates scored against a sizing constraint the venue no longer enforces.
+
+**A test run that rewrote a committed study.** `vitest run test/backtest/` silently overwrote
+`research/studies/carry-study-2026-07-10.md`, 124 lines each way. That file is the evidence behind a
+**settled** NO-GO. The rewrite replaced published evidence with weaker evidence: funding rows per
+symbol **3250 → 31**, V 1.7369730 → 1.0255109, SR0\* 3.5943 → 2.7618, cells with ≤1 holdout episode
+18 → 81. Under a green test run, invisibly; it was caught only by reading `git status`. The write is
+now opt-in behind `CARRY_STUDY_WRITE=1` — fails CLOSED for writing, never for testing.
+
+**And the collapse itself is a separate, still-open defect.** `fetchExtended()` in
+`test/backtest/fetch-data.mjs` defaults `targetBars` to 200 — its own header calls that a smoke
+fetch — and has **no `existsSync` guard**, so it overwrites a full-history cache with a smoke-sized
+one. The cache proves it: `funding-{BTC,ETH,SOL,XRP}` are dated Jul 27 with 31 rows over 10 days
+while `funding-{AVAX,DOGE,LINK}` are untouched from Jul 12 with 3250 rows over three years. Any
+carry-adjacent measurement taken today runs on ~1% of its intended data.
+
+### 4. The rail had no alert, and a dashboard that coloured nothing
+
+`d2ab9fa`. `agentic_venue_stop_total` had **zero** alert rules, so `orphan_cancel_failed` — the exact
+recurrence signature of the 11h stranding — could fire every bar forever and reach nobody, this
+loop's sweep included. `AgenticOrphanStopCancelFailing` fires on more than one failure in 30m (a
+single one is a venue blip the next bar retries; two means the same order failed on consecutive
+bars). **Severity `warning` deliberately:** the counter was zero-seeded minutes earlier, and only
+`critical` becomes a blocking sweep alarm — handing an unbaselined counter that power on day one
+risks wedging every future pass on a threshold nobody has validated. The rule states what would
+justify promotion.
+
+A companion rule for the quieter failure — `orphan_scan` climbing while both cancel counters stay
+flat — was **considered and rejected as premature**: that is also the healthy steady state for every
+symbol with no stranded order. Separating them needs venue-side algo-order age against tracked
+positions, which does not exist yet.
+
+The dashboard's orange override never matched anything it was written for: its prefix alternatives
+end in `_` followed by `\b`, and `_` is a word character, so the boundary never asserts. Verified
+programmatically against all fifteen labels rather than by eye.
+
+### Gates, deploy, soak
+
+`format:check` ✓ · `lint` ✓ · `lint:md` 0 errors ✓ · `typecheck` ✓ · `build` ✓ · `test`
+**3249 passed / 179 files** ✓ · `test:livegate` **55/55** ✓. Each commit additionally passed the
+pre-commit hook. `test:cov` is red at HEAD and was **not** caused by this pass —
+`reconciliation.service.ts`, `unknown-resolver.service.ts` and `position-sizer.service.ts` are the
+sub-100% files under the two 100% globs and none was touched; `halt-coordinator.service.ts` is
+100/100/100/100.
+
+Deploy 07:47:51Z, `GIT_SHA=3f215aa`, `build_info{git_sha="3f215aa"}` confirmed on the running
+process, `RestartCount` 0, healthy. Prometheus force-recreated (rules file changed): **22 rules
+across 5 groups, 0 firing**, `AgenticOrphanStopCancelFailing` loaded `health: ok`. All 15
+venue-stop labels zero-pre-seeded on **both** venues (30 children) — the exhaustiveness pin works on
+the live process, not just in the type-checker.
+
+**One honest caveat on the soak.** The 07:45:59Z pre-deploy sweep was VOID by its own controls: the
+container had restarted 16s earlier as the host came back from sleep, so `bootId`, the rules probe
+and the alert history all failed. That is duty cycle, not a defect, but it means this pass's
+pre-deploy baseline is thinner than usual and the post-deploy read below is the load-bearing one.
+
+### Soak addendum — the new instrument produced its first reading, and it discriminates
+
+First decide bar after the deploy (08:00Z bar, read 08:01:13Z, boot `ae5df10b`):
+
+```text
+orphan_scan=16  orphan_readopt=4  orphan_cancel=0  orphan_cancel_failed=0  reconcile_error=0
+```
+
+on `binanceusdm`; `binance` reads 0 throughout, which is correct — the path is perp-only.
+
+**WATCH-V4-11's expected-positive HOLDS on its first read.** 16 scans is one per perp symbol in the
+universe on a single bar, so the no-active-plan reconcile path demonstrably executes; before this
+pass that fact was unobservable.
+
+**And it answers WATCH-V4-10's open question, which two passes could not.** The reading is
+`orphan_scan` > 0 with **both** cancel counters at 0 and no `reconcile_error` — so the branch does
+not throw, and case (d) is out. It runs and matches nothing. Crucially, `orphan_readopt=4` in the
+same bar proves `fetchOpenAlgoOrders` **is** returning live algo orders and they **are** resolving to
+our ids — four resting stops on positioned symbols were re-adopted. So the venue read works; it
+simply does not return the HYPE stop.
+
+**The most probable reading, stated with its alternative rather than as a conclusion:** the HYPE
+`STOP_MARKET` is **gone at the venue and stranded only in our book** — which is the benign half of
+the pair `watches.md` said was unanswerable from any scheduled read. The alternative it does not
+fully exclude is an id-resolution mismatch specific to that one order, placed a day earlier by an
+older build. The 4 readopts weigh heavily against that but do not kill it.
+
+**The one probe that settles it** is a keyed `fetchAlgoOrderStatus(cbt019fb31cb7c97ea0a8dfa5462d3d3764,
+HYPE/USDT:USDT)` — the primitive already exists on the adapter and has no scheduled caller. That is
+the next pass's cheapest high-value action, and if it returns CANCELED/EXPIRED then the remaining
+work on V4-10 is a fold of four stale local rows, not a venue problem.
+
+### WATCH lines
+
+V3-1 holds. V4-1 holds on its re-derived clause — the 19:00:30Z `adopt_non_adoptable` is transient
+and explained (two binance `STOP_LOSS_LIMIT` ACKs 19-28s before the sweep), and the alert's 5 firing
+samples are the `for: 0m` rule staying hot ~5 min after one event, not a sustained fault. V4-2 holds
+(zero `fill_overflow` ever). V4-4 holds. V4-7 holds. **V4-10 is root-caused and instrumented but
+NOT closed** — the stranded rows persist by design of the fix. New **WATCH-V4-11** (algo-rail
+observability) and **WATCH-V4-12** (truncation tagging) in `watches.md`.
+
+### Flagged / next pass
+
+1. **The improvement was crowded out for the second consecutive pass, and the recommendation is not
+   "try harder next time".** Five of six defects this pass were _invisible failures_ — a counter
+   never emitted, a cancel never journaled, a study silently rewritten, a spec nobody runs, an alert
+   that does not exist. The loop keeps finding these because nothing runs between passes that would.
+   The cheapest structural fix is to put the off-gate harnesses (`test/backtest`, `test/eval`) on a
+   scheduled run whose failure is surfaced by `loop:sweep`, so a rotted harness costs minutes
+   instead of days. That is one commit and it is the highest-leverage thing available.
+2. **`fetchExtended()`'s 200-bar default with no `existsSync` guard** — named in §3, not fixed
+   (different file, different fix). It will keep truncating caches silently.
+3. **`AGENTIC_PLAYBOOK_AB_PCT=40` still routes nothing.** Inherited from Pass 49 and untouched: mint
+   a v11 candidate against `inverted` (`loop:authoring` now exists to draft one) or set the knob to
+   0 and say so. This is the profitability decision this pass did not get to.
+4. **The unresolved question underneath all of it.** Net-of-cost is −$44.23 over 34 trips at a 0.206
+   win rate, and `verdicts.md` holds that entries measure significantly negative and worse than a
+   random-bar placebo. This pass spent its whole budget making the lane *observable*, which was
+   worth doing, and moved the edge not at all. An owner call remains open on whether a lane that
+   provably cannot pass its own gate should keep accruing ~$1/day of evidence.

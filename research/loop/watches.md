@@ -604,6 +604,45 @@ WATCH-V3-1: spot heap slope on the demo soak (paper plateau 673 MiB is the
   of any kind occurs by 2026-08-07, the rule is UNTESTED and must be recorded as such — an unfired
   alert is not a passing one.
 
+### WATCH-V4-15 — a sampling race and a real orphan no longer look the same (2026-08-01, Pass 56)
+
+**Source:** `research/loop/incidents/2026-08-01-spurious-unknown-ours-halt.md`; shipped `62f9738`.
+
+**What changed.** The open-orders axis halted the whole book whenever a venue-open order carrying our
+prefix was absent from the in-memory open-order map. That map is read ONCE, after a per-symbol `await`
+loop, so an order the strategy cancelled mid-sweep read as a divergence. On 2026-07-31 that halted
+trading over an order already terminal at the venue 27.3 s earlier. There is now a second tier — order
+book, then a venue-scoped durable read — and a new `stale_venue_open` class that does not halt, but
+DOES escalate per-coid: streak keyed `venue|coid`, reset when the coid leaves that venue's open list,
+halt past `driftPasses`.
+
+**Expected-positive.** `stale_venue_open` appears on an ordinary in-sweep cancel and does NOT halt,
+while a coid still venue-open across more than `driftPasses` consecutive passes DOES halt, with its id
+present in `reconciliations.detail` (the pre-fix halt recorded no id at all, which is why the incident
+had to be reconstructed from `order_events` and container logs).
+
+**Named defect outcomes — any one is a finding:**
+
+1. **It never fires at all.** Every case resolves at the book tier, so the durable arm is dead code in
+   production and the incident it was written for is not the shape that actually occurs. The durable
+   tier is reachable in principle only after a restart, when the book no longer holds the record — if
+   months pass with zero durable-tier resolutions, say so rather than assuming coverage.
+2. **It fires and never clears.** The streak reset is not matching coids (key shape, venue prefix, or a
+   coid that changes representation between the venue read and the map), so a benign race walks toward
+   a halt. This is the failure that turns the fix into a slower version of the bug.
+3. **A genuine orphan escalates but the halt string still lacks the id** — the discriminator was lost
+   again somewhere between `acc.halts` and the `reconciliations.detail` column.
+
+**It is deliberately ACTIONABLE**, i.e. absent from `NON_ACTIONABLE_CLASSES`. A stuck
+`stale_venue_open` therefore starves the clean stamp and blocks kill-switch auto-resume. **That is the
+intended fail direction, not a defect** — an unresolved venue/local disagreement must not be able to
+hand back a permit. Do not "fix" it by making the class non-actionable; that reintroduces exactly the
+silent-mask this WATCH exists to detect.
+
+**Deadline.** If nothing has fired by **2026-08-15**, record it as UNTESTED rather than passing — an
+unfired alert is not a passing one. The alert-side change (`ReconciliationMismatch` now excludes this
+class) means a firing will be visible in the sweep's annotations, not as a page.
+
 ## Flagged for human review (open)
 
 > **This section is for defects that CANNOT be fixed without crossing the §4 MUST-NOT rails — owner

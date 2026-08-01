@@ -120,11 +120,17 @@ groups:
       # classes are excluded here: foreign_open_order (the shared demo wallet's manual-trading
       # steady state — the reason this alert used to fire 24/7), adopted_terminal and
       # backfilled_fill (stream misses healed from venue truth — self-correcting by definition).
+      # stale_venue_open joins them (2026-07-31 fix): a single occurrence is the axis's own sampling
+      # race — an ordinary strategy cancel landing inside a 16-45s per-symbol sweep on a 30s reconcile
+      # cadence — not a divergence, and it would otherwise fire this routinely on every such cancel.
+      # It is NOT dropped from paging entirely: a streak surviving cfg.driftPasses consecutive passes
+      # escalates to the same UNKNOWN_OURS_OPEN halt, which still pages critical via ReconciliationHalt
+      # + KillSwitchEngaged below regardless of this warning-tier exclusion.
       # Everything else (sweep/query failures, non-adoptable statuses, and the halting classes) is
       # actionable signal; halting classes ALSO page critical via ReconciliationHalt +
       # KillSwitchEngaged above.
       - alert: ReconciliationMismatch
-        expr: increase(reconciliation_mismatch_total{class!~"foreign_open_order|adopted_terminal|backfilled_fill"}[5m]) > 0
+        expr: increase(reconciliation_mismatch_total{class!~"foreign_open_order|adopted_terminal|backfilled_fill|stale_venue_open"}[5m]) > 0
         for: 0m
         labels: { severity: warning }
         annotations:

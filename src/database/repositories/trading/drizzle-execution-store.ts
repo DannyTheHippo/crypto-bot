@@ -395,6 +395,22 @@ export class DrizzleExecutionStore implements ExecutionStorePort {
     return row === null ? null : this.rowToOrderRecord(row);
   }
 
+  // §6.4 open-orders axis second tier (see the port's own header comment): the durable fallback for
+  // a venue-open coid absent from OrderBookService — a just-restarted process, a recovery gap, or
+  // true corruption. order.repository's own findByClientOrderId is unscoped (other callers, e.g. this
+  // file's own event-fold lookup, intentionally look up by the globally-unique coid alone) — venue is
+  // compared HERE against the row's own persisted `venue` column instead, so a row that exists but
+  // belongs to a different venue resolves identically to "not found". Environment (demo/testnet vs
+  // live) stays unscoped: VenueId alone does not distinguish them, but clientOrderId already encodes
+  // mode in its own prefix character, so no two different-mode orders can ever collide on this lookup.
+  async loadOrderByClientOrderId(
+    venue: VenueId,
+    clientOrderId: ClientOrderId,
+  ): Promise<OrderRecord | null> {
+    const row = await this.orders.findByClientOrderId(clientOrderId);
+    return row === null || row.venue !== venue ? null : this.rowToOrderRecord(row);
+  }
+
   // §6.4 spot-lane false-HALT fix: the trade axis's first filter, checked before any classification.
   async hasFill(venue: VenueId, symbol: SymbolId, venueTradeId: string): Promise<boolean> {
     return (await this.fills.fetchByTradeId(venue, symbol, venueTradeId)) !== null;

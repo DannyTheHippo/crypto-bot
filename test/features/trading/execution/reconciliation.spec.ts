@@ -502,6 +502,343 @@ describe('ReconciliationService (§6.4)', () => {
     expect(calls).toContainEqual([{ class: 'foreign_open_order' }, 1]);
   });
 
+  // 2026-07-31 incident (boot 4753ef53): the axis reads localOpen ONCE, AFTER the whole per-symbol
+  // fetchOpenOrders loop finishes, so a coid resting at the venue when ITS symbol was swept, then
+  // cancelled locally before the loop ended, misclassified as UNKNOWN_OURS purely from that timing
+  // gap. resolveUnknownOursOpen resolves the coid against OrderBookService first (never pruned
+  // within a process) and the durable store second, before concluding corruption.
+  describe('UNKNOWN_OURS second-tier resolution (2026-07-31 incident)', () => {
+    it('no book record and no durable row ⇒ still HALTs, and detail now carries the coid', async () => {
+      const ctx = build(
+        { openOrders: [venueOrder(OTHER_COID, 'open')] },
+        undefined,
+        undefined,
+        undefined,
+        { sweepSymbols: [SYM] },
+      );
+      const r = await ctx.recon.reconcile();
+      expect(r.halted).toBe(true);
+      expect(ctx.store.reconciliations[0]!.detail).toBe(`UNKNOWN_OURS_OPEN:${OTHER_COID}`);
+    });
+
+    it('book record TERMINAL ⇒ no halt, stale_venue_open bumped, clean stamp still withheld', async () => {
+      const counter = { inc: vi.fn() } as unknown as Counter<string>;
+      const ctx = build(
+        { openOrders: [venueOrder(OTHER_COID, 'open')] },
+        counter,
+        undefined,
+        undefined,
+        { sweepSymbols: [SYM] },
+      );
+      const coid = seedOpenOrder(ctx, OTHER_COID);
+      // Simulate the race: the strategy cancelled it (OrderBookService folds the venue truth, the
+      // portfolio open-order entry is retired) between this symbol's sweep and the local read.
+      ctx.orders.apply(coid, { type: 'VENUE_CANCELED' });
+      ctx.portfolio.closeOrder(coid);
+      const r = await ctx.recon.reconcile();
+      expect(r.halted).toBe(false);
+      expect(r.mismatches).toBe(1);
+      expect(r.actionableMismatches).toBeGreaterThan(0); // stays out of NON_ACTIONABLE_CLASSES
+      expect((counter.inc as ReturnType<typeof vi.fn>).mock.calls).toContainEqual([
+        { class: 'stale_venue_open' },
+        1,
+      ]);
+    });
+
+    it('durable row CANCELED, no book record ⇒ no halt, stale_venue_open bumped (durable tier)', async () => {
+      const counter = { inc: vi.fn() } as unknown as Counter<string>;
+      const ctx = build(
+        { openOrders: [venueOrder(OTHER_COID, 'open')] },
+        counter,
+        undefined,
+        undefined,
+        { sweepSymbols: [SYM] },
+      );
+      // No OrderBookService record at all — but the durable store still holds it, TERMINAL, on the
+      // same venue: the in-memory book merely hadn't caught up. This is the branch behind the durable
+      // tier's whole reason for existing.
+      ctx.store.orders.set(OTHER_COID, {
+        state: 'CANCELED',
+        qty: '1',
+        cumQty: '0',
+        venueOrderId: 'v1',
+        intentId: 'durable-intent',
+        venue: V,
+        symbol: SYM,
+      });
+      const r = await ctx.recon.reconcile();
+      expect(r.halted).toBe(false);
+      expect(r.mismatches).toBe(1);
+      expect((counter.inc as ReturnType<typeof vi.fn>).mock.calls).toContainEqual([
+        { class: 'stale_venue_open' },
+        1,
+      ]);
+    });
+
+    it('durable row exists NON-terminal ⇒ still HALTs (lost from memory while genuinely live)', async () => {
+      const ctx = build(
+        { openOrders: [venueOrder(OTHER_COID, 'open')] },
+        undefined,
+        undefined,
+        undefined,
+        { sweepSymbols: [SYM] },
+      );
+      // No OrderBookService record — but the durable store still holds it, non-terminal, on the
+      // same venue: exactly the FILL_FOR_UNKNOWN_ORDER shape the trade axis halts on.
+      ctx.store.orders.set(OTHER_COID, {
+        state: 'ACKED',
+        qty: '1',
+        cumQty: '0',
+        venueOrderId: 'v1',
+        intentId: 'durable-intent',
+        venue: V,
+        symbol: SYM,
+      });
+      const r = await ctx.recon.reconcile();
+      expect(r.halted).toBe(true);
+      expect(ctx.engages[0]!.reason).toContain(`UNKNOWN_OURS_OPEN:${OTHER_COID}`);
+    });
+
+    it('durable row ACKED on a different venue than the sweeping exchange ⇒ still HALTs', async () => {
+      const ctx = build(
+        { openOrders: [venueOrder(OTHER_COID, 'open')] },
+        undefined,
+        undefined,
+        undefined,
+        { sweepSymbols: [SYM] },
+      );
+      // The row is real and non-terminal, but it belongs to a DIFFERENT venue — comparing row.venue
+      // directly (not deriving venue from symbol) must treat this identically to no row at all.
+      ctx.store.orders.set(OTHER_COID, {
+        state: 'ACKED',
+        qty: '1',
+        cumQty: '0',
+        venueOrderId: 'v1',
+        intentId: 'durable-intent',
+        venue: venueId('binanceusdm'),
+        symbol: SYM,
+      });
+      const r = await ctx.recon.reconcile();
+      expect(r.halted).toBe(true);
+      expect(ctx.engages[0]!.reason).toContain(`UNKNOWN_OURS_OPEN:${OTHER_COID}`);
+    });
+
+    it('durable read throwing still HALTs — fail closed on "could not confirm"', async () => {
+      const ctx = build(
+        { openOrders: [venueOrder(OTHER_COID, 'open')] },
+        undefined,
+        undefined,
+        undefined,
+        { sweepSymbols: [SYM] },
+      );
+      ctx.store.loadOrderByClientOrderId = () => {
+        throw new Error('durable store unavailable');
+      };
+      const r = await ctx.recon.reconcile();
+      expect(r.halted).toBe(true);
+      expect(ctx.engages[0]!.reason).toContain(`UNKNOWN_OURS_OPEN:${OTHER_COID}`);
+    });
+
+    it('regression: a coid cancelled AFTER its own symbol sweep resolves but BEFORE the sweep loop finishes does not halt', async () => {
+      const counter = { inc: vi.fn() } as unknown as Counter<string>;
+      let releaseGate: () => void = () => undefined;
+      const gate = new Promise<void>((resolve) => {
+        releaseGate = resolve;
+      });
+      const ctx = build(
+        { openOrders: [venueOrder(OTHER_COID, 'open')], openOrdersGate: gate },
+        counter,
+        undefined,
+        undefined,
+        { sweepSymbols: [SYM] },
+      );
+      const coid = seedOpenOrder(ctx, OTHER_COID);
+      const pending = ctx.recon.reconcile();
+      // The pass is suspended inside fetchOpenOrders(SYM), exactly where the live incident's
+      // CANCEL_OPEN_SIGNAL landed mid-sweep — fold the cancel now, before the gate releases and the
+      // loop's post-sweep localOpen read runs.
+      ctx.orders.apply(coid, { type: 'VENUE_CANCELED' });
+      ctx.portfolio.closeOrder(coid);
+      releaseGate();
+      const r = await pending;
+      expect(r.halted).toBe(false);
+      expect((counter.inc as ReturnType<typeof vi.fn>).mock.calls).toContainEqual([
+        { class: 'stale_venue_open' },
+        1,
+      ]);
+    });
+
+    // Cause C (MUST-FIX 1): a resolved-terminal reading that the venue keeps listing open anyway is
+    // not always the sampling race above — it could be an order genuinely still resting live at the
+    // venue. A per-coid consecutive-pass streak is what tells the two apart.
+    describe('staleVenueOpenStreak escalation', () => {
+      it(`stays open ${CFG.driftPasses} consecutive stale_venue_open passes without halting, then HALTs on pass ${CFG.driftPasses + 1}`, async () => {
+        const ctx = build(
+          { openOrders: [venueOrder(OTHER_COID, 'open')] },
+          undefined,
+          undefined,
+          undefined,
+          { sweepSymbols: [SYM] },
+        );
+        const coid = seedOpenOrder(ctx, OTHER_COID);
+        ctx.orders.apply(coid, { type: 'VENUE_CANCELED' });
+        ctx.portfolio.closeOrder(coid);
+        for (let i = 0; i < CFG.driftPasses; i++) {
+          expect((await ctx.recon.reconcile()).halted).toBe(false);
+        }
+        const r = await ctx.recon.reconcile();
+        expect(r.halted).toBe(true);
+        expect(ctx.engages[0]!.reason).toContain(`UNKNOWN_OURS_OPEN:${OTHER_COID}`);
+      });
+
+      it('resets the streak the moment the coid drops out of venueOpen', async () => {
+        const script: ExchangeScript = { openOrders: [venueOrder(OTHER_COID, 'open')] };
+        const ctx = build(script, undefined, undefined, undefined, { sweepSymbols: [SYM] });
+        const coid = seedOpenOrder(ctx, OTHER_COID);
+        ctx.orders.apply(coid, { type: 'VENUE_CANCELED' });
+        ctx.portfolio.closeOrder(coid);
+        for (let i = 0; i < CFG.driftPasses; i++) {
+          expect((await ctx.recon.reconcile()).halted).toBe(false);
+        }
+        // The coid drops out of venue truth for one pass — a resolved race, not corruption — so the
+        // streak must reset rather than merely pause.
+        script.openOrders = [];
+        expect((await ctx.recon.reconcile()).halted).toBe(false);
+        // Had the streak NOT reset, this re-appearance would push it past cfg.driftPasses and HALT.
+        script.openOrders = [venueOrder(OTHER_COID, 'open')];
+        expect((await ctx.recon.reconcile()).halted).toBe(false);
+      });
+
+      // v3 §1.5: the cleanup sweep in reconcileOpenOrders is scoped to `${exchange.venue}|` — a
+      // second venue's pass, sharing the SAME ReconciliationService instance and its SAME
+      // staleVenueOpenStreak map, must skip (not delete) a streak entry that belongs to a different
+      // venue, even though that entry does not appear in ITS OWN venueCoids either.
+      it("a streak entry left by one venue is never pruned by another venue's own cleanup sweep", async () => {
+        const PERP = venueId('binanceusdm');
+        const clock = { now: () => epochMs(T) };
+        const store = new InMemoryExecutionStore();
+        const orders = new OrderBookService();
+        const portfolio = new PortfolioStateService(
+          { quoteAsset: 'USDT', startingCash: '100000' },
+          new FeeLedgerService(),
+        );
+        const sampler = new EquitySamplerService(portfolio, fixedFeed('100'), clock, store);
+        const { ks, engages } = killSwitchStub();
+        const ingestor = new FillIngestorService(store, ks, orders, portfolio, sampler);
+        const baseExchange = {
+          capabilities: {
+            clientOrderId: true,
+            fetchOrderByClientId: true,
+            wsUserStream: true,
+            stp: false,
+            sandbox: true,
+          },
+          placeOrder: () => Promise.reject(new Error('unused')),
+          cancelOrder: () => Promise.reject(new Error('unused')),
+          fetchOrder: () => Promise.reject(new Error('unused')),
+          fetchBalances: () =>
+            Promise.resolve(new Map([['USDT', { free: '100000', locked: '0' }]])),
+          fetchMyTrades: () => Promise.resolve([]),
+          validateCredentials: () => Promise.reject(new Error('unused')),
+        };
+        const spotPort: ExchangePort = {
+          ...baseExchange,
+          venue: V,
+          fetchOpenOrders: () => Promise.resolve([venueOrder(OTHER_COID, 'open')]),
+        };
+        const perpPort: ExchangePort = {
+          ...baseExchange,
+          venue: PERP,
+          fetchOpenOrders: () => Promise.resolve([]),
+        };
+        const ports = new Map([
+          [V, spotPort],
+          [PERP, perpPort],
+        ]);
+        const registry = new Map<VenueId, VenueRuntimeDescriptor>([
+          [
+            V,
+            {
+              venue: V,
+              config: { id: V, environment: 'demo' },
+              symbols: [SYM],
+              capitalShare: '500',
+              perpCapable: false,
+            },
+          ],
+          [
+            PERP,
+            {
+              venue: PERP,
+              config: { id: PERP, environment: 'demo' },
+              symbols: [],
+              capitalShare: '500',
+              perpCapable: false,
+            },
+          ],
+        ]);
+        const recon = new ReconciliationService(
+          clock,
+          spotPort,
+          store,
+          ks,
+          CFG,
+          orders,
+          portfolio,
+          ingestor,
+          undefined,
+          undefined,
+          undefined,
+          ports,
+          registry,
+          undefined,
+          undefined,
+        );
+        // SPOT: venue-open, terminal locally ⇒ stale_venue_open, leaving `${V}|${OTHER_COID}` in
+        // staleVenueOpenStreak. PERP has no orders of its own, so its OWN cleanup sweep runs over an
+        // empty venueCoids — the SPOT key must survive that sweep untouched (wrong prefix, `continue`).
+        orders.create(initialOrder(OTHER_COID, qty('1'), '0.001', SYM));
+        orders.apply(OTHER_COID, { type: 'SUBMIT_SENT' });
+        orders.apply(OTHER_COID, { type: 'ACK', venueOrderId: 'v1' });
+        portfolio.addInFlight(makeIntent({ clientOrderId: OTHER_COID }));
+        portfolio.openOrder(makeIntent().strategyId, {
+          clientOrderId: OTHER_COID,
+          symbol: SYM,
+          side: 'BUY',
+          qty: qty('1'),
+          limitPrice: price('100'),
+        });
+        orders.apply(OTHER_COID, { type: 'VENUE_CANCELED' });
+        portfolio.closeOrder(OTHER_COID);
+
+        const r = await recon.reconcile();
+        expect(r.halted).toBe(false);
+        expect(r.mismatches).toBe(1); // SPOT's stale_venue_open only — PERP's pass is clean
+        expect(engages).toHaveLength(0);
+      });
+    });
+
+    // Cause A/B vs. a genuine portfolio-vs-book desync: an order OrderBookService still tracks
+    // NON-terminal (still ACKED) is KNOWN by any honest reading even if the portfolio's own
+    // open-order set no longer lists it — this must record nothing, not even stale_venue_open.
+    it('OrderBookService tracks the coid NON-terminal ⇒ nothing recorded (no bump, no halt)', async () => {
+      const ctx = build(
+        { openOrders: [venueOrder(OTHER_COID, 'open')] },
+        undefined,
+        undefined,
+        undefined,
+        { sweepSymbols: [SYM] },
+      );
+      const coid = seedOpenOrder(ctx, OTHER_COID); // ACKed in OrderBookService, open in portfolio
+      // Retire it from the portfolio's open-order set WITHOUT a terminal fold — OrderBookService
+      // still reads ACKED, simulating a portfolio/book desync rather than an actual cancel.
+      ctx.portfolio.closeOrder(coid);
+      const r = await ctx.recon.reconcile();
+      expect(r.halted).toBe(false);
+      expect(r.mismatches).toBe(0);
+    });
+  });
+
   it('labels a failed per-symbol sweep as sweep_failure (#24)', async () => {
     const counter = { inc: vi.fn() } as unknown as Counter<string>;
     const ctx = build({ openOrdersThrow: true }, counter);

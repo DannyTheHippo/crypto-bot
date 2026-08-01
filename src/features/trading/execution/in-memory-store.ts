@@ -139,21 +139,39 @@ export class InMemoryExecutionStore implements ExecutionStorePort {
   loadOrderByVenueOrderId(venue: VenueId, venueOrderId: string): Promise<OrderRecord | null> {
     for (const [coid, o] of this.orders) {
       if (o.venue === venue && o.venueOrderId === venueOrderId) {
-        const record: OrderRecord = {
-          clientOrderId: coid as ClientOrderId,
-          state: o.state,
-          qty: new Decimal(o.qty),
-          cumQty: new Decimal(o.cumQty),
-          stepSize: '0.00000001',
-          venueOrderId: o.venueOrderId,
-          attempt: 0,
-          cancelWanted: false,
-          symbol: o.symbol as SymbolId | undefined,
-        };
-        return Promise.resolve(record);
+        return Promise.resolve(this.toOrderRecord(coid, o));
       }
     }
     return Promise.resolve(null);
+  }
+
+  // §6.4 open-orders axis second tier — mirrors loadOrderByVenueOrderId above, keyed directly by
+  // clientOrderId since this store's `orders` map is already coid-keyed (unlike the DB's row scan).
+  // Venue is compared against the stored order's own `venue` field, exactly like
+  // DrizzleExecutionStore's row.venue check — a coid that exists but on a different venue resolves
+  // identically to "not found".
+  loadOrderByClientOrderId(
+    venue: VenueId,
+    clientOrderId: ClientOrderId,
+  ): Promise<OrderRecord | null> {
+    const o = this.orders.get(clientOrderId);
+    return Promise.resolve(
+      o === undefined || o.venue !== venue ? null : this.toOrderRecord(clientOrderId, o),
+    );
+  }
+
+  private toOrderRecord(coid: string, o: StoredOrder): OrderRecord {
+    return {
+      clientOrderId: coid as ClientOrderId,
+      state: o.state,
+      qty: new Decimal(o.qty),
+      cumQty: new Decimal(o.cumQty),
+      stepSize: '0.00000001',
+      venueOrderId: o.venueOrderId,
+      attempt: 0,
+      cancelWanted: false,
+      symbol: o.symbol as SymbolId | undefined,
+    };
   }
 
   // §6.4 spot-lane false-HALT fix: the trade axis's first filter, checked before any classification.

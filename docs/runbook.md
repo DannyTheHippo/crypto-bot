@@ -149,9 +149,20 @@ Reconciliation **HALTs and NEVER auto-flattens** — local truth is suspect on a
 flattening on wrong state can double the damage. Passes are **per-venue**
 (`reconciliation_runs_total{venue,result}`). Mismatch taxonomy and response:
 
-- **UNKNOWN_OURS open order** (our clientOrderId prefix, unknown locally) ⇒ HALT, no auto-cancel.
-  Investigate: was it placed by a prior boot? Query by clientOrderId, reconcile intent history, cancel
-  manually if confirmed orphaned.
+- **UNKNOWN_OURS open order** (our clientOrderId prefix, venue-open, unknown locally) — two-tier
+  resolution before this HALTs (2026-07-31 incident, boot 4753ef53): the axis reads local open-order
+  state ONCE, after every symbol's sweep, so a coid resting at the venue when ITS symbol was swept
+  then cancelled/filled locally before the sweep loop finished misreads as "unknown" purely from that
+  timing gap. Resolved first against `OrderBookService` (in-memory, never pruned within a process),
+  then the durable order store, venue-scoped by the row's own `venue` column. A TERMINAL resolution on
+  either tier bumps `stale_venue_open` (actionable, non-halting) instead of halting immediately — but
+  only for up to `cfg.driftPasses` CONSECUTIVE passes on the SAME coid (`staleVenueOpenStreak`,
+  keyed `venue|coid`, reset the moment that coid drops out of the venue's own open-orders list). A
+  streak surviving past `cfg.driftPasses` means the terminal resolution keeps being wrong — the order
+  is genuinely still resting live at the venue (a venue-confirmed cancel that never applied, a second
+  instance on the key, a manual venue action) — and escalates to `UNKNOWN_OURS_OPEN:{coid}` ⇒ HALT, no
+  auto-cancel, exactly as a first-pass unresolved coid does. Investigate: was it placed by a prior
+  boot? Query by clientOrderId, reconcile intent history, cancel manually if confirmed orphaned.
 - **FILL_FOR_UNKNOWN_ORDER** (a trade for an our-prefix order unknown locally) ⇒ HALT. A fill happened
   the OMS never recorded — reconcile the position before any further trading.
 - **BALANCE_DRIFT beyond ε** (abs+rel tolerance) ⇒ HALT. **BALANCE_LEAK** (within-ε drift growing
@@ -170,6 +181,12 @@ flattening on wrong state can double the damage. Passes are **per-venue**
 - **FILL_FOLD_FAILED** (same shape, non-reducer cause — a store write, portfolio fold, or equity
   sample threw after the fill row committed) ⇒ actionable mismatch, no halt. Blocks that pass's clean
   stamp only; the same never-re-detected residue applies, so check the warn log for the coid.
+- **stale_venue_open** (a venue-open UNKNOWN_OURS coid resolved TERMINAL via the in-memory or durable
+  tier — see the UNKNOWN_OURS entry above) ⇒ actionable mismatch, no halt, UNLESS the same coid's
+  streak survives `cfg.driftPasses` consecutive passes, in which case it escalates to the
+  UNKNOWN_OURS_OPEN halt above. Excluded from the `ReconciliationMismatch` warning alert (routine
+  noise below the escalation threshold) but a halt escalation still pages critical via
+  `ReconciliationHalt` regardless.
 - **FOREIGN open order / trade** (not our prefix) ⇒ WARN, ignore (another account/bot on the same key).
 - **Missed fill for a known order** ⇒ backfilled via the FillIngestor (WARN).
 - A venue `rejected` for an order we believe ACKED ⇒ WARN inconsistency (never an illegal terminal adopt).

@@ -47,7 +47,15 @@ import { PortfolioStateService } from './portfolio-state.service';
 // classes keep their historical halts[] names; the warn-only classes had no in-code discriminator
 // before this (only comments), so these names are the canonical taxonomy.
 type MismatchClass =
-  | 'unknown_ours_open' // halting: our COID prefix on the venue, no local row
+  | 'unknown_ours_open' // halting: our COID prefix on the venue, no local row anywhere (in-memory or durable)
+  | 'stale_venue_open' // actionable: venue-open COID resolved TERMINAL via the in-memory or durable
+  // tier — usually a sampling-order race (this axis reads localOpen ONCE, after every symbol's
+  // fetchOpenOrders), self-clearing within one pass (2026-07-31 incident, boot 4753ef53). Non-halting
+  // ON ITS OWN, but a per-coid streak (staleVenueOpenStreak) surviving cfg.driftPasses consecutive
+  // passes escalates to the same UNKNOWN_OURS_OPEN halt unknown_ours_open uses — that is a race that
+  // never resolved, i.e. the order is genuinely still live at the venue. Deliberately NOT in
+  // NON_ACTIONABLE_CLASSES below: unlike the three benign classes, even a non-escalating occurrence
+  // points at a real staleness problem, not routine noise, so it must keep blocking the clean stamp.
   | 'fill_for_unknown_order' // halting: our-prefix trade, no local order
   | 'balance_drift' // halting: balance beyond ε
   | 'balance_leak' // halting: within ε but monotone-growing drift
@@ -67,6 +75,7 @@ type MismatchClass =
 // without a matching entry here silently keeps that one class unseeded rather than failing to compile.
 const ALL_MISMATCH_CLASSES: readonly MismatchClass[] = [
   'unknown_ours_open',
+  'stale_venue_open',
   'fill_for_unknown_order',
   'balance_drift',
   'balance_leak',
@@ -249,6 +258,13 @@ export class ReconciliationService {
   private readonly checkpoints = new Map<string, EpochMs>();
   private readonly driftHistory = new Map<string, Decimal[]>();
   private readonly positionDivergenceStreak = new Map<string, number>();
+  // UNKNOWN_OURS second tier (2026-07-31 incident): keyed `${venue}|${coid}` — mirrors
+  // positionDivergenceStreak's own per-key consecutive-pass counter. Bumped by
+  // resolveUnknownOursOpen/escalateStaleVenueOpen whenever the SAME coid resolves stale_venue_open
+  // again; deleted by reconcileOpenOrders the moment that coid drops out of the venue's own
+  // fetchOpenOrders result, so a resolved race can never accumulate toward the escalation threshold
+  // across passes.
+  private readonly staleVenueOpenStreak = new Map<string, number>();
   // Task C4: keyed `${venue}:${axis}` — rate-limits the diagnostic WARN below, never the counter
   // (which is per-event so alerting cannot lose an increment to this throttle).
   private readonly lastAxisErrorLogAt = new Map<string, EpochMs>();
@@ -738,11 +754,21 @@ export class ReconciliationService {
     for (const vo of venueOpen) {
       const verdict = classifyVenueOpenOrder(vo.clientOrderId, localCoids.has(vo.clientOrderId));
       if (verdict === 'UNKNOWN_OURS') {
-        bump(acc, 'unknown_ours_open');
-        acc.halts.push('UNKNOWN_OURS_OPEN'); // I1: our prefix, no local row ⇒ corruption (no auto-cancel)
+        await this.resolveUnknownOursOpen(exchange, vo.clientOrderId, cfg, acc);
       } else if (verdict === 'FOREIGN') {
         bump(acc, 'foreign_open_order'); // manual trading on the key — WARN + ignore
       }
+    }
+
+    // staleVenueOpenStreak reset: a coid stops being visited by the loop above the instant it drops
+    // out of `venueOpen` — self-clearing causes A/B (see resolveUnknownOursOpen) never get bumped
+    // again, but their old streak count would otherwise sit in the map forever and let a LATER,
+    // unrelated re-appearance resume counting from where a fully-resolved race left off. Swept once
+    // per venue per pass, scoped to this venue's own key prefix only.
+    const streakPrefix = `${exchange.venue}|`;
+    for (const key of this.staleVenueOpenStreak.keys()) {
+      if (!key.startsWith(streakPrefix)) continue;
+      if (!venueCoids.has(key.slice(streakPrefix.length))) this.staleVenueOpenStreak.delete(key);
     }
 
     // Local order we believe open but the venue does not list: adopt the venue's terminal truth.
@@ -756,6 +782,85 @@ export class ReconciliationService {
       if (venueCoids.has(lo.clientOrderId)) continue;
       if (failedSymbols.has(lo.symbol)) continue;
       await this.adoptTerminal(exchange, lo.clientOrderId, lo.symbol, acc);
+    }
+  }
+
+  // UNKNOWN_OURS second tier (2026-07-31 incident, boot 4753ef53): classifyVenueOpenOrder's verdict
+  // above is computed against `localOpen`, sampled ONCE after every symbol's fetchOpenOrders loop —
+  // an order resting at the venue when ITS symbol was swept, then cancelled/filled locally before the
+  // loop finished, reads as "our prefix, absent locally" purely from that timing gap, not a real
+  // divergence. cbt019fb74b74127d468e1bd84cd515dc50 (BTC LIMIT SELL) was cancelled at 17:30:32.611,
+  // 27.3s before the stale read engaged the kill switch on it. Mirrors the trade axis's own two-tier
+  // resolution (resolveVenueOrder's in-memory-first pass-start-index, then the durable
+  // loadOrderByVenueOrderId fallback at reconcileTrade's tier-2): OrderBookService is authoritative
+  // FIRST because it is never pruned within a process, so a terminal record there proves the venue
+  // read was simply stale.
+  //
+  // A single terminal resolution does NOT by itself prove the sampling race, though — it collapses
+  // three distinct causes into one reading: (A) the sampling race above, which cannot survive a
+  // second, INDEPENDENT venue read; (B) venue eventual consistency, which also self-clears; (C) the
+  // order is genuinely still resting live at the venue and our terminal fold was wrong (a
+  // venue-confirmed cancel that never applied, a second instance on the key, a manual venue action) —
+  // this does NOT self-clear. escalateStaleVenueOpen's per-coid consecutive-pass streak is what tells
+  // C apart from A/B: a repeated stale_venue_open reading cannot widen a race that one independent
+  // venue sample already resolved, so a streak surviving `cfg.driftPasses` passes on the SAME coid is
+  // cause C, and escalates to the same UNKNOWN_OURS_OPEN halt the pre-change code always issued.
+  private async resolveUnknownOursOpen(
+    exchange: ExchangePort,
+    coid: ClientOrderId,
+    cfg: ReconConfig,
+    acc: PassAccumulator,
+  ): Promise<void> {
+    const rec = this.orders.get(coid);
+    if (rec !== undefined) {
+      if (TERMINAL_ORDER_STATES.has(rec.state)) {
+        bump(acc, 'stale_venue_open'); // gone terminal locally between this coid's symbol sweep and the local read
+        this.escalateStaleVenueOpen(exchange, coid, cfg, acc);
+      }
+      return; // tracked and non-terminal ⇒ KNOWN by any honest reading; nothing to record
+    }
+    // Absent from OrderBookService entirely: a just-restarted process, a recovery gap, or true
+    // corruption. Fall through to the durable tier, venue-scoped by the row's own persisted `venue`
+    // column (loadOrderByClientOrderId — the same discipline venueOrderIndex applies to venueOrderId
+    // lookups) — never by clientOrderId shape alone (isOurClientOrderId matches prefix only, no
+    // venue/mode). FAIL CLOSED: a throw, a miss, and a wrong-venue row all resolve `durable` to null
+    // identically and fall through to the halt below — "could not confirm this is ours on THIS venue"
+    // is never treated as confirmed.
+    let durable: OrderRecord | null;
+    try {
+      durable = await this.store.loadOrderByClientOrderId(exchange.venue, coid);
+    } catch {
+      durable = null;
+    }
+    if (durable !== null) {
+      if (TERMINAL_ORDER_STATES.has(durable.state)) {
+        bump(acc, 'stale_venue_open'); // durably terminal too — the in-memory book merely hadn't caught up
+        this.escalateStaleVenueOpen(exchange, coid, cfg, acc);
+        return;
+      }
+      // Durably ours on this venue, still non-terminal, yet absent from OrderBookService ⇒ the
+      // in-memory projection was lost while the order was genuinely live — exactly the
+      // FILL_FOR_UNKNOWN_ORDER shape the trade axis halts on at reconcileTrade's own durable tier.
+      // Fall through to the halt below; never auto-cancel what we cannot fully account for (rule 6).
+    }
+    bump(acc, 'unknown_ours_open');
+    acc.halts.push(`UNKNOWN_OURS_OPEN:${coid}`); // I1: our prefix, no live local row anywhere ⇒ corruption
+  }
+
+  // Cause C escalation (resolveUnknownOursOpen above). Reset lives in reconcileOpenOrders, not here:
+  // this method only ever runs for a coid present in THIS pass's venueOpen, so it cannot itself
+  // observe the coid's absence on a later pass — that is the signal that the race actually resolved.
+  private escalateStaleVenueOpen(
+    exchange: ExchangePort,
+    coid: ClientOrderId,
+    cfg: ReconConfig,
+    acc: PassAccumulator,
+  ): void {
+    const key = `${exchange.venue}|${coid}`;
+    const streak = (this.staleVenueOpenStreak.get(key) ?? 0) + 1;
+    this.staleVenueOpenStreak.set(key, streak);
+    if (streak > cfg.driftPasses) {
+      acc.halts.push(`UNKNOWN_OURS_OPEN:${coid}`); // cause C: still resting live at the venue, not a sampling race
     }
   }
 

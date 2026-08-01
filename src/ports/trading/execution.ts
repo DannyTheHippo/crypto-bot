@@ -203,6 +203,26 @@ export interface ExecutionStorePort {
   // silent degrade to "not found" on a store that has not wired it would quietly resurrect the
   // foreign/ours ambiguity this method exists to close.
   loadOrderByVenueOrderId(venue: VenueId, venueOrderId: string): Promise<OrderRecord | null>;
+  // §6.4 open-orders axis second tier (2026-07-31 incident, boot 4753ef53): loadOrderByVenueOrderId's
+  // own precedent, keyed by clientOrderId instead — reached only when a coid the venue lists as open
+  // is absent from OrderBookService (never pruned within a process, so that tier is authoritative
+  // first): a just-restarted process, a recovery gap, or true corruption. `venue` is compared against
+  // the row's OWN persisted `venue` column, never derived from the row's symbol — deriving venue from
+  // a symbol string can itself throw (splitSymbol) on a malformed/unparseable value, which would
+  // escape this read path entirely rather than resolve to a safe "not confirmed". A miss and a
+  // wrong-venue row both resolve to null identically, so the caller's fail-closed fallthrough treats
+  // them the same. Environment (demo/testnet vs live) is deliberately UNSCOPED here: VenueId itself is
+  // environment-agnostic (demo `binance` and live `binance` are the same VenueId; only `orders.mode`
+  // distinguishes them, and it is not read on this path) — but that is safe because clientOrderId
+  // already encodes mode in its own prefix character (encodeClientOrderId), so two orders from
+  // different modes can never share a clientOrderId in the first place; there is no environment
+  // cross-talk for this lookup to accidentally resolve. Required (not @Optional) for the same reason
+  // as loadOrderByVenueOrderId above — a silent degrade to "not found" on a store that never wired it
+  // would quietly widen this axis's UNKNOWN_OURS_OPEN halt back into the incident it exists to close.
+  loadOrderByClientOrderId(
+    venue: VenueId,
+    clientOrderId: ClientOrderId,
+  ): Promise<OrderRecord | null>;
   // §6.4 spot-lane false-HALT fix (2026-07-19): a fill already recorded in the durable fills table
   // (e.g. a historical trade the checkpoint/overlap window keeps re-surfacing forever once the
   // symbol goes quiet — 2026-07-19 incident) is a pure no-op no matter how it classifies; checked

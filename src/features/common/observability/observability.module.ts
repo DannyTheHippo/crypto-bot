@@ -61,6 +61,7 @@ import {
 } from './metrics.service';
 import { OpsEventLogger } from './ops-event-logger';
 import {
+  PROMOTION_BLOCKED_GAUGE,
   PROMOTION_LLM_COST_GAUGE,
   PROMOTION_NET_PNL_GAUGE,
   PROMOTION_READY_GAUGE,
@@ -157,6 +158,7 @@ import {
     PROMOTION_LLM_COST_GAUGE,
     PROMOTION_WINDOW_DAYS_GAUGE,
     PROMOTION_READY_GAUGE,
+    PROMOTION_BLOCKED_GAUGE,
     PromotionMetricsService,
     VERSION_NET_PNL_GAUGE,
     VERSION_ROUND_TRIPS_GAUGE,

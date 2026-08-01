@@ -337,6 +337,45 @@ describe('PromotionReadinessService', () => {
     expect(v.permitted).toBe(false);
   });
 
+  // G5 (research/studies/success-exit-2026-07-31.md §9, 2026-08-01): typed `reasons` from `string[]`
+  // to the closed `PromotionBlockedReason` union (ports/trading/promotion.ts) to back the new
+  // agentic_promotion_blocked gauge's zero-seed — a type-only change. This pins the exact reasons
+  // array for every non-NO_STATS_SOURCE clause firing at once (that early-return branch is covered
+  // separately above), proving the retype changed nothing at runtime: order and membership are
+  // byte-identical to evaluate()'s own reasons.push sequence.
+  it('all seven non-NO_STATS_SOURCE reasons can fire simultaneously — verdict pinned exactly (G5 regression)', async () => {
+    const fills: PromotionFillRow[] = [
+      // Unconvertible fee (BNB) on the opening leg; closes at a loss (100 → 90).
+      fill({ executedAt: 0, side: 'BUY', qty: '1', price: '100', fee: '0.001', feeAsset: 'BNB' }),
+      fill({ executedAt: 1_000, side: 'SELL', qty: '1', price: '90' }),
+      // Unjoined fill: strategyId null → UNRESOLVED_FILL, excluded from the walk.
+      fill({ executedAt: 2_000, strategyId: null, side: 'BUY' }),
+    ];
+    const cfg: PromotionReadinessConfig = { ...CFG, fundingDataExpected: true };
+    const base = statsOf(fills);
+    const port: PromotionStatsPort = {
+      ...base.port,
+      fundingNetForMode: () => Promise.resolve({ netQuote: '0', hasRows: false }),
+    };
+    const benchmark: PassiveBenchmarkPort = { passivePnlQuote: () => Promise.resolve('1000') };
+
+    const v = await new PromotionReadinessService(port, cfg, benchmark).evaluate();
+
+    expect(v.evidence.roundTrips).toBe(1);
+    expect(v.evidence.netPnl).toBe('-10');
+    expect(v.evidence.windowDays).toBe(0);
+    expect(v.evidence.reasons).toEqual([
+      'UNRESOLVED_FILL',
+      'UNCONVERTIBLE_FEE_ASSET',
+      'INSUFFICIENT_ROUND_TRIPS',
+      'NON_POSITIVE_NET_PNL',
+      'INSUFFICIENT_WINDOW',
+      'FUNDING_DATA_MISSING',
+      'BELOW_PASSIVE_BENCHMARK',
+    ]);
+    expect(v.permitted).toBe(false);
+  });
+
   describe('per-model cost (W4+W13)', () => {
     const PRICED: PromotionReadinessConfig = {
       tokenPriceInputPerMtok: '3',

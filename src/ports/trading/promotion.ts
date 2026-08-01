@@ -184,6 +184,23 @@ export interface RoundTripEvidencePort {
 
 // ── PromotionReadiness verdict ───────────────────────────────────────────────
 
+// The closed set of blocking-reason labels PromotionReadinessService can ever push into `reasons`
+// below — the eight literal strings at notPermitted's one call site (NO_STATS_SOURCE) and
+// evaluate()'s seven reasons.push call sites, and no others. Typed here (not left as plain
+// `string[]`) so G5's zero-seeded `agentic_promotion_blocked{reason}` gauge
+// (promotion-metrics.service.ts) can be built from a `satisfies Record<PromotionBlockedReason,
+// true>` map: a ninth reason added to this union without a matching seed-map entry fails typecheck,
+// the same exhaustiveness discipline agent-metrics-recorder.service.ts uses for AgentVenueStopEvent.
+export type PromotionBlockedReason =
+  | 'NO_STATS_SOURCE'
+  | 'UNRESOLVED_FILL'
+  | 'UNCONVERTIBLE_FEE_ASSET'
+  | 'INSUFFICIENT_ROUND_TRIPS'
+  | 'NON_POSITIVE_NET_PNL'
+  | 'INSUFFICIENT_WINDOW'
+  | 'FUNDING_DATA_MISSING'
+  | 'BELOW_PASSIVE_BENCHMARK';
+
 export interface PromotionReadinessEvidence {
   readonly roundTrips: number;
   // Fraction of closed demo round trips with per-trip net (realizedPnl − feesQuote) > 0 over the
@@ -210,7 +227,7 @@ export interface PromotionReadinessEvidence {
   // against netPnl above to produce BELOW_PASSIVE_BENCHMARK. Null is not a failure: the gate simply
   // does not apply the benchmark clause, which is the pre-enable behavior (see PassiveBenchmarkPort).
   readonly passivePnlQuote: string | null;
-  readonly reasons: string[];
+  readonly reasons: PromotionBlockedReason[];
 }
 
 // The benchmark half of the promotion verdict (2026-07-27).

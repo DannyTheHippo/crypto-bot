@@ -25,6 +25,7 @@ import type {
   ModeAuditEvent,
   ModeControlConfig,
 } from '../../src/ports/trading/mode-control';
+import type { PromotionBlockedReason } from '../../src/ports/trading/promotion';
 
 const T = 1_700_000_000_000;
 const SECRET = 'arming-secret';
@@ -238,7 +239,7 @@ describe('LIVE-GATE MATRIX — earned-live promotion gate (agentic boot interloc
     lastClosedAt: 2,
     fundingDataMissing: false,
     passivePnlQuote: null,
-    reasons: [] as string[],
+    reasons: [] as PromotionBlockedReason[],
   };
 
   it('refuses a live agentic boot with no verdict at all (no DB / evaluation error → fail-closed)', () => {
@@ -248,7 +249,7 @@ describe('LIVE-GATE MATRIX — earned-live promotion gate (agentic boot interloc
     );
   });
 
-  it.each([
+  it.each<[PromotionBlockedReason]>([
     ['INSUFFICIENT_ROUND_TRIPS'],
     ['NON_POSITIVE_NET_PNL'],
     ['INSUFFICIENT_WINDOW'],

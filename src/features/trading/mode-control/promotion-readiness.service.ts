@@ -7,6 +7,7 @@ import {
   PROMOTION_STATS,
   type PassiveBenchmarkPort,
   type PerModelTokenTotals,
+  type PromotionBlockedReason,
   type PromotionReadiness,
   type PromotionReadinessConfig,
   type PromotionReadinessPort,
@@ -123,7 +124,7 @@ export class PromotionReadinessService implements PromotionReadinessPort {
     const belowPassiveBenchmark =
       passivePnlQuote !== null && netPnl.lte(new Decimal(passivePnlQuote));
 
-    const reasons: string[] = [];
+    const reasons: PromotionBlockedReason[] = [];
     if (hasUnresolvedFill) reasons.push('UNRESOLVED_FILL');
     if (unconvertibleFeeAsset) reasons.push('UNCONVERTIBLE_FEE_ASSET');
     if (cycles.length < MIN_ROUND_TRIPS) reasons.push('INSUFFICIENT_ROUND_TRIPS');
@@ -240,7 +241,7 @@ function zeroEvidence() {
 }
 
 function notPermitted(
-  reasons: string[],
+  reasons: PromotionBlockedReason[],
   evidence: Omit<PromotionReadiness['evidence'], 'reasons'>,
 ): PromotionReadiness {
   return { permitted: false, evidence: { ...evidence, reasons } };

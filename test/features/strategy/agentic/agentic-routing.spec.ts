@@ -527,7 +527,7 @@ describe('live interlock (earned-live gate: a live-configured agentic boot needs
   });
 
   it('throws on a not-permitted verdict, surfacing the unmet criteria', () => {
-    const refused = {
+    const refused: PromotionReadiness = {
       permitted: false,
       evidence: { ...permittedVerdict.evidence, reasons: ['INSUFFICIENT_ROUND_TRIPS'] },
     };

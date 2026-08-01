@@ -32,3 +32,22 @@ export function splitSymbol(symbol: SymbolId): AssetPair {
   }
   return { base: parts[0]!, quote, settle };
 }
+
+// One representative symbol per DISTINCT base asset, in first-occurrence order. A configured
+// universe routinely lists the same underlying on more than one venue/product (e.g. 'BTC/USDT' spot
+// and 'BTC/USDT:USDT' perp) — equal-weighting the raw symbol strings would hold a dual-listed asset
+// twice, which is not a buy-and-hold basket over the universe. Built for
+// PassiveBenchmarkRepository's basket derivation (database/repositories/trading/
+// passive-benchmark.repository.ts); kept here rather than inline so it shares splitSymbol's own
+// unit coverage and stays reusable by any future basket/universe consumer.
+export function distinctBaseAssetRepresentatives(symbols: readonly string[]): readonly string[] {
+  const seenBases = new Set<string>();
+  const representatives: string[] = [];
+  for (const symbol of symbols) {
+    const { base } = splitSymbol(symbol as SymbolId);
+    if (seenBases.has(base)) continue;
+    seenBases.add(base);
+    representatives.push(symbol);
+  }
+  return representatives;
+}

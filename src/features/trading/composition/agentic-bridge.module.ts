@@ -11,6 +11,7 @@ import { InMemoryAgentDecisionJournal } from '../../../database/repositories/str
 import { LlmUsageSinkAdapter } from '../../../database/repositories/common/llm-usage-sink.adapter';
 import { InMemoryLlmUsageSink } from '../../../database/repositories/common/in-memory-llm-usage-sink';
 import { PromotionStatsRepository } from '../../../database/repositories/trading/promotion-stats.repository';
+import { PassiveBenchmarkRepository } from '../../../database/repositories/trading/passive-benchmark.repository';
 import {
   PlaybookStoreAdapter,
   type PlaybookVersionEntry,
@@ -59,8 +60,10 @@ import {
   type SymbolConstraints,
 } from '../../../ports/strategy/agentic-strategy';
 import {
+  PASSIVE_BENCHMARK,
   PROMOTION_STATS,
   REFLECTION_EVIDENCE,
+  type PassiveBenchmarkPort,
   type PromotionStatsPort,
   type RoundTripEvidencePort,
 } from '../../../ports/trading/promotion';
@@ -760,6 +763,23 @@ function isTestEnv(): boolean {
       inject: [DRIZZLE_DB],
     },
     {
+      // PASSIVE_BENCHMARK (2026-08-01, G4 — research/studies/success-exit-2026-07-31.md § 6): the
+      // benchmark half of the earned-live verdict. Same DB-only, undefined-under-test/ci/no-DB shape
+      // as PROMOTION_STATS above — @Optional() at the consumer (PromotionReadinessService) means an
+      // absent binding here leaves the clause dark (byte-identical pre-2026-08-01 behavior), never a
+      // false permit. AppConfig.strategy.symbols (TRADING_SYMBOLS) is passed as a plain array so the
+      // repository itself stays ConfigService-free.
+      provide: PASSIVE_BENCHMARK,
+      useFactory: (
+        db: NodePgDatabase<typeof schema> | null,
+        config: TypedConfigService,
+      ): PassiveBenchmarkPort | undefined =>
+        isTestEnv() || db === null
+          ? undefined
+          : new PassiveBenchmarkRepository(db, config.strategy.symbols),
+      inject: [DRIZZLE_DB, TypedConfigService],
+    },
+    {
       // Realized round-trip evidence + durable trigger seed for ReflectionService — a pure reader
       // over the same PROMOTION_STATS binding (one fills-walk closure rule for the promotion
       // verdict AND the learning loop). DB-only like PROMOTION_STATS itself: undefined under
@@ -796,6 +816,7 @@ function isTestEnv(): boolean {
     PriceHistoryStore,
     LLM_USAGE_SINK,
     PROMOTION_STATS,
+    PASSIVE_BENCHMARK,
     REFLECTION_EVIDENCE,
     EDGE_POLICY_OVERRIDE,
     EdgeCohortPinState,

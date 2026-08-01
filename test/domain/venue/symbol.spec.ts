@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { splitSymbol } from '../../../src/domain/venue/types/symbol';
+import {
+  distinctBaseAssetRepresentatives,
+  splitSymbol,
+} from '../../../src/domain/venue/types/symbol';
 import { symbolId } from '../../../src/domain/common/types/ids';
 
 describe('splitSymbol', () => {
@@ -31,5 +34,28 @@ describe('splitSymbol', () => {
 
   it('rejects a colon form with an empty quote asset', () => {
     expect(() => splitSymbol(symbolId('BTC/:USDT'))).toThrow(/unsupported symbol format/);
+  });
+});
+
+describe('distinctBaseAssetRepresentatives', () => {
+  it('a dual-listed asset (spot + perp) collapses to ONE representative, spot preferred by config order', () => {
+    // The exact shape TRADING_SYMBOLS carries: spot entries first, perp duplicates later. Holding
+    // BTC twice in the basket is the failure mode this function exists to prevent.
+    const symbols = ['BTC/USDT', 'ETH/USDT', 'BTC/USDT:USDT', 'ETH/USDT:USDT'];
+    expect(distinctBaseAssetRepresentatives(symbols)).toEqual(['BTC/USDT', 'ETH/USDT']);
+  });
+
+  it('a perp-only asset (no spot listing) still surfaces via its own representative', () => {
+    const symbols = ['BTC/USDT', 'HYPE/USDT:USDT'];
+    expect(distinctBaseAssetRepresentatives(symbols)).toEqual(['BTC/USDT', 'HYPE/USDT:USDT']);
+  });
+
+  it('no duplicates ⇒ every symbol passes through unchanged, in order', () => {
+    const symbols = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT'];
+    expect(distinctBaseAssetRepresentatives(symbols)).toEqual(symbols);
+  });
+
+  it('an empty universe yields an empty basket', () => {
+    expect(distinctBaseAssetRepresentatives([])).toEqual([]);
   });
 });

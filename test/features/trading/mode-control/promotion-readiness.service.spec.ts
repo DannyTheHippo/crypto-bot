@@ -648,4 +648,87 @@ describe('PromotionReadinessService', () => {
       expect(v.evidence.passivePnlQuote).toBeNull();
     });
   });
+
+  // G4 (2026-08-01, research/studies/success-exit-2026-07-31.md § 6): PassiveBenchmarkRepository
+  // (database/repositories/trading/passive-benchmark.repository.ts) is bound as PASSIVE_BENCHMARK
+  // at the composition root (AgenticBridgeModule) — this suite exercises the SERVICE side of that
+  // binding only (the repository itself is DB-coupled and untested outside test:db, same convention
+  // PromotionStatsRepository already follows). Two things are pinned here that the 2026-07-27 suite
+  // above does not cover:
+  //   1. the adapter's own fail-closed sentinel ('Infinity' — see the repository's CANNOT_COMPUTE
+  //      comment) actually forces a block once it reaches the real comparison, not just in isolation;
+  //   2. binding the benchmark can only ever ADD a reason, never remove one or flip a verdict from
+  //      not-permitted to permitted — the gate-override grant (2026-07-22) authorises this change
+  //      ONLY because it can make the gate stricter, never looser.
+  describe('passive benchmark clause — fail-closed adapter integration + verdict-unchanged proof (2026-08-01)', () => {
+    const benchmarkOf = (value: string | null): PassiveBenchmarkPort => ({
+      passivePnlQuote: () => Promise.resolve(value),
+    });
+
+    // 30 profitable trips, no LLM cost: realized 30, net 30 — a baseline the gate ALREADY permits
+    // with no benchmark bound (same shape as the funding-inclusion block's own profitableFills()).
+    function permittedBaselineFills(): PromotionFillRow[] {
+      const fills: PromotionFillRow[] = [];
+      for (let i = 0; i < 30; i++) {
+        const closedAt = 1_000_000 + i * ((15 * DAY) / 29);
+        fills.push(
+          fill({ executedAt: closedAt - 1, side: 'BUY', qty: '0.001', price: '50000' }),
+          fill({ executedAt: closedAt, side: 'SELL', qty: '0.001', price: '51000' }),
+        );
+      }
+      return fills;
+    }
+
+    it('the baseline is permitted with no benchmark bound (sanity check for the two tests below)', async () => {
+      const v = await new PromotionReadinessService(
+        statsOf(permittedBaselineFills()).port,
+        CFG,
+      ).evaluate();
+      expect(v.evidence.netPnl).toBe('30');
+      expect(v.permitted).toBe(true);
+      expect(v.evidence.reasons).toEqual([]);
+    });
+
+    it('binding a benchmark the baseline beats leaves it permitted — reasons stay empty (never flips true → true differently)', async () => {
+      const v = await new PromotionReadinessService(
+        statsOf(permittedBaselineFills()).port,
+        CFG,
+        benchmarkOf('1'), // netPnl 30 > 1
+      ).evaluate();
+      expect(v.permitted).toBe(true);
+      expect(v.evidence.reasons).toEqual([]);
+    });
+
+    it("the adapter's fail-closed sentinel (Infinity) flips a permitted baseline to blocked, adding exactly one reason", async () => {
+      const v = await new PromotionReadinessService(
+        statsOf(permittedBaselineFills()).port,
+        CFG,
+        benchmarkOf('Infinity'),
+      ).evaluate();
+      expect(v.evidence.netPnl).toBe('30');
+      expect(v.evidence.passivePnlQuote).toBe('Infinity');
+      expect(v.evidence.reasons).toEqual(['BELOW_PASSIVE_BENCHMARK']);
+      expect(v.permitted).toBe(false);
+    });
+
+    it('binding the benchmark can never rescue a verdict already blocked by another reason — never flips false → true', async () => {
+      // 29 round trips (same fixture as the standalone INSUFFICIENT_ROUND_TRIPS test above) blocks
+      // regardless of the benchmark, even one the strategy trivially beats.
+      const fills: PromotionFillRow[] = [];
+      for (let i = 0; i < 29; i++) {
+        const closedAt = 1_000_000 + i * DAY;
+        fills.push(
+          fill({ executedAt: closedAt - 1, side: 'BUY', qty: '0.001', price: '50000' }),
+          fill({ executedAt: closedAt, side: 'SELL', qty: '0.001', price: '51000' }),
+        );
+      }
+      const v = await new PromotionReadinessService(
+        statsOf(fills).port,
+        CFG,
+        benchmarkOf('-999999'), // trivially beaten
+      ).evaluate();
+      expect(v.permitted).toBe(false);
+      expect(v.evidence.reasons).toEqual(['INSUFFICIENT_ROUND_TRIPS']);
+    });
+  });
 });

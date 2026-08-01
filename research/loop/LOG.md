@@ -706,7 +706,62 @@ basket, which is a judgement: equal-weight over the 40-symbol universe, over the
 equal-weight full-notional basket compares a 50%-exposed strategy against a 100%-exposed benchmark).
 **Owner question, open.**
 
+### G4 shipped after all — the owner delegated the basket choice (`682b6f6`)
+
+Asked to "handle G4 as you think is best", so the design calls were made and recorded rather than
+deferred: equal-weight over **28 distinct underlying assets, not the 40 strings** (the universe lists
+`BTC/USDT` and `BTC/USDT:USDT` separately, so string-weighting holds ~12 assets twice), spot preferred,
+**exposure-matched** (`benchmarkPnl = avgGrossExposure × basketReturn` — an unmatched full-notional
+basket flatters a ~50%-exposed strategy in a drawdown exactly as much as it punishes it in a rally).
+
+**The price source was the load-bearing redirect.** A first attempt STOPPED correctly, reporting that
+production could not supply a historical price at an arbitrary past instant and proposing to widen
+`FeedHealthPort.fetchCandles` with a `since` param plus touch the ccxt adapter. That was not necessary:
+**`agent_decisions.close` is already a dense 15m grid** that `loop-forward-return-core` validates with
+five cited reasons, so the whole thing lands with no port change, no ccxt work and no new schema.
+Verified independently at the orchestrator AND in the adapter: **40/40 symbols ⇒ 28/28 distinct assets
+have a usable price at BOTH window ends, 100%.** The clause blocks on evidence, never on a data gap.
+
+**FAILS CLOSED, and where matters.** The service's existing contract reads a `null` from a bound port
+as "measurement gap, drop the clause" — fail OPEN — and that test predates this work and lives in
+mode-control, which the 2026-07-22 grant's KEPT set forbids re-wording. So fail-closed lives entirely in
+the **adapter**: every data problem returns an `Infinity` sentinel rather than `null`, and
+`netPnl.lte(Infinity)` blocks unconditionally; one missing asset voids the whole basket. `reasons` is
+push-only and tests pin both directions, so it **can never manufacture a permit**.
+
+**Honest caveat:** testnet fills span ~8.6 days against `MIN_WINDOW_DAYS=14`, so `INSUFFICIENT_WINDOW`
+is already the binding blocker and this clause is not yet exercised end-to-end. That is a window
+shortfall, not a price shortfall — price coverage is already complete.
+
+**With G4 and G5 both bound, the adopted criteria are fully instrumented** — no clause is decorative.
+
+### The soak produced a NEW FINDING, and it is the worst one on the board
+
+Deployed `682b6f6` (boot `cdc2da19`, healthy, RestartCount 0). `agentic_promotion_blocked` reads for
+the first time — the gate's binding clauses are visible instead of hand-inferred, which is precisely
+what § 9 asked for:
+
+```text
+NON_POSITIVE_NET_PNL     1      INSUFFICIENT_WINDOW      1
+BELOW_PASSIVE_BENCHMARK  1      (five others)            0   ← all 8 present, zero-seeded
+```
+
+**`BELOW_PASSIVE_BENCHMARK = 1` was ambiguous on arrival and was disambiguated before being recorded**
+— a fired clause could equally have been the `Infinity` fail-closed sentinel tripping on a data
+problem, which would be an instrument reading, not evidence. It is evidence. The equal-weight 28-asset
+basket returned **−2.175%** over the evidence window (worst −11.15%, best +17.19%), so the benchmark
+PnL is a small negative: ≈ −$11 at ~50% exposure, ≈ −$22 at full notional, ≈ −$44 even at 2× the book.
+Against `netPnl = −$48.54`, **the lane underperforms passive at every plausible exposure.**
+
+Stated plainly, because it is the sharpest single number this program has produced: **the lane lost
+~4.9% of the book over a window in which simply holding the same basket at matched exposure would have
+lost ~2.2%.** Roughly **$37 of the $48.54 loss is not market beta — it is the strategy.** Every prior
+measurement compared the lane against ZERO; this is the first against OPPORTUNITY COST, and it is
+worse. It also independently corroborates the horizon finding above from a completely different
+direction: both say the entries are not merely unprofitable but actively value-destroying.
+
 ### Gate
 
-format/lint/lint:md/typecheck green · **3418 tests / 184 files** · livegate **55/55** · build clean.
-No deploy: nothing shipped changes runtime behaviour.
+format/lint/lint:md/typecheck green · **3433 tests / 185 files** · livegate **55/55** · build clean.
+No deploy: nothing shipped changes runtime behaviour (the benchmark only adds a blocking reason to a
+gate already returning `permitted: false`).

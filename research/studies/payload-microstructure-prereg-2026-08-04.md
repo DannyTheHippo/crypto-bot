@@ -340,5 +340,202 @@ accumulating more entries and looking again cannot become silent multiple testin
 
 _Appended after execution. Nothing above this divider was edited after the scoring code was written._
 
-Filled in below on 2026-08-04 after `PAYLOAD_SUBGROUP=1` ran against the live database.
-</content>
+**The freeze is git-attested, not merely asserted.** Commit `c48085e` contains this file with
+everything above the divider present and the Results section EMPTY — it landed before the scoring code
+ran. `git show c48085e:research/studies/payload-microstructure-prereg-2026-08-04.md` reproduces the
+frozen pre-registration, and `git diff c48085e -- <this file>` is exactly the results appended below.
+
+**Run:** 2026-08-04, `PAYLOAD_SUBGROUP=1` + `DATABASE_URL` against the live `cryptobot` database,
+`vitest run test/backtest/payload-subgroup.spec.ts`. Green. Read-only; no write, no migration.
+
+## R1. Verdict — NULL
+
+**No cell is POSITIVE.** Seven cells clear clauses 1 and 2 of the §10 rule (POWERED, and a
+Bonferroni-corrected interval excluding 0), and **all seven fail clause 3**: the family-wise
+random-bar placebo returns **p = 0.3781**, nowhere near the 0.05 bar.
+
+This is the outcome §0 named as expected, and it is reported as such rather than as a failure. The
+standing "no edge in anything the system records" verdict is **not localized** by this study: the four
+surviving unpersisted channels behave, family-wise, like the recorded ones.
+
+## R2. Population and data integrity — clean
+
+| quantity | value |
+| --- | --- |
+| entry rows read | 94 |
+| entries scored | **94** |
+| **unparseable `input_payload` rows** | **0** |
+| rows with no payload | 0 |
+| rows with unusable action/venue/symbol/event_time | 0 |
+| rows off the 15m bar grid | 0 |
+| longs / shorts | 56 / 38 |
+| distinct symbols / **BASE-asset clusters** | 17 / **13** |
+| price-grid rows read | 43,991 |
+| grid series (venue, symbol) | 40 |
+| grid rows rejected / off-grid | 0 / 0 |
+
+The guarded parse (§12) found **zero unparseable rows** — every one of the 94 `TEXT` payloads is a
+well-formed JSON object. The guard was still the right call: a bare `::jsonb` cast would have been
+correct here only by luck, and the count is reported because "0 unparseable" is a measurement, not an
+assumption.
+
+Feature presence on the scored 94 matched the frozen §2.1 table exactly: A1/A2/A3 94/94 (100.0%);
+B1/B2/C1/C2/D1 80/94 (85.1%).
+
+## R3. Horizon accounting — no horizon was voided
+
+| h | ok | gap | pending | gapShare | reading |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 94 | 0 | 0 | 0.0% | scored |
+| 4 | 92 | 0 | 2 | 0.0% | scored |
+| 8 | 92 | 0 | 2 | 0.0% | scored |
+| 24 | 92 | 0 | 2 | 0.0% | scored |
+
+**Zero gaps at every horizon.** The two misses at h=4/8/24 are `pending` — the forward bar had not
+happened yet at read time — which is benign and excluded from the gap denominator by construction.
+The `MAX_GAP_SHARE = 0.2` rule never fired, so all four horizons were scored and none of the 64 cells
+was voided for gap reasons.
+
+## R4. Power — 64 of 64 cells POWERED, 0 underpowered
+
+Every cell cleared both clauses of the §8 gate on both groups. Group sizes ran **n = 26–54** per side
+(median split ≈ 46–47 per side for family A, ≈ 38–40 for B/C/D) and **k = 8–13** base-asset clusters
+per side, against floors of n ≥ 12 and k ≥ 5.
+
+**So the verbatim "PRESENT but underpowered" reading of §11 applies to no cell in this run.** It stays
+in the document because it is the binding wording for any future re-read, and because the §7
+denominator already pre-pays that re-read.
+
+This is better power than §11 anticipated, and it does not change the §11 conclusion: point estimates
+below are quoted because every cell is powered, but **none of this is a deployable filter**, for the
+reasons in R6 and R7.
+
+## R5. The seven interval-excluding cells
+
+All are POWERED, all have `degenerateDraws = 0`, and all fail the placebo clause.
+
+| cell | n high / low | k high / low | Δ (bps) | 99.921875% CI (bps) |
+| --- | --- | --- | --- | --- |
+| A1 `micropriceBps` / median / h=1 | 47 / 47 | 12 / 13 | **+10.4** | [+4.4, +19.4] |
+| A1 `micropriceBps` / sign / h=1 | 44 / 50 | 12 / 13 | **+9.7** | [+3.3, +19.4] |
+| A3 `depthImbalance25bps` / median / h=1 | 47 / 47 | 12 / 12 | **−10.7** | [−21.3, −1.0] |
+| A3 `depthImbalance25bps` / sign / h=1 | 44 / 50 | 12 / 12 | **−10.6** | [−15.2, −0.8] |
+| B2 `takerBuySellRatio` / sign / h=1 | 54 / 26 | 9 / 10 | **−10.4** | [−25.5, −2.3] |
+| A3 `depthImbalance25bps` / median / h=4 | 47 / 45 | 12 / 12 | **−40.2** | [−78.1, −0.7] |
+| B2 `takerBuySellRatio` / sign / h=4 | 52 / 26 | 9 / 10 | **−36.0** | [−59.8, −13.0] |
+
+**Direction-consistency — the registered deliverable (§11) — reads badly for a microstructure story:**
+
+- **A1 and A3 point in OPPOSITE directions at h=1.** Both are derived from the _same order-book
+  snapshot_ in the _same block_: A1 is the microprice offset, A3 the ±25bps depth imbalance, both
+  aligned to the trade's direction. A genuine book-pressure effect should move them together. It does
+  not. That internal contradiction is stronger evidence against a real effect than the placebo test
+  is, and it was pre-registered as a thing to look at rather than discovered as a way to explain a
+  result away.
+- **The median and sign cuts agreeing within a feature is NOT independent confirmation.** The two cuts
+  partition nearly the same rows (e.g. A1's aligned median is −0.0035, so the two splits differ on a
+  handful of entries). Four of the seven rows above are two features counted twice.
+- **Five of seven sit at h=1** — 15 minutes. See R6: that is exactly where the study's structural
+  confound lives.
+- **Nothing survives past h=4.** Every h=8 and h=24 interval spans zero, most of them widely
+  (e.g. A3/median/h=24: [−343.0, +25.2] bps).
+
+## R6. The confound that most likely explains the h=1 cells — measured, not speculated
+
+Forward returns are anchored on the decision bar's **close** (§8). The features are read from the
+snapshot the decide call carried. Those are not the same instant, and the gap was measured on the same
+94 rows after the run:
+
+| quantity | value |
+| --- | --- |
+| `created_at − event_time` | min 914.8s, p50 **928.3s**, p90 942.1s, max 960.8s |
+| ⇒ lag after the bar CLOSE (`event_time + 900s`) | min 14.8s, p50 **28.3s**, p90 42.1s, max 60.8s |
+| ⇒ share of the h=1 (900s) window already elapsed | p50 **3.1%**, max 6.8% |
+
+So on a median entry, **~3.1% of the h=1 forward window had already elapsed when the order book that
+produced A1/A2/A3 was read.** How big an artifact can that buy? Measured on the same price grid
+(43,593 consecutive bar pairs): the **h=1 return dispersion is 32.2 bps** (sample SD; p95 of |return|
+is 64.6 bps). Under a random walk the move already realized in the first 3.1% of the window has SD
+`sqrt(0.031) × 32.2 ≈ 5.7 bps`. A median split on a feature **perfectly** correlated with that
+already-realized move separates the two halves by `2 × 0.798 × 5.7 ≈ 9.1 bps`.
+
+**The observed h=1 effects are +10.4, +9.7, −10.7, −10.6 and −10.4 bps (R5). The artifact's ceiling is
+9.1 bps.** The two are the same size. That is not proof the effects are artifacts — 9.1 bps is an
+upper bound requiring perfect correlation, which no real book feature has — but it means **the data
+cannot distinguish "entirely anchor-lag artifact" from "real 15-minute microstructure effect"**, and
+the artifact reproduces the observed decay pattern (present at h=1, weaker at h=4, absent from h=8)
+for free.
+
+This bites A1/A2/A3 hardest: the order book is a live WS read taken at decide time, ~28s past the
+anchor. The REST-polled B/C/D blocks are stale in the _other_ direction (their poll predates the
+decide call), which is a different bias, not an absent one.
+
+Recorded as a disclosed confound, not used to retro-fit the verdict: the verdict was already NULL on
+the frozen §10 rule before this lag was measured. The fix belongs to a future design — anchor the
+forward return at the decide instant rather than at the bar close — not to a re-analysis of these
+rows.
+
+## R7. The placebo — what it did and did not test
+
+`observedMaxAbsDelta = 123.10 bps`; **75 of 200** random-bar realizations were at least as extreme;
+family-wise **p = 0.3781**.
+
+**The registered statistic is weaker than it should have been, and that is disclosed rather than
+swapped.** The observed maximum came from **D1 `fundingTrendDelta` / median / h=24** (Δ = +123.1 bps,
+CI [−55.0, +320.7] — a cell that plainly includes zero), because per-cell dispersion grows with the
+horizon: h=24 cells carry |Δ| in the tens-to-hundreds of bps while the h=1 cells that actually cleared
+their intervals carry ~10 bps. An unstandardized max-|Δ| statistic is therefore dominated by the
+noisiest cells and is a **weak** test of the tight, small-Δ h=1 cells.
+
+A variance-standardized max statistic (max over cells of |Δ| / bootstrap SE) would have been the
+better registration. It is **not** substituted here — choosing a statistic after seeing which one
+helps is precisely what this document exists to prevent. It is recorded as the design fix for the next
+study in this line.
+
+Read honestly, then: the placebo says the _largest raw effect_ in the grid is unremarkable under a
+random-anchor null. It does not, on its own, dispose of the h=1 cells. **What disposes of them is R5's
+direction contradiction and R6's measured anchor lag** — and the frozen §10 rule, which requires all
+three clauses and got two.
+
+## R8. Bounds — the registered deliverable
+
+Stated as bounds, per §11, and not as estimates to act on. Widest and tightest corrected intervals per
+family, over all four horizons:
+
+| family | tightest CI in the family | width | widest CI in the family | width |
+| --- | --- | --- | --- | --- |
+| A `bookStructure` | A3/sign/h=1: [−15.2, −0.8] | 14.4 bps | A3/median/h=24: [−343.0, +25.2] | 368.2 bps |
+| B `positioning` | B2/sign/h=1: [−25.5, −2.3] | 23.2 bps | B1/sign/h=24: [−88.1, +226.7] | 314.8 bps |
+| C `derivatives` | C1/median/h=1: [−28.7, +20.2] | 48.9 bps | C1/median/h=24: [−34.3, +251.9] | 286.2 bps |
+| D `fundingHistory` | D1/sign/h=1: [−13.3, +42.6] | 55.9 bps | D1/median/h=24: [−55.0, +320.7] | 375.7 bps |
+
+At h=8 and h=24 the corrected intervals are hundreds of bps wide on 12.2 days of data. **The study
+bounds nothing useful at those horizons** — an effect of any size a trader would care about sits
+comfortably inside every one of them. That is the §11 prediction confirmed, not a surprise.
+
+## R9. Findings that are not about edge
+
+Two facts surfaced by the §2 gates matter independently of the null:
+
+1. **`liquidation` has been a constant on every entry the lane has ever taken.** 94/94 rows carry
+   `liqNotionalUsd: 0`, `count: 0`, `longShareOfLiqs: null`, `windowMin: 60`. Zero variance, so no cut
+   exists and the block is unscoreable by construction. Whatever prompt tokens it costs, it has never
+   carried one bit into an entry decision (§2.2). Whether the feed is dead or the 12 days were quiet
+   is **not** answered here.
+2. **The three `derivatives` v2 fields this study was commissioned to test do not exist in the data.**
+   `spotPerpBasisBps`, `oiChangePct` and `fundingTrendDelta` are 0/94 — `derivativesV2Enabled` has
+   been off for the entire entry history (§2.3). D1 reconstructs the funding-trend channel from
+   `fundingHistory`; it is a substitute, not the same measurement.
+
+## R10. What this run adds to §13's "cannot answer"
+
+Everything in §13 stands. Three additions from the run itself:
+
+- **The h=1 result cannot be separated from the anchor-lag artifact** (R6). Resolving it needs a
+  feature timestamp, which the payload does not carry — the fix is a study design that anchors the
+  forward return at the decide instant rather than the bar close, not a re-analysis of these rows.
+- **The placebo, as registered, is a weak test of the cells that mattered** (R7). The family-wise
+  p = 0.3781 is a true statement about the max raw effect and a much weaker statement about the h=1
+  cells than its size suggests.
+- **Nothing here bounds the h=8/h=24 horizons** (R8). Reporting them as "no effect found" would be
+  wrong; the correct reading is "no effect resolvable at this sample size".

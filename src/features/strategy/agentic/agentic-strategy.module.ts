@@ -48,6 +48,21 @@ function intEnv(raw: string | undefined, fallback: number): number {
   return new Decimal(raw ?? fallback).toNumber();
 }
 
+// WATCH-V4-12 sanctioned fix: narrows AGENTIC_OUTPUT_EFFORT into AnthropicAgentClientConfig.
+// outputEffort's own literal union. The real config-refusal boundary is environment.config.ts's zod
+// enum (throws loudly at boot on an invalid value) — this raw-env read only ever sees an already-
+// validated value on the production path (agenticEnv sources it off TypedConfigService), the SAME
+// fail-safe-backstop convention selectAgentClient's own modelB guard documents above for a
+// module-isolation caller that bypasses validate() entirely. FAILS OPEN: an unrecognised value here
+// degrades to undefined (⇒ attemptOnce omits output_config, today's behaviour), never a thrown error
+// on a spend/quality knob.
+const OUTPUT_EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+function outputEffortEnv(raw: string | undefined): AnthropicAgentClientConfig['outputEffort'] {
+  return raw !== undefined && OUTPUT_EFFORT_LEVELS.has(raw)
+    ? (raw as NonNullable<AnthropicAgentClientConfig['outputEffort']>)
+    : undefined;
+}
+
 // Converts AppConfig.agentic.tokenPrices' decimal-string per-model map into DailyLlmBudgetCaps'
 // number-rated ModelTokenRates map (same Decimal(...).toNumber() convention as intEnv above) — the
 // composition root's only reachable source for the map (see createAgentLlmBudget's own comment on
@@ -151,6 +166,10 @@ export function agenticEnv(config?: TypedConfigService): Record<string, string |
     AGENTIC_REFLECTION_MODEL: agentic.reflectionModel,
     AGENTIC_TIMEOUT_MS: String(agentic.timeoutMs),
     AGENTIC_MAX_TOKENS: String(agentic.maxTokens),
+    // WATCH-V4-12 sanctioned fix: sourced off the validated config field (never raw process.env), same
+    // no-drift convention as AGENTIC_REFLECTION_MODEL above (optional string, no String() coercion —
+    // an absent field stays absent here rather than becoming the literal string 'undefined').
+    AGENTIC_OUTPUT_EFFORT: agentic.outputEffort,
     AGENTIC_MAX_CALLS_PER_DAY: String(agentic.maxCallsPerDay),
     AGENTIC_MAX_TOKENS_PER_DAY: String(agentic.maxTokensPerDay),
     AGENTIC_DAILY_COST_STOP_USD: String(agentic.dailyCostStopUsd),
@@ -567,6 +586,9 @@ export function selectAgentClient(
       model: selectedModel,
       timeoutMs: intEnv(env['AGENTIC_TIMEOUT_MS'], DEFAULT_TIMEOUT_MS),
       maxTokens: intEnv(env['AGENTIC_MAX_TOKENS'], DEFAULT_MAX_TOKENS),
+      // WATCH-V4-12 sanctioned fix: absent ⇒ undefined ⇒ byte-identical request (see
+      // AnthropicAgentClientConfig.outputEffort's own comment).
+      outputEffort: outputEffortEnv(env['AGENTIC_OUTPUT_EFFORT']),
       signalTtlMs: intEnv(env['SIGNAL_TTL_MS'], DEFAULT_SIGNAL_TTL_MS),
       profile,
       constraintsFor: constraintsFromDefaultFilters,

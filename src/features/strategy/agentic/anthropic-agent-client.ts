@@ -265,6 +265,18 @@ export interface AnthropicAgentClientConfig {
   readonly model: string;
   readonly timeoutMs: number;
   readonly maxTokens: number;
+  // WATCH-V4-12 sanctioned fix (2026-08-03): threads output_config.effort into every decide/batch
+  // request. The lane sends thinking:{type:'adaptive'} on every call (below) but no output_config, so
+  // every call runs the API's default effort ('high') — measured to spend the ENTIRE maxTokens budget
+  // on thinking before tool_use JSON starts (8 truncations this boot, output_tokens pinned at exactly
+  // 4096, ~$0.61/day / ~11 symbol-decides lost/day, all fully paid for and discarded). Two more-direct
+  // fixes are refuted: thinking.budget_tokens was REMOVED on claude-sonnet-5 (would 400 — see
+  // attemptOnce), and raising AGENTIC_MAX_TOKENS is refuted by the $3/day USD breaker plus the 75s
+  // batch HTTP abort budget a raised ceiling would project past (research/loop/watches.md §
+  // WATCH-V4-12). FAILS OPEN toward today's behaviour: absent/unset ⇒ attemptOnce omits output_config
+  // entirely (byte-identical request), never a blocked decide. Ships flag-off — a separate enable
+  // commit flips the deploy knob after its own $0 offline-harness review (charter.md).
+  readonly outputEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   readonly signalTtlMs: number;
   readonly baseUrl?: string;
   // Venue/sizing facts folded into the system prompt (fees, sizing rule, venue minimums).
@@ -2109,6 +2121,12 @@ export class AnthropicAgentClient implements AgentClientPort {
           // or 'adaptive' when the caller's #42 thinking-A/B treatment arm fired. Reflection has
           // its own separate request builder (see reflection.service.ts) and is unaffected.
           thinking,
+          // WATCH-V4-12 sanctioned fix — see AnthropicAgentClientConfig.outputEffort's own comment
+          // for the measured truncation leak and the two refuted alternatives. Nested inside
+          // output_config, not top-level, per the API contract. Key omitted entirely when unset
+          // (the flag-off default) so the request stays byte-identical to pre-fix — this is the
+          // property the flag-off spec's own test pins.
+          ...(this.cfg.outputEffort ? { output_config: { effort: this.cfg.outputEffort } } : {}),
         }),
         signal,
       });

@@ -52,6 +52,11 @@ export interface AppConfig {
     reflectionModel?: string;
     timeoutMs: number;
     maxTokens: number;
+    // WATCH-V4-12 sanctioned fix: Anthropic output_config.effort, threaded to
+    // AnthropicAgentClientConfig.outputEffort (anthropic-agent-client.ts's attemptOnce has the full
+    // measured basis). Absent ⇒ the client omits output_config entirely — byte-identical to today's
+    // request (API default effort 'high'). Ships flag-off pending its own enable commit.
+    outputEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
     minDecisionIntervalMs: number;
     warmupBars: number;
     maxCallsPerDay: number;

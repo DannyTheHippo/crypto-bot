@@ -1589,6 +1589,47 @@ describe('AnthropicAgentClient', () => {
       expect(body['tool_choice']).toEqual({ type: 'tool', name: 'submit_trade' });
       expect(proposal.thinkingArm).toBe(true);
     });
+
+    // WATCH-V4-12 sanctioned fix: the flag-off guarantee. cfg.outputEffort unset (buildCfg's default)
+    // must leave the request byte-identical to pre-fix — no output_config key at all, never an
+    // explicit `output_config: undefined` (which JSON.stringify would drop anyway, but a
+    // literal-undefined value would still fail a `not.toHaveProperty` check the wrong way if
+    // attemptOnce ever built the key unconditionally).
+    it('omits output_config entirely when cfg.outputEffort is unset (flag-off default)', async () => {
+      const fetchFn = vi.fn();
+      const client = new AnthropicAgentClient(buildCfg(), fetchFn);
+      fetchFn.mockResolvedValue(
+        apiResponse(toolUseBody({ action: 'hold', confidence: 0.5, rationale: 'r' })),
+      );
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+      });
+
+      await client.propose(input);
+
+      const [, init] = fetchFn.mock.calls[0] as [string, RequestInit];
+      const body = JSON.parse(init.body as string) as Record<string, unknown>;
+      expect(body).not.toHaveProperty('output_config');
+    });
+
+    it('sends output_config.effort when cfg.outputEffort is set (WATCH-V4-12 sanctioned fix)', async () => {
+      const fetchFn = vi.fn();
+      const client = new AnthropicAgentClient(buildCfg({ outputEffort: 'low' }), fetchFn);
+      fetchFn.mockResolvedValue(
+        apiResponse(toolUseBody({ action: 'hold', confidence: 0.5, rationale: 'r' })),
+      );
+      const input = buildInput({
+        tickers: new Map([[SYM, ticker('100', 1n)]]),
+        context: FLAT_CONTEXT,
+      });
+
+      await client.propose(input);
+
+      const [, init] = fetchFn.mock.calls[0] as [string, RequestInit];
+      const body = JSON.parse(init.body as string) as Record<string, unknown>;
+      expect(body['output_config']).toEqual({ effort: 'low' });
+    });
   });
 
   // v3 consolidation spec §9: bookEntryHint (best-bid-aware entry pricing for the legacy long-only

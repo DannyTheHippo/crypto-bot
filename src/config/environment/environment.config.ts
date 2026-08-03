@@ -23,6 +23,12 @@ const VENUE_ENVIRONMENTS = ['paper', 'testnet', 'demo', 'live'] as const;
 
 const CANDLE_INTERVALS = ['1m', '5m', '15m', '1h', '4h', '1d'] as const;
 
+// WATCH-V4-12 sanctioned fix: the Anthropic Messages API's output_config.effort levels, in ascending
+// thinking-depth/spend order. Omitting output_config entirely runs the API default ('high') — the
+// truncation leak this knob targets (anthropic-agent-client.ts's attemptOnce comment has the full
+// measured basis and the two refuted alternatives).
+const AGENTIC_OUTPUT_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+
 // Money/decimal-string knobs (RiskLimitsConfig fields + BASE_NOTIONAL): plain non-negative decimal
 // strings, validated here and converted to Decimal only where the consuming module already does so
 // (domain/trading/risk/limits.ts) — never a native float on a money path.
@@ -268,6 +274,15 @@ const envSchema = z
     // v3 §3.2 default: 1024→4096 — the rich decision contract's richer per-consult output (directives,
     // thesis, portfolio scheduling) needs the headroom the deployed shape already carried.
     AGENTIC_MAX_TOKENS: z.coerce.number().int().positive().default(4096),
+    // WATCH-V4-12 sanctioned fix (2026-08-03): threads output_config.effort into the decide/batch
+    // request — see AGENTIC_OUTPUT_EFFORT_LEVELS' own comment and anthropic-agent-client.ts's
+    // attemptOnce for the measured truncation leak this targets. Absent (default) ⇒ the client omits
+    // output_config entirely — byte-identical to today's request, API default effort ('high'). Ships
+    // flag-off: this is a two-step change-discipline enable (research/loop/watches.md § WATCH-V4-12,
+    // charter.md's "decide model changes ONLY via the $0 offline harness") — a separate commit flips
+    // the deploy knob after its own offline review, never this one. An unrecognised value fails the
+    // zod parse loudly at boot (config refusal at construction), never silently coerces.
+    AGENTIC_OUTPUT_EFFORT: z.enum(AGENTIC_OUTPUT_EFFORT_LEVELS).optional(),
     AGENTIC_MIN_DECISION_INTERVAL_MS: z.coerce.number().int().min(0).default(0),
     AGENTIC_WARMUP_BARS: z.coerce.number().int().positive().default(50),
     // v3 §3.3: the two lane-split caps (500/1100-ish per lane) merge into one book-wide cap —
@@ -942,6 +957,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     AGENTIC_REFLECTION_MODEL: agenticReflectionModel,
     AGENTIC_TIMEOUT_MS: agenticTimeoutMs,
     AGENTIC_MAX_TOKENS: agenticMaxTokens,
+    AGENTIC_OUTPUT_EFFORT: agenticOutputEffort,
     AGENTIC_MIN_DECISION_INTERVAL_MS: agenticMinDecisionIntervalMs,
     AGENTIC_WARMUP_BARS: agenticWarmupBars,
     AGENTIC_MAX_CALLS_PER_DAY: agenticMaxCallsPerDay,
@@ -1149,6 +1165,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       reflectionModel: agenticReflectionModel,
       timeoutMs: agenticTimeoutMs,
       maxTokens: agenticMaxTokens,
+      outputEffort: agenticOutputEffort,
       minDecisionIntervalMs: agenticMinDecisionIntervalMs,
       warmupBars: agenticWarmupBars,
       maxCallsPerDay: agenticMaxCallsPerDay,

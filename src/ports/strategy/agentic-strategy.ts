@@ -797,13 +797,16 @@ export interface AgentDecisionJournalPort {
 //
 // Persists reflection-path LLM token usage (llm_usage table) for offline cost analysis — decide-path
 // usage is ALREADY captured per call on agent_decisions.input_tokens/output_tokens, so this sink's
-// CURRENT writers are the reflection loop only; recording decide-path usage here too would double
-// count against agent_decisions when a later PnL computation UNIONs the two sources. Same convention
-// as AGENT_DECISION_JOURNAL: record is sync fire-and-forget, an analysis artifact rather than a safety
-// interlock — the composition root binds a DB-backed adapter when the persistence path is active, else
-// the token resolves to undefined and the @Optional consumer simply skips recording. mode is stamped
-// by the adapter at construction (mirrors SignalJournalAdapter's ExecRunContext), not carried on the
-// entry — a caller like ReflectionService has no natural access to the run's trading mode.
+// ONLY writer was the reflection loop (ReflectionService), deleted 2026-07-30 with the in-process
+// reflection loop; recording decide-path usage here too would have double counted against
+// agent_decisions when a later PnL computation UNIONs the two sources. llm_usage is now read-only
+// historical evidence — its rows stay live and are still folded into PromotionReadinessService's
+// llmCostUsd figure via that same UNION. Same convention as AGENT_DECISION_JOURNAL: record is sync
+// fire-and-forget, an analysis artifact rather than a safety interlock — the composition root binds a
+// DB-backed adapter when the persistence path is active, else the token resolves to undefined and the
+// @Optional consumer simply skips recording. mode is stamped by the adapter at construction (mirrors
+// SignalJournalAdapter's ExecRunContext), not carried on the entry — a caller like the (now-deleted)
+// ReflectionService had no natural access to the run's trading mode.
 export const LLM_USAGE_SINK = Symbol('LLM_USAGE_SINK');
 
 export interface LlmUsageEntry {

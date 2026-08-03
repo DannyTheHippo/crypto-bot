@@ -480,8 +480,11 @@ export const agentPlaybookVersions = pgTable(
 // ── llm_usage ─────────────────────────────────────────────────────────────────
 // Reflection-path LLM token usage, kept separate from agent_decisions.input_tokens/output_tokens
 // (the decide-path's own per-call columns) so cost analysis can UNION the two without double
-// counting: decide-path tokens live on agent_decisions; this table's writers are the reflection loop
-// only (ReflectionService, via LlmUsageSink — ports/strategy/agentic-strategy.ts). kind is a 2-value union
+// counting: decide-path tokens live on agent_decisions; this table's only writer was the reflection
+// loop (ReflectionService, via LlmUsageSink — ports/strategy/agentic-strategy.ts), deleted 2026-07-30
+// with the in-process reflection loop. llm_usage is now read-only historical evidence — its 69 rows
+// stay live and are still folded into PromotionReadinessService's llmCostUsd figure via a UNION with
+// agent_decisions, so they are never dropped or backfilled. kind is a 2-value union
 // ('decide' | 'reflection') for future use, matching the repo's TS-level-only enum convention
 // (agent_decisions.action, agent_playbook_versions.source) — no DB CHECK constraint. strategy_id is
 // nullable: reflection runs are per-strategy, but a future 'decide' writer might not always resolve

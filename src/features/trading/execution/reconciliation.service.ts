@@ -21,6 +21,7 @@ import { feeAmount, price, qty } from '../../../domain/common/types/money';
 import { venueForSymbol } from '../../../domain/venue/types/venue-map';
 import { CLOCK, type ClockPort } from '../../../ports/common/clock';
 import {
+  AdapterError,
   EXCHANGE_PORT,
   VENUE_EXCHANGE_PORTS,
   type ExchangeOrderState,
@@ -123,7 +124,16 @@ interface PassAccumulator {
   openOrdersChecked: number;
   tradesChecked: number;
   balancesChecked: number;
+  // Defect 2 (2026-08-03 incident, KAITO/USDT:USDT local 0 vs venue -91.3): the position-drift
+  // debounce below makes the FIRST divergent pass the only record whenever a drift self-heals before
+  // streak >= 2 — the common case — so identifying detail belongs here, not only in the WARN.
+  // Capped (see MAX_ACC_NOTES) to bound the persisted `detail` row size.
+  readonly notes: string[];
 }
+
+// Defect 2: bounds acc.notes so a pass sweeping many divergent symbols cannot grow `detail` past a
+// reasonable row size — matches the general shape of ALL_MISMATCH_CLASSES' own "bounded set" posture.
+const MAX_ACC_NOTES = 20;
 
 // `mismatches` stays the RAW total every pre-existing consumer already reads (the reconciliations
 // row, the runs counter's result label, ops events). `actionableMismatches` is additive and feeds
@@ -188,9 +198,16 @@ function summarizeMismatches(acc: PassAccumulator): string {
     .join(',');
 }
 
-// Shared by describeError (below) and the axis-error counter's error_class label — ccxt's exception
-// hierarchy is a small closed set, so the constructor name alone is a bounded-cardinality label.
+// Shared by describeError (below) and the axis-error counter's error_class label. Every ccxt sweep
+// call in ccxt-exchange.adapter.ts rethrows toAdapterError(e), which ALWAYS constructs an
+// AdapterError — so `err.constructor.name` alone was always the literal string "AdapterError"
+// (verified empirically: Prometheus /label/error_class/values returned exactly
+// ["AdapterError","none"] across full retention). errorClass (the 5-member closed
+// AdapterErrorClass union) and code (the wrapped ccxt constructor name) are the two fields that
+// actually distinguish a failure and were being discarded; both are bounded, so the composed label
+// stays bounded cardinality too.
 function errorClassName(err: unknown): string {
+  if (err instanceof AdapterError) return `${err.errorClass}:${err.code}`;
   return err instanceof Error ? err.constructor.name : typeof err;
 }
 
@@ -605,6 +622,7 @@ export class ReconciliationService {
       openOrdersChecked: 0,
       tradesChecked: 0,
       balancesChecked: 0,
+      notes: [],
     };
     const startedAt = this.clock.now();
 
@@ -657,7 +675,10 @@ export class ReconciliationService {
           : acc.halts.length > 0
             ? acc.halts.join(',')
             : mismatchTotal > 0
-              ? summarizeMismatches(acc) // H1 fix: sweep_failure etc. never populate acc.halts — 'clean' must not lie
+              ? // H1 fix: sweep_failure etc. never populate acc.halts — 'clean' must not lie. Defect 2:
+                // acc.notes (first-pass position-drift identity, non-halting) rides along when present —
+                // 'clean' is unreachable here (mismatchTotal > 0), so no branch above is affected.
+                [summarizeMismatches(acc), ...acc.notes].join(';')
               : 'clean',
     });
     // Per-class increments (#24); a clean pass increments nothing — increase() over an absent
@@ -708,6 +729,33 @@ export class ReconciliationService {
       this.axisErrorCounter?.inc({ venue, axis, error_class: errorClassName(err) });
     } catch {
       /* metrics must never throw into a trading path */
+    }
+  }
+
+  // Defect 2 diagnostic pair for reconcilePositions' `!within`/streak<2 branch — same FAIL OPEN
+  // posture as logAxisError/incAxisErrorCounter above: this is measurement-only (a WARN plus a bounded
+  // note for the `detail` column), never a control-flow input, so a throwing logger or a formatting
+  // error must never abort the sweep or reach acc.halts/the streak logic.
+  private recordPositionDrift(
+    venue: VenueId,
+    symbol: SymbolId,
+    localQty: Decimal,
+    venueQty: Decimal,
+    cfg: ReconConfig,
+    streak: number,
+    acc: PassAccumulator,
+  ): void {
+    try {
+      this.log.warn(
+        `position drift venue=${venue} symbol=${symbol} local=${localQty.toFixed()} venue=${venueQty.toFixed()} epsAbs=${cfg.epsAbs} epsRel=${cfg.epsRel} streak=${streak}`,
+      );
+      if (acc.notes.length < MAX_ACC_NOTES) {
+        acc.notes.push(
+          `POSITION_DRIFT?${symbol}:local=${localQty.toFixed()},venue=${venueQty.toFixed()}`,
+        );
+      }
+    } catch {
+      /* diagnostic-only — must never abort the sweep or influence a halt decision */
     }
   }
 
@@ -1191,6 +1239,11 @@ export class ReconciliationService {
         this.positionDivergenceStreak.set(streakKey, streak);
         if (streak >= 2) {
           acc.halts.push(`POSITION_DRIFT:${symbol}`); // second consecutive divergent pass ⇒ HALT, no auto-flatten
+        } else {
+          // Defect 2: the debounce (above) makes THIS first-pass reading the ONLY record whenever the
+          // drift self-heals before a second consecutive pass — the common case — so it must carry the
+          // same identity every sibling axis already does (BALANCE_DRIFT:${asset}). Diagnostic-only.
+          this.recordPositionDrift(exchange.venue, symbol, localQty, venueQty, cfg, streak, acc);
         }
       } else {
         this.positionDivergenceStreak.delete(streakKey);

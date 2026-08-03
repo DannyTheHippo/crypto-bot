@@ -19,11 +19,12 @@ import { InMemoryExecutionStore } from '../../../../src/features/trading/executi
 import { OrderBookService } from '../../../../src/features/trading/execution/order-book.service';
 import { PortfolioStateService } from '../../../../src/features/trading/execution/portfolio-state.service';
 import { ReconciliationService } from '../../../../src/features/trading/execution/reconciliation.service';
-import type {
-  ExchangeOrderState,
-  ExchangePort,
-  VenueFill,
-  VenuePosition,
+import {
+  AdapterError,
+  type ExchangeOrderState,
+  type ExchangePort,
+  type VenueFill,
+  type VenuePosition,
 } from '../../../../src/ports/venue/exchange';
 import { AXIS_NOT_RUN, type ReconConfig } from '../../../../src/ports/trading/execution';
 import type { OpsEvent, OpsEventPort } from '../../../../src/ports/common/observability';
@@ -892,6 +893,27 @@ describe('ReconciliationService (§6.4)', () => {
       }
     });
 
+    it("errorClassName composes AdapterError's errorClass:code — the only shape production ever throws (every ccxt-exchange.adapter.ts sweep call rethrows toAdapterError(e), so err.constructor.name alone is always the literal 'AdapterError')", async () => {
+      const err = new AdapterError(
+        'TRANSPORT_RETRYABLE',
+        'RequestTimeout',
+        'binance request timed out',
+      );
+      const axisErrorCounter = { inc: vi.fn() } as unknown as Counter<string>;
+      const ctx = build(
+        { openOrdersThrowError: err },
+        undefined,
+        undefined,
+        undefined,
+        { sweepSymbols: [SYM] },
+        axisErrorCounter,
+      );
+      await ctx.recon.reconcile();
+      expect((axisErrorCounter.inc as ReturnType<typeof vi.fn>).mock.calls).toContainEqual([
+        { venue: V, axis: 'openOrders', error_class: 'TRANSPORT_RETRYABLE:RequestTimeout' },
+      ]);
+    });
+
     it('rate-limits the WARN to one line per venue:axis per pass while the counter increments per-event: the same error on 3 symbols logs once but increments 3 times', async () => {
       const err = new FakeVenueTimeout('symbol-scoped timeout');
       const axisErrorCounter = { inc: vi.fn() } as unknown as Counter<string>;
@@ -1678,9 +1700,12 @@ describe('ReconciliationService (§6.4)', () => {
     // balanceAxis:false isolates every case below to the position axis alone — the local BUY fill
     // moves quote cash away from the default venue balance stub, which would otherwise add an
     // unrelated BALANCE_DRIFT mismatch to these assertions.
-    function seedLocalLong(ctx: Ctx, sz = '0.001') {
-      const intent = makeIntent({ qty: qty(sz) });
-      ctx.portfolio.applyFill(intent, makeFill({ qty: intent.qty, price: intent.refPrice }));
+    function seedLocalLong(ctx: Ctx, sz = '0.001', symbol = SYM) {
+      const intent = makeIntent({ qty: qty(sz), symbol });
+      ctx.portfolio.applyFill(
+        intent,
+        makeFill({ qty: intent.qty, price: intent.refPrice, symbol }),
+      );
     }
 
     it('first divergent pass: position_drift counted, NO halt (debounce lets in-flight recovery land)', async () => {
@@ -1696,6 +1721,35 @@ describe('ReconciliationService (§6.4)', () => {
         { class: 'position_drift' },
         1,
       ]);
+    });
+
+    it('first divergent pass (non-halting): the persisted detail names the symbol and both exact qty strings — the debounce makes this the ONLY record whenever the drift self-heals (2026-08-03 KAITO/USDT:USDT incident)', async () => {
+      const ctx = build({ positions: () => [] }, undefined, undefined, undefined, {
+        balanceAxis: false,
+      });
+      seedLocalLong(ctx, '0.001'); // local 0.001, venue 0 (positions: () => [])
+      const r = await ctx.recon.reconcile();
+      expect(r.halted).toBe(false);
+      const detail = ctx.store.reconciliations[0]!.detail;
+      // Exact-equality, not toContain: the `?` discriminator (observed-not-halted) vs `:` (the
+      // HALTING form, same symbol prefix) is the entire operational distinction this note exists to
+      // preserve — a refactor emitting POSITION_DRIFT:${symbol} here instead would keep a loose
+      // toContain green while destroying that distinction.
+      expect(detail).toBe('position_drift:1;POSITION_DRIFT?BTC/USDT:local=0.001,venue=0');
+    });
+
+    it('a single pass with MORE THAN MAX_ACC_NOTES (20) distinct divergent symbols caps the persisted notes at exactly 20 and drops the rest (acc.notes.length < MAX_ACC_NOTES false arm)', async () => {
+      const ctx = build({ positions: () => [] }, undefined, undefined, undefined, {
+        balanceAxis: false,
+      });
+      const symbols = Array.from({ length: 21 }, (_, i) => symbolId(`SYM${i}/USDT`));
+      for (const symbol of symbols) seedLocalLong(ctx, '0.001', symbol);
+      const r = await ctx.recon.reconcile();
+      expect(r.halted).toBe(false);
+      const detail = ctx.store.reconciliations[0]!.detail;
+      const notes = detail.split(';').filter((part) => part.startsWith('POSITION_DRIFT?'));
+      expect(notes).toHaveLength(20);
+      expect(detail).toContain('position_drift:21'); // all 21 divergences counted — only the notes are capped
     });
 
     it('second CONSECUTIVE divergent pass HALTs with POSITION_DRIFT, never auto-flattens', async () => {

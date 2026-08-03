@@ -167,6 +167,17 @@ flattening on wrong state can double the damage. Passes are **per-venue**
   the OMS never recorded — reconcile the position before any further trading.
 - **BALANCE_DRIFT beyond ε** (abs+rel tolerance) ⇒ HALT. **BALANCE_LEAK** (within-ε drift growing
   monotonically across 3 passes) ⇒ HALT — a systematic leak.
+- **POSITION_DRIFT** (Defect A: venue/local signed-position qty beyond ε on a perp-capable venue) has
+  two distinct `detail` forms, distinguished by the character right after `POSITION_DRIFT` — do not
+  confuse them:
+  - **`POSITION_DRIFT:{symbol}`** (**colon**) ⇒ HALT, no auto-flatten. The **second consecutive**
+    divergent pass on the same venue+symbol — the debounce gave one full pass for an in-flight
+    recovery (e.g. a fired stop the local book hasn't caught up to) to self-heal, and it didn't.
+  - **`POSITION_DRIFT?{symbol}:local=…,venue=…`** (**question mark**) ⇒ non-halting, diagnostic only.
+    The **first** divergent pass — quantities are exact decimal strings, not rounded. Because a
+    self-healing drift never reaches a second consecutive pass, this is usually the **only** record
+    that the drift ever happened; check the reconciliations row's `detail` column (or the paired WARN
+    log) for it rather than assuming a self-healed drift left no trace.
 - **FILL_OVERFLOW:{symbol}** (a backfilled trade folds past the order's qty + one step) ⇒ HALT.
   **This one does NOT clear itself, and the halt does not re-fire.** The fill row is committed to
   `fills` before the fold is attempted, so the next pass's already-recorded filter skips the trade:

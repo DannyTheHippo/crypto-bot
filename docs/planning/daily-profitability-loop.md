@@ -178,7 +178,10 @@ CANDIDATE/PROMOTION/MAINTENANCE-backlog) waits until the alarm is root-caused an
 
 The sweep's alarm kinds, read from `scripts/loop-sweep-core.mjs`'s `computeSweep`/`computeApp` (the
 authoritative list — re-verify against that file before citing, per this playbook's own standing
-rule):
+rule). 22 kinds total as of this refresh (2026-08-03): the 10 liveness/venue alarms below, plus the
+12 DB-integrity kinds in their own group further down.
+
+**Liveness and venue-health alarms:**
 
 - `zero_decides` — decides/consult-gate liveness counters unchanged since watermark on a healthy
   boot (the 8.2h candle-stall class).
@@ -187,15 +190,24 @@ rule):
   auto-flatten; spec §7). A HALT on one venue is never masked by the other venue's clean rows —
   the check is per-venue by construction, not a global "latest row" read.
 - `cost_breaker_proximity` — spend ≥80% of the ONE unified `$3/day` breaker
-  (`AGENTIC_DAILY_COST_BREAKER_USD`, `.env.app`'s `AGENTIC_DAILY_COST_STOP_USD`).
+  (`AGENTIC_DAILY_COST_BREAKER_USD`, `.env.app`'s `AGENTIC_DAILY_COST_STOP_USD`). NOT raised on a
+  container younger than `BUDGET_GAUGE_INIT_GRACE_MS` (5 min) whose `remainingUsd` reads exactly 0 —
+  `agentic_budget_remaining_usd` is only `set()` on the lane's first budget evaluation, so a fresh
+  boot's uninitialised 0 would otherwise read as "the entire breaker already spent". That case emits
+  the `budget_gauge_uninitialised` ANNOTATION instead; past the grace window a 0 reading is real
+  exhaustion and alarms as usual.
 - `journal_silence` (per venue) — that venue's reconciliations journal produced no new rows since
   watermark while the container is healthy.
-- `restart_storm` — RestartCount climbing fast (the R8-6 wedge-to-OOM class; a single restart is an
-  ordinary redeploy, not an alarm).
+- `restart_storm` — more than `RESTART_STORM_THRESHOLD` (1) restart since watermark, i.e. it fires at
+  ≥2 restarts (the R8-6 wedge-to-OOM class; a single restart is an ordinary redeploy, not an alarm).
 - `reconcile_clean_stamp_stale` — `reconciliation_last_success_timestamp_seconds` older than 30 min
-  (added Pass 40, 2026-07-27; this list omitted it until Pass 44 re-verified against the core).
-  Read the GAUGE, never a `CLEAN` row age: `reconciliations.result` is written off the RAW mismatch
-  total, so a row-age check fires forever on benign shared-wallet noise (WATCH-V4-1).
+  (`RECONCILE_CLEAN_STAMP_STALE_MS`; added Pass 40, 2026-07-27; this list omitted it until Pass 44
+  re-verified against the core). Read the GAUGE, never a `CLEAN` row age: `reconciliations.result` is
+  written off the RAW mismatch total, so a row-age check fires forever on benign shared-wallet noise
+  (WATCH-V4-1). A gauge reading exactly 0 (never stamped this boot) is aged from the container's
+  `StartedAt` instead of the epoch, so a fresh boot gets the same runway as an established one; a
+  negative or future-dated age (container/host clock skew) is NOT this alarm — it lands as a
+  `probe_failed` ANNOTATION naming the skew, since an incoherent age is undetermined, not clean.
 - `prometheus_alert_firing` (added Pass 43, 2026-07-28) — a **critical**-severity rule in
   `observability/alerts.rules.yml` is firing. The sweep reads Prometheus' own `/api/v1/rules`, so this
   alarm kind inherits every rule in that file, including rules written after the sweep code. Only
@@ -206,14 +218,52 @@ rule):
   that judgement belongs there, not in the sweep. NOTE the probe's own positive controls: a stale rules
   file (a committed alert the running Prometheus never loaded), an unhealthy rule, or a rule group that
   has stopped evaluating all FAIL the probe rather than reading as "nothing firing".
+- `venue_reject_rate_high` (per venue) — ≥20% (`VENUE_REJECT_RATE_ALARM_THRESHOLD`) of the most
+  recent `VENUE_REJECT_WINDOW_SUBMITS` (20) SUBMIT_SENT events for that venue were rejected by the
+  venue, once at least `VENUE_REJECT_MIN_SUBMITS` (6) submits exist in the window and the window is
+  under `VENUE_REJECT_WINDOW_MAX_AGE_MS` (7 days) old — orders manufactured and thrown away, which
+  every liveness counter in this sweep would otherwise read as a working lane. A determinate reading
+  below the 6-submit floor is the `venue_reject_rate_undetermined` ANNOTATION, not a pass.
+- `venue_reject_rate_unreadable` — the reject-rate probe failed, returned the wrong shape, or
+  produced an incoherent submits/rejects pair for a venue. This is a HEALTH probe and fails CLOSED,
+  unlike the forward-return measurement/veto-only gates, which fail OPEN.
+
+**DB-integrity invariants (5 checks, 12 kinds, all fail CLOSED — added by `1f68d6f` on 2026-08-03):**
+distinct from the liveness alarms above, these guard the durable Postgres journal itself rather than
+process/container liveness. I3 (recomputing the round-trip walk) and I5 (equity reconciliation) were
+deliberately left OUT of this set — I3 needs the TypeScript `walkRoundTrips` outside this stdlib-only
+`.mjs`'s reach, and I5 carries a built-in demo/live frame residual that is expected to fire.
+
+- `fill_ordering_violation` / `fill_ordering_unreadable` (W1) — a fill reads out of `venue_timestamp`
+  order within its `(strategy_id, symbol)` ingestion group, breaking `walkRoundTrips`'
+  (`domain/trading/risk/round-trips.ts`) prefix-determinism assumption — `fills` carries no
+  append-only trigger, so nothing in the DB enforces ingestion order matching venue execution order.
+- `unresolved_fill_intent` / `unresolved_fill_intent_unreadable` (I1) — any `fills.intent_id IS NULL`,
+  which silently trips `PromotionReadinessService`'s `UNRESOLVED_FILL` reason with no series naming
+  which fills, how many, or since when.
+- `cum_qty_mismatch` / `cum_qty_mismatch_unreadable` (I2, WATCH-V4-4) — a terminal order's `cum_qty`
+  disagrees with the exact `NUMERIC(38,18)` sum of its own fills' qty; the comparison runs inside
+  Postgres, never brought into JS as a float.
+- `unconvertible_fill_fee` / `unconvertible_fill_fee_unreadable` (I4) — a fill's fee is NULL, or its
+  `fee_ccy` is neither the traded symbol's base nor quote asset — a fee the promotion gate cannot
+  price into net PnL.
+- `config_snapshot_missing` / `config_snapshot_unreadable` / `config_snapshot_shape_unknown` /
+  `config_snapshot_drift` (W3) — the running promotion config (`PROMOTION_DUST_NOTIONAL` /
+  `PROMOTION_EVIDENCE_EPOCH`) must match the newest `config_snapshots` row, tried against the flat
+  env-var spelling, the flat camelCase spelling, and the nested canonical AppConfig location the
+  writer actually stores (`agentic.promotionDustNotional` / `agentic.promotionEvidenceEpoch`,
+  `src/ports/common/app-config.ts:128`, `:189`). A 0-row table, an unparseable/unrecognised row, and a
+  genuine mismatch are each their own kind rather than one shared "drift" alarm.
 
 `probe_failed` is technically an ANNOTATION kind in the core (not pushed to the `alarms` array — verify
 by searching `loop-sweep-core.mjs` for `kind: 'probe_failed'` before treating it otherwise, never by
 line range: this is the THIRD stale line-range citation on this exact sentence — first `:117-133`
-pointed at `extractCounters`, then `~L182-220` rotted as the file grew 632 → 1053 lines. Verified this
-pass: 10 push sites, all into `annotations`, zero into `alarms`), but it still forces the same
-investigation posture: a stack read errored, so nothing downstream of it can be trusted this sweep
-(§C.9 negative-read-void discipline).
+pointed at `extractCounters`, then `~L182-220` rotted as the file kept growing pass over pass (632
+lines when first measured, well past 1900 by 2026-08-03, and different again by the time this
+sentence is next read), and a line-range citation would only rot again from here. Verified this pass: 10 push
+sites, all into `annotations`, zero into `alarms`), but it still forces the same investigation
+posture: a stack read errored, so nothing downstream of it can be trusted this sweep (§C.9
+negative-read-void discipline).
 
 **Read the annotations, not just the alarms — these kinds carry incidents the alarm list CANNOT show**
 (added Pass 45, 2026-07-28, after a 49-min demo-fapi outage fired two rules and had fully resolved

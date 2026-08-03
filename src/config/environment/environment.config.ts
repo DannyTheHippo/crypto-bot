@@ -72,25 +72,38 @@ function deepFreeze<T>(obj: T): T {
   return obj;
 }
 
-function canonicalJsonWithoutSecrets(config: AppConfig): string {
-  // DATABASE_URL contains credentials — excluded from hash like other secrets.
-  const secretFields = new Set([
+// Keys excluded from configHash's canonical input — DATABASE_URL contains credentials, and bootId/
+// gitSha are excluded because they change on every build/boot, and a hash that moves per deploy
+// cannot serve its purpose of detecting knob drift between deploys. Exported so any other consumer
+// that needs a "what varies independently of the hash" answer (e.g. the config-snapshot writer)
+// reuses this list instead of hand-maintaining a second copy that can drift out of sync. Frozen
+// ReadonlySet: any consumer `.add()`/`.delete()`-ing this shared instance would silently change
+// every subsequent configHash.
+export const CONFIG_HASH_EXCLUDED_FIELDS: ReadonlySet<string> = Object.freeze(
+  new Set([
     'liveApiKey',
     'liveApiSecret',
     'armingSecret',
     'liveBaseUrlOverride',
     'bootId',
-    // Not a secret — excluded for the same reason as bootId: it changes on every build, and a hash
-    // that moves per deploy cannot serve its purpose of detecting knob drift between deploys.
     'gitSha',
     'db',
-  ]);
+  ]),
+);
+
+// Object-returning sibling of canonicalJsonWithoutSecrets below — same recursive, key-sorted,
+// CONFIG_HASH_EXCLUDED_FIELDS filtering, without the final JSON.stringify. Exported so a consumer
+// that needs the projected SHAPE (not the hash bytes) — the config-snapshot writer
+// (trading-runtime.module.ts's configSnapshotPayload) — gets a projection structurally guaranteed to
+// exclude exactly what configHash's own canonical input excludes, rather than hand-filtering a
+// second copy (e.g. only the `app` sub-object) that can drift out of sync with this list.
+export function canonicalObjectWithoutSecrets(config: AppConfig): Record<string, unknown> {
   const sanitized: Record<string, unknown> = {};
 
   function copyNonSecret(src: Record<string, unknown>, dst: Record<string, unknown>) {
     const keys = Object.keys(src).sort();
     for (const k of keys) {
-      if (secretFields.has(k)) continue;
+      if (CONFIG_HASH_EXCLUDED_FIELDS.has(k)) continue;
       const v = src[k];
       if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
         dst[k] = {};
@@ -102,7 +115,11 @@ function canonicalJsonWithoutSecrets(config: AppConfig): string {
   }
 
   copyNonSecret(config as unknown as Record<string, unknown>, sanitized);
-  return JSON.stringify(sanitized);
+  return sanitized;
+}
+
+function canonicalJsonWithoutSecrets(config: AppConfig): string {
+  return JSON.stringify(canonicalObjectWithoutSecrets(config));
 }
 
 const tradingModeValues = ['paper', 'testnet', 'live'] as const;

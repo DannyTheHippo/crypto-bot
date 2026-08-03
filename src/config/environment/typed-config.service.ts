@@ -89,6 +89,10 @@ export class TypedConfigService {
     return this.config.get('observability', { infer: true });
   }
 
+  get configHash(): AppConfig['configHash'] {
+    return this.config.get('configHash', { infer: true });
+  }
+
   // §10 live-mode secrets, grouped: present only outside test/ci (the schema strips them otherwise).
   // Read solely inside the live-adapter factory + ModeControl at the composition root; never logged.
   get liveSecrets(): {
@@ -102,6 +106,39 @@ export class TypedConfigService {
       liveApiSecret: this.config.get('liveApiSecret', { infer: true }),
       armingSecret: this.config.get('armingSecret', { infer: true }),
       liveBaseUrlOverride: this.config.get('liveBaseUrlOverride', { infer: true }),
+    };
+  }
+
+  // The one deliberate exception to "one getter per key" above: the config-snapshot writer
+  // (trading-runtime.module.ts's configSnapshotPayload) needs the WHOLE validated AppConfig, not a
+  // single key, to build environment.config.ts's canonicalObjectWithoutSecrets projection — the same
+  // filter that produces configHash's own canonical input, so the stored snapshot excludes exactly
+  // what the hash excludes. Assembled entirely from this facade's own getters, never a raw
+  // ConfigService passthrough, so it stays subject to the same test/ci live-secret stripping every
+  // getter above already relies on.
+  get raw(): AppConfig {
+    return {
+      app: this.app,
+      mode: this.mode,
+      db: this.db,
+      venues: this.venues,
+      venueCapitalSplit: this.venueCapitalSplit,
+      agentic: this.agentic,
+      risk: this.risk,
+      recovery: this.recovery,
+      perp: this.perp,
+      strategy: this.strategy,
+      derivativesFeed: this.derivativesFeed,
+      fundingIngest: this.fundingIngest,
+      sentimentFeed: this.sentimentFeed,
+      fearGreedFeed: this.fearGreedFeed,
+      tradeFlowFeed: this.tradeFlowFeed,
+      positioningFeed: this.positioningFeed,
+      liquidationFeed: this.liquidationFeed,
+      marketData: this.marketData,
+      observability: this.observability,
+      configHash: this.configHash,
+      ...this.liveSecrets,
     };
   }
 }

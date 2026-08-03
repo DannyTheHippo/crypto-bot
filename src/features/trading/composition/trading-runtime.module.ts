@@ -11,6 +11,7 @@ import {
 import Decimal from 'decimal.js';
 import path from 'node:path';
 import { TypedConfigService } from '../../../config/environment/typed-config.service';
+import { canonicalObjectWithoutSecrets } from '../../../config/environment/environment.config';
 import { DEFAULT_FILTERS } from '../../../domain/trading/risk/default-filters';
 import type { VenueId } from '../../../domain/common/types/ids';
 import { strategyId, symbolId, type SymbolId } from '../../../domain/common/types/ids';
@@ -67,6 +68,10 @@ import {
   type PlanStopRegistryPort,
   type ProtectiveExitConfig,
 } from '../../../ports/trading/risk';
+import {
+  CONFIG_SNAPSHOT_WRITER,
+  type ConfigSnapshotWriterPort,
+} from '../../../ports/trading/config-snapshot';
 import { SENTIMENT_FEED, type SentimentFeedPort } from '../../../ports/strategy/sentiment-feed';
 import {
   SIGNAL_SINK,
@@ -129,6 +134,7 @@ import { RiskModule } from '../risk/risk.module';
 import { symbolConstraintsFor } from './agentic-bridge.module';
 import { MergedExchangeStream } from './market-streams.module';
 import { seedAgentLastSuccess } from './seed-agent-last-success';
+import { writeConfigSnapshot } from './write-config-snapshot';
 import { engageStartTradingFailure } from './start-trading-failure';
 
 // v3 spec §1.3: TradingRuntimeModule absorbs app.module.ts's root provider block (SignalSinkService
@@ -379,6 +385,12 @@ export class TradingRuntimeService
     // intentStore below. @Optional like the other DB-backed deps: absent under test/ci/no-DB
     // leaves every role lookup 'unknown' (warn-once, leave-alone — never a blind cancel).
     @Optional() @Inject(EXECUTION_STORE) private readonly executionStore?: ExecutionStorePort,
+    // Root-cause fix for config_snapshot_missing: undefined under test/ci/no-DB
+    // (PersistenceOverridesModule's CONFIG_SNAPSHOT_WRITER gate) — see write-config-snapshot.ts's
+    // own fail-open direction for why an absent writer and a failing write are both silent no-ops.
+    @Optional()
+    @Inject(CONFIG_SNAPSHOT_WRITER)
+    private readonly configSnapshotWriter?: ConfigSnapshotWriterPort,
   ) {
     this.agentClient = new MetricsWrappingAgentClient(
       rawAgentClient,
@@ -611,6 +623,37 @@ export class TradingRuntimeService
     }
   }
 
+  // The full, non-partial AppConfig (TypedConfigService's own `raw` getter, assembled from its
+  // existing per-key getters), passed through environment.config.ts's canonicalObjectWithoutSecrets
+  // — the SAME recursive CONFIG_HASH_EXCLUDED_FIELDS filter that produces configHash's own canonical
+  // input. `db` (DATABASE_URL carries credentials), the four §10 live secrets, and `app.bootId`/
+  // `app.gitSha` are deliberately omitted here — structurally, via that shared filter, not by a
+  // second hand-maintained field list that could drift out of sync with the hash's own exclusions.
+  //
+  // Invariant: this payload must be a pure function of `config.configHash` — any field that varies
+  // while the hash stays constant belongs in CONFIG_HASH_EXCLUDED_FIELDS (environment.config.ts),
+  // never a one-off filter added here, or a PK collision (same hash, second boot) freezes the FIRST
+  // boot's value in `config` while `onConflictDoUpdate` bumps `activated_at` to the current boot's
+  // time.
+  //
+  // Self-verifying: `configHash: ''` mirrors validate()'s own hash input exactly (down to the
+  // recursive key-sorted ordering canonicalObjectWithoutSecrets already applies), so a verifier can
+  // recompute sha256(canonicalJson(config)) and compare it against the row's separate `hash` PK
+  // column — this retires the "cannot self-verify its SHA-256" limitation this comment used to
+  // document.
+  private configSnapshotPayload(): Record<string, unknown> {
+    const raw = this.config.raw;
+    const sanitized = canonicalObjectWithoutSecrets({ ...raw, configHash: '' });
+    // W4 audit gap (config_snapshot_shape_unknown): PROMOTION_EVIDENCE_EPOCH is documented-optional
+    // ("Absent/'' ⇒ all-time" — environment.config.ts's own schema comment), but JSON.stringify
+    // silently drops an undefined-valued key, making a correctly-unset epoch indistinguishable from
+    // a row whose shape the sweep reader has never seen. Stamp it explicit null so "unset" stays
+    // distinguishable from "shape unrecognised".
+    (sanitized['agentic'] as Record<string, unknown>)['promotionEvidenceEpoch'] =
+      raw.agentic.promotionEvidenceEpoch ?? null;
+    return sanitized;
+  }
+
   private async startTrading(mode: 'paper' | 'testnet' | 'live'): Promise<void> {
     // Multi-symbol (P7): one agentic strategy instance per configured symbol, across BOTH venues
     // (v3: TRADING_SYMBOLS spans the combined 40-symbol basket). Every symbol MUST have a
@@ -630,6 +673,16 @@ export class TradingRuntimeService
     // Seeded HERE, seconds into the boot and ahead of the venue pin/key-probe network calls below, so
     // the pre-seed window the staleness alert's `for:` has to ride out is seconds rather than minutes.
     await seedAgentLastSuccess(this.agentMetrics, this.log, this.promotionStats);
+    // config_snapshot_missing root-cause fix: one durable row per distinct config activation, so a
+    // redeploy that edits PROMOTION_EVIDENCE_EPOCH/PROMOTION_DUST_NOTIONAL (or any other knob)
+    // in .env.app cannot rewrite the promotion scoreboard's evidence basis invisibly. Passed as a
+    // thunk (not pre-evaluated args) — write-config-snapshot.ts's own header explains why payload
+    // assembly must run inside its try, not out here ahead of the call.
+    await writeConfigSnapshot(this.configSnapshotWriter, this.log, () => ({
+      hash: this.config.configHash,
+      config: this.configSnapshotPayload(),
+      mode: this.config.mode.configMode,
+    }));
 
     if (mode !== 'paper') {
       // Defect A commit-1 (2026-07-16 phantom perp position): heal any already-phantom position

@@ -9,7 +9,8 @@ import { DrizzleModeAudit } from '../../../database/repositories/trading/drizzle
 import { RiskDecisionJournalAdapter } from '../../../database/repositories/trading/risk-decision-journal.adapter';
 import { SignalJournalAdapter } from '../../../database/repositories/trading/signal-journal.adapter';
 import { FundingPaymentsRepository } from '../../../database/repositories/venue/funding-payments.repository';
-import { DATABASE_POOL, DRIZZLE_DB } from '../../../database/database.tokens';
+import type { ConfigSnapshotRepository } from '../../../database/repositories/trading/config-snapshot.repository';
+import { CONFIG_SNAPSHOT_REPO, DATABASE_POOL, DRIZZLE_DB } from '../../../database/database.tokens';
 import type * as schema from '../../../database/schemas/trading';
 import { TypedConfigService } from '../../../config/environment/typed-config.service';
 import {
@@ -23,6 +24,10 @@ import {
 } from '../../../ports/trading/execution';
 import { MODE_AUDIT_OVERRIDE, type ModeAuditPort } from '../../../ports/trading/mode-control';
 import { RISK_JOURNAL_OVERRIDE, type RiskJournalPort } from '../../../ports/trading/risk';
+import {
+  CONFIG_SNAPSHOT_WRITER,
+  type ConfigSnapshotWriterPort,
+} from '../../../ports/trading/config-snapshot';
 import { SIGNAL_JOURNAL, type SignalJournalPort } from '../../../ports/strategy/strategy';
 import { FUNDING_PAYMENTS, type FundingPaymentsPort } from '../../../ports/venue/funding-payments';
 
@@ -117,6 +122,20 @@ function dbRunContext(config: TypedConfigService): ExecRunContext {
         isTestEnv() || db === null ? undefined : new FundingPaymentsRepository(db),
       inject: [DRIZZLE_DB],
     },
+    {
+      // Wraps the ALREADY-BOUND CONFIG_SNAPSHOT_REPO (database.module.ts's repoProviders) rather
+      // than constructing a second instance off the same db handle — CONFIG_SNAPSHOT_REPO has been
+      // bound and unused since 214eb7d; this is the fix that finally consumes it. Undefined under
+      // test/ci/no-DB mirrors every other override here — TradingRuntimeService's @Optional injection
+      // then simply skips the write (write-config-snapshot.ts's own fail-open direction covers a
+      // write that IS attempted but fails; this covers the write never being attempted at all).
+      provide: CONFIG_SNAPSHOT_WRITER,
+      useFactory: (
+        repo: ConfigSnapshotRepository,
+        db: NodePgDatabase<typeof schema> | null,
+      ): ConfigSnapshotWriterPort | undefined => (isTestEnv() || db === null ? undefined : repo),
+      inject: [CONFIG_SNAPSHOT_REPO, DRIZZLE_DB],
+    },
   ],
   exports: [
     EXEC_OUTBOX_OVERRIDE,
@@ -126,6 +145,7 @@ function dbRunContext(config: TypedConfigService): ExecRunContext {
     RISK_JOURNAL_OVERRIDE,
     SIGNAL_JOURNAL,
     FUNDING_PAYMENTS,
+    CONFIG_SNAPSHOT_WRITER,
   ],
 })
 export class PersistenceOverridesModule {}

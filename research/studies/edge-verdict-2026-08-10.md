@@ -269,3 +269,51 @@ Signal, Risk sizes and vetoes it, Execution enforces the approved intent. A repa
 study may constrain the model's exit options or its directive bounds; it may never bypass Risk. The
 live flip, the four live gates, and the promotion requirement (≥30 demo round trips, positive
 net-of-cost PnL, ≥14 days) remain unchanged.
+
+## AMENDMENT 2026-08-03 — two measurement defects in the harness; the ENTRIES verdict holds, one sub-clause reverses
+
+*Dated and appended one week before the 2026-08-10 verdict, per pre-registration discipline. The
+frozen body above is untouched and its published cells are not replaced. Full working:
+`research/studies/exit-attribution-restated-2026-08-03.md`; harness
+`test/backtest/exit-attribution-restated.spec.ts` (env-gated, off the production gate, $0).*
+
+Two defects were found in `test/backtest/exit-attribution.spec.ts`, the harness this verdict is
+adjudicated on:
+
+**(a) The cost basis is the wrong venue's.** The spec hardcodes `ROUND_TRIP_FEE='0.002'` — 10 bps per
+leg, maker = taker. That is the *spot* schedule. Measured from the `fills` table over this study's own
+population: `binanceusdm` charges **2.0000 bps/leg maker and 4.5787 taker**; `binance` charges
+**10.0000** on both. The book is ~89% perp by notional, so the frozen constant bills roughly **2.15×**
+the real cost on 20 of the 23 trips.
+
+**(b) The entry anchor is buy-side only.** `entryVwap` is `cost/boughtQty` (`round-trips.ts`), i.e. the
+BUY VWAP. **9 of 23 trips open short**, and on those the buys are the *cover* — so the exit price was
+being used as the entry anchor. The anchor shift ranges **−200.9 to +238.0 bps**. TRUMP/USDT:USDT
+reproduces the reported case exactly: `buyVwap` **1.593** against an opening SELL VWAP of **1.561**.
+This discharges backlog task **#105**.
+
+### What the restatement does and does not change
+
+A control pass **reproduces the frozen table cell for cell** — all 16 cells, trip counts, hit rates and
+stop/tp/hold splits, Arm 1 at −108.1 bps and the margin at +29.7 bps. That is what licenses reading the
+restated numbers as a correction rather than a different measurement.
+
+- **The ENTRIES verdict does NOT move, and is strengthened.** Every cell of every arm is still
+  negative under every pass, on both populations. No cell is net-positive. The restatement makes the
+  arms look **worse**, not better: the best cell falls from −45.0 to **−59.5 bps/trip**.
+- **No cell's sign flipped.**
+- **The Arm2−Arm1 margin's sign DID flip: +29.7 → −34.3 bps** on the frozen population. The published
+  reading "Arm 2 beats Arm 1 by 29.7 bps, just under the ≥30 bar" is an artifact of the two defects
+  pulling in opposite directions; restated, Arm 2 is **34.3 bps worse** than Arm 1. On the current
+  49-trip book the margin does not flip (+26.3 → +11.6) but still misses the bar.
+- **The fee defect alone would have changed a clause.** Restating fees only — leaving the anchor
+  defect in place — puts the margin at **+40.4 bps**, clearing the ≥30 bps condition that the
+  published run missed by 0.3 bps. A clause decided by 0.3 bps was decided by a constant that was
+  2.15× wrong.
+
+### Which cost basis a reader must use
+
+The **measured per-(venue, liquidity) schedule**, never a flat 20 bps. The flat constant is the spot
+schedule applied to a book that is overwhelmingly perp. This amendment does not alter the verdict rule
+frozen above; it records that a reader applying that rule must apply it to the restated cells, and that
+one published sub-clause about the Arm2−Arm1 margin is an artifact and must not be cited.

@@ -55,17 +55,39 @@ export const MIN_ENTRIES = 12;
  * The CLUSTER floor, declared NOW — before any live data exists — precisely so it can never be chosen
  * once something is known about the result.
  *
- * The bootstrap below resamples SYMBOLS, not rows. With k clusters every resampled mean is an average
- * over k draws from a k-element set, so the statistic lives on a small discrete lattice: at k=3 the
- * bootstrap distribution has at most 10 distinct values and its 2.5%/97.5% order statistics are
- * essentially the min and max of three numbers. That interval is an ARTIFACT OF THE LATTICE, not a
- * measurement of sampling error — it will look narrow or wide according to which three symbols
- * happened to trade, and it cannot be read as 95% coverage of anything. Five is the smallest k at
- * which the lattice is dense enough (>= 126 distinct multisets) for the order statistics to mean what
- * they are printed as. n >= 12 alone does NOT rescue this: 20 entries concentrated on 3 symbols is 3
- * effective observations for a cluster bootstrap, which is why the two clauses are independent.
+ * The bootstrap below resamples BASE ASSETS, not rows and not symbol strings. With k clusters every
+ * resampled mean is an average over k draws from a k-element set, so the statistic lives on a small
+ * discrete lattice: at k=3 the bootstrap distribution has at most 10 distinct values and its
+ * 2.5%/97.5% order statistics are essentially the min and max of three numbers. That interval is an
+ * ARTIFACT OF THE LATTICE, not a measurement of sampling error — it will look narrow or wide according
+ * to which three assets happened to trade, and it cannot be read as 95% coverage of anything. Five is
+ * the smallest k at which the lattice is dense enough (>= 126 distinct multisets) for the order
+ * statistics to mean what they are printed as. n >= 12 alone does NOT rescue this: 20 entries
+ * concentrated on 3 assets is 3 effective observations for a cluster bootstrap, which is why the two
+ * clauses are independent.
+ *
+ * BASE ASSET, not symbol string, because the trading universe is 40 symbol strings over only 28
+ * distinct base assets — twelve bases trade on BOTH venues (spot `BTC/USDT` and perp
+ * `BTC/USDT:USDT`), and the measured spot/perp h=24 forward-return correlation for the same base is
+ * 0.9993-0.9999. A same-base cross-venue pair is ~one observation wearing two symbol strings, not two
+ * independent ones, so clustering on the raw symbol let a 3-base cell through this floor by counting
+ * to 5 or 6 distinct strings first.
  */
 export const MIN_CLUSTERS = 5;
+
+/**
+ * The base asset of a ccxt symbol string — the part before the first `/`. `BTC/USDT` (spot) and
+ * `BTC/USDT:USDT` (USDⓈ-M perp) both yield `BTC`. This is the unit the cluster bootstrap resamples —
+ * see MIN_CLUSTERS above for why the raw symbol string double-counts.
+ *
+ * Exported so a later study clusters on the SAME unit by importing this rather than re-deriving it —
+ * `scripts/loop-oos-arm-core.mjs`'s paired bootstrap is the first consumer (a redefined clustering
+ * function is as silently-different a study as a redefined constant, see the module header above).
+ */
+export function baseAsset(symbol) {
+  const i = symbol.indexOf('/');
+  return i === -1 ? symbol : symbol.slice(0, i);
+}
 
 /** Ported from playbook-space-replay.ts:385. */
 export const N_BOOT = 20_000;
@@ -135,23 +157,26 @@ export function makeRand(seed) {
 const mean = (a) => (a.length === 0 ? null : a.reduce((s, x) => s + x, 0) / a.length);
 
 /**
- * CLUSTER bootstrap — ported from playbook-space-replay.ts:558. Resamples SYMBOLS, not observations:
- * several entries on one symbol within hours are not independent, and a row-level bootstrap would
- * overstate confidence.
+ * CLUSTER bootstrap — ported from playbook-space-replay.ts:558. Resamples BASE ASSETS, not
+ * observations and not symbol strings: several entries on one asset within hours are not independent,
+ * and neither are a spot and a perp entry on the same coin (MIN_CLUSTERS above), so a row-level or
+ * symbol-level bootstrap would both overstate confidence.
  *
- * One deliberate difference from the port: the cluster list is SORTED BY SYMBOL before resampling.
- * The original walks Map insertion order, which is input order — here the input order is a psql row
- * order that could change under an index or plan change, and identical rows arriving in a different
- * order must not move the interval. Sorting is what makes BOOTSTRAP_SEED actually buy determinism.
+ * One deliberate difference from the port: the cluster list is SORTED BY BASE ASSET before
+ * resampling. The original walks Map insertion order, which is input order — here the input order is
+ * a psql row order that could change under an index or plan change, and identical rows arriving in a
+ * different order must not move the interval. Sorting is what makes BOOTSTRAP_SEED actually buy
+ * determinism.
  */
 export function clusterBootstrap(obs, rand) {
-  const bySymbol = new Map();
+  const byAsset = new Map();
   for (const o of obs) {
-    const list = bySymbol.get(o.symbol);
+    const key = baseAsset(o.symbol);
+    const list = byAsset.get(key);
     if (list) list.push(o.bps);
-    else bySymbol.set(o.symbol, [o.bps]);
+    else byAsset.set(key, [o.bps]);
   }
-  const clusters = [...bySymbol.keys()].sort().map((k) => bySymbol.get(k));
+  const clusters = [...byAsset.keys()].sort().map((k) => byAsset.get(k));
   const draws = [];
   for (let b = 0; b < N_BOOT; b += 1) {
     let sum = 0;
@@ -170,6 +195,65 @@ export function clusterBootstrap(obs, rand) {
 }
 
 /**
+ * PAIRED cluster bootstrap for a delta between two arms scored on the SAME rows — first consumer is
+ * the out-of-sample session arm (`scripts/loop-oos-arm-core.mjs`), comparing the session's entries
+ * against the live lane's on identical base-asset clusters. Ported from clusterBootstrap's own
+ * resampling convention (N_BOOT draws, `clusters.length` picks per draw, WITH replacement) so the two
+ * bootstraps cannot silently drift apart — the difference is that the SAME resampled base-asset list
+ * is applied to both `obsA` and `obsB` in each draw, which is what makes the result a paired delta
+ * rather than two independent intervals subtracted (subtracting two independent CIs overstates the
+ * variance of a delta computed on the same rows).
+ *
+ * A DEGENERATE draw is one where the same resample carries zero observations for one side — obsA and
+ * obsB are not guaranteed to have an entry on every base asset (the session may enter where the live
+ * lane held, or the reverse), so a resample can land entirely on assets absent from one side. Such a
+ * draw is COUNTED, never silently dropped: dropping it would narrow the interval exactly as if every
+ * draw had been well-behaved, which is the same "absence reads as a clean reading" defect class
+ * MAX_GAP_SHARE above exists to name rather than hide.
+ */
+export function pairedClusterBootstrapDelta(obsA, obsB, rand) {
+  const groupByAsset = (obs) => {
+    const byAsset = new Map();
+    for (const o of obs) {
+      const key = baseAsset(o.symbol);
+      const list = byAsset.get(key);
+      if (list) list.push(o.bps);
+      else byAsset.set(key, [o.bps]);
+    }
+    return byAsset;
+  };
+  const byAssetA = groupByAsset(obsA);
+  const byAssetB = groupByAsset(obsB);
+  const bases = [...new Set([...byAssetA.keys(), ...byAssetB.keys()])].sort();
+  const draws = [];
+  let degenerate = 0;
+  for (let b = 0; b < N_BOOT; b += 1) {
+    let sumA = 0;
+    let countA = 0;
+    let sumB = 0;
+    let countB = 0;
+    for (let k = 0; k < bases.length; k += 1) {
+      const pick = bases[(rand() * bases.length) | 0];
+      for (const v of byAssetA.get(pick) ?? []) {
+        sumA += v;
+        countA += 1;
+      }
+      for (const v of byAssetB.get(pick) ?? []) {
+        sumB += v;
+        countB += 1;
+      }
+    }
+    if (countA === 0 || countB === 0) {
+      degenerate += 1;
+      continue;
+    }
+    draws.push(sumA / countA - sumB / countB);
+  }
+  draws.sort((a, b) => a - b);
+  return { bases: bases.length, draws, degenerate };
+}
+
+/**
  * The powered/underpowered decision and, ONLY when powered, the interval.
  *
  * An underpowered cell returns ciLo/ciHi as null rather than as numbers nobody may act on. That is
@@ -182,7 +266,7 @@ export function computeCell(obs) {
     (a, b) => a.symbol.localeCompare(b.symbol) || a.t0 - b.t0 || a.venue.localeCompare(b.venue),
   );
   const bps = sorted.map((o) => o.bps);
-  const clusters = new Set(sorted.map((o) => o.symbol)).size;
+  const clusters = new Set(sorted.map((o) => baseAsset(o.symbol))).size;
   const n = bps.length;
   const powered = n >= MIN_ENTRIES && clusters >= MIN_CLUSTERS;
   if (!powered) {
@@ -201,7 +285,9 @@ export function computeCell(obs) {
 
 // ── the price grid ───────────────────────────────────────────────────────────────────────────────
 
-const fmtBps = (v) =>
+/** Exported so every module printing a bps figure — `scripts/loop-oos-arm-core.mjs` included —
+ * formats it identically rather than growing a second, silently-divergent formatter. */
+export const fmtBps = (v) =>
   v === null || !Number.isFinite(v) ? 'n/a' : `${v >= 0 ? '+' : ''}${v.toFixed(1)} bps`;
 
 /**
@@ -327,8 +413,11 @@ function annotation(kind, detail) {
  * by being lifted into a sentence away from its caveat. Emitting the label and the estimate as
  * separate fields invites exactly that, so the renderable form is minted here, together, and the
  * runner prints this rather than assembling its own.
+ *
+ * Exported so every caller — `scripts/loop-oos-arm-core.mjs` included — renders a cell through this
+ * SAME chokepoint rather than growing a second copy of the never-detach-the-label rule.
  */
-function summarise(cell, label) {
+export function summarise(cell, label) {
   // Name the clause that ACTUALLY failed. "n<12 or clusters<5" printed against a cell with clusters=5
   // is a false statement about the data, and the two clauses are independent by design (20 entries on
   // 3 symbols fails only the cluster clause) — so a reader must be able to see which one bit.
@@ -366,10 +455,44 @@ function divergenceFor(cell, predicted) {
  *                   probe failed. `isFlat` is the FLAT_MARKER match the runner computed in SQL.
  * @param gridRows   [{ eventTime, venue, symbol, close }] or null when the probe failed.
  * @param reference  REPLAY_REFERENCE-shaped table, or null when it could not be read/validated.
+ * @param eligibleHorizons  optional subset of HORIZONS to score. Omitted (the default) scores every
+ *   HORIZONS member, unchanged from before this parameter existed. A caller that restricts this — the
+ *   out-of-sample session arm passes `[24]`, since its pre-registration declares ONLY h=24 as its
+ *   SECONDARY bound — MUST NOT have the other horizons vanish silently: every HORIZONS member outside
+ *   the passed set gets its own `forward_return_horizon_not_blind` annotation, once per call, naming
+ *   exactly which horizons were excluded and why a study would exclude them (a horizon outside a
+ *   study's declared scope is not blind to that study's own design, not a data gap).
+ * @param includeObservations  when true, each measured horizon carries its own raw `obs` array (the
+ *   per-entry bps observations `computeCell` was built from) alongside `cell` — added for
+ *   `scripts/loop-oos-arm-core.mjs`'s paired bootstrap, which needs the SAME per-entry observations
+ *   this module already computes rather than re-deriving them from the grid a second time. Omitted
+ *   (the default), no `obs` key is added anywhere — the output shape is byte-identical to before this
+ *   parameter existed, which is what keeps every existing consumer's assertions valid unchanged.
  * Never throws. Returns { status, panels, annotations } and deliberately no `alarms` key.
  */
-export function computeForwardReturn({ entryRows, gridRows, reference } = {}) {
+export function computeForwardReturn({
+  entryRows,
+  gridRows,
+  reference,
+  eligibleHorizons,
+  includeObservations,
+} = {}) {
   const annotations = [];
+
+  const scoredHorizons = Array.isArray(eligibleHorizons)
+    ? HORIZONS.filter((h) => eligibleHorizons.includes(h))
+    : HORIZONS;
+  const excludedHorizons = HORIZONS.filter((h) => !scoredHorizons.includes(h));
+  if (excludedHorizons.length > 0) {
+    annotations.push(
+      annotation(
+        'forward_return_horizon_not_blind',
+        `h=${excludedHorizons.join(',')} excluded by the caller's eligibleHorizons filter — not ` +
+          'scored for this read. This is a declared scope limit, never a silent drop: the caller ' +
+          `restricted scoring to h=${scoredHorizons.join(',')} only`,
+      ),
+    );
+  }
 
   if (!Array.isArray(entryRows)) {
     annotations.push(
@@ -517,7 +640,7 @@ export function computeForwardReturn({ entryRows, gridRows, reference } = {}) {
     for (const population of POPULATIONS) {
       const pool = population === 'flat_only' ? ofVersion.filter((e) => e.isFlat) : ofVersion;
       const horizons = [];
-      for (const h of HORIZONS) {
+      for (const h of scoredHorizons) {
         const counts = { ok: 0, gap: 0, pending: 0, noSeries: 0, badPrice: 0, noEntryBar: 0 };
         const obs = [];
         for (const e of pool) {
@@ -609,7 +732,7 @@ export function computeForwardReturn({ entryRows, gridRows, reference } = {}) {
             ),
           );
         }
-        horizons.push({
+        const horizonEntry = {
           h,
           status: 'measured',
           reason: null,
@@ -618,7 +741,9 @@ export function computeForwardReturn({ entryRows, gridRows, reference } = {}) {
           cell,
           divergence,
           summary: summarise(cell),
-        });
+        };
+        if (includeObservations === true) horizonEntry.obs = obs.slice();
+        horizons.push(horizonEntry);
       }
       panels.push({
         playbookVersion: version,
@@ -685,8 +810,9 @@ export function sweepAnnotations(result) {
         'forward_return_underpowered_rollup',
         `${under.length} realised-entry-forward-return cell group(s) are UNDERPOWERED at every ` +
           `horizon and NONE of them is actionable: ${under.join(', ')} — the bar is n>=${MIN_ENTRIES} ` +
-          `AND clusters>=${MIN_CLUSTERS} (the cluster bootstrap resamples symbols, so a few symbols ` +
-          'means a few effective observations however many rows there are). No replay-vs-live ' +
+          `AND clusters>=${MIN_CLUSTERS} (the cluster bootstrap resamples base assets, so a few ` +
+          'assets means a few effective observations however many rows there are — a spot and perp ' +
+          'symbol on the same coin count once). No replay-vs-live ' +
           'divergence was evaluated for any of them. Point estimates are deliberately NOT quoted ' +
           'here; run `pnpm loop:forward-return` to see each one printed with its power label',
       ),

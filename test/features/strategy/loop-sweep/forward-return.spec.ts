@@ -327,6 +327,31 @@ describe('realised entry forward return — power gating', () => {
     expect(h.divergence?.delta).toBeNull();
     expect(r.annotations.map((a) => a.kind)).not.toContain('forward_return_replay_divergence');
   });
+
+  it('collapses BTC/USDT (spot) and BTC/USDT:USDT (perp) into ONE cluster, not two', () => {
+    // Same base asset on two venues — measured spot/perp h=24 forward-return correlation is
+    // 0.9993-0.9999 (core header), so these 20 entries are one effective observation, not twenty
+    // spread over two symbols. n clears MIN_ENTRIES; clusters must not.
+    const gridRows = [
+      ...fullSeries('binance', 'BTC/USDT', T0, 100, 0.1),
+      ...fullSeries('binanceusdm', 'BTC/USDT:USDT', T0, 100, 0.1),
+    ];
+    const entryRows = Array.from({ length: 20 }, (_, i) =>
+      entry({
+        venue: i % 2 === 0 ? 'binance' : 'binanceusdm',
+        symbol: i % 2 === 0 ? 'BTC/USDT' : 'BTC/USDT:USDT',
+        eventTime: T0 + i * BAR_MS,
+      }),
+    );
+    const r = computeForwardReturn({ entryRows, gridRows, reference: REF });
+    const h = h1(r);
+
+    expect(h.cell?.n).toBe(20);
+    expect(h.cell?.n).toBeGreaterThanOrEqual(MIN_ENTRIES);
+    expect(h.cell?.clusters).toBe(1);
+    expect(h.cell?.powered).toBe(false);
+    expect(h.summary).toContain(`clusters=1<${MIN_CLUSTERS}`);
+  });
 });
 
 describe('realised entry forward return — void reads are named, never clean zeros', () => {
@@ -441,6 +466,32 @@ describe('realised entry forward return — determinism and fail-open shape', ()
       reference: REF,
     });
     expect(JSON.stringify(a.panels)).toBe(JSON.stringify(b.panels));
+  });
+
+  it("keeps clusters=5 (not 6) and stays byte-identical when a perp entry shares AAA's base asset", () => {
+    // AAA/USDT (spot, already in the fixture above) and AAA/USDT:USDT (perp) share the base AAA — a
+    // symbol-string keying would count 6 distinct clusters here instead of 5, and moving that count
+    // moves the bootstrap's resample unit, which must not happen post-collapse either.
+    const dupGridRows = [...gridRows, ...fullSeries('binanceusdm', 'AAA/USDT:USDT', T0, 100, 0.1)];
+    const dupEntryRows = [
+      ...entryRows,
+      entry({ venue: 'binanceusdm', symbol: 'AAA/USDT:USDT', eventTime: T0 + 20 * BAR_MS }),
+    ];
+    const a = computeForwardReturn({
+      entryRows: dupEntryRows,
+      gridRows: dupGridRows,
+      reference: REF,
+    });
+    const h = h1(a);
+    expect(h.cell?.clusters).toBe(5);
+    expect(h.cell?.powered).toBe(true);
+
+    const b = computeForwardReturn({
+      entryRows: dupEntryRows,
+      gridRows: dupGridRows,
+      reference: REF,
+    });
+    expect(JSON.stringify(a)).toBe(JSON.stringify(b));
   });
 
   it('carries NO alarms key — a divergence is a finding, never an alarm', () => {

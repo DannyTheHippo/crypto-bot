@@ -7253,3 +7253,91 @@ and no resting order — is UNREAD**, and an unread check is not a passing one.
 3. The `-4024` repair, via one of the two correct seams.
 4. The pin-leak audit the failed agent owed.
 5. `output_config: {effort: …}` as a cost-negative truncation experiment.
+
+## 2026-07-31 — Pass 54 (the grid was flattering, and nothing here can be shown to learn)
+
+**Window:** 2026-07-31T20:40Z → 21:15Z. Lease `30c1a5be616fd056`, taken 20:40:39Z, no collision.
+**Owner-directed research session**, not a scheduled pass — recorded with a `**Window:**` line because
+Pass 53 spent effort reconstructing the one Pass 52 omitted.
+
+**The question asked:** could a vastly more intelligent but cheaper decide model (GPT-5.6 after its
+price cut, or kimi-k3) push the book toward profitability. **The owner then reframed it** to: the
+least-bad config / model / architecture that can potentially LEARN an edge. The reframe is what
+produced the findings; the original question was answerable from the record alone.
+
+Full record: `research/studies/learning-capacity-2026-07-31.md`.
+
+### Headline — the declared horizon grid was measuring the wrong thing
+
+Forward return is scored at h ∈ {1,4,8,24} bars. That grid was never matched to holding behaviour.
+Measured, n=40 closes over 10 days: **median hold 234.4 min ≈ 15.6 bars, mean 817.3 min ≈ 54.5 bars.**
+Re-scored at hold-matched horizons ($0, no new model calls, control reproduces `loop:forward-return`
+exactly at h=1):
+
+| version | h=1 | h=8 | h=24 | **h=16** | **h=54** |
+| --- | --- | --- | --- | --- | --- |
+| v1 | −16.9 | −47.4 | −58.5 | **−57.6** | **−111.3** |
+| v2 | −15.9 | −70.8 | −155.6 | **−94.5** | **−174.8** |
+
+**This reconciles two ledgers that have disagreed for a week.** Realized gross is **−69.1 bps/round
+trip** on the current book (−$23.17 over $3,353.99 notional, 38 trips) and −101.9/−106.0 in the older
+record; h=1 said −16.9. **The hold-matched horizons bracket every realized figure; h=1 brackets none.**
+Order-of-magnitude agreement only — the cells are v1/v2 while realized spans all eight arms, and
+forward return measures entry drift not round-trip PnL. Consequence: the gap to the +13.0 bps bar is
+**~70–125 bps at the horizon that counts**, not the ~30 the old grid implied. No ordering flips.
+
+### Nothing here can currently be SHOWN to learn
+
+Eight live playbook versions; **only v1 (n=28,k=13) and v2 (n=18,k=11) ever reached the power bar, and
+they are the two oldest.** 78 entries / 8 versions = 9.75 against a bar of 12.
+
+**The mechanism is DIVISION, not suppression — the obvious confound was checked and would have
+inverted the story.** Trading did not slow: **2026-07-24 was simultaneously the highest-volume day in
+the program's history (24 entries) and its heaviest minting day (v2,v3,v6,v7 all live)** — four arms
+sharing 24 entries is ~6 each, half the bar, on the best day there has ever been. The two POWERED
+versions are the two that had the book largely to themselves. 07-26/07-28/07-29 produced zero decides
+(outage, host sleep), compounding but not causing it.
+
+### The model question, on the reframed terms
+
+No model supplies edge (best cell ever: −7.12 bps vs a +13.0 bar). In a learning architecture the
+model is a **substrate for running many experiments**, so price buys **search rate, not PnL** — haiku
+~4–5× more arms per dollar, GPT-5.6 Luna ~15× on rate. The cost thesis is dead on its own terms:
+**gross with inference FREE is −$23.17.** kimi-k3 excluded — quality disqualification, and Moonshot's
+~31.5% empty-200 rate makes it 1.9× MORE expensive. **The haiku question is NOT settled and cannot be
+settled offline for free:** the replay cells persist only per-(arm,horizon) aggregates, so re-scoring
+haiku at h=16 needs a fresh paid run. Verified in the spec, not assumed.
+
+### Shipped — three commits, gate green (3414 tests / 184 files, livegate 55/55, build clean)
+
+`1064503` the hold-matched re-score tool. `4b7e021` a corpus builder — v4 is 587 rows (+52%) but
+**currently INERT**: the OHLCV cache stops at ~07-27 so 34% of rows score null at every horizon (the
+known `279713e` truncation; a $0 re-fetch is the unlock). `3958c8c` a decide-model A/B config gate,
+**flag-off**, with a fail-closed boot refusal.
+
+**The A/B gate is NOT a working A/B and the commit says so.** Three findings recorded against its own
+interest: `abArm` had **zero production call sites** before it (playbook routing uses its own inline
+bucket — the "independent salt" requirement was vacuous); the arm is drawn **once per BOOT** because
+the client pins one model per instance and `AGENT_CLIENT` is a singleton, so the claimed benefit is
+**not delivered**; and attribution journals/meters every arm-B decide **as arm A**, which would poison
+the promotion gate's own cost and PnL inputs. `AGENTIC_MODEL_AB_PCT` stays 0.
+
+### Also found
+
+`leaders_only` and `one_symbol_btc` are **structurally unscoreable** — capped at 3 and 1 symbol-clusters
+by their own playbook text against a floor of 5. The untested search space is 5 arms, not 7.
+
+### The decision this turns on — OWNER
+
+**Daily minting and powered evidence are mutually exclusive.** Holding an arm to n≥12 AND k≥5 takes
+2–4 days; daily minting guarantees no arm is ever readable. That override is a dated owner decision
+(`candidate-routing-override-2026-07-31.md`) and change-discipline forbids reopening it silently.
+Recommendation: suspend daily minting for the live lane, move iteration offline (~$5/arm, hours). If
+kept, record explicitly that the live lane is a **corpus generator, not an evidence source**.
+
+### Next
+
+1. Refresh the OHLCV cache ($0) — nothing downstream is scoreable without it.
+2. Close the attribution gap and the per-call-model constraint before any A/B enable.
+3. Then a pre-registered paid re-run of haiku vs sonnet at the hold-matched horizon.
+4. **Re-read every prior study against the horizon finding** — all were scored on the flattering grid.

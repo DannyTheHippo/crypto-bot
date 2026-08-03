@@ -117,6 +117,23 @@ WATCH-V3-1: spot heap slope on the demo soak (paper plateau 673 MiB is the
   never expected to HALT and was never meant to** — it pushes nothing to `acc.halts`
   (`reconciliation.service.ts:776`), and every one of the 1,727 recorded HALTs came from
   `POSITION_DRIFT`, `UNKNOWN_OURS_OPEN` or `FILL_FOR_UNKNOWN_ORDER`, the last at 2026-07-27T16:46:02Z.
+
+  > **CORRECTED Pass 59 (2026-08-03) — the set-membership sentence above is true but badly
+  > misleading, and a pass reasoning from it will over-estimate what has actually fired.** Over
+  > `audit_log`'s full retained range (2026-07-21 → 2026-08-03, 32,579 rows) **all 18
+  > `RECONCILE_MISMATCH` kill-switch transitions carry reason `UNKNOWN_OURS_OPEN`. Zero
+  > `POSITION_DRIFT`, zero `FILL_FOR_UNKNOWN_ORDER`.** The 2026-07-27T16:46:02Z record the sentence
+  > cites is itself `UNKNOWN_OURS_OPEN`. Positive control: the same predicate on the same column
+  > returns those 18 rows, so the two zeros are genuine absences, not a void read. **The realized set
+  > is `{UNKNOWN_OURS_OPEN}` alone — `POSITION_DRIFT` has never halted this system in retained
+  > history**, and it could not have done so casually anyway: a `streak >= 2` debounce shipped in
+  > `1ff1fc7` (2026-07-17), ten days before that anchor, so a halt needs two CONSECUTIVE divergent
+  > passes on one `venue|symbol`. `audit_log` begins 2026-07-21, four days after the positions axis
+  > landed, so the 1,727 figure cannot be decomposed by class before that date — it is not refuted,
+  > it is unverifiable. **`FILL_FOR_UNKNOWN_ORDER`'s zero has a second, worse explanation**: on
+  > `binanceusdm` the reconciler's trades axis has observed **0 trades across 777 passes in 13h**
+  > (binance: 6,356 across 778 — positive control), so that detector cannot fire there at all. See
+  > this pass's LOG entry § the dead perp trades axis.
   The stamp-age clause and the `sum(fills.qty)` clause are unchanged.
 
   **State at re-derivation (2026-07-30T21:46:46Z):** 24h reads **2,840 `CLEAN` / 10 `MISMATCH` / 0
@@ -253,6 +270,58 @@ WATCH-V3-1: spot heap slope on the demo soak (paper plateau 673 MiB is the
   NOT separable, and no pass may claim either change moved the book on its own.**
   Deadline: first pass with ≥12 entries attributable to `playbook_version=10` (this loop's own
   "never act on a sub-n≥12 cell" bar).
+
+  > **FIRST POWERED READING — Pass 59, 2026-08-03 — and the expected-positive above is UNADJUDICABLE
+  > AS WRITTEN. Do not re-derive this; the defect is in the comparator, not the sample.** The deadline
+  > fired (n=21, clusters=8, `flat_only` identical — all 21 entries are from FLAT, gap=0 at every
+  > horizon). But the clause sets a **live** cell against a **replay** cell, so its difference
+  > confounds four axes at once, none of which decomposes: v10-vs-v8, live-vs-replay, two **disjoint**
+  > windows (replay 07-21→27, 6.35 d, basket **−438.4 bps**; live 07-30→08-03, 3.66 d, basket
+  > **−70.5 bps**), and venue mix (replay drew on 139 spot corpus rows; live is **21 of 21
+  > binanceusdm perp, zero spot** — itself confounded with v10 via the spot-suppression finding). It
+  > is not even v8-against-v8: the `−36.3` is the champion arm's **70 replayed** entries, a different
+  > set from v8's **8 live** ones.
+  >
+  > **The framing is load-bearing — the verdict flips three ways on defensible baselines:** vs v8
+  > *replay* (as written) v10 is worse at h=1/4/8, better at h=24; vs v8 *live* (same instrument, same
+  > price source) v10 is **BETTER at h=4 (+52.0) and h=8 (+16.2)** — the two horizons the sweep flags
+  > as its failures; market-neutralised, v10 is worse at all four. **Verdict: NOT-COMPARABLE at every
+  > horizon.** More v10 data cannot fix it.
+  >
+  > **What IS established, and it is not nothing.** (a) Against **v10's own** replay prediction — the
+  > one comparison free of the live-vs-replay axis — the interval excludes the prediction at h=4
+  > (delta −46.1) and h=8 (−72.1): **`inverted` did not reproduce out of sample at 2 of 4 horizons**,
+  > exactly the failure `verdicts.md` guardrail 2 pre-registered. It is **consistent at h=1 and at
+  > h=24 — and h=24 was the parent study's DECLARED PRIMARY horizon**, so the headline is narrower
+  > than "the arm failed". (b) Market-neutral (each entry's signed return minus `dir ×` the
+  > equal-weight drift of all 40 series at the same bar/horizon): h=4 **−48.6** CI [−123.8, −1.7],
+  > h=8 **−65.0** CI [−148.5, −10.1], n=21/k=8 — **powered, excludes zero.** v10's entries are worse
+  > than the market it traded. Beta *helped* v10, so this is the honest adverse reading.
+  >
+  > **The adverse-selection sentence three lines above is FALSE for this metric.** `ENTRY_SQL` selects
+  > `agent_decisions` rows (decisions, filled or not) and `forwardBps` anchors on the decision bar's
+  > close, marking out on the same close-convention grid at both ends — **no fill price, no fee, no
+  > fill/no-fill filter, construction identical to replay's `fwdBps`.** Replay's inability to see fills
+  > cannot move a statistic that ignores fills on both sides; the sentence was written about
+  > *realised PnL* and does not transfer. The real instrument is the filled-vs-unfilled split on these
+  > same 21 rows (16 filled / 5 not, 76.2%): FILLED h=4 **−68.1**, NOFILL **+27.5**, a +95.6 bps gap in
+  > exactly the adverse-selection direction — but **NOFILL is n=5/k=3 and may NOT be quoted as
+  > evidence** under this program's own power bar. Suggestive, not established; it reaches n≥12 around
+  > 2026-08-09.
+  >
+  > **ROLLBACK REFUSED, on mechanism as much as evidence.** `AGENTIC_PLAYBOOK_PIN=8` is not a
+  > rollback: with `active=8`, `selectCandidate`'s `version > 8` filter **re-arms v9 AND v10 as A/B
+  > candidates**; both clear `THOMPSON_MIN_TRIPS`, so it would **activate Thompson sampling for the
+  > first time in this program's history** (priors so wide the draw is near a coin flip); and a freshly
+  > minted v12 has 0 trips, so it would be ineligible and never routed — **silently cancelling the
+  > owner's daily-minting override** by a second mechanism its own record forbids. `verdicts.md`
+  > guardrail 5 also binds: revert to the next-least-bad arm, **never to `champion_v8` by default**.
+  > The knob needs a restart (`current()` caches once per process) and took the bot down on
+  > 2026-07-06. Evidence for preferring v8 rests on an **n=8/k=5** cell that fails the power bar, and
+  > the window confound runs *against* v10 (v8 made money into a −240.3 bps headwind while 76%-short
+  > v10 had a −70.5 bps tailwind). **Restate the expected-positive against the live-vs-live v8 cell the
+  > tool already computes** (`REPLAY_REFERENCE.incumbent` is loaded and never rendered) before any
+  > future pass tries to adjudicate this again.
 
 ### WATCH-V4-10 — an orphaned perp algo stop resting against a flat book (2026-07-30, Pass 49)
 

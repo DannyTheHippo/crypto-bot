@@ -103,7 +103,12 @@ never changes for strategy evolution.
     framings lifted. Reflection runs Opus-4.8; decide model changes ONLY via the $0 offline
     harness (never a blind flip); ceiling = `AGENTIC_DAILY_COST_STOP_USD=$5/day` breaker
     (expected true spend ~$2.2–2.5/day at 5 symbols).
-- **Budgets:** `AGENTIC_DAILY_COST_STOP_USD=$5/day` runtime breaker; **≤$20/gate** for offline
+- **Budgets:** `AGENTIC_DAILY_COST_STOP_USD=$3/day` runtime breaker (**SUPERSEDED 2026-07-21 by the
+  v3 one-book consolidation, recorded here Pass 59, 2026-08-03** — the `$5/day` above is the pre-v3
+  two-lane figure and is historical. `.env.app:97` deploys `3`, `loop-sweep-core.mjs`'s
+  `AGENTIC_DAILY_COST_BREAKER_USD` reads `3`, and the playbook §0 documents the unified `$3/day`;
+  the charter was simply never updated, which is the drift Pass 58 flagged. Breaker exhaustion
+  mid-day ⇒ economize via prompt/cadence, never raise the breaker); **≤$20/gate** for offline
   candidate evals (~2 API calls/replayed row — cap row count to stay under budget).
 
 - **Pre-authorizations (owner; per the 2026-07-12 delegation a pass applies these itself once the

@@ -825,3 +825,199 @@ construction.
 - **It does not attribute the fall in entry rate.** The v10 coincidence is confounded with the
   `inverted` playbook shipping at 2026-07-30T16:57Z with no control arm (`STATUS.md:158`).
 - **It resolves none of the other four rows** in § Figures this document could not verify.
+
+### Amendment 2026-08-04 — the baseline and the band are REPAIRED, before the first seal
+
+_Appended per the rule above. Nothing before this heading is edited, including the 2026-08-03
+amendment, which reported these defects and deliberately did not repair them._
+
+**As-of** the live `cryptobot` database at **2026-08-03T22:44Z**, read-only `psql`. **The arm is
+still UNSTARTED — no window has been sealed and no read has been scored** (§ Cadence: the hourly
+trigger is owner-side and does not exist). That is the entire reason this repair is admissible: the
+2026-08-03 amendment correctly refused to re-declare a band after seeing what would trip it, and a
+repair written before the first seal is a different act from a repair written after a look.
+
+**What the previous amendment established and this one acts on:** `p0 = 0.1329` is drawn from a
+window that closed 2026-07-31T20:30Z; VOID condition 3's `[4%, 40%]` floor sits **above** the
+incumbent's own rate; and the `60.8 FLAT rows/day` planning figure understates cadence by ~2.2x.
+Left as they stand, the first two would make this arm **produce a false positive by construction** —
+the primary would reject on a baseline mismatch, or the read would void on correct behaviour.
+
+#### 1. The comparator is the live lane's OWN rate on the SAME sealed rows — not any frozen constant
+
+**Registered here as the primary's comparator, replacing `p0 = 0.1329`:**
+
+> For each sealed read, the baseline `L` is the live lane's **own recorded entry rate on exactly the
+> rows in that read's sealed window**, computed under the registered denominator: entries
+> (`open_long` + `open_short`) ÷ rows carrying the FLAT position marker, `trigger_kind = 'candle'`,
+> `strategy_id NOT LIKE 'replay-%'`, marker literal imported from
+> `scripts/loop-forward-return.mjs:36-37` — the identical construction registered in
+> [`entry-rate-denominator-2026-08-03.md`](entry-rate-denominator-2026-08-03.md) § Registered
+> definition. `L` is recorded in the seal, before the read is scored, alongside the row ids and the
+> payload sha256.
+
+**Which population, and why it must be that one.** The baseline must be drawn from **the sealed rows
+themselves**, because those are the only rows on which the two arms are comparable: the session
+decides on those payloads and the live lane's own recorded action for those payloads exists in the
+same journal row. Every alternative is a bet that the regime has not moved, and the record shows the
+bet losing. On the identical construction, the incumbent's rate ranges **0.00% to 42.42%** across
+playbook versions (§ 3 of the entry-rate study), and three defensible "lane rates" coexist today:
+
+| candidate baseline | value | denominator | why it is rejected as the comparator |
+| --- | --- | --- | --- |
+| `corpus-v4-flat` window (the original `p0`) | 13.29% | 78 / 587 FLAT rows, window closed 2026-07-31T20:30Z | a different regime; rejects at ~157 rows on a lane behaving perfectly |
+| whole book, lifetime | 9.24% (9.14% proportion-safe) | 92 / 996 to 2026-08-03T22:00Z | mixes eight playbook versions; rejects at ~850 rows on a lane behaving perfectly |
+| playbook v10 only | **4.1743%** | **23 / 551**, measured 2026-08-03T22:44Z | closest, but still a different window from any future seal, and it moved 3.87% -> 4.17% in a single day |
+| **the seal's own rows** | measured per read | that read's own FLAT rows | **ADOPTED** |
+
+**This is not a new instrument — it is this document's own remedy, promoted.** § Weaknesses item 3
+already pre-committed that _"the first seal must record the live baseline measured on that seal's own
+rows"_. The defect was that the primary statistic did not then USE it; it tested against the frozen
+constant while the same-rows figure sat in the seal as a footnote. This amendment makes the seal's
+figure the comparator.
+
+#### 2. The primary becomes a TWO-sample proportion test on the same rows, and it is conservative
+
+The scored statistic was a one-sample proportion test of the session's rate against a fixed `p0`.
+With a per-seal comparator there is no fixed constant to test against, so:
+
+> **PRIMARY, as amended.** A two-sided **two-proportion test** of the session arm's entry rate
+> against the live lane's entry rate **on the same sealed rows**, at the unchanged
+> `alpha = 0.05 / 6 = 8.3333e-3`. **When either arm's entry count is below 5, the normal
+> approximation is invalid and the test is computed by Fisher's exact test at the same alpha** — a
+> pre-declared substitution, made before any read, never chosen after seeing counts.
+
+**Both arms score the same rows, so the two proportions are positively correlated, and an unpaired
+two-proportion test therefore OVERSTATES the variance of the difference. The test under-rejects.**
+That direction is chosen deliberately: this arm's named failure mode is a **false PASS** (§
+Multiplicity — _"the single most likely way this arm produces a false positive"_), and a conservative
+test fails toward the outcome the document was built to protect.
+
+**The paired alternative is rejected, with its reason.** McNemar's test on the discordant pairs is
+more powerful, and it is refused because § Blindness is procedural already chose a **rate** over a
+per-row agreement score precisely because _"a rate is robust to a single leaked row in a way a paired
+agreement count is not"_. Blindness here is procedural, not mechanical; a statistic that is fragile
+to one leaked row is the wrong statistic for a transcript-enforced arm. **Power is traded for leak
+robustness, knowingly.**
+
+**Rows and days, restated under the amended test.** `n` per arm at two-sided `alpha = 8.3333e-3` and
+80% power (`z = 2.6390 + 0.8416 = 3.4806`, `z^2 = 12.1146`), pooled form
+`n = 2 z^2 p_bar q_bar / d^2`, at the planning baseline `p = 0.041743`. Both arms score the same
+rows, so `n` per arm **is** `n` rows.
+
+| `d` (absolute) | rows required | days at 134.7/day | days at 123.9/day (8% sleep haircut) |
+| --- | --- | --- | --- |
+| 10 pp | **202** | 1.50 | 1.63 |
+| 5 pp | **604** | 4.49 | 4.88 |
+| 3 pp | **1,441** | 10.70 | 11.63 |
+
+**The correction costs rows and buys days.** It needs 1.4x–1.5x the rows of the original one-sample
+design (140 / 558 / 1,551), but the measured cadence is 2.2x the planning figure, so every day count
+falls: 5 pp moves from 9.2 days to **under 5**. The design's one-line summary survives intact — a
+5-percentage-point behavioural difference is powered in about a working week; a 10 bps return
+difference is not powered in any number of days.
+
+**`p = 0.041743` is a PLANNING figure and is never a comparator.** It sizes the table above and
+nothing else. The comparator is measured per seal (§ 1), and the first seal replaces this planning
+figure with its own measured rate, exactly as § Powered in days already requires for the cadence
+figure.
+
+#### 3. VOID condition 3 is REPLACED — the band becomes relative, and the floor moves to the secondary
+
+**The defect, restated with a fresh receipt.** The incumbent lane's rate was **21 / 543 = 3.8674%**
+at the 2026-08-03T22:00Z cutoff and is **23 / 551 = 4.1743%** at 2026-08-03T22:44Z. **The `[4%, 40%]`
+floor would have voided a correct read yesterday and would not void one today.** An absolute floor
+sitting within one day's drift of the incumbent's own rate is a coin flip, not a condition.
+
+> **VOID condition 3, as amended 2026-08-04.** With `S` the session arm's entry rate and `L` the
+> live lane's rate on the same sealed rows (§ 1), a read VOIDs if **either**:
+>
+> **(a) `S / L > 6.0` or `S / L < 1/6`** — the payload/prompt-surface integrity band; or
+>
+> **(b) `S > 65%`** absolute — above every figure ever recorded on this corpus.
+>
+> If `L = 0` on the sealed rows, arm (a) is **INAPPLICABLE** (not a VOID) and only (b) applies; the
+> primary is then computed by Fisher's exact test per § 2.
+>
+> **There is no absolute floor on the primary.** A read whose session entry count is low is
+> **reported with its true `n` and its achieved power**, per § Underpowered and incomplete — it is
+> not dropped and its window is not re-opened.
+
+**Why 6.0, derived from the record rather than chosen.** The condition's stated purpose is that a
+rate far out is _"evidence the prompt surface or the payload changed"_ — a payload defect, not a
+model difference. So the band is calibrated on the recorded separation between those two things, on
+**identical rows**:
+
+| effect | ratio vs the live-recorded 16.1% on the same 354 rows | source |
+| --- | --- | --- |
+| `champion_v8` sonnet replay, 21.8% | 1.35x | `verdicts.md:190` |
+| `haiku_swarm` / `haiku_single`, 24.58% / 24.86% | 1.53x / 1.54x | `verdicts.md:227` |
+| **`champion_v8` kimi-k3, 62.0% — the largest cross-model effect ever measured here** | **3.85x** | `verdicts.md:190` |
+| **the capabilities defect, 2.5% -> 19.1%** | **7.64x** | `verdicts.md:273-276` |
+
+**6.0 sits above every model-axis ratio on record and below the recorded defect magnitude.** That is
+exactly the separation the condition claimed to make and, as written, did not: it separated
+regimes instead. The 65% ceiling in (b) sits above the highest rate ever recorded on this corpus
+(kimi's 62.0%), so it fires only on a schema or prompt failure regardless of what the incumbent is
+doing.
+
+**Why deleting the absolute floor STRENGTHENS the arm rather than loosening it.** Three reasons, and
+the third is the decisive one:
+
+1. **The primary is a proportion test and is well-defined at any rate, including zero.** A session
+   entering 0 of 604 rows while the lane enters 25 is not an undefined statistic; it is a large,
+   cleanly detectable behavioural difference.
+2. **The floor's real work is already done, by an imported constant.** The entry population matters
+   for the SECONDARY h=24 read, and that read is already governed by `MIN_ENTRIES = 12` and
+   `MIN_CLUSTERS = 5`, imported from `loop-forward-return-core.mjs` and unchanged by this amendment.
+   A cell below either is UNDERPOWERED, never a bound, never a headline. **Nothing is removed; a
+   duplicate is.**
+3. **As written, the floor VOIDED the arm's most informative outcome.** A stronger reasoner that
+   abstains where the live lane trades is a real finding about the payload — and the floor would have
+   discarded it while still consuming the rows, since a VOID spends its window and buys nothing. **A
+   condition that destroys evidence in the direction the arm was built to look is a defect, not a
+   safeguard.**
+
+**Everything else in § VOID conditions is UNCHANGED:** conditions 1 (`capsSource !== 'recorded'`), 2
+(system-prompt fidelity), 4 (transcript blindness) and 5 (missing seal) stand word for word, as does
+the asymmetry that a VOID consumes its window and does not consume a family slot.
+
+#### 4. The cadence figure is replaced with a measurement, and the haircut is named
+
+`60.8 qualifying FLAT rows/day` is retired as a planning figure. Measured on the live journal
+(FLAT-marker candle rows, non-replay), as of 2026-08-03T22:44Z:
+
+| UTC day | FLAT rows | entries |
+| --- | --- | --- |
+| 2026-07-31 | 124 | 8 |
+| 2026-08-01 | 131 | 4 |
+| 2026-08-02 | 149 | 2 |
+| 2026-08-03 (partial, to 22:40Z) | 125 | 7 |
+
+**134.7 FLAT rows/day** over the three full UTC days (404 / 3); the partial 08-03 extrapolates to
+132.3/day. Consistent with the 2026-08-03 amendment's 128.7/day (v10 window) and 135.8/day (last
+three days) on a fresher cut.
+
+**The host-sleep haircut is applied and named:** worst measured availability loss is **8% per 24h**
+(`STATUS.md:181-182`), giving an effective **123.9 rows/day**, which is the conservative column of
+§ 2's table. A missed hour remains a **gap between windows, never a backfill**.
+
+**This is the live lane's rate, not the arm's.** The document's own rule still governs: the first
+seal replaces it with the arm's own measured rate, in a further amendment.
+
+#### 5. What this amendment does not do
+
+- **It scores no read, seals no window and consumes no family slot.** The arm remains UNSTARTED.
+- **It changes no alpha, no multiplicity ladder, no cluster unit, and no imported constant.** Six
+  disjoint scored reads at `8.3333e-3`; base-asset clusters; `HORIZONS`, `MIN_ENTRIES`,
+  `MIN_CLUSTERS`, `N_BOOT`, `BOOTSTRAP_SEED`, `MAX_GAP_SHARE`, `BAR_MS`, `FLAT_MARKER` all still
+  imported, never redefined.
+- **It does not make the arm easier to pass.** The comparator is now same-rows (removing a free
+  rejection), the test is conservative by construction, and the payload-integrity band is two-sided
+  where the old one was effectively one-sided against the incumbent's regime.
+- **It does not touch the SECONDARY read**, its bound framing, its `delta_min(28) ~= 72 bps` limit, or
+  the `k <= 3` leak (`R^2` mean 0.065, max 0.132).
+- **It does not attribute anything.** The incumbent's rate moving 3.87% -> 4.17% in a day is reported,
+  not explained; the v10 confound (`inverted`, live 2026-07-30T16:57Z, no control arm) is unchanged.
+- **It does not create the hourly trigger.** § Cadence still binds: the trigger is owner-side, it does
+  not exist, and until it does no read may be sealed.

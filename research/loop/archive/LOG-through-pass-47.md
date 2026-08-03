@@ -7341,3 +7341,146 @@ kept, record explicitly that the live lane is a **corpus generator, not an evide
 2. Close the attribution gap and the per-call-model constraint before any A/B enable.
 3. Then a pre-registered paid re-run of haiku vs sonnet at the hold-matched horizon.
 4. **Re-read every prior study against the horizon finding** — all were scored on the flattering grid.
+
+## 2026-08-01 — Pass 55 (the criteria were adopted, and the last unsearched lever refused itself)
+
+**Window:** 2026-07-31T21:48Z → 2026-08-01T08:20Z. Two leases, both taken and released:
+`ef54fc6236ea40a2` (21:48Z) and `399762ce0e738cbb` (06:03Z). **Owner-directed session**, continuous
+with Pass 54.
+
+### ⚠ COLLISION — the FIFTH occurrence, and this one is characterised
+
+**A concurrent scheduled pass ran at ~00:07Z inside this tree**, between two of this session's turns.
+Evidence: a sweep digest `sweep-2026-08-01T00-07-32-287Z.json` this session did not produce, and
+`package.json` / `scripts/loop-authoring.mjs` / `loop-authoring-core.spec.mjs` modified at 02:18–02:24
+local while this session was idle. It committed nothing and wrote no LOG entry — it left work
+in-flight. My lease was taken at 06:03Z, _after_ it ran, so `loop:lock` never had the chance to refuse
+it; the lease binds only passes that call it, exactly as documented.
+
+**Its work was NOT committed and NOT discarded.** Per playbook §4 ("stage ONLY files this pass
+authored"), the three files were left in the working tree for that pass to claim. **This is the first
+occurrence where the other pass's intent is legible, and its work looks correct and valuable:**
+`loop:authoring` gains `--env-file-if-exists=.env` (the API key lives in `.env`, not `.env.app` — which
+plausibly explains why `loop:authoring` has NEVER minted), `temperature` is removed because this model
+family 400s on any non-default sampling parameter, and the HTTP error body is now surfaced instead of
+swallowed. A later pass should adopt them; they are not this pass's to commit.
+
+### The owner adopted the success/stop criteria — `1C, 2A, 3A, 4A`
+
+Recorded as Amendment 1 at the top of `research/studies/success-exit-2026-07-31.md`, without rewriting
+anything: the original "IT ENACTS NOTHING" paragraph and § 11's "until the owner answers" both stand,
+each carrying a superseded-by pointer.
+
+- **G1 re-cut from h ∈ {1,4} to the hold-matched h = 16.** **Recorded plainly: Q4 = A did NOT rebut
+  § 10.** The "STOP written in the vocabulary of a success criterion" objection stands unresolved; the
+  owner chose to run the criteria with it outstanding.
+- **S3 will probably decide this before the window does.** At 2026-08-01T06:10Z: net-of-cost −$48.54
+  over 8.47 window-days, LLM $22.04. −$5.73/day reaches the −$200 trigger in **26.4 days ≈ 2026-08-27**,
+  four days BEFORE § 8's 2026-08-31 close. The LLM trigger is far out (~49 days). Q2 = A and Q3 = A
+  interact that way and neither question showed it alone.
+
+### The h = 16 derivation — control PASSED, and the honest output is a BOUND
+
+**A correction against this session's own first draft:** the claim "the re-cut G1 has no number" was
+WRONG. The clause's number is the floor (`mean > +24.2 AND ciLo > +24.2`) and the floor does not move
+with the horizon — **G1 at h = 16 is evaluable today.** § 3's table is the FEASIBILITY analysis, not
+the clause.
+
+The method was recovered and reproduces all four published rows exactly, including an undocumented
+convention (`mean`/`ciLo` rounded to 1dp _before_ the SE subtraction; raw inputs miss by 0.02–0.04).
+**A point value at h = 16 is impossible without a fresh paid run:** the offline grid is frozen at
+`{1,4,8,24}` and only per-(arm, horizon) aggregates are written to disk. Live is no substitute — v10
+reads n = 10 at h = 16, under the floor of 12.
+
+Monotonicity supports only: **req(K=20) ∈ [+45.0, +92.6], interval share ∈ [46.2%, 73.9%].** Even the
+FLOOR of that exceeds h = 4's 35.6%, so **h = 16 is never as defensible as h ∈ {1,4}** — at best
+"floor-limited like h = 8", which § 3 called _"a stronger reason to exclude it, not a weaker one"_.
+Interpolation was forbidden and the data shows why: SE grows 1.70×, 1.56×, then **3.29×**.
+`inverted`'s own h = 16 performance is **UNMEASURED** — the powered h = 16 cells (v1 −57.6, v2 −94.5)
+are different playbook versions and citing them for `inverted` would be population-mixing.
+
+### `arm-sweep-v1` — SIZING-GATE REFUSAL, $0.92 of $18 (`01f207c`)
+
+The arm space was the last unsearched lever. Pre-registered on `shorts_only` (in no prior record; the
+natural counter-hypothesis to a long-biased book with a measured-negative signal) and `meanrev_pure`.
+Calibration, 30 rows/arm, transport 100%: **both arms 0 entries**, projected n@386 = 0, **neither full
+leg funded**; the gate was verified to fire before any network call. The anticipated risk was wrong —
+the corpus is spot=139/perp=247 so the eligible ceiling is 247 rows; the model simply never proposed an
+entry under either arm. Recorded against the result: **0/30 is not a proven zero** (rule of three puts
+the upper bound near 10%, which on 386 rows would clear n ≥ 12), so this bounds the entry rate rather
+than killing the arms.
+
+### G5 shipped; G4 declined to a design question
+
+`agentic_promotion_blocked{reason}` now emits one series per reason, 1/0 over the whole closed set,
+zero-seeded via `satisfies Record<PromotionBlockedReason, true>`. **The reason set is EIGHT, not the
+seven this repo's prose says** — `NO_STATS_SOURCE` is an early-return branch, and a count that missed
+it would have under-seeded exactly the reason that fires when the stats source is gone. Fails OPEN
+(mirrors evidence, never feeds back). `test:livegate` 55/55.
+
+**G4 is NOT built, and this is a blocker not a deferral.** `PassiveBenchmarkPort` has **no
+implementation anywhere** — `verdicts.md:294-303` already recorded it. Building it requires choosing a
+basket, which is a judgement: equal-weight over the 40-symbol universe, over the 28 distinct assets, or
+**exposure-matched to the strategy's realised ~50% gross exposure** (the recommendation — an
+equal-weight full-notional basket compares a 50%-exposed strategy against a 100%-exposed benchmark).
+**Owner question, open.**
+
+### G4 shipped after all — the owner delegated the basket choice (`682b6f6`)
+
+Asked to "handle G4 as you think is best", so the design calls were made and recorded rather than
+deferred: equal-weight over **28 distinct underlying assets, not the 40 strings** (the universe lists
+`BTC/USDT` and `BTC/USDT:USDT` separately, so string-weighting holds ~12 assets twice), spot preferred,
+**exposure-matched** (`benchmarkPnl = avgGrossExposure × basketReturn` — an unmatched full-notional
+basket flatters a ~50%-exposed strategy in a drawdown exactly as much as it punishes it in a rally).
+
+**The price source was the load-bearing redirect.** A first attempt STOPPED correctly, reporting that
+production could not supply a historical price at an arbitrary past instant and proposing to widen
+`FeedHealthPort.fetchCandles` with a `since` param plus touch the ccxt adapter. That was not necessary:
+**`agent_decisions.close` is already a dense 15m grid** that `loop-forward-return-core` validates with
+five cited reasons, so the whole thing lands with no port change, no ccxt work and no new schema.
+Verified independently at the orchestrator AND in the adapter: **40/40 symbols ⇒ 28/28 distinct assets
+have a usable price at BOTH window ends, 100%.** The clause blocks on evidence, never on a data gap.
+
+**FAILS CLOSED, and where matters.** The service's existing contract reads a `null` from a bound port
+as "measurement gap, drop the clause" — fail OPEN — and that test predates this work and lives in
+mode-control, which the 2026-07-22 grant's KEPT set forbids re-wording. So fail-closed lives entirely in
+the **adapter**: every data problem returns an `Infinity` sentinel rather than `null`, and
+`netPnl.lte(Infinity)` blocks unconditionally; one missing asset voids the whole basket. `reasons` is
+push-only and tests pin both directions, so it **can never manufacture a permit**.
+
+**Honest caveat:** testnet fills span ~8.6 days against `MIN_WINDOW_DAYS=14`, so `INSUFFICIENT_WINDOW`
+is already the binding blocker and this clause is not yet exercised end-to-end. That is a window
+shortfall, not a price shortfall — price coverage is already complete.
+
+**With G4 and G5 both bound, the adopted criteria are fully instrumented** — no clause is decorative.
+
+### The soak produced a NEW FINDING, and it is the worst one on the board
+
+Deployed `682b6f6` (boot `cdc2da19`, healthy, RestartCount 0). `agentic_promotion_blocked` reads for
+the first time — the gate's binding clauses are visible instead of hand-inferred, which is precisely
+what § 9 asked for:
+
+```text
+NON_POSITIVE_NET_PNL     1      INSUFFICIENT_WINDOW      1
+BELOW_PASSIVE_BENCHMARK  1      (five others)            0   ← all 8 present, zero-seeded
+```
+
+**`BELOW_PASSIVE_BENCHMARK = 1` was ambiguous on arrival and was disambiguated before being recorded**
+— a fired clause could equally have been the `Infinity` fail-closed sentinel tripping on a data
+problem, which would be an instrument reading, not evidence. It is evidence. The equal-weight 28-asset
+basket returned **−2.175%** over the evidence window (worst −11.15%, best +17.19%), so the benchmark
+PnL is a small negative: ≈ −$11 at ~50% exposure, ≈ −$22 at full notional, ≈ −$44 even at 2× the book.
+Against `netPnl = −$48.54`, **the lane underperforms passive at every plausible exposure.**
+
+Stated plainly, because it is the sharpest single number this program has produced: **the lane lost
+~4.9% of the book over a window in which simply holding the same basket at matched exposure would have
+lost ~2.2%.** Roughly **$37 of the $48.54 loss is not market beta — it is the strategy.** Every prior
+measurement compared the lane against ZERO; this is the first against OPPORTUNITY COST, and it is
+worse. It also independently corroborates the horizon finding above from a completely different
+direction: both say the entries are not merely unprofitable but actively value-destroying.
+
+### Gate
+
+format/lint/lint:md/typecheck green · **3433 tests / 185 files** · livegate **55/55** · build clean.
+No deploy: nothing shipped changes runtime behaviour (the benchmark only adds a blocking reason to a
+gate already returning `permitted: false`).

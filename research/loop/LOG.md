@@ -15,151 +15,6 @@ than the five below are in that archive; older still is git history. Current sta
 
 ---
 
-## 2026-08-01 — Pass 55 (the criteria were adopted, and the last unsearched lever refused itself)
-
-**Window:** 2026-07-31T21:48Z → 2026-08-01T08:20Z. Two leases, both taken and released:
-`ef54fc6236ea40a2` (21:48Z) and `399762ce0e738cbb` (06:03Z). **Owner-directed session**, continuous
-with Pass 54.
-
-### ⚠ COLLISION — the FIFTH occurrence, and this one is characterised
-
-**A concurrent scheduled pass ran at ~00:07Z inside this tree**, between two of this session's turns.
-Evidence: a sweep digest `sweep-2026-08-01T00-07-32-287Z.json` this session did not produce, and
-`package.json` / `scripts/loop-authoring.mjs` / `loop-authoring-core.spec.mjs` modified at 02:18–02:24
-local while this session was idle. It committed nothing and wrote no LOG entry — it left work
-in-flight. My lease was taken at 06:03Z, _after_ it ran, so `loop:lock` never had the chance to refuse
-it; the lease binds only passes that call it, exactly as documented.
-
-**Its work was NOT committed and NOT discarded.** Per playbook §4 ("stage ONLY files this pass
-authored"), the three files were left in the working tree for that pass to claim. **This is the first
-occurrence where the other pass's intent is legible, and its work looks correct and valuable:**
-`loop:authoring` gains `--env-file-if-exists=.env` (the API key lives in `.env`, not `.env.app` — which
-plausibly explains why `loop:authoring` has NEVER minted), `temperature` is removed because this model
-family 400s on any non-default sampling parameter, and the HTTP error body is now surfaced instead of
-swallowed. A later pass should adopt them; they are not this pass's to commit.
-
-### The owner adopted the success/stop criteria — `1C, 2A, 3A, 4A`
-
-Recorded as Amendment 1 at the top of `research/studies/success-exit-2026-07-31.md`, without rewriting
-anything: the original "IT ENACTS NOTHING" paragraph and § 11's "until the owner answers" both stand,
-each carrying a superseded-by pointer.
-
-- **G1 re-cut from h ∈ {1,4} to the hold-matched h = 16.** **Recorded plainly: Q4 = A did NOT rebut
-  § 10.** The "STOP written in the vocabulary of a success criterion" objection stands unresolved; the
-  owner chose to run the criteria with it outstanding.
-- **S3 will probably decide this before the window does.** At 2026-08-01T06:10Z: net-of-cost −$48.54
-  over 8.47 window-days, LLM $22.04. −$5.73/day reaches the −$200 trigger in **26.4 days ≈ 2026-08-27**,
-  four days BEFORE § 8's 2026-08-31 close. The LLM trigger is far out (~49 days). Q2 = A and Q3 = A
-  interact that way and neither question showed it alone.
-
-### The h = 16 derivation — control PASSED, and the honest output is a BOUND
-
-**A correction against this session's own first draft:** the claim "the re-cut G1 has no number" was
-WRONG. The clause's number is the floor (`mean > +24.2 AND ciLo > +24.2`) and the floor does not move
-with the horizon — **G1 at h = 16 is evaluable today.** § 3's table is the FEASIBILITY analysis, not
-the clause.
-
-The method was recovered and reproduces all four published rows exactly, including an undocumented
-convention (`mean`/`ciLo` rounded to 1dp _before_ the SE subtraction; raw inputs miss by 0.02–0.04).
-**A point value at h = 16 is impossible without a fresh paid run:** the offline grid is frozen at
-`{1,4,8,24}` and only per-(arm, horizon) aggregates are written to disk. Live is no substitute — v10
-reads n = 10 at h = 16, under the floor of 12.
-
-Monotonicity supports only: **req(K=20) ∈ [+45.0, +92.6], interval share ∈ [46.2%, 73.9%].** Even the
-FLOOR of that exceeds h = 4's 35.6%, so **h = 16 is never as defensible as h ∈ {1,4}** — at best
-"floor-limited like h = 8", which § 3 called _"a stronger reason to exclude it, not a weaker one"_.
-Interpolation was forbidden and the data shows why: SE grows 1.70×, 1.56×, then **3.29×**.
-`inverted`'s own h = 16 performance is **UNMEASURED** — the powered h = 16 cells (v1 −57.6, v2 −94.5)
-are different playbook versions and citing them for `inverted` would be population-mixing.
-
-### `arm-sweep-v1` — SIZING-GATE REFUSAL, $0.92 of $18 (`01f207c`)
-
-The arm space was the last unsearched lever. Pre-registered on `shorts_only` (in no prior record; the
-natural counter-hypothesis to a long-biased book with a measured-negative signal) and `meanrev_pure`.
-Calibration, 30 rows/arm, transport 100%: **both arms 0 entries**, projected n@386 = 0, **neither full
-leg funded**; the gate was verified to fire before any network call. The anticipated risk was wrong —
-the corpus is spot=139/perp=247 so the eligible ceiling is 247 rows; the model simply never proposed an
-entry under either arm. Recorded against the result: **0/30 is not a proven zero** (rule of three puts
-the upper bound near 10%, which on 386 rows would clear n ≥ 12), so this bounds the entry rate rather
-than killing the arms.
-
-### G5 shipped; G4 declined to a design question
-
-`agentic_promotion_blocked{reason}` now emits one series per reason, 1/0 over the whole closed set,
-zero-seeded via `satisfies Record<PromotionBlockedReason, true>`. **The reason set is EIGHT, not the
-seven this repo's prose says** — `NO_STATS_SOURCE` is an early-return branch, and a count that missed
-it would have under-seeded exactly the reason that fires when the stats source is gone. Fails OPEN
-(mirrors evidence, never feeds back). `test:livegate` 55/55.
-
-**G4 is NOT built, and this is a blocker not a deferral.** `PassiveBenchmarkPort` has **no
-implementation anywhere** — `verdicts.md:294-303` already recorded it. Building it requires choosing a
-basket, which is a judgement: equal-weight over the 40-symbol universe, over the 28 distinct assets, or
-**exposure-matched to the strategy's realised ~50% gross exposure** (the recommendation — an
-equal-weight full-notional basket compares a 50%-exposed strategy against a 100%-exposed benchmark).
-**Owner question, open.**
-
-### G4 shipped after all — the owner delegated the basket choice (`682b6f6`)
-
-Asked to "handle G4 as you think is best", so the design calls were made and recorded rather than
-deferred: equal-weight over **28 distinct underlying assets, not the 40 strings** (the universe lists
-`BTC/USDT` and `BTC/USDT:USDT` separately, so string-weighting holds ~12 assets twice), spot preferred,
-**exposure-matched** (`benchmarkPnl = avgGrossExposure × basketReturn` — an unmatched full-notional
-basket flatters a ~50%-exposed strategy in a drawdown exactly as much as it punishes it in a rally).
-
-**The price source was the load-bearing redirect.** A first attempt STOPPED correctly, reporting that
-production could not supply a historical price at an arbitrary past instant and proposing to widen
-`FeedHealthPort.fetchCandles` with a `since` param plus touch the ccxt adapter. That was not necessary:
-**`agent_decisions.close` is already a dense 15m grid** that `loop-forward-return-core` validates with
-five cited reasons, so the whole thing lands with no port change, no ccxt work and no new schema.
-Verified independently at the orchestrator AND in the adapter: **40/40 symbols ⇒ 28/28 distinct assets
-have a usable price at BOTH window ends, 100%.** The clause blocks on evidence, never on a data gap.
-
-**FAILS CLOSED, and where matters.** The service's existing contract reads a `null` from a bound port
-as "measurement gap, drop the clause" — fail OPEN — and that test predates this work and lives in
-mode-control, which the 2026-07-22 grant's KEPT set forbids re-wording. So fail-closed lives entirely in
-the **adapter**: every data problem returns an `Infinity` sentinel rather than `null`, and
-`netPnl.lte(Infinity)` blocks unconditionally; one missing asset voids the whole basket. `reasons` is
-push-only and tests pin both directions, so it **can never manufacture a permit**.
-
-**Honest caveat:** testnet fills span ~8.6 days against `MIN_WINDOW_DAYS=14`, so `INSUFFICIENT_WINDOW`
-is already the binding blocker and this clause is not yet exercised end-to-end. That is a window
-shortfall, not a price shortfall — price coverage is already complete.
-
-**With G4 and G5 both bound, the adopted criteria are fully instrumented** — no clause is decorative.
-
-### The soak produced a NEW FINDING, and it is the worst one on the board
-
-Deployed `682b6f6` (boot `cdc2da19`, healthy, RestartCount 0). `agentic_promotion_blocked` reads for
-the first time — the gate's binding clauses are visible instead of hand-inferred, which is precisely
-what § 9 asked for:
-
-```text
-NON_POSITIVE_NET_PNL     1      INSUFFICIENT_WINDOW      1
-BELOW_PASSIVE_BENCHMARK  1      (five others)            0   ← all 8 present, zero-seeded
-```
-
-**`BELOW_PASSIVE_BENCHMARK = 1` was ambiguous on arrival and was disambiguated before being recorded**
-— a fired clause could equally have been the `Infinity` fail-closed sentinel tripping on a data
-problem, which would be an instrument reading, not evidence. It is evidence. The equal-weight 28-asset
-basket returned **−2.175%** over the evidence window (worst −11.15%, best +17.19%), so the benchmark
-PnL is a small negative: ≈ −$11 at ~50% exposure, ≈ −$22 at full notional, ≈ −$44 even at 2× the book.
-Against `netPnl = −$48.54`, **the lane underperforms passive at every plausible exposure.**
-
-Stated plainly, because it is the sharpest single number this program has produced: **the lane lost
-~4.9% of the book over a window in which simply holding the same basket at matched exposure would have
-lost ~2.2%.** Roughly **$37 of the $48.54 loss is not market beta — it is the strategy.** Every prior
-measurement compared the lane against ZERO; this is the first against OPPORTUNITY COST, and it is
-worse. It also independently corroborates the horizon finding above from a completely different
-direction: both say the entries are not merely unprofitable but actively value-destroying.
-
-### Gate
-
-format/lint/lint:md/typecheck green · **3433 tests / 185 files** · livegate **55/55** · build clean.
-No deploy: nothing shipped changes runtime behaviour (the benchmark only adds a blocking reason to a
-gate already returning `permitted: false`).
-
----
-
 ## 2026-08-01 — Pass 56 (the reconciler halted the book over an order it had cancelled itself)
 
 **Window:** 2026-08-01T00:07Z → 08:05Z. Lease `744d853ec7a088c4` taken 00:07:22Z — **it EXPIRED
@@ -792,3 +647,283 @@ separate enable commit.
 5. **The dust pin leak** (Pass 58's first item) was NOT reached — this pass's defect load consumed it.
 6. **The daily-mint override has produced zero candidates in three days** — one authoring row (id 16,
    08-01), none 08-02 or 08-03. Today's slot was still UNSPENT at pass end.
+
+## 2026-08-04 — Pass 60 (the bar this program gates on was derived for the first time, and it is wrong in both directions)
+
+**Window:** 2026-08-03T18:25Z → 2026-08-04T00:50Z. Eight commits on `8c753d2`, all deployed and
+verified. **No lease id is recorded in this pass's inputs** — that is a gap in the record, not a
+claim that none was taken, and it is written down rather than papered over.
+
+**Pass type: a distrust-everything audit that began as three money-path fixes.** Three commits
+repaired live-path defects, then six re-derivations re-measured the numbers this program has been
+citing. The through-line is the same one that has now held five passes — _a surface reporting health
+it never established_ — and this time it was the whole scoreboard.
+
+### The perp trades axis is FIXED, and ccxt was the one emptying the window
+
+Pass 59 recorded this as a BLOCKED defect with an explicitly UNPROVEN hypothesis (a venue-side 7-day
+`startTime` constraint). **The hypothesis was wrong about where the constraint lives, and the keyed
+in-container probe settled it.** Pinned **ccxt 4.5.58 derives the dead window CLIENT-SIDE**:
+`binance.js:8253-8266` sets `endTime = min(since + 7d, now)` whenever `since !== undefined` AND
+`now − since ≥ 7d` AND `market['linear']`. With `since = 0` that requests **1970-01-01 → 1970-01-08**
+and returns EMPTY **with no throw** — which is exactly why **no `sweep_failure` was ever recorded**
+for an axis that had never worked. Spot has no such branch.
+
+Probe, one venue each: perp `HYPE` returned **0 / 27 / 9** trades at `since` = 0 / undefined /
+now−24h; spot `BTC` returned **353** at `since = 0`. Because the trade checkpoint advances only off
+a returned trade, `checkpoint = 0` was a **permanent deadlock** — not a slow start.
+
+**Fix: a 6-day lookback floor, deliberately inside the 7-day cap.** Below 7d ccxt sets no `endTime`
+at all; at exactly 7d clock skew truncates the newest trades. **Live confirmation after deploy:
+`binanceusdm` checked 93 trades in 2 passes, against ZERO across all 19,587 lifetime passes before.**
+The fill-backfill and the `FILL_FOR_UNKNOWN_ORDER` corruption detector are therefore live on the perp
+venue for the first time; the post-deploy soak recorded **0 kill-switch engagements**.
+
+One thing the fix does not do: `ADOPT_CLOSED_LOOKBACK_MS` sits **exactly** on the same 7-day boundary
+with zero headroom. Recorded as open defect **#139**, not repaired here.
+
+### THE HEADLINE — the bar was never derived, and it is wrong in BOTH directions at once
+
+Every study in this program is scored against **+13.0 bps/trip**, a figure that enters the repo fully
+formed in `7b3e977` and is cited circularly thereafter. It was derived this pass from measured
+operands, at **48 trips / 10.85 d / $83.2531 mean one-way notional**, anchor **2026-08-03T16:07Z**,
+cluster bootstrap on base assets (seed 20260731, `N_BOOT` 20,000, `MIN_CLUSTERS=5`):
+
+| term | value |
+| --- | --- |
+| venue fees, per cycle | **8.6718 bps/trip** (spot 20.0000, perp 7.2208; 88.65% perp by notional) |
+| slippage | **−0.3317 bps/trip** — sign-flipped from the recorded +0.333 and indistinguishable from zero |
+| **GROSS bar** | **+8.3619 bps/trip, cluster CI95 [6.2010, 10.7616], n=48 / 12 clusters — POWERED, EVIDENCE** |
+| LLM, amortized | **+70.44 bps/trip** at that denominator |
+| **ALL-IN bar** | **≈ +78.80 bps/trip** |
+
+**So +13.0 sits ABOVE the gross CI's upper bound** — ~4.6 bps more than the venue actually charges,
+which is the conservative direction — **and ~66 bps BELOW the all-in question it was used to
+answer.** Wrong both ways, for different reasons. **+24.2 is recorded UNDERIVABLE**: there is no live
+book (all 295 fills are `mode='testnet'`) and no authoritative live fee schedule in the repo. A bar
+the record cannot state is recorded as exactly that.
+
+**The gap widened.** Realised gross **−69.90 bps/trip** over the 48-trip population against the
+all-in bar is **148.70 bps/trip**, against the 111–130 the record carries. Both halves moved — the
+realised side is less negative than at n=23, the bar is much higher — and **neither may be quoted
+alone**.
+
+**SUPERSEDED FORWARD ONLY.** No completed study is re-adjudicated; every result already scored
+against +13.0 stays scored against +13.0, on the same rule the deployment bar's own amendment
+declared for itself. The three code homes (`playbook-space-replay.ts:47-48`,
+`inversion-test.mjs:27`, `loop-authoring-core.mjs:519-524`) were **listed, not edited** — changing
+them is a separate dated pre-registration. `verdicts.md` § Addendum 2026-08-04.
+
+Two figures in circulation were corrected in passing: the `~81 bps/trip` LLM inference is **70.44**
+(the $0.59/trip operand was right; the `$72` notional was not — measured mean **$83.2531**, median
+$80.1664, and `$72` reproduces as no statistic of the distribution), and the recorded slippage
+`+0.333 bps/leg` no longer reproduces on either cut.
+
+### The LLM term, verified by identity rather than by tolerance
+
+**$0.5871/trip.** Two independently built instruments agree **to the digit** and differ only by one
+declared denominator (all-fill notional ÷ 2 = $84.43 ⇒ +69.5 bps, versus closed-cycle-member notional
+⇒ +70.44 bps). The recomputation against `agentic_promotion_llm_cost_usd` is an **equality test, not
+a tolerance** — both folds price the same columns at the same rates in the same order.
+
+In dollars, where the denominator cancels: **$28.77 of LLM against $3.54 of fees paid over the same
+window = 8.13×**, and LLM is **45% of the −$63.53 net-of-cost deficit** (as-of 2026-08-03T22:12Z).
+
+**The operationally important half is the marginal one.** Cadence consults are time-driven, so the
+marginal cost of one more trip is **≈ $0** — **518 cadence-only consults spent $17.81, 61.9% of the
+bill, with no trade attached**. That **refutes "trade less to save money"** outright: at fixed
+cadence the amortized term falls roughly as 1/trips (measured 78.45 → 63.88 bps between the 23-trip
+and 38-trip snapshots). Only **per-trip notional and the timing knobs** move the ratio. Whether more
+trades at this entry quality helps is an **edge** question and is untouched — the ENTRIES and
+NO_SURVIVOR verdicts do not move.
+
+`verdicts.md`'s _"Do not propose cost work as a profitability lever"_ was **re-scoped, not
+weakened**: it binds unchanged on fees and on book-level inference (free inference still leaves gross
+at −$32.19 at the 08-03 anchor), and **the per-trip BAR is now out of its scope** — deriving or
+correcting the bar is a measurement correction, not a cost lever.
+
+### The microstructure search is a NULL, and the verdict is NOT localized
+
+The standing _"no edge in anything the system records"_ verdict rested on a 1,807-cut search bounded
+by **persisted columns**. Four microstructure channels and funding term structure are rendered into
+every consult and land in no table, so that search carried no evidence about them in either
+direction. This pass ran the search those channels were missing, at **$0** — historical rows only.
+
+**64 pre-registered cells, all 64 POWERED** over 94 entries / 17 symbols / **13 base-asset clusters**,
+zero unparseable payloads. **Seven cells cleared power and a Bonferroni interval excluding zero, and
+all seven failed the placebo** — family-wise **p = 0.3781**, nowhere near 0.05.
+
+**The freeze is git-attested, not asserted:** `c48085e` contains the pre-registration with the
+Results section EMPTY, so `git show c48085e:<file>` reproduces the frozen prereg and
+`git diff c48085e -- <file>` **is** the results.
+
+Two independent undercuts land alongside the null and matter more than it does. **Microprice and
+depth imbalance point in OPPOSITE directions at h=1** — a coherent signal cannot do that. And a
+measured **anchor-lag confound**: features are read a **median 28.3 s after the anchoring bar close**,
+giving an artifact ceiling of **~9.1 bps** against observed effects of 9.7–10.7. That confound is not
+scoped to this study — it applies to **every forward-return reading in the program, WATCH-V10-1
+included** (open defect **#144**).
+
+### Passive benchmark — the caution survives, and it gets sharper
+
+`BELOW_PASSIVE_BENCHMARK` is a blocking clause on the earned-live gate whose adapter fails CLOSED, so
+an error in it is blocking-side. Recomputed independently from `agent_decisions.close`:
+
+- **The basket return reproduces**: **−2.2150%** against the recorded −2.175% over the exact Pass-57
+  evidence window, inside the ±0.5 pp the basket moves across neighbouring 15m bars.
+- **The dollar attribution does not, and the error runs against the strategy.** The exposure term was
+  never measured at all — the recorded _"≈ −$11 / −$22 / −$44"_ were scenarios over an assumed $1,000
+  book. Measured time-weighted average gross exposure is **$235.05** (Pass-57 window) and **$204.44**
+  (current), so `passivePnlQuote` was **≈ −$5.21**, not ≈ −$37. **Beta owns 10.7% of the Pass-57 loss
+  and the strategy owns −$43.33 (89.3%)**; on the current book, beta **−$1.88 (3.0%)** against
+  strategy **−$61.65 (97.0%)**. _Worse than doing nothing_ holds by a **wider** margin than recorded.
+- **The clause has never discriminated.** Whenever `passivePnlQuote < 0` — i.e. whenever the basket
+  falls — `BELOW_PASSIVE_BENCHMARK` is **logically entailed** by `NON_POSITIVE_NET_PNL` and can never
+  be the sole blocker. It is sound; it is also not doing independent work.
+- **`RECORDED, NOT REPRODUCED`:** no `(from, to)` pair on the 1,091-bar journal grid produces the
+  recorded dispersion triple _"worst −11.15%, best +17.19%"_ under either basket definition. Do not
+  re-quote those two figures.
+- **A hole in no prior record:** the adapter puts **no staleness bound** on either endpoint lookup,
+  and a **46.5-hour journal gap sits inside this very window**. Had an endpoint landed in it, the
+  basket would have anchored up to two days away and still returned a finite, non-sentinel number.
+  Open defect **#141**.
+
+Survivorship was checked and is clean: `TRADING_SYMBOLS` was last edited 2026-07-19T21:30:31Z
+(`b41023c`), four days before the evidence window opens, so the universe is ex-ante.
+
+### Exit-attribution restated — the verdict holds, one published sub-clause reverses
+
+`edge-verdict-2026-08-10.md` has a verdict due **2026-08-10** on cells produced by a harness carrying
+two measurement defects: a flat 20 bps cost basis on a book that is ~85% perp, and a buy-side
+`entryVwap` that is the **cover** price on every short trip. Restated beside the published cells, on
+one population, with `walkRoundTrips` imported rather than reimplemented:
+
+- **The control reproduces the frozen table cell for cell** — all 16 cells, trip counts, hit rates,
+  stop/tp/hold splits, Arm 1 −108.1 bps, margin +29.7.
+- **The ENTRIES verdict does not move and is strengthened**: every cell in every arm is still
+  negative, and the best cell falls from **−45.0 to −59.5 bps/trip**.
+- **But the Arm2−Arm1 margin's sign flips: +29.7 → −34.3 bps** on the frozen population, an artifact
+  of the two defects pulling opposite ways. **9 of 23 trips open short**, anchor shift −200.9 to
+  +238.0 bps; the flat 20 bps overbills ~2.15× on 20 of 23 trips.
+- **The fee defect ALONE would have changed a published clause**: fees-only restated puts the margin
+  at **+40.4 bps**, clearing clause 1's ≥30 bps condition that the published run **missed by 0.3
+  bps**. That is the whole reason this had to be an amendment dated ahead of the verdict rather than
+  a silent edit. The frozen spec was not touched. **Backlog #105 discharged.**
+
+### Five recorded numbers moved, and one of them was a live money-path defect
+
+`census-2026-08-03.md` (as-of 18:25:30Z) and `entry-rate-denominator-2026-08-03.md` (cutoff
+2026-08-03T22:00Z) registered one denominator each and reconciled everything circulating against it:
+
+- **`13.29%` is VERIFIED** — it is **78 FLAT entries / 587 FLAT rows** in `corpus-v4-flat.jsonl`,
+  reproduced from the live journal to the row. **It is a data file, not a sentence.** The current
+  lane does **not** still enter at that rate: under playbook v10 it is **3.87% (21/543)**.
+- **`n=64` is STALENESS, not error.** The frozen `recorded-entries-v3.jsonl` fixture reproduces
+  exactly over its own window; 28 further entries have occurred since.
+- **The fee floor restates 9.2947 → 8.6476 bps.**
+- **The `×2` leg conversion is NOT an aggregation error.** Spot's exact per-cycle rate is 20.0000,
+  identical to 2 × 10.0000. Perp's is 7.2208 against 2 × 3.574209 = 7.1484 — a 0.072 bps difference
+  that is real but small. The actual finding is **dispersion**: only 1 of 49 trips lands within 1 bps
+  of the blended rate.
+- **The live defect:** the strategy lane charged **every** symbol a hardcoded 10/10 spot schedule,
+  producing a **20 bps take-profit floor** against a measured perp round trip of **~7.15 bps** —
+  **2.8×** — on a book that is **89.0% perp by notional** (7366.31 of 8273.76 USDT over 295 fills).
+  Every perp take-profit between ~7 and 20 bps was vetoed on a false cost, and **the system prompt
+  told the model the false number**. Fixed in `70a2939`.
+
+### The book, and a reproducibility defect that flatters it
+
+One atomic `evaluate()` sample, post-deploy 2026-08-04: `windowDays=10.9688, roundTrips=49,
+netPnlUsd=−63.6882, llmCostUsd=28.8563, winRate=0.2449, ready=false`, reasons
+`[NON_POSITIVE_NET_PNL, INSUFFICIENT_WINDOW, BELOW_PASSIVE_BENCHMARK]`. **Gross alone ≈ −$34.83** —
+zero LLM spend still leaves the book negative.
+
+The recorded 16:07Z tuple reproduces from raw rows to full precision on every operand **except one**,
+and chasing that $0.03 found a real defect. `PromotionStatsRepository.fundingNetForMode` filters
+funding on `funding_time` — the market instant — with **no `created_at` predicate**, while the ingest
+poller lags **~37 minutes**. Three `funding_time = 16:00:00Z` rows (net −0.03240350) were written at
+16:37Z, so the 16:07Z sample could not see them and today's query does. **Re-running the promotion
+gate against history returns a different `netPnl` than the gate itself returned**, for any sample
+taken inside the lag window. Direction: a live sample reads **less negative** than settled truth —
+**it flatters the book**, the wrong direction for a permission gate. Small here ($0.032 on a $60
+loss), recorded as a measurement-reproducibility defect (**#143**); **no verdict this pass turns on
+it**.
+
+Related and recorded loudly: **an UNCAPPED book read is not reproducible.** Two uncapped runs four
+minutes apart returned `llmCostUsd` **28.7683109** and **28.8562685**. Any future citation of a book
+figure that does not carry an as-of instant is unreproducible by construction.
+
+### The three live-path commits, cited by what they fixed
+
+These are recorded from their commit subjects and the deploy verification, not re-derived here:
+`6029d72` **four safety gates that could not fire, and a watermark that could strand every later
+fill** (money path); `c9c0eb9` **one of the four live gates ANDed in a hardcoded `true`, including on
+its own fail-closed path** (live gate); `70a2939` the perp fee schedule above, plus an episodic-memory
+lookup that could never match a row (agentic/fees/config).
+
+### The filter-drift guard fired on its first live boot, and caught a real 10× error
+
+`FIL/USDT tickSize table=0.001 venue=0.0001`. The symbol is **refused** until the table is fixed
+(open defect **#146**). A guard that fires on its first boot is the guard working — recorded that way
+deliberately, because the alternative reading (a noisy new check) is how a real 10× error gets tuned
+away.
+
+### Alarms — 2, and one of them is new
+
+`venue_reject_rate_high [binance]` is the known frozen window (16/20 = 80.0%, all 20 submits predate
+`f5abf8a`, newest binance submit 2026-07-31T01:45:02Z) whose **recorded clearing path is
+unreachable** — it ages out ~2026-08-07T01:45Z into `venue_reject_rate_undetermined`, which is
+silence, not health.
+
+**`cost_breaker_proximity` is NEW this pass**: spend **$2.72 against the $3.00/day breaker, ~90%**.
+Nothing about the cost shape changed — the lane has been self-pacing to almost exactly the cap for
+weeks — but it is now an alarm every pass must triage rather than a paragraph in STATUS. **STATUS's
+"1 alarm" banner was wrong and was re-derived, not copied.**
+
+### Diff, gates, soak
+
+`6029d72` money path · `c9c0eb9` live gate · `70a2939` agentic/fees/config · `4eeefd5` census +
+exit-attribution restatement · `c48085e` six re-derivations + LLM instrument · `e9d7d48` perp trades
+axis + coverage + paper fees · `00bdec6` microstructure null · `0bbccbf` eval fixture hash tag.
+
+Gates at close: `format:check`, `lint`, `lint:md`, `typecheck`, `build` clean; **`test` 195 files /
+3724 passed**; `test:livegate` **55/55**; `test:cov` green; `eval:agentic` **95 passed**; `backtest`
+**80 passed**.
+
+**Deployed and verified:** `build_info{git_sha="00bdec6"}`, bootId
+`f0f33fcd-7a08-45c8-922c-0e998aa41b7e`, `RestartCount` 0, `kill_switch_state{state="RUNNING"}`,
+migrations applied, **0 kill-switch engagements**. **HEAD ended at `0bbccbf`, one commit PAST the
+deployed image** — a test-only eval-fixture change. Tip and running binary do **not** match, and
+saying so is cheaper than a future pass discovering it.
+
+### Two misses, recorded rather than smoothed
+
+1. **`test:cov` was RED at HEAD, from this pass's own `6029d72`.** Found by an A/B revert, not by the
+   gate: **five uncovered branches across three files**, not the two first surveyed. Now green. Three
+   residual branches carry written `v8 ignore` proofs — two provably unreachable, and one an
+   `ast-v8-to-istanbul` artifact that reports a **negative** count for a path that demonstrably runs.
+   This is the fourth pass in a row where backlog 56 (`test:cov` off the green path) is the reason a
+   coverage regression shipped.
+2. **`eval:agentic` broke on the prompt-surface deploy and was caught AFTER the deploy, not before.**
+   It sits in this plan's own step-2 gate and was not run beforehand. A sequencing miss, not a code
+   defect — and the honest framing is that the gate existed and was skipped, not that it was missing.
+
+### Flagged / next
+
+1. **Eight open defects, #139–#146, are the next pass's fix queue.** They are BUGS, so per
+   `charter.md`'s bug-routing discipline they are **not** backlog rows; none is owner-gated either,
+   so they are carried in STATUS under their own heading. **#140 blocks starting the OOS session
+   arm** — its pre-registration would VOID on correct behaviour, because its `[4%, 40%]` floor sits
+   above the incumbent's own 3.87% entry rate, and its `p0` is stale.
+2. **WATCH-PLAYBOOK-V10-1 was restated in two tiers** (`watches.md` amendment, 2026-08-04). The
+   FIRED-POWERED Pass-59 reading STANDS and must not be re-derived. **Tier 1 is capped UNDERPOWERED
+   forever** — v8 is n=8/k=5 and accrues no new entries, so it carries no deadline. **Tier 2 is
+   adjudicable now** and re-reads when NOFILL reaches n≥12, ~2026-08-09. **ROLLBACK STAYS REFUSED.**
+3. **The false adverse-selection annotation** in the forward-return core is STILL not fixed — flagged
+   by Pass 59, not reached by Pass 60. A wrong sentence that will misdirect the next reader.
+4. **The pin-set leak (≈$0.33/day) was not reached for a second consecutive pass.** Pass 58 found it,
+   Pass 59's defect load consumed it, and so did Pass 60's.
+5. **STATUS was at its 200-line cap and had to be compressed, not appended to.** The perp-axis banner
+   was RETIRED (the defect is fixed), the alarm banner re-derived, the six standing cautions folded
+   to four, and the bar / LLM-cost / passive-benchmark / microstructure bodies left in their studies
+   with pointers. It closed at **197 lines**.

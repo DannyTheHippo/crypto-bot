@@ -5,7 +5,6 @@ import { KillSwitchService } from '../../../../src/features/trading/risk/kill-sw
 import { PositionSizerService } from '../../../../src/features/trading/risk/position-sizer.service';
 import { RiskEngineService } from '../../../../src/features/trading/risk/risk-engine.service';
 import { RateBucketsService } from '../../../../src/features/trading/risk/rate-buckets.service';
-import { CrossingRegistryService } from '../../../../src/features/trading/risk/crossing-registry.service';
 import type {
   SizerDeps,
   RiskEngineDeps,
@@ -108,7 +107,6 @@ function makeGateway() {
     feed,
     kill,
     new RateBucketsService(clock),
-    new CrossingRegistryService(),
     journal,
   );
   const sizer = new PositionSizerService(clock, sizerDeps);
@@ -162,7 +160,6 @@ describe('SignalGatewayService', () => {
       feed,
       kill,
       new RateBucketsService(clock),
-      new CrossingRegistryService(),
       journal,
     );
     const sizer = new PositionSizerService(clock, {
@@ -185,7 +182,6 @@ describe('SignalGatewayService', () => {
       feed,
       kill,
       new RateBucketsService(mclock),
-      new CrossingRegistryService(),
       journal,
     );
     const sizer = new PositionSizerService(mclock, sizerDeps);

@@ -13,6 +13,7 @@ import type {
   RecoveredOpenOrder,
 } from '../../../ports/trading/execution';
 import type { OrderRecord, OrderState } from '../../../domain/trading/oms/reducer';
+import { DEFAULT_FILTERS } from '../../../domain/trading/risk/default-filters';
 import type { SymbolId } from '../../../domain/common/types/ids';
 
 interface StoredOrder {
@@ -71,6 +72,12 @@ export class InMemoryExecutionStore implements ExecutionStorePort {
       venueOrderId: ev.venueOrderId ?? prev?.venueOrderId,
       intentId: prev?.intentId,
       venue: prev?.venue,
+      // Carried forward like venue/intentId: a PersistedOrderEvent has no symbol of its own, so
+      // omitting it here erased the symbol saveNewOrder recorded on the FIRST event of every order.
+      // The DB store cannot lose it (orders.symbol is a NOT NULL column, re-read per lookup), and
+      // toOrderRecord now resolves stepSize by symbol — a dropped symbol would silently downgrade
+      // every recovered record to the fallback step.
+      symbol: prev?.symbol,
     });
     return Promise.resolve({ applied: true });
   }
@@ -160,13 +167,19 @@ export class InMemoryExecutionStore implements ExecutionStorePort {
     );
   }
 
+  // stepSize resolution mirrors DrizzleExecutionStore.rowToOrderRecord exactly (see its comment):
+  // the reducer's `residual < stepSize ⇒ FILLED` dust rule means a synthesized flat '0.00000001'
+  // makes a recovered order behave differently from a live one on the same symbol. A stored order
+  // with no symbol (an event-only row — appendOrderEvent does not carry one) keeps the literal.
   private toOrderRecord(coid: string, o: StoredOrder): OrderRecord {
     return {
       clientOrderId: coid as ClientOrderId,
       state: o.state,
       qty: new Decimal(o.qty),
       cumQty: new Decimal(o.cumQty),
-      stepSize: '0.00000001',
+      stepSize:
+        (o.symbol === undefined ? undefined : DEFAULT_FILTERS.get(o.symbol)?.stepSize) ??
+        '0.00000001',
       venueOrderId: o.venueOrderId,
       attempt: 0,
       cancelWanted: false,

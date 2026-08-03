@@ -1,5 +1,6 @@
 import { Injectable, Inject } from '@nestjs/common';
 import {
+  AdapterError,
   type ExchangePort,
   type VenueCapabilities,
   type PlaceOrderRequest,
@@ -93,8 +94,14 @@ export class CcxtExchangeAdapter implements ExchangePort {
         // OMS-compatible via fetchOpenOrders/cancelOrder as-is. STOP_MARKET is a different,
         // non-fungible swap-only rail (see below); fail closed on a mismatched venue rather than
         // silently place the wrong kind of order.
+        // TERMINAL_REJECT, not a bare Error: this throw is PRE-NETWORK (createOrder is only called
+        // below), so nothing can exist venue-side. ExecutionGate classifies any non-AdapterError as
+        // OUTCOME_AMBIGUOUS → SUBMIT_UNKNOWN, which would reserve exposure and arm the rule-5 60s
+        // kill switch over an order that was provably never sent.
         if (String(this.venue) === PERP_VENUE_ID) {
-          throw new Error(
+          throw new AdapterError(
+            'TERMINAL_REJECT',
+            'VENUE_RAIL_MISMATCH',
             `STOP_LOSS_LIMIT is spot-only; venue ${String(this.venue)} is the swap venue (fail-closed)`,
           );
         }
@@ -108,8 +115,11 @@ export class CcxtExchangeAdapter implements ExchangePort {
         // fetchOpenOrders, and regular fetchOrder/cancelOrder 404 against it with -2013/-2011).
         // Spot has no equivalent rail; fail closed rather than place a plain market order the
         // caller never asked for.
+        // TERMINAL_REJECT for the same pre-network reason as the STOP_LOSS_LIMIT mismatch above.
         if (String(this.venue) !== PERP_VENUE_ID) {
-          throw new Error(
+          throw new AdapterError(
+            'TERMINAL_REJECT',
+            'VENUE_RAIL_MISMATCH',
             `STOP_MARKET is swap-only; venue ${String(this.venue)} is not the swap venue (fail-closed)`,
           );
         }
@@ -139,6 +149,20 @@ export class CcxtExchangeAdapter implements ExchangePort {
         req.limitPrice,
         params,
       );
+      // An ack without an id is the one case that is neither a success nor a reject: createOrder
+      // RESOLVED, so the order may well be resting venue-side, but there is no identity to ack it
+      // with. String(undefined) would write the literal "undefined" as the venueOrderId (poisoning
+      // reconciliation's venueOrderIndex), and a TERMINAL_REJECT would abandon a possibly-live
+      // order. OUTCOME_AMBIGUOUS hands it to the query-by-clientOrderId loop, the only thing that
+      // can resolve it (rule 5: never blind-resubmit, query first). toAdapterError below passes an
+      // AdapterError through unchanged, so this classification survives the catch.
+      if (order.id === undefined || order.id === '') {
+        throw new AdapterError(
+          'OUTCOME_AMBIGUOUS',
+          'ACK_MISSING_VENUE_ORDER_ID',
+          `createOrder resolved without a venue order id for clientOrderId ${req.clientOrderId}`,
+        );
+      }
       return { clientOrderId: req.clientOrderId, venueOrderId: String(order.id) };
     } catch (e) {
       throw toAdapterError(e);
@@ -195,20 +219,53 @@ export class CcxtExchangeAdapter implements ExchangePort {
     }
   }
 
-  // Phase-7 increment-2 wires the real apiRestrictions probe.
-  validateCredentials(): Promise<CredentialCheck> {
-    return Promise.resolve({
-      valid: true,
-      canTrade: true,
-      withdrawalsEnabled: false,
-      keyFingerprint: 'ccxt',
-    });
+  // §10c credential probe over the SAME endpoint KeyProbeService uses. This is NOT live gate (c):
+  // that gate runs through KEY_PROBE → KeyProbeService.probeAll() → ModeControlService.keysValid(),
+  // and this method has no production caller (the routing facade in
+  // composition/exchange-adapters.module.ts says so at its own delegation). It answers venue truth
+  // anyway, because the previous hardcoded {valid:true, canTrade:true, withdrawalsEnabled:false}
+  // asserted "withdrawals are proven disabled" to any future caller without ever asking the venue.
+  //
+  // Failure direction — permission gate, so it fails CLOSED off-sandbox: an unprobeable restriction
+  // set answers withdrawalsEnabled:true, because "we could not verify withdrawals are disabled"
+  // must never read as "withdrawals are disabled". On a sandbox the env/url wall carries the safety
+  // (no real funds) and Spot Testnet exposes no sapi at all, so it degrades to the testnet posture
+  // exactly like KeyProbeService.fetchRestrictions does.
+  async validateCredentials(): Promise<CredentialCheck> {
+    try {
+      const r = await this.client.sapiGetAccountApiRestrictions();
+      const withdrawalsEnabled = r['enableWithdrawals'] === true;
+      // apiRestrictions is ACCOUNT-wide; the surface flag that matters is this adapter's own venue.
+      const surfaceEnabled =
+        String(this.venue) === PERP_VENUE_ID
+          ? r['enableFutures'] === true
+          : r['enableSpotAndMarginTrading'] === true;
+      // Cross-margin borrow is forbidden on BOTH surfaces (§7.1), so it invalidates the key here
+      // too — mirroring KeyProbeService.recompute rather than inventing a looser rule.
+      const marginEnabled = r['enableMargin'] === true;
+      return {
+        valid: surfaceEnabled && !withdrawalsEnabled && !marginEnabled,
+        canTrade: surfaceEnabled,
+        withdrawalsEnabled,
+        keyFingerprint: 'ccxt',
+      };
+    } catch {
+      if (this.capabilities.sandbox) {
+        return { valid: true, canTrade: true, withdrawalsEnabled: false, keyFingerprint: 'ccxt' };
+      }
+      return { valid: false, canTrade: false, withdrawalsEnabled: true, keyFingerprint: 'ccxt' };
+    }
   }
 
   // Backlog #51 (Phase-8 perp deploy checklist): delegate the venue-side margin/leverage pin to
   // the client. Gated by venue — on a spot venue there is nothing to pin and the method is a
   // deliberate no-op (the boot call site invokes it unconditionally on every non-paper boot).
   // Client-side the implementation is fail-closed; see RealCcxtOrderClient.pinPerpVenueDefaults.
+  // Unlike placeOrder's rail-mismatch pair (typed TERMINAL_REJECT AdapterErrors), this throw and
+  // the missing-client-method throws in fetchOpenAlgoOrders/cancelAlgoOrder/fetchAlgoOrderStatus/
+  // fetchPositions stay BARE Errors on purpose: none is on the order-submission path, so no OMS
+  // classification is derived from them — they are boot-time/query-path wiring faults whose callers
+  // already defer correctly (boot engages the kill switch; recoverSymbol retries next sweep).
   async pinPerpVenueDefaults(symbols: readonly SymbolId[], leverage: number): Promise<void> {
     if (String(this.venue) !== PERP_VENUE_ID) return;
     if (this.client.pinPerpVenueDefaults === undefined) {

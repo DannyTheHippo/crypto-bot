@@ -3,9 +3,14 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import Decimal from 'decimal.js';
 import { DrizzleExecutionStore } from '../../../../src/database/repositories/trading/drizzle-execution-store';
 import type * as schema from '../../../../src/database/schemas/trading';
-import type { PersistedOrderEvent } from '../../../../src/ports/trading/execution';
+import type {
+  PersistedOrderEvent,
+  ReconciliationRow,
+  EquitySample,
+} from '../../../../src/ports/trading/execution';
 import type { OrderIntent } from '../../../../src/domain/trading/types/order-intent';
 import type { ApprovalProof } from '../../../../src/domain/trading/types/risk-decision';
+import { reduce } from '../../../../src/domain/trading/oms/reducer';
 import { price, qty } from '../../../../src/domain/common/types/money';
 import {
   intentId,
@@ -16,6 +21,10 @@ import {
   epochMs,
   type ClientOrderId,
 } from '../../../../src/domain/common/types/ids';
+
+// A second intent id for the recovery/fill fixtures below, distinct from the trigger-order block's
+// own IID so neither can quietly reuse the other's clientOrderId.
+const IID2 = intentId('0190abcd-1234-7abc-89ab-0123456789ac');
 
 // Backlog #40: the appendOrderEvent chokepoint stamps submittedAt/ackedAt/firstFillAt (journal-time
 // wall clock, the W7 terminalAt convention) keyed on the EVENT type — the repository's COALESCE
@@ -326,5 +335,230 @@ describe('DrizzleExecutionStore trigger-order persistence pass-through (Push 3 P
     await store.saveIntent(makeIntent({ type: 'LIMIT', limitPrice: price('100') }), proof);
     expect(captured()?.['type']).toBe('LIMIT');
     expect(captured()?.['triggerPrice']).toBeUndefined();
+  });
+});
+
+// 2026-08-03: an errored pass — one that threw before finishing its axis chain — was persisted as
+// result='CLEAN' whenever it happened to carry zero mismatches, with the truth only in the
+// `PASS_ERROR:` detail string. The verdict column now carries it.
+describe('DrizzleExecutionStore.saveReconciliation result mapping', () => {
+  function storeWithCapturedRecon(): {
+    store: DrizzleExecutionStore;
+    captured: () => Record<string, unknown> | undefined;
+  } {
+    const store = new DrizzleExecutionStore({} as NodePgDatabase<typeof schema>, {
+      mode: 'paper',
+      runId: 'run-test',
+      bootId: 'boot-test',
+    });
+    let captured: Record<string, unknown> | undefined;
+    (store as unknown as { reconciliations: unknown }).reconciliations = {
+      insert: (row: Record<string, unknown>) => {
+        captured = row;
+        return Promise.resolve();
+      },
+    };
+    return { store, captured: () => captured };
+  }
+
+  const row = (over: Partial<ReconciliationRow> = {}): ReconciliationRow => ({
+    ts: epochMs(1_800_000_000_000),
+    venue: 'binance',
+    mismatches: 0,
+    halted: false,
+    passError: false,
+    detail: 'clean',
+    durationMs: 10,
+    openOrdersChecked: 1,
+    tradesChecked: 1,
+    balancesChecked: 1,
+    ...over,
+  });
+
+  it('a pass that threw with ZERO mismatches persists ERROR, never CLEAN', async () => {
+    const { store, captured } = storeWithCapturedRecon();
+    await store.saveReconciliation(row({ passError: true, detail: 'PASS_ERROR:Error:db down' }));
+    expect(captured()?.['result']).toBe('ERROR');
+  });
+
+  it('passError outranks halted — an errored pass is never reported as a completed HALT', async () => {
+    const { store, captured } = storeWithCapturedRecon();
+    await store.saveReconciliation(row({ passError: true, halted: true, mismatches: 3 }));
+    expect(captured()?.['result']).toBe('ERROR');
+  });
+
+  it.each<[Partial<ReconciliationRow>, string]>([
+    [{ halted: true, mismatches: 1 }, 'HALT'],
+    [{ mismatches: 2 }, 'MISMATCH'],
+    [{}, 'CLEAN'],
+  ])('maps the pre-existing verdicts unchanged (%o → %s)', async (over, expected) => {
+    const { store, captured } = storeWithCapturedRecon();
+    await store.saveReconciliation(row(over));
+    expect(captured()?.['result']).toBe(expected);
+  });
+});
+
+// The reducer's dust rule is `residual < stepSize ⇒ FILLED`, so a recovered order carrying a
+// synthesized flat '0.00000001' step needed an exact-to-the-satoshi fill to leave PARTIALLY_FILLED
+// while a live order on the same symbol dust-completed normally — stranded forever, starving the
+// clean reconcile stamp. The step now comes from the same DEFAULT_FILTERS table the sizer reads.
+describe('DrizzleExecutionStore recovered-order stepSize (rowToOrderRecord)', () => {
+  function storeWithOrderRow(row: Record<string, unknown>): DrizzleExecutionStore {
+    const store = new DrizzleExecutionStore({} as NodePgDatabase<typeof schema>, {
+      mode: 'paper',
+      runId: 'run-test',
+      bootId: 'boot-test',
+    });
+    (store as unknown as { orders: unknown }).orders = {
+      findByClientOrderId: () => Promise.resolve(row),
+    };
+    return store;
+  }
+
+  const orderRow = (symbol: string) => ({
+    clientOrderId: 'cbp' + 'a'.repeat(32),
+    state: 'ACKED',
+    qty: '1',
+    cumQty: '0',
+    venueOrderId: 'v1',
+    symbol,
+    venue: 'binance',
+  });
+
+  it('resolves the venue stepSize for a known symbol', async () => {
+    const store = storeWithOrderRow(orderRow('BTC/USDT'));
+    const rec = await store.loadOrderByClientOrderId(
+      venueId('binance'),
+      encodeClientOrderId(IID2, 'paper'),
+    );
+    expect(rec?.stepSize).toBe('0.00001'); // DEFAULT_FILTERS BTC/USDT LOT_SIZE
+  });
+
+  it('a recovered order whose residual sits under the venue step folds FILLED (it did not before)', async () => {
+    const store = storeWithOrderRow(orderRow('BTC/USDT'));
+    const rec = (await store.loadOrderByClientOrderId(
+      venueId('binance'),
+      encodeClientOrderId(IID2, 'paper'),
+    ))!;
+    // residual 0.000005 < step 0.00001 ⇒ dust ⇒ FILLED. Under the old flat '0.00000001' the same
+    // fold left the order PARTIALLY_FILLED, which is the stranding this fix removes.
+    expect(reduce(rec, { type: 'FILL', cumQty: new Decimal('0.999995') }).state).toBe('FILLED');
+    expect(
+      reduce({ ...rec, stepSize: '0.00000001' }, { type: 'FILL', cumQty: new Decimal('0.999995') })
+        .state,
+    ).toBe('PARTIALLY_FILLED');
+  });
+
+  it('a symbol outside DEFAULT_FILTERS keeps the fine fallback step', async () => {
+    const store = storeWithOrderRow(orderRow('NOTLISTED/USDT'));
+    const rec = await store.loadOrderByClientOrderId(
+      venueId('binance'),
+      encodeClientOrderId(IID2, 'paper'),
+    );
+    expect(rec?.stepSize).toBe('0.00000001');
+  });
+});
+
+// (mode, venue, symbol, venue_trade_id) — 0002_fills_mode_scoped_uidx.sql. The DB-level guarantee
+// is pinned in test/db/persistence.spec.ts (f1); these pin that the store actually SCOPES its two
+// read paths by this run's mode rather than asking the unscoped question.
+describe('DrizzleExecutionStore fill lookups are mode-scoped', () => {
+  function storeWithCapturedFillReads(mode: 'paper' | 'testnet' | 'live'): {
+    store: DrizzleExecutionStore;
+    reads: unknown[][];
+  } {
+    const store = new DrizzleExecutionStore({} as NodePgDatabase<typeof schema>, {
+      mode,
+      runId: 'run-test',
+      bootId: 'boot-test',
+    });
+    const reads: unknown[][] = [];
+    (store as unknown as { fills: unknown }).fills = {
+      fetchByTradeId: (...args: unknown[]) => {
+        reads.push(args);
+        return Promise.resolve(null);
+      },
+      insertIdempotent: () => Promise.resolve({ inserted: true }),
+    };
+    return { store, reads };
+  }
+
+  it('hasFill asks only about THIS run mode', async () => {
+    const { store, reads } = storeWithCapturedFillReads('testnet');
+    await store.hasFill(venueId('binance'), symbolId('BTC/USDT'), 'paper-trade-1');
+    expect(reads[0]).toEqual(['testnet', 'binance', 'BTC/USDT', 'paper-trade-1']);
+  });
+
+  it('saveFill checks the existing row within THIS run mode', async () => {
+    const { store, reads } = storeWithCapturedFillReads('paper');
+    await store.saveFill(
+      {
+        venue: venueId('binance'),
+        symbol: symbolId('BTC/USDT'),
+        venueTradeId: 'paper-trade-1',
+        clientOrderId: encodeClientOrderId(IID2, 'paper'),
+        price: price('100'),
+        qty: qty('1'),
+        fee: null,
+        liquidity: 'taker',
+        venueTimestamp: epochMs(1),
+        source: 'paper',
+      },
+      '',
+    );
+    expect(reads[0]).toEqual(['paper', 'binance', 'BTC/USDT', 'paper-trade-1']);
+  });
+});
+
+// equity_curve.gap_annotation existed from 0000_v3_initial.sql with no writer at all; the sampler's
+// MARK_FALLBACK provenance is its first one (see EquitySample.gapAnnotation).
+describe('DrizzleExecutionStore.savePortfolioSample gap annotation', () => {
+  function storeWithCapturedEquity(): {
+    store: DrizzleExecutionStore;
+    captured: () => Record<string, unknown> | undefined;
+  } {
+    let captured: Record<string, unknown> | undefined;
+    const tx = {
+      insert: () => ({
+        values: (row: Record<string, unknown>) => {
+          captured ??= row; // the equity_curve insert is the first write in the transaction
+          return Promise.resolve();
+        },
+      }),
+    };
+    const db = {
+      transaction: (fn: (t: unknown) => Promise<void>) => fn(tx),
+    } as unknown as NodePgDatabase<typeof schema>;
+    const store = new DrizzleExecutionStore(db, {
+      mode: 'paper',
+      runId: 'run-test',
+      bootId: 'boot-test',
+    });
+    (store as unknown as { positions: unknown }).positions = {
+      replaceAll: () => Promise.resolve(),
+    };
+    return { store, captured: () => captured };
+  }
+
+  const sample = (over: Partial<EquitySample> = {}): EquitySample => ({
+    ts: epochMs(1_800_000_000_000),
+    equity: '100000',
+    cash: '100000',
+    unrealized: '0',
+    peak: '100000',
+    sessionDateUtc: '2027-01-15',
+    ...over,
+  });
+
+  it('forwards the sampler annotation verbatim', async () => {
+    const { store, captured } = storeWithCapturedEquity();
+    await store.savePortfolioSample(sample({ gapAnnotation: 'MARK_FALLBACK:BTC/USDT' }), []);
+    expect(captured()?.['gapAnnotation']).toBe('MARK_FALLBACK:BTC/USDT');
+  });
+
+  it('leaves the column null when every position had a live mark', async () => {
+    const { store, captured } = storeWithCapturedEquity();
+    await store.savePortfolioSample(sample(), []);
+    expect(captured()?.['gapAnnotation']).toBeUndefined();
   });
 });

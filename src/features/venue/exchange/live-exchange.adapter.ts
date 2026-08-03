@@ -8,6 +8,9 @@ import type {
   VenueFill,
   CredentialCheck,
   AlgoOrderState,
+  AlgoOrderHistoryView,
+  VenuePosition,
+  VenueFundingPayment,
 } from '../../../ports/venue/exchange';
 import { LIVE_ADAPTER_CAP } from '../../../ports/trading/mode-control';
 import type { VenueId, SymbolId, ClientOrderId, EpochMs } from '../../../domain/common/types/ids';
@@ -71,13 +74,25 @@ export class LiveExchangeAdapter implements ExchangePort {
     return this.inner.validateCredentials();
   }
 
-  // Push 3 P7d (P7a gap): the swap algo-rail round-trip, delegated like every other method above —
-  // unlike pinPerpVenueDefaults (deliberately NOT delegated; see app.module.ts's own comment on that
-  // omission), a live perp deployment's protective-stop lifecycle needs these from boot one, so there
-  // is no separate "own ceremony" deferral here. `?.` guards the inner adapter lacking either method
-  // (spot/paper) — fetchOpenAlgoOrders answers vacuously empty (mirrors CcxtExchangeAdapter's own
-  // spot answer), cancelAlgoOrder rejects loudly (fail-closed: a caller that reaches this method
-  // believes an algo order exists and must not be told the cancel silently no-opped).
+  // Push 3 P7d (P7a gap): the swap algo-rail round-trip, delegated like every other method above.
+  // pinPerpVenueDefaults is the ONE method deliberately left undelegated — that omission is
+  // documented at its call site (trading-runtime.module.ts's startTrading): a live perp deployment
+  // pins venue defaults as part of its own out-of-session RUN ceremony. Everything else a live boot
+  // touches must be here, because a missing method is INVISIBLE to the caller — the optional members
+  // of ExchangePort are `?.`-guarded or presence-tested everywhere, so a non-delegation degrades to
+  // "the venue has nothing to say" rather than to an error.
+  //
+  // `?.` guards the inner adapter lacking a method (spot/paper). Each fallback matches the posture
+  // the port declares for that method, never a convenient one:
+  //   • fetchOpenAlgoOrders / fetchFundingPayments — vacuously empty (mirrors CcxtExchangeAdapter's
+  //     own spot answer; both back measurement paths that fail OPEN on an absent venue rail);
+  //   • fetchAlgoOrderStatus — `undefined`, the port's own "could not tell" answer, which
+  //     AlgoStopRecoveryService retries next sweep rather than treating as proof the stop is gone;
+  //   • cancelAlgoOrder / fetchPositions — reject loudly, FAIL CLOSED. A caller reaching
+  //     cancelAlgoOrder believes an algo order exists and must not be told the cancel silently
+  //     no-opped; an empty position list is indistinguishable from "the account is flat" and would
+  //     drive reconciliation's position axis to a POSITION_DRIFT HALT on fabricated venue truth
+  //     (CcxtExchangeAdapter.fetchPositions throws for exactly this reason).
   fetchOpenAlgoOrders(symbol?: SymbolId): Promise<readonly AlgoOrderState[]> {
     return this.inner.fetchOpenAlgoOrders?.(symbol) ?? Promise.resolve([]);
   }
@@ -89,5 +104,31 @@ export class LiveExchangeAdapter implements ExchangePort {
       );
     }
     return this.inner.cancelAlgoOrder(algoId, symbol);
+  }
+
+  fetchAlgoOrderStatus(
+    clientAlgoId: string,
+    symbol: SymbolId,
+    sinceMs: EpochMs,
+  ): Promise<AlgoOrderHistoryView | undefined> {
+    return (
+      this.inner.fetchAlgoOrderStatus?.(clientAlgoId, symbol, sinceMs) ?? Promise.resolve(undefined)
+    );
+  }
+
+  fetchPositions(symbols?: readonly SymbolId[]): Promise<readonly VenuePosition[]> {
+    if (!this.inner.fetchPositions) {
+      return Promise.reject(
+        new Error('LiveExchangeAdapter: inner adapter does not implement fetchPositions'),
+      );
+    }
+    return this.inner.fetchPositions(symbols);
+  }
+
+  fetchFundingPayments(
+    symbol: SymbolId,
+    sinceMs: EpochMs,
+  ): Promise<readonly VenueFundingPayment[]> {
+    return this.inner.fetchFundingPayments?.(symbol, sinceMs) ?? Promise.resolve([]);
   }
 }

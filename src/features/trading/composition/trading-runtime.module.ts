@@ -8,16 +8,19 @@ import {
   type OnModuleDestroy,
   type OnModuleInit,
 } from '@nestjs/common';
+import { InjectMetric } from '@willsoto/nestjs-prometheus';
 import Decimal from 'decimal.js';
 import path from 'node:path';
+import type { Counter } from 'prom-client';
 import { TypedConfigService } from '../../../config/environment/typed-config.service';
 import { canonicalObjectWithoutSecrets } from '../../../config/environment/environment.config';
 import { DEFAULT_FILTERS } from '../../../domain/trading/risk/default-filters';
-import type { VenueId } from '../../../domain/common/types/ids';
+import type { EpochMs, VenueId } from '../../../domain/common/types/ids';
 import { strategyId, symbolId, type SymbolId } from '../../../domain/common/types/ids';
 import type { CandleInterval } from '../../../domain/venue/types/market-events';
 import { isDegradedDecideRationale } from '../../../domain/strategy/types/decide-rationale';
-import { venueForSymbol } from '../../../domain/venue/types/venue-map';
+import { PERP_VENUE, venueForSymbol } from '../../../domain/venue/types/venue-map';
+import { assertSwapPrivateUrlSafe } from '../../../shared/venue-safety/swap-url-guard';
 import {
   AGENT_CLIENT,
   AGENT_DECISION_JOURNAL,
@@ -116,6 +119,12 @@ import {
 import { StrategyHost } from '../../strategy/agentic/strategy-host';
 import { StrategyRegistry } from '../../strategy/agentic/strategy-registry';
 import { UniverseScannerService } from '../../strategy/agentic/universe-scanner.service';
+import {
+  checkVenueFilterDrift,
+  VENUE_FILTER_DRIFT_COUNTER,
+  type RawVenueMarkets,
+} from '../../venue/exchange/filters-drift-check';
+import { buildCcxtExchange } from '../../venue/market-data/ccxt-stream.adapter';
 import { AlgoStopRecoveryService } from '../execution/algo-stop-recovery.service';
 import { BootRecoveryService } from '../execution/boot-recovery.service';
 import { DemoFillPollerService } from '../execution/demo-fill-poller.service';
@@ -264,6 +273,37 @@ export class MetricsWrappingAgentClient implements AgentClientPort {
   }
 }
 
+// Re-entrancy guard for the fire-and-forget interval drivers below (startDriverTimers). Every driver
+// fires on a fixed period regardless of whether its previous invocation finished, so on a slow venue
+// a tick can overlap ITSELF: two concurrent sweeps of the same order book, doubled venue load, and
+// interleaved mutation of the resolvers' in-memory tracking maps. It is NOT a corruption bug — every
+// fold goes through the order_events journal's dedupe key, so a doubled apply is a no-op — which is
+// why only reconciliation (the slowest pass, ~38.6s against a 30s period) ever grew a guard of its
+// own. This generalises that guard to the rest.
+//
+// Skip, never queue: a skipped tick is simply the next tick's work — these drivers are idempotent
+// re-scans of current state, so a coalesced tick loses nothing but latency.
+//
+// FAILURE DIRECTION: OPEN. The flag is released in `finally`, and `Promise.resolve().then(run)`
+// routes a SYNCHRONOUS throw down the same rejection path — a driver that faults can never wedge its
+// own timer permanently silent, which for a safety driver would be far worse than a doubled tick.
+export function skipIfBusy<A extends unknown[]>(
+  run: (...args: A) => unknown,
+  onError: (err: unknown) => void,
+): (...args: A) => void {
+  let busy = false;
+  return (...args: A): void => {
+    if (busy) return;
+    busy = true;
+    void Promise.resolve()
+      .then(() => run(...args))
+      .catch(onError)
+      .finally(() => {
+        busy = false;
+      });
+  };
+}
+
 @Injectable()
 export class TradingRuntimeService
   implements OnModuleInit, OnApplicationBootstrap, OnModuleDestroy
@@ -391,6 +431,12 @@ export class TradingRuntimeService
     @Optional()
     @Inject(CONFIG_SNAPSHOT_WRITER)
     private readonly configSnapshotWriter?: ConfigSnapshotWriterPort,
+    // Boot-time venue-filter drift (checkFilterDrift below). @Optional so a module-isolation boot
+    // without the Prometheus registry still constructs — an absent counter costs the alert, never
+    // the refusal, which is decided by the checker's return value alone.
+    @Optional()
+    @InjectMetric('venue_filter_drift_total')
+    private readonly filterDriftCounter?: Counter<string>,
   ) {
     this.agentClient = new MetricsWrappingAgentClient(
       rawAgentClient,
@@ -476,17 +522,10 @@ export class TradingRuntimeService
     }
   }
 
-  // §6/§8 periodic drivers — the runtime FIRING of logic unit-tested in isolation: the halt
-  // coordinator and unknown-order resolver tick each second, equity samples every 5s, reconciliation
-  // is timed every 30s (ReconciliationService.reconcile() iterates VENUE_REGISTRY internally — one
-  // pass per venue per tick, §1.5 — so this single timer already drives per-venue reconciliation).
-  // 30s is the TIMER PERIOD, not the effective cadence: a pass costs ~38.6s, so roughly every other
-  // tick coalesces onto the still-running pass (reconciliation.service.ts's re-entrancy guard) and the
-  // measured effective cadence between COMPLETED passes is ~60s p50 (max 90.5s observed). Reason about
-  // mismatch-detection latency using ~60s, not 30s. SKIPPED
-  // under test/ci so timers never fire inside the suite — the tick/reconcile/sample logic is verified
-  // directly in the unit/paper tests; only the firing was deferred. Each fire is fire-and-forget with
-  // its rejection swallowed (the services engage the kill switch on real faults).
+  // §6/§8 boot: restore durable state, then start the periodic drivers (startDriverTimers below) and
+  // hand off to startTrading. The whole body is SKIPPED under test/ci so timers never fire inside the
+  // suite — the tick/reconcile/sample logic is verified directly in the unit/paper tests; only the
+  // firing was deferred.
   async onApplicationBootstrap(): Promise<void> {
     const env = process.env['NODE_ENV'];
     if (env === 'test' || env === 'ci' || process.env['CI']) return;
@@ -496,53 +535,7 @@ export class TradingRuntimeService
     // first reconcile sees recovered truth. No-op in paper/no-DB (in-memory store returns empty). A
     // corrupt persisted order state throws here — failing the boot loudly rather than trading on it.
     await this.bootRecovery.recoverOnBoot(mode);
-    this.driverTimers.push(
-      setInterval(() => {
-        const now = this.clock.now();
-        void Promise.resolve(this.coordinator.tick(now)).catch(() => undefined);
-        void Promise.resolve(this.resolver.tick(now)).catch(() => undefined);
-        // Recovery must never be silent, but a recovery-evaluation FAULT must also never mask the
-        // halt/resolver ticks above — same fire-and-forget-with-swallowed-rejection convention (the
-        // services themselves own their own halt/engage faults; a tick failure here just means one
-        // fewer evaluation pass, and the next 1s tick tries again).
-        void Promise.resolve(this.recoveryCoordinator.tick(now)).catch(() => undefined);
-      }, 1_000),
-      setInterval(() => {
-        void Promise.resolve(this.sampler.sample()).catch(() => undefined);
-      }, 5_000),
-    );
-    // §S3 protective backstop: ticks alongside the halt coordinator/resolver, but its rejection is
-    // LOGGED (not silently swallowed) — a tick failure here means the bot-side stop-loss/trailing
-    // stop is not being enforced, which is worth a warn line even though the tick itself never engages
-    // the kill switch on its own faults.
-    this.driverTimers.push(
-      setInterval(() => {
-        void Promise.resolve(this.protectiveExit.tick(this.clock.now())).catch((err: unknown) => {
-          this.log.warn(
-            `protective-exit tick failed: ${err instanceof Error ? err.message : String(err)}`,
-          );
-        });
-      }, 1_000),
-    );
-    // Reconciliation compares the in-memory portfolio against the venue, per venue. In paper the
-    // in-memory paper adapters ARE the venue, so they match exactly. On the Binance Demo flavor the
-    // account is a SHARED multi-asset wallet (not dedicated to the bot), so a demo venue's own
-    // ReconConfig disables the balances axis for it (a BALANCE_DRIFT HALT on holdings the bot never
-    // touched would be wrong — see ReconciliationService.venueReconConfig); order/trade axes run
-    // everywhere. A failed pass is logged AND lands in reconciliation_runs_total{result="error"} +
-    // the reconciliations row — a silent .catch here once hid a per-pass throw for weeks (reconTs=0,
-    // zero rows) while the safety sweep never actually confirmed venue truth.
-    if (mode === 'paper' || mode === 'testnet') {
-      this.driverTimers.push(
-        setInterval(() => {
-          void Promise.resolve(this.reconciliation.reconcile()).catch((err: unknown) => {
-            this.log.warn(
-              `reconcile pass failed: ${err instanceof Error ? err.message : String(err)}`,
-            );
-          });
-        }, 30_000),
-      );
-    }
+    this.startDriverTimers();
     // Catch pin/boot failures here: void+throw becomes unhandledRejection → process.exit(1)
     // (main.ts) → docker restart storm while Nest already reported healthy (2026-07-24 HYPE
     // setMarginMode -4067 with open orders). Fail-closed stays fail-closed via kill-switch HALT
@@ -561,6 +554,75 @@ export class TradingRuntimeService
       }
       engageStartTradingFailure(this.killSwitch, err);
     });
+  }
+
+  // Extracted from onApplicationBootstrap so the timer wiring itself is reachable from a spec (the
+  // constructor wires ~35 collaborators and is never direct-constructed in the suite — same
+  // Object.create-prototype harness seedConfiguredLabelSets uses).
+  private startDriverTimers(): void {
+    // One busy flag PER DRIVER, not per timer: the three 1s drivers share a callback (and one `now`
+    // reading, so they all evaluate the same instant), but a slow resolver.tick must not be able to
+    // throttle the halt coordinator alongside itself.
+    // Recovery must never be silent, but a recovery-evaluation FAULT must also never mask the
+    // halt/resolver ticks — the pre-existing fire-and-forget-with-swallowed-rejection convention
+    // (the services themselves own their own halt/engage faults; a tick failure here just means one
+    // fewer evaluation pass, and the next 1s tick tries again).
+    const swallow = (): void => undefined;
+    const tickCoordinator = skipIfBusy((now: EpochMs) => this.coordinator.tick(now), swallow);
+    const tickResolver = skipIfBusy((now: EpochMs) => this.resolver.tick(now), swallow);
+    const tickRecovery = skipIfBusy((now: EpochMs) => this.recoveryCoordinator.tick(now), swallow);
+    this.driverTimers.push(
+      setInterval(() => {
+        const now = this.clock.now();
+        tickCoordinator(now);
+        tickResolver(now);
+        tickRecovery(now);
+      }, 1_000),
+      setInterval(
+        skipIfBusy(() => this.sampler.sample(), swallow),
+        5_000,
+      ),
+      // §S3 protective backstop: ticks alongside the halt coordinator/resolver, but its rejection is
+      // LOGGED (not silently swallowed) — a tick failure here means the bot-side stop-loss/trailing
+      // stop is not being enforced, which is worth a warn line even though the tick itself never
+      // engages the kill switch on its own faults.
+      setInterval(
+        skipIfBusy(
+          () => this.protectiveExit.tick(this.clock.now()),
+          (err: unknown) =>
+            this.log.warn(
+              `protective-exit tick failed: ${err instanceof Error ? err.message : String(err)}`,
+            ),
+        ),
+        1_000,
+      ),
+      // Reconciliation compares the in-memory portfolio against the venue, per venue. In paper the
+      // in-memory paper adapters ARE the venue, so they match exactly. On the Binance Demo flavor the
+      // account is a SHARED multi-asset wallet (not dedicated to the bot), so a demo venue's own
+      // ReconConfig disables the balances axis for it (a BALANCE_DRIFT HALT on holdings the bot never
+      // touched would be wrong — see ReconciliationService.venueReconConfig); order/trade axes run
+      // everywhere. A failed pass is logged AND lands in reconciliation_runs_total{result="error"} +
+      // the reconciliations row — a silent .catch here once hid a per-pass throw for weeks (reconTs=0,
+      // zero rows) while the safety sweep never actually confirmed venue truth.
+      //
+      // 2026-08-03: this timer was registered ONLY for paper/testnet, so a LIVE boot ran with no
+      // reconciliation at all — no UNKNOWN_OURS_OPEN, no FILL_FOR_UNKNOWN_ORDER, no BALANCE_DRIFT, no
+      // POSITION_DRIFT, and RecoveryCoordinatorService's auto-resume (which gates on a clean pass
+      // being the latest) permanently inert. TradingMode has exactly three members, so the gate is
+      // gone entirely rather than widened: every mode reconciles, and the per-venue axis selection is
+      // where environment-specific carve-outs belong (venueReconConfig already turns the balances axis
+      // off for a demo venue by the VENUE's own environment, not by boot mode — a live venue keeps it).
+      setInterval(
+        skipIfBusy(
+          () => this.reconciliation.reconcile(),
+          (err: unknown) =>
+            this.log.warn(
+              `reconcile pass failed: ${err instanceof Error ? err.message : String(err)}`,
+            ),
+        ),
+        30_000,
+      ),
+    );
   }
 
   onModuleDestroy(): void {
@@ -668,6 +730,9 @@ export class TradingRuntimeService
       );
     }
     this.tradingSymbols = symbols.map((s) => symbolId(s));
+    // Filled by the boot-time venue-filter drift check below on a non-paper boot; empty in paper,
+    // where the static table IS the venue.
+    let filterRefused: ReadonlySet<string> = new Set();
 
     await this.seedDailyLlmBudget();
     // Seeded HERE, seconds into the boot and ahead of the venue pin/key-probe network calls below, so
@@ -702,6 +767,14 @@ export class TradingRuntimeService
         );
       });
       await this.refreshKeyProbe();
+      // DEFAULT_FILTERS is a hand-maintained, probe-dated table and the ONLY source of
+      // tick/step/minNotional for both the sizer and the risk engine's F1 gate — see
+      // filters-drift-check.ts for the full failure-direction split (a positive mismatch refuses the
+      // symbol; an unreadable venue leaves the table standing). Non-paper only: in paper the static
+      // table IS the venue. Never throws — the checker's own fail-open half means a boot-time venue
+      // hiccup must not be able to ground the bot, and a genuine mismatch is expressed by refusing
+      // the affected symbols below, not by failing the boot.
+      filterRefused = await this.checkFilterDrift();
       // Backlog #51 (Phase-8 perp deploy checklist): pin venue-side isolated margin + leverage
       // BEFORE the first order — account defaults are never trusted. The routing facade behind
       // EXCHANGE_PORT (VenueRoutingExchangeAdapter) narrows this call to the perp venue's own port
@@ -712,7 +785,8 @@ export class TradingRuntimeService
       // through UNfloored so the client's integer guard refuses it (silently truncating a cap the
       // sizer still reads as a decimal would diverge venue leverage from sizing math — reviewer S2).
       // NB LiveExchangeAdapter does not delegate the hook — a live perp deployment (far future, own
-      // ceremony) must wire that deliberately.
+      // ceremony) must wire that deliberately. It IS the only ExchangePort method that adapter
+      // leaves undelegated; every other optional member is forwarded (live-exchange.adapter.ts).
       await this.exchangePort.pinPerpVenueDefaults?.(
         this.tradingSymbols,
         // Decimal round-trip (not Number()): leverage is a multiplier, not money, but the money
@@ -842,6 +916,11 @@ export class TradingRuntimeService
     // lane-wide spend cap across all instances.
     const strategyIds = symbols.map((_, i) => `agentic-${i + 1}`);
     symbols.forEach((symbol, i) => {
+      // A drifted symbol is SKIPPED here rather than filtered out of `symbols` above: the strategy id
+      // is the list INDEX, and positions/journals key off that id, so compacting the list would
+      // re-attribute every later symbol's state. Skipping leaves agentic-N pinned to the same symbol
+      // it has always meant, with the refused one simply never enabled this boot.
+      if (filterRefused.has(symbol)) return;
       this.registry.enable(strategyId(strategyIds[i]!), active, this.agenticParams(symbol));
     });
     const first = this.agenticParams(symbols[0]!);
@@ -895,6 +974,63 @@ export class TradingRuntimeService
         this.universeScanner.maybeRecompute(this.clock.now());
       }, 15_000),
     );
+  }
+
+  // Boot-time DEFAULT_FILTERS drift check. Returns the symbols to REFUSE for this boot; a failure
+  // anywhere in the checker itself resolves to "refuse nothing" (the measurement failed, and a
+  // measurement gate must never block the thing it measures — the checker's own fail-open half).
+  private async checkFilterDrift(): Promise<ReadonlySet<string>> {
+    try {
+      const report = await checkVenueFilterDrift(
+        this.tradingSymbols,
+        (venue) => this.loadVenueMarkets(venue),
+        this.log,
+        (row) => this.filterDriftCounter?.inc({ symbol: row.symbol, field: row.field }),
+      );
+      if (report.unverified.length > 0) {
+        this.log.warn(
+          `venue filter drift: ${report.unverified.length} symbol(s) unverified this boot — ${report.unverified.join(', ')}`,
+        );
+      }
+      return report.refused;
+    } catch (err) {
+      this.log.warn(
+        `venue filter drift check failed (fail open, static table stands): ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return new Set();
+    }
+  }
+
+  // The venue-truth half of the drift check: ONE public loadMarkets per venue, on the SAME
+  // environment-resolved ccxt instance the venue's own adapter is built from (buildCcxtExchange
+  // applies setSandboxMode/enableDemoTrading per environment). That sameness is load-bearing, not
+  // incidental: DEFAULT_FILTERS' perp rows were probe-verified against DEMO fapi and demo's BTC
+  // stepSize genuinely differs from production's, so reading prod filters here would report drift on
+  // a correct table and refuse every perp symbol. The swap-URL guard is re-asserted for the same
+  // reason it guards the credentialed client (exchange-adapters.module.ts's buildOrderClient) — a
+  // sandbox flavor that silently resolved to the production host must fail loudly, here too.
+  private async loadVenueMarkets(venue: VenueId): Promise<RawVenueMarkets> {
+    const descriptor = this.venueRegistry.get(venue);
+    if (descriptor === undefined) {
+      throw new Error(`venue filter drift: no registry descriptor for venue "${venue}"`);
+    }
+    const exchange = buildCcxtExchange(descriptor.config);
+    if (venue === PERP_VENUE) {
+      assertSwapPrivateUrlSafe(
+        (exchange as unknown as { urls: { api: { fapiPrivate: string } } }).urls.api.fapiPrivate,
+        descriptor.config.environment,
+      );
+    }
+    const markets = await exchange.loadMarkets();
+    const rows = new Map<string, unknown>();
+    for (const [symbol, market] of Object.entries(markets)) {
+      // `info` is the raw venue payload the checker parses; falling back to the unified market means
+      // a shape it cannot read lands the symbol in `unverified` (fail open) rather than in `unlisted`
+      // (refused) — a listed symbol must never be refused because ccxt withheld its raw row.
+      const info = (market as { info?: unknown } | undefined)?.info;
+      rows.set(symbol, info ?? market);
+    }
+    return rows;
   }
 
   private async refreshKeyProbe(): Promise<void> {
@@ -1081,6 +1217,7 @@ export class TradingRuntimeService
     { provide: PLAN_STOP_REGISTRY, useClass: PlanStopRegistryService },
     ProtectiveExitService,
     PROTECTIVE_EXITS_COUNTER,
+    VENUE_FILTER_DRIFT_COUNTER,
     { provide: SIGNAL_SINK, useExisting: SignalSinkService },
     {
       provide: STRATEGY_HOST,

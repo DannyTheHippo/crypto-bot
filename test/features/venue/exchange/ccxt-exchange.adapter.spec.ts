@@ -143,6 +143,28 @@ describe('CcxtExchangeAdapter.placeOrder', () => {
     });
   });
 
+  // The ack path may NOT invent an identity: String(undefined) would ack the order as the literal
+  // "undefined". createOrder resolved, so the order may be resting venue-side — OUTCOME_AMBIGUOUS
+  // routes it to ExecutionGate's SUBMIT_UNKNOWN query loop instead of rejecting a live order.
+  it.each([
+    ['undefined', undefined],
+    ['an empty string', ''],
+  ])('classifies an ack with %s as its order id OUTCOME_AMBIGUOUS', async (_label, id) => {
+    const client = fakeClient({
+      createOrder: vi.fn().mockResolvedValue({ ...baseOrder, id }),
+    });
+    const adapter = makeCcxtAdapter(client);
+
+    const err: unknown = await adapter.placeOrder(baseReq).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(AdapterError);
+    expect(err).toMatchObject({
+      errorClass: 'OUTCOME_AMBIGUOUS',
+      code: 'ACK_MISSING_VENUE_ORDER_ID',
+    });
+    expect((err as AdapterError).message).not.toContain('undefined');
+  });
+
   it('throws AdapterError (not raw ccxt) on venue rejection', async () => {
     const client = fakeClient({
       createOrder: vi.fn().mockRejectedValue(new InsufficientFunds('broke')),
@@ -307,6 +329,33 @@ describe('CcxtExchangeAdapter.placeOrder trigger orders', () => {
       }),
     ).rejects.toThrow(/STOP_MARKET is swap-only.*fail-closed/);
   });
+
+  // Both rail mismatches throw BEFORE createOrder, so nothing can exist venue-side. A bare Error
+  // would be classified OUTCOME_AMBIGUOUS by ExecutionGate.onPlaceError → SUBMIT_UNKNOWN: exposure
+  // reserved and the rule-5 60s kill-switch watchdog armed for an order that was never sent.
+  it.each([
+    ['STOP_LOSS_LIMIT', 'binanceusdm'],
+    ['STOP_MARKET', 'binance'],
+  ] as const)(
+    'classifies the %s rail mismatch TERMINAL_REJECT and never reaches the network',
+    async (type, venue) => {
+      const createOrder = vi.fn().mockResolvedValue(baseOrder);
+      const adapter = new CcxtExchangeAdapter(fakeClient({ createOrder }), venueId(venue), true);
+
+      const err: unknown = await adapter
+        .placeOrder({
+          ...baseReq,
+          type,
+          limitPrice: type === 'STOP_MARKET' ? undefined : baseReq.limitPrice,
+          triggerPrice: '48000',
+        })
+        .catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(AdapterError);
+      expect(err).toMatchObject({ errorClass: 'TERMINAL_REJECT', code: 'VENUE_RAIL_MISMATCH' });
+      expect(createOrder).not.toHaveBeenCalled();
+    },
+  );
 });
 
 // ── algo rail (Push 3 P7a) ──────────────────────────────────────────────────────
@@ -774,13 +823,102 @@ describe('CcxtExchangeAdapter.fetchMyTrades', () => {
 // ── validateCredentials ───────────────────────────────────────────────────────
 
 describe('CcxtExchangeAdapter.validateCredentials', () => {
-  it('returns valid stub with withdrawalsEnabled=false', async () => {
-    const adapter = makeCcxtAdapter();
+  // Restriction-set shape per KeyProbeService.fetchRestrictions (GET /sapi/v1/account/apiRestrictions).
+  const TRADEABLE_SPOT_KEY = {
+    enableWithdrawals: false,
+    enableSpotAndMarginTrading: true,
+    enableFutures: false,
+    enableMargin: false,
+  };
+
+  it('derives real flags from the apiRestrictions probe (never a hardcoded answer)', async () => {
+    const client = fakeClient({
+      sapiGetAccountApiRestrictions: vi.fn().mockResolvedValue(TRADEABLE_SPOT_KEY),
+    });
+    const adapter = makeCcxtAdapter(client);
+
     const result = await adapter.validateCredentials();
-    expect(result.valid).toBe(true);
-    expect(result.canTrade).toBe(true);
-    expect(result.withdrawalsEnabled).toBe(false);
-    expect(result.keyFingerprint).toBe('ccxt');
+
+    expect(result).toEqual({
+      valid: true,
+      canTrade: true,
+      withdrawalsEnabled: false,
+      keyFingerprint: 'ccxt',
+    });
+  });
+
+  it('reports a withdrawal-enabled key as invalid with withdrawalsEnabled=true', async () => {
+    const client = fakeClient({
+      sapiGetAccountApiRestrictions: vi
+        .fn()
+        .mockResolvedValue({ ...TRADEABLE_SPOT_KEY, enableWithdrawals: true }),
+    });
+    const adapter = makeCcxtAdapter(client);
+
+    const result = await adapter.validateCredentials();
+
+    expect(result.withdrawalsEnabled).toBe(true);
+    expect(result.valid).toBe(false);
+    expect(result.canTrade).toBe(true); // the surface IS tradeable; the key is still refused
+  });
+
+  it('gates the swap venue on enableFutures, not the spot flag', async () => {
+    const client = fakeClient({
+      sapiGetAccountApiRestrictions: vi.fn().mockResolvedValue(TRADEABLE_SPOT_KEY),
+    });
+    const adapter = new CcxtExchangeAdapter(client, venueId('binanceusdm'), true);
+
+    const result = await adapter.validateCredentials();
+
+    expect(result.canTrade).toBe(false);
+    expect(result.valid).toBe(false);
+  });
+
+  it('refuses a margin-enabled key on both surfaces (cross-margin borrow is forbidden)', async () => {
+    const client = fakeClient({
+      sapiGetAccountApiRestrictions: vi
+        .fn()
+        .mockResolvedValue({ ...TRADEABLE_SPOT_KEY, enableMargin: true }),
+    });
+    const adapter = makeCcxtAdapter(client);
+
+    expect((await adapter.validateCredentials()).valid).toBe(false);
+  });
+
+  // Spot Testnet exposes no sapi (NotSupported) — same degradation KeyProbeService applies when
+  // requireRestrictions is false. The env/url wall carries the safety here; no real funds.
+  it('degrades to the testnet posture when the probe fails on a sandbox adapter', async () => {
+    const client = fakeClient({
+      sapiGetAccountApiRestrictions: vi.fn().mockRejectedValue(new Error('NotSupported')),
+    });
+    const adapter = new CcxtExchangeAdapter(client, VEN, true);
+
+    const result = await adapter.validateCredentials();
+
+    expect(result).toEqual({
+      valid: true,
+      canTrade: true,
+      withdrawalsEnabled: false,
+      keyFingerprint: 'ccxt',
+    });
+  });
+
+  // Fail CLOSED off-sandbox: "could not verify withdrawals are disabled" must never be reported as
+  // "withdrawals are disabled".
+  it('fails closed with withdrawalsEnabled=true when the probe fails on a non-sandbox adapter', async () => {
+    const client = fakeClient({
+      sapiGetAccountApiRestrictions: vi.fn().mockRejectedValue(new Error('network down')),
+    });
+    const adapter = new CcxtExchangeAdapter(client, VEN, false);
+
+    const result = await adapter.validateCredentials();
+
+    expect(result).toEqual({
+      valid: false,
+      canTrade: false,
+      withdrawalsEnabled: true,
+      keyFingerprint: 'ccxt',
+    });
   });
 });
 

@@ -67,6 +67,12 @@ export class PortfolioStateService implements PortfolioViewPort {
   // Empty when the config field is absent, so venueBalances() reports nothing until the
   // composition root wires it (byte-identical to pre-split behavior for every existing caller).
   private readonly cashByVenue = new Map<VenueId, Decimal>();
+  // Snapshot's reconcileStatus, owned by ReconciliationService (setReconcileStatus below) — this
+  // service has no reconciliation knowledge of its own. 'PENDING' until the first pass completes,
+  // which is the honest reading at boot: nothing has compared local state against venue truth yet.
+  // Before 2026-08-03 the snapshot returned a hardcoded 'CLEAN' against the 3-state advertised type,
+  // i.e. it asserted a reconcile verdict on a book that had never been reconciled.
+  private reconcileState: PortfolioSnapshot['reconcileStatus'] = 'PENDING';
   private cash: Decimal;
   private equityValue: Decimal;
   // Unrealized PnL of the current book, refreshed by recordEquity (the sampler owns the marks). Held
@@ -208,6 +214,12 @@ export class PortfolioStateService implements PortfolioViewPort {
     this.sodUtc = equity;
   }
 
+  // Stamped by ReconciliationService at the two points it already records a verdict: MISMATCH
+  // alongside lastMismatchAt, CLEAN alongside lastCleanAt. Never derived here.
+  setReconcileStatus(status: PortfolioSnapshot['reconcileStatus']): void {
+    this.reconcileState = status;
+  }
+
   cashBalance(): Decimal {
     return this.cash;
   }
@@ -257,7 +269,7 @@ export class PortfolioStateService implements PortfolioViewPort {
       startingCash: this.startingCash,
       peakEquity: this.peak,
       sodEquityUtc: this.sodUtc,
-      reconcileStatus: 'CLEAN',
+      reconcileStatus: this.reconcileState,
       snapshotSeq: this.seq,
       venueBalances: this.deriveVenueBalances(),
     };

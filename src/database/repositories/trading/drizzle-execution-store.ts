@@ -16,6 +16,7 @@ import type { ApprovalProof } from '../../../domain/trading/types/risk-decision'
 import type { FillRecord } from '../../../domain/trading/types/exec-report';
 import type { OrderRecord } from '../../../domain/trading/oms/reducer';
 import { isOrderState, TERMINAL_ORDER_STATES } from '../../../domain/trading/oms/reducer';
+import { DEFAULT_FILTERS } from '../../../domain/trading/risk/default-filters';
 import type {
   ExecutionStorePort,
   PersistedOrderEvent,
@@ -206,7 +207,15 @@ export class DrizzleExecutionStore implements ExecutionStorePort {
     fill: FillRecord,
     intentId: string,
   ): Promise<{ inserted: boolean; conflict: boolean }> {
-    const existing = await this.fills.fetchByTradeId(fill.venue, fill.symbol, fill.venueTradeId);
+    // Mode-scoped (0002_fills_mode_scoped_uidx.sql): this run's own mode is the only one whose rows
+    // may answer "have I already recorded this trade id" — paper/testnet/live share one database and
+    // paper re-mints its trade ids from 1 on every reboot.
+    const existing = await this.fills.fetchByTradeId(
+      this.ctx.mode,
+      fill.venue,
+      fill.symbol,
+      fill.venueTradeId,
+    );
     if (existing !== null) {
       // Same tradeId, different price/qty is corruption (§6.6 I3). Compare by EXACT DECIMAL value,
       // never by string: pg renders NUMERIC(38,18) padded to full scale ('100.500000000000000000'),
@@ -263,6 +272,9 @@ export class DrizzleExecutionStore implements ExecutionStorePort {
         unrealized: sample.unrealized,
         peak: sample.peak,
         sessionDateUtc: sample.sessionDateUtc,
+        // The gap_annotation column has existed since 0000_v3_initial.sql and had no writer until
+        // 2026-08-03; EquitySample.gapAnnotation is its first one (MARK_FALLBACK — see that field).
+        gapAnnotation: sample.gapAnnotation,
         bootId: this.ctx.bootId,
         mode: this.ctx.mode,
       });
@@ -281,7 +293,17 @@ export class DrizzleExecutionStore implements ExecutionStorePort {
       tradesChecked: row.tradesChecked,
       balancesChecked: row.balancesChecked,
       discrepancies: { mismatches: row.mismatches, detail: row.detail },
-      result: row.halted ? 'HALT' : row.mismatches > 0 ? 'MISMATCH' : 'CLEAN',
+      // passError FIRST, ahead of halted: a pass that threw before finishing its axis chain examined
+      // LESS than a clean pass did, so its (often zero) mismatch count is an absence of observation.
+      // Mapping halted/mismatches alone recorded those passes as 'CLEAN' — a positive health claim
+      // from a pass that never finished looking, with the truth only in the PASS_ERROR detail string.
+      result: row.passError
+        ? 'ERROR'
+        : row.halted
+          ? 'HALT'
+          : row.mismatches > 0
+            ? 'MISMATCH'
+            : 'CLEAN',
       mode: this.ctx.mode,
       runId: this.ctx.runId,
       bootId: this.ctx.bootId,
@@ -322,7 +344,16 @@ export class DrizzleExecutionStore implements ExecutionStorePort {
   }
 
   // orders table has no step_size / attempt / cancelWanted columns — these are runtime-only fields
-  // for the OMS reducer, synthesized here with safe defaults. Shared by loadOpenOrders (recovery,
+  // for the OMS reducer, resolved here. stepSize is NOT a free choice: the reducer's dust rule is
+  // `residual < stepSize ⇒ FILLED` (domain/trading/oms/reducer.ts), so the old flat '0.00000001'
+  // made every RECOVERED order need an exact-to-the-satoshi fill to leave PARTIALLY_FILLED while a
+  // live order (whose step comes from EXEC_FILTERS via the gate's initialOrder) dust-completed
+  // normally — stranding recovered orders non-terminal forever and starving the clean reconcile
+  // stamp with adopt_non_adoptable. Resolved from the same DEFAULT_FILTERS table the sizer and the
+  // engine's F1 re-validation read, keyed by the row's own persisted symbol; the literal survives
+  // only as the fallback for a symbol outside that table (fail OPEN, i.e. toward the FINER step —
+  // an over-fine step can only delay a dust-complete, never fabricate one).
+  // Shared by loadOpenOrders (recovery,
   // §4.2) and loadOrderByVenueOrderId (§6.4 cluster-A durable second tier) — one reconstruction, two
   // callers. Never trust a persisted state string blindly (I7): a row whose `state` is outside the
   // OrderState allow-list is corruption — throw loudly rather than synthesize a malformed
@@ -345,7 +376,7 @@ export class DrizzleExecutionStore implements ExecutionStorePort {
       state: r.state,
       qty: new Decimal(r.qty),
       cumQty: new Decimal(r.cumQty),
-      stepSize: '0.00000001',
+      stepSize: DEFAULT_FILTERS.get(r.symbol)?.stepSize ?? '0.00000001',
       venueOrderId: r.venueOrderId ?? undefined,
       attempt: 0,
       cancelWanted: false,
@@ -415,7 +446,7 @@ export class DrizzleExecutionStore implements ExecutionStorePort {
 
   // §6.4 spot-lane false-HALT fix: the trade axis's first filter, checked before any classification.
   async hasFill(venue: VenueId, symbol: SymbolId, venueTradeId: string): Promise<boolean> {
-    return (await this.fills.fetchByTradeId(venue, symbol, venueTradeId)) !== null;
+    return (await this.fills.fetchByTradeId(this.ctx.mode, venue, symbol, venueTradeId)) !== null;
   }
 
   // Rehydrate the persisted write-ahead intent (tx1) for a recovered order so the runtime gets

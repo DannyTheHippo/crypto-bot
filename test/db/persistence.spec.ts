@@ -509,7 +509,7 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
   });
 
   // ── (f) Fill dedupe — via real FillRepository ─────────────────────────────
-  it('(f) fill dedupe: same (venue,symbol,venue_trade_id) via FillRepository.insertIdempotent → one row', async () => {
+  it('(f) fill dedupe: same (mode,venue,symbol,venue_trade_id) via FillRepository.insertIdempotent → one row', async () => {
     const fillRepo = new FillRepository(db);
     const fill = {
       venue: 'binance',
@@ -533,9 +533,52 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
     const r2 = await fillRepo.insertIdempotent(fill);
     expect(r2.inserted).toBe(false);
 
-    const fetched = await fillRepo.fetchByTradeId('binance', 'BTC/USDT', 'trade-repo-001');
+    const fetched = await fillRepo.fetchByTradeId('paper', 'binance', 'BTC/USDT', 'trade-repo-001');
     expect(fetched).not.toBeNull();
     expect(fetched!.venueTradeId).toBe('trade-repo-001');
+  });
+
+  // ── (f1) Mode segregation of the fill key (0002_fills_mode_scoped_uidx.sql) ──
+  // The paper adapter re-mints 'paper-trade-N' from 1 on every reboot while all three modes share
+  // one database, so before mode joined the key a restart's fill collided with a prior run's row —
+  // a false FILL_PAYLOAD_CONFLICT halt, or a dropped fill. Asserted at the DB layer because the
+  // unique index IS the guarantee; the repository only names the arbiter.
+  it('(f1) the same (venue,symbol,venue_trade_id) under two modes both insert, and each mode dedupes within itself', async () => {
+    const fillRepo = new FillRepository(db);
+    const base = {
+      venue: 'binance',
+      symbol: 'BTC/USDT',
+      venueTradeId: 'paper-trade-1',
+      clientOrderId: 'cbpdeadbeef00000000000000000000002',
+      price: '50000.000000000000000000',
+      qty: '0.001000000000000000',
+      feeResolved: false,
+      liquidity: 'taker' as const,
+      venueTimestamp: 1700000000000,
+      source: 'paper' as const,
+      runId: 'r1',
+      bootId: 'b1',
+    };
+
+    expect((await fillRepo.insertIdempotent({ ...base, mode: 'paper' })).inserted).toBe(true);
+    expect((await fillRepo.insertIdempotent({ ...base, mode: 'testnet' })).inserted).toBe(true);
+    // Within one mode the id is still a hard duplicate.
+    expect((await fillRepo.insertIdempotent({ ...base, mode: 'paper' })).inserted).toBe(false);
+
+    const paperRow = await fillRepo.fetchByTradeId('paper', 'binance', 'BTC/USDT', 'paper-trade-1');
+    const testnetRow = await fillRepo.fetchByTradeId(
+      'testnet',
+      'binance',
+      'BTC/USDT',
+      'paper-trade-1',
+    );
+    expect(paperRow?.mode).toBe('paper');
+    expect(testnetRow?.mode).toBe('testnet');
+    expect(paperRow!.fillId).not.toBe(testnetRow!.fillId);
+    // And a mode that never wrote it reads nothing — the scoping is real, not decorative.
+    expect(
+      await fillRepo.fetchByTradeId('live', 'binance', 'BTC/USDT', 'paper-trade-1'),
+    ).toBeNull();
   });
 
   // ── (f2) DrizzleExecutionStore.saveFill — Decimal dedupe, no false conflict ──
@@ -907,6 +950,7 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
       venue: 'binance',
       mismatches: 0,
       halted: false,
+      passError: false,
       detail: 'clean',
       durationMs: 1_234,
       openOrdersChecked: 3,
@@ -918,6 +962,7 @@ describe.skipIf(SKIP)('DB integration — persistence layer', () => {
       venue: 'binanceusdm',
       mismatches: 2,
       halted: false,
+      passError: false,
       detail: 'balance drift',
       durationMs: 5_678,
       openOrdersChecked: 0,

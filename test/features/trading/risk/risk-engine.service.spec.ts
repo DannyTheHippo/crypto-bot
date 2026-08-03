@@ -16,7 +16,6 @@ import { price, qty } from '../../../../src/domain/common/types/money';
 import type { OrderIntent } from '../../../../src/domain/trading/types/order-intent';
 import type { PortfolioSnapshot, Position } from '../../../../src/domain/trading/types/portfolio';
 import type { RiskDecision } from '../../../../src/domain/trading/types/risk-decision';
-import { CrossingRegistryService } from '../../../../src/features/trading/risk/crossing-registry.service';
 import { KillSwitchService } from '../../../../src/features/trading/risk/kill-switch.service';
 import { RateBucketsService } from '../../../../src/features/trading/risk/rate-buckets.service';
 import { RiskEngineService } from '../../../../src/features/trading/risk/risk-engine.service';
@@ -135,7 +134,6 @@ function makeEngine(
     over.feedPort ?? feed(over.refPresent ?? true),
     kill,
     new RateBucketsService(clock),
-    new CrossingRegistryService(),
     journal,
     over.riskRejects,
   );
@@ -462,6 +460,67 @@ describe('RiskEngineService', () => {
       );
       expect(d).toMatchObject({ verdict: 'REJECTED', reasons: ['EXPOSURE_LIMIT'] });
     });
+  });
+
+  // ── X1 crossing gate: it must actually be able to fire. It used to probe a CrossingRegistryService
+  // whose add()/remove() had no caller in src/ at all, so the book was permanently empty and
+  // CROSSING_INTENT was unreachable in production. The book is now derived from
+  // snapshot.inFlightIntents, which is the set the registry was supposed to mirror. ──
+  describe('§5 X1: crossing a sibling strategy resting order', () => {
+    const SIB = strategyId('sibling');
+    const restingBuy = (owner = SIB, over: Partial<OrderIntent> = {}) =>
+      intent({
+        clientOrderId: encodeClientOrderId(
+          intentId('01900000-0000-7000-8000-0000000000c1'),
+          'paper',
+        ),
+        strategyId: owner,
+        side: 'BUY',
+        qty: qty('1'),
+        limitPrice: price('100'),
+        reduceOnly: false,
+        ...over,
+      });
+
+    it('REJECTS CROSSING_INTENT when a marketable SELL would execute against a SIBLING strategy resting BUY', () => {
+      const { engine } = makeEngine();
+      const d = engine.evaluate(
+        intent({ side: 'SELL', limitPrice: price('100') }),
+        snapshot({ inFlightIntents: [restingBuy()] }),
+      );
+      // Pre-fix the empty registry made wouldCross permanently false ⇒ this APPROVED.
+      expect(d).toMatchObject({ verdict: 'REJECTED', reasons: ['CROSSING_INTENT'] });
+    });
+
+    it('does NOT trigger on the SAME strategy own resting order (self-crossing is just its own book)', () => {
+      const { engine } = makeEngine();
+      const d = engine.evaluate(
+        intent({ side: 'SELL', limitPrice: price('100') }),
+        snapshot({ inFlightIntents: [restingBuy(SID)] }),
+      );
+      expect(d.verdict).toBe('APPROVED');
+    });
+
+    it('a sibling MARKET in-flight order is not a resting book entry (no price to cross at)', () => {
+      const { engine } = makeEngine();
+      const d = engine.evaluate(
+        intent({ side: 'SELL', limitPrice: price('100') }),
+        snapshot({
+          inFlightIntents: [restingBuy(SIB, { type: 'MARKET', limitPrice: undefined })],
+        }),
+      );
+      expect(d.verdict).toBe('APPROVED');
+    });
+  });
+
+  // The proof's snapshotSeq is the audit record of WHICH portfolio snapshot approved the order; it
+  // was bound to intent.refSeq (the market-data sequence), naming the wrong series. The two fixture
+  // values differ so the assertion discriminates.
+  it('stamps the proof snapshotSeq from the PORTFOLIO snapshot, not the intent market-data refSeq', () => {
+    const { engine } = makeEngine();
+    const d = engine.evaluate(intent({ refSeq: 9n }), snapshot({ snapshotSeq: 42n }));
+    expect(d.verdict).toBe('APPROVED');
+    if (d.verdict === 'APPROVED') expect(d.approved.proof.snapshotSeq).toBe(42n);
   });
 
   // v3 §1.5/§10: gross/net exposure and drawdown are BOOK-scoped (one snapshot, one equity) — the

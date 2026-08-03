@@ -34,7 +34,6 @@ import {
   type RiskJournalPort,
   type SizerDeps,
 } from '../../../ports/trading/risk';
-import { CrossingRegistryService } from './crossing-registry.service';
 import { PLANNED_STOP_SIZING_COUNTER, PositionSizerService } from './position-sizer.service';
 import { RateBucketsService } from './rate-buckets.service';
 import { RISK_REJECTIONS_COUNTER, RiskEngineService } from './risk-engine.service';
@@ -220,7 +219,6 @@ const CONFIG_OPTIONAL = { token: TypedConfigService, optional: true } as const;
       inject: [RISK_SIGNING_KEY, CONFIG_OPTIONAL],
     },
     RateBucketsService,
-    CrossingRegistryService,
     PositionSizerService,
     PLANNED_STOP_SIZING_COUNTER,
     RiskEngineService,

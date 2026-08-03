@@ -125,7 +125,15 @@ export const orderEvents = pgTable(
 );
 
 // ── fills ─────────────────────────────────────────────────────────────────────
-// UNIQUE(venue, symbol, venue_trade_id) per §6.6; ON CONFLICT DO NOTHING.
+// UNIQUE(mode, venue, symbol, venue_trade_id) per §6.6; ON CONFLICT DO NOTHING.
+// MODE IS PART OF THE KEY (0002_fills_mode_scoped_uidx.sql, 2026-08-03). venue_trade_id is only
+// unique within the venue that MINTED it, and paper mints its own ('paper-trade-N', PaperAdapter)
+// off a counter that restarts at 1 on every reboot — while paper, testnet and live all share one
+// database. A DB-backed paper restart therefore re-minted ids a previous run had already stored:
+// the same (venue, symbol, venue_trade_id) with a different price/qty, which
+// DrizzleExecutionStore.saveFill reads as a payload conflict and fill-ingestor.service.ts turns
+// into a FILL_PAYLOAD_CONFLICT kill switch — or, on an identical payload, silently drops a real
+// fill. Segregating by mode is the same discipline positions' PK already applies.
 
 export const fills = pgTable(
   'fills',
@@ -152,7 +160,9 @@ export const fills = pgTable(
     ...tradingStamp,
     ingestedAt: timestamp('ingested_at', { withTimezone: true }).defaultNow().notNull(),
   },
-  (t) => [uniqueIndex('fills_venue_symbol_trade_uidx').on(t.venue, t.symbol, t.venueTradeId)],
+  (t) => [
+    uniqueIndex('fills_mode_venue_symbol_trade_uidx').on(t.mode, t.venue, t.symbol, t.venueTradeId),
+  ],
 );
 
 // ── positions ─────────────────────────────────────────────────────────────────
@@ -308,7 +318,10 @@ export const reconciliations = pgTable('reconciliations', {
   tradesChecked: integer('trades_checked').notNull(),
   balancesChecked: integer('balances_checked').notNull(),
   discrepancies: jsonb('discrepancies').notNull(),
-  result: text('result').notNull().$type<'CLEAN' | 'MISMATCH' | 'HALT'>(),
+  // 'ERROR' = the pass threw before finishing its axis chain (it never got to observe enough to
+  // claim any of the other three). TS-level only ($type<>()), no DB CHECK — same convention as
+  // signals.kind / agent_playbook_versions.source, so adding the member needed no migration.
+  result: text('result').notNull().$type<'CLEAN' | 'MISMATCH' | 'HALT' | 'ERROR'>(),
   ...tradingStamp,
 });
 

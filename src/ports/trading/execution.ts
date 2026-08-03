@@ -141,6 +141,12 @@ export interface EquitySample {
   readonly unrealized: string;
   readonly peak: string;
   readonly sessionDateUtc: string;
+  // Provenance of the valuation, persisted to equity_curve.gap_annotation. The sampler values a
+  // position with no live mark at its own average entry (zero unrealized) rather than dropping it —
+  // correct, and deliberately NOT changed, but that zero feeds C1/C2 and the sizer's equity with no
+  // way to tell a genuinely flat unrealized from an unmarkable one. 'MARK_FALLBACK:<symbols>' names
+  // the positions that were valued that way; absent whenever every position had a live mark.
+  readonly gapAnnotation?: string;
 }
 
 // Observer hook fired with every equity sample (per-fill + 5s). The post-trade monitors subscribe
@@ -253,6 +259,20 @@ export interface RecoveredOpenOrder {
 // count, and cannot be mistaken for one.
 export const AXIS_NOT_RUN = -1;
 
+// How far ahead of our own clock a venue-reported trade timestamp may sit before the fill-sweep
+// watermarks (DemoFillPollerService's per-venue `since`, ReconciliationService's per-(venue,symbol)
+// checkpoint) refuse to follow it. Both watermarks are MONOTONE and advance to the newest
+// venueTimestamp seen, so a SINGLE unbounded-future stamp — a venue emitting microseconds, clock
+// skew, a malformed row — pins them past every real trade and every later fill is swept out of the
+// window forever. ccxt-normalize.ts only checks finite-integer, never an upper bound, so nothing
+// upstream catches it. Mirrors the market-data path's own REF_PRICE_SKEW_TOLERANCE_MS clamp
+// (feed-health.service.ts, the 2026-07-22 MF1 fix) — the same poison, the same shape of guard.
+// Wider than that path's 5s because a REST trade sweep tolerates far more venue/host clock skew
+// than a live tick does, and the cost of an over-wide allowance is only a slightly stale window.
+// Fails CLOSED for the watermark (never advance past the ceiling) and OPEN for the fill itself
+// (a future-stamped trade still ingests — dropping a real fill would be the worse error).
+export const VENUE_TIMESTAMP_SKEW_ALLOWANCE_MS = 60_000;
+
 // §6.4 reconciliation audit row.
 // The four count fields below were columns on the table from the start but were written as a
 // hardcoded 0 by the only persisting store, so all 23,973 rows since the v3 cutover recorded nothing
@@ -270,6 +290,14 @@ export interface ReconciliationRow {
   readonly venue: string;
   readonly mismatches: number;
   readonly halted: boolean;
+  // The pass threw before completing its axis chain. Separate from `halted` and from `mismatches`
+  // because it is neither: an errored pass observed LESS than a clean one did, so its zero mismatch
+  // count is an absence of observation, not an observation of absence. Without this field the only
+  // store that persists these rows mapped halted/mismatches alone, so a pass that threw with zero
+  // mismatches was recorded `result='CLEAN'` — a positive claim of health for a pass that never
+  // finished looking, with the truth buried in the `PASS_ERROR:` detail string. Fail CLOSED: the
+  // ERROR verdict outranks every other, so an errored pass can never be read as clean.
+  readonly passError: boolean;
   readonly detail: string;
   // Wall-clock across the whole axis chain, including a thrown pass. Measurement-only: it feeds no
   // decision anywhere, so it fails OPEN — a backwards wall-clock step (SystemClock is Date.now() on a

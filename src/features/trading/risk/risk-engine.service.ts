@@ -13,9 +13,9 @@ import {
 } from '../../../ports/trading/risk';
 import { evaluate, type MarkInfo, type RiskEvalInput } from '../../../domain/trading/risk/evaluate';
 import { mintApproval } from '../../../domain/trading/risk/proof';
+import { wouldCross, type RestingOrder } from '../../../domain/trading/risk/crossing';
 import { KillSwitchService } from './kill-switch.service';
 import { RateBucketsService } from './rate-buckets.service';
-import { CrossingRegistryService } from './crossing-registry.service';
 import type { OrderIntent } from '../../../domain/trading/types/order-intent';
 import type { PortfolioSnapshot } from '../../../domain/trading/types/portfolio';
 import type { RiskDecision } from '../../../domain/trading/types/risk-decision';
@@ -31,6 +31,28 @@ export const RISK_REJECTIONS_COUNTER = makeCounterProvider({
   labelNames: ['code'] as const,
 });
 
+// §5 X1 crossing book. This used to be probed off a dedicated CrossingRegistryService whose add()/
+// remove() had NO caller anywhere in src/ (only a unit spec), so the map was permanently empty,
+// wouldCross was permanently false, and evaluate.ts's CROSSING_INTENT — a declared money-safety
+// gate — was unreachable in production. snapshot.inFlightIntents is the same resting/in-flight set
+// the registry was meant to mirror (kept until terminal, rehydrated on boot for venue-confirmed
+// opens), so the gate now reads a source that is actually written. A market/undefined-limit intent
+// is not resting on the book at a price and is skipped; the pure domain helper does the
+// same-strategy and marketability filtering.
+function restingBook(snapshot: PortfolioSnapshot): RestingOrder[] {
+  const book: RestingOrder[] = [];
+  for (const f of snapshot.inFlightIntents) {
+    if (f.limitPrice === undefined) continue;
+    book.push({
+      strategyId: f.strategyId,
+      symbol: f.symbol,
+      side: f.side,
+      price: f.limitPrice,
+    });
+  }
+  return book;
+}
+
 @Injectable()
 export class RiskEngineService implements RiskEnginePort {
   private readonly log = new Logger('RiskEngine');
@@ -41,7 +63,6 @@ export class RiskEngineService implements RiskEnginePort {
     @Inject(FEED_HEALTH) private readonly feed: FeedHealthPort,
     private readonly killSwitch: KillSwitchService,
     private readonly rates: RateBucketsService,
-    private readonly crossing: CrossingRegistryService,
     @Inject(RISK_JOURNAL) private readonly journal: RiskJournalPort,
     @Optional()
     @InjectMetric('risk_rejections_total')
@@ -160,11 +181,14 @@ export class RiskEngineService implements RiskEnginePort {
       mark,
       filters,
       rate,
-      wouldCross: this.crossing.wouldCross(
-        intent.strategyId,
-        intent.symbol,
-        intent.side,
-        intent.limitPrice,
+      wouldCross: wouldCross(
+        {
+          strategyId: intent.strategyId,
+          symbol: intent.symbol,
+          side: intent.side,
+          limitPrice: intent.limitPrice,
+        },
+        restingBook(snapshot),
       ),
       currentGross: gross,
       currentNet: net,
@@ -172,7 +196,7 @@ export class RiskEngineService implements RiskEnginePort {
     };
 
     const result = evaluate(input);
-    const decision = this.finalize(result, now);
+    const decision = this.finalize(result, now, snapshot);
     this.record(decision); // journaled fire-and-forget (see record()); durability is order_events, not this
     // Diagnostic (2026-07-23): STALE_DATA collapses four distinct failures — no ref price at all, a
     // future/negative-age stamp, a genuinely aged mark, or a non-LIVE feed. The risk_decisions row
@@ -193,7 +217,11 @@ export class RiskEngineService implements RiskEnginePort {
     return decision;
   }
 
-  private finalize(result: ReturnType<typeof evaluate>, now: EpochMs): RiskDecision {
+  private finalize(
+    result: ReturnType<typeof evaluate>,
+    now: EpochMs,
+    snapshot: PortfolioSnapshot,
+  ): RiskDecision {
     if (result.verdict === 'REJECTED') {
       if (result.halt) this.killSwitch.engage(result.halt, result.halt === 'MAX_DRAWDOWN');
       return { verdict: 'REJECTED', intent: result.intent, reasons: result.reasons };
@@ -202,7 +230,10 @@ export class RiskEngineService implements RiskEnginePort {
       nonce: Buffer.from(this.deps.randomBytes(16)).toString('hex'),
       approvedAtMs: epochMs(now),
       limitsVersion: this.deps.limitsVersion,
-      snapshotSeq: result.intent.refSeq,
+      // The PORTFOLIO snapshot's sequence, as the field name and its risk_intents audit column mean.
+      // This was bound to intent.refSeq — the MARKET-DATA sequence — so the audit record named the
+      // wrong series entirely (refSeq is already covered by the intent hash).
+      snapshotSeq: snapshot.snapshotSeq,
     });
     return result.verdict === 'APPROVED'
       ? { verdict: 'APPROVED', approved }

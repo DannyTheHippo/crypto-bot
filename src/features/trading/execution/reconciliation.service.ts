@@ -15,6 +15,7 @@ import {
   type OrderRecord,
 } from '../../../domain/trading/oms/reducer';
 import type { FillRecord } from '../../../domain/trading/types/exec-report';
+import type { OrderIntent } from '../../../domain/trading/types/order-intent';
 import type { ClientOrderId, EpochMs, SymbolId } from '../../../domain/common/types/ids';
 import { isOurClientOrderId, type VenueId } from '../../../domain/common/types/ids';
 import { feeAmount, price, qty } from '../../../domain/common/types/money';
@@ -35,6 +36,7 @@ import {
   type ExecutionStorePort,
   type ReconConfig,
   AXIS_NOT_RUN,
+  VENUE_TIMESTAMP_SKEW_ALLOWANCE_MS,
 } from '../../../ports/trading/execution';
 import { OPS_EVENTS, type OpsEventPort } from '../../../ports/common/observability';
 import { KILL_SWITCH, type KillSwitchPort } from '../../../ports/trading/risk';
@@ -57,7 +59,13 @@ type MismatchClass =
   // never resolved, i.e. the order is genuinely still live at the venue. Deliberately NOT in
   // NON_ACTIONABLE_CLASSES below: unlike the three benign classes, even a non-escalating occurrence
   // points at a real staleness problem, not routine noise, so it must keep blocking the clean stamp.
-  | 'fill_for_unknown_order' // halting: our-prefix trade, no local order
+  | 'fill_for_unknown_order' // halting: our-prefix trade, no local order AND a durable intent for it
+  | 'foreign_twin_coid' // benign: a cb-SHAPED coid on a trade whose intent this deployment never
+  // wrote. isOurClientOrderId matches the `cb[ptl]<hex32>` SHAPE only — no venue, no run, no boot,
+  // no database — so a SECOND instance of this same software on the shared demo key mints ids that
+  // are indistinguishable from ours by shape alone. See reconcileTrade's own comment for why the
+  // write-ahead makes the absence of a durable intent row proof of a foreign twin rather than of
+  // corruption.
   | 'balance_drift' // halting: balance beyond ε
   | 'balance_leak' // halting: within ε but monotone-growing drift
   | 'position_drift' // halting: Defect A — venue/local signed-position qty beyond ε
@@ -78,6 +86,7 @@ const ALL_MISMATCH_CLASSES: readonly MismatchClass[] = [
   'unknown_ours_open',
   'stale_venue_open',
   'fill_for_unknown_order',
+  'foreign_twin_coid',
   'balance_drift',
   'balance_leak',
   'position_drift',
@@ -175,6 +184,16 @@ const NON_ACTIONABLE_CLASSES: ReadonlySet<MismatchClass> = new Set<MismatchClass
   'adopted_terminal',
   'backfilled_fill',
   'sweep_failure',
+  // Same shared-key foreign-activity steady state as 'foreign_open_order' above, one rail over: it
+  // is a THIRD PARTY's trade, so there is nothing for this deployment to clear and no pass can ever
+  // resolve it. Actionable membership would be the C3 defect again in a nastier form — the trade
+  // axis's own hasFill comment records that a trade on a quiet symbol keeps re-surfacing inside the
+  // checkpoint's overlap window indefinitely, so ONE foreign-twin trade would starve lastCleanAt
+  // (and RecoveryCoordinatorService's auto-resume with it) forever. Visibility is not lost: the
+  // per-class counter still increments, and observability/alerts.rules.yml's ReconciliationMismatch
+  // excludes exactly four class names by regex (verified 2026-08-03) — this one is not among them,
+  // so it pages while never blocking recovery.
+  'foreign_twin_coid',
 ]);
 
 // Counts only mismatches that represent a real, unexplained divergence. This NEVER feeds `halted`,
@@ -525,8 +544,11 @@ export class ReconciliationService {
     } catch (err) {
       // A pass that threw before completing is NOT a clean confirmation — mark the latest outcome
       // non-clean so cleanIsLatest() blocks auto-resume until a fresh clean pass genuinely runs (a
-      // persisting error also independently ages out cleanWithin). Fail CLOSED.
+      // persisting error also independently ages out cleanWithin). Fail CLOSED — including on the
+      // snapshot field, which has no ERROR member: "could not confirm" resolves to the non-clean
+      // side, never back to PENDING (which would read as "not yet checked").
       this.lastMismatchAt = this.clock.now();
+      this.portfolio.setReconcileStatus('MISMATCH');
       throw err;
     }
     // Task C3: `actionableMismatches`, not the raw total — see NON_ACTIONABLE_CLASSES above. The
@@ -537,8 +559,12 @@ export class ReconciliationService {
       // Process-wide stamp only — matches lastCleanAt. Per-venue clean in reconcileOnce used to
       // refresh this gauge while another venue mismatched (adversarial review 2026-07-24).
       this.lastSuccessGauge?.set(startedAt / 1000);
+      // The snapshot field Risk reads, stamped off the SAME verdict as lastCleanAt so the two can
+      // never disagree (see PortfolioStateService.reconcileState).
+      this.portfolio.setReconcileStatus('CLEAN');
     } else {
       this.lastMismatchAt = this.clock.now();
+      this.portfolio.setReconcileStatus('MISMATCH');
     }
     return result;
   }
@@ -650,6 +676,9 @@ export class ReconciliationService {
       // and auto-resume on a divergence THIS pass had already found. Fail CLOSED: the divergence counts
       // from the instant it is known.
       this.lastMismatchAt = this.clock.now();
+      // Same DETECTION-time reasoning as lastMismatchAt above: a multi-venue pass halting on venue A
+      // must not advertise a stale CLEAN on the snapshot while it finishes sweeping venue B.
+      this.portfolio.setReconcileStatus('MISMATCH');
       this.killSwitch.engage(`RECONCILE_MISMATCH:${acc.halts.join(',')}`, false); // never auto-flatten
     }
 
@@ -660,6 +689,10 @@ export class ReconciliationService {
       venue: exchange.venue,
       mismatches: mismatchTotal,
       halted,
+      // Carried as its own field, not inferred downstream from the `PASS_ERROR:` detail prefix: the
+      // store maps this to result='ERROR', and a verdict column must never depend on parsing a
+      // free-text diagnostic string (see ReconciliationRow.passError).
+      passError: passError !== undefined,
       // Measured across the whole axis chain including a thrown pass — an errored pass's cost is the
       // most interesting duration there is (the 2026-07-28 venue outage ran passes to timeout).
       // Clamped: measurement-only, feeds no decision, so it fails OPEN on a backwards wall clock.
@@ -1026,10 +1059,27 @@ export class ReconciliationService {
         continue;
       }
       acc.tradesChecked += trades.length;
+      let clamped = 0;
       for (const t of trades) {
         await this.reconcileTrade(exchange, t, byVenueId, acc);
-        if (t.venueTimestamp > (this.checkpoints.get(key) ?? 0))
-          this.checkpoints.set(key, t.venueTimestamp);
+        // CLAMPED to now + VENUE_TIMESTAMP_SKEW_ALLOWANCE_MS (same guard, same reason as
+        // DemoFillPollerService's sweep watermark — see that constant): this checkpoint is monotone
+        // and drives the next pass's `since`, so ONE unbounded-future venueTimestamp would advance it
+        // past every real trade and sweep this symbol's fills out of the window forever. The trade
+        // itself is reconciled above regardless — only the checkpoint refuses to follow the stamp.
+        const ceiling = (this.clock.now() + VENUE_TIMESTAMP_SKEW_ALLOWANCE_MS) as EpochMs;
+        if (t.venueTimestamp > ceiling) clamped += 1;
+        const advanceTo = Math.min(t.venueTimestamp, ceiling) as EpochMs;
+        if (advanceTo > (this.checkpoints.get(key) ?? 0)) this.checkpoints.set(key, advanceTo);
+      }
+      // One line per (venue, symbol) sweep, not per trade: a venue emitting the wrong time UNIT
+      // stamps the whole batch, and a per-trade line would bury the incident in its own noise. Error
+      // level, not warn — a future-stamped trade is a venue data-integrity event, never routine.
+      if (clamped > 0) {
+        this.log.error(
+          `venue ${exchange.venue} returned ${clamped} trade(s) on ${symbol} stamped beyond ` +
+            `now+${VENUE_TIMESTAMP_SKEW_ALLOWANCE_MS}ms — checkpoint clamped to ${this.checkpoints.get(key) ?? 0}`,
+        );
       }
     }
   }
@@ -1088,15 +1138,13 @@ export class ReconciliationService {
       return;
     }
     if (isOurClientOrderId(t.clientOrderId)) {
-      // Our own coid literally appears on the trade (the paper adapter's shape, or a genuine venue
-      // echo). I1's write-ahead makes "our prefix, no local row" impossible except corruption —
-      // unconditional HALT, exactly the pre-cluster-A axis-2 semantics. Never routed through the
-      // durable venue-order-id lookup below: that question (does SOME order of ours own this venue
-      // order id?) does not apply here — the trade already names OUR clientOrderId, not a venue id.
+      // A cb-SHAPED coid literally appears on the trade (the paper adapter's shape, or a genuine
+      // venue echo). Never routed through the durable venue-order-id lookup below: that question
+      // (does SOME order of ours own this venue order id?) does not apply here — the trade already
+      // names a clientOrderId, not a venue id.
       const rec = this.orders.get(t.clientOrderId);
       if (rec === undefined) {
-        bump(acc, 'fill_for_unknown_order');
-        acc.halts.push('FILL_FOR_UNKNOWN_ORDER'); // our prefix, no local order ⇒ corruption (§6.4)
+        await this.resolveOurPrefixUnknownFill(t, acc);
         return;
       }
       await this.applyTrade(t, rec, acc);
@@ -1128,6 +1176,52 @@ export class ReconciliationService {
     this.log.debug(
       `ignoring foreign trade ${t.venueTradeId} on ${t.symbol} (venue order id ${t.clientOrderId})`,
     );
+  }
+
+  // A cb-shaped coid on a trade with no in-memory order. The pre-2026-08-03 code halted the whole
+  // book here unconditionally, on the premise that I1's write-ahead makes "our prefix, no local row"
+  // impossible except corruption. The premise is sound; the TEST for it was not. isOurClientOrderId
+  // (domain/common/types/ids.ts) matches the `cb[ptl]<hex32>` SHAPE only — no venue, no run, no boot,
+  // no database — so a SECOND instance of this same software trading the shared demo key mints ids
+  // this check cannot tell from our own, and its ordinary trades HALTed our entire book. Nothing
+  // about that is a divergence in OUR state.
+  //
+  // The write-ahead is what makes the real test cheap, and it is an ORDERING guarantee, verified at
+  // its source: execution-gate.service.ts's doSubmit awaits store.saveIntent BEFORE
+  // exchange.placeOrder, so no order of ours can exist at the venue without its intent row already
+  // durable. Therefore:
+  //   • intent row ABSENT ⇒ this deployment never submitted this coid ⇒ provably a foreign twin.
+  //     WARN + counter, NO halt (rule 6 is about OUR divergences; there is nothing here to reconcile).
+  //   • intent row PRESENT but no order anywhere ⇒ the original corruption case, unchanged HALT.
+  // FAIL CLOSED on every uncertainty: a store that never wired the (optional) lookup, and a lookup
+  // that throws, both halt exactly as before — "could not confirm foreign" is never "confirmed
+  // foreign". Only a definite null downgrades the verdict.
+  private async resolveOurPrefixUnknownFill(t: VenueFill, acc: PassAccumulator): Promise<void> {
+    const load = this.store.loadIntentByClientOrderId?.bind(this.store);
+    if (load !== undefined) {
+      let intent: OrderIntent | null;
+      try {
+        intent = await load(t.clientOrderId);
+      } catch (err) {
+        this.log.error(
+          `write-ahead intent lookup for ${t.clientOrderId} threw (${describeError(err)}) — ` +
+            'treated as unconfirmed, halting as before',
+        );
+        bump(acc, 'fill_for_unknown_order');
+        acc.halts.push('FILL_FOR_UNKNOWN_ORDER');
+        return;
+      }
+      if (intent === null) {
+        bump(acc, 'foreign_twin_coid');
+        this.log.warn(
+          `trade ${t.venueTradeId} on ${t.symbol} carries cb-shaped coid ${t.clientOrderId} with no ` +
+            'durable write-ahead intent — a second instance of this software on the shared key, not our order',
+        );
+        return;
+      }
+    }
+    bump(acc, 'fill_for_unknown_order');
+    acc.halts.push('FILL_FOR_UNKNOWN_ORDER'); // durably ours, no order anywhere ⇒ corruption (§6.4)
   }
 
   // Fold from the LIVE book record, never the caller's snapshot. byVenueId (reconcileTrades) is

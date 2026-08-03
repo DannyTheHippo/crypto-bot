@@ -231,8 +231,14 @@ describe('InMemoryExecutionStore', () => {
     expect(found?.qty.toFixed()).toBe('1'); // exact strings — the caller folds a missed fill onto this
     expect(found?.cumQty.toFixed()).toBe('0.4');
     expect(found?.venueOrderId).toBe('v9');
-    // Synthesized fields, same convention as DrizzleExecutionStore's rowToOrderRecord.
-    expect(found?.stepSize).toBe('0.00000001');
+    // stepSize is RESOLVED from DEFAULT_FILTERS by the stored symbol, not synthesized flat — the
+    // reducer's `residual < stepSize ⇒ FILLED` dust rule must behave the same for a recovered order
+    // as for a live one (same convention as DrizzleExecutionStore's rowToOrderRecord). Reaching it
+    // here also proves the symbol survives appendOrderEvent: two events were folded above, and the
+    // event carries no symbol of its own.
+    expect(found?.symbol).toBe(SYM);
+    expect(found?.stepSize).toBe('0.00001'); // DEFAULT_FILTERS BTC/USDT LOT_SIZE
+    // Genuinely synthesized (no column, no source): unchanged.
     expect(found?.attempt).toBe(0);
     expect(found?.cancelWanted).toBe(false);
 
@@ -266,6 +272,7 @@ describe('InMemoryExecutionStore', () => {
       venue: 'binance',
       mismatches: 0,
       halted: false,
+      passError: false,
       detail: 'clean',
       durationMs: 42,
       openOrdersChecked: 0,

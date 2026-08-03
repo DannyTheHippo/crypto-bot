@@ -30,9 +30,15 @@ export class EquitySamplerService {
     const cash = this.portfolio.cashBalance();
     let equity = cash;
     let unrealized = new Decimal(0);
+    // Which positions were valued at their own entry for want of a mark. The VALUATION is unchanged
+    // and deliberately so (see this class's header), but its zero-unrealized contribution is
+    // otherwise indistinguishable from a genuinely flat position in the equity curve C1/C2 and the
+    // sizer read — so the sample carries the provenance instead of leaving it untraceable.
+    const unmarked: string[] = [];
     for (const p of this.portfolio.livePositions()) {
       const ref = this.feed.getRefPrice(p.symbol);
       const mark = ref ? ref.mid : p.avgEntry;
+      if (!ref) unmarked.push(p.symbol);
       equity = equity.add(p.signedQty.mul(mark));
       unrealized = unrealized.add(p.signedQty.mul(mark.sub(p.avgEntry)));
     }
@@ -45,6 +51,11 @@ export class EquitySamplerService {
       unrealized: unrealized.toFixed(),
       peak: this.portfolio.peakEquity().toFixed(),
       sessionDateUtc: new Date(now).toISOString().slice(0, 10),
+      // Sorted + deduped so the annotation is a stable function of WHICH symbols were unmarkable,
+      // not of position iteration order — two rows with the same set compare equal.
+      ...(unmarked.length > 0
+        ? { gapAnnotation: `MARK_FALLBACK:${[...new Set(unmarked)].sort().join(',')}` }
+        : {}),
     };
     await this.store.savePortfolioSample(sample, [...this.portfolio.livePositions()]);
     this.observer?.(sample); // post-trade monitors (C1/C2) evaluate every sample

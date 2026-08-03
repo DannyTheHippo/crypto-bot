@@ -19,7 +19,6 @@ import type {
 import { FeeLedgerService } from '../../../../src/features/trading/execution/fee-ledger.service';
 import { HaltCoordinatorService } from '../../../../src/features/trading/execution/halt-coordinator.service';
 import { PortfolioStateService } from '../../../../src/features/trading/execution/portfolio-state.service';
-import { CrossingRegistryService } from '../../../../src/features/trading/risk/crossing-registry.service';
 import { KillSwitchService } from '../../../../src/features/trading/risk/kill-switch.service';
 import { PositionSizerService } from '../../../../src/features/trading/risk/position-sizer.service';
 import { RateBucketsService } from '../../../../src/features/trading/risk/rate-buckets.service';
@@ -134,7 +133,6 @@ function build(
     feed,
     killSwitch,
     new RateBucketsService(clock),
-    new CrossingRegistryService(),
     { record: () => undefined },
   );
 

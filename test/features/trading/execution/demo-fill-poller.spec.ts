@@ -8,6 +8,7 @@ import type {
 } from '../../../../src/features/trading/execution/fill-ingestor.service';
 import type { AlgoStopRecoveryService } from '../../../../src/features/trading/execution/algo-stop-recovery.service';
 import type { ExchangePort, VenueFill } from '../../../../src/ports/venue/exchange';
+import { VENUE_TIMESTAMP_SKEW_ALLOWANCE_MS } from '../../../../src/ports/trading/execution';
 import type { OrderRecord } from '../../../../src/domain/trading/oms/reducer';
 import type { FillRecord } from '../../../../src/domain/trading/types/exec-report';
 import {
@@ -195,6 +196,49 @@ describe('DemoFillPollerService', () => {
     await poller.poll(V, [SYM]);
     await poller.poll(V, [SYM]);
     expect(sinceCalls[1]).toBe(T + 90);
+  });
+
+  // The watermark is MONOTONE, so a single unbounded-future venueTimestamp used to pin it past every
+  // real trade permanently and every later fill was swept out of the `since` window forever.
+  // ccxt-normalize.ts only range-checks finite-integer, never an upper bound. The fill still ingests
+  // (dropping a real fill would be the worse error); only the watermark refuses to follow the stamp.
+  it('a fill stamped 10 years in the future still ingests, but the watermark stops at now + skew allowance', async () => {
+    const TEN_YEARS_MS = 10 * 365 * 86_400_000;
+    const { poller, ingested, sinceCalls } = build(
+      [
+        fill({
+          clientOrderId: clientOrderId(VENUE_ID),
+          venueTradeId: 'future-1',
+          venueTimestamp: epochMs(T + TEN_YEARS_MS),
+        }),
+      ],
+      [localOrder()],
+    );
+    poller.init();
+    const r = await poller.poll(V, [SYM]);
+    expect(r).toEqual({ ingested: 1, skippedUnknown: 0 }); // the fill itself is NOT dropped
+    expect(ingested[0]?.venueTimestamp).toBe(T + TEN_YEARS_MS); // recorded verbatim, unclamped
+    await poller.poll(V, [SYM]);
+    expect(sinceCalls[1]).toBe(T + VENUE_TIMESTAMP_SKEW_ALLOWANCE_MS); // exact ceiling, not the stamp
+  });
+
+  // The allowance is a tolerance band, not a ceiling on ordinary progress: a trade a few seconds
+  // ahead of our clock (venue/host skew) must still advance the watermark to its own stamp.
+  it('a trade inside the skew allowance advances the watermark to its own timestamp, unclamped', async () => {
+    const { poller, sinceCalls } = build(
+      [
+        fill({
+          clientOrderId: clientOrderId(VENUE_ID),
+          venueTradeId: 'skewed-1',
+          venueTimestamp: epochMs(T + 5_000),
+        }),
+      ],
+      [localOrder()],
+    );
+    poller.init();
+    await poller.poll(V, [SYM]);
+    await poller.poll(V, [SYM]);
+    expect(sinceCalls[1]).toBe(T + 5_000);
   });
 
   it('leaves the watermark unchanged when a poll returns no trades', async () => {

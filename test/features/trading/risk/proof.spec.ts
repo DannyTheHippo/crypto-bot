@@ -6,6 +6,7 @@ import {
   type MintOptions,
 } from '../../../../src/domain/trading/risk/proof';
 import type { OrderIntent } from '../../../../src/domain/trading/types/order-intent';
+import type { ApprovalProof } from '../../../../src/domain/trading/types/risk-decision';
 import { price, qty } from '../../../../src/domain/common/types/money';
 import {
   intentId,
@@ -92,5 +93,53 @@ describe('approval proof (§4.2 unforgeable RiskApprovedIntent)', () => {
     expect(mintApproval(intent(), KEY, OPTS).proof.hmac).toBe(
       mintApproval(intent(), KEY, OPTS).proof.hmac,
     );
+  });
+
+  // The hmac used to cover only `${intentHash}:${nonce}`, leaving every other proof field
+  // unauthenticated — including approvedAtMs/ttlMs, the two values verifyApproval reads to decide
+  // EXPIRED. A holder of a genuine proof could therefore extend its own TTL indefinitely (the
+  // forgery defense answering an attacker-supplied deadline), and limitsVersion/snapshotSeq — the
+  // persisted audit record of which limits and which portfolio snapshot approved the order — could
+  // be rewritten without detection. Every authenticated field is pinned individually below.
+  describe('the hmac authenticates the FULL proof tuple, not just intentHash+nonce', () => {
+    const cases: ReadonlyArray<readonly [string, Partial<ApprovalProof>]> = [
+      ['approvedAtMs (TTL extension attack)', { approvedAtMs: epochMs(999_000) }],
+      ['ttlMs (TTL extension attack)', { ttlMs: 86_400_000 }],
+      ['limitsVersion (audit record of which limits approved)', { limitsVersion: 'v0' }],
+      ['snapshotSeq (audit record of which snapshot approved)', { snapshotSeq: 6n }],
+      ['nonce', { nonce: 'n2' }],
+      ['intentHash', { intentHash: 'a'.repeat(64) }],
+    ];
+
+    for (const [label, patch] of cases) {
+      it(`tampering with ${label} fails the HMAC check`, () => {
+        const approved = mintApproval(intent(), KEY, OPTS);
+        const tampered = {
+          ...approved,
+          proof: { ...approved.proof, ...patch },
+        } as typeof approved;
+        // intentHash is the one field the independent hash recompute catches first.
+        const expected = 'intentHash' in patch ? 'BAD_HASH' : 'BAD_HMAC';
+        expect(verifyApproval(tampered, KEY, epochMs(1500), false)).toBe(expected);
+      });
+    }
+
+    it('an untampered proof still verifies OK (the widened MAC is not a blanket reject)', () => {
+      expect(verifyApproval(mintApproval(intent(), KEY, OPTS), KEY, epochMs(1500), false)).toBe(
+        'OK',
+      );
+    });
+
+    // A TTL push-out is the attack the old MAC could not see: the proof stays otherwise valid and
+    // the expiry check would have accepted the rewritten deadline.
+    it('a proof whose approvedAtMs is pushed forward past its real expiry is BAD_HMAC, never OK', () => {
+      const approved = mintApproval(intent(), KEY, OPTS);
+      const pushedOut = {
+        ...approved,
+        proof: { ...approved.proof, approvedAtMs: epochMs(1_000_000) },
+      } as typeof approved;
+      // Long past the genuine 1000+2000ms deadline; pre-fix this returned 'OK'.
+      expect(verifyApproval(pushedOut, KEY, epochMs(1_000_500), false)).toBe('BAD_HMAC');
+    });
   });
 });

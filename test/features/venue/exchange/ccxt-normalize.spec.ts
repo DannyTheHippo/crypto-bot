@@ -68,6 +68,21 @@ describe('normalizeOrderState', () => {
     expect(result.venueOrderId).toBe('99887');
   });
 
+  // String(undefined) used to mint the literal "undefined" as the venue identity: reconciliation's
+  // venueOrderIndex would key on it and the unknown-resolver's `length > 0` truth test would accept
+  // it as a real venue order.
+  it('throws when the venue order id is missing (never mints the string "undefined")', () => {
+    expect(() => normalizeOrderState({ ...baseOrder, id: undefined }, COID, SYM)).toThrow(
+      'normalizeOrderState: order is missing a venue order id (got undefined)',
+    );
+  });
+
+  it('throws when the venue order id is an empty string', () => {
+    expect(() => normalizeOrderState({ ...baseOrder, id: '' }, COID, SYM)).toThrow(
+      'normalizeOrderState: order is missing a venue order id (got empty string)',
+    );
+  });
+
   it('defaults cumQty to "0" when filled is undefined', () => {
     const result = normalizeOrderState({ ...baseOrder, filled: undefined }, COID, SYM);
     expect(result.cumQty).toBe('0');
@@ -157,6 +172,21 @@ describe('normalizeTrade', () => {
   it('stringifies numeric trade id', () => {
     const fill = normalizeTrade({ ...baseTrade, id: 777 }, VEN, SYM);
     expect(fill.venueTradeId).toBe('777');
+  });
+
+  // venueTradeId is the dedupe key of UNIQUE(venue, symbol, venue_trade_id): two id-less trades on
+  // one symbol both stringified to "undefined", so the second was swallowed by the ingestor's
+  // ON CONFLICT DO NOTHING and its money effect never landed.
+  it('throws when the venue trade id is missing (never mints the string "undefined")', () => {
+    expect(() => normalizeTrade({ ...baseTrade, id: undefined }, VEN, SYM)).toThrow(
+      'normalizeTrade: trade is missing a venue trade id (got undefined)',
+    );
+  });
+
+  it('throws when the venue trade id is an empty string', () => {
+    expect(() => normalizeTrade({ ...baseTrade, id: '' }, VEN, SYM)).toThrow(
+      'normalizeTrade: trade is missing a venue trade id (got empty string)',
+    );
   });
 
   it('stringifies numeric fee cost', () => {

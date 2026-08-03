@@ -19,7 +19,10 @@ export interface ReconciliationInsert {
   tradesChecked: number;
   balancesChecked: number;
   discrepancies: unknown;
-  result: 'CLEAN' | 'MISMATCH' | 'HALT';
+  // 'ERROR' (2026-08-03): a pass that threw before completing its axis chain. Plain unconstrained
+  // `text` column with no DB CHECK (0000_v3_initial.sql), same TS-level-only enum convention as
+  // signals.kind / agent_playbook_versions.source — so the new member needs no migration.
+  result: 'CLEAN' | 'MISMATCH' | 'HALT' | 'ERROR';
   mode: 'paper' | 'testnet' | 'live';
   runId: string;
   bootId: string;

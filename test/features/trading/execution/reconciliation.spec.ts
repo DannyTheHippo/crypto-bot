@@ -87,6 +87,9 @@ function build(
   const ingestor = new FillIngestorService(store, ks, orders, portfolio, sampler);
   const opsEvents: OpsEvent[] = [];
   const opsEventLogger: OpsEventPort = { emit: (e) => opsEvents.push(e) };
+  // Every `since` the trade axis asked for, in order — the only external view of the per-(venue,
+  // symbol) checkpoint (a private map), and what the future-timestamp clamp has to be pinned on.
+  const tradeSinceCalls: number[] = [];
 
   const exchange: ExchangePort = {
     venue: V,
@@ -122,7 +125,8 @@ function build(
               ? script.balances()
               : new Map([['USDT', { free: '100000', locked: '0' }]]),
           ),
-    fetchMyTrades: () => {
+    fetchMyTrades: (...args: unknown[]) => {
+      tradeSinceCalls.push(args[1] as number); // the `since` the checkpoint produced for this sweep
       script.beforeTrades?.();
       return script.tradesThrow
         ? Promise.reject(new Error('trades down'))
@@ -1273,8 +1277,31 @@ describe('ReconciliationService (§6.4)', () => {
     expect(r.mismatches).toBeGreaterThan(0);
   });
 
-  it('a trade for an our-prefix order unknown locally HALTs', async () => {
+  it('a trade for a DURABLY-ours order unknown locally HALTs', async () => {
     // Seed a known order on SYM so SYM is swept; the orphan trade is a DIFFERENT our-prefix id.
+    // The write-ahead intent for that id IS present, so its absence from the book is corruption.
+    const known = makeIntent().clientOrderId;
+    const ctx = build({
+      openOrders: [venueOrder(known, 'open')],
+      trades: [trade(OTHER_COID, 'orphan-1')],
+    });
+    seedOpenOrder(ctx, known);
+    await ctx.store.saveIntent(makeIntent({ clientOrderId: OTHER_COID }), {
+      nonce: 'n',
+      approvedAtMs: T,
+      ttlMs: 60_000,
+    } as never);
+    const r = await ctx.recon.reconcile();
+    expect(r.halted).toBe(true);
+    expect(ctx.engages.some((e) => e.reason.includes('FILL_FOR_UNKNOWN_ORDER'))).toBe(true);
+  });
+
+  it('the same trade with NO durable write-ahead intent is a foreign twin, not a halt', async () => {
+    // isOurClientOrderId matches the cb-shape only — no venue, no run, no boot — so a second
+    // instance of this software on the shared demo key mints ids indistinguishable from ours. The
+    // write-ahead persists every one of OUR intents before the network call, so a missing intent
+    // row proves the trade was never ours; halting the whole book on it would hand a stranger a
+    // kill switch. Uncertainty still fails CLOSED — only a definite null downgrades the verdict.
     const known = makeIntent().clientOrderId;
     const ctx = build({
       openOrders: [venueOrder(known, 'open')],
@@ -1282,8 +1309,8 @@ describe('ReconciliationService (§6.4)', () => {
     });
     seedOpenOrder(ctx, known);
     const r = await ctx.recon.reconcile();
-    expect(r.halted).toBe(true);
-    expect(ctx.engages.some((e) => e.reason.includes('FILL_FOR_UNKNOWN_ORDER'))).toBe(true);
+    expect(r.halted).toBe(false);
+    expect(ctx.engages.some((e) => e.reason.includes('FILL_FOR_UNKNOWN_ORDER'))).toBe(false);
   });
 
   // Cluster-A: on the real venue, VenueFill.clientOrderId carries the numeric venue order id

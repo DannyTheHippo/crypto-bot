@@ -51,6 +51,16 @@ export function normalizeOrderState(
     throw new Error(`normalizeOrderState: unknown ccxt order status "${rawStatus ?? 'undefined'}"`);
   }
 
+  // venueOrderId is an IDENTITY, not a measurement: String(undefined) would mint the literal
+  // "undefined" and hand reconciliation's venueOrderIndex a key that matches every other id-less
+  // row, and the unknown-resolver's `length > 0` truth test would accept it as a real venue order.
+  // Same audit-grade posture as the status guard above and normalizeTrade's timestamp guard below.
+  if (o.id === undefined || o.id === '') {
+    throw new Error(
+      `normalizeOrderState: order is missing a venue order id (got ${o.id === undefined ? 'undefined' : 'empty string'})`,
+    );
+  }
+
   return {
     clientOrderId: coid,
     venueOrderId: String(o.id),
@@ -80,6 +90,16 @@ export function normalizeTrade(
     );
   }
   const venueTimestamp: EpochMs = epochMs(t.timestamp);
+
+  // Same audit-grade discipline for the id: venueTradeId is the dedupe key of
+  // UNIQUE(venue, symbol, venue_trade_id), so String(undefined) would make EVERY id-less trade on a
+  // symbol collide on the literal "undefined" — the ingestor's ON CONFLICT DO NOTHING would drop
+  // the second one as an already-seen fill and its money effect would never land.
+  if (t.id === undefined || t.id === '') {
+    throw new Error(
+      `normalizeTrade: trade is missing a venue trade id (got ${t.id === undefined ? 'undefined' : 'empty string'})`,
+    );
+  }
 
   // t.order carries the venue's own order id but VenueFill requires the client order id.
   // The caller passes fallbackCoid (the coid we queried with) when t.order is absent.

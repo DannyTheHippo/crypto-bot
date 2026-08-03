@@ -26,7 +26,6 @@ import {
 } from '../../src/features/venue/exchange/paper-exchange.adapter';
 import { KillSwitchService } from '../../src/features/trading/risk/kill-switch.service';
 import { RateBucketsService } from '../../src/features/trading/risk/rate-buckets.service';
-import { CrossingRegistryService } from '../../src/features/trading/risk/crossing-registry.service';
 import { PositionSizerService } from '../../src/features/trading/risk/position-sizer.service';
 import { RiskEngineService } from '../../src/features/trading/risk/risk-engine.service';
 import type { ExecFilters, EquityLimits, ExecRunContext } from '../../src/ports/trading/execution';
@@ -147,7 +146,6 @@ function build() {
     feed,
     killSwitch,
     new RateBucketsService(clock),
-    new CrossingRegistryService(),
     { record: () => undefined },
   );
   const modeControl: ModeControlPort = {

@@ -6,6 +6,7 @@ import {
   type ExchangePort,
   type VenueFill,
 } from '../../../ports/venue/exchange';
+import { VENUE_TIMESTAMP_SKEW_ALLOWANCE_MS } from '../../../ports/trading/execution';
 import type { SymbolId, EpochMs, ClientOrderId, VenueId } from '../../../domain/common/types/ids';
 import { price, qty, feeAmount } from '../../../domain/common/types/money';
 import type { OrderRecord } from '../../../domain/trading/oms/reducer';
@@ -86,7 +87,13 @@ export class DemoFillPollerService {
     // ≤ maxTs was already in this fetch; the boundary trade re-fetches inclusively and the ingestor
     // dedupes it on venueTradeId. Includes skipped (foreign/pre-boot) trades — all have ts ≤ now,
     // while our not-yet-placed fills carry future ts, so the watermark can never outrun an own fill.
+    //
+    // CLAMPED to now + VENUE_TIMESTAMP_SKEW_ALLOWANCE_MS (see that constant): the "all have ts ≤ now"
+    // premise above is the venue's promise, not ours to assume — one unbounded-future stamp would
+    // otherwise pin this watermark past every real trade permanently. The trade itself still ingests.
     let maxTs = since;
+    let clampedTrades = 0;
+    let clampedSample: string | undefined;
     // Defect A commit-1: a fill matching no local order, on a symbol carrying an algo-rail anchor,
     // is the phantom-position signature (a venue-fired stop's spawned market order is
     // venue-generated and unmappable by clientOrderId — see this class's own MATCHING comment).
@@ -110,7 +117,13 @@ export class DemoFillPollerService {
     for (const symbol of symbols) {
       const fills = await exchange.fetchMyTrades(symbol, since);
       for (const f of fills) {
-        if (f.venueTimestamp > maxTs) maxTs = f.venueTimestamp;
+        const ceiling = (this.clock.now() + VENUE_TIMESTAMP_SKEW_ALLOWANCE_MS) as EpochMs;
+        if (f.venueTimestamp > ceiling) {
+          clampedTrades += 1;
+          clampedSample ??= `${f.symbol} trade ${f.venueTradeId} ts=${f.venueTimestamp}`;
+        }
+        const advanceTo = Math.min(f.venueTimestamp, ceiling) as EpochMs;
+        if (advanceTo > maxTs) maxTs = advanceTo;
         const matched = byVenueId.get(f.clientOrderId); // f.clientOrderId holds the venue order id (ccxt trade.order)
         if (matched === undefined) {
           skippedUnknown += 1; // a fill with no matching local order (foreign or pre-boot) — never halt here
@@ -132,6 +145,16 @@ export class DemoFillPollerService {
       }
     }
     this.sinceByVenue.set(venue, maxTs);
+    // A venue-stamped future trade is a venue data-integrity event, not routine — logged at error.
+    // One line per poll (count + one sample) rather than per trade: a venue emitting the wrong time
+    // UNIT stamps every trade in the batch, and a per-trade line would turn the incident into a log
+    // flood that buries itself.
+    if (clampedTrades > 0) {
+      this.log.error(
+        `venue "${venue}" returned ${clampedTrades} trade(s) stamped beyond now+${VENUE_TIMESTAMP_SKEW_ALLOWANCE_MS}ms — ` +
+          `sweep watermark clamped to ${maxTs}, fills still ingested (e.g. ${clampedSample})`,
+      );
+    }
     // Recovered against the intent's OWN createdAt lookback, never this poller's `since` watermark
     // (just advanced above) — the watermark can already sit past the trigger trade, exactly the
     // live phantom's geometry. Fail OPEN: a throw here is retried next poll, never breaks this one.

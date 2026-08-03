@@ -15,6 +15,13 @@
       "when": 1784569967893,
       "tag": "0001_v3_append_only_hardening",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1785781746298,
+      "tag": "0002_fills_mode_scoped_uidx",
+      "breakpoints": true
     }
   ]
 }

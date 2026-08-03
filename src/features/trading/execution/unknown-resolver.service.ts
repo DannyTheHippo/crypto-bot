@@ -80,6 +80,16 @@ function reconcileTerminalFor(
   }
 }
 
+// Backfill floor for an unknown registered WITHOUT any intent behind it (neither in-flight nor
+// durable — see resolveTracking). The normal floor is the intent's createdAt; with no intent there
+// is no order-specific timestamp to anchor on, and anchoring on the discovery tick would be WRONG in
+// the one direction that matters: a boot-recovered order was placed BEFORE this process started, so
+// a discovery-time floor would hide its own fills from fetchMyTrades and leave a filled order
+// polling until the 60s kill-switch backstop. A wide overlap costs nothing (I3 dedupe makes every
+// re-ingested trade a no-op), so the window is deliberately far longer than any plausible
+// crash-to-restart gap.
+const NO_INTENT_BACKFILL_LOOKBACK_MS = 86_400_000;
+
 type UnknownKind = 'submit' | 'cancel';
 
 interface Pending {
@@ -89,6 +99,13 @@ interface Pending {
   attempts: number;
   nextDueAt: number;
   readonly firstUnknownAt: number;
+  // fetchMyTrades floor for backfillFills, resolved ONCE at registration. Held here rather than
+  // re-read per poll because the intent behind it may live only in the durable store (an async read
+  // has no place on the per-poll path) or may not exist at all.
+  readonly since: EpochMs;
+  // Registration-time rail classification, for the same reason `since` is captured: resolveOne can
+  // only re-derive it from the in-flight map, which a store-only intent never enters.
+  readonly algoRail: boolean;
   cancelReissues: number;
   escalated: boolean; // 60s kill-switch backstop fired for this order
 }
@@ -141,7 +158,7 @@ export class UnknownResolverService {
   // Cron-driven each cycle. Auto-discovers newly-unknown orders, drops resolved ones, enforces the
   // 60s backstop, then polls every entry whose backoff is due.
   async tick(now: EpochMs): Promise<void> {
-    this.sync(now);
+    await this.sync(now);
     for (const p of [...this.pending.values()]) {
       if (!p.escalated && now - p.firstUnknownAt > UNKNOWN_KILL_AFTER_MS) {
         p.escalated = true;
@@ -153,18 +170,18 @@ export class UnknownResolverService {
     await this.sweepStrandedNew(now);
   }
 
-  // Reconcile the tracking set with the order book: register fresh unknowns (symbol + TTL come from
-  // the retained in-flight intent), forget any an out-of-band stream event already resolved.
-  private sync(now: EpochMs): void {
+  // Reconcile the tracking set with the order book: register fresh unknowns, forget any an
+  // out-of-band stream event already resolved.
+  private async sync(now: EpochMs): Promise<void> {
     for (const rec of this.orders.all()) {
       const isUnknown = rec.state === 'SUBMIT_UNKNOWN' || rec.state === 'CANCEL_UNKNOWN';
       const tracked = this.pending.has(rec.clientOrderId);
       if (isUnknown && !tracked) {
-        const intent = this.portfolio.inFlightIntent(rec.clientOrderId);
-        if (intent === undefined) continue; // exposure is reserved via the intent; without it we cannot poll
+        const tracking = await this.resolveTracking(rec, now);
+        if (tracking === undefined) continue;
         this.pending.set(rec.clientOrderId, {
           coid: rec.clientOrderId,
-          symbol: intent.symbol,
+          ...tracking,
           kind: rec.state === 'SUBMIT_UNKNOWN' ? 'submit' : 'cancel',
           attempts: 0,
           nextDueAt: now + this.backoff(1),
@@ -178,14 +195,55 @@ export class UnknownResolverService {
     }
   }
 
+  // Everything registration needs that does not come off the OrderRecord: the symbol to query, the
+  // backfill floor, and the rail. Three intent sources in falling order of authority, because a
+  // SUBMIT_UNKNOWN can legitimately have NO in-flight intent and, before 2026-08-03, that alone made
+  // it permanently untrackable — never polled, never escalated by tick()'s 60s backstop. Boot
+  // recovery is the reproducer: a persisted SUBMITTING row is neither venue-confirmed-open nor yet
+  // unresolved when boot-recovery.service.ts decides whether to rehydrate its intent, so it does not;
+  // CrashRecoveryService.recoverOnBoot() then degrades it to SUBMIT_UNKNOWN AFTER that loop has run.
+  // The order was a LIVENESS trap rather than silent money loss — it still reads `isUnresolved`, so
+  // it blocked live arming and kill-switch auto-resume forever instead of trading unwatched — but the
+  // one invariant that is supposed to end that state (unknown >60s ⇒ kill switch) never applied to it.
+  //
+  // FAIL DIRECTION: the ONLY remaining skip is "no symbol from any source", where a poll is
+  // physically impossible (fetchOrder is keyed by symbol). Deliberately NOT addInFlight: reserving
+  // capital for an order that never confirmed landing is the wrong direction, and that policy is
+  // boot-recovery's, not this loop's — tracking an order and reserving exposure for it are separate
+  // decisions.
+  private async resolveTracking(
+    rec: OrderRecord,
+    now: EpochMs,
+  ): Promise<{ symbol: SymbolId; since: EpochMs; algoRail: boolean } | undefined> {
+    const intent =
+      this.portfolio.inFlightIntent(rec.clientOrderId) ??
+      (await this.loadDurableIntent(rec.clientOrderId));
+    if (intent !== undefined) {
+      return { symbol: intent.symbol, since: intent.createdAt, algoRail: isAlgoRailIntent(intent) };
+    }
+    if (rec.symbol === undefined) return undefined;
+    // Symbol-only: the rail cannot be classified without the intent's triggerPrice, so the order
+    // takes the regular rail — the pre-existing behaviour for every order whose intent is missing,
+    // and resolveAlgoOne's own "absence proves nothing" refusal is unavailable to us here anyway.
+    return {
+      symbol: rec.symbol,
+      since: Math.max(0, now - NO_INTENT_BACKFILL_LOOKBACK_MS) as EpochMs,
+      algoRail: false,
+    };
+  }
+
   private async resolveOne(p: Pending, now: EpochMs): Promise<void> {
     // Push 3 P7f fix 2: an algo-rail intent (isAlgoRailIntent) can never be resolved through
     // fetchOrder — that is the REGULAR rail, and a perp STOP_MARKET 404s there (-2013 →
     // OrderNotFound), which the regular-rail branch below would read as a genuine not-found and
     // FALSELY retire the pending entry on the first poll, bypassing the rule-5 60s kill-switch
     // watchdog while a phantom reserve stays held. Route to the algo-rail's own truth instead.
+    // p.algoRail carries the registration-time classification for an order whose intent lives only
+    // in the durable store; the live in-flight read still wins when it is available, so an order
+    // registered before its intent landed in the map cannot be pinned to the wrong rail.
     const intent = this.portfolio.inFlightIntent(p.coid);
-    if (p.kind === 'submit' && intent !== undefined && isAlgoRailIntent(intent)) {
+    const algoRail = intent !== undefined ? isAlgoRailIntent(intent) : p.algoRail;
+    if (p.kind === 'submit' && algoRail) {
       await this.resolveAlgoOne(p, now);
       return;
     }
@@ -624,10 +682,11 @@ export class UnknownResolverService {
   }
 
   // Sweep realized trades since the intent was created (a wide overlap is free under I3 dedupe) and
-  // ingest each through the shared FillIngestor; duplicates apply nothing. The in-flight intent is
-  // retained for every non-terminal tracked order, so its createdAt is the checkpoint floor.
+  // ingest each through the shared FillIngestor; duplicates apply nothing. The floor is resolved at
+  // registration (see resolveTracking) — reading the in-flight map here instead would throw on the
+  // intent-less orders this loop now tracks.
   private async backfillFills(p: Pending, venueOrderId: string): Promise<void> {
-    const since = this.portfolio.inFlightIntent(p.coid)!.createdAt;
+    const since = p.since;
     let trades: readonly VenueFill[];
     try {
       trades = await this.exchange.fetchMyTrades(p.symbol, since);

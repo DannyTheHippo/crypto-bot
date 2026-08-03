@@ -1,7 +1,9 @@
 import { Global, Module } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { TypedConfigService } from '../../../config/environment/typed-config.service';
-import { SPOT_VENUE } from '../../../domain/venue/types/venue-map';
+import { PERP_VENUE, SPOT_VENUE } from '../../../domain/venue/types/venue-map';
+import type { VenueEnvironment } from '../../../ports/common/app-config';
+import { venuePrivateUrlCrossCheckOk } from '../../../shared/venue-safety/venue-url-crosscheck';
 import {
   KEY_PROBE,
   type KeyProbePort,
@@ -9,7 +11,7 @@ import {
 } from '../../../ports/trading/mode-control';
 import { venueId, type VenueId } from '../../../domain/common/types/ids';
 import { KeyProbeService } from '../../venue/exchange/key-probe.service';
-import { buildOrderClient, resolveSandbox } from './exchange-adapters.module';
+import { buildOrderClient, resolveSandbox, venuePrivateUrl } from './exchange-adapters.module';
 
 // v3 spec §1.3/§7.1: gate-(c) KEY_PROBE, bound globally by the composition root (ModeControl
 // consumes it). GET /sapi/v1/account/apiRestrictions is ACCOUNT-wide — one Binance API key, one
@@ -35,6 +37,18 @@ export function invalidKeyProbe(venues: readonly VenueId[]): KeyProbePort {
   };
 }
 
+// Live gate (c)'s URL conjunct, decided ONCE here: BOTH credentialed rails' effective private base
+// URLs must resolve to the booted environment's own hosts. AND across venues because the
+// account-wide probe's verdict is shared by both venue entries — a mismatch on either rail must not
+// be masked by the other. Config-only (no venue round trip), so re-probing cannot make it stale.
+// FAILS CLOSED: any unrecognised host/venue/URL yields false, which forces keysValid false on both
+// surfaces (see shared/venue-safety/venue-url-crosscheck.ts for the failure-direction rationale).
+export function resolveUrlCrossCheck(environment: VenueEnvironment): boolean {
+  return [SPOT_VENUE, PERP_VENUE].every((venue) =>
+    venuePrivateUrlCrossCheckOk(venue, venuePrivateUrl(venue, environment), environment),
+  );
+}
+
 @Global()
 @Module({
   providers: [
@@ -48,14 +62,14 @@ export function invalidKeyProbe(venues: readonly VenueId[]): KeyProbePort {
         const sandbox = resolveSandbox(config);
         const apiKey = isLive ? (config.liveSecrets.liveApiKey ?? '') : sandbox.apiKey;
         const secret = isLive ? (config.liveSecrets.liveApiSecret ?? '') : sandbox.secret;
-        const client = buildOrderClient(
-          SPOT_VENUE,
-          isLive ? 'live' : sandbox.environment,
-          apiKey,
-          secret,
-        );
+        const environment: VenueEnvironment = isLive ? 'live' : sandbox.environment;
+        const client = buildOrderClient(SPOT_VENUE, environment, apiKey, secret);
         const keyFingerprint = createHash('sha256').update(apiKey).digest('hex').slice(0, 16);
-        return new KeyProbeService(client, { keyFingerprint, requireRestrictions: isLive });
+        return new KeyProbeService(client, {
+          keyFingerprint,
+          requireRestrictions: isLive,
+          urlCrossCheckOk: resolveUrlCrossCheck(environment),
+        });
       },
       inject: [TypedConfigService],
     },

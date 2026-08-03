@@ -9,6 +9,10 @@ export interface KeyProbeConfig {
   readonly keyFingerprint: string; // hex digest of the key, minted at the composition root — NEVER the raw key
   // live: an unprobeable restriction set ⇒ refuse (keysValid:false); testnet (no sapi) ⇒ degrade to canTrade.
   readonly requireRestrictions: boolean;
+  // Gate-(c) URL conjunct, decided ONCE at the composition root (key-probe.module.ts) from the built
+  // ccxt clients' effective base URLs — a config cross-check, so it costs no venue round trip and
+  // cannot go stale between probes. Fails CLOSED there (shared/venue-safety/venue-url-crosscheck.ts).
+  readonly urlCrossCheckOk: boolean;
 }
 
 // v3 §7.1: local venue-id copies (same idiom as position-sizer.service.ts's PERP_VENUE_ID and
@@ -29,8 +33,9 @@ type RawRestrictions = Omit<KeyProbeResult, 'keysValid'>;
 // borrow (enableMargin) is likewise forbidden on both surfaces regardless of which one is otherwise
 // valid (§7.1: the perp futures-requirement never weakens the spot margin prohibition).
 // NOTE: the Binance field names and the testnet NotSupported degradation must be confirmed against a
-// real response during the out-of-session testnet RUN; urlCrossCheckOk is finalized in the
-// composition-root wiring (both entries share the stubbed-true value pending that wiring).
+// real response during the out-of-session testnet RUN. urlCrossCheckOk is carried verbatim from
+// cfg (decided at the composition root) into EVERY branch, the fail-closed catches included: a probe
+// that could not run must not report a passing cross-check.
 @Injectable()
 export class KeyProbeService implements KeyProbePort {
   constructor(
@@ -63,7 +68,7 @@ export class KeyProbeService implements KeyProbePort {
         futuresEnabled: r['enableFutures'] === true,
         marginEnabled: r['enableMargin'] === true,
         keyFingerprint: this.cfg.keyFingerprint,
-        urlCrossCheckOk: true,
+        urlCrossCheckOk: this.cfg.urlCrossCheckOk,
       };
     } catch {
       // Spot Testnet exposes no sapi (NotSupported); a network/permission error lands here too.
@@ -75,7 +80,7 @@ export class KeyProbeService implements KeyProbePort {
           futuresEnabled: false,
           marginEnabled: false,
           keyFingerprint: this.cfg.keyFingerprint,
-          urlCrossCheckOk: true,
+          urlCrossCheckOk: this.cfg.urlCrossCheckOk,
         };
       }
       // Testnet: degrade to canTrade — the env/url gate carries the wall here, no real funds at risk.
@@ -85,7 +90,7 @@ export class KeyProbeService implements KeyProbePort {
         futuresEnabled: true,
         marginEnabled: false,
         keyFingerprint: this.cfg.keyFingerprint,
-        urlCrossCheckOk: true,
+        urlCrossCheckOk: this.cfg.urlCrossCheckOk,
       };
     }
   }

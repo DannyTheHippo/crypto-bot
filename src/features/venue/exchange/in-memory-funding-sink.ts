@@ -1,10 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import type { FundingEventPayload, FundingSinkPort } from './paper-perp.adapter';
 
-// In-process FUNDING_SINK default (DB-less paper, and the deterministic test substrate) — mirrors
-// InMemoryExecOutbox's role for EXEC_OUTBOX (../execution/in-memory-outbox.ts). A future
-// Drizzle-backed adapter writing to the funding_events table (trading.schema.ts) mirrors this
-// contract at the composition root.
+// In-process FUNDING_SINK for the DB-less/test substrate — mirrors InMemoryExecOutbox's role for
+// EXEC_OUTBOX (../execution/in-memory-outbox.ts). No longer the production binding: with a database
+// present the composition root binds FundingEventsRepository (the funding_events writer) instead
+// (exchange-adapters.module.ts's buildFundingSink).
 @Injectable()
 export class InMemoryFundingSink implements FundingSinkPort {
   readonly rows: FundingEventPayload[] = [];

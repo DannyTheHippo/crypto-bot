@@ -29,8 +29,8 @@ function stubClient(over: Partial<CcxtOrderClient>): CcxtOrderClient {
 }
 
 const FP = 'fp-abc';
-const probeWith = (client: CcxtOrderClient, requireRestrictions = false) =>
-  new KeyProbeService(client, { keyFingerprint: FP, requireRestrictions });
+const probeWith = (client: CcxtOrderClient, requireRestrictions = false, urlCrossCheckOk = true) =>
+  new KeyProbeService(client, { keyFingerprint: FP, requireRestrictions, urlCrossCheckOk });
 
 // v3 §7.1: one account, two surfaces — probeAll() makes ONE network call (apiRestrictions is
 // account-wide) and derives BOTH venues' verdicts from it via the per-surface recompute.
@@ -133,5 +133,44 @@ describe('KeyProbeService.probeAll — v3 §7.1 per-venue recompute', () => {
     const r = await probeWith(clientThrowing(), true).probeAll();
     expect(r.get(SPOT)).toMatchObject({ keysValid: false, withdrawalsEnabled: true });
     expect(r.get(PERP)).toMatchObject({ keysValid: false, withdrawalsEnabled: true });
+  });
+});
+
+// The conjunct was a literal `true` in all three branches until the composition-root wiring landed
+// (key-probe.module.ts's resolveUrlCrossCheck) — a hollow term inside live gate (c). Every branch
+// must now carry cfg's verdict, the fail-closed catches included: a probe that could not run must
+// never report a passing cross-check. ModeControlService.venueKeysValid ANDs the same field, so a
+// false here is also a false keysValid input for the live-gate resolution.
+describe('KeyProbeService urlCrossCheckOk (live gate (c) conjunct)', () => {
+  const RESTRICTIONS_OK = {
+    enableWithdrawals: false,
+    enableSpotAndMarginTrading: true,
+    enableMargin: false,
+    enableFutures: true,
+  };
+
+  it('a failed cross-check invalidates BOTH venues on the SUCCESS branch, with the flag surfaced', async () => {
+    const r = await probeWith(clientReturning(RESTRICTIONS_OK), false, false).probeAll();
+    expect(r.get(SPOT)).toMatchObject({ keysValid: false, urlCrossCheckOk: false });
+    expect(r.get(PERP)).toMatchObject({ keysValid: false, urlCrossCheckOk: false });
+    // ModeControlService.venueKeysValid recomputes the verdict from the RAW flags (auditor S5) —
+    // asserted here in that form so the gate input, not just the probe's advisory keysValid, is
+    // shown false on an otherwise-perfect restriction set.
+    const spot = r.get(SPOT)!;
+    expect(
+      !spot.withdrawalsEnabled && spot.spotEnabled && !spot.marginEnabled && spot.urlCrossCheckOk,
+    ).toBe(false);
+  });
+
+  it('a failed cross-check keeps the testnet-degrade branch refusing on both venues', async () => {
+    const r = await probeWith(clientThrowing(), false, false).probeAll();
+    expect(r.get(SPOT)).toMatchObject({ keysValid: false, urlCrossCheckOk: false });
+    expect(r.get(PERP)).toMatchObject({ keysValid: false, urlCrossCheckOk: false });
+  });
+
+  it('the live fail-closed catch branch reports the cross-check verdict, never a stubbed true', async () => {
+    const r = await probeWith(clientThrowing(), true, false).probeAll();
+    expect(r.get(SPOT)).toMatchObject({ keysValid: false, urlCrossCheckOk: false });
+    expect(r.get(PERP)).toMatchObject({ keysValid: false, urlCrossCheckOk: false });
   });
 });

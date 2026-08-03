@@ -1,5 +1,6 @@
 import { Global, Module } from '@nestjs/common';
 import Decimal from 'decimal.js';
+import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { TypedConfigService } from '../../../config/environment/typed-config.service';
 import { ExecutionModule } from '../execution/execution.module';
 import type { VenueConfig, VenueEnvironment } from '../../../ports/common/app-config';
@@ -45,12 +46,15 @@ import {
   type PaperPerpConfig,
   type FundingSinkPort,
 } from '../../venue/exchange/paper-perp.adapter';
-// v3-integration(#6): in-memory-funding-sink.ts is on the §9 deletion list ("funding payments are
-// DB-mandatory") but no DB-backed writer for the funding_events table (PaperPerpAdapter's OWN
-// funding-simulation journal, distinct from the funding_payments venue-ingest table §6 already owns)
-// exists yet. Binding the in-memory sink here is a deliberate stopgap — flag for #6/#8 to land a
-// Drizzle-backed FundingSinkPort and delete this import in the same pass as the file's removal.
+// FUNDING_SINK substrate pair: the Drizzle writer for funding_events (the append-only journal
+// PaperPerpAdapter.applyFunding produces, distinct from the funding_payments venue-ingest table §6
+// owns) whenever a database is present, InMemoryFundingSink for the no-DB/test substrate — the same
+// isTestEnv()/db===null split PersistenceOverridesModule applies to every other durable writer.
 import { InMemoryFundingSink } from '../../venue/exchange/in-memory-funding-sink';
+import { FundingEventsRepository } from '../../../database/repositories/trading/funding-events.repository';
+import { PersistenceModule } from '../../../database/database.module';
+import { DRIZZLE_DB } from '../../../database/database.tokens';
+import type * as dbSchema from '../../../database/schemas/trading';
 import { VENUE_REGISTRY, type VenueRuntimeDescriptor } from '../../../ports/venue/venue-registry';
 
 // v3 spec §1.3: ExchangeAdaptersModule replaces PaperExchangeModule. VENUE_EXCHANGE_PORTS (token
@@ -66,6 +70,24 @@ export { VENUE_EXCHANGE_PORTS };
 // enableDemoTrading/setSandboxMode has mutated it — moved verbatim from app.module.ts.
 function swapPrivateUrl(exchange: ReturnType<typeof buildCcxtExchange>): string {
   return (exchange as unknown as { urls: { api: { fapiPrivate: string } } }).urls.api.fapiPrivate;
+}
+
+// Spot rail counterpart of swapPrivateUrl: ccxt 4.5.58 keys the spot private REST base as
+// urls.api.private (urls.api.sapi — the endpoint KeyProbeService actually calls — exists on the LIVE
+// tree only, which is why the sandbox rails must be cross-checked on `private` instead).
+function spotPrivateUrl(exchange: ReturnType<typeof buildCcxtExchange>): string {
+  return (exchange as unknown as { urls: { api: { private: string } } }).urls.api.private;
+}
+
+// The effective PRIVATE REST base a venue would trade through in the given environment, read off a
+// ccxt instance built by the SAME buildCcxtExchange path buildOrderClient uses — so the url tree has
+// already been mutated by setSandboxMode/enableDemoTrading (buildOrderClient only sets credentials
+// afterwards, never a url). Keyless and offline: url resolution makes no network call, so the
+// composition root can cross-check a rail's host without paying a venue round trip. Exported for
+// key-probe.module.ts, which feeds it to live gate (c)'s urlCrossCheckOk conjunct.
+export function venuePrivateUrl(venue: string, environment: VenueEnvironment): string {
+  const exchange = buildCcxtExchange({ id: venue, environment });
+  return venue === PERP_VENUE ? swapPrivateUrl(exchange) : spotPrivateUrl(exchange);
 }
 
 // Build a credentialed ccxt order client for a real venue (testnet/live). Reached only on a
@@ -352,6 +374,25 @@ export class VenueRoutingExchangeAdapter implements ExchangePort {
   }
 }
 
+// Local copy, matching every other composition module's own (venue-registry, kill-switch,
+// persistence-overrides): the hermetic suite must never reach a database handle.
+function isTestEnv(): boolean {
+  return (
+    process.env['NODE_ENV'] === 'test' ||
+    process.env['NODE_ENV'] === 'ci' ||
+    Boolean(process.env['CI'])
+  );
+}
+
+// FUNDING_SINK selection. Fail direction: this is a durability writer, not a gate — with no database
+// it falls back to the in-memory sink rather than refusing to boot (a paper boot has no DB by
+// design, and a dropped funding-simulation row must never stop the trading loop). Config refuses a
+// non-test boot without DATABASE_URL upstream (§3), so the fallback is reachable only under
+// test/ci/no-DB — exactly where InMemoryExecOutbox backs EXEC_OUTBOX.
+export function buildFundingSink(db: NodePgDatabase<typeof dbSchema> | null): FundingSinkPort {
+  return isTestEnv() || db === null ? new InMemoryFundingSink() : new FundingEventsRepository(db);
+}
+
 const DEFAULT_PAPER_CONFIG: PaperConfig = {
   seed: 1,
   takerBuffer: '0.05',
@@ -367,13 +408,13 @@ const DEFAULT_PAPER_CONFIG: PaperConfig = {
   // factory injects both) — ExecutionModule is not @Global, so every consumer of its exports must
   // import it directly (same requirement PaperExchangeModule's own retired `imports: [ExecutionModule]`
   // satisfied for the pre-v3 single-venue EXCHANGE_PORT factory).
-  imports: [ExecutionModule],
+  imports: [ExecutionModule, PersistenceModule],
   providers: [
     { provide: PAPER_CONFIG, useValue: DEFAULT_PAPER_CONFIG },
     {
-      // Stopgap FUNDING_SINK binding — see the InMemoryFundingSink import comment above.
       provide: FUNDING_SINK,
-      useFactory: (): FundingSinkPort => new InMemoryFundingSink(),
+      useFactory: buildFundingSink,
+      inject: [DRIZZLE_DB],
     },
     {
       provide: VENUE_EXCHANGE_PORTS,

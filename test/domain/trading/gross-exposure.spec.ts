@@ -73,6 +73,32 @@ describe('domain/risk timeWeightedAvgGrossExposure', () => {
     expect(withNullSide!.toFixed()).toBe('100');
   });
 
+  it('a fill landing exactly on fromMs opens the position with the window, adding no lead-in slice', () => {
+    // executedAt === fromMs: the seed loop (strictly-before) skips it, and the cursor has not moved,
+    // so no zero-exposure slice is credited before it. Notional 100 (2 @ 50) for the whole [0,100).
+    const avg = timeWeightedAvgGrossExposure(
+      [fill({ executedAt: 0, qty: '2', price: '50' })],
+      0,
+      100,
+    );
+    expect(avg!.toFixed()).toBe('100');
+  });
+
+  it('two fills sharing one instant are folded into a single time step, not double-weighted', () => {
+    // Both at t=50: the first advances the cursor to 50, the second finds executedAt === cursor and
+    // contributes no second slice. Flat for [0,50), then 200 (two 1 @ 100 lots) for [50,100).
+    // weighted = 0*50 + 200*50 = 10000; avg = 100.
+    const avg = timeWeightedAvgGrossExposure(
+      [
+        fill({ executedAt: 50, qty: '1', price: '100' }),
+        fill({ executedAt: 50, qty: '1', price: '100' }),
+      ],
+      0,
+      100,
+    );
+    expect(avg!.toFixed()).toBe('100');
+  });
+
   it('a reduce-then-flip mid-window is walked through the same avg-cost accounting the OMS uses', () => {
     // BUY 2 @ 100 before the window → notional 200 for [0,50).
     // SELL 3 @ 120 at t=50 flips short 1 @ 120 (reopened at the fill price) → notional 120 for [50,100).

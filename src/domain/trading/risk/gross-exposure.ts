@@ -77,9 +77,10 @@ export function timeWeightedAvgGrossExposure(
     }
     applyAndTrackGross(f);
   }
-  if (toMs > cursor) {
-    weightedSum = weightedSum.plus(currentGross.mul(toMs - cursor));
-  }
+  // Unconditional: `cursor` only ever takes fromMs or an executedAt the loop guard already proved
+  // < toMs, so toMs - cursor is always positive — the guard this replaced was a dead branch in a
+  // 100%-branch zone, and mul(0) would be a no-op even if the tail were empty.
+  weightedSum = weightedSum.plus(currentGross.mul(toMs - cursor));
 
   return weightedSum.div(toMs - fromMs);
 }

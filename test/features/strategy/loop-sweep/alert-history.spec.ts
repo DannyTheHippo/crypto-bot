@@ -329,6 +329,28 @@ function baseApp(over: Record<string, unknown> = {}): Record<string, unknown> {
           errors: [],
         },
       },
+      // Deliverable B: clean readings for all five DB integrity invariants — every one fails CLOSED
+      // (an absent probe alarms), same reasoning as orderRejects above. Own behaviour pinned in
+      // db-integrity.spec.ts.
+      fillOrdering: { ok: true, value: { violations: 0, checked: 100 } },
+      unresolvedFillIntents: { ok: true, value: { count: 0 } },
+      cumQtyMismatch: { ok: true, value: { mismatches: 0, checked: 50 } },
+      unconvertibleFillFees: { ok: true, value: { violations: 0, checked: 100 } },
+      // config_snapshots is verified-but-unwritten on the real stack today, so a CLEAN fixture must
+      // supply a matching snapshot row explicitly rather than omit the probe — see
+      // classifyConfigSnapshotDrift.
+      configSnapshot: {
+        ok: true,
+        value: {
+          total: 1,
+          rawConfig: JSON.stringify({
+            PROMOTION_DUST_NOTIONAL: '5',
+            PROMOTION_EVIDENCE_EPOCH: '2026-07-21T11:21:00Z',
+          }),
+          runningDustNotional: '5',
+          runningEvidenceEpoch: '2026-07-21T11:21:00Z',
+        },
+      },
       ...(probesOver as Record<string, unknown> | undefined),
     },
     ...rest,

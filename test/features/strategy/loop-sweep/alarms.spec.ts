@@ -72,6 +72,15 @@ interface FiringAlert {
 }
 interface Probes {
   orderRejects?: Record<string, unknown>;
+  // Deliverable B (five DB integrity invariants) + Deliverable A (promotion-evidence tuple) — all
+  // optional/untyped here, same convention as orderRejects above: their own behaviour is pinned in
+  // db-integrity.spec.ts / promotion-evidence.spec.ts, this file only needs them to stay silent.
+  fillOrdering?: Record<string, unknown>;
+  unresolvedFillIntents?: Record<string, unknown>;
+  cumQtyMismatch?: Record<string, unknown>;
+  unconvertibleFillFees?: Record<string, unknown>;
+  configSnapshot?: Record<string, unknown>;
+  promotionEvidence?: Record<string, unknown>;
   decides: { ok: boolean; value: { count: number; latestCreatedAtMs: number } };
   realDecides: { ok: boolean; value: { count: number; latestCreatedAtMs: number } };
   consultGate: { ok: boolean; value: { total: number } };
@@ -152,6 +161,29 @@ function baseProbes(): Probes {
     // rate and alarms by design, so a fixture that omits it is asserting a defect, not a quiet stack.
     // Its own behaviour is pinned in venue-reject-rate.spec.ts.
     orderRejects: baseOrderRejects(0),
+    // Deliverable B: clean readings for all five DB integrity invariants — present in the base bag
+    // for the same reason orderRejects is: every one of these fails CLOSED, so an absent probe would
+    // alarm and every unrelated test in this file would carry a spurious defect. Own behaviour pinned
+    // in db-integrity.spec.ts.
+    fillOrdering: { ok: true, value: { violations: 0, checked: 100 } },
+    unresolvedFillIntents: { ok: true, value: { count: 0 } },
+    cumQtyMismatch: { ok: true, value: { mismatches: 0, checked: 50 } },
+    unconvertibleFillFees: { ok: true, value: { violations: 0, checked: 100 } },
+    // config_snapshots is verified-but-unwritten on the real stack today (config_snapshot_missing
+    // fires whenever total=0 — see classifyConfigSnapshotDrift), so a fixture representing the
+    // CLEAN/matching state has to supply a snapshot row explicitly, not merely omit the probe.
+    configSnapshot: {
+      ok: true,
+      value: {
+        total: 1,
+        rawConfig: JSON.stringify({
+          PROMOTION_DUST_NOTIONAL: '5',
+          PROMOTION_EVIDENCE_EPOCH: '2026-07-21T11:21:00Z',
+        }),
+        runningDustNotional: '5',
+        runningEvidenceEpoch: '2026-07-21T11:21:00Z',
+      },
+    },
   };
 }
 

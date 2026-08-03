@@ -29,6 +29,8 @@
 // Measurement fails OPEN (§D): a failed probe (ok:false) becomes a named `probe_failed` annotation,
 // never a pass and never a throw — a partial digest with failures named beats a confident blank.
 
+import Decimal from 'decimal.js';
+
 // The venue ids this sweep reads reconciliations for — mirrors domain/venue/types/venue-map.ts's
 // SPOT_VENUE/PERP_VENUE (a node script outside the tsconfig graph cannot import that .ts directly;
 // re-verify against it before trusting this list).
@@ -787,6 +789,23 @@ function computeApp(prev, cur, elapsedMs = null, nowMs = null) {
     annotations.push(...rejectVerdict.annotations);
   }
 
+  // Deliverable A (task #87's transcription-desync fix): the promotion-evidence ATOMIC TUPLE.
+  // ANNOTATION ONLY — disclosure, never a defect signal (see the section below for the fail-OPEN
+  // declaration and why voiding beats a partial tuple).
+  annotations.push(...classifyPromotionEvidence(probes.promotionEvidence).annotations);
+
+  // Deliverable B: five DB integrity invariants (W1, I1, I2, I4, W3). All ALARMS, all fail CLOSED —
+  // each guards a named corruption mode where an unreadable answer is itself the finding (see each
+  // section below). Deliberately NOT gated on containerHealthy or bootMatches, for the same reason
+  // classifyVenueRejectRates above is not: these read DURABLE Postgres state that stays true whether
+  // this pass's container is healthy right now or not, so gating on container health would let an
+  // unhealthy container suppress the very finding most likely to accompany one.
+  alarms.push(...classifyFillOrdering(probes.fillOrdering).alarms);
+  alarms.push(...classifyUnresolvedFillIntents(probes.unresolvedFillIntents).alarms);
+  alarms.push(...classifyCumQtyMismatch(probes.cumQtyMismatch).alarms);
+  alarms.push(...classifyUnconvertibleFillFees(probes.unconvertibleFillFees).alarms);
+  alarms.push(...classifyConfigSnapshotDrift(probes.configSnapshot).alarms);
+
   return { deltas, alarms, annotations };
 }
 
@@ -1250,6 +1269,504 @@ export function classifyVenueRejectRates(probe) {
     });
   }
   return { alarms, annotations };
+}
+
+// ── Deliverable A: the promotion-evidence ATOMIC TUPLE (task #87) ──────────────────────────────────
+// The defect: research/loop/STATUS.md recorded a promotion window that advanced while the closed-
+// round-trip count stayed flat. Resolved during planning as a TRANSCRIPTION DESYNC, not a code bug —
+// the window and the count were read at different moments (different sources, different instants)
+// and paired in prose. The true pairings are all self-consistent (7.329d⟺34, 7.6486d⟺35, 7.891d⟺37);
+// STATUS paired a fresh count with a stale window. The fix is therefore an ATOMICITY GUARANTEE: every
+// field below must come from the SAME PromotionReadinessService.evaluate() sample, so a pass
+// physically cannot pair fields from different samples again.
+//
+// HOW ATOMICITY IS ACTUALLY GUARANTEED, not merely asserted: promotion-metrics.service.ts's tick()
+// calls evaluate() ONCE, then sets all seven gauges below in one synchronous burst with no `await`
+// between the `.set()` calls — so between two ticks (5-minute SAMPLE_INTERVAL_MS) every one of these
+// gauges holds a value from the SAME evaluate() call, and a Prometheus scrape (itself one synchronous
+// read of the whole registry) can only ever observe one tick's values, never a mix of two. This probe
+// reads all seven in ONE `promtool query instant` call (buildPromotionEvidenceProbe, loop-sweep.mjs)
+// so the read side inherits the same one-instant guarantee the write side already provides — a
+// second `promQuery()` call per metric would still be internally consistent (nothing else in this
+// process mutates these gauges), but batching is what makes the atomicity a property of the CODE
+// rather than an argument about timing.
+//
+// FAIL DIRECTION — measurement/veto-only gate, fails OPEN: this is disclosure of the loop's own
+// research evidence, not a defect signal, so a read failure becomes ONE annotation and never blocks
+// or alters anything the pass does (contrast Deliverable B below, a money-path/DB-integrity HEALTH
+// gate that fails CLOSED). The one rule that is NOT soft: every field of the tuple voids TOGETHER.
+// If even one gauge or blocked-reason label is unreadable, the WHOLE tuple is void — never a
+// partially-populated one, because a partial tuple is precisely task #87's failure mode reproduced
+// in a new place.
+//
+// Hand-mirrored from ports/trading/promotion.ts:194-202's PromotionBlockedReason union — a .mjs
+// script outside the tsconfig graph cannot import the TS type (same constraint gather()'s realDecides
+// probe documents for DEGRADED_DECIDE_RATIONALE_TAGS). Must be edited alongside that union; the
+// `satisfies Record<PromotionBlockedReason, true>` map in promotion-metrics.service.ts is the
+// exhaustiveness check on the WRITE side, this list is its read-side twin.
+export const PROMOTION_BLOCKED_REASONS = [
+  'NO_STATS_SOURCE',
+  'UNRESOLVED_FILL',
+  'UNCONVERTIBLE_FEE_ASSET',
+  'INSUFFICIENT_ROUND_TRIPS',
+  'NON_POSITIVE_NET_PNL',
+  'INSUFFICIENT_WINDOW',
+  'FUNDING_DATA_MISSING',
+  'BELOW_PASSIVE_BENCHMARK',
+];
+
+/**
+ * The promotion-evidence tuple, voided WHOLESALE on any incomplete read. PURE: no I/O, no clock,
+ * cannot throw. `probe` is `probes.promotionEvidence` from gather() — see
+ * buildPromotionEvidenceProbe (loop-sweep.mjs) for its shape.
+ */
+export function classifyPromotionEvidence(probe) {
+  const annotations = [];
+  try {
+    if (!probe || probe.ok !== true || !probe.value) {
+      annotations.push({
+        kind: 'promotion_evidence_void',
+        detail:
+          'the promotion-evidence tuple could not be read at all ' +
+          `(${(probe && probe.error) || 'no probe result'}) — VOID, not a partial reading: every ` +
+          'field of this tuple must come from the same evaluate() sample or none of them are ' +
+          'trustworthy together',
+      });
+      return { annotations };
+    }
+    const v = probe.value;
+    // Each of these six is an UNLABELED prom-client Gauge, which registers with a default value of 0
+    // at construction (PromotionMetricsService's constructor runs whenever ObservabilityModule
+    // loads) — so 0 is both a legitimate default AND a legitimate real reading, and Number.isFinite
+    // only trips when the series is ENTIRELY ABSENT (a binary predating this metric, or one renamed/
+    // dropped — the same not-a-zero contract promActiveCause/promConsultGateTotal already draw for
+    // other metrics, not a "never ticked" defense: a real boot's tick() runs within the first
+    // SAMPLE_INTERVAL_MS regardless of PROMOTION_READINESS binding).
+    const scalarFields = [
+      ['roundTrips', v.roundTrips],
+      ['winRate', v.winRate],
+      ['netPnlUsd', v.netPnlUsd],
+      ['llmCostUsd', v.llmCostUsd],
+      ['windowDays', v.windowDays],
+      ['ready', v.ready],
+    ];
+    const missingScalars = scalarFields
+      .filter(([, val]) => !Number.isFinite(val))
+      .map(([name]) => name);
+    // agentic_promotion_blocked IS explicitly zero-seeded at construction (G5, promotion-metrics.
+    // service.ts) — a normal boot carries all eight reason labels (0 or 1) even before the first
+    // tick(). Missing here means the gauge/module is entirely absent, not merely unticked.
+    const blocked =
+      (v.blockedByReason && typeof v.blockedByReason === 'object' && v.blockedByReason) || {};
+    const missingReasons = PROMOTION_BLOCKED_REASONS.filter((r) => !Number.isFinite(blocked[r]));
+    if (missingScalars.length > 0 || missingReasons.length > 0) {
+      const parts = [];
+      if (missingScalars.length > 0) parts.push(`missing gauge(s): ${missingScalars.join(', ')}`);
+      if (missingReasons.length > 0) {
+        parts.push(`missing blocked-reason label(s): ${missingReasons.join(', ')}`);
+      }
+      annotations.push({
+        kind: 'promotion_evidence_void',
+        detail:
+          `the promotion-evidence tuple is INCOMPLETE — ${parts.join('; ')} — voided WHOLESALE ` +
+          'rather than reporting the fields that did read: a partially-populated tuple is exactly ' +
+          'the transcription-desync failure mode this check exists to rule out (task #87)',
+      });
+      return { annotations };
+    }
+    const reasons = PROMOTION_BLOCKED_REASONS.filter((r) => blocked[r] === 1);
+    annotations.push({
+      kind: 'promotion_evidence',
+      detail:
+        `windowDays=${v.windowDays} roundTrips=${v.roundTrips} netPnlUsd=${v.netPnlUsd} ` +
+        `llmCostUsd=${v.llmCostUsd} winRate=${v.winRate} ready=${v.ready === 1} ` +
+        `reasons=[${reasons.length > 0 ? reasons.join(', ') : 'none'}] — all seven fields sampled ` +
+        'from ONE PromotionReadinessService.evaluate() call (promotion-metrics.service.ts tick(), ' +
+        'which sets every gauge synchronously off one evaluate() with no await between the sets, so ' +
+        'one instant Prometheus query at one point in time can never straddle two evaluate() calls)',
+    });
+  } catch (err) {
+    annotations.push({
+      kind: 'promotion_evidence_void',
+      detail:
+        'the promotion-evidence classifier threw and produced NO reading: ' +
+        `${err instanceof Error ? err.message : String(err)} — VOID, not a pass`,
+    });
+  }
+  return { annotations };
+}
+
+// ── Deliverable B: five DB integrity invariants ─────────────────────────────────────────────────
+// None of these existed before this pass. All five are ALARMS and fail CLOSED — each guards a named
+// corruption mode where an unreadable answer is itself the finding, the opposite direction from
+// Deliverable A above (a measurement/veto-only gate) and matching classifyVenueRejectRates' own
+// fail-CLOSED argument (rules/code-hygiene.md: measurement/veto-only gates fail OPEN, safety/
+// integrity gates fail CLOSED).
+//
+// EXPLICITLY NOT ALARMS, and why — so a later pass does not "helpfully" promote them:
+//   I3 (recomputing the round-trip walk must reproduce the promotion gauges — verified byte-exact
+//   today at 40 cycles / 8.4689 days) needs the TypeScript walkRoundTrips (domain/trading/risk/
+//   round-trips.ts), not SQL — this sweep is a stdlib-only .mjs outside the tsconfig graph and
+//   cannot import it. It is a periodic audit, not a sweep-native check.
+//   I5 (equity reconciliation) carries a BUILT-IN frame residual — unrealized PnL is marked in the
+//   live frame while entries are recorded in the demo frame — so an alarm here is EXPECTED to fire
+//   and would be ignored, which is worse than not having it. Its DRIFT is nonetheless the cheapest
+//   available proxy for the demo mark and should be recorded per pass as a measurement, not a gate.
+
+// ── W1: out-of-order fill ingestion ─────────────────────────────────────────────────────────────
+// The load-bearing one. walkRoundTrips (domain/trading/risk/round-trips.ts) walks each
+// (strategyId, symbol) group's fills in the order they ARRIVE in its input array — that array is
+// built by PromotionStatsRepository ordering fills by ingested_at, on the assumption that reading
+// rows in ingestion order reproduces venue execution order. `fills` carries no append-only trigger:
+// drizzle/0001_v3_append_only_hardening.sql hardens exactly five tables (audit_log, order_events,
+// funding_events, funding_payments, experiments) and fills is created UNTRIGGERED at
+// drizzle/0000_v3_initial.sql:114 — nothing in the DB enforces that a later-ingested fill also
+// carries a later venue_timestamp within its group. Every round-trip count and window feeding
+// Deliverable A's tuple (and the live PromotionReadinessService verdict) rests on this prefix-
+// determinism holding, and nothing before this pass checked it. Measured live at authoring time:
+// 0 violations.
+//
+// FAILS CLOSED: an unreadable ordering check is not the same as a proven-ordered journal.
+export function classifyFillOrdering(probe) {
+  const alarms = [];
+  try {
+    if (!probe || probe.ok !== true || !probe.value) {
+      alarms.push({
+        kind: 'fill_ordering_unreadable',
+        detail:
+          'the fill-ordering check could not read fills/order_intents at all ' +
+          `(${(probe && probe.error) || 'no probe result'}) — fails CLOSED: an unread ordering ` +
+          'check is not evidence the journal is ordered',
+      });
+      return { alarms };
+    }
+    const { violations, checked } = probe.value;
+    if (
+      !Number.isFinite(violations) ||
+      !Number.isFinite(checked) ||
+      violations < 0 ||
+      checked < 0 ||
+      violations > checked
+    ) {
+      alarms.push({
+        kind: 'fill_ordering_unreadable',
+        detail:
+          `incoherent violations/checked pair (violations=${String(violations)}, ` +
+          `checked=${String(checked)}) — the query did not answer the question, fails CLOSED`,
+      });
+      return { alarms };
+    }
+    if (violations > 0) {
+      alarms.push({
+        kind: 'fill_ordering_violation',
+        detail:
+          `${violations} of ${checked} fill(s), grouped by (strategy_id, symbol) and read in ` +
+          'ingested_at order, carry a venue_timestamp EARLIER than the fill read immediately before ' +
+          "them in the same group — walkRoundTrips' (domain/trading/risk/round-trips.ts) prefix-" +
+          'determinism assumption is violated for at least one group, which can corrupt every ' +
+          'round-trip count and window this sweep and the live promotion gate report',
+      });
+    }
+  } catch (err) {
+    alarms.push({
+      kind: 'fill_ordering_unreadable',
+      detail:
+        `the fill-ordering classifier threw and produced NO verdict: ${err instanceof Error ? err.message : String(err)} — ` +
+        'fails CLOSED, because an integrity check that cannot run is not one that passed',
+    });
+  }
+  return { alarms };
+}
+
+// ── I1: fills.intent_id must never be NULL ──────────────────────────────────────────────────────
+// A NULL intent_id silently trips PromotionReadinessService's UNRESOLVED_FILL reason
+// (promotion-readiness.service.ts:85,128) and blocks the earned-live gate with no series anywhere
+// naming which fills, how many, or since when — the gate goes dark for a reason nobody can see.
+export function classifyUnresolvedFillIntents(probe) {
+  const alarms = [];
+  try {
+    if (!probe || probe.ok !== true || !probe.value || !Number.isFinite(probe.value.count)) {
+      alarms.push({
+        kind: 'unresolved_fill_intent_unreadable',
+        detail:
+          'the unresolved-fill-intent check could not read fills at all ' +
+          `(${(probe && probe.error) || 'no probe result'}) — fails CLOSED`,
+      });
+      return { alarms };
+    }
+    const { count } = probe.value;
+    if (count < 0) {
+      alarms.push({
+        kind: 'unresolved_fill_intent_unreadable',
+        detail: `negative fill count (${count}) — the query did not answer the question, fails CLOSED`,
+      });
+      return { alarms };
+    }
+    if (count > 0) {
+      alarms.push({
+        kind: 'unresolved_fill_intent',
+        detail:
+          `${count} fills row(s) carry intent_id IS NULL — each one silently trips ` +
+          "PromotionReadinessService's UNRESOLVED_FILL reason and blocks the earned-live gate with " +
+          'no series naming which fills or how many',
+      });
+    }
+  } catch (err) {
+    alarms.push({
+      kind: 'unresolved_fill_intent_unreadable',
+      detail:
+        `the unresolved-fill-intent classifier threw and produced NO verdict: ${err instanceof Error ? err.message : String(err)} — ` +
+        'fails CLOSED',
+    });
+  }
+  return { alarms };
+}
+
+// ── I2: orders.cum_qty must equal the summed qty of its own fills, on every terminal order ───────
+// WATCH-V4-4's expected-positive (research/loop/watches.md), currently hand-checked every pass — 439
+// terminal orders, 0 mismatches at authoring time. A money-equality check (root CLAUDE.md hard rule
+// 1): the comparison runs INSIDE Postgres as an exact NUMERIC(38,18) `<>`, never brought into JS as a
+// float and never compared via parseFloat/Number() — NUMERIC arithmetic in Postgres is exact
+// decimal, the same guarantee decimal.js gives client-side.
+export function classifyCumQtyMismatch(probe) {
+  const alarms = [];
+  try {
+    if (!probe || probe.ok !== true || !probe.value) {
+      alarms.push({
+        kind: 'cum_qty_mismatch_unreadable',
+        detail:
+          'the cum_qty/fill-sum check could not read orders/fills at all ' +
+          `(${(probe && probe.error) || 'no probe result'}) — fails CLOSED: an unread money-path ` +
+          'equality is not a matching one',
+      });
+      return { alarms };
+    }
+    const { mismatches, checked } = probe.value;
+    if (
+      !Number.isFinite(mismatches) ||
+      !Number.isFinite(checked) ||
+      mismatches < 0 ||
+      checked < 0 ||
+      mismatches > checked
+    ) {
+      alarms.push({
+        kind: 'cum_qty_mismatch_unreadable',
+        detail:
+          `incoherent mismatches/checked pair (mismatches=${String(mismatches)}, ` +
+          `checked=${String(checked)}) — fails CLOSED`,
+      });
+      return { alarms };
+    }
+    if (mismatches > 0) {
+      alarms.push({
+        kind: 'cum_qty_mismatch',
+        detail:
+          `${mismatches} of ${checked} terminal order(s) have cum_qty <> the exact sum of their ` +
+          'own fills’ qty (WATCH-V4-4) — the cached reducer state has drifted from the ' +
+          'settlement journal it is supposed to mirror',
+      });
+    }
+  } catch (err) {
+    alarms.push({
+      kind: 'cum_qty_mismatch_unreadable',
+      detail:
+        `the cum_qty/fill-sum classifier threw and produced NO verdict: ${err instanceof Error ? err.message : String(err)} — ` +
+        'fails CLOSED',
+    });
+  }
+  return { alarms };
+}
+
+// ── I4: every fill's fee must be non-null AND in a convertible asset ─────────────────────────────
+// "Convertible" is defined exactly the way domain/trading/risk/round-trips.ts's baseAssetOf/
+// quoteAssetOf define it (hand-mirrored below in SQL by the runner, since this .mjs cannot import
+// that TS module): the traded symbol's own base or quote asset. round-trips.ts itself only flags an
+// UNCONVERTIBLE fee when fee/feeAsset are BOTH present and neither matches — a null fee or feeAsset
+// is silently skipped there (nothing to sum, nothing to flag). This invariant is stricter on purpose:
+// a null fee is not "no fee", it is an UNREAD fee, and the money rule (root CLAUDE.md hard rule 1)
+// requires every fee to be accounted for, not silently absent.
+export function classifyUnconvertibleFillFees(probe) {
+  const alarms = [];
+  try {
+    if (!probe || probe.ok !== true || !probe.value) {
+      alarms.push({
+        kind: 'unconvertible_fill_fee_unreadable',
+        detail:
+          'the fill-fee convertibility check could not read fills at all ' +
+          `(${(probe && probe.error) || 'no probe result'}) — fails CLOSED`,
+      });
+      return { alarms };
+    }
+    const { violations, checked } = probe.value;
+    if (
+      !Number.isFinite(violations) ||
+      !Number.isFinite(checked) ||
+      violations < 0 ||
+      checked < 0 ||
+      violations > checked
+    ) {
+      alarms.push({
+        kind: 'unconvertible_fill_fee_unreadable',
+        detail:
+          `incoherent violations/checked pair (violations=${String(violations)}, ` +
+          `checked=${String(checked)}) — fails CLOSED`,
+      });
+      return { alarms };
+    }
+    if (violations > 0) {
+      alarms.push({
+        kind: 'unconvertible_fill_fee',
+        detail:
+          `${violations} of ${checked} fill(s) carry a null fee/fee_ccy, or a fee_ccy that is ` +
+          "neither the traded symbol's base nor quote asset — each is a fee the promotion gate " +
+          'cannot price into net PnL',
+      });
+    }
+  } catch (err) {
+    alarms.push({
+      kind: 'unconvertible_fill_fee_unreadable',
+      detail:
+        `the fill-fee convertibility classifier threw and produced NO verdict: ${err instanceof Error ? err.message : String(err)} — ` +
+        'fails CLOSED',
+    });
+  }
+  return { alarms };
+}
+
+// ── W3: the running promotion config must match the newest config_snapshots row ──────────────────
+// Verified before writing this query (2026-08-03, per this deliverable's own instruction to check
+// rather than guess): config_snapshots EXISTS under this name (database/schemas/trading/
+// trading.schema.ts) and its repository (ConfigSnapshotRepository.upsert,
+// database/repositories/trading/config-snapshot.repository.ts) is bound at CONFIG_SNAPSHOT_REPO in
+// database.module.ts — but a full-text search of src/ found ZERO call sites that ever invoke
+// `.upsert()`. The table is therefore ALWAYS EMPTY on this stack today. That is not this check's bug
+// to paper over: fails CLOSED, so an unwritten snapshot is its own named alarm
+// (config_snapshot_missing) rather than a silent pass — an unwritten config snapshot is not evidence
+// the config agrees with itself. Because the writer has never run, the JSON shape `config_snapshots.
+// config` would carry has never been established either; if a row does someday exist, both a raw
+// env-var key spelling and a camelCase AppConfig-field spelling are tried before giving up
+// (config_snapshot_shape_unknown), rather than silently assuming one.
+export function classifyConfigSnapshotDrift(probe) {
+  const alarms = [];
+  try {
+    if (!probe || probe.ok !== true || !probe.value) {
+      alarms.push({
+        kind: 'config_snapshot_unreadable',
+        detail:
+          'the config-snapshot drift check could not read config_snapshots or the running ' +
+          `container env at all (${(probe && probe.error) || 'no probe result'}) — fails CLOSED: an ` +
+          'unread config comparison is not the same as a matching one',
+      });
+      return { alarms };
+    }
+    const { total, rawConfig, runningDustNotional, runningEvidenceEpoch } = probe.value;
+    if (!Number.isFinite(total) || total < 0) {
+      alarms.push({
+        kind: 'config_snapshot_unreadable',
+        detail: `unparseable config_snapshots row count (${String(total)}) — fails CLOSED`,
+      });
+      return { alarms };
+    }
+    if (total === 0) {
+      alarms.push({
+        kind: 'config_snapshot_missing',
+        detail:
+          'config_snapshots has 0 rows — ConfigSnapshotRepository.upsert() ' +
+          '(database/repositories/trading/config-snapshot.repository.ts) is bound at ' +
+          'CONFIG_SNAPSHOT_REPO but never invoked by any feature module (verified 2026-08-03: zero ' +
+          'call sites in src/), so no snapshot has ever been written — PROMOTION_DUST_NOTIONAL/' +
+          'PROMOTION_EVIDENCE_EPOCH drift cannot be verified until a writer exists. Fails CLOSED: an ' +
+          'unwritten config snapshot is not evidence the config agrees with itself',
+      });
+      return { alarms };
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(rawConfig);
+    } catch (err) {
+      alarms.push({
+        kind: 'config_snapshot_unreadable',
+        detail:
+          "the newest config_snapshots row's config column did not parse as JSON " +
+          `(${err instanceof Error ? err.message : String(err)}) — fails CLOSED`,
+      });
+      return { alarms };
+    }
+    if (!parsed || typeof parsed !== 'object') {
+      alarms.push({
+        kind: 'config_snapshot_shape_unknown',
+        detail:
+          'the newest config_snapshots row’s config column is not a JSON object — fails CLOSED',
+      });
+      return { alarms };
+    }
+    const dustSnapshot =
+      parsed.PROMOTION_DUST_NOTIONAL !== undefined
+        ? parsed.PROMOTION_DUST_NOTIONAL
+        : parsed.promotionDustNotional;
+    const epochSnapshot =
+      parsed.PROMOTION_EVIDENCE_EPOCH !== undefined
+        ? parsed.PROMOTION_EVIDENCE_EPOCH
+        : (parsed.promotionEvidenceEpoch ?? parsed.evidenceEpochMs);
+    if (dustSnapshot === undefined || epochSnapshot === undefined) {
+      alarms.push({
+        kind: 'config_snapshot_shape_unknown',
+        detail:
+          'config_snapshots carries a row but neither PROMOTION_DUST_NOTIONAL/promotionDustNotional ' +
+          'nor PROMOTION_EVIDENCE_EPOCH/promotionEvidenceEpoch/evidenceEpochMs were found in its ' +
+          "config JSON — the writer's shape has never been established (zero call sites), so this " +
+          'comparison cannot run. Fails CLOSED: an unrecognised shape is not a match',
+      });
+      return { alarms };
+    }
+    if (runningDustNotional === null || runningEvidenceEpoch === null) {
+      alarms.push({
+        kind: 'config_snapshot_unreadable',
+        detail:
+          'the running container env did not resolve PROMOTION_DUST_NOTIONAL/' +
+          'PROMOTION_EVIDENCE_EPOCH — fails CLOSED',
+      });
+      return { alarms };
+    }
+    const mismatches = [];
+    // Money-shaped value (root CLAUDE.md hard rule 1) — compared via decimal.js, never string
+    // equality (which would false-mismatch "5" against "5.0") and never parseFloat/Number().
+    let dustEqual;
+    try {
+      dustEqual = new Decimal(String(dustSnapshot)).equals(new Decimal(runningDustNotional));
+    } catch {
+      dustEqual = false;
+      mismatches.push(
+        `PROMOTION_DUST_NOTIONAL: unparseable decimal (snapshot=${String(dustSnapshot)} running=${runningDustNotional})`,
+      );
+    }
+    if (dustEqual === false && mismatches.length === 0) {
+      mismatches.push(
+        `PROMOTION_DUST_NOTIONAL: snapshot=${String(dustSnapshot)} running=${runningDustNotional}`,
+      );
+    }
+    if (String(epochSnapshot) !== runningEvidenceEpoch) {
+      mismatches.push(
+        `PROMOTION_EVIDENCE_EPOCH: snapshot=${String(epochSnapshot)} running=${runningEvidenceEpoch}`,
+      );
+    }
+    if (mismatches.length > 0) {
+      alarms.push({
+        kind: 'config_snapshot_drift',
+        detail:
+          'the running config disagrees with the newest committed config_snapshots row: ' +
+          mismatches.join('; '),
+      });
+    }
+  } catch (err) {
+    alarms.push({
+      kind: 'config_snapshot_unreadable',
+      detail:
+        `the config-snapshot drift classifier threw and produced NO verdict: ${err instanceof Error ? err.message : String(err)} — ` +
+        'fails CLOSED',
+    });
+  }
+  return { alarms };
 }
 
 // ── off-gate harness monitor: making a silent suite's result impossible to miss ───────────────────

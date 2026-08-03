@@ -49,6 +49,7 @@ import {
   VENUES,
 } from './loop-sweep-core.mjs';
 import { forwardReturnAnnotations } from './loop-forward-return.mjs';
+import { oosArmSweepAnnotations } from './loop-oos-arm.mjs';
 import {
   dockerInspect,
   dockerLogsTail,
@@ -131,6 +132,74 @@ function promScalar(res) {
   if (!parsed.ok) return { ok: false, error: parsed.error };
   if (parsed.value.length === 0) return { ok: false, error: 'empty instant vector (no series)' };
   return { ok: true, value: parsed.value[0].value };
+}
+
+// ── Deliverable A: one promtool call for the whole promotion-evidence tuple ─────────────────────
+// parsePromSeries (above) only captures the LABEL block because every other probe in this file
+// queries exactly one metric name at a time and never needs it back. This ONE probe queries all
+// seven `agentic_promotion_*` series in a SINGLE `promtool query instant` call — see
+// classifyPromotionEvidence's header (loop-sweep-core.mjs) for why that single call is the
+// atomicity guarantee the whole deliverable rests on — so the metric name has to survive parsing.
+const PROM_NAMED_SERIES_RE = /^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{[^}]*\})?\s*=>\s*([-\d.eE+]+)\s*@/;
+export function parseNamedPromSeries(res) {
+  if (!res.ok) return { ok: false, error: res.error };
+  const series = [];
+  for (const raw of res.value.split('\n')) {
+    const line = raw.trim();
+    if (!line) continue;
+    const m = PROM_NAMED_SERIES_RE.exec(line);
+    if (!m) continue;
+    const labels = {};
+    if (m[2]) {
+      for (const pair of m[2].slice(1, -1).split(',')) {
+        const pm = pair.match(/([^=]+)="([^"]*)"/);
+        if (pm) labels[pm[1].trim()] = pm[2];
+      }
+    }
+    series.push({ name: m[1], labels, value: Number(m[3]) });
+  }
+  return { ok: true, value: series };
+}
+
+// The names queried, so a single regex change here and in gather()'s promQuery expr can never drift
+// apart — both are asserted against each other by the spec.
+export const PROMOTION_EVIDENCE_METRIC_NAMES = [
+  'agentic_promotion_round_trips',
+  'agentic_promotion_win_rate',
+  'agentic_promotion_net_pnl_usd',
+  'agentic_promotion_llm_cost_usd',
+  'agentic_promotion_window_days',
+  'agentic_promotion_ready',
+  'agentic_promotion_blocked',
+];
+
+// Reshapes the flat named-series list into the tuple shape classifyPromotionEvidence expects.
+// `blockedByReason` carries whatever `reason` labels the single query returned — the classifier owns
+// judging whether that set is the full closed 8-member union (PROMOTION_BLOCKED_REASONS).
+export function buildPromotionEvidenceProbe(res) {
+  const parsed = parseNamedPromSeries(res);
+  if (!parsed.ok) return parsed;
+  const byName = new Map();
+  const blockedByReason = {};
+  for (const s of parsed.value) {
+    if (s.name === 'agentic_promotion_blocked') {
+      if (s.labels.reason) blockedByReason[s.labels.reason] = s.value;
+      continue;
+    }
+    byName.set(s.name, s.value);
+  }
+  return {
+    ok: true,
+    value: {
+      roundTrips: byName.get('agentic_promotion_round_trips'),
+      winRate: byName.get('agentic_promotion_win_rate'),
+      netPnlUsd: byName.get('agentic_promotion_net_pnl_usd'),
+      llmCostUsd: byName.get('agentic_promotion_llm_cost_usd'),
+      windowDays: byName.get('agentic_promotion_window_days'),
+      ready: byName.get('agentic_promotion_ready'),
+      blockedByReason,
+    },
+  };
 }
 
 // Pass 48 (2026-07-30): reads agent_client_latch_cause — a closed three-member set seeded at 0 for
@@ -454,6 +523,17 @@ function parsePsqlRow(res) {
   return { ok: true, value: line.split('|') };
 }
 
+// W3: pulls one `KEY=value` entry out of `docker inspect`'s `.Config.Env` array (gather()'s
+// `containerEnv`). Null on any absence — an operator relying on the zod schema default rather than
+// setting the var explicitly in .env.app leaves it out of `.Config.Env` entirely, which the core
+// treats the same as an unreadable running value, never as "empty string".
+function envValue(envList, key) {
+  if (!Array.isArray(envList)) return null;
+  const prefix = `${key}=`;
+  const entry = envList.find((e) => typeof e === 'string' && e.startsWith(prefix));
+  return entry === undefined ? null : entry.slice(prefix.length);
+}
+
 // ── provenance + liveness probes for the one app process ─────────────────────────────────────────
 function gather() {
   const probes = {};
@@ -462,6 +542,12 @@ function gather() {
   let containerHealthy = false;
   let restartCount = null;
   let startedAt = null;
+  // W3 (Deliverable B): the container's own RESOLVED env — `docker inspect .Config.Env`, captured
+  // from this same inspect call rather than a second docker round-trip. This is "the running"
+  // PROMOTION_DUST_NOTIONAL/PROMOTION_EVIDENCE_EPOCH: docker compose resolves env_file precedence
+  // (.env.app then .env, later wins) into this array at container CREATE time, so reading it here is
+  // the actual deployed value, not a re-parse of the static .env.app text file.
+  let containerEnv = null;
   const inspect = dockerInspect(APP_CONTAINER);
   if (inspect.ok) {
     try {
@@ -471,6 +557,7 @@ function gather() {
       containerHealthy = health ? health === 'healthy' : state.Running === true;
       restartCount = Number.isFinite(info && info.RestartCount) ? info.RestartCount : null;
       startedAt = (state && state.StartedAt) || null;
+      containerEnv = Array.isArray(info && info.Config && info.Config.Env) ? info.Config.Env : null;
     } catch (err) {
       probes.inspect = { ok: false, error: `inspect parse: ${String(err)}` };
     }
@@ -639,6 +726,144 @@ function gather() {
       ? { ok: false, error: errors.join('; ') }
       : { ok: true, value: { byVenue, errors } };
   })();
+
+  // ── Deliverable B: five DB integrity invariants — see classifyFillOrdering/
+  // classifyUnresolvedFillIntents/classifyCumQtyMismatch/classifyUnconvertibleFillFees/
+  // classifyConfigSnapshotDrift (loop-sweep-core.mjs) for the derivation, the fail-CLOSED argument,
+  // and each check's own header. This runner half only gathers the raw counts.
+
+  // W1: out-of-order fill ingestion. `fill_id` is the tiebreak, not a second ordering key — it is
+  // the IDENTITY column's own monotonic insertion order, so ties on `ingested_at` (bulk inserts in
+  // one transaction all share a `now()` timestamp) still resolve to true insertion order. INNER JOIN
+  // to order_intents deliberately drops NULL-intent fills from THIS check (I1 below owns those) —
+  // same exclusion walkRoundTrips itself applies via its `strategyId === null` filter.
+  probes.fillOrdering = (() => {
+    const row = parsePsqlRow(
+      psql(
+        'select ' +
+          'count(*) filter (where prev_ts is not null and f_ts < prev_ts) as violations, ' +
+          'count(*) as checked ' +
+          'from (' +
+          'select f.venue_timestamp as f_ts, ' +
+          'lag(f.venue_timestamp) over (' +
+          'partition by i.strategy_id, f.symbol order by f.ingested_at, f.fill_id' +
+          ') as prev_ts ' +
+          'from fills f join order_intents i on i.intent_id = f.intent_id' +
+          ') t',
+        { cwd: REPO_ROOT },
+      ),
+    );
+    if (!row.ok) return row;
+    const violations = Number(row.value[0]);
+    const checked = Number(row.value[1]);
+    return Number.isFinite(violations) && Number.isFinite(checked)
+      ? { ok: true, value: { violations, checked } }
+      : { ok: false, error: `unparseable fill-ordering counts: ${row.value[0]}|${row.value[1]}` };
+  })();
+
+  // I1: fills.intent_id must never be NULL.
+  probes.unresolvedFillIntents = (() => {
+    const row = parsePsqlRow(
+      psql('select count(*) from fills where intent_id is null', { cwd: REPO_ROOT }),
+    );
+    if (!row.ok) return row;
+    const count = Number(row.value[0]);
+    return Number.isFinite(count)
+      ? { ok: true, value: { count } }
+      : { ok: false, error: `unparseable unresolved-fill-intent count: ${row.value[0]}` };
+  })();
+
+  // I2: orders.cum_qty must equal the exact summed qty of its own fills, on every TERMINAL order
+  // (terminal_at IS NOT NULL — the same predicate order.repository.ts uses for "not open"). The
+  // `<>` comparison runs INSIDE Postgres against NUMERIC(38,18) columns — exact decimal arithmetic,
+  // never a float and never parseFloat/Number() (root CLAUDE.md hard rule 1).
+  probes.cumQtyMismatch = (() => {
+    const row = parsePsqlRow(
+      psql(
+        'select ' +
+          'count(*) filter (where cum_qty <> fill_sum) as mismatches, ' +
+          'count(*) as checked ' +
+          'from (' +
+          'select o.cum_qty, coalesce(sum(f.qty), 0) as fill_sum ' +
+          'from orders o left join fills f on f.intent_id = o.intent_id ' +
+          'where o.terminal_at is not null ' +
+          'group by o.intent_id, o.cum_qty' +
+          ') t',
+        { cwd: REPO_ROOT },
+      ),
+    );
+    if (!row.ok) return row;
+    const mismatches = Number(row.value[0]);
+    const checked = Number(row.value[1]);
+    return Number.isFinite(mismatches) && Number.isFinite(checked)
+      ? { ok: true, value: { mismatches, checked } }
+      : {
+          ok: false,
+          error: `unparseable cum_qty-mismatch counts: ${row.value[0]}|${row.value[1]}`,
+        };
+  })();
+
+  // I4: every fill's fee must be non-null AND in a convertible asset (the traded symbol's own base
+  // or quote asset). Hand-mirrors domain/trading/risk/round-trips.ts's baseAssetOf/quoteAssetOf in
+  // SQL (this .mjs cannot import that TS module) — symbol is "BASE/QUOTE" or ccxt's linear-swap
+  // "BASE/QUOTE:SETTLE", so quote is split_part(symbol,'/',2) with anything past a ':' trimmed off.
+  probes.unconvertibleFillFees = (() => {
+    const row = parsePsqlRow(
+      psql(
+        'select ' +
+          'count(*) filter (' +
+          'where fee_amount is null or fee_ccy is null ' +
+          "or (fee_ccy <> split_part(symbol, '/', 1) " +
+          "and fee_ccy <> split_part(split_part(symbol, '/', 2), ':', 1))" +
+          ') as violations, ' +
+          'count(*) as checked ' +
+          'from fills',
+        { cwd: REPO_ROOT },
+      ),
+    );
+    if (!row.ok) return row;
+    const violations = Number(row.value[0]);
+    const checked = Number(row.value[1]);
+    return Number.isFinite(violations) && Number.isFinite(checked)
+      ? { ok: true, value: { violations, checked } }
+      : {
+          ok: false,
+          error: `unparseable unconvertible-fill-fee counts: ${row.value[0]}|${row.value[1]}`,
+        };
+  })();
+
+  // W3: does the newest config_snapshots row match the running container's env? See
+  // classifyConfigSnapshotDrift's header for why config_snapshots is verified-but-unwritten today.
+  probes.configSnapshot = (() => {
+    const row = parsePsqlRow(
+      psql(
+        'select (select count(*) from config_snapshots), ' +
+          "coalesce((select config::text from config_snapshots order by activated_at desc limit 1), '')",
+        { cwd: REPO_ROOT },
+      ),
+    );
+    if (!row.ok) return row;
+    const total = Number(row.value[0]);
+    if (!Number.isFinite(total)) {
+      return { ok: false, error: `unparseable config_snapshots count: ${row.value[0]}` };
+    }
+    return {
+      ok: true,
+      value: {
+        total,
+        rawConfig: row.value[1] ?? '',
+        runningDustNotional: envValue(containerEnv, 'PROMOTION_DUST_NOTIONAL'),
+        runningEvidenceEpoch: envValue(containerEnv, 'PROMOTION_EVIDENCE_EPOCH'),
+      },
+    };
+  })();
+
+  // ── Deliverable A: the promotion-evidence ATOMIC TUPLE — see classifyPromotionEvidence's header
+  // (loop-sweep-core.mjs) for the full derivation. ONE promtool call for all seven series so every
+  // field comes from the SAME Prometheus instant.
+  probes.promotionEvidence = buildPromotionEvidenceProbe(
+    promQuery(`{__name__=~"(${PROMOTION_EVIDENCE_METRIC_NAMES.join('|')})"}`),
+  );
 
   // reconciliations: per-venue row count + latest verdict (CLEAN/MISMATCH/HALT) for the reconcile-halt
   // + journal-silence checks. The reconciliations table is venue-scoped (venue NOT NULL, one row per
@@ -1304,6 +1529,14 @@ export function runSweep() {
   // Fails OPEN and by construction: forwardReturnAnnotations() cannot throw, and this measurement
   // never contributes an alarm — an adverse divergence is a FINDING, not a fault.
   result.annotations.push(...forwardReturnAnnotations({ cwd: REPO_ROOT }));
+
+  // Out-of-sample SESSION arm (research/studies/oos-session-arm-2026-08-03.md), merged the SAME way
+  // and for the SAME reason as the forward-return measurement immediately above: its subject is a
+  // scored comparison, not the stack's own state, so it has no business feeding computeSweep's
+  // watermark. Fails OPEN by construction (oosArmSweepAnnotations cannot throw) and never contributes
+  // an alarm — the arm is UNSTARTED until the owner-side hourly trigger exists, and that is reported
+  // as an annotation, never as a fault.
+  result.annotations.push(...oosArmSweepAnnotations({ cwd: REPO_ROOT }));
 
   // Backlog 54: the off-gate harnesses (test/eval, test/backtest, and the loop-sweep specs) surfaced
   // as annotations. Merged here beside the two above and for the same reason — its subject is this

@@ -946,7 +946,7 @@ export class AgenticStrategy implements AsyncStrategy {
         context: { ...context, ...trackRecordCtx, ...edgePolicyCtx },
       });
     } catch (err) {
-      this.recordErrorJournalEntry(input, err);
+      this.recordErrorJournalEntry(input, context, err);
       throw err;
     }
     proposal = this.enforcePlannedStopRiskOnPlanUpdate(proposal, context);
@@ -976,8 +976,14 @@ export class AgenticStrategy implements AsyncStrategy {
     // hold is normal quiet, not a stuck loop. posKey folds side + signed qty so any fill or resize
     // resets the streak. On the Nth identical positioned noop the symbol is suppressed until its
     // position changes (see the gate above); the suppression is loud (alarm) because a stuck loop is
-    // a defect, never expected steady state.
-    this.updateNoopBreaker(context.position, decision.action);
+    // a defect, never expected steady state. Gated on the SAME isModelAuthoredDecision filter the
+    // history ring uses below: a `client_latched`/`budget_exhausted:`/`off_menu:`/`schema_rejected:`
+    // degrade is lane-health noise, not the model repeating itself — an outage that outlasts the
+    // threshold must never engage a breaker that then survives the outage (forced_rearm cannot clear
+    // it while a position is still open, so a surviving breaker would suppress consults indefinitely).
+    if (isModelAuthoredDecision(decision.action, decision.rationale)) {
+      this.updateNoopBreaker(context.position, decision.action);
+    }
 
     this.annotatePreviousOutcome(lastClose, context.position, lastCandle, heldDuringPrev);
 
@@ -1004,7 +1010,7 @@ export class AgenticStrategy implements AsyncStrategy {
       if (this.history.length > MAX_DECISION_HISTORY) this.history.shift();
     }
 
-    this.recordJournalEntry(input, decision, proposal);
+    this.recordJournalEntry(input, context, decision, proposal);
 
     // B3 (Design § Model-owned exits, § New tool contract action mapping) plan bookkeeping, branched
     // on the proposal's own action + whether directives were returned at all:
@@ -1327,6 +1333,7 @@ export class AgenticStrategy implements AsyncStrategy {
       this.annotatePreviousOutcome(lastClose, context.position, lastCandle, heldDuringPrev);
       this.recordQuietJournalEntry(
         input,
+        context,
         'venue_resting_fill: a resting venue order closed the position — plan cleared',
         'plan-executor',
       );
@@ -1389,6 +1396,7 @@ export class AgenticStrategy implements AsyncStrategy {
           this.onVenueTp?.('tp_race_hold');
           this.recordQuietJournalEntry(
             input,
+            context,
             `plan hold: close crossed the TP while the venue ${tpSide} rests or is in flight — awaiting its fill`,
             'plan-executor',
           );
@@ -1421,6 +1429,7 @@ export class AgenticStrategy implements AsyncStrategy {
           this.onVenueStop?.('stood_down');
           this.recordQuietJournalEntry(
             input,
+            context,
             `plan hold: close breached the plan stop by ${breachBps.toFixed(1)}bps, within the ${this.planStopForceBps}bps force band — deferring to the resting venue stop`,
             'plan-executor',
           );
@@ -1430,7 +1439,7 @@ export class AgenticStrategy implements AsyncStrategy {
       }
       this.clearPlan();
       this.annotatePreviousOutcome(lastClose, context.position, lastCandle, heldDuringPrev);
-      this.recordQuietJournalEntry(input, `plan exit: ${verdict.reason}`, 'plan-executor');
+      this.recordQuietJournalEntry(input, context, `plan exit: ${verdict.reason}`, 'plan-executor');
       // AGENTIC_VENUE_TP/AGENTIC_VENUE_STOP: a resting TP/stop order locks the base/margin at the
       // venue — cancel it BEFORE this full-size IOC exit, else the exit venue-rejects for
       // insufficient balance. Stop/max_hold only: a take_profit crossing this close-price check
@@ -1480,7 +1489,12 @@ export class AgenticStrategy implements AsyncStrategy {
     if (verdict.type === 'cancel_entry' || verdict.type === 'plan_expired') {
       this.clearPlan();
       this.annotatePreviousOutcome(lastClose, context.position, lastCandle, heldDuringPrev);
-      this.recordQuietJournalEntry(input, `plan cleared: ${verdict.type}`, 'plan-executor');
+      this.recordQuietJournalEntry(
+        input,
+        context,
+        `plan cleared: ${verdict.type}`,
+        'plan-executor',
+      );
       if (verdict.type === 'cancel_entry') {
         return [
           {
@@ -1516,6 +1530,7 @@ export class AgenticStrategy implements AsyncStrategy {
         : null;
     this.recordQuietJournalEntry(
       input,
+      context,
       `plan active — deterministic hold (${this.consultScheduleRationale()})`,
       'plan-executor',
       sampledPayload,
@@ -2682,7 +2697,7 @@ export class AgenticStrategy implements AsyncStrategy {
 
     this.annotatePreviousOutcome(lastClose, context.position, lastCandle, heldDuringPrev);
 
-    this.recordQuietJournalEntry(input, rationale);
+    this.recordQuietJournalEntry(input, context, rationale);
 
     return [];
   }
@@ -3002,10 +3017,16 @@ export class AgenticStrategy implements AsyncStrategy {
   // equality. Pure derivation from features the payload already carries (indicators + funding sign +
   // eventTime) — the SAME fields the client derives its retrieval query from, so a stored tag and a
   // query tag can never drift. null (⇒ untagged, a fail-open retrieval miss) while indicators are
-  // under warmup.
-  private regimeTagsFor(input: AgentDecisionInput): ReturnType<typeof deriveRegimeTags> {
+  // under warmup. Takes `context` explicitly rather than reading `input.context`: AgentDecisionInput's
+  // own `context` field is optional and host-supplied only (see its comment — "the strategy enriches,
+  // the host does not"), so `input` never carries it on any call path into this strategy; the locally
+  // built AgentContext (buildContext's own return) is the one place indicators actually live.
+  private regimeTagsFor(
+    input: AgentDecisionInput,
+    context: AgentContext,
+  ): ReturnType<typeof deriveRegimeTags> {
     return deriveRegimeTags({
-      indicators: input.context?.indicators ?? null,
+      indicators: context.indicators,
       fundingRate: input.snapshot.derivatives?.fundingRate ?? null,
       eventTime: input.snapshot.eventTime,
     });
@@ -3028,6 +3049,7 @@ export class AgenticStrategy implements AsyncStrategy {
 
   private recordJournalEntry(
     input: AgentDecisionInput,
+    context: AgentContext,
     decision: AgentDecisionMeta,
     proposal?: AgentProposal,
   ): void {
@@ -3074,7 +3096,7 @@ export class AgenticStrategy implements AsyncStrategy {
         // treatment-truth telemetry) still exist and are unaffected; they are simply no longer
         // forwarded to the journal, since the v3 agent_decisions table has no columns for them.
         // R2: regime fingerprint for episodic-memory retrieval — see regimeTagsFor.
-        regimeTags: this.regimeTagsFor(input),
+        regimeTags: this.regimeTagsFor(input, context),
       });
     } catch {
       // A journal failure must never affect trading — it's an analysis artifact, not a safety
@@ -3082,7 +3104,11 @@ export class AgenticStrategy implements AsyncStrategy {
     }
   }
 
-  private recordErrorJournalEntry(input: AgentDecisionInput, err: unknown): void {
+  private recordErrorJournalEntry(
+    input: AgentDecisionInput,
+    context: AgentContext,
+    err: unknown,
+  ): void {
     if (!this.journal) return;
     const { basedOnSeq, refPrice } = this.deriveMarketBasis(input);
     const candles = input.snapshot.candles.get(this.symbol) ?? [];
@@ -3121,7 +3147,7 @@ export class AgenticStrategy implements AsyncStrategy {
         inputPayload: null,
         // R2: tag error rows too — the regime is still knowable from the input, so a later consult can
         // learn "in this regime a decide errored" alongside its real decisions.
-        regimeTags: this.regimeTagsFor(input),
+        regimeTags: this.regimeTagsFor(input, context),
       });
     } catch {
       // See recordJournalEntry — a journal failure must never affect trading.
@@ -3132,6 +3158,7 @@ export class AgenticStrategy implements AsyncStrategy {
   // row, distinguishable at a glance from every client-sourced decision on the same strategyId.
   private recordQuietJournalEntry(
     input: AgentDecisionInput,
+    context: AgentContext,
     rationale: string,
     model: 'prescreen' | 'plan-executor' = 'prescreen',
     // W6: sampled market payload on a plan-managed quiet bar (see quietPayloadSampleBars) — absent
@@ -3164,7 +3191,7 @@ export class AgenticStrategy implements AsyncStrategy {
         inputPayload,
         // R2: quiet/prescreen holds are tagged too — a regime in which the lane repeatedly held is
         // itself case-based context worth surfacing.
-        regimeTags: this.regimeTagsFor(input),
+        regimeTags: this.regimeTagsFor(input, context),
       });
     } catch {
       // See recordJournalEntry — a journal failure must never affect trading.

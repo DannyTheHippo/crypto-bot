@@ -9,7 +9,10 @@ import {
   type AnthropicAgentClientConfig,
   type LoggerLike,
 } from '../../../../src/features/strategy/agentic/anthropic-agent-client';
-import { DECISION_V2_BOUNDS } from '../../../../src/features/strategy/agentic/agent-prompt';
+import {
+  DECISION_V2_BOUNDS,
+  PROMPT_HASH_BASELINE_MAX_TOKENS,
+} from '../../../../src/features/strategy/agentic/agent-prompt';
 import {
   AgentProposeError,
   type AgentDecisionInput,
@@ -2974,6 +2977,266 @@ describe('AnthropicAgentClient', () => {
 
       expect(proposal.signals).toEqual([]);
       expect(proposal.decision?.action).toBe('error');
+    });
+  });
+
+  // 2026-08-03. The take-profit floor used to read maker/takerBps off the ONE static profile the
+  // composition root builds from TRADING_SYMBOLS[0] (BTC/USDT, spot), so a 20bps floor was applied to
+  // a book that is 85% perp — a venue whose MEASURED schedule is 2 maker / 4-5 taker bps
+  // (research/studies/fee-floor-derivation-2026-07-31.md § 2). The gate now reads
+  // domain/trading/fees.ts keyed by the symbol's own venue. THE TABLE STILL CARRIES 10/10 FOR BOTH
+  // VENUES: this pass ships the plumbing, not the behaviour change, so the first test below must keep
+  // failing the perp trade and the second proves the flip is a one-line table edit away.
+  describe('take-profit floor reads the SYMBOL’s own venue fee schedule', () => {
+    const PERP_SYM = symbolId('SOL/USDT:USDT');
+
+    function perpInput(): AgentDecisionInput {
+      return {
+        strategyId: SID,
+        trigger: { kind: 'candle', event: { ...candle('100', 1n), symbol: PERP_SYM } },
+        snapshot: {
+          eventTime: epochMs(T),
+          candles: new Map(),
+          tickers: new Map([[PERP_SYM, { ...ticker('100', 1n), symbol: PERP_SYM }]]),
+          books: new Map(),
+          execReports: [],
+          portfolio: { strategyId: SID, positions: new Map(), openOrders: [] },
+        },
+        context: FLAT_CONTEXT,
+      };
+    }
+
+    function perpOpen(takeProfitPct: number): unknown {
+      return toolUseBody(
+        {
+          action: 'open_long',
+          sizeFraction: 0.05,
+          entry: { style: 'maker', offsetBps: 0 },
+          entryValidityBars: 4,
+          stopLossPct: 0.01,
+          takeProfitPct,
+          maxHoldBars: 96,
+        },
+        'tool_use',
+        'submit_trade',
+      );
+    }
+
+    it('UNCHANGED TODAY: a perp takeProfitPct of 0.0015 is still rejected under the shipped 10/10 table', async () => {
+      const fetchFn = vi.fn().mockResolvedValue(apiResponse(perpOpen(0.0015)));
+      const client = new AnthropicAgentClient(
+        buildCfg({ maxPositionFractionPerp: '0.35', perpLeverageCap: '2' }),
+        fetchFn,
+      );
+
+      const proposal = await client.propose(perpInput());
+
+      expect(proposal.signals).toEqual([]);
+      expect(proposal.decision?.rationale).toContain('[rejected: tp below fee floor]');
+    });
+
+    it('PLUMBING PROVEN: the same trade passes once the perp entry carries its measured 2/5 schedule', async () => {
+      const fetchFn = vi.fn().mockResolvedValue(apiResponse(perpOpen(0.0015)));
+      const client = new AnthropicAgentClient(
+        buildCfg({
+          maxPositionFractionPerp: '0.35',
+          perpLeverageCap: '2',
+          // The pending enable, applied in-memory only: 2 maker + 5 taker = 7bps round trip, which
+          // 0.0015 (15bps) clears twice over.
+          feeSchedules: new Map([
+            [
+              venueId('binanceusdm'),
+              {
+                makerBps: '2',
+                takerBps: '5',
+                measuredAt: '2026-07-31',
+                sourceStudy: 'research/studies/fee-floor-derivation-2026-07-31.md § 2',
+              },
+            ],
+          ]),
+        }),
+        fetchFn,
+      );
+
+      const proposal = await client.propose(perpInput());
+
+      expect(proposal.signals).toHaveLength(1);
+      expect(proposal.signals[0]!.kind).toBe('ENTER_LONG');
+      expect(proposal.plan?.takeProfitPct).toBe('0.0015');
+    });
+
+    it('the SPOT floor is untouched by that flip — each symbol is floored by its own venue', async () => {
+      const fetchFn = vi
+        .fn()
+        .mockResolvedValue(
+          apiResponse(
+            toolUseBody(tradeOpen({ takeProfitPct: 0.0015 }), 'tool_use', 'submit_trade'),
+          ),
+        );
+      // The pending enable EDITS the perp entry of the full table; it does not delete the spot one.
+      // The override therefore carries BOTH venues — a perp-only map would leave spot unmapped and
+      // fall back to the cheapest thing present (the 7bps perp entry), which is the opposite of the
+      // fail-closed behaviour and would silently make this assertion vacuous.
+      const client = new AnthropicAgentClient(
+        buildCfg({
+          feeSchedules: new Map([
+            [
+              venueId('binance'),
+              {
+                makerBps: '10',
+                takerBps: '10',
+                measuredAt: '2026-07-31',
+                sourceStudy: 'research/studies/fee-floor-derivation-2026-07-31.md § 2',
+              },
+            ],
+            [
+              venueId('binanceusdm'),
+              {
+                makerBps: '2',
+                takerBps: '5',
+                measuredAt: '2026-07-31',
+                sourceStudy: 'research/studies/fee-floor-derivation-2026-07-31.md § 2',
+              },
+            ],
+          ]),
+        }),
+        fetchFn,
+      );
+
+      const proposal = await client.propose(
+        buildInput({ tickers: new Map([[SYM, ticker('100', 1n)]]), context: FLAT_CONTEXT }),
+      );
+
+      // SYM is spot, so it is floored by binance's own 20bps round trip even while the perp entry
+      // sits at 7bps: 15bps clears the perp floor and not the spot one.
+      expect(proposal.signals).toEqual([]);
+      expect(proposal.decision?.rationale).toContain('[rejected: tp below fee floor]');
+    });
+
+    it('an UNMAPPED venue falls back to the most expensive schedule present — fails CLOSED', async () => {
+      // The fail-closed fallback deserves its own case rather than riding on the spot test above.
+      // Direction matters: the fallback can only be observed when the entry left in the table is the
+      // EXPENSIVE one, so this drops the perp entry and floors an unmapped perp symbol at spot's
+      // 20bps round trip. The mirror case (a perp-only table flooring an unmapped spot symbol at
+      // 7bps) is NOT constructible through this gate: DECISION_V2_BOUNDS.takeProfitPct.min is 0.001
+      // (10bps), so the schema rejects anything under the 7bps perp floor before the gate is
+      // reached. Worth stating plainly, because it means the pending perp enable makes the SCHEMA
+      // minimum — not this gate — the binding take-profit floor on perps.
+      const fetchFn = vi
+        .fn()
+        .mockResolvedValue(
+          apiResponse(
+            toolUseBody(tradeOpen({ takeProfitPct: 0.0015 }), 'tool_use', 'submit_trade'),
+          ),
+        );
+      const client = new AnthropicAgentClient(
+        buildCfg({
+          maxPositionFractionPerp: '0.35',
+          perpLeverageCap: '2',
+          feeSchedules: new Map([
+            [
+              venueId('binance'),
+              {
+                makerBps: '10',
+                takerBps: '10',
+                measuredAt: '2026-07-31',
+                sourceStudy: 'research/studies/fee-floor-derivation-2026-07-31.md § 2',
+              },
+            ],
+          ]),
+        }),
+        fetchFn,
+      );
+
+      const proposal = await client.propose(perpInput());
+
+      // 15bps clears a 7bps perp schedule, but the perp venue is absent from this table, so the
+      // fallback floors it at the worst entry present (spot's 20bps) and refuses.
+      expect(proposal.signals).toEqual([]);
+      expect(proposal.decision?.rationale).toContain('[rejected: tp below fee floor]');
+    });
+  });
+
+  // 2026-08-03. computePromptHash covers templateVersion + playbook + tool schema + model id only, so
+  // two REQUEST-param levers were invisible to it: output_config.effort (shipped flag-off in ea68379)
+  // and max_tokens. Same shape as the th1 precedent — a request-param arm made recoverable from the
+  // hash by a tag.
+  describe('promptHash covers the request-param levers', () => {
+    async function hashFor(over: Partial<AnthropicAgentClientConfig>): Promise<string> {
+      const fetchFn = vi
+        .fn()
+        .mockResolvedValue(
+          apiResponse(toolUseBody({ action: 'hold' }, 'tool_use', 'submit_trade')),
+        );
+      const proposal = await new AnthropicAgentClient(buildCfg(over), fetchFn).propose(
+        buildInput({ tickers: new Map([[SYM, ticker('100', 1n)]]), context: FLAT_CONTEXT }),
+      );
+      return proposal.promptHash!;
+    }
+
+    it('flag-OFF is byte-identical: an unset outputEffort adds no tag', async () => {
+      expect(await hashFor({})).toBe(await hashFor({ outputEffort: undefined }));
+    });
+
+    it('flag-ON hashes distinctly, and each effort level distinctly from the others', async () => {
+      const off = await hashFor({});
+      const low = await hashFor({ outputEffort: 'low' });
+      const max = await hashFor({ outputEffort: 'max' });
+
+      expect(low).not.toBe(off);
+      expect(max).not.toBe(off);
+      expect(low).not.toBe(max);
+    });
+
+    it('max_tokens at the deployed default adds no tag; any other budget hashes distinctly', async () => {
+      const baseline = await hashFor({ maxTokens: PROMPT_HASH_BASELINE_MAX_TOKENS });
+      const raised = await hashFor({ maxTokens: PROMPT_HASH_BASELINE_MAX_TOKENS * 2 });
+
+      expect(raised).not.toBe(baseline);
+      // The fixture default (256) is itself a deviation — it must carry the tag rather than silently
+      // colliding with a real 4096-token deployment's rows.
+      expect(await hashFor({})).not.toBe(baseline);
+    });
+
+    it('the batch path stamps the SAME request-param tags as the single-symbol path', async () => {
+      const fetchFn = vi.fn().mockResolvedValue(
+        apiResponse({
+          stop_reason: 'tool_use',
+          content: [
+            {
+              type: 'tool_use',
+              name: 'submit_portfolio',
+              input: { decisions: [{ symbol: 'BTC/USDT', action: 'hold' }], nextConsultBars: 4 },
+            },
+          ],
+        }),
+      );
+      const client = new AnthropicAgentClient(buildCfg({ outputEffort: 'low' }), fetchFn);
+      const { proposals } = await client.proposeBatch([
+        buildInput({ tickers: new Map([[SYM, ticker('100', 1n)]]), context: FLAT_CONTEXT }),
+      ]);
+      const batchHash = proposals.get('BTC/USDT')!.promptHash!;
+
+      const offBatchFetch = vi.fn().mockResolvedValue(
+        apiResponse({
+          stop_reason: 'tool_use',
+          content: [
+            {
+              type: 'tool_use',
+              name: 'submit_portfolio',
+              input: { decisions: [{ symbol: 'BTC/USDT', action: 'hold' }], nextConsultBars: 4 },
+            },
+          ],
+        }),
+      );
+      const { proposals: offProposals } = await new AnthropicAgentClient(
+        buildCfg(),
+        offBatchFetch,
+      ).proposeBatch([
+        buildInput({ tickers: new Map([[SYM, ticker('100', 1n)]]), context: FLAT_CONTEXT }),
+      ]);
+
+      expect(batchHash).not.toBe(offProposals.get('BTC/USDT')!.promptHash);
     });
   });
 });

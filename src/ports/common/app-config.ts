@@ -50,6 +50,14 @@ export interface AppConfig {
     // is what keeps PromotionReadinessService's re-pricing of the historical Opus llm_usage rows
     // honest. Absent ⇒ one model, one price, refusal never trips.
     reflectionModel?: string;
+    // Second decide-model arm for the keyed-PRF paired A/B (AGENTIC_MODEL_B/AGENTIC_MODEL_AB_PCT) —
+    // validated here so agenticEnv() can bridge it instead of selectAgentClient's module-isolation
+    // entry point falling through to raw process.env (the same drift class fixed for the four
+    // feed/A/B flags above).
+    modelB?: string;
+    // Percent of boots keyed-PRF-routed to modelB instead of model. 0 (default) ⇒ selectAgentClient
+    // never reads modelB, byte-identical to pre-A/B.
+    modelAbPct: number;
     timeoutMs: number;
     maxTokens: number;
     // WATCH-V4-12 sanctioned fix: Anthropic output_config.effort, threaded to
@@ -120,6 +128,9 @@ export interface AppConfig {
     // expectancy ladder computes from. Inert without a RoundTripEvidencePort wired. No A/B
     // interaction. Default false ⇒ byte-identical.
     trackRecordEnabled: boolean;
+    // R2 (episodic memory): gates the similarSetupsProvider retrieval block/sentence. Off by
+    // default ⇒ byte-identical to pre-feature (no similarSetups sentence/block/tag).
+    episodicMemoryEnabled: boolean;
     // Portfolio-consult batching (Push II Phase 5, DESIGN Task 2): coalesces concurrent single-symbol
     // decide() calls landing within one window into ONE Anthropic call (BatchingAgentClient,
     // submit_portfolio). Off by default — BatchingAgentClient is not even constructed unconfigured.

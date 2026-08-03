@@ -29,7 +29,6 @@ import {
 } from '../../../../src/features/strategy/agentic/strategy-host';
 import { StrategyRegistry } from '../../../../src/features/strategy/agentic/strategy-registry';
 import { SignalSinkService } from '../../../../src/features/trading/execution/signal-sink.service';
-import { CrossingRegistryService } from '../../../../src/features/trading/risk/crossing-registry.service';
 import { KillSwitchService } from '../../../../src/features/trading/risk/kill-switch.service';
 import { PositionSizerService } from '../../../../src/features/trading/risk/position-sizer.service';
 import { RateBucketsService } from '../../../../src/features/trading/risk/rate-buckets.service';
@@ -178,7 +177,6 @@ function realChokepoint() {
     feed,
     kill,
     new RateBucketsService(clock),
-    new CrossingRegistryService(),
     { record: () => undefined } satisfies RiskJournalPort,
   );
   const sizer = new PositionSizerService(clock, sizerDeps);

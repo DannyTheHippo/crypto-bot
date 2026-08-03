@@ -1,7 +1,8 @@
 // Batch shared-payload block (2026-07-30). payloadExtrasProvider is called ONCE per batch, but its
 // result used to be spread into EVERY symbol element, so an 8-symbol wave sent 8 copies of the same
-// portfolio/budget/calendar/execQuality/fundingAccrualQuote blocks. They now ride in ONE shared
-// block ahead of the symbol blocks.
+// portfolio/budget/calendar/execQuality blocks. They now ride in ONE shared block ahead of the symbol
+// blocks. (fundingAccrualQuote rode in that block too until 2026-08-03, when it was found to be a
+// per-symbol fact — see the per-symbol funding accrual describe at the bottom of this file.)
 //
 // The two contracts this file exists to hold:
 //  1. The partition is exact — `full === { ...shared, ...symbolOnly }` key-for-key, asserted against
@@ -193,8 +194,8 @@ function buildInput(symbolStr: string, i: number): AgentDecisionInput {
   };
 }
 
-// Sized off the live journal (2026-07-30): portfolio ≈900B, budget ≈152B, calendar ≈14B,
-// fundingAccrualQuote ≈27B per rendered element.
+// Sized off the live journal (2026-07-30): portfolio ≈900B, budget ≈152B, calendar ≈14B per
+// rendered element.
 const PAYLOAD_EXTRAS: AgentPayloadExtras = {
   portfolio: {
     cappedEquity: '1000.00',
@@ -219,12 +220,17 @@ const PAYLOAD_EXTRAS: AgentPayloadExtras = {
   },
   calendar: [{ name: 'FOMC minutes', atMs: T + 3_600_000, importance: 'high' }],
   execQuality: 'maker fill 61% (n=44) · missed-entry cost 4.1bps · post-fill drift +1.8bps',
-  fundingAccrualQuote: '-0.418293014',
+  // Per symbol, DISTINCT per symbol — the whole point of the 2026-08-03 move. The live map only ever
+  // holds symbols the funding poller has actually seen; the omission case is covered below.
+  fundingAccrualBySymbol: new Map(
+    BATCH_SYMBOLS.map((s, i) => [symbolId(s), `-0.41829301${i}`] as const),
+  ),
 };
 
 function elementExtras(symbolStr: string): BuildMarketPayloadExtras {
   return {
     ...PAYLOAD_EXTRAS,
+    fundingAccrualQuote: PAYLOAD_EXTRAS.fundingAccrualBySymbol?.get(symbolId(symbolStr)),
     fearGreed: FEAR_GREED,
     constraints: { tickSize: price('0.01'), lotStep: qty('0.0001'), minNotional: price('10') },
     capabilities: {
@@ -328,9 +334,11 @@ describe('shared batch payload block', () => {
       'calendar',
       'execQuality',
       'fearGreed',
-      'fundingAccrualQuote',
       'portfolio',
     ]);
+    // Never hoisted again: it is one symbol's carry, and the shared block's own header tells the model
+    // its contents apply to EVERY symbol below.
+    expect(shared).not.toHaveProperty('fundingAccrualQuote');
 
     const symbolOnly = JSON.parse(
       buildMarketPayload(buildInput('BTC/USDT', 0), extras, { omitShared: true }),
@@ -491,5 +499,90 @@ describe('shared batch payload block', () => {
     for (let i = 0; i < BATCH_SYMBOLS.length; i += 1) {
       expect(blocks[i + 1]!.text).toContain('"fearGreed"');
     }
+  });
+});
+
+// 2026-08-03. fundingAccrualQuote was computed once per batch from config.strategy.symbol
+// (= TRADING_SYMBOLS[0] = BTC/USDT SPOT, a venue that accrues no funding at all) and rendered into the
+// shared block, whose own header states that its contents apply to EVERY symbol below. One symbol's
+// number was being asserted as a fact of all 40.
+describe('per-symbol funding accrual', () => {
+  it('renders each symbol its OWN accrual, never one symbol’s number in the shared block', async () => {
+    const fetchFn = vi.fn().mockResolvedValue(apiResponse(holdBody(BATCH_SYMBOLS)));
+    await new AnthropicAgentClient(baseCfg(), fetchFn).proposeBatch(BATCH_SYMBOLS.map(buildInput));
+
+    const blocks = sentBody(fetchFn).messages[0]!.content;
+    const sharedText = blocks.find((b) => b.text.includes('Batch-wide context'))!.text;
+    expect(sharedText).not.toContain('fundingAccrualQuote');
+
+    // The shared block is block 0 here (no playbook wired), so element i is block i + 1.
+    for (const [i, symbol] of BATCH_SYMBOLS.entries()) {
+      const element = JSON.parse(
+        blocks[i + 1]!.text.slice(blocks[i + 1]!.text.indexOf('{')),
+      ) as Record<string, unknown>;
+      expect(element['symbol']).toBe(symbol);
+      expect(element['fundingAccrualQuote']).toBe(`-0.41829301${i}`);
+    }
+  });
+
+  it('omits the key entirely for a symbol with no accrual — never a literal null', async () => {
+    const fetchFn = vi.fn().mockResolvedValue(apiResponse(holdBody(BATCH_SYMBOLS)));
+    // The poller has seen only ETH/USDT: every other element must carry no key at all. `null` used to
+    // reach the wire verbatim — cumulativeAccrualQuote returns `string | null` while the render guard
+    // is `!== undefined`.
+    await new AnthropicAgentClient(
+      baseCfg({
+        payloadExtrasProvider: () => ({
+          ...PAYLOAD_EXTRAS,
+          fundingAccrualBySymbol: new Map([[symbolId('ETH/USDT'), '1.5']]),
+        }),
+      }),
+      fetchFn,
+    ).proposeBatch(BATCH_SYMBOLS.map(buildInput));
+
+    const blocks = sentBody(fetchFn).messages[0]!.content;
+    for (const [i, symbol] of BATCH_SYMBOLS.entries()) {
+      const text = blocks[i + 1]!.text;
+      if (symbol === 'ETH/USDT') {
+        expect(text).toContain('"fundingAccrualQuote":"1.5"');
+      } else {
+        expect(text).not.toContain('fundingAccrualQuote');
+      }
+    }
+  });
+
+  it('the single-symbol (non-batched) path keys the accrual the same way', async () => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      apiResponse({
+        stop_reason: 'tool_use',
+        content: [{ type: 'tool_use', name: 'submit_trade', input: { action: 'hold' } }],
+      }),
+    );
+    const { inputPayload } = await new AnthropicAgentClient(
+      baseCfg({
+        payloadExtrasProvider: () => ({
+          ...PAYLOAD_EXTRAS,
+          fundingAccrualBySymbol: new Map([[symbolId('SOL/USDT'), '2.25']]),
+        }),
+      }),
+      fetchFn,
+    ).propose(buildInput('SOL/USDT', 2));
+
+    expect(JSON.parse(inputPayload!)).toMatchObject({ fundingAccrualQuote: '2.25' });
+  });
+
+  it('the shared/element partition still round-trips after the move', () => {
+    const input = buildInput('ETH/USDT', 1);
+    const extras = elementExtras('ETH/USDT');
+
+    const full = JSON.parse(buildMarketPayload(input, extras)) as Record<string, unknown>;
+    const shared = JSON.parse(buildSharedPayload(extras)!) as Record<string, unknown>;
+    const symbolOnly = JSON.parse(
+      buildMarketPayload(input, extras, { omitShared: true }),
+    ) as Record<string, unknown>;
+
+    expect({ ...shared, ...symbolOnly }).toEqual(full);
+    expect(Object.keys(shared).filter((k) => k in symbolOnly)).toEqual([]);
+    expect(symbolOnly).toHaveProperty('fundingAccrualQuote');
   });
 });

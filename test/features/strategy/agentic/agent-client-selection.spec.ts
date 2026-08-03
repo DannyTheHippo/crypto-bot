@@ -647,6 +647,10 @@ describe('agenticEnv', () => {
   it('maps every AGENTIC_* field off the validated AppConfig.agentic config, so the real wiring path can never drift from it', () => {
     const agentic: AppConfig['agentic'] = {
       model: 'claude-config-model',
+      // Decide-model A/B (AGENTIC_MODEL_B/AGENTIC_MODEL_AB_PCT): modelB left unset here, mirroring
+      // the never-configured-in-this-fixture convention every other optional field above follows —
+      // modelAbPct: 0 is the required (non-optional) field's byte-identical-to-pre-A/B default.
+      modelAbPct: 0,
       timeoutMs: 12345,
       maxTokens: 777,
       minDecisionIntervalMs: 1000,
@@ -660,6 +664,9 @@ describe('agenticEnv', () => {
       crossSymbolLookbackBars: 20,
       bookStructureFeedEnabled: false,
       trackRecordEnabled: false,
+      // R2 (episodic memory): added to keep this fixture an exact structural match of the real
+      // (validated) config shape.
+      episodicMemoryEnabled: false,
       edgePolicyEnabled: false,
       edgePolicyFamily: 'none',
       portfolioConsultEnabled: true,
@@ -725,12 +732,20 @@ describe('agenticEnv', () => {
     // fixture matches the real TypedConfigService shape, same sibling-key convention as
     // derivativesFeed/tradeFlowFeed/strategy/venues above.
     const perp: AppConfig['perp'] = { leverageCap: '3', mmrFallback: '0.005', liqBufferPct: '0.2' };
+    // Config-schema drift fix: SENTIMENT_FEED_ENABLED/FEAR_GREED_FEED_ENABLED ARE already zod-
+    // validated, but agenticEnv never bridged them — present here (both 'true', unlike the fixture's
+    // other off-by-default flags) so the assertions below actually exercise the validated-config
+    // path rather than a coincidental process.env match.
+    const sentimentFeed: AppConfig['sentimentFeed'] = { enabled: true, pollIntervalMs: 300000 };
+    const fearGreedFeed: AppConfig['fearGreedFeed'] = { enabled: true, pollIntervalMs: 21600000 };
     const config = {
       agentic,
       derivativesFeed,
       tradeFlowFeed,
       positioningFeed,
       liquidationFeed,
+      sentimentFeed,
+      fearGreedFeed,
       strategy,
       venues,
       perp,
@@ -768,7 +783,18 @@ describe('agenticEnv', () => {
       // Plan-authoritative exits (2026-07-30): same validated-config sourcing, never a raw
       // process.env fall-through.
       AGENTIC_PLAN_AUTHORITATIVE_EXITS: 'false',
+      // Config-schema drift fix: these five keys now source off the validated config fields —
+      // AGENTIC_MODEL_AB_PCT/AGENTIC_EPISODIC_MEMORY_ENABLED/SENTIMENT_FEED_ENABLED/
+      // FEAR_GREED_FEED_ENABLED were previously falling through to raw process.env (or, for episodic
+      // memory, had no schema entry at all) despite this function's own header comment.
+      AGENTIC_MODEL_AB_PCT: '0',
+      AGENTIC_EPISODIC_MEMORY_ENABLED: 'false',
+      SENTIMENT_FEED_ENABLED: 'true',
+      FEAR_GREED_FEED_ENABLED: 'true',
     });
+    // AGENTIC_MODEL_B: sourced off agentic.modelB (undefined in this fixture) — asserts the absent-
+    // stays-absent contract (never the literal string 'undefined'), mirroring AGENTIC_REFLECTION_MODEL.
+    expect(agenticEnv(config)['AGENTIC_MODEL_B']).toBeUndefined();
     // AGENTIC_DERIVATIVES_AB_PCT read-site deleted (v3 spec §9/§10 work item 3) — no longer
     // overridden off agentic.derivativesAbPct; asserting its ABSENCE from the override set (rather
     // than a fall-through process.env value, which is test-environment-dependent) proves the

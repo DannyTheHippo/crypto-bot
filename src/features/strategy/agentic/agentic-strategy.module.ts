@@ -164,6 +164,12 @@ export function agenticEnv(config?: TypedConfigService): Record<string, string |
     ...process.env,
     AGENTIC_MODEL: agentic.model,
     AGENTIC_REFLECTION_MODEL: agentic.reflectionModel,
+    // Decide-model A/B: sourced off the validated config fields (never raw process.env) — the same
+    // no-drift convention as every other schema-backed AGENTIC_* key in this map. Optional string, no
+    // String() coercion (same rationale as AGENTIC_REFLECTION_MODEL above) — an absent modelB stays
+    // absent here rather than becoming the literal string 'undefined'.
+    AGENTIC_MODEL_B: agentic.modelB,
+    AGENTIC_MODEL_AB_PCT: String(agentic.modelAbPct),
     AGENTIC_TIMEOUT_MS: String(agentic.timeoutMs),
     AGENTIC_MAX_TOKENS: String(agentic.maxTokens),
     // WATCH-V4-12 sanctioned fix: sourced off the validated config field (never raw process.env), same
@@ -215,6 +221,17 @@ export function agenticEnv(config?: TypedConfigService): Record<string, string |
     AGENTIC_BOOK_STRUCTURE_ENABLED: String(agentic.bookStructureFeedEnabled),
     // Track-record block: off by default ⇒ byte-identical. No A/B interaction.
     AGENTIC_TRACK_RECORD_ENABLED: String(agentic.trackRecordEnabled),
+    // R2 (episodic memory): sourced off the validated config field — was previously the only one of
+    // these five keys with no schema entry at all (raw process.env, no drift possible to have, but
+    // also no config refusal on a malformed value). Off by default ⇒ byte-identical.
+    AGENTIC_EPISODIC_MEMORY_ENABLED: String(agentic.episodicMemoryEnabled),
+    // C4/X3a: sourced off the validated config fields (never raw process.env) — same no-drift
+    // convention as DERIVATIVES_FEED_ENABLED above. Both ARE already zod-validated
+    // (environment.config.ts's SENTIMENT_FEED_ENABLED/FEAR_GREED_FEED_ENABLED), but this function
+    // never bridged them, so selectAgentClient read them through the `...process.env` fall-through
+    // instead — the same drift class this comment block documents for AGENTIC_MAX_POSITION_FRACTION_*.
+    SENTIMENT_FEED_ENABLED: String(config.sentimentFeed.enabled),
+    FEAR_GREED_FEED_ENABLED: String(config.fearGreedFeed.enabled),
     // Phase 4 edge policy: off by default ⇒ byte-identical (DisabledEdgePolicy).
     AGENTIC_EDGE_POLICY_ENABLED: String(agentic.edgePolicyEnabled),
     AGENTIC_EDGE_POLICY_FAMILY: agentic.edgePolicyFamily,

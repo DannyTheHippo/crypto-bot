@@ -878,4 +878,39 @@ describe('AgenticStrategy decision journal', () => {
     );
     expect(journal.entries[0]!.rationale).toContain('socket hang up');
   });
+
+  // R2 (episodic memory): regimeTagsFor must read the STRATEGY-BUILT AgentContext (buildContext's own
+  // indicators), never `input.context` — AgentDecisionInput.context is host-supplied-only and never
+  // set on this lane (see its own comment), so reading it here would silently stamp every row null
+  // forever. Threaded through every journal-write call site (decide/quiet/error/plan-executor).
+  it('stamps a non-null regimeTags fingerprint on the journal row once indicators are warm', async () => {
+    const journal = new RecordingJournal();
+    const proposal: AgentProposal = {
+      signals: [],
+      decision: { action: 'hold', confidence: 0.5, rationale: 'flat chop' },
+    };
+    const client = new FixedProposalAgentClient(proposal);
+    const strategy = makeStrategy(client, { deps: { journal } });
+    const candles = Array.from({ length: 21 }, (_, i) => candle('100', i));
+
+    await strategy.decide(buildInput({ candles }));
+
+    expect(journal.entries).toHaveLength(1);
+    // T (1_700_000_000_000ms) = 2023-11-14T22:13:20Z → UTC hour 22 → 'us' session; a constant-price
+    // series gives a zero EMA spread (flat trend) and a zero ATR (low vol); no derivatives feed is
+    // wired in this fixture, so funding is omitted entirely (the spot-lane shape).
+    expect(journal.entries[0]!.regimeTags).toEqual({ trend: 'flat', vol: 'low', session: 'us' });
+  });
+
+  it('still writes a journal row (with a null regimeTags) while indicators are under warmup', async () => {
+    const journal = new RecordingJournal();
+    const client = new CapturingAgentClient();
+    const strategy = makeStrategy(client, { deps: { journal } });
+    const candles = Array.from({ length: 5 }, (_, i) => candle('100', i)); // < 21 warmup closes
+
+    await strategy.decide(buildInput({ candles }));
+
+    expect(journal.entries).toHaveLength(1);
+    expect(journal.entries[0]!.regimeTags).toBeNull();
+  });
 });

@@ -2002,3 +2002,75 @@ describe('Plan-stop watcher — sizer interaction on a double-fire (Push 3 P2)',
     expect(sizer.size(exitSignal, snapshot)).toEqual({ ok: false, reason: 'NO_POSITION' });
   });
 });
+
+// XA5 fix: updateNoopBreaker must never advance on a degrade row — a `client_latched`/
+// `budget_exhausted:`/`off_menu:`/`schema_rejected:` (etc.) decision is lane-health noise, not the
+// model repeating itself, and once positioned there is no forced_rearm rescue (that branch requires
+// activePlan === null — see evaluateConsultSchedule's own header comment — and a managed position
+// always has one). Gated on the same isModelAuthoredDecision filter the decision-history ring already
+// uses (agentic.strategy.ts's own decide()).
+describe('AgenticStrategy repeated-noop breaker (XA5) is gated on model-authored decisions', () => {
+  // Bar 0 opens the plan for real (open_long + directives); every later call repeats the SAME
+  // scripted decision while the position stays unchanged, so posKey/action never vary — the only
+  // thing that can differ between the two tests below is whether that repeated row counts. Pinned
+  // nextConsultBars: 1 keeps every bar nominally due for a fresh consult regardless of the breaker,
+  // isolating the breaker's own suppression as the only thing that could stop a further LLM call.
+  class RepeatingClient implements AgentClientPort {
+    calls = 0;
+    constructor(private readonly repeated: { action: 'hold' | 'error'; rationale: string }) {}
+    propose(): Promise<AgentProposal> {
+      this.calls += 1;
+      if (this.calls === 1) {
+        return Promise.resolve({
+          signals: [],
+          decision: { action: 'open_long', confidence: 0.8, rationale: 'enter' },
+          plan: PLAN,
+          nextConsultBars: 1,
+        });
+      }
+      return Promise.resolve({
+        signals: [],
+        decision: {
+          ...this.repeated,
+          confidence: this.repeated.action === 'error' ? null : 0.5,
+        },
+        nextConsultBars: 1,
+      });
+    }
+  }
+
+  it('six consecutive client_latched degrade rows while positioned do NOT engage the breaker', async () => {
+    const client = new RepeatingClient({
+      action: 'error',
+      rationale: 'client_latched: cause=fatal_400',
+    });
+    const strategy = makeStrategy(client);
+    const held = longPosition('100');
+
+    await strategy.decide(buildInput(0)); // open_long -> plan stored
+    for (let i = 1; i <= 6; i++) {
+      await strategy.decide(buildInput(i, { position: held })); // 6x identical client_latched row
+    }
+    const callsSoFar = client.calls;
+    await strategy.decide(buildInput(7, { position: held }));
+    // A wrongly-engaged breaker would suppress this bar (skipped_scheduled) despite nextConsultBars:1
+    // pinning it due — the call count must still climb.
+    expect(client.calls).toBe(callsSoFar + 1);
+  });
+
+  it('six consecutive genuinely model-authored identical holds while positioned DO engage the breaker', async () => {
+    const client = new RepeatingClient({ action: 'hold', rationale: 'chop, no edge' });
+    const strategy = makeStrategy(client);
+    const held = longPosition('100');
+
+    await strategy.decide(buildInput(0));
+    for (let i = 1; i <= 6; i++) {
+      await strategy.decide(buildInput(i, { position: held })); // 6x identical model-authored hold
+    }
+    const callsSoFar = client.calls;
+    await strategy.decide(buildInput(7, { position: held }));
+    // The breaker engaged on the 6th identical model-authored hold — this bar is suppressed even
+    // though nextConsultBars: 1 keeps it nominally due.
+    expect(client.calls).toBe(callsSoFar);
+  });
+});

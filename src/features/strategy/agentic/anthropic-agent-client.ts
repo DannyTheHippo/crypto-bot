@@ -6,6 +6,7 @@ import type { CandleEvent } from '../../../domain/venue/types/market-events';
 import type { EpochMs, SymbolId, VenueId } from '../../../domain/common/types/ids';
 import type { Signal } from '../../../domain/strategy/types/signal';
 import { venueForSymbol, PERP_VENUE_ID } from '../../../domain/venue/types/venue-map';
+import { roundTripFeeFraction, type VenueFeeSchedule } from '../../../domain/trading/fees';
 import {
   AgentProposeError,
   type AgentBudgetBlock,
@@ -40,6 +41,9 @@ import {
   THINKING_TEMPLATE_VERSION,
   MEMORY_TEMPLATE_VERSION,
   TRADE_TEMPLATE_VERSION,
+  OUTPUT_EFFORT_TEMPLATE_PREFIX,
+  MAX_TOKENS_TEMPLATE_PREFIX,
+  PROMPT_HASH_BASELINE_MAX_TOKENS,
   type SymbolCapabilities,
   type BuildMarketPayloadExtras,
   buildMarketPayload,
@@ -247,16 +251,20 @@ const NOOP_LOGGER: LoggerLike = { warn: () => undefined };
 // What payloadExtrasProvider answers. Named (rather than inlined twice on the config field) because
 // the inline shape had drifted: it declared four keys while the composition root's closure
 // (agentic-bridge.module.ts's PAYLOAD_EXTRAS_PROVIDER_OVERRIDE) already returned six —
-// `execQuality`/`fundingAccrualQuote` reached buildMarketPayload structurally untyped, so nothing
-// checked that they even existed. Every key except venueFreeCash is a BuildMarketPayloadExtras field
-// spread straight through; venueFreeCash is consumed here instead (capabilitiesFor keys it per
-// symbol) and never rendered as its own payload key.
+// `execQuality` reached buildMarketPayload structurally untyped, so nothing checked that it even
+// existed. portfolio/budget/calendar/execQuality are genuinely batch-wide and spread straight
+// through; venueFreeCash and fundingAccrualBySymbol are consumed here instead, keyed per symbol
+// (capabilitiesFor and the per-element extras respectively).
 export interface AgentPayloadExtras {
   readonly portfolio?: AgentPortfolioBlock;
   readonly budget?: AgentBudgetBlock;
   readonly calendar?: readonly AgentCalendarEvent[];
   readonly execQuality?: string;
-  readonly fundingAccrualQuote?: string;
+  // Cumulative funding accrual PER SYMBOL. Was a single batch-wide `fundingAccrualQuote` string
+  // computed from one symbol (tradingSymbols[0], a spot symbol that accrues no funding) and rendered
+  // in the shared block under a header promising the facts in it apply to every symbol. A symbol with
+  // no entry renders no key at all — see buildFundingAccrualMap (agentic-bridge.module.ts).
+  readonly fundingAccrualBySymbol?: ReadonlyMap<SymbolId, string>;
   readonly venueFreeCash?: ReadonlyMap<VenueId, string>;
 }
 
@@ -288,6 +296,12 @@ export interface AnthropicAgentClientConfig {
   // (fees, sizing, backstop) is symbol-independent. Absent (or returning undefined for a symbol)
   // ⇒ the static profile's constraints — the exact pre-P7 behavior.
   readonly constraintsFor?: (symbol: string) => AgentTradingProfile['constraints'] | undefined;
+  // The venue fee table the take-profit floor gate reads, keyed by the SYMBOL'S OWN venue
+  // (venueForSymbol) rather than off the one static profile the system prompt renders. Absent ⇒
+  // domain/trading/fees.ts's VENUE_FEE_SCHEDULES, which is what the composition root deliberately
+  // relies on (one table, never a config-side second copy). The override exists so the pending
+  // perp-schedule enable can be exercised end-to-end offline before it ships.
+  readonly feeSchedules?: ReadonlyMap<VenueId, VenueFeeSchedule>;
   // C1: documents the optional derivatives block in the system prompt (agent-prompt.ts's
   // buildSystemPrompt derivativesFeedEnabled option). Absent/false ⇒ byte-identical legacy prompt.
   readonly derivativesFeedEnabled?: boolean;
@@ -842,6 +856,9 @@ export class AnthropicAgentClient implements AgentClientPort {
       bookStructureEnabled: this.cfg.bookStructureFeedEnabled ?? false,
       ...payloadExtras,
       capabilities: caps,
+      // Per-symbol, keyed off the one batch-wide map (see AgentPayloadExtras). undefined for a symbol
+      // with no accrual ⇒ buildMarketPayload omits the key, never renders a null.
+      fundingAccrualQuote: payloadExtras?.fundingAccrualBySymbol?.get(symbol),
       similarSetups,
       // I1b: B3 (agentic.strategy.ts) already attaches these onto AgentPositionSummary
       // (input.context.position) — reflected here into buildMarketPayload's own top-level
@@ -1046,7 +1063,6 @@ export class AnthropicAgentClient implements AgentClientPort {
       eventTime,
       lastCandle,
       decision: parsedTrade.data,
-      baseProfile: ctx.baseProfile,
       usage,
       latencyMs,
       playbookVersion: ctx.playbookVersion,
@@ -1156,6 +1172,9 @@ export class AnthropicAgentClient implements AgentClientPort {
         // thesis/directives and capabilities (per-symbol, unlike portfolio/budget/calendar).
         ...sharedExtras,
         capabilities: caps,
+        // Per-symbol (see AgentPayloadExtras.fundingAccrualBySymbol): it rode in the shared block
+        // until 2026-08-03, which stated one symbol's accrual as a fact of every symbol in the batch.
+        fundingAccrualQuote: payloadExtras?.fundingAccrualBySymbol?.get(symbolId),
         similarSetups,
         currentThesis: input.context?.position.currentThesis,
         directives: input.context?.position.directives,
@@ -1499,7 +1518,6 @@ export class AnthropicAgentClient implements AgentClientPort {
         eventTime: r.eventTime,
         lastCandle: r.lastCandle,
         decision: parsedElement.data,
-        baseProfile: ctx.baseProfile,
         usage: usageForThis,
         latencyMs,
         playbookVersion: ctx.playbookVersion,
@@ -1640,6 +1658,17 @@ export class AnthropicAgentClient implements AgentClientPort {
       ...(this.cfg.episodicMemoryEnabled ? [MEMORY_TEMPLATE_VERSION] : []),
       // #42: last slot by design — a REQUEST-param arm, not a prompt-content tag; see above.
       ...(thinkingArm ? [THINKING_TEMPLATE_VERSION] : []),
+      // 2026-08-03: the other two REQUEST-param levers, stacking after th1 for the same reason it
+      // sits last. Composed here (not at the two computePromptHash call sites) so the single-symbol
+      // and batch hashes cannot disagree about what the request actually carried. Both are silent at
+      // the shipped defaults — outputEffort unset and maxTokens at PROMPT_HASH_BASELINE_MAX_TOKENS
+      // produce zero tags, so today's live hashes are byte-identical to pre-tag.
+      ...(this.cfg.outputEffort
+        ? [`${OUTPUT_EFFORT_TEMPLATE_PREFIX}${this.cfg.outputEffort}`]
+        : []),
+      ...(this.cfg.maxTokens !== PROMPT_HASH_BASELINE_MAX_TOKENS
+        ? [`${MAX_TOKENS_TEMPLATE_PREFIX}${this.cfg.maxTokens}`]
+        : []),
     ];
 
     return {
@@ -1687,7 +1716,6 @@ export class AnthropicAgentClient implements AgentClientPort {
     readonly eventTime: EpochMs;
     readonly lastCandle: CandleEvent | undefined;
     readonly decision: TradeDecisionV2;
-    readonly baseProfile: AgentTradingProfile;
     readonly usage: AgentUsage | undefined;
     readonly latencyMs: number;
     readonly playbookVersion: number | undefined;
@@ -1706,7 +1734,6 @@ export class AnthropicAgentClient implements AgentClientPort {
       eventTime,
       lastCandle,
       decision,
-      baseProfile,
       usage,
       latencyMs,
       playbookVersion,
@@ -1776,7 +1803,13 @@ export class AnthropicAgentClient implements AgentClientPort {
     // scale-in, AND an 'adjust' that revises takeProfitPct — never on a bare partial-close (no
     // directives ⇒ nothing to floor-check) or on a no-op hold.
     if (directives !== undefined) {
-      const feeFraction = new Decimal(baseProfile.makerBps).plus(baseProfile.takerBps).div(10_000);
+      // Keyed on THIS symbol's own venue, not on the one static profile the system prompt renders:
+      // that profile is built from the FIRST configured symbol (agentic-bridge.module.ts), so a
+      // single venue's schedule was floor-checking a book that is 85% the other venue. The table
+      // currently carries the same schedule for both venues, so this is arithmetically identical to
+      // the profile read it replaces — see domain/trading/fees.ts for why the measured perp schedule
+      // is a separate enable.
+      const feeFraction = roundTripFeeFraction(venueForSymbol(symbol), this.cfg.feeSchedules);
       if (new Decimal(directives.takeProfitPct).lt(feeFraction)) {
         this.logger.warn(
           `trade rejected: takeProfitPct ${directives.takeProfitPct} below round-trip fee ${feeFraction.toFixed()}`,

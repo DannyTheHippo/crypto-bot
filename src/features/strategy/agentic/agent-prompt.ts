@@ -11,7 +11,7 @@ import type {
 } from '../../../ports/strategy/agentic-strategy';
 import type { SentimentSnapshot } from '../../../ports/strategy/sentiment-feed';
 import type { FearGreedSnapshot } from '../../../ports/strategy/fear-greed-feed';
-import type { SymbolId, VenueId } from '../../../domain/common/types/ids';
+import type { EpochMs, SymbolId, VenueId } from '../../../domain/common/types/ids';
 import { splitSymbol } from '../../../domain/venue/types/symbol';
 import { toIndicatorNumber } from '../../../domain/common/types/money';
 import { AGENTIC_MAX_STOP_LOSS_PCT } from '../../../domain/trading/risk/agentic-bounds';
@@ -115,6 +115,22 @@ export const THINKING_TEMPLATE_VERSION = 'th1';
 // information-context A/B control arm. Composed as a `+mem1` suffix, stacking alongside the other
 // info-context tags; flag-OFF hashes stay byte-identical.
 export const MEMORY_TEMPLATE_VERSION = 'mem1';
+// Request-param attribution tags (2026-08-03), same class as THINKING_TEMPLATE_VERSION above and
+// stacking after it: computePromptHash folds in the template version, playbook, tool schema and model
+// id, so a lever that changes the REQUEST rather than the prompt text is invisible to it unless a tag
+// carries it. Two were invisible:
+//   - output_config.effort (AnthropicAgentClientConfig.outputEffort, shipped flag-off in ea68379) —
+//     it decides how much of max_tokens is spent thinking before tool_use JSON starts, which is the
+//     difference between a decision and a truncation. Rendered `+eff-<level>` so the arm is readable
+//     off the hash, not merely distinguishable.
+//   - max_tokens (AGENTIC_MAX_TOKENS) — rendered `+mt<value>` only when it DIFFERS from the deployed
+//     default below, so the live fleet's hashes are byte-identical to pre-tag and only a deviating
+//     deployment (or an offline harness on a smaller budget) carries the tag.
+export const OUTPUT_EFFORT_TEMPLATE_PREFIX = 'eff-';
+export const MAX_TOKENS_TEMPLATE_PREFIX = 'mt';
+// The deployed AGENTIC_MAX_TOKENS: the zod default in config/environment/environment.config.ts and the
+// value .env.app sets explicitly. A client at this budget adds no tag.
+export const PROMPT_HASH_BASELINE_MAX_TOKENS = 4096;
 
 // v3 consolidation spec §4.4: ONE unified rich-decision-contract tool family — the four lane-split
 // tags (t1/t1s single-symbol spot/perp, tpf1/tpf2 portfolio spot/perp) collapse into ONE tag: shorts
@@ -122,7 +138,14 @@ export const MEMORY_TEMPLATE_VERSION = 'mem1';
 // flag, so there is no longer a second tool SHAPE to distinguish by tag — computePromptHash's own
 // toolSchemaJson component (JSON.stringify(ctx.activeTool)) already distinguishes submit_trade from
 // submit_portfolio structurally, so a single tag suffices here.
-export const TRADE_TEMPLATE_VERSION = 'v3';
+//
+// v3→v4 (2026-08-03): ONE bump covering every model-visible prose/payload change shipped in the same
+// deploy — the fundingAccrualQuote guidance sentence added, the d1 sentence deleted (no producer ever
+// set extras.d1, so the prompt promised a block that never rendered), and the wall-clock age cue added
+// to each recentDecisions line. They ship together under one tag rather than three, because they are
+// one deploy: a hash can only ever attribute rows to the composition that produced them, and no row
+// will ever exist carrying a subset of these three.
+export const TRADE_TEMPLATE_VERSION = 'v4';
 
 // Delimiters wrapping the advisory playbook block quoted into the user message. Unique and
 // non-trivial so a playbook can never forge a close/open of its own — playbook-validator.ts
@@ -630,9 +653,16 @@ export function buildSystemPrompt(
     'The user message may include a budget block with your remaining daily calls/tokens/USD and the approximate cost of one more consult — the same LLM spend the net-of-cost mandate above counts as a loss; it is omitted when budget tracking is unavailable.',
     'The user message may include a currentThesis field: the thesis text you persisted on your last decision for this position, fed back verbatim — treat it as your own prior reasoning to revise or confirm, not a new instruction.',
     'The user message may include directives, barsHeld, and barsUntilForcedExit fields describing the exit directives currently being enforced on your open position (if any), how long it has been held, and how many bars remain before maxHoldBars forces an exit. When you are positioned and those fields are ABSENT, the plan was lost (typically a process restart) — re-arm immediately by submitting a hold that includes the full six-field directive set; do not return a bare hold while unmanaged.',
-    'The user message may include a d1 field alongside htf.h1/htf.h4 with a daily-timeframe indicator aggregate, for longer-horizon regime context appropriate to the swing horizon above.',
+    // 2026-08-03: the sentence promising a `d1` daily-timeframe aggregate is DELETED. The render path
+    // that would merge extras.d1 into htf still exists (see buildMarketPayload), but no producer has
+    // ever set extras.d1 — not propose()'s extras, not proposeBatch()'s — so the prompt was describing
+    // a block the model could never receive. A real daily aggregate needs a longer candle window than
+    // the 340-bar buffer holds; building one is backlog, and the sentence returns with it.
     'The user message may include a calendar block listing scheduled macro events (e.g. FOMC, CPI) in the next 72 hours — de-risk sizing and holding period into a binary macro event rather than being surprised by one.',
     'The user message may include an execQuality field: a digest of your recent execution quality (maker fill rate, missed-entry opportunity cost, post-fill drift) — use it to calibrate when maker patience pays and when taker urgency is worth the extra cost.',
+    // 2026-08-03: this key had shipped for weeks with NO sentence describing it — the model was
+    // handed a bare signed number and left to guess its sign convention, its scope, and its units.
+    'The user message may include a fundingAccrualQuote field: the cumulative perp funding this process has observed for THIS symbol since it started, in quote currency — POSITIVE means you have been net PAID to hold your side, NEGATIVE means you have net PAID it. It is realized carry already in your PnL, not a forecast; the funding rate itself is what tells you about the next settlement. It is omitted for a symbol that accrues no funding (spot) or that has not been polled yet.',
     ...(derivativesFeedEnabled
       ? [
           derivativesV2Enabled
@@ -727,15 +757,36 @@ function quoteAssetOf(symbol: string): string {
 // recognise a thesis being repeated — without paying for the whole of it N rings deep.
 const MAX_RENDERED_REASON_LEN = 120;
 
+// Wall-clock age of one decision-ring entry, as the model reads it. "N decisions ago" alone is a
+// COUNT, not a time: this ring admits only model-authored rows, and in a degraded regime (the client
+// latched, or consults scheduled far out) 12 model rows have spanned a MEDIAN 126h — so a decision the
+// model reads as its last one can be a week old, while the system prompt asserts these are its prior
+// calls. Rounded, never precise: this is regime context, not a timestamp.
+//
+// FAILURE DIRECTION — fails OPEN to no cue: a non-finite or negative age (a clock step, or a fixture
+// row without a usable eventTime) renders the line exactly as before rather than printing a nonsense
+// age or throwing. Same discipline as quoteAssetOf above — this is display decoration on a historical
+// context line, never a money path.
+function renderDecisionAge(nowMs: number, thenMs: number): string | null {
+  const elapsed = nowMs - thenMs;
+  if (!Number.isFinite(elapsed) || elapsed < 0) return null;
+  const hours = elapsed / 3_600_000;
+  if (hours < 1) return `~${Math.round(elapsed / 60_000)}m ago`;
+  if (hours < 48) return `~${Math.round(hours)}h ago`;
+  return `~${Math.round(hours / 24)}d ago`;
+}
+
 // One merged human-readable line per past decision — action/close plus its outcome once known (the
 // most recent entry has none yet). Replaces what used to be two payload fields (recentDecisions +
 // a separately rendered recentDecisionOutcomes) carrying overlapping information for the same
 // decisions; merging halves the tokens spent on this context without dropping anything. "N decisions
-// ago" counts back from the newest-last ring's tail. A non-finite rendered close (the strategy had no
-// candle yet) prints "n/a" rather than the literal "NaN".
+// ago" counts back from the newest-last ring's tail, and carries the entry's wall-clock age alongside
+// it (see renderDecisionAge). A non-finite rendered close (the strategy had no candle yet) prints
+// "n/a" rather than the literal "NaN".
 function renderDecisionLines(
   recentDecisions: readonly AgentDecisionRecord[],
   symbol: string,
+  nowMs: EpochMs,
 ): string[] {
   const quote = quoteAssetOf(symbol);
   const n = recentDecisions.length;
@@ -744,7 +795,8 @@ function renderDecisionLines(
     const d = recentDecisions[i]!;
     const agoCount = n - i;
     const closeStr = Number.isFinite(d.close) ? String(d.close) : 'n/a';
-    let line = `${agoCount} decision${agoCount === 1 ? '' : 's'} ago: ${d.action} @ ${closeStr}`;
+    const age = renderDecisionAge(nowMs, d.eventTime);
+    let line = `${agoCount} decision${agoCount === 1 ? '' : 's'} ago${age ? ` (${age})` : ''}: ${d.action} @ ${closeStr}`;
     if (d.reason) {
       const reason =
         d.reason.length > MAX_RENDERED_REASON_LEN
@@ -1143,9 +1195,11 @@ export interface BuildMarketPayloadExtras {
   // Rolling-window execution-quality digest string (maker fill rate, missed-entry cost, post-fill
   // drift — exec-quality.service.ts). Absent ⇒ no `execQuality` key.
   readonly execQuality?: string;
-  // P5b: cumulative perp funding observed this process for the traded symbol (exact decimal
-  // string, POSITIVE = net received / NEGATIVE = net paid — funding-ingest.service.ts). Absent ⇒
-  // no `fundingAccrualQuote` key (FUNDING_INGEST unbound, or no poll has completed yet).
+  // P5b: cumulative perp funding observed this process for THIS symbol (exact decimal string,
+  // POSITIVE = net received / NEGATIVE = net paid — funding-ingest.service.ts). Per-symbol since
+  // 2026-08-03: the client keys it off AgentPayloadExtras.fundingAccrualBySymbol, and it is
+  // deliberately NOT part of the shared-block partition (see sharedFields). Absent ⇒ no
+  // `fundingAccrualQuote` key (FUNDING_INGEST unbound, spot symbol, or no poll completed yet).
   readonly fundingAccrualQuote?: string;
   // R2 (episodic memory): the pre-rendered "similar past setups" digest (episodic-memory.ts's
   // renderSimilarSetups — a token-bounded, ≤5-entry, synthetic-labeled string). Rendered by the client
@@ -1190,6 +1244,10 @@ export interface BuildMarketPayloadExtras {
 //    the block that gates its side selection.
 //  - position / eventTime / interval / recentDecisions / execReportsSinceLastDecide — identical in
 //    most waves, but only incidentally (a flat book, one shared bar, an empty ring).
+//  - fundingAccrualQuote — REMOVED from this partition on 2026-08-03. It was never batch-invariant:
+//    the composition root computed it from ONE symbol (tradingSymbols[0], a spot symbol that accrues
+//    no funding at all) and this block then presented that number under a header stating its contents
+//    apply to every symbol below. It is now supplied per element by the client, from a per-symbol map.
 function sharedFields(extras: BuildMarketPayloadExtras): Record<string, unknown> {
   const sentiment = buildSentimentBlock(extras.sentiment);
   const fearGreed = buildFearGreedBlock(extras.fearGreed);
@@ -1200,9 +1258,6 @@ function sharedFields(extras: BuildMarketPayloadExtras): Record<string, unknown>
     ...(extras.budget ? { budget: extras.budget } : {}),
     ...(extras.calendar !== undefined ? { calendar: extras.calendar } : {}),
     ...(extras.execQuality !== undefined ? { execQuality: extras.execQuality } : {}),
-    ...(extras.fundingAccrualQuote !== undefined
-      ? { fundingAccrualQuote: extras.fundingAccrualQuote }
-      : {}),
   };
 }
 
@@ -1372,7 +1427,7 @@ export function buildMarketPayload(
     indicators: input.context?.indicators ?? null,
     htf,
     position: input.context?.position ?? null,
-    recentDecisions: renderDecisionLines(recentDecisions, symbol),
+    recentDecisions: renderDecisionLines(recentDecisions, symbol, input.snapshot.eventTime),
     execReportsSinceLastDecide: input.snapshot.execReports.map((r) => ({
       kind: r.kind,
       eventTime: r.eventTime,

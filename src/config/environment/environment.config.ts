@@ -363,6 +363,10 @@ const envSchema = z
       .transform((v) => v === 'true'),
     // Re-place threshold (bps), mirrors AGENTIC_VENUE_TP_REPLACE_DRIFT_BPS above.
     AGENTIC_VENUE_STOP_REPLACE_DRIFT_BPS: z.coerce.number().int().positive().default(10),
+    // B5 entry cap — enforced PER STRATEGY RUNTIME (strategy-host.ts's entryCount check), i.e. per
+    // SYMBOL, not book-wide: every configured TRADING_SYMBOLS entry gets its own independent counter
+    // reset on the same UTC day boundary. The effective book-wide ceiling is this value times the
+    // active-symbol count, not this value alone — a name that reads "book-wide" at a glance.
     AGENTIC_MAX_ENTRIES_PER_DAY: z.coerce.number().int().positive().default(12),
     AGENTIC_DRAIN_COOLDOWN_BASE_MS: z.coerce.number().int().positive().default(30_000),
     AGENTIC_DRAIN_COOLDOWN_MAX_MS: z.coerce.number().int().positive().default(900_000),
@@ -428,6 +432,16 @@ const envSchema = z
     // 'true'/'false' (not z.coerce.boolean(), same rationale as above). Default 'false' ⇒
     // byte-identical to pre-feature.
     AGENTIC_TRACK_RECORD_ENABLED: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
+    // R2 (episodic memory): gates the similarSetupsProvider retrieval block/sentence
+    // (agentic-strategy.module.ts's selectAgentClient, AnthropicAgentClientConfig.similarSetupsProvider)
+    // — was previously read straight off raw process.env with no schema entry, the same drift class
+    // the four keys bridged in agenticEnv() were audited for. 'true'/'false' (not z.coerce.boolean(),
+    // same rationale as AGENTIC_TRACK_RECORD_ENABLED above). Default 'false' ⇒ byte-identical to
+    // pre-feature (no similarSetups sentence/block/tag).
+    AGENTIC_EPISODIC_MEMORY_ENABLED: z
       .enum(['true', 'false'])
       .default('false')
       .transform((v) => v === 'true'),
@@ -955,6 +969,8 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     SANDBOX_ENV: sandboxEnv,
     AGENTIC_MODEL: agenticModel,
     AGENTIC_REFLECTION_MODEL: agenticReflectionModel,
+    AGENTIC_MODEL_B: agenticModelB,
+    AGENTIC_MODEL_AB_PCT: agenticModelAbPct,
     AGENTIC_TIMEOUT_MS: agenticTimeoutMs,
     AGENTIC_MAX_TOKENS: agenticMaxTokens,
     AGENTIC_OUTPUT_EFFORT: agenticOutputEffort,
@@ -979,6 +995,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     AGENTIC_CROSS_SYMBOL_LOOKBACK_BARS: agenticCrossSymbolLookbackBars,
     AGENTIC_BOOK_STRUCTURE_ENABLED: agenticBookStructureEnabled,
     AGENTIC_TRACK_RECORD_ENABLED: agenticTrackRecordEnabled,
+    AGENTIC_EPISODIC_MEMORY_ENABLED: agenticEpisodicMemoryEnabled,
     AGENTIC_EDGE_POLICY_ENABLED: agenticEdgePolicyEnabled,
     AGENTIC_EDGE_POLICY_FAMILY: agenticEdgePolicyFamily,
     AGENTIC_PORTFOLIO_CONSULT: agenticPortfolioConsult,
@@ -1163,6 +1180,8 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
     agentic: {
       model: agenticModel,
       reflectionModel: agenticReflectionModel,
+      modelB: agenticModelB,
+      modelAbPct: agenticModelAbPct,
       timeoutMs: agenticTimeoutMs,
       maxTokens: agenticMaxTokens,
       outputEffort: agenticOutputEffort,
@@ -1199,6 +1218,7 @@ export function validate(env: Record<string, string | undefined>): AppConfig {
       crossSymbolLookbackBars: agenticCrossSymbolLookbackBars,
       bookStructureFeedEnabled: agenticBookStructureEnabled,
       trackRecordEnabled: agenticTrackRecordEnabled,
+      episodicMemoryEnabled: agenticEpisodicMemoryEnabled,
       edgePolicyEnabled: agenticEdgePolicyEnabled,
       edgePolicyFamily: agenticEdgePolicyFamily,
       portfolioConsultEnabled: agenticPortfolioConsult,

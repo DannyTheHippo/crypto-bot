@@ -80,7 +80,9 @@ import type { SymbolFilters } from '../../../domain/trading/risk/evaluate';
 import { DEFAULT_FILTERS } from '../../../domain/trading/risk/default-filters';
 import { price, qty } from '../../../domain/common/types/money';
 import type { PortfolioSnapshot } from '../../../domain/trading/types/portfolio';
-import { symbolId, type VenueId } from '../../../domain/common/types/ids';
+import { feeScheduleForVenue } from '../../../domain/trading/fees';
+import { venueForSymbol } from '../../../domain/venue/types/venue-map';
+import { symbolId, type SymbolId, type VenueId } from '../../../domain/common/types/ids';
 
 // v3 spec §1.3: AgenticBridgeModule replaces AgenticCompositionBridgeModule (pure code motion out of
 // app.module.ts) — same twelve tokens, with two v3 deltas: PLAYBOOK_PROVIDER_OVERRIDE's validator
@@ -400,11 +402,15 @@ export function symbolConstraintsFor(symbol: string): SymbolConstraints | undefi
 // second, independently-tunable copy: maxOrderNotional is read live off RISK_LIMITS (RiskModule's
 // config-overlaid DEFAULT_LIMITS, exported for exactly this single-source-of-truth read — see
 // LimitsCompleteModule); baseNotional is the SAME validated AppConfig.risk.baseNotional risk.module.ts's
-// sizer reads (passed in by the factory below, so prompt and sizer can never drift); maker/takerBps
-// mirror the paper fee schedule (§1.5) — the actual fee schedule the paper adapter charges, not a
-// hardcoded guess. equityFraction is the SAME validated AppConfig.risk.equityFraction risk.module.ts's
-// sizer reads (P5 compounding sizing) — set on the profile only when > 0 so the prompt sentence and
-// the sizer's active path can never disagree.
+// sizer reads (passed in by the factory below, so prompt and sizer can never drift). equityFraction is
+// the SAME validated AppConfig.risk.equityFraction risk.module.ts's sizer reads (P5 compounding
+// sizing) — set on the profile only when > 0 so the prompt sentence and the sizer's active path can
+// never disagree.
+//
+// maker/takerBps are read from domain/trading/fees.ts keyed by THIS symbol's own venue, rather than
+// the flat '10'/'10' pair that stood here for every symbol regardless of venue. The table currently
+// carries the spot schedule for both venues, so this render is byte-identical to the hardcoded pair
+// it replaces — see that table's own comment for why the measured perp schedule is a separate enable.
 function agentTradingProfileFor(
   symbol: string,
   limits: PartialRiskLimits,
@@ -413,9 +419,10 @@ function agentTradingProfileFor(
   protectStopLossPct: string,
   protectTrailingPct: string,
 ): AgentTradingProfile {
+  const fees = feeScheduleForVenue(venueForSymbol(symbolId(symbol)));
   return {
-    makerBps: '10',
-    takerBps: '10',
+    makerBps: fees.makerBps,
+    takerBps: fees.takerBps,
     baseNotional,
     maxOrderNotional: limits.maxOrderNotional ?? '100000',
     constraints: symbolConstraintsFor(symbol) ?? {
@@ -447,6 +454,25 @@ export function buildVenueFreeCash(
   const result = new Map<VenueId, string>();
   for (const [venue, balances] of venueBalances) {
     result.set(venue, (balances.get('USDT')?.free ?? new Decimal(0)).toFixed());
+  }
+  return result;
+}
+
+// Per-symbol cumulative funding accrual, built fresh on each payload-extras call (an in-memory read
+// per symbol, no I/O). A symbol whose accrual is null — the poller has never run for it, or it is a
+// spot symbol that accrues no funding at all — carries NO entry, so the client omits the key for that
+// symbol instead of rendering `"fundingAccrualQuote": null`. Exported for direct unit testing, same
+// convention as buildVenueFreeCash above.
+export function buildFundingAccrualMap(
+  symbols: readonly string[],
+  fundingIngest: FundingIngestService | undefined,
+): ReadonlyMap<SymbolId, string> | undefined {
+  if (!fundingIngest) return undefined;
+  const result = new Map<SymbolId, string>();
+  for (const symbol of symbols) {
+    const id = symbolId(symbol);
+    const accrual = fundingIngest.cumulativeAccrualQuote(id);
+    if (accrual !== null) result.set(id, accrual);
   }
   return result;
 }
@@ -756,10 +782,15 @@ function isTestEnv(): boolean {
             // ExecQualityService has enough recorded attempts — see this token's own provider comment.
             execQuality: execQuality.digest(),
             // P5b: undefined (FUNDING_INGEST unbound — off-flag, spot venue, or no DB) until the
-            // poller has completed at least one poll for the configured symbol.
-            fundingAccrualQuote: fundingIngest?.cumulativeAccrualQuote(
-              symbolId(config.strategy.symbol),
-            ),
+            // poller has completed at least one poll.
+            //
+            // Per SYMBOL, not per batch: this used to be a single call for config.strategy.symbol
+            // (= tradingSymbols[0], BTC/USDT SPOT — a venue that accrues no funding at all) whose
+            // result rode in the batch-wide shared block under a header stating those facts apply to
+            // EVERY symbol below. One symbol's number was being sold to 40 symbols as their own.
+            // Absent entry (cumulativeAccrualQuote returning null — never polled, or nothing accrued)
+            // omits the key for that symbol rather than rendering a literal null.
+            fundingAccrualBySymbol: buildFundingAccrualMap(config.strategy.symbols, fundingIngest),
             // v3 §6.4/#10bc: per-venue free cash the client keys per symbol via venueForSymbol.
             venueFreeCash: buildVenueFreeCash(snapshot.venueBalances),
           };

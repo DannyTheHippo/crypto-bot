@@ -404,6 +404,11 @@ describe('validate()', () => {
         // deployment can never bill a pricier model at cheaper rates in the earned-live math.
         model: 'claude-sonnet-5',
         reflectionModel: undefined,
+        // Decide-model A/B: unset ⇒ modelB stays absent, modelAbPct defaults to 0 (byte-identical
+        // to pre-A/B — see AGENTIC_MODEL_AB_PCT's own schema comment).
+        modelB: undefined,
+        modelAbPct: 0,
+        outputEffort: undefined,
         timeoutMs: 30000,
         maxTokens: 4096,
         minDecisionIntervalMs: 0,
@@ -431,6 +436,7 @@ describe('validate()', () => {
         derivativesV2Enabled: false,
         bookStructureFeedEnabled: false,
         trackRecordEnabled: false,
+        episodicMemoryEnabled: false,
         edgePolicyEnabled: false,
         edgePolicyFamily: 'none',
         crossSymbolEnabled: false,
@@ -477,9 +483,15 @@ describe('validate()', () => {
         AGENTIC_FALLBACK_CONSULT_BARS: '8',
         AGENTIC_WAKE_MOVE_PCT: '0.03',
         AGENTIC_ACTIVE_MENU_SIZE: '5',
+        // AGENTIC_MODEL_AB_PCT left at its 0 default here (>0 requires an AGENTIC_TOKEN_PRICES_JSON
+        // entry for AGENTIC_MODEL_B — see the superRefine gate-honesty refusal, covered separately).
+        AGENTIC_MODEL_B: 'claude-arm-b',
+        AGENTIC_EPISODIC_MEMORY_ENABLED: 'true',
         TRADING_SYMBOLS: 'BTC/USDT,ETH/USDT,SOL/USDT,XRP/USDT,LINK/USDT',
       });
       expect(cfg.agentic.model).toBe('claude-haiku-4-5');
+      expect(cfg.agentic.modelB).toBe('claude-arm-b');
+      expect(cfg.agentic.episodicMemoryEnabled).toBe(true);
       expect(cfg.agentic.timeoutMs).toBe(5000);
       expect(cfg.agentic.maxTokens).toBe(2048);
       expect(cfg.agentic.minDecisionIntervalMs).toBe(1000);

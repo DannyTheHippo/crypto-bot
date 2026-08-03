@@ -451,6 +451,36 @@ export function buildVenueFreeCash(
   return result;
 }
 
+// The ACTIVE_MENU_GATE_OVERRIDE pin predicate, factored out (like symbolConstraintsFor/
+// buildVenueFreeCash/agentTradingProfileFor above) so the full precedence — edge-cohort
+// short-circuit, then position, then in-flight-intent/resting-order — is directly unit-testable
+// without a Nest bootstrap. Order is load-bearing: edge cohort first (cheapest, no snapshot read),
+// then position, then in-flight/resting orders.
+//
+// In-flight intents (S1, 2026-08-03 review): a PRE-EXISTING gap, unrelated to dust accounting — an
+// entry intent submitted but not yet reflected in snap.openOrders (the window between submit and
+// the order-open event) had NO pin at all before this fix: no position row exists yet (the fill
+// hasn't landed) and no open-order row exists yet either (the venue hasn't acked it), so a symbol
+// could drop off the active menu mid-entry. Closing it here mirrors the resting-order clause
+// (same "don't strand a symbol the book is already committed to" rule) rather than inventing a
+// second convention.
+export function buildMenuPinPredicate(
+  edgePins: EdgeCohortPinState,
+  portfolio: PortfolioViewPort,
+): (symbol: string) => boolean {
+  return (symbol) => {
+    if (edgePins.has(symbol)) return true;
+    const snap = portfolio.snapshot();
+    for (const p of snap.positions.values()) {
+      if (String(p.symbol) === symbol && !p.signedQty.isZero()) return true;
+    }
+    return (
+      snap.openOrders.some((o) => String(o.symbol) === symbol) ||
+      snap.inFlightIntents.some((i) => String(i.symbol) === symbol)
+    );
+  };
+}
+
 function isTestEnv(): boolean {
   return (
     process.env['NODE_ENV'] === 'test' ||
@@ -484,10 +514,12 @@ function isTestEnv(): boolean {
       inject: [DRIZZLE_DB],
     },
     {
-      // DB-backed LLM_USAGE_SINK: persists reflection-path token usage to llm_usage for offline cost
-      // analysis (P2a) — ReflectionService injects this @Optional, so undefined (paper/no-DB/test)
-      // simply skips recording. In-memory (array-backed, not a bare no-op — see its own comment)
-      // under test/ci or no-DB, mirroring AGENT_DECISION_JOURNAL's own fallback convention above.
+      // DB-backed LLM_USAGE_SINK: persisted reflection-path token usage to llm_usage for offline cost
+      // analysis (P2a) — ReflectionService injected this @Optional, so undefined (paper/no-DB/test)
+      // simply skipped recording. ReflectionService was deleted (9a63edf); llm_usage is vestigial by
+      // design now (no live writer) — its 69 historical rows are already correctly folded into the
+      // promotion cost figure. In-memory (array-backed, not a bare no-op — see its own comment) under
+      // test/ci or no-DB, mirroring AGENT_DECISION_JOURNAL's own fallback convention above.
       provide: LLM_USAGE_SINK,
       useFactory: (
         db: NodePgDatabase<typeof schema> | null,
@@ -578,7 +610,10 @@ function isTestEnv(): boolean {
       // (agentic-strategy.module.ts's AGENT_CLIENT factory, via this SAME token) and
       // TradingRuntimeService's own recompute-cadence/pin-provider wiring share the exact same
       // instance — never two independently-drifting scanners. isPinned reads the live PORTFOLIO_VIEW
-      // snapshot: a symbol with an open position is always active, never orphaned from consults.
+      // snapshot: a symbol carrying an open position, a resting order, or an in-flight entry intent
+      // (S1, 2026-08-03 review) is always active, never orphaned from consults — see
+      // buildMenuPinPredicate's own comment (below, ACTIVE_MENU_GATE_OVERRIDE) for the full
+      // precedence.
       provide: EdgeCohortPinState,
       useFactory: (): EdgeCohortPinState => new EdgeCohortPinState(),
     },
@@ -629,14 +664,7 @@ function isTestEnv(): boolean {
         new UniverseScannerService({
           basket: config.strategy.symbols,
           menuSize: config.agentic.activeMenuSize,
-          isPinned: (symbol) => {
-            if (edgePins.has(symbol)) return true;
-            const snap = portfolio.snapshot();
-            for (const p of snap.positions.values()) {
-              if (String(p.symbol) === symbol && !p.signedQty.isZero()) return true;
-            }
-            return snap.openOrders.some((o) => String(o.symbol) === symbol);
-          },
+          isPinned: buildMenuPinPredicate(edgePins, portfolio),
           logger: { log: (msg) => Logger.log(msg, 'UniverseScanner') },
           // W1 (Grafana rebuild): adapts the recorder's methods to UniverseScannerMetricsLike —
           // this module never imports features/common/observability's boundaries wall the other

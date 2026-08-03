@@ -567,7 +567,21 @@ classification** bullet, which stood last in this section, is now `charter.md` �
   0.78 < 0.85, forward proxy −27.9bps vs champion +17.8bps; the "cheaper-and-more-proposing"
   profile did NOT persist (propose ratio 1.8→0.8, propose-agreement 0.2). No further scheduled
   re-test — revisit only on a material payload/regime change (e.g. post-factorial always-on info
-  blocks). Opus-4.8 decisively rejected (07-13). **Thinking-on: NO FLIP** by pre-registered
+  blocks). **Opus-4.8 rejected 07-13 on n=50 rows — 0 proposes at 3.1× champion cost** (figures
+  recoverable only from `be2f4fa` `reports/loop/state.md`, compacted away the same day by
+  `66c3fac`). **NO ARTIFACT SURVIVES:** the origin text records the scorecard JSON as "archived in
+  the session scratchpad", so it never entered the repo — no path in any commit on any branch has
+  ever matched `opus`. Alone among the model verdicts in this section it carries no checkable
+  evidence and **cannot be re-scored under § THE DECLARED HORIZON GRID**. It is the only recorded
+  reason not to test above sonnet, and no decide-model row appears on the S1 frontier ledger
+  (`success-exit-2026-07-31.md:426-437`). Re-running the harness `charter.md:103-104` mandates
+  (`test/eval/agentic/candidate-model-eval.spec.ts`, `AGENTIC_EVAL_CANDIDATE_MODELS=claude-opus-5`)
+  is the only way to make it falsifiable — **a FAIL there IS the missing artifact**. That harness is
+  NOT free: `:28` says each replayed row costs one real API call per model, so the charter's "$0"
+  means zero live-trading risk, not zero spend. The subscription-funded session arm
+  (`oos-session-arm-2026-08-03.md`) is a **ceiling probe on payload information content and may
+  never be cited as the decide-model instrument.** See
+  `research/studies/record-scope-audit-2026-08-03.md` § 3. **Thinking-on: NO FLIP** by pre-registered
   criteria but strongest lever surfaced → absorbed into the P8a factorial (#42 CLOSED-OBE). E2
   re-run recipe (env hygiene — the SAFE recipe): LOG.md 2026-07-10 ~22:00Z incident-pass entry.
 - **Kimi-K3 offline replay: HOLD decisively (2026-07-21/22, n=100 newest payload rows; v3

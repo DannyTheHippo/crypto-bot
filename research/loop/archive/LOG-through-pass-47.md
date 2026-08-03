@@ -7021,3 +7021,80 @@ require a pass to go looking for it in `order_events`.
    `400c08e` did not fix.
 4. Reject-rate alarm (§4 recommendation above).
 5. The `anthropic api: symbol <SYM> missing from` warn — first appearance, unexplained.
+
+## 2026-07-31 — Pass 52 (three instruments the loop never had, and the bar it gates on was never derived)
+
+**Window:** 2026-07-31T09:52Z → 12:34Z. **RECONSTRUCTED by Pass 53**, not recorded by the session
+itself — being owner-directed rather than scheduled, it wrote no `**Window:**` line, and one missing
+line blanks the WHOLE sweep-coverage verdict by construction (`classifyUnrecordedSweeps` treats any
+unparseable entry as making every gap unattributable). Bounds are evidence, not memory: first and
+last digests of the session, `sweep-2026-07-31T09-52-43-609Z.json` → `sweep-2026-07-31T12-34-11-885Z`
+(the post-deploy soak), bracketing the nine commits `b28e54b` 12:19:11Z … `c78d193` 12:32:07Z.
+
+**Owner-directed session, not a scheduled pass.** Seven commits `b28e54b` … `fd4e389`. Full gate
+green: format/lint/lint:md/typecheck/build, **3384 tests / 183 files** (from 3267/179), livegate
+55/55, `eval:agentic` 62 passed, `test:db` 4 passed, `test:cov` 94.22/88.05/92.82/95.61 against
+90/85/90/90. First pass in four that is not only defect repair.
+
+### What shipped
+
+**Three instruments (`f60c79a`).** `loop:forward-return` measures REALISED entry forward return and
+closes WATCH-PLAYBOOK-V10-1's instrument gap — `inverted` shipped on a replay prediction and nothing
+checked it. It needs no new data: `agent_decisions` is already a dense 15m price grid. **One premise
+correction that would have silently corrupted it:** `trigger_kind='exec'` rows are NOT bar-aligned
+(an ExecReport's eventTime is a fill time), so both queries filter to candle triggers and the core
+independently refuses off-grid rows. First reading: v10 **UNDERPOWERED at n=4/clusters=4**, which is
+the expected output. Plus a per-venue reject alarm (backlog 55) and an off-gate harness monitor
+(backlog 54) — both closed.
+
+**Four defects.** The 2026-07-10 incident configuration was still in CI, disarmed by one assertion,
+with `drizzle-adapters.spec.ts` carrying no wall at all (`b28e54b`). A REJECTED algo stop normalized
+to UNKNOWN — the one status `recoverIntent` never folds (`c3a7253`). Forward return walked array
+indices, so the 60-hour outage made h=24 a different horizon (`df58436`). The registry gate opened on
+scratch DBs and closed on production, which is why `loop:authoring` had never minted and could not
+have (`633f901`).
+
+**The deployment bar gained a chronological-halves clause and the authoring pass a once-per-UTC-day
+ceiling (`0ee5947`)**, both pre-registered before the code.
+
+### Three recorded claims that turned out to be wrong
+
+1. **WATCH-V4-10's root cause.** The breach was real; the recorded cause was not. Reconciliation axis
+   1 is regular-rail BY CONSTRUCTION and `fetchOrder` on an algo coid throws `-1102`, so the
+   recorded fix would have minted permanent `adopt_query_failure` noise every 30s while folding
+   nothing. Venue truth: REJECTED / "Reduce only reject", fired 4m08s after flat, no spawned order.
+2. **The break-even floor was never derived.** +13.0/+24.2 enter the repo fully formed in `7b3e977`
+   with no operands; "BEST achievable cost structure" is defined nowhere and every later citation is
+   circular — one points at the Moonshot HTTP-200 verdict. Measured demo cost is **9.29 bps/round
+   trip**. No verdict moves (gap 111–126, not 115–130), but the h=1 inversion bullet now reads +7.6
+   net rather than −3.1 and is amended.
+3. **The research bar is CLUSTER-limited, not n-limited.** At h=1/4 it is unreachable at ANY cluster
+   count — the best mean ever observed is below the fee floor and `mean > floor` is α-free and
+   n-free. h=8/24 need 64–219 clusters against a 40-symbol universe.
+
+### Two things left open on purpose
+
+**The alarm fires and was not tuned.** `venue_reject_rate_high [binance]` 16/20 = 80% is a TRUE
+finding — every submit in the window predates the fix, and the alarm correctly refuses to call an
+unrefuted 80% clean. It self-clears. STATUS carries a do-not-investigate banner.
+
+**Family B is blocked.** `assertDesignMatchesCorpus` fails CLOSED and the on-disk corpus hashes
+`030367ba…` against the `f1dd13c6…` every artifact records. Payload bytes match the live DB 386/386,
+so the cause is unpinned row order among `event_time` ties. **The hash was deliberately NOT
+re-pinned** — that would discard which corpus the published results belong to. The choice between a
+deterministically re-ordered corpus and accepting the 20 cells as recorded-but-unreproducible is
+open.
+
+### Method note
+
+Nine parallel agents over disjoint file scopes. **Three agents corrected load-bearing claims the
+orchestrator passed down as established** (the algo-stop root cause, the corpus one-bar premise, the
+`horizonDependent` definition), and two caught bugs the orchestrator's own spec would have created —
+an API-key check placed after the day-slot claim, and `Number(null) === 0` reading as 1970 and
+PROCEEDING in a gate declared fail-closed. Also learned: the husky pre-commit hook validates the
+WHOLE repo, so no commit can land while any peer has the tree mid-edit.
+
+**Deploy is DUE** — HEAD is seven commits ahead of live `f5abf8a` and this time the delta is runtime.
+
+_(Pass 53 note: that deploy DID happen at 12:33Z, and the commit count above is off — `b28e54b`…`fd4e389`
+is eight commits, nine counting the `c78d193` docs commit, not seven.)_

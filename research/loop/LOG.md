@@ -15,83 +15,6 @@ than the five below are in that archive; older still is git history. Current sta
 
 ---
 
-## 2026-07-31 — Pass 52 (three instruments the loop never had, and the bar it gates on was never derived)
-
-**Window:** 2026-07-31T09:52Z → 12:34Z. **RECONSTRUCTED by Pass 53**, not recorded by the session
-itself — being owner-directed rather than scheduled, it wrote no `**Window:**` line, and one missing
-line blanks the WHOLE sweep-coverage verdict by construction (`classifyUnrecordedSweeps` treats any
-unparseable entry as making every gap unattributable). Bounds are evidence, not memory: first and
-last digests of the session, `sweep-2026-07-31T09-52-43-609Z.json` → `sweep-2026-07-31T12-34-11-885Z`
-(the post-deploy soak), bracketing the nine commits `b28e54b` 12:19:11Z … `c78d193` 12:32:07Z.
-
-**Owner-directed session, not a scheduled pass.** Seven commits `b28e54b` … `fd4e389`. Full gate
-green: format/lint/lint:md/typecheck/build, **3384 tests / 183 files** (from 3267/179), livegate
-55/55, `eval:agentic` 62 passed, `test:db` 4 passed, `test:cov` 94.22/88.05/92.82/95.61 against
-90/85/90/90. First pass in four that is not only defect repair.
-
-### What shipped
-
-**Three instruments (`f60c79a`).** `loop:forward-return` measures REALISED entry forward return and
-closes WATCH-PLAYBOOK-V10-1's instrument gap — `inverted` shipped on a replay prediction and nothing
-checked it. It needs no new data: `agent_decisions` is already a dense 15m price grid. **One premise
-correction that would have silently corrupted it:** `trigger_kind='exec'` rows are NOT bar-aligned
-(an ExecReport's eventTime is a fill time), so both queries filter to candle triggers and the core
-independently refuses off-grid rows. First reading: v10 **UNDERPOWERED at n=4/clusters=4**, which is
-the expected output. Plus a per-venue reject alarm (backlog 55) and an off-gate harness monitor
-(backlog 54) — both closed.
-
-**Four defects.** The 2026-07-10 incident configuration was still in CI, disarmed by one assertion,
-with `drizzle-adapters.spec.ts` carrying no wall at all (`b28e54b`). A REJECTED algo stop normalized
-to UNKNOWN — the one status `recoverIntent` never folds (`c3a7253`). Forward return walked array
-indices, so the 60-hour outage made h=24 a different horizon (`df58436`). The registry gate opened on
-scratch DBs and closed on production, which is why `loop:authoring` had never minted and could not
-have (`633f901`).
-
-**The deployment bar gained a chronological-halves clause and the authoring pass a once-per-UTC-day
-ceiling (`0ee5947`)**, both pre-registered before the code.
-
-### Three recorded claims that turned out to be wrong
-
-1. **WATCH-V4-10's root cause.** The breach was real; the recorded cause was not. Reconciliation axis
-   1 is regular-rail BY CONSTRUCTION and `fetchOrder` on an algo coid throws `-1102`, so the
-   recorded fix would have minted permanent `adopt_query_failure` noise every 30s while folding
-   nothing. Venue truth: REJECTED / "Reduce only reject", fired 4m08s after flat, no spawned order.
-2. **The break-even floor was never derived.** +13.0/+24.2 enter the repo fully formed in `7b3e977`
-   with no operands; "BEST achievable cost structure" is defined nowhere and every later citation is
-   circular — one points at the Moonshot HTTP-200 verdict. Measured demo cost is **9.29 bps/round
-   trip**. No verdict moves (gap 111–126, not 115–130), but the h=1 inversion bullet now reads +7.6
-   net rather than −3.1 and is amended.
-3. **The research bar is CLUSTER-limited, not n-limited.** At h=1/4 it is unreachable at ANY cluster
-   count — the best mean ever observed is below the fee floor and `mean > floor` is α-free and
-   n-free. h=8/24 need 64–219 clusters against a 40-symbol universe.
-
-### Two things left open on purpose
-
-**The alarm fires and was not tuned.** `venue_reject_rate_high [binance]` 16/20 = 80% is a TRUE
-finding — every submit in the window predates the fix, and the alarm correctly refuses to call an
-unrefuted 80% clean. It self-clears. STATUS carries a do-not-investigate banner.
-
-**Family B is blocked.** `assertDesignMatchesCorpus` fails CLOSED and the on-disk corpus hashes
-`030367ba…` against the `f1dd13c6…` every artifact records. Payload bytes match the live DB 386/386,
-so the cause is unpinned row order among `event_time` ties. **The hash was deliberately NOT
-re-pinned** — that would discard which corpus the published results belong to. The choice between a
-deterministically re-ordered corpus and accepting the 20 cells as recorded-but-unreproducible is
-open.
-
-### Method note
-
-Nine parallel agents over disjoint file scopes. **Three agents corrected load-bearing claims the
-orchestrator passed down as established** (the algo-stop root cause, the corpus one-bar premise, the
-`horizonDependent` definition), and two caught bugs the orchestrator's own spec would have created —
-an API-key check placed after the day-slot claim, and `Number(null) === 0` reading as 1970 and
-PROCEEDING in a gate declared fail-closed. Also learned: the husky pre-commit hook validates the
-WHOLE repo, so no commit can land while any peer has the tree mid-edit.
-
-**Deploy is DUE** — HEAD is seven commits ahead of live `f5abf8a` and this time the delta is runtime.
-
-_(Pass 53 note: that deploy DID happen at 12:33Z, and the commit count above is off — `b28e54b`…`fd4e389`
-is eight commits, nine counting the `c78d193` docs commit, not seven.)_
-
 ## 2026-07-31 — Pass 53 (a position that could not be exited, and the 45 minutes nobody could have seen)
 
 **Window:** 2026-07-31T16:07Z → 17:15Z. Lease `195186b5400588b5`, taken 16:07:30Z, no collision.
@@ -614,3 +537,87 @@ learned it about its own axes. That is a bigger lever than any single one of the
 - **Pre-existing coverage red, NOT this pass's:** `src/domain/trading/risk/gross-exposure.ts:74-80`,
   branches 85.71% against a 100% threshold — arrived with Pass 55's `682b6f6`/`6dcb45f`. `pnpm test`
   is green (it omits `--coverage`; backlog 56), so no gate blocks, but `test:cov` is red on `main`.
+
+## 2026-08-03 — Pass 57 (four recorded findings were wrong, and one of them was blocking the falsification test)
+
+**Window:** 2026-08-03T06:43Z → 08:05Z. **No lease taken** — owner-directed session, not a scheduled
+pass. Lane collisions were prevented by scope declaration instead (the mechanism this pass shipped),
+with the orchestrator holding all four loop files as single-writer. Four sweeps ran inside the window
+(07:19:53Z, 07:20:02Z, 07:53:32Z, 07:54:27Z), all from lanes verifying their own instruments.
+
+**Owner-directed session, not a scheduled pass.** A 15-step plan, executed by nine parallel lanes over
+disjoint file scopes. Full gate green. **The through-line is not what shipped — it is how much of the
+record turned out to be unfalsifiable or simply wrong**, and that four of the corrections came from
+agents refusing a premise the orchestrator handed down as established.
+
+### Four recorded claims refuted by measurement
+
+1. **THE CORPUS NEVER DRIFTED, AND FAMILY B WAS NEVER BLOCKED BY IT.** `corpusManifest`'s separator is
+   a genuine **NUL byte**; `corpus-fingerprint-drift-2026-07-31.md` typed a **space** into its own
+   reimplementation and attributed the resulting mismatch to unpinned row order among `event_time`
+   ties. Measured four ways: NUL + file order = `f1dd13c6…` (**= the recorded design pin**), space +
+   file order = `030367ba…` (**= that study's claimed "on-disk" value**), and the
+   `(eventTime, id-numeric)` tie-break is a **no-op**. Its whole § 2.6 reordering table is the same
+   artifact. `assertDesignMatchesCorpus` verified **not throwing**. **Transferable lesson: a
+   reimplementation of a hash function is a second source of truth — import it, or do not compute it.**
+2. **THE DUPLICATED CANDLE WAS A PARTIAL BAR STAMPED CLOSED.** `feed-health.service.ts:224` marked
+   **every** backfilled bar `closed: true`, most-recent included, and its own comment admitted the live
+   feed re-emits that bar's close. One duplicate, consistently, every boot, with differing OHLCV. The
+   justification cited the **retired** EMA-cross lane ("washed out by the bounded indicator window") —
+   for the surviving LLM lane nothing washes out; it lands in the prompt. Two competing hypotheses were
+   refuted first (stream redelivery cannot be _consistent_; re-init is unreachable **and** structurally
+   impossible — `initStrategy` allocates a fresh Map).
+3. **THE CLUSTER FLOOR COUNTED VENUES, NOT ASSETS.** `MIN_CLUSTERS=5` was satisfiable by **three**
+   independent assets — 40 symbol strings are only **28 bases**, and same-base cross-venue pairs
+   correlate 0.9993–0.9999 at h=24. Fixed. **The re-read is an honest null: no POWERED cell flips**, and
+   v10 — the arm `WATCH-PLAYBOOK-V10-1` watches — is byte-identical. A forward guarantee, not a
+   retroactive correction. It does make the promotion bar **harder** than recorded.
+4. **DEMO/LIVE DECOUPLING FLATTERS THE BOOK.** Backlog 57 closed with a number: artifact **+21.0
+   bps/trip**, CI **[+1.4, +39.8]**, n=38 of 46. Correcting for it makes the book **worse** (demo −70.3
+   vs live −91.2), so decoupling cannot be what makes the numbers negative. KAITO reproduces (+609.2 vs
+   +611); **TRUMP does not** (−11.0 vs −207) and is recorded as an unresolved contradiction.
+
+### Three surfaces reporting health they never established
+
+`fee_resolved` (two write sites, **zero readers**) and the `fee_ledger` table (**zero writers** — the
+same-named service is an in-memory Map) are vestigial; two comments asserting consumers that do not
+exist were corrected. `config_snapshots` has **zero rows and zero writers** — found because the new W3
+invariant alarms on it truthfully rather than being tuned away. This is the same shape as Pass 56's
+through-line, now three times over.
+
+### What shipped
+
+Promotion evidence as **one atomic tuple** from a single `evaluate()` sample — voids whole, never
+partial — which closes the window/count discrepancy structurally (it was a **transcription desync**, not
+a code defect). **Five DB integrity invariants** failing CLOSED, the load-bearing one being W1: `fills`
+carries **no append-only trigger** (the 0001 hardening covers five tables and not that one), and
+prefix-determinism is what the whole walk rests on. **Fan-out becomes a declared capability** —
+`loop:fanout declare` refuses lane collisions and an `ORCHESTRATOR_OWNED` reserved set, failing CLOSED,
+deliberately opposite `loop:lock`'s fail-open; plus playbook §4.6. And the **standing out-of-sample
+session arm**: pre-registered, decide leg with a **passing** \$0-egress proof, and a score leg that fails
+OPEN.
+
+### Two things deliberately NOT done
+
+**The ~\$22 Family B paid run.** Its blocker is refuted and the account can spend, but the paid block is
+atomic — it cannot be probed without committing the spend. Surfaced as an owner go/no-go rather than
+triggered as a side effect of a hash fix. **It is the deployment's own falsification test.**
+
+**The `entryVwap` short-side fix.** `round-trips.ts` builds it BUY-side unconditionally, so on a SHORT
+trip it is the **cover** price (TRUMP: 16 SELL @1.561 entering, one BUY @1.593 covering, `entryVwap` =
+1.593). That biases Arm2/Arm3 anchoring in `edge-verdict-2026-08-10.md`, **whose verdict lands in days**,
+and may explain TRUMP's non-reproduction above. It needs a dated review and a pre-registration
+amendment — never a silent edit to a frozen study.
+
+### Method note
+
+Nine lanes, disjoint scopes, orchestrator holding all four loop files as single-writer. **Agents
+corrected the orchestrator on: the corpus premise, the `13.29%` entry-rate baseline (not in the repo at
+all), `N_BOOT` (20,000, not the 5,000 two records name), the cluster-count arithmetic (1,461, not
+1,288), the `sqrt(k/24)` leak claim (fails at k=23), the live feed-flag count (10 of 13, not 9), and
+what a FAIL in the session arm actually supports** — it is a ceiling probe on payload information, and
+the charter-mandated decide-model instrument is `candidate-model-eval.spec.ts`, not this. Two lanes
+stopped mid-task on a statement of intent and were resumed. One lane tried `allowJs` to fix a `.mjs`
+import, found it broke typecheck project-wide, and **reverted it** rather than leaving a config landmine.
+Also relearned the hard way: **a full gate run mid-fan-out measures your peers, not you** — which §4.6
+now says out loud.

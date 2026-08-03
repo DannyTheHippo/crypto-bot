@@ -219,6 +219,16 @@ WATCH-V3-1: spot heap slope on the demo soak (paper plateau 673 MiB is the
 
 ### WATCH-PLAYBOOK-V10-1 — `inverted` is live, and the divergence is the finding (2026-07-30, Pass 49)
 
+> **AMENDMENT 2026-08-03 — clustering is now on BASE asset, and v10 is unaffected.** `clusterBootstrap`
+> and `computeCell` keyed clusters on the raw symbol string, so 40 symbol strings counted as 40 units
+> when they are only **28 distinct bases** (twelve bases trade on both venues, h=24 correlation
+> 0.9993–0.9999) — `MIN_CLUSTERS=5` was satisfiable by **three** independent assets, the exact
+> degeneracy its own comment claimed to prevent. Re-read after the fix: **no POWERED cell flips.** v10
+> itself is **byte-identical** (clusters=6, same mean, same four CIs) — its 17 entries carry no
+> same-base cross-venue pair. v1/v2 stay powered (13→10, 11→9 clusters); v9 drops 5→4 but was already
+> underpowered on n=6. So this is a **forward guarantee, not a retroactive correction**, and nothing in
+> this WATCH's recorded history moves. `research/studies/cluster-degeneracy-2026-08-03.md`.
+
   **WATCH-PLAYBOOK-V10-1 (replay-predicted vs live-realised entry return).** `agentic_playbook_info`
   reads `version="10"` since the 16:57:19Z boot: the `inverted` arm's prose, minted
   `source='loop-candidate'` `parent_version=8` and promoted the same minute. **It is a RESEARCH-BAR
@@ -652,6 +662,26 @@ class) means a firing will be visible in the sweep's annotations, not as a page.
 > one-money-path-item-per-pass limit, was corrected, and fixed all four in the same pass. That limit
 > governs chosen IMPROVEMENTS only and never licenses a deferral — now stated outright in playbook §4
 > (§ DEFECTS ARE NEVER DEFERRED).
+
+- **GO/NO-GO OWED: the ~$22 Family B paid edge run (2026-08-03).** The blocker recorded since
+  2026-07-31 was **refuted** this pass. `corpusManifest`'s separator is a genuine **NUL byte**, not the
+  space `corpus-fingerprint-drift-2026-07-31.md` typed into its own reimplementation; the real function
+  over the real 386-row corpus reproduces the recorded `f1dd13c6…` design pin exactly. Measured four
+  ways: NUL + file order = `f1dd13c6…` (= the pin), space + file order = `030367ba…` (= that study's
+  claimed "on-disk" value), and the `(eventTime, id-numeric)` tie-break is a **no-op**. The study's
+  whole § 2.6 reordering table is the same artifact. Verified free, no network: `loadDesign()` against
+  the live corpus does **not** throw — `assertDesignMatchesCorpus` is not firing and never should have
+  been. A 1-token preflight confirms the Anthropic account can spend.
+  **What was NOT done, deliberately:** `pnpm eval:playbook-space`'s paid `it` block runs the corpus
+  assertion, the preflight, and `runReplay` (~1,400 calls, up to ≈$21.91) as **one atomic function** —
+  there is no way to probe "is the assertion still blocking" without committing the spend. Committing
+  ~$22 as a side effect of a hash-bug fix is a consequential action, so it was surfaced rather than
+  triggered, even though the budget was pre-authorised for this study.
+  **What remains genuinely unverified:** transport rate, schema validity and faithfulness are only
+  exercised by the real run. "Family B is unblocked" is therefore supported for its two most likely
+  blockers (corpus mismatch, funding) and unproven for the rest.
+  Record: `research/studies/corpus-fingerprint-drift-correction-2026-08-03.md`. **Transferable lesson:
+  a reimplementation of a hash function is a second source of truth — import it, or do not compute it.**
 
 - ~~**BOTH PROVIDER ACCOUNTS ARE UNFUNDED — the single blocker on the entire program (Passes 42/43,
   2026-07-28).**~~ **Struck 2026-07-30T09:01Z when funding returned — read the AMENDED block at the

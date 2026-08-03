@@ -372,15 +372,22 @@ export function loadDesign(file = DESIGN_FILE): StudyDesign {
 
 /**
  * A design sized against a different corpus is void: the row count it budgeted for and the entry
- * counts it assumed both belong to that corpus. Fails CLOSED.
+ * counts it assumed both belong to that corpus. Fails CLOSED — a measurement whose provenance does
+ * not match the corpus in front of it must never be silently accepted as evidence.
+ *
+ * There is no legacy/pre-tie-break arm here. An earlier pass of this function briefly carried one,
+ * reasoning that pre-2026-08 designs recorded a different, unrecoverable corpus ordering — that
+ * reasoning was wrong (research/studies/corpus-fingerprint-drift-correction-2026-08-03.md):
+ * `corpusManifest`'s separator is a genuine NUL byte, and every pre-2026-08 design's recorded hash
+ * reproduces from the real corpus exactly, via the real `corpusManifest`. There was never a second
+ * hash to route to, so a mismatch here is always the generic case.
  */
 export function assertDesignMatchesCorpus(d: StudyDesign, payloadSha256: string): void {
-  if (d.corpusSha256 !== payloadSha256) {
-    throw new Error(
-      `design was sized for corpus ${d.corpusSha256.slice(0, 12)} but this corpus is ` +
-        `${payloadSha256.slice(0, 12)} — re-run calibration; the design does not transfer.`,
-    );
-  }
+  if (d.corpusSha256 === payloadSha256) return;
+  throw new Error(
+    `design was sized for corpus ${d.corpusSha256.slice(0, 12)} but this corpus is ` +
+      `${payloadSha256.slice(0, 12)} — re-run calibration; the design does not transfer.`,
+  );
 }
 const N_BOOT = 20_000;
 const N_PLACEBO = 5_000;
@@ -451,9 +458,47 @@ interface RawCorpusRow {
   readonly input_payload: string;
 }
 
+/**
+ * A FORWARD GUARD, not a fix for drift that happened — none did
+ * (research/studies/corpus-fingerprint-drift-correction-2026-08-03.md). The corpus has 81 distinct
+ * `event_time` values shared by 305 of its 386 rows (a "tie group"), so any FUTURE re-dump that
+ * doesn't preserve today's exact row order is a real risk: ~10^117 orderings are consistent with
+ * `ORDER BY event_time` alone, and each would change `corpusManifest`'s hash even though every row and
+ * every payload byte were identical. This sort makes two loads of the SAME rows produce the SAME
+ * order — and therefore the SAME hash — regardless of what order they arrive in off the wire or disk,
+ * closing that risk before it can produce a real mismatch.
+ *
+ * This lives HERE, in `loadCorpus`, not inside `corpusManifest`. Sorting only inside the manifest
+ * would make the HASH order-invariant while `strideSample` and the chronological-halves `eventTime`
+ * vector — both of which read `rows` directly, never the manifest — stayed order-dependent. That
+ * would let two runs agree "same corpus" while actually scoring different subsamples: a worse, silent
+ * failure than a loud hash mismatch. Sorting in `loadCorpus` makes the hash and the sampling agree by
+ * construction.
+ *
+ * Comparator: (eventTime ASC, id ASC) with id compared NUMERICALLY. Corpus ids are numeric strings
+ * (bigint ids from agent_decisions, serialised to string); an id that fails to parse would make this
+ * sort itself undefined and therefore not reproducible — exactly the failure this guard exists to
+ * prevent — so it FAILS CLOSED rather than degrading to a string comparison that would quietly
+ * reintroduce the risk.
+ */
+function sortCorpusRows(rows: readonly CorpusRow[]): readonly CorpusRow[] {
+  return [...rows].sort((a, b) => {
+    if (a.eventTime !== b.eventTime) return a.eventTime - b.eventTime;
+    const aId = Number(a.id);
+    const bId = Number(b.id);
+    if (!Number.isFinite(aId) || !Number.isFinite(bId)) {
+      throw new Error(
+        `loadCorpus: non-numeric row id in tie-break (a=${a.id}, b=${b.id}) — refusing to sort with ` +
+          `an undefined order, which would make the manifest hash unreproducible again.`,
+      );
+    }
+    return aId - bId;
+  });
+}
+
 export function loadCorpus(file = join(DATA, 'corpus-v3-flat.jsonl')): readonly CorpusRow[] {
   if (!existsSync(file)) throw new Error(`corpus not found: ${file}`);
-  return readFileSync(file, 'utf8')
+  const rows = readFileSync(file, 'utf8')
     .split('\n')
     .filter((l) => l.trim().length > 0)
     .map((l) => JSON.parse(l) as RawCorpusRow)
@@ -464,6 +509,7 @@ export function loadCorpus(file = join(DATA, 'corpus-v3-flat.jsonl')): readonly 
       recordedAction: r.action,
       inputPayload: r.input_payload,
     }));
+  return sortCorpusRows(rows);
 }
 
 /** Row ids in order plus a hash over the payloads — a run whose manifest differs is void. */

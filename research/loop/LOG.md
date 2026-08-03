@@ -759,12 +759,26 @@ provenance is stamped and `build_provenance_void` did not fire; 23 rules loaded 
 container healthy, `RestartCount` 0; **reconciliation CLEAN 9/9 on BOTH venues**; warn this boot 3,
 `fatal=0 error=0`.
 
-**Two honest limits on that verdict.** At 9 minutes the boot had **0 decides** — unremarkable at this
-cadence (the prior boot averaged one real decide per ~9 min against a consult gate that skips ~94% of
-wakes) but **not positive evidence**; the decide-liveness read is deferred to the next pass, and
-`AgenticNoSuccessfulDecideSustained` is the rule that would catch a genuine stall. And the 3 warns carry
-**zero** `submit_portfolio` truncations, which at 0.2h of runtime says nothing either way — the knob
-shipped flag-off, so the leak should be **unchanged**, not fixed, until a separate enable commit.
+**Decide liveness: CONFIRMED, and the scare is worth writing down.** At 9 and again at 12 minutes the
+boot had **0 decides, an empty `agentic_active_menu`, and every `agentic_consult_gate_total` at zero**,
+while market-data staleness sat under 10s across the basket. On the previous boot the menu held 13
+symbols, so that reads exactly like a stalled lane.
+
+**It was not.** The lane decides on **15-minute bar boundaries**: the two prior boots' first decides
+landed at **09:45:00.46** (7m54s after a 09:37:06 boot) and **08:30:00.86** (1m24s after 08:28:37) —
+both precisely on :00/:15/:30/:45. This boot started at **17:00:03**, three seconds PAST the 17:00
+boundary, so the first opportunity was 17:15:00. Decides resumed at **17:15:00.381Z**, 4 rows within
+one second. **Predicted, then observed.**
+
+**The general lesson, because a future pass will meet this again:** for ~15 minutes after any redeploy,
+menu size, consult-gate counters and decide counts are ALL legitimately zero, and a boot landing just
+after a bar boundary maximises that window. **Do not read a post-deploy zero as a stall without first
+checking the bar phase** — the counters reset on boot, so there is no delta to distinguish them, and
+`AgenticNoSuccessfulDecideSustained` (`for: 5m`) is the rule that would catch a genuine one.
+
+One limit stands: the 3 warns carry **zero** `submit_portfolio` truncations, which at this runtime says
+nothing either way — the knob shipped flag-off, so the leak should be **unchanged**, not fixed, until a
+separate enable commit.
 
 ### Flagged / next
 

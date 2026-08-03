@@ -5,6 +5,7 @@
 // ci.yml simply doesn't invoke it, not because it needs guarding.
 import { describe, expect, it } from 'vitest';
 import {
+  MAX_TOKENS_TEMPLATE_PREFIX,
   THINKING_TEMPLATE_VERSION,
   TRADE_TEMPLATE_VERSION,
   buildSystemPrompt,
@@ -13,7 +14,7 @@ import {
 } from '../../../src/features/strategy/agentic/agent-prompt';
 import { SEED_PLAYBOOK } from '../../../src/features/strategy/agentic/agentic-strategy.module';
 import { scoreRows } from '../../../src/features/strategy/agentic/counterfactual-scoring';
-import { EVAL_PROFILE, replay, type ScriptedDecision } from './fixtures';
+import { EVAL_MAX_TOKENS, EVAL_PROFILE, replay, type ScriptedDecision } from './fixtures';
 
 const MODEL = 'claude-eval-fixture-model';
 const CLOSES = ['100', '102', '108', '104', '96', '99', '101'];
@@ -53,9 +54,15 @@ describe('agentic eval — replay runner (offline, fixture fetchFn)', () => {
       ]);
     }
 
-    // Client always stamps thinkingArm=true ⇒ TRADE_TEMPLATE_VERSION+th1 (prepareDecideContext).
+    // Client always stamps thinkingArm=true ⇒ TRADE_TEMPLATE_VERSION+th1 (prepareDecideContext),
+    // and since 2026-08-04 it appends an `mt<value>` tag whenever maxTokens deviates from the
+    // deployed baseline. This fixture runs at EVAL_MAX_TOKENS, which is such a deviation, so the
+    // tag is EXPECTED here — its absence would mean fixture rows hash identically to real
+    // deployment rows, which is the collision the tag exists to prevent. Composed from the same
+    // constants the client composes from, so a future prefix or budget change cannot leave this
+    // assertion quietly asserting the old contract.
     const expectedPromptHash = computePromptHash({
-      templateVersion: `${TRADE_TEMPLATE_VERSION}+${THINKING_TEMPLATE_VERSION}`,
+      templateVersion: `${TRADE_TEMPLATE_VERSION}+${THINKING_TEMPLATE_VERSION}+${MAX_TOKENS_TEMPLATE_PREFIX}${EVAL_MAX_TOKENS}`,
       playbookContent: SEED_PLAYBOOK.content,
       toolSchemaJson: JSON.stringify(buildTradeTool()),
       modelId: MODEL,

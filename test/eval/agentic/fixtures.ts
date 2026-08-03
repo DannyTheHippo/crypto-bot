@@ -60,6 +60,13 @@ export const SID = strategyId('agentic-eval');
 export const V = venueId('binance');
 export const SYM = symbolId('BTC/USDT');
 
+// The fixture's output budget, deliberately far below the deployed PROMPT_HASH_BASELINE_MAX_TOKENS
+// so replays stay cheap. Exported because that deviation is now VISIBLE IN THE PROMPT HASH: the
+// client appends an `mt<value>` tag whenever maxTokens differs from the baseline, precisely so a
+// fixture row can never collide with a real deployment's rows. Any spec asserting a replay's
+// promptHash must compose the tag from THIS constant rather than restating the number.
+export const EVAL_MAX_TOKENS = 256;
+
 // Recorded v2 sessions (and the still-live legacy client paths pre-#10a) emit 'long'/'flat';
 // ScoringRow.action is the narrowed v3 union. Map at the harness boundary — same semantics as the
 // strategy's toJournalAction ('long' entered, 'flat' closed).
@@ -212,7 +219,7 @@ export async function replay(
       apiKey: 'sk-ant-eval-fixture',
       model,
       timeoutMs: 5000,
-      maxTokens: 256,
+      maxTokens: EVAL_MAX_TOKENS,
       signalTtlMs: 60_000,
       profile: EVAL_PROFILE,
     },

@@ -10,8 +10,10 @@ import { applyFillToPosition, type PositionState } from './position';
 //  • base fee   — deducted from the base actually retained ⇒ position holds NET base while the
 //                 cost basis stays GROSS (avgEntry already weighted on the gross fill). This is
 //                 the "unsellable dust" case; getting it wrong shows up as balance drift.
-//  • third-asset fee (e.g. BNB) — never touches the position or quote cash; recorded per asset
-//                 for balance reconciliation. PnL reporting converts at mark elsewhere (estimate).
+//  • third-asset fee (e.g. BNB) — never touches the position or quote cash; recorded per asset via
+//                 FeeLedgerService. That accumulator is write-only today (research/studies/
+//                 fee-truth-2026-08-03.md) — no balance-reconciliation or mark-to-market PnL reader
+//                 consumes it yet; treat the total as unread state, not a live signal.
 
 export interface FillMoneyInput {
   readonly side: 'BUY' | 'SELL';

@@ -140,6 +140,11 @@ export const fills = pgTable(
     qty: numericMoney('qty').notNull(),
     feeCcy: text('fee_ccy'),
     feeAmount: numericMoney('fee_amount'),
+    // VESTIGIAL (research/studies/fee-truth-2026-08-03.md): always written false
+    // (drizzle-execution-store.ts saveFill), never updated, never read — the promotion gate
+    // recomputes fee-convertibility itself from fee_ccy vs. the traded symbol's base/quote asset
+    // (round-trips.ts) and never selects this column. Do not treat it as a live signal; a drop is a
+    // follow-up migration, not done here.
     feeResolved: boolean('fee_resolved').notNull().default(false),
     liquidity: text('liquidity').notNull().$type<'maker' | 'taker'>(),
     venueTimestamp: bigint('venue_timestamp', { mode: 'number' }).notNull(),
@@ -180,6 +185,11 @@ export const balances = pgTable('balances', {
   ...tradingStamp,
 });
 
+// VESTIGIAL (research/studies/fee-truth-2026-08-03.md): zero writers, zero readers anywhere in
+// src/ — confirmed by exhaustive search. Not the same thing as the in-memory FeeLedgerService
+// (execution/fee-ledger.service.ts), which IS fed on every third-asset fee but is itself
+// unconsumed. This table has never had a writer at all. A drop is a follow-up migration, not done
+// here.
 export const feeLedger = pgTable('fee_ledger', {
   id: bigint('id', { mode: 'number' }).generatedAlwaysAsIdentity().primaryKey(),
   venue: text('venue').notNull(),

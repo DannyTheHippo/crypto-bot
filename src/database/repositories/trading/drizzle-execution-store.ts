@@ -227,6 +227,8 @@ export class DrizzleExecutionStore implements ExecutionStorePort {
       qty: fill.qty.toFixed(),
       feeCcy: fill.fee?.ccy,
       feeAmount: fill.fee?.amount.toFixed(),
+      // Always false, unconditionally — no code path ever sets this true and nothing reads it back
+      // (research/studies/fee-truth-2026-08-03.md); kept only because the column is NOT NULL.
       feeResolved: false,
       liquidity: fill.liquidity,
       venueTimestamp: fill.venueTimestamp,

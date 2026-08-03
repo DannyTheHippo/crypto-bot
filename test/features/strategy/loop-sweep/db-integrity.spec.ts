@@ -180,7 +180,7 @@ describe('classifyConfigSnapshotDrift — W3', () => {
     });
   }
 
-  it('alarms when config_snapshots has never been written — the verified live state today', () => {
+  it('alarms when config_snapshots has never been written', () => {
     const { alarms } = classifyConfigSnapshotDrift(ok({ total: 0, rawConfig: '' }));
     expect(kinds(alarms)).toEqual(['config_snapshot_missing']);
     expect(alarms[0]?.detail).toContain('ConfigSnapshotRepository');
@@ -227,6 +227,51 @@ describe('classifyConfigSnapshotDrift — W3', () => {
       snapshot({ rawConfig: JSON.stringify({ someOtherKey: true }) }),
     );
     expect(kinds(alarms)).toEqual(['config_snapshot_shape_unknown']);
+  });
+
+  // The writer being wired alongside this deliverable stores the FULL canonical AppConfig, NESTED
+  // (agentic.promotionDustNotional / agentic.promotionEvidenceEpoch — see app-config.ts:128, :189),
+  // not the flat two-knob shape above. These pin the reader against that real shape.
+  describe('the nested AppConfig shape the writer actually produces', () => {
+    function nestedSnapshot(over: Record<string, unknown> = {}): unknown {
+      return ok({
+        total: 1,
+        rawConfig: JSON.stringify({
+          agentic: {
+            promotionDustNotional: '5',
+            promotionEvidenceEpoch: '2026-07-21T11:21:00Z',
+          },
+        }),
+        runningDustNotional: '5',
+        runningEvidenceEpoch: '2026-07-21T11:21:00Z',
+        ...over,
+      });
+    }
+
+    it('resolves both knobs from a nested payload and stays silent on a clean match', () => {
+      expect(classifyConfigSnapshotDrift(nestedSnapshot()).alarms).toEqual([]);
+    });
+
+    it('fires config_snapshot_drift on a nested dust-notional drift', () => {
+      const { alarms } = classifyConfigSnapshotDrift(nestedSnapshot({ runningDustNotional: '7' }));
+      expect(kinds(alarms)).toEqual(['config_snapshot_drift']);
+      expect(alarms[0]?.detail).toContain('PROMOTION_DUST_NOTIONAL');
+    });
+
+    it('fires config_snapshot_drift on a nested evidence-epoch drift', () => {
+      const { alarms } = classifyConfigSnapshotDrift(
+        nestedSnapshot({ runningEvidenceEpoch: '2026-07-22T00:00:00Z' }),
+      );
+      expect(kinds(alarms)).toEqual(['config_snapshot_drift']);
+      expect(alarms[0]?.detail).toContain('PROMOTION_EVIDENCE_EPOCH');
+    });
+
+    it('still yields config_snapshot_shape_unknown when NEITHER the flat nor the nested spelling is present', () => {
+      const { alarms } = classifyConfigSnapshotDrift(
+        snapshot({ rawConfig: JSON.stringify({ agentic: { someOtherKnob: true } }) }),
+      );
+      expect(kinds(alarms)).toEqual(['config_snapshot_shape_unknown']);
+    });
   });
 
   it('fails CLOSED when the running env could not be resolved', () => {
@@ -313,8 +358,9 @@ describe('the fail direction is declared in source, for each of the five invaria
     expect(source).toContain('fills is created UNTRIGGERED');
   });
 
-  it('W3 records that config_snapshots is verified but has never been written, not guessed', () => {
-    expect(source).toContain('ZERO call sites');
-    expect(source).toContain('The table is therefore ALWAYS EMPTY');
+  it('W3 records the writer/reader fail-open/fail-closed asymmetry, not guessed', () => {
+    expect(source).toContain('writeConfigSnapshot');
+    expect(source).toContain('declared FAIL OPEN');
+    expect(source).toContain('deliberately asymmetric with the writer');
   });
 });

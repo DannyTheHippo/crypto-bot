@@ -129,9 +129,9 @@ function baseApp(): Record<string, unknown> {
       unresolvedFillIntents: { ok: true, value: { count: 0 } },
       cumQtyMismatch: { ok: true, value: { mismatches: 0, checked: 50 } },
       unconvertibleFillFees: { ok: true, value: { violations: 0, checked: 100 } },
-      // config_snapshots is verified-but-unwritten on the real stack today, so a CLEAN fixture must
-      // supply a matching snapshot row explicitly rather than omit the probe — see
-      // classifyConfigSnapshotDrift.
+      // config_snapshot_missing fires on total=0, and the writer is fail-open so an unsuccessful
+      // write leaves the same total=0 — a CLEAN fixture must supply a matching snapshot row
+      // explicitly rather than omit the probe. See classifyConfigSnapshotDrift.
       configSnapshot: {
         ok: true,
         value: {

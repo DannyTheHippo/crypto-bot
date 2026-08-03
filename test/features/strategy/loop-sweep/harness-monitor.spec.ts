@@ -29,6 +29,7 @@ interface Harness {
   id: string;
   label: string;
   args: string[];
+  onGate: boolean;
 }
 interface Core {
   classifyHarnessRuns: (input: {
@@ -60,7 +61,17 @@ const {
 } = core;
 
 const NOW = 10_000_000_000;
-const ONE: Harness[] = [{ id: 'eval-agentic', label: 'pnpm eval:agentic (test/eval)', args: [] }];
+const ONE: Harness[] = [
+  { id: 'eval-agentic', label: 'pnpm eval:agentic (test/eval)', args: [], onGate: false },
+];
+const ON_GATE: Harness[] = [
+  {
+    id: 'loop-sweep-specs',
+    label: 'loop-sweep specs (incl. forward-return.spec.ts)',
+    args: [],
+    onGate: true,
+  },
+];
 
 function artifact(runs: Record<string, unknown>): string {
   return JSON.stringify({ schema: 1, writtenAtMs: NOW, runs });
@@ -88,7 +99,7 @@ const only = (
   return first;
 };
 
-describe('the monitored set covers the suites the production gate does not', () => {
+describe('the monitored set, and which of its members are actually off the production gate', () => {
   it('watches the loop-sweep specs (which carry forward-return.spec.ts) and eval:agentic', () => {
     const ids = MONITORED_HARNESSES.map((h) => h.id);
     expect(ids).toContain('loop-sweep-specs');
@@ -99,6 +110,15 @@ describe('the monitored set covers the suites the production gate does not', () 
     expect(sweepSpecs?.args).toContain('test/features/strategy/loop-sweep');
     const evalAgentic = MONITORED_HARNESSES.find((h) => h.id === 'eval-agentic');
     expect(evalAgentic?.args).toContain('test/eval');
+  });
+
+  it('records loop-sweep-specs as ON the production gate, and the other two as OFF it', () => {
+    // pnpm test == `vitest run test/features test/domain test/ports test/livegate` (package.json) —
+    // test/features/strategy/loop-sweep is matched by the test/features positional, so this harness
+    // is NOT off-gate the way the other two genuinely are.
+    expect(MONITORED_HARNESSES.find((h) => h.id === 'loop-sweep-specs')?.onGate).toBe(true);
+    expect(MONITORED_HARNESSES.find((h) => h.id === 'eval-agentic')?.onGate).toBe(false);
+    expect(MONITORED_HARNESSES.find((h) => h.id === 'backtest')?.onGate).toBe(false);
   });
 
   it('also watches test/backtest — the other harness named in the finding', () => {
@@ -146,6 +166,32 @@ describe('fresh results', () => {
     expect(Object.keys(classifyHarnessRuns({ artifactText: null, nowMs: NOW }))).toEqual([
       'annotations',
     ]);
+  });
+
+  it('states the true per-harness gate fact instead of one blanket claim — loop-sweep-specs IS on `pnpm test`', () => {
+    const neverRun = only({ artifactText: null, nowMs: NOW }, ON_GATE);
+    expect(neverRun.kind).toBe('harness_never_run');
+    expect(neverRun.detail).toContain('ON the production gate');
+    expect(neverRun.detail).not.toContain('OFF the production gate');
+
+    const failed = only(
+      {
+        artifactText: artifact({ 'loop-sweep-specs': run({ ok: false, exitCode: 1 }) }),
+        nowMs: NOW,
+      },
+      ON_GATE,
+    );
+    expect(failed.kind).toBe('harness_failed');
+    expect(failed.detail).toContain('ON the production gate');
+    expect(failed.detail).not.toContain('OFF the production gate');
+
+    // eval-agentic (used throughout this file's other tests) genuinely IS off-gate, so its wording
+    // is unchanged by this fix.
+    const offGateFailed = only({
+      artifactText: artifact({ 'eval-agentic': run({ ok: false, exitCode: 1 }) }),
+      nowMs: NOW,
+    });
+    expect(offGateFailed.detail).toContain('OFF the production gate');
   });
 
   it('treats a result exactly at the freshness bound as fresh, and one millisecond past it as stale', () => {

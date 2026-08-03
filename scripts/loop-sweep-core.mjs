@@ -1634,18 +1634,20 @@ export function classifyUnconvertibleFillFees(probe) {
 }
 
 // ── W3: the running promotion config must match the newest config_snapshots row ──────────────────
-// Verified before writing this query (2026-08-03, per this deliverable's own instruction to check
-// rather than guess): config_snapshots EXISTS under this name (database/schemas/trading/
-// trading.schema.ts) and its repository (ConfigSnapshotRepository.upsert,
-// database/repositories/trading/config-snapshot.repository.ts) is bound at CONFIG_SNAPSHOT_REPO in
-// database.module.ts — but a full-text search of src/ found ZERO call sites that ever invoke
-// `.upsert()`. The table is therefore ALWAYS EMPTY on this stack today. That is not this check's bug
-// to paper over: fails CLOSED, so an unwritten snapshot is its own named alarm
+// As of this pass, config_snapshots has a writer: startTrading() in trading-runtime.module.ts calls
+// writeConfigSnapshot() (features/trading/composition/write-config-snapshot.ts), which invokes
+// ConfigSnapshotRepository.upsert() (bound at CONFIG_SNAPSHOT_REPO) with the FULL canonical
+// secret-free AppConfig, NESTED — the row's own `hash` primary key is computed over the full
+// canonical config, so a flat two-knob projection would make that key unverifiable against its
+// content. That writer is declared FAIL OPEN (a write failure leaves config_snapshots exactly as it
+// was rather than blocking boot — measurement input, not a safety gate): a failed or not-yet-run
+// write and an unwritten table are indistinguishable from this side. This reader stays fails CLOSED,
+// deliberately asymmetric with the writer: total === 0 is its own named alarm
 // (config_snapshot_missing) rather than a silent pass — an unwritten config snapshot is not evidence
-// the config agrees with itself. Because the writer has never run, the JSON shape `config_snapshots.
-// config` would carry has never been established either; if a row does someday exist, both a raw
-// env-var key spelling and a camelCase AppConfig-field spelling are tried before giving up
-// (config_snapshot_shape_unknown), rather than silently assuming one.
+// the config agrees with itself. It tries a flat env-var key spelling, a flat camelCase spelling, AND
+// the real nested AppConfig location (`agentic.promotionDustNotional` / `agentic.promotionEvidenceEpoch`,
+// src/ports/common/app-config.ts:128, :189) before giving up (config_snapshot_shape_unknown), rather
+// than silently assuming one.
 export function classifyConfigSnapshotDrift(probe) {
   const alarms = [];
   try {
@@ -1671,12 +1673,15 @@ export function classifyConfigSnapshotDrift(probe) {
       alarms.push({
         kind: 'config_snapshot_missing',
         detail:
-          'config_snapshots has 0 rows — ConfigSnapshotRepository.upsert() ' +
-          '(database/repositories/trading/config-snapshot.repository.ts) is bound at ' +
-          'CONFIG_SNAPSHOT_REPO but never invoked by any feature module (verified 2026-08-03: zero ' +
-          'call sites in src/), so no snapshot has ever been written — PROMOTION_DUST_NOTIONAL/' +
-          'PROMOTION_EVIDENCE_EPOCH drift cannot be verified until a writer exists. Fails CLOSED: an ' +
-          'unwritten config snapshot is not evidence the config agrees with itself',
+          'config_snapshots has 0 rows. A writer exists (startTrading() in ' +
+          'trading-runtime.module.ts calls writeConfigSnapshot(), which invokes ' +
+          'ConfigSnapshotRepository.upsert() bound at CONFIG_SNAPSHOT_REPO) and it is declared FAIL ' +
+          'OPEN, so 0 rows means the write never succeeded this boot — either it has not run yet or ' +
+          'it threw and swallowed the error. Check the app log first: writeConfigSnapshot() logs its ' +
+          'failure path via log.warn("config snapshot write failed …") on the same boot. ' +
+          'PROMOTION_DUST_NOTIONAL/PROMOTION_EVIDENCE_EPOCH drift cannot be verified until a row ' +
+          'lands. Fails CLOSED: an unwritten config snapshot is not evidence the config agrees with ' +
+          'itself',
       });
       return { alarms };
     }
@@ -1700,22 +1705,30 @@ export function classifyConfigSnapshotDrift(probe) {
       });
       return { alarms };
     }
+    // Two writer shapes are tried: a flat env-var-keyed snapshot (never actually written — see
+    // the header above) and the nested canonical AppConfig the writer being wired today actually
+    // produces (src/ports/common/app-config.ts:128, :189 — `agentic.promotionDustNotional`,
+    // `agentic.promotionEvidenceEpoch`). Flat wins when both are present so the never-observed
+    // shape does not regress if it ever does show up.
     const dustSnapshot =
       parsed.PROMOTION_DUST_NOTIONAL !== undefined
         ? parsed.PROMOTION_DUST_NOTIONAL
-        : parsed.promotionDustNotional;
+        : (parsed.promotionDustNotional ?? parsed.agentic?.promotionDustNotional);
     const epochSnapshot =
       parsed.PROMOTION_EVIDENCE_EPOCH !== undefined
         ? parsed.PROMOTION_EVIDENCE_EPOCH
-        : (parsed.promotionEvidenceEpoch ?? parsed.evidenceEpochMs);
+        : (parsed.promotionEvidenceEpoch ??
+          parsed.evidenceEpochMs ??
+          parsed.agentic?.promotionEvidenceEpoch);
     if (dustSnapshot === undefined || epochSnapshot === undefined) {
       alarms.push({
         kind: 'config_snapshot_shape_unknown',
         detail:
-          'config_snapshots carries a row but neither PROMOTION_DUST_NOTIONAL/promotionDustNotional ' +
-          'nor PROMOTION_EVIDENCE_EPOCH/promotionEvidenceEpoch/evidenceEpochMs were found in its ' +
-          "config JSON — the writer's shape has never been established (zero call sites), so this " +
-          'comparison cannot run. Fails CLOSED: an unrecognised shape is not a match',
+          'config_snapshots carries a row but neither PROMOTION_DUST_NOTIONAL/promotionDustNotional/' +
+          'agentic.promotionDustNotional nor PROMOTION_EVIDENCE_EPOCH/promotionEvidenceEpoch/' +
+          'evidenceEpochMs/agentic.promotionEvidenceEpoch were found in its config JSON — none of the ' +
+          'known writer shapes match, so this comparison cannot run. Fails CLOSED: an unrecognised ' +
+          'shape is not a match',
       });
       return { alarms };
     }
@@ -1769,7 +1782,7 @@ export function classifyConfigSnapshotDrift(probe) {
   return { alarms };
 }
 
-// ── off-gate harness monitor: making a silent suite's result impossible to miss ───────────────────
+// ── harness monitor: making a silent suite's result impossible to miss ─────────────────────────────
 // Written for backlog 54 (2026-07-31). `test/backtest` and `test/eval` are deliberately OFF the
 // production gate (`pnpm test`), which means their failures are invisible by construction — three
 // consecutive passes shipped only defect repairs and the loop's own words for it were "every defect
@@ -1777,6 +1790,13 @@ export function classifyConfigSnapshotDrift(probe) {
 // counterfactual-scoring horizon fix broke `eval:agentic` AND a test/features/strategy/eval spec, and
 // both were caught only because a human ran them by hand. `pnpm eval:agentic` was likewise hand-
 // verified green in Pass 51. That hand-check is what this automates.
+//
+// NOT ALL THREE MONITORED HARNESSES ARE OFF-GATE. `loop-sweep-specs` IS matched by `pnpm test`'s
+// `test/features` positional (package.json's `test` script: `vitest run test/features test/domain
+// test/ports test/livegate`) — verified 2026-08-03, correcting an over-claim this comment used to
+// make. It stays monitored anyway for the same silence-is-not-clean guarantee the off-gate suites
+// get; each `MONITORED_HARNESSES` entry below carries its own `onGate` field so this file states the
+// true fact per harness rather than asserting one blanket claim for all three.
 //
 // SPLIT OF LABOUR — the sweep must NOT run the suites. `pnpm loop:sweep` runs 3x/day and has to stay
 // fast; a vitest run inside it would make the health sweep hostage to a test suite. So a separate
@@ -1805,9 +1825,21 @@ export const MONITORED_HARNESSES = [
     id: 'loop-sweep-specs',
     label: 'loop-sweep specs (incl. forward-return.spec.ts)',
     args: ['run', 'test/features/strategy/loop-sweep'],
+    // ON the production gate — `pnpm test`'s `test/features` positional matches this path.
+    onGate: true,
   },
-  { id: 'eval-agentic', label: 'pnpm eval:agentic (test/eval)', args: ['run', 'test/eval'] },
-  { id: 'backtest', label: 'pnpm backtest (test/backtest)', args: ['run', 'test/backtest'] },
+  {
+    id: 'eval-agentic',
+    label: 'pnpm eval:agentic (test/eval)',
+    args: ['run', 'test/eval'],
+    onGate: false,
+  },
+  {
+    id: 'backtest',
+    label: 'pnpm backtest (test/backtest)',
+    args: ['run', 'test/backtest'],
+    onGate: false,
+  },
 ];
 
 // The artifact scripts/loop-harness.mjs writes and loop-sweep.mjs reads, under research/loop/digests/
@@ -1821,6 +1853,20 @@ export const HARNESS_ARTIFACT_NAME = '.harness-runs.json';
 // uses against the same cadence. Deliberately not generous: the failure mode being defended against
 // is a result that quietly ages into fiction while the digest keeps printing its verdict.
 export const HARNESS_RESULT_STALE_MS = 1.5 * EXPECTED_SWEEP_INTERVAL_MS;
+
+// Per-harness gate wording, driven by MONITORED_HARNESSES' own onGate field rather than one blanket
+// claim for all three (loop-sweep-specs IS on `pnpm test`; eval-agentic/backtest are not — see the
+// header comment above).
+function gateClause(h, tense) {
+  if (h.onGate) {
+    return tense === 'never_run'
+      ? 'this suite is ON the production gate (`pnpm test`), which would independently catch it failing'
+      : 'this suite is ON the production gate (`pnpm test`), which will independently fail on it too';
+  }
+  return tense === 'never_run'
+    ? 'this suite is off the production gate, so nothing else in this repo would notice it breaking'
+    : 'this suite is OFF the production gate, so nothing else in this repo will fail on it';
+}
 
 function harnessAgeText(ageMs) {
   return ageMs >= 3_600_000
@@ -1872,8 +1918,7 @@ export function classifyHarnessRuns({ artifactText = null, nowMs = null, harness
           kind: 'harness_never_run',
           detail:
             `${h.label}: NO recorded run at all${runs ? ' in the harness artifact' : ' (artifact absent)'} — ` +
-            'this suite is off the production gate, so nothing else in this repo would notice it ' +
-            'breaking; run `pnpm loop:harness` to produce a reading',
+            `${gateClause(h, 'never_run')}; run \`pnpm loop:harness\` to produce a reading`,
         });
         continue;
       }
@@ -1921,9 +1966,7 @@ export function classifyHarnessRuns({ artifactText = null, nowMs = null, harness
           `${h.label}: ${run.ok ? 'PASS' : 'FAIL'} ${harnessAgeText(ageMs)} ago` +
           `${Number.isFinite(run.exitCode) ? ` (exit ${run.exitCode})` : ''}` +
           `${typeof run.summary === 'string' && run.summary !== '' ? ` — ${run.summary}` : ''}` +
-          (run.ok
-            ? ''
-            : ' — this suite is OFF the production gate, so nothing else in this repo will fail on it'),
+          (run.ok ? '' : ` — ${gateClause(h, 'failed')}`),
       });
     }
   } catch (err) {

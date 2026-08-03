@@ -169,9 +169,10 @@ function baseProbes(): Probes {
     unresolvedFillIntents: { ok: true, value: { count: 0 } },
     cumQtyMismatch: { ok: true, value: { mismatches: 0, checked: 50 } },
     unconvertibleFillFees: { ok: true, value: { violations: 0, checked: 100 } },
-    // config_snapshots is verified-but-unwritten on the real stack today (config_snapshot_missing
-    // fires whenever total=0 — see classifyConfigSnapshotDrift), so a fixture representing the
-    // CLEAN/matching state has to supply a snapshot row explicitly, not merely omit the probe.
+    // config_snapshot_missing fires whenever total=0 (see classifyConfigSnapshotDrift), and the
+    // writer is fail-open so a boot with no successful write still reads total=0 — so a fixture
+    // representing the CLEAN/matching state has to supply a snapshot row explicitly, not merely
+    // omit the probe.
     configSnapshot: {
       ok: true,
       value: {

@@ -4,6 +4,7 @@ import { readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { walkRoundTrips, type RoundTripFill } from '../../src/domain/trading/risk/round-trips';
 import { simulateExit, type RawCandle, type Side } from './exit-simulator';
+import { partitionFillsIntoCycles, computeCycleFrameStats } from './live-frame';
 
 // ── Exit-attribution study (three arms) ──────────────────────────────────────
 //
@@ -26,6 +27,14 @@ import { simulateExit, type RawCandle, type Side } from './exit-simulator';
 //
 // Gated like the sibling live evals: EXIT_ATTRIBUTION=1 + DATABASE_URL, self-skips otherwise.
 // Read-only against fills/order_intents/agent_decisions — never a write, never a reset.
+//
+// FRAME-MIXING FIX (backlog 57, research/studies/frame-audit-2026-08-03.md): `entryVwap` below is
+// the recorded round trip's DEMO-frame fill VWAP, but `exit-simulator.ts` resolves stop/TP against
+// `bars` drawn from the LIVE-frame OHLCV cache — so all 16 cells priced their entry in one frame and
+// probed it in another. Below, ALONGSIDE the original arm2/arm3 cells (never replaced — those were
+// published), a second pass re-runs the identical 16 cells substituting a live-frame entry price
+// (the same 15m-grid interpolation frame-audit.spec.ts uses, via live-frame.ts) so entry and probe
+// share one frame. Cycle boundaries are untouched; only the entry mark is substituted.
 
 const RUN = process.env['EXIT_ATTRIBUTION'] === '1';
 const DB_URL = process.env['DATABASE_URL'];
@@ -136,8 +145,12 @@ describe.skipIf(!RUN || !DB_URL)('exit-attribution: discretion vs geometry vs en
         refPrice: r.ref_price,
       }));
 
-      const { cycles } = walkRoundTrips(fills, new Decimal(DUST_NOTIONAL));
+      const dustNotional = new Decimal(DUST_NOTIONAL);
+      const { cycles } = walkRoundTrips(fills, dustNotional);
       expect(cycles.length).toBeGreaterThan(0);
+
+      // Frame-mixing fix (see header): per-cycle live-frame entry marks, aligned 1:1 with `cycles`.
+      const frameParts = partitionFillsIntoCycles(fills, cycles, dustNotional);
 
       // Entry decisions carry the declared geometry in plan_json. Matched to a cycle by ASOF join:
       // the latest open_* decision for that (strategy, symbol) at or before the cycle's open.
@@ -197,13 +210,28 @@ describe.skipIf(!RUN || !DB_URL)('exit-attribution: discretion vs geometry vs en
       arm3.set('timeonly', newArm('Arm3 time-stop only'));
       arm3.set('nostop', newArm('Arm3 no take-profit'));
 
+      // LIVE-FRAME RE-RUN (backlog 57) — the identical 16 cells, entry priced off the interpolated
+      // live-frame grid instead of the demo fill VWAP. Reported BESIDE arm2/arm3, never replacing.
+      const arm2Live = newArm('Arm2 LIVE-FRAME declared plan, mechanical');
+      const arm3Live = new Map<string, ArmAccumulator>();
+      for (const sm of STOP_MULTIPLES) {
+        for (const tm of TP_MULTIPLES) {
+          arm3Live.set(`${sm}|${tm}`, newArm(`Arm3 LIVE-FRAME stop x${sm} tp x${tm}`));
+        }
+      }
+      arm3Live.set('timeonly', newArm('Arm3 LIVE-FRAME time-stop only'));
+      arm3Live.set('nostop', newArm('Arm3 LIVE-FRAME no take-profit'));
+      let livePartitionMismatches = 0;
+      let liveNoEntry = 0; // no live-priced BUY fill in the cycle (grid miss or no BUY fill)
+
       let unmatched = 0;
       let noCandles = 0;
       let phantomTrips = 0;
       const arm1NoPhantom = newArm('Arm1 actual, phantoms excluded');
       const perTrip: string[] = [];
 
-      for (const c of cycles) {
+      for (let cycleIdx = 0; cycleIdx < cycles.length; cycleIdx += 1) {
+        const c = cycles[cycleIdx]!;
         const entry = matchEntry(c.strategyId, c.symbol, c.openedAt);
         if (entry === null) {
           unmatched += 1;
@@ -275,6 +303,59 @@ describe.skipIf(!RUN || !DB_URL)('exit-attribution: discretion vs geometry vs en
         run(arm3.get('timeonly')!, null, null);
         run(arm3.get('nostop')!, entry.stopLossPct, null);
 
+        // LIVE-FRAME RE-RUN: same forward bars (already live-frame OHLCV), same declared geometry,
+        // ONLY the entry mark substituted. The partition MUST reproduce walkRoundTrips's own
+        // realizedPnl before its liveEntryVwap is trusted for anything (same discipline as
+        // frame-audit.spec.ts) — a mismatch skips the live re-run for this trip only, never the
+        // original arm1/arm2/arm3 above, which do not depend on this partition at all.
+        const members = frameParts[cycleIdx]!;
+        const frameStats = computeCycleFrameStats(members, c.closedAt, candlesFor);
+        if (!frameStats.demoPnlCheck.eq(c.realizedPnl)) {
+          livePartitionMismatches += 1;
+        } else if (frameStats.liveEntryVwap === null) {
+          liveNoEntry += 1;
+        } else {
+          const runLive = (
+            arm: ArmAccumulator,
+            stopLossPct: string | null,
+            takeProfitPct: string | null,
+          ): void => {
+            const outcome = simulateExit({
+              side: entry.side,
+              entryPrice: frameStats.liveEntryVwap!.toString(),
+              stopLossPct,
+              takeProfitPct,
+              maxHoldBars: entry.maxHoldBars,
+              bars: forward,
+              resolution: 'intrabar',
+              roundTripFee: ROUND_TRIP_FEE,
+            });
+            if (outcome === null) {
+              arm.excluded += 1;
+              return;
+            }
+            arm.trips += 1;
+            arm.sum = arm.sum.plus(outcome.netReturn);
+            if (new Decimal(outcome.netReturn).gt(0)) arm.wins += 1;
+            if (outcome.reason === 'stop') arm.stops += 1;
+            else if (outcome.reason === 'take_profit') arm.takeProfits += 1;
+            else arm.maxHolds += 1;
+          };
+
+          runLive(arm2Live, entry.stopLossPct, entry.takeProfitPct);
+          for (const sm of STOP_MULTIPLES) {
+            for (const tm of TP_MULTIPLES) {
+              runLive(
+                arm3Live.get(`${sm}|${tm}`)!,
+                new Decimal(entry.stopLossPct).mul(sm).toString(),
+                new Decimal(entry.takeProfitPct).mul(tm).toString(),
+              );
+            }
+          }
+          runLive(arm3Live.get('timeonly')!, null, null);
+          runLive(arm3Live.get('nostop')!, entry.stopLossPct, null);
+        }
+
         // A cycle whose notional is at or under the dust threshold is a PHANTOM: walkRoundTrips
         // closes a trip as soon as the running position dips below PROMOTION_DUST_NOTIONAL, so a
         // multi-fill backfill whose first fill is small mints a "closed round trip" at that first
@@ -293,10 +374,18 @@ describe.skipIf(!RUN || !DB_URL)('exit-attribution: discretion vs geometry vs en
         }
       }
 
+      const arm1MeanBps = arm1.trips > 0 ? arm1.sum.div(arm1.trips).mul(10_000) : new Decimal(0);
+      const arm2MeanBps = arm2.trips > 0 ? arm2.sum.div(arm2.trips).mul(10_000) : new Decimal(0);
+      const arm2LiveMeanBps =
+        arm2Live.trips > 0 ? arm2Live.sum.div(arm2Live.trips).mul(10_000) : new Decimal(0);
+      const marginOriginal = arm2MeanBps.minus(arm1MeanBps);
+      const marginLive = arm2LiveMeanBps.minus(arm1MeanBps);
+
       lines.push(
         `[exit-attribution] epoch=${new Date(EPOCH_MS).toISOString()} fills=${fills.length} ` +
           `cycles=${cycles.length} entryDecisions=${decisions.length} unmatched=${unmatched} ` +
-          `noCandles=${noCandles} phantomDustTrips=${phantomTrips}`,
+          `noCandles=${noCandles} phantomDustTrips=${phantomTrips} ` +
+          `livePartitionMismatches=${livePartitionMismatches} liveNoEntry=${liveNoEntry}`,
         '',
         '--- per-trip (Arm 1 actual) ---',
         ...perTrip,
@@ -306,6 +395,18 @@ describe.skipIf(!RUN || !DB_URL)('exit-attribution: discretion vs geometry vs en
         summarise(arm1NoPhantom),
         summarise(arm2),
         ...[...arm3.values()].map(summarise),
+        '',
+        '--- LIVE-FRAME RE-RUN (backlog 57 fix: entry priced off the interpolated live-frame grid; ' +
+          'cycle boundaries and forward bars UNCHANGED — see header) ---',
+        summarise(arm2Live),
+        ...[...arm3Live.values()].map(summarise),
+        '',
+        `Arm2 mean:        original=${arm2MeanBps.toFixed(1)}bps   live-frame=${arm2LiveMeanBps.toFixed(1)}bps   ` +
+          `delta=${arm2LiveMeanBps.minus(arm2MeanBps).toFixed(1)}bps`,
+        `Arm2 - Arm1 margin: original=${marginOriginal.toFixed(1)}bps   live-frame=${marginLive.toFixed(1)}bps   ` +
+          `delta=${marginLive.minus(marginOriginal).toFixed(1)}bps`,
+        `sign flip on Arm2 mean: ${arm2MeanBps.isNeg() !== arm2LiveMeanBps.isNeg() && arm2LiveMeanBps.abs().gt(0) ? 'YES' : 'no'}   ` +
+          `sign flip on Arm2-Arm1 margin: ${marginOriginal.isNeg() !== marginLive.isNeg() ? 'YES' : 'no'}`,
       );
 
       const out = lines.join('\n');
@@ -316,6 +417,9 @@ describe.skipIf(!RUN || !DB_URL)('exit-attribution: discretion vs geometry vs en
       // the preregistration, never asserted here (a green test must never imply a positive result).
       expect(arm1.trips).toBeGreaterThan(0);
       expect(arm2.trips + arm2.excluded).toBeGreaterThan(0);
+      expect(
+        arm2Live.trips + arm2Live.excluded + livePartitionMismatches + liveNoEntry,
+      ).toBeGreaterThan(0);
     } finally {
       await pool.end();
     }
